@@ -970,6 +970,15 @@ function getSelectedAnimationAsset() {
   return assets.find((asset) => asset.name === assetPickerState.selectedFile) || null;
 }
 
+function populateAssetPickerDetail(detail, selected) {
+  detail.innerHTML = "";
+  detail.appendChild(buildAnimPreviewNode(selected && selected.fileUrl));
+  const selectedLabel = document.createElement("div");
+  selectedLabel.className = "anim-override-file";
+  selectedLabel.textContent = `${t("animOverridesModalSelected")}: ${selected ? selected.name : "-"}`;
+  detail.appendChild(selectedLabel);
+}
+
 function syncAssetPickerSelectionUi() {
   const root = document.getElementById("modalRoot");
   if (!root || !assetPickerState) return;
@@ -978,14 +987,7 @@ function syncAssetPickerSelectionUi() {
     item.classList.toggle("active", item.dataset.assetName === (selected && selected.name));
   }
   const detail = root.querySelector(".asset-picker-detail");
-  if (detail) {
-    detail.innerHTML = "";
-    detail.appendChild(buildAnimPreviewNode(selected && selected.fileUrl));
-    const selectedLabel = document.createElement("div");
-    selectedLabel.className = "anim-override-file";
-    selectedLabel.textContent = `${t("animOverridesModalSelected")}: ${selected ? selected.name : "-"}`;
-    detail.appendChild(selectedLabel);
-  }
+  if (detail) populateAssetPickerDetail(detail, selected);
   const previewBtn = root.querySelector(".asset-picker-preview-btn");
   if (previewBtn) previewBtn.disabled = !selected;
   const useBtn = root.querySelector(".asset-picker-use-btn");
@@ -1005,7 +1007,7 @@ function renderAssetPickerModal() {
   }
   normalizeAssetPickerSelection();
   const assets = Array.isArray(animationOverridesData.assets) ? animationOverridesData.assets : [];
-  const selected = assets.find((asset) => asset.name === assetPickerState.selectedFile) || null;
+  const selected = getSelectedAnimationAsset();
 
   const overlay = document.createElement("div");
   overlay.className = "modal-backdrop";
@@ -1075,11 +1077,7 @@ function renderAssetPickerModal() {
 
   const detail = document.createElement("div");
   detail.className = "asset-picker-detail";
-  detail.appendChild(buildAnimPreviewNode(selected && selected.fileUrl));
-  const selectedLabel = document.createElement("div");
-  selectedLabel.className = "anim-override-file";
-  selectedLabel.textContent = `${t("animOverridesModalSelected")}: ${selected ? selected.name : "-"}`;
-  detail.appendChild(selectedLabel);
+  populateAssetPickerDetail(detail, selected);
   body.appendChild(detail);
   modal.appendChild(body);
 
