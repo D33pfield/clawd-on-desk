@@ -115,15 +115,26 @@ describe("updateRegistry pure-data validators", () => {
   it("theme effect proxies to deps.activateTheme and maps throws to error", () => {
     const entry = updateRegistry.theme;
     const calls = [];
+    const overrideMap = {
+      tiers: {
+        workingTiers: {
+          "clawd-working-typing.svg": { file: "clawd-working-typing-old.svg" },
+        },
+      },
+    };
     const deps = {
-      snapshot: baseSnapshot,
-      activateTheme: (id) => {
-        calls.push(id);
+      snapshot: { ...baseSnapshot, themeOverrides: { clawd: overrideMap } },
+      activateTheme: (id, variantId, targetOverrideMap) => {
+        calls.push({ id, variantId, targetOverrideMap });
         if (id === "bad") throw new Error("boom");
       },
     };
     assert.deepStrictEqual(entry.effect("clawd", deps), { status: "ok" });
-    assert.deepStrictEqual(calls, ["clawd"]);
+    assert.deepStrictEqual(calls, [{
+      id: "clawd",
+      variantId: null,
+      targetOverrideMap: overrideMap,
+    }]);
 
     const err = entry.effect("bad", deps);
     assert.strictEqual(err.status, "error");
@@ -379,8 +390,8 @@ describe("setThemeSelection command", () => {
     const calls = { activateTheme: [] };
     const deps = {
       snapshot: baseSnapshot,
-      activateTheme: (themeId, variantId) => {
-        calls.activateTheme.push({ themeId, variantId });
+      activateTheme: (themeId, variantId, overrideMap) => {
+        calls.activateTheme.push({ themeId, variantId, overrideMap });
         // Simulate lenient variant fallback: "dead" variant → resolves to default
         const resolved = variantId === "dead" ? "default" : variantId;
         return { themeId, variantId: resolved };
@@ -409,6 +420,7 @@ describe("setThemeSelection command", () => {
     assert.strictEqual(calls.activateTheme.length, 1);
     assert.strictEqual(calls.activateTheme[0].themeId, "clawd");
     assert.strictEqual(calls.activateTheme[0].variantId, "default");
+    assert.strictEqual(calls.activateTheme[0].overrideMap, null);
   });
 
   it("uses snapshot.themeVariant when variantId not provided", () => {
@@ -417,6 +429,24 @@ describe("setThemeSelection command", () => {
     const r = commandRegistry.setThemeSelection({ themeId: "clawd" }, deps);
     assert.strictEqual(r.status, "ok");
     assert.strictEqual(calls.activateTheme[0].variantId, "chill");
+  });
+
+  it("passes the target theme override map into activateTheme", () => {
+    const overrideMap = {
+      tiers: {
+        workingTiers: {
+          "clawd-working-typing.svg": { file: "clawd-working-typing-old.svg" },
+        },
+      },
+    };
+    const snapshotWithOverride = {
+      ...baseSnapshot,
+      themeOverrides: { clawd: overrideMap },
+    };
+    const { deps, calls } = makeDeps({ snapshot: snapshotWithOverride });
+    const r = commandRegistry.setThemeSelection({ themeId: "clawd" }, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(calls.activateTheme[0].overrideMap, overrideMap);
   });
 
   it("explicit variantId overrides snapshot map", () => {

@@ -294,7 +294,9 @@ const updateRegistry = {
         };
       }
       try {
-        deps.activateTheme(value);
+        const snapshot = (deps && deps.snapshot) || {};
+        const currentOverrides = snapshot.themeOverrides || {};
+        deps.activateTheme(value, null, currentOverrides[value] || null);
         return { status: "ok" };
       } catch (err) {
         return {
@@ -488,11 +490,13 @@ function setThemeSelection(payload, deps) {
 
   const snapshot = deps.snapshot || {};
   const currentVariantMap = snapshot.themeVariant || {};
+  const currentOverrides = snapshot.themeOverrides || {};
   const targetVariant = variantIdInput || currentVariantMap[themeId] || "default";
+  const targetOverrideMap = currentOverrides[themeId] || null;
 
   let resolved;
   try {
-    resolved = deps.activateTheme(themeId, targetVariant);
+    resolved = deps.activateTheme(themeId, targetVariant, targetOverrideMap);
   } catch (err) {
     return { status: "error", message: `setThemeSelection: ${err && err.message}` };
   }
