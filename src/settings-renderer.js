@@ -616,6 +616,15 @@ function captureAssetPickerScrollState() {
   assetPickerState.listScrollTop = list.scrollTop;
 }
 
+function restoreAssetPickerScrollState(list) {
+  if (!list || !assetPickerState || typeof assetPickerState.listScrollTop !== "number") return;
+  const target = assetPickerState.listScrollTop;
+  list.scrollTop = target;
+  requestAnimationFrame(() => {
+    if (document.body.contains(list)) list.scrollTop = target;
+  });
+}
+
 function shouldRefreshAssetPickerModal({ previousSignature, previousSelectedFile }) {
   if (!assetPickerState) return false;
   if (assetPickerState.selectedFile !== previousSelectedFile) return true;
@@ -955,6 +964,34 @@ function buildInlineField(labelText, input) {
   return wrap;
 }
 
+function getSelectedAnimationAsset() {
+  if (!assetPickerState || !animationOverridesData) return null;
+  const assets = Array.isArray(animationOverridesData.assets) ? animationOverridesData.assets : [];
+  return assets.find((asset) => asset.name === assetPickerState.selectedFile) || null;
+}
+
+function syncAssetPickerSelectionUi() {
+  const root = document.getElementById("modalRoot");
+  if (!root || !assetPickerState) return;
+  const selected = getSelectedAnimationAsset();
+  for (const item of root.querySelectorAll(".asset-picker-item")) {
+    item.classList.toggle("active", item.dataset.assetName === (selected && selected.name));
+  }
+  const detail = root.querySelector(".asset-picker-detail");
+  if (detail) {
+    detail.innerHTML = "";
+    detail.appendChild(buildAnimPreviewNode(selected && selected.fileUrl));
+    const selectedLabel = document.createElement("div");
+    selectedLabel.className = "anim-override-file";
+    selectedLabel.textContent = `${t("animOverridesModalSelected")}: ${selected ? selected.name : "-"}`;
+    detail.appendChild(selectedLabel);
+  }
+  const previewBtn = root.querySelector(".asset-picker-preview-btn");
+  if (previewBtn) previewBtn.disabled = !selected;
+  const useBtn = root.querySelector(".asset-picker-use-btn");
+  if (useBtn) useBtn.disabled = !selected;
+}
+
 function renderAssetPickerModal() {
   const root = document.getElementById("modalRoot");
   if (!root) return;
@@ -1024,18 +1061,17 @@ function renderAssetPickerModal() {
       const item = document.createElement("button");
       item.type = "button";
       item.className = "asset-picker-item" + (selected && selected.name === asset.name ? " active" : "");
+      item.dataset.assetName = asset.name;
       item.textContent = asset.name;
       item.addEventListener("click", () => {
         assetPickerState.selectedFile = asset.name;
-        renderAssetPickerModal();
+        syncAssetPickerSelectionUi();
       });
       list.appendChild(item);
     }
   }
   body.appendChild(list);
-  if (typeof assetPickerState.listScrollTop === "number") {
-    list.scrollTop = assetPickerState.listScrollTop;
-  }
+  restoreAssetPickerScrollState(list);
 
   const detail = document.createElement("div");
   detail.className = "asset-picker-detail";
@@ -1052,14 +1088,15 @@ function renderAssetPickerModal() {
 
   const previewBtn = document.createElement("button");
   previewBtn.type = "button";
-  previewBtn.className = "soft-btn";
+  previewBtn.className = "soft-btn asset-picker-preview-btn";
   previewBtn.textContent = t("animOverridesPreview");
   previewBtn.disabled = !selected;
   attachActivation(previewBtn, () => {
-    if (!selected) return { status: "error", message: "no asset selected" };
+    const currentSelected = getSelectedAnimationAsset();
+    if (!currentSelected) return { status: "error", message: "no asset selected" };
     return window.settingsAPI.previewAnimationOverride({
       stateKey: previewStateForCard(card),
-      file: selected.name,
+      file: currentSelected.name,
       durationMs: card.supportsAutoReturn ? card.autoReturnMs : null,
     });
   });
@@ -1074,18 +1111,19 @@ function renderAssetPickerModal() {
 
   const useBtn = document.createElement("button");
   useBtn.type = "button";
-  useBtn.className = "soft-btn accent";
+  useBtn.className = "soft-btn accent asset-picker-use-btn";
   useBtn.textContent = t("animOverridesModalUse");
   useBtn.disabled = !selected;
   attachActivation(useBtn, () => {
-    if (!selected) return { status: "error", message: "no asset selected" };
-    return runAnimationOverrideCommand(card, { file: selected.name }).then((result) => {
+    const currentSelected = getSelectedAnimationAsset();
+    if (!currentSelected) return { status: "error", message: "no asset selected" };
+    return runAnimationOverrideCommand(card, { file: currentSelected.name }).then((result) => {
       if (result && result.status === "ok") {
         closeAssetPicker();
         if (window.settingsAPI && typeof window.settingsAPI.previewAnimationOverride === "function") {
           window.settingsAPI.previewAnimationOverride({
             stateKey: previewStateForCard(card),
-            file: selected.name,
+            file: currentSelected.name,
             durationMs: card.supportsAutoReturn ? card.autoReturnMs : null,
           }).then((previewResult) => {
             if (!previewResult || previewResult.status === "ok") return;
