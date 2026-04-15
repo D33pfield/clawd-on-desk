@@ -205,6 +205,9 @@ const updateRegistry = {
   autoStartWithClaude: {
     validate: requireBoolean("autoStartWithClaude"),
     effect(value, deps) {
+      if (deps && deps.snapshot && deps.snapshot.manageClaudeHooksAutomatically === false) {
+        return { status: "ok", noop: true };
+      }
       if (!deps || typeof deps.installAutoStart !== "function" || typeof deps.uninstallAutoStart !== "function") {
         return {
           status: "error",
@@ -219,6 +222,37 @@ const updateRegistry = {
         return {
           status: "error",
           message: `autoStartWithClaude: ${err && err.message}`,
+        };
+      }
+    },
+  },
+
+  manageClaudeHooksAutomatically: {
+    validate: requireBoolean("manageClaudeHooksAutomatically"),
+    effect(value, deps) {
+      if (
+        !deps
+        || typeof deps.syncClaudeHooksNow !== "function"
+        || typeof deps.startClaudeSettingsWatcher !== "function"
+        || typeof deps.stopClaudeSettingsWatcher !== "function"
+      ) {
+        return {
+          status: "error",
+          message: "manageClaudeHooksAutomatically effect requires syncClaudeHooksNow/startClaudeSettingsWatcher/stopClaudeSettingsWatcher deps",
+        };
+      }
+      try {
+        if (value) {
+          deps.syncClaudeHooksNow();
+          deps.startClaudeSettingsWatcher();
+        } else {
+          deps.stopClaudeSettingsWatcher();
+        }
+        return { status: "ok" };
+      } catch (err) {
+        return {
+          status: "error",
+          message: `manageClaudeHooksAutomatically: ${err && err.message}`,
         };
       }
     },
@@ -728,10 +762,50 @@ function resetThemeOverrides(payload, deps) {
   return { status: "ok", commit: { themeOverrides: nextOverrides } };
 }
 
+function installHooks(_payload, deps) {
+  if (!deps || typeof deps.syncClaudeHooksNow !== "function") {
+    return {
+      status: "error",
+      message: "installHooks requires syncClaudeHooksNow dep",
+    };
+  }
+  try {
+    deps.syncClaudeHooksNow();
+    return { status: "ok" };
+  } catch (err) {
+    return { status: "error", message: `installHooks: ${err && err.message}` };
+  }
+}
+
+function uninstallHooks(_payload, deps) {
+  if (
+    !deps
+    || typeof deps.uninstallClaudeHooksNow !== "function"
+    || typeof deps.stopClaudeSettingsWatcher !== "function"
+  ) {
+    return {
+      status: "error",
+      message: "uninstallHooks requires uninstallClaudeHooksNow and stopClaudeSettingsWatcher deps",
+    };
+  }
+
+  const shouldRestoreWatcher = !!(deps.snapshot && deps.snapshot.manageClaudeHooksAutomatically);
+  try {
+    deps.stopClaudeSettingsWatcher();
+    deps.uninstallClaudeHooksNow();
+    return { status: "ok", commit: { manageClaudeHooksAutomatically: false } };
+  } catch (err) {
+    if (shouldRestoreWatcher && typeof deps.startClaudeSettingsWatcher === "function") {
+      try { deps.startClaudeSettingsWatcher(); } catch {}
+    }
+    return { status: "error", message: `uninstallHooks: ${err && err.message}` };
+  }
+}
+
 const commandRegistry = {
   removeTheme,
-  installHooks: notImplemented("installHooks"),
-  uninstallHooks: notImplemented("uninstallHooks"),
+  installHooks,
+  uninstallHooks,
   registerShortcut: notImplemented("registerShortcut"),
   setAgentFlag,
   setAnimationOverride,

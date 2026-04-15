@@ -39,6 +39,12 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.version, prefs.CURRENT_VERSION);
   });
 
+  it("defaults Claude hook management on and Start with Claude off", () => {
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.manageClaudeHooksAutomatically, true);
+    assert.strictEqual(d.autoStartWithClaude, false);
+  });
+
   it("seeds all known agents as enabled", () => {
     const d = prefs.getDefaults();
     for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "opencode"]) {

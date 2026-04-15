@@ -62,6 +62,10 @@ function _uninstallAutoStartHook() {
   const { unregisterAutoStart } = require("../hooks/install.js");
   unregisterAutoStart();
 }
+function _uninstallClaudeHooksNow() {
+  const { unregisterHooks } = require("../hooks/install.js");
+  unregisterHooks();
+}
 
 // Cross-platform "open at login" writer used by both the openAtLogin effect
 // and the startup hydration helper. Throws on failure so the action layer can
@@ -118,6 +122,10 @@ const _settingsController = createSettingsController({
   injectedDeps: {
     installAutoStart: _installAutoStartHook,
     uninstallAutoStart: _uninstallAutoStartHook,
+    syncClaudeHooksNow: () => _server.syncClawdHooks(),
+    uninstallClaudeHooksNow: _uninstallClaudeHooksNow,
+    startClaudeSettingsWatcher: () => _server.startClaudeSettingsWatcher(),
+    stopClaudeSettingsWatcher: () => _server.stopClaudeSettingsWatcher(),
     setOpenAtLogin: _writeSystemOpenAtLogin,
     startMonitorForAgent: _deferredStartMonitorForAgent,
     stopMonitorForAgent: _deferredStopMonitorForAgent,
@@ -286,6 +294,7 @@ let isQuitting = false;
 // directly (writes go through ctx setters → controller.applyUpdate).
 let showTray = _settingsController.get("showTray");
 let showDock = _settingsController.get("showDock");
+let manageClaudeHooksAutomatically = _settingsController.get("manageClaudeHooksAutomatically");
 let autoStartWithClaude = _settingsController.get("autoStartWithClaude");
 let openAtLogin = _settingsController.get("openAtLogin");
 let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
@@ -663,6 +672,7 @@ const { initFocusHelper, killFocusHelper, focusTerminalWindow, clearMacFocusCool
 
 // ── HTTP server — delegated to src/server.js ──
 const _serverCtx = {
+  get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
   get doNotDisturb() { return doNotDisturb; },
   get hideBubbles() { return hideBubbles; },
@@ -778,6 +788,7 @@ const _menuCtx = {
   set showTray(v) { _settingsController.applyUpdate("showTray", v); },
   get showDock() { return showDock; },
   set showDock(v) { _settingsController.applyUpdate("showDock", v); },
+  get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
   set autoStartWithClaude(v) { _settingsController.applyUpdate("autoStartWithClaude", v); },
   get openAtLogin() { return openAtLogin; },
@@ -848,7 +859,7 @@ const { t, buildContextMenu, buildTrayMenu, rebuildAllMenus, createTray,
 // from a future settings panel land here identically.
 const MENU_AFFECTING_KEYS = new Set([
   "lang", "soundMuted", "bubbleFollowPet", "hideBubbles", "showSessionId",
-  "autoStartWithClaude", "openAtLogin", "showTray", "showDock", "theme", "size",
+  "manageClaudeHooksAutomatically", "autoStartWithClaude", "openAtLogin", "showTray", "showDock", "theme", "size",
 ]);
 function wireSettingsSubscribers() {
   _settingsController.subscribe(({ changes }) => {
@@ -866,6 +877,9 @@ function wireSettingsSubscribers() {
       try { applyDockVisibility(); } catch (err) {
         console.warn("Clawd: applyDockVisibility failed:", err && err.message);
       }
+    }
+    if ("manageClaudeHooksAutomatically" in changes) {
+      manageClaudeHooksAutomatically = changes.manageClaudeHooksAutomatically;
     }
     // autoStartWithClaude / openAtLogin are object-form pre-commit gates in
     // settings-actions.js — by the time we get here the system call already
@@ -1273,6 +1287,70 @@ ipcMain.handle("settings:confirm-remove-theme", async (event, themeId) => {
     return { confirmed: response === 0 };
   } catch (err) {
     console.warn("Clawd: confirm-remove-theme dialog failed:", err && err.message);
+    return { confirmed: false };
+  }
+});
+
+const CLAUDE_HOOKS_DIALOG_STRINGS = {
+  en: {
+    disableTitle: "Turn off automatic Claude hook management?",
+    disableDetail: "Existing Claude hooks in ~/.claude/settings.json stay in place unless you remove them now.",
+    disableOnly: "Disable automatic management only",
+    disableAndRemove: "Disable and remove installed hooks",
+    cancel: "Cancel",
+    disconnectTitle: "Disconnect Claude hooks?",
+    disconnectDetail: "This removes Clawd-managed Claude hooks from ~/.claude/settings.json and turns off automatic management. Your Start with Claude preference will be kept for later re-enable.",
+    disconnect: "Disconnect hooks",
+  },
+  zh: {
+    disableTitle: "关闭 Claude hooks 自动管理？",
+    disableDetail: "如果不选择立即移除，`~/.claude/settings.json` 里当前已安装的 Claude hooks 会继续保留。",
+    disableOnly: "只关闭自动管理",
+    disableAndRemove: "关闭并移除当前 hooks",
+    cancel: "取消",
+    disconnectTitle: "断开 Claude hooks？",
+    disconnectDetail: "这会从 `~/.claude/settings.json` 移除 Clawd 管理的 Claude hooks，并关闭自动管理。`随 Claude Code 启动` 的偏好会保留，方便以后重新启用。",
+    disconnect: "断开 hooks",
+  },
+};
+function _getSettingsDialogParent(event) {
+  return BrowserWindow.fromWebContents(event.sender) || settingsWindow || null;
+}
+ipcMain.handle("settings:confirm-disable-claude-hooks", async (event) => {
+  const s = CLAUDE_HOOKS_DIALOG_STRINGS[lang] || CLAUDE_HOOKS_DIALOG_STRINGS.en;
+  try {
+    const { response } = await dialog.showMessageBox(_getSettingsDialogParent(event), {
+      type: "warning",
+      buttons: [s.disableAndRemove, s.disableOnly, s.cancel],
+      defaultId: 1,
+      cancelId: 2,
+      message: s.disableTitle,
+      detail: s.disableDetail,
+      noLink: true,
+    });
+    if (response === 0) return { choice: "disconnect" };
+    if (response === 1) return { choice: "disable" };
+    return { choice: "cancel" };
+  } catch (err) {
+    console.warn("Clawd: confirm-disable-claude-hooks dialog failed:", err && err.message);
+    return { choice: "cancel" };
+  }
+});
+ipcMain.handle("settings:confirm-disconnect-claude-hooks", async (event) => {
+  const s = CLAUDE_HOOKS_DIALOG_STRINGS[lang] || CLAUDE_HOOKS_DIALOG_STRINGS.en;
+  try {
+    const { response } = await dialog.showMessageBox(_getSettingsDialogParent(event), {
+      type: "warning",
+      buttons: [s.disconnect, s.cancel],
+      defaultId: 1,
+      cancelId: 1,
+      message: s.disconnectTitle,
+      detail: s.disconnectDetail,
+      noLink: true,
+    });
+    return { confirmed: response === 0 };
+  } catch (err) {
+    console.warn("Clawd: confirm-disconnect-claude-hooks dialog failed:", err && err.message);
     return { confirmed: false };
   }
 });

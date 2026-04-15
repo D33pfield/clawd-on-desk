@@ -44,8 +44,13 @@ const STRINGS = {
     rowSoundDesc: "Play a chime when Clawd finishes a task or asks for input.",
     rowOpenAtLogin: "Open at login",
     rowOpenAtLoginDesc: "Start Clawd automatically when you log in.",
+    rowManageClaudeHooks: "Manage Claude hooks automatically",
+    rowManageClaudeHooksDesc: "Sync Claude hooks at startup and restore them if ~/.claude/settings.json gets overwritten.",
+    rowManageClaudeHooksOffNote: "Turning this off stops future automatic management only. Existing Claude hooks stay installed unless you disconnect them.",
+    actionDisconnectClaudeHooks: "Disconnect",
     rowStartWithClaude: "Start with Claude Code",
     rowStartWithClaudeDesc: "Auto-launch Clawd whenever a Claude Code session starts.",
+    rowStartWithClaudeDisabledDesc: "Requires automatic Claude hook management. Port changes and overwritten settings will not be reconciled while management is off.",
     rowBubbleFollow: "Bubbles follow Clawd",
     rowBubbleFollowDesc: "Place permission and update bubbles next to the pet instead of the screen corner.",
     rowHideBubbles: "Hide all bubbles",
@@ -144,8 +149,13 @@ const STRINGS = {
     rowSoundDesc: "Clawd 完成任务或需要输入时播放提示音。",
     rowOpenAtLogin: "开机自启",
     rowOpenAtLoginDesc: "登录系统时自动启动 Clawd。",
+    rowManageClaudeHooks: "自动管理 Claude hooks",
+    rowManageClaudeHooksDesc: "启动时同步 Claude hooks，并在 `~/.claude/settings.json` 被其他工具覆盖后自动补回。",
+    rowManageClaudeHooksOffNote: "关闭后只会停止后续自动管理。当前已安装的 Claude hooks 会保留，除非你主动断开。",
+    actionDisconnectClaudeHooks: "断开",
     rowStartWithClaude: "随 Claude Code 启动",
     rowStartWithClaudeDesc: "Claude Code 会话开始时自动拉起 Clawd。",
+    rowStartWithClaudeDisabledDesc: "需要先开启 Claude hooks 自动管理。关闭期间，端口变化和外部覆盖都不会被自动修补。",
     rowBubbleFollow: "气泡跟随 Clawd",
     rowBubbleFollowDesc: "把权限气泡和更新气泡放在桌宠旁边，而不是屏幕角落。",
     rowHideBubbles: "隐藏所有气泡",
@@ -1464,7 +1474,19 @@ function renderGeneralTab(parent) {
   ]));
 
   // Section: Startup
+  const manageClaudeHooksEnabled = !!(snapshot && snapshot.manageClaudeHooksAutomatically);
   parent.appendChild(buildSection(t("sectionStartup"), [
+    buildSwitchRow({
+      key: "manageClaudeHooksAutomatically",
+      labelKey: "rowManageClaudeHooks",
+      descKey: "rowManageClaudeHooksDesc",
+      descExtraKey: "rowManageClaudeHooksOffNote",
+      onToggle: ({ nextRaw }) => confirmDisableClaudeHookManagement(nextRaw),
+      actionButton: {
+        labelKey: "actionDisconnectClaudeHooks",
+        invoke: () => runDisconnectClaudeHooks(),
+      },
+    }),
     buildSwitchRow({
       key: "openAtLogin",
       labelKey: "rowOpenAtLogin",
@@ -1474,6 +1496,8 @@ function renderGeneralTab(parent) {
       key: "autoStartWithClaude",
       labelKey: "rowStartWithClaude",
       descKey: "rowStartWithClaudeDesc",
+      descExtraKey: manageClaudeHooksEnabled ? null : "rowStartWithClaudeDisabledDesc",
+      disabled: !manageClaudeHooksEnabled,
     }),
   ]));
 
@@ -1542,7 +1566,16 @@ function attachActivation(el, invoke) {
   });
 }
 
-function buildSwitchRow({ key, labelKey, descKey, invert = false }) {
+function buildSwitchRow({
+  key,
+  labelKey,
+  descKey,
+  invert = false,
+  disabled = false,
+  descExtraKey = null,
+  onToggle = null,
+  actionButton = null,
+}) {
   const row = document.createElement("div");
   row.className = "row";
   row.innerHTML =
@@ -1552,21 +1585,71 @@ function buildSwitchRow({ key, labelKey, descKey, invert = false }) {
     `</div>` +
     `<div class="row-control"><div class="switch" role="switch" tabindex="0"></div></div>`;
   row.querySelector(".row-label").textContent = t(labelKey);
+  const text = row.querySelector(".row-text");
   row.querySelector(".row-desc").textContent = t(descKey);
+  if (descExtraKey) {
+    const extra = document.createElement("span");
+    extra.className = "row-desc";
+    extra.textContent = t(descExtraKey);
+    text.appendChild(extra);
+  }
   const sw = row.querySelector(".switch");
+  const control = row.querySelector(".row-control");
   const rawValue = !!(snapshot && snapshot[key]);
   const visualOn = invert ? !rawValue : rawValue;
   if (visualOn) sw.classList.add("on");
   sw.setAttribute("aria-checked", visualOn ? "true" : "false");
+  if (actionButton) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "soft-btn accent";
+    btn.textContent = t(actionButton.labelKey);
+    control.insertBefore(btn, sw);
+    attachActivation(btn, actionButton.invoke);
+  }
+  if (disabled) {
+    sw.classList.add("disabled");
+    sw.setAttribute("aria-disabled", "true");
+    sw.tabIndex = -1;
+    return row;
+  }
   // No optimistic update — visual state flips on broadcast, not on click.
   // If the action fails, the broadcast never fires and the switch stays.
   attachActivation(sw, () => {
     const currentRaw = !!(snapshot && snapshot[key]);
     const currentVisual = invert ? !currentRaw : currentRaw;
     const nextRaw = invert ? currentVisual : !currentVisual;
+    if (typeof onToggle === "function") {
+      return onToggle({ currentRaw, currentVisual, nextRaw });
+    }
     return window.settingsAPI.update(key, nextRaw);
   });
   return row;
+}
+
+function confirmDisableClaudeHookManagement(nextRaw) {
+  if (nextRaw) return window.settingsAPI.update("manageClaudeHooksAutomatically", true);
+  if (!window.settingsAPI || typeof window.settingsAPI.confirmDisableClaudeHooks !== "function") {
+    return window.settingsAPI.update("manageClaudeHooksAutomatically", false);
+  }
+  return window.settingsAPI.confirmDisableClaudeHooks().then((result) => {
+    if (!result || result.choice === "cancel") return { status: "ok", noop: true };
+    if (result.choice === "disconnect") return window.settingsAPI.command("uninstallHooks");
+    return window.settingsAPI.update("manageClaudeHooksAutomatically", false);
+  });
+}
+
+function runDisconnectClaudeHooks() {
+  if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
+    return Promise.resolve({ status: "error", message: "settings API unavailable" });
+  }
+  if (typeof window.settingsAPI.confirmDisconnectClaudeHooks !== "function") {
+    return window.settingsAPI.command("uninstallHooks");
+  }
+  return window.settingsAPI.confirmDisconnectClaudeHooks().then((result) => {
+    if (!result || !result.confirmed) return { status: "ok", noop: true };
+    return window.settingsAPI.command("uninstallHooks");
+  });
 }
 
 function buildLanguageRow() {

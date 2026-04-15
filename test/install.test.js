@@ -3,7 +3,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { registerHooks, __test } = require("../hooks/install");
+const { registerHooks, unregisterHooks, __test } = require("../hooks/install");
 
 const tempDirs = [];
 
@@ -36,6 +36,25 @@ function getClawdCommands(settings, event) {
     }
   }
   return commands;
+}
+
+function getHttpUrls(settings, event) {
+  const entries = settings.hooks?.[event];
+  if (!Array.isArray(entries)) return [];
+  const urls = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.type === "http" && typeof entry.url === "string") {
+      urls.push(entry.url);
+    }
+    if (!Array.isArray(entry.hooks)) continue;
+    for (const hook of entry.hooks) {
+      if (hook && typeof hook === "object" && hook.type === "http" && typeof hook.url === "string") {
+        urls.push(hook.url);
+      }
+    }
+  }
+  return urls;
 }
 
 afterEach(() => {
@@ -243,5 +262,132 @@ describe("Hook installer version compatibility", () => {
       source: expectedPath,
       status: "known",
     });
+  });
+});
+
+describe("Hook installer unregisterHooks", () => {
+  it("removes Clawd command hooks, HTTP hook, and auto-start while preserving third-party hooks", () => {
+    const settingsPath = makeTempSettings({
+      hooks: {
+        SessionStart: [
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: 'node "/tmp/auto-start.js"' }],
+          },
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: 'node "/tmp/clawd-hook.js" SessionStart' }],
+          },
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: 'node "/tmp/third-party.js" SessionStart' }],
+          },
+        ],
+        Stop: [
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: 'node "/tmp/clawd-hook.js" Stop' }],
+          },
+        ],
+        PermissionRequest: [
+          {
+            matcher: "",
+            hooks: [{ type: "http", url: "http://127.0.0.1:23335/permission", timeout: 600 }],
+          },
+          {
+            matcher: "",
+            hooks: [{ type: "http", url: "http://localhost:8080/permission", timeout: 100 }],
+          },
+        ],
+      },
+    });
+
+    const result = unregisterHooks({ settingsPath });
+    const settings = readSettings(settingsPath);
+
+    assert.deepStrictEqual(result, { removed: 4, changed: true });
+    assert.deepStrictEqual(getClawdCommands(settings, "SessionStart"), []);
+    assert.deepStrictEqual(getClawdCommands(settings, "Stop"), []);
+    assert.deepStrictEqual(
+      settings.hooks.SessionStart[0].hooks[0].command,
+      'node "/tmp/third-party.js" SessionStart'
+    );
+    assert.deepStrictEqual(getHttpUrls(settings, "PermissionRequest"), ["http://localhost:8080/permission"]);
+    assert.ok(!Object.prototype.hasOwnProperty.call(settings.hooks, "Stop"));
+  });
+
+  it("keeps third-party PermissionRequest hooks when no Clawd HTTP hook is present", () => {
+    const settingsPath = makeTempSettings({
+      hooks: {
+        PermissionRequest: [
+          {
+            matcher: "",
+            hooks: [{ type: "http", url: "http://localhost:8080/permission", timeout: 600 }],
+          },
+        ],
+      },
+    });
+
+    const result = unregisterHooks({ settingsPath });
+    const settings = readSettings(settingsPath);
+
+    assert.deepStrictEqual(result, { removed: 0, changed: false });
+    assert.deepStrictEqual(getHttpUrls(settings, "PermissionRequest"), ["http://localhost:8080/permission"]);
+  });
+
+  it("recognizes stale Clawd PermissionRequest URLs on any managed port", () => {
+    const settingsPath = makeTempSettings({
+      hooks: {
+        PermissionRequest: [
+          {
+            matcher: "",
+            hooks: [{ type: "http", url: "http://127.0.0.1:23337/permission", timeout: 600 }],
+          },
+        ],
+      },
+    });
+
+    const result = unregisterHooks({ settingsPath });
+    const settings = readSettings(settingsPath);
+
+    assert.deepStrictEqual(result, { removed: 1, changed: true });
+    assert.deepStrictEqual(settings.hooks, {});
+  });
+
+  it("is idempotent when run repeatedly", () => {
+    const settingsPath = makeTempSettings({
+      hooks: {
+        Stop: [
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: 'node "/tmp/clawd-hook.js" Stop' }],
+          },
+        ],
+      },
+    });
+
+    const first = unregisterHooks({ settingsPath });
+    const second = unregisterHooks({ settingsPath });
+
+    assert.deepStrictEqual(first, { removed: 1, changed: true });
+    assert.deepStrictEqual(second, { removed: 0, changed: false });
+  });
+
+  it("keeps empty hooks object when every Clawd entry is removed", () => {
+    const settingsPath = makeTempSettings({
+      hooks: {
+        Stop: [
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: 'node "/tmp/clawd-hook.js" Stop' }],
+          },
+        ],
+      },
+    });
+
+    unregisterHooks({ settingsPath });
+    const settings = readSettings(settingsPath);
+
+    assert.deepStrictEqual(settings.hooks, {});
   });
 });

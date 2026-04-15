@@ -167,6 +167,26 @@ function syncCommandHook(entries, marker, expectedCommand) {
   return { found, changed };
 }
 
+function isClawdPermissionUrl(url) {
+  if (typeof url !== "string" || !url) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:"
+      && parsed.hostname === "127.0.0.1"
+      && parsed.pathname === HTTP_MARKER;
+  } catch {
+    return false;
+  }
+}
+
+function isClawdPermissionHook(entry) {
+  return !!entry
+    && typeof entry === "object"
+    && entry.type === "http"
+    && typeof entry.url === "string"
+    && isClawdPermissionUrl(entry.url);
+}
+
 function removeMatchingCommandHooks(entries, predicate) {
   if (!Array.isArray(entries)) return { entries, removed: 0, changed: false };
 
@@ -214,13 +234,60 @@ function removeMatchingCommandHooks(entries, predicate) {
   return { entries: nextEntries, removed, changed };
 }
 
+function removeMatchingHttpHooks(entries, predicate) {
+  if (!Array.isArray(entries)) return { entries, removed: 0, changed: false };
+
+  let removed = 0;
+  let changed = false;
+  const nextEntries = [];
+
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") {
+      nextEntries.push(entry);
+      continue;
+    }
+
+    if (isClawdPermissionHook(entry) && predicate(entry)) {
+      removed++;
+      changed = true;
+      continue;
+    }
+
+    if (!Array.isArray(entry.hooks)) {
+      nextEntries.push(entry);
+      continue;
+    }
+
+    const nextHooks = entry.hooks.filter((hook) => {
+      if (!isClawdPermissionHook(hook)) return true;
+      if (!predicate(hook)) return true;
+      removed++;
+      changed = true;
+      return false;
+    });
+
+    if (nextHooks.length === entry.hooks.length) {
+      nextEntries.push(entry);
+      continue;
+    }
+
+    if (nextHooks.length === 0 && typeof entry.command !== "string" && entry.type !== "http") {
+      continue;
+    }
+
+    nextEntries.push({ ...entry, hooks: nextHooks });
+  }
+
+  return { entries: nextEntries, removed, changed };
+}
+
 function syncHttpHook(entries, expectedUrl) {
   let found = false;
   let changed = false;
   if (!Array.isArray(entries)) return { found, changed };
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
-    if (entry.type === "http" && typeof entry.url === "string" && entry.url.includes(HTTP_MARKER)) {
+    if (isClawdPermissionHook(entry)) {
       found = true;
       if (entry.url !== expectedUrl) {
         entry.url = expectedUrl;
@@ -229,8 +296,7 @@ function syncHttpHook(entries, expectedUrl) {
     }
     if (!Array.isArray(entry.hooks)) continue;
     for (const hook of entry.hooks) {
-      if (!hook || typeof hook !== "object" || hook.type !== "http" || typeof hook.url !== "string") continue;
-      if (!hook.url.includes(HTTP_MARKER)) continue;
+      if (!isClawdPermissionHook(hook)) continue;
       found = true;
       if (hook.url !== expectedUrl) {
         hook.url = expectedUrl;
@@ -529,6 +595,51 @@ function registerHooks(options = {}) {
   };
 }
 
+function unregisterHooks(options = {}) {
+  const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  let settings = {};
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+  } catch (err) {
+    if (err.code === "ENOENT") return { removed: 0, changed: false };
+    throw new Error(`Failed to read settings.json: ${err.message}`);
+  }
+
+  if (!settings.hooks || typeof settings.hooks !== "object") {
+    return { removed: 0, changed: false };
+  }
+
+  let removed = 0;
+  let changed = false;
+  for (const [event, entries] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(entries)) continue;
+
+    const commandResult = removeMatchingCommandHooks(
+      entries,
+      (command) => command.includes(MARKER)
+        || command.includes(AUTO_START_MARKER)
+        || command.includes(LEGACY_AUTO_START_MARKER)
+    );
+    const httpResult = removeMatchingHttpHooks(
+      commandResult.entries,
+      (hook) => isClawdPermissionHook(hook)
+    );
+
+    if (!commandResult.changed && !httpResult.changed) continue;
+
+    removed += commandResult.removed + httpResult.removed;
+    changed = true;
+    if (httpResult.entries.length > 0) settings.hooks[event] = httpResult.entries;
+    else delete settings.hooks[event];
+  }
+
+  if (changed) {
+    writeJsonAtomic(settingsPath, settings);
+  }
+
+  return { removed, changed };
+}
+
 /**
  * Remove the auto-start hook from SessionStart in ~/.claude/settings.json.
  * Also removes legacy auto-start.sh entries.
@@ -595,10 +706,14 @@ function isAutoStartRegistered() {
 // Export for use by main.js
 module.exports = {
   registerHooks,
+  unregisterHooks,
   unregisterAutoStart,
   isAutoStartRegistered,
   __test: {
     getClaudeVersion,
+    isClawdPermissionHook,
+    isClawdPermissionUrl,
+    removeMatchingHttpHooks,
     versionLessThan,
     removeMatchingCommandHooks,
     reconcileVersionedHooks,

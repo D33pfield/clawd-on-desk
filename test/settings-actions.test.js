@@ -87,7 +87,7 @@ describe("updateRegistry pure-data validators", () => {
 
   it("object-form boolean fields validate via entry.validate", () => {
     const deps = { snapshot: baseSnapshot };
-    for (const key of ["autoStartWithClaude", "openAtLogin"]) {
+    for (const key of ["autoStartWithClaude", "manageClaudeHooksAutomatically", "openAtLogin"]) {
       const entry = updateRegistry[key];
       assert.strictEqual(typeof entry, "object", `${key} should be object-form`);
       assert.strictEqual(typeof entry.validate, "function", `${key} should expose validate`);
@@ -171,7 +171,7 @@ describe("updateRegistry pure-data validators", () => {
   });
 });
 
-describe("object-form effects (autoStartWithClaude / openAtLogin)", () => {
+describe("object-form effects (autoStartWithClaude / manageClaudeHooksAutomatically / openAtLogin)", () => {
   it("autoStartWithClaude effect calls installAutoStart on true", () => {
     let installCalls = 0;
     let uninstallCalls = 0;
@@ -214,6 +214,58 @@ describe("object-form effects (autoStartWithClaude / openAtLogin)", () => {
     assert.match(r.message, /file locked/);
   });
 
+  it("autoStartWithClaude effect noops when Claude hook management is disabled", () => {
+    let installCalls = 0;
+    let uninstallCalls = 0;
+    const deps = {
+      snapshot: { ...prefs.getDefaults(), manageClaudeHooksAutomatically: false },
+      installAutoStart: () => installCalls++,
+      uninstallAutoStart: () => uninstallCalls++,
+    };
+    const r = updateRegistry.autoStartWithClaude.effect(true, deps);
+    assert.deepStrictEqual(r, { status: "ok", noop: true });
+    assert.strictEqual(installCalls, 0);
+    assert.strictEqual(uninstallCalls, 0);
+  });
+
+  it("manageClaudeHooksAutomatically effect syncs hooks and starts watcher on true", () => {
+    let syncCalls = 0;
+    let startCalls = 0;
+    let stopCalls = 0;
+    const deps = {
+      syncClaudeHooksNow: () => syncCalls++,
+      startClaudeSettingsWatcher: () => startCalls++,
+      stopClaudeSettingsWatcher: () => stopCalls++,
+    };
+    const r = updateRegistry.manageClaudeHooksAutomatically.effect(true, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(syncCalls, 1);
+    assert.strictEqual(startCalls, 1);
+    assert.strictEqual(stopCalls, 0);
+  });
+
+  it("manageClaudeHooksAutomatically effect stops watcher on false", () => {
+    let syncCalls = 0;
+    let startCalls = 0;
+    let stopCalls = 0;
+    const deps = {
+      syncClaudeHooksNow: () => syncCalls++,
+      startClaudeSettingsWatcher: () => startCalls++,
+      stopClaudeSettingsWatcher: () => stopCalls++,
+    };
+    const r = updateRegistry.manageClaudeHooksAutomatically.effect(false, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(syncCalls, 0);
+    assert.strictEqual(startCalls, 0);
+    assert.strictEqual(stopCalls, 1);
+  });
+
+  it("manageClaudeHooksAutomatically effect returns error when deps missing", () => {
+    const r = updateRegistry.manageClaudeHooksAutomatically.effect(true, {});
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /syncClaudeHooksNow/);
+  });
+
   it("openAtLogin effect calls setOpenAtLogin with the value", () => {
     let lastValue = null;
     const deps = { setOpenAtLogin: (v) => { lastValue = v; } };
@@ -236,6 +288,49 @@ describe("object-form effects (autoStartWithClaude / openAtLogin)", () => {
     const r = updateRegistry.openAtLogin.effect(true, deps);
     assert.strictEqual(r.status, "error");
     assert.match(r.message, /permission denied/);
+  });
+});
+
+describe("hook commands", () => {
+  it("installHooks triggers a one-shot Claude sync without changing prefs", async () => {
+    let syncCalls = 0;
+    const r = await commandRegistry.installHooks(null, {
+      snapshot: prefs.getDefaults(),
+      syncClaudeHooksNow: () => syncCalls++,
+    });
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(syncCalls, 1);
+    assert.strictEqual(r.commit, undefined);
+  });
+
+  it("uninstallHooks stops watcher, uninstalls hooks, and commits only manageClaudeHooksAutomatically=false", async () => {
+    const calls = [];
+    const r = await commandRegistry.uninstallHooks(null, {
+      snapshot: { ...prefs.getDefaults(), manageClaudeHooksAutomatically: true, autoStartWithClaude: true },
+      stopClaudeSettingsWatcher: () => calls.push("stop"),
+      uninstallClaudeHooksNow: () => calls.push("uninstall"),
+      startClaudeSettingsWatcher: () => calls.push("start"),
+    });
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(calls, ["stop", "uninstall"]);
+    assert.deepStrictEqual(r.commit, { manageClaudeHooksAutomatically: false });
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(r.commit, "autoStartWithClaude"), false);
+  });
+
+  it("uninstallHooks restores watcher on uninstall failure when management was enabled", async () => {
+    const calls = [];
+    const r = await commandRegistry.uninstallHooks(null, {
+      snapshot: { ...prefs.getDefaults(), manageClaudeHooksAutomatically: true },
+      stopClaudeSettingsWatcher: () => calls.push("stop"),
+      uninstallClaudeHooksNow: () => {
+        calls.push("uninstall");
+        throw new Error("disk locked");
+      },
+      startClaudeSettingsWatcher: () => calls.push("start"),
+    });
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /disk locked/);
+    assert.deepStrictEqual(calls, ["stop", "uninstall", "start"]);
   });
 });
 

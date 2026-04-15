@@ -50,6 +50,7 @@ const SCHEMA = {
   lang: { type: "string", default: "en", enum: ["en", "zh"] },
   showTray: { type: "boolean", default: true },
   showDock: { type: "boolean", default: true },
+  manageClaudeHooksAutomatically: { type: "boolean", default: true },
   autoStartWithClaude: { type: "boolean", default: false },
   // System-backed: actual truth lives in OS login items / autostart files.
   // `openAtLoginHydrated` starts false; main.js's startup hydrate helper imports
