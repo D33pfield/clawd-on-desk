@@ -99,6 +99,11 @@ const STRINGS = {
     animOverridesDuration: "Auto-return",
     animOverridesSaveDuration: "Save timing",
     animOverridesContinuousHint: "Continuous state: no auto-return editor here.",
+    animOverridesAssetCycle: "Asset cycle",
+    animOverridesSuggestedTiming: "Suggested timing",
+    animOverridesTimingEstimated: "estimated",
+    animOverridesTimingFallback: "theme default",
+    animOverridesTimingUnavailable: "unavailable",
     animOverridesDisplayHintWarning: "displayHintMap can override this slot at runtime.",
     animOverridesModalTitle: "Choose an asset file",
     animOverridesModalSubtitle: "Add files to the current theme assets folder, then refresh the list here.",
@@ -192,6 +197,11 @@ const STRINGS = {
     animOverridesDuration: "返回时长",
     animOverridesSaveDuration: "保存时长",
     animOverridesContinuousHint: "持续态不提供 auto-return 编辑。",
+    animOverridesAssetCycle: "素材周期",
+    animOverridesSuggestedTiming: "建议时长",
+    animOverridesTimingEstimated: "估算",
+    animOverridesTimingFallback: "主题默认值",
+    animOverridesTimingUnavailable: "不可用",
     animOverridesDisplayHintWarning: "运行时可能被 displayHintMap 盖掉。",
     animOverridesModalTitle: "选择素材文件",
     animOverridesModalSubtitle: "把文件放进当前主题 assets 目录后，可在这里刷新列表重新选择。",
@@ -582,7 +592,11 @@ function getAnimOverrideCardById(cardId) {
 
 function getAnimationAssetsSignature(data = animationOverridesData) {
   const assets = data && Array.isArray(data.assets) ? data.assets : [];
-  return assets.map((asset) => asset.name).join("\n");
+  return assets.map((asset) => [
+    asset.name,
+    asset.cycleMs == null ? "" : asset.cycleMs,
+    asset.cycleStatus || "",
+  ].join(":")).join("\n");
 }
 
 function stopAssetPickerPolling() {
@@ -857,7 +871,7 @@ function buildAnimOverrideCard(card) {
     window.settingsAPI.previewAnimationOverride({
       stateKey: previewStateForCard(card),
       file: card.currentFile,
-      durationMs: card.supportsAutoReturn ? card.autoReturnMs : null,
+      durationMs: getAnimationPreviewDuration(null, card),
     })
   );
   actions.appendChild(previewBtn);
@@ -921,6 +935,18 @@ function buildAnimOverrideCard(card) {
   timingTitle.className = "anim-override-editor-title";
   timingTitle.textContent = t("animOverridesDuration");
   timingBlock.appendChild(timingTitle);
+  timingBlock.appendChild(buildAnimTimingHint(
+    t("animOverridesAssetCycle"),
+    card.assetCycleMs,
+    card.assetCycleStatus
+  ));
+  if (card.supportsAutoReturn && card.assetCycleMs == null && card.suggestedDurationMs != null) {
+    timingBlock.appendChild(buildAnimTimingHint(
+      t("animOverridesSuggestedTiming"),
+      card.suggestedDurationMs,
+      card.suggestedDurationStatus
+    ));
+  }
   if (card.supportsAutoReturn) {
     const timingInput = document.createElement("input");
     timingInput.type = "number";
@@ -928,6 +954,9 @@ function buildAnimOverrideCard(card) {
     timingInput.max = "60000";
     timingInput.step = "100";
     timingInput.value = card.autoReturnMs == null ? "" : String(card.autoReturnMs);
+    if (card.suggestedDurationMs != null && card.suggestedDurationMs !== card.autoReturnMs) {
+      timingInput.placeholder = String(card.suggestedDurationMs);
+    }
     timingBlock.appendChild(buildInlineField("ms", timingInput));
     const timingSave = document.createElement("button");
     timingSave.type = "button";
@@ -964,6 +993,31 @@ function buildInlineField(labelText, input) {
   return wrap;
 }
 
+function formatAnimTimingValue(ms, status) {
+  let text = Number.isFinite(ms) && ms > 0
+    ? `${ms} ms`
+    : t("animOverridesTimingUnavailable");
+  if (status === "estimated") text += ` (${t("animOverridesTimingEstimated")})`;
+  else if (status === "fallback") text += ` (${t("animOverridesTimingFallback")})`;
+  return text;
+}
+
+function buildAnimTimingHint(label, ms, status) {
+  const line = document.createElement("div");
+  line.className = "anim-override-binding";
+  line.textContent = `${label}: ${formatAnimTimingValue(ms, status)}`;
+  return line;
+}
+
+function getAnimationPreviewDuration(asset, card) {
+  if (asset && Number.isFinite(asset.cycleMs) && asset.cycleMs > 0) return asset.cycleMs;
+  if (card && Number.isFinite(card.previewDurationMs) && card.previewDurationMs > 0) return card.previewDurationMs;
+  if (card && card.supportsAutoReturn && Number.isFinite(card.autoReturnMs) && card.autoReturnMs > 0) {
+    return card.autoReturnMs;
+  }
+  return null;
+}
+
 function getSelectedAnimationAsset() {
   if (!assetPickerState || !animationOverridesData) return null;
   const assets = Array.isArray(animationOverridesData.assets) ? animationOverridesData.assets : [];
@@ -977,6 +1031,11 @@ function populateAssetPickerDetail(detail, selected) {
   selectedLabel.className = "anim-override-file";
   selectedLabel.textContent = `${t("animOverridesModalSelected")}: ${selected ? selected.name : "-"}`;
   detail.appendChild(selectedLabel);
+  detail.appendChild(buildAnimTimingHint(
+    t("animOverridesAssetCycle"),
+    selected && selected.cycleMs,
+    selected && selected.cycleStatus
+  ));
 }
 
 function syncAssetPickerSelectionUi() {
@@ -1095,7 +1154,7 @@ function renderAssetPickerModal() {
     return window.settingsAPI.previewAnimationOverride({
       stateKey: previewStateForCard(card),
       file: currentSelected.name,
-      durationMs: card.supportsAutoReturn ? card.autoReturnMs : null,
+      durationMs: getAnimationPreviewDuration(currentSelected, card),
     });
   });
   footer.appendChild(previewBtn);
@@ -1122,7 +1181,7 @@ function renderAssetPickerModal() {
           window.settingsAPI.previewAnimationOverride({
             stateKey: previewStateForCard(card),
             file: currentSelected.name,
-            durationMs: card.supportsAutoReturn ? card.autoReturnMs : null,
+            durationMs: getAnimationPreviewDuration(currentSelected, card),
           }).then((previewResult) => {
             if (!previewResult || previewResult.status === "ok") return;
             showToast(t("toastSaveFailed") + previewResult.message, { error: true });

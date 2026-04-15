@@ -329,6 +329,7 @@ describe("resetThemeOverrides", () => {
 
   it("清空当前主题的所有 overrides", () => {
     const snap = baseSnap();
+    snap.theme = "calico";
     snap.themeOverrides = {
       clawd: {
         states: {
@@ -355,6 +356,7 @@ describe("resetThemeOverrides", () => {
 
   it("接受字符串 payload 简写", () => {
     const snap = baseSnap();
+    snap.theme = "calico";
     snap.themeOverrides = { clawd: { states: { attention: { disabled: true } } } };
     const r = action("clawd", { snapshot: snap });
     assert.strictEqual(r.status, "ok");
@@ -364,6 +366,42 @@ describe("resetThemeOverrides", () => {
   it("空 themeId 报错", () => {
     const r = action({ themeId: "" }, { snapshot: baseSnap() });
     assert.strictEqual(r.status, "error");
+  });
+
+  it("当前主题 reset 时会显式重载运行时 theme（overrideMap=null）", () => {
+    const snap = baseSnap();
+    snap.theme = "clawd";
+    snap.themeOverrides = {
+      clawd: { states: { attention: { disabled: true } } },
+    };
+    const calls = [];
+    const r = action(
+      { themeId: "clawd" },
+      {
+        snapshot: snap,
+        activateTheme: (themeId, variantId, overrideMap) => {
+          calls.push({ themeId, variantId, overrideMap });
+        },
+      },
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(calls, [{
+      themeId: "clawd",
+      variantId: null,
+      overrideMap: null,
+    }]);
+    assert.deepStrictEqual(r.commit.themeOverrides, {});
+  });
+
+  it("当前主题 reset 缺少 activateTheme 依赖时返回 error", () => {
+    const snap = baseSnap();
+    snap.theme = "clawd";
+    snap.themeOverrides = {
+      clawd: { states: { attention: { disabled: true } } },
+    };
+    const r = action({ themeId: "clawd" }, { snapshot: snap });
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /activateTheme/);
   });
 });
 

@@ -4,6 +4,7 @@ const fs = require("fs");
 const { pathToFileURL } = require("url");
 const { applyStationaryCollectionBehavior } = require("./mac-window");
 const hitGeometry = require("./hit-geometry");
+const animationCycle = require("./animation-cycle");
 const { findNearestWorkArea, computeLooseClamp, SYNTHETIC_WORK_AREA } = require("./work-area");
 const { getLaunchSizingWorkArea, getProportionalPixelSize } = require("./size-utils");
 
@@ -376,6 +377,18 @@ function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
     applyState("mini-idle");
     return;
   }
+
+  // Theme hot-reload path (override tweak / variant swap): re-render whatever
+  // we were already showing. Going through resolveDisplayState() here flashes
+  // "working/typing" when sessions Map still holds a stale session whose
+  // state hasn't been stale-downgraded yet — currentState already reflects
+  // the user-visible state before reload and stays authoritative.
+  if (!includeStartupRecovery) {
+    const prev = _state.getCurrentState();
+    applyState(prev, getSvgOverride(prev));
+    return;
+  }
+
   if (sessions.size > 0) {
     const resolved = resolveDisplayState();
     applyState(resolved, getSvgOverride(resolved));
@@ -383,7 +396,6 @@ function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
   }
 
   applyState("idle", getSvgOverride("idle"));
-  if (!includeStartupRecovery) return;
 
   setTimeout(() => {
     if (sessions.size > 0 || doNotDisturb) return;
@@ -916,6 +928,16 @@ function _buildFileUrl(absPath) {
   catch { return null; }
 }
 
+function _resolveAnimationAssetAbsPath(filename) {
+  if (!filename || !activeTheme) return null;
+  try {
+    const absPath = themeLoader.getAssetPath(filename);
+    return absPath && fs.existsSync(absPath) ? absPath : null;
+  } catch {
+    return null;
+  }
+}
+
 function _resolveAnimationAssetsDir(theme = activeTheme) {
   if (!theme) return null;
   const themeAssetsDir = theme._themeDir ? path.join(theme._themeDir, "assets") : null;
@@ -927,14 +949,53 @@ function _resolveAnimationAssetsDir(theme = activeTheme) {
 }
 
 function _buildAnimationAssetUrl(filename) {
-  if (!filename || !activeTheme) return null;
-  try {
-    const absPath = themeLoader.getAssetPath(filename);
-    if (!absPath || !fs.existsSync(absPath)) return null;
-    return _buildFileUrl(absPath);
-  } catch {
-    return null;
+  const absPath = _resolveAnimationAssetAbsPath(filename);
+  return absPath ? _buildFileUrl(absPath) : null;
+}
+
+function _buildAnimationAssetProbe(file) {
+  const absPath = _resolveAnimationAssetAbsPath(file);
+  if (!absPath) {
+    return {
+      assetCycleMs: null,
+      assetCycleStatus: "unavailable",
+      assetCycleSource: null,
+    };
   }
+  const probe = animationCycle.probeAssetCycle(absPath);
+  return {
+    assetCycleMs: Number.isFinite(probe && probe.ms) && probe.ms > 0 ? probe.ms : null,
+    assetCycleStatus: (probe && probe.status) || "unavailable",
+    assetCycleSource: (probe && probe.source) || null,
+  };
+}
+
+function _readCurrentThemeOverrideMap() {
+  const themeId = activeTheme && activeTheme._id;
+  if (!themeId || !_settingsController || typeof _settingsController.getSnapshot !== "function") return null;
+  const snapshot = _settingsController.getSnapshot();
+  return snapshot && snapshot.themeOverrides ? snapshot.themeOverrides[themeId] || null : null;
+}
+
+function _hasExplicitAutoReturnOverride(themeOverrideMap, stateKey) {
+  const autoReturn = themeOverrideMap && themeOverrideMap.timings && themeOverrideMap.timings.autoReturn;
+  return !!(autoReturn && Object.prototype.hasOwnProperty.call(autoReturn, stateKey));
+}
+
+function _buildTimingHint(file, fallbackMs = null) {
+  const assetProbe = _buildAnimationAssetProbe(file);
+  const suggestedDurationMs = assetProbe.assetCycleMs != null
+    ? assetProbe.assetCycleMs
+    : (Number.isFinite(fallbackMs) && fallbackMs > 0 ? fallbackMs : null);
+  const suggestedDurationStatus = assetProbe.assetCycleMs != null
+    ? assetProbe.assetCycleStatus
+    : (suggestedDurationMs != null ? "fallback" : "unavailable");
+  return {
+    ...assetProbe,
+    suggestedDurationMs,
+    suggestedDurationStatus,
+    previewDurationMs: suggestedDurationMs,
+  };
 }
 
 function _listAnimationOverrideAssets(theme = activeTheme) {
@@ -957,8 +1018,17 @@ function _listAnimationOverrideAssets(theme = activeTheme) {
       const ext = path.extname(entry.name).toLowerCase();
       if (!ANIMATION_OVERRIDE_ASSET_EXTS.has(ext)) continue;
       if (seen.has(entry.name)) continue;
-      const previewUrl = _buildAnimationAssetUrl(entry.name) || _buildFileUrl(path.join(dir, entry.name));
-      assets.push({ name: entry.name, fileUrl: previewUrl, ext });
+      const absPath = _resolveAnimationAssetAbsPath(entry.name) || path.join(dir, entry.name);
+      const previewUrl = _buildFileUrl(absPath);
+      const probe = animationCycle.probeAssetCycle(absPath);
+      assets.push({
+        name: entry.name,
+        fileUrl: previewUrl,
+        ext,
+        cycleMs: Number.isFinite(probe && probe.ms) && probe.ms > 0 ? probe.ms : null,
+        cycleStatus: (probe && probe.status) || "unavailable",
+        cycleSource: (probe && probe.source) || null,
+      });
       seen.add(entry.name);
     }
   }
@@ -982,6 +1052,7 @@ function _buildTierCardGroup(tierGroup, triggerKind, resolvedTiers, baseTiers, b
     const higherTier = index === 0 ? null : resolvedTiers[index - 1];
     const maxSessions = higherTier ? Math.max(tier.minSessions, higherTier.minSessions - 1) : null;
     const hintTarget = baseHintMap && baseHintMap[originalFile];
+    const timingHint = _buildTimingHint(tier.file);
     return {
       id: `${tierGroup}:${originalFile}`,
       slotType: "tier",
@@ -997,18 +1068,22 @@ function _buildTierCardGroup(tierGroup, triggerKind, resolvedTiers, baseTiers, b
       transition: _readResolvedTransition(tier.file),
       supportsAutoReturn: false,
       autoReturnMs: null,
+      hasAutoReturnOverride: false,
+      ...timingHint,
       displayHintWarning: !!(hintTarget && hintTarget !== originalFile),
       displayHintTarget: hintTarget || null,
     };
   });
 }
 
-function _buildStateCard(stateKey, triggerKind) {
+function _buildStateCard(stateKey, triggerKind, themeOverrideMap) {
   const files = activeTheme && activeTheme.states && activeTheme.states[stateKey];
   if (!Array.isArray(files) || !files[0]) return null;
   const currentFile = files[0];
   const autoReturnMap = (activeTheme && activeTheme.timings && activeTheme.timings.autoReturn) || {};
   const supportsAutoReturn = Object.prototype.hasOwnProperty.call(autoReturnMap, stateKey);
+  const resolvedAutoReturnMs = supportsAutoReturn ? autoReturnMap[stateKey] : null;
+  const timingHint = _buildTimingHint(currentFile, resolvedAutoReturnMs);
   return {
     id: `state:${stateKey}`,
     slotType: "state",
@@ -1020,7 +1095,9 @@ function _buildStateCard(stateKey, triggerKind) {
     bindingLabel: `states.${stateKey}[0]`,
     transition: _readResolvedTransition(currentFile),
     supportsAutoReturn,
-    autoReturnMs: supportsAutoReturn ? autoReturnMap[stateKey] : null,
+    autoReturnMs: resolvedAutoReturnMs,
+    hasAutoReturnOverride: supportsAutoReturn ? _hasExplicitAutoReturnOverride(themeOverrideMap, stateKey) : false,
+    ...timingHint,
     displayHintWarning: false,
     displayHintTarget: null,
   };
@@ -1029,7 +1106,8 @@ function _buildStateCard(stateKey, triggerKind) {
 function _buildAnimationOverrideCards() {
   if (!activeTheme) return [];
   const cards = [];
-  const thinking = _buildStateCard("thinking", "thinking");
+  const themeOverrideMap = _readCurrentThemeOverrideMap();
+  const thinking = _buildStateCard("thinking", "thinking", themeOverrideMap);
   if (thinking) cards.push(thinking);
 
   const baseBindings = activeTheme._bindingBase || {};
@@ -1057,7 +1135,7 @@ function _buildAnimationOverrideCards() {
     ["sleeping", "sleeping"],
     ["waking", "waking"],
   ]) {
-    const card = _buildStateCard(stateKey, triggerKind);
+    const card = _buildStateCard(stateKey, triggerKind, themeOverrideMap);
     if (card) cards.push(card);
   }
   return cards;

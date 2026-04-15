@@ -710,6 +710,19 @@ function resetThemeOverrides(payload, deps) {
   if (!currentOverrides[themeId]) {
     return { status: "ok", noop: true };
   }
+
+  const activeThemeId = snapshot.theme;
+  if (themeId === activeThemeId) {
+    if (!deps || typeof deps.activateTheme !== "function") {
+      return { status: "error", message: "resetThemeOverrides effect requires activateTheme dep for the active theme" };
+    }
+    try {
+      deps.activateTheme(themeId, null, null);
+    } catch (err) {
+      return { status: "error", message: `resetThemeOverrides: ${err && err.message}` };
+    }
+  }
+
   const nextOverrides = { ...currentOverrides };
   delete nextOverrides[themeId];
   return { status: "ok", commit: { themeOverrides: nextOverrides } };
