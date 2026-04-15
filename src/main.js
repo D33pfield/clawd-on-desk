@@ -494,6 +494,7 @@ const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, re
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
+let sessionDebugLog = null; // set after app.whenReady()
 
 const _updateBubbleCtx = {
   get win() { return win; },
@@ -579,6 +580,7 @@ const _stateCtx = {
   miniPeekOut: () => miniPeekOut(),
   buildContextMenu: () => buildContextMenu(),
   buildTrayMenu: () => buildTrayMenu(),
+  debugLog: (msg) => sessionLog(msg),
   // Phase 3b: 读 prefs.themeOverrides 判断某个 oneshot state 是否被用户禁用。
   // state.js gate 调这个做 early-return。不做白名单校验——settings-actions
   // 负责写入合法性，这里只读。
@@ -766,6 +768,12 @@ function updateLog(msg) {
   if (!updateDebugLog) return;
   const { rotatedAppend } = require("./log-rotate");
   rotatedAppend(updateDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
+}
+
+function sessionLog(msg) {
+  if (!sessionDebugLog) return;
+  const { rotatedAppend } = require("./log-rotate");
+  rotatedAppend(sessionDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
 // ── Menu — delegated to src/menu.js ──
@@ -2042,6 +2050,7 @@ if (!gotTheLock) {
 
     permDebugLog = path.join(app.getPath("userData"), "permission-debug.log");
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
+    sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     createWindow();
 
     // Register global shortcut for toggling pet visibility
