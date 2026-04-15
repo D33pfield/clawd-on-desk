@@ -1051,7 +1051,41 @@ function getThemeMetadata(themeId) {
     name: raw.name || themeId,
     builtin: !!isBuiltin,
     previewFileUrl: _buildPreviewUrl(raw, themeDir, isBuiltin),
+    previewContentRatio: _computePreviewContentRatio(raw),
+    previewContentOffsetPct: _computePreviewContentOffsetPct(raw),
     variants: _buildVariantMetadata(raw, themeDir, isBuiltin),
+  };
+}
+
+// Ratio of the theme's actual pet content vs the full viewBox. Lets the
+// settings panel normalize preview sizes across themes whose assets have
+// wildly different canvas utilization (pixel pets with lots of transparent
+// margin vs APNG cats that fill the whole frame).
+function _computePreviewContentRatio(raw) {
+  const vb = raw && raw.viewBox;
+  const cb = raw && raw.layout && raw.layout.contentBox;
+  if (!vb || !cb) return null;
+  if (!(vb.width > 0) || !(vb.height > 0)) return null;
+  if (!(cb.width > 0) || !(cb.height > 0)) return null;
+  return Math.max(cb.width / vb.width, cb.height / vb.height);
+}
+
+// How far the contentBox center sits away from the viewBox center, as a
+// percentage of viewBox size. Themes like clawd place the pet near the bottom
+// of the viewBox (baseline-anchored) so the preview thumbnail looks bottom-
+// heavy — the renderer applies a matching transform to recenter it visually.
+function _computePreviewContentOffsetPct(raw) {
+  const vb = raw && raw.viewBox;
+  const cb = raw && raw.layout && raw.layout.contentBox;
+  if (!vb || !cb) return null;
+  if (!(vb.width > 0) || !(vb.height > 0)) return null;
+  const cbCenterX = cb.x + cb.width / 2;
+  const cbCenterY = cb.y + cb.height / 2;
+  const vbCenterX = vb.x + vb.width / 2;
+  const vbCenterY = vb.y + vb.height / 2;
+  return {
+    x: -((cbCenterX - vbCenterX) / vb.width) * 100,
+    y: -((cbCenterY - vbCenterY) / vb.height) * 100,
   };
 }
 
@@ -1083,6 +1117,8 @@ function _scanMetadata(dir, builtin, themes, seen) {
         name: raw.name || entry.name,
         builtin,
         previewFileUrl: _buildPreviewUrl(raw, themeDir, builtin),
+        previewContentRatio: _computePreviewContentRatio(raw),
+        previewContentOffsetPct: _computePreviewContentOffsetPct(raw),
         variants: _buildVariantMetadata(raw, themeDir, builtin),
       });
       seen.add(entry.name);

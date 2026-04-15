@@ -479,6 +479,28 @@ function localizeField(value) {
   return "";
 }
 
+// Target visual content size inside theme-thumb frames. Picked to match
+// clawd's natural ratio (~0.51) so pixel pets stay full-size while
+// tight-canvas themes like calico (~0.80) get scaled down to feel balanced.
+const PREVIEW_TARGET_CONTENT_RATIO = 0.55;
+
+function applyThemePreviewScale(img, contentRatio) {
+  if (!Number.isFinite(contentRatio) || contentRatio <= 0) return;
+  if (contentRatio <= PREVIEW_TARGET_CONTENT_RATIO) return;
+  const scale = PREVIEW_TARGET_CONTENT_RATIO / contentRatio;
+  const pct = `${(scale * 100).toFixed(2)}%`;
+  img.style.maxWidth = pct;
+  img.style.maxHeight = pct;
+}
+
+function applyThemePreviewOffset(img, offsetPct) {
+  if (!offsetPct) return;
+  const { x, y } = offsetPct;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+  if (Math.abs(x) < 0.5 && Math.abs(y) < 0.5) return;
+  img.style.transform = `translate(${x.toFixed(2)}%, ${y.toFixed(2)}%)`;
+}
+
 function buildThemeCard(theme) {
   const card = document.createElement("div");
   card.className = "theme-card";
@@ -494,6 +516,8 @@ function buildThemeCard(theme) {
     img.src = theme.previewFileUrl;
     img.alt = "";
     img.draggable = false;
+    applyThemePreviewScale(img, theme.previewContentRatio);
+    applyThemePreviewOffset(img, theme.previewContentOffsetPct);
     thumb.appendChild(img);
   } else {
     const glyph = document.createElement("span");
