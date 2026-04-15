@@ -22,6 +22,7 @@ const STRINGS = {
     sidebarAgents: "Agents",
     sidebarTheme: "Theme",
     sidebarAnimMap: "Animation Map",
+    sidebarAnimOverrides: "Animation Overrides",
     sidebarShortcuts: "Shortcuts",
     sidebarAbout: "About",
     sidebarSoon: "Soon",
@@ -82,6 +83,30 @@ const STRINGS = {
     animMapCarryingLabel: "Worktree carry",
     animMapCarryingDesc: "The carrying animation when a worktree is created.",
     toastAnimMapResetOk: "Animation overrides cleared.",
+    animOverridesTitle: "Animation Overrides",
+    animOverridesSubtitle: "Swap per-card files and adjust fade / return timing for the current theme.",
+    animOverridesCurrentTheme: "Current theme",
+    animOverridesOpenThemeTab: "Open Theme tab",
+    animOverridesOpenAssets: "Open assets folder",
+    animOverridesResetAll: "Reset all to default",
+    animOverridesChangeFile: "Change file",
+    animOverridesPreview: "Preview once",
+    animOverridesReset: "Reset slot",
+    animOverridesFade: "Fade",
+    animOverridesFadeIn: "In",
+    animOverridesFadeOut: "Out",
+    animOverridesSaveFade: "Save fade",
+    animOverridesDuration: "Auto-return",
+    animOverridesSaveDuration: "Save timing",
+    animOverridesContinuousHint: "Continuous state: no auto-return editor here.",
+    animOverridesDisplayHintWarning: "displayHintMap can override this slot at runtime.",
+    animOverridesModalTitle: "Choose an asset file",
+    animOverridesModalSubtitle: "Add files to the current theme assets folder, then refresh the list here.",
+    animOverridesModalEmpty: "No supported assets found in this theme yet.",
+    animOverridesModalSelected: "Selected file",
+    animOverridesModalUse: "Use this file",
+    animOverridesModalCancel: "Cancel",
+    animOverridesRefresh: "Refresh list",
   },
   zh: {
     settingsTitle: "设置",
@@ -90,6 +115,7 @@ const STRINGS = {
     sidebarAgents: "Agent 管理",
     sidebarTheme: "主题",
     sidebarAnimMap: "动画映射",
+    sidebarAnimOverrides: "动画替换",
     sidebarShortcuts: "快捷键",
     sidebarAbout: "关于",
     sidebarSoon: "待推出",
@@ -150,6 +176,30 @@ const STRINGS = {
     animMapCarryingLabel: "Worktree 搬运",
     animMapCarryingDesc: "创建 worktree 时的搬运动画。",
     toastAnimMapResetOk: "动画覆盖已清空。",
+    animOverridesTitle: "动画替换",
+    animOverridesSubtitle: "按卡片换文件，并调整当前主题的淡入淡出与返回时机。",
+    animOverridesCurrentTheme: "当前主题",
+    animOverridesOpenThemeTab: "打开主题页",
+    animOverridesOpenAssets: "打开素材目录",
+    animOverridesResetAll: "全部恢复默认",
+    animOverridesChangeFile: "换文件",
+    animOverridesPreview: "预览一次",
+    animOverridesReset: "恢复槽位",
+    animOverridesFade: "Fade",
+    animOverridesFadeIn: "入",
+    animOverridesFadeOut: "出",
+    animOverridesSaveFade: "保存 Fade",
+    animOverridesDuration: "返回时长",
+    animOverridesSaveDuration: "保存时长",
+    animOverridesContinuousHint: "持续态不提供 auto-return 编辑。",
+    animOverridesDisplayHintWarning: "运行时可能被 displayHintMap 盖掉。",
+    animOverridesModalTitle: "选择素材文件",
+    animOverridesModalSubtitle: "把文件放进当前主题 assets 目录后，可在这里刷新列表重新选择。",
+    animOverridesModalEmpty: "当前主题里还没有可用素材。",
+    animOverridesModalSelected: "当前选中",
+    animOverridesModalUse: "使用这个文件",
+    animOverridesModalCancel: "取消",
+    animOverridesRefresh: "刷新列表",
   },
 };
 
@@ -164,6 +214,9 @@ let agentMetadata = null;
 // a theme, drops a new one into the folder). Null until first fetch; refreshed
 // on tab open, after removeTheme succeeds, and on `theme` broadcasts.
 let themeList = null;
+let animationOverridesData = null;
+let assetPickerState = null;
+let assetPickerPollTimer = null;
 
 function t(key) {
   const lang = (snapshot && snapshot.lang) || "en";
@@ -194,6 +247,7 @@ const SIDEBAR_TABS = [
   { id: "agents", icon: "\u26A1", labelKey: "sidebarAgents", available: true },
   { id: "theme", icon: "\u{1F3A8}", labelKey: "sidebarTheme", available: true },
   { id: "animMap", icon: "\u{1F3AC}", labelKey: "sidebarAnimMap", available: true },
+  { id: "animOverrides", icon: "\u{1F39E}", labelKey: "sidebarAnimOverrides", available: true },
   { id: "shortcuts", icon: "\u2328", labelKey: "sidebarShortcuts", available: false },
   { id: "about", icon: "\u2139", labelKey: "sidebarAbout", available: false },
 ];
@@ -224,6 +278,7 @@ function renderSidebar() {
 // ── Content ──
 function renderContent() {
   const content = document.getElementById("content");
+  if (activeTab !== "animOverrides" && assetPickerState) closeAssetPicker();
   content.innerHTML = "";
   if (activeTab === "general") {
     renderGeneralTab(content);
@@ -233,6 +288,8 @@ function renderContent() {
     renderThemeTab(content);
   } else if (activeTab === "animMap") {
     renderAnimMapTab(content);
+  } else if (activeTab === "animOverrides") {
+    renderAnimOverridesTab(content);
   } else {
     renderPlaceholder(content);
   }
@@ -293,13 +350,19 @@ function readThemeOverrideMap(themeId) {
   const all = snapshot && snapshot.themeOverrides;
   const map = all && all[themeId];
   if (!map || typeof map !== "object") return null;
-  const keys = Object.keys(map);
+  const keys = [
+    ...(map.states ? Object.keys(map.states) : []),
+    ...(map.tiers && map.tiers.workingTiers ? Object.keys(map.tiers.workingTiers) : []),
+    ...(map.tiers && map.tiers.jugglingTiers ? Object.keys(map.tiers.jugglingTiers) : []),
+    ...(map.timings && map.timings.autoReturn ? Object.keys(map.timings.autoReturn) : []),
+  ];
   return keys.length > 0 ? map : null;
 }
 
 function isStateDisabled(themeId, stateKey) {
   const map = readThemeOverrideMap(themeId);
-  const entry = map && map[stateKey];
+  const states = map && map.states;
+  const entry = (states && states[stateKey]) || (map && map[stateKey]);
   return !!(entry && entry.disabled === true);
 }
 
@@ -379,24 +442,8 @@ function renderThemeTab(parent) {
 
   const grid = document.createElement("div");
   grid.className = "theme-grid";
-
-  // Phase 3b-swap: when the active theme has ≥2 variants, wrap its card +
-  // variant strip in a "spotlight" block that spans the full grid row. Keeps
-  // the strip visually attached to the active card instead of floating below
-  // the entire grid.
-  const active = themeList.find((x) => x.active);
-  const activeHasVariants = active && Array.isArray(active.variants) && active.variants.length > 1;
-
   for (const theme of themeList) {
-    if (theme === active && activeHasVariants) {
-      const spotlight = document.createElement("div");
-      spotlight.className = "theme-spotlight";
-      spotlight.appendChild(buildThemeCard(theme));
-      spotlight.appendChild(buildVariantStrip(theme));
-      grid.appendChild(spotlight);
-    } else {
-      grid.appendChild(buildThemeCard(theme));
-    }
+    grid.appendChild(buildThemeCard(theme));
   }
   parent.appendChild(grid);
 }
@@ -415,75 +462,6 @@ function localizeField(value) {
     if (firstKey) return value[firstKey];
   }
   return "";
-}
-
-function buildVariantStrip(theme) {
-  const wrap = document.createElement("div");
-  wrap.className = "theme-variant-strip";
-
-  const label = document.createElement("div");
-  label.className = "theme-variant-strip-label";
-  label.textContent = t("themeVariantStripLabel");
-  wrap.appendChild(label);
-
-  const row = document.createElement("div");
-  row.className = "theme-variant-row";
-
-  const currentVariantId = (snapshot && snapshot.themeVariant && snapshot.themeVariant[theme.id])
-    || "default";
-
-  for (const variant of theme.variants) {
-    row.appendChild(buildVariantCard(theme.id, variant, currentVariantId));
-  }
-  wrap.appendChild(row);
-  return wrap;
-}
-
-function buildVariantCard(themeId, variant, currentVariantId) {
-  const card = document.createElement("div");
-  card.className = "theme-variant-card";
-  card.setAttribute("role", "radio");
-  card.setAttribute("tabindex", "0");
-  const isActive = variant.id === currentVariantId;
-  card.setAttribute("aria-checked", isActive ? "true" : "false");
-  if (isActive) card.classList.add("active");
-
-  const thumb = document.createElement("div");
-  thumb.className = "theme-variant-thumb";
-  if (variant.previewFileUrl) {
-    const img = document.createElement("img");
-    img.src = variant.previewFileUrl;
-    img.alt = "";
-    img.draggable = false;
-    thumb.appendChild(img);
-  } else {
-    const glyph = document.createElement("span");
-    glyph.className = "theme-variant-thumb-empty";
-    glyph.textContent = t("themeThumbMissing");
-    thumb.appendChild(glyph);
-  }
-  card.appendChild(thumb);
-
-  const name = document.createElement("div");
-  name.className = "theme-variant-name";
-  name.textContent = localizeField(variant.name) || variant.id;
-  card.appendChild(name);
-
-  const descText = localizeField(variant.description);
-  if (descText) {
-    const desc = document.createElement("div");
-    desc.className = "theme-variant-desc";
-    desc.textContent = descText;
-    desc.title = descText;
-    card.appendChild(desc);
-  }
-
-  if (!isActive) {
-    attachActivation(card, () =>
-      window.settingsAPI.command("setThemeSelection", { themeId, variantId: variant.id })
-    );
-  }
-  return card;
 }
 
 function buildThemeCard(theme) {
@@ -580,6 +558,551 @@ function handleDeleteTheme(theme) {
     .catch((err) => {
       showToast(t("toastThemeDeleteFailed") + (err && err.message), { error: true });
     });
+}
+
+function fetchAnimationOverridesData() {
+  if (!window.settingsAPI || typeof window.settingsAPI.getAnimationOverridesData !== "function") {
+    animationOverridesData = { theme: null, assets: [], cards: [] };
+    return Promise.resolve(animationOverridesData);
+  }
+  return window.settingsAPI.getAnimationOverridesData().then((data) => {
+    animationOverridesData = data || { theme: null, assets: [], cards: [] };
+    return animationOverridesData;
+  }).catch((err) => {
+    console.warn("settings: getAnimationOverridesData failed", err);
+    animationOverridesData = { theme: null, assets: [], cards: [] };
+    return animationOverridesData;
+  });
+}
+
+function getAnimOverrideCardById(cardId) {
+  const cards = animationOverridesData && animationOverridesData.cards;
+  return Array.isArray(cards) ? cards.find((card) => card.id === cardId) || null : null;
+}
+
+function getAnimationAssetsSignature(data = animationOverridesData) {
+  const assets = data && Array.isArray(data.assets) ? data.assets : [];
+  return assets.map((asset) => asset.name).join("\n");
+}
+
+function stopAssetPickerPolling() {
+  if (assetPickerPollTimer) {
+    clearInterval(assetPickerPollTimer);
+    assetPickerPollTimer = null;
+  }
+}
+
+function closeAssetPicker() {
+  assetPickerState = null;
+  stopAssetPickerPolling();
+  renderAssetPickerModal();
+}
+
+function normalizeAssetPickerSelection() {
+  if (!assetPickerState || !animationOverridesData) return;
+  const assets = Array.isArray(animationOverridesData.assets) ? animationOverridesData.assets : [];
+  if (!assets.length) {
+    assetPickerState.selectedFile = null;
+    return;
+  }
+  const stillExists = assets.some((asset) => asset.name === assetPickerState.selectedFile);
+  if (!stillExists) assetPickerState.selectedFile = assets[0].name;
+}
+
+function captureAssetPickerScrollState() {
+  if (!assetPickerState) return;
+  const list = document.querySelector(".asset-picker-list");
+  if (!list) return;
+  assetPickerState.listScrollTop = list.scrollTop;
+}
+
+function shouldRefreshAssetPickerModal({ previousSignature, previousSelectedFile }) {
+  if (!assetPickerState) return false;
+  if (assetPickerState.selectedFile !== previousSelectedFile) return true;
+  return getAnimationAssetsSignature() !== previousSignature;
+}
+
+function startAssetPickerPolling() {
+  stopAssetPickerPolling();
+  assetPickerPollTimer = setInterval(() => {
+    if (!assetPickerState) return;
+    const previousSignature = getAnimationAssetsSignature();
+    const previousSelectedFile = assetPickerState.selectedFile;
+    fetchAnimationOverridesData().then(() => {
+      normalizeAssetPickerSelection();
+      if (shouldRefreshAssetPickerModal({ previousSignature, previousSelectedFile })) {
+        renderAssetPickerModal();
+      }
+    });
+  }, 1500);
+}
+
+function previewStateForCard(card) {
+  if (!card) return null;
+  if (card.slotType === "tier") {
+    return card.tierGroup === "jugglingTiers" ? "juggling" : "working";
+  }
+  return card.stateKey;
+}
+
+function buildAnimOverrideRequest(card, patch) {
+  const themeId = animationOverridesData && animationOverridesData.theme && animationOverridesData.theme.id;
+  const base = {
+    themeId,
+    slotType: card.slotType,
+  };
+  if (card.slotType === "tier") {
+    base.tierGroup = card.tierGroup;
+    base.originalFile = card.originalFile;
+  } else {
+    base.stateKey = card.stateKey;
+  }
+  return { ...base, ...patch };
+}
+
+function runAnimationOverrideCommand(card, patch) {
+  const payload = buildAnimOverrideRequest(card, patch);
+  return window.settingsAPI.command("setAnimationOverride", payload).then((result) => {
+    if (!result || result.status !== "ok" || result.noop) return result;
+    return fetchAnimationOverridesData().then(() => {
+      normalizeAssetPickerSelection();
+      if (activeTab === "animOverrides") renderContent();
+      renderAssetPickerModal();
+      return result;
+    });
+  });
+}
+
+function openAssetPicker(card) {
+  assetPickerState = {
+    cardId: card.id,
+    selectedFile: card.currentFile,
+  };
+  renderAssetPickerModal();
+  startAssetPickerPolling();
+}
+
+function formatSessionRange(minSessions, maxSessions) {
+  const isZh = ((snapshot && snapshot.lang) || "en") === "zh";
+  if (maxSessions == null) return isZh ? `${minSessions}+ 会话` : `${minSessions}+ sessions`;
+  if (minSessions === maxSessions) return isZh ? `${minSessions} 会话` : `${minSessions} session${minSessions === 1 ? "" : "s"}`;
+  return isZh ? `${minSessions}-${maxSessions} 会话` : `${minSessions}-${maxSessions} sessions`;
+}
+
+function getAnimOverrideTriggerLabel(card) {
+  switch (card.triggerKind) {
+    case "thinking": return "UserPromptSubmit";
+    case "working": return `PreToolUse (${formatSessionRange(card.minSessions, card.maxSessions)})`;
+    case "juggling": return `SubagentStart (${formatSessionRange(card.minSessions, card.maxSessions)})`;
+    case "error": return "PostToolUseFailure";
+    case "attention": return "Stop / PostCompact";
+    case "notification": return "PermissionRequest";
+    case "sweeping": return "PreCompact";
+    case "carrying": return "WorktreeCreate";
+    case "sleeping": return "60s no events";
+    case "waking": return "Wake";
+    default: return card.triggerKind || card.stateKey || card.id;
+  }
+}
+
+function buildAnimPreviewNode(fileUrl) {
+  const frame = document.createElement("div");
+  frame.className = "anim-override-preview-frame";
+  if (fileUrl) {
+    const img = document.createElement("img");
+    img.src = fileUrl;
+    img.alt = "";
+    img.draggable = false;
+    frame.appendChild(img);
+  } else {
+    const glyph = document.createElement("span");
+    glyph.className = "theme-thumb-empty";
+    glyph.textContent = t("themeThumbMissing");
+    frame.appendChild(glyph);
+  }
+  return frame;
+}
+
+function renderAnimOverridesTab(parent) {
+  const h1 = document.createElement("h1");
+  h1.textContent = t("animOverridesTitle");
+  parent.appendChild(h1);
+
+  const subtitle = document.createElement("p");
+  subtitle.className = "subtitle";
+  subtitle.textContent = t("animOverridesSubtitle");
+  parent.appendChild(subtitle);
+
+  if (animationOverridesData === null) {
+    const loading = document.createElement("div");
+    loading.className = "placeholder-desc";
+    parent.appendChild(loading);
+    fetchAnimationOverridesData().then(() => {
+      if (activeTab === "animOverrides") renderContent();
+    });
+    return;
+  }
+
+  const data = animationOverridesData;
+  const themeMeta = document.createElement("div");
+  themeMeta.className = "anim-override-meta";
+  const themeLabel = document.createElement("div");
+  themeLabel.className = "anim-override-meta-label";
+  themeLabel.textContent = `${t("animOverridesCurrentTheme")}: ${(data.theme && data.theme.name) || "clawd"}`;
+  themeMeta.appendChild(themeLabel);
+
+  const themeBtn = document.createElement("button");
+  themeBtn.type = "button";
+  themeBtn.className = "soft-btn";
+  themeBtn.textContent = t("animOverridesOpenThemeTab");
+  themeBtn.addEventListener("click", () => {
+    activeTab = "theme";
+    renderSidebar();
+    renderContent();
+  });
+  themeMeta.appendChild(themeBtn);
+
+  const assetsBtn = document.createElement("button");
+  assetsBtn.type = "button";
+  assetsBtn.className = "soft-btn";
+  assetsBtn.textContent = t("animOverridesOpenAssets");
+  attachActivation(assetsBtn, () => window.settingsAPI.openThemeAssetsDir());
+  themeMeta.appendChild(assetsBtn);
+
+  const themeId = data.theme && data.theme.id;
+  const resetAllBtn = document.createElement("button");
+  resetAllBtn.type = "button";
+  resetAllBtn.className = "soft-btn";
+  resetAllBtn.textContent = t("animOverridesResetAll");
+  resetAllBtn.disabled = !themeId || readThemeOverrideMap(themeId) === null;
+  attachActivation(resetAllBtn, () =>
+    window.settingsAPI.command("resetThemeOverrides", { themeId }).then((result) => {
+      if (result && result.status === "ok" && !result.noop) {
+        showToast(t("toastAnimMapResetOk"));
+      }
+      return result;
+    })
+  );
+  themeMeta.appendChild(resetAllBtn);
+  parent.appendChild(themeMeta);
+
+  const cards = Array.isArray(data.cards) ? data.cards : [];
+  const grid = document.createElement("div");
+  grid.className = "anim-override-grid";
+  for (const card of cards) {
+    grid.appendChild(buildAnimOverrideCard(card));
+  }
+  parent.appendChild(grid);
+  renderAssetPickerModal();
+}
+
+function buildAnimOverrideCard(card) {
+  const wrap = document.createElement("section");
+  wrap.className = "anim-override-card";
+
+  const preview = document.createElement("div");
+  preview.className = "anim-override-preview";
+  preview.appendChild(buildAnimPreviewNode(card.currentFileUrl));
+  wrap.appendChild(preview);
+
+  const body = document.createElement("div");
+  body.className = "anim-override-body";
+
+  const trigger = document.createElement("div");
+  trigger.className = "anim-override-trigger";
+  trigger.textContent = getAnimOverrideTriggerLabel(card);
+  body.appendChild(trigger);
+
+  const file = document.createElement("div");
+  file.className = "anim-override-file";
+  file.textContent = card.currentFile;
+  body.appendChild(file);
+
+  const binding = document.createElement("div");
+  binding.className = "anim-override-binding";
+  binding.textContent = card.bindingLabel;
+  body.appendChild(binding);
+
+  if (card.displayHintWarning) {
+    const warning = document.createElement("div");
+    warning.className = "anim-override-warning";
+    warning.textContent = t("animOverridesDisplayHintWarning");
+    body.appendChild(warning);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "anim-override-actions";
+
+  const changeBtn = document.createElement("button");
+  changeBtn.type = "button";
+  changeBtn.className = "soft-btn accent";
+  changeBtn.textContent = t("animOverridesChangeFile");
+  changeBtn.addEventListener("click", () => openAssetPicker(card));
+  actions.appendChild(changeBtn);
+
+  const previewBtn = document.createElement("button");
+  previewBtn.type = "button";
+  previewBtn.className = "soft-btn";
+  previewBtn.textContent = t("animOverridesPreview");
+  attachActivation(previewBtn, () =>
+    window.settingsAPI.previewAnimationOverride({
+      stateKey: previewStateForCard(card),
+      file: card.currentFile,
+      durationMs: card.supportsAutoReturn ? card.autoReturnMs : null,
+    })
+  );
+  actions.appendChild(previewBtn);
+
+  const resetBtn = document.createElement("button");
+  resetBtn.type = "button";
+  resetBtn.className = "soft-btn";
+  resetBtn.textContent = t("animOverridesReset");
+  attachActivation(resetBtn, () =>
+    runAnimationOverrideCommand(card, {
+      file: null,
+      transition: null,
+      ...(card.supportsAutoReturn ? { autoReturnMs: null } : {}),
+    })
+  );
+  actions.appendChild(resetBtn);
+  body.appendChild(actions);
+
+  const editors = document.createElement("div");
+  editors.className = "anim-override-editors";
+
+  const fadeBlock = document.createElement("div");
+  fadeBlock.className = "anim-override-editor";
+  const fadeTitle = document.createElement("div");
+  fadeTitle.className = "anim-override-editor-title";
+  fadeTitle.textContent = t("animOverridesFade");
+  fadeBlock.appendChild(fadeTitle);
+  const fadeFields = document.createElement("div");
+  fadeFields.className = "anim-override-inline-fields";
+  const inInput = document.createElement("input");
+  inInput.type = "number";
+  inInput.min = "0";
+  inInput.step = "10";
+  inInput.value = String(card.transition.in);
+  const outInput = document.createElement("input");
+  outInput.type = "number";
+  outInput.min = "0";
+  outInput.step = "10";
+  outInput.value = String(card.transition.out);
+  fadeFields.appendChild(buildInlineField(t("animOverridesFadeIn"), inInput));
+  fadeFields.appendChild(buildInlineField(t("animOverridesFadeOut"), outInput));
+  fadeBlock.appendChild(fadeFields);
+  const fadeSave = document.createElement("button");
+  fadeSave.type = "button";
+  fadeSave.className = "soft-btn";
+  fadeSave.textContent = t("animOverridesSaveFade");
+  attachActivation(fadeSave, () => {
+    const fadeIn = Number(inInput.value);
+    const fadeOut = Number(outInput.value);
+    if (!Number.isFinite(fadeIn) || fadeIn < 0 || !Number.isFinite(fadeOut) || fadeOut < 0) {
+      return { status: "error", message: "fade values must be non-negative numbers" };
+    }
+    return runAnimationOverrideCommand(card, { transition: { in: fadeIn, out: fadeOut } });
+  });
+  fadeBlock.appendChild(fadeSave);
+  editors.appendChild(fadeBlock);
+
+  const timingBlock = document.createElement("div");
+  timingBlock.className = "anim-override-editor";
+  const timingTitle = document.createElement("div");
+  timingTitle.className = "anim-override-editor-title";
+  timingTitle.textContent = t("animOverridesDuration");
+  timingBlock.appendChild(timingTitle);
+  if (card.supportsAutoReturn) {
+    const timingInput = document.createElement("input");
+    timingInput.type = "number";
+    timingInput.min = "500";
+    timingInput.max = "60000";
+    timingInput.step = "100";
+    timingInput.value = card.autoReturnMs == null ? "" : String(card.autoReturnMs);
+    timingBlock.appendChild(buildInlineField("ms", timingInput));
+    const timingSave = document.createElement("button");
+    timingSave.type = "button";
+    timingSave.className = "soft-btn";
+    timingSave.textContent = t("animOverridesSaveDuration");
+    attachActivation(timingSave, () => {
+      const value = Number(timingInput.value);
+      if (!Number.isFinite(value) || value < 500 || value > 60000) {
+        return { status: "error", message: "auto-return must be between 500 and 60000 ms" };
+      }
+      return runAnimationOverrideCommand(card, { autoReturnMs: value });
+    });
+    timingBlock.appendChild(timingSave);
+  } else {
+    const hint = document.createElement("div");
+    hint.className = "anim-override-binding";
+    hint.textContent = t("animOverridesContinuousHint");
+    timingBlock.appendChild(hint);
+  }
+  editors.appendChild(timingBlock);
+  body.appendChild(editors);
+
+  wrap.appendChild(body);
+  return wrap;
+}
+
+function buildInlineField(labelText, input) {
+  const wrap = document.createElement("label");
+  wrap.className = "anim-override-inline-field";
+  const label = document.createElement("span");
+  label.textContent = labelText;
+  wrap.appendChild(label);
+  wrap.appendChild(input);
+  return wrap;
+}
+
+function renderAssetPickerModal() {
+  const root = document.getElementById("modalRoot");
+  if (!root) return;
+  captureAssetPickerScrollState();
+  root.innerHTML = "";
+  if (!assetPickerState || !animationOverridesData) return;
+  const card = getAnimOverrideCardById(assetPickerState.cardId);
+  if (!card) {
+    closeAssetPicker();
+    return;
+  }
+  normalizeAssetPickerSelection();
+  const assets = Array.isArray(animationOverridesData.assets) ? animationOverridesData.assets : [];
+  const selected = assets.find((asset) => asset.name === assetPickerState.selectedFile) || null;
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-backdrop";
+  overlay.addEventListener("click", (ev) => {
+    if (ev.target === overlay) closeAssetPicker();
+  });
+
+  const modal = document.createElement("div");
+  modal.className = "asset-picker-modal";
+
+  const title = document.createElement("h2");
+  title.textContent = t("animOverridesModalTitle");
+  modal.appendChild(title);
+
+  const subtitle = document.createElement("p");
+  subtitle.className = "subtitle";
+  subtitle.textContent = t("animOverridesModalSubtitle");
+  modal.appendChild(subtitle);
+
+  const refreshRow = document.createElement("div");
+  refreshRow.className = "asset-picker-toolbar";
+  const refreshBtn = document.createElement("button");
+  refreshBtn.type = "button";
+  refreshBtn.className = "soft-btn";
+  refreshBtn.textContent = t("animOverridesRefresh");
+  attachActivation(refreshBtn, () => fetchAnimationOverridesData().then(() => {
+    normalizeAssetPickerSelection();
+    renderAssetPickerModal();
+    return { status: "ok" };
+  }));
+  refreshRow.appendChild(refreshBtn);
+
+  const openAssetsBtn = document.createElement("button");
+  openAssetsBtn.type = "button";
+  openAssetsBtn.className = "soft-btn";
+  openAssetsBtn.textContent = t("animOverridesOpenAssets");
+  attachActivation(openAssetsBtn, () => window.settingsAPI.openThemeAssetsDir());
+  refreshRow.appendChild(openAssetsBtn);
+  modal.appendChild(refreshRow);
+
+  const body = document.createElement("div");
+  body.className = "asset-picker-body";
+
+  const list = document.createElement("div");
+  list.className = "asset-picker-list";
+  if (!assets.length) {
+    const empty = document.createElement("div");
+    empty.className = "placeholder-desc";
+    empty.textContent = t("animOverridesModalEmpty");
+    list.appendChild(empty);
+  } else {
+    for (const asset of assets) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "asset-picker-item" + (selected && selected.name === asset.name ? " active" : "");
+      item.textContent = asset.name;
+      item.addEventListener("click", () => {
+        assetPickerState.selectedFile = asset.name;
+        renderAssetPickerModal();
+      });
+      list.appendChild(item);
+    }
+  }
+  body.appendChild(list);
+  if (typeof assetPickerState.listScrollTop === "number") {
+    list.scrollTop = assetPickerState.listScrollTop;
+  }
+
+  const detail = document.createElement("div");
+  detail.className = "asset-picker-detail";
+  detail.appendChild(buildAnimPreviewNode(selected && selected.fileUrl));
+  const selectedLabel = document.createElement("div");
+  selectedLabel.className = "anim-override-file";
+  selectedLabel.textContent = `${t("animOverridesModalSelected")}: ${selected ? selected.name : "-"}`;
+  detail.appendChild(selectedLabel);
+  body.appendChild(detail);
+  modal.appendChild(body);
+
+  const footer = document.createElement("div");
+  footer.className = "asset-picker-footer";
+
+  const previewBtn = document.createElement("button");
+  previewBtn.type = "button";
+  previewBtn.className = "soft-btn";
+  previewBtn.textContent = t("animOverridesPreview");
+  previewBtn.disabled = !selected;
+  attachActivation(previewBtn, () => {
+    if (!selected) return { status: "error", message: "no asset selected" };
+    return window.settingsAPI.previewAnimationOverride({
+      stateKey: previewStateForCard(card),
+      file: selected.name,
+      durationMs: card.supportsAutoReturn ? card.autoReturnMs : null,
+    });
+  });
+  footer.appendChild(previewBtn);
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "soft-btn";
+  cancelBtn.textContent = t("animOverridesModalCancel");
+  cancelBtn.addEventListener("click", () => closeAssetPicker());
+  footer.appendChild(cancelBtn);
+
+  const useBtn = document.createElement("button");
+  useBtn.type = "button";
+  useBtn.className = "soft-btn accent";
+  useBtn.textContent = t("animOverridesModalUse");
+  useBtn.disabled = !selected;
+  attachActivation(useBtn, () => {
+    if (!selected) return { status: "error", message: "no asset selected" };
+    return runAnimationOverrideCommand(card, { file: selected.name }).then((result) => {
+      if (result && result.status === "ok") {
+        closeAssetPicker();
+        if (window.settingsAPI && typeof window.settingsAPI.previewAnimationOverride === "function") {
+          window.settingsAPI.previewAnimationOverride({
+            stateKey: previewStateForCard(card),
+            file: selected.name,
+            durationMs: card.supportsAutoReturn ? card.autoReturnMs : null,
+          }).then((previewResult) => {
+            if (!previewResult || previewResult.status === "ok") return;
+            showToast(t("toastSaveFailed") + previewResult.message, { error: true });
+          }).catch((err) => {
+            showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+          });
+        }
+      }
+      return result;
+    });
+  });
+  footer.appendChild(useBtn);
+  modal.appendChild(footer);
+
+  overlay.appendChild(modal);
+  root.appendChild(overlay);
 }
 
 function renderAgentsTab(parent) {
@@ -882,10 +1405,14 @@ window.settingsAPI.onChanged((payload) => {
   // resolves — rendering with a null snapshot blanks the UI and the
   // initial render later would need to re-fetch static language state.
   if (!snapshot) return;
+  const changes = payload && payload.changes;
+  const needsAnimOverridesRefresh = !!(changes && (
+    "theme" in changes || "themeVariant" in changes || "themeOverrides" in changes
+  ));
+  if (needsAnimOverridesRefresh) animationOverridesData = null;
   // Patch `active` in place when only `theme` changed — cheaper than
   // a full refetch. `themeOverrides` changes (e.g. removeTheme cleanup)
   // can alter the list shape, so those still refetch.
-  const changes = payload && payload.changes;
   if (changes && "themeOverrides" in changes) {
     // 只有 theme tab 关心 list（removeTheme cleanup 可能改 list 形态）。
     // animMap tab 的开关直接从 snapshot.themeOverrides 读，不用 refetch。
@@ -896,17 +1423,31 @@ window.settingsAPI.onChanged((payload) => {
       });
       return;
     }
+    if (activeTab === "animOverrides" || assetPickerState) {
+      fetchAnimationOverridesData().then(() => {
+        normalizeAssetPickerSelection();
+        renderSidebar();
+        renderContent();
+        renderAssetPickerModal();
+      });
+      return;
+    }
     renderSidebar();
     renderContent();
+    return;
+  }
+  if (needsAnimOverridesRefresh && (activeTab === "animOverrides" || assetPickerState)) {
+    fetchAnimationOverridesData().then(() => {
+      normalizeAssetPickerSelection();
+      renderSidebar();
+      renderContent();
+      renderAssetPickerModal();
+    });
     return;
   }
   if (changes && "theme" in changes && themeList) {
     themeList = themeList.map((t) => ({ ...t, active: t.id === changes.theme }));
   }
-  // Phase 3b-swap: themeVariant changes (e.g. after setThemeSelection command)
-  // need to re-render so the variant strip highlights the newly-active card.
-  // The list itself is unchanged — variants live on each theme entry — so no
-  // fetch is needed, just a re-render under the current active theme.
   renderSidebar();
   renderContent();
 });

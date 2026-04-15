@@ -167,12 +167,13 @@ function _scanThemesDir(dir, builtin, themes, seen) {
  * a missing variant is a UX concern, not a theme-breaking condition.
  *
  * @param {string} themeId
- * @param {{ strict?: boolean, variant?: string }} [opts]
+ * @param {{ strict?: boolean, variant?: string, overrides?: object|null }} [opts]
  * @returns {object} merged theme config
  */
 function loadTheme(themeId, opts = {}) {
   const strict = !!opts.strict;
   const requestedVariant = typeof opts.variant === "string" && opts.variant ? opts.variant : "default";
+  const userOverrides = _isPlainObject(opts.overrides) ? opts.overrides : null;
   const { raw, isBuiltin, themeDir } = _readThemeJson(themeId);
 
   if (!raw) {
@@ -195,12 +196,15 @@ function loadTheme(themeId, opts = {}) {
   // derivation (imgWidthRatio/imgOffsetX/imgBottom), tier sorting, and
   // basename sanitization all run on the patched raw.
   const { resolvedId, spec: variantSpec } = _resolveVariant(raw, requestedVariant);
-  const patchedRaw = variantSpec ? _applyVariantPatch(raw, variantSpec, themeId, resolvedId) : raw;
+  const afterVariant = variantSpec ? _applyVariantPatch(raw, variantSpec, themeId, resolvedId) : raw;
+  const patchedRaw = userOverrides ? _applyUserOverridesPatch(afterVariant, userOverrides) : afterVariant;
 
   // Merge defaults for optional fields
   const theme = mergeDefaults(patchedRaw, themeId, isBuiltin);
   theme._themeDir = themeDir;
   theme._variantId = resolvedId;
+  theme._userOverrides = userOverrides;
+  theme._bindingBase = _buildBaseBindingMetadata(afterVariant);
 
   // For external themes: sanitize SVGs + resolve asset paths
   if (!isBuiltin) {
@@ -612,6 +616,10 @@ function _deepMergeObject(base, patch) {
   return out;
 }
 
+function _basenameOnly(value) {
+  return typeof value === "string" ? value.replace(/^.*[\/\\]/, "") : value;
+}
+
 /**
  * Resolve a requested variant id against the theme's declared variants.
  * Synthesises a `default` variant when the author didn't declare one so the
@@ -663,6 +671,117 @@ function _applyVariantPatch(raw, variantSpec, themeId, variantId) {
       patched[key] = value;
     }
   }
+  return patched;
+}
+
+function _normalizeTransitionOverride(transition) {
+  if (!_isPlainObject(transition)) return null;
+  const out = {};
+  if (Number.isFinite(transition.in)) out.in = transition.in;
+  if (Number.isFinite(transition.out)) out.out = transition.out;
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function _buildBaseBindingMetadata(raw) {
+  const states = {};
+  if (_isPlainObject(raw.states)) {
+    for (const [stateKey, files] of Object.entries(raw.states)) {
+      if (Array.isArray(files) && files[0]) states[stateKey] = _basenameOnly(files[0]);
+    }
+  }
+  const mapTierGroup = (tiers) =>
+    Array.isArray(tiers)
+      ? tiers
+        .filter((tier) => _isPlainObject(tier))
+        .map((tier) => ({
+          minSessions: Number.isFinite(tier.minSessions) ? tier.minSessions : 0,
+          originalFile: _basenameOnly(tier.file),
+        }))
+        .sort((a, b) => b.minSessions - a.minSessions)
+      : [];
+  const displayHintMap = {};
+  if (_isPlainObject(raw.displayHintMap)) {
+    for (const [key, value] of Object.entries(raw.displayHintMap)) {
+      displayHintMap[_basenameOnly(key)] = _basenameOnly(value);
+    }
+  }
+  return {
+    states,
+    workingTiers: mapTierGroup(raw.workingTiers),
+    jugglingTiers: mapTierGroup(raw.jugglingTiers),
+    displayHintMap,
+  };
+}
+
+function _ensureTransitionsPatch(patched) {
+  if (!_isPlainObject(patched.transitions)) patched.transitions = {};
+  return patched.transitions;
+}
+
+function _applyTransitionOverride(patched, targetFile, transition) {
+  const cleanTarget = _basenameOnly(targetFile);
+  const cleanTransition = _normalizeTransitionOverride(transition);
+  if (!cleanTarget || !cleanTransition) return;
+  const nextTransitions = _ensureTransitionsPatch(patched);
+  const prev = _isPlainObject(nextTransitions[cleanTarget]) ? nextTransitions[cleanTarget] : {};
+  nextTransitions[cleanTarget] = { ...prev, ...cleanTransition };
+}
+
+function _applyUserOverridesPatch(raw, overrides) {
+  if (!_isPlainObject(overrides)) return raw;
+  const patched = { ...raw };
+
+  const stateOverrides = _isPlainObject(overrides.states) ? overrides.states : {};
+  if (_isPlainObject(raw.states) && Object.keys(stateOverrides).length > 0) {
+    const nextStates = { ...raw.states };
+    for (const [stateKey, entry] of Object.entries(stateOverrides)) {
+      if (!_isPlainObject(entry)) continue;
+      const currentFiles = Array.isArray(nextStates[stateKey]) ? [...nextStates[stateKey]] : null;
+      if (!currentFiles || currentFiles.length === 0) continue;
+      if (typeof entry.file === "string" && entry.file) {
+        currentFiles[0] = entry.file;
+      }
+      nextStates[stateKey] = currentFiles;
+      const transitionTarget = (typeof entry.file === "string" && entry.file) ? entry.file : currentFiles[0];
+      _applyTransitionOverride(patched, transitionTarget, entry.transition);
+    }
+    patched.states = nextStates;
+  }
+
+  const tierGroups = _isPlainObject(overrides.tiers) ? overrides.tiers : {};
+  for (const tierGroup of ["workingTiers", "jugglingTiers"]) {
+    const tierOverrides = _isPlainObject(tierGroups[tierGroup]) ? tierGroups[tierGroup] : null;
+    const rawTiers = Array.isArray(raw[tierGroup]) ? raw[tierGroup] : null;
+    if (!tierOverrides || !rawTiers) continue;
+    const nextTiers = rawTiers.map((tier) => (_isPlainObject(tier) ? { ...tier } : tier));
+    for (const [originalFile, entry] of Object.entries(tierOverrides)) {
+      if (!_isPlainObject(entry)) continue;
+      const cleanOriginal = _basenameOnly(originalFile);
+      const tier = nextTiers.find((candidate) =>
+        _isPlainObject(candidate) && _basenameOnly(candidate.file) === cleanOriginal
+      );
+      if (!tier) continue;
+      if (typeof entry.file === "string" && entry.file) {
+        tier.file = entry.file;
+      }
+      const transitionTarget = (typeof entry.file === "string" && entry.file) ? entry.file : tier.file;
+      _applyTransitionOverride(patched, transitionTarget, entry.transition);
+    }
+    patched[tierGroup] = nextTiers;
+  }
+
+  const timings = _isPlainObject(overrides.timings) ? overrides.timings : null;
+  const autoReturn = timings && _isPlainObject(timings.autoReturn) ? timings.autoReturn : null;
+  if (autoReturn) {
+    const nextTimings = _isPlainObject(raw.timings) ? _deepMergeObject(raw.timings, {}) : {};
+    nextTimings.autoReturn = _isPlainObject(nextTimings.autoReturn) ? { ...nextTimings.autoReturn } : {};
+    for (const [stateKey, value] of Object.entries(autoReturn)) {
+      if (!Number.isFinite(value)) continue;
+      nextTimings.autoReturn[stateKey] = value;
+    }
+    patched.timings = nextTimings;
+  }
+
   return patched;
 }
 
@@ -837,7 +956,7 @@ function mergeDefaults(raw, themeId, isBuiltin) {
   theme.idleAnimations = raw.idleAnimations || [];
 
   // ── Filename sanitization: basename all file references to prevent path traversal ──
-  const bn = (f) => typeof f === "string" ? f.replace(/^.*[\/\\]/, "") : f;
+  const bn = _basenameOnly;
   for (const [s, files] of Object.entries(theme.states || {})) {
     if (Array.isArray(files)) theme.states[s] = files.map(bn);
   }

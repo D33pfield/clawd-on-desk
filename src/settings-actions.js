@@ -100,6 +100,69 @@ function requirePlainObject(key) {
   };
 }
 
+function isPlainObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+const THEME_OVERRIDE_RESERVED_KEYS = new Set(["states", "tiers", "timings"]);
+const TIER_OVERRIDE_GROUPS = new Set(["workingTiers", "jugglingTiers"]);
+
+function cloneStateOverrides(themeMap) {
+  const out = {};
+  if (!isPlainObject(themeMap)) return out;
+  if (isPlainObject(themeMap.states)) {
+    for (const [stateKey, entry] of Object.entries(themeMap.states)) {
+      if (isPlainObject(entry)) out[stateKey] = { ...entry };
+    }
+  }
+  for (const [key, entry] of Object.entries(themeMap)) {
+    if (THEME_OVERRIDE_RESERVED_KEYS.has(key)) continue;
+    if (!out[key] && isPlainObject(entry)) out[key] = { ...entry };
+  }
+  return out;
+}
+
+function cloneTierOverrides(themeMap, tierGroup) {
+  const out = {};
+  if (!isPlainObject(themeMap) || !isPlainObject(themeMap.tiers)) return out;
+  const group = themeMap.tiers[tierGroup];
+  if (!isPlainObject(group)) return out;
+  for (const [originalFile, entry] of Object.entries(group)) {
+    if (isPlainObject(entry)) out[originalFile] = { ...entry };
+  }
+  return out;
+}
+
+function cloneAutoReturnOverrides(themeMap) {
+  const out = {};
+  if (!isPlainObject(themeMap) || !isPlainObject(themeMap.timings)) return out;
+  const autoReturn = themeMap.timings.autoReturn;
+  if (!isPlainObject(autoReturn)) return out;
+  for (const [stateKey, value] of Object.entries(autoReturn)) {
+    if (typeof value === "number" && Number.isFinite(value)) out[stateKey] = value;
+  }
+  return out;
+}
+
+function buildThemeOverrideMap({ states, workingTiers, jugglingTiers, autoReturn }) {
+  const out = {};
+  if (states && Object.keys(states).length > 0) out.states = states;
+  const tiers = {};
+  if (workingTiers && Object.keys(workingTiers).length > 0) tiers.workingTiers = workingTiers;
+  if (jugglingTiers && Object.keys(jugglingTiers).length > 0) tiers.jugglingTiers = jugglingTiers;
+  if (Object.keys(tiers).length > 0) out.tiers = tiers;
+  if (autoReturn && Object.keys(autoReturn).length > 0) out.timings = { autoReturn };
+  return out;
+}
+
+function normalizeTransitionPayload(transition) {
+  if (!isPlainObject(transition)) return null;
+  const out = {};
+  if (typeof transition.in === "number" && Number.isFinite(transition.in) && transition.in >= 0) out.in = transition.in;
+  if (typeof transition.out === "number" && Number.isFinite(transition.out) && transition.out >= 0) out.out = transition.out;
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 // ── updateRegistry ──
 // Maps prefs field name → validator. Controller looks up by key and runs.
 
@@ -475,35 +538,160 @@ function setThemeOverrideDisabled(payload, deps) {
   const snapshot = (deps && deps.snapshot) || {};
   const currentOverrides = snapshot.themeOverrides || {};
   const currentThemeMap = currentOverrides[themeId] || {};
-  const currentEntry = currentThemeMap[stateKey];
+  const currentStates = cloneStateOverrides(currentThemeMap);
+  const currentEntry = currentStates[stateKey];
   const currentDisabled = !!(currentEntry && currentEntry.disabled === true);
   if (currentDisabled === disabled) {
     return { status: "ok", noop: true };
   }
 
-  const nextThemeMap = { ...currentThemeMap };
+  const nextStates = { ...currentStates };
   if (disabled) {
-    nextThemeMap[stateKey] = { disabled: true };
+    nextStates[stateKey] = { ...(currentEntry || {}), disabled: true };
   } else {
-    // disabled=false：若原条目只有 disabled 就删掉；若同时带 sourceThemeId/file
-    // （Phase 3b-ext 格式）就脱掉 disabled 保留其余字段。normalizeThemeOverrides
-    // 自身会把孤立的 disabled:false 折叠成 file 形态或丢弃，这里依赖那层兜底。
-    if (currentEntry && typeof currentEntry.sourceThemeId === "string" && typeof currentEntry.file === "string") {
-      nextThemeMap[stateKey] = {
-        sourceThemeId: currentEntry.sourceThemeId,
-        file: currentEntry.file,
-      };
-    } else {
-      delete nextThemeMap[stateKey];
-    }
+    const preserved = { ...(currentEntry || {}) };
+    delete preserved.disabled;
+    if (Object.keys(preserved).length > 0) nextStates[stateKey] = preserved;
+    else delete nextStates[stateKey];
   }
 
+  const nextThemeMap = buildThemeOverrideMap({
+    states: nextStates,
+    workingTiers: cloneTierOverrides(currentThemeMap, "workingTiers"),
+    jugglingTiers: cloneTierOverrides(currentThemeMap, "jugglingTiers"),
+    autoReturn: cloneAutoReturnOverrides(currentThemeMap),
+  });
   const nextOverrides = { ...currentOverrides };
   if (Object.keys(nextThemeMap).length > 0) {
     nextOverrides[themeId] = nextThemeMap;
   } else {
     delete nextOverrides[themeId];
   }
+  return { status: "ok", commit: { themeOverrides: nextOverrides } };
+}
+
+const _validateAnimationOverrideThemeId = requireString("setAnimationOverride.themeId");
+function setAnimationOverride(payload, deps) {
+  if (!isPlainObject(payload)) {
+    return { status: "error", message: "setAnimationOverride: payload must be an object" };
+  }
+  const { themeId, slotType } = payload;
+  const idCheck = _validateAnimationOverrideThemeId(themeId);
+  if (idCheck.status !== "ok") return idCheck;
+  if (slotType !== "state" && slotType !== "tier") {
+    return { status: "error", message: "setAnimationOverride.slotType must be 'state' or 'tier'" };
+  }
+
+  const touchesFile = Object.prototype.hasOwnProperty.call(payload, "file");
+  const touchesTransition = Object.prototype.hasOwnProperty.call(payload, "transition");
+  const touchesAutoReturn = Object.prototype.hasOwnProperty.call(payload, "autoReturnMs");
+  if (!touchesFile && !touchesTransition && !touchesAutoReturn) {
+    return { status: "error", message: "setAnimationOverride must change file, transition, or autoReturnMs" };
+  }
+
+  if (touchesFile && payload.file !== null && (typeof payload.file !== "string" || !payload.file)) {
+    return { status: "error", message: "setAnimationOverride.file must be null or a non-empty string" };
+  }
+  if (touchesTransition && payload.transition !== null && !normalizeTransitionPayload(payload.transition)) {
+    return { status: "error", message: "setAnimationOverride.transition must contain finite non-negative in/out values" };
+  }
+  if (touchesAutoReturn && payload.autoReturnMs !== null) {
+    if (typeof payload.autoReturnMs !== "number" || !Number.isFinite(payload.autoReturnMs)) {
+      return { status: "error", message: "setAnimationOverride.autoReturnMs must be null or a finite number" };
+    }
+    if (payload.autoReturnMs < 500 || payload.autoReturnMs > 60000) {
+      return { status: "error", message: "setAnimationOverride.autoReturnMs must be between 500 and 60000" };
+    }
+  }
+
+  const snapshot = (deps && deps.snapshot) || {};
+  const currentOverrides = snapshot.themeOverrides || {};
+  const currentThemeMap = currentOverrides[themeId] || {};
+  const nextStates = cloneStateOverrides(currentThemeMap);
+  const nextWorkingTiers = cloneTierOverrides(currentThemeMap, "workingTiers");
+  const nextJugglingTiers = cloneTierOverrides(currentThemeMap, "jugglingTiers");
+  const nextAutoReturn = cloneAutoReturnOverrides(currentThemeMap);
+
+  if (slotType === "state") {
+    if (typeof payload.stateKey !== "string" || !payload.stateKey) {
+      return { status: "error", message: "setAnimationOverride.stateKey must be a non-empty string for state slots" };
+    }
+    const stateKey = payload.stateKey;
+    const nextEntry = { ...(nextStates[stateKey] || {}) };
+    if (touchesFile) {
+      if (payload.file === null) {
+        delete nextEntry.file;
+        delete nextEntry.sourceThemeId;
+      } else {
+        nextEntry.file = payload.file;
+      }
+    }
+    if (touchesTransition) {
+      if (payload.transition === null) delete nextEntry.transition;
+      else nextEntry.transition = normalizeTransitionPayload(payload.transition);
+    }
+    if (Object.keys(nextEntry).length > 0) nextStates[stateKey] = nextEntry;
+    else delete nextStates[stateKey];
+
+    if (touchesAutoReturn) {
+      if (payload.autoReturnMs === null) delete nextAutoReturn[stateKey];
+      else nextAutoReturn[stateKey] = payload.autoReturnMs;
+    }
+  } else {
+    const { tierGroup, originalFile } = payload;
+    if (!TIER_OVERRIDE_GROUPS.has(tierGroup)) {
+      return { status: "error", message: "setAnimationOverride.tierGroup must be workingTiers or jugglingTiers" };
+    }
+    if (typeof originalFile !== "string" || !originalFile) {
+      return { status: "error", message: "setAnimationOverride.originalFile must be a non-empty string for tier slots" };
+    }
+    if (touchesAutoReturn) {
+      return { status: "error", message: "setAnimationOverride.autoReturnMs is only supported for state slots" };
+    }
+    const tierMap = tierGroup === "workingTiers" ? nextWorkingTiers : nextJugglingTiers;
+    const nextEntry = { ...(tierMap[originalFile] || {}) };
+    if (touchesFile) {
+      if (payload.file === null) {
+        delete nextEntry.file;
+        delete nextEntry.sourceThemeId;
+      } else {
+        nextEntry.file = payload.file;
+      }
+    }
+    if (touchesTransition) {
+      if (payload.transition === null) delete nextEntry.transition;
+      else nextEntry.transition = normalizeTransitionPayload(payload.transition);
+    }
+    if (Object.keys(nextEntry).length > 0) tierMap[originalFile] = nextEntry;
+    else delete tierMap[originalFile];
+  }
+
+  const nextThemeMap = buildThemeOverrideMap({
+    states: nextStates,
+    workingTiers: nextWorkingTiers,
+    jugglingTiers: nextJugglingTiers,
+    autoReturn: nextAutoReturn,
+  });
+  const nextOverrides = { ...currentOverrides };
+  if (Object.keys(nextThemeMap).length > 0) nextOverrides[themeId] = nextThemeMap;
+  else delete nextOverrides[themeId];
+
+  if (JSON.stringify(nextOverrides) === JSON.stringify(currentOverrides)) {
+    return { status: "ok", noop: true };
+  }
+
+  const activeThemeId = snapshot.theme;
+  if (themeId === activeThemeId) {
+    if (!deps || typeof deps.activateTheme !== "function") {
+      return { status: "error", message: "setAnimationOverride effect requires activateTheme dep for the active theme" };
+    }
+    try {
+      deps.activateTheme(themeId, null, nextThemeMap);
+    } catch (err) {
+      return { status: "error", message: `setAnimationOverride: ${err && err.message}` };
+    }
+  }
+
   return { status: "ok", commit: { themeOverrides: nextOverrides } };
 }
 
@@ -529,6 +717,7 @@ const commandRegistry = {
   uninstallHooks: notImplemented("uninstallHooks"),
   registerShortcut: notImplemented("registerShortcut"),
   setAgentFlag,
+  setAnimationOverride,
   setThemeOverrideDisabled,
   resetThemeOverrides,
   setThemeSelection,

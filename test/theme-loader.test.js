@@ -263,4 +263,53 @@ describe("theme-loader variant loading", () => {
     assert.strictEqual(meta.variants.length, 1);
     assert.strictEqual(meta.variants[0].id, "default");
   });
+
+  it("user overrides patch states / tiers / timings on top of the resolved variant", () => {
+    const theme = themeLoader.loadTheme("host", {
+      variant: "chill",
+      overrides: {
+        states: {
+          thinking: {
+            file: "custom-thinking.svg",
+            transition: { in: 80, out: 120 },
+          },
+        },
+        tiers: {
+          workingTiers: {
+            "pose-c.svg": {
+              file: "custom-working.svg",
+              transition: { in: 10, out: 40 },
+            },
+          },
+        },
+        timings: {
+          autoReturn: { attention: 6400 },
+        },
+      },
+    });
+    assert.strictEqual(theme.states.thinking[0], "custom-thinking.svg");
+    assert.deepStrictEqual(
+      theme.workingTiers.map((t) => t.file),
+      ["custom-working.svg", "pose-b.svg"]
+    );
+    assert.deepStrictEqual(theme.transitions["custom-thinking.svg"], { in: 80, out: 120 });
+    assert.deepStrictEqual(theme.transitions["custom-working.svg"], { in: 10, out: 40 });
+    assert.strictEqual(theme.timings.autoReturn.attention, 6400);
+  });
+
+  it("stores pre-override tier bindings for UI card identity", () => {
+    const theme = themeLoader.loadTheme("host", {
+      variant: "chill",
+      overrides: {
+        tiers: {
+          jugglingTiers: {
+            "pose-b.svg": { file: "custom-juggling.svg" },
+          },
+        },
+      },
+    });
+    assert.deepStrictEqual(theme._bindingBase.jugglingTiers, [
+      { minSessions: 1, originalFile: "pose-b.svg" },
+    ]);
+  });
 });

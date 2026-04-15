@@ -1,6 +1,7 @@
-const { app, BrowserWindow, screen, Menu, ipcMain, globalShortcut, nativeTheme, dialog } = require("electron");
+const { app, BrowserWindow, screen, Menu, ipcMain, globalShortcut, nativeTheme, dialog, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const { pathToFileURL } = require("url");
 const { applyStationaryCollectionBehavior } = require("./mac-window");
 const hitGeometry = require("./hit-geometry");
 const { findNearestWorkArea, computeLooseClamp, SYNTHETIC_WORK_AREA } = require("./work-area");
@@ -122,9 +123,10 @@ const _settingsController = createSettingsController({
     clearSessionsByAgent: _deferredClearSessionsByAgent,
     dismissPermissionsByAgent: _deferredDismissPermissionsByAgent,
     // Theme deps — defined much later in the file, wrapped in lazy closures.
-    // activateTheme accepts (themeId, variantId?) and returns { themeId, variantId }
-    // with the actually-resolved variantId (lenient fallback on unknown variants).
-    activateTheme: (id, variantId) => _deferredActivateTheme(id, variantId),
+    // activateTheme accepts (themeId, variantId?, overrideMap?) and returns
+    // { themeId, variantId } with the actually-resolved variantId
+    // (lenient fallback on unknown variants).
+    activateTheme: (id, variantId, overrideMap) => _deferredActivateTheme(id, variantId, overrideMap),
     getThemeInfo: (id) => _deferredGetThemeInfo(id),
     removeThemeDir: (id) => _deferredRemoveThemeDir(id),
   },
@@ -211,7 +213,13 @@ themeLoader.init(__dirname, app.getPath("userData"));
 const _requestedThemeId = _settingsController.get("theme") || "clawd";
 const _initialVariantMap = _settingsController.get("themeVariant") || {};
 const _requestedVariantId = _initialVariantMap[_requestedThemeId] || "default";
-let activeTheme = themeLoader.loadTheme(_requestedThemeId, { variant: _requestedVariantId });
+const _initialThemeOverrides = _settingsController.get("themeOverrides") || {};
+const _requestedThemeOverrides = _initialThemeOverrides[_requestedThemeId] || null;
+let activeTheme = themeLoader.loadTheme(_requestedThemeId, {
+  variant: _requestedVariantId,
+  overrides: _requestedThemeOverrides,
+});
+activeTheme._overrideSignature = JSON.stringify(_requestedThemeOverrides || {});
 if (activeTheme._id !== _requestedThemeId || activeTheme._variantId !== _requestedVariantId) {
   const nextVariantMap = { ...(_settingsController.get("themeVariant") || {}) };
   // Self-heal: store the resolved ids so next boot doesn't fall back again.
@@ -558,7 +566,8 @@ const _stateCtx = {
     if (!themeId || !stateKey) return false;
     const overrides = _settingsController.get("themeOverrides");
     const themeMap = overrides && overrides[themeId];
-    const entry = themeMap && themeMap[stateKey];
+    const stateMap = themeMap && themeMap.states;
+    const entry = (stateMap && stateMap[stateKey]) || (themeMap && themeMap[stateKey]);
     return !!(entry && entry.disabled === true);
   },
   hasAnyEnabledAgent: () => {
@@ -899,6 +908,213 @@ function wireSettingsSubscribers() {
 }
 wireSettingsSubscribers();
 
+const ANIMATION_OVERRIDE_ASSET_EXTS = new Set([".svg", ".gif", ".apng", ".png", ".webp"]);
+let animationOverridePreviewTimer = null;
+
+function _buildFileUrl(absPath) {
+  try { return pathToFileURL(absPath).href; }
+  catch { return null; }
+}
+
+function _resolveAnimationAssetsDir(theme = activeTheme) {
+  if (!theme) return null;
+  const themeAssetsDir = theme._themeDir ? path.join(theme._themeDir, "assets") : null;
+  if (themeAssetsDir && fs.existsSync(themeAssetsDir)) return themeAssetsDir;
+  const idleFile = theme.states && theme.states.idle && theme.states.idle[0];
+  if (!idleFile) return null;
+  const resolved = themeLoader.getAssetPath(idleFile);
+  return resolved ? path.dirname(resolved) : null;
+}
+
+function _buildAnimationAssetUrl(filename) {
+  if (!filename || !activeTheme) return null;
+  try {
+    const absPath = themeLoader.getAssetPath(filename);
+    if (!absPath || !fs.existsSync(absPath)) return null;
+    return _buildFileUrl(absPath);
+  } catch {
+    return null;
+  }
+}
+
+function _listAnimationOverrideAssets(theme = activeTheme) {
+  if (!theme) return [];
+  const dirs = [];
+  const primaryDir = _resolveAnimationAssetsDir(theme);
+  const sourceDir = theme._themeDir ? path.join(theme._themeDir, "assets") : null;
+  const cacheDir = theme._assetsDir || null;
+  for (const dir of [primaryDir, sourceDir, cacheDir]) {
+    if (!dir || !fs.existsSync(dir)) continue;
+    if (!dirs.includes(dir)) dirs.push(dir);
+  }
+  const seen = new Set();
+  const assets = [];
+  for (const dir of dirs) {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { entries = []; }
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name).toLowerCase();
+      if (!ANIMATION_OVERRIDE_ASSET_EXTS.has(ext)) continue;
+      if (seen.has(entry.name)) continue;
+      const previewUrl = _buildAnimationAssetUrl(entry.name) || _buildFileUrl(path.join(dir, entry.name));
+      assets.push({ name: entry.name, fileUrl: previewUrl, ext });
+      seen.add(entry.name);
+    }
+  }
+  assets.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  return assets;
+}
+
+function _readResolvedTransition(file) {
+  const entry = activeTheme && activeTheme.transitions && activeTheme.transitions[file];
+  return {
+    in: entry && Number.isFinite(entry.in) ? entry.in : 150,
+    out: entry && Number.isFinite(entry.out) ? entry.out : 150,
+  };
+}
+
+function _buildTierCardGroup(tierGroup, triggerKind, resolvedTiers, baseTiers, baseHintMap) {
+  if (!Array.isArray(resolvedTiers)) return [];
+  return resolvedTiers.map((tier, index) => {
+    const baseTier = Array.isArray(baseTiers) ? baseTiers[index] : null;
+    const originalFile = (baseTier && baseTier.originalFile) || tier.file;
+    const higherTier = index === 0 ? null : resolvedTiers[index - 1];
+    const maxSessions = higherTier ? Math.max(tier.minSessions, higherTier.minSessions - 1) : null;
+    const hintTarget = baseHintMap && baseHintMap[originalFile];
+    return {
+      id: `${tierGroup}:${originalFile}`,
+      slotType: "tier",
+      tierGroup,
+      triggerKind,
+      originalFile,
+      baseFile: originalFile,
+      minSessions: tier.minSessions,
+      maxSessions,
+      currentFile: tier.file,
+      currentFileUrl: _buildAnimationAssetUrl(tier.file),
+      bindingLabel: `${tierGroup}[${originalFile}]`,
+      transition: _readResolvedTransition(tier.file),
+      supportsAutoReturn: false,
+      autoReturnMs: null,
+      displayHintWarning: !!(hintTarget && hintTarget !== originalFile),
+      displayHintTarget: hintTarget || null,
+    };
+  });
+}
+
+function _buildStateCard(stateKey, triggerKind) {
+  const files = activeTheme && activeTheme.states && activeTheme.states[stateKey];
+  if (!Array.isArray(files) || !files[0]) return null;
+  const currentFile = files[0];
+  const autoReturnMap = (activeTheme && activeTheme.timings && activeTheme.timings.autoReturn) || {};
+  const supportsAutoReturn = Object.prototype.hasOwnProperty.call(autoReturnMap, stateKey);
+  return {
+    id: `state:${stateKey}`,
+    slotType: "state",
+    stateKey,
+    triggerKind,
+    currentFile,
+    baseFile: (activeTheme._bindingBase && activeTheme._bindingBase.states && activeTheme._bindingBase.states[stateKey]) || currentFile,
+    currentFileUrl: _buildAnimationAssetUrl(currentFile),
+    bindingLabel: `states.${stateKey}[0]`,
+    transition: _readResolvedTransition(currentFile),
+    supportsAutoReturn,
+    autoReturnMs: supportsAutoReturn ? autoReturnMap[stateKey] : null,
+    displayHintWarning: false,
+    displayHintTarget: null,
+  };
+}
+
+function _buildAnimationOverrideCards() {
+  if (!activeTheme) return [];
+  const cards = [];
+  const thinking = _buildStateCard("thinking", "thinking");
+  if (thinking) cards.push(thinking);
+
+  const baseBindings = activeTheme._bindingBase || {};
+  cards.push(..._buildTierCardGroup(
+    "workingTiers",
+    "working",
+    activeTheme.workingTiers || [],
+    baseBindings.workingTiers || [],
+    baseBindings.displayHintMap || {}
+  ));
+  cards.push(..._buildTierCardGroup(
+    "jugglingTiers",
+    "juggling",
+    activeTheme.jugglingTiers || [],
+    baseBindings.jugglingTiers || [],
+    baseBindings.displayHintMap || {}
+  ));
+
+  for (const [stateKey, triggerKind] of [
+    ["error", "error"],
+    ["attention", "attention"],
+    ["notification", "notification"],
+    ["sweeping", "sweeping"],
+    ["carrying", "carrying"],
+    ["sleeping", "sleeping"],
+    ["waking", "waking"],
+  ]) {
+    const card = _buildStateCard(stateKey, triggerKind);
+    if (card) cards.push(card);
+  }
+  return cards;
+}
+
+function _buildAnimationOverrideData() {
+  if (!activeTheme) return null;
+  const meta = themeLoader.getThemeMetadata(activeTheme._id) || {};
+  return {
+    theme: {
+      id: activeTheme._id,
+      name: meta.name || activeTheme._id,
+      variantId: activeTheme._variantId || "default",
+      assetsDir: _resolveAnimationAssetsDir(activeTheme),
+    },
+    assets: _listAnimationOverrideAssets(activeTheme),
+    cards: _buildAnimationOverrideCards(),
+  };
+}
+
+function _previewAnimationOverride(payload) {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "previewAnimationOverride payload must be an object" };
+  }
+  const { stateKey, file, durationMs } = payload;
+  if (typeof stateKey !== "string" || !stateKey) {
+    return { status: "error", message: "previewAnimationOverride.stateKey must be a non-empty string" };
+  }
+  if (typeof file !== "string" || !file) {
+    return { status: "error", message: "previewAnimationOverride.file must be a non-empty string" };
+  }
+  if (!_state || typeof _state.applyState !== "function" || typeof _state.resolveDisplayState !== "function") {
+    return { status: "error", message: "previewAnimationOverride requires state runtime" };
+  }
+  if (animationOverridePreviewTimer) {
+    clearTimeout(animationOverridePreviewTimer);
+    animationOverridePreviewTimer = null;
+  }
+  try {
+    _state.applyState(stateKey, file);
+  } catch (err) {
+    return { status: "error", message: `previewAnimationOverride: ${err && err.message}` };
+  }
+  const fallbackMs = (activeTheme && activeTheme.timings && activeTheme.timings.autoReturn && activeTheme.timings.autoReturn[stateKey]) || 1800;
+  const holdMs = (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 300)
+    ? durationMs
+    : fallbackMs;
+  animationOverridePreviewTimer = setTimeout(() => {
+    animationOverridePreviewTimer = null;
+    try {
+      const resolved = _state.resolveDisplayState();
+      _state.applyState(resolved, _state.getSvgOverride(resolved));
+    } catch {}
+  }, holdMs);
+  return { status: "ok" };
+}
+
 // ── IPC: settings panel write entry points ──
 // Renderer-side callers (the future settings panel) use these. Menu/main code
 // in this process calls _settingsController directly — no IPC round-trip.
@@ -915,6 +1131,17 @@ ipcMain.handle("settings:command", async (_event, payload) => {
   }
   return _settingsController.applyCommand(payload.action, payload.payload);
 });
+ipcMain.handle("settings:get-animation-overrides-data", () => _buildAnimationOverrideData());
+ipcMain.handle("settings:open-theme-assets-dir", async () => {
+  const dir = _resolveAnimationAssetsDir(activeTheme);
+  if (!dir || !fs.existsSync(dir)) {
+    return { status: "error", message: "theme assets directory unavailable" };
+  }
+  const result = await shell.openPath(dir);
+  if (result) return { status: "error", message: result };
+  return { status: "ok", path: dir };
+});
+ipcMain.handle("settings:preview-animation-override", (_event, payload) => _previewAnimationOverride(payload));
 
 // Static metadata for the Agents tab: name, eventSource, capabilities.
 // The renderer uses this (alongside the agents snapshot field) to render one
@@ -1479,16 +1706,33 @@ function activateTheme(themeId, variantId) {
   const currentVariantMap = _settingsController.get("themeVariant") || {};
   const targetVariant = (typeof variantId === "string" && variantId) ? variantId
     : (currentVariantMap[themeId] || "default");
+  const currentOverrides = _settingsController.get("themeOverrides") || {};
+  const targetOverrideMap = arguments.length >= 3 ? arguments[2] : (currentOverrides[themeId] || null);
+  const targetOverrideSignature = JSON.stringify(targetOverrideMap || {});
 
   // Joint dedup: same theme + same variant → skip reload. Different variant
   // on same theme MUST run the full reload pipeline (can't hot-patch tiers /
   // displayHint / geometry safely — see plan-settings-panel-3b-swap.md §6.2).
-  if (activeTheme && activeTheme._id === themeId && activeTheme._variantId === targetVariant) {
+  if (
+    activeTheme &&
+    activeTheme._id === themeId &&
+    activeTheme._variantId === targetVariant &&
+    (activeTheme._overrideSignature || "{}") === targetOverrideSignature
+  ) {
     return { themeId, variantId: activeTheme._variantId };
   }
 
   // Strict load first: if it throws, nothing downstream has mutated yet.
-  const newTheme = themeLoader.loadTheme(themeId, { strict: true, variant: targetVariant });
+  const newTheme = themeLoader.loadTheme(themeId, {
+    strict: true,
+    variant: targetVariant,
+    overrides: targetOverrideMap,
+  });
+  newTheme._overrideSignature = targetOverrideSignature;
+  if (animationOverridePreviewTimer) {
+    clearTimeout(animationOverridePreviewTimer);
+    animationOverridePreviewTimer = null;
+  }
 
   _state.cleanup();
   _tick.cleanup();
@@ -1533,8 +1777,8 @@ function activateTheme(themeId, variantId) {
 // Inject theme deps into the settings controller now that activateTheme,
 // themeLoader, and activeTheme are all defined. Uses lazy closures because
 // these references are captured at call time (inside an effect or command).
-function _deferredActivateTheme(themeId, variantId) {
-  return activateTheme(themeId, variantId);
+function _deferredActivateTheme(themeId, variantId, overrideMap) {
+  return activateTheme(themeId, variantId, overrideMap);
 }
 function _deferredGetThemeInfo(themeId) {
   const all = themeLoader.discoverThemes();

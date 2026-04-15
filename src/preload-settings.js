@@ -28,6 +28,9 @@ ipcRenderer.on("settings-changed", (_event, payload) => {
 
 contextBridge.exposeInMainWorld("settingsAPI", {
   getSnapshot: () => ipcRenderer.invoke("settings:get-snapshot"),
+  getAnimationOverridesData: () => ipcRenderer.invoke("settings:get-animation-overrides-data"),
+  openThemeAssetsDir: () => ipcRenderer.invoke("settings:open-theme-assets-dir"),
+  previewAnimationOverride: (payload) => ipcRenderer.invoke("settings:preview-animation-override", payload),
   update: (key, value) => ipcRenderer.invoke("settings:update", { key, value }),
   command: (action, payload) => ipcRenderer.invoke("settings:command", { action, payload }),
   listAgents: () => ipcRenderer.invoke("settings:list-agents"),
