@@ -491,44 +491,70 @@ html, body {
   color: var(--text-secondary);
   margin-right: auto;
 }
-.anim-override-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 14px;
-}
-.anim-override-card {
+.anim-override-list {
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--bg);
+  background: var(--panel-bg);
   overflow: hidden;
 }
-.anim-override-preview {
-  padding: 14px 14px 0;
+.anim-override-row {
+  border-bottom: 1px solid var(--border);
 }
-.anim-override-preview-frame {
-  width: 100%;
-  aspect-ratio: 1 / 1;
-  border-radius: 10px;
+.anim-override-row:last-child { border-bottom: none; }
+.anim-override-row > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  user-select: none;
+}
+.anim-override-row > summary::-webkit-details-marker { display: none; }
+.anim-override-row > summary:hover { background: rgba(0, 0, 0, 0.03); }
+@media (prefers-color-scheme: dark) {
+  .anim-override-row > summary:hover { background: rgba(255, 255, 255, 0.04); }
+}
+.anim-override-chevron {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  transition: transform 0.15s ease;
+}
+.anim-override-row[open] > summary .anim-override-chevron {
+  transform: rotate(90deg);
+}
+.anim-override-thumb {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
   background: rgba(0, 0, 0, 0.04);
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  cursor: pointer;
 }
 @media (prefers-color-scheme: dark) {
-  .anim-override-preview-frame { background: rgba(255, 255, 255, 0.04); }
+  .anim-override-thumb { background: rgba(255, 255, 255, 0.04); }
 }
-.anim-override-preview-frame img {
+.anim-override-thumb img {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
   pointer-events: none;
 }
-.anim-override-body {
-  padding: 12px 14px 14px;
+.anim-override-summary-text {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
+  min-width: 0;
 }
 .anim-override-trigger {
   font-size: 13px;
@@ -536,76 +562,130 @@ html, body {
   color: var(--text-primary);
 }
 .anim-override-file {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-primary);
+  font-size: 11px;
+  color: var(--text-secondary);
   word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.anim-override-summary-badges {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.anim-override-badge {
+  font-size: 11px;
+  line-height: 1;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.anim-override-badge-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.anim-override-badge-warn {
+  color: var(--accent);
+  font-size: 13px;
+}
+.anim-override-summary-change {
+  flex: 0 0 auto;
+}
+.anim-override-drawer {
+  padding: 6px 14px 16px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--bg);
+}
+.anim-override-drawer-head {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.anim-override-drawer-preview {
+  flex: 0 0 auto;
+  width: 120px;
+  height: 120px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.04);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: pointer;
+}
+@media (prefers-color-scheme: dark) {
+  .anim-override-drawer-preview { background: rgba(255, 255, 255, 0.04); }
+}
+.anim-override-drawer-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+.anim-override-drawer-info {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
 }
 .anim-override-binding {
   font-size: 11px;
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
   word-break: break-word;
 }
 .anim-override-warning {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--accent);
+  background: rgba(217, 119, 87, 0.08);
+  border: 1px solid rgba(217, 119, 87, 0.25);
+  border-radius: 8px;
+  padding: 6px 10px;
 }
-.anim-override-actions {
+.anim-override-sliders {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 2px;
-}
-.anim-override-editors {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  flex-direction: column;
   gap: 10px;
 }
-@media (max-width: 760px) {
-  .anim-override-editors {
-    grid-template-columns: 1fr;
-  }
+.anim-override-slider-row {
+  display: grid;
+  grid-template-columns: 72px 1fr 80px;
+  align-items: center;
+  gap: 10px;
 }
-.anim-override-editor {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel-bg);
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.anim-override-editor-title {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--text-tertiary);
-}
-.anim-override-inline-fields {
-  display: flex;
-  gap: 8px;
-}
-.anim-override-inline-field {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 11px;
+.anim-override-slider-label {
+  font-size: 12px;
   color: var(--text-secondary);
 }
-.anim-override-inline-field input {
+.anim-override-slider-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.anim-override-slider-row input[type="number"] {
   width: 100%;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
   color: var(--text-primary);
-  padding: 6px 8px;
+  padding: 4px 6px;
   font: inherit;
+  font-size: 12px;
+  text-align: right;
 }
-.anim-override-inline-field input:focus-visible {
+.anim-override-slider-row input[type="number"]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+.anim-override-drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* ── Asset picker modal ── */

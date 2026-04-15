@@ -105,6 +105,8 @@ const STRINGS = {
     animOverridesTimingFallback: "theme default",
     animOverridesTimingUnavailable: "unavailable",
     animOverridesDisplayHintWarning: "displayHintMap can override this slot at runtime.",
+    animOverridesOverriddenTooltip: "Modified from default",
+    animOverridesExpandRow: "Expand",
     animOverridesModalTitle: "Choose an asset file",
     animOverridesModalSubtitle: "Add files to the current theme assets folder, then refresh the list here.",
     animOverridesModalEmpty: "No supported assets found in this theme yet.",
@@ -203,6 +205,8 @@ const STRINGS = {
     animOverridesTimingFallback: "主题默认值",
     animOverridesTimingUnavailable: "不可用",
     animOverridesDisplayHintWarning: "运行时可能被 displayHintMap 盖掉。",
+    animOverridesOverriddenTooltip: "已修改（非默认值）",
+    animOverridesExpandRow: "展开",
     animOverridesModalTitle: "选择素材文件",
     animOverridesModalSubtitle: "把文件放进当前主题 assets 目录后，可在这里刷新列表重新选择。",
     animOverridesModalEmpty: "当前主题里还没有可用素材。",
@@ -227,6 +231,7 @@ let themeList = null;
 let animationOverridesData = null;
 let assetPickerState = null;
 let assetPickerPollTimer = null;
+const expandedOverrideRowIds = new Set();
 
 function t(key) {
   const lang = (snapshot && snapshot.lang) || "en";
@@ -810,76 +815,220 @@ function renderAnimOverridesTab(parent) {
   parent.appendChild(themeMeta);
 
   const cards = Array.isArray(data.cards) ? data.cards : [];
-  const grid = document.createElement("div");
-  grid.className = "anim-override-grid";
+  const list = document.createElement("div");
+  list.className = "anim-override-list";
   for (const card of cards) {
-    grid.appendChild(buildAnimOverrideCard(card));
+    list.appendChild(buildAnimOverrideRow(card));
   }
-  parent.appendChild(grid);
+  parent.appendChild(list);
   renderAssetPickerModal();
 }
 
-function buildAnimOverrideCard(card) {
-  const wrap = document.createElement("section");
-  wrap.className = "anim-override-card";
+function triggerPreviewOnce(card) {
+  window.settingsAPI.previewAnimationOverride({
+    stateKey: previewStateForCard(card),
+    file: card.currentFile,
+    durationMs: getAnimationPreviewDuration(null, card),
+  });
+}
 
-  const preview = document.createElement("div");
-  preview.className = "anim-override-preview";
-  preview.appendChild(buildAnimPreviewNode(card.currentFileUrl));
-  wrap.appendChild(preview);
+function isCardOverridden(card) {
+  const themeId = animationOverridesData && animationOverridesData.theme && animationOverridesData.theme.id;
+  if (!themeId) return false;
+  const map = readThemeOverrideMap(themeId);
+  if (!map) return false;
+  if (card.slotType === "tier") {
+    const group = map.tiers && map.tiers[card.tierGroup];
+    return !!(group && group[card.originalFile]);
+  }
+  const entry = map.states && map.states[card.stateKey];
+  if (entry) return true;
+  const autoReturn = map.timings && map.timings.autoReturn;
+  return !!(autoReturn && Object.prototype.hasOwnProperty.call(autoReturn, card.stateKey));
+}
 
-  const body = document.createElement("div");
-  body.className = "anim-override-body";
+function buildAnimOverrideRow(card) {
+  const row = document.createElement("details");
+  row.className = "anim-override-row";
+  row.dataset.rowId = card.id;
+  if (expandedOverrideRowIds.has(card.id)) row.open = true;
+  row.addEventListener("toggle", () => {
+    if (row.open) expandedOverrideRowIds.add(card.id);
+    else expandedOverrideRowIds.delete(card.id);
+  });
 
+  row.appendChild(buildAnimOverrideSummary(card));
+  row.appendChild(buildAnimOverrideDrawer(card));
+  return row;
+}
+
+function buildAnimOverrideSummary(card) {
+  const summary = document.createElement("summary");
+
+  const chevron = document.createElement("span");
+  chevron.className = "anim-override-chevron";
+  chevron.textContent = "\u25B8"; // ▸
+  chevron.setAttribute("aria-hidden", "true");
+  summary.appendChild(chevron);
+
+  const thumb = document.createElement("div");
+  thumb.className = "anim-override-thumb";
+  thumb.title = t("animOverridesPreview");
+  if (card.currentFileUrl) {
+    const img = document.createElement("img");
+    img.src = card.currentFileUrl;
+    img.alt = "";
+    img.draggable = false;
+    thumb.appendChild(img);
+  }
+  thumb.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    triggerPreviewOnce(card);
+  });
+  summary.appendChild(thumb);
+
+  const text = document.createElement("div");
+  text.className = "anim-override-summary-text";
   const trigger = document.createElement("div");
   trigger.className = "anim-override-trigger";
   trigger.textContent = getAnimOverrideTriggerLabel(card);
-  body.appendChild(trigger);
-
+  text.appendChild(trigger);
   const file = document.createElement("div");
   file.className = "anim-override-file";
   file.textContent = card.currentFile;
-  body.appendChild(file);
+  file.title = card.bindingLabel || "";
+  text.appendChild(file);
+  summary.appendChild(text);
 
-  const binding = document.createElement("div");
-  binding.className = "anim-override-binding";
-  binding.textContent = card.bindingLabel;
-  body.appendChild(binding);
+  const badges = document.createElement("div");
+  badges.className = "anim-override-summary-badges";
+  if (card.displayHintWarning) {
+    const warn = document.createElement("span");
+    warn.className = "anim-override-badge anim-override-badge-warn";
+    warn.textContent = "\u26A0"; // ⚠
+    warn.title = t("animOverridesDisplayHintWarning");
+    badges.appendChild(warn);
+  }
+  if (isCardOverridden(card)) {
+    const dotWrap = document.createElement("span");
+    dotWrap.className = "anim-override-badge";
+    dotWrap.title = t("animOverridesOverriddenTooltip");
+    const dot = document.createElement("span");
+    dot.className = "anim-override-badge-dot";
+    dotWrap.appendChild(dot);
+    badges.appendChild(dotWrap);
+  }
+  summary.appendChild(badges);
+
+  const changeBtn = document.createElement("button");
+  changeBtn.type = "button";
+  changeBtn.className = "soft-btn accent anim-override-summary-change";
+  changeBtn.textContent = t("animOverridesChangeFile");
+  changeBtn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    openAssetPicker(card);
+  });
+  summary.appendChild(changeBtn);
+
+  return summary;
+}
+
+function buildAnimOverrideDrawer(card) {
+  const drawer = document.createElement("div");
+  drawer.className = "anim-override-drawer";
 
   if (card.displayHintWarning) {
     const warning = document.createElement("div");
     warning.className = "anim-override-warning";
     warning.textContent = t("animOverridesDisplayHintWarning");
-    body.appendChild(warning);
+    drawer.appendChild(warning);
   }
 
-  const actions = document.createElement("div");
-  actions.className = "anim-override-actions";
+  const head = document.createElement("div");
+  head.className = "anim-override-drawer-head";
+  const bigPreview = document.createElement("div");
+  bigPreview.className = "anim-override-drawer-preview";
+  bigPreview.title = t("animOverridesPreview");
+  if (card.currentFileUrl) {
+    const img = document.createElement("img");
+    img.src = card.currentFileUrl;
+    img.alt = "";
+    img.draggable = false;
+    bigPreview.appendChild(img);
+  }
+  bigPreview.addEventListener("click", () => triggerPreviewOnce(card));
+  head.appendChild(bigPreview);
 
-  const changeBtn = document.createElement("button");
-  changeBtn.type = "button";
-  changeBtn.className = "soft-btn accent";
-  changeBtn.textContent = t("animOverridesChangeFile");
-  changeBtn.addEventListener("click", () => openAssetPicker(card));
-  actions.appendChild(changeBtn);
+  const info = document.createElement("div");
+  info.className = "anim-override-drawer-info";
+  const binding = document.createElement("div");
+  binding.className = "anim-override-binding";
+  binding.textContent = card.bindingLabel;
+  info.appendChild(binding);
+  info.appendChild(buildAnimTimingHint(
+    t("animOverridesAssetCycle"),
+    card.assetCycleMs,
+    card.assetCycleStatus
+  ));
+  if (card.supportsAutoReturn && card.assetCycleMs == null && card.suggestedDurationMs != null) {
+    info.appendChild(buildAnimTimingHint(
+      t("animOverridesSuggestedTiming"),
+      card.suggestedDurationMs,
+      card.suggestedDurationStatus
+    ));
+  }
+  if (!card.supportsAutoReturn) {
+    const hint = document.createElement("div");
+    hint.className = "anim-override-binding";
+    hint.textContent = t("animOverridesContinuousHint");
+    info.appendChild(hint);
+  }
+  head.appendChild(info);
+  drawer.appendChild(head);
 
-  const previewBtn = document.createElement("button");
-  previewBtn.type = "button";
-  previewBtn.className = "soft-btn";
-  previewBtn.textContent = t("animOverridesPreview");
-  attachActivation(previewBtn, () =>
-    window.settingsAPI.previewAnimationOverride({
-      stateKey: previewStateForCard(card),
-      file: card.currentFile,
-      durationMs: getAnimationPreviewDuration(null, card),
-    })
-  );
-  actions.appendChild(previewBtn);
+  const sliders = document.createElement("div");
+  sliders.className = "anim-override-sliders";
+  sliders.appendChild(buildAnimOverrideSliderRow({
+    label: t("animOverridesFadeIn"),
+    min: 0, max: 1000, step: 10,
+    value: card.transition.in,
+    onCommit: (v) => runAnimationOverrideCommand(card, {
+      transition: { in: v, out: card.transition.out },
+    }),
+  }));
+  sliders.appendChild(buildAnimOverrideSliderRow({
+    label: t("animOverridesFadeOut"),
+    min: 0, max: 1000, step: 10,
+    value: card.transition.out,
+    onCommit: (v) => runAnimationOverrideCommand(card, {
+      transition: { in: card.transition.in, out: v },
+    }),
+  }));
+  if (card.supportsAutoReturn) {
+    const current = Number.isFinite(card.autoReturnMs) ? card.autoReturnMs : (card.suggestedDurationMs || 3000);
+    sliders.appendChild(buildAnimOverrideSliderRow({
+      label: t("animOverridesDuration"),
+      min: 500, max: 10000, step: 100,
+      value: current,
+      numberMin: 500,
+      numberMax: 60000,
+      onCommit: (v) => {
+        if (!Number.isFinite(v) || v < 500 || v > 60000) return;
+        return runAnimationOverrideCommand(card, { autoReturnMs: v });
+      },
+    }));
+  }
+  drawer.appendChild(sliders);
 
+  const footer = document.createElement("div");
+  footer.className = "anim-override-drawer-footer";
   const resetBtn = document.createElement("button");
   resetBtn.type = "button";
   resetBtn.className = "soft-btn";
   resetBtn.textContent = t("animOverridesReset");
+  resetBtn.disabled = !isCardOverridden(card);
   attachActivation(resetBtn, () =>
     runAnimationOverrideCommand(card, {
       file: null,
@@ -887,110 +1036,61 @@ function buildAnimOverrideCard(card) {
       ...(card.supportsAutoReturn ? { autoReturnMs: null } : {}),
     })
   );
-  actions.appendChild(resetBtn);
-  body.appendChild(actions);
+  footer.appendChild(resetBtn);
+  drawer.appendChild(footer);
 
-  const editors = document.createElement("div");
-  editors.className = "anim-override-editors";
-
-  const fadeBlock = document.createElement("div");
-  fadeBlock.className = "anim-override-editor";
-  const fadeTitle = document.createElement("div");
-  fadeTitle.className = "anim-override-editor-title";
-  fadeTitle.textContent = t("animOverridesFade");
-  fadeBlock.appendChild(fadeTitle);
-  const fadeFields = document.createElement("div");
-  fadeFields.className = "anim-override-inline-fields";
-  const inInput = document.createElement("input");
-  inInput.type = "number";
-  inInput.min = "0";
-  inInput.step = "10";
-  inInput.value = String(card.transition.in);
-  const outInput = document.createElement("input");
-  outInput.type = "number";
-  outInput.min = "0";
-  outInput.step = "10";
-  outInput.value = String(card.transition.out);
-  fadeFields.appendChild(buildInlineField(t("animOverridesFadeIn"), inInput));
-  fadeFields.appendChild(buildInlineField(t("animOverridesFadeOut"), outInput));
-  fadeBlock.appendChild(fadeFields);
-  const fadeSave = document.createElement("button");
-  fadeSave.type = "button";
-  fadeSave.className = "soft-btn";
-  fadeSave.textContent = t("animOverridesSaveFade");
-  attachActivation(fadeSave, () => {
-    const fadeIn = Number(inInput.value);
-    const fadeOut = Number(outInput.value);
-    if (!Number.isFinite(fadeIn) || fadeIn < 0 || !Number.isFinite(fadeOut) || fadeOut < 0) {
-      return { status: "error", message: "fade values must be non-negative numbers" };
-    }
-    return runAnimationOverrideCommand(card, { transition: { in: fadeIn, out: fadeOut } });
-  });
-  fadeBlock.appendChild(fadeSave);
-  editors.appendChild(fadeBlock);
-
-  const timingBlock = document.createElement("div");
-  timingBlock.className = "anim-override-editor";
-  const timingTitle = document.createElement("div");
-  timingTitle.className = "anim-override-editor-title";
-  timingTitle.textContent = t("animOverridesDuration");
-  timingBlock.appendChild(timingTitle);
-  timingBlock.appendChild(buildAnimTimingHint(
-    t("animOverridesAssetCycle"),
-    card.assetCycleMs,
-    card.assetCycleStatus
-  ));
-  if (card.supportsAutoReturn && card.assetCycleMs == null && card.suggestedDurationMs != null) {
-    timingBlock.appendChild(buildAnimTimingHint(
-      t("animOverridesSuggestedTiming"),
-      card.suggestedDurationMs,
-      card.suggestedDurationStatus
-    ));
-  }
-  if (card.supportsAutoReturn) {
-    const timingInput = document.createElement("input");
-    timingInput.type = "number";
-    timingInput.min = "500";
-    timingInput.max = "60000";
-    timingInput.step = "100";
-    timingInput.value = card.autoReturnMs == null ? "" : String(card.autoReturnMs);
-    if (card.suggestedDurationMs != null && card.suggestedDurationMs !== card.autoReturnMs) {
-      timingInput.placeholder = String(card.suggestedDurationMs);
-    }
-    timingBlock.appendChild(buildInlineField("ms", timingInput));
-    const timingSave = document.createElement("button");
-    timingSave.type = "button";
-    timingSave.className = "soft-btn";
-    timingSave.textContent = t("animOverridesSaveDuration");
-    attachActivation(timingSave, () => {
-      const value = Number(timingInput.value);
-      if (!Number.isFinite(value) || value < 500 || value > 60000) {
-        return { status: "error", message: "auto-return must be between 500 and 60000 ms" };
-      }
-      return runAnimationOverrideCommand(card, { autoReturnMs: value });
-    });
-    timingBlock.appendChild(timingSave);
-  } else {
-    const hint = document.createElement("div");
-    hint.className = "anim-override-binding";
-    hint.textContent = t("animOverridesContinuousHint");
-    timingBlock.appendChild(hint);
-  }
-  editors.appendChild(timingBlock);
-  body.appendChild(editors);
-
-  wrap.appendChild(body);
-  return wrap;
+  return drawer;
 }
 
-function buildInlineField(labelText, input) {
-  const wrap = document.createElement("label");
-  wrap.className = "anim-override-inline-field";
-  const label = document.createElement("span");
-  label.textContent = labelText;
-  wrap.appendChild(label);
-  wrap.appendChild(input);
-  return wrap;
+function buildAnimOverrideSliderRow({ label, min, max, step, value, numberMin, numberMax, onCommit }) {
+  const row = document.createElement("div");
+  row.className = "anim-override-slider-row";
+
+  const lbl = document.createElement("span");
+  lbl.className = "anim-override-slider-label";
+  lbl.textContent = label;
+  row.appendChild(lbl);
+
+  const range = document.createElement("input");
+  range.type = "range";
+  range.min = String(min);
+  range.max = String(max);
+  range.step = String(step);
+  range.value = String(clampNumber(value, min, max));
+  row.appendChild(range);
+
+  const number = document.createElement("input");
+  number.type = "number";
+  number.min = String(Number.isFinite(numberMin) ? numberMin : min);
+  number.max = String(Number.isFinite(numberMax) ? numberMax : max);
+  number.step = String(step);
+  number.value = String(value);
+  row.appendChild(number);
+
+  range.addEventListener("input", () => {
+    number.value = range.value;
+  });
+  range.addEventListener("change", () => {
+    const v = Number(range.value);
+    if (Number.isFinite(v)) onCommit(v);
+  });
+  number.addEventListener("input", () => {
+    const v = Number(number.value);
+    if (Number.isFinite(v)) range.value = String(clampNumber(v, min, max));
+  });
+  const commitFromNumber = () => {
+    const v = Number(number.value);
+    if (Number.isFinite(v)) onCommit(v);
+  };
+  number.addEventListener("change", commitFromNumber);
+  number.addEventListener("blur", commitFromNumber);
+
+  return row;
+}
+
+function clampNumber(v, min, max) {
+  if (!Number.isFinite(v)) return min;
+  return Math.min(Math.max(v, min), max);
 }
 
 function formatAnimTimingValue(ms, status) {
