@@ -62,6 +62,7 @@ const STRINGS = {
     toastSaveFailed: "Couldn't save: ",
     langEnglish: "English",
     langChinese: "中文",
+    langKorean: "한국어",
     themeTitle: "Theme",
     themeSubtitle: "Pick a theme for Clawd. Community themes land in your user themes folder and can be removed from here.",
     themeEmpty: "No themes available.",
@@ -167,6 +168,7 @@ const STRINGS = {
     toastSaveFailed: "保存失败：",
     langEnglish: "English",
     langChinese: "中文",
+    langKorean: "한국어",
     themeTitle: "主题",
     themeSubtitle: "为 Clawd 选择一个主题。社区主题会放在你的用户主题目录里，可以在此删除。",
     themeEmpty: "没有可用的主题。",
@@ -224,6 +226,112 @@ const STRINGS = {
     animOverridesModalUse: "使用这个文件",
     animOverridesModalCancel: "取消",
     animOverridesRefresh: "刷新列表",
+  },
+  ko: {
+    settingsTitle: "설정",
+    settingsSubtitle: "데스크톱에서 Clawd의 동작 방식을 설정합니다.",
+    sidebarGeneral: "일반",
+    sidebarAgents: "에이전트",
+    sidebarTheme: "테마",
+    sidebarAnimMap: "애니메이션 맵",
+    sidebarAnimOverrides: "애니메이션 오버라이드",
+    sidebarShortcuts: "단축키",
+    sidebarAbout: "정보",
+    sidebarSoon: "예정",
+    sectionAppearance: "외관",
+    sectionStartup: "시작",
+    sectionBubbles: "말풍선",
+    agentsTitle: "에이전트",
+    agentsSubtitle: "에이전트별로 추적을 켜거나 끕니다. 비활성화된 에이전트는 로그 모니터를 멈추고 HTTP 경계에서 hook 이벤트를 버리므로, 펫을 움직이거나 권한 말풍선을 띄우거나 세션을 유지하지 않습니다.",
+    agentsEmpty: "등록된 에이전트가 없습니다.",
+    eventSourceHook: "훅",
+    eventSourceLogPoll: "로그 폴링",
+    eventSourcePlugin: "플러그인",
+    badgePermissionBubble: "권한 말풍선",
+    rowAgentPermissions: "팝업 말풍선 표시",
+    rowAgentPermissionsDesc: "끄면 이 에이전트는 Clawd 말풍선 대신 자체 터미널에서 프롬프트를 처리합니다.",
+    rowLanguage: "언어",
+    rowLanguageDesc: "메뉴와 말풍선의 인터페이스 언어입니다.",
+    rowSound: "효과음",
+    rowSoundDesc: "Clawd가 작업을 마치거나 입력을 요청할 때 알림음을 재생합니다.",
+    rowOpenAtLogin: "로그인 시 자동 실행",
+    rowOpenAtLoginDesc: "로그인할 때 Clawd를 자동으로 시작합니다.",
+    rowManageClaudeHooks: "Claude hooks 자동 관리",
+    rowManageClaudeHooksDesc: "시작 시 Claude hooks를 동기화하고 `~/.claude/settings.json`이 덮어써지면 다시 복구합니다.",
+    rowManageClaudeHooksOffNote: "이 옵션을 꺼도 이후 자동 관리만 중지됩니다. 기존 Claude hooks는 직접 연결 해제하기 전까지 남아 있습니다.",
+    actionDisconnectClaudeHooks: "연결 해제",
+    rowStartWithClaude: "Claude Code와 함께 시작",
+    rowStartWithClaudeDesc: "Claude Code 세션이 시작될 때마다 Clawd를 자동으로 실행합니다.",
+    rowStartWithClaudeDisabledDesc: "Claude hooks 자동 관리가 필요합니다. 관리가 꺼져 있는 동안에는 포트 변경이나 설정 덮어쓰기를 자동으로 복구하지 않습니다.",
+    rowBubbleFollow: "말풍선이 Clawd를 따라다님",
+    rowBubbleFollowDesc: "권한 및 업데이트 말풍선을 화면 구석 대신 펫 옆에 표시합니다.",
+    rowHideBubbles: "모든 말풍선 숨기기",
+    rowHideBubblesDesc: "권한, 알림, 업데이트 말풍선을 모두 숨깁니다.",
+    rowShowSessionId: "세션 ID 표시",
+    rowShowSessionIdDesc: "말풍선 제목과 Sessions 메뉴에 짧은 세션 ID를 덧붙입니다.",
+    placeholderTitle: "곧 제공 예정",
+    placeholderDesc: "이 패널은 향후 Clawd 릴리스에 추가됩니다. 계획은 docs/plan-settings-panel.md에 있습니다.",
+    toastSaveFailed: "저장 실패: ",
+    langEnglish: "English",
+    langChinese: "中文",
+    langKorean: "한국어",
+    themeTitle: "테마",
+    themeSubtitle: "Clawd의 테마를 선택합니다. 커뮤니티 테마는 사용자 테마 폴더에 추가되며 여기서 삭제할 수 있습니다.",
+    themeEmpty: "사용 가능한 테마가 없습니다.",
+    themeBadgeBuiltin: "기본 제공",
+    themeBadgeActive: "활성",
+    themeActiveIndicator: "\u2713 활성",
+    themeThumbMissing: "\u{1F3AD}",
+    themeDeleteLabel: "테마 삭제",
+    themeVariantStripLabel: "변형",
+    toastThemeDeleted: "테마를 삭제했습니다.",
+    toastThemeDeleteFailed: "테마 삭제 실패: ",
+    animMapTitle: "애니메이션 맵",
+    animMapSubtitle: "개별 인터럽트 애니메이션을 끕니다. 이벤트는 계속 발생하지만 Clawd는 선택한 상태의 화면과 소리만 건너뜁니다.",
+    animMapSemanticsNote: "비활성화 = 화면 없음 + 소리 없음. 권한 말풍선, 세션, 터미널 포커스는 그대로 작동합니다.",
+    animMapResetAll: "모두 초기화",
+    animMapAttentionLabel: "작업 완료 (happy)",
+    animMapAttentionDesc: "에이전트가 한 턴을 마쳤을 때 재생되는 즐거운 바운스 애니메이션입니다. (Stop / PostCompact)",
+    animMapErrorLabel: "오류 플래시",
+    animMapErrorDesc: "도구 호출이 실패했을 때 흔들리는 애니메이션입니다.",
+    animMapSweepingLabel: "컨텍스트 정리",
+    animMapSweepingDesc: "PreCompact / 컨텍스트 정리 중 빗자루 애니메이션입니다.",
+    animMapNotificationLabel: "알림",
+    animMapNotificationDesc: "권한 요청과 입력 요청 시 재생되는 종 애니메이션입니다.",
+    animMapCarryingLabel: "워크트리 운반",
+    animMapCarryingDesc: "worktree가 생성될 때 재생되는 운반 애니메이션입니다.",
+    toastAnimMapResetOk: "애니메이션 오버라이드를 초기화했습니다.",
+    animOverridesTitle: "애니메이션 오버라이드",
+    animOverridesSubtitle: "현재 테마의 카드별 파일을 바꾸고 페이드/복귀 타이밍을 조정합니다.",
+    animOverridesCurrentTheme: "현재 테마",
+    animOverridesOpenThemeTab: "테마 탭 열기",
+    animOverridesOpenAssets: "assets 폴더 열기",
+    animOverridesResetAll: "모두 기본값으로 복원",
+    animOverridesChangeFile: "파일 변경",
+    animOverridesPreview: "한 번 미리보기",
+    animOverridesReset: "슬롯 초기화",
+    animOverridesFade: "페이드",
+    animOverridesFadeIn: "입장",
+    animOverridesFadeOut: "퇴장",
+    animOverridesSaveFade: "페이드 저장",
+    animOverridesDuration: "자동 복귀",
+    animOverridesSaveDuration: "타이밍 저장",
+    animOverridesContinuousHint: "지속 상태는 여기서 auto-return을 편집할 수 없습니다.",
+    animOverridesAssetCycle: "에셋 주기",
+    animOverridesSuggestedTiming: "권장 타이밍",
+    animOverridesTimingEstimated: "추정값",
+    animOverridesTimingFallback: "테마 기본값",
+    animOverridesTimingUnavailable: "사용할 수 없음",
+    animOverridesDisplayHintWarning: "displayHintMap이 런타임에 이 슬롯을 덮어쓸 수 있습니다.",
+    animOverridesOverriddenTooltip: "기본값에서 변경됨",
+    animOverridesExpandRow: "펼치기",
+    animOverridesModalTitle: "에셋 파일 선택",
+    animOverridesModalSubtitle: "파일을 현재 테마의 assets 폴더에 추가한 뒤 여기서 목록을 새로고침하세요.",
+    animOverridesModalEmpty: "이 테마에는 아직 지원되는 에셋이 없습니다.",
+    animOverridesModalSelected: "선택된 파일",
+    animOverridesModalUse: "이 파일 사용",
+    animOverridesModalCancel: "취소",
+    animOverridesRefresh: "목록 새로고침",
   },
 };
 
@@ -745,10 +853,20 @@ function openAssetPicker(card) {
 }
 
 function formatSessionRange(minSessions, maxSessions) {
-  const isZh = ((snapshot && snapshot.lang) || "en") === "zh";
-  if (maxSessions == null) return isZh ? `${minSessions}+ 会话` : `${minSessions}+ sessions`;
-  if (minSessions === maxSessions) return isZh ? `${minSessions} 会话` : `${minSessions} session${minSessions === 1 ? "" : "s"}`;
-  return isZh ? `${minSessions}-${maxSessions} 会话` : `${minSessions}-${maxSessions} sessions`;
+  const lang = (snapshot && snapshot.lang) || "en";
+  if (lang === "zh") {
+    if (maxSessions == null) return `${minSessions}+ 会话`;
+    if (minSessions === maxSessions) return `${minSessions} 会话`;
+    return `${minSessions}-${maxSessions} 会话`;
+  }
+  if (lang === "ko") {
+    if (maxSessions == null) return `${minSessions}+ 세션`;
+    if (minSessions === maxSessions) return `${minSessions} 세션`;
+    return `${minSessions}-${maxSessions} 세션`;
+  }
+  if (maxSessions == null) return `${minSessions}+ sessions`;
+  if (minSessions === maxSessions) return `${minSessions} session${minSessions === 1 ? "" : "s"}`;
+  return `${minSessions}-${maxSessions} sessions`;
 }
 
 function getAnimOverrideTriggerLabel(card) {
@@ -1660,17 +1778,19 @@ function buildLanguageRow() {
       `<span class="row-label"></span>` +
       `<span class="row-desc"></span>` +
     `</div>` +
-    `<div class="row-control">` +
-      `<div class="segmented" role="tablist">` +
-        `<button data-lang="en"></button>` +
-        `<button data-lang="zh"></button>` +
-      `</div>` +
-    `</div>`;
+      `<div class="row-control">` +
+        `<div class="segmented" role="tablist">` +
+          `<button data-lang="en"></button>` +
+          `<button data-lang="zh"></button>` +
+          `<button data-lang="ko"></button>` +
+        `</div>` +
+      `</div>`;
   row.querySelector(".row-label").textContent = t("rowLanguage");
   row.querySelector(".row-desc").textContent = t("rowLanguageDesc");
   const buttons = row.querySelectorAll(".segmented button");
   buttons[0].textContent = t("langEnglish");
   buttons[1].textContent = t("langChinese");
+  buttons[2].textContent = t("langKorean");
   const current = (snapshot && snapshot.lang) || "en";
   for (const btn of buttons) {
     if (btn.dataset.lang === current) btn.classList.add("active");

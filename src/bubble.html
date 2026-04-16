@@ -323,10 +323,80 @@ function truncate(s, max) {
   return s.slice(0, max - 1) + "\u2026";
 }
 
+const BUBBLE_STRINGS = {
+  en: {
+    autoAcceptEdits: "Auto-accept edits",
+    switchToPlanMode: "Switch to plan mode",
+    allowInDir: "Allow {tool} in {dir}/",
+    alwaysAllowRule: "Always allow `{rule}`",
+    alwaysAllow: "Always allow",
+    permissionRequest: "Permission Request",
+    allow: "Allow",
+    deny: "Deny",
+    alwaysAllowBlanket: "Always Allow (blanket)",
+    alwaysAllowBlanketTitle: "Warning: opencode's 'always' rule auto-approves every subsequent tool call of the same category in this session (including rm and similar destructive commands). The rule lives only in memory — restart opencode to revoke.",
+    needsInput: "Needs Input",
+    goToTerminal: "Go to Terminal",
+    codexPermission: "Codex Permission",
+    gotIt: "Got it",
+    planReview: "Plan Review",
+    approve: "Approve",
+    reject: "Reject",
+  },
+  zh: {
+    autoAcceptEdits: "\u81EA\u52A8\u63A5\u53D7\u7F16\u8F91",
+    switchToPlanMode: "\u5207\u6362\u5230 Plan \u6A21\u5F0F",
+    allowInDir: "\u5141\u8BB8 {tool} \u5728 {dir}/",
+    alwaysAllowRule: "\u59CB\u7EC8\u5141\u8BB8 `{rule}`",
+    alwaysAllow: "\u59CB\u7EC8\u5141\u8BB8",
+    permissionRequest: "\u6743\u9650\u8BF7\u6C42",
+    allow: "\u6279\u51C6",
+    deny: "\u62D2\u7EDD",
+    alwaysAllowBlanket: "\u59CB\u7EC8\u5141\u8BB8\uFF08\u901A\u914D\uFF09",
+    alwaysAllowBlanketTitle: "\u8B66\u544A\uFF1Aopencode \u7684 always \u89C4\u5219\u4F1A\u8BA9\u672C\u6B21 session \u5185\u4E0B\u4E00\u6B21\u6240\u6709\u540C\u7C7B\u5DE5\u5177\u8C03\u7528\u81EA\u52A8\u653E\u884C\uFF08\u5305\u62EC rm \u7B49\u5371\u9669\u547D\u4EE4\uFF09\u3002\u8BE5\u89C4\u5219\u53EA\u5728\u5185\u5B58\u4E2D\uFF0C\u91CD\u542F opencode \u5373\u6062\u590D\u3002",
+    needsInput: "\u9700\u8981\u8F93\u5165",
+    goToTerminal: "\u524D\u5F80\u7EC8\u7AEF",
+    codexPermission: "Codex \u6743\u9650\u8BF7\u6C42",
+    gotIt: "\u77E5\u9053\u4E86",
+    planReview: "\u8BA1\u5212\u5BA1\u6279",
+    approve: "\u6279\u51C6",
+    reject: "\u62D2\u7EDD",
+  },
+  ko: {
+    autoAcceptEdits: "\uD3B8\uC9D1 \uC790\uB3D9 \uC2B9\uC778",
+    switchToPlanMode: "Plan \uBAA8\uB4DC\uB85C \uC804\uD658",
+    allowInDir: "{dir}/\uC5D0\uC11C {tool} \uD5C8\uC6A9",
+    alwaysAllowRule: "\uD56D\uC0C1 \uD5C8\uC6A9 `{rule}`",
+    alwaysAllow: "\uD56D\uC0C1 \uD5C8\uC6A9",
+    permissionRequest: "\uAD8C\uD55C \uC694\uCCAD",
+    allow: "\uD5C8\uC6A9",
+    deny: "\uAC70\uBD80",
+    alwaysAllowBlanket: "\uD56D\uC0C1 \uD5C8\uC6A9 (\uC804\uCCB4)",
+    alwaysAllowBlanketTitle: "\uACBD\uACE0: opencode\uC758 'always' \uADDC\uCE59\uC740 \uC774 \uC138\uC158\uC5D0\uC11C \uAC19\uC740 \uC885\uB958\uC758 \uC774\uD6C4 \uBAA8\uB4E0 \uB3C4\uAD6C \uD638\uCD9C\uC744 \uC790\uB3D9 \uC2B9\uC778\uD569\uB2C8\uB2E4. (rm \uAC19\uC740 \uD30C\uAD34\uC801 \uBA85\uB839 \uD3EC\uD568) \uC774 \uADDC\uCE59\uC740 \uBA54\uBAA8\uB9AC\uC5D0\uB9CC \uB0A8\uC73C\uBA70, opencode\uB97C \uC7AC\uC2DC\uC791\uD558\uBA74 \uD574\uC81C\uB429\uB2C8\uB2E4.",
+    needsInput: "\uC785\uB825 \uD544\uC694",
+    goToTerminal: "\uD130\uBBF8\uB110\uB85C \uC774\uB3D9",
+    codexPermission: "Codex \uAD8C\uD55C \uC694\uCCAD",
+    gotIt: "\uD655\uC778",
+    planReview: "\uACC4\uD68D \uAC80\uD1A0",
+    approve: "\uC2B9\uC778",
+    reject: "\uAC70\uBD80",
+  },
+};
+
+function bubbleText(lang, key, vars) {
+  const dict = BUBBLE_STRINGS[lang] || BUBBLE_STRINGS.en;
+  let value = dict[key] || BUBBLE_STRINGS.en[key] || key;
+  if (!vars) return value;
+  for (const [name, replacement] of Object.entries(vars)) {
+    value = value.replace(`{${name}}`, replacement);
+  }
+  return value;
+}
+
 function getSuggestionLabel(s, lang) {
   if (s.type === "setMode") {
-    if (s.mode === "acceptEdits") return lang === "zh" ? "\u81EA\u52A8\u63A5\u53D7\u7F16\u8F91" : "Auto-accept edits";
-    if (s.mode === "plan") return lang === "zh" ? "\u5207\u6362\u5230 Plan \u6A21\u5F0F" : "Switch to plan mode";
+    if (s.mode === "acceptEdits") return bubbleText(lang, "autoAcceptEdits");
+    if (s.mode === "plan") return bubbleText(lang, "switchToPlanMode");
     return s.mode;
   }
   if (s.type === "addRules") {
@@ -337,13 +407,13 @@ function getSuggestionLabel(s, lang) {
     if (rc) {
       if (rc.includes("**")) {
         const dir = rc.split("**")[0].replace(/[\\/]$/, "").split(/[\\/]/).pop() || rc;
-        return lang === "zh" ? `\u5141\u8BB8 ${tn} \u5728 ${dir}/` : `Allow ${tn} in ${dir}/`;
+        return bubbleText(lang, "allowInDir", { tool: tn, dir });
       }
       const short = rc.length > 30 ? rc.slice(0, 29) + "\u2026" : rc;
-      return lang === "zh" ? `\u59CB\u7EC8\u5141\u8BB8 \`${short}\`` : `Always allow \`${short}\``;
+      return bubbleText(lang, "alwaysAllowRule", { rule: short });
     }
   }
-  return lang === "zh" ? "\u59CB\u7EC8\u5141\u8BB8" : "Always allow";
+  return bubbleText(lang, "alwaysAllow");
 }
 
 function disableAll() {
@@ -373,7 +443,7 @@ function show(data) {
   //   3. "Always Allow" button maps to reply="always" via "opencode-always"
   //      behavior (handleDecide special-cases this).
   if (data.isOpencode) {
-    headerTitle.textContent = data.lang === "zh" ? "\u6743\u9650\u8BF7\u6C42" : "Permission Request";
+    headerTitle.textContent = bubbleText(data.lang, "permissionRequest");
 
     const rawName = data.toolName || "unknown";
     const displayName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
@@ -399,8 +469,8 @@ function show(data) {
     }
     commandBlock.textContent = truncate(detail, 200);
 
-    btnAllow.textContent = data.lang === "zh" ? "\u6279\u51C6" : "Allow";
-    btnDeny.textContent = data.lang === "zh" ? "\u62D2\u7EDD" : "Deny";
+    btnAllow.textContent = bubbleText(data.lang, "allow");
+    btnDeny.textContent = bubbleText(data.lang, "deny");
     btnAllow.style.display = "";
     btnDeny.style.display = "";
     btnAllow.disabled = false;
@@ -417,12 +487,8 @@ function show(data) {
     if (Array.isArray(data.opencodeAlways) && data.opencodeAlways.length > 0) {
       const btn = document.createElement("button");
       btn.className = "btn-suggestion";
-      btn.textContent = data.lang === "zh"
-        ? "\u59CB\u7EC8\u5141\u8BB8\uFF08\u901A\u914D\uFF09"   // 始终允许（通配）
-        : "Always Allow (blanket)";
-      btn.title = data.lang === "zh"
-        ? "\u8B66\u544A\uFF1Aopencode \u7684 always \u89C4\u5219\u4F1A\u8BA9\u672C\u6B21 session \u5185\u4E0B\u4E00\u6B21\u6240\u6709\u540C\u7C7B\u5DE5\u5177\u8C03\u7528\u81EA\u52A8\u653E\u884C\uFF08\u5305\u62EC rm \u7B49\u5371\u9669\u547D\u4EE4\uFF09\u3002\u8BE5\u89C4\u5219\u53EA\u5728\u5185\u5B58\u4E2D\uFF0C\u91CD\u542F opencode \u5373\u6062\u590D\u3002"
-        : "Warning: opencode's 'always' rule auto-approves every subsequent tool call of the same category in this session (including rm and similar destructive commands). The rule lives only in memory — restart opencode to revoke.";
+      btn.textContent = bubbleText(data.lang, "alwaysAllowBlanket");
+      btn.title = bubbleText(data.lang, "alwaysAllowBlanketTitle");
       btn.addEventListener("click", () => {
         disableAll();
         window.bubbleAPI.decide("opencode-always");
@@ -436,7 +502,7 @@ function show(data) {
 
   if (elicitationMode) {
     // Elicitation mode — show question with "Go to Terminal" button
-    headerTitle.textContent = data.lang === "zh" ? "\u9700\u8981\u8F93\u5165" : "Needs Input";
+    headerTitle.textContent = bubbleText(data.lang, "needsInput");
     toolPill.style.display = "none";
 
     // Extract question text from toolInput.questions
@@ -446,7 +512,7 @@ function show(data) {
     }
     commandBlock.textContent = questionText || JSON.stringify(data.toolInput);
 
-    btnAllow.textContent = data.lang === "zh" ? "\u524D\u5F80\u7EC8\u7AEF" : "Go to Terminal";
+    btnAllow.textContent = bubbleText(data.lang, "goToTerminal");
     btnAllow.disabled = false;
     btnDeny.style.display = "none";
     suggestionsContainer.innerHTML = "";
@@ -456,12 +522,12 @@ function show(data) {
 
   // Codex notify mode — informational bubble with Dismiss button only
   if (data.toolName === "CodexExec") {
-    headerTitle.textContent = data.lang === "zh" ? "Codex \u6743\u9650\u8BF7\u6C42" : "Codex Permission";
+    headerTitle.textContent = bubbleText(data.lang, "codexPermission");
     toolPill.textContent = "CODEX";
     toolPill.setAttribute("data-tool", "CodexExec");
     toolPill.style.display = "";
     commandBlock.textContent = (data.toolInput && data.toolInput.command) || "(unknown)";
-    btnAllow.textContent = data.lang === "zh" ? "\u77E5\u9053\u4E86" : "Got it";
+    btnAllow.textContent = bubbleText(data.lang, "gotIt");
     btnAllow.disabled = false;
     btnDeny.style.display = "none";
     suggestionsContainer.innerHTML = "";
@@ -473,8 +539,8 @@ function show(data) {
 
   // Header
   headerTitle.textContent = isPlanReview
-    ? (data.lang === "zh" ? "\u8BA1\u5212\u5BA1\u6279" : "Plan Review")
-    : "Permission Request";
+    ? bubbleText(data.lang, "planReview")
+    : bubbleText(data.lang, "permissionRequest");
   toolPill.style.display = isPlanReview ? "none" : "";
   btnDeny.style.display = isPlanReview ? "none" : "";
 
@@ -486,8 +552,8 @@ function show(data) {
   commandBlock.textContent = formatDetail(data.toolName, data.toolInput);
 
   // Button labels
-  btnAllow.textContent = data.lang === "zh" ? "\u6279\u51C6" : (isPlanReview ? "Approve" : "Allow");
-  btnDeny.textContent = data.lang === "zh" ? "\u62D2\u7EDD" : (isPlanReview ? "Reject" : "Deny");
+  btnAllow.textContent = isPlanReview ? bubbleText(data.lang, "approve") : bubbleText(data.lang, "allow");
+  btnDeny.textContent = isPlanReview ? bubbleText(data.lang, "reject") : bubbleText(data.lang, "deny");
 
   // Dynamic suggestion buttons
   suggestionsContainer.innerHTML = "";
@@ -495,7 +561,7 @@ function show(data) {
     // "Go to Terminal" button — deny + focus terminal
     const btn = document.createElement("button");
     btn.className = "btn-suggestion";
-    btn.textContent = data.lang === "zh" ? "\u524D\u5F80\u7EC8\u7AEF" : "Go to Terminal";
+    btn.textContent = bubbleText(data.lang, "goToTerminal");
     btn.addEventListener("click", () => {
       disableAll();
       window.bubbleAPI.decide("deny-and-focus");
