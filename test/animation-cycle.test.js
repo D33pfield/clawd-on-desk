@@ -171,14 +171,22 @@ describe("animation-cycle raster probes", () => {
 });
 
 describe("probeAssetCycle", () => {
-  it("dispatches by extension and returns unavailable for unsupported files", () => {
+  it("dispatches by extension, marks static rasters, and returns unavailable for unsupported files", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "anim-cycle-"));
     const svgPath = path.join(tempDir, "loop.svg");
     const gifPath = path.join(tempDir, "loop.gif");
+    const pngPath = path.join(tempDir, "still.png");
+    const webpPath = path.join(tempDir, "still.webp");
+    const jpgPath = path.join(tempDir, "still.jpg");
+    const jpegPath = path.join(tempDir, "still.jpeg");
     const txtPath = path.join(tempDir, "readme.txt");
 
     fs.writeFileSync(svgPath, `<svg xmlns="http://www.w3.org/2000/svg"><style>.x { animation: blink 2s infinite linear; }</style></svg>`, "utf8");
     fs.writeFileSync(gifPath, buildGifBuffer([12]));
+    fs.writeFileSync(pngPath, Buffer.from("89504e470d0a1a0a", "hex"));
+    fs.writeFileSync(webpPath, Buffer.from("524946460000000057454250", "hex"));
+    fs.writeFileSync(jpgPath, Buffer.from("ffd8ffe000104a4649460001", "hex"));
+    fs.writeFileSync(jpegPath, Buffer.from("ffd8ffe000104a4649460001", "hex"));
     fs.writeFileSync(txtPath, "plain text", "utf8");
 
     assert.deepStrictEqual(probeAssetCycle(svgPath), {
@@ -190,6 +198,26 @@ describe("probeAssetCycle", () => {
       ms: 120,
       status: CYCLE_STATUS.EXACT,
       source: "gif",
+    });
+    assert.deepStrictEqual(probeAssetCycle(pngPath), {
+      ms: null,
+      status: CYCLE_STATUS.STATIC,
+      source: "png",
+    });
+    assert.deepStrictEqual(probeAssetCycle(webpPath), {
+      ms: null,
+      status: CYCLE_STATUS.STATIC,
+      source: "webp",
+    });
+    assert.deepStrictEqual(probeAssetCycle(jpgPath), {
+      ms: null,
+      status: CYCLE_STATUS.STATIC,
+      source: "jpg",
+    });
+    assert.deepStrictEqual(probeAssetCycle(jpegPath), {
+      ms: null,
+      status: CYCLE_STATUS.STATIC,
+      source: "jpeg",
     });
     assert.deepStrictEqual(probeAssetCycle(txtPath), {
       ms: null,

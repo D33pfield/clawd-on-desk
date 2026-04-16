@@ -7,6 +7,7 @@ const { parseDocument } = require("htmlparser2");
 const CYCLE_STATUS = {
   EXACT: "exact",
   ESTIMATED: "estimated",
+  STATIC: "static",
   UNAVAILABLE: "unavailable",
 };
 
@@ -24,6 +25,10 @@ const probeCache = new Map();
 
 function buildUnavailableResult(source = "file") {
   return { ms: null, status: CYCLE_STATUS.UNAVAILABLE, source };
+}
+
+function buildStaticResult(source = "file") {
+  return { ms: null, status: CYCLE_STATUS.STATIC, source };
 }
 
 function cloneResult(result) {
@@ -532,6 +537,9 @@ function probeAssetCycle(absPath) {
     if (ext === ".svg") result = probeSvgCycle(fs.readFileSync(absPath, "utf8"));
     else if (ext === ".gif") result = probeGifCycle(fs.readFileSync(absPath));
     else if (ext === ".apng") result = probeApngCycle(fs.readFileSync(absPath));
+    else if (ext === ".png" || ext === ".webp" || ext === ".jpg" || ext === ".jpeg") {
+      result = buildStaticResult(ext.slice(1));
+    }
   } catch {
     result = buildUnavailableResult(ext ? ext.slice(1) : "file");
   }

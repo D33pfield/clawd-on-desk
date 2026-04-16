@@ -341,6 +341,42 @@ Mini mode still uses the existing `objectScale` + per-file offsets, so this is m
 | PNG | Static poses | No | Good for single-frame non-tracked states |
 | JPG / JPEG | Static poses without transparency | No | Fine for opaque or composited artwork |
 
+### Minimal Static Theme Example
+
+If you only have still artwork, that is fine. A theme with single-frame PNG / WebP / JPG / JPEG files is a first-class path now. The simplest authoring recipe is:
+
+- set `eyeTracking.enabled` to `false`
+- set `miniMode.supported` to `false` unless you really drew all 8 mini states
+- use one real file each for `idle`, `thinking`, `working`, and `sleeping`
+- add `sleepSequence.mode: "direct"` if you do not want to draw `yawning` / `dozing` / `collapsing` / `waking`
+- use PR2 `fallbackTo` on interruption states when one still image is enough
+
+Example:
+
+```json
+"eyeTracking": {
+  "enabled": false,
+  "states": []
+},
+"sleepSequence": {
+  "mode": "direct"
+},
+"states": {
+  "idle": ["idle.jpg"],
+  "thinking": ["thinking.jpg"],
+  "working": ["working.jpg"],
+  "attention": ["happy.jpg"],
+  "error": { "fallbackTo": "attention" },
+  "notification": { "fallbackTo": "attention" },
+  "sleeping": ["sleeping.jpg"]
+},
+"miniMode": {
+  "supported": false
+}
+```
+
+See `themes/static-test/theme.json` in this repo for a fuller built-in JPG sample that also exercises `transitions`, `objectScale`, file offsets, and sleep hitboxes.
+
 ### Canvas Size
 
 All assets should share the same logical canvas defined by `viewBox`. For raster formats (GIF/APNG/WebP):

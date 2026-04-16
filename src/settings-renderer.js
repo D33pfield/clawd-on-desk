@@ -1270,6 +1270,7 @@ function clampNumber(v, min, max) {
 }
 
 function formatAnimTimingValue(ms, status) {
+  if (status === "static") return "—";
   let text = Number.isFinite(ms) && ms > 0
     ? `${ms} ms`
     : t("animOverridesTimingUnavailable");
