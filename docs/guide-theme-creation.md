@@ -4,23 +4,33 @@ Create your own Clawd desktop pet theme with custom characters and animations.
 
 ## Quick Start
 
-1. Copy the template:
+1. Scaffold a theme:
    ```bash
-   cp -r themes/template ~/.config/clawd-on-desk/themes/my-theme   # Linux/macOS
-   # or
-   xcopy /E themes\template "%APPDATA%\clawd-on-desk\themes\my-theme\"  # Windows
+   node scripts/create-theme.js my-theme
+   ```
+   The script writes to your Clawd user themes directory by default:
+   - Windows: `%APPDATA%/clawd-on-desk/themes/my-theme/`
+   - macOS: `~/Library/Application Support/clawd-on-desk/themes/my-theme/`
+   - Linux: `~/.config/clawd-on-desk/themes/my-theme/`
+   - No argument also works: it creates the next available `my-theme` scaffold automatically
+
+2. (Optional) Customize the generated metadata:
+   ```bash
+   node scripts/create-theme.js pixel-cat --name "Pixel Cat" --author "Your Name"
    ```
 
-2. Edit `theme.json` — set your theme name, author, and file mappings
+3. Edit `theme.json` — set your theme name, author, and file mappings
 
-3. Create your assets in the `assets/` folder
+4. Create your assets in the `assets/` folder
 
-4. Restart Clawd → right-click → Theme → select your theme
+5. Restart Clawd → right-click → Theme → select your theme
 
-5. (Optional) Validate:
+6. (Optional) Validate:
    ```bash
    node scripts/validate-theme.js ~/.config/clawd-on-desk/themes/my-theme
    ```
+
+If you prefer the manual route, copying `themes/template/` yourself still works. The scaffold script just automates the same starting point and patches `name` / `author` for you.
 
 ## Theme Directory Structure
 
@@ -447,7 +457,8 @@ The validator checks:
 ## Theme Installation (User Side)
 
 1. Download/clone the theme to the themes directory (see paths above)
-2. Restart Clawd or switch theme via right-click → Theme menu
-3. The theme appears in the menu by its `name` field from `theme.json`
+2. In `Settings…` → `Theme`, check the capability badges (`Tracked idle`, `Animated idle`, `Static theme`, `Mini`, `Direct sleep`, `No reactions`) to confirm what the theme supports
+3. Restart Clawd or switch theme via right-click → Theme menu
+4. The theme appears in the menu by its `name` field from `theme.json`
 
 > **Security note:** Third-party SVG files are automatically sanitized — `<script>`, event handlers, and `javascript:` URLs are stripped before rendering.

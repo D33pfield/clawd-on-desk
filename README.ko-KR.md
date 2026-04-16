@@ -118,12 +118,15 @@ npm start
 Clawd는 커스텀 테마를 지원합니다. 기본 크랩 대신 원하는 캐릭터와 애니메이션으로 바꿀 수 있습니다.
 
 **빠른 시작:**
-1. `themes/template/`를 테마 디렉터리로 복사합니다.
-   - Windows: `%APPDATA%/clawd-on-desk/themes/my-theme/`
-   - macOS: `~/Library/Application Support/clawd-on-desk/themes/my-theme/`
-   - Linux: `~/.config/clawd-on-desk/themes/my-theme/`
-2. `theme.json`을 수정하고 에셋(SVG, GIF, APNG, WebP)을 만듭니다.
-3. Clawd를 우클릭한 뒤 Theme 메뉴에서 테마를 선택합니다.
+1. 먼저 테마 스캐폴드를 생성합니다.
+   ```bash
+   node scripts/create-theme.js my-theme
+   # 또는
+   npm run create-theme -- my-theme
+   ```
+   인자를 주지 않아도 사용자 테마 디렉터리에 다음 사용 가능한 `my-theme` 스캐폴드가 생성됩니다.
+2. `theme.json`을 수정하고 에셋(SVG, GIF, APNG, WebP, PNG, JPG, JPEG)을 만듭니다.
+3. Clawd를 재시작하거나 `Settings…` → `Theme`에서 테마를 선택합니다.
 
 **최소 동작 테마:** 1개의 SVG(idle + 시선 추적)와 7개의 GIF/APNG(thinking, working, error, happy, notification, sleeping, waking)만 있어도 됩니다. 시선 추적을 끄면 모든 상태를 아무 형식으로나 만들어도 됩니다.
 
@@ -131,6 +134,8 @@ Clawd는 커스텀 테마를 지원합니다. 기본 크랩 대신 원하는 캐
 ```bash
 node scripts/validate-theme.js path/to/your-theme
 ```
+
+`Settings…` → `Theme`의 테마 카드에는 `Tracked idle`, `Static theme`, `Mini`, `Direct sleep`, `No reactions` 같은 능력 배지가 표시되어 전환 전에 테마 특성을 확인할 수 있습니다.
 
 전체 제작 가이드는 [docs/guide-theme-creation.md](docs/guide-theme-creation.md) 에 있습니다. 입문/중급/고급 경로, `theme.json` 필드 설명, 에셋 가이드라인까지 포함합니다.
 

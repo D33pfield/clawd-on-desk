@@ -64,10 +64,16 @@ const STRINGS = {
     langChinese: "中文",
     langKorean: "한국어",
     themeTitle: "Theme",
-    themeSubtitle: "Pick a theme for Clawd. Community themes land in your user themes folder and can be removed from here.",
+    themeSubtitle: "Pick a theme for Clawd. Cards show built-in + capability badges so you can see tracked/static/mini differences before switching.",
     themeEmpty: "No themes available.",
     themeBadgeBuiltin: "Built-in",
     themeBadgeActive: "Active",
+    themeCapabilityTracked: "Tracked idle",
+    themeCapabilityAnimated: "Animated idle",
+    themeCapabilityStatic: "Static theme",
+    themeCapabilityMini: "Mini",
+    themeCapabilityDirectSleep: "Direct sleep",
+    themeCapabilityNoReactions: "No reactions",
     themeActiveIndicator: "\u2713 Active",
     themeThumbMissing: "\u{1F3AD}",
     themeDeleteLabel: "Delete theme",
@@ -183,10 +189,16 @@ const STRINGS = {
     langChinese: "中文",
     langKorean: "한국어",
     themeTitle: "主题",
-    themeSubtitle: "为 Clawd 选择一个主题。社区主题会放在你的用户主题目录里，可以在此删除。",
+    themeSubtitle: "为 Clawd 选择一个主题。卡片会显示内建和能力角标，切换前就能看出 tracked / static / mini 等差异。",
     themeEmpty: "没有可用的主题。",
     themeBadgeBuiltin: "内建",
     themeBadgeActive: "当前",
+    themeCapabilityTracked: "跟随 idle",
+    themeCapabilityAnimated: "动画 idle",
+    themeCapabilityStatic: "静态主题",
+    themeCapabilityMini: "Mini",
+    themeCapabilityDirectSleep: "直睡",
+    themeCapabilityNoReactions: "无反应",
     themeActiveIndicator: "\u2713 当前",
     themeThumbMissing: "\u{1F3AD}",
     themeDeleteLabel: "删除主题",
@@ -302,10 +314,16 @@ const STRINGS = {
     langChinese: "中文",
     langKorean: "한국어",
     themeTitle: "테마",
-    themeSubtitle: "Clawd의 테마를 선택합니다. 커뮤니티 테마는 사용자 테마 폴더에 추가되며 여기서 삭제할 수 있습니다.",
+    themeSubtitle: "Clawd의 테마를 선택합니다. 카드에는 기본 제공/능력 배지가 표시되어 tracked/static/mini 차이를 미리 볼 수 있습니다.",
     themeEmpty: "사용 가능한 테마가 없습니다.",
     themeBadgeBuiltin: "기본 제공",
     themeBadgeActive: "활성",
+    themeCapabilityTracked: "커서 추적 idle",
+    themeCapabilityAnimated: "애니메이션 idle",
+    themeCapabilityStatic: "정적 테마",
+    themeCapabilityMini: "Mini",
+    themeCapabilityDirectSleep: "직접 수면",
+    themeCapabilityNoReactions: "반응 없음",
     themeActiveIndicator: "\u2713 활성",
     themeThumbMissing: "\u{1F3AD}",
     themeDeleteLabel: "테마 삭제",
@@ -658,6 +676,19 @@ function applyThemePreviewOffset(img, offsetPct) {
   img.style.transform = `translate(${x.toFixed(2)}%, ${y.toFixed(2)}%)`;
 }
 
+function getThemeCapabilityBadgeLabels(theme) {
+  const caps = theme && theme.capabilities;
+  if (!caps || typeof caps !== "object") return [];
+  const badges = [];
+  if (caps.idleMode === "tracked") badges.push(t("themeCapabilityTracked"));
+  else if (caps.idleMode === "animated") badges.push(t("themeCapabilityAnimated"));
+  else if (caps.idleMode === "static") badges.push(t("themeCapabilityStatic"));
+  if (caps.miniMode) badges.push(t("themeCapabilityMini"));
+  if (caps.sleepMode === "direct") badges.push(t("themeCapabilityDirectSleep"));
+  if (caps.reactions === false) badges.push(t("themeCapabilityNoReactions"));
+  return badges;
+}
+
 function buildThemeCard(theme) {
   const card = document.createElement("div");
   card.className = "theme-card";
@@ -697,6 +728,19 @@ function buildThemeCard(theme) {
     name.appendChild(badge);
   }
   card.appendChild(name);
+
+  const capLabels = getThemeCapabilityBadgeLabels(theme);
+  if (capLabels.length) {
+    const caps = document.createElement("div");
+    caps.className = "theme-card-capabilities";
+    for (const label of capLabels) {
+      const badge = document.createElement("span");
+      badge.className = "theme-card-badge";
+      badge.textContent = label;
+      caps.appendChild(badge);
+    }
+    card.appendChild(caps);
+  }
 
   const canDelete = !theme.builtin && !theme.active;
   if (theme.active || canDelete) {

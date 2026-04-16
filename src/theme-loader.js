@@ -1375,6 +1375,7 @@ function _scanMetadata(dir, builtin, themes, seen) {
   try {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (!entry.isDirectory() || seen.has(entry.name)) continue;
+      if (builtin && entry.name === "template") continue;
       const jsonPath = path.join(dir, entry.name, "theme.json");
       if (!fs.existsSync(jsonPath)) continue;
       let raw;

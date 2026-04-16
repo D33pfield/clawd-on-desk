@@ -118,12 +118,15 @@ Some agents have feature gaps (no permission bubble, polling latency, no termina
 Clawd supports custom themes — replace the default crab with your own character and animations.
 
 **Quick start:**
-1. Copy `themes/template/` to your themes directory:
-   - Windows: `%APPDATA%/clawd-on-desk/themes/my-theme/`
-   - macOS: `~/Library/Application Support/clawd-on-desk/themes/my-theme/`
-   - Linux: `~/.config/clawd-on-desk/themes/my-theme/`
-2. Edit `theme.json` and create your assets (SVG, GIF, APNG, or WebP)
-3. Right-click Clawd → Theme → select your theme
+1. Scaffold a theme:
+   ```bash
+   node scripts/create-theme.js my-theme
+   # or
+   npm run create-theme -- my-theme
+   ```
+   No argument also works: it creates the next available `my-theme` scaffold in your user themes directory.
+2. Edit `theme.json` and create your assets (SVG, GIF, APNG, WebP, PNG, JPG, or JPEG)
+3. Restart Clawd or open `Settings…` → `Theme` → select your theme
 
 **Minimum viable theme:** 1 SVG (idle with eye tracking) + 7 GIF/APNG files (thinking, working, error, happy, notification, sleeping, waking). Eye tracking can be disabled to use any format for all states.
 
@@ -131,6 +134,8 @@ Validate your theme before distributing:
 ```bash
 node scripts/validate-theme.js path/to/your-theme
 ```
+
+Theme cards in `Settings…` → `Theme` now expose capability badges such as `Tracked idle`, `Static theme`, `Mini`, `Direct sleep`, and `No reactions`, so users can tell what a theme supports before switching.
 
 See [docs/guide-theme-creation.md](docs/guide-theme-creation.md) for the full creation guide with tiered paths (beginner → advanced), `theme.json` field reference, and asset guidelines.
 
