@@ -4,6 +4,8 @@
 <h1 align="center">Clawd on Desk</h1>
 <p align="center">
   <a href="README.zh-CN.md">中文版</a>
+  ·
+  <a href="README.ko-KR.md">한국어</a>
 </p>
 <p align="center">
   <a href="https://github.com/hesreallyhim/awesome-claude-code"><img src="https://awesome.re/mentioned-badge-flat.svg" alt="Mentioned in Awesome Claude Code"></a>
