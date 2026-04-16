@@ -190,7 +190,7 @@ const updateRegistry = {
   positionSaved: requireBoolean("positionSaved"),
 
   // ── Pure data prefs (function-form: validator only) ──
-  lang: requireEnum("lang", ["en", "zh"]),
+  lang: requireEnum("lang", ["en", "zh", "ko"]),
   soundMuted: requireBoolean("soundMuted"),
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
   hideBubbles: requireBoolean("hideBubbles"),

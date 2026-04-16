@@ -1275,6 +1275,12 @@ const REMOVE_THEME_DIALOG_STRINGS = {
     message: (name) => `确认删除主题 "${name}"？`,
     detail: "此操作不可撤销。主题的所有文件将从磁盘移除。",
   },
+  ko: {
+    delete: "삭제",
+    cancel: "취소",
+    message: (name) => `테마 "${name}"을(를) 삭제할까요?`,
+    detail: "이 작업은 되돌릴 수 없습니다. 이 테마의 모든 파일이 디스크에서 제거됩니다.",
+  },
 };
 ipcMain.handle("settings:confirm-remove-theme", async (event, themeId) => {
   if (typeof themeId !== "string" || !themeId) return { confirmed: false };
@@ -1319,6 +1325,16 @@ const CLAUDE_HOOKS_DIALOG_STRINGS = {
     disconnectTitle: "断开 Claude hooks？",
     disconnectDetail: "这会从 `~/.claude/settings.json` 移除 Clawd 管理的 Claude hooks，并关闭自动管理。`随 Claude Code 启动` 的偏好会保留，方便以后重新启用。",
     disconnect: "断开 hooks",
+  },
+  ko: {
+    disableTitle: "Claude hooks 자동 관리를 끌까요?",
+    disableDetail: "지금 제거하지 않으면 `~/.claude/settings.json`에 설치된 Claude hooks는 그대로 유지됩니다.",
+    disableOnly: "자동 관리만 끄기",
+    disableAndRemove: "끄고 설치된 hooks 제거",
+    cancel: "취소",
+    disconnectTitle: "Claude hooks 연결을 해제할까요?",
+    disconnectDetail: "`~/.claude/settings.json`에서 Clawd가 관리하는 Claude hooks를 제거하고 자동 관리를 끕니다. `Claude Code와 함께 시작` 설정은 나중에 다시 켤 수 있도록 유지됩니다.",
+    disconnect: "hooks 연결 해제",
   },
 };
 function _getSettingsDialogParent(event) {
