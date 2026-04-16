@@ -28,8 +28,8 @@ Create your own Clawd desktop pet theme with custom characters and animations.
 my-theme/
   theme.json              ← Configuration (required)
   assets/
-    idle-follow.svg       ← Idle animation with eye tracking (SVG required if eyeTracking enabled)
-    thinking.gif          ← Any format: SVG, GIF, APNG, WebP
+    idle-follow.svg       ← Idle animation with eye tracking (SVG required only if idle is in eyeTracking.states)
+    thinking.gif          ← Any format: SVG, GIF, APNG, WebP, PNG, JPG, JPEG
     typing.gif
     error.gif
     happy.gif
@@ -43,12 +43,14 @@ my-theme/
 
 ### Beginner: Swap Art + GIF Animations (Hours)
 
-**Minimum viable theme: 1 SVG + 7 GIF/APNG files.**
+**Minimum viable theme depends on your capability switches.**
 
 1. Start from `themes/template/`
-2. Edit `assets/idle-follow.svg` — replace the placeholder shapes inside `#body-js` and `#eyes-js` with your character
+2. Choose whether you want eye tracking:
+   - `eyeTracking.enabled: true` → your `idle` asset must be SVG and include `#eyes-js`
+   - `eyeTracking.enabled: false` → idle can also be GIF / APNG / WebP / PNG / JPG / JPEG
 3. Create simple frame animations (4-12 frames) for other states using [Piskel](https://www.piskelapp.com/) (free, browser-based) or [Aseprite](https://www.aseprite.org/) (paid, pixel art pro tool)
-4. Export as APNG (best quality) or GIF (pixel art works fine)
+4. Export as APNG / WebP / GIF, or use single-frame PNG / JPG / JPEG for static poses
 5. Update `theme.json` to point to your files
 
 **Recommended workflow for character art:**
@@ -87,29 +89,33 @@ Skip the template entirely. Author all animations as SVG with CSS `@keyframes`:
 
 ### Required States
 
-Every theme must define these states (each is an array of filenames):
+Current validator/runtime baseline requires these states (each is an array of filenames):
 
 | State | When | Notes |
 |-------|------|-------|
-| `idle` | No agent activity | Must be SVG if eye tracking enabled |
+| `idle` | No agent activity | Must be SVG only when idle is listed in `eyeTracking.states` |
 | `thinking` | User submitted prompt | |
-| `working` | Agent using tools | Default for 1-session working |
+| `working` | Agent using tools | Base working file for single-session fallback |
 | `sleeping` | After sleep sequence | |
-| `waking` | Mouse wakes from sleep | |
+| `waking` | Mouse wakes from sleep | PR1 does not add `sleepSequence.mode` yet, so keep this state |
 
-### Optional States
+### Additional Common States
 
-| State | When | Fallback if omitted |
-|-------|------|---------------------|
-| `yawning` | Sleep sequence start | Skipped |
-| `dozing` | After yawning | Skipped |
-| `collapsing` | Falling asleep | Skipped |
-| `error` | Tool failure | Uses `working` |
-| `attention` | Task completed | Uses `idle` |
-| `notification` | Permission / alert | Uses `idle` |
-| `sweeping` | Context compaction | Uses `working` |
-| `carrying` | Worktree creation | Uses `working` |
-| `juggling` | Subagent active | Uses `working` |
+These are common optional states you can add when you want distinct visuals for those events:
+
+| State | When | Notes |
+|-------|------|-------|
+| `yawning` | Sleep sequence start | |
+| `dozing` | After yawning | Use SVG only if `dozing` is listed in `eyeTracking.states` |
+| `collapsing` | Falling asleep | |
+| `error` | Tool failure | |
+| `attention` | Task completed | |
+| `notification` | Permission / alert | |
+| `sweeping` | Context compaction | |
+| `carrying` | Worktree creation | |
+| `juggling` | Subagent active | Declare this and/or `jugglingTiers` if you want a distinct juggling visual |
+
+Current schema does **not** support author-defined `fallbackTo` yet. PR1 only calibrates the existing capability switches; semantic fallback chains land in a later PR.
 
 ### Eye Tracking
 
@@ -132,7 +138,23 @@ Eye tracking makes the character follow the user's cursor. It requires the idle 
 - `#body-js` — receives a smaller translate for subtle body lean (optional)
 - `#shadow-js` — receives translate + scaleX for shadow stretch toward cursor (optional)
 
-**To disable eye tracking:** set `"enabled": false`. All states can then use any format (GIF, APNG, WebP). Your idle animation will just loop without cursor following.
+**To disable eye tracking:** set `"enabled": false`. All states can then use any format (SVG, GIF, APNG, WebP, PNG, JPG, JPEG). Your idle animation will just loop without cursor following.
+
+### Capability Switches
+
+PR1 keeps the existing schema fields as the only runtime truth. These fields already act as the theme's capability switches:
+
+| Field | Current meaning |
+|-------|-----------------|
+| `eyeTracking.enabled` | Global eye-tracking on/off switch. When `false`, states do not need SVG just for cursor tracking. |
+| `eyeTracking.states` | Per-state whitelist for eye tracking. Only listed states must be SVG and will use the object channel. |
+| `miniMode.supported` | Enables mini mode for this theme. When `false`, Mini Mode is gated off in the menu/tray and edge-snap path. |
+| `idleAnimations` | Optional idle random pool. Omit or leave empty to keep idle on `states.idle[0]`. |
+| `reactions` | Optional click/drag reaction block. Omit it to disable click and drag reactions entirely. |
+| `workingTiers` | Optional multi-session working overrides. Omit to fall back to `states.working[0]`. |
+| `jugglingTiers` | Optional subagent juggling overrides. Omit to fall back to `states.juggling[0]` if you provide that state. |
+
+The loader also derives read-only metadata such as `idleMode` (`tracked` / `animated` / `static`) from these fields, but that metadata is not a second schema authority.
 
 ### Working Tiers
 
@@ -165,7 +187,7 @@ Click and drag response animations:
 - `annoyed` — 50% chance on double-click instead of directional
 - `double` — 4-click rapid reaction, `files` array for random selection
 
-Omit the entire `reactions` block to disable all click reactions.
+Omit the entire `reactions` block to disable all click and drag reactions.
 
 ### Idle Animations
 
@@ -177,6 +199,8 @@ Random animations played during idle periods:
   { "file": "idle-reading.gif", "duration": 14000 }
 ]
 ```
+
+Omit `idleAnimations` or use an empty array if you want idle to stay on `states.idle[0]` with no random pool.
 
 ### Hit Boxes
 
@@ -213,7 +237,7 @@ Mini mode hides the character at the screen edge. Set `"supported": false` or om
 }
 ```
 
-Mini mode requires 8 additional animations. `mini-idle` should be SVG if eye tracking is enabled for it.
+If `miniMode.supported` is `true`, the validator expects all 8 mini states shown above. `mini-idle` only needs to be SVG when `mini-idle` is listed in `eyeTracking.states`.
 
 ### Timings
 
@@ -283,6 +307,8 @@ Mini mode still uses the existing `objectScale` + per-file offsets, so this is m
 | APNG | Frame animations | No | Best quality, alpha channel |
 | GIF | Pixel art animations | No | Binary transparency only |
 | WebP | Photo-style animations | No | Good compression |
+| PNG | Static poses | No | Good for single-frame non-tracked states |
+| JPG / JPEG | Static poses without transparency | No | Fine for opaque or composited artwork |
 
 ### Canvas Size
 
@@ -326,6 +352,7 @@ The validator checks:
 - `theme.json` schema (required fields, types, schemaVersion)
 - Asset file existence (all referenced files)
 - Eye tracking SVG structure (required IDs)
+- Mini mode completeness when `miniMode.supported=true`
 - Hit box configuration
 
 ## Debugging Tips

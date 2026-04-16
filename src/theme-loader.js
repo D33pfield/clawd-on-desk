@@ -57,6 +57,16 @@ const DEFAULT_EYE_TRACKING = {
 };
 
 const REQUIRED_STATES = ["idle", "working", "thinking", "sleeping", "waking"];
+const MINI_REQUIRED_STATES = [
+  "mini-idle",
+  "mini-enter",
+  "mini-enter-sleep",
+  "mini-crabwalk",
+  "mini-peek",
+  "mini-alert",
+  "mini-happy",
+  "mini-sleep",
+];
 
 // ── Variant support (Phase 3b-swap) ──
 // Allow-list of fields a variant may override. Anything else → ignored + warned
@@ -205,6 +215,7 @@ function loadTheme(themeId, opts = {}) {
   theme._variantId = resolvedId;
   theme._userOverrides = userOverrides;
   theme._bindingBase = _buildBaseBindingMetadata(afterVariant);
+  theme._capabilities = _buildCapabilities(theme);
 
   // For external themes: sanitize SVGs + resolve asset paths
   if (!isBuiltin) {
@@ -567,6 +578,12 @@ function validateTheme(cfg) {
     }
   }
 
+  if (cfg.eyeTracking && cfg.eyeTracking.enabled) {
+    if (!Array.isArray(cfg.eyeTracking.states) || cfg.eyeTracking.states.length === 0) {
+      errors.push("eyeTracking.states must be a non-empty array when eyeTracking.enabled=true");
+    }
+  }
+
   // eyeTracking.states listed states must use .svg if enabled
   if (cfg.eyeTracking && cfg.eyeTracking.enabled && cfg.states) {
     for (const stateName of (cfg.eyeTracking.states || [])) {
@@ -578,6 +595,15 @@ function validateTheme(cfg) {
             errors.push(`eyeTracking state "${stateName}" file "${f}" must be .svg`);
           }
         }
+      }
+    }
+  }
+
+  if (_isMiniSupported(cfg)) {
+    for (const stateName of MINI_REQUIRED_STATES) {
+      const files = cfg.miniMode.states && cfg.miniMode.states[stateName];
+      if (!Array.isArray(files) || files.length === 0) {
+        errors.push(`miniMode.supported=true requires miniMode.states.${stateName} to be a non-empty array`);
       }
     }
   }
@@ -596,6 +622,56 @@ function validateTheme(cfg) {
 
 function _isPlainObject(v) {
   return v && typeof v === "object" && !Array.isArray(v);
+}
+
+function _hasNonEmptyArray(value) {
+  return Array.isArray(value) && value.length > 0;
+}
+
+function _hasReactionBindings(reactions) {
+  if (!_isPlainObject(reactions)) return false;
+  return Object.values(reactions).some((entry) =>
+    _isPlainObject(entry)
+    && (
+      (typeof entry.file === "string" && entry.file.length > 0)
+      || (Array.isArray(entry.files) && entry.files.some((file) => typeof file === "string" && file.length > 0))
+    )
+  );
+}
+
+function _isMiniSupported(cfg) {
+  return !!(_isPlainObject(cfg && cfg.miniMode) && cfg.miniMode.supported !== false);
+}
+
+function _supportsIdleTracking(cfg) {
+  return !!(
+    _isPlainObject(cfg && cfg.eyeTracking)
+    && cfg.eyeTracking.enabled
+    && Array.isArray(cfg.eyeTracking.states)
+    && cfg.eyeTracking.states.includes("idle")
+  );
+}
+
+function _deriveIdleMode(cfg) {
+  if (_supportsIdleTracking(cfg)) return "tracked";
+  if (_hasNonEmptyArray(cfg && cfg.idleAnimations)) return "animated";
+  return "static";
+}
+
+function _buildCapabilities(cfg) {
+  return {
+    eyeTracking: !!(
+      _isPlainObject(cfg && cfg.eyeTracking)
+      && cfg.eyeTracking.enabled
+      && _hasNonEmptyArray(cfg.eyeTracking.states)
+    ),
+    miniMode: _isMiniSupported(cfg),
+    idleAnimations: _hasNonEmptyArray(cfg && cfg.idleAnimations),
+    reactions: _hasReactionBindings(cfg && cfg.reactions),
+    workingTiers: _hasNonEmptyArray(cfg && cfg.workingTiers),
+    jugglingTiers: _hasNonEmptyArray(cfg && cfg.jugglingTiers),
+    idleMode: _deriveIdleMode(cfg),
+  };
 }
 
 /**
@@ -1054,6 +1130,7 @@ function getThemeMetadata(themeId) {
     previewContentRatio: _computePreviewContentRatio(raw),
     previewContentOffsetPct: _computePreviewContentOffsetPct(raw),
     variants: _buildVariantMetadata(raw, themeDir, isBuiltin),
+    capabilities: _buildCapabilities(raw),
   };
 }
 
@@ -1120,6 +1197,7 @@ function _scanMetadata(dir, builtin, themes, seen) {
         previewContentRatio: _computePreviewContentRatio(raw),
         previewContentOffsetPct: _computePreviewContentOffsetPct(raw),
         variants: _buildVariantMetadata(raw, themeDir, builtin),
+        capabilities: _buildCapabilities(raw),
       });
       seen.add(entry.name);
     }

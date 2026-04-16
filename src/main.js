@@ -852,6 +852,7 @@ const _menuCtx = {
   reapplyMacVisibility,
   discoverThemes: () => themeLoader.discoverThemes(),
   getActiveThemeId: () => activeTheme ? activeTheme._id : "clawd",
+  getActiveThemeCapabilities: () => activeTheme ? activeTheme._capabilities : null,
   ensureUserThemesDir: () => themeLoader.ensureUserThemesDir(),
   openSettingsWindow: () => openSettingsWindow(),
 };
@@ -945,7 +946,7 @@ function wireSettingsSubscribers() {
 }
 wireSettingsSubscribers();
 
-const ANIMATION_OVERRIDE_ASSET_EXTS = new Set([".svg", ".gif", ".apng", ".png", ".webp"]);
+const ANIMATION_OVERRIDE_ASSET_EXTS = new Set([".svg", ".gif", ".apng", ".png", ".webp", ".jpg", ".jpeg"]);
 let animationOverridePreviewTimer = null;
 
 function _buildFileUrl(absPath) {
@@ -1175,6 +1176,7 @@ function _buildAnimationOverrideData() {
       name: meta.name || activeTheme._id,
       variantId: activeTheme._variantId || "default",
       assetsDir: _resolveAnimationAssetsDir(activeTheme),
+      capabilities: activeTheme._capabilities || meta.capabilities || null,
     },
     assets: _listAnimationOverrideAssets(activeTheme),
     cards: _buildAnimationOverrideCards(),

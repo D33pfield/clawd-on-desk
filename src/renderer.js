@@ -20,7 +20,7 @@ function initWithConfig(cfg) {
   _shadowStretch = (tc.eyeTracking && tc.eyeTracking.shadowStretch) || 0.15;
   _shadowShift = (tc.eyeTracking && tc.eyeTracking.shadowShift) || 0.3;
   _eyeTrackingStates = (tc.eyeTrackingStates) || ["idle", "dozing", "mini-idle"];
-  _dragSvg = tc.dragSvg || "clawd-react-drag.svg";
+  _dragSvg = tc.dragSvg || null;
   _idleFollowSvg = tc.idleFollowSvg || "clawd-idle-follow.svg";
   _glyphFlipDefs = tc.glyphFlips || { "pixel-z": 4, "pixel-z-small": 3 };
 
@@ -297,6 +297,7 @@ function cancelReaction() {
 function startDragReaction() {
   if (isDragReacting) return;
   if (dndEnabled) return;
+  if (!_dragSvg) return;
 
   if (isReacting) {
     if (reactTimer) { clearTimeout(reactTimer); reactTimer = null; }

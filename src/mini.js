@@ -28,6 +28,10 @@ function refreshTheme() {
   MINI_OFFSET_RATIO = ctx.theme.miniMode.offsetRatio;
 }
 
+function themeSupportsMini() {
+  return !!(ctx.theme && ctx.theme.miniMode && ctx.theme.miniMode.supported !== false);
+}
+
 // ── Window animation ──
 function animateWindowX(targetX, durationMs) {
   if (peekAnimTimer) { clearTimeout(peekAnimTimer); peekAnimTimer = null; }
@@ -126,6 +130,7 @@ function _getSize() {
 }
 
 function checkMiniModeSnap() {
+  if (!themeSupportsMini()) return;
   if (miniMode) return;
   const bounds = ctx.win.getBounds();
   const size = _getSize();
@@ -153,6 +158,7 @@ function checkMiniModeSnap() {
 }
 
 function enterMiniMode(wa, viaMenu, edge) {
+  if (!themeSupportsMini()) return;
   if (miniMode && !viaMenu) return;
   const bounds = ctx.win.getBounds();
   if (!viaMenu) {
@@ -255,6 +261,7 @@ function exitMiniMode() {
 }
 
 function enterMiniViaMenu() {
+  if (!themeSupportsMini()) return;
   const bounds = ctx.win.getBounds();
   const size = _getSize();
   const wa = ctx.getNearestWorkArea(bounds.x + size.width / 2, bounds.y + size.height / 2);

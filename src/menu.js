@@ -30,6 +30,25 @@ module.exports = function initMenu(ctx) {
   // ── Translation helper (bound to ctx.lang via the shared i18n module) ──
   const t = createTranslator(() => ctx.lang);
 
+  function isMiniSupported() {
+    const caps = typeof ctx.getActiveThemeCapabilities === "function"
+      ? ctx.getActiveThemeCapabilities()
+      : null;
+    if (caps && typeof caps.miniMode === "boolean") return caps.miniMode;
+    return true;
+  }
+
+  function buildMiniModeMenuItem() {
+    const miniSupported = isMiniSupported();
+    const inMiniMode = ctx.getMiniMode();
+    return {
+      label: inMiniMode ? t("exitMiniMode") : t("miniMode"),
+      enabled: !ctx.getMiniTransitioning()
+        && (inMiniMode || (miniSupported && !(ctx.doNotDisturb && !inMiniMode))),
+      click: () => inMiniMode ? ctx.exitMiniMode() : ctx.enterMiniViaMenu(),
+    };
+  }
+
   // ── Theme submenu builder ──
   function buildThemeSubmenu() {
     const themes = ctx.discoverThemes ? ctx.discoverThemes() : [];
@@ -107,6 +126,8 @@ module.exports = function initMenu(ctx) {
         label: ctx.doNotDisturb ? t("wake") : t("sleep"),
         click: () => ctx.doNotDisturb ? ctx.disableDoNotDisturb() : ctx.enableDoNotDisturb(),
       },
+      buildMiniModeMenuItem(),
+      { type: "separator" },
       // The setters route through ctx.settings.applyUpdate(); main.js's
       // settings subscriber handles reposition / menu rebuild / persist.
       {
@@ -420,9 +441,7 @@ module.exports = function initMenu(ctx) {
       },
       { type: "separator" },
       {
-        label: ctx.getMiniMode() ? t("exitMiniMode") : t("miniMode"),
-        enabled: !ctx.getMiniTransitioning() && !(ctx.doNotDisturb && !ctx.getMiniMode()),
-        click: () => ctx.getMiniMode() ? ctx.exitMiniMode() : ctx.enterMiniViaMenu(),
+        ...buildMiniModeMenuItem(),
       },
       { type: "separator" },
       {

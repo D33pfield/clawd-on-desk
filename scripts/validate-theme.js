@@ -29,6 +29,16 @@ const D = "\x1b[0m";   // reset
 const PASS = `${G}\u2713${D}`;
 const FAIL = `${R}\u2717${D}`;
 const WARN = `${Y}!${D}`;
+const MINI_REQUIRED_STATES = [
+  "mini-idle",
+  "mini-enter",
+  "mini-enter-sleep",
+  "mini-crabwalk",
+  "mini-peek",
+  "mini-alert",
+  "mini-happy",
+  "mini-sleep",
+];
 
 // ── Main ──
 
@@ -90,6 +100,47 @@ function warn(condition, msg) {
     console.log(`  ${WARN} ${msg}`);
     warnings++;
   }
+}
+
+function isPlainObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasNonEmptyArray(value) {
+  return Array.isArray(value) && value.length > 0;
+}
+
+function hasReactionBindings(reactions) {
+  if (!isPlainObject(reactions)) return false;
+  return Object.values(reactions).some((entry) =>
+    isPlainObject(entry)
+    && (
+      (typeof entry.file === "string" && entry.file.length > 0)
+      || (Array.isArray(entry.files) && entry.files.some((file) => typeof file === "string" && file.length > 0))
+    )
+  );
+}
+
+function supportsIdleTracking(cfg) {
+  return !!(
+    isPlainObject(cfg && cfg.eyeTracking)
+    && cfg.eyeTracking.enabled
+    && Array.isArray(cfg.eyeTracking.states)
+    && cfg.eyeTracking.states.includes("idle")
+  );
+}
+
+function deriveIdleMode(cfg) {
+  if (supportsIdleTracking(cfg)) return "tracked";
+  if (hasNonEmptyArray(cfg && cfg.idleAnimations)) return "animated";
+  return "static";
+}
+
+function svgHasClass(content, className) {
+  if (typeof content !== "string" || typeof className !== "string" || !className) return false;
+  const escaped = className.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const classAttrRe = new RegExp(`class=["'][^"']*\\b${escaped}\\b[^"']*["']`);
+  return classAttrRe.test(content);
 }
 
 check(raw.schemaVersion === 1, `schemaVersion = 1 (got: ${raw.schemaVersion})`);
@@ -239,6 +290,7 @@ if (raw.eyeTracking && raw.eyeTracking.enabled && assetsDirExists) {
   const ids = raw.eyeTracking.ids || { eyes: "eyes-js", body: "body-js", shadow: "shadow-js" };
   const eyesId = ids.eyes;
   const optionalIds = [ids.body, ids.shadow].filter(Boolean);
+  const trackingLayers = isPlainObject(raw.eyeTracking.trackingLayers) ? raw.eyeTracking.trackingLayers : null;
 
   // Check each eye tracking SVG
   const eyeStates = raw.eyeTracking.states || [];
@@ -252,22 +304,45 @@ if (raw.eyeTracking && raw.eyeTracking.enabled && assetsDirExists) {
 
       try {
         const content = fs.readFileSync(svgPath, "utf8");
-        // Eyes ID is required for eye tracking to work
-        const hasEyes = content.includes(`id="${eyesId}"`);
-        // Doze states may use dozeEyes instead
-        const dozeId = ids.dozeEyes;
-        const hasDoze = dozeId && content.includes(`id="${dozeId}"`);
-        if (hasEyes) {
-          console.log(`  ${PASS} ${file}: contains id="${eyesId}"`);
-        } else if (hasDoze) {
-          console.log(`  ${PASS} ${file}: contains id="${dozeId}" (doze eyes)`);
+        if (trackingLayers) {
+          let matchedAnyLayer = false;
+          for (const [layerName, layerCfg] of Object.entries(trackingLayers)) {
+            const layerIds = Array.isArray(layerCfg && layerCfg.ids) ? layerCfg.ids : [];
+            const layerClasses = Array.isArray(layerCfg && layerCfg.classes) ? layerCfg.classes : [];
+            if (layerIds.length === 0 && layerClasses.length === 0) {
+              warn(false, `${file}: trackingLayers.${layerName} has no ids/classes`);
+              continue;
+            }
+            let layerMatched = false;
+            for (const id of layerIds) {
+              if (content.includes(`id="${id}"`)) layerMatched = true;
+              else warn(false, `${file}: missing trackingLayers.${layerName}.ids entry "${id}"`);
+            }
+            for (const className of layerClasses) {
+              if (svgHasClass(content, className)) layerMatched = true;
+              else warn(false, `${file}: missing trackingLayers.${layerName}.classes entry "${className}"`);
+            }
+            if (layerMatched) matchedAnyLayer = true;
+          }
+          check(matchedAnyLayer, `${file}: trackingLayers matched at least one configured element/class`);
         } else {
-          check(false, `${file}: missing id="${eyesId}" (required for eye tracking)`);
-        }
-        // Body and shadow are optional (renderer null-checks them)
-        for (const id of optionalIds) {
-          if (!content.includes(`id="${id}"`)) {
-            warn(false, `${file}: missing id="${id}" (optional, enables body lean/shadow stretch)`);
+          // Eyes ID is required for legacy eye tracking to work
+          const hasEyes = content.includes(`id="${eyesId}"`);
+          // Doze states may use dozeEyes instead
+          const dozeId = ids.dozeEyes;
+          const hasDoze = dozeId && content.includes(`id="${dozeId}"`);
+          if (hasEyes) {
+            console.log(`  ${PASS} ${file}: contains id="${eyesId}"`);
+          } else if (hasDoze) {
+            console.log(`  ${PASS} ${file}: contains id="${dozeId}" (doze eyes)`);
+          } else {
+            check(false, `${file}: missing id="${eyesId}" (required for eye tracking)`);
+          }
+          // Body and shadow are optional (renderer null-checks them)
+          for (const id of optionalIds) {
+            if (!content.includes(`id="${id}"`)) {
+              warn(false, `${file}: missing id="${id}" (optional, enables body lean/shadow stretch)`);
+            }
           }
         }
       } catch (e) {
@@ -302,12 +377,12 @@ if (raw.workingTiers && raw.workingTiers.length > 1) {
 }
 
 // Mini mode
-if (raw.miniMode && raw.miniMode.supported) {
-  const miniStates = ["mini-idle", "mini-enter", "mini-peek", "mini-sleep"];
-  for (const s of miniStates) {
-    if (!raw.miniMode.states || !raw.miniMode.states[s]) {
-      warn(false, `miniMode.supported=true but missing miniMode.states.${s}`);
-    }
+if (isPlainObject(raw.miniMode) && raw.miniMode.supported !== false) {
+  for (const s of MINI_REQUIRED_STATES) {
+    check(
+      raw.miniMode.states && Array.isArray(raw.miniMode.states[s]) && raw.miniMode.states[s].length > 0,
+      `miniMode.supported=true requires miniMode.states.${s}`
+    );
   }
 }
 
@@ -491,6 +566,24 @@ if (raw.variants !== undefined) {
       console.log(`    ${PASS} variant "${variantId}" structurally valid (${variantAssets.size} asset ref${variantAssets.size === 1 ? "" : "s"})`);
     }
   }
+}
+
+console.log(`\n${C}[Capabilities]${D}`);
+const capabilities = {
+  eyeTracking: !!(
+    isPlainObject(raw.eyeTracking)
+    && raw.eyeTracking.enabled
+    && hasNonEmptyArray(raw.eyeTracking.states)
+  ),
+  miniMode: !!(isPlainObject(raw.miniMode) && raw.miniMode.supported !== false),
+  idleAnimations: hasNonEmptyArray(raw.idleAnimations),
+  reactions: hasReactionBindings(raw.reactions),
+  workingTiers: hasNonEmptyArray(raw.workingTiers),
+  jugglingTiers: hasNonEmptyArray(raw.jugglingTiers),
+  idleMode: deriveIdleMode(raw),
+};
+for (const [key, value] of Object.entries(capabilities)) {
+  console.log(`  ${PASS} ${key}: ${value}`);
 }
 
 // ── Summary ──

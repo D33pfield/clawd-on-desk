@@ -54,6 +54,23 @@ function validThemeJson(overrides = {}) {
   };
 }
 
+function fullMiniMode(overrides = {}) {
+  return {
+    supported: true,
+    states: {
+      "mini-idle": ["mini-idle.svg"],
+      "mini-enter": ["mini-enter.svg"],
+      "mini-enter-sleep": ["mini-enter-sleep.svg"],
+      "mini-crabwalk": ["mini-crabwalk.svg"],
+      "mini-peek": ["mini-peek.svg"],
+      "mini-alert": ["mini-alert.svg"],
+      "mini-happy": ["mini-happy.svg"],
+      "mini-sleep": ["mini-sleep.svg"],
+    },
+    ...overrides,
+  };
+}
+
 describe("theme-loader strict mode", () => {
   let fixture;
   before(() => {
@@ -141,6 +158,93 @@ describe("theme-loader getThemeMetadata", () => {
     // (Exercising the positive path requires writing assets; we trust
     // path.basename() + fs.existsSync as leaf pieces.)
     assert.strictEqual(meta.previewFileUrl, null);
+  });
+});
+
+describe("theme-loader capability metadata", () => {
+  let fixture;
+  before(() => {
+    fixture = makeFixture([
+      { id: "clawd", builtin: true, json: validThemeJson({ name: "Clawd" }) },
+      {
+        id: "capTheme",
+        builtin: true,
+        json: validThemeJson({
+          name: "Capabilities",
+          eyeTracking: { enabled: true, states: ["idle"] },
+          workingTiers: [{ minSessions: 1, file: "working-tier.svg" }],
+          jugglingTiers: [{ minSessions: 1, file: "juggling-tier.svg" }],
+          idleAnimations: [{ file: "idle-loop.png", duration: 1200 }],
+          reactions: { drag: { file: "drag.png" } },
+          miniMode: { supported: false },
+        }),
+      },
+      {
+        id: "implicitMini",
+        builtin: true,
+        json: validThemeJson({
+          name: "Implicit Mini",
+          miniMode: fullMiniMode({ supported: undefined }),
+        }),
+      },
+      {
+        id: "badMini",
+        builtin: true,
+        json: validThemeJson({
+          name: "Bad Mini",
+          miniMode: {
+            supported: true,
+            states: {
+              "mini-idle": ["mini-idle.svg"],
+              "mini-enter": ["mini-enter.svg"],
+            },
+          },
+        }),
+      },
+    ]);
+  });
+  after(() => fixture && fixture.cleanup());
+
+  it("derives _capabilities from the current schema fields", () => {
+    const theme = themeLoader.loadTheme("capTheme", { strict: true });
+    assert.deepStrictEqual(theme._capabilities, {
+      eyeTracking: true,
+      miniMode: false,
+      idleAnimations: true,
+      reactions: true,
+      workingTiers: true,
+      jugglingTiers: true,
+      idleMode: "tracked",
+    });
+  });
+
+  it("includes capabilities in theme metadata scans", () => {
+    const meta = themeLoader.getThemeMetadata("capTheme");
+    assert.deepStrictEqual(meta.capabilities, {
+      eyeTracking: true,
+      miniMode: false,
+      idleAnimations: true,
+      reactions: true,
+      workingTiers: true,
+      jugglingTiers: true,
+      idleMode: "tracked",
+    });
+
+    const listed = themeLoader.listThemesWithMetadata().find((theme) => theme.id === "capTheme");
+    assert.ok(listed, "capTheme should appear in metadata list");
+    assert.deepStrictEqual(listed.capabilities, meta.capabilities);
+  });
+
+  it("treats a miniMode block as supported unless supported=false", () => {
+    const theme = themeLoader.loadTheme("implicitMini", { strict: true });
+    assert.strictEqual(theme._capabilities.miniMode, true);
+  });
+
+  it("strict load rejects mini themes that do not define all 8 mini states", () => {
+    assert.throws(
+      () => themeLoader.loadTheme("badMini", { strict: true }),
+      /miniMode\.supported=true requires miniMode\.states\.mini-enter-sleep/
+    );
   });
 });
 
