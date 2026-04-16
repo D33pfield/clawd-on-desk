@@ -18,6 +18,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { isPlainObject } = require("./theme-loader");
 
 const CURRENT_VERSION = 1;
 
@@ -192,10 +193,6 @@ function normalizeAgents(value, defaultsValue) {
     if (touched) out[id] = merged;
   }
   return out;
-}
-
-function isPlainObject(value) {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function normalizeTransitionOverride(value) {

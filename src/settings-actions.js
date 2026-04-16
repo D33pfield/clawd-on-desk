@@ -49,6 +49,7 @@
 // keep validate side-effect-free.
 
 const { CURRENT_VERSION, AGENT_FLAGS } = require("./prefs");
+const { isPlainObject } = require("./theme-loader");
 
 // ── Validator helpers ──
 
@@ -98,10 +99,6 @@ function requirePlainObject(key) {
     }
     return { status: "ok" };
   };
-}
-
-function isPlainObject(value) {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 const THEME_OVERRIDE_RESERVED_KEYS = new Set(["states", "tiers", "timings", "idleAnimations"]);
