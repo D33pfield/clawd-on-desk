@@ -29,6 +29,7 @@ const _kill = ctx.processKill || process.kill.bind(process);
 let theme = null;
 let SVG_IDLE_FOLLOW = null;
 let STATE_SVGS = {};
+let STATE_BINDINGS = {};
 let MIN_DISPLAY_MS = {};
 let AUTO_RETURN_MS = {};
 let DEEP_SLEEP_TIMEOUT = 0;
@@ -36,7 +37,9 @@ let YAWN_DURATION = 0;
 let WAKE_DURATION = 0;
 let DND_SKIP_YAWN = false;
 let COLLAPSE_DURATION = 0;
+let SLEEP_MODE = "full";
 const SLEEP_SEQUENCE = new Set(["yawning", "dozing", "collapsing", "sleeping", "waking"]);
+const VISUAL_FALLBACK_STATES = new Set(["error", "attention", "notification", "sweeping", "carrying", "sleeping"]);
 
 const STATE_PRIORITY = {
   error: 8, notification: 7, sweeping: 6, attention: 5,
@@ -97,10 +100,43 @@ const STATE_LABEL_KEY = {
   idle: "sessionIdle", sleeping: "sessionSleeping",
 };
 
+function buildStateBindings(nextTheme) {
+  const bindings = {};
+  const sourceBindings = nextTheme && nextTheme._stateBindings;
+  if (sourceBindings && typeof sourceBindings === "object") {
+    for (const [stateKey, entry] of Object.entries(sourceBindings)) {
+      bindings[stateKey] = {
+        files: Array.isArray(entry && entry.files) ? [...entry.files] : [],
+        fallbackTo: typeof (entry && entry.fallbackTo) === "string" && entry.fallbackTo ? entry.fallbackTo : null,
+      };
+    }
+  }
+  if (nextTheme && nextTheme.states) {
+    for (const [stateKey, files] of Object.entries(nextTheme.states)) {
+      const normalizedFiles = Array.isArray(files) ? [...files] : [];
+      if (!bindings[stateKey]) {
+        bindings[stateKey] = { files: normalizedFiles, fallbackTo: null };
+      } else if (bindings[stateKey].files.length === 0) {
+        bindings[stateKey].files = normalizedFiles;
+      }
+    }
+  }
+  if (nextTheme && nextTheme.miniMode && nextTheme.miniMode.states) {
+    for (const [stateKey, files] of Object.entries(nextTheme.miniMode.states)) {
+      bindings[stateKey] = {
+        files: Array.isArray(files) ? [...files] : [],
+        fallbackTo: null,
+      };
+    }
+  }
+  return bindings;
+}
+
 function refreshTheme() {
   theme = ctx.theme;
   SVG_IDLE_FOLLOW = theme.states.idle[0];
   STATE_SVGS = { ...theme.states };
+  STATE_BINDINGS = buildStateBindings(theme);
   if (theme.miniMode && theme.miniMode.states) {
     Object.assign(STATE_SVGS, theme.miniMode.states);
   }
@@ -111,6 +147,7 @@ function refreshTheme() {
   WAKE_DURATION = theme.timings.wakeDuration;
   DND_SKIP_YAWN = !!theme.timings.dndSkipYawn;
   COLLAPSE_DURATION = theme.timings.collapseDuration || 0;
+  SLEEP_MODE = theme.sleepSequence && theme.sleepSequence.mode === "direct" ? "direct" : "full";
   DISPLAY_HINT_MAP = theme.displayHintMap || {};
   HIT_BOXES = theme.hitBoxes;
   WIDE_SVGS = new Set(theme.wideHitboxFiles || []);
@@ -179,6 +216,61 @@ function isOneshotDisabled(logicalState) {
   catch { return false; }
 }
 
+function pickStateFile(files) {
+  if (!Array.isArray(files) || files.length === 0) return null;
+  return files[Math.floor(Math.random() * files.length)] || files[0] || null;
+}
+
+function hasOwnVisualFiles(state) {
+  const entry = STATE_BINDINGS[state];
+  return !!(entry && Array.isArray(entry.files) && entry.files.length > 0);
+}
+
+function resolveVisualBinding(state, visited = new Set([state]), hops = 0) {
+  const entry = STATE_BINDINGS[state];
+  if (entry && Array.isArray(entry.files) && entry.files.length > 0) {
+    return pickStateFile(entry.files);
+  }
+  if (entry && entry.fallbackTo && VISUAL_FALLBACK_STATES.has(state) && hops < 3 && !visited.has(entry.fallbackTo)) {
+    visited.add(entry.fallbackTo);
+    return resolveVisualBinding(entry.fallbackTo, visited, hops + 1);
+  }
+  const idleEntry = STATE_BINDINGS.idle;
+  if (idleEntry && Array.isArray(idleEntry.files) && idleEntry.files.length > 0) {
+    return pickStateFile(idleEntry.files);
+  }
+  return null;
+}
+
+function applyResolvedDisplayState() {
+  const resolved = resolveDisplayState();
+  applyState(resolved, getSvgOverride(resolved));
+}
+
+function playWakeTransitionOrResolve() {
+  if (SLEEP_MODE === "direct" && !hasOwnVisualFiles("waking")) {
+    applyResolvedDisplayState();
+    return;
+  }
+  applyState("waking");
+}
+
+function queueSleepState() {
+  if (SLEEP_MODE === "direct") {
+    setState("sleeping");
+    return;
+  }
+  setState("yawning");
+}
+
+function applyDndSleepState() {
+  if (SLEEP_MODE === "direct") {
+    applyState("sleeping");
+    return;
+  }
+  applyState(DND_SKIP_YAWN ? "collapsing" : "yawning");
+}
+
 function applyState(state, svgOverride) {
   // Phase 3b: user-disabled oneshot state — skip visual + sound, fall back to
   // whatever resolveDisplayState picks (usually working/idle). Gate lives at
@@ -221,8 +313,7 @@ function applyState(state, svgOverride) {
     ctx.playSound("confirm");
   }
 
-  const svgs = STATE_SVGS[state] || STATE_SVGS.idle;
-  const svg = svgOverride || svgs[Math.floor(Math.random() * svgs.length)];
+  const svg = svgOverride || resolveVisualBinding(state);
   currentSvg = svg;
 
   // Force eye resend after SVG load completes (~300ms)
@@ -275,8 +366,7 @@ function applyState(state, svgOverride) {
   } else if (state === "waking") {
     autoReturnTimer = setTimeout(() => {
       autoReturnTimer = null;
-      const resolved = resolveDisplayState();
-      applyState(resolved, getSvgOverride(resolved));
+      applyResolvedDisplayState();
     }, WAKE_DURATION);
   } else if (AUTO_RETURN_MS[state]) {
     autoReturnTimer = setTimeout(() => {
@@ -295,8 +385,7 @@ function applyState(state, svgOverride) {
           applyState(ctx.doNotDisturb ? "mini-sleep" : "mini-idle");
         }
       } else {
-        const resolved = resolveDisplayState();
-        applyState(resolved, getSvgOverride(resolved));
+        applyResolvedDisplayState();
       }
     }, AUTO_RETURN_MS[state]);
   }
@@ -332,7 +421,7 @@ function stopWakePoll() {
 
 function wakeFromDoze() {
   if (currentState === "sleeping" || currentState === "collapsing") {
-    applyState("waking");
+    playWakeTransitionOrResolve();
     return;
   }
   ctx.sendToRenderer("wake-from-doze");
@@ -560,7 +649,7 @@ function cleanStaleSessions() {
   }
   if (changed && sessions.size === 0) {
     if (removedNonHeadless) {
-      setState("yawning");
+      queueSleepState();
     } else {
       setState("idle", SVG_IDLE_FOLLOW);
     }
@@ -818,7 +907,7 @@ function enableDoNotDisturb() {
   if (ctx.miniMode) {
     applyState("mini-sleep");
   } else {
-    applyState(DND_SKIP_YAWN ? "collapsing" : "yawning");
+    applyDndSleepState();
   }
   ctx.buildContextMenu();
   ctx.buildTrayMenu();
@@ -834,7 +923,7 @@ function disableDoNotDisturb() {
     ctx.miniPeeked = false;
     applyState("mini-idle");
   } else {
-    applyState("waking");
+    playWakeTransitionOrResolve();
   }
   ctx.buildContextMenu();
   ctx.buildTrayMenu();
@@ -863,7 +952,7 @@ function cleanup() {
 }
 
 return {
-  setState, applyState, updateSession, resolveDisplayState, setUpdateVisualState,
+  setState, applyState, updateSession, resolveDisplayState, resolveVisualBinding, setUpdateVisualState,
   enableDoNotDisturb, disableDoNotDisturb,
   startStaleCleanup, stopStaleCleanup, startWakePoll, stopWakePoll,
   getSvgOverride, cleanStaleSessions, startStartupRecovery, refreshTheme,

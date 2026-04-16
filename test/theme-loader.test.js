@@ -45,6 +45,9 @@ function validThemeJson(overrides = {}) {
     viewBox: { x: 0, y: 0, width: 100, height: 100 },
     states: {
       idle: ["idle.svg"],
+      yawning: ["yawning.svg"],
+      dozing: ["dozing.svg"],
+      collapsing: ["collapsing.svg"],
       thinking: ["thinking.svg"],
       working: ["working.svg"],
       sleeping: ["sleeping.svg"],
@@ -215,6 +218,7 @@ describe("theme-loader capability metadata", () => {
       workingTiers: true,
       jugglingTiers: true,
       idleMode: "tracked",
+      sleepMode: "full",
     });
   });
 
@@ -228,6 +232,7 @@ describe("theme-loader capability metadata", () => {
       workingTiers: true,
       jugglingTiers: true,
       idleMode: "tracked",
+      sleepMode: "full",
     });
 
     const listed = themeLoader.listThemesWithMetadata().find((theme) => theme.id === "capTheme");
@@ -244,6 +249,142 @@ describe("theme-loader capability metadata", () => {
     assert.throws(
       () => themeLoader.loadTheme("badMini", { strict: true }),
       /miniMode\.supported=true requires miniMode\.states\.mini-enter-sleep/
+    );
+  });
+});
+
+describe("theme-loader fallback + sleepSequence", () => {
+  let fixture;
+  before(() => {
+    const directSleepStates = {
+      idle: ["idle.svg"],
+      thinking: ["thinking.svg"],
+      working: ["working.svg"],
+      attention: ["attention.svg"],
+      error: { fallbackTo: "attention" },
+      sleeping: { fallbackTo: "idle" },
+    };
+    fixture = makeFixture([
+      { id: "clawd", builtin: true, json: validThemeJson({ name: "Clawd" }) },
+      {
+        id: "directSleep",
+        builtin: true,
+        json: validThemeJson({
+          name: "Direct Sleep",
+          states: directSleepStates,
+          sleepSequence: { mode: "direct" },
+        }),
+      },
+      {
+        id: "badSleepMode",
+        builtin: true,
+        json: validThemeJson({
+          name: "Bad Sleep Mode",
+          sleepSequence: { mode: "instant" },
+        }),
+      },
+      {
+        id: "badFallbackCycle",
+        builtin: true,
+        json: validThemeJson({
+          name: "Bad Fallback Cycle",
+          states: {
+            ...validThemeJson().states,
+            error: { fallbackTo: "attention" },
+            attention: { fallbackTo: "error" },
+          },
+        }),
+      },
+      {
+        id: "badFallbackHop",
+        builtin: true,
+        json: validThemeJson({
+          name: "Bad Fallback Hop",
+          states: {
+            ...validThemeJson().states,
+            error: { fallbackTo: "attention" },
+            attention: { fallbackTo: "notification" },
+            notification: { fallbackTo: "carrying" },
+            carrying: { fallbackTo: "sleeping" },
+          },
+        }),
+      },
+      {
+        id: "badFallbackSource",
+        builtin: true,
+        json: validThemeJson({
+          name: "Bad Fallback Source",
+          states: {
+            ...validThemeJson().states,
+            waking: { fallbackTo: "idle" },
+          },
+          sleepSequence: { mode: "direct" },
+        }),
+      },
+    ]);
+  });
+  after(() => fixture && fixture.cleanup());
+
+  it("normalizes object-form state bindings and direct sleep mode", () => {
+    const theme = themeLoader.loadTheme("directSleep", { strict: true });
+    assert.strictEqual(theme.sleepSequence.mode, "direct");
+    assert.deepStrictEqual(theme.states.error, []);
+    assert.deepStrictEqual(theme._stateBindings.error, {
+      files: [],
+      fallbackTo: "attention",
+    });
+    assert.deepStrictEqual(theme._stateBindings.sleeping, {
+      files: [],
+      fallbackTo: "idle",
+    });
+    assert.strictEqual(theme._capabilities.sleepMode, "direct");
+
+    const meta = themeLoader.getThemeMetadata("directSleep");
+    assert.strictEqual(meta.capabilities.sleepMode, "direct");
+  });
+
+  it("user overrides can materialize a fallback-only state without dropping fallbackTo", () => {
+    const theme = themeLoader.loadTheme("directSleep", {
+      strict: true,
+      overrides: {
+        states: {
+          error: {
+            file: "custom-error.svg",
+            transition: { in: 30, out: 60 },
+          },
+        },
+      },
+    });
+    assert.deepStrictEqual(theme.states.error, ["custom-error.svg"]);
+    assert.deepStrictEqual(theme._stateBindings.error, {
+      files: ["custom-error.svg"],
+      fallbackTo: "attention",
+    });
+    assert.deepStrictEqual(theme.transitions["custom-error.svg"], { in: 30, out: 60 });
+  });
+
+  it("rejects invalid sleepSequence values", () => {
+    assert.throws(
+      () => themeLoader.loadTheme("badSleepMode", { strict: true }),
+      /sleepSequence\.mode must be "full" or "direct"/
+    );
+  });
+
+  it("rejects fallback cycles and overlong chains", () => {
+    assert.throws(
+      () => themeLoader.loadTheme("badFallbackCycle", { strict: true }),
+      /forms a cycle|does not terminate in real files/
+    );
+    assert.throws(
+      () => themeLoader.loadTheme("badFallbackHop", { strict: true }),
+      /exceeds 3 hop limit/
+    );
+  });
+
+  it("rejects fallbackTo on unsupported source states", () => {
+    assert.throws(
+      () => themeLoader.loadTheme("badFallbackSource", { strict: true }),
+      /states\.waking\.fallbackTo is not supported in PR2/
     );
   });
 });

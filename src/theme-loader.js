@@ -56,7 +56,8 @@ const DEFAULT_EYE_TRACKING = {
   shadowOrigin: "7.5px 15px",
 };
 
-const REQUIRED_STATES = ["idle", "working", "thinking", "sleeping", "waking"];
+const REQUIRED_STATES = ["idle", "working", "thinking"];
+const FULL_SLEEP_REQUIRED_STATES = ["yawning", "dozing", "collapsing", "waking"];
 const MINI_REQUIRED_STATES = [
   "mini-idle",
   "mini-enter",
@@ -67,6 +68,14 @@ const MINI_REQUIRED_STATES = [
   "mini-happy",
   "mini-sleep",
 ];
+const VISUAL_FALLBACK_STATES = new Set([
+  "error",
+  "attention",
+  "notification",
+  "sweeping",
+  "carrying",
+  "sleeping",
+]);
 
 // ── Variant support (Phase 3b-swap) ──
 // Allow-list of fields a variant may override. Anything else → ignored + warned
@@ -556,6 +565,8 @@ function ensureUserThemesDir() {
 
 function validateTheme(cfg) {
   const errors = [];
+  const sleepMode = _deriveSleepMode(cfg);
+  const normalizedStates = _normalizeStateBindings(cfg && cfg.states);
 
   if (cfg.schemaVersion !== 1) {
     errors.push(`schemaVersion must be 1, got ${cfg.schemaVersion}`);
@@ -572,8 +583,18 @@ function validateTheme(cfg) {
     errors.push("missing required field: states");
   } else {
     for (const s of REQUIRED_STATES) {
-      if (!cfg.states[s] || !Array.isArray(cfg.states[s]) || cfg.states[s].length === 0) {
+      if (!_hasStateFiles(cfg.states[s])) {
         errors.push(`states.${s} must be a non-empty array`);
+      }
+    }
+    if (!_hasStateBinding(cfg.states.sleeping)) {
+      errors.push("states.sleeping must define files or fallbackTo");
+    }
+    if (sleepMode === "full") {
+      for (const s of FULL_SLEEP_REQUIRED_STATES) {
+        if (!_hasStateFiles(cfg.states[s])) {
+          errors.push(`sleepSequence.mode=full requires states.${s} to be a non-empty array`);
+        }
       }
     }
   }
@@ -587,8 +608,9 @@ function validateTheme(cfg) {
   // eyeTracking.states listed states must use .svg if enabled
   if (cfg.eyeTracking && cfg.eyeTracking.enabled && cfg.states) {
     for (const stateName of (cfg.eyeTracking.states || [])) {
-      const files = cfg.states[stateName] ||
-                    (cfg.miniMode && cfg.miniMode.states && cfg.miniMode.states[stateName]);
+      const files = _getStateFiles(cfg.states[stateName]).length > 0
+        ? _getStateFiles(cfg.states[stateName])
+        : (cfg.miniMode && cfg.miniMode.states && cfg.miniMode.states[stateName]);
       if (files) {
         for (const f of files) {
           if (!f.endsWith(".svg")) {
@@ -597,6 +619,59 @@ function validateTheme(cfg) {
         }
       }
     }
+  }
+
+  if (cfg.sleepSequence !== undefined) {
+    const rawMode = cfg.sleepSequence && cfg.sleepSequence.mode;
+    if (rawMode !== "full" && rawMode !== "direct") {
+      errors.push(`sleepSequence.mode must be "full" or "direct", got ${rawMode}`);
+    }
+  }
+
+  const fallbackStateKeys = Object.keys(normalizedStates);
+  for (const stateKey of fallbackStateKeys) {
+    const entry = normalizedStates[stateKey];
+    if (!entry.fallbackTo) continue;
+    if (!VISUAL_FALLBACK_STATES.has(stateKey)) {
+      errors.push(`states.${stateKey}.fallbackTo is not supported in PR2`);
+      continue;
+    }
+    if (!Object.prototype.hasOwnProperty.call(normalizedStates, entry.fallbackTo)) {
+      errors.push(`states.${stateKey}.fallbackTo target "${entry.fallbackTo}" does not exist`);
+    }
+  }
+
+  for (const stateKey of fallbackStateKeys) {
+    const visited = new Set([stateKey]);
+    let hops = 0;
+    let cursor = stateKey;
+    while (true) {
+      const entry = normalizedStates[cursor];
+      if (!entry || !entry.fallbackTo) break;
+      const target = entry.fallbackTo;
+      hops++;
+      if (hops > 3) {
+        errors.push(`states.${stateKey}.fallbackTo exceeds 3 hop limit`);
+        break;
+      }
+      if (visited.has(target)) {
+        errors.push(`states.${stateKey}.fallbackTo forms a cycle`);
+        break;
+      }
+      visited.add(target);
+      if (!Object.prototype.hasOwnProperty.call(normalizedStates, target)) {
+        break;
+      }
+      cursor = target;
+    }
+    const terminal = normalizedStates[cursor];
+    if (!terminal || !_hasStateFiles(terminal)) {
+      errors.push(`states.${stateKey}.fallbackTo chain does not terminate in real files`);
+    }
+  }
+
+  if (fallbackStateKeys.length > 0 && !fallbackStateKeys.some((stateKey) => _hasStateFiles(normalizedStates[stateKey]))) {
+    errors.push("theme must declare at least one state with real files");
   }
 
   if (_isMiniSupported(cfg)) {
@@ -626,6 +701,42 @@ function _isPlainObject(v) {
 
 function _hasNonEmptyArray(value) {
   return Array.isArray(value) && value.length > 0;
+}
+
+function _getStateBindingEntry(entry) {
+  if (Array.isArray(entry)) {
+    return { files: [...entry], fallbackTo: null };
+  }
+  if (_isPlainObject(entry)) {
+    return {
+      files: Array.isArray(entry.files) ? [...entry.files] : [],
+      fallbackTo: (typeof entry.fallbackTo === "string" && entry.fallbackTo) ? entry.fallbackTo : null,
+    };
+  }
+  return { files: [], fallbackTo: null };
+}
+
+function _getStateFiles(entry) {
+  return _getStateBindingEntry(entry).files;
+}
+
+function _hasStateFiles(entry) {
+  return _getStateFiles(entry).length > 0;
+}
+
+function _hasStateBinding(entry) {
+  const normalized = _getStateBindingEntry(entry);
+  return normalized.files.length > 0 || !!normalized.fallbackTo;
+}
+
+function _normalizeStateBindings(states) {
+  const normalized = {};
+  if (!_isPlainObject(states)) return normalized;
+  for (const [stateKey, entry] of Object.entries(states)) {
+    if (stateKey.startsWith("_")) continue;
+    normalized[stateKey] = _getStateBindingEntry(entry);
+  }
+  return normalized;
 }
 
 function _hasReactionBindings(reactions) {
@@ -658,6 +769,10 @@ function _deriveIdleMode(cfg) {
   return "static";
 }
 
+function _deriveSleepMode(cfg) {
+  return (cfg && cfg.sleepSequence && cfg.sleepSequence.mode === "direct") ? "direct" : "full";
+}
+
 function _buildCapabilities(cfg) {
   return {
     eyeTracking: !!(
@@ -671,6 +786,7 @@ function _buildCapabilities(cfg) {
     workingTiers: _hasNonEmptyArray(cfg && cfg.workingTiers),
     jugglingTiers: _hasNonEmptyArray(cfg && cfg.jugglingTiers),
     idleMode: _deriveIdleMode(cfg),
+    sleepMode: _deriveSleepMode(cfg),
   };
 }
 
@@ -761,8 +877,10 @@ function _normalizeTransitionOverride(transition) {
 function _buildBaseBindingMetadata(raw) {
   const states = {};
   if (_isPlainObject(raw.states)) {
-    for (const [stateKey, files] of Object.entries(raw.states)) {
-      if (Array.isArray(files) && files[0]) states[stateKey] = _basenameOnly(files[0]);
+    for (const [stateKey, entry] of Object.entries(raw.states)) {
+      if (stateKey.startsWith("_")) continue;
+      const files = _getStateFiles(entry);
+      if (files[0]) states[stateKey] = _basenameOnly(files[0]);
     }
   }
   const mapTierGroup = (tiers) =>
@@ -812,13 +930,22 @@ function _applyUserOverridesPatch(raw, overrides) {
     const nextStates = { ...raw.states };
     for (const [stateKey, entry] of Object.entries(stateOverrides)) {
       if (!_isPlainObject(entry)) continue;
-      const currentFiles = Array.isArray(nextStates[stateKey]) ? [...nextStates[stateKey]] : null;
-      if (!currentFiles || currentFiles.length === 0) continue;
+      const currentState = _getStateBindingEntry(nextStates[stateKey]);
+      const currentFiles = currentState.files;
+      if (currentFiles.length === 0 && !(typeof entry.file === "string" && entry.file)) continue;
+      const nextFiles = [...currentFiles];
       if (typeof entry.file === "string" && entry.file) {
-        currentFiles[0] = entry.file;
+        if (nextFiles.length > 0) nextFiles[0] = entry.file;
+        else nextFiles.push(entry.file);
       }
-      nextStates[stateKey] = currentFiles;
-      const transitionTarget = (typeof entry.file === "string" && entry.file) ? entry.file : currentFiles[0];
+      if (Array.isArray(nextStates[stateKey])) {
+        nextStates[stateKey] = nextFiles;
+      } else if (_isPlainObject(nextStates[stateKey])) {
+        nextStates[stateKey] = { ...nextStates[stateKey], files: nextFiles };
+      } else {
+        nextStates[stateKey] = nextFiles;
+      }
+      const transitionTarget = (typeof entry.file === "string" && entry.file) ? entry.file : nextFiles[0];
       _applyTransitionOverride(patched, transitionTarget, entry.transition);
     }
     patched.states = nextStates;
@@ -988,6 +1115,8 @@ function mergeDefaults(raw, themeId, isBuiltin) {
     ...(raw.eyeTracking && raw.eyeTracking.ids || {}),
   };
 
+  theme.sleepSequence = { mode: _deriveSleepMode(raw) };
+
   // miniMode
   if (raw.miniMode) {
     theme.miniMode = {
@@ -1033,8 +1162,16 @@ function mergeDefaults(raw, themeId, isBuiltin) {
 
   // ── Filename sanitization: basename all file references to prevent path traversal ──
   const bn = _basenameOnly;
-  for (const [s, files] of Object.entries(theme.states || {})) {
-    if (Array.isArray(files)) theme.states[s] = files.map(bn);
+  const normalizedStates = _normalizeStateBindings(raw.states);
+  theme.states = {};
+  theme._stateBindings = {};
+  for (const [stateKey, entry] of Object.entries(normalizedStates)) {
+    const files = entry.files.map(bn);
+    theme.states[stateKey] = files;
+    theme._stateBindings[stateKey] = {
+      files,
+      fallbackTo: entry.fallbackTo || null,
+    };
   }
   if (theme.miniMode && theme.miniMode.states) {
     for (const [s, files] of Object.entries(theme.miniMode.states)) {
@@ -1098,7 +1235,7 @@ function getSoundUrl(soundName) {
 // `preview: "../../foo"` can't escape the theme dir.
 function _buildPreviewUrl(raw, themeDir, isBuiltin) {
   const previewFile = (typeof raw.preview === "string" && raw.preview)
-    || (raw.states && Array.isArray(raw.states.idle) && raw.states.idle[0])
+    || _getStateFiles(raw.states && raw.states.idle)[0]
     || null;
   if (!previewFile) return null;
   const filename = path.basename(previewFile);

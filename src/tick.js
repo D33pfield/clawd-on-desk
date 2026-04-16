@@ -23,6 +23,7 @@ let MOUSE_IDLE_TIMEOUT = 0;
 let MOUSE_SLEEP_TIMEOUT = 0;
 let SVG_IDLE_FOLLOW = null;
 let IDLE_ANIMS = [];
+let SLEEP_MODE = "full";
 
 function refreshTheme() {
   theme = ctx.theme;
@@ -30,6 +31,7 @@ function refreshTheme() {
   MOUSE_SLEEP_TIMEOUT = theme.timings.mouseSleepTimeout;
   SVG_IDLE_FOLLOW = theme.states.idle[0];
   IDLE_ANIMS = (theme.idleAnimations || []).map(a => ({ svg: a.file, duration: a.duration }));
+  SLEEP_MODE = theme.sleepSequence && theme.sleepSequence.mode === "direct" ? "direct" : "full";
 }
 
 refreshTheme();
@@ -139,10 +141,14 @@ function startMainTick() {
       if (!hasTriggeredYawn && elapsed >= MOUSE_SLEEP_TIMEOUT) {
         hasTriggeredYawn = true;
         if (!isMouseIdle) ctx.sendToRenderer("eye-move", 0, 0);
-        yawnDelayTimer = setTimeout(() => {
-          yawnDelayTimer = null;
-          if (ctx.currentState === "idle") ctx.setState("yawning");
-        }, isMouseIdle ? 50 : 250);
+        if (SLEEP_MODE === "direct") {
+          if (ctx.currentState === "idle") ctx.setState("sleeping");
+        } else {
+          yawnDelayTimer = setTimeout(() => {
+            yawnDelayTimer = null;
+            if (ctx.currentState === "idle") ctx.setState("yawning");
+          }, isMouseIdle ? 50 : 250);
+        }
         return;
       }
 

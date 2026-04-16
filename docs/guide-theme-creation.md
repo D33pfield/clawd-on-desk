@@ -85,19 +85,19 @@ Skip the template entirely. Author all animations as SVG with CSS `@keyframes`:
 | `name` | string | Display name |
 | `version` | string | Semver (e.g. `"1.0.0"`) |
 | `viewBox` | object | `{ x, y, width, height }` — logical canvas in SVG units |
-| `states` | object | Maps state names to file arrays (see below) |
+| `states` | object | Maps state names to file arrays or `{ files, fallbackTo }` objects (see below) |
 
 ### Required States
 
-Current validator/runtime baseline requires these states (each is an array of filenames):
+Current validator/runtime baseline requires these core states:
 
 | State | When | Notes |
 |-------|------|-------|
-| `idle` | No agent activity | Must be SVG only when idle is listed in `eyeTracking.states` |
-| `thinking` | User submitted prompt | |
-| `working` | Agent using tools | Base working file for single-session fallback |
-| `sleeping` | After sleep sequence | |
-| `waking` | Mouse wakes from sleep | PR1 does not add `sleepSequence.mode` yet, so keep this state |
+| `idle` | No agent activity | Must have real files. Must be SVG only when idle is listed in `eyeTracking.states` |
+| `thinking` | User submitted prompt | Must have real files |
+| `working` | Agent using tools | Must have real files. Base working file for single-session fallback |
+| `sleeping` | After sleep sequence | Must exist with either real files or `fallbackTo` |
+| `waking` | Mouse wakes from sleep | Required only when `sleepSequence.mode` is `full` |
 
 ### Additional Common States
 
@@ -115,7 +115,7 @@ These are common optional states you can add when you want distinct visuals for 
 | `carrying` | Worktree creation | |
 | `juggling` | Subagent active | Declare this and/or `jugglingTiers` if you want a distinct juggling visual |
 
-Current schema does **not** support author-defined `fallbackTo` yet. PR1 only calibrates the existing capability switches; semantic fallback chains land in a later PR.
+If `sleepSequence.mode` is `full` (the default), `yawning`, `dozing`, `collapsing`, and `waking` also need real files. If `sleepSequence.mode` is `direct`, those extra sleep-sequence files are optional and the pet can go straight to `sleeping`.
 
 ### Eye Tracking
 
@@ -155,6 +155,37 @@ PR1 keeps the existing schema fields as the only runtime truth. These fields alr
 | `jugglingTiers` | Optional subagent juggling overrides. Omit to fall back to `states.juggling[0]` if you provide that state. |
 
 The loader also derives read-only metadata such as `idleMode` (`tracked` / `animated` / `static`) from these fields, but that metadata is not a second schema authority.
+
+### State Visual Fallback
+
+PR2 adds object-form state bindings for a small set of interruption/sleep states. Legacy array form still works:
+
+```json
+"states": {
+  "attention": ["happy.gif"],
+  "error": { "fallbackTo": "attention" },
+  "carrying": { "fallbackTo": "working" },
+  "sleeping": { "files": ["sleeping.gif"] }
+}
+```
+
+- `files` — the state's own assets
+- `fallbackTo` — visual-only fallback target inside `states`
+- Supported `fallbackTo` sources in PR2: `error`, `attention`, `notification`, `sweeping`, `carrying`, `sleeping`
+- Fallback does **not** skip the logical state. Timers, hitboxes, and state transitions still run as the original state.
+
+### Sleep Sequence
+
+Use `sleepSequence.mode` to choose between the full sleep path and the new direct-sleep path:
+
+```json
+"sleepSequence": {
+  "mode": "full"
+}
+```
+
+- `full` — default. Runtime keeps `yawning -> dozing -> collapsing -> sleeping`, and `waking` should have real files.
+- `direct` — after `mouseSleepTimeout`, runtime goes straight to `sleeping`. On wake, if `waking` has real files it plays once; otherwise the pet returns straight to idle/current display state.
 
 ### Working Tiers
 
