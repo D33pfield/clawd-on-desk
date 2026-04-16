@@ -164,6 +164,7 @@ function _scanThemesDir(dir, builtin, themes, seen) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       if (seen.has(entry.name)) continue;
+      if (builtin && entry.name === "template") continue;
       const jsonPath = path.join(dir, entry.name, "theme.json");
       if (!fs.existsSync(jsonPath)) continue;
       try {

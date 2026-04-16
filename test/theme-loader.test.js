@@ -164,6 +164,38 @@ describe("theme-loader getThemeMetadata", () => {
   });
 });
 
+describe("theme-loader discovery", () => {
+  let fixture;
+  before(() => {
+    fixture = makeFixture([
+      {
+        id: "clawd",
+        builtin: true,
+        json: validThemeJson({ name: "Clawd" }),
+      },
+      {
+        id: "template",
+        builtin: true,
+        json: validThemeJson({ name: "My Theme" }),
+      },
+      {
+        id: "user-cat",
+        builtin: false,
+        json: validThemeJson({ name: "User Cat" }),
+      },
+    ]);
+  });
+  after(() => fixture && fixture.cleanup());
+
+  it("skips the built-in template from discoverThemes and metadata scans", () => {
+    const discovered = themeLoader.discoverThemes().map((theme) => theme.id);
+    assert.deepStrictEqual(discovered.sort(), ["clawd", "user-cat"]);
+
+    const listed = themeLoader.listThemesWithMetadata().map((theme) => theme.id);
+    assert.deepStrictEqual(listed.sort(), ["clawd", "user-cat"]);
+  });
+});
+
 describe("theme-loader capability metadata", () => {
   let fixture;
   before(() => {
