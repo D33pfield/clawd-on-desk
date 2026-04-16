@@ -572,6 +572,29 @@ html, body {
   word-break: break-word;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
+.anim-override-fallback-chip {
+  align-self: flex-start;
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 999px;
+  white-space: nowrap;
+  max-width: 100%;
+}
+@media (prefers-color-scheme: dark) {
+  .anim-override-fallback-chip { background: rgba(255, 255, 255, 0.08); }
+}
+.anim-override-fallback-chip-arrow {
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.8;
+}
 .anim-override-summary-badges {
   flex: 0 0 auto;
   display: flex;

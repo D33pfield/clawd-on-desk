@@ -1054,17 +1054,24 @@ function buildAnimOverrideSummary(card) {
   file.textContent = card.currentFile;
   file.title = card.bindingLabel || "";
   text.appendChild(file);
+  if (card.fallbackTargetState) {
+    const chip = document.createElement("div");
+    chip.className = "anim-override-fallback-chip";
+    chip.title = getAnimFallbackHint(card);
+    const arrow = document.createElement("span");
+    arrow.className = "anim-override-fallback-chip-arrow";
+    arrow.textContent = "\u21B7"; // ↷
+    arrow.setAttribute("aria-hidden", "true");
+    chip.appendChild(arrow);
+    const target = document.createElement("span");
+    target.textContent = card.fallbackTargetState;
+    chip.appendChild(target);
+    text.appendChild(chip);
+  }
   summary.appendChild(text);
 
   const badges = document.createElement("div");
   badges.className = "anim-override-summary-badges";
-  if (card.fallbackTargetState) {
-    const inherit = document.createElement("span");
-    inherit.className = "anim-override-badge";
-    inherit.textContent = `↷ ${card.fallbackTargetState}`;
-    inherit.title = getAnimFallbackHint(card);
-    badges.appendChild(inherit);
-  }
   if (card.displayHintWarning) {
     const warn = document.createElement("span");
     warn.className = "anim-override-badge anim-override-badge-warn";
