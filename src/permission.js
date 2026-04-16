@@ -31,8 +31,22 @@ function restoreFrontApp(appName) {
 }
 
 const RESTORE_FOCUS_DELAY_MS = 300;
+const MAC_FLOATING_TOPMOST_DELAY_MS = 120;
 const WIN_TOPMOST_LEVEL = "pop-up-menu";
 const LINUX_WINDOW_TYPE = "toolbar";
+
+function deferMacFloatingVisibility(ctx, win) {
+  if (!isMac || !win || win.isDestroyed()) return;
+  const deferUntil = Date.now() + MAC_FLOATING_TOPMOST_DELAY_MS;
+  win.__clawdMacDeferredVisibilityUntil = deferUntil;
+  setTimeout(() => {
+    if (!win || win.isDestroyed()) return;
+    if (win.__clawdMacDeferredVisibilityUntil === deferUntil) {
+      delete win.__clawdMacDeferredVisibilityUntil;
+    }
+    if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
+  }, MAC_FLOATING_TOPMOST_DELAY_MS);
+}
 
 // Codex doesn't come through /permission, so its sub-gate is checked at
 // the bubble-creation callsite instead of at the route entrance.
@@ -269,7 +283,7 @@ function showPermissionBubble(permEntry) {
     show: false, // Fix lost focus
     frame: false,
     transparent: true,
-    alwaysOnTop: true,
+    alwaysOnTop: !isMac,
     resizable: false,
     skipTaskbar: true,
     hasShadow: false,
@@ -320,8 +334,10 @@ function showPermissionBubble(permEntry) {
   bub.showInactive();
   // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly
   if (isLinux) bub.setSkipTaskbar(true);
-  // macOS: apply after showInactive() — it resets NSWindowCollectionBehavior
-  ctx.reapplyMacVisibility();
+  // macOS: constructing/raising a topmost panel too early can still activate
+  // Clawd on some setups. Defer topmost restoration until after showInactive.
+  if (isMac) deferMacFloatingVisibility(ctx, bub);
+  else ctx.reapplyMacVisibility();
 
   bub.on("closed", () => {
     const idx = pendingPermissions.indexOf(permEntry);

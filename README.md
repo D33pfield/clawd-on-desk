@@ -42,6 +42,7 @@ A desktop pet that reacts to your AI coding agent sessions in real-time. Clawd l
 - **Global hotkeys** — `Ctrl+Shift+Y` to Allow, `Ctrl+Shift+N` to Deny the latest permission bubble (only registered while bubbles are visible)
 - **Stacking layout** — multiple permission requests stack upward from the bottom-right corner
 - **Auto-dismiss** — if you answer in the terminal first, the bubble disappears automatically
+- **Per-agent toggle** — open `Settings…` → `Agents` → `Claude Code` and turn off `Show pop-up bubbles` to keep permission prompts in Claude Code's own terminal
 
 ### Session Intelligence
 - **Multi-session tracking** — sessions across all agents resolve to the highest-priority state

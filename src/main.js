@@ -529,6 +529,9 @@ function reapplyMacVisibility() {
   if (!isMac) return;
   const apply = (w) => {
     if (w && !w.isDestroyed()) {
+      const deferUntil = Number(w.__clawdMacDeferredVisibilityUntil) || 0;
+      if (deferUntil > Date.now()) return;
+      if (deferUntil) delete w.__clawdMacDeferredVisibilityUntil;
       w.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
       if (!applyStationaryCollectionBehavior(w)) {
         const opts = { visibleOnFullScreen: true };

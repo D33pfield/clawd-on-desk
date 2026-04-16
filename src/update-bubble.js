@@ -9,6 +9,20 @@ const LINUX_WINDOW_TYPE = "toolbar";
 const WIDTH = 340;
 const EDGE_MARGIN = 8;
 const GAP = 6;
+const MAC_FLOATING_TOPMOST_DELAY_MS = 120;
+
+function deferMacFloatingVisibility(ctx, win) {
+  if (!isMac || !win || win.isDestroyed()) return;
+  const deferUntil = Date.now() + MAC_FLOATING_TOPMOST_DELAY_MS;
+  win.__clawdMacDeferredVisibilityUntil = deferUntil;
+  setTimeout(() => {
+    if (!win || win.isDestroyed()) return;
+    if (win.__clawdMacDeferredVisibilityUntil === deferUntil) {
+      delete win.__clawdMacDeferredVisibilityUntil;
+    }
+    if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
+  }, MAC_FLOATING_TOPMOST_DELAY_MS);
+}
 
 function estimateHeight(payload) {
   let height = payload && payload.mode === "error" ? 220 : 150;
@@ -104,12 +118,13 @@ module.exports = function initUpdateBubble(ctx) {
       show: false,
       frame: false,
       transparent: true,
-      alwaysOnTop: true,
+      alwaysOnTop: !isMac,
       resizable: false,
       skipTaskbar: true,
       hasShadow: false,
       focusable: false,
       ...(isLinux ? { type: LINUX_WINDOW_TYPE } : {}),
+      ...(isMac ? { type: "panel" } : {}),
       webPreferences: {
         preload: path.join(__dirname, "preload-update-bubble.js"),
         nodeIntegration: false,
@@ -176,7 +191,8 @@ module.exports = function initUpdateBubble(ctx) {
     }
     bubble.showInactive();
     if (isLinux) bubble.setSkipTaskbar(true);
-    if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
+    if (isMac) deferMacFloatingVisibility(ctx, bubble);
+    else if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
   }
 
   function settlePrevious(actionId) {
