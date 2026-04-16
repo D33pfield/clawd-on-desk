@@ -1102,23 +1102,57 @@ function _buildTierCardGroup(tierGroup, triggerKind, resolvedTiers, baseTiers, b
   });
 }
 
+function _getResolvedStateCardBinding(stateKey) {
+  if (!activeTheme) return null;
+  const bindingMap = activeTheme._stateBindings || {};
+  let cursor = stateKey;
+  let hops = 0;
+  const visited = new Set([stateKey]);
+
+  while (cursor && hops <= 3) {
+    const binding = bindingMap[cursor] || {};
+    const files = Array.isArray(binding.files)
+      ? binding.files
+      : (activeTheme.states && Array.isArray(activeTheme.states[cursor]) ? activeTheme.states[cursor] : []);
+    if (files[0]) {
+      return {
+        currentFile: files[0],
+        resolvedState: cursor,
+        fallbackTargetState: cursor !== stateKey ? cursor : null,
+      };
+    }
+    const fallbackTo = typeof binding.fallbackTo === "string" && binding.fallbackTo ? binding.fallbackTo : null;
+    if (!fallbackTo || visited.has(fallbackTo)) break;
+    visited.add(fallbackTo);
+    cursor = fallbackTo;
+    hops += 1;
+  }
+
+  return null;
+}
+
 function _buildStateCard(stateKey, triggerKind, themeOverrideMap) {
-  const files = activeTheme && activeTheme.states && activeTheme.states[stateKey];
-  if (!Array.isArray(files) || !files[0]) return null;
-  const currentFile = files[0];
+  const resolved = _getResolvedStateCardBinding(stateKey);
+  if (!resolved || !resolved.currentFile) return null;
+  const currentFile = resolved.currentFile;
   const autoReturnMap = (activeTheme && activeTheme.timings && activeTheme.timings.autoReturn) || {};
   const supportsAutoReturn = Object.prototype.hasOwnProperty.call(autoReturnMap, stateKey);
   const resolvedAutoReturnMs = supportsAutoReturn ? autoReturnMap[stateKey] : null;
   const timingHint = _buildTimingHint(currentFile, resolvedAutoReturnMs);
+  const fallbackTargetState = resolved.fallbackTargetState;
   return {
     id: `state:${stateKey}`,
     slotType: "state",
     stateKey,
     triggerKind,
     currentFile,
+    resolvedState: resolved.resolvedState,
+    fallbackTargetState,
     baseFile: (activeTheme._bindingBase && activeTheme._bindingBase.states && activeTheme._bindingBase.states[stateKey]) || currentFile,
     currentFileUrl: _buildAnimationAssetUrl(currentFile),
-    bindingLabel: `states.${stateKey}[0]`,
+    bindingLabel: fallbackTargetState
+      ? `states.${stateKey}.fallbackTo -> ${fallbackTargetState}`
+      : `states.${stateKey}[0]`,
     transition: _readResolvedTransition(currentFile),
     supportsAutoReturn,
     autoReturnMs: resolvedAutoReturnMs,

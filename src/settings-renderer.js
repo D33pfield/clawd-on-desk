@@ -111,6 +111,7 @@ const STRINGS = {
     animOverridesTimingFallback: "theme default",
     animOverridesTimingUnavailable: "unavailable",
     animOverridesDisplayHintWarning: "displayHintMap can override this slot at runtime.",
+    animOverridesFallbackHint: "This slot currently falls back to {state}.",
     animOverridesOverriddenTooltip: "Modified from default",
     animOverridesExpandRow: "Expand",
     animOverridesModalTitle: "Choose an asset file",
@@ -217,6 +218,7 @@ const STRINGS = {
     animOverridesTimingFallback: "主题默认值",
     animOverridesTimingUnavailable: "不可用",
     animOverridesDisplayHintWarning: "运行时可能被 displayHintMap 盖掉。",
+    animOverridesFallbackHint: "这个槽位当前回退到 {state}。",
     animOverridesOverriddenTooltip: "已修改（非默认值）",
     animOverridesExpandRow: "展开",
     animOverridesModalTitle: "选择素材文件",
@@ -323,6 +325,7 @@ const STRINGS = {
     animOverridesTimingFallback: "테마 기본값",
     animOverridesTimingUnavailable: "사용할 수 없음",
     animOverridesDisplayHintWarning: "displayHintMap이 런타임에 이 슬롯을 덮어쓸 수 있습니다.",
+    animOverridesFallbackHint: "이 슬롯은 현재 {state}(으)로 폴백됩니다.",
     animOverridesOverriddenTooltip: "기본값에서 변경됨",
     animOverridesExpandRow: "펼치기",
     animOverridesModalTitle: "에셋 파일 선택",
@@ -1055,6 +1058,13 @@ function buildAnimOverrideSummary(card) {
 
   const badges = document.createElement("div");
   badges.className = "anim-override-summary-badges";
+  if (card.fallbackTargetState) {
+    const inherit = document.createElement("span");
+    inherit.className = "anim-override-badge";
+    inherit.textContent = `↷ ${card.fallbackTargetState}`;
+    inherit.title = getAnimFallbackHint(card);
+    badges.appendChild(inherit);
+  }
   if (card.displayHintWarning) {
     const warn = document.createElement("span");
     warn.className = "anim-override-badge anim-override-badge-warn";
@@ -1090,6 +1100,13 @@ function buildAnimOverrideSummary(card) {
 function buildAnimOverrideDrawer(card) {
   const drawer = document.createElement("div");
   drawer.className = "anim-override-drawer";
+
+  if (card.fallbackTargetState) {
+    const hint = document.createElement("div");
+    hint.className = "anim-override-binding";
+    hint.textContent = getAnimFallbackHint(card);
+    drawer.appendChild(hint);
+  }
 
   if (card.displayHintWarning) {
     const warning = document.createElement("div");
@@ -1252,6 +1269,11 @@ function formatAnimTimingValue(ms, status) {
   if (status === "estimated") text += ` (${t("animOverridesTimingEstimated")})`;
   else if (status === "fallback") text += ` (${t("animOverridesTimingFallback")})`;
   return text;
+}
+
+function getAnimFallbackHint(card) {
+  if (!card || !card.fallbackTargetState) return "";
+  return t("animOverridesFallbackHint").replace("{state}", card.fallbackTargetState);
 }
 
 function buildAnimTimingHint(label, ms, status) {
