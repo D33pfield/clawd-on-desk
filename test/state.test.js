@@ -60,6 +60,7 @@ function update(api, o = {}) {
     o.sourcePid ?? null, o.cwd || "/tmp", o.editor || null,
     o.pidChain || null, o.agentPid ?? null, o.agentId || "claude-code",
     o.host || null, o.headless || false, o.displayHint,
+    o.sessionTitle ?? null,
   );
 }
 
@@ -77,6 +78,7 @@ function rawSession(state, opts = {}) {
     agentId: opts.agentId || null,
     host: opts.host || null,
     headless: opts.headless || false,
+    sessionTitle: opts.sessionTitle ?? null,
     pidReachable: opts.pidReachable ?? false,
     resumeState: opts.resumeState || null,
   };
@@ -667,6 +669,80 @@ describe("updateSession()", () => {
     update(api, { id: "s1", state: "sleeping", event: "SessionEnd" });
     // s2 remains with thinking
     assert.strictEqual(api.resolveDisplayState(), "thinking");
+  });
+
+  // ── session title (B1) ──
+
+  it("stores sessionTitle from updateSession positional arg", () => {
+    update(api, { id: "s1", state: "working", sessionTitle: "My Task" });
+    assert.strictEqual(api.sessions.get("s1").sessionTitle, "My Task");
+  });
+
+  it("trims whitespace on sessionTitle", () => {
+    update(api, { id: "s1", state: "working", sessionTitle: "  Spaced  " });
+    assert.strictEqual(api.sessions.get("s1").sessionTitle, "Spaced");
+  });
+
+  it("sticky sessionTitle: follow-up events without title keep existing", () => {
+    update(api, { id: "s1", state: "thinking", sessionTitle: "Persistent Title" });
+    update(api, { id: "s1", state: "working" }); // no title in this update
+    assert.strictEqual(api.sessions.get("s1").sessionTitle, "Persistent Title");
+  });
+
+  it("sticky sessionTitle: empty string does not clear existing title", () => {
+    update(api, { id: "s1", state: "thinking", sessionTitle: "Keep Me" });
+    update(api, { id: "s1", state: "working", sessionTitle: "" });
+    assert.strictEqual(api.sessions.get("s1").sessionTitle, "Keep Me");
+  });
+
+  it("sticky sessionTitle: whitespace-only input does not clear existing title", () => {
+    update(api, { id: "s1", state: "thinking", sessionTitle: "Keep Me" });
+    update(api, { id: "s1", state: "working", sessionTitle: "   " });
+    assert.strictEqual(api.sessions.get("s1").sessionTitle, "Keep Me");
+  });
+
+  it("sessionTitle can be updated to a new non-empty value", () => {
+    update(api, { id: "s1", state: "thinking", sessionTitle: "Old Name" });
+    update(api, { id: "s1", state: "working", sessionTitle: "New Name" });
+    assert.strictEqual(api.sessions.get("s1").sessionTitle, "New Name");
+  });
+
+  it("new session with no sessionTitle has null field", () => {
+    update(api, { id: "s1", state: "working" });
+    assert.strictEqual(api.sessions.get("s1").sessionTitle, null);
+  });
+
+  it("buildSessionSubmenu uses sessionTitle over cwd folder name", () => {
+    update(api, {
+      id: "s1",
+      state: "idle",
+      cwd: "/tmp/project-abc",
+      sessionTitle: "Fix login bug",
+    });
+    const menu = api.buildSessionSubmenu();
+    // Label format: `${name}  ${stateText}  ${elapsed}` — name should be the title
+    assert.ok(
+      menu[0].label.includes("Fix login bug"),
+      `expected label to include title, got: ${menu[0].label}`
+    );
+    assert.ok(
+      !menu[0].label.includes("project-abc"),
+      `expected label to NOT include folder when title present, got: ${menu[0].label}`
+    );
+  });
+
+  it("buildSessionSubmenu falls back to folder name when sessionTitle is null", () => {
+    update(api, {
+      id: "s1",
+      state: "idle",
+      cwd: "/tmp/project-abc",
+      // no sessionTitle
+    });
+    const menu = api.buildSessionSubmenu();
+    assert.ok(
+      menu[0].label.includes("project-abc"),
+      `expected folder fallback, got: ${menu[0].label}`
+    );
   });
 });
 

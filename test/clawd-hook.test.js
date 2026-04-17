@@ -1,14 +1,28 @@
 "use strict";
 
 // Unit tests for hooks/clawd-hook.js pure helpers.
-// Tests `buildStateBody` — the body-construction logic extracted from main().
+// Tests `buildStateBody` and `extractSessionTitleFromTranscript`.
 // The top-level `main()` path (stdin read, HTTP post, process.exit) is not
 // tested here; its side effects are exercised by manual / end-to-end runs.
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
-const { buildStateBody } = require("../hooks/clawd-hook.js");
+const {
+  buildStateBody,
+  extractSessionTitleFromTranscript,
+} = require("../hooks/clawd-hook.js");
+
+function writeTmpJsonl(entries) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-hook-test-"));
+  const file = path.join(dir, "transcript.jsonl");
+  const body = entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
+  fs.writeFileSync(file, body);
+  return file;
+}
 
 const mockResolve = () => ({
   stablePid: null,
@@ -130,6 +144,68 @@ describe("buildStateBody", () => {
     assert.ok(!("pid_chain" in body));
   });
 
+  describe("session_title extraction", () => {
+    it("passes through explicit payload.session_title", () => {
+      const body = buildStateBody(
+        "SessionStart",
+        { session_id: "s", session_title: "Fix login bug" },
+        mockResolve
+      );
+      assert.strictEqual(body.session_title, "Fix login bug");
+    });
+
+    it("trims whitespace on payload.session_title", () => {
+      const body = buildStateBody(
+        "SessionStart",
+        { session_id: "s", session_title: "  Spaced Title  " },
+        mockResolve
+      );
+      assert.strictEqual(body.session_title, "Spaced Title");
+    });
+
+    it("omits session_title field when payload has none and no transcript path", () => {
+      const body = buildStateBody("SessionStart", { session_id: "s" }, mockResolve);
+      assert.ok(!("session_title" in body));
+    });
+
+    it("falls back to transcript when payload.session_title is missing", () => {
+      const file = writeTmpJsonl([
+        { type: "user", message: { content: "hi" } },
+        { type: "custom-title", customTitle: "From Transcript" },
+      ]);
+      const body = buildStateBody(
+        "SessionStart",
+        { session_id: "s", transcript_path: file },
+        mockResolve
+      );
+      assert.strictEqual(body.session_title, "From Transcript");
+    });
+
+    it("prefers payload.session_title over transcript", () => {
+      const file = writeTmpJsonl([
+        { type: "custom-title", customTitle: "Transcript Title" },
+      ]);
+      const body = buildStateBody(
+        "SessionStart",
+        { session_id: "s", session_title: "Payload Title", transcript_path: file },
+        mockResolve
+      );
+      assert.strictEqual(body.session_title, "Payload Title");
+    });
+
+    it("ignores non-string session_title and falls back to transcript", () => {
+      const file = writeTmpJsonl([
+        { type: "custom-title", customTitle: "Transcript Title" },
+      ]);
+      const body = buildStateBody(
+        "SessionStart",
+        { session_id: "s", session_title: 123, transcript_path: file },
+        mockResolve
+      );
+      assert.strictEqual(body.session_title, "Transcript Title");
+    });
+  });
+
   describe("remote mode (CLAWD_REMOTE=1)", () => {
     before(() => { process.env.CLAWD_REMOTE = "1"; });
     after(() => { delete process.env.CLAWD_REMOTE; });
@@ -151,5 +227,92 @@ describe("buildStateBody", () => {
       buildStateBody("SessionStart", { session_id: "s" }, countingResolve);
       assert.strictEqual(called, false);
     });
+  });
+});
+
+describe("extractSessionTitleFromTranscript", () => {
+  it("returns the latest title from a tail with multiple rename events", () => {
+    const file = writeTmpJsonl([
+      { type: "user", message: { content: "hello" } },
+      { type: "custom-title", customTitle: "First Title" },
+      { type: "agent-name", agentName: "Renamed Later" },
+    ]);
+    assert.strictEqual(extractSessionTitleFromTranscript(file), "Renamed Later");
+  });
+
+  it("returns null for missing file", () => {
+    assert.strictEqual(extractSessionTitleFromTranscript("/no/such/path.jsonl"), null);
+  });
+
+  it("returns null when transcript has no title events", () => {
+    const file = writeTmpJsonl([
+      { type: "user", message: { content: "hi" } },
+      { type: "assistant", message: { content: "yo" } },
+    ]);
+    assert.strictEqual(extractSessionTitleFromTranscript(file), null);
+  });
+
+  it("supports custom_title (snake_case) variant", () => {
+    const file = writeTmpJsonl([
+      { type: "custom-title", custom_title: "Snake Title" },
+    ]);
+    assert.strictEqual(extractSessionTitleFromTranscript(file), "Snake Title");
+  });
+
+  it("supports agent_name (snake_case) variant", () => {
+    const file = writeTmpJsonl([
+      { type: "agent-name", agent_name: "Snake Agent" },
+    ]);
+    assert.strictEqual(extractSessionTitleFromTranscript(file), "Snake Agent");
+  });
+
+  it("supports plain title field", () => {
+    const file = writeTmpJsonl([
+      { type: "custom-title", title: "Plain Title Field" },
+    ]);
+    assert.strictEqual(extractSessionTitleFromTranscript(file), "Plain Title Field");
+  });
+
+  it("trims whitespace on extracted title", () => {
+    const file = writeTmpJsonl([
+      { type: "custom-title", customTitle: "  Padded  " },
+    ]);
+    assert.strictEqual(extractSessionTitleFromTranscript(file), "Padded");
+  });
+
+  it("ignores corrupt JSON lines and keeps scanning", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-hook-test-"));
+    const file = path.join(dir, "corrupt.jsonl");
+    fs.writeFileSync(
+      file,
+      [
+        JSON.stringify({ type: "user", message: { content: "hi" } }),
+        "{ not valid json at all",
+        JSON.stringify({ type: "custom-title", customTitle: "After Garbage" }),
+      ].join("\n") + "\n"
+    );
+    assert.strictEqual(extractSessionTitleFromTranscript(file), "After Garbage");
+  });
+
+  it("returns null for non-string path input", () => {
+    assert.strictEqual(extractSessionTitleFromTranscript(null), null);
+    assert.strictEqual(extractSessionTitleFromTranscript(undefined), null);
+    assert.strictEqual(extractSessionTitleFromTranscript(42), null);
+    assert.strictEqual(extractSessionTitleFromTranscript(""), null);
+  });
+
+  it("skips the truncated first line when reading a file larger than the tail window", () => {
+    // Write ~300KB of junk + a valid title event at the end.
+    // The tail window is 256KB, so the first line of what we read will be a
+    // truncated JSON fragment. extractSessionTitleFromTranscript must drop it
+    // rather than letting JSON.parse reject it loudly.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-hook-test-"));
+    const file = path.join(dir, "big.jsonl");
+    const padLine = JSON.stringify({ type: "user", message: { content: "x".repeat(400) } });
+    const parts = [];
+    for (let i = 0; i < 700; i++) parts.push(padLine); // ~300KB of padding
+    parts.push(JSON.stringify({ type: "custom-title", customTitle: "End Title" }));
+    fs.writeFileSync(file, parts.join("\n") + "\n");
+    assert.strictEqual(extractSessionTitleFromTranscript(file), "End Title");
   });
 });

@@ -458,6 +458,16 @@ function debugSession(msg) {
   try { ctx.debugLog(msg); } catch {}
 }
 
+// Local title normalizer (trim, empty → null). Note: hooks/clawd-hook.js has
+// an identical 4-liner; hook scripts can't require src/* (different runtime
+// context: plain node child process, no Electron), so the two are kept in
+// sync manually rather than sharing a module.
+function normalizeTitle(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
 function describeSession(sessionId, session) {
   if (!session) return `sid=${sessionId} <deleted>`;
   return [
@@ -472,7 +482,9 @@ function describeSession(sessionId, session) {
 }
 
 // ── Session management ──
-function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain, agentPid, agentId, host, headless, displayHint) {
+// B1 note: `sessionTitle` is tacked on as a 13th positional param for now.
+// This signature is ugly; B2 will refactor the whole thing to an options bag.
+function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain, agentPid, agentId, host, headless, displayHint, sessionTitle) {
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
     if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
@@ -492,6 +504,9 @@ function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain
   const srcAgentId = agentId || (existing && existing.agentId) || null;
   const srcHost = host || (existing && existing.host) || null;
   const srcHeadless = headless || (existing && existing.headless) || false;
+  // Sticky: empty input does not clear an existing title. A session that has
+  // ever been named keeps that name until the user explicitly renames it.
+  const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
   const srcResumeState = (existing && existing.resumeState) || null;
   const isSubagentStart = event === "SubagentStart" || event === "subagentStart";
   const isSubagentStop = event === "SubagentStop" || event === "subagentStop";
@@ -501,7 +516,7 @@ function updateSession(sessionId, state, event, sourcePid, cwd, editor, pidChain
   const pidReachable = existing ? existing.pidReachable :
     (srcAgentPid ? isProcessAlive(srcAgentPid) : (srcPid ? isProcessAlive(srcPid) : false));
 
-  const base = { sourcePid: srcPid, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, pidReachable };
+  const base = { sourcePid: srcPid, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, sessionTitle: srcSessionTitle, pidReachable };
 
   // Evict oldest session if at capacity and this is a new session
   if (!existing && sessions.size >= MAX_SESSIONS) {
@@ -847,7 +862,7 @@ function formatElapsed(ms) {
 function buildSessionSubmenu() {
   const entries = [];
   for (const [id, s] of sessions) {
-    entries.push({ id, state: s.state, updatedAt: s.updatedAt, sourcePid: s.sourcePid, cwd: s.cwd, editor: s.editor, pidChain: s.pidChain, host: s.host, headless: s.headless, agentId: s.agentId });
+    entries.push({ id, state: s.state, updatedAt: s.updatedAt, sourcePid: s.sourcePid, cwd: s.cwd, editor: s.editor, pidChain: s.pidChain, host: s.host, headless: s.headless, agentId: s.agentId, sessionTitle: s.sessionTitle });
   }
   if (entries.length === 0) {
     return [{ label: ctx.t("noSessions"), enabled: false }];
@@ -864,7 +879,10 @@ function buildSessionSubmenu() {
   function buildItem(e) {
     const stateText = ctx.t(STATE_LABEL_KEY[e.state] || "sessionIdle");
     const folder = e.cwd ? path.basename(e.cwd) : (e.id.length > 6 ? e.id.slice(0, 6) + ".." : e.id);
-    const name = ctx.showSessionId ? `${folder} #${e.id.slice(-3)}` : folder;
+    // Prefer user-set session title (Claude Code /rename, Codex turn summary)
+    // over the cwd folder name when available.
+    const baseName = normalizeTitle(e.sessionTitle) || folder;
+    const name = ctx.showSessionId ? `${baseName} #${e.id.slice(-3)}` : baseName;
     const elapsed = formatElapsed(now - e.updatedAt);
     const hasPid = !!e.sourcePid;
     const icon = getAgentIcon(e.agentId);

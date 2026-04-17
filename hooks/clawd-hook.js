@@ -3,8 +3,66 @@
 // Usage: node clawd-hook.js <event_name>
 // Reads stdin JSON from Claude Code for session_id
 
+const fs = require("fs");
 const { postStateToRunningServer, readHostPrefix } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+
+const TRANSCRIPT_TAIL_BYTES = 262144; // 256 KB
+
+function normalizeTitle(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+// Read the tail of a Claude Code transcript JSONL and return the most recent
+// user-set session title (custom-title / agent-name events). Returns null if
+// the file is missing/unreadable or no title events are found.
+function extractSessionTitleFromTranscript(transcriptPath) {
+  if (typeof transcriptPath !== "string" || !transcriptPath) return null;
+
+  let data;
+  let truncated = false;
+  let fd = null;
+  try {
+    const stat = fs.statSync(transcriptPath);
+    fd = fs.openSync(transcriptPath, "r");
+    const readLen = Math.min(stat.size, TRANSCRIPT_TAIL_BYTES);
+    truncated = stat.size > readLen;
+    const buf = Buffer.alloc(readLen);
+    fs.readSync(fd, buf, 0, readLen, Math.max(0, stat.size - readLen));
+    data = buf.toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+
+  const lines = data.split("\n");
+  // If we read a tail of a larger file, the first line is likely a truncated
+  // JSON fragment — drop it so JSON.parse doesn't fail noisily on it.
+  if (truncated && lines.length > 1) lines.shift();
+
+  let latest = null;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let obj;
+    try { obj = JSON.parse(line); } catch { continue; }
+    if (!obj || typeof obj !== "object") continue;
+    const type = typeof obj.type === "string" ? obj.type : "";
+    if (type !== "custom-title" && type !== "agent-name") continue;
+    latest =
+      normalizeTitle(obj.customTitle) ||
+      normalizeTitle(obj.title) ||
+      normalizeTitle(obj.custom_title) ||
+      normalizeTitle(obj.agentName) ||
+      normalizeTitle(obj.agent_name) ||
+      latest;
+  }
+  return latest;
+}
 
 const EVENT_TO_STATE = {
   SessionStart: "idle",
@@ -40,6 +98,12 @@ function buildStateBody(event, payload, resolve) {
   const body = { state: resolvedState, session_id: sessionId, event };
   body.agent_id = "claude-code";
   if (cwd) body.cwd = cwd;
+  // Session title: prefer payload field, fall back to scanning the transcript
+  // tail for user-set custom-title / agent-name events
+  const sessionTitle =
+    normalizeTitle(payload.session_title) ||
+    extractSessionTitleFromTranscript(payload.transcript_path);
+  if (sessionTitle) body.session_title = sessionTitle;
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
   } else {
@@ -96,4 +160,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { buildStateBody };
+module.exports = { buildStateBody, extractSessionTitleFromTranscript };

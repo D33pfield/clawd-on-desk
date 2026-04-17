@@ -236,6 +236,11 @@ function startClaudeSettingsWatcher() {
   }
 }
 
+// /state POST body size cap. Raised from 1024 to 4096 to give new fields
+// (session_title) headroom on top of cwd / pid_chain / host / etc. Still a
+// local-only 127.0.0.1 endpoint — not an Internet DoS concern.
+const MAX_STATE_BODY_BYTES = 4096;
+
 function startHttpServer() {
   httpServer = createHttpServer((req, res) => {
     if (req.method === "GET" && req.url === "/state") {
@@ -247,7 +252,7 @@ function startHttpServer() {
       req.on("data", (chunk) => {
         if (tooLarge) return;
         bodySize += chunk.length;
-        if (bodySize > 1024) { tooLarge = true; return; }
+        if (bodySize > MAX_STATE_BODY_BYTES) { tooLarge = true; return; }
         body += chunk;
       });
       req.on("end", () => {
@@ -272,6 +277,11 @@ function startHttpServer() {
           const agentId = typeof data.agent_id === "string" ? data.agent_id : "claude-code";
           const host = typeof data.host === "string" ? data.host : null;
           const headless = data.headless === true;
+          // Session title (Claude Code /rename or Codex turn_context.summary).
+          // Non-string / empty values are silently dropped — matches the
+          // "ignore + fall back" pattern used by cwd / agent_id above.
+          const rawTitle = typeof data.session_title === "string" ? data.session_title.trim() : "";
+          const sessionTitle = rawTitle || null;
           // Agent gate: user disabled this agent in the settings panel. Drop
           // with 204 so hook scripts get a quick no-op response instead of
           // hanging on our HTTP connection. Still surfaces as a success code
@@ -299,7 +309,7 @@ function startHttpServer() {
               const safeSvg = path.basename(svg);
               ctx.setState(state, safeSvg);
             } else {
-              ctx.updateSession(sid, state, event, source_pid, cwd, editor, pidChain, agentPid, agentId, host, headless, display_svg);
+              ctx.updateSession(sid, state, event, source_pid, cwd, editor, pidChain, agentPid, agentId, host, headless, display_svg, sessionTitle);
             }
             res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
             res.end("ok");

@@ -414,6 +414,99 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
+  describe("session title extraction (turn_context.summary)", () => {
+    it("captures sessionTitle on next state emit after turn_context", (_, done) => {
+      const testFile = path.join(dateDir, TEST_FILENAME);
+      // turn_context carries the summary; session_meta (emitted after) triggers idle
+      fs.writeFileSync(testFile, [
+        '{"type":"turn_context","payload":{"summary":"Fix auth bug"}}',
+        '{"type":"session_meta","payload":{"cwd":"/projects/foo"}}',
+      ].join("\n") + "\n");
+
+      const config = makeConfig(tmpDir);
+      monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+        if (state !== "idle") return;
+        assert.strictEqual(extra.sessionTitle, "Fix auth bug");
+        done();
+      });
+      monitor.start();
+    });
+
+    it("ignores 'none' placeholder summary", (_, done) => {
+      const testFile = path.join(dateDir, TEST_FILENAME);
+      fs.writeFileSync(testFile, [
+        '{"type":"turn_context","payload":{"summary":"none"}}',
+        '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      ].join("\n") + "\n");
+
+      const config = makeConfig(tmpDir);
+      monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+        if (state !== "idle") return;
+        assert.strictEqual(extra.sessionTitle, null);
+        done();
+      });
+      monitor.start();
+    });
+
+    it("ignores 'auto' placeholder summary", (_, done) => {
+      const testFile = path.join(dateDir, TEST_FILENAME);
+      fs.writeFileSync(testFile, [
+        '{"type":"turn_context","payload":{"summary":"auto"}}',
+        '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      ].join("\n") + "\n");
+
+      const config = makeConfig(tmpDir);
+      monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+        if (state !== "idle") return;
+        assert.strictEqual(extra.sessionTitle, null);
+        done();
+      });
+      monitor.start();
+    });
+
+    it("does not emit a 'metaOnly' event just to deliver title", (_, done) => {
+      // Writing turn_context alone (with no followed mapped event) must NOT
+      // trigger _onStateChange. Title delivery rides on the next mapped event.
+      const testFile = path.join(dateDir, TEST_FILENAME);
+      fs.writeFileSync(testFile, [
+        '{"type":"turn_context","payload":{"summary":"Title Only"}}',
+      ].join("\n") + "\n");
+
+      const config = makeConfig(tmpDir);
+      let emittedCount = 0;
+      monitor = new CodexLogMonitor(config, () => { emittedCount++; });
+      monitor.start();
+
+      // Give the monitor a poll cycle (pollIntervalMs=100ms) to prove nothing fires
+      setTimeout(() => {
+        assert.strictEqual(emittedCount, 0, `expected no emits, got ${emittedCount}`);
+        done();
+      }, 300);
+    });
+
+    it("updates sessionTitle when a later turn_context replaces an earlier one", (_, done) => {
+      const testFile = path.join(dateDir, TEST_FILENAME);
+      fs.writeFileSync(testFile, [
+        '{"type":"turn_context","payload":{"summary":"Old Title"}}',
+        '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+        '{"type":"turn_context","payload":{"summary":"New Title"}}',
+        '{"type":"event_msg","payload":{"type":"task_started"}}',
+      ].join("\n") + "\n");
+
+      const config = makeConfig(tmpDir);
+      const observed = [];
+      monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+        observed.push({ state, title: extra.sessionTitle });
+        // task_started → thinking: we should see the new title by this point
+        if (state === "thinking") {
+          assert.strictEqual(extra.sessionTitle, "New Title");
+          done();
+        }
+      });
+      monitor.start();
+    });
+  });
+
   it("should process recent existing day dirs even if not today/yesterday", (_, done) => {
     const oldDateDir = path.join(tmpDir, "2024", "01", "02");
     fs.mkdirSync(oldDateDir, { recursive: true });
