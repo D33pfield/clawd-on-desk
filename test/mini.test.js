@@ -71,9 +71,10 @@ function makeCtx(theme, stateLog, initialX = 160) {
     getCurrentPixelSize() { return { width: 120, height: 120 }; },
     getPetWindowBounds() { return { ...bounds }; },
     getAnimationAssetCycleMs(file) {
-      if (file && file.includes("mini-enter")) return 240;
+      if (file && file.includes("mini-enter")) return 1000;
       return null;
     },
+    getBoundsSnapshot() { return { ...bounds }; },
     setViewportOffsetY() {},
     stopWakePoll() {},
     sendToRenderer() {},
@@ -106,7 +107,7 @@ describe("mini mode entry timing", () => {
     loader = null;
   });
 
-  it("edge-snap entry reaches mini-idle without a multi-second freeze", () => {
+  it("drag-snap entry slides to mini position first, then plays mini-enter", () => {
     loader = loadMiniWithElectron({
       getAllDisplays() {
         return [{ bounds: { x: 0, y: 0, width: 800, height: 600 }, workArea: { x: 0, y: 0, width: 800, height: 600 } }];
@@ -114,19 +115,27 @@ describe("mini mode entry timing", () => {
     });
     const stateLog = [];
     const theme = cloneTheme(_defaultTheme);
-    const rightMiniX = 800 - Math.round(120 * (1 - theme.miniMode.offsetRatio));
-    const ctx = makeCtx(theme, stateLog, rightMiniX);
+    // Start away from the mini position so the 100ms slide is observable.
+    const ctx = makeCtx(theme, stateLog, 600);
     const mini = loader.initMini(ctx);
 
     mini.enterMiniMode({ x: 0, y: 0, width: 800, height: 600 }, false, "right");
-    mock.timers.tick(260);
 
-    assert.deepStrictEqual(stateLog.slice(0, 2), ["mini-enter", "mini-idle"]);
+    // After the 100ms window slide: window is at mini position,
+    // mini-enter has just been applied, enter animation is playing.
+    mock.timers.tick(120);
+    assert.deepStrictEqual(stateLog, ["mini-enter"]);
+    assert.equal(ctx.getBoundsSnapshot().x, mini.getCurrentMiniX());
+    assert.equal(mini.getMiniTransitioning(), true);
+
+    // After the mini-enter animation settles (mocked to 1000ms).
+    mock.timers.tick(1020);
+    assert.deepStrictEqual(stateLog, ["mini-enter", "mini-idle"]);
     assert.equal(mini.getMiniTransitioning(), false);
     assert.equal(mini.getMiniMode(), true);
   });
 
-  it("via-menu mini handoff also settles into mini-idle quickly", () => {
+  it("via-menu mini handoff preloads mini-enter offscreen before revealing the pet", () => {
     loader = loadMiniWithElectron({
       getAllDisplays() {
         return [{ bounds: { x: 0, y: 0, width: 800, height: 600 }, workArea: { x: 0, y: 0, width: 800, height: 600 } }];
@@ -134,19 +143,27 @@ describe("mini mode entry timing", () => {
     });
     const stateLog = [];
     const theme = cloneTheme(_defaultTheme);
-    const ctx = makeCtx(theme, stateLog, 800);
+    const ctx = makeCtx(theme, stateLog, 710);
     const mini = loader.initMini(ctx);
 
     mini.enterMiniMode({ x: 0, y: 0, width: 800, height: 600 }, true, "right");
-    mock.timers.tick(350);
-    mock.timers.tick(260);
+    mock.timers.tick(360);
+
+    assert.deepStrictEqual(stateLog, ["mini-enter"]);
+    assert.notEqual(ctx.getBoundsSnapshot().x, mini.getCurrentMiniX());
+    assert.equal(mini.getMiniTransitioning(), true);
+
+    mock.timers.tick(300);
+    assert.equal(ctx.getBoundsSnapshot().x, mini.getCurrentMiniX());
+
+    mock.timers.tick(1020);
 
     assert.deepStrictEqual(stateLog, ["mini-enter", "mini-idle"]);
     assert.equal(mini.getMiniTransitioning(), false);
     assert.equal(mini.getMiniMode(), true);
   });
 
-  it("enters mini-peek immediately after enter when the cursor is already over the pet", () => {
+  it("drag-snap still plays full mini-enter even when the cursor is over the pet", () => {
     loader = loadMiniWithElectron({
       getAllDisplays() {
         return [{ bounds: { x: 0, y: 0, width: 800, height: 600 }, workArea: { x: 0, y: 0, width: 800, height: 600 } }];
@@ -160,30 +177,12 @@ describe("mini mode entry timing", () => {
     const mini = loader.initMini(ctx);
 
     mini.enterMiniMode({ x: 0, y: 0, width: 800, height: 600 }, false, "right");
-    mock.timers.tick(260);
+    mock.timers.tick(120);
+    assert.deepStrictEqual(stateLog, ["mini-enter"]);
 
-    assert.deepStrictEqual(stateLog.slice(0, 2), ["mini-enter", "mini-peek"]);
+    mock.timers.tick(1020);
+    assert.deepStrictEqual(stateLog, ["mini-enter", "mini-idle"]);
     assert.equal(mini.getMiniTransitioning(), false);
     assert.equal(mini.getMiniMode(), true);
-  });
-
-  it("hover can interrupt mini-enter before the full enter cycle completes", () => {
-    loader = loadMiniWithElectron({
-      getAllDisplays() {
-        return [{ bounds: { x: 0, y: 0, width: 800, height: 600 }, workArea: { x: 0, y: 0, width: 800, height: 600 } }];
-      },
-    });
-    const stateLog = [];
-    const theme = cloneTheme(_defaultTheme);
-    const rightMiniX = 800 - Math.round(120 * (1 - theme.miniMode.offsetRatio));
-    const ctx = makeCtx(theme, stateLog, rightMiniX);
-    const mini = loader.initMini(ctx);
-
-    mini.enterMiniMode({ x: 0, y: 0, width: 800, height: 600 }, false, "right");
-    mock.timers.tick(120);
-
-    assert.equal(mini.interruptMiniEnterForHover(), true);
-    assert.deepStrictEqual(stateLog.slice(0, 2), ["mini-enter", "mini-peek"]);
-    assert.equal(mini.getMiniTransitioning(), false);
   });
 });

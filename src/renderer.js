@@ -447,7 +447,16 @@ function swapToFile(file, state, useObjectChannel) {
     };
 
     next.addEventListener("load", swap, { once: true });
-    next.src = url;
+    // Cache-bust query param: Chromium reuses the SVG document (and its CSS
+    // animation timeline) across <img> elements pointing at the same URL, so
+    // one-shot animations (`animation: foo 3.2s 1 forwards`) that already ran
+    // once would reappear stuck on their last frame on subsequent loads —
+    // the user sees a static pet instead of the entry animation. Appending
+    // a timestamp forces a fresh SVG document & fresh animation start each
+    // swap. Infinite animations are unaffected (they look identical either
+    // way). Load time stays ~0ms since the file itself is still in the HTTP
+    // cache; only the in-memory SVG document is rebuilt.
+    next.src = `${url}${url.includes("?") ? "&" : "?"}_t=${Date.now()}`;
     container.appendChild(next);
     pendingNext = next;
     // Timeout fallback for images that fail to load

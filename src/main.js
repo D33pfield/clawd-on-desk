@@ -786,7 +786,6 @@ const _tickCtx = {
   applyState,
   miniPeekIn: () => miniPeekIn(),
   miniPeekOut: () => miniPeekOut(),
-  interruptMiniEnterForHover: () => _mini.interruptMiniEnterForHover(),
   getObjRect,
   getHitRectScreen,
 };
@@ -2315,6 +2314,7 @@ function createWindow() {
     try {
       if (!_mini.getMiniMode() && !_mini.getMiniTransitioning()) {
         checkMiniModeSnap();
+        if (_mini.getMiniMode() || _mini.getMiniTransitioning()) return;
         // After drag, clamp to the nearest screen (loose clamp during drag allows cross-screen).
         // In proportional mode, also recalculate size for the landing display.
         if (win && !win.isDestroyed()) {

@@ -89,28 +89,23 @@ function startMainTick() {
     }
 
     // ── Mini mode peek hover ──
-    if (ctx.miniMode && !ctx.dragLocked && !ctx.menuOpen) {
-      if (ctx.mouseOverPet && typeof ctx.interruptMiniEnterForHover === "function" && ctx.interruptMiniEnterForHover()) {
-        return;
-      }
-      if (!ctx.miniTransitioning) {
-        const canPeek = ctx.currentState === "mini-idle" || ctx.currentState === "mini-peek"
-          || ctx.currentState === "mini-sleep";
-        if (!ctx.isAnimating && canPeek) {
-          if (ctx.mouseOverPet && ctx.currentState === "mini-sleep" && !ctx.miniSleepPeeked) {
-            ctx.miniPeekIn();
-            ctx.miniSleepPeeked = true;
-          } else if (!ctx.mouseOverPet && ctx.currentState === "mini-sleep" && ctx.miniSleepPeeked) {
-            ctx.miniPeekOut();
-            ctx.miniSleepPeeked = false;
-          } else if (ctx.mouseOverPet && ctx.currentState !== "mini-peek" && ctx.currentState !== "mini-sleep" && !ctx.miniPeeked) {
-            ctx.miniPeekIn();
-            ctx.applyState("mini-peek");
-          } else if (!ctx.mouseOverPet && (ctx.currentState === "mini-peek" || ctx.miniPeeked)) {
-            ctx.miniPeekOut();
-            ctx.miniPeeked = false;
-            if (ctx.currentState !== "mini-idle") ctx.applyState("mini-idle");
-          }
+    if (ctx.miniMode && !ctx.miniTransitioning && !ctx.dragLocked && !ctx.menuOpen) {
+      const canPeek = ctx.currentState === "mini-idle" || ctx.currentState === "mini-peek"
+        || ctx.currentState === "mini-sleep";
+      if (!ctx.isAnimating && canPeek) {
+        if (ctx.mouseOverPet && ctx.currentState === "mini-sleep" && !ctx.miniSleepPeeked) {
+          ctx.miniPeekIn();
+          ctx.miniSleepPeeked = true;
+        } else if (!ctx.mouseOverPet && ctx.currentState === "mini-sleep" && ctx.miniSleepPeeked) {
+          ctx.miniPeekOut();
+          ctx.miniSleepPeeked = false;
+        } else if (ctx.mouseOverPet && ctx.currentState !== "mini-peek" && ctx.currentState !== "mini-sleep" && !ctx.miniPeeked) {
+          ctx.miniPeekIn();
+          ctx.applyState("mini-peek");
+        } else if (!ctx.mouseOverPet && (ctx.currentState === "mini-peek" || ctx.miniPeeked)) {
+          ctx.miniPeekOut();
+          ctx.miniPeeked = false;
+          if (ctx.currentState !== "mini-idle") ctx.applyState("mini-idle");
         }
       }
     }

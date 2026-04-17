@@ -60,6 +60,7 @@ function makeCtx(theme, statesSeen) {
     menuOpen: false,
     isAnimating: false,
     mouseOverPet: false,
+    miniPeeked: false,
     forceEyeResend: false,
     startupRecoveryActive: false,
     sendToRenderer() {},
@@ -127,5 +128,65 @@ describe("tick sleepSequence mode", () => {
 
     for (const step of [50, 50, 50, 50, 50, 50, 50, 50, 50]) mock.timers.tick(step);
     assert.deepStrictEqual(statesSeen, ["yawning"]);
+  });
+});
+
+describe("tick mini hover", () => {
+  let cursor;
+  let loader;
+  let tickApi;
+  let ctx;
+  let statesSeen;
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    cursor = { x: 40, y: 40 };
+    loader = loadTickWithScreen(() => ({ ...cursor }));
+    statesSeen = [];
+  });
+
+  afterEach(() => {
+    if (tickApi) tickApi.cleanup();
+    if (loader) loader.restore();
+    mock.timers.reset();
+    tickApi = null;
+    ctx = null;
+  });
+
+  it("enters mini-peek from mini-idle when the cursor moves over the pet", () => {
+    const theme = cloneTheme(_defaultTheme);
+    let peekInCalls = 0;
+
+    ctx = makeCtx(theme, statesSeen);
+    ctx.miniMode = true;
+    ctx.currentState = "mini-idle";
+    ctx.miniPeekIn = () => { peekInCalls++; };
+
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+    mock.timers.tick(60);
+
+    assert.equal(peekInCalls, 1);
+    assert.deepStrictEqual(statesSeen, ["mini-peek"]);
+  });
+
+  it("returns to mini-idle when the cursor leaves mini-peek", () => {
+    const theme = cloneTheme(_defaultTheme);
+    let peekOutCalls = 0;
+
+    cursor = { x: 400, y: 400 };
+    ctx = makeCtx(theme, statesSeen);
+    ctx.miniMode = true;
+    ctx.currentState = "mini-peek";
+    ctx.mouseOverPet = true;
+    ctx.miniPeekOut = () => { peekOutCalls++; };
+
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+    mock.timers.tick(60);
+
+    assert.equal(peekOutCalls, 1);
+    assert.equal(ctx.miniPeeked, false);
+    assert.deepStrictEqual(statesSeen, ["mini-idle"]);
   });
 });

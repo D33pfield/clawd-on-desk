@@ -10,6 +10,7 @@ const SNAP_TOLERANCE = 30;
 const JUMP_PEAK_HEIGHT = 40;
 const JUMP_DURATION = 350;
 const MINI_ENTER_FALLBACK_MS = 3200;
+const MINI_ENTER_PRELOAD_MS = 300;
 const CRABWALK_SPEED = 0.12;  // px/ms
 let MINI_OFFSET_RATIO = ctx.theme.miniMode.offsetRatio;
 
@@ -105,16 +106,31 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone) {
   const startTime = Date.now();
   let frameCount = 0;
   const step = () => {
-    if (!ctx.win || ctx.win.isDestroyed()) { peekAnimTimer = null; isAnimating = false; return; }
+    if (!ctx.win || ctx.win.isDestroyed()) {
+      peekAnimTimer = null;
+      isAnimating = false;
+      if (onDone) onDone();
+      return;
+    }
     const t = Math.min(1, (Date.now() - startTime) / durationMs);
     const eased = t * (2 - t);
     const x = Math.round(startX + (targetX - startX) * eased);
     const arc = -4 * JUMP_PEAK_HEIGHT * t * (t - 1);
     const y = Math.round(startY + (targetY - startY) * eased - arc);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) { peekAnimTimer = null; isAnimating = false; if (onDone) onDone(); return; }
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      peekAnimTimer = null;
+      isAnimating = false;
+      if (onDone) onDone();
+      return;
+    }
     try {
       ctx.win.setPosition(x, y);
-    } catch { peekAnimTimer = null; isAnimating = false; if (onDone) onDone(); return; }
+    } catch {
+      peekAnimTimer = null;
+      isAnimating = false;
+      if (onDone) onDone();
+      return;
+    }
     ctx.syncHitWin();
     // Throttle bubble reposition to every 3rd frame (~20fps) — visually identical, less overhead
     if (ctx.bubbleFollowPet && ctx.pendingPermissions.length && (++frameCount % 3 === 0 || t >= 1)) ctx.repositionBubbles();
@@ -159,21 +175,8 @@ function getMiniEnterDurationMs(state) {
   return Number.isFinite(cycleMs) && cycleMs > 0 ? cycleMs : MINI_ENTER_FALLBACK_MS;
 }
 
-function isMiniEnterState(state) {
-  return state === "mini-enter" || state === "mini-enter-sleep";
-}
-
 function getMiniRestState() {
   return ctx.doNotDisturb ? "mini-sleep" : "mini-idle";
-}
-
-function applyMiniPostEnterState() {
-  if (!ctx.doNotDisturb && ctx.mouseOverPet) {
-    miniPeekIn();
-    ctx.applyState("mini-peek");
-    return;
-  }
-  ctx.applyState(getMiniRestState());
 }
 
 function finishMiniEntry(delayMs) {
@@ -182,18 +185,8 @@ function finishMiniEntry(delayMs) {
   miniTransitionTimer = setTimeout(() => {
     miniTransitionTimer = null;
     miniTransitioning = false;
-    applyMiniPostEnterState();
+    ctx.applyState(getMiniRestState());
   }, settleMs);
-}
-
-function interruptMiniEnterForHover() {
-  if (!miniMode || isAnimating || ctx.doNotDisturb) return false;
-  if (!isMiniEnterState(ctx.currentState)) return false;
-  if (miniTransitionTimer) { clearTimeout(miniTransitionTimer); miniTransitionTimer = null; }
-  miniTransitioning = false;
-  miniPeekIn();
-  ctx.applyState("mini-peek");
-  return true;
 }
 
 function cancelMiniTransition() {
@@ -279,16 +272,35 @@ function enterMiniMode(wa, viaMenu, edge) {
       jumpTarget = minLeft - size.width;
     }
     animateWindowParabola(jumpTarget, bounds.y, JUMP_DURATION, () => {
-      miniSnap = { y: bounds.y, width: size.width, height: size.height };
-      ctx.win.setBounds({ x: currentMiniX, y: miniSnap.y, width: miniSnap.width, height: miniSnap.height });
-      ctx.syncHitWin();
+      const enterDurationMs = getMiniEnterDurationMs(enterSvgState);
+      ctx.applyState(enterSvgState);
+      if (MINI_ENTER_PRELOAD_MS <= 0) {
+        miniSnap = { y: bounds.y, width: size.width, height: size.height };
+        ctx.win.setBounds({ x: currentMiniX, y: miniSnap.y, width: miniSnap.width, height: miniSnap.height });
+        ctx.syncHitWin();
+        finishMiniEntry(enterDurationMs);
+        return;
+      }
+      miniTransitionTimer = setTimeout(() => {
+        miniSnap = { y: bounds.y, width: size.width, height: size.height };
+        ctx.win.setBounds({ x: currentMiniX, y: miniSnap.y, width: miniSnap.width, height: miniSnap.height });
+        miniTransitionTimer = null;
+        ctx.syncHitWin();
+        finishMiniEntry(enterDurationMs);
+      }, MINI_ENTER_PRELOAD_MS);
+    });
+  } else {
+    // Drag path: slide the window into place first, then play mini-enter.
+    // Running the 100ms window slide concurrently with the ~960ms in-SVG
+    // body-slide used to cancel them out visually (opposite directions, 10×
+    // speed difference) — the body-slide became invisible and the pet
+    // looked frozen for ~1s before the arm wave. Sequencing them matches
+    // the via-menu path: window settles, then the full entry animation
+    // plays in place and reads clearly.
+    animateWindowX(currentMiniX, 100, () => {
       ctx.applyState(enterSvgState);
       finishMiniEntry(getMiniEnterDurationMs(enterSvgState));
     });
-  } else {
-    ctx.applyState(enterSvgState);
-    finishMiniEntry(getMiniEnterDurationMs(enterSvgState));
-    animateWindowX(currentMiniX, 100);
   }
 }
 
@@ -448,7 +460,6 @@ function cleanup() {
 return {
   enterMiniMode, exitMiniMode, enterMiniViaMenu,
   miniPeekIn, miniPeekOut, checkMiniModeSnap, cancelMiniTransition,
-  interruptMiniEnterForHover,
   animateWindowX, animateWindowParabola,
   refreshTheme,
   handleDisplayChange, handleResize, restoreFromPrefs,
