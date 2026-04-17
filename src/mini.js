@@ -9,6 +9,7 @@ const PEEK_OFFSET = 25;
 const SNAP_TOLERANCE = 30;
 const JUMP_PEAK_HEIGHT = 40;
 const JUMP_DURATION = 350;
+const MINI_ENTER_FALLBACK_MS = 3200;
 const CRABWALK_SPEED = 0.12;  // px/ms
 let MINI_OFFSET_RATIO = ctx.theme.miniMode.offsetRatio;
 
@@ -33,11 +34,20 @@ function themeSupportsMini() {
 }
 
 // ── Window animation ──
-function animateWindowX(targetX, durationMs) {
+// Mini animations run on **real** Electron bounds (not virtual). enterMiniMode
+// calls ctx.setViewportOffsetY(0) before starting animation, so real === virtual
+// throughout the mini lifecycle. Skipping applyPetWindowBounds here avoids the
+// per-frame materialize → IPC → renderer CSS re-apply round-trip that was
+// stalling the main thread during mini entry.
+function animateWindowX(targetX, durationMs, onDone) {
   if (peekAnimTimer) { clearTimeout(peekAnimTimer); peekAnimTimer = null; }
   const bounds = ctx.win.getBounds();
   const startX = bounds.x;
-  if (startX === targetX) { isAnimating = false; return; }
+  if (startX === targetX) {
+    isAnimating = false;
+    if (onDone) onDone();
+    return;
+  }
   isAnimating = true;
   const startTime = Date.now();
   const snapY = miniSnap ? miniSnap.y : bounds.y;
@@ -45,14 +55,29 @@ function animateWindowX(targetX, durationMs) {
   const snapH = miniSnap ? miniSnap.height : bounds.height;
   let frameCount = 0;
   const step = () => {
-    if (!ctx.win || ctx.win.isDestroyed()) { peekAnimTimer = null; isAnimating = false; return; }
+    if (!ctx.win || ctx.win.isDestroyed()) {
+      peekAnimTimer = null;
+      isAnimating = false;
+      if (onDone) onDone();
+      return;
+    }
     const t = Math.min(1, (Date.now() - startTime) / durationMs);
     const eased = t * (2 - t);
     const x = Math.round(startX + (targetX - startX) * eased);
-    if (!Number.isFinite(x) || !Number.isFinite(snapY)) { peekAnimTimer = null; isAnimating = false; return; }
+    if (!Number.isFinite(x) || !Number.isFinite(snapY)) {
+      peekAnimTimer = null;
+      isAnimating = false;
+      if (onDone) onDone();
+      return;
+    }
     try {
       ctx.win.setBounds({ x, y: snapY, width: snapW, height: snapH });
-    } catch { peekAnimTimer = null; isAnimating = false; return; }
+    } catch {
+      peekAnimTimer = null;
+      isAnimating = false;
+      if (onDone) onDone();
+      return;
+    }
     ctx.syncHitWin();
     // Throttle bubble reposition to every 3rd frame (~20fps) — visually identical, less overhead
     if (ctx.bubbleFollowPet && ctx.pendingPermissions.length && (++frameCount % 3 === 0 || t >= 1)) ctx.repositionBubbles();
@@ -61,6 +86,7 @@ function animateWindowX(targetX, durationMs) {
     } else {
       peekAnimTimer = null;
       isAnimating = false;
+      if (onDone) onDone();
     }
   };
   step();
@@ -118,6 +144,58 @@ function miniPeekOut() {
   animateWindowX(currentMiniX, 200);
 }
 
+function getMiniStateFile(state) {
+  const miniStates = ctx.theme && ctx.theme.miniMode && ctx.theme.miniMode.states;
+  if (!miniStates) return null;
+  const files = miniStates[state];
+  return Array.isArray(files) && files[0] ? files[0] : null;
+}
+
+function getMiniEnterDurationMs(state) {
+  const file = getMiniStateFile(state);
+  const cycleMs = typeof ctx.getAnimationAssetCycleMs === "function"
+    ? ctx.getAnimationAssetCycleMs(file)
+    : null;
+  return Number.isFinite(cycleMs) && cycleMs > 0 ? cycleMs : MINI_ENTER_FALLBACK_MS;
+}
+
+function isMiniEnterState(state) {
+  return state === "mini-enter" || state === "mini-enter-sleep";
+}
+
+function getMiniRestState() {
+  return ctx.doNotDisturb ? "mini-sleep" : "mini-idle";
+}
+
+function applyMiniPostEnterState() {
+  if (!ctx.doNotDisturb && ctx.mouseOverPet) {
+    miniPeekIn();
+    ctx.applyState("mini-peek");
+    return;
+  }
+  ctx.applyState(getMiniRestState());
+}
+
+function finishMiniEntry(delayMs) {
+  if (miniTransitionTimer) { clearTimeout(miniTransitionTimer); miniTransitionTimer = null; }
+  const settleMs = Number.isFinite(delayMs) && delayMs >= 0 ? delayMs : MINI_ENTER_FALLBACK_MS;
+  miniTransitionTimer = setTimeout(() => {
+    miniTransitionTimer = null;
+    miniTransitioning = false;
+    applyMiniPostEnterState();
+  }, settleMs);
+}
+
+function interruptMiniEnterForHover() {
+  if (!miniMode || isAnimating || ctx.doNotDisturb) return false;
+  if (!isMiniEnterState(ctx.currentState)) return false;
+  if (miniTransitionTimer) { clearTimeout(miniTransitionTimer); miniTransitionTimer = null; }
+  miniTransitioning = false;
+  miniPeekIn();
+  ctx.applyState("mini-peek");
+  return true;
+}
+
 function cancelMiniTransition() {
   miniTransitioning = false;
   if (miniTransitionTimer) { clearTimeout(miniTransitionTimer); miniTransitionTimer = null; }
@@ -132,7 +210,7 @@ function _getSize() {
 function checkMiniModeSnap() {
   if (!themeSupportsMini()) return;
   if (miniMode) return;
-  const bounds = ctx.win.getBounds();
+  const bounds = ctx.getPetWindowBounds();
   const size = _getSize();
   const mEdge = Math.round(size.width * 0.25);
   const centerX = bounds.x + size.width / 2;
@@ -160,12 +238,19 @@ function checkMiniModeSnap() {
 function enterMiniMode(wa, viaMenu, edge) {
   if (!themeSupportsMini()) return;
   if (miniMode && !viaMenu) return;
-  const bounds = ctx.win.getBounds();
+  // preMini 存 virtual — 退出 mini 时能复原贴顶位置
+  const virtualBounds = ctx.getPetWindowBounds();
   if (!viaMenu) {
-    preMiniX = bounds.x;
-    preMiniY = bounds.y;
+    preMiniX = virtualBounds.x;
+    preMiniY = virtualBounds.y;
   }
+  // 清零 viewport offset — mini 全程用 real 坐标,避免每帧 materialize + IPC 风暴
+  if (typeof ctx.setViewportOffsetY === "function") ctx.setViewportOffsetY(0);
+  // 之后 real === virtual,用 real API 读取当前 y 作为 mini 起点
+  const bounds = ctx.win.getBounds();
   miniMode = true;
+  miniSleepPeeked = false;
+  miniPeeked = false;
   if (edge) miniEdge = edge;
   const size = _getSize();
   currentMiniX = calcMiniX(wa, size);
@@ -194,23 +279,16 @@ function enterMiniMode(wa, viaMenu, edge) {
       jumpTarget = minLeft - size.width;
     }
     animateWindowParabola(jumpTarget, bounds.y, JUMP_DURATION, () => {
+      miniSnap = { y: bounds.y, width: size.width, height: size.height };
+      ctx.win.setBounds({ x: currentMiniX, y: miniSnap.y, width: miniSnap.width, height: miniSnap.height });
+      ctx.syncHitWin();
       ctx.applyState(enterSvgState);
-      miniTransitionTimer = setTimeout(() => {
-        miniSnap = { y: bounds.y, width: size.width, height: size.height };
-        ctx.win.setBounds({ x: currentMiniX, y: miniSnap.y, width: miniSnap.width, height: miniSnap.height });
-        miniTransitionTimer = setTimeout(() => {
-          miniTransitioning = false;
-          ctx.applyState(ctx.doNotDisturb ? "mini-sleep" : "mini-idle");
-        }, 3200);
-      }, 300);
+      finishMiniEntry(getMiniEnterDurationMs(enterSvgState));
     });
   } else {
-    animateWindowX(currentMiniX, 100);
     ctx.applyState(enterSvgState);
-    miniTransitionTimer = setTimeout(() => {
-      miniTransitioning = false;
-      ctx.applyState(ctx.doNotDisturb ? "mini-sleep" : "mini-idle");
-    }, 3200);
+    finishMiniEntry(getMiniEnterDurationMs(enterSvgState));
+    animateWindowX(currentMiniX, 100);
   }
 }
 
@@ -227,7 +305,12 @@ function exitMiniMode() {
   miniPeeked = false;
 
   const size = _getSize();
-  const clamped = ctx.clampToScreen(preMiniX, preMiniY, size.width, size.height);
+  const visualState = ctx.doNotDisturb ? "idle" : ctx.resolveDisplayState();
+  const visualFile = visualState ? ctx.getSvgOverride(visualState) : null;
+  const clamped = ctx.clampToScreenVisual(preMiniX, preMiniY, size.width, size.height, {
+    state: visualState,
+    file: visualFile,
+  });
   const wa = ctx.getNearestWorkArea(clamped.x + size.width / 2, clamped.y + size.height / 2);
   const mEdge = Math.round(size.width * 0.25);
   // Prevent right-edge re-snap
@@ -262,6 +345,12 @@ function exitMiniMode() {
 
 function enterMiniViaMenu() {
   if (!themeSupportsMini()) return;
+  // preMini 存 virtual — 退出 mini 时能复原贴顶位置
+  const virtualBounds = ctx.getPetWindowBounds();
+  preMiniX = virtualBounds.x;
+  preMiniY = virtualBounds.y;
+  // 清零 viewport offset — 和 enterMiniMode 对称
+  if (typeof ctx.setViewportOffsetY === "function") ctx.setViewportOffsetY(0);
   const bounds = ctx.win.getBounds();
   const size = _getSize();
   const wa = ctx.getNearestWorkArea(bounds.x + size.width / 2, bounds.y + size.height / 2);
@@ -272,8 +361,6 @@ function enterMiniViaMenu() {
   const edge = centerX <= waMid ? "left" : "right";
   miniEdge = edge;
 
-  preMiniX = bounds.x;
-  preMiniY = bounds.y;
   miniTransitioning = true;
 
   // Send edge before crabwalk so CSS flip applies before animation starts
@@ -301,9 +388,12 @@ function handleDisplayChange() {
   if (!ctx.win || ctx.win.isDestroyed()) return;
   if (!miniMode) return;
   const size = _getSize();
-  const snapY = miniSnap ? miniSnap.y : ctx.win.getBounds().y;
+  // mini 期间 offset 恒为 0,real === virtual,直接读 real
+  const bounds = ctx.win.getBounds();
+  const snapY = miniSnap ? miniSnap.y : bounds.y;
   const wa = ctx.getNearestWorkArea(currentMiniX + size.width / 2, snapY + size.height / 2);
   currentMiniX = calcMiniX(wa, size);
+  // mini 的 y 必须在工作区内(real 坐标),加回两端 clamp
   const clampedY = Math.max(wa.y, Math.min(snapY, wa.y + wa.height - size.height));
   miniSnap = { y: clampedY, width: size.width, height: size.height };
   ctx.win.setBounds({ x: currentMiniX, y: clampedY, width: size.width, height: size.height });
@@ -327,10 +417,14 @@ function restoreFromPrefs(prefs, size) {
   miniEdge = prefs.miniEdge || "right";
   const wa = ctx.getNearestWorkArea(prefs.x + size.width / 2, prefs.y + size.height / 2);
   currentMiniX = calcMiniX(wa, size);
+  // 启动恢复 mini 时 y 必须在工作区内(保证 offset = 0,符合 mini 语义)
   const startY = Math.max(wa.y, Math.min(prefs.y, wa.y + wa.height - size.height));
   miniSnap = { y: startY, width: size.width, height: size.height };
   miniMode = true;
-  return { x: currentMiniX, y: startY };
+  miniTransitioning = false;
+  miniSleepPeeked = false;
+  miniPeeked = false;
+  return { x: currentMiniX, y: startY, width: size.width, height: size.height };
 }
 
 function getMiniMode() { return miniMode; }
@@ -354,6 +448,7 @@ function cleanup() {
 return {
   enterMiniMode, exitMiniMode, enterMiniViaMenu,
   miniPeekIn, miniPeekOut, checkMiniModeSnap, cancelMiniTransition,
+  interruptMiniEnterForHover,
   animateWindowX, animateWindowParabola,
   refreshTheme,
   handleDisplayChange, handleResize, restoreFromPrefs,

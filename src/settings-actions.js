@@ -207,6 +207,8 @@ const updateRegistry = {
   preMiniX: requireFiniteNumber("preMiniX"),
   preMiniY: requireFiniteNumber("preMiniY"),
   positionSaved: requireBoolean("positionSaved"),
+  positionThemeId: requireString("positionThemeId", { allowEmpty: true }),
+  positionVariantId: requireString("positionVariantId", { allowEmpty: true }),
 
   // ── Pure data prefs (function-form: validator only) ──
   lang: requireEnum("lang", ["en", "zh", "ko"]),

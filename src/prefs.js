@@ -34,6 +34,8 @@ const SCHEMA = {
   x: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   y: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   positionSaved: { type: "boolean", default: false },
+  positionThemeId: { type: "string", default: "" },
+  positionVariantId: { type: "string", default: "" },
   size: {
     type: "string",
     default: "P:10",

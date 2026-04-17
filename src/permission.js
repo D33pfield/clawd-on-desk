@@ -263,7 +263,7 @@ function repositionBubbles() {
   const margin = 8;
   const gap = 6;
   const bw = 340;
-  const petBounds = ctx.win.getBounds();
+  const petBounds = ctx.getPetWindowBounds();
   const cx = petBounds.x + petBounds.width / 2;
   const cy = petBounds.y + petBounds.height / 2;
   const wa = ctx.getNearestWorkArea(cx, cy);

@@ -131,8 +131,28 @@ function getHitRectScreen(theme, bounds, state, file, hitBox, options = {}) {
   };
 }
 
+function getContentRectScreen(theme, bounds, state, file, options = {}) {
+  const box = options.box || (theme && theme.layout && theme.layout.contentBox);
+  if (!theme || !bounds || !box) return null;
+
+  const artRect = getAssetRectScreen(theme, bounds, state, file);
+  if (!artRect) return null;
+
+  const vb = theme.viewBox;
+  const scaleX = artRect.w / vb.width;
+  const scaleY = artRect.h / vb.height;
+
+  return {
+    left: artRect.x + (box.x - vb.x) * scaleX,
+    top: artRect.y + (box.y - vb.y) * scaleY,
+    right: artRect.x + (box.x - vb.x + box.width) * scaleX,
+    bottom: artRect.y + (box.y - vb.y + box.height) * scaleY,
+  };
+}
+
 module.exports = {
   getAssetRectScreen,
+  getContentRectScreen,
   getHitRectScreen,
   usesObjectChannel,
   usesNormalizedLayout,

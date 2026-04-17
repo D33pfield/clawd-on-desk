@@ -5,6 +5,7 @@ const {
   createDragSnapshot,
   computeAnchoredDragBounds,
   computeFinalDragBounds,
+  materializeVirtualBounds,
 } = require("../src/drag-position");
 const { computeLooseClamp } = require("../src/work-area");
 
@@ -57,5 +58,43 @@ describe("anchored drag positioning", () => {
     );
 
     assert.deepStrictEqual(result, { x: 3640, y: 100, width: 200, height: 200 });
+  });
+});
+
+describe("materializeVirtualBounds", () => {
+  it("keeps in-bounds virtual coordinates unchanged", () => {
+    const result = materializeVirtualBounds(
+      { x: 100, y: 120, width: 200, height: 200 },
+      wa(0, 0, 1920, 1080)
+    );
+
+    assert.deepStrictEqual(result, {
+      bounds: { x: 100, y: 120, width: 200, height: 200 },
+      viewportOffsetY: 0,
+    });
+  });
+
+  it("materializes negative virtual y to the workArea top and returns viewport offset", () => {
+    const result = materializeVirtualBounds(
+      { x: 100, y: -74, width: 200, height: 200 },
+      wa(0, 0, 1920, 1080)
+    );
+
+    assert.deepStrictEqual(result, {
+      bounds: { x: 100, y: 0, width: 200, height: 200 },
+      viewportOffsetY: 74,
+    });
+  });
+
+  it("falls back to raw virtual bounds when no workArea exists", () => {
+    const result = materializeVirtualBounds(
+      { x: 50, y: -20, width: 100, height: 100 },
+      null
+    );
+
+    assert.deepStrictEqual(result, {
+      bounds: { x: 50, y: -20, width: 100, height: 100 },
+      viewportOffsetY: 0,
+    });
   });
 });

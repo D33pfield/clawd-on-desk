@@ -79,6 +79,17 @@ describe("computeLooseClamp", () => {
     assert.strictEqual(result.x, -50);
   });
 
+  it("supports asymmetric top and bottom margins", () => {
+    const displays = [display(0, 0, 1920, 1080)];
+    const result = computeLooseClamp(displays, null, 100, -120, 200, 200, {
+      marginTop: 90,
+      marginBottom: 30,
+    });
+
+    assert.strictEqual(result.x, 100);
+    assert.strictEqual(result.y, -90);
+  });
+
   // ── issue #93 regression cases ──
 
   it("falls back to primary when displays is empty", () => {

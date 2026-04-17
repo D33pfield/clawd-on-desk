@@ -156,7 +156,7 @@ module.exports = function initUpdateBubble(ctx) {
 
   function computeBounds() {
     if (!ctx.win || ctx.win.isDestroyed()) return null;
-    const petBounds = ctx.win.getBounds();
+    const petBounds = ctx.getPetWindowBounds();
     const cx = petBounds.x + petBounds.width / 2;
     const cy = petBounds.y + petBounds.height / 2;
     const wa = ctx.getNearestWorkArea(cx, cy);

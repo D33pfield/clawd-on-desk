@@ -99,4 +99,15 @@ describe("hit geometry", () => {
     approx(rect.w, 261);
     approx(rect.h, 261);
   });
+
+  it("derives the visible content rect from contentBox geometry", () => {
+    const artRect = hitGeometry.getAssetRectScreen(clawd, bounds, "idle", "clawd-idle-follow.svg");
+    const expected = visibleContentRect(clawd, artRect);
+    const actual = hitGeometry.getContentRectScreen(clawd, bounds, "idle", "clawd-idle-follow.svg");
+
+    approx(actual.left, expected.x);
+    approx(actual.top, expected.y);
+    approx(actual.right, expected.x + expected.w);
+    approx(actual.bottom, expected.bottom);
+  });
 });
