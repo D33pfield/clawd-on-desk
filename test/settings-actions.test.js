@@ -599,6 +599,141 @@ describe("setThemeSelection command", () => {
   });
 });
 
+describe("importAnimationOverrides command", () => {
+  const validPayload = {
+    version: 1,
+    themes: {
+      clawd: {
+        states: {
+          error: { file: "clawd-error.svg" },
+          attention: { disabled: true },
+        },
+      },
+    },
+  };
+
+  it("rejects non-object payloads", () => {
+    const r = commandRegistry.importAnimationOverrides(null, { snapshot: {} });
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /must be an object/);
+  });
+
+  it("rejects payloads missing themes map", () => {
+    const r = commandRegistry.importAnimationOverrides({ version: 1 }, { snapshot: {} });
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /themes/);
+  });
+
+  it("rejects payloads whose version is newer than supported", () => {
+    const r = commandRegistry.importAnimationOverrides(
+      { version: 999, themes: { clawd: {} } },
+      { snapshot: {} }
+    );
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /newer than supported/);
+  });
+
+  it("rejects when normalized payload has no valid entries", () => {
+    const r = commandRegistry.importAnimationOverrides(
+      { version: 1, themes: { clawd: { not_a_real_field: 1 } } },
+      { snapshot: {} }
+    );
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /no valid/);
+  });
+
+  it("merges by theme id into existing overrides by default", () => {
+    const snapshot = {
+      theme: "calico",
+      themeOverrides: {
+        calico: { states: { attention: { file: "cat-attention.svg" } } },
+      },
+    };
+    const r = commandRegistry.importAnimationOverrides(validPayload, { snapshot });
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.mode, "merge");
+    assert.ok(r.commit.themeOverrides.calico, "calico overrides preserved on merge");
+    assert.ok(r.commit.themeOverrides.clawd, "clawd overrides added on merge");
+    assert.strictEqual(r.importedThemeCount, 1);
+  });
+
+  it("replaces the entire map when mode=replace", () => {
+    const snapshot = {
+      theme: "calico",
+      themeOverrides: {
+        calico: { states: { attention: { file: "cat-attention.svg" } } },
+      },
+    };
+    const r = commandRegistry.importAnimationOverrides(
+      { ...validPayload, mode: "replace" },
+      { snapshot, activateTheme: () => {} }
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.mode, "replace");
+    assert.strictEqual(r.commit.themeOverrides.calico, undefined);
+    assert.ok(r.commit.themeOverrides.clawd);
+  });
+
+  it("calls activateTheme with the new override map for the active theme", () => {
+    // Regression: the effect runs BEFORE controller._commit, so activateTheme
+    // must receive the new override map explicitly — reading themeOverrides
+    // from the store would see the stale pre-import value and the imported
+    // slots would never take effect.
+    const calls = [];
+    const snapshot = { theme: "clawd", themeOverrides: {} };
+    const r = commandRegistry.importAnimationOverrides(validPayload, {
+      snapshot,
+      activateTheme: (id, variantId, overrideMap) => {
+        calls.push({ id, variantId, overrideMap });
+      },
+    });
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].id, "clawd");
+    assert.ok(calls[0].overrideMap, "overrideMap must not be null");
+    assert.deepStrictEqual(
+      calls[0].overrideMap,
+      r.commit.themeOverrides.clawd,
+      "activateTheme must receive the same normalized override map that gets committed"
+    );
+  });
+
+  it("skips activateTheme when active theme overrides are unchanged", () => {
+    let activated = null;
+    const snapshot = {
+      theme: "clawd",
+      themeOverrides: {
+        clawd: {
+          states: {
+            error: { file: "clawd-error.svg" },
+            attention: { disabled: true },
+          },
+        },
+      },
+    };
+    const r = commandRegistry.importAnimationOverrides(validPayload, {
+      snapshot,
+      activateTheme: (id) => { activated = id; },
+    });
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(activated, null, "activateTheme should not fire when data unchanged");
+  });
+
+  it("errors when activateTheme dep is missing and active theme needs reload", () => {
+    const snapshot = { theme: "clawd", themeOverrides: {} };
+    const r = commandRegistry.importAnimationOverrides(validPayload, { snapshot });
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /activateTheme/);
+  });
+
+  it("does not require activateTheme when import only touches non-active themes", () => {
+    const snapshot = { theme: "calico", themeOverrides: {} };
+    const r = commandRegistry.importAnimationOverrides(validPayload, { snapshot });
+    assert.strictEqual(r.status, "ok");
+    assert.ok(r.commit.themeOverrides.clawd);
+  });
+});
+
 describe("version validator", () => {
   it("accepts the current version", () => {
     const r = updateRegistry.version(prefs.CURRENT_VERSION, { snapshot: prefs.getDefaults() });

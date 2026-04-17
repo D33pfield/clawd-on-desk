@@ -101,6 +101,15 @@ const STRINGS = {
     animOverridesOpenThemeTab: "Open Theme tab",
     animOverridesOpenAssets: "Open assets folder",
     animOverridesResetAll: "Reset all to default",
+    animOverridesExport: "Export…",
+    animOverridesImport: "Import…",
+    toastAnimOverridesExportOk: (count, path) =>
+      `Exported overrides for ${count} theme${count === 1 ? "" : "s"} → ${path}`,
+    toastAnimOverridesImportOk: (count) =>
+      `Imported overrides for ${count} theme${count === 1 ? "" : "s"}.`,
+    toastAnimOverridesExportEmpty: "No overrides to export yet.",
+    toastAnimOverridesExportFailed: (message) => `Export failed: ${message}`,
+    toastAnimOverridesImportFailed: (message) => `Import failed: ${message}`,
     animOverridesChangeFile: "Change file",
     animOverridesPreview: "Preview once",
     animOverridesReset: "Reset slot",
@@ -226,6 +235,13 @@ const STRINGS = {
     animOverridesOpenThemeTab: "打开主题页",
     animOverridesOpenAssets: "打开素材目录",
     animOverridesResetAll: "全部恢复默认",
+    animOverridesExport: "导出…",
+    animOverridesImport: "导入…",
+    toastAnimOverridesExportOk: (count, path) => `已导出 ${count} 个主题的覆盖 → ${path}`,
+    toastAnimOverridesImportOk: (count) => `已导入 ${count} 个主题的覆盖。`,
+    toastAnimOverridesExportEmpty: "当前没有覆盖可导出。",
+    toastAnimOverridesExportFailed: (message) => `导出失败：${message}`,
+    toastAnimOverridesImportFailed: (message) => `导入失败：${message}`,
     animOverridesChangeFile: "换文件",
     animOverridesPreview: "预览一次",
     animOverridesReset: "恢复槽位",
@@ -351,6 +367,13 @@ const STRINGS = {
     animOverridesOpenThemeTab: "테마 탭 열기",
     animOverridesOpenAssets: "assets 폴더 열기",
     animOverridesResetAll: "모두 기본값으로 복원",
+    animOverridesExport: "내보내기…",
+    animOverridesImport: "가져오기…",
+    toastAnimOverridesExportOk: (count, path) => `${count}개 테마 덮어쓰기를 내보냈습니다 → ${path}`,
+    toastAnimOverridesImportOk: (count) => `${count}개 테마 덮어쓰기를 가져왔습니다.`,
+    toastAnimOverridesExportEmpty: "내보낼 덮어쓰기가 없습니다.",
+    toastAnimOverridesExportFailed: (message) => `내보내기 실패: ${message}`,
+    toastAnimOverridesImportFailed: (message) => `가져오기 실패: ${message}`,
     animOverridesChangeFile: "파일 변경",
     animOverridesPreview: "한 번 미리보기",
     animOverridesReset: "슬롯 초기화",
@@ -1120,6 +1143,47 @@ function renderAnimOverridesTab(parent) {
     })
   );
   themeMeta.appendChild(resetAllBtn);
+
+  const exportBtn = document.createElement("button");
+  exportBtn.type = "button";
+  exportBtn.className = "soft-btn";
+  exportBtn.textContent = t("animOverridesExport");
+  attachActivation(exportBtn, () =>
+    window.settingsAPI.exportAnimationOverrides().then((result) => {
+      if (!result) return result;
+      const lang = (snapshot && snapshot.lang) || "en";
+      const dict = STRINGS[lang] || STRINGS.en;
+      if (result.status === "ok") {
+        showToast(dict.toastAnimOverridesExportOk(result.themeCount || 0, result.path || ""));
+      } else if (result.status === "empty") {
+        showToast(dict.toastAnimOverridesExportEmpty);
+      } else if (result.status === "error") {
+        showToast(dict.toastAnimOverridesExportFailed(result.message || ""), { error: true });
+      }
+      return result;
+    })
+  );
+  themeMeta.appendChild(exportBtn);
+
+  const importBtn = document.createElement("button");
+  importBtn.type = "button";
+  importBtn.className = "soft-btn";
+  importBtn.textContent = t("animOverridesImport");
+  attachActivation(importBtn, () =>
+    window.settingsAPI.importAnimationOverrides().then((result) => {
+      if (!result) return result;
+      const lang = (snapshot && snapshot.lang) || "en";
+      const dict = STRINGS[lang] || STRINGS.en;
+      if (result.status === "ok") {
+        showToast(dict.toastAnimOverridesImportOk(result.themeCount || 0));
+      } else if (result.status === "error") {
+        showToast(dict.toastAnimOverridesImportFailed(result.message || ""), { error: true });
+      }
+      return result;
+    })
+  );
+  themeMeta.appendChild(importBtn);
+
   parent.appendChild(themeMeta);
 
   const sections = Array.isArray(data.sections) ? data.sections : [];
@@ -1631,7 +1695,14 @@ function renderAssetPickerModal() {
     return runAnimationOverrideCommand(card, { file: currentSelected.name }).then((result) => {
       if (result && result.status === "ok") {
         closeAssetPicker();
-        if (window.settingsAPI && typeof window.settingsAPI.previewAnimationOverride === "function") {
+        // Skip preview on no-op: the user didn't actually change anything, so
+        // forcing a fresh applyState() on a continuous state (working/thinking/
+        // juggling) would leave the pet stuck on the preview frame for
+        // WORKING_STALE_MS (5 min) when a live CC session keeps resolveDisplayState
+        // pinned to "working". See docs/plan-settings-panel-3b-swap.md Path A MVP
+        // preview semantics.
+        const changed = !result.noop;
+        if (changed && window.settingsAPI && typeof window.settingsAPI.previewAnimationOverride === "function") {
           window.settingsAPI.previewAnimationOverride({
             stateKey: previewStateForCard(card),
             file: currentSelected.name,

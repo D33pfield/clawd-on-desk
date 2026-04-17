@@ -47,6 +47,7 @@ const SIZES = {
 // `_settingsController.applyUpdate()`, which auto-persists.
 const prefsModule = require("./prefs");
 const { createSettingsController } = require("./settings-controller");
+const { ANIMATION_OVERRIDES_EXPORT_VERSION } = require("./settings-actions");
 const loginItemHelpers = require("./login-item");
 const PREFS_PATH = path.join(app.getPath("userData"), "clawd-prefs.json");
 const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
@@ -948,6 +949,18 @@ wireSettingsSubscribers();
 
 const ANIMATION_OVERRIDE_ASSET_EXTS = new Set([".svg", ".gif", ".apng", ".png", ".webp", ".jpg", ".jpeg"]);
 let animationOverridePreviewTimer = null;
+// Tasks queued while activateTheme()'s reload is in progress. Anything that
+// needs to talk to the renderer after a fresh theme load (e.g. the preview
+// animation triggered right after a setAnimationOverride) lands here and fires
+// once both webContents finish reloading. See _previewAnimationOverride.
+let _pendingPostReloadTasks = [];
+function _runPendingPostReloadTasks() {
+  const tasks = _pendingPostReloadTasks;
+  _pendingPostReloadTasks = [];
+  for (const task of tasks) {
+    try { task(); } catch (err) { console.warn("Clawd: post-reload task threw:", err && err.message); }
+  }
+}
 
 function _buildFileUrl(absPath) {
   try { return pathToFileURL(absPath).href; }
@@ -1367,6 +1380,30 @@ function _previewAnimationOverride(payload) {
   if (!_state || typeof _state.applyState !== "function" || typeof _state.resolveDisplayState !== "function") {
     return { status: "error", message: "previewAnimationOverride requires state runtime" };
   }
+  // When a preview is fired right after setAnimationOverride (the "Use this
+  // file" flow), activateTheme() is still mid-reload: the renderer is tearing
+  // down its webContents, so any IPC we send lands in a reloading window and
+  // is racey with syncRendererStateAfterLoad() that fires when reload ends.
+  // Defer until the reload is actually done — see _runPendingPostReloadTasks
+  // hooked into activateTheme()'s onReady.
+  if (themeReloadInProgress) {
+    _pendingPostReloadTasks.push(() => _runAnimationOverridePreview(stateKey, file, durationMs));
+    return { status: "ok", deferred: true };
+  }
+  return _runAnimationOverridePreview(stateKey, file, durationMs);
+}
+
+// Preview is a quick peek at the asset, not a full-length playback. Hard clamp
+// the hold duration:
+//   · some assets have extremely long cycleMs (a SMIL animation with dur="60s"
+//     or an indefinite loop that the cycle probe estimates high) — without a
+//     ceiling the pet would be stuck on the preview SVG for that full duration
+//   · the floor prevents sub-flash previews that finish before the renderer
+//     has even painted the new SVG
+const PREVIEW_HOLD_MIN_MS = 800;
+const PREVIEW_HOLD_MAX_MS = 3500;
+
+function _runAnimationOverridePreview(stateKey, file, durationMs) {
   if (animationOverridePreviewTimer) {
     clearTimeout(animationOverridePreviewTimer);
     animationOverridePreviewTimer = null;
@@ -1376,15 +1413,22 @@ function _previewAnimationOverride(payload) {
   } catch (err) {
     return { status: "error", message: `previewAnimationOverride: ${err && err.message}` };
   }
-  const fallbackMs = (activeTheme && activeTheme.timings && activeTheme.timings.autoReturn && activeTheme.timings.autoReturn[stateKey]) || 1800;
-  const holdMs = (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 300)
+  const requested = (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs > 0)
     ? durationMs
-    : fallbackMs;
+    : PREVIEW_HOLD_MIN_MS;
+  const holdMs = Math.max(PREVIEW_HOLD_MIN_MS, Math.min(PREVIEW_HOLD_MAX_MS, requested));
   animationOverridePreviewTimer = setTimeout(() => {
     animationOverridePreviewTimer = null;
     try {
-      const resolved = _state.resolveDisplayState();
-      _state.applyState(resolved, _state.getSvgOverride(resolved));
+      // Unconditionally release back to idle at the end of the preview. Rationale:
+      //   · continuous states (working/thinking/juggling) would otherwise stay
+      //     latched on the preview SVG until the live session stales out (5 min)
+      //   · oneshot states have their own autoReturn, but clamping to 3.5s means
+      //     we'll usually beat it — forcing idle here keeps the exit consistent
+      //   · if a hook event fires mid-preview and a live session is still active,
+      //     the next event will re-upgrade state naturally — a brief idle flash
+      //     is acceptable UX for a preview exit
+      _state.applyState("idle", _state.getSvgOverride("idle"));
     } catch {}
   }, holdMs);
   return { status: "ok" };
@@ -1417,6 +1461,115 @@ ipcMain.handle("settings:open-theme-assets-dir", async () => {
   return { status: "ok", path: dir };
 });
 ipcMain.handle("settings:preview-animation-override", (_event, payload) => _previewAnimationOverride(payload));
+
+const ANIMATION_OVERRIDES_EXPORT_DIALOG_STRINGS = {
+  en: {
+    saveTitle: "Export Animation Overrides",
+    openTitle: "Import Animation Overrides",
+    defaultName: (ts) => `clawd-animation-overrides-${ts}.json`,
+    jsonFilter: "Clawd Animation Overrides",
+    nothingToExport: "No animation overrides to export. Override something first.",
+  },
+  zh: {
+    saveTitle: "导出动画覆盖",
+    openTitle: "导入动画覆盖",
+    defaultName: (ts) => `clawd-animation-overrides-${ts}.json`,
+    jsonFilter: "Clawd 动画覆盖",
+    nothingToExport: "没有可导出的动画覆盖。先自定义几个动画试试。",
+  },
+  ko: {
+    saveTitle: "애니메이션 덮어쓰기 내보내기",
+    openTitle: "애니메이션 덮어쓰기 가져오기",
+    defaultName: (ts) => `clawd-animation-overrides-${ts}.json`,
+    jsonFilter: "Clawd 애니메이션 덮어쓰기",
+    nothingToExport: "내보낼 애니메이션 덮어쓰기가 없습니다. 먼저 무언가를 덮어써 보세요.",
+  },
+};
+
+ipcMain.handle("settings:export-animation-overrides", async (event) => {
+  const s = ANIMATION_OVERRIDES_EXPORT_DIALOG_STRINGS[lang] || ANIMATION_OVERRIDES_EXPORT_DIALOG_STRINGS.en;
+  const snapshot = _settingsController.getSnapshot();
+  const overrides = (snapshot && snapshot.themeOverrides) || {};
+  const parent = _getSettingsDialogParent(event);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const defaultName = s.defaultName(stamp);
+  try {
+    const result = await dialog.showSaveDialog(parent, {
+      title: s.saveTitle,
+      defaultPath: defaultName,
+      filters: [{ name: s.jsonFilter, extensions: ["json"] }],
+    });
+    if (result.canceled || !result.filePath) {
+      return { status: "cancel" };
+    }
+    const payload = {
+      clawdAnimationOverrides: ANIMATION_OVERRIDES_EXPORT_VERSION,
+      version: ANIMATION_OVERRIDES_EXPORT_VERSION,
+      exportedAt: new Date().toISOString(),
+      clawdVersion: app.getVersion(),
+      themes: overrides,
+    };
+    fs.writeFileSync(result.filePath, JSON.stringify(payload, null, 2), "utf8");
+    return {
+      status: "ok",
+      path: result.filePath,
+      themeCount: Object.keys(overrides).length,
+    };
+  } catch (err) {
+    console.warn("Clawd: export-animation-overrides failed:", err && err.message);
+    return { status: "error", message: (err && err.message) || "export failed" };
+  }
+});
+
+ipcMain.handle("settings:import-animation-overrides", async (event) => {
+  const s = ANIMATION_OVERRIDES_EXPORT_DIALOG_STRINGS[lang] || ANIMATION_OVERRIDES_EXPORT_DIALOG_STRINGS.en;
+  const parent = _getSettingsDialogParent(event);
+  let filePath;
+  try {
+    const result = await dialog.showOpenDialog(parent, {
+      title: s.openTitle,
+      properties: ["openFile"],
+      filters: [{ name: s.jsonFilter, extensions: ["json"] }],
+    });
+    if (result.canceled || !result.filePaths || !result.filePaths.length) {
+      return { status: "cancel" };
+    }
+    filePath = result.filePaths[0];
+  } catch (err) {
+    console.warn("Clawd: import-animation-overrides dialog failed:", err && err.message);
+    return { status: "error", message: (err && err.message) || "dialog failed" };
+  }
+
+  let parsed;
+  try {
+    const text = fs.readFileSync(filePath, "utf8");
+    parsed = JSON.parse(text);
+  } catch (err) {
+    return { status: "error", message: `parse failed: ${err && err.message}` };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { status: "error", message: "file is not a Clawd animation overrides export" };
+  }
+  const magic = parsed.clawdAnimationOverrides;
+  if (typeof magic !== "number") {
+    return { status: "error", message: "file is not a Clawd animation overrides export" };
+  }
+
+  const commandResult = await _settingsController.applyCommand("importAnimationOverrides", {
+    version: parsed.version || magic,
+    themes: parsed.themes,
+    mode: "merge",
+  });
+  if (commandResult && commandResult.status === "ok") {
+    return {
+      status: "ok",
+      path: filePath,
+      themeCount: commandResult.importedThemeCount || 0,
+    };
+  }
+  return commandResult || { status: "error", message: "import failed" };
+});
 
 // Static metadata for the Agents tab: name, eventSource, capabilities.
 // The renderer uses this (alongside the agents snapshot field) to render one
@@ -2118,6 +2271,7 @@ function activateTheme(themeId, variantId) {
     syncRendererStateAfterLoad({ includeStartupRecovery: false });
     syncHitWin();
     startMainTick();
+    _runPendingPostReloadTasks();
   };
   win.webContents.once("did-finish-load", onReady);
   hitWin.webContents.once("did-finish-load", onReady);

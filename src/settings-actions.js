@@ -48,7 +48,9 @@
 // prefs without writing them right back. Object-form entries must therefore
 // keep validate side-effect-free.
 
-const { CURRENT_VERSION, AGENT_FLAGS } = require("./prefs");
+const { CURRENT_VERSION, AGENT_FLAGS, normalizeThemeOverrides } = require("./prefs");
+
+const ANIMATION_OVERRIDES_EXPORT_VERSION = 1;
 const { isPlainObject } = require("./theme-loader");
 
 // ── Validator helpers ──
@@ -784,6 +786,65 @@ function setAnimationOverride(payload, deps) {
   return { status: "ok", commit: { themeOverrides: nextOverrides } };
 }
 
+function importAnimationOverrides(payload, deps) {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "importAnimationOverrides payload must be an object" };
+  }
+  const mode = payload.mode === "replace" ? "replace" : "merge";
+
+  const incomingVersion = payload.version;
+  if (typeof incomingVersion === "number" && incomingVersion > ANIMATION_OVERRIDES_EXPORT_VERSION) {
+    return {
+      status: "error",
+      message: `importAnimationOverrides: file version ${incomingVersion} newer than supported (${ANIMATION_OVERRIDES_EXPORT_VERSION})`,
+    };
+  }
+
+  const themesPayload = payload.themes;
+  if (!themesPayload || typeof themesPayload !== "object" || Array.isArray(themesPayload)) {
+    return { status: "error", message: "importAnimationOverrides: payload.themes must be an object" };
+  }
+
+  const normalizedIncoming = normalizeThemeOverrides(themesPayload, {});
+  if (!normalizedIncoming || Object.keys(normalizedIncoming).length === 0) {
+    return { status: "error", message: "importAnimationOverrides: no valid override entries found" };
+  }
+
+  const snapshot = (deps && deps.snapshot) || {};
+  const currentOverrides = snapshot.themeOverrides || {};
+  const nextOverrides = mode === "replace"
+    ? normalizedIncoming
+    : { ...currentOverrides, ...normalizedIncoming };
+
+  const activeThemeId = snapshot.theme;
+  const activeChanged = activeThemeId
+    && JSON.stringify(nextOverrides[activeThemeId] || null)
+       !== JSON.stringify(currentOverrides[activeThemeId] || null);
+
+  if (activeChanged) {
+    if (!deps || typeof deps.activateTheme !== "function") {
+      return { status: "error", message: "importAnimationOverrides effect requires activateTheme dep" };
+    }
+    try {
+      // Must pass nextOverrides[activeThemeId] — the effect runs BEFORE
+      // controller._commit(), so activateTheme reading themeOverrides from the
+      // store would still see the old map. Passing nextOverrideMap explicitly
+      // is what makes the newly-imported slots actually take effect.
+      deps.activateTheme(activeThemeId, null, nextOverrides[activeThemeId] || null);
+    } catch (err) {
+      return { status: "error", message: `importAnimationOverrides: ${err && err.message}` };
+    }
+  }
+
+  const importedThemeCount = Object.keys(normalizedIncoming).length;
+  return {
+    status: "ok",
+    commit: { themeOverrides: nextOverrides },
+    importedThemeCount,
+    mode,
+  };
+}
+
 const _validateResetOverridesThemeId = requireString("resetThemeOverrides.themeId");
 function resetThemeOverrides(payload, deps) {
   const themeId = typeof payload === "string" ? payload : (payload && payload.themeId);
@@ -862,6 +923,7 @@ const commandRegistry = {
   setAnimationOverride,
   setThemeOverrideDisabled,
   resetThemeOverrides,
+  importAnimationOverrides,
   setThemeSelection,
 };
 
@@ -869,6 +931,7 @@ module.exports = {
   updateRegistry,
   commandRegistry,
   ONESHOT_OVERRIDE_STATES,
+  ANIMATION_OVERRIDES_EXPORT_VERSION,
   // Exposed for tests
   requireBoolean,
   requireFiniteNumber,

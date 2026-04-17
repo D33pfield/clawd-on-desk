@@ -370,4 +370,5 @@ module.exports = {
   migrate,
   load,
   save,
+  normalizeThemeOverrides,
 };
