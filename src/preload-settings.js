@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   getAnimationOverridesData: () => ipcRenderer.invoke("settings:get-animation-overrides-data"),
   openThemeAssetsDir: () => ipcRenderer.invoke("settings:open-theme-assets-dir"),
   previewAnimationOverride: (payload) => ipcRenderer.invoke("settings:preview-animation-override", payload),
+  previewReaction: (payload) => ipcRenderer.invoke("settings:preview-reaction", payload),
   exportAnimationOverrides: () => ipcRenderer.invoke("settings:export-animation-overrides"),
   importAnimationOverrides: () => ipcRenderer.invoke("settings:import-animation-overrides"),
   update: (key, value) => ipcRenderer.invoke("settings:update", { key, value }),

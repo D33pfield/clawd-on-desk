@@ -103,8 +103,9 @@ function requirePlainObject(key) {
   };
 }
 
-const THEME_OVERRIDE_RESERVED_KEYS = new Set(["states", "tiers", "timings", "idleAnimations"]);
+const THEME_OVERRIDE_RESERVED_KEYS = new Set(["states", "tiers", "timings", "idleAnimations", "reactions", "hitbox"]);
 const TIER_OVERRIDE_GROUPS = new Set(["workingTiers", "jugglingTiers"]);
+const REACTION_KEYS = new Set(["drag", "clickLeft", "clickRight", "annoyed", "double"]);
 
 function cloneStateOverrides(themeMap) {
   const out = {};
@@ -151,7 +152,16 @@ function cloneIdleAnimationOverrides(themeMap) {
   return cloneFileKeyedMap(themeMap.idleAnimations);
 }
 
-function buildThemeOverrideMap({ states, workingTiers, jugglingTiers, autoReturn, idleAnimations }) {
+function cloneReactionOverrides(themeMap) {
+  const out = {};
+  if (!isPlainObject(themeMap) || !isPlainObject(themeMap.reactions)) return out;
+  for (const [reactionKey, entry] of Object.entries(themeMap.reactions)) {
+    if (isPlainObject(entry)) out[reactionKey] = { ...entry };
+  }
+  return out;
+}
+
+function buildThemeOverrideMap({ states, workingTiers, jugglingTiers, autoReturn, idleAnimations, reactions }) {
   const out = {};
   if (states && Object.keys(states).length > 0) out.states = states;
   const tiers = {};
@@ -160,6 +170,7 @@ function buildThemeOverrideMap({ states, workingTiers, jugglingTiers, autoReturn
   if (Object.keys(tiers).length > 0) out.tiers = tiers;
   if (autoReturn && Object.keys(autoReturn).length > 0) out.timings = { autoReturn };
   if (idleAnimations && Object.keys(idleAnimations).length > 0) out.idleAnimations = idleAnimations;
+  if (reactions && Object.keys(reactions).length > 0) out.reactions = reactions;
   return out;
 }
 
@@ -625,8 +636,8 @@ function setAnimationOverride(payload, deps) {
   const { themeId, slotType } = payload;
   const idCheck = _validateAnimationOverrideThemeId(themeId);
   if (idCheck.status !== "ok") return idCheck;
-  if (slotType !== "state" && slotType !== "tier" && slotType !== "idleAnimation") {
-    return { status: "error", message: "setAnimationOverride.slotType must be 'state', 'tier', or 'idleAnimation'" };
+  if (slotType !== "state" && slotType !== "tier" && slotType !== "idleAnimation" && slotType !== "reaction") {
+    return { status: "error", message: "setAnimationOverride.slotType must be 'state', 'tier', 'idleAnimation', or 'reaction'" };
   }
 
   const touchesFile = Object.prototype.hasOwnProperty.call(payload, "file");
@@ -668,6 +679,7 @@ function setAnimationOverride(payload, deps) {
   const nextJugglingTiers = cloneTierOverrides(currentThemeMap, "jugglingTiers");
   const nextAutoReturn = cloneAutoReturnOverrides(currentThemeMap);
   const nextIdleAnimations = cloneIdleAnimationOverrides(currentThemeMap);
+  const nextReactions = cloneReactionOverrides(currentThemeMap);
 
   if (slotType === "state") {
     if (typeof payload.stateKey !== "string" || !payload.stateKey) {
@@ -727,7 +739,7 @@ function setAnimationOverride(payload, deps) {
     }
     if (Object.keys(nextEntry).length > 0) tierMap[originalFile] = nextEntry;
     else delete tierMap[originalFile];
-  } else {
+  } else if (slotType === "idleAnimation") {
     const { originalFile } = payload;
     if (typeof originalFile !== "string" || !originalFile) {
       return { status: "error", message: "setAnimationOverride.originalFile must be a non-empty string for idleAnimation slots" };
@@ -754,6 +766,39 @@ function setAnimationOverride(payload, deps) {
     }
     if (Object.keys(nextEntry).length > 0) nextIdleAnimations[originalFile] = nextEntry;
     else delete nextIdleAnimations[originalFile];
+  } else {
+    // slotType === "reaction"
+    const { reactionKey } = payload;
+    if (!REACTION_KEYS.has(reactionKey)) {
+      return { status: "error", message: "setAnimationOverride.reactionKey must be one of: drag, clickLeft, clickRight, annoyed, double" };
+    }
+    if (touchesAutoReturn) {
+      return { status: "error", message: "setAnimationOverride.autoReturnMs is not supported for reaction slots" };
+    }
+    // drag plays until pointer-up — no duration semantics. Other reactions use
+    // durationMs to control how long the oneshot stays on screen.
+    if (touchesDuration && reactionKey === "drag") {
+      return { status: "error", message: "setAnimationOverride.durationMs is not supported for reaction 'drag' (plays until pointer-up)" };
+    }
+    const nextEntry = { ...(nextReactions[reactionKey] || {}) };
+    if (touchesFile) {
+      if (payload.file === null) {
+        delete nextEntry.file;
+        delete nextEntry.sourceThemeId;
+      } else {
+        nextEntry.file = payload.file;
+      }
+    }
+    if (touchesTransition) {
+      if (payload.transition === null) delete nextEntry.transition;
+      else nextEntry.transition = normalizeTransitionPayload(payload.transition);
+    }
+    if (touchesDuration) {
+      if (payload.durationMs === null) delete nextEntry.durationMs;
+      else nextEntry.durationMs = payload.durationMs;
+    }
+    if (Object.keys(nextEntry).length > 0) nextReactions[reactionKey] = nextEntry;
+    else delete nextReactions[reactionKey];
   }
 
   const nextThemeMap = buildThemeOverrideMap({
@@ -762,6 +807,7 @@ function setAnimationOverride(payload, deps) {
     jugglingTiers: nextJugglingTiers,
     autoReturn: nextAutoReturn,
     idleAnimations: nextIdleAnimations,
+    reactions: nextReactions,
   });
   const nextOverrides = { ...currentOverrides };
   if (Object.keys(nextThemeMap).length > 0) nextOverrides[themeId] = nextThemeMap;
@@ -780,6 +826,73 @@ function setAnimationOverride(payload, deps) {
       deps.activateTheme(themeId, null, nextThemeMap);
     } catch (err) {
       return { status: "error", message: `setAnimationOverride: ${err && err.message}` };
+    }
+  }
+
+  return { status: "ok", commit: { themeOverrides: nextOverrides } };
+}
+
+// Per-file toggle: force a file INTO or OUT of the wide-hitbox set, overriding
+// the theme author's declaration. Passing `enabled: null` clears the override
+// for that file (fall back to whatever the theme declares).
+function setWideHitboxOverride(payload, deps) {
+  if (!isPlainObject(payload)) {
+    return { status: "error", message: "setWideHitboxOverride: payload must be an object" };
+  }
+  const { themeId, file, enabled } = payload;
+  if (typeof themeId !== "string" || !themeId) {
+    return { status: "error", message: "setWideHitboxOverride.themeId must be a non-empty string" };
+  }
+  if (typeof file !== "string" || !file) {
+    return { status: "error", message: "setWideHitboxOverride.file must be a non-empty string" };
+  }
+  if (enabled !== null && typeof enabled !== "boolean") {
+    return { status: "error", message: "setWideHitboxOverride.enabled must be boolean or null" };
+  }
+
+  const snapshot = (deps && deps.snapshot) || {};
+  const currentOverrides = snapshot.themeOverrides || {};
+  const currentThemeMap = currentOverrides[themeId] || {};
+  const currentHitbox = isPlainObject(currentThemeMap.hitbox) ? currentThemeMap.hitbox : {};
+  const currentWide = isPlainObject(currentHitbox.wide) ? { ...currentHitbox.wide } : {};
+
+  if (enabled === null) {
+    delete currentWide[file];
+  } else {
+    currentWide[file] = enabled;
+  }
+
+  const nextHitbox = { ...currentHitbox };
+  if (Object.keys(currentWide).length > 0) {
+    nextHitbox.wide = currentWide;
+  } else {
+    delete nextHitbox.wide;
+  }
+
+  const nextThemeMap = { ...currentThemeMap };
+  if (Object.keys(nextHitbox).length > 0) {
+    nextThemeMap.hitbox = nextHitbox;
+  } else {
+    delete nextThemeMap.hitbox;
+  }
+
+  const nextOverrides = { ...currentOverrides };
+  if (Object.keys(nextThemeMap).length > 0) nextOverrides[themeId] = nextThemeMap;
+  else delete nextOverrides[themeId];
+
+  if (JSON.stringify(nextOverrides) === JSON.stringify(currentOverrides)) {
+    return { status: "ok", noop: true };
+  }
+
+  const activeThemeId = snapshot.theme;
+  if (themeId === activeThemeId) {
+    if (!deps || typeof deps.activateTheme !== "function") {
+      return { status: "error", message: "setWideHitboxOverride effect requires activateTheme dep" };
+    }
+    try {
+      deps.activateTheme(themeId, null, nextThemeMap);
+    } catch (err) {
+      return { status: "error", message: `setWideHitboxOverride: ${err && err.message}` };
     }
   }
 
@@ -924,6 +1037,7 @@ const commandRegistry = {
   setThemeOverrideDisabled,
   resetThemeOverrides,
   importAnimationOverrides,
+  setWideHitboxOverride,
   setThemeSelection,
 };
 

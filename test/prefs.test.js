@@ -423,4 +423,94 @@ describe("prefs.save", () => {
       },
     });
   });
+
+  it("themeOverrides: reactions round-trip with file + durationMs + transition", () => {
+    const p = makeTempPath();
+    const snap = prefs.getDefaults();
+    snap.themeOverrides = {
+      clawd: {
+        reactions: {
+          clickLeft: {
+            file: "my-poke.svg",
+            durationMs: 2200,
+            transition: { in: 50, out: 100 },
+          },
+          double: { file: "my-double.svg", durationMs: 4000 },
+        },
+      },
+    };
+    prefs.save(p, snap);
+    const { snapshot } = prefs.load(p);
+    assert.deepStrictEqual(snapshot.themeOverrides.clawd.reactions, {
+      clickLeft: {
+        file: "my-poke.svg",
+        durationMs: 2200,
+        transition: { in: 50, out: 100 },
+      },
+      double: { file: "my-double.svg", durationMs: 4000 },
+    });
+  });
+
+  it("themeOverrides: hitbox.wide round-trips boolean per-file flags", () => {
+    const p = makeTempPath();
+    const snap = prefs.getDefaults();
+    snap.themeOverrides = {
+      clawd: {
+        hitbox: {
+          wide: {
+            "clawd-error.svg": true,
+            "clawd-idle.svg": false,
+          },
+        },
+      },
+    };
+    prefs.save(p, snap);
+    const { snapshot } = prefs.load(p);
+    assert.deepStrictEqual(snapshot.themeOverrides.clawd.hitbox, {
+      wide: {
+        "clawd-error.svg": true,
+        "clawd-idle.svg": false,
+      },
+    });
+  });
+
+  it("themeOverrides: hitbox normalize drops non-boolean values", () => {
+    const validated = prefs.validate({
+      ...prefs.getDefaults(),
+      themeOverrides: {
+        clawd: {
+          hitbox: {
+            wide: {
+              "ok.svg": true,
+              "bad.svg": "yes",   // dropped
+              "null-val.svg": null,  // dropped
+            },
+          },
+        },
+      },
+    });
+    assert.deepStrictEqual(validated.themeOverrides.clawd.hitbox, {
+      wide: { "ok.svg": true },
+    });
+  });
+
+  it("themeOverrides: normalize drops unknown reaction keys and strips durationMs from drag", () => {
+    const validated = prefs.validate({
+      ...prefs.getDefaults(),
+      themeOverrides: {
+        clawd: {
+          reactions: {
+            explode: { file: "bogus.svg" },           // invalid key
+            drag: { file: "my-drag.svg", durationMs: 9999 },  // drag can't have duration
+            clickLeft: { file: "p.svg" },             // valid
+          },
+        },
+      },
+    });
+    assert.deepStrictEqual(validated.themeOverrides.clawd.reactions, {
+      drag: { file: "my-drag.svg" },     // durationMs stripped
+      clickLeft: { file: "p.svg" },
+      // explode: absent
+    });
+  });
 });

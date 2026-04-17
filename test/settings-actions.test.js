@@ -599,6 +599,165 @@ describe("setThemeSelection command", () => {
   });
 });
 
+describe("setAnimationOverride reaction slot", () => {
+  const baseSnapshot = { theme: "clawd", themeOverrides: {} };
+  const noopDeps = { snapshot: baseSnapshot, activateTheme: () => {} };
+
+  it("rejects unknown reactionKey", () => {
+    const r = commandRegistry.setAnimationOverride({
+      themeId: "clawd",
+      slotType: "reaction",
+      reactionKey: "explode",
+      file: "x.svg",
+    }, noopDeps);
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /reactionKey/);
+  });
+
+  it("accepts valid reactionKey and writes reactions.<key>.file", () => {
+    const r = commandRegistry.setAnimationOverride({
+      themeId: "clawd",
+      slotType: "reaction",
+      reactionKey: "clickLeft",
+      file: "my-poke.svg",
+    }, noopDeps);
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(
+      r.commit.themeOverrides.clawd.reactions.clickLeft,
+      { file: "my-poke.svg" }
+    );
+  });
+
+  it("rejects durationMs for drag reaction (drag plays until pointer-up)", () => {
+    const r = commandRegistry.setAnimationOverride({
+      themeId: "clawd",
+      slotType: "reaction",
+      reactionKey: "drag",
+      durationMs: 2000,
+    }, noopDeps);
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /drag/);
+  });
+
+  it("accepts durationMs for clickLeft reaction", () => {
+    const r = commandRegistry.setAnimationOverride({
+      themeId: "clawd",
+      slotType: "reaction",
+      reactionKey: "clickLeft",
+      durationMs: 3000,
+    }, noopDeps);
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.commit.themeOverrides.clawd.reactions.clickLeft.durationMs, 3000);
+  });
+
+  it("rejects autoReturnMs for reaction slots", () => {
+    const r = commandRegistry.setAnimationOverride({
+      themeId: "clawd",
+      slotType: "reaction",
+      reactionKey: "clickLeft",
+      autoReturnMs: 3000,
+    }, noopDeps);
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /autoReturnMs/);
+  });
+
+  it("clears reaction override when file is set to null with no other fields", () => {
+    const snapshot = {
+      theme: "clawd",
+      themeOverrides: {
+        clawd: { reactions: { clickLeft: { file: "old.svg" } } },
+      },
+    };
+    const r = commandRegistry.setAnimationOverride({
+      themeId: "clawd",
+      slotType: "reaction",
+      reactionKey: "clickLeft",
+      file: null,
+    }, { snapshot, activateTheme: () => {} });
+    assert.strictEqual(r.status, "ok");
+    // With reactions.clickLeft emptied to {}, buildThemeOverrideMap should drop
+    // both `reactions` and the themeId if nothing else remains.
+    assert.strictEqual(r.commit.themeOverrides.clawd, undefined);
+  });
+});
+
+describe("setWideHitboxOverride command", () => {
+  it("rejects missing file / themeId", () => {
+    const r = commandRegistry.setWideHitboxOverride({ themeId: "clawd", enabled: true }, { snapshot: {} });
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /file/);
+  });
+
+  it("rejects non-boolean / non-null enabled", () => {
+    const r = commandRegistry.setWideHitboxOverride({
+      themeId: "clawd", file: "x.svg", enabled: "yes",
+    }, { snapshot: {} });
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /boolean or null/);
+  });
+
+  it("writes hitbox.wide[file] = true when enabled", () => {
+    const snapshot = { theme: "clawd", themeOverrides: {} };
+    const r = commandRegistry.setWideHitboxOverride(
+      { themeId: "clawd", file: "clawd-error.svg", enabled: true },
+      { snapshot, activateTheme: () => {} }
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(
+      r.commit.themeOverrides.clawd.hitbox.wide,
+      { "clawd-error.svg": true }
+    );
+  });
+
+  it("clears the entry when enabled=null (fall back to theme default)", () => {
+    const snapshot = {
+      theme: "clawd",
+      themeOverrides: {
+        clawd: { hitbox: { wide: { "clawd-error.svg": true } } },
+      },
+    };
+    const r = commandRegistry.setWideHitboxOverride(
+      { themeId: "clawd", file: "clawd-error.svg", enabled: null },
+      { snapshot, activateTheme: () => {} }
+    );
+    assert.strictEqual(r.status, "ok");
+    // Entire hitbox + themeId entry drops when last toggle is cleared.
+    assert.strictEqual(r.commit.themeOverrides.clawd, undefined);
+  });
+
+  it("noop when setting same value", () => {
+    const snapshot = {
+      theme: "clawd",
+      themeOverrides: {
+        clawd: { hitbox: { wide: { "clawd-error.svg": true } } },
+      },
+    };
+    const r = commandRegistry.setWideHitboxOverride(
+      { themeId: "clawd", file: "clawd-error.svg", enabled: true },
+      { snapshot }
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.noop, true);
+  });
+
+  it("triggers activateTheme with next override map when active theme changes", () => {
+    let activatedWith = null;
+    const snapshot = { theme: "clawd", themeOverrides: {} };
+    const r = commandRegistry.setWideHitboxOverride(
+      { themeId: "clawd", file: "foo.svg", enabled: true },
+      {
+        snapshot,
+        activateTheme: (id, variantId, overrideMap) => { activatedWith = { id, overrideMap }; },
+      }
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(activatedWith.id, "clawd");
+    assert.deepStrictEqual(activatedWith.overrideMap, {
+      hitbox: { wide: { "foo.svg": true } },
+    });
+  });
+});
+
 describe("importAnimationOverrides command", () => {
   const validPayload = {
     version: 1,

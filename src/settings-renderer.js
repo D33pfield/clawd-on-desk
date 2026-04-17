@@ -135,11 +135,21 @@ const STRINGS = {
     animOverridesSectionInterrupts: "Interrupts",
     animOverridesSectionSleep: "Sleep",
     animOverridesSectionMini: "Mini Mode",
+    animOverridesSectionReactions: "Reactions",
     animOverridesSectionIdleTracked: "Cursor-follow idle",
     animOverridesSectionIdleAnimated: "Idle random pool",
     animOverridesSectionIdleStatic: "Single static idle",
     animOverridesSectionSleepFull: "Full sleep sequence",
     animOverridesSectionSleepDirect: "Direct sleep only",
+    animReactionDrag: "Drag (held)",
+    animReactionClickLeft: "Poke (left)",
+    animReactionClickRight: "Poke (right)",
+    animReactionAnnoyed: "Annoyed (rapid poke)",
+    animReactionDouble: "Double-tap",
+    animOverridesWideHitboxToggle: "Wide hitbox",
+    animOverridesWideHitboxDesc: "Use a wider click zone for this frame. Helpful when the visual reaches beyond the default pet silhouette.",
+    animOverridesWideHitboxResetToTheme: "Reset to theme default",
+    animOverridesAspectWarning: "This asset's aspect ratio differs from the original by {pct}% — the hitbox and positioning may need manual tuning.",
     animOverridesExpandRow: "Expand",
     animOverridesModalTitle: "Choose an asset file",
     animOverridesModalSubtitle: "Add files to the current theme assets folder, then refresh the list here.",
@@ -267,11 +277,21 @@ const STRINGS = {
     animOverridesSectionInterrupts: "打扰态",
     animOverridesSectionSleep: "睡眠",
     animOverridesSectionMini: "Mini Mode",
+    animOverridesSectionReactions: "反应动画",
     animOverridesSectionIdleTracked: "跟随鼠标的 idle",
     animOverridesSectionIdleAnimated: "idle 随机池",
     animOverridesSectionIdleStatic: "单张静态 idle",
     animOverridesSectionSleepFull: "完整睡眠序列",
     animOverridesSectionSleepDirect: "直睡模式",
+    animReactionDrag: "拖拽（按住）",
+    animReactionClickLeft: "戳（左）",
+    animReactionClickRight: "戳（右）",
+    animReactionAnnoyed: "烦躁（连续戳）",
+    animReactionDouble: "双击",
+    animOverridesWideHitboxToggle: "宽点击区",
+    animOverridesWideHitboxDesc: "给这一帧启用更宽的点击区。素材视觉延伸超出默认桌宠轮廓时有用。",
+    animOverridesWideHitboxResetToTheme: "恢复主题默认",
+    animOverridesAspectWarning: "此素材宽高比与原文件差了 {pct}%，点击区和位置可能需要手动校准。",
     animOverridesExpandRow: "展开",
     animOverridesModalTitle: "选择素材文件",
     animOverridesModalSubtitle: "把文件放进当前主题 assets 目录后，可在这里刷新列表重新选择。",
@@ -399,11 +419,21 @@ const STRINGS = {
     animOverridesSectionInterrupts: "인터럽트",
     animOverridesSectionSleep: "수면",
     animOverridesSectionMini: "Mini Mode",
+    animOverridesSectionReactions: "반응 애니메이션",
     animOverridesSectionIdleTracked: "커서 추적 idle",
     animOverridesSectionIdleAnimated: "idle 랜덤 풀",
     animOverridesSectionIdleStatic: "단일 정적 idle",
     animOverridesSectionSleepFull: "전체 수면 시퀀스",
     animOverridesSectionSleepDirect: "직접 수면",
+    animReactionDrag: "드래그 (누름)",
+    animReactionClickLeft: "콕 찌르기 (왼쪽)",
+    animReactionClickRight: "콕 찌르기 (오른쪽)",
+    animReactionAnnoyed: "짜증 (연속 찌르기)",
+    animReactionDouble: "더블탭",
+    animOverridesWideHitboxToggle: "넓은 클릭 영역",
+    animOverridesWideHitboxDesc: "이 프레임에 더 넓은 클릭 영역을 사용합니다. 애셋이 기본 펫 실루엣을 넘어설 때 유용합니다.",
+    animOverridesWideHitboxResetToTheme: "테마 기본값으로 복원",
+    animOverridesAspectWarning: "이 애셋의 가로세로 비율이 원본과 {pct}% 차이납니다. 클릭 영역과 위치를 수동으로 조정해야 할 수 있습니다.",
     animOverridesExpandRow: "펼치기",
     animOverridesModalTitle: "에셋 파일 선택",
     animOverridesModalSubtitle: "파일을 현재 테마의 assets 폴더에 추가한 뒤 여기서 목록을 새로고침하세요.",
@@ -933,6 +963,8 @@ function buildAnimOverrideRequest(card, patch) {
     base.originalFile = card.originalFile;
   } else if (card.slotType === "idleAnimation") {
     base.originalFile = card.originalFile;
+  } else if (card.slotType === "reaction") {
+    base.reactionKey = card.reactionKey;
   } else {
     base.stateKey = card.stateKey;
   }
@@ -1004,6 +1036,11 @@ function getAnimOverrideTriggerLabel(card) {
     case "mini-alert": return "Mini alert";
     case "mini-happy": return "Mini happy";
     case "mini-sleep": return "Mini sleep";
+    case "dragReaction": return t("animReactionDrag");
+    case "clickLeftReaction": return t("animReactionClickLeft");
+    case "clickRightReaction": return t("animReactionClickRight");
+    case "annoyedReaction": return t("animReactionAnnoyed");
+    case "doubleReaction": return t("animReactionDouble");
     default: return card.triggerKind || card.stateKey || card.id;
   }
 }
@@ -1016,6 +1053,7 @@ function getAnimOverrideSectionTitle(section) {
     case "interrupts": return t("animOverridesSectionInterrupts");
     case "sleep": return t("animOverridesSectionSleep");
     case "mini": return t("animOverridesSectionMini");
+    case "reactions": return t("animOverridesSectionReactions");
     default: return section.id;
   }
 }
@@ -1195,6 +1233,16 @@ function renderAnimOverridesTab(parent) {
 }
 
 function triggerPreviewOnce(card) {
+  if (card.slotType === "reaction") {
+    // Reactions live in the renderer's click-reaction layer, not the state
+    // machine — preview through the reaction channel so we don't hijack
+    // working/idle state for a non-logical visual.
+    window.settingsAPI.previewReaction({
+      file: card.currentFile,
+      durationMs: getAnimationPreviewDuration(null, card),
+    });
+    return;
+  }
   window.settingsAPI.previewAnimationOverride({
     stateKey: previewStateForCard(card),
     file: card.currentFile,
@@ -1324,6 +1372,63 @@ function buildAnimOverrideSummary(card) {
   return summary;
 }
 
+function buildAnimWideHitboxToggle(card) {
+  const row = document.createElement("label");
+  row.className = "anim-override-toggle-row";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = !!card.wideHitboxEnabled;
+  const label = document.createElement("div");
+  label.className = "anim-override-toggle-label";
+  const title = document.createElement("div");
+  title.className = "anim-override-toggle-title";
+  title.textContent = t("animOverridesWideHitboxToggle");
+  label.appendChild(title);
+  const desc = document.createElement("div");
+  desc.className = "anim-override-toggle-desc";
+  desc.textContent = t("animOverridesWideHitboxDesc");
+  label.appendChild(desc);
+  if (card.wideHitboxOverridden) {
+    const badge = document.createElement("button");
+    badge.type = "button";
+    badge.className = "anim-override-reset-chip";
+    badge.textContent = t("animOverridesWideHitboxResetToTheme");
+    badge.addEventListener("click", (e) => {
+      e.preventDefault();
+      const themeId = animationOverridesData && animationOverridesData.theme && animationOverridesData.theme.id;
+      if (!themeId || !card.currentFile) return;
+      window.settingsAPI.command("setWideHitboxOverride", {
+        themeId,
+        file: card.currentFile,
+        enabled: null,
+      }).then((result) => {
+        if (!result || result.status !== "ok" || result.noop) return;
+        return fetchAnimationOverridesData().then(() => {
+          if (activeTab === "animOverrides") renderContent();
+        });
+      });
+    });
+    label.appendChild(badge);
+  }
+  input.addEventListener("change", () => {
+    const themeId = animationOverridesData && animationOverridesData.theme && animationOverridesData.theme.id;
+    if (!themeId || !card.currentFile) return;
+    window.settingsAPI.command("setWideHitboxOverride", {
+      themeId,
+      file: card.currentFile,
+      enabled: input.checked,
+    }).then((result) => {
+      if (!result || result.status !== "ok" || result.noop) return;
+      return fetchAnimationOverridesData().then(() => {
+        if (activeTab === "animOverrides") renderContent();
+      });
+    });
+  });
+  row.appendChild(input);
+  row.appendChild(label);
+  return row;
+}
+
 function buildAnimOverrideDrawer(card) {
   const drawer = document.createElement("div");
   drawer.className = "anim-override-drawer";
@@ -1339,6 +1444,14 @@ function buildAnimOverrideDrawer(card) {
     const warning = document.createElement("div");
     warning.className = "anim-override-warning";
     warning.textContent = t("animOverridesDisplayHintWarning");
+    drawer.appendChild(warning);
+  }
+
+  if (card.aspectRatioWarning) {
+    const warning = document.createElement("div");
+    warning.className = "anim-override-warning";
+    const diffPct = Math.round(card.aspectRatioWarning.diffRatio * 100);
+    warning.textContent = t("animOverridesAspectWarning").replace("{pct}", String(diffPct));
     drawer.appendChild(warning);
   }
 
@@ -1431,6 +1544,10 @@ function buildAnimOverrideDrawer(card) {
     }));
   }
   drawer.appendChild(sliders);
+
+  if (card.slotType !== "reaction") {
+    drawer.appendChild(buildAnimWideHitboxToggle(card));
+  }
 
   const footer = document.createElement("div");
   footer.className = "anim-override-drawer-footer";
@@ -1702,17 +1819,29 @@ function renderAssetPickerModal() {
         // pinned to "working". See docs/plan-settings-panel-3b-swap.md Path A MVP
         // preview semantics.
         const changed = !result.noop;
-        if (changed && window.settingsAPI && typeof window.settingsAPI.previewAnimationOverride === "function") {
-          window.settingsAPI.previewAnimationOverride({
-            stateKey: previewStateForCard(card),
-            file: currentSelected.name,
-            durationMs: getAnimationPreviewDuration(currentSelected, card),
-          }).then((previewResult) => {
-            if (!previewResult || previewResult.status === "ok") return;
-            showToast(t("toastSaveFailed") + previewResult.message, { error: true });
-          }).catch((err) => {
-            showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-          });
+        if (changed) {
+          const previewPromise = card.slotType === "reaction"
+            ? (window.settingsAPI && typeof window.settingsAPI.previewReaction === "function"
+                ? window.settingsAPI.previewReaction({
+                    file: currentSelected.name,
+                    durationMs: getAnimationPreviewDuration(currentSelected, card),
+                  })
+                : null)
+            : (window.settingsAPI && typeof window.settingsAPI.previewAnimationOverride === "function"
+                ? window.settingsAPI.previewAnimationOverride({
+                    stateKey: previewStateForCard(card),
+                    file: currentSelected.name,
+                    durationMs: getAnimationPreviewDuration(currentSelected, card),
+                  })
+                : null);
+          if (previewPromise) {
+            previewPromise.then((previewResult) => {
+              if (!previewResult || previewResult.status === "ok") return;
+              showToast(t("toastSaveFailed") + previewResult.message, { error: true });
+            }).catch((err) => {
+              showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+            });
+          }
         }
       }
       return result;

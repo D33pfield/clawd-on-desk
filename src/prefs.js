@@ -215,6 +215,44 @@ function normalizeSlotOverride(entry, { allowDisabled = true } = {}) {
   return Object.keys(out).length > 0 ? out : null;
 }
 
+const REACTION_KEYS = new Set(["drag", "clickLeft", "clickRight", "annoyed", "double"]);
+
+// Per-file hitbox override: { file.svg: boolean }.
+// true  = force the file INTO the wide-hitbox set (even if the theme author didn't list it)
+// false = force the file OUT of the wide-hitbox set (even if the theme author did list it)
+// absent = follow whatever the theme declares
+function normalizeHitboxOverrides(value) {
+  if (!isPlainObject(value)) return null;
+  const out = {};
+  if (isPlainObject(value.wide)) {
+    const wide = {};
+    for (const [file, enabled] of Object.entries(value.wide)) {
+      if (typeof file !== "string" || !file) continue;
+      if (typeof enabled !== "boolean") continue;
+      wide[file] = enabled;
+    }
+    if (Object.keys(wide).length > 0) out.wide = wide;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function normalizeReactionOverridesMap(value) {
+  if (!isPlainObject(value)) return null;
+  const out = {};
+  for (const [reactionKey, entry] of Object.entries(value)) {
+    if (!REACTION_KEYS.has(reactionKey)) continue;
+    const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: false });
+    if (!cleanEntry) continue;
+    // drag has no duration semantically (it plays until pointer-up), so strip
+    // any durationMs written by a wayward import.
+    if (reactionKey === "drag" && Object.prototype.hasOwnProperty.call(cleanEntry, "durationMs")) {
+      delete cleanEntry.durationMs;
+    }
+    if (Object.keys(cleanEntry).length > 0) out[reactionKey] = cleanEntry;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 function normalizeStateOverridesMap(value) {
   if (!isPlainObject(value)) return null;
   const out = {};
@@ -259,7 +297,7 @@ function normalizeThemeOverrides(value, defaultsValue) {
     // Back-compat: older prefs wrote state entries directly under themeId.
     const legacyStates = {};
     for (const [key, entry] of Object.entries(themeMap)) {
-      if (key === "states" || key === "tiers" || key === "timings" || key === "idleAnimations") continue;
+      if (key === "states" || key === "tiers" || key === "timings" || key === "idleAnimations" || key === "reactions" || key === "hitbox") continue;
       const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: true });
       if (cleanEntry) legacyStates[key] = cleanEntry;
     }
@@ -288,6 +326,12 @@ function normalizeThemeOverrides(value, defaultsValue) {
 
     const idleAnimations = normalizeFileKeyedOverrideMap(themeMap.idleAnimations);
     if (idleAnimations) cleanThemeMap.idleAnimations = idleAnimations;
+
+    const reactions = normalizeReactionOverridesMap(themeMap.reactions);
+    if (reactions) cleanThemeMap.reactions = reactions;
+
+    const hitbox = normalizeHitboxOverrides(themeMap.hitbox);
+    if (hitbox) cleanThemeMap.hitbox = hitbox;
 
     if (Object.keys(cleanThemeMap).length > 0) {
       out[themeId] = cleanThemeMap;

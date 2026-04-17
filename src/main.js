@@ -210,6 +210,7 @@ function stopMonitorForAgent(agentId) {
 
 // ── Theme loader ──
 const themeLoader = require("./theme-loader");
+const { isPlainObject: _isPlainObject } = themeLoader;
 themeLoader.init(__dirname, app.getPath("userData"));
 
 // Lenient load so a missing/corrupt user-selected theme can't brick boot.
@@ -977,6 +978,73 @@ function _resolveAnimationAssetAbsPath(filename) {
   }
 }
 
+// Cheap regex-based viewBox/width-height parser for SVG. The renderer already
+// uses an <object> element that resolves these at paint time, but for the
+// aspect-ratio warning we compute it in main so the settings panel sees it on
+// initial render without round-tripping through the renderer.
+function _readSvgAspectRatio(absPath) {
+  try {
+    const text = fs.readFileSync(absPath, "utf8");
+    const headMatch = text.match(/<svg\b[^>]*>/i);
+    if (!headMatch) return null;
+    const head = headMatch[0];
+    const vbMatch = head.match(/\sviewBox\s*=\s*["']([-\d.\s]+)["']/i);
+    if (vbMatch) {
+      const parts = vbMatch[1].trim().split(/\s+/).map(Number);
+      if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
+        return parts[2] / parts[3];
+      }
+    }
+    const wMatch = head.match(/\swidth\s*=\s*["']([\d.]+)/i);
+    const hMatch = head.match(/\sheight\s*=\s*["']([\d.]+)/i);
+    if (wMatch && hMatch) {
+      const w = parseFloat(wMatch[1]);
+      const h = parseFloat(hMatch[1]);
+      if (w > 0 && h > 0) return w / h;
+    }
+  } catch { /* swallow — callers treat null as "unknown, skip warn" */ }
+  return null;
+}
+
+// Warn when a user-overridden file's aspect ratio diverges enough from the
+// original that the theme's hitbox / objectScale assumptions likely no longer
+// line up. Currently only meaningful for SVG → SVG swaps — bitmap formats
+// skip silently rather than mislead with a false-negative.
+const ASPECT_RATIO_WARN_THRESHOLD = 0.15;
+
+function _computeAspectRatioWarning(baseFile, currentFile) {
+  if (!baseFile || !currentFile) return null;
+  if (baseFile === currentFile) return null;
+  const lowerBase = baseFile.toLowerCase();
+  const lowerCurrent = currentFile.toLowerCase();
+  if (!lowerBase.endsWith(".svg") || !lowerCurrent.endsWith(".svg")) return null;
+  const basePath = _resolveAnimationAssetAbsPath(baseFile);
+  const currentPath = _resolveAnimationAssetAbsPath(currentFile);
+  if (!basePath || !currentPath) return null;
+  const baseAspect = _readSvgAspectRatio(basePath);
+  const currentAspect = _readSvgAspectRatio(currentPath);
+  if (baseAspect == null || currentAspect == null) return null;
+  const diffRatio = Math.abs(baseAspect - currentAspect) / baseAspect;
+  if (diffRatio < ASPECT_RATIO_WARN_THRESHOLD) return null;
+  return {
+    baseAspect,
+    currentAspect,
+    diffRatio,
+  };
+}
+
+function _computeCardHitboxInfo(currentFile, themeOverrideMap) {
+  if (!currentFile || !activeTheme) {
+    return { wideHitboxEnabled: false, wideHitboxOverridden: false };
+  }
+  const wideFiles = Array.isArray(activeTheme.wideHitboxFiles) ? activeTheme.wideHitboxFiles : [];
+  const wideHitboxEnabled = wideFiles.includes(currentFile);
+  const overrideWide = themeOverrideMap && themeOverrideMap.hitbox && themeOverrideMap.hitbox.wide;
+  const wideHitboxOverridden = !!(overrideWide
+    && Object.prototype.hasOwnProperty.call(overrideWide, currentFile));
+  return { wideHitboxEnabled, wideHitboxOverridden };
+}
+
 function _resolveAnimationAssetsDir(theme = activeTheme) {
   if (!theme) return null;
   const themeAssetsDir = theme._themeDir ? path.join(theme._themeDir, "assets") : null;
@@ -1247,6 +1315,61 @@ function _buildIdleAnimationCards(themeOverrideMap) {
     .filter(Boolean);
 }
 
+const REACTION_ORDER = [
+  { key: "drag",       triggerKind: "dragReaction",       supportsDuration: false },
+  { key: "clickLeft",  triggerKind: "clickLeftReaction",  supportsDuration: true  },
+  { key: "clickRight", triggerKind: "clickRightReaction", supportsDuration: true  },
+  { key: "annoyed",    triggerKind: "annoyedReaction",    supportsDuration: true  },
+  { key: "double",     triggerKind: "doubleReaction",     supportsDuration: true  },
+];
+
+function _buildReactionCards(themeOverrideMap) {
+  if (!activeTheme || !_isPlainObject(activeTheme.reactions)) return [];
+  const reactionsMap = activeTheme.reactions;
+  const overrideMap = themeOverrideMap && themeOverrideMap.reactions;
+  const cards = [];
+  for (const spec of REACTION_ORDER) {
+    const reactionEntry = reactionsMap[spec.key];
+    if (!_isPlainObject(reactionEntry)) continue;
+    // `double` carries a random pool (files[]); MVP exposes only files[0].
+    // Other reactions carry a single file under `file`.
+    const currentFile = (Array.isArray(reactionEntry.files) && reactionEntry.files[0])
+      || reactionEntry.file
+      || null;
+    if (!currentFile) continue;
+    const durationMs = spec.supportsDuration && Number.isFinite(reactionEntry.duration)
+      ? reactionEntry.duration
+      : null;
+    const timingHint = _buildTimingHint(currentFile, durationMs);
+    const overrideEntry = overrideMap && overrideMap[spec.key];
+    const hasDurationOverride = !!(overrideEntry
+      && Object.prototype.hasOwnProperty.call(overrideEntry, "durationMs"));
+    cards.push({
+      id: `reaction:${spec.key}`,
+      slotType: "reaction",
+      sectionId: "reactions",
+      reactionKey: spec.key,
+      triggerKind: spec.triggerKind,
+      currentFile,
+      baseFile: currentFile,
+      currentFileUrl: _buildAnimationAssetUrl(currentFile),
+      bindingLabel: `reactions.${spec.key}`,
+      transition: _readResolvedTransition(currentFile),
+      supportsAutoReturn: false,
+      supportsDuration: spec.supportsDuration,
+      autoReturnMs: null,
+      durationMs,
+      hasAutoReturnOverride: false,
+      hasDurationOverride,
+      ...timingHint,
+      previewDurationMs: timingHint.previewDurationMs || durationMs,
+      displayHintWarning: false,
+      displayHintTarget: null,
+    });
+  }
+  return cards;
+}
+
 function _pushSection(sections, id, mode, cards) {
   if (!Array.isArray(cards) || cards.length === 0) return;
   sections.push({ id, mode: mode || null, cards });
@@ -1324,6 +1447,9 @@ function _buildAnimationOverrideSections() {
   }
   _pushSection(sections, "sleep", sleepMode, sleepCards);
 
+  const reactionCards = _buildReactionCards(themeOverrideMap);
+  _pushSection(sections, "reactions", null, reactionCards);
+
   if (activeTheme.miniMode && activeTheme.miniMode.supported) {
     const miniCards = [];
     for (const stateKey of [
@@ -1345,6 +1471,22 @@ function _buildAnimationOverrideSections() {
     }
     _pushSection(sections, "mini", null, miniCards);
   }
+
+  // Annotate every card with wide-hitbox status + aspect-ratio warning so the
+  // settings panel drawer can render the toggle + warning banner. Reactions
+  // are intentionally skipped — they're renderer-owned click animations that
+  // don't consume HIT_BOXES.
+  for (const section of sections) {
+    if (!section || !Array.isArray(section.cards)) continue;
+    if (section.id === "reactions") continue;
+    for (const card of section.cards) {
+      const { wideHitboxEnabled, wideHitboxOverridden } = _computeCardHitboxInfo(card.currentFile, themeOverrideMap);
+      card.wideHitboxEnabled = wideHitboxEnabled;
+      card.wideHitboxOverridden = wideHitboxOverridden;
+      card.aspectRatioWarning = _computeAspectRatioWarning(card.baseFile, card.currentFile);
+    }
+  }
+
   return sections;
 }
 
@@ -1461,6 +1603,26 @@ ipcMain.handle("settings:open-theme-assets-dir", async () => {
   return { status: "ok", path: dir };
 });
 ipcMain.handle("settings:preview-animation-override", (_event, payload) => _previewAnimationOverride(payload));
+
+// Reaction preview goes through the renderer's click-reaction channel
+// (bypasses the state machine entirely — reactions are a renderer-owned
+// visual layer, not a logical state). Duration is clamped to the same
+// [800, 3500]ms window as state previews.
+ipcMain.handle("settings:preview-reaction", (_event, payload) => {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "previewReaction payload must be an object" };
+  }
+  const { file, durationMs } = payload;
+  if (typeof file !== "string" || !file) {
+    return { status: "error", message: "previewReaction.file must be a non-empty string" };
+  }
+  const requested = (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs > 0)
+    ? durationMs
+    : PREVIEW_HOLD_MIN_MS;
+  const clamped = Math.max(PREVIEW_HOLD_MIN_MS, Math.min(PREVIEW_HOLD_MAX_MS, requested));
+  sendToRenderer("play-click-reaction", file, clamped);
+  return { status: "ok" };
+});
 
 const ANIMATION_OVERRIDES_EXPORT_DIALOG_STRINGS = {
   en: {

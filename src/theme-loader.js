@@ -1016,6 +1016,55 @@ function _applyUserOverridesPatch(raw, overrides) {
     patched.timings = nextTimings;
   }
 
+  // Per-file wide-hitbox opt-in/opt-out. Only touches the file list the theme
+  // publishes — doesn't regenerate HIT_BOXES. state.js rebuilds WIDE_SVGS from
+  // theme.wideHitboxFiles on refreshTheme, so the merged list flows through.
+  const hitboxOverrides = _isPlainObject(overrides.hitbox) ? overrides.hitbox : null;
+  const wideOverrides = hitboxOverrides && _isPlainObject(hitboxOverrides.wide) ? hitboxOverrides.wide : null;
+  if (wideOverrides && Object.keys(wideOverrides).length > 0) {
+    const currentSet = new Set(
+      (Array.isArray(patched.wideHitboxFiles) ? patched.wideHitboxFiles : []).map(_basenameOnly)
+    );
+    for (const [file, enabled] of Object.entries(wideOverrides)) {
+      const bn = _basenameOnly(file);
+      if (!bn) continue;
+      if (enabled) currentSet.add(bn);
+      else currentSet.delete(bn);
+    }
+    patched.wideHitboxFiles = [...currentSet];
+  }
+
+  const reactionOverrides = _isPlainObject(overrides.reactions) ? overrides.reactions : null;
+  if (reactionOverrides && _isPlainObject(raw.reactions)) {
+    const nextReactions = { ...raw.reactions };
+    for (const [reactionKey, entry] of Object.entries(reactionOverrides)) {
+      if (!_isPlainObject(entry)) continue;
+      const rawReaction = nextReactions[reactionKey];
+      if (!_isPlainObject(rawReaction)) continue;
+      const nextReaction = { ...rawReaction };
+      const hasNewFile = typeof entry.file === "string" && entry.file;
+      if (hasNewFile) {
+        // `double` reaction stores a files array (random pool). The MVP exposes
+        // only files[0] to users, so overriding replaces the first entry while
+        // keeping the rest of the pool intact.
+        if (Array.isArray(nextReaction.files) && nextReaction.files.length > 0) {
+          nextReaction.files = [entry.file, ...nextReaction.files.slice(1)];
+        } else {
+          nextReaction.file = entry.file;
+        }
+      }
+      if (Number.isFinite(entry.durationMs)) {
+        nextReaction.duration = entry.durationMs;
+      }
+      nextReactions[reactionKey] = nextReaction;
+      const transitionTarget = hasNewFile
+        ? entry.file
+        : (nextReaction.file || (Array.isArray(nextReaction.files) ? nextReaction.files[0] : null));
+      if (transitionTarget) _applyTransitionOverride(patched, transitionTarget, entry.transition);
+    }
+    patched.reactions = nextReactions;
+  }
+
   const idleAnimationOverrides = _isPlainObject(overrides.idleAnimations) ? overrides.idleAnimations : null;
   if (idleAnimationOverrides && Array.isArray(raw.idleAnimations)) {
     const nextIdleAnimations = raw.idleAnimations.map((entry) => (_isPlainObject(entry) ? { ...entry } : entry));
