@@ -1029,8 +1029,7 @@ function _listAnimationOverrideAssets(theme = activeTheme) {
   const dirs = [];
   const primaryDir = _resolveAnimationAssetsDir(theme);
   const sourceDir = theme._themeDir ? path.join(theme._themeDir, "assets") : null;
-  const cacheDir = theme._assetsDir || null;
-  for (const dir of [primaryDir, sourceDir, cacheDir]) {
+  for (const dir of [primaryDir, sourceDir]) {
     if (!dir || !fs.existsSync(dir)) continue;
     if (!dirs.includes(dir)) dirs.push(dir);
   }
@@ -1320,6 +1319,7 @@ function _buildAnimationOverrideSections() {
       "mini-enter-sleep",
       "mini-crabwalk",
       "mini-peek",
+      "mini-working",
       "mini-alert",
       "mini-happy",
       "mini-sleep",

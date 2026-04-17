@@ -458,11 +458,9 @@ function getAssetPath(filename) {
   if (!activeTheme) return path.join(assetsSvgDir, filename);
 
   if (activeTheme._builtin) {
-    // Built-in theme with own assets dir (e.g., calico with APNGs)
-    if (!filename.endsWith(".svg")) {
-      const themeAsset = path.join(activeTheme._themeDir, "assets", filename);
-      if (fs.existsSync(themeAsset)) return themeAsset;
-    }
+    // Built-in theme with own assets dir (e.g., calico with APNGs + SVGs)
+    const themeAsset = path.join(activeTheme._themeDir, "assets", filename);
+    if (fs.existsSync(themeAsset)) return themeAsset;
     return path.join(assetsSvgDir, filename);
   }
 
