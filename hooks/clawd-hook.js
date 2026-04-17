@@ -25,22 +25,10 @@ const EVENT_TO_STATE = {
   WorktreeCreate: "carrying",
 };
 
-const event = process.argv[2];
-const state = EVENT_TO_STATE[event];
-if (!state) process.exit(0);
+function buildStateBody(event, payload, resolve) {
+  const state = EVENT_TO_STATE[event];
+  if (!state) return null;
 
-const config = getPlatformConfig();
-const resolve = createPidResolver({
-  agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
-  agentCmdlineCheck: (cmd) => cmd.includes("claude-code") || cmd.includes("@anthropic-ai"),
-  platformConfig: config,
-});
-
-// Pre-resolve on SessionStart (runs during stdin buffering, not after)
-// Remote mode: skip PID collection — remote PIDs are meaningless on the local machine
-if (event === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
-
-readStdinJson().then((payload) => {
   const sessionId = payload.session_id || "default";
   const cwd = payload.cwd || "";
   const source = payload.source || payload.reason || "";
@@ -77,9 +65,35 @@ readStdinJson().then((payload) => {
     if (pidChain.length) body.pid_chain = pidChain;
   }
 
-  postStateToRunningServer(
-    JSON.stringify(body),
-    { timeoutMs: 100 },
-    () => process.exit(0)
-  );
-});
+  return body;
+}
+
+function main() {
+  const event = process.argv[2];
+  if (!EVENT_TO_STATE[event]) process.exit(0);
+
+  const config = getPlatformConfig();
+  const resolve = createPidResolver({
+    agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
+    agentCmdlineCheck: (cmd) => cmd.includes("claude-code") || cmd.includes("@anthropic-ai"),
+    platformConfig: config,
+  });
+
+  // Pre-resolve on SessionStart (runs during stdin buffering, not after)
+  // Remote mode: skip PID collection — remote PIDs are meaningless on the local machine
+  if (event === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
+
+  readStdinJson().then((payload) => {
+    const body = buildStateBody(event, payload || {}, resolve);
+    if (!body) process.exit(0);
+    postStateToRunningServer(
+      JSON.stringify(body),
+      { timeoutMs: 100 },
+      () => process.exit(0)
+    );
+  });
+}
+
+if (require.main === module) main();
+
+module.exports = { buildStateBody };
