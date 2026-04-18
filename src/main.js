@@ -612,6 +612,7 @@ function moveWindowForDrag() {
   if (!bounds) return;
 
   applyPetWindowBounds(bounds);
+  if (isWin && isNearWorkAreaEdge(bounds)) reassertWinTopmost();
   syncHitWin();
   if (bubbleFollowPet) repositionFloatingBubbles();
 }
@@ -893,6 +894,24 @@ const TOPMOST_WATCHDOG_MS = 5_000;
 let topmostWatchdog = null;
 let hwndRecoveryTimer = null;
 
+function reassertWinTopmost() {
+  if (!isWin) return;
+  if (win && !win.isDestroyed()) win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+  if (hitWin && !hitWin.isDestroyed()) hitWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+}
+
+function isNearWorkAreaEdge(bounds, tolerance = 2) {
+  if (!bounds) return false;
+  const wa = getNearestWorkArea(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  if (!wa) return false;
+  return (
+    bounds.x <= wa.x + tolerance ||
+    bounds.y <= wa.y + tolerance ||
+    bounds.x + bounds.width >= wa.x + wa.width - tolerance ||
+    bounds.y + bounds.height >= wa.y + wa.height - tolerance
+  );
+}
+
 // Reinitialize HWND input routing after DWM z-order disruptions.
 // showInactive() (ShowWindow SW_SHOWNOACTIVATE) is the same call that makes
 // the right-click context menu restore drag capability — it forces Windows to
@@ -904,8 +923,7 @@ function scheduleHwndRecovery() {
     hwndRecoveryTimer = null;
     if (!win || win.isDestroyed()) return;
     // Just restore z-order — input routing is handled by hitWin now
-    win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-    if (hitWin && !hitWin.isDestroyed()) hitWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+    reassertWinTopmost();
     forceEyeResend = true;
   }, 1000);
 }
@@ -2558,6 +2576,8 @@ function createWindow() {
           const virtualBounds = getPetWindowBounds();
           const clamped = computeFinalDragBounds(virtualBounds, size, clampToScreenVisual);
           if (clamped) applyPetWindowBounds(clamped);
+          reassertWinTopmost();
+          scheduleHwndRecovery();
           syncHitWin();
           repositionUpdateBubble();
         }
