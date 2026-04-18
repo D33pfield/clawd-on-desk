@@ -39,7 +39,7 @@ const SCHEMA = {
   positionVariantId: { type: "string", default: "" },
   size: {
     type: "string",
-    default: "P:9", // UI slider shows 30% on first boot (UI scale: 100 = screen-width 30%)
+    default: "P:9",
     // Accept "S"/"M"/"L" (legacy) or "P:<num>" — full migration happens elsewhere.
     validate: (v) =>
       typeof v === "string" &&

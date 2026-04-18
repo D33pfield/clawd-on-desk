@@ -2604,9 +2604,6 @@ function buildSizeSliderRow() {
   applyLocalValue(initial);
   setDragging(transientUiState.size.dragging, transientUiState.size.pending);
 
-  // Ticks are visual-only reference marks now — clicking no longer snaps
-  // (that "kept getting stuck" per user feedback). Keep dot + label for
-  // spatial orientation, drop the button element and click handler.
   for (const v of SIZE_TICK_VALUES) {
     const mark = document.createElement("span");
     mark.className = "size-tick";

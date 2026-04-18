@@ -24,7 +24,6 @@ const SIZES = {
 // settings panel can share them. menu.js binds the translator to ctx.lang.
 const { createTranslator } = require("./i18n");
 
-
 module.exports = function initMenu(ctx) {
   // ── Translation helper (bound to ctx.lang via the shared i18n module) ──
   const t = createTranslator(() => ctx.lang);
@@ -239,8 +238,7 @@ module.exports = function initMenu(ctx) {
     });
   }
 
-  function buildDisplaySubmenu() {
-    const displays = screen.getAllDisplays();
+  function buildDisplaySubmenu(displays = screen.getAllDisplays()) {
     if (displays.length <= 1) return [{ label: t("displayLabel").replace("{n}", 1), enabled: false }];
     const currentBounds = ctx.getPetWindowBounds ? ctx.getPetWindowBounds() : null;
     const current = currentBounds
@@ -303,12 +301,13 @@ module.exports = function initMenu(ctx) {
     // sendToDisplay is a multi-display-only tail entry. Push dynamically
     // (rather than visible:false) — Electron leaves a phantom gap for
     // hidden separators otherwise.
-    if (screen.getAllDisplays().length > 1 && !ctx.getMiniMode()) {
+    const displays = screen.getAllDisplays();
+    if (displays.length > 1 && !ctx.getMiniMode()) {
       template.push(
         { type: "separator" },
         {
           label: t("sendToDisplay"),
-          submenu: buildDisplaySubmenu(),
+          submenu: buildDisplaySubmenu(displays),
         },
       );
     }
