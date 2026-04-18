@@ -67,6 +67,7 @@ const SCHEMA = {
   hideBubbles: { type: "boolean", default: false },
   showSessionId: { type: "boolean", default: false },
   soundMuted: { type: "boolean", default: false },
+  allowEdgePinning: { type: "boolean", default: false },
   shortcuts: {
     type: "object",
     defaultFactory: () => getDefaultShortcuts(),

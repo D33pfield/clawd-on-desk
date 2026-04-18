@@ -77,7 +77,7 @@ describe("updateRegistry pure-data validators", () => {
   it("function-form boolean fields reject non-booleans", () => {
     const deps = { snapshot: baseSnapshot };
     for (const key of [
-      "soundMuted", "bubbleFollowPet", "hideBubbles",
+      "soundMuted", "bubbleFollowPet", "hideBubbles", "allowEdgePinning",
       "showSessionId", "miniMode", "openAtLoginHydrated",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);

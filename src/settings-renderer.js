@@ -75,6 +75,8 @@ const STRINGS = {
     rowHideBubblesDesc: "Suppress permission, notification, and update bubbles entirely.",
     rowShowSessionId: "Show session ID",
     rowShowSessionIdDesc: "Append the short session ID to bubble headers and the Sessions menu.",
+    rowAllowEdgePinning: "Allow pinning to screen edges",
+    rowAllowEdgePinningDesc: "Top/bottom decorations (sparkles, buildings, bubbles, …) may be clipped by the screen edge",
     placeholderTitle: "Coming soon",
     placeholderDesc: "This panel will land in a future Clawd release. The plan lives in docs/plans/plan-settings-panel.md.",
     toastSaveFailed: "Couldn't save: ",
@@ -251,6 +253,8 @@ const STRINGS = {
     rowHideBubblesDesc: "完全屏蔽权限、通知和更新气泡。",
     rowShowSessionId: "显示会话 ID",
     rowShowSessionIdDesc: "在气泡标题和会话菜单后追加短会话 ID。",
+    rowAllowEdgePinning: "允许贴靠屏幕边缘",
+    rowAllowEdgePinningDesc: "开启后桌宠贴屏幕边缘时，顶/底装饰（花花、建筑、气泡等）可能被裁掉。",
     placeholderTitle: "即将推出",
     placeholderDesc: "此面板将在 Clawd 后续版本中加入，规划见 docs/plans/plan-settings-panel.md。",
     toastSaveFailed: "保存失败：",
@@ -425,6 +429,8 @@ const STRINGS = {
     rowHideBubblesDesc: "권한, 알림, 업데이트 말풍선을 모두 숨깁니다.",
     rowShowSessionId: "세션 ID 표시",
     rowShowSessionIdDesc: "말풍선 제목과 Sessions 메뉴에 짧은 세션 ID를 덧붙입니다.",
+    rowAllowEdgePinning: "화면 가장자리에 붙이기 허용",
+    rowAllowEdgePinningDesc: "화면 가장자리에 붙을 때 상/하단 장식(반짝임·건물·말풍선 등)이 잘릴 수 있습니다.",
     placeholderTitle: "곧 제공 예정",
     placeholderDesc: "이 패널은 향후 Clawd 릴리스에 추가됩니다. 계획은 docs/plans/plan-settings-panel.md에 있습니다.",
     toastSaveFailed: "저장 실패: ",
@@ -547,7 +553,7 @@ const CONTRIBUTORS = [
   "PixelCookie-zyf", "yujiachen-y", "AooooooZzzz", "purefkh", "Tobeabellwether", "Jasonhonghh", "crashchen",
   "hongbigtou", "InTimmyDate", "NeizhiTouhu", "xu3stones-cmd", "androidZzT", "Ye-0413", "WanfengzzZ",
   "TaoXieSZ", "ssly", "stickycandy", "Rladmsrl", "YOIMIYA66", "Kevin7Qi", "sefuzhou770801-hub",
-  "Tonic-Jin", "seoki180", "PeterShanxin", "CHIANGANGSTER",
+  "Tonic-Jin", "seoki180", "PeterShanxin", "rullerzhou-afk", "CHIANGANGSTER",
 ];
 
 const SHORTCUT_API = globalThis.ClawdShortcutActions || {};
@@ -2115,6 +2121,11 @@ function renderGeneralTab(parent) {
       descKey: "rowSoundDesc",
       // soundMuted is inverse: ON-switch means sound enabled.
       invert: true,
+    }),
+    buildSwitchRow({
+      key: "allowEdgePinning",
+      labelKey: "rowAllowEdgePinning",
+      descKey: "rowAllowEdgePinningDesc",
     }),
   ]));
 

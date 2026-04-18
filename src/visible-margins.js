@@ -66,8 +66,59 @@ function computeStableVisibleContentMargins(theme, bounds, options = {}) {
   };
 }
 
+function normalizeMargin(value) {
+  return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+}
+
+// ON 贴边溢出量 —— 按 Peter PR#125 hitRect 基准反算窗口高度比例（测试 280px 下 top=169/bottom=14）
+const EDGE_PIN_TOP_RATIO = 0.6;
+const EDGE_PIN_BOTTOM_RATIO = 0.25;
+
+function getLooseDragMargins({ width, height, visibleMargins, allowEdgePinning } = {}) {
+  const marginX = Number.isFinite(width) ? Math.round(width * 0.25) : 0;
+  const rubberBandY = Number.isFinite(height) ? Math.round(height * 0.25) : 0;
+  const margins = visibleMargins || {};
+  const topMargin = normalizeMargin(margins.top);
+  const heightPx = Number.isFinite(height) ? Math.round(height) : 0;
+
+  if (allowEdgePinning) {
+    // ON: drag 与 rest 等量（无橡皮筋回弹）
+    return {
+      marginX,
+      marginTop: Math.round(heightPx * EDGE_PIN_TOP_RATIO),
+      marginBottom: Math.round(heightPx * EDGE_PIN_BOTTOM_RATIO),
+    };
+  }
+
+  // OFF: 保持现状
+  return {
+    marginX,
+    marginTop: topMargin + rubberBandY,
+    // Bottom drag always uses the pure 0.25h rubber band when OFF.
+    marginBottom: rubberBandY,
+  };
+}
+
+function getRestClampMargins({ height, visibleMargins, allowEdgePinning } = {}) {
+  const margins = visibleMargins || {};
+  const topMargin = normalizeMargin(margins.top);
+  const bottomMargin = normalizeMargin(margins.bottom);
+  const heightPx = Number.isFinite(height) ? Math.round(height) : 0;
+
+  if (allowEdgePinning) {
+    return {
+      top: Math.round(heightPx * EDGE_PIN_TOP_RATIO),
+      bottom: Math.round(heightPx * EDGE_PIN_BOTTOM_RATIO),
+    };
+  }
+
+  return { top: topMargin, bottom: bottomMargin };
+}
+
 module.exports = {
   getThemeMarginBox,
   collectThemeEnvelopeFiles,
   computeStableVisibleContentMargins,
+  getLooseDragMargins,
+  getRestClampMargins,
 };

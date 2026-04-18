@@ -6,7 +6,12 @@ const { applyStationaryCollectionBehavior } = require("./mac-window");
 const hitGeometry = require("./hit-geometry");
 const animationCycle = require("./animation-cycle");
 const { findNearestWorkArea, computeLooseClamp, SYNTHETIC_WORK_AREA } = require("./work-area");
-const { getThemeMarginBox, computeStableVisibleContentMargins } = require("./visible-margins");
+const {
+  getThemeMarginBox,
+  computeStableVisibleContentMargins,
+  getLooseDragMargins,
+  getRestClampMargins,
+} = require("./visible-margins");
 const {
   createDragSnapshot,
   computeAnchoredDragBounds,
@@ -325,6 +330,7 @@ let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
 let hideBubbles = _settingsController.get("hideBubbles");
 let showSessionId = _settingsController.get("showSessionId");
 let soundMuted = _settingsController.get("soundMuted");
+let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let petHidden = false;
 const shortcutRegistrationFailures = new Map();
 
@@ -1090,6 +1096,7 @@ function wireSettingsSubscribers() {
     if ("hideBubbles" in changes) hideBubbles = changes.hideBubbles;
     if ("showSessionId" in changes) showSessionId = changes.showSessionId;
     if ("soundMuted" in changes) soundMuted = changes.soundMuted;
+    if ("allowEdgePinning" in changes) allowEdgePinningCached = changes.allowEdgePinning;
 
     // 2. Reactive side effects (mirror what the legacy setters / click handlers used to do).
     if ("hideBubbles" in changes) {
@@ -1100,6 +1107,26 @@ function wireSettingsSubscribers() {
     if ("bubbleFollowPet" in changes) {
       try { repositionFloatingBubbles(); } catch (err) {
         console.warn("Clawd: repositionFloatingBubbles failed:", err && err.message);
+      }
+    }
+    if ("allowEdgePinning" in changes) {
+      try {
+        if (
+          win && !win.isDestroyed() &&
+          !dragLocked &&
+          !_mini.getMiniMode() &&
+          !_mini.getMiniTransitioning()
+        ) {
+          const size = getCurrentPixelSize();
+          const virtualBounds = getPetWindowBounds();
+          const clamped = computeFinalDragBounds(virtualBounds, size, clampToScreenVisual);
+          if (clamped) applyPetWindowBounds(clamped);
+          syncHitWin();
+          if (bubbleFollowPet) repositionFloatingBubbles();
+          else repositionUpdateBubble();
+        }
+      } catch (err) {
+        console.warn("Clawd: allowEdgePinning re-clamp failed:", err && err.message);
       }
     }
 
@@ -2655,11 +2682,20 @@ function getNearestWorkArea(cx, cy) {
 // so the pet can freely cross between screens. Only prevents going fully off-screen.
 function looseClampPetToDisplays(x, y, w, h) {
   const margins = getVisibleContentMargins({ x, y, width: w, height: h });
-  return computeLooseClamp(screen.getAllDisplays(), getPrimaryWorkAreaSafe(), x, y, w, h, {
-    marginX: Math.round(w * 0.25),
-    marginTop: margins.top + Math.round(h * 0.25),
-    marginBottom: Math.round(h * 0.25),
-  });
+  return computeLooseClamp(
+    screen.getAllDisplays(),
+    getPrimaryWorkAreaSafe(),
+    x,
+    y,
+    w,
+    h,
+    getLooseDragMargins({
+      width: w,
+      height: h,
+      visibleMargins: margins,
+      allowEdgePinning: allowEdgePinningCached,
+    })
+  );
 }
 
 function clampToScreenVisual(x, y, w, h, options = {}) {
@@ -2670,9 +2706,17 @@ function clampToScreenVisual(x, y, w, h, options = {}) {
   const nearest = getNearestWorkArea(x + w / 2, y + h / 2);
   const mLeft  = Math.round(w * 0.25);
   const mRight = Math.round(w * 0.25);
+  const clampMargins = getRestClampMargins({
+    height: h,
+    visibleMargins: margins,
+    allowEdgePinning: allowEdgePinningCached,
+  });
   return {
     x: Math.max(nearest.x - mLeft, Math.min(x, nearest.x + nearest.width - w + mRight)),
-    y: Math.max(nearest.y - margins.top, Math.min(y, nearest.y + nearest.height - h + margins.bottom)),
+    y: Math.max(
+      nearest.y - clampMargins.top,
+      Math.min(y, nearest.y + nearest.height - h + clampMargins.bottom)
+    ),
   };
 }
 

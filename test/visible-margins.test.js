@@ -8,6 +8,8 @@ const {
   getThemeMarginBox,
   collectThemeEnvelopeFiles,
   computeStableVisibleContentMargins,
+  getLooseDragMargins,
+  getRestClampMargins,
 } = require("../src/visible-margins");
 
 themeLoader.init(path.join(__dirname, "..", "src"));
@@ -66,5 +68,57 @@ describe("visible margin envelopes", () => {
     });
     assert.ok(stable.top < Math.round(idleRect.top - bounds.y));
     assert.ok(stable.bottom <= Math.round(bounds.y + bounds.height - idleRect.bottom));
+  });
+});
+
+describe("edge pinning margin policy", () => {
+  it("keeps bottom drag rubber-band unchanged when edge pinning is off", () => {
+    const margins = getLooseDragMargins({
+      width: 200,
+      height: 120,
+      visibleMargins: { top: 18, bottom: 9 },
+      allowEdgePinning: false,
+    });
+
+    assert.deepStrictEqual(margins, {
+      marginX: 50,
+      marginTop: 48,
+      marginBottom: 30,
+    });
+  });
+
+  it("drops only the top drag protection when edge pinning is on", () => {
+    const margins = getLooseDragMargins({
+      width: 200,
+      height: 120,
+      visibleMargins: { top: 18, bottom: 9 },
+      allowEdgePinning: true,
+    });
+
+    assert.deepStrictEqual(margins, {
+      marginX: 50,
+      marginTop: 30,
+      marginBottom: 30,
+    });
+  });
+
+  it("preserves rest clamp margins when edge pinning is off", () => {
+    assert.deepStrictEqual(
+      getRestClampMargins({
+        visibleMargins: { top: 22, bottom: 14 },
+        allowEdgePinning: false,
+      }),
+      { top: 22, bottom: 14 }
+    );
+  });
+
+  it("drops rest clamp margins when edge pinning is on", () => {
+    assert.deepStrictEqual(
+      getRestClampMargins({
+        visibleMargins: { top: 22, bottom: 14 },
+        allowEdgePinning: true,
+      }),
+      { top: 0, bottom: 0 }
+    );
   });
 });

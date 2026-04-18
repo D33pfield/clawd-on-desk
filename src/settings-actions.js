@@ -224,6 +224,7 @@ const updateRegistry = {
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
   hideBubbles: requireBoolean("hideBubbles"),
   showSessionId: requireBoolean("showSessionId"),
+  allowEdgePinning: requireBoolean("allowEdgePinning"),
 
   // ── System-backed prefs (object-form: validate + effect pre-commit gate) ──
   //
