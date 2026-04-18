@@ -107,10 +107,23 @@ describe("buildAcceleratorFromEvent", () => {
     );
   });
 
-  it("waits for a non-modifier key", () => {
+  it("waits for a non-modifier key and reports held modifiers for live preview", () => {
     assert.deepStrictEqual(
       buildAcceleratorFromEvent({ key: "Shift", code: "ShiftLeft", shiftKey: true }),
-      { action: "pending" }
+      { action: "pending", modifiers: ["Shift"] }
+    );
+    assert.deepStrictEqual(
+      buildAcceleratorFromEvent({
+        key: "Control",
+        code: "ControlLeft",
+        ctrlKey: true,
+        shiftKey: true,
+      }),
+      { action: "pending", modifiers: ["CommandOrControl", "Shift"] }
+    );
+    assert.deepStrictEqual(
+      buildAcceleratorFromEvent({ key: "Alt", code: "AltLeft" }),
+      { action: "pending", modifiers: [] }
     );
   });
 
@@ -118,6 +131,23 @@ describe("buildAcceleratorFromEvent", () => {
     assert.deepStrictEqual(
       buildAcceleratorFromEvent({ key: "a", code: "KeyA" }),
       { action: "reject", reason: "must include modifier" }
+    );
+  });
+
+  it("formats live partial previews for modifier-only state", () => {
+    const { formatAcceleratorPartial } = require("../src/shortcut-actions");
+    assert.strictEqual(formatAcceleratorPartial([]), "");
+    assert.strictEqual(
+      formatAcceleratorPartial(["CommandOrControl", "Shift"]),
+      "Ctrl+Shift+…"
+    );
+    assert.strictEqual(
+      formatAcceleratorPartial(["CommandOrControl", "Shift"], { isMac: true }),
+      "⌘⇧…"
+    );
+    assert.strictEqual(
+      formatAcceleratorPartial(["CommandOrControl", "Alt"]),
+      "Ctrl+Alt+…"
     );
   });
 

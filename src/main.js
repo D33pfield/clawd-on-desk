@@ -2123,6 +2123,23 @@ function stopShortcutRecording() {
       );
     } catch {}
   }
+
+  // Restore the temporarily unregistered accelerator if prefs still hold the
+  // same value (i.e. the user cancelled or pressed the same combo again so
+  // the command was a noop). If prefs changed, applyPersistentShortcutChange
+  // has already registered the new value — don't double-register.
+  const { actionId, tempUnregisteredAccel } = settingsShortcutRecording;
+  if (tempUnregisteredAccel) {
+    const snapshot = _settingsController.getSnapshot();
+    const current = snapshot && snapshot.shortcuts && snapshot.shortcuts[actionId];
+    if (current === tempUnregisteredAccel) {
+      const handler = actionId === "togglePet" ? togglePetVisibility : null;
+      if (typeof handler === "function") {
+        try { globalShortcut.register(tempUnregisteredAccel, handler); } catch {}
+      }
+    }
+  }
+
   settingsShortcutRecording = null;
 }
 
@@ -2140,6 +2157,26 @@ function startShortcutRecording(actionId) {
   }
 
   stopShortcutRecording();
+
+  // Temporarily unregister this action's current persistent globalShortcut so
+  // the user pressing their old combo doesn't fire the real handler (e.g.
+  // hiding the pet) mid-recording. Contextual shortcuts (permission hotkeys)
+  // manage their own lifecycle via syncPermissionShortcuts, skip them.
+  let tempUnregisteredAccel = null;
+  const meta = SHORTCUT_ACTIONS[actionId];
+  if (meta && meta.persistent) {
+    const snapshot = _settingsController.getSnapshot();
+    const current = snapshot && snapshot.shortcuts && snapshot.shortcuts[actionId];
+    if (current) {
+      try {
+        if (globalShortcut.isRegistered(current)) {
+          globalShortcut.unregister(current);
+          tempUnregisteredAccel = current;
+        }
+      } catch {}
+    }
+  }
+
   const listener = (event, input) => {
     if (!input || input.type !== "keyDown") return;
     event.preventDefault();
@@ -2154,7 +2191,7 @@ function startShortcutRecording(actionId) {
     });
   };
   settingsWindow.webContents.on("before-input-event", listener);
-  settingsShortcutRecording = { actionId, listener };
+  settingsShortcutRecording = { actionId, listener, tempUnregisteredAccel };
   return { status: "ok" };
 }
 

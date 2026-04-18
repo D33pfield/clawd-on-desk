@@ -278,9 +278,6 @@
       return { action: "cancel" };
     }
 
-    const nonMod = normalizeKey(key, code);
-    if (!nonMod) return { action: "pending" };
-
     const mods = [];
     if (isMac) {
       if (metaKey) mods.push("CommandOrControl");
@@ -290,6 +287,9 @@
     if (shiftKey) mods.push("Shift");
     if (altKey) mods.push("Alt");
 
+    const nonMod = normalizeKey(key, code);
+    if (!nonMod) return { action: "pending", modifiers: mods };
+
     if (mods.length === 0) {
       return { action: "reject", reason: "must include modifier" };
     }
@@ -298,6 +298,17 @@
       action: "commit",
       accelerator: [...mods, nonMod].join("+"),
     };
+  }
+
+  function formatAcceleratorPartial(modifiers, { isMac = false } = {}) {
+    if (!Array.isArray(modifiers) || modifiers.length === 0) return "";
+    const labels = modifiers.map((modifier) => {
+      if (modifier === "CommandOrControl") return isMac ? "⌘" : "Ctrl";
+      if (modifier === "Shift") return isMac ? "⇧" : "Shift";
+      if (modifier === "Alt") return isMac ? "⌥" : "Alt";
+      return modifier;
+    });
+    return isMac ? labels.join("") + "…" : labels.join("+") + "+…";
   }
 
   function formatAcceleratorLabel(
@@ -354,6 +365,7 @@
     normalizeKey,
     buildAcceleratorFromEvent,
     formatAcceleratorLabel,
+    formatAcceleratorPartial,
     normalizeShortcuts,
     isDangerousAccelerator,
     validateShortcutMapShape,

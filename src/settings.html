@@ -501,7 +501,8 @@ html, body {
   justify-content: flex-end;
 }
 .shortcut-value {
-  min-width: 190px;
+  width: 190px;
+  box-sizing: border-box;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -510,6 +511,9 @@ html, body {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
   text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .shortcut-value.unassigned {
   color: var(--text-tertiary);

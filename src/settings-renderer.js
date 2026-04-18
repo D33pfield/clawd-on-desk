@@ -27,11 +27,11 @@ const STRINGS = {
     sidebarAbout: "About",
     shortcutsTitle: "Shortcuts",
     shortcutsSubtitle: "Set global shortcuts for pet visibility and permission actions. Leave a field empty to unbind it.",
-    shortcutRecordButton: "Record",
+    shortcutRecordButton: "Change",
     shortcutClearButton: "Clear",
     shortcutResetButton: "Reset",
     shortcutResetAllButton: "Reset All",
-    shortcutRecordingHint: "Recording… (Press Esc to cancel)",
+    shortcutRecordingHint: "Press keys (Esc)",
     shortcutUnassigned: "— unassigned —",
     shortcutErrorConflict: "Conflict with {other}. Try another key.",
     shortcutErrorSystemConflict: "Already in use by system or another app.",
@@ -42,6 +42,7 @@ const STRINGS = {
     shortcutLabelTogglePet: "Toggle pet visibility",
     shortcutLabelPermissionAllow: "Permission: Allow",
     shortcutLabelPermissionDeny: "Permission: Deny",
+    shortcutToastSaved: "Shortcut updated",
     sidebarSoon: "Soon",
     sectionAppearance: "Appearance",
     sectionStartup: "Startup",
@@ -188,11 +189,11 @@ const STRINGS = {
     sidebarAbout: "关于",
     shortcutsTitle: "快捷键",
     shortcutsSubtitle: "为桌宠显隐和权限操作设置全局快捷键。留空即可解绑。",
-    shortcutRecordButton: "录制",
+    shortcutRecordButton: "修改",
     shortcutClearButton: "清空",
     shortcutResetButton: "恢复默认",
     shortcutResetAllButton: "全部恢复默认",
-    shortcutRecordingHint: "录制中…（按 Esc 取消）",
+    shortcutRecordingHint: "按下组合键（Esc）",
     shortcutUnassigned: "— 未绑定 —",
     shortcutErrorConflict: "与 {other} 冲突，请换一个组合键。",
     shortcutErrorSystemConflict: "该组合键已被系统或其他应用占用。",
@@ -203,6 +204,7 @@ const STRINGS = {
     shortcutLabelTogglePet: "显示/隐藏桌宠",
     shortcutLabelPermissionAllow: "权限：允许",
     shortcutLabelPermissionDeny: "权限：拒绝",
+    shortcutToastSaved: "快捷键已更新",
     sidebarSoon: "待推出",
     sectionAppearance: "外观",
     sectionStartup: "启动",
@@ -347,11 +349,11 @@ const STRINGS = {
     sidebarAbout: "정보",
     shortcutsTitle: "단축키",
     shortcutsSubtitle: "펫 표시 전환과 권한 동작에 사용할 전역 단축키를 설정합니다. 비워 두면 해제됩니다.",
-    shortcutRecordButton: "녹화",
+    shortcutRecordButton: "변경",
     shortcutClearButton: "해제",
     shortcutResetButton: "기본값 복원",
     shortcutResetAllButton: "모두 기본값 복원",
-    shortcutRecordingHint: "녹화 중… (Esc로 취소)",
+    shortcutRecordingHint: "키 조합 (Esc)",
     shortcutUnassigned: "— 미지정 —",
     shortcutErrorConflict: "{other} 와(과) 충돌합니다. 다른 키를 사용해 주세요.",
     shortcutErrorSystemConflict: "시스템 또는 다른 앱이 이미 사용 중입니다.",
@@ -362,6 +364,7 @@ const STRINGS = {
     shortcutLabelTogglePet: "펫 표시 전환",
     shortcutLabelPermissionAllow: "권한: 허용",
     shortcutLabelPermissionDeny: "권한: 거부",
+    shortcutToastSaved: "단축키가 업데이트되었습니다",
     sidebarSoon: "예정",
     sectionAppearance: "외관",
     sectionStartup: "시작",
@@ -503,6 +506,8 @@ const buildAcceleratorFromEvent = SHORTCUT_API.buildAcceleratorFromEvent
   || (() => ({ action: "reject", reason: "That key combination is not supported." }));
 const formatAcceleratorLabel = SHORTCUT_API.formatAcceleratorLabel
   || ((value) => value || "— unassigned —");
+const formatAcceleratorPartial = SHORTCUT_API.formatAcceleratorPartial
+  || (() => "");
 const IS_MAC = /\bMac\b/i.test(navigator.platform || "");
 
 let snapshot = null;
@@ -524,6 +529,7 @@ let shortcutFailures = {};
 let shortcutFailureToastShown = false;
 let shortcutRecordingActionId = null;
 let shortcutRecordingError = "";
+let shortcutRecordingPartial = [];
 
 function t(key) {
   const lang = (snapshot && snapshot.lang) || "en";
@@ -2307,6 +2313,7 @@ function finishShortcutRecording() {
   if (!shortcutRecordingActionId) return Promise.resolve();
   shortcutRecordingActionId = null;
   shortcutRecordingError = "";
+  shortcutRecordingPartial = [];
   if (activeTab === "shortcuts") renderContent();
   if (!window.settingsAPI || typeof window.settingsAPI.exitShortcutRecording !== "function") {
     return Promise.resolve();
@@ -2324,6 +2331,7 @@ function enterShortcutRecording(actionId) {
     return;
   }
   shortcutRecordingError = "";
+  shortcutRecordingPartial = [];
   window.settingsAPI.enterShortcutRecording(actionId).then((result) => {
     if (!result || result.status !== "ok") {
       showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
@@ -2331,6 +2339,7 @@ function enterShortcutRecording(actionId) {
     }
     shortcutRecordingActionId = actionId;
     shortcutRecordingError = "";
+    shortcutRecordingPartial = [];
     if (activeTab === "shortcuts") renderContent();
   }).catch((err) => {
     showToast(t("toastSaveFailed") + (err && err.message), { error: true });
@@ -2340,22 +2349,42 @@ function enterShortcutRecording(actionId) {
 function handleShortcutRecordKey(payload) {
   if (!shortcutRecordingActionId) return;
   const built = buildAcceleratorFromEvent(payload, { isMac: IS_MAC });
-  if (!built || built.action === "pending") return;
+  if (!built) return;
+  if (built.action === "pending") {
+    // Update live preview of modifiers held down so the user can see
+    // "Ctrl+Shift+…" build up before the final non-modifier key commits.
+    const nextPartial = Array.isArray(built.modifiers) ? built.modifiers : [];
+    const changed = nextPartial.length !== shortcutRecordingPartial.length
+      || nextPartial.some((m, i) => m !== shortcutRecordingPartial[i]);
+    if (changed) {
+      shortcutRecordingPartial = nextPartial;
+      if (activeTab === "shortcuts") renderContent();
+    }
+    return;
+  }
   if (built.action === "cancel") {
     cancelShortcutRecording();
     return;
   }
   if (built.action === "reject") {
     shortcutRecordingError = translateShortcutError(built.reason);
+    shortcutRecordingPartial = [];
     if (activeTab === "shortcuts") renderContent();
     return;
   }
+  const targetActionId = shortcutRecordingActionId;
+  const prevValue = getShortcutValue(targetActionId);
   window.settingsAPI.command("registerShortcut", {
-    actionId: shortcutRecordingActionId,
+    actionId: targetActionId,
     accelerator: built.accelerator,
   }).then((result) => {
     if (result && result.status === "ok") {
       finishShortcutRecording();
+      // Only toast when the value actually changed — if the user re-entered
+      // the same combo (noop), don't pretend something was saved.
+      if (prevValue !== built.accelerator) {
+        showToast(t("shortcutToastSaved"));
+      }
       return;
     }
     shortcutRecordingError = translateShortcutError(result && result.message);
@@ -2412,8 +2441,15 @@ function buildShortcutRow(actionId) {
   const isRecording = shortcutRecordingActionId === actionId;
   const failure = shortcutFailures && shortcutFailures[actionId];
   if (isRecording) {
-    status.classList.add("shortcut-status-recording");
-    status.textContent = shortcutRecordingError || t("shortcutRecordingHint");
+    // Only surface errors here — the value box below already shows the
+    // recording hint / live partial preview, so duplicating it in the left
+    // column just makes it wrap to 3 lines and looks bad.
+    if (shortcutRecordingError) {
+      status.classList.add("shortcut-status-recording");
+      status.textContent = shortcutRecordingError;
+    } else {
+      status.textContent = "";
+    }
   } else if (failure) {
     status.classList.add("shortcut-status-warning");
     status.textContent = t("shortcutErrorRegistrationFailed");
@@ -2429,12 +2465,19 @@ function buildShortcutRow(actionId) {
   value.className = "shortcut-value";
   if (!getShortcutValue(actionId)) value.classList.add("unassigned");
   if (isRecording) value.classList.add("recording");
-  value.textContent = isRecording
-    ? t("shortcutRecordingHint")
-    : formatAcceleratorLabel(getShortcutValue(actionId), {
+  if (isRecording) {
+    // Show "Ctrl+Shift+…" live as the user holds modifiers, fall back to
+    // the hint until any modifier is pressed.
+    const partial = shortcutRecordingPartial.length > 0
+      ? formatAcceleratorPartial(shortcutRecordingPartial, { isMac: IS_MAC })
+      : "";
+    value.textContent = partial || t("shortcutRecordingHint");
+  } else {
+    value.textContent = formatAcceleratorLabel(getShortcutValue(actionId), {
       isMac: IS_MAC,
       unassignedLabel: t("shortcutUnassigned"),
     });
+  }
   control.appendChild(value);
 
   if (failure && !isRecording) {
@@ -2445,21 +2488,25 @@ function buildShortcutRow(actionId) {
     control.appendChild(warning);
   }
 
-  const disableOtherRows = !!shortcutRecordingActionId && !isRecording;
+  // While any row is recording, lock down every row's action buttons (the
+  // recording row's too — otherwise the user can hit Clear/Reset mid-capture
+  // and break the "keyboard or Esc only" contract). Reset All follows the
+  // same rule below.
+  const anyRecording = !!shortcutRecordingActionId;
   control.appendChild(buildShortcutButton(
     t("shortcutRecordButton"),
     () => enterShortcutRecording(actionId),
-    { disabled: !!shortcutRecordingActionId }
+    { disabled: anyRecording }
   ));
   control.appendChild(buildShortcutButton(
     t("shortcutClearButton"),
     () => runShortcutAction("registerShortcut", { actionId, accelerator: null }),
-    { disabled: disableOtherRows || getShortcutValue(actionId) === null }
+    { disabled: anyRecording || getShortcutValue(actionId) === null }
   ));
   control.appendChild(buildShortcutButton(
     t("shortcutResetButton"),
     () => runShortcutAction("resetShortcut", { actionId }),
-    { disabled: disableOtherRows }
+    { disabled: anyRecording }
   ));
 
   row.appendChild(control);
