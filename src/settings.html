@@ -489,6 +489,48 @@ html, body {
   outline-offset: 2px;
 }
 
+/* ── Shortcuts ── */
+.shortcuts-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.shortcut-row-control {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.shortcut-value {
+  min-width: 190px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  text-align: left;
+}
+.shortcut-value.unassigned {
+  color: var(--text-tertiary);
+}
+.shortcut-value.recording {
+  color: var(--accent);
+  border-color: rgba(217, 119, 87, 0.35);
+  background: rgba(217, 119, 87, 0.08);
+}
+.shortcut-warning {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--accent);
+}
+.shortcut-status-warning {
+  color: var(--accent);
+}
+.shortcut-status-recording {
+  color: var(--accent);
+}
+
 /* ── Animation Overrides ── */
 .anim-override-meta {
   display: flex;
@@ -946,6 +988,7 @@ html, body {
 </div>
 <div class="toast-stack" id="toastStack"></div>
 <div id="modalRoot"></div>
+<script src="shortcut-actions.js"></script>
 <script src="settings-renderer.js"></script>
 </body>
 </html>

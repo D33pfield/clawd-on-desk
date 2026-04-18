@@ -20,20 +20,35 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 const listeners = new Set();
+const shortcutFailureListeners = new Set();
+const shortcutRecordKeyListeners = new Set();
 ipcRenderer.on("settings-changed", (_event, payload) => {
   for (const cb of listeners) {
     try { cb(payload); } catch (err) { console.warn("settings onChanged listener threw:", err); }
   }
 });
+ipcRenderer.on("shortcut-failures-changed", (_event, payload) => {
+  for (const cb of shortcutFailureListeners) {
+    try { cb(payload); } catch (err) { console.warn("shortcut failure listener threw:", err); }
+  }
+});
+ipcRenderer.on("shortcut-record-key", (_event, payload) => {
+  for (const cb of shortcutRecordKeyListeners) {
+    try { cb(payload); } catch (err) { console.warn("shortcut record listener threw:", err); }
+  }
+});
 
 contextBridge.exposeInMainWorld("settingsAPI", {
   getSnapshot: () => ipcRenderer.invoke("settings:get-snapshot"),
+  getShortcutFailures: () => ipcRenderer.invoke("settings:getShortcutFailures"),
   getAnimationOverridesData: () => ipcRenderer.invoke("settings:get-animation-overrides-data"),
   openThemeAssetsDir: () => ipcRenderer.invoke("settings:open-theme-assets-dir"),
   previewAnimationOverride: (payload) => ipcRenderer.invoke("settings:preview-animation-override", payload),
   previewReaction: (payload) => ipcRenderer.invoke("settings:preview-reaction", payload),
   exportAnimationOverrides: () => ipcRenderer.invoke("settings:export-animation-overrides"),
   importAnimationOverrides: () => ipcRenderer.invoke("settings:import-animation-overrides"),
+  enterShortcutRecording: (actionId) => ipcRenderer.invoke("settings:enterShortcutRecording", actionId),
+  exitShortcutRecording: () => ipcRenderer.invoke("settings:exitShortcutRecording"),
   update: (key, value) => ipcRenderer.invoke("settings:update", { key, value }),
   command: (action, payload) => ipcRenderer.invoke("settings:command", { action, payload }),
   listAgents: () => ipcRenderer.invoke("settings:list-agents"),
@@ -46,5 +61,15 @@ contextBridge.exposeInMainWorld("settingsAPI", {
     ipcRenderer.invoke("settings:confirm-disconnect-claude-hooks"),
   onChanged: (cb) => {
     if (typeof cb === "function") listeners.add(cb);
+  },
+  onShortcutFailuresChanged: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    shortcutFailureListeners.add(cb);
+    return () => shortcutFailureListeners.delete(cb);
+  },
+  onShortcutRecordKey: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    shortcutRecordKeyListeners.add(cb);
+    return () => shortcutRecordKeyListeners.delete(cb);
   },
 });

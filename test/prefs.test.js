@@ -29,6 +29,7 @@ describe("prefs.getDefaults", () => {
     assert.notStrictEqual(a, b);
     assert.notStrictEqual(a.agents, b.agents);
     assert.notStrictEqual(a.themeOverrides, b.themeOverrides);
+    assert.notStrictEqual(a.shortcuts, b.shortcuts);
     // Mutating one shouldn't affect the other
     a.agents["claude-code"].enabled = false;
     assert.strictEqual(b.agents["claude-code"].enabled, true);
@@ -183,6 +184,58 @@ describe("prefs.validate", () => {
     assert.deepStrictEqual(v.themeVariant, {});
     const w = prefs.validate({ themeVariant: [1, 2] });
     assert.deepStrictEqual(w.themeVariant, {});
+  });
+
+  it("shortcuts defaults to the built-in shortcut map", () => {
+    const d = prefs.getDefaults();
+    assert.deepStrictEqual(d.shortcuts, {
+      togglePet: "CommandOrControl+Shift+Alt+C",
+      permissionAllow: "CommandOrControl+Shift+Y",
+      permissionDeny: "CommandOrControl+Shift+N",
+    });
+  });
+
+  it("shortcuts fills missing keys and normalizes valid values", () => {
+    const v = prefs.validate({
+      shortcuts: {
+        togglePet: "Ctrl+K",
+      },
+    });
+    assert.deepStrictEqual(v.shortcuts, {
+      togglePet: "CommandOrControl+K",
+      permissionAllow: "CommandOrControl+Shift+Y",
+      permissionDeny: "CommandOrControl+Shift+N",
+    });
+  });
+
+  it("shortcuts falls back to defaults for invalid or dangerous values", () => {
+    const v = prefs.validate({
+      shortcuts: {
+        togglePet: "Ctrl+C",
+        permissionAllow: "bad accelerator",
+        permissionDeny: 42,
+      },
+    });
+    assert.deepStrictEqual(v.shortcuts, {
+      togglePet: "CommandOrControl+Shift+Alt+C",
+      permissionAllow: "CommandOrControl+Shift+Y",
+      permissionDeny: "CommandOrControl+Shift+N",
+    });
+  });
+
+  it("shortcuts de-duplicates conflicting load-time values with default priority", () => {
+    const v = prefs.validate({
+      shortcuts: {
+        togglePet: "Ctrl+K",
+        permissionAllow: "Ctrl+K",
+        permissionDeny: "Ctrl+Shift+Y",
+      },
+    });
+    assert.deepStrictEqual(v.shortcuts, {
+      togglePet: "CommandOrControl+K",
+      permissionAllow: "CommandOrControl+Shift+Y",
+      permissionDeny: "CommandOrControl+Shift+N",
+    });
   });
 });
 

@@ -55,6 +55,10 @@ const SIZES = {
 const prefsModule = require("./prefs");
 const { createSettingsController } = require("./settings-controller");
 const { ANIMATION_OVERRIDES_EXPORT_VERSION } = require("./settings-actions");
+const {
+  SHORTCUT_ACTIONS,
+  SHORTCUT_ACTION_IDS,
+} = require("./shortcut-actions");
 const loginItemHelpers = require("./login-item");
 const PREFS_PATH = path.join(app.getPath("userData"), "clawd-prefs.json");
 const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
@@ -146,6 +150,12 @@ const _settingsController = createSettingsController({
     activateTheme: (id, variantId, overrideMap) => _deferredActivateTheme(id, variantId, overrideMap),
     getThemeInfo: (id) => _deferredGetThemeInfo(id),
     removeThemeDir: (id) => _deferredRemoveThemeDir(id),
+    globalShortcut,
+    shortcutHandlers: {
+      togglePet: () => togglePetVisibility(),
+    },
+    getShortcutFailure: (actionId) => getShortcutFailure(actionId),
+    clearShortcutFailure: (actionId) => clearShortcutFailure(actionId),
   },
 });
 
@@ -316,7 +326,34 @@ let hideBubbles = _settingsController.get("hideBubbles");
 let showSessionId = _settingsController.get("showSessionId");
 let soundMuted = _settingsController.get("soundMuted");
 let petHidden = false;
-const DEFAULT_TOGGLE_SHORTCUT = "CommandOrControl+Shift+Alt+C";
+const shortcutRegistrationFailures = new Map();
+
+function getShortcutFailure(actionId) {
+  return shortcutRegistrationFailures.get(actionId) || null;
+}
+
+function broadcastShortcutFailures() {
+  if (!settingsWindow || settingsWindow.isDestroyed() || !settingsWindow.webContents || settingsWindow.webContents.isDestroyed()) {
+    return;
+  }
+  settingsWindow.webContents.send(
+    "shortcut-failures-changed",
+    Object.fromEntries(shortcutRegistrationFailures)
+  );
+}
+
+function reportShortcutFailure(actionId, reason) {
+  if (!SHORTCUT_ACTIONS[actionId]) return;
+  if (shortcutRegistrationFailures.get(actionId) === reason) return;
+  shortcutRegistrationFailures.set(actionId, reason);
+  broadcastShortcutFailures();
+}
+
+function clearShortcutFailure(actionId) {
+  if (!shortcutRegistrationFailures.has(actionId)) return;
+  shortcutRegistrationFailures.delete(actionId);
+  broadcastShortcutFailures();
+}
 
 function togglePetVisibility() {
   if (!win || win.isDestroyed()) return;
@@ -353,18 +390,32 @@ function togglePetVisibility() {
   buildContextMenu();
 }
 
-function registerToggleShortcut() {
-  try {
-    globalShortcut.register(DEFAULT_TOGGLE_SHORTCUT, togglePetVisibility);
-  } catch (err) {
-    console.warn("Clawd: failed to register global shortcut:", err.message);
+function registerPersistentShortcutsFromSettings() {
+  const snapshot = _settingsController.getSnapshot();
+  const shortcuts = (snapshot && snapshot.shortcuts) || {};
+  for (const actionId of SHORTCUT_ACTION_IDS) {
+    const meta = SHORTCUT_ACTIONS[actionId];
+    if (!meta || !meta.persistent) continue;
+    const accelerator = shortcuts[actionId];
+    if (!accelerator) {
+      clearShortcutFailure(actionId);
+      continue;
+    }
+    const handler = actionId === "togglePet" ? togglePetVisibility : null;
+    if (typeof handler !== "function") continue;
+    let ok = false;
+    try {
+      ok = !!globalShortcut.register(accelerator, handler);
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      reportShortcutFailure(actionId, "system conflict");
+      console.warn(`Clawd: failed to register shortcut ${actionId}: ${accelerator}`);
+      continue;
+    }
+    clearShortcutFailure(actionId);
   }
-}
-
-function unregisterToggleShortcut() {
-  try {
-    globalShortcut.unregister(DEFAULT_TOGGLE_SHORTCUT);
-  } catch {}
 }
 
 function sendToRenderer(channel, ...args) {
@@ -586,6 +637,12 @@ const _permCtx = {
     const s = sessions.get(sessionId);
     if (s && s.sourcePid) focusTerminalWindow(s.sourcePid, s.cwd, s.editor, s.pidChain);
   },
+  getSettingsSnapshot: () => _settingsController.getSnapshot(),
+  subscribeShortcuts: (cb) => _settingsController.subscribeKey("shortcuts", (_value, snapshot) => {
+    if (typeof cb === "function") cb(snapshot);
+  }),
+  reportShortcutFailure: (actionId, reason) => reportShortcutFailure(actionId, reason),
+  clearShortcutFailure: (actionId) => clearShortcutFailure(actionId),
 };
 const _perm = require("./permission")(_permCtx);
 const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, showCodexNotifyBubble, clearCodexNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
@@ -996,6 +1053,8 @@ const MENU_AFFECTING_KEYS = new Set([
   "lang", "soundMuted", "bubbleFollowPet", "hideBubbles", "showSessionId",
   "manageClaudeHooksAutomatically", "autoStartWithClaude", "openAtLogin", "showTray", "showDock", "theme", "size",
 ]);
+let lastTogglePetShortcut = ((_settingsController.getSnapshot().shortcuts) || {}).togglePet || null;
+
 function wireSettingsSubscribers() {
   _settingsController.subscribe(({ changes }) => {
     // 1. Update mirror caches first so any side-effect handler reads fresh values.
@@ -1068,6 +1127,14 @@ function wireSettingsSubscribers() {
   });
 }
 wireSettingsSubscribers();
+_settingsController.subscribeKey("shortcuts", (_value, snapshot) => {
+  const nextTogglePetShortcut = (snapshot && snapshot.shortcuts && snapshot.shortcuts.togglePet) || null;
+  if (nextTogglePetShortcut === lastTogglePetShortcut) return;
+  lastTogglePetShortcut = nextTogglePetShortcut;
+  try { rebuildAllMenus(); } catch (err) {
+    console.warn("Clawd: rebuildAllMenus failed:", err && err.message);
+  }
+});
 
 const ANIMATION_OVERRIDE_ASSET_EXTS = new Set([".svg", ".gif", ".apng", ".png", ".webp", ".jpg", ".jpeg"]);
 let animationOverridePreviewTimer = null;
@@ -1701,6 +1768,16 @@ function _runAnimationOverridePreview(stateKey, file, durationMs) {
 // Renderer-side callers (the future settings panel) use these. Menu/main code
 // in this process calls _settingsController directly — no IPC round-trip.
 ipcMain.handle("settings:get-snapshot", () => _settingsController.getSnapshot());
+ipcMain.handle("settings:getShortcutFailures", () =>
+  Object.fromEntries(shortcutRegistrationFailures)
+);
+ipcMain.handle("settings:enterShortcutRecording", (_event, actionId) =>
+  startShortcutRecording(actionId)
+);
+ipcMain.handle("settings:exitShortcutRecording", () => {
+  stopShortcutRecording();
+  return { status: "ok" };
+});
 ipcMain.handle("settings:update", (_event, payload) => {
   if (!payload || typeof payload !== "object") {
     return { status: "error", message: "settings:update payload must be { key, value }" };
@@ -2029,6 +2106,57 @@ const { setupAutoUpdater, checkForUpdates, getUpdateMenuItem, getUpdateMenuLabel
 // already wired up for the controller. The renderer subscribes to
 // settings-changed broadcasts so menu changes and panel changes stay in sync.
 let settingsWindow = null;
+let settingsShortcutRecording = null;
+
+function stopShortcutRecording() {
+  if (!settingsShortcutRecording) return;
+  if (
+    settingsWindow
+    && !settingsWindow.isDestroyed()
+    && settingsWindow.webContents
+    && !settingsWindow.webContents.isDestroyed()
+  ) {
+    try {
+      settingsWindow.webContents.removeListener(
+        "before-input-event",
+        settingsShortcutRecording.listener
+      );
+    } catch {}
+  }
+  settingsShortcutRecording = null;
+}
+
+function startShortcutRecording(actionId) {
+  if (!SHORTCUT_ACTIONS[actionId]) {
+    return { status: "error", message: "unknown shortcut action" };
+  }
+  if (
+    !settingsWindow
+    || settingsWindow.isDestroyed()
+    || !settingsWindow.webContents
+    || settingsWindow.webContents.isDestroyed()
+  ) {
+    return { status: "error", message: "settings window unavailable" };
+  }
+
+  stopShortcutRecording();
+  const listener = (event, input) => {
+    if (!input || input.type !== "keyDown") return;
+    event.preventDefault();
+    settingsWindow.webContents.send("shortcut-record-key", {
+      actionId,
+      key: input.key,
+      code: input.code,
+      altKey: !!input.alt,
+      ctrlKey: !!input.control,
+      metaKey: !!input.meta,
+      shiftKey: !!input.shift,
+    });
+  };
+  settingsWindow.webContents.on("before-input-event", listener);
+  settingsShortcutRecording = { actionId, listener };
+  return { status: "ok" };
+}
 
 function getSettingsWindowIcon() {
   // Don't pass an icon on macOS — the system uses the .app bundle icon.
@@ -2088,6 +2216,7 @@ function openSettingsWindow() {
     settingsWindow.focus();
   });
   settingsWindow.on("closed", () => {
+    stopShortcutRecording();
     settingsWindow = null;
   });
 }
@@ -2726,8 +2855,8 @@ if (!gotTheLock) {
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     createWindow();
 
-    // Register global shortcut for toggling pet visibility
-    registerToggleShortcut();
+    // Register persistent global shortcuts from the validated prefs snapshot.
+    registerPersistentShortcutsFromSettings();
 
     // Construct log monitors. We always instantiate them so toggling the
     // agent on/off later can call start()/stop() without paying the require
@@ -2792,7 +2921,6 @@ if (!gotTheLock) {
   app.on("before-quit", () => {
     isQuitting = true;
     flushRuntimeStateToPrefs();
-    unregisterToggleShortcut();
     globalShortcut.unregisterAll();
     _perm.cleanup();
     _server.cleanup();

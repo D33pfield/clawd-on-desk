@@ -23,6 +23,7 @@ const SIZES = {
 // i18n string pool + translator factory live in src/i18n.js so the future
 // settings panel can share them. menu.js binds the translator to ctx.lang.
 const { createTranslator } = require("./i18n");
+const { formatAcceleratorLabel } = require("./shortcut-actions");
 
 const { shell } = require("electron");
 
@@ -46,6 +47,21 @@ module.exports = function initMenu(ctx) {
       enabled: !ctx.getMiniTransitioning()
         && (inMiniMode || (miniSupported && !(ctx.doNotDisturb && !inMiniMode))),
       click: () => inMiniMode ? ctx.exitMiniMode() : ctx.enterMiniViaMenu(),
+    };
+  }
+
+  function buildToggleShortcutHintItem() {
+    const snapshot = ctx.settings && typeof ctx.settings.getSnapshot === "function"
+      ? ctx.settings.getSnapshot()
+      : null;
+    const accelerator = snapshot && snapshot.shortcuts ? snapshot.shortcuts.togglePet : null;
+    const template = t("toggleShortcut");
+    const label = accelerator
+      ? template.replace("{shortcut}", formatAcceleratorLabel(accelerator, { isMac }))
+      : template.replace(/\s*[:：]\s*\{shortcut\}/, "").replace("{shortcut}", "");
+    return {
+      label,
+      enabled: false,
     };
   }
 
@@ -222,10 +238,7 @@ module.exports = function initMenu(ctx) {
         label: ctx.petHidden ? t("showPet") : t("hidePet"),
         click: () => ctx.togglePetVisibility(),
       },
-      {
-        label: t("toggleShortcut").replace("{shortcut}", isMac ? "⌘⇧⌥C" : "Ctrl+Shift+Alt+C"),
-        enabled: false,
-      },
+      buildToggleShortcutHintItem(),
       { type: "separator" },
       { label: t("quit"), click: () => requestAppQuit() },
     );
@@ -490,10 +503,7 @@ module.exports = function initMenu(ctx) {
         click: () => ctx.openSettingsWindow(),
       },
       { type: "separator" },
-      {
-        label: t("toggleShortcut").replace("{shortcut}", isMac ? "⌘⇧⌥C" : "Ctrl+Shift+Alt+C"),
-        enabled: false,
-      },
+      buildToggleShortcutHintItem(),
       { type: "separator" },
       { label: t("quit"), click: () => requestAppQuit() },
     );

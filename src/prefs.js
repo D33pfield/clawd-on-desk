@@ -19,6 +19,7 @@
 const fs = require("fs");
 const path = require("path");
 const { isPlainObject } = require("./theme-loader");
+const { normalizeShortcuts, getDefaultShortcuts } = require("./shortcut-actions");
 
 const CURRENT_VERSION = 1;
 
@@ -66,6 +67,11 @@ const SCHEMA = {
   hideBubbles: { type: "boolean", default: false },
   showSessionId: { type: "boolean", default: false },
   soundMuted: { type: "boolean", default: false },
+  shortcuts: {
+    type: "object",
+    defaultFactory: () => getDefaultShortcuts(),
+    normalize: normalizeShortcuts,
+  },
   // Theme
   theme: { type: "string", default: "clawd" },
   // Phase 2/3 placeholders — schema reserves the keys so future migrations don't need v2.
@@ -417,4 +423,5 @@ module.exports = {
   load,
   save,
   normalizeThemeOverrides,
+  normalizeShortcuts,
 };

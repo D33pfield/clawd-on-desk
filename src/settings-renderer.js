@@ -25,6 +25,23 @@ const STRINGS = {
     sidebarAnimOverrides: "Animation Overrides",
     sidebarShortcuts: "Shortcuts",
     sidebarAbout: "About",
+    shortcutsTitle: "Shortcuts",
+    shortcutsSubtitle: "Set global shortcuts for pet visibility and permission actions. Leave a field empty to unbind it.",
+    shortcutRecordButton: "Record",
+    shortcutClearButton: "Clear",
+    shortcutResetButton: "Reset",
+    shortcutResetAllButton: "Reset All",
+    shortcutRecordingHint: "Recording… (Press Esc to cancel)",
+    shortcutUnassigned: "— unassigned —",
+    shortcutErrorConflict: "Conflict with {other}. Try another key.",
+    shortcutErrorSystemConflict: "Already in use by system or another app.",
+    shortcutErrorReserved: "This combination is reserved. Try another key.",
+    shortcutErrorInvalid: "That key combination is not supported.",
+    shortcutErrorNeedsModifier: "Shortcut must include at least one modifier key.",
+    shortcutErrorRegistrationFailed: "Saved, but currently not active due to system conflict. Rebind or try again later.",
+    shortcutLabelTogglePet: "Toggle pet visibility",
+    shortcutLabelPermissionAllow: "Permission: Allow",
+    shortcutLabelPermissionDeny: "Permission: Deny",
     sidebarSoon: "Soon",
     sectionAppearance: "Appearance",
     sectionStartup: "Startup",
@@ -169,6 +186,23 @@ const STRINGS = {
     sidebarAnimOverrides: "动画替换",
     sidebarShortcuts: "快捷键",
     sidebarAbout: "关于",
+    shortcutsTitle: "快捷键",
+    shortcutsSubtitle: "为桌宠显隐和权限操作设置全局快捷键。留空即可解绑。",
+    shortcutRecordButton: "录制",
+    shortcutClearButton: "清空",
+    shortcutResetButton: "恢复默认",
+    shortcutResetAllButton: "全部恢复默认",
+    shortcutRecordingHint: "录制中…（按 Esc 取消）",
+    shortcutUnassigned: "— 未绑定 —",
+    shortcutErrorConflict: "与 {other} 冲突，请换一个组合键。",
+    shortcutErrorSystemConflict: "该组合键已被系统或其他应用占用。",
+    shortcutErrorReserved: "该组合键属于保留快捷键，请换一个。",
+    shortcutErrorInvalid: "暂不支持这个组合键。",
+    shortcutErrorNeedsModifier: "快捷键至少要包含一个修饰键。",
+    shortcutErrorRegistrationFailed: "已保存，但当前因系统冲突未生效。请重新绑定或稍后再试。",
+    shortcutLabelTogglePet: "显示/隐藏桌宠",
+    shortcutLabelPermissionAllow: "权限：允许",
+    shortcutLabelPermissionDeny: "权限：拒绝",
     sidebarSoon: "待推出",
     sectionAppearance: "外观",
     sectionStartup: "启动",
@@ -311,6 +345,23 @@ const STRINGS = {
     sidebarAnimOverrides: "애니메이션 오버라이드",
     sidebarShortcuts: "단축키",
     sidebarAbout: "정보",
+    shortcutsTitle: "단축키",
+    shortcutsSubtitle: "펫 표시 전환과 권한 동작에 사용할 전역 단축키를 설정합니다. 비워 두면 해제됩니다.",
+    shortcutRecordButton: "녹화",
+    shortcutClearButton: "해제",
+    shortcutResetButton: "기본값 복원",
+    shortcutResetAllButton: "모두 기본값 복원",
+    shortcutRecordingHint: "녹화 중… (Esc로 취소)",
+    shortcutUnassigned: "— 미지정 —",
+    shortcutErrorConflict: "{other} 와(과) 충돌합니다. 다른 키를 사용해 주세요.",
+    shortcutErrorSystemConflict: "시스템 또는 다른 앱이 이미 사용 중입니다.",
+    shortcutErrorReserved: "예약된 단축키 조합입니다. 다른 키를 사용해 주세요.",
+    shortcutErrorInvalid: "지원하지 않는 키 조합입니다.",
+    shortcutErrorNeedsModifier: "단축키에는 하나 이상의 보조 키가 필요합니다.",
+    shortcutErrorRegistrationFailed: "저장되었지만 현재는 시스템 충돌로 활성화되지 않았습니다. 다시 바인딩하거나 나중에 다시 시도해 주세요.",
+    shortcutLabelTogglePet: "펫 표시 전환",
+    shortcutLabelPermissionAllow: "권한: 허용",
+    shortcutLabelPermissionDeny: "권한: 거부",
     sidebarSoon: "예정",
     sectionAppearance: "외관",
     sectionStartup: "시작",
@@ -445,6 +496,15 @@ const STRINGS = {
   },
 };
 
+const SHORTCUT_API = globalThis.ClawdShortcutActions || {};
+const SHORTCUT_ACTIONS = SHORTCUT_API.SHORTCUT_ACTIONS || {};
+const SHORTCUT_ACTION_IDS = SHORTCUT_API.SHORTCUT_ACTION_IDS || Object.keys(SHORTCUT_ACTIONS);
+const buildAcceleratorFromEvent = SHORTCUT_API.buildAcceleratorFromEvent
+  || (() => ({ action: "reject", reason: "That key combination is not supported." }));
+const formatAcceleratorLabel = SHORTCUT_API.formatAcceleratorLabel
+  || ((value) => value || "— unassigned —");
+const IS_MAC = /\bMac\b/i.test(navigator.platform || "");
+
 let snapshot = null;
 let activeTab = "general";
 // Static per-agent metadata from agents/registry.js via settings:list-agents.
@@ -460,6 +520,10 @@ let animationOverridesData = null;
 let assetPickerState = null;
 let assetPickerPollTimer = null;
 const expandedOverrideRowIds = new Set();
+let shortcutFailures = {};
+let shortcutFailureToastShown = false;
+let shortcutRecordingActionId = null;
+let shortcutRecordingError = "";
 
 function t(key) {
   const lang = (snapshot && snapshot.lang) || "en";
@@ -491,7 +555,7 @@ const SIDEBAR_TABS = [
   { id: "theme", icon: "\u{1F3A8}", labelKey: "sidebarTheme", available: true },
   { id: "animMap", icon: "\u{1F3AC}", labelKey: "sidebarAnimMap", available: true },
   { id: "animOverrides", icon: "\u{1F39E}", labelKey: "sidebarAnimOverrides", available: true },
-  { id: "shortcuts", icon: "\u2328", labelKey: "sidebarShortcuts", available: false },
+  { id: "shortcuts", icon: "\u2328", labelKey: "sidebarShortcuts", available: true },
   { id: "about", icon: "\u2139", labelKey: "sidebarAbout", available: false },
 ];
 
@@ -533,6 +597,8 @@ function renderContent() {
     renderAnimMapTab(content);
   } else if (activeTab === "animOverrides") {
     renderAnimOverridesTab(content);
+  } else if (activeTab === "shortcuts") {
+    renderShortcutsTab(content);
   } else {
     renderPlaceholder(content);
   }
@@ -2212,6 +2278,218 @@ function buildLanguageRow() {
   return row;
 }
 
+function getShortcutActionLabel(actionId) {
+  const meta = SHORTCUT_ACTIONS[actionId];
+  return meta ? t(meta.labelKey) : actionId;
+}
+
+function getShortcutValue(actionId) {
+  const shortcuts = snapshot && snapshot.shortcuts;
+  if (!shortcuts || typeof shortcuts !== "object") return null;
+  return shortcuts[actionId] ?? null;
+}
+
+function translateShortcutError(message) {
+  if (!message) return "";
+  const conflictMatch = /^conflict: already bound to (.+)$/.exec(message);
+  if (conflictMatch) {
+    return t("shortcutErrorConflict").replace("{other}", getShortcutActionLabel(conflictMatch[1]));
+  }
+  if (message === "reserved accelerator") return t("shortcutErrorReserved");
+  if (message === "invalid accelerator format") return t("shortcutErrorInvalid");
+  if (message === "must include modifier") return t("shortcutErrorNeedsModifier");
+  if (message.includes("unregister of old accelerator failed")) return t("shortcutErrorSystemConflict");
+  if (message.includes("system conflict")) return t("shortcutErrorSystemConflict");
+  return message;
+}
+
+function finishShortcutRecording() {
+  if (!shortcutRecordingActionId) return Promise.resolve();
+  shortcutRecordingActionId = null;
+  shortcutRecordingError = "";
+  if (activeTab === "shortcuts") renderContent();
+  if (!window.settingsAPI || typeof window.settingsAPI.exitShortcutRecording !== "function") {
+    return Promise.resolve();
+  }
+  return window.settingsAPI.exitShortcutRecording().catch(() => {});
+}
+
+function cancelShortcutRecording() {
+  return finishShortcutRecording();
+}
+
+function enterShortcutRecording(actionId) {
+  if (!window.settingsAPI || typeof window.settingsAPI.enterShortcutRecording !== "function") {
+    showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
+    return;
+  }
+  shortcutRecordingError = "";
+  window.settingsAPI.enterShortcutRecording(actionId).then((result) => {
+    if (!result || result.status !== "ok") {
+      showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+      return;
+    }
+    shortcutRecordingActionId = actionId;
+    shortcutRecordingError = "";
+    if (activeTab === "shortcuts") renderContent();
+  }).catch((err) => {
+    showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+  });
+}
+
+function handleShortcutRecordKey(payload) {
+  if (!shortcutRecordingActionId) return;
+  const built = buildAcceleratorFromEvent(payload, { isMac: IS_MAC });
+  if (!built || built.action === "pending") return;
+  if (built.action === "cancel") {
+    cancelShortcutRecording();
+    return;
+  }
+  if (built.action === "reject") {
+    shortcutRecordingError = translateShortcutError(built.reason);
+    if (activeTab === "shortcuts") renderContent();
+    return;
+  }
+  window.settingsAPI.command("registerShortcut", {
+    actionId: shortcutRecordingActionId,
+    accelerator: built.accelerator,
+  }).then((result) => {
+    if (result && result.status === "ok") {
+      finishShortcutRecording();
+      return;
+    }
+    shortcutRecordingError = translateShortcutError(result && result.message);
+    if (activeTab === "shortcuts") renderContent();
+  }).catch((err) => {
+    shortcutRecordingError = (err && err.message) || "";
+    if (activeTab === "shortcuts") renderContent();
+  });
+}
+
+function runShortcutAction(action, payload) {
+  if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
+    showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
+    return;
+  }
+  window.settingsAPI.command(action, payload).then((result) => {
+    if (!result || result.status !== "ok") {
+      const message = translateShortcutError(result && result.message)
+        || (t("toastSaveFailed") + "unknown error");
+      showToast(message, { error: true });
+    }
+  }).catch((err) => {
+    showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+  });
+}
+
+function buildShortcutButton(label, onClick, { disabled = false, accent = false } = {}) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "soft-btn" + (accent ? " accent" : "");
+  btn.textContent = label;
+  if (disabled) {
+    btn.disabled = true;
+    return btn;
+  }
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
+function buildShortcutRow(actionId) {
+  const row = document.createElement("div");
+  row.className = "row shortcut-row";
+  row.dataset.shortcutActionId = actionId;
+
+  const textWrap = document.createElement("div");
+  textWrap.className = "row-text";
+  const label = document.createElement("span");
+  label.className = "row-label";
+  label.textContent = getShortcutActionLabel(actionId);
+  textWrap.appendChild(label);
+
+  const status = document.createElement("span");
+  status.className = "row-desc";
+  const isRecording = shortcutRecordingActionId === actionId;
+  const failure = shortcutFailures && shortcutFailures[actionId];
+  if (isRecording) {
+    status.classList.add("shortcut-status-recording");
+    status.textContent = shortcutRecordingError || t("shortcutRecordingHint");
+  } else if (failure) {
+    status.classList.add("shortcut-status-warning");
+    status.textContent = t("shortcutErrorRegistrationFailed");
+  } else {
+    status.textContent = "";
+  }
+  textWrap.appendChild(status);
+  row.appendChild(textWrap);
+
+  const control = document.createElement("div");
+  control.className = "row-control shortcut-row-control";
+  const value = document.createElement("div");
+  value.className = "shortcut-value";
+  if (!getShortcutValue(actionId)) value.classList.add("unassigned");
+  if (isRecording) value.classList.add("recording");
+  value.textContent = isRecording
+    ? t("shortcutRecordingHint")
+    : formatAcceleratorLabel(getShortcutValue(actionId), {
+      isMac: IS_MAC,
+      unassignedLabel: t("shortcutUnassigned"),
+    });
+  control.appendChild(value);
+
+  if (failure && !isRecording) {
+    const warning = document.createElement("span");
+    warning.className = "shortcut-warning";
+    warning.textContent = "⚠";
+    warning.title = t("shortcutErrorRegistrationFailed");
+    control.appendChild(warning);
+  }
+
+  const disableOtherRows = !!shortcutRecordingActionId && !isRecording;
+  control.appendChild(buildShortcutButton(
+    t("shortcutRecordButton"),
+    () => enterShortcutRecording(actionId),
+    { disabled: !!shortcutRecordingActionId }
+  ));
+  control.appendChild(buildShortcutButton(
+    t("shortcutClearButton"),
+    () => runShortcutAction("registerShortcut", { actionId, accelerator: null }),
+    { disabled: disableOtherRows || getShortcutValue(actionId) === null }
+  ));
+  control.appendChild(buildShortcutButton(
+    t("shortcutResetButton"),
+    () => runShortcutAction("resetShortcut", { actionId }),
+    { disabled: disableOtherRows }
+  ));
+
+  row.appendChild(control);
+  return row;
+}
+
+function renderShortcutsTab(parent) {
+  const h1 = document.createElement("h1");
+  h1.textContent = t("shortcutsTitle");
+  parent.appendChild(h1);
+
+  const subtitle = document.createElement("p");
+  subtitle.className = "subtitle";
+  subtitle.textContent = t("shortcutsSubtitle");
+  parent.appendChild(subtitle);
+
+  const head = document.createElement("div");
+  head.className = "shortcuts-head";
+  head.appendChild(document.createElement("div"));
+  head.appendChild(buildShortcutButton(
+    t("shortcutResetAllButton"),
+    () => runShortcutAction("resetAllShortcuts", null),
+    { disabled: !!shortcutRecordingActionId, accent: true }
+  ));
+  parent.appendChild(head);
+
+  const rows = SHORTCUT_ACTION_IDS.map((actionId) => buildShortcutRow(actionId));
+  parent.appendChild(buildSection("", rows));
+}
+
 // ── Boot ──
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
@@ -2274,6 +2552,48 @@ window.settingsAPI.onChanged((payload) => {
   }
   renderSidebar();
   renderContent();
+});
+
+if (window.settingsAPI && typeof window.settingsAPI.getShortcutFailures === "function") {
+  window.settingsAPI.getShortcutFailures().then((failures) => {
+    shortcutFailures = failures || {};
+    if (!shortcutFailureToastShown && Object.keys(shortcutFailures).length > 0) {
+      shortcutFailureToastShown = true;
+      showToast(t("shortcutErrorRegistrationFailed"), { error: true });
+    }
+    if (activeTab === "shortcuts") renderContent();
+  }).catch((err) => {
+    console.warn("settings: getShortcutFailures failed", err);
+  });
+}
+
+if (window.settingsAPI && typeof window.settingsAPI.onShortcutFailuresChanged === "function") {
+  window.settingsAPI.onShortcutFailuresChanged((failures) => {
+    shortcutFailures = failures || {};
+    if (!shortcutFailureToastShown && Object.keys(shortcutFailures).length > 0) {
+      shortcutFailureToastShown = true;
+      showToast(t("shortcutErrorRegistrationFailed"), { error: true });
+    }
+    if (activeTab === "shortcuts") renderContent();
+  });
+}
+
+if (window.settingsAPI && typeof window.settingsAPI.onShortcutRecordKey === "function") {
+  window.settingsAPI.onShortcutRecordKey((payload) => handleShortcutRecordKey(payload));
+}
+
+window.addEventListener("blur", () => {
+  if (shortcutRecordingActionId) cancelShortcutRecording();
+});
+
+document.addEventListener("mousedown", (event) => {
+  if (!shortcutRecordingActionId) return;
+  const target = event.target;
+  const row = target && typeof target.closest === "function"
+    ? target.closest("[data-shortcut-action-id]")
+    : null;
+  if (row && row.dataset.shortcutActionId === shortcutRecordingActionId) return;
+  cancelShortcutRecording();
 });
 
 window.settingsAPI.getSnapshot().then((snap) => {

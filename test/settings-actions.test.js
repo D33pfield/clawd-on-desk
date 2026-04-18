@@ -170,6 +170,18 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.themeOverrides({}, deps).status, "ok");
     assert.strictEqual(updateRegistry.themeOverrides("nope", deps).status, "error");
   });
+
+  it("shortcuts commit validator accepts only known keys with string/null values", () => {
+    const entry = updateRegistry.shortcuts;
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(typeof entry, "object");
+    assert.strictEqual(entry.validate({
+      togglePet: "CommandOrControl+Shift+Alt+C",
+      permissionAllow: null,
+    }, deps).status, "ok");
+    assert.strictEqual(entry.validate({ bogus: "Ctrl+K" }, deps).status, "error");
+    assert.strictEqual(entry.validate({ togglePet: 42 }, deps).status, "error");
+  });
 });
 
 describe("object-form effects (autoStartWithClaude / manageClaudeHooksAutomatically / openAtLogin)", () => {
@@ -332,6 +344,250 @@ describe("hook commands", () => {
     assert.strictEqual(r.status, "error");
     assert.match(r.message, /disk locked/);
     assert.deepStrictEqual(calls, ["stop", "uninstall", "start"]);
+  });
+});
+
+describe("shortcut commands", () => {
+  function makeShortcutDeps(overrides = {}) {
+    const snapshot = overrides.snapshot || prefs.getDefaults();
+    const registered = new Set(overrides.registered || []);
+    const failures = new Map(Object.entries(overrides.failures || {}));
+    const calls = { register: [], unregister: [] };
+    const globalShortcut = {
+      register(accelerator, handler) {
+        calls.register.push({ accelerator, handler });
+        if (overrides.failRegister && overrides.failRegister.has(accelerator)) {
+          return false;
+        }
+        registered.add(accelerator);
+        return true;
+      },
+      unregister(accelerator) {
+        calls.unregister.push(accelerator);
+        if (overrides.throwOnUnregister === accelerator) {
+          throw new Error("unregister boom");
+        }
+        if (overrides.stubbornUnregister === accelerator) return;
+        registered.delete(accelerator);
+      },
+      isRegistered(accelerator) {
+        return registered.has(accelerator);
+      },
+    };
+    return {
+      deps: {
+        snapshot,
+        globalShortcut,
+        shortcutHandlers: {
+          togglePet: () => {},
+          permissionAllow: () => {},
+          permissionDeny: () => {},
+        },
+        getShortcutFailure: (actionId) => failures.get(actionId) || null,
+        clearShortcutFailure: (actionId) => failures.delete(actionId),
+      },
+      calls,
+      registered,
+      failures,
+    };
+  }
+
+  it("registerShortcut commits persistent shortcuts after register-new/unregister-old", () => {
+    const snapshot = prefs.validate({
+      shortcuts: {
+        togglePet: "Ctrl+J",
+      },
+    });
+    const { deps, calls, registered } = makeShortcutDeps({
+      snapshot,
+      registered: [snapshot.shortcuts.togglePet],
+    });
+    const r = commandRegistry.registerShortcut({
+      actionId: "togglePet",
+      accelerator: "Ctrl+K",
+    }, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.shortcuts, {
+      ...snapshot.shortcuts,
+      togglePet: "CommandOrControl+K",
+    });
+    assert.deepStrictEqual(calls.register.map((c) => c.accelerator), ["CommandOrControl+K"]);
+    assert.deepStrictEqual(calls.unregister, ["CommandOrControl+J"]);
+    assert.deepStrictEqual([...registered].sort(), ["CommandOrControl+K"]);
+  });
+
+  it("registerShortcut rejects internal conflicts before touching globalShortcut", () => {
+    const snapshot = prefs.getDefaults();
+    const { deps, calls } = makeShortcutDeps({ snapshot });
+    const r = commandRegistry.registerShortcut({
+      actionId: "togglePet",
+      accelerator: snapshot.shortcuts.permissionAllow,
+    }, deps);
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /already bound to permissionAllow/);
+    assert.deepStrictEqual(calls.register, []);
+    assert.deepStrictEqual(calls.unregister, []);
+  });
+
+  it("registerShortcut rejects invalid and dangerous accelerators", () => {
+    const { deps } = makeShortcutDeps();
+    const invalid = commandRegistry.registerShortcut({
+      actionId: "togglePet",
+      accelerator: "bad-value",
+    }, deps);
+    assert.strictEqual(invalid.status, "error");
+    assert.match(invalid.message, /invalid accelerator format/);
+
+    const dangerous = commandRegistry.registerShortcut({
+      actionId: "togglePet",
+      accelerator: "Ctrl+C",
+    }, deps);
+    assert.strictEqual(dangerous.status, "error");
+    assert.match(dangerous.message, /reserved accelerator/);
+  });
+
+  it("registerShortcut short-circuits idempotent writes", () => {
+    const snapshot = prefs.getDefaults();
+    const { deps, calls } = makeShortcutDeps({ snapshot });
+    const r = commandRegistry.registerShortcut({
+      actionId: "togglePet",
+      accelerator: snapshot.shortcuts.togglePet,
+    }, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.noop, true);
+    assert.deepStrictEqual(calls.register, []);
+    assert.deepStrictEqual(calls.unregister, []);
+  });
+
+  it("registerShortcut retries same persistent value when a runtime failure exists", () => {
+    const snapshot = prefs.getDefaults();
+    const { deps, calls, failures, registered } = makeShortcutDeps({
+      snapshot,
+      failures: { togglePet: "system conflict" },
+    });
+    const r = commandRegistry.registerShortcut({
+      actionId: "togglePet",
+      accelerator: snapshot.shortcuts.togglePet,
+    }, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.noop, true);
+    assert.deepStrictEqual(calls.register.map((c) => c.accelerator), [
+      snapshot.shortcuts.togglePet,
+    ]);
+    assert.strictEqual(failures.has("togglePet"), false);
+    assert.ok(registered.has(snapshot.shortcuts.togglePet));
+  });
+
+  it("registerShortcut keeps the old persistent binding when the new register fails", () => {
+    const snapshot = prefs.validate({
+      shortcuts: {
+        togglePet: "Ctrl+J",
+      },
+    });
+    const { deps, calls, registered } = makeShortcutDeps({
+      snapshot,
+      registered: [snapshot.shortcuts.togglePet],
+      failRegister: new Set(["CommandOrControl+K"]),
+    });
+    const r = commandRegistry.registerShortcut({
+      actionId: "togglePet",
+      accelerator: "Ctrl+K",
+    }, deps);
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /system conflict/);
+    assert.deepStrictEqual(calls.unregister, []);
+    assert.ok(registered.has(snapshot.shortcuts.togglePet));
+    assert.strictEqual(registered.has("CommandOrControl+K"), false);
+  });
+
+  it("registerShortcut rolls back the new persistent binding if old unregister verification fails", () => {
+    const snapshot = prefs.validate({
+      shortcuts: {
+        togglePet: "Ctrl+J",
+      },
+    });
+    const { deps, calls, registered } = makeShortcutDeps({
+      snapshot,
+      registered: [snapshot.shortcuts.togglePet],
+      stubbornUnregister: snapshot.shortcuts.togglePet,
+    });
+    const r = commandRegistry.registerShortcut({
+      actionId: "togglePet",
+      accelerator: "Ctrl+K",
+    }, deps);
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /unregister of old accelerator failed/);
+    assert.deepStrictEqual(calls.unregister, ["CommandOrControl+J", "CommandOrControl+K"]);
+    assert.ok(registered.has(snapshot.shortcuts.togglePet));
+    assert.strictEqual(registered.has("CommandOrControl+K"), false);
+  });
+
+  it("registerShortcut skips globalShortcut work for contextual actions", () => {
+    const snapshot = prefs.getDefaults();
+    const { deps, calls } = makeShortcutDeps({ snapshot });
+    const r = commandRegistry.registerShortcut({
+      actionId: "permissionAllow",
+      accelerator: "Ctrl+K",
+    }, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.shortcuts.permissionAllow, "CommandOrControl+K");
+    assert.deepStrictEqual(calls.register, []);
+    assert.deepStrictEqual(calls.unregister, []);
+  });
+
+  it("resetShortcut routes through registerShortcut with the default value", () => {
+    const snapshot = prefs.validate({
+      shortcuts: {
+        togglePet: "Ctrl+J",
+      },
+    });
+    const { deps } = makeShortcutDeps({
+      snapshot,
+      registered: [snapshot.shortcuts.togglePet],
+    });
+    const r = commandRegistry.resetShortcut({ actionId: "togglePet" }, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.commit.shortcuts.togglePet, "CommandOrControl+Shift+Alt+C");
+  });
+
+  it("resetAllShortcuts commits the full default shortcut map atomically", () => {
+    const snapshot = prefs.validate({
+      shortcuts: {
+        togglePet: "Ctrl+J",
+        permissionAllow: "Ctrl+K",
+        permissionDeny: null,
+      },
+    });
+    const { deps, calls } = makeShortcutDeps({
+      snapshot,
+      registered: [snapshot.shortcuts.togglePet],
+    });
+    const r = commandRegistry.resetAllShortcuts(null, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.shortcuts, prefs.getDefaults().shortcuts);
+    assert.deepStrictEqual(calls.register.map((c) => c.accelerator), [
+      "CommandOrControl+Shift+Alt+C",
+    ]);
+    assert.deepStrictEqual(calls.unregister, ["CommandOrControl+J"]);
+  });
+
+  it("resetAllShortcuts leaves prefs untouched when the persistent default is unavailable", () => {
+    const snapshot = prefs.validate({
+      shortcuts: {
+        togglePet: "Ctrl+J",
+      },
+    });
+    const { deps, calls, registered } = makeShortcutDeps({
+      snapshot,
+      registered: [snapshot.shortcuts.togglePet],
+      failRegister: new Set(["CommandOrControl+Shift+Alt+C"]),
+    });
+    const r = commandRegistry.resetAllShortcuts(null, deps);
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /system conflict on togglePet/);
+    assert.strictEqual(r.commit, undefined);
+    assert.deepStrictEqual(calls.unregister, []);
+    assert.ok(registered.has(snapshot.shortcuts.togglePet));
   });
 });
 
