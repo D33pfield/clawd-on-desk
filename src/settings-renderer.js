@@ -6,12 +6,11 @@
 //
 //   1. UI clicks → settingsAPI.update(key, value) → main → controller
 //   2. Controller commits → broadcasts settings-changed
-//   3. settingsAPI.onChanged fires → renderUI() rebuilds the affected row(s)
+//   3. settingsAPI.onChanged fires → renderer syncs the active tab
 //
-// We never optimistically toggle a switch in the click handler. The visual
-// state always reflects what the store says — period. Failures show a toast
-// and the switch stays in its previous position because the store was never
-// committed.
+// Broadcast state is still authoritative, but controls keep a tiny transient
+// UI layer so switches can animate immediately and slider drags don't get
+// interrupted by high-frequency size broadcasts.
 
 // ── i18n (mirror src/i18n.js — bubbles can't require electron modules) ──
 const STRINGS = {
@@ -77,6 +76,8 @@ const STRINGS = {
     rowShowSessionIdDesc: "Append the short session ID to bubble headers and the Sessions menu.",
     rowAllowEdgePinning: "Allow pinning to screen edges",
     rowAllowEdgePinningDesc: "Top/bottom decorations (sparkles, buildings, bubbles, …) may be clipped by the screen edge",
+    rowSize: "Size",
+    rowSizeDesc: "Drag to resize the pet as a percentage of screen width. Click a dot to snap to a preset.",
     placeholderTitle: "Coming soon",
     placeholderDesc: "This panel will land in a future Clawd release. The plan lives in docs/plans/plan-settings-panel.md.",
     toastSaveFailed: "Couldn't save: ",
@@ -255,6 +256,8 @@ const STRINGS = {
     rowShowSessionIdDesc: "在气泡标题和会话菜单后追加短会话 ID。",
     rowAllowEdgePinning: "允许贴靠屏幕边缘",
     rowAllowEdgePinningDesc: "开启后桌宠贴屏幕边缘时，顶/底装饰（花花、建筑、气泡等）可能被裁掉。",
+    rowSize: "大小",
+    rowSizeDesc: "拖动滑杆按屏幕宽度百分比调整桌宠大小；点击小圆点可吸附到预设值。",
     placeholderTitle: "即将推出",
     placeholderDesc: "此面板将在 Clawd 后续版本中加入，规划见 docs/plans/plan-settings-panel.md。",
     toastSaveFailed: "保存失败：",
@@ -431,6 +434,8 @@ const STRINGS = {
     rowShowSessionIdDesc: "말풍선 제목과 Sessions 메뉴에 짧은 세션 ID를 덧붙입니다.",
     rowAllowEdgePinning: "화면 가장자리에 붙이기 허용",
     rowAllowEdgePinningDesc: "화면 가장자리에 붙을 때 상/하단 장식(반짝임·건물·말풍선 등)이 잘릴 수 있습니다.",
+    rowSize: "크기",
+    rowSizeDesc: "화면 너비 비율로 펫 크기를 드래그해 조절할 수 있습니다. 점을 누르면 사전 설정 값으로 맞출 수 있습니다.",
     placeholderTitle: "곧 제공 예정",
     placeholderDesc: "이 패널은 향후 Clawd 릴리스에 추가됩니다. 계획은 docs/plans/plan-settings-panel.md에 있습니다.",
     toastSaveFailed: "저장 실패: ",
@@ -587,6 +592,192 @@ let shortcutFailureToastShown = false;
 let shortcutRecordingActionId = null;
 let shortcutRecordingError = "";
 let shortcutRecordingPartial = [];
+let nextTransientUiSeq = 1;
+
+const SIZE_PREFS_MAX = 30;
+const SIZE_UI_MIN = 1;
+const SIZE_UI_MAX = 100;
+const SIZE_TICK_VALUES = [25, 50, 75, 100];
+const SIZE_THROTTLE_MS = 80;
+const GENERAL_IN_PLACE_KEYS = new Set([
+  "size",
+  "soundMuted",
+  "allowEdgePinning",
+  "openAtLogin",
+  "autoStartWithClaude",
+  "bubbleFollowPet",
+  "hideBubbles",
+  "showSessionId",
+]);
+
+const transientUiState = {
+  generalSwitches: new Map(),
+  agentSwitches: new Map(),
+  size: {
+    draftUi: null,
+    dragging: false,
+    pending: false,
+    seq: 0,
+  },
+};
+
+const mountedControls = {
+  generalSwitches: new Map(),
+  agentSwitches: new Map(),
+  size: null,
+};
+
+function clearMountedControls() {
+  mountedControls.generalSwitches.clear();
+  mountedControls.agentSwitches.clear();
+  mountedControls.size = null;
+}
+
+function uiSizeToPrefs(ui) {
+  return Math.round((ui * SIZE_PREFS_MAX / SIZE_UI_MAX) * 10) / 10;
+}
+
+function prefsSizeToUi(prefs) {
+  return Math.round(prefs * SIZE_UI_MAX / SIZE_PREFS_MAX);
+}
+
+function clampSizeUi(n) {
+  return Math.max(SIZE_UI_MIN, Math.min(SIZE_UI_MAX, Math.round(n)));
+}
+
+function sizeUiToPct(ui) {
+  return ((ui - SIZE_UI_MIN) / (SIZE_UI_MAX - SIZE_UI_MIN)) * 100;
+}
+
+function readSizeUiFromSnapshot() {
+  const value = snapshot && snapshot.size;
+  if (typeof value === "string" && value.startsWith("P:")) {
+    const parsed = parseFloat(value.slice(2));
+    if (Number.isFinite(parsed) && parsed > 0) return clampSizeUi(prefsSizeToUi(parsed));
+  }
+  return clampSizeUi(prefsSizeToUi(10));
+}
+
+function readGeneralSwitchRaw(key) {
+  return !!(snapshot && snapshot[key]);
+}
+
+function readGeneralSwitchVisual(key, invert = false) {
+  const rawValue = readGeneralSwitchRaw(key);
+  return invert ? !rawValue : rawValue;
+}
+
+function agentSwitchStateId(agentId, flag) {
+  return `${agentId}:${flag}`;
+}
+
+function readAgentFlagValue(agentId, flag) {
+  const entry = snapshot && snapshot.agents && snapshot.agents[agentId];
+  return entry ? entry[flag] !== false : true;
+}
+
+function setSwitchVisual(sw, visualOn, { pending = false } = {}) {
+  sw.classList.toggle("on", !!visualOn);
+  sw.classList.toggle("pending", !!pending);
+  sw.setAttribute("aria-checked", visualOn ? "true" : "false");
+}
+
+function attachAnimatedSwitch(sw, { getCommittedVisual, getTransientState, setTransientState, clearTransientState, invoke }) {
+  const run = () => {
+    if (sw.classList.contains("pending")) return;
+    const currentVisual = getCommittedVisual();
+    const nextVisual = !currentVisual;
+    const seq = nextTransientUiSeq++;
+    setTransientState({ visualOn: nextVisual, pending: true, seq });
+    setSwitchVisual(sw, nextVisual, { pending: true });
+    Promise.resolve()
+      .then(invoke)
+      .then((result) => {
+        const current = getTransientState();
+        if (!current || current.seq !== seq) return;
+        if (!result || result.status !== "ok" || result.noop) {
+          clearTransientState(seq);
+          setSwitchVisual(sw, getCommittedVisual(), { pending: false });
+          if (result && result.noop) return;
+          const msg = (result && result.message) || "unknown error";
+          showToast(t("toastSaveFailed") + msg, { error: true });
+          return;
+        }
+        setTransientState({ visualOn: nextVisual, pending: false, seq });
+        setSwitchVisual(sw, nextVisual, { pending: false });
+      })
+      .catch((err) => {
+        const current = getTransientState();
+        if (!current || current.seq !== seq) return;
+        clearTransientState(seq);
+        setSwitchVisual(sw, getCommittedVisual(), { pending: false });
+        showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      });
+  };
+  sw.addEventListener("click", run);
+  sw.addEventListener("keydown", (ev) => {
+    if (ev.key === " " || ev.key === "Enter") {
+      ev.preventDefault();
+      run();
+    }
+  });
+}
+
+function syncMountedSizeControl({ fromBroadcast = false } = {}) {
+  const control = mountedControls.size;
+  if (!control || !document.body.contains(control.row)) return false;
+  const snapshotUi = readSizeUiFromSnapshot();
+  if (fromBroadcast) {
+    transientUiState.size.pending = false;
+    if (
+      !transientUiState.size.dragging
+      || transientUiState.size.draftUi === null
+      || transientUiState.size.draftUi === snapshotUi
+    ) {
+      transientUiState.size.draftUi = null;
+    }
+  }
+  const displayedUi =
+    transientUiState.size.draftUi === null ? snapshotUi : transientUiState.size.draftUi;
+  control.setDragging(transientUiState.size.dragging, transientUiState.size.pending);
+  control.setValue(displayedUi);
+  return true;
+}
+
+function tryPatchActiveTabInPlace(changes) {
+  const keys = changes ? Object.keys(changes) : [];
+  if (keys.length === 0) return false;
+
+  if (activeTab === "general") {
+    if (!keys.every((key) => GENERAL_IN_PLACE_KEYS.has(key))) return false;
+    if (keys.includes("size") && !syncMountedSizeControl({ fromBroadcast: true })) return false;
+    for (const key of keys) {
+      if (key === "size") continue;
+      const meta = mountedControls.generalSwitches.get(key);
+      if (!meta || !document.body.contains(meta.element)) return false;
+    }
+    for (const key of keys) {
+      if (key === "size") continue;
+      const meta = mountedControls.generalSwitches.get(key);
+      transientUiState.generalSwitches.delete(key);
+      setSwitchVisual(meta.element, readGeneralSwitchVisual(key, meta.invert), { pending: false });
+    }
+    return true;
+  }
+
+  if (activeTab === "agents") {
+    if (!(keys.length === 1 && keys[0] === "agents")) return false;
+    if (mountedControls.agentSwitches.size === 0) return false;
+    for (const [id, meta] of mountedControls.agentSwitches) {
+      if (!meta || !document.body.contains(meta.element)) return false;
+      transientUiState.agentSwitches.delete(id);
+      setSwitchVisual(meta.element, readAgentFlagValue(meta.agentId, meta.flag), { pending: false });
+    }
+    return true;
+  }
+
+  return false;
+}
 
 function t(key) {
   const lang = (snapshot && snapshot.lang) || "en";
@@ -649,6 +840,7 @@ function renderSidebar() {
 function renderContent() {
   const content = document.getElementById("content");
   if (activeTab !== "animOverrides" && assetPickerState) closeAssetPicker();
+  clearMountedControls();
   content.innerHTML = "";
   if (activeTab === "general") {
     renderGeneralTab(content);
@@ -2073,20 +2265,33 @@ function buildAgentSwitchRow({ agent, flag, extraClass, buildText }) {
   sw.className = "switch";
   sw.setAttribute("role", "switch");
   sw.setAttribute("tabindex", "0");
-  const readFlag = () => {
-    const entry = snapshot && snapshot.agents && snapshot.agents[agent.id];
-    return entry ? entry[flag] !== false : true;
-  };
-  const on = readFlag();
-  if (on) sw.classList.add("on");
-  sw.setAttribute("aria-checked", on ? "true" : "false");
-  attachActivation(sw, () =>
+  const stateId = agentSwitchStateId(agent.id, flag);
+  const override = transientUiState.agentSwitches.get(stateId);
+  const committedVisual = readAgentFlagValue(agent.id, flag);
+  setSwitchVisual(sw, override ? override.visualOn : committedVisual, {
+    pending: override ? override.pending : false,
+  });
+  mountedControls.agentSwitches.set(stateId, {
+    element: sw,
+    agentId: agent.id,
+    flag,
+  });
+  attachAnimatedSwitch(sw, {
+    getCommittedVisual: () => readAgentFlagValue(agent.id, flag),
+    getTransientState: () => transientUiState.agentSwitches.get(stateId) || null,
+    setTransientState: (value) => transientUiState.agentSwitches.set(stateId, value),
+    clearTransientState: (seq) => {
+      const current = transientUiState.agentSwitches.get(stateId);
+      if (!current || (seq !== undefined && current.seq !== seq)) return;
+      transientUiState.agentSwitches.delete(stateId);
+    },
+    invoke: () =>
     window.settingsAPI.command("setAgentFlag", {
       agentId: agent.id,
       flag,
-      value: !readFlag(),
-    })
-  );
+      value: !readAgentFlagValue(agent.id, flag),
+    }),
+  });
   ctrl.appendChild(sw);
   row.appendChild(ctrl);
   return row;
@@ -2115,6 +2320,7 @@ function renderGeneralTab(parent) {
   // Section: Appearance
   parent.appendChild(buildSection(t("sectionAppearance"), [
     buildLanguageRow(),
+    buildSizeSliderRow(),
     buildSwitchRow({
       key: "soundMuted",
       labelKey: "rowSound",
@@ -2251,10 +2457,10 @@ function buildSwitchRow({
   }
   const sw = row.querySelector(".switch");
   const control = row.querySelector(".row-control");
-  const rawValue = !!(snapshot && snapshot[key]);
-  const visualOn = invert ? !rawValue : rawValue;
-  if (visualOn) sw.classList.add("on");
-  sw.setAttribute("aria-checked", visualOn ? "true" : "false");
+  const override = transientUiState.generalSwitches.get(key);
+  const visualOn = override ? override.visualOn : readGeneralSwitchVisual(key, invert);
+  setSwitchVisual(sw, visualOn, { pending: override ? override.pending : false });
+  mountedControls.generalSwitches.set(key, { element: sw, invert });
   if (actionButton) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -2269,16 +2475,25 @@ function buildSwitchRow({
     sw.tabIndex = -1;
     return row;
   }
-  // No optimistic update — visual state flips on broadcast, not on click.
-  // If the action fails, the broadcast never fires and the switch stays.
-  attachActivation(sw, () => {
-    const currentRaw = !!(snapshot && snapshot[key]);
-    const currentVisual = invert ? !currentRaw : currentRaw;
-    const nextRaw = invert ? currentVisual : !currentVisual;
-    if (typeof onToggle === "function") {
-      return onToggle({ currentRaw, currentVisual, nextRaw });
-    }
-    return window.settingsAPI.update(key, nextRaw);
+  attachAnimatedSwitch(sw, {
+    getCommittedVisual: () => readGeneralSwitchVisual(key, invert),
+    getTransientState: () => transientUiState.generalSwitches.get(key) || null,
+    setTransientState: (value) => transientUiState.generalSwitches.set(key, value),
+    clearTransientState: (seq) => {
+      const current = transientUiState.generalSwitches.get(key);
+      if (!current || (seq !== undefined && current.seq !== seq)) return;
+      transientUiState.generalSwitches.delete(key);
+    },
+    invoke: () => {
+      const currentRaw = readGeneralSwitchRaw(key);
+      const currentVisual = invert ? !currentRaw : currentRaw;
+      const nextVisual = !currentVisual;
+      const nextRaw = invert ? !nextVisual : nextVisual;
+      if (typeof onToggle === "function") {
+        return onToggle({ currentRaw, currentVisual, nextRaw });
+      }
+      return window.settingsAPI.update(key, nextRaw);
+    },
   });
   return row;
 }
@@ -2345,6 +2560,151 @@ function buildLanguageRow() {
       });
     });
   }
+  return row;
+}
+
+function buildSizeSliderRow() {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML =
+    `<div class="row-text">` +
+      `<span class="row-label"></span>` +
+      `<span class="row-desc"></span>` +
+    `</div>` +
+    `<div class="row-control size-control">` +
+      `<div class="size-slider-wrap">` +
+        `<div class="size-bubble"></div>` +
+        `<input type="range" class="size-slider" min="${SIZE_UI_MIN}" max="${SIZE_UI_MAX}" step="1" />` +
+      `</div>` +
+      `<div class="size-ticks"></div>` +
+    `</div>`;
+  row.querySelector(".row-label").textContent = t("rowSize");
+  row.querySelector(".row-desc").textContent = t("rowSizeDesc");
+
+  const control = row.querySelector(".size-control");
+  const slider = row.querySelector(".size-slider");
+  const bubble = row.querySelector(".size-bubble");
+  const ticksEl = row.querySelector(".size-ticks");
+
+  function applyLocalValue(ui) {
+    const pct = sizeUiToPct(ui);
+    slider.value = String(ui);
+    slider.style.setProperty("--size-fill", `${pct}%`);
+    bubble.textContent = `${ui}%`;
+    bubble.style.left = `${pct}%`;
+    for (const btn of ticksEl.querySelectorAll(".size-tick")) {
+      btn.classList.toggle("active", Number(btn.dataset.value) === ui);
+    }
+  }
+
+  function setDragging(nextDragging, pending = transientUiState.size.pending) {
+    control.classList.toggle("dragging", !!nextDragging);
+    control.classList.toggle("pending", !!pending);
+  }
+
+  const initial =
+    transientUiState.size.draftUi === null ? readSizeUiFromSnapshot() : transientUiState.size.draftUi;
+  applyLocalValue(initial);
+  setDragging(transientUiState.size.dragging, transientUiState.size.pending);
+
+  for (const v of SIZE_TICK_VALUES) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "size-tick";
+    btn.dataset.value = String(v);
+    btn.style.left = `${sizeUiToPct(v)}%`;
+    const dot = document.createElement("span");
+    dot.className = "size-tick-dot";
+    const label = document.createElement("span");
+    label.className = "size-tick-label";
+    label.textContent = String(v);
+    btn.appendChild(dot);
+    btn.appendChild(label);
+    btn.addEventListener("click", () => {
+      transientUiState.size.draftUi = v;
+      transientUiState.size.dragging = false;
+      applyLocalValue(v);
+      commitNow(v);
+    });
+    ticksEl.appendChild(btn);
+  }
+
+  let lastSendAt = 0;
+  let pendingTimer = null;
+  let pendingValue = null;
+
+  function commitNow(ui) {
+    if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+    pendingValue = null;
+    lastSendAt = Date.now();
+    const seq = transientUiState.size.seq + 1;
+    transientUiState.size.seq = seq;
+    transientUiState.size.pending = true;
+    setDragging(transientUiState.size.dragging, true);
+    window.settingsAPI.command("resizePet", `P:${uiSizeToPrefs(ui)}`).then((result) => {
+      if (seq !== transientUiState.size.seq) return;
+      transientUiState.size.pending = false;
+      setDragging(transientUiState.size.dragging, false);
+      if (result && result.status !== "ok") {
+        transientUiState.size.draftUi = null;
+        applyLocalValue(readSizeUiFromSnapshot());
+        if (result.message) showToast(t("toastSaveFailed") + result.message, { error: true });
+      }
+    }).catch((err) => {
+      if (seq !== transientUiState.size.seq) return;
+      transientUiState.size.pending = false;
+      transientUiState.size.draftUi = null;
+      setDragging(false, false);
+      applyLocalValue(readSizeUiFromSnapshot());
+      showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+    });
+  }
+  function scheduleCommit(ui) {
+    pendingValue = ui;
+    const elapsed = Date.now() - lastSendAt;
+    if (elapsed >= SIZE_THROTTLE_MS) {
+      commitNow(ui);
+      return;
+    }
+    if (pendingTimer) return;
+    pendingTimer = setTimeout(() => {
+      pendingTimer = null;
+      if (pendingValue !== null) commitNow(pendingValue);
+    }, SIZE_THROTTLE_MS - elapsed);
+  }
+
+  function stopDragging() {
+    transientUiState.size.dragging = false;
+    setDragging(false, transientUiState.size.pending);
+  }
+
+  slider.addEventListener("pointerdown", () => {
+    transientUiState.size.dragging = true;
+    setDragging(true, transientUiState.size.pending);
+  });
+  slider.addEventListener("pointerup", stopDragging);
+  slider.addEventListener("pointercancel", stopDragging);
+  slider.addEventListener("blur", stopDragging);
+  slider.addEventListener("input", () => {
+    const ui = Number(slider.value);
+    transientUiState.size.draftUi = ui;
+    applyLocalValue(ui);
+    scheduleCommit(ui);
+  });
+  slider.addEventListener("change", () => {
+    const ui = Number(slider.value);
+    transientUiState.size.draftUi = ui;
+    stopDragging();
+    applyLocalValue(ui);
+    commitNow(ui);
+  });
+
+  mountedControls.size = {
+    row,
+    setValue: applyLocalValue,
+    setDragging,
+  };
+
   return row;
 }
 
@@ -2886,6 +3246,9 @@ window.settingsAPI.onChanged((payload) => {
   }
   if (changes && "theme" in changes && themeList) {
     themeList = themeList.map((t) => ({ ...t, active: t.id === changes.theme }));
+  }
+  if (tryPatchActiveTabInPlace(changes)) {
+    return;
   }
   renderSidebar();
   renderContent();

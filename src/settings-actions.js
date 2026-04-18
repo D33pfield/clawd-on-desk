@@ -1338,10 +1338,31 @@ function uninstallHooks(_payload, deps) {
   }
 }
 
+function resizePet(payload, deps) {
+  // Settings panel slider entry point. Routes to menu.resizeWindow via
+  // deps.resizePet so it picks up the full side-effect chain (actual window
+  // resize, hitWin sync, bubble reposition, runtime flush) that a raw
+  // applyUpdate("size", ...) would miss. menu.resizeWindow itself writes
+  // prefs.size through the controller, so this command returns no commit.
+  if (typeof payload !== "string" || !/^P:\d+(?:\.\d+)?$/.test(payload)) {
+    return { status: "error", message: `resizePet: invalid size "${payload}"` };
+  }
+  if (!deps || typeof deps.resizePet !== "function") {
+    return { status: "error", message: "resizePet requires deps.resizePet" };
+  }
+  try {
+    deps.resizePet(payload);
+    return { status: "ok" };
+  } catch (err) {
+    return { status: "error", message: `resizePet: ${err && err.message}` };
+  }
+}
+
 const commandRegistry = {
   removeTheme,
   installHooks,
   uninstallHooks,
+  resizePet,
   registerShortcut,
   resetShortcut,
   resetAllShortcuts,

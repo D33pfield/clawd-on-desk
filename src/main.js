@@ -132,6 +132,14 @@ function _deferredDismissPermissionsByAgent(id) {
     ? _perm.dismissPermissionsByAgent(id)
     : 0;
 }
+function _deferredResizePet(sizeKey) {
+  // Bound to _menu.resizeWindow after menu module is created below. Settings
+  // panel's size slider commands route through here so they get the same
+  // window resize + hitWin sync + bubble reposition as the context menu.
+  if (_menu && typeof _menu.resizeWindow === "function") {
+    _menu.resizeWindow(sizeKey);
+  }
+}
 
 const _settingsController = createSettingsController({
   prefsPath: PREFS_PATH,
@@ -148,6 +156,7 @@ const _settingsController = createSettingsController({
     stopMonitorForAgent: _deferredStopMonitorForAgent,
     clearSessionsByAgent: _deferredClearSessionsByAgent,
     dismissPermissionsByAgent: _deferredDismissPermissionsByAgent,
+    resizePet: _deferredResizePet,
     // Theme deps — defined much later in the file, wrapped in lazy closures.
     // activateTheme accepts (themeId, variantId?, overrideMap?) and returns
     // { themeId, variantId } with the actually-resolved variantId
