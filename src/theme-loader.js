@@ -108,6 +108,18 @@ const DANGEROUS_HREF_RE = /^\s*javascript\s*:/i;
 const EXTERNAL_RESOURCE_RE = /^\s*(https?|data|file|ftp)\s*:/i;
 const PATH_TRAVERSAL_RE = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
 const HREF_ATTRS = new Set(["href", "xlink:href", "src", "action", "formaction"]);
+const SVG_URL_ATTRS = new Set([
+  "style",
+  "fill",
+  "stroke",
+  "filter",
+  "clip-path",
+  "mask",
+  "marker-start",
+  "marker-mid",
+  "marker-end",
+  "cursor",
+]);
 
 // ── State ──
 
@@ -368,6 +380,45 @@ function sanitizeSvg(svgContent) {
   return render.default(doc, { xmlMode: true });
 }
 
+function _unwrapCssUrlTarget(rawValue) {
+  if (typeof rawValue !== "string") return "";
+  const trimmed = rawValue.trim();
+  const singleQuoted = trimmed.startsWith("'") && trimmed.endsWith("'");
+  const doubleQuoted = trimmed.startsWith("\"") && trimmed.endsWith("\"");
+  if ((singleQuoted || doubleQuoted) && trimmed.length >= 2) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function _isUnsafeResourceTarget(rawValue) {
+  const target = _unwrapCssUrlTarget(rawValue);
+  if (!target) return false;
+  if (target.startsWith("#")) return false;
+  return DANGEROUS_HREF_RE.test(target)
+    || EXTERNAL_RESOURCE_RE.test(target)
+    || PATH_TRAVERSAL_RE.test(target)
+    || !target.startsWith("#");
+}
+
+function _sanitizeCssUrls(cssText) {
+  if (typeof cssText !== "string" || !cssText) return cssText;
+  return cssText
+    .replace(/@import\b[^;]*/gi, "/* sanitized */")
+    .replace(/url\s*\(\s*([^)]*?)\s*\)/gi, (match, rawTarget) => (
+      _isUnsafeResourceTarget(rawTarget) ? "url()" : match
+    ));
+}
+
+function _containsUnsafeCssUrl(cssText) {
+  if (typeof cssText !== "string" || !cssText) return false;
+  const matches = cssText.matchAll(/url\s*\(\s*([^)]*?)\s*\)/gi);
+  for (const match of matches) {
+    if (_isUnsafeResourceTarget(match[1])) return true;
+  }
+  return false;
+}
+
 /**
  * Recursively walk DOM tree and remove dangerous nodes/attributes.
  */
@@ -393,9 +444,7 @@ function _sanitizeNode(node) {
       if (child.children) {
         for (const textNode of child.children) {
           if (textNode.type === "text" && textNode.data) {
-            textNode.data = textNode.data
-              .replace(/@import\b[^;]*/gi, "/* sanitized */")
-              .replace(/url\s*\(\s*(?!['"]?#)[^)]*\)/gi, "url()");
+            textNode.data = _sanitizeCssUrls(textNode.data);
           }
         }
       }
@@ -414,6 +463,17 @@ function _sanitizeNode(node) {
         if (HREF_ATTRS.has(key.toLowerCase())) {
           const val = child.attribs[key];
           if (DANGEROUS_HREF_RE.test(val) || EXTERNAL_RESOURCE_RE.test(val) || PATH_TRAVERSAL_RE.test(val)) {
+            delete child.attribs[key];
+            continue;
+          }
+        }
+        if (SVG_URL_ATTRS.has(key.toLowerCase())) {
+          const val = child.attribs[key];
+          if (key.toLowerCase() === "style") {
+            const sanitized = _sanitizeCssUrls(val);
+            if (!sanitized || !sanitized.trim()) delete child.attribs[key];
+            else child.attribs[key] = sanitized;
+          } else if (_containsUnsafeCssUrl(val)) {
             delete child.attribs[key];
           }
         }

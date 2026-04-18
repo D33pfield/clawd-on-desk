@@ -265,9 +265,7 @@ module.exports = function initMenu(ctx) {
     if (ctx.getMiniMode()) return;
     const wa = display.workArea;
     if (ctx.isProportionalMode && ctx.isProportionalMode()) {
-      const ratio = parseFloat(ctx.currentSize.slice(2)) || 10;
-      const px = Math.round(wa.width * ratio / 100);
-      const size = { width: px, height: px };
+      const size = ctx.getCurrentPixelSize(wa);
       const x = Math.round(wa.x + (wa.width - size.width) / 2);
       const y = Math.round(wa.y + (wa.height - size.height) / 2);
       ctx.applyPetWindowBounds({ x, y, width: size.width, height: size.height });
@@ -278,7 +276,7 @@ module.exports = function initMenu(ctx) {
       ctx.applyPetWindowBounds({ x, y, width: size.width, height: size.height });
     }
     ctx.syncHitWin();
-    if (ctx.bubbleFollowPet) ctx.repositionBubbles();
+    ctx.repositionBubbles();
     ctx.flushRuntimeStateToPrefs();
   }
 
@@ -363,7 +361,7 @@ module.exports = function initMenu(ctx) {
         ctx.syncHitWin();
       }
     }
-    if (ctx.bubbleFollowPet) ctx.repositionBubbles();
+    ctx.repositionBubbles();
     ctx.flushRuntimeStateToPrefs();
   }
 

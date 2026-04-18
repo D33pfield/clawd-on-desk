@@ -935,6 +935,28 @@ describe("setAnimationOverride reaction slot", () => {
     // both `reactions` and the themeId if nothing else remains.
     assert.strictEqual(r.commit.themeOverrides.clawd, undefined);
   });
+
+  it("preserves existing hitbox overrides when editing a reaction slot", () => {
+    const snapshot = {
+      theme: "clawd",
+      themeOverrides: {
+        clawd: {
+          reactions: { clickLeft: { file: "old.svg" } },
+          hitbox: { wide: { "clawd-error.svg": true } },
+        },
+      },
+    };
+    const r = commandRegistry.setAnimationOverride({
+      themeId: "clawd",
+      slotType: "reaction",
+      reactionKey: "clickLeft",
+      file: "new.svg",
+    }, { snapshot, activateTheme: () => {} });
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.themeOverrides.clawd.hitbox, {
+      wide: { "clawd-error.svg": true },
+    });
+  });
 });
 
 describe("setWideHitboxOverride command", () => {
@@ -1010,6 +1032,32 @@ describe("setWideHitboxOverride command", () => {
     assert.strictEqual(activatedWith.id, "clawd");
     assert.deepStrictEqual(activatedWith.overrideMap, {
       hitbox: { wide: { "foo.svg": true } },
+    });
+  });
+});
+
+describe("theme override subtree preservation", () => {
+  it("setThemeOverrideDisabled keeps existing reactions and hitbox overrides", () => {
+    const snapshot = {
+      theme: "clawd",
+      themeOverrides: {
+        clawd: {
+          states: { attention: { file: "attention.svg" } },
+          reactions: { clickLeft: { file: "click.svg" } },
+          hitbox: { wide: { "clawd-error.svg": true } },
+        },
+      },
+    };
+    const r = commandRegistry.setThemeOverrideDisabled(
+      { themeId: "clawd", stateKey: "attention", disabled: true },
+      { snapshot }
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.themeOverrides.clawd.reactions, {
+      clickLeft: { file: "click.svg" },
+    });
+    assert.deepStrictEqual(r.commit.themeOverrides.clawd.hitbox, {
+      wide: { "clawd-error.svg": true },
     });
   });
 });

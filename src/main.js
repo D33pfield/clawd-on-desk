@@ -623,7 +623,7 @@ function moveWindowForDrag() {
   applyPetWindowBounds(bounds);
   if (isWin && isNearWorkAreaEdge(bounds)) reassertWinTopmost();
   syncHitWin();
-  if (bubbleFollowPet) repositionFloatingBubbles();
+  repositionFloatingBubbles();
 }
 
 // ── Mini Mode — delegated to src/mini.js ──
@@ -1149,8 +1149,7 @@ function wireSettingsSubscribers() {
           const clamped = computeFinalDragBounds(virtualBounds, size, clampToScreenVisual);
           if (clamped) applyPetWindowBounds(clamped);
           syncHitWin();
-          if (bubbleFollowPet) repositionFloatingBubbles();
-          else repositionUpdateBubble();
+          repositionFloatingBubbles();
         }
       } catch (err) {
         console.warn("Clawd: allowEdgePinning re-clamp failed:", err && err.message);
@@ -1295,6 +1294,14 @@ function _resolveAnimationAssetsDir(theme = activeTheme) {
   if (!idleFile) return null;
   const resolved = themeLoader.getAssetPath(idleFile);
   return resolved ? path.dirname(resolved) : null;
+}
+
+function _resolveOpenableFsPath(absPath) {
+  if (!absPath || !app.isPackaged) return absPath;
+  const asarSegment = `${path.sep}app.asar${path.sep}`;
+  if (!absPath.includes(asarSegment)) return absPath;
+  const unpackedPath = absPath.replace(asarSegment, `${path.sep}app.asar.unpacked${path.sep}`);
+  return fs.existsSync(unpackedPath) ? unpackedPath : absPath;
 }
 
 function _buildAnimationAssetUrl(filename) {
@@ -1846,7 +1853,7 @@ ipcMain.handle("settings:command", async (_event, payload) => {
 });
 ipcMain.handle("settings:get-animation-overrides-data", () => _buildAnimationOverrideData());
 ipcMain.handle("settings:open-theme-assets-dir", async () => {
-  const dir = _resolveAnimationAssetsDir(activeTheme);
+  const dir = _resolveOpenableFsPath(_resolveAnimationAssetsDir(activeTheme));
   if (!dir || !fs.existsSync(dir)) {
     return { status: "error", message: "theme assets directory unavailable" };
   }
@@ -2524,8 +2531,7 @@ function createWindow() {
     // Event-level safety net for position sync
     const syncFloatingWindows = () => {
       syncHitWin();
-      if (bubbleFollowPet) repositionFloatingBubbles();
-      else repositionUpdateBubble();
+      repositionFloatingBubbles();
     };
     win.on("move", syncFloatingWindows);
     win.on("resize", syncFloatingWindows);
@@ -2588,7 +2594,7 @@ function createWindow() {
           reassertWinTopmost();
           scheduleHwndRecovery();
           syncHitWin();
-          repositionUpdateBubble();
+          repositionFloatingBubbles();
         }
       }
     } finally {
@@ -2667,7 +2673,7 @@ function createWindow() {
     if (isProportionalMode() || clamped.x !== x || clamped.y !== y) {
       applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
       syncHitWin();
-      repositionUpdateBubble();
+      repositionFloatingBubbles();
     }
   });
   screen.on("display-removed", () => {
@@ -2683,11 +2689,11 @@ function createWindow() {
     const clamped = clampToScreenVisual(x, y, size.width, size.height);
     applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
     syncHitWin();
-    repositionUpdateBubble();
+    repositionFloatingBubbles();
   });
   screen.on("display-added", () => {
     reapplyMacVisibility();
-    repositionUpdateBubble();
+    repositionFloatingBubbles();
   });
 }
 

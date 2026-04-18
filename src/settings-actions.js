@@ -169,7 +169,16 @@ function cloneReactionOverrides(themeMap) {
   return out;
 }
 
-function buildThemeOverrideMap({ states, workingTiers, jugglingTiers, autoReturn, idleAnimations, reactions }) {
+function cloneHitboxOverrides(themeMap) {
+  const out = {};
+  if (!isPlainObject(themeMap) || !isPlainObject(themeMap.hitbox)) return out;
+  for (const [groupKey, entry] of Object.entries(themeMap.hitbox)) {
+    if (isPlainObject(entry)) out[groupKey] = { ...entry };
+  }
+  return out;
+}
+
+function buildThemeOverrideMap({ states, workingTiers, jugglingTiers, autoReturn, idleAnimations, reactions, hitbox }) {
   const out = {};
   if (states && Object.keys(states).length > 0) out.states = states;
   const tiers = {};
@@ -179,6 +188,7 @@ function buildThemeOverrideMap({ states, workingTiers, jugglingTiers, autoReturn
   if (autoReturn && Object.keys(autoReturn).length > 0) out.timings = { autoReturn };
   if (idleAnimations && Object.keys(idleAnimations).length > 0) out.idleAnimations = idleAnimations;
   if (reactions && Object.keys(reactions).length > 0) out.reactions = reactions;
+  if (hitbox && Object.keys(hitbox).length > 0) out.hitbox = hitbox;
   return out;
 }
 
@@ -929,6 +939,8 @@ function setThemeOverrideDisabled(payload, deps) {
     jugglingTiers: cloneTierOverrides(currentThemeMap, "jugglingTiers"),
     autoReturn: cloneAutoReturnOverrides(currentThemeMap),
     idleAnimations: cloneIdleAnimationOverrides(currentThemeMap),
+    reactions: cloneReactionOverrides(currentThemeMap),
+    hitbox: cloneHitboxOverrides(currentThemeMap),
   });
   const nextOverrides = { ...currentOverrides };
   if (Object.keys(nextThemeMap).length > 0) {
@@ -991,6 +1003,7 @@ function setAnimationOverride(payload, deps) {
   const nextAutoReturn = cloneAutoReturnOverrides(currentThemeMap);
   const nextIdleAnimations = cloneIdleAnimationOverrides(currentThemeMap);
   const nextReactions = cloneReactionOverrides(currentThemeMap);
+  const nextHitbox = cloneHitboxOverrides(currentThemeMap);
 
   if (slotType === "state") {
     if (typeof payload.stateKey !== "string" || !payload.stateKey) {
@@ -1119,6 +1132,7 @@ function setAnimationOverride(payload, deps) {
     autoReturn: nextAutoReturn,
     idleAnimations: nextIdleAnimations,
     reactions: nextReactions,
+    hitbox: nextHitbox,
   });
   const nextOverrides = { ...currentOverrides };
   if (Object.keys(nextThemeMap).length > 0) nextOverrides[themeId] = nextThemeMap;

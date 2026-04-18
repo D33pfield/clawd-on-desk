@@ -24,13 +24,20 @@ function makeFixture(themes) {
   const userData = path.join(tmp, "userData");
   fs.mkdirSync(path.join(userData, "themes"), { recursive: true });
 
-  for (const { id, builtin, json } of themes) {
+  for (const { id, builtin, json, assets } of themes) {
     const base = builtin
       ? path.join(tmp, "themes", id)
       : path.join(userData, "themes", id);
     fs.mkdirSync(base, { recursive: true });
     if (json !== undefined) {
       fs.writeFileSync(path.join(base, "theme.json"), JSON.stringify(json), "utf8");
+    }
+    if (assets && typeof assets === "object") {
+      const assetsDir = path.join(base, "assets");
+      fs.mkdirSync(assetsDir, { recursive: true });
+      for (const [filename, content] of Object.entries(assets)) {
+        fs.writeFileSync(path.join(assetsDir, filename), content, "utf8");
+      }
     }
   }
   themeLoader.init(appDir, userData);
@@ -193,6 +200,46 @@ describe("theme-loader discovery", () => {
 
     const listed = themeLoader.listThemesWithMetadata().map((theme) => theme.id);
     assert.deepStrictEqual(listed.sort(), ["clawd", "user-cat"]);
+  });
+});
+
+describe("theme-loader external SVG sanitization", () => {
+  let fixture;
+  before(() => {
+    fixture = makeFixture([
+      {
+        id: "clawd",
+        builtin: true,
+        json: validThemeJson({ name: "Clawd" }),
+      },
+      {
+        id: "unsafe-inline-style",
+        builtin: false,
+        json: validThemeJson({ name: "Unsafe Inline Style" }),
+        assets: {
+          "idle.svg": [
+            "<svg xmlns=\"http://www.w3.org/2000/svg\">",
+            "  <rect",
+            "    style=\"fill:url(https://example.com/pattern.svg#p);stroke:url(#allowed)\"",
+            "    fill=\"url(https://bad.example/fill.svg#p)\"",
+            "    width=\"10\" height=\"10\"/>",
+            "</svg>",
+          ].join(""),
+        },
+      },
+    ]);
+  });
+  after(() => fixture && fixture.cleanup());
+
+  it("strips external url() references from inline style and presentation attrs", () => {
+    themeLoader.loadTheme("unsafe-inline-style", { strict: true });
+    const sanitizedPath = themeLoader.getAssetPath("idle.svg");
+    const sanitized = fs.readFileSync(sanitizedPath, "utf8");
+
+    assert.ok(sanitized.includes("stroke:url(#allowed)"), "internal fragment url should survive");
+    assert.ok(!sanitized.includes("https://example.com"), "inline style external url should be removed");
+    assert.ok(!sanitized.includes("https://bad.example"), "presentation attr external url should be removed");
+    assert.ok(!sanitized.includes("fill=\"url("), "unsafe fill attr should be dropped");
   });
 });
 
