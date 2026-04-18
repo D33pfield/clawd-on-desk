@@ -23,9 +23,7 @@ const SIZES = {
 // i18n string pool + translator factory live in src/i18n.js so the future
 // settings panel can share them. menu.js binds the translator to ctx.lang.
 const { createTranslator } = require("./i18n");
-const { formatAcceleratorLabel } = require("./shortcut-actions");
 
-const { shell } = require("electron");
 
 module.exports = function initMenu(ctx) {
   // ── Translation helper (bound to ctx.lang via the shared i18n module) ──
@@ -48,57 +46,6 @@ module.exports = function initMenu(ctx) {
         && (inMiniMode || (miniSupported && !(ctx.doNotDisturb && !inMiniMode))),
       click: () => inMiniMode ? ctx.exitMiniMode() : ctx.enterMiniViaMenu(),
     };
-  }
-
-  function buildToggleShortcutHintItem() {
-    const snapshot = ctx.settings && typeof ctx.settings.getSnapshot === "function"
-      ? ctx.settings.getSnapshot()
-      : null;
-    const accelerator = snapshot && snapshot.shortcuts ? snapshot.shortcuts.togglePet : null;
-    const template = t("toggleShortcut");
-    const label = accelerator
-      ? template.replace("{shortcut}", formatAcceleratorLabel(accelerator, { isMac }))
-      : template.replace(/\s*[:：]\s*\{shortcut\}/, "").replace("{shortcut}", "");
-    return {
-      label,
-      enabled: false,
-    };
-  }
-
-  // ── Theme submenu builder ──
-  function buildThemeSubmenu() {
-    const themes = ctx.discoverThemes ? ctx.discoverThemes() : [];
-    const activeId = ctx.getActiveThemeId ? ctx.getActiveThemeId() : "clawd";
-
-    const items = themes.map(theme => ({
-      label: theme.name + (theme.builtin ? "" : " ✦"),
-      type: "radio",
-      checked: theme.id === activeId,
-      click: () => {
-        if (theme.id === activeId) return;
-        // Shared commit gate with the settings panel. Failure leaves the
-        // store untouched so the radio stays on the previous theme.
-        Promise.resolve(ctx.settings.applyUpdate("theme", theme.id)).then(
-          (r) => {
-            if (r && r.status === "error") {
-              console.warn("Clawd: theme switch failed:", r.message);
-            }
-          },
-          (err) => console.warn("Clawd: theme switch threw:", err && err.message)
-        );
-      },
-    }));
-
-    items.push({ type: "separator" });
-    items.push({
-      label: t("openThemeDir"),
-      click: () => {
-        const dir = ctx.ensureUserThemesDir ? ctx.ensureUserThemesDir() : null;
-        if (dir) shell.openPath(dir);
-      },
-    });
-
-    return items;
   }
 
   // ── System tray ──
@@ -144,14 +91,9 @@ module.exports = function initMenu(ctx) {
       },
       buildMiniModeMenuItem(),
       { type: "separator" },
-      // The setters route through ctx.settings.applyUpdate(); main.js's
-      // settings subscriber handles reposition / menu rebuild / persist.
-      {
-        label: t("bubbleFollow"),
-        type: "checkbox",
-        checked: ctx.bubbleFollowPet,
-        click: (menuItem) => { ctx.bubbleFollowPet = menuItem.checked; },
-      },
+      // Quick-toggle noise controls. Other settings (language, theme, bubble
+      // follow, start-with-Claude, updates, etc.) were moved out of the tray
+      // and now live only in the Settings panel / About tab.
       {
         label: t("hideBubbles"),
         type: "checkbox",
@@ -172,11 +114,6 @@ module.exports = function initMenu(ctx) {
       },
       { type: "separator" },
       {
-        label: t("theme"),
-        submenu: buildThemeSubmenu(),
-      },
-      { type: "separator" },
-      {
         label: t("startOnLogin"),
         type: "checkbox",
         // Bound to prefs via ctx.openAtLogin. The setter routes to
@@ -185,15 +122,6 @@ module.exports = function initMenu(ctx) {
         // checkbox updates without explicit buildTrayMenu/buildContextMenu().
         checked: ctx.openAtLogin,
         click: (menuItem) => { ctx.openAtLogin = menuItem.checked; },
-      },
-      {
-        label: t("startWithClaude"),
-        type: "checkbox",
-        checked: ctx.autoStartWithClaude,
-        enabled: ctx.manageClaudeHooksAutomatically,
-        // Setter triggers controller.applyUpdate; subscriber in main.js
-        // installs/uninstalls the SessionStart hook + rebuilds the menu.
-        click: (menuItem) => { ctx.autoStartWithClaude = menuItem.checked; },
       },
     ];
     // macOS: Dock and Menu Bar visibility toggles
@@ -223,22 +151,10 @@ module.exports = function initMenu(ctx) {
         click: () => ctx.openSettingsWindow(),
       },
       { type: "separator" },
-      ctx.getUpdateMenuItem(),
-      { type: "separator" },
-      {
-        label: t("language"),
-        submenu: [
-          { label: "English", type: "radio", checked: ctx.lang === "en", click: () => { ctx.lang = "en"; } },
-          { label: "中文", type: "radio", checked: ctx.lang === "zh", click: () => { ctx.lang = "zh"; } },
-          { label: "한국어", type: "radio", checked: ctx.lang === "ko", click: () => { ctx.lang = "ko"; } },
-        ],
-      },
-      { type: "separator" },
       {
         label: ctx.petHidden ? t("showPet") : t("hidePet"),
         click: () => ctx.togglePetVisibility(),
       },
-      buildToggleShortcutHintItem(),
       { type: "separator" },
       { label: t("quit"), click: () => requestAppQuit() },
     );
@@ -323,83 +239,6 @@ module.exports = function initMenu(ctx) {
     });
   }
 
-  function buildProportionalSubmenu() {
-    const isP = ctx.isProportionalMode && ctx.isProportionalMode();
-    const currentRatio = isP ? parseFloat(ctx.currentSize.slice(2)) : 0;
-    const isCustom = isP && !ctx.PROPORTIONAL_RATIOS.includes(currentRatio);
-    const items = ctx.PROPORTIONAL_RATIOS.map(r => ({
-      label: t("proportionalPct").replace("{n}", r),
-      type: "radio",
-      checked: ctx.currentSize === `P:${r}`,
-      click: () => resizeWindow(`P:${r}`),
-    }));
-    items.push({ type: "separator" });
-    items.push({
-      label: isCustom
-        ? `${t("proportionalCustom")} (${currentRatio}%)`
-        : t("proportionalCustom"),
-      type: "radio",
-      checked: isCustom,
-      click: () => promptCustomRatio(isCustom ? currentRatio : 10),
-    });
-    return items;
-  }
-
-  function promptCustomRatio(defaultVal) {
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
-<style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-         margin: 0; padding: 16px; background: #f5f5f5; user-select: none; }
-  label { display: block; font-size: 13px; margin-bottom: 8px; color: #333; }
-  input { width: 80px; padding: 4px 8px; font-size: 14px; border: 1px solid #ccc;
-          border-radius: 4px; outline: none; text-align: center; }
-  input:focus { border-color: #4a90d9; }
-  .buttons { margin-top: 12px; text-align: right; }
-  button { padding: 4px 16px; font-size: 13px; border-radius: 4px; border: 1px solid #ccc;
-           background: #fff; cursor: pointer; margin-left: 6px; }
-  button.primary { background: #4a90d9; color: #fff; border-color: #4a90d9; }
-  .hint { font-size: 11px; color: #999; margin-top: 4px; }
-</style></head><body>
-<label>${t("proportionalCustomMsg")}</label>
-<input id="v" type="number" min="1" max="75" step="1" value="${defaultVal}" autofocus>
-<div class="hint">1% ≈ tiny &nbsp; 15% ≈ large &nbsp; 75% = max</div>
-<div class="buttons">
-  <button onclick="window.close()">Cancel</button>
-  <button class="primary" onclick="ok()">OK</button>
-</div>
-<script>
-  const inp = document.getElementById("v");
-  inp.select();
-  inp.addEventListener("keydown", e => { if (e.key === "Enter") ok(); if (e.key === "Escape") window.close(); });
-  function ok() { const n = parseFloat(inp.value); if (n >= 1 && n <= 75) window.promptAPI.submit(n); window.close(); }
-</script></body></html>`;
-
-    const promptWin = new BrowserWindow({
-      width: 280, height: 140,
-      resizable: false, minimizable: false, maximizable: false,
-      alwaysOnTop: true, skipTaskbar: true,
-      frame: false, transparent: false,
-      show: false,
-      webPreferences: {
-        preload: path.join(__dirname, "preload-prompt.js"),
-        nodeIntegration: false,
-        contextIsolation: true,
-      },
-    });
-    promptWin.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
-    promptWin.once("ready-to-show", () => promptWin.show());
-
-    const { ipcMain } = require("electron");
-    const handler = (_, val) => {
-      resizeWindow(`P:${val}`);
-      ipcMain.removeListener("proportional-custom", handler);
-    };
-    ipcMain.on("proportional-custom", handler);
-    promptWin.on("closed", () => {
-      ipcMain.removeListener("proportional-custom", handler);
-    });
-  }
-
   function buildDisplaySubmenu() {
     const displays = screen.getAllDisplays();
     if (displays.length <= 1) return [{ label: t("displayLabel").replace("{n}", 1), enabled: false }];
@@ -448,16 +287,6 @@ module.exports = function initMenu(ctx) {
   function buildContextMenu() {
     const template = [
       {
-        label: t("proportional"),
-        submenu: buildProportionalSubmenu(),
-      },
-      {
-        label: t("sendToDisplay"),
-        submenu: buildDisplaySubmenu(),
-        visible: screen.getAllDisplays().length > 1 && !ctx.getMiniMode(),
-      },
-      { type: "separator" },
-      {
         ...buildMiniModeMenuItem(),
       },
       { type: "separator" },
@@ -470,12 +299,19 @@ module.exports = function initMenu(ctx) {
         label: `${t("sessions")} (${ctx.sessions.size})`,
         submenu: ctx.buildSessionSubmenu(),
       },
-      { type: "separator" },
-      {
-        label: t("theme"),
-        submenu: buildThemeSubmenu(),
-      },
     ];
+    // sendToDisplay is a multi-display-only tail entry. Push dynamically
+    // (rather than visible:false) — Electron leaves a phantom gap for
+    // hidden separators otherwise.
+    if (screen.getAllDisplays().length > 1 && !ctx.getMiniMode()) {
+      template.push(
+        { type: "separator" },
+        {
+          label: t("sendToDisplay"),
+          submenu: buildDisplaySubmenu(),
+        },
+      );
+    }
     // macOS: Dock and Menu Bar visibility toggles
     if (isMac) {
       template.push(
@@ -502,8 +338,6 @@ module.exports = function initMenu(ctx) {
         label: t("settings"),
         click: () => ctx.openSettingsWindow(),
       },
-      { type: "separator" },
-      buildToggleShortcutHintItem(),
       { type: "separator" },
       { label: t("quit"), click: () => requestAppQuit() },
     );

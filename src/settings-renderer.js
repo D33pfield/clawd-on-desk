@@ -77,7 +77,7 @@ const STRINGS = {
     rowAllowEdgePinning: "Allow pinning to screen edges",
     rowAllowEdgePinningDesc: "Top/bottom decorations (sparkles, buildings, bubbles, …) may be clipped by the screen edge",
     rowSize: "Size",
-    rowSizeDesc: "Drag to resize the pet as a percentage of screen width. Click a dot to snap to a preset.",
+    rowSizeDesc: "Drag to resize the pet.",
     placeholderTitle: "Coming soon",
     placeholderDesc: "This panel will land in a future Clawd release. The plan lives in docs/plans/plan-settings-panel.md.",
     toastSaveFailed: "Couldn't save: ",
@@ -257,7 +257,7 @@ const STRINGS = {
     rowAllowEdgePinning: "允许贴靠屏幕边缘",
     rowAllowEdgePinningDesc: "开启后桌宠贴屏幕边缘时，顶/底装饰（花花、建筑、气泡等）可能被裁掉。",
     rowSize: "大小",
-    rowSizeDesc: "拖动滑杆按屏幕宽度百分比调整桌宠大小；点击小圆点可吸附到预设值。",
+    rowSizeDesc: "拖动调整桌宠大小。",
     placeholderTitle: "即将推出",
     placeholderDesc: "此面板将在 Clawd 后续版本中加入，规划见 docs/plans/plan-settings-panel.md。",
     toastSaveFailed: "保存失败：",
@@ -435,7 +435,7 @@ const STRINGS = {
     rowAllowEdgePinning: "화면 가장자리에 붙이기 허용",
     rowAllowEdgePinningDesc: "화면 가장자리에 붙을 때 상/하단 장식(반짝임·건물·말풍선 등)이 잘릴 수 있습니다.",
     rowSize: "크기",
-    rowSizeDesc: "화면 너비 비율로 펫 크기를 드래그해 조절할 수 있습니다. 점을 누르면 사전 설정 값으로 맞출 수 있습니다.",
+    rowSizeDesc: "드래그하여 펫 크기를 조절하세요.",
     placeholderTitle: "곧 제공 예정",
     placeholderDesc: "이 패널은 향후 Clawd 릴리스에 추가됩니다. 계획은 docs/plans/plan-settings-panel.md에 있습니다.",
     toastSaveFailed: "저장 실패: ",
@@ -2592,9 +2592,6 @@ function buildSizeSliderRow() {
     slider.style.setProperty("--size-fill", `${pct}%`);
     bubble.textContent = `${ui}%`;
     bubble.style.left = `${pct}%`;
-    for (const btn of ticksEl.querySelectorAll(".size-tick")) {
-      btn.classList.toggle("active", Number(btn.dataset.value) === ui);
-    }
   }
 
   function setDragging(nextDragging, pending = transientUiState.size.pending) {
@@ -2607,26 +2604,22 @@ function buildSizeSliderRow() {
   applyLocalValue(initial);
   setDragging(transientUiState.size.dragging, transientUiState.size.pending);
 
+  // Ticks are visual-only reference marks now — clicking no longer snaps
+  // (that "kept getting stuck" per user feedback). Keep dot + label for
+  // spatial orientation, drop the button element and click handler.
   for (const v of SIZE_TICK_VALUES) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "size-tick";
-    btn.dataset.value = String(v);
-    btn.style.left = `${sizeUiToPct(v)}%`;
+    const mark = document.createElement("span");
+    mark.className = "size-tick";
+    mark.dataset.value = String(v);
+    mark.style.left = `${sizeUiToPct(v)}%`;
     const dot = document.createElement("span");
     dot.className = "size-tick-dot";
     const label = document.createElement("span");
     label.className = "size-tick-label";
     label.textContent = String(v);
-    btn.appendChild(dot);
-    btn.appendChild(label);
-    btn.addEventListener("click", () => {
-      transientUiState.size.draftUi = v;
-      transientUiState.size.dragging = false;
-      applyLocalValue(v);
-      commitNow(v);
-    });
-    ticksEl.appendChild(btn);
+    mark.appendChild(dot);
+    mark.appendChild(label);
+    ticksEl.appendChild(mark);
   }
 
   let lastSendAt = 0;

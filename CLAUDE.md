@@ -155,7 +155,6 @@ opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
 | `src/shortcut-actions.js` | 快捷键纯逻辑层（零 Electron 依赖）：`SHORTCUT_ACTIONS` 注册表、`parseAccelerator`、`DANGEROUS_ACCELERATORS` 黑名单、`buildAcceleratorFromEvent`、`formatAcceleratorLabel`、`normalizeShortcuts`（加载期 default-priority 两轮去重） |
 | `src/settings-renderer.js` | 设置窗口渲染进程（2k+ 行）：主题卡片、animation overrides、agent 面板、诊断 |
 | `src/preload-settings.js` | 设置窗口 contextBridge：读 snapshot、发 update/command、订阅变更 |
-| `src/preload-prompt.js` | 轻量提示子窗口（elicitation / 更新气泡等）preload |
 | `src/theme-loader.js` | 主题运行时（~1400 行）：加载 `theme.json`、必需状态校验、变体 merge、能力感知 overrides、SVG 白名单消毒、用户主题目录发现 |
 | `src/agent-gate.js` | 纯函数 gate：`isAgentEnabled(snapshot, id)` / `isAgentPermissionsEnabled(...)`，默认 true 兼容旧 prefs |
 | `src/animation-cycle.js` | 解析 SVG/APNG 的动画周期（精确 / 估算 / static / unavailable），供渲染循环与抖动检测使用 |
@@ -176,6 +175,7 @@ opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
 | `src/mac-window.js` | macOS 专用窗口行为（alwaysOnTop 恢复、space 行为等） |
 | `src/login-item.js` | 开机自启：封装 `app.getLoginItemSettings` / `setLoginItemSettings`，供 controller 做 validate/effect |
 | `src/work-area.js` + `size-utils.js` | 多显示器工作区查询 / 窗口尺寸钳制工具 |
+| `src/visible-margins.js` | 透明窗口 → 可视角色的 margin 计算 + 拖拽/静置 clamp 策略；`allowEdgePinning` 开关决定是否允许贴边溢出（ON: top=0.6h / bottom=0.25h 等量 drag 与 rest 消除橡皮筋回弹；OFF: 保留 visibleMargins + 0.25h 回弹） |
 | `src/log-rotate.js` | 1MB 循环追加日志工具：超限时从文件中点的换行处切半保留新内容 |
 | `hooks/clawd-hook.js` | Claude Code command hook：事件名 → 状态映射 → HTTP POST，零依赖 |
 | `hooks/copilot-hook.js` | Copilot CLI command hook：camelCase 事件名，与 clawd-hook.js 相同架构 |
