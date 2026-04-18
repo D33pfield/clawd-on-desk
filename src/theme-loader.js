@@ -79,7 +79,7 @@ const VISUAL_FALLBACK_STATES = new Set([
 
 // ── Variant support (Phase 3b-swap) ──
 // Allow-list of fields a variant may override. Anything else → ignored + warned
-// (see docs/plan-settings-panel-3b-swap.md §6.4 Validator Spec rule 1).
+// (see docs/plans/plan-settings-panel-3b-swap.md §6.4 Validator Spec rule 1).
 const VARIANT_ALLOWED_KEYS = new Set([
   // Metadata (not merged into runtime theme)
   "name", "description", "preview",

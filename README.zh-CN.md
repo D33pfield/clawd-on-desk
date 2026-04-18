@@ -91,7 +91,7 @@
   </tr>
 </table>
 
-完整事件映射表、极简模式、点击彩蛋见：**[docs/state-mapping.zh-CN.md](docs/state-mapping.zh-CN.md)**
+完整事件映射表、极简模式、点击彩蛋见：**[docs/guides/state-mapping.zh-CN.md](docs/guides/state-mapping.zh-CN.md)**
 
 ## 快速开始
 
@@ -107,11 +107,11 @@ npm install
 npm start
 ```
 
-**Claude Code** 和 **Codex CLI** 开箱即用。其他 Agent（Copilot、Kiro 等）需一次性配置。也涵盖远程 SSH、WSL 及平台说明（macOS / Linux）：**[docs/setup-guide.zh-CN.md](docs/setup-guide.zh-CN.md)**
+**Claude Code** 和 **Codex CLI** 开箱即用。其他 Agent（Copilot、Kiro 等）需一次性配置。也涵盖远程 SSH、WSL 及平台说明（macOS / Linux）：**[docs/guides/setup-guide.zh-CN.md](docs/guides/setup-guide.zh-CN.md)**
 
 ## 已知限制
 
-部分 Agent 存在功能差异（无权限气泡、轮询延迟、无法跳转终端等）。完整列表见：**[docs/known-limitations.zh-CN.md](docs/known-limitations.zh-CN.md)**
+部分 Agent 存在功能差异（无权限气泡、轮询延迟、无法跳转终端等）。完整列表见：**[docs/guides/known-limitations.zh-CN.md](docs/guides/known-limitations.zh-CN.md)**
 
 ## 自定义主题
 
@@ -137,7 +137,7 @@ node scripts/validate-theme.js path/to/your-theme
 
 `设置…` → `主题` 里的主题卡现在会显示能力角标，例如 `Tracked idle`、`静态主题`、`Mini`、`直睡`、`无 reactions`，方便用户在切换前看出主题差异。
 
-详见 [docs/guide-theme-creation.md](docs/guide-theme-creation.md)（主题创作完整指南，含入门/进阶/高级路径、theme.json 字段说明、素材规范）。
+详见 [docs/guides/guide-theme-creation.md](docs/guides/guide-theme-creation.md)（主题创作完整指南，含入门/进阶/高级路径、theme.json 字段说明、素材规范）。
 
 > 第三方 SVG 文件会被自动消毒，确保安全。
 

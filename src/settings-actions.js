@@ -528,7 +528,7 @@ async function removeTheme(payload, deps) {
 // variant user had selected" scenario leaves `themeVariant[themeId]` pointing
 // at a dead variantId. Fix: call activateTheme which lenient-fallbacks unknown
 // variants, read back the actually-resolved variantId, and commit both fields.
-// See docs/plan-settings-panel-3b-swap.md §6.2 "Runtime 切换路径".
+// See docs/plans/plan-settings-panel-3b-swap.md §6.2 "Runtime 切换路径".
 const _validateSetThemeSelectionThemeId = requireString("setThemeSelection.themeId");
 function setThemeSelection(payload, deps) {
   const themeId = typeof payload === "string" ? payload : (payload && payload.themeId);

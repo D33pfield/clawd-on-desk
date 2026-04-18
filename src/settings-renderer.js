@@ -58,7 +58,7 @@ const STRINGS = {
     rowShowSessionId: "Show session ID",
     rowShowSessionIdDesc: "Append the short session ID to bubble headers and the Sessions menu.",
     placeholderTitle: "Coming soon",
-    placeholderDesc: "This panel will land in a future Clawd release. The plan lives in docs/plan-settings-panel.md.",
+    placeholderDesc: "This panel will land in a future Clawd release. The plan lives in docs/plans/plan-settings-panel.md.",
     toastSaveFailed: "Couldn't save: ",
     langEnglish: "English",
     langChinese: "中文",
@@ -202,7 +202,7 @@ const STRINGS = {
     rowShowSessionId: "显示会话 ID",
     rowShowSessionIdDesc: "在气泡标题和会话菜单后追加短会话 ID。",
     placeholderTitle: "即将推出",
-    placeholderDesc: "此面板将在 Clawd 后续版本中加入，规划见 docs/plan-settings-panel.md。",
+    placeholderDesc: "此面板将在 Clawd 后续版本中加入，规划见 docs/plans/plan-settings-panel.md。",
     toastSaveFailed: "保存失败：",
     langEnglish: "English",
     langChinese: "中文",
@@ -344,7 +344,7 @@ const STRINGS = {
     rowShowSessionId: "세션 ID 표시",
     rowShowSessionIdDesc: "말풍선 제목과 Sessions 메뉴에 짧은 세션 ID를 덧붙입니다.",
     placeholderTitle: "곧 제공 예정",
-    placeholderDesc: "이 패널은 향후 Clawd 릴리스에 추가됩니다. 계획은 docs/plan-settings-panel.md에 있습니다.",
+    placeholderDesc: "이 패널은 향후 Clawd 릴리스에 추가됩니다. 계획은 docs/plans/plan-settings-panel.md에 있습니다.",
     toastSaveFailed: "저장 실패: ",
     langEnglish: "English",
     langChinese: "中文",
@@ -1816,7 +1816,7 @@ function renderAssetPickerModal() {
         // forcing a fresh applyState() on a continuous state (working/thinking/
         // juggling) would leave the pet stuck on the preview frame for
         // WORKING_STALE_MS (5 min) when a live CC session keeps resolveDisplayState
-        // pinned to "working". See docs/plan-settings-panel-3b-swap.md Path A MVP
+        // pinned to "working". See docs/plans/plan-settings-panel-3b-swap.md Path A MVP
         // preview semantics.
         const changed = !result.noop;
         if (changed) {

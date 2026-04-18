@@ -45,7 +45,7 @@ const AGENT_ID = "opencode";
 const ACTIVE_STATES_BLOCKING_THINKING = new Set(["working", "sweeping"]);
 
 // Process tree walk config — mirrors hooks/clawd-hook.js exactly, minus the
-// Claude-specific detection. See docs/plan-opencode-integration.md Phase 4.
+// Claude-specific detection. See docs/plans/plan-opencode-integration.md Phase 4.
 // Spike confirmed (2026-04-05): plugin runs in-process with opencode, so walk
 // starts at process.pid. Observed chains on Windows:
 //   WT:         opencode.exe → node.exe → powershell.exe → windowsterminal.exe
@@ -415,7 +415,7 @@ function normalizeServerUrl(raw) {
 }
 
 // Handle v2 permission.asked event — see Phase 2 Spike in
-// docs/plan-opencode-integration.md. The payload has no sessionID in its
+// docs/plans/plan-opencode-integration.md. The payload has no sessionID in its
 // properties (only `id` = requestID), so we borrow _lastSessionId which is
 // kept fresh by session.*/message.part.updated events. Phase 1 dedup/state
 // machine logic does not run for permission events — they ride a parallel

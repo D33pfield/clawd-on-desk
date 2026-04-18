@@ -463,7 +463,7 @@ function permLog(msg) {
 // Fire-and-forget POST to the opencode plugin's reverse bridge. The plugin
 // runs inside opencode's Bun process and does NOT expose opencode's own
 // permission route externally — TUI mode has no TCP listener at all (see
-// Phase 2 Spike in docs/plan-opencode-integration.md). Instead the plugin
+// Phase 2 Spike in docs/plans/plan-opencode-integration.md). Instead the plugin
 // starts its own Bun.serve on a random localhost port and forwards our
 // decision to opencode's in-process Hono router via ctx.client._client.post().
 //

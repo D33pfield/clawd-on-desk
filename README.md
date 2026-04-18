@@ -91,7 +91,7 @@ A desktop pet that reacts to your AI coding agent sessions in real-time. Clawd l
   </tr>
 </table>
 
-Full event-to-state mapping, mini mode, and click reactions: **[docs/state-mapping.md](docs/state-mapping.md)**
+Full event-to-state mapping, mini mode, and click reactions: **[docs/guides/state-mapping.md](docs/guides/state-mapping.md)**
 
 ## Quick Start
 
@@ -107,11 +107,11 @@ npm install
 npm start
 ```
 
-**Claude Code** and **Codex CLI** work out of the box. Other agents (Copilot, Kiro, etc.) need one-time setup. Also covers remote SSH, WSL, and platform-specific notes (macOS / Linux): **[docs/setup-guide.md](docs/setup-guide.md)**
+**Claude Code** and **Codex CLI** work out of the box. Other agents (Copilot, Kiro, etc.) need one-time setup. Also covers remote SSH, WSL, and platform-specific notes (macOS / Linux): **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)**
 
 ## Known Limitations
 
-Some agents have feature gaps (no permission bubble, polling latency, no terminal focus). See the full table: **[docs/known-limitations.md](docs/known-limitations.md)**
+Some agents have feature gaps (no permission bubble, polling latency, no terminal focus). See the full table: **[docs/guides/known-limitations.md](docs/guides/known-limitations.md)**
 
 ## Custom Themes
 
@@ -137,7 +137,7 @@ node scripts/validate-theme.js path/to/your-theme
 
 Theme cards in `Settings…` → `Theme` now expose capability badges such as `Tracked idle`, `Static theme`, `Mini`, `Direct sleep`, and `No reactions`, so users can tell what a theme supports before switching.
 
-See [docs/guide-theme-creation.md](docs/guide-theme-creation.md) for the full creation guide with tiered paths (beginner → advanced), `theme.json` field reference, and asset guidelines.
+See [docs/guides/guide-theme-creation.md](docs/guides/guide-theme-creation.md) for the full creation guide with tiered paths (beginner → advanced), `theme.json` field reference, and asset guidelines.
 
 > Third-party SVG files are automatically sanitized for security.
 

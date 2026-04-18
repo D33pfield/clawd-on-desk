@@ -433,7 +433,7 @@ check(
 );
 
 // ── 5. Variants (Phase 3b-swap) ──
-// Spec lives in docs/plan-settings-panel-3b-swap.md §6.4 "Validator Spec".
+// Spec lives in docs/plans/plan-settings-panel-3b-swap.md §6.4 "Validator Spec".
 // Rules 1, 2, 3, 4, 6, 7, 8 implemented here. Rule 5 (SVG eye-tracking on
 // variant-introduced assets) is folded into rule 3's asset scan below.
 const VARIANT_ALLOWED_KEYS = new Set([
