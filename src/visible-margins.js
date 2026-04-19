@@ -73,6 +73,8 @@ function normalizeMargin(value) {
 // ON 贴边溢出量 —— 按 Peter PR#125 hitRect 基准反算窗口高度比例（测试 280px 下 top=169/bottom=14）
 const EDGE_PIN_TOP_RATIO = 0.6;
 const EDGE_PIN_BOTTOM_RATIO = 0.25;
+// OFF 仍保留 top rubber-band，但顶点不应把窗口主体藏到只剩半截。
+const OFF_RUBBER_BAND_TOP_CAP_RATIO = 0.5;
 
 function normalizeBottomInset(value) {
   return Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
@@ -82,6 +84,11 @@ function getCappedEdgePinBottom(heightPx, bottomInset) {
   const desiredBottom = Math.round(heightPx * EDGE_PIN_BOTTOM_RATIO);
   const cappedInset = normalizeBottomInset(bottomInset);
   return cappedInset == null ? desiredBottom : Math.min(desiredBottom, cappedInset);
+}
+
+function getCappedOffRubberBandTop(topMargin, heightPx, rubberBandY) {
+  const topCap = Math.max(topMargin, Math.round(heightPx * OFF_RUBBER_BAND_TOP_CAP_RATIO));
+  return Math.min(topMargin + rubberBandY, topCap);
 }
 
 function getLooseDragMargins({ width, height, visibleMargins, allowEdgePinning, bottomInset } = {}) {
@@ -100,10 +107,10 @@ function getLooseDragMargins({ width, height, visibleMargins, allowEdgePinning, 
     };
   }
 
-  // OFF: 保持现状
+  // OFF: 保留 0.25h 橡皮筋，但顶点不再额外吞掉超过半个窗口的可见区域。
   return {
     marginX,
-    marginTop: topMargin + rubberBandY,
+    marginTop: getCappedOffRubberBandTop(topMargin, heightPx, rubberBandY),
     // Bottom drag always uses the pure 0.25h rubber band when OFF.
     marginBottom: rubberBandY,
   };

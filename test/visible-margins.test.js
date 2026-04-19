@@ -72,7 +72,7 @@ describe("visible margin envelopes", () => {
 });
 
 describe("edge pinning margin policy", () => {
-  it("keeps OFF drag as visibleMargins.top + 0.25h rubber band (top) and pure 0.25h (bottom)", () => {
+  it("keeps OFF drag bottom rubber band but caps total top overflow at half the window", () => {
     const margins = getLooseDragMargins({
       width: 200,
       height: 280,
@@ -82,8 +82,38 @@ describe("edge pinning margin policy", () => {
 
     assert.deepStrictEqual(margins, {
       marginX: 50,
-      marginTop: 170, // 100 + round(280 * 0.25) = 100 + 70
+      marginTop: 140, // capped to round(280 * 0.5)
       marginBottom: 70, // round(280 * 0.25), bottom drag OFF ignores visibleMargins.bottom
+    });
+  });
+
+  it("OFF drag keeps the full 0.25h top overshoot when headroom is modest", () => {
+    const margins = getLooseDragMargins({
+      width: 200,
+      height: 280,
+      visibleMargins: { top: 40, bottom: 50 },
+      allowEdgePinning: false,
+    });
+
+    assert.deepStrictEqual(margins, {
+      marginX: 50,
+      marginTop: 110, // 40 + round(280 * 0.25)
+      marginBottom: 70,
+    });
+  });
+
+  it("OFF drag stops adding extra top overshoot once rest headroom already exceeds half the window", () => {
+    const margins = getLooseDragMargins({
+      width: 200,
+      height: 280,
+      visibleMargins: { top: 170, bottom: 50 },
+      allowEdgePinning: false,
+    });
+
+    assert.deepStrictEqual(margins, {
+      marginX: 50,
+      marginTop: 170,
+      marginBottom: 70,
     });
   });
 
