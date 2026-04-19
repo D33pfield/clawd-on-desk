@@ -116,6 +116,8 @@ npm start
 
 **Claude Code** and **Codex CLI** work out of the box. Other agents (Copilot, Kiro, etc.) need one-time setup. Also covers remote SSH, WSL, and platform-specific notes (macOS / Linux): **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)**
 
+For the official `Codex + WSL` status, Clawd's current implementation boundary, and why this is easy to misread, see: **[docs/guides/codex-wsl-clarification.md](docs/guides/codex-wsl-clarification.md)**
+
 ## Known Limitations
 
 Some agents have feature gaps (no permission bubble, polling latency, no terminal focus). See the full table: **[docs/guides/known-limitations.md](docs/guides/known-limitations.md)**

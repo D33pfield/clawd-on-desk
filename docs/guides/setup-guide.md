@@ -47,6 +47,8 @@ Remote hooks run in `CLAWD_REMOTE` mode which skips PID collection (remote PIDs 
 
 ## WSL (Windows Subsystem for Linux)
 
+> This section mainly covers Claude Code and other hook-based agents inside WSL. For the official `Codex CLI + WSL` status, the current Windows hooks status, and why Clawd does not auto-detect Codex logs under WSL's Linux home by default, see: [codex-wsl-clarification.md](codex-wsl-clarification.md)
+
 If you run Claude Code inside WSL while Clawd runs on the Windows host, hooks can POST directly to `127.0.0.1:23333` — no SSH tunnel needed, because WSL2 shares localhost with Windows by default.
 
 **Setup:**

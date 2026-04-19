@@ -116,6 +116,8 @@ npm start
 
 **Claude Code** 和 **Codex CLI** 开箱即用。其他 Agent（Copilot、Kiro 等）需一次性配置。也涵盖远程 SSH、WSL 及平台说明（macOS / Linux）：**[docs/guides/setup-guide.zh-CN.md](docs/guides/setup-guide.zh-CN.md)**
 
+关于 `Codex + WSL` 的官方现状、Clawd 当前实现边界、以及为什么容易被误解，见：**[docs/guides/codex-wsl-clarification.zh-CN.md](docs/guides/codex-wsl-clarification.zh-CN.md)**
+
 ## 已知限制
 
 部分 Agent 存在功能差异（无权限气泡、轮询延迟、无法跳转终端等）。完整列表见：**[docs/guides/known-limitations.zh-CN.md](docs/guides/known-limitations.zh-CN.md)**

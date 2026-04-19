@@ -116,6 +116,8 @@ npm start
 
 **Claude Code**와 **Codex CLI**는 바로 사용할 수 있습니다. 다른 에이전트(Copilot, Kiro 등)는 1회 설정이 필요합니다. 원격 SSH, WSL, 플랫폼별 참고 사항(macOS / Linux)까지 포함된 가이드는 **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)** 를 참고하세요.
 
+`Codex + WSL`의 공식 현황, Clawd의 현재 구현 경계, 그리고 왜 이 부분이 오해되기 쉬운지는 **[docs/guides/codex-wsl-clarification.ko-KR.md](docs/guides/codex-wsl-clarification.ko-KR.md)** 를 참고하세요.
+
 ## 알려진 제한 사항
 
 일부 에이전트는 기능 차이가 있습니다. 예를 들어 권한 말풍선이 없거나, 폴링 지연이 있거나, 터미널 포커스를 지원하지 않을 수 있습니다. 전체 표는 **[docs/guides/known-limitations.md](docs/guides/known-limitations.md)** 에 있습니다.
