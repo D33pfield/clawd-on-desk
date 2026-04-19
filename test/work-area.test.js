@@ -7,13 +7,57 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const {
+  getDisplayInsets,
   findNearestWorkArea,
   computeLooseClamp,
   SYNTHETIC_WORK_AREA,
 } = require("../src/work-area");
 
 const wa = (x, y, w, h) => ({ x, y, width: w, height: h });
-const display = (x, y, w, h) => ({ workArea: wa(x, y, w, h) });
+const display = (x, y, w, h) => ({ bounds: wa(x, y, w, h), workArea: wa(x, y, w, h) });
+
+describe("getDisplayInsets", () => {
+  it("returns zeros when display is missing or incomplete", () => {
+    assert.deepStrictEqual(getDisplayInsets(null), { top: 0, right: 0, bottom: 0, left: 0 });
+    assert.deepStrictEqual(getDisplayInsets({ bounds: wa(0, 0, 100, 100) }), { top: 0, right: 0, bottom: 0, left: 0 });
+  });
+
+  it("measures a bottom taskbar as a bottom inset", () => {
+    const result = getDisplayInsets({
+      bounds: wa(0, 0, 2560, 1440),
+      workArea: wa(0, 0, 2560, 1392),
+    });
+
+    assert.deepStrictEqual(result, { top: 0, right: 0, bottom: 48, left: 0 });
+  });
+
+  it("measures a top taskbar as a top inset", () => {
+    const result = getDisplayInsets({
+      bounds: wa(0, 0, 2560, 1440),
+      workArea: wa(0, 48, 2560, 1392),
+    });
+
+    assert.deepStrictEqual(result, { top: 48, right: 0, bottom: 0, left: 0 });
+  });
+
+  it("measures left and right taskbars independently", () => {
+    assert.deepStrictEqual(
+      getDisplayInsets({
+        bounds: wa(0, 0, 1920, 1080),
+        workArea: wa(64, 0, 1856, 1080),
+      }),
+      { top: 0, right: 0, bottom: 0, left: 64 }
+    );
+
+    assert.deepStrictEqual(
+      getDisplayInsets({
+        bounds: wa(0, 0, 1920, 1080),
+        workArea: wa(0, 0, 1856, 1080),
+      }),
+      { top: 0, right: 64, bottom: 0, left: 0 }
+    );
+  });
+});
 
 describe("findNearestWorkArea", () => {
   it("returns the only display's workArea when there is one display", () => {

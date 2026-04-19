@@ -102,6 +102,22 @@ describe("edge pinning margin policy", () => {
     });
   });
 
+  it("ON drag caps bottom slack by display inset", () => {
+    const margins = getLooseDragMargins({
+      width: 200,
+      height: 280,
+      visibleMargins: { top: 100, bottom: 50 },
+      allowEdgePinning: true,
+      bottomInset: 48,
+    });
+
+    assert.deepStrictEqual(margins, {
+      marginX: 50,
+      marginTop: 168,
+      marginBottom: 48,
+    });
+  });
+
   it("OFF rest clamp keeps the visibleMargins verbatim", () => {
     assert.deepStrictEqual(
       getRestClampMargins({
@@ -130,6 +146,49 @@ describe("edge pinning margin policy", () => {
     assert.strictEqual(rest.top, drag.marginTop);
     assert.strictEqual(rest.bottom, drag.marginBottom);
     assert.deepStrictEqual(rest, { top: 168, bottom: 70 });
+  });
+
+  it("ON rest clamp caps bottom slack by display inset", () => {
+    assert.deepStrictEqual(
+      getRestClampMargins({
+        height: 280,
+        visibleMargins: { top: 500, bottom: 500 },
+        allowEdgePinning: true,
+        bottomInset: 48,
+      }),
+      { top: 168, bottom: 48 }
+    );
+  });
+
+  it("ON cap uses the smaller of ratio and inset", () => {
+    assert.deepStrictEqual(
+      getRestClampMargins({
+        height: 280,
+        visibleMargins: { top: 500, bottom: 500 },
+        allowEdgePinning: true,
+        bottomInset: 120,
+      }),
+      { top: 168, bottom: 70 }
+    );
+  });
+
+  it("ON bottom can clamp fully to zero when no physical inset is available", () => {
+    const drag = getLooseDragMargins({
+      width: 200,
+      height: 280,
+      visibleMargins: { top: 22, bottom: 14 },
+      allowEdgePinning: true,
+      bottomInset: 0,
+    });
+    const rest = getRestClampMargins({
+      height: 280,
+      visibleMargins: { top: 22, bottom: 14 },
+      allowEdgePinning: true,
+      bottomInset: 0,
+    });
+
+    assert.strictEqual(drag.marginBottom, 0);
+    assert.strictEqual(rest.bottom, 0);
   });
 
   it("ON rest clamp ignores visibleMargins and uses height ratios", () => {

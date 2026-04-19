@@ -74,7 +74,17 @@ function normalizeMargin(value) {
 const EDGE_PIN_TOP_RATIO = 0.6;
 const EDGE_PIN_BOTTOM_RATIO = 0.25;
 
-function getLooseDragMargins({ width, height, visibleMargins, allowEdgePinning } = {}) {
+function normalizeBottomInset(value) {
+  return Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
+}
+
+function getCappedEdgePinBottom(heightPx, bottomInset) {
+  const desiredBottom = Math.round(heightPx * EDGE_PIN_BOTTOM_RATIO);
+  const cappedInset = normalizeBottomInset(bottomInset);
+  return cappedInset == null ? desiredBottom : Math.min(desiredBottom, cappedInset);
+}
+
+function getLooseDragMargins({ width, height, visibleMargins, allowEdgePinning, bottomInset } = {}) {
   const marginX = Number.isFinite(width) ? Math.round(width * 0.25) : 0;
   const rubberBandY = Number.isFinite(height) ? Math.round(height * 0.25) : 0;
   const margins = visibleMargins || {};
@@ -86,7 +96,7 @@ function getLooseDragMargins({ width, height, visibleMargins, allowEdgePinning }
     return {
       marginX,
       marginTop: Math.round(heightPx * EDGE_PIN_TOP_RATIO),
-      marginBottom: Math.round(heightPx * EDGE_PIN_BOTTOM_RATIO),
+      marginBottom: getCappedEdgePinBottom(heightPx, bottomInset),
     };
   }
 
@@ -99,7 +109,7 @@ function getLooseDragMargins({ width, height, visibleMargins, allowEdgePinning }
   };
 }
 
-function getRestClampMargins({ height, visibleMargins, allowEdgePinning } = {}) {
+function getRestClampMargins({ height, visibleMargins, allowEdgePinning, bottomInset } = {}) {
   const margins = visibleMargins || {};
   const topMargin = normalizeMargin(margins.top);
   const bottomMargin = normalizeMargin(margins.bottom);
@@ -108,7 +118,7 @@ function getRestClampMargins({ height, visibleMargins, allowEdgePinning } = {}) 
   if (allowEdgePinning) {
     return {
       top: Math.round(heightPx * EDGE_PIN_TOP_RATIO),
-      bottom: Math.round(heightPx * EDGE_PIN_BOTTOM_RATIO),
+      bottom: getCappedEdgePinBottom(heightPx, bottomInset),
     };
   }
 

@@ -9,7 +9,7 @@ const {
 } = require("./settings-window-icon");
 const hitGeometry = require("./hit-geometry");
 const animationCycle = require("./animation-cycle");
-const { findNearestWorkArea, computeLooseClamp, SYNTHETIC_WORK_AREA } = require("./work-area");
+const { findNearestWorkArea, computeLooseClamp, getDisplayInsets, SYNTHETIC_WORK_AREA } = require("./work-area");
 const {
   getThemeMarginBox,
   computeStableVisibleContentMargins,
@@ -2712,10 +2712,25 @@ function getNearestWorkArea(cx, cy) {
   return findNearestWorkArea(screen.getAllDisplays(), getPrimaryWorkAreaSafe(), cx, cy);
 }
 
+function getNearestDisplayBottomInset(cx, cy) {
+  const point = { x: Math.round(cx), y: Math.round(cy) };
+  let display = null;
+  try {
+    display = screen.getDisplayNearestPoint(point);
+  } catch {}
+  if (!display || !display.bounds || !display.workArea) {
+    try {
+      display = screen.getPrimaryDisplay();
+    } catch {}
+  }
+  return getDisplayInsets(display).bottom;
+}
+
 // Loose clamp used during drag: union of all display work areas as the boundary,
 // so the pet can freely cross between screens. Only prevents going fully off-screen.
 function looseClampPetToDisplays(x, y, w, h) {
   const margins = getVisibleContentMargins({ x, y, width: w, height: h });
+  const bottomInset = getNearestDisplayBottomInset(x + w / 2, y + h / 2);
   return computeLooseClamp(
     screen.getAllDisplays(),
     getPrimaryWorkAreaSafe(),
@@ -2728,6 +2743,7 @@ function looseClampPetToDisplays(x, y, w, h) {
       height: h,
       visibleMargins: margins,
       allowEdgePinning: allowEdgePinningCached,
+      bottomInset,
     })
   );
 }
@@ -2738,12 +2754,14 @@ function clampToScreenVisual(x, y, w, h, options = {}) {
     options
   );
   const nearest = getNearestWorkArea(x + w / 2, y + h / 2);
+  const bottomInset = getNearestDisplayBottomInset(x + w / 2, y + h / 2);
   const mLeft  = Math.round(w * 0.25);
   const mRight = Math.round(w * 0.25);
   const clampMargins = getRestClampMargins({
     height: h,
     visibleMargins: margins,
     allowEdgePinning: allowEdgePinningCached,
+    bottomInset,
   });
   return {
     x: Math.max(nearest.x - mLeft, Math.min(x, nearest.x + nearest.width - w + mRight)),

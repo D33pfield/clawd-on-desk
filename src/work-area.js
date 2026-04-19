@@ -11,6 +11,19 @@
 // so setBounds() calls stay valid until the display topology stabilizes.
 const SYNTHETIC_WORK_AREA = { x: 0, y: 0, width: 1920, height: 1080 };
 
+function getDisplayInsets(display) {
+  if (!display || !display.bounds || !display.workArea) {
+    return { top: 0, right: 0, bottom: 0, left: 0 };
+  }
+  const { bounds, workArea } = display;
+  return {
+    top: Math.max(0, workArea.y - bounds.y),
+    left: Math.max(0, workArea.x - bounds.x),
+    bottom: Math.max(0, bounds.y + bounds.height - (workArea.y + workArea.height)),
+    right: Math.max(0, bounds.x + bounds.width - (workArea.x + workArea.width)),
+  };
+}
+
 function findNearestWorkArea(displays, primaryWa, cx, cy) {
   if (!Array.isArray(displays) || displays.length === 0) {
     return primaryWa || SYNTHETIC_WORK_AREA;
@@ -58,6 +71,7 @@ function computeLooseClamp(displays, primaryWa, x, y, w, h, options = {}) {
 }
 
 module.exports = {
+  getDisplayInsets,
   findNearestWorkArea,
   computeLooseClamp,
   SYNTHETIC_WORK_AREA,
