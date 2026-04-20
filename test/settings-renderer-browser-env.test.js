@@ -23,4 +23,12 @@ describe("settings renderer browser environment", () => {
     assert.ok(!source.includes('require("./settings-size-slider")'));
     assert.ok(source.includes("globalThis.ClawdSettingsSizeSlider"));
   });
+
+  it("does not animate the size bubble's horizontal position", () => {
+    const html = fs.readFileSync(SETTINGS_HTML, "utf8");
+    const match = html.match(/\.size-bubble\s*\{([\s\S]*?)\n\}/);
+    assert.ok(match, "settings.html should define a .size-bubble rule");
+    assert.ok(!/transition:\s*left\b/.test(match[1]));
+    assert.ok(/transition:\s*transform 0\.14s ease,\s*box-shadow 0\.18s ease;/.test(match[1]));
+  });
 });
