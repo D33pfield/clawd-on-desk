@@ -6,8 +6,8 @@
 |------|------|
 | **Codex CLI：无法跳转终端** | Codex 通过 JSONL 日志轮询，日志中不含终端 PID，点击桌宠无法跳转到 Codex 终端。Claude Code 和 Copilot CLI 正常。 |
 | **Codex CLI：Windows hooks 禁用** | Codex 在 Windows 上硬编码禁用了 hooks，因此走日志轮询，延迟约 1.5 秒（hook 方式几乎无延迟）。 |
-| **Copilot CLI：需手动配置 hooks** | Copilot 需要手动创建 `~/.copilot/hooks/hooks.json`。Claude Code 和 Codex 开箱即用。 |
-| **Copilot CLI：无权限气泡** | Copilot 的 `preToolUse` 只支持拒绝，无法做完整的允许/拒绝审批流。权限气泡仅支持 Claude Code。 |
+| **Copilot CLI：需手动配置 hooks** | Copilot 是目前唯一仍需手动创建 `~/.copilot/hooks/hooks.json` 的受支持 Agent。 |
+| **Copilot CLI：无权限气泡** | Copilot 的 `preToolUse` 只支持拒绝，无法做完整的允许/拒绝审批流。权限气泡目前支持 Claude Code、CodeBuddy 和 opencode。 |
 | **Gemini CLI：无 working 状态** | Gemini 的 session JSON 只记录已完成消息，不包含进行中的工具执行。桌宠会从 thinking 直接跳到 happy/error，工作中没有打字动画。 |
 | **Gemini CLI：无权限气泡** | Gemini 在终端内处理工具审批。文件轮询无法拦截或展示审批请求。 |
 | **Gemini CLI：无法跳转终端** | Session JSON 不携带终端 PID，和 Codex 一样无法做终端聚焦。 |
