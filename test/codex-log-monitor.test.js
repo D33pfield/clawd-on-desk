@@ -521,4 +521,34 @@ describe("CodexLogMonitor", () => {
     });
     monitor.start();
   });
+
+  it("should process recently modified rollout files even when their day dir falls outside the 7 newest by name", (_, done) => {
+    const oldDateDir = path.join(tmpDir, "2024", "01", "02");
+    fs.mkdirSync(oldDateDir, { recursive: true });
+    const testFile = path.join(oldDateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n');
+
+    // Create 8 lexically newer day dirs so the old dir is excluded from the
+    // name-based fallback window that existed before the mtime scan.
+    for (let day = 3; day <= 10; day++) {
+      fs.mkdirSync(path.join(tmpDir, "2024", "01", String(day).padStart(2, "0")), {
+        recursive: true,
+      });
+    }
+
+    const config = makeConfig(tmpDir);
+    monitor = new CodexLogMonitor(config, (sid, state) => {
+      assert.strictEqual(sid, EXPECTED_SID);
+      assert.strictEqual(state, "idle");
+      done();
+    });
+
+    assert.strictEqual(
+      monitor._getCachedRecentExistingDayDirs(7).includes(oldDateDir),
+      false,
+      "old dir should be outside the legacy name-based fallback window"
+    );
+
+    monitor.start();
+  });
 });
