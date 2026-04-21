@@ -10,6 +10,11 @@ const APPROVAL_HEURISTIC_MS = 2000;
 const MAX_TRACKED_FILES = 50;
 const MAX_PARTIAL_BYTES = 65536;
 const RECENT_DAY_DIR_CACHE_MS = 60 * 60 * 1000; // 1 hour
+// A rollout file is considered "active" if written within this window. Used by
+// both the untracked-file pickup gate in _poll and the _getActiveDayDirs scan
+// so slow Codex desktop sessions (3–5 min write cadence) aren't dropped by one
+// path only to be rescued by the other.
+const ACTIVE_SESSION_WINDOW_MS = 5 * 60 * 1000;
 
 class CodexLogMonitor {
   /**
@@ -78,7 +83,7 @@ class CodexLogMonitor {
         if (!this._tracked.has(filePath)) {
           try {
             const mtime = fs.statSync(filePath).mtimeMs;
-            if (now - mtime > 120000) continue; // older than 2 min — completed session, skip
+            if (now - mtime > ACTIVE_SESSION_WINDOW_MS) continue; // completed session, skip
           } catch { continue; }
         }
         this._pollFile(filePath, file);
@@ -117,7 +122,7 @@ class CodexLogMonitor {
   // Scan baseDir for any day dir containing a rollout-*.jsonl whose mtime
   // is within `withinMs`. Returns the set of such day dirs.
   // Cached for 5s to keep polling cheap.
-  _getActiveDayDirs(withinMs = 5 * 60 * 1000) {
+  _getActiveDayDirs(withinMs = ACTIVE_SESSION_WINDOW_MS) {
     const now = Date.now();
     if (this._activeDayDirsCache && now - this._activeDayDirsCacheAt < 5000) {
       return this._activeDayDirsCache;

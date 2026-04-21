@@ -240,10 +240,10 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
-  it("should skip old files (>2min mtime)", (_, done) => {
+  it("should skip old files (>5min mtime)", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n');
-    // Backdate mtime to 10 minutes ago
+    // Backdate mtime to 10 minutes ago — outside the 5 min active window
     const oldTime = new Date(Date.now() - 600000);
     fs.utimesSync(testFile, oldTime, oldTime);
 
@@ -256,6 +256,26 @@ describe("CodexLogMonitor", () => {
       assert.strictEqual(called, false, "should not have processed old file");
       done();
     }, 300);
+  });
+
+  it("should pick up files with mtime inside the active window (slow Codex desktop session)", (_, done) => {
+    // Regression guard for #139 gap: _getActiveDayDirs rescues the day dir
+    // using a 5 min window, but _poll used to gate untracked files at 2 min.
+    // A Codex desktop session writing every 3–5 min would be found but then
+    // dropped. Backdate mtime to 3 min — between the old 2 min gate and the
+    // 5 min window — and confirm the file is processed.
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/projects/slow"}}\n');
+    const recent = new Date(Date.now() - 3 * 60 * 1000);
+    fs.utimesSync(testFile, recent, recent);
+
+    const config = makeConfig(tmpDir);
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      assert.strictEqual(state, "idle");
+      assert.strictEqual(extra.cwd, "/projects/slow");
+      done();
+    });
+    monitor.start();
   });
 
   it("should handle corrupted JSON lines gracefully", (_, done) => {
