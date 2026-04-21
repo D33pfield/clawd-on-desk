@@ -128,6 +128,20 @@ describe("findPendingPermissionForStateEvent", () => {
     assert.strictEqual(match.id, "b");
   });
 
+  it("falls back to fingerprint when the event has tool_use_id but the pending request does not", () => {
+    const fingerprint = buildToolInputFingerprint({ command: "printenv COMPUTERNAME" });
+    const pending = [
+      { id: "only", sessionId: "sid", toolName: "Bash", toolInputFingerprint: fingerprint, res: {} },
+    ];
+    const match = findPendingPermissionForStateEvent(pending, {
+      sessionId: "sid",
+      toolName: "Bash",
+      toolUseId: "toolu_terminal",
+      toolInputFingerprint: fingerprint,
+    });
+    assert.strictEqual(match.id, "only");
+  });
+
   it("uses the single pending request fallback for Stop cleanup", () => {
     const pending = [
       { id: "only", sessionId: "sid", toolName: "Bash", res: {} },
@@ -315,5 +329,32 @@ describe("/state permission cleanup", () => {
 
     assert.strictEqual(res.statusCode, 200);
     assert.deepStrictEqual(resolved, []);
+  });
+
+  it("clears a terminal-answered pending Bash request when the pending entry lacks tool_use_id", async () => {
+    const command = "printenv COMPUTERNAME";
+    const pendingPermissions = [
+      {
+        id: "pending-bash",
+        sessionId: "sid",
+        toolName: "Bash",
+        toolInputFingerprint: buildToolInputFingerprint({ command }),
+        res: {},
+      },
+    ];
+    const { handler, resolved } = startServer({ pendingPermissions });
+
+    const res = await callHandler(handler, makeReq("POST", "/state", JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "PostToolUse",
+      tool_name: "Bash",
+      tool_use_id: "toolu_terminal",
+      tool_input_fingerprint: buildToolInputFingerprint({ command }),
+    })));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(resolved.map((entry) => entry.perm.id), ["pending-bash"]);
+    assert.deepStrictEqual(resolved.map((entry) => entry.message), ["User answered in terminal"]);
   });
 });

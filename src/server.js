@@ -177,7 +177,7 @@ function findPendingPermissionForStateEvent(pendingPermissions, options) {
   const toolUseId = normalizeHookToolUseId(options.toolUseId);
   if (toolUseId) {
     const matchByToolUseId = sessionPending.find((perm) => perm.toolUseId === toolUseId);
-    return matchByToolUseId || null;
+    if (matchByToolUseId) return matchByToolUseId;
   }
 
   const toolName = typeof options.toolName === "string" && options.toolName
@@ -188,7 +188,9 @@ function findPendingPermissionForStateEvent(pendingPermissions, options) {
     : null;
   if (toolName && toolInputFingerprint) {
     const matchesByFingerprint = sessionPending.filter((perm) => (
-      perm.toolName === toolName && perm.toolInputFingerprint === toolInputFingerprint
+      perm.toolName === toolName
+        && perm.toolInputFingerprint === toolInputFingerprint
+        && (!toolUseId || !perm.toolUseId)
     ));
     if (matchesByFingerprint.length === 1) return matchesByFingerprint[0];
   }
