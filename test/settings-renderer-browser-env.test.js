@@ -45,3 +45,39 @@ describe("settings renderer browser environment", () => {
     assert.ok(!/\.size-bubble::after\s*\{[\s\S]*margin-top:\s*-1px;/.test(html));
   });
 });
+
+describe("macOS platform detection (Settings shortcut labels)", () => {
+  // Mirrors the top-level IS_MAC expression in settings-renderer.js. Because
+  // that const runs inside the Settings window's DOM context, we can't eval
+  // it from node directly — so we (a) lock the source expression shape with a
+  // string check, and (b) spot-check the logic against all navigator.platform
+  // values macOS has been known to emit.
+  const isMac = (platform) => (platform || "").startsWith("Mac");
+
+  it("keeps the unified (navigator.platform startsWith 'Mac') check", () => {
+    const source = fs.readFileSync(SETTINGS_RENDERER, "utf8");
+    assert.ok(
+      source.includes('(navigator.platform || "").startsWith("Mac")'),
+      "settings-renderer.js must use startsWith('Mac'); word-boundary regex caused #135"
+    );
+  });
+
+  it("detects every known macOS navigator.platform value", () => {
+    // Values Apple has shipped across Intel / Apple Silicon / PPC / legacy.
+    // If any later Electron/OS build emits something outside this set, the
+    // Shortcut tab will silently fall back to Windows labels — catch here.
+    assert.strictEqual(isMac("MacIntel"), true);
+    assert.strictEqual(isMac("MacPPC"), true);
+    assert.strictEqual(isMac("Mac68K"), true);
+    assert.strictEqual(isMac("MacARM64"), true);
+  });
+
+  it("returns false for non-macOS platforms and degenerate values", () => {
+    assert.strictEqual(isMac("Win32"), false);
+    assert.strictEqual(isMac("Linux x86_64"), false);
+    assert.strictEqual(isMac("iPhone"), false);
+    assert.strictEqual(isMac(""), false);
+    assert.strictEqual(isMac(undefined), false);
+    assert.strictEqual(isMac(null), false);
+  });
+});

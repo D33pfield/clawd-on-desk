@@ -850,6 +850,7 @@ module.exports.__test = {
   shouldBypassOpencodeBubble,
   normalizePermissionSuggestions,
   normalizeElicitationToolInput,
+  normalizeToolMatchValue,
   buildToolInputFingerprint,
   findPendingPermissionForStateEvent,
 };
