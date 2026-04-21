@@ -258,24 +258,73 @@ describe("CodexLogMonitor", () => {
     }, 300);
   });
 
-  it("should pick up files with mtime inside the active window (slow Codex desktop session)", (_, done) => {
-    // Regression guard for #139 gap: _getActiveDayDirs rescues the day dir
-    // using a 5 min window, but _poll used to gate untracked files at 2 min.
-    // A Codex desktop session writing every 3–5 min would be found but then
-    // dropped. Backdate mtime to 3 min — between the old 2 min gate and the
-    // 5 min window — and confirm the file is processed.
+  it("picks up slow Codex desktop sessions (mtime 3 min old) and emits only live writes", (_, done) => {
+    // Two guards bundled:
+    //   1. #139 gap: _getActiveDayDirs + _poll both need to find a file
+    //      whose last write is in the 2–5 min range. If the file wasn't
+    //      picked up, the appended live write below would never emit.
+    //   2. Replay protection: the historical session_meta line (3 min old)
+    //      must NOT emit "idle" on attach — that would be a replay of a
+    //      stale transition on Clawd restart. Backfill mode drops it.
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/projects/slow"}}\n');
     const recent = new Date(Date.now() - 3 * 60 * 1000);
     fs.utimesSync(testFile, recent, recent);
 
     const config = makeConfig(tmpDir);
+    const seen = [];
     monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
-      assert.strictEqual(state, "idle");
-      assert.strictEqual(extra.cwd, "/projects/slow");
-      done();
+      seen.push({ state, cwd: extra.cwd });
+      if (state === "thinking") {
+        // Historical session_meta must not appear; only the live task_started
+        // after the append should fire.
+        assert.strictEqual(seen.length, 1, `expected a single live emit, got: ${JSON.stringify(seen)}`);
+        assert.strictEqual(extra.cwd, "/projects/slow");
+        done();
+      }
     });
     monitor.start();
+
+    // Live append after monitor has attached. This is what the user's next
+    // prompt would look like in a real slow session.
+    setTimeout(() => {
+      fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+    }, 200);
+  });
+
+  it("backfills historical turns silently, then emits live turns normally", (_, done) => {
+    // Simulates Clawd restart discovering a completed turn that finished
+    // minutes ago. The historical task_started/function_call/task_complete
+    // sequence must NOT emit — those states belong to the past. Only
+    // content appended after monitor start should reach the callback.
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command","arguments":"{\\"command\\":\\"ls\\"}"}}',
+      '{"type":"event_msg","payload":{"type":"exec_command_end"}}',
+      '{"type":"event_msg","payload":{"type":"task_complete"}}',
+    ].join("\n") + "\n");
+    // Backdate past the grace window so backfill engages.
+    const recent = new Date(Date.now() - 60 * 1000);
+    fs.utimesSync(testFile, recent, recent);
+
+    const config = makeConfig(tmpDir);
+    const seen = [];
+    monitor = new CodexLogMonitor(config, (sid, state) => {
+      seen.push(state);
+      if (state === "thinking") {
+        // Should only see the live task_started; the four historical
+        // state-bearing events must have been swallowed by backfill.
+        assert.deepStrictEqual(seen, ["thinking"]);
+        done();
+      }
+    });
+    monitor.start();
+
+    setTimeout(() => {
+      fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+    }, 200);
   });
 
   it("should handle corrupted JSON lines gracefully", (_, done) => {

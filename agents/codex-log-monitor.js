@@ -15,6 +15,11 @@ const RECENT_DAY_DIR_CACHE_MS = 60 * 60 * 1000; // 1 hour
 // so slow Codex desktop sessions (3–5 min write cadence) aren't dropped by one
 // path only to be rescued by the other.
 const ACTIVE_SESSION_WINDOW_MS = 5 * 60 * 1000;
+// Grace window around monitor start. A file with content whose last write
+// predates this window is treated as pre-existing history on attach — we
+// replay it silently (backfill) instead of emitting stale transitions. A
+// file written within the grace window is a live session and emits normally.
+const BACKFILL_GRACE_MS = 5 * 1000;
 
 class CodexLogMonitor {
   /**
@@ -267,6 +272,15 @@ class CodexLogMonitor {
         partial: "",
         hadToolUse: false,
         agentPid: null,
+        // Backfill mode: only a file whose last write predates monitor
+        // start (by more than BACKFILL_GRACE_MS) is treated as stale
+        // history — we replay it silently to advance offset + pick up
+        // cwd/sessionTitle without emitting old transitions. Files written
+        // inside the grace window are live sessions and emit normally.
+        // Empty files have nothing to replay.
+        backfilling:
+          stat.size > 0 &&
+          stat.mtimeMs < this._startedAtMs - BACKFILL_GRACE_MS,
       };
       this._tracked.set(filePath, tracked);
     }
@@ -301,6 +315,10 @@ class CodexLogMonitor {
       if (!line.trim()) continue;
       this._processLine(line, tracked);
     }
+
+    // First pass drained the historical bytes we picked up on attach;
+    // subsequent writes to this file are live and must emit normally.
+    if (tracked.backfilling) tracked.backfilling = false;
   }
 
   _processLine(line, tracked) {
@@ -362,6 +380,13 @@ class CodexLogMonitor {
     if (key === "response_item:function_call") {
       tracked.hadToolUse = true;
     }
+
+    // Backfill gate: first-pass replay of a file's historical content skips
+    // every callback and every deferred approval timer. Side-effect fields
+    // (cwd / sessionTitle / hadToolUse) were already updated above so live
+    // state stays correct. Independent of the timestamp-based replay guard,
+    // which only helps lines that carry a timestamp field.
+    if (tracked.backfilling) return;
 
     // Turn-end: happy if tools were used this turn, idle otherwise
     if (state === "codex-turn-end") {
