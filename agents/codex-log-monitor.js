@@ -1,6 +1,16 @@
 // Codex CLI JSONL log monitor
 // Polls ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl for state changes
 // Zero dependencies (node built-ins only)
+//
+// Replay protection is two layers — change one, consider the other:
+//   1. Line-level: _processLine skips entries whose `timestamp` field is
+//      older than monitor start. Only helps lines that carry a timestamp.
+//   2. File-level: _pollFile sets tracked.backfilling when attaching to a
+//      file whose mtime predates monitor start. _processLine then suppresses
+//      every emit + deferred timer until the first read drains. Works for
+//      any line shape, covers what layer 1 can't.
+// The two overlap but don't duplicate each other — collapsing them takes a
+// refactor, not a tweak.
 
 const fs = require("fs");
 const path = require("path");
