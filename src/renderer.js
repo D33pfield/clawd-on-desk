@@ -47,8 +47,8 @@ function initWithConfig(cfg) {
   _transitions = tc.transitions || {};
   _miniFlipAssets = !!tc.miniFlipAssets;
 
-  applyObjectScaleStyle(clawdEl);
-  applyObjectScaleStyle(pendingNext);
+  applyObjectScaleStyle(clawdEl, getObjectSvgName(clawdEl));
+  applyObjectScaleStyle(pendingNext, getObjectSvgName(pendingNext));
 }
 
 function applyObjectScaleStyle(el, file) {
