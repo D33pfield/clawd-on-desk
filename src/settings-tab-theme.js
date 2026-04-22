@@ -7,6 +7,7 @@
   let runtime = null;
   let helpers = null;
   let ops = null;
+  let readers = null;
 
   function t(key) {
     return helpers.t(key);
@@ -52,7 +53,7 @@
     if (value == null) return "";
     if (typeof value === "string") return value;
     if (typeof value === "object") {
-      const lang = (state.snapshot && state.snapshot.lang) || "en";
+      const lang = readers.getLang();
       if (value[lang]) return value[lang];
       if (value.en) return value.en;
       if (value.zh) return value.zh;
@@ -205,6 +206,7 @@
     runtime = core.runtime;
     helpers = core.helpers;
     ops = core.ops;
+    readers = core.readers;
     core.tabs.theme = {
       render,
     };

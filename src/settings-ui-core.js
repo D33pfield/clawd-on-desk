@@ -34,11 +34,7 @@
   const formatAcceleratorPartial = shortcutApi.formatAcceleratorPartial
     || (() => "");
 
-  // navigator.platform returns "MacIntel" on macOS (both Intel and Apple
-  // Silicon — the latter retains "MacIntel" for web compatibility). The old
-  // /\bMac\b/ pattern failed because the trailing \b needs a non-word char
-  // after "c", but "I" is a word character. Follow the MDN-recommended check:
-  // https://developer.mozilla.org/en-US/docs/Web/API/Navigator/platform
+  // startsWith("Mac") not /\bMac\b/ — "MacIntel" has \w after "c", fails \b (regression #135).
   const IS_MAC = (navigator.platform || "").startsWith("Mac");
 
   const state = {
@@ -131,9 +127,25 @@
     return shortcuts[actionId] ?? null;
   }
 
+  function getLang() {
+    return (state.snapshot && state.snapshot.lang) || "en";
+  }
+
+  function readThemeOverrideMap(themeId) {
+    const all = state.snapshot && state.snapshot.themeOverrides;
+    const map = all && all[themeId];
+    if (!map || typeof map !== "object") return null;
+    const keys = [
+      ...(map.states ? Object.keys(map.states) : []),
+      ...(map.tiers && map.tiers.workingTiers ? Object.keys(map.tiers.workingTiers) : []),
+      ...(map.tiers && map.tiers.jugglingTiers ? Object.keys(map.tiers.jugglingTiers) : []),
+      ...(map.timings && map.timings.autoReturn ? Object.keys(map.timings.autoReturn) : []),
+    ];
+    return keys.length > 0 ? map : null;
+  }
+
   function t(key) {
-    const lang = (state.snapshot && state.snapshot.lang) || "en";
-    const dict = STRINGS[lang] || STRINGS.en || {};
+    const dict = STRINGS[getLang()] || STRINGS.en || {};
     return dict[key] || key;
   }
 
@@ -486,10 +498,6 @@
     return window.settingsAPI.exitShortcutRecording().catch(() => {});
   }
 
-  function cancelShortcutRecording() {
-    return finishShortcutRecording();
-  }
-
   function enterShortcutRecording(actionId) {
     if (!window.settingsAPI || typeof window.settingsAPI.enterShortcutRecording !== "function") {
       showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
@@ -526,7 +534,7 @@
       return;
     }
     if (built.action === "cancel") {
-      cancelShortcutRecording();
+      finishShortcutRecording();
       return;
     }
     if (built.action === "reject") {
@@ -613,7 +621,7 @@
     }
 
     const activeTab = tabs[state.activeTab];
-    if (activeTab && typeof activeTab.patchInPlace === "function" && activeTab.patchInPlace(changes, core)) {
+    if (activeTab && typeof activeTab.patchInPlace === "function" && activeTab.patchInPlace(changes)) {
       return;
     }
     requestRender({ sidebar: true, content: true });
@@ -626,6 +634,8 @@
     agentSwitchStateId,
     readAgentFlagValue,
     getShortcutValue,
+    getLang,
+    readThemeOverrideMap,
   };
 
   core.helpers = {
@@ -670,7 +680,6 @@
     showToast,
     enterShortcutRecording,
     finishShortcutRecording,
-    cancelShortcutRecording,
     handleShortcutRecordKey,
     applyShortcutFailures,
     fetchThemes,

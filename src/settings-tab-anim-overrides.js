@@ -6,22 +6,16 @@
   let helpers = null;
   let ops = null;
   let i18n = null;
+  let readers = null;
 
   function t(key) {
     return helpers.t(key);
   }
 
-  function readThemeOverrideMap(themeId) {
-    const all = state.snapshot && state.snapshot.themeOverrides;
-    const map = all && all[themeId];
-    if (!map || typeof map !== "object") return null;
-    const keys = [
-      ...(map.states ? Object.keys(map.states) : []),
-      ...(map.tiers && map.tiers.workingTiers ? Object.keys(map.tiers.workingTiers) : []),
-      ...(map.tiers && map.tiers.jugglingTiers ? Object.keys(map.tiers.jugglingTiers) : []),
-      ...(map.timings && map.timings.autoReturn ? Object.keys(map.timings.autoReturn) : []),
-    ];
-    return keys.length > 0 ? map : null;
+  function getCurrentOverrideThemeId() {
+    return runtime.animationOverridesData
+      && runtime.animationOverridesData.theme
+      && runtime.animationOverridesData.theme.id;
   }
 
   function getAnimOverrideCardById(cardId) {
@@ -85,9 +79,8 @@
   }
 
   function buildAnimOverrideRequest(card, patch) {
-    const themeId = runtime.animationOverridesData && runtime.animationOverridesData.theme && runtime.animationOverridesData.theme.id;
     const base = {
-      themeId,
+      themeId: getCurrentOverrideThemeId(),
       slotType: card.slotType,
     };
     if (card.slotType === "tier") {
@@ -126,7 +119,7 @@
   }
 
   function formatSessionRange(minSessions, maxSessions) {
-    const lang = (state.snapshot && state.snapshot.lang) || "en";
+    const lang = readers.getLang();
     if (lang === "zh") {
       if (maxSessions == null) return `${minSessions}+ 会话`;
       if (minSessions === maxSessions) return `${minSessions} 会话`;
@@ -301,7 +294,7 @@
     resetAllBtn.type = "button";
     resetAllBtn.className = "soft-btn";
     resetAllBtn.textContent = t("animOverridesResetAll");
-    resetAllBtn.disabled = !themeId || readThemeOverrideMap(themeId) === null;
+    resetAllBtn.disabled = !themeId || readers.readThemeOverrideMap(themeId) === null;
     helpers.attachActivation(resetAllBtn, () =>
       window.settingsAPI.command("resetThemeOverrides", { themeId }).then((result) => {
         if (result && result.status === "ok" && !result.noop) {
@@ -319,8 +312,7 @@
     helpers.attachActivation(exportBtn, () =>
       window.settingsAPI.exportAnimationOverrides().then((result) => {
         if (!result) return result;
-        const lang = (state.snapshot && state.snapshot.lang) || "en";
-        const dict = i18n.STRINGS[lang] || i18n.STRINGS.en;
+        const dict = i18n.STRINGS[readers.getLang()] || i18n.STRINGS.en;
         if (result.status === "ok") {
           ops.showToast(dict.toastAnimOverridesExportOk(result.themeCount || 0, result.path || ""));
         } else if (result.status === "empty") {
@@ -340,8 +332,7 @@
     helpers.attachActivation(importBtn, () =>
       window.settingsAPI.importAnimationOverrides().then((result) => {
         if (!result) return result;
-        const lang = (state.snapshot && state.snapshot.lang) || "en";
-        const dict = i18n.STRINGS[lang] || i18n.STRINGS.en;
+        const dict = i18n.STRINGS[readers.getLang()] || i18n.STRINGS.en;
         if (result.status === "ok") {
           ops.showToast(dict.toastAnimOverridesImportOk(result.themeCount || 0));
         } else if (result.status === "error") {
@@ -359,7 +350,7 @@
       if (!section || !Array.isArray(section.cards) || !section.cards.length) continue;
       parent.appendChild(buildAnimOverrideSection(section));
     }
-    ops.requestRender({ modal: true });
+    if (runtime.assetPicker.state) ops.requestRender({ modal: true });
   }
 
   function triggerPreviewOnce(card) {
@@ -378,9 +369,9 @@
   }
 
   function isCardOverridden(card) {
-    const themeId = runtime.animationOverridesData && runtime.animationOverridesData.theme && runtime.animationOverridesData.theme.id;
+    const themeId = getCurrentOverrideThemeId();
     if (!themeId) return false;
-    const map = readThemeOverrideMap(themeId);
+    const map = readers.readThemeOverrideMap(themeId);
     if (!map) return false;
     if (card.slotType === "tier") {
       const group = map.tiers && map.tiers[card.tierGroup];
@@ -499,6 +490,21 @@
     return summary;
   }
 
+  function runWideHitboxCommand(card, enabled) {
+    const themeId = getCurrentOverrideThemeId();
+    if (!themeId || !card.currentFile) return;
+    window.settingsAPI.command("setWideHitboxOverride", {
+      themeId,
+      file: card.currentFile,
+      enabled,
+    }).then((result) => {
+      if (!result || result.status !== "ok" || result.noop) return;
+      return ops.fetchAnimationOverridesData().then(() => {
+        if (state.activeTab === "animOverrides") ops.requestRender({ content: true });
+      });
+    });
+  }
+
   function buildAnimWideHitboxToggle(card) {
     const row = document.createElement("label");
     row.className = "anim-override-toggle-row";
@@ -522,34 +528,12 @@
       badge.textContent = t("animOverridesWideHitboxResetToTheme");
       badge.addEventListener("click", (e) => {
         e.preventDefault();
-        const themeId = runtime.animationOverridesData && runtime.animationOverridesData.theme && runtime.animationOverridesData.theme.id;
-        if (!themeId || !card.currentFile) return;
-        window.settingsAPI.command("setWideHitboxOverride", {
-          themeId,
-          file: card.currentFile,
-          enabled: null,
-        }).then((result) => {
-          if (!result || result.status !== "ok" || result.noop) return;
-          return ops.fetchAnimationOverridesData().then(() => {
-            if (state.activeTab === "animOverrides") ops.requestRender({ content: true });
-          });
-        });
+        runWideHitboxCommand(card, null);
       });
       label.appendChild(badge);
     }
     input.addEventListener("change", () => {
-      const themeId = runtime.animationOverridesData && runtime.animationOverridesData.theme && runtime.animationOverridesData.theme.id;
-      if (!themeId || !card.currentFile) return;
-      window.settingsAPI.command("setWideHitboxOverride", {
-        themeId,
-        file: card.currentFile,
-        enabled: input.checked,
-      }).then((result) => {
-        if (!result || result.status !== "ok" || result.noop) return;
-        return ops.fetchAnimationOverridesData().then(() => {
-          if (state.activeTab === "animOverrides") ops.requestRender({ content: true });
-        });
-      });
+      runWideHitboxCommand(card, input.checked);
     });
     row.appendChild(input);
     row.appendChild(label);
@@ -985,6 +969,7 @@
     helpers = core.helpers;
     ops = core.ops;
     i18n = core.i18n;
+    readers = core.readers;
     core.renderHooks.modal = renderAssetPickerModal;
     core.tabs.animOverrides = {
       render,

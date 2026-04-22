@@ -12,26 +12,14 @@
   let state = null;
   let helpers = null;
   let ops = null;
+  let readers = null;
 
   function t(key) {
     return helpers.t(key);
   }
 
-  function readThemeOverrideMap(themeId) {
-    const all = state.snapshot && state.snapshot.themeOverrides;
-    const map = all && all[themeId];
-    if (!map || typeof map !== "object") return null;
-    const keys = [
-      ...(map.states ? Object.keys(map.states) : []),
-      ...(map.tiers && map.tiers.workingTiers ? Object.keys(map.tiers.workingTiers) : []),
-      ...(map.tiers && map.tiers.jugglingTiers ? Object.keys(map.tiers.jugglingTiers) : []),
-      ...(map.timings && map.timings.autoReturn ? Object.keys(map.timings.autoReturn) : []),
-    ];
-    return keys.length > 0 ? map : null;
-  }
-
   function isStateDisabled(themeId, stateKey) {
-    const map = readThemeOverrideMap(themeId);
+    const map = readers.readThemeOverrideMap(themeId);
     const states = map && map.states;
     const entry = (states && states[stateKey]) || (map && map[stateKey]);
     return !!(entry && entry.disabled === true);
@@ -85,7 +73,7 @@
     const rows = ANIM_MAP_ROWS.map((spec) => buildAnimMapRow(spec, themeId));
     parent.appendChild(helpers.buildSection("", rows));
 
-    const hasAny = readThemeOverrideMap(themeId) !== null;
+    const hasAny = readers.readThemeOverrideMap(themeId) !== null;
     const resetWrap = document.createElement("div");
     resetWrap.className = "anim-map-reset";
     const resetBtn = document.createElement("button");
@@ -110,6 +98,7 @@
     state = core.state;
     helpers = core.helpers;
     ops = core.ops;
+    readers = core.readers;
     core.tabs.animMap = {
       render,
     };

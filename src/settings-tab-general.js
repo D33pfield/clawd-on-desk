@@ -145,12 +145,12 @@
     buttons[0].textContent = t("langEnglish");
     buttons[1].textContent = t("langChinese");
     buttons[2].textContent = t("langKorean");
-    const current = (state.snapshot && state.snapshot.lang) || "en";
+    const current = readers.getLang();
     for (const btn of buttons) {
       if (btn.dataset.lang === current) btn.classList.add("active");
       btn.addEventListener("click", () => {
         const next = btn.dataset.lang;
-        if (next === ((state.snapshot && state.snapshot.lang) || "en")) return;
+        if (next === readers.getLang()) return;
         window.settingsAPI.update("lang", next).then((result) => {
           if (!result || result.status !== "ok") {
             const msg = (result && result.message) || "unknown error";

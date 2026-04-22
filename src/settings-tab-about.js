@@ -124,8 +124,6 @@
     footer.textContent = t("aboutFooter");
     parent.appendChild(footer);
 
-    // Known exception in the refactor plan: keep the existing async DOM-closure
-    // pattern here and only move code structure in this pass.
     fetchAboutInfo().then((info) => {
       const safe = info || {};
 

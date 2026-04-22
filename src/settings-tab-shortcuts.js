@@ -141,7 +141,7 @@
   function attachGlobalListeners() {
     if (listenersAttached) return;
     window.addEventListener("blur", () => {
-      if (state.shortcutRecordingActionId) ops.cancelShortcutRecording();
+      if (state.shortcutRecordingActionId) ops.finishShortcutRecording();
     });
 
     document.addEventListener("mousedown", (event) => {
@@ -151,7 +151,7 @@
         ? target.closest("[data-shortcut-action-id]")
         : null;
       if (row && row.dataset.shortcutActionId === state.shortcutRecordingActionId) return;
-      ops.cancelShortcutRecording();
+      ops.finishShortcutRecording();
     });
     listenersAttached = true;
   }
