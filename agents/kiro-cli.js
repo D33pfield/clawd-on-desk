@@ -5,8 +5,7 @@
 module.exports = {
   id: "kiro-cli",
   name: "Kiro CLI",
-  // mac/linux keep legacy "kiro" alongside the real "kiro-cli" until a mac user confirms.
-  processNames: { win: ["kiro-cli.exe"], mac: ["kiro-cli", "kiro"], linux: ["kiro-cli", "kiro"] },
+  processNames: { win: ["kiro-cli.exe"], mac: ["kiro-cli"], linux: ["kiro-cli"] },
   eventSource: "hook",
   // camelCase event names — matches Kiro CLI hook system
   eventMap: {
