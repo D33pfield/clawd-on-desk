@@ -954,6 +954,19 @@ btnDeny.addEventListener("click", () => {
   window.bubbleAPI.decide("deny");
 });
 
+// Elicitation-only Enter-to-submit: selecting a preset radio/checkbox then
+// pressing Enter should send. textarea has its own Enter handler so we skip
+// it here to avoid double-submit. Deliberately gated on elicitationMode so
+// regular permission bubbles never auto-Allow on Enter.
+document.addEventListener("keydown", (e) => {
+  if (!elicitationMode) return;
+  if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+  if (e.target && e.target.tagName === "TEXTAREA") return;
+  if (btnAllow.disabled) return;
+  e.preventDefault();
+  btnAllow.click();
+});
+
 window.bubbleAPI.onPermissionShow(show);
 window.bubbleAPI.onPermissionHide(hide);
 </script>
