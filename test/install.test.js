@@ -507,6 +507,34 @@ describe("Hook installer version compatibility", () => {
     assert.strictEqual(result.updated, 0);
   });
 
+  it("is idempotent on repeated Windows registration", () => {
+    const settingsPath = makeTempSettings({});
+    const first = registerHooks({
+      silent: true,
+      settingsPath,
+      platform: "win32",
+      nodeBin: "node",
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+    assert.ok(first.added > 0, "first run should add hooks");
+
+    const second = registerHooks({
+      silent: true,
+      settingsPath,
+      platform: "win32",
+      nodeBin: "node",
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+    assert.strictEqual(second.added, 0);
+    assert.strictEqual(second.updated, 0);
+
+    const settings = readSettings(settingsPath);
+    const stopHooks = getCommandHookEntries(settings, "Stop", "clawd-hook.js");
+    assert.strictEqual(stopHooks.length, 1);
+    assert.strictEqual(stopHooks[0].shell, "powershell");
+    assert.ok(stopHooks[0].command.startsWith("& "), stopHooks[0].command);
+  });
+
   it("preserves existing absolute node path when detection fails", () => {
     const existingAbsPath = "/Users/tester/.nvm/versions/node/v20.11.0/bin/node";
     const settingsPath = makeTempSettings({
