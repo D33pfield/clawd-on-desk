@@ -135,7 +135,48 @@
     parent.appendChild(head);
 
     const rows = i18n.SHORTCUT_ACTION_IDS.map((actionId) => buildShortcutRow(actionId));
+    rows.push(buildFixedKeyRow());
     parent.appendChild(helpers.buildSection("", rows));
+  }
+
+  // Built-in non-customizable keys (e.g. Enter submits inside elicitation
+  // bubbles). Renders as a grayed-out row that visually matches the real
+  // shortcut rows so users don't wonder why Enter "isn't in the list".
+  // Buttons are disabled; tooltip explains why.
+  function buildFixedKeyRow() {
+    const row = document.createElement("div");
+    row.className = "row shortcut-row";
+
+    const textWrap = document.createElement("div");
+    textWrap.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("shortcutLabelBubbleSubmit");
+    textWrap.appendChild(label);
+    row.appendChild(textWrap);
+
+    const control = document.createElement("div");
+    control.className = "row-control shortcut-row-control";
+    const value = document.createElement("div");
+    value.className = "shortcut-value";
+    value.textContent = "Enter";
+    control.appendChild(value);
+
+    const tooltip = t("shortcutBuiltinKeyTooltip");
+    const noop = () => {};
+    const changeBtn = helpers.buildShortcutButton(t("shortcutRecordButton"), noop, { disabled: true });
+    const clearBtn = helpers.buildShortcutButton(t("shortcutClearButton"), noop, { disabled: true });
+    const resetBtn = helpers.buildShortcutButton(t("shortcutResetButton"), noop, { disabled: true });
+    changeBtn.title = tooltip;
+    clearBtn.title = tooltip;
+    resetBtn.title = tooltip;
+    control.appendChild(changeBtn);
+    control.appendChild(clearBtn);
+    control.appendChild(resetBtn);
+
+    row.appendChild(control);
+    row.title = tooltip;
+    return row;
   }
 
   function attachGlobalListeners() {
