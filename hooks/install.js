@@ -669,9 +669,7 @@ function registerHooks(options = {}) {
     // Use nested format to match Claude Code's expected structure
     settings.hooks[event].push({
       matcher: "",
-      hooks: [
-        { ...desiredHook },
-      ],
+      hooks: [desiredHook],
     });
     added++;
   }
@@ -691,7 +689,7 @@ function registerHooks(options = {}) {
       // Insert at index 0 — must run BEFORE clawd-hook.js so the app is starting
       settings.hooks.SessionStart.unshift({
         matcher: "",
-        hooks: [{ ...autoStartHook }],
+        hooks: [autoStartHook],
       });
       added++;
     } else if (autoStartSync.changed) {
