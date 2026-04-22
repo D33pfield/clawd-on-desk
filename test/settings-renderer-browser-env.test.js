@@ -5,23 +5,76 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const SETTINGS_HTML = path.join(__dirname, "..", "src", "settings.html");
-const SETTINGS_RENDERER = path.join(__dirname, "..", "src", "settings-renderer.js");
+const SRC_DIR = path.join(__dirname, "..", "src");
+const SETTINGS_HTML = path.join(SRC_DIR, "settings.html");
+const SETTINGS_RENDERER = path.join(SRC_DIR, "settings-renderer.js");
+const SETTINGS_UI_CORE = path.join(SRC_DIR, "settings-ui-core.js");
+const SETTINGS_I18N = path.join(SRC_DIR, "settings-i18n.js");
+const TAB_MODULES = [
+  path.join(SRC_DIR, "settings-tab-general.js"),
+  path.join(SRC_DIR, "settings-tab-agents.js"),
+  path.join(SRC_DIR, "settings-tab-theme.js"),
+  path.join(SRC_DIR, "settings-tab-anim-map.js"),
+  path.join(SRC_DIR, "settings-tab-anim-overrides.js"),
+  path.join(SRC_DIR, "settings-tab-shortcuts.js"),
+  path.join(SRC_DIR, "settings-tab-about.js"),
+];
 
 describe("settings renderer browser environment", () => {
-  it("loads the size-slider helper as a plain script before settings-renderer", () => {
+  it("loads browser scripts in dependency order and keeps CommonJS helpers out of settings.html", () => {
     const html = fs.readFileSync(SETTINGS_HTML, "utf8");
-    const helperIndex = html.indexOf('<script src="settings-size-slider.js"></script>');
-    const rendererIndex = html.indexOf('<script src="settings-renderer.js"></script>');
-    assert.notStrictEqual(helperIndex, -1, "settings.html should load the size-slider helper");
-    assert.notStrictEqual(rendererIndex, -1, "settings.html should load settings-renderer.js");
-    assert.ok(helperIndex < rendererIndex, "size-slider helper must load before settings-renderer.js");
+    const scriptOrder = [
+      "shortcut-actions.js",
+      "settings-size-slider.js",
+      "settings-i18n.js",
+      "settings-ui-core.js",
+      "settings-tab-general.js",
+      "settings-tab-agents.js",
+      "settings-tab-theme.js",
+      "settings-tab-anim-map.js",
+      "settings-tab-anim-overrides.js",
+      "settings-tab-shortcuts.js",
+      "settings-tab-about.js",
+      "settings-renderer.js",
+    ];
+
+    let previousIndex = -1;
+    for (const scriptName of scriptOrder) {
+      const marker = `<script src="${scriptName}"></script>`;
+      const nextIndex = html.indexOf(marker);
+      assert.notStrictEqual(nextIndex, -1, `settings.html should load ${scriptName}`);
+      assert.ok(nextIndex > previousIndex, `${scriptName} should load after the previous dependency`);
+      previousIndex = nextIndex;
+    }
+
+    assert.ok(
+      !html.includes('<script src="settings-size-preview-session.js"></script>'),
+      "settings.html must not load the main-process size preview helper"
+    );
   });
 
-  it("does not use CommonJS require in settings-renderer.js", () => {
-    const source = fs.readFileSync(SETTINGS_RENDERER, "utf8");
-    assert.ok(!source.includes('require("./settings-size-slider")'));
-    assert.ok(source.includes("globalThis.ClawdSettingsSizeSlider"));
+  it("uses browser globals instead of CommonJS in settings renderer modules", () => {
+    const rendererSource = fs.readFileSync(SETTINGS_RENDERER, "utf8");
+    const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+
+    assert.ok(rendererSource.includes("globalThis.ClawdSettingsCore"));
+    assert.ok(coreSource.includes("ClawdSettingsSizeSlider"));
+    assert.ok(i18nSource.includes("globalThis"));
+
+    for (const source of [rendererSource, coreSource, i18nSource]) {
+      assert.ok(!source.includes("require("));
+      assert.ok(!source.includes("module.exports"));
+    }
+
+    for (const file of TAB_MODULES) {
+      const source = fs.readFileSync(file, "utf8");
+      assert.ok(!source.includes("require("), `${path.basename(file)} must stay browser-script friendly`);
+      assert.ok(!source.includes("module.exports"), `${path.basename(file)} must not use CommonJS exports`);
+      assert.ok(!source.includes("settingsAPI.onChanged"), `${path.basename(file)} must not subscribe to settingsAPI.onChanged`);
+      assert.ok(!source.includes("settingsAPI.onShortcutRecordKey"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutRecordKey`);
+      assert.ok(!source.includes("settingsAPI.onShortcutFailuresChanged"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutFailuresChanged`);
+    }
   });
 
   it("does not animate the size bubble's horizontal position", () => {
@@ -47,25 +100,17 @@ describe("settings renderer browser environment", () => {
 });
 
 describe("macOS platform detection (Settings shortcut labels)", () => {
-  // Mirrors the top-level IS_MAC expression in settings-renderer.js. Because
-  // that const runs inside the Settings window's DOM context, we can't eval
-  // it from node directly — so we (a) lock the source expression shape with a
-  // string check, and (b) spot-check the logic against all navigator.platform
-  // values macOS has been known to emit.
   const isMac = (platform) => (platform || "").startsWith("Mac");
 
-  it("keeps the unified (navigator.platform startsWith 'Mac') check", () => {
-    const source = fs.readFileSync(SETTINGS_RENDERER, "utf8");
+  it("keeps the unified (navigator.platform startsWith 'Mac') check in settings-ui-core.js", () => {
+    const source = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     assert.ok(
       source.includes('(navigator.platform || "").startsWith("Mac")'),
-      "settings-renderer.js must use startsWith('Mac'); word-boundary regex caused #135"
+      "settings-ui-core.js must use startsWith('Mac'); word-boundary regex caused #135"
     );
   });
 
   it("detects every known macOS navigator.platform value", () => {
-    // Values Apple has shipped across Intel / Apple Silicon / PPC / legacy.
-    // If any later Electron/OS build emits something outside this set, the
-    // Shortcut tab will silently fall back to Windows labels — catch here.
     assert.strictEqual(isMac("MacIntel"), true);
     assert.strictEqual(isMac("MacPPC"), true);
     assert.strictEqual(isMac("Mac68K"), true);
