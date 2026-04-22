@@ -554,8 +554,7 @@ function disableAll() {
   btnAllow.disabled = true;
   btnDeny.disabled = true;
   for (const btn of suggestionsContainer.children) btn.disabled = true;
-  for (const input of elicitationForm.querySelectorAll("input")) input.disabled = true;
-  for (const ta of elicitationForm.querySelectorAll("textarea")) ta.disabled = true;
+  for (const el of elicitationForm.querySelectorAll("input, textarea")) el.disabled = true;
 }
 
 function revealCard() {
@@ -584,16 +583,11 @@ function resetBubbleContent() {
 
 function isQuestionAnswered(questionCard) {
   if (!questionCard) return false;
-  const inputs = [...questionCard.querySelectorAll("input")];
-  const checked = inputs.filter(input => input.checked);
-  if (checked.length === 0) return false;
-  // If "Other" is among selected, its textarea must be non-empty.
-  const otherChecked = checked.some(input => input.dataset.other === "true");
-  if (otherChecked) {
-    const textarea = questionCard.querySelector("textarea[data-other-textarea]");
-    if (!textarea || !textarea.value.trim()) return false;
-  }
-  return true;
+  const checked = [...questionCard.querySelectorAll("input:checked")];
+  if (!checked.length) return false;
+  if (!checked.some(input => input.dataset.other === "true")) return true;
+  const textarea = questionCard.querySelector("textarea[data-other-textarea]");
+  return !!(textarea && textarea.value.trim());
 }
 
 function updateElicitationSubmitState() {
@@ -701,10 +695,8 @@ function renderElicitationForm(data) {
       optionList.appendChild(label);
     });
 
-    // Append the "Other / custom text" option. CC protocol auto-provides this
-    // in the terminal UI ("Type something.") but does NOT include it in
-    // question.options — we inject it client-side so users aren't stuck
-    // with only preset choices.
+    // CC's AskUserQuestion protocol auto-provides "Other" in terminal UI but
+    // not in question.options — we inject it client-side.
     const otherLabel = document.createElement("label");
     otherLabel.className = "option-item option-item-other";
 
@@ -752,8 +744,6 @@ function renderElicitationForm(data) {
       }
     };
     otherInput.addEventListener("change", toggleOtherTextarea);
-    // For single-select (radio), listen to other options too — picking a
-    // preset radio silently unchecks Other, but change doesn't fire on it.
     if (!question.multiSelect) {
       optionList.querySelectorAll("input[type=radio]").forEach(r => {
         if (r !== otherInput) {
@@ -937,8 +927,7 @@ btnAllow.addEventListener("click", () => {
     if (!answers) {
       btnAllow.textContent = bubbleText(currentLang, "submitAnswer");
       btnDeny.disabled = false;
-      for (const input of elicitationForm.querySelectorAll("input")) input.disabled = false;
-      for (const ta of elicitationForm.querySelectorAll("textarea")) ta.disabled = false;
+      for (const el of elicitationForm.querySelectorAll("input, textarea")) el.disabled = false;
       updateElicitationSubmitState();
       return;
     }

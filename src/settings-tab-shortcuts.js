@@ -139,10 +139,8 @@
     parent.appendChild(helpers.buildSection("", rows));
   }
 
-  // Built-in non-customizable keys (e.g. Enter submits inside elicitation
-  // bubbles). Renders as a grayed-out row that visually matches the real
-  // shortcut rows so users don't wonder why Enter "isn't in the list".
-  // Buttons are disabled; tooltip explains why.
+  // Grayed row for keys that aren't customizable, so users don't wonder
+  // why "Enter" isn't in the list.
   function buildFixedKeyRow() {
     const row = document.createElement("div");
     row.className = "row shortcut-row";

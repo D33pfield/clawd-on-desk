@@ -26,10 +26,10 @@ describe("AskUserQuestion bubble Other option", () => {
   });
 
   it("requires non-empty custom text when Other is selected and disables textareas during submit", () => {
-    assert.match(bubbleHtml, /const otherChecked = checked\.some\(input => input\.dataset\.other === "true"\);/);
-    assert.match(bubbleHtml, /if \(!textarea \|\| !textarea\.value\.trim\(\)\) return false;/);
+    assert.match(bubbleHtml, /if \(!checked\.some\(input => input\.dataset\.other === "true"\)\) return true;/);
+    assert.match(bubbleHtml, /return !!\(textarea && textarea\.value\.trim\(\)\);/);
     assert.match(bubbleHtml, /if \(!otherText\) return null;/);
-    assert.match(bubbleHtml, /for \(const ta of elicitationForm\.querySelectorAll\("textarea"\)\) ta\.disabled = true;/);
-    assert.match(bubbleHtml, /for \(const ta of elicitationForm\.querySelectorAll\("textarea"\)\) ta\.disabled = false;/);
+    assert.match(bubbleHtml, /for \(const el of elicitationForm\.querySelectorAll\("input, textarea"\)\) el\.disabled = true;/);
+    assert.match(bubbleHtml, /for \(const el of elicitationForm\.querySelectorAll\("input, textarea"\)\) el\.disabled = false;/);
   });
 });
