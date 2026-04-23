@@ -519,6 +519,85 @@ describe("prefs.save", () => {
     });
   });
 
+  it("themeOverrides.sounds: round-trips per-soundName file entries", () => {
+    const p = makeTempPath();
+    const snap = prefs.getDefaults();
+    snap.themeOverrides = {
+      clawd: {
+        sounds: {
+          complete: { file: "my-done.mp3" },
+          confirm: { file: "nope.wav" },
+        },
+      },
+    };
+    prefs.save(p, snap);
+    const { snapshot } = prefs.load(p);
+    assert.deepStrictEqual(snapshot.themeOverrides.clawd.sounds, {
+      complete: { file: "my-done.mp3" },
+      confirm: { file: "nope.wav" },
+    });
+  });
+
+  it("themeOverrides.sounds: drops entries with invalid / empty file and non-string keys", () => {
+    const validated = prefs.validate({
+      ...prefs.getDefaults(),
+      themeOverrides: {
+        clawd: {
+          sounds: {
+            complete: { file: "ok.mp3" },
+            confirm: { file: "" },    // empty
+            weird:    { durationMs: 1000 }, // no file → dropped
+            "":       { file: "x.mp3" }, // empty key → dropped
+          },
+        },
+      },
+    });
+    assert.deepStrictEqual(validated.themeOverrides.clawd.sounds, {
+      complete: { file: "ok.mp3" },
+    });
+  });
+
+  it("themeOverrides.sounds: strips ancillary fields (durationMs / transition / sourceThemeId) — sounds only keep file", () => {
+    const validated = prefs.validate({
+      ...prefs.getDefaults(),
+      themeOverrides: {
+        clawd: {
+          sounds: {
+            complete: { file: "ok.mp3", durationMs: 1000, transition: { in: 50 }, sourceThemeId: "x" },
+          },
+        },
+      },
+    });
+    assert.deepStrictEqual(validated.themeOverrides.clawd.sounds, {
+      complete: { file: "ok.mp3" },
+    });
+  });
+
+  it("themeOverrides.sounds: rejects path-unsafe soundName keys and basename-sanitises file", () => {
+    // soundName becomes a filename stem under sound-overrides/<themeId>/ —
+    // a malicious theme or hand-edited pref must not be able to escape that
+    // directory. File paths with separators get basename-stripped.
+    const validated = prefs.validate({
+      ...prefs.getDefaults(),
+      themeOverrides: {
+        clawd: {
+          sounds: {
+            complete:      { file: "ok.mp3" },
+            "../../evil":  { file: "x.mp3" },           // unsafe key → dropped
+            "foo/bar":     { file: "x.mp3" },           // unsafe key → dropped
+            "spaces bad":  { file: "x.mp3" },           // unsafe key → dropped
+            confirm:       { file: "../../etc/passwd" },// unsafe file → basenamed
+            quiet:         { file: ".." },               // bare `..` → dropped
+          },
+        },
+      },
+    });
+    assert.deepStrictEqual(validated.themeOverrides.clawd.sounds, {
+      complete: { file: "ok.mp3" },
+      confirm:  { file: "passwd" },
+    });
+  });
+
   it("themeOverrides: legacy flat state entries normalize into states map", () => {
     const validated = prefs.validate({
       ...prefs.getDefaults(),
