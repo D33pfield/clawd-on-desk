@@ -343,15 +343,47 @@
     );
     themeMeta.appendChild(importBtn);
 
-    parent.appendChild(themeMeta);
+    parent.appendChild(buildSubtabSwitcher());
 
-    const sections = Array.isArray(data.sections) ? data.sections : [];
-    for (const section of sections) {
-      if (!section || !Array.isArray(section.cards) || !section.cards.length) continue;
-      parent.appendChild(buildAnimOverrideSection(section));
+    if (runtime.animOverridesSubtab === "sounds") {
+      parent.appendChild(buildSoundOverridesSection(data));
+    } else {
+      parent.appendChild(themeMeta);
+      const sections = Array.isArray(data.sections) ? data.sections : [];
+      for (const section of sections) {
+        if (!section || !Array.isArray(section.cards) || !section.cards.length) continue;
+        parent.appendChild(buildAnimOverrideSection(section));
+      }
     }
-    parent.appendChild(buildSoundOverridesSection(data));
     if (runtime.assetPicker.state) ops.requestRender({ modal: true });
+  }
+
+  function buildSubtabSwitcher() {
+    const wrap = document.createElement("div");
+    wrap.className = "anim-override-subtabs";
+    const group = document.createElement("div");
+    group.className = "segmented";
+    group.setAttribute("role", "tablist");
+
+    const current = runtime.animOverridesSubtab === "sounds" ? "sounds" : "animations";
+    const entries = [
+      { key: "animations", label: t("animOverridesSubtabAnimations") },
+      { key: "sounds", label: t("animOverridesSubtabSounds") },
+    ];
+    for (const entry of entries) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = entry.label;
+      if (entry.key === current) btn.classList.add("active");
+      btn.addEventListener("click", () => {
+        if (runtime.animOverridesSubtab === entry.key) return;
+        runtime.animOverridesSubtab = entry.key;
+        ops.requestRender({ content: true });
+      });
+      group.appendChild(btn);
+    }
+    wrap.appendChild(group);
+    return wrap;
   }
 
   function getSoundOverrideLabel(slot) {

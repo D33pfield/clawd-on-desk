@@ -66,6 +66,7 @@
     agentMetadata: null,
     themeList: null,
     animationOverridesData: null,
+    animOverridesSubtab: "animations",
     expandedOverrideRowIds: new Set(),
     assetPicker: {
       state: null,
