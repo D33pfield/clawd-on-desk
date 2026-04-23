@@ -323,6 +323,16 @@ function normalizeStateOverridesMap(value) {
 // the key (used as filename stem when copying) and the file (joined into the
 // overrides dir at load time) — defence in depth against malicious themes or
 // hand-edited pref files.
+// Strips any path segments and rejects traversal-only names. Returns null if
+// the result isn't a usable basename, otherwise the (optionally capped) name.
+function _safeBasename(raw, { maxLen } = {}) {
+  if (typeof raw !== "string" || !raw) return null;
+  let name = raw.replace(/^.*[\/\\]/, "");
+  if (maxLen && name.length > maxLen) name = name.slice(0, maxLen);
+  if (!name || name === "." || name === "..") return null;
+  return name;
+}
+
 function normalizeSoundOverridesMap(value) {
   if (!isPlainObject(value)) return null;
   const out = {};
@@ -330,10 +340,18 @@ function normalizeSoundOverridesMap(value) {
     if (typeof soundName !== "string" || !soundName) continue;
     if (!/^[a-zA-Z0-9_-]+$/.test(soundName)) continue;
     const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: false });
-    if (!cleanEntry || typeof cleanEntry.file !== "string" || !cleanEntry.file) continue;
-    const safeFile = cleanEntry.file.replace(/^.*[\/\\]/, "");
-    if (!safeFile || safeFile === "." || safeFile === "..") continue;
-    out[soundName] = { file: safeFile };
+    if (!cleanEntry) continue;
+    const safeFile = _safeBasename(cleanEntry.file);
+    if (!safeFile) continue;
+    const soundEntry = { file: safeFile };
+    // Preserves the user-picked filename; on-disk dest is renamed to
+    // `${soundName}${ext}`, so without this a same-ext replacement would
+    // render identically to the theme default in the UI.
+    if (isPlainObject(entry)) {
+      const safeOriginal = _safeBasename(entry.originalName, { maxLen: 256 });
+      if (safeOriginal) soundEntry.originalName = safeOriginal;
+    }
+    out[soundName] = soundEntry;
   }
   return Object.keys(out).length > 0 ? out : null;
 }

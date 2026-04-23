@@ -916,6 +916,16 @@ html, body {
   padding: 10px 14px;
 }
 .sound-override-row:last-child { border-bottom: none; }
+/* Truncate long user-picked filenames with ellipsis so one long pick can't
+   push the action buttons out of the row. Hover tooltip (set via JS `title`)
+   still surfaces the full name. */
+.sound-override-row .anim-override-summary-text { min-width: 0; flex: 1 1 auto; }
+.sound-override-row .anim-override-file {
+  word-break: normal;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .sound-override-actions {
   display: flex;
   gap: 6px;

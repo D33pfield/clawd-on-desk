@@ -421,7 +421,12 @@
 
     const file = document.createElement("div");
     file.className = "anim-override-file";
-    file.textContent = slot.currentFile || "—";
+    // Show the user-picked filename when available (overrides rename to
+    // `${soundName}${ext}` on disk, so without originalName a same-ext
+    // replacement would render identically to the theme default).
+    const fileText = slot.originalName || slot.currentFile || "";
+    file.textContent = fileText || "—";
+    if (fileText) file.title = fileText;
     text.appendChild(file);
     row.appendChild(text);
 

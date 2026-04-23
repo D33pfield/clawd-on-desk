@@ -1208,7 +1208,7 @@ function setSoundOverride(payload, deps) {
   if (!isPlainObject(payload)) {
     return { status: "error", message: "setSoundOverride: payload must be an object" };
   }
-  const { themeId, soundName, file } = payload;
+  const { themeId, soundName, file, originalName } = payload;
   if (typeof themeId !== "string" || !themeId) {
     return { status: "error", message: "setSoundOverride.themeId must be a non-empty string" };
   }
@@ -1227,7 +1227,9 @@ function setSoundOverride(payload, deps) {
   if (file === null) {
     delete nextSounds[soundName];
   } else {
-    nextSounds[soundName] = { file };
+    const entry = { file };
+    if (typeof originalName === "string" && originalName) entry.originalName = originalName;
+    nextSounds[soundName] = entry;
   }
 
   const nextThemeMap = buildThemeOverrideMap({

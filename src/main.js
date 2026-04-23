@@ -1890,9 +1890,13 @@ function _buildSoundOverrideSlots() {
     if (typeof themeDefault !== "string" || !themeDefault) continue;
     const overrideEntry = overrideSoundsMap ? overrideSoundsMap[name] : null;
     const overrideFile = overrideEntry && typeof overrideEntry.file === "string" ? overrideEntry.file : null;
+    const originalName = overrideEntry && typeof overrideEntry.originalName === "string" && overrideEntry.originalName
+      ? overrideEntry.originalName
+      : null;
     slots.push({
       name,
       currentFile: overrideFile || themeDefault,
+      originalName,
       themeDefaultFile: themeDefault,
       overridden: !!overrideFile,
     });
@@ -2134,6 +2138,7 @@ ipcMain.handle("settings:pick-sound-file", async (event, payload) => {
     themeId,
     soundName,
     file: destFilename,
+    originalName: path.basename(sourcePath),
   });
   if (!cmdResult || cmdResult.status !== "ok") {
     return cmdResult || { status: "error", message: "setSoundOverride failed" };

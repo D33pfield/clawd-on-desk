@@ -1002,6 +1002,17 @@ describe("setSoundOverride command", () => {
     });
   });
 
+  it("preserves originalName in the committed entry when provided", () => {
+    const r = commandRegistry.setSoundOverride(
+      { themeId: "clawd", soundName: "complete", file: "complete.mp3", originalName: "cat-demo.mp3" },
+      noopDeps
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.themeOverrides.clawd.sounds, {
+      complete: { file: "complete.mp3", originalName: "cat-demo.mp3" },
+    });
+  });
+
   it("null file clears the entry and removes the theme row when nothing else is overridden", () => {
     const snapshot = {
       theme: "clawd",

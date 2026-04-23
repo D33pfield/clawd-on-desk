@@ -573,6 +573,32 @@ describe("prefs.save", () => {
     });
   });
 
+  it("themeOverrides.sounds: preserves originalName when valid, basename-strips and caps length", () => {
+    // originalName is display-only — stores what the user picked before the
+    // copy renamed it to `${soundName}${ext}`. Sanitised to guard hand-edited
+    // pref files from shoving path traversal / absurd strings into the UI.
+    const longName = "a".repeat(300) + ".mp3";
+    const validated = prefs.validate({
+      ...prefs.getDefaults(),
+      themeOverrides: {
+        clawd: {
+          sounds: {
+            complete: { file: "complete.mp3", originalName: "cat-demo.mp3" },
+            confirm:  { file: "confirm.wav", originalName: "../../etc/passwd.wav" }, // basenamed
+            hiss:     { file: "hiss.mp3", originalName: ".." },                      // dropped
+            purr:     { file: "purr.mp3", originalName: "" },                        // dropped
+            growl:    { file: "growl.mp3", originalName: longName },                 // capped
+          },
+        },
+      },
+    });
+    assert.strictEqual(validated.themeOverrides.clawd.sounds.complete.originalName, "cat-demo.mp3");
+    assert.strictEqual(validated.themeOverrides.clawd.sounds.confirm.originalName, "passwd.wav");
+    assert.strictEqual(validated.themeOverrides.clawd.sounds.hiss.originalName, undefined);
+    assert.strictEqual(validated.themeOverrides.clawd.sounds.purr.originalName, undefined);
+    assert.strictEqual(validated.themeOverrides.clawd.sounds.growl.originalName.length, 256);
+  });
+
   it("themeOverrides.sounds: rejects path-unsafe soundName keys and basename-sanitises file", () => {
     // soundName becomes a filename stem under sound-overrides/<themeId>/ —
     // a malicious theme or hand-edited pref must not be able to escape that
