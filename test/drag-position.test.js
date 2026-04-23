@@ -5,6 +5,7 @@ const {
   createDragSnapshot,
   computeAnchoredDragBounds,
   computeFinalDragBounds,
+  needsFinalClampAdjustment,
   materializeVirtualBounds,
 } = require("../src/drag-position");
 const { computeLooseClamp } = require("../src/work-area");
@@ -58,6 +59,26 @@ describe("anchored drag positioning", () => {
     );
 
     assert.deepStrictEqual(result, { x: 3640, y: 100, width: 200, height: 200 });
+  });
+
+  it("detects when the final clamp would move the saved position", () => {
+    assert.strictEqual(
+      needsFinalClampAdjustment(
+        { x: 3900, y: 100, width: 200, height: 200 },
+        { width: 200, height: 200 },
+        () => ({ x: 3640, y: 100 })
+      ),
+      true
+    );
+
+    assert.strictEqual(
+      needsFinalClampAdjustment(
+        { x: 120, y: 160, width: 200, height: 200 },
+        { width: 200, height: 200 },
+        (x, y) => ({ x, y })
+      ),
+      false
+    );
   });
 });
 

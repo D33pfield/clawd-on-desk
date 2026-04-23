@@ -34,6 +34,14 @@ function computeFinalDragBounds(bounds, size, clampPosition) {
   return { x: pos.x, y: pos.y, width: size.width, height: size.height };
 }
 
+function needsFinalClampAdjustment(bounds, size, clampPosition) {
+  const clamped = computeFinalDragBounds(bounds, size, clampPosition);
+  return !!(
+    clamped &&
+    (clamped.x !== bounds.x || clamped.y !== bounds.y)
+  );
+}
+
 function materializeVirtualBounds(virtualBounds, workArea) {
   if (!virtualBounds) return null;
   const minY = workArea && Number.isFinite(workArea.y) ? workArea.y : -Infinity;
@@ -53,5 +61,6 @@ module.exports = {
   createDragSnapshot,
   computeAnchoredDragBounds,
   computeFinalDragBounds,
+  needsFinalClampAdjustment,
   materializeVirtualBounds,
 };

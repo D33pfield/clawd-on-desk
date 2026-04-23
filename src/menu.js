@@ -47,6 +47,20 @@ module.exports = function initMenu(ctx) {
     };
   }
 
+  function buildBringToPrimaryDisplayMenuItem() {
+    return {
+      label: t("bringPetToPrimaryDisplay"),
+      enabled: typeof ctx.bringPetToPrimaryDisplay === "function"
+        && !ctx.getMiniMode()
+        && !ctx.getMiniTransitioning(),
+      click: () => {
+        if (typeof ctx.bringPetToPrimaryDisplay === "function") {
+          ctx.bringPetToPrimaryDisplay();
+        }
+      },
+    };
+  }
+
   // ── System tray ──
   function createTray() {
     if (ctx.tray) return;
@@ -149,6 +163,7 @@ module.exports = function initMenu(ctx) {
         label: t("settings"),
         click: () => ctx.openSettingsWindow(),
       },
+      buildBringToPrimaryDisplayMenuItem(),
       { type: "separator" },
       {
         label: ctx.petHidden ? t("showPet") : t("hidePet"),
@@ -331,6 +346,8 @@ module.exports = function initMenu(ctx) {
       );
     }
     template.push(
+      { type: "separator" },
+      buildBringToPrimaryDisplayMenuItem(),
       { type: "separator" },
       {
         label: t("settings"),

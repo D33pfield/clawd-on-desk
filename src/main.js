@@ -26,6 +26,7 @@ const {
   createDragSnapshot,
   computeAnchoredDragBounds,
   computeFinalDragBounds,
+  needsFinalClampAdjustment,
   materializeVirtualBounds,
 } = require("./drag-position");
 const {
@@ -455,6 +456,40 @@ function togglePetVisibility() {
   syncPermissionShortcuts();
   buildTrayMenu();
   buildContextMenu();
+}
+
+function bringPetToPrimaryDisplay() {
+  if (!win || win.isDestroyed()) return;
+  if (_mini.getMiniMode() || _mini.getMiniTransitioning()) return;
+
+  const workArea = getPrimaryWorkAreaSafe() || SYNTHETIC_WORK_AREA;
+  const size = getEffectiveCurrentPixelSize(workArea);
+  const bounds = {
+    x: Math.round(workArea.x + (workArea.width - size.width) / 2),
+    y: Math.round(workArea.y + (workArea.height - size.height) / 2),
+    width: size.width,
+    height: size.height,
+  };
+
+  applyPetWindowBounds(bounds);
+  syncHitWin();
+  repositionFloatingBubbles();
+
+  if (petHidden) {
+    togglePetVisibility();
+  } else {
+    win.showInactive();
+    if (isLinux) win.setSkipTaskbar(true);
+    if (hitWin && !hitWin.isDestroyed()) {
+      hitWin.showInactive();
+      if (isLinux) hitWin.setSkipTaskbar(true);
+    }
+  }
+
+  reapplyMacVisibility();
+  reassertWinTopmost();
+  scheduleHwndRecovery();
+  flushRuntimeStateToPrefs();
 }
 
 function registerPersistentShortcutsFromSettings() {
@@ -1097,6 +1132,7 @@ const _menuCtx = {
   repositionBubbles: () => repositionFloatingBubbles(),
   get petHidden() { return petHidden; },
   togglePetVisibility: () => togglePetVisibility(),
+  bringPetToPrimaryDisplay: () => bringPetToPrimaryDisplay(),
   get isQuitting() { return isQuitting; },
   set isQuitting(v) { isQuitting = v; },
   get menuOpen() { return menuOpen; },
@@ -2590,8 +2626,15 @@ function createWindow() {
       height: size.height,
     };
   }
-  const startupNeedsRegularize = (prefs.positionSaved || prefs.miniMode)
-    && hasStoredPositionThemeMismatch(prefs);
+  const startupNeedsRegularize = prefs.positionSaved
+    && !prefs.miniMode
+    && (
+      hasStoredPositionThemeMismatch(prefs)
+      || needsFinalClampAdjustment(startBounds, size, clampToScreenVisual)
+    );
+  const startupRegularizedBounds = startupNeedsRegularize
+    ? computeFinalDragBounds(startBounds, size, clampToScreenVisual)
+    : null;
 
   win = new BrowserWindow({
     width: size.width,
@@ -2642,9 +2685,8 @@ function createWindow() {
   }
   win.loadFile(path.join(__dirname, "index.html"));
   applyPetWindowBounds(startBounds);
-  if (startupNeedsRegularize) {
-    const clamped = computeFinalDragBounds(getPetWindowBounds(), size, clampToScreenVisual);
-    if (clamped) applyPetWindowBounds(clamped);
+  if (startupRegularizedBounds) {
+    applyPetWindowBounds(startupRegularizedBounds);
   }
   win.showInactive();
   // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly

@@ -43,6 +43,7 @@ function buildBaseCtx(overrides = {}) {
     buildSessionSubmenu: () => [],
     openSettingsWindow: () => {},
     togglePetVisibility: () => {},
+    bringPetToPrimaryDisplay: () => {},
     enableDoNotDisturb: () => {},
     disableDoNotDisturb: () => {},
     enterMiniViaMenu: () => {},
@@ -197,5 +198,95 @@ describe("menu send-to-display", () => {
       width: 120,
       height: 120,
     });
+  });
+});
+
+describe("menu recovery action", () => {
+  it("adds a tray item that brings the pet back to the primary display", () => {
+    const fakeElectron = {
+      app: { quit: () => {}, setActivationPolicy: () => {}, dock: { show: () => {}, hide: () => {} } },
+      BrowserWindow: function BrowserWindow() {},
+      Menu: {
+        buildFromTemplate(template) {
+          return { template };
+        },
+      },
+      Tray: function Tray() {
+        this.setToolTip = () => {};
+        this.setContextMenu = (menu) => { this.contextMenu = menu; };
+        this.destroy = () => {};
+      },
+      nativeImage: {
+        createFromPath() {
+          return {
+            resize() { return this; },
+            setTemplateImage() {},
+          };
+        },
+      },
+      screen: {
+        getAllDisplays: () => [{ id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } }],
+        getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+        getDisplayNearestPoint: () => ({ id: 1 }),
+      },
+    };
+    const initMenu = loadMenuWithElectron(fakeElectron);
+
+    let called = 0;
+    const ctx = buildBaseCtx({
+      bringPetToPrimaryDisplay: () => { called += 1; },
+    });
+
+    const menu = initMenu(ctx);
+    menu.createTray();
+
+    const recover = ctx.tray.contextMenu.template.find((item) => item.label === "Bring Pet to Primary Display");
+    assert.ok(recover, "tray menu should expose the recovery action");
+
+    recover.click();
+
+    assert.strictEqual(called, 1);
+  });
+
+  it("disables the recovery action while mini mode is active", () => {
+    const fakeElectron = {
+      app: { quit: () => {}, setActivationPolicy: () => {}, dock: { show: () => {}, hide: () => {} } },
+      BrowserWindow: function BrowserWindow() {},
+      Menu: {
+        buildFromTemplate(template) {
+          return { template };
+        },
+      },
+      Tray: function Tray() {
+        this.setToolTip = () => {};
+        this.setContextMenu = (menu) => { this.contextMenu = menu; };
+        this.destroy = () => {};
+      },
+      nativeImage: {
+        createFromPath() {
+          return {
+            resize() { return this; },
+            setTemplateImage() {},
+          };
+        },
+      },
+      screen: {
+        getAllDisplays: () => [{ id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } }],
+        getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+        getDisplayNearestPoint: () => ({ id: 1 }),
+      },
+    };
+    const initMenu = loadMenuWithElectron(fakeElectron);
+
+    const ctx = buildBaseCtx({
+      getMiniMode: () => true,
+    });
+
+    const menu = initMenu(ctx);
+    menu.createTray();
+
+    const recover = ctx.tray.contextMenu.template.find((item) => item.label === "Bring Pet to Primary Display");
+    assert.ok(recover, "tray menu should expose the recovery action");
+    assert.strictEqual(recover.enabled, false);
   });
 });
