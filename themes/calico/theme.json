@@ -305,12 +305,12 @@
     },
     "fileOffsets": {
       "calico-idle-follow.svg": {
-        "x": -10,
-        "y": -10
+        "x": -5,
+        "y": -5
       },
       "calico-idle.apng": {
         "x": 10,
-        "y": 0
+        "y": -3
       },
       "calico-thinking.apng": {
         "x": 0,
@@ -349,7 +349,7 @@
         "y": 7
       },
       "calico-happy.apng": {
-        "x": 5,
+        "x": 8,
         "y": 6
       },
       "calico-yawning.apng": {
@@ -361,15 +361,15 @@
         "y": 4
       },
       "calico-collapsing.apng": {
-        "x": 5,
+        "x": 8,
         "y": -5
       },
       "calico-sleeping.apng": {
-        "x": 5,
+        "x": 8,
         "y": -5
       },
       "calico-waking.apng": {
-        "x": 5,
+        "x": 8,
         "y": -5
       },
       "calico-react-poke.apng": {
