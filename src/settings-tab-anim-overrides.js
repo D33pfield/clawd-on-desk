@@ -294,7 +294,7 @@
     resetAllBtn.type = "button";
     resetAllBtn.className = "soft-btn";
     resetAllBtn.textContent = t("animOverridesResetAll");
-    resetAllBtn.disabled = !themeId || readers.readThemeOverrideMap(themeId) === null;
+    resetAllBtn.disabled = !themeId || !readers.hasAnyThemeOverride(themeId);
     helpers.attachActivation(resetAllBtn, () =>
       window.settingsAPI.command("resetThemeOverrides", { themeId }).then((result) => {
         if (result && result.status === "ok" && !result.noop) {
@@ -496,7 +496,7 @@
     resetBtn.type = "button";
     resetBtn.className = "soft-btn";
     resetBtn.textContent = t("soundOverridesReset");
-    resetBtn.disabled = !slot.overridden;
+    resetBtn.disabled = !slot.hasStoredOverride;
     helpers.attachActivation(resetBtn, () => runSoundResetCommand(slot));
     actions.appendChild(resetBtn);
 

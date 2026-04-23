@@ -146,6 +146,23 @@
     return keys.length > 0 ? map : null;
   }
 
+  function hasAnyThemeOverride(themeId) {
+    const all = state.snapshot && state.snapshot.themeOverrides;
+    const map = all && all[themeId];
+    if (!map || typeof map !== "object") return false;
+    const keys = [
+      ...(map.states ? Object.keys(map.states) : []),
+      ...(map.tiers && map.tiers.workingTiers ? Object.keys(map.tiers.workingTiers) : []),
+      ...(map.tiers && map.tiers.jugglingTiers ? Object.keys(map.tiers.jugglingTiers) : []),
+      ...(map.timings && map.timings.autoReturn ? Object.keys(map.timings.autoReturn) : []),
+      ...(map.idleAnimations ? Object.keys(map.idleAnimations) : []),
+      ...(map.reactions ? Object.keys(map.reactions) : []),
+      ...(map.hitbox ? Object.keys(map.hitbox) : []),
+      ...(map.sounds ? Object.keys(map.sounds) : []),
+    ];
+    return keys.length > 0;
+  }
+
   function t(key) {
     const dict = STRINGS[getLang()] || STRINGS.en || {};
     return dict[key] || key;
@@ -642,6 +659,7 @@
     getShortcutValue,
     getLang,
     readThemeOverrideMap,
+    hasAnyThemeOverride,
   };
 
   core.helpers = {

@@ -1892,6 +1892,11 @@ function _buildSoundOverrideSlots() {
     if (typeof name !== "string" || !name) continue;
     if (typeof themeDefault !== "string" || !themeDefault) continue;
     const overrideEntry = overrideSoundsMap ? overrideSoundsMap[name] : null;
+    const hasStoredOverride = !!(
+      overrideEntry
+      && typeof overrideEntry.file === "string"
+      && overrideEntry.file
+    );
     const runtimeOverridePath = runtimeOverrideMap && typeof runtimeOverrideMap[name] === "string"
       ? runtimeOverrideMap[name]
       : null;
@@ -1910,6 +1915,7 @@ function _buildSoundOverrideSlots() {
       originalName,
       themeDefaultFile: themeDefault,
       overridden: !!overrideFile,
+      hasStoredOverride,
     });
   }
   slots.sort((a, b) => a.name.localeCompare(b.name));

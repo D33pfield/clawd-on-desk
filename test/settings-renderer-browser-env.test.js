@@ -97,6 +97,26 @@ describe("settings renderer browser environment", () => {
     assert.ok(/\.size-bubble::after\s*\{[\s\S]*top:\s*calc\(100%\s*\+\s*var\(--size-bubble-tail-gap\)\);[\s\S]*border-top:\s*var\(--size-bubble-tail-inner-size\)\s+solid\s+var\(--panel-bg\);[\s\S]*\}/.test(html));
     assert.ok(!/\.size-bubble::after\s*\{[\s\S]*margin-top:\s*-1px;/.test(html));
   });
+
+  it("keeps stale sound override prefs resettable from the settings UI", () => {
+    const overridesSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8");
+    assert.ok(
+      overridesSource.includes("resetBtn.disabled = !slot.hasStoredOverride;"),
+      "sound override row reset must stay enabled when prefs still contain a stale sound override entry"
+    );
+  });
+
+  it("counts sound overrides in the theme-overrides reset gate", () => {
+    const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    assert.ok(
+      coreSource.includes("function hasAnyThemeOverride(themeId)"),
+      "settings-ui-core.js should expose a helper for any stored theme override"
+    );
+    assert.ok(
+      coreSource.includes("...(map.sounds ? Object.keys(map.sounds) : []),"),
+      "sound overrides must participate in the global reset-all gate"
+    );
+  });
 });
 
 describe("macOS platform detection (Settings shortcut labels)", () => {
