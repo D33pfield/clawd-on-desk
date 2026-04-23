@@ -15,7 +15,15 @@ const {
 } = require("./settings-size-preview-session");
 const hitGeometry = require("./hit-geometry");
 const animationCycle = require("./animation-cycle");
-const { findNearestWorkArea, computeLooseClamp, getDisplayInsets, SYNTHETIC_WORK_AREA } = require("./work-area");
+const {
+  findNearestWorkArea,
+  computeLooseClamp,
+  getDisplayInsets,
+  buildDisplaySnapshot,
+  findMatchingDisplay,
+  isPointInAnyWorkArea,
+  SYNTHETIC_WORK_AREA,
+} = require("./work-area");
 const {
   getThemeMarginBox,
   computeStableVisibleContentMargins,
@@ -249,6 +257,7 @@ function flushRuntimeStateToPrefs() {
     positionSaved: true,
     positionThemeId: activeTheme ? activeTheme._id : "",
     positionVariantId: activeTheme ? activeTheme._variantId : "",
+    positionDisplay: captureCurrentDisplaySnapshot(bounds),
     savedPixelWidth: bounds.width,
     savedPixelHeight: bounds.height,
     size: currentSize,
@@ -257,6 +266,22 @@ function flushRuntimeStateToPrefs() {
     preMiniX: _mini.getPreMiniX(),
     preMiniY: _mini.getPreMiniY(),
   });
+}
+
+// Snapshot the display the pet is currently on so the next launch can tell
+// whether the same physical monitor is still attached (see startup regularize
+// logic below). Returns null if screen.* is unavailable — any truthy snapshot
+// here unlocks the "trust saved position" path, so we fail closed.
+function captureCurrentDisplaySnapshot(bounds) {
+  try {
+    const display = screen.getDisplayNearestPoint({
+      x: Math.round(bounds.x + bounds.width / 2),
+      y: Math.round(bounds.y + bounds.height / 2),
+    });
+    return buildDisplaySnapshot(display);
+  } catch {
+    return null;
+  }
 }
 
 let _codexMonitor = null;          // Codex CLI JSONL log polling instance
@@ -2626,11 +2651,39 @@ function createWindow() {
       height: size.height,
     };
   }
+  // Display-snapshot gate: if the monitor the pet was last on is still here
+  // (same bounds or matching display.id), we trust the saved position even if
+  // a generic clamp would otherwise nudge it. Only when the monitor is gone
+  // — unplugged external display, RDP session ended, laptop closed with pet
+  // on the external, etc. — do we regularize to the current topology.
+  //
+  // Visibility backstop: even with a matching display, if the saved center
+  // landed outside every current workArea (manual prefs edits, exotic multi-
+  // monitor rearrangements where bounds matched but the pet's coordinates
+  // ended up in no-man's-land), fall back to regularize so the user isn't
+  // greeted by an invisible pet. Normal "pet partially off-screen" cases
+  // pass this check because the midpoint still lands inside a workArea.
+  //
+  // Legacy prefs (positionDisplay === null) fall through to the clamp-delta
+  // check, preserving v0.6.0 behavior for users who haven't re-saved yet.
+  const allDisplays = screen.getAllDisplays();
+  const savedDisplayStillAttached = !!findMatchingDisplay(
+    prefs.positionDisplay,
+    allDisplays
+  );
+  const savedCenterVisible = isPointInAnyWorkArea(
+    startBounds.x + startBounds.width / 2,
+    startBounds.y + startBounds.height / 2,
+    allDisplays
+  );
   const startupNeedsRegularize = prefs.positionSaved
     && !prefs.miniMode
     && (
       hasStoredPositionThemeMismatch(prefs)
-      || needsFinalClampAdjustment(startBounds, size, clampToScreenVisual)
+      || (
+        !(savedDisplayStillAttached && savedCenterVisible)
+        && needsFinalClampAdjustment(startBounds, size, clampToScreenVisual)
+      )
     );
   const startupRegularizedBounds = startupNeedsRegularize
     ? computeFinalDragBounds(startBounds, size, clampToScreenVisual)

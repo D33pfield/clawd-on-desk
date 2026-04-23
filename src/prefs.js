@@ -20,6 +20,7 @@ const fs = require("fs");
 const path = require("path");
 const { isPlainObject } = require("./theme-loader");
 const { normalizeShortcuts, getDefaultShortcuts } = require("./shortcut-actions");
+const { isValidDisplaySnapshot } = require("./work-area");
 
 const CURRENT_VERSION = 1;
 
@@ -37,6 +38,16 @@ const SCHEMA = {
   positionSaved: { type: "boolean", default: false },
   positionThemeId: { type: "string", default: "" },
   positionVariantId: { type: "string", default: "" },
+  // Snapshot of the display the pet sat on at save time. Used on next launch
+  // to distinguish "monitor got unplugged" (saved position is now stranded on
+  // a phantom screen) from "monitor still here" (saved position is still
+  // safe, even if a generic clamp would nudge it). `null` when no snapshot
+  // was captured (legacy prefs, headless CI, startup race).
+  positionDisplay: {
+    type: "object",
+    defaultFactory: () => null,
+    normalize: normalizePositionDisplay,
+  },
   // Last realized pixel bounds. Used to restore proportional mode exactly
   // when keepSizeAcrossDisplays is enabled.
   savedPixelWidth: { type: "number", default: 0, validate: (v) => Number.isFinite(v) && v >= 0 },
@@ -196,6 +207,25 @@ function migrate(raw) {
 }
 
 const AGENT_FLAGS = ["enabled", "permissionsEnabled"];
+
+function normalizePositionDisplay(value) {
+  if (!isValidDisplaySnapshot(value)) return null;
+  const b = value.bounds;
+  const out = {
+    bounds: { x: b.x, y: b.y, width: b.width, height: b.height },
+  };
+  const wa = value.workArea;
+  if (wa && typeof wa === "object"
+    && Number.isFinite(wa.x) && Number.isFinite(wa.y)
+    && Number.isFinite(wa.width) && Number.isFinite(wa.height)) {
+    out.workArea = { x: wa.x, y: wa.y, width: wa.width, height: wa.height };
+  }
+  if (typeof value.id === "number" && Number.isFinite(value.id)) out.id = value.id;
+  if (typeof value.scaleFactor === "number" && Number.isFinite(value.scaleFactor)) {
+    out.scaleFactor = value.scaleFactor;
+  }
+  return out;
+}
 
 function normalizeAgents(value, defaultsValue) {
   if (!value || typeof value !== "object") return defaultsValue;

@@ -49,6 +49,7 @@
 // keep validate side-effect-free.
 
 const { CURRENT_VERSION, AGENT_FLAGS, normalizeThemeOverrides } = require("./prefs");
+const { isValidDisplaySnapshot } = require("./work-area");
 const {
   SHORTCUT_ACTIONS,
   SHORTCUT_ACTION_IDS,
@@ -245,6 +246,13 @@ const updateRegistry = {
   positionSaved: requireBoolean("positionSaved"),
   positionThemeId: requireString("positionThemeId", { allowEmpty: true }),
   positionVariantId: requireString("positionVariantId", { allowEmpty: true }),
+  // Written only by flushRuntimeStateToPrefs() with a snapshot Electron just
+  // handed us; null marks "no snapshot yet" (legacy prefs, headless CI, the
+  // rare startup race where screen.* is still coming up).
+  positionDisplay: (value) => {
+    if (value === null || isValidDisplaySnapshot(value)) return { status: "ok" };
+    return { status: "error", message: "positionDisplay must be null or a valid display snapshot" };
+  },
   savedPixelWidth: requireNonNegativeFiniteNumber("savedPixelWidth"),
   savedPixelHeight: requireNonNegativeFiniteNumber("savedPixelHeight"),
 

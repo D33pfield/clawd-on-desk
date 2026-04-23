@@ -187,6 +187,39 @@ describe("prefs.validate", () => {
     assert.deepStrictEqual(b, d);
   });
 
+  it("positionDisplay defaults to null and round-trips a valid snapshot", () => {
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.positionDisplay, null);
+
+    const v = prefs.validate({
+      positionDisplay: {
+        id: 42,
+        scaleFactor: 2,
+        bounds: { x: 0, y: 0, width: 2560, height: 1440 },
+        workArea: { x: 0, y: 0, width: 2560, height: 1392 },
+        stray: "ignored",
+      },
+    });
+    assert.deepStrictEqual(v.positionDisplay, {
+      id: 42,
+      scaleFactor: 2,
+      bounds: { x: 0, y: 0, width: 2560, height: 1440 },
+      workArea: { x: 0, y: 0, width: 2560, height: 1392 },
+    });
+  });
+
+  it("positionDisplay drops malformed snapshots back to null", () => {
+    for (const bad of [
+      { positionDisplay: "not an object" },
+      { positionDisplay: { bounds: null } },
+      { positionDisplay: { bounds: { x: 0, y: 0, width: 0, height: 1080 } } },
+      { positionDisplay: { bounds: { x: NaN, y: 0, width: 1920, height: 1080 } } },
+    ]) {
+      const v = prefs.validate(bad);
+      assert.strictEqual(v.positionDisplay, null, `expected null for ${JSON.stringify(bad)}`);
+    }
+  });
+
   // Phase 3b-swap: themeVariant field
   it("themeVariant defaults to empty object (no migration needed)", () => {
     const d = prefs.getDefaults();
