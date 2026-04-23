@@ -194,6 +194,7 @@ let isReacting = false;
 let isDragReacting = false;
 let reactTimer = null;
 let currentIdleSvg = null;    // tracks which SVG is currently showing
+let currentState = null;      // last state name received from main (for re-pulse)
 let dndEnabled = false;
 let miniLeftFlip = false;
 
@@ -471,6 +472,9 @@ function swapToFile(file, state, useObjectChannel) {
 window.electronAPI.onStateChange((state, svg) => {
   // Main process state change → cancel any active click reaction
   cancelReaction();
+  // Track the latest state name so the Kimi permission pulse can re-trigger
+  // swapToFile() with the matching state for eye-tracking decisions.
+  currentState = state;
 
   // Dedup: same file already displayed OR currently loading → don't re-swap
   const alreadyDisplayed = clawdEl && clawdEl.isConnected && currentDisplayedSvg === svg;
@@ -499,6 +503,14 @@ window.electronAPI.onStateChange((state, svg) => {
 
   swapToFile(svg, state);
   currentIdleSvg = svg;
+});
+
+// Kimi CLI permission hold: re-trigger the current animation so it loops
+// while the user is reviewing the permission prompt.
+window.electronAPI.onKimiPermissionPulse(() => {
+  if (clawdEl && clawdEl.isConnected && currentDisplayedSvg) {
+    swapToFile(currentDisplayedSvg, currentState);
+  }
 });
 
 // --- Eye tracking (idle state only) ---

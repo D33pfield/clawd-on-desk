@@ -20,6 +20,26 @@ Events from all agents (Claude Code hooks, Codex JSONL, Copilot hooks) map to th
 | WorktreeCreate | carrying | Carrying | <img src="../assets/gif/clawd-carrying.gif" width="160"> | <img src="../assets/gif/calico-carrying.gif" width="130"> |
 | 60s no events | sleeping | Sleep | <img src="../assets/gif/clawd-sleeping.gif" width="160"> | <img src="../assets/gif/calico-sleeping.gif" width="130"> |
 
+## Kimi Code Hook Events
+
+Kimi Code now uses hook-only integration (`~/.kimi/config.toml`), and maps these 13 hook events to shared Clawd states:
+
+| Kimi Hook Event | State |
+|---|---|
+| SessionStart | idle |
+| SessionEnd | sleeping |
+| UserPromptSubmit | thinking |
+| PreToolUse | working by default. Permission animation only flips when payload carries explicit approval signals (`permission_required` / `requires_approval` / `waiting_for_approval` / `is_permission_request`). Persistent mode switch: `CLAWD_KIMI_PERMISSION_MODE=explicit` (default — only explicit signals trigger notification) or `CLAWD_KIMI_PERMISSION_MODE=suspect` (deferred heuristic for gated tools). The installer (`npm run install:kimi-hooks` and the auto-sync at startup) bakes this value into the `command` field of `~/.kimi/config.toml` so it survives Clawd restarts. Other optional knobs: `CLAWD_KIMI_PERMISSION_IMMEDIATE=1` forces immediate remap for permission-gated tools; `CLAWD_KIMI_PERMISSION_SUSPECT=1` (legacy alias) enables deferred suspect mode for the current process only; `CLAWD_KIMI_PERMISSION_SUSPECT_MS=<ms>` tunes the suspect window; `CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION=1` keeps explicit-only behavior even when optional modes are set. |
+| PostToolUse | working |
+| PostToolUseFailure | error |
+| Stop | attention |
+| StopFailure | error |
+| SubagentStart | juggling |
+| SubagentStop | working |
+| PreCompact | sweeping |
+| PostCompact | attention |
+| Notification | notification |
+
 ## Mini Mode
 
 Drag to the right screen edge (or right-click → "Mini Mode") to enter mini mode — half-body visible at screen edge, peeking out on hover.

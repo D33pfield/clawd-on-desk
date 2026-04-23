@@ -144,9 +144,22 @@ function _deferredClearSessionsByAgent(id) {
     : 0;
 }
 function _deferredDismissPermissionsByAgent(id) {
-  return _perm && typeof _perm.dismissPermissionsByAgent === "function"
+  const removed = _perm && typeof _perm.dismissPermissionsByAgent === "function"
     ? _perm.dismissPermissionsByAgent(id)
     : 0;
+  // Symmetric cleanup for Kimi's state.js animation lock: dismissing the
+  // passive bubble alone would leave `kimiPermissionHolds` pinning
+  // notification forever with nothing actionable (same class of bug we
+  // already fixed for DND). Kimi is the only agent with a state-side
+  // permission lock today, so scope the extra work to it.
+  if (id === "kimi-cli" && _state && typeof _state.disposeAllKimiPermissionState === "function") {
+    const disposed = _state.disposeAllKimiPermissionState();
+    if (disposed && typeof _state.resolveDisplayState === "function" && typeof _state.setState === "function") {
+      const resolved = _state.resolveDisplayState();
+      _state.setState(resolved, _state.getSvgOverride ? _state.getSvgOverride(resolved) : undefined);
+    }
+  }
+  return removed;
 }
 function _deferredResizePet(sizeKey) {
   // Bound to _menu.resizeWindow after menu module is created below. Settings
@@ -709,7 +722,7 @@ const _permCtx = {
   clearShortcutFailure: (actionId) => clearShortcutFailure(actionId),
 };
 const _perm = require("./permission")(_permCtx);
-const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, showCodexNotifyBubble, clearCodexNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
+const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
@@ -799,6 +812,14 @@ const _stateCtx = {
   t: (key) => t(key),
   focusTerminalWindow: (...args) => focusTerminalWindow(...args),
   resolvePermissionEntry: (...args) => resolvePermissionEntry(...args),
+  showKimiNotifyBubble: (...args) => showKimiNotifyBubble(...args),
+  clearKimiNotifyBubbles: (...args) => clearKimiNotifyBubbles(...args),
+  // state.js needs this to gate startKimiPermissionPoll symmetrically with
+  // shouldSuppressKimiNotifyBubble in permission.js — without it the
+  // permissionsEnabled=false toggle would silently rebuild holds on every
+  // incoming Kimi PermissionRequest.
+  isAgentPermissionsEnabled: (agentId) =>
+    _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
   miniPeekIn: () => miniPeekIn(),
   miniPeekOut: () => miniPeekOut(),
   buildContextMenu: () => buildContextMenu(),
