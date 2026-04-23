@@ -1884,13 +1884,24 @@ function _buildSoundOverrideSlots() {
   const themeOverrideMap = _readCurrentThemeOverrideMap();
   const overrideSoundsMap = themeOverrideMap && _isPlainObject(themeOverrideMap.sounds)
     ? themeOverrideMap.sounds : null;
+  const runtimeOverrideMap = activeTheme && _isPlainObject(activeTheme._soundOverrideFiles)
+    ? activeTheme._soundOverrideFiles
+    : null;
   const slots = [];
   for (const [name, themeDefault] of Object.entries(activeTheme.sounds)) {
     if (typeof name !== "string" || !name) continue;
     if (typeof themeDefault !== "string" || !themeDefault) continue;
     const overrideEntry = overrideSoundsMap ? overrideSoundsMap[name] : null;
-    const overrideFile = overrideEntry && typeof overrideEntry.file === "string" ? overrideEntry.file : null;
-    const originalName = overrideEntry && typeof overrideEntry.originalName === "string" && overrideEntry.originalName
+    const runtimeOverridePath = runtimeOverrideMap && typeof runtimeOverrideMap[name] === "string"
+      ? runtimeOverrideMap[name]
+      : null;
+    const overrideFile = runtimeOverridePath && fs.existsSync(runtimeOverridePath)
+      ? path.basename(runtimeOverridePath)
+      : null;
+    const originalName = overrideFile
+      && overrideEntry
+      && typeof overrideEntry.originalName === "string"
+      && overrideEntry.originalName
       ? overrideEntry.originalName
       : null;
     slots.push({
@@ -1903,6 +1914,17 @@ function _buildSoundOverrideSlots() {
   }
   slots.sort((a, b) => a.name.localeCompare(b.name));
   return slots;
+}
+
+function _rememberRuntimeSoundOverrideFile(themeId, soundName, absPath) {
+  if (!activeTheme || activeTheme._id !== themeId) return;
+  if (typeof soundName !== "string" || !soundName) return;
+  if (typeof absPath !== "string" || !absPath) return;
+  const nextOverrideMap = _isPlainObject(activeTheme._soundOverrideFiles)
+    ? { ...activeTheme._soundOverrideFiles }
+    : {};
+  nextOverrideMap[soundName] = absPath;
+  activeTheme._soundOverrideFiles = nextOverrideMap;
 }
 
 function _buildAnimationOverrideData() {
@@ -2143,6 +2165,13 @@ ipcMain.handle("settings:pick-sound-file", async (event, payload) => {
   if (!cmdResult || cmdResult.status !== "ok") {
     return cmdResult || { status: "error", message: "setSoundOverride failed" };
   }
+  // A missing override file may already exist in prefs from a prior run (for
+  // example, the user deleted it manually from "Open overrides folder"). If
+  // they re-pick the same basename/originalName pair, setSoundOverride() is a
+  // noop and activateTheme() does not rebuild activeTheme._soundOverrideFiles.
+  // Remember the freshly-copied file in the live theme so both UI and
+  // playback immediately reflect the restored override.
+  _rememberRuntimeSoundOverrideFile(themeId, soundName, destPath);
   // Same-filename replacements short-circuit setSoundOverride as a noop, so
   // activateTheme() never runs and the renderer's _audioCache keeps its old
   // Audio object for this URL — the user would hear the previous file on
