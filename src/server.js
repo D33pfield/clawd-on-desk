@@ -10,6 +10,7 @@ const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
   DEFAULT_SERVER_PORT,
+  buildPermissionUrl,
   clearRuntimeConfig,
   getPortCandidates,
   readRuntimePort,
@@ -199,6 +200,57 @@ function findPendingPermissionForStateEvent(pendingPermissions, options) {
   return allowSingletonFallback && sessionPending.length === 1 ? sessionPending[0] : null;
 }
 
+const HOOK_MARKER = "clawd-hook.js";
+const SETTINGS_FILENAME = "settings.json";
+
+function entriesContainCommandMarker(entries, marker) {
+  if (!Array.isArray(entries)) return false;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    if (typeof entry.command === "string" && entry.command.includes(marker)) return true;
+    if (!Array.isArray(entry.hooks)) continue;
+    for (const hook of entry.hooks) {
+      if (!hook || typeof hook !== "object") continue;
+      if (typeof hook.command === "string" && hook.command.includes(marker)) return true;
+    }
+  }
+  return false;
+}
+
+function entriesContainHttpHookUrl(entries, expectedUrl) {
+  if (!Array.isArray(entries) || !expectedUrl) return false;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.type === "http" && entry.url === expectedUrl) return true;
+    if (!Array.isArray(entry.hooks)) continue;
+    for (const hook of entry.hooks) {
+      if (!hook || typeof hook !== "object") continue;
+      if (hook.type === "http" && hook.url === expectedUrl) return true;
+    }
+  }
+  return false;
+}
+
+function settingsNeedClaudeHookResync(rawSettings, expectedPermissionUrl) {
+  if (typeof rawSettings !== "string" || !rawSettings.trim()) return false;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawSettings);
+  } catch {
+    return false;
+  }
+
+  const hooks = parsed && typeof parsed === "object" ? parsed.hooks : null;
+  if (!hooks || typeof hooks !== "object") return true;
+
+  const hasManagedCommandHook = Object.values(hooks).some((entries) => (
+    entriesContainCommandMarker(entries, HOOK_MARKER)
+  ));
+  const hasManagedPermissionHook = entriesContainHttpHookUrl(hooks.PermissionRequest, expectedPermissionUrl);
+  return !hasManagedCommandHook || !hasManagedPermissionHook;
+}
+
 module.exports = function initServer(ctx) {
 
 const fsApi = ctx.fs || fs;
@@ -351,8 +403,6 @@ function sendStateHealthResponse(res) {
   res.end(body);
 }
 
-const HOOK_MARKER = "clawd-hook.js";
-const SETTINGS_FILENAME = "settings.json";
 // Watch ~/.claude/ directory for settings.json overwrites (e.g. CC-Switch)
 // that wipe our hooks. Re-register when hooks disappear.
 // Watch the directory (not the file) because atomic rename replaces the inode
@@ -385,8 +435,9 @@ function startClaudeSettingsWatcher() {
         if (nowFn() - settingsWatchLastSyncTime < settingsWatchRateLimitMs) return;
         try {
           const raw = fsApi.readFileSync(settingsPath, "utf-8");
-          if (!raw.includes(HOOK_MARKER)) {
-            console.log("Clawd: hooks wiped from settings.json — re-registering");
+          const expectedPermissionUrl = buildPermissionUrl(getHookServerPort());
+          if (settingsNeedClaudeHookResync(raw, expectedPermissionUrl)) {
+            console.log("Clawd: hooks missing from settings.json — re-registering");
             settingsWatchLastSyncTime = nowFn();
             syncClawdHooks();
           }
@@ -863,6 +914,9 @@ return {
 };
 
 module.exports.__test = {
+  entriesContainCommandMarker,
+  entriesContainHttpHookUrl,
+  settingsNeedClaudeHookResync,
   shouldBypassCCBubble,
   shouldBypassOpencodeBubble,
   normalizePermissionSuggestions,

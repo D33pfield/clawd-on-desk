@@ -70,7 +70,22 @@ function makeServer(overrides = {}) {
   const timers = makeFakeTimers();
   const syncCalls = [];
   let lastWatcher = null;
-  let settingsRaw = '{"hooks":{"Stop":[{"matcher":"","hooks":[{"type":"command","command":"node \\"/tmp/clawd-hook.js\\" Stop"}]}]}}';
+  let settingsRaw = JSON.stringify({
+    hooks: {
+      Stop: [
+        {
+          matcher: "",
+          hooks: [{ type: "command", command: 'node "/tmp/clawd-hook.js" Stop' }],
+        },
+      ],
+      PermissionRequest: [
+        {
+          matcher: "",
+          hooks: [{ type: "http", url: "http://127.0.0.1:23333/permission", timeout: 600 }],
+        },
+      ],
+    },
+  });
 
   const ctx = {
     manageClaudeHooksAutomatically: true,
@@ -154,6 +169,62 @@ describe("server Claude hook management", () => {
     api.startClaudeSettingsWatcher();
     api.stopClaudeSettingsWatcher();
     setSettingsRaw('{"hooks":{}}');
+    getWatcher().emitChange("settings.json");
+    timers.flush();
+
+    assert.deepStrictEqual(syncCalls, []);
+  });
+
+  it("watcher re-syncs when PermissionRequest hook disappears but command hooks remain", () => {
+    const { api, syncCalls, timers, getWatcher, setSettingsRaw } = makeServer();
+
+    api.startClaudeSettingsWatcher();
+    setSettingsRaw(JSON.stringify({
+      hooks: {
+        Stop: [
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: 'node "/tmp/clawd-hook.js" Stop' }],
+          },
+        ],
+      },
+    }));
+    getWatcher().emitChange("settings.json");
+    timers.flush();
+
+    assert.deepStrictEqual(syncCalls, ["claude"]);
+  });
+
+  it("watcher re-syncs when PermissionRequest hook points to the wrong port", () => {
+    const { api, syncCalls, timers, getWatcher, setSettingsRaw } = makeServer();
+
+    api.startClaudeSettingsWatcher();
+    setSettingsRaw(JSON.stringify({
+      hooks: {
+        Stop: [
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: 'node "/tmp/clawd-hook.js" Stop' }],
+          },
+        ],
+        PermissionRequest: [
+          {
+            matcher: "",
+            hooks: [{ type: "http", url: "http://127.0.0.1:23335/permission", timeout: 600 }],
+          },
+        ],
+      },
+    }));
+    getWatcher().emitChange("settings.json");
+    timers.flush();
+
+    assert.deepStrictEqual(syncCalls, ["claude"]);
+  });
+
+  it("watcher ignores settings changes when both command and PermissionRequest hooks are intact", () => {
+    const { api, syncCalls, timers, getWatcher } = makeServer();
+
+    api.startClaudeSettingsWatcher();
     getWatcher().emitChange("settings.json");
     timers.flush();
 
