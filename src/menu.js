@@ -347,8 +347,6 @@ module.exports = function initMenu(ctx) {
     }
     template.push(
       { type: "separator" },
-      buildBringToPrimaryDisplayMenuItem(),
-      { type: "separator" },
       {
         label: t("settings"),
         click: () => ctx.openSettingsWindow(),

@@ -2635,12 +2635,19 @@ function createWindow() {
   const startupRegularizedBounds = startupNeedsRegularize
     ? computeFinalDragBounds(startBounds, size, clampToScreenVisual)
     : null;
+  const initialVirtualBounds = startupRegularizedBounds || startBounds;
+  const initialWorkArea = getNearestWorkArea(
+    initialVirtualBounds.x + initialVirtualBounds.width / 2,
+    initialVirtualBounds.y + initialVirtualBounds.height / 2
+  );
+  const initialMaterialized = materializeVirtualBounds(initialVirtualBounds, initialWorkArea);
+  const initialWindowBounds = (initialMaterialized && initialMaterialized.bounds) || initialVirtualBounds;
 
   win = new BrowserWindow({
     width: size.width,
     height: size.height,
-    x: startBounds.x,
-    y: startBounds.y,
+    x: initialWindowBounds.x,
+    y: initialWindowBounds.y,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -2684,10 +2691,7 @@ function createWindow() {
     win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
   }
   win.loadFile(path.join(__dirname, "index.html"));
-  applyPetWindowBounds(startBounds);
-  if (startupRegularizedBounds) {
-    applyPetWindowBounds(startupRegularizedBounds);
-  }
+  applyPetWindowBounds(initialVirtualBounds);
   win.showInactive();
   // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly
   if (isLinux) win.setSkipTaskbar(true);
