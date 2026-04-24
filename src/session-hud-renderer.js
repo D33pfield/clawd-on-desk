@@ -1,22 +1,11 @@
 "use strict";
 
-const AGENT_LABELS = {
-  "claude-code": "CC",
-  codex: "Codex",
-  "copilot-cli": "Copilot",
-  "cursor-agent": "Cursor",
-  "gemini-cli": "Gemini",
-  "kiro-cli": "Kiro",
-  "kimi-cli": "Kimi",
-  opencode: "opencode",
-  codebuddy: "CodeBuddy",
-};
+const HUD_MAX_EXPANDED_ROWS = 3;
 
 let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null };
 let i18nPayload = { lang: "en", translations: {} };
 
-const dotEl = document.getElementById("dot");
-const textEl = document.getElementById("text");
+const hudEl = document.getElementById("hud");
 
 function t(key) {
   const dict = i18nPayload && i18nPayload.translations ? i18nPayload.translations : {};
@@ -25,15 +14,18 @@ function t(key) {
 
 function formatElapsed(ms) {
   const sec = Math.max(0, Math.floor(ms / 1000));
-  if (sec < 60) return t("sessionJustNow");
+  if (sec < 5) return t("sessionJustNow");
+  if (sec < 60) return t("sessionHudElapsedSec").replace("{n}", sec);
   const min = Math.floor(sec / 60);
+  if (min < 5) {
+    const secRem = sec % 60;
+    return t("sessionHudElapsedMinSec")
+      .replace("{m}", min)
+      .replace("{s}", secRem);
+  }
   if (min < 60) return t("sessionMinAgo").replace("{n}", min);
   const hr = Math.floor(min / 60);
   return t("sessionHrAgo").replace("{n}", hr);
-}
-
-function agentLabel(agentId) {
-  return AGENT_LABELS[agentId] || agentId || t("dashboardUnknownAgent");
 }
 
 function titleFor(session) {
@@ -52,35 +44,89 @@ function orderedHudSessions(currentSnapshot) {
   return ordered.concat(missing).filter((session) => session && !session.headless);
 }
 
-function setDot(badge) {
-  dotEl.className = `dot dot-${badge || "idle"}`;
+function splitHudLayout(sessions) {
+  const expanded = sessions.slice(0, HUD_MAX_EXPANDED_ROWS);
+  const folded = sessions.slice(HUD_MAX_EXPANDED_ROWS);
+  return { expanded, folded };
+}
+
+function createRowForSession(session, now) {
+  const row = document.createElement("div");
+  row.className = "row";
+
+  const left = document.createElement("div");
+  left.className = "left";
+
+  const dot = document.createElement("span");
+  dot.className = `dot dot-${session.badge || "idle"}`;
+  left.appendChild(dot);
+
+  if (session.iconUrl) {
+    const img = document.createElement("img");
+    img.className = "agent-icon";
+    img.alt = "";
+    img.src = session.iconUrl;
+    left.appendChild(img);
+  }
+
+  const title = document.createElement("span");
+  title.className = "title";
+  title.textContent = titleFor(session);
+  left.appendChild(title);
+
+  const right = document.createElement("span");
+  right.className = "right";
+  right.textContent = formatElapsed(now - (Number(session.updatedAt) || now));
+
+  row.appendChild(left);
+  row.appendChild(right);
+
+  row.addEventListener("click", () => {
+    window.sessionHudAPI.focusSession(session.id);
+  });
+
+  return row;
+}
+
+function createFoldedRow(count) {
+  const row = document.createElement("div");
+  row.className = "row row-folded";
+
+  const left = document.createElement("div");
+  left.className = "left";
+
+  const dot = document.createElement("span");
+  dot.className = "dot dot-idle";
+  left.appendChild(dot);
+
+  const title = document.createElement("span");
+  title.className = "title";
+  title.textContent = t("sessionHudOtherActive").replace("{n}", count);
+  left.appendChild(title);
+
+  row.appendChild(left);
+
+  row.addEventListener("click", () => {
+    window.sessionHudAPI.openDashboard();
+  });
+
+  return row;
 }
 
 function render() {
   const sessions = orderedHudSessions(snapshot);
-  if (!sessions.length) {
-    setDot("idle");
-    textEl.textContent = "";
-    return;
-  }
+  hudEl.replaceChildren();
+  if (!sessions.length) return;
 
-  if (sessions.length === 1) {
-    const session = sessions[0];
-    setDot(session.badge || "idle");
-    textEl.textContent = [
-      agentLabel(session.agentId),
-      titleFor(session),
-      formatElapsed(Date.now() - (Number(session.updatedAt) || Date.now())),
-    ].filter(Boolean).join(" · ");
-    return;
-  }
+  const now = Date.now();
+  const { expanded, folded } = splitHudLayout(sessions);
 
-  const activeCount = Number.isFinite(Number(snapshot.hudTotalNonIdle))
-    ? Number(snapshot.hudTotalNonIdle)
-    : sessions.filter((session) => session.state !== "idle" && session.state !== "sleeping").length;
-  const latestTitle = snapshot.hudLastTitle || titleFor(sessions[0]);
-  setDot(activeCount > 0 ? "running" : "idle");
-  textEl.textContent = `${activeCount} · ${t("sessionHudLast")}: ${latestTitle}`;
+  for (const session of expanded) {
+    hudEl.appendChild(createRowForSession(session, now));
+  }
+  if (folded.length > 0) {
+    hudEl.appendChild(createFoldedRow(folded.length));
+  }
 }
 
 async function init() {
@@ -99,5 +145,5 @@ async function init() {
 }
 
 init().catch((err) => {
-  textEl.textContent = err && err.message ? err.message : String(err);
+  hudEl.textContent = err && err.message ? err.message : String(err);
 });

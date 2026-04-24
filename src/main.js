@@ -2128,6 +2128,8 @@ ipcMain.handle("dashboard:get-snapshot", () => _state.buildSessionSnapshot());
 ipcMain.handle("dashboard:get-i18n", () => getDashboardI18nPayload());
 ipcMain.on("dashboard:focus-session", (_event, sessionId) => focusDashboardSession(sessionId));
 ipcMain.handle("session-hud:get-i18n", () => getDashboardI18nPayload());
+ipcMain.on("session-hud:focus-session", (_event, sessionId) => focusDashboardSession(sessionId));
+ipcMain.on("session-hud:open-dashboard", () => showDashboard());
 
 ipcMain.handle("settings:get-snapshot", () => _settingsController.getSnapshot());
 ipcMain.handle("settings:getShortcutFailures", () =>

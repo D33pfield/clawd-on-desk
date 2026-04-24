@@ -19,6 +19,8 @@ ipcRenderer.on("session-hud:lang-change", (_event, payload) => {
 
 contextBridge.exposeInMainWorld("sessionHudAPI", {
   getI18n: () => ipcRenderer.invoke("session-hud:get-i18n"),
+  focusSession: (sessionId) => ipcRenderer.send("session-hud:focus-session", sessionId),
+  openDashboard: () => ipcRenderer.send("session-hud:open-dashboard"),
   onSessionSnapshot: (cb) => {
     if (typeof cb !== "function") return () => {};
     snapshotListeners.add(cb);

@@ -8,7 +8,9 @@ const isMac = process.platform === "darwin";
 const isWin = process.platform === "win32";
 
 const HUD_WIDTH = 240;
-const HUD_HEIGHT = 28;
+const HUD_ROW_HEIGHT = 28;
+const HUD_MAX_EXPANDED_ROWS = 3;
+const HUD_HEIGHT = HUD_ROW_HEIGHT;
 const HUD_PET_GAP = 4;
 const BUBBLE_GAP = 6;
 const EDGE_MARGIN = 8;
@@ -19,6 +21,28 @@ const MAC_FLOATING_TOPMOST_DELAY_MS = 120;
 function clampToWorkArea(value, min, max) {
   if (max < min) return min;
   return Math.max(min, Math.min(value, max));
+}
+
+function computeHudLayout(snapshot) {
+  const sessions = (snapshot && Array.isArray(snapshot.sessions)) ? snapshot.sessions : [];
+  if (sessions.length === 0) return { expanded: [], folded: [], rowCount: 0 };
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const orderedIds = (snapshot && Array.isArray(snapshot.orderedIds))
+    ? snapshot.orderedIds
+    : sessions.map((s) => s.id);
+  const ordered = orderedIds.map((id) => byId.get(id)).filter(Boolean);
+  const orderedSet = new Set(ordered.map((s) => s.id));
+  const missing = sessions.filter((s) => !orderedSet.has(s.id));
+  const visible = ordered.concat(missing).filter((s) => s && !s.headless);
+  const expanded = visible.slice(0, HUD_MAX_EXPANDED_ROWS);
+  const folded = visible.slice(HUD_MAX_EXPANDED_ROWS);
+  const rowCount = expanded.length + (folded.length > 0 ? 1 : 0);
+  return { expanded, folded, rowCount };
+}
+
+function computeHudHeight(rowCount) {
+  if (!Number.isFinite(rowCount) || rowCount <= 0) return HUD_ROW_HEIGHT;
+  return rowCount * HUD_ROW_HEIGHT;
 }
 
 function computeSessionHudBounds({ hitRect, workArea, width = HUD_WIDTH, height = HUD_HEIGHT }) {
@@ -73,6 +97,7 @@ module.exports = function initSessionHud(ctx) {
   let latestSnapshot = null;
   let hudFlippedAbove = false;
   let lastReservedOffset = 0;
+  let lastHudHeight = HUD_ROW_HEIGHT;
 
   function getCurrentSnapshot() {
     return typeof ctx.getSessionSnapshot === "function"
@@ -139,7 +164,6 @@ module.exports = function initSessionHud(ctx) {
       },
     });
 
-    hudWindow.setIgnoreMouseEvents(true);
     if (isWin) hudWindow.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
     if (typeof ctx.guardAlwaysOnTop === "function") ctx.guardAlwaysOnTop(hudWindow);
 
@@ -165,7 +189,7 @@ module.exports = function initSessionHud(ctx) {
     notifyReservedOffsetIfChanged();
   }
 
-  function computeBounds() {
+  function computeBounds(snapshot) {
     if (!ctx.win || ctx.win.isDestroyed()) return null;
     const petBounds = typeof ctx.getPetWindowBounds === "function" ? ctx.getPetWindowBounds() : null;
     if (!petBounds) return null;
@@ -177,7 +201,10 @@ module.exports = function initSessionHud(ctx) {
     const workArea = typeof ctx.getNearestWorkArea === "function"
       ? ctx.getNearestWorkArea(cx, cy)
       : { x: 0, y: 0, width: 1280, height: 800 };
-    return computeSessionHudBounds({ hitRect, workArea });
+    const layout = computeHudLayout(snapshot);
+    const height = computeHudHeight(layout.rowCount);
+    lastHudHeight = height;
+    return computeSessionHudBounds({ hitRect, workArea, height });
   }
 
   function showSessionHud(win) {
@@ -201,7 +228,7 @@ module.exports = function initSessionHud(ctx) {
     const win = ensureSessionHud();
     if (!win || win.isDestroyed()) return;
 
-    const computed = computeBounds();
+    const computed = computeBounds(snapshot);
     if (!computed) {
       hideSessionHud();
       return;
@@ -227,7 +254,8 @@ module.exports = function initSessionHud(ctx) {
   function readHudReservedOffset() {
     if (!hudWindow || hudWindow.isDestroyed() || !hudWindow.isVisible()) return 0;
     if (hudFlippedAbove) return 0;
-    return HUD_PET_GAP + HUD_HEIGHT + BUBBLE_GAP;
+    const h = Number.isFinite(lastHudHeight) && lastHudHeight > 0 ? lastHudHeight : HUD_ROW_HEIGHT;
+    return HUD_PET_GAP + h + BUBBLE_GAP;
   }
 
   function notifyReservedOffsetIfChanged() {
@@ -242,6 +270,7 @@ module.exports = function initSessionHud(ctx) {
     hudWindow = null;
     didFinishLoad = false;
     hudFlippedAbove = false;
+    lastHudHeight = HUD_ROW_HEIGHT;
     notifyReservedOffsetIfChanged();
   }
 
@@ -259,9 +288,13 @@ module.exports = function initSessionHud(ctx) {
 
 module.exports.__test = {
   computeSessionHudBounds,
+  computeHudLayout,
+  computeHudHeight,
   constants: {
     HUD_WIDTH,
     HUD_HEIGHT,
+    HUD_ROW_HEIGHT,
+    HUD_MAX_EXPANDED_ROWS,
     HUD_PET_GAP,
     BUBBLE_GAP,
     EDGE_MARGIN,
