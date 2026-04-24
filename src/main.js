@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, Menu, ipcMain, globalShortcut, nativeTheme, dialog, shell } = require("electron");
+const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
@@ -1031,7 +1031,6 @@ const _dashboard = require("./dashboard")({
   getI18n: () => getDashboardI18nPayload(),
   getPetWindowBounds,
   getNearestWorkArea,
-  focusTerminalForSession: focusDashboardSession,
   iconPath: getSettingsWindowIcon(),
 });
 showDashboard = _dashboard.showDashboard;
@@ -1246,7 +1245,7 @@ const _menuCtx = {
 };
 const _menu = require("./menu")(_menuCtx);
 const { t, buildContextMenu, buildTrayMenu, rebuildAllMenus, createTray,
-        destroyTray, showPetContextMenu, popupMenuAt, ensureContextMenuOwner,
+        destroyTray, showPetContextMenu, ensureContextMenuOwner,
         requestAppQuit, applyDockVisibility } = _menu;
 
 // ── Settings subscribers ──
@@ -3169,8 +3168,8 @@ function createWindow() {
     if (best) focusTerminalWindow(best.sourcePid, best.cwd, best.editor, best.pidChain);
   });
 
-  ipcMain.on("show-session-menu", () => {
-    popupMenuAt(Menu.buildFromTemplate(buildSessionSubmenu()));
+  ipcMain.on("toggle-dashboard", () => {
+    toggleDashboard();
   });
 
   ipcMain.on("bubble-height", (event, height) => _perm.handleBubbleHeight(event, height));

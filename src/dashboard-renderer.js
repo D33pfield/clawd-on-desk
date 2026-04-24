@@ -202,14 +202,6 @@ function render() {
 }
 
 async function init() {
-  const [nextI18n, nextSnapshot] = await Promise.all([
-    window.dashboardAPI.getI18n(),
-    window.dashboardAPI.getSnapshot(),
-  ]);
-  i18nPayload = nextI18n || i18nPayload;
-  snapshot = nextSnapshot || snapshot;
-  render();
-
   window.dashboardAPI.onLangChange((payload) => {
     i18nPayload = payload || i18nPayload;
     render();
@@ -219,12 +211,13 @@ async function init() {
     render();
   });
 
-  setInterval(async () => {
-    try {
-      snapshot = await window.dashboardAPI.getSnapshot();
-      render();
-    } catch {}
-  }, 1500);
+  const [nextI18n, nextSnapshot] = await Promise.all([
+    window.dashboardAPI.getI18n(),
+    window.dashboardAPI.getSnapshot(),
+  ]);
+  i18nPayload = nextI18n || i18nPayload;
+  snapshot = nextSnapshot || snapshot;
+  render();
 
   setInterval(render, 1000);
 }
