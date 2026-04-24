@@ -101,4 +101,38 @@ describe("update bubble follow-pet positioning", () => {
 
     assert.deepStrictEqual(bounds, { x: 406, y: 8, width: 340, height: 520 });
   });
+
+  it("starts below the HUD reserve when no permission stack is present", () => {
+    const bounds = updateBubble.__test.computeUpdateBubbleBounds({
+      bubbleFollowPet: true,
+      width: 340,
+      edgeMargin: 8,
+      gap: 6,
+      height: 150,
+      reservedHeight: 0,
+      hudReservedOffset: 38,
+      workArea: { x: 0, y: 0, width: 800, height: 900 },
+      petBounds: { x: 300, y: 60, width: 120, height: 120 },
+      hitRect: { left: 320, top: 88, right: 400, bottom: 168 },
+    });
+
+    assert.deepStrictEqual(bounds, { x: 190, y: 206, width: 340, height: 150 });
+  });
+
+  it("places update bubbles after both HUD and permission stack offsets", () => {
+    const bounds = updateBubble.__test.computeUpdateBubbleBounds({
+      bubbleFollowPet: true,
+      width: 340,
+      edgeMargin: 8,
+      gap: 6,
+      height: 150,
+      reservedHeight: 206,
+      hudReservedOffset: 38,
+      workArea: { x: 0, y: 0, width: 800, height: 900 },
+      petBounds: { x: 300, y: 60, width: 120, height: 120 },
+      hitRect: { left: 320, top: 88, right: 400, bottom: 168 },
+    });
+
+    assert.deepStrictEqual(bounds, { x: 190, y: 412, width: 340, height: 150 });
+  });
 });

@@ -103,17 +103,12 @@ module.exports = function initDashboard(ctx) {
     return createDashboardWindow();
   }
 
-  function toggleDashboard() {
-    return showDashboard();
-  }
-
   function broadcastSessionSnapshot(snapshot) {
     sendSnapshot(snapshot);
   }
 
   return {
     showDashboard,
-    toggleDashboard,
     broadcastSessionSnapshot,
     sendI18n,
     getWindow: () => dashboardWindow,

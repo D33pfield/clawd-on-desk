@@ -70,6 +70,7 @@ const i18n = {
     sessionJustNow: "just now",
     sessionMinAgo: "{n}m ago",
     sessionHrAgo: "{n}h ago",
+    sessionHudLast: "last",
     // Status badges shown in the Sessions submenu (derived via deriveSessionBadge)
     sessionBadgeRunning: "Running",
     sessionBadgeDone: "Done",
@@ -178,6 +179,7 @@ const i18n = {
     sessionJustNow: "刚刚",
     sessionMinAgo: "{n}分钟前",
     sessionHrAgo: "{n}小时前",
+    sessionHudLast: "最近",
     sessionBadgeRunning: "运行中",
     sessionBadgeDone: "已完成",
     sessionBadgeInterrupted: "中断",
@@ -284,6 +286,7 @@ const i18n = {
     sessionJustNow: "방금",
     sessionMinAgo: "{n}분 전",
     sessionHrAgo: "{n}시간 전",
+    sessionHudLast: "최근",
     sessionBadgeRunning: "실행 중",
     sessionBadgeDone: "완료",
     sessionBadgeInterrupted: "중단됨",

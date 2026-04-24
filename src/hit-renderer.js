@@ -111,7 +111,7 @@ document.addEventListener("pointerup", (e) => {
     stopDrag();
     if (!wasDrag) {
       if (e.ctrlKey || e.metaKey) {
-        window.hitAPI.toggleDashboard();
+        window.hitAPI.showDashboard();
       } else {
         handleClick(e.clientX);
       }

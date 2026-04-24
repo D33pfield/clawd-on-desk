@@ -102,6 +102,7 @@ function computeBubbleStackLayout({
   gap,
   workArea: wa,
   hitRect,
+  hudReservedOffset = 0,
 }) {
   const N = bubbleHeights.length;
   const bounds = new Array(N);
@@ -128,9 +129,10 @@ function computeBubbleStackLayout({
     // 1. Below pet — enough vertical room to hang the stack from the hitbox.
     //    Iterate oldest→newest growing downward so the visual order matches
     //    the side/corner branches' upward-stacking loop below.
-    if (wa.y + wa.height - hitBottom >= totalH) {
+    const reserve = Math.max(0, Number(hudReservedOffset) || 0);
+    if (wa.y + wa.height - hitBottom >= reserve + totalH) {
       x = Math.max(wa.x, Math.min(hitCx - Math.round(bw / 2), wa.x + wa.width - bw));
-      let yTop = hitBottom;
+      let yTop = hitBottom + reserve;
       for (let i = 0; i < N; i++) {
         const bh = bubbleHeights[i];
         bounds[i] = { x, y: yTop, width: bw, height: bh };
@@ -356,6 +358,7 @@ function repositionBubbles() {
     gap,
     workArea: wa,
     hitRect,
+    hudReservedOffset: typeof ctx.getHudReservedOffset === "function" ? ctx.getHudReservedOffset() : 0,
   });
 
   for (let i = 0; i < pendingPermissions.length; i++) {

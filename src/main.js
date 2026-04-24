@@ -485,6 +485,8 @@ function togglePetVisibility() {
     hideUpdateBubble();
     petHidden = true;
   }
+  syncSessionHudVisibility();
+  repositionFloatingBubbles();
   syncPermissionShortcuts();
   buildTrayMenu();
   buildContextMenu();
@@ -587,6 +589,7 @@ function applyPetWindowBounds(bounds) {
   if (!materialized) return null;
   win.setBounds(materialized.bounds);
   setViewportOffsetY(materialized.viewportOffsetY);
+  repositionSessionHud();
   return materialized.bounds;
 }
 
@@ -698,6 +701,7 @@ function syncHitWin() {
     _lastHitW = w; _lastHitH = h;
     hitWin.setShape([{ x: 0, y: 0, width: w, height: h }]);
   }
+  repositionSessionHud();
 }
 
 let mouseOverPet = false;
@@ -707,6 +711,12 @@ let menuOpen = false;
 let idlePaused = false;
 let forceEyeResend = false;
 let themeReloadInProgress = false;
+let repositionSessionHud = () => {};
+let syncSessionHudVisibility = () => {};
+let broadcastSessionHudSnapshot = () => {};
+let sendSessionHudI18n = () => {};
+let getSessionHudReservedOffset = () => 0;
+let getSessionHudWindow = () => null;
 
 // Keep drag math in Electron's main-process DIP coordinate space. Renderer
 // PointerEvent.screenX/Y can be scaled differently on high-DPI displays.
@@ -751,6 +761,7 @@ function moveWindowForDrag() {
   applyPetWindowBounds(bounds);
   if (isWin && isNearWorkAreaEdge(bounds)) reassertWinTopmost();
   syncHitWin();
+  repositionSessionHud();
   repositionFloatingBubbles();
 }
 
@@ -773,6 +784,7 @@ const _permCtx = {
   getPetWindowBounds,
   getNearestWorkArea,
   getHitRectScreen,
+  getHudReservedOffset: () => getSessionHudReservedOffset(),
   guardAlwaysOnTop,
   reapplyMacVisibility,
   isAgentPermissionsEnabled: (agentId) =>
@@ -803,6 +815,7 @@ const _updateBubbleCtx = {
   getPetWindowBounds,
   getNearestWorkArea,
   getHitRectScreen,
+  getHudReservedOffset: () => getSessionHudReservedOffset(),
   guardAlwaysOnTop,
   reapplyMacVisibility,
 };
@@ -848,12 +861,12 @@ function reapplyMacVisibility() {
   apply(hitWin);
   for (const perm of pendingPermissions) apply(perm.bubble);
   apply(_updateBubble.getBubbleWindow());
+  apply(getSessionHudWindow());
   apply(contextMenuOwner);
 }
 
 // ── State machine — delegated to src/state.js ──
 let showDashboard = () => {};
-let toggleDashboard = () => {};
 let broadcastDashboardSessionSnapshot = () => {};
 let sendDashboardI18n = () => {};
 
@@ -902,7 +915,11 @@ const _stateCtx = {
   buildContextMenu: () => buildContextMenu(),
   buildTrayMenu: () => buildTrayMenu(),
   debugLog: (msg) => sessionLog(msg),
-  broadcastSessionSnapshot: (snapshot) => broadcastDashboardSessionSnapshot(snapshot),
+  broadcastSessionSnapshot: (snapshot) => {
+    broadcastDashboardSessionSnapshot(snapshot);
+    broadcastSessionHudSnapshot(snapshot);
+    repositionFloatingBubbles();
+  },
   // Phase 3b: 读 prefs.themeOverrides 判断某个 oneshot state 是否被用户禁用。
   // state.js gate 调这个做 early-return。不做白名单校验——settings-actions
   // 负责写入合法性，这里只读。
@@ -1034,9 +1051,30 @@ const _dashboard = require("./dashboard")({
   iconPath: getSettingsWindowIcon(),
 });
 showDashboard = _dashboard.showDashboard;
-toggleDashboard = _dashboard.toggleDashboard;
 broadcastDashboardSessionSnapshot = _dashboard.broadcastSessionSnapshot;
 sendDashboardI18n = _dashboard.sendI18n;
+
+const _sessionHud = require("./session-hud")({
+  get win() { return win; },
+  get petHidden() { return petHidden; },
+  get sessionHudEnabled() { return true; },
+  getMiniMode: () => _mini.getMiniMode(),
+  getMiniTransitioning: () => _mini.getMiniTransitioning(),
+  getSessionSnapshot: () => _state.buildSessionSnapshot(),
+  getI18n: () => getDashboardI18nPayload(),
+  getPetWindowBounds,
+  getHitRectScreen,
+  getNearestWorkArea,
+  guardAlwaysOnTop,
+  reapplyMacVisibility,
+  onReservedOffsetChange: () => repositionFloatingBubbles(),
+});
+repositionSessionHud = _sessionHud.repositionSessionHud;
+syncSessionHudVisibility = _sessionHud.syncSessionHud;
+broadcastSessionHudSnapshot = _sessionHud.broadcastSessionSnapshot;
+sendSessionHudI18n = _sessionHud.sendI18n;
+getSessionHudReservedOffset = _sessionHud.getHudReservedOffset;
+getSessionHudWindow = _sessionHud.getWindow;
 
 // ── HTTP server — delegated to src/server.js ──
 const _serverCtx = {
@@ -1139,6 +1177,10 @@ function startTopmostWatchdog() {
     const updateBubbleWin = _updateBubble.getBubbleWindow();
     if (updateBubbleWin && !updateBubbleWin.isDestroyed() && updateBubbleWin.isVisible()) {
       updateBubbleWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+    }
+    const sessionHudWin = getSessionHudWindow();
+    if (sessionHudWin && !sessionHudWin.isDestroyed() && sessionHudWin.isVisible()) {
+      sessionHudWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
     }
   }, TOPMOST_WATCHDOG_MS);
 }
@@ -1303,6 +1345,9 @@ function wireSettingsSubscribers() {
     if ("lang" in changes) {
       try { sendDashboardI18n(); } catch (err) {
         console.warn("Clawd: dashboard lang broadcast failed:", err && err.message);
+      }
+      try { sendSessionHudI18n(); } catch (err) {
+        console.warn("Clawd: session HUD lang broadcast failed:", err && err.message);
       }
     }
 
@@ -2072,6 +2117,7 @@ function _runAnimationOverridePreview(stateKey, file, durationMs) {
 ipcMain.handle("dashboard:get-snapshot", () => _state.buildSessionSnapshot());
 ipcMain.handle("dashboard:get-i18n", () => getDashboardI18nPayload());
 ipcMain.on("dashboard:focus-session", (_event, sessionId) => focusDashboardSession(sessionId));
+ipcMain.handle("session-hud:get-i18n", () => getDashboardI18nPayload());
 
 ipcMain.handle("settings:get-snapshot", () => _settingsController.getSnapshot());
 ipcMain.handle("settings:getShortcutFailures", () =>
@@ -3073,6 +3119,7 @@ function createWindow() {
     const syncFloatingWindows = () => {
       if (settingsSizePreviewSyncFrozen) return;
       syncHitWin();
+      repositionSessionHud();
       repositionFloatingBubbles();
     };
     win.on("move", syncFloatingWindows);
@@ -3091,6 +3138,8 @@ function createWindow() {
       hitWin.webContents.reload();
     });
   }
+
+  syncSessionHudVisibility();
 
   ipcMain.on("show-context-menu", showPetContextMenu);
 
@@ -3168,8 +3217,8 @@ function createWindow() {
     if (best) focusTerminalWindow(best.sourcePid, best.cwd, best.editor, best.pidChain);
   });
 
-  ipcMain.on("toggle-dashboard", () => {
-    toggleDashboard();
+  ipcMain.on("show-dashboard", () => {
+    showDashboard();
   });
 
   ipcMain.on("bubble-height", (event, height) => _perm.handleBubbleHeight(event, height));
@@ -3224,6 +3273,7 @@ function createWindow() {
     if (proportionalRecalc || clamped.x !== current.x || clamped.y !== current.y) {
       applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
       syncHitWin();
+      repositionSessionHud();
       repositionFloatingBubbles();
     }
   });
@@ -3242,10 +3292,12 @@ function createWindow() {
     const clamped = clampToScreenVisual(current.x, current.y, size.width, size.height);
     applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
     syncHitWin();
+    repositionSessionHud();
     repositionFloatingBubbles();
   });
   screen.on("display-added", () => {
     reapplyMacVisibility();
+    repositionSessionHud();
     repositionFloatingBubbles();
   });
 }
@@ -3358,6 +3410,11 @@ const _miniCtx = {
   get bubbleFollowPet() { return bubbleFollowPet; },
   get pendingPermissions() { return pendingPermissions; },
   repositionBubbles: () => repositionFloatingBubbles(),
+  syncSessionHudVisibility: () => {
+    syncSessionHudVisibility();
+    repositionFloatingBubbles();
+  },
+  repositionSessionHud: () => repositionSessionHud(),
   buildContextMenu: () => buildContextMenu(),
   buildTrayMenu: () => buildTrayMenu(),
   getAnimationAssetCycleMs: (file) => {
@@ -3458,6 +3515,7 @@ function activateTheme(themeId, variantId) {
     syncHitStateAfterLoad();
     syncRendererStateAfterLoad({ includeStartupRecovery: false });
     syncHitWin();
+    syncSessionHudVisibility();
     startMainTick();
     _runPendingPostReloadTasks();
   };
@@ -3666,6 +3724,7 @@ if (!gotTheLock) {
     _state.cleanup();
     _tick.cleanup();
     _mini.cleanup();
+    _sessionHud.cleanup();
     if (_codexMonitor) _codexMonitor.stop();
     if (_geminiMonitor) _geminiMonitor.stop();
     stopTopmostWatchdog();

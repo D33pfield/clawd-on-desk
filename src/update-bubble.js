@@ -47,6 +47,7 @@ function computeUpdateBubbleBounds({
   gap,
   height,
   reservedHeight,
+  hudReservedOffset = 0,
   workArea,
   petBounds,
   hitRect,
@@ -58,7 +59,9 @@ function computeUpdateBubbleBounds({
     const hitTop = Math.round(hitRect.top);
     const hitBottom = Math.round(hitRect.bottom);
     const hitCx = Math.round((hitRect.left + hitRect.right) / 2);
-    const underPetY = hitBottom;
+    const reserve = Math.max(0, Number(hudReservedOffset) || 0);
+    const permissionStackOffset = reserve > 0 ? (reservedHeight || 0) : 0;
+    const underPetY = hitBottom + reserve + permissionStackOffset;
     const abovePetY = hitTop - height;
     const followBottom = workArea.y + workArea.height - edgeMargin;
     const maxY = followBottom - height;
@@ -171,6 +174,7 @@ module.exports = function initUpdateBubble(ctx) {
       gap: GAP,
       height,
       reservedHeight,
+      hudReservedOffset: typeof ctx.getHudReservedOffset === "function" ? ctx.getHudReservedOffset() : 0,
       workArea: wa,
       petBounds,
       hitRect,

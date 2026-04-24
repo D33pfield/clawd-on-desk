@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self';">
+<title>Session HUD</title>
+<style>
+* { box-sizing: border-box; }
+
+:root {
+  --hud-bg: rgba(255, 255, 255, 0.88);
+  --hud-border: rgba(0, 0, 0, 0.12);
+  --text: #242427;
+  --shadow: rgba(0, 0, 0, 0.16);
+  --running: #16a34a;
+  --done: #71717a;
+  --interrupted: #d97706;
+  --idle: #9ca3af;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --hud-bg: rgba(32, 32, 36, 0.88);
+    --hud-border: rgba(255, 255, 255, 0.12);
+    --text: #f4f4f5;
+    --shadow: rgba(0, 0, 0, 0.34);
+    --idle: #71717a;
+  }
+}
+
+html,
+body {
+  width: 240px;
+  height: 28px;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 12px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+.hud {
+  width: 240px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--hud-border);
+  border-radius: 8px;
+  background: var(--hud-bg);
+  box-shadow: 0 4px 14px var(--shadow);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--idle);
+}
+
+.dot-running { background: var(--running); }
+.dot-done { background: var(--done); }
+.dot-interrupted { background: var(--interrupted); }
+.dot-idle { background: var(--idle); }
+
+.text {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: 0;
+}
+</style>
+</head>
+<body>
+  <div class="hud">
+    <span id="dot" class="dot dot-idle"></span>
+    <span id="text" class="text"></span>
+  </div>
+  <script src="./session-hud-renderer.js"></script>
+</body>
+</html>

@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld("hitAPI", {
   showContextMenu: () => ipcRenderer.send("show-context-menu"),
   focusTerminal: () => ipcRenderer.send("focus-terminal"),
   exitMiniMode: () => ipcRenderer.send("exit-mini-mode"),
-  toggleDashboard: () => ipcRenderer.send("toggle-dashboard"),
+  showDashboard: () => ipcRenderer.send("show-dashboard"),
   // Reaction triggers → main → renderWin
   startDragReaction: () => ipcRenderer.send("start-drag-reaction"),
   endDragReaction: () => ipcRenderer.send("end-drag-reaction"),
