@@ -2169,6 +2169,7 @@ ipcMain.handle("settings:end-size-preview", (_event, value) => {
   }
   return settingsSizePreviewSession.end(value || null);
 });
+ipcMain.on("settings:open-dashboard", () => showDashboard());
 ipcMain.handle("settings:get-preview-sound-url", () => {
   try { return themeLoader.getPreviewSoundUrl(); }
   catch { return null; }
