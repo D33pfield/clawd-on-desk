@@ -676,6 +676,7 @@ function buildSessionSnapshotEntry(id, session) {
     state: (session && session.state) || "idle",
     badge: deriveSessionBadge(session),
     sessionTitle: normalizeTitle(session && session.sessionTitle),
+    displayTitle: sessionDisplayTitle(id, session),
     cwd: (session && session.cwd) || "",
     updatedAt: sessionUpdatedAt(session),
     sourcePid: (session && session.sourcePid) || null,
@@ -699,6 +700,9 @@ function buildSessionSnapshot() {
   const menuEntries = entries.slice().sort(sessionMenuComparator);
   const orderedIds = dashboardEntries.map((entry) => entry.id);
   const menuOrderedIds = menuEntries.map((entry) => entry.id);
+  const hudEntries = dashboardEntries.filter((entry) =>
+    !entry.headless && entry.state !== "idle" && entry.state !== "sleeping"
+  );
 
   const groupMap = new Map();
   for (const entry of dashboardEntries) {
@@ -721,11 +725,11 @@ function buildSessionSnapshot() {
     groups,
     orderedIds,
     menuOrderedIds,
-    totalNonIdle: entries.reduce((count, entry) => (
-      entry.state !== "idle" && entry.state !== "sleeping" ? count + 1 : count
-    ), 0),
+    hudTotalNonIdle: hudEntries.length,
+    hudLastSessionId: hudEntries.length ? hudEntries[0].id : null,
+    hudLastTitle: hudEntries.length ? hudEntries[0].displayTitle : null,
     lastSessionId: lastSession ? lastSession.id : null,
-    lastTitle: lastSession ? sessionDisplayTitle(lastSession.id, lastSession) : null,
+    lastTitle: lastSession ? lastSession.displayTitle : null,
   };
 }
 
@@ -733,7 +737,9 @@ function sessionSnapshotSignature(snapshot) {
   return JSON.stringify({
     orderedIds: snapshot.orderedIds,
     menuOrderedIds: snapshot.menuOrderedIds,
-    totalNonIdle: snapshot.totalNonIdle,
+    hudTotalNonIdle: snapshot.hudTotalNonIdle,
+    hudLastSessionId: snapshot.hudLastSessionId,
+    hudLastTitle: snapshot.hudLastTitle,
     lastSessionId: snapshot.lastSessionId,
     lastTitle: snapshot.lastTitle,
     sessions: snapshot.sessions.map((entry) => ({
@@ -741,12 +747,14 @@ function sessionSnapshotSignature(snapshot) {
       state: entry.state,
       badge: entry.badge,
       sessionTitle: entry.sessionTitle,
+      displayTitle: entry.displayTitle,
       cwd: entry.cwd,
       agentId: entry.agentId,
       sourcePid: entry.sourcePid,
       headless: entry.headless,
       host: entry.host,
       lastEventLabelKey: entry.lastEvent ? entry.lastEvent.labelKey : null,
+      lastEventRawEvent: entry.lastEvent ? entry.lastEvent.rawEvent : null,
       lastEventAt: entry.lastEvent ? entry.lastEvent.at : null,
     })),
   });
@@ -1466,7 +1474,7 @@ function buildSessionSubmenu() {
     const badgeText = ctx.t(badgeKey);
     // Prefer user-set session title (Claude Code /rename, Codex turn summary)
     // over the cwd folder name when available.
-    const baseName = sessionDisplayTitle(e.id, e);
+    const baseName = e.displayTitle || sessionDisplayTitle(e.id, e);
     const name = ctx.showSessionId ? `${baseName} #${e.id.slice(-3)}` : baseName;
     const elapsed = formatElapsed(now - e.updatedAt);
     const hasPid = !!e.sourcePid;

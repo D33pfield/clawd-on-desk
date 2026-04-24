@@ -900,7 +900,9 @@ describe("buildSessionSnapshot", () => {
       groups: [],
       orderedIds: [],
       menuOrderedIds: [],
-      totalNonIdle: 0,
+      hudTotalNonIdle: 0,
+      hudLastSessionId: null,
+      hudLastTitle: null,
       lastSessionId: null,
       lastTitle: null,
     });
@@ -940,13 +942,16 @@ describe("buildSessionSnapshot", () => {
       { host: "", ids: ["error-local", "old-working"] },
       { host: "remote-box", ids: ["latest-remote"] },
     ]);
-    assert.strictEqual(snapshot.totalNonIdle, 2);
+    assert.strictEqual(snapshot.hudTotalNonIdle, 2);
+    assert.strictEqual(snapshot.hudLastSessionId, "error-local");
+    assert.strictEqual(snapshot.hudLastTitle, "error-project");
     assert.strictEqual(snapshot.lastSessionId, "latest-remote");
     assert.strictEqual(snapshot.lastTitle, "latest-project");
 
     const oldWorking = snapshot.sessions.find((s) => s.id === "old-working");
     assert.strictEqual(oldWorking.badge, "running");
     assert.strictEqual(oldWorking.sessionTitle, "Fix login");
+    assert.strictEqual(oldWorking.displayTitle, "Fix login");
     assert.strictEqual(oldWorking.iconUrl.startsWith("file:"), true);
     assert.deepStrictEqual(oldWorking.lastEvent, {
       labelKey: "eventLabelPreToolUse",
@@ -956,6 +961,7 @@ describe("buildSessionSnapshot", () => {
 
     const latestRemote = snapshot.sessions.find((s) => s.id === "latest-remote");
     assert.strictEqual(latestRemote.headless, true);
+    assert.strictEqual(latestRemote.displayTitle, "latest-project");
     assert.deepStrictEqual(latestRemote.lastEvent, {
       labelKey: null,
       rawEvent: "MysteryEvent",
@@ -963,7 +969,31 @@ describe("buildSessionSnapshot", () => {
     });
 
     const errorLocal = snapshot.sessions.find((s) => s.id === "error-local");
+    assert.strictEqual(errorLocal.displayTitle, "error-project");
     assert.strictEqual(errorLocal.iconUrl, null);
+  });
+
+  it("keeps headless sessions in Dashboard data but excludes them from HUD aggregates", () => {
+    api.sessions.set("headless-active", rawSession("working", {
+      updatedAt: 3000,
+      cwd: "/tmp/headless",
+      agentId: "claude-code",
+      headless: true,
+    }));
+    api.sessions.set("interactive-active", rawSession("thinking", {
+      updatedAt: 2000,
+      cwd: "/tmp/interactive",
+      agentId: "codex",
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+
+    assert.deepStrictEqual(snapshot.orderedIds, ["headless-active", "interactive-active"]);
+    assert.strictEqual(snapshot.sessions.length, 2);
+    assert.strictEqual(snapshot.lastSessionId, "headless-active");
+    assert.strictEqual(snapshot.hudTotalNonIdle, 1);
+    assert.strictEqual(snapshot.hudLastSessionId, "interactive-active");
+    assert.strictEqual(snapshot.hudLastTitle, "interactive");
   });
 });
 

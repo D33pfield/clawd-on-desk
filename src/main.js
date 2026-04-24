@@ -85,6 +85,7 @@ const SIZES = {
 const prefsModule = require("./prefs");
 const { createSettingsController } = require("./settings-controller");
 const { ANIMATION_OVERRIDES_EXPORT_VERSION } = require("./settings-actions");
+const { createTranslator, i18n } = require("./i18n");
 const {
   SHORTCUT_ACTIONS,
   SHORTCUT_ACTION_IDS,
@@ -216,6 +217,12 @@ const _settingsController = createSettingsController({
 // Updated by the subscriber in `wireSettingsSubscribers()` below — never
 // assign directly.
 let lang = _settingsController.get("lang");
+const translate = createTranslator(() => lang);
+
+function getDashboardI18nPayload() {
+  const dict = i18n[lang] || i18n.en;
+  return { lang, translations: { ...dict } };
+}
 
 // First-run import of system-backed settings into prefs. The actual truth for
 // `openAtLogin` lives in OS login items / autostart files; if we just trusted
@@ -845,6 +852,11 @@ function reapplyMacVisibility() {
 }
 
 // ── State machine — delegated to src/state.js ──
+let showDashboard = () => {};
+let toggleDashboard = () => {};
+let broadcastDashboardSessionSnapshot = () => {};
+let sendDashboardI18n = () => {};
+
 const _stateCtx = {
   get theme() { return activeTheme; },
   get win() { return win; },
@@ -890,6 +902,7 @@ const _stateCtx = {
   buildContextMenu: () => buildContextMenu(),
   buildTrayMenu: () => buildTrayMenu(),
   debugLog: (msg) => sessionLog(msg),
+  broadcastSessionSnapshot: (snapshot) => broadcastDashboardSessionSnapshot(snapshot),
   // Phase 3b: 读 prefs.themeOverrides 判断某个 oneshot state 是否被用户禁用。
   // state.js gate 调这个做 early-return。不做白名单校验——settings-actions
   // 负责写入合法性，这里只读。
@@ -1002,6 +1015,29 @@ const { startMainTick, resetIdleTimer } = _tick;
 // ── Terminal focus — delegated to src/focus.js ──
 const _focus = require("./focus")({ _allowSetForeground });
 const { initFocusHelper, killFocusHelper, focusTerminalWindow, clearMacFocusCooldownTimer } = _focus;
+
+function focusDashboardSession(sessionId) {
+  if (!sessionId) return;
+  const session = sessions.get(String(sessionId));
+  if (session && session.sourcePid) {
+    focusTerminalWindow(session.sourcePid, session.cwd, session.editor, session.pidChain);
+  }
+}
+
+const _dashboard = require("./dashboard")({
+  get lang() { return lang; },
+  t: (key) => translate(key),
+  getSessionSnapshot: () => _state.buildSessionSnapshot(),
+  getI18n: () => getDashboardI18nPayload(),
+  getPetWindowBounds,
+  getNearestWorkArea,
+  focusTerminalForSession: focusDashboardSession,
+  iconPath: getSettingsWindowIcon(),
+});
+showDashboard = _dashboard.showDashboard;
+toggleDashboard = _dashboard.toggleDashboard;
+broadcastDashboardSessionSnapshot = _dashboard.broadcastSessionSnapshot;
+sendDashboardI18n = _dashboard.sendI18n;
 
 // ── HTTP server — delegated to src/server.js ──
 const _serverCtx = {
@@ -1184,6 +1220,7 @@ const _menuCtx = {
   checkForUpdates: (...args) => checkForUpdates(...args),
   getUpdateMenuItem: () => getUpdateMenuItem(),
   buildSessionSubmenu: () => buildSessionSubmenu(),
+  openDashboard: () => showDashboard(),
   // The settings controller is the only writer of persisted prefs. Toggle
   // setters above route through it; resize/sendToDisplay use
   // flushRuntimeStateToPrefs to capture window bounds after movement.
@@ -1264,6 +1301,11 @@ function wireSettingsSubscribers() {
     if ("soundVolume" in changes) soundVolume = changes.soundVolume;
     if ("allowEdgePinning" in changes) allowEdgePinningCached = changes.allowEdgePinning;
     if ("keepSizeAcrossDisplays" in changes) keepSizeAcrossDisplaysCached = changes.keepSizeAcrossDisplays;
+    if ("lang" in changes) {
+      try { sendDashboardI18n(); } catch (err) {
+        console.warn("Clawd: dashboard lang broadcast failed:", err && err.message);
+      }
+    }
 
     // 2. Reactive side effects (mirror what the legacy setters / click handlers used to do).
     if ("hideBubbles" in changes) {
@@ -2028,6 +2070,10 @@ function _runAnimationOverridePreview(stateKey, file, durationMs) {
 // ── IPC: settings panel write entry points ──
 // Renderer-side callers (the future settings panel) use these. Menu/main code
 // in this process calls _settingsController directly — no IPC round-trip.
+ipcMain.handle("dashboard:get-snapshot", () => _state.buildSessionSnapshot());
+ipcMain.handle("dashboard:get-i18n", () => getDashboardI18nPayload());
+ipcMain.on("dashboard:focus-session", (_event, sessionId) => focusDashboardSession(sessionId));
+
 ipcMain.handle("settings:get-snapshot", () => _settingsController.getSnapshot());
 ipcMain.handle("settings:getShortcutFailures", () =>
   Object.fromEntries(shortcutRegistrationFailures)
