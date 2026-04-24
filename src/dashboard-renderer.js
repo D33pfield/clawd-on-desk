@@ -14,6 +14,7 @@ const AGENT_LABELS = {
 
 let snapshot = { sessions: [], groups: [], orderedIds: [] };
 let i18nPayload = { lang: "en", translations: {} };
+let activeEdit = null;
 
 const titleEl = document.getElementById("title");
 const countEl = document.getElementById("count");
@@ -57,6 +58,105 @@ function createText(tag, className, text) {
   if (className) el.className = className;
   el.textContent = text || "";
   return el;
+}
+
+function sessionTitleText(session) {
+  return session.displayTitle || session.sessionTitle || session.id || "";
+}
+
+function snapshotHasSession(currentSnapshot, sessionId) {
+  const sessions = Array.isArray(currentSnapshot && currentSnapshot.sessions)
+    ? currentSnapshot.sessions
+    : [];
+  return sessions.some((session) => session && session.id === sessionId);
+}
+
+function beginTitleEdit(session) {
+  if (!session || !session.id) return;
+  activeEdit = {
+    sessionId: session.id,
+    agentId: session.agentId || null,
+    host: session.host || null,
+    draft: sessionTitleText(session),
+    committing: false,
+  };
+  render({ force: true });
+}
+
+function cancelTitleEdit() {
+  if (!activeEdit) return;
+  activeEdit = null;
+  render({ force: true });
+}
+
+async function commitTitleEdit() {
+  if (!activeEdit || activeEdit.committing) return;
+  const edit = activeEdit;
+  edit.committing = true;
+  try {
+    const result = await window.dashboardAPI.setSessionAlias({
+      host: edit.host,
+      agentId: edit.agentId,
+      sessionId: edit.sessionId,
+      alias: edit.draft,
+    });
+    if (!result || result.status !== "ok") {
+      edit.committing = false;
+      console.warn("session alias update failed:", result && result.message);
+      render({ force: true });
+      return;
+    }
+    if (activeEdit === edit) activeEdit = null;
+    render({ force: true });
+  } catch (err) {
+    if (activeEdit === edit) {
+      edit.committing = false;
+      render({ force: true });
+    }
+    console.warn("session alias update threw:", err);
+  }
+}
+
+function createTitle(session) {
+  const text = sessionTitleText(session);
+  if (activeEdit && activeEdit.sessionId === session.id) {
+    const input = document.createElement("input");
+    input.className = "session-title-input";
+    input.type = "text";
+    input.value = activeEdit.draft;
+    input.addEventListener("input", () => {
+      if (activeEdit && activeEdit.sessionId === session.id) {
+        activeEdit.draft = input.value;
+      }
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        commitTitleEdit();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        cancelTitleEdit();
+      }
+    });
+    input.addEventListener("blur", () => {
+      commitTitleEdit();
+    });
+    requestAnimationFrame(() => {
+      if (activeEdit && activeEdit.sessionId === session.id && document.contains(input)) {
+        input.focus();
+        input.select();
+      }
+    });
+    return input;
+  }
+
+  const title = createText("div", "session-title", text);
+  title.title = text;
+  title.addEventListener("dblclick", (event) => {
+    event.stopPropagation();
+    beginTitleEdit(session);
+  });
+  return title;
 }
 
 function appendMeta(main, session, now) {
@@ -122,9 +222,7 @@ function createCard(session, now) {
 
   const main = document.createElement("div");
   main.className = "main";
-  const title = createText("div", "session-title", session.displayTitle || session.sessionTitle || session.id);
-  title.title = session.displayTitle || session.sessionTitle || session.id;
-  main.appendChild(title);
+  main.appendChild(createTitle(session));
   appendMeta(main, session, now);
   appendPath(main, session);
   appendEvent(main, session, now);
@@ -157,7 +255,8 @@ function renderEmpty() {
   contentEl.replaceChildren(empty);
 }
 
-function render() {
+function render(options = {}) {
+  if (activeEdit && !options.force) return;
   const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
   const count = sessions.length;
   titleEl.textContent = t("dashboardWindowTitle");
@@ -202,6 +301,11 @@ async function init() {
   });
   window.dashboardAPI.onSessionSnapshot((nextSnapshot) => {
     snapshot = nextSnapshot || snapshot;
+    if (activeEdit && !snapshotHasSession(snapshot, activeEdit.sessionId)) {
+      activeEdit = null;
+      render({ force: true });
+      return;
+    }
     render();
   });
 

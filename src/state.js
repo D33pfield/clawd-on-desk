@@ -7,6 +7,7 @@ const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
 const { VISUAL_FALLBACK_STATES } = require("./theme-loader");
+const { sessionAliasKey } = require("./session-alias");
 
 // ── Agent icons (official logos from assets/icons/agents/) ──
 const AGENT_ICON_DIR = path.join(__dirname, "..", "assets", "icons", "agents");
@@ -641,7 +642,22 @@ function sessionUpdatedAt(session) {
   return Number.isFinite(updatedAt) ? updatedAt : 0;
 }
 
-function sessionDisplayTitle(id, sessionLike) {
+function getSessionAliases() {
+  if (typeof ctx.getSessionAliases !== "function") return {};
+  const aliases = ctx.getSessionAliases();
+  return aliases && typeof aliases === "object" && !Array.isArray(aliases)
+    ? aliases
+    : {};
+}
+
+function sessionDisplayTitle(id, sessionLike, sessionAliases = {}) {
+  const aliasKey = sessionAliasKey(
+    sessionLike && sessionLike.host,
+    sessionLike && sessionLike.agentId,
+    id
+  );
+  const alias = aliasKey ? sessionAliases[aliasKey] : null;
+  if (alias && typeof alias.title === "string" && alias.title) return alias.title;
   const title = normalizeTitle(sessionLike && sessionLike.sessionTitle);
   if (title) return title;
   const cwd = sessionLike && sessionLike.cwd;
@@ -662,7 +678,7 @@ function sessionUpdatedAtComparator(a, b) {
   return String(a.id).localeCompare(String(b.id));
 }
 
-function buildSessionSnapshotEntry(id, session) {
+function buildSessionSnapshotEntry(id, session, sessionAliases = {}) {
   const recentEvents = Array.isArray(session && session.recentEvents)
     ? session.recentEvents
     : [];
@@ -676,7 +692,7 @@ function buildSessionSnapshotEntry(id, session) {
     state: (session && session.state) || "idle",
     badge: deriveSessionBadge(session),
     sessionTitle: normalizeTitle(session && session.sessionTitle),
-    displayTitle: sessionDisplayTitle(id, session),
+    displayTitle: sessionDisplayTitle(id, session, sessionAliases),
     cwd: (session && session.cwd) || "",
     updatedAt: sessionUpdatedAt(session),
     sourcePid: (session && session.sourcePid) || null,
@@ -692,8 +708,9 @@ function buildSessionSnapshotEntry(id, session) {
 
 function buildSessionSnapshot() {
   const entries = [];
+  const sessionAliases = getSessionAliases();
   for (const [id, session] of sessions) {
-    entries.push(buildSessionSnapshotEntry(id, session));
+    entries.push(buildSessionSnapshotEntry(id, session, sessionAliases));
   }
 
   const dashboardEntries = entries.slice().sort(sessionUpdatedAtComparator);
@@ -731,6 +748,19 @@ function buildSessionSnapshot() {
     lastSessionId: lastSession ? lastSession.id : null,
     lastTitle: lastSession ? lastSession.displayTitle : null,
   };
+}
+
+function getActiveSessionAliasKeys() {
+  const keys = new Set();
+  for (const [id, session] of sessions) {
+    const key = sessionAliasKey(
+      session && session.host,
+      session && session.agentId,
+      id
+    );
+    if (key) keys.add(key);
+  }
+  return keys;
 }
 
 function sessionSnapshotSignature(snapshot) {
@@ -1614,6 +1644,7 @@ return {
   getSvgOverride, cleanStaleSessions, startStartupRecovery, refreshTheme,
   detectRunningAgentProcesses, buildSessionSubmenu, buildSessionSnapshot,
   emitSessionSnapshot, broadcastSessionSnapshot, getLastSessionSnapshot,
+  getActiveSessionAliasKeys,
   clearSessionsByAgent,
   disposeAllKimiPermissionState,
   deriveSessionBadge,

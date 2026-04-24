@@ -196,6 +196,10 @@ const _settingsController = createSettingsController({
     clearSessionsByAgent: _deferredClearSessionsByAgent,
     dismissPermissionsByAgent: _deferredDismissPermissionsByAgent,
     resizePet: _deferredResizePet,
+    getActiveSessionAliasKeys: () =>
+      _state && typeof _state.getActiveSessionAliasKeys === "function"
+        ? _state.getActiveSessionAliasKeys()
+        : new Set(),
     // Theme deps — defined much later in the file, wrapped in lazy closures.
     // activateTheme accepts (themeId, variantId?, overrideMap?) and returns
     // { themeId, variantId } with the actually-resolved variantId
@@ -933,6 +937,7 @@ const _stateCtx = {
     const entry = (stateMap && stateMap[stateKey]) || (themeMap && themeMap[stateKey]);
     return !!(entry && entry.disabled === true);
   },
+  getSessionAliases: () => _settingsController.get("sessionAliases"),
   hasAnyEnabledAgent: () => {
     // `get("agents")` returns the live reference (no clone) — we're only
     // reading. Missing agents field falls back to "assume enabled" (the
@@ -1302,6 +1307,7 @@ const { t, buildContextMenu, buildTrayMenu, rebuildAllMenus, createTray,
 const MENU_AFFECTING_KEYS = new Set([
   "lang", "soundMuted", "bubbleFollowPet", "hideBubbles", "showSessionId",
   "manageClaudeHooksAutomatically", "autoStartWithClaude", "openAtLogin", "showTray", "showDock", "theme", "size",
+  "sessionAliases",
 ]);
 let lastTogglePetShortcut = ((_settingsController.getSnapshot().shortcuts) || {}).togglePet || null;
 
@@ -2127,6 +2133,15 @@ function _runAnimationOverridePreview(stateKey, file, durationMs) {
 ipcMain.handle("dashboard:get-snapshot", () => _state.buildSessionSnapshot());
 ipcMain.handle("dashboard:get-i18n", () => getDashboardI18nPayload());
 ipcMain.on("dashboard:focus-session", (_event, sessionId) => focusDashboardSession(sessionId));
+ipcMain.handle("dashboard:set-session-alias", async (_event, payload) => {
+  const result = await _settingsController.applyCommand("setSessionAlias", payload);
+  if (result && result.status === "ok" && !result.noop) {
+    try { _state.emitSessionSnapshot({ force: true }); } catch (err) {
+      console.warn("Clawd: session alias snapshot broadcast failed:", err && err.message);
+    }
+  }
+  return result;
+});
 ipcMain.handle("session-hud:get-i18n", () => getDashboardI18nPayload());
 ipcMain.on("session-hud:focus-session", (_event, sessionId) => focusDashboardSession(sessionId));
 ipcMain.on("session-hud:open-dashboard", () => showDashboard());

@@ -21,6 +21,7 @@ const path = require("path");
 const { isPlainObject } = require("./theme-loader");
 const { normalizeShortcuts, getDefaultShortcuts } = require("./shortcut-actions");
 const { isValidDisplaySnapshot } = require("./work-area");
+const { normalizeSessionAliases } = require("./session-alias");
 
 const CURRENT_VERSION = 1;
 
@@ -127,6 +128,11 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => ({}),
     normalize: normalizeThemeVariant,
+  },
+  sessionAliases: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeSessionAliases,
   },
 };
 

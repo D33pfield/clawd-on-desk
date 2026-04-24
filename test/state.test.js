@@ -995,6 +995,102 @@ describe("buildSessionSnapshot", () => {
     assert.strictEqual(snapshot.hudLastSessionId, "interactive-active");
     assert.strictEqual(snapshot.hudLastTitle, "interactive");
   });
+
+  it("applies session aliases to displayTitle without mutating raw session fields", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx({
+      getSessionAliases: () => ({
+        "local|claude-code|claude-local": { title: "Claude review", updatedAt: 100 },
+        "local|codex|codex-local": { title: "Codex follow-up", updatedAt: 100 },
+      }),
+    }));
+    api.sessions.set("claude-local", rawSession("working", {
+      updatedAt: 2000,
+      cwd: "D:\\animation",
+      agentId: "claude-code",
+      sessionTitle: "Agent title",
+    }));
+    api.sessions.set("codex-local", rawSession("thinking", {
+      updatedAt: 1000,
+      cwd: "d:/animation/",
+      agentId: "codex",
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    const claude = snapshot.sessions.find((s) => s.id === "claude-local");
+    const codex = snapshot.sessions.find((s) => s.id === "codex-local");
+
+    assert.strictEqual(claude.displayTitle, "Claude review");
+    assert.strictEqual(claude.sessionTitle, "Agent title");
+    assert.strictEqual(claude.cwd, "D:\\animation");
+    assert.strictEqual(codex.displayTitle, "Codex follow-up");
+    assert.strictEqual(codex.cwd, "d:/animation/");
+    assert.strictEqual(snapshot.hudLastTitle, "Claude review");
+  });
+
+  it("keeps session aliases scoped by host, agent, and session id", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx({
+      getSessionAliases: () => ({
+        "remote-box|codex|remote": { title: "Remote Codex", updatedAt: 100 },
+        "local|claude-code|local": { title: "Local Claude", updatedAt: 100 },
+      }),
+    }));
+    api.sessions.set("local", rawSession("working", {
+      updatedAt: 1000,
+      cwd: "/home/me/project",
+      host: null,
+      agentId: "claude-code",
+    }));
+    api.sessions.set("remote", rawSession("working", {
+      updatedAt: 2000,
+      cwd: "/home/me/project",
+      host: "remote-box",
+      agentId: "codex",
+    }));
+    api.sessions.set("remote-other-agent", rawSession("working", {
+      updatedAt: 3000,
+      cwd: "/home/me/project",
+      host: "remote-box",
+      agentId: "claude-code",
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    assert.strictEqual(
+      snapshot.sessions.find((s) => s.id === "local").displayTitle,
+      "Local Claude"
+    );
+    assert.strictEqual(
+      snapshot.sessions.find((s) => s.id === "remote").displayTitle,
+      "Remote Codex"
+    );
+    assert.strictEqual(
+      snapshot.sessions.find((s) => s.id === "remote-other-agent").displayTitle,
+      "project"
+    );
+  });
+
+  it("returns active session alias keys for all sessions including idle and headless", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx());
+    api.sessions.set("idle-session", rawSession("idle", {
+      agentId: "codex",
+      host: null,
+    }));
+    api.sessions.set("headless-session", rawSession("working", {
+      agentId: "claude-code",
+      host: "remote-box",
+      headless: true,
+    }));
+
+    assert.deepStrictEqual(
+      Array.from(api.getActiveSessionAliasKeys()).sort(),
+      [
+        "local|codex|idle-session",
+        "remote-box|claude-code|headless-session",
+      ]
+    );
+  });
 });
 
 describe("emitSessionSnapshot diff", () => {
