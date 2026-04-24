@@ -883,6 +883,161 @@ describe("recentEvents tracking", () => {
   });
 });
 
+describe("buildSessionSnapshot", () => {
+  let api, ctx;
+  const pid = process.pid;
+
+  beforeEach(() => {
+    ctx = makeCtx({ processKill: makePidKill(new Set([pid])) });
+    api = require("../src/state")(ctx);
+  });
+  afterEach(() => api.cleanup());
+
+  it("returns a JSON-serializable empty snapshot", () => {
+    const snapshot = api.buildSessionSnapshot();
+    assert.deepStrictEqual(snapshot, {
+      sessions: [],
+      groups: [],
+      orderedIds: [],
+      menuOrderedIds: [],
+      totalNonIdle: 0,
+      lastSessionId: null,
+      lastTitle: null,
+    });
+    assert.doesNotThrow(() => JSON.stringify(snapshot));
+  });
+
+  it("builds renderer-safe fields, groups, and both dashboard/menu orderings", () => {
+    api.sessions.set("old-working", rawSession("working", {
+      updatedAt: 1000,
+      sourcePid: pid,
+      cwd: "/tmp/old-project",
+      agentId: "claude-code",
+      sessionTitle: "Fix login",
+      recentEvents: [{ event: "PreToolUse", state: "working", at: 900 }],
+    }));
+    api.sessions.set("latest-remote", rawSession("idle", {
+      updatedAt: 3000,
+      cwd: "/tmp/latest-project",
+      agentId: "codex",
+      host: "remote-box",
+      headless: true,
+      recentEvents: [{ event: "MysteryEvent", state: "idle", at: 2900 }],
+    }));
+    api.sessions.set("error-local", rawSession("error", {
+      updatedAt: 2000,
+      cwd: "/tmp/error-project",
+      agentId: "missing-agent",
+      recentEvents: [],
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+
+    assert.doesNotThrow(() => JSON.stringify(snapshot));
+    assert.deepStrictEqual(snapshot.orderedIds, ["latest-remote", "error-local", "old-working"]);
+    assert.deepStrictEqual(snapshot.menuOrderedIds, ["error-local", "old-working", "latest-remote"]);
+    assert.deepStrictEqual(snapshot.groups, [
+      { host: "", ids: ["error-local", "old-working"] },
+      { host: "remote-box", ids: ["latest-remote"] },
+    ]);
+    assert.strictEqual(snapshot.totalNonIdle, 2);
+    assert.strictEqual(snapshot.lastSessionId, "latest-remote");
+    assert.strictEqual(snapshot.lastTitle, "latest-project");
+
+    const oldWorking = snapshot.sessions.find((s) => s.id === "old-working");
+    assert.strictEqual(oldWorking.badge, "running");
+    assert.strictEqual(oldWorking.sessionTitle, "Fix login");
+    assert.strictEqual(oldWorking.iconUrl.startsWith("file:"), true);
+    assert.deepStrictEqual(oldWorking.lastEvent, {
+      labelKey: "eventLabelPreToolUse",
+      rawEvent: "PreToolUse",
+      at: 900,
+    });
+
+    const latestRemote = snapshot.sessions.find((s) => s.id === "latest-remote");
+    assert.strictEqual(latestRemote.headless, true);
+    assert.deepStrictEqual(latestRemote.lastEvent, {
+      labelKey: null,
+      rawEvent: "MysteryEvent",
+      at: 2900,
+    });
+
+    const errorLocal = snapshot.sessions.find((s) => s.id === "error-local");
+    assert.strictEqual(errorLocal.iconUrl, null);
+  });
+});
+
+describe("emitSessionSnapshot diff", () => {
+  let api, broadcasts;
+
+  beforeEach(() => {
+    broadcasts = [];
+    api = require("../src/state")(makeCtx({
+      broadcastSessionSnapshot: (snapshot) => broadcasts.push(snapshot),
+    }));
+  });
+  afterEach(() => api.cleanup());
+
+  it("does not broadcast when only a single session updatedAt changes", () => {
+    api.sessions.set("s1", rawSession("working", {
+      updatedAt: 1000,
+      cwd: "/tmp/one",
+      agentId: "claude-code",
+      recentEvents: [{ event: "PreToolUse", state: "working", at: 900 }],
+    }));
+
+    assert.strictEqual(api.emitSessionSnapshot().changed, true);
+    assert.strictEqual(broadcasts.length, 1);
+
+    api.sessions.get("s1").updatedAt = 2000;
+    assert.strictEqual(api.emitSessionSnapshot().changed, false);
+    assert.strictEqual(broadcasts.length, 1);
+  });
+
+  it("broadcasts when updatedAt changes dashboard order and last session", () => {
+    api.sessions.set("s1", rawSession("working", {
+      updatedAt: 1000,
+      cwd: "/tmp/one",
+      agentId: "claude-code",
+    }));
+    api.sessions.set("s2", rawSession("working", {
+      updatedAt: 2000,
+      cwd: "/tmp/two",
+      agentId: "codex",
+    }));
+
+    assert.strictEqual(api.emitSessionSnapshot().changed, true);
+    assert.deepStrictEqual(broadcasts[broadcasts.length - 1].orderedIds, ["s2", "s1"]);
+
+    api.sessions.get("s1").updatedAt = 3000;
+    assert.strictEqual(api.emitSessionSnapshot().changed, true);
+    assert.deepStrictEqual(broadcasts[broadcasts.length - 1].orderedIds, ["s1", "s2"]);
+    assert.strictEqual(broadcasts[broadcasts.length - 1].lastSessionId, "s1");
+  });
+
+  it("broadcasts when visible fields change, including cwd and agentId", () => {
+    api.sessions.set("s1", rawSession("idle", {
+      updatedAt: 1000,
+      cwd: "/tmp/one",
+      agentId: "claude-code",
+      recentEvents: [{ event: "SessionStart", state: "idle", at: 900 }],
+    }));
+
+    assert.strictEqual(api.emitSessionSnapshot().changed, true);
+
+    api.sessions.get("s1").cwd = "/tmp/two";
+    assert.strictEqual(api.emitSessionSnapshot().changed, true);
+
+    api.sessions.get("s1").agentId = "codex";
+    assert.strictEqual(api.emitSessionSnapshot().changed, true);
+
+    api.sessions.get("s1").recentEvents.push({ event: "SessionStart", state: "idle", at: 1200 });
+    assert.strictEqual(api.emitSessionSnapshot().changed, true);
+
+    assert.strictEqual(broadcasts.length, 4);
+  });
+});
+
 describe("deriveSessionBadge", () => {
   let api;
   beforeEach(() => { api = require("../src/state")(makeCtx()); });
@@ -1083,6 +1238,26 @@ describe("buildSessionSubmenu badge + i18n", () => {
     assert.ok(label.includes("Fix login bug"));
     assert.ok(!label.includes("project-abc"));
     assert.match(label, /Running/);
+  });
+
+  it("keeps the terminal focus click closure after snapshot refactor", () => {
+    const calls = [];
+    api.cleanup();
+    ctx = makeCtx({ focusTerminalWindow: (...args) => calls.push(args) });
+    api = require("../src/state")(ctx);
+    api.sessions.set("s1", rawSession("working", {
+      updatedAt: 1000,
+      sourcePid: 1234,
+      cwd: "/tmp/project-abc",
+      editor: "vscode",
+      pidChain: [42, 1234],
+      agentId: "claude-code",
+    }));
+
+    const item = api.buildSessionSubmenu()[0];
+    assert.strictEqual(item.enabled, true);
+    item.click();
+    assert.deepStrictEqual(calls, [[1234, "/tmp/project-abc", "vscode", [42, 1234]]]);
   });
 });
 
