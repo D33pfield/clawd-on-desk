@@ -275,7 +275,6 @@ const updateRegistry = {
   showSessionId: requireBoolean("showSessionId"),
   allowEdgePinning: requireBoolean("allowEdgePinning"),
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
-  claudeAutoModeNoticeShown: requireBoolean("claudeAutoModeNoticeShown"),
 
   // ── System-backed prefs (object-form: validate + effect pre-commit gate) ──
   //

@@ -44,7 +44,6 @@ describe("prefs.getDefaults", () => {
     const d = prefs.getDefaults();
     assert.strictEqual(d.manageClaudeHooksAutomatically, true);
     assert.strictEqual(d.autoStartWithClaude, false);
-    assert.strictEqual(d.claudeAutoModeNoticeShown, false);
     assert.strictEqual(d.allowEdgePinning, false);
     assert.strictEqual(d.keepSizeAcrossDisplays, false);
     assert.strictEqual(d.savedPixelWidth, 0);
@@ -101,7 +100,6 @@ describe("prefs.validate", () => {
       soundMuted: true,
       soundVolume: 0.4,
       bubbleFollowPet: true,
-      claudeAutoModeNoticeShown: true,
       allowEdgePinning: true,
       keepSizeAcrossDisplays: true,
       savedPixelWidth: 286,
@@ -116,7 +114,6 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.soundMuted, true);
     assert.strictEqual(v.soundVolume, 0.4);
     assert.strictEqual(v.bubbleFollowPet, true);
-    assert.strictEqual(v.claudeAutoModeNoticeShown, true);
     assert.strictEqual(v.allowEdgePinning, true);
     assert.strictEqual(v.keepSizeAcrossDisplays, true);
     assert.strictEqual(v.savedPixelWidth, 286);

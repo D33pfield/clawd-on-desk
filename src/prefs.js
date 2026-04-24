@@ -71,7 +71,6 @@ const SCHEMA = {
   showDock: { type: "boolean", default: true },
   manageClaudeHooksAutomatically: { type: "boolean", default: true },
   autoStartWithClaude: { type: "boolean", default: false },
-  claudeAutoModeNoticeShown: { type: "boolean", default: false },
   // System-backed: actual truth lives in OS login items / autostart files.
   // `openAtLoginHydrated` starts false; main.js's startup hydrate helper imports
   // the current system value into prefs on first run, then flips this flag.

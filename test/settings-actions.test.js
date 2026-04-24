@@ -78,7 +78,7 @@ describe("updateRegistry pure-data validators", () => {
     const deps = { snapshot: baseSnapshot };
     for (const key of [
       "soundMuted", "bubbleFollowPet", "hideBubbles", "allowEdgePinning", "keepSizeAcrossDisplays",
-      "showSessionId", "miniMode", "openAtLoginHydrated", "claudeAutoModeNoticeShown",
+      "showSessionId", "miniMode", "openAtLoginHydrated",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);
       assert.strictEqual(updateRegistry[key](false, deps).status, "ok", `${key}(false)`);
