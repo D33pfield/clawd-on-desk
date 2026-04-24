@@ -52,15 +52,15 @@ function computeUpdateBubbleBounds({
   petBounds,
   hitRect,
 }) {
+  const permissionStackOffset = Math.max(0, Number(reservedHeight) || 0);
   let x = workArea.x + workArea.width - width - edgeMargin;
-  let y = workArea.y + workArea.height - edgeMargin - height - reservedHeight;
+  let y = workArea.y + workArea.height - edgeMargin - height - permissionStackOffset;
 
   if (bubbleFollowPet && petBounds && hitRect) {
     const hitTop = Math.round(hitRect.top);
     const hitBottom = Math.round(hitRect.bottom);
     const hitCx = Math.round((hitRect.left + hitRect.right) / 2);
     const reserve = Math.max(0, Number(hudReservedOffset) || 0);
-    const permissionStackOffset = reserve > 0 ? (reservedHeight || 0) : 0;
     const underPetY = hitBottom + reserve + permissionStackOffset;
     const abovePetY = hitTop - height;
     const followBottom = workArea.y + workArea.height - edgeMargin;
