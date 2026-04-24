@@ -27,7 +27,8 @@ function t(key) {
 
 function formatElapsed(ms) {
   const sec = Math.max(0, Math.floor(ms / 1000));
-  if (sec < 60) return t("sessionJustNow");
+  if (sec < 5) return t("sessionJustNow");
+  if (sec < 60) return t("sessionHudElapsedSec").replace("{n}", sec);
   const min = Math.floor(sec / 60);
   if (min < 60) return t("sessionMinAgo").replace("{n}", min);
   const hr = Math.floor(min / 60);
