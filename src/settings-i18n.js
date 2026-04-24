@@ -623,7 +623,7 @@
     "hongbigtou", "InTimmyDate", "NeizhiTouhu", "xu3stones-cmd", "androidZzT", "Ye-0413", "WanfengzzZ",
     "TaoXieSZ", "ssly", "stickycandy", "Rladmsrl", "YOIMIYA66", "Kevin7Qi", "sefuzhou770801-hub",
     "Tonic-Jin", "seoki180", "sophie-haynes", "PeterShanxin", "CHIANGANGSTER", "JaeHyeon-KAIST", "hhhzxyhhh",
-    "TVpoet", "zeus6768",
+    "TVpoet", "zeus6768", "anhtrinh919",
   ];
 
   root.ClawdSettingsI18n = {
