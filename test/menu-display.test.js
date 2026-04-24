@@ -40,7 +40,6 @@ function buildBaseCtx(overrides = {}) {
     getMiniMode: () => false,
     getMiniTransitioning: () => false,
     getActiveThemeCapabilities: () => ({ miniMode: true }),
-    buildSessionSubmenu: () => [],
     openDashboard: () => {},
     openSettingsWindow: () => {},
     togglePetVisibility: () => {},

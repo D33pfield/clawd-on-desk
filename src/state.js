@@ -65,15 +65,6 @@ const ONESHOT_STATES = new Set(["attention", "error", "sweeping", "notification"
 // extending the state machine. Cap avoids unbounded growth on long sessions.
 const RECENT_EVENT_LIMIT = 8;
 
-// Badge (4-category) → i18n key. Flat keys, not dot-paths — createTranslator()
-// in src/i18n.js only does flat dict[key] lookup.
-const SESSION_BADGE_KEYS = {
-  running: "sessionBadgeRunning",
-  done: "sessionBadgeDone",
-  interrupted: "sessionBadgeInterrupted",
-  idle: "sessionBadgeIdle",
-};
-
 // Hook event name → i18n key for recentEvents.label derivation (C2 renders at
 // read time so a language switch updates already-stored events too).
 // eslint-disable-next-line no-unused-vars
@@ -1485,71 +1476,6 @@ function formatElapsed(ms) {
   return ctx.t("sessionHrAgo").replace("{n}", hr);
 }
 
-function buildSessionSubmenu() {
-  const snapshot = buildSessionSnapshot();
-  const entryById = new Map(snapshot.sessions.map((entry) => [entry.id, entry]));
-  const entries = snapshot.menuOrderedIds
-    .map((id) => entryById.get(id))
-    .filter(Boolean);
-  if (entries.length === 0) {
-    return [{ label: ctx.t("noSessions"), enabled: false }];
-  }
-
-  const now = Date.now();
-
-  function buildItem(e) {
-    // 4-category badge derived from session.state + recentEvents tail.
-    // Not the raw state name — user-facing language (Running/Done/...).
-    const badgeKey = SESSION_BADGE_KEYS[e.badge] || "sessionBadgeIdle";
-    const badgeText = ctx.t(badgeKey);
-    // Prefer user-set session title (Claude Code /rename, Codex turn summary)
-    // over the cwd folder name when available.
-    const baseName = e.displayTitle || sessionDisplayTitle(e.id, e);
-    const name = ctx.showSessionId ? `${baseName} #${e.id.slice(-3)}` : baseName;
-    const elapsed = formatElapsed(now - e.updatedAt);
-    const hasPid = !!e.sourcePid;
-    const icon = getAgentIcon(e.agentId);
-    const live = sessions.get(e.id);
-    const item = {
-      label: `${e.headless ? "🤖 " : ""}${name}  ${badgeText}  ${elapsed}`,
-      enabled: hasPid,
-      click: hasPid ? () => ctx.focusTerminalWindow(
-        e.sourcePid,
-        e.cwd,
-        live && live.editor,
-        live && live.pidChain
-      ) : undefined,
-    };
-    if (icon) item.icon = icon;
-    return item;
-  }
-
-  // Single-pass grouping by host
-  const groups = new Map(); // key: host || "" for local
-  for (const e of entries) {
-    const key = e.host || "";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(e);
-  }
-
-  if (groups.size === 1 && groups.has("")) return entries.map(buildItem);
-
-  // Build grouped menu: local first, then each remote host
-  const items = [];
-  const local = groups.get("");
-  if (local) {
-    items.push({ label: `📍 ${ctx.t("sessionLocal")}`, enabled: false });
-    items.push(...local.map(buildItem));
-  }
-  for (const [h, group] of groups) {
-    if (!h) continue;
-    if (items.length) items.push({ type: "separator" });
-    items.push({ label: `🖥 ${h}`, enabled: false });
-    items.push(...group.map(buildItem));
-  }
-  return items;
-}
-
 // ── Do Not Disturb ──
 // Drops every Kimi hold + suspect timer WITHOUT triggering a state resolve.
 // Used by two "channel is no longer available" paths:
@@ -1642,7 +1568,7 @@ return {
   enableDoNotDisturb, disableDoNotDisturb,
   startStaleCleanup, stopStaleCleanup, startWakePoll, stopWakePoll,
   getSvgOverride, cleanStaleSessions, startStartupRecovery, refreshTheme,
-  detectRunningAgentProcesses, buildSessionSubmenu, buildSessionSnapshot,
+  detectRunningAgentProcesses, buildSessionSnapshot,
   emitSessionSnapshot, broadcastSessionSnapshot, getLastSessionSnapshot,
   getActiveSessionAliasKeys,
   clearSessionsByAgent,

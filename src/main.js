@@ -957,7 +957,7 @@ const _stateCtx = {
 const _state = require("./state")(_stateCtx);
 const { setState, applyState, updateSession, resolveDisplayState, getSvgOverride,
         enableDoNotDisturb, disableDoNotDisturb, startStaleCleanup, stopStaleCleanup,
-        startWakePoll, stopWakePoll, detectRunningAgentProcesses, buildSessionSubmenu,
+        startWakePoll, stopWakePoll, detectRunningAgentProcesses,
         startStartupRecovery: _startStartupRecovery } = _state;
 const sessions = _state.sessions;
 const STATE_PRIORITY = _state.STATE_PRIORITY;
@@ -1263,10 +1263,8 @@ const _menuCtx = {
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
   miniHandleResize: (sizeKey) => _mini.handleResize(sizeKey),
-  focusTerminalWindow: (...args) => focusTerminalWindow(...args),
   checkForUpdates: (...args) => checkForUpdates(...args),
   getUpdateMenuItem: () => getUpdateMenuItem(),
-  buildSessionSubmenu: () => buildSessionSubmenu(),
   openDashboard: () => showDashboard(),
   // The settings controller is the only writer of persisted prefs. Toggle
   // setters above route through it; resize/sendToDisplay use

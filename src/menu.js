@@ -314,10 +314,6 @@ module.exports = function initMenu(ctx) {
       },
       { type: "separator" },
       {
-        label: `${t("sessions")} (${ctx.sessions.size})`,
-        submenu: ctx.buildSessionSubmenu(),
-      },
-      {
         label: t("openDashboard"),
         click: () => {
           if (typeof ctx.openDashboard === "function") ctx.openDashboard();

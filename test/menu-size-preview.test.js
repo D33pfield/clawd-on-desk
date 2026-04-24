@@ -74,7 +74,6 @@ describe("menu resizeWindow preview mode", () => {
       getMiniMode: () => false,
       getMiniTransitioning: () => false,
       getActiveThemeCapabilities: () => ({ miniMode: true }),
-      buildSessionSubmenu: () => [],
       openSettingsWindow: () => {},
       togglePetVisibility: () => {},
       enableDoNotDisturb: () => {},
