@@ -58,7 +58,8 @@ Thinking when you prompt, typing when tools run, juggling subagents, reviewing p
 ### Session Intelligence
 - **Multi-session tracking** — sessions across all agents resolve to the highest-priority state
 - **Subagent awareness** — juggling for 1 subagent, conducting for 2+
-- **Terminal focus** — right-click Clawd → Sessions menu to jump to a specific session's terminal window; notification/attention states auto-focus the relevant terminal
+- **Sessions dashboard + HUD** — right-click or tray → `Open Dashboard` to inspect live sessions, recent events, aliases, and jump to a terminal; a compact HUD near Clawd keeps current live sessions visible
+- **Terminal focus** — Dashboard/HUD actions jump to a specific session's terminal window; notification/attention states auto-focus the relevant terminal
 - **Process liveness detection** — detects crashed/exited supported agent processes and cleans up orphan sessions
 - **Startup recovery** — if Clawd restarts while any supported agent is still running, it stays awake instead of falling asleep
 
