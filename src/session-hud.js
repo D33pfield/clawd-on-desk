@@ -7,10 +7,11 @@ const isLinux = process.platform === "linux";
 const isMac = process.platform === "darwin";
 const isWin = process.platform === "win32";
 
+const HUD_BORDER_Y = 2;
 const HUD_WIDTH = 240;
 const HUD_ROW_HEIGHT = 28;
 const HUD_MAX_EXPANDED_ROWS = 3;
-const HUD_HEIGHT = HUD_ROW_HEIGHT;
+const HUD_HEIGHT = HUD_ROW_HEIGHT + HUD_BORDER_Y;
 const HUD_PET_GAP = 4;
 const BUBBLE_GAP = 6;
 const EDGE_MARGIN = 8;
@@ -23,6 +24,10 @@ function clampToWorkArea(value, min, max) {
   return Math.max(min, Math.min(value, max));
 }
 
+function isHudSession(session) {
+  return !!session && !session.headless && session.state !== "sleeping";
+}
+
 function computeHudLayout(snapshot) {
   const sessions = (snapshot && Array.isArray(snapshot.sessions)) ? snapshot.sessions : [];
   if (sessions.length === 0) return { expanded: [], folded: [], rowCount: 0 };
@@ -33,7 +38,7 @@ function computeHudLayout(snapshot) {
   const ordered = orderedIds.map((id) => byId.get(id)).filter(Boolean);
   const orderedSet = new Set(ordered.map((s) => s.id));
   const missing = sessions.filter((s) => !orderedSet.has(s.id));
-  const visible = ordered.concat(missing).filter((s) => s && !s.headless);
+  const visible = ordered.concat(missing).filter(isHudSession);
   const expanded = visible.slice(0, HUD_MAX_EXPANDED_ROWS);
   const folded = visible.slice(HUD_MAX_EXPANDED_ROWS);
   const rowCount = expanded.length + (folded.length > 0 ? 1 : 0);
@@ -42,7 +47,7 @@ function computeHudLayout(snapshot) {
 
 function computeHudHeight(rowCount) {
   if (!Number.isFinite(rowCount) || rowCount <= 0) return HUD_ROW_HEIGHT;
-  return rowCount * HUD_ROW_HEIGHT;
+  return rowCount * HUD_ROW_HEIGHT + HUD_BORDER_Y;
 }
 
 function computeSessionHudBounds({ hitRect, workArea, width = HUD_WIDTH, height = HUD_HEIGHT }) {
@@ -107,7 +112,7 @@ module.exports = function initSessionHud(ctx) {
 
   function hasVisibleSessions(snapshot) {
     const sessions = Array.isArray(snapshot && snapshot.sessions) ? snapshot.sessions : [];
-    return sessions.some((session) => session && !session.headless);
+    return sessions.some(isHudSession);
   }
 
   function shouldShow(snapshot = latestSnapshot) {
@@ -290,6 +295,7 @@ module.exports.__test = {
   computeSessionHudBounds,
   computeHudLayout,
   computeHudHeight,
+  isHudSession,
   constants: {
     HUD_WIDTH,
     HUD_HEIGHT,
@@ -298,5 +304,6 @@ module.exports.__test = {
     HUD_PET_GAP,
     BUBBLE_GAP,
     EDGE_MARGIN,
+    HUD_BORDER_Y,
   },
 };

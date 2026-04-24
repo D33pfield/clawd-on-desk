@@ -30,14 +30,27 @@ function normalizeSessionId(sessionId) {
   return normalized;
 }
 
-function sessionAliasKey(host, agentId, sessionId) {
+function normalizeSessionScope(agentId, sessionId, options = {}) {
+  const normalizedAgent = normalizeSessionAgent(agentId);
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const cwd = options && typeof options.cwd === "string" ? options.cwd.trim() : "";
+  if (normalizedAgent === "kiro-cli" && normalizedSessionId === "default" && cwd) {
+    return `cwd:${encodeURIComponent(cwd)}`;
+  }
+  return "";
+}
+
+function sessionAliasKey(host, agentId, sessionId, options = {}) {
   const normalizedSessionId = normalizeSessionId(sessionId);
   if (!normalizedSessionId) return null;
-  return [
+  const parts = [
     normalizeSessionHost(host),
     normalizeSessionAgent(agentId),
     normalizedSessionId,
-  ].join("|");
+  ];
+  const scope = normalizeSessionScope(agentId, normalizedSessionId, options);
+  if (scope) parts.push(scope);
+  return parts.join("|");
 }
 
 function sanitizeSessionAlias(value) {
@@ -105,6 +118,7 @@ module.exports = {
   SESSION_ALIAS_TTL_MS,
   normalizeSessionHost,
   normalizeSessionAgent,
+  normalizeSessionScope,
   sessionAliasKey,
   sanitizeSessionAlias,
   normalizeSessionAliases,

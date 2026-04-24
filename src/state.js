@@ -117,6 +117,7 @@ let autoReturnTimer = null;
 let pendingState = null;
 let eyeResendTimer = null;
 let updateVisualState = null;
+let updateVisualKind = null;
 let updateVisualSvgOverride = null;
 let updateVisualPriority = null;
 
@@ -251,9 +252,16 @@ function refreshTheme() {
   } else {
     currentHitBox = HIT_BOXES.default;
   }
+  refreshUpdateVisualOverride();
 }
 
 refreshTheme();
+
+function refreshUpdateVisualOverride() {
+  updateVisualSvgOverride = (updateVisualKind === "checking" && theme && theme.updateVisuals && theme.updateVisuals.checking)
+    ? theme.updateVisuals.checking
+    : null;
+}
 
 function setState(newState, svgOverride) {
   if (ctx.doNotDisturb) return;
@@ -641,13 +649,26 @@ function getSessionAliases() {
     : {};
 }
 
-function sessionDisplayTitle(id, sessionLike, sessionAliases = {}) {
-  const aliasKey = sessionAliasKey(
+function getSessionAliasEntry(id, sessionLike, sessionAliases = {}) {
+  const scopedAliasKey = sessionAliasKey(
+    sessionLike && sessionLike.host,
+    sessionLike && sessionLike.agentId,
+    id,
+    { cwd: sessionLike && sessionLike.cwd }
+  );
+  if (scopedAliasKey && sessionAliases[scopedAliasKey]) return sessionAliases[scopedAliasKey];
+
+  const legacyAliasKey = sessionAliasKey(
     sessionLike && sessionLike.host,
     sessionLike && sessionLike.agentId,
     id
   );
-  const alias = aliasKey ? sessionAliases[aliasKey] : null;
+  if (legacyAliasKey && legacyAliasKey !== scopedAliasKey) return sessionAliases[legacyAliasKey] || null;
+  return legacyAliasKey ? sessionAliases[legacyAliasKey] : null;
+}
+
+function sessionDisplayTitle(id, sessionLike, sessionAliases = {}) {
+  const alias = getSessionAliasEntry(id, sessionLike, sessionAliases);
   if (alias && typeof alias.title === "string" && alias.title) return alias.title;
   const title = normalizeTitle(sessionLike && sessionLike.sessionTitle);
   if (title) return title;
@@ -670,6 +691,7 @@ function sessionUpdatedAtComparator(a, b) {
 }
 
 function buildSessionSnapshotEntry(id, session, sessionAliases = {}) {
+  const alias = getSessionAliasEntry(id, session, sessionAliases);
   const recentEvents = Array.isArray(session && session.recentEvents)
     ? session.recentEvents
     : [];
@@ -682,6 +704,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}) {
     iconUrl: getAgentIconUrl(session && session.agentId),
     state: (session && session.state) || "idle",
     badge: deriveSessionBadge(session),
+    hasAlias: !!(alias && typeof alias.title === "string" && alias.title),
     sessionTitle: normalizeTitle(session && session.sessionTitle),
     displayTitle: sessionDisplayTitle(id, session, sessionAliases),
     cwd: (session && session.cwd) || "",
@@ -709,7 +732,7 @@ function buildSessionSnapshot() {
   const orderedIds = dashboardEntries.map((entry) => entry.id);
   const menuOrderedIds = menuEntries.map((entry) => entry.id);
   const hudEntries = dashboardEntries.filter((entry) =>
-    !entry.headless && entry.state !== "idle" && entry.state !== "sleeping"
+    !entry.headless && entry.state !== "sleeping"
   );
 
   const groupMap = new Map();
@@ -747,7 +770,8 @@ function getActiveSessionAliasKeys() {
     const key = sessionAliasKey(
       session && session.host,
       session && session.agentId,
-      id
+      id,
+      { cwd: session && session.cwd }
     );
     if (key) keys.add(key);
   }
@@ -767,6 +791,7 @@ function sessionSnapshotSignature(snapshot) {
       id: entry.id,
       state: entry.state,
       badge: entry.badge,
+      hasAlias: entry.hasAlias,
       sessionTitle: entry.sessionTitle,
       displayTitle: entry.displayTitle,
       cwd: entry.cwd,
@@ -954,14 +979,11 @@ function updateSession(sessionId, state, event, opts = {}) {
     sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base, resumeState: null });
   } else if (ONESHOT_STATES.has(state)) {
     if (existing) {
+      Object.assign(existing, base);
+      existing.state = "idle";
       existing.updatedAt = Date.now();
       existing.displayHint = null;
       existing.resumeState = null;
-      if (sourcePid) existing.sourcePid = sourcePid;
-      if (cwd) existing.cwd = cwd;
-      if (editor) existing.editor = editor;
-      if (pidChain && pidChain.length) existing.pidChain = pidChain;
-      if (agentPid) existing.agentPid = agentPid;
     } else {
       sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base, resumeState: null });
     }
@@ -1384,15 +1406,15 @@ function resolveDisplayState() {
 function setUpdateVisualState(kind) {
   if (!kind) {
     updateVisualState = null;
+    updateVisualKind = null;
     updateVisualSvgOverride = null;
     updateVisualPriority = null;
     return null;
   }
+  updateVisualKind = kind;
   updateVisualState = UPDATE_VISUAL_STATE_MAP[kind] || kind;
   updateVisualPriority = UPDATE_VISUAL_PRIORITY_MAP[kind] || STATE_PRIORITY[updateVisualState] || 0;
-  updateVisualSvgOverride = (kind === "checking" && theme && theme.updateVisuals && theme.updateVisuals.checking)
-    ? theme.updateVisuals.checking
-    : null;
+  refreshUpdateVisualOverride();
   return updateVisualState;
 }
 

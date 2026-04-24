@@ -385,6 +385,19 @@ describe("setSessionAlias command", () => {
     });
   });
 
+  it("stores Kiro default-session aliases under a cwd-scoped key", () => {
+    const snapshot = { ...prefs.getDefaults(), sessionAliases: {} };
+    const r = commandRegistry.setSessionAlias(
+      { host: null, agentId: "kiro-cli", sessionId: "default", cwd: "/repo/a", alias: "Kiro A" },
+      { snapshot, now: 1000, getActiveSessionAliasKeys: () => new Set(["local|kiro-cli|default|cwd:%2Frepo%2Fa"]) }
+    );
+
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.sessionAliases, {
+      "local|kiro-cli|default|cwd:%2Frepo%2Fa": { title: "Kiro A", updatedAt: 1000 },
+    });
+  });
+
   it("clears an existing alias when alias is empty", () => {
     const snapshot = {
       ...prefs.getDefaults(),

@@ -12,6 +12,7 @@ const {
 function mkSession(id, overrides = {}) {
   return {
     id,
+    state: "working",
     headless: false,
     updatedAt: Date.now(),
     ...overrides,
@@ -106,6 +107,21 @@ describe("session HUD layout", () => {
     assert.strictEqual(rowCount, 1);
   });
 
+  it("includes done idle sessions but excludes sleeping sessions", () => {
+    const sessions = [
+      mkSession("working", { state: "working" }),
+      mkSession("done", { state: "idle", badge: "done" }),
+      mkSession("sleeping", { state: "sleeping" }),
+    ];
+    const { expanded, folded, rowCount } = computeHudLayout({
+      sessions,
+      orderedIds: ["done", "working", "sleeping"],
+    });
+    assert.deepStrictEqual(expanded.map((s) => s.id), ["done", "working"]);
+    assert.strictEqual(folded.length, 0);
+    assert.strictEqual(rowCount, 2);
+  });
+
   it("returns 0 rows for empty snapshot", () => {
     const { expanded, folded, rowCount } = computeHudLayout({ sessions: [] });
     assert.strictEqual(expanded.length, 0);
@@ -114,7 +130,11 @@ describe("session HUD layout", () => {
   });
 
   it("computeHudHeight multiplies row count by row height", () => {
-    assert.strictEqual(computeHudHeight(3), constants.HUD_ROW_HEIGHT * 3);
+    assert.strictEqual(
+      computeHudHeight(3),
+      constants.HUD_ROW_HEIGHT * 3
+        + constants.HUD_BORDER_Y
+    );
     assert.strictEqual(computeHudHeight(0), constants.HUD_ROW_HEIGHT);
     assert.strictEqual(computeHudHeight(-1), constants.HUD_ROW_HEIGHT);
   });

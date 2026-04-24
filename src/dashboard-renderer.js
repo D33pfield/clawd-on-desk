@@ -78,6 +78,8 @@ function beginTitleEdit(session) {
     sessionId: session.id,
     agentId: session.agentId || null,
     host: session.host || null,
+    cwd: session.cwd || "",
+    initialDraft: sessionTitleText(session),
     draft: sessionTitleText(session),
     committing: false,
   };
@@ -93,12 +95,18 @@ function cancelTitleEdit() {
 async function commitTitleEdit() {
   if (!activeEdit || activeEdit.committing) return;
   const edit = activeEdit;
+  if (edit.draft === edit.initialDraft) {
+    activeEdit = null;
+    render({ force: true });
+    return;
+  }
   edit.committing = true;
   try {
     const result = await window.dashboardAPI.setSessionAlias({
       host: edit.host,
       agentId: edit.agentId,
       sessionId: edit.sessionId,
+      cwd: edit.cwd,
       alias: edit.draft,
     });
     if (!result || result.status !== "ok") {

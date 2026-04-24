@@ -7,6 +7,10 @@ let i18nPayload = { lang: "en", translations: {} };
 
 const hudEl = document.getElementById("hud");
 
+function isHudSession(session) {
+  return !!session && !session.headless && session.state !== "sleeping";
+}
+
 function t(key) {
   const dict = i18nPayload && i18nPayload.translations ? i18nPayload.translations : {};
   return dict[key] || key;
@@ -41,7 +45,7 @@ function orderedHudSessions(currentSnapshot) {
   const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
   const orderedIds = new Set(ordered.map((session) => session.id));
   const missing = sessions.filter((session) => !orderedIds.has(session.id));
-  return ordered.concat(missing).filter((session) => session && !session.headless);
+  return ordered.concat(missing).filter(isHudSession);
 }
 
 function splitHudLayout(sessions) {

@@ -184,6 +184,23 @@ describe("resolveDisplayState()", () => {
     assert.strictEqual(api.resolveDisplayState(), "idle");
   });
 
+  it("refreshes the active checking update visual override when the theme changes", () => {
+    const ctx = makeCtx();
+    api.cleanup();
+    api = require("../src/state")(ctx);
+
+    api.setUpdateVisualState("checking");
+    assert.strictEqual(api.getSvgOverride("thinking"), "clawd-working-debugger.svg");
+
+    ctx.theme = _calicoTheme;
+    api.refreshTheme();
+    assert.strictEqual(api.getSvgOverride("thinking"), "calico-thinking.apng");
+
+    ctx.theme = _defaultTheme;
+    api.refreshTheme();
+    assert.strictEqual(api.getSvgOverride("thinking"), "clawd-working-debugger.svg");
+  });
+
   it("update overlay does not override higher-priority agent states", () => {
     // error(8) > thinking(2) — update checking must not stomp agent error
     api.sessions.set("s1", rawSession("error"));
@@ -840,6 +857,19 @@ describe("recentEvents tracking", () => {
     );
   });
 
+  it("updates recentEvents when an existing session receives a oneshot error", () => {
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    update(api, { id: "s1", state: "error", event: "PostToolUseFailure" });
+
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.state, "idle");
+    assert.deepStrictEqual(
+      session.recentEvents.map((e) => e.event),
+      ["PreToolUse", "PostToolUseFailure"]
+    );
+    assert.strictEqual(api.deriveSessionBadge(session), "interrupted");
+  });
+
   it("handles null event as null (not crash, not skipped)", () => {
     // The update() helper falls back to "PreToolUse" on null event —
     // bypass it here to test the null path directly.
@@ -963,6 +993,28 @@ describe("buildSessionSnapshot", () => {
     assert.strictEqual(snapshot.hudLastTitle, "interactive");
   });
 
+  it("keeps done idle interactive sessions in HUD aggregates", () => {
+    api.sessions.set("done-local", rawSession("idle", {
+      updatedAt: 3000,
+      sourcePid: pid,
+      cwd: "/tmp/done-project",
+      agentId: "claude-code",
+      recentEvents: [{ event: "Stop", state: "attention", at: 2900 }],
+    }));
+    api.sessions.set("sleeping-local", rawSession("sleeping", {
+      updatedAt: 4000,
+      sourcePid: pid,
+      cwd: "/tmp/sleeping-project",
+      agentId: "codex",
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    assert.strictEqual(snapshot.sessions.find((s) => s.id === "done-local").badge, "done");
+    assert.strictEqual(snapshot.hudTotalNonIdle, 1);
+    assert.strictEqual(snapshot.hudLastSessionId, "done-local");
+    assert.strictEqual(snapshot.hudLastTitle, "done-project");
+  });
+
   it("applies session aliases to displayTitle without mutating raw session fields", () => {
     api.cleanup();
     api = require("../src/state")(makeCtx({
@@ -1037,6 +1089,58 @@ describe("buildSessionSnapshot", () => {
     );
   });
 
+  it("scopes Kiro default-session aliases by cwd", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx({
+      getSessionAliases: () => ({
+        "local|kiro-cli|default|cwd:%2Frepo%2Fa": { title: "Kiro repo A", updatedAt: 100 },
+      }),
+    }));
+    api.sessions.set("default", rawSession("working", {
+      updatedAt: 1000,
+      cwd: "/repo/b",
+      agentId: "kiro-cli",
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    assert.strictEqual(snapshot.sessions[0].displayTitle, "b");
+  });
+
+  it("falls back to legacy Kiro default-session aliases when no cwd-scoped alias exists", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx({
+      getSessionAliases: () => ({
+        "local|kiro-cli|default": { title: "Legacy Kiro", updatedAt: 100 },
+      }),
+    }));
+    api.sessions.set("default", rawSession("working", {
+      updatedAt: 1000,
+      cwd: "/repo/a",
+      agentId: "kiro-cli",
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    assert.strictEqual(snapshot.sessions[0].displayTitle, "Legacy Kiro");
+  });
+
+  it("prefers cwd-scoped Kiro default-session aliases over legacy aliases", () => {
+    api.cleanup();
+    api = require("../src/state")(makeCtx({
+      getSessionAliases: () => ({
+        "local|kiro-cli|default": { title: "Legacy Kiro", updatedAt: 100 },
+        "local|kiro-cli|default|cwd:%2Frepo%2Fa": { title: "Kiro repo A", updatedAt: 200 },
+      }),
+    }));
+    api.sessions.set("default", rawSession("working", {
+      updatedAt: 1000,
+      cwd: "/repo/a",
+      agentId: "kiro-cli",
+    }));
+
+    const snapshot = api.buildSessionSnapshot();
+    assert.strictEqual(snapshot.sessions[0].displayTitle, "Kiro repo A");
+  });
+
   it("returns active session alias keys for all sessions including idle and headless", () => {
     api.cleanup();
     api = require("../src/state")(makeCtx());
@@ -1049,11 +1153,16 @@ describe("buildSessionSnapshot", () => {
       host: "remote-box",
       headless: true,
     }));
+    api.sessions.set("default", rawSession("working", {
+      agentId: "kiro-cli",
+      cwd: "/repo/a",
+    }));
 
     assert.deepStrictEqual(
       Array.from(api.getActiveSessionAliasKeys()).sort(),
       [
         "local|codex|idle-session",
+        "local|kiro-cli|default|cwd:%2Frepo%2Fa",
         "remote-box|claude-code|headless-session",
       ]
     );

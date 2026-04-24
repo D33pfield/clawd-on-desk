@@ -873,8 +873,8 @@ function setSessionAlias(payload, deps) {
   if (!payload || typeof payload !== "object") {
     return { status: "error", message: "setSessionAlias: payload must be an object" };
   }
-  const { host, agentId, sessionId, alias } = payload;
-  const key = sessionAliasKey(host, agentId, sessionId);
+  const { host, agentId, sessionId, cwd, alias } = payload;
+  const key = sessionAliasKey(host, agentId, sessionId, { cwd });
   if (!key) {
     return { status: "error", message: "setSessionAlias.sessionId must be a non-empty string" };
   }

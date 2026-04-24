@@ -803,6 +803,7 @@ const _permCtx = {
   }),
   reportShortcutFailure: (actionId, reason) => reportShortcutFailure(actionId, reason),
   clearShortcutFailure: (actionId) => clearShortcutFailure(actionId),
+  repositionUpdateBubble: () => repositionUpdateBubble(),
 };
 const _perm = require("./permission")(_permCtx);
 const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
@@ -1349,6 +1350,11 @@ function wireSettingsSubscribers() {
       }
       try { sendSessionHudI18n(); } catch (err) {
         console.warn("Clawd: session HUD lang broadcast failed:", err && err.message);
+      }
+    }
+    if ("sessionAliases" in changes) {
+      try { _state.emitSessionSnapshot({ force: true }); } catch (err) {
+        console.warn("Clawd: session alias snapshot broadcast failed:", err && err.message);
       }
     }
 
@@ -2127,13 +2133,7 @@ ipcMain.handle("dashboard:get-snapshot", () => _state.buildSessionSnapshot());
 ipcMain.handle("dashboard:get-i18n", () => getDashboardI18nPayload());
 ipcMain.on("dashboard:focus-session", (_event, sessionId) => focusDashboardSession(sessionId));
 ipcMain.handle("dashboard:set-session-alias", async (_event, payload) => {
-  const result = await _settingsController.applyCommand("setSessionAlias", payload);
-  if (result && result.status === "ok" && !result.noop) {
-    try { _state.emitSessionSnapshot({ force: true }); } catch (err) {
-      console.warn("Clawd: session alias snapshot broadcast failed:", err && err.message);
-    }
-  }
-  return result;
+  return _settingsController.applyCommand("setSessionAlias", payload);
 });
 ipcMain.handle("session-hud:get-i18n", () => getDashboardI18nPayload());
 ipcMain.on("session-hud:focus-session", (_event, sessionId) => focusDashboardSession(sessionId));
