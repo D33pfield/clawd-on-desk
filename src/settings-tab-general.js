@@ -5,6 +5,7 @@
     "size",
     "soundMuted",
     "soundVolume",
+    "sessionHudEnabled",
     "allowEdgePinning",
     "keepSizeAcrossDisplays",
     "openAtLogin",
@@ -36,6 +37,11 @@
     parent.appendChild(helpers.buildSection(t("sectionAppearance"), [
       buildLanguageRow(),
       buildSizeSliderRow(),
+      helpers.buildSwitchRow({
+        key: "sessionHudEnabled",
+        labelKey: "rowSessionHud",
+        descKey: "rowSessionHudDesc",
+      }),
       helpers.buildSwitchRow({
         key: "soundMuted",
         labelKey: "rowSound",

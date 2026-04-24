@@ -271,6 +271,7 @@ const updateRegistry = {
   soundMuted: requireBoolean("soundMuted"),
   soundVolume: requireNumberInRange("soundVolume", 0, 1),
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
+  sessionHudEnabled: requireBoolean("sessionHudEnabled"),
   hideBubbles: requireBoolean("hideBubbles"),
   showSessionId: requireBoolean("showSessionId"),
   allowEdgePinning: requireBoolean("allowEdgePinning"),

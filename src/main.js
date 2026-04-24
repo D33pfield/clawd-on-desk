@@ -419,6 +419,7 @@ let manageClaudeHooksAutomatically = _settingsController.get("manageClaudeHooksA
 let autoStartWithClaude = _settingsController.get("autoStartWithClaude");
 let openAtLogin = _settingsController.get("openAtLogin");
 let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
+let sessionHudEnabled = _settingsController.get("sessionHudEnabled");
 let hideBubbles = _settingsController.get("hideBubbles");
 let showSessionId = _settingsController.get("showSessionId");
 let soundMuted = _settingsController.get("soundMuted");
@@ -1057,7 +1058,7 @@ sendDashboardI18n = _dashboard.sendI18n;
 const _sessionHud = require("./session-hud")({
   get win() { return win; },
   get petHidden() { return petHidden; },
-  get sessionHudEnabled() { return true; },
+  get sessionHudEnabled() { return sessionHudEnabled; },
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
@@ -1336,6 +1337,7 @@ function wireSettingsSubscribers() {
       openAtLogin = changes.openAtLogin;
     }
     if ("bubbleFollowPet" in changes) bubbleFollowPet = changes.bubbleFollowPet;
+    if ("sessionHudEnabled" in changes) sessionHudEnabled = changes.sessionHudEnabled;
     if ("hideBubbles" in changes) hideBubbles = changes.hideBubbles;
     if ("showSessionId" in changes) showSessionId = changes.showSessionId;
     if ("soundMuted" in changes) soundMuted = changes.soundMuted;
@@ -1360,6 +1362,14 @@ function wireSettingsSubscribers() {
     if ("bubbleFollowPet" in changes) {
       try { repositionFloatingBubbles(); } catch (err) {
         console.warn("Clawd: repositionFloatingBubbles failed:", err && err.message);
+      }
+    }
+    if ("sessionHudEnabled" in changes) {
+      try {
+        syncSessionHudVisibility();
+        repositionFloatingBubbles();
+      } catch (err) {
+        console.warn("Clawd: session HUD setting sync failed:", err && err.message);
       }
     }
     if ("allowEdgePinning" in changes) {

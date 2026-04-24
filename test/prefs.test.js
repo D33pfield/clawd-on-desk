@@ -46,6 +46,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.autoStartWithClaude, false);
     assert.strictEqual(d.allowEdgePinning, false);
     assert.strictEqual(d.keepSizeAcrossDisplays, false);
+    assert.strictEqual(d.sessionHudEnabled, true);
     assert.strictEqual(d.savedPixelWidth, 0);
     assert.strictEqual(d.savedPixelHeight, 0);
   });
@@ -77,6 +78,7 @@ describe("prefs.validate", () => {
       soundVolume: 2,        // out of range → default 1
       x: NaN,                // not finite
       bubbleFollowPet: true, // ok
+      sessionHudEnabled: "yes",
       hideBubbles: 0,        // wrong type
       allowEdgePinning: "yes",
       savedPixelWidth: -1,
@@ -88,6 +90,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.soundVolume, 1);
     assert.strictEqual(v.x, 0);
     assert.strictEqual(v.bubbleFollowPet, true);
+    assert.strictEqual(v.sessionHudEnabled, true);
     assert.strictEqual(v.hideBubbles, false);
     assert.strictEqual(v.allowEdgePinning, false);
     assert.strictEqual(v.savedPixelWidth, 0);
@@ -100,6 +103,7 @@ describe("prefs.validate", () => {
       soundMuted: true,
       soundVolume: 0.4,
       bubbleFollowPet: true,
+      sessionHudEnabled: false,
       allowEdgePinning: true,
       keepSizeAcrossDisplays: true,
       savedPixelWidth: 286,
@@ -114,6 +118,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.soundMuted, true);
     assert.strictEqual(v.soundVolume, 0.4);
     assert.strictEqual(v.bubbleFollowPet, true);
+    assert.strictEqual(v.sessionHudEnabled, false);
     assert.strictEqual(v.allowEdgePinning, true);
     assert.strictEqual(v.keepSizeAcrossDisplays, true);
     assert.strictEqual(v.savedPixelWidth, 286);
