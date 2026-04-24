@@ -163,6 +163,12 @@ module.exports = function initMenu(ctx) {
         label: t("settings"),
         click: () => ctx.openSettingsWindow(),
       },
+      {
+        label: t("openDashboard"),
+        click: () => {
+          if (typeof ctx.openDashboard === "function") ctx.openDashboard();
+        },
+      },
       buildBringToPrimaryDisplayMenuItem(),
       { type: "separator" },
       {

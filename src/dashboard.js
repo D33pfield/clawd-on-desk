@@ -7,6 +7,12 @@ const DEFAULT_WIDTH = 480;
 const DEFAULT_HEIGHT = 600;
 const MIN_WIDTH = 320;
 const MIN_HEIGHT = 400;
+const LIGHT_BACKGROUND = "#f5f5f7";
+const DARK_BACKGROUND = "#1c1c1f";
+
+function getDashboardBackgroundColor() {
+  return nativeTheme.shouldUseDarkColors ? DARK_BACKGROUND : LIGHT_BACKGROUND;
+}
 
 module.exports = function initDashboard(ctx) {
   let dashboardWindow = null;
@@ -64,7 +70,7 @@ module.exports = function initDashboard(ctx) {
       skipTaskbar: false,
       alwaysOnTop: false,
       title: typeof ctx.t === "function" ? ctx.t("dashboardWindowTitle") : "Sessions",
-      backgroundColor: nativeTheme.shouldUseDarkColors ? "#1c1c1f" : "#f5f5f7",
+      backgroundColor: getDashboardBackgroundColor(),
       webPreferences: {
         preload: path.join(__dirname, "preload-dashboard.js"),
         nodeIntegration: false,
@@ -89,6 +95,15 @@ module.exports = function initDashboard(ctx) {
       dashboardWindow = null;
     });
     return dashboardWindow;
+  }
+
+  function syncThemeBackground() {
+    if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
+    dashboardWindow.setBackgroundColor(getDashboardBackgroundColor());
+  }
+
+  if (nativeTheme && typeof nativeTheme.on === "function") {
+    nativeTheme.on("updated", syncThemeBackground);
   }
 
   function showDashboard() {

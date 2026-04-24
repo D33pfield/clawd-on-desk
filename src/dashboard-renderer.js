@@ -146,13 +146,7 @@ function createCard(session, now) {
 }
 
 function deriveGroups(currentSnapshot) {
-  const sessions = Array.isArray(currentSnapshot.sessions) ? currentSnapshot.sessions : [];
-  const groups = Array.isArray(currentSnapshot.groups) ? currentSnapshot.groups : [];
-  if (groups.length) return groups;
-  const ids = Array.isArray(currentSnapshot.orderedIds)
-    ? currentSnapshot.orderedIds
-    : sessions.map((session) => session.id);
-  return ids.length ? [{ host: "", ids }] : [];
+  return Array.isArray(currentSnapshot.groups) ? currentSnapshot.groups : [];
 }
 
 function renderEmpty() {
