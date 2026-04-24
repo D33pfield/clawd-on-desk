@@ -13,6 +13,9 @@ const {
 const {
   createSettingsSizePreviewSession,
 } = require("./settings-size-preview-session");
+const {
+  maybeShowClaudeAutoModeNotice,
+} = require("./claude-auto-mode-notice");
 const hitGeometry = require("./hit-geometry");
 const animationCycle = require("./animation-cycle");
 const {
@@ -3608,6 +3611,14 @@ if (!gotTheLock) {
 
     // Auto-updater: setup event handlers (user triggers check via tray menu)
     setupAutoUpdater();
+
+    void maybeShowClaudeAutoModeNotice({
+      settingsController: _settingsController,
+      dialog,
+      getParent: () => (win && !win.isDestroyed() ? win : null),
+      lang: () => lang,
+      warn: (...args) => console.warn(...args),
+    });
   });
 
   app.on("before-quit", () => {
