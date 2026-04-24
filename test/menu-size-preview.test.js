@@ -64,7 +64,6 @@ describe("menu resizeWindow preview mode", () => {
       openAtLogin: false,
       bubbleFollowPet: false,
       hideBubbles: false,
-      showSessionId: false,
       soundMuted: false,
       menuOpen: false,
       tray: null,

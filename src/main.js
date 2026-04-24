@@ -425,7 +425,6 @@ let openAtLogin = _settingsController.get("openAtLogin");
 let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
 let sessionHudEnabled = _settingsController.get("sessionHudEnabled");
 let hideBubbles = _settingsController.get("hideBubbles");
-let showSessionId = _settingsController.get("showSessionId");
 let soundMuted = _settingsController.get("soundMuted");
 let soundVolume = _settingsController.get("soundVolume");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
@@ -894,7 +893,6 @@ const _stateCtx = {
   set forceEyeResend(v) { forceEyeResend = v; },
   get mouseStillSince() { return _tick ? _tick._mouseStillSince : Date.now(); },
   get pendingPermissions() { return pendingPermissions; },
-  get showSessionId() { return showSessionId; },
   sendToRenderer,
   sendToHitWin,
   syncHitWin,
@@ -1236,8 +1234,6 @@ const _menuCtx = {
   set bubbleFollowPet(v) { _settingsController.applyUpdate("bubbleFollowPet", v); },
   get hideBubbles() { return hideBubbles; },
   set hideBubbles(v) { _settingsController.applyUpdate("hideBubbles", v); },
-  get showSessionId() { return showSessionId; },
-  set showSessionId(v) { _settingsController.applyUpdate("showSessionId", v); },
   get soundMuted() { return soundMuted; },
   set soundMuted(v) { _settingsController.applyUpdate("soundMuted", v); },
   get soundVolume() { return soundVolume; },
@@ -1303,7 +1299,7 @@ const { t, buildContextMenu, buildTrayMenu, rebuildAllMenus, createTray,
 // route writes through the controller, so menu clicks and IPC updates
 // from a future settings panel land here identically.
 const MENU_AFFECTING_KEYS = new Set([
-  "lang", "soundMuted", "bubbleFollowPet", "hideBubbles", "showSessionId",
+  "lang", "soundMuted", "bubbleFollowPet", "hideBubbles",
   "manageClaudeHooksAutomatically", "autoStartWithClaude", "openAtLogin", "showTray", "showDock", "theme", "size",
   "sessionAliases",
 ]);
@@ -1343,7 +1339,6 @@ function wireSettingsSubscribers() {
     if ("bubbleFollowPet" in changes) bubbleFollowPet = changes.bubbleFollowPet;
     if ("sessionHudEnabled" in changes) sessionHudEnabled = changes.sessionHudEnabled;
     if ("hideBubbles" in changes) hideBubbles = changes.hideBubbles;
-    if ("showSessionId" in changes) showSessionId = changes.showSessionId;
     if ("soundMuted" in changes) soundMuted = changes.soundMuted;
     if ("soundVolume" in changes) soundVolume = changes.soundVolume;
     if ("allowEdgePinning" in changes) allowEdgePinningCached = changes.allowEdgePinning;

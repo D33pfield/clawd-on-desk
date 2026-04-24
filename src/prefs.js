@@ -82,7 +82,6 @@ const SCHEMA = {
   bubbleFollowPet: { type: "boolean", default: false },
   sessionHudEnabled: { type: "boolean", default: true },
   hideBubbles: { type: "boolean", default: false },
-  showSessionId: { type: "boolean", default: false },
   soundMuted: { type: "boolean", default: false },
   soundVolume: {
     type: "number",

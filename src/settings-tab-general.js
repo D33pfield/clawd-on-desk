@@ -12,7 +12,6 @@
     "autoStartWithClaude",
     "bubbleFollowPet",
     "hideBubbles",
-    "showSessionId",
   ]);
 
   let state = null;
@@ -98,11 +97,6 @@
         key: "hideBubbles",
         labelKey: "rowHideBubbles",
         descKey: "rowHideBubblesDesc",
-      }),
-      helpers.buildSwitchRow({
-        key: "showSessionId",
-        labelKey: "rowShowSessionId",
-        descKey: "rowShowSessionIdDesc",
       }),
     ]));
   }

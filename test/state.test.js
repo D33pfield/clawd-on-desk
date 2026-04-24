@@ -34,7 +34,6 @@ function makeCtx(overrides = {}) {
     buildTrayMenu: () => {},
     pendingPermissions: [],
     resolvePermissionEntry: () => {},
-    showSessionId: false,
     focusTerminalWindow: () => {},
     // Default: all pids dead
     processKill: () => { const e = new Error("ESRCH"); e.code = "ESRCH"; throw e; },

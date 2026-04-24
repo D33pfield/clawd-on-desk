@@ -121,6 +121,7 @@ h1 {
 }
 
 .card {
+  position: relative;
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 10px;
@@ -131,6 +132,16 @@ h1 {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
+}
+
+.session-id-badge {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--subtle);
+  pointer-events: none;
 }
 
 .agent-icon,

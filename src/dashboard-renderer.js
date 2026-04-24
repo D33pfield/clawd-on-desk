@@ -218,6 +218,11 @@ function createCard(session, now) {
   const card = document.createElement("article");
   card.className = "card";
 
+  if (session.id) {
+    const idTail = String(session.id).slice(-3);
+    card.appendChild(createText("span", "session-id-badge", `#${idTail}`));
+  }
+
   card.appendChild(createIcon(session));
 
   const main = document.createElement("div");

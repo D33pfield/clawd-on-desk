@@ -119,12 +119,6 @@ module.exports = function initMenu(ctx) {
         checked: !ctx.soundMuted,
         click: (menuItem) => { ctx.soundMuted = !menuItem.checked; },
       },
-      {
-        label: t("showSessionId"),
-        type: "checkbox",
-        checked: ctx.showSessionId,
-        click: (menuItem) => { ctx.showSessionId = menuItem.checked; },
-      },
       { type: "separator" },
       {
         label: t("startOnLogin"),

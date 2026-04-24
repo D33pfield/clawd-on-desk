@@ -30,7 +30,6 @@ function buildBaseCtx(overrides = {}) {
     openAtLogin: false,
     bubbleFollowPet: false,
     hideBubbles: false,
-    showSessionId: false,
     soundMuted: false,
     menuOpen: false,
     tray: null,

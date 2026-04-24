@@ -279,7 +279,6 @@ const updateRegistry = {
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
   sessionHudEnabled: requireBoolean("sessionHudEnabled"),
   hideBubbles: requireBoolean("hideBubbles"),
-  showSessionId: requireBoolean("showSessionId"),
   allowEdgePinning: requireBoolean("allowEdgePinning"),
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
 
