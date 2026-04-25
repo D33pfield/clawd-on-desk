@@ -233,9 +233,9 @@ Thanks to everyone who has helped make Clawd better:
 
 ## License
 
-Source code is licensed under the [MIT License](LICENSE).
+Source code is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
 
-**Artwork (assets/) is NOT covered by MIT.** All rights reserved by their respective copyright holders. See [assets/LICENSE](assets/LICENSE) for details.
+**Artwork (assets/) is NOT covered by AGPL-3.0.** All rights reserved by their respective copyright holders. See [assets/LICENSE](assets/LICENSE) for details.
 
 - **Clawd** character is the property of [Anthropic](https://www.anthropic.com). This is an unofficial fan project, not affiliated with or endorsed by Anthropic.
 - **Calico cat (三花猫)** artwork by 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)). All rights reserved.

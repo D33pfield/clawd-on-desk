@@ -230,9 +230,9 @@ Clawd를 더 좋게 만드는 데 도움을 준 모든 분들께 감사합니다
 
 ## 라이선스
 
-소스 코드는 [MIT License](LICENSE)로 배포됩니다.
+소스 코드는 [GNU Affero General Public License v3.0](LICENSE)(AGPL-3.0)로 배포됩니다.
 
-**아트워크(`assets/`)는 MIT 라이선스 대상이 아닙니다.** 각 저작권자의 권리가 유지되며 자세한 내용은 [assets/LICENSE](assets/LICENSE)를 참고하세요.
+**아트워크(`assets/`)는 AGPL-3.0 라이선스 대상이 아닙니다.** 각 저작권자의 권리가 유지되며 자세한 내용은 [assets/LICENSE](assets/LICENSE)를 참고하세요.
 
 - **Clawd** 캐릭터는 [Anthropic](https://www.anthropic.com)의 자산입니다. 이 프로젝트는 비공식 팬 프로젝트이며 Anthropic과 제휴하거나 승인받지 않았습니다.
 - **Calico cat (삼색 고양이)** 아트워크는 鹿鹿([@rullerzhou-afk](https://github.com/rullerzhou-afk))의 작품이며, 모든 권리를 보유합니다.
