@@ -2,7 +2,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const permission = require("../src/permission");
-const { computeBubbleStackLayout } = permission.__test;
+const { computeBubbleStackLayout, clampBubbleHeight } = permission.__test;
 
 // Common defaults so each test only spells out what's interesting.
 const BW = 340;
@@ -18,6 +18,28 @@ function layout(opts) {
     ...opts,
   });
 }
+
+describe("permission bubble height clamp", () => {
+  it("caps a tall measured bubble to the work area reserve", () => {
+    assert.strictEqual(clampBubbleHeight(1500, 900), 876);
+  });
+
+  it("rounds fractional measured heights up before clamping", () => {
+    assert.strictEqual(clampBubbleHeight(240.2, 900), 241);
+  });
+
+  it("supports an explicit reserve for product-tuned edge spacing", () => {
+    assert.strictEqual(clampBubbleHeight(1500, 900, 40), 860);
+  });
+
+  it("keeps invalid natural heights at zero", () => {
+    assert.strictEqual(clampBubbleHeight(0, 900), 0);
+  });
+
+  it("falls back to the natural height when work area height is unavailable", () => {
+    assert.strictEqual(clampBubbleHeight(500, 0), 500);
+  });
+});
 
 describe("permission bubble stack layout", () => {
   it("hangs the stack from the pet hitbox when there is room below", () => {

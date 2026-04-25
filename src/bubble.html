@@ -178,8 +178,26 @@ body { padding: 6px; }
   display: none;
   flex-direction: column;
   gap: 10px;
+  min-height: 0;
 }
 .elicitation-form.visible { display: flex; }
+.card.elicitation-scrollable .elicitation-form {
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.card.elicitation-scrollable .elicitation-form::-webkit-scrollbar { width: 6px; }
+.card.elicitation-scrollable .elicitation-form::-webkit-scrollbar-track { background: transparent; }
+.card.elicitation-scrollable .elicitation-form::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 3px;
+}
+.card.elicitation-scrollable .elicitation-form::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+.card.elicitation-scrollable .actions {
+  padding-top: 8px;
+  border-top: 1px solid var(--card-border);
+}
 
 .question-card {
   padding: 12px;
@@ -408,6 +426,11 @@ const sessionTag = document.getElementById("sessionTag");
 let elicitationMode = false;
 let elicitationQuestions = [];
 let currentLang = "en";
+let heightReportFrame = 0;
+
+// Mirrors body { padding: 6px; } above. Keep this in sync if the body padding changes.
+const BUBBLE_BODY_PADDING_Y = 12;
+const MIN_ELICITATION_FORM_HEIGHT = 80;
 
 function setSessionTag(data) {
   const parts = [];
@@ -564,21 +587,66 @@ function disableAll() {
   for (const el of elicitationForm.querySelectorAll("input, textarea")) el.disabled = true;
 }
 
-function revealCard() {
-  card.classList.remove("hiding");
-  card.classList.add("visible");
-  // 12 = 6px padding top + 6px padding bottom
-  requestAnimationFrame(() => {
-    window.bubbleAPI.reportHeight(card.offsetHeight + 12);
+function withUnconstrainedElicitationForm(fn) {
+  if (!elicitationMode) return fn();
+  const previousMaxHeight = elicitationForm.style.maxHeight;
+  const wasScrollable = card.classList.contains("elicitation-scrollable");
+
+  card.classList.remove("elicitation-scrollable");
+  elicitationForm.style.maxHeight = "";
+  try {
+    return fn();
+  } finally {
+    elicitationForm.style.maxHeight = previousMaxHeight;
+    card.classList.toggle("elicitation-scrollable", wasScrollable);
+  }
+}
+
+function measureNaturalBubbleHeight() {
+  return withUnconstrainedElicitationForm(() => {
+    return Math.ceil(Math.max(card.offsetHeight, card.scrollHeight) + BUBBLE_BODY_PADDING_Y);
   });
 }
 
+function applyElicitationViewport() {
+  if (!elicitationMode || !elicitationForm.classList.contains("visible")) return;
+  const cardRect = card.getBoundingClientRect();
+  const formRect = elicitationForm.getBoundingClientRect();
+  const fixedCardHeight = Math.max(0, cardRect.height - formRect.height);
+  const availableFormHeight = Math.floor(window.innerHeight - BUBBLE_BODY_PADDING_Y - fixedCardHeight);
+  const maxFormHeight = Math.max(MIN_ELICITATION_FORM_HEIGHT, availableFormHeight);
+
+  elicitationForm.style.maxHeight = `${maxFormHeight}px`;
+  card.classList.add("elicitation-scrollable");
+}
+
+function scheduleBubbleHeightReport() {
+  if (heightReportFrame) cancelAnimationFrame(heightReportFrame);
+  heightReportFrame = requestAnimationFrame(() => {
+    heightReportFrame = 0;
+    window.bubbleAPI.reportHeight(measureNaturalBubbleHeight());
+    applyElicitationViewport();
+  });
+}
+
+function revealCard() {
+  card.classList.remove("hiding");
+  card.classList.add("visible");
+  scheduleBubbleHeightReport();
+}
+
 function resetBubbleContent() {
+  if (heightReportFrame) {
+    cancelAnimationFrame(heightReportFrame);
+    heightReportFrame = 0;
+  }
   elicitationMode = false;
   elicitationQuestions = [];
+  card.classList.remove("elicitation-scrollable");
   commandBlock.style.display = "";
   commandBlock.textContent = "";
   elicitationForm.innerHTML = "";
+  elicitationForm.style.maxHeight = "";
   elicitationForm.classList.remove("visible");
   toolPill.style.display = "";
   btnAllow.style.display = "";
@@ -746,6 +814,7 @@ function renderElicitationForm(data) {
       const selected = otherInput.checked;
       otherTextarea.classList.toggle("visible", selected);
       updateElicitationSubmitState();
+      scheduleBubbleHeightReport();
       if (selected) {
         requestAnimationFrame(() => otherTextarea.focus());
       }
@@ -756,6 +825,7 @@ function renderElicitationForm(data) {
         if (r !== otherInput) {
           r.addEventListener("change", () => {
             otherTextarea.classList.toggle("visible", otherInput.checked);
+            scheduleBubbleHeightReport();
           });
         }
       });
@@ -978,6 +1048,7 @@ document.addEventListener("keydown", (e) => {
   btnAllow.click();
 });
 
+window.addEventListener("resize", applyElicitationViewport);
 window.bubbleAPI.onPermissionShow(show);
 window.bubbleAPI.onPermissionHide(hide);
 </script>

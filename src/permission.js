@@ -35,6 +35,21 @@ const RESTORE_FOCUS_DELAY_MS = 300;
 const MAC_FLOATING_TOPMOST_DELAY_MS = 120;
 const WIN_TOPMOST_LEVEL = "pop-up-menu";
 const LINUX_WINDOW_TYPE = "toolbar";
+// 24px matches the 8px stack margin on both edges plus a small buffer, so a
+// single tall bubble never hugs or exceeds the visible work area.
+const BUBBLE_HEIGHT_RESERVE = 24;
+
+function clampBubbleHeight(naturalHeight, workAreaHeight, reserve = BUBBLE_HEIGHT_RESERVE) {
+  const roundedHeight = Math.ceil(Number(naturalHeight));
+  if (!Number.isFinite(roundedHeight) || roundedHeight <= 0) return 0;
+
+  const areaHeight = Math.floor(Number(workAreaHeight));
+  if (!Number.isFinite(areaHeight) || areaHeight <= 0) return roundedHeight;
+
+  const edgeReserve = Math.max(0, Math.floor(Number(reserve) || 0));
+  const maxHeight = Math.max(1, areaHeight - edgeReserve);
+  return Math.min(roundedHeight, maxHeight);
+}
 
 function deferMacFloatingVisibility(ctx, win) {
   if (!isMac || !win || win.isDestroyed()) return;
@@ -354,6 +369,13 @@ function estimateBubbleHeight(sugCount) {
   return 200 + (sugCount || 0) * 37;
 }
 
+function getAnchorWorkArea(petBounds) {
+  const bounds = petBounds || ctx.getPetWindowBounds();
+  const cx = bounds.x + bounds.width / 2;
+  const cy = bounds.y + bounds.height / 2;
+  return ctx.getNearestWorkArea(cx, cy);
+}
+
 function repositionBubbles() {
   // Thin wrapper around computeBubbleStackLayout (top of file). All the
   // geometry lives there so it can be unit-tested without Electron windows.
@@ -362,13 +384,14 @@ function repositionBubbles() {
   const gap = 6;
   const bw = 340;
   const petBounds = ctx.getPetWindowBounds();
-  const cx = petBounds.x + petBounds.width / 2;
-  const cy = petBounds.y + petBounds.height / 2;
-  const wa = ctx.getNearestWorkArea(cx, cy);
+  const wa = getAnchorWorkArea(petBounds);
   const hitRect = ctx.bubbleFollowPet ? ctx.getHitRectScreen(petBounds) : null;
 
   const bubbleHeights = pendingPermissions.map(perm =>
-    perm.measuredHeight || estimateBubbleHeight((perm.suggestions || []).length)
+    clampBubbleHeight(
+      perm.measuredHeight || estimateBubbleHeight((perm.suggestions || []).length),
+      wa.height
+    )
   );
 
   const bounds = computeBubbleStackLayout({
@@ -392,7 +415,8 @@ function repositionBubbles() {
 
 function showPermissionBubble(permEntry) {
   const sugCount = (permEntry.suggestions || []).length;
-  const bh = estimateBubbleHeight(sugCount);
+  const wa = getAnchorWorkArea();
+  const bh = clampBubbleHeight(estimateBubbleHeight(sugCount), wa.height);
   // Temporary position — repositionBubbles() will finalize after renderer reports real height
   const pos = { x: 0, y: 0, width: 340, height: bh };
 
@@ -919,6 +943,7 @@ return {
 // hit the pure layout function without standing up Electron / ctx mocks.
 module.exports.__test = {
   computeBubbleStackLayout,
+  clampBubbleHeight,
   shouldSuppressCodexNotifyBubble,
   buildElicitationUpdatedInput,
 };
