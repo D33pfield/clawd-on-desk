@@ -105,10 +105,15 @@ describe("settings renderer browser environment", () => {
     assert.ok(!/\.size-bubble::after\s*\{[\s\S]*margin-top:\s*-1px;/.test(html));
   });
 
-  it("exposes split bubble controls in the General tab without reviving hide-all UI", () => {
+  it("exposes aggregate and split bubble controls in the General tab", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
     const html = fs.readFileSync(SETTINGS_HTML, "utf8");
+    assert.ok(generalSource.includes('key: "hideBubbles"'));
+    assert.ok(generalSource.includes("rowHideBubbles"));
+    assert.ok(generalSource.includes("setAllBubblesHidden"));
+    assert.ok(generalSource.includes('{ hidden: nextRaw }'));
+    assert.ok(generalSource.includes('keys.includes("hideBubbles")'));
     assert.ok(generalSource.includes("buildBubblePolicyRow()"));
     assert.ok(generalSource.includes("setBubbleCategoryEnabled"));
     assert.ok(generalSource.includes("confirmDisableUpdateBubbles"));
@@ -124,7 +129,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("updateBubbleDisableConfirmTitle"));
     assert.ok(/\.bubble-policy-seconds\s*\{[\s\S]*width:\s*42px;/.test(html));
     assert.ok(/\.bubble-policy-seconds\s*\{[\s\S]*box-sizing:\s*border-box;[\s\S]*text-align:\s*center;[\s\S]*padding:\s*0 3px;/.test(html));
-    assert.ok(!generalSource.includes("rowHideBubbles"));
+    assert.ok(i18nSource.includes("rowHideBubbles"));
     assert.ok(i18nSource.includes("rowBubblePolicy"));
     assert.ok(i18nSource.includes("bubbleUpdateWarning"));
     assert.ok(i18nSource.includes("bubbleSecondsPrefix"));
@@ -195,7 +200,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("children: [buildBubblePolicyList()]"));
     assert.ok(generalSource.includes('key: "bubbleFollowPet"'));
     assert.ok(!generalSource.includes('key: "showSessionId"'));
-    assert.ok(!generalSource.includes('key: "hideBubbles"'));
+    assert.ok(generalSource.includes('key: "hideBubbles"'));
     assert.ok(i18nSource.includes("bubblePolicySummaryPermission"));
     assert.ok(i18nSource.includes("bubblePolicySummaryNotification"));
     assert.ok(i18nSource.includes("bubblePolicySummaryUpdate"));

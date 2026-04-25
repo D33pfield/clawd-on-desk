@@ -92,6 +92,12 @@
 
     parent.appendChild(helpers.buildSection(t("sectionBubbles"), [
       helpers.buildSwitchRow({
+        key: "hideBubbles",
+        labelKey: "rowHideBubbles",
+        descKey: "rowHideBubblesDesc",
+        onToggle: ({ nextRaw }) => window.settingsAPI.command("setAllBubblesHidden", { hidden: nextRaw }),
+      }),
+      helpers.buildSwitchRow({
         key: "bubbleFollowPet",
         labelKey: "rowBubbleFollow",
         descKey: "rowBubbleFollowDesc",
@@ -709,6 +715,15 @@
   function patchInPlace(changes) {
     const keys = changes ? Object.keys(changes) : [];
     if (keys.length === 0) return false;
+    if (keys.includes("hideBubbles")) {
+      // Aggregate hiding also changes the policy summary and category controls.
+      const meta = state.mountedControls.generalSwitches.get("hideBubbles");
+      if (meta && document.body.contains(meta.element)) {
+        state.transientUiState.generalSwitches.delete("hideBubbles");
+        helpers.setSwitchVisual(meta.element, readers.readGeneralSwitchVisual("hideBubbles", meta.invert), { pending: false });
+      }
+      return false;
+    }
     if (!keys.every((key) => GENERAL_IN_PLACE_KEYS.has(key))) return false;
     if (keys.includes("size") && !ops.syncMountedSizeControl({ fromBroadcast: true })) return false;
     if (keys.includes("soundVolume") || keys.includes("soundMuted")) {
