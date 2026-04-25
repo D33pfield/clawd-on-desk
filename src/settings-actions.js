@@ -871,7 +871,7 @@ function setAllBubblesHidden(payload, deps) {
   if (typeof hidden !== "boolean") {
     return { status: "error", message: "setAllBubblesHidden.hidden must be a boolean" };
   }
-  return { status: "ok", commit: buildAggregateHideCommit(hidden) };
+  return { status: "ok", commit: buildAggregateHideCommit(hidden, deps && deps.snapshot) };
 }
 
 function setBubbleCategoryEnabled(payload, deps) {

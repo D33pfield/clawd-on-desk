@@ -22,14 +22,14 @@ const {
 // sub-gate is named for. Silencing them would break plan-mode and leave
 // CC hanging on an elicitation.
 //
-// hideBubbles is also honored here: dropping the HTTP connection lets
-// CC/codebuddy fall back to their terminal chat prompt. The previous
-// behavior merely skipped showPermissionBubble, leaving the request
-// parked in pendingPermissions — CC would then hang for 600s before
-// timing out with nothing in the terminal.
+// The aggregate/split permission bubble gates are also honored here:
+// dropping the HTTP connection lets CC/codebuddy fall back to their terminal
+// chat prompt. The previous behavior merely skipped showPermissionBubble,
+// leaving the request parked in pendingPermissions — CC would then hang for
+// 600s before timing out with nothing in the terminal.
 function shouldBypassCCBubble(ctx, toolName, agentId) {
   if (toolName === "ExitPlanMode" || toolName === "AskUserQuestion") return false;
-  if (ctx.hideBubbles) return true;
+  if (!arePermissionBubblesEnabled(ctx)) return true;
   if (typeof ctx.isAgentPermissionsEnabled !== "function") return false;
   return !ctx.isAgentPermissionsEnabled(agentId);
 }
@@ -739,11 +739,6 @@ function startHttpServer() {
             res.destroy();
             return;
           }
-          if (!arePermissionBubblesEnabled(ctx)) {
-            ctx.permLog(`${ccAgentId} permission bubbles disabled → destroy connection, terminal fallback`);
-            res.destroy();
-            return;
-          }
 
           const toolName = typeof data.tool_name === "string" ? data.tool_name : "Unknown";
           const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
@@ -776,7 +771,9 @@ function startHttpServer() {
           }
 
           if (shouldBypassCCBubble(ctx, toolName, permAgentId)) {
-            const reason = ctx.hideBubbles ? "hideBubbles" : `${permAgentId} bubbles disabled`;
+            const reason = !arePermissionBubblesEnabled(ctx)
+              ? "permission bubbles disabled"
+              : `${permAgentId} bubbles disabled`;
             ctx.permLog(`${reason} → destroy connection, chat fallback (tool=${toolName})`);
             res.destroy();
             return;

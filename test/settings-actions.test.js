@@ -377,17 +377,35 @@ describe("bubble policy commands", () => {
     assert.strictEqual(result.commit.hideBubbles, true);
   });
 
-  it("setAllBubblesHidden preserves legacy aggregate menu semantics", async () => {
-    const hidden = await commandRegistry.setAllBubblesHidden({ hidden: true }, { snapshot: prefs.getDefaults() });
+  it("setAllBubblesHidden preserves category durations while acting as an aggregate override", async () => {
+    const snapshot = {
+      ...prefs.getDefaults(),
+      notificationBubbleAutoCloseSeconds: 12,
+      updateBubbleAutoCloseSeconds: 8,
+    };
+    const hidden = await commandRegistry.setAllBubblesHidden({ hidden: true }, { snapshot });
     assert.strictEqual(hidden.status, "ok");
     assert.deepStrictEqual(hidden.commit, {
       hideBubbles: true,
-      permissionBubblesEnabled: false,
-      notificationBubbleAutoCloseSeconds: 0,
-      updateBubbleAutoCloseSeconds: 0,
     });
 
-    const shown = await commandRegistry.setAllBubblesHidden({ hidden: false }, { snapshot: prefs.getDefaults() });
+    const shown = await commandRegistry.setAllBubblesHidden({ hidden: false }, { snapshot: { ...snapshot, hideBubbles: true } });
+    assert.strictEqual(shown.status, "ok");
+    assert.deepStrictEqual(shown.commit, {
+      hideBubbles: false,
+    });
+  });
+
+  it("setAllBubblesHidden restores defaults when every category is already off", async () => {
+    const shown = await commandRegistry.setAllBubblesHidden({ hidden: false }, {
+      snapshot: {
+        ...prefs.getDefaults(),
+        hideBubbles: true,
+        permissionBubblesEnabled: false,
+        notificationBubbleAutoCloseSeconds: 0,
+        updateBubbleAutoCloseSeconds: 0,
+      },
+    });
     assert.strictEqual(shown.status, "ok");
     assert.deepStrictEqual(shown.commit, {
       hideBubbles: false,

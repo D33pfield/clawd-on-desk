@@ -19,6 +19,7 @@ function normalizeAutoCloseSeconds(value, defaultValue) {
 }
 
 function isAllBubblesHidden(snapshot = {}) {
+  if (snapshot.hideBubbles === true) return true;
   const permissionEnabled = snapshot.permissionBubblesEnabled !== false;
   const notificationSeconds = normalizeAutoCloseSeconds(
     snapshot.notificationBubbleAutoCloseSeconds,
@@ -34,6 +35,10 @@ function isAllBubblesHidden(snapshot = {}) {
 function getBubblePolicy(snapshot = {}, kind) {
   if (!isValidBubbleKind(kind)) {
     throw new Error(`Unknown bubble policy kind: ${kind}`);
+  }
+
+  if (snapshot.hideBubbles === true) {
+    return { enabled: false, autoCloseMs: kind === "permission" ? null : 0 };
   }
 
   if (kind === "permission") {
@@ -62,20 +67,27 @@ function getBubblePolicy(snapshot = {}, kind) {
   };
 }
 
-function buildAggregateHideCommit(hidden) {
-  return hidden
-    ? {
-        hideBubbles: true,
-        permissionBubblesEnabled: false,
-        notificationBubbleAutoCloseSeconds: 0,
-        updateBubbleAutoCloseSeconds: 0,
-      }
-    : {
-        hideBubbles: false,
-        permissionBubblesEnabled: true,
-        notificationBubbleAutoCloseSeconds: NOTIFICATION_DEFAULT_SECONDS,
-        updateBubbleAutoCloseSeconds: UPDATE_DEFAULT_SECONDS,
-      };
+function buildAggregateHideCommit(hidden, snapshot = {}) {
+  if (hidden) return { hideBubbles: true };
+
+  const permissionEnabled = snapshot.permissionBubblesEnabled !== false;
+  const notificationSeconds = normalizeAutoCloseSeconds(
+    snapshot.notificationBubbleAutoCloseSeconds,
+    NOTIFICATION_DEFAULT_SECONDS
+  );
+  const updateSeconds = normalizeAutoCloseSeconds(
+    snapshot.updateBubbleAutoCloseSeconds,
+    UPDATE_DEFAULT_SECONDS
+  );
+  const commit = { hideBubbles: false };
+
+  if (!permissionEnabled && notificationSeconds === 0 && updateSeconds === 0) {
+    commit.permissionBubblesEnabled = true;
+    commit.notificationBubbleAutoCloseSeconds = NOTIFICATION_DEFAULT_SECONDS;
+    commit.updateBubbleAutoCloseSeconds = UPDATE_DEFAULT_SECONDS;
+  }
+
+  return commit;
 }
 
 function buildCategoryEnabledCommit(snapshot = {}, category, enabled) {
@@ -101,9 +113,17 @@ function buildCategoryEnabledCommit(snapshot = {}, category, enabled) {
   if (category === "permission") {
     next.permissionBubblesEnabled = enabled;
   } else if (category === "notification") {
-    next.notificationBubbleAutoCloseSeconds = enabled ? NOTIFICATION_DEFAULT_SECONDS : 0;
+    next.notificationBubbleAutoCloseSeconds = enabled
+      ? (next.notificationBubbleAutoCloseSeconds > 0
+          ? next.notificationBubbleAutoCloseSeconds
+          : NOTIFICATION_DEFAULT_SECONDS)
+      : 0;
   } else {
-    next.updateBubbleAutoCloseSeconds = enabled ? UPDATE_DEFAULT_SECONDS : 0;
+    next.updateBubbleAutoCloseSeconds = enabled
+      ? (next.updateBubbleAutoCloseSeconds > 0
+          ? next.updateBubbleAutoCloseSeconds
+          : UPDATE_DEFAULT_SECONDS)
+      : 0;
   }
 
   next.hideBubbles = isAllBubblesHidden(next);

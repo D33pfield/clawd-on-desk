@@ -202,9 +202,10 @@
 
   function buildBubblePolicySummary() {
     const wrap = document.createElement("div");
-    const permissionOn = !!(state.snapshot && state.snapshot.permissionBubblesEnabled !== false);
-    const notificationSeconds = Number(state.snapshot && state.snapshot.notificationBubbleAutoCloseSeconds) || 0;
-    const updateSeconds = Number(state.snapshot && state.snapshot.updateBubbleAutoCloseSeconds) || 0;
+    const aggregateHidden = !!(state.snapshot && state.snapshot.hideBubbles === true);
+    const permissionOn = !aggregateHidden && !!(state.snapshot && state.snapshot.permissionBubblesEnabled !== false);
+    const notificationSeconds = aggregateHidden ? 0 : Number(state.snapshot && state.snapshot.notificationBubbleAutoCloseSeconds) || 0;
+    const updateSeconds = aggregateHidden ? 0 : Number(state.snapshot && state.snapshot.updateBubbleAutoCloseSeconds) || 0;
     const items = [
       {
         text: t("bubblePolicySummaryPermission").replace(
@@ -280,6 +281,7 @@
     const controls = item.querySelector(".bubble-policy-controls");
 
     function currentEnabled() {
+      if (state.snapshot && state.snapshot.hideBubbles === true) return false;
       if (!secondsKey) return !!(state.snapshot && state.snapshot.permissionBubblesEnabled !== false);
       const seconds = Number(state.snapshot && state.snapshot[secondsKey]);
       return Number.isFinite(seconds) && seconds > 0;

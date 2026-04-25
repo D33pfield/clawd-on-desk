@@ -5,10 +5,15 @@ const assert = require("node:assert");
 
 const { shouldBypassCCBubble, shouldBypassOpencodeBubble } = require("../src/server").__test;
 
-function makeCtx({ enabled = true, hideBubbles = false } = {}) {
+function makeCtx({ enabled = true, hideBubbles = false, permissionBubblesEnabled = true } = {}) {
   return {
     isAgentPermissionsEnabled: () => enabled,
     hideBubbles,
+    getBubblePolicy: (kind) => (
+      kind === "permission"
+        ? { enabled: permissionBubblesEnabled && !hideBubbles, autoCloseMs: null }
+        : { enabled: !hideBubbles, autoCloseMs: 1000 }
+    ),
   };
 }
 
@@ -43,8 +48,20 @@ describe("shouldBypassCCBubble", () => {
     assert.strictEqual(shouldBypassCCBubble(ctx, "Edit", "codebuddy"), true);
   });
 
+  it("bypasses normal permission tools when the split permission category is off", () => {
+    const ctx = makeCtx({ enabled: true, permissionBubblesEnabled: false });
+    assert.strictEqual(shouldBypassCCBubble(ctx, "Bash", "claude-code"), true);
+    assert.strictEqual(shouldBypassCCBubble(ctx, "Edit", "codebuddy"), true);
+  });
+
   it("hideBubbles does NOT bypass ExitPlanMode or AskUserQuestion — those would hang CC", () => {
     const ctx = makeCtx({ enabled: true, hideBubbles: true });
+    assert.strictEqual(shouldBypassCCBubble(ctx, "ExitPlanMode", "claude-code"), false);
+    assert.strictEqual(shouldBypassCCBubble(ctx, "AskUserQuestion", "claude-code"), false);
+  });
+
+  it("split permission category does NOT bypass ExitPlanMode or AskUserQuestion", () => {
+    const ctx = makeCtx({ enabled: true, permissionBubblesEnabled: false });
     assert.strictEqual(shouldBypassCCBubble(ctx, "ExitPlanMode", "claude-code"), false);
     assert.strictEqual(shouldBypassCCBubble(ctx, "AskUserQuestion", "claude-code"), false);
   });

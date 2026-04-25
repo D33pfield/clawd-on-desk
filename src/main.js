@@ -1414,7 +1414,10 @@ function wireSettingsSubscribers() {
         console.warn("Clawd: syncPermissionShortcuts failed:", err && err.message);
       }
     }
-    if ("permissionBubblesEnabled" in changes && changes.permissionBubblesEnabled === false) {
+    if (
+      ("permissionBubblesEnabled" in changes && changes.permissionBubblesEnabled === false) ||
+      ("hideBubbles" in changes && changes.hideBubbles === true)
+    ) {
       try {
         if (_perm && typeof _perm.dismissInteractivePermissionBubbles === "function") {
           _perm.dismissInteractivePermissionBubbles();
@@ -1423,7 +1426,10 @@ function wireSettingsSubscribers() {
         console.warn("Clawd: dismiss interactive bubbles failed:", err && err.message);
       }
     }
-    if ("notificationBubbleAutoCloseSeconds" in changes && changes.notificationBubbleAutoCloseSeconds === 0) {
+    if (
+      ("notificationBubbleAutoCloseSeconds" in changes && changes.notificationBubbleAutoCloseSeconds === 0) ||
+      ("hideBubbles" in changes && changes.hideBubbles === true)
+    ) {
       try {
         clearCodexNotifyBubbles();
         clearKimiNotifyBubbles();
@@ -1431,7 +1437,10 @@ function wireSettingsSubscribers() {
         console.warn("Clawd: clear notification bubbles failed:", err && err.message);
       }
     }
-    if ("updateBubbleAutoCloseSeconds" in changes && changes.updateBubbleAutoCloseSeconds === 0) {
+    if (
+      ("updateBubbleAutoCloseSeconds" in changes && changes.updateBubbleAutoCloseSeconds === 0) ||
+      ("hideBubbles" in changes && changes.hideBubbles === true)
+    ) {
       try {
         if (_updateBubble && typeof _updateBubble.hideForPolicy === "function") _updateBubble.hideForPolicy();
       } catch (err) {
