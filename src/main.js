@@ -1435,12 +1435,23 @@ function wireSettingsSubscribers() {
     if (
       ("notificationBubbleAutoCloseSeconds" in changes && changes.notificationBubbleAutoCloseSeconds === 0) ||
       ("hideBubbles" in changes && changes.hideBubbles === true)
+      ) {
+        try {
+          clearCodexNotifyBubbles(undefined, "settings-policy-disabled");
+          clearKimiNotifyBubbles(undefined, "settings-policy-disabled");
+        } catch (err) {
+          console.warn("Clawd: clear notification bubbles failed:", err && err.message);
+        }
+    } else if (
+      "notificationBubbleAutoCloseSeconds" in changes &&
+      changes.notificationBubbleAutoCloseSeconds > 0
     ) {
       try {
-        clearCodexNotifyBubbles();
-        clearKimiNotifyBubbles();
+        if (_perm && typeof _perm.refreshPassiveNotifyAutoClose === "function") {
+          _perm.refreshPassiveNotifyAutoClose();
+        }
       } catch (err) {
-        console.warn("Clawd: clear notification bubbles failed:", err && err.message);
+        console.warn("Clawd: refresh notification bubble timers failed:", err && err.message);
       }
     }
     if (
@@ -1451,6 +1462,17 @@ function wireSettingsSubscribers() {
         if (_updateBubble && typeof _updateBubble.hideForPolicy === "function") _updateBubble.hideForPolicy();
       } catch (err) {
         console.warn("Clawd: hide update bubble failed:", err && err.message);
+      }
+    } else if (
+      "updateBubbleAutoCloseSeconds" in changes &&
+      changes.updateBubbleAutoCloseSeconds > 0
+    ) {
+      try {
+        if (_updateBubble && typeof _updateBubble.refreshAutoCloseForPolicy === "function") {
+          _updateBubble.refreshAutoCloseForPolicy();
+        }
+      } catch (err) {
+        console.warn("Clawd: refresh update bubble timer failed:", err && err.message);
       }
     }
     if ("bubbleFollowPet" in changes) {
@@ -3784,7 +3806,7 @@ if (!gotTheLock) {
           });
           return;
         }
-        clearCodexNotifyBubbles(sid);
+        clearCodexNotifyBubbles(sid, `codex-state-transition:${state}`);
         updateSession(sid, state, event, {
           cwd: extra.cwd,
           agentId: "codex",

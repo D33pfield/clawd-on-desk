@@ -21,6 +21,7 @@
     "notificationBubbleAutoCloseSeconds",
     "updateBubbleAutoCloseSeconds",
   ]);
+  const BUBBLE_SECONDS_AUTO_COMMIT_DELAY_MS = 600;
 
   let state = null;
   let readers = null;
@@ -315,6 +316,10 @@
     const sw = item.querySelector(".switch");
     const controls = item.querySelector(".bubble-policy-controls");
     let secondsInput = null;
+    let secondsCommitTimer = null;
+    let secondsDraftValue = null;
+    let secondsInFlightValue = null;
+    let secondsCommitSeq = 0;
 
     function currentEnabled() {
       if (state.snapshot && state.snapshot.hideBubbles === true) return false;
@@ -333,9 +338,62 @@
       if (secondsInput) secondsInput.disabled = !enabled || pending;
     }
 
+    function clearSecondsCommitTimer() {
+      if (secondsCommitTimer) {
+        clearTimeout(secondsCommitTimer);
+        secondsCommitTimer = null;
+      }
+    }
+
     function syncFromSnapshot() {
       setVisual(currentEnabled(), false);
-      if (secondsInput) secondsInput.value = String(currentSeconds());
+      if (!secondsInput) return;
+      const snapshotSeconds = currentSeconds();
+      if (secondsDraftValue === snapshotSeconds) secondsDraftValue = null;
+      if (secondsInFlightValue === snapshotSeconds) secondsInFlightValue = null;
+      if (document.activeElement === secondsInput || secondsDraftValue != null) return;
+      secondsInput.value = String(snapshotSeconds);
+    }
+
+    function submitSecondsCommit(next) {
+      if (!secondsInput) return Promise.resolve(false);
+      if (next === currentSeconds() || next === secondsInFlightValue) {
+        if (secondsDraftValue === next) secondsDraftValue = null;
+        return Promise.resolve(true);
+      }
+      clearSecondsCommitTimer();
+      secondsDraftValue = next;
+      secondsInFlightValue = next;
+      const seq = ++secondsCommitSeq;
+      return commitSecondsValue(secondsInput, secondsKey, next, category).then((committed) => {
+        if (seq === secondsCommitSeq && secondsInFlightValue === next) secondsInFlightValue = null;
+        if (seq !== secondsCommitSeq) return committed;
+        if (committed && secondsDraftValue === next) secondsDraftValue = null;
+        if (!committed) secondsDraftValue = null;
+        return committed;
+      });
+    }
+
+    function scheduleSecondsCommit(next) {
+      secondsDraftValue = next;
+      clearSecondsCommitTimer();
+      secondsCommitTimer = setTimeout(() => {
+        secondsCommitTimer = null;
+        void submitSecondsCommit(next);
+      }, BUBBLE_SECONDS_AUTO_COMMIT_DELAY_MS);
+    }
+
+    function flushSecondsCommit() {
+      clearSecondsCommitTimer();
+      const raw = secondsInput.value.trim();
+      const next = parseBubbleSecondsInputValue(raw);
+      if (next == null) {
+        secondsDraftValue = null;
+        secondsInput.value = String(Number(state.snapshot && state.snapshot[secondsKey]) || 0);
+        ops.showToast(t("toastSaveFailed") + t("bubbleSecondsInvalid"), { error: true });
+        return;
+      }
+      void submitSecondsCommit(next);
     }
 
     function runToggle() {
@@ -395,18 +453,29 @@
       secondsInput = input;
       input.disabled = !currentEnabled();
       input.addEventListener("input", () => {
-        const next = input.value.replace(/\D+/g, "").slice(0, 4);
-        if (input.value !== next) input.value = next;
-      });
-      input.addEventListener("change", () => {
+        const sanitized = input.value.replace(/\D+/g, "").slice(0, 4);
+        if (input.value !== sanitized) input.value = sanitized;
         const raw = input.value.trim();
-        const next = Number(raw);
-        if (!raw || !Number.isInteger(next) || next < 0 || next > 3600) {
-          input.value = String(Number(state.snapshot && state.snapshot[secondsKey]) || 0);
-          ops.showToast(t("toastSaveFailed") + t("bubbleSecondsInvalid"), { error: true });
+        const next = parseBubbleSecondsInputValue(raw);
+        if (next == null) {
+          clearSecondsCommitTimer();
+          secondsDraftValue = null;
           return;
         }
-        commitSecondsValue(input, secondsKey, next, category);
+        if (category === "update" && next === 0) return;
+        scheduleSecondsCommit(next);
+      });
+      input.addEventListener("blur", () => {
+        flushSecondsCommit();
+      });
+      input.addEventListener("change", () => {
+        flushSecondsCommit();
+      });
+      input.addEventListener("keydown", (ev) => {
+        if (ev.key !== "Enter") return;
+        ev.preventDefault();
+        flushSecondsCommit();
+        input.blur();
       });
     }
 
@@ -498,25 +567,36 @@
   function commitSecondsValue(input, secondsKey, next, category) {
     const previous = Number(state.snapshot && state.snapshot[secondsKey]) || 0;
     const doCommit = () => {
-      window.settingsAPI.update(secondsKey, next).then((result) => {
+      return window.settingsAPI.update(secondsKey, next).then((result) => {
         if (!result || result.status !== "ok") {
           input.value = String(Number(state.snapshot && state.snapshot[secondsKey]) || 0);
           const msg = (result && result.message) || "unknown error";
           ops.showToast(t("toastSaveFailed") + msg, { error: true });
+          return false;
         }
+        return true;
       }).catch((err) => {
         input.value = String(Number(state.snapshot && state.snapshot[secondsKey]) || 0);
         ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+        return false;
       });
     };
     if (category === "update" && next === 0 && previous !== 0) {
-      confirmDisableUpdateBubbles().then((confirmed) => {
-        if (confirmed) doCommit();
-        else input.value = String(previous);
+      return confirmDisableUpdateBubbles().then((confirmed) => {
+        if (confirmed) return doCommit();
+        input.value = String(previous);
+        return false;
       });
-      return;
     }
-    doCommit();
+    return doCommit();
+  }
+
+  function parseBubbleSecondsInputValue(raw) {
+    const trimmed = String(raw || "").trim();
+    if (!trimmed) return null;
+    const next = Number(trimmed);
+    if (!Number.isInteger(next) || next < 0 || next > 3600) return null;
+    return next;
   }
 
   function buildVolumeSliderRow() {

@@ -137,6 +137,31 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("bubbleSecondsPrefix"));
   });
 
+  it("describes notification bubble seconds as an auto-close upper bound instead of a guaranteed visible duration", () => {
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+
+    assert.ok(i18nSource.includes("auto-close upper bound"));
+    assert.ok(i18nSource.includes("later session states may dismiss it earlier"));
+    assert.ok(i18nSource.includes("自动关闭上限"));
+    assert.ok(i18nSource.includes("后续状态可能提前关闭"));
+    assert.ok(i18nSource.includes("자동 종료 상한"));
+    assert.ok(i18nSource.includes("후속 상태가 더 일찍 닫을 수 있습니다"));
+  });
+
+  it("auto-commits bubble seconds shortly after valid input instead of waiting only for change", () => {
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    assert.ok(generalSource.includes("BUBBLE_SECONDS_AUTO_COMMIT_DELAY_MS"));
+    assert.ok(generalSource.includes('input.addEventListener("input", () => {'));
+    assert.ok(generalSource.includes("scheduleSecondsCommit(next);"));
+    assert.ok(generalSource.includes('input.addEventListener("blur", () => {'));
+    assert.ok(generalSource.includes("flushSecondsCommit();"));
+    assert.ok(generalSource.includes('input.addEventListener("change", () => {'));
+    assert.ok(generalSource.includes("const next = parseBubbleSecondsInputValue(raw);"));
+    assert.ok(generalSource.includes('if (category === "update" && next === 0) return;'));
+    assert.ok(generalSource.includes("commitSecondsValue(secondsInput, secondsKey, next, category)"));
+    assert.ok(!generalSource.includes("commitSecondsValue(input, secondsKey, next, category).then("));
+  });
+
   it("keeps update bubble disable confirmation inside the Settings renderer", () => {
     const preloadSource = fs.readFileSync(PRELOAD_SETTINGS, "utf8");
     const mainSource = fs.readFileSync(MAIN_PROCESS, "utf8");

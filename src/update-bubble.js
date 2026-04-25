@@ -50,6 +50,14 @@ function estimateHeight(payload) {
   return height;
 }
 
+function computeAutoCloseRemainingMs(shownAt, autoCloseMs, now = Date.now()) {
+  const totalMs = Number(autoCloseMs);
+  if (!Number.isFinite(totalMs) || totalMs <= 0) return 0;
+  const startedAt = Number(shownAt);
+  if (!Number.isFinite(startedAt) || startedAt <= 0) return totalMs;
+  return Math.max(0, totalMs - Math.max(0, now - startedAt));
+}
+
 function computeUpdateBubbleBounds({
   bubbleFollowPet,
   width,
@@ -114,6 +122,7 @@ module.exports = function initUpdateBubble(ctx) {
   let resolveAction = null;
   let hideTimer = null;
   let autoCloseTimer = null;
+  let visibleSince = 0;
 
   function getPermissionStackHeight() {
     const pending = typeof ctx.getPendingPermissions === "function" ? ctx.getPendingPermissions() : [];
@@ -235,12 +244,37 @@ module.exports = function initUpdateBubble(ctx) {
     clearAutoCloseTimer();
     const policy = getPolicy(ctx);
     if (!policy.enabled || !(policy.autoCloseMs > 0)) return;
+    visibleSince = Date.now();
     autoCloseTimer = setTimeout(() => {
       autoCloseTimer = null;
       const fallback = payload && payload.defaultAction != null ? payload.defaultAction : null;
       if (resolveAction) settlePrevious(fallback);
       hideUpdateBubble();
     }, policy.autoCloseMs);
+  }
+
+  function refreshAutoCloseForPolicy() {
+    if (!bubble || bubble.isDestroyed() || !activePayload) return false;
+    clearAutoCloseTimer();
+    const policy = getPolicy(ctx);
+    if (!policy.enabled || !(policy.autoCloseMs > 0)) {
+      hideForPolicy();
+      return false;
+    }
+    const remainingMs = computeAutoCloseRemainingMs(visibleSince, policy.autoCloseMs, Date.now());
+    if (remainingMs <= 0) {
+      const fallback = activePayload && activePayload.defaultAction != null ? activePayload.defaultAction : null;
+      if (resolveAction) settlePrevious(fallback);
+      hideUpdateBubble();
+      return false;
+    }
+    autoCloseTimer = setTimeout(() => {
+      autoCloseTimer = null;
+      const fallback = activePayload && activePayload.defaultAction != null ? activePayload.defaultAction : null;
+      if (resolveAction) settlePrevious(fallback);
+      hideUpdateBubble();
+    }, remainingMs);
+    return true;
   }
 
   function showUpdateBubble(payload) {
@@ -291,6 +325,7 @@ module.exports = function initUpdateBubble(ctx) {
     if (!bubble || bubble.isDestroyed()) return;
     bubble.webContents.send("update-bubble-hide");
     clearAutoCloseTimer();
+    visibleSince = 0;
     if (hideTimer) clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
       if (bubble && !bubble.isDestroyed()) bubble.hide();
@@ -344,12 +379,14 @@ module.exports = function initUpdateBubble(ctx) {
     handleUpdateBubbleHeight,
     syncVisibility,
     hideForPolicy,
+    refreshAutoCloseForPolicy,
     cleanup,
     getBubbleWindow: () => bubble,
   };
 };
 
 module.exports.__test = {
+  computeAutoCloseRemainingMs,
   computeUpdateBubbleBounds,
   estimateHeight,
 };
