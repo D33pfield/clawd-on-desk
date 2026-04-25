@@ -22,14 +22,15 @@ describe("AskUserQuestion bubble Other option", () => {
     assert.match(bubbleHtml, /otherInput\.setAttribute\("data-other", "true"\);/);
     assert.match(bubbleHtml, /const otherTextarea = document\.createElement\("textarea"\);/);
     assert.match(bubbleHtml, /otherTextarea\.setAttribute\("data-other-textarea", "true"\);/);
-    assert.match(bubbleHtml, /otherTextarea\.addEventListener\("input", updateElicitationSubmitState\);/);
+    assert.match(bubbleHtml, /otherTextarea\.addEventListener\("input", \(\) => \{/);
+    assert.match(bubbleHtml, /ensureElicitationAnswer\(questionIndex\)\.otherText = otherTextarea\.value;/);
   });
 
   it("requires non-empty custom text when Other is selected and disables textareas during submit", () => {
-    assert.match(bubbleHtml, /if \(!checked\.some\(input => input\.dataset\.other === "true"\)\) return true;/);
-    assert.match(bubbleHtml, /return !!\(textarea && textarea\.value\.trim\(\)\);/);
-    assert.match(bubbleHtml, /if \(!otherText\) return null;/);
-    assert.match(bubbleHtml, /for \(const el of elicitationForm\.querySelectorAll\("input, textarea"\)\) el\.disabled = true;/);
-    assert.match(bubbleHtml, /for \(const el of elicitationForm\.querySelectorAll\("input, textarea"\)\) el\.disabled = false;/);
+    assert.match(bubbleHtml, /const ELICITATION_OTHER_KEY = "__other__";/);
+    assert.match(bubbleHtml, /if \(optionKey === ELICITATION_OTHER_KEY\) \{/);
+    assert.match(bubbleHtml, /const otherText = answer\.otherText\.trim\(\);/);
+    assert.match(bubbleHtml, /if \(!otherText\) return "";/);
+    assert.match(bubbleHtml, /for \(const el of elicitationForm\.querySelectorAll\("input, textarea, button"\)\) el\.disabled = true;/);
   });
 });

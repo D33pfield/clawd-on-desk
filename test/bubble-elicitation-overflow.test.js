@@ -13,7 +13,7 @@ describe("AskUserQuestion bubble overflow", () => {
     );
     assert.match(
       bubbleHtml,
-      /<div class="elicitation-form" id="elicitationForm"><\/div>\s*<div class="actions">/
+      /<div class="elicitation-form" id="elicitationForm"><\/div>\s*<div class="elicitation-progress" id="elicitationProgress"><\/div>\s*<div class="actions">/
     );
     const actionsBlock = bubbleHtml.match(/\.actions\s*\{(?<body>[^}]*)\}/);
     assert.ok(actionsBlock, "bubble.html should define a base .actions block");
