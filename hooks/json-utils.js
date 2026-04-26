@@ -42,6 +42,31 @@ function asarUnpackedPath(p) {
   return p.replace("app.asar/", "app.asar.unpacked/");
 }
 
+function quoteHookCommandArg(value) {
+  return `"${String(value).replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * Format a Node-based hook command consistently across installers.
+ *
+ * POSIX hook launchers can execute a plain quoted command. On Windows, some
+ * launchers run through PowerShell, where a bare quoted executable is treated
+ * as a string literal and must be prefixed with `&`; others are more reliable
+ * when explicitly routed through cmd.exe. Callers choose the wrapper that
+ * matches the target agent while sharing the quoting rules.
+ */
+function formatNodeHookCommand(nodeBin, scriptPath, options = {}) {
+  const platform = options.platform || process.platform;
+  const args = Array.isArray(options.args) ? options.args : [];
+  const command = [nodeBin, scriptPath, ...args].map(quoteHookCommandArg).join(" ");
+  if (platform !== "win32") return command;
+
+  const wrapper = options.windowsWrapper || "powershell";
+  if (wrapper === "cmd") return `cmd /d /s /c "${command}"`;
+  if (wrapper === "none") return command;
+  return `& ${command}`;
+}
+
 /**
  * Extract the existing absolute node binary path from hook commands that
  * contain `marker` (e.g. "cursor-hook.js").  Scans settings.hooks for
@@ -87,4 +112,9 @@ function extractExistingNodeBin(settings, marker, options) {
   return null;
 }
 
-module.exports = { writeJsonAtomic, asarUnpackedPath, extractExistingNodeBin };
+module.exports = {
+  writeJsonAtomic,
+  asarUnpackedPath,
+  extractExistingNodeBin,
+  formatNodeHookCommand,
+};

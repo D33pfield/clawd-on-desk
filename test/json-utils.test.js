@@ -1,6 +1,6 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
-const { extractExistingNodeBin } = require("../hooks/json-utils");
+const { extractExistingNodeBin, formatNodeHookCommand } = require("../hooks/json-utils");
 
 describe("extractExistingNodeBin", () => {
   it("extracts node path from flat command format", () => {
@@ -104,6 +104,37 @@ describe("extractExistingNodeBin", () => {
     assert.strictEqual(
       extractExistingNodeBin(settings, "cursor-hook.js"),
       "\\\\fileserver\\tools\\nodejs\\node.exe"
+    );
+  });
+});
+
+describe("formatNodeHookCommand", () => {
+  it("formats POSIX commands as quoted node + script", () => {
+    assert.strictEqual(
+      formatNodeHookCommand("/usr/local/bin/node", "/app/hooks/codex-debug-hook.js", {
+        platform: "linux",
+      }),
+      '"/usr/local/bin/node" "/app/hooks/codex-debug-hook.js"'
+    );
+  });
+
+  it("formats Windows PowerShell commands with call operator", () => {
+    assert.strictEqual(
+      formatNodeHookCommand("C:\\Program Files\\nodejs\\node.exe", "D:/app/hooks/kiro-hook.js", {
+        platform: "win32",
+        windowsWrapper: "powershell",
+      }),
+      '& "C:\\Program Files\\nodejs\\node.exe" "D:/app/hooks/kiro-hook.js"'
+    );
+  });
+
+  it("formats Windows cmd-wrapped commands", () => {
+    assert.strictEqual(
+      formatNodeHookCommand("C:\\Program Files\\nodejs\\node.exe", "D:/app/hooks/codex-debug-hook.js", {
+        platform: "win32",
+        windowsWrapper: "cmd",
+      }),
+      'cmd /d /s /c ""C:\\Program Files\\nodejs\\node.exe" "D:/app/hooks/codex-debug-hook.js""'
     );
   });
 });

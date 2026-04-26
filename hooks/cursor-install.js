@@ -5,7 +5,12 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { resolveNodeBin } = require("./server-config");
-const { writeJsonAtomic, asarUnpackedPath, extractExistingNodeBin } = require("./json-utils");
+const {
+  writeJsonAtomic,
+  asarUnpackedPath,
+  extractExistingNodeBin,
+  formatNodeHookCommand,
+} = require("./json-utils");
 const MARKER = "cursor-hook.js";
 
 const CURSOR_HOOK_EVENTS = [
@@ -23,11 +28,12 @@ const CURSOR_HOOK_EVENTS = [
 ];
 
 function buildCursorHookCommand(nodeBin, hookScript, platform = process.platform) {
-  const baseCommand = `"${nodeBin}" "${hookScript}"`;
-  if (platform !== "win32") return baseCommand;
   // Cursor's Windows hook launcher is more reliable when the command goes
   // through cmd.exe explicitly instead of invoking node directly.
-  return `cmd /d /s /c "${baseCommand}"`;
+  return formatNodeHookCommand(nodeBin, hookScript, {
+    platform,
+    windowsWrapper: "cmd",
+  });
 }
 
 /**

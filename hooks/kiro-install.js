@@ -13,7 +13,7 @@ const path = require("path");
 const os = require("os");
 const { spawnSync } = require("child_process");
 const { resolveNodeBin } = require("./server-config");
-const { writeJsonAtomic, extractExistingNodeBin } = require("./json-utils");
+const { writeJsonAtomic, extractExistingNodeBin, formatNodeHookCommand } = require("./json-utils");
 const MARKER = "kiro-hook.js";
 const CLAWD_AGENT_NAME = "clawd";
 const CLAWD_AGENT_DESCRIPTION = "Clawd desktop pet hook integration";
@@ -125,8 +125,10 @@ function getHookScriptPath() {
 // on Windows to invoke the binary. POSIX shells need no such prefix.
 function formatHookCommand(nodeBin, scriptPath, platformOverride) {
   const platform = platformOverride || process.platform;
-  const quoted = `"${nodeBin}" "${scriptPath}"`;
-  return platform === "win32" ? `& ${quoted}` : quoted;
+  return formatNodeHookCommand(nodeBin, scriptPath, {
+    platform,
+    windowsWrapper: "powershell",
+  });
 }
 
 function getKiroCliCandidates(homeDir = os.homedir(), platformOverride, env = process.env) {
