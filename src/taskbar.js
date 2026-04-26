@@ -8,16 +8,21 @@ function shouldKeepOutOfTaskbar(platform = process.platform) {
 // skipTaskbar flag after showInactive() or taskbar/shell restart. Reassert it
 // for floating Clawd windows whenever they are shown without activation, and
 // from Windows' shell-state watchdog while they remain visible.
-function keepOutOfTaskbar(w) {
+function keepOutOfTaskbarForPlatform(w, platform = process.platform) {
   if (!w || w.isDestroyed()) return;
-  if (shouldKeepOutOfTaskbar() && typeof w.setSkipTaskbar === "function") {
+  if (shouldKeepOutOfTaskbar(platform) && typeof w.setSkipTaskbar === "function") {
     w.setSkipTaskbar(true);
   }
+}
+
+function keepOutOfTaskbar(w) {
+  keepOutOfTaskbarForPlatform(w);
 }
 
 module.exports = {
   keepOutOfTaskbar,
   __test: {
+    keepOutOfTaskbarForPlatform,
     shouldKeepOutOfTaskbar,
   },
 };

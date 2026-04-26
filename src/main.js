@@ -1289,6 +1289,9 @@ function startTopmostWatchdog() {
       sessionHudWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
       keepOutOfTaskbar(sessionHudWin);
     }
+    if (contextMenuOwner && !contextMenuOwner.isDestroyed()) {
+      keepOutOfTaskbar(contextMenuOwner);
+    }
   }, TOPMOST_WATCHDOG_MS);
 }
 

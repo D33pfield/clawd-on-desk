@@ -16,15 +16,32 @@ describe("taskbar helpers", () => {
     assert.doesNotThrow(() => keepOutOfTaskbar({ isDestroyed: () => false }));
   });
 
-  it("calls setSkipTaskbar on supported runtime platforms", () => {
-    let called = false;
+  it("calls setSkipTaskbar only on supported platforms", () => {
+    for (const platform of ["win32", "linux", "darwin"]) {
+      let callCount = 0;
+      let lastValue = null;
+      __test.keepOutOfTaskbarForPlatform({
+        isDestroyed: () => false,
+        setSkipTaskbar(value) {
+          callCount += 1;
+          lastValue = value;
+        },
+      }, platform);
+
+      assert.strictEqual(callCount, __test.shouldKeepOutOfTaskbar(platform) ? 1 : 0);
+      if (callCount) assert.strictEqual(lastValue, true);
+    }
+  });
+
+  it("uses the runtime platform for the public helper", () => {
+    let callCount = 0;
     keepOutOfTaskbar({
       isDestroyed: () => false,
       setSkipTaskbar(value) {
-        called = value;
+        callCount += value ? 1 : 0;
       },
     });
 
-    assert.strictEqual(called, __test.shouldKeepOutOfTaskbar(process.platform));
+    assert.strictEqual(callCount, __test.shouldKeepOutOfTaskbar(process.platform) ? 1 : 0);
   });
 });

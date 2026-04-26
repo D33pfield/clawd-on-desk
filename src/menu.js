@@ -2,6 +2,7 @@
 
 const { app, BrowserWindow, screen, Menu, Tray, nativeImage } = require("electron");
 const path = require("path");
+const { keepOutOfTaskbar } = require("./taskbar");
 
 const isMac = process.platform === "darwin";
 const isWin = process.platform === "win32";
@@ -239,6 +240,7 @@ module.exports = function initMenu(ctx) {
     const cursor = screen.getCursorScreenPoint();
     owner.setBounds({ x: cursor.x, y: cursor.y, width: 1, height: 1 });
     owner.show();
+    keepOutOfTaskbar(owner);
     owner.focus();
 
     ctx.menuOpen = true;
@@ -249,6 +251,7 @@ module.exports = function initMenu(ctx) {
         if (owner && !owner.isDestroyed()) owner.hide();
         if (ctx.win && !ctx.win.isDestroyed()) {
           ctx.win.showInactive();
+          keepOutOfTaskbar(ctx.win);
           if (isMac) {
             ctx.reapplyMacVisibility();
           } else if (isWin) {
