@@ -117,6 +117,16 @@ Clawd adapts to multi-monitor setups: proportional sizing uses the display Clawd
 
 ## Quick Start
 
+For normal use, download the latest prebuilt installer from **[GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest)**:
+
+- **Windows**: `Clawd-on-Desk-Setup-<version>-x64.exe` or `Clawd-on-Desk-Setup-<version>-arm64.exe`
+- **macOS**: `.dmg`
+- **Linux**: `.AppImage` or `.deb`
+
+Launch Clawd after installing it; supported agent hooks/plugins are synced automatically on startup.
+
+Run from source only if you're contributing, testing unreleased code, or debugging integrations. Source installs download Electron/build tooling and can create a large `node_modules` tree.
+
 ```bash
 # Clone the repo
 git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
