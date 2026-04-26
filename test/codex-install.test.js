@@ -121,14 +121,14 @@ describe("Codex official hook installer", () => {
     );
   });
 
-  it("formats Windows commands without adding a nested cmd wrapper", () => {
+  it("formats Windows commands for PowerShell execution", () => {
     const command = buildCodexStateHookCommand(
       "C:\\Program Files\\nodejs\\node.exe",
       "D:/animation/hooks/codex-hook.js",
       "win32"
     );
 
-    assert.strictEqual(command, '"C:\\Program Files\\nodejs\\node.exe" "D:/animation/hooks/codex-hook.js"');
+    assert.strictEqual(command, '& "C:\\Program Files\\nodejs\\node.exe" "D:/animation/hooks/codex-hook.js"');
   });
 
   it("unregisters only official state hooks", () => {

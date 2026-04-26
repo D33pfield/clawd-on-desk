@@ -35,10 +35,11 @@ function getCodexPaths(options = {}) {
 function buildCodexHookCommand(nodeBin, hookScript, platform = process.platform) {
   return formatNodeHookCommand(nodeBin, hookScript, {
     platform,
-    // Codex already invokes hook commands through %COMSPEC% /C on Windows.
-    // Avoid an extra cmd.exe layer whose quote stripping would obscure Phase
-    // 0/1 validation.
-    windowsWrapper: "none",
+    // Real Windows Codex hook runs execute command strings through
+    // PowerShell. A bare quoted executable (`"node" "hook.js"`) is parsed as
+    // a string literal plus an unexpected token and exits 1, so use the
+    // PowerShell call operator.
+    windowsWrapper: "powershell",
   });
 }
 

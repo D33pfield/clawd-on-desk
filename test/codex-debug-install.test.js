@@ -216,7 +216,7 @@ describe("Codex debug hook installer", () => {
     assert.strictEqual(__test.parseTomlTableHeader("[features] trailing"), null);
   });
 
-  it("formats Windows commands without adding a nested cmd wrapper", () => {
+  it("formats Windows commands for PowerShell execution", () => {
     const command = buildCodexDebugHookCommand(
       "C:\\Program Files\\nodejs\\node.exe",
       "D:/animation/hooks/codex-debug-hook.js",
@@ -225,7 +225,7 @@ describe("Codex debug hook installer", () => {
 
     assert.strictEqual(
       command,
-      '"C:\\Program Files\\nodejs\\node.exe" "D:/animation/hooks/codex-debug-hook.js"'
+      '& "C:\\Program Files\\nodejs\\node.exe" "D:/animation/hooks/codex-debug-hook.js"'
     );
   });
 
