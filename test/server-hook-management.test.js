@@ -5,6 +5,7 @@ const assert = require("node:assert");
 const { EventEmitter } = require("node:events");
 
 const initServer = require("../src/server");
+const { resolveCodexOfficialHookState } = require("../src/server").__test;
 
 class FakeWatcher extends EventEmitter {
   constructor(callback) {
@@ -111,6 +112,7 @@ function makeServer(overrides = {}) {
     syncCursorHooksImpl: () => syncCalls.push("cursor"),
     syncCodeBuddyHooksImpl: () => syncCalls.push("codebuddy"),
     syncKiroHooksImpl: () => syncCalls.push("kiro"),
+    syncCodexHooksImpl: () => syncCalls.push("codex"),
     syncOpencodePluginImpl: () => syncCalls.push("opencode"),
     ...overrides,
   };
@@ -133,7 +135,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["claude", "gemini", "cursor", "codebuddy", "kiro", "opencode"]);
+    assert.deepStrictEqual(syncCalls, ["claude", "gemini", "cursor", "codebuddy", "kiro", "codex", "opencode"]);
     assert.ok(getWatcher(), "watcher should start when management is enabled");
   });
 
@@ -144,7 +146,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["gemini", "cursor", "codebuddy", "kiro", "opencode"]);
+    assert.deepStrictEqual(syncCalls, ["gemini", "cursor", "codebuddy", "kiro", "codex", "opencode"]);
     assert.strictEqual(getWatcher(), null);
   });
 
@@ -239,7 +241,75 @@ describe("server Claude hook management", () => {
     const second = makeServer({ manageClaudeHooksAutomatically: false });
     second.api.startHttpServer();
 
-    assert.deepStrictEqual(first.syncCalls, ["gemini", "cursor", "codebuddy", "kiro", "opencode"]);
-    assert.deepStrictEqual(second.syncCalls, ["gemini", "cursor", "codebuddy", "kiro", "opencode"]);
+    assert.deepStrictEqual(first.syncCalls, ["gemini", "cursor", "codebuddy", "kiro", "codex", "opencode"]);
+    assert.deepStrictEqual(second.syncCalls, ["gemini", "cursor", "codebuddy", "kiro", "codex", "opencode"]);
+  });
+});
+
+describe("Codex official hook turn tracking", () => {
+  it("resolves Stop to attention when the turn used a tool", () => {
+    const turns = new Map();
+    resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "UserPromptSubmit",
+      session_id: "codex:s1",
+      turn_id: "turn-1",
+    }, "thinking", turns);
+    resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "PreToolUse",
+      session_id: "codex:s1",
+      turn_id: "turn-1",
+    }, "working", turns);
+
+    const result = resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "Stop",
+      session_id: "codex:s1",
+      turn_id: "turn-1",
+    }, "idle", turns);
+
+    assert.deepStrictEqual(result, { state: "attention", drop: false });
+    assert.strictEqual(turns.has("turn-1"), false);
+  });
+
+  it("resolves Stop to idle when no tool was seen", () => {
+    const turns = new Map();
+    resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "UserPromptSubmit",
+      session_id: "codex:s1",
+      turn_id: "turn-1",
+    }, "thinking", turns);
+
+    const result = resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "Stop",
+      session_id: "codex:s1",
+      turn_id: "turn-1",
+    }, "idle", turns);
+
+    assert.deepStrictEqual(result, { state: "idle", drop: false });
+  });
+
+  it("drops stop_hook_active continuations without updating state", () => {
+    const turns = new Map([["turn-1", { sessionId: "codex:s1", hadToolUse: true }]]);
+
+    const result = resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "Stop",
+      session_id: "codex:s1",
+      turn_id: "turn-1",
+      stop_hook_active: true,
+    }, "idle", turns);
+
+    assert.deepStrictEqual(result, { state: "idle", drop: true });
+    assert.strictEqual(turns.has("turn-1"), false);
   });
 });

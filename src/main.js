@@ -302,6 +302,43 @@ function captureCurrentDisplaySnapshot(bounds) {
 
 let _codexMonitor = null;          // Codex CLI JSONL log polling instance
 let _geminiMonitor = null;         // Gemini CLI session JSON polling instance
+const CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS = 10 * 60 * 1000;
+const CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS = new Set([
+  "session_meta",
+  "event_msg:task_started",
+  "event_msg:user_message",
+  "response_item:function_call",
+  "response_item:custom_tool_call",
+  "event_msg:exec_command_end",
+  "event_msg:patch_apply_end",
+  "event_msg:custom_tool_call_output",
+  "event_msg:task_complete",
+]);
+const codexOfficialHookSessions = new Map();
+
+function markCodexOfficialHookSession(sessionId) {
+  if (!sessionId) return;
+  codexOfficialHookSessions.set(String(sessionId), Date.now());
+}
+
+function shouldSuppressCodexLogEvent(sessionId, state, event) {
+  if (state === "codex-permission") return false;
+  if (!CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS.has(event)) return false;
+  const lastHookAt = codexOfficialHookSessions.get(String(sessionId));
+  if (!lastHookAt) return false;
+  if (Date.now() - lastHookAt > CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS) {
+    codexOfficialHookSessions.delete(String(sessionId));
+    return false;
+  }
+  return true;
+}
+
+function updateSessionFromServer(sessionId, state, event, opts = {}) {
+  if (opts && opts.agentId === "codex" && opts.hookSource === "codex-official") {
+    markCodexOfficialHookSession(sessionId);
+  }
+  return updateSession(sessionId, state, event, opts);
+}
 
 // Hook-based agents have no module-level monitor — they're gated at the
 // HTTP route layer. Only log-poll agents hit these branches.
@@ -1144,7 +1181,7 @@ const _serverCtx = {
   isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
   isAgentPermissionsEnabled: (agentId) => _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
   setState,
-  updateSession,
+  updateSession: updateSessionFromServer,
   resolvePermissionEntry,
   sendPermissionResponse,
   showPermissionBubble,
@@ -3794,6 +3831,7 @@ if (!gotTheLock) {
       const CodexLogMonitor = require("../agents/codex-log-monitor");
       const codexAgent = require("../agents/codex");
       _codexMonitor = new CodexLogMonitor(codexAgent, (sid, state, event, extra) => {
+        if (shouldSuppressCodexLogEvent(sid, state, event)) return;
         if (state === "codex-permission") {
           updateSession(sid, "notification", event, {
             cwd: extra.cwd,

@@ -219,6 +219,8 @@ function findPendingPermissionForStateEvent(pendingPermissions, options) {
 
 const HOOK_MARKER = "clawd-hook.js";
 const SETTINGS_FILENAME = "settings.json";
+const CODEX_OFFICIAL_HOOK_SOURCE = "codex-official";
+const MAX_CODEX_OFFICIAL_TURNS = 200;
 
 function entriesContainCommandMarker(entries, marker) {
   if (!Array.isArray(entries)) return false;
@@ -268,6 +270,53 @@ function settingsNeedClaudeHookResync(rawSettings, expectedPermissionUrl) {
   return !hasManagedCommandHook || !hasManagedPermissionHook;
 }
 
+function pruneCodexOfficialTurns(turns) {
+  if (!turns || turns.size <= MAX_CODEX_OFFICIAL_TURNS) return;
+  const overflow = turns.size - MAX_CODEX_OFFICIAL_TURNS;
+  let removed = 0;
+  for (const key of turns.keys()) {
+    turns.delete(key);
+    removed++;
+    if (removed >= overflow) break;
+  }
+}
+
+function resolveCodexOfficialHookState(data, requestedState, turns) {
+  if (!data || data.agent_id !== "codex" || data.hook_source !== CODEX_OFFICIAL_HOOK_SOURCE) {
+    return { state: requestedState, drop: false };
+  }
+
+  const event = typeof data.event === "string" ? data.event : "";
+  const turnId = typeof data.turn_id === "string" && data.turn_id ? data.turn_id : null;
+  const sessionId = typeof data.session_id === "string" && data.session_id ? data.session_id : "default";
+
+  if (event === "Stop" && data.stop_hook_active === true) {
+    if (turnId && turns) turns.delete(turnId);
+    return { state: requestedState, drop: true };
+  }
+
+  if (turnId && turns) {
+    if (event === "UserPromptSubmit") {
+      turns.set(turnId, { sessionId, hadToolUse: false });
+      pruneCodexOfficialTurns(turns);
+    } else if (event === "PreToolUse" || event === "PostToolUse") {
+      const current = turns.get(turnId) || { sessionId, hadToolUse: false };
+      current.sessionId = sessionId;
+      current.hadToolUse = true;
+      turns.set(turnId, current);
+      pruneCodexOfficialTurns(turns);
+    } else if (event === "Stop") {
+      const current = turns.get(turnId);
+      if (current) turns.delete(turnId);
+      return { state: current && current.hadToolUse ? "attention" : "idle", drop: false };
+    }
+  } else if (event === "Stop") {
+    return { state: "idle", drop: false };
+  }
+
+  return { state: requestedState, drop: false };
+}
+
 module.exports = function initServer(ctx) {
 
 const fsApi = ctx.fs || fs;
@@ -290,6 +339,7 @@ let activeServerPort = null;
 let settingsWatcher = null;
 let settingsWatchDebounceTimer = null;
 let settingsWatchLastSyncTime = 0;
+const codexOfficialTurns = new Map();
 
 function shouldManageClaudeHooks() {
   return ctx.manageClaudeHooksAutomatically !== false;
@@ -382,6 +432,22 @@ function syncKimiHooks() {
     }
   } catch (err) {
     console.warn("Clawd: failed to sync Kimi hooks:", err.message);
+  }
+}
+
+function syncCodexHooks() {
+  try {
+    if (typeof ctx.syncCodexHooksImpl === "function") return ctx.syncCodexHooksImpl();
+    const { registerCodexHooks } = require("../hooks/codex-install.js");
+    const { added, updated, warnings } = registerCodexHooks({ silent: true });
+    if (added > 0 || updated > 0) {
+      console.log(`Clawd: synced Codex hooks (added ${added}, updated ${updated})`);
+    }
+    if (Array.isArray(warnings)) {
+      for (const warning of warnings) console.warn(`Clawd: Codex hook sync warning: ${warning}`);
+    }
+  } catch (err) {
+    console.warn("Clawd: failed to sync Codex hooks:", err.message);
   }
 }
 
@@ -499,7 +565,7 @@ function startHttpServer() {
         }
         try {
           const data = JSON.parse(body);
-          const { state, svg, session_id, event } = data;
+          let { state, svg, session_id, event } = data;
           let display_svg;
           if (data.display_svg === null) display_svg = null;
           else if (typeof data.display_svg === "string") display_svg = path.basename(data.display_svg);
@@ -526,6 +592,7 @@ function startHttpServer() {
           const rawTitle = typeof data.session_title === "string" ? data.session_title.trim() : "";
           const sessionTitle = rawTitle || null;
           const permissionSuspect = data.permission_suspect === true;
+          const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
           // Agent gate: user disabled this agent in the settings panel. Drop
           // with 204 so hook scripts get a quick no-op response instead of
           // hanging on our HTTP connection. Still surfaces as a success code
@@ -537,6 +604,13 @@ function startHttpServer() {
           }
           if (ctx.STATE_SVGS[state]) {
             const sid = session_id || "default";
+            const codexHookState = resolveCodexOfficialHookState(data, state, codexOfficialTurns);
+            if (codexHookState.drop) {
+              res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+              res.end();
+              return;
+            }
+            state = codexHookState.state;
             if (state.startsWith("mini-") && !svg) {
               res.writeHead(400);
               res.end("mini states require svg override");
@@ -568,6 +642,7 @@ function startHttpServer() {
                 displayHint: display_svg,
                 sessionTitle,
                 permissionSuspect,
+                hookSource,
               });
             }
             res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
@@ -887,7 +962,7 @@ function startHttpServer() {
     console.log(`Clawd state server listening on 127.0.0.1:${activeServerPort}`);
     // Defer hook/plugin registration off the startup path. Each sync call
     // reads+parses+writes a config JSON (50-150ms cumulative on slow disks),
-    // and all five operate on independent files for independent agents, so
+    // and they operate on independent files for independent agents, so
     // none of them need to block the HTTP server from accepting traffic.
     setImmediateFn(() => {
       if (shouldManageClaudeHooks()) {
@@ -899,6 +974,7 @@ function startHttpServer() {
       syncCodeBuddyHooks();
       syncKiroHooks();
       syncKimiHooks();
+      syncCodexHooks();
       syncOpencodePlugin();
     });
   });
@@ -921,6 +997,7 @@ return {
   syncCodeBuddyHooks,
   syncKiroHooks,
   syncKimiHooks,
+  syncCodexHooks,
   syncOpencodePlugin,
   startClaudeSettingsWatcher,
   stopClaudeSettingsWatcher,
@@ -940,4 +1017,5 @@ module.exports.__test = {
   normalizeToolMatchValue,
   buildToolInputFingerprint,
   findPendingPermissionForStateEvent,
+  resolveCodexOfficialHookState,
 };
