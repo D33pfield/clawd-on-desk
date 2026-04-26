@@ -8,6 +8,7 @@ const {
   buildPermissionBody,
   buildStateBody,
   buildToolInputFingerprint,
+  extractCodexSessionIdFromTranscriptPath,
   normalizeCodexSessionId,
   sanitizeCodexPermissionOutput,
 } = require("../hooks/codex-hook");
@@ -26,6 +27,20 @@ describe("Codex official hook", () => {
     assert.strictEqual(normalizeCodexSessionId(""), "codex:default");
   });
 
+  it("prefers rollout transcript ids when normalizing session ids", () => {
+    const transcriptPath = "/tmp/rollout-2026-03-25T15-10-51-019d23d4-f1a9-7633-b9c7-758327137228.jsonl";
+
+    assert.strictEqual(
+      extractCodexSessionIdFromTranscriptPath(transcriptPath),
+      "019d23d4-f1a9-7633-b9c7-758327137228"
+    );
+    assert.strictEqual(
+      normalizeCodexSessionId("official-session", transcriptPath),
+      "codex:019d23d4-f1a9-7633-b9c7-758327137228"
+    );
+    assert.strictEqual(normalizeCodexSessionId("official-session", "/tmp/rollout.jsonl"), "codex:official-session");
+  });
+
   it("builds SessionStart state payloads", () => {
     const body = buildStateBody({
       hook_event_name: "SessionStart",
@@ -33,19 +48,19 @@ describe("Codex official hook", () => {
       cwd: "/repo",
       turn_id: "turn-1",
       permission_mode: "default",
-      transcript_path: "/tmp/rollout.jsonl",
+      transcript_path: "/tmp/rollout-2026-03-25T15-10-51-019d23d4-f1a9-7633-b9c7-758327137228.jsonl",
       model: "gpt-5.2-codex",
     }, mockResolve);
 
     assert.strictEqual(body.state, "idle");
-    assert.strictEqual(body.session_id, "codex:s1");
+    assert.strictEqual(body.session_id, "codex:019d23d4-f1a9-7633-b9c7-758327137228");
     assert.strictEqual(body.agent_id, "codex");
     assert.strictEqual(body.hook_source, "codex-official");
     assert.strictEqual(body.event, "SessionStart");
     assert.strictEqual(body.cwd, "/repo");
     assert.strictEqual(body.turn_id, "turn-1");
     assert.strictEqual(body.permission_mode, "default");
-    assert.strictEqual(body.transcript_path, "/tmp/rollout.jsonl");
+    assert.strictEqual(body.transcript_path, "/tmp/rollout-2026-03-25T15-10-51-019d23d4-f1a9-7633-b9c7-758327137228.jsonl");
     assert.strictEqual(body.model, "gpt-5.2-codex");
     assert.strictEqual(body.source_pid, 123);
     assert.strictEqual(body.agent_pid, 456);
@@ -107,7 +122,7 @@ describe("Codex official hook", () => {
       cwd: "/repo",
       turn_id: "turn-1",
       permission_mode: "default",
-      transcript_path: "/tmp/rollout.jsonl",
+      transcript_path: "/tmp/rollout-2026-03-25T15-10-51-019d23d4-f1a9-7633-b9c7-758327137228.jsonl",
       model: "gpt-5.2-codex",
       tool_name: "Bash",
       tool_input: toolInput,
@@ -115,7 +130,7 @@ describe("Codex official hook", () => {
 
     assert.strictEqual(body.agent_id, "codex");
     assert.strictEqual(body.hook_source, "codex-official");
-    assert.strictEqual(body.session_id, "codex:s1");
+    assert.strictEqual(body.session_id, "codex:019d23d4-f1a9-7633-b9c7-758327137228");
     assert.strictEqual(body.tool_name, "Bash");
     assert.strictEqual(body.tool_input.description, "Run tests with approval");
     assert.strictEqual(body.tool_input_description, "Run tests with approval");

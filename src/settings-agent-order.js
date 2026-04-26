@@ -33,6 +33,13 @@ function buildSettingsAgentOrderExports() {
     return !!(caps.permissionApproval || caps.interactiveBubble || caps.notificationHook);
   }
 
+  function getAgentEventSourceBadgeKey(agent) {
+    const eventSource = agent && typeof agent.eventSource === "string" ? agent.eventSource : "";
+    if (eventSource === "log-poll") return "eventSourceLogPoll";
+    if (eventSource === "plugin-event") return "eventSourcePlugin";
+    return "eventSourceHook";
+  }
+
   function compareAgentNames(a, b) {
     return normalizeAgentName(a).localeCompare(normalizeAgentName(b), undefined, {
       sensitivity: "base",
@@ -80,6 +87,7 @@ function buildSettingsAgentOrderExports() {
   return {
     COLLAPSIBLE_AGENT_PRIORITY,
     NON_COLLAPSIBLE_AGENT_PRIORITY,
+    getAgentEventSourceBadgeKey,
     isAgentCollapsible,
     sortAgentMetadataForSettings,
   };

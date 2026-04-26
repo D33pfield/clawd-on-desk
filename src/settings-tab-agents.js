@@ -2,6 +2,7 @@
 
 (function initSettingsTabAgents(root) {
   const {
+    getAgentEventSourceBadgeKey,
     sortAgentMetadataForSettings,
   } = root.ClawdSettingsAgentOrder || {};
   let state = null;
@@ -65,9 +66,11 @@
         text.appendChild(label);
         const badges = document.createElement("span");
         badges.className = "row-desc agent-badges";
-        const esKey = agent.eventSource === "log-poll" ? "eventSourceLogPoll"
-          : agent.eventSource === "plugin-event" ? "eventSourcePlugin"
-          : "eventSourceHook";
+        const esKey = typeof getAgentEventSourceBadgeKey === "function"
+          ? getAgentEventSourceBadgeKey(agent)
+          : (agent.eventSource === "log-poll" ? "eventSourceLogPoll"
+            : agent.eventSource === "plugin-event" ? "eventSourcePlugin"
+            : "eventSourceHook");
         const esBadge = document.createElement("span");
         esBadge.className = "agent-badge";
         esBadge.textContent = t(esKey);

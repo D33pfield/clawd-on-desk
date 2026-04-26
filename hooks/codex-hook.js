@@ -3,6 +3,7 @@
 // Registered in ~/.codex/hooks.json by hooks/codex-install.js
 
 const crypto = require("crypto");
+const path = require("path");
 const {
   postPermissionToRunningServer,
   postStateToRunningServer,
@@ -32,8 +33,19 @@ function getCodexPermissionTimeoutMs() {
   return CODEX_PERMISSION_TIMEOUT_MS;
 }
 
-function normalizeCodexSessionId(value) {
-  const raw = typeof value === "string" && value.trim() ? value.trim() : "default";
+function extractCodexSessionIdFromTranscriptPath(transcriptPath) {
+  if (typeof transcriptPath !== "string" || !transcriptPath.trim()) return null;
+  const fileName = path.basename(transcriptPath.replace(/\\/g, "/"));
+  const match = fileName.match(
+    /^rollout-.+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i
+  );
+  return match ? match[1] : null;
+}
+
+function normalizeCodexSessionId(value, transcriptPath = "") {
+  const transcriptSessionId = extractCodexSessionIdFromTranscriptPath(transcriptPath);
+  const raw = transcriptSessionId
+    || (typeof value === "string" && value.trim() ? value.trim() : "default");
   return raw.startsWith("codex:") ? raw : `codex:${raw}`;
 }
 
@@ -137,7 +149,7 @@ function buildPermissionBody(payload, resolve) {
   const body = {
     agent_id: "codex",
     hook_source: "codex-official",
-    session_id: normalizeCodexSessionId(payload.session_id),
+    session_id: normalizeCodexSessionId(payload.session_id, payload.transcript_path),
     tool_name: toolName,
     tool_input: normalizeToolMatchValue(rawToolInput) || {},
   };
@@ -181,7 +193,7 @@ function buildStateBody(payload, resolve) {
 
   const body = {
     state,
-    session_id: normalizeCodexSessionId(payload.session_id),
+    session_id: normalizeCodexSessionId(payload.session_id, payload.transcript_path),
     event,
     agent_id: "codex",
     hook_source: "codex-official",
@@ -267,6 +279,7 @@ module.exports = {
   buildPermissionBody,
   buildStateBody,
   buildToolInputFingerprint,
+  extractCodexSessionIdFromTranscriptPath,
   normalizeCodexSessionId,
   sanitizeCodexPermissionDecision,
   sanitizeCodexPermissionOutput,

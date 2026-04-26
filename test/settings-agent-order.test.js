@@ -4,11 +4,19 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const {
+  getAgentEventSourceBadgeKey,
   isAgentCollapsible,
   sortAgentMetadataForSettings,
 } = require("../src/settings-agent-order");
 
 describe("settings agent order", () => {
+  it("maps agent event sources to badge labels", () => {
+    assert.strictEqual(getAgentEventSourceBadgeKey({ eventSource: "hook" }), "eventSourceHook");
+    assert.strictEqual(getAgentEventSourceBadgeKey({ eventSource: "hook+log-poll" }), "eventSourceHook");
+    assert.strictEqual(getAgentEventSourceBadgeKey({ eventSource: "log-poll" }), "eventSourceLogPoll");
+    assert.strictEqual(getAgentEventSourceBadgeKey({ eventSource: "plugin-event" }), "eventSourcePlugin");
+  });
+
   it("treats agents with detail rows as collapsible", () => {
     assert.strictEqual(isAgentCollapsible({ capabilities: { permissionApproval: true } }), true);
     assert.strictEqual(isAgentCollapsible({ capabilities: { interactiveBubble: true } }), true);

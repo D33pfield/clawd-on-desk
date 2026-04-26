@@ -737,6 +737,19 @@ describe("updateSession()", () => {
     assert.strictEqual(api.getStartupRecoveryActive(), false);
   });
 
+  it("includes hookSource in session debug logs", () => {
+    const logs = [];
+    ctx.debugLog = (msg) => logs.push(msg);
+
+    api.updateSession("s1", "working", "PreToolUse", {
+      cwd: "/tmp",
+      agentId: "codex",
+      hookSource: "codex-official",
+    });
+
+    assert.ok(logs.some((msg) => msg.includes("source=codex-official")));
+  });
+
   it("attention is oneshot — stored as idle in session", () => {
     update(api, { id: "s1", state: "working" });
     mock.timers.tick(1000); // past MIN_DISPLAY_MS.working
