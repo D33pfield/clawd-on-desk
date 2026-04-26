@@ -6,12 +6,12 @@ const { describe, it } = require("node:test");
 
 const PERMISSION_MODULE_PATH = require.resolve("../src/permission");
 
-function loadPermissionWithElectron() {
+function loadPermissionWithElectron(fakeElectron = null) {
   delete require.cache[PERMISSION_MODULE_PATH];
   const originalLoad = Module._load;
   Module._load = function patchedLoad(request, parent, isMain) {
     if (request === "electron") {
-      return {
+      return fakeElectron || {
         BrowserWindow: Object.assign(class {}, { fromWebContents() { return null; } }),
         globalShortcut: {
           register() { return true; },
@@ -27,6 +27,77 @@ function loadPermissionWithElectron() {
   } finally {
     Module._load = originalLoad;
   }
+}
+
+function createCodexDecisionHarness() {
+  const focusCalls = [];
+  const fakeElectron = {
+    BrowserWindow: Object.assign(class {}, {
+      fromWebContents(sender) { return sender && sender.__window ? sender.__window : null; },
+    }),
+    globalShortcut: {
+      register() { return true; },
+      unregister() {},
+      isRegistered() { return false; },
+    },
+  };
+  const initPermission = loadPermissionWithElectron(fakeElectron);
+  const api = initPermission({
+    sessions: new Map(),
+    hideBubbles: false,
+    petHidden: false,
+    win: null,
+    lang: "en",
+    getBubblePolicy: () => ({ enabled: true, autoCloseMs: null }),
+    focusTerminalForSession: (sessionId) => focusCalls.push(sessionId),
+    permDebugLog: null,
+  });
+  return { api, focusCalls };
+}
+
+function createFakeRes() {
+  const res = {
+    statusCode: null,
+    headers: {},
+    body: "",
+    writableEnded: false,
+    writableFinished: false,
+    destroyed: false,
+    _listeners: new Map(),
+    writeHead(code, headers) {
+      this.statusCode = code;
+      this.headers = headers || {};
+    },
+    end(data) {
+      if (data) this.body += String(data);
+      this.writableEnded = true;
+      this.writableFinished = true;
+    },
+    on(event, handler) {
+      this._listeners.set(event, handler);
+      return this;
+    },
+    removeListener(event, handler) {
+      if (this._listeners.get(event) === handler) this._listeners.delete(event);
+      return this;
+    },
+  };
+  return res;
+}
+
+function createFakeBubble() {
+  const bubble = {
+    hidden: false,
+    destroyed: false,
+    webContents: {
+      send(event) {
+        if (event === "permission-hide") bubble.hidden = true;
+      },
+    },
+    isDestroyed() { return this.destroyed; },
+    destroy() { this.destroyed = true; },
+  };
+  return bubble;
 }
 
 describe("Codex permission response sanitizer", () => {
@@ -55,5 +126,60 @@ describe("Codex permission response sanitizer", () => {
 
     assert.deepStrictEqual(deny, { behavior: "deny", message: "Blocked" });
     assert.strictEqual(permission.__test.buildCodexPermissionResponseBody({ behavior: "ask" }), "{}");
+  });
+
+  it("treats Codex deny-and-focus as immediate no-decision instead of hanging the socket", () => {
+    const { api, focusCalls } = createCodexDecisionHarness();
+    const res = createFakeRes();
+    const bubble = createFakeBubble();
+    const permEntry = {
+      res,
+      abortHandler: () => {},
+      suggestions: [],
+      sessionId: "codex:s1",
+      bubble,
+      hideTimer: null,
+      toolName: "Bash",
+      toolInput: { command: "npm test" },
+      createdAt: Date.now(),
+      agentId: "codex",
+      isCodex: true,
+    };
+    api.pendingPermissions.push(permEntry);
+
+    api.handleDecide({ sender: { __window: bubble } }, "deny-and-focus");
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.writableEnded, true);
+    assert.strictEqual(res.body, "");
+    assert.deepStrictEqual(focusCalls, ["codex:s1"]);
+    assert.strictEqual(api.pendingPermissions.length, 0);
+  });
+
+  it("does not let Codex take suggestion or opencode-only decision paths", () => {
+    for (const behavior of ["suggestion:0", "opencode-always"]) {
+      const { api } = createCodexDecisionHarness();
+      const res = createFakeRes();
+      const bubble = createFakeBubble();
+      api.pendingPermissions.push({
+        res,
+        abortHandler: () => {},
+        suggestions: [{ type: "setMode", mode: "default" }],
+        sessionId: "codex:s1",
+        bubble,
+        hideTimer: null,
+        toolName: "Bash",
+        toolInput: { command: "npm test" },
+        createdAt: Date.now(),
+        agentId: "codex",
+        isCodex: true,
+      });
+
+      api.handleDecide({ sender: { __window: bubble } }, behavior);
+
+      assert.strictEqual(res.statusCode, 204);
+      assert.strictEqual(res.body, "");
+      assert.strictEqual(api.pendingPermissions.length, 0);
+    }
   });
 });

@@ -777,6 +777,18 @@ function handleDecide(event, behavior) {
     dismissPassiveNotify(perm, "ipc-decide");
     return;
   }
+  if (perm.isCodex) {
+    if (behavior === "allow" || behavior === "deny") {
+      resolvePermissionEntry(perm, behavior);
+      return;
+    }
+    // Codex is blocking on the hook socket. UI actions that mean "handle it
+    // elsewhere" must answer no-decision immediately instead of leaving the
+    // hook parked until its long timeout.
+    resolvePermissionEntry(perm, "no-decision", `Unsupported Codex bubble action: ${String(behavior)}`);
+    if (behavior === "deny-and-focus") ctx.focusTerminalForSession(perm.sessionId);
+    return;
+  }
   if (perm.isElicitation && behavior && typeof behavior === "object" && behavior.type === "elicitation-submit") {
     perm.resolvedUpdatedInput = buildElicitationUpdatedInput(perm.toolInput, behavior.answers);
     resolvePermissionEntry(perm, "allow");
