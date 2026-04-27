@@ -15,8 +15,9 @@ module.exports = {
     PostToolUse: "working",
     Stop: "codex-turn-end",
   },
-  // JSONL record type:subtype → pet state mapping
-  // ⚠️ Also duplicated in hooks/codex-remote-monitor.js (zero-dep requirement) — keep in sync
+  // JSONL record type:subtype → pet state mapping. The remote monitor keeps
+  // a zero-dep subset of this table; update both paths when adding shared
+  // Codex JSONL events.
   logEventMap: {
     "session_meta": "idle",
     "event_msg:task_started": "thinking",
