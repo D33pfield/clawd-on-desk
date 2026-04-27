@@ -368,6 +368,11 @@ function shouldManageClaudeHooks() {
   return ctx.manageClaudeHooksAutomatically !== false;
 }
 
+function isAgentEnabled(agentId) {
+  if (typeof ctx.isAgentEnabled !== "function") return true;
+  return ctx.isAgentEnabled(agentId) !== false;
+}
+
 function getClaudeSettingsDir() {
   return typeof ctx.claudeSettingsDir === "string"
     ? ctx.claudeSettingsDir
@@ -500,6 +505,44 @@ function syncOpencodePlugin() {
   }
 }
 
+const AGENT_INTEGRATION_SYNCERS = Object.freeze({
+  "gemini-cli": syncGeminiHooks,
+  "cursor-agent": syncCursorHooks,
+  codebuddy: syncCodeBuddyHooks,
+  "kiro-cli": syncKiroHooks,
+  "kimi-cli": syncKimiHooks,
+  codex: syncCodexHooks,
+  opencode: syncOpencodePlugin,
+});
+
+function syncIntegrationForAgent(agentId) {
+  if (agentId === "claude-code") {
+    if (!shouldManageClaudeHooks()) return false;
+    syncClawdHooks();
+    startClaudeSettingsWatcher();
+    return true;
+  }
+  const sync = AGENT_INTEGRATION_SYNCERS[agentId];
+  if (typeof sync !== "function") return false;
+  sync();
+  return true;
+}
+
+function stopIntegrationForAgent(agentId) {
+  if (agentId !== "claude-code") return false;
+  return stopClaudeSettingsWatcher();
+}
+
+function syncEnabledStartupIntegrations() {
+  if (shouldManageClaudeHooks() && isAgentEnabled("claude-code")) {
+    syncClawdHooks();
+    startClaudeSettingsWatcher();
+  }
+  for (const [agentId, sync] of Object.entries(AGENT_INTEGRATION_SYNCERS)) {
+    if (isAgentEnabled(agentId)) sync();
+  }
+}
+
 function sendStateHealthResponse(res) {
   const body = JSON.stringify({ ok: true, app: CLAWD_SERVER_ID, port: getHookServerPort() });
   res.writeHead(200, {
@@ -537,6 +580,7 @@ function startClaudeSettingsWatcher() {
       if (settingsWatchDebounceTimer) return;
       settingsWatchDebounceTimer = setTimeoutFn(() => {
         settingsWatchDebounceTimer = null;
+        if (!shouldManageClaudeHooks() || !isAgentEnabled("claude-code")) return;
         // Rate-limit: don't re-sync within 5s to avoid write wars with CC-Switch
         if (nowFn() - settingsWatchLastSyncTime < settingsWatchRateLimitMs) return;
         try {
@@ -1070,17 +1114,7 @@ function startHttpServer() {
     // and they operate on independent files for independent agents, so
     // none of them need to block the HTTP server from accepting traffic.
     setImmediateFn(() => {
-      if (shouldManageClaudeHooks()) {
-        syncClawdHooks();
-        startClaudeSettingsWatcher();
-      }
-      syncGeminiHooks();
-      syncCursorHooks();
-      syncCodeBuddyHooks();
-      syncKiroHooks();
-      syncKimiHooks();
-      syncCodexHooks();
-      syncOpencodePlugin();
+      syncEnabledStartupIntegrations();
     });
   });
 
@@ -1104,6 +1138,8 @@ return {
   syncKimiHooks,
   syncCodexHooks,
   syncOpencodePlugin,
+  syncIntegrationForAgent,
+  stopIntegrationForAgent,
   startClaudeSettingsWatcher,
   stopClaudeSettingsWatcher,
   cleanup,
