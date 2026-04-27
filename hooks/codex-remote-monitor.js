@@ -31,6 +31,7 @@ const LOG_EVENT_MAP = {
   "event_msg:task_started": "thinking",
   "event_msg:user_message": "thinking",
   "event_msg:agent_message": "working",
+  "event_msg:guardian_assessment": "working",
   "response_item:function_call": "working",
   "response_item:custom_tool_call": "working",
   "response_item:web_search_call": "working",
