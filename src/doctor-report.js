@@ -62,6 +62,12 @@ function redactIps(text) {
   );
 }
 
+function normalizeDisplayPathSeparators(text) {
+  return String(text).replace(/(?:~\/|\[APP\](?=[\\/]))[^\s|;,)]+/g, (match) => {
+    return match.replace(/\\/g, "/");
+  });
+}
+
 function redact(input, options = {}) {
   let out = redactAppRootPaths(String(input == null ? "" : input), options);
   out = redactHomePaths(out, options.homeDir);
@@ -69,6 +75,7 @@ function redact(input, options = {}) {
     out = out.replace(pattern, replacement);
   }
   out = redactIps(out);
+  out = normalizeDisplayPathSeparators(out);
   return out;
 }
 
@@ -149,6 +156,25 @@ function formatAgentDetail(detail) {
   ].filter(Boolean).join("; ");
 }
 
+function hasHttpOutcomeEvents(connectionTest) {
+  const events = Array.isArray(connectionTest && connectionTest.events) ? connectionTest.events : [];
+  return events.some((event) => {
+    if (!event || typeof event.outcome !== "string") return false;
+    return event.outcome === "accepted" || event.outcome.startsWith("dropped-");
+  });
+}
+
+function formatFileActivitySummary(fileActivity) {
+  if (!Array.isArray(fileActivity) || !fileActivity.length) return "";
+  return fileActivity
+    .map((entry) => {
+      const agent = entry && entry.agentId ? entry.agentId : "unknown";
+      const count = entry && Number.isFinite(entry.count) ? entry.count : 0;
+      return `${agent} (${count})`;
+    })
+    .join(", ");
+}
+
 function formatDiagnosticReport(result, meta = {}) {
   const generatedAt = result && result.generatedAt ? result.generatedAt : new Date().toISOString();
   const platform = meta.platform || process.platform;
@@ -199,13 +225,20 @@ function formatDiagnosticReport(result, meta = {}) {
       }
     }
     if (Array.isArray(connectionTest.fileActivity) && connectionTest.fileActivity.length) {
-      lines.push(
-        "",
-        row(["Agent", "Source", "Count"]),
-        row(["---", "---", "---"])
-      );
-      for (const entry of connectionTest.fileActivity) {
-        lines.push(row([entry.agentId || "", entry.source || "", entry.count || 0]));
+      if (hasHttpOutcomeEvents(connectionTest)) {
+        lines.push(
+          "",
+          `Fallback file activity also observed: ${formatFileActivitySummary(connectionTest.fileActivity)}.`
+        );
+      } else {
+        lines.push(
+          "",
+          row(["Agent", "Source", "Count"]),
+          row(["---", "---", "---"])
+        );
+        for (const entry of connectionTest.fileActivity) {
+          lines.push(row([entry.agentId || "", entry.source || "", entry.count || 0]));
+        }
       }
     }
   }
@@ -242,5 +275,6 @@ module.exports = {
   redactDoctorResult,
   formatAgentDetail,
   formatAgentDiagnosticNotes,
+  normalizeDisplayPathSeparators,
   formatDiagnosticReport,
 };

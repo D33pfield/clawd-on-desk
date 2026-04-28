@@ -1460,6 +1460,11 @@ html, body {
 }
 .doctor-agent-list {
   margin: 8px 0 0 17px;
+  max-height: min(34vh, 270px);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding: 7px 4px 0 0;
+  border-top: 1px solid var(--row-border);
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -1467,6 +1472,10 @@ html, body {
 .doctor-agent-item {
   display: grid;
   gap: 3px;
+}
+.doctor-agent-item + .doctor-agent-item {
+  border-top: 1px solid var(--row-border);
+  padding-top: 7px;
 }
 .doctor-agent-row {
   grid-template-columns: minmax(0, 1fr) auto;

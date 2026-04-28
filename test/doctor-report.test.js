@@ -5,6 +5,7 @@ const {
   redactDoctorResult,
   formatAgentDetail,
   formatDiagnosticReport,
+  normalizeDisplayPathSeparators,
 } = require("../src/doctor-report");
 
 describe("doctor report redaction", () => {
@@ -55,8 +56,19 @@ describe("doctor report redaction", () => {
     assert.ok(!out.includes("D:/animation"));
     assert.ok(!out.includes("D:\\animation"));
     assert.ok(out.includes("[APP]/hooks/opencode-plugin"));
-    assert.ok(out.includes("[APP]\\hooks\\codex-hook.js"));
+    assert.ok(out.includes("[APP]/hooks/codex-hook.js"));
     assert.ok(out.includes("D:/other/hooks/opencode-plugin"));
+  });
+
+  it("normalizes redacted display path separators", () => {
+    assert.strictEqual(
+      normalizeDisplayPathSeparators("~/.claude\\settings.json and [APP]\\hooks\\opencode-plugin"),
+      "~/.claude/settings.json and [APP]/hooks/opencode-plugin"
+    );
+    assert.strictEqual(
+      redact("C:\\Users\\Alice\\.claude\\settings.json", { homeDir: "C:\\Users\\Alice" }),
+      "~/.claude/settings.json"
+    );
   });
 
   it("redacts nested doctor results before they are sent to the Settings UI", () => {
@@ -80,6 +92,7 @@ describe("doctor report redaction", () => {
     assert.ok(text.includes("~/.cursor"));
     assert.ok(text.includes("~/.config/opencode"));
     assert.ok(text.includes("[APP]/hooks/opencode-plugin"));
+    assert.ok(!text.includes("~/.cursor\\hooks.json"));
   });
 });
 
@@ -185,9 +198,34 @@ describe("formatDiagnosticReport", () => {
     assert.match(report, /## Connection Test/);
     assert.match(report, /HTTP works but events were dropped/);
     assert.match(report, /dropped-by-dnd/);
-    assert.match(report, /gemini-cli/);
+    assert.match(report, /Fallback file activity also observed: gemini-cli \(1\)\./);
+    assert.doesNotMatch(report, /\| gemini-cli \| file-mtime \| 1 \|/);
     assert.ok(!report.includes("Alice"));
     assert.ok(!report.includes("D:/animation"));
     assert.ok(report.includes("~/.cursor"));
+    assert.ok(!report.includes("~/.cursor\\hooks.json"));
+  });
+
+  it("keeps the fallback file table when no HTTP event reached Clawd", () => {
+    const report = formatDiagnosticReport({
+      generatedAt: "2026-04-28T14:32:00.000Z",
+      overall: { status: "warning", issueCount: 1 },
+      checks: [],
+      connectionTest: {
+        status: "http-blocked",
+        level: "warning",
+        detail: "File activity changed, but no HTTP hook event reached Clawd.",
+        events: [],
+        fileActivity: [{
+          agentId: "codex",
+          source: "file-mtime",
+          count: 2,
+        }],
+      },
+    });
+
+    assert.match(report, /## Connection Test/);
+    assert.match(report, /\| codex \| file-mtime \| 2 \|/);
+    assert.doesNotMatch(report, /Fallback file activity also observed/);
   });
 });

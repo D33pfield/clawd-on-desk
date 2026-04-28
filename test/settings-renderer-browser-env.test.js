@@ -123,6 +123,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(html.includes(".doctor-fix-confirm"));
     assert.ok(html.includes(".doctor-repair-feedback"));
     assert.ok(html.includes(".doctor-repair-summary"));
+    assert.ok(/\.doctor-agent-list\s*\{[\s\S]*max-height:\s*min\(34vh,\s*270px\);[\s\S]*overflow-y:\s*auto;/.test(html));
+    assert.ok(/\.doctor-agent-item \+ \.doctor-agent-item\s*\{[\s\S]*border-top:\s*1px solid var\(--row-border\);/.test(html));
     assert.ok(preloadSource.includes('contextBridge.exposeInMainWorld("doctor"'));
     assert.ok(preloadSource.includes('ipcRenderer.invoke("doctor:run-checks")'));
     assert.ok(preloadSource.includes('ipcRenderer.invoke("doctor:get-report")'));
