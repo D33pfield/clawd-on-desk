@@ -113,6 +113,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes("doctorFixConfirmCodexDetail"));
     assert.ok(doctorModalSource.includes("doctorRestartConfirmDetail"));
     assert.ok(doctorModalSource.includes("doctorRestartButton"));
+    assert.ok(doctorModalSource.includes('commandAction.type !== "restart-clawd"'));
     assert.ok(doctorModalSource.includes("repairFeedback"));
     assert.ok(doctorModalSource.includes("lastRepairFeedback"));
     assert.ok(doctorModalSource.includes("core.ops.showToast"));

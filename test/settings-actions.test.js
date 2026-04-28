@@ -565,7 +565,7 @@ describe("doctor repair commands", () => {
   it("routes Doctor restart-clawd repair through deps.restartClawd", async () => {
     const calls = [];
     const r = await commandRegistry.repairDoctorIssue(
-      { type: "restart-clawd" },
+      { type: "restart-clawd", confirmed: true },
       { restartClawd: () => calls.push("restart") }
     );
 
@@ -573,8 +573,20 @@ describe("doctor repair commands", () => {
     assert.deepStrictEqual(calls, ["restart"]);
   });
 
+  it("does not run Doctor restart-clawd repair without confirmation", async () => {
+    const calls = [];
+    const r = await commandRegistry.repairDoctorIssue(
+      { type: "restart-clawd" },
+      { restartClawd: () => calls.push("restart") }
+    );
+
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /confirmation/i);
+    assert.deepStrictEqual(calls, []);
+  });
+
   it("returns an error when restart-clawd is dispatched without deps.restartClawd", async () => {
-    const r = await commandRegistry.repairDoctorIssue({ type: "restart-clawd" }, {});
+    const r = await commandRegistry.repairDoctorIssue({ type: "restart-clawd", confirmed: true }, {});
 
     assert.strictEqual(r.status, "error");
     assert.match(r.message, /restartClawd/);

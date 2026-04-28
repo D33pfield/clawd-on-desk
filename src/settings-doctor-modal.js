@@ -427,7 +427,7 @@
     refreshModal(core);
     try {
       const commandAction = { ...action };
-      delete commandAction.confirmed;
+      if (commandAction.type !== "restart-clawd") delete commandAction.confirmed;
       const result = await root.settingsAPI.command("repairDoctorIssue", commandAction);
       if (!result || result.status !== "ok") {
         throw new Error((result && result.message) || t(core, "doctorFixFailed"));

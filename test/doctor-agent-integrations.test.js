@@ -221,6 +221,25 @@ describe("checkAgentIntegrations", () => {
     assert.deepStrictEqual(detail.kiroScan.fullyValidFiles, ["clawd.json"]);
   });
 
+  it("does not offer automatic repair when Kiro agent configs are corrupt", () => {
+    const root = makeTempDir();
+    const agentsDir = path.join(root, ".kiro", "agents");
+    const descriptor = baseDescriptor({
+      agentId: "kiro-cli",
+      marker: "kiro-hook.js",
+      parentDir: path.join(root, ".kiro"),
+      configPath: agentsDir,
+      configMode: "dir",
+      nested: true,
+    });
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, "broken.json"), "{ nope", "utf8");
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "config-corrupt");
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
   it("reports opencode stale absolute plugin paths", () => {
     const root = makeTempDir();
     const parentDir = path.join(root, ".config", "opencode");

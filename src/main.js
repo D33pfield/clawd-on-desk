@@ -202,15 +202,19 @@ function _deferredResizePet(sizeKey) {
   }
 }
 
+let _restartScheduled = false;
 function _restartClawdNow() {
+  if (_restartScheduled) return;
+  _restartScheduled = true;
   // Triggered by Doctor's restart-clawd repair. relaunch() queues a fresh
-  // process; exit(0) tears the current one down without prompting other
-  // windows for confirmation (Doctor already confirmed with the user).
+  // process; quit() then follows the normal shutdown path so before-quit
+  // still flushes prefs and cleans up server/monitor resources.
   // setImmediate so the IPC reply for repairDoctorIssue lands in the
-  // renderer before the main process tears itself down.
+  // renderer before the main process starts closing windows.
   setImmediate(() => {
+    isQuitting = true;
     app.relaunch();
-    app.exit(0);
+    app.quit();
   });
 }
 

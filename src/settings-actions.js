@@ -1742,7 +1742,10 @@ async function repairDoctorIssue(payload, deps) {
   };
 }
 
-function restartClawd(_payload, deps) {
+function restartClawd(payload, deps) {
+  if (!payload || payload.confirmed !== true) {
+    return { status: "error", message: "restartClawd requires confirmation" };
+  }
   if (!deps || typeof deps.restartClawd !== "function") {
     return { status: "error", message: "restartClawd requires deps.restartClawd" };
   }
