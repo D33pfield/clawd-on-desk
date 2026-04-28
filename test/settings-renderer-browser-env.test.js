@@ -128,7 +128,12 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes("doctorPrivacyShort"));
     assert.ok(html.includes(".doctor-repair-feedback"));
     assert.ok(html.includes(".doctor-repair-summary"));
-    assert.ok(/\.doctor-agent-list\s*\{[\s\S]*max-height:\s*min\(34vh,\s*270px\);[\s\S]*overflow-y:\s*auto;/.test(html));
+    // Regression guard: agent list must not introduce its own scroll viewport.
+    // The outer .doctor-check-list owns scrolling so users get a single scrollbar.
+    // [^}]*? keeps the match scoped to this rule body so unrelated max-height
+    // declarations elsewhere in settings.html don't trip the assertion.
+    assert.ok(!/\.doctor-agent-list\s*\{[^}]*?max-height:/.test(html));
+    assert.ok(!/\.doctor-agent-list\s*\{[^}]*?overflow-y:\s*auto/.test(html));
     assert.ok(/\.doctor-agent-item \+ \.doctor-agent-item\s*\{[\s\S]*border-top:\s*1px solid var\(--row-border\);/.test(html));
     assert.ok(preloadSource.includes('contextBridge.exposeInMainWorld("doctor"'));
     assert.ok(preloadSource.includes('ipcRenderer.invoke("doctor:run-checks")'));
