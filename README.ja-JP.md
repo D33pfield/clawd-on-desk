@@ -204,6 +204,9 @@ Clawd on Desk はコミュニティ主導のプロジェクトです。バグ報
 
 Clawd をより良くしてくれたすべての方に感謝します。
 
+<details>
+<summary>コントリビューター 37 人をすべて表示</summary>
+
 <table>
   <tr>
     <td align="center" valign="top" width="110"><a href="https://github.com/PixelCookie-zyf"><img src="https://github.com/PixelCookie-zyf.png" width="50" style="border-radius:50%" /><br /><sub>PixelCookie-zyf</sub></a></td>
@@ -255,6 +258,8 @@ Clawd をより良くしてくれたすべての方に感謝します。
     <td align="center" valign="top" width="110"><a href="https://github.com/tatsuyanakanogaroinc"><img src="https://github.com/tatsuyanakanogaroinc.png" width="50" style="border-radius:50%" /><br /><sub>tatsuyanakanogaroinc</sub></a></td>
   </tr>
 </table>
+
+</details>
 
 ## 謝辞
 
