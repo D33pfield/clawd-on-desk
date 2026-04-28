@@ -133,10 +133,12 @@ html, body {
 }
 .doctor-indicator.pass .doctor-indicator-dot,
 .doctor-overall.pass .doctor-overall-dot,
-.doctor-check-row.pass .doctor-check-dot { background: #2f9e44; }
+.doctor-check-row.pass .doctor-check-dot,
+.doctor-connection-panel.pass .doctor-check-dot { background: #2f9e44; }
 .doctor-indicator.warning .doctor-indicator-dot,
 .doctor-overall.warning .doctor-overall-dot,
-.doctor-check-row.warning .doctor-check-dot { background: #d97706; }
+.doctor-check-row.warning .doctor-check-dot,
+.doctor-connection-panel.warning .doctor-check-dot { background: #d97706; }
 .doctor-indicator.critical .doctor-indicator-dot,
 .doctor-overall.critical .doctor-overall-dot,
 .doctor-check-row.critical .doctor-check-dot { background: #dc2626; }
@@ -1430,6 +1432,7 @@ html, body {
   background: var(--bg);
 }
 .doctor-check-main,
+.doctor-connection-main,
 .doctor-agent-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -1479,9 +1482,16 @@ html, body {
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
+.doctor-connection-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--bg);
+}
 .doctor-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .doctor-empty {

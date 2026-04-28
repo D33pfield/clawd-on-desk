@@ -89,7 +89,7 @@ describe("settings renderer browser environment", () => {
     }
   });
 
-  it("wires Clawd Doctor through Settings without Step 2 log actions", () => {
+  it("wires Clawd Doctor through Settings with Step 2 connection actions", () => {
     const html = fs.readFileSync(SETTINGS_HTML, "utf8");
     const rendererSource = fs.readFileSync(SETTINGS_RENDERER, "utf8");
     const doctorModalSource = fs.readFileSync(SETTINGS_DOCTOR_MODAL, "utf8");
@@ -105,19 +105,28 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes("runningPromise"));
     assert.ok(doctorModalSource.includes("root.doctor.runChecks"));
     assert.ok(doctorModalSource.includes("root.doctor.getReport"));
+    assert.ok(doctorModalSource.includes("root.doctor.testConnection"));
+    assert.ok(doctorModalSource.includes("root.doctor.openClawdLog"));
     assert.ok(doctorModalSource.includes("agentDetailText"));
+    assert.ok(doctorModalSource.includes("startConnectionTest"));
     assert.ok(html.includes(".doctor-agent-detail"));
+    assert.ok(html.includes(".doctor-connection-panel"));
     assert.ok(preloadSource.includes('contextBridge.exposeInMainWorld("doctor"'));
     assert.ok(preloadSource.includes('ipcRenderer.invoke("doctor:run-checks")'));
     assert.ok(preloadSource.includes('ipcRenderer.invoke("doctor:get-report")'));
+    assert.ok(preloadSource.includes('ipcRenderer.invoke("doctor:test-connection"'));
+    assert.ok(preloadSource.includes('ipcRenderer.invoke("doctor:open-clawd-log"'));
     assert.ok(mainSource.includes('ipcMain.handle("doctor:run-checks"'));
     assert.ok(mainSource.includes('ipcMain.handle("doctor:get-report"'));
+    assert.ok(mainSource.includes('ipcMain.handle("doctor:test-connection"'));
+    assert.ok(mainSource.includes('ipcMain.handle("doctor:open-clawd-log"'));
+    assert.ok(mainSource.includes("runConnectionTest"));
+    assert.ok(mainSource.includes("openClawdLog"));
     assert.ok(mainSource.includes("formatDiagnosticReport"));
     assert.ok(mainSource.includes("redactDoctorResult(buildDoctorResult())"));
     assert.ok(i18nSource.includes("doctorRunFailed"));
-    assert.ok(!mainSource.includes("doctor:open-clawd-log"));
-    assert.ok(!preloadSource.includes("doctor:open-clawd-log"));
-    assert.ok(!doctorModalSource.includes("open-clawd-log"));
+    assert.ok(i18nSource.includes("doctorConnectionHttpVerified"));
+    assert.ok(i18nSource.includes("doctorOpenLog"));
   });
 
   it("does not animate the size bubble's horizontal position", () => {

@@ -9,6 +9,11 @@
     dot: null,
     label: null,
     status: null,
+    modalOpen: false,
+    connectionTest: null,
+    connectionTesting: false,
+    connectionRemainingSeconds: 0,
+    connectionTimer: null,
   };
 
   function t(core, key) {
@@ -59,6 +64,30 @@
     if (check.level === "warning" || check.status === "warning" || check.status === "fail") return t(core, "doctorStatusWarning");
     if (check.level === "info") return t(core, "doctorStatusInfo");
     return t(core, "doctorStatusPass");
+  }
+
+  function connectionStatusClass(test) {
+    if (state.connectionTesting) return "warning";
+    if (!test) return "unknown";
+    if (test.level === "warning" || test.status === "http-dropped" || test.status === "http-blocked" || test.status === "no-activity" || test.status === "error") {
+      return "warning";
+    }
+    return "pass";
+  }
+
+  function connectionStatusLabel(core, test) {
+    if (state.connectionTesting) {
+      return t(core, "doctorConnectionTesting").replace("{seconds}", String(state.connectionRemainingSeconds));
+    }
+    if (!test) return t(core, "doctorConnectionIdle");
+    const map = {
+      "http-verified": "doctorConnectionHttpVerified",
+      "http-dropped": "doctorConnectionHttpDropped",
+      "http-blocked": "doctorConnectionHttpBlocked",
+      "no-activity": "doctorConnectionNoActivity",
+      error: "doctorConnectionError",
+    };
+    return t(core, map[test.status] || "doctorConnectionError");
   }
 
   function pushIfValue(lines, label, value) {
@@ -140,8 +169,26 @@
     }).join("");
   }
 
+  function renderConnectionTest(core) {
+    const test = state.connectionTest;
+    const detail = state.connectionTesting
+      ? t(core, "doctorConnectionInstruction")
+      : (test && test.detail) || t(core, "doctorConnectionInstruction");
+    return (
+      `<div class="doctor-connection-panel ${connectionStatusClass(test)}">` +
+        `<div class="doctor-connection-main">` +
+          `<span class="doctor-check-dot"></span>` +
+          `<span class="doctor-check-label">${escape(core, t(core, "doctorConnectionTitle"))}</span>` +
+          `<span class="doctor-check-status">${escape(core, connectionStatusLabel(core, test))}</span>` +
+        `</div>` +
+        `<div class="doctor-check-detail">${escape(core, detail)}</div>` +
+      `</div>`
+    );
+  }
+
   function renderModalBody(core, result) {
     const issueCount = result && result.overall ? result.overall.issueCount || 0 : 0;
+    const testDisabled = state.connectionTesting ? " disabled" : "";
     return (
       `<div class="doctor-modal">` +
         `<div class="doctor-modal-header">` +
@@ -157,8 +204,11 @@
         `</div>` +
         `<div class="doctor-privacy">${escape(core, t(core, "doctorPrivacy"))}</div>` +
         `<div class="doctor-check-list">${renderCheckList(core, result)}</div>` +
+        renderConnectionTest(core) +
         `<div class="doctor-actions">` +
           `<button type="button" class="soft-btn" data-action="copy">${escape(core, t(core, "doctorCopyReport"))}</button>` +
+          `<button type="button" class="soft-btn" data-action="open-log">${escape(core, t(core, "doctorOpenLog"))}</button>` +
+          `<button type="button" class="soft-btn" data-action="test-connection"${testDisabled}>${escape(core, t(core, "doctorTestConnection"))}</button>` +
           `<button type="button" class="soft-btn accent" data-action="rerun">${escape(core, t(core, "doctorRerun"))}</button>` +
         `</div>` +
       `</div>`
@@ -166,11 +216,24 @@
   }
 
   function closeModal() {
+    state.modalOpen = false;
     const rootEl = document.getElementById("modalRoot");
     if (rootEl) rootEl.innerHTML = "";
   }
 
+  function stopConnectionCountdown() {
+    if (state.connectionTimer) {
+      clearInterval(state.connectionTimer);
+      state.connectionTimer = null;
+    }
+  }
+
+  function refreshModal(core) {
+    if (state.modalOpen) mountModal(core, state.lastResult);
+  }
+
   function mountModal(core, result) {
+    state.modalOpen = true;
     const rootEl = document.getElementById("modalRoot");
     if (!rootEl) return;
     rootEl.innerHTML = (
@@ -183,6 +246,8 @@
     const close = rootEl.querySelector(".doctor-close");
     const copy = rootEl.querySelector('[data-action="copy"]');
     const rerun = rootEl.querySelector('[data-action="rerun"]');
+    const testConnection = rootEl.querySelector('[data-action="test-connection"]');
+    const openLog = rootEl.querySelector('[data-action="open-log"]');
     if (backdrop) {
       backdrop.addEventListener("click", (ev) => {
         if (ev.target === backdrop) closeModal();
@@ -203,6 +268,53 @@
     }
     if (rerun) {
       rerun.addEventListener("click", () => runAndOpen(core));
+    }
+    if (testConnection) {
+      testConnection.addEventListener("click", () => startConnectionTest(core));
+    }
+    if (openLog) {
+      openLog.addEventListener("click", async () => {
+        try {
+          if (!root.doctor || typeof root.doctor.openClawdLog !== "function") throw new Error(t(core, "doctorOpenLogFailed"));
+          const result = await root.doctor.openClawdLog();
+          if (!result || result.status !== "ok") throw new Error((result && (result.message || result.reason)) || t(core, "doctorOpenLogFailed"));
+          core.helpers.showToast(t(core, "doctorOpenLogOpened"));
+        } catch (err) {
+          core.helpers.showToast((err && err.message) || t(core, "doctorOpenLogFailed"), { error: true });
+        }
+      });
+    }
+  }
+
+  async function startConnectionTest(core) {
+    if (state.connectionTesting) return;
+    if (!root.doctor || typeof root.doctor.testConnection !== "function") {
+      core.helpers.showToast(t(core, "doctorConnectionError"), { error: true });
+      return;
+    }
+    const durationMs = 10000;
+    state.connectionTesting = true;
+    state.connectionTest = null;
+    state.connectionRemainingSeconds = Math.ceil(durationMs / 1000);
+    stopConnectionCountdown();
+    state.connectionTimer = setInterval(() => {
+      state.connectionRemainingSeconds = Math.max(0, state.connectionRemainingSeconds - 1);
+      refreshModal(core);
+    }, 1000);
+    refreshModal(core);
+    try {
+      state.connectionTest = await root.doctor.testConnection(durationMs);
+    } catch (err) {
+      state.connectionTest = {
+        status: "error",
+        level: "warning",
+        detail: (err && err.message) || t(core, "doctorRunFailed"),
+      };
+    } finally {
+      state.connectionTesting = false;
+      state.connectionRemainingSeconds = 0;
+      stopConnectionCountdown();
+      refreshModal(core);
     }
   }
 

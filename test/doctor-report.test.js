@@ -129,6 +129,22 @@ describe("formatDiagnosticReport", () => {
           ],
         },
       ],
+      connectionTest: {
+        status: "http-dropped",
+        level: "warning",
+        detail: "HTTP works but events were dropped",
+        events: [{
+          agentId: "codex",
+          route: "permission",
+          outcome: "dropped-by-dnd",
+          eventType: "PermissionRequest",
+        }],
+        fileActivity: [{
+          agentId: "gemini-cli",
+          source: "file-mtime",
+          count: 1,
+        }],
+      },
     }, {
       version: "0.6.2",
       platform: "win32",
@@ -144,6 +160,10 @@ describe("formatDiagnosticReport", () => {
     assert.match(report, /codex_hooks=uncertain/);
     assert.match(report, /valid=clawd\.json/);
     assert.match(report, /opencode issue: directory-missing/);
+    assert.match(report, /## Connection Test/);
+    assert.match(report, /HTTP works but events were dropped/);
+    assert.match(report, /dropped-by-dnd/);
+    assert.match(report, /gemini-cli/);
     assert.ok(!report.includes("Alice"));
     assert.ok(report.includes("~/.cursor"));
   });

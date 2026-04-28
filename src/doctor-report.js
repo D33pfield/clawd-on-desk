@@ -152,6 +152,38 @@ function formatDiagnosticReport(result, meta = {}) {
     lines.push(row([check.id || "unknown", statusLabel(check), check.detail || ""]));
   }
 
+  const connectionTest = result && result.connectionTest ? result.connectionTest : null;
+  if (connectionTest) {
+    lines.push(
+      "",
+      "## Connection Test",
+      "",
+      row(["Status", "Detail"]),
+      row(["---", "---"]),
+      row([String(connectionTest.status || "unknown").toUpperCase(), connectionTest.detail || ""])
+    );
+    if (Array.isArray(connectionTest.events) && connectionTest.events.length) {
+      lines.push(
+        "",
+        row(["Agent", "Route", "Outcome", "Event"]),
+        row(["---", "---", "---", "---"])
+      );
+      for (const event of connectionTest.events) {
+        lines.push(row([event.agentId || "", event.route || "", event.outcome || "", event.eventType || ""]));
+      }
+    }
+    if (Array.isArray(connectionTest.fileActivity) && connectionTest.fileActivity.length) {
+      lines.push(
+        "",
+        row(["Agent", "Source", "Count"]),
+        row(["---", "---", "---"])
+      );
+      for (const entry of connectionTest.fileActivity) {
+        lines.push(row([entry.agentId || "", entry.source || "", entry.count || 0]));
+      }
+    }
+  }
+
   const agentCheck = findCheck(result, "agent-integrations");
   if (agentCheck && Array.isArray(agentCheck.details)) {
     lines.push(

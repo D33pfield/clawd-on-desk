@@ -1,6 +1,7 @@
 const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const { pathToFileURL } = require("url");
 const { applyStationaryCollectionBehavior } = require("./mac-window");
 const {
@@ -1193,6 +1194,7 @@ const _serverCtx = {
   get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
   get doNotDisturb() { return doNotDisturb; },
+  shouldDropForDnd: () => _state.shouldDropForDnd ? _state.shouldDropForDnd() : doNotDisturb,
   get hideBubbles() { return getAllBubblesHidden(); },
   getBubblePolicy: getRuntimeBubblePolicy,
   get pendingPermissions() { return pendingPermissions; },
@@ -2748,8 +2750,11 @@ const _updater = require("./updater")(_updaterCtx);
 const { setupAutoUpdater, checkForUpdates, getUpdateMenuItem, getUpdateMenuLabel } = _updater;
 const { runDoctorChecks } = require("./doctor");
 const { formatDiagnosticReport, redactDoctorResult } = require("./doctor-report");
+const { runConnectionTest } = require("./doctor-hook-activity");
+const { openClawdLog } = require("./doctor-logs");
 
 let lastDoctorResult = null;
+let lastDoctorConnectionTest = null;
 
 function buildDoctorResult() {
   lastDoctorResult = runDoctorChecks({
@@ -2758,6 +2763,15 @@ function buildDoctorResult() {
     doNotDisturb,
   });
   return lastDoctorResult;
+}
+
+function buildDoctorReportResult() {
+  const result = lastDoctorResult || buildDoctorResult();
+  if (!lastDoctorConnectionTest) return result;
+  return {
+    ...result,
+    connectionTest: lastDoctorConnectionTest,
+  };
 }
 
 // ── About tab IPC ──
@@ -2803,8 +2817,22 @@ ipcMain.handle("settings:open-external", async (_event, url) => {
   }
 });
 ipcMain.handle("doctor:run-checks", () => redactDoctorResult(buildDoctorResult()));
+ipcMain.handle("doctor:test-connection", async (_event, payload) => {
+  lastDoctorConnectionTest = await runConnectionTest({
+    server: _server,
+    durationMs: payload && payload.durationMs,
+    homeDir: os.homedir(),
+  });
+  return redactDoctorResult(lastDoctorConnectionTest);
+});
+ipcMain.handle("doctor:open-clawd-log", async (_event, payload) => openClawdLog({
+  requested: payload && payload.name,
+  homeDir: os.homedir(),
+  userDataDir: app.getPath("userData"),
+  shell,
+}));
 ipcMain.handle("doctor:get-report", () => {
-  const result = lastDoctorResult || buildDoctorResult();
+  const result = buildDoctorReportResult();
   return formatDiagnosticReport(result, {
     version: app.getVersion(),
     platform: process.platform,
