@@ -16,6 +16,7 @@
     connectionTimer: null,
     repairingKey: null,
     repairFeedback: {},
+    lastRepairFeedback: null,
     pendingConfirmAction: null,
     fixActionByKey: new Map(),
   };
@@ -190,6 +191,13 @@
     );
   }
 
+  function renderRepairSummary(core) {
+    const feedback = state.lastRepairFeedback;
+    if (!feedback || !feedback.message) return "";
+    const cls = feedback.status === "ok" ? "ok" : "error";
+    return `<div class="doctor-repair-summary ${cls}">${escape(core, feedback.message)}</div>`;
+  }
+
   function renderCheckList(core, result) {
     const checks = result && Array.isArray(result.checks) ? result.checks : [];
     if (!checks.length) {
@@ -273,6 +281,7 @@
           `<button type="button" class="doctor-close" aria-label="${escape(core, t(core, "doctorClose"))}">x</button>` +
         `</div>` +
         `<div class="doctor-privacy">${escape(core, t(core, "doctorPrivacy"))}</div>` +
+        renderRepairSummary(core) +
         `<div class="doctor-check-list">${checkList}</div>` +
         fixConfirm +
         renderConnectionTest(core) +
@@ -289,6 +298,7 @@
   function closeModal() {
     state.modalOpen = false;
     state.pendingConfirmAction = null;
+    state.lastRepairFeedback = null;
     const rootEl = document.getElementById("modalRoot");
     if (rootEl) rootEl.innerHTML = "";
   }
@@ -396,6 +406,7 @@
     }
     state.repairingKey = fixActionKey(action);
     state.pendingConfirmAction = null;
+    state.lastRepairFeedback = null;
     if (state.repairFeedback) delete state.repairFeedback[state.repairingKey];
     refreshModal(core);
     try {
@@ -407,11 +418,13 @@
       }
       const message = (result && result.message) || t(core, "doctorFixApplied");
       state.repairFeedback[state.repairingKey] = { status: "ok", message };
+      state.lastRepairFeedback = { status: "ok", message };
       core.helpers.showToast(message);
       await runChecks(core);
     } catch (err) {
       const message = (err && err.message) || t(core, "doctorFixFailed");
       state.repairFeedback[state.repairingKey] = { status: "error", message };
+      state.lastRepairFeedback = { status: "error", message };
       core.helpers.showToast(message, { error: true });
     } finally {
       state.repairingKey = null;

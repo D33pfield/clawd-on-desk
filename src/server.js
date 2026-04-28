@@ -114,6 +114,33 @@ function getRecentHookEventsFromBuffer(buffer, options = {}) {
     .sort((a, b) => a.timestamp - b.timestamp);
 }
 
+function createSingleRequestHookEventRecorder(recordFn, data, defaultRoute) {
+  let recorded = false;
+  function record(route, outcome) {
+    const routeToUse = route || defaultRoute;
+    if (
+      recorded
+      || typeof recordFn !== "function"
+      || !HOOK_EVENT_ROUTES.has(routeToUse)
+      || !HOOK_EVENT_OUTCOMES.has(outcome)
+    ) {
+      // Invalid route/outcome values stay no-op without consuming the single-flight slot.
+      return null;
+    }
+    recorded = true;
+    return recordFn(data, routeToUse, outcome);
+  }
+  return {
+    record,
+    accepted: (route) => record(route, "accepted"),
+    droppedByDisabled: (route) => record(route, "dropped-by-disabled"),
+    droppedByDnd: (route) => record(route, "dropped-by-dnd"),
+    acceptedUnlessDnd: (dropForDnd, route) => (
+      dropForDnd ? record(route, "dropped-by-dnd") : record(route, "accepted")
+    ),
+  };
+}
+
 // Truncate large string values in objects (recursive) — bubble only needs a preview
 const PREVIEW_MAX = 500;
 const MAX_PERMISSION_SUGGESTIONS = 20;
@@ -437,13 +464,8 @@ function recordHookEvent(data, route, outcome) {
   return recordHookEventInBuffer(recentHookEvents, data, route, outcome, { now: nowFn });
 }
 
-function createRequestHookRecorder(data) {
-  let recorded = false;
-  return function recordRequestHookEvent(route, outcome) {
-    if (recorded) return null;
-    recorded = true;
-    return recordHookEvent(data, route, outcome);
-  };
+function createRequestHookRecorder(data, defaultRoute) {
+  return createSingleRequestHookEventRecorder(recordHookEvent, data, defaultRoute);
 }
 
 function getRecentHookEvents(options = {}) {
@@ -831,7 +853,7 @@ function startHttpServer() {
         }
         try {
           const data = JSON.parse(body);
-          const recordRequestHookEvent = createRequestHookRecorder(data);
+          const recordRequestHookEvent = createRequestHookRecorder(data, "state");
           let { state, svg, session_id, event } = data;
           let display_svg;
           if (data.display_svg === null) display_svg = null;
@@ -865,7 +887,7 @@ function startHttpServer() {
           // hanging on our HTTP connection. Still surfaces as a success code
           // so hook exit behavior is unchanged.
           if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled(agentId)) {
-            recordRequestHookEvent("state", "dropped-by-disabled");
+            recordRequestHookEvent.droppedByDisabled();
             res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
             res.end();
             return;
@@ -894,7 +916,7 @@ function startHttpServer() {
               });
               if (perm) ctx.resolvePermissionEntry(perm, "deny", "User answered in terminal");
             }
-            recordRequestHookEvent("state", shouldDropForDnd() ? "dropped-by-dnd" : "accepted");
+            recordRequestHookEvent.acceptedUnlessDnd(shouldDropForDnd());
             if (svg) {
               const safeSvg = path.basename(svg);
               ctx.setState(state, safeSvg);
@@ -951,7 +973,7 @@ function startHttpServer() {
           res.end("bad json");
           return;
         }
-        const recordRequestHookEvent = createRequestHookRecorder(data);
+        const recordRequestHookEvent = createRequestHookRecorder(data, "permission");
 
         try {
           // ── opencode branch ──
@@ -974,7 +996,7 @@ function startHttpServer() {
             // fire-and-forget, so 200 ACK satisfies it; skipping the bridge
             // reply lets the opencode TUI fall back to its built-in prompt.
             if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled("opencode")) {
-              recordRequestHookEvent("permission", "dropped-by-disabled");
+              recordRequestHookEvent.droppedByDisabled();
               ctx.permLog("opencode disabled → silent drop, TUI fallback");
               return;
             }
@@ -997,7 +1019,7 @@ function startHttpServer() {
             // we have no way to resolve the pending permission.
             if (!requestId || !bridgeUrl || !bridgeToken) {
               const missing = !requestId ? "request_id" : (!bridgeUrl ? "bridge_url" : "bridge_token");
-              recordRequestHookEvent("permission", "accepted");
+              recordRequestHookEvent.accepted();
               ctx.permLog(`SKIPPED opencode perm: missing ${missing}`);
               return;
             }
@@ -1007,7 +1029,7 @@ function startHttpServer() {
             // can confirm in the terminal themselves. Spike 2026-04-06
             // confirmed this works: TUI shows Allow/Reject without hanging.
             if (ctx.doNotDisturb) {
-              recordRequestHookEvent("permission", "dropped-by-dnd");
+              recordRequestHookEvent.droppedByDnd();
               ctx.permLog(`opencode DND → silent drop, TUI fallback — request=${requestId}`);
               return;
             }
@@ -1016,7 +1038,7 @@ function startHttpServer() {
             // not render a bubble and let the TUI prompt handle it.
             const opencodeSubGateBypass = shouldBypassOpencodeBubble(ctx);
             if (!arePermissionBubblesEnabled(ctx) || opencodeSubGateBypass) {
-              recordRequestHookEvent("permission", "accepted");
+              recordRequestHookEvent.accepted();
               ctx.permLog(`opencode bubble hidden: tool=${toolName} — TUI fallback (permissionBubblesEnabled=${arePermissionBubblesEnabled(ctx)} subGateBypass=${opencodeSubGateBypass})`);
               return;
             }
@@ -1048,7 +1070,7 @@ function startHttpServer() {
             // mutating session state — so working/thinking is preserved for resolve.
             ctx.updateSession(sessionId, "notification", "PermissionRequest", { agentId: "opencode" });
             ctx.permLog(`opencode showing bubble: tool=${toolName} session=${sessionId}`);
-            recordRequestHookEvent("permission", "accepted");
+            recordRequestHookEvent.accepted();
             try {
               ctx.showPermissionBubble(permEntry);
             } catch (bubbleErr) {
@@ -1086,21 +1108,21 @@ function startHttpServer() {
               : buildToolInputFingerprint(rawInput);
 
             if (ctx.doNotDisturb) {
-              recordRequestHookEvent("permission", "dropped-by-dnd");
+              recordRequestHookEvent.droppedByDnd();
               ctx.permLog(`codex DND -> no decision, native prompt fallback (tool=${toolName})`);
               sendCodexPermissionNoDecision(res);
               return;
             }
 
             if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled("codex")) {
-              recordRequestHookEvent("permission", "dropped-by-disabled");
+              recordRequestHookEvent.droppedByDisabled();
               ctx.permLog(`codex disabled -> no decision, native prompt fallback (tool=${toolName})`);
               sendCodexPermissionNoDecision(res);
               return;
             }
 
             if (shouldBypassCodexBubble(ctx)) {
-              recordRequestHookEvent("permission", "accepted");
+              recordRequestHookEvent.accepted();
               const reason = !arePermissionBubblesEnabled(ctx)
                 ? "permission bubbles disabled"
                 : "codex bubbles disabled";
@@ -1140,7 +1162,7 @@ function startHttpServer() {
             });
 
             ctx.permLog(`codex showing bubble: tool=${toolName} session=${sessionId} stack=${ctx.pendingPermissions.length}`);
-            recordRequestHookEvent("permission", "accepted");
+            recordRequestHookEvent.accepted();
             try {
               ctx.showPermissionBubble(permEntry);
             } catch (bubbleErr) {
@@ -1160,7 +1182,7 @@ function startHttpServer() {
           // Deny in chat, no hang, no timeout. Same pattern as opencode
           // silent drop (95cbfc7).
           if (ctx.doNotDisturb) {
-            recordRequestHookEvent("permission", "dropped-by-dnd");
+            recordRequestHookEvent.droppedByDnd();
             ctx.permLog("CC DND → destroy connection, CC chat fallback");
             res.destroy();
             return;
@@ -1172,7 +1194,7 @@ function startHttpServer() {
           // gets the same treatment.
           const ccAgentId = typeof data.agent_id === "string" && data.agent_id ? data.agent_id : "claude-code";
           if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled(ccAgentId)) {
-            recordRequestHookEvent("permission", "dropped-by-disabled");
+            recordRequestHookEvent.droppedByDisabled();
             ctx.permLog(`${ccAgentId} disabled → destroy connection, chat fallback`);
             res.destroy();
             return;
@@ -1197,21 +1219,21 @@ function startHttpServer() {
 
           const existingSession = ctx.sessions.get(sessionId);
           if (existingSession && existingSession.headless) {
-            recordRequestHookEvent("permission", "accepted");
+            recordRequestHookEvent.accepted();
             ctx.permLog(`SKIPPED: headless session=${sessionId}`);
             ctx.sendPermissionResponse(res, "deny", "Non-interactive session; auto-denied");
             return;
           }
 
           if (ctx.PASSTHROUGH_TOOLS.has(toolName)) {
-            recordRequestHookEvent("permission", "accepted");
+            recordRequestHookEvent.accepted();
             ctx.permLog(`PASSTHROUGH: tool=${toolName} session=${sessionId}`);
             ctx.sendPermissionResponse(res, "allow");
             return;
           }
 
           if (shouldBypassCCBubble(ctx, toolName, permAgentId)) {
-            recordRequestHookEvent("permission", "accepted");
+            recordRequestHookEvent.accepted();
             const reason = !arePermissionBubblesEnabled(ctx)
               ? "permission bubbles disabled"
               : `${permAgentId} bubbles disabled`;
@@ -1251,7 +1273,7 @@ function startHttpServer() {
             permEntry.abortHandler = abortHandler;
             res.on("close", abortHandler);
             ctx.pendingPermissions.push(permEntry);
-            recordRequestHookEvent("permission", "accepted");
+            recordRequestHookEvent.accepted();
             ctx.showPermissionBubble(permEntry);
             return;
           }
@@ -1289,7 +1311,7 @@ function startHttpServer() {
           ctx.updateSession(sessionId, "notification", "PermissionRequest", { agentId: permAgentId });
 
           ctx.permLog(`showing bubble: tool=${toolName} session=${sessionId} suggestions=${suggestions.length} stack=${ctx.pendingPermissions.length}`);
-          recordRequestHookEvent("permission", "accepted");
+          recordRequestHookEvent.accepted();
           ctx.showPermissionBubble(permEntry);
         } catch (err) {
           ctx.permLog(`/permission handler error: ${err && err.message}`);
@@ -1387,5 +1409,6 @@ module.exports.__test = {
   resolveCodexOfficialHookState,
   recordHookEventInBuffer,
   getRecentHookEventsFromBuffer,
+  createSingleRequestHookEventRecorder,
   HOOK_EVENT_RING_SIZE_PER_AGENT,
 };

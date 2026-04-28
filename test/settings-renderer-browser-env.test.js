@@ -112,6 +112,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes("renderFixConfirm"));
     assert.ok(doctorModalSource.includes("doctorFixConfirmCodexDetail"));
     assert.ok(doctorModalSource.includes("repairFeedback"));
+    assert.ok(doctorModalSource.includes("lastRepairFeedback"));
     assert.ok(doctorModalSource.includes("agentDetailText"));
     assert.ok(doctorModalSource.includes("startConnectionTest"));
     assert.ok(html.includes(".doctor-agent-detail"));
@@ -119,6 +120,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(html.includes(".doctor-fix-button"));
     assert.ok(html.includes(".doctor-fix-confirm"));
     assert.ok(html.includes(".doctor-repair-feedback"));
+    assert.ok(html.includes(".doctor-repair-summary"));
     assert.ok(preloadSource.includes('contextBridge.exposeInMainWorld("doctor"'));
     assert.ok(preloadSource.includes('ipcRenderer.invoke("doctor:run-checks")'));
     assert.ok(preloadSource.includes('ipcRenderer.invoke("doctor:get-report")'));

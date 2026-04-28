@@ -7,6 +7,7 @@ const { EventEmitter } = require("node:events");
 const initServer = require("../src/server");
 const {
   HOOK_EVENT_RING_SIZE_PER_AGENT,
+  createSingleRequestHookEventRecorder,
   recordHookEventInBuffer,
   getRecentHookEventsFromBuffer,
 } = initServer.__test;
@@ -286,5 +287,27 @@ describe("server hook event ringbuffer", () => {
     assert.strictEqual(events.length, HOOK_EVENT_RING_SIZE_PER_AGENT);
     assert.strictEqual(events[0].eventType, "E7");
     assert.strictEqual(events.at(-1).eventType, `E${HOOK_EVENT_RING_SIZE_PER_AGENT + 6}`);
+  });
+
+  it("single-request recorder keeps the first valid route outcome", () => {
+    const calls = [];
+    const recorder = createSingleRequestHookEventRecorder(
+      (data, route, outcome) => {
+        calls.push({ data, route, outcome });
+        return { route, outcome };
+      },
+      { agent_id: "codex" },
+      "permission"
+    );
+
+    assert.strictEqual(recorder.record("bogus", "accepted"), null);
+    assert.deepStrictEqual(recorder.accepted(), { route: "permission", outcome: "accepted" });
+    assert.strictEqual(recorder.droppedByDnd(), null);
+    assert.strictEqual(recorder.droppedByDisabled("state"), null);
+    assert.deepStrictEqual(calls, [{
+      data: { agent_id: "codex" },
+      route: "permission",
+      outcome: "accepted",
+    }]);
   });
 });
