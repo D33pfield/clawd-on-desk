@@ -103,8 +103,11 @@ body { padding: 6px; }
 /* ── Header ── */
 .header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
   margin-bottom: 0;
 }
 .header-title {
@@ -112,12 +115,15 @@ body { padding: 6px; }
   font-weight: 600;
   color: var(--header-color);
   letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 /* ── Tool pill ── */
 .tool-pill {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
+  min-width: 0;
   padding: 3px 8px;
   border-radius: 6px;
   font-size: 11px;
@@ -126,6 +132,26 @@ body { padding: 6px; }
   color: #fff;
   letter-spacing: 0.05em;
   background: #52525b;
+  overflow: hidden;
+  cursor: default;
+}
+.tool-pill-text {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  will-change: transform;
+}
+.tool-pill.is-marquee:hover > .tool-pill-text {
+  text-overflow: clip;
+  overflow: visible;
+  animation: pill-marquee 1.5s ease-in-out 1 forwards;
+}
+@keyframes pill-marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(var(--marquee-shift, 0)); }
 }
 .tool-pill[data-tool="Bash"]  { background: #d97757; }
 .tool-pill[data-tool="Edit"]  { background: #5b8dd9; }
@@ -442,7 +468,7 @@ body { padding: 6px; }
 <div class="card" id="card">
   <div class="header">
     <span class="header-title">Permission Request</span>
-    <span class="tool-pill" id="toolPill"></span>
+    <span class="tool-pill" id="toolPill"><span class="tool-pill-text" id="toolPillText"></span></span>
   </div>
 
   <div class="session-tag" id="sessionTag"></div>
@@ -462,6 +488,19 @@ body { padding: 6px; }
 <script>
 const card = document.getElementById("card");
 const toolPill = document.getElementById("toolPill");
+const toolPillText = document.getElementById("toolPillText");
+function stopMarquee() {
+  toolPill.classList.remove("is-marquee");
+  toolPill.style.removeProperty("--marquee-shift");
+}
+function startMarqueeIfOverflowing() {
+  const overflow = toolPillText.scrollWidth - toolPillText.clientWidth;
+  if (overflow <= 0) return;
+  toolPill.style.setProperty("--marquee-shift", `-${overflow}px`);
+  toolPill.classList.add("is-marquee");
+}
+toolPill.addEventListener("mouseenter", startMarqueeIfOverflowing);
+toolPill.addEventListener("mouseleave", stopMarquee);
 const commandBlock = document.getElementById("commandBlock");
 const elicitationForm = document.getElementById("elicitationForm");
 const elicitationProgress = document.getElementById("elicitationProgress");
@@ -743,6 +782,7 @@ function resetBubbleContent() {
   elicitationProgress.textContent = "";
   elicitationProgress.classList.remove("visible");
   toolPill.style.display = "";
+  stopMarquee();
   btnAllow.style.display = "";
   btnAllow.disabled = false;
   btnDeny.style.display = "";
@@ -1063,7 +1103,7 @@ function show(data) {
 
     const rawName = data.toolName || "unknown";
     const displayName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
-    toolPill.textContent = displayName;
+    toolPillText.textContent = displayName;
     toolPill.setAttribute("data-tool", displayName);
     toolPill.style.display = "";
 
@@ -1130,7 +1170,7 @@ function show(data) {
   // Codex notify mode — informational bubble with Dismiss button only
   if (data.toolName === "CodexExec") {
     headerTitle.textContent = bubbleText(data.lang, "codexPermission");
-    toolPill.textContent = "CODEX";
+    toolPillText.textContent = "CODEX";
     toolPill.setAttribute("data-tool", "CodexExec");
     toolPill.style.display = "";
     commandBlock.textContent = (data.toolInput && data.toolInput.command) || "(unknown)";
@@ -1145,7 +1185,7 @@ function show(data) {
   // Kimi notify mode — informational bubble with Dismiss button only
   if (data.toolName === "KimiPermission") {
     headerTitle.textContent = bubbleText(data.lang, "kimiPermission");
-    toolPill.textContent = "KIMI";
+    toolPillText.textContent = "KIMI";
     toolPill.setAttribute("data-tool", "KimiPermission");
     toolPill.style.display = "";
     commandBlock.textContent = (data.toolInput && data.toolInput.command) || bubbleText(data.lang, "checkKimiTerminal");
@@ -1167,7 +1207,7 @@ function show(data) {
   btnDeny.style.display = isPlanReview ? "none" : "";
 
   // Tool pill
-  toolPill.textContent = data.toolName || "Unknown";
+  toolPillText.textContent = data.toolName || "Unknown";
   toolPill.setAttribute("data-tool", data.toolName || "");
 
   // Command block (textContent only — never innerHTML)
