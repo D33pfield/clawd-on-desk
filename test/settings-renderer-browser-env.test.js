@@ -113,6 +113,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes("doctorFixConfirmCodexDetail"));
     assert.ok(doctorModalSource.includes("repairFeedback"));
     assert.ok(doctorModalSource.includes("lastRepairFeedback"));
+    assert.ok(doctorModalSource.includes("core.ops.showToast"));
+    assert.ok(!doctorModalSource.includes("core.helpers.showToast"));
     assert.ok(doctorModalSource.includes("agentDetailText"));
     assert.ok(doctorModalSource.includes("startConnectionTest"));
     assert.ok(html.includes(".doctor-agent-detail"));
@@ -135,7 +137,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(mainSource.includes("runConnectionTest"));
     assert.ok(mainSource.includes("openClawdLog"));
     assert.ok(mainSource.includes("formatDiagnosticReport"));
-    assert.ok(mainSource.includes("redactDoctorResult(buildDoctorResult())"));
+    assert.ok(mainSource.includes("getDoctorRedactionOptions"));
+    assert.ok(mainSource.includes("redactDoctorResult(buildDoctorResult(), getDoctorRedactionOptions())"));
     assert.ok(i18nSource.includes("doctorRunFailed"));
     assert.ok(i18nSource.includes("doctorFixApplied"));
     assert.ok(i18nSource.includes("doctorFixConfirmCodexDetail"));

@@ -29,6 +29,12 @@
     return core.helpers.escapeHtml(value == null ? "" : value);
   }
 
+  function showToast(core, message, options) {
+    if (core && core.ops && typeof core.ops.showToast === "function") {
+      core.ops.showToast(message, options);
+    }
+  }
+
   function overallClass(result) {
     const status = result && result.overall && result.overall.status;
     if (!result) return "unknown";
@@ -345,9 +351,9 @@
         try {
           const report = await root.doctor.getReport();
           await navigator.clipboard.writeText(report);
-          core.helpers.showToast(t(core, "doctorCopied"));
+          showToast(core, t(core, "doctorCopied"));
         } catch (err) {
-          core.helpers.showToast((err && err.message) || t(core, "doctorCopyFailed"), { error: true });
+          showToast(core, (err && err.message) || t(core, "doctorCopyFailed"), { error: true });
         }
       });
     }
@@ -363,9 +369,9 @@
           if (!root.doctor || typeof root.doctor.openClawdLog !== "function") throw new Error(t(core, "doctorOpenLogFailed"));
           const result = await root.doctor.openClawdLog();
           if (!result || result.status !== "ok") throw new Error((result && (result.message || result.reason)) || t(core, "doctorOpenLogFailed"));
-          core.helpers.showToast(t(core, "doctorOpenLogOpened"));
+          showToast(core, t(core, "doctorOpenLogOpened"));
         } catch (err) {
-          core.helpers.showToast((err && err.message) || t(core, "doctorOpenLogFailed"), { error: true });
+          showToast(core, (err && err.message) || t(core, "doctorOpenLogFailed"), { error: true });
         }
       });
     }
@@ -396,7 +402,7 @@
   async function startFixAction(core, action) {
     if (state.repairingKey) return;
     if (!root.settingsAPI || typeof root.settingsAPI.command !== "function") {
-      core.helpers.showToast(t(core, "doctorFixFailed"), { error: true });
+      showToast(core, t(core, "doctorFixFailed"), { error: true });
       return;
     }
     if (requiresFixConfirmation(action) && action.confirmed !== true) {
@@ -419,13 +425,13 @@
       const message = (result && result.message) || t(core, "doctorFixApplied");
       state.repairFeedback[state.repairingKey] = { status: "ok", message };
       state.lastRepairFeedback = { status: "ok", message };
-      core.helpers.showToast(message);
+      showToast(core, message);
       await runChecks(core);
     } catch (err) {
       const message = (err && err.message) || t(core, "doctorFixFailed");
       state.repairFeedback[state.repairingKey] = { status: "error", message };
       state.lastRepairFeedback = { status: "error", message };
-      core.helpers.showToast(message, { error: true });
+      showToast(core, message, { error: true });
     } finally {
       state.repairingKey = null;
       refreshModal(core);
@@ -435,7 +441,7 @@
   async function startConnectionTest(core) {
     if (state.connectionTesting) return;
     if (!root.doctor || typeof root.doctor.testConnection !== "function") {
-      core.helpers.showToast(t(core, "doctorConnectionError"), { error: true });
+      showToast(core, t(core, "doctorConnectionError"), { error: true });
       return;
     }
     const durationMs = 10000;
@@ -489,7 +495,7 @@
       const result = await runChecks(core);
       mountModal(core, result);
     } catch (err) {
-      core.helpers.showToast((err && err.message) || t(core, "doctorRunFailed"), { error: true });
+      showToast(core, (err && err.message) || t(core, "doctorRunFailed"), { error: true });
       mountModal(core, state.lastResult);
     }
   }

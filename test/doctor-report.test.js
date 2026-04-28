@@ -43,6 +43,22 @@ describe("doctor report redaction", () => {
     assert.ok(out.includes("[REDACTED]"));
   });
 
+  it("redacts configured Clawd app roots without consuming the rest of the path", () => {
+    const out = redact([
+      "D:/animation/hooks/opencode-plugin",
+      "D:\\animation\\hooks\\codex-hook.js",
+      "D:/other/hooks/opencode-plugin",
+    ].join("\n"), {
+      appRoot: "D:\\animation",
+    });
+
+    assert.ok(!out.includes("D:/animation"));
+    assert.ok(!out.includes("D:\\animation"));
+    assert.ok(out.includes("[APP]/hooks/opencode-plugin"));
+    assert.ok(out.includes("[APP]\\hooks\\codex-hook.js"));
+    assert.ok(out.includes("D:/other/hooks/opencode-plugin"));
+  });
+
   it("redacts nested doctor results before they are sent to the Settings UI", () => {
     const result = redactDoctorResult({
       checks: [{
@@ -52,15 +68,18 @@ describe("doctor report redaction", () => {
           agentName: "Cursor Agent",
           detail: "C:\\Users\\Alice\\.cursor\\hooks.json missing",
           opencodeEntry: "/Users/bob/.config/opencode/opencode.json",
+          appEntry: "D:/animation/hooks/opencode-plugin",
         }],
       }],
-    }, { homeDir: "C:\\Users\\Alice" });
+    }, { homeDir: "C:\\Users\\Alice", appRoot: "D:\\animation" });
 
     const text = JSON.stringify(result);
     assert.ok(!text.includes("Alice"));
     assert.ok(!text.includes("/Users/bob"));
+    assert.ok(!text.includes("D:/animation"));
     assert.ok(text.includes("~/.cursor"));
     assert.ok(text.includes("~/.config/opencode"));
+    assert.ok(text.includes("[APP]/hooks/opencode-plugin"));
   });
 });
 
@@ -125,6 +144,7 @@ describe("formatDiagnosticReport", () => {
                 corruptFiles: [],
               },
               opencodeEntryIssue: "directory-missing",
+              opencodeEntry: "D:/animation/hooks/opencode-plugin",
             },
           ],
         },
@@ -151,6 +171,7 @@ describe("formatDiagnosticReport", () => {
       release: "10.0.26200",
       locale: "zh",
       homeDir: "C:\\Users\\Alice",
+      appRoot: "D:\\animation",
     });
 
     assert.match(report, /# Clawd Diagnostic Report/);
@@ -160,11 +181,13 @@ describe("formatDiagnosticReport", () => {
     assert.match(report, /codex_hooks=uncertain/);
     assert.match(report, /valid=clawd\.json/);
     assert.match(report, /opencode issue: directory-missing/);
+    assert.match(report, /\[APP\]\/hooks\/opencode-plugin/);
     assert.match(report, /## Connection Test/);
     assert.match(report, /HTTP works but events were dropped/);
     assert.match(report, /dropped-by-dnd/);
     assert.match(report, /gemini-cli/);
     assert.ok(!report.includes("Alice"));
+    assert.ok(!report.includes("D:/animation"));
     assert.ok(report.includes("~/.cursor"));
   });
 });

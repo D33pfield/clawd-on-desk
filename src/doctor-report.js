@@ -30,6 +30,31 @@ function redactHomePaths(text, homeDir = os.homedir()) {
   return out;
 }
 
+function getRedactionRoots(options = {}) {
+  const roots = [];
+  if (typeof options.appRoot === "string" && options.appRoot) roots.push(options.appRoot);
+  if (Array.isArray(options.appRoots)) {
+    for (const entry of options.appRoots) {
+      if (typeof entry === "string" && entry) roots.push(entry);
+    }
+  }
+  return [...new Set(roots)]
+    .map((entry) => entry.replace(/[\\/]+$/, ""))
+    .filter((entry) => entry.length >= 3)
+    .sort((a, b) => b.length - a.length);
+}
+
+function redactAppRootPaths(text, options = {}) {
+  let out = String(text);
+  for (const root of getRedactionRoots(options)) {
+    const variants = [...new Set([root, root.replace(/\\/g, "/")])];
+    for (const variant of variants) {
+      out = out.replace(new RegExp(`${escapeRegExp(variant)}(?=[\\\\/]|$)`, "gi"), "[APP]");
+    }
+  }
+  return out;
+}
+
 function redactIps(text) {
   return String(text).replace(
     /\b(?!(?:127\.0\.0\.1)\b)(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}\b/g,
@@ -38,7 +63,8 @@ function redactIps(text) {
 }
 
 function redact(input, options = {}) {
-  let out = redactHomePaths(String(input == null ? "" : input), options.homeDir);
+  let out = redactAppRootPaths(String(input == null ? "" : input), options);
+  out = redactHomePaths(out, options.homeDir);
   for (const [pattern, replacement] of SECRET_PATTERNS) {
     out = out.replace(pattern, replacement);
   }
@@ -205,7 +231,7 @@ function formatDiagnosticReport(result, meta = {}) {
 
   lines.push(
     "",
-    "**Privacy notice**: This report is generated locally. Clawd does not upload any data. User paths are replaced with `~`. The report contains no API keys, tokens, conversation content, or document filenames."
+    "**Privacy notice**: This report is generated locally. Clawd does not upload any data. User paths are replaced with `~`, and Clawd app paths are replaced with `[APP]`. The report contains no API keys, tokens, conversation content, or document filenames."
   );
 
   return redact(lines.join("\n"), meta);

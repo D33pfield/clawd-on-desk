@@ -2795,6 +2795,15 @@ function buildDoctorReportResult() {
   };
 }
 
+function getDoctorRedactionOptions() {
+  const appRoots = [path.resolve(path.join(__dirname, ".."))];
+  try {
+    const appPath = app.getAppPath();
+    if (appPath) appRoots.push(path.resolve(appPath));
+  } catch {}
+  return { appRoots };
+}
+
 // ── About tab IPC ──
 // Hero SVG is inlined (not file URL) because settings.html CSP is
 // `default-src 'none'` with no `object-src`/`frame-src` — <object>/<iframe>
@@ -2837,10 +2846,10 @@ ipcMain.handle("settings:open-external", async (_event, url) => {
     return { status: "error", message: (err && err.message) || String(err) };
   }
 });
-ipcMain.handle("doctor:run-checks", () => redactDoctorResult(buildDoctorResult()));
+ipcMain.handle("doctor:run-checks", () => redactDoctorResult(buildDoctorResult(), getDoctorRedactionOptions()));
 ipcMain.handle("doctor:test-connection", async (_event, payload) => {
   const result = await runDedupedDoctorConnectionTest(payload);
-  return redactDoctorResult(result);
+  return redactDoctorResult(result, getDoctorRedactionOptions());
 });
 ipcMain.handle("doctor:open-clawd-log", async (_event, payload) => openClawdLog({
   requested: payload && payload.name,
@@ -2855,6 +2864,7 @@ ipcMain.handle("doctor:get-report", () => {
     platform: process.platform,
     release: os.release(),
     locale: _settingsController.get("lang") || "en",
+    ...getDoctorRedactionOptions(),
   });
 });
 
