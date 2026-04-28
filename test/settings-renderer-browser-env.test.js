@@ -383,6 +383,14 @@ describe("settings renderer browser environment", () => {
     );
   });
 
+  it("keeps localized shortcut labels from collapsing into vertical CJK text", () => {
+    const html = fs.readFileSync(SETTINGS_HTML, "utf8");
+    assert.match(html, /\.shortcut-row-control\s*\{[\s\S]*?flex:\s*1 1 0;[\s\S]*?min-width:\s*0;[\s\S]*?flex-wrap:\s*wrap;[\s\S]*?justify-content:\s*flex-start;[\s\S]*?\}/);
+    assert.match(html, /\.shortcut-row \.row-text\s*\{[\s\S]*?flex:\s*0 0 190px;[\s\S]*?\}/);
+    assert.match(html, /\.shortcut-row \.row-label\s*\{[\s\S]*?word-break:\s*keep-all;[\s\S]*?overflow-wrap:\s*normal;[\s\S]*?\}/);
+    assert.match(html, /\.shortcut-value\s*\{[\s\S]*?flex:\s*1 1 190px;[\s\S]*?min-width:\s*160px;[\s\S]*?max-width:\s*286px;[\s\S]*?\}/);
+  });
+
   it("counts sound overrides in the theme-overrides reset gate", () => {
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     assert.ok(

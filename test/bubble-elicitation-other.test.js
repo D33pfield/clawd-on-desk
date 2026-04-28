@@ -13,6 +13,8 @@ describe("AskUserQuestion bubble Other option", () => {
     assert.match(bubbleHtml, /otherPlaceholder: "\\u8F93\\u5165\\u4F60\\u7684\\u56DE\\u7B54\\u2026",/);
     assert.match(bubbleHtml, /other: "\\uAE30\\uD0C0",/);
     assert.match(bubbleHtml, /otherPlaceholder: "\\uC9C1\\uC811 \\uC785\\uB825\\u2026",/);
+    assert.match(bubbleHtml, /other: "その他",/);
+    assert.match(bubbleHtml, /otherPlaceholder: "回答を入力…",/);
   });
 
   it("renders a client-side Other option with a folding textarea", () => {

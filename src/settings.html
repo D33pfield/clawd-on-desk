@@ -924,11 +924,23 @@ html, body {
   margin-bottom: 10px;
 }
 .shortcut-row-control {
+  flex: 1 1 0;
+  min-width: 0;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
+}
+.shortcut-row .row-text {
+  flex: 0 0 190px;
+}
+.shortcut-row .row-label {
+  line-height: 1.35;
+  word-break: keep-all;
+  overflow-wrap: normal;
 }
 .shortcut-value {
-  width: 190px;
+  flex: 1 1 190px;
+  min-width: 160px;
+  max-width: 286px;
   box-sizing: border-box;
   padding: 8px 10px;
   border: 1px solid var(--border);
@@ -941,6 +953,9 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.shortcut-row-control .soft-btn {
+  white-space: nowrap;
 }
 .shortcut-value.unassigned {
   color: var(--text-tertiary);

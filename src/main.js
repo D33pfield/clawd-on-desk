@@ -2408,6 +2408,7 @@ const SOUND_OVERRIDE_DIALOG_STRINGS = {
   en: { title: "Choose a sound file", filterName: "Audio" },
   zh: { title: "选择音效文件", filterName: "音频" },
   ko: { title: "음향 파일 선택", filterName: "오디오" },
+  ja: { title: "音声ファイルを選択", filterName: "音声" },
 };
 
 function _getSettingsDialogParent(event) {
@@ -2593,6 +2594,13 @@ const ANIMATION_OVERRIDES_EXPORT_DIALOG_STRINGS = {
     jsonFilter: "Clawd 애니메이션 덮어쓰기",
     nothingToExport: "내보낼 애니메이션 덮어쓰기가 없습니다. 먼저 무언가를 덮어써 보세요.",
   },
+  ja: {
+    saveTitle: "アニメーション差し替えをエクスポート",
+    openTitle: "アニメーション差し替えをインポート",
+    defaultName: (ts) => `clawd-animation-overrides-${ts}.json`,
+    jsonFilter: "Clawd アニメーション差し替え",
+    nothingToExport: "エクスポートするアニメーション差し替えがありません。先に何かを差し替えてください。",
+  },
 };
 
 ipcMain.handle("settings:export-animation-overrides", async (event) => {
@@ -2717,6 +2725,12 @@ const REMOVE_THEME_DIALOG_STRINGS = {
     cancel: "취소",
     message: (name) => `테마 "${name}"을(를) 삭제할까요?`,
     detail: "이 작업은 되돌릴 수 없습니다. 이 테마의 모든 파일이 디스크에서 제거됩니다.",
+  },
+  ja: {
+    delete: "削除",
+    cancel: "キャンセル",
+    message: (name) => `テーマ "${name}" を削除しますか？`,
+    detail: "この操作は元に戻せません。このテーマのすべてのファイルがディスクから削除されます。",
   },
 };
 ipcMain.handle("settings:confirm-remove-theme", async (event, themeId) => {
