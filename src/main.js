@@ -2746,6 +2746,19 @@ const _updaterCtx = {
 };
 const _updater = require("./updater")(_updaterCtx);
 const { setupAutoUpdater, checkForUpdates, getUpdateMenuItem, getUpdateMenuLabel } = _updater;
+const { runDoctorChecks } = require("./doctor");
+const { formatDiagnosticReport, redactDoctorResult } = require("./doctor-report");
+
+let lastDoctorResult = null;
+
+function buildDoctorResult() {
+  lastDoctorResult = runDoctorChecks({
+    server: _server,
+    prefs: _settingsController.getSnapshot(),
+    doNotDisturb,
+  });
+  return lastDoctorResult;
+}
 
 // ── About tab IPC ──
 // Hero SVG is inlined (not file URL) because settings.html CSP is
@@ -2788,6 +2801,16 @@ ipcMain.handle("settings:open-external", async (_event, url) => {
   } catch (err) {
     return { status: "error", message: (err && err.message) || String(err) };
   }
+});
+ipcMain.handle("doctor:run-checks", () => redactDoctorResult(buildDoctorResult()));
+ipcMain.handle("doctor:get-report", () => {
+  const result = lastDoctorResult || buildDoctorResult();
+  return formatDiagnosticReport(result, {
+    version: app.getVersion(),
+    platform: process.platform,
+    release: os.release(),
+    locale: _settingsController.get("lang") || "en",
+  });
 });
 
 // ── Settings panel window ──

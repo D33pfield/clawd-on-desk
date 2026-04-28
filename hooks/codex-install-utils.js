@@ -9,6 +9,10 @@ const {
   formatNodeHookCommand,
 } = require("./json-utils");
 
+const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".codex");
+const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "hooks.json");
+const DEFAULT_FEATURES_CONFIG = path.join(DEFAULT_PARENT_DIR, "config.toml");
+
 const CODEX_HOOK_EVENTS = [
   "SessionStart",
   "UserPromptSubmit",
@@ -323,6 +327,9 @@ function unregisterCodexCommandHooks(options = {}) {
 }
 
 module.exports = {
+  DEFAULT_PARENT_DIR,
+  DEFAULT_CONFIG_PATH,
+  DEFAULT_FEATURES_CONFIG,
   CODEX_HOOK_EVENTS,
   buildCodexHookCommand,
   ensureCodexHooksFeature,

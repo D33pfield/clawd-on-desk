@@ -10,6 +10,7 @@ const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
   DEFAULT_SERVER_PORT,
+  RUNTIME_CONFIG_PATH,
   buildPermissionUrl,
   clearRuntimeConfig,
   getPortCandidates,
@@ -387,6 +388,28 @@ function getClaudeSettingsPath() {
 
 function getHookServerPort() {
   return activeServerPort || readRuntimePortFn() || DEFAULT_SERVER_PORT;
+}
+
+function getRuntimeStatus() {
+  let address = null;
+  try {
+    address = httpServer && typeof httpServer.address === "function" ? httpServer.address() : null;
+  } catch {
+    address = null;
+  }
+  const addressPort = address && typeof address === "object" && Number.isInteger(address.port)
+    ? address.port
+    : null;
+  const port = activeServerPort || addressPort || null;
+  const runtimePort = readRuntimePortFn();
+  return {
+    listening: !!port && (!httpServer || httpServer.listening !== false),
+    port,
+    runtimePath: typeof ctx.runtimeConfigPath === "string" ? ctx.runtimeConfigPath : RUNTIME_CONFIG_PATH,
+    runtimePort,
+    runtimeFileExists: Number.isInteger(runtimePort),
+    runtimeMatches: Number.isInteger(port) && runtimePort === port,
+  };
 }
 
 function syncClawdHooks() {
@@ -1130,6 +1153,7 @@ function cleanup() {
 return {
   startHttpServer,
   getHookServerPort,
+  getRuntimeStatus,
   syncClawdHooks,
   syncGeminiHooks,
   syncCursorHooks,

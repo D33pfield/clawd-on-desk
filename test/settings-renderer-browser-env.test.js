@@ -10,6 +10,7 @@ const SETTINGS_HTML = path.join(SRC_DIR, "settings.html");
 const SETTINGS_RENDERER = path.join(SRC_DIR, "settings-renderer.js");
 const SETTINGS_UI_CORE = path.join(SRC_DIR, "settings-ui-core.js");
 const SETTINGS_I18N = path.join(SRC_DIR, "settings-i18n.js");
+const SETTINGS_DOCTOR_MODAL = path.join(SRC_DIR, "settings-doctor-modal.js");
 const PRELOAD_SETTINGS = path.join(SRC_DIR, "preload-settings.js");
 const MAIN_PROCESS = path.join(SRC_DIR, "main.js");
 const TAB_MODULES = [
@@ -38,6 +39,7 @@ describe("settings renderer browser environment", () => {
       "settings-tab-anim-overrides.js",
       "settings-tab-shortcuts.js",
       "settings-tab-about.js",
+      "settings-doctor-modal.js",
       "settings-renderer.js",
     ];
 
@@ -60,15 +62,18 @@ describe("settings renderer browser environment", () => {
     const rendererSource = fs.readFileSync(SETTINGS_RENDERER, "utf8");
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    const doctorModalSource = fs.readFileSync(SETTINGS_DOCTOR_MODAL, "utf8");
     const agentOrderSource = fs.readFileSync(path.join(SRC_DIR, "settings-agent-order.js"), "utf8");
 
     assert.ok(rendererSource.includes("globalThis.ClawdSettingsCore"));
     assert.ok(coreSource.includes("ClawdSettingsSizeSlider"));
     assert.ok(i18nSource.includes("globalThis"));
+    assert.ok(doctorModalSource.includes("globalThis"));
+    assert.ok(doctorModalSource.includes("ClawdSettingsDoctorModal"));
     assert.ok(agentOrderSource.includes("globalThis"));
     assert.ok(agentOrderSource.includes("module.exports"));
 
-    for (const source of [rendererSource, coreSource, i18nSource]) {
+    for (const source of [rendererSource, coreSource, i18nSource, doctorModalSource]) {
       assert.ok(!source.includes("require("));
       assert.ok(!source.includes("module.exports"));
     }
@@ -82,6 +87,37 @@ describe("settings renderer browser environment", () => {
       assert.ok(!source.includes("settingsAPI.onShortcutRecordKey"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutRecordKey`);
       assert.ok(!source.includes("settingsAPI.onShortcutFailuresChanged"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutFailuresChanged`);
     }
+  });
+
+  it("wires Clawd Doctor through Settings without Step 2 log actions", () => {
+    const html = fs.readFileSync(SETTINGS_HTML, "utf8");
+    const rendererSource = fs.readFileSync(SETTINGS_RENDERER, "utf8");
+    const doctorModalSource = fs.readFileSync(SETTINGS_DOCTOR_MODAL, "utf8");
+    const preloadSource = fs.readFileSync(PRELOAD_SETTINGS, "utf8");
+    const mainSource = fs.readFileSync(MAIN_PROCESS, "utf8");
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+
+    assert.ok(html.includes('<script src="settings-doctor-modal.js"></script>'));
+    assert.ok(html.includes(".doctor-indicator"));
+    assert.ok(html.includes(".doctor-modal"));
+    assert.ok(rendererSource.includes("ClawdSettingsDoctorModal.renderSidebarIndicator"));
+    assert.ok(doctorModalSource.includes("initialRunStarted"));
+    assert.ok(doctorModalSource.includes("runningPromise"));
+    assert.ok(doctorModalSource.includes("root.doctor.runChecks"));
+    assert.ok(doctorModalSource.includes("root.doctor.getReport"));
+    assert.ok(doctorModalSource.includes("agentDetailText"));
+    assert.ok(html.includes(".doctor-agent-detail"));
+    assert.ok(preloadSource.includes('contextBridge.exposeInMainWorld("doctor"'));
+    assert.ok(preloadSource.includes('ipcRenderer.invoke("doctor:run-checks")'));
+    assert.ok(preloadSource.includes('ipcRenderer.invoke("doctor:get-report")'));
+    assert.ok(mainSource.includes('ipcMain.handle("doctor:run-checks"'));
+    assert.ok(mainSource.includes('ipcMain.handle("doctor:get-report"'));
+    assert.ok(mainSource.includes("formatDiagnosticReport"));
+    assert.ok(mainSource.includes("redactDoctorResult(buildDoctorResult())"));
+    assert.ok(i18nSource.includes("doctorRunFailed"));
+    assert.ok(!mainSource.includes("doctor:open-clawd-log"));
+    assert.ok(!preloadSource.includes("doctor:open-clawd-log"));
+    assert.ok(!doctorModalSource.includes("open-clawd-log"));
   });
 
   it("does not animate the size bubble's horizontal position", () => {

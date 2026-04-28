@@ -80,3 +80,8 @@ contextBridge.exposeInMainWorld("settingsAPI", {
     return () => shortcutRecordKeyListeners.delete(cb);
   },
 });
+
+contextBridge.exposeInMainWorld("doctor", {
+  runChecks: () => ipcRenderer.invoke("doctor:run-checks"),
+  getReport: () => ipcRenderer.invoke("doctor:get-report"),
+});
