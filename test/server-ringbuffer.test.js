@@ -251,6 +251,28 @@ describe("server hook event ringbuffer", () => {
     res.destroy();
   });
 
+  it("records opencode malformed bridge requests as HTTP activity", async () => {
+    const { api, handler } = startServer();
+
+    const res = await callHandler(handler, "POST", "/permission", {
+      agent_id: "opencode",
+      session_id: "opencode:s1",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(api.getRecentHookEvents().map(({ agentId, route, outcome }) => ({
+      agentId,
+      route,
+      outcome,
+    })), [{
+      agentId: "opencode",
+      route: "permission",
+      outcome: "accepted",
+    }]);
+  });
+
   it("caps each agent ring at 50 events", () => {
     const buffer = new Map();
     for (let i = 0; i < HOOK_EVENT_RING_SIZE_PER_AGENT + 7; i++) {

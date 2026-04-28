@@ -483,12 +483,30 @@ describe("doctor repair commands", () => {
     const calls = [];
     const r = await commandRegistry.repairAgentIntegration({ agentId: "codex" }, {
       snapshot: prefs.getDefaults(),
-      repairIntegrationForAgent: (agentId) => calls.push(agentId),
+      repairIntegrationForAgent: (agentId, options) => calls.push({ agentId, options }),
     });
 
     assert.strictEqual(r.status, "ok");
-    assert.deepStrictEqual(calls, ["codex"]);
+    assert.deepStrictEqual(calls, [{ agentId: "codex", options: { forceCodexHooksFeature: false } }]);
     assert.strictEqual(r.commit, undefined);
+  });
+
+  it("passes explicit Codex feature-force consent and surfaces repair failures", async () => {
+    const calls = [];
+    const r = await commandRegistry.repairAgentIntegration({
+      agentId: "codex",
+      forceCodexHooksFeature: true,
+    }, {
+      snapshot: prefs.getDefaults(),
+      repairIntegrationForAgent: (agentId, options) => {
+        calls.push({ agentId, options });
+        return { status: "error", message: "codex_hooks is still false" };
+      },
+    });
+
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /codex_hooks/);
+    assert.deepStrictEqual(calls, [{ agentId: "codex", options: { forceCodexHooksFeature: true } }]);
   });
 
   it("rejects Copilot CLI because it is manual-only", async () => {

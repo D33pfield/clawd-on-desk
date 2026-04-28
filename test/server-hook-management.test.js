@@ -295,6 +295,34 @@ describe("server Claude hook management", () => {
     assert.strictEqual(unsupported, false);
     assert.deepStrictEqual(syncCalls, ["codex-repair"]);
   });
+
+  it("passes Codex repair options through to the repair implementation", () => {
+    const seen = [];
+    const { api } = makeServer({
+      repairCodexHooksImpl: (options) => {
+        seen.push(options);
+        return { status: "ok", message: "done" };
+      },
+    });
+
+    const repaired = api.repairIntegrationForAgent("codex", { forceCodexHooksFeature: true });
+
+    assert.deepStrictEqual(repaired, { status: "ok", message: "done" });
+    assert.deepStrictEqual(seen, [{ forceCodexHooksFeature: true }]);
+  });
+
+  it("surfaces repair sync failures instead of reporting success", () => {
+    const { api } = makeServer({
+      syncGeminiHooksImpl: () => {
+        throw new Error("permission denied");
+      },
+    });
+
+    const repaired = api.repairIntegrationForAgent("gemini-cli");
+
+    assert.strictEqual(repaired.status, "error");
+    assert.match(repaired.message, /permission denied/);
+  });
 });
 
 describe("Codex official hook turn tracking", () => {

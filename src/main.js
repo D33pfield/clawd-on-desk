@@ -160,9 +160,9 @@ function _deferredSyncIntegrationForAgent(id) {
     ? _server.syncIntegrationForAgent(id)
     : false;
 }
-function _deferredRepairIntegrationForAgent(id) {
+function _deferredRepairIntegrationForAgent(id, options) {
   return _server && typeof _server.repairIntegrationForAgent === "function"
-    ? _server.repairIntegrationForAgent(id)
+    ? _server.repairIntegrationForAgent(id, options)
     : false;
 }
 function _deferredStopIntegrationForAgent(id) {

@@ -192,7 +192,11 @@ describe("checkAgentIntegrations", () => {
     const detail = runOne(descriptor);
     assert.strictEqual(detail.status, "not-connected");
     assert.strictEqual(detail.supplementary.value, "disabled");
-    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "codex" });
+    assert.deepStrictEqual(detail.fixAction, {
+      type: "agent-integration",
+      agentId: "codex",
+      forceCodexHooksFeature: true,
+    });
   });
 
   it("scans Kiro agent configs and reports fully-valid files", () => {

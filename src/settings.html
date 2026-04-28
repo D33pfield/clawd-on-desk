@@ -1508,6 +1508,44 @@ html, body {
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
+.doctor-repair-feedback {
+  margin-top: 5px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.doctor-repair-feedback.error {
+  color: #b91c1c;
+}
+.doctor-repair-feedback.ok {
+  color: #2f9e44;
+}
+.doctor-fix-confirm {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px;
+  border: 1px solid rgba(217, 119, 87, 0.35);
+  border-radius: 8px;
+  background: rgba(217, 119, 87, 0.08);
+}
+.doctor-fix-confirm-title {
+  font-weight: 700;
+  font-size: 12px;
+}
+.doctor-fix-confirm-detail {
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.doctor-fix-confirm-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
 .doctor-connection-panel {
   border: 1px solid var(--border);
   border-radius: 8px;

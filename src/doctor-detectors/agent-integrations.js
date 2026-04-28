@@ -52,9 +52,18 @@ function withAgentBubbleNote(detail, prefs, agentId) {
 
 function withAgentFixAction(detail, descriptor) {
   if (!descriptor.autoInstall || !REPAIRABLE_AGENT_STATUSES.has(detail.status)) return detail;
+  const fixAction = { type: "agent-integration", agentId: descriptor.agentId };
+  if (
+    descriptor.agentId === "codex"
+    && detail.supplementary
+    && detail.supplementary.key === "codex_hooks"
+    && detail.supplementary.value === "disabled"
+  ) {
+    fixAction.forceCodexHooksFeature = true;
+  }
   return {
     ...detail,
-    fixAction: { type: "agent-integration", agentId: descriptor.agentId },
+    fixAction,
   };
 }
 

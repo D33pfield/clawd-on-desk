@@ -1611,6 +1611,16 @@ async function repairAgentIntegration(payload, deps) {
   const agentId = typeof payload === "string" ? payload : payload && payload.agentId;
   const idCheck = _validateAgentFlagId(agentId);
   if (idCheck.status !== "ok") return idCheck;
+  if (
+    payload
+    && typeof payload === "object"
+    && Object.prototype.hasOwnProperty.call(payload, "forceCodexHooksFeature")
+    && typeof payload.forceCodexHooksFeature !== "boolean"
+  ) {
+    return { status: "error", message: "repairAgentIntegration.forceCodexHooksFeature must be a boolean" };
+  }
+  const forceCodexHooksFeature =
+    !!(payload && typeof payload === "object" && payload.forceCodexHooksFeature === true);
 
   if (!AUTO_REPAIRABLE_AGENT_IDS.has(agentId)) {
     return {
@@ -1650,7 +1660,9 @@ async function repairAgentIntegration(payload, deps) {
   }
 
   try {
-    const result = await repairFn(agentId);
+    const result = await repairFn(agentId, {
+      forceCodexHooksFeature: agentId === "codex" && forceCodexHooksFeature,
+    });
     if (result === false) {
       return { status: "error", message: `No automatic integration repair is available for ${agentId}` };
     }
@@ -1660,7 +1672,12 @@ async function repairAgentIntegration(payload, deps) {
         message: result.message || `Failed to repair ${agentId}`,
       };
     }
-    return { status: "ok" };
+    return {
+      status: "ok",
+      message: result && typeof result === "object" && result.message
+        ? result.message
+        : `Repaired ${agentId}`,
+    };
   } catch (err) {
     return {
       status: "error",

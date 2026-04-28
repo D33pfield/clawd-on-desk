@@ -15,6 +15,9 @@
     connectionRemainingSeconds: 0,
     connectionTimer: null,
     repairingKey: null,
+    repairFeedback: {},
+    pendingConfirmAction: null,
+    fixActionByKey: new Map(),
   };
 
   function t(core, key) {
@@ -134,24 +137,57 @@
 
   function fixActionKey(action) {
     if (!action || typeof action !== "object") return "";
-    return `${action.type || "unknown"}:${action.agentId || ""}`;
+    const forceCodex = action.forceCodexHooksFeature ? "force-codex-hooks" : "";
+    return `${action.type || "unknown"}:${action.agentId || ""}:${forceCodex}`;
+  }
+
+  function rememberFixAction(action) {
+    const key = fixActionKey(action);
+    if (key) state.fixActionByKey.set(key, action);
+    return key;
   }
 
   function renderFixButton(core, action) {
     if (!action || typeof action !== "object" || !action.type) return "";
-    const key = fixActionKey(action);
+    const key = rememberFixAction(action);
     const busy = state.repairingKey === key;
     const disabled = state.repairingKey ? " disabled" : "";
-    const agentAttr = action.agentId ? ` data-agent-id="${escape(core, action.agentId)}"` : "";
     const label = busy ? t(core, "doctorFixing") : t(core, "doctorFix");
-    return `<button type="button" class="doctor-fix-button" data-action="fix" data-fix-type="${escape(core, action.type)}"${agentAttr}${disabled}>${escape(core, label)}</button>`;
+    return `<button type="button" class="doctor-fix-button" data-action="fix" data-fix-key="${escape(core, key)}"${disabled}>${escape(core, label)}</button>`;
   }
 
-  function confirmFixAction(core, action) {
-    if (!action || action.type !== "agent-integration" || action.agentId !== "codex") return true;
-    const confirmFn = typeof root.confirm === "function" ? root.confirm.bind(root) : null;
-    if (!confirmFn) return true;
-    return confirmFn(t(core, "doctorFixConfirmCodex"));
+  function requiresFixConfirmation(action) {
+    return !!(
+      action
+      && action.type === "agent-integration"
+      && action.agentId === "codex"
+      && action.forceCodexHooksFeature === true
+    );
+  }
+
+  function renderRepairFeedback(core, action) {
+    const key = fixActionKey(action);
+    const feedback = key && state.repairFeedback ? state.repairFeedback[key] : null;
+    if (!feedback || !feedback.message) return "";
+    const cls = feedback.status === "ok" ? "ok" : "error";
+    return `<div class="doctor-repair-feedback ${cls}">${escape(core, feedback.message)}</div>`;
+  }
+
+  function renderFixConfirm(core) {
+    const action = state.pendingConfirmAction;
+    if (!requiresFixConfirmation(action)) return "";
+    return (
+      `<div class="doctor-fix-confirm">` +
+        `<div>` +
+          `<div class="doctor-fix-confirm-title">${escape(core, t(core, "doctorFixConfirmCodexTitle"))}</div>` +
+          `<div class="doctor-fix-confirm-detail">${escape(core, t(core, "doctorFixConfirmCodexDetail"))}</div>` +
+        `</div>` +
+        `<div class="doctor-fix-confirm-actions">` +
+          `<button type="button" class="soft-btn" data-action="cancel-fix-confirm">${escape(core, t(core, "doctorFixConfirmCancel"))}</button>` +
+          `<button type="button" class="soft-btn accent" data-action="confirm-fix">${escape(core, t(core, "doctorFixConfirmCodexAction"))}</button>` +
+        `</div>` +
+      `</div>`
+    );
   }
 
   function renderCheckList(core, result) {
@@ -167,6 +203,7 @@
           check.details.map((detail) => {
             const agentDetail = agentDetailText(detail);
             const fixButton = renderFixButton(core, detail.fixAction);
+            const repairFeedback = renderRepairFeedback(core, detail.fixAction);
             return (
               `<div class="doctor-agent-item">` +
                 `<div class="doctor-agent-row${fixButton ? " with-action" : ""}">` +
@@ -175,12 +212,14 @@
                   fixButton +
                 `</div>` +
                 (agentDetail ? `<div class="doctor-agent-detail">${escape(core, agentDetail)}</div>` : "") +
+                repairFeedback +
               `</div>`
             );
           }).join("")
         }</div>`;
       }
       const fixButton = renderFixButton(core, check.fixAction);
+      const repairFeedback = renderRepairFeedback(core, check.fixAction);
       return (
         `<div class="doctor-check-row ${cls}">` +
           `<div class="doctor-check-main${fixButton ? " with-action" : ""}">` +
@@ -190,6 +229,7 @@
             fixButton +
           `</div>` +
           (check.detail ? `<div class="doctor-check-detail">${escape(core, check.detail)}</div>` : "") +
+          repairFeedback +
           agentRows +
         `</div>`
       );
@@ -214,8 +254,11 @@
   }
 
   function renderModalBody(core, result) {
+    state.fixActionByKey = new Map();
     const issueCount = result && result.overall ? result.overall.issueCount || 0 : 0;
     const testDisabled = state.connectionTesting ? " disabled" : "";
+    const checkList = renderCheckList(core, result);
+    const fixConfirm = renderFixConfirm(core);
     return (
       `<div class="doctor-modal">` +
         `<div class="doctor-modal-header">` +
@@ -230,7 +273,8 @@
           `<button type="button" class="doctor-close" aria-label="${escape(core, t(core, "doctorClose"))}">x</button>` +
         `</div>` +
         `<div class="doctor-privacy">${escape(core, t(core, "doctorPrivacy"))}</div>` +
-        `<div class="doctor-check-list">${renderCheckList(core, result)}</div>` +
+        `<div class="doctor-check-list">${checkList}</div>` +
+        fixConfirm +
         renderConnectionTest(core) +
         `<div class="doctor-actions">` +
           `<button type="button" class="soft-btn" data-action="copy">${escape(core, t(core, "doctorCopyReport"))}</button>` +
@@ -244,6 +288,7 @@
 
   function closeModal() {
     state.modalOpen = false;
+    state.pendingConfirmAction = null;
     const rootEl = document.getElementById("modalRoot");
     if (rootEl) rootEl.innerHTML = "";
   }
@@ -276,6 +321,8 @@
     const testConnection = rootEl.querySelector('[data-action="test-connection"]');
     const openLog = rootEl.querySelector('[data-action="open-log"]');
     const fixButtons = rootEl.querySelectorAll('[data-action="fix"]');
+    const confirmFix = rootEl.querySelector('[data-action="confirm-fix"]');
+    const cancelFixConfirm = rootEl.querySelector('[data-action="cancel-fix-confirm"]');
     if (backdrop) {
       backdrop.addEventListener("click", (ev) => {
         if (ev.target === backdrop) closeModal();
@@ -316,12 +363,22 @@
       button.addEventListener("click", (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        const action = {
-          type: button.getAttribute("data-fix-type") || "",
-        };
-        const agentId = button.getAttribute("data-agent-id");
-        if (agentId) action.agentId = agentId;
+        const key = button.getAttribute("data-fix-key") || "";
+        const action = state.fixActionByKey.get(key) || { type: "" };
         startFixAction(core, action);
+      });
+    }
+    if (confirmFix) {
+      confirmFix.addEventListener("click", () => {
+        const action = state.pendingConfirmAction;
+        if (!action) return;
+        startFixAction(core, { ...action, confirmed: true });
+      });
+    }
+    if (cancelFixConfirm) {
+      cancelFixConfirm.addEventListener("click", () => {
+        state.pendingConfirmAction = null;
+        refreshModal(core);
       });
     }
   }
@@ -332,18 +389,30 @@
       core.helpers.showToast(t(core, "doctorFixFailed"), { error: true });
       return;
     }
-    if (!confirmFixAction(core, action)) return;
+    if (requiresFixConfirmation(action) && action.confirmed !== true) {
+      state.pendingConfirmAction = action;
+      refreshModal(core);
+      return;
+    }
     state.repairingKey = fixActionKey(action);
+    state.pendingConfirmAction = null;
+    if (state.repairFeedback) delete state.repairFeedback[state.repairingKey];
     refreshModal(core);
     try {
-      const result = await root.settingsAPI.command("repairDoctorIssue", action);
+      const commandAction = { ...action };
+      delete commandAction.confirmed;
+      const result = await root.settingsAPI.command("repairDoctorIssue", commandAction);
       if (!result || result.status !== "ok") {
         throw new Error((result && result.message) || t(core, "doctorFixFailed"));
       }
-      core.helpers.showToast(t(core, "doctorFixApplied"));
+      const message = (result && result.message) || t(core, "doctorFixApplied");
+      state.repairFeedback[state.repairingKey] = { status: "ok", message };
+      core.helpers.showToast(message);
       await runChecks(core);
     } catch (err) {
-      core.helpers.showToast((err && err.message) || t(core, "doctorFixFailed"), { error: true });
+      const message = (err && err.message) || t(core, "doctorFixFailed");
+      state.repairFeedback[state.repairingKey] = { status: "error", message };
+      core.helpers.showToast(message, { error: true });
     } finally {
       state.repairingKey = null;
       refreshModal(core);
