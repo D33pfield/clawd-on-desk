@@ -141,8 +141,37 @@ describe("Codex official /permission path", () => {
     assert.strictEqual(pendingPermissions.length, 0);
   });
 
-  it("defaults Codex PermissionRequest to native no-decision while recording the event", async () => {
+  it("defaults Codex PermissionRequest to a real approval bubble", async () => {
     const { handler, pendingPermissions, updates, shown } = startServer();
+    const req = makeReq({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:s1",
+      tool_name: "Bash",
+      tool_input: { command: "whoami /all" },
+    });
+    const res = makeRes();
+
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.strictEqual(shown.length, 1);
+    assert.deepStrictEqual(updates[0], [
+      "codex:s1",
+      "notification",
+      "PermissionRequest",
+      { agentId: "codex", hookSource: "codex-official" },
+    ]);
+
+    res.destroy();
+  });
+
+  it("returns no-decision in explicit native mode while recording the event", async () => {
+    const { handler, pendingPermissions, updates, shown } = startServer({
+      isCodexPermissionInterceptEnabled: () => false,
+    });
     const res = await callPermission(handler, {
       agent_id: "codex",
       hook_source: "codex-official",

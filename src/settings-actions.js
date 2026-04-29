@@ -54,7 +54,7 @@ const {
   CODEX_PERMISSION_MODES,
   normalizeThemeOverrides,
 } = require("./prefs");
-const { isAgentEnabled } = require("./agent-gate");
+const { getCodexPermissionMode, isAgentEnabled } = require("./agent-gate");
 const { isValidDisplaySnapshot } = require("./work-area");
 const {
   MAX_AUTO_CLOSE_SECONDS,
@@ -911,9 +911,7 @@ function setAgentPermissionMode(payload, deps) {
   const snapshot = deps && deps.snapshot;
   const currentAgents = (snapshot && snapshot.agents) || {};
   const currentEntry = currentAgents.codex || {};
-  const currentMode = CODEX_PERMISSION_MODES.includes(currentEntry.permissionMode)
-    ? currentEntry.permissionMode
-    : "native";
+  const currentMode = getCodexPermissionMode({ agents: currentAgents });
   if (currentMode === payload.mode) return { status: "ok", noop: true };
 
   try {

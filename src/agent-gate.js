@@ -18,8 +18,8 @@ const isAgentPermissionsEnabled = (snapshot, agentId) => readFlag(snapshot, agen
 const isAgentNotificationHookEnabled = (snapshot, agentId) => readFlag(snapshot, agentId, "notificationHookEnabled");
 function getCodexPermissionMode(snapshot) {
   const entry = snapshot && snapshot.agents && snapshot.agents.codex;
-  if (entry && entry.permissionMode === "intercept") return "intercept";
-  return "native";
+  if (entry && entry.permissionMode === "native") return "native";
+  return "intercept";
 }
 const isCodexPermissionInterceptEnabled = (snapshot) => getCodexPermissionMode(snapshot) === "intercept";
 

@@ -177,13 +177,13 @@ describe("isAgentNotificationHookEnabled", () => {
 });
 
 describe("Codex permission mode gate", () => {
-  it("defaults missing Codex permissionMode to native", () => {
-    assert.strictEqual(getCodexPermissionMode(null), "native");
-    assert.strictEqual(getCodexPermissionMode({ agents: { codex: {} } }), "native");
-    assert.strictEqual(isCodexPermissionInterceptEnabled({ agents: { codex: {} } }), false);
+  it("defaults missing Codex permissionMode to intercept", () => {
+    assert.strictEqual(getCodexPermissionMode(null), "intercept");
+    assert.strictEqual(getCodexPermissionMode({ agents: { codex: {} } }), "intercept");
+    assert.strictEqual(isCodexPermissionInterceptEnabled({ agents: { codex: {} } }), true);
   });
 
-  it("enables interception only for explicit intercept mode", () => {
+  it("uses native mode only when explicitly selected", () => {
     assert.strictEqual(
       isCodexPermissionInterceptEnabled({ agents: { codex: { permissionMode: "intercept" } } }),
       true
@@ -429,20 +429,33 @@ describe("setAgentPermissionMode command", () => {
     };
   }
 
-  it("switches Codex to intercept mode without dismissing bubbles", () => {
+  it("treats switching Codex to the default intercept mode as a noop", () => {
     const { deps, calls } = makeDeps();
     const r = commandRegistry.setAgentPermissionMode(
       { agentId: "codex", mode: "intercept" },
       deps
     );
     assert.strictEqual(r.status, "ok");
-    assert.strictEqual(r.commit.agents.codex.permissionMode, "intercept");
+    assert.strictEqual(r.noop, true);
     assert.deepStrictEqual(calls.dismissPermissionsByAgent, []);
   });
 
   it("switches Codex back to native mode and dismisses pending Codex bubbles", () => {
     const seeded = prefs.getDefaults();
     seeded.agents.codex.permissionMode = "intercept";
+    const { deps, calls } = makeDeps({ snapshot: seeded });
+    const r = commandRegistry.setAgentPermissionMode(
+      { agentId: "codex", mode: "native" },
+      deps
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.commit.agents.codex.permissionMode, "native");
+    assert.deepStrictEqual(calls.dismissPermissionsByAgent, ["codex"]);
+  });
+
+  it("treats missing Codex permissionMode as intercept when switching to native", () => {
+    const seeded = prefs.getDefaults();
+    delete seeded.agents.codex.permissionMode;
     const { deps, calls } = makeDeps({ snapshot: seeded });
     const r = commandRegistry.setAgentPermissionMode(
       { agentId: "codex", mode: "native" },

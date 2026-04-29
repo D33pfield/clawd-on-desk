@@ -87,8 +87,8 @@ opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
 权限决策流（Codex official PermissionRequest command hook，阻塞）：
   Codex PermissionRequest
     → hooks/codex-hook.js POST /permission { tool_name, tool_input, tool_input_description, session_id, turn_id }
-    → 默认 native 模式：server 记录 notification 并立即返回 no-decision，Codex AutoReview / 原生审批继续处理
-    → 显式 intercept 模式：main.js 创建普通 Allow / Deny bubble，用户点击后 codex-hook.js stdout 输出官方 JSON decision
+    → 默认 intercept 模式：main.js 创建普通 Allow / Deny bubble，用户点击后 codex-hook.js stdout 输出官方 JSON decision
+    → 显式 native 模式：server 记录 notification 并立即返回 no-decision，Codex AutoReview / 原生审批继续处理
     → DND / disabled / bubble hidden / Clawd unavailable 时 stdout "{}"，Codex 回到原生审批提示
 ```
 

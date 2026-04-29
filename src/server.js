@@ -47,7 +47,7 @@ function shouldBypassCodexBubble(ctx) {
 }
 
 function shouldInterceptCodexPermission(ctx) {
-  if (typeof ctx.isCodexPermissionInterceptEnabled !== "function") return false;
+  if (typeof ctx.isCodexPermissionInterceptEnabled !== "function") return true;
   return ctx.isCodexPermissionInterceptEnabled();
 }
 

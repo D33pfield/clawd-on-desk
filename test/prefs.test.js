@@ -75,9 +75,9 @@ describe("prefs.getDefaults", () => {
     }
   });
 
-  it("defaults Codex permissions to native mode", () => {
+  it("defaults Codex permissions to intercept mode", () => {
     const d = prefs.getDefaults();
-    assert.strictEqual(d.agents.codex.permissionMode, "native");
+    assert.strictEqual(d.agents.codex.permissionMode, "intercept");
   });
 });
 
@@ -253,13 +253,13 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.agents.codex.permissionMode, "intercept");
   });
 
-  it("normalizes agents: drops invalid Codex permissionMode to native", () => {
+  it("normalizes agents: drops invalid Codex permissionMode to intercept", () => {
     const v = prefs.validate({
       agents: {
         codex: { enabled: true, permissionMode: "auto" },
       },
     });
-    assert.strictEqual(v.agents.codex.permissionMode, "native");
+    assert.strictEqual(v.agents.codex.permissionMode, "intercept");
   });
 
   it("normalizes agents: fills missing notificationHookEnabled from defaults", () => {
