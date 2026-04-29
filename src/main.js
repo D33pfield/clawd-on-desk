@@ -1,7 +1,6 @@
 const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const os = require("os");
 const { pathToFileURL } = require("url");
 const { applyStationaryCollectionBehavior } = require("./mac-window");
 const {
@@ -2794,52 +2793,6 @@ const _updaterCtx = {
 };
 const _updater = require("./updater")(_updaterCtx);
 const { setupAutoUpdater, checkForUpdates, getUpdateMenuItem, getUpdateMenuLabel } = _updater;
-const { runDoctorChecks } = require("./doctor");
-const { formatDiagnosticReport, redactDoctorResult } = require("./doctor-report");
-const { createConnectionTestDeduper, runConnectionTest } = require("./doctor-hook-activity");
-const { openClawdLog } = require("./doctor-logs");
-
-let lastDoctorResult = null;
-let lastDoctorConnectionTest = null;
-const runDedupedDoctorConnectionTest = createConnectionTestDeduper(
-  (payload) => runConnectionTest({
-    server: _server,
-    durationMs: payload && payload.durationMs,
-    homeDir: os.homedir(),
-  }),
-  {
-    onResult: (result) => {
-      lastDoctorConnectionTest = result;
-    },
-  }
-);
-
-function buildDoctorResult() {
-  lastDoctorResult = runDoctorChecks({
-    server: _server,
-    prefs: _settingsController.getSnapshot(),
-    doNotDisturb,
-  });
-  return lastDoctorResult;
-}
-
-function buildDoctorReportResult() {
-  const result = lastDoctorResult || buildDoctorResult();
-  if (!lastDoctorConnectionTest) return result;
-  return {
-    ...result,
-    connectionTest: lastDoctorConnectionTest,
-  };
-}
-
-function getDoctorRedactionOptions() {
-  const appRoots = [path.resolve(path.join(__dirname, ".."))];
-  try {
-    const appPath = app.getAppPath();
-    if (appPath) appRoots.push(path.resolve(appPath));
-  } catch {}
-  return { appRoots };
-}
 
 // ── About tab IPC ──
 // Hero SVG is inlined (not file URL) because settings.html CSP is
@@ -2883,26 +2836,17 @@ ipcMain.handle("settings:open-external", async (_event, url) => {
     return { status: "error", message: (err && err.message) || String(err) };
   }
 });
-ipcMain.handle("doctor:run-checks", () => redactDoctorResult(buildDoctorResult(), getDoctorRedactionOptions()));
-ipcMain.handle("doctor:test-connection", async (_event, payload) => {
-  const result = await runDedupedDoctorConnectionTest(payload);
-  return redactDoctorResult(result, getDoctorRedactionOptions());
-});
-ipcMain.handle("doctor:open-clawd-log", async (_event, payload) => openClawdLog({
-  requested: payload && payload.name,
-  homeDir: os.homedir(),
-  userDataDir: app.getPath("userData"),
+
+// ── Doctor tab IPC ──
+const { registerDoctorIpc } = require("./doctor-ipc");
+registerDoctorIpc({
+  ipcMain,
+  app,
   shell,
-}));
-ipcMain.handle("doctor:get-report", () => {
-  const result = buildDoctorReportResult();
-  return formatDiagnosticReport(result, {
-    version: app.getVersion(),
-    platform: process.platform,
-    release: os.release(),
-    locale: _settingsController.get("lang") || "en",
-    ...getDoctorRedactionOptions(),
-  });
+  server: _server,
+  getPrefsSnapshot: () => _settingsController.getSnapshot(),
+  getDoNotDisturb: () => doNotDisturb,
+  getLocale: () => _settingsController.get("lang") || "en",
 });
 
 // ── Settings panel window ──

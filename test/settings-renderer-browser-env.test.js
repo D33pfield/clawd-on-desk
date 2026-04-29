@@ -13,6 +13,7 @@ const SETTINGS_I18N = path.join(SRC_DIR, "settings-i18n.js");
 const SETTINGS_DOCTOR_MODAL = path.join(SRC_DIR, "settings-doctor-modal.js");
 const PRELOAD_SETTINGS = path.join(SRC_DIR, "preload-settings.js");
 const MAIN_PROCESS = path.join(SRC_DIR, "main.js");
+const DOCTOR_IPC = path.join(SRC_DIR, "doctor-ipc.js");
 const TAB_MODULES = [
   path.join(SRC_DIR, "settings-tab-general.js"),
   path.join(SRC_DIR, "settings-tab-agents.js"),
@@ -95,6 +96,7 @@ describe("settings renderer browser environment", () => {
     const doctorModalSource = fs.readFileSync(SETTINGS_DOCTOR_MODAL, "utf8");
     const preloadSource = fs.readFileSync(PRELOAD_SETTINGS, "utf8");
     const mainSource = fs.readFileSync(MAIN_PROCESS, "utf8");
+    const doctorIpcSource = fs.readFileSync(DOCTOR_IPC, "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
 
     assert.ok(html.includes('<script src="settings-doctor-modal.js"></script>'));
@@ -140,17 +142,18 @@ describe("settings renderer browser environment", () => {
     assert.ok(preloadSource.includes('ipcRenderer.invoke("doctor:get-report")'));
     assert.ok(preloadSource.includes('ipcRenderer.invoke("doctor:test-connection"'));
     assert.ok(preloadSource.includes('ipcRenderer.invoke("doctor:open-clawd-log"'));
-    assert.ok(mainSource.includes('ipcMain.handle("doctor:run-checks"'));
-    assert.ok(mainSource.includes('ipcMain.handle("doctor:get-report"'));
-    assert.ok(mainSource.includes('ipcMain.handle("doctor:test-connection"'));
-    assert.ok(mainSource.includes('ipcMain.handle("doctor:open-clawd-log"'));
-    assert.ok(mainSource.includes("createConnectionTestDeduper"));
-    assert.ok(mainSource.includes("runDedupedDoctorConnectionTest"));
-    assert.ok(mainSource.includes("runConnectionTest"));
-    assert.ok(mainSource.includes("openClawdLog"));
-    assert.ok(mainSource.includes("formatDiagnosticReport"));
-    assert.ok(mainSource.includes("getDoctorRedactionOptions"));
-    assert.ok(mainSource.includes("redactDoctorResult(buildDoctorResult(), getDoctorRedactionOptions())"));
+    assert.ok(mainSource.includes("registerDoctorIpc"));
+    assert.ok(doctorIpcSource.includes('ipcMain.handle("doctor:run-checks"'));
+    assert.ok(doctorIpcSource.includes('ipcMain.handle("doctor:get-report"'));
+    assert.ok(doctorIpcSource.includes('ipcMain.handle("doctor:test-connection"'));
+    assert.ok(doctorIpcSource.includes('ipcMain.handle("doctor:open-clawd-log"'));
+    assert.ok(doctorIpcSource.includes("createConnectionTestDeduper"));
+    assert.ok(doctorIpcSource.includes("runDedupedDoctorConnectionTest"));
+    assert.ok(doctorIpcSource.includes("runConnectionTest"));
+    assert.ok(doctorIpcSource.includes("openClawdLog"));
+    assert.ok(doctorIpcSource.includes("formatDiagnosticReport"));
+    assert.ok(doctorIpcSource.includes("getDoctorRedactionOptions"));
+    assert.ok(doctorIpcSource.includes("redactDoctorResult(buildDoctorResult(), getDoctorRedactionOptions(app))"));
     assert.ok(i18nSource.includes("doctorRunFailed"));
     assert.ok(i18nSource.includes("doctorFixApplied"));
     assert.ok(i18nSource.includes("doctorFixConfirmCodexDetail"));
