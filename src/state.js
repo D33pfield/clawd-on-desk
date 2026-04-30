@@ -103,6 +103,7 @@ const STARTUP_RECOVERY_MAX_MS = 300000;
 
 // ── Hit-test bounding boxes (from theme) ──
 let HIT_BOXES = {};
+let FILE_HIT_BOXES = {};
 let WIDE_SVGS = new Set();
 let SLEEPING_SVGS = new Set();
 let currentHitBox = HIT_BOXES.default;
@@ -224,6 +225,13 @@ function buildStateBindings(nextTheme) {
   return bindings;
 }
 
+function resolveHitBoxForSvg(svg) {
+  if (svg && FILE_HIT_BOXES[svg]) return FILE_HIT_BOXES[svg];
+  if (svg && SLEEPING_SVGS.has(svg)) return HIT_BOXES.sleeping;
+  if (svg && WIDE_SVGS.has(svg)) return HIT_BOXES.wide;
+  return HIT_BOXES.default;
+}
+
 function refreshTheme() {
   theme = ctx.theme;
   SVG_IDLE_FOLLOW = theme.states.idle[0];
@@ -242,16 +250,11 @@ function refreshTheme() {
   SLEEP_MODE = theme.sleepSequence && theme.sleepSequence.mode === "direct" ? "direct" : "full";
   DISPLAY_HINT_MAP = theme.displayHintMap || {};
   HIT_BOXES = theme.hitBoxes;
+  FILE_HIT_BOXES = theme.fileHitBoxes || {};
   WIDE_SVGS = new Set(theme.wideHitboxFiles || []);
   SLEEPING_SVGS = new Set(theme.sleepingHitboxFiles || []);
 
-  if (currentSvg && SLEEPING_SVGS.has(currentSvg)) {
-    currentHitBox = HIT_BOXES.sleeping;
-  } else if (currentSvg && WIDE_SVGS.has(currentSvg)) {
-    currentHitBox = HIT_BOXES.wide;
-  } else {
-    currentHitBox = HIT_BOXES.default;
-  }
+  currentHitBox = resolveHitBoxForSvg(currentSvg);
   refreshUpdateVisualOverride();
 }
 
@@ -459,14 +462,7 @@ function applyState(state, svgOverride) {
     eyeResendTimer = setTimeout(() => { eyeResendTimer = null; ctx.forceEyeResend = true; }, delay);
   }
 
-  // Update hit box based on SVG
-  if (SLEEPING_SVGS.has(svg)) {
-    currentHitBox = HIT_BOXES.sleeping;
-  } else if (WIDE_SVGS.has(svg)) {
-    currentHitBox = HIT_BOXES.wide;
-  } else {
-    currentHitBox = HIT_BOXES.default;
-  }
+  currentHitBox = resolveHitBoxForSvg(svg);
 
   ctx.sendToRenderer("state-change", state, svg);
   ctx.syncHitWin();
@@ -1606,6 +1602,7 @@ return {
   sessions, STATE_PRIORITY, ONESHOT_STATES, SLEEP_SEQUENCE,
   get STATE_SVGS() { return STATE_SVGS; },
   get HIT_BOXES() { return HIT_BOXES; },
+  get FILE_HIT_BOXES() { return FILE_HIT_BOXES; },
   get WIDE_SVGS() { return WIDE_SVGS; },
   cleanup,
 };

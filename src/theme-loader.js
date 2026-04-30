@@ -86,7 +86,7 @@ const VARIANT_ALLOWED_KEYS = new Set([
   // Runtime fields (see §6.1 allow-list table)
   "workingTiers", "jugglingTiers", "idleAnimations",
   "wideHitboxFiles", "sleepingHitboxFiles",
-  "hitBoxes", "timings", "transitions",
+  "hitBoxes", "fileHitBoxes", "timings", "transitions",
   "objectScale", "displayHintMap",
 ]);
 // Fields that replace wholesale instead of deep-merge.
@@ -1063,6 +1063,45 @@ function _basenameOnly(value) {
   return typeof value === "string" ? value.replace(/^.*[\/\\]/, "") : value;
 }
 
+function _warnFileHitBoxDropped(rawKey, reason) {
+  console.warn(`[theme-loader] fileHitBoxes["${rawKey}"] dropped: ${reason}`);
+}
+
+function _normalizeFileHitBoxes(value) {
+  const out = {};
+  if (value == null) return out;
+  if (!_isPlainObject(value)) {
+    console.warn("[theme-loader] fileHitBoxes dropped: expected object map");
+    return out;
+  }
+
+  for (const [rawKey, box] of Object.entries(value)) {
+    const key = _basenameOnly(rawKey);
+    if (!key) {
+      _warnFileHitBoxDropped(rawKey, "invalid filename key");
+      continue;
+    }
+    if (!_isPlainObject(box)) {
+      _warnFileHitBoxDropped(rawKey, "expected object with finite x/y/w/h");
+      continue;
+    }
+    const { x, y, w, h } = box;
+    if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) {
+      _warnFileHitBoxDropped(rawKey, "missing/invalid x/y/w/h");
+      continue;
+    }
+    out[key] = { x, y, w, h };
+  }
+  return out;
+}
+
+function _mergeFileHitBoxes(base, patch) {
+  return {
+    ..._normalizeFileHitBoxes(base),
+    ..._normalizeFileHitBoxes(patch),
+  };
+}
+
 /**
  * Resolve a requested variant id against the theme's declared variants.
  * Synthesises a `default` variant when the author didn't declare one so the
@@ -1104,6 +1143,10 @@ function _applyVariantPatch(raw, variantSpec, themeId, variantId) {
     if (key === "name" || key === "description" || key === "preview") continue;
     if (!VARIANT_ALLOWED_KEYS.has(key)) {
       console.warn(`[theme-loader] variant "${themeId}:${variantId}" declares ignored field "${key}" (not in allow-list)`);
+      continue;
+    }
+    if (key === "fileHitBoxes") {
+      patched.fileHitBoxes = _mergeFileHitBoxes(patched.fileHitBoxes, value);
       continue;
     }
     if (VARIANT_REPLACE_FIELDS.has(key) || Array.isArray(value)) {
@@ -1424,6 +1467,7 @@ function mergeDefaults(raw, themeId, isBuiltin) {
 
   // hitBoxes
   theme.hitBoxes = { ...DEFAULT_HITBOXES, ...(raw.hitBoxes || {}) };
+  theme.fileHitBoxes = _normalizeFileHitBoxes(raw.fileHitBoxes);
   theme.wideHitboxFiles = raw.wideHitboxFiles || [];
   theme.sleepingHitboxFiles = raw.sleepingHitboxFiles || [];
 

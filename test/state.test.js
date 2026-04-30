@@ -372,6 +372,35 @@ describe("working sub-animations", () => {
   });
 });
 
+describe("hitbox selection", () => {
+  let api;
+
+  afterEach(() => { if (api) api.cleanup(); });
+
+  it("uses a file-specific hitbox for the displayed SVG", () => {
+    const theme = cloneTheme(_defaultTheme);
+    const fileBox = { x: 10, y: 11, w: 12, h: 13 };
+    theme.fileHitBoxes = { "clawd-working-typing.svg": fileBox };
+    api = require("../src/state")(makeCtx({ theme }));
+
+    api.applyState("working", "clawd-working-typing.svg");
+
+    assert.deepStrictEqual(api.getCurrentHitBox(), fileBox);
+  });
+
+  it("keeps wide/default fallback when no file-specific hitbox exists", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.fileHitBoxes = {};
+    api = require("../src/state")(makeCtx({ theme }));
+
+    api.applyState("error", "clawd-error.svg");
+    assert.deepStrictEqual(api.getCurrentHitBox(), theme.hitBoxes.wide);
+
+    api.applyState("working", "clawd-working-typing.svg");
+    assert.deepStrictEqual(api.getCurrentHitBox(), theme.hitBoxes.default);
+  });
+});
+
 describe("visual fallback resolution", () => {
   let api;
 

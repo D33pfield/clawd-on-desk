@@ -295,6 +295,17 @@ Clickable area in viewBox units. Only the `default` hitbox is required:
 "wideHitboxFiles": ["error.gif", "notification.gif"]
 ```
 
+Use `fileHitBoxes` when one specific asset needs a tighter or taller clickable area than the shared buckets:
+
+```json
+"fileHitBoxes": {
+  "working-typing.svg": { "x": -2, "y": -7, "w": 20, "h": 24 }
+}
+```
+
+File-specific hitboxes apply to the final displayed filename and override `sleepingHitboxFiles`, `wideHitboxFiles`, and `default`.
+When overriding `fileHitBoxes` in a variant, each rect must include all four fields (`x`, `y`, `w`, `h`). Incomplete rects are dropped with a console warning, and any base-theme rect for the same file remains active.
+
 ### Mini Mode
 
 Mini mode hides the character at the screen edge. Set `"supported": false` or omit the block to skip:

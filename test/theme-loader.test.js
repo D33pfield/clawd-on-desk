@@ -1,12 +1,16 @@
 "use strict";
 
-const { describe, it, before, after } = require("node:test");
+const { describe, it, before, after, afterEach, mock } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
 const themeLoader = require("../src/theme-loader");
+
+afterEach(() => {
+  mock.restoreAll();
+});
 
 // Scratch dir layout the loader expects:
 //   <tmp>/src/           (appDir)
@@ -294,6 +298,83 @@ describe("theme-loader preview sound selection", () => {
   it("returns null when neither confirm nor complete is available", () => {
     themeLoader.loadTheme("silent-theme", { strict: true });
     assert.strictEqual(themeLoader.getPreviewSoundUrl(), null);
+  });
+});
+
+describe("theme-loader fileHitBoxes", () => {
+  let fixture;
+  before(() => {
+    fixture = makeFixture([
+      { id: "clawd", builtin: true, json: validThemeJson({ name: "Clawd" }) },
+      {
+        id: "filehit",
+        builtin: true,
+        json: validThemeJson({
+          name: "File Hitboxes",
+          fileHitBoxes: {
+            "./nested/working.svg": { x: 1, y: 2, w: 3, h: 4 },
+            "zero-width.svg": { x: 1, y: 2, w: 0, h: 4 },
+            "missing-height.svg": { x: 1, y: 2, w: 3 },
+            "not-object.svg": 42,
+          },
+        }),
+      },
+      {
+        id: "variant-filehit",
+        builtin: true,
+        json: validThemeJson({
+          name: "Variant File Hitboxes",
+          fileHitBoxes: {
+            "base.svg": { x: 0, y: 1, w: 2, h: 3 },
+            "pose.svg": { x: 1, y: 2, w: 3, h: 4 },
+          },
+          variants: {
+            tuned: {
+              fileHitBoxes: {
+                "pose.svg": { x: 10, y: 20, w: 30, h: 40 },
+                "./nested/extra.svg": { x: 5, y: 6, w: 7, h: 8 },
+              },
+            },
+            partial: {
+              fileHitBoxes: {
+                "pose.svg": { x: 99 },
+              },
+            },
+          },
+        }),
+      },
+    ]);
+  });
+  after(() => fixture && fixture.cleanup());
+
+  it("normalizes basename keys and drops invalid entries with warnings", () => {
+    const warn = mock.method(console, "warn", () => {});
+
+    const theme = themeLoader.loadTheme("filehit", { strict: true });
+
+    assert.deepStrictEqual(theme.fileHitBoxes, {
+      "working.svg": { x: 1, y: 2, w: 3, h: 4 },
+    });
+    assert.ok(warn.mock.callCount() >= 3);
+  });
+
+  it("variant fileHitBoxes merge by file key and replace whole rects", () => {
+    const theme = themeLoader.loadTheme("variant-filehit", { strict: true, variant: "tuned" });
+
+    assert.deepStrictEqual(theme.fileHitBoxes, {
+      "base.svg": { x: 0, y: 1, w: 2, h: 3 },
+      "pose.svg": { x: 10, y: 20, w: 30, h: 40 },
+      "extra.svg": { x: 5, y: 6, w: 7, h: 8 },
+    });
+  });
+
+  it("variant partial rects are rejected instead of deep-merged", () => {
+    const warn = mock.method(console, "warn", () => {});
+
+    const theme = themeLoader.loadTheme("variant-filehit", { strict: true, variant: "partial" });
+
+    assert.deepStrictEqual(theme.fileHitBoxes["pose.svg"], { x: 1, y: 2, w: 3, h: 4 });
+    assert.ok(warn.mock.callCount() >= 1);
   });
 });
 
