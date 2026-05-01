@@ -82,7 +82,7 @@ const P = {
   /* V1 锁定数值 */
   SCALE_LOW: 0.96, BREATH_PERIOD: 5.0,
   MAX_ROT_DEG: 20, CLOUD_LAG: 0.20,
-  EYE_MAX: 1.20, RECENTER_TIME: 0.45,
+  EYE_MAX: 1.20, EYE_TRACK_TIME: 0.06, RECENTER_TIME: 0.45,
   FLOW_PERIOD: 5.5, FLOW_AMP: 4,
   BLINK_INTERVAL: 6.0, BLINK_DUR: 0.16,
   /* V2 新增 */
@@ -172,14 +172,10 @@ function loop(now) {
 
   /* 眼睛位置 */
   const target = computeEyeTarget();
-  if (mouseInside) {
-    eyeOffset.x = target.x;
-    eyeOffset.y = target.y;
-  } else {
-    const rate = 1 - Math.exp(-dt / P.RECENTER_TIME);
-    eyeOffset.x += (0 - eyeOffset.x) * rate;
-    eyeOffset.y += (0 - eyeOffset.y) * rate;
-  }
+  const eyeTime = mouseInside ? P.EYE_TRACK_TIME : P.RECENTER_TIME;
+  const eyeRate = 1 - Math.exp(-dt / eyeTime);
+  eyeOffset.x += (target.x - eyeOffset.x) * eyeRate;
+  eyeOffset.y += (target.y - eyeOffset.y) * eyeRate;
 
   /* 云朵 rotate (eye.x 驱动 + lag) */
   const maxRot = P.MAX_ROT_DEG * Math.PI / 180;
@@ -209,9 +205,10 @@ function loop(now) {
   );
 
   /* 眼睛 group transform */
+  const eyeScale = curDistScale;
   eyeGroup.setAttribute(
     'transform',
-    `translate(${eyeOffset.x.toFixed(3)} ${eyeOffset.y.toFixed(3)})`
+    `translate(${eyeOffset.x.toFixed(3)} ${eyeOffset.y.toFixed(3)}) translate(12 12) scale(${eyeScale.toFixed(4)}) translate(-12 -12)`
   );
 
   /* 眨眼 */

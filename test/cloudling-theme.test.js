@@ -115,6 +115,10 @@ describe("built-in Cloudling prototype theme", () => {
     );
 
     assert.ok(asset.includes("EYE_MAX: 1.20"), "normal idle should use the tuned bridge-validation eye range");
+    assert.ok(asset.includes("EYE_TRACK_TIME: 0.06"), "normal idle should smooth bridged eye movement");
+    assert.ok(asset.includes("const eyeScale = curDistScale"), "normal idle should scale eyes with distance-driven body scale");
     assert.ok(source.includes("EYE_MAX: 1.20"), "source copy should mirror the tuned eye range");
+    assert.ok(source.includes("EYE_TRACK_TIME: 0.06"), "source copy should mirror the eye smoothing");
+    assert.ok(source.includes("const eyeScale = curDistScale"), "source copy should mirror the distance-driven eye scale");
   });
 });
