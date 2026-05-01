@@ -225,7 +225,9 @@ describe("server hook event ringbuffer", () => {
   });
 
   it("records Codex native permission mode as accepted HTTP activity", async () => {
-    const { api, handler, ctx } = startServer();
+    const { api, handler, ctx } = startServer({
+      isCodexPermissionInterceptEnabled: () => false,
+    });
 
     const res = await callHandler(handler, "POST", "/permission", {
       agent_id: "codex",
