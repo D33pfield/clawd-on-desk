@@ -121,4 +121,26 @@ describe("built-in Cloudling prototype theme", () => {
     assert.ok(source.includes("EYE_TRACK_TIME: 0.06"), "source copy should mirror the eye smoothing");
     assert.ok(source.includes("const eyeScale = curDistScale"), "source copy should mirror the distance-driven eye scale");
   });
+
+  it("uses tuned mini idle eye-follow and distance scaling for bridge validation", () => {
+    const asset = fs.readFileSync(
+      path.join(__dirname, "..", "themes", "cloudling", "assets", "cloudling-mini-idle.svg"),
+      "utf8"
+    );
+    const source = fs.readFileSync(
+      path.join(__dirname, "..", "assets", "source", "cloudling-pointer-bridge", "cloudling-mini-idle.svg"),
+      "utf8"
+    );
+
+    assert.ok(asset.includes("eyeMax: 2.05"), "mini idle should use the tuned horizontal eye range");
+    assert.ok(asset.includes("yClamp: 0.85"), "mini idle should allow a wider vertical eye range");
+    assert.ok(asset.includes("distMaxScale: 1.15"), "mini idle should match normal idle distance scaling");
+    assert.ok(asset.includes("eyeTrack: 0.06"), "mini idle should smooth bridged eye movement");
+    assert.ok(asset.includes("const eyeScale = currentDistScale"), "mini idle should scale eyes with distance-driven body scale");
+    assert.ok(source.includes("eyeMax: 2.05"), "source copy should mirror the tuned horizontal eye range");
+    assert.ok(source.includes("yClamp: 0.85"), "source copy should mirror the wider vertical eye range");
+    assert.ok(source.includes("distMaxScale: 1.15"), "source copy should mirror normal idle distance scaling");
+    assert.ok(source.includes("eyeTrack: 0.06"), "source copy should mirror the eye smoothing");
+    assert.ok(source.includes("const eyeScale = currentDistScale"), "source copy should mirror the distance-driven eye scale");
+  });
 });

@@ -92,20 +92,21 @@ const EYE_BASE = {
   r: { x: 11.05, y: 9.65, h: 4.65, rx: 1.1 },
 };
 const params = {
-  eyeMax: 1.85,
-  yClamp: 0.65,
+  eyeMax: 2.05,
+  yClamp: 0.85,
   maxRotDeg: 13,
   cloudLag: 0.20,
   scaleLow: 0.96,
   breathPeriod: 5.0,
   distNear: 6,
   distFar: 20,
-  distMaxScale: 1.09,
+  distMaxScale: 1.15,
   distRecenter: 0.5,
   flowPeriod: 5.5,
   flowAmp: 4,
   blinkInterval: 6.0,
   blinkDur: 0.16,
+  eyeTrack: 0.06,
   recenter: 0.15,
 };
 let pointerInside = false;
@@ -156,14 +157,10 @@ function tick(now) {
   lastT = now;
   const t = (now - startT) / 1000;
   updateTarget();
-  if (pointerInside) {
-    current.x = target.x;
-    current.y = target.y;
-  } else {
-    const recenterRate = 1 - Math.exp(-dt / params.recenter);
-    current.x += (0 - current.x) * recenterRate;
-    current.y += (0 - current.y) * recenterRate;
-  }
+  const eyeTime = pointerInside ? params.eyeTrack : params.recenter;
+  const eyeRate = 1 - Math.exp(-dt / eyeTime);
+  current.x += (target.x - current.x) * eyeRate;
+  current.y += (target.y - current.y) * eyeRate;
 
   const maxRot = params.maxRotDeg * Math.PI / 180;
   const targetRot = (current.x / Math.max(params.eyeMax, 0.01)) * maxRot;
@@ -189,7 +186,11 @@ function tick(now) {
     "transform",
     `translate(12 12) rotate(${angleDeg.toFixed(3)}) scale(${finalScale.toFixed(4)}) translate(-12 -12)`
   );
-  eyes.setAttribute("transform", `translate(${current.x.toFixed(3)} ${current.y.toFixed(3)})`);
+  const eyeScale = currentDistScale;
+  eyes.setAttribute(
+    "transform",
+    `translate(${current.x.toFixed(3)} ${current.y.toFixed(3)}) translate(${face.x} ${face.y}) scale(${eyeScale.toFixed(4)}) translate(${-face.x} ${-face.y})`
+  );
   applyBlink(t);
   const flowOffset = Math.sin(2 * Math.PI * t / params.flowPeriod) * params.flowAmp;
   eyeGrad.setAttribute("y1", (3 + flowOffset).toFixed(2));
