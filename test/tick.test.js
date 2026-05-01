@@ -235,7 +235,7 @@ describe("tick Cloudling pointer bridge", () => {
     assert.deepStrictEqual(pointers, [{ x: 4, y: 5, inside: true }]);
   });
 
-  it("sends pointer payloads while mini-peek is active", () => {
+  it("keeps pointer bridge active outside the asset rect", () => {
     const theme = cloneTheme(_defaultTheme);
     const pointers = [];
 
@@ -257,7 +257,7 @@ describe("tick Cloudling pointer bridge", () => {
     tickApi.startMainTick();
     mock.timers.tick(60);
 
-    assert.deepStrictEqual(pointers, [{ x: 40, y: 50, inside: false }]);
+    assert.deepStrictEqual(pointers, [{ x: 40, y: 50, inside: true }]);
   });
 });
 
