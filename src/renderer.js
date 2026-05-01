@@ -246,9 +246,23 @@ function resolveViewBox(state, file) {
   return _viewBox;
 }
 
+function viewBoxEquals(a, b) {
+  return !!(a && b
+    && a.x === b.x
+    && a.y === b.y
+    && a.width === b.width
+    && a.height === b.height);
+}
+
+function hasRootViewBoxFileOverride(file) {
+  return !!(file && _fileViewBoxes && viewBoxEquals(_fileViewBoxes[file], _viewBox));
+}
+
 function shouldUseNormalizedLayout(file, state) {
   if (!_layout || !_layout.contentBox) return false;
-  if (_inMiniMode || (state && state.startsWith("mini-")) || (file && file.startsWith("mini-"))) return false;
+  if (_inMiniMode) return false;
+  if (hasRootViewBoxFileOverride(file)) return true;
+  if ((state && state.startsWith("mini-")) || (file && file.startsWith("mini-"))) return false;
   return true;
 }
 
@@ -377,9 +391,10 @@ if (window.electronAPI && typeof window.electronAPI.onLowPowerIdleModeChange ===
 
 window.electronAPI.onDndChange((enabled) => { dndEnabled = enabled; });
 
-window.electronAPI.onMiniModeChange((enabled, edge) => {
-  _inMiniMode = enabled;
-  miniLeftFlip = enabled && edge === "left";
+window.electronAPI.onMiniModeChange((enabled, edge, options) => {
+  const preEntry = !!(options && options.preEntry);
+  _inMiniMode = !!enabled && !preEntry;
+  miniLeftFlip = !!enabled && edge === "left";
   container.classList.toggle("mini-left", miniLeftFlip);
   applyMiniFlip(clawdEl);
   if (miniLeftFlip) {

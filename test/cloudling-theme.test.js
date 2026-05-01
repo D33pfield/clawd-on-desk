@@ -66,4 +66,29 @@ describe("built-in Cloudling prototype theme", () => {
       false
     );
   });
+
+  it("treats Cloudling mini-crabwalk as a normal-layout pre-entry asset", () => {
+    const theme = themeLoader.loadTheme("cloudling", { strict: true });
+    const bounds = { x: 0, y: 0, width: 200, height: 200 };
+
+    assert.strictEqual(hitGeometry.usesNormalizedLayout(
+      theme,
+      "mini-crabwalk",
+      "cloudling-mini-crabwalk.svg"
+    ), true);
+    assert.strictEqual(hitGeometry.usesNormalizedLayout(
+      theme,
+      "mini-idle",
+      "cloudling-mini-idle.svg"
+    ), false);
+
+    const crabwalk = hitGeometry.getAssetRectScreen(
+      theme,
+      bounds,
+      "mini-crabwalk",
+      "cloudling-mini-crabwalk.svg"
+    );
+
+    assert.ok(crabwalk.w > bounds.width, "mini-crabwalk should use normal normalized layout");
+  });
 });

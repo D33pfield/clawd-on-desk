@@ -395,8 +395,10 @@ function enterMiniViaMenu() {
   miniTransitioning = true;
   syncSessionHudVisibility();
 
-  // Send edge before crabwalk so CSS flip applies before animation starts
-  ctx.sendToRenderer("mini-mode-change", true, edge);
+  // Pre-entry crabwalk still uses the normal-size render/layout path. Send the
+  // edge for left-side flipping, but don't let the renderer enter mini layout
+  // until enterMiniMode() starts the real mini handoff.
+  ctx.sendToRenderer("mini-mode-change", true, edge, { preEntry: true });
   ctx.sendToHitWin("hit-state-sync", { miniMode: true });
 
   ctx.applyState("mini-crabwalk");

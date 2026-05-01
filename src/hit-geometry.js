@@ -18,6 +18,24 @@ function resolveViewBox(theme, state, file) {
   return theme.viewBox;
 }
 
+function viewBoxEquals(a, b) {
+  return !!(a && b
+    && a.x === b.x
+    && a.y === b.y
+    && a.width === b.width
+    && a.height === b.height);
+}
+
+function hasRootViewBoxFileOverride(theme, file) {
+  const key = basenameOnly(file);
+  return !!(
+    theme
+    && key
+    && theme.fileViewBoxes
+    && viewBoxEquals(theme.fileViewBoxes[key], theme.viewBox)
+  );
+}
+
 function usesObjectChannel(theme, state, file) {
   if (!theme || !isSvgFile(file)) return false;
   const eyeStates = theme.eyeTracking && theme.eyeTracking.enabled
@@ -31,6 +49,7 @@ function usesObjectChannel(theme, state, file) {
 
 function usesNormalizedLayout(theme, state, file) {
   if (!theme || !theme.layout || !theme.layout.contentBox) return false;
+  if (hasRootViewBoxFileOverride(theme, file)) return true;
   if ((state && state.startsWith("mini-")) || (file && file.startsWith("mini-"))) return false;
   return true;
 }

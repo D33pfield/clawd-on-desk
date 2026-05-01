@@ -146,6 +146,48 @@ describe("hit geometry", () => {
     );
   });
 
+  it("uses normal layout for mini-named files that explicitly override to the root viewBox", () => {
+    const rootViewBox = { x: -32, y: -24, width: 88, height: 72 };
+    const theme = {
+      viewBox: rootViewBox,
+      miniMode: { viewBox: { x: -12, y: -12, width: 48, height: 48 } },
+      fileViewBoxes: {
+        "cloudling-mini-crabwalk.svg": rootViewBox,
+      },
+      layout: {
+        contentBox: { x: 0, y: 0, width: 24, height: 24 },
+        centerX: 12,
+        baselineY: 24,
+        centerXRatio: 0.5,
+        baselineBottomRatio: 0.05,
+        visibleHeightRatio: 0.58,
+      },
+      objectScale: { widthRatio: 1, heightRatio: 1, offsetX: 0, offsetY: 0, objBottom: 0.05 },
+      eyeTracking: { enabled: false, states: [] },
+      trustedRuntime: { scriptedSvgFiles: ["cloudling-mini-crabwalk.svg"] },
+      _builtin: true,
+    };
+
+    assert.strictEqual(
+      hitGeometry.usesNormalizedLayout(theme, "mini-crabwalk", "cloudling-mini-crabwalk.svg"),
+      true
+    );
+    assert.strictEqual(
+      hitGeometry.usesNormalizedLayout(theme, "mini-idle", "cloudling-mini-idle.svg"),
+      false
+    );
+
+    const rect = hitGeometry.getAssetRectScreen(
+      theme,
+      bounds,
+      "mini-crabwalk",
+      "cloudling-mini-crabwalk.svg"
+    );
+
+    approx(rect.w, 425.33);
+    approx(rect.h, 348);
+  });
+
   it("uses trusted built-in scripted SVGs as object-channel geometry without treating external data as trusted", () => {
     const trustedTheme = {
       _builtin: true,

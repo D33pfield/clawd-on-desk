@@ -163,6 +163,32 @@ describe("mini mode entry timing", () => {
     assert.equal(mini.getMiniMode(), true);
   });
 
+  it("via-menu crabwalk tells renderer to flip edge without entering mini layout early", () => {
+    loader = loadMiniWithElectron({
+      getAllDisplays() {
+        return [{ bounds: { x: 0, y: 0, width: 800, height: 600 }, workArea: { x: 0, y: 0, width: 800, height: 600 } }];
+      },
+    });
+    const stateLog = [];
+    const rendererEvents = [];
+    const theme = cloneTheme(_defaultTheme);
+    const ctx = makeCtx(theme, stateLog, 710);
+    ctx.sendToRenderer = (...args) => rendererEvents.push(args);
+    const mini = loader.initMini(ctx);
+
+    mini.enterMiniViaMenu();
+
+    assert.deepStrictEqual(stateLog, ["mini-crabwalk"]);
+    assert.deepStrictEqual(rendererEvents[0], [
+      "mini-mode-change",
+      true,
+      "right",
+      { preEntry: true },
+    ]);
+    assert.equal(mini.getMiniMode(), false);
+    assert.equal(mini.getMiniTransitioning(), true);
+  });
+
   it("drag-snap still plays full mini-enter even when the cursor is over the pet", () => {
     loader = loadMiniWithElectron({
       getAllDisplays() {
