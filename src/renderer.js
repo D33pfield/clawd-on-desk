@@ -27,6 +27,9 @@ function initWithConfig(cfg) {
   _shadowStretch = (tc.eyeTracking && tc.eyeTracking.shadowStretch) || 0.15;
   _shadowShift = (tc.eyeTracking && tc.eyeTracking.shadowShift) || 0.3;
   _eyeTrackingStates = (tc.eyeTrackingStates) || ["idle", "dozing", "mini-idle"];
+  _trustedScriptedSvgFiles = new Set(Array.isArray(tc.trustedScriptedSvgFiles) ? tc.trustedScriptedSvgFiles : []);
+  _miniViewBox = tc.miniModeViewBox || null;
+  _fileViewBoxes = tc.fileViewBoxes || {};
   _dragSvg = tc.dragSvg || null;
   _idleFollowSvg = tc.idleFollowSvg || "clawd-idle-follow.svg";
   _glyphFlipDefs = tc.glyphFlips || { "pixel-z": 4, "pixel-z-small": 3 };
@@ -54,14 +57,14 @@ function initWithConfig(cfg) {
   _transitions = tc.transitions || {};
   _miniFlipAssets = !!tc.miniFlipAssets;
 
-  applyObjectScaleStyle(clawdEl, getObjectSvgName(clawdEl));
-  applyObjectScaleStyle(pendingNext, getObjectSvgName(pendingNext));
+  applyObjectScaleStyle(clawdEl, getObjectSvgName(clawdEl), null);
+  applyObjectScaleStyle(pendingNext, getObjectSvgName(pendingNext), null);
 }
 
-function applyObjectScaleStyle(el, file) {
+function applyObjectScaleStyle(el, file, state) {
   if (!el || !_objectScaleCSS) return;
-  if (shouldUseNormalizedLayout(file)) {
-    applyNormalizedLayoutStyle(el, file);
+  if (shouldUseNormalizedLayout(file, state)) {
+    applyNormalizedLayoutStyle(el, file, state);
     return;
   }
   const fo = (file && _fileOffsets[file]) || null;
@@ -233,14 +236,25 @@ function setLowPowerIdleMode(enabled) {
   }
 }
 
-function shouldUseNormalizedLayout(file) {
+function isSvgFile(file) {
+  return typeof file === "string" && file.toLowerCase().endsWith(".svg");
+}
+
+function resolveViewBox(state, file) {
+  if (file && _fileViewBoxes && _fileViewBoxes[file]) return _fileViewBoxes[file];
+  if (state && state.startsWith("mini-") && _miniViewBox) return _miniViewBox;
+  return _viewBox;
+}
+
+function shouldUseNormalizedLayout(file, state) {
   if (!_layout || !_layout.contentBox) return false;
-  if (_inMiniMode || (file && file.startsWith("mini-"))) return false;
+  if (_inMiniMode || (state && state.startsWith("mini-")) || (file && file.startsWith("mini-"))) return false;
   return true;
 }
 
-function applyNormalizedLayoutStyle(el, file) {
-  if (!el || !_layout || !_layout.contentBox || !_viewBox) return;
+function applyNormalizedLayoutStyle(el, file, state) {
+  const viewBox = resolveViewBox(state, file);
+  if (!el || !_layout || !_layout.contentBox || !viewBox) return;
   const fo = (file && _fileOffsets[file]) || null;
   const ox = fo ? fo.x : 0;
   const oy = fo ? fo.y : 0;
@@ -249,12 +263,12 @@ function applyNormalizedLayoutStyle(el, file) {
   const centerX = _layout.centerX != null ? _layout.centerX : (cb.x + cb.width / 2);
   const baselineY = _layout.baselineY != null ? _layout.baselineY : (cb.y + cb.height);
   const unitRatio = ((_layout.visibleHeightRatio || 0.58) * scale) / cb.height;
-  const widthRatio = _viewBox.width * unitRatio;
-  const heightRatio = _viewBox.height * unitRatio;
+  const widthRatio = viewBox.width * unitRatio;
+  const heightRatio = viewBox.height * unitRatio;
   const leftRatio = (_layout.centerXRatio != null ? _layout.centerXRatio : 0.5)
-    - ((centerX - _viewBox.x) * unitRatio);
+    - ((centerX - viewBox.x) * unitRatio);
   const bottomRatio = (_layout.baselineBottomRatio != null ? _layout.baselineBottomRatio : 0.05)
-    - ((_viewBox.y + _viewBox.height - baselineY) * unitRatio);
+    - ((viewBox.y + viewBox.height - baselineY) * unitRatio);
 
   if (el.tagName === "IMG") {
     el.style.width = `${widthRatio * 100}%`;
@@ -280,6 +294,9 @@ let _bodyScale;
 let _shadowStretch;
 let _shadowShift;
 let _eyeTrackingStates;
+let _trustedScriptedSvgFiles = new Set();
+let _miniViewBox = null;
+let _fileViewBoxes = {};
 let _dragSvg;
 let _idleFollowSvg;
 let _glyphFlipDefs;
@@ -295,9 +312,9 @@ function setViewportOffset(offsetY) {
   const next = Number.isFinite(offsetY) ? Math.max(0, Math.round(offsetY)) : 0;
   if (next === _viewportOffsetY) return;
   _viewportOffsetY = next;
-  applyObjectScaleStyle(clawdEl, currentDisplayedSvg);
+  applyObjectScaleStyle(clawdEl, currentDisplayedSvg, currentState);
   if (pendingNext) {
-    applyObjectScaleStyle(pendingNext, getObjectSvgName(pendingNext));
+    applyObjectScaleStyle(pendingNext, getObjectSvgName(pendingNext), currentState);
   }
 }
 
@@ -412,15 +429,22 @@ function getObjectSvgName(objectEl) {
 
 // ── Dual-channel rendering ──
 // Object channel: <object type="image/svg+xml"> for SVG states needing eye tracking
+// or built-in trusted SVG files whose own scripts need a document context.
 // Img channel: <img> for all other formats (SVG/GIF/APNG/WebP pure playback)
 
 /**
- * Determine if a state+file needs the <object> channel (eye tracking).
+ * Determine if a state should attach Clawd-controlled eye tracking.
+ */
+function needsEyeTracking(state) {
+  return _eyeTrackingStates.includes(state);
+}
+
+/**
+ * Determine if a state+file needs the <object> channel.
  */
 function needsObjectChannel(state, file) {
-  if (!file) return false;
-  if (!file.endsWith(".svg")) return false;
-  return _eyeTrackingStates.includes(state);
+  if (!isSvgFile(file)) return false;
+  return needsEyeTracking(state) || _trustedScriptedSvgFiles.has(file);
 }
 
 /**
@@ -532,7 +556,7 @@ function swapToFile(file, state, useObjectChannel) {
     next.type = "image/svg+xml";
     next.id = "clawd";
     next.style.opacity = "0";
-    applyObjectScaleStyle(next, file);
+    applyObjectScaleStyle(next, file, state);
 
     const swap = () => {
       if (pendingNext !== next) return;
@@ -559,7 +583,7 @@ function swapToFile(file, state, useObjectChannel) {
       clawdEl = next;
       currentDisplayedSvg = file;
 
-      if (state && needsObjectChannel(state, file)) {
+      if (state && needsEyeTracking(state)) {
         attachEyeTracking(next);
       }
       if (miniLeftFlip) applyGlyphFlipCompensation(next);
@@ -581,7 +605,7 @@ function swapToFile(file, state, useObjectChannel) {
     next.className = "clawd-img";
     next.id = "clawd";
     next.style.opacity = "0";
-    applyObjectScaleStyle(next, file);
+    applyObjectScaleStyle(next, file, state);
     applyMiniFlip(next);
 
     const swap = () => {
@@ -642,14 +666,17 @@ window.electronAPI.onStateChange((state, svg) => {
   noteLowPowerActivity();
 
   // Dedup: same file already displayed OR currently loading → don't re-swap
+  const desiredObjectChannel = needsObjectChannel(state, svg);
   const alreadyDisplayed = clawdEl && clawdEl.isConnected && currentDisplayedSvg === svg;
+  const displayedChannelMatches = !alreadyDisplayed || ((clawdEl.tagName === "OBJECT") === desiredObjectChannel);
   const alreadyPending = pendingSvgFile === svg && pendingNext;
+  const pendingChannelMatches = !alreadyPending || ((pendingNext.tagName === "OBJECT") === desiredObjectChannel);
 
-  if (alreadyDisplayed || alreadyPending) {
+  if ((alreadyDisplayed && displayedChannelMatches) || (alreadyPending && pendingChannelMatches)) {
     if (alreadyDisplayed) {
-      if (needsObjectChannel(state, svg) && !eyeTarget && !_trackingLayers) {
+      if (needsEyeTracking(state) && !eyeTarget && !_trackingLayers) {
         if (clawdEl.tagName === "OBJECT") attachEyeTracking(clawdEl);
-      } else if (!needsObjectChannel(state, svg)) {
+      } else if (!needsEyeTracking(state)) {
         detachEyeTracking();
       }
       scheduleLowPowerIdlePause();

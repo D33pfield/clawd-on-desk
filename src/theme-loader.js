@@ -653,6 +653,8 @@ function getRendererConfig() {
     : [];
   return {
     viewBox: t.viewBox,
+    miniModeViewBox: t.miniMode ? t.miniMode.viewBox : null,
+    fileViewBoxes: { ...(t.fileViewBoxes || {}) },
     layout: t.layout,
     assetsPath: getRendererAssetsPath(),
     // For external themes: non-SVG assets served from source dir (not cache)

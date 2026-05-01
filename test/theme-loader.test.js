@@ -249,6 +249,10 @@ describe("theme-loader trusted runtime and schema v1 defaults", () => {
       scriptedSvgFiles: ["scripted.svg", "also-scripted.svg"],
     });
     assert.deepStrictEqual(rendererConfig.trustedScriptedSvgFiles, ["scripted.svg", "also-scripted.svg"]);
+    assert.deepStrictEqual(rendererConfig.fileViewBoxes, {
+      "mini-special.svg": { x: -12, y: -12, width: 48, height: 48 },
+    });
+    assert.deepStrictEqual(rendererConfig.miniModeViewBox, { x: -12, y: -12, width: 48, height: 48 });
     assert.deepStrictEqual(theme.fileViewBoxes, {
       "mini-special.svg": { x: -12, y: -12, width: 48, height: 48 },
     });
@@ -264,6 +268,10 @@ describe("theme-loader trusted runtime and schema v1 defaults", () => {
     assert.strictEqual(theme._builtin, false);
     assert.deepStrictEqual(theme.trustedRuntime, { scriptedSvgFiles: [] });
     assert.deepStrictEqual(rendererConfig.trustedScriptedSvgFiles, []);
+    assert.deepStrictEqual(rendererConfig.fileViewBoxes, {
+      "mini-special.svg": { x: -10, y: -10, width: 40, height: 40 },
+    });
+    assert.deepStrictEqual(rendererConfig.miniModeViewBox, { x: -10, y: -10, width: 40, height: 40 });
     assert.strictEqual(warn.mock.callCount(), 1);
     assert.match(warn.mock.calls[0].arguments[0], /trustedRuntime ignored for non-builtin theme "forged"/);
     assert.deepStrictEqual(theme.fileViewBoxes, {

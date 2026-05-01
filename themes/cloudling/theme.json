@@ -1,0 +1,186 @@
+{
+  "schemaVersion": 1,
+  "name": "Cloudling",
+  "author": "stlabslogo",
+  "version": "0.1.0",
+  "description": "Minimal built-in Cloudling prototype using trusted scripted SVG object-channel assets",
+  "viewBox": {
+    "x": -32,
+    "y": -24,
+    "width": 88,
+    "height": 72
+  },
+  "fileViewBoxes": {
+    "cloudling-mini-crabwalk.svg": {
+      "x": -32,
+      "y": -24,
+      "width": 88,
+      "height": 72
+    }
+  },
+  "layout": {
+    "contentBox": {
+      "x": 0,
+      "y": 0,
+      "width": 24,
+      "height": 24
+    },
+    "marginBox": {
+      "x": -2,
+      "y": -2,
+      "width": 28,
+      "height": 28
+    },
+    "centerX": 12,
+    "baselineY": 24,
+    "visibleHeightRatio": 0.58,
+    "baselineBottomRatio": 0.05
+  },
+  "trustedRuntime": {
+    "scriptedSvgFiles": [
+      "cloudling-idle.svg",
+      "cloudling-building.svg",
+      "cloudling-mini-enter-roll-in.svg",
+      "cloudling-mini-idle.svg",
+      "cloudling-mini-crabwalk.svg"
+    ]
+  },
+  "eyeTracking": {
+    "enabled": false,
+    "states": []
+  },
+  "states": {
+    "idle": [
+      "cloudling-idle.svg"
+    ],
+    "thinking": [
+      "cloudling-idle.svg"
+    ],
+    "working": [
+      "cloudling-building.svg"
+    ],
+    "juggling": [
+      "cloudling-building.svg"
+    ],
+    "attention": {
+      "fallbackTo": "idle"
+    },
+    "notification": {
+      "fallbackTo": "idle"
+    },
+    "error": {
+      "fallbackTo": "idle"
+    },
+    "sweeping": {
+      "fallbackTo": "working"
+    },
+    "carrying": {
+      "fallbackTo": "working"
+    },
+    "sleeping": {
+      "fallbackTo": "idle"
+    }
+  },
+  "sleepSequence": {
+    "mode": "direct"
+  },
+  "workingTiers": [
+    {
+      "minSessions": 1,
+      "file": "cloudling-building.svg"
+    }
+  ],
+  "displayHintMap": {
+    "clawd-working-building.svg": "cloudling-building.svg",
+    "clawd-working-typing.svg": "cloudling-building.svg",
+    "clawd-working-juggling.svg": "cloudling-building.svg",
+    "clawd-working-conducting.svg": "cloudling-building.svg",
+    "clawd-working-thinking.svg": "cloudling-idle.svg"
+  },
+  "timings": {
+    "minDisplay": {
+      "working": 1000,
+      "thinking": 1000
+    },
+    "autoReturn": {}
+  },
+  "hitBoxes": {
+    "default": {
+      "x": 0,
+      "y": 0,
+      "w": 24,
+      "h": 24
+    },
+    "sleeping": {
+      "x": 0,
+      "y": 0,
+      "w": 24,
+      "h": 24
+    },
+    "wide": {
+      "x": -4,
+      "y": -4,
+      "w": 32,
+      "h": 32
+    }
+  },
+  "miniMode": {
+    "supported": true,
+    "offsetRatio": 0.486,
+    "viewBox": {
+      "x": -12,
+      "y": -12,
+      "width": 48,
+      "height": 48
+    },
+    "states": {
+      "mini-idle": [
+        "cloudling-mini-idle.svg"
+      ],
+      "mini-alert": [
+        "cloudling-mini-idle.svg"
+      ],
+      "mini-happy": [
+        "cloudling-mini-idle.svg"
+      ],
+      "mini-enter": [
+        "cloudling-mini-enter-roll-in.svg"
+      ],
+      "mini-peek": [
+        "cloudling-mini-idle.svg"
+      ],
+      "mini-crabwalk": [
+        "cloudling-mini-crabwalk.svg"
+      ],
+      "mini-enter-sleep": [
+        "cloudling-mini-enter-roll-in.svg"
+      ],
+      "mini-sleep": [
+        "cloudling-mini-idle.svg"
+      ]
+    },
+    "timings": {
+      "minDisplay": {
+        "mini-alert": 4000,
+        "mini-happy": 4000,
+        "mini-peek": 1500
+      },
+      "autoReturn": {
+        "mini-alert": 4000,
+        "mini-happy": 4000,
+        "mini-peek": 1500
+      }
+    },
+    "glyphFlips": {}
+  },
+  "objectScale": {
+    "widthRatio": 1,
+    "heightRatio": 1,
+    "imgWidthRatio": 1,
+    "offsetX": 0,
+    "offsetY": 0,
+    "imgOffsetX": 0,
+    "objBottom": 0.05,
+    "imgBottom": 0.05
+  }
+}

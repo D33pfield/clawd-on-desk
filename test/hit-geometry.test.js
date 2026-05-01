@@ -120,4 +120,67 @@ describe("hit geometry", () => {
     approx(actual.right, expected.x + expected.w);
     approx(actual.bottom, expected.bottom);
   });
+
+  it("resolves root, mini, and per-file viewBoxes in priority order", () => {
+    const rootViewBox = { x: -32, y: -24, width: 88, height: 72 };
+    const miniViewBox = { x: -12, y: -12, width: 48, height: 48 };
+    const theme = {
+      viewBox: rootViewBox,
+      miniMode: { viewBox: miniViewBox },
+      fileViewBoxes: {
+        "cloudling-mini-crabwalk.svg": rootViewBox,
+      },
+    };
+
+    assert.deepStrictEqual(
+      hitGeometry.resolveViewBox(theme, "working", "cloudling-building.svg"),
+      rootViewBox
+    );
+    assert.deepStrictEqual(
+      hitGeometry.resolveViewBox(theme, "mini-idle", "cloudling-mini-idle.svg"),
+      miniViewBox
+    );
+    assert.deepStrictEqual(
+      hitGeometry.resolveViewBox(theme, "mini-crabwalk", "cloudling-mini-crabwalk.svg"),
+      rootViewBox
+    );
+  });
+
+  it("uses trusted built-in scripted SVGs as object-channel geometry without treating external data as trusted", () => {
+    const trustedTheme = {
+      _builtin: true,
+      viewBox: { x: -32, y: -24, width: 88, height: 72 },
+      miniMode: { viewBox: { x: -12, y: -12, width: 48, height: 48 } },
+      fileViewBoxes: {},
+      objectScale: { widthRatio: 1, heightRatio: 1, offsetX: 0, offsetY: 0, objBottom: 0 },
+      eyeTracking: { enabled: false, states: [] },
+      trustedRuntime: { scriptedSvgFiles: ["cloudling-building.svg"] },
+    };
+    const externalTheme = {
+      ...trustedTheme,
+      _builtin: false,
+      trustedRuntime: { scriptedSvgFiles: ["cloudling-building.svg"] },
+    };
+
+    assert.strictEqual(
+      hitGeometry.usesObjectChannel(trustedTheme, "working", "cloudling-building.svg"),
+      true
+    );
+    assert.strictEqual(
+      hitGeometry.usesObjectChannel(externalTheme, "working", "cloudling-building.svg"),
+      false
+    );
+
+    const rect = hitGeometry.getAssetRectScreen(
+      trustedTheme,
+      bounds,
+      "working",
+      "cloudling-building.svg"
+    );
+
+    approx(rect.x, 0);
+    approx(rect.y, 18.18);
+    approx(rect.w, 200);
+    approx(rect.h, 163.64);
+  });
 });

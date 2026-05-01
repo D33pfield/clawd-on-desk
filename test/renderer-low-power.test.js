@@ -23,3 +23,19 @@ describe("renderer low-power idle mode", () => {
     assert.ok(source.includes("if (!lowPowerIdleMode && !lowPowerSvgPaused) return;"));
   });
 });
+
+describe("renderer object-channel selection", () => {
+  it("allows built-in trusted scripted SVG files to use <object>", () => {
+    const source = fs.readFileSync(RENDERER, "utf8");
+
+    assert.ok(source.includes("_trustedScriptedSvgFiles = new Set"));
+    assert.ok(source.includes("return needsEyeTracking(state) || _trustedScriptedSvgFiles.has(file);"));
+  });
+
+  it("keeps eye-tracking attachment state-based only", () => {
+    const source = fs.readFileSync(RENDERER, "utf8");
+
+    assert.ok(source.includes("function needsEyeTracking(state)"));
+    assert.ok(source.includes("if (state && needsEyeTracking(state)) {\n        attachEyeTracking(next);"));
+  });
+});
