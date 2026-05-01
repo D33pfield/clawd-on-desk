@@ -241,6 +241,12 @@ window.addEventListener("pointermove", e => {
 svg.addEventListener("pointerleave", () => {
   pointerInside = false;
 });
+window.__cloudlingSetPointer = payload => {
+  if (!payload || !Number.isFinite(payload.x) || !Number.isFinite(payload.y)) return;
+  pointer.x = payload.x;
+  pointer.y = payload.y;
+  pointerInside = !!payload.inside;
+};
 requestAnimationFrame(tick);
 ]]></script>
 </svg>

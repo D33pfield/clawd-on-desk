@@ -62,7 +62,7 @@
       <rect id="eye-l" x="7.7" y="9.5" width="2.6" height="5" rx="1.3" ry="1.3" fill="url(#eye-grad)" stroke="#ffffff" stroke-width="0.08" stroke-opacity="0.7"/>
       <rect id="eye-r" x="13.7" y="9.5" width="2.6" height="5" rx="1.3" ry="1.3" fill="url(#eye-grad)" stroke="#ffffff" stroke-width="0.08" stroke-opacity="0.7"/>
     </g>
-  
+
 <script type="application/ecmascript"><![CDATA[
 const FACE_CENTER = { x: 12, y: 12 };
 
@@ -109,6 +109,13 @@ svgEl.addEventListener('mousemove', e => {
 });
 svgEl.addEventListener('mouseleave', () => mouseInside = false);
 svgEl.addEventListener('mouseenter', () => mouseInside = true);
+
+window.__cloudlingSetPointer = payload => {
+  if (!payload || !Number.isFinite(payload.x) || !Number.isFinite(payload.y)) return;
+  mouseVB.x = payload.x;
+  mouseVB.y = payload.y;
+  mouseInside = !!payload.inside;
+};
 
 function computeEyeTarget() {
   if (!mouseInside) return { x: 0, y: 0 };
