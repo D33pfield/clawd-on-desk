@@ -283,11 +283,10 @@ function makeFoodCloud(p, cx, cy, scale, opacity, opts = {}) {
   const sy = opts.sy ?? 1;
   const rot = opts.rot ?? 0;
   const filterId = opts.melting ? `${p}-food-melt` : `${p}-food-shadow`;
-  const strokeOpacity = opts.melting ? 0.16 : 0.30;
   const hiOpacity = opts.melting ? 0.55 : 1;
   return `
     <g class="food-cloud" opacity="${opacity.toFixed(3)}" transform="translate(${cx.toFixed(2)} ${cy.toFixed(2)}) rotate(${rot.toFixed(2)}) scale(${(scale * sx).toFixed(3)} ${(scale * sy).toFixed(3)})" filter="url(#${filterId})">
-      <path d="${path}" fill="url(#${p}-food)" stroke="url(#${p}-food-rim)" stroke-width="0.10" stroke-opacity="${strokeOpacity}"/>
+      <path d="${path}" fill="url(#${p}-food)"/>
       <ellipse cx="-0.6" cy="-0.7" rx="2.6" ry="1.2" fill="url(#${p}-food-hi)" opacity="${hiOpacity}"/>
     </g>
   `;
@@ -549,13 +548,6 @@ function renderFrame(t) {
 .edge-rim-soft { stroke-opacity: .10; }
 .edge-contact { stroke-opacity: .18; }
 .cloud-drop-shadow { flood-opacity: .13; }
-.food-cloud-shadow { flood-opacity: .28; flood-color: #5060FF; }
-.food-cloud > path {
-  stroke: #5870E8 !important;
-  stroke-width: 1.2 !important;
-  stroke-opacity: .9 !important;
-  vector-effect: non-scaling-stroke !important;
-}
 }
 </style>
 <defs>

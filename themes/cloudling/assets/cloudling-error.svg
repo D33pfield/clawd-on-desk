@@ -89,7 +89,7 @@
       </filter>
     </defs>
 
-    <g id="rain" stroke="#7180C2" stroke-width=".45" stroke-linecap="round"></g>
+    <g id="rain" display="none" stroke="#7180C2" stroke-width=".45" stroke-linecap="round"></g>
     <ellipse id="ground" cx="12" cy="22.9" rx="8.7" ry="1.25" fill="#030513" opacity=".48" filter="url(#ground-blur)"/>
 
     <g id="cloud-root">

@@ -15,9 +15,9 @@
 .edge-contact { stroke-opacity: .18; }
 .cloud-drop-shadow { flood-opacity: .13; }
 .orbit-track { stroke: rgba(57,65,255,.22); }
-.spark-shell { stroke: rgba(54,58,96,.78); stroke-width: 0.18; }
-.spark-core { opacity: .10; }
-#taskTrailLayer use, #taskABack, #taskBBack, #taskCBack, #taskDBack, #taskAFront, #taskBFront, #taskCFront, #taskDFront { filter: url(#task-light-glow); }
+.spark-shell { stroke: rgba(255,255,255,.82); stroke-width: 0.075; }
+.spark-core { opacity: .20; }
+#taskTrailLayer use, #taskABack, #taskBBack, #taskCBack, #taskDBack, #taskAFront, #taskBFront, #taskCFront, #taskDFront { filter: url(#task-glow); }
 .food-cloud-shadow { flood-opacity: .28; flood-color: #5060FF; }
 .food-cloud > path {
   stroke: #5870E8 !important;

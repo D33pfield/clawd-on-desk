@@ -33,13 +33,6 @@
 .edge-contact { stroke-opacity: .18; }
 .cloud-drop-shadow { flood-opacity: .13; }
 .statusbar { background: #fff; color: #C97A4A; }
-.food-cloud-shadow { flood-opacity: .28; flood-color: #5060FF; }
-.food-cloud > path {
-  stroke: #5870E8 !important;
-  stroke-width: 1.2 !important;
-  stroke-opacity: .9 !important;
-  vector-effect: non-scaling-stroke !important;
-}
 }
 ]]></style>
     <defs>
@@ -255,14 +248,15 @@ function setEyeRect(node, cx, cy, w, h) {
 }
 
 // ===== 暖云更新 =====
-//   屏障位置: 中心 (12, barrierY), 后层 x=12-barrierGap, 前层 x=12+barrierGap
-//   入场起点: 后层 (3, barrierY), 前层 (4, barrierY); 保持在画布内, 避免桌宠裁切框露出硬边
+//   屏障位置: 偏向可视中心, 后层 x=warmCenterX-barrierGap, 前层 x=warmCenterX+barrierGap
+//   入场起点: 从画面内侧进入, 避免 Electron 裁切框露出硬边
 //   消散方向: 先淡出再外飘, 避免退出时被 viewBox 切出直边
 function updateWarmClouds(t, p, phase, v) {
-  const restBackX = 12 - v.barrierGap;
-  const restFrontX = 12 + v.barrierGap;
-  const enterBackX = 3;
-  const enterFrontX = 4;
+  const warmCenterX = 15.4;
+  const restBackX = warmCenterX - v.barrierGap;
+  const restFrontX = warmCenterX + v.barrierGap;
+  const enterBackX = 12.4;
+  const enterFrontX = 13.4;
   const restY = v.barrierY;
   const microFloat = Math.sin(t * 1.6) * 0.12;
 
