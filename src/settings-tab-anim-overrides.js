@@ -1,6 +1,18 @@
 "use strict";
 
 (function initSettingsTabAnimOverrides(root) {
+  const animMergeApi = root.ClawdSettingsAnimOverridesMerge || {};
+  const getAssetPreviewUrl = animMergeApi.getAssetPreviewUrl || ((asset) => {
+    if (!asset) return null;
+    if (asset.previewImageUrl) return asset.previewImageUrl;
+    return asset.needsScriptedPreviewPoster ? null : asset.fileUrl || null;
+  });
+  const getCardPreviewUrl = animMergeApi.getCardPreviewUrl || ((card) => {
+    if (!card) return null;
+    if (card.currentFilePreviewUrl) return card.currentFilePreviewUrl;
+    return (card.previewPosterPending || card.needsScriptedPreviewPoster) ? null : card.currentFileUrl || null;
+  });
+
   let state = null;
   let runtime = null;
   let helpers = null;
@@ -56,6 +68,15 @@
     img.alt = "";
     img.draggable = false;
     parent.appendChild(img);
+    return true;
+  }
+
+  function appendAnimationPreviewPending(parent) {
+    if (!parent) return false;
+    const pending = document.createElement("span");
+    pending.className = "anim-override-preview-pending";
+    pending.setAttribute("aria-hidden", "true");
+    parent.appendChild(pending);
     return true;
   }
 
@@ -254,14 +275,18 @@
     return wrapper;
   }
 
-  function buildAnimPreviewNode(fileUrl) {
+  function buildAnimPreviewNode(fileUrl, { pending = false } = {}) {
     const frame = document.createElement("div");
     frame.className = "anim-override-preview-frame";
     if (!appendAnimationPreviewMedia(frame, fileUrl)) {
-      const glyph = document.createElement("span");
-      glyph.className = "theme-thumb-empty";
-      glyph.textContent = t("themeThumbMissing");
-      frame.appendChild(glyph);
+      if (pending) {
+        appendAnimationPreviewPending(frame);
+      } else {
+        const glyph = document.createElement("span");
+        glyph.className = "theme-thumb-empty";
+        glyph.textContent = t("themeThumbMissing");
+        frame.appendChild(glyph);
+      }
     }
     return frame;
   }
@@ -629,7 +654,9 @@
     const thumb = document.createElement("div");
     thumb.className = "anim-override-thumb";
     thumb.title = t("animOverridesPreview");
-    appendAnimationPreviewMedia(thumb, card.currentFilePreviewUrl || card.currentFileUrl);
+    if (!appendAnimationPreviewMedia(thumb, getCardPreviewUrl(card)) && (card.previewPosterPending || card.needsScriptedPreviewPoster)) {
+      appendAnimationPreviewPending(thumb);
+    }
     thumb.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -779,7 +806,9 @@
     const bigPreview = document.createElement("div");
     bigPreview.className = "anim-override-drawer-preview";
     bigPreview.title = t("animOverridesPreview");
-    appendAnimationPreviewMedia(bigPreview, card.currentFilePreviewUrl || card.currentFileUrl);
+    if (!appendAnimationPreviewMedia(bigPreview, getCardPreviewUrl(card)) && (card.previewPosterPending || card.needsScriptedPreviewPoster)) {
+      appendAnimationPreviewPending(bigPreview);
+    }
     bigPreview.addEventListener("click", () => triggerPreviewOnce(card));
     head.appendChild(bigPreview);
 
@@ -974,7 +1003,10 @@
 
   function populateAssetPickerDetail(detail, selected) {
     detail.innerHTML = "";
-    detail.appendChild(buildAnimPreviewNode(selected && (selected.previewImageUrl || selected.fileUrl)));
+    const previewUrl = getAssetPreviewUrl(selected);
+    detail.appendChild(buildAnimPreviewNode(previewUrl, {
+      pending: !!(selected && !previewUrl && selected.needsScriptedPreviewPoster),
+    }));
     const selectedLabel = document.createElement("div");
     selectedLabel.className = "anim-override-file";
     selectedLabel.textContent = `${t("animOverridesModalSelected")}: ${selected ? selected.name : "-"}`;

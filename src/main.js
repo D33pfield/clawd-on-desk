@@ -1660,11 +1660,15 @@ _settingsController.subscribeKey("shortcuts", (_value, snapshot) => {
 const ANIMATION_OVERRIDE_ASSET_EXTS = new Set([".svg", ".gif", ".apng", ".png", ".webp", ".jpg", ".jpeg"]);
 const ANIMATION_OVERRIDE_PREVIEW_POSTER_SIZE = { width: 176, height: 144 };
 const ANIMATION_OVERRIDE_PREVIEW_POSTER_VERSION = 2;
+const ANIMATION_OVERRIDE_PREVIEW_POSTER_CACHE_MAX = 192;
+const ANIMATION_OVERRIDE_PREVIEW_POSTER_TIMEOUT_MS = 30000;
 let animationOverridePreviewTimer = null;
 let animationOverridePreviewPosterWindow = null;
 let animationOverridePreviewPosterReady = null;
 let animationOverridePreviewPosterQueue = Promise.resolve();
 const animationOverridePreviewPosterCache = new Map();
+const animationOverridePreviewPosterPendingKeys = new Set();
+let animationOverridePreviewPosterGenerationId = 0;
 // Tasks queued while activateTheme()'s reload is in progress. Anything that
 // needs to talk to the renderer after a fresh theme load (e.g. the preview
 // animation triggered right after a setAnimationOverride) lands here and fires
@@ -1683,10 +1687,12 @@ function _buildFileUrl(absPath) {
   catch { return null; }
 }
 
-function _resolveAnimationAssetAbsPath(filename) {
-  if (!filename || !activeTheme) return null;
+function _resolveAnimationAssetAbsPath(filename, theme = activeTheme) {
+  if (!filename || !theme) return null;
   try {
-    const absPath = themeLoader.getAssetPath(filename);
+    const absPath = typeof themeLoader._resolveAssetPath === "function"
+      ? themeLoader._resolveAssetPath(theme, filename)
+      : themeLoader.getAssetPath(filename);
     return absPath && fs.existsSync(absPath) ? absPath : null;
   } catch {
     return null;
@@ -1778,8 +1784,8 @@ function _resolveOpenableFsPath(absPath) {
   return fs.existsSync(unpackedPath) ? unpackedPath : absPath;
 }
 
-function _buildAnimationAssetUrl(filename) {
-  const absPath = _resolveAnimationAssetAbsPath(filename);
+function _buildAnimationAssetUrl(filename, theme = activeTheme) {
+  const absPath = _resolveAnimationAssetAbsPath(filename, theme);
   return absPath ? _buildFileUrl(absPath) : null;
 }
 
@@ -1792,30 +1798,75 @@ function _needsScriptedAnimationPreviewPoster(filename, theme = activeTheme) {
   return scriptedFiles.includes(base);
 }
 
-function _buildAnimationAssetPreview(filename, theme = activeTheme) {
-  const fileUrl = _buildAnimationAssetUrl(filename);
+function _rememberAnimationPreviewPosterCache(cacheKey, dataUrl) {
+  if (!cacheKey || !dataUrl) return;
+  if (animationOverridePreviewPosterCache.has(cacheKey)) {
+    animationOverridePreviewPosterCache.delete(cacheKey);
+  }
+  animationOverridePreviewPosterCache.set(cacheKey, dataUrl);
+  while (animationOverridePreviewPosterCache.size > ANIMATION_OVERRIDE_PREVIEW_POSTER_CACHE_MAX) {
+    const oldestKey = animationOverridePreviewPosterCache.keys().next().value;
+    if (!oldestKey) break;
+    animationOverridePreviewPosterCache.delete(oldestKey);
+  }
+}
+
+function _readAnimationPreviewPosterCache(cacheKey) {
+  if (!cacheKey || !animationOverridePreviewPosterCache.has(cacheKey)) return null;
+  const dataUrl = animationOverridePreviewPosterCache.get(cacheKey);
+  animationOverridePreviewPosterCache.delete(cacheKey);
+  animationOverridePreviewPosterCache.set(cacheKey, dataUrl);
+  return dataUrl;
+}
+
+function _buildAnimationPreviewPosterDescriptor(filename, theme, absPath) {
+  if (!filename || !theme || !absPath) return null;
+  try {
+    const stat = fs.statSync(absPath);
+    const themeId = theme && theme._id ? theme._id : "theme";
+    const safeFilename = path.basename(filename);
+    return {
+      themeId,
+      filename: safeFilename,
+      absPath,
+      fileUrl: _buildFileUrl(absPath),
+      posterVersion: ANIMATION_OVERRIDE_PREVIEW_POSTER_VERSION,
+      size: stat.size,
+      mtime: Math.round(stat.mtimeMs),
+      cacheKey: `${ANIMATION_OVERRIDE_PREVIEW_POSTER_VERSION}|${themeId}|${safeFilename}|${stat.size}|${Math.round(stat.mtimeMs)}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function _buildAnimationAssetPreview(filename, theme = activeTheme, resolvedAbsPath = null) {
+  const absPath = resolvedAbsPath || _resolveAnimationAssetAbsPath(filename, theme);
+  const fileUrl = absPath ? _buildFileUrl(absPath) : null;
   const needsPoster = _needsScriptedAnimationPreviewPoster(filename, theme);
+  if (!needsPoster) {
+    return {
+      fileUrl,
+      previewImageUrl: fileUrl,
+      needsScriptedPreviewPoster: false,
+      previewPosterCacheKey: null,
+      previewPosterPending: false,
+    };
+  }
+
+  const descriptor = _buildAnimationPreviewPosterDescriptor(filename, theme, absPath);
+  const cachedPoster = descriptor ? _readAnimationPreviewPosterCache(descriptor.cacheKey) : null;
   return {
     fileUrl,
-    previewImageUrl: fileUrl,
-    needsScriptedPreviewPoster: needsPoster,
+    previewImageUrl: cachedPoster,
+    needsScriptedPreviewPoster: true,
+    previewPosterCacheKey: descriptor ? descriptor.cacheKey : null,
+    previewPosterPending: !!(descriptor && !cachedPoster),
   };
 }
 
 function _animationPreviewDelay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function _getAnimationPreviewPosterCacheKey(filename) {
-  const absPath = _resolveAnimationAssetAbsPath(filename);
-  if (!absPath) return null;
-  try {
-    const stat = fs.statSync(absPath);
-    const themeId = activeTheme && activeTheme._id ? activeTheme._id : "theme";
-    return `${ANIMATION_OVERRIDE_PREVIEW_POSTER_VERSION}|${themeId}|${path.basename(filename)}|${stat.size}|${Math.round(stat.mtimeMs)}`;
-  } catch {
-    return null;
-  }
 }
 
 function _getAnimationPreviewPosterWindow() {
@@ -1858,16 +1909,30 @@ async function _ensureAnimationPreviewPosterPage() {
   return posterWindow;
 }
 
-async function _captureAnimationPreviewPosterDataUrl(filename) {
-  const absPath = _resolveAnimationAssetAbsPath(filename);
-  if (!absPath) return null;
-  const fileUrl = _buildFileUrl(absPath);
-  if (!fileUrl) return null;
-  const cacheKey = _getAnimationPreviewPosterCacheKey(filename);
-  if (cacheKey && animationOverridePreviewPosterCache.has(cacheKey)) {
-    return animationOverridePreviewPosterCache.get(cacheKey);
-  }
+function _withAnimationPreviewPosterTimeout(promise) {
+  let timer = null;
+  return new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error("animation preview poster capture timed out");
+      err.code = "ANIMATION_PREVIEW_POSTER_TIMEOUT";
+      reject(err);
+    }, ANIMATION_OVERRIDE_PREVIEW_POSTER_TIMEOUT_MS);
+    Promise.resolve(promise).then(resolve, reject);
+  }).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
+function _destroyAnimationPreviewPosterWindow() {
+  if (animationOverridePreviewPosterWindow && !animationOverridePreviewPosterWindow.isDestroyed()) {
+    animationOverridePreviewPosterWindow.destroy();
+  }
+  animationOverridePreviewPosterWindow = null;
+  animationOverridePreviewPosterReady = null;
+}
+
+async function _captureAnimationPreviewPosterDataUrl(fileUrl) {
+  if (!fileUrl) return null;
   const capture = async () => {
     const posterWindow = await _ensureAnimationPreviewPosterPage();
     if (!posterWindow || posterWindow.isDestroyed()) return null;
@@ -1884,32 +1949,113 @@ async function _captureAnimationPreviewPosterDataUrl(filename) {
     return image && typeof image.toDataURL === "function" ? image.toDataURL() : null;
   };
 
-  const result = await (animationOverridePreviewPosterQueue = animationOverridePreviewPosterQueue
-    .then(capture, capture)
-    .catch((err) => {
-      console.warn("Clawd: failed to capture animation preview poster:", err && err.message);
-      return null;
-    }));
-  if (cacheKey && result) animationOverridePreviewPosterCache.set(cacheKey, result);
-  return result;
+  try {
+    return await _withAnimationPreviewPosterTimeout(capture());
+  } catch (err) {
+    if (err && err.code === "ANIMATION_PREVIEW_POSTER_TIMEOUT") {
+      _destroyAnimationPreviewPosterWindow();
+    }
+    throw err;
+  }
 }
 
-async function _hydrateAnimationPreviewPosters(data) {
-  if (!data || !Array.isArray(data.assets)) return data;
-  const previewByName = new Map();
-  for (const asset of data.assets) {
-    if (!asset || typeof asset.name !== "string") continue;
-    if (asset.needsScriptedPreviewPoster) {
-      const posterUrl = await _captureAnimationPreviewPosterDataUrl(asset.name);
-      if (posterUrl) asset.previewImageUrl = posterUrl;
+function _getLiveSettingsWebContents() {
+  if (
+    !settingsWindow
+    || settingsWindow.isDestroyed()
+    || !settingsWindow.webContents
+    || settingsWindow.webContents.isDestroyed()
+  ) {
+    return null;
+  }
+  return settingsWindow.webContents;
+}
+
+function _bumpAnimationPreviewPosterGeneration() {
+  animationOverridePreviewPosterGenerationId += 1;
+  return animationOverridePreviewPosterGenerationId;
+}
+
+function _maybeDestroyIdleAnimationPreviewPosterWindow() {
+  if (animationOverridePreviewPosterPendingKeys.size > 0) return;
+  if (_getLiveSettingsWebContents()) return;
+  _destroyAnimationPreviewPosterWindow();
+}
+
+function _sendAnimationPreviewPosterReady(job, previewImageUrl) {
+  if (!job || !previewImageUrl) return;
+  const webContents = _getLiveSettingsWebContents();
+  if (!webContents) return;
+  webContents.send("settings:animation-preview-poster-ready", {
+    themeId: job.themeId,
+    filename: job.filename,
+    previewImageUrl,
+    previewPosterCacheKey: job.previewPosterCacheKey,
+  });
+}
+
+async function _runAnimationPreviewPosterJob(job) {
+  try {
+    if (!job || !job.previewPosterCacheKey || !job.fileUrl) return;
+    if (job.generationId !== animationOverridePreviewPosterGenerationId) return;
+    if (!_getLiveSettingsWebContents()) return;
+
+    const cached = _readAnimationPreviewPosterCache(job.previewPosterCacheKey);
+    if (cached) {
+      _sendAnimationPreviewPosterReady(job, cached);
+      return;
     }
-    previewByName.set(asset.name, asset.previewImageUrl || asset.fileUrl || null);
+
+    const previewImageUrl = await _captureAnimationPreviewPosterDataUrl(job.fileUrl);
+    if (!previewImageUrl) return;
+    _rememberAnimationPreviewPosterCache(job.previewPosterCacheKey, previewImageUrl);
+    _sendAnimationPreviewPosterReady(job, previewImageUrl);
+  } catch (err) {
+    console.warn("Clawd: failed to capture animation preview poster:", err && err.message);
+  } finally {
+    if (job && job.previewPosterCacheKey) {
+      animationOverridePreviewPosterPendingKeys.delete(job.previewPosterCacheKey);
+    }
+    _maybeDestroyIdleAnimationPreviewPosterWindow();
+  }
+}
+
+function _enqueueAnimationPreviewPosterJob(job) {
+  if (!job || !job.previewPosterCacheKey || !job.fileUrl) return;
+  if (animationOverridePreviewPosterCache.has(job.previewPosterCacheKey)) return;
+  if (animationOverridePreviewPosterPendingKeys.has(job.previewPosterCacheKey)) return;
+  animationOverridePreviewPosterPendingKeys.add(job.previewPosterCacheKey);
+  const run = () => _runAnimationPreviewPosterJob(job);
+  animationOverridePreviewPosterQueue = animationOverridePreviewPosterQueue.then(run, run);
+}
+
+function _scheduleAnimationPreviewPosters(data) {
+  const webContents = _getLiveSettingsWebContents();
+  if (!webContents || !data || !data.theme || !data.theme.id) return;
+  const themeId = data.theme.id;
+  const generationId = animationOverridePreviewPosterGenerationId;
+  const enqueue = (filename, fileUrl, previewPosterCacheKey, previewPosterPending) => {
+    if (previewPosterPending !== true) return;
+    if (!filename || !fileUrl || !previewPosterCacheKey) return;
+    _enqueueAnimationPreviewPosterJob({
+      themeId,
+      filename: path.basename(filename),
+      fileUrl,
+      previewPosterCacheKey,
+      generationId,
+    });
+  };
+  for (const asset of data.assets || []) {
+    enqueue(asset && asset.name, asset && asset.fileUrl, asset && asset.previewPosterCacheKey, asset && asset.previewPosterPending);
   }
   for (const card of data.cards || []) {
-    if (!card || typeof card.currentFile !== "string") continue;
-    card.currentFilePreviewUrl = previewByName.get(card.currentFile) || card.currentFileUrl || null;
+    enqueue(
+      card && card.currentFile,
+      card && card.currentFileUrl,
+      card && card.currentFilePreviewPosterCacheKey,
+      card && card.previewPosterPending
+    );
   }
-  return data;
 }
 
 function _buildAnimationAssetProbe(file) {
@@ -1976,15 +2122,16 @@ function _listAnimationOverrideAssets(theme = activeTheme) {
       const ext = path.extname(entry.name).toLowerCase();
       if (!ANIMATION_OVERRIDE_ASSET_EXTS.has(ext)) continue;
       if (seen.has(entry.name)) continue;
-      const absPath = _resolveAnimationAssetAbsPath(entry.name) || path.join(dir, entry.name);
-      const previewUrl = _buildFileUrl(absPath);
+      const absPath = _resolveAnimationAssetAbsPath(entry.name, theme) || path.join(dir, entry.name);
+      const preview = _buildAnimationAssetPreview(entry.name, theme, absPath);
       const probe = animationCycle.probeAssetCycle(absPath);
-      const needsScriptedPreviewPoster = _needsScriptedAnimationPreviewPoster(entry.name, theme);
       assets.push({
         name: entry.name,
-        fileUrl: previewUrl,
-        previewImageUrl: previewUrl,
-        needsScriptedPreviewPoster,
+        fileUrl: preview.fileUrl,
+        previewImageUrl: preview.previewImageUrl,
+        needsScriptedPreviewPoster: preview.needsScriptedPreviewPoster,
+        previewPosterCacheKey: preview.previewPosterCacheKey,
+        previewPosterPending: preview.previewPosterPending,
         ext,
         cycleMs: Number.isFinite(probe && probe.ms) && probe.ms > 0 ? probe.ms : null,
         cycleStatus: (probe && probe.status) || "unavailable",
@@ -2041,6 +2188,8 @@ function _buildTierCardGroup(tierGroup, triggerKind, resolvedTiers, baseTiers, b
       currentFileUrl: preview.fileUrl,
       currentFilePreviewUrl: preview.previewImageUrl,
       needsScriptedPreviewPoster: preview.needsScriptedPreviewPoster,
+      currentFilePreviewPosterCacheKey: preview.previewPosterCacheKey,
+      previewPosterPending: preview.previewPosterPending,
       bindingLabel: `${tierGroup}[${originalFile}]`,
       transition: _readResolvedTransition(tier.file),
       supportsAutoReturn: false,
@@ -2120,6 +2269,8 @@ function _buildStateCard(stateKey, triggerKind, themeOverrideMap, options = {}) 
     currentFileUrl: preview.fileUrl,
     currentFilePreviewUrl: preview.previewImageUrl,
     needsScriptedPreviewPoster: preview.needsScriptedPreviewPoster,
+    currentFilePreviewPosterCacheKey: preview.previewPosterCacheKey,
+    previewPosterPending: preview.previewPosterPending,
     bindingLabel: fallbackTargetState
       ? `${bindingPathPrefix}.${stateKey}.fallbackTo -> ${fallbackTargetState}`
       : `${bindingPathPrefix}.${stateKey}[0]`,
@@ -2162,6 +2313,8 @@ function _buildIdleAnimationCards(themeOverrideMap) {
         currentFileUrl: preview.fileUrl,
         currentFilePreviewUrl: preview.previewImageUrl,
         needsScriptedPreviewPoster: preview.needsScriptedPreviewPoster,
+        currentFilePreviewPosterCacheKey: preview.previewPosterCacheKey,
+        previewPosterPending: preview.previewPosterPending,
         bindingLabel: `idleAnimations[${index}] (${originalFile})`,
         transition: _readResolvedTransition(entry.file),
         supportsAutoReturn: false,
@@ -2220,6 +2373,8 @@ function _buildReactionCards(themeOverrideMap) {
       currentFileUrl: preview.fileUrl,
       currentFilePreviewUrl: preview.previewImageUrl,
       needsScriptedPreviewPoster: preview.needsScriptedPreviewPoster,
+      currentFilePreviewPosterCacheKey: preview.previewPosterCacheKey,
+      previewPosterPending: preview.previewPosterPending,
       bindingLabel: `reactions.${spec.key}`,
       transition: _readResolvedTransition(currentFile),
       supportsAutoReturn: false,
@@ -2416,7 +2571,7 @@ function _rememberRuntimeSoundOverrideFile(themeId, soundName, absPath) {
   activeTheme._soundOverrideFiles = nextOverrideMap;
 }
 
-async function _buildAnimationOverrideData() {
+function _buildAnimationOverrideData() {
   if (!activeTheme) return null;
   const meta = themeLoader.getThemeMetadata(activeTheme._id) || {};
   const sections = _buildAnimationOverrideSections();
@@ -2433,7 +2588,8 @@ async function _buildAnimationOverrideData() {
     cards: sections.flatMap((section) => section.cards || []),
     sounds: _buildSoundOverrideSlots(),
   };
-  return _hydrateAnimationPreviewPosters(data);
+  _scheduleAnimationPreviewPosters(data);
+  return data;
 }
 
 function _previewAnimationOverride(payload) {
@@ -3243,6 +3399,7 @@ function openSettingsWindow() {
     },
   };
   if (iconPath) opts.icon = iconPath;
+  _bumpAnimationPreviewPosterGeneration();
   settingsWindow = new BrowserWindow(opts);
   if (isWin && typeof settingsWindow.setAppDetails === "function") {
     const taskbarDetails = getSettingsWindowTaskbarDetails();
@@ -3257,9 +3414,11 @@ function openSettingsWindow() {
     settingsWindow.focus();
   });
   settingsWindow.on("closed", () => {
+    _bumpAnimationPreviewPosterGeneration();
     stopShortcutRecording();
     void settingsSizePreviewSession.cleanup();
     settingsWindow = null;
+    _maybeDestroyIdleAnimationPreviewPosterWindow();
   });
 }
 
@@ -3832,6 +3991,9 @@ function activateTheme(themeId, variantId) {
     clearTimeout(animationOverridePreviewTimer);
     animationOverridePreviewTimer = null;
   }
+  if (!activeTheme || activeTheme._id !== newTheme._id) {
+    _bumpAnimationPreviewPosterGeneration();
+  }
   let preservedVirtualBounds = getPetWindowBounds();
 
   _state.cleanup();
@@ -4084,9 +4246,8 @@ if (!gotTheLock) {
     stopTopmostWatchdog();
     if (hwndRecoveryTimer) { clearTimeout(hwndRecoveryTimer); hwndRecoveryTimer = null; }
     _focus.cleanup();
-    if (animationOverridePreviewPosterWindow && !animationOverridePreviewPosterWindow.isDestroyed()) {
-      animationOverridePreviewPosterWindow.destroy();
-    }
+    _bumpAnimationPreviewPosterGeneration();
+    _destroyAnimationPreviewPosterWindow();
     if (hitWin && !hitWin.isDestroyed()) hitWin.destroy();
   });
 

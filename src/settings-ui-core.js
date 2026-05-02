@@ -25,6 +25,12 @@
     throw new Error("settings-i18n.js failed to load before settings-ui-core.js");
   }
 
+  const animMergeApi = root.ClawdSettingsAnimOverridesMerge || {};
+  const mergePosterCacheIntoAnimationData = animMergeApi.mergePosterCacheIntoAnimationData
+    || ((data) => data);
+  const applyAnimationPosterPayloadToRuntime = animMergeApi.applyAnimationPosterPayload
+    || (() => ({ valid: false, stored: false, applied: false }));
+
   const shortcutApi = root.ClawdShortcutActions || {};
   const SHORTCUT_ACTIONS = shortcutApi.SHORTCUT_ACTIONS || {};
   const SHORTCUT_ACTION_IDS = shortcutApi.SHORTCUT_ACTION_IDS || Object.keys(SHORTCUT_ACTIONS);
@@ -71,6 +77,10 @@
     agentMetadata: null,
     themeList: null,
     animationOverridesData: null,
+    animationOverridesFetchSeq: 0,
+    animationPosterRenderPending: false,
+    animationPosterRenderFlags: null,
+    animationPreviewPosterCache: new Map(),
     animOverridesSubtab: "animations",
     expandedOverrideRowIds: new Set(),
     assetPicker: {
@@ -645,18 +655,56 @@
     });
   }
 
+  function emptyAnimationOverridesData() {
+    return { theme: null, assets: [], sections: [], cards: [], sounds: [] };
+  }
+
   function fetchAnimationOverridesData() {
+    const seq = runtime.animationOverridesFetchSeq + 1;
+    runtime.animationOverridesFetchSeq = seq;
     if (!window.settingsAPI || typeof window.settingsAPI.getAnimationOverridesData !== "function") {
-      runtime.animationOverridesData = { theme: null, assets: [], cards: [] };
+      runtime.animationOverridesData = emptyAnimationOverridesData();
       return Promise.resolve(runtime.animationOverridesData);
     }
     return window.settingsAPI.getAnimationOverridesData().then((data) => {
-      runtime.animationOverridesData = data || { theme: null, assets: [], cards: [] };
+      if (seq !== runtime.animationOverridesFetchSeq) return runtime.animationOverridesData;
+      runtime.animationOverridesData = mergePosterCacheIntoAnimationData(
+        data || emptyAnimationOverridesData(),
+        runtime.animationPreviewPosterCache
+      );
       return runtime.animationOverridesData;
     }).catch((err) => {
+      if (seq !== runtime.animationOverridesFetchSeq) return runtime.animationOverridesData;
       console.warn("settings: getAnimationOverridesData failed", err);
-      runtime.animationOverridesData = { theme: null, assets: [], cards: [] };
+      if (!runtime.animationOverridesData) runtime.animationOverridesData = emptyAnimationOverridesData();
       return runtime.animationOverridesData;
+    });
+  }
+
+  function requestAnimationPosterRender({ content = false, modal = false } = {}) {
+    if (!content && !modal) return;
+    runtime.animationPosterRenderFlags = {
+      content: !!(content || (runtime.animationPosterRenderFlags && runtime.animationPosterRenderFlags.content)),
+      modal: !!(modal || (runtime.animationPosterRenderFlags && runtime.animationPosterRenderFlags.modal)),
+    };
+    if (runtime.animationPosterRenderPending) return;
+    runtime.animationPosterRenderPending = true;
+    requestAnimationFrame(() => {
+      const flags = runtime.animationPosterRenderFlags || {};
+      runtime.animationPosterRenderPending = false;
+      runtime.animationPosterRenderFlags = null;
+      requestRender({ content: !!flags.content, modal: !!flags.modal });
+    });
+  }
+
+  function applyAnimationPreviewPoster(payload) {
+    const result = applyAnimationPosterPayloadToRuntime(runtime, payload, {
+      warn: (message, value) => console.warn(message, value),
+    });
+    if (!result || !result.valid || !result.applied) return;
+    requestAnimationPosterRender({
+      content: state.activeTab === "animOverrides" && runtime.animOverridesSubtab === "animations",
+      modal: !!runtime.assetPicker.state,
     });
   }
 
@@ -902,6 +950,7 @@
     applyShortcutFailures,
     fetchThemes,
     fetchAnimationOverridesData,
+    applyAnimationPreviewPoster,
     stopAssetPickerPolling,
     closeAssetPicker,
     normalizeAssetPickerSelection,

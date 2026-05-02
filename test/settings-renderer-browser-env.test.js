@@ -4,11 +4,13 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 
 const SRC_DIR = path.join(__dirname, "..", "src");
 const SETTINGS_HTML = path.join(SRC_DIR, "settings.html");
 const SETTINGS_RENDERER = path.join(SRC_DIR, "settings-renderer.js");
 const SETTINGS_UI_CORE = path.join(SRC_DIR, "settings-ui-core.js");
+const SETTINGS_ANIM_OVERRIDES_MERGE = path.join(SRC_DIR, "settings-anim-overrides-merge.js");
 const SETTINGS_I18N = path.join(SRC_DIR, "settings-i18n.js");
 const SETTINGS_DOCTOR_MODAL = path.join(SRC_DIR, "settings-doctor-modal.js");
 const SETTINGS_ANIMATION_PREVIEW = path.join(SRC_DIR, "settings-animation-preview.html");
@@ -25,6 +27,233 @@ const TAB_MODULES = [
   path.join(SRC_DIR, "settings-tab-about.js"),
 ];
 
+function createDeferred() {
+  const deferred = {};
+  deferred.promise = new Promise((resolve, reject) => {
+    deferred.resolve = resolve;
+    deferred.reject = reject;
+  });
+  return deferred;
+}
+
+function loadSettingsCoreForTest(settingsAPI) {
+  const context = {
+    console,
+    navigator: { platform: "Win32" },
+    localStorage: {
+      getItem: () => null,
+      setItem: () => {},
+    },
+    document: {
+      body: { contains: () => false },
+      getElementById: () => null,
+    },
+    requestAnimationFrame: (cb) => {
+      cb();
+      return 1;
+    },
+    window: null,
+    globalThis: null,
+    settingsAPI,
+    ClawdSettingsSizeSlider: {
+      SIZE_UI_MIN: 1,
+      SIZE_UI_MAX: 100,
+      SIZE_TICK_VALUES: [25, 50, 75, 100],
+      SIZE_SLIDER_THUMB_DIAMETER: 18,
+      prefsSizeToUi: (value) => value,
+      clampSizeUi: (value) => value,
+      sizeUiToPct: (value) => value,
+      getSizeSliderAnchorPx: () => 0,
+      createSizeSliderController: () => ({}),
+    },
+    ClawdSettingsI18n: {
+      STRINGS: { en: {} },
+      CONTRIBUTORS: [],
+      MAINTAINERS: [],
+    },
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
+  vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
+  return context.ClawdSettingsCore;
+}
+
+class FakeClassList {
+  constructor(el) {
+    this.el = el;
+  }
+
+  _set(values) {
+    this.el.className = [...values].join(" ");
+  }
+
+  _values() {
+    return new Set(String(this.el.className || "").split(/\s+/).filter(Boolean));
+  }
+
+  add(...names) {
+    const values = this._values();
+    for (const name of names) values.add(name);
+    this._set(values);
+  }
+
+  remove(...names) {
+    const values = this._values();
+    for (const name of names) values.delete(name);
+    this._set(values);
+  }
+
+  contains(name) {
+    return this._values().has(name);
+  }
+
+  toggle(name, force) {
+    const values = this._values();
+    const shouldAdd = force === undefined ? !values.has(name) : !!force;
+    if (shouldAdd) values.add(name);
+    else values.delete(name);
+    this._set(values);
+    return shouldAdd;
+  }
+}
+
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = String(tagName || "").toUpperCase();
+    this.children = [];
+    this.attributes = {};
+    this.dataset = {};
+    this.eventListeners = {};
+    this.className = "";
+    this.textContent = "";
+    this.title = "";
+    this.type = "";
+    this.disabled = false;
+    this.open = false;
+    this.parentNode = null;
+    this.style = { setProperty: () => {} };
+    this.classList = new FakeClassList(this);
+  }
+
+  appendChild(child) {
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+    if (name === "class") this.className = String(value);
+  }
+
+  addEventListener(type, cb) {
+    if (!this.eventListeners[type]) this.eventListeners[type] = [];
+    this.eventListeners[type].push(cb);
+  }
+
+  set innerHTML(_value) {
+    this.children = [];
+  }
+
+  get innerHTML() {
+    return "";
+  }
+
+  _matches(selector) {
+    if (selector.startsWith(".")) return this.classList.contains(selector.slice(1));
+    return this.tagName.toLowerCase() === selector.toLowerCase();
+  }
+
+  querySelectorAll(selector) {
+    const matches = [];
+    const visit = (node) => {
+      for (const child of node.children) {
+        if (child._matches(selector)) matches.push(child);
+        visit(child);
+      }
+    };
+    visit(this);
+    return matches;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+
+  contains(target) {
+    if (target === this) return true;
+    return this.children.some((child) => child.contains(target));
+  }
+}
+
+function loadAnimOverridesTabForTest({ runtime, modalRoot }) {
+  const document = {
+    body: new FakeElement("body"),
+    createElement: (tagName) => new FakeElement(tagName),
+    getElementById: (id) => (id === "modalRoot" ? modalRoot : null),
+    querySelector: () => null,
+  };
+  const context = {
+    console,
+    document,
+    requestAnimationFrame: (cb) => {
+      cb();
+      return 1;
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    URL,
+    window: {
+      settingsAPI: {
+        openThemeAssetsDir: () => Promise.resolve({ status: "ok" }),
+        command: () => Promise.resolve({ status: "ok" }),
+        exportAnimationOverrides: () => Promise.resolve({ status: "empty" }),
+        importAnimationOverrides: () => Promise.resolve({ status: "cancel" }),
+        previewAnimationOverride: () => Promise.resolve({ status: "ok" }),
+        previewReaction: () => Promise.resolve({ status: "ok" }),
+      },
+    },
+    globalThis: null,
+    ClawdSettingsAnimOverridesMerge: require(SETTINGS_ANIM_OVERRIDES_MERGE),
+  };
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8"), context);
+  const core = {
+    state: { activeTab: "animOverrides" },
+    runtime,
+    helpers: {
+      t: (key) => key,
+      attachActivation: (el) => el,
+    },
+    ops: {
+      selectTab: () => {},
+      requestRender: ({ modal = false } = {}) => {
+        if (modal && typeof core.renderHooks.modal === "function") core.renderHooks.modal();
+      },
+      fetchAnimationOverridesData: () => Promise.resolve(runtime.animationOverridesData),
+      stopAssetPickerPolling: () => {},
+      closeAssetPicker: () => {},
+      normalizeAssetPickerSelection: () => {},
+      showToast: () => {},
+    },
+    i18n: {
+      STRINGS: { en: {} },
+    },
+    readers: {
+      hasAnyThemeOverride: () => false,
+      readThemeOverrideMap: () => null,
+      getLang: () => "en",
+    },
+    renderHooks: {},
+    tabs: {},
+  };
+  context.ClawdSettingsTabAnimOverrides.init(core);
+  return { core, document };
+}
+
 describe("settings renderer browser environment", () => {
   it("loads browser scripts in dependency order and keeps CommonJS helpers out of settings.html", () => {
     const html = fs.readFileSync(SETTINGS_HTML, "utf8");
@@ -32,6 +261,7 @@ describe("settings renderer browser environment", () => {
       "shortcut-actions.js",
       "settings-size-slider.js",
       "settings-i18n.js",
+      "settings-anim-overrides-merge.js",
       "settings-ui-core.js",
       "settings-agent-order.js",
       "settings-tab-general.js",
@@ -392,9 +622,12 @@ describe("settings renderer browser environment", () => {
     const previewHtml = fs.readFileSync(SETTINGS_ANIMATION_PREVIEW, "utf8");
     const overridesSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8");
     const mainSource = fs.readFileSync(MAIN_PROCESS, "utf8");
+    const preloadSource = fs.readFileSync(PRELOAD_SETTINGS, "utf8");
+    const rendererSource = fs.readFileSync(SETTINGS_RENDERER, "utf8");
 
     assert.ok(html.includes("img-src 'self' data: file:"));
     assert.ok(!html.includes("frame-src"));
+    assert.ok(html.includes("settings-anim-overrides-merge.js"));
     assert.ok(previewHtml.includes("default-src 'self' file:"));
     assert.ok(previewHtml.includes("object-src 'self' file:"));
     assert.ok(previewHtml.includes("script-src 'unsafe-inline'"));
@@ -403,15 +636,226 @@ describe("settings renderer browser environment", () => {
     assert.ok(mainSource.includes("ANIMATION_OVERRIDE_PREVIEW_POSTER_VERSION"));
     assert.ok(!overridesSource.includes('document.createElement("iframe")'));
     assert.ok(overridesSource.includes('if (url.protocol === "data:" || url.protocol === "blob:") return fileUrl;'));
-    assert.ok(overridesSource.includes("card.currentFilePreviewUrl || card.currentFileUrl"));
-    assert.ok(overridesSource.includes("selected.previewImageUrl || selected.fileUrl"));
+    assert.ok(overridesSource.includes("getCardPreviewUrl(card)"));
+    assert.ok(overridesSource.includes("getAssetPreviewUrl(selected)"));
     assert.ok(mainSource.includes("function _needsScriptedAnimationPreviewPoster"));
     assert.ok(mainSource.includes("function _captureAnimationPreviewPosterDataUrl"));
+    assert.ok(mainSource.includes("function _scheduleAnimationPreviewPosters"));
     assert.ok(mainSource.includes("capturePage"));
+    assert.ok(mainSource.includes("settings:animation-preview-poster-ready"));
+    assert.ok(preloadSource.includes("onAnimationPreviewPosterReady"));
+    assert.ok(rendererSource.includes("onAnimationPreviewPosterReady"));
     assert.ok(mainSource.includes("theme._builtin"));
     assert.ok(mainSource.includes("trustedRuntime.scriptedSvgFiles"));
     assert.ok(mainSource.includes("currentFilePreviewUrl: preview.previewImageUrl"));
-    assert.ok(mainSource.includes("previewImageUrl: previewUrl"));
+    assert.ok(mainSource.includes("previewPosterPending: preview.previewPosterPending"));
+    assert.ok(!mainSource.includes("function _hydrateAnimationPreviewPosters"));
+  });
+
+  it("merges pushed animation preview posters without accepting stale cache keys", () => {
+    const merge = require(SETTINGS_ANIM_OVERRIDES_MERGE);
+    const cache = new Map();
+    merge.rememberAnimationPreviewPoster(cache, {
+      themeId: "cloudling",
+      filename: "cloudling-thinking.svg",
+      previewImageUrl: "data:image/png;base64,poster-k1",
+      previewPosterCacheKey: "K1",
+    });
+
+    const data = {
+      theme: { id: "cloudling" },
+      assets: [{
+        name: "cloudling-thinking.svg",
+        previewImageUrl: null,
+        previewPosterCacheKey: "K1",
+        previewPosterPending: true,
+      }],
+      sections: [{
+        cards: [{
+          currentFile: "cloudling-thinking.svg",
+          currentFilePreviewUrl: null,
+          currentFilePreviewPosterCacheKey: "K1",
+          previewPosterPending: true,
+        }],
+      }],
+      cards: [{
+        currentFile: "cloudling-thinking.svg",
+        currentFilePreviewUrl: null,
+        currentFilePreviewPosterCacheKey: "K1",
+        previewPosterPending: true,
+      }],
+    };
+    merge.mergePosterCacheIntoAnimationData(data, cache);
+    assert.strictEqual(data.assets[0].previewImageUrl, "data:image/png;base64,poster-k1");
+    assert.strictEqual(data.assets[0].previewPosterPending, false);
+    assert.strictEqual(data.sections[0].cards[0].currentFilePreviewUrl, "data:image/png;base64,poster-k1");
+    assert.strictEqual(data.cards[0].currentFilePreviewUrl, "data:image/png;base64,poster-k1");
+
+    const mismatch = {
+      theme: { id: "cloudling" },
+      assets: [{
+        name: "cloudling-thinking.svg",
+        previewImageUrl: null,
+        previewPosterCacheKey: "K2",
+        previewPosterPending: true,
+      }],
+      sections: [{
+        cards: [{
+          currentFile: "cloudling-thinking.svg",
+          currentFilePreviewUrl: null,
+          currentFilePreviewPosterCacheKey: "K2",
+          previewPosterPending: true,
+        }],
+      }],
+      cards: [{
+        currentFile: "cloudling-thinking.svg",
+        currentFilePreviewUrl: null,
+        currentFilePreviewPosterCacheKey: "K2",
+        previewPosterPending: true,
+      }],
+    };
+    merge.mergePosterCacheIntoAnimationData(mismatch, cache);
+    assert.strictEqual(mismatch.assets[0].previewImageUrl, null);
+    assert.strictEqual(mismatch.sections[0].cards[0].currentFilePreviewUrl, null);
+    assert.strictEqual(mismatch.cards[0].currentFilePreviewUrl, null);
+  });
+
+  it("keeps poster-ready pushes across an overlapping animation overrides fetch", async () => {
+    const deferred = createDeferred();
+    const core = loadSettingsCoreForTest({
+      getAnimationOverridesData: () => deferred.promise,
+    });
+    const fetchPromise = core.ops.fetchAnimationOverridesData();
+    core.ops.applyAnimationPreviewPoster({
+      themeId: "cloudling",
+      filename: "cloudling-thinking.svg",
+      previewImageUrl: "data:image/png;base64,pushed",
+      previewPosterCacheKey: "K1",
+    });
+    deferred.resolve({
+      theme: { id: "cloudling" },
+      assets: [{
+        name: "cloudling-thinking.svg",
+        previewImageUrl: null,
+        previewPosterCacheKey: "K1",
+        previewPosterPending: true,
+      }],
+      sections: [{
+        cards: [{
+          currentFile: "cloudling-thinking.svg",
+          currentFilePreviewUrl: null,
+          currentFilePreviewPosterCacheKey: "K1",
+          previewPosterPending: true,
+        }],
+      }],
+      cards: [{
+        currentFile: "cloudling-thinking.svg",
+        currentFilePreviewUrl: null,
+        currentFilePreviewPosterCacheKey: "K1",
+        previewPosterPending: true,
+      }],
+    });
+    await fetchPromise;
+
+    assert.strictEqual(core.runtime.animationOverridesData.assets[0].previewImageUrl, "data:image/png;base64,pushed");
+    assert.strictEqual(core.runtime.animationOverridesData.sections[0].cards[0].currentFilePreviewUrl, "data:image/png;base64,pushed");
+    assert.strictEqual(core.runtime.animationOverridesData.cards[0].currentFilePreviewUrl, "data:image/png;base64,pushed");
+  });
+
+  it("does not let a stale rejected animation overrides fetch clear newer data", async () => {
+    const oldFetch = createDeferred();
+    const newFetch = createDeferred();
+    const fetches = [oldFetch, newFetch];
+    const core = loadSettingsCoreForTest({
+      getAnimationOverridesData: () => fetches.shift().promise,
+    });
+
+    const oldPromise = core.ops.fetchAnimationOverridesData();
+    const newPromise = core.ops.fetchAnimationOverridesData();
+    newFetch.resolve({ theme: { id: "calico" }, assets: [{ name: "calico-idle.png" }], sections: [], cards: [] });
+    await newPromise;
+    oldFetch.reject(new Error("old failed"));
+    await oldPromise;
+
+    assert.strictEqual(core.runtime.animationOverridesData.theme.id, "calico");
+    assert.strictEqual(core.runtime.animationOverridesData.assets[0].name, "calico-idle.png");
+  });
+
+  it("renders pending scripted animation previews as placeholders instead of SVG images", () => {
+    const merge = require(SETTINGS_ANIM_OVERRIDES_MERGE);
+    const asset = {
+      name: "cloudling-thinking.svg",
+      fileUrl: "file:///themes/cloudling/assets/cloudling-thinking.svg",
+      previewImageUrl: null,
+      needsScriptedPreviewPoster: true,
+      previewPosterCacheKey: "K1",
+      previewPosterPending: true,
+      cycleMs: null,
+      cycleStatus: "unavailable",
+    };
+    const card = {
+      id: "state:thinking",
+      slotType: "state",
+      sectionId: "work",
+      stateKey: "thinking",
+      triggerKind: "thinking",
+      currentFile: asset.name,
+      currentFileUrl: asset.fileUrl,
+      currentFilePreviewUrl: null,
+      currentFilePreviewPosterCacheKey: "K1",
+      needsScriptedPreviewPoster: true,
+      previewPosterPending: true,
+      bindingLabel: "states.thinking[0]",
+      transition: { in: 150, out: 150 },
+      supportsAutoReturn: false,
+      supportsDuration: false,
+      autoReturnMs: null,
+      durationMs: null,
+      assetCycleMs: null,
+      assetCycleStatus: "unavailable",
+      suggestedDurationMs: null,
+      suggestedDurationStatus: "unavailable",
+      previewDurationMs: null,
+      displayHintWarning: false,
+      displayHintTarget: null,
+      fallbackTargetState: null,
+      wideHitboxEnabled: false,
+      wideHitboxOverridden: false,
+      aspectRatioWarning: null,
+    };
+    assert.strictEqual(merge.getAssetPreviewUrl(asset), null);
+    assert.strictEqual(merge.getCardPreviewUrl(card), null);
+
+    const runtime = {
+      animationOverridesData: {
+        theme: { id: "cloudling", name: "Cloudling" },
+        assets: [asset],
+        sections: [{ id: "work", cards: [card] }],
+        cards: [card],
+        sounds: [],
+      },
+      animOverridesSubtab: "animations",
+      expandedOverrideRowIds: new Set(["state:thinking"]),
+      assetPicker: {
+        state: null,
+        pollTimer: null,
+      },
+    };
+    const modalRoot = new FakeElement("div");
+    const { core } = loadAnimOverridesTabForTest({ runtime, modalRoot });
+    const parent = new FakeElement("main");
+    core.tabs.animOverrides.render(parent, core);
+
+    runtime.assetPicker.state = { cardId: card.id, selectedFile: asset.name };
+    core.renderHooks.modal();
+
+    const svgImages = [
+      ...parent.querySelectorAll("img"),
+      ...modalRoot.querySelectorAll("img"),
+    ].filter((img) => String(img.src || "").includes(".svg"));
+    assert.strictEqual(svgImages.length, 0);
+    assert.ok(parent.querySelectorAll(".anim-override-preview-pending").length >= 2);
+    assert.ok(modalRoot.querySelectorAll(".anim-override-preview-pending").length >= 1);
   });
 
   it("keeps localized shortcut labels from collapsing into vertical CJK text", () => {

@@ -80,6 +80,10 @@ if (window.settingsAPI && typeof window.settingsAPI.onChanged === "function") {
   window.settingsAPI.onChanged((payload) => core.ops.applyChanges(payload));
 }
 
+if (window.settingsAPI && typeof window.settingsAPI.onAnimationPreviewPosterReady === "function") {
+  window.settingsAPI.onAnimationPreviewPosterReady((payload) => core.ops.applyAnimationPreviewPoster(payload));
+}
+
 if (window.settingsAPI && typeof window.settingsAPI.onShortcutRecordKey === "function") {
   window.settingsAPI.onShortcutRecordKey((payload) => core.ops.handleShortcutRecordKey(payload));
 }

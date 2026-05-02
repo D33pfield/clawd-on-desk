@@ -10,6 +10,9 @@
 //   listAgents()                        Promise<Array<{id, name, ...}>>
 //   onChanged(cb)                       cb({ changes, snapshot? }) — fires for
 //                                       every settings-changed broadcast
+//   onAnimationPreviewPosterReady(cb)   cb({ themeId, filename, previewImageUrl,
+//                                       previewPosterCacheKey }) — incremental
+//                                       animation override preview poster
 //
 // All writes go through ipcMain.handle("settings:update") in main.js, which
 // routes through the controller. The renderer never owns state — it always
@@ -68,6 +71,14 @@ contextBridge.exposeInMainWorld("settingsAPI", {
     ipcRenderer.invoke("settings:confirm-remove-theme", themeId),
   onChanged: (cb) => {
     if (typeof cb === "function") listeners.add(cb);
+  },
+  onAnimationPreviewPosterReady: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    const listener = (_event, payload) => {
+      try { cb(payload); } catch (err) { console.warn("animation preview poster listener threw:", err); }
+    };
+    ipcRenderer.on("settings:animation-preview-poster-ready", listener);
+    return () => ipcRenderer.removeListener("settings:animation-preview-poster-ready", listener);
   },
   onShortcutFailuresChanged: (cb) => {
     if (typeof cb !== "function") return () => {};
