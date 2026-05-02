@@ -62,7 +62,7 @@ function commonDefs() {
       <feDropShadow dx="0" dy=".65" stdDeviation=".8" flood-color="#3941FF" flood-opacity=".18"/>
     </filter>
     <filter id="small-shadow" x="-70%" y="-70%" width="240%" height="240%">
-      <feDropShadow dx="0" dy=".35" stdDeviation=".48" flood-color="#3941FF" flood-opacity=".14"/>
+      <feDropShadow dx="0" dy=".35" stdDeviation=".50" flood-color="#3941FF" flood-opacity=".28"/>
     </filter>
     <filter id="edge-blur" x="-50%" y="-50%" width="200%" height="200%">
       <feGaussianBlur stdDeviation=".16"/>
@@ -108,8 +108,8 @@ function makeCard(x, y, opacity, opts = {}) {
   const lines = lineSets[id % lineSets.length];
   return `
     <g class="ctx-card-group ${extraClass}" opacity="${opacity.toFixed(3)}" transform="translate(${x.toFixed(3)} ${y.toFixed(3)}) scale(${scale.toFixed(3)})" filter="url(#small-shadow)">
-      <rect class="ctx-card" x="0" y="0" width="${P.cardW}" height="${P.cardH}" rx="1.32" stroke-width=".23"/>
-      <rect class="ctx-card-inner" x=".48" y=".48" width="${(P.cardW - .96).toFixed(2)}" height="${(P.cardH - .96).toFixed(2)}" rx=".96" stroke-width=".07" opacity="${(.40 * detail).toFixed(3)}"/>
+      <rect class="ctx-card" x="0" y="0" width="${P.cardW}" height="${P.cardH}" rx="1.32" stroke-width=".36"/>
+      <rect class="ctx-card-inner" x=".48" y=".48" width="${(P.cardW - .96).toFixed(2)}" height="${(P.cardH - .96).toFixed(2)}" rx=".96" stroke-width=".11" opacity="${(.54 * detail).toFixed(3)}"/>
       <rect class="ctx-line-a" x="1.28" y="1.98" width="${lines[0]}" height=".34" rx=".17" opacity="${(.96 * detail).toFixed(3)}"/>
       <rect class="ctx-line-b" x="1.28" y="3.64" width="${lines[1]}" height=".30" rx=".15" opacity="${(.84 * detail).toFixed(3)}"/>
       <rect class="ctx-line-c" x="1.28" y="5.24" width="${lines[2]}" height=".30" rx=".15" opacity="${(.80 * detail).toFixed(3)}"/>
@@ -229,12 +229,12 @@ function renderFrame(t) {
   --ink: #edeef6;
   --muted: rgba(237,238,246,.66);
   --accent: #B1A7FF;
-  --card-fill: rgba(255,255,255,.072);
-  --card-stroke: rgba(184,199,255,.40);
-  --card-inner: rgba(255,255,255,.22);
-  --line-a: rgba(191,208,255,.58);
-  --line-b: rgba(122,157,255,.42);
-  --line-c: rgba(177,167,255,.42);
+  --card-fill: rgba(205,218,255,.205);
+  --card-stroke: rgba(216,227,255,.90);
+  --card-inner: rgba(255,255,255,.48);
+  --line-a: rgba(238,244,255,.94);
+  --line-b: rgba(158,185,255,.82);
+  --line-c: rgba(212,206,255,.80);
 }
 .edge-rim-tight { stroke-opacity: .10; }
 .edge-rim-soft { stroke-opacity: .07; }

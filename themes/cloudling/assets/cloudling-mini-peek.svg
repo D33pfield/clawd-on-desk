@@ -94,73 +94,152 @@ const poseReadout = document.getElementById("pose-readout");
 const shakeReadout = document.getElementById("shake-readout");
 const eyeReadout = document.getElementById("eye-readout");
 
-const EYE_BASE = {
-  l: { cx: 7.75, cy: 11.975 },
-  r: { cx: 12.15, cy: 11.975 },
+const MINI_EYE_BASE = {
+  l: { cx: 7.75, cy: 11.975, w: 2.20, h: 4.65, rx: 1.10 },
+  r: { cx: 12.15, cy: 11.975, w: 2.20, h: 4.65, rx: 1.10 },
 };
+const IDLE_EYE_BASE = {
+  l: { cx: 9.00, cy: 12.00, w: 2.60, h: 5.00, rx: 1.30 },
+  r: { cx: 15.00, cy: 12.00, w: 2.60, h: 5.00, rx: 1.30 },
+};
+const face = { x: 12.00, y: 12.00 };
 const params = {
-  bodyTx: -0.35,
-  bodyTy: -0.05,
-  bodyScale: 1.020,
-  bodyRot: -1.25,
-  shakePower: 0.95,
-  shakeDur: 0.44,
-  breath: 0.012,
-  focusPulse: 0.028,
-  eyeTx: -0.25,
-  eyeTy: -0.10,
-  eyeW: 2.38,
-  eyeH: 4.85,
-  eyePulse: 0.045,
-  rimPower: 1.20,
+  settleTx: -0.22,
+  settleTy: -0.04,
+  settleScale: 1.012,
+  settleRot: -0.65,
+  eyeReturnDur: 0.24,
+  idleEyeMax: 0.50,
+  idleYClamp: 1.00,
+  idleRecenter: 0.45,
+  duangDelay: 0.10,
+  duangDur: 1.12,
+  duangPower: 1.16,
+  duangCycles: 4.80,
+  duangTravel: 0.33,
+  duangLift: 0.10,
+  duangRot: 4.20,
+  duangSquash: 0.048,
+  breath: 0.008,
+  rimPower: 1.30,
   flowPeriod: 4.8,
   flowAmp: 4.8,
   blinkInterval: 5.2,
   blinkDur: 0.14,
 };
-let lastT = performance.now();
-const startT = performance.now();
+let startT = performance.now();
+let lastFrameT = 0;
 let nextBlinkT = 2.4 + Math.random() * 1.4;
 let blinkActive = false;
 let blinkStartT = 0;
+let lastState = null;
+let pointerInside = false;
+let pointer = { ...face };
+let idleEye = { x: 0, y: 0 };
+
+function clamp(v, min = 0, max = 1) {
+  return Math.max(min, Math.min(max, v));
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function smoothstep(edge0, edge1, x) {
+  const t = clamp((x - edge0) / Math.max(edge1 - edge0, 0.0001));
+  return t * t * (3 - 2 * t);
+}
+
+function easeOutCubic(t) {
+  return 1 - Math.pow(1 - clamp(t), 3);
+}
+
+function duangWave(t) {
+  const u = clamp((t - params.duangDelay) / Math.max(params.duangDur, 0.01));
+  if (u <= 0 || u >= 1) return 0;
+  const envelope = Math.pow(1 - u, 1.35);
+  return Math.sin(u * Math.PI * params.duangCycles) * envelope * params.duangPower;
+}
+
+function pointerToSvg(e) {
+  const r = svg.getBoundingClientRect();
+  const x = -12 + ((e.clientX - r.left) / Math.max(r.width, 1)) * 48;
+  const y = -12 + ((e.clientY - r.top) / Math.max(r.height, 1)) * 48;
+  pointer = { x, y };
+  pointerInside = true;
+}
+
+function idleEyeTarget() {
+  const dx = pointer.x - face.x;
+  const dy = pointer.y - face.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 0.001) return { x: 0, y: 0 };
+  const sat = Math.tanh(dist / 6);
+  return {
+    x: (dx / dist) * sat * params.idleEyeMax,
+    y: clamp((dy / dist) * sat * params.idleEyeMax, -params.idleEyeMax * params.idleYClamp, params.idleEyeMax * params.idleYClamp),
+  };
+}
+
+function updateIdleEye(dt) {
+  const target = pointerInside ? idleEyeTarget() : { x: 0, y: 0 };
+  if (pointerInside) {
+    idleEye = target;
+  } else {
+    const recenterRate = 1 - Math.exp(-dt / Math.max(params.idleRecenter, 0.001));
+    idleEye.x += (target.x - idleEye.x) * recenterRate;
+    idleEye.y += (target.y - idleEye.y) * recenterRate;
+  }
+  return idleEye;
+}
+
+function stateAt(t, dt) {
+  const idle = updateIdleEye(dt);
+  const eyeReturn = smoothstep(0, params.eyeReturnDur, t);
+  const bodyWake = easeOutCubic(clamp(t / 0.30));
+  const spring = duangWave(t);
+  const hit = Math.abs(spring);
+  const hold = Math.sin(2 * Math.PI * t / 3.9);
+  const live = smoothstep(0.65, 1.25, t);
+  const bodyStart = 1 - bodyWake;
+  const poseTx = params.settleTx - bodyStart * 0.28 + spring * params.duangTravel + live * Math.sin(2 * Math.PI * t / 3.1 + 0.8) * 0.018;
+  const poseTy = params.settleTy - hit * params.duangLift + hold * 0.022 * live;
+  const poseRot = params.settleRot - bodyStart * 1.15 + spring * params.duangRot + hold * 0.12 * live;
+  const sx = params.settleScale + hit * params.duangSquash;
+  const sy = params.settleScale - hit * params.duangSquash * 0.72;
+  const breathScale = 1 + Math.sin(2 * Math.PI * t / 4.8) * params.breath * live;
+  const eyeTx = idle.x * eyeReturn;
+  const eyeTy = idle.y * eyeReturn;
+  const flowOffset = Math.sin(2 * Math.PI * t / params.flowPeriod) * params.flowAmp;
+  return { t, poseTx, poseTy, poseRot, sx, sy, breathScale, eyeTx, eyeTy, eyeMorph: eyeReturn, idleEyeX: idle.x, idleEyeY: idle.y, flowOffset, spring };
+}
 
 function tick(now) {
-  const dt = Math.min(0.05, (now - lastT) / 1000);
-  lastT = now;
   const t = (now - startT) / 1000;
-  const intro = Math.min(1, t / 0.24);
-  const introEase = 1 - Math.pow(1 - intro, 3);
-  const hold = Math.sin(2 * Math.PI * t / 3.8);
-  const curious = Math.sin(2 * Math.PI * t / 2.4 + 0.55);
-  const shakeU = Math.min(1, t / Math.max(params.shakeDur, 0.01));
-  const shakeEnvelope = t < params.shakeDur ? Math.pow(1 - shakeU, 1.15) : 0;
-  const twoTwitch = Math.sin(shakeU * Math.PI * 4) * shakeEnvelope * params.shakePower;
-  const shakeX = twoTwitch * 0.16;
-  const shakeY = Math.abs(twoTwitch) * -0.045;
-  const shakeRot = twoTwitch * 1.35;
-  const shakeSquash = Math.abs(twoTwitch) * 0.010;
-  const poseTx = params.bodyTx * introEase + curious * 0.035 + shakeX;
-  const poseTy = params.bodyTy * introEase + hold * 0.035 + shakeY;
-  const poseScale = 1 + (params.bodyScale - 1) * introEase + shakeSquash;
-  const poseRot = params.bodyRot * introEase + hold * 0.20 + shakeRot;
-  const breathScale = 1 + Math.sin(2 * Math.PI * t / 4.8) * params.breath;
-  const focusScale = 1 + Math.max(0, curious) * params.focusPulse;
+  const dt = Math.min(0.05, Math.max(0.001, t - lastFrameT));
+  lastFrameT = t;
+  renderFrame(t, dt);
+  requestAnimationFrame(tick);
+}
 
+function renderFrame(t, dt = 1 / 60) {
+  const s = stateAt(Math.max(0, t), dt);
   pose.setAttribute(
     "transform",
-    `translate(${poseTx.toFixed(3)} ${poseTy.toFixed(3)}) translate(12 12) rotate(${poseRot.toFixed(3)}) scale(${poseScale.toFixed(4)}) translate(-12 -12)`
+    `translate(${s.poseTx.toFixed(3)} ${s.poseTy.toFixed(3)}) translate(12 12) rotate(${s.poseRot.toFixed(3)}) scale(${s.sx.toFixed(4)} ${s.sy.toFixed(4)}) translate(-12 -12)`
   );
   body.setAttribute(
     "transform",
-    `translate(12 12) scale(${(breathScale * focusScale).toFixed(4)}) translate(-12 -12)`
+    `translate(12 12) scale(${s.breathScale.toFixed(4)}) translate(-12 -12)`
   );
-  const eyePulse = 1 + Math.max(0, curious) * params.eyePulse;
-  eyes.setAttribute("transform", `translate(${params.eyeTx.toFixed(3)} ${params.eyeTy.toFixed(3)})`);
-  applyEyes(t, eyePulse);
-  const flowOffset = Math.sin(2 * Math.PI * t / params.flowPeriod) * params.flowAmp;
-  eyeGrad.setAttribute("y1", (3 + flowOffset).toFixed(2));
-  eyeGrad.setAttribute("y2", (21 + flowOffset).toFixed(2));
-  requestAnimationFrame(tick);
+  eyes.setAttribute("transform", `translate(${s.eyeTx.toFixed(3)} ${s.eyeTy.toFixed(3)})`);
+  applyEyes(s.t, s.eyeMorph);
+  applyEdgePower();
+  eyeGrad.setAttribute("y1", (3 + s.flowOffset).toFixed(2));
+  eyeGrad.setAttribute("y2", (21 + s.flowOffset).toFixed(2));
+  updateReadouts(s);
+  lastState = s;
+  return s;
 }
 
 function getBlinkScale(t) {
@@ -179,12 +258,15 @@ function getBlinkScale(t) {
   return 1;
 }
 
-function setEyeRect(rect, base, blinkScale, pulseScale = 1) {
-  const w = params.eyeW * pulseScale;
-  const h = Math.max(params.eyeH * blinkScale * pulseScale, 0.15);
-  const x = base.cx - w / 2;
-  const y = base.cy - h / 2;
-  const rx = Math.min(w / 2, h / 2);
+function setEyeRect(rect, miniBase, idleBase, blinkScale, morph) {
+  const cx = lerp(miniBase.cx, idleBase.cx, morph);
+  const cy = lerp(miniBase.cy, idleBase.cy, morph);
+  const w = lerp(miniBase.w, idleBase.w, morph);
+  const baseH = lerp(miniBase.h, idleBase.h, morph);
+  const h = Math.max(baseH * blinkScale, 0.15);
+  const x = cx - w / 2;
+  const y = cy - h / 2;
+  const rx = Math.min(lerp(miniBase.rx, idleBase.rx, morph), w / 2, h / 2);
   rect.setAttribute("x", x.toFixed(3));
   rect.setAttribute("width", w.toFixed(3));
   rect.setAttribute("height", h.toFixed(3));
@@ -193,20 +275,54 @@ function setEyeRect(rect, base, blinkScale, pulseScale = 1) {
   rect.setAttribute("ry", rx.toFixed(3));
 }
 
-function applyEyes(t, pulseScale) {
+function applyEyes(t, morph) {
   const blinkScale = getBlinkScale(t);
-  setEyeRect(eyeL, EYE_BASE.l, blinkScale, pulseScale);
-  setEyeRect(eyeR, EYE_BASE.r, blinkScale, pulseScale);
+  setEyeRect(eyeL, MINI_EYE_BASE.l, IDLE_EYE_BASE.l, blinkScale, morph);
+  setEyeRect(eyeR, MINI_EYE_BASE.r, IDLE_EYE_BASE.r, blinkScale, morph);
 }
 
-function applyStaticPose() {
+function applyEdgePower() {
   edgeContact.style.strokeOpacity = (0.08 * params.rimPower).toFixed(3);
   edgeSoft.style.strokeOpacity = (0.06 * params.rimPower).toFixed(3);
   edgeTight.style.strokeOpacity = (0.08 * params.rimPower).toFixed(3);
-  poseReadout.textContent = `pose: tx ${params.bodyTx.toFixed(2)}, scale ${params.bodyScale.toFixed(3)}, rot ${params.bodyRot.toFixed(2)}deg`;
-  shakeReadout.textContent = `shake: ${params.shakePower.toFixed(2)} / ${params.shakeDur.toFixed(2)}s, 只在入场抖两下`;
-  eyeReadout.textContent = `eyes: w ${params.eyeW.toFixed(2)}, h ${params.eyeH.toFixed(2)}, tx ${params.eyeTx.toFixed(2)}`;
 }
+
+function updateReadouts(s) {
+  poseReadout.textContent = `pose: tx ${params.settleTx.toFixed(2)}, scale ${params.settleScale.toFixed(3)}, rot ${params.settleRot.toFixed(2)}deg`;
+  shakeReadout.textContent = `duang: power ${params.duangPower.toFixed(2)} / ${params.duangDur.toFixed(2)}s / cycles ${params.duangCycles.toFixed(2)} / now ${s.spring.toFixed(2)}`;
+  eyeReadout.textContent = `eyes: mini 2.2x4.65 gap 4.4 -> idle 2.6x5 gap 6 / morph ${s.eyeMorph.toFixed(2)} / offset ${s.idleEyeX.toFixed(2)}, ${s.idleEyeY.toFixed(2)}`;
+}
+
+renderFrame(0);
+
+window.__miniPeekDebug = {
+  renderAt(seconds) {
+    return renderFrame(Number(seconds) || 0);
+  },
+  getState() {
+    return lastState;
+  },
+  getParams() {
+    return { ...params };
+  },
+};
+
+function restart(now = performance.now()) {
+  startT = now;
+  lastFrameT = 0;
+  nextBlinkT = 2.4 + Math.random() * 1.4;
+  blinkActive = false;
+  renderFrame(0);
+}
+
+svg.addEventListener("pointerenter", e => {
+  pointerToSvg(e);
+  restart();
+});
+svg.addEventListener("pointermove", pointerToSvg);
+svg.addEventListener("pointerleave", () => {
+  pointerInside = false;
+});
 requestAnimationFrame(tick);
 ]]></script>
 </svg>

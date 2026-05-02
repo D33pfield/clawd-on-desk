@@ -70,9 +70,18 @@ const eyeL = document.getElementById('eye-l-path');
 const eyeR = document.getElementById('eye-r-path');
 const eyeGrad = document.getElementById('eye-grad');
 
-/* token 库保留原版 8 个; pick 池略调权重, 小尺寸容易糊的 :/+ 出现少一点. */
+/* token 库保留原版 8 个; 组合池过滤纯随机撞出的丑 pair. */
 const TOKENS = ['gt', 'lt', 'und', 'colon', 'eq', 'plus', 'slash', 'bslash'];
-const PICK_POOL = ['gt', 'lt', 'und', 'eq', 'slash', 'bslash', 'gt', 'lt', 'slash', 'bslash', 'plus', 'colon'];
+const A_PAIRS = [
+  ['lt', 'gt'], ['lt', 'eq'], ['gt', 'eq'], ['eq', 'gt'], ['eq', 'lt'],
+  ['gt', 'und'], ['lt', 'und'], ['slash', 'und'], ['und', 'bslash'],
+  ['eq', 'slash'], ['eq', 'bslash'],
+];
+const B_PAIRS = [
+  ['colon', 'gt'], ['colon', 'slash'], ['colon', 'bslash'], ['colon', 'und'],
+  ['plus', 'und'], ['slash', 'plus'], ['bslash', 'plus'],
+];
+const ACTIVE_PAIRS = [...A_PAIRS, ...A_PAIRS, ...A_PAIRS, ...B_PAIRS];
 
 /* token builder: 返回 { d, mode, sw }. mode='stroke' 用描边, mode='fill' 用填充 (圆点类). */
 function tok(d, mode, sw) { return { d, mode, sw }; }
@@ -170,14 +179,65 @@ let nextThresholdL = P.SWITCH_DEG_L;
 let nextThresholdR = P.SWITCH_DEG_R;
 let switchStartL = -Infinity;
 let switchStartR = -Infinity;
+let rngState = 0xC10D1E;
 
-function jitterFactor(j) { return 1 + (Math.random() * 2 - 1) * j; }
-/* 选 token: 排除自己上一帧 + 排除另一只眼当前 (鹿鹿: typing 时两眼必须不一样, 像真在码字) */
-function pickToken(prev, otherEye) {
-  let next;
-  do { next = PICK_POOL[Math.floor(Math.random() * PICK_POOL.length)]; }
-  while (next === prev || next === otherEye);
-  return next;
+function rand() {
+  rngState = (rngState * 1664525 + 1013904223) >>> 0;
+  return rngState / 4294967296;
+}
+function choose(list) { return list[Math.floor(rand() * list.length) % list.length]; }
+function jitterFactor(j) { return 1 + (rand() * 2 - 1) * j; }
+function pairKey(l, r) { return `${l}|${r}`; }
+const A_PAIR_KEYS = new Set(A_PAIRS.map(([l, r]) => pairKey(l, r)));
+
+function currentPairIsA() {
+  return A_PAIR_KEYS.has(pairKey(lastLeft, lastRight));
+}
+
+function getPhaseInfo(t) {
+  const cycle = P.T_SPIN + P.T_HOLD_FAR + P.T_BACK + P.T_HOLD_HOME;
+  const phase = t % Math.max(cycle, 0.01);
+  if (phase < P.T_SPIN) {
+    return { name: 'spin', u: phase / Math.max(P.T_SPIN, 0.01), aOnly: phase / Math.max(P.T_SPIN, 0.01) > .80 };
+  }
+  if (phase < P.T_SPIN + P.T_HOLD_FAR) {
+    return { name: 'holdFar', u: 1, aOnly: true };
+  }
+  if (phase < P.T_SPIN + P.T_HOLD_FAR + P.T_BACK) {
+    const u = (phase - P.T_SPIN - P.T_HOLD_FAR) / Math.max(P.T_BACK, 0.01);
+    return { name: 'back', u, aOnly: u > .75 };
+  }
+  return { name: 'holdHome', u: 1, aOnly: true };
+}
+
+function settleToA(now) {
+  if (currentPairIsA()) return;
+  const sameRight = A_PAIRS.filter(([l, r]) => r === lastRight && l !== lastLeft);
+  const sameLeft = A_PAIRS.filter(([l, r]) => l === lastLeft && r !== lastRight);
+  if (sameRight.length) {
+    lastLeft = choose(sameRight)[0];
+    switchStartL = now;
+  } else if (sameLeft.length) {
+    lastRight = choose(sameLeft)[1];
+    switchStartR = now;
+  } else {
+    const [l, r] = choose(A_PAIRS);
+    lastLeft = l;
+    lastRight = r;
+    switchStartL = now;
+    switchStartR = now;
+  }
+}
+
+/* 选 token: 另一只眼固定, 从 A/B 组合池中过滤候选; A-only 区间只用 A 档. */
+function pickToken(side, prev, otherEye, aOnly) {
+  const pool = aOnly ? A_PAIRS : ACTIVE_PAIRS;
+  const candidates = pool
+    .filter(([l, r]) => side === 'left' ? r === otherEye : l === otherEye)
+    .map(([l, r]) => side === 'left' ? l : r)
+    .filter(token => token !== prev && token !== otherEye);
+  if (candidates.length) return choose(candidates);
+  return prev;
 }
 
 function switchSoft(startMs, nowMs) {
@@ -234,6 +294,7 @@ function loop(now) {
   const dt = (now - lastT) / 1000;
   lastT = now;
   const t = (now - startT) / 1000;
+  const phaseInfo = getPhaseInfo(t);
 
   /* 卡顿旋转 */
   const angleDeg = getRotation(t);
@@ -258,17 +319,18 @@ function loop(now) {
   );
 
   /* ⭐ 字符联动切换: 累积转过的角度, 到阈值才切换 */
+  if (phaseInfo.aOnly) settleToA(now);
   const angleStep = angularVelDeg * dt;
   switchAccumL += angleStep;
   switchAccumR += angleStep;
   if (switchAccumL >= nextThresholdL) {
-    lastLeft = pickToken(lastLeft, lastRight);
+    lastLeft = pickToken('left', lastLeft, lastRight, phaseInfo.aOnly);
     switchStartL = now;
     switchAccumL = 0;
     nextThresholdL = P.SWITCH_DEG_L * jitterFactor(P.SWITCH_JITTER);
   }
   if (switchAccumR >= nextThresholdR) {
-    lastRight = pickToken(lastRight, lastLeft);
+    lastRight = pickToken('right', lastRight, lastLeft, phaseInfo.aOnly);
     switchStartR = now;
     switchAccumR = 0;
     nextThresholdR = P.SWITCH_DEG_R * jitterFactor(P.SWITCH_JITTER);

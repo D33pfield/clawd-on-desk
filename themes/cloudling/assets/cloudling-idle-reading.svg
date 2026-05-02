@@ -256,16 +256,18 @@ function setEyeRect(node, cx, cy, w, h) {
 
 // ===== 暖云更新 =====
 //   屏障位置: 中心 (12, barrierY), 后层 x=12-barrierGap, 前层 x=12+barrierGap
-//   入场起点: 后层 (-30, barrierY), 前层 (-26, barrierY)
-//   消散方向: 后层向左飘 (x: 12-gap → 12-gap-30), 前层向右飘 (x: 12+gap → 12+gap+30)
+//   入场起点: 后层 (3, barrierY), 前层 (4, barrierY); 保持在画布内, 避免桌宠裁切框露出硬边
+//   消散方向: 先淡出再外飘, 避免退出时被 viewBox 切出直边
 function updateWarmClouds(t, p, phase, v) {
   const restBackX = 12 - v.barrierGap;
   const restFrontX = 12 + v.barrierGap;
+  const enterBackX = 3;
+  const enterFrontX = 4;
   const restY = v.barrierY;
   const microFloat = Math.sin(t * 1.6) * 0.12;
 
-  let backX = -30, backY = restY;
-  let frontX = -26, frontY = restY;
+  let backX = enterBackX, backY = restY;
+  let frontX = enterFrontX, frontY = restY;
   let backOp = 0, frontOp = 0;
   let backRot = 0, frontRot = 0;
   let backScaleX = 1.0, backScaleY = 1.0;
@@ -277,8 +279,8 @@ function updateWarmClouds(t, p, phase, v) {
     const qBack = easeOut(clamp(phase.local * 1.10 * v.warmSpeed));
     const qFront = easeOut(clamp((phase.local - 0.18) * 1.25 * v.warmSpeed));
     const bump = wave(remap(phase.local, 0.68, 1.0));
-    backX = lerp(-30, restBackX, qBack);
-    frontX = lerp(-26, restFrontX, qFront);
+    backX = lerp(enterBackX, restBackX, qBack);
+    frontX = lerp(enterFrontX, restFrontX, qFront);
     backY = restY + microFloat * 0.5 + bump * 0.24;
     frontY = restY + microFloat + bump * 0.30;
     backScaleX = 1 + bump * 0.035;
@@ -310,9 +312,9 @@ function updateWarmClouds(t, p, phase, v) {
     frontOp = v.warmOp;
   } else if (phase.name === 'cloud-fade') {
     const q = phase.local;
-    const driftQ = smoother(q);
+    const driftQ = smoother(remap(q, 0.18, 1));
     const driftDistance = 42;
-    const fade = 1 - smoother(remap(q, 0.38, 1));
+    const fade = 1 - smoother(remap(q, 0.08, 0.48));
     backX = restBackX - driftDistance * driftQ;
     backY = restY + microFloat * 0.5 - 1 * driftQ;
     frontX = restFrontX + driftDistance * driftQ;
