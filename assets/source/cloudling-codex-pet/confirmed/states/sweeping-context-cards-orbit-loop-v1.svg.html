@@ -14,12 +14,14 @@
   --ink: #edeef6;
   --muted: rgba(237,238,246,.66);
   --accent: #B1A7FF;
-  --card-fill: rgba(205,218,255,.205);
-  --card-stroke: rgba(216,227,255,.90);
-  --card-inner: rgba(255,255,255,.48);
-  --line-a: rgba(238,244,255,.94);
-  --line-b: rgba(158,185,255,.82);
-  --line-c: rgba(212,206,255,.80);
+  --card-plate: rgba(16,22,50,.58);
+  --card-fill: rgba(218,226,246,.78);
+  --card-tint: rgba(112,139,214,.14);
+  --card-stroke: rgba(28,35,76,.82);
+  --card-inner: rgba(96,113,172,.46);
+  --line-a: rgba(28,35,76,.64);
+  --line-b: rgba(54,70,128,.50);
+  --line-c: rgba(72,84,132,.42);
 }
 body.light {
   --bg: #f5f6fb;
@@ -29,11 +31,13 @@ body.light {
   --ink: #2e3038;
   --muted: rgba(46,48,56,.62);
   --accent: #6B5CFF;
-  --card-fill: rgba(67,109,255,.064);
-  --card-stroke: rgba(67,109,255,.36);
-  --card-inner: rgba(255,255,255,.78);
-  --line-a: rgba(67,109,255,.50);
-  --line-b: rgba(107,92,255,.40);
+  --card-plate: rgba(52,61,110,.18);
+  --card-fill: rgba(245,247,255,.82);
+  --card-tint: rgba(91,121,220,.08);
+  --card-stroke: rgba(56,68,132,.42);
+  --card-inner: rgba(99,116,178,.34);
+  --line-a: rgba(56,68,132,.52);
+  --line-b: rgba(77,92,154,.40);
   --line-c: rgba(85,96,126,.34);
 }
 body {
@@ -124,7 +128,9 @@ body.light .stage-wrap { box-shadow: 0 12px 30px rgba(57,65,255,.08); }
 body.light .edge-rim-tight { stroke-opacity: .18; }
 body.light .edge-rim-soft { stroke-opacity: .12; }
 body.light .edge-contact { stroke-opacity: .18; }
+.ctx-card-plate { fill: var(--card-plate); }
 .ctx-card { fill: var(--card-fill); stroke: var(--card-stroke); }
+.ctx-card-tint { fill: var(--card-tint); }
 .ctx-card-inner { fill: none; stroke: var(--card-inner); }
 .ctx-line-a { fill: var(--line-a); }
 .ctx-line-b { fill: var(--line-b); }
@@ -211,7 +217,7 @@ function commonDefs() {
       <feDropShadow dx="0" dy=".65" stdDeviation=".8" flood-color="#3941FF" flood-opacity=".18"/>
     </filter>
     <filter id="small-shadow" x="-70%" y="-70%" width="240%" height="240%">
-      <feDropShadow dx="0" dy=".35" stdDeviation=".50" flood-color="#3941FF" flood-opacity=".28"/>
+      <feDropShadow dx="0" dy=".42" stdDeviation=".62" flood-color="#101524" flood-opacity=".56"/>
     </filter>
     <filter id="edge-blur" x="-50%" y="-50%" width="200%" height="200%">
       <feGaussianBlur stdDeviation=".16"/>
@@ -257,8 +263,10 @@ function makeCard(x, y, opacity, opts = {}) {
   const lines = lineSets[id % lineSets.length];
   return `
     <g class="ctx-card-group ${extraClass}" opacity="${opacity.toFixed(3)}" transform="translate(${x.toFixed(3)} ${y.toFixed(3)}) scale(${scale.toFixed(3)})" filter="url(#small-shadow)">
-      <rect class="ctx-card" x="0" y="0" width="${P.cardW}" height="${P.cardH}" rx="1.32" stroke-width=".36"/>
-      <rect class="ctx-card-inner" x=".48" y=".48" width="${(P.cardW - .96).toFixed(2)}" height="${(P.cardH - .96).toFixed(2)}" rx=".96" stroke-width=".11" opacity="${(.54 * detail).toFixed(3)}"/>
+      <rect class="ctx-card-plate" x="-.14" y="-.14" width="${(P.cardW + .28).toFixed(2)}" height="${(P.cardH + .28).toFixed(2)}" rx="1.46"/>
+      <rect class="ctx-card" x="0" y="0" width="${P.cardW}" height="${P.cardH}" rx="1.32" stroke-width=".42"/>
+      <rect class="ctx-card-tint" x=".28" y=".28" width="${(P.cardW - .56).toFixed(2)}" height="${(P.cardH - .56).toFixed(2)}" rx="1.06"/>
+      <rect class="ctx-card-inner" x=".48" y=".48" width="${(P.cardW - .96).toFixed(2)}" height="${(P.cardH - .96).toFixed(2)}" rx=".96" stroke-width=".16" opacity="${(.68 * detail).toFixed(3)}"/>
       <rect class="ctx-line-a" x="1.28" y="1.98" width="${lines[0]}" height=".34" rx=".17" opacity="${(.96 * detail).toFixed(3)}"/>
       <rect class="ctx-line-b" x="1.28" y="3.64" width="${lines[1]}" height=".30" rx=".15" opacity="${(.84 * detail).toFixed(3)}"/>
       <rect class="ctx-line-c" x="1.28" y="5.24" width="${lines[2]}" height=".30" rx=".15" opacity="${(.80 * detail).toFixed(3)}"/>
