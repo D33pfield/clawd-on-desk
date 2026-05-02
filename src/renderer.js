@@ -417,6 +417,10 @@ function applyGlyphFlipCompensation(objectEl) {
   try {
     const doc = objectEl.contentDocument;
     if (!doc) return;
+    const svgWindow = objectEl.contentWindow;
+    if (svgWindow && typeof svgWindow.__clawdSetGlyphFlipCompensation === "function") {
+      svgWindow.__clawdSetGlyphFlipCompensation(true);
+    }
     for (const [id, w] of Object.entries(_glyphFlipDefs)) {
       const el = doc.getElementById(id);
       if (el) el.setAttribute("transform", `translate(${w}, 0) scale(-1, 1)`);
@@ -429,6 +433,10 @@ function removeGlyphFlipCompensation(objectEl) {
   try {
     const doc = objectEl.contentDocument;
     if (!doc) return;
+    const svgWindow = objectEl.contentWindow;
+    if (svgWindow && typeof svgWindow.__clawdSetGlyphFlipCompensation === "function") {
+      svgWindow.__clawdSetGlyphFlipCompensation(false);
+    }
     for (const id of Object.keys(_glyphFlipDefs)) {
       const el = doc.getElementById(id);
       if (el) el.removeAttribute("transform");

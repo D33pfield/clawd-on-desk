@@ -212,4 +212,14 @@ describe("built-in Cloudling theme", () => {
     assert.ok(source.includes("eyeTrack: 0.06"), "source copy should mirror the eye smoothing");
     assert.ok(source.includes("const eyeScale = currentDistScale"), "source copy should mirror the distance-driven eye scale");
   });
+
+  it("lets mini sleep pre-mirror Zzz glyphs for left-edge mini mode", () => {
+    const asset = fs.readFileSync(
+      path.join(__dirname, "..", "themes", "cloudling", "assets", "cloudling-mini-sleep.svg"),
+      "utf8"
+    );
+
+    assert.ok(asset.includes("window.__clawdSetGlyphFlipCompensation = enabled =>"));
+    assert.ok(asset.includes("const x0 = glyphFlipCompensation ? w / 2 : -w / 2;"));
+  });
 });

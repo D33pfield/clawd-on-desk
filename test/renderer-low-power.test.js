@@ -53,3 +53,13 @@ describe("renderer Cloudling pointer bridge", () => {
     assert.ok(preload.includes('onCloudlingPointer: (callback) => ipcRenderer.on("cloudling-pointer", (_, payload) => callback(payload))'));
   });
 });
+
+describe("renderer glyph flip compensation", () => {
+  it("notifies object-channel SVGs when mini-left glyph compensation changes", () => {
+    const source = fs.readFileSync(RENDERER, "utf8");
+
+    assert.ok(source.includes("typeof svgWindow.__clawdSetGlyphFlipCompensation === \"function\""));
+    assert.ok(source.includes("svgWindow.__clawdSetGlyphFlipCompensation(true);"));
+    assert.ok(source.includes("svgWindow.__clawdSetGlyphFlipCompensation(false);"));
+  });
+});
