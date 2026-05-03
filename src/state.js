@@ -995,8 +995,15 @@ function describeSession(sessionId, session) {
     `agent=${session.agentId || "-"}`,
     `agentPid=${session.agentPid || "-"}`,
     `sourcePid=${session.sourcePid || "-"}`,
+    `pidReachable=${session.pidReachable ? 1 : 0}`,
     `headless=${session.headless ? 1 : 0}`,
   ].join(" ");
+}
+
+function resolvePidReachable(existing, agentPid, sourcePid) {
+  if (agentPid && isProcessAlive(agentPid)) return true;
+  if (sourcePid && isProcessAlive(sourcePid)) return true;
+  return existing ? !!existing.pidReachable : false;
 }
 
 // ── Session management ──
@@ -1065,8 +1072,7 @@ function updateSession(sessionId, state, event, opts = {}) {
 
   debugSession(`event ${describeSession(sessionId, existing)} -> incoming=${state}/${event || "-"} hint=${displayHint || "-"} source=${hookSource || "-"}`);
 
-  const pidReachable = existing ? existing.pidReachable :
-    (srcAgentPid ? isProcessAlive(srcAgentPid) : (srcPid ? isProcessAlive(srcPid) : false));
+  const pidReachable = resolvePidReachable(existing, srcAgentPid, srcPid);
 
   const recentEvents = pushRecentEvent(existing, preservedState || state, event);
   const base = { sourcePid: srcPid, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, sessionTitle: srcSessionTitle, recentEvents, pidReachable };

@@ -879,6 +879,29 @@ describe("updateSession()", () => {
     assert.ok(logs.some((msg) => msg.includes("codex-exit-probe cancel sid=c1 reason=UserPromptSubmit")));
   });
 
+  it("upgrades pidReachable when later Codex hooks provide a live pid", () => {
+    api.cleanup();
+    const alive = new Set([1000, 2000]);
+    ctx = makeCtx({ processKill: makePidKill(alive) });
+    api = require("../src/state")(ctx);
+
+    api.updateSession("c1", "thinking", "event_msg:task_started", {
+      agentId: "codex",
+      cwd: "/tmp",
+    });
+    assert.strictEqual(api.sessions.get("c1").pidReachable, false);
+
+    api.updateSession("c1", "thinking", "UserPromptSubmit", {
+      agentId: "codex",
+      agentPid: 1000,
+      sourcePid: 2000,
+      cwd: "/tmp",
+      hookSource: "codex-official",
+    });
+
+    assert.strictEqual(api.sessions.get("c1").pidReachable, true);
+  });
+
   it("attention is oneshot — stored as idle in session", () => {
     update(api, { id: "s1", state: "working" });
     mock.timers.tick(1000); // past MIN_DISPLAY_MS.working

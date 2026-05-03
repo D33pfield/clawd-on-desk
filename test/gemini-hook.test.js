@@ -6,7 +6,9 @@ const { __test } = require("../hooks/gemini-hook");
 
 function runGeminiHook(argvEvent, payload = {}) {
   const scriptPath = path.resolve(__dirname, "..", "hooks", "gemini-hook.js");
-  return spawnSync(process.execPath, [scriptPath, argvEvent], {
+  const httpBlockerPath = path.resolve(__dirname, "hook-http-blocker.js");
+  return spawnSync(process.execPath, ["--require", httpBlockerPath, scriptPath, argvEvent], {
+    env: { ...process.env, CLAWD_REMOTE: "1" },
     input: JSON.stringify(payload),
     encoding: "utf8",
     windowsHide: true,
