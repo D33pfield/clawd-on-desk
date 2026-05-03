@@ -790,6 +790,95 @@ describe("updateSession()", () => {
     assert.ok(logs.some((msg) => msg.includes("source=codex-official")));
   });
 
+  it("Codex Stop schedules an exit probe and deletes when agentPid exits", () => {
+    api.cleanup();
+    const alive = new Set([1000, 2000]);
+    const logs = [];
+    ctx = makeCtx({
+      processKill: makePidKill(alive),
+      debugLog: (msg) => logs.push(msg),
+    });
+    api = require("../src/state")(ctx);
+
+    api.updateSession("c1", "thinking", "UserPromptSubmit", {
+      agentId: "codex",
+      agentPid: 1000,
+      sourcePid: 2000,
+      cwd: "/tmp",
+    });
+    api.updateSession("c1", "idle", "Stop", {
+      agentId: "codex",
+      agentPid: 1000,
+      sourcePid: 2000,
+      cwd: "/tmp",
+      hookSource: "codex-official",
+    });
+
+    assert.ok(api.sessions.has("c1"));
+    assert.ok(logs.some((msg) => msg.includes("codex-exit-probe schedule")));
+
+    alive.delete(1000);
+    mock.timers.tick(1000);
+
+    assert.ok(!api.sessions.has("c1"));
+    assert.ok(logs.some((msg) => msg.includes("codex-exit-probe delete reason=agent-exit")));
+  });
+
+  it("Codex exit probe keeps the session when agentPid stays alive", () => {
+    api.cleanup();
+    const alive = new Set([1000, 2000]);
+    const logs = [];
+    ctx = makeCtx({
+      processKill: makePidKill(alive),
+      debugLog: (msg) => logs.push(msg),
+    });
+    api = require("../src/state")(ctx);
+
+    api.updateSession("c1", "idle", "Stop", {
+      agentId: "codex",
+      agentPid: 1000,
+      sourcePid: 2000,
+      cwd: "/tmp",
+      hookSource: "codex-official",
+    });
+    mock.timers.tick(15000);
+
+    assert.ok(api.sessions.has("c1"));
+    assert.ok(logs.some((msg) => msg.includes("codex-exit-probe keep reason=agent-alive")));
+  });
+
+  it("Codex exit probe cancels when new activity arrives", () => {
+    api.cleanup();
+    const alive = new Set([1000, 2000]);
+    const logs = [];
+    ctx = makeCtx({
+      processKill: makePidKill(alive),
+      debugLog: (msg) => logs.push(msg),
+    });
+    api = require("../src/state")(ctx);
+
+    api.updateSession("c1", "idle", "Stop", {
+      agentId: "codex",
+      agentPid: 1000,
+      sourcePid: 2000,
+      cwd: "/tmp",
+      hookSource: "codex-official",
+    });
+    api.updateSession("c1", "thinking", "UserPromptSubmit", {
+      agentId: "codex",
+      agentPid: 1000,
+      sourcePid: 2000,
+      cwd: "/tmp",
+      hookSource: "codex-official",
+    });
+
+    alive.delete(1000);
+    mock.timers.tick(15000);
+
+    assert.ok(api.sessions.has("c1"));
+    assert.ok(logs.some((msg) => msg.includes("codex-exit-probe cancel sid=c1 reason=UserPromptSubmit")));
+  });
+
   it("attention is oneshot — stored as idle in session", () => {
     update(api, { id: "s1", state: "working" });
     mock.timers.tick(1000); // past MIN_DISPLAY_MS.working

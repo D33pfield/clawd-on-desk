@@ -99,11 +99,13 @@ const sessions = new Map();
 const MAX_SESSIONS = 20;
 const SESSION_STALE_MS = 600000;
 const WORKING_STALE_MS = 300000;
+const CODEX_EXIT_PROBE_DELAYS_MS = [1000, 3000, 8000, 15000];
 let lastSessionSnapshotSignature = null;
 let lastSessionSnapshot = null;
 let startupRecoveryActive = false;
 let startupRecoveryTimer = null;
 const STARTUP_RECOVERY_MAX_MS = 300000;
+const codexExitProbes = new Map();
 
 // ── Hit-test bounding boxes (from theme) ──
 let HIT_BOXES = {};
@@ -603,6 +605,136 @@ function debugSession(msg) {
   try { ctx.debugLog(msg); } catch {}
 }
 
+function formatPidChain(pidChain) {
+  return Array.isArray(pidChain) && pidChain.length
+    ? `[${pidChain.join(">")}]`
+    : "[]";
+}
+
+function clearCodexExitProbe(sessionId) {
+  const id = typeof sessionId === "string" ? sessionId : "";
+  if (!id) return false;
+  const existing = codexExitProbes.get(id);
+  if (!existing) return false;
+  for (const timer of existing.timers || []) clearTimeout(timer);
+  codexExitProbes.delete(id);
+  return true;
+}
+
+function cancelCodexExitProbe(sessionId, reason) {
+  const id = typeof sessionId === "string" ? sessionId : "";
+  if (!id) return false;
+  const removed = clearCodexExitProbe(id);
+  if (removed) debugSession(`codex-exit-probe cancel sid=${id} reason=${reason || "-"}`);
+  return removed;
+}
+
+function runCodexExitProbe(sessionId, token, delayMs) {
+  const entry = codexExitProbes.get(sessionId);
+  if (!entry || entry.token !== token) return;
+
+  const session = sessions.get(sessionId);
+  if (!session) {
+    clearCodexExitProbe(sessionId);
+    debugSession(`codex-exit-probe finish sid=${sessionId} reason=no-session delay=${delayMs}`);
+    return;
+  }
+
+  if (session.agentId !== "codex" || session.headless || session.host || !session.agentPid || !session.pidReachable) {
+    clearCodexExitProbe(sessionId);
+    debugSession(
+      `codex-exit-probe finish ${describeSession(sessionId, session)} reason=not-probeable ` +
+      `delay=${delayMs} host=${session.host || "-"} chain=${formatPidChain(session.pidChain)}`
+    );
+    return;
+  }
+
+  const agentAlive = isProcessAlive(session.agentPid);
+  const sourceAlive = session.sourcePid ? isProcessAlive(session.sourcePid) : null;
+  const final = delayMs === entry.finalDelay;
+  debugSession(
+    `codex-exit-probe check ${describeSession(sessionId, session)} delay=${delayMs} ` +
+    `agentAlive=${agentAlive ? 1 : 0} sourceAlive=${sourceAlive == null ? "-" : (sourceAlive ? 1 : 0)} ` +
+    `final=${final ? 1 : 0} chain=${formatPidChain(session.pidChain)}`
+  );
+
+  if (!agentAlive) {
+    clearCodexExitProbe(sessionId);
+    debugSession(
+      `codex-exit-probe delete reason=agent-exit delay=${delayMs} ` +
+      `${describeSession(sessionId, session)} chain=${formatPidChain(session.pidChain)}`
+    );
+    cleanStaleSessions();
+    return;
+  }
+
+  if (final) {
+    clearCodexExitProbe(sessionId);
+    debugSession(
+      `codex-exit-probe keep reason=agent-alive ${describeSession(sessionId, session)} ` +
+      `chain=${formatPidChain(session.pidChain)}`
+    );
+  }
+}
+
+function scheduleCodexExitProbe(sessionId) {
+  const session = sessions.get(sessionId);
+  clearCodexExitProbe(sessionId);
+
+  if (!session) {
+    debugSession(`codex-exit-probe skip sid=${sessionId} reason=no-session`);
+    return;
+  }
+  if (session.agentId !== "codex") return;
+  if (session.headless) {
+    debugSession(`codex-exit-probe skip ${describeSession(sessionId, session)} reason=headless`);
+    return;
+  }
+  if (session.host) {
+    debugSession(`codex-exit-probe skip ${describeSession(sessionId, session)} reason=remote-host host=${session.host}`);
+    return;
+  }
+  if (!session.agentPid) {
+    debugSession(
+      `codex-exit-probe skip ${describeSession(sessionId, session)} reason=no-agent-pid ` +
+      `chain=${formatPidChain(session.pidChain)}`
+    );
+    return;
+  }
+  if (!session.pidReachable) {
+    debugSession(
+      `codex-exit-probe skip ${describeSession(sessionId, session)} reason=pid-unreachable ` +
+      `chain=${formatPidChain(session.pidChain)}`
+    );
+    return;
+  }
+
+  const token = Symbol(sessionId);
+  const entry = {
+    token,
+    timers: [],
+    finalDelay: CODEX_EXIT_PROBE_DELAYS_MS[CODEX_EXIT_PROBE_DELAYS_MS.length - 1],
+  };
+  codexExitProbes.set(sessionId, entry);
+  debugSession(
+    `codex-exit-probe schedule ${describeSession(sessionId, session)} ` +
+    `delays=${CODEX_EXIT_PROBE_DELAYS_MS.join(",")} chain=${formatPidChain(session.pidChain)}`
+  );
+  for (const delayMs of CODEX_EXIT_PROBE_DELAYS_MS) {
+    const timer = setTimeout(() => runCodexExitProbe(sessionId, token, delayMs), delayMs);
+    entry.timers.push(timer);
+  }
+}
+
+function updateCodexExitProbe(sessionId, agentId, event) {
+  if (agentId !== "codex") return;
+  if (event === "Stop") {
+    scheduleCodexExitProbe(sessionId);
+  } else {
+    cancelCodexExitProbe(sessionId, event || "state-update");
+  }
+}
+
 // Append an event to a session's rolling recentEvents list, dropping the
 // oldest when over RECENT_EVENT_LIMIT. Returned list is a new array —
 // caller assigns it to session.recentEvents.
@@ -897,6 +1029,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const permAgentId = agentId || (sessionForPerm && sessionForPerm.agentId) || null;
 
   if (event === "PermissionRequest") {
+    if (permAgentId === "codex") cancelCodexExitProbe(sessionId, "PermissionRequest");
     // Kimi-only gate: startKimiPermissionPoll suppresses the passive bubble
     // when the user disabled Kimi permissions in Settings, but the setState
     // ran first and flashed notification anyway — leaving a silent animation
@@ -948,6 +1081,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   }
 
   if (isSubagentStop) {
+    updateCodexExitProbe(sessionId, srcAgentId, event);
     if (!existing) {
       debugSession(`subagent-stop ignore sid=${sessionId} reason=no-session`);
       cleanStaleSessions();
@@ -980,6 +1114,7 @@ function updateSession(sessionId, state, event, opts = {}) {
 
   if (event === "SessionEnd") {
     const endingSession = sessions.get(sessionId);
+    cancelCodexExitProbe(sessionId, "SessionEnd");
     sessions.delete(sessionId);
     debugSession(`session-end delete ${describeSession(sessionId, endingSession)}`);
     cleanStaleSessions();
@@ -1040,6 +1175,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     }
   }
   cleanStaleSessions();
+  updateCodexExitProbe(sessionId, srcAgentId, event);
   // Any Kimi event other than the PreToolUse that originally opened the hold
   // means the user already answered (Approve / Reject / Reject-and-tell-model)
   // and the agent loop has moved on. We must NOT keep the pet stuck on the
@@ -1131,6 +1267,7 @@ function cleanStaleSessions() {
     if (s.pidReachable && s.agentPid && !isProcessAlive(s.agentPid)) {
       debugSession(`stale-delete agent-exit ${describeSession(id, s)}`);
       if (!s.headless) removedNonHeadless = true;
+      if (s && s.agentId === "codex") cancelCodexExitProbe(id, "stale-delete-agent-exit");
       if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
       sessions.delete(id); changed = true;
       continue;
@@ -1141,6 +1278,7 @@ function cleanStaleSessions() {
         if (!isProcessAlive(s.sourcePid)) {
           debugSession(`stale-delete source-exit ${describeSession(id, s)}`);
           if (!s.headless) removedNonHeadless = true;
+          if (s && s.agentId === "codex") cancelCodexExitProbe(id, "stale-delete-source-exit");
           if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
           sessions.delete(id); changed = true;
         } else if (s.state !== "idle") {
@@ -1150,11 +1288,13 @@ function cleanStaleSessions() {
       } else if (!s.pidReachable) {
         debugSession(`stale-delete unreachable ${describeSession(id, s)}`);
         if (!s.headless) removedNonHeadless = true;
+        if (s && s.agentId === "codex") cancelCodexExitProbe(id, "stale-delete-unreachable");
         if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
         sessions.delete(id); changed = true;
       } else {
         debugSession(`stale-delete no-source ${describeSession(id, s)}`);
         if (!s.headless) removedNonHeadless = true;
+        if (s && s.agentId === "codex") cancelCodexExitProbe(id, "stale-delete-no-source");
         if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
         sessions.delete(id); changed = true;
       }
@@ -1162,6 +1302,7 @@ function cleanStaleSessions() {
       if (s.pidReachable && s.sourcePid && !isProcessAlive(s.sourcePid)) {
         debugSession(`stale-delete working-source-exit ${describeSession(id, s)}`);
         if (!s.headless) removedNonHeadless = true;
+        if (s && s.agentId === "codex") cancelCodexExitProbe(id, "stale-delete-working-source-exit");
         if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
         sessions.delete(id); changed = true;
       } else if (s.state === "working" || s.state === "juggling" || s.state === "thinking") {
@@ -1212,6 +1353,7 @@ function dismissSession(sessionId) {
   if (!id) return false;
   const session = sessions.get(id);
   if (!session) return false;
+  if (session.agentId === "codex") cancelCodexExitProbe(id, "session-hidden");
   sessions.delete(id);
   if (session.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-hidden");
   const resolved = resolveDisplayState();
@@ -1225,6 +1367,7 @@ function clearSessionsByAgent(agentId) {
   let removed = 0;
   for (const [id, s] of sessions) {
     if (s && s.agentId === agentId) {
+      if (agentId === "codex") cancelCodexExitProbe(id, "clear-sessions");
       sessions.delete(id);
       if (agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-clear-sessions");
       removed++;
@@ -1611,6 +1754,7 @@ function cleanup() {
   kimiPermissionHolds.clear();
   for (const { timer } of kimiPermissionSuspectTimers.values()) clearTimeout(timer);
   kimiPermissionSuspectTimers.clear();
+  for (const id of [...codexExitProbes.keys()]) clearCodexExitProbe(id);
   stopStaleCleanup();
 }
 
