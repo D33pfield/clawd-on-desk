@@ -119,6 +119,21 @@ describe("Gemini hook script", () => {
     assert.strictEqual(postedBodies[0].editor, "code");
   });
 
+  it("recognizes node-hosted Gemini CLI command lines for agent PID tracking", () => {
+    assert.strictEqual(
+      __test.isGeminiAgentCommandLine('"C:/Program Files/nodejs/node.exe" "C:/Users/me/AppData/Roaming/npm/node_modules/@google/gemini-cli/dist/index.js"'),
+      true
+    );
+    assert.strictEqual(
+      __test.isGeminiAgentCommandLine('"node" "C:/Users/me/AppData/Roaming/npm/node_modules/.bin/gemini"'),
+      true
+    );
+    assert.strictEqual(
+      __test.isGeminiAgentCommandLine('"node" "D:/animation/hooks/gemini-hook.js" "BeforeTool"'),
+      false
+    );
+  });
+
   it("posts host instead of local PID metadata in remote mode", async () => {
     const postedBodies = [];
     let resolveCalls = 0;

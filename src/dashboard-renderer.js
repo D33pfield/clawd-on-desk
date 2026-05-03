@@ -223,6 +223,31 @@ function createIcon(session) {
   return createText("span", "agent-fallback", agentFallback(session.agentId));
 }
 
+function createHideButton(session) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "hide-session-button";
+  button.textContent = "\u00d7";
+  button.title = t("dashboardHideSessionTitle");
+  button.setAttribute("aria-label", t("dashboardHideSessionTitle"));
+  button.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    if (!session || !session.id || !window.dashboardAPI.hideSession) return;
+    button.disabled = true;
+    try {
+      const result = await window.dashboardAPI.hideSession(session.id);
+      if (!result || (result.status !== "ok" && result.status !== "not-found")) {
+        button.disabled = false;
+        console.warn("hide session failed:", result && result.message);
+      }
+    } catch (err) {
+      button.disabled = false;
+      console.warn("hide session threw:", err);
+    }
+  });
+  return button;
+}
+
 function createCard(session, now) {
   const card = document.createElement("article");
   card.className = "card";
@@ -230,6 +255,7 @@ function createCard(session, now) {
   if (session.id) {
     const idTail = String(session.id).slice(-3);
     card.appendChild(createText("span", "session-id-badge", `#${idTail}`));
+    card.appendChild(createHideButton(session));
   }
 
   card.appendChild(createIcon(session));

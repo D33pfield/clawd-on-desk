@@ -18,8 +18,18 @@ const HOOK_MAP = {
 };
 
 const config = getPlatformConfig();
+function isGeminiAgentCommandLine(cmd) {
+  if (typeof cmd !== "string") return false;
+  const normalized = cmd.toLowerCase().replace(/\\/g, "/");
+  return normalized.includes("@google/gemini-cli")
+    || normalized.includes("gemini-cli")
+    || normalized.includes("/node_modules/.bin/gemini")
+    || /(^|[\s"'/])gemini(\.js)?($|[\s"'/])/.test(normalized);
+}
+
 const resolve = createPidResolver({
   agentNames: { win: new Set(["gemini.exe"]), mac: new Set(["gemini"]), linux: new Set(["gemini"]) },
+  agentCmdlineCheck: isGeminiAgentCommandLine,
   platformConfig: config,
 });
 
@@ -149,5 +159,6 @@ module.exports = {
     sendHookEvent,
     shouldResolvePid,
     stdoutForEvent,
+    isGeminiAgentCommandLine,
   },
 };

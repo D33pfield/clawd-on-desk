@@ -1205,6 +1205,16 @@ function focusDashboardSession(sessionId) {
   }
 }
 
+function hideDashboardSession(sessionId) {
+  if (!_state || typeof _state.dismissSession !== "function") {
+    return { status: "error", message: "session state is not ready" };
+  }
+  const removed = _state.dismissSession(String(sessionId || ""));
+  return removed
+    ? { status: "ok" }
+    : { status: "not-found" };
+}
+
 const _dashboard = require("./dashboard")({
   get lang() { return lang; },
   t: (key) => translate(key),
@@ -2708,6 +2718,7 @@ function _runAnimationOverridePreview(stateKey, file, durationMs) {
 ipcMain.handle("dashboard:get-snapshot", () => _state.buildSessionSnapshot());
 ipcMain.handle("dashboard:get-i18n", () => getDashboardI18nPayload());
 ipcMain.on("dashboard:focus-session", (_event, sessionId) => focusDashboardSession(sessionId));
+ipcMain.handle("dashboard:hide-session", (_event, sessionId) => hideDashboardSession(sessionId));
 ipcMain.handle("dashboard:set-session-alias", async (_event, payload) => {
   return _settingsController.applyCommand("setSessionAlias", payload);
 });

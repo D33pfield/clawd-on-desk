@@ -2,7 +2,9 @@
 
 const assert = require("node:assert");
 const EventEmitter = require("node:events");
+const fs = require("node:fs");
 const Module = require("node:module");
+const path = require("node:path");
 const { describe, it } = require("node:test");
 
 const DASHBOARD_MODULE_PATH = require.resolve("../src/dashboard");
@@ -69,5 +71,14 @@ describe("dashboard window", () => {
     nativeTheme.emit("updated");
 
     assert.deepStrictEqual(createdWindow.backgroundColors, ["#f5f5f7", "#1c1c1f"]);
+  });
+
+  it("exposes a Clawd-only hide action instead of a terminal close action", () => {
+    const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8");
+    const preloadSource = fs.readFileSync(path.join(__dirname, "..", "src", "preload-dashboard.js"), "utf8");
+
+    assert.match(rendererSource, /dashboardHideSessionTitle/);
+    assert.match(rendererSource, /hideSession\(session\.id\)/);
+    assert.match(preloadSource, /dashboard:hide-session/);
   });
 });

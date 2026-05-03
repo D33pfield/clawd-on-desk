@@ -1125,32 +1125,13 @@ function cleanStaleSessions() {
   const now = Date.now();
   let changed = false;
   let removedNonHeadless = false;
-  // Helper: when a Kimi session is removed by stale cleanup, drop any
-  // hold/suspect timer attached to it. Otherwise the pet would stay locked
-  // on `notification` even after the Kimi process is gone (the
-  // event-driven release paths can never fire post-mortem).
-  const disposeKimiTimers = (id) => {
-    const hadSuspect = cancelPermissionSuspect(id);
-    const hold = kimiPermissionHolds.get(id);
-    if (hold) {
-      if (hold.timer) clearTimeout(hold.timer);
-      kimiPermissionHolds.delete(id);
-    }
-    // Bubble cleanup: stopKimiPermissionPoll() is the normal release path and
-    // already calls clearKimiNotifyBubbles(). When the session dies under us
-    // (PID exit / unreachable / source-exit) we bypass that path, so the
-    // passive "Check Kimi terminal" bubble would otherwise stay forever.
-    if ((hold || hadSuspect) && typeof ctx.clearKimiNotifyBubbles === "function") {
-      ctx.clearKimiNotifyBubbles(id, "kimi-session-disposed");
-    }
-  };
   for (const [id, s] of sessions) {
     const age = now - s.updatedAt;
 
     if (s.pidReachable && s.agentPid && !isProcessAlive(s.agentPid)) {
       debugSession(`stale-delete agent-exit ${describeSession(id, s)}`);
       if (!s.headless) removedNonHeadless = true;
-      if (s && s.agentId === "kimi-cli") disposeKimiTimers(id);
+      if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
       sessions.delete(id); changed = true;
       continue;
     }
@@ -1160,7 +1141,7 @@ function cleanStaleSessions() {
         if (!isProcessAlive(s.sourcePid)) {
           debugSession(`stale-delete source-exit ${describeSession(id, s)}`);
           if (!s.headless) removedNonHeadless = true;
-          if (s && s.agentId === "kimi-cli") disposeKimiTimers(id);
+          if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
           sessions.delete(id); changed = true;
         } else if (s.state !== "idle") {
           debugSession(`stale-idle session-timeout ${describeSession(id, s)}`);
@@ -1169,19 +1150,19 @@ function cleanStaleSessions() {
       } else if (!s.pidReachable) {
         debugSession(`stale-delete unreachable ${describeSession(id, s)}`);
         if (!s.headless) removedNonHeadless = true;
-        if (s && s.agentId === "kimi-cli") disposeKimiTimers(id);
+        if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
         sessions.delete(id); changed = true;
       } else {
         debugSession(`stale-delete no-source ${describeSession(id, s)}`);
         if (!s.headless) removedNonHeadless = true;
-        if (s && s.agentId === "kimi-cli") disposeKimiTimers(id);
+        if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
         sessions.delete(id); changed = true;
       }
     } else if (age > WORKING_STALE_MS) {
       if (s.pidReachable && s.sourcePid && !isProcessAlive(s.sourcePid)) {
         debugSession(`stale-delete working-source-exit ${describeSession(id, s)}`);
         if (!s.headless) removedNonHeadless = true;
-        if (s && s.agentId === "kimi-cli") disposeKimiTimers(id);
+        if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
         sessions.delete(id); changed = true;
       } else if (s.state === "working" || s.state === "juggling" || s.state === "thinking") {
         debugSession(`stale-idle working-timeout ${describeSession(id, s)}`);
@@ -1211,30 +1192,41 @@ function cleanStaleSessions() {
   }
 }
 
-// setState() respects minDisplay timings, so the visible pet finishes
-// its current animation before settling to the resolved state.
+// Session removal helpers. Kimi has extra animation/bubble bookkeeping because
+// its approval prompt is terminal-driven rather than an HTTP permission roundtrip.
+function disposeKimiSessionState(id, reason) {
+  const hadSuspect = cancelPermissionSuspect(id);
+  const hold = kimiPermissionHolds.get(id);
+  if (hold) {
+    if (hold.timer) clearTimeout(hold.timer);
+    kimiPermissionHolds.delete(id);
+  }
+  if ((hold || hadSuspect) && typeof ctx.clearKimiNotifyBubbles === "function") {
+    ctx.clearKimiNotifyBubbles(id, reason || "kimi-session-disposed");
+  }
+  return !!(hold || hadSuspect);
+}
+
+function dismissSession(sessionId) {
+  const id = typeof sessionId === "string" ? sessionId : "";
+  if (!id) return false;
+  const session = sessions.get(id);
+  if (!session) return false;
+  sessions.delete(id);
+  if (session.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-hidden");
+  const resolved = resolveDisplayState();
+  setState(resolved, getSvgOverride(resolved));
+  emitSessionSnapshot({ force: true });
+  return true;
+}
+
 function clearSessionsByAgent(agentId) {
   if (!agentId) return 0;
   let removed = 0;
   for (const [id, s] of sessions) {
     if (s && s.agentId === agentId) {
       sessions.delete(id);
-      if (agentId === "kimi-cli") {
-        const hadSuspect = cancelPermissionSuspect(id);
-        const hold = kimiPermissionHolds.get(id);
-        if (hold) {
-          if (hold.timer) clearTimeout(hold.timer);
-          kimiPermissionHolds.delete(id);
-        }
-        // Defense in depth: callers SHOULD pair this with
-        // dismissPermissionsByAgent("kimi-cli") (settings-actions does), but
-        // direct callers of clearSessionsByAgent shouldn't strand the
-        // passive bubble. clearKimiNotifyBubbles is a no-op when nothing
-        // matches.
-        if ((hold || hadSuspect) && typeof ctx.clearKimiNotifyBubbles === "function") {
-          ctx.clearKimiNotifyBubbles(id, "kimi-clear-sessions");
-        }
-      }
+      if (agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-clear-sessions");
       removed++;
     }
   }
@@ -1631,6 +1623,7 @@ return {
   detectRunningAgentProcesses, buildSessionSnapshot,
   emitSessionSnapshot, broadcastSessionSnapshot, getLastSessionSnapshot,
   getActiveSessionAliasKeys,
+  dismissSession,
   clearSessionsByAgent,
   disposeAllKimiPermissionState,
   deriveSessionBadge,

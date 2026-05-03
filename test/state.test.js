@@ -722,6 +722,17 @@ describe("updateSession()", () => {
     assert.ok(!api.sessions.has("s1"));
   });
 
+  it("dismissSession removes only Clawd bookkeeping for that session", () => {
+    update(api, { id: "s1", state: "working" });
+    update(api, { id: "s2", state: "thinking" });
+
+    assert.strictEqual(api.dismissSession("s1"), true);
+    assert.ok(!api.sessions.has("s1"));
+    assert.ok(api.sessions.has("s2"));
+    assert.strictEqual(api.resolveDisplayState(), "thinking");
+    assert.strictEqual(api.dismissSession("missing"), false);
+  });
+
   it("PermissionRequest → notification state, no session creation", () => {
     update(api, { id: "perm1", state: "notification", event: "PermissionRequest" });
     assert.ok(!api.sessions.has("perm1"));

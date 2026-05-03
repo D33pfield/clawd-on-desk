@@ -137,7 +137,7 @@ h1 {
 .session-id-badge {
   position: absolute;
   top: 8px;
-  right: 12px;
+  right: 38px;
   font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 11px;
   color: var(--subtle);
@@ -264,6 +264,33 @@ button:disabled {
   background: var(--surface-alt);
   color: var(--muted);
   border-color: var(--border);
+}
+
+.hide-session-button {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  min-width: 22px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-color: transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--subtle);
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.hide-session-button:hover:not(:disabled) {
+  background: var(--surface-alt);
+  color: var(--text);
+}
+
+.hide-session-button:disabled {
+  background: transparent;
+  color: var(--subtle);
 }
 
 .empty {
