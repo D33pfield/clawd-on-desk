@@ -113,6 +113,7 @@ describe("Agent Registry", () => {
     const gemini = registry.getAgent("gemini-cli");
     assert.strictEqual(gemini.capabilities.httpHook, false);
     assert.strictEqual(gemini.capabilities.permissionApproval, false);
+    assert.strictEqual(gemini.capabilities.notificationHook, true);
     assert.strictEqual(gemini.capabilities.sessionEnd, true);
     assert.strictEqual(gemini.capabilities.subagent, false);
 
@@ -150,6 +151,15 @@ describe("Agent Registry", () => {
     assert.strictEqual(cursor.eventMap.preToolUse, "working");
     assert.strictEqual(cursor.eventMap.afterAgentThought, "thinking");
     assert.strictEqual(cursor.eventMap.stop, "attention");
+  });
+
+  it("treats Gemini CLI as a hook-only agent", () => {
+    const gemini = registry.getAgent("gemini-cli");
+
+    assert.strictEqual(gemini.eventSource, "hook");
+    assert.ok(gemini.hookConfig);
+    assert.strictEqual(gemini.hookConfig.configFormat, "gemini-settings-json");
+    assert.strictEqual(gemini.logConfig, undefined);
   });
 
   it("should have logEventMap for poll-based agents", () => {

@@ -5,8 +5,8 @@ module.exports = {
   id: "gemini-cli",
   name: "Gemini CLI",
   processNames: { win: ["gemini.exe"], mac: ["gemini"], linux: ["gemini"] },
-  eventSource: "log-poll",
-  // PascalCase event names — matches Gemini CLI hook system (retained for future use)
+  eventSource: "hook",
+  // PascalCase event names — matches Gemini CLI hook system
   eventMap: {
     SessionStart: "idle",
     SessionEnd: "sleeping",
@@ -20,6 +20,7 @@ module.exports = {
   capabilities: {
     httpHook: false,
     permissionApproval: false,
+    notificationHook: true,
     sessionEnd: true,
     subagent: false,
   },
@@ -28,8 +29,4 @@ module.exports = {
   },
   stdinFormat: "geminiHookJson",
   pidField: "gemini_pid",
-  logConfig: {
-    sessionDir: "~/.gemini/tmp",
-    pollIntervalMs: 1500,
-  },
 };
