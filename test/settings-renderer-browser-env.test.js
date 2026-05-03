@@ -353,6 +353,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(!doctorModalSource.includes("core.helpers.showToast"));
     assert.ok(doctorModalSource.includes("agentDetailText"));
     assert.ok(doctorModalSource.includes("startConnectionTest"));
+    assert.ok(doctorModalSource.includes("stopConnectionCountdown();"));
     assert.ok(html.includes(".doctor-agent-detail"));
     assert.ok(html.includes(".doctor-connection-panel"));
     assert.ok(html.includes(".doctor-fix-button"));
@@ -379,12 +380,16 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorIpcSource.includes('ipcMain.handle("doctor:test-connection"'));
     assert.ok(doctorIpcSource.includes('ipcMain.handle("doctor:open-clawd-log"'));
     assert.ok(doctorIpcSource.includes("createConnectionTestDeduper"));
+    assert.ok(doctorIpcSource.includes("createDoctorRunChecksDeduper"));
+    assert.ok(doctorIpcSource.includes("runDedupedDoctorChecks"));
     assert.ok(doctorIpcSource.includes("runDedupedDoctorConnectionTest"));
+    assert.ok(doctorIpcSource.includes("normalizeDoctorConnectionTestPayload"));
+    assert.ok(doctorIpcSource.includes("normalizeDoctorOpenLogPayload"));
     assert.ok(doctorIpcSource.includes("runConnectionTest"));
     assert.ok(doctorIpcSource.includes("openClawdLog"));
     assert.ok(doctorIpcSource.includes("formatDiagnosticReport"));
     assert.ok(doctorIpcSource.includes("getDoctorRedactionOptions"));
-    assert.ok(doctorIpcSource.includes("redactDoctorResult(buildDoctorResult(), getDoctorRedactionOptions(app))"));
+    assert.ok(doctorIpcSource.includes("redactDoctorResult(await runDedupedDoctorChecks(), getDoctorRedactionOptions(app))"));
     assert.ok(i18nSource.includes("doctorRunFailed"));
     assert.ok(i18nSource.includes("doctorFixApplied"));
     assert.ok(i18nSource.includes("doctorFixConfirmCodexDetail"));

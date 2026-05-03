@@ -14,6 +14,44 @@ function getDoctorRedactionOptions(app) {
   return { appRoots };
 }
 
+function normalizeDoctorObjectPayload(payload) {
+  return payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+}
+
+function normalizeDoctorConnectionTestPayload(payload) {
+  return normalizeDoctorObjectPayload(payload);
+}
+
+function normalizeDoctorOpenLogPayload(payload) {
+  const safePayload = normalizeDoctorObjectPayload(payload);
+  return typeof safePayload.name === "string" ? { name: safePayload.name } : {};
+}
+
+function createDoctorRunChecksDeduper(runChecks, options = {}) {
+  const onResult = typeof options.onResult === "function" ? options.onResult : null;
+  let pending = null;
+  return function runDedupedDoctorChecks() {
+    // Single-flight: concurrent IPC calls share the first run's result.
+    if (pending) return pending;
+    try {
+      pending = Promise.resolve(runChecks())
+        .then((result) => {
+          if (onResult) onResult(result);
+          return result;
+        })
+        .finally(() => {
+          pending = null;
+        });
+    } catch (err) {
+      pending = Promise.reject(err)
+        .finally(() => {
+          pending = null;
+        });
+    }
+    return pending;
+  };
+}
+
 function registerDoctorIpc({
   ipcMain,
   app,
@@ -57,21 +95,26 @@ function registerDoctorIpc({
     };
   }
 
-  ipcMain.handle("doctor:run-checks", () => (
-    redactDoctorResult(buildDoctorResult(), getDoctorRedactionOptions(app))
+  const runDedupedDoctorChecks = createDoctorRunChecksDeduper(buildDoctorResult);
+
+  ipcMain.handle("doctor:run-checks", async () => (
+    redactDoctorResult(await runDedupedDoctorChecks(), getDoctorRedactionOptions(app))
   ));
 
   ipcMain.handle("doctor:test-connection", async (_event, payload) => {
-    const result = await runDedupedDoctorConnectionTest(payload);
+    const result = await runDedupedDoctorConnectionTest(normalizeDoctorConnectionTestPayload(payload));
     return redactDoctorResult(result, getDoctorRedactionOptions(app));
   });
 
-  ipcMain.handle("doctor:open-clawd-log", async (_event, payload) => openClawdLog({
-    requested: payload && payload.name,
-    homeDir: os.homedir(),
-    userDataDir: app.getPath("userData"),
-    shell,
-  }));
+  ipcMain.handle("doctor:open-clawd-log", async (_event, payload) => {
+    const safePayload = normalizeDoctorOpenLogPayload(payload);
+    return openClawdLog({
+      requested: safePayload.name,
+      homeDir: os.homedir(),
+      userDataDir: app.getPath("userData"),
+      shell,
+    });
+  });
 
   ipcMain.handle("doctor:get-report", () => {
     const result = buildDoctorReportResult();
@@ -87,4 +130,9 @@ function registerDoctorIpc({
 
 module.exports = {
   registerDoctorIpc,
+  __test: {
+    createDoctorRunChecksDeduper,
+    normalizeDoctorConnectionTestPayload,
+    normalizeDoctorOpenLogPayload,
+  },
 };

@@ -139,6 +139,34 @@ describe("Codex official hook", () => {
     });
   });
 
+  it("scans early transcript records until session_meta is found", () => {
+    withTempTranscript([
+      JSON.stringify({ type: "turn_context", payload: { cwd: "/repo" } }),
+      "{not json",
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          source: { subagent: { thread_spawn: { parent_thread_id: "root", agent_role: "worker" } } },
+          agent_id: "upstream-agent-id",
+          agent_type: "worker",
+        },
+      }),
+    ], (transcriptPath) => {
+      const meta = readFirstSessionMeta(transcriptPath);
+      assert.strictEqual(meta.agent_type, "worker");
+
+      const body = buildStateBody({
+        hook_event_name: "SessionStart",
+        session_id: "official-session",
+        transcript_path: transcriptPath,
+      }, mockResolve);
+
+      assert.strictEqual(body.codex_session_role, "subagent");
+      assert.strictEqual(body.codex_subagent_id, "upstream-agent-id");
+      assert.strictEqual(body.codex_agent_type, "worker");
+    });
+  });
+
   it("renames upstream Codex agent fields without polluting Clawd agent_id", () => {
     const body = buildStateBody({
       hook_event_name: "PreToolUse",

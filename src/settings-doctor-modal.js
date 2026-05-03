@@ -313,6 +313,7 @@
 
   function closeModal() {
     state.modalOpen = false;
+    stopConnectionCountdown();
     state.pendingConfirmAction = null;
     state.lastRepairFeedback = null;
     const rootEl = document.getElementById("modalRoot");

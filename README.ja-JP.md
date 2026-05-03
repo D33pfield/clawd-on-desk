@@ -8,6 +8,8 @@
   <a href="README.zh-CN.md">中文版</a>
   ·
   <a href="README.ko-KR.md">한국어</a>
+  ·
+  <a href="README.ja-JP.md">日本語</a>
 </p>
 <p align="center">
   <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>

@@ -5,6 +5,7 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { StringDecoder } = require("string_decoder");
 const {
   postPermissionToRunningServer,
   postStateToRunningServer,
@@ -94,42 +95,52 @@ function buildToolInputFingerprint(toolInput) {
     .digest("hex");
 }
 
+function parseSessionMetaLine(line) {
+  if (typeof line !== "string" || !line.trim()) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(line.replace(/\r$/, ""));
+  } catch {
+    return null;
+  }
+  if (parsed && parsed.type === "session_meta" && parsed.payload && typeof parsed.payload === "object") {
+    return parsed.payload;
+  }
+  return null;
+}
+
 function readFirstSessionMeta(transcriptPath) {
   if (typeof transcriptPath !== "string" || !transcriptPath.trim()) return null;
   let fd;
   try {
     fd = fs.openSync(transcriptPath, "r");
-    const chunks = [];
+    const decoder = new StringDecoder("utf8");
+    let buffered = "";
     let offset = 0;
-    let foundNewline = false;
 
-    while (offset < SESSION_META_READ_MAX_BYTES && !foundNewline) {
+    while (offset < SESSION_META_READ_MAX_BYTES) {
       const readLen = Math.min(SESSION_META_READ_CHUNK_BYTES, SESSION_META_READ_MAX_BYTES - offset);
       const buf = Buffer.allocUnsafe(readLen);
       const bytesRead = fs.readSync(fd, buf, 0, readLen, offset);
       if (bytesRead <= 0) break;
 
       const slice = buf.subarray(0, bytesRead);
-      const newline = slice.indexOf(0x0a);
-      if (newline >= 0) {
-        chunks.push(slice.subarray(0, newline));
-        offset += newline;
-        foundNewline = true;
-        break;
+      offset += bytesRead;
+      buffered += decoder.write(slice);
+
+      let newlineIndex = buffered.indexOf("\n");
+      while (newlineIndex >= 0) {
+        const meta = parseSessionMetaLine(buffered.slice(0, newlineIndex));
+        if (meta) return meta;
+        buffered = buffered.slice(newlineIndex + 1);
+        newlineIndex = buffered.indexOf("\n");
       }
 
-      chunks.push(slice);
-      offset += bytesRead;
       if (bytesRead < readLen) break;
     }
 
-    if (!chunks.length) return null;
-    const firstLine = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
-    if (!firstLine.trim()) return null;
-    const parsed = JSON.parse(firstLine);
-    if (parsed && parsed.type === "session_meta" && parsed.payload && typeof parsed.payload === "object") {
-      return parsed.payload;
-    }
+    buffered += decoder.end();
+    return parseSessionMetaLine(buffered);
   } catch {
     return null;
   } finally {

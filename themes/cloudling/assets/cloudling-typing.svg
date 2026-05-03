@@ -62,7 +62,7 @@
       <path id="eye-l-path" stroke-linecap="round" stroke-linejoin="round"/>
       <path id="eye-r-path" stroke-linecap="round" stroke-linejoin="round"/>
     </g>
-  
+
 <script type="application/ecmascript"><![CDATA[
 const cloudGroup = document.getElementById('cloud-group');
 const eyeGroup = document.getElementById('eye-group');
