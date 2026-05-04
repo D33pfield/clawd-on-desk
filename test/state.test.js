@@ -630,11 +630,11 @@ describe("cleanStaleSessions()", () => {
     assert.strictEqual(api.sessions.size, 0);
   });
 
-  it("last non-headless deleted → triggers yawning", () => {
+  it("last non-headless deleted → returns to idle", () => {
     api = require("../src/state")(makeCtx({ processKill: makePidKill(new Set()) }));
     api.sessions.set("s1", rawSession("working", { agentPid: 9999, pidReachable: true }));
     api.cleanStaleSessions();
-    assert.strictEqual(api.getCurrentState(), "yawning");
+    assert.strictEqual(api.getCurrentState(), "idle");
   });
 
   it("all headless deleted → idle (not yawning)", () => {
@@ -748,11 +748,11 @@ describe("updateSession()", () => {
     assert.strictEqual(api.getCurrentState(), "sweeping");
   });
 
-  it("SessionEnd + last non-headless → sleeping", () => {
+  it("SessionEnd + last non-headless → idle", () => {
     update(api, { id: "s1", state: "working" });
     mock.timers.tick(1000);
     update(api, { id: "s1", state: "sleeping", event: "SessionEnd" });
-    assert.strictEqual(api.getCurrentState(), "sleeping");
+    assert.strictEqual(api.getCurrentState(), "idle");
   });
 
   it("headless session does not affect resolveDisplayState", () => {
@@ -821,6 +821,7 @@ describe("updateSession()", () => {
     mock.timers.tick(1000);
 
     assert.ok(!api.sessions.has("c1"));
+    assert.strictEqual(api.getCurrentState(), "idle");
     assert.ok(logs.some((msg) => msg.includes("codex-exit-probe delete reason=agent-exit")));
   });
 

@@ -399,14 +399,6 @@ function playWakeTransitionOrResolve() {
   applyState("waking");
 }
 
-function queueSleepState() {
-  if (SLEEP_MODE === "direct") {
-    setState("sleeping");
-    return;
-  }
-  setState("yawning");
-}
-
 function applyDndSleepState() {
   if (SLEEP_MODE === "direct") {
     applyState("sleeping");
@@ -1126,18 +1118,10 @@ function updateSession(sessionId, state, event, opts = {}) {
     cleanStaleSessions();
     if (srcAgentId === "kimi-cli") stopKimiPermissionPoll(sessionId);
     if (!endingSession || !endingSession.headless) {
-      let hasLiveInteractive = false;
-      for (const s of sessions.values()) {
-        if (!s.headless) { hasLiveInteractive = true; break; }
-      }
       // /clear sends sweeping — play it even if other sessions are active
       // (sweeping is ONESHOT and auto-returns, so it won't interfere)
       if (state === "sweeping") {
         setState("sweeping");
-        return;
-      }
-      if (!hasLiveInteractive) {
-        setState("sleeping");
         return;
       }
     }
@@ -1266,13 +1250,11 @@ function isProcessAlive(pid) {
 function cleanStaleSessions() {
   const now = Date.now();
   let changed = false;
-  let removedNonHeadless = false;
   for (const [id, s] of sessions) {
     const age = now - s.updatedAt;
 
     if (s.pidReachable && s.agentPid && !isProcessAlive(s.agentPid)) {
       debugSession(`stale-delete agent-exit ${describeSession(id, s)}`);
-      if (!s.headless) removedNonHeadless = true;
       if (s && s.agentId === "codex") cancelCodexExitProbe(id, "stale-delete-agent-exit");
       if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
       sessions.delete(id); changed = true;
@@ -1283,7 +1265,6 @@ function cleanStaleSessions() {
       if (s.pidReachable && s.sourcePid) {
         if (!isProcessAlive(s.sourcePid)) {
           debugSession(`stale-delete source-exit ${describeSession(id, s)}`);
-          if (!s.headless) removedNonHeadless = true;
           if (s && s.agentId === "codex") cancelCodexExitProbe(id, "stale-delete-source-exit");
           if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
           sessions.delete(id); changed = true;
@@ -1293,13 +1274,11 @@ function cleanStaleSessions() {
         }
       } else if (!s.pidReachable) {
         debugSession(`stale-delete unreachable ${describeSession(id, s)}`);
-        if (!s.headless) removedNonHeadless = true;
         if (s && s.agentId === "codex") cancelCodexExitProbe(id, "stale-delete-unreachable");
         if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
         sessions.delete(id); changed = true;
       } else {
         debugSession(`stale-delete no-source ${describeSession(id, s)}`);
-        if (!s.headless) removedNonHeadless = true;
         if (s && s.agentId === "codex") cancelCodexExitProbe(id, "stale-delete-no-source");
         if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
         sessions.delete(id); changed = true;
@@ -1307,7 +1286,6 @@ function cleanStaleSessions() {
     } else if (age > WORKING_STALE_MS) {
       if (s.pidReachable && s.sourcePid && !isProcessAlive(s.sourcePid)) {
         debugSession(`stale-delete working-source-exit ${describeSession(id, s)}`);
-        if (!s.headless) removedNonHeadless = true;
         if (s && s.agentId === "codex") cancelCodexExitProbe(id, "stale-delete-working-source-exit");
         if (s && s.agentId === "kimi-cli") disposeKimiSessionState(id, "kimi-session-disposed");
         sessions.delete(id); changed = true;
@@ -1318,11 +1296,7 @@ function cleanStaleSessions() {
     }
   }
   if (changed && sessions.size === 0) {
-    if (removedNonHeadless) {
-      queueSleepState();
-    } else {
-      setState("idle", SVG_IDLE_FOLLOW);
-    }
+    setState("idle", SVG_IDLE_FOLLOW);
   } else if (changed) {
     const resolved = resolveDisplayState();
     setState(resolved, getSvgOverride(resolved));

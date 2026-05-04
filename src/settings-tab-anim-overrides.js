@@ -199,7 +199,7 @@
       case "yawning": return "Sleep: yawn";
       case "dozing": return "Sleep: doze";
       case "collapsing": return "Sleep: collapse";
-      case "sleeping": return "60s no events";
+      case "sleeping": return "60s mouse idle";
       case "waking": return "Wake";
       case "mini-idle": return "Mini idle";
       case "mini-enter": return "Mini enter";

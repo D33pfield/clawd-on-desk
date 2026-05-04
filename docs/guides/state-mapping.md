@@ -18,7 +18,8 @@ Most lifecycle events from agents (Claude Code hooks, Codex JSONL, Copilot hooks
 | PermissionRequest | notification | Alert | <img src="../../assets/gif/clawd-notification.gif" width="160"> | <img src="../../assets/gif/calico-notification.gif" width="130"> | <img src="../../assets/gif/cloudling-notification.gif" width="140"> |
 | PreCompact | sweeping | Sweeping | <img src="../../assets/gif/clawd-sweeping.gif" width="160"> | <img src="../../assets/gif/calico-sweeping.gif" width="130"> | <img src="../../assets/gif/cloudling-sweeping.gif" width="140"> |
 | WorktreeCreate | carrying | Carrying | <img src="../../assets/gif/clawd-carrying.gif" width="160"> | <img src="../../assets/gif/calico-carrying.gif" width="130"> | <img src="../../assets/gif/cloudling-carrying.gif" width="140"> |
-| 60s no events | sleeping | Sleep | <img src="../../assets/gif/clawd-sleeping.gif" width="160"> | <img src="../../assets/gif/calico-sleeping.gif" width="130"> | <img src="../../assets/gif/cloudling-sleeping.gif" width="140"> |
+| 60s mouse idle | sleeping | Sleep | <img src="../../assets/gif/clawd-sleeping.gif" width="160"> | <img src="../../assets/gif/calico-sleeping.gif" width="130"> | <img src="../../assets/gif/cloudling-sleeping.gif" width="140"> |
+| SessionEnd | remove session; idle if no live sessions | No sleep transition | | | |
 
 ## Kimi Code CLI (Kimi-CLI) Hook Events
 
@@ -27,7 +28,7 @@ Kimi Code CLI (Kimi-CLI) now uses hook-only integration (`~/.kimi/config.toml`),
 | Kimi Hook Event | State |
 |---|---|
 | SessionStart | idle |
-| SessionEnd | sleeping |
+| SessionEnd | remove session; idle if no live sessions |
 | UserPromptSubmit | thinking |
 | PreToolUse | working by default. Permission animation only flips when payload carries explicit approval signals (`permission_required` / `requires_approval` / `waiting_for_approval` / `is_permission_request`). Persistent mode switch: `CLAWD_KIMI_PERMISSION_MODE=explicit` (default — only explicit signals trigger notification) or `CLAWD_KIMI_PERMISSION_MODE=suspect` (deferred heuristic for gated tools). The installer (`npm run install:kimi-hooks` and the auto-sync at startup) bakes this value into the `command` field of `~/.kimi/config.toml` so it survives Clawd restarts. Other optional knobs: `CLAWD_KIMI_PERMISSION_IMMEDIATE=1` forces immediate remap for permission-gated tools; `CLAWD_KIMI_PERMISSION_SUSPECT=1` (legacy alias) enables deferred suspect mode for the current process only; `CLAWD_KIMI_PERMISSION_SUSPECT_MS=<ms>` tunes the suspect window; `CLAWD_KIMI_DISABLE_PRETOOL_PERMISSION=1` keeps explicit-only behavior even when optional modes are set. |
 | PostToolUse | working |
