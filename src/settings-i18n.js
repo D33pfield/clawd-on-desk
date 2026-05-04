@@ -1202,7 +1202,7 @@
     "TaoXieSZ", "ssly", "stickycandy", "Rladmsrl", "YOIMIYA66", "Kevin7Qi", "sefuzhou770801-hub",
     "Tonic-Jin", "seoki180", "sophie-haynes", "PeterShanxin", "CHIANGANGSTER", "JaeHyeon-KAIST", "hhhzxyhhh",
     "TVpoet", "zeus6768", "anhtrinh919", "tomaioo", "v-avuso", "livlign", "tongguang2",
-    "Ziy1-Tan", "tatsuyanakanogaroinc", "yeonhub", "joshua-wu", "nmsn", "sunnysonx",
+    "Ziy1-Tan", "tatsuyanakanogaroinc", "yeonhub", "joshua-wu", "nmsn", "sunnysonx", "YuChenYunn", "jhseo-b",
   ];
 
   root.ClawdSettingsI18n = {
