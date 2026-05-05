@@ -737,6 +737,37 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("collapsibleCollapse"));
   });
 
+  it("groups Theme cards and exposes Codex Pet import actions in Settings", () => {
+    const tabSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-theme.js"), "utf8");
+    const preloadSource = fs.readFileSync(PRELOAD_SETTINGS, "utf8");
+    const mainSource = fs.readFileSync(MAIN_PROCESS, "utf8");
+    const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    const html = fs.readFileSync(SETTINGS_HTML, "utf8");
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+
+    assert.ok(tabSource.includes("function getThemeSections(themes)"));
+    assert.ok(tabSource.includes("themeGroupBuiltIn"));
+    assert.ok(tabSource.includes("themeGroupImportedCodexPets"));
+    assert.ok(tabSource.includes("themeGroupUserThemes"));
+    assert.ok(tabSource.includes("handleImportCodexPetZip"));
+    assert.ok(tabSource.includes("handleOpenCodexPetsFolder"));
+    assert.ok(tabSource.includes("handleRemoveCodexPet"));
+    assert.ok(tabSource.includes("themeUninstallPetLabel"));
+    assert.ok(coreSource.includes("codexPetZipImportPending"));
+    assert.ok(coreSource.includes("codexPetRemovalPendingThemeId"));
+    assert.ok(preloadSource.includes("openCodexPetsDir"));
+    assert.ok(preloadSource.includes("importCodexPetZip"));
+    assert.ok(preloadSource.includes("removeCodexPet"));
+    assert.ok(mainSource.includes('ipcMain.handle("settings:open-codex-pets-dir"'));
+    assert.ok(mainSource.includes('ipcMain.handle("settings:import-codex-pet-zip"'));
+    assert.ok(mainSource.includes('ipcMain.handle("settings:remove-codex-pet"'));
+    assert.ok(html.includes(".theme-section-title"));
+    assert.ok(html.includes(".theme-uninstall-btn"));
+    assert.ok(i18nSource.includes("themeImportPetZip"));
+    assert.ok(i18nSource.includes("toastCodexPetZipImportOk"));
+    assert.ok(i18nSource.includes("toastCodexPetRemoveOk"));
+  });
+
   it("animates collapsible Settings groups with measured height instead of instant hidden jumps", () => {
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     const html = fs.readFileSync(SETTINGS_HTML, "utf8");
@@ -915,6 +946,14 @@ describe("settings renderer browser environment", () => {
     assert.ok(html.includes("img-src 'self' data: file:"));
     assert.ok(!html.includes("frame-src"));
     assert.ok(html.includes("settings-anim-overrides-merge.js"));
+    const themeTabSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-theme.js"), "utf8");
+    assert.ok(!html.includes("object-src"));
+    assert.ok(html.includes(".theme-thumb-atlas-frame"));
+    assert.ok(html.includes("width: 800%;"));
+    assert.ok(themeTabSource.includes("getCodexPetPreviewAtlasUrl"));
+    assert.ok(themeTabSource.includes("theme-thumb-atlas-frame"));
+    assert.ok(themeTabSource.includes("theme.codexPet.previewAtlasUrl"));
+    assert.ok(!themeTabSource.includes('document.createElement("object")'));
     assert.ok(previewHtml.includes("default-src 'self' file:"));
     assert.ok(previewHtml.includes("object-src 'self' file:"));
     assert.ok(previewHtml.includes("script-src 'unsafe-inline'"));
@@ -926,6 +965,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(overridesSource.includes("getCardPreviewUrl(card)"));
     assert.ok(overridesSource.includes("getAssetPreviewUrl(selected)"));
     assert.ok(mainSource.includes("function _needsScriptedAnimationPreviewPoster"));
+    assert.ok(mainSource.includes("function _isObjectChannelSvgAnimationFile"));
+    assert.ok(mainSource.includes('theme.rendering.svgChannel === "object"'));
     assert.ok(mainSource.includes("function _captureAnimationPreviewPosterDataUrl"));
     assert.ok(mainSource.includes("function _scheduleAnimationPreviewPosters"));
     assert.ok(mainSource.includes("capturePage"));

@@ -769,10 +769,30 @@ html, body {
 }
 
 /* ── Theme grid ── */
+.theme-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin: -2px 0 14px;
+}
 .theme-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 14px;
+}
+.theme-section + .theme-section {
+  margin-top: 18px;
+}
+.theme-section-title {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--text-secondary);
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0;
 }
 .theme-card {
   position: relative;
@@ -813,6 +833,25 @@ html, body {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+  pointer-events: none;
+}
+.theme-thumb-atlas-frame {
+  position: relative;
+  display: block;
+  height: 100%;
+  aspect-ratio: 192 / 208;
+  overflow: hidden;
+  pointer-events: none;
+}
+.theme-thumb-atlas-frame img {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 800%;
+  height: 900%;
+  max-width: none;
+  max-height: none;
+  object-fit: fill;
   pointer-events: none;
 }
 .theme-thumb-empty {
@@ -887,6 +926,31 @@ html, body {
   background: rgba(185, 28, 28, 0.1);
 }
 .theme-delete-btn:focus-visible {
+  outline: 2px solid var(--toast-error);
+  outline-offset: 2px;
+}
+.theme-uninstall-btn {
+  border: 1px solid rgba(185, 28, 28, 0.18);
+  background: transparent;
+  color: var(--toast-error);
+  border-radius: 6px;
+  min-height: 26px;
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.theme-uninstall-btn:hover:not(:disabled) {
+  background: rgba(185, 28, 28, 0.1);
+  border-color: rgba(185, 28, 28, 0.3);
+}
+.theme-uninstall-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.theme-uninstall-btn:focus-visible {
   outline: 2px solid var(--toast-error);
   outline-offset: 2px;
 }

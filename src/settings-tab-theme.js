@@ -22,6 +22,7 @@
     subtitle.className = "subtitle";
     subtitle.textContent = t("themeSubtitle");
     parent.appendChild(subtitle);
+    parent.appendChild(buildThemeActions());
 
     if (runtime.themeList === null) {
       const loading = document.createElement("div");
@@ -41,12 +42,43 @@
       return;
     }
 
-    const grid = document.createElement("div");
-    grid.className = "theme-grid";
-    for (const theme of runtime.themeList) {
-      grid.appendChild(buildThemeCard(theme));
+    for (const section of getThemeSections(runtime.themeList)) {
+      const sectionEl = document.createElement("section");
+      sectionEl.className = "theme-section";
+      sectionEl.setAttribute("aria-labelledby", `theme-section-${section.id}`);
+
+      const title = document.createElement("h2");
+      title.id = `theme-section-${section.id}`;
+      title.className = "theme-section-title";
+      title.textContent = section.title;
+      sectionEl.appendChild(title);
+
+      const grid = document.createElement("div");
+      grid.className = "theme-grid";
+      for (const theme of section.themes) {
+        grid.appendChild(buildThemeCard(theme));
+      }
+      sectionEl.appendChild(grid);
+      parent.appendChild(sectionEl);
     }
-    parent.appendChild(grid);
+  }
+
+  function getThemeSections(themes) {
+    const groups = {
+      builtin: [],
+      importedCodexPets: [],
+      user: [],
+    };
+    for (const theme of themes || []) {
+      if (theme && theme.builtin) groups.builtin.push(theme);
+      else if (theme && theme.managedCodexPet) groups.importedCodexPets.push(theme);
+      else groups.user.push(theme);
+    }
+    return [
+      { id: "builtin", title: t("themeGroupBuiltIn"), themes: groups.builtin },
+      { id: "imported-codex-pets", title: t("themeGroupImportedCodexPets"), themes: groups.importedCodexPets },
+      { id: "user", title: t("themeGroupUserThemes"), themes: groups.user },
+    ].filter((section) => section.themes.length > 0);
   }
 
   function localizeField(value) {
@@ -63,21 +95,55 @@
     return "";
   }
 
-  function applyThemePreviewScale(img, contentRatio) {
+  function applyThemePreviewScale(el, contentRatio) {
     if (!Number.isFinite(contentRatio) || contentRatio <= 0) return;
     if (contentRatio <= PREVIEW_TARGET_CONTENT_RATIO) return;
     const scale = PREVIEW_TARGET_CONTENT_RATIO / contentRatio;
     const pct = `${(scale * 100).toFixed(2)}%`;
-    img.style.maxWidth = pct;
-    img.style.maxHeight = pct;
+    el.style.maxWidth = pct;
+    el.style.maxHeight = pct;
   }
 
-  function applyThemePreviewOffset(img, offsetPct) {
+  function applyThemePreviewOffset(el, offsetPct) {
     if (!offsetPct) return;
     const { x, y } = offsetPct;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     if (Math.abs(x) < 0.5 && Math.abs(y) < 0.5) return;
-    img.style.transform = `translate(${x.toFixed(2)}%, ${y.toFixed(2)}%)`;
+    el.style.transform = `translate(${x.toFixed(2)}%, ${y.toFixed(2)}%)`;
+  }
+
+  function getCodexPetPreviewAtlasUrl(theme) {
+    return theme
+      && theme.codexPet
+      && typeof theme.codexPet.previewAtlasUrl === "string"
+      && theme.codexPet.previewAtlasUrl;
+  }
+
+  function buildCodexPetAtlasPreview(theme) {
+    const frame = document.createElement("span");
+    frame.className = "theme-thumb-atlas-frame";
+    applyThemePreviewScale(frame, theme.previewContentRatio);
+    applyThemePreviewOffset(frame, theme.previewContentOffsetPct);
+
+    const img = document.createElement("img");
+    img.src = getCodexPetPreviewAtlasUrl(theme);
+    img.alt = "";
+    img.draggable = false;
+    frame.appendChild(img);
+    return frame;
+  }
+
+  function buildThemePreviewMedia(theme) {
+    if (theme.managedCodexPet && getCodexPetPreviewAtlasUrl(theme)) {
+      return buildCodexPetAtlasPreview(theme);
+    }
+    const img = document.createElement("img");
+    img.src = theme.previewFileUrl;
+    img.alt = "";
+    img.draggable = false;
+    applyThemePreviewScale(img, theme.previewContentRatio);
+    applyThemePreviewOffset(img, theme.previewContentOffsetPct);
+    return img;
   }
 
   function getThemeCapabilityBadgeLabels(theme) {
@@ -93,6 +159,44 @@
     return badges;
   }
 
+  function buildThemeActions() {
+    const row = document.createElement("div");
+    row.className = "theme-actions";
+
+    const importBtn = document.createElement("button");
+    importBtn.type = "button";
+    importBtn.className = "soft-btn";
+    importBtn.textContent = t("themeImportPetZip");
+    importBtn.disabled = !!runtime.codexPetZipImportPending
+      || !window.settingsAPI
+      || typeof window.settingsAPI.importCodexPetZip !== "function";
+    if (runtime.codexPetZipImportPending) importBtn.classList.add("pending");
+    importBtn.addEventListener("click", handleImportCodexPetZip);
+    row.appendChild(importBtn);
+
+    const folderBtn = document.createElement("button");
+    folderBtn.type = "button";
+    folderBtn.className = "soft-btn";
+    folderBtn.textContent = t("themeOpenCodexPetsFolder");
+    folderBtn.disabled = !window.settingsAPI
+      || typeof window.settingsAPI.openCodexPetsDir !== "function";
+    folderBtn.addEventListener("click", handleOpenCodexPetsFolder);
+    row.appendChild(folderBtn);
+
+    const refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    refreshBtn.className = "soft-btn";
+    refreshBtn.textContent = t("themeRefreshImportedPets");
+    refreshBtn.disabled = !!runtime.codexPetsRefreshPending
+      || !window.settingsAPI
+      || typeof window.settingsAPI.refreshCodexPets !== "function";
+    if (runtime.codexPetsRefreshPending) refreshBtn.classList.add("pending");
+    refreshBtn.addEventListener("click", handleRefreshCodexPets);
+    row.appendChild(refreshBtn);
+
+    return row;
+  }
+
   function buildThemeCard(theme) {
     const card = document.createElement("div");
     card.className = "theme-card";
@@ -103,14 +207,8 @@
 
     const thumb = document.createElement("div");
     thumb.className = "theme-thumb";
-    if (theme.previewFileUrl) {
-      const img = document.createElement("img");
-      img.src = theme.previewFileUrl;
-      img.alt = "";
-      img.draggable = false;
-      applyThemePreviewScale(img, theme.previewContentRatio);
-      applyThemePreviewOffset(img, theme.previewContentOffsetPct);
-      thumb.appendChild(img);
+    if (theme.previewFileUrl || getCodexPetPreviewAtlasUrl(theme)) {
+      thumb.appendChild(buildThemePreviewMedia(theme));
     } else {
       const glyph = document.createElement("span");
       glyph.className = "theme-thumb-empty";
@@ -131,6 +229,12 @@
       badge.textContent = t("themeBadgeBuiltin");
       name.appendChild(badge);
     }
+    if (theme.managedCodexPet) {
+      const badge = document.createElement("span");
+      badge.className = "theme-card-badge accent";
+      badge.textContent = t("themeBadgeCodexPet");
+      name.appendChild(badge);
+    }
     card.appendChild(name);
 
     const capLabels = getThemeCapabilityBadgeLabels(theme);
@@ -146,8 +250,9 @@
       card.appendChild(caps);
     }
 
-    const canDelete = !theme.builtin && !theme.active;
-    if (theme.active || canDelete) {
+    const canDelete = !theme.builtin && !theme.active && !theme.managedCodexPet;
+    const canRemoveCodexPet = !!theme.managedCodexPet;
+    if (theme.active || canDelete || canRemoveCodexPet) {
       const footer = document.createElement("div");
       footer.className = "theme-card-footer";
       const indicator = document.createElement("span");
@@ -167,6 +272,20 @@
         });
         footer.appendChild(btn);
       }
+      if (canRemoveCodexPet) {
+        const btn = document.createElement("button");
+        btn.className = "theme-uninstall-btn";
+        btn.type = "button";
+        btn.textContent = t("themeUninstallPetLabel");
+        btn.title = t("themeUninstallPetLabel");
+        btn.setAttribute("aria-label", t("themeUninstallPetLabel"));
+        btn.disabled = runtime.codexPetRemovalPendingThemeId === theme.id;
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          handleRemoveCodexPet(theme);
+        });
+        footer.appendChild(btn);
+      }
       card.appendChild(footer);
     }
 
@@ -174,6 +293,143 @@
       helpers.attachActivation(card, () => window.settingsAPI.command("setThemeSelection", { themeId: theme.id }));
     }
     return card;
+  }
+
+  function formatCodexPetsRefreshOk(result) {
+    const summary = (result && result.summary) || {};
+    const formatter = t("toastCodexPetsRefreshOk");
+    if (typeof formatter === "function") {
+      return formatter(
+        summary.imported || 0,
+        summary.updated || 0,
+        summary.unchanged || 0,
+        summary.removed || 0,
+        summary.invalid || 0,
+        !!(result && result.switchedToFallback)
+      );
+    }
+    return String(formatter);
+  }
+
+  function formatCodexPetsRefreshFailed(message) {
+    const formatter = t("toastCodexPetsRefreshFailed");
+    if (typeof formatter === "function") return formatter(message || "unknown error");
+    return String(formatter) + (message || "unknown error");
+  }
+
+  function handleRefreshCodexPets() {
+    if (!window.settingsAPI || typeof window.settingsAPI.refreshCodexPets !== "function") return;
+    runtime.codexPetsRefreshPending = true;
+    if (state.activeTab === "theme") ops.requestRender({ content: true });
+    window.settingsAPI.refreshCodexPets()
+      .then((result) => {
+        if (!result || result.status !== "ok") {
+          ops.showToast(formatCodexPetsRefreshFailed(result && result.message), { error: true });
+          return null;
+        }
+        ops.showToast(formatCodexPetsRefreshOk(result));
+        return ops.fetchThemes().then(() => {
+          if (state.activeTab === "theme") ops.requestRender({ content: true });
+        });
+      })
+      .catch((err) => {
+        ops.showToast(formatCodexPetsRefreshFailed(err && err.message), { error: true });
+      })
+      .finally(() => {
+        runtime.codexPetsRefreshPending = false;
+        if (state.activeTab === "theme") ops.requestRender({ content: true });
+      });
+  }
+
+  function handleOpenCodexPetsFolder() {
+    if (!window.settingsAPI || typeof window.settingsAPI.openCodexPetsDir !== "function") return;
+    window.settingsAPI.openCodexPetsDir()
+      .then((result) => {
+        if (!result || result.status !== "ok") {
+          ops.showToast(t("toastCodexPetsFolderFailed") + ((result && result.message) || "unknown error"), { error: true });
+        }
+      })
+      .catch((err) => {
+        ops.showToast(t("toastCodexPetsFolderFailed") + (err && err.message), { error: true });
+      });
+  }
+
+  function formatCodexPetZipImportOk(result) {
+    const imported = result && result.imported;
+    const name = imported && (imported.displayName || imported.id);
+    const formatter = t("toastCodexPetZipImportOk");
+    if (typeof formatter === "function") return formatter(name || "Codex Pet");
+    return String(formatter);
+  }
+
+  function formatCodexPetZipImportFailed(message) {
+    const formatter = t("toastCodexPetZipImportFailed");
+    if (typeof formatter === "function") return formatter(message || "unknown error");
+    return String(formatter) + (message || "unknown error");
+  }
+
+  function handleImportCodexPetZip() {
+    if (!window.settingsAPI || typeof window.settingsAPI.importCodexPetZip !== "function") return;
+    runtime.codexPetZipImportPending = true;
+    if (state.activeTab === "theme") ops.requestRender({ content: true });
+    window.settingsAPI.importCodexPetZip()
+      .then((result) => {
+        if (!result || result.status === "cancel") return null;
+        if (result.status !== "ok") {
+          ops.showToast(formatCodexPetZipImportFailed(result && result.message), { error: true });
+          return null;
+        }
+        ops.showToast(formatCodexPetZipImportOk(result));
+        return ops.fetchThemes().then(() => {
+          if (state.activeTab === "theme") ops.requestRender({ content: true });
+        });
+      })
+      .catch((err) => {
+        ops.showToast(formatCodexPetZipImportFailed(err && err.message), { error: true });
+      })
+      .finally(() => {
+        runtime.codexPetZipImportPending = false;
+        if (state.activeTab === "theme") ops.requestRender({ content: true });
+      });
+  }
+
+  function formatCodexPetRemoveOk(result) {
+    const removed = result && result.removed;
+    const name = removed && (removed.displayName || removed.id);
+    const formatter = t("toastCodexPetRemoveOk");
+    if (typeof formatter === "function") return formatter(name || "Codex Pet", !!(result && result.switchedToFallback));
+    return String(formatter);
+  }
+
+  function formatCodexPetRemoveFailed(message) {
+    const formatter = t("toastCodexPetRemoveFailed");
+    if (typeof formatter === "function") return formatter(message || "unknown error");
+    return String(formatter) + (message || "unknown error");
+  }
+
+  function handleRemoveCodexPet(theme) {
+    if (!window.settingsAPI || typeof window.settingsAPI.removeCodexPet !== "function") return;
+    runtime.codexPetRemovalPendingThemeId = theme.id;
+    if (state.activeTab === "theme") ops.requestRender({ content: true });
+    window.settingsAPI.removeCodexPet(theme.id)
+      .then((result) => {
+        if (!result || result.status === "cancel") return null;
+        if (result.status !== "ok") {
+          ops.showToast(formatCodexPetRemoveFailed(result && result.message), { error: true });
+          return null;
+        }
+        ops.showToast(formatCodexPetRemoveOk(result));
+        return ops.fetchThemes().then(() => {
+          if (state.activeTab === "theme") ops.requestRender({ content: true });
+        });
+      })
+      .catch((err) => {
+        ops.showToast(formatCodexPetRemoveFailed(err && err.message), { error: true });
+      })
+      .finally(() => {
+        runtime.codexPetRemovalPendingThemeId = null;
+        if (state.activeTab === "theme") ops.requestRender({ content: true });
+      });
   }
 
   function handleDeleteTheme(theme) {
