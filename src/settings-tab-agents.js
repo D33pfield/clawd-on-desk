@@ -221,11 +221,9 @@
       btn.disabled = !!disabled;
     }
     if (segmented && previousIndex !== currentIndex) {
-      segmented.classList.add("codex-permission-mode-transitioning");
       requestAnimationFrame(() => {
         segmented.getBoundingClientRect();
         segmented.style.setProperty("--codex-permission-mode-active-index", String(currentIndex));
-        segmented.classList.remove("codex-permission-mode-transitioning");
       });
     } else if (segmented) {
       segmented.style.setProperty("--codex-permission-mode-active-index", String(currentIndex));

@@ -209,12 +209,12 @@
       : currentIndex;
     segmented.style.setProperty("--language-active-index", String(fromIndex));
     if (fromIndex !== currentIndex) {
-      segmented.classList.add("language-segmented-transitioning");
       requestAnimationFrame(() => {
         segmented.getBoundingClientRect();
         segmented.style.setProperty("--language-active-index", String(currentIndex));
-        segmented.classList.remove("language-segmented-transitioning");
       });
+    }
+    if (runtime && transition) {
       runtime.languageTransition = null;
     }
     for (const btn of buttons) {

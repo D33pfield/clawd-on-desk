@@ -172,6 +172,12 @@ class FakeElement {
     this.attributes[name] = String(value);
     if (name === "class") this.className = String(value);
     if (name === "id") this.id = String(value);
+    if (name === "type") this.type = String(value);
+    if (name === "tabindex") this.tabIndex = Number(value);
+    if (name.startsWith("data-")) {
+      const key = name.slice(5).replace(/-([a-z])/g, (_m, ch) => ch.toUpperCase());
+      this.dataset[key] = String(value);
+    }
   }
 
   removeAttribute(name) {
@@ -187,6 +193,31 @@ class FakeElement {
 
   set innerHTML(_value) {
     this.children = [];
+    const html = String(_value || "");
+    const stack = [this];
+    const tagRe = /<\/?([a-zA-Z][\w-]*)([^>]*)>/g;
+    let match;
+    while ((match = tagRe.exec(html)) !== null) {
+      const full = match[0];
+      const tagName = match[1];
+      const attrSource = match[2] || "";
+      if (full.startsWith("</")) {
+        if (stack.length > 1) stack.pop();
+        continue;
+      }
+      const child = new FakeElement(tagName);
+      const attrRe = /([:\w-]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+      let attrMatch;
+      while ((attrMatch = attrRe.exec(attrSource)) !== null) {
+        const attrName = attrMatch[1];
+        if (attrName === "/") continue;
+        const attrValue = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? "";
+        child.setAttribute(attrName, attrValue);
+      }
+      stack[stack.length - 1].appendChild(child);
+      const voidTag = /^(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/i.test(tagName);
+      if (!full.endsWith("/>") && !voidTag) stack.push(child);
+    }
   }
 
   get innerHTML() {
@@ -199,10 +230,12 @@ class FakeElement {
   }
 
   querySelectorAll(selector) {
+    const parts = String(selector || "").trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return [];
     const matches = [];
     const visit = (node) => {
       for (const child of node.children) {
-        if (child._matches(selector)) matches.push(child);
+        if (child._matchesSelectorParts(parts)) matches.push(child);
         visit(child);
       }
     };
@@ -223,6 +256,17 @@ class FakeElement {
     return { top: 0, left: 0, width: 0, height: 0, right: 0, bottom: 0 };
   }
 
+  _matchesSelectorParts(parts) {
+    if (!this._matches(parts[parts.length - 1])) return false;
+    let current = this.parentNode;
+    for (let i = parts.length - 2; i >= 0; i--) {
+      while (current && !current._matches(parts[i])) current = current.parentNode;
+      if (!current) return false;
+      current = current.parentNode;
+    }
+    return true;
+  }
+
   get isConnected() {
     let current = this;
     while (current) {
@@ -236,6 +280,115 @@ class FakeElement {
     if (!this.isConnected) return 0;
     return Math.max(40, this.children.length * 40);
   }
+}
+
+function loadGeneralLanguageRowForTest({
+  snapshot,
+} = {}) {
+  const raf = createQueuedRaf();
+  const body = new FakeElement("body");
+  const content = new FakeElement("main");
+  content.id = "content";
+  body.appendChild(content);
+
+  const document = {
+    body,
+    createElement: (tagName) => new FakeElement(tagName),
+    getElementById(id) {
+      if (id === "content") return content;
+      return null;
+    },
+  };
+
+  const settingsAPI = {
+    update: () => Promise.resolve({ status: "ok" }),
+  };
+  const context = {
+    console,
+    navigator: { platform: "Win32" },
+    localStorage: {
+      getItem: () => null,
+      setItem: () => {},
+    },
+    document,
+    requestAnimationFrame: (cb) => raf.requestAnimationFrame(cb),
+    window: null,
+    globalThis: null,
+    settingsAPI,
+    ClawdSettingsSizeSlider: {
+      SIZE_UI_MIN: 1,
+      SIZE_UI_MAX: 100,
+      SIZE_TICK_VALUES: [25, 50, 75, 100],
+      SIZE_SLIDER_THUMB_DIAMETER: 18,
+      prefsSizeToUi: (value) => value,
+      clampSizeUi: (value) => value,
+      sizeUiToPct: (value) => value,
+      getSizeSliderAnchorPx: () => 0,
+      createSizeSliderController: () => ({}),
+    },
+    ClawdSettingsI18n: {
+      STRINGS: {
+        en: {
+          rowLanguage: "Language",
+          rowLanguageDesc: "Language desc",
+          langEnglish: "English",
+          langChinese: "Chinese",
+          langKorean: "Korean",
+          langJapanese: "Japanese",
+          toastSaveFailed: "Failed: ",
+        },
+        zh: {
+          rowLanguage: "Language",
+          rowLanguageDesc: "Language desc",
+          langEnglish: "English",
+          langChinese: "Chinese",
+          langKorean: "Korean",
+          langJapanese: "Japanese",
+          toastSaveFailed: "Failed: ",
+        },
+      },
+      CONTRIBUTORS: [],
+      MAINTAINERS: [],
+    },
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
+  vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
+  const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8")
+    .replace(
+      "root.ClawdSettingsTabGeneral = { init };",
+      "root.ClawdSettingsTabGeneral = { init, __test: { buildLanguageRow } };"
+    );
+  vm.runInContext(generalSource, context);
+
+  const core = context.ClawdSettingsCore;
+  core.state.snapshot = snapshot || { lang: "en" };
+  core.state.activeTab = "general";
+  context.ClawdSettingsTabGeneral.init(core);
+
+  let contentRenderCount = 0;
+  let languageTransitionSeenByRender = null;
+  function renderLanguageOnly() {
+    contentRenderCount++;
+    core.ops.clearMountedControls();
+    content.innerHTML = "";
+    languageTransitionSeenByRender = core.runtime.languageTransition
+      ? { ...core.runtime.languageTransition }
+      : null;
+    content.appendChild(context.ClawdSettingsTabGeneral.__test.buildLanguageRow());
+  }
+  core.ops.installRenderHooks({ content: renderLanguageOnly });
+
+  return {
+    core,
+    content,
+    raf,
+    getContentRenderCount: () => contentRenderCount,
+    getLanguageTransitionSeenByRender: () => languageTransitionSeenByRender,
+    getSegmented: () => content.querySelector(".language-segmented"),
+  };
 }
 
 function loadAgentsTabForTest({
@@ -681,6 +834,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("const LANGUAGE_OPTIONS = [\"en\", \"zh\", \"ko\", \"ja\"];"));
     assert.ok(generalSource.includes("language-segmented"));
     assert.ok(generalSource.includes("runtime.languageTransition"));
+    assert.ok(!generalSource.includes("language-segmented-transitioning"));
     assert.ok(generalSource.includes('segmented.style.setProperty("--language-active-index", String(fromIndex));'));
     assert.ok(generalSource.includes("requestAnimationFrame(() => {"));
     assert.ok(generalSource.includes("segmented.getBoundingClientRect();"));
@@ -694,6 +848,44 @@ describe("settings renderer browser environment", () => {
     assert.ok(/\.language-segmented::before\s*\{[\s\S]*transform:\s*translateX\(calc\(var\(--language-active-index\)\s*\*\s*100%\)\);[\s\S]*transition:\s*transform 0\.24s cubic-bezier\(0\.22,\s*1,\s*0\.36,\s*1\);/.test(html));
     assert.ok(/\.language-segmented button\.active\s*\{[\s\S]*background:\s*transparent;[\s\S]*box-shadow:\s*none;/.test(html));
     assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.language-segmented::before\s*\{[\s\S]*transition:\s*none;/.test(html));
+  });
+
+  it("uses and clears the General tab language slide transition during render", () => {
+    const harness = loadGeneralLanguageRowForTest({
+      snapshot: { lang: "en" },
+    });
+
+    harness.core.ops.requestRender({ content: true });
+    assert.strictEqual(harness.getContentRenderCount(), 1);
+    assert.strictEqual(harness.getSegmented().style.getPropertyValue("--language-active-index"), "0");
+
+    harness.core.ops.applyChanges({
+      changes: { lang: "zh" },
+      snapshot: { lang: "zh" },
+    });
+
+    const segmented = harness.getSegmented();
+    assert.strictEqual(harness.getContentRenderCount(), 2);
+    assert.deepStrictEqual(
+      harness.getLanguageTransitionSeenByRender(),
+      { from: "en", to: "zh" },
+      "General render should consume the previous and next language pair"
+    );
+    assert.strictEqual(
+      segmented.style.getPropertyValue("--language-active-index"),
+      "0",
+      "language pill should start at the previous language before rAF"
+    );
+    assert.strictEqual(harness.core.runtime.languageTransition, null);
+    const buttons = segmented.querySelectorAll("button");
+    assert.strictEqual(buttons[1].classList.contains("active"), true);
+
+    harness.raf.flush();
+    assert.strictEqual(
+      segmented.style.getPropertyValue("--language-active-index"),
+      "1",
+      "language pill should move to the new language on rAF"
+    );
   });
 
   it("does not keep a stale language slide transition when language changes off the General tab", () => {
@@ -984,6 +1176,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(!agentsSource.includes("Gemini CLI"));
     assert.ok(!agentsSource.includes("if (disabled || btn.classList.contains(\"active\")) return;"));
     assert.ok(agentsSource.includes("if (btn.disabled || btn.classList.contains(\"active\")) return;"));
+    assert.ok(!agentsSource.includes("codex-permission-mode-transitioning"));
   });
 
   it("keeps Agent management switch broadcasts in place even when Codex permission rows are mounted", () => {
@@ -1152,10 +1345,8 @@ describe("settings renderer browser environment", () => {
     });
 
     assert.strictEqual(segmented.style.getPropertyValue("--codex-permission-mode-active-index"), "1");
-    assert.strictEqual(segmented.classList.contains("codex-permission-mode-transitioning"), true);
     harness.raf.flush();
     assert.strictEqual(segmented.style.getPropertyValue("--codex-permission-mode-active-index"), "0");
-    assert.strictEqual(segmented.classList.contains("codex-permission-mode-transitioning"), false);
   });
 
   it("patches agent-only broadcasts in place without requiring Codex-specific rows", () => {
