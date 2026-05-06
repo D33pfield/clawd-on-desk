@@ -17,6 +17,7 @@
 - **Renderer crash logging** (#220) - renderer-side crash logging now guards against `EIO` write failures instead of letting logging errors cascade.
 - **Agent submenu toggle flash** (#233) - toggling an agent from Settings no longer briefly flashes the submenu into an inconsistent state.
 - **Auto-start launch config** (#240) - auto-start now shares the same Electron launch configuration path as normal startup, reducing drift between manual and automatic launches.
+- **DND permission fallbacks** - Do Not Disturb now preserves agent-native permission fallback behavior instead of accidentally swallowing or auto-answering permission requests.
 
 ### Refactoring & Tests
 
