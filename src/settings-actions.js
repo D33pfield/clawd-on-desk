@@ -49,7 +49,6 @@
 // keep validate side-effect-free.
 
 const { CURRENT_VERSION } = require("./prefs");
-const { isAgentEnabled } = require("./agent-gate");
 const { isValidDisplaySnapshot } = require("./work-area");
 const {
   MAX_AUTO_CLOSE_SECONDS,
@@ -93,8 +92,15 @@ const {
   setThemeOverrideDisabled,
   setWideHitboxOverride,
 } = require("./settings-actions-theme-overrides");
-
-const CLAUDE_HOOKS_LOCK_KEY = "claude-hooks";
+const {
+  autoStartWithClaude,
+  createRepairDoctorIssue,
+  installHooks,
+  manageClaudeHooksAutomatically,
+  openAtLogin,
+  repairLocalServer,
+  uninstallHooks,
+} = require("./settings-actions-system");
 
 // ── updateRegistry ──
 // Maps prefs field name → validator. Controller looks up by key and runs.
@@ -158,104 +164,9 @@ const updateRegistry = {
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
 
   // ── System-backed prefs (object-form: validate + effect pre-commit gate) ──
-  //
-  // autoStartWithClaude: writes/removes a SessionStart hook in
-  //   ~/.claude/settings.json via hooks/install.js. Failure to write the file
-  //   (permission denied, disk full, corrupt JSON) MUST prevent the prefs
-  //   commit so the UI never shows "on" while the file is unchanged.
-  autoStartWithClaude: {
-    lockKey: CLAUDE_HOOKS_LOCK_KEY,
-    validate: requireBoolean("autoStartWithClaude"),
-    effect(value, deps) {
-      if (deps && deps.snapshot && deps.snapshot.manageClaudeHooksAutomatically === false) {
-        return { status: "ok", noop: true };
-      }
-      if (!deps || typeof deps.installAutoStart !== "function" || typeof deps.uninstallAutoStart !== "function") {
-        return {
-          status: "error",
-          message: "autoStartWithClaude effect requires installAutoStart/uninstallAutoStart deps",
-        };
-      }
-      try {
-        if (value) deps.installAutoStart();
-        else deps.uninstallAutoStart();
-        return { status: "ok" };
-      } catch (err) {
-        return {
-          status: "error",
-          message: `autoStartWithClaude: ${err && err.message}`,
-        };
-      }
-    },
-  },
-
-  manageClaudeHooksAutomatically: {
-    lockKey: CLAUDE_HOOKS_LOCK_KEY,
-    validate: requireBoolean("manageClaudeHooksAutomatically"),
-    effect(value, deps) {
-      if (
-        !deps
-        || typeof deps.syncClaudeHooksNow !== "function"
-        || typeof deps.startClaudeSettingsWatcher !== "function"
-        || typeof deps.stopClaudeSettingsWatcher !== "function"
-      ) {
-        return {
-          status: "error",
-          message: "manageClaudeHooksAutomatically effect requires syncClaudeHooksNow/startClaudeSettingsWatcher/stopClaudeSettingsWatcher deps",
-        };
-      }
-      if (!value) {
-        try {
-          deps.stopClaudeSettingsWatcher();
-          return { status: "ok" };
-        } catch (err) {
-          return {
-            status: "error",
-            message: `manageClaudeHooksAutomatically: ${err && err.message}`,
-          };
-        }
-      }
-      if (!isAgentEnabled(deps.snapshot, "claude-code")) {
-        return { status: "ok" };
-      }
-      return Promise.resolve()
-        .then(() => deps.syncClaudeHooksNow())
-        .then(() => {
-          deps.startClaudeSettingsWatcher();
-          return { status: "ok" };
-        })
-        .catch((err) => ({
-          status: "error",
-          message: `manageClaudeHooksAutomatically: ${err && err.message}`,
-        }));
-    },
-  },
-
-  // openAtLogin: writes the OS login item entry. Truth lives in the OS
-  //   (LaunchAgent on macOS, Registry Run key on Windows, ~/.config/autostart
-  //   on Linux). Effect proxies to a deps-injected setter so platform branching
-  //   stays in main.js. See main.js's hydrateSystemBackedSettings() for the
-  //   inverse direction (system → prefs on first run).
-  openAtLogin: {
-    validate: requireBoolean("openAtLogin"),
-    effect(value, deps) {
-      if (!deps || typeof deps.setOpenAtLogin !== "function") {
-        return {
-          status: "error",
-          message: "openAtLogin effect requires setOpenAtLogin dep",
-        };
-      }
-      try {
-        deps.setOpenAtLogin(value);
-        return { status: "ok" };
-      } catch (err) {
-        return {
-          status: "error",
-          message: `openAtLogin: ${err && err.message}`,
-        };
-      }
-    },
-  },
+  autoStartWithClaude,
+  manageClaudeHooksAutomatically,
+  openAtLogin,
 
   // openAtLoginHydrated is set exactly once by hydrateSystemBackedSettings()
   //   on first run after the openAtLogin field is added. Pure validator —
@@ -564,117 +475,6 @@ function setThemeSelection(payload, deps) {
   };
 }
 
-async function installHooks(_payload, deps) {
-  if (!deps || typeof deps.syncClaudeHooksNow !== "function") {
-    return {
-      status: "error",
-      message: "installHooks requires syncClaudeHooksNow dep",
-    };
-  }
-  try {
-    await deps.syncClaudeHooksNow();
-    return { status: "ok" };
-  } catch (err) {
-    return { status: "error", message: `installHooks: ${err && err.message}` };
-  }
-}
-
-async function uninstallHooks(_payload, deps) {
-  if (
-    !deps
-    || typeof deps.uninstallClaudeHooksNow !== "function"
-    || typeof deps.stopClaudeSettingsWatcher !== "function"
-  ) {
-    return {
-      status: "error",
-      message: "uninstallHooks requires uninstallClaudeHooksNow and stopClaudeSettingsWatcher deps",
-    };
-  }
-
-  const shouldRestoreWatcher = !!(deps.snapshot && deps.snapshot.manageClaudeHooksAutomatically);
-  try {
-    deps.stopClaudeSettingsWatcher();
-    await deps.uninstallClaudeHooksNow();
-    return { status: "ok", commit: { manageClaudeHooksAutomatically: false } };
-  } catch (err) {
-    if (shouldRestoreWatcher && typeof deps.startClaudeSettingsWatcher === "function") {
-      try { deps.startClaudeSettingsWatcher(); } catch {}
-    }
-    return { status: "error", message: `uninstallHooks: ${err && err.message}` };
-  }
-}
-
-async function repairLocalServer(_payload, deps) {
-  if (!deps || typeof deps.repairLocalServer !== "function") {
-    return {
-      status: "error",
-      message: "repairLocalServer requires repairLocalServer dep",
-    };
-  }
-  try {
-    const result = await deps.repairLocalServer();
-    if (result === false) {
-      return { status: "error", message: "Local server repair failed" };
-    }
-    if (result && typeof result === "object" && result.status && result.status !== "ok") {
-      return {
-        status: "error",
-        message: result.message || "Local server repair failed",
-      };
-    }
-    return { status: "ok" };
-  } catch (err) {
-    return {
-      status: "error",
-      message: `repairLocalServer: ${err && err.message}`,
-    };
-  }
-}
-
-async function repairDoctorIssue(payload, deps) {
-  if (!payload || typeof payload !== "object") {
-    return { status: "error", message: "repairDoctorIssue payload must be an object" };
-  }
-  const { type } = payload;
-  if (type === "agent-integration") {
-    return repairAgentIntegration(payload, deps);
-  }
-  if (type === "permission-bubble-policy") {
-    return setBubbleCategoryEnabled({ category: "permission", enabled: true }, deps);
-  }
-  if (type === "theme-health") {
-    return {
-      status: "error",
-      message: "Theme health issues must be fixed manually in Settings -> Theme",
-    };
-  }
-  if (type === "local-server") {
-    return repairLocalServer(payload, deps);
-  }
-  if (type === "restart-clawd") {
-    return restartClawd(payload, deps);
-  }
-  return {
-    status: "error",
-    message: `Unknown Doctor repair target: ${type || "missing"}`,
-  };
-}
-
-function restartClawd(payload, deps) {
-  if (!payload || payload.confirmed !== true) {
-    return { status: "error", message: "restartClawd requires confirmation" };
-  }
-  if (!deps || typeof deps.restartClawd !== "function") {
-    return { status: "error", message: "restartClawd requires deps.restartClawd" };
-  }
-  try {
-    deps.restartClawd();
-    return { status: "ok", message: "Clawd is restarting" };
-  } catch (err) {
-    return { status: "error", message: `restartClawd: ${err && err.message}` };
-  }
-}
-
 function resizePet(payload, deps) {
   // Settings panel slider entry point. Routes to menu.resizeWindow via
   // deps.resizePet so it picks up the full side-effect chain (actual window
@@ -695,8 +495,10 @@ function resizePet(payload, deps) {
   }
 }
 
-installHooks.lockKey = CLAUDE_HOOKS_LOCK_KEY;
-uninstallHooks.lockKey = CLAUDE_HOOKS_LOCK_KEY;
+const repairDoctorIssue = createRepairDoctorIssue({
+  repairAgentIntegration,
+  setBubbleCategoryEnabled,
+});
 
 const commandRegistry = {
   removeTheme,
