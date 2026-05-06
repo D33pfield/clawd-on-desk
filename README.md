@@ -27,7 +27,7 @@
 
 Clawd lives on your desktop and reacts to what your AI coding agent is doing — in real time. Start a long task, walk away, come back when the crab tells you it's done.
 
-Thinking when you prompt, typing when tools run, juggling subagents, reviewing permissions, celebrating when tasks complete, sleeping when you step away. Ships with three built-in themes: **Clawd** (pixel crab), **Calico** (三花猫), and **Cloudling** (云宝), with full support for custom themes.
+Thinking when you prompt, typing when tools run, juggling subagents, reviewing permissions, celebrating when tasks complete, sleeping when you step away. Ships with three built-in themes: **Clawd** (pixel crab), **Calico** (三花猫), and **Cloudling** (云宝), with full support for custom themes and imported Codex Pet animation packs.
 
 > Supports Windows 11, macOS, and Ubuntu/Linux. Windows releases provide separate x64 and ARM64 installers. Source builds require Node.js. Works with **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Cursor Agent**, **CodeBuddy**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, and **opencode**.
 
@@ -48,6 +48,7 @@ Thinking when you prompt, typing when tools run, juggling subagents, reviewing p
 ### Animations & Interaction
 - **Real-time state awareness** — agent hooks and log polling drive Clawd's animations automatically
 - **12 animated states** — idle, thinking, typing, building, juggling, conducting, error, happy, notification, sweeping, carrying, sleeping
+- **Codex Pet imports** — import Codex Pet zip packages from `Settings…` → `Theme`; Clawd adapts their atlas animations into managed themes
 - **Eye tracking** — Clawd follows your cursor in idle state, with body lean and shadow stretch
 - **Sleep sequence** — yawning, dozing, collapsing, sleeping after 60s idle; mouse movement triggers a startled wake-up animation
 - **Click reactions** — double-click for a poke, 4 clicks for a flail
@@ -124,10 +125,7 @@ Full event-to-state mapping, mini mode, and click reactions: **[docs/guides/stat
 
 Clawd adapts to multi-monitor setups: proportional sizing uses the display Clawd launches on, portrait monitors get a bounded boost so the pet stays readable on tall narrow screens, and you can drag Clawd across displays.
 
-<p align="center">
-  <video src="assets/videos/clawd-multi-monitor-demo.mp4" width="480" controls muted playsinline></video>
-</p>
-<p align="center"><sub>Demo video contributed alongside <a href="https://github.com/rullerzhou-afk/clawd-on-desk/pull/103">PR #103</a>. If it does not render, <a href="assets/videos/clawd-multi-monitor-demo.mp4">open the MP4 directly</a>.</sub></p>
+<p align="center"><sub>Want to see the real multi-monitor behavior? <a href="assets/videos/clawd-multi-monitor-demo.mp4">Watch the demo video in this repository</a>.</sub></p>
 
 ## Quick Start
 
@@ -163,7 +161,7 @@ Some agents have feature gaps (no permission bubble, polling latency, no termina
 
 ## Custom Themes
 
-Clawd supports custom themes — replace the default crab with your own character and animations.
+Clawd supports custom themes — replace the default crab with your own character and animations. If you already have a Codex Pet package, import its zip from `Settings…` → `Theme` → `Import pet zip`; Clawd turns the atlas into a managed theme automatically.
 
 **Quick start:**
 1. Scaffold a theme:
