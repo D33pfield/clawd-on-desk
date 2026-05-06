@@ -44,6 +44,10 @@ const {
   getProportionalPixelSize,
 } = require("./size-utils");
 const { keepOutOfTaskbar } = require("./taskbar");
+const {
+  animateWindowOpacity,
+  setWindowOpacity,
+} = require("./window-opacity-transition");
 
 // ── Autoplay policy: allow sound playback without user gesture ──
 // MUST be set before any BrowserWindow is created (before app.whenReady)
@@ -53,6 +57,9 @@ const isMac = process.platform === "darwin";
 const isLinux = process.platform === "linux";
 const isWin = process.platform === "win32";
 const LINUX_WINDOW_TYPE = "toolbar";
+const THEME_SWITCH_FADE_OUT_MS = 140;
+const THEME_SWITCH_FADE_IN_MS = 180;
+const THEME_SWITCH_FADE_FALLBACK_MS = 4000;
 
 applyWindowsAppUserModelId(app, process.platform);
 
@@ -1306,6 +1313,10 @@ let forceEyeResend = false;
 let forceEyeResendBoostUntil = 0;
 let requestFastTick = () => {};
 let themeReloadInProgress = false;
+let themeSwitchTransitionSeq = 0;
+let themeSwitchFadeFallbackTimer = null;
+let themeSwitchOpacityCancelSignal = null;
+let themeSwitchReloadListenerCleanup = null;
 let repositionSessionHud = () => {};
 let syncSessionHudVisibility = () => {};
 let broadcastSessionHudSnapshot = () => {};
@@ -4627,6 +4638,86 @@ Object.defineProperties(this || {}, {}); // no-op placeholder
 // controller rejects the commit — otherwise prefs would record a theme id
 // that can't actually render. Does NOT write `theme` back to prefs; the
 // controller commits after this returns (writing here would infinite-loop).
+function clearThemeSwitchFadeFallback() {
+  if (themeSwitchFadeFallbackTimer) {
+    clearTimeout(themeSwitchFadeFallbackTimer);
+    themeSwitchFadeFallbackTimer = null;
+  }
+}
+
+function cancelThemeSwitchOpacityAnimation() {
+  if (themeSwitchOpacityCancelSignal) {
+    themeSwitchOpacityCancelSignal.cancelled = true;
+    themeSwitchOpacityCancelSignal = null;
+  }
+}
+
+function clearThemeSwitchReloadListeners() {
+  if (themeSwitchReloadListenerCleanup) {
+    themeSwitchReloadListenerCleanup();
+    themeSwitchReloadListenerCleanup = null;
+  }
+}
+
+function scheduleThemeSwitchFadeFallback(seq, onFallback) {
+  clearThemeSwitchFadeFallback();
+  themeSwitchFadeFallbackTimer = setTimeout(() => {
+    themeSwitchFadeFallbackTimer = null;
+    if (seq !== themeSwitchTransitionSeq) return;
+    if (typeof onFallback === "function") {
+      onFallback();
+    } else {
+      setWindowOpacity(win, 1);
+    }
+  }, THEME_SWITCH_FADE_FALLBACK_MS);
+}
+
+function animateThemeWindowOpacity(seq, targetOpacity, durationMs) {
+  if (seq !== themeSwitchTransitionSeq) return Promise.resolve(false);
+  cancelThemeSwitchOpacityAnimation();
+  const cancelSignal = { cancelled: false };
+  themeSwitchOpacityCancelSignal = cancelSignal;
+  return animateWindowOpacity(win, targetOpacity, { durationMs, cancelSignal })
+    .finally(() => {
+      if (themeSwitchOpacityCancelSignal === cancelSignal) {
+        themeSwitchOpacityCancelSignal = null;
+      }
+    });
+}
+
+function fadeInThemeWindow(seq) {
+  if (seq !== themeSwitchTransitionSeq) return;
+  clearThemeSwitchFadeFallback();
+  animateThemeWindowOpacity(seq, 1, THEME_SWITCH_FADE_IN_MS).then((ok) => {
+    if (!ok && seq === themeSwitchTransitionSeq) setWindowOpacity(win, 1);
+  });
+}
+
+function reloadThemeWindowsAfterFade(seq, onReady, onFallback) {
+  if (seq !== themeSwitchTransitionSeq) return;
+  if (!win || win.isDestroyed() || !hitWin || hitWin.isDestroyed()) {
+    if (typeof onFallback === "function") onFallback();
+    else setWindowOpacity(win, 1);
+    return;
+  }
+  clearThemeSwitchReloadListeners();
+  const renderContents = win.webContents;
+  const hitContents = hitWin.webContents;
+  renderContents.once("did-finish-load", onReady);
+  hitContents.once("did-finish-load", onReady);
+  themeSwitchReloadListenerCleanup = () => {
+    renderContents.removeListener("did-finish-load", onReady);
+    hitContents.removeListener("did-finish-load", onReady);
+  };
+  scheduleThemeSwitchFadeFallback(seq, onFallback);
+  try {
+    renderContents.reload();
+    hitContents.reload();
+  } catch {
+    if (typeof onFallback === "function") onFallback();
+  }
+}
+
 function activateTheme(themeId, variantId) {
   if (!win || win.isDestroyed()) {
     throw new Error("theme switch requires ready windows");
@@ -4686,15 +4777,21 @@ function activateTheme(themeId, variantId) {
   _tick.refreshTheme();
   if (_mini.getMiniMode()) _mini.handleDisplayChange();
 
+  const transitionSeq = ++themeSwitchTransitionSeq;
+  cancelThemeSwitchOpacityAnimation();
+  clearThemeSwitchFadeFallback();
+  clearThemeSwitchReloadListeners();
   themeReloadInProgress = true;
-  win.webContents.reload();
-  hitWin.webContents.reload();
 
   let ready = 0;
-  const onReady = () => {
-    if (++ready < 2) return;
+  let reloadSettled = false;
+  const finishThemeReload = () => {
+    if (transitionSeq !== themeSwitchTransitionSeq || reloadSettled) return;
+    reloadSettled = true;
+    clearThemeSwitchFadeFallback();
+    clearThemeSwitchReloadListeners();
     themeReloadInProgress = false;
-    if (preservedVirtualBounds && !_mini.getMiniTransitioning()) {
+    if (preservedVirtualBounds && !_mini.getMiniTransitioning() && win && !win.isDestroyed()) {
       applyPetWindowBounds(preservedVirtualBounds);
       const clamped = computeFinalDragBounds(
         getPetWindowBounds(),
@@ -4703,15 +4800,31 @@ function activateTheme(themeId, variantId) {
       );
       if (clamped) applyPetWindowBounds(clamped);
     }
-    syncHitStateAfterLoad();
-    syncRendererStateAfterLoad({ includeStartupRecovery: false });
-    syncHitWin();
+    // Fallback can reach this path before both reload events arrive; the sync
+    // helpers are window-guarded and serve as a best-effort state resend.
+    if (hitWin && !hitWin.isDestroyed()) syncHitStateAfterLoad();
+    if (win && !win.isDestroyed()) {
+      syncRendererStateAfterLoad({ includeStartupRecovery: false });
+      syncHitWin();
+    }
     syncSessionHudVisibility();
-    startMainTick();
+    if (win && !win.isDestroyed()) startMainTick();
     _runPendingPostReloadTasks();
+    fadeInThemeWindow(transitionSeq);
   };
-  win.webContents.once("did-finish-load", onReady);
-  hitWin.webContents.once("did-finish-load", onReady);
+  const onReady = () => {
+    if (transitionSeq !== themeSwitchTransitionSeq) return;
+    if (++ready < 2) return;
+    finishThemeReload();
+  };
+
+  animateThemeWindowOpacity(transitionSeq, 0, THEME_SWITCH_FADE_OUT_MS).then(() => {
+    reloadThemeWindowsAfterFade(
+      transitionSeq,
+      onReady,
+      () => finishThemeReload()
+    );
+  });
 
   flushRuntimeStateToPrefs();
 
