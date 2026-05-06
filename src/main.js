@@ -5,11 +5,9 @@ const { pathToFileURL } = require("url");
 const { applyStationaryCollectionBehavior } = require("./mac-window");
 const {
   applyWindowsAppUserModelId,
-  getSettingsWindowIconPath,
-  getSettingsWindowTaskbarDetails: getSettingsWindowTaskbarDetailsHelper,
   shouldOpenSettingsWindowFromArgv,
-  SETTINGS_WINDOW_TITLE,
 } = require("./settings-window-icon");
+const createSettingsWindowRuntime = require("./settings-window");
 const {
   createSettingsSizePreviewSession,
 } = require("./settings-size-preview-session");
@@ -431,8 +429,28 @@ const createCodexPetMain = require("./codex-pet-main");
 const { isPlainObject: _isPlainObject } = themeLoader;
 themeLoader.init(__dirname, app.getPath("userData"));
 
+const settingsWindowRuntime = createSettingsWindowRuntime({
+  app,
+  BrowserWindow,
+  fs,
+  isWin,
+  nativeTheme,
+  path,
+  onBeforeCreate: () => _bumpAnimationPreviewPosterGeneration(),
+  onBeforeClosed: () => {
+    _bumpAnimationPreviewPosterGeneration();
+    stopShortcutRecording();
+    void settingsSizePreviewSession.cleanup();
+  },
+  onAfterClosed: () => _maybeDestroyIdleAnimationPreviewPosterWindow(),
+});
+
+function getSettingsWindow() {
+  return settingsWindowRuntime.getWindow();
+}
+
 // The injected window/menu closures below are intentionally lazy. During
-// startup before activeTheme / win / settingsWindow / rebuildAllMenus exist,
+// startup before activeTheme / win / Settings window / rebuildAllMenus exist,
 // only the sync/summary/merge methods are safe to call.
 const codexPetMain = createCodexPetMain({
   app,
@@ -442,7 +460,7 @@ const codexPetMain = createCodexPetMain({
   getActiveTheme: () => activeTheme,
   getLang: () => lang,
   getMainWindow: () => win,
-  getSettingsWindow: () => settingsWindow,
+  getSettingsWindow,
   path,
   rebuildAllMenus: () => rebuildAllMenus(),
   settingsController: _settingsController,
@@ -607,6 +625,7 @@ function getShortcutFailure(actionId) {
 }
 
 function broadcastShortcutFailures() {
+  const settingsWindow = getSettingsWindow();
   if (!settingsWindow || settingsWindow.isDestroyed() || !settingsWindow.webContents || settingsWindow.webContents.isDestroyed()) {
     return;
   }
@@ -1324,7 +1343,7 @@ const _dashboard = require("./dashboard")({
   getI18n: () => getDashboardI18nPayload(),
   getPetWindowBounds,
   getNearestWorkArea,
-  iconPath: getSettingsWindowIcon(),
+  iconPath: settingsWindowRuntime.getIconPath(),
 });
 showDashboard = _dashboard.showDashboard;
 broadcastDashboardSessionSnapshot = _dashboard.broadcastSessionSnapshot;
@@ -1579,7 +1598,7 @@ const _menuCtx = {
   getActiveThemeId: () => activeTheme ? activeTheme._id : "clawd",
   getActiveThemeCapabilities: () => activeTheme ? activeTheme._capabilities : null,
   ensureUserThemesDir: () => themeLoader.ensureUserThemesDir(),
-  openSettingsWindow: () => openSettingsWindow(),
+  openSettingsWindow: () => settingsWindowRuntime.open(),
 };
 const _menu = require("./menu")(_menuCtx);
 const { t, buildContextMenu, buildTrayMenu, rebuildAllMenus, createTray,
@@ -2125,6 +2144,7 @@ async function _captureAnimationPreviewPosterDataUrl(fileUrl) {
 }
 
 function _getLiveSettingsWebContents() {
+  const settingsWindow = getSettingsWindow();
   if (
     !settingsWindow
     || settingsWindow.isDestroyed()
@@ -2932,7 +2952,7 @@ const SOUND_OVERRIDE_DIALOG_STRINGS = {
 };
 
 function _getSettingsDialogParent(event) {
-  return BrowserWindow.fromWebContents(event.sender) || settingsWindow || null;
+  return BrowserWindow.fromWebContents(event.sender) || getSettingsWindow() || null;
 }
 
 function _cleanupSiblingSoundOverrides(overridesDir, soundName, keepExt) {
@@ -3264,7 +3284,7 @@ ipcMain.handle("settings:confirm-remove-theme", async (event, themeId) => {
   if (typeof themeId !== "string" || !themeId) return { confirmed: false };
   const meta = themeLoader.getThemeMetadata(themeId);
   const displayName = (meta && meta.name) || themeId;
-  const parent = BrowserWindow.fromWebContents(event.sender) || settingsWindow || null;
+  const parent = BrowserWindow.fromWebContents(event.sender) || getSettingsWindow() || null;
   const s = REMOVE_THEME_DIALOG_STRINGS[lang] || REMOVE_THEME_DIALOG_STRINGS.en;
   try {
     const { response } = await dialog.showMessageBox(parent, {
@@ -3376,7 +3396,6 @@ registerDoctorIpc({
 // settings UI. Reuses ipcMain.handle("settings:get-snapshot" / "settings:update")
 // already wired up for the controller. The renderer subscribes to
 // settings-changed broadcasts so menu changes and panel changes stay in sync.
-let settingsWindow = null;
 let settingsShortcutRecording = null;
 const SIZE_PREVIEW_KEY_RE = /^P:\d+(?:\.\d+)?$/;
 
@@ -3387,6 +3406,7 @@ function isValidSizePreviewKey(value) {
 function beginSettingsSizePreviewProtection() {
   settingsSizePreviewSyncFrozen = true;
   if (!isWin) return;
+  const settingsWindow = getSettingsWindow();
   if (
     settingsWindow
     && !settingsWindow.isDestroyed()
@@ -3407,6 +3427,7 @@ function beginSettingsSizePreviewProtection() {
 function endSettingsSizePreviewProtection() {
   settingsSizePreviewSyncFrozen = false;
   if (!isWin) return;
+  const settingsWindow = getSettingsWindow();
   if (
     settingsWindow
     && !settingsWindow.isDestroyed()
@@ -3451,6 +3472,7 @@ const settingsSizePreviewSession = createSettingsSizePreviewSession({
 
 function stopShortcutRecording() {
   if (!settingsShortcutRecording) return;
+  const settingsWindow = getSettingsWindow();
   if (
     settingsWindow
     && !settingsWindow.isDestroyed()
@@ -3488,6 +3510,7 @@ function startShortcutRecording(actionId) {
   if (!SHORTCUT_ACTIONS[actionId]) {
     return { status: "error", message: "unknown shortcut action" };
   }
+  const settingsWindow = getSettingsWindow();
   if (
     !settingsWindow
     || settingsWindow.isDestroyed()
@@ -3534,92 +3557,6 @@ function startShortcutRecording(actionId) {
   settingsWindow.webContents.on("before-input-event", listener);
   settingsShortcutRecording = { actionId, listener, tempUnregisteredAccel };
   return { status: "ok" };
-}
-
-function getSettingsWindowIcon() {
-  return getSettingsWindowIconPath({
-    platform: process.platform,
-    isPackaged: app.isPackaged,
-    resourcesPath: process.resourcesPath,
-    appDir: path.join(__dirname, ".."),
-    existsSync: fs.existsSync,
-  });
-}
-
-function getSettingsWindowTaskbarDetails() {
-  return getSettingsWindowTaskbarDetailsHelper({
-    platform: process.platform,
-    isPackaged: app.isPackaged,
-    resourcesPath: process.resourcesPath,
-    appDir: path.join(__dirname, ".."),
-    execPath: process.execPath,
-    appPath: app.getAppPath(),
-    existsSync: fs.existsSync,
-  });
-}
-
-function openSettingsWindowWhenReady() {
-  if (app.isReady()) {
-    openSettingsWindow();
-    return;
-  }
-  app.once("ready", openSettingsWindow);
-}
-
-function openSettingsWindow() {
-  if (settingsWindow && !settingsWindow.isDestroyed()) {
-    if (settingsWindow.isMinimized()) settingsWindow.restore();
-    settingsWindow.show();
-    settingsWindow.focus();
-    return;
-  }
-  const iconPath = getSettingsWindowIcon();
-  const opts = {
-    width: 800,
-    height: 560,
-    minWidth: 640,
-    minHeight: 480,
-    show: false,
-    frame: true,
-    transparent: false,
-    resizable: true,
-    minimizable: true,
-    maximizable: true,
-    skipTaskbar: false,
-    alwaysOnTop: false,
-    title: SETTINGS_WINDOW_TITLE,
-    // Match settings.html's dark-mode palette to avoid a white flash before
-    // CSS media query kicks in. Hex values must stay in sync with the
-    // `--bg` CSS variable in settings.html for each theme.
-    backgroundColor: nativeTheme.shouldUseDarkColors ? "#1c1c1f" : "#f5f5f7",
-    webPreferences: {
-      preload: path.join(__dirname, "preload-settings.js"),
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-  };
-  if (iconPath) opts.icon = iconPath;
-  _bumpAnimationPreviewPosterGeneration();
-  settingsWindow = new BrowserWindow(opts);
-  if (isWin && typeof settingsWindow.setAppDetails === "function") {
-    const taskbarDetails = getSettingsWindowTaskbarDetails();
-    if (taskbarDetails && taskbarDetails.appIconPath) {
-      settingsWindow.setAppDetails(taskbarDetails);
-    }
-  }
-  settingsWindow.setMenuBarVisibility(false);
-  settingsWindow.loadFile(path.join(__dirname, "settings.html"));
-  settingsWindow.once("ready-to-show", () => {
-    settingsWindow.show();
-    settingsWindow.focus();
-  });
-  settingsWindow.on("closed", () => {
-    _bumpAnimationPreviewPosterGeneration();
-    stopShortcutRecording();
-    void settingsSizePreviewSession.cleanup();
-    settingsWindow = null;
-    _maybeDestroyIdleAnimationPreviewPosterWindow();
-  });
 }
 
 function createWindow() {
@@ -4455,7 +4392,7 @@ if (!gotTheLock) {
       keepOutOfTaskbar(hitWin);
     }
     if (shouldOpenSettingsWindowFromArgv(commandLine)) {
-      openSettingsWindowWhenReady();
+      settingsWindowRuntime.openWhenReady();
     }
     codexPetMain.enqueueImportUrlsFromArgv(commandLine);
     reapplyMacVisibility();
@@ -4487,7 +4424,7 @@ if (!gotTheLock) {
     focusDebugLog = path.join(app.getPath("userData"), "focus-debug.log");
     createWindow();
     if (shouldOpenSettingsWindowFromArgv(process.argv)) {
-      openSettingsWindow();
+      settingsWindowRuntime.open();
     }
     codexPetMain.enqueueImportUrlsFromArgv(process.argv);
     codexPetMain.flushPendingImportUrls().catch((err) => {
