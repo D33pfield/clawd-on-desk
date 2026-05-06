@@ -5,25 +5,30 @@ const path = require("node:path");
 
 const ROOT = path.join(__dirname, "..");
 const MAIN = path.join(ROOT, "src", "main.js");
+const CODEX_PET_MAIN = path.join(ROOT, "src", "codex-pet-main.js");
 const PRELOAD_SETTINGS = path.join(ROOT, "src", "preload-settings.js");
 const SETTINGS_ACTIONS = path.join(ROOT, "src", "settings-actions.js");
 const SETTINGS_TAB_THEME = path.join(ROOT, "src", "settings-tab-theme.js");
 
 test("main syncs Codex Pet themes before the first theme load", () => {
   const source = fs.readFileSync(MAIN, "utf8");
-  const syncIdx = source.indexOf("let _startupCodexPetSyncSummary = _syncCodexPetThemesForMain(_requestedThemeId);");
+  const runtimeSource = fs.readFileSync(CODEX_PET_MAIN, "utf8");
+  const syncIdx = source.indexOf("let _startupCodexPetSyncSummary = codexPetMain.syncThemes(_requestedThemeId);");
   const loadIdx = source.indexOf("let activeTheme = themeLoader.loadTheme(_requestedThemeId");
 
-  assert.ok(source.includes('const codexPetAdapter = require("./codex-pet-adapter");'));
+  assert.ok(source.includes('const createCodexPetMain = require("./codex-pet-main");'));
+  assert.ok(source.includes("const codexPetMain = createCodexPetMain({"));
+  assert.ok(runtimeSource.includes('const defaultCodexPetAdapter = require("./codex-pet-adapter");'));
   assert.ok(syncIdx >= 0, "startup Codex Pet sync should be present");
   assert.ok(loadIdx >= 0, "initial theme load should be present");
   assert.ok(syncIdx < loadIdx, "Codex Pet sync must run before loading the selected theme");
-  assert.ok(source.includes("_summaryHasActiveCodexPetOrphan(_startupCodexPetSyncSummary, _requestedThemeId)"));
+  assert.ok(source.includes("codexPetMain.summaryHasActiveOrphan(_startupCodexPetSyncSummary, _requestedThemeId)"));
   assert.ok(source.includes('theme: _requestedThemeId,'));
 });
 
 test("settings exposes Codex Pet refresh and managed theme metadata", () => {
   const mainSource = fs.readFileSync(MAIN, "utf8");
+  const runtimeSource = fs.readFileSync(CODEX_PET_MAIN, "utf8");
   const preloadSource = fs.readFileSync(PRELOAD_SETTINGS, "utf8");
   const tabSource = fs.readFileSync(SETTINGS_TAB_THEME, "utf8");
 
@@ -31,15 +36,19 @@ test("settings exposes Codex Pet refresh and managed theme metadata", () => {
   assert.ok(mainSource.includes('ipcMain.handle("settings:open-codex-pets-dir"'));
   assert.ok(mainSource.includes('ipcMain.handle("settings:import-codex-pet-zip"'));
   assert.ok(mainSource.includes('ipcMain.handle("settings:remove-codex-pet"'));
-  assert.ok(mainSource.includes("codexPetImporter.importCodexPetFromZipBuffer"));
-  assert.ok(mainSource.includes("fs.promises.readFile(zipPath)"));
-  assert.ok(mainSource.includes("_resolveCodexPetRemovalTarget(themeId)"));
-  assert.ok(mainSource.includes("fs.promises.rm(target.packageDir"));
-  assert.ok(mainSource.includes("_decorateCodexPetThemeMetadata({"));
-  assert.ok(mainSource.includes("managedCodexPet: true"));
-  assert.ok(mainSource.includes("function _getCodexPetPreviewAtlasUrl"));
-  assert.ok(mainSource.includes("previewAtlasUrl: _getCodexPetPreviewAtlasUrl(theme.id, marker)"));
-  assert.ok(mainSource.includes("unchanged: (a.unchanged || 0) + (b.unchanged || 0)"));
+  assert.ok(mainSource.includes("codexPetMain.refreshFromSettings()"));
+  assert.ok(mainSource.includes("codexPetMain.openCodexPetsDir()"));
+  assert.ok(mainSource.includes("codexPetMain.importCodexPetZip(event)"));
+  assert.ok(mainSource.includes("codexPetMain.removeCodexPet(themeId)"));
+  assert.ok(mainSource.includes("codexPetMain.decorateThemeMetadata({"));
+  assert.ok(runtimeSource.includes("codexPetImporter.importCodexPetFromZipBuffer"));
+  assert.ok(runtimeSource.includes("fs.promises.readFile(zipPath)"));
+  assert.ok(runtimeSource.includes("function resolveRemovalTarget(themeId)"));
+  assert.ok(runtimeSource.includes("fs.promises.rm(target.packageDir"));
+  assert.ok(runtimeSource.includes("managedCodexPet: true"));
+  assert.ok(runtimeSource.includes("function getPreviewAtlasUrl"));
+  assert.ok(runtimeSource.includes("previewAtlasUrl: getPreviewAtlasUrl(theme.id, marker)"));
+  assert.ok(runtimeSource.includes("unchanged: (a.unchanged || 0) + (b.unchanged || 0)"));
   assert.ok(preloadSource.includes('refreshCodexPets: () => ipcRenderer.invoke("settings:refresh-codex-pets")'));
   assert.ok(preloadSource.includes('openCodexPetsDir: () => ipcRenderer.invoke("settings:open-codex-pets-dir")'));
   assert.ok(preloadSource.includes('importCodexPetZip: () => ipcRenderer.invoke("settings:import-codex-pet-zip")'));
@@ -58,7 +67,7 @@ test("managed Codex Pet themes cannot be removed through the user-theme delete c
   const mainSource = fs.readFileSync(MAIN, "utf8");
   const actionsSource = fs.readFileSync(SETTINGS_ACTIONS, "utf8");
 
-  assert.ok(mainSource.includes("managedCodexPet: !!_readCodexPetManagedThemeMarker(themeId)"));
+  assert.ok(mainSource.includes("managedCodexPet: codexPetMain.isManagedTheme(themeId)"));
   assert.ok(actionsSource.includes("info.managedCodexPet"));
   assert.ok(actionsSource.includes("remove it from Petdex instead"));
 });

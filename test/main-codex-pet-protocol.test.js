@@ -5,24 +5,28 @@ const path = require("node:path");
 
 const ROOT = path.join(__dirname, "..");
 const MAIN = path.join(ROOT, "src", "main.js");
+const CODEX_PET_MAIN = path.join(ROOT, "src", "codex-pet-main.js");
 const PACKAGE_JSON = path.join(ROOT, "package.json");
 const LAUNCH = path.join(ROOT, "launch.js");
 const SHARED_PROCESS = path.join(ROOT, "hooks", "shared-process.js");
 
 test("main wires clawd:// protocol dispatch through the Codex Pet importer", () => {
   const source = fs.readFileSync(MAIN, "utf8");
+  const runtimeSource = fs.readFileSync(CODEX_PET_MAIN, "utf8");
 
-  assert.ok(source.includes('const codexPetImporter = require("./codex-pet-importer");'));
+  assert.ok(source.includes('const createCodexPetMain = require("./codex-pet-main");'));
   assert.ok(source.includes('app.on("open-url"'));
   assert.ok(source.includes('app.on("second-instance"'));
-  assert.ok(source.includes("_enqueueCodexPetImportUrlsFromArgv(commandLine);"));
-  assert.ok(source.includes("_enqueueCodexPetImportUrlsFromArgv(process.argv);"));
-  assert.ok(source.includes("codexPetImporter.parseClawdImportUrl(rawUrl)"));
-  assert.ok(source.includes("codexPetImporter.importCodexPetFromUrl(parsed.url, {"));
-  assert.ok(source.includes("confirmReplaceExistingPackage: _confirmReplaceExistingCodexPetPackage"));
-  assert.ok(source.includes("codexPetImporter.ERR_REPLACE_DECLINED"));
-  assert.ok(source.includes("async function _confirmReplaceExistingCodexPetPackage"));
-  assert.ok(source.includes('setThemeSelection", { themeId: generated.themeId }'));
+  assert.ok(source.includes("codexPetMain.enqueueImportUrl(url);"));
+  assert.ok(source.includes("codexPetMain.enqueueImportUrlsFromArgv(commandLine);"));
+  assert.ok(source.includes("codexPetMain.enqueueImportUrlsFromArgv(process.argv);"));
+  assert.ok(runtimeSource.includes('const defaultCodexPetImporter = require("./codex-pet-importer");'));
+  assert.ok(runtimeSource.includes("codexPetImporter.parseClawdImportUrl(rawUrl)"));
+  assert.ok(runtimeSource.includes("codexPetImporter.importCodexPetFromUrl(parsed.url, {"));
+  assert.ok(runtimeSource.includes("confirmReplaceExistingPackage: confirmReplaceExistingPackage"));
+  assert.ok(runtimeSource.includes("codexPetImporter.ERR_REPLACE_DECLINED"));
+  assert.ok(runtimeSource.includes("async function confirmReplaceExistingPackage"));
+  assert.ok(runtimeSource.includes('setThemeSelection", { themeId: generated.themeId }'));
 });
 
 test("package metadata registers the clawd protocol and exposes dev registration", () => {
