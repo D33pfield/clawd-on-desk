@@ -14,7 +14,7 @@
 //                                       previewPosterCacheKey }) — incremental
 //                                       animation override preview poster
 //
-// All writes go through ipcMain.handle("settings:update") in main.js, which
+// All writes go through the main-process "settings:update" handler, which
 // routes through the controller. The renderer never owns state — it always
 // re-renders from the snapshot delivered via onChanged broadcasts (or the
 // initial getSnapshot() call). This is the unidirectional flow contract from

@@ -11,6 +11,7 @@ const createSettingsWindowRuntime = require("./settings-window");
 const {
   createSettingsSizePreviewSession,
 } = require("./settings-size-preview-session");
+const { registerSettingsIpc } = require("./settings-ipc");
 const hitGeometry = require("./hit-geometry");
 const animationCycle = require("./animation-cycle");
 const {
@@ -49,6 +50,7 @@ const {
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
 } = require("./session-focus");
+const { getAllAgents } = require("../agents/registry");
 
 // ── Autoplay policy: allow sound playback without user gesture ──
 // MUST be set before any BrowserWindow is created (before app.whenReady)
@@ -2760,17 +2762,6 @@ function _buildSoundOverrideSlots() {
   return slots;
 }
 
-function _rememberRuntimeSoundOverrideFile(themeId, soundName, absPath) {
-  if (!activeTheme || activeTheme._id !== themeId) return;
-  if (typeof soundName !== "string" || !soundName) return;
-  if (typeof absPath !== "string" || !absPath) return;
-  const nextOverrideMap = _isPlainObject(activeTheme._soundOverrideFiles)
-    ? { ...activeTheme._soundOverrideFiles }
-    : {};
-  nextOverrideMap[soundName] = absPath;
-  activeTheme._soundOverrideFiles = nextOverrideMap;
-}
-
 function _buildAnimationOverrideData() {
   if (!activeTheme) return null;
   const meta = themeLoader.getThemeMetadata(activeTheme._id) || {};
@@ -2886,47 +2877,6 @@ ipcMain.on("session-hud:focus-session", (_event, sessionId) =>
 );
 ipcMain.on("session-hud:open-dashboard", () => showDashboard());
 
-ipcMain.handle("settings:get-snapshot", () => _settingsController.getSnapshot());
-ipcMain.handle("settings:getShortcutFailures", () =>
-  Object.fromEntries(shortcutRegistrationFailures)
-);
-ipcMain.handle("settings:enterShortcutRecording", (_event, actionId) =>
-  startShortcutRecording(actionId)
-);
-ipcMain.handle("settings:exitShortcutRecording", () => {
-  stopShortcutRecording();
-  return { status: "ok" };
-});
-ipcMain.handle("settings:update", (_event, payload) => {
-  if (!payload || typeof payload !== "object") {
-    return { status: "error", message: "settings:update payload must be { key, value }" };
-  }
-  return _settingsController.applyUpdate(payload.key, payload.value);
-});
-ipcMain.handle("settings:begin-size-preview", () => settingsSizePreviewSession.begin());
-ipcMain.handle("settings:preview-size", (_event, value) => {
-  if (!isValidSizePreviewKey(value)) {
-    return { status: "error", message: `invalid preview size "${value}"` };
-  }
-  return settingsSizePreviewSession.preview(value).then(() => ({ status: "ok" }));
-});
-ipcMain.handle("settings:end-size-preview", (_event, value) => {
-  if (value !== null && value !== undefined && !isValidSizePreviewKey(value)) {
-    return { status: "error", message: `invalid preview size "${value}"` };
-  }
-  return settingsSizePreviewSession.end(value || null);
-});
-ipcMain.on("settings:open-dashboard", () => showDashboard());
-ipcMain.handle("settings:get-preview-sound-url", () => {
-  try { return themeLoader.getPreviewSoundUrl(); }
-  catch { return null; }
-});
-ipcMain.handle("settings:command", async (_event, payload) => {
-  if (!payload || typeof payload !== "object") {
-    return { status: "error", message: "settings:command payload must be { action, payload }" };
-  }
-  return _settingsController.applyCommand(payload.action, payload.payload);
-});
 ipcMain.handle("settings:get-animation-overrides-data", () => _buildAnimationOverrideData());
 ipcMain.handle("settings:open-theme-assets-dir", async () => {
   const dir = _resolveOpenableFsPath(_resolveAnimationAssetsDir(activeTheme));
@@ -2939,158 +2889,9 @@ ipcMain.handle("settings:open-theme-assets-dir", async () => {
 });
 ipcMain.handle("settings:preview-animation-override", (_event, payload) => _previewAnimationOverride(payload));
 
-// ── Sound override IPC ──
-// Audio extensions we accept for sound overrides. MIME decoding in the renderer
-// is ultimately whatever Chromium supports; we restrict the dialog filter here
-// to the common lossy + lossless formats a user is likely to bring in.
-const SOUND_OVERRIDE_ASSET_EXTS = new Set([".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"]);
-const SOUND_OVERRIDE_DIALOG_STRINGS = {
-  en: { title: "Choose a sound file", filterName: "Audio" },
-  zh: { title: "选择音效文件", filterName: "音频" },
-  ko: { title: "음향 파일 선택", filterName: "오디오" },
-  ja: { title: "音声ファイルを選択", filterName: "音声" },
-};
-
 function _getSettingsDialogParent(event) {
   return BrowserWindow.fromWebContents(event.sender) || getSettingsWindow() || null;
 }
-
-function _cleanupSiblingSoundOverrides(overridesDir, soundName, keepExt) {
-  // Replacing a sound with a different extension would otherwise leave the old
-  // file as orphaned junk in the overrides dir (not referenced from prefs, but
-  // still on disk). Strip siblings that share `soundName` but differ in ext so
-  // the folder stays tidy and `Open folder` shows only what's active.
-  let entries;
-  try { entries = fs.readdirSync(overridesDir); }
-  catch { return; }
-  for (const entry of entries) {
-    if (path.parse(entry).name !== soundName) continue;
-    if (path.extname(entry).toLowerCase() === keepExt) continue;
-    try { fs.unlinkSync(path.join(overridesDir, entry)); } catch {}
-  }
-}
-
-ipcMain.handle("settings:pick-sound-file", async (event, payload) => {
-  if (!payload || typeof payload !== "object") {
-    return { status: "error", message: "pickSoundFile payload must be an object" };
-  }
-  const { soundName } = payload;
-  if (typeof soundName !== "string" || !soundName) {
-    return { status: "error", message: "pickSoundFile.soundName must be a non-empty string" };
-  }
-  // soundName becomes a filename stem under sound-overrides/<themeId>/ — a
-  // third-party theme could ship `sounds: { "../../foo": "x.mp3" }` and
-  // weaponise this IPC as a write-anywhere primitive. Restrict to chars that
-  // are unambiguously safe in a path segment on every supported OS.
-  if (!/^[a-zA-Z0-9_-]+$/.test(soundName)) {
-    return { status: "error", message: `pickSoundFile.soundName "${soundName}" contains invalid characters` };
-  }
-  if (!activeTheme) return { status: "error", message: "no active theme" };
-  const themeId = activeTheme._id;
-  // Only allow replacing sounds the theme actually publishes — overriding a
-  // name state.js never triggers produces a silent override with no effect.
-  if (!_isPlainObject(activeTheme.sounds) || !activeTheme.sounds[soundName]) {
-    return { status: "error", message: `sound "${soundName}" not declared by theme "${themeId}"` };
-  }
-  const overridesDir = themeLoader.getSoundOverridesDir(themeId);
-  if (!overridesDir) return { status: "error", message: "sound-overrides directory unavailable" };
-
-  const parent = _getSettingsDialogParent(event);
-  const s = SOUND_OVERRIDE_DIALOG_STRINGS[lang] || SOUND_OVERRIDE_DIALOG_STRINGS.en;
-  const extList = [...SOUND_OVERRIDE_ASSET_EXTS].map((e) => e.slice(1));
-
-  let result;
-  try {
-    result = await dialog.showOpenDialog(parent, {
-      title: s.title,
-      filters: [{ name: s.filterName, extensions: extList }],
-      properties: ["openFile"],
-    });
-  } catch (err) {
-    return { status: "error", message: `pick dialog failed: ${err && err.message}` };
-  }
-  if (result.canceled || !result.filePaths || !result.filePaths[0]) {
-    return { status: "cancel" };
-  }
-
-  const sourcePath = result.filePaths[0];
-  const ext = path.extname(sourcePath).toLowerCase();
-  if (!SOUND_OVERRIDE_ASSET_EXTS.has(ext)) {
-    return { status: "error", message: `unsupported audio extension: ${ext || "(none)"}` };
-  }
-
-  try { fs.mkdirSync(overridesDir, { recursive: true }); }
-  catch (err) { return { status: "error", message: `mkdir failed: ${err && err.message}` }; }
-
-  const destFilename = `${soundName}${ext}`;
-  const destPath = path.join(overridesDir, destFilename);
-  try {
-    fs.copyFileSync(sourcePath, destPath);
-  } catch (err) {
-    return { status: "error", message: `copy failed: ${err && err.message}` };
-  }
-  _cleanupSiblingSoundOverrides(overridesDir, soundName, ext);
-
-  const cmdResult = await _settingsController.applyCommand("setSoundOverride", {
-    themeId,
-    soundName,
-    file: destFilename,
-    originalName: path.basename(sourcePath),
-  });
-  if (!cmdResult || cmdResult.status !== "ok") {
-    return cmdResult || { status: "error", message: "setSoundOverride failed" };
-  }
-  // A missing override file may already exist in prefs from a prior run (for
-  // example, the user deleted it manually from "Open overrides folder"). If
-  // they re-pick the same basename/originalName pair, setSoundOverride() is a
-  // noop and activateTheme() does not rebuild activeTheme._soundOverrideFiles.
-  // Remember the freshly-copied file in the live theme so both UI and
-  // playback immediately reflect the restored override.
-  _rememberRuntimeSoundOverrideFile(themeId, soundName, destPath);
-  // Same-filename replacements short-circuit setSoundOverride as a noop, so
-  // activateTheme() never runs and the renderer's _audioCache keeps its old
-  // Audio object for this URL — the user would hear the previous file on
-  // every future trigger. Explicitly invalidate the cache entry for the
-  // current sound URL so the next playback reloads from disk. Harmless when
-  // activateTheme did run (renderer was reloaded, cache is already empty).
-  const newUrl = themeLoader.getSoundUrl(soundName);
-  if (newUrl) sendToRenderer("invalidate-sound-cache", newUrl);
-  return { status: "ok", file: destFilename };
-});
-
-ipcMain.handle("settings:preview-sound", (_event, payload) => {
-  if (!payload || typeof payload !== "object") {
-    return { status: "error", message: "previewSound payload must be an object" };
-  }
-  const { soundName } = payload;
-  if (typeof soundName !== "string" || !soundName) {
-    return { status: "error", message: "previewSound.soundName must be a non-empty string" };
-  }
-  // Mirror playSound()'s guards: DND / muted users clicking Play in Settings
-  // would otherwise bypass the system they explicitly opted into (meetings,
-  // shared spaces). Return a skipped status so the UI can stay silent.
-  if (doNotDisturb) return { status: "skipped", reason: "dnd" };
-  if (soundMuted) return { status: "skipped", reason: "muted" };
-  const url = themeLoader.getSoundUrl(soundName);
-  if (!url) return { status: "error", message: "sound unavailable" };
-  // Cache-bust so the renderer's `_audioCache[url]` doesn't replay a stale
-  // Audio object after the user swapped the override file. playSound() doesn't
-  // need this because changing the override triggers activateTheme → renderer
-  // reload, which clears the cache naturally; preview runs without reload.
-  const bustedUrl = `${url}${url.includes("?") ? "&" : "?"}_t=${Date.now()}`;
-  sendToRenderer("play-sound", { url: bustedUrl, volume: soundVolume });
-  return { status: "ok" };
-});
-
-ipcMain.handle("settings:open-sound-overrides-dir", async () => {
-  if (!activeTheme) return { status: "error", message: "no active theme" };
-  const dir = themeLoader.getSoundOverridesDir(activeTheme._id);
-  if (!dir) return { status: "error", message: "sound-overrides directory unavailable" };
-  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
-  const openResult = await shell.openPath(dir);
-  if (openResult) return { status: "error", message: openResult };
-  return { status: "ok", path: dir };
-});
 
 // Reaction preview goes through the renderer's click-reaction channel
 // (bypasses the state machine entirely — reactions are a renderer-owned
@@ -3228,97 +3029,6 @@ ipcMain.handle("settings:import-animation-overrides", async (event) => {
   return commandResult || { status: "error", message: "import failed" };
 });
 
-// Static metadata for the Agents tab: name, eventSource, capabilities.
-// The renderer uses this (alongside the agents snapshot field) to render one
-// row per agent. Static because it comes from agents/registry.js — no runtime
-// state involved — so the renderer can cache the result and never has to
-// re-fetch.
-ipcMain.handle("settings:list-themes", () => {
-  try {
-    const activeId = activeTheme ? activeTheme._id : "clawd";
-    return themeLoader.listThemesWithMetadata().map((t) =>
-      codexPetMain.decorateThemeMetadata({
-        ...t,
-        active: t.id === activeId,
-      })
-    );
-  } catch (err) {
-    console.warn("Clawd: settings:list-themes failed:", err && err.message);
-    return [];
-  }
-});
-
-ipcMain.handle("settings:refresh-codex-pets", () => codexPetMain.refreshFromSettings());
-ipcMain.handle("settings:open-codex-pets-dir", () => codexPetMain.openCodexPetsDir());
-ipcMain.handle("settings:import-codex-pet-zip", (event) => codexPetMain.importCodexPetZip(event));
-ipcMain.handle("settings:remove-codex-pet", (_event, themeId) => codexPetMain.removeCodexPet(themeId));
-
-// Kept in main so `dialog.showMessageBox` can take a BrowserWindow ref.
-const REMOVE_THEME_DIALOG_STRINGS = {
-  en: {
-    delete: "Delete",
-    cancel: "Cancel",
-    message: (name) => `Delete theme "${name}"?`,
-    detail: "This cannot be undone. All files for this theme will be removed from disk.",
-  },
-  zh: {
-    delete: "删除",
-    cancel: "取消",
-    message: (name) => `确认删除主题 "${name}"？`,
-    detail: "此操作不可撤销。主题的所有文件将从磁盘移除。",
-  },
-  ko: {
-    delete: "삭제",
-    cancel: "취소",
-    message: (name) => `테마 "${name}"을(를) 삭제할까요?`,
-    detail: "이 작업은 되돌릴 수 없습니다. 이 테마의 모든 파일이 디스크에서 제거됩니다.",
-  },
-  ja: {
-    delete: "削除",
-    cancel: "キャンセル",
-    message: (name) => `テーマ "${name}" を削除しますか？`,
-    detail: "この操作は元に戻せません。このテーマのすべてのファイルがディスクから削除されます。",
-  },
-};
-ipcMain.handle("settings:confirm-remove-theme", async (event, themeId) => {
-  if (typeof themeId !== "string" || !themeId) return { confirmed: false };
-  const meta = themeLoader.getThemeMetadata(themeId);
-  const displayName = (meta && meta.name) || themeId;
-  const parent = BrowserWindow.fromWebContents(event.sender) || getSettingsWindow() || null;
-  const s = REMOVE_THEME_DIALOG_STRINGS[lang] || REMOVE_THEME_DIALOG_STRINGS.en;
-  try {
-    const { response } = await dialog.showMessageBox(parent, {
-      type: "warning",
-      buttons: [s.delete, s.cancel],
-      defaultId: 1,
-      cancelId: 1,
-      message: s.message(displayName),
-      detail: s.detail,
-      noLink: true,
-    });
-    return { confirmed: response === 0 };
-  } catch (err) {
-    console.warn("Clawd: confirm-remove-theme dialog failed:", err && err.message);
-    return { confirmed: false };
-  }
-});
-
-
-ipcMain.handle("settings:list-agents", () => {
-  try {
-    const { getAllAgents } = require("../agents/registry");
-    return getAllAgents().map((a) => ({
-      id: a.id,
-      name: a.name,
-      eventSource: a.eventSource,
-      capabilities: a.capabilities || {},
-    }));
-  } catch (err) {
-    console.warn("Clawd: settings:list-agents failed:", err && err.message);
-    return [];
-  }
-});
-
 // ── Auto-updater — delegated to src/updater.js ──
 const _updaterCtx = {
   get doNotDisturb() { return doNotDisturb; },
@@ -3336,48 +3046,6 @@ const _updaterCtx = {
 const _updater = require("./updater")(_updaterCtx);
 const { setupAutoUpdater, checkForUpdates, getUpdateMenuItem, getUpdateMenuLabel } = _updater;
 
-// ── About tab IPC ──
-// Hero SVG is inlined so the Settings renderer can access #shake-slot to
-// drive the click reaction. Animation override posters are captured in a
-// hidden renderer, so they cannot expose SVG internals to Settings either.
-ipcMain.handle("settings:get-about-info", () => {
-  const heroSvgAbsPath = path.join(__dirname, "..", "assets", "svg", "clawd-about-hero.svg");
-  let heroSvgContent = "";
-  try {
-    heroSvgContent = fs.readFileSync(heroSvgAbsPath, "utf8");
-  } catch (err) {
-    console.warn("Clawd: failed to read about hero SVG:", err && err.message);
-  }
-  return {
-    version: app.getVersion(),
-    repoUrl: "https://github.com/rullerzhou-afk/clawd-on-desk",
-    license: "AGPL-3.0",
-    copyright: "\u00a9 2026 Ruller_Lulu",
-    authorName: "Ruller_Lulu / \u9e7f\u9e7f",
-    authorUrl: "https://github.com/rullerzhou-afk",
-    heroSvgContent,
-  };
-});
-ipcMain.handle("settings:check-for-updates", () => {
-  try {
-    checkForUpdates(true);
-    return { status: "ok" };
-  } catch (err) {
-    return { status: "error", message: (err && err.message) || String(err) };
-  }
-});
-ipcMain.handle("settings:open-external", async (_event, url) => {
-  if (typeof url !== "string" || !/^https?:\/\//i.test(url)) {
-    return { status: "error", message: "Invalid URL" };
-  }
-  try {
-    await shell.openExternal(url);
-    return { status: "ok" };
-  } catch (err) {
-    return { status: "error", message: (err && err.message) || String(err) };
-  }
-});
-
 // ── Doctor tab IPC ──
 const { registerDoctorIpc } = require("./doctor-ipc");
 registerDoctorIpc({
@@ -3393,8 +3061,8 @@ registerDoctorIpc({
 // ── Settings panel window ──
 //
 // Single-instance, non-modal, system-titlebar BrowserWindow that hosts the
-// settings UI. Reuses ipcMain.handle("settings:get-snapshot" / "settings:update")
-// already wired up for the controller. The renderer subscribes to
+// settings UI. Reuses the settings IPC registration already wired up for the
+// controller. The renderer subscribes to
 // settings-changed broadcasts so menu changes and panel changes stay in sync.
 let settingsShortcutRecording = null;
 const SIZE_PREVIEW_KEY_RE = /^P:\d+(?:\.\d+)?$/;
@@ -3558,6 +3226,36 @@ function startShortcutRecording(actionId) {
   settingsShortcutRecording = { actionId, listener, tempUnregisteredAccel };
   return { status: "ok" };
 }
+
+registerSettingsIpc({
+  ipcMain,
+  app,
+  BrowserWindow,
+  dialog,
+  shell,
+  fs,
+  path,
+  settingsController: _settingsController,
+  themeLoader,
+  codexPetMain,
+  getSettingsWindow,
+  getActiveTheme: () => activeTheme,
+  getLang: () => lang,
+  getShortcutFailures: () => Object.fromEntries(shortcutRegistrationFailures),
+  startShortcutRecording,
+  stopShortcutRecording,
+  settingsSizePreviewSession,
+  isValidSizePreviewKey,
+  showDashboard: () => showDashboard(),
+  sendToRenderer,
+  getDoNotDisturb: () => doNotDisturb,
+  getSoundMuted: () => soundMuted,
+  getSoundVolume: () => soundVolume,
+  isPlainObject: _isPlainObject,
+  getAllAgents,
+  checkForUpdates,
+  aboutHeroSvgPath: path.join(__dirname, "..", "assets", "svg", "clawd-about-hero.svg"),
+});
 
 function createWindow() {
   // Read everything from the settings controller. The mirror caches above

@@ -6,6 +6,7 @@ const path = require("node:path");
 const ROOT = path.join(__dirname, "..");
 const MAIN = path.join(ROOT, "src", "main.js");
 const CODEX_PET_MAIN = path.join(ROOT, "src", "codex-pet-main.js");
+const SETTINGS_IPC = path.join(ROOT, "src", "settings-ipc.js");
 const PRELOAD_SETTINGS = path.join(ROOT, "src", "preload-settings.js");
 const SETTINGS_ACTIONS = path.join(ROOT, "src", "settings-actions.js");
 const SETTINGS_TAB_THEME = path.join(ROOT, "src", "settings-tab-theme.js");
@@ -27,20 +28,20 @@ test("main syncs Codex Pet themes before the first theme load", () => {
 });
 
 test("settings exposes Codex Pet refresh and managed theme metadata", () => {
-  const mainSource = fs.readFileSync(MAIN, "utf8");
+  const settingsIpcSource = fs.readFileSync(SETTINGS_IPC, "utf8");
   const runtimeSource = fs.readFileSync(CODEX_PET_MAIN, "utf8");
   const preloadSource = fs.readFileSync(PRELOAD_SETTINGS, "utf8");
   const tabSource = fs.readFileSync(SETTINGS_TAB_THEME, "utf8");
 
-  assert.ok(mainSource.includes('ipcMain.handle("settings:refresh-codex-pets"'));
-  assert.ok(mainSource.includes('ipcMain.handle("settings:open-codex-pets-dir"'));
-  assert.ok(mainSource.includes('ipcMain.handle("settings:import-codex-pet-zip"'));
-  assert.ok(mainSource.includes('ipcMain.handle("settings:remove-codex-pet"'));
-  assert.ok(mainSource.includes("codexPetMain.refreshFromSettings()"));
-  assert.ok(mainSource.includes("codexPetMain.openCodexPetsDir()"));
-  assert.ok(mainSource.includes("codexPetMain.importCodexPetZip(event)"));
-  assert.ok(mainSource.includes("codexPetMain.removeCodexPet(themeId)"));
-  assert.ok(mainSource.includes("codexPetMain.decorateThemeMetadata({"));
+  assert.ok(settingsIpcSource.includes('handle("settings:refresh-codex-pets"'));
+  assert.ok(settingsIpcSource.includes('handle("settings:open-codex-pets-dir"'));
+  assert.ok(settingsIpcSource.includes('handle("settings:import-codex-pet-zip"'));
+  assert.ok(settingsIpcSource.includes('handle("settings:remove-codex-pet"'));
+  assert.ok(settingsIpcSource.includes("codexPetMain.refreshFromSettings()"));
+  assert.ok(settingsIpcSource.includes("codexPetMain.openCodexPetsDir()"));
+  assert.ok(settingsIpcSource.includes("codexPetMain.importCodexPetZip(event)"));
+  assert.ok(settingsIpcSource.includes("codexPetMain.removeCodexPet(themeId)"));
+  assert.ok(settingsIpcSource.includes("codexPetMain.decorateThemeMetadata({"));
   assert.ok(runtimeSource.includes("codexPetImporter.importCodexPetFromZipBuffer"));
   assert.ok(runtimeSource.includes("fs.promises.readFile(zipPath)"));
   assert.ok(runtimeSource.includes("function resolveRemovalTarget(themeId)"));

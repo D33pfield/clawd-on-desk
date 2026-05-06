@@ -67,11 +67,12 @@ describe("i18n locales", () => {
   });
 
   it("keeps main-process Settings dialog strings available for every supported language", () => {
-    const source = fs.readFileSync(path.join(ROOT, "src", "main.js"), "utf8");
-    for (const name of [
-      "SOUND_OVERRIDE_DIALOG_STRINGS",
-      "ANIMATION_OVERRIDES_EXPORT_DIALOG_STRINGS",
-      "REMOVE_THEME_DIALOG_STRINGS",
+    const mainSource = fs.readFileSync(path.join(ROOT, "src", "main.js"), "utf8");
+    const settingsIpcSource = fs.readFileSync(path.join(ROOT, "src", "settings-ipc.js"), "utf8");
+    for (const [name, source] of [
+      ["SOUND_OVERRIDE_DIALOG_STRINGS", settingsIpcSource],
+      ["ANIMATION_OVERRIDES_EXPORT_DIALOG_STRINGS", mainSource],
+      ["REMOVE_THEME_DIALOG_STRINGS", settingsIpcSource],
     ]) {
       const start = source.indexOf(`const ${name} = {`);
       assert.notStrictEqual(start, -1, `missing ${name}`);

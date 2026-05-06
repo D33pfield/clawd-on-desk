@@ -16,6 +16,7 @@ const SETTINGS_DOCTOR_MODAL = path.join(SRC_DIR, "settings-doctor-modal.js");
 const SETTINGS_ANIMATION_PREVIEW = path.join(SRC_DIR, "settings-animation-preview.html");
 const PRELOAD_SETTINGS = path.join(SRC_DIR, "preload-settings.js");
 const MAIN_PROCESS = path.join(SRC_DIR, "main.js");
+const SETTINGS_IPC = path.join(SRC_DIR, "settings-ipc.js");
 const DOCTOR_IPC = path.join(SRC_DIR, "doctor-ipc.js");
 const TAB_MODULES = [
   path.join(SRC_DIR, "settings-tab-general.js"),
@@ -1682,7 +1683,7 @@ describe("settings renderer browser environment", () => {
   it("groups Theme cards and exposes Codex Pet import actions in Settings", () => {
     const tabSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-theme.js"), "utf8");
     const preloadSource = fs.readFileSync(PRELOAD_SETTINGS, "utf8");
-    const mainSource = fs.readFileSync(MAIN_PROCESS, "utf8");
+    const settingsIpcSource = fs.readFileSync(SETTINGS_IPC, "utf8");
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     const html = fs.readFileSync(SETTINGS_HTML, "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
@@ -1700,9 +1701,9 @@ describe("settings renderer browser environment", () => {
     assert.ok(preloadSource.includes("openCodexPetsDir"));
     assert.ok(preloadSource.includes("importCodexPetZip"));
     assert.ok(preloadSource.includes("removeCodexPet"));
-    assert.ok(mainSource.includes('ipcMain.handle("settings:open-codex-pets-dir"'));
-    assert.ok(mainSource.includes('ipcMain.handle("settings:import-codex-pet-zip"'));
-    assert.ok(mainSource.includes('ipcMain.handle("settings:remove-codex-pet"'));
+    assert.ok(settingsIpcSource.includes('handle("settings:open-codex-pets-dir"'));
+    assert.ok(settingsIpcSource.includes('handle("settings:import-codex-pet-zip"'));
+    assert.ok(settingsIpcSource.includes('handle("settings:remove-codex-pet"'));
     assert.ok(html.includes(".theme-section-title"));
     assert.ok(html.includes(".theme-uninstall-btn"));
     assert.ok(i18nSource.includes("themeImportPetZip"));
