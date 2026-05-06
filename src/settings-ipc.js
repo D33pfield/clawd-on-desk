@@ -43,7 +43,7 @@ function requiredDependency(value, name) {
   return value;
 }
 
-function isPlainObjectFallback(value) {
+function isPlainObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
@@ -66,7 +66,7 @@ function cleanupSiblingSoundOverrides(fs, path, overridesDir, soundName, keepExt
   }
 }
 
-function rememberRuntimeSoundOverrideFile({ getActiveTheme, isPlainObject }, themeId, soundName, absPath) {
+function rememberRuntimeSoundOverrideFile({ getActiveTheme }, themeId, soundName, absPath) {
   const activeTheme = getActiveTheme();
   if (!activeTheme || activeTheme._id !== themeId) return;
   if (typeof soundName !== "string" || !soundName) return;
@@ -101,11 +101,6 @@ function registerSettingsIpc(options = {}) {
   const getSettingsWindow = options.getSettingsWindow || (() => null);
   const getActiveTheme = options.getActiveTheme || (() => null);
   const getLang = options.getLang || (() => "en");
-  const getShortcutFailures = options.getShortcutFailures || (() => ({}));
-  const startShortcutRecording = options.startShortcutRecording || (() => (
-    { status: "error", message: "shortcut recording unavailable" }
-  ));
-  const stopShortcutRecording = options.stopShortcutRecording || (() => {});
   const settingsSizePreviewSession = requiredDependency(
     options.settingsSizePreviewSession,
     "settingsSizePreviewSession"
@@ -119,8 +114,7 @@ function registerSettingsIpc(options = {}) {
   const getDoNotDisturb = options.getDoNotDisturb || (() => false);
   const getSoundMuted = options.getSoundMuted || (() => false);
   const getSoundVolume = options.getSoundVolume || (() => 1);
-  const isPlainObject = options.isPlainObject || isPlainObjectFallback;
-  const getAllAgents = options.getAllAgents || (() => require("../agents/registry").getAllAgents());
+  const getAllAgents = requiredDependency(options.getAllAgents, "getAllAgents");
   const checkForUpdates = options.checkForUpdates || (() => {});
   const now = options.now || (() => Date.now());
   const aboutHeroSvgPath = options.aboutHeroSvgPath
@@ -142,14 +136,6 @@ function registerSettingsIpc(options = {}) {
   }
 
   handle("settings:get-snapshot", () => settingsController.getSnapshot());
-  handle("settings:getShortcutFailures", () => getShortcutFailures());
-  handle("settings:enterShortcutRecording", (_event, actionId) =>
-    startShortcutRecording(actionId)
-  );
-  handle("settings:exitShortcutRecording", () => {
-    stopShortcutRecording();
-    return { status: "ok" };
-  });
   handle("settings:update", (_event, payload) => {
     if (!payload || typeof payload !== "object") {
       return { status: "error", message: "settings:update payload must be { key, value }" };
@@ -246,7 +232,7 @@ function registerSettingsIpc(options = {}) {
     if (!cmdResult || cmdResult.status !== "ok") {
       return cmdResult || { status: "error", message: "setSoundOverride failed" };
     }
-    rememberRuntimeSoundOverrideFile({ getActiveTheme, isPlainObject }, themeId, soundName, destPath);
+    rememberRuntimeSoundOverrideFile({ getActiveTheme }, themeId, soundName, destPath);
     const newUrl = themeLoader.getSoundUrl(soundName);
     if (newUrl) sendToRenderer("invalidate-sound-cache", newUrl);
     return { status: "ok", file: destFilename };
@@ -384,10 +370,4 @@ function registerSettingsIpc(options = {}) {
 
 module.exports = {
   registerSettingsIpc,
-  __test: {
-    cleanupSiblingSoundOverrides,
-    getSettingsDialogParent,
-    mapAgentMetadata,
-    rememberRuntimeSoundOverrideFile,
-  },
 };

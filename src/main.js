@@ -12,6 +12,7 @@ const {
   createSettingsSizePreviewSession,
 } = require("./settings-size-preview-session");
 const { registerSettingsIpc } = require("./settings-ipc");
+const createShortcutRuntime = require("./shortcut-runtime");
 const hitGeometry = require("./hit-geometry");
 const animationCycle = require("./animation-cycle");
 const {
@@ -102,10 +103,6 @@ const {
   getBubblePolicy,
   isAllBubblesHidden,
 } = require("./bubble-policy");
-const {
-  SHORTCUT_ACTIONS,
-  SHORTCUT_ACTION_IDS,
-} = require("./shortcut-actions");
 const loginItemHelpers = require("./login-item");
 const PREFS_PATH = path.join(app.getPath("userData"), "clawd-prefs.json");
 const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
@@ -227,6 +224,10 @@ function _restartClawdNow() {
   });
 }
 
+let shortcutRuntime = null;
+const shortcutHandlers = {
+  togglePet: () => togglePetVisibility(),
+};
 const _settingsController = createSettingsController({
   prefsPath: PREFS_PATH,
   loadResult: _initialPrefsLoad,
@@ -265,11 +266,13 @@ const _settingsController = createSettingsController({
     getThemeInfo: (id) => _deferredGetThemeInfo(id),
     removeThemeDir: (id) => _deferredRemoveThemeDir(id),
     globalShortcut,
-    shortcutHandlers: {
-      togglePet: () => togglePetVisibility(),
+    shortcutHandlers,
+    // The controller is created before shortcutRuntime because each side needs
+    // the other. These callbacks may run before the runtime is assigned.
+    getShortcutFailure: (actionId) => shortcutRuntime ? shortcutRuntime.getFailure(actionId) : null,
+    clearShortcutFailure: (actionId) => {
+      if (shortcutRuntime) shortcutRuntime.clearFailure(actionId);
     },
-    getShortcutFailure: (actionId) => getShortcutFailure(actionId),
-    clearShortcutFailure: (actionId) => clearShortcutFailure(actionId),
   },
 });
 
@@ -441,7 +444,7 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
   onBeforeCreate: () => _bumpAnimationPreviewPosterGeneration(),
   onBeforeClosed: () => {
     _bumpAnimationPreviewPosterGeneration();
-    stopShortcutRecording();
+    if (shortcutRuntime) shortcutRuntime.stopRecording();
     void settingsSizePreviewSession.cleanup();
   },
   onAfterClosed: () => _maybeDestroyIdleAnimationPreviewPosterWindow(),
@@ -450,6 +453,14 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
 function getSettingsWindow() {
   return settingsWindowRuntime.getWindow();
 }
+
+shortcutRuntime = createShortcutRuntime({
+  ipcMain,
+  globalShortcut,
+  settingsController: _settingsController,
+  getSettingsWindow,
+  shortcutHandlers,
+});
 
 // The injected window/menu closures below are intentionally lazy. During
 // startup before activeTheme / win / Settings window / rebuildAllMenus exist,
@@ -620,22 +631,6 @@ let lowPowerIdleMode = _settingsController.get("lowPowerIdleMode");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
 let petHidden = false;
-const shortcutRegistrationFailures = new Map();
-
-function getShortcutFailure(actionId) {
-  return shortcutRegistrationFailures.get(actionId) || null;
-}
-
-function broadcastShortcutFailures() {
-  const settingsWindow = getSettingsWindow();
-  if (!settingsWindow || settingsWindow.isDestroyed() || !settingsWindow.webContents || settingsWindow.webContents.isDestroyed()) {
-    return;
-  }
-  settingsWindow.webContents.send(
-    "shortcut-failures-changed",
-    Object.fromEntries(shortcutRegistrationFailures)
-  );
-}
 
 function getRuntimeBubblePolicy(kind) {
   return getBubblePolicy(_settingsController.getSnapshot(), kind);
@@ -643,19 +638,6 @@ function getRuntimeBubblePolicy(kind) {
 
 function getAllBubblesHidden() {
   return isAllBubblesHidden(_settingsController.getSnapshot());
-}
-
-function reportShortcutFailure(actionId, reason) {
-  if (!SHORTCUT_ACTIONS[actionId]) return;
-  if (shortcutRegistrationFailures.get(actionId) === reason) return;
-  shortcutRegistrationFailures.set(actionId, reason);
-  broadcastShortcutFailures();
-}
-
-function clearShortcutFailure(actionId) {
-  if (!shortcutRegistrationFailures.has(actionId)) return;
-  shortcutRegistrationFailures.delete(actionId);
-  broadcastShortcutFailures();
 }
 
 function togglePetVisibility() {
@@ -727,34 +709,6 @@ function bringPetToPrimaryDisplay() {
   reassertWinTopmost();
   scheduleHwndRecovery();
   flushRuntimeStateToPrefs();
-}
-
-function registerPersistentShortcutsFromSettings() {
-  const snapshot = _settingsController.getSnapshot();
-  const shortcuts = (snapshot && snapshot.shortcuts) || {};
-  for (const actionId of SHORTCUT_ACTION_IDS) {
-    const meta = SHORTCUT_ACTIONS[actionId];
-    if (!meta || !meta.persistent) continue;
-    const accelerator = shortcuts[actionId];
-    if (!accelerator) {
-      clearShortcutFailure(actionId);
-      continue;
-    }
-    const handler = actionId === "togglePet" ? togglePetVisibility : null;
-    if (typeof handler !== "function") continue;
-    let ok = false;
-    try {
-      ok = !!globalShortcut.register(accelerator, handler);
-    } catch {
-      ok = false;
-    }
-    if (!ok) {
-      reportShortcutFailure(actionId, "system conflict");
-      console.warn(`Clawd: failed to register shortcut ${actionId}: ${accelerator}`);
-      continue;
-    }
-    clearShortcutFailure(actionId);
-  }
 }
 
 function sendToRenderer(channel, ...args) {
@@ -1031,8 +985,8 @@ const _permCtx = {
   subscribeShortcuts: (cb) => _settingsController.subscribeKey("shortcuts", (_value, snapshot) => {
     if (typeof cb === "function") cb(snapshot);
   }),
-  reportShortcutFailure: (actionId, reason) => reportShortcutFailure(actionId, reason),
-  clearShortcutFailure: (actionId) => clearShortcutFailure(actionId),
+  reportShortcutFailure: (actionId, reason) => shortcutRuntime.reportFailure(actionId, reason),
+  clearShortcutFailure: (actionId) => shortcutRuntime.clearFailure(actionId),
   repositionUpdateBubble: () => repositionUpdateBubble(),
 };
 const _perm = require("./permission")(_permCtx);
@@ -3064,7 +3018,6 @@ registerDoctorIpc({
 // settings UI. Reuses the settings IPC registration already wired up for the
 // controller. The renderer subscribes to
 // settings-changed broadcasts so menu changes and panel changes stay in sync.
-let settingsShortcutRecording = null;
 const SIZE_PREVIEW_KEY_RE = /^P:\d+(?:\.\d+)?$/;
 
 function isValidSizePreviewKey(value) {
@@ -3138,95 +3091,6 @@ const settingsSizePreviewSession = createSettingsSizePreviewSession({
   },
 });
 
-function stopShortcutRecording() {
-  if (!settingsShortcutRecording) return;
-  const settingsWindow = getSettingsWindow();
-  if (
-    settingsWindow
-    && !settingsWindow.isDestroyed()
-    && settingsWindow.webContents
-    && !settingsWindow.webContents.isDestroyed()
-  ) {
-    try {
-      settingsWindow.webContents.removeListener(
-        "before-input-event",
-        settingsShortcutRecording.listener
-      );
-    } catch {}
-  }
-
-  // Restore the temporarily unregistered accelerator if prefs still hold the
-  // same value (i.e. the user cancelled or pressed the same combo again so
-  // the command was a noop). If prefs changed, applyPersistentShortcutChange
-  // has already registered the new value — don't double-register.
-  const { actionId, tempUnregisteredAccel } = settingsShortcutRecording;
-  if (tempUnregisteredAccel) {
-    const snapshot = _settingsController.getSnapshot();
-    const current = snapshot && snapshot.shortcuts && snapshot.shortcuts[actionId];
-    if (current === tempUnregisteredAccel) {
-      const handler = actionId === "togglePet" ? togglePetVisibility : null;
-      if (typeof handler === "function") {
-        try { globalShortcut.register(tempUnregisteredAccel, handler); } catch {}
-      }
-    }
-  }
-
-  settingsShortcutRecording = null;
-}
-
-function startShortcutRecording(actionId) {
-  if (!SHORTCUT_ACTIONS[actionId]) {
-    return { status: "error", message: "unknown shortcut action" };
-  }
-  const settingsWindow = getSettingsWindow();
-  if (
-    !settingsWindow
-    || settingsWindow.isDestroyed()
-    || !settingsWindow.webContents
-    || settingsWindow.webContents.isDestroyed()
-  ) {
-    return { status: "error", message: "settings window unavailable" };
-  }
-
-  stopShortcutRecording();
-
-  // Temporarily unregister this action's current persistent globalShortcut so
-  // the user pressing their old combo doesn't fire the real handler (e.g.
-  // hiding the pet) mid-recording. Contextual shortcuts (permission hotkeys)
-  // manage their own lifecycle via syncPermissionShortcuts, skip them.
-  let tempUnregisteredAccel = null;
-  const meta = SHORTCUT_ACTIONS[actionId];
-  if (meta && meta.persistent) {
-    const snapshot = _settingsController.getSnapshot();
-    const current = snapshot && snapshot.shortcuts && snapshot.shortcuts[actionId];
-    if (current) {
-      try {
-        if (globalShortcut.isRegistered(current)) {
-          globalShortcut.unregister(current);
-          tempUnregisteredAccel = current;
-        }
-      } catch {}
-    }
-  }
-
-  const listener = (event, input) => {
-    if (!input || input.type !== "keyDown") return;
-    event.preventDefault();
-    settingsWindow.webContents.send("shortcut-record-key", {
-      actionId,
-      key: input.key,
-      code: input.code,
-      altKey: !!input.alt,
-      ctrlKey: !!input.control,
-      metaKey: !!input.meta,
-      shiftKey: !!input.shift,
-    });
-  };
-  settingsWindow.webContents.on("before-input-event", listener);
-  settingsShortcutRecording = { actionId, listener, tempUnregisteredAccel };
-  return { status: "ok" };
-}
-
 registerSettingsIpc({
   ipcMain,
   app,
@@ -3241,9 +3105,6 @@ registerSettingsIpc({
   getSettingsWindow,
   getActiveTheme: () => activeTheme,
   getLang: () => lang,
-  getShortcutFailures: () => Object.fromEntries(shortcutRegistrationFailures),
-  startShortcutRecording,
-  stopShortcutRecording,
   settingsSizePreviewSession,
   isValidSizePreviewKey,
   showDashboard: () => showDashboard(),
@@ -3251,7 +3112,6 @@ registerSettingsIpc({
   getDoNotDisturb: () => doNotDisturb,
   getSoundMuted: () => soundMuted,
   getSoundVolume: () => soundVolume,
-  isPlainObject: _isPlainObject,
   getAllAgents,
   checkForUpdates,
   aboutHeroSvgPath: path.join(__dirname, "..", "assets", "svg", "clawd-about-hero.svg"),
@@ -4130,7 +3990,7 @@ if (!gotTheLock) {
     });
 
     // Register persistent global shortcuts from the validated prefs snapshot.
-    registerPersistentShortcutsFromSettings();
+    shortcutRuntime.registerPersistentShortcutsFromSettings();
 
     // Construct log monitors. We always instantiate them so toggling the
     // agent on/off later can call start()/stop() without paying the require

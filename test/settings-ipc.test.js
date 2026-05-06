@@ -117,12 +117,6 @@ function createHarness(overrides = {}) {
     getSettingsWindow: () => ({ id: "settings-window" }),
     getActiveTheme: () => activeTheme,
     getLang: overrides.getLang || (() => "en"),
-    getShortcutFailures: () => ({ togglePet: "system conflict" }),
-    startShortcutRecording: (actionId) => {
-      calls.push(["startShortcutRecording", actionId]);
-      return { status: "ok", actionId };
-    },
-    stopShortcutRecording: () => calls.push(["stopShortcutRecording"]),
     settingsSizePreviewSession,
     isValidSizePreviewKey: (value) => /^P:\d+$/.test(value),
     showDashboard: () => calls.push(["showDashboard"]),
@@ -130,7 +124,6 @@ function createHarness(overrides = {}) {
     getDoNotDisturb: overrides.getDoNotDisturb || (() => false),
     getSoundMuted: overrides.getSoundMuted || (() => false),
     getSoundVolume: overrides.getSoundVolume || (() => 0.4),
-    isPlainObject: (value) => !!value && typeof value === "object" && !Array.isArray(value),
     getAllAgents: overrides.getAllAgents || (() => []),
     checkForUpdates: (manual) => calls.push(["checkForUpdates", manual]),
     aboutHeroSvgPath: overrides.aboutHeroSvgPath || path.join(__dirname, "missing-about-hero.svg"),
@@ -147,6 +140,9 @@ test("settings IPC registers owned channels and leaves animation override channe
   assert.ok(ipcMain.handlers.has("settings:list-themes"));
   assert.ok(ipcMain.handlers.has("settings:refresh-codex-pets"));
   assert.ok(ipcMain.listeners.has("settings:open-dashboard"));
+  assert.ok(!ipcMain.handlers.has("settings:getShortcutFailures"));
+  assert.ok(!ipcMain.handlers.has("settings:enterShortcutRecording"));
+  assert.ok(!ipcMain.handlers.has("settings:exitShortcutRecording"));
   assert.ok(!ipcMain.handlers.has("settings:get-animation-overrides-data"));
   assert.ok(!ipcMain.handlers.has("settings:open-theme-assets-dir"));
   assert.ok(!ipcMain.handlers.has("settings:preview-animation-override"));
@@ -160,7 +156,7 @@ test("settings IPC registers owned channels and leaves animation override channe
   assert.strictEqual(ipcMain.listeners.size, 0);
 });
 
-test("settings IPC delegates controller, shortcut, size preview, and dashboard handlers", async () => {
+test("settings IPC delegates controller, size preview, and dashboard handlers", async () => {
   const { ipcMain, calls } = createHarness();
 
   assert.deepStrictEqual(await ipcMain.invoke("settings:get-snapshot"), { lang: "en" });
@@ -176,14 +172,6 @@ test("settings IPC delegates controller, shortcut, size preview, and dashboard h
   assert.deepStrictEqual(await ipcMain.invoke("settings:command", { action: "resizePet", payload: "P:30" }), {
     status: "ok",
   });
-  assert.deepStrictEqual(await ipcMain.invoke("settings:getShortcutFailures"), {
-    togglePet: "system conflict",
-  });
-  assert.deepStrictEqual(await ipcMain.invoke("settings:enterShortcutRecording", "togglePet"), {
-    status: "ok",
-    actionId: "togglePet",
-  });
-  assert.deepStrictEqual(await ipcMain.invoke("settings:exitShortcutRecording"), { status: "ok" });
   assert.deepStrictEqual(await ipcMain.invoke("settings:begin-size-preview"), {
     status: "ok",
     phase: "begin",
@@ -203,8 +191,6 @@ test("settings IPC delegates controller, shortcut, size preview, and dashboard h
   assert.deepStrictEqual(calls, [
     ["applyUpdate", "size", "P:20"],
     ["applyCommand", "resizePet", "P:30"],
-    ["startShortcutRecording", "togglePet"],
-    ["stopShortcutRecording"],
     ["sizeBegin"],
     ["sizePreview", "P:35"],
     ["sizeEnd", "P:35"],
