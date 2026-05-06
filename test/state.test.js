@@ -37,6 +37,7 @@ function makeCtx(overrides = {}) {
     buildTrayMenu: () => {},
     pendingPermissions: [],
     resolvePermissionEntry: () => {},
+    dismissPermissionsForDnd: () => {},
     focusTerminalWindow: () => {},
     // Default: all pids dead
     processKill: () => { const e = new Error("ESRCH"); e.code = "ESRCH"; throw e; },
@@ -1825,14 +1826,20 @@ describe("DND mode", () => {
     assert.strictEqual(api.getCurrentState(), "sleeping");
   });
 
-  it("DND denies all pending permissions", () => {
-    const denied = [];
-    ctx.resolvePermissionEntry = (perm, action) => denied.push({ perm, action });
+  it("DND dismisses pending permissions without resolving deny", () => {
+    const resolved = [];
+    const dismissed = [];
+    ctx.resolvePermissionEntry = (perm, action) => resolved.push({ perm, action });
+    ctx.dismissPermissionsForDnd = () => {
+      dismissed.push([...ctx.pendingPermissions]);
+      ctx.pendingPermissions.length = 0;
+      return 2;
+    };
     ctx.pendingPermissions = ["p1", "p2"];
     api.enableDoNotDisturb();
-    assert.strictEqual(denied.length, 2);
-    assert.strictEqual(denied[0].action, "deny");
-    assert.strictEqual(denied[1].action, "deny");
+    assert.deepStrictEqual(dismissed, [["p1", "p2"]]);
+    assert.deepStrictEqual(resolved, []);
+    assert.deepStrictEqual(ctx.pendingPermissions, []);
   });
 
   it("DND clears pending and auto-return timers", () => {

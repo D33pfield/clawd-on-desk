@@ -1692,9 +1692,9 @@ function formatElapsed(ms) {
 // ── Do Not Disturb ──
 // Drops every Kimi hold + suspect timer WITHOUT triggering a state resolve.
 // Used by two "channel is no longer available" paths:
-//   1. enableDoNotDisturb — the DND loop has already dismissed matching
-//      bubbles via resolvePermissionEntry, but without this the lock would
-//      pin notification the moment DND is disabled.
+//   1. enableDoNotDisturb — the DND permission dismiss helper has already
+//      dropped matching bubbles without answering for the user, but without
+//      this the lock would pin notification the moment DND is disabled.
 //   2. dismissPermissionsByAgent("kimi-cli") — when the user toggles off
 //      Kimi's permission UI from settings; symmetric to (1).
 // Intentionally does NOT call applyResolvedDisplayState — the callers are
@@ -1718,7 +1718,9 @@ function enableDoNotDisturb() {
   ctx.doNotDisturb = true;
   ctx.sendToRenderer("dnd-change", true);
   ctx.sendToHitWin("hit-state-sync", { dndEnabled: true });
-  for (const perm of [...ctx.pendingPermissions]) ctx.resolvePermissionEntry(perm, "deny", "DND enabled");
+  if (typeof ctx.dismissPermissionsForDnd === "function") {
+    ctx.dismissPermissionsForDnd();
+  }
   disposeAllKimiPermissionState();
   if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; pendingState = null; }
   if (autoReturnTimer) { clearTimeout(autoReturnTimer); autoReturnTimer = null; }

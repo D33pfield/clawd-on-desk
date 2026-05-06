@@ -304,22 +304,22 @@ async function installCodexPetPackage({ manifest, files, codexPetsDir, confirmRe
         throw new Error(`refusing to overwrite non-pet directory: ${targetDir}`);
       }
       const existingMarker = readImportMarker(targetDir);
-      if (!existingMarker) {
-        if (typeof confirmReplaceExistingPackage !== "function") {
-          throw new Error(`Codex Pet package already exists locally: ${targetDir}`);
-        }
-        const existingManifest = readPetManifestIfPresent(targetDir);
-        const confirmed = await confirmReplaceExistingPackage({
-          packageDir: targetDir,
-          packageName,
-          existingManifest,
-          incomingManifest: manifest,
-        });
-        if (!confirmed) {
-          const err = new Error("Codex Pet package replacement was cancelled");
-          err.code = ERR_REPLACE_DECLINED;
-          throw err;
-        }
+      if (typeof confirmReplaceExistingPackage !== "function") {
+        throw new Error(`Codex Pet package already exists locally: ${targetDir}`);
+      }
+      const existingManifest = readPetManifestIfPresent(targetDir);
+      const confirmed = await confirmReplaceExistingPackage({
+        packageDir: targetDir,
+        packageName,
+        existingManifest,
+        incomingManifest: manifest,
+        existingMarker,
+        wasClawdImported: !!existingMarker,
+      });
+      if (!confirmed) {
+        const err = new Error("Codex Pet package replacement was cancelled");
+        err.code = ERR_REPLACE_DECLINED;
+        throw err;
       }
       fs.rmSync(targetDir, { recursive: true, force: true });
     }

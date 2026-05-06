@@ -81,6 +81,13 @@ function createFakeRes() {
       if (this._listeners.get(event) === handler) this._listeners.delete(event);
       return this;
     },
+    destroy() {
+      this.destroyed = true;
+      this.writableEnded = true;
+      this.writableFinished = true;
+      const handler = this._listeners.get("close");
+      if (handler) handler();
+    },
   };
   return res;
 }
@@ -181,5 +188,66 @@ describe("Codex permission response sanitizer", () => {
       assert.strictEqual(res.body, "");
       assert.strictEqual(api.pendingPermissions.length, 0);
     }
+  });
+
+  it("dismisses DND permissions without approving or denying on the user's behalf", () => {
+    const { api } = createCodexDecisionHarness();
+    const codexRes = createFakeRes();
+    const claudeRes = createFakeRes();
+    const opencodeRes = createFakeRes();
+    const codexBubble = createFakeBubble();
+    const claudeBubble = createFakeBubble();
+    const opencodeBubble = createFakeBubble();
+    const notifyBubble = createFakeBubble();
+
+    api.pendingPermissions.push(
+      {
+        res: codexRes,
+        abortHandler: () => {},
+        sessionId: "codex:s1",
+        bubble: codexBubble,
+        hideTimer: null,
+        agentId: "codex",
+        isCodex: true,
+      },
+      {
+        res: claudeRes,
+        abortHandler: () => {},
+        sessionId: "claude:s1",
+        bubble: claudeBubble,
+        hideTimer: null,
+        agentId: "claude-code",
+      },
+      {
+        res: opencodeRes,
+        sessionId: "opencode:s1",
+        bubble: opencodeBubble,
+        hideTimer: null,
+        agentId: "opencode",
+        isOpencode: true,
+        bridgeUrl: "http://127.0.0.1:9",
+        bridgeToken: "token",
+        requestId: "req-1",
+      },
+      {
+        sessionId: "codex:s1",
+        bubble: notifyBubble,
+        agentId: "codex",
+        isCodexNotify: true,
+      }
+    );
+
+    assert.strictEqual(api.dismissPermissionsForDnd(), 4);
+
+    assert.strictEqual(codexRes.statusCode, 204);
+    assert.strictEqual(codexRes.body, "");
+    assert.strictEqual(claudeRes.destroyed, true);
+    assert.strictEqual(opencodeRes.destroyed, false);
+    assert.strictEqual(opencodeRes.statusCode, null);
+    assert.strictEqual(codexBubble.hidden, true);
+    assert.strictEqual(claudeBubble.hidden, true);
+    assert.strictEqual(opencodeBubble.hidden, true);
+    assert.strictEqual(notifyBubble.hidden, true);
+    assert.strictEqual(api.pendingPermissions.length, 0);
   });
 });

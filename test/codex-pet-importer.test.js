@@ -409,7 +409,7 @@ test("requires confirmation before replacing an existing non-Clawd-imported pet 
   assert.ok(importer.readImportMarker(replaced.packageDir));
 });
 
-test("replaces Clawd-imported pet packages without a second confirmation", async () => {
+test("requires confirmation before replacing Clawd-imported pet packages", async () => {
   const root = makeTempDir();
   const petsDir = path.join(root, "pets");
   const first = await importer.installCodexPetPackage({
@@ -419,10 +419,36 @@ test("replaces Clawd-imported pet packages without a second confirmation", async
   });
   assert.ok(importer.readImportMarker(first.packageDir));
 
+  await assert.rejects(
+    () => importer.installCodexPetPackage({
+      manifest: fixtureManifest({ displayName: "Second" }),
+      files: [{ relativePath: "spritesheet.png", buffer: fixtureSpritesheet() }],
+      codexPetsDir: petsDir,
+    }),
+    /already exists locally/
+  );
+
+  let seenPayload = null;
+  await assert.rejects(
+    () => importer.installCodexPetPackage({
+      manifest: fixtureManifest({ displayName: "Second" }),
+      files: [{ relativePath: "spritesheet.png", buffer: fixtureSpritesheet() }],
+      codexPetsDir: petsDir,
+      confirmReplaceExistingPackage: async (payload) => {
+        seenPayload = payload;
+        return false;
+      },
+    }),
+    { code: importer.ERR_REPLACE_DECLINED }
+  );
+  assert.strictEqual(seenPayload.wasClawdImported, true);
+  assert.ok(seenPayload.existingMarker);
+
   const second = await importer.installCodexPetPackage({
     manifest: fixtureManifest({ displayName: "Second" }),
     files: [{ relativePath: "spritesheet.png", buffer: fixtureSpritesheet() }],
     codexPetsDir: petsDir,
+    confirmReplaceExistingPackage: async () => true,
   });
   assert.strictEqual(second.packageDir, first.packageDir);
   assert.strictEqual(second.packageInfo.displayName, "Second");
