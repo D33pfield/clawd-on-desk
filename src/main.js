@@ -13,6 +13,7 @@ const {
 } = require("./settings-size-preview-session");
 const { registerSettingsIpc } = require("./settings-ipc");
 const { registerSessionIpc } = require("./session-ipc");
+const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
 const createShortcutRuntime = require("./shortcut-runtime");
 const hitGeometry = require("./hit-geometry");
 const animationCycle = require("./animation-cycle");
@@ -3106,8 +3107,8 @@ registerSessionIpc({
   ipcMain,
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
   getI18n: () => getDashboardI18nPayload(),
-  focusSession: focusDashboardSession,
-  hideSession: hideDashboardSession,
+  focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
+  hideSession: (sessionId) => hideDashboardSession(sessionId),
   setSessionAlias: (payload) => _settingsController.applyCommand("setSessionAlias", payload),
   showDashboard: () => showDashboard(),
 });
@@ -3346,80 +3347,37 @@ function createWindow() {
 
   syncSessionHudVisibility();
 
-  ipcMain.on("show-context-menu", showPetContextMenu);
-
-  ipcMain.on("drag-move", () => moveWindowForDrag());
-
-  ipcMain.on("pause-cursor-polling", () => { idlePaused = true; });
-  ipcMain.on("resume-from-reaction", () => {
-    idlePaused = false;
-    if (_mini.getMiniTransitioning()) return;
-    sendToRenderer("state-change", _state.getCurrentState(), _state.getCurrentSvg());
-  });
-
-  ipcMain.on("drag-lock", (event, locked) => {
-    dragLocked = !!locked;
-    if (locked) {
-      mouseOverPet = true;
-      beginDragSnapshot();
-    } else {
-      clearDragSnapshot();
-      syncHitWin();
-    }
-  });
-
-  // Reaction relay: hitWin → main → renderWin
-  ipcMain.on("start-drag-reaction", () => sendToRenderer("start-drag-reaction"));
-  ipcMain.on("end-drag-reaction", () => sendToRenderer("end-drag-reaction"));
-  ipcMain.on("play-click-reaction", (_, svg, duration) => {
-    sendToRenderer("play-click-reaction", svg, duration);
-  });
-
-  ipcMain.on("drag-end", () => {
-    try {
-      if (!_mini.getMiniMode() && !_mini.getMiniTransitioning()) {
-        checkMiniModeSnap();
-        if (_mini.getMiniMode() || _mini.getMiniTransitioning()) return;
-        // After drag, clamp to the nearest screen (loose clamp during drag allows cross-screen).
-        // In proportional mode, also recalculate size for the landing display —
-        // unless the user asked to keep the pixel size across displays, in which
-        // case we leave the current window size alone.
-        if (win && !win.isDestroyed()) {
-          const virtualBounds = getPetWindowBounds();
-          const size = keepSizeAcrossDisplaysCached
-            ? { width: virtualBounds.width, height: virtualBounds.height }
-            : getCurrentPixelSize();
-          const clamped = computeFinalDragBounds(virtualBounds, size, clampToScreenVisual);
-          if (clamped) applyPetWindowBounds(clamped);
-          reassertWinTopmost();
-          scheduleHwndRecovery();
-          syncHitWin();
-          repositionFloatingBubbles();
-        }
-      }
-    } finally {
-      dragLocked = false;
-      clearDragSnapshot();
-    }
-  });
-
-  ipcMain.on("exit-mini-mode", () => {
-    if (_mini.getMiniMode()) exitMiniMode();
-  });
-
-  ipcMain.on("focus-terminal", () => {
-    const focusableIds = getFocusableLocalHudSessionIds();
-    focusLog(`focus request source=pet-body sid=- focusableCount=${focusableIds.length}`);
-    if (focusableIds.length > 1) {
-      focusLog(`focus result branch=none reason=multi-session-open-dashboard count=${focusableIds.length}`);
-      showDashboard();
-      return;
-    }
-    if (focusableIds.length === 1) {
-      focusDashboardSession(focusableIds[0], { requestSource: "pet-body" });
-      return;
-    }
-    focusLog("focus result branch=none reason=no-focusable-session source=pet-body");
+  registerPetInteractionIpc({
+    ipcMain,
+    showContextMenu: (event) => showPetContextMenu(event),
+    moveWindowForDrag: () => moveWindowForDrag(),
+    setIdlePaused: (value) => { idlePaused = !!value; },
+    isMiniTransitioning: () => _mini.getMiniTransitioning(),
+    getCurrentState: () => _state.getCurrentState(),
+    getCurrentSvg: () => _state.getCurrentSvg(),
+    sendToRenderer,
+    setDragLocked: (value) => { dragLocked = !!value; },
+    setMouseOverPet: (value) => { mouseOverPet = !!value; },
+    beginDragSnapshot: () => beginDragSnapshot(),
+    clearDragSnapshot: () => clearDragSnapshot(),
+    syncHitWin: () => syncHitWin(),
+    isMiniMode: () => _mini.getMiniMode(),
+    checkMiniModeSnap: () => checkMiniModeSnap(),
+    hasPetWindow: () => !!(win && !win.isDestroyed()),
+    getPetWindowBounds: () => getPetWindowBounds(),
+    getKeepSizeAcrossDisplays: () => keepSizeAcrossDisplaysCached,
+    getCurrentPixelSize: () => getCurrentPixelSize(),
+    computeDragEndBounds: (virtualBounds, size) =>
+      computeFinalDragBounds(virtualBounds, size, clampToScreenVisual),
+    applyPetWindowBounds: (bounds) => applyPetWindowBounds(bounds),
+    reassertWinTopmost: () => reassertWinTopmost(),
+    scheduleHwndRecovery: () => scheduleHwndRecovery(),
+    repositionFloatingBubbles: () => repositionFloatingBubbles(),
+    exitMiniMode: () => exitMiniMode(),
+    getFocusableLocalHudSessionIds: () => getFocusableLocalHudSessionIds(),
+    focusLog: (message) => focusLog(message),
+    showDashboard: () => showDashboard(),
+    focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
   });
 
   ipcMain.on("bubble-height", (event, height) => _perm.handleBubbleHeight(event, height));
