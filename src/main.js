@@ -51,10 +51,7 @@ const {
 const { keepOutOfTaskbar } = require("./taskbar");
 const createTopmostRuntime = require("./topmost-runtime");
 const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
-const {
-  animateWindowOpacity,
-  setWindowOpacity,
-} = require("./window-opacity-transition");
+const createThemeFadeSequencer = require("./theme-fade-sequencer");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
 } = require("./session-focus");
@@ -886,16 +883,19 @@ let forceEyeResend = false;
 let forceEyeResendBoostUntil = 0;
 let requestFastTick = () => {};
 let themeReloadInProgress = false;
-let themeSwitchTransitionSeq = 0;
-let themeSwitchFadeFallbackTimer = null;
-let themeSwitchOpacityCancelSignal = null;
-let themeSwitchReloadListenerCleanup = null;
 let repositionSessionHud = () => {};
 let syncSessionHudVisibility = () => {};
 let broadcastSessionHudSnapshot = () => {};
 let sendSessionHudI18n = () => {};
 let getSessionHudReservedOffset = () => 0;
 let getSessionHudWindow = () => null;
+const themeFadeSequencer = createThemeFadeSequencer({
+  getRenderWindow: () => win,
+  getHitWindow: () => hitWin,
+  fadeOutMs: THEME_SWITCH_FADE_OUT_MS,
+  fadeInMs: THEME_SWITCH_FADE_IN_MS,
+  fallbackMs: THEME_SWITCH_FADE_FALLBACK_MS,
+});
 
 function setForceEyeResend(value) {
   forceEyeResend = !!value;
@@ -2144,86 +2144,6 @@ Object.defineProperties(this || {}, {}); // no-op placeholder
 // controller rejects the commit — otherwise prefs would record a theme id
 // that can't actually render. Does NOT write `theme` back to prefs; the
 // controller commits after this returns (writing here would infinite-loop).
-function clearThemeSwitchFadeFallback() {
-  if (themeSwitchFadeFallbackTimer) {
-    clearTimeout(themeSwitchFadeFallbackTimer);
-    themeSwitchFadeFallbackTimer = null;
-  }
-}
-
-function cancelThemeSwitchOpacityAnimation() {
-  if (themeSwitchOpacityCancelSignal) {
-    themeSwitchOpacityCancelSignal.cancelled = true;
-    themeSwitchOpacityCancelSignal = null;
-  }
-}
-
-function clearThemeSwitchReloadListeners() {
-  if (themeSwitchReloadListenerCleanup) {
-    themeSwitchReloadListenerCleanup();
-    themeSwitchReloadListenerCleanup = null;
-  }
-}
-
-function scheduleThemeSwitchFadeFallback(seq, onFallback) {
-  clearThemeSwitchFadeFallback();
-  themeSwitchFadeFallbackTimer = setTimeout(() => {
-    themeSwitchFadeFallbackTimer = null;
-    if (seq !== themeSwitchTransitionSeq) return;
-    if (typeof onFallback === "function") {
-      onFallback();
-    } else {
-      setWindowOpacity(win, 1);
-    }
-  }, THEME_SWITCH_FADE_FALLBACK_MS);
-}
-
-function animateThemeWindowOpacity(seq, targetOpacity, durationMs) {
-  if (seq !== themeSwitchTransitionSeq) return Promise.resolve(false);
-  cancelThemeSwitchOpacityAnimation();
-  const cancelSignal = { cancelled: false };
-  themeSwitchOpacityCancelSignal = cancelSignal;
-  return animateWindowOpacity(win, targetOpacity, { durationMs, cancelSignal })
-    .finally(() => {
-      if (themeSwitchOpacityCancelSignal === cancelSignal) {
-        themeSwitchOpacityCancelSignal = null;
-      }
-    });
-}
-
-function fadeInThemeWindow(seq) {
-  if (seq !== themeSwitchTransitionSeq) return;
-  clearThemeSwitchFadeFallback();
-  animateThemeWindowOpacity(seq, 1, THEME_SWITCH_FADE_IN_MS).then((ok) => {
-    if (!ok && seq === themeSwitchTransitionSeq) setWindowOpacity(win, 1);
-  });
-}
-
-function reloadThemeWindowsAfterFade(seq, onReady, onFallback) {
-  if (seq !== themeSwitchTransitionSeq) return;
-  if (!win || win.isDestroyed() || !hitWin || hitWin.isDestroyed()) {
-    if (typeof onFallback === "function") onFallback();
-    else setWindowOpacity(win, 1);
-    return;
-  }
-  clearThemeSwitchReloadListeners();
-  const renderContents = win.webContents;
-  const hitContents = hitWin.webContents;
-  renderContents.once("did-finish-load", onReady);
-  hitContents.once("did-finish-load", onReady);
-  themeSwitchReloadListenerCleanup = () => {
-    renderContents.removeListener("did-finish-load", onReady);
-    hitContents.removeListener("did-finish-load", onReady);
-  };
-  scheduleThemeSwitchFadeFallback(seq, onFallback);
-  try {
-    renderContents.reload();
-    hitContents.reload();
-  } catch {
-    if (typeof onFallback === "function") onFallback();
-  }
-}
-
 function activateTheme(themeId, variantId) {
   if (!win || win.isDestroyed()) {
     throw new Error("theme switch requires ready windows");
@@ -2280,19 +2200,12 @@ function activateTheme(themeId, variantId) {
   _tick.refreshTheme();
   if (_mini.getMiniMode()) _mini.handleDisplayChange();
 
-  const transitionSeq = ++themeSwitchTransitionSeq;
-  cancelThemeSwitchOpacityAnimation();
-  clearThemeSwitchFadeFallback();
-  clearThemeSwitchReloadListeners();
   themeReloadInProgress = true;
 
-  let ready = 0;
   let reloadSettled = false;
   const finishThemeReload = () => {
-    if (transitionSeq !== themeSwitchTransitionSeq || reloadSettled) return;
+    if (reloadSettled) return;
     reloadSettled = true;
-    clearThemeSwitchFadeFallback();
-    clearThemeSwitchReloadListeners();
     themeReloadInProgress = false;
     if (preservedVirtualBounds && !_mini.getMiniTransitioning() && win && !win.isDestroyed()) {
       applyPetWindowBounds(preservedVirtualBounds);
@@ -2313,20 +2226,11 @@ function activateTheme(themeId, variantId) {
     syncSessionHudVisibility();
     if (win && !win.isDestroyed()) startMainTick();
     if (animationOverridesMain) animationOverridesMain.runPendingPostReloadTasks();
-    fadeInThemeWindow(transitionSeq);
-  };
-  const onReady = () => {
-    if (transitionSeq !== themeSwitchTransitionSeq) return;
-    if (++ready < 2) return;
-    finishThemeReload();
   };
 
-  animateThemeWindowOpacity(transitionSeq, 0, THEME_SWITCH_FADE_OUT_MS).then(() => {
-    reloadThemeWindowsAfterFade(
-      transitionSeq,
-      onReady,
-      () => finishThemeReload()
-    );
+  themeFadeSequencer.run({
+    onReloadFinished: () => finishThemeReload(),
+    onFallback: () => finishThemeReload(),
   });
 
   flushRuntimeStateToPrefs();
@@ -2538,6 +2442,7 @@ if (!gotTheLock) {
     _sessionHud.cleanup();
     if (_codexMonitor) _codexMonitor.stop();
     topmostRuntime.cleanup();
+    themeFadeSequencer.cleanup();
     _focus.cleanup();
     if (animationOverridesMain) animationOverridesMain.cleanup();
     if (hitWin && !hitWin.isDestroyed()) hitWin.destroy();
