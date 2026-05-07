@@ -54,6 +54,7 @@ const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
 const createThemeFadeSequencer = require("./theme-fade-sequencer");
 const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
+const createFloatingWindowRuntime = require("./floating-window-runtime");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
 } = require("./session-focus");
@@ -184,6 +185,7 @@ function _restartClawdNow() {
 let shortcutRuntime = null;
 let themeRuntime = null;
 let agentRuntime = null;
+let floatingWindowRuntime = null;
 let codexPetMain = null;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
@@ -587,28 +589,16 @@ function togglePetVisibility() {
       hitWin.showInactive();
       keepOutOfTaskbar(hitWin);
     }
-    // Restore any permission bubbles that were hidden
-    for (const perm of pendingPermissions) {
-      if (perm.bubble && !perm.bubble.isDestroyed()) {
-        perm.bubble.showInactive();
-        keepOutOfTaskbar(perm.bubble);
-      }
-    }
-    syncUpdateBubbleVisibility();
+    floatingWindowRuntime.showFloatingSurfacesForPet();
     reapplyMacVisibility();
     petHidden = false;
   } else {
     win.hide();
     if (hitWin && !hitWin.isDestroyed()) hitWin.hide();
-    // Also hide any permission bubbles
-    for (const perm of pendingPermissions) {
-      if (perm.bubble && !perm.bubble.isDestroyed()) perm.bubble.hide();
-    }
-    hideUpdateBubble();
+    floatingWindowRuntime.hideFloatingSurfacesForPet();
     petHidden = true;
   }
-  syncSessionHudVisibility();
-  repositionFloatingBubbles();
+  syncSessionHudVisibilityAndBubbles();
   syncPermissionShortcuts();
   buildTrayMenu();
   buildContextMenu();
@@ -873,8 +863,7 @@ function moveWindowForDrag() {
   applyPetWindowBounds(bounds);
   if (isWin && isNearWorkAreaEdge(bounds)) reassertWinTopmost();
   syncHitWin();
-  repositionSessionHud();
-  repositionFloatingBubbles();
+  repositionAnchoredFloatingSurfaces();
 }
 
 // ── Mini Mode — delegated to src/mini.js ──
@@ -988,9 +977,27 @@ const {
   syncVisibility: syncUpdateBubbleVisibility,
 } = _updateBubble;
 
+floatingWindowRuntime = createFloatingWindowRuntime({
+  getPendingPermissions: () => pendingPermissions,
+  repositionPermissionBubbles: () => repositionBubbles(),
+  repositionUpdateBubble: () => repositionUpdateBubble(),
+  repositionSessionHud: () => repositionSessionHud(),
+  syncSessionHudVisibility: () => syncSessionHudVisibility(),
+  syncUpdateBubbleVisibility: () => syncUpdateBubbleVisibility(),
+  hideUpdateBubble: () => hideUpdateBubble(),
+  keepOutOfTaskbar,
+});
+
 function repositionFloatingBubbles() {
-  if (pendingPermissions.length) repositionBubbles();
-  repositionUpdateBubble();
+  return floatingWindowRuntime.repositionFloatingBubbles();
+}
+
+function repositionAnchoredFloatingSurfaces() {
+  return floatingWindowRuntime.repositionAnchoredSurfaces();
+}
+
+function syncSessionHudVisibilityAndBubbles() {
+  return floatingWindowRuntime.syncSessionHudVisibilityAndBubbles();
 }
 
 // ── State machine — delegated to src/state.js ──
@@ -1800,8 +1807,7 @@ function createWindow() {
     const syncFloatingWindows = () => {
       if (settingsSizePreviewSyncFrozen) return;
       syncHitWin();
-      repositionSessionHud();
-      repositionFloatingBubbles();
+      repositionAnchoredFloatingSurfaces();
     };
     win.on("move", syncFloatingWindows);
     win.on("resize", syncFloatingWindows);
@@ -1912,8 +1918,7 @@ function createWindow() {
     if (proportionalRecalc || clamped.x !== current.x || clamped.y !== current.y) {
       applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
       syncHitWin();
-      repositionSessionHud();
-      repositionFloatingBubbles();
+      repositionAnchoredFloatingSurfaces();
     }
   });
   screen.on("display-removed", () => {
@@ -1931,13 +1936,11 @@ function createWindow() {
     const clamped = clampToScreenVisual(current.x, current.y, size.width, size.height);
     applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
     syncHitWin();
-    repositionSessionHud();
-    repositionFloatingBubbles();
+    repositionAnchoredFloatingSurfaces();
   });
   screen.on("display-added", () => {
     reapplyMacVisibility();
-    repositionSessionHud();
-    repositionFloatingBubbles();
+    repositionAnchoredFloatingSurfaces();
   });
 }
 
@@ -2050,10 +2053,7 @@ const _miniCtx = {
   get bubbleFollowPet() { return bubbleFollowPet; },
   get pendingPermissions() { return pendingPermissions; },
   repositionBubbles: () => repositionFloatingBubbles(),
-  syncSessionHudVisibility: () => {
-    syncSessionHudVisibility();
-    repositionFloatingBubbles();
-  },
+  syncSessionHudVisibility: () => syncSessionHudVisibilityAndBubbles(),
   repositionSessionHud: () => repositionSessionHud(),
   buildContextMenu: () => buildContextMenu(),
   buildTrayMenu: () => buildTrayMenu(),
