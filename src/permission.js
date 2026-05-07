@@ -504,12 +504,11 @@ function showPermissionBubble(permEntry) {
     skipTaskbar: true,
     hasShadow: false,
     ...(isLinux ? { type: LINUX_WINDOW_TYPE } : {}),
-    ...(isMac ? { type: "panel" } : {}),
+    ...(isMac ? { type: "panel", acceptsFirstMouse: true } : {}),
     // Elicitation needs keyboard focus for the Other/textarea input path.
-    // Permission prompts stay non-focusable so they don't steal focus from
-    // CC's terminal (which would trigger false "User answered in terminal"
-    // denials — see bub.focus() note below).
-    focusable: !!permEntry.isElicitation,
+    // Permission prompts need focusable: true on macOS to receive clicks,
+    // but acceptsFirstMouse allows click-through without stealing focus.
+    focusable: isMac ? true : !!permEntry.isElicitation,
     webPreferences: {
       preload: path.join(__dirname, "preload-bubble.js"),
       nodeIntegration: false,
@@ -537,12 +536,16 @@ function showPermissionBubble(permEntry) {
     }
   });
 
+  // macOS: set alwaysOnTop BEFORE showInactive to prevent bubble from sinking
+  if (isMac) {
+    bub.setAlwaysOnTop(true, "screen-saver");
+  }
+
   repositionBubbles();
   bub.showInactive();
   repositionDependentBubbles();
   keepOutOfTaskbar(bub);
-  // macOS: constructing/raising a topmost panel too early can still activate
-  // Clawd on some setups. Defer topmost restoration until after showInactive.
+  // macOS: defer full visibility restoration to avoid activating Clawd
   if (isMac) deferMacFloatingVisibility(ctx, bub);
   else ctx.reapplyMacVisibility();
 
