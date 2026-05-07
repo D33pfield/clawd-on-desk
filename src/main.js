@@ -20,29 +20,11 @@ const { registerUpdateBubbleIpc } = initUpdateBubble;
 const createSettingsAnimationOverridesMain = require("./settings-animation-overrides-main");
 const { registerSettingsAnimationOverridesIpc } = createSettingsAnimationOverridesMain;
 const createShortcutRuntime = require("./shortcut-runtime");
-const createPetGeometryMain = require("./pet-geometry-main");
 const {
   findNearestWorkArea,
-  computeLooseClamp,
-  getDisplayInsets,
   buildDisplaySnapshot,
-  findMatchingDisplay,
-  isPointInAnyWorkArea,
   SYNTHETIC_WORK_AREA,
 } = require("./work-area");
-const {
-  getThemeMarginBox,
-  computeStableVisibleContentMargins,
-  getLooseDragMargins,
-  getRestClampMargins,
-} = require("./visible-margins");
-const {
-  createDragSnapshot,
-  computeAnchoredDragBounds,
-  computeFinalDragBounds,
-  needsFinalClampAdjustment,
-  materializeVirtualBounds,
-} = require("./drag-position");
 const {
   getLaunchPixelSize,
   getLaunchSizingWorkArea,
@@ -55,6 +37,7 @@ const createThemeFadeSequencer = require("./theme-fade-sequencer");
 const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
 const createFloatingWindowRuntime = require("./floating-window-runtime");
+const createPetWindowRuntime = require("./pet-window-runtime");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
 } = require("./session-focus");
@@ -477,31 +460,63 @@ if (_loadedStartupTheme._id !== _requestedThemeId || _loadedStartupTheme._varian
   }
 }
 
-// ── CSS <object> sizing (from theme) ──
-const petGeometryMain = createPetGeometryMain({
+// ── Pet window geometry / bounds runtime ──
+const petWindowRuntime = createPetWindowRuntime({
+  screen,
+  isWin,
+  isMac,
+  isLinux,
+  linuxWindowType: LINUX_WINDOW_TYPE,
+  topmostLevel: WIN_TOPMOST_LEVEL,
+  getRenderWindow: () => win,
+  getHitWindow: () => hitWin,
+  getSettingsWindow: () => getSettingsWindow(),
   getActiveTheme: () => getActiveTheme(),
   getCurrentState: () => _state.getCurrentState(),
   getCurrentSvg: () => _state.getCurrentSvg(),
   getCurrentHitBox: () => _state.getCurrentHitBox(),
   getMiniMode: () => _mini.getMiniMode(),
+  getMiniTransitioning: () => _mini.getMiniTransitioning(),
   getMiniPeekOffset: () => _mini.PEEK_OFFSET,
+  getCurrentPixelSize: () => getCurrentPixelSize(),
+  getEffectiveCurrentPixelSize: (workArea) => getEffectiveCurrentPixelSize(workArea),
+  getKeepSizeAcrossDisplays: () => keepSizeAcrossDisplaysCached,
+  getAllowEdgePinning: () => allowEdgePinningCached,
+  isProportionalMode: () => isProportionalMode(),
+  getPrimaryWorkAreaSafe: () => getPrimaryWorkAreaSafe(),
+  getNearestWorkArea,
+  sendToRenderer,
+  keepOutOfTaskbar,
+  repositionSessionHud: () => repositionSessionHud(),
+  repositionAnchoredSurfaces: () => repositionAnchoredFloatingSurfaces(),
+  repositionFloatingBubbles: () => repositionFloatingBubbles(),
+  showFloatingSurfacesForPet: () => floatingWindowRuntime.showFloatingSurfacesForPet(),
+  hideFloatingSurfacesForPet: () => floatingWindowRuntime.hideFloatingSurfacesForPet(),
+  syncSessionHudVisibilityAndBubbles: () => syncSessionHudVisibilityAndBubbles(),
+  syncPermissionShortcuts: () => syncPermissionShortcuts(),
+  buildTrayMenu: () => buildTrayMenu(),
+  buildContextMenu: () => buildContextMenu(),
+  reapplyMacVisibility: () => reapplyMacVisibility(),
+  reassertWinTopmost: () => reassertWinTopmost(),
+  scheduleHwndRecovery: () => scheduleHwndRecovery(),
+  isNearWorkAreaEdge,
+  flushRuntimeStateToPrefs: () => flushRuntimeStateToPrefs(),
+  handleMiniDisplayChange: () => _mini.handleDisplayChange(),
+  exitMiniMode: () => exitMiniMode(),
 });
 
 function getObjRect(bounds) {
-  return petGeometryMain.getObjRect(bounds);
+  return petWindowRuntime.getObjRect(bounds);
 }
 
 function getAssetPointerPayload(bounds, point) {
-  return petGeometryMain.getAssetPointerPayload(bounds, point);
+  return petWindowRuntime.getAssetPointerPayload(bounds, point);
 }
 
 let win;
 let hitWin;  // input window — small opaque rect over hitbox, receives all pointer events
-let viewportOffsetY = 0;
-const themeMarginEnvelopeCache = new Map();
 let tray = null;
 let contextMenuOwner = null;
-let settingsSizePreviewSyncFrozen = false;
 // Mirror of _settingsController.get("size") — initialized from disk, kept in
 // sync by the settings subscriber. The legacy S/M/L → P:N migration runs
 // inside createWindow() because it needs the screen API.
@@ -569,7 +584,6 @@ let soundVolume = _settingsController.get("soundVolume");
 let lowPowerIdleMode = _settingsController.get("lowPowerIdleMode");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
-let petHidden = false;
 
 function getRuntimeBubblePolicy(kind) {
   return getBubblePolicy(_settingsController.getSnapshot(), kind);
@@ -579,64 +593,8 @@ function getAllBubblesHidden() {
   return isAllBubblesHidden(_settingsController.getSnapshot());
 }
 
-function togglePetVisibility() {
-  if (!win || win.isDestroyed()) return;
-  if (_mini.getMiniTransitioning()) return;
-  if (petHidden) {
-    win.showInactive();
-    keepOutOfTaskbar(win);
-    if (hitWin && !hitWin.isDestroyed()) {
-      hitWin.showInactive();
-      keepOutOfTaskbar(hitWin);
-    }
-    floatingWindowRuntime.showFloatingSurfacesForPet();
-    reapplyMacVisibility();
-    petHidden = false;
-  } else {
-    win.hide();
-    if (hitWin && !hitWin.isDestroyed()) hitWin.hide();
-    floatingWindowRuntime.hideFloatingSurfacesForPet();
-    petHidden = true;
-  }
-  syncSessionHudVisibilityAndBubbles();
-  syncPermissionShortcuts();
-  buildTrayMenu();
-  buildContextMenu();
-}
-
-function bringPetToPrimaryDisplay() {
-  if (!win || win.isDestroyed()) return;
-  if (_mini.getMiniMode() || _mini.getMiniTransitioning()) return;
-
-  const workArea = getPrimaryWorkAreaSafe() || SYNTHETIC_WORK_AREA;
-  const size = getEffectiveCurrentPixelSize(workArea);
-  const bounds = {
-    x: Math.round(workArea.x + (workArea.width - size.width) / 2),
-    y: Math.round(workArea.y + (workArea.height - size.height) / 2),
-    width: size.width,
-    height: size.height,
-  };
-
-  applyPetWindowBounds(bounds);
-  syncHitWin();
-  repositionFloatingBubbles();
-
-  if (petHidden) {
-    togglePetVisibility();
-  } else {
-    win.showInactive();
-    keepOutOfTaskbar(win);
-    if (hitWin && !hitWin.isDestroyed()) {
-      hitWin.showInactive();
-      keepOutOfTaskbar(hitWin);
-    }
-  }
-
-  reapplyMacVisibility();
-  reassertWinTopmost();
-  scheduleHwndRecovery();
-  flushRuntimeStateToPrefs();
-}
+function togglePetVisibility() { return petWindowRuntime.togglePetVisibility(); }
+function bringPetToPrimaryDisplay() { return petWindowRuntime.bringPetToPrimaryDisplay(); }
 
 function sendToRenderer(channel, ...args) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
@@ -645,50 +603,10 @@ function sendToHitWin(channel, ...args) {
   if (hitWin && !hitWin.isDestroyed()) hitWin.webContents.send(channel, ...args);
 }
 
-function setViewportOffsetY(offsetY) {
-  const next = Number.isFinite(offsetY) ? Math.max(0, Math.round(offsetY)) : 0;
-  if (next === viewportOffsetY) return;
-  viewportOffsetY = next;
-  sendToRenderer("viewport-offset", viewportOffsetY);
-}
-
-function getPetWindowBounds() {
-  if (!win || win.isDestroyed()) return null;
-  const bounds = win.getBounds();
-  return {
-    x: bounds.x,
-    y: bounds.y - viewportOffsetY,
-    width: bounds.width,
-    height: bounds.height,
-  };
-}
-
-function applyPetWindowBounds(bounds) {
-  if (!win || win.isDestroyed() || !bounds) return null;
-  const workArea = getNearestWorkArea(
-    bounds.x + bounds.width / 2,
-    bounds.y + bounds.height / 2
-  );
-  const materialized = materializeVirtualBounds(bounds, workArea);
-  if (!materialized) return null;
-  win.setBounds(materialized.bounds);
-  setViewportOffsetY(materialized.viewportOffsetY);
-  repositionSessionHud();
-  return materialized.bounds;
-}
-
-function applyPetWindowPosition(x, y) {
-  const bounds = getPetWindowBounds();
-  if (!bounds) return null;
-  return applyPetWindowBounds({ ...bounds, x, y });
-}
-
-function hasStoredPositionThemeMismatch(prefs) {
-  const theme = getActiveTheme();
-  if (!prefs || !theme) return false;
-  return prefs.positionThemeId !== theme._id
-    || prefs.positionVariantId !== theme._variantId;
-}
+function setViewportOffsetY(offsetY) { return petWindowRuntime.setViewportOffsetY(offsetY); }
+function getPetWindowBounds() { return petWindowRuntime.getPetWindowBounds(); }
+function applyPetWindowBounds(bounds) { return petWindowRuntime.applyPetWindowBounds(bounds); }
+function applyPetWindowPosition(x, y) { return petWindowRuntime.applyPetWindowPosition(x, y); }
 
 function syncHitStateAfterLoad() {
   sendToHitWin("hit-state-sync", {
@@ -766,33 +684,9 @@ function resetSoundCooldown() {
   lastSoundTime = 0;
 }
 
-// Sync input window position to match render window's hitbox.
-// Called manually after every win position/size change + event-level safety net.
-let _lastHitW = 0, _lastHitH = 0;
-function syncHitWin() {
-  if (!hitWin || hitWin.isDestroyed() || !win || win.isDestroyed()) return;
-  // Keep the captured pointer stable while dragging. Repositioning the input
-  // window mid-drag can break pointer capture on Windows.
-  if (dragLocked) return;
-  const bounds = getPetWindowBounds();
-  const hit = getHitRectScreen(bounds);
-  const x = Math.round(hit.left);
-  const y = Math.round(hit.top);
-  const w = Math.round(hit.right - hit.left);
-  const h = Math.round(hit.bottom - hit.top);
-  if (w <= 0 || h <= 0) return;
-  hitWin.setBounds({ x, y, width: w, height: h });
-  // Update shape if hitbox dimensions changed (e.g. after resize)
-  if (w !== _lastHitW || h !== _lastHitH) {
-    _lastHitW = w; _lastHitH = h;
-    hitWin.setShape([{ x: 0, y: 0, width: w, height: h }]);
-  }
-  repositionSessionHud();
-}
+function syncHitWin() { return petWindowRuntime.syncHitWin(); }
 
 let mouseOverPet = false;
-let dragLocked = false;
-let dragSnapshot = null;
 let menuOpen = false;
 let idlePaused = false;
 let forceEyeResend = false;
@@ -820,51 +714,9 @@ function setForceEyeResend(value) {
   }
 }
 
-// Keep drag math in Electron's main-process DIP coordinate space. Renderer
-// PointerEvent.screenX/Y can be scaled differently on high-DPI displays.
-function beginDragSnapshot() {
-  if (!win || win.isDestroyed()) {
-    dragSnapshot = null;
-    return;
-  }
-  const bounds = getPetWindowBounds();
-  // When keepSizeAcrossDisplays is on, the pet may currently be sized from
-  // a prior display (e.g. dragged from a small monitor and kept small on a
-  // large one). Snapshotting getCurrentPixelSize() here would snap it to
-  // the large display's proportional size at drag start, which is the
-  // exact behaviour the user disabled.
-  const size = keepSizeAcrossDisplaysCached
-    ? { width: bounds.width, height: bounds.height }
-    : getCurrentPixelSize();
-  dragSnapshot = createDragSnapshot(
-    screen.getCursorScreenPoint(),
-    bounds,
-    size
-  );
-}
-
-function clearDragSnapshot() {
-  dragSnapshot = null;
-}
-
-function moveWindowForDrag() {
-  if (!dragLocked) return;
-  if (_mini.getMiniMode() || _mini.getMiniTransitioning()) return;
-  if (!win || win.isDestroyed()) return;
-  if (!dragSnapshot) return;
-
-  const bounds = computeAnchoredDragBounds(
-    dragSnapshot,
-    screen.getCursorScreenPoint(),
-    looseClampPetToDisplays
-  );
-  if (!bounds) return;
-
-  applyPetWindowBounds(bounds);
-  if (isWin && isNearWorkAreaEdge(bounds)) reassertWinTopmost();
-  syncHitWin();
-  repositionAnchoredFloatingSurfaces();
-}
+function beginDragSnapshot() { return petWindowRuntime.beginDragSnapshot(); }
+function clearDragSnapshot() { return petWindowRuntime.clearDragSnapshot(); }
+function moveWindowForDrag() { return petWindowRuntime.moveWindowForDrag(); }
 
 // ── Mini Mode — delegated to src/mini.js ──
 // Initialized after state module (needs applyState, resolveDisplayState, etc.)
@@ -883,7 +735,7 @@ const topmostRuntime = createTopmostRuntime({
   getNearestWorkArea,
   getPetWindowBounds,
   getShowDock: () => showDock,
-  isDragLocked: () => dragLocked,
+  isDragLocked: () => petWindowRuntime.isDragLocked(),
   isMiniAnimating: () => _mini.getIsAnimating(),
   isMiniTransitioning: () => _mini.getMiniTransitioning(),
   keepOutOfTaskbar,
@@ -915,7 +767,7 @@ const _permCtx = {
   get permDebugLog() { return permDebugLog; },
   get doNotDisturb() { return doNotDisturb; },
   get hideBubbles() { return getAllBubblesHidden(); },
-  get petHidden() { return petHidden; },
+  get petHidden() { return petWindowRuntime.isPetHidden(); },
   getBubblePolicy: getRuntimeBubblePolicy,
   getPetWindowBounds,
   getNearestWorkArea,
@@ -958,7 +810,7 @@ let focusDebugLog = null; // set after app.whenReady()
 const _updateBubbleCtx = {
   get win() { return win; },
   get bubbleFollowPet() { return bubbleFollowPet; },
-  get petHidden() { return petHidden; },
+  get petHidden() { return petWindowRuntime.isPetHidden(); },
   getBubblePolicy: getRuntimeBubblePolicy,
   getPendingPermissions: () => pendingPermissions,
   getPetWindowBounds,
@@ -1094,38 +946,9 @@ const { setState, applyState, updateSession, resolveDisplayState, getSvgOverride
 const sessions = _state.sessions;
 
 // ── Hit-test: SVG bounding box → screen coordinates ──
-function getHitRectScreen(bounds) {
-  return petGeometryMain.getHitRectScreen(bounds);
-}
-
-function getUpdateBubbleAnchorRect(bounds) {
-  return petGeometryMain.getUpdateBubbleAnchorRect(bounds);
-}
-
-function getSessionHudAnchorRect(bounds) {
-  return petGeometryMain.getSessionHudAnchorRect(bounds);
-}
-
-function getVisibleContentMargins(bounds) {
-  const theme = getActiveTheme();
-  if (!bounds || !theme) return { top: 0, bottom: 0 };
-  const box = getThemeMarginBox(theme);
-  if (!box) return { top: 0, bottom: 0 };
-
-  const cacheKey = [
-    theme._id || "",
-    theme._variantId || "",
-    bounds.width,
-    bounds.height,
-    JSON.stringify(box),
-  ].join("|");
-  const cached = themeMarginEnvelopeCache.get(cacheKey);
-  if (cached) return cached;
-
-  const margins = computeStableVisibleContentMargins(theme, bounds, { box });
-  themeMarginEnvelopeCache.set(cacheKey, margins);
-  return margins;
-}
+function getHitRectScreen(bounds) { return petWindowRuntime.getHitRectScreen(bounds); }
+function getUpdateBubbleAnchorRect(bounds) { return petWindowRuntime.getUpdateBubbleAnchorRect(bounds); }
+function getSessionHudAnchorRect(bounds) { return petWindowRuntime.getSessionHudAnchorRect(bounds); }
 
 // ── Main tick — delegated to src/tick.js ──
 const _tickCtx = {
@@ -1136,7 +959,7 @@ const _tickCtx = {
   get currentSvg() { return _state.getCurrentSvg(); },
   get miniMode() { return _mini.getMiniMode(); },
   get miniTransitioning() { return _mini.getMiniTransitioning(); },
-  get dragLocked() { return dragLocked; },
+  get dragLocked() { return petWindowRuntime.isDragLocked(); },
   get menuOpen() { return menuOpen; },
   get idlePaused() { return idlePaused; },
   get isAnimating() { return _mini.getIsAnimating(); },
@@ -1219,7 +1042,7 @@ sendDashboardI18n = _dashboard.sendI18n;
 
 const _sessionHud = require("./session-hud")({
   get win() { return win; },
-  get petHidden() { return petHidden; },
+  get petHidden() { return petWindowRuntime.isPetHidden(); },
   get sessionHudEnabled() { return sessionHudEnabled; },
   get sessionHudShowElapsed() { return sessionHudShowElapsed; },
   getMiniMode: () => _mini.getMiniMode(),
@@ -1332,7 +1155,7 @@ const _menuCtx = {
   get soundVolume() { return soundVolume; },
   get pendingPermissions() { return pendingPermissions; },
   repositionBubbles: () => repositionFloatingBubbles(),
-  get petHidden() { return petHidden; },
+  get petHidden() { return petWindowRuntime.isPetHidden(); },
   togglePetVisibility: () => togglePetVisibility(),
   bringPetToPrimaryDisplay: () => bringPetToPrimaryDisplay(),
   get isQuitting() { return isQuitting; },
@@ -1399,7 +1222,7 @@ function updateSettingsMirrors(changes) { for (const [key, value] of Object.entr
 function callRuntimeMethod(owner, method, ...args) { return owner && typeof owner[method] === "function" ? owner[method](...args) : undefined; }
 
 function reclampPetAfterEdgePinningChange() {
-  if (!win || win.isDestroyed() || dragLocked || _mini.getMiniMode() || _mini.getMiniTransitioning()) return;
+  if (!win || win.isDestroyed() || petWindowRuntime.isDragLocked() || _mini.getMiniMode() || _mini.getMiniTransitioning()) return;
   const clamped = computeFinalDragBounds(getPetWindowBounds(), getEffectiveCurrentPixelSize(), clampToScreenVisual);
   if (clamped) applyPetWindowBounds(clamped);
   syncHitWin(); repositionFloatingBubbles();
@@ -1494,47 +1317,11 @@ function isValidSizePreviewKey(value) {
 }
 
 function beginSettingsSizePreviewProtection() {
-  settingsSizePreviewSyncFrozen = true;
-  if (!isWin) return;
-  const settingsWindow = getSettingsWindow();
-  if (
-    settingsWindow
-    && !settingsWindow.isDestroyed()
-    && typeof settingsWindow.setAlwaysOnTop === "function"
-  ) {
-    settingsWindow.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-    if (typeof settingsWindow.moveTop === "function") settingsWindow.moveTop();
-  }
-  if (
-    hitWin
-    && !hitWin.isDestroyed()
-    && typeof hitWin.setIgnoreMouseEvents === "function"
-  ) {
-    hitWin.setIgnoreMouseEvents(true);
-  }
+  return petWindowRuntime.beginSettingsSizePreviewProtection();
 }
 
 function endSettingsSizePreviewProtection() {
-  settingsSizePreviewSyncFrozen = false;
-  if (!isWin) return;
-  const settingsWindow = getSettingsWindow();
-  if (
-    settingsWindow
-    && !settingsWindow.isDestroyed()
-    && typeof settingsWindow.setAlwaysOnTop === "function"
-  ) {
-    settingsWindow.setAlwaysOnTop(false);
-  }
-  if (
-    hitWin
-    && !hitWin.isDestroyed()
-    && typeof hitWin.setIgnoreMouseEvents === "function"
-  ) {
-    hitWin.setIgnoreMouseEvents(false);
-    hitWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-  }
-  reassertWinTopmost();
-  scheduleHwndRecovery();
+  return petWindowRuntime.endSettingsSizePreviewProtection();
 }
 
 const settingsSizePreviewSession = createSettingsSizePreviewSession({
@@ -1623,208 +1410,51 @@ function createWindow() {
   const proportionalSize = getCurrentPixelSize(launchSizingWorkArea);
   const size = getLaunchPixelSize(prefs, proportionalSize);
 
-  // Restore saved position, or default to bottom-right of primary display.
-  // Prefs file always exists in the new architecture (defaults are hydrated
-  // by prefs.load()), so the "no prefs" branch from the legacy code is gone —
-  // a fresh install gets x=0, y=0 from defaults, and we treat that as "place
-  // bottom-right" via the explicit zero check below.
-  let startBounds;
-  if (prefs.miniMode) {
-    startBounds = _mini.restoreFromPrefs(prefs, size);
-  } else if (prefs.positionSaved) {
-    startBounds = { x: prefs.x, y: prefs.y, width: size.width, height: size.height };
-  } else {
-    const workArea = getPrimaryWorkAreaSafe() || SYNTHETIC_WORK_AREA;
-    startBounds = {
-      x: workArea.x + workArea.width - size.width - 20,
-      y: workArea.y + workArea.height - size.height - 20,
-      width: size.width,
-      height: size.height,
-    };
-  }
-  // Display-snapshot gate: if the monitor the pet was last on is still here
-  // (same bounds or matching display.id), we trust the saved position even if
-  // a generic clamp would otherwise nudge it. Only when the monitor is gone
-  // — unplugged external display, RDP session ended, laptop closed with pet
-  // on the external, etc. — do we regularize to the current topology.
-  //
-  // Visibility backstop: even with a matching display, if the saved center
-  // landed outside every current workArea (manual prefs edits, exotic multi-
-  // monitor rearrangements where bounds matched but the pet's coordinates
-  // ended up in no-man's-land), fall back to regularize so the user isn't
-  // greeted by an invisible pet. Normal "pet partially off-screen" cases
-  // pass this check because the midpoint still lands inside a workArea.
-  //
-  // Legacy prefs (positionDisplay === null) fall through to the clamp-delta
-  // check, preserving v0.6.0 behavior for users who haven't re-saved yet.
-  const allDisplays = screen.getAllDisplays();
-  const savedDisplayStillAttached = !!findMatchingDisplay(
-    prefs.positionDisplay,
-    allDisplays
-  );
-  const savedCenterVisible = isPointInAnyWorkArea(
-    startBounds.x + startBounds.width / 2,
-    startBounds.y + startBounds.height / 2,
-    allDisplays
-  );
-  const startupNeedsRegularize = prefs.positionSaved
-    && !prefs.miniMode
-    && (
-      hasStoredPositionThemeMismatch(prefs)
-      || (
-        !(savedDisplayStillAttached && savedCenterVisible)
-        && needsFinalClampAdjustment(startBounds, size, clampToScreenVisual)
-      )
-    );
-  const startupRegularizedBounds = startupNeedsRegularize
-    ? computeFinalDragBounds(startBounds, size, clampToScreenVisual)
-    : null;
-  const initialVirtualBounds = startupRegularizedBounds || startBounds;
-  const initialWorkArea = getNearestWorkArea(
-    initialVirtualBounds.x + initialVirtualBounds.width / 2,
-    initialVirtualBounds.y + initialVirtualBounds.height / 2
-  );
-  const initialMaterialized = materializeVirtualBounds(initialVirtualBounds, initialWorkArea);
-  const initialWindowBounds = (initialMaterialized && initialMaterialized.bounds) || initialVirtualBounds;
-
-  win = new BrowserWindow({
-    width: size.width,
-    height: size.height,
-    x: initialWindowBounds.x,
-    y: initialWindowBounds.y,
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    resizable: false,
-    skipTaskbar: true,
-    hasShadow: false,
-    fullscreenable: false,
-    enableLargerThanScreen: true,
-    ...(isLinux ? { type: LINUX_WINDOW_TYPE } : {}),
-    ...(isMac ? { type: "panel", roundedCorners: false } : {}),
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      backgroundThrottling: false,
-      additionalArguments: [
-        "--theme-config=" + JSON.stringify(themeRuntime.getRendererConfig()),
-      ],
-    },
+  const {
+    initialVirtualBounds,
+    initialWindowBounds,
+  } = petWindowRuntime.resolveStartupPlacement(prefs, size, {
+    restoreMiniFromPrefs: (prefsSnapshot, pixelSize) => _mini.restoreFromPrefs(prefsSnapshot, pixelSize),
   });
 
-  win.setFocusable(false);
-
-  // Watchdog (Linux only): prevent accidental window close.
-  // render-process-gone is handled by the global crash-recovery handler below.
-  // On macOS/Windows the WM handles window lifecycle differently.
-  if (isLinux) {
-    win.on("close", (event) => {
-      if (!isQuitting) {
-        event.preventDefault();
-        if (!win.isVisible()) {
-          win.showInactive();
-          keepOutOfTaskbar(win);
-        }
-      }
-    });
-    win.on("unresponsive", () => {
-      if (isQuitting) return;
-      console.warn("Clawd: renderer unresponsive — reloading");
-      win.webContents.reload();
-    });
-  }
-
-  if (isWin) {
-    // Windows: use pop-up-menu level to stay above taskbar/shell UI
-    win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-  }
-  win.loadFile(path.join(__dirname, "index.html"));
-  applyPetWindowBounds(initialVirtualBounds);
-  win.showInactive();
-  keepOutOfTaskbar(win);
-  // macOS: apply after showInactive() — it resets NSWindowCollectionBehavior
-  reapplyMacVisibility();
-
-  // macOS: startup-time dock state can be overridden during app/window activation.
-  // Re-apply once on next tick so persisted showDock reliably takes effect.
-  if (isMac) {
-    setTimeout(() => {
-      if (!win || win.isDestroyed()) return;
-      applyDockVisibility();
-    }, 0);
-  }
+  petWindowRuntime.createRenderWindow({
+    BrowserWindow,
+    size,
+    initialWindowBounds,
+    initialVirtualBounds,
+    preloadPath: path.join(__dirname, "preload.js"),
+    loadFilePath: path.join(__dirname, "index.html"),
+    themeConfig: themeRuntime.getRendererConfig(),
+    setRenderWindow: (createdWindow) => { win = createdWindow; },
+    isQuitting: () => isQuitting,
+    applyDockVisibility,
+  });
 
   buildContextMenu();
   if (!isMac || showTray) createTray();
   ensureContextMenuOwner();
 
-
-
   // ── Create input window (hitWin) — small rect over hitbox, receives all pointer events ──
-  {
-    const initBounds = getPetWindowBounds();
-    const initHit = getHitRectScreen(initBounds);
-    const hx = Math.round(initHit.left), hy = Math.round(initHit.top);
-    const hw = Math.round(initHit.right - initHit.left);
-    const hh = Math.round(initHit.bottom - initHit.top);
-
-    hitWin = new BrowserWindow({
-      width: hw, height: hh, x: hx, y: hy,
-      frame: false,
-      transparent: true,
-      alwaysOnTop: true,
-      resizable: false,
-      skipTaskbar: true,
-      hasShadow: false,
-      fullscreenable: false,
-      enableLargerThanScreen: true,
-      ...(isLinux ? { type: LINUX_WINDOW_TYPE } : {}),
-      ...(isMac ? { type: "panel", roundedCorners: false } : {}),
-      focusable: !isLinux,  // KEY EXPERIMENT: allow activation to avoid WS_EX_NOACTIVATE input routing bugs (Windows-only issue)
-      webPreferences: {
-        preload: path.join(__dirname, "preload-hit.js"),
-        backgroundThrottling: false,
-        additionalArguments: [
-          "--hit-theme-config=" + JSON.stringify(themeRuntime.getHitRendererConfig()),
-        ],
-      },
-    });
-    // setShape: native hit region, no per-pixel alpha dependency.
-    // hitWin has no visual content — clipping is irrelevant.
-    hitWin.setShape([{ x: 0, y: 0, width: hw, height: hh }]);
-    hitWin.setIgnoreMouseEvents(false);  // PERMANENT — never toggle
-    if (isMac) hitWin.setFocusable(false);
-    hitWin.showInactive();
-    keepOutOfTaskbar(hitWin);
-    if (isWin) {
-      hitWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-    }
-    // macOS: apply after showInactive() — it resets NSWindowCollectionBehavior
-    reapplyMacVisibility();
-    hitWin.loadFile(path.join(__dirname, "hit.html"));
-    if (isWin) guardAlwaysOnTop(hitWin);
-
-    // Event-level safety net for position sync
-    const syncFloatingWindows = () => {
-      if (settingsSizePreviewSyncFrozen) return;
-      syncHitWin();
-      repositionAnchoredFloatingSurfaces();
-    };
-    win.on("move", syncFloatingWindows);
-    win.on("resize", syncFloatingWindows);
-
-    // Send initial state to hitWin once it's ready
-    hitWin.webContents.on("did-finish-load", () => {
+  hitWin = petWindowRuntime.createHitWindow({
+    BrowserWindow,
+    preloadPath: path.join(__dirname, "preload-hit.js"),
+    loadFilePath: path.join(__dirname, "hit.html"),
+    hitThemeConfig: themeRuntime.getHitRendererConfig(),
+    guardAlwaysOnTop,
+    onDidFinishLoad: () => {
       sendToHitWin("theme-config", themeRuntime.getHitRendererConfig());
       if (themeRuntime.isReloadInProgress()) return;
       syncHitStateAfterLoad();
-    });
-
-    // Crash recovery for hitWin
-    hitWin.webContents.on("render-process-gone", (_event, details) => {
+    },
+    onRenderProcessGone: (details, ownedHitWin) => {
       safeConsoleError("hitWin renderer crashed:", details.reason);
-      hitWin.webContents.reload();
-    });
-  }
+      ownedHitWin.webContents.reload();
+    },
+  });
+
+  // Event-level safety net for position sync
+  win.on("move", () => petWindowRuntime.syncFloatingWindowsAfterPetBoundsChange());
+  win.on("resize", () => petWindowRuntime.syncFloatingWindowsAfterPetBoundsChange());
 
   syncSessionHudVisibility();
 
@@ -1837,7 +1467,7 @@ function createWindow() {
     getCurrentState: () => _state.getCurrentState(),
     getCurrentSvg: () => _state.getCurrentSvg(),
     sendToRenderer,
-    setDragLocked: (value) => { dragLocked = !!value; },
+    setDragLocked: (value) => { petWindowRuntime.setDragLocked(value); },
     setMouseOverPet: (value) => { mouseOverPet = !!value; },
     beginDragSnapshot: () => beginDragSnapshot(),
     clearDragSnapshot: () => clearDragSnapshot(),
@@ -1880,7 +1510,7 @@ function createWindow() {
   // Also handles crash recovery (render-process-gone → reload)
   win.webContents.on("did-finish-load", () => {
     sendToRenderer("theme-config", themeRuntime.getRendererConfig());
-    sendToRenderer("viewport-offset", viewportOffsetY);
+    sendToRenderer("viewport-offset", petWindowRuntime.getViewportOffsetY());
     if (themeRuntime.isReloadInProgress()) return;
     syncRendererStateAfterLoad();
   });
@@ -1888,7 +1518,7 @@ function createWindow() {
   // ── Crash recovery: renderer process can die from <object> churn ──
   win.webContents.on("render-process-gone", (_event, details) => {
     safeConsoleError("Renderer crashed:", details.reason);
-    dragLocked = false;
+    petWindowRuntime.setDragLocked(false);
     idlePaused = false;
     mouseOverPet = false;
     win.webContents.reload();
@@ -1897,51 +1527,9 @@ function createWindow() {
   guardAlwaysOnTop(win);
   startTopmostWatchdog();
 
-  // ── Display change: re-clamp window to prevent off-screen ──
-  // In proportional mode, also recalculate size based on the new work area,
-  // unless keepSizeAcrossDisplays is on — then we preserve the current window
-  // size and only re-clamp the position.
-  screen.on("display-metrics-changed", () => {
-    reapplyMacVisibility();
-    if (!win || win.isDestroyed()) return;
-    if (_mini.getMiniTransitioning()) return;
-    if (_mini.getMiniMode()) {
-      _mini.handleDisplayChange();
-      return;
-    }
-    const current = getPetWindowBounds();
-    const size = keepSizeAcrossDisplaysCached
-      ? { width: current.width, height: current.height }
-      : getCurrentPixelSize();
-    const clamped = clampToScreenVisual(current.x, current.y, size.width, size.height);
-    const proportionalRecalc = isProportionalMode() && !keepSizeAcrossDisplaysCached;
-    if (proportionalRecalc || clamped.x !== current.x || clamped.y !== current.y) {
-      applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
-      syncHitWin();
-      repositionAnchoredFloatingSurfaces();
-    }
-  });
-  screen.on("display-removed", () => {
-    reapplyMacVisibility();
-    if (!win || win.isDestroyed()) return;
-    if (_mini.getMiniTransitioning()) return;
-    if (_mini.getMiniMode()) {
-      exitMiniMode();
-      return;
-    }
-    const current = getPetWindowBounds();
-    const size = keepSizeAcrossDisplaysCached
-      ? { width: current.width, height: current.height }
-      : getCurrentPixelSize();
-    const clamped = clampToScreenVisual(current.x, current.y, size.width, size.height);
-    applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
-    syncHitWin();
-    repositionAnchoredFloatingSurfaces();
-  });
-  screen.on("display-added", () => {
-    reapplyMacVisibility();
-    repositionAnchoredFloatingSurfaces();
-  });
+  screen.on("display-metrics-changed", () => petWindowRuntime.handleDisplayMetricsChanged());
+  screen.on("display-removed", () => petWindowRuntime.handleDisplayRemoved());
+  screen.on("display-added", () => petWindowRuntime.handleDisplayAdded());
 }
 
 // Read primary display safely — getPrimaryDisplay() can also throw during
@@ -1960,68 +1548,11 @@ function getNearestWorkArea(cx, cy) {
   return findNearestWorkArea(screen.getAllDisplays(), getPrimaryWorkAreaSafe(), cx, cy);
 }
 
-function getNearestDisplayBottomInset(cx, cy) {
-  const point = { x: Math.round(cx), y: Math.round(cy) };
-  let display = null;
-  try {
-    display = screen.getDisplayNearestPoint(point);
-  } catch {}
-  if (!display || !display.bounds || !display.workArea) {
-    try {
-      display = screen.getPrimaryDisplay();
-    } catch {}
-  }
-  return getDisplayInsets(display).bottom;
-}
+function clampToScreenVisual(x, y, w, h, options = {}) { return petWindowRuntime.clampToScreenVisual(x, y, w, h, options); }
+function clampToScreen(x, y, w, h) { return petWindowRuntime.clampToScreen(x, y, w, h); }
 
-// Loose clamp used during drag: union of all display work areas as the boundary,
-// so the pet can freely cross between screens. Only prevents going fully off-screen.
-function looseClampPetToDisplays(x, y, w, h) {
-  const margins = getVisibleContentMargins({ x, y, width: w, height: h });
-  const bottomInset = getNearestDisplayBottomInset(x + w / 2, y + h / 2);
-  return computeLooseClamp(
-    screen.getAllDisplays(),
-    getPrimaryWorkAreaSafe(),
-    x,
-    y,
-    w,
-    h,
-    getLooseDragMargins({
-      width: w,
-      height: h,
-      visibleMargins: margins,
-      allowEdgePinning: allowEdgePinningCached,
-      bottomInset,
-    })
-  );
-}
-
-function clampToScreenVisual(x, y, w, h, options = {}) {
-  const margins = getVisibleContentMargins(
-    { x, y, width: w, height: h },
-    options
-  );
-  const nearest = getNearestWorkArea(x + w / 2, y + h / 2);
-  const bottomInset = getNearestDisplayBottomInset(x + w / 2, y + h / 2);
-  const mLeft  = Math.round(w * 0.25);
-  const mRight = Math.round(w * 0.25);
-  const clampMargins = getRestClampMargins({
-    height: h,
-    visibleMargins: margins,
-    allowEdgePinning: "allowEdgePinning" in options ? options.allowEdgePinning : allowEdgePinningCached,
-    bottomInset,
-  });
-  return {
-    x: Math.max(nearest.x - mLeft, Math.min(x, nearest.x + nearest.width - w + mRight)),
-    y: Math.max(
-      nearest.y - clampMargins.top,
-      Math.min(y, nearest.y + nearest.height - h + clampMargins.bottom)
-    ),
-  };
-}
-
-function clampToScreen(x, y, w, h) {
-  return clampToScreenVisual(x, y, w, h);
+function computeFinalDragBounds(bounds, size, clampPosition = clampToScreenVisual) {
+  return petWindowRuntime.computeFinalDragBounds(bounds, size, clampPosition);
 }
 
 // ── Mini Mode — initialized here after state module ──
