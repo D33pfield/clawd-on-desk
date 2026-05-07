@@ -9,7 +9,7 @@ const initServer = require("../src/server");
 const {
   buildToolInputFingerprint,
   findPendingPermissionForStateEvent,
-} = initServer.__test;
+} = require("../src/server-permission-utils");
 
 function makeFakeHttp() {
   let capturedHandler = null;
