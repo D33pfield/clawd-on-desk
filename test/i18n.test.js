@@ -41,9 +41,9 @@ function loadSettingsI18nStrings() {
 }
 
 function loadBubbleStrings() {
-  const source = fs.readFileSync(path.join(ROOT, "src", "bubble.html"), "utf8");
+  const source = fs.readFileSync(path.join(ROOT, "src", "bubble-renderer.js"), "utf8");
   const match = source.match(/const BUBBLE_STRINGS = (\{[\s\S]*?\n\});/);
-  assert.ok(match, "bubble.html should define BUBBLE_STRINGS");
+  assert.ok(match, "bubble-renderer.js should define BUBBLE_STRINGS");
   const context = {};
   vm.runInNewContext(`result = ${match[1]};`, context);
   return context.result;

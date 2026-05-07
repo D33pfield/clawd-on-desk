@@ -3,13 +3,14 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const bubbleHtml = fs.readFileSync(path.join(__dirname, "..", "src", "bubble.html"), "utf8");
+const bubbleCss = fs.readFileSync(path.join(__dirname, "..", "src", "bubble.css"), "utf8");
+const bubbleRenderer = fs.readFileSync(path.join(__dirname, "..", "src", "bubble-renderer.js"), "utf8");
 
 function functionBody(name) {
-  const start = bubbleHtml.indexOf(`function ${name}(`);
+  const start = bubbleRenderer.indexOf(`function ${name}(`);
   assert.notStrictEqual(start, -1, `missing function ${name}`);
-  const next = bubbleHtml.indexOf("\nfunction ", start + 1);
-  return next === -1 ? bubbleHtml.slice(start) : bubbleHtml.slice(start, next);
+  const next = bubbleRenderer.indexOf("\nfunction ", start + 1);
+  return next === -1 ? bubbleRenderer.slice(start) : bubbleRenderer.slice(start, next);
 }
 
 describe("AskUserQuestion bubble overflow", () => {
@@ -22,14 +23,15 @@ describe("AskUserQuestion bubble overflow", () => {
   });
 
   it("reports natural content height before calling the no-op viewport hook", () => {
-    assert.match(bubbleHtml, /function measureNaturalBubbleHeight\(\)/);
-    assert.match(bubbleHtml, /card\.classList\.remove\("elicitation-scrollable"\);/);
-    assert.match(bubbleHtml, /elicitationForm\.style\.maxHeight = "";/);
+    assert.match(bubbleRenderer, /function measureNaturalBubbleHeight\(\)/);
+    assert.match(bubbleRenderer, /card\.classList\.remove\("elicitation-scrollable"\);/);
+    assert.match(bubbleRenderer, /elicitationForm\.style\.maxHeight = "";/);
     assert.match(
-      bubbleHtml,
+      bubbleRenderer,
       /window\.bubbleAPI\.reportHeight\(measureNaturalBubbleHeight\(\)\);[\s\S]*applyElicitationViewport\(\);/
     );
-    assert.doesNotMatch(bubbleHtml, /max-height:\s*calc\(100vh/);
+    assert.doesNotMatch(bubbleCss, /max-height:\s*calc\(100vh/);
+    assert.doesNotMatch(bubbleRenderer, /max-height:\s*calc\(100vh/);
   });
 
   it("does not make the no-op viewport hook add internal scrolling or a max-height clamp", () => {
