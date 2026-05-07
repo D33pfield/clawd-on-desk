@@ -52,6 +52,7 @@ const { keepOutOfTaskbar } = require("./taskbar");
 const createTopmostRuntime = require("./topmost-runtime");
 const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
 const createThemeFadeSequencer = require("./theme-fade-sequencer");
+const createThemeRuntime = require("./theme-runtime");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
 } = require("./session-focus");
@@ -228,6 +229,8 @@ function _restartClawdNow() {
 }
 
 let shortcutRuntime = null;
+let themeRuntime = null;
+let codexPetMain = null;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
 };
@@ -261,13 +264,11 @@ const _settingsController = createSettingsController({
       _state && typeof _state.getActiveSessionAliasKeys === "function"
         ? _state.getActiveSessionAliasKeys()
         : new Set(),
-    // Theme deps — defined much later in the file, wrapped in lazy closures.
-    // activateTheme accepts (themeId, variantId?, overrideMap?) and returns
-    // { themeId, variantId } with the actually-resolved variantId
-    // (lenient fallback on unknown variants).
-    activateTheme: (id, variantId, overrideMap) => _deferredActivateTheme(id, variantId, overrideMap),
-    getThemeInfo: (id) => _deferredGetThemeInfo(id),
-    removeThemeDir: (id) => _deferredRemoveThemeDir(id),
+    // Theme runtime is wired after theme-loader.init(); keep these closures
+    // lazy so settings actions never capture a pre-init runtime reference.
+    activateTheme: (id, variantId, overrideMap) => themeRuntime.activateTheme(id, variantId, overrideMap),
+    getThemeInfo: (id) => themeRuntime.getThemeInfo(id),
+    removeThemeDir: (id) => themeRuntime.removeThemeDir(id),
     globalShortcut,
     shortcutHandlers,
     // The controller is created before shortcutRuntime because each side needs
@@ -325,12 +326,13 @@ function hydrateSystemBackedSettings() {
 function flushRuntimeStateToPrefs() {
   if (!win || win.isDestroyed()) return;
   const bounds = getPetWindowBounds();
+  const theme = getActiveTheme();
   _settingsController.applyBulk({
     x: bounds.x,
     y: bounds.y,
     positionSaved: true,
-    positionThemeId: activeTheme ? activeTheme._id : "",
-    positionVariantId: activeTheme ? activeTheme._variantId : "",
+    positionThemeId: theme ? theme._id : "",
+    positionVariantId: theme ? theme._variantId : "",
     positionDisplay: captureCurrentDisplaySnapshot(bounds),
     savedPixelWidth: bounds.width,
     savedPixelHeight: bounds.height,
@@ -435,6 +437,37 @@ function safeConsoleError(...args) {
 const themeLoader = require("./theme-loader");
 const createCodexPetMain = require("./codex-pet-main");
 themeLoader.init(__dirname, app.getPath("userData"));
+themeRuntime = createThemeRuntime({
+  themeLoader,
+  settingsController: _settingsController,
+  fs,
+  path,
+  getRenderWindow: () => win,
+  getHitWindow: () => hitWin,
+  getStateRuntime: () => _state,
+  getTickRuntime: () => _tick,
+  getMiniRuntime: () => _mini,
+  getAnimationOverridesRuntime: () => animationOverridesMain,
+  getFadeSequencer: () => themeFadeSequencer,
+  getPetWindowBounds,
+  applyPetWindowBounds,
+  computeFinalDragBounds,
+  clampToScreenVisual,
+  flushRuntimeStateToPrefs,
+  syncHitStateAfterLoad,
+  syncRendererStateAfterLoad,
+  syncHitWin,
+  syncSessionHudVisibility: () => syncSessionHudVisibility(),
+  startMainTick: () => startMainTick(),
+  bumpAnimationOverridePreviewPosterGeneration,
+  rebuildAllMenus: () => rebuildAllMenus(),
+  isManagedTheme: (themeId) => codexPetMain && codexPetMain.isManagedTheme(themeId),
+});
+themeLoader.bindActiveThemeRuntime(themeRuntime);
+
+function getActiveTheme() {
+  return themeRuntime ? themeRuntime.getActiveTheme() : null;
+}
 
 let animationOverridesMain = null;
 function bumpAnimationOverridePreviewPosterGeneration() {
@@ -473,14 +506,14 @@ shortcutRuntime = createShortcutRuntime({
 });
 
 // The injected window/menu closures below are intentionally lazy. During
-// startup before activeTheme / win / Settings window / rebuildAllMenus exist,
+// startup before themeRuntime / win / Settings window / rebuildAllMenus exist,
 // only the sync/summary/merge methods are safe to call.
-const codexPetMain = createCodexPetMain({
+codexPetMain = createCodexPetMain({
   app,
   BrowserWindow,
   dialog,
   fs,
-  getActiveTheme: () => activeTheme,
+  getActiveTheme: () => getActiveTheme(),
   getLang: () => lang,
   getMainWindow: () => win,
   getSettingsWindow,
@@ -495,8 +528,8 @@ const REGISTER_PROTOCOL_DEV_ARG = codexPetMain.REGISTER_PROTOCOL_DEV_ARG;
 // If lenient fell back to "clawd" OR the variant fell back to "default",
 // hydrate prefs to match so the store stays truth.
 //
-// Startup runs BEFORE the window is ready, so we call themeLoader.loadTheme
-// directly — not activateTheme (which requires ready windows) and not the
+// Startup runs BEFORE the window is ready, so we call the runtime's initial
+// load path, not activateTheme (which requires ready windows) and not the
 // setThemeSelection command (which goes through activateTheme). The runtime
 // switch path via UI goes through setThemeSelection post-window-ready.
 let _requestedThemeId = _settingsController.get("theme") || "clawd";
@@ -529,20 +562,19 @@ if (codexPetMain.summaryHasActiveOrphan(_startupCodexPetSyncSummary, _requestedT
   );
   codexPetMain.setLastSyncSummary(_startupCodexPetSyncSummary);
 }
-let activeTheme = themeLoader.loadTheme(_requestedThemeId, {
+const _loadedStartupTheme = themeRuntime.loadInitialTheme(_requestedThemeId, {
   variant: _requestedVariantId,
   overrides: _requestedThemeOverrides,
 });
-activeTheme._overrideSignature = JSON.stringify(_requestedThemeOverrides || {});
-if (activeTheme._id !== _requestedThemeId || activeTheme._variantId !== _requestedVariantId) {
+if (_loadedStartupTheme._id !== _requestedThemeId || _loadedStartupTheme._variantId !== _requestedVariantId) {
   const nextVariantMap = { ...(_settingsController.get("themeVariant") || {}) };
   // Self-heal: store the resolved ids so next boot doesn't fall back again.
-  nextVariantMap[activeTheme._id] = activeTheme._variantId;
-  if (activeTheme._id !== _requestedThemeId) {
+  nextVariantMap[_loadedStartupTheme._id] = _loadedStartupTheme._variantId;
+  if (_loadedStartupTheme._id !== _requestedThemeId) {
     delete nextVariantMap[_requestedThemeId];
   }
   const result = _settingsController.hydrate({
-    theme: activeTheme._id,
+    theme: _loadedStartupTheme._id,
     themeVariant: nextVariantMap,
   });
   if (result && result.status === "error") {
@@ -552,7 +584,7 @@ if (activeTheme._id !== _requestedThemeId || activeTheme._variantId !== _request
 
 // ── CSS <object> sizing (from theme) ──
 const petGeometryMain = createPetGeometryMain({
-  getActiveTheme: () => activeTheme,
+  getActiveTheme: () => getActiveTheme(),
   getCurrentState: () => _state.getCurrentState(),
   getCurrentSvg: () => _state.getCurrentSvg(),
   getCurrentHitBox: () => _state.getCurrentHitBox(),
@@ -769,9 +801,10 @@ function applyPetWindowPosition(x, y) {
 }
 
 function hasStoredPositionThemeMismatch(prefs) {
-  if (!prefs || !activeTheme) return false;
-  return prefs.positionThemeId !== activeTheme._id
-    || prefs.positionVariantId !== activeTheme._variantId;
+  const theme = getActiveTheme();
+  if (!prefs || !theme) return false;
+  return prefs.positionThemeId !== theme._id
+    || prefs.positionVariantId !== theme._variantId;
 }
 
 function syncHitStateAfterLoad() {
@@ -840,7 +873,7 @@ function playSound(name) {
   if (soundMuted || doNotDisturb) return;
   const now = Date.now();
   if (now - lastSoundTime < SOUND_COOLDOWN_MS) return;
-  const url = themeLoader.getSoundUrl(name);
+  const url = themeRuntime.getSoundUrl(name);
   if (!url) return;
   lastSoundTime = now;
   sendToRenderer("play-sound", { url, volume: soundVolume });
@@ -882,7 +915,6 @@ let idlePaused = false;
 let forceEyeResend = false;
 let forceEyeResendBoostUntil = 0;
 let requestFastTick = () => {};
-let themeReloadInProgress = false;
 let repositionSessionHud = () => {};
 let syncSessionHudVisibility = () => {};
 let broadcastSessionHudSnapshot = () => {};
@@ -1074,7 +1106,7 @@ let broadcastDashboardSessionSnapshot = () => {};
 let sendDashboardI18n = () => {};
 
 const _stateCtx = {
-  get theme() { return activeTheme; },
+  get theme() { return getActiveTheme(); },
   get win() { return win; },
   get hitWin() { return hitWin; },
   get doNotDisturb() { return doNotDisturb; },
@@ -1127,7 +1159,8 @@ const _stateCtx = {
   // state.js gate 调这个做 early-return。不做白名单校验——settings-actions
   // 负责写入合法性，这里只读。
   isOneshotDisabled: (stateKey) => {
-    const themeId = activeTheme && activeTheme._id;
+    const theme = getActiveTheme();
+    const themeId = theme && theme._id;
     if (!themeId || !stateKey) return false;
     const overrides = _settingsController.get("themeOverrides");
     const themeMap = overrides && overrides[themeId];
@@ -1174,13 +1207,14 @@ function getSessionHudAnchorRect(bounds) {
 }
 
 function getVisibleContentMargins(bounds) {
-  if (!bounds || !activeTheme) return { top: 0, bottom: 0 };
-  const box = getThemeMarginBox(activeTheme);
+  const theme = getActiveTheme();
+  if (!bounds || !theme) return { top: 0, bottom: 0 };
+  const box = getThemeMarginBox(theme);
   if (!box) return { top: 0, bottom: 0 };
 
   const cacheKey = [
-    activeTheme._id || "",
-    activeTheme._variantId || "",
+    theme._id || "",
+    theme._variantId || "",
     bounds.width,
     bounds.height,
     JSON.stringify(box),
@@ -1188,14 +1222,14 @@ function getVisibleContentMargins(bounds) {
   const cached = themeMarginEnvelopeCache.get(cacheKey);
   if (cached) return cached;
 
-  const margins = computeStableVisibleContentMargins(activeTheme, bounds, { box });
+  const margins = computeStableVisibleContentMargins(theme, bounds, { box });
   themeMarginEnvelopeCache.set(cacheKey, margins);
   return margins;
 }
 
 // ── Main tick — delegated to src/tick.js ──
 const _tickCtx = {
-  get theme() { return activeTheme; },
+  get theme() { return getActiveTheme(); },
   get win() { return win; },
   getPetWindowBounds,
   get currentState() { return _state.getCurrentState(); },
@@ -1429,8 +1463,8 @@ const _menuCtx = {
   getNearestWorkArea,
   reapplyMacVisibility,
   discoverThemes: () => themeLoader.discoverThemes(),
-  getActiveThemeId: () => activeTheme ? activeTheme._id : "clawd",
-  getActiveThemeCapabilities: () => activeTheme ? activeTheme._capabilities : null,
+  getActiveThemeId: () => themeRuntime.getActiveThemeId("clawd"),
+  getActiveThemeCapabilities: () => themeRuntime.getActiveThemeCapabilities(),
   ensureUserThemesDir: () => themeLoader.ensureUserThemesDir(),
   openSettingsWindow: () => settingsWindowRuntime.open(),
 };
@@ -1497,10 +1531,10 @@ animationOverridesMain = createSettingsAnimationOverridesMain({
   path,
   themeLoader,
   settingsController: _settingsController,
-  getActiveTheme: () => activeTheme,
+  getActiveTheme: () => getActiveTheme(),
   getSettingsWindow,
   getLang: () => lang,
-  getThemeReloadInProgress: () => themeReloadInProgress,
+  getThemeReloadInProgress: () => themeRuntime.isReloadInProgress(),
   getStateRuntime: () => _state,
   sendToRenderer,
 });
@@ -1628,7 +1662,7 @@ registerSettingsIpc({
   themeLoader,
   codexPetMain,
   getSettingsWindow,
-  getActiveTheme: () => activeTheme,
+  getActiveTheme: () => getActiveTheme(),
   getLang: () => lang,
   settingsSizePreviewSession,
   isValidSizePreviewKey,
@@ -1762,7 +1796,7 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       backgroundThrottling: false,
       additionalArguments: [
-        "--theme-config=" + JSON.stringify(themeLoader.getRendererConfig()),
+        "--theme-config=" + JSON.stringify(themeRuntime.getRendererConfig()),
       ],
     },
   });
@@ -1840,7 +1874,7 @@ function createWindow() {
         preload: path.join(__dirname, "preload-hit.js"),
         backgroundThrottling: false,
         additionalArguments: [
-          "--hit-theme-config=" + JSON.stringify(themeLoader.getHitRendererConfig()),
+          "--hit-theme-config=" + JSON.stringify(themeRuntime.getHitRendererConfig()),
         ],
       },
     });
@@ -1871,8 +1905,8 @@ function createWindow() {
 
     // Send initial state to hitWin once it's ready
     hitWin.webContents.on("did-finish-load", () => {
-      sendToHitWin("theme-config", themeLoader.getHitRendererConfig());
-      if (themeReloadInProgress) return;
+      sendToHitWin("theme-config", themeRuntime.getHitRendererConfig());
+      if (themeRuntime.isReloadInProgress()) return;
       syncHitStateAfterLoad();
     });
 
@@ -1936,9 +1970,9 @@ function createWindow() {
   // If hooks arrived during startup, respect them instead of forcing idle
   // Also handles crash recovery (render-process-gone → reload)
   win.webContents.on("did-finish-load", () => {
-    sendToRenderer("theme-config", themeLoader.getRendererConfig());
+    sendToRenderer("theme-config", themeRuntime.getRendererConfig());
     sendToRenderer("viewport-offset", viewportOffsetY);
-    if (themeReloadInProgress) return;
+    if (themeRuntime.isReloadInProgress()) return;
     syncRendererStateAfterLoad();
   });
 
@@ -2086,7 +2120,7 @@ function clampToScreen(x, y, w, h) {
 
 // ── Mini Mode — initialized here after state module ──
 const _miniCtx = {
-  get theme() { return activeTheme; },
+  get theme() { return getActiveTheme(); },
   get win() { return win; },
   get currentSize() { return currentSize; },
   get doNotDisturb() { return doNotDisturb; },
@@ -2140,138 +2174,9 @@ Object.defineProperties(this || {}, {}); // no-op placeholder
 
 // ── Theme switching ──
 //
-// The `theme` settings effect calls this. MUST throw on failure so the
-// controller rejects the commit — otherwise prefs would record a theme id
-// that can't actually render. Does NOT write `theme` back to prefs; the
-// controller commits after this returns (writing here would infinite-loop).
-function activateTheme(themeId, variantId) {
-  if (!win || win.isDestroyed()) {
-    throw new Error("theme switch requires ready windows");
-  }
-  // Resolve variantId: explicit arg wins; else current per-theme preference; else default.
-  // (Unknown variants lenient-fallback inside loadTheme, so we still commit strict on themeId.)
-  const currentVariantMap = _settingsController.get("themeVariant") || {};
-  const targetVariant = (typeof variantId === "string" && variantId) ? variantId
-    : (currentVariantMap[themeId] || "default");
-  const currentOverrides = _settingsController.get("themeOverrides") || {};
-  const targetOverrideMap = arguments.length >= 3 ? arguments[2] : (currentOverrides[themeId] || null);
-  const targetOverrideSignature = JSON.stringify(targetOverrideMap || {});
-
-  // Joint dedup: same theme + same variant → skip reload. Different variant
-  // on same theme MUST run the full reload pipeline (can't hot-patch tiers /
-  // displayHint / geometry safely — see plan-settings-panel-3b-swap.md §6.2).
-  if (
-    activeTheme &&
-    activeTheme._id === themeId &&
-    activeTheme._variantId === targetVariant &&
-    (activeTheme._overrideSignature || "{}") === targetOverrideSignature
-  ) {
-    return { themeId, variantId: activeTheme._variantId };
-  }
-
-  // Strict load first: if it throws, nothing downstream has mutated yet.
-  const newTheme = themeLoader.loadTheme(themeId, {
-    strict: true,
-    variant: targetVariant,
-    overrides: targetOverrideMap,
-  });
-  newTheme._overrideSignature = targetOverrideSignature;
-  if (animationOverridesMain) animationOverridesMain.clearPreviewTimer();
-  if (!activeTheme || activeTheme._id !== newTheme._id) {
-    bumpAnimationOverridePreviewPosterGeneration();
-  }
-  let preservedVirtualBounds = getPetWindowBounds();
-
-  _state.cleanup();
-  _tick.cleanup();
-  _mini.cleanup();
-  // ⚠️ Don't clear pendingPermissions — bubbles are independent BrowserWindows
-  // ⚠️ Don't clear sessions — keep active session tracking
-  // ⚠️ Don't clear displayHint — semantic tokens resolve through new theme's map
-
-  if (_mini.getMiniMode() && !newTheme.miniMode.supported) {
-    preservedVirtualBounds = null;
-    _mini.exitMiniMode();
-  }
-
-  activeTheme = newTheme;
-  _mini.refreshTheme();
-  _state.refreshTheme();
-  _tick.refreshTheme();
-  if (_mini.getMiniMode()) _mini.handleDisplayChange();
-
-  themeReloadInProgress = true;
-
-  let reloadSettled = false;
-  const finishThemeReload = () => {
-    if (reloadSettled) return;
-    reloadSettled = true;
-    themeReloadInProgress = false;
-    if (preservedVirtualBounds && !_mini.getMiniTransitioning() && win && !win.isDestroyed()) {
-      applyPetWindowBounds(preservedVirtualBounds);
-      const clamped = computeFinalDragBounds(
-        getPetWindowBounds(),
-        { width: preservedVirtualBounds.width, height: preservedVirtualBounds.height },
-        clampToScreenVisual
-      );
-      if (clamped) applyPetWindowBounds(clamped);
-    }
-    // Fallback can reach this path before both reload events arrive; the sync
-    // helpers are window-guarded and serve as a best-effort state resend.
-    if (hitWin && !hitWin.isDestroyed()) syncHitStateAfterLoad();
-    if (win && !win.isDestroyed()) {
-      syncRendererStateAfterLoad({ includeStartupRecovery: false });
-      syncHitWin();
-    }
-    syncSessionHudVisibility();
-    if (win && !win.isDestroyed()) startMainTick();
-    if (animationOverridesMain) animationOverridesMain.runPendingPostReloadTasks();
-  };
-
-  themeFadeSequencer.run({
-    onReloadFinished: () => finishThemeReload(),
-    onFallback: () => finishThemeReload(),
-  });
-
-  flushRuntimeStateToPrefs();
-
-  // Return resolved ids so the caller (setThemeSelection command) can commit
-  // the actually-loaded variantId — handles "author deleted variant" dirty state.
-  return { themeId, variantId: newTheme._variantId };
-}
-
-// Inject theme deps into the settings controller now that activateTheme,
-// themeLoader, and activeTheme are all defined. Uses lazy closures because
-// these references are captured at call time (inside an effect or command).
-function _deferredActivateTheme(themeId, variantId, overrideMap) {
-  return activateTheme(themeId, variantId, overrideMap);
-}
-function _deferredGetThemeInfo(themeId) {
-  const all = themeLoader.discoverThemes();
-  const entry = all.find((t) => t.id === themeId);
-  if (!entry) return null;
-  return {
-    builtin: !!entry.builtin,
-    active: activeTheme && activeTheme._id === themeId,
-    managedCodexPet: codexPetMain.isManagedTheme(themeId),
-  };
-}
-function _deferredRemoveThemeDir(themeId) {
-  const userThemesDir = themeLoader.ensureUserThemesDir();
-  if (!userThemesDir) throw new Error("user themes directory unavailable");
-  // Re-verify path containment as a defensive check — settings-actions
-  // already rejects built-in / active themes, and ensureUserThemesDir only
-  // ever returns the userData subtree, but belt + suspenders on an fs.rm
-  // call is worth the two lines.
-  const target = path.resolve(path.join(userThemesDir, themeId));
-  const root = path.resolve(userThemesDir);
-  if (!target.startsWith(root + path.sep)) {
-    throw new Error(`theme path escapes user themes directory: ${themeId}`);
-  }
-  fs.rmSync(target, { recursive: true, force: true });
-  // Rebuild menus so Theme submenu reflects the deleted entry.
-  try { rebuildAllMenus(); } catch { /* best-effort */ }
-}
+// The settings controller calls themeRuntime.activateTheme through lazy
+// injected deps. main.js remains the composition root; theme-runtime owns the
+// active theme source and the cleanup/refresh/reload protocol.
 
 // ── Auto-install VS Code / Cursor terminal-focus extension ──
 const EXT_ID = "clawd.clawd-terminal-focus";
@@ -2442,7 +2347,7 @@ if (!gotTheLock) {
     _sessionHud.cleanup();
     if (_codexMonitor) _codexMonitor.stop();
     topmostRuntime.cleanup();
-    themeFadeSequencer.cleanup();
+    themeRuntime.cleanup();
     _focus.cleanup();
     if (animationOverridesMain) animationOverridesMain.cleanup();
     if (hitWin && !hitWin.isDestroyed()) hitWin.destroy();

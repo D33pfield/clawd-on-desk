@@ -44,8 +44,7 @@ const {
 
 // ── State ──
 
-let activeTheme = null;
-let activeThemeContext = null;
+let runtimeOwner = null;
 let builtinThemesDir = null;   // set by init()
 let assetsSvgDir = null;       // assets/svg/ for built-in theme
 let assetsSoundsDir = null;    // assets/sounds/ for built-in theme
@@ -71,7 +70,6 @@ function init(appDir, userData) {
     themeCacheDir = path.join(userData, "theme-cache");
     soundOverridesRoot = path.join(userData, "sound-overrides");
   }
-  if (activeTheme) activeThemeContext = _createThemeContext(activeTheme);
 }
 
 // Directory where sound-override files for `themeId` live. main.js creates /
@@ -87,6 +85,22 @@ function _createThemeContext(theme) {
     assetsSvgDir,
     assetsSoundsDir,
   });
+}
+
+function bindActiveThemeRuntime(owner) {
+  runtimeOwner = owner || null;
+}
+
+function _getActiveThemeContext() {
+  if (!runtimeOwner) return null;
+  if (typeof runtimeOwner.getActiveThemeContext === "function") {
+    return runtimeOwner.getActiveThemeContext();
+  }
+  if (typeof runtimeOwner.getActiveTheme === "function") {
+    const theme = runtimeOwner.getActiveTheme();
+    return theme ? _createThemeContext(theme) : null;
+  }
+  return null;
 }
 
 /**
@@ -129,7 +143,7 @@ function _scanThemesDir(dir, builtin, themes, seen) {
 }
 
 /**
- * Load and activate a theme by ID.
+ * Load a theme by ID without activating it.
  *
  * Strict mode throws on missing/invalid; lenient falls back to "clawd".
  * Callers detect fallback by comparing the requested id against
@@ -191,8 +205,6 @@ function loadTheme(themeId, opts = {}) {
 
   theme._soundOverrideFiles = _resolveSoundOverrideFiles(themeId, userOverrides);
 
-  activeTheme = theme;
-  activeThemeContext = _createThemeContext(theme);
   return theme;
 }
 
@@ -261,10 +273,14 @@ function _readThemeJson(themeId) {
 }
 
 /**
+ * Compatibility shim for legacy callers. Active theme ownership lives in
+ * theme-runtime; this module only delegates when a runtime has been bound.
  * @returns {object|null} current active theme config
  */
 function getActiveTheme() {
-  return activeTheme;
+  return runtimeOwner && typeof runtimeOwner.getActiveTheme === "function"
+    ? runtimeOwner.getActiveTheme()
+    : null;
 }
 
 /**
@@ -273,6 +289,7 @@ function getActiveTheme() {
  * @returns {string|null} theme-local filename, or null if not mapped
  */
 function resolveHint(hookFilename) {
+  const activeTheme = getActiveTheme();
   if (!activeTheme || !activeTheme.displayHintMap) return null;
   return activeTheme.displayHintMap[hookFilename] || null;
 }
@@ -289,12 +306,12 @@ function resolveHint(hookFilename) {
  * @returns {string} absolute file path
  */
 function getAssetPath(filename) {
-  if (activeThemeContext) return activeThemeContext.resolveAssetPath(filename);
-  return _resolveAssetPath(activeTheme, filename);
+  const context = _getActiveThemeContext();
+  return context ? context.resolveAssetPath(filename) : null;
 }
 
 function _resolveAssetPath(theme, filename) {
-  if (theme === activeTheme && activeThemeContext) return activeThemeContext.resolveAssetPath(filename);
+  if (!theme) return null;
   return _createThemeContext(theme).resolveAssetPath(filename);
 }
 
@@ -304,7 +321,8 @@ function _resolveAssetPath(theme, filename) {
  * @returns {string} path prefix
  */
 function getRendererAssetsPath() {
-  return activeThemeContext ? activeThemeContext.getRendererAssetsPath() : "../assets/svg";
+  const context = _getActiveThemeContext();
+  return context ? context.getRendererAssetsPath() : "../assets/svg";
 }
 
 /**
@@ -313,7 +331,8 @@ function getRendererAssetsPath() {
  * @returns {string|null} file:// URL or null for built-in
  */
 function getRendererSourceAssetsPath() {
-  return activeThemeContext ? activeThemeContext.getRendererSourceAssetsPath() : null;
+  const context = _getActiveThemeContext();
+  return context ? context.getRendererSourceAssetsPath() : null;
 }
 
 /**
@@ -321,14 +340,16 @@ function getRendererSourceAssetsPath() {
  * Contains only the subset renderer.js needs.
  */
 function getRendererConfig() {
-  return activeThemeContext ? activeThemeContext.getRendererConfig() : null;
+  const context = _getActiveThemeContext();
+  return context ? context.getRendererConfig() : null;
 }
 
 /**
  * Build config object to inject into hit-renderer process.
  */
 function getHitRendererConfig() {
-  return activeThemeContext ? activeThemeContext.getHitRendererConfig() : null;
+  const context = _getActiveThemeContext();
+  return context ? context.getHitRendererConfig() : null;
 }
 
 /**
@@ -401,7 +422,8 @@ function _validateRequiredAssets(theme) {
  * @returns {string|null} file:// URL, or null if sound not defined
  */
 function getSoundUrl(soundName) {
-  return activeThemeContext ? activeThemeContext.getSoundUrl(soundName) : null;
+  const context = _getActiveThemeContext();
+  return context ? context.getSoundUrl(soundName) : null;
 }
 
 function getPreviewSoundUrl() {
@@ -431,6 +453,7 @@ function listThemesWithMetadata() {
 
 module.exports = {
   init,
+  bindActiveThemeRuntime,
   discoverThemes,
   loadTheme,
   validateThemeShape,
@@ -447,6 +470,7 @@ module.exports = {
   getSoundUrl,
   getPreviewSoundUrl,
   getSoundOverridesDir,
+  createThemeContext: _createThemeContext,
   _resolveAssetPath,
   _externalAssetsSourceDir,
   _validateRequiredAssets,

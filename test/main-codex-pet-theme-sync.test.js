@@ -15,10 +15,10 @@ test("main syncs Codex Pet themes before the first theme load", () => {
   const source = fs.readFileSync(MAIN, "utf8");
   const runtimeSource = fs.readFileSync(CODEX_PET_MAIN, "utf8");
   const syncIdx = source.indexOf("let _startupCodexPetSyncSummary = codexPetMain.syncThemes(_requestedThemeId);");
-  const loadIdx = source.indexOf("let activeTheme = themeLoader.loadTheme(_requestedThemeId");
+  const loadIdx = source.indexOf("const _loadedStartupTheme = themeRuntime.loadInitialTheme(_requestedThemeId");
 
   assert.ok(source.includes('const createCodexPetMain = require("./codex-pet-main");'));
-  assert.ok(source.includes("const codexPetMain = createCodexPetMain({"));
+  assert.ok(source.includes("codexPetMain = createCodexPetMain({"));
   assert.ok(runtimeSource.includes('const defaultCodexPetAdapter = require("./codex-pet-adapter");'));
   assert.ok(syncIdx >= 0, "startup Codex Pet sync should be present");
   assert.ok(loadIdx >= 0, "initial theme load should be present");
@@ -66,9 +66,11 @@ test("settings exposes Codex Pet refresh and managed theme metadata", () => {
 
 test("managed Codex Pet themes cannot be removed through the user-theme delete command", () => {
   const mainSource = fs.readFileSync(MAIN, "utf8");
+  const themeRuntimeSource = fs.readFileSync(path.join(ROOT, "src", "theme-runtime.js"), "utf8");
   const actionsSource = fs.readFileSync(SETTINGS_ACTIONS, "utf8");
 
-  assert.ok(mainSource.includes("managedCodexPet: codexPetMain.isManagedTheme(themeId)"));
+  assert.ok(mainSource.includes("isManagedTheme: (themeId) => codexPetMain && codexPetMain.isManagedTheme(themeId)"));
+  assert.ok(themeRuntimeSource.includes("managedCodexPet: isManagedTheme(themeId)"));
   assert.ok(actionsSource.includes("info.managedCodexPet"));
   assert.ok(actionsSource.includes("remove it from Petdex instead"));
 });

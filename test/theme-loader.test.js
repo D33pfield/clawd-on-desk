@@ -70,6 +70,10 @@ function validThemeJson(overrides = {}) {
   };
 }
 
+function contextFor(theme) {
+  return themeLoader.createThemeContext(theme);
+}
+
 function fullMiniMode(overrides = {}) {
   return {
     supported: true,
@@ -272,7 +276,7 @@ describe("theme-loader trusted runtime and schema v1 defaults", () => {
 
   it("keeps schemaVersion 1 themes valid while adding safe defaults", () => {
     const theme = themeLoader.loadTheme("old-schema", { strict: true });
-    const rendererConfig = themeLoader.getRendererConfig();
+    const rendererConfig = contextFor(theme).getRendererConfig();
 
     assert.strictEqual(theme.schemaVersion, 1);
     assert.deepStrictEqual(theme.trustedRuntime, { scriptedSvgFiles: [] });
@@ -284,7 +288,7 @@ describe("theme-loader trusted runtime and schema v1 defaults", () => {
 
   it("preserves trustedRuntime only for built-in themes and sanitizes filenames", () => {
     const theme = themeLoader.loadTheme("trusted", { strict: true });
-    const rendererConfig = themeLoader.getRendererConfig();
+    const rendererConfig = contextFor(theme).getRendererConfig();
 
     assert.strictEqual(theme._builtin, true);
     assert.deepStrictEqual(theme.trustedRuntime, {
@@ -309,7 +313,7 @@ describe("theme-loader trusted runtime and schema v1 defaults", () => {
     const warn = mock.method(console, "warn", () => {});
 
     const theme = themeLoader.loadTheme("forged", { strict: true });
-    const rendererConfig = themeLoader.getRendererConfig();
+    const rendererConfig = contextFor(theme).getRendererConfig();
 
     assert.strictEqual(theme._builtin, false);
     assert.deepStrictEqual(theme.trustedRuntime, { scriptedSvgFiles: [] });
@@ -328,7 +332,7 @@ describe("theme-loader trusted runtime and schema v1 defaults", () => {
 
   it("passes forced SVG object-channel rendering through for external themes", () => {
     const theme = themeLoader.loadTheme("forced-object", { strict: true });
-    const rendererConfig = themeLoader.getRendererConfig();
+    const rendererConfig = contextFor(theme).getRendererConfig();
 
     assert.strictEqual(theme._builtin, false);
     assert.deepStrictEqual(theme.rendering, { svgChannel: "object" });
@@ -456,22 +460,22 @@ describe("theme-loader preview sound selection", () => {
   after(() => fixture && fixture.cleanup());
 
   it("prefers confirm for settings preview when available", () => {
-    themeLoader.loadTheme("preview-theme", { strict: true });
-    const previewUrl = themeLoader.getPreviewSoundUrl();
+    const theme = themeLoader.loadTheme("preview-theme", { strict: true });
+    const previewUrl = contextFor(theme).getPreviewSoundUrl();
     assert.ok(previewUrl, "preview URL expected");
     assert.ok(previewUrl.includes("preview-confirm.mp3"));
   });
 
   it("falls back to complete when confirm is unavailable", () => {
-    themeLoader.loadTheme("fallback-theme", { strict: true });
-    const previewUrl = themeLoader.getPreviewSoundUrl();
+    const theme = themeLoader.loadTheme("fallback-theme", { strict: true });
+    const previewUrl = contextFor(theme).getPreviewSoundUrl();
     assert.ok(previewUrl, "preview URL expected");
     assert.ok(previewUrl.includes("complete.mp3"));
   });
 
   it("returns null when neither confirm nor complete is available", () => {
-    themeLoader.loadTheme("silent-theme", { strict: true });
-    assert.strictEqual(themeLoader.getPreviewSoundUrl(), null);
+    const theme = themeLoader.loadTheme("silent-theme", { strict: true });
+    assert.strictEqual(contextFor(theme).getPreviewSoundUrl(), null);
   });
 });
 
@@ -686,8 +690,8 @@ describe("theme-loader external SVG sanitization", () => {
   after(() => fixture && fixture.cleanup());
 
   it("strips unsafe href/url references while preserving safe local ones", () => {
-    themeLoader.loadTheme("unsafe-inline-style", { strict: true });
-    const sanitizedPath = themeLoader.getAssetPath("idle.svg");
+    const theme = themeLoader.loadTheme("unsafe-inline-style", { strict: true });
+    const sanitizedPath = contextFor(theme).resolveAssetPath("idle.svg");
     const sanitized = fs.readFileSync(sanitizedPath, "utf8");
 
     assert.ok(sanitized.includes("fill:url(pattern.svg#grad)"), "safe relative CSS url should survive");
@@ -701,8 +705,8 @@ describe("theme-loader external SVG sanitization", () => {
   });
 
   it("copies safe relative raster dependencies beside cached SVGs", () => {
-    themeLoader.loadTheme("safe-raster-ref", { strict: true });
-    const sanitizedPath = themeLoader.getAssetPath("idle.svg");
+    const theme = themeLoader.loadTheme("safe-raster-ref", { strict: true });
+    const sanitizedPath = contextFor(theme).resolveAssetPath("idle.svg");
     const sanitized = fs.readFileSync(sanitizedPath, "utf8");
     const cachedAssetsDir = path.dirname(sanitizedPath);
     const cachedWebp = path.join(cachedAssetsDir, "spritesheet.webp");
@@ -731,8 +735,8 @@ describe("theme-loader external SVG sanitization", () => {
   });
 
   it("repairs a missing cached raster when metadata still exists", () => {
-    themeLoader.loadTheme("repair-raster-ref", { strict: true });
-    const cachedAssetsDir = path.dirname(themeLoader.getAssetPath("idle.svg"));
+    const theme = themeLoader.loadTheme("repair-raster-ref", { strict: true });
+    const cachedAssetsDir = path.dirname(contextFor(theme).resolveAssetPath("idle.svg"));
     const cachedWebp = path.join(cachedAssetsDir, "spritesheet.webp");
 
     assert.strictEqual(fs.readFileSync(cachedWebp, "utf8"), "repair-webp");
@@ -743,8 +747,8 @@ describe("theme-loader external SVG sanitization", () => {
   });
 
   it("invalidates cached rasters when source mtime or size changes", () => {
-    themeLoader.loadTheme("invalidation-raster-ref", { strict: true });
-    const cachedAssetsDir = path.dirname(themeLoader.getAssetPath("idle.svg"));
+    const theme = themeLoader.loadTheme("invalidation-raster-ref", { strict: true });
+    const cachedAssetsDir = path.dirname(contextFor(theme).resolveAssetPath("idle.svg"));
     const cachedWebp = path.join(cachedAssetsDir, "spritesheet.webp");
     const sourceWebp = path.join(fixture.tmp, "userData", "themes", "invalidation-raster-ref", "assets", "spritesheet.webp");
 
@@ -756,8 +760,8 @@ describe("theme-loader external SVG sanitization", () => {
   });
 
   it("removes orphaned cached rasters after SVG references change", () => {
-    themeLoader.loadTheme("orphan-raster-ref", { strict: true });
-    const cachedAssetsDir = path.dirname(themeLoader.getAssetPath("idle.svg"));
+    const theme = themeLoader.loadTheme("orphan-raster-ref", { strict: true });
+    const cachedAssetsDir = path.dirname(contextFor(theme).resolveAssetPath("idle.svg"));
     const cachedA = path.join(cachedAssetsDir, "a.webp");
     const cachedB = path.join(cachedAssetsDir, "b.webp");
     const sourceSvg = path.join(fixture.tmp, "userData", "themes", "orphan-raster-ref", "assets", "idle.svg");
@@ -791,8 +795,8 @@ describe("theme-loader external SVG sanitization", () => {
       "utf8"
     );
 
-    themeLoader.loadTheme(themeId, { strict: true });
-    const sanitized = fs.readFileSync(themeLoader.getAssetPath("idle.svg"), "utf8");
+    const theme = themeLoader.loadTheme(themeId, { strict: true });
+    const sanitized = fs.readFileSync(contextFor(theme).resolveAssetPath("idle.svg"), "utf8");
     const cacheMeta = JSON.parse(fs.readFileSync(path.join(cacheRoot, ".cache-meta.json"), "utf8"));
 
     assert.strictEqual(cacheMeta.version, 2);
