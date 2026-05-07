@@ -25,6 +25,10 @@ const {
   resolveHitBoxForSvg: resolveHitBoxForSvgWithRuntime,
 } = require("./state-hitbox-resolver");
 const {
+  pickDisplayHint: pickDisplayHintWithMap,
+  pushRecentEvent,
+} = require("./state-session-events");
+const {
   deriveSessionBadge,
   normalizeTitle,
   shouldAutoClearDetachedSession: shouldAutoClearDetachedSessionWithDeps,
@@ -78,11 +82,6 @@ let DND_SLEEP_TRANSITION_DURATION = 0;
 let COLLAPSE_DURATION = 0;
 let SLEEP_MODE = "full";
 const { SLEEP_SEQUENCE, STATE_PRIORITY, ONESHOT_STATES } = createStatePriorityConstants();
-
-// Rolling event history per session. Used by deriveSessionBadge() to infer a
-// user-facing status ("Running" / "Done" / "Interrupted" / "Idle") without
-// extending the state machine. Cap avoids unbounded growth on long sessions.
-const RECENT_EVENT_LIMIT = 8;
 
 // Session display hints — validated against theme.displayHintMap keys
 let DISPLAY_HINT_MAP = {};
@@ -516,15 +515,7 @@ function wakeFromDoze() {
 }
 
 function pickDisplayHint(state, existing, incoming) {
-  if (state !== "working" && state !== "thinking" && state !== "juggling") {
-    return null;
-  }
-  if (incoming !== undefined) {
-    if (incoming === null || incoming === "") return null;
-    if (DISPLAY_HINT_MAP[incoming] != null) return incoming;
-    return existing && existing.displayHint != null ? existing.displayHint : null;
-  }
-  return existing && existing.displayHint != null ? existing.displayHint : null;
+  return pickDisplayHintWithMap(state, existing, incoming, DISPLAY_HINT_MAP);
 }
 
 function debugSession(msg) {
@@ -660,24 +651,6 @@ function updateCodexExitProbe(sessionId, agentId, event) {
   } else {
     cancelCodexExitProbe(sessionId, event || "state-update");
   }
-}
-
-// Append an event to a session's rolling recentEvents list, dropping the
-// oldest when over RECENT_EVENT_LIMIT. Returned list is a new array —
-// caller assigns it to session.recentEvents.
-// Intentionally does NOT store a human-readable label field. C2 derives
-// labels via i18n at render time so language switches update existing
-// sessions' menu labels too.
-function pushRecentEvent(existing, state, event) {
-  const previous = Array.isArray(existing && existing.recentEvents)
-    ? existing.recentEvents.slice(-(RECENT_EVENT_LIMIT - 1))
-    : [];
-  previous.push({
-    at: Date.now(),
-    event: event || null,
-    state: state || "idle",
-  });
-  return previous;
 }
 
 function shouldAutoClearDetachedSession(session, badge) {
