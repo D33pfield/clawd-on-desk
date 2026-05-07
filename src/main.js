@@ -53,6 +53,7 @@ const createTopmostRuntime = require("./topmost-runtime");
 const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
 const createThemeFadeSequencer = require("./theme-fade-sequencer");
 const createThemeRuntime = require("./theme-runtime");
+const createAgentRuntimeMain = require("./agent-runtime-main");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
 } = require("./session-focus");
@@ -155,54 +156,6 @@ function _readSystemOpenAtLogin() {
   ).openAtLogin;
 }
 
-// Forward declarations — these are defined later in the file but the
-// controller's injectedDeps need to resolve them lazily. Using a function
-// wrapper lets us bind them after module scope finishes without a second
-// `setDeps()` API on the controller.
-function _deferredStartMonitorForAgent(id) {
-  return startMonitorForAgent(id);
-}
-function _deferredStopMonitorForAgent(id) {
-  return stopMonitorForAgent(id);
-}
-function _deferredSyncIntegrationForAgent(id) {
-  return _server && typeof _server.syncIntegrationForAgent === "function"
-    ? _server.syncIntegrationForAgent(id)
-    : false;
-}
-function _deferredRepairIntegrationForAgent(id, options) {
-  return _server && typeof _server.repairIntegrationForAgent === "function"
-    ? _server.repairIntegrationForAgent(id, options)
-    : false;
-}
-function _deferredStopIntegrationForAgent(id) {
-  return _server && typeof _server.stopIntegrationForAgent === "function"
-    ? _server.stopIntegrationForAgent(id)
-    : false;
-}
-function _deferredClearSessionsByAgent(id) {
-  return _state && typeof _state.clearSessionsByAgent === "function"
-    ? _state.clearSessionsByAgent(id)
-    : 0;
-}
-function _deferredDismissPermissionsByAgent(id) {
-  const removed = _perm && typeof _perm.dismissPermissionsByAgent === "function"
-    ? _perm.dismissPermissionsByAgent(id)
-    : 0;
-  // Symmetric cleanup for Kimi's state.js animation lock: dismissing the
-  // passive bubble alone would leave `kimiPermissionHolds` pinning
-  // notification forever with nothing actionable (same class of bug we
-  // already fixed for DND). Kimi is the only agent with a state-side
-  // permission lock today, so scope the extra work to it.
-  if (id === "kimi-cli" && _state && typeof _state.disposeAllKimiPermissionState === "function") {
-    const disposed = _state.disposeAllKimiPermissionState();
-    if (disposed && typeof _state.resolveDisplayState === "function" && typeof _state.setState === "function") {
-      const resolved = _state.resolveDisplayState();
-      _state.setState(resolved, _state.getSvgOverride ? _state.getSvgOverride(resolved) : undefined);
-    }
-  }
-  return removed;
-}
 function _deferredResizePet(sizeKey) {
   // Bound to _menu.resizeWindow after menu module is created below. Settings
   // panel's size slider commands route through here so they get the same
@@ -230,6 +183,7 @@ function _restartClawdNow() {
 
 let shortcutRuntime = null;
 let themeRuntime = null;
+let agentRuntime = null;
 let codexPetMain = null;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
@@ -248,17 +202,18 @@ const _settingsController = createSettingsController({
     startClaudeSettingsWatcher: () => _server.startClaudeSettingsWatcher(),
     stopClaudeSettingsWatcher: () => _server.stopClaudeSettingsWatcher(),
     setOpenAtLogin: _writeSystemOpenAtLogin,
-    startMonitorForAgent: _deferredStartMonitorForAgent,
-    stopMonitorForAgent: _deferredStopMonitorForAgent,
-    syncIntegrationForAgent: _deferredSyncIntegrationForAgent,
-    repairIntegrationForAgent: _deferredRepairIntegrationForAgent,
-    stopIntegrationForAgent: _deferredStopIntegrationForAgent,
+    startMonitorForAgent: (id) => agentRuntime && agentRuntime.startMonitorForAgent(id),
+    stopMonitorForAgent: (id) => agentRuntime && agentRuntime.stopMonitorForAgent(id),
+    syncIntegrationForAgent: (id) => agentRuntime ? agentRuntime.syncIntegrationForAgent(id) : false,
+    repairIntegrationForAgent: (id, options) =>
+      agentRuntime ? agentRuntime.repairIntegrationForAgent(id, options) : false,
+    stopIntegrationForAgent: (id) => agentRuntime ? agentRuntime.stopIntegrationForAgent(id) : false,
     repairLocalServer: () => _server && typeof _server.repairRuntimeStatus === "function"
       ? _server.repairRuntimeStatus()
       : false,
     restartClawd: _restartClawdNow,
-    clearSessionsByAgent: _deferredClearSessionsByAgent,
-    dismissPermissionsByAgent: _deferredDismissPermissionsByAgent,
+    clearSessionsByAgent: (id) => agentRuntime ? agentRuntime.clearSessionsByAgent(id) : 0,
+    dismissPermissionsByAgent: (id) => agentRuntime ? agentRuntime.dismissPermissionsByAgent(id) : 0,
     resizePet: _deferredResizePet,
     getActiveSessionAliasKeys: () =>
       _state && typeof _state.getActiveSessionAliasKeys === "function"
@@ -358,68 +313,6 @@ function captureCurrentDisplaySnapshot(bounds) {
   } catch {
     return null;
   }
-}
-
-const CodexSubagentClassifier = require("../agents/codex-subagent-classifier");
-const {
-  buildCodexMonitorUpdateOptions,
-  isCodexMonitorPermissionEvent,
-} = require("./codex-monitor-callback");
-const _codexSubagentClassifier = new CodexSubagentClassifier();
-let _codexMonitor = null;          // Codex CLI JSONL log polling instance
-const CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS = 10 * 60 * 1000;
-const CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS = new Set([
-  "session_meta",
-  "event_msg:task_started",
-  "event_msg:user_message",
-  "event_msg:guardian_assessment",
-  "response_item:function_call",
-  "response_item:custom_tool_call",
-  "event_msg:exec_command_end",
-  "event_msg:patch_apply_end",
-  "event_msg:custom_tool_call_output",
-  "event_msg:task_complete",
-]);
-const codexOfficialHookSessions = new Map();
-
-function markCodexOfficialHookSession(sessionId) {
-  if (!sessionId) return;
-  codexOfficialHookSessions.set(String(sessionId), Date.now());
-}
-
-function hasRecentCodexOfficialHookSession(sessionId) {
-  const lastHookAt = codexOfficialHookSessions.get(String(sessionId));
-  if (!lastHookAt) return false;
-  if (Date.now() - lastHookAt > CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS) {
-    codexOfficialHookSessions.delete(String(sessionId));
-    return false;
-  }
-  return true;
-}
-
-function shouldSuppressCodexLogEvent(sessionId, state, event) {
-  // P2: official PermissionRequest owns the interactive bubble. Drop the
-  // legacy JSONL codex-permission notification for hook-active sessions so the
-  // user does not see both the real approval bubble and the old "Got it" hint.
-  if (state === "codex-permission") return hasRecentCodexOfficialHookSession(sessionId);
-  if (!CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS.has(event)) return false;
-  return hasRecentCodexOfficialHookSession(sessionId);
-}
-
-function updateSessionFromServer(sessionId, state, event, opts = {}) {
-  if (opts && opts.agentId === "codex" && opts.hookSource === "codex-official") {
-    markCodexOfficialHookSession(sessionId);
-  }
-  return updateSession(sessionId, state, event, opts);
-}
-
-// Hook-based agents have no module-level monitor — they're gated at the
-// HTTP route layer. Only log-poll agents hit these branches.
-function startMonitorForAgent(agentId) {
-  if (agentId === "codex" && _codexMonitor) _codexMonitor.start();
-}
-function stopMonitorForAgent(agentId) {
-  if (agentId === "codex" && _codexMonitor) _codexMonitor.stop();
 }
 
 function safeConsoleError(...args) {
@@ -1341,6 +1234,16 @@ sendSessionHudI18n = _sessionHud.sendI18n;
 getSessionHudReservedOffset = _sessionHud.getHudReservedOffset;
 getSessionHudWindow = _sessionHud.getWindow;
 
+agentRuntime = createAgentRuntimeMain({
+  getServer: () => _server,
+  getStateRuntime: () => _state,
+  getPermissionRuntime: () => _perm,
+  isAgentEnabled: (agentId) => _isAgentEnabled(_settingsController.getSnapshot(), agentId),
+  updateSession: (sessionId, state, event, opts) => updateSession(sessionId, state, event, opts),
+  showCodexNotifyBubble: (payload) => showCodexNotifyBubble(payload),
+  clearCodexNotifyBubbles: (...args) => clearCodexNotifyBubbles(...args),
+});
+
 // ── HTTP server — delegated to src/server.js ──
 const _serverCtx = {
   get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
@@ -1356,9 +1259,9 @@ const _serverCtx = {
   isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
   isAgentPermissionsEnabled: (agentId) => _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
   isCodexPermissionInterceptEnabled: () => _isCodexPermissionInterceptEnabled({ agents: _settingsController.get("agents") }),
-  codexSubagentClassifier: _codexSubagentClassifier,
+  codexSubagentClassifier: agentRuntime.getCodexSubagentClassifier(),
   setState,
-  updateSession: updateSessionFromServer,
+  updateSession: agentRuntime.updateSessionFromServer,
   resolvePermissionEntry,
   sendPermissionResponse,
   showPermissionBubble,
@@ -2297,32 +2200,7 @@ if (!gotTheLock) {
     // cost at click time. Whether we call .start() right now depends on the
     // agent-gate snapshot — a user who disabled Codex at last shutdown
     // shouldn't see its file watcher spin up on the next launch.
-    try {
-      const CodexLogMonitor = require("../agents/codex-log-monitor");
-      const codexAgent = require("../agents/codex");
-      _codexMonitor = new CodexLogMonitor(codexAgent, (sid, state, event, extra) => {
-        if (shouldSuppressCodexLogEvent(sid, state, event)) return;
-        if (isCodexMonitorPermissionEvent(state)) {
-          updateSession(sid, "notification", event, buildCodexMonitorUpdateOptions(extra, {
-            includeHeadless: false,
-          }));
-          showCodexNotifyBubble({
-            sessionId: sid,
-            command: (extra && extra.permissionDetail && extra.permissionDetail.command) || "",
-          });
-          return;
-        }
-        clearCodexNotifyBubbles(sid, `codex-state-transition:${state}`);
-        updateSession(sid, state, event, buildCodexMonitorUpdateOptions(extra, {
-          includeHeadless: true,
-        }));
-      }, { classifier: _codexSubagentClassifier });
-      if (_isAgentEnabled(_settingsController.getSnapshot(), "codex")) {
-        _codexMonitor.start();
-      }
-    } catch (err) {
-      console.warn("Clawd: Codex log monitor not started:", err.message);
-    }
+    agentRuntime.startCodexLogMonitor();
 
     // Auto-install VS Code/Cursor terminal-focus extension
     try { installTerminalFocusExtension(); } catch (err) {
@@ -2345,7 +2223,7 @@ if (!gotTheLock) {
     _tick.cleanup();
     _mini.cleanup();
     _sessionHud.cleanup();
-    if (_codexMonitor) _codexMonitor.stop();
+    agentRuntime.cleanup();
     topmostRuntime.cleanup();
     themeRuntime.cleanup();
     _focus.cleanup();
