@@ -1,7 +1,6 @@
 const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { applyStationaryCollectionBehavior } = require("./mac-window");
 const {
   applyWindowsAppUserModelId,
   shouldOpenSettingsWindowFromArgv,
@@ -50,6 +49,8 @@ const {
   getProportionalPixelSize,
 } = require("./size-utils");
 const { keepOutOfTaskbar } = require("./taskbar");
+const createTopmostRuntime = require("./topmost-runtime");
+const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
 const {
   animateWindowOpacity,
   setWindowOpacity,
@@ -955,6 +956,35 @@ function moveWindowForDrag() {
 // Initialized after state module (needs applyState, resolveDisplayState, etc.)
 // See _mini initialization below
 
+// ── alwaysOnTop recovery — delegated to src/topmost-runtime.js ──
+const topmostRuntime = createTopmostRuntime({
+  isWin,
+  isMac,
+  getWin: () => win,
+  getHitWin: () => hitWin,
+  getPendingPermissions: () => pendingPermissions,
+  getUpdateBubbleWindow: () => _updateBubble.getBubbleWindow(),
+  getSessionHudWindow: () => getSessionHudWindow(),
+  getContextMenuOwner: () => contextMenuOwner,
+  getNearestWorkArea,
+  getPetWindowBounds,
+  getShowDock: () => showDock,
+  isDragLocked: () => dragLocked,
+  isMiniAnimating: () => _mini.getIsAnimating(),
+  isMiniTransitioning: () => _mini.getMiniTransitioning(),
+  keepOutOfTaskbar,
+  setForceEyeResend,
+  applyPetWindowPosition,
+  syncHitWin,
+});
+const {
+  reassertWinTopmost,
+  reapplyMacVisibility,
+  isNearWorkAreaEdge,
+  scheduleHwndRecovery,
+  guardAlwaysOnTop,
+  startTopmostWatchdog,
+} = topmostRuntime;
 
 // ── Permission bubble — delegated to src/permission.js ──
 const {
@@ -1036,37 +1066,6 @@ const {
 function repositionFloatingBubbles() {
   if (pendingPermissions.length) repositionBubbles();
   repositionUpdateBubble();
-}
-
-// ── macOS cross-Space visibility helper ──
-// Prefer native collection behavior over Electron's setVisibleOnAllWorkspaces:
-// Electron may briefly hide the window while transforming process type, while
-// the native path also mirrors Masko Code's SkyLight-backed stationary Space.
-function reapplyMacVisibility() {
-  if (!isMac) return;
-  const apply = (w) => {
-    if (w && !w.isDestroyed()) {
-      const deferUntil = Number(w.__clawdMacDeferredVisibilityUntil) || 0;
-      if (deferUntil > Date.now()) return;
-      if (deferUntil) delete w.__clawdMacDeferredVisibilityUntil;
-      w.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
-      if (!applyStationaryCollectionBehavior(w)) {
-        const opts = { visibleOnFullScreen: true };
-        if (!showDock) opts.skipTransformProcessType = true;
-        w.setVisibleOnAllWorkspaces(true, opts);
-        // First, try the native flicker-free path.
-        // If the native path fails, use Electron's cross-space API as a fallback.
-        // After using Electron as a fallback, try the native enhancement again to avoid Electron resetting the window behavior we want.
-        applyStationaryCollectionBehavior(w);
-      }
-    }
-  };
-  apply(win);
-  apply(hitWin);
-  for (const perm of pendingPermissions) apply(perm.bubble);
-  apply(_updateBubble.getBubbleWindow());
-  apply(getSessionHudWindow());
-  apply(contextMenuOwner);
 }
 
 // ── State machine — delegated to src/state.js ──
@@ -1334,106 +1333,6 @@ const _serverCtx = {
 };
 const _server = require("./server")(_serverCtx);
 const { startHttpServer, getHookServerPort } = _server;
-
-// ── alwaysOnTop recovery (Windows DWM / Shell can strip TOPMOST flag) ──
-// The "always-on-top-changed" event only fires from Electron's own SetAlwaysOnTop
-// path — it does NOT fire when Explorer/Start menu/Gallery silently reorder windows.
-// So we keep the event listener for the cases it does catch (Alt/Win key), and add
-// a slow watchdog (20s) to recover from silent shell-initiated z-order drops.
-const WIN_TOPMOST_LEVEL = "pop-up-menu";  // above taskbar-level UI
-const MAC_TOPMOST_LEVEL = "screen-saver"; // above fullscreen apps on macOS
-const TOPMOST_WATCHDOG_MS = 5_000;
-let topmostWatchdog = null;
-let hwndRecoveryTimer = null;
-
-function reassertWinTopmost() {
-  if (!isWin) return;
-  if (win && !win.isDestroyed()) win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-  if (hitWin && !hitWin.isDestroyed()) hitWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-}
-
-function isNearWorkAreaEdge(bounds, tolerance = 2) {
-  if (!bounds) return false;
-  const wa = getNearestWorkArea(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-  if (!wa) return false;
-  return (
-    bounds.x <= wa.x + tolerance ||
-    bounds.y <= wa.y + tolerance ||
-    bounds.x + bounds.width >= wa.x + wa.width - tolerance ||
-    bounds.y + bounds.height >= wa.y + wa.height - tolerance
-  );
-}
-
-// Reinitialize HWND input routing after DWM z-order disruptions.
-// showInactive() (ShowWindow SW_SHOWNOACTIVATE) is the same call that makes
-// the right-click context menu restore drag capability — it forces Windows to
-// fully recalculate the transparent window's input target region.
-function scheduleHwndRecovery() {
-  if (!isWin) return;
-  if (hwndRecoveryTimer) clearTimeout(hwndRecoveryTimer);
-  hwndRecoveryTimer = setTimeout(() => {
-    hwndRecoveryTimer = null;
-    if (!win || win.isDestroyed()) return;
-    // Just restore z-order — input routing is handled by hitWin now
-    reassertWinTopmost();
-    setForceEyeResend(true);
-  }, 1000);
-}
-
-function guardAlwaysOnTop(w) {
-  if (!isWin) return;
-  w.on("always-on-top-changed", (_, isOnTop) => {
-    if (!isOnTop && w && !w.isDestroyed()) {
-      w.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-      if (w === win && !dragLocked && !_mini.getIsAnimating() && !_mini.getMiniTransitioning()) {
-        setForceEyeResend(true);
-        const bounds = getPetWindowBounds();
-        applyPetWindowPosition(bounds.x + 1, bounds.y);
-        applyPetWindowPosition(bounds.x, bounds.y);
-        syncHitWin();
-        scheduleHwndRecovery();
-      }
-    }
-  });
-}
-
-function startTopmostWatchdog() {
-  if (!isWin || topmostWatchdog) return;
-  topmostWatchdog = setInterval(() => {
-    if (win && !win.isDestroyed()) {
-      win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-      keepOutOfTaskbar(win);
-    }
-    // Keep hitWin topmost too
-    if (hitWin && !hitWin.isDestroyed()) {
-      hitWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-      keepOutOfTaskbar(hitWin);
-    }
-    for (const perm of pendingPermissions) {
-      if (perm.bubble && !perm.bubble.isDestroyed() && perm.bubble.isVisible()) {
-        perm.bubble.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-        keepOutOfTaskbar(perm.bubble);
-      }
-    }
-    const updateBubbleWin = _updateBubble.getBubbleWindow();
-    if (updateBubbleWin && !updateBubbleWin.isDestroyed() && updateBubbleWin.isVisible()) {
-      updateBubbleWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-      keepOutOfTaskbar(updateBubbleWin);
-    }
-    const sessionHudWin = getSessionHudWindow();
-    if (sessionHudWin && !sessionHudWin.isDestroyed() && sessionHudWin.isVisible()) {
-      sessionHudWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-      keepOutOfTaskbar(sessionHudWin);
-    }
-    if (contextMenuOwner && !contextMenuOwner.isDestroyed()) {
-      keepOutOfTaskbar(contextMenuOwner);
-    }
-  }, TOPMOST_WATCHDOG_MS);
-}
-
-function stopTopmostWatchdog() {
-  if (topmostWatchdog) { clearInterval(topmostWatchdog); topmostWatchdog = null; }
-}
 
 function updateLog(msg) {
   if (!updateDebugLog) return;
@@ -2638,8 +2537,7 @@ if (!gotTheLock) {
     _mini.cleanup();
     _sessionHud.cleanup();
     if (_codexMonitor) _codexMonitor.stop();
-    stopTopmostWatchdog();
-    if (hwndRecoveryTimer) { clearTimeout(hwndRecoveryTimer); hwndRecoveryTimer = null; }
+    topmostRuntime.cleanup();
     _focus.cleanup();
     if (animationOverridesMain) animationOverridesMain.cleanup();
     if (hitWin && !hitWin.isDestroyed()) hitWin.destroy();
