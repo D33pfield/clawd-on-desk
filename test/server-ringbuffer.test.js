@@ -10,7 +10,7 @@ const {
   createSingleRequestHookEventRecorder,
   recordHookEventInBuffer,
   getRecentHookEventsFromBuffer,
-} = initServer.__test;
+} = require("../src/server-hook-events");
 
 function makeFakeHttp() {
   let capturedHandler = null;
@@ -345,6 +345,23 @@ describe("server hook event ringbuffer", () => {
     assert.strictEqual(events.length, HOOK_EVENT_RING_SIZE_PER_AGENT);
     assert.strictEqual(events[0].eventType, "E7");
     assert.strictEqual(events.at(-1).eventType, `E${HOOK_EVENT_RING_SIZE_PER_AGENT + 6}`);
+  });
+
+  it("filters recent hook events by agent and timestamp and returns copies", () => {
+    const buffer = new Map();
+    recordHookEventInBuffer(buffer, { agent_id: "codex", event: "Old" }, "state", "accepted", { now: () => 10 });
+    recordHookEventInBuffer(buffer, { agent_id: "codex", event: "New" }, "state", "accepted", { now: () => 20 });
+    recordHookEventInBuffer(buffer, { agent_id: "gemini-cli", event: "Other" }, "state", "accepted", { now: () => 30 });
+
+    const events = getRecentHookEventsFromBuffer(buffer, { agentId: "codex", since: 20 });
+
+    assert.deepStrictEqual(events.map(({ agentId, eventType, timestamp }) => ({ agentId, eventType, timestamp })), [{
+      agentId: "codex",
+      eventType: "New",
+      timestamp: 20,
+    }]);
+    events[0].eventType = "mutated";
+    assert.strictEqual(buffer.get("codex")[1].eventType, "New");
   });
 
   it("single-request recorder keeps the first valid route outcome", () => {
