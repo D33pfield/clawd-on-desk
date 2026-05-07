@@ -1,11 +1,8 @@
 // src/state.js — State machine + session management + DND + wake poll
 // Extracted from main.js L158-240, L299-505, L544-960
 
-let screen, nativeImage;
-try { ({ screen, nativeImage } = require("electron")); } catch { screen = null; nativeImage = null; }
-const path = require("path");
-const fs = require("fs");
-const { pathToFileURL } = require("url");
+let screen;
+try { ({ screen } = require("electron")); } catch { screen = null; }
 const {
   createStatePriorityConstants,
   getStatePriority,
@@ -36,30 +33,7 @@ const {
   getActiveSessionAliasKeys: getActiveSessionAliasKeysFromSessions,
   sessionSnapshotSignature,
 } = require("./state-session-snapshot");
-
-// ── Agent icons (official logos from assets/icons/agents/) ──
-const AGENT_ICON_DIR = path.join(__dirname, "..", "assets", "icons", "agents");
-const _agentIconCache = new Map();
-const _agentIconUrlCache = new Map();
-
-function getAgentIcon(agentId) {
-  if (!nativeImage || !agentId) return undefined;
-  if (_agentIconCache.has(agentId)) return _agentIconCache.get(agentId);
-  const iconPath = path.join(AGENT_ICON_DIR, `${agentId}.png`);
-  if (!fs.existsSync(iconPath)) return undefined;
-  const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
-  _agentIconCache.set(agentId, icon);
-  return icon;
-}
-
-function getAgentIconUrl(agentId) {
-  if (!agentId) return null;
-  if (_agentIconUrlCache.has(agentId)) return _agentIconUrlCache.get(agentId);
-  const iconPath = path.join(AGENT_ICON_DIR, `${agentId}.png`);
-  const iconUrl = fs.existsSync(iconPath) ? pathToFileURL(iconPath).href : null;
-  _agentIconUrlCache.set(agentId, iconUrl);
-  return iconUrl;
-}
+const { getAgentIconUrl } = require("./state-agent-icons");
 
 module.exports = function initState(ctx) {
 
