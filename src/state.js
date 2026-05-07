@@ -8,6 +8,11 @@ const fs = require("fs");
 const { pathToFileURL } = require("url");
 const { VISUAL_FALLBACK_STATES } = require("./theme-loader");
 const {
+  createStatePriorityConstants,
+  getStatePriority,
+  resolveDisplayStateFromSessions,
+} = require("./state-priority");
+const {
   deriveSessionBadge,
   normalizeTitle,
   shouldAutoClearDetachedSession: shouldAutoClearDetachedSessionWithDeps,
@@ -60,14 +65,7 @@ let DND_SLEEP_TRANSITION_SVG = null;
 let DND_SLEEP_TRANSITION_DURATION = 0;
 let COLLAPSE_DURATION = 0;
 let SLEEP_MODE = "full";
-const SLEEP_SEQUENCE = new Set(["yawning", "dozing", "collapsing", "sleeping", "waking"]);
-
-const STATE_PRIORITY = {
-  error: 8, notification: 7, sweeping: 6, attention: 5,
-  carrying: 4, juggling: 4, working: 3, thinking: 2, idle: 1, sleeping: 0,
-};
-
-const ONESHOT_STATES = new Set(["attention", "error", "sweeping", "notification", "carrying"]);
+const { SLEEP_SEQUENCE, STATE_PRIORITY, ONESHOT_STATES } = createStatePriorityConstants();
 
 // Rolling event history per session. Used by deriveSessionBadge() to infer a
 // user-facing status ("Running" / "Done" / "Interrupted" / "Idle") without
@@ -272,7 +270,7 @@ function setState(newState, svgOverride) {
   if (newState === "yawning" && SLEEP_SEQUENCE.has(currentState)) return;
 
   if (pendingTimer) {
-    if (pendingState && (STATE_PRIORITY[newState] || 0) < (STATE_PRIORITY[pendingState] || 0)) {
+    if (pendingState && getStatePriority(newState, STATE_PRIORITY) < getStatePriority(pendingState, STATE_PRIORITY)) {
       return;
     }
     clearTimeout(pendingTimer);
@@ -1345,31 +1343,12 @@ function stopKimiPermissionPoll(sessionId) {
 }
 
 function resolveDisplayState() {
-  let best;
-  if (sessions.size === 0) {
-    best = "idle";
-  } else {
-    best = "sleeping";
-    let hasNonHeadless = false;
-    for (const [, s] of sessions) {
-      if (s.headless) continue;
-      hasNonHeadless = true;
-      if ((STATE_PRIORITY[s.state] || 0) > (STATE_PRIORITY[best] || 0)) best = s.state;
-    }
-    if (!hasNonHeadless) best = "idle";
-  }
-  // Permission animation lock (highest priority): if any permission request is
-  // pending, always pin notification regardless of session priority.
-  if (hasPermissionAnimationLock()) {
-    best = "notification";
-  }
-
-  // Update overlay participates in priority, but equal-priority live states
-  // such as notification/permission locks must remain visible.
-  if (updateVisualState && (updateVisualPriority || (STATE_PRIORITY[updateVisualState] || 0)) > (STATE_PRIORITY[best] || 0)) {
-    return updateVisualState;
-  }
-  return best;
+  return resolveDisplayStateFromSessions(sessions, {
+    statePriority: STATE_PRIORITY,
+    permissionLocked: hasPermissionAnimationLock(),
+    updateVisualState,
+    updateVisualPriority,
+  });
 }
 
 function setUpdateVisualState(kind) {
@@ -1382,7 +1361,7 @@ function setUpdateVisualState(kind) {
   }
   updateVisualKind = kind;
   updateVisualState = UPDATE_VISUAL_STATE_MAP[kind] || kind;
-  updateVisualPriority = UPDATE_VISUAL_PRIORITY_MAP[kind] || STATE_PRIORITY[updateVisualState] || 0;
+  updateVisualPriority = UPDATE_VISUAL_PRIORITY_MAP[kind] || getStatePriority(updateVisualState, STATE_PRIORITY);
   refreshUpdateVisualOverride();
   return updateVisualState;
 }
