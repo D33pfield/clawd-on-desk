@@ -10,6 +10,10 @@ const {
   isPathInsideDir: _isPathInsideDir,
 } = require("./theme-assets-cache");
 const {
+  getThemeMetadata: _getThemeMetadata,
+  listThemesWithMetadata: _listThemesWithMetadata,
+} = require("./theme-metadata");
+const {
   REQUIRED_STATES,
   FULL_SLEEP_REQUIRED_STATES,
   MINI_REQUIRED_STATES,
@@ -391,75 +395,6 @@ function _validateRequiredAssets(theme) {
 }
 
 /**
- * Build preview URL for a single variant. Fallback chain:
- *   variant.preview → variant.idleAnimations[0].file → root theme preview
- *
- * Avoids "all variant cards show the same preview" when variants only differ
- * in tiers/timings but not in any visible asset.
- */
-function _buildVariantPreviewUrl(raw, variantSpec, themeDir, isBuiltin) {
-  let previewFile = null;
-  if (variantSpec) {
-    if (typeof variantSpec.preview === "string" && variantSpec.preview) {
-      previewFile = variantSpec.preview;
-    } else if (Array.isArray(variantSpec.idleAnimations)
-               && variantSpec.idleAnimations[0]
-               && typeof variantSpec.idleAnimations[0].file === "string") {
-      previewFile = variantSpec.idleAnimations[0].file;
-    }
-  }
-  if (previewFile) {
-    const filename = path.basename(previewFile);
-    const themeLocal = path.join(themeDir, "assets", filename);
-    if (fs.existsSync(themeLocal)) {
-      try { return pathToFileURL(themeLocal).href; } catch {}
-    }
-    if (isBuiltin && assetsSvgDir) {
-      const central = path.join(assetsSvgDir, filename);
-      if (fs.existsSync(central)) {
-        try { return pathToFileURL(central).href; } catch {}
-      }
-    }
-  }
-  return _buildPreviewUrl(raw, themeDir, isBuiltin);
-}
-
-/**
- * Normalize a theme's variants for metadata consumers (settings panel).
- * - Always includes a `default` entry (synthetic if author didn't declare one)
- * - Each entry: { id, name, description, previewFileUrl }
- * - `name` / `description` preserved as-is (string or {en,zh} — UI handles i18n)
- */
-function _buildVariantMetadata(raw, themeDir, isBuiltin) {
-  const rawVariants = _isPlainObject(raw.variants) ? raw.variants : {};
-  const hasExplicitDefault = _isPlainObject(rawVariants.default);
-  const out = [];
-
-  if (!hasExplicitDefault) {
-    // i18n object — settings-renderer's localizeField() picks the right key.
-    // Don't reuse raw.name here: that would label the synthetic default with
-    // the theme's own name (e.g. "Clawd"), creating a confusing duplicate of
-    // the theme card's title inside its own variant strip.
-    out.push({
-      id: "default",
-      name: { en: "Standard", zh: "标准" },
-      description: null,
-      previewFileUrl: _buildPreviewUrl(raw, themeDir, isBuiltin),
-    });
-  }
-  for (const [id, spec] of Object.entries(rawVariants)) {
-    if (!_isPlainObject(spec)) continue;
-    out.push({
-      id,
-      name: (spec.name != null) ? spec.name : id,
-      description: (spec.description != null) ? spec.description : null,
-      previewFileUrl: _buildVariantPreviewUrl(raw, spec, themeDir, isBuiltin),
-    });
-  }
-  return out;
-}
-
-/**
  * Resolve a logical sound name to an absolute file:// URL.
  * Built-in themes: assets/sounds/. External themes: {themeDir}/sounds/.
  * @param {string} soundName - logical name (e.g. "complete")
@@ -473,76 +408,15 @@ function getPreviewSoundUrl() {
   return getSoundUrl("confirm") || getSoundUrl("complete") || null;
 }
 
-// basename() strips any path segments in theme.json so a malicious
-// `preview: "../../foo"` can't escape the theme dir.
-function _buildPreviewUrl(raw, themeDir, isBuiltin) {
-  const previewFile = (typeof raw.preview === "string" && raw.preview)
-    || _getStateFiles(raw.states && raw.states.idle)[0]
-    || null;
-  if (!previewFile) return null;
-  const filename = path.basename(previewFile);
-  // clawd reuses assets/svg/ at repo root; calico + user themes have their own.
-  let absPath = null;
-  const themeLocal = path.join(themeDir, "assets", filename);
-  if (fs.existsSync(themeLocal)) {
-    absPath = themeLocal;
-  } else if (isBuiltin && assetsSvgDir) {
-    const central = path.join(assetsSvgDir, filename);
-    if (fs.existsSync(central)) absPath = central;
-  }
-  if (!absPath) return null;
-  try { return pathToFileURL(absPath).href; } catch { return null; }
-}
-
 /**
  * Read metadata for a single theme WITHOUT activating it.
  * Returns null for missing/malformed themes.
  */
 function getThemeMetadata(themeId) {
-  const { raw, isBuiltin, themeDir } = _readThemeJson(themeId);
-  if (!raw) return null;
-  return {
-    id: themeId,
-    name: raw.name || themeId,
-    builtin: !!isBuiltin,
-    previewFileUrl: _buildPreviewUrl(raw, themeDir, isBuiltin),
-    previewContentRatio: _computePreviewContentRatio(raw),
-    previewContentOffsetPct: _computePreviewContentOffsetPct(raw),
-    variants: _buildVariantMetadata(raw, themeDir, isBuiltin),
-    capabilities: _buildCapabilities(raw),
-  };
-}
-
-// Ratio of the theme's actual pet content vs the full viewBox. Lets the
-// settings panel normalize preview sizes across themes whose assets have
-// wildly different canvas utilization (pixel pets with lots of transparent
-// margin vs APNG cats that fill the whole frame).
-function _computePreviewContentRatio(raw) {
-  const vb = raw && raw.viewBox;
-  const cb = raw && raw.layout && raw.layout.contentBox;
-  if (!vb || !cb) return null;
-  if (!(vb.width > 0) || !(vb.height > 0)) return null;
-  if (!(cb.width > 0) || !(cb.height > 0)) return null;
-  return Math.max(cb.width / vb.width, cb.height / vb.height);
-}
-
-// How far the contentBox center sits away from the viewBox center, as a
-// percentage of viewBox size. Themes like clawd place the pet near the bottom
-// of the viewBox (baseline-anchored) so the preview thumbnail looks bottom-
-// heavy — the renderer applies a matching transform to recenter it visually.
-function _computePreviewContentOffsetPct(raw) {
-  const vb = raw && raw.viewBox;
-  const cb = raw && raw.layout && raw.layout.contentBox;
-  if (!vb || !cb) return null;
-  if (!(vb.width > 0) || !(vb.height > 0)) return null;
-  const cbCenterX = cb.x + cb.width / 2;
-  const cbCenterY = cb.y + cb.height / 2;
-  const vbCenterX = vb.x + vb.width / 2;
-  const vbCenterY = vb.y + vb.height / 2;
-  return {
-    x: -((cbCenterX - vbCenterX) / vb.width) * 100,
-    y: -((cbCenterY - vbCenterY) / vb.height) * 100,
-  };
+  return _getThemeMetadata(themeId, {
+    readThemeJson: _readThemeJson,
+    assetsSvgDir,
+  });
 }
 
 /**
@@ -552,35 +426,7 @@ function _computePreviewContentOffsetPct(raw) {
  * `theme` / `themeOverrides` broadcast.
  */
 function listThemesWithMetadata() {
-  const themes = [];
-  const seen = new Set();
-  if (builtinThemesDir) _scanMetadata(builtinThemesDir, true, themes, seen);
-  if (userThemesDir) _scanMetadata(userThemesDir, false, themes, seen);
-  return themes;
-}
-
-function _scanMetadata(dir, builtin, themes, seen) {
-  try {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || seen.has(entry.name)) continue;
-      const jsonPath = path.join(dir, entry.name, "theme.json");
-      let raw;
-      try { raw = JSON.parse(fs.readFileSync(jsonPath, "utf8")); } catch { continue; }
-      if (builtin && raw && raw._scaffoldOnly === true) continue;
-      const themeDir = path.join(dir, entry.name);
-      themes.push({
-        id: entry.name,
-        name: raw.name || entry.name,
-        builtin,
-        previewFileUrl: _buildPreviewUrl(raw, themeDir, builtin),
-        previewContentRatio: _computePreviewContentRatio(raw),
-        previewContentOffsetPct: _computePreviewContentOffsetPct(raw),
-        variants: _buildVariantMetadata(raw, themeDir, builtin),
-        capabilities: _buildCapabilities(raw),
-      });
-      seen.add(entry.name);
-    }
-  } catch { /* dir missing */ }
+  return _listThemesWithMetadata({ builtinThemesDir, userThemesDir, assetsSvgDir });
 }
 
 module.exports = {
