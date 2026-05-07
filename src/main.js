@@ -499,7 +499,7 @@ const petWindowRuntime = createPetWindowRuntime({
   reapplyMacVisibility: () => reapplyMacVisibility(),
   reassertWinTopmost: () => reassertWinTopmost(),
   scheduleHwndRecovery: () => scheduleHwndRecovery(),
-  isNearWorkAreaEdge,
+  isNearWorkAreaEdge: (bounds) => isNearWorkAreaEdge(bounds),
   flushRuntimeStateToPrefs: () => flushRuntimeStateToPrefs(),
   handleMiniDisplayChange: () => _mini.handleDisplayChange(),
   exitMiniMode: () => exitMiniMode(),

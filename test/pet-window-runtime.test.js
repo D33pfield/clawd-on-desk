@@ -131,6 +131,17 @@ describe("pet-window-runtime", () => {
     assert.match(menuSource, /parent:\s*ctx\.win/);
   });
 
+  it("lazy-binds topmost edge helpers so main can initialize the pet runtime first", () => {
+    const mainSource = fs.readFileSync(path.join(SRC_DIR, "main.js"), "utf8");
+    const start = mainSource.indexOf("const petWindowRuntime = createPetWindowRuntime({");
+    const end = mainSource.indexOf("\n});", start);
+    const petRuntimeOptions = mainSource.slice(start, end);
+
+    assert.ok(start >= 0 && end > start);
+    assert.match(petRuntimeOptions, /isNearWorkAreaEdge:\s*\(bounds\)\s*=>\s*isNearWorkAreaEdge\(bounds\)/);
+    assert.doesNotMatch(petRuntimeOptions, /\n\s*isNearWorkAreaEdge,\r?\n/);
+  });
+
   it("creates the hit window with the Windows drag focusability contract", () => {
     const instances = [];
     const harness = createRuntime();
