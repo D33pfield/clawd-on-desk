@@ -1,5 +1,8 @@
 "use strict";
 
+// NOTE: log lines keep the legacy "[theme-loader]" prefix so existing grep and
+// alert rules that target the original module name continue to work.
+
 const fs = require("fs");
 const path = require("path");
 const {

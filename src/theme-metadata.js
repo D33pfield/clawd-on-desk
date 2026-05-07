@@ -1,5 +1,9 @@
 "use strict";
 
+// Design invariant: this module must not require theme-loader, hold active-theme
+// state, or read directories owned by theme-loader.init(). Directory roots and
+// single-theme reads are injected through options.
+
 const fs = require("fs");
 const path = require("path");
 const { pathToFileURL } = require("url");
@@ -52,7 +56,7 @@ function buildVariantPreviewUrl(raw, variantSpec, themeDir, isBuiltin, options =
       if (fs.existsSync(central)) return fileUrl(central);
     }
   }
-  return buildPreviewUrl(raw, themeDir, isBuiltin, { assetsSvgDir });
+  return buildPreviewUrl(raw, themeDir, isBuiltin, options);
 }
 
 function buildVariantMetadata(raw, themeDir, isBuiltin, options = {}) {
