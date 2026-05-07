@@ -5,7 +5,10 @@ const assert = require("node:assert");
 const { EventEmitter } = require("node:events");
 
 const initServer = require("../src/server");
-const { resolveCodexOfficialHookState } = require("../src/server").__test;
+const {
+  MAX_CODEX_OFFICIAL_TURNS,
+  resolveCodexOfficialHookState,
+} = require("../src/server-codex-official-turns");
 
 class FakeWatcher extends EventEmitter {
   constructor(callback) {
@@ -471,5 +474,24 @@ describe("Codex official hook turn tracking", () => {
     assert.deepStrictEqual(subStop, { state: "idle", drop: false });
     assert.deepStrictEqual(rootStop, { state: "attention", drop: false });
     assert.strictEqual(turns.size, 0);
+  });
+
+  it("prunes the oldest tracked turns when the cap is exceeded", () => {
+    const turns = new Map();
+    for (let i = 0; i < MAX_CODEX_OFFICIAL_TURNS + 3; i++) {
+      resolveCodexOfficialHookState({
+        agent_id: "codex",
+        hook_source: "codex-official",
+        event: "UserPromptSubmit",
+        session_id: "codex:s1",
+        turn_id: `turn-${i}`,
+      }, "thinking", turns);
+    }
+
+    assert.strictEqual(turns.size, MAX_CODEX_OFFICIAL_TURNS);
+    assert.strictEqual(turns.has("codex:s1|turn-0"), false);
+    assert.strictEqual(turns.has("codex:s1|turn-1"), false);
+    assert.strictEqual(turns.has("codex:s1|turn-2"), false);
+    assert.strictEqual(turns.has(`codex:s1|turn-${MAX_CODEX_OFFICIAL_TURNS + 2}`), true);
   });
 });
