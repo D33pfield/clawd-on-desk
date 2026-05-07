@@ -96,11 +96,7 @@ function _getActiveThemeContext() {
   if (typeof runtimeOwner.getActiveThemeContext === "function") {
     return runtimeOwner.getActiveThemeContext();
   }
-  if (typeof runtimeOwner.getActiveTheme === "function") {
-    const theme = runtimeOwner.getActiveTheme();
-    return theme ? _createThemeContext(theme) : null;
-  }
-  return null;
+  throw new Error("theme-loader active facade requires runtimeOwner.getActiveThemeContext()");
 }
 
 /**

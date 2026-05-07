@@ -47,7 +47,18 @@ function makeFixture() {
     fs.mkdirSync(themeDir, { recursive: true });
     fs.writeFileSync(
       path.join(themeDir, "theme.json"),
-      JSON.stringify(validThemeJson({ name: id })),
+      JSON.stringify(validThemeJson({
+        name: id,
+        variants: id === "clawd"
+          ? {
+              default: { name: "Default" },
+              cozy: {
+                name: "Cozy",
+                timings: { idleMouseMoveThreshold: 42 },
+              },
+            }
+          : undefined,
+      })),
       "utf8"
     );
   }
@@ -74,10 +85,12 @@ function createRuntime(options = {}) {
   const stateRuntime = {
     cleanup: () => calls.push("state.cleanup"),
     refreshTheme: () => calls.push("state.refreshTheme"),
+    ...(options.stateRuntime || {}),
   };
   const tickRuntime = {
     cleanup: () => calls.push("tick.cleanup"),
     refreshTheme: () => calls.push("tick.refreshTheme"),
+    ...(options.tickRuntime || {}),
   };
   const miniRuntime = {
     cleanup: () => calls.push("mini.cleanup"),
@@ -86,13 +99,18 @@ function createRuntime(options = {}) {
     getMiniTransitioning: () => false,
     handleDisplayChange: () => calls.push("mini.handleDisplayChange"),
     exitMiniMode: () => calls.push("mini.exitMiniMode"),
+    ...(options.miniRuntime || {}),
   };
   const sequencer = {
     run(callbacks) {
       calls.push("sequencer.run");
+      if (options.deferSequencerFinish) {
+        return;
+      }
       callbacks.onReloadFinished();
     },
     cleanup: () => calls.push("sequencer.cleanup"),
+    ...(options.sequencer || {}),
   };
   const runtime = createThemeRuntime({
     themeLoader,
@@ -103,7 +121,7 @@ function createRuntime(options = {}) {
     getTickRuntime: () => tickRuntime,
     getMiniRuntime: () => miniRuntime,
     getFadeSequencer: () => sequencer,
-    getPetWindowBounds: () => ({ x: 10, y: 20, width: 100, height: 100 }),
+    getPetWindowBounds: () => options.petWindowBounds || { x: 10, y: 20, width: 100, height: 100 },
     applyPetWindowBounds: (bounds) => calls.push(["applyBounds", bounds]),
     computeFinalDragBounds: () => null,
     clampToScreenVisual: (x, y) => ({ x, y }),
@@ -158,6 +176,35 @@ describe("theme-runtime active ownership", () => {
     assert.strictEqual(themeLoader.getActiveTheme()._id, "calico");
   });
 
+  it("fails fast when legacy active config facades bind an owner without a theme context", () => {
+    makeFixture();
+    themeLoader.bindActiveThemeRuntime({
+      getActiveTheme: () => ({ _id: "clawd" }),
+    });
+
+    assert.throws(
+      () => themeLoader.getRendererConfig(),
+      /requires runtimeOwner\.getActiveThemeContext/
+    );
+  });
+
+  it("loads the startup theme with requested variant and override signature", () => {
+    makeFixture();
+    const { runtime } = createRuntime();
+
+    const theme = runtime.loadInitialTheme("clawd", {
+      variant: "cozy",
+      overrides: { states: { idle: { file: "idle-custom.svg" } } },
+    });
+
+    assert.strictEqual(theme._id, "clawd");
+    assert.strictEqual(theme._variantId, "cozy");
+    assert.strictEqual(theme.timings.idleMouseMoveThreshold, 42);
+    assert.deepStrictEqual(theme.states.idle, ["idle-custom.svg"]);
+    assert.strictEqual(theme._overrideSignature, JSON.stringify({ states: { idle: { file: "idle-custom.svg" } } }));
+    assert.strictEqual(runtime.getActiveTheme(), theme);
+  });
+
   it("dedups an already-active theme without running the reload protocol", () => {
     makeFixture();
     const { runtime, calls } = createRuntime();
@@ -167,6 +214,17 @@ describe("theme-runtime active ownership", () => {
 
     assert.deepStrictEqual(result, { themeId: "clawd", variantId: "default" });
     assert.deepStrictEqual(calls, []);
+  });
+
+  it("returns the resolved variant id when activation falls back from an unknown variant", () => {
+    makeFixture();
+    const { runtime } = createRuntime();
+    runtime.loadInitialTheme("calico");
+
+    const result = runtime.activateTheme("clawd", "missing");
+
+    assert.deepStrictEqual(result, { themeId: "clawd", variantId: "default" });
+    assert.strictEqual(runtime.getActiveTheme()._variantId, "default");
   });
 
   it("switches themes through the cleanup, refresh, and sequencer protocol", () => {
@@ -195,5 +253,48 @@ describe("theme-runtime active ownership", () => {
       "startMainTick",
       "flushPrefs",
     ]);
+  });
+
+  it("exits mini mode and skips preserved bounds when the new theme lacks mini support", () => {
+    makeFixture();
+    const { runtime, calls } = createRuntime({
+      miniRuntime: {
+        getMiniMode: () => true,
+      },
+    });
+    runtime.loadInitialTheme("clawd");
+
+    runtime.activateTheme("calico");
+
+    assert.ok(calls.includes("mini.exitMiniMode"));
+    assert.ok(!calls.some((call) => Array.isArray(call) && call[0] === "applyBounds"));
+  });
+
+  it("skips preserved bounds while a mini transition owns movement", () => {
+    makeFixture();
+    const { runtime, calls } = createRuntime({
+      miniRuntime: {
+        getMiniTransitioning: () => true,
+      },
+    });
+    runtime.loadInitialTheme("clawd");
+
+    runtime.activateTheme("calico");
+
+    assert.ok(!calls.some((call) => Array.isArray(call) && call[0] === "applyBounds"));
+    assert.ok(calls.includes("syncRendererState"));
+  });
+
+  it("cleanup tears down the sequencer and resets reload state", () => {
+    makeFixture();
+    const { runtime, calls } = createRuntime({ deferSequencerFinish: true });
+    runtime.loadInitialTheme("clawd");
+    runtime.activateTheme("calico");
+
+    assert.strictEqual(runtime.isReloadInProgress(), true);
+    runtime.cleanup();
+
+    assert.strictEqual(runtime.isReloadInProgress(), false);
+    assert.ok(calls.includes("sequencer.cleanup"));
   });
 });

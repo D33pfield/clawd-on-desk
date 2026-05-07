@@ -27,6 +27,21 @@ test("main syncs Codex Pet themes before the first theme load", () => {
   assert.ok(source.includes('theme: _requestedThemeId,'));
 });
 
+test("main falls back before startup theme load when active Codex Pet theme is orphaned", () => {
+  const source = fs.readFileSync(MAIN, "utf8");
+  const orphanCheckIdx = source.indexOf("codexPetMain.summaryHasActiveOrphan(_startupCodexPetSyncSummary, _requestedThemeId)");
+  const hydrateIdx = source.indexOf("themeOverrides: nextOverrides,", orphanCheckIdx);
+  const loadIdx = source.indexOf("const _loadedStartupTheme = themeRuntime.loadInitialTheme(_requestedThemeId");
+
+  assert.ok(orphanCheckIdx >= 0, "active-orphan check should be present");
+  assert.ok(hydrateIdx > orphanCheckIdx, "orphan fallback should hydrate cleaned prefs");
+  assert.ok(loadIdx > hydrateIdx, "startup theme load should happen after orphan fallback");
+  assert.ok(source.includes("delete nextVariantMap[orphanThemeId];"));
+  assert.ok(source.includes("delete nextOverrides[orphanThemeId];"));
+  assert.ok(source.includes('_requestedThemeId = "clawd";'));
+  assert.ok(source.includes("codexPetMain.setLastSyncSummary(_startupCodexPetSyncSummary);"));
+});
+
 test("settings exposes Codex Pet refresh and managed theme metadata", () => {
   const settingsIpcSource = fs.readFileSync(SETTINGS_IPC, "utf8");
   const runtimeSource = fs.readFileSync(CODEX_PET_MAIN, "utf8");
