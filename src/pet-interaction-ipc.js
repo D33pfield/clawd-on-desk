@@ -44,6 +44,10 @@ function registerPetInteractionIpc(options = {}) {
   const focusLog = requiredDependency(options.focusLog, "focusLog");
   const showDashboard = requiredDependency(options.showDashboard, "showDashboard");
   const focusSession = requiredDependency(options.focusSession, "focusSession");
+  const setLowPowerIdlePaused = requiredDependency(
+    options.setLowPowerIdlePaused,
+    "setLowPowerIdlePaused"
+  );
   const disposers = [];
 
   function on(channel, listener) {
@@ -61,6 +65,9 @@ function registerPetInteractionIpc(options = {}) {
     setIdlePaused(false);
     if (isMiniTransitioning()) return;
     sendToRenderer("state-change", getCurrentState(), getCurrentSvg());
+  });
+  on("low-power-idle-paused", (_event, paused) => {
+    setLowPowerIdlePaused(!!paused);
   });
 
   on("drag-lock", (_event, locked) => {

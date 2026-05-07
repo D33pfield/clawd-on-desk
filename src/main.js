@@ -689,6 +689,7 @@ function syncHitWin() { return petWindowRuntime.syncHitWin(); }
 let mouseOverPet = false;
 let menuOpen = false;
 let idlePaused = false;
+let lowPowerIdlePaused = false;
 let forceEyeResend = false;
 let forceEyeResendBoostUntil = 0;
 let requestFastTick = () => {};
@@ -712,6 +713,13 @@ function setForceEyeResend(value) {
     forceEyeResendBoostUntil = Math.max(forceEyeResendBoostUntil, Date.now() + 2000);
     requestFastTick(100);
   }
+}
+
+function setLowPowerIdlePaused(value) {
+  const next = !!value;
+  if (lowPowerIdlePaused === next) return;
+  lowPowerIdlePaused = next;
+  if (!next) setForceEyeResend(true);
 }
 
 function beginDragSnapshot() { return petWindowRuntime.beginDragSnapshot(); }
@@ -962,6 +970,7 @@ const _tickCtx = {
   get dragLocked() { return petWindowRuntime.isDragLocked(); },
   get menuOpen() { return menuOpen; },
   get idlePaused() { return idlePaused; },
+  get lowPowerIdlePaused() { return lowPowerIdlePaused; },
   get isAnimating() { return _mini.getIsAnimating(); },
   get miniSleepPeeked() { return _mini.getMiniSleepPeeked(); },
   set miniSleepPeeked(v) { _mini.setMiniSleepPeeked(v); },
@@ -1463,6 +1472,7 @@ function createWindow() {
     showContextMenu: (event) => showPetContextMenu(event),
     moveWindowForDrag: () => moveWindowForDrag(),
     setIdlePaused: (value) => { idlePaused = !!value; },
+    setLowPowerIdlePaused,
     isMiniTransitioning: () => _mini.getMiniTransitioning(),
     getCurrentState: () => _state.getCurrentState(),
     getCurrentSvg: () => _state.getCurrentSvg(),
@@ -1508,6 +1518,9 @@ function createWindow() {
   // Wait for renderer to be ready before sending initial state
   // If hooks arrived during startup, respect them instead of forcing idle
   // Also handles crash recovery (render-process-gone → reload)
+  win.webContents.on("did-start-loading", () => {
+    setLowPowerIdlePaused(false);
+  });
   win.webContents.on("did-finish-load", () => {
     sendToRenderer("theme-config", themeRuntime.getRendererConfig());
     sendToRenderer("viewport-offset", petWindowRuntime.getViewportOffsetY());
@@ -1518,6 +1531,7 @@ function createWindow() {
   // ── Crash recovery: renderer process can die from <object> churn ──
   win.webContents.on("render-process-gone", (_event, details) => {
     safeConsoleError("Renderer crashed:", details.reason);
+    setLowPowerIdlePaused(false);
     petWindowRuntime.setDragLocked(false);
     idlePaused = false;
     mouseOverPet = false;

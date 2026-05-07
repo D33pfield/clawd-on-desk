@@ -7,9 +7,16 @@ const path = require("node:path");
 
 const RENDERER = path.join(__dirname, "..", "src", "renderer.js");
 const PRELOAD = path.join(__dirname, "..", "src", "preload.js");
+const MAIN = path.join(__dirname, "..", "src", "main.js");
 
 function readNormalized(filePath) {
   return fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+}
+
+function matchSource(source, pattern, message) {
+  const match = source.match(pattern);
+  assert.ok(match, message || `missing pattern ${pattern}`);
+  return match;
 }
 
 describe("renderer low-power idle mode", () => {
@@ -26,6 +33,55 @@ describe("renderer low-power idle mode", () => {
     const source = fs.readFileSync(RENDERER, "utf8");
 
     assert.ok(source.includes("if (!lowPowerIdleMode && !lowPowerSvgPaused) return;"));
+  });
+
+  it("does not treat passive eye or pointer tracking as low-power activity", () => {
+    const source = readNormalized(RENDERER);
+    const eyeHandler = matchSource(
+      source,
+      /window\.electronAPI\.onEyeMove\(\(dx, dy\) => \{([\s\S]*?)\n\}\);/,
+      "missing eye-move handler"
+    )[1];
+    const pointerHandler = matchSource(
+      source,
+      /window\.electronAPI\.onCloudlingPointer\(\(payload\) => \{([\s\S]*?)\n\s+\}\);/,
+      "missing Cloudling pointer handler"
+    )[1];
+
+    assert.ok(!eyeHandler.includes("noteLowPowerActivity()"));
+    assert.ok(!pointerHandler.includes("noteLowPowerActivity()"));
+  });
+
+  it("suppresses passive tracking while low-power paused and cancels layered RAF", () => {
+    const source = readNormalized(RENDERER);
+
+    assert.ok(source.includes("function shouldSuppressPassiveTrackingForLowPower()"));
+    assert.ok(source.includes("return lowPowerIdleMode && lowPowerSvgPaused && shouldPauseForLowPower();"));
+    assert.ok(source.includes("function _cancelLayerAnimLoop()"));
+    assert.ok(source.includes("if (next) _cancelLayerAnimLoop();"));
+    assert.ok(source.includes("if (shouldSuppressPassiveTrackingForLowPower()) { _layerAnimFrame = null; return; }"));
+    assert.ok(source.includes("if (shouldSuppressPassiveTrackingForLowPower()) {\n    _cancelLayerAnimLoop();\n    return;\n  }"));
+    assert.ok(source.includes("if (shouldSuppressPassiveTrackingForLowPower()) return;\n  if (!shouldUseCloudlingPointerBridge"));
+  });
+
+  it("notifies main only when the low-power paused state changes", () => {
+    const source = readNormalized(RENDERER);
+    const preload = readNormalized(PRELOAD);
+
+    assert.ok(source.includes("function setLowPowerSvgPaused(paused)"));
+    assert.ok(source.includes("if (lowPowerSvgPaused === next) return;"));
+    assert.ok(source.includes("window.electronAPI.setLowPowerIdlePaused(next);"));
+    assert.ok(preload.includes('setLowPowerIdlePaused: (paused) => ipcRenderer.send("low-power-idle-paused", !!paused)'));
+  });
+
+  it("resets main's paused mirror on renderer reload/crash and boosts eye resend on resume", () => {
+    const source = readNormalized(MAIN);
+
+    assert.ok(source.includes("function setLowPowerIdlePaused(value)"));
+    assert.ok(source.includes("if (!next) setForceEyeResend(true);"));
+    assert.ok(source.includes('win.webContents.on("did-start-loading", () => {'));
+    assert.ok(source.includes('win.webContents.on("render-process-gone", (_event, details) => {'));
+    assert.ok(source.includes("setLowPowerIdlePaused(false);"));
   });
 });
 

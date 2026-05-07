@@ -301,6 +301,131 @@ describe("tick adaptive polling", () => {
     assert.ok(cursorCalls < 45, `expected fewer than 45 polls, got ${cursorCalls}`);
   });
 
+  it("uses a very low cursor polling rate while normal idle is low-power paused", () => {
+    const theme = cloneTheme(_defaultTheme);
+
+    ctx = makeCtx(theme, statesSeen);
+    ctx.lowPowerIdlePaused = true;
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    mock.timers.tick(10000);
+
+    assert.ok(cursorCalls > 0);
+    assert.ok(cursorCalls <= 3, `expected at most 3 polls in 10s while paused, got ${cursorCalls}`);
+  });
+
+  it("keeps non-paused idle polling materially above the low-power paused rate", () => {
+    const theme = cloneTheme(_defaultTheme);
+
+    ctx = makeCtx(theme, statesSeen);
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    for (let elapsed = 0; elapsed < 10000; elapsed += 100) mock.timers.tick(100);
+
+    assert.ok(cursorCalls > 30, `expected more than 30 polls in 10s while not paused, got ${cursorCalls}`);
+  });
+
+  it("uses a bounded low-power polling rate for mini-idle", () => {
+    const theme = cloneTheme(_defaultTheme);
+
+    ctx = makeCtx(theme, statesSeen);
+    ctx.currentState = "mini-idle";
+    ctx.currentSvg = "clawd-mini-idle.svg";
+    ctx.miniMode = true;
+    ctx.lowPowerIdlePaused = true;
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    mock.timers.tick(10000);
+
+    assert.ok(cursorCalls > 0);
+    assert.ok(cursorCalls <= 6, `expected at most 6 polls in 10s while mini-idle paused, got ${cursorCalls}`);
+  });
+
+  it("does not throttle mini-peek with the low-power paused idle delay", () => {
+    const theme = cloneTheme(_defaultTheme);
+
+    ctx = makeCtx(theme, statesSeen);
+    ctx.currentState = "mini-peek";
+    ctx.currentSvg = "clawd-mini-idle.svg";
+    ctx.miniMode = true;
+    ctx.lowPowerIdlePaused = true;
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    for (let elapsed = 0; elapsed < 500; elapsed += 50) mock.timers.tick(50);
+
+    assert.ok(cursorCalls >= 8, `expected fast mini-peek polling, got ${cursorCalls}`);
+  });
+
+  it("does not throttle drag, menu-open, or mini-transition paths while low-power paused", () => {
+    const theme = cloneTheme(_defaultTheme);
+    const cases = [
+      ["drag", { dragLocked: true }],
+      ["menu", { menuOpen: true }],
+      ["transition", { miniTransitioning: true }],
+    ];
+
+    for (const [name, patch] of cases) {
+      if (tickApi) tickApi.cleanup();
+      cursorCalls = 0;
+      ctx = makeCtx(theme, statesSeen);
+      Object.assign(ctx, patch);
+      ctx.lowPowerIdlePaused = true;
+      tickApi = loader.initTick(ctx);
+      tickApi.startMainTick();
+
+      for (let elapsed = 0; elapsed < 500; elapsed += 50) mock.timers.tick(50);
+
+      assert.ok(cursorCalls >= 8, `expected fast polling for ${name}, got ${cursorCalls}`);
+    }
+  });
+
+  it("suppresses passive eye-move IPC while low-power paused", () => {
+    const theme = cloneTheme(_defaultTheme);
+    const eyeMoves = [];
+
+    ctx = makeCtx(theme, statesSeen);
+    ctx.lowPowerIdlePaused = true;
+    ctx.sendToRenderer = (channel, ...args) => {
+      if (channel === "eye-move") eyeMoves.push(args);
+    };
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    mock.timers.tick(1);
+    cursor = { x: 95, y: 70 };
+    mock.timers.tick(5000);
+
+    assert.deepStrictEqual(eyeMoves, []);
+  });
+
+  it("suppresses passive Cloudling pointer IPC while low-power paused", () => {
+    const theme = cloneTheme(_defaultTheme);
+    const pointers = [];
+
+    ctx = makeCtx(theme, statesSeen);
+    ctx.lowPowerIdlePaused = true;
+    ctx.getAssetPointerPayload = (_bounds, point) => ({
+      x: point.x,
+      y: point.y,
+      inside: true,
+    });
+    ctx.sendToRenderer = (channel, payload) => {
+      if (channel === "cloudling-pointer") pointers.push(payload);
+    };
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    mock.timers.tick(1);
+    cursor = { x: 95, y: 70 };
+    mock.timers.tick(5000);
+
+    assert.deepStrictEqual(pointers, []);
+  });
+
   it("cleanup clears the pending adaptive tick", () => {
     const theme = cloneTheme(_defaultTheme);
 

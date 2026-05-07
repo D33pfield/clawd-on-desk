@@ -76,6 +76,7 @@ function createHarness(overrides = {}) {
     focusLog: (message) => calls.push(["focusLog", message]),
     showDashboard: () => calls.push(["showDashboard"]),
     focusSession: (sessionId, options) => calls.push(["focusSession", sessionId, options]),
+    setLowPowerIdlePaused: (value) => calls.push(["setLowPowerIdlePaused", value]),
   });
   return { ipcMain, runtime, calls, state };
 }
@@ -90,6 +91,7 @@ test("pet interaction IPC registers owned channels and disposes them", () => {
     "end-drag-reaction",
     "exit-mini-mode",
     "focus-terminal",
+    "low-power-idle-paused",
     "pause-cursor-polling",
     "play-click-reaction",
     "resume-from-reaction",
@@ -109,6 +111,8 @@ test("pet interaction IPC delegates menu, drag move, reaction pause, and rendere
   ipcMain.send("drag-move");
   ipcMain.send("pause-cursor-polling");
   ipcMain.send("resume-from-reaction");
+  ipcMain.send("low-power-idle-paused", true);
+  ipcMain.send("low-power-idle-paused", false);
   state.miniTransitioning = true;
   ipcMain.send("resume-from-reaction");
   ipcMain.send("start-drag-reaction");
@@ -121,6 +125,8 @@ test("pet interaction IPC delegates menu, drag move, reaction pause, and rendere
     ["setIdlePaused", true],
     ["setIdlePaused", false],
     ["sendToRenderer", "state-change", "idle", "idle.svg"],
+    ["setLowPowerIdlePaused", true],
+    ["setLowPowerIdlePaused", false],
     ["setIdlePaused", false],
     ["sendToRenderer", "start-drag-reaction"],
     ["sendToRenderer", "end-drag-reaction"],
