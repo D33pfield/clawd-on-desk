@@ -299,6 +299,4 @@ module.exports = {
   normalizeTransitionOverride,
   buildBaseBindingMetadata,
   applyUserOverridesPatch,
-  // Exported for focused tests; loader callers should use applyUserOverridesPatch.
-  applyTransitionOverride,
 };

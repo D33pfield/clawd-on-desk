@@ -19,6 +19,7 @@
 const fs = require("fs");
 const path = require("path");
 const themeLoader = require("../src/theme-loader");
+const { VARIANT_ALLOWED_KEYS } = require("../src/theme-variants");
 
 // ── Colors (ANSI) ──
 const R = "\x1b[31m";  // red
@@ -436,13 +437,6 @@ check(
 // Spec lives in docs/plans/plan-settings-panel-3b-swap.md §6.4 "Validator Spec".
 // Rules 1, 2, 3, 4, 6, 7, 8 implemented here. Rule 5 (SVG eye-tracking on
 // variant-introduced assets) is folded into rule 3's asset scan below.
-const VARIANT_ALLOWED_KEYS = new Set([
-  "name", "description", "preview",
-  "workingTiers", "jugglingTiers", "idleAnimations",
-  "wideHitboxFiles", "sleepingHitboxFiles",
-  "hitBoxes", "timings", "transitions",
-  "objectScale", "displayHintMap",
-]);
 // Reserved fields a variant cannot declare. `name` / `description` are
 // intentionally absent — inside a variant they are that variant's LABEL, not
 // an attempt to override the theme's root display name.

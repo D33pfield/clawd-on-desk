@@ -849,7 +849,7 @@ module.exports = {
   _validateRequiredAssets,
   // Schema constants + helpers are re-exported for backward compatibility with
   // scripts/validate-theme.js and tests. New direct callers should require
-  // "./theme-schema" once Round A2 lands.
+  // "./theme-schema".
   REQUIRED_STATES,
   FULL_SLEEP_REQUIRED_STATES,
   MINI_REQUIRED_STATES,
