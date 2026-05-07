@@ -224,6 +224,21 @@ test("scripted SVG previews do not fall back to direct file URLs as poster image
   }
 });
 
+test("runtime exposes animation asset probes for mini-mode entry timing", () => {
+  const harness = createRuntimeHarness();
+  try {
+    const probe = harness.runtime.buildAnimationAssetProbe("scripted.svg", harness.activeTheme);
+
+    assert.deepStrictEqual(probe, {
+      assetCycleMs: 5400,
+      assetCycleStatus: "exact",
+      assetCycleSource: "trusted-runtime",
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("external object-channel SVG previews require posters without getting trusted long holds", () => {
   const harness = createRuntimeHarness({
     themeOverrides: {

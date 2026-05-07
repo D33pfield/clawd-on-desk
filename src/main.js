@@ -2223,7 +2223,9 @@ const _miniCtx = {
   buildTrayMenu: () => buildTrayMenu(),
   getAnimationAssetCycleMs: (file) => {
     if (!file) return null;
-    const probe = _buildAnimationAssetProbe(file);
+    const probe = animationOverridesMain && typeof animationOverridesMain.buildAnimationAssetProbe === "function"
+      ? animationOverridesMain.buildAnimationAssetProbe(file)
+      : null;
     return Number.isFinite(probe && probe.assetCycleMs) && probe.assetCycleMs > 0
       ? probe.assetCycleMs
       : null;

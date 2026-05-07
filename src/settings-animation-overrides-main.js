@@ -1232,6 +1232,7 @@ function createSettingsAnimationOverridesMain(options = {}) {
     buildAnimationOverrideSections,
     listAnimationOverrideAssets,
     buildAnimationAssetPreview,
+    buildAnimationAssetProbe,
     previewAnimationOverride,
     previewReaction,
     openThemeAssetsDir,
