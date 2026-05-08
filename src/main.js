@@ -579,6 +579,8 @@ let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
 let sessionHudEnabled = _settingsController.get("sessionHudEnabled");
 let sessionHudShowElapsed = _settingsController.get("sessionHudShowElapsed");
 let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetached");
+let sessionHudAutoHide = _settingsController.get("sessionHudAutoHide");
+let sessionHudPinned = _settingsController.get("sessionHudPinned");
 let soundMuted = _settingsController.get("soundMuted");
 let soundVolume = _settingsController.get("soundVolume");
 let lowPowerIdleMode = _settingsController.get("lowPowerIdleMode");
@@ -1054,6 +1056,8 @@ const _sessionHud = require("./session-hud")({
   get petHidden() { return petWindowRuntime.isPetHidden(); },
   get sessionHudEnabled() { return sessionHudEnabled; },
   get sessionHudShowElapsed() { return sessionHudShowElapsed; },
+  get sessionHudAutoHide() { return sessionHudAutoHide; },
+  get sessionHudPinned() { return sessionHudPinned; },
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
@@ -1222,6 +1226,7 @@ const SETTINGS_MIRROR_SETTERS = {
   autoStartWithClaude: (v) => { autoStartWithClaude = v; }, openAtLogin: (v) => { openAtLogin = v; },
   bubbleFollowPet: (v) => { bubbleFollowPet = v; }, sessionHudEnabled: (v) => { sessionHudEnabled = v; },
   sessionHudShowElapsed: (v) => { sessionHudShowElapsed = v; }, sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
+  sessionHudAutoHide: (v) => { sessionHudAutoHide = v; }, sessionHudPinned: (v) => { sessionHudPinned = v; },
   soundMuted: (v) => { soundMuted = v; }, soundVolume: (v) => { soundVolume = v; }, lowPowerIdleMode: (v) => { lowPowerIdleMode = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; },
 };
@@ -1410,6 +1415,18 @@ registerSessionIpc({
   hideSession: (sessionId) => hideDashboardSession(sessionId),
   setSessionAlias: (payload) => _settingsController.applyCommand("setSessionAlias", payload),
   showDashboard: () => showDashboard(),
+  setSessionHudPinned: (value) => {
+    const result = _settingsController.applyUpdate("sessionHudPinned", !!value);
+    if (result && typeof result.then === "function") {
+      result
+        .then((r) => {
+          if (r && r.status === "error") console.warn("Clawd: failed to pin Session HUD:", r.message);
+        })
+        .catch((err) => console.warn("Clawd: failed to pin Session HUD:", err && err.message));
+    } else if (result && result.status === "error") {
+      console.warn("Clawd: failed to pin Session HUD:", result.message);
+    }
+  },
 });
 
 function createWindow() {

@@ -173,6 +173,22 @@ describe("settings-effect-router", () => {
       ["updateMirrors", { sessionHudCleanupDetached: false }],
       ["emitSessionSnapshot", { force: true }],
     ]);
+
+    calls.length = 0;
+    emit({ sessionHudAutoHide: true });
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { sessionHudAutoHide: true }],
+      ["syncSessionHudVisibility"],
+      ["repositionFloatingBubbles"],
+    ]);
+
+    calls.length = 0;
+    emit({ sessionHudPinned: true });
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { sessionHudPinned: true }],
+      ["syncSessionHudVisibility"],
+      ["repositionFloatingBubbles"],
+    ]);
   });
 
   it("delegates edge pinning changes to one injected reclamp helper", () => {

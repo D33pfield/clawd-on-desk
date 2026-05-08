@@ -155,7 +155,12 @@ function createSettingsEffectRouter(options = {}) {
     if ("bubbleFollowPet" in changes) {
       safeCall(logWarn, "Clawd: repositionFloatingBubbles failed:", repositionFloatingBubbles);
     }
-    if ("sessionHudEnabled" in changes || "sessionHudShowElapsed" in changes) {
+    if (
+      "sessionHudEnabled" in changes
+      || "sessionHudShowElapsed" in changes
+      || "sessionHudAutoHide" in changes
+      || "sessionHudPinned" in changes
+    ) {
       try {
         syncSessionHudVisibility();
         repositionFloatingBubbles();

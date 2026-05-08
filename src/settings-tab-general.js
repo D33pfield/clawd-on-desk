@@ -9,6 +9,7 @@
     "sessionHudEnabled",
     "sessionHudShowElapsed",
     "sessionHudCleanupDetached",
+    "sessionHudAutoHide",
     "allowEdgePinning",
     "keepSizeAcrossDisplays",
     "manageClaudeHooksAutomatically",
@@ -28,6 +29,7 @@
   const SESSION_HUD_CHILD_SWITCH_KEYS = [
     "sessionHudShowElapsed",
     "sessionHudCleanupDetached",
+    "sessionHudAutoHide",
   ];
   const CLAUDE_HOOK_MANAGEMENT_CHILD_SWITCH_KEYS = [
     "autoStartWithClaude",
@@ -69,6 +71,12 @@
         key: "sessionHudShowElapsed",
         labelKey: "rowSessionHudElapsed",
         descKey: "rowSessionHudElapsedDesc",
+        disabled: !sessionHudControlsEnabled,
+      }),
+      helpers.buildSwitchRow({
+        key: "sessionHudAutoHide",
+        labelKey: "rowSessionHudAutoHide",
+        descKey: "rowSessionHudAutoHideDesc",
         disabled: !sessionHudControlsEnabled,
       }),
       helpers.buildSwitchRow({

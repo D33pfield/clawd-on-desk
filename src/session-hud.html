@@ -54,6 +54,47 @@ body { padding: 2px 3px 8px; }
   background: var(--hud-bg);
   box-shadow: 0 8px 18px -12px var(--shadow), 0 2px 4px rgba(0, 0, 0, 0.10);
   overflow: hidden;
+  position: relative;
+}
+
+.hud.has-pin .row {
+  padding-right: 28px;
+}
+
+.pin-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  z-index: 2;
+  opacity: 0.55;
+  transition: opacity 100ms ease, background 100ms ease, color 100ms ease;
+}
+
+.pin-btn:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.pin-btn.pinned {
+  opacity: 1;
+  color: #f59e0b;
+}
+
+@media (prefers-color-scheme: dark) {
+  .pin-btn:hover {
+    background: rgba(255, 255, 255, 0.10);
+  }
 }
 
 .row {

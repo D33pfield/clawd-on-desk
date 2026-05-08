@@ -154,6 +154,8 @@ const updateRegistry = {
   sessionHudEnabled: requireBoolean("sessionHudEnabled"),
   sessionHudShowElapsed: requireBoolean("sessionHudShowElapsed"),
   sessionHudCleanupDetached: requireBoolean("sessionHudCleanupDetached"),
+  sessionHudAutoHide: requireBoolean("sessionHudAutoHide"),
+  sessionHudPinned: requireBoolean("sessionHudPinned"),
   hideBubbles: requireBoolean("hideBubbles"),
   permissionBubblesEnabled: requireBoolean("permissionBubblesEnabled"),
   notificationBubbleAutoCloseSeconds: requireIntegerInRange(

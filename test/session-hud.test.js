@@ -7,6 +7,11 @@ const {
   computeHudLayout,
   computeHudHeight,
   getHudWidth,
+  evaluateBaseEligible,
+  evaluateShouldShow,
+  pointInExpandedRect,
+  computeAutoHideHotZone,
+  pointInHotZone,
   constants,
 } = sessionHud.__test;
 
@@ -208,5 +213,151 @@ describe("session HUD layout", () => {
     );
     assert.strictEqual(computeHudHeight(0), constants.HUD_ROW_HEIGHT);
     assert.strictEqual(computeHudHeight(-1), constants.HUD_ROW_HEIGHT);
+  });
+});
+
+describe("session HUD auto-hide helpers", () => {
+  const baseSnapshot = { sessions: [mkSession("a")] };
+  const baseFlags = {
+    snapshot: baseSnapshot,
+    sessionHudEnabled: true,
+    sessionHudAutoHide: false,
+    sessionHudPinned: false,
+    inHotZone: false,
+    now: 1000,
+    visibleHoldUntil: 0,
+    hideGraceMs: 500,
+    petHidden: false,
+    miniMode: false,
+    miniTransitioning: false,
+  };
+
+  it("evaluateBaseEligible returns false for guard branches", () => {
+    assert.strictEqual(evaluateBaseEligible({ ...baseFlags, snapshot: null }), false);
+    assert.strictEqual(evaluateBaseEligible({ ...baseFlags, sessionHudEnabled: false }), false);
+    assert.strictEqual(evaluateBaseEligible({ ...baseFlags, petHidden: true }), false);
+    assert.strictEqual(evaluateBaseEligible({ ...baseFlags, miniMode: true }), false);
+    assert.strictEqual(evaluateBaseEligible({ ...baseFlags, miniTransitioning: true }), false);
+    assert.strictEqual(evaluateBaseEligible({ ...baseFlags, snapshot: { sessions: [] } }), false);
+    assert.strictEqual(evaluateBaseEligible(baseFlags), true);
+  });
+
+  it("evaluateShouldShow shows when auto-hide is off, regardless of hot zone", () => {
+    const r = evaluateShouldShow({ ...baseFlags, sessionHudAutoHide: false, inHotZone: false });
+    assert.strictEqual(r.show, true);
+  });
+
+  it("evaluateShouldShow hides when auto-hide on + unpinned + outside zone + hold expired", () => {
+    const r = evaluateShouldShow({
+      ...baseFlags,
+      sessionHudAutoHide: true,
+      sessionHudPinned: false,
+      inHotZone: false,
+      visibleHoldUntil: 500,
+      now: 1000,
+    });
+    assert.strictEqual(r.show, false);
+    assert.strictEqual(r.nextHoldUntil, 500);
+  });
+
+  it("evaluateShouldShow shows when pinned regardless of zone", () => {
+    const r = evaluateShouldShow({
+      ...baseFlags,
+      sessionHudAutoHide: true,
+      sessionHudPinned: true,
+      inHotZone: false,
+    });
+    assert.strictEqual(r.show, true);
+  });
+
+  it("evaluateShouldShow advances visibleHoldUntil when in hot zone", () => {
+    const r = evaluateShouldShow({
+      ...baseFlags,
+      sessionHudAutoHide: true,
+      inHotZone: true,
+      now: 1000,
+      visibleHoldUntil: 0,
+      hideGraceMs: 500,
+    });
+    assert.strictEqual(r.show, true);
+    assert.strictEqual(r.nextHoldUntil, 1500);
+  });
+
+  it("evaluateShouldShow keeps HUD visible during hold-grace window", () => {
+    const r = evaluateShouldShow({
+      ...baseFlags,
+      sessionHudAutoHide: true,
+      inHotZone: false,
+      now: 1200,
+      visibleHoldUntil: 1500,
+    });
+    assert.strictEqual(r.show, true);
+  });
+
+  it("evaluateShouldShow hides once now >= visibleHoldUntil", () => {
+    const r = evaluateShouldShow({
+      ...baseFlags,
+      sessionHudAutoHide: true,
+      inHotZone: false,
+      now: 1500,
+      visibleHoldUntil: 1500,
+    });
+    assert.strictEqual(r.show, false);
+  });
+
+  it("evaluateShouldShow honors base guards even with auto-hide on", () => {
+    const r = evaluateShouldShow({
+      ...baseFlags,
+      sessionHudAutoHide: true,
+      petHidden: true,
+      inHotZone: true,
+    });
+    assert.strictEqual(r.show, false);
+  });
+
+  it("pointInExpandedRect respects pad on all sides", () => {
+    const rect = { left: 10, top: 10, right: 30, bottom: 30 };
+    assert.strictEqual(pointInExpandedRect({ x: 20, y: 20 }, rect, 0), true);
+    assert.strictEqual(pointInExpandedRect({ x: 5, y: 20 }, rect, 0), false);
+    assert.strictEqual(pointInExpandedRect({ x: 5, y: 20 }, rect, 8), true);
+    assert.strictEqual(pointInExpandedRect({ x: -5, y: 20 }, rect, 8), false);
+    assert.strictEqual(pointInExpandedRect(null, rect, 0), false);
+    assert.strictEqual(pointInExpandedRect({ x: 0, y: 0 }, null, 0), false);
+  });
+
+  it("computeAutoHideHotZone collects pet + expected HUD bounds, skips invalid", () => {
+    const z1 = computeAutoHideHotZone({
+      petHitRect: { left: 0, top: 0, right: 80, bottom: 80 },
+      expectedHudContentBounds: { x: 0, y: 90, width: 240, height: 28 },
+      pad: 24,
+    });
+    assert.strictEqual(z1.rects.length, 2);
+    assert.strictEqual(z1.pad, 24);
+
+    const z2 = computeAutoHideHotZone({
+      petHitRect: { left: 0, top: 0, right: 80, bottom: 80 },
+      expectedHudContentBounds: null,
+      pad: 24,
+    });
+    assert.strictEqual(z2.rects.length, 1);
+
+    const z3 = computeAutoHideHotZone({
+      petHitRect: null,
+      expectedHudContentBounds: null,
+      pad: 24,
+    });
+    assert.strictEqual(z3.rects.length, 0);
+  });
+
+  it("pointInHotZone treats union of expanded rects", () => {
+    const zone = computeAutoHideHotZone({
+      petHitRect: { left: 0, top: 0, right: 80, bottom: 80 },
+      expectedHudContentBounds: { x: 0, y: 100, width: 240, height: 28 },
+      pad: 24,
+    });
+    assert.strictEqual(pointInHotZone({ x: 40, y: 40 }, zone), true); // pet
+    assert.strictEqual(pointInHotZone({ x: 100, y: 110 }, zone), true); // hud
+    assert.strictEqual(pointInHotZone({ x: 40, y: 90 }, zone), true); // gap covered by pad expansion
+    assert.strictEqual(pointInHotZone({ x: 500, y: 500 }, zone), false);
   });
 });

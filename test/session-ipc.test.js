@@ -61,6 +61,9 @@ function createHarness(overrides = {}) {
     showDashboard: overrides.showDashboard || (() => {
       calls.push(["showDashboard"]);
     }),
+    setSessionHudPinned: overrides.setSessionHudPinned || ((value) => {
+      calls.push(["setSessionHudPinned", value]);
+    }),
   });
   return { ipcMain, runtime, calls };
 }
@@ -79,6 +82,7 @@ test("session IPC registers owned channels and disposes them", () => {
     "dashboard:focus-session",
     "session-hud:focus-session",
     "session-hud:open-dashboard",
+    "session-hud:set-pinned",
     "settings:open-dashboard",
     "show-dashboard",
   ]);
@@ -105,6 +109,8 @@ test("session IPC delegates dashboard and HUD behavior", async () => {
   });
   ipcMain.send("dashboard:focus-session", "dash-session");
   ipcMain.send("session-hud:focus-session", "hud-session");
+  ipcMain.send("session-hud:set-pinned", true);
+  ipcMain.send("session-hud:set-pinned", 0);
   assert.deepStrictEqual(await ipcMain.invoke("dashboard:hide-session", "hidden-session"), {
     status: "ok",
     hidden: "hidden-session",
@@ -117,6 +123,8 @@ test("session IPC delegates dashboard and HUD behavior", async () => {
   assert.deepStrictEqual(calls, [
     ["focusSession", "dash-session", { requestSource: "dashboard" }],
     ["focusSession", "hud-session", { requestSource: "hud" }],
+    ["setSessionHudPinned", true],
+    ["setSessionHudPinned", false],
     ["hideSession", "hidden-session"],
     ["setSessionAlias", { sessionId: "s1", alias: "Frontend" }],
   ]);

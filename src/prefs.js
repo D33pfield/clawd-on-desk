@@ -89,6 +89,8 @@ const SCHEMA = {
   sessionHudEnabled: { type: "boolean", default: true },
   sessionHudShowElapsed: { type: "boolean", default: true },
   sessionHudCleanupDetached: { type: "boolean", default: false },
+  sessionHudAutoHide: { type: "boolean", default: false },
+  sessionHudPinned: { type: "boolean", default: false },
   hideBubbles: { type: "boolean", default: false },
   permissionBubblesEnabled: { type: "boolean", default: true },
   notificationBubbleAutoCloseSeconds: {

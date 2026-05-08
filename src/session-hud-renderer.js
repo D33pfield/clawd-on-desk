@@ -2,7 +2,7 @@
 
 const HUD_MAX_EXPANDED_ROWS = 3;
 
-let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null, hudShowElapsed: true };
+let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null, hudShowElapsed: true, hudAutoHide: false, hudPinned: false };
 let i18nPayload = { lang: "en", translations: {} };
 
 const unreadSessions = new Set();
@@ -52,6 +52,8 @@ function orderedHudSessions(currentSnapshot) {
 }
 
 const BELL_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>`;
+const PIN_SVG_FILLED = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14 4l6 6-4 1-3 3 1 5-2 1-4-4-5 5-1-1 5-5-4-4 1-2 5 1 3-3 1-4z"/></svg>`;
+const PIN_SVG_OUTLINE = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M14 4l6 6-4 1-3 3 1 5-2 1-4-4-5 5-1-1 5-5-4-4 1-2 5 1 3-3 1-4z"/></svg>`;
 
 function updateUnread(sessions) {
   const currentIds = new Set(sessions.map((s) => s.id));
@@ -160,10 +162,26 @@ function createFoldedRow(count) {
   return row;
 }
 
+function createPinButton(pinned) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = pinned ? "pin-btn pinned" : "pin-btn";
+  btn.innerHTML = pinned ? PIN_SVG_FILLED : PIN_SVG_OUTLINE;
+  const tipKey = pinned ? "sessionHudUnpinTooltip" : "sessionHudPinTooltip";
+  btn.title = t(tipKey);
+  btn.setAttribute("aria-label", t(tipKey));
+  btn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    window.sessionHudAPI.setPinned(!pinned);
+  });
+  return btn;
+}
+
 function render() {
   const sessions = orderedHudSessions(snapshot);
   updateUnread(sessions);
   hudEl.replaceChildren();
+  hudEl.classList.toggle("has-pin", snapshot.hudAutoHide === true);
   if (!sessions.length) return;
 
   const now = Date.now();
@@ -174,6 +192,10 @@ function render() {
   }
   if (folded.length > 0) {
     hudEl.appendChild(createFoldedRow(folded.length));
+  }
+
+  if (snapshot.hudAutoHide === true) {
+    hudEl.appendChild(createPinButton(snapshot.hudPinned === true));
   }
 }
 

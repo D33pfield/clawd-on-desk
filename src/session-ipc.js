@@ -13,6 +13,7 @@ function registerSessionIpc(options = {}) {
   const hideSession = requiredDependency(options.hideSession, "hideSession");
   const setSessionAlias = requiredDependency(options.setSessionAlias, "setSessionAlias");
   const showDashboard = requiredDependency(options.showDashboard, "showDashboard");
+  const setSessionHudPinned = requiredDependency(options.setSessionHudPinned, "setSessionHudPinned");
   const disposers = [];
 
   function handle(channel, listener) {
@@ -38,6 +39,7 @@ function registerSessionIpc(options = {}) {
     focusSession(sessionId, { requestSource: "hud" })
   );
   on("session-hud:open-dashboard", () => showDashboard());
+  on("session-hud:set-pinned", (_event, value) => setSessionHudPinned(!!value));
 
   on("settings:open-dashboard", () => showDashboard());
   on("show-dashboard", () => showDashboard());
