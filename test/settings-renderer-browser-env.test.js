@@ -3148,10 +3148,12 @@ describe("settings renderer browser environment", () => {
     core.tabs.animOverrides.render(parent, core);
 
     const row = parent.querySelector(".anim-override-toggle-row");
+    const input = parent.querySelectorAll("input").find((candidate) => candidate.type === "checkbox");
     const title = parent.querySelector(".anim-override-toggle-title");
 
     assert.ok(row, "expanded animation override row should render a wide-hitbox toggle row");
     assert.strictEqual(row.tagName, "DIV");
+    assert.strictEqual(input.getAttribute("aria-label"), "animOverridesWideHitboxToggle");
     assert.ok(title);
     assert.strictEqual((title.eventListeners.click || []).length, 0);
   });
@@ -3248,6 +3250,33 @@ describe("settings renderer browser environment", () => {
     assert.ok(resetChip, "wide-hitbox reset chip should render for stale no-op overrides");
     assert.strictEqual(resetChip.hidden, false);
     assert.strictEqual(resetChip.disabled, false);
+  });
+
+  it("shows a fallback error detail when wide hitbox saves fail without a message", async () => {
+    const card = createAnimOverrideCard();
+    const runtime = createAnimOverridesRuntime(card);
+    const modalRoot = new FakeElement("div");
+    const toasts = [];
+    const { core } = loadAnimOverridesTabForTest({
+      runtime,
+      modalRoot,
+      settingsAPI: {
+        command: () => Promise.resolve({ status: "error" }),
+      },
+      opsOverrides: {
+        showToast: (message) => toasts.push(message),
+      },
+    });
+    const parent = new FakeElement("main");
+    core.tabs.animOverrides.render(parent, core);
+
+    const toggle = parent.querySelectorAll("input").find((input) => input.type === "checkbox");
+    toggle.checked = true;
+    for (const listener of toggle.eventListeners.change || []) listener();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.ok(toasts.some((message) => String(message).includes("unknown error")));
   });
 
   it("preserves pending wide hitbox state across full Animation Overrides rerenders", async () => {
@@ -3751,6 +3780,7 @@ describe("settings renderer browser environment", () => {
       seq: 1,
     });
     core.state.mountedControls.animOverrideTimingSliders.set("state:thinking:transition.in", { row: {} });
+    core.runtime.pendingAnimationOverrideResets = new Set(["state:thinking"]);
 
     core.ops.applyChanges({
       changes: { theme: "calico" },
@@ -3762,6 +3792,7 @@ describe("settings renderer browser environment", () => {
     });
 
     assert.strictEqual(core.runtime.pendingAnimationOverrideEdits.size, 0);
+    assert.strictEqual(core.runtime.pendingAnimationOverrideResets.size, 0);
     assert.strictEqual(core.state.mountedControls.animOverrideTimingSliders.size, 0);
   });
 

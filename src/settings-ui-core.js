@@ -927,6 +927,9 @@
       if (runtime.pendingWideHitboxOverrideEdits && typeof runtime.pendingWideHitboxOverrideEdits.clear === "function") {
         runtime.pendingWideHitboxOverrideEdits.clear();
       }
+      if (runtime.pendingAnimationOverrideResets && typeof runtime.pendingAnimationOverrideResets.clear === "function") {
+        runtime.pendingAnimationOverrideResets.clear();
+      }
       if (state.mountedControls.animOverrideTimingSliders
         && typeof state.mountedControls.animOverrideTimingSliders.clear === "function") {
         state.mountedControls.animOverrideTimingSliders.clear();

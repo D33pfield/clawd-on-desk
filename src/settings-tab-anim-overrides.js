@@ -1307,7 +1307,7 @@
         syncMountedWideHitboxToggles();
         syncMountedOverrideStatusControls();
         if (result && result.status === "error") {
-          ops.showToast(t("toastSaveFailed") + ((result && result.message) || ""), { error: true });
+          ops.showToast(t("toastSaveFailed") + (result.message || "unknown error"), { error: true });
         }
         return result;
       }
@@ -1325,7 +1325,7 @@
       clearPendingWideHitboxOverrideEdit(pendingToken);
       syncMountedWideHitboxToggles();
       syncMountedOverrideStatusControls();
-      ops.showToast(t("toastSaveFailed") + ((err && err.message) || ""), { error: true });
+      ops.showToast(t("toastSaveFailed") + ((err && err.message) || "unknown error"), { error: true });
       return { status: "error", message: err && err.message };
     });
   }
@@ -1368,6 +1368,7 @@
     input.type = "checkbox";
     input.checked = !!card.wideHitboxEnabled;
     input.disabled = pending;
+    input.setAttribute("aria-label", t("animOverridesWideHitboxToggle"));
     const label = document.createElement("div");
     label.className = "anim-override-toggle-label";
     const title = document.createElement("div");
@@ -1884,9 +1885,9 @@
             if (previewPromise) {
               previewPromise.then((previewResult) => {
                 if (!previewResult || previewResult.status === "ok") return;
-                ops.showToast(t("toastSaveFailed") + previewResult.message, { error: true });
+                ops.showToast(t("toastSaveFailed") + (previewResult.message || "unknown error"), { error: true });
               }).catch((err) => {
-                ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+                ops.showToast(t("toastSaveFailed") + ((err && err.message) || "unknown error"), { error: true });
               });
             }
           }
