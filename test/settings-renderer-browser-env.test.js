@@ -3213,11 +3213,17 @@ describe("settings renderer browser environment", () => {
     for (const listener of toggle.eventListeners.change || []) listener();
     await Promise.resolve();
     await Promise.resolve();
+    let resetButton = parent.querySelectorAll("button").find((button) => button.textContent === "animOverridesReset");
+    assert.ok(parent.querySelector(".anim-override-badge-dot"), "wide-hitbox commit should update the summary changed badge in place");
+    assert.strictEqual(resetButton.disabled, false, "wide-hitbox commit should enable reset affordance in place");
 
     toggle.checked = false;
     for (const listener of toggle.eventListeners.change || []) listener();
     await Promise.resolve();
     await Promise.resolve();
+    resetButton = parent.querySelectorAll("button").find((button) => button.textContent === "animOverridesReset");
+    assert.strictEqual(parent.querySelector(".anim-override-badge-dot"), null, "theme-default hitbox commit should clear the changed badge in place");
+    assert.strictEqual(resetButton.disabled, true, "theme-default hitbox commit should disable reset affordance in place");
 
     assert.strictEqual(payloads.length, 2);
     assert.strictEqual(payloads[0].enabled, true);

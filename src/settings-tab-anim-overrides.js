@@ -1281,6 +1281,7 @@
     const pending = pendingToken && getPendingWideHitboxOverrideEdits().get(card.id);
     if (!pending) return Promise.resolve({ status: "noop" });
     syncMountedWideHitboxToggles();
+    syncMountedOverrideStatusControls();
     return window.settingsAPI.command("setWideHitboxOverride", {
       themeId,
       file: card.currentFile,
@@ -1289,6 +1290,7 @@
       if (!result || result.status !== "ok" || result.noop) {
         clearPendingWideHitboxOverrideEdit(pendingToken);
         syncMountedWideHitboxToggles();
+        syncMountedOverrideStatusControls();
         if (result && result.status === "error") {
           ops.showToast(t("toastSaveFailed") + ((result && result.message) || ""), { error: true });
         }
@@ -1299,6 +1301,7 @@
         ops.normalizeAssetPickerSelection();
         if (state.activeTab === "animOverrides") {
           syncMountedWideHitboxToggles();
+          syncMountedOverrideStatusControls();
         }
         ops.requestRender({ modal: true });
         return result;
@@ -1306,6 +1309,7 @@
     }).catch((err) => {
       clearPendingWideHitboxOverrideEdit(pendingToken);
       syncMountedWideHitboxToggles();
+      syncMountedOverrideStatusControls();
       ops.showToast(t("toastSaveFailed") + ((err && err.message) || ""), { error: true });
       return { status: "error", message: err && err.message };
     });
