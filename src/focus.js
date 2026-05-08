@@ -467,27 +467,40 @@ function executeMacFocusRequest(request) {
   focusTerminalWindowLegacy(request, finalize);
   scheduleTerminalTabFocus(request.editor, request.pidChain);
   scheduleITermTabFocus(request.sourcePid, request.pidChain);
-  scheduleSupersetFocus(request.cwd);
+  scheduleSupersetFocus(request.sourcePid, request.cwd);
   scheduleGhosttyFocus(request.sourcePid, request.cwd);
 }
 
-function scheduleSupersetFocus(cwd) {
-  // Best-effort, fire-and-forget. Skips silently if the cwd isn't tracked by
-  // any Superset instance, so non-Superset users pay nothing here.
-  if (!isMac || !cwd) return;
-  const dirs = findSupersetDataDirs();
-  if (!dirs.length) return;
-  for (const dir of dirs) {
-    const id = querySupersetWorkspaceId(path.join(dir, "local.db"), cwd);
-    if (!id) continue;
-    const scheme = supersetSchemeForDir(dir);
-    if (!scheme) continue;
-    const url = `${scheme}://workspace/${id}`;
-    execFile("/usr/bin/open", ["-b", SUPERSET_BUNDLE_ID, url], { timeout: 1500 }, (err) => {
-      if (err) focusLog(`superset deep-link failed: ${err.message}`);
-    });
-    return;
-  }
+function scheduleSupersetFocus(sourcePid, cwd) {
+  // Mirror scheduleITermTabFocus / scheduleGhosttyFocus: detect the host by
+  // the source process command name *first*, then run the deep link. Without
+  // the comm gate, any focus request whose cwd happens to be tracked by
+  // Superset (e.g. a worktree opened in VS Code / Cursor / iTerm2) would
+  // pull Superset to the front and steal focus from the real source.
+  if (!isMac || !sourcePid || !cwd) return;
+  execFile("ps", ["-o", "comm=", "-p", String(sourcePid)], { encoding: "utf8", timeout: 500 }, (err, stdout) => {
+    if (err) return;
+    // Superset bundles exec at /Applications/Superset.app/Contents/MacOS/Superset,
+    // so path.basename of the comm is "Superset" for every Superset-hosted
+    // shell (the boundary walk in shared-process.js ends at the bundle exec
+    // because terminalNames does not list Superset).
+    const name = path.basename(stdout.trim()).toLowerCase();
+    if (name !== "superset") return;
+
+    const dirs = findSupersetDataDirs();
+    if (!dirs.length) return;
+    for (const dir of dirs) {
+      const id = querySupersetWorkspaceId(path.join(dir, "local.db"), cwd);
+      if (!id) continue;
+      const scheme = supersetSchemeForDir(dir);
+      if (!scheme) continue;
+      const url = `${scheme}://workspace/${id}`;
+      execFile("/usr/bin/open", ["-b", SUPERSET_BUNDLE_ID, url], { timeout: 1500 }, (err2) => {
+        if (err2) focusLog(`superset deep-link failed: ${err2.message}`);
+      });
+      return;
+    }
+  });
 }
 
 function scheduleGhosttyFocus(sourcePid, cwd) {
