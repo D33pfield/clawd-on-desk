@@ -1,6 +1,7 @@
 // src/focus.js — Terminal focus system (PowerShell persistent process + macOS osascript)
 // Extracted from main.js L1030-1335
 
+const fs = require("fs");
 const http = require("http");
 const crypto = require("crypto");
 const path = require("path");
@@ -310,6 +311,17 @@ function scheduleTerminalTabFocus(editor, pidChain) {
   }, 800);
 }
 
+function findFirstValidTty(psOutput) {
+  for (const line of psOutput.trim().split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      const tty = parts[parts.length - 1];
+      if (tty !== "??" && tty !== "?") return tty;
+    }
+  }
+  return null;
+}
+
 function scheduleITermTabFocus(sourcePid, pidChain) {
   if (!isMac || !sourcePid || !Array.isArray(pidChain) || !pidChain.length) return;
   execFile("ps", ["-o", "comm=", "-p", String(sourcePid)], { encoding: "utf8", timeout: 500 }, (err, stdout) => {
@@ -317,23 +329,15 @@ function scheduleITermTabFocus(sourcePid, pidChain) {
     const name = path.basename(stdout.trim()).toLowerCase();
     if (name !== "iterm2") return;
 
-    // Find the shell PID's TTY to match against iTerm2 sessions.
     // Walk pidChain from agent (index 0) upward — the first PID with a valid TTY
     // is typically the shell or login process that owns the iTerm2 session.
     const candidates = pidChain.filter(p => Number.isFinite(p) && p > 0 && p !== sourcePid);
     if (!candidates.length) return;
 
-    const pidsArg = candidates.slice(0, 5).join(",");
+    const pidsArg = candidates.slice(0, 8).join(",");
     execFile("ps", ["-o", "pid=,tty=", "-p", pidsArg], { encoding: "utf8", timeout: 500 }, (psErr, psOut) => {
       if (psErr || !psOut) return;
-      let ttyName = null;
-      for (const line of psOut.trim().split("\n")) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length >= 2 && parts[1] !== "??" && parts[1] !== "?") {
-          ttyName = parts[1];
-          break;
-        }
-      }
+      const ttyName = findFirstValidTty(psOut);
       if (!ttyName) return;
 
       const script = `
@@ -353,6 +357,60 @@ function scheduleITermTabFocus(sourcePid, pidChain) {
       setTimeout(() => {
         execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, () => {});
       }, 400);
+    });
+  });
+}
+
+function scheduleCmuxWorkspaceSwitch(pidChain) {
+  if (!isMac || !Array.isArray(pidChain) || !pidChain.length) return;
+  const pids = pidChain.filter(p => Number.isFinite(p) && p > 0);
+  if (!pids.length) return;
+
+  const pidsArg = pids.slice(0, 8).join(",");
+  // First ps call: detect cmux process by name (comm= needs full terminal width
+  // to avoid truncating long paths, so it must be a separate call from tty=).
+  execFile("ps", ["-o", "comm=", "-p", pidsArg], { encoding: "utf8", timeout: 500 }, (err, stdout) => {
+    if (err || !stdout) return;
+    let hasCmux = false;
+    for (const line of stdout.trim().split("\n")) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length >= 1 && path.basename(parts[parts.length - 1]).toLowerCase() === "cmux") { hasCmux = true; break; }
+    }
+    if (!hasCmux) return;
+
+    // Second ps call: find TTY from any PID in the chain.
+    // cmux daemon entries have tty=?? so findFirstValidTty skips them naturally.
+    execFile("ps", ["-o", "pid=,tty=", "-p", pidsArg], { encoding: "utf8", timeout: 500 }, (psErr, psOut) => {
+      if (psErr || !psOut) { logFocusResult("branch=cmux reason=cmux-no-tty"); return; }
+      const ttyName = findFirstValidTty(psOut);
+      if (!ttyName) { logFocusResult("branch=cmux reason=cmux-no-tty"); return; }
+
+      // Read cmux session file, match TTY to workspace index, focus via AppleScript
+      const cmuxDir = path.join(process.env.HOME, "Library/Application Support/cmux");
+      try {
+        const sessionFile = fs.readdirSync(cmuxDir)
+          .filter(f => f.startsWith("session-") && f.endsWith(".json") && !f.includes("-previous"))
+          .sort()[0];
+        if (!sessionFile) { logFocusResult("branch=cmux reason=cmux-session-read-failed"); return; }
+        const sessionData = JSON.parse(fs.readFileSync(path.join(cmuxDir, sessionFile), "utf8"));
+        const tabManager = sessionData.windows?.[0]?.tabManager;
+        const workspaceIndex = tabManager?.workspaces?.findIndex(ws =>
+          ws.panels?.some(panel => panel.ttyName === ttyName)
+        ) ?? -1;
+        if (workspaceIndex < 0) { logFocusResult("branch=cmux reason=cmux-workspace-not-found"); return; }
+
+        // Delay to let focusTerminalWindowLegacy (System Events) finish activating
+        // the terminal window before switching cmux workspace — same pattern as iTerm2.
+        const script = `tell application "cmux" to focus terminal 1 of tab ${workspaceIndex + 1} of front window`;
+        setTimeout(() => {
+          execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, (osaErr) => {
+            if (osaErr) { logFocusResult("branch=cmux reason=cmux-applescript-failed"); return; }
+            logFocusResult("branch=cmux reason=cmux-workspace-selected");
+          });
+        }, 400);
+      } catch (readErr) {
+        logFocusResult("branch=cmux reason=cmux-session-read-failed");
+      }
     });
   });
 }
@@ -407,6 +465,7 @@ function executeMacFocusRequest(request) {
   focusTerminalWindowLegacy(request, finalize);
   scheduleTerminalTabFocus(request.editor, request.pidChain);
   scheduleITermTabFocus(request.sourcePid, request.pidChain);
+  scheduleCmuxWorkspaceSwitch(request.pidChain);
 }
 
 function requestMacFocus(request) {
