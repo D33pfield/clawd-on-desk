@@ -275,10 +275,10 @@
   }
 
   function buildSessionHudSummary() {
-    const wrap = document.createElement("div");
+    const fragment = document.createDocumentFragment();
 
     function syncFromSnapshot() {
-      wrap.innerHTML = "";
+      while (fragment.firstChild) fragment.removeChild(fragment.firstChild);
       const snapshot = state.snapshot || {};
       const enabled = snapshot.sessionHudEnabled !== false;
       const onLabel = t("bubblePolicySummaryOn");
@@ -314,13 +314,13 @@
         const chip = document.createElement("span");
         chip.className = "collapsible-summary-chip" + (item.accent ? " accent" : "");
         chip.textContent = item.text;
-        wrap.appendChild(chip);
+        fragment.appendChild(chip);
       }
     }
 
     syncFromSnapshot();
     return {
-      element: wrap,
+      element: fragment,
       syncFromSnapshot,
     };
   }
@@ -349,10 +349,10 @@
   }
 
   function buildBubblePolicySummary() {
-    const wrap = document.createElement("div");
+    const fragment = document.createDocumentFragment();
 
     function syncFromSnapshot() {
-      wrap.innerHTML = "";
+      while (fragment.firstChild) fragment.removeChild(fragment.firstChild);
       const snapshot = readBubblePolicySnapshot();
       const items = [
       {
@@ -375,13 +375,13 @@
         const chip = document.createElement("span");
         chip.className = "collapsible-summary-chip" + (item.accent ? " accent" : "");
         chip.textContent = item.text;
-        wrap.appendChild(chip);
+        fragment.appendChild(chip);
       }
     }
 
     syncFromSnapshot();
     return {
-      element: wrap,
+      element: fragment,
       syncFromSnapshot,
     };
   }
