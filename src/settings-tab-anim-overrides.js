@@ -354,8 +354,9 @@
       const overridden = isCardOverridden(card);
       const hitboxPending = getPendingWideHitboxOverrideEdits().has(cardId);
       const resetPending = getPendingAnimationOverrideResets().has(cardId);
+      const timingPending = getPendingAnimationOverrideEdits().has(cardId);
       control.card = card || control.card;
-      if (control.resetBtn) control.resetBtn.disabled = !overridden || hitboxPending || resetPending;
+      if (control.resetBtn) control.resetBtn.disabled = !overridden || hitboxPending || resetPending || timingPending;
       setSummaryOverrideBadge(control.summaryBadges, overridden);
     }
   }
@@ -727,6 +728,15 @@
         ops.requestRender({ modal: true });
         return result;
       });
+    }).catch((err) => {
+      clearPendingAnimationOverrideEdit(pendingToken);
+      if (timingOnly) {
+        syncMountedTimingSliders();
+        syncMountedWideHitboxToggles();
+        syncMountedOverrideStatusControls();
+      }
+      ops.showToast(t("toastSaveFailed") + ((err && err.message) || "unknown error"), { error: true });
+      return { status: "error", message: err && err.message };
     });
   }
 
@@ -1417,6 +1427,7 @@
         return result;
       }
       return ops.fetchAnimationOverridesData().then(() => {
+        if (options.clearPendingOnSuccess) clearPendingWideHitboxOverrideEdit(pendingToken);
         reconcilePendingWideHitboxOverrideEdits();
         ops.normalizeAssetPickerSelection();
         if (state.activeTab === "animOverrides") {
@@ -1440,7 +1451,9 @@
   function resetAnimationOverrideCard(card) {
     if (!card || !card.id) return Promise.resolve({ status: "noop" });
     const pendingResets = getPendingAnimationOverrideResets();
-    if (pendingResets.has(card.id) || getPendingWideHitboxOverrideEdits().has(card.id)) {
+    if (pendingResets.has(card.id)
+      || getPendingWideHitboxOverrideEdits().has(card.id)
+      || getPendingAnimationOverrideEdits().has(card.id)) {
       return Promise.resolve({ status: "ok", noop: true });
     }
     pendingResets.add(card.id);
@@ -1468,7 +1481,7 @@
           wideHitboxThemeDefault: resetHitboxThemeDefault,
         },
         resetHitboxThemeDefault,
-        { allowDuringReset: true }
+        { allowDuringReset: true, clearPendingOnSuccess: true }
       );
     }).finally(() => {
       pendingResets.delete(card.id);
@@ -1670,7 +1683,8 @@
     resetBtn.textContent = t("animOverridesReset");
     resetBtn.disabled = !isCardOverridden(card)
       || getPendingWideHitboxOverrideEdits().has(card.id)
-      || getPendingAnimationOverrideResets().has(card.id);
+      || getPendingAnimationOverrideResets().has(card.id)
+      || getPendingAnimationOverrideEdits().has(card.id);
     helpers.attachActivation(resetBtn, () => resetAnimationOverrideCard(card));
     footer.appendChild(resetBtn);
     drawer.appendChild(footer);

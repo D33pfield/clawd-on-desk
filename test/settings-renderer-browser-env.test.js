@@ -3388,6 +3388,51 @@ describe("settings renderer browser environment", () => {
     );
   });
 
+  it("blocks slot reset while a same-card timing edit is pending", async () => {
+    const card = createAnimOverrideCard({
+      hasTransitionOverride: true,
+    });
+    const runtime = createAnimOverridesRuntime(card);
+    const modalRoot = new FakeElement("div");
+    const calls = [];
+    const { core } = loadAnimOverridesTabForTest({
+      runtime,
+      modalRoot,
+      settingsAPI: {
+        command: (name, payload) => {
+          calls.push({ name, payload });
+          return new Promise(() => {});
+        },
+      },
+      readersOverrides: {
+        readThemeOverrideMap: () => ({
+          states: {
+            thinking: {
+              transition: { in: 120, out: 180 },
+            },
+          },
+        }),
+      },
+    });
+    const parent = new FakeElement("main");
+    core.tabs.animOverrides.render(parent, core);
+
+    const range = parent.querySelectorAll("input").find((input) => input.type === "range");
+    const resetButton = parent.querySelectorAll("button").find((button) => button.textContent === "animOverridesReset");
+    range.value = "260";
+    for (const listener of range.eventListeners.change || []) listener();
+
+    assert.strictEqual(resetButton.disabled, true, "slot reset should be blocked while timing is pending");
+    for (const listener of resetButton.eventListeners.click || []) listener();
+    await Promise.resolve();
+
+    assert.deepStrictEqual(
+      calls.map((call) => call.name),
+      ["setAnimationOverride"],
+      "blocked slot reset should not enqueue a reset command"
+    );
+  });
+
   it("blocks timing edits while a same-card wide hitbox edit is pending", async () => {
     const card = createAnimOverrideCard();
     const runtime = createAnimOverridesRuntime(card);
@@ -3528,7 +3573,7 @@ describe("settings renderer browser environment", () => {
 
     const resetButton = parent.querySelectorAll("button").find((button) => button.textContent === "animOverridesReset");
     assert.ok(resetButton, "expanded row should render a reset button");
-    for (const listener of resetButton.eventListeners.click || []) listener();
+    const resetPromises = (resetButton.eventListeners.click || []).map((listener) => listener());
     await Promise.resolve();
     await Promise.resolve();
 
@@ -3539,18 +3584,15 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(resetChipWhileResetPending.disabled, true, "slot reset should block wide-hitbox reset chips while pending");
 
     resolveAnimationReset({ status: "ok" });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await Promise.all(resetPromises);
 
     assert.deepStrictEqual(
       calls.map((call) => call.name),
       ["setAnimationOverride", "setWideHitboxOverride"]
     );
     assert.strictEqual(calls[1].payload.enabled, null);
+    assert.strictEqual(runtime.pendingWideHitboxOverrideEdits.size, 0);
+    assert.strictEqual(runtime.pendingAnimationOverrideResets.size, 0);
   });
 
   it("clears hitbox overrides for the pre-reset replacement file when resetting a slot", async () => {
@@ -3587,9 +3629,9 @@ describe("settings renderer browser environment", () => {
           if (fetchCount === 1) {
             Object.assign(runtime.animationOverridesData.cards[0], {
               currentFile: baseFile,
-              wideHitboxEnabled: false,
+              wideHitboxEnabled: true,
               wideHitboxOverridden: false,
-              wideHitboxThemeDefault: false,
+              wideHitboxThemeDefault: true,
             });
           }
           return Promise.resolve(runtime.animationOverridesData);
@@ -3615,17 +3657,12 @@ describe("settings renderer browser environment", () => {
 
     const resetButton = parent.querySelectorAll("button").find((button) => button.textContent === "animOverridesReset");
     assert.ok(resetButton, "expanded row should render a reset button");
-    for (const listener of resetButton.eventListeners.click || []) listener();
+    const resetPromises = (resetButton.eventListeners.click || []).map((listener) => listener());
     await Promise.resolve();
     await Promise.resolve();
 
     resolveAnimationReset({ status: "ok" });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await Promise.all(resetPromises);
 
     assert.deepStrictEqual(
       calls.map((call) => call.name),
@@ -3633,6 +3670,41 @@ describe("settings renderer browser environment", () => {
     );
     assert.strictEqual(calls[1].payload.file, replacementFile);
     assert.strictEqual(calls[1].payload.enabled, null);
+    assert.strictEqual(runtime.pendingWideHitboxOverrideEdits.size, 0);
+    assert.strictEqual(runtime.pendingAnimationOverrideResets.size, 0);
+    const toggle = parent.querySelectorAll("input").find((input) => input.type === "checkbox");
+    assert.strictEqual(toggle.checked, true, "base file wide-hitbox default should be restored after reset");
+    assert.strictEqual(toggle.disabled, false);
+  });
+
+  it("clears pending timing edits when animation override commands reject", async () => {
+    const card = createAnimOverrideCard();
+    const runtime = createAnimOverridesRuntime(card);
+    const modalRoot = new FakeElement("div");
+    const toasts = [];
+    const { core } = loadAnimOverridesTabForTest({
+      runtime,
+      modalRoot,
+      settingsAPI: {
+        command: () => Promise.reject(new Error("ipc failed")),
+      },
+      opsOverrides: {
+        showToast: (message) => toasts.push(message),
+      },
+    });
+    const parent = new FakeElement("main");
+    core.tabs.animOverrides.render(parent, core);
+
+    const range = parent.querySelectorAll("input").find((input) => input.type === "range");
+    const toggle = parent.querySelectorAll("input").find((input) => input.type === "checkbox");
+    range.value = "260";
+    for (const listener of range.eventListeners.change || []) listener();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.strictEqual(runtime.pendingAnimationOverrideEdits.size, 0);
+    assert.strictEqual(toggle.disabled, false, "wide-hitbox toggle should unlock after a rejected timing command");
+    assert.ok(toasts.some((message) => String(message).includes("ipc failed")));
   });
 
   it("treats reaction-only overrides as overridden for summary badges and reset actions", () => {
