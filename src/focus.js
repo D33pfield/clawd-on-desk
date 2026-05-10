@@ -395,10 +395,22 @@ function scheduleCmuxWorkspaceSwitch(pidChain) {
             .sort()[0];
           if (!sessionFile) { logFocusResult("branch=cmux reason=cmux-session-read-failed"); return; }
           const sessionData = JSON.parse(fs.readFileSync(path.join(cmuxDir, sessionFile), "utf8"));
-          const tabManager = sessionData.windows?.[0]?.tabManager;
-          const match = tabManager?.workspaces?.flatMap(ws =>
-            ws.panels?.map(p => ({ workspaceId: ws.id, panelId: p.id, ttyName: p.ttyName })) ?? []
-          ).find(p => p.ttyName === ttyName);
+          // Find matching panel across ALL windows (multiple cmux instances may be open)
+          let match = null;
+          for (const win of sessionData.windows ?? []) {
+            const tm = win?.tabManager;
+            if (!tm) continue;
+            for (const ws of tm.workspaces ?? []) {
+              for (const p of ws.panels ?? []) {
+                if (p.ttyName === ttyName) {
+                  match = { workspaceId: ws.id ?? ws, panelId: p.id, ttyName: p.ttyName };
+                  break;
+                }
+              }
+              if (match) break;
+            }
+            if (match) break;
+          }
           if (!match) { logFocusResult("branch=cmux reason=cmux-workspace-not-found"); return; }
 
           const focusWithPanelId = (panelId) => {
