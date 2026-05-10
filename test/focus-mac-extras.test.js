@@ -11,10 +11,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-// Hermetic HOME so scheduleSupersetFocus's internal findSupersetDataDirs()
-// (which scans `~/.superset*/local.db`) sees a controlled fixture instead
-// of the host's real Superset install (or its absence on CI). Must be paired
-// with restoreHome() in the test's cleanup.
+// Hermetic home env so scheduleSupersetFocus's internal findSupersetDataDirs()
+// (which scans os.homedir()/.superset*/local.db) sees a controlled fixture
+// instead of the host's real Superset install (or its absence on CI). Must be
+// paired with restoreHome() in the test's cleanup.
 function setupHermeticSupersetHome({ withDb = true } = {}) {
   const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "focus-test-home-"));
   if (withDb) {
@@ -22,12 +22,16 @@ function setupHermeticSupersetHome({ withDb = true } = {}) {
     fs.writeFileSync(path.join(tmpHome, ".superset", "local.db"), "");
   }
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
   process.env.HOME = tmpHome;
+  process.env.USERPROFILE = tmpHome;
   return {
     tmpHome,
     restoreHome() {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
       try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch {}
     },
   };
