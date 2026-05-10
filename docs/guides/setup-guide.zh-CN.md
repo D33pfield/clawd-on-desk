@@ -22,7 +22,7 @@
 
 **opencode** — 使用 `~/.config/opencode/opencode.json` 里的 plugin 配置。如果本机已安装 opencode，Clawd 启动时会自动注册；也可以手动执行 `node hooks/opencode-install.js`。
 
-**Pi** — 使用全局 extension 目录 `~/.pi/agent/extensions/clawd-on-desk`。如果本机已安装 Pi，Clawd 启动时会自动注册；也可以手动执行 `npm run install:pi-extension`。当前是 state-only 集成，只感知交互式 Pi 会话状态；Pi 的工具审批仍在 Pi 自己的终端 / TUI 中处理。
+**Pi** — 使用全局 extension 目录 `~/.pi/agent/extensions/clawd-on-desk`。如果本机已安装 Pi，Clawd 启动时会自动注册；也可以手动执行 `npm run install:pi-extension`。交互式 Pi 会话会向 Clawd 上报状态；`bash` / `write` / `edit` 工具可走 Clawd 权限气泡，但 Pi 的单 agent 权限开关对新老用户都默认关闭，需要手动开启。Clawd 气泡不可用、被关闭或被 DND 隐藏时，extension 会回退到 Pi 终端确认，而不是静默允许工具执行。
 
 ## 远程 SSH 模式（Claude Code & Codex CLI）
 

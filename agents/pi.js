@@ -21,9 +21,9 @@ module.exports = {
   },
   capabilities: {
     httpHook: false,
-    permissionApproval: false,
+    permissionApproval: true,
     notificationHook: false,
-    interactiveBubble: false,
+    interactiveBubble: true,
     sessionEnd: true,
     subagent: false,
   },

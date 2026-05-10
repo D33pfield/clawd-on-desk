@@ -181,7 +181,7 @@ function createIntegrationSyncRuntime(options = {}) {
       const { registerPiExtension } = require("../hooks/pi-install.js");
       const result = registerPiExtension({ silent: true });
       if (result.installed && result.updated) {
-        console.log(`Clawd: synced Pi extension (updated=${!!result.updated})`);
+        console.log("Clawd: synced Pi extension");
       }
       return { status: "ok", ...result };
     } catch (err) {

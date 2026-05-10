@@ -7,6 +7,7 @@ function buildSettingsAgentOrderExports() {
     "gemini-cli",
     "kimi-cli",
     "opencode",
+    "pi",
     "codebuddy",
   ];
 
@@ -14,7 +15,6 @@ function buildSettingsAgentOrderExports() {
     "cursor-agent",
     "copilot-cli",
     "kiro-cli",
-    "pi",
   ];
 
   const COLLAPSIBLE_AGENT_PRIORITY_MAP = new Map(

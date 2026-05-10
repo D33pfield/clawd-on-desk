@@ -26,6 +26,7 @@ const {
   shouldBypassCCBubble,
   shouldBypassCodexBubble,
   shouldBypassOpencodeBubble,
+  shouldBypassPiBubble,
 } = require("./server-route-permission");
 const {
   getCodexOfficialTurnKey,
@@ -278,6 +279,7 @@ module.exports.__test = {
   shouldBypassCCBubble,
   shouldBypassCodexBubble,
   shouldBypassOpencodeBubble,
+  shouldBypassPiBubble,
   normalizePermissionSuggestions,
   normalizeElicitationToolInput,
   normalizeCodexPermissionToolInput,
