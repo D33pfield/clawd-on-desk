@@ -349,7 +349,6 @@
         helpers.buildSwitchRow({
           key: "soundMuted",
           labelKey: "rowSoundEnabled",
-          descKey: "rowSoundDesc",
           invert: true,
         }),
         buildVolumeSliderRow(),
@@ -364,6 +363,7 @@
     const sw = document.createElement("div");
     sw.className = "switch sound-header-switch";
     sw.setAttribute("role", "switch");
+    sw.setAttribute("aria-label", t("rowSoundEnabled"));
     sw.setAttribute("tabindex", "0");
     wrap.appendChild(chip);
     wrap.appendChild(sw);

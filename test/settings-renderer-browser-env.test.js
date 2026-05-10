@@ -1179,6 +1179,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes('id: "general:sound"'));
     assert.ok(generalSource.includes("sound-option-list"));
     assert.ok(generalSource.includes("state.mountedControls.soundSummary"));
+    assert.ok(generalSource.includes('sw.setAttribute("aria-label", t("rowSoundEnabled"));'));
+    assert.ok(!/key:\s*"soundMuted",[\s\S]{0,120}descKey:\s*"rowSoundDesc"/.test(generalSource));
     assert.ok(generalSource.includes("sessionHudSummaryAutoHide"));
     assert.ok(generalSource.includes("session-hud-summary-control"));
     assert.ok(/\.settings-option-list\s*\{[\s\S]*display:\s*grid;[\s\S]*gap:\s*8px;/.test(css));
@@ -1418,6 +1420,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(summary.children.length, 2);
     assert.strictEqual(summary.children[0].textContent, "on · 50%");
     assert.ok(summary.children[1].classList.contains("sound-header-switch"));
+    assert.strictEqual(summary.children[1].attributes["aria-label"], "Enable sound effects");
 
     const beforeRenderCount = harness.getContentRenderCount();
     harness.core.ops.applyChanges({
