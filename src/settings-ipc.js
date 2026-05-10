@@ -275,6 +275,16 @@ function registerSettingsIpc(options = {}) {
     }
   });
 
+  handle("settings:open-user-themes-dir", async () => {
+    const dir = typeof themeLoader.ensureUserThemesDir === "function"
+      ? themeLoader.ensureUserThemesDir()
+      : null;
+    if (!dir) return { status: "error", message: "user themes directory unavailable" };
+    const openResult = await shell.openPath(dir);
+    if (openResult) return { status: "error", message: openResult };
+    return { status: "ok", path: dir };
+  });
+
   handle("settings:refresh-codex-pets", () => codexPetMain.refreshFromSettings());
   handle("settings:open-codex-pets-dir", () => codexPetMain.openCodexPetsDir());
   handle("settings:import-codex-pet-zip", (event) => codexPetMain.importCodexPetZip(event));

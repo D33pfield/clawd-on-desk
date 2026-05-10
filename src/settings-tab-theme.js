@@ -163,6 +163,7 @@
     const row = document.createElement("div");
     row.className = "theme-actions";
 
+    const codexGroup = buildThemeActionGroup(t("themeActionGroupCodexPets"));
     const importBtn = document.createElement("button");
     importBtn.type = "button";
     importBtn.className = "soft-btn";
@@ -172,7 +173,7 @@
       || typeof window.settingsAPI.importCodexPetZip !== "function";
     if (runtime.codexPetZipImportPending) importBtn.classList.add("pending");
     importBtn.addEventListener("click", handleImportCodexPetZip);
-    row.appendChild(importBtn);
+    codexGroup.buttons.appendChild(importBtn);
 
     const folderBtn = document.createElement("button");
     folderBtn.type = "button";
@@ -181,7 +182,7 @@
     folderBtn.disabled = !window.settingsAPI
       || typeof window.settingsAPI.openCodexPetsDir !== "function";
     folderBtn.addEventListener("click", handleOpenCodexPetsFolder);
-    row.appendChild(folderBtn);
+    codexGroup.buttons.appendChild(folderBtn);
 
     const refreshBtn = document.createElement("button");
     refreshBtn.type = "button";
@@ -192,9 +193,43 @@
       || typeof window.settingsAPI.refreshCodexPets !== "function";
     if (runtime.codexPetsRefreshPending) refreshBtn.classList.add("pending");
     refreshBtn.addEventListener("click", handleRefreshCodexPets);
-    row.appendChild(refreshBtn);
+    codexGroup.buttons.appendChild(refreshBtn);
+    row.appendChild(codexGroup.group);
+
+    const userThemeGroup = buildThemeActionGroup(t("themeActionGroupUserThemes"));
+    const userThemeFolderBtn = document.createElement("button");
+    userThemeFolderBtn.type = "button";
+    userThemeFolderBtn.className = "soft-btn";
+    userThemeFolderBtn.textContent = t("themeOpenUserThemesFolder");
+    userThemeFolderBtn.disabled = !window.settingsAPI
+      || typeof window.settingsAPI.openUserThemesDir !== "function";
+    userThemeFolderBtn.addEventListener("click", handleOpenUserThemesFolder);
+    userThemeGroup.buttons.appendChild(userThemeFolderBtn);
+
+    const refreshThemesBtn = document.createElement("button");
+    refreshThemesBtn.type = "button";
+    refreshThemesBtn.className = "soft-btn";
+    refreshThemesBtn.textContent = t("themeRefreshThemes");
+    refreshThemesBtn.disabled = !window.settingsAPI
+      || typeof window.settingsAPI.listThemes !== "function";
+    refreshThemesBtn.addEventListener("click", handleRefreshThemes);
+    userThemeGroup.buttons.appendChild(refreshThemesBtn);
+    row.appendChild(userThemeGroup.group);
 
     return row;
+  }
+
+  function buildThemeActionGroup(title) {
+    const group = document.createElement("div");
+    group.className = "theme-action-group";
+    const label = document.createElement("div");
+    label.className = "theme-action-label";
+    label.textContent = title;
+    group.appendChild(label);
+    const buttons = document.createElement("div");
+    buttons.className = "theme-action-buttons";
+    group.appendChild(buttons);
+    return { group, buttons };
   }
 
   function buildThemeCard(theme) {
@@ -352,6 +387,25 @@
       .catch((err) => {
         ops.showToast(t("toastCodexPetsFolderFailed") + (err && err.message), { error: true });
       });
+  }
+
+  function handleOpenUserThemesFolder() {
+    if (!window.settingsAPI || typeof window.settingsAPI.openUserThemesDir !== "function") return;
+    window.settingsAPI.openUserThemesDir()
+      .then((result) => {
+        if (!result || result.status !== "ok") {
+          ops.showToast(t("toastUserThemesFolderFailed") + ((result && result.message) || "unknown error"), { error: true });
+        }
+      })
+      .catch((err) => {
+        ops.showToast(t("toastUserThemesFolderFailed") + (err && err.message), { error: true });
+      });
+  }
+
+  function handleRefreshThemes() {
+    ops.fetchThemes().then(() => {
+      if (state.activeTab === "theme") ops.requestRender({ content: true });
+    });
   }
 
   function formatCodexPetZipImportOk(result) {

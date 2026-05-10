@@ -71,6 +71,7 @@ function createHarness(overrides = {}) {
     getSoundUrl: () => null,
     listThemesWithMetadata: () => [],
     getThemeMetadata: (themeId) => ({ name: themeId }),
+    ensureUserThemesDir: () => path.join(os.tmpdir(), "clawd-user-themes"),
   };
   const codexPetMain = overrides.codexPetMain || {
     decorateThemeMetadata: (theme) => theme,
@@ -137,6 +138,7 @@ test("settings IPC registers owned channels and leaves animation override channe
   assert.ok(ipcMain.handlers.has("settings:get-snapshot"));
   assert.ok(ipcMain.handlers.has("settings:pick-sound-file"));
   assert.ok(ipcMain.handlers.has("settings:list-themes"));
+  assert.ok(ipcMain.handlers.has("settings:open-user-themes-dir"));
   assert.ok(ipcMain.handlers.has("settings:refresh-codex-pets"));
   assert.ok(!ipcMain.listeners.has("settings:open-dashboard"));
   assert.ok(!ipcMain.handlers.has("settings:getShortcutFailures"));
@@ -259,6 +261,33 @@ test("settings IPC delegates Codex Pet theme channels and decorates metadata", a
     ["import", "sender-web-contents"],
     ["remove", "imported-pet"],
   ]);
+});
+
+test("settings IPC opens the user themes directory", async () => {
+  const openCalls = [];
+  const { ipcMain } = createHarness({
+    themeLoader: {
+      getPreviewSoundUrl: () => null,
+      getSoundOverridesDir: () => null,
+      getSoundUrl: () => null,
+      listThemesWithMetadata: () => [],
+      getThemeMetadata: () => null,
+      ensureUserThemesDir: () => "C:\\Users\\Example\\AppData\\Roaming\\Clawd\\themes",
+    },
+    shell: {
+      openPath: async (dir) => {
+        openCalls.push(dir);
+        return "";
+      },
+      openExternal: async () => {},
+    },
+  });
+
+  assert.deepStrictEqual(await ipcMain.invoke("settings:open-user-themes-dir"), {
+    status: "ok",
+    path: "C:\\Users\\Example\\AppData\\Roaming\\Clawd\\themes",
+  });
+  assert.deepStrictEqual(openCalls, ["C:\\Users\\Example\\AppData\\Roaming\\Clawd\\themes"]);
 });
 
 test("settings IPC copies sound overrides, removes stale siblings, and invalidates renderer cache", async () => {

@@ -66,6 +66,7 @@ test("settings exposes Codex Pet refresh and managed theme metadata", () => {
   assert.ok(runtimeSource.includes("previewAtlasUrl: getPreviewAtlasUrl(theme.id, marker)"));
   assert.ok(runtimeSource.includes("unchanged: (a.unchanged || 0) + (b.unchanged || 0)"));
   assert.ok(preloadSource.includes('refreshCodexPets: () => ipcRenderer.invoke("settings:refresh-codex-pets")'));
+  assert.ok(preloadSource.includes('openUserThemesDir: () => ipcRenderer.invoke("settings:open-user-themes-dir")'));
   assert.ok(preloadSource.includes('openCodexPetsDir: () => ipcRenderer.invoke("settings:open-codex-pets-dir")'));
   assert.ok(preloadSource.includes('importCodexPetZip: () => ipcRenderer.invoke("settings:import-codex-pet-zip")'));
   assert.ok(preloadSource.includes('removeCodexPet: (themeId) => ipcRenderer.invoke("settings:remove-codex-pet", themeId)'));
@@ -73,6 +74,9 @@ test("settings exposes Codex Pet refresh and managed theme metadata", () => {
   assert.ok(tabSource.includes("themeRefreshImportedPets"));
   assert.ok(tabSource.includes("themeImportPetZip"));
   assert.ok(tabSource.includes("themeOpenCodexPetsFolder"));
+  assert.ok(tabSource.includes("themeActionGroupUserThemes"));
+  assert.ok(tabSource.includes("themeOpenUserThemesFolder"));
+  assert.ok(tabSource.includes("handleRefreshThemes"));
   assert.ok(tabSource.includes("themeUninstallPetLabel"));
   assert.ok(tabSource.includes("handleRemoveCodexPet"));
   assert.ok(tabSource.includes("getThemeSections"));

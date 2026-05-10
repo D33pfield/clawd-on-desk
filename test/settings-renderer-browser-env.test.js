@@ -1722,25 +1722,37 @@ describe("settings renderer browser environment", () => {
     assert.ok(tabSource.includes("themeGroupUserThemes"));
     assert.ok(tabSource.includes("handleImportCodexPetZip"));
     assert.ok(tabSource.includes("handleOpenCodexPetsFolder"));
+    assert.ok(tabSource.includes("handleOpenUserThemesFolder"));
+    assert.ok(tabSource.includes("handleRefreshThemes"));
     assert.ok(tabSource.includes("handleRemoveCodexPet"));
     assert.ok(tabSource.includes("themeUninstallPetLabel"));
     assert.ok(coreSource.includes("codexPetZipImportPending"));
     assert.ok(coreSource.includes("codexPetRemovalPendingThemeId"));
+    assert.ok(preloadSource.includes("openUserThemesDir"));
     assert.ok(preloadSource.includes("openCodexPetsDir"));
     assert.ok(preloadSource.includes("importCodexPetZip"));
     assert.ok(preloadSource.includes("removeCodexPet"));
+    assert.ok(settingsIpcSource.includes('handle("settings:open-user-themes-dir"'));
     assert.ok(settingsIpcSource.includes('handle("settings:open-codex-pets-dir"'));
     assert.ok(settingsIpcSource.includes('handle("settings:import-codex-pet-zip"'));
     assert.ok(settingsIpcSource.includes('handle("settings:remove-codex-pet"'));
     assert.ok(css.includes(".theme-section-title"));
+    assert.ok(css.includes(".theme-action-group"));
+    assert.ok(css.includes(".theme-action-buttons"));
     assert.ok(css.includes(".theme-uninstall-btn"));
     assert.ok(i18nSource.includes("themeImportPetZip"));
+    assert.ok(i18nSource.includes("themeOpenUserThemesFolder"));
     assert.ok(i18nSource.includes("toastCodexPetZipImportOk"));
     assert.ok(i18nSource.includes("toastCodexPetRemoveOk"));
 
     const strings = loadSettingsI18nForTest();
+    assert.strictEqual(strings.en.themeActionGroupCodexPets, "Codex Pet packages");
+    assert.strictEqual(strings.en.themeActionGroupUserThemes, "User themes");
     assert.strictEqual(strings.en.themeImportPetZip, "Import Codex Pet (.zip)");
+    assert.strictEqual(strings.en.themeOpenUserThemesFolder, "Open themes folder");
+    assert.strictEqual(strings.en.themeRefreshThemes, "Refresh themes");
     assert.strictEqual(strings.zh.themeImportPetZip, "导入 Codex Pet（.zip）");
+    assert.strictEqual(strings.zh.themeOpenUserThemesFolder, "打开主题文件夹");
   });
 
   it("animates collapsible Settings groups with measured height instead of instant hidden jumps", () => {
