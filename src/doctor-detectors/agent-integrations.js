@@ -549,6 +549,86 @@ function checkOpencodeSettings(descriptor, settings, options) {
   });
 }
 
+function readJsonIfPresent(fsImpl, filePath) {
+  try {
+    return JSON.parse(fsImpl.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function isPiManagedMarker(value) {
+  return !!(
+    value
+    && value.app === "clawd-on-desk"
+    && value.integration === "pi"
+    && value.managed === true
+  );
+}
+
+function checkPiExtensionMode(descriptor, options) {
+  const extensionDir = descriptor.configPath;
+  const markerPath = path.join(extensionDir, descriptor.markerFile || ".clawd-managed.json");
+  const extensionPath = path.join(extensionDir, descriptor.marker || "index.ts");
+  const corePath = path.join(extensionDir, descriptor.coreFile || "pi-extension-core.js");
+
+  if (!dirExists(options.fs, extensionDir)) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: false,
+      configPath: extensionDir,
+      extensionDir,
+      detail: `${extensionDir} missing`,
+    });
+  }
+
+  const marker = readJsonIfPresent(options.fs, markerPath);
+  if (!isPiManagedMarker(marker)) {
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: extensionDir,
+      extensionDir,
+      markerPath,
+      detail: `${extensionDir} exists but is not Clawd-managed`,
+    });
+  }
+
+  const extensionFileExists = fileExists(options.fs, extensionPath);
+  const coreFileExists = fileExists(options.fs, corePath);
+  if (!extensionFileExists || !coreFileExists) {
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: extensionDir,
+      extensionDir,
+      markerPath,
+      extensionPath,
+      corePath,
+      extensionFileExists,
+      coreFileExists,
+      detail: "Pi extension files are missing or incomplete",
+    });
+  }
+
+  return makeDetail(descriptor, "ok", {
+    level: null,
+    parentDirExists: true,
+    configFileExists: true,
+    configPath: extensionDir,
+    extensionDir,
+    markerPath,
+    extensionPath,
+    corePath,
+    extensionFileExists,
+    coreFileExists,
+    detail: `${extensionDir} extension verified`,
+  });
+}
+
 function checkAgent(descriptor, options) {
   const prefs = options.prefs || {};
   if (!isAgentEnabled(prefs, descriptor.agentId)) {
@@ -591,6 +671,8 @@ function checkAgent(descriptor, options) {
     detail = checkTomlTextMode(descriptor, options);
   } else if (descriptor.configMode === "dir") {
     detail = checkKiroDirMode(descriptor, options);
+  } else if (descriptor.configMode === "pi-extension") {
+    detail = checkPiExtensionMode(descriptor, options);
   } else {
     detail = makeDetail(descriptor, "manual-only", {
       level: "info",
@@ -645,6 +727,7 @@ module.exports = {
   __test: {
     checkFileMode,
     checkKiroDirMode,
+    checkPiExtensionMode,
     checkTomlTextMode,
     validateCommandList,
   },

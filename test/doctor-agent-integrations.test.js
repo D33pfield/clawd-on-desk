@@ -464,6 +464,78 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.fixAction, undefined);
   });
 
+  function piDescriptor() {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".pi", "agent");
+    return baseDescriptor({
+      agentId: "pi",
+      agentName: "Pi",
+      eventSource: "extension",
+      parentDir,
+      configPath: path.join(parentDir, "extensions", "clawd-on-desk"),
+      configMode: "pi-extension",
+      marker: "index.ts",
+      coreFile: "pi-extension-core.js",
+      markerFile: ".clawd-managed.json",
+    });
+  }
+
+  it("reports missing Pi extension as repairable not-connected", () => {
+    const descriptor = piDescriptor();
+    fs.mkdirSync(descriptor.parentDir, { recursive: true });
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.eventSource, "extension");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "pi" });
+  });
+
+  it("reports unmanaged Pi extension directory as needs-review without repair action", () => {
+    const descriptor = piDescriptor();
+    fs.mkdirSync(descriptor.configPath, { recursive: true });
+    fs.writeFileSync(path.join(descriptor.configPath, "index.ts"), "export default function() {}\n", "utf8");
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "needs-review");
+    assert.strictEqual(detail.level, "warning");
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("reports managed Pi extension as ok", () => {
+    const descriptor = piDescriptor();
+    writeJson(path.join(descriptor.configPath, ".clawd-managed.json"), {
+      app: "clawd-on-desk",
+      integration: "pi",
+      managed: true,
+    });
+    fs.writeFileSync(path.join(descriptor.configPath, "index.ts"), "export default function() {}\n", "utf8");
+    fs.writeFileSync(path.join(descriptor.configPath, "pi-extension-core.js"), "module.exports = {}\n", "utf8");
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.extensionFileExists, true);
+    assert.strictEqual(detail.coreFileExists, true);
+  });
+
+  it("reports managed Pi extension with missing copied files as repairable broken-path", () => {
+    const descriptor = piDescriptor();
+    writeJson(path.join(descriptor.configPath, ".clawd-managed.json"), {
+      app: "clawd-on-desk",
+      integration: "pi",
+      managed: true,
+    });
+    fs.writeFileSync(path.join(descriptor.configPath, "index.ts"), "export default function() {}\n", "utf8");
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.coreFileExists, false);
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "pi" });
+  });
+
   it("reports opencode stale absolute plugin paths", () => {
     const root = makeTempDir();
     const parentDir = path.join(root, ".config", "opencode");

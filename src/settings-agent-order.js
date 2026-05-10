@@ -14,6 +14,7 @@ function buildSettingsAgentOrderExports() {
     "cursor-agent",
     "copilot-cli",
     "kiro-cli",
+    "pi",
   ];
 
   const COLLAPSIBLE_AGENT_PRIORITY_MAP = new Map(
@@ -37,6 +38,7 @@ function buildSettingsAgentOrderExports() {
     const eventSource = agent && typeof agent.eventSource === "string" ? agent.eventSource : "";
     if (eventSource === "log-poll") return "eventSourceLogPoll";
     if (eventSource === "plugin-event") return "eventSourcePlugin";
+    if (eventSource === "extension") return "eventSourceExtension";
     return "eventSourceHook";
   }
 
