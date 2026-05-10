@@ -367,7 +367,6 @@ function scheduleCmuxWorkspaceSwitch(pidChain) {
   if (!pids.length) return;
 
   const pidsArg = pids.slice(0, 8).join(",");
-  const cmuxBin = "/Applications/cmux.app/Contents/Resources/bin/cmux";
   execFile("ps", ["-o", "comm=", "-p", pidsArg], { encoding: "utf8", timeout: 500 }, (err, stdout) => {
     if (err || !stdout) return;
     let hasCmux = false;
@@ -377,51 +376,58 @@ function scheduleCmuxWorkspaceSwitch(pidChain) {
     }
     if (!hasCmux) return;
 
-    execFile("ps", ["-o", "pid=,tty=", "-p", pidsArg], { encoding: "utf8", timeout: 500 }, (psErr, psOut) => {
-      if (psErr || !psOut) { logFocusResult("branch=cmux reason=cmux-no-tty"); return; }
-      const ttyName = findFirstValidTty(psOut);
-      if (!ttyName) { logFocusResult("branch=cmux reason=cmux-no-tty"); return; }
+    // Locate cmux app via Spotlight (mdfind), fall back to hardcoded path
+    const cmuxAppPath = "/Applications/cmux.app";
+    execFile("mdfind", ["kMDItemCFBundleIdentifier=com.cmuxterm.app"], { timeout: 2000 }, (mdfindErr, appPath) => {
+      const resolvedAppPath = (!mdfindErr && appPath.trim()) ? appPath.trim().split("\n")[0] : cmuxAppPath;
+      const cmuxBin = path.join(resolvedAppPath, "Contents/Resources/bin/cmux");
 
-      // Read cmux session file, match TTY to workspace+panel, focus by panel id
-      const cmuxDir = path.join(process.env.HOME, "Library/Application Support/cmux");
-      try {
-        const sessionFile = fs.readdirSync(cmuxDir)
-          .filter(f => f.startsWith("session-") && f.endsWith(".json") && !f.includes("-previous"))
-          .sort()[0];
-        if (!sessionFile) { logFocusResult("branch=cmux reason=cmux-session-read-failed"); return; }
-        const sessionData = JSON.parse(fs.readFileSync(path.join(cmuxDir, sessionFile), "utf8"));
-        const tabManager = sessionData.windows?.[0]?.tabManager;
-        const match = tabManager?.workspaces?.flatMap(ws =>
-          ws.panels?.map(p => ({ workspaceId: ws.id, panelId: p.id, ttyName: p.ttyName })) ?? []
-        ).find(p => p.ttyName === ttyName);
-        if (!match) { logFocusResult("branch=cmux reason=cmux-workspace-not-found"); return; }
+      execFile("ps", ["-o", "pid=,tty=", "-p", pidsArg], { encoding: "utf8", timeout: 500 }, (psErr, psOut) => {
+        if (psErr || !psOut) { logFocusResult("branch=cmux reason=cmux-no-tty"); return; }
+        const ttyName = findFirstValidTty(psOut);
+        if (!ttyName) { logFocusResult("branch=cmux reason=cmux-no-tty"); return; }
 
-        const focusWithPanelId = (panelId) => {
-          execFile(cmuxBin, ["focus-panel", "--panel", panelId], { timeout: 1500 }, (panelErr) => {
-            if (panelErr) {
-              // Fallback 1: select-workspace
-              execFile(cmuxBin, ["select-workspace", "--workspace", match.workspaceId], { timeout: 1500 }, (wsErr) => {
-                if (wsErr) {
-                  // Fallback 2: AppleScript
-                  const script = `tell application "cmux" to focus terminal id "${panelId}"`;
-                  execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, (osaErr) => {
-                    if (osaErr) { logFocusResult("branch=cmux reason=cmux-all-fallbacks-failed"); return; }
+        // Read cmux session file, match TTY to workspace+panel, focus by panel id
+        const cmuxDir = path.join(process.env.HOME, "Library/Application Support/cmux");
+        try {
+          const sessionFile = fs.readdirSync(cmuxDir)
+            .filter(f => f.startsWith("session-") && f.endsWith(".json") && !f.includes("-previous"))
+            .sort()[0];
+          if (!sessionFile) { logFocusResult("branch=cmux reason=cmux-session-read-failed"); return; }
+          const sessionData = JSON.parse(fs.readFileSync(path.join(cmuxDir, sessionFile), "utf8"));
+          const tabManager = sessionData.windows?.[0]?.tabManager;
+          const match = tabManager?.workspaces?.flatMap(ws =>
+            ws.panels?.map(p => ({ workspaceId: ws.id, panelId: p.id, ttyName: p.ttyName })) ?? []
+          ).find(p => p.ttyName === ttyName);
+          if (!match) { logFocusResult("branch=cmux reason=cmux-workspace-not-found"); return; }
+
+          const focusWithPanelId = (panelId) => {
+            execFile(cmuxBin, ["focus-panel", "--panel", panelId], { timeout: 1500 }, (panelErr) => {
+              if (panelErr) {
+                // Fallback 1: select-workspace
+                execFile(cmuxBin, ["select-workspace", "--workspace", match.workspaceId], { timeout: 1500 }, (wsErr) => {
+                  if (wsErr) {
+                    // Fallback 2: AppleScript
+                    const script = `tell application "cmux" to focus terminal id "${panelId}"`;
+                    execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, (osaErr) => {
+                      if (osaErr) { logFocusResult("branch=cmux reason=cmux-all-fallbacks-failed"); return; }
+                      logFocusResult("branch=cmux reason=cmux-workspace-selected");
+                    });
+                  } else {
                     logFocusResult("branch=cmux reason=cmux-workspace-selected");
-                  });
-                } else {
-                  logFocusResult("branch=cmux reason=cmux-workspace-selected");
-                }
-              });
-            } else {
-              logFocusResult("branch=cmux reason=cmux-workspace-selected");
-            }
-          });
-        };
+                  }
+                });
+              } else {
+                logFocusResult("branch=cmux reason=cmux-workspace-selected");
+              }
+            });
+          };
 
-        setTimeout(() => focusWithPanelId(match.panelId), 400);
-      } catch (readErr) {
-        logFocusResult("branch=cmux reason=cmux-session-read-failed");
-      }
+          setTimeout(() => focusWithPanelId(match.panelId), 400);
+        } catch (readErr) {
+          logFocusResult("branch=cmux reason=cmux-session-read-failed");
+        }
+      });
     });
   });
 }
