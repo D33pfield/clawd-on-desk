@@ -80,6 +80,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   openExternal: (url) => ipcRenderer.invoke("settings:open-external", url),
   listThemes: () => ipcRenderer.invoke("settings:list-themes"),
   openUserThemesDir: () => ipcRenderer.invoke("settings:open-user-themes-dir"),
+  importUserThemeZip: () => ipcRenderer.invoke("settings:import-user-theme-zip"),
   refreshCodexPets: () => ipcRenderer.invoke("settings:refresh-codex-pets"),
   openCodexPetsDir: () => ipcRenderer.invoke("settings:open-codex-pets-dir"),
   importCodexPetZip: () => ipcRenderer.invoke("settings:import-codex-pet-zip"),

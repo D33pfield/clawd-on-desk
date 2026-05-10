@@ -1708,7 +1708,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("collapsibleCollapse"));
   });
 
-  it("groups Theme cards and exposes Codex Pet import actions in Settings", () => {
+  it("groups Theme cards and exposes theme import actions in Settings", () => {
     const tabSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-theme.js"), "utf8");
     const preloadSource = fs.readFileSync(PRELOAD_SETTINGS, "utf8");
     const settingsIpcSource = fs.readFileSync(SETTINGS_IPC, "utf8");
@@ -1721,18 +1721,23 @@ describe("settings renderer browser environment", () => {
     assert.ok(tabSource.includes("themeGroupImportedCodexPets"));
     assert.ok(tabSource.includes("themeGroupUserThemes"));
     assert.ok(tabSource.includes("handleImportCodexPetZip"));
-    assert.ok(tabSource.includes("handleOpenCodexPetsFolder"));
+    assert.ok(tabSource.includes("handleImportUserThemeZip"));
+    assert.ok(!tabSource.includes("themeOpenCodexPetsFolder"));
+    assert.ok(!tabSource.includes("handleOpenCodexPetsFolder"));
     assert.ok(tabSource.includes("handleOpenUserThemesFolder"));
     assert.ok(tabSource.includes("handleRefreshThemes"));
     assert.ok(tabSource.includes("handleRemoveCodexPet"));
     assert.ok(tabSource.includes("themeUninstallPetLabel"));
     assert.ok(coreSource.includes("codexPetZipImportPending"));
+    assert.ok(coreSource.includes("userThemeZipImportPending"));
     assert.ok(coreSource.includes("codexPetRemovalPendingThemeId"));
     assert.ok(preloadSource.includes("openUserThemesDir"));
+    assert.ok(preloadSource.includes("importUserThemeZip"));
     assert.ok(preloadSource.includes("openCodexPetsDir"));
     assert.ok(preloadSource.includes("importCodexPetZip"));
     assert.ok(preloadSource.includes("removeCodexPet"));
     assert.ok(settingsIpcSource.includes('handle("settings:open-user-themes-dir"'));
+    assert.ok(settingsIpcSource.includes('handle("settings:import-user-theme-zip"'));
     assert.ok(settingsIpcSource.includes('handle("settings:open-codex-pets-dir"'));
     assert.ok(settingsIpcSource.includes('handle("settings:import-codex-pet-zip"'));
     assert.ok(settingsIpcSource.includes('handle("settings:remove-codex-pet"'));
@@ -1741,7 +1746,10 @@ describe("settings renderer browser environment", () => {
     assert.ok(css.includes(".theme-action-buttons"));
     assert.ok(css.includes(".theme-uninstall-btn"));
     assert.ok(i18nSource.includes("themeImportPetZip"));
+    assert.ok(i18nSource.includes("themeImportUserThemeZip"));
+    assert.ok(i18nSource.includes("themeImportUserThemeZipHint"));
     assert.ok(i18nSource.includes("themeOpenUserThemesFolder"));
+    assert.ok(i18nSource.includes("toastUserThemeZipImportOk"));
     assert.ok(i18nSource.includes("toastCodexPetZipImportOk"));
     assert.ok(i18nSource.includes("toastCodexPetRemoveOk"));
 
@@ -1749,9 +1757,13 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(strings.en.themeActionGroupCodexPets, "Codex Pet packages");
     assert.strictEqual(strings.en.themeActionGroupUserThemes, "User themes");
     assert.strictEqual(strings.en.themeImportPetZip, "Import Codex Pet (.zip)");
+    assert.strictEqual(strings.en.themeImportUserThemeZip, "Import theme (.zip)");
+    assert.ok(strings.en.themeImportUserThemeZipHint.includes("theme.json"));
     assert.strictEqual(strings.en.themeOpenUserThemesFolder, "Open themes folder");
     assert.strictEqual(strings.en.themeRefreshThemes, "Refresh themes");
     assert.strictEqual(strings.zh.themeImportPetZip, "导入 Codex Pet（.zip）");
+    assert.strictEqual(strings.zh.themeImportUserThemeZip, "导入主题（.zip）");
+    assert.ok(strings.zh.themeImportUserThemeZipHint.includes("theme.json"));
     assert.strictEqual(strings.zh.themeOpenUserThemesFolder, "打开主题文件夹");
   });
 

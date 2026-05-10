@@ -175,15 +175,6 @@
     importBtn.addEventListener("click", handleImportCodexPetZip);
     codexGroup.buttons.appendChild(importBtn);
 
-    const folderBtn = document.createElement("button");
-    folderBtn.type = "button";
-    folderBtn.className = "soft-btn";
-    folderBtn.textContent = t("themeOpenCodexPetsFolder");
-    folderBtn.disabled = !window.settingsAPI
-      || typeof window.settingsAPI.openCodexPetsDir !== "function";
-    folderBtn.addEventListener("click", handleOpenCodexPetsFolder);
-    codexGroup.buttons.appendChild(folderBtn);
-
     const refreshBtn = document.createElement("button");
     refreshBtn.type = "button";
     refreshBtn.className = "soft-btn";
@@ -197,6 +188,18 @@
     row.appendChild(codexGroup.group);
 
     const userThemeGroup = buildThemeActionGroup(t("themeActionGroupUserThemes"));
+    const importThemeBtn = document.createElement("button");
+    importThemeBtn.type = "button";
+    importThemeBtn.className = "soft-btn";
+    importThemeBtn.textContent = t("themeImportUserThemeZip");
+    importThemeBtn.title = t("themeImportUserThemeZipHint");
+    importThemeBtn.disabled = !!runtime.userThemeZipImportPending
+      || !window.settingsAPI
+      || typeof window.settingsAPI.importUserThemeZip !== "function";
+    if (runtime.userThemeZipImportPending) importThemeBtn.classList.add("pending");
+    importThemeBtn.addEventListener("click", handleImportUserThemeZip);
+    userThemeGroup.buttons.appendChild(importThemeBtn);
+
     const userThemeFolderBtn = document.createElement("button");
     userThemeFolderBtn.type = "button";
     userThemeFolderBtn.className = "soft-btn";
@@ -376,19 +379,6 @@
       });
   }
 
-  function handleOpenCodexPetsFolder() {
-    if (!window.settingsAPI || typeof window.settingsAPI.openCodexPetsDir !== "function") return;
-    window.settingsAPI.openCodexPetsDir()
-      .then((result) => {
-        if (!result || result.status !== "ok") {
-          ops.showToast(t("toastCodexPetsFolderFailed") + ((result && result.message) || "unknown error"), { error: true });
-        }
-      })
-      .catch((err) => {
-        ops.showToast(t("toastCodexPetsFolderFailed") + (err && err.message), { error: true });
-      });
-  }
-
   function handleOpenUserThemesFolder() {
     if (!window.settingsAPI || typeof window.settingsAPI.openUserThemesDir !== "function") return;
     window.settingsAPI.openUserThemesDir()
@@ -406,6 +396,44 @@
     ops.fetchThemes().then(() => {
       if (state.activeTab === "theme") ops.requestRender({ content: true });
     });
+  }
+
+  function formatUserThemeZipImportOk(result) {
+    const formatter = t("toastUserThemeZipImportOk");
+    const name = localizeField(result && result.name) || (result && result.themeId) || "theme";
+    if (typeof formatter === "function") return formatter(name);
+    return String(formatter);
+  }
+
+  function formatUserThemeZipImportFailed(message) {
+    const formatter = t("toastUserThemeZipImportFailed");
+    if (typeof formatter === "function") return formatter(message || "unknown error");
+    return String(formatter) + (message || "unknown error");
+  }
+
+  function handleImportUserThemeZip() {
+    if (!window.settingsAPI || typeof window.settingsAPI.importUserThemeZip !== "function") return;
+    runtime.userThemeZipImportPending = true;
+    if (state.activeTab === "theme") ops.requestRender({ content: true });
+    window.settingsAPI.importUserThemeZip()
+      .then((result) => {
+        if (!result || result.status === "cancel") return null;
+        if (result.status !== "ok") {
+          ops.showToast(formatUserThemeZipImportFailed(result && result.message), { error: true });
+          return null;
+        }
+        ops.showToast(formatUserThemeZipImportOk(result));
+        return ops.fetchThemes().then(() => {
+          if (state.activeTab === "theme") ops.requestRender({ content: true });
+        });
+      })
+      .catch((err) => {
+        ops.showToast(formatUserThemeZipImportFailed(err && err.message), { error: true });
+      })
+      .finally(() => {
+        runtime.userThemeZipImportPending = false;
+        if (state.activeTab === "theme") ops.requestRender({ content: true });
+      });
   }
 
   function formatCodexPetZipImportOk(result) {

@@ -82,6 +82,7 @@
     themeList: null,
     codexPetsRefreshPending: false,
     codexPetZipImportPending: false,
+    userThemeZipImportPending: false,
     codexPetRemovalPendingThemeId: null,
     animationOverridesData: null,
     animationOverridesFetchSeq: 0,
