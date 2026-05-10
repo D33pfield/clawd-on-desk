@@ -175,6 +175,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncPiExtension() {
+    try {
+      if (typeof ctx.syncPiExtensionImpl === "function") return ctx.syncPiExtensionImpl();
+      const { registerPiExtension } = require("../hooks/pi-install.js");
+      const result = registerPiExtension({ silent: true });
+      if (result.installed && result.updated) {
+        console.log("Clawd: synced Pi extension");
+      }
+      return { status: "ok", ...result };
+    } catch (err) {
+      console.warn("Clawd: failed to sync Pi extension:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync Pi extension" };
+    }
+  }
+
   const AGENT_INTEGRATION_SYNCERS = Object.freeze({
     "gemini-cli": syncGeminiHooks,
     "cursor-agent": syncCursorHooks,
@@ -183,6 +198,7 @@ function createIntegrationSyncRuntime(options = {}) {
     "kimi-cli": syncKimiHooks,
     codex: syncCodexHooks,
     opencode: syncOpencodePlugin,
+    pi: syncPiExtension,
   });
 
   const AGENT_INTEGRATION_REPAIRERS = Object.freeze({
@@ -239,6 +255,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncKimiHooks,
     syncCodexHooks,
     syncOpencodePlugin,
+    syncPiExtension,
     repairCodexHooks,
     syncIntegrationForAgent,
     repairIntegrationForAgent,

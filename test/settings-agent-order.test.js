@@ -15,6 +15,7 @@ describe("settings agent order", () => {
     assert.strictEqual(getAgentEventSourceBadgeKey({ eventSource: "hook+log-poll" }), "eventSourceHook");
     assert.strictEqual(getAgentEventSourceBadgeKey({ eventSource: "log-poll" }), "eventSourceLogPoll");
     assert.strictEqual(getAgentEventSourceBadgeKey({ eventSource: "plugin-event" }), "eventSourcePlugin");
+    assert.strictEqual(getAgentEventSourceBadgeKey({ eventSource: "extension" }), "eventSourceExtension");
   });
 
   it("treats agents with detail rows as collapsible", () => {
@@ -37,6 +38,7 @@ describe("settings agent order", () => {
       { id: "cursor-agent", name: "Cursor Agent", capabilities: {} },
       { id: "codex", name: "Codex CLI", capabilities: { interactiveBubble: true } },
       { id: "kimi-cli", name: "Kimi CLI", capabilities: { permissionApproval: true, notificationHook: true } },
+      { id: "pi", name: "Pi", capabilities: { permissionApproval: true, interactiveBubble: true } },
     ]);
 
     assert.deepStrictEqual(sorted.map((agent) => agent.id), [
@@ -45,6 +47,7 @@ describe("settings agent order", () => {
       "gemini-cli",
       "kimi-cli",
       "opencode",
+      "pi",
       "codebuddy",
       "cursor-agent",
       "copilot-cli",

@@ -26,6 +26,7 @@ function makeRuntime(overrides = {}) {
       return { status: "ok", message: "done" };
     },
     syncOpencodePluginImpl: () => calls.push({ name: "opencode" }),
+    syncPiExtensionImpl: () => calls.push({ name: "pi" }),
     ...(overrides.ctx || {}),
   };
   const runtime = createIntegrationSyncRuntime({
@@ -71,6 +72,7 @@ describe("integration sync runtime", () => {
       "kiro",
       "kimi",
       "codex",
+      "pi",
     ]);
   });
 
@@ -108,5 +110,31 @@ describe("integration sync runtime", () => {
     assert.strictEqual(runtime.stopIntegrationForAgent("codex"), false);
     assert.strictEqual(runtime.stopIntegrationForAgent("claude-code"), "stopped");
     assert.deepStrictEqual(calls.map((entry) => entry.name), ["watcher:stop"]);
+  });
+
+  it("does not log Pi extension sync when the managed files are already current", () => {
+    const piInstall = require("../hooks/pi-install");
+    const originalRegister = piInstall.registerPiExtension;
+    const originalLog = console.log;
+    const logs = [];
+    piInstall.registerPiExtension = () => ({
+      installed: true,
+      skipped: false,
+      updated: false,
+      extensionDir: "C:/Users/Tester/.pi/agent/extensions/clawd-on-desk",
+    });
+    console.log = (message) => logs.push(message);
+
+    try {
+      const { runtime } = makeRuntime({ ctx: { syncPiExtensionImpl: undefined } });
+      const result = runtime.syncPiExtension();
+
+      assert.strictEqual(result.status, "ok");
+      assert.strictEqual(result.installed, true);
+      assert.deepStrictEqual(logs, []);
+    } finally {
+      piInstall.registerPiExtension = originalRegister;
+      console.log = originalLog;
+    }
   });
 });

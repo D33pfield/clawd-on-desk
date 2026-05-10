@@ -21,6 +21,7 @@ describe("doctor agent descriptors", () => {
         "kiro-cli",
         "kimi-cli",
         "opencode",
+        "pi",
       ]
     );
   });
@@ -34,6 +35,7 @@ describe("doctor agent descriptors", () => {
     const kiro = require("../hooks/kiro-install");
     const kimi = require("../hooks/kimi-install");
     const opencode = require("../hooks/opencode-install");
+    const pi = require("../hooks/pi-install");
 
     assert.strictEqual(getAgentDescriptor("claude-code").parentDir, claude.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("claude-code").configPath, claude.DEFAULT_CONFIG_PATH);
@@ -59,6 +61,12 @@ describe("doctor agent descriptors", () => {
 
     assert.strictEqual(getAgentDescriptor("opencode").parentDir, opencode.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("opencode").configPath, opencode.DEFAULT_CONFIG_PATH);
+
+    assert.strictEqual(getAgentDescriptor("pi").parentDir, pi.DEFAULT_PARENT_DIR);
+    assert.strictEqual(getAgentDescriptor("pi").configPath, pi.DEFAULT_EXTENSION_DIR);
+    assert.strictEqual(getAgentDescriptor("pi").marker, pi.EXTENSION_FILE);
+    assert.strictEqual(getAgentDescriptor("pi").coreFile, pi.CORE_FILE);
+    assert.strictEqual(getAgentDescriptor("pi").markerFile, pi.MARKER_FILE);
   });
 
   it("returns copies from public accessors", () => {
