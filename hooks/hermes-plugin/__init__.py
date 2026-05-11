@@ -40,6 +40,10 @@ HOOK_TO_STATE: Dict[str, Tuple[str, str]] = {
     # Hermes on_session_end fires at the end of every run_conversation turn,
     # not only when the CLI exits, so Clawd should treat it like turn stop.
     "on_session_end": ("attention", "Stop"),
+    # Hermes on_session_finalize is the real boundary for session rotation and
+    # gateway eviction; one-shot `hermes -z` did not emit it in local QA.
+    "on_session_finalize": ("sleeping", "SessionEnd"),
+    "on_session_reset": ("idle", "SessionStart"),
 }
 
 HOOKS = tuple(HOOK_TO_STATE.keys())
@@ -272,6 +276,17 @@ def _forget_task_session(event_name: str, kwargs: Dict[str, Any]) -> None:
         _task_session_ids.pop(task_id, None)
 
 
+def _forget_session_task_mappings(session_id: str) -> None:
+    if not session_id:
+        return
+    stale = [
+        task_id for task_id, (mapped_session_id, _) in _task_session_ids.items()
+        if mapped_session_id == session_id
+    ]
+    for task_id in stale:
+        _task_session_ids.pop(task_id, None)
+
+
 def _session_id(event_name: str, kwargs: Dict[str, Any]) -> str:
     explicit = _first_string(kwargs.get("session_id"), kwargs.get("session_key"))
     task_id = _first_string(kwargs.get("task_id"))
@@ -309,10 +324,24 @@ def _remember_session(event_name: str, kwargs: Dict[str, Any]) -> None:
             "pre_llm_call",
             "post_llm_call",
             "on_session_end",
+            "on_session_reset",
         ):
             _active_session_id = explicit
         if task_id:
             _remember_task_session(task_id, explicit)
+
+
+def _finish_session_boundary(event_name: str, payload: Dict[str, Any]) -> None:
+    global _active_session_id
+    if event_name != "on_session_finalize":
+        return
+    session_id = _first_string(payload.get("session_id"))
+    if not session_id:
+        return
+    with _session_lock:
+        if _active_session_id == session_id:
+            _active_session_id = ""
+        _forget_session_task_mappings(session_id)
 
 
 def _event_extra(event_name: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -392,6 +421,7 @@ def _handle_hook(event_name: str, **kwargs: Any) -> None:
                 "kwargs": _safe_value(kwargs),
             })
         _post_state(payload)
+        _finish_session_boundary(event_name, payload)
     except Exception as exc:
         _append_log({
             "ts": _utc_now(),

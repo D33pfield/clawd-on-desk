@@ -174,7 +174,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(hermes.capabilities.httpHook, false);
     assert.strictEqual(hermes.capabilities.permissionApproval, false);
     assert.strictEqual(hermes.capabilities.interactiveBubble, false);
-    assert.strictEqual(hermes.capabilities.sessionEnd, false);
+    assert.strictEqual(hermes.capabilities.sessionEnd, true);
     assert.strictEqual(hermes.capabilities.subagent, false);
   });
 
@@ -219,6 +219,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(hermes.eventMap.SessionStart, "idle");
     assert.strictEqual(hermes.eventMap.PreToolUse, "working");
     assert.strictEqual(hermes.eventMap.Stop, "attention");
+    assert.strictEqual(hermes.eventMap.SessionEnd, "sleeping");
   });
 
   it("treats Gemini CLI as a hook-only agent", () => {
