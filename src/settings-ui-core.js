@@ -68,7 +68,9 @@
       animMapReset: null,
       animOverrideTimingSliders: new Map(),
       bubblePolicySummary: null,
+      sessionHudSummary: null,
       size: null,
+      soundSummary: null,
       soundVolume: null,
     },
     shortcutRecordingActionId: null,
@@ -547,7 +549,9 @@
       `<div class="row-control"><div class="switch" role="switch" tabindex="0"></div></div>`;
     row.querySelector(".row-label").textContent = t(labelKey);
     const text = row.querySelector(".row-text");
-    row.querySelector(".row-desc").textContent = t(descKey);
+    const desc = row.querySelector(".row-desc");
+    if (descKey) desc.textContent = t(descKey);
+    else desc.remove();
     let extraElement = null;
     if (descExtraKey) {
       const extra = document.createElement("span");
@@ -638,7 +642,9 @@
     state.mountedControls.animMapReset = null;
     state.mountedControls.animOverrideTimingSliders.clear();
     state.mountedControls.bubblePolicySummary = null;
+    state.mountedControls.sessionHudSummary = null;
     state.mountedControls.size = null;
+    state.mountedControls.soundSummary = null;
     state.mountedControls.soundVolume = null;
   }
 

@@ -69,13 +69,7 @@
       buildSizeSliderRow(),
       buildSessionHudGroup(),
       buildDashboardRow(),
-      helpers.buildSwitchRow({
-        key: "soundMuted",
-        labelKey: "rowSound",
-        descKey: "rowSoundDesc",
-        invert: true,
-      }),
-      buildVolumeSliderRow(),
+      buildSoundGroup(),
       helpers.buildSwitchRow({
         key: "lowPowerIdleMode",
         labelKey: "rowLowPowerIdleMode",
@@ -127,12 +121,12 @@
         descKey: "rowHideBubblesDesc",
         onToggle: ({ nextRaw }) => window.settingsAPI.command("setAllBubblesHidden", { hidden: nextRaw }),
       }),
+      buildBubblePolicyRow(),
       helpers.buildSwitchRow({
         key: "bubbleFollowPet",
         labelKey: "rowBubbleFollow",
         descKey: "rowBubbleFollowDesc",
       }),
-      buildBubblePolicyRow(),
     ]));
   }
 
@@ -247,41 +241,56 @@
       summary: summaryControl.element,
       defaultCollapsed: true,
       className: "session-hud-collapsible",
-      children: [
-        helpers.buildSwitchRow({
-          key: "sessionHudEnabled",
-          labelKey: "rowSessionHudMaster",
-        }),
-        helpers.buildSwitchRow({
-          key: "sessionHudShowElapsed",
-          labelKey: "rowSessionHudElapsed",
-          descKey: "rowSessionHudElapsedDesc",
-          disabled: !sessionHudControlsEnabled,
-        }),
-        helpers.buildSwitchRow({
-          key: "sessionHudAutoHide",
-          labelKey: "rowSessionHudAutoHide",
-          descKey: "rowSessionHudAutoHideDesc",
-          disabled: !sessionHudControlsEnabled,
-        }),
-        helpers.buildSwitchRow({
-          key: "sessionHudCleanupDetached",
-          labelKey: "rowSessionHudCleanupDetached",
-          descKey: "rowSessionHudCleanupDetachedDesc",
-          disabled: !sessionHudControlsEnabled,
-        }),
-      ],
+      children: [buildSessionHudOptionsList(sessionHudControlsEnabled)],
     });
+  }
+
+  function buildOptionList(className, rows) {
+    const list = document.createElement("div");
+    list.className = `settings-option-list ${className || ""}`.trim();
+    for (const row of rows) {
+      row.classList.add("settings-option-item");
+      list.appendChild(row);
+    }
+    return list;
+  }
+
+  function buildSessionHudOptionsList(sessionHudControlsEnabled) {
+    return buildOptionList("session-hud-option-list", [
+      helpers.buildSwitchRow({
+        key: "sessionHudEnabled",
+        labelKey: "rowSessionHudMaster",
+      }),
+      helpers.buildSwitchRow({
+        key: "sessionHudShowElapsed",
+        labelKey: "rowSessionHudElapsed",
+        descKey: "rowSessionHudElapsedDesc",
+        disabled: !sessionHudControlsEnabled,
+      }),
+      helpers.buildSwitchRow({
+        key: "sessionHudAutoHide",
+        labelKey: "rowSessionHudAutoHide",
+        descKey: "rowSessionHudAutoHideDesc",
+        disabled: !sessionHudControlsEnabled,
+      }),
+      helpers.buildSwitchRow({
+        key: "sessionHudCleanupDetached",
+        labelKey: "rowSessionHudCleanupDetached",
+        descKey: "rowSessionHudCleanupDetachedDesc",
+        disabled: !sessionHudControlsEnabled,
+      }),
+    ]);
   }
 
   function buildSessionHudSummary() {
     const wrap = document.createElement("div");
-    wrap.className = "collapsible-summary-wrap";
+    wrap.className = "collapsible-summary-wrap session-hud-summary-control";
 
     function syncFromSnapshot() {
       wrap.innerHTML = "";
       const snapshot = state.snapshot || {};
       const enabled = snapshot.sessionHudEnabled !== false;
+      wrap.classList.toggle("compact", !enabled);
       const onLabel = t("bubblePolicySummaryOn");
       const offLabel = t("bubblePolicySummaryOff");
       const items = [{
@@ -323,6 +332,178 @@
     return {
       element: wrap,
       syncFromSnapshot,
+    };
+  }
+
+  function buildSoundGroup() {
+    const summaryControl = buildSoundSummary();
+    state.mountedControls.soundSummary = summaryControl;
+    return helpers.buildCollapsibleGroup({
+      id: "general:sound",
+      title: t("rowSound"),
+      desc: t("rowSoundDesc"),
+      summary: summaryControl.element,
+      defaultCollapsed: true,
+      className: "sound-collapsible",
+      children: [buildOptionList("sound-option-list", [
+        buildSoundEnabledRow(summaryControl),
+        buildVolumeSliderRow(),
+      ])],
+    });
+  }
+
+  function buildSoundEnabledRow(summaryControl) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML =
+      `<div class="row-text">` +
+        `<span class="row-label"></span>` +
+      `</div>` +
+      `<div class="row-control"><div class="switch" role="switch" tabindex="0"></div></div>`;
+    row.querySelector(".row-label").textContent = t("rowSoundEnabled");
+    const sw = row.querySelector(".switch");
+    const text = row.querySelector(".row-text");
+    const override = state.transientUiState.generalSwitches.get("soundMuted");
+    const visualOn = override ? override.visualOn : readers.readGeneralSwitchVisual("soundMuted", true);
+    helpers.setSwitchVisual(sw, visualOn, { pending: override ? override.pending : false });
+    state.mountedControls.generalSwitches.set("soundMuted", {
+      element: sw,
+      invert: true,
+      row,
+      text,
+      extraElement: null,
+    });
+
+    const run = (ev) => {
+      if (sw.classList.contains("disabled") || sw.getAttribute("aria-disabled") === "true") return;
+      if (!summaryControl || typeof summaryControl.toggleSound !== "function") return;
+      summaryControl.toggleSound(ev);
+    };
+    sw.addEventListener("click", run);
+    sw.addEventListener("keydown", (ev) => {
+      if (ev.key !== " " && ev.key !== "Enter") return;
+      run(ev);
+    });
+    return row;
+  }
+
+  function buildSoundSummary() {
+    const wrap = document.createElement("div");
+    wrap.className = "sound-summary-control";
+    const chip = document.createElement("span");
+    const sw = document.createElement("div");
+    sw.className = "switch sound-header-switch";
+    sw.setAttribute("role", "switch");
+    sw.setAttribute("aria-label", t("rowSoundEnabled"));
+    sw.setAttribute("tabindex", "0");
+    wrap.appendChild(chip);
+    wrap.appendChild(sw);
+
+    function getSnapshotVolumePct() {
+      const v = state.snapshot && typeof state.snapshot.soundVolume === "number"
+        ? state.snapshot.soundVolume : 1;
+      return Math.round(Math.max(0, Math.min(1, v)) * 100);
+    }
+
+    function getSoundTransientState() {
+      return state.transientUiState.generalSwitches.get("soundMuted") || null;
+    }
+
+    function getCommittedSoundVisual() {
+      return readers.readGeneralSwitchVisual("soundMuted", true);
+    }
+
+    function getDisplaySoundVisual() {
+      const transient = getSoundTransientState();
+      return transient ? transient.visualOn : getCommittedSoundVisual();
+    }
+
+    function getDisplaySoundPending() {
+      const transient = getSoundTransientState();
+      return transient ? transient.pending : false;
+    }
+
+    function setSoundChildSwitchVisual(visualOn, pendingVisual) {
+      const meta = getMountedGeneralSwitch("soundMuted");
+      if (!meta) return;
+      helpers.setSwitchVisual(meta.element, visualOn, { pending: pendingVisual });
+    }
+
+    function normalizeVolumePct(pct) {
+      const n = Number(pct);
+      if (!Number.isFinite(n)) return getSnapshotVolumePct();
+      return Math.round(Math.max(0, Math.min(100, n)));
+    }
+
+    function applySoundSummaryVisual(enabled, pendingVisual = false, volumePct = getSnapshotVolumePct()) {
+      const stateLabel = enabled ? t("bubblePolicySummaryOn") : t("bubblePolicySummaryOff");
+      chip.className = "collapsible-summary-chip" + (enabled ? " accent" : "");
+      chip.textContent = `${stateLabel} · ${normalizeVolumePct(volumePct)}%`;
+      helpers.setSwitchVisual(sw, enabled, { pending: pendingVisual });
+    }
+
+    function syncFromSnapshot() {
+      applySoundSummaryVisual(getDisplaySoundVisual(), getDisplaySoundPending());
+    }
+
+    function syncVolumePreview(pct) {
+      applySoundSummaryVisual(getDisplaySoundVisual(), getDisplaySoundPending(), pct);
+    }
+
+    function toggleSound(ev) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      const activeTransient = getSoundTransientState();
+      if (activeTransient && activeTransient.pending) return;
+      const currentRaw = readers.readGeneralSwitchRaw("soundMuted");
+      const currentVisual = !currentRaw;
+      const nextVisual = !currentVisual;
+      const nextMuted = !nextVisual;
+      const seq = state.nextTransientUiSeq++;
+      state.transientUiState.generalSwitches.set("soundMuted", { visualOn: nextVisual, pending: true, seq });
+      applySoundSummaryVisual(nextVisual, true);
+      setSoundChildSwitchVisual(nextVisual, true);
+      window.settingsAPI.update("soundMuted", nextMuted).then((result) => {
+        const currentTransient = getSoundTransientState();
+        if (!currentTransient || currentTransient.seq !== seq) return;
+        state.transientUiState.generalSwitches.delete("soundMuted");
+        if (!result || result.status !== "ok" || result.noop) {
+          const committedVisual = getCommittedSoundVisual();
+          applySoundSummaryVisual(committedVisual, false);
+          setSoundChildSwitchVisual(committedVisual, false);
+          if (result && result.noop) return;
+          const msg = (result && result.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + msg, { error: true });
+          return;
+        }
+        applySoundSummaryVisual(nextVisual, false);
+        setSoundChildSwitchVisual(nextVisual, false);
+      }).catch((err) => {
+        const currentTransient = getSoundTransientState();
+        if (!currentTransient || currentTransient.seq !== seq) return;
+        state.transientUiState.generalSwitches.delete("soundMuted");
+        const committedVisual = getCommittedSoundVisual();
+        applySoundSummaryVisual(committedVisual, false);
+        setSoundChildSwitchVisual(committedVisual, false);
+        ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      });
+    }
+
+    sw.addEventListener("click", toggleSound);
+    sw.addEventListener("keydown", (ev) => {
+      if (ev.key !== " " && ev.key !== "Enter") return;
+      toggleSound(ev);
+    });
+
+    syncFromSnapshot();
+    return {
+      element: wrap,
+      headerSwitch: sw,
+      syncFromSnapshot,
+      syncVolumePreview,
+      toggleSound,
     };
   }
 
@@ -773,6 +954,10 @@
       slider.value = String(pct);
       slider.style.setProperty("--volume-fill", `${pct}%`);
       readout.textContent = `${pct}%`;
+      const summary = state.mountedControls.soundSummary;
+      if (summary && document.body.contains(summary.element) && typeof summary.syncVolumePreview === "function") {
+        summary.syncVolumePreview(pct);
+      }
     }
 
     function getSnapshotVolumePct() {
@@ -1068,6 +1253,8 @@
     if (keys.includes("soundVolume") || keys.includes("soundMuted")) {
       const vc = state.mountedControls.soundVolume;
       if (!vc || !document.body.contains(vc.row)) return false;
+      const summary = state.mountedControls.soundSummary;
+      if (!summary || !document.body.contains(summary.element)) return false;
     }
     if (keys.includes("sessionHudEnabled")
       && !SESSION_HUD_CHILD_SWITCH_KEYS.every((key) => getMountedGeneralSwitch(key))) {
@@ -1117,6 +1304,11 @@
       && !syncClaudeHookManagementChildSwitchesDisabled()) return false;
     if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_POLICY_KEYS.has(key)))
       && !syncBubblePolicyControlsFromSnapshot()) return false;
+    if ((keys.includes("soundVolume") || keys.includes("soundMuted"))
+      && state.mountedControls.soundSummary
+      && document.body.contains(state.mountedControls.soundSummary.element)) {
+      state.mountedControls.soundSummary.syncFromSnapshot();
+    }
     return true;
   }
 
