@@ -137,7 +137,7 @@ const SCHEMA = {
       "opencode": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "pi": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "openclaw": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
-      "hermes": { enabled: false },
+      "hermes": { enabled: true },
     }),
     normalize: normalizeAgents,
   },
