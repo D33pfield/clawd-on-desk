@@ -87,6 +87,8 @@ _session_lock = threading.Lock()
 _process_meta_lock = threading.Lock()
 _active_session_id = ""
 _task_session_ids: Dict[str, Tuple[str, float]] = {}
+_known_session_ids: Dict[str, float] = {}
+_session_platforms: Dict[str, str] = {}
 _process_meta_started = False
 _process_meta_resolved = False
 _process_meta: Dict[str, Any] = {}
@@ -572,6 +574,31 @@ def _first_string(*values: Any) -> str:
     return ""
 
 
+def _thread_env_string(name: str) -> str:
+    try:
+        # Hermes WebUI keeps per-run env in its internal api.config._thread_ctx.
+        # If that module layout changes, fall back to process env for CLI safety.
+        config = sys.modules.get("api.config")
+        if config is None:
+            return ""
+        _thread_ctx = getattr(config, "_thread_ctx", None)
+        env = getattr(_thread_ctx, "env", None)
+        if isinstance(env, dict):
+            return _first_string(env.get(name))
+    except Exception:
+        return ""
+    return ""
+
+
+def _runtime_cwd() -> str:
+    return _first_string(
+        _thread_env_string("TERMINAL_CWD"),
+        os.environ.get("TERMINAL_CWD"),
+        os.environ.get("PWD"),
+        os.getcwd(),
+    )
+
+
 def _prune_task_session_ids(now: Optional[float] = None) -> None:
     if now is None:
         now = time.time()
@@ -587,6 +614,41 @@ def _prune_task_session_ids(now: Optional[float] = None) -> None:
     oldest = sorted(_task_session_ids.items(), key=lambda item: item[1][1])[:overflow]
     for task_id, _ in oldest:
         _task_session_ids.pop(task_id, None)
+
+
+def _prune_known_session_ids(now: Optional[float] = None) -> None:
+    if now is None:
+        now = time.time()
+    stale = [
+        session_id for session_id, seen_at in _known_session_ids.items()
+        if now - seen_at > TASK_SESSION_TTL_SECONDS
+    ]
+    for session_id in stale:
+        _known_session_ids.pop(session_id, None)
+        _session_platforms.pop(session_id, None)
+    if len(_known_session_ids) <= MAX_TASK_SESSION_IDS:
+        return
+    overflow = len(_known_session_ids) - MAX_TASK_SESSION_IDS
+    oldest = sorted(_known_session_ids.items(), key=lambda item: item[1])[:overflow]
+    for session_id, _ in oldest:
+        _known_session_ids.pop(session_id, None)
+        _session_platforms.pop(session_id, None)
+
+
+def _remember_known_session(session_id: str, platform: str = "") -> None:
+    if not session_id:
+        return
+    _prune_known_session_ids()
+    _known_session_ids[session_id] = time.time()
+    if platform:
+        _session_platforms[session_id] = platform
+
+
+def _is_known_session(session_id: str) -> bool:
+    if not session_id:
+        return False
+    _prune_known_session_ids()
+    return session_id in _known_session_ids
 
 
 def _remember_task_session(task_id: str, session_id: str) -> None:
@@ -630,6 +692,7 @@ def _forget_session_task_mappings(session_id: str) -> None:
 
 def _session_id(event_name: str, kwargs: Dict[str, Any]) -> str:
     explicit = _first_string(kwargs.get("session_id"), kwargs.get("session_key"))
+    thread_session = _thread_env_string("HERMES_SESSION_KEY")
     task_id = _first_string(kwargs.get("task_id"))
     parent_id = _first_string(kwargs.get("parent_session_id"))
     if explicit:
@@ -639,6 +702,17 @@ def _session_id(event_name: str, kwargs: Dict[str, Any]) -> str:
         remembered = _lookup_task_session(task_id)
         if remembered:
             return remembered
+        # WebUI calls run_conversation(task_id=session_id), but Hermes Agent's
+        # pre_tool_call helper currently omits session_id. Prefer that stable
+        # session key over the process-global active-session fallback.
+        if event_name in TOOL_HOOKS and task_id and _is_known_session(task_id):
+            _remember_task_session(task_id, task_id)
+            return task_id
+        if event_name in TOOL_HOOKS and thread_session:
+            _remember_known_session(thread_session)
+            if task_id:
+                _remember_task_session(task_id, thread_session)
+            return thread_session
         if event_name == "pre_tool_call" and task_id and _active_session_id:
             _remember_task_session(task_id, _active_session_id)
             return _active_session_id
@@ -661,9 +735,11 @@ def _remember_session(event_name: str, kwargs: Dict[str, Any]) -> None:
     task_id = _first_string(kwargs.get("task_id"))
     if not explicit:
         return
+    platform = _first_string(kwargs.get("platform"))
     with _session_lock:
         if event_name == "on_session_reset":
             _task_session_ids.clear()
+        _remember_known_session(explicit, platform)
         if event_name in (
             "on_session_start",
             "pre_llm_call",
@@ -687,9 +763,21 @@ def _finish_session_boundary(event_name: str, payload: Dict[str, Any]) -> None:
         if _active_session_id == session_id:
             _active_session_id = ""
         _forget_session_task_mappings(session_id)
+        _known_session_ids.pop(session_id, None)
+        _session_platforms.pop(session_id, None)
 
 
-def _event_extra(event_name: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+def _session_platform(session_id: str, kwargs: Dict[str, Any]) -> str:
+    platform = _first_string(kwargs.get("platform"))
+    if platform:
+        return platform
+    if not session_id:
+        return ""
+    with _session_lock:
+        return _session_platforms.get(session_id, "")
+
+
+def _event_extra(event_name: str, kwargs: Dict[str, Any], session_id: str = "") -> Dict[str, Any]:
     extra: Dict[str, Any] = {}
     tool_name = _first_string(kwargs.get("tool_name"))
     if tool_name:
@@ -697,6 +785,15 @@ def _event_extra(event_name: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
     tool_call_id = _first_string(kwargs.get("tool_call_id"))
     if tool_call_id:
         extra["tool_use_id"] = tool_call_id
+    platform = _session_platform(session_id, kwargs)
+    if platform:
+        extra["platform"] = platform
+    model = _first_string(kwargs.get("model"))
+    if model:
+        extra["model"] = model
+    provider = _first_string(kwargs.get("provider"))
+    if provider:
+        extra["provider"] = provider
     return extra
 
 
@@ -710,17 +807,20 @@ def _state_payload(event_name: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         if completed is False and interrupted is not True:
             state, clawd_event = "error", "StopFailure"
 
+    session_id = _session_id(event_name, kwargs)
+    platform = _session_platform(session_id, kwargs)
     payload: Dict[str, Any] = {
         "agent_id": AGENT_ID,
         "hook_source": "hermes-plugin",
         "state": state,
         "event": clawd_event,
-        "session_id": _session_id(event_name, kwargs),
-        "cwd": _first_string(os.environ.get("TERMINAL_CWD"), os.environ.get("PWD"), os.getcwd()),
+        "session_id": session_id,
+        "cwd": _runtime_cwd(),
         "agent_pid": os.getpid(),
     }
-    _add_process_meta(payload)
-    payload.update(_event_extra(event_name, kwargs))
+    if platform != "webui":
+        _add_process_meta(payload)
+    payload.update(_event_extra(event_name, kwargs, session_id))
     return payload
 
 

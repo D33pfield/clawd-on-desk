@@ -84,6 +84,8 @@ mod._post_state = fake_post_state
 mod._append_log = fake_append_log
 mod._active_session_id = ""
 mod._task_session_ids.clear()
+mod._known_session_ids.clear()
+mod._session_platforms.clear()
 
 mod._handle_hook("pre_llm_call", session_id="old-session")
 mod._handle_hook("pre_tool_call", task_id="old-task", tool_name="terminal")
@@ -113,6 +115,119 @@ print(json.dumps([{"event": item["event"], "session_id": item["session_id"]} for
       { event: "SessionStart", session_id: "new-session" },
       { event: "SessionEnd", session_id: "new-session" },
     ]);
+  });
+
+  it("uses WebUI task ids as session ids for tool hooks before active-session fallback", () => {
+    const output = runPluginPython(String.raw`
+import importlib.util
+import json
+import sys
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("hermes_plugin", r"hooks/hermes-plugin/__init__.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+posts = []
+mod._post_state = lambda payload: posts.append(dict(payload))
+mod._append_log = lambda *args, **kwargs: None
+mod._active_session_id = ""
+mod._task_session_ids.clear()
+mod._known_session_ids.clear()
+mod._session_platforms.clear()
+mod._process_meta_resolved = True
+mod._process_meta = {"source_pid": 40, "pid_chain": [10, 20, 40], "editor": "code"}
+
+mod._handle_hook("pre_llm_call", session_id="web-a", platform="webui", model="gpt-5.4")
+mod._handle_hook("pre_llm_call", session_id="web-b", platform="webui", model="claude-sonnet-4-6")
+mod._handle_hook("pre_tool_call", task_id="web-a", tool_name="terminal")
+
+print(json.dumps(posts, sort_keys=True))
+`);
+    const posts = JSON.parse(output);
+    assert.strictEqual(posts[0].session_id, "web-a");
+    assert.strictEqual(posts[0].platform, "webui");
+    assert.strictEqual(posts[0].model, "gpt-5.4");
+    assert.strictEqual(posts[1].session_id, "web-b");
+    assert.strictEqual(posts[2].session_id, "web-a");
+    assert.strictEqual(posts[2].platform, "webui");
+    assert.strictEqual(posts[2].tool_name, "terminal");
+    assert.strictEqual(posts[2].source_pid, undefined);
+    assert.strictEqual(posts[2].editor, undefined);
+  });
+
+  it("prefers WebUI thread-local environment for cwd and session key", () => {
+    const output = runPluginPython(String.raw`
+import importlib.util
+import json
+import os
+import sys
+import types
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("hermes_plugin", r"hooks/hermes-plugin/__init__.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+api_mod = types.ModuleType("api")
+api_mod.__path__ = []
+config_mod = types.ModuleType("api.config")
+config_mod._thread_ctx = types.SimpleNamespace(env={
+    "TERMINAL_CWD": "/workspace/from-thread",
+    "HERMES_SESSION_KEY": "thread-session",
+})
+sys.modules["api"] = api_mod
+sys.modules["api.config"] = config_mod
+
+posts = []
+mod._post_state = lambda payload: posts.append(dict(payload))
+mod._append_log = lambda *args, **kwargs: None
+mod._active_session_id = "wrong-active"
+mod._task_session_ids.clear()
+mod._known_session_ids.clear()
+mod._session_platforms.clear()
+os.environ["TERMINAL_CWD"] = "/workspace/from-process"
+
+mod._handle_hook("pre_tool_call", task_id="thread-task", tool_name="read_file")
+
+print(json.dumps(posts[-1], sort_keys=True))
+`);
+    const payload = JSON.parse(output);
+    assert.strictEqual(payload.session_id, "thread-session");
+    assert.strictEqual(payload.cwd, "/workspace/from-thread");
+    assert.strictEqual(payload.tool_name, "read_file");
+  });
+
+  it("keeps CLI tool hooks on the active-session fallback", () => {
+    const output = runPluginPython(String.raw`
+import importlib.util
+import json
+import os
+import sys
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("hermes_plugin", r"hooks/hermes-plugin/__init__.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+posts = []
+mod._post_state = lambda payload: posts.append(dict(payload))
+mod._append_log = lambda *args, **kwargs: None
+mod._active_session_id = "cli-session"
+mod._task_session_ids.clear()
+mod._known_session_ids.clear()
+mod._session_platforms.clear()
+os.environ["TERMINAL_CWD"] = "/workspace/cli"
+
+mod._handle_hook("pre_tool_call", task_id="random-task-id", tool_name="terminal")
+
+print(json.dumps(posts[-1], sort_keys=True))
+`);
+    const payload = JSON.parse(output);
+    assert.strictEqual(payload.session_id, "cli-session");
+    assert.strictEqual(payload.cwd, "/workspace/cli");
+    assert.strictEqual(payload.tool_name, "terminal");
+    assert.strictEqual(payload.platform, undefined);
   });
 
   it("resolves Hermes process metadata without guessing wrapper-only chains", () => {

@@ -65,6 +65,15 @@ function handleStatePost(req, res, options) {
       const agentId = typeof data.agent_id === "string" ? data.agent_id : "claude-code";
       const host = typeof data.host === "string" ? data.host : null;
       const headless = data.headless === true;
+      const platform = typeof data.platform === "string" && data.platform.trim()
+        ? data.platform.trim()
+        : null;
+      const model = typeof data.model === "string" && data.model.trim()
+        ? data.model.trim()
+        : null;
+      const provider = typeof data.provider === "string" && data.provider.trim()
+        ? data.provider.trim()
+        : null;
       const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : null;
       const toolUseId = normalizeHookToolUseId(
         data.tool_use_id ?? data.toolUseId ?? data.toolUseID
@@ -144,6 +153,9 @@ function handleStatePost(req, res, options) {
             agentId,
             host,
             headless: headless || codexHookState.headless === true,
+            platform,
+            model,
+            provider,
             displayHint: display_svg,
             sessionTitle,
             permissionSuspect,

@@ -80,6 +80,9 @@ function update(api, o = {}) {
       headless: o.headless || false,
       displayHint: o.displayHint,
       sessionTitle: o.sessionTitle ?? null,
+      platform: o.platform ?? null,
+      model: o.model ?? null,
+      provider: o.provider ?? null,
     },
   );
 }
@@ -98,6 +101,9 @@ function rawSession(state, opts = {}) {
     agentId: opts.agentId || null,
     host: opts.host || null,
     headless: opts.headless || false,
+    platform: opts.platform || null,
+    model: opts.model || null,
+    provider: opts.provider || null,
     sessionTitle: opts.sessionTitle ?? null,
     recentEvents: opts.recentEvents || [],
     pidReachable: opts.pidReachable ?? false,
@@ -1035,6 +1041,25 @@ describe("updateSession()", () => {
   it("stores sessionTitle from updateSession positional arg", () => {
     update(api, { id: "s1", state: "working", sessionTitle: "My Task" });
     assert.strictEqual(api.sessions.get("s1").sessionTitle, "My Task");
+  });
+
+  it("stores optional platform and model metadata", () => {
+    update(api, {
+      id: "s1",
+      state: "working",
+      platform: "webui",
+      model: "gpt-5.4",
+      provider: "openai",
+    });
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.platform, "webui");
+    assert.strictEqual(session.model, "gpt-5.4");
+    assert.strictEqual(session.provider, "openai");
+
+    update(api, { id: "s1", state: "idle", event: "Stop" });
+    assert.strictEqual(api.sessions.get("s1").platform, "webui");
+    assert.strictEqual(api.sessions.get("s1").model, "gpt-5.4");
+    assert.strictEqual(api.sessions.get("s1").provider, "openai");
   });
 
   it("trims whitespace on sessionTitle", () => {

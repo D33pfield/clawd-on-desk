@@ -275,7 +275,7 @@ function createCard(session, now) {
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = t("dashboardJumpTerminal");
-  button.disabled = !session.sourcePid;
+  button.disabled = !session.sourcePid || session.platform === "webui";
   button.addEventListener("click", () => {
     window.dashboardAPI.focusSession(session.id);
   });

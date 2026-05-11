@@ -55,6 +55,9 @@ describe("state-session-snapshot builder", () => {
         updatedAt: 1000,
         cwd: "/tmp/old-project",
         sessionTitle: "Fix login",
+        platform: "webui",
+        model: "gpt-5.4",
+        provider: "openai",
         recentEvents: [{ event: "PreToolUse", state: "working", at: 900 }],
       })],
       ["latest-remote", session("idle", {
@@ -92,6 +95,9 @@ describe("state-session-snapshot builder", () => {
     const oldWorking = snapshot.sessions.find((entry) => entry.id === "old-working");
     assert.strictEqual(oldWorking.badge, "running");
     assert.strictEqual(oldWorking.iconUrl, "icon:claude-code");
+    assert.strictEqual(oldWorking.platform, "webui");
+    assert.strictEqual(oldWorking.model, "gpt-5.4");
+    assert.strictEqual(oldWorking.provider, "openai");
     assert.strictEqual(oldWorking.sessionTitle, "Fix login");
     assert.strictEqual(oldWorking.displayTitle, "Fix login");
     assert.deepStrictEqual(oldWorking.lastEvent, {

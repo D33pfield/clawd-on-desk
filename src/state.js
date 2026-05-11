@@ -714,6 +714,9 @@ function updateSession(sessionId, state, event, opts = {}) {
     agentId = null,
     host = null,
     headless = false,
+    platform = null,
+    model = null,
+    provider = null,
     displayHint = undefined,
     sessionTitle = null,
     permissionSuspect = false,
@@ -755,6 +758,9 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcAgentId = agentId || (existing && existing.agentId) || null;
   const srcHost = host || (existing && existing.host) || null;
   const srcHeadless = headless || (existing && existing.headless) || false;
+  const srcPlatform = platform || (existing && existing.platform) || null;
+  const srcModel = model || (existing && existing.model) || null;
+  const srcProvider = provider || (existing && existing.provider) || null;
   // Sticky: empty input does not clear an existing title. A session that has
   // ever been named keeps that name until the user explicitly renames it.
   const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
@@ -768,7 +774,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const pidReachable = resolvePidReachable(existing, srcAgentPid, srcPid);
 
   const recentEvents = pushRecentEvent(existing, preservedState || state, event);
-  const base = { sourcePid: srcPid, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, sessionTitle: srcSessionTitle, recentEvents, pidReachable };
+  const base = { sourcePid: srcPid, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, sessionTitle: srcSessionTitle, recentEvents, pidReachable };
 
   // Evict oldest session if at capacity and this is a new session
   if (!existing && sessions.size >= MAX_SESSIONS) {
