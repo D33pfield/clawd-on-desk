@@ -646,6 +646,133 @@ describe("checkAgentIntegrations", () => {
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "openclaw" });
   });
 
+  it("checks Hermes plugin directory files and enabled marker", () => {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".hermes");
+    const pluginDir = path.join(parentDir, "plugins", "clawd-on-desk");
+    const descriptor = baseDescriptor({
+      agentId: "hermes",
+      marker: "clawd-on-desk",
+      parentDir,
+      configPath: pluginDir,
+      configMode: "plugin-dir",
+      managedFiles: ["plugin.yaml", "__init__.py"],
+      configFilePath: path.join(parentDir, "config.yaml"),
+    });
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, "plugin.yaml"), "name: clawd-on-desk\n", "utf8");
+    fs.writeFileSync(path.join(pluginDir, "__init__.py"), "# plugin\n", "utf8");
+    fs.writeFileSync(descriptor.configFilePath, "plugins:\n  enabled:\n    - clawd-on-desk\n", "utf8");
+
+    const detail = runOne(descriptor, {
+      prefs: { agents: { hermes: { enabled: true } } },
+    });
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.pluginEnabled, true);
+  });
+
+  it("reports Hermes plugin directory missing managed files as repairable", () => {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".hermes");
+    const pluginDir = path.join(parentDir, "plugins", "clawd-on-desk");
+    const descriptor = baseDescriptor({
+      agentId: "hermes",
+      marker: "clawd-on-desk",
+      parentDir,
+      configPath: pluginDir,
+      configMode: "plugin-dir",
+      managedFiles: ["plugin.yaml", "__init__.py"],
+      configFilePath: path.join(parentDir, "config.yaml"),
+    });
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, "plugin.yaml"), "name: clawd-on-desk\n", "utf8");
+
+    const detail = runOne(descriptor, {
+      prefs: { agents: { hermes: { enabled: true } } },
+    });
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.deepStrictEqual(detail.missingPluginFiles, ["__init__.py"]);
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "hermes" });
+  });
+
+  it("does not report Hermes ok when clawd-on-desk appears only in disabled plugins", () => {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".hermes");
+    const pluginDir = path.join(parentDir, "plugins", "clawd-on-desk");
+    const descriptor = baseDescriptor({
+      agentId: "hermes",
+      marker: "clawd-on-desk",
+      parentDir,
+      configPath: pluginDir,
+      configMode: "plugin-dir",
+      managedFiles: ["plugin.yaml", "__init__.py"],
+      configFilePath: path.join(parentDir, "config.yaml"),
+    });
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, "plugin.yaml"), "name: clawd-on-desk\n", "utf8");
+    fs.writeFileSync(path.join(pluginDir, "__init__.py"), "# plugin\n", "utf8");
+    fs.writeFileSync(
+      descriptor.configFilePath,
+      "plugins:\n  enabled: []\n  disabled:\n    - clawd-on-desk\n",
+      "utf8"
+    );
+
+    const detail = runOne(descriptor, {
+      prefs: { agents: { hermes: { enabled: true } } },
+    });
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.pluginEnabled, false);
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "hermes" });
+  });
+
+  it("accepts Hermes inline enabled plugin lists", () => {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".hermes");
+    const pluginDir = path.join(parentDir, "plugins", "clawd-on-desk");
+    const descriptor = baseDescriptor({
+      agentId: "hermes",
+      marker: "clawd-on-desk",
+      parentDir,
+      configPath: pluginDir,
+      configMode: "plugin-dir",
+      managedFiles: ["plugin.yaml", "__init__.py"],
+      configFilePath: path.join(parentDir, "config.yaml"),
+    });
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, "plugin.yaml"), "name: clawd-on-desk\n", "utf8");
+    fs.writeFileSync(path.join(pluginDir, "__init__.py"), "# plugin\n", "utf8");
+    fs.writeFileSync(
+      descriptor.configFilePath,
+      "plugins:\n  enabled: [\"clawd-on-desk\"]\n  disabled: []\n",
+      "utf8"
+    );
+
+    const detail = runOne(descriptor, {
+      prefs: { agents: { hermes: { enabled: true } } },
+    });
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.pluginEnabled, true);
+  });
+
+  it("keeps Hermes disabled as info-only by default", () => {
+    const descriptor = baseDescriptor({
+      agentId: "hermes",
+      marker: "clawd-on-desk",
+      configMode: "plugin-dir",
+    });
+
+    const detail = runOne(descriptor, {
+      prefs: { agents: { hermes: { enabled: false } } },
+    });
+
+    assert.strictEqual(detail.status, "disabled");
+    assert.strictEqual(detail.level, "info");
+  });
+
   it("adds a non-failing note when per-agent permission bubbles are disabled", () => {
     const descriptor = baseDescriptor({ agentId: "codex", marker: "codex-hook.js" });
     writeJson(descriptor.configPath, {

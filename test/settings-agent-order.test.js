@@ -37,6 +37,7 @@ describe("settings agent order", () => {
       { id: "claude-code", name: "Claude Code", capabilities: { permissionApproval: true, notificationHook: true } },
       { id: "cursor-agent", name: "Cursor Agent", capabilities: {} },
       { id: "openclaw", name: "OpenClaw", capabilities: {} },
+      { id: "hermes", name: "Hermes Agent", capabilities: {} },
       { id: "codex", name: "Codex CLI", capabilities: { interactiveBubble: true } },
       { id: "kimi-cli", name: "Kimi CLI", capabilities: { permissionApproval: true, notificationHook: true } },
       { id: "pi", name: "Pi", capabilities: { permissionApproval: true, interactiveBubble: true } },
@@ -54,6 +55,7 @@ describe("settings agent order", () => {
       "copilot-cli",
       "kiro-cli",
       "openclaw",
+      "hermes",
     ]);
   });
 

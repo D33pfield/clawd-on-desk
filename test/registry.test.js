@@ -18,6 +18,7 @@ describe("Agent Registry", () => {
       "opencode",
       "pi",
       "openclaw",
+      "hermes",
     ]);
   });
 
@@ -31,6 +32,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(registry.getAgent("kiro-cli").name, "Kiro CLI");
     assert.strictEqual(registry.getAgent("pi").name, "Pi");
     assert.strictEqual(registry.getAgent("openclaw").name, "OpenClaw");
+    assert.strictEqual(registry.getAgent("hermes").name, "Hermes Agent");
     assert.strictEqual(registry.getAgent("nonexistent"), undefined);
   });
 
@@ -57,6 +59,9 @@ describe("Agent Registry", () => {
 
     const openclaw = registry.getAgent("openclaw");
     assert.deepStrictEqual(openclaw.processNames.win, []);
+
+    const hermes = registry.getAgent("hermes");
+    assert.deepStrictEqual(hermes.processNames.win, ["hermes.exe"]);
   });
 
   it("should include explicit Linux process names", () => {
@@ -83,6 +88,9 @@ describe("Agent Registry", () => {
 
     const openclaw = registry.getAgent("openclaw");
     assert.deepStrictEqual(openclaw.processNames.linux, []);
+
+    const hermes = registry.getAgent("hermes");
+    assert.deepStrictEqual(hermes.processNames.linux, ["hermes"]);
   });
 
   it("should keep Kiro CLI process names narrowed to kiro-cli only", () => {
@@ -105,6 +113,8 @@ describe("Agent Registry", () => {
     assert.ok(agentIds.includes("cursor-agent"));
     assert.ok(agentIds.includes("kiro-cli"));
     assert.ok(agentIds.includes("pi"));
+    assert.ok(agentIds.includes("pi"));
+    assert.ok(agentIds.includes("hermes"));
   });
 
   it("should have correct capabilities", () => {
@@ -159,6 +169,13 @@ describe("Agent Registry", () => {
     assert.strictEqual(openclaw.capabilities.notificationHook, false);
     assert.strictEqual(openclaw.capabilities.sessionEnd, true);
     assert.strictEqual(openclaw.capabilities.subagent, false);
+
+    const hermes = registry.getAgent("hermes");
+    assert.strictEqual(hermes.capabilities.httpHook, false);
+    assert.strictEqual(hermes.capabilities.permissionApproval, false);
+    assert.strictEqual(hermes.capabilities.interactiveBubble, false);
+    assert.strictEqual(hermes.capabilities.sessionEnd, false);
+    assert.strictEqual(hermes.capabilities.subagent, false);
   });
 
   it("should have eventMap for hook-based agents", () => {
@@ -197,6 +214,11 @@ describe("Agent Registry", () => {
     assert.strictEqual(openclaw.eventMap.UserPromptSubmit, "thinking");
     assert.strictEqual(openclaw.eventMap.PostToolUseFailure, "error");
     assert.strictEqual(openclaw.eventMap.PreCompact, "sweeping");
+
+    const hermes = registry.getAgent("hermes");
+    assert.strictEqual(hermes.eventMap.SessionStart, "idle");
+    assert.strictEqual(hermes.eventMap.PreToolUse, "working");
+    assert.strictEqual(hermes.eventMap.Stop, "attention");
   });
 
   it("treats Gemini CLI as a hook-only agent", () => {

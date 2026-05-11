@@ -66,6 +66,7 @@ describe("prefs.getDefaults", () => {
     for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "opencode", "pi", "openclaw"]) {
       assert.strictEqual(d.agents[id].enabled, true, `${id} should default enabled`);
     }
+    assert.strictEqual(d.agents.hermes.enabled, false, "hermes should default disabled");
   });
 
   it("seeds permission-capable agents with permissionsEnabled=true", () => {
@@ -77,6 +78,11 @@ describe("prefs.getDefaults", () => {
         `${id} should default permissionsEnabled`
       );
     }
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(d.agents.hermes, "permissionsEnabled"),
+      false,
+      "hermes should not expose a dead permissionsEnabled switch"
+    );
   });
 
   it("defaults OpenClaw permission bubbles off", () => {
@@ -285,6 +291,15 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.agents["claude-code"].permissionsEnabled, true);
   });
 
+  it("normalizes agents: strips Hermes permission/notification flags until implemented", () => {
+    const v = prefs.validate({
+      agents: {
+        hermes: { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      },
+    });
+    assert.deepStrictEqual(v.agents.hermes, { enabled: true });
+  });
+
   it("normalizes agents: preserves notificationHookEnabled flag", () => {
     const v = prefs.validate({
       agents: {
@@ -335,6 +350,11 @@ describe("prefs.validate", () => {
         `${id} should default notificationHookEnabled`
       );
     }
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(d.agents.hermes, "notificationHookEnabled"),
+      false,
+      "hermes should not expose a dead notificationHookEnabled switch"
+    );
   });
 
   it("returns defaults for null/non-object input", () => {

@@ -137,6 +137,7 @@ const SCHEMA = {
       "opencode": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "pi": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "openclaw": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
+      "hermes": { enabled: false },
     }),
     normalize: normalizeAgents,
   },
@@ -308,7 +309,8 @@ function normalizeAgents(value, defaultsValue) {
       || { enabled: true, permissionsEnabled: true, notificationHookEnabled: true };
     const merged = { ...base };
     let touched = false;
-    for (const flag of AGENT_FLAGS) {
+    const allowedFlags = AGENT_FLAGS.filter((flag) => Object.prototype.hasOwnProperty.call(base, flag));
+    for (const flag of allowedFlags) {
       if (typeof entry[flag] === "boolean") {
         merged[flag] = entry[flag];
         touched = true;

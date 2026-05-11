@@ -16,6 +16,7 @@ function buildSettingsAgentOrderExports() {
     "copilot-cli",
     "kiro-cli",
     "openclaw",
+    "hermes",
   ];
 
   const COLLAPSIBLE_AGENT_PRIORITY_MAP = new Map(

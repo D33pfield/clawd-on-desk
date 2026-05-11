@@ -32,6 +32,7 @@ function makeRuntime(overrides = {}) {
       calls.push({ name: "openclaw-repair" });
       return { status: "ok", message: "done" };
     },
+    syncHermesPluginImpl: () => calls.push({ name: "hermes" }),
     ...(overrides.ctx || {}),
   };
   const runtime = createIntegrationSyncRuntime({
@@ -79,6 +80,7 @@ describe("integration sync runtime", () => {
       "codex",
       "pi",
       "openclaw",
+      "hermes",
     ]);
   });
 
