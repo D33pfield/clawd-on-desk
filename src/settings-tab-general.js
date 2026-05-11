@@ -346,14 +346,45 @@
       defaultCollapsed: true,
       className: "sound-collapsible",
       children: [buildOptionList("sound-option-list", [
-        helpers.buildSwitchRow({
-          key: "soundMuted",
-          labelKey: "rowSoundEnabled",
-          invert: true,
-        }),
+        buildSoundEnabledRow(summaryControl),
         buildVolumeSliderRow(),
       ])],
     });
+  }
+
+  function buildSoundEnabledRow(summaryControl) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML =
+      `<div class="row-text">` +
+        `<span class="row-label"></span>` +
+      `</div>` +
+      `<div class="row-control"><div class="switch" role="switch" tabindex="0"></div></div>`;
+    row.querySelector(".row-label").textContent = t("rowSoundEnabled");
+    const sw = row.querySelector(".switch");
+    const text = row.querySelector(".row-text");
+    const override = state.transientUiState.generalSwitches.get("soundMuted");
+    const visualOn = override ? override.visualOn : readers.readGeneralSwitchVisual("soundMuted", true);
+    helpers.setSwitchVisual(sw, visualOn, { pending: override ? override.pending : false });
+    state.mountedControls.generalSwitches.set("soundMuted", {
+      element: sw,
+      invert: true,
+      row,
+      text,
+      extraElement: null,
+    });
+
+    const run = (ev) => {
+      if (sw.classList.contains("disabled") || sw.getAttribute("aria-disabled") === "true") return;
+      if (!summaryControl || typeof summaryControl.toggleSound !== "function") return;
+      summaryControl.toggleSound(ev);
+    };
+    sw.addEventListener("click", run);
+    sw.addEventListener("keydown", (ev) => {
+      if (ev.key !== " " && ev.key !== "Enter") return;
+      run(ev);
+    });
+    return row;
   }
 
   function buildSoundSummary() {
@@ -398,15 +429,25 @@
       helpers.setSwitchVisual(meta.element, visualOn, { pending: pendingVisual });
     }
 
-    function applySoundSummaryVisual(enabled, pendingVisual = false) {
+    function normalizeVolumePct(pct) {
+      const n = Number(pct);
+      if (!Number.isFinite(n)) return getSnapshotVolumePct();
+      return Math.round(Math.max(0, Math.min(100, n)));
+    }
+
+    function applySoundSummaryVisual(enabled, pendingVisual = false, volumePct = getSnapshotVolumePct()) {
       const stateLabel = enabled ? t("bubblePolicySummaryOn") : t("bubblePolicySummaryOff");
       chip.className = "collapsible-summary-chip" + (enabled ? " accent" : "");
-      chip.textContent = `${stateLabel} · ${getSnapshotVolumePct()}%`;
+      chip.textContent = `${stateLabel} · ${normalizeVolumePct(volumePct)}%`;
       helpers.setSwitchVisual(sw, enabled, { pending: pendingVisual });
     }
 
     function syncFromSnapshot() {
       applySoundSummaryVisual(getDisplaySoundVisual(), getDisplaySoundPending());
+    }
+
+    function syncVolumePreview(pct) {
+      applySoundSummaryVisual(getDisplaySoundVisual(), getDisplaySoundPending(), pct);
     }
 
     function toggleSound(ev) {
@@ -461,6 +502,8 @@
       element: wrap,
       headerSwitch: sw,
       syncFromSnapshot,
+      syncVolumePreview,
+      toggleSound,
     };
   }
 
@@ -910,6 +953,10 @@
       slider.value = String(pct);
       slider.style.setProperty("--volume-fill", `${pct}%`);
       readout.textContent = `${pct}%`;
+      const summary = state.mountedControls.soundSummary;
+      if (summary && document.body.contains(summary.element) && typeof summary.syncVolumePreview === "function") {
+        summary.syncVolumePreview(pct);
+      }
     }
 
     function getSnapshotVolumePct() {

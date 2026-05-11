@@ -600,7 +600,7 @@
       rowLowPowerIdleMode: "低功耗 idle",
       rowLowPowerIdleModeDesc: "Clawd 静止几秒后暂停 idle SVG 动画；有活动时会立即恢复动画。",
       rowSessionHud: "会话 HUD",
-      rowSessionHudDesc: "在桌宠下方显示活跃会话状态",
+      rowSessionHudDesc: "在桌宠下方显示活跃会话状态。",
       rowSessionHudMaster: "启用",
       sessionHudSummaryEnabled: "HUD: {state}",
       sessionHudSummaryElapsed: "时间: {state}",

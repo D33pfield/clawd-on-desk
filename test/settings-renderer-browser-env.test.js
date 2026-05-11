@@ -1176,10 +1176,13 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("function buildSessionHudOptionsList("));
     assert.ok(generalSource.includes("session-hud-option-list"));
     assert.ok(generalSource.includes("function buildSoundGroup("));
+    assert.ok(generalSource.includes("function buildSoundEnabledRow("));
     assert.ok(generalSource.includes('id: "general:sound"'));
     assert.ok(generalSource.includes("sound-option-list"));
     assert.ok(generalSource.includes("state.mountedControls.soundSummary"));
     assert.ok(generalSource.includes('sw.setAttribute("aria-label", t("rowSoundEnabled"));'));
+    assert.ok(generalSource.includes("toggleSound"));
+    assert.ok(generalSource.includes("syncVolumePreview"));
     assert.ok(!/key:\s*"soundMuted",[\s\S]{0,120}descKey:\s*"rowSoundDesc"/.test(generalSource));
     assert.ok(generalSource.includes('state.transientUiState.generalSwitches.set("soundMuted"'));
     assert.ok(generalSource.includes("if (!result || result.status !== \"ok\" || result.noop)"));
@@ -1426,6 +1429,10 @@ describe("settings renderer browser environment", () => {
     assert.ok(summary.children[1].classList.contains("sound-header-switch"));
     assert.strictEqual(summary.children[1].attributes["aria-label"], "Enable sound effects");
 
+    volumeSlider.value = "75";
+    for (const listener of volumeSlider.eventListeners.input || []) listener();
+    assert.strictEqual(summary.children[0].textContent, "on · 75%");
+
     const beforeRenderCount = harness.getContentRenderCount();
     harness.core.ops.applyChanges({
       changes: { soundVolume: 0.25 },
@@ -1497,6 +1504,57 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(headerSwitch.classList.contains("on"), false);
     assert.strictEqual(headerSwitch.classList.contains("pending"), false);
     assert.strictEqual(summary.element.children[0].textContent, "off · 100%");
+  });
+
+  it("keeps the sound child switch and summary in sync while the update is pending", async () => {
+    const updateCalls = [];
+    let resolveUpdate = null;
+    const initialSnapshot = makeGeneralSnapshot({
+      soundMuted: false,
+      soundVolume: 1,
+    });
+    const harness = loadGeneralTabForTest({
+      snapshot: initialSnapshot,
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return new Promise((resolve) => {
+            resolveUpdate = resolve;
+          });
+        },
+      },
+    });
+    harness.renderContent();
+
+    const summary = harness.core.state.mountedControls.soundSummary;
+    const headerSwitch = summary.headerSwitch;
+    const childSwitch = harness.getSwitch("soundMuted");
+    let stopped = false;
+    let prevented = false;
+    childSwitch.eventListeners.click[0]({
+      stopPropagation: () => { stopped = true; },
+      preventDefault: () => { prevented = true; },
+    });
+
+    assert.deepStrictEqual(updateCalls, [{ key: "soundMuted", value: true }]);
+    assert.strictEqual(stopped, true);
+    assert.strictEqual(prevented, true);
+    assert.strictEqual(childSwitch.classList.contains("on"), false);
+    assert.strictEqual(childSwitch.classList.contains("pending"), true);
+    assert.strictEqual(headerSwitch.classList.contains("on"), false);
+    assert.strictEqual(headerSwitch.classList.contains("pending"), true);
+    assert.strictEqual(summary.element.children[0].textContent, "off · 100%");
+
+    resolveUpdate({ status: "ok" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.strictEqual(childSwitch.classList.contains("on"), false);
+    assert.strictEqual(childSwitch.classList.contains("pending"), false);
+    assert.strictEqual(headerSwitch.classList.contains("on"), false);
+    assert.strictEqual(headerSwitch.classList.contains("pending"), false);
+    assert.strictEqual(summary.element.children[0].textContent, "off · 100%");
+    assert.strictEqual(harness.core.state.transientUiState.generalSwitches.has("soundMuted"), false);
   });
 
   it("restores the sound summary switch when a toggle is a noop", async () => {
