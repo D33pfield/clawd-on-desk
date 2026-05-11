@@ -1094,11 +1094,27 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes('commandAction.type !== "restart-clawd"'));
     assert.ok(doctorModalSource.includes("repairFeedback"));
     assert.ok(doctorModalSource.includes("lastRepairFeedback"));
+    assert.ok(doctorModalSource.includes("actionNotice"));
+    assert.ok(doctorModalSource.includes("actionNoticeTimer"));
+    assert.ok(doctorModalSource.includes("checkExpansionOverrides"));
+    assert.ok(doctorModalSource.includes("showActionNotice"));
+    assert.ok(doctorModalSource.includes("if (state.modalOpen)"));
     assert.ok(doctorModalSource.includes("core.ops.showToast"));
     assert.ok(!doctorModalSource.includes("core.helpers.showToast"));
     assert.ok(doctorModalSource.includes("agentDetailText"));
     assert.ok(doctorModalSource.includes("startConnectionTest"));
     assert.ok(doctorModalSource.includes("stopConnectionCountdown();"));
+    assert.ok(doctorModalSource.includes('class="doctor-title-row"'));
+    assert.ok(doctorModalSource.includes("renderLocalServerCheck"));
+    assert.ok(doctorModalSource.includes("doctor-local-server-main"));
+    assert.ok(doctorModalSource.includes("renderAgentIntegrationCheck"));
+    assert.ok(doctorModalSource.includes("doctor-agent-collapsible"));
+    assert.ok(doctorModalSource.includes("doctor-agent-chevron"));
+    assert.ok(doctorModalSource.includes('data-action="toggle-check"'));
+    assert.ok(doctorModalSource.includes("checkNeedsAttention"));
+    assert.ok(doctorModalSource.includes("renderActionNotice"));
+    assert.ok(doctorModalSource.includes("doctor-action-bar"));
+    assert.ok(doctorModalSource.includes("clearActionNoticeTimer();"));
     assert.ok(css.includes(".doctor-agent-detail"));
     assert.ok(css.includes(".doctor-connection-panel"));
     assert.ok(css.includes(".doctor-fix-button"));
@@ -1107,6 +1123,17 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes("doctorPrivacyShort"));
     assert.ok(css.includes(".doctor-repair-feedback"));
     assert.ok(css.includes(".doctor-repair-summary"));
+    assert.ok(css.includes(".doctor-title-row"));
+    assert.ok(css.includes(".doctor-check-row-compact"));
+    assert.ok(css.includes(".doctor-local-server-main"));
+    assert.ok(css.includes(".doctor-agent-toggle"));
+    assert.ok(css.includes(".doctor-agent-chevron"));
+    assert.ok(css.includes(".doctor-agent-collapsible.expanded"));
+    assert.ok(css.includes(".doctor-action-bar"));
+    assert.ok(css.includes(".doctor-action-notice"));
+    assert.ok(/\.doctor-close:hover\s*\{[\s\S]*background:\s*rgba\(217,\s*119,\s*87,\s*0\.1\);[\s\S]*transform:\s*scale\(1\.04\);/.test(css));
+    assert.ok(/\.doctor-close:focus-visible\s*\{[\s\S]*outline:\s*2px solid var\(--accent\);/.test(css));
+    assert.ok(/\.doctor-agent-toggle:focus-visible\s*\{[\s\S]*outline:\s*2px solid var\(--accent\);/.test(css));
     // Regression guard: agent list must not introduce its own scroll viewport.
     // The outer .doctor-check-list owns scrolling so users get a single scrollbar.
     // [^}]*? keeps the match scoped to this rule body so unrelated max-height

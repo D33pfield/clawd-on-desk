@@ -19,6 +19,9 @@
     lastRepairFeedback: null,
     pendingConfirmAction: null,
     fixActionByKey: new Map(),
+    actionNotice: null,
+    actionNoticeTimer: null,
+    checkExpansionOverrides: new Map(),
   };
 
   function t(core, key) {
@@ -30,8 +33,35 @@
   }
 
   function showToast(core, message, options) {
+    if (state.modalOpen) {
+      showActionNotice(core, message, options);
+      return;
+    }
     if (core && core.ops && typeof core.ops.showToast === "function") {
       core.ops.showToast(message, options);
+    }
+  }
+
+  function clearActionNoticeTimer() {
+    if (state.actionNoticeTimer && typeof clearTimeout === "function") {
+      clearTimeout(state.actionNoticeTimer);
+    }
+    state.actionNoticeTimer = null;
+  }
+
+  function showActionNotice(core, message, options) {
+    state.actionNotice = {
+      message: String(message || ""),
+      error: !!(options && options.error),
+    };
+    clearActionNoticeTimer();
+    if (state.modalOpen) refreshModal(core);
+    if (typeof setTimeout === "function") {
+      state.actionNoticeTimer = setTimeout(() => {
+        state.actionNotice = null;
+        state.actionNoticeTimer = null;
+        if (state.modalOpen) refreshModal(core);
+      }, 3200);
     }
   }
 
@@ -219,6 +249,85 @@
     return `<div class="doctor-repair-summary ${cls}">${escape(core, feedback.message)}</div>`;
   }
 
+  function checkNeedsAttention(check) {
+    if (!check || typeof check !== "object") return false;
+    if (check.level === "critical" || check.level === "warning") return true;
+    if (check.status === "critical" || check.status === "warning" || check.status === "fail") return true;
+    if (check.fixAction) return true;
+    const directKey = fixActionKey(check.fixAction);
+    if (directKey && (state.repairingKey === directKey || state.repairFeedback[directKey])) return true;
+    if (!Array.isArray(check.details)) return false;
+    return check.details.some((detail) => {
+      if (!detail || typeof detail !== "object") return false;
+      if (detail.fixAction) return true;
+      const key = fixActionKey(detail.fixAction);
+      return !!(key && (state.repairingKey === key || state.repairFeedback[key]));
+    });
+  }
+
+  function isCheckExpanded(check) {
+    const id = check && check.id;
+    if (!id) return false;
+    if (state.checkExpansionOverrides.has(id)) return state.checkExpansionOverrides.get(id);
+    return checkNeedsAttention(check);
+  }
+
+  function renderAgentRows(core, check) {
+    if (!check || !Array.isArray(check.details)) return "";
+    return `<div class="doctor-agent-list">${
+      check.details.map((detail) => {
+        const agentDetail = agentDetailText(detail);
+        const fixButton = renderFixButton(core, detail.fixAction);
+        const repairFeedback = renderRepairFeedback(core, detail.fixAction);
+        return (
+          `<div class="doctor-agent-item">` +
+            `<div class="doctor-agent-row${fixButton ? " with-action" : ""}">` +
+              `<span>${escape(core, detail.agentName || detail.agentId)}</span>` +
+              `<span>${escape(core, detail.status || "")}</span>` +
+              fixButton +
+            `</div>` +
+            (agentDetail ? `<div class="doctor-agent-detail">${escape(core, agentDetail)}</div>` : "") +
+            repairFeedback +
+          `</div>`
+        );
+      }).join("")
+    }</div>`;
+  }
+
+  function renderLocalServerCheck(core, check, cls) {
+    const fixButton = renderFixButton(core, check.fixAction);
+    const repairFeedback = renderRepairFeedback(core, check.fixAction);
+    return (
+      `<div class="doctor-check-row doctor-check-row-compact ${cls}">` +
+        `<div class="doctor-check-main doctor-local-server-main${fixButton ? " with-action" : ""}">` +
+          `<span class="doctor-check-dot"></span>` +
+          `<span class="doctor-check-label">${escape(core, checkLabel(core, check))}</span>` +
+          `<span class="doctor-check-summary">${escape(core, check.detail || "")}</span>` +
+          `<span class="doctor-check-status">${escape(core, checkStatusLabel(core, check))}</span>` +
+          fixButton +
+        `</div>` +
+        repairFeedback +
+      `</div>`
+    );
+  }
+
+  function renderAgentIntegrationCheck(core, check, cls) {
+    const expanded = isCheckExpanded(check);
+    const summary = check.detail || "";
+    return (
+      `<div class="doctor-check-row doctor-agent-collapsible ${cls}${expanded ? " expanded" : " collapsed"}">` +
+        `<button type="button" class="doctor-check-main doctor-agent-toggle" data-action="toggle-check" data-check-id="${escape(core, check.id)}" aria-expanded="${expanded ? "true" : "false"}">` +
+          `<span class="doctor-check-dot"></span>` +
+          `<span class="doctor-check-label">${escape(core, checkLabel(core, check))}</span>` +
+          `<span class="doctor-check-summary">${escape(core, summary)}</span>` +
+          `<span class="doctor-check-status">${escape(core, checkStatusLabel(core, check))}</span>` +
+          `<span class="doctor-agent-chevron" aria-hidden="true"><svg viewBox="0 0 20 20" focusable="false"><path d="M8 5l5 5-5 5"></path></svg></span>` +
+        `</button>` +
+        (expanded ? renderAgentRows(core, check) : "") +
+      `</div>`
+    );
+  }
+
   function renderCheckList(core, result) {
     const checks = result && Array.isArray(result.checks) ? result.checks : [];
     if (!checks.length) {
@@ -226,27 +335,8 @@
     }
     return checks.map((check) => {
       const cls = check.level === "critical" ? "critical" : (check.level === "warning" ? "warning" : "pass");
-      let agentRows = "";
-      if (check.id === "agent-integrations" && Array.isArray(check.details)) {
-        agentRows = `<div class="doctor-agent-list">${
-          check.details.map((detail) => {
-            const agentDetail = agentDetailText(detail);
-            const fixButton = renderFixButton(core, detail.fixAction);
-            const repairFeedback = renderRepairFeedback(core, detail.fixAction);
-            return (
-              `<div class="doctor-agent-item">` +
-                `<div class="doctor-agent-row${fixButton ? " with-action" : ""}">` +
-                  `<span>${escape(core, detail.agentName || detail.agentId)}</span>` +
-                  `<span>${escape(core, detail.status || "")}</span>` +
-                  fixButton +
-                `</div>` +
-                (agentDetail ? `<div class="doctor-agent-detail">${escape(core, agentDetail)}</div>` : "") +
-                repairFeedback +
-              `</div>`
-            );
-          }).join("")
-        }</div>`;
-      }
+      if (check.id === "local-server") return renderLocalServerCheck(core, check, cls);
+      if (check.id === "agent-integrations") return renderAgentIntegrationCheck(core, check, cls);
       const fixButton = renderFixButton(core, check.fixAction);
       const repairFeedback = renderRepairFeedback(core, check.fixAction);
       return (
@@ -259,7 +349,6 @@
           `</div>` +
           (check.detail ? `<div class="doctor-check-detail">${escape(core, check.detail)}</div>` : "") +
           repairFeedback +
-          agentRows +
         `</div>`
       );
     }).join("");
@@ -282,6 +371,17 @@
     );
   }
 
+  function renderActionNotice(core) {
+    const notice = state.actionNotice;
+    if (!notice || !notice.message) return `<div class="doctor-action-notice-slot" aria-live="polite"></div>`;
+    const cls = notice.error ? "error" : "ok";
+    return (
+      `<div class="doctor-action-notice-slot" aria-live="polite">` +
+        `<div class="doctor-action-notice ${cls}" role="status">${escape(core, notice.message)}</div>` +
+      `</div>`
+    );
+  }
+
   function renderModalBody(core, result) {
     state.fixActionByKey = new Map();
     const issueCount = result && result.overall ? result.overall.issueCount || 0 : 0;
@@ -291,7 +391,7 @@
     return (
       `<div class="doctor-modal">` +
         `<div class="doctor-modal-header">` +
-          `<div>` +
+          `<div class="doctor-title-row">` +
             `<h2>${escape(core, t(core, "doctorTitle"))}</h2>` +
             `<div class="doctor-overall ${overallClass(result)}">` +
               `<span class="doctor-overall-dot"></span>` +
@@ -299,19 +399,24 @@
               `<span class="doctor-issue-count">${escape(core, t(core, "doctorIssueCount").replace("{count}", String(issueCount)))}</span>` +
             `</div>` +
           `</div>` +
-          `<button type="button" class="doctor-close" aria-label="${escape(core, t(core, "doctorClose"))}">x</button>` +
+          `<button type="button" class="doctor-close" aria-label="${escape(core, t(core, "doctorClose"))}" title="${escape(core, t(core, "doctorClose"))}"><svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M6 6l8 8M14 6l-8 8"></path></svg></button>` +
         `</div>` +
         `<div class="doctor-privacy">${escape(core, t(core, "doctorPrivacy"))}</div>` +
         renderRepairSummary(core) +
         `<div class="doctor-check-list">${checkList}</div>` +
         fixConfirm +
         renderConnectionTest(core) +
-        `<div class="doctor-privacy-inline">${escape(core, t(core, "doctorPrivacyShort"))}</div>` +
-        `<div class="doctor-actions">` +
-          `<button type="button" class="soft-btn" data-action="copy">${escape(core, t(core, "doctorCopyReport"))}</button>` +
-          `<button type="button" class="soft-btn" data-action="open-log">${escape(core, t(core, "doctorOpenLog"))}</button>` +
-          `<button type="button" class="soft-btn" data-action="test-connection"${testDisabled}>${escape(core, t(core, "doctorTestConnection"))}</button>` +
-          `<button type="button" class="soft-btn accent" data-action="rerun">${escape(core, t(core, "doctorRerun"))}</button>` +
+        `<div class="doctor-action-bar">` +
+          `<div class="doctor-action-side">` +
+            renderActionNotice(core) +
+            `<div class="doctor-privacy-inline">${escape(core, t(core, "doctorPrivacyShort"))}</div>` +
+          `</div>` +
+          `<div class="doctor-actions">` +
+            `<button type="button" class="soft-btn" data-action="copy">${escape(core, t(core, "doctorCopyReport"))}</button>` +
+            `<button type="button" class="soft-btn" data-action="open-log">${escape(core, t(core, "doctorOpenLog"))}</button>` +
+            `<button type="button" class="soft-btn" data-action="test-connection"${testDisabled}>${escape(core, t(core, "doctorTestConnection"))}</button>` +
+            `<button type="button" class="soft-btn accent" data-action="rerun">${escape(core, t(core, "doctorRerun"))}</button>` +
+          `</div>` +
         `</div>` +
       `</div>`
     );
@@ -320,6 +425,9 @@
   function closeModal() {
     state.modalOpen = false;
     stopConnectionCountdown();
+    clearActionNoticeTimer();
+    state.actionNotice = null;
+    state.checkExpansionOverrides = new Map();
     state.pendingConfirmAction = null;
     state.lastRepairFeedback = null;
     const rootEl = document.getElementById("modalRoot");
@@ -356,6 +464,7 @@
     const fixButtons = rootEl.querySelectorAll('[data-action="fix"]');
     const confirmFix = rootEl.querySelector('[data-action="confirm-fix"]');
     const cancelFixConfirm = rootEl.querySelector('[data-action="cancel-fix-confirm"]');
+    const toggleCheckButtons = rootEl.querySelectorAll('[data-action="toggle-check"]');
     if (backdrop) {
       backdrop.addEventListener("click", (ev) => {
         if (ev.target === backdrop) closeModal();
@@ -411,6 +520,14 @@
     if (cancelFixConfirm) {
       cancelFixConfirm.addEventListener("click", () => {
         state.pendingConfirmAction = null;
+        refreshModal(core);
+      });
+    }
+    for (const button of toggleCheckButtons) {
+      button.addEventListener("click", () => {
+        const id = button.getAttribute("data-check-id") || "";
+        const expanded = button.getAttribute("aria-expanded") === "true";
+        if (id) state.checkExpansionOverrides.set(id, !expanded);
         refreshModal(core);
       });
     }
