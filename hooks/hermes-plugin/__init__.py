@@ -7,8 +7,11 @@ a Hermes hook callback.
 
 from __future__ import annotations
 
+import csv
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -49,12 +52,44 @@ HOOK_TO_STATE: Dict[str, Tuple[str, str]] = {
 HOOKS = tuple(HOOK_TO_STATE.keys())
 TOOL_HOOKS = {"pre_tool_call", "post_tool_call"}
 
+TERMINAL_NAMES = {
+    "win32": {
+        "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+        "alacritty.exe", "wezterm-gui.exe", "mintty.exe", "conemu64.exe",
+        "conemu.exe", "hyper.exe", "tabby.exe", "antigravity.exe",
+        "warp.exe", "ghostty.exe",
+    },
+    "darwin": {"terminal", "iterm2", "alacritty", "wezterm-gui", "kitty", "hyper", "tabby", "warp", "ghostty"},
+    "linux": {
+        "gnome-terminal", "kgx", "konsole", "xfce4-terminal", "tilix",
+        "alacritty", "wezterm", "wezterm-gui", "kitty", "ghostty",
+        "xterm", "lxterminal", "terminator", "tabby", "hyper", "warp",
+    },
+}
+SYSTEM_BOUNDARY = {
+    "win32": {"explorer.exe", "services.exe", "winlogon.exe", "svchost.exe", "system", "idle"},
+    "darwin": {"launchd", "init", "systemd"},
+    "linux": {"systemd", "init"},
+}
+EDITOR_NAMES = {
+    "win32": {"code.exe": "code", "cursor.exe": "cursor"},
+    "darwin": {"code": "code", "cursor": "cursor"},
+    "linux": {"code": "code", "cursor": "cursor", "code-insiders": "code"},
+}
+EDITOR_PATH_CHECKS = (("visual studio code", "code"), ("cursor.app", "cursor"))
+PROCESS_TREE_MAX_DEPTH = 8
+PROCESS_QUERY_TIMEOUT_SECONDS = 0.8
+
 _cached_port: Optional[int] = None
 _no_server_until = 0.0
 _log_lock = threading.Lock()
 _session_lock = threading.Lock()
+_process_meta_lock = threading.Lock()
 _active_session_id = ""
 _task_session_ids: Dict[str, Tuple[str, float]] = {}
+_process_meta_started = False
+_process_meta_resolved = False
+_process_meta: Dict[str, Any] = {}
 
 
 def _debug_enabled() -> bool:
@@ -224,6 +259,312 @@ def _post_state(body: Dict[str, Any]) -> None:
     _no_server_until = time.monotonic() + NO_SERVER_COOLDOWN_SECONDS
 
 
+def _platform_key() -> str:
+    if sys.platform.startswith("win"):
+        return "win32"
+    if sys.platform == "darwin":
+        return "darwin"
+    return "linux"
+
+
+def _normalize_process_name(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().replace("\\", "/")
+    if not text:
+        return ""
+    return Path(text).name.lower()
+
+
+def _int_pid(value: Any) -> Optional[int]:
+    try:
+        pid = int(value)
+    except Exception:
+        return None
+    return pid if pid > 0 else None
+
+
+def _run_process_command(args: list[str], timeout: float = PROCESS_QUERY_TIMEOUT_SECONDS) -> Optional[subprocess.CompletedProcess]:
+    kwargs: Dict[str, Any] = {
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": timeout,
+    }
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        return subprocess.run(args, **kwargs)
+    except Exception:
+        return None
+
+
+def _process_info(pid: int, name: Any, parent_pid: Any, path: Any = "", cmdline: Any = "") -> Optional[Dict[str, Any]]:
+    parent = _int_pid(parent_pid)
+    if not parent:
+        return None
+    normalized = _normalize_process_name(name or path)
+    if not normalized:
+        return None
+    return {
+        "pid": pid,
+        "parent_pid": parent,
+        "name": normalized,
+        "path": path if isinstance(path, str) else "",
+        "cmdline": cmdline if isinstance(cmdline, str) else "",
+    }
+
+
+def _parse_wmic_process_info(pid: int, text: str) -> Optional[Dict[str, Any]]:
+    rows = [line for line in str(text or "").splitlines() if line.strip()]
+    if len(rows) < 2:
+        return None
+    try:
+        for row in csv.DictReader(rows):
+            lowered = {str(key).lower(): value for key, value in row.items()}
+            info = _process_info(
+                pid,
+                lowered.get("name"),
+                lowered.get("parentprocessid"),
+                lowered.get("executablepath") or "",
+                lowered.get("commandline") or "",
+            )
+            if info:
+                return info
+    except Exception:
+        return None
+    return None
+
+
+def _query_windows_process_info(pid: int) -> Optional[Dict[str, Any]]:
+    result = _run_process_command([
+        "wmic",
+        "process",
+        "where",
+        f"ProcessId={pid}",
+        "get",
+        "Name,ParentProcessId,ExecutablePath,CommandLine",
+        "/format:csv",
+    ])
+    if result and result.returncode == 0:
+        info = _parse_wmic_process_info(pid, result.stdout)
+        if info:
+            return info
+
+    script = (
+        f"$p=Get-CimInstance Win32_Process -Filter 'ProcessId={pid}' -ErrorAction SilentlyContinue; "
+        "if ($p) { $p | Select-Object Name,ParentProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress }"
+    )
+    result = _run_process_command(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], timeout=1.2)
+    if result and result.returncode == 0 and result.stdout.strip():
+        try:
+            row = json.loads(result.stdout)
+            if isinstance(row, list):
+                row = row[0] if row else {}
+            if isinstance(row, dict):
+                info = _process_info(
+                    pid,
+                    row.get("Name"),
+                    row.get("ParentProcessId"),
+                    row.get("ExecutablePath") or "",
+                    row.get("CommandLine") or "",
+                )
+                if info:
+                    return info
+        except Exception:
+            pass
+
+    # PowerShell 7 exposes a Parent property on Get-Process. This is a useful
+    # fallback on Windows builds where WMIC is missing and Win32_Process CIM is
+    # unavailable. Windows PowerShell 5.1 may return no Parent; that is fine.
+    get_process_script = (
+        f"$p=Get-Process -Id {pid} -ErrorAction SilentlyContinue; "
+        "if ($p) { "
+        "$name=$p.ProcessName + '.exe'; "
+        "if ($p.Path) { $name=[IO.Path]::GetFileName($p.Path) }; "
+        "$parentId=0; "
+        "if ($p.Parent) { $parentId=$p.Parent.Id }; "
+        "[pscustomobject]@{Name=$name;ParentProcessId=$parentId;ExecutablePath=$p.Path;CommandLine=''} | ConvertTo-Json -Compress "
+        "}"
+    )
+    for shell in ("pwsh.exe", "powershell.exe"):
+        result = _run_process_command([shell, "-NoProfile", "-NonInteractive", "-Command", get_process_script], timeout=2.5)
+        if not result or result.returncode != 0 or not result.stdout.strip():
+            continue
+        try:
+            row = json.loads(result.stdout)
+            if isinstance(row, list):
+                row = row[0] if row else {}
+            if not isinstance(row, dict):
+                continue
+            info = _process_info(
+                pid,
+                row.get("Name"),
+                row.get("ParentProcessId"),
+                row.get("ExecutablePath") or "",
+                row.get("CommandLine") or "",
+            )
+            if info:
+                return info
+        except Exception:
+            continue
+    return None
+
+
+def _query_linux_process_info(pid: int) -> Optional[Dict[str, Any]]:
+    proc_dir = Path("/proc") / str(pid)
+    try:
+        stat_text = (proc_dir / "stat").read_text(encoding="utf-8", errors="replace")
+        after_comm = stat_text.rsplit(")", 1)[1].strip().split()
+        parent_pid = int(after_comm[1])
+        name = (proc_dir / "comm").read_text(encoding="utf-8", errors="replace").strip()
+        try:
+            raw_cmdline = (proc_dir / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace")
+        except Exception:
+            raw_cmdline = ""
+        return _process_info(pid, name, parent_pid, "", raw_cmdline)
+    except Exception:
+        return None
+
+
+def _query_posix_process_info(pid: int) -> Optional[Dict[str, Any]]:
+    if _platform_key() == "linux" and Path("/proc").exists():
+        info = _query_linux_process_info(pid)
+        if info:
+            return info
+    result = _run_process_command(["ps", "-o", "ppid=,comm=", "-p", str(pid)], timeout=0.8)
+    if not result or result.returncode != 0:
+        return None
+    line = result.stdout.strip().splitlines()
+    if not line:
+        return None
+    parts = line[-1].strip().split(None, 1)
+    if len(parts) < 2:
+        return None
+    return _process_info(pid, parts[1], parts[0], parts[1], "")
+
+
+def _query_process_info(pid: int) -> Optional[Dict[str, Any]]:
+    if _platform_key() == "win32":
+        return _query_windows_process_info(pid)
+    return _query_posix_process_info(pid)
+
+
+def _detect_editor(platform: str, info: Dict[str, Any]) -> str:
+    name = _normalize_process_name(info.get("name"))
+    editor = EDITOR_NAMES.get(platform, EDITOR_NAMES["linux"]).get(name)
+    if editor:
+        return editor
+    text = f"{info.get('path') or ''} {info.get('cmdline') or ''}".lower()
+    for pattern, candidate in EDITOR_PATH_CHECKS:
+        if pattern in text:
+            return candidate
+    return ""
+
+
+def _resolve_process_metadata(start_pid: Optional[int] = None) -> Dict[str, Any]:
+    platform = _platform_key()
+    terminal_names = TERMINAL_NAMES.get(platform, TERMINAL_NAMES["linux"])
+    boundaries = SYSTEM_BOUNDARY.get(platform, SYSTEM_BOUNDARY["linux"])
+    pid = _int_pid(start_pid if start_pid is not None else os.getpid())
+    if not pid:
+        return {}
+
+    pid_chain: list[int] = []
+    seen = set()
+    terminal_pid: Optional[int] = None
+    editor_pid: Optional[int] = None
+    detected_editor = ""
+
+    for _ in range(PROCESS_TREE_MAX_DEPTH):
+        if pid in seen:
+            break
+        seen.add(pid)
+        info = _query_process_info(pid)
+        if not info:
+            break
+        current_pid = _int_pid(info.get("pid")) or pid
+        name = _normalize_process_name(info.get("name"))
+        parent_pid = _int_pid(info.get("parent_pid"))
+        pid_chain.append(current_pid)
+
+        if not detected_editor:
+            editor = _detect_editor(platform, info)
+            if editor:
+                detected_editor = editor
+                editor_pid = current_pid
+
+        if name in terminal_names:
+            terminal_pid = current_pid
+        if name in boundaries:
+            break
+        if not parent_pid or parent_pid == current_pid or parent_pid <= 1:
+            break
+        pid = parent_pid
+
+    source_pid = editor_pid or terminal_pid
+    meta: Dict[str, Any] = {}
+    if source_pid:
+        meta["source_pid"] = source_pid
+    if pid_chain:
+        meta["pid_chain"] = pid_chain
+    if detected_editor:
+        meta["editor"] = detected_editor
+    return meta
+
+
+def _resolve_process_meta_background() -> None:
+    global _process_meta, _process_meta_resolved
+    try:
+        meta = _resolve_process_metadata()
+        _append_log({"ts": _utc_now(), "event": "process_meta_resolved", "process_meta": meta})
+    except Exception as exc:
+        meta = {}
+        _append_log({"ts": _utc_now(), "event": "process_meta_error", "error": str(exc)}, force=True)
+    with _process_meta_lock:
+        _process_meta = meta
+        _process_meta_resolved = True
+
+
+def _ensure_process_meta_resolver_started() -> None:
+    global _process_meta_started, _process_meta_resolved
+    with _process_meta_lock:
+        if _process_meta_started:
+            return
+        _process_meta_started = True
+    try:
+        thread = threading.Thread(target=_resolve_process_meta_background, name="clawd-hermes-process-meta", daemon=True)
+        thread.start()
+    except Exception as exc:
+        with _process_meta_lock:
+            _process_meta_resolved = True
+        _append_log({"ts": _utc_now(), "event": "process_meta_thread_error", "error": str(exc)}, force=True)
+
+
+def _cached_process_meta() -> Dict[str, Any]:
+    with _process_meta_lock:
+        if not _process_meta_resolved or not _process_meta:
+            return {}
+        return dict(_process_meta)
+
+
+def _add_process_meta(payload: Dict[str, Any]) -> None:
+    meta = _cached_process_meta()
+    source_pid = _int_pid(meta.get("source_pid"))
+    if source_pid:
+        payload["source_pid"] = source_pid
+    pid_chain = meta.get("pid_chain")
+    if isinstance(pid_chain, list):
+        safe_chain = [_int_pid(pid) for pid in pid_chain]
+        safe_chain = [pid for pid in safe_chain if pid]
+        if safe_chain:
+            payload["pid_chain"] = safe_chain
+    editor = meta.get("editor")
+    if editor in ("code", "cursor"):
+        payload["editor"] = editor
+
+
 def _first_string(*values: Any) -> str:
     for value in values:
         if isinstance(value, str) and value.strip():
@@ -378,6 +719,7 @@ def _state_payload(event_name: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         "cwd": _first_string(os.environ.get("TERMINAL_CWD"), os.environ.get("PWD"), os.getcwd()),
         "agent_pid": os.getpid(),
     }
+    _add_process_meta(payload)
     payload.update(_event_extra(event_name, kwargs))
     return payload
 
@@ -451,6 +793,7 @@ def _make_callback(event_name: str):
 
 
 def register(ctx) -> None:
+    _ensure_process_meta_resolver_started()
     for hook_name in HOOKS:
         ctx.register_hook(hook_name, _make_callback(hook_name))
     _append_log({

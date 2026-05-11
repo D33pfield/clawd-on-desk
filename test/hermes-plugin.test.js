@@ -114,4 +114,140 @@ print(json.dumps([{"event": item["event"], "session_id": item["session_id"]} for
       { event: "SessionEnd", session_id: "new-session" },
     ]);
   });
+
+  it("resolves Hermes process metadata without guessing wrapper-only chains", () => {
+    const output = runPluginPython(String.raw`
+import importlib.util
+import json
+import sys
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("hermes_plugin", r"hooks/hermes-plugin/__init__.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+mod._platform_key = lambda: "win32"
+cases = {}
+
+def run_case(tree, start):
+    def fake_query(pid):
+        row = tree.get(pid)
+        if not row:
+            return None
+        name, parent = row
+        return {"pid": pid, "parent_pid": parent, "name": name, "path": "", "cmdline": ""}
+    mod._query_process_info = fake_query
+    return mod._resolve_process_metadata(start)
+
+cases["terminal"] = run_case({
+    10: ("python.exe", 20),
+    20: ("uv.exe", 30),
+    30: ("hermes.exe", 40),
+    40: ("pwsh.exe", 50),
+    50: ("WindowsTerminal.exe", 60),
+    60: ("explorer.exe", 4),
+}, 10)
+
+cases["editor"] = run_case({
+    10: ("python.exe", 20),
+    20: ("hermes.exe", 30),
+    30: ("pwsh.exe", 40),
+    40: ("Cursor.exe", 50),
+    50: ("explorer.exe", 4),
+}, 10)
+
+cases["wrapper_only"] = run_case({
+    10: ("python.exe", 20),
+    20: ("uv.exe", 30),
+    30: ("hermes.exe", 40),
+    40: ("explorer.exe", 4),
+}, 10)
+
+cases["failure"] = run_case({}, 10)
+
+print(json.dumps(cases, sort_keys=True))
+`);
+    const cases = JSON.parse(output);
+    assert.strictEqual(cases.terminal.source_pid, 50);
+    assert.deepStrictEqual(cases.terminal.pid_chain, [10, 20, 30, 40, 50, 60]);
+    assert.strictEqual(cases.editor.source_pid, 40);
+    assert.strictEqual(cases.editor.editor, "cursor");
+    assert.deepStrictEqual(cases.editor.pid_chain, [10, 20, 30, 40, 50]);
+    assert.strictEqual(cases.wrapper_only.source_pid, undefined);
+    assert.deepStrictEqual(cases.wrapper_only.pid_chain, [10, 20, 30, 40]);
+    assert.deepStrictEqual(cases.failure, {});
+  });
+
+  it("attaches cached Hermes process metadata to state payloads without hot-path lookups", () => {
+    const output = runPluginPython(String.raw`
+import importlib.util
+import json
+import sys
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("hermes_plugin", r"hooks/hermes-plugin/__init__.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+mod._platform_key = lambda: "win32"
+tree = {
+    10: ("python.exe", 20),
+    20: ("hermes.exe", 30),
+    30: ("pwsh.exe", 40),
+    40: ("Code.exe", 50),
+    50: ("explorer.exe", 4),
+}
+calls = []
+def fake_query(pid):
+    calls.append(pid)
+    row = tree.get(pid)
+    if not row:
+        return None
+    name, parent = row
+    return {"pid": pid, "parent_pid": parent, "name": name, "path": "", "cmdline": ""}
+
+posts = []
+mod._query_process_info = fake_query
+mod._append_log = lambda *args, **kwargs: None
+mod._post_state = lambda payload: posts.append(dict(payload))
+mod.os.getpid = lambda: 10
+
+mod._resolve_process_meta_background()
+resolved_calls = list(calls)
+
+mod._handle_hook("pre_llm_call", session_id="cached-session")
+mod._handle_hook("post_llm_call", session_id="cached-session")
+
+print(json.dumps({
+    "resolved_calls": resolved_calls,
+    "all_calls": calls,
+    "posts": [{
+        "event": item["event"],
+        "source_pid": item.get("source_pid"),
+        "pid_chain": item.get("pid_chain"),
+        "editor": item.get("editor"),
+        "agent_pid": item.get("agent_pid"),
+    } for item in posts],
+}, sort_keys=True))
+`);
+    const result = JSON.parse(output);
+    assert.deepStrictEqual(result.resolved_calls, [10, 20, 30, 40, 50]);
+    assert.deepStrictEqual(result.all_calls, result.resolved_calls);
+    assert.deepStrictEqual(result.posts, [
+      {
+        event: "UserPromptSubmit",
+        source_pid: 40,
+        pid_chain: [10, 20, 30, 40, 50],
+        editor: "code",
+        agent_pid: 10,
+      },
+      {
+        event: "Stop",
+        source_pid: 40,
+        pid_chain: [10, 20, 30, 40, 50],
+        editor: "code",
+        agent_pid: 10,
+      },
+    ]);
+  });
 });
