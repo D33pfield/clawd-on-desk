@@ -27,7 +27,8 @@ function readManifestHooks() {
 }
 
 function runPluginPython(code) {
-  const result = spawnSync("python", ["-"], {
+  const pythonCmd = process.platform === "win32" ? "python" : "python3";
+  const result = spawnSync(pythonCmd, ["-"], {
     cwd: path.join(__dirname, ".."),
     input: code,
     encoding: "utf8",
@@ -36,7 +37,7 @@ function runPluginPython(code) {
   assert.strictEqual(
     result.status,
     0,
-    `python exited ${result.status}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
+    `${pythonCmd} exited ${result.status}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
   );
   return result.stdout.trim();
 }
