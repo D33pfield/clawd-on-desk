@@ -235,6 +235,10 @@
     return { group, buttons };
   }
 
+  function stopThemeCardButtonKeydown(ev) {
+    ev.stopPropagation();
+  }
+
   function buildThemeCard(theme) {
     const card = document.createElement("div");
     card.className = "theme-card";
@@ -308,6 +312,7 @@
         ev.stopPropagation();
         handleDeleteTheme(theme);
       });
+      btn.addEventListener("keydown", stopThemeCardButtonKeydown);
       footer.appendChild(btn);
     }
     if (canRemoveCodexPet) {
@@ -322,6 +327,7 @@
         ev.stopPropagation();
         handleRemoveCodexPet(theme);
       });
+      btn.addEventListener("keydown", stopThemeCardButtonKeydown);
       footer.appendChild(btn);
     }
     card.appendChild(footer);

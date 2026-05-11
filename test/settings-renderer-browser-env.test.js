@@ -220,6 +220,29 @@ class FakeElement {
     this.eventListeners[type].push(cb);
   }
 
+  dispatchEvent(event) {
+    const ev = event || {};
+    if (!ev.type) throw new Error("FakeElement.dispatchEvent requires an event type");
+    if (!ev.target) ev.target = this;
+    ev.currentTarget = this;
+    if (typeof ev.preventDefault !== "function") {
+      ev.preventDefault = function preventDefault() {
+        this.defaultPrevented = true;
+      };
+    }
+    if (typeof ev.stopPropagation !== "function") {
+      ev.stopPropagation = function stopPropagation() {
+        this.cancelBubble = true;
+      };
+    }
+    const listeners = this.eventListeners[ev.type] || [];
+    for (const listener of [...listeners]) listener(ev);
+    if (ev.bubbles !== false && !ev.cancelBubble && this.parentNode) {
+      return this.parentNode.dispatchEvent(ev);
+    }
+    return !ev.defaultPrevented;
+  }
+
   set innerHTML(_value) {
     for (const child of this.children) child.parentNode = null;
     this.children = [];
@@ -547,6 +570,108 @@ function makeGeneralSnapshot(overrides = {}) {
     updateBubbleAutoCloseSeconds: 12,
     ...overrides,
   };
+}
+
+function createKeyboardEventForTest(key) {
+  return {
+    type: "keydown",
+    key,
+    bubbles: true,
+    cancelBubble: false,
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+    stopPropagation() {
+      this.cancelBubble = true;
+    },
+  };
+}
+
+function findAncestorByClass(el, className) {
+  let current = el;
+  while (current) {
+    if (current.classList && current.classList.contains(className)) return current;
+    current = current.parentNode;
+  }
+  return null;
+}
+
+function loadThemeTabForTest({
+  themes,
+  settingsAPI = {},
+} = {}) {
+  const body = new FakeElement("body");
+  const content = new FakeElement("main");
+  content.id = "content";
+  body.appendChild(content);
+
+  const commands = [];
+  const document = {
+    body,
+    createElement: (tagName) => new FakeElement(tagName),
+    getElementById(id) {
+      if (id === "content") return content;
+      return null;
+    },
+  };
+
+  const api = {
+    command: (name, payload) => {
+      commands.push({ name, payload });
+      return Promise.resolve({ status: "ok" });
+    },
+    ...settingsAPI,
+  };
+  const context = {
+    console,
+    navigator: { platform: "Win32" },
+    localStorage: {
+      getItem: () => null,
+      setItem: () => {},
+    },
+    document,
+    requestAnimationFrame: (cb) => {
+      cb();
+      return 1;
+    },
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    window: null,
+    globalThis: null,
+    settingsAPI: api,
+    ClawdSettingsSizeSlider: {
+      SIZE_UI_MIN: 1,
+      SIZE_UI_MAX: 100,
+      SIZE_TICK_VALUES: [25, 50, 75, 100],
+      SIZE_SLIDER_THUMB_DIAMETER: 18,
+      prefsSizeToUi: (value) => value,
+      clampSizeUi: (value) => value,
+      sizeUiToPct: (value) => value,
+      getSizeSliderAnchorPx: () => 0,
+      createSizeSliderController: () => ({}),
+    },
+    ClawdSettingsI18n: {
+      STRINGS: loadSettingsI18nForTest(),
+      CONTRIBUTORS: [],
+      MAINTAINERS: [],
+    },
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
+  vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-theme.js"), "utf8"), context);
+
+  const core = context.ClawdSettingsCore;
+  core.state.snapshot = { lang: "en" };
+  core.state.activeTab = "theme";
+  core.runtime.themeList = Array.isArray(themes) ? themes : [];
+  context.ClawdSettingsTabTheme.init(core);
+  core.tabs.theme.render(content, core);
+
+  return { content, commands };
 }
 
 function loadAgentsTabForTest({
@@ -1748,8 +1873,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(css.includes(".theme-action-group"));
     assert.ok(css.includes(".theme-action-buttons"));
     assert.ok(css.includes(".theme-uninstall-btn"));
-    assert.ok(/\.theme-card-footer\s*\{[\s\S]*min-height:\s*26px;[\s\S]*margin-top:\s*auto;/.test(css));
-    assert.ok(/\.theme-card-check\s*\{[\s\S]*white-space:\s*nowrap;/.test(css));
+    assert.ok(/\.theme-card-footer\s*\{[^}]*min-height:\s*26px;[^}]*margin-top:\s*auto;[^}]*\}/.test(css));
+    assert.ok(/\.theme-card-check\s*\{[^}]*white-space:\s*nowrap;[^}]*\}/.test(css));
     assert.ok(i18nSource.includes("themeImportPetZip"));
     assert.ok(i18nSource.includes("themeImportUserThemeZip"));
     assert.ok(i18nSource.includes("themeImportUserThemeZipHint"));
@@ -1771,6 +1896,62 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(strings.zh.themeImportUserThemeZip, "导入 Clawd 主题包（.zip）");
     assert.ok(strings.zh.themeImportUserThemeZipHint.includes("theme.json"));
     assert.strictEqual(strings.zh.themeOpenUserThemesFolder, "打开主题文件夹");
+  });
+
+  it("keeps Theme card footers reserved without leaking button keyboard events to card activation", async () => {
+    const { content, commands } = loadThemeTabForTest({
+      themes: [
+        { id: "clawd", name: "Clawd", builtin: true, active: true },
+        { id: "calico", name: "Calico", builtin: true, active: false },
+        { id: "pet-active", name: "Pet Active", managedCodexPet: true, active: true },
+        { id: "pet-inactive", name: "Pet Inactive", managedCodexPet: true, active: false },
+        { id: "user-theme", name: "User Theme", active: false },
+      ],
+    });
+
+    const cards = content.querySelectorAll(".theme-card");
+    assert.strictEqual(cards.length, 5);
+    for (const card of cards) {
+      assert.ok(card.querySelector(".theme-card-footer"));
+    }
+
+    const activeChecks = cards
+      .filter((card) => card.getAttribute("aria-checked") === "true")
+      .map((card) => card.querySelector(".theme-card-check"));
+    const inactiveChecks = cards
+      .filter((card) => card.getAttribute("aria-checked") === "false")
+      .map((card) => card.querySelector(".theme-card-check"));
+    assert.ok(activeChecks.length > 0);
+    assert.ok(inactiveChecks.length > 0);
+    for (const indicator of activeChecks) {
+      assert.strictEqual(indicator.getAttribute("aria-hidden"), undefined);
+      assert.ok(indicator.textContent);
+    }
+    for (const indicator of inactiveChecks) {
+      assert.strictEqual(indicator.getAttribute("aria-hidden"), "true");
+      assert.strictEqual(indicator.textContent, "");
+    }
+
+    const deleteButton = content.querySelector(".theme-delete-btn");
+    const inactiveUninstallButton = content.querySelectorAll(".theme-uninstall-btn")
+      .find((button) => {
+        const card = findAncestorByClass(button, "theme-card");
+        return card && card.getAttribute("aria-checked") === "false";
+      });
+    assert.ok(deleteButton);
+    assert.ok(inactiveUninstallButton);
+
+    const deleteKeydown = createKeyboardEventForTest("Enter");
+    deleteButton.dispatchEvent(deleteKeydown);
+    const uninstallKeydown = createKeyboardEventForTest(" ");
+    inactiveUninstallButton.dispatchEvent(uninstallKeydown);
+    await Promise.resolve();
+
+    assert.strictEqual(deleteKeydown.cancelBubble, true);
+    assert.strictEqual(uninstallKeydown.cancelBubble, true);
+    assert.strictEqual(deleteKeydown.defaultPrevented, false);
+    assert.strictEqual(uninstallKeydown.defaultPrevented, false);
+    assert.deepStrictEqual(commands, []);
   });
 
   it("animates collapsible Settings groups with measured height instead of instant hidden jumps", () => {
