@@ -505,6 +505,184 @@ function checkKiroDirMode(descriptor, options) {
   });
 }
 
+function checkPluginDirMode(descriptor, options) {
+  const pluginDir = descriptor.configPath;
+  if (!dirExists(options.fs, pluginDir)) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: false,
+      configPath: pluginDir,
+      detail: `${pluginDir} missing`,
+      missingPluginFiles: descriptor.managedFiles || [],
+    });
+  }
+
+  const managedFiles = Array.isArray(descriptor.managedFiles) ? descriptor.managedFiles : [];
+  const missingPluginFiles = managedFiles.filter((file) => !fileExists(options.fs, path.join(pluginDir, file)));
+  if (missingPluginFiles.length > 0) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: pluginDir,
+      detail: `${pluginDir} missing managed file(s): ${missingPluginFiles.join(", ")}`,
+      missingPluginFiles,
+    });
+  }
+
+  const configFilePath = descriptor.configFilePath;
+  let pluginEnabled = null;
+  if (configFilePath && fileExists(options.fs, configFilePath)) {
+    try {
+      const text = options.fs.readFileSync(configFilePath, "utf8");
+      pluginEnabled = parseYamlPluginEnabled(text, descriptor.marker);
+    } catch (err) {
+      return makeDetail(descriptor, "config-corrupt", {
+        level: "warning",
+        parentDirExists: true,
+        configFileExists: true,
+        configPath: pluginDir,
+        pluginConfigPath: configFilePath,
+        detail: err && err.message ? err.message : "plugin config read failed",
+      });
+    }
+  }
+
+  if (pluginEnabled === false) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: pluginDir,
+      pluginConfigPath: configFilePath,
+      pluginEnabled: false,
+      detail: `${configFilePath} does not list ${descriptor.marker} as an enabled plugin`,
+    });
+  }
+
+  if (pluginEnabled === null) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: pluginDir,
+      pluginConfigPath: configFilePath || null,
+      pluginEnabled: null,
+      detail: `${configFilePath || "plugin config"} missing; cannot verify ${descriptor.marker} is enabled`,
+    });
+  }
+
+  return makeDetail(descriptor, "ok", {
+    level: null,
+    parentDirExists: true,
+    configFileExists: true,
+    configPath: pluginDir,
+    pluginConfigPath: configFilePath,
+    pluginEnabled: true,
+    detail: `${pluginDir} plugin files present and enabled`,
+  });
+}
+
+function stripYamlComment(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (quote === "\"" && ch === "\\") {
+        i++;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "\"" || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "#") return line.slice(0, i);
+  }
+  return line;
+}
+
+function yamlIndent(line) {
+  const match = String(line || "").match(/^ */);
+  return match ? match[0].length : 0;
+}
+
+function unquoteYamlScalar(value) {
+  const text = String(value || "").trim();
+  if (text.length >= 2 && text.startsWith("\"") && text.endsWith("\"")) {
+    return text.slice(1, -1).replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
+  }
+  if (text.length >= 2 && text.startsWith("'") && text.endsWith("'")) {
+    return text.slice(1, -1).replace(/''/g, "'");
+  }
+  return text;
+}
+
+function yamlScalarEquals(value, expected) {
+  return unquoteYamlScalar(value) === expected;
+}
+
+function yamlInlineListContains(value, expected) {
+  const text = String(value || "").trim();
+  if (!text.startsWith("[") || !text.endsWith("]")) return null;
+  const inner = text.slice(1, -1).trim();
+  if (!inner) return false;
+  return inner
+    .split(",")
+    .map((entry) => entry.trim())
+    .some((entry) => yamlScalarEquals(entry, expected));
+}
+
+function parseYamlPluginEnabled(text, pluginId) {
+  if (typeof text !== "string" || typeof pluginId !== "string" || !pluginId) return null;
+  const lines = text.split(/\r?\n/);
+  let inPlugins = false;
+  let pluginsIndent = -1;
+  let currentKey = "";
+  let sawEnabled = false;
+
+  for (const rawLine of lines) {
+    const withoutComment = stripYamlComment(rawLine);
+    if (!withoutComment.trim()) continue;
+    const indent = yamlIndent(withoutComment);
+    const trimmed = withoutComment.trim();
+
+    if (!inPlugins) {
+      if (indent === 0 && /^plugins\s*:\s*$/.test(trimmed)) {
+        inPlugins = true;
+        pluginsIndent = indent;
+      }
+      continue;
+    }
+
+    if (indent <= pluginsIndent) break;
+
+    const keyMatch = trimmed.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
+    if (keyMatch && indent === pluginsIndent + 2) {
+      currentKey = keyMatch[1];
+      if (currentKey !== "enabled") continue;
+
+      sawEnabled = true;
+      const rest = keyMatch[2].trim();
+      const inlineList = yamlInlineListContains(rest, pluginId);
+      if (inlineList === true) return true;
+      if (inlineList === false || rest === "" || rest === "[]") continue;
+      if (yamlScalarEquals(rest, pluginId)) return true;
+      continue;
+    }
+
+    if (currentKey === "enabled" && trimmed.startsWith("-")) {
+      const item = trimmed.slice(1).trim();
+      if (yamlScalarEquals(item, pluginId)) return true;
+    }
+  }
+
+  return sawEnabled ? false : null;
+}
+
 function findOpencodePluginEntry(pluginEntries, marker) {
   if (!Array.isArray(pluginEntries)) return null;
   for (const entry of pluginEntries) {
@@ -775,6 +953,8 @@ function checkAgent(descriptor, options) {
     detail = checkPiExtensionMode(descriptor, options);
   } else if (descriptor.configMode === "openclaw-plugin") {
     detail = checkOpenClawPluginMode(descriptor, options);
+  } else if (descriptor.configMode === "plugin-dir") {
+    detail = checkPluginDirMode(descriptor, options);
   } else {
     detail = makeDetail(descriptor, "manual-only", {
       level: "info",
@@ -832,6 +1012,8 @@ module.exports = {
     checkKiroDirMode,
     checkOpenClawPluginMode,
     checkPiExtensionMode,
+    checkPluginDirMode,
+    parseYamlPluginEnabled,
     checkTomlTextMode,
     validateCommandList,
   },

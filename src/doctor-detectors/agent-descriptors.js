@@ -13,6 +13,7 @@ const kimi = require("../../hooks/kimi-install");
 const opencode = require("../../hooks/opencode-install");
 const pi = require("../../hooks/pi-install");
 const openclaw = require("../../hooks/openclaw-install");
+const hermes = require("../../hooks/hermes-install");
 
 function agentName(agentId) {
   const agent = getAgent(agentId);
@@ -152,6 +153,18 @@ const AGENT_DESCRIPTORS = Object.freeze([
     marker: openclaw.PLUGIN_DIR_NAME,
     pluginId: openclaw.PLUGIN_ID,
     detection: "openclaw-plugin",
+  }),
+  Object.freeze({
+    agentId: "hermes",
+    agentName: agentName("hermes"),
+    eventSource: agentEventSource("hermes"),
+    parentDir: hermes.resolveHermesHome(),
+    configPath: path.join(hermes.resolveHermesHome(), "plugins", hermes.PLUGIN_ID),
+    configMode: "plugin-dir",
+    autoInstall: true,
+    marker: hermes.PLUGIN_ID,
+    managedFiles: hermes.MANAGED_PLUGIN_FILES,
+    configFilePath: path.join(hermes.resolveHermesHome(), "config.yaml"),
   }),
 ]);
 

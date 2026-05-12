@@ -223,6 +223,35 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncHermesPlugin() {
+    try {
+      if (typeof ctx.syncHermesPluginImpl === "function") return ctx.syncHermesPluginImpl();
+      const { isHermesInstalled, registerHermesPlugin } = require("../hooks/hermes-install.js");
+      const installed = typeof ctx.isHermesInstalledImpl === "function"
+        ? ctx.isHermesInstalledImpl()
+        : isHermesInstalled();
+      if (!installed) {
+        return {
+          status: "skipped",
+          reason: "hermes-not-installed",
+          message: "Hermes Agent is not installed; skipped plugin sync",
+        };
+      }
+      const result = registerHermesPlugin({ silent: true });
+      if (result && result.status === "error") {
+        console.warn("Clawd: failed to sync Hermes plugin:", result.message);
+        return result;
+      }
+      if (result && (result.installed > 0 || result.updated > 0)) {
+        console.log(`Clawd: synced Hermes plugin (installed=${result.installed}, updated=${result.updated})`);
+      }
+      return result && typeof result === "object" ? result : { status: "ok" };
+    } catch (err) {
+      console.warn("Clawd: failed to sync Hermes plugin:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync Hermes plugin" };
+    }
+  }
+
   const AGENT_INTEGRATION_SYNCERS = Object.freeze({
     "gemini-cli": syncGeminiHooks,
     "cursor-agent": syncCursorHooks,
@@ -233,6 +262,7 @@ function createIntegrationSyncRuntime(options = {}) {
     opencode: syncOpencodePlugin,
     pi: syncPiExtension,
     openclaw: syncOpenClawPlugin,
+    hermes: syncHermesPlugin,
   });
 
   const AGENT_INTEGRATION_REPAIRERS = Object.freeze({
@@ -292,6 +322,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncOpencodePlugin,
     syncPiExtension,
     syncOpenClawPlugin,
+    syncHermesPlugin,
     repairCodexHooks,
     repairOpenClawPlugin,
     syncIntegrationForAgent,

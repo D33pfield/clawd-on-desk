@@ -791,7 +791,7 @@ const _permCtx = {
     _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
   focusTerminalForSession: (sessionId, options = {}) => {
     const s = sessions.get(sessionId);
-    if (s && s.sourcePid) {
+    if (s && s.sourcePid && s.platform !== "webui") {
       focusTerminalWindow({
         sourcePid: s.sourcePid,
         cwd: s.cwd,
@@ -1013,7 +1013,7 @@ function focusDashboardSession(sessionId, options = {}) {
   if (!sessionId) return;
   const requestSource = options.requestSource || "dashboard";
   const session = sessions.get(String(sessionId));
-  if (session && session.sourcePid) {
+  if (session && session.sourcePid && session.platform !== "webui") {
     focusTerminalWindow({
       sourcePid: session.sourcePid,
       cwd: session.cwd,

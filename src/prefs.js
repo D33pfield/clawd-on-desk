@@ -137,6 +137,7 @@ const SCHEMA = {
       "opencode": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "pi": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "openclaw": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
+      "hermes": { enabled: true },
     }),
     normalize: normalizeAgents,
   },
@@ -222,6 +223,8 @@ function validate(raw) {
 // v0 → v1: add `version`, `agents`, `themeOverrides` fields. Existing fields
 //   stay as-is and get re-validated downstream. Pre-existing prefs files have
 //   no `version` key — that's the v0 marker.
+// v1 → v2: no structural migration. Version 2 is the first schema version that
+//   includes Hermes in the built-in agent defaults.
 function migrate(raw) {
   if (!raw || typeof raw !== "object") return raw;
   const out = { ...raw };
@@ -272,6 +275,9 @@ function migrate(raw) {
     };
     out.version = 2;
   }
+  if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
+    out.version = CURRENT_VERSION;
+  }
   // Future migrations slot in here as `if (out.version < N) { ... out.version = N }`.
   return out;
 }
@@ -308,7 +314,8 @@ function normalizeAgents(value, defaultsValue) {
       || { enabled: true, permissionsEnabled: true, notificationHookEnabled: true };
     const merged = { ...base };
     let touched = false;
-    for (const flag of AGENT_FLAGS) {
+    const allowedFlags = AGENT_FLAGS.filter((flag) => Object.prototype.hasOwnProperty.call(base, flag));
+    for (const flag of allowedFlags) {
       if (typeof entry[flag] === "boolean") {
         merged[flag] = entry[flag];
         touched = true;

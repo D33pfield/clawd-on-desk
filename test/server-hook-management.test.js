@@ -120,6 +120,9 @@ function makeServer(overrides = {}) {
     repairCodexHooksImpl: () => syncCalls.push("codex-repair"),
     syncOpencodePluginImpl: () => syncCalls.push("opencode"),
     syncPiExtensionImpl: () => syncCalls.push("pi"),
+    syncOpenClawPluginImpl: () => syncCalls.push("openclaw"),
+    repairOpenClawPluginImpl: () => syncCalls.push("openclaw-repair"),
+    syncHermesPluginImpl: () => syncCalls.push("hermes"),
     ...overrides,
   };
 
@@ -141,8 +144,29 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["claude", "gemini", "cursor", "codebuddy", "kiro", "kimi", "codex", "opencode", "pi"]);
+    assert.deepStrictEqual(syncCalls, ["claude", "gemini", "cursor", "codebuddy", "kiro", "kimi", "codex", "opencode", "pi", "openclaw", "hermes"]);
     assert.ok(getWatcher(), "watcher should start when management is enabled");
+  });
+
+  it("startup skips Hermes plugin sync quietly when Hermes is not installed", () => {
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(" "));
+    try {
+      const { api, syncCalls, getWatcher } = makeServer({
+        manageClaudeHooksAutomatically: true,
+        syncHermesPluginImpl: undefined,
+        isHermesInstalledImpl: () => false,
+      });
+
+      api.startHttpServer();
+
+      assert.deepStrictEqual(syncCalls, ["claude", "gemini", "cursor", "codebuddy", "kiro", "kimi", "codex", "opencode", "pi", "openclaw"]);
+      assert.ok(getWatcher(), "watcher should start when management is enabled");
+      assert.strictEqual(warnings.some((line) => /Hermes/i.test(line)), false);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 
   it("startup skips Claude sync/watcher but still syncs other agents when automatic management is disabled", () => {
@@ -152,19 +176,19 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["gemini", "cursor", "codebuddy", "kiro", "kimi", "codex", "opencode", "pi"]);
+    assert.deepStrictEqual(syncCalls, ["gemini", "cursor", "codebuddy", "kiro", "kimi", "codex", "opencode", "pi", "openclaw", "hermes"]);
     assert.strictEqual(getWatcher(), null);
   });
 
   it("startup skips automatic hook/plugin sync for disabled agents", () => {
-    const disabled = new Set(["gemini-cli", "cursor-agent", "kiro-cli", "opencode", "pi"]);
+    const disabled = new Set(["gemini-cli", "cursor-agent", "kiro-cli", "opencode", "pi", "openclaw"]);
     const { api, syncCalls, getWatcher } = makeServer({
       isAgentEnabled: (agentId) => !disabled.has(agentId),
     });
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["claude", "codebuddy", "kimi", "codex"]);
+    assert.deepStrictEqual(syncCalls, ["claude", "codebuddy", "kimi", "codex", "hermes"]);
     assert.ok(getWatcher(), "Claude watcher should still start when Claude is enabled");
   });
 
@@ -175,7 +199,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["gemini", "cursor", "codebuddy", "kiro", "kimi", "codex", "opencode", "pi"]);
+    assert.deepStrictEqual(syncCalls, ["gemini", "cursor", "codebuddy", "kiro", "kimi", "codex", "opencode", "pi", "openclaw", "hermes"]);
     assert.strictEqual(getWatcher(), null);
   });
 
@@ -285,8 +309,8 @@ describe("server Claude hook management", () => {
     const second = makeServer({ manageClaudeHooksAutomatically: false });
     second.api.startHttpServer();
 
-    assert.deepStrictEqual(first.syncCalls, ["gemini", "cursor", "codebuddy", "kiro", "kimi", "codex", "opencode", "pi"]);
-    assert.deepStrictEqual(second.syncCalls, ["gemini", "cursor", "codebuddy", "kiro", "kimi", "codex", "opencode", "pi"]);
+    assert.deepStrictEqual(first.syncCalls, ["gemini", "cursor", "codebuddy", "kiro", "kimi", "codex", "opencode", "pi", "openclaw", "hermes"]);
+    assert.deepStrictEqual(second.syncCalls, ["gemini", "cursor", "codebuddy", "kiro", "kimi", "codex", "opencode", "pi", "openclaw", "hermes"]);
   });
 
   it("repairIntegrationForAgent uses the Codex official hook repair path", () => {

@@ -18,6 +18,7 @@ describe("session focus helpers", () => {
         { id: "sleeping", sourcePid: 1002, state: "sleeping" },
         { id: "hidden", sourcePid: 1003, state: "idle", hiddenFromHud: true },
         { id: "remote", sourcePid: 1004, state: "working", host: "remote-box" },
+        { id: "webui", sourcePid: 1005, state: "working", platform: "webui" },
       ],
     };
 

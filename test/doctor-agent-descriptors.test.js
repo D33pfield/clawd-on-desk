@@ -1,5 +1,6 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const path = require("node:path");
 
 const {
   AGENT_DESCRIPTORS,
@@ -23,6 +24,7 @@ describe("doctor agent descriptors", () => {
         "opencode",
         "pi",
         "openclaw",
+        "hermes",
       ]
     );
   });
@@ -38,6 +40,7 @@ describe("doctor agent descriptors", () => {
     const opencode = require("../hooks/opencode-install");
     const pi = require("../hooks/pi-install");
     const openclaw = require("../hooks/openclaw-install");
+    const hermes = require("../hooks/hermes-install");
 
     assert.strictEqual(getAgentDescriptor("claude-code").parentDir, claude.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("claude-code").configPath, claude.DEFAULT_CONFIG_PATH);
@@ -73,6 +76,12 @@ describe("doctor agent descriptors", () => {
     assert.strictEqual(getAgentDescriptor("openclaw").parentDir, openclaw.DEFAULT_STATE_DIR);
     assert.strictEqual(getAgentDescriptor("openclaw").configPath, openclaw.DEFAULT_CONFIG_PATH);
     assert.strictEqual(getAgentDescriptor("openclaw").marker, openclaw.PLUGIN_DIR_NAME);
+
+    assert.strictEqual(getAgentDescriptor("hermes").parentDir, hermes.resolveHermesHome());
+    assert.strictEqual(
+      getAgentDescriptor("hermes").configPath,
+      path.join(hermes.resolveHermesHome(), "plugins", hermes.PLUGIN_ID)
+    );
   });
 
   it("returns copies from public accessors", () => {

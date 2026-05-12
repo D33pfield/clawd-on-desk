@@ -7,7 +7,8 @@ function isFocusableLocalHudSession(entry) {
     && !entry.headless
     && entry.state !== "sleeping"
     && !entry.hiddenFromHud
-    && !entry.host;
+    && !entry.host
+    && entry.platform !== "webui";
 }
 
 function getFocusableLocalHudSessionIds(snapshot) {

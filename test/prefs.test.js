@@ -63,7 +63,7 @@ describe("prefs.getDefaults", () => {
 
   it("seeds all known agents as enabled", () => {
     const d = prefs.getDefaults();
-    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "opencode", "pi", "openclaw"]) {
+    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "opencode", "pi", "openclaw", "hermes"]) {
       assert.strictEqual(d.agents[id].enabled, true, `${id} should default enabled`);
     }
   });
@@ -77,6 +77,11 @@ describe("prefs.getDefaults", () => {
         `${id} should default permissionsEnabled`
       );
     }
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(d.agents.hermes, "permissionsEnabled"),
+      false,
+      "hermes should not expose a dead permissionsEnabled switch"
+    );
   });
 
   it("defaults OpenClaw permission bubbles off", () => {
@@ -285,6 +290,15 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.agents["claude-code"].permissionsEnabled, true);
   });
 
+  it("normalizes agents: strips Hermes permission/notification flags until implemented", () => {
+    const v = prefs.validate({
+      agents: {
+        hermes: { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      },
+    });
+    assert.deepStrictEqual(v.agents.hermes, { enabled: true });
+  });
+
   it("normalizes agents: preserves notificationHookEnabled flag", () => {
     const v = prefs.validate({
       agents: {
@@ -335,6 +349,11 @@ describe("prefs.validate", () => {
         `${id} should default notificationHookEnabled`
       );
     }
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(d.agents.hermes, "notificationHookEnabled"),
+      false,
+      "hermes should not expose a dead notificationHookEnabled switch"
+    );
   });
 
   it("returns defaults for null/non-object input", () => {
@@ -571,6 +590,27 @@ describe("prefs.load", () => {
     // New fields populated from defaults
     assert.ok(snapshot.agents);
     assert.ok(snapshot.themeOverrides);
+  });
+
+  it("loads v2 prefs without locking or warning", () => {
+    const p = makeTempPath();
+    fs.writeFileSync(
+      p,
+      JSON.stringify({ version: 2, lang: "zh" }),
+      "utf8"
+    );
+    const originalWarn = console.warn;
+    let warned = false;
+    console.warn = () => { warned = true; };
+    try {
+      const { snapshot, locked } = prefs.load(p);
+      assert.strictEqual(locked, false);
+      assert.strictEqual(snapshot.version, prefs.CURRENT_VERSION);
+      assert.strictEqual(snapshot.lang, "zh");
+      assert.strictEqual(warned, false);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 
   it("returns locked=true and warns for future-version files", () => {

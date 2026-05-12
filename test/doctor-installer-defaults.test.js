@@ -15,6 +15,7 @@ describe("installer default path exports", () => {
     const kimi = require("../hooks/kimi-install");
     const opencode = require("../hooks/opencode-install");
     const pi = require("../hooks/pi-install");
+    const hermes = require("../hooks/hermes-install");
 
     assert.strictEqual(claude.DEFAULT_PARENT_DIR, path.join(home, ".claude"));
     assert.strictEqual(claude.DEFAULT_CONFIG_PATH, path.join(home, ".claude", "settings.json"));
@@ -43,5 +44,8 @@ describe("installer default path exports", () => {
 
     assert.strictEqual(pi.DEFAULT_PARENT_DIR, path.join(home, ".pi", "agent"));
     assert.strictEqual(pi.DEFAULT_EXTENSION_DIR, path.join(home, ".pi", "agent", "extensions", "clawd-on-desk"));
+
+    assert.strictEqual(hermes.DEFAULT_PARENT_DIR, path.join(home, ".hermes"));
+    assert.strictEqual(hermes.DEFAULT_PLUGIN_DIR, path.join(home, ".hermes", "plugins", "clawd-on-desk"));
   });
 });
