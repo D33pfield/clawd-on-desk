@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
-  <!-- clawd 戴巫师帽螃蟹走 v7 - 2026-05-11
+  <!-- clawd 戴巫师帽螃蟹走 v7 dark-hat variant - 2026-05-11
        基于调参页参数回填:
        dropY=2 dropX=0.7 recoverY=0.8 fallScale=1.11 pushScale=1
        tilt=7.5 counterTilt=-3 brimX=-0.2 brimY=-0.5 brimTilt=7 brimCounterTilt=-1.5
@@ -10,6 +10,7 @@
          - 扶帽时帽子轻微上浮, 帽尖软弹, 帽星闪烁。
          - 手碰帽后弹出 5 颗像素星尘, 增加巫师帽魔法感。
          - 成功后眼睛看向用户并眨眼; 眼睛高光常驻显示。
+         - dark variant: 帽子改成更接近拼豆图纸的深蓝紫/靛紫配色。
   -->
 
   <defs>
@@ -286,7 +287,7 @@
       <g id="wizard-hat-fit" transform="translate(0, 1.5) translate(7.5, 6) scale(0.95) translate(-7.5, -6)">
         <g class="hat-tilt">
           <g class="hat-crown-magic">
-          <g id="hat-cone" fill="#B984D8">
+          <g id="hat-cone" fill="#5865C8">
             <rect x="3" y="-5" width="4" height="1"/>
             <rect x="2" y="-4" width="6" height="1"/>
             <rect x="2" y="-3" width="7" height="1"/>
@@ -296,7 +297,7 @@
             <rect x="2" y="1"  width="11" height="1"/>
             <rect x="2" y="2"  width="11" height="1"/>
           </g>
-          <g id="hat-fold" fill="#9F65C9">
+          <g id="hat-fold" fill="#404CB0">
             <rect x="4" y="-3" width="1" height="1"/>
             <rect x="4" y="-2" width="1" height="1"/>
           </g>
@@ -309,14 +310,14 @@
             <rect x="10" y="2" width="1" height="1"/>
           </g>
           </g>
-          <g id="hat-band" fill="#6F55B5">
+          <g id="hat-band" fill="#2C2557">
             <rect x="1" y="3" width="13" height="2"/>
           </g>
         </g>
 
         <g transform="translate(-0.2, -0.5)">
         <g class="brim-tilt">
-        <g id="hat-brim" fill="#C28ADC">
+        <g id="hat-brim" fill="#6A70D8">
           <rect class="brim-side" x="-1" y="5" width="3" height="1"/>
           <rect class="brim-center" x="2" y="5" width="11" height="1"/>
           <rect class="brim-side" x="13" y="5" width="3" height="1"/>
