@@ -38,6 +38,9 @@ function resolveHermesHome(options = {}) {
     const localHermes = path.join(env.LOCALAPPDATA, "hermes");
     try {
       if (fs.existsSync(path.join(localHermes, "config.yaml"))) return localHermes;
+      if (fs.existsSync(path.join(localHermes, "hermes-agent", "venv", "Scripts", "hermes.exe"))) {
+        return localHermes;
+      }
     } catch {}
   }
 
@@ -158,6 +161,9 @@ function runHermesCli(args, options = {}) {
   const hermesHome = options.hermesHome || resolveHermesHome(options);
   const command = resolveHermesCommand({ ...options, hermesHome });
   const displayCommand = formatHermesCommand(command || "hermes", args);
+  const timeout = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+    ? Math.floor(options.timeoutMs)
+    : 5000;
   if (!command) {
     return {
       ok: false,
@@ -172,6 +178,7 @@ function runHermesCli(args, options = {}) {
   const result = spawn(command, args, {
     encoding: "utf8",
     env: { ...(options.env || process.env), HERMES_HOME: hermesHome },
+    timeout,
     windowsHide: true,
   });
   if (result && result.error) {

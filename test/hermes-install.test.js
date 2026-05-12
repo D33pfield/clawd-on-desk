@@ -211,6 +211,55 @@ describe("Hermes plugin installer", () => {
     assert.strictEqual(installed, true);
   });
 
+  it("uses LOCALAPPDATA/hermes as Hermes home when only the Windows venv command exists", () => {
+    const sourcePluginDir = makeSourcePlugin();
+    const localAppData = makeTempDir();
+    const homeDir = makeTempDir();
+    const localHermes = path.join(localAppData, "hermes");
+    const command = path.join(localHermes, "hermes-agent", "venv", "Scripts", "hermes.exe");
+    fs.mkdirSync(path.dirname(command), { recursive: true });
+    fs.writeFileSync(command, "", "utf8");
+    const spawnSync = makeSpawn();
+
+    const result = registerHermesPlugin({
+      silent: true,
+      sourcePluginDir,
+      env: { LOCALAPPDATA: localAppData },
+      platform: "win32",
+      homeDir,
+      spawnSync,
+    });
+
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(result.hermesHome, localHermes);
+    assert.strictEqual(result.pluginDir, path.join(localHermes, "plugins", PLUGIN_ID));
+    assert.strictEqual(spawnSync.calls[0].command, command);
+    assert.strictEqual(spawnSync.calls[0].options.env.HERMES_HOME, localHermes);
+  });
+
+  it("bounds Hermes CLI calls with a timeout and reports enable timeouts as repairable errors", () => {
+    const sourcePluginDir = makeSourcePlugin();
+    const hermesHome = makeTempDir();
+    const timeout = new Error("spawnSync hermes ETIMEDOUT");
+    timeout.code = "ETIMEDOUT";
+    const spawnSync = makeSpawn(0, { error: timeout });
+
+    const result = registerHermesPlugin({
+      silent: true,
+      hermesHome,
+      sourcePluginDir,
+      hermesCommand: "hermes",
+      spawnSync,
+      timeoutMs: 1234,
+      env: {},
+    });
+
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.reason, "hermes-cli-enable-failed");
+    assert.match(result.message, /enabling failed/);
+    assert.strictEqual(spawnSync.calls[0].options.timeout, 1234);
+  });
+
   it("uninstaller disables through CLI and removes only the managed plugin directory", () => {
     const hermesHome = makeTempDir();
     const pluginDir = path.join(hermesHome, "plugins", PLUGIN_ID);
