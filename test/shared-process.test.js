@@ -172,25 +172,31 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
     try { cb(); } finally { childProcess.execFileSync = orig; }
   }
 
-  function psJson(name, parentPid) {
-    return JSON.stringify({ Name: name, ParentProcessId: parentPid });
+  // Builds the JSON the snapshot helper expects: one ConvertTo-Json array of
+  // process records. Each record: { pid, name, ppid, cmd? }
+  function snapshotJson(procs) {
+    return JSON.stringify(procs.map((p) => ({
+      ProcessId: p.pid,
+      Name: p.name,
+      ParentProcessId: p.ppid,
+      CommandLine: typeof p.cmd === "string" ? p.cmd : null,
+    })));
   }
 
-  it("populates pidChain by walking PS JSON output", () => {
+  it("populates pidChain by walking the snapshot Map", () => {
     const cfg = getPlatformConfig();
     const resolve = createPidResolver({ platformConfig: cfg, startPid: 1000 });
-    withMockedExec((_cmd, args) => {
-      if (args[3].includes("ProcessId=1000")) return psJson("cmd.exe", 1001);
-      if (args[3].includes("ProcessId=1001")) return psJson("explorer.exe", 0);
-      return "";
-    }, () => {
+    withMockedExec(() => snapshotJson([
+      { pid: 1000, name: "cmd.exe", ppid: 1001 },
+      { pid: 1001, name: "explorer.exe", ppid: 0 },
+    ]), () => {
       const { pidChain } = resolve();
       assert.ok(pidChain.includes(1000));
       assert.ok(pidChain.includes(1001));
     });
   });
 
-  it("breaks the walk immediately when PS returns empty (process not found)", () => {
+  it("breaks the walk immediately when the snapshot is empty", () => {
     const cfg = getPlatformConfig();
     const resolve = createPidResolver({ platformConfig: cfg, startPid: 9999 });
     withMockedExec(() => "", () => {
@@ -211,10 +217,9 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
   it("sets stablePid to the terminal PID when a terminal process is found", () => {
     const cfg = getPlatformConfig();
     const resolve = createPidResolver({ platformConfig: cfg, startPid: 500 });
-    withMockedExec((_cmd, args) => {
-      if (args[3].includes("ProcessId=500")) return psJson("windowsterminal.exe", 0);
-      return "";
-    }, () => {
+    withMockedExec(() => snapshotJson([
+      { pid: 500, name: "windowsterminal.exe", ppid: 0 },
+    ]), () => {
       const { stablePid } = resolve();
       assert.strictEqual(stablePid, 500);
     });
@@ -223,10 +228,9 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
   it("detects editor from process name", () => {
     const cfg = getPlatformConfig();
     const resolve = createPidResolver({ platformConfig: cfg, startPid: 200 });
-    withMockedExec((_cmd, args) => {
-      if (args[3].includes("ProcessId=200")) return psJson("code.exe", 0);
-      return "";
-    }, () => {
+    withMockedExec(() => snapshotJson([
+      { pid: 200, name: "code.exe", ppid: 0 },
+    ]), () => {
       const { detectedEditor } = resolve();
       assert.strictEqual(detectedEditor, "code");
     });
@@ -235,15 +239,31 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
   it("stops the walk at a system boundary process (explorer.exe)", () => {
     const cfg = getPlatformConfig();
     const resolve = createPidResolver({ platformConfig: cfg, startPid: 300 });
-    let callCount = 0;
+    withMockedExec(() => snapshotJson([
+      { pid: 300, name: "cmd.exe", ppid: 301 },
+      { pid: 301, name: "explorer.exe", ppid: 302 },
+      { pid: 302, name: "unreachable.exe", ppid: 0 },
+    ]), () => {
+      const { pidChain } = resolve();
+      assert.ok(pidChain.includes(301), "explorer.exe must be in the chain");
+      assert.ok(!pidChain.includes(302), "walk must stop after the system boundary");
+    });
+  });
+
+  it("uses a single PowerShell spawn for the snapshot regardless of chain depth", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ platformConfig: cfg, startPid: 100 });
+    let spawnCount = 0;
     withMockedExec(() => {
-      callCount++;
-      if (callCount === 1) return psJson("cmd.exe", 301);
-      if (callCount === 2) return psJson("explorer.exe", 0);
-      return psJson("unreachable.exe", 0);
+      spawnCount++;
+      return snapshotJson([
+        { pid: 100, name: "cmd.exe", ppid: 101 },
+        { pid: 101, name: "powershell.exe", ppid: 102 },
+        { pid: 102, name: "windowsterminal.exe", ppid: 0 },
+      ]);
     }, () => {
       resolve();
-      assert.strictEqual(callCount, 2, "must stop at system boundary");
+      assert.strictEqual(spawnCount, 1, "snapshot must be taken exactly once");
     });
   });
 
@@ -254,33 +274,29 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
       startPid: 400,
       agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
     });
-    withMockedExec((_cmd, args) => {
-      if (args[3].includes("ProcessId=400")) return psJson("node.exe", 401);
-      if (args[3].includes("ProcessId=401")) return psJson("claude.exe", 0);
-      return "";
-    }, () => {
-      const { agentPid } = resolve();
+    withMockedExec(() => snapshotJson([
+      { pid: 400, name: "node.exe", ppid: 401 },
+      { pid: 401, name: "claude.exe", ppid: 0, cmd: "C:\\Program Files\\claude\\claude.exe" },
+    ]), () => {
+      const { agentPid, agentCommandLine } = resolve();
       assert.strictEqual(agentPid, 401);
+      assert.ok(agentCommandLine.includes("claude.exe"), "agentCommandLine must come from the snapshot");
     });
   });
 
-  it("detects agentPid via agentCmdlineCheck on node.exe", () => {
+  it("detects agentPid via agentCmdlineCheck on node.exe using snapshot CommandLine", () => {
     const cfg = getPlatformConfig();
     const resolve = createPidResolver({
       platformConfig: cfg,
       startPid: 600,
       agentCmdlineCheck: (cmdline) => cmdline.includes("claude-code"),
     });
-    withMockedExec((_cmd, args) => {
-      const command = args[3];
-      if (command.includes("Select-Object")) {
-        if (command.includes("ProcessId=600")) return psJson("node.exe", 0);
-        return "";
-      }
-      return "node C:\\Users\\x\\AppData\\Local\\claude-code\\index.js";
-    }, () => {
-      const { agentPid } = resolve();
+    withMockedExec(() => snapshotJson([
+      { pid: 600, name: "node.exe", ppid: 0, cmd: "node C:\\Users\\x\\AppData\\Local\\claude-code\\index.js" },
+    ]), () => {
+      const { agentPid, agentCommandLine } = resolve();
       assert.strictEqual(agentPid, 600);
+      assert.ok(agentCommandLine.includes("claude-code"));
     });
   });
 });
