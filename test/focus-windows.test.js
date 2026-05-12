@@ -125,6 +125,23 @@ describe("Windows terminal focus", () => {
     }
   });
 
+  it("tries the attached console HWND when a PowerShell process has no main window", () => {
+    const { initFocus, cleanup } = loadFocusWithMock();
+    try {
+      const focus = initFocus({});
+      const cmd = focus.__test.makeFocusCmd(1234, ["repo"]);
+      const helperScript = focus.__test.PS_FOCUS_ADDTYPE;
+
+      assert.match(helperScript, /AttachConsole/);
+      assert.match(helperScript, /GetConsoleWindow/);
+      assert.match(helperScript, /FindConsoleWindowForPid/);
+      assert.match(cmd, /FindConsoleWindowForPid\(\[uint32\]\$curPid\)/);
+      assert.match(cmd, /reason = 'console-window'/);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("logs Windows helper stdout through Node focus logging", () => {
     const logs = [];
     const { initFocus, cleanup } = loadFocusWithMock();

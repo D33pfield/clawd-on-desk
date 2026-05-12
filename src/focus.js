@@ -93,6 +93,9 @@ public class WinFocus {
     public static extern int GetWindowText(IntPtr hWnd, StringBuilder sb, int maxCount);
     [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool AttachConsole(uint dwProcessId);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool FreeConsole();
+    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
     public static void Focus(IntPtr hWnd) {
@@ -101,6 +104,18 @@ public class WinFocus {
         keybd_event(0x12, 0, 0, UIntPtr.Zero);
         keybd_event(0x12, 0, 2, UIntPtr.Zero);
         SetForegroundWindow(hWnd);
+    }
+    public static IntPtr FindConsoleWindowForPid(uint targetPid) {
+        // Console shells such as powershell.exe / pwsh.exe can have
+        // MainWindowHandle == 0 because the visible HWND belongs to the
+        // console host. Attaching briefly lets us retrieve that HWND.
+        // The helper uses stdin/stdout pipes, so detaching from a console does
+        // not break the IPC channel back to Electron.
+        FreeConsole();
+        if (!AttachConsole(targetPid)) return IntPtr.Zero;
+        IntPtr hWnd = GetConsoleWindow();
+        FreeConsole();
+        return hWnd;
     }
     public static IntPtr[] FindByPidTitles(uint targetPid, string[] subs) {
         var found = new List<IntPtr>();
@@ -211,6 +226,13 @@ for ($i = 0; $i -lt 8; $i++) {
     $proc = Get-Process -Id $curPid -ErrorAction SilentlyContinue
     if (-not $proc -or $proc.ProcessName -eq 'explorer') { break }
     if ($proc.MainWindowHandle -ne 0) {${parentWindowBlock}
+    }
+    $consoleHwnd = [WinFocus]::FindConsoleWindowForPid([uint32]$curPid)
+    if ($consoleHwnd -ne [IntPtr]::Zero -and [WinFocus]::IsWindowVisible($consoleHwnd)) {
+        [WinFocus]::Focus($consoleHwnd)
+        $focused = $true
+        $reason = 'console-window'
+        break
     }
     $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$curPid" -ErrorAction SilentlyContinue
     if (-not $cim -or $cim.ParentProcessId -eq 0 -or $cim.ParentProcessId -eq $curPid) { break }

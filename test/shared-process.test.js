@@ -29,6 +29,12 @@ describe("getPlatformConfig()", () => {
     assert.ok(all.length > 5, "should have several terminals");
   });
 
+  it("recognizes Windows console hosts as terminal anchors", { skip: process.platform !== "win32" }, () => {
+    const cfg = getPlatformConfig();
+    assert.ok(cfg.terminalNames.has("conhost.exe"));
+    assert.ok(cfg.terminalNames.has("openconsole.exe"));
+  });
+
   it("merges extraTerminals into base set", () => {
     const cfg = getPlatformConfig({
       extraTerminals: { win: ["custom.exe"], mac: ["custom"], linux: ["custom"] },

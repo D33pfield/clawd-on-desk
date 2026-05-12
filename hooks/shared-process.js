@@ -6,6 +6,7 @@
 
 const BASE_TERMINAL_NAMES_WIN = [
   "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+  "conhost.exe", "openconsole.exe",
   "code.exe", "alacritty.exe", "wezterm-gui.exe", "mintty.exe",
   "conemu64.exe", "conemu.exe", "hyper.exe", "tabby.exe",
   "antigravity.exe", "warp.exe", "iterm.exe", "ghostty.exe",
