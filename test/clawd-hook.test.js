@@ -146,22 +146,13 @@ describe("buildStateBody", () => {
   });
 
   describe("agentPid and headless detection", () => {
-    const childProcess = require("child_process");
-    const makeResolve = (agentPid) =>
-      () => ({ stablePid: 1, agentPid, detectedEditor: null, pidChain: [] });
-
-    function withMockedExec(mockFn, cb) {
-      const orig = childProcess.execFileSync;
-      childProcess.execFileSync = mockFn;
-      try { cb(); } finally { childProcess.execFileSync = orig; }
-    }
+    const makeResolve = (agentPid, agentCommandLine = "") =>
+      () => ({ stablePid: 1, agentPid, agentCommandLine, detectedEditor: null, pidChain: [] });
 
     it("sets agent_pid and claude_pid when agentPid is present", () => {
-      withMockedExec(() => "", () => {
-        const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(42));
-        assert.strictEqual(body.agent_pid, 42);
-        assert.strictEqual(body.claude_pid, 42);
-      });
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(42));
+      assert.strictEqual(body.agent_pid, 42);
+      assert.strictEqual(body.claude_pid, 42);
     });
 
     it("omits agent_pid and claude_pid when agentPid is absent", () => {
@@ -170,47 +161,38 @@ describe("buildStateBody", () => {
       assert.ok(!("claude_pid" in body));
     });
 
-    it("sets headless when cmdline ends with -p", () => {
-      withMockedExec(() => "node claude-code -p", () => {
-        const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99));
-        assert.strictEqual(body.headless, true);
-      });
+    it("sets headless when agentCommandLine ends with -p", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, "node claude-code -p"));
+      assert.strictEqual(body.headless, true);
     });
 
-    it("sets headless when cmdline has -p followed by a space", () => {
-      withMockedExec(() => "node claude-code -p some-prompt", () => {
-        const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99));
-        assert.strictEqual(body.headless, true);
-      });
+    it("sets headless when agentCommandLine has -p followed by a space", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, "node claude-code -p some-prompt"));
+      assert.strictEqual(body.headless, true);
     });
 
-    it("sets headless when cmdline contains --print", () => {
-      withMockedExec(() => "node claude-code --print", () => {
-        const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99));
-        assert.strictEqual(body.headless, true);
-      });
+    it("sets headless when agentCommandLine contains --print", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, "node claude-code --print"));
+      assert.strictEqual(body.headless, true);
     });
 
     it("does not set headless when -p is a prefix of a longer option", () => {
-      withMockedExec(() => "node claude-code --port 3000", () => {
-        const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99));
-        assert.ok(!("headless" in body));
-      });
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, "node claude-code --port 3000"));
+      assert.ok(!("headless" in body));
     });
 
-    it("does not set headless when cmdline is empty", () => {
-      withMockedExec(() => "", () => {
-        const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99));
-        assert.ok(!("headless" in body));
-      });
+    it("does not set headless when agentCommandLine is empty", () => {
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(99, ""));
+      assert.ok(!("headless" in body));
     });
 
-    it("keeps agent_pid set when execFileSync throws", () => {
-      withMockedExec(() => { throw new Error("ENOENT"); }, () => {
-        const body = buildStateBody("PreToolUse", { session_id: "s" }, makeResolve(77));
-        assert.strictEqual(body.agent_pid, 77);
-        assert.ok(!("headless" in body));
-      });
+    it("does not set headless when agentCommandLine is missing from resolve()", () => {
+      // Backward compat: a resolver that never populates agentCommandLine must
+      // not crash and must not set headless.
+      const resolve = () => ({ stablePid: 1, agentPid: 77, detectedEditor: null, pidChain: [] });
+      const body = buildStateBody("PreToolUse", { session_id: "s" }, resolve);
+      assert.strictEqual(body.agent_pid, 77);
+      assert.ok(!("headless" in body));
     });
   });
 

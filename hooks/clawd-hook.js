@@ -165,29 +165,17 @@ function buildStateBody(event, payload, resolve) {
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
   } else {
-    const { stablePid, agentPid, detectedEditor, pidChain } = resolve();
+    const { stablePid, agentPid, agentCommandLine, detectedEditor, pidChain } = resolve();
     body.source_pid = stablePid;
     if (detectedEditor) body.editor = detectedEditor;
     if (agentPid) {
       body.agent_pid = agentPid;
       body.claude_pid = agentPid; // backward compat with older Clawd versions
-      // Check if claude process is running in non-interactive (-p/--print) mode.
-      // Windows 11 24H2+ removed wmic, so fall back to PowerShell Get-CimInstance.
-      try {
-        const { execFileSync } = require("child_process");
-        const isWin = process.platform === "win32";
-        const cmdOut = isWin
-          ? execFileSync(
-              "powershell.exe",
-              [
-                "-NoProfile", "-NonInteractive", "-Command",
-                `(Get-CimInstance Win32_Process -Filter "ProcessId=${agentPid}" -ErrorAction SilentlyContinue).CommandLine`,
-              ],
-              { encoding: "utf8", timeout: 500, windowsHide: true }
-            )
-          : execFileSync("ps", ["-o", "command=", "-p", String(agentPid)], { encoding: "utf8", timeout: 500 });
-        if (/\s(-p|--print)(\s|$)/.test(cmdOut)) body.headless = true;
-      } catch {}
+      // Headless (-p/--print) detection reuses the agentCommandLine captured by
+      // the resolver — no extra spawn here. See hooks/shared-process.js.
+      if (agentCommandLine && /\s(-p|--print)(\s|$)/.test(agentCommandLine)) {
+        body.headless = true;
+      }
     }
     if (pidChain.length) body.pid_chain = pidChain;
   }
