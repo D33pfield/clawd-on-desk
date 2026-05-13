@@ -58,8 +58,8 @@ function createHarness(overrides = {}) {
       calls.push(["setSessionAlias", payload]);
       return { status: "ok", alias: payload.alias };
     }),
-    showDashboard: overrides.showDashboard || (() => {
-      calls.push(["showDashboard"]);
+    showDashboard: overrides.showDashboard || ((options) => {
+      calls.push(["showDashboard", options]);
     }),
     setSessionHudPinned: overrides.setSessionHudPinned || ((value) => {
       calls.push(["setSessionHudPinned", value]);
@@ -138,8 +138,8 @@ test("session IPC owns dashboard open bridges", () => {
   ipcMain.send("show-dashboard");
 
   assert.deepStrictEqual(calls, [
-    ["showDashboard"],
-    ["showDashboard"],
-    ["showDashboard"],
+    ["showDashboard", { source: "hud" }],
+    ["showDashboard", { source: "settings" }],
+    ["showDashboard", undefined],
   ]);
 });

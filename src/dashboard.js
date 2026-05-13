@@ -14,6 +14,31 @@ function getDashboardBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? DARK_BACKGROUND : LIGHT_BACKGROUND;
 }
 
+function isUsableBounds(bounds) {
+  return !!bounds
+    && Number.isFinite(bounds.x)
+    && Number.isFinite(bounds.y)
+    && Number.isFinite(bounds.width)
+    && Number.isFinite(bounds.height)
+    && bounds.width > 0
+    && bounds.height > 0;
+}
+
+function clampBoundsToWorkArea(bounds, workArea) {
+  const width = Math.min(bounds.width, workArea.width);
+  const height = Math.min(bounds.height, workArea.height);
+  const minX = workArea.x;
+  const minY = workArea.y;
+  const maxX = workArea.x + workArea.width - width;
+  const maxY = workArea.y + workArea.height - height;
+  return {
+    x: Math.round(Math.min(Math.max(bounds.x, minX), maxX)),
+    y: Math.round(Math.min(Math.max(bounds.y, minY), maxY)),
+    width: Math.round(width),
+    height: Math.round(height),
+  };
+}
+
 module.exports = function initDashboard(ctx) {
   let dashboardWindow = null;
 
@@ -42,6 +67,52 @@ module.exports = function initDashboard(ctx) {
     };
   }
 
+  function getSettingsWindow() {
+    return typeof ctx.getSettingsWindow === "function"
+      ? ctx.getSettingsWindow()
+      : null;
+  }
+
+  function getSettingsBounds(settingsWindow) {
+    if (!settingsWindow || typeof settingsWindow.isDestroyed !== "function") return null;
+    if (settingsWindow.isDestroyed()) return null;
+    if (typeof settingsWindow.isMinimized === "function" && settingsWindow.isMinimized()) return null;
+    if (typeof settingsWindow.getBounds !== "function") return null;
+    const bounds = settingsWindow.getBounds();
+    return isUsableBounds(bounds) ? bounds : null;
+  }
+
+  function computeSettingsAnchoredBounds(settingsBounds) {
+    const cx = settingsBounds.x + settingsBounds.width / 2;
+    const cy = settingsBounds.y + settingsBounds.height / 2;
+    const workArea = typeof ctx.getNearestWorkArea === "function"
+      ? ctx.getNearestWorkArea(cx, cy)
+      : { x: 0, y: 0, width: 1280, height: 800 };
+    const width = Math.max(MIN_WIDTH, Math.min(DEFAULT_WIDTH, settingsBounds.width, workArea.width));
+    const height = Math.max(MIN_HEIGHT, Math.min(settingsBounds.height, workArea.height));
+    return clampBoundsToWorkArea({
+      x: settingsBounds.x + (settingsBounds.width - width) / 2,
+      y: settingsBounds.y,
+      width,
+      height,
+    }, workArea);
+  }
+
+  function getDashboardPlacement(options = {}) {
+    if (options.source !== "settings") {
+      return { bounds: computeInitialBounds(), parent: null };
+    }
+    const settingsWindow = getSettingsWindow();
+    const settingsBounds = getSettingsBounds(settingsWindow);
+    if (!settingsBounds) {
+      return { bounds: computeInitialBounds(), parent: null };
+    }
+    return {
+      bounds: computeSettingsAnchoredBounds(settingsBounds),
+      parent: settingsWindow,
+    };
+  }
+
   function sendSnapshot(snapshot = getCurrentSnapshot()) {
     if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
     if (!dashboardWindow.webContents || dashboardWindow.webContents.isDestroyed()) return;
@@ -55,10 +126,10 @@ module.exports = function initDashboard(ctx) {
     dashboardWindow.webContents.send("dashboard:lang-change", ctx.getI18n());
   }
 
-  function createDashboardWindow() {
-    const bounds = computeInitialBounds();
+  function createDashboardWindow(options = {}) {
+    const placement = getDashboardPlacement(options);
     const opts = {
-      ...bounds,
+      ...placement.bounds,
       minWidth: MIN_WIDTH,
       minHeight: MIN_HEIGHT,
       show: false,
@@ -77,6 +148,10 @@ module.exports = function initDashboard(ctx) {
         contextIsolation: true,
       },
     };
+    if (placement.parent) {
+      opts.parent = placement.parent;
+      opts.modal = false;
+    }
     if (ctx.iconPath) opts.icon = ctx.iconPath;
 
     dashboardWindow = new BrowserWindow(opts);
@@ -106,16 +181,25 @@ module.exports = function initDashboard(ctx) {
     nativeTheme.on("updated", syncThemeBackground);
   }
 
-  function showDashboard() {
+  function showDashboard(options = {}) {
     if (dashboardWindow && !dashboardWindow.isDestroyed()) {
       if (dashboardWindow.isMinimized()) dashboardWindow.restore();
+      if (options.source === "settings") {
+        const placement = getDashboardPlacement(options);
+        if (placement.parent && typeof dashboardWindow.setParentWindow === "function") {
+          dashboardWindow.setParentWindow(placement.parent);
+        }
+        if (isUsableBounds(placement.bounds) && typeof dashboardWindow.setBounds === "function") {
+          dashboardWindow.setBounds(placement.bounds);
+        }
+      }
       dashboardWindow.show();
       dashboardWindow.focus();
       sendI18n();
       sendSnapshot();
       return dashboardWindow;
     }
-    return createDashboardWindow();
+    return createDashboardWindow(options);
   }
 
   function broadcastSessionSnapshot(snapshot) {

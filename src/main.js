@@ -1092,6 +1092,7 @@ const _dashboard = require("./dashboard")({
   getI18n: () => getDashboardI18nPayload(),
   getPetWindowBounds,
   getNearestWorkArea,
+  getSettingsWindow: () => settingsWindowRuntime.getWindow(),
   iconPath: settingsWindowRuntime.getIconPath(),
 });
 showDashboard = _dashboard.showDashboard;
