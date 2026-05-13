@@ -2,15 +2,26 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const fs = require("fs");
 const path = require("path");
 const { fileURLToPath } = require("url");
 
+const { getAllAgents } = require("../agents/registry");
 const {
   AGENT_ICON_DIR,
   getAgentIconPath,
   getAgentIcon,
   getAgentIconUrl,
 } = require("../src/state-agent-icons");
+
+function readPngSize(filePath) {
+  const buffer = fs.readFileSync(filePath);
+  assert.strictEqual(buffer.toString("ascii", 1, 4), "PNG");
+  return {
+    width: buffer.readUInt32BE(16),
+    height: buffer.readUInt32BE(20),
+  };
+}
 
 describe("state agent icons", () => {
   it("returns undefined for BrowserWindow menu icons when nativeImage is unavailable", () => {
@@ -34,26 +45,50 @@ describe("state agent icons", () => {
     );
   });
 
-  it("supports bundled SVG agent icons", () => {
+  it("returns the bundled Kiro PNG icon", () => {
+    const iconUrl = getAgentIconUrl("kiro-cli");
+
+    assert.strictEqual(new URL(iconUrl).protocol, "file:");
+    assert.strictEqual(
+      path.normalize(fileURLToPath(iconUrl)),
+      path.join(AGENT_ICON_DIR, "kiro-cli.png")
+    );
+    assert.strictEqual(getAgentIconPath("kiro-cli"), path.join(AGENT_ICON_DIR, "kiro-cli.png"));
+  });
+
+  it("returns bundled PNG icons for Pi and OpenClaw", () => {
     const iconUrl = getAgentIconUrl("pi");
 
     assert.strictEqual(new URL(iconUrl).protocol, "file:");
     assert.strictEqual(
       path.normalize(fileURLToPath(iconUrl)),
-      path.join(AGENT_ICON_DIR, "pi.svg")
+      path.join(AGENT_ICON_DIR, "pi.png")
     );
-    assert.strictEqual(getAgentIconPath("pi"), path.join(AGENT_ICON_DIR, "pi.svg"));
+    assert.strictEqual(getAgentIconPath("pi"), path.join(AGENT_ICON_DIR, "pi.png"));
+
+    const openClawIconUrl = getAgentIconUrl("openclaw");
+    assert.strictEqual(new URL(openClawIconUrl).protocol, "file:");
+    assert.strictEqual(
+      path.normalize(fileURLToPath(openClawIconUrl)),
+      path.join(AGENT_ICON_DIR, "openclaw.png")
+    );
+    assert.strictEqual(getAgentIconPath("openclaw"), path.join(AGENT_ICON_DIR, "openclaw.png"));
   });
 
-  it("returns the bundled OpenClaw SVG icon", () => {
-    const iconUrl = getAgentIconUrl("openclaw");
+  it("has canonical runtime PNG icons for every registered agent", () => {
+    for (const agent of getAllAgents()) {
+      const iconPath = path.join(AGENT_ICON_DIR, `${agent.id}.png`);
+      assert.ok(fs.existsSync(iconPath), `Missing runtime PNG icon for ${agent.id}`);
+    }
+  });
 
-    assert.strictEqual(new URL(iconUrl).protocol, "file:");
-    assert.strictEqual(
-      path.normalize(fileURLToPath(iconUrl)),
-      path.join(AGENT_ICON_DIR, "openclaw.svg")
-    );
-    assert.strictEqual(getAgentIconPath("openclaw"), path.join(AGENT_ICON_DIR, "openclaw.svg"));
+  it("keeps runtime agent PNG icons at 64x64", () => {
+    for (const entry of fs.readdirSync(AGENT_ICON_DIR)) {
+      if (path.extname(entry).toLowerCase() !== ".png") continue;
+      const iconPath = path.join(AGENT_ICON_DIR, entry);
+      const size = readPngSize(iconPath);
+      assert.deepStrictEqual(size, { width: 64, height: 64 }, `${entry} should be 64x64`);
+    }
   });
 
   it("returns the cached URL value for repeated lookups", () => {
