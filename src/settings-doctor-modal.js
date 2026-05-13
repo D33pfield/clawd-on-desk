@@ -417,7 +417,7 @@
           `<span class="doctor-check-summary">${escape(core, summary)}</span>` +
           `<span class="doctor-check-status">${escape(core, checkStatusLabel(core, check))}</span>` +
         `</button>` +
-        `<div class="doctor-agent-body" aria-hidden="${expanded ? "false" : "true"}">` +
+        `<div class="doctor-agent-body" aria-hidden="${expanded ? "false" : "true"}"${expanded ? "" : " inert"}>` +
           `<div class="doctor-agent-body-inner">` +
             renderAgentRows(core, check) +
           `</div>` +
@@ -673,7 +673,11 @@
           row.classList.toggle("expanded", !expanded);
           row.classList.toggle("collapsed", expanded);
         }
-        if (body) body.setAttribute("aria-hidden", expanded ? "true" : "false");
+        if (body) {
+          body.setAttribute("aria-hidden", expanded ? "true" : "false");
+          if (expanded) body.setAttribute("inert", "");
+          else body.removeAttribute("inert");
+        }
       });
     }
   }

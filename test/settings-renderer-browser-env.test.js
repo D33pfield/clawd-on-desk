@@ -1118,6 +1118,9 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes('button.setAttribute("aria-expanded"'));
     assert.ok(doctorModalSource.includes('row.classList.toggle("expanded"'));
     assert.ok(doctorModalSource.includes('body.setAttribute("aria-hidden"'));
+    assert.ok(doctorModalSource.includes('" inert"'));
+    assert.ok(doctorModalSource.includes('body.setAttribute("inert", "")'));
+    assert.ok(doctorModalSource.includes("body.removeAttribute(\"inert\")"));
     assert.ok(doctorModalSource.includes("checkNeedsAttention"));
     assert.ok(doctorModalSource.includes("formatAgentIntegrationSummary"));
     assert.ok(doctorModalSource.includes("formatAgentAttentionNames"));
