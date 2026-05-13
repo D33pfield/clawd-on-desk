@@ -1,49 +1,7 @@
 // test/focus-iterm-tab.test.js — Tests for iTerm2 tab-level focus switching
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
-
-// focus.js destructures { execFile, spawn } at require-time, so we must
-// patch child_process and process.platform BEFORE requiring focus.js.
-
-function loadFocusWithMock(execFileMock, options = {}) {
-  const cpKey = require.resolve("child_process");
-  const focusKey = require.resolve("../src/focus");
-  const platform = options.platform || "darwin";
-
-  // Save originals
-  const origCp = require.cache[cpKey];
-  const origFocus = require.cache[focusKey];
-  const origPlatform = Object.getOwnPropertyDescriptor(process, "platform");
-
-  // Build a patched child_process module
-  const realCp = require("child_process");
-  const patchedCp = { ...realCp, execFile: execFileMock, spawn: realCp.spawn };
-  require.cache[cpKey] = { id: cpKey, filename: cpKey, loaded: true, exports: patchedCp };
-  Object.defineProperty(process, "platform", {
-    ...origPlatform,
-    value: platform,
-  });
-
-  // Clear focus.js cache so it picks up patched child_process
-  delete require.cache[focusKey];
-  let initFocus;
-  try {
-    initFocus = require("../src/focus");
-  } finally {
-    Object.defineProperty(process, "platform", origPlatform);
-  }
-
-  // Restore child_process cache immediately (focus.js already captured the reference)
-  if (origCp) require.cache[cpKey] = origCp;
-  else delete require.cache[cpKey];
-
-  const cleanup = () => {
-    if (origFocus) require.cache[focusKey] = origFocus;
-    else delete require.cache[focusKey];
-  };
-
-  return { initFocus, cleanup };
-}
+const { loadFocusWithMock } = require("./helpers/load-focus-with-mock");
 
 describe("iTerm2 tab focus (macOS)", () => {
 
