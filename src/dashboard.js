@@ -101,16 +101,18 @@ module.exports = function initDashboard(ctx) {
 
   function getDashboardPlacement(options = {}) {
     if (options.source !== "settings") {
-      return { bounds: computeInitialBounds(), parent: null };
+      return { bounds: computeInitialBounds() };
     }
+    // Keep Settings-opened dashboard windows visually attached with absolute
+    // screen bounds. On Windows, using a BrowserWindow parent here can introduce
+    // frame/titlebar coordinate drift that makes the outer window heights differ.
     const settingsWindow = getSettingsWindow();
     const settingsBounds = getSettingsBounds(settingsWindow);
     if (!settingsBounds) {
-      return { bounds: computeInitialBounds(), parent: null };
+      return { bounds: computeInitialBounds() };
     }
     return {
       bounds: computeSettingsAnchoredBounds(settingsBounds),
-      parent: settingsWindow,
     };
   }
 
@@ -118,9 +120,6 @@ module.exports = function initDashboard(ctx) {
     if (options.source !== "settings") return;
     if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
     const placement = getDashboardPlacement(options);
-    if (placement.parent && typeof dashboardWindow.setParentWindow === "function") {
-      dashboardWindow.setParentWindow(placement.parent);
-    }
     if (isUsableBounds(placement.bounds) && typeof dashboardWindow.setBounds === "function") {
       dashboardWindow.setBounds(placement.bounds);
     }
@@ -170,10 +169,6 @@ module.exports = function initDashboard(ctx) {
         contextIsolation: true,
       },
     };
-    if (placement.parent) {
-      opts.parent = placement.parent;
-      opts.modal = false;
-    }
     if (ctx.iconPath) opts.icon = ctx.iconPath;
 
     dashboardWindow = new BrowserWindow(opts);

@@ -125,7 +125,7 @@ describe("dashboard window", () => {
     assert.strictEqual(getCreatedWindow().opts.modal, undefined);
   });
 
-  it("anchors dashboard windows opened from settings to the settings window", () => {
+  it("visually anchors dashboard windows opened from settings to the settings window", () => {
     const settingsWindow = {
       isDestroyed: () => false,
       isMinimized: () => false,
@@ -143,8 +143,9 @@ describe("dashboard window", () => {
       width: 480,
       height: 560,
     });
-    assert.strictEqual(getCreatedWindow().opts.parent, settingsWindow);
-    assert.strictEqual(getCreatedWindow().opts.modal, false);
+    assert.strictEqual(getCreatedWindow().opts.parent, undefined);
+    assert.strictEqual(getCreatedWindow().opts.modal, undefined);
+    assert.deepStrictEqual(getCreatedWindow().parentWindows, []);
   });
 
   it("clamps settings-anchored dashboard bounds to the work area", () => {
@@ -207,7 +208,7 @@ describe("dashboard window", () => {
       width: 480,
       height: 560,
     }]);
-    assert.deepStrictEqual(getCreatedWindow().parentWindows, [settingsWindow]);
+    assert.deepStrictEqual(getCreatedWindow().parentWindows, []);
   });
 
   it("re-syncs settings anchored bounds before and after showing the dashboard", () => {
