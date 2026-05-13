@@ -699,6 +699,19 @@ function resolvePidReachable(existing, agentPid, sourcePid) {
   return existing ? !!existing.pidReachable : false;
 }
 
+function evictOldestSessionIfNeeded(sessionId) {
+  if (sessions.has(sessionId) || sessions.size < MAX_SESSIONS) return;
+  let oldestId = null;
+  let oldestTime = Infinity;
+  for (const [id, s] of sessions) {
+    if (s.updatedAt < oldestTime) {
+      oldestTime = s.updatedAt;
+      oldestId = id;
+    }
+  }
+  if (oldestId) sessions.delete(oldestId);
+}
+
 // ── Session management ──
 // Session-related fields go through `opts`. Earlier versions took 13
 // positional params — refactored in B2 to an options bag so new fields
@@ -717,6 +730,8 @@ function updateSession(sessionId, state, event, opts = {}) {
     platform = null,
     model = null,
     provider = null,
+    codexOriginator = null,
+    codexSource = null,
     displayHint = undefined,
     sessionTitle = null,
     permissionSuspect = false,
@@ -744,6 +759,52 @@ function updateSession(sessionId, state, event, opts = {}) {
       && typeof ctx.isAgentPermissionsEnabled === "function"
       && !ctx.isAgentPermissionsEnabled("kimi-cli")
     ) return;
+    const shouldPersistCodexPermissionFocus = permAgentId === "codex" && (
+      sourcePid || agentPid || (pidChain && pidChain.length) || cwd || host ||
+      model || provider || codexOriginator || codexSource || platform
+    );
+    if (shouldPersistCodexPermissionFocus) {
+      const existing = sessions.get(sessionId);
+      evictOldestSessionIfNeeded(sessionId);
+      const srcPid = sourcePid || (existing && existing.sourcePid) || null;
+      const srcCwd = cwd || (existing && existing.cwd) || "";
+      const srcEditor = editor || (existing && existing.editor) || null;
+      const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
+      const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
+      const srcAgentId = agentId || (existing && existing.agentId) || null;
+      const srcHost = host || (existing && existing.host) || null;
+      const srcHeadless = headless || (existing && existing.headless) || false;
+      const srcPlatform = platform || (existing && existing.platform) || null;
+      const srcModel = model || (existing && existing.model) || null;
+      const srcProvider = provider || (existing && existing.provider) || null;
+      const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
+      const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
+      const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
+      const storedState = existing && existing.state ? existing.state : "notification";
+      const recentEvents = pushRecentEvent(existing, storedState, event);
+      sessions.set(sessionId, {
+        state: storedState,
+        updatedAt: Date.now(),
+        displayHint: existing ? existing.displayHint : null,
+        sourcePid: srcPid,
+        cwd: srcCwd,
+        editor: srcEditor,
+        pidChain: srcPidChain,
+        agentPid: srcAgentPid,
+        agentId: srcAgentId,
+        host: srcHost,
+        headless: srcHeadless,
+        platform: srcPlatform,
+        model: srcModel,
+        provider: srcProvider,
+        codexOriginator: srcCodexOriginator,
+        codexSource: srcCodexSource,
+        sessionTitle: srcSessionTitle,
+        recentEvents,
+        pidReachable: resolvePidReachable(existing, srcAgentPid, srcPid),
+        resumeState: (existing && existing.resumeState) || null,
+      });
+    }
     setState("notification");
     if (permAgentId === "kimi-cli") startKimiPermissionPoll(sessionId);
     return;
@@ -761,6 +822,8 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcPlatform = platform || (existing && existing.platform) || null;
   const srcModel = model || (existing && existing.model) || null;
   const srcProvider = provider || (existing && existing.provider) || null;
+  const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
+  const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
   // Sticky: empty input does not clear an existing title. A session that has
   // ever been named keeps that name until the user explicitly renames it.
   const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
@@ -774,16 +837,10 @@ function updateSession(sessionId, state, event, opts = {}) {
   const pidReachable = resolvePidReachable(existing, srcAgentPid, srcPid);
 
   const recentEvents = pushRecentEvent(existing, preservedState || state, event);
-  const base = { sourcePid: srcPid, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, sessionTitle: srcSessionTitle, recentEvents, pidReachable };
+  const base = { sourcePid: srcPid, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, sessionTitle: srcSessionTitle, recentEvents, pidReachable };
 
-  // Evict oldest session if at capacity and this is a new session
-  if (!existing && sessions.size >= MAX_SESSIONS) {
-    let oldestId = null, oldestTime = Infinity;
-    for (const [id, s] of sessions) {
-      if (s.updatedAt < oldestTime) { oldestTime = s.updatedAt; oldestId = id; }
-    }
-    if (oldestId) sessions.delete(oldestId);
-  }
+  // Evict oldest session if at capacity and this is a new session.
+  evictOldestSessionIfNeeded(sessionId);
 
   if (isSubagentStop) {
     updateCodexExitProbe(sessionId, srcAgentId, event);

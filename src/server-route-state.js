@@ -74,6 +74,12 @@ function handleStatePost(req, res, options) {
       const provider = typeof data.provider === "string" && data.provider.trim()
         ? data.provider.trim()
         : null;
+      const codexOriginator = typeof data.codex_originator === "string" && data.codex_originator.trim()
+        ? data.codex_originator.trim()
+        : null;
+      const codexSource = typeof data.codex_source === "string" && data.codex_source.trim()
+        ? data.codex_source.trim()
+        : null;
       const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : null;
       const toolUseId = normalizeHookToolUseId(
         data.tool_use_id ?? data.toolUseId ?? data.toolUseID
@@ -156,6 +162,8 @@ function handleStatePost(req, res, options) {
             platform,
             model,
             provider,
+            codexOriginator,
+            codexSource,
             displayHint: display_svg,
             sessionTitle,
             permissionSuspect,

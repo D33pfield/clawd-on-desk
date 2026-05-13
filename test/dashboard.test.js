@@ -79,7 +79,9 @@ describe("dashboard window", () => {
 
     assert.match(rendererSource, /dashboardHideSessionTitle/);
     assert.match(rendererSource, /hideSession\(session\.id\)/);
-    assert.match(rendererSource, /session\.platform === "webui"/);
+    assert.match(rendererSource, /session\.canFocus !== true/);
+    assert.match(rendererSource, /dashboardOpenCodexSession/);
+    assert.doesNotMatch(rendererSource, /session\.platform === "webui"/);
     assert.match(preloadSource, /dashboard:hide-session/);
   });
 });
