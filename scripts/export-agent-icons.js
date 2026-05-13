@@ -22,12 +22,33 @@ const OUTPUT_DIR = path.join(__dirname, "..", "assets", "icons", "agents");
 const SOURCE_EXTENSIONS = [".png", ".svg"];
 const EXPORTER_ENV = "CLAWD_AGENT_ICON_EXPORTER";
 
+function getSourceCandidatePath(agentId, extension) {
+  return path.join(SOURCE_DIR, `${agentId}${extension}`);
+}
+
 function getSourcePath(agentId) {
   for (const extension of SOURCE_EXTENSIONS) {
-    const sourcePath = path.join(SOURCE_DIR, `${agentId}${extension}`);
+    const sourcePath = getSourceCandidatePath(agentId, extension);
     if (fs.existsSync(sourcePath)) return sourcePath;
   }
   return null;
+}
+
+function assertRasterSourceFresh(agentId) {
+  const pngPath = getSourceCandidatePath(agentId, ".png");
+  const svgPath = getSourceCandidatePath(agentId, ".svg");
+  if (!fs.existsSync(pngPath) || !fs.existsSync(svgPath)) return;
+
+  const pngMtime = fs.statSync(pngPath).mtimeMs;
+  const svgMtime = fs.statSync(svgPath).mtimeMs;
+  if (svgMtime <= pngMtime) return;
+
+  throw new Error(
+    [
+      `SVG source is newer than PNG source for ${agentId}.`,
+      `Refresh ${path.relative(process.cwd(), pngPath)} from ${path.relative(process.cwd(), svgPath)} before exporting runtime icons.`,
+    ].join(" ")
+  );
 }
 
 function exportIcon(agentId, options = {}) {
@@ -39,6 +60,7 @@ function exportIcon(agentId, options = {}) {
   if (!sourcePath) {
     throw new Error(`Missing source asset for agent icon: ${agentId}`);
   }
+  assertRasterSourceFresh(agentId);
 
   const image = nativeImage.createFromPath(sourcePath);
   if (!image || image.isEmpty()) {
@@ -138,5 +160,6 @@ module.exports = {
   SOURCE_DIR,
   OUTPUT_DIR,
   getSourcePath,
+  assertRasterSourceFresh,
   exportIcon,
 };

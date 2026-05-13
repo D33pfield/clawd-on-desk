@@ -84,7 +84,11 @@ describe("state agent icons", () => {
 
   it("keeps runtime agent PNG icons at 64x64", () => {
     for (const entry of fs.readdirSync(AGENT_ICON_DIR)) {
-      if (path.extname(entry).toLowerCase() !== ".png") continue;
+      assert.strictEqual(
+        path.extname(entry).toLowerCase(),
+        ".png",
+        `${entry} should not be stored in the runtime icon directory`
+      );
       const iconPath = path.join(AGENT_ICON_DIR, entry);
       const size = readPngSize(iconPath);
       assert.deepStrictEqual(size, { width: 64, height: 64 }, `${entry} should be 64x64`);
