@@ -42,6 +42,7 @@ const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
   getSessionFocusTarget,
 } = require("./session-focus");
+const { focusCodexThreadTarget } = require("./session-focus-handoff");
 const { getAllAgents } = require("../agents/registry");
 
 // ── Autoplay policy: allow sound playback without user gesture ──
@@ -1049,18 +1050,15 @@ function focusDashboardSession(sessionId, options = {}) {
   const focusEntry = { ...(session || {}), ...(fallbackEntry || {}), id };
   const focusTarget = getSessionFocusTarget(focusEntry);
   if (focusTarget.type === "codex-thread" && focusTarget.url) {
-    focusLog(`focus request source=${requestSource} sid=${id} agent=${focusEntry.agentId || "-"} target=codex-thread`);
-    shell.openExternal(focusTarget.url)
-      .then(() => {
-        focusLog(`focus result branch=codex-thread reason=opened source=${requestSource} sid=${id}`);
-      })
-      .catch((err) => {
-        const message = err && err.message ? err.message.replace(/[\r\n\t]+/g, " ") : "unknown";
-        focusLog(`focus result branch=codex-thread reason=open-failed source=${requestSource} sid=${id} error=${message}`);
-        if (!focusTerminalSession(focusEntry, id, requestSource)) {
-          focusLog(`focus result branch=none reason=codex-thread-fallback-no-source-pid source=${requestSource} sid=${id}`);
-        }
-      });
+    focusCodexThreadTarget({
+      shell,
+      focusEntry,
+      sessionId: id,
+      requestSource,
+      url: focusTarget.url,
+      focusLog,
+      focusTerminalSession,
+    });
     return;
   }
 

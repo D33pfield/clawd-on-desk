@@ -137,14 +137,18 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
   const getAgentIconUrl = typeof options.getAgentIconUrl === "function"
     ? options.getAgentIconUrl
     : () => null;
-  const focusTarget = getSessionFocusTarget({ ...(session || {}), id });
+  const state = (session && session.state) || "idle";
+  const hiddenFromHud = shouldAutoClearDetachedSession(session, badge, options);
+  const focusTarget = session && !session.headless && state !== "sleeping" && !hiddenFromHud
+    ? getSessionFocusTarget({ ...(session || {}), id })
+    : { canFocus: false, type: null, url: null };
   return {
     id,
     agentId: (session && session.agentId) || null,
     iconUrl: getAgentIconUrl(session && session.agentId),
-    state: (session && session.state) || "idle",
+    state,
     badge,
-    hiddenFromHud: shouldAutoClearDetachedSession(session, badge, options),
+    hiddenFromHud,
     hasAlias: !!(alias && typeof alias.title === "string" && alias.title),
     sessionTitle: getEffectiveSessionTitle(id, session, options),
     displayTitle: sessionDisplayTitle(id, session, sessionAliases, options),

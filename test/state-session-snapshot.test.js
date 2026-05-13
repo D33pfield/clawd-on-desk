@@ -140,6 +140,35 @@ describe("state-session-snapshot builder", () => {
     assert.strictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").codexSource, "vscode");
   });
 
+  it("does not expose focus targets for sessions hidden from the focusable UI surface", () => {
+    const hiddenEndedSession = session("idle", {
+      sourcePid: 123,
+      pidReachable: true,
+      agentPid: null,
+      recentEvents: [{ event: "Stop", state: "idle", at: 1 }],
+    });
+    const snapshot = buildSessionSnapshot(new Map([
+      ["headless", session("working", { sourcePid: 123, headless: true })],
+      ["sleeping", session("sleeping", { sourcePid: 123 })],
+      ["remote", session("working", { sourcePid: 123, host: "remote-box" })],
+      ["hidden", hiddenEndedSession],
+      ["codex:019e115a-4df2-7ed0-b90e-8e6345aca777", session("working", {
+        agentId: "codex",
+        codexOriginator: "Codex Desktop",
+        headless: true,
+      })],
+    ]), {
+      sessionHudCleanupDetached: true,
+      isProcessAlive: () => false,
+    });
+
+    for (const entry of snapshot.sessions) {
+      assert.strictEqual(entry.canFocus, false, entry.id);
+      assert.strictEqual(entry.focusTarget, null, entry.id);
+    }
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "hidden").hiddenFromHud, true);
+  });
+
   it("applies aliases, Codex thread names, and Kiro cwd-scoped alias keys", () => {
     const sessions = new Map([
       ["claude-local", session("working", {
