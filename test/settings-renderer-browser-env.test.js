@@ -461,6 +461,7 @@ function loadGeneralLanguageRowForTest({
     getContentRenderCount: () => contentRenderCount,
     getLangPicker: () => content.querySelector(".language-picker"),
     getLangTrigger: () => content.querySelector(".language-picker-trigger"),
+    getLangMenu: () => content.querySelector(".language-picker-menu"),
     getLangValue: () => content.querySelector(".language-picker-value"),
     getLangOptions: () => content.querySelectorAll(".language-picker-option"),
     getDocumentListenerCount: (type) => {
@@ -1359,6 +1360,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes(`class="language-picker"`));
     assert.ok(generalSource.includes(`aria-haspopup="listbox"`));
     assert.ok(generalSource.includes(`role="listbox"`));
+    assert.ok(generalSource.includes(`aria-hidden="true"`));
     assert.ok(generalSource.includes(`role", "option"`));
     assert.ok(!generalSource.includes(`<select class="language-select"`));
     assert.ok(!generalSource.includes("language-segmented"));
@@ -1385,15 +1387,19 @@ describe("settings renderer browser environment", () => {
     assert.ok(picker, "language picker should be rendered");
     assert.ok(trigger, "language picker trigger should be rendered");
     assert.strictEqual(harness.getLangValue().textContent, "English");
+    assert.strictEqual(harness.getLangMenu().attributes["aria-hidden"], "true");
     const options = harness.getLangOptions();
     assert.strictEqual(options.length, SUPPORTED_LANGS.length);
     for (let i = 0; i < SUPPORTED_LANGS.length; i++) {
       assert.strictEqual(options[i].dataset.lang, SUPPORTED_LANGS[i]);
+      assert.strictEqual(options[i].tabIndex, -1);
     }
     assert.strictEqual(options[0].attributes["aria-selected"], "true");
 
     trigger.dispatchEvent({ type: "click" });
     assert.strictEqual(picker.classList.contains("open"), true);
+    assert.strictEqual(harness.getLangMenu().attributes["aria-hidden"], "false");
+    assert.strictEqual(options[0].tabIndex, 0);
     options[1].dispatchEvent({ type: "click" });
 
     assert.deepStrictEqual(
@@ -1402,6 +1408,8 @@ describe("settings renderer browser environment", () => {
       "clicking a language option should call settingsAPI.update with the new lang"
     );
     assert.strictEqual(picker.classList.contains("open"), false);
+    assert.strictEqual(harness.getLangMenu().attributes["aria-hidden"], "true");
+    for (const option of options) assert.strictEqual(option.tabIndex, -1);
     assert.strictEqual(harness.getLangValue().textContent, "Chinese");
 
     harness.core.ops.applyChanges({

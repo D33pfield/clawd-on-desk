@@ -195,7 +195,7 @@
             `<span class="language-picker-value"></span>` +
             `<span class="language-picker-chevron" aria-hidden="true"></span>` +
           `</button>` +
-          `<div class="language-picker-menu" role="listbox"></div>` +
+          `<div class="language-picker-menu" role="listbox" aria-hidden="true"></div>` +
         `</div>` +
       `</div>`;
     row.querySelector(".row-label").textContent = t("rowLanguage");
@@ -227,16 +227,19 @@
       const selectedLang = LANGUAGE_OPTIONS.includes(lang) ? lang : LANGUAGE_OPTIONS[0];
       activeLang = selectedLang;
       valueEl.textContent = getLabel(selectedLang);
+      const open = picker.classList.contains("open");
       for (const option of options) {
         const selected = option.dataset.lang === selectedLang;
         option.classList.toggle("selected", selected);
         option.setAttribute("aria-selected", selected ? "true" : "false");
-        option.tabIndex = selected ? 0 : -1;
+        option.tabIndex = open && selected ? 0 : -1;
       }
     }
     function setOpen(open) {
       picker.classList.toggle("open", open);
       trigger.setAttribute("aria-expanded", open ? "true" : "false");
+      menu.setAttribute("aria-hidden", open ? "false" : "true");
+      syncDisplay(activeLang);
       if (!open) return;
       const option = getOption(activeLang);
       if (option && typeof option.focus === "function") option.focus();
