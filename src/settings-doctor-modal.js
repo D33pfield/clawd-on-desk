@@ -268,15 +268,15 @@
     if (!check || typeof check !== "object") return false;
     if (check.level === "critical" || check.level === "warning") return true;
     if (check.status === "critical" || check.status === "warning" || check.status === "fail") return true;
-    if (check.fixAction) return true;
     const directKey = fixActionKey(check.fixAction);
     if (directKey && (state.repairingKey === directKey || state.repairFeedback[directKey])) return true;
+    if (check.fixAction) return true;
     if (!Array.isArray(check.details)) return false;
     return check.details.some((detail) => {
       if (!detail || typeof detail !== "object") return false;
-      if (detail.fixAction) return true;
       const key = fixActionKey(detail.fixAction);
-      return !!(key && (state.repairingKey === key || state.repairFeedback[key]));
+      if (key && (state.repairingKey === key || state.repairFeedback[key])) return true;
+      return !!detail.fixAction;
     });
   }
 
