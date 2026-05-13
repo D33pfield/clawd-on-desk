@@ -23,6 +23,10 @@
     actionNoticeTimer: null,
     checkExpansionOverrides: new Map(),
     checksLoading: false,
+    connectionRunId: 0,
+    repairRunId: 0,
+    modalEntering: false,
+    modalEnteringTimer: null,
   };
 
   const AGENT_WARNING_STATUSES = new Set([
@@ -62,6 +66,24 @@
       clearTimeout(state.actionNoticeTimer);
     }
     state.actionNoticeTimer = null;
+  }
+
+  function clearModalEnteringTimer() {
+    if (state.modalEnteringTimer && typeof clearTimeout === "function") {
+      clearTimeout(state.modalEnteringTimer);
+    }
+    state.modalEnteringTimer = null;
+  }
+
+  function startModalEntering() {
+    state.modalEntering = true;
+    clearModalEnteringTimer();
+    if (typeof setTimeout === "function") {
+      state.modalEnteringTimer = setTimeout(() => {
+        state.modalEntering = false;
+        state.modalEnteringTimer = null;
+      }, 220);
+    }
   }
 
   function showActionNotice(core, message, options) {
@@ -566,10 +588,19 @@
 
   function closeModal() {
     state.modalOpen = false;
+    state.connectionRunId += 1;
+    state.repairRunId += 1;
     stopConnectionCountdown();
     clearActionNoticeTimer();
+    clearModalEnteringTimer();
     state.actionNotice = null;
+    state.modalEntering = false;
     state.checkExpansionOverrides = new Map();
+    state.connectionTesting = false;
+    state.connectionRemainingSeconds = 0;
+    state.connectionTest = null;
+    state.repairingKey = null;
+    state.repairFeedback = {};
     state.pendingConfirmAction = null;
     state.lastRepairFeedback = null;
     const rootEl = document.getElementById("modalRoot");
@@ -588,7 +619,9 @@
   }
 
   function mountModal(core, result) {
-    const entering = !state.modalOpen;
+    const opening = !state.modalOpen;
+    if (opening) startModalEntering();
+    const entering = state.modalEntering;
     state.modalOpen = true;
     const rootEl = document.getElementById("modalRoot");
     if (!rootEl) return;
@@ -698,15 +731,18 @@
       refreshModal(core);
       return;
     }
-    state.repairingKey = fixActionKey(action);
+    const repairKey = fixActionKey(action);
+    const runId = ++state.repairRunId;
+    state.repairingKey = repairKey;
     state.pendingConfirmAction = null;
     state.lastRepairFeedback = null;
-    if (state.repairFeedback) delete state.repairFeedback[state.repairingKey];
+    if (state.repairFeedback) delete state.repairFeedback[repairKey];
     refreshModal(core);
     try {
       const commandAction = { ...action };
       if (commandAction.type !== "restart-clawd") delete commandAction.confirmed;
       const result = await root.settingsAPI.command("repairDoctorIssue", commandAction);
+      if (runId !== state.repairRunId) return;
       if (!result || result.status !== "ok") {
         throw new Error((result && result.message) || t(core, "doctorFixFailed"));
       }
@@ -717,7 +753,7 @@
       if (action && action.type === "agent-integration" && action.agentId === "codex") {
         message = `${message} ${t(core, "codexHookReviewReminder")}`;
       }
-      state.repairFeedback[state.repairingKey] = { status: "ok", message };
+      state.repairFeedback[repairKey] = { status: "ok", message };
       state.lastRepairFeedback = { status: "ok", message };
       showToast(core, message);
       // restart-clawd tears the main process down right after this IPC reply,
@@ -726,11 +762,13 @@
       if (action && action.type === "restart-clawd") return;
       await runChecks(core);
     } catch (err) {
+      if (runId !== state.repairRunId) return;
       const message = (err && err.message) || t(core, "doctorFixFailed");
-      state.repairFeedback[state.repairingKey] = { status: "error", message };
+      state.repairFeedback[repairKey] = { status: "error", message };
       state.lastRepairFeedback = { status: "error", message };
       showToast(core, message, { error: true });
     } finally {
+      if (runId !== state.repairRunId) return;
       state.repairingKey = null;
       refreshModal(core);
     }
@@ -743,6 +781,7 @@
       return;
     }
     const durationMs = 10000;
+    const runId = ++state.connectionRunId;
     state.connectionTesting = true;
     state.connectionTest = null;
     state.connectionRemainingSeconds = Math.ceil(durationMs / 1000);
@@ -752,15 +791,18 @@
       refreshModal(core);
     }, 1000);
     refreshModal(core);
+    let nextConnectionTest = null;
     try {
-      state.connectionTest = await root.doctor.testConnection(durationMs);
+      nextConnectionTest = await root.doctor.testConnection(durationMs);
     } catch (err) {
-      state.connectionTest = {
+      nextConnectionTest = {
         status: "error",
         level: "warning",
         detail: (err && err.message) || t(core, "doctorRunFailed"),
       };
     } finally {
+      if (runId !== state.connectionRunId) return;
+      state.connectionTest = nextConnectionTest;
       state.connectionTesting = false;
       state.connectionRemainingSeconds = 0;
       stopConnectionCountdown();

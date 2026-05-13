@@ -1098,6 +1098,11 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes("actionNoticeTimer"));
     assert.ok(doctorModalSource.includes("checkExpansionOverrides"));
     assert.ok(doctorModalSource.includes("checksLoading"));
+    assert.ok(doctorModalSource.includes("connectionRunId"));
+    assert.ok(doctorModalSource.includes("repairRunId"));
+    assert.ok(doctorModalSource.includes("modalEntering"));
+    assert.ok(doctorModalSource.includes("clearModalEnteringTimer"));
+    assert.ok(doctorModalSource.includes("startModalEntering"));
     assert.ok(doctorModalSource.includes("showActionNotice"));
     assert.ok(doctorModalSource.includes("if (state.modalOpen)"));
     assert.ok(doctorModalSource.includes("core.ops.showToast"));
@@ -1138,6 +1143,10 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes("doctor-check-skeleton"));
     assert.ok(doctorModalSource.includes("doctor-skeleton-line"));
     assert.ok(doctorModalSource.includes("doctor-connection-progress"));
+    assert.ok(doctorModalSource.includes("const runId = ++state.connectionRunId"));
+    assert.ok(doctorModalSource.includes("if (runId !== state.connectionRunId) return;"));
+    assert.ok(doctorModalSource.includes("state.connectionTesting = false"));
+    assert.ok(doctorModalSource.includes("state.connectionTest = null"));
     assert.ok(doctorModalSource.includes('state.checksLoading = true'));
     assert.ok(doctorModalSource.includes('state.checksLoading = false'));
     assert.ok(doctorModalSource.includes("formatCheckedDateTime"));
@@ -1148,7 +1157,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes("doctorLastCheckedAt"));
     assert.ok(doctorModalSource.includes("result.generatedAt"));
     assert.ok(doctorModalSource.includes("doctor-last-checked"));
-    assert.ok(doctorModalSource.includes("const entering = !state.modalOpen"));
+    assert.ok(doctorModalSource.includes("const opening = !state.modalOpen"));
+    assert.ok(doctorModalSource.includes("const entering = state.modalEntering"));
     assert.ok(doctorModalSource.includes("doctor-modal-entering"));
     assert.ok(doctorModalSource.includes("renderModalBody(core, result, { entering })"));
     assert.ok(doctorModalSource.includes("renderActionNotice"));
@@ -1156,8 +1166,13 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes("doctor-action-notice-text"));
     assert.ok(doctorModalSource.includes("doctor-action-bar"));
     assert.ok(doctorModalSource.includes("clearActionNoticeTimer();"));
+    assert.ok(doctorModalSource.includes("state.repairFeedback = {};"));
+    assert.ok(doctorModalSource.includes("state.repairingKey = null;"));
+    assert.ok(doctorModalSource.includes("const runId = ++state.repairRunId"));
+    assert.ok(doctorModalSource.includes("if (runId !== state.repairRunId) return;"));
     assert.ok(doctorModalSource.includes("doctor-privacy"));
     assert.ok(!doctorModalSource.includes("doctorPrivacyShort"));
+    assert.ok(!i18nSource.includes("doctorPrivacyShort"));
     assert.ok(!doctorModalSource.includes("doctor-privacy-inline"));
     assert.ok(css.includes(".doctor-agent-detail"));
     assert.ok(css.includes(".doctor-connection-panel"));
@@ -1178,6 +1193,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(css.includes(".doctor-action-notice"));
     assert.ok(!css.includes(".doctor-action-notice::after"));
     assert.ok(css.includes(".doctor-action-notice-icon"));
+    assert.ok(/@media \(prefers-color-scheme:\s*dark\)\s*\{[\s\S]*\.doctor-action-notice\.ok[\s\S]*color:\s*#8ce99a;[\s\S]*\.doctor-action-notice\.error[\s\S]*color:\s*#fca5a5;/.test(css));
     assert.ok(css.includes("@keyframes doctor-notice-in"));
     assert.ok(/\.doctor-modal\s*\{[\s\S]*width:\s*min\(728px,\s*100%\);[\s\S]*max-height:\s*calc\(100vh - 32px\);/.test(css));
     assert.ok(/\.doctor-modal\s*\{[\s\S]*gap:\s*8px;[\s\S]*padding:\s*14px;/.test(css));

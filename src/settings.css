@@ -2377,6 +2377,18 @@ html, body {
   background: color-mix(in srgb, var(--panel-bg) 88%, var(--doctor-critical-strong) 12%);
   color: var(--doctor-critical-strong);
 }
+@media (prefers-color-scheme: dark) {
+  .doctor-action-notice.ok {
+    border-color: rgba(var(--doctor-pass-rgb), 0.42);
+    background: color-mix(in srgb, var(--panel-bg) 76%, var(--doctor-pass) 24%);
+    color: #8ce99a;
+  }
+  .doctor-action-notice.error {
+    border-color: rgba(var(--doctor-critical-rgb), 0.42);
+    background: color-mix(in srgb, var(--panel-bg) 76%, var(--doctor-critical) 24%);
+    color: #fca5a5;
+  }
+}
 @keyframes doctor-notice-in {
   from {
     opacity: 0;
