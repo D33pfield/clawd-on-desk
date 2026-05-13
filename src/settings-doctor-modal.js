@@ -391,15 +391,20 @@
   function renderLocalServerCheck(core, check, cls) {
     const fixButton = renderFixButton(core, check.fixAction);
     const repairFeedback = renderRepairFeedback(core, check.fixAction);
+    const detail = String(check.detail || "");
+    const fullDetail = detail && cls !== "pass"
+      ? `<div class="doctor-check-detail">${escape(core, detail)}</div>`
+      : "";
     return (
       `<div class="doctor-check-row doctor-check-row-compact ${cls}">` +
         `<div class="doctor-check-main doctor-local-server-main${fixButton ? " with-action" : ""}">` +
           `<span class="doctor-check-dot"></span>` +
           `<span class="doctor-check-label">${escape(core, checkLabel(core, check))}</span>` +
-          `<span class="doctor-check-summary">${escape(core, check.detail || "")}</span>` +
+          `<span class="doctor-check-summary" title="${escape(core, detail)}">${escape(core, detail)}</span>` +
           `<span class="doctor-check-status">${escape(core, checkStatusLabel(core, check))}</span>` +
           fixButton +
         `</div>` +
+        fullDetail +
         repairFeedback +
       `</div>`
     );

@@ -1108,6 +1108,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(doctorModalSource.includes('class="doctor-title-row"'));
     assert.ok(doctorModalSource.includes("renderLocalServerCheck"));
     assert.ok(doctorModalSource.includes("doctor-local-server-main"));
+    assert.ok(doctorModalSource.includes('class="doctor-check-summary" title='));
+    assert.ok(doctorModalSource.includes('const fullDetail = detail && cls !== "pass"'));
     assert.ok(doctorModalSource.includes("renderAgentIntegrationCheck"));
     assert.ok(doctorModalSource.includes("doctor-agent-collapsible"));
     assert.ok(doctorModalSource.includes("doctor-agent-chevron"));
@@ -1189,6 +1191,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(css.includes("--doctor-pass"));
     assert.ok(css.includes("--doctor-warning"));
     assert.ok(css.includes("--doctor-critical"));
+    assert.ok(css.includes("--doctor-critical-rgb: 220, 38, 38;"));
     assert.ok(css.includes(".doctor-check-skeleton"));
     assert.ok(css.includes("@keyframes doctor-skeleton-sheen"));
     assert.ok(css.includes(".doctor-connection-panel.testing"));

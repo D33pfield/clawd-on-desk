@@ -133,7 +133,7 @@ html, body {
   --doctor-warning-rgb: 217, 119, 6;
   --doctor-critical: #dc2626;
   --doctor-critical-strong: #b91c1c;
-  --doctor-critical-rgb: 185, 28, 28;
+  --doctor-critical-rgb: 220, 38, 38;
 }
 .doctor-indicator-dot,
 .doctor-overall-dot,
