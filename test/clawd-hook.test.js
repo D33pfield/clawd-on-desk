@@ -59,6 +59,39 @@ describe("buildStateBody", () => {
     assert.strictEqual(body.state, "working");
   });
 
+  it("maps PreToolUse Task to synthetic SubagentStart", () => {
+    const body = buildStateBody(
+      "PreToolUse",
+      { session_id: "s", tool_name: "Task" },
+      mockResolve
+    );
+    assert.strictEqual(body.state, "juggling");
+    assert.strictEqual(body.event, "SubagentStart");
+    assert.strictEqual(body.tool_name, "Task");
+  });
+
+  it("keeps non-Task PreToolUse as working", () => {
+    const body = buildStateBody(
+      "PreToolUse",
+      { session_id: "s", tool_name: "Bash" },
+      mockResolve
+    );
+    assert.strictEqual(body.state, "working");
+    assert.strictEqual(body.event, "PreToolUse");
+    assert.strictEqual(body.tool_name, "Bash");
+  });
+
+  it("keeps PostToolUse Task as working", () => {
+    const body = buildStateBody(
+      "PostToolUse",
+      { session_id: "s", tool_name: "Task" },
+      mockResolve
+    );
+    assert.strictEqual(body.state, "working");
+    assert.strictEqual(body.event, "PostToolUse");
+    assert.strictEqual(body.tool_name, "Task");
+  });
+
   it("maps Stop to attention state", () => {
     const body = buildStateBody("Stop", { session_id: "s" }, mockResolve);
     assert.strictEqual(body.state, "attention");

@@ -461,7 +461,7 @@ describe("bubble policy commands", () => {
     assert.deepStrictEqual(shown.commit, {
       hideBubbles: false,
       permissionBubblesEnabled: true,
-      notificationBubbleAutoCloseSeconds: 3,
+      notificationBubbleAutoCloseSeconds: 6,
       updateBubbleAutoCloseSeconds: 9,
     });
   });

@@ -75,7 +75,7 @@ describe("bubble policy", () => {
     const result = buildCategoryEnabledCommit(snapshot, "notification", true);
     assert.deepStrictEqual(result.commit, {
       permissionBubblesEnabled: false,
-      notificationBubbleAutoCloseSeconds: 3,
+      notificationBubbleAutoCloseSeconds: 6,
       updateBubbleAutoCloseSeconds: 0,
       hideBubbles: false,
     });
@@ -130,7 +130,7 @@ describe("bubble policy", () => {
     }), {
       hideBubbles: false,
       permissionBubblesEnabled: true,
-      notificationBubbleAutoCloseSeconds: 3,
+      notificationBubbleAutoCloseSeconds: 6,
       updateBubbleAutoCloseSeconds: 9,
     });
   });

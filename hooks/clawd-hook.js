@@ -133,6 +133,17 @@ const EVENT_TO_STATE = {
   WorktreeCreate: "carrying",
 };
 
+function isTaskToolStart(event, payload) {
+  // Claude Code may report subagent launches as PreToolUse(Task) without a
+  // matching SubagentStart. Keep PostToolUse(Task) as a normal working update:
+  // state.js holds juggling through working events and releases it on a later
+  // Stop/UserPromptSubmit, or on a real SubagentStop if Claude emits one.
+  return event === "PreToolUse"
+    && payload
+    && typeof payload.tool_name === "string"
+    && payload.tool_name === "Task";
+}
+
 function buildStateBody(event, payload, resolve) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
@@ -140,12 +151,16 @@ function buildStateBody(event, payload, resolve) {
   const sessionId = payload.session_id || "default";
   const cwd = payload.cwd || "";
   const source = payload.source || payload.reason || "";
+  const syntheticSubagentStart = isTaskToolStart(event, payload);
 
   // /clear triggers SessionEnd → SessionStart in quick succession;
   // show sweeping (clearing context) instead of sleeping
-  const resolvedState = (event === "SessionEnd" && source === "clear") ? "sweeping" : state;
+  const resolvedState = syntheticSubagentStart
+    ? "juggling"
+    : ((event === "SessionEnd" && source === "clear") ? "sweeping" : state);
+  const resolvedEvent = syntheticSubagentStart ? "SubagentStart" : event;
 
-  const body = { state: resolvedState, session_id: sessionId, event };
+  const body = { state: resolvedState, session_id: sessionId, event: resolvedEvent };
   body.agent_id = "claude-code";
   if (cwd) body.cwd = cwd;
   const toolName = typeof payload.tool_name === "string" && payload.tool_name ? payload.tool_name : null;

@@ -56,7 +56,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.savedPixelWidth, 0);
     assert.strictEqual(d.savedPixelHeight, 0);
     assert.strictEqual(d.permissionBubblesEnabled, true);
-    assert.strictEqual(d.notificationBubbleAutoCloseSeconds, 3);
+    assert.strictEqual(d.notificationBubbleAutoCloseSeconds, 6);
     assert.strictEqual(d.updateBubbleAutoCloseSeconds, 9);
     assert.deepStrictEqual(d.sessionAliases, {});
   });
@@ -136,7 +136,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.sessionHudCleanupDetached, false);
     assert.strictEqual(v.hideBubbles, false);
     assert.strictEqual(v.permissionBubblesEnabled, true);
-    assert.strictEqual(v.notificationBubbleAutoCloseSeconds, 3);
+    assert.strictEqual(v.notificationBubbleAutoCloseSeconds, 6);
     assert.strictEqual(v.updateBubbleAutoCloseSeconds, 9);
     assert.strictEqual(v.allowEdgePinning, false);
     assert.strictEqual(v.savedPixelWidth, 0);
@@ -155,7 +155,7 @@ describe("prefs.validate", () => {
     const v = prefs.validate(prefs.migrate({ hideBubbles: false }));
     assert.strictEqual(v.hideBubbles, false);
     assert.strictEqual(v.permissionBubblesEnabled, true);
-    assert.strictEqual(v.notificationBubbleAutoCloseSeconds, 3);
+    assert.strictEqual(v.notificationBubbleAutoCloseSeconds, 6);
     assert.strictEqual(v.updateBubbleAutoCloseSeconds, 9);
   });
 
@@ -169,6 +169,26 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.permissionBubblesEnabled, true);
     assert.strictEqual(v.notificationBubbleAutoCloseSeconds, 12);
     assert.strictEqual(v.updateBubbleAutoCloseSeconds, 8);
+  });
+
+  it("upgrades legacy default notification bubble duration during v3 migration", () => {
+    const v = prefs.validate(prefs.migrate({
+      version: 2,
+      hideBubbles: false,
+      notificationBubbleAutoCloseSeconds: 3,
+    }));
+    assert.strictEqual(v.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(v.notificationBubbleAutoCloseSeconds, 6);
+  });
+
+  it("preserves explicit notification bubble duration during v3 migration", () => {
+    const v = prefs.validate(prefs.migrate({
+      version: 2,
+      hideBubbles: false,
+      notificationBubbleAutoCloseSeconds: 12,
+    }));
+    assert.strictEqual(v.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(v.notificationBubbleAutoCloseSeconds, 12);
   });
 
   it("preserves existing Pi permission prefs during v2 migration", () => {

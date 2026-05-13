@@ -2,7 +2,7 @@
 
 const BUBBLE_KINDS = Object.freeze(["permission", "notification", "update"]);
 const BUBBLE_KIND_SET = new Set(BUBBLE_KINDS);
-const NOTIFICATION_DEFAULT_SECONDS = 3;
+const NOTIFICATION_DEFAULT_SECONDS = 6;
 const UPDATE_DEFAULT_SECONDS = 9;
 // Permission default = 0 (off): permission requests block tool execution, so an
 // auto-dismiss is a defensive fallback for cases where the agent's HTTP socket
