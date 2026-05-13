@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 
 let app;
@@ -18,6 +19,7 @@ const { getAllAgents } = require("../agents/registry");
 
 const ICON_SIZE = 64;
 const SOURCE_DIR = path.join(__dirname, "..", "assets", "source", "agent-icons");
+const SOURCE_MANIFEST_PATH = path.join(SOURCE_DIR, "source-manifest.json");
 const OUTPUT_DIR = path.join(__dirname, "..", "assets", "icons", "agents");
 const SOURCE_EXTENSIONS = [".png", ".svg"];
 const EXPORTER_ENV = "CLAWD_AGENT_ICON_EXPORTER";
@@ -34,19 +36,63 @@ function getSourcePath(agentId) {
   return null;
 }
 
-function assertRasterSourceFresh(agentId) {
+function hashFile(filePath) {
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+function readSourceManifest() {
+  if (!fs.existsSync(SOURCE_MANIFEST_PATH)) return { svgSources: {} };
+  const manifest = JSON.parse(fs.readFileSync(SOURCE_MANIFEST_PATH, "utf8"));
+  if (!manifest || typeof manifest !== "object") return { svgSources: {} };
+  if (!manifest.svgSources || typeof manifest.svgSources !== "object") {
+    manifest.svgSources = {};
+  }
+  return manifest;
+}
+
+function writeSourceManifest(manifest) {
+  fs.mkdirSync(SOURCE_DIR, { recursive: true });
+  fs.writeFileSync(SOURCE_MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+function hasRasterAndSvgSources(agentId) {
   const pngPath = getSourceCandidatePath(agentId, ".png");
   const svgPath = getSourceCandidatePath(agentId, ".svg");
-  if (!fs.existsSync(pngPath) || !fs.existsSync(svgPath)) return;
+  return fs.existsSync(pngPath) && fs.existsSync(svgPath);
+}
 
-  const pngMtime = fs.statSync(pngPath).mtimeMs;
-  const svgMtime = fs.statSync(svgPath).mtimeMs;
-  if (svgMtime <= pngMtime) return;
+function updateSvgSourceHashes(manifest, agents) {
+  manifest.svgSources = {};
+  for (const agent of agents) {
+    if (!hasRasterAndSvgSources(agent.id)) continue;
+    const svgPath = getSourceCandidatePath(agent.id, ".svg");
+    manifest.svgSources[agent.id] = { sha256: hashFile(svgPath) };
+  }
+  return manifest;
+}
+
+function assertRasterSourceCurrent(agentId, manifest = readSourceManifest()) {
+  if (!hasRasterAndSvgSources(agentId)) return;
+
+  const svgPath = getSourceCandidatePath(agentId, ".svg");
+  const record = manifest.svgSources && manifest.svgSources[agentId];
+  const expectedHash = record && typeof record.sha256 === "string" ? record.sha256 : null;
+  if (!expectedHash) {
+    throw new Error(
+      [
+        `Missing SVG source hash for ${agentId}.`,
+        "After refreshing the same-name PNG source, run: node scripts/export-agent-icons.js --accept-svg-sources",
+      ].join(" ")
+    );
+  }
+
+  const actualHash = hashFile(svgPath);
+  if (actualHash.toLowerCase() === expectedHash.toLowerCase()) return;
 
   throw new Error(
     [
-      `SVG source is newer than PNG source for ${agentId}.`,
-      `Refresh ${path.relative(process.cwd(), pngPath)} from ${path.relative(process.cwd(), svgPath)} before exporting runtime icons.`,
+      `SVG source hash changed for ${agentId}.`,
+      `Refresh the same-name PNG source from ${path.relative(process.cwd(), svgPath)}, then run: node scripts/export-agent-icons.js --accept-svg-sources`,
     ].join(" ")
   );
 }
@@ -60,7 +106,7 @@ function exportIcon(agentId, options = {}) {
   if (!sourcePath) {
     throw new Error(`Missing source asset for agent icon: ${agentId}`);
   }
-  assertRasterSourceFresh(agentId);
+  assertRasterSourceCurrent(agentId, options.manifest);
 
   const image = nativeImage.createFromPath(sourcePath);
   if (!image || image.isEmpty()) {
@@ -83,10 +129,18 @@ function exportIcon(agentId, options = {}) {
 
 function main() {
   const dryRun = process.argv.includes("--dry-run");
+  const acceptSvgSources = process.argv.includes("--accept-svg-sources");
   const exported = [];
+  const agents = getAllAgents();
+  const manifest = readSourceManifest();
 
-  for (const agent of getAllAgents()) {
-    exported.push(exportIcon(agent.id, { dryRun }));
+  if (acceptSvgSources) {
+    updateSvgSourceHashes(manifest, agents);
+    if (!dryRun) writeSourceManifest(manifest);
+  }
+
+  for (const agent of agents) {
+    exported.push(exportIcon(agent.id, { dryRun, manifest }));
   }
 
   for (const entry of exported) {
@@ -158,8 +212,12 @@ if (require.main === module) {
 module.exports = {
   ICON_SIZE,
   SOURCE_DIR,
+  SOURCE_MANIFEST_PATH,
   OUTPUT_DIR,
   getSourcePath,
-  assertRasterSourceFresh,
+  readSourceManifest,
+  writeSourceManifest,
+  updateSvgSourceHashes,
+  assertRasterSourceCurrent,
   exportIcon,
 };

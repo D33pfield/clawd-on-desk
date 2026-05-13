@@ -8,6 +8,10 @@ const { fileURLToPath } = require("url");
 
 const { getAllAgents } = require("../agents/registry");
 const {
+  readSourceManifest,
+  updateSvgSourceHashes,
+} = require("../scripts/export-agent-icons");
+const {
   AGENT_ICON_DIR,
   getAgentIconPath,
   getAgentIcon,
@@ -93,6 +97,11 @@ describe("state agent icons", () => {
       const size = readPngSize(iconPath);
       assert.deepStrictEqual(size, { width: 64, height: 64 }, `${entry} should be 64x64`);
     }
+  });
+
+  it("keeps source SVG hashes aligned with the source manifest", () => {
+    const expectedManifest = updateSvgSourceHashes({ svgSources: {} }, getAllAgents());
+    assert.deepStrictEqual(readSourceManifest(), expectedManifest);
   });
 
   it("returns the cached URL value for repeated lookups", () => {

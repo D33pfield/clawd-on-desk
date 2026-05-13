@@ -1,0 +1,13 @@
+{
+  "svgSources": {
+    "kiro-cli": {
+      "sha256": "dbc80a624ee4904e0fadca3c5e6c0fa78bfa9019d09ed1acec9f3e4fffa7b059"
+    },
+    "pi": {
+      "sha256": "06f3dabe57ef1cc79749d10f2b859bdd158b725d2209b557f44e5ed60c37b5de"
+    },
+    "openclaw": {
+      "sha256": "c74ae2ad0605c3ef91bb4f58e5afa8a969299afed62b6d07f5aee7ed8a50776b"
+    }
+  }
+}
