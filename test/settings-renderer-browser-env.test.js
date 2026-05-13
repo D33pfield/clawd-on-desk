@@ -349,6 +349,7 @@ function loadGeneralLanguageRowForTest({
   toastStack.id = "toastStack";
   body.appendChild(toastStack);
 
+  const documentListeners = new Map();
   const document = {
     body,
     createElement: (tagName) => new FakeElement(tagName),
@@ -356,6 +357,16 @@ function loadGeneralLanguageRowForTest({
       if (id === "content") return content;
       if (id === "toastStack") return toastStack;
       return null;
+    },
+    addEventListener(type, cb) {
+      if (!documentListeners.has(type)) documentListeners.set(type, []);
+      documentListeners.get(type).push(cb);
+    },
+    removeEventListener(type, cb) {
+      const listeners = documentListeners.get(type);
+      if (!listeners) return;
+      const index = listeners.indexOf(cb);
+      if (index !== -1) listeners.splice(index, 1);
     },
   };
 
@@ -448,7 +459,14 @@ function loadGeneralLanguageRowForTest({
     settingsAPI,
     updateCalls,
     getContentRenderCount: () => contentRenderCount,
-    getLangSelect: () => content.querySelector(".language-select"),
+    getLangPicker: () => content.querySelector(".language-picker"),
+    getLangTrigger: () => content.querySelector(".language-picker-trigger"),
+    getLangValue: () => content.querySelector(".language-picker-value"),
+    getLangOptions: () => content.querySelectorAll(".language-picker-option"),
+    getDocumentListenerCount: (type) => {
+      const listeners = documentListeners.get(type);
+      return listeners ? listeners.length : 0;
+    },
     getToastText: () => {
       const toast = toastStack.querySelector(".toast");
       return toast ? toast.textContent : "";
@@ -1338,64 +1356,94 @@ describe("settings renderer browser environment", () => {
       SUPPORTED_LANGS.map((lang) => String.raw`"${lang}"`).join(String.raw`,\s*`) +
       String.raw`\];`
     ).test(generalSource));
-    assert.ok(generalSource.includes(`<select class="language-select"`));
+    assert.ok(generalSource.includes(`class="language-picker"`));
+    assert.ok(generalSource.includes(`aria-haspopup="listbox"`));
+    assert.ok(generalSource.includes(`role="listbox"`));
+    assert.ok(generalSource.includes(`role", "option"`));
+    assert.ok(!generalSource.includes(`<select class="language-select"`));
     assert.ok(!generalSource.includes("language-segmented"));
     assert.ok(!generalSource.includes("runtime.languageTransition"));
     assert.ok(!generalSource.includes("--language-active-index"));
     assert.ok(!coreSource.includes("languageTransition"));
-    assert.ok(/\.language-select\s*\{[\s\S]*appearance:\s*none;/.test(css));
-    assert.ok(/\.language-select:focus\s*\{[\s\S]*outline:\s*2px solid var\(--accent\);/.test(css));
+    assert.ok(/\.language-picker-menu\s*\{[\s\S]*box-shadow:/.test(css));
+    assert.ok(/\.language-picker-option:hover,[\s\S]*\.language-picker-option:focus-visible\s*\{[\s\S]*background:/.test(css));
+    assert.ok(/\.language-picker-option\.selected\s*\{[\s\S]*color:\s*var\(--accent\);/.test(css));
+    assert.ok(/@media \(prefers-color-scheme:\s*dark\)\s*\{[\s\S]*\.language-picker-menu/.test(css));
+    assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.language-picker-trigger,[\s\S]*\.language-picker-chevron,[\s\S]*\.language-picker-menu[\s\S]*transition:\s*none;/.test(css));
     assert.ok(!css.includes(".language-segmented"));
   });
 
-  it("populates the language dropdown with current selection and propagates change events", () => {
+  it("populates the language picker with current selection and propagates click changes", () => {
     const harness = loadGeneralLanguageRowForTest({
       snapshot: { lang: "en" },
     });
 
     harness.core.ops.requestRender({ content: true });
     assert.strictEqual(harness.getContentRenderCount(), 1);
-    const select = harness.getLangSelect();
-    assert.ok(select, "language dropdown should be rendered");
-    const options = select.querySelectorAll("option");
+    const picker = harness.getLangPicker();
+    const trigger = harness.getLangTrigger();
+    assert.ok(picker, "language picker should be rendered");
+    assert.ok(trigger, "language picker trigger should be rendered");
+    assert.strictEqual(harness.getLangValue().textContent, "English");
+    const options = harness.getLangOptions();
     assert.strictEqual(options.length, SUPPORTED_LANGS.length);
     for (let i = 0; i < SUPPORTED_LANGS.length; i++) {
-      assert.strictEqual(options[i].getAttribute("value"), SUPPORTED_LANGS[i]);
+      assert.strictEqual(options[i].dataset.lang, SUPPORTED_LANGS[i]);
     }
-    assert.strictEqual(select.value, "en");
+    assert.strictEqual(options[0].attributes["aria-selected"], "true");
 
-    select.value = "zh";
-    select.dispatchEvent({ type: "change" });
+    trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(picker.classList.contains("open"), true);
+    options[1].dispatchEvent({ type: "click" });
 
     assert.deepStrictEqual(
       harness.updateCalls,
       [{ key: "lang", value: "zh" }],
-      "changing the dropdown should call settingsAPI.update with the new lang"
+      "clicking a language option should call settingsAPI.update with the new lang"
     );
+    assert.strictEqual(picker.classList.contains("open"), false);
+    assert.strictEqual(harness.getLangValue().textContent, "Chinese");
 
     harness.core.ops.applyChanges({
       changes: { lang: "zh" },
       snapshot: { lang: "zh" },
     });
     assert.strictEqual(harness.getContentRenderCount(), 2);
-    assert.strictEqual(harness.getLangSelect().value, "zh");
+    assert.strictEqual(harness.getLangValue().textContent, "Chinese");
+    assert.strictEqual(harness.getLangOptions()[1].attributes["aria-selected"], "true");
   });
 
-  it("reverts the language dropdown when saving the selection fails", async () => {
+  it("supports keyboard language selection and reverts when saving fails", async () => {
     const harness = loadGeneralLanguageRowForTest({
       snapshot: { lang: "en" },
       update: () => Promise.resolve({ status: "error", message: "synthetic failure" }),
     });
 
     harness.core.ops.requestRender({ content: true });
-    const select = harness.getLangSelect();
-    select.value = "zh";
-    select.dispatchEvent({ type: "change" });
+    const trigger = harness.getLangTrigger();
+    trigger.dispatchEvent(createKeyboardEventForTest("ArrowDown"));
+    assert.strictEqual(harness.getLangPicker().classList.contains("open"), true);
+    const options = harness.getLangOptions();
+    options[1].dispatchEvent(createKeyboardEventForTest("Enter"));
     await Promise.resolve();
 
     assert.deepStrictEqual(harness.updateCalls, [{ key: "lang", value: "zh" }]);
-    assert.strictEqual(select.value, "en");
+    assert.strictEqual(harness.getLangValue().textContent, "English");
     assert.strictEqual(harness.getToastText(), "Failed: synthetic failure");
+  });
+
+  it("cleans up language picker document listeners across re-renders", () => {
+    const harness = loadGeneralLanguageRowForTest({
+      snapshot: { lang: "en" },
+    });
+
+    harness.core.ops.requestRender({ content: true });
+    assert.strictEqual(harness.getDocumentListenerCount("click"), 1);
+    assert.strictEqual(harness.getDocumentListenerCount("keydown"), 1);
+
+    harness.core.ops.requestRender({ content: true });
+    assert.strictEqual(harness.getDocumentListenerCount("click"), 1);
+    assert.strictEqual(harness.getDocumentListenerCount("keydown"), 1);
   });
 
   it("exposes aggregate and split bubble controls in the General tab", () => {

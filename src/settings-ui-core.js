@@ -69,6 +69,7 @@
       animOverrideTimingSliders: new Map(),
       bubblePolicySummary: null,
       sessionHudSummary: null,
+      languagePicker: null,
       size: null,
       soundSummary: null,
       soundVolume: null,
@@ -627,6 +628,9 @@
   }
 
   function clearMountedControls() {
+    if (state.mountedControls.languagePicker && typeof state.mountedControls.languagePicker.dispose === "function") {
+      state.mountedControls.languagePicker.dispose();
+    }
     if (state.mountedControls.size && typeof state.mountedControls.size.dispose === "function") {
       Promise.resolve(state.mountedControls.size.dispose()).catch(() => {});
     }
@@ -642,6 +646,7 @@
     state.mountedControls.animOverrideTimingSliders.clear();
     state.mountedControls.bubblePolicySummary = null;
     state.mountedControls.sessionHudSummary = null;
+    state.mountedControls.languagePicker = null;
     state.mountedControls.size = null;
     state.mountedControls.soundSummary = null;
     state.mountedControls.soundVolume = null;
