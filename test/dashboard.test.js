@@ -28,6 +28,7 @@ describe("dashboard window", () => {
     let createdWindow = null;
     const nativeTheme = new EventEmitter();
     nativeTheme.shouldUseDarkColors = false;
+    const timers = [];
 
     class FakeBrowserWindow {
       constructor(opts) {
@@ -41,6 +42,7 @@ describe("dashboard window", () => {
         this.backgroundColors = [opts.backgroundColor];
         this.parentWindows = [];
         this.setBoundsCalls = [];
+        this.onceCallbacks = new Map();
         this.webContents = {
           isDestroyed: () => false,
           once: () => {},
@@ -55,7 +57,7 @@ describe("dashboard window", () => {
       focus() {}
       setMenuBarVisibility() {}
       loadFile() {}
-      once() {}
+      once(eventName, callback) { this.onceCallbacks.set(eventName, callback); }
       on() {}
       setBackgroundColor(color) { this.backgroundColors.push(color); }
       setBounds(bounds) {
@@ -64,6 +66,10 @@ describe("dashboard window", () => {
       }
       setParentWindow(parentWindow) {
         this.parentWindows.push(parentWindow);
+      }
+      emitReadyToShow() {
+        const callback = this.onceCallbacks.get("ready-to-show");
+        if (callback) callback();
       }
     }
 
@@ -75,6 +81,10 @@ describe("dashboard window", () => {
       getPetWindowBounds: () => ({ x: 100, y: 100, width: 120, height: 120 }),
       getNearestWorkArea: options.getNearestWorkArea || (() => ({ x: 0, y: 0, width: 1280, height: 800 })),
       getSettingsWindow: options.getSettingsWindow,
+      setTimeout: options.setTimeout || ((callback, delay) => {
+        timers.push({ callback, delay });
+        return timers.length;
+      }),
       getSessionSnapshot: () => ({ sessions: [], groups: [] }),
       getI18n: () => ({ lang: "en", translations: {} }),
     });
@@ -82,6 +92,7 @@ describe("dashboard window", () => {
     return {
       dashboard,
       nativeTheme,
+      timers,
       getCreatedWindow: () => createdWindow,
     };
   }
@@ -197,6 +208,31 @@ describe("dashboard window", () => {
       height: 560,
     }]);
     assert.deepStrictEqual(getCreatedWindow().parentWindows, [settingsWindow]);
+  });
+
+  it("re-syncs settings anchored bounds before and after showing the dashboard", () => {
+    let settingsBounds = { x: 100, y: 50, width: 800, height: 560 };
+    const settingsWindow = {
+      isDestroyed: () => false,
+      isMinimized: () => false,
+      getBounds: () => settingsBounds,
+    };
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      getSettingsWindow: () => settingsWindow,
+    });
+
+    dashboard.showDashboard({ source: "settings" });
+    settingsBounds = { x: 100, y: 50, width: 800, height: 540 };
+    getCreatedWindow().emitReadyToShow();
+    settingsBounds = { x: 100, y: 50, width: 800, height: 520 };
+    for (const timer of timers) timer.callback();
+
+    assert.deepStrictEqual(getCreatedWindow().setBoundsCalls, [
+      { x: 260, y: 50, width: 480, height: 540 },
+      { x: 260, y: 50, width: 480, height: 520 },
+      { x: 260, y: 50, width: 480, height: 520 },
+    ]);
+    assert.deepStrictEqual(timers.map((timer) => timer.delay), [0, 80]);
   });
 
   it("exposes a Clawd-only hide action instead of a terminal close action", () => {

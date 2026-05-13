@@ -41,6 +41,7 @@ function clampBoundsToWorkArea(bounds, workArea) {
 
 module.exports = function initDashboard(ctx) {
   let dashboardWindow = null;
+  const scheduleLater = typeof ctx.setTimeout === "function" ? ctx.setTimeout : setTimeout;
 
   function getCurrentSnapshot() {
     return typeof ctx.getSessionSnapshot === "function"
@@ -113,6 +114,27 @@ module.exports = function initDashboard(ctx) {
     };
   }
 
+  function applySettingsPlacement(options = {}) {
+    if (options.source !== "settings") return;
+    if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
+    const placement = getDashboardPlacement(options);
+    if (placement.parent && typeof dashboardWindow.setParentWindow === "function") {
+      dashboardWindow.setParentWindow(placement.parent);
+    }
+    if (isUsableBounds(placement.bounds) && typeof dashboardWindow.setBounds === "function") {
+      dashboardWindow.setBounds(placement.bounds);
+    }
+  }
+
+  function scheduleSettingsPlacementSync(options = {}) {
+    if (options.source !== "settings") return;
+    for (const delay of [0, 80]) {
+      scheduleLater(() => {
+        applySettingsPlacement(options);
+      }, delay);
+    }
+  }
+
   function sendSnapshot(snapshot = getCurrentSnapshot()) {
     if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
     if (!dashboardWindow.webContents || dashboardWindow.webContents.isDestroyed()) return;
@@ -163,7 +185,9 @@ module.exports = function initDashboard(ctx) {
     });
     dashboardWindow.once("ready-to-show", () => {
       if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
+      applySettingsPlacement(options);
       dashboardWindow.show();
+      scheduleSettingsPlacementSync(options);
       dashboardWindow.focus();
     });
     dashboardWindow.on("closed", () => {
@@ -184,16 +208,9 @@ module.exports = function initDashboard(ctx) {
   function showDashboard(options = {}) {
     if (dashboardWindow && !dashboardWindow.isDestroyed()) {
       if (dashboardWindow.isMinimized()) dashboardWindow.restore();
-      if (options.source === "settings") {
-        const placement = getDashboardPlacement(options);
-        if (placement.parent && typeof dashboardWindow.setParentWindow === "function") {
-          dashboardWindow.setParentWindow(placement.parent);
-        }
-        if (isUsableBounds(placement.bounds) && typeof dashboardWindow.setBounds === "function") {
-          dashboardWindow.setBounds(placement.bounds);
-        }
-      }
+      applySettingsPlacement(options);
       dashboardWindow.show();
+      scheduleSettingsPlacementSync(options);
       dashboardWindow.focus();
       sendI18n();
       sendSnapshot();
