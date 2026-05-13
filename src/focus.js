@@ -234,7 +234,7 @@ for ($i = 0; $i -lt 8; $i++) {
         $reason = 'console-window'
         break
     }
-    $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$curPid" -ErrorAction SilentlyContinue
+    $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$curPid" -OperationTimeoutSec 2 -ErrorAction SilentlyContinue
     if (-not $cim -or $cim.ParentProcessId -eq 0 -or $cim.ParentProcessId -eq $curPid) { break }
     $curPid = $cim.ParentProcessId
 }

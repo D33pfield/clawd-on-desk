@@ -142,6 +142,18 @@ describe("Windows terminal focus", () => {
     }
   });
 
+  it("caps CIM parent-process lookup time in the Windows focus helper", () => {
+    const { initFocus, cleanup } = loadFocusWithMock();
+    try {
+      const focus = initFocus({});
+      const cmd = focus.__test.makeFocusCmd(1234, ["repo"]);
+
+      assert.match(cmd, /Get-CimInstance Win32_Process -Filter "ProcessId=\$curPid" -OperationTimeoutSec 2/);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("logs Windows helper stdout through Node focus logging", () => {
     const logs = [];
     const { initFocus, cleanup } = loadFocusWithMock();

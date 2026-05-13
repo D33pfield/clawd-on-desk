@@ -364,7 +364,7 @@ def _query_windows_process_info(pid: int, snapshot: Optional[Dict[int, Dict[str,
         f"$p=Get-CimInstance Win32_Process -Filter 'ProcessId={pid}' -ErrorAction SilentlyContinue; "
         "if ($p) { $p | Select-Object ProcessId,Name,ParentProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress }"
     )
-    result = _run_process_command(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], timeout=1.2)
+    result = _run_process_command(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], timeout=3.0)
     if result and result.returncode == 0 and result.stdout.strip():
         try:
             row = json.loads(result.stdout)

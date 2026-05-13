@@ -386,6 +386,7 @@ print(json.dumps({"calls": calls, "meta": meta}, sort_keys=True))
     const result = JSON.parse(output);
     assert.strictEqual(result.calls.length, 6);
     assert.doesNotMatch(result.calls[0].args.join(" "), /-Filter/);
+    assert.deepStrictEqual(result.calls.map((call) => call.timeout), [3, 3, 3, 3, 3, 3]);
     assert.deepStrictEqual(
       result.calls.slice(1).map((call) => call.args.join(" ").match(/ProcessId=(\d+)/)[1]),
       ["10", "20", "30", "40", "50"]
