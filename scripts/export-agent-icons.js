@@ -5,6 +5,7 @@ const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
 const { spawnSync } = require("child_process");
+const { writeJsonAtomic } = require("../hooks/json-utils");
 
 let app;
 let nativeImage;
@@ -51,8 +52,7 @@ function readSourceManifest() {
 }
 
 function writeSourceManifest(manifest) {
-  fs.mkdirSync(SOURCE_DIR, { recursive: true });
-  fs.writeFileSync(SOURCE_MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeJsonAtomic(SOURCE_MANIFEST_PATH, manifest);
 }
 
 function hasRasterAndSvgSources(agentId) {
