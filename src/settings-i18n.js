@@ -1210,7 +1210,7 @@
       animOverridesModalCancel: "取消",
       animOverridesRefresh: "重新整理列表",
       animOverridesSubtabAnimations: "動畫",
-      animOverridesSubtabSounds: "聲音",
+      animOverridesSubtabSounds: "音效",
       soundOverridesSectionTitle: "音效自訂",
       soundOverridesSectionSubtitle: "自訂目前主題的音效檔案。所選檔案會複製到主題專用的自訂音效資料夾。",
       soundOverridesLabelComplete: "完成提示 (complete)",
