@@ -162,6 +162,54 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.ctx.pendingPermissions, []);
   });
 
+  it("passes Codex Desktop focus metadata through permission bubbles", async () => {
+    const sessionId = "codex:019e115a-4df2-7ed0-b90e-8e6345aca777";
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "codex",
+      session_id: sessionId,
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      source_pid: 456,
+      agent_pid: 456,
+      pid_chain: [789, 456, -1],
+      cwd: "/repo",
+      model: "gpt-5.4",
+      codex_originator: "Codex Desktop",
+      codex_source: "vscode",
+    }));
+
+    assert.strictEqual(res.statusCode, null);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.sessionId, sessionId);
+    assert.strictEqual(entry.agentId, "codex");
+    assert.strictEqual(entry.isCodex, true);
+    assert.strictEqual(entry.sourcePid, 456);
+    assert.strictEqual(entry.agentPid, 456);
+    assert.deepStrictEqual(entry.pidChain, [789, 456]);
+    assert.strictEqual(entry.cwd, "/repo");
+    assert.strictEqual(entry.model, "gpt-5.4");
+    assert.strictEqual(entry.codexOriginator, "Codex Desktop");
+    assert.strictEqual(entry.codexSource, "vscode");
+    assert.deepStrictEqual(res.ctx.calls.updateSession, [[
+      sessionId,
+      "notification",
+      "PermissionRequest",
+      {
+        agentId: "codex",
+        hookSource: "codex-official",
+        sourcePid: 456,
+        agentPid: 456,
+        pidChain: [789, 456],
+        cwd: "/repo",
+        model: "gpt-5.4",
+        codexOriginator: "Codex Desktop",
+        codexSource: "vscode",
+      },
+    ]]);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
+  });
+
   it("silently drops disabled opencode permissions after ACK", async () => {
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "opencode",

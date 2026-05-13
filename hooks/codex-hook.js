@@ -262,6 +262,7 @@ function buildPermissionBody(payload, resolve) {
   const toolName = typeof payload.tool_name === "string" && payload.tool_name
     ? payload.tool_name
     : "Unknown";
+  const sessionMeta = readFirstSessionMeta(payload.transcript_path);
 
   const body = {
     agent_id: "codex",
@@ -281,6 +282,7 @@ function buildPermissionBody(payload, resolve) {
     body.transcript_path = payload.transcript_path;
   }
   if (typeof payload.model === "string" && payload.model) body.model = payload.model;
+  applyCodexSessionMetaFields(body, payload, sessionMeta);
 
   const toolUseId = normalizeToolUseId(payload.tool_use_id ?? payload.toolUseId ?? payload.toolUseID);
   const toolInputFingerprint = buildToolInputFingerprint(rawToolInput);
@@ -290,7 +292,9 @@ function buildPermissionBody(payload, resolve) {
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
   } else {
-    applyLocalProcessFields(body, resolve);
+    applyLocalProcessFields(body, resolve, {
+      preferAgentPid: isCodexDesktopSession(payload, sessionMeta),
+    });
   }
 
   return body;

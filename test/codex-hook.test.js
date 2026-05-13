@@ -307,6 +307,32 @@ describe("Codex official hook", () => {
     assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "codex_session_role"), false);
   });
 
+  it("carries Codex Desktop metadata on PermissionRequest payloads", () => {
+    withTempTranscript([
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          originator: "Codex Desktop",
+          source: "vscode",
+        },
+      }),
+    ], (transcriptPath) => {
+      const body = buildPermissionBody({
+        hook_event_name: "PermissionRequest",
+        session_id: "official-session",
+        transcript_path: transcriptPath,
+        tool_name: "Bash",
+        tool_input: { command: "npm test" },
+      }, mockResolve);
+
+      assert.strictEqual(body.session_id, "codex:019d23d4-f1a9-7633-b9c7-758327137228");
+      assert.strictEqual(body.codex_originator, "Codex Desktop");
+      assert.strictEqual(body.codex_source, "vscode");
+      assert.strictEqual(body.source_pid, 456);
+      assert.strictEqual(body.agent_pid, 456);
+    });
+  });
+
   it("does not classify PermissionRequest payloads even when the transcript is subagent", () => {
     withTempTranscript([
       JSON.stringify({

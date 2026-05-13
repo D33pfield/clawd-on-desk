@@ -21,13 +21,14 @@ function getCodexThreadUrl(entry) {
 
 function getSessionFocusTarget(entry) {
   if (!entry || !entry.id) return { canFocus: false, type: null, url: null };
+  if (entry.host || entry.platform === "webui") return { canFocus: false, type: null, url: null };
 
   const codexThreadUrl = getCodexThreadUrl(entry);
-  if (codexThreadUrl && !entry.host) {
+  if (codexThreadUrl) {
     return { canFocus: true, type: "codex-thread", url: codexThreadUrl };
   }
 
-  if (entry.sourcePid && !entry.host && entry.platform !== "webui") {
+  if (entry.sourcePid) {
     return { canFocus: true, type: "terminal", url: null };
   }
 

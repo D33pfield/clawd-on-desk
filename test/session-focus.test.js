@@ -61,6 +61,11 @@ describe("session focus helpers", () => {
       type: null,
       url: null,
     });
+    assert.deepStrictEqual(getSessionFocusTarget({ ...entry, platform: "webui" }), {
+      canFocus: false,
+      type: null,
+      url: null,
+    });
   });
 
   it("rejects malformed entries defensively", () => {

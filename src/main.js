@@ -791,7 +791,10 @@ const _permCtx = {
   isAgentPermissionsEnabled: (agentId) =>
     _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
   focusTerminalForSession: (sessionId, options = {}) => {
-    focusDashboardSession(sessionId, { requestSource: options.requestSource || "permission-bubble" });
+    focusDashboardSession(sessionId, {
+      requestSource: options.requestSource || "permission-bubble",
+      fallbackEntry: getPendingPermissionFocusEntry(sessionId),
+    });
   },
   getSettingsSnapshot: () => _settingsController.getSnapshot(),
   subscribeShortcuts: (cb) => _settingsController.subscribeKey("shortcuts", (_value, snapshot) => {
@@ -808,6 +811,23 @@ let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
 let sessionDebugLog = null; // set after app.whenReady()
 let focusDebugLog = null; // set after app.whenReady()
+
+function getPendingPermissionFocusEntry(sessionId) {
+  const id = String(sessionId || "");
+  if (!id) return null;
+  const entry = pendingPermissions.find((perm) => perm && perm.sessionId === id && perm.agentId === "codex");
+  if (!entry) return null;
+  const focusEntry = { id, agentId: entry.agentId };
+  if (entry.sourcePid) focusEntry.sourcePid = entry.sourcePid;
+  if (entry.cwd) focusEntry.cwd = entry.cwd;
+  if (entry.agentPid) focusEntry.agentPid = entry.agentPid;
+  if (entry.pidChain) focusEntry.pidChain = entry.pidChain;
+  if (entry.host) focusEntry.host = entry.host;
+  if (entry.model) focusEntry.model = entry.model;
+  if (entry.codexOriginator) focusEntry.codexOriginator = entry.codexOriginator;
+  if (entry.codexSource) focusEntry.codexSource = entry.codexSource;
+  return focusEntry;
+}
 
 const _updateBubbleCtx = {
   get win() { return win; },
@@ -1018,14 +1038,18 @@ function focusDashboardSession(sessionId, options = {}) {
   const requestSource = options.requestSource || "dashboard";
   const id = String(sessionId);
   const session = sessions.get(id);
-  if (!session) {
+  const fallbackEntry = options.fallbackEntry && typeof options.fallbackEntry === "object"
+    ? options.fallbackEntry
+    : null;
+  if (!session && !fallbackEntry) {
     focusLog(`focus result branch=none reason=session-not-found source=${requestSource} sid=${id}`);
     return;
   }
 
-  const focusTarget = getSessionFocusTarget({ ...session, id });
+  const focusEntry = { ...(session || {}), ...(fallbackEntry || {}), id };
+  const focusTarget = getSessionFocusTarget(focusEntry);
   if (focusTarget.type === "codex-thread" && focusTarget.url) {
-    focusLog(`focus request source=${requestSource} sid=${id} agent=${session.agentId || "-"} target=codex-thread`);
+    focusLog(`focus request source=${requestSource} sid=${id} agent=${focusEntry.agentId || "-"} target=codex-thread`);
     shell.openExternal(focusTarget.url)
       .then(() => {
         focusLog(`focus result branch=codex-thread reason=opened source=${requestSource} sid=${id}`);
@@ -1033,7 +1057,7 @@ function focusDashboardSession(sessionId, options = {}) {
       .catch((err) => {
         const message = err && err.message ? err.message.replace(/[\r\n\t]+/g, " ") : "unknown";
         focusLog(`focus result branch=codex-thread reason=open-failed source=${requestSource} sid=${id} error=${message}`);
-        if (!focusTerminalSession(session, id, requestSource)) {
+        if (!focusTerminalSession(focusEntry, id, requestSource)) {
           focusLog(`focus result branch=none reason=codex-thread-fallback-no-source-pid source=${requestSource} sid=${id}`);
         }
       });
@@ -1041,11 +1065,11 @@ function focusDashboardSession(sessionId, options = {}) {
   }
 
   if (focusTarget.type === "terminal") {
-    focusTerminalSession(session, id, requestSource);
+    focusTerminalSession(focusEntry, id, requestSource);
     return;
   }
 
-  if (session.platform === "webui") {
+  if (focusEntry.platform === "webui") {
     focusLog(`focus result branch=none reason=webui-unfocusable source=${requestSource} sid=${id}`);
   } else {
     focusLog(`focus result branch=none reason=no-source-pid source=${requestSource} sid=${id}`);
