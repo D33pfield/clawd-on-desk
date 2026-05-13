@@ -137,6 +137,7 @@ test("deploy: full happy path emits expected progress sequence", async () => {
     { code: 0 }, // scp
     { code: 0 }, // install-claude
     { code: 0 }, // install-codex
+    { code: 0 }, // install-copilot
   ]);
   const runtime = makeRuntimeStub();
   const result = await deploy({ profile, runtime, deps: { spawn, hooksDir } });
@@ -150,6 +151,7 @@ test("deploy: full happy path emits expected progress sequence", async () => {
     "scp:start", "scp:ok",
     "install-claude:start", "install-claude:ok",
     "install-codex:start", "install-codex:ok",
+    "install-copilot:start", "install-copilot:ok",
   ]);
 });
 
@@ -175,6 +177,7 @@ test("deploy: with hostPrefix triggers host-prefix step via ssh stdin", async ()
     },
     { code: 0 }, // install-claude
     { code: 0 }, // install-codex
+    { code: 0 }, // install-copilot
   ]);
   const runtime = makeRuntimeStub();
   const result = await deploy({ profile, runtime, deps: { spawn, hooksDir } });
@@ -292,6 +295,7 @@ test("deploy: install-claude failure is non-fatal (best-effort)", async () => {
     { code: 0 },
     { code: 1, stderr: "install.js failed" }, // install-claude
     { code: 0 }, // install-codex
+    { code: 0 }, // install-copilot
   ]);
   const runtime = makeRuntimeStub();
   const result = await deploy({ profile, runtime, deps: { spawn, hooksDir } });
@@ -300,6 +304,7 @@ test("deploy: install-claude failure is non-fatal (best-effort)", async () => {
   const steps = runtime.events.map((e) => `${e.payload.step}:${e.payload.status}`);
   assert.ok(steps.includes("install-claude:fail"));
   assert.ok(steps.includes("install-codex:ok"));
+  assert.ok(steps.includes("install-copilot:ok"));
 });
 
 // ── Codex monitor PID management ──
