@@ -250,6 +250,7 @@
         return;
       }
       if (next === readers.getLang()) {
+        syncDisplay(next);
         setOpen(false);
         return;
       }

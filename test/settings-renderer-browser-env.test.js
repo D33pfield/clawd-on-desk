@@ -1420,6 +1420,16 @@ describe("settings renderer browser environment", () => {
       "clicking the already displayed pending language should not submit a duplicate update"
     );
 
+    trigger.dispatchEvent({ type: "click" });
+    options[0].dispatchEvent({ type: "click" });
+    assert.deepStrictEqual(
+      harness.updateCalls,
+      [{ key: "lang", value: "zh" }],
+      "clicking back to the committed language while pending should not submit a duplicate update"
+    );
+    assert.strictEqual(harness.getLangValue().textContent, "English");
+    assert.strictEqual(options[0].attributes["aria-selected"], "true");
+
     harness.core.ops.applyChanges({
       changes: { lang: "zh" },
       snapshot: { lang: "zh" },
