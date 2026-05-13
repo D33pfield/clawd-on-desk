@@ -190,26 +190,74 @@
         `<span class="row-desc"></span>` +
       `</div>` +
       `<div class="row-control">` +
-        `<select class="language-select" aria-label=""></select>` +
+        `<div class="language-picker">` +
+          `<button type="button" class="language-picker-trigger" aria-haspopup="listbox" aria-expanded="false">` +
+            `<span class="language-picker-value"></span>` +
+            `<span class="language-picker-chevron" aria-hidden="true"></span>` +
+          `</button>` +
+          `<div class="language-picker-menu" role="listbox" aria-hidden="true"></div>` +
+        `</div>` +
       `</div>`;
     row.querySelector(".row-label").textContent = t("rowLanguage");
     row.querySelector(".row-desc").textContent = t("rowLanguageDesc");
-    const select = row.querySelector(".language-select");
-    select.setAttribute("aria-label", t("rowLanguage"));
+    const picker = row.querySelector(".language-picker");
+    const trigger = row.querySelector(".language-picker-trigger");
+    const valueEl = row.querySelector(".language-picker-value");
+    const menu = row.querySelector(".language-picker-menu");
+    trigger.setAttribute("aria-label", t("rowLanguage"));
     const currentLang = readers.getLang();
+    let activeLang = currentLang;
+    const getLabel = (lang) => t(LANGUAGE_LABEL_KEYS[lang] || "langEnglish");
+    const options = [];
     for (const lang of LANGUAGE_OPTIONS) {
-      const opt = document.createElement("option");
-      opt.setAttribute("value", lang);
-      opt.textContent = t(LANGUAGE_LABEL_KEYS[lang] || "langEnglish");
-      if (lang === currentLang) opt.setAttribute("selected", "");
-      select.appendChild(opt);
+      const option = document.createElement("button");
+      option.type = "button";
+      option.className = "language-picker-option";
+      option.setAttribute("role", "option");
+      option.setAttribute("data-lang", lang);
+      option.setAttribute("aria-selected", lang === currentLang ? "true" : "false");
+      option.textContent = getLabel(lang);
+      menu.appendChild(option);
+      options.push(option);
     }
-    select.value = currentLang;
-    select.addEventListener("change", () => {
-      const next = select.value;
-      if (next === readers.getLang()) return;
+    function getOption(lang) {
+      return options.find((option) => option.dataset.lang === lang) || options[0] || null;
+    }
+    function syncDisplay(lang) {
+      const selectedLang = LANGUAGE_OPTIONS.includes(lang) ? lang : LANGUAGE_OPTIONS[0];
+      activeLang = selectedLang;
+      valueEl.textContent = getLabel(selectedLang);
+      const open = picker.classList.contains("open");
+      for (const option of options) {
+        const selected = option.dataset.lang === selectedLang;
+        option.classList.toggle("selected", selected);
+        option.setAttribute("aria-selected", selected ? "true" : "false");
+        option.tabIndex = open && selected ? 0 : -1;
+      }
+    }
+    function setOpen(open) {
+      picker.classList.toggle("open", open);
+      trigger.setAttribute("aria-expanded", open ? "true" : "false");
+      menu.setAttribute("aria-hidden", open ? "false" : "true");
+      syncDisplay(activeLang);
+      if (!open) return;
+      const option = getOption(activeLang);
+      if (option && typeof option.focus === "function") option.focus();
+    }
+    function chooseLanguage(next) {
+      if (next === activeLang) {
+        setOpen(false);
+        return;
+      }
+      if (next === readers.getLang()) {
+        syncDisplay(next);
+        setOpen(false);
+        return;
+      }
+      syncDisplay(next);
+      setOpen(false);
       const revertIfStillPending = () => {
-        if (select.value === next) select.value = readers.getLang();
+        if (activeLang === next) syncDisplay(readers.getLang());
       };
       window.settingsAPI.update("lang", next).then((result) => {
         if (!result || result.status !== "ok") {
@@ -221,7 +269,62 @@
         ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
         revertIfStillPending();
       });
+    }
+    trigger.addEventListener("click", () => {
+      setOpen(!picker.classList.contains("open"));
     });
+    trigger.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        setOpen(true);
+      }
+    });
+    for (const option of options) {
+      option.addEventListener("click", () => chooseLanguage(option.dataset.lang));
+      option.addEventListener("keydown", (event) => {
+        const index = options.indexOf(option);
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setOpen(false);
+          if (typeof trigger.focus === "function") trigger.focus();
+          return;
+        }
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          chooseLanguage(option.dataset.lang);
+          return;
+        }
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          const delta = event.key === "ArrowDown" ? 1 : -1;
+          const nextOption = options[(index + delta + options.length) % options.length];
+          if (nextOption && typeof nextOption.focus === "function") nextOption.focus();
+        }
+      });
+    }
+    const closeOnOutsideClick = (event) => {
+      if (!picker.classList.contains("open")) return;
+      if (picker.contains(event.target)) return;
+      setOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key !== "Escape" || !picker.classList.contains("open")) return;
+      event.preventDefault();
+      setOpen(false);
+    };
+    if (document && typeof document.addEventListener === "function") {
+      document.addEventListener("click", closeOnOutsideClick);
+      document.addEventListener("keydown", closeOnEscape);
+      state.mountedControls.languagePicker = {
+        dispose: () => {
+          if (typeof document.removeEventListener === "function") {
+            document.removeEventListener("click", closeOnOutsideClick);
+            document.removeEventListener("keydown", closeOnEscape);
+          }
+        },
+      };
+    }
+    syncDisplay(currentLang);
     return row;
   }
 
