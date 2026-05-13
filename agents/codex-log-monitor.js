@@ -291,6 +291,8 @@ class CodexLogMonitor {
         filePath,
         cwd: retired ? retired.cwd : "",
         sessionTitle: retired ? retired.sessionTitle : null,
+        codexOriginator: retired ? retired.codexOriginator : null,
+        codexSource: retired ? retired.codexSource : null,
         lastEventTime: Date.now(),
         lastState: retired ? retired.lastState : null,
         lastStateEvent: retired ? retired.lastStateEvent : null,
@@ -379,6 +381,12 @@ class CodexLogMonitor {
     // Extract CWD from session_meta
     if (type === "session_meta" && payload) {
       tracked.cwd = payload.cwd || "";
+      tracked.codexOriginator = typeof payload.originator === "string" && payload.originator.trim()
+        ? payload.originator.trim()
+        : tracked.codexOriginator;
+      tracked.codexSource = typeof payload.source === "string" && payload.source.trim()
+        ? payload.source.trim()
+        : tracked.codexSource;
       const role = this._classifier.registerSession(tracked.sessionId, { sessionMeta: payload });
       if (role === "subagent") tracked.isSubagent = true;
       else if (role === "root") tracked.isSubagent = false;
@@ -629,6 +637,8 @@ class CodexLogMonitor {
       offset: Number.isFinite(tracked.offset) ? tracked.offset : 0,
       cwd: tracked.cwd || "",
       sessionTitle: tracked.sessionTitle || null,
+      codexOriginator: tracked.codexOriginator || null,
+      codexSource: tracked.codexSource || null,
       lastState: tracked.lastState || null,
       lastStateEvent: tracked.lastStateEvent || null,
       hasEmittedState: tracked.hasEmittedState === true,
@@ -686,6 +696,8 @@ class CodexLogMonitor {
         ? extra.agentPid
         : agentPid,
       sessionTitle: tracked.sessionTitle,
+      codexOriginator: tracked.codexOriginator || null,
+      codexSource: tracked.codexSource || null,
       ...(extra || {}),
       headless: this._isTrackedSubagent(tracked)
         ? true

@@ -274,8 +274,11 @@ function createCard(session, now) {
   actions.className = "actions";
   const button = document.createElement("button");
   button.type = "button";
-  button.textContent = t("dashboardJumpTerminal");
-  button.disabled = !session.sourcePid || session.platform === "webui";
+  const focusTargetType = session.focusTarget && session.focusTarget.type;
+  button.textContent = focusTargetType === "codex-thread"
+    ? t("dashboardOpenCodexSession")
+    : t("dashboardJumpTerminal");
+  button.disabled = session.canFocus !== true;
   button.addEventListener("click", () => {
     window.dashboardAPI.focusSession(session.id);
   });

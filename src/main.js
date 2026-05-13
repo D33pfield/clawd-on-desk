@@ -40,6 +40,7 @@ const createFloatingWindowRuntime = require("./floating-window-runtime");
 const createPetWindowRuntime = require("./pet-window-runtime");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
+  getSessionFocusTarget,
 } = require("./session-focus");
 const { getAllAgents } = require("../agents/registry");
 
@@ -790,18 +791,7 @@ const _permCtx = {
   isAgentPermissionsEnabled: (agentId) =>
     _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
   focusTerminalForSession: (sessionId, options = {}) => {
-    const s = sessions.get(sessionId);
-    if (s && s.sourcePid && s.platform !== "webui") {
-      focusTerminalWindow({
-        sourcePid: s.sourcePid,
-        cwd: s.cwd,
-        editor: s.editor,
-        pidChain: s.pidChain,
-        sessionId: String(sessionId),
-        agentId: s.agentId,
-        requestSource: options.requestSource || "permission-bubble",
-      });
-    }
+    focusDashboardSession(sessionId, { requestSource: options.requestSource || "permission-bubble" });
   },
   getSettingsSnapshot: () => _settingsController.getSnapshot(),
   subscribeShortcuts: (cb) => _settingsController.subscribeKey("shortcuts", (_value, snapshot) => {
@@ -1009,24 +999,56 @@ function getFocusableLocalHudSessionIds() {
   return selectFocusableLocalHudSessionIds(_state.buildSessionSnapshot());
 }
 
+function focusTerminalSession(session, sessionId, requestSource) {
+  if (!session || !session.sourcePid) return false;
+  focusTerminalWindow({
+    sourcePid: session.sourcePid,
+    cwd: session.cwd,
+    editor: session.editor,
+    pidChain: session.pidChain,
+    sessionId: String(sessionId),
+    agentId: session.agentId,
+    requestSource,
+  });
+  return true;
+}
+
 function focusDashboardSession(sessionId, options = {}) {
   if (!sessionId) return;
   const requestSource = options.requestSource || "dashboard";
-  const session = sessions.get(String(sessionId));
-  if (session && session.sourcePid && session.platform !== "webui") {
-    focusTerminalWindow({
-      sourcePid: session.sourcePid,
-      cwd: session.cwd,
-      editor: session.editor,
-      pidChain: session.pidChain,
-      sessionId: String(sessionId),
-      agentId: session.agentId,
-      requestSource,
-    });
-  } else if (!session) {
-    focusLog(`focus result branch=none reason=session-not-found source=${requestSource} sid=${String(sessionId)}`);
+  const id = String(sessionId);
+  const session = sessions.get(id);
+  if (!session) {
+    focusLog(`focus result branch=none reason=session-not-found source=${requestSource} sid=${id}`);
+    return;
+  }
+
+  const focusTarget = getSessionFocusTarget({ ...session, id });
+  if (focusTarget.type === "codex-thread" && focusTarget.url) {
+    focusLog(`focus request source=${requestSource} sid=${id} agent=${session.agentId || "-"} target=codex-thread`);
+    shell.openExternal(focusTarget.url)
+      .then(() => {
+        focusLog(`focus result branch=codex-thread reason=opened source=${requestSource} sid=${id}`);
+      })
+      .catch((err) => {
+        const message = err && err.message ? err.message.replace(/[\r\n\t]+/g, " ") : "unknown";
+        focusLog(`focus result branch=codex-thread reason=open-failed source=${requestSource} sid=${id} error=${message}`);
+        if (!focusTerminalSession(session, id, requestSource)) {
+          focusLog(`focus result branch=none reason=codex-thread-fallback-no-source-pid source=${requestSource} sid=${id}`);
+        }
+      });
+    return;
+  }
+
+  if (focusTarget.type === "terminal") {
+    focusTerminalSession(session, id, requestSource);
+    return;
+  }
+
+  if (session.platform === "webui") {
+    focusLog(`focus result branch=none reason=webui-unfocusable source=${requestSource} sid=${id}`);
   } else {
-    focusLog(`focus result branch=none reason=no-source-pid source=${requestSource} sid=${String(sessionId)}`);
+    focusLog(`focus result branch=none reason=no-source-pid source=${requestSource} sid=${id}`);
   }
 }
 

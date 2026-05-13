@@ -166,6 +166,37 @@ function applyCodexUpstreamFields(body, payload, sessionMeta) {
   if (upstreamAgentType) body.codex_agent_type = upstreamAgentType;
 }
 
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function applyCodexSessionMetaFields(body, payload, sessionMeta) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const meta = sessionMeta && typeof sessionMeta === "object" ? sessionMeta : {};
+  const originator = firstString(meta.originator, source.originator);
+  const codexSource = firstString(meta.source, source.source);
+  if (originator) body.codex_originator = originator;
+  if (codexSource) body.codex_source = codexSource;
+}
+
+function isCodexDesktopSession(payload, sessionMeta) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const meta = sessionMeta && typeof sessionMeta === "object" ? sessionMeta : {};
+  return firstString(meta.originator, source.originator).toLowerCase() === "codex desktop";
+}
+
+function applyLocalProcessFields(body, resolve, options = {}) {
+  const { stablePid, agentPid, detectedEditor, pidChain } = resolve();
+  const sourcePid = options.preferAgentPid && agentPid ? agentPid : stablePid;
+  body.source_pid = sourcePid;
+  if (detectedEditor) body.editor = detectedEditor;
+  if (agentPid) body.agent_pid = agentPid;
+  if (pidChain.length) body.pid_chain = pidChain;
+}
+
 function resolveCodexSessionRole(payload, sessionMeta) {
   const hookRole = classifyHookPayload(payload);
   if (hookRole !== ROLE_UNKNOWN) return hookRole;
@@ -259,11 +290,7 @@ function buildPermissionBody(payload, resolve) {
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
   } else {
-    const { stablePid, agentPid, detectedEditor, pidChain } = resolve();
-    body.source_pid = stablePid;
-    if (detectedEditor) body.editor = detectedEditor;
-    if (agentPid) body.agent_pid = agentPid;
-    if (pidChain.length) body.pid_chain = pidChain;
+    applyLocalProcessFields(body, resolve);
   }
 
   return body;
@@ -305,6 +332,7 @@ function buildStateBody(payload, resolve) {
   if (threadName) body.session_title = threadName;
   const codexRole = resolveCodexSessionRole(payload, sessionMeta);
   if (codexRole !== ROLE_UNKNOWN) body.codex_session_role = codexRole;
+  applyCodexSessionMetaFields(body, payload, sessionMeta);
   applyCodexUpstreamFields(body, payload, sessionMeta);
 
   const toolName = typeof payload.tool_name === "string" && payload.tool_name ? payload.tool_name : null;
@@ -318,11 +346,9 @@ function buildStateBody(payload, resolve) {
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
   } else {
-    const { stablePid, agentPid, detectedEditor, pidChain } = resolve();
-    body.source_pid = stablePid;
-    if (detectedEditor) body.editor = detectedEditor;
-    if (agentPid) body.agent_pid = agentPid;
-    if (pidChain.length) body.pid_chain = pidChain;
+    applyLocalProcessFields(body, resolve, {
+      preferAgentPid: isCodexDesktopSession(payload, sessionMeta),
+    });
   }
 
   return body;
@@ -368,12 +394,15 @@ if (require.main === module) main();
 
 module.exports = {
   EVENT_TO_STATE,
+  applyCodexSessionMetaFields,
+  applyLocalProcessFields,
   buildCodexNoDecisionOutput,
   buildCodexPermissionOutput,
   buildPermissionBody,
   buildStateBody,
   buildToolInputFingerprint,
   extractCodexSessionIdFromTranscriptPath,
+  isCodexDesktopSession,
   normalizeCodexSessionId,
   readFirstSessionMeta,
   sanitizeCodexPermissionDecision,
