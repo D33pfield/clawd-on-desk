@@ -6,7 +6,7 @@
 |------|------|
 | **Codex CLI：无法跳转终端** | Codex official hooks 和 JSONL fallback 都不携带可用终端 PID，点击桌宠仍无法跳转到 Codex 终端。Claude Code 和 Copilot CLI 正常。 |
 | **Codex CLI：hook 覆盖仍不完整** | Official hooks 已覆盖实时状态和 `PermissionRequest` 观察 / intercept 模式，但不是所有运行时信号都有 hook。Clawd 会保留 JSONL 轮询，用于 hook 被禁用的会话，以及 web search、context compaction、turn aborted 等 fallback-only 事件；这些事件仍可能有轮询延迟。 |
-| **Copilot CLI：需手动配置 hooks** | Copilot 是目前唯一仍需手动创建 `~/.copilot/hooks/hooks.json` 的受支持 Agent。 |
+| **Copilot CLI：本地需手动配置 hooks** | 本地安装仍需手动创建 `~/.copilot/hooks/hooks.json`。SSH 远程部署 (`scripts/remote-deploy.sh`) 现在已经自动配置 Copilot hooks。 |
 | **Copilot CLI：无权限气泡** | Copilot 的 `preToolUse` 只支持拒绝，无法做完整的允许/拒绝审批流。权限气泡目前支持 Claude Code、Codex CLI、CodeBuddy、opencode 和 Pi。 |
 | **Gemini CLI：无权限气泡** | Gemini 仍在终端内处理工具审批。Clawd 会观察 Gemini hook 事件，但除非 Gemini 未来提供兼容的阻塞式审批协议，否则不显示权限气泡。 |
 | **Cursor Agent：无权限气泡** | Cursor 在 hook 的 stdout JSON 里处理权限，而不是走 HTTP 阻塞式审批，Clawd 无法接管这条审批链路。 |

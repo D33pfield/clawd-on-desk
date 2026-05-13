@@ -53,6 +53,8 @@ FILES=(
   "$HOOKS_DIR/codex-remote-monitor.js"
   "$HOOKS_DIR/codex-session-index.js"
   "$HOOKS_DIR/codex-subagent-fields.js"
+  "$HOOKS_DIR/copilot-hook.js"
+  "$HOOKS_DIR/copilot-install.js"
 )
 
 # ── Local port detection ──
@@ -145,6 +147,11 @@ ssh "$SSH_TARGET" "node ~/.claude/hooks/install.js --remote" || {
 echo "Registering Codex official hooks (remote mode)..."
 ssh "$SSH_TARGET" "node ~/.claude/hooks/codex-install.js --remote" || {
   echo "WARNING: Codex official hook registration failed (Codex CLI may not be installed on remote)"
+}
+
+echo "Registering Copilot CLI hooks (remote mode)..."
+ssh "$SSH_TARGET" "node ~/.claude/hooks/copilot-install.js --remote" || {
+  echo "WARNING: Copilot CLI hook registration failed (Copilot CLI may not be installed on remote)"
 }
 
 # ── Print SSH configuration ──

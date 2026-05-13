@@ -41,6 +41,8 @@ const HOOK_FILES = [
   "codex-remote-monitor.js",
   "codex-session-index.js",
   "codex-subagent-fields.js",
+  "copilot-hook.js",
+  "copilot-install.js",
 ];
 
 // Resolve hooks dir for both dev (source tree) and packaged (asar.unpacked).
@@ -219,6 +221,20 @@ async function deploy({ profile, runtime, deps = {} }) {
       progress("install-codex", "fail", summarizeStderr(r.stderr) || `non-zero exit ${formatExit(r)}`);
     } else {
       progress("install-codex", "ok");
+    }
+  }
+
+  // 7. node ~/.claude/hooks/copilot-install.js --remote — Copilot CLI hook registration.
+  // Best-effort: silently degrades when Copilot CLI is not installed remotely
+  // (the installer skips and exits 0 when ~/.copilot/ is missing).
+  progress("install-copilot", "start");
+  {
+    const args = buildSshArgs(profile).concat(["node ~/.claude/hooks/copilot-install.js --remote"]);
+    const r = await spawnAndWait(spawn, "ssh", args, { timeoutMs: 60000, runtime });
+    if (r.code !== 0) {
+      progress("install-copilot", "fail", summarizeStderr(r.stderr) || `non-zero exit ${formatExit(r)}`);
+    } else {
+      progress("install-copilot", "ok");
     }
   }
 
