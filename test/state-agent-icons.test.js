@@ -9,6 +9,7 @@ const { fileURLToPath } = require("url");
 
 const { getAllAgents } = require("../agents/registry");
 const {
+  getElectronBinary,
   hashSvgSource,
   readSourceManifest,
   normalizeTextLineEndings,
@@ -28,6 +29,10 @@ function readPngSize(filePath) {
     width: buffer.readUInt32BE(16),
     height: buffer.readUInt32BE(20),
   };
+}
+
+function shouldCheckRuntimeIconEntry(entry) {
+  return entry.isFile() && !entry.name.startsWith(".");
 }
 
 describe("state agent icons", () => {
@@ -90,16 +95,32 @@ describe("state agent icons", () => {
   });
 
   it("keeps runtime agent PNG icons at 64x64", () => {
-    for (const entry of fs.readdirSync(AGENT_ICON_DIR)) {
+    for (const entry of fs.readdirSync(AGENT_ICON_DIR, { withFileTypes: true })) {
+      if (!shouldCheckRuntimeIconEntry(entry)) continue;
       assert.strictEqual(
-        path.extname(entry).toLowerCase(),
+        path.extname(entry.name).toLowerCase(),
         ".png",
-        `${entry} should not be stored in the runtime icon directory`
+        `${entry.name} should not be stored in the runtime icon directory`
       );
-      const iconPath = path.join(AGENT_ICON_DIR, entry);
+      const iconPath = path.join(AGENT_ICON_DIR, entry.name);
       const size = readPngSize(iconPath);
-      assert.deepStrictEqual(size, { width: 64, height: 64 }, `${entry} should be 64x64`);
+      assert.deepStrictEqual(size, { width: 64, height: 64 }, `${entry.name} should be 64x64`);
     }
+  });
+
+  it("ignores local dotfiles and directories when checking runtime icon dimensions", () => {
+    const entries = [
+      { name: ".DS_Store", isFile: () => true },
+      { name: "scratch", isFile: () => false },
+      { name: "codex.png", isFile: () => true },
+    ];
+
+    assert.deepStrictEqual(
+      entries
+        .filter(shouldCheckRuntimeIconEntry)
+        .map((entry) => entry.name),
+      ["codex.png"]
+    );
   });
 
   it("keeps source SVG hashes aligned with the source manifest", () => {
@@ -122,6 +143,14 @@ describe("state agent icons", () => {
       assert.strictEqual(hashSvgSource(crlfPath), hashSvgSource(lfPath));
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves the real Electron binary for the exporter entrypoint", () => {
+    const electronBinary = getElectronBinary();
+    assert.ok(path.isAbsolute(electronBinary), "Electron binary path should be absolute");
+    if (process.platform === "win32") {
+      assert.strictEqual(path.basename(electronBinary).toLowerCase(), "electron.exe");
     }
   });
 

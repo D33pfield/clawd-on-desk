@@ -157,8 +157,15 @@ function main() {
 }
 
 function getElectronBinary() {
-  const extension = process.platform === "win32" ? ".cmd" : "";
-  return path.join(__dirname, "..", "node_modules", ".bin", `electron${extension}`);
+  try {
+    const electronPath = require("electron");
+    if (typeof electronPath === "string" && electronPath) return electronPath;
+  } catch {}
+
+  if (process.platform === "win32") {
+    return path.join(__dirname, "..", "node_modules", "electron", "dist", "electron.exe");
+  }
+  return path.join(__dirname, "..", "node_modules", ".bin", "electron");
 }
 
 function runInElectron() {
@@ -185,7 +192,7 @@ function runInElectron() {
   const result = spawnSync(electronBin, [tempDir, ...process.argv.slice(2)], {
     cwd: path.join(__dirname, ".."),
     env: { ...process.env, [EXPORTER_ENV]: "1" },
-    shell: process.platform === "win32",
+    shell: false,
     stdio: "inherit",
     windowsHide: true,
   });
@@ -226,6 +233,7 @@ module.exports = {
   writeSourceManifest,
   normalizeTextLineEndings,
   hashSvgSource,
+  getElectronBinary,
   updateSvgSourceHashes,
   assertRasterSourceCurrent,
   exportIcon,
