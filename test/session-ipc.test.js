@@ -148,9 +148,15 @@ test("session IPC owns dashboard open bridges", () => {
 
 test("main forwards dashboard open source options into session IPC", () => {
   const mainSource = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
-  const registerIndex = mainSource.indexOf("registerSessionIpc({");
-  assert.notStrictEqual(registerIndex, -1);
-  const registerBlock = mainSource.slice(registerIndex, mainSource.indexOf("});", registerIndex) + 3);
+  const preservesOptions = [
+    /registerSessionIpc\(\{[\s\S]*?showDashboard\s*,/,
+    /registerSessionIpc\(\{[\s\S]*?showDashboard:\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*=>\s*showDashboard\(\s*\1\s*\)/,
+    /registerSessionIpc\(\{[\s\S]*?showDashboard:\s*\(\s*\.\.\.\s*([A-Za-z_$][\w$]*)\s*\)\s*=>\s*showDashboard\(\s*\.\.\.\s*\1\s*\)/,
+  ].some((pattern) => pattern.test(mainSource));
 
-  assert.match(registerBlock, /showDashboard:\s*\(options\)\s*=>\s*showDashboard\(options\)/);
+  assert.strictEqual(
+    preservesOptions,
+    true,
+    "main.js should preserve dashboard open options when wiring session IPC"
+  );
 });
