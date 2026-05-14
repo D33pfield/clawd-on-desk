@@ -107,7 +107,8 @@
       "buildUniversalInstaller": false,
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
-      "installerHeaderIcon": "assets/icon.ico"
+      "installerHeaderIcon": "assets/icon.ico",
+      "include": "build/installer.nsh"
     },
     "files": [
       "NOTICE.md",
