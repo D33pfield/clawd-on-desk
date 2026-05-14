@@ -141,7 +141,7 @@ describe("dashboard window", () => {
       x: 260,
       y: 66,
       width: 480,
-      height: 528,
+      height: 544,
     });
     assert.strictEqual(getCreatedWindow().opts.parent, undefined);
     assert.strictEqual(getCreatedWindow().opts.modal, undefined);
@@ -206,7 +206,7 @@ describe("dashboard window", () => {
       x: 260,
       y: 66,
       width: 480,
-      height: 528,
+      height: 544,
     }]);
     assert.deepStrictEqual(getCreatedWindow().parentWindows, []);
   });
@@ -229,9 +229,9 @@ describe("dashboard window", () => {
     for (const timer of timers) timer.callback();
 
     assert.deepStrictEqual(getCreatedWindow().setBoundsCalls, [
-      { x: 260, y: 66, width: 480, height: 508 },
-      { x: 260, y: 66, width: 480, height: 488 },
-      { x: 260, y: 66, width: 480, height: 488 },
+      { x: 260, y: 66, width: 480, height: 524 },
+      { x: 260, y: 66, width: 480, height: 504 },
+      { x: 260, y: 66, width: 480, height: 504 },
     ]);
     assert.deepStrictEqual(timers.map((timer) => timer.delay), [0, 80]);
   });
