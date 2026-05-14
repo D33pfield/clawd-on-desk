@@ -2,6 +2,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const { registerSessionIpc } = require("../src/session-ipc");
 
@@ -142,4 +144,13 @@ test("session IPC owns dashboard open bridges", () => {
     ["showDashboard", { source: "settings" }],
     ["showDashboard", undefined],
   ]);
+});
+
+test("main forwards dashboard open source options into session IPC", () => {
+  const mainSource = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+  const registerIndex = mainSource.indexOf("registerSessionIpc({");
+  assert.notStrictEqual(registerIndex, -1);
+  const registerBlock = mainSource.slice(registerIndex, mainSource.indexOf("});", registerIndex) + 3);
+
+  assert.match(registerBlock, /showDashboard:\s*\(options\)\s*=>\s*showDashboard\(options\)/);
 });
