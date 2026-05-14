@@ -7,6 +7,7 @@ const DEFAULT_WIDTH = 480;
 const DEFAULT_HEIGHT = 600;
 const MIN_WIDTH = 320;
 const MIN_HEIGHT = 400;
+const SETTINGS_FLOATING_MARGIN = 16;
 const LIGHT_BACKGROUND = "#f5f5f7";
 const DARK_BACKGROUND = "#1c1c1f";
 
@@ -83,17 +84,18 @@ module.exports = function initDashboard(ctx) {
     return isUsableBounds(bounds) ? bounds : null;
   }
 
-  function computeSettingsAnchoredBounds(settingsBounds) {
+  function computeSettingsFloatingBounds(settingsBounds) {
     const cx = settingsBounds.x + settingsBounds.width / 2;
     const cy = settingsBounds.y + settingsBounds.height / 2;
     const workArea = typeof ctx.getNearestWorkArea === "function"
       ? ctx.getNearestWorkArea(cx, cy)
       : { x: 0, y: 0, width: 1280, height: 800 };
     const width = Math.max(MIN_WIDTH, Math.min(DEFAULT_WIDTH, settingsBounds.width, workArea.width));
-    const height = Math.max(MIN_HEIGHT, Math.min(settingsBounds.height, workArea.height));
+    const targetHeight = settingsBounds.height - SETTINGS_FLOATING_MARGIN * 2;
+    const height = Math.max(MIN_HEIGHT, Math.min(targetHeight, workArea.height));
     return clampBoundsToWorkArea({
       x: settingsBounds.x + (settingsBounds.width - width) / 2,
-      y: settingsBounds.y,
+      y: settingsBounds.y + SETTINGS_FLOATING_MARGIN,
       width,
       height,
     }, workArea);
@@ -103,16 +105,16 @@ module.exports = function initDashboard(ctx) {
     if (options.source !== "settings") {
       return { bounds: computeInitialBounds() };
     }
-    // Keep Settings-opened dashboard windows visually attached with absolute
-    // screen bounds. On Windows, using a BrowserWindow parent here can introduce
-    // frame/titlebar coordinate drift that makes the outer window heights differ.
+    // Keep Settings-opened dashboards as a visually attached floating panel.
+    // Matching native outer frames exactly is brittle on Windows because DWM can
+    // add invisible borders and titlebar frame offsets per window.
     const settingsWindow = getSettingsWindow();
     const settingsBounds = getSettingsBounds(settingsWindow);
     if (!settingsBounds) {
       return { bounds: computeInitialBounds() };
     }
     return {
-      bounds: computeSettingsAnchoredBounds(settingsBounds),
+      bounds: computeSettingsFloatingBounds(settingsBounds),
     };
   }
 

@@ -125,7 +125,7 @@ describe("dashboard window", () => {
     assert.strictEqual(getCreatedWindow().opts.modal, undefined);
   });
 
-  it("visually anchors dashboard windows opened from settings to the settings window", () => {
+  it("floats dashboard windows opened from settings inside the settings window bounds", () => {
     const settingsWindow = {
       isDestroyed: () => false,
       isMinimized: () => false,
@@ -139,16 +139,16 @@ describe("dashboard window", () => {
 
     assert.deepStrictEqual(getCreatedWindow().bounds, {
       x: 260,
-      y: 50,
+      y: 66,
       width: 480,
-      height: 560,
+      height: 528,
     });
     assert.strictEqual(getCreatedWindow().opts.parent, undefined);
     assert.strictEqual(getCreatedWindow().opts.modal, undefined);
     assert.deepStrictEqual(getCreatedWindow().parentWindows, []);
   });
 
-  it("clamps settings-anchored dashboard bounds to the work area", () => {
+  it("clamps settings-floating dashboard bounds to the work area", () => {
     const settingsWindow = {
       isDestroyed: () => false,
       isMinimized: () => false,
@@ -204,14 +204,14 @@ describe("dashboard window", () => {
 
     assert.deepStrictEqual(getCreatedWindow().setBoundsCalls, [{
       x: 260,
-      y: 50,
+      y: 66,
       width: 480,
-      height: 560,
+      height: 528,
     }]);
     assert.deepStrictEqual(getCreatedWindow().parentWindows, []);
   });
 
-  it("re-syncs settings anchored bounds before and after showing the dashboard", () => {
+  it("re-syncs settings floating bounds before and after showing the dashboard", () => {
     let settingsBounds = { x: 100, y: 50, width: 800, height: 560 };
     const settingsWindow = {
       isDestroyed: () => false,
@@ -229,9 +229,9 @@ describe("dashboard window", () => {
     for (const timer of timers) timer.callback();
 
     assert.deepStrictEqual(getCreatedWindow().setBoundsCalls, [
-      { x: 260, y: 50, width: 480, height: 540 },
-      { x: 260, y: 50, width: 480, height: 520 },
-      { x: 260, y: 50, width: 480, height: 520 },
+      { x: 260, y: 66, width: 480, height: 508 },
+      { x: 260, y: 66, width: 480, height: 488 },
+      { x: 260, y: 66, width: 480, height: 488 },
     ]);
     assert.deepStrictEqual(timers.map((timer) => timer.delay), [0, 80]);
   });
