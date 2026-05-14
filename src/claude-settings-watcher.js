@@ -178,6 +178,23 @@ function createClaudeSettingsWatcher(ctx = {}) {
     if (settingsWatcher) return false;
     const settingsDir = getClaudeSettingsDir();
     const settingsPath = getClaudeSettingsPath();
+    // Seed the trusted baseline from the current settings.json before the watcher starts,
+    // so the very first watcher event after Clawd boots (e.g. an external CLI minimize
+    // landing right after syncClawdHooks() ran) can be compared against a real snapshot
+    // instead of null. Wrapped in its own try/catch so a missing or unreadable file
+    // (fresh install, permission error) cannot prevent the watcher from starting.
+    // The settingsNeedClaudeHookResync guard inside this block also prevents seeding
+    // from a polluted state if an external CLI raced ahead of this read.
+    try {
+      const seedRaw = fsApi.readFileSync(settingsPath, "utf-8");
+      const seedPort = typeof ctx.getHookServerPort === "function" ? ctx.getHookServerPort() : null;
+      const seedExpectedPermissionUrl = buildPermissionUrl(seedPort);
+      if (!settingsNeedClaudeHookResync(seedRaw, seedExpectedPermissionUrl)) {
+        lastTrustedSnapshot = takeSnapshot(seedRaw);
+      }
+    } catch (err) {
+      console.warn("Clawd: could not seed settings baseline:", err.message);
+    }
     try {
       settingsWatcher = fsApi.watch(settingsDir, (_event, filename) => {
         if (filename && filename !== SETTINGS_FILENAME) return;
