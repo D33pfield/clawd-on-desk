@@ -3,12 +3,15 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { fileURLToPath } = require("url");
 
 const { getAllAgents } = require("../agents/registry");
 const {
+  hashSvgSource,
   readSourceManifest,
+  normalizeTextLineEndings,
   updateSvgSourceHashes,
 } = require("../scripts/export-agent-icons");
 const {
@@ -102,6 +105,24 @@ describe("state agent icons", () => {
   it("keeps source SVG hashes aligned with the source manifest", () => {
     const expectedManifest = updateSvgSourceHashes({ svgSources: {} }, getAllAgents());
     assert.deepStrictEqual(readSourceManifest(), expectedManifest);
+  });
+
+  it("normalizes SVG source line endings before hashing", () => {
+    assert.strictEqual(
+      normalizeTextLineEndings("<svg>\r\n  <path />\r\n</svg>\r"),
+      "<svg>\n  <path />\n</svg>\n"
+    );
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-svg-hash-"));
+    try {
+      const lfPath = path.join(tempDir, "lf.svg");
+      const crlfPath = path.join(tempDir, "crlf.svg");
+      fs.writeFileSync(lfPath, "<svg>\n  <path />\n</svg>\n");
+      fs.writeFileSync(crlfPath, "<svg>\r\n  <path />\r\n</svg>\r\n");
+      assert.strictEqual(hashSvgSource(crlfPath), hashSvgSource(lfPath));
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("returns the cached URL value for repeated lookups", () => {

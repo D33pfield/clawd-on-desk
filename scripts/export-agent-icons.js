@@ -37,8 +37,15 @@ function getSourcePath(agentId) {
   return null;
 }
 
-function hashFile(filePath) {
-  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+function normalizeTextLineEndings(value) {
+  return String(value).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function hashSvgSource(filePath) {
+  return crypto
+    .createHash("sha256")
+    .update(normalizeTextLineEndings(fs.readFileSync(filePath, "utf8")), "utf8")
+    .digest("hex");
 }
 
 function readSourceManifest() {
@@ -66,7 +73,7 @@ function updateSvgSourceHashes(manifest, agents) {
   for (const agent of agents) {
     if (!hasRasterAndSvgSources(agent.id)) continue;
     const svgPath = getSourceCandidatePath(agent.id, ".svg");
-    manifest.svgSources[agent.id] = { sha256: hashFile(svgPath) };
+    manifest.svgSources[agent.id] = { sha256: hashSvgSource(svgPath) };
   }
   return manifest;
 }
@@ -81,18 +88,18 @@ function assertRasterSourceCurrent(agentId, manifest = readSourceManifest()) {
     throw new Error(
       [
         `Missing SVG source hash for ${agentId}.`,
-        "After refreshing the same-name PNG source, run: node scripts/export-agent-icons.js --accept-svg-sources",
+        "After refreshing the same-name PNG source, run: npm run export-agent-icons -- --accept-svg-sources",
       ].join(" ")
     );
   }
 
-  const actualHash = hashFile(svgPath);
+  const actualHash = hashSvgSource(svgPath);
   if (actualHash.toLowerCase() === expectedHash.toLowerCase()) return;
 
   throw new Error(
     [
       `SVG source hash changed for ${agentId}.`,
-      `Refresh the same-name PNG source from ${path.relative(process.cwd(), svgPath)}, then run: node scripts/export-agent-icons.js --accept-svg-sources`,
+      `Refresh the same-name PNG source from ${path.relative(process.cwd(), svgPath)}, then run: npm run export-agent-icons -- --accept-svg-sources`,
     ].join(" ")
   );
 }
@@ -217,6 +224,8 @@ module.exports = {
   getSourcePath,
   readSourceManifest,
   writeSourceManifest,
+  normalizeTextLineEndings,
+  hashSvgSource,
   updateSvgSourceHashes,
   assertRasterSourceCurrent,
   exportIcon,
