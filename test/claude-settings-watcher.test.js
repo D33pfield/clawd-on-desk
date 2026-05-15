@@ -265,7 +265,7 @@ describe("createClaudeSettingsWatcher — suspicious shrink protection", () => {
         matcher: "",
         hooks: [
           { type: "command", command: 'node "/tmp/clawd-hook.js" Stop' },
-          { type: "command", command: "node /home/u/.claude/hooks/maestro-audit.mjs" },
+          { type: "command", command: "node /home/u/.claude/hooks/my-auto-start.js" },
           { type: "command", command: "node /home/u/.claude/hooks/secret-guard.js" },
         ],
       }],

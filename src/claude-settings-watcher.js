@@ -61,10 +61,20 @@ function settingsNeedClaudeHookResync(rawSettings, expectedPermissionUrl) {
   return !hasManagedCommandHook || !hasManagedPermissionHook;
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function commandContainsMarkerToken(command, marker) {
+  if (typeof command !== "string" || typeof marker !== "string" || !marker) return false;
+  const pattern = new RegExp(`(^|[^A-Za-z0-9._-])${escapeRegExp(marker)}($|[^A-Za-z0-9._-])`);
+  return pattern.test(command);
+}
+
 function commandContainsAnyMarker(command, markers) {
   return typeof command === "string"
     && Array.isArray(markers)
-    && markers.some((marker) => command.includes(marker));
+    && markers.some((marker) => commandContainsMarkerToken(command, marker));
 }
 
 function countCommandHooksInEntries(entries, options = {}) {
@@ -89,6 +99,7 @@ function countCommandHooksInEntries(entries, options = {}) {
  * Count total command hooks across every event in the hooks object.
  * Handles both nested format (entry.hooks[].command) and flat format (entry.command).
  * HTTP hooks (type: "http") are excluded because they cannot encode the marker.
+ * TODO: Decide whether non-Clawd HTTP hooks should contribute to third-party shrink detection.
  * @param {object|null|undefined} hooks
  * @returns {number}
  */
