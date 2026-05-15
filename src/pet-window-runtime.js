@@ -46,6 +46,7 @@ function createPetWindowRuntime(options = {}) {
   const getCurrentHitBox = options.getCurrentHitBox || (() => null);
   const getMiniMode = options.getMiniMode || (() => false);
   const getMiniTransitioning = options.getMiniTransitioning || (() => false);
+  const getMiniContainedSeam = options.getMiniContainedSeam || (() => null);
   const getMiniPeekOffset = options.getMiniPeekOffset || (() => 0);
   const getCurrentPixelSize = options.getCurrentPixelSize || (() => null);
   const getEffectiveCurrentPixelSize = options.getEffectiveCurrentPixelSize || getCurrentPixelSize;
@@ -341,6 +342,24 @@ function createPetWindowRuntime(options = {}) {
     return needsFinalClampAdjustmentRaw(bounds, size, clampPosition);
   }
 
+  // At an internal multi-monitor seam the render window is clip-pathed so its
+  // seam-crossing half shows nothing — but the hit (input) window is a
+  // transparent surface and would keep capturing clicks over the neighbouring
+  // display. Clip the hit rect to the same seam so those clicks fall through.
+  // The clamps keep the rect from inverting when the whole hit rect is past
+  // the seam; the w<=0 guard in the callers then drops the degenerate result.
+  function clipHitRectToMiniSeam(hit) {
+    if (!hit) return hit;
+    const seam = getMiniContainedSeam();
+    if (!seam || !Number.isFinite(seam.boundary)) return hit;
+    if (seam.edge === "right") {
+      if (hit.right <= seam.boundary) return hit;
+      return { ...hit, right: Math.max(hit.left, seam.boundary) };
+    }
+    if (hit.left >= seam.boundary) return hit;
+    return { ...hit, left: Math.min(hit.right, seam.boundary) };
+  }
+
   function syncHitWin() {
     const hitWin = getHitWindow();
     const win = getRenderWindow();
@@ -349,7 +368,7 @@ function createPetWindowRuntime(options = {}) {
     // window mid-drag can break pointer capture on Windows.
     if (dragLocked) return;
     const bounds = getPetWindowBounds();
-    const hit = getHitRectScreen(bounds);
+    const hit = clipHitRectToMiniSeam(getHitRectScreen(bounds));
     if (!hit) return;
     const x = Math.round(hit.left);
     const y = Math.round(hit.top);
@@ -367,7 +386,7 @@ function createPetWindowRuntime(options = {}) {
   }
 
   function getInitialHitWindowBounds(renderBounds = getPetWindowBounds()) {
-    const hit = getHitRectScreen(renderBounds);
+    const hit = clipHitRectToMiniSeam(getHitRectScreen(renderBounds));
     if (!hit) return null;
     return {
       x: Math.round(hit.left),

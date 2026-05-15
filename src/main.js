@@ -481,6 +481,7 @@ const petWindowRuntime = createPetWindowRuntime({
   getCurrentHitBox: () => _state.getCurrentHitBox(),
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
+  getMiniContainedSeam: () => _mini.getContainedSeam(),
   getMiniPeekOffset: () => _mini.PEEK_OFFSET,
   getCurrentPixelSize: () => getCurrentPixelSize(),
   getEffectiveCurrentPixelSize: (workArea) => getEffectiveCurrentPixelSize(workArea),
@@ -627,6 +628,10 @@ function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
   sendToRenderer("low-power-idle-mode-change", lowPowerIdleMode);
   if (_mini.getMiniMode()) {
     sendToRenderer("mini-mode-change", true, _mini.getMiniEdge());
+    // mini-clip is a renderer inline style — a renderer/theme reload (and
+    // startup recovery) drops it. Re-send the current seam clip so a
+    // contained mini stays clipped instead of bleeding onto the neighbour.
+    _mini.syncContainedClip();
   }
   if (doNotDisturb) {
     sendToRenderer("dnd-change", true);

@@ -89,6 +89,7 @@ function createRuntime(overrides = {}) {
     getCurrentHitBox: () => overrides.hitBox || null,
     getMiniMode: () => overrides.miniMode || false,
     getMiniTransitioning: () => overrides.miniTransitioning || false,
+    getMiniContainedSeam: () => overrides.miniContainedSeam || null,
     getMiniPeekOffset: () => 0,
     getCurrentPixelSize: () => overrides.currentPixelSize || { width: 100, height: 100 },
     getEffectiveCurrentPixelSize: () => overrides.effectivePixelSize || { width: 100, height: 100 },
@@ -243,6 +244,52 @@ describe("pet-window-runtime", () => {
     harness.runtime.syncHitWin();
 
     assert.deepStrictEqual(harness.hitWin.calls, []);
+  });
+
+  it("clips the hit window to a right-side internal monitor seam", () => {
+    const renderWin = makeWindow({ x: 40, y: 0, width: 120, height: 120 });
+    const harness = createRuntime({
+      renderWin,
+      miniMode: true,
+      miniContainedSeam: { boundary: 100, edge: "right" },
+    });
+
+    harness.runtime.syncHitWin();
+
+    // Full hit rect [40,160) clipped at the seam → keep the local half [40,100).
+    assert.deepStrictEqual(
+      harness.hitWin.calls.find((call) => call[0] === "setBounds"),
+      ["setBounds", { x: 40, y: 0, width: 60, height: 120 }]
+    );
+  });
+
+  it("clips the hit window from the left at a left-side internal seam", () => {
+    const renderWin = makeWindow({ x: 40, y: 0, width: 120, height: 120 });
+    const harness = createRuntime({
+      renderWin,
+      miniMode: true,
+      miniContainedSeam: { boundary: 100, edge: "left" },
+    });
+
+    harness.runtime.syncHitWin();
+
+    // Full hit rect [40,160) clipped at the seam → keep the local half [100,160).
+    assert.deepStrictEqual(
+      harness.hitWin.calls.find((call) => call[0] === "setBounds"),
+      ["setBounds", { x: 100, y: 0, width: 60, height: 120 }]
+    );
+  });
+
+  it("leaves the hit window unclipped when no internal seam is active", () => {
+    const renderWin = makeWindow({ x: 40, y: 0, width: 120, height: 120 });
+    const harness = createRuntime({ renderWin, miniMode: true });
+
+    harness.runtime.syncHitWin();
+
+    assert.deepStrictEqual(
+      harness.hitWin.calls.find((call) => call[0] === "setBounds"),
+      ["setBounds", { x: 40, y: 0, width: 120, height: 120 }]
+    );
   });
 
   it("reasserts Windows topmost when drag movement lands near a work-area edge", () => {
