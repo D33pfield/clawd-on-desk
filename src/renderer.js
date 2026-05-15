@@ -3,6 +3,7 @@
 // Reactions are triggered via IPC from main (relayed from hit window).
 
 const container = document.getElementById("pet-container");
+const clipLayer = document.getElementById("pet-clip");
 let clawdEl = document.getElementById("clawd");
 let pendingNext = null;
 const LOW_POWER_IDLE_PAUSE_MS = 5000;
@@ -440,19 +441,24 @@ window.electronAPI.onMiniModeChange((enabled, edge, options) => {
 // fraction of the window width that falls on the local display. We clip the
 // rest away so the half that physically crosses onto the neighbouring
 // monitor renders nothing there — the local display keeps the half-body peek.
+//
+// The clip is applied to #pet-clip, which (unlike #pet-container) never
+// carries transform: scaleX(-1). A clip-path on the flipped container would
+// be mirrored too, so a left-edge clip would land on the wrong half; the
+// unflipped wrapper keeps `inset()` in screen space for both edges.
 function applyMiniClip(info) {
-  if (!container) return;
+  if (!clipLayer) return;
   if (!info || !Number.isFinite(info.fraction)) {
-    container.style.clipPath = "";
+    clipLayer.style.clipPath = "";
     return;
   }
   const f = Math.max(0, Math.min(1, info.fraction));
   if (info.edge === "left") {
     // Local display lies to the RIGHT of the seam — keep [f, 1], clip the left.
-    container.style.clipPath = `inset(0 0 0 ${f * 100}%)`;
+    clipLayer.style.clipPath = `inset(0 0 0 ${f * 100}%)`;
   } else {
     // Local display lies to the LEFT of the seam — keep [0, f], clip the right.
-    container.style.clipPath = `inset(0 ${(1 - f) * 100}% 0 0)`;
+    clipLayer.style.clipPath = `inset(0 ${(1 - f) * 100}% 0 0)`;
   }
 }
 

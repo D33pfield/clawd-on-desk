@@ -192,6 +192,11 @@ function seamBoundary(wa, yMid, edge) {
 let containedBoundary = null;
 
 function syncContainedClip() {
+  // Startup recovery computes the seam state before the render window
+  // exists; theme/renderer reload can also tear the window down briefly.
+  // Bail out rather than dereference a missing window — the clip is
+  // (re)sent from syncRendererStateAfterLoad() once the renderer is up.
+  if (!ctx.win || ctx.win.isDestroyed()) return;
   if (!miniMode || containedBoundary == null) {
     ctx.sendToRenderer("mini-clip", null);
     return;
@@ -491,6 +496,14 @@ function refreshContainedBoundary(wa, yMid) {
   containedBoundary = seamBoundary(wa, yMid, miniEdge);
 }
 
+// Internal-seam state for the hit (input) window. When non-null the hit
+// rect must be clipped to the same seam so the transparent input surface
+// does not keep capturing clicks over the neighbouring display.
+function getContainedSeam() {
+  if (containedBoundary == null) return null;
+  return { boundary: containedBoundary, edge: miniEdge };
+}
+
 function handleDisplayChange() {
   if (!ctx.win || ctx.win.isDestroyed()) return;
   if (!miniMode) return;
@@ -541,8 +554,10 @@ function restoreFromPrefs(prefs, size) {
   miniTransitioning = false;
   miniSleepPeeked = false;
   miniPeeked = false;
+  // Compute the seam state only — the render window does not exist yet at
+  // startup restore. The renderer clip is (re)sent by
+  // syncRendererStateAfterLoad() once the renderer has finished loading.
   refreshContainedBoundary(wa, startY + size.height / 2);
-  syncContainedClip();
   return { x: currentMiniX, y: startY, width: size.width, height: size.height };
 }
 
@@ -569,6 +584,7 @@ return {
   miniPeekIn, miniPeekOut, checkMiniModeSnap, cancelMiniTransition,
   animateWindowX, animateWindowParabola,
   refreshTheme,
+  syncContainedClip, getContainedSeam,
   handleDisplayChange, handleResize, restoreFromPrefs,
   getMiniMode, getMiniEdge, getMiniTransitioning, getMiniSleepPeeked, setMiniSleepPeeked, getMiniPeeked, setMiniPeeked,
   getIsAnimating, getPreMiniX, getPreMiniY, getCurrentMiniX, getMiniSnap,
