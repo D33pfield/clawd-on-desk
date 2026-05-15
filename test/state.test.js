@@ -357,10 +357,10 @@ describe("working sub-animations", () => {
     assert.strictEqual(api.getSvgOverride("working"), "clawd-working-typing.svg");
   });
 
-  it("2 working sessions → juggling SVG", () => {
+  it("2 working sessions → headphones groove SVG", () => {
     api.sessions.set("s1", rawSession("working"));
     api.sessions.set("s2", rawSession("working"));
-    assert.strictEqual(api.getSvgOverride("working"), "clawd-working-juggling.svg");
+    assert.strictEqual(api.getSvgOverride("working"), "clawd-headphones-groove.svg");
   });
 
   it("3+ working sessions → building SVG", () => {
