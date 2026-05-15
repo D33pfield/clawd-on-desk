@@ -59,6 +59,16 @@ remote_node_command() {
 }
 
 REMOTE_NODE_PROBE=$(cat <<'REMOTE_NODE_PROBE_SCRIPT'
+node_version_supported() {
+  v="$1"
+  major="${v#v}"
+  major="${major%%.*}"
+  case "$major" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$major" -ge 14 ]
+}
+
 emit_node() {
   p="$1"
   src="$2"
@@ -69,19 +79,32 @@ emit_node() {
   esac
   if [ ! -x "$p" ]; then return 1; fi
   v="$("$p" --version 2>/dev/null)" || return 1
-  case "$v" in
-    v[0-9]*)
-      printf 'CLAWD_REMOTE_NODE_BIN=%s\n' "$p"
-      printf 'CLAWD_REMOTE_NODE_VERSION=%s\n' "$v"
-      printf 'CLAWD_REMOTE_NODE_SOURCE=%s\n' "$src"
-      exit 0
-      ;;
-  esac
-  return 1
+  node_version_supported "$v" || return 1
+  printf 'CLAWD_REMOTE_NODE_BIN=%s\n' "$p"
+  printf 'CLAWD_REMOTE_NODE_VERSION=%s\n' "$v"
+  printf 'CLAWD_REMOTE_NODE_SOURCE=%s\n' "$src"
+  exit 0
+}
+
+probe_login_shells() {
+  for shell in "$SHELL" /bin/zsh /bin/bash /bin/sh
+  do
+    if [ -z "$shell" ]; then continue; fi
+    case "$shell" in
+      /*) ;;
+      *) continue ;;
+    esac
+    if [ ! -x "$shell" ]; then continue; fi
+    out="$("$shell" -lic 'printf "__CLAWD_REMOTE_NODE_PROBE__\n"; command -v node 2>/dev/null; which node 2>/dev/null; true' 2>/dev/null)"
+    p="$(printf '%s\n' "$out" | awk 'found && $0 ~ /^\// { last=$0 } $0 == "__CLAWD_REMOTE_NODE_PROBE__" { found=1 } END { if (last) print last }')"
+    emit_node "$p" "shell:$shell"
+  done
 }
 
 p="$(command -v node 2>/dev/null || true)"
 emit_node "$p" "path"
+
+probe_login_shells
 
 for p in \
   /opt/homebrew/bin/node \
@@ -99,19 +122,6 @@ for p in \
   "$HOME"/.local/share/mise/shims/node
 do
   emit_node "$p" "candidate"
-done
-
-for shell in "$SHELL" /bin/zsh /bin/bash /bin/sh
-do
-  if [ -z "$shell" ]; then continue; fi
-  case "$shell" in
-    /*) ;;
-    *) continue ;;
-  esac
-  if [ ! -x "$shell" ]; then continue; fi
-  out="$("$shell" -lic 'printf "__CLAWD_REMOTE_NODE_PROBE__\n"; command -v node 2>/dev/null; which node 2>/dev/null; true' 2>/dev/null)"
-  p="$(printf '%s\n' "$out" | awk 'found && $0 ~ /^\// { last=$0 } $0 == "__CLAWD_REMOTE_NODE_PROBE__" { found=1 } END { if (last) print last }')"
-  emit_node "$p" "shell:$shell"
 done
 
 exit 127

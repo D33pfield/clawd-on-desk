@@ -505,6 +505,44 @@ test("bare node probe does not keep spawning while absolute-node resolver is in 
   rt.cleanup();
 });
 
+test("disconnect followed by reconnect clears a stale in-flight node resolver gate", async () => {
+  clearRemoteNodeCache();
+  const spawnCalls = [];
+  let resolveNode;
+  const pendingResolver = new Promise((resolve) => { resolveNode = resolve; });
+  const spawn = (cmd, args, opts) => {
+    const child = makeMockChild();
+    spawnCalls.push({ cmd, args, opts, child });
+    return child;
+  };
+  const timers = makeFakeTimers();
+  const profile = { id: "p1", host: "user@pi", remoteForwardPort: 23333 };
+  const rt = createRemoteSshRuntimeBase({
+    spawn,
+    getHookServerPort: () => 23335,
+    setTimeout: timers.setTimeoutFn,
+    clearTimeout: timers.clearTimeoutFn,
+    resolveRemoteNodeBin: () => pendingResolver,
+  });
+
+  rt.connect(profile);
+  timers.flushWhere((t) => t.ms === 0);
+  assert.equal(spawnCalls.length, 2, "main tunnel + first bare-node probe");
+  spawnCalls[1].child._fakeExit(127);
+  await new Promise((r) => setImmediate(r));
+
+  rt.disconnect("p1");
+  rt.connect(profile);
+  assert.equal(spawnCalls.length, 3, "reconnect should spawn a fresh main tunnel");
+  timers.flushWhere((t) => t.ms === 0);
+  assert.equal(spawnCalls.length, 4,
+    "fresh reconnect should not be blocked by the stale resolver from the prior tunnel");
+
+  resolveNode({ ok: true, nodeBin: "/usr/bin/node", version: "v20.0.0", source: "test" });
+  await new Promise((r) => setImmediate(r));
+  rt.cleanup();
+});
+
 test("connect uses persisted remote Node path and skips background resolver", async () => {
   clearRemoteNodeCache();
   const spawnCalls = [];
@@ -539,6 +577,51 @@ test("connect uses persisted remote Node path and skips background resolver", as
   assert.equal(resolverCalled, false);
   const probeCmd = spawnCalls[1].args[spawnCalls[1].args.length - 1];
   assert.ok(probeCmd.startsWith("'/home/me/.nvm/versions/node/v22/bin/node' -e "));
+  rt.cleanup();
+});
+
+test("cached absolute node probe failure clears cache and re-resolves", async () => {
+  clearRemoteNodeCache();
+  const spawnCalls = [];
+  const resolverCalls = [];
+  const spawn = (cmd, args, opts) => {
+    const child = makeMockChild();
+    spawnCalls.push({ cmd, args, opts, child });
+    return child;
+  };
+  const timers = makeFakeTimers();
+  const rt = createRemoteSshRuntimeBase({
+    spawn,
+    getHookServerPort: () => 23335,
+    setTimeout: timers.setTimeoutFn,
+    clearTimeout: timers.clearTimeoutFn,
+    resolveRemoteNodeBin: (options) => {
+      resolverCalls.push(options);
+      return { ok: true, nodeBin: "/usr/bin/node", version: "v20.0.0", source: "path" };
+    },
+  });
+
+  rt.connect({
+    id: "p1",
+    host: "user@pi",
+    remoteForwardPort: 23333,
+    detectedRemoteNodeBin: "/stale/node",
+    detectedRemoteNodeVersion: "v20.0.0",
+    detectedRemoteNodeSource: "profile",
+  });
+  timers.flushWhere((t) => t.ms === 0);
+  assert.equal(spawnCalls.length, 2, "main tunnel + cached-path probe");
+  assert.ok(spawnCalls[1].args[spawnCalls[1].args.length - 1].startsWith("'/stale/node' -e "));
+
+  spawnCalls[1].child._fakeExit(127);
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(resolverCalls.length, 1);
+  assert.equal(resolverCalls[0].useCache, false);
+
+  timers.flushWhere((t) => t.ms === PROBE_MIN_GAP_MS);
+  assert.equal(spawnCalls.length, 3, "resolved path should schedule a replacement probe");
+  assert.ok(spawnCalls[2].args[spawnCalls[2].args.length - 1].startsWith("'/usr/bin/node' -e "));
   rt.cleanup();
 });
 

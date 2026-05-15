@@ -205,6 +205,34 @@ test("deploy: reuses resolved absolute Node path for all remote installers", asy
   }
 });
 
+test("deploy: verifies stale persisted Node metadata before using it", async () => {
+  const hooksDir = path.join(REPO_ROOT, "hooks");
+  const profile = {
+    id: "p1",
+    host: "user@pi",
+    remoteForwardPort: 23333,
+    detectedRemoteNodeBin: "/stale/node",
+    detectedRemoteNodeVersion: "v20.10.0",
+    detectedRemoteNodeSource: "profile",
+  };
+  const nodeBin = "/home/me/.nvm/versions/node/v22.1.0/bin/node";
+  const { spawn, calls } = makeRecordingSpawn([
+    { code: 0 }, // mkdir
+    { code: 127, stderr: "/stale/node: not found" }, // cached node verification
+    { code: 0, stdout: nodeProbeStdout(nodeBin, "v22.1.0", "shell:/bin/bash") }, // full probe
+    { code: 0 }, // scp
+    { code: 0 }, // install-claude
+    { code: 0 }, // install-codex
+    { code: 0 }, // install-copilot
+  ]);
+  const runtime = makeRuntimeStub();
+  const result = await deploy({ profile, runtime, deps: { spawn, hooksDir } });
+  assert.equal(result.ok, true);
+  assert.equal(result.remoteNode.nodeBin, nodeBin);
+  assert.ok(calls[1].args[calls[1].args.length - 1].includes("/stale/node"));
+  assert.ok(calls[4].args[calls[4].args.length - 1].startsWith(`'${nodeBin}'`));
+});
+
 test("deploy: with hostPrefix triggers host-prefix step via ssh stdin", async () => {
   const hooksDir = path.join(REPO_ROOT, "hooks");
   const profile = {
@@ -378,6 +406,29 @@ test("startCodexMonitor pre-cleans then launches new monitor", async () => {
   const startCmd = calls[1].args[calls[1].args.length - 1];
   assert.match(startCmd, /nohup '\/usr\/bin\/node' "\$HOME\/\.claude\/hooks\/codex-remote-monitor\.js" '--port' '23335'/);
   assert.match(startCmd, /echo \$! > ~\/\.clawd-codex-monitor\.pid/);
+});
+
+test("startCodexMonitor verifies stale persisted Node metadata before launch", async () => {
+  const profile = {
+    id: "p1",
+    host: "pi",
+    remoteForwardPort: 23335,
+    detectedRemoteNodeBin: "/stale/node",
+    detectedRemoteNodeVersion: "v20.10.0",
+    detectedRemoteNodeSource: "profile",
+  };
+  const { spawn, calls } = makeRecordingSpawn([
+    { code: 127, stderr: "/stale/node: not found" },
+    { code: 0, stdout: nodeProbeStdout("/usr/local/bin/node", "v22.1.0", "path") },
+    { code: 0 }, // pre-clean
+    { code: 0 }, // launch
+  ]);
+  const r = await startCodexMonitor({ profile, deps: { spawn } });
+  assert.equal(r.ok, true);
+  assert.equal(calls.length, 4);
+  assert.ok(calls[0].args[calls[0].args.length - 1].includes("/stale/node"));
+  const startCmd = calls[3].args[calls[3].args.length - 1];
+  assert.match(startCmd, /nohup '\/usr\/local\/bin\/node'/);
 });
 
 test("stopCodexMonitor kills PID and removes pid file (best-effort)", async () => {

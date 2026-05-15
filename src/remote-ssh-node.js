@@ -13,8 +13,19 @@ const { quoteForPosixShellArg } = require("./remote-ssh-quote");
 
 const NODE_PROBE_TIMEOUT_MS = 60000;
 const NODE_PROBE_SENTINEL = "__CLAWD_REMOTE_NODE_PROBE__";
+const MIN_REMOTE_NODE_MAJOR = 14;
 
 const NODE_PROBE_SCRIPT = `
+node_version_supported() {
+  v="$1"
+  major="\${v#v}"
+  major="\${major%%.*}"
+  case "$major" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$major" -ge ${MIN_REMOTE_NODE_MAJOR} ]
+}
+
 emit_node() {
   p="$1"
   src="$2"
@@ -25,19 +36,37 @@ emit_node() {
   esac
   if [ ! -x "$p" ]; then return 1; fi
   v="$("$p" --version 2>/dev/null)" || return 1
-  case "$v" in
-    v[0-9]*)
-      printf 'CLAWD_REMOTE_NODE_BIN=%s\\n' "$p"
-      printf 'CLAWD_REMOTE_NODE_VERSION=%s\\n' "$v"
-      printf 'CLAWD_REMOTE_NODE_SOURCE=%s\\n' "$src"
-      exit 0
-      ;;
-  esac
-  return 1
+  node_version_supported "$v" || return 1
+  printf 'CLAWD_REMOTE_NODE_BIN=%s\\n' "$p"
+  printf 'CLAWD_REMOTE_NODE_VERSION=%s\\n' "$v"
+  printf 'CLAWD_REMOTE_NODE_SOURCE=%s\\n' "$src"
+  exit 0
+}
+
+if [ "$#" -gt 0 ]; then
+  emit_node "$1" "\${2:-cache}"
+  exit 127
+fi
+
+probe_login_shells() {
+  for shell in "$SHELL" /bin/zsh /bin/bash /bin/sh
+  do
+    if [ -z "$shell" ]; then continue; fi
+    case "$shell" in
+      /*) ;;
+      *) continue ;;
+    esac
+    if [ ! -x "$shell" ]; then continue; fi
+    out="$("$shell" -lic 'printf "${NODE_PROBE_SENTINEL}\\n"; command -v node 2>/dev/null; which node 2>/dev/null; true' 2>/dev/null)"
+    p="$(printf '%s\\n' "$out" | awk 'found && $0 ~ /^\\// { last=$0 } $0 == "${NODE_PROBE_SENTINEL}" { found=1 } END { if (last) print last }')"
+    emit_node "$p" "shell:$shell"
+  done
 }
 
 p="$(command -v node 2>/dev/null || true)"
 emit_node "$p" "path"
+
+probe_login_shells
 
 for p in \\
   /opt/homebrew/bin/node \\
@@ -55,19 +84,6 @@ for p in \\
   "$HOME"/.local/share/mise/shims/node
 do
   emit_node "$p" "candidate"
-done
-
-for shell in "$SHELL" /bin/zsh /bin/bash /bin/sh
-do
-  if [ -z "$shell" ]; then continue; fi
-  case "$shell" in
-    /*) ;;
-    *) continue ;;
-  esac
-  if [ ! -x "$shell" ]; then continue; fi
-  out="$("$shell" -lic 'printf "${NODE_PROBE_SENTINEL}\\n"; command -v node 2>/dev/null; which node 2>/dev/null; true' 2>/dev/null)"
-  p="$(printf '%s\\n' "$out" | awk 'found && $0 ~ /^\\// { last=$0 } $0 == "${NODE_PROBE_SENTINEL}" { found=1 } END { if (last) print last }')"
-  emit_node "$p" "shell:$shell"
 done
 
 exit 127
@@ -128,8 +144,11 @@ function spawnAndWait(spawn, command, args, opts = {}) {
   });
 }
 
-function buildRemoteNodeProbeCommand() {
-  return `sh -c ${quoteForPosixShellArg(NODE_PROBE_SCRIPT)}`;
+function buildRemoteNodeProbeCommand(nodeBin = null, source = "cache") {
+  const tail = isValidRemoteNodeBin(nodeBin)
+    ? ` -- ${quoteForPosixShellArg(nodeBin)} ${quoteForPosixShellArg(String(source || "cache"))}`
+    : "";
+  return `sh -c ${quoteForPosixShellArg(NODE_PROBE_SCRIPT)}${tail}`;
 }
 
 function parseRemoteNodeProbeOutput(stdout) {
@@ -148,10 +167,16 @@ function parseRemoteNodeProbeOutput(stdout) {
       out.source = line.slice("CLAWD_REMOTE_NODE_SOURCE=".length);
     }
   }
-  if (!isValidRemoteNodeBin(out.nodeBin) || !/^v\d+/i.test(String(out.version || ""))) {
+  if (!isValidRemoteNodeBin(out.nodeBin) || !isSupportedRemoteNodeVersion(out.version)) {
     return null;
   }
   return out;
+}
+
+function isSupportedRemoteNodeVersion(value) {
+  if (typeof value !== "string" || !/^v\d+/i.test(value)) return false;
+  const major = Number.parseInt(value.slice(1).split(".")[0], 10);
+  return Number.isInteger(major) && major >= MIN_REMOTE_NODE_MAJOR;
 }
 
 function isValidRemoteNodeBin(value) {
@@ -170,15 +195,15 @@ function remoteNodeCacheKey(profile) {
 }
 
 const remoteNodeCache = new Map();
+const REMOTE_NODE_CACHE_INVALID = { invalid: true };
 
 function getProfileRemoteNodeBin(profile) {
   if (!profile || typeof profile !== "object") return null;
   if (!isValidRemoteNodeBin(profile.detectedRemoteNodeBin)) return null;
+  if (!isSupportedRemoteNodeVersion(profile.detectedRemoteNodeVersion)) return null;
   const out = {
     nodeBin: profile.detectedRemoteNodeBin,
-    version: /^v\d+/i.test(String(profile.detectedRemoteNodeVersion || ""))
-      ? profile.detectedRemoteNodeVersion
-      : null,
+    version: profile.detectedRemoteNodeVersion,
     source: typeof profile.detectedRemoteNodeSource === "string" && profile.detectedRemoteNodeSource
       ? profile.detectedRemoteNodeSource
       : "profile",
@@ -196,6 +221,7 @@ function clearRemoteNodeCache() {
 function getCachedRemoteNodeBin(profile) {
   const key = remoteNodeCacheKey(profile);
   const cached = key ? remoteNodeCache.get(key) : null;
+  if (cached === REMOTE_NODE_CACHE_INVALID) return null;
   if (cached) return cached;
   const persisted = getProfileRemoteNodeBin(profile);
   if (persisted && key) {
@@ -207,35 +233,22 @@ function getCachedRemoteNodeBin(profile) {
 function setCachedRemoteNodeBin(profile, result) {
   const key = remoteNodeCacheKey(profile);
   if (!key || !result || !isValidRemoteNodeBin(result.nodeBin)) return;
+  if (!isSupportedRemoteNodeVersion(result.version)) return;
   remoteNodeCache.set(key, {
     nodeBin: result.nodeBin,
-    version: result.version || null,
+    version: result.version,
     source: result.source || "cache",
   });
 }
 
-async function resolveRemoteNodeBin(options = {}) {
-  const {
-    profile,
-    buildSshArgs,
-    runtime,
-    timeoutMs = NODE_PROBE_TIMEOUT_MS,
-  } = options;
-  const spawn = options.spawn || childProcess.spawn;
+function clearCachedRemoteNodeBin(profile) {
+  const key = remoteNodeCacheKey(profile);
+  if (!key) return;
+  remoteNodeCache.set(key, REMOTE_NODE_CACHE_INVALID);
+}
 
-  if (!profile || typeof profile !== "object") {
-    return { ok: false, step: "check-node", message: "Remote profile is missing." };
-  }
-  if (typeof buildSshArgs !== "function") {
-    throw new Error("resolveRemoteNodeBin requires buildSshArgs");
-  }
-
-  const cached = getCachedRemoteNodeBin(profile);
-  if (cached) {
-    return { ok: true, ...cached, source: cached.source || "cache" };
-  }
-
-  const command = buildRemoteNodeProbeCommand();
+async function probeRemoteNodeBin({ profile, spawn, buildSshArgs, runtime, timeoutMs, nodeBin = null, source = "cache" }) {
+  const command = buildRemoteNodeProbeCommand(nodeBin, source);
   const args = buildSshArgs(profile).concat([command]);
   const r = await spawnAndWait(spawn, "ssh", args, { runtime, timeoutMs });
   if (r.code !== 0) {
@@ -260,8 +273,51 @@ async function resolveRemoteNodeBin(options = {}) {
       message: "Remote Node.js probe returned an invalid result.",
     };
   }
-  setCachedRemoteNodeBin(profile, parsed);
   return { ok: true, ...parsed };
+}
+
+async function resolveRemoteNodeBin(options = {}) {
+  const {
+    profile,
+    buildSshArgs,
+    runtime,
+    timeoutMs = NODE_PROBE_TIMEOUT_MS,
+    useCache = true,
+    verifyCache = false,
+  } = options;
+  const spawn = options.spawn || childProcess.spawn;
+
+  if (!profile || typeof profile !== "object") {
+    return { ok: false, step: "check-node", message: "Remote profile is missing." };
+  }
+  if (typeof buildSshArgs !== "function") {
+    throw new Error("resolveRemoteNodeBin requires buildSshArgs");
+  }
+
+  const cached = useCache ? getCachedRemoteNodeBin(profile) : null;
+  if (cached) {
+    if (!verifyCache) {
+      return { ok: true, ...cached, source: cached.source || "cache" };
+    }
+    const verified = await probeRemoteNodeBin({
+      profile,
+      spawn,
+      buildSshArgs,
+      runtime,
+      timeoutMs,
+      nodeBin: cached.nodeBin,
+      source: cached.source || "cache",
+    });
+    if (verified.ok) {
+      setCachedRemoteNodeBin(profile, verified);
+      return verified;
+    }
+    clearCachedRemoteNodeBin(profile);
+  }
+
+  const probed = await probeRemoteNodeBin({ profile, spawn, buildSshArgs, runtime, timeoutMs });
+  if (probed.ok) setCachedRemoteNodeBin(profile, probed);
+  return probed;
 }
 
 function remoteHookPath(scriptName) {
@@ -304,10 +360,13 @@ function formatExit(r) {
 module.exports = {
   NODE_PROBE_TIMEOUT_MS,
   NODE_PROBE_SENTINEL,
+  MIN_REMOTE_NODE_MAJOR,
   buildRemoteNodeProbeCommand,
   parseRemoteNodeProbeOutput,
   isValidRemoteNodeBin,
+  isSupportedRemoteNodeVersion,
   clearRemoteNodeCache,
+  clearCachedRemoteNodeBin,
   getProfileRemoteNodeBin,
   getCachedRemoteNodeBin,
   setCachedRemoteNodeBin,

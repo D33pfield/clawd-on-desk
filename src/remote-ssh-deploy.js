@@ -24,7 +24,6 @@ const path = require("path");
 const { buildSshArgs, buildScpArgs } = require("./remote-ssh-runtime");
 const {
   resolveRemoteNodeBin,
-  getCachedRemoteNodeBin,
   buildRemoteHookNodeCommand,
 } = require("./remote-ssh-node");
 
@@ -169,6 +168,7 @@ async function deploy({ profile, runtime, deps = {} }) {
       spawn,
       buildSshArgs,
       runtime,
+      verifyCache: true,
     });
     if (!resolved.ok) {
       progress("check-node", "fail", resolved.message || "remote node not found");
@@ -280,11 +280,19 @@ async function deploy({ profile, runtime, deps = {} }) {
 
 async function startCodexMonitor({ profile, runtime = null, deps = {} }) {
   const spawn = deps.spawn || childProcess.spawn;
-  const remoteNode = deps.nodeBin
-    || (getCachedRemoteNodeBin(profile) && getCachedRemoteNodeBin(profile).nodeBin)
-    || (await resolveRemoteNodeBin({ profile, spawn, buildSshArgs, runtime })).nodeBin;
+  let remoteNode = deps.nodeBin;
   if (!remoteNode) {
-    return { ok: false, stderr: "Remote Node.js not found" };
+    const resolved = await resolveRemoteNodeBin({
+      profile,
+      spawn,
+      buildSshArgs,
+      runtime,
+      verifyCache: true,
+    });
+    if (!resolved.ok) {
+      return { ok: false, stderr: resolved.message || "Remote Node.js not found" };
+    }
+    remoteNode = resolved.nodeBin;
   }
   // Pre-clean step: best-effort, never fatal. The trailing `; true` makes
   // the whole compound exit 0 even if no PID file exists or kill fails.

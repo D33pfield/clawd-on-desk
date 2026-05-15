@@ -8,6 +8,7 @@ const {
   buildRemoteNodeProbeCommand,
   parseRemoteNodeProbeOutput,
   isValidRemoteNodeBin,
+  isSupportedRemoteNodeVersion,
   clearRemoteNodeCache,
   getProfileRemoteNodeBin,
   getCachedRemoteNodeBin,
@@ -51,6 +52,8 @@ test("buildRemoteNodeProbeCommand uses a POSIX shell probe with manager fallback
   assert.ok(command.includes(".asdf"));
   assert.ok(command.includes(".mise"));
   assert.ok(command.includes("-lic"));
+  assert.ok(command.indexOf("-lic") < command.indexOf(".nvm/versions"),
+    "login shell should be preferred before raw node-manager glob candidates");
 });
 
 test("parseRemoteNodeProbeOutput extracts markers while ignoring shell noise", () => {
@@ -70,6 +73,14 @@ test("parseRemoteNodeProbeOutput extracts markers while ignoring shell noise", (
 test("parseRemoteNodeProbeOutput rejects bare node and invalid versions", () => {
   assert.equal(parseRemoteNodeProbeOutput("CLAWD_REMOTE_NODE_BIN=node\nCLAWD_REMOTE_NODE_VERSION=v20\n"), null);
   assert.equal(parseRemoteNodeProbeOutput("CLAWD_REMOTE_NODE_BIN=/usr/bin/node\nCLAWD_REMOTE_NODE_VERSION=20\n"), null);
+  assert.equal(parseRemoteNodeProbeOutput("CLAWD_REMOTE_NODE_BIN=/usr/bin/node\nCLAWD_REMOTE_NODE_VERSION=v12.22.12\n"), null);
+});
+
+test("isSupportedRemoteNodeVersion enforces the hook syntax floor", () => {
+  assert.equal(isSupportedRemoteNodeVersion("v14.0.0"), true);
+  assert.equal(isSupportedRemoteNodeVersion("v22.1.0"), true);
+  assert.equal(isSupportedRemoteNodeVersion("v12.22.12"), false);
+  assert.equal(isSupportedRemoteNodeVersion("20.10.0"), false);
 });
 
 test("isValidRemoteNodeBin accepts absolute POSIX paths including spaces", () => {
@@ -129,6 +140,35 @@ test("resolveRemoteNodeBin reuses persisted profile Node metadata without spawni
   assert.equal(resolved.ok, true);
   assert.equal(resolved.nodeBin, "/opt/homebrew/bin/node");
   assert.equal(resolved.source, "profile");
+});
+
+test("resolveRemoteNodeBin can verify a cached path and fall back when stale", async () => {
+  clearRemoteNodeCache();
+  const profile = {
+    id: "p1",
+    host: "pi",
+    remoteForwardPort: 23333,
+    detectedRemoteNodeBin: "/stale/node",
+    detectedRemoteNodeVersion: "v20.10.0",
+    detectedRemoteNodeSource: "profile",
+  };
+  const { spawn, calls } = makeRecordingSpawn([
+    { code: 127, stderr: "/stale/node: not found" },
+    {
+      stdout: [
+        "CLAWD_REMOTE_NODE_BIN=/usr/local/bin/node",
+        "CLAWD_REMOTE_NODE_VERSION=v22.1.0",
+        "CLAWD_REMOTE_NODE_SOURCE=path",
+      ].join("\n"),
+    },
+  ]);
+
+  const resolved = await resolveRemoteNodeBin({ profile, spawn, buildSshArgs, verifyCache: true });
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.nodeBin, "/usr/local/bin/node");
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0].args[calls[0].args.length - 1].includes("/stale/node"));
+  assert.equal(getCachedRemoteNodeBin(profile).nodeBin, "/usr/local/bin/node");
 });
 
 test("resolveRemoteNodeBin reports a helpful failure when probe exits non-zero", async () => {

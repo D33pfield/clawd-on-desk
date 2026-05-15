@@ -34,6 +34,7 @@ const { EventEmitter } = require("events");
 const {
   resolveRemoteNodeBin,
   getCachedRemoteNodeBin,
+  clearCachedRemoteNodeBin,
   buildRemoteNodeEvalCommand,
 } = require("./remote-ssh-node");
 
@@ -354,6 +355,7 @@ function createRemoteSshRuntime(deps = {}) {
 
   function startConnect(state) {
     if (state.stopped) return;
+    state.remoteNodeResolveInFlight = false;
     setStatus(state, state.status === "reconnecting" ? "reconnecting" : "connecting", {
       message: null,
       lastError: null,
@@ -498,7 +500,10 @@ function createRemoteSshRuntime(deps = {}) {
     state.remoteNodeResolveInFlight = true;
     const finish = (resolved) => {
       if (state.sshChild !== child) return;
-      if (state.stopped) return;
+      if (state.stopped) {
+        state.remoteNodeResolveInFlight = false;
+        return;
+      }
       state.remoteNodeResolveInFlight = false;
       if (!resolved || resolved.ok !== true || !resolved.nodeBin) {
         const cls = classifyStderr((resolved && resolved.stderr) || "");
@@ -537,7 +542,10 @@ function createRemoteSshRuntime(deps = {}) {
     };
     const fail = (err) => {
       if (state.sshChild !== child) return;
-      if (state.stopped) return;
+      if (state.stopped) {
+        state.remoteNodeResolveInFlight = false;
+        return;
+      }
       state.remoteNodeResolveInFlight = false;
       const cls = classifyStderr((err && err.stderr) || "");
       if (cls.kind === "permanent") {
@@ -574,6 +582,7 @@ function createRemoteSshRuntime(deps = {}) {
           registerChild,
           unregisterChild,
         },
+        useCache: false,
       });
       if (result && typeof result.then === "function") {
         result.then(finish, fail);
@@ -743,9 +752,14 @@ function createRemoteSshRuntime(deps = {}) {
       state.probeLastExitCode = exitCode;
       if (state.stopped) return;
       if ((exitCode === 126 || exitCode === 127)
-          && state.allowBareNodeProbe
           && state.sshChild
           && !state.remoteNodeResolveInFlight) {
+        if (state.remoteNodeBin) {
+          clearCachedRemoteNodeBin(state.profile);
+          state.remoteNodeBin = null;
+          state.remoteNodeSource = null;
+          state.allowBareNodeProbe = true;
+        }
         resolveRemoteNodeInBackground(state, state.sshChild);
       }
       if (exitCode === 0 && state.sshChild) {
@@ -803,8 +817,14 @@ function createRemoteSshRuntime(deps = {}) {
       return;
     }
     if (cls.kind === "permanent") {
-      if (state.allowBareNodeProbe
-          && (cls.reason === "probe_node_missing" || cls.reason === "probe_node_not_exec")) {
+      if ((cls.reason === "probe_node_missing" || cls.reason === "probe_node_not_exec")
+          && (state.allowBareNodeProbe || state.remoteNodeBin)) {
+        if (state.remoteNodeBin) {
+          clearCachedRemoteNodeBin(state.profile);
+          state.remoteNodeBin = null;
+          state.remoteNodeSource = null;
+          state.allowBareNodeProbe = true;
+        }
         if (!state.remoteNodeResolveInFlight && state.sshChild) {
           resolveRemoteNodeInBackground(state, state.sshChild);
         }
@@ -884,6 +904,7 @@ function createRemoteSshRuntime(deps = {}) {
       clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
     }
+    state.remoteNodeResolveInFlight = false;
     state.stopped = true;
     setStatus(state, "failed", {
       message: message || hint || reason,
@@ -909,6 +930,7 @@ function createRemoteSshRuntime(deps = {}) {
     }
     state.retryAttempt = 0;
     state.unknownStrikes = 0;
+    state.remoteNodeResolveInFlight = false;
     setStatus(state, "idle", {
       message: null,
       lastError: null,
@@ -942,6 +964,7 @@ function createRemoteSshRuntime(deps = {}) {
       cleanupProbeLoop(state);
       if (state.backoffTimer) clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
+      state.remoteNodeResolveInFlight = false;
       if (state.sshChild) killChild(state.sshChild);
       state.sshChild = null;
     }
