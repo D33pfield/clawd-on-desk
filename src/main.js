@@ -15,6 +15,7 @@ const { registerSessionIpc } = require("./session-ipc");
 const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
 const initPermission = require("./permission");
 const { registerPermissionIpc } = initPermission;
+const { createTelegramApprovalSidecar } = require("./telegram-approval-sidecar");
 const initUpdateBubble = require("./update-bubble");
 const { registerUpdateBubbleIpc } = initUpdateBubble;
 const createSettingsAnimationOverridesMain = require("./settings-animation-overrides-main");
@@ -172,6 +173,7 @@ let themeRuntime = null;
 let agentRuntime = null;
 let floatingWindowRuntime = null;
 let codexPetMain = null;
+let telegramApprovalSidecar = null;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
 };
@@ -811,9 +813,10 @@ const _permCtx = {
   reportShortcutFailure: (actionId, reason) => shortcutRuntime.reportFailure(actionId, reason),
   clearShortcutFailure: (actionId) => shortcutRuntime.clearFailure(actionId),
   repositionUpdateBubble: () => repositionUpdateBubble(),
+  getTelegramApprovalClient: () => getTelegramApprovalClient(),
 };
 const _perm = initPermission(_permCtx);
-const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
+const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, maybeStartRemoteApproval, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
@@ -1165,6 +1168,7 @@ const _serverCtx = {
   resolvePermissionEntry,
   sendPermissionResponse,
   showPermissionBubble,
+  maybeStartRemoteApproval,
   replyOpencodePermission,
   permLog,
 };
@@ -1187,6 +1191,57 @@ function focusLog(msg) {
   if (!focusDebugLog) return;
   const { rotatedAppend } = require("./log-rotate");
   rotatedAppend(focusDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
+}
+
+function isTelegramApprovalBootstrapEnabled(env = process.env) {
+  const value = String(env.CLAWD_TG_APPROVAL_ENABLED || "").trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+function getTelegramApprovalClient() {
+  if (!telegramApprovalSidecar || typeof telegramApprovalSidecar.getClient !== "function") return null;
+  return telegramApprovalSidecar.getClient();
+}
+
+function telegramApprovalLog(level, message, meta = {}) {
+  const parts = [`telegram approval sidecar ${level}: ${message}`];
+  if (meta && meta.text) parts.push(String(meta.text).trim());
+  if (meta && meta.error) parts.push(String(meta.error).trim());
+  permLog(parts.filter(Boolean).join(" | "));
+}
+
+function startTelegramApprovalSidecar() {
+  if (!isTelegramApprovalBootstrapEnabled()) return false;
+  if (telegramApprovalSidecar) return true;
+  const userDataDir = app.getPath("userData");
+  const envBotToken = process.env.CLAWD_TG_BOT_TOKEN || "";
+  telegramApprovalSidecar = createTelegramApprovalSidecar({
+    baseEnv: process.env,
+    env: process.env,
+    userDataDir,
+    resourcesPath: process.resourcesPath,
+    isPackaged: app.isPackaged,
+    configPath: process.env.CLAWD_BRIDGE_CONFIG || undefined,
+    tokenEnvFilePath: process.env.CLAWD_TG_BOT_TOKEN_FILE || undefined,
+    botToken: envBotToken,
+    redactionSecrets: envBotToken ? [envBotToken] : [],
+    log: telegramApprovalLog,
+  });
+  telegramApprovalSidecar.start()
+    .then(() => telegramApprovalLog("info", "running"))
+    .catch((err) => telegramApprovalLog("warn", "start failed", {
+      error: err && err.message ? err.message : String(err),
+    }));
+  return true;
+}
+
+function stopTelegramApprovalSidecar() {
+  const sidecar = telegramApprovalSidecar;
+  telegramApprovalSidecar = null;
+  if (!sidecar || typeof sidecar.stop !== "function") return;
+  sidecar.stop().catch((err) => telegramApprovalLog("warn", "stop failed", {
+    error: err && err.message ? err.message : String(err),
+  }));
 }
 
 // ── Menu — delegated to src/menu.js ──
@@ -1824,6 +1879,7 @@ if (!gotTheLock) {
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     focusDebugLog = path.join(app.getPath("userData"), "focus-debug.log");
+    startTelegramApprovalSidecar();
     createWindow();
     if (shouldOpenSettingsWindowFromArgv(process.argv)) {
       settingsWindowRuntime.open();
@@ -1857,6 +1913,7 @@ if (!gotTheLock) {
     flushRuntimeStateToPrefs();
     globalShortcut.unregisterAll();
     void settingsSizePreviewSession.cleanup();
+    stopTelegramApprovalSidecar();
     _perm.cleanup();
     _server.cleanup();
     _updateBubble.cleanup();

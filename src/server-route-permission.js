@@ -113,6 +113,15 @@ function sendPiPermissionNoDecision(res) {
   res.end();
 }
 
+function startRemoteApproval(ctx, permEntry) {
+  if (typeof ctx.maybeStartRemoteApproval !== "function") return;
+  try {
+    ctx.maybeStartRemoteApproval(permEntry);
+  } catch (err) {
+    ctx.permLog(`telegram remote approval start failed: ${err && err.message ? err.message : err}`);
+  }
+}
+
 function handlePermissionPost(req, res, options) {
   const {
     ctx,
@@ -356,7 +365,9 @@ function handlePermissionPost(req, res, options) {
           if (popIdx !== -1) ctx.pendingPermissions.splice(popIdx, 1);
           if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
           sendCodexPermissionNoDecision(res);
+          return;
         }
+        startRemoteApproval(ctx, permEntry);
         return;
       }
 
@@ -435,7 +446,9 @@ function handlePermissionPost(req, res, options) {
           if (popIdx !== -1) ctx.pendingPermissions.splice(popIdx, 1);
           if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
           sendPiPermissionNoDecision(res);
+          return;
         }
+        startRemoteApproval(ctx, permEntry);
         return;
       }
 
@@ -599,7 +612,9 @@ function handlePermissionPost(req, res, options) {
         }
         permEntry.bubble = null;
         try { res.destroy(); } catch {}
+        return;
       }
+      startRemoteApproval(ctx, permEntry);
     } catch (err) {
       ctx.permLog(`/permission handler error: ${err && err.message}`);
       // Response may already be sent (opencode branch 200-ACKs before
