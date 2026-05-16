@@ -16,6 +16,7 @@ const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
 const initPermission = require("./permission");
 const { registerPermissionIpc } = initPermission;
 const { createTelegramApprovalSidecar } = require("./telegram-approval-sidecar");
+const telegramApprovalSettings = require("./telegram-approval-settings");
 const initUpdateBubble = require("./update-bubble");
 const { registerUpdateBubbleIpc } = initUpdateBubble;
 const createSettingsAnimationOverridesMain = require("./settings-animation-overrides-main");
@@ -174,6 +175,9 @@ let agentRuntime = null;
 let floatingWindowRuntime = null;
 let codexPetMain = null;
 let telegramApprovalSidecar = null;
+let telegramApprovalSyncPromise = Promise.resolve();
+let telegramApprovalConfigSignature = "";
+let telegramApprovalTokenRevision = 0;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
 };
@@ -208,6 +212,9 @@ const _settingsController = createSettingsController({
       _state && typeof _state.getActiveSessionAliasKeys === "function"
         ? _state.getActiveSessionAliasKeys()
         : new Set(),
+    writeTelegramApprovalToken: (token) => writeTelegramApprovalToken(token),
+    getTelegramApprovalStatus: () => getTelegramApprovalStatus(),
+    sendTelegramApprovalTest: () => sendTelegramApprovalTest(),
     // Theme runtime is wired after theme-loader.init(); keep these closures
     // lazy so settings actions never capture a pre-init runtime reference.
     activateTheme: (id, variantId, overrideMap) => themeRuntime.activateTheme(id, variantId, overrideMap),
@@ -1193,11 +1200,6 @@ function focusLog(msg) {
   rotatedAppend(focusDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
-function isTelegramApprovalBootstrapEnabled(env = process.env) {
-  const value = String(env.CLAWD_TG_APPROVAL_ENABLED || "").trim().toLowerCase();
-  return value === "1" || value === "true" || value === "yes" || value === "on";
-}
-
 function getTelegramApprovalClient() {
   if (!telegramApprovalSidecar || typeof telegramApprovalSidecar.getClient !== "function") return null;
   return telegramApprovalSidecar.getClient();
@@ -1210,23 +1212,132 @@ function telegramApprovalLog(level, message, meta = {}) {
   permLog(parts.filter(Boolean).join(" | "));
 }
 
-function startTelegramApprovalSidecar() {
-  if (!isTelegramApprovalBootstrapEnabled()) return false;
-  if (telegramApprovalSidecar) return true;
+function getTelegramApprovalPrefs() {
+  return telegramApprovalSettings.normalizeTelegramApproval(_settingsController.get("tgApproval"));
+}
+
+function getTelegramApprovalPaths() {
   const userDataDir = app.getPath("userData");
+  return {
+    userDataDir,
+    configPath: process.env.CLAWD_BRIDGE_CONFIG
+      || telegramApprovalSettings.defaultBridgeConfigPath(userDataDir),
+    tokenEnvFilePath: process.env.CLAWD_TG_BOT_TOKEN_FILE
+      || telegramApprovalSettings.defaultTokenEnvFilePath(userDataDir),
+  };
+}
+
+function getTelegramApprovalTokenStatus() {
+  const paths = getTelegramApprovalPaths();
+  return telegramApprovalSettings.tokenStatus({
+    fs,
+    filePath: paths.tokenEnvFilePath,
+    env: process.env,
+  });
+}
+
+function buildTelegramApprovalSignature(config, paths, tokenStatus) {
+  return JSON.stringify({
+    enabled: config.enabled === true,
+    allowedTgUserId: config.allowedTgUserId,
+    targetSessionKey: config.targetSessionKey,
+    configPath: paths.configPath,
+    tokenEnvFilePath: paths.tokenEnvFilePath,
+    envTokenConfigured: tokenStatus.envTokenConfigured === true,
+    tokenStored: tokenStatus.tokenStored === true,
+    tokenFileMtimeMs: tokenStatus.tokenFileMtimeMs || 0,
+    tokenRevision: telegramApprovalTokenRevision,
+  });
+}
+
+function getTelegramApprovalStatus() {
+  const config = getTelegramApprovalPrefs();
+  const token = getTelegramApprovalTokenStatus();
+  const ready = telegramApprovalSettings.readiness(config, token);
+  const sidecarStatus = telegramApprovalSidecar && typeof telegramApprovalSidecar.getStatus === "function"
+    ? telegramApprovalSidecar.getStatus()
+    : { status: "stopped" };
+  return {
+    ...sidecarStatus,
+    enabled: config.enabled === true,
+    configured: ready.ready === true,
+    reason: ready.reason || "",
+    message: sidecarStatus.message || ready.message || "",
+    tokenStored: token.tokenStored === true,
+    envTokenConfigured: token.envTokenConfigured === true,
+  };
+}
+
+function writeTelegramApprovalToken(token) {
+  const paths = getTelegramApprovalPaths();
+  const result = telegramApprovalSettings.writeTokenEnvFile({
+    fs,
+    path,
+    filePath: paths.tokenEnvFilePath,
+    token,
+    platform: process.platform,
+  });
+  if (result && result.status === "ok") {
+    telegramApprovalTokenRevision += 1;
+    queueTelegramApprovalSidecarSync("token");
+  }
+  return result;
+}
+
+function startTelegramApprovalSidecar() {
+  const config = getTelegramApprovalPrefs();
+  const paths = getTelegramApprovalPaths();
+  const token = getTelegramApprovalTokenStatus();
+  const ready = telegramApprovalSettings.readiness(config, token);
+  if (!ready.ready) {
+    if (ready.reason !== "disabled") {
+      telegramApprovalLog("info", ready.reason || "not configured", {
+        error: ready.message || "",
+      });
+    }
+    return false;
+  }
+  const configWrite = telegramApprovalSettings.writeBridgeConfigFile({
+    fs,
+    path,
+    filePath: paths.configPath,
+    config,
+  });
+  if (!configWrite || configWrite.status !== "ok") {
+    telegramApprovalLog("warn", "config write failed", {
+      error: configWrite && configWrite.message,
+    });
+    return false;
+  }
+  const signature = buildTelegramApprovalSignature(config, paths, token);
+  if (telegramApprovalSidecar && telegramApprovalConfigSignature === signature) {
+    if (typeof telegramApprovalSidecar.isRunning !== "function" || !telegramApprovalSidecar.isRunning()) {
+      telegramApprovalSidecar.start()
+        .then(() => telegramApprovalLog("info", "running"))
+        .catch((err) => telegramApprovalLog("warn", "start failed", {
+          error: err && err.message ? err.message : String(err),
+        }));
+    }
+    return true;
+  }
+  if (telegramApprovalSidecar) return true;
   const envBotToken = process.env.CLAWD_TG_BOT_TOKEN || "";
   telegramApprovalSidecar = createTelegramApprovalSidecar({
     baseEnv: process.env,
     env: process.env,
-    userDataDir,
+    userDataDir: paths.userDataDir,
     resourcesPath: process.resourcesPath,
     isPackaged: app.isPackaged,
-    configPath: process.env.CLAWD_BRIDGE_CONFIG || undefined,
-    tokenEnvFilePath: process.env.CLAWD_TG_BOT_TOKEN_FILE || undefined,
+    configPath: paths.configPath,
+    tokenEnvFilePath: paths.tokenEnvFilePath,
     botToken: envBotToken,
-    redactionSecrets: envBotToken ? [envBotToken] : [],
+    redactionSecrets: [
+      ...telegramApprovalSettings.redactionSecretsForTelegramApproval(config),
+      ...(envBotToken ? [envBotToken] : []),
+    ],
     log: telegramApprovalLog,
   });
+  telegramApprovalConfigSignature = signature;
   telegramApprovalSidecar.start()
     .then(() => telegramApprovalLog("info", "running"))
     .catch((err) => telegramApprovalLog("warn", "start failed", {
@@ -1238,10 +1349,65 @@ function startTelegramApprovalSidecar() {
 function stopTelegramApprovalSidecar() {
   const sidecar = telegramApprovalSidecar;
   telegramApprovalSidecar = null;
-  if (!sidecar || typeof sidecar.stop !== "function") return;
-  sidecar.stop().catch((err) => telegramApprovalLog("warn", "stop failed", {
+  telegramApprovalConfigSignature = "";
+  if (!sidecar || typeof sidecar.stop !== "function") return Promise.resolve();
+  return sidecar.stop().catch((err) => telegramApprovalLog("warn", "stop failed", {
     error: err && err.message ? err.message : String(err),
   }));
+}
+
+async function syncTelegramApprovalSidecar(reason = "settings") {
+  const config = getTelegramApprovalPrefs();
+  const paths = getTelegramApprovalPaths();
+  const token = getTelegramApprovalTokenStatus();
+  const ready = telegramApprovalSettings.readiness(config, token);
+  if (!ready.ready) {
+    if (telegramApprovalSidecar) await stopTelegramApprovalSidecar();
+    return false;
+  }
+  const nextSignature = buildTelegramApprovalSignature(config, paths, token);
+  if (telegramApprovalSidecar && telegramApprovalConfigSignature !== nextSignature) {
+    await stopTelegramApprovalSidecar();
+  }
+  const started = startTelegramApprovalSidecar();
+  if (started) telegramApprovalLog("debug", `sync ${reason}`);
+  return started;
+}
+
+function queueTelegramApprovalSidecarSync(reason) {
+  telegramApprovalSyncPromise = telegramApprovalSyncPromise
+    .catch(() => {})
+    .then(() => syncTelegramApprovalSidecar(reason));
+  return telegramApprovalSyncPromise;
+}
+
+async function sendTelegramApprovalTest() {
+  await queueTelegramApprovalSidecarSync("test");
+  if (telegramApprovalSidecar && !getTelegramApprovalClient() && typeof telegramApprovalSidecar.start === "function") {
+    try {
+      await telegramApprovalSidecar.start();
+    } catch (err) {
+      return { status: "error", message: err && err.message ? err.message : "Telegram approval sidecar failed to start" };
+    }
+  }
+  const client = getTelegramApprovalClient();
+  if (!client || typeof client.requestApproval !== "function") {
+    return { status: "error", message: "Telegram approval sidecar is not running" };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60 * 1000);
+  try {
+    const decision = await client.requestApproval({
+      title: "Clawd Telegram approval test",
+      detail: "This is a settings test message. It is not attached to any agent permission request.",
+    }, { signal: controller.signal });
+    if (decision === "allow" || decision === "deny") {
+      return { status: "ok", decision };
+    }
+    return { status: "error", message: "Telegram test did not receive a button response" };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ── Menu — delegated to src/menu.js ──
@@ -1381,6 +1547,9 @@ const settingsEffectRouter = createSettingsEffectRouter({
   logWarn: console.warn,
 });
 settingsEffectRouter.start();
+_settingsController.subscribeKey("tgApproval", () => {
+  queueTelegramApprovalSidecarSync("settings");
+});
 
 animationOverridesMain = createSettingsAnimationOverridesMain({
   app,
@@ -1879,7 +2048,7 @@ if (!gotTheLock) {
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     focusDebugLog = path.join(app.getPath("userData"), "focus-debug.log");
-    startTelegramApprovalSidecar();
+    queueTelegramApprovalSidecarSync("startup");
     createWindow();
     if (shouldOpenSettingsWindowFromArgv(process.argv)) {
       settingsWindowRuntime.open();
