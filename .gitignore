@@ -33,6 +33,7 @@ docs/**
 !docs/investigations/codex-subagent-session-meta.md
 !docs/project/
 !docs/project/agent-runtime-architecture.md
+!docs/project/release-process.md
 !docs/project/theme-state-ui.md
 !docs/cloudling/
 !docs/cloudling/specs/

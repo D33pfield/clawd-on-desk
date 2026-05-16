@@ -79,3 +79,5 @@ jobs:
         with:
           files: artifacts/*
           body_path: docs/releases/release-${{ github.ref_name }}.md
+          draft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
