@@ -157,6 +157,7 @@ class TelegramApprovalSidecar extends EventEmitter {
     this.restartAttempts = [];
     this.requestedStop = false;
     this.stdoutBuffer = "";
+    this.stderrBuffer = "";
     this.readySettled = false;
   }
 
@@ -204,6 +205,7 @@ class TelegramApprovalSidecar extends EventEmitter {
       this.client = null;
       this.readySettled = false;
       this.stdoutBuffer = "";
+      this.stderrBuffer = "";
 
       const failStartup = (err) => {
         if (this.readySettled) return;
@@ -242,8 +244,7 @@ class TelegramApprovalSidecar extends EventEmitter {
       if (child.stderr) {
         if (typeof child.stderr.setEncoding === "function") child.stderr.setEncoding("utf8");
         child.stderr.on("data", (chunk) => {
-          const text = this._redact(chunk);
-          if (text.trim()) this.log("debug", "telegram approval sidecar stderr", { text });
+          this._handleStderr(chunk);
         });
       }
       child.on("error", failStartup);
@@ -323,10 +324,49 @@ class TelegramApprovalSidecar extends EventEmitter {
     }
   }
 
+  // Line-buffer stderr before redacting. Node hands us arbitrary TCP chunks,
+  // so a token like "123:ABC...xyz" can be split mid-string — chunk-level
+  // regex/secret replacement would then leak half the token to the log. We
+  // hold the trailing partial line in stderrBuffer until the next newline (or
+  // exit, see _flushStderr) and only redact on complete lines.
+  _handleStderr(chunk) {
+    this.stderrBuffer += String(chunk || "");
+    // Cap the buffer so a sidecar emitting megabytes of unterminated output
+    // can't blow up Clawd memory. Once the cap trips we flush what we have as
+    // a single (redacted) line — better to log a slightly-truncated message
+    // than to retain unbounded raw bytes that might contain a half-token.
+    if (this.stderrBuffer.length > MAX_HANDSHAKE_BUFFER) {
+      const flushed = this.stderrBuffer;
+      this.stderrBuffer = "";
+      this._logStderrLine(flushed);
+      return;
+    }
+    const split = splitLines(this.stderrBuffer);
+    this.stderrBuffer = split.rest;
+    for (const line of split.lines) {
+      this._logStderrLine(line);
+    }
+  }
+
+  _logStderrLine(line) {
+    const text = this._redact(line);
+    if (text.trim()) this.log("debug", "telegram approval sidecar stderr", { text });
+  }
+
+  _flushStderr() {
+    if (!this.stderrBuffer) return;
+    const remaining = this.stderrBuffer;
+    this.stderrBuffer = "";
+    this._logStderrLine(remaining);
+  }
+
   _handleExit(child, code, signal, failStartup) {
     if (this.child === child) this.child = null;
     this._clearStartupTimer();
     this._clearStopTimer();
+    // Drain any trailing partial line so a sidecar that crashed without a
+    // final newline still gets redacted-and-logged.
+    this._flushStderr();
     const wasReady = this.readySettled && this.client;
     if (!this.readySettled) {
       failStartup(new Error(`sidecar exited before handshake (${formatExit(code, signal)})`));

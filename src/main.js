@@ -1216,14 +1216,17 @@ function getTelegramApprovalPrefs() {
   return telegramApprovalSettings.normalizeTelegramApproval(_settingsController.get("tgApproval"));
 }
 
+// Canonical paths only — no env-var override. The Settings "Save token" button,
+// the sidecar's bridge TOML, and tokenStatus all share this single location so
+// a malicious or accidental CLAWD_TG_BOT_TOKEN_FILE / CLAWD_BRIDGE_CONFIG can't
+// redirect the writer to an attacker-controlled path or split the writer/reader
+// view of where the token lives.
 function getTelegramApprovalPaths() {
   const userDataDir = app.getPath("userData");
   return {
     userDataDir,
-    configPath: process.env.CLAWD_BRIDGE_CONFIG
-      || telegramApprovalSettings.defaultBridgeConfigPath(userDataDir),
-    tokenEnvFilePath: process.env.CLAWD_TG_BOT_TOKEN_FILE
-      || telegramApprovalSettings.defaultTokenEnvFilePath(userDataDir),
+    configPath: telegramApprovalSettings.defaultBridgeConfigPath(userDataDir),
+    tokenEnvFilePath: telegramApprovalSettings.defaultTokenEnvFilePath(userDataDir),
   };
 }
 
@@ -1321,6 +1324,11 @@ function startTelegramApprovalSidecar() {
     return true;
   }
   if (telegramApprovalSidecar) return true;
+  // CLAWD_TG_BOT_TOKEN is a dev/test-only escape hatch: shell-exporting the
+  // token lets a developer run the sidecar without going through the Settings
+  // UI. Production users configure the token via Settings → it lands in the
+  // userData env-file. tokenStatus only exposes envTokenConfigured as a bool,
+  // never the string. If you don't want this knob, drop the line below.
   const envBotToken = process.env.CLAWD_TG_BOT_TOKEN || "";
   telegramApprovalSidecar = createTelegramApprovalSidecar({
     baseEnv: process.env,

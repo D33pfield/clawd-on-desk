@@ -669,9 +669,20 @@ function isRemoteApprovalActionable(permEntry) {
   if (permEntry.isElicitation || permEntry.isCodexNotify || permEntry.isKimiNotify || permEntry.isOpencode) return false;
   if (permEntry.toolName === "ExitPlanMode" || permEntry.toolName === "AskUserQuestion") return false;
   if (PASSTHROUGH_TOOLS.has(permEntry.toolName)) return false;
+  // Headless sessions auto-deny locally; mirror that on the Telegram side so a
+  // non-interactive Codex/Pi/CC run never sends an actionable approval card.
+  const session = ctx.sessions && typeof ctx.sessions.get === "function"
+    ? ctx.sessions.get(permEntry.sessionId)
+    : null;
+  if (session && session.headless) return false;
   return true;
 }
 
+// Returns a redacted summary string, or null when no agent-supplied description
+// is available. We refuse to send a Telegram approval card without something
+// describing the action — the local bubble shows the full tool input, so a
+// Telegram-only "Tool input hidden by Clawd." card would let the user approve
+// a black box.
 function buildRemoteApprovalSummary(permEntry) {
   const input = permEntry && permEntry.toolInput && typeof permEntry.toolInput === "object"
     ? permEntry.toolInput
@@ -685,10 +696,15 @@ function buildRemoteApprovalSummary(permEntry) {
     const text = compactRemoteApprovalText(candidate, 200);
     if (text) return text;
   }
-  return "Tool input hidden by Clawd.";
+  return null;
 }
 
+// Returns the Telegram approval payload, or null when there is no safe summary
+// to ship. Callers must treat null as a no-op signal — never send a card
+// without an action-describing summary.
 function buildRemoteApprovalPayload(permEntry) {
+  const summary = buildRemoteApprovalSummary(permEntry);
+  if (!summary) return null;
   const agentId = compactRemoteApprovalText(permEntry.agentId || "claude-code", 80) || "claude-code";
   const toolName = compactRemoteApprovalText(permEntry.toolName || "Unknown", 80) || "Unknown";
   const session = ctx.sessions.get(permEntry.sessionId);
@@ -700,7 +716,7 @@ function buildRemoteApprovalPayload(permEntry) {
     `Agent: ${agentId}`,
     `Tool: ${toolName}`,
     sessionFolder ? `Session: ${sessionFolder}` : null,
-    `Summary: ${buildRemoteApprovalSummary(permEntry)}`,
+    `Summary: ${summary}`,
   ].filter(Boolean).join("\n");
   return {
     title: `${agentId} requests ${toolName}`,
@@ -725,11 +741,37 @@ function cancelRemoteApproval(permEntry) {
   try { controller.abort(); } catch {}
 }
 
+// "Go to terminal" path: drop the bubble, abort any in-flight Telegram prompt,
+// hand focus back to the agent terminal. The HTTP res is intentionally NOT
+// answered here — the original socket-close abortHandler stays registered so
+// the agent's own disconnect drives final cleanup.
+function dismissPermissionForTerminal(perm) {
+  if (!perm) return;
+  // Cancel before splicing so a late Telegram decision can't slip in between
+  // the splice and the abort.
+  cancelRemoteApproval(perm);
+  const idx = pendingPermissions.indexOf(perm);
+  if (idx !== -1) pendingPermissions.splice(idx, 1);
+  if (perm.bubble && !perm.bubble.isDestroyed()) {
+    perm.bubble.webContents.send("permission-hide");
+    if (perm.hideTimer) clearTimeout(perm.hideTimer);
+    const bub = perm.bubble;
+    perm.hideTimer = setTimeout(() => { if (!bub.isDestroyed()) bub.destroy(); }, 250);
+  }
+  repositionBubbles();
+  repositionDependentBubbles();
+  syncPermissionShortcuts();
+  ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+}
+
 function maybeStartRemoteApproval(permEntry) {
   if (!isRemoteApprovalActionable(permEntry)) return false;
   const client = getTelegramApprovalClient();
   if (!client || typeof client.requestApproval !== "function") return false;
   if (typeof client.isEnabled === "function" && !client.isEnabled()) return false;
+
+  const payload = buildRemoteApprovalPayload(permEntry);
+  if (!payload) return false;
 
   const controller = typeof AbortController === "function" ? new AbortController() : null;
   if (controller) permEntry.remoteApprovalAbortController = controller;
@@ -737,7 +779,7 @@ function maybeStartRemoteApproval(permEntry) {
   let request;
   try {
     request = client.requestApproval(
-      buildRemoteApprovalPayload(permEntry),
+      payload,
       controller ? { signal: controller.signal } : {}
     );
   } catch (err) {
@@ -1090,20 +1132,7 @@ function handleDecide(event, behavior) {
     }
     resolvePermissionEntry(perm, "allow");
   } else if (behavior === "deny-and-focus") {
-    // Dismiss bubble without responding — let user decide in terminal.
-    // Keep abortHandler registered so socket cleanup happens when Claude Code disconnects.
-    const idx = pendingPermissions.indexOf(perm);
-    if (idx !== -1) pendingPermissions.splice(idx, 1);
-    if (perm.bubble && !perm.bubble.isDestroyed()) {
-      perm.bubble.webContents.send("permission-hide");
-      if (perm.hideTimer) clearTimeout(perm.hideTimer);
-      const bub = perm.bubble;
-      perm.hideTimer = setTimeout(() => { if (!bub.isDestroyed()) bub.destroy(); }, 250);
-    }
-    repositionBubbles();
-    repositionDependentBubbles();
-    syncPermissionShortcuts();
-    ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+    dismissPermissionForTerminal(perm);
   } else {
     resolvePermissionEntry(perm, behavior === "allow" ? "allow" : "deny");
   }
@@ -1354,6 +1383,7 @@ return {
   sendPermissionResponse, repositionBubbles, permLog,
   pendingPermissions, PASSTHROUGH_TOOLS,
   maybeStartRemoteApproval,
+  dismissPermissionForTerminal,
   handleBubbleHeight, handleDecide, cleanup,
   showCodexNotifyBubble, clearCodexNotifyBubbles,
   showKimiNotifyBubble, clearKimiNotifyBubbles,

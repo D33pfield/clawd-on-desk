@@ -84,7 +84,13 @@ function makePermEntry(overrides = {}) {
     bubble: null,
     hideTimer: null,
     toolName: "Bash",
-    toolInput: { command: "npm test -- --token sk-1234567890123456" },
+    // Default fixture carries a description so behaviour tests can exercise
+    // the remote-approval lifecycle. Cases that want to prove the no-summary
+    // guard explicitly clear toolInput.description.
+    toolInput: {
+      command: "npm test -- --token sk-1234567890123456",
+      description: "Run project tests",
+    },
     resolvedSuggestion: null,
     createdAt: Date.now() - 5000,
     agentId: "claude-code",
@@ -198,5 +204,68 @@ describe("permission telegram remote approval", () => {
       assert.equal(perm.maybeStartRemoteApproval(entry), false, entry.toolName);
     }
     assert.deepEqual(requests, []);
+  });
+
+  it("does not send a Telegram card when the tool input lacks a description/summary/reason", () => {
+    const requests = [];
+    const client = {
+      isEnabled: () => true,
+      requestApproval: (payload) => {
+        requests.push(payload);
+        return Promise.resolve("allow");
+      },
+    };
+    const perm = initPermission(makeCtx({ getTelegramApprovalClient: () => client }));
+    // Bare Bash payload — only `command`. Local bubble shows the full command
+    // but Telegram would only get "Tool input hidden by Clawd.", so the guard
+    // must refuse to send.
+    const entry = makePermEntry({
+      toolInput: { command: "rm -rf /tmp/scratch" },
+    });
+    assert.equal(perm.maybeStartRemoteApproval(entry), false);
+    assert.deepEqual(requests, []);
+  });
+
+  it("does not send a Telegram card for headless sessions", () => {
+    const requests = [];
+    const client = {
+      isEnabled: () => true,
+      requestApproval: (payload) => {
+        requests.push(payload);
+        return Promise.resolve("allow");
+      },
+    };
+    const ctx = makeCtx({
+      getTelegramApprovalClient: () => client,
+      sessions: new Map([["sid", { cwd: "D:\\work\\project-alpha", headless: true }]]),
+    });
+    const perm = initPermission(ctx);
+    const entry = makePermEntry();
+    assert.equal(perm.maybeStartRemoteApproval(entry), false);
+    assert.deepEqual(requests, []);
+  });
+
+  it("aborts the remote request when the user picks deny-and-focus (go to terminal)", () => {
+    let signal;
+    const client = {
+      isEnabled: () => true,
+      requestApproval: (_payload, options) => {
+        signal = options.signal;
+        return new Promise(() => {});
+      },
+    };
+    const perm = initPermission(makeCtx({ getTelegramApprovalClient: () => client }));
+    const entry = makePermEntry();
+    perm.pendingPermissions.push(entry);
+
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    assert.equal(signal.aborted, false);
+
+    // deny-and-focus removes the entry from pendingPermissions without writing
+    // an HTTP response — historically it left the remote prompt to TTL out.
+    perm.dismissPermissionForTerminal(entry);
+
+    assert.equal(signal.aborted, true);
+    assert.equal(perm.pendingPermissions.indexOf(entry), -1);
   });
 });

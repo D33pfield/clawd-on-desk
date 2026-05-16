@@ -146,13 +146,72 @@ test("sidecar manager redacts stderr before logging", async () => {
   });
 
   const ready = sidecar.start();
-  child.stderr.emit("data", "failed for telegram:123456789 user 987654321 token=123:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi");
+  child.stderr.emit(
+    "data",
+    "failed for telegram:123456789 user 987654321 token=123:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi\n"
+  );
   child.emitHandshake();
   await ready;
 
   const text = logs.map((entry) => entry.meta && entry.meta.text).join("\n");
+  // Sanity: the redacted line is actually logged (regression guard — earlier
+  // implementations would silently drop everything if the line buffer wasn't
+  // flushed).
+  assert.match(text, /failed for/);
   assert.equal(text.includes("telegram:123456789"), false);
   assert.equal(text.includes("987654321"), false);
+  assert.equal(text.includes("123:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"), false);
+});
+
+test("sidecar manager redacts stderr tokens that span chunk boundaries", async () => {
+  const child = new FakeChild();
+  const logs = [];
+  const { spawn } = makeSpawn([child]);
+  const sidecar = new TelegramApprovalSidecar({
+    spawn,
+    binaryPath: "sidecar.exe",
+    redactionSecrets: ["telegram:123456789"],
+    log: (level, message, meta) => logs.push({ level, message, meta }),
+  });
+
+  const ready = sidecar.start();
+  // Simulate Node TCP splitting a single panic log in the middle of a token.
+  // Without line buffering, the chunk-level regex would miss both halves and
+  // the rebuilt log would contain the full token.
+  child.stderr.emit("data", "panic: failed for chat telegram:1234");
+  child.stderr.emit("data", "56789 token=123:ABCDEFGHIJKLMNOPQRSTU");
+  child.stderr.emit("data", "VWXYZabcdefghi end\n");
+  child.emitHandshake();
+  await ready;
+
+  const text = logs.map((entry) => entry.meta && entry.meta.text).join("\n");
+  assert.match(text, /panic: failed for chat/);
+  assert.equal(text.includes("telegram:123456789"), false);
+  assert.equal(text.includes("123:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"), false);
+});
+
+test("sidecar manager flushes any trailing partial stderr line on exit", async () => {
+  const child = new FakeChild({ exitOnKill: false });
+  const logs = [];
+  const { spawn } = makeSpawn([child]);
+  const sidecar = new TelegramApprovalSidecar({
+    spawn,
+    binaryPath: "sidecar.exe",
+    autoRestart: false,
+    log: (level, message, meta) => logs.push({ level, message, meta }),
+  });
+
+  const ready = sidecar.start();
+  child.emitHandshake();
+  await ready;
+  // Crash log without a trailing newline — the line stays in stderrBuffer
+  // until exit drains it.
+  child.stderr.emit("data", "panic without newline 123:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi");
+  child.emit("exit", 1, null);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+
+  const text = logs.map((entry) => entry.meta && entry.meta.text).join("\n");
+  assert.match(text, /panic without newline/);
   assert.equal(text.includes("123:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"), false);
 });
 
