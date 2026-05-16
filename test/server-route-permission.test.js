@@ -396,6 +396,29 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
   });
 
+  it("returns terminal fallback when an elicitation bubble fails", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question: "Continue?" }] },
+    }), {
+      ctx: {
+        showPermissionBubble: () => {
+          throw new Error("no window");
+        },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
+    assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, [{
+      behavior: "deny",
+      message: "Elicitation bubble unavailable; answer in terminal",
+    }]);
+  });
+
   it("keeps local Claude permission pending if remote approval startup throws", async () => {
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "claude-code",
@@ -417,6 +440,9 @@ describe("server-route-permission POST", () => {
 
   it("does not start remote approval for elicitation, passthrough, DND, or opencode paths", async () => {
     const cases = [
+      {
+        body: { tool_name: "ExitPlanMode", tool_input: { plan: "ship it" } },
+      },
       {
         body: { tool_name: "AskUserQuestion", tool_input: { questions: [] } },
       },

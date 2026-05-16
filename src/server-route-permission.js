@@ -114,6 +114,7 @@ function sendPiPermissionNoDecision(res) {
 }
 
 function startRemoteApproval(ctx, permEntry) {
+  if (permEntry && permEntry.toolName === "ExitPlanMode") return;
   if (typeof ctx.maybeStartRemoteApproval !== "function") return;
   try {
     ctx.maybeStartRemoteApproval(permEntry);
@@ -551,7 +552,21 @@ function handlePermissionPost(req, res, options) {
         res.on("close", abortHandler);
         ctx.pendingPermissions.push(permEntry);
         recordRequestHookEvent.accepted();
-        ctx.showPermissionBubble(permEntry);
+        try {
+          ctx.showPermissionBubble(permEntry);
+        } catch (bubbleErr) {
+          ctx.permLog(`elicitation bubble failed: ${bubbleErr && bubbleErr.message} -> terminal fallback`);
+          const popIdx = ctx.pendingPermissions.indexOf(permEntry);
+          if (popIdx !== -1) ctx.pendingPermissions.splice(popIdx, 1);
+          if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
+          if (permEntry.autoCloseTimer) { clearTimeout(permEntry.autoCloseTimer); permEntry.autoCloseTimer = null; }
+          if (permEntry.hideTimer) { clearTimeout(permEntry.hideTimer); permEntry.hideTimer = null; }
+          if (permEntry.bubble && !permEntry.bubble.isDestroyed()) {
+            try { permEntry.bubble.destroy(); } catch {}
+          }
+          permEntry.bubble = null;
+          ctx.sendPermissionResponse(res, "deny", "Elicitation bubble unavailable; answer in terminal", "Elicitation");
+        }
         return;
       }
 

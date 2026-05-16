@@ -107,7 +107,7 @@ describe("permission telegram remote approval", () => {
     const entry = makePermEntry({
       toolInput: {
         command: "npm test -- --token sk-1234567890123456",
-        description: "Run project tests",
+        description: "Run project tests for chat 987654321 and telegram:123456789",
       },
     });
     perm.pendingPermissions.push(entry);
@@ -121,6 +121,8 @@ describe("permission telegram remote approval", () => {
     assert.match(requests[0].payload.detail, /Summary: Run project tests/);
     assert.equal(requests[0].payload.detail.includes("npm test"), false);
     assert.equal(requests[0].payload.detail.includes("sk-1234567890123456"), false);
+    assert.equal(requests[0].payload.detail.includes("987654321"), false);
+    assert.equal(requests[0].payload.detail.includes("telegram:123456789"), false);
 
     resolveApproval("allow");
     await flush();

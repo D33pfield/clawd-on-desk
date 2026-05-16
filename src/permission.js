@@ -659,6 +659,7 @@ function compactRemoteApprovalText(value, maxLen = 200) {
   text = text.replace(/\b(?:Bearer|Token)\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, "Bearer <redacted>");
   text = text.replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,})\b/g, "<redacted:token>");
   text = text.replace(/\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|password|secret)\s*[:=]\s*\S+/gi, "$1=<redacted>");
+  text = text.replace(/\b(?:telegram:)?-?\d{7,}(?::\d+){0,2}\b/g, "<redacted:id>");
   if (text.length > maxLen) text = `${text.slice(0, Math.max(0, maxLen - 1))}…`;
   return text;
 }
