@@ -15,7 +15,6 @@ const {
   redactText,
   SIDECAR_ENV_CONFIG,
   SIDECAR_ENV_TOKEN_FILE,
-  SIDECAR_ENV_TOKEN,
 } = require("../src/telegram-approval-sidecar");
 
 class FakeStream extends EventEmitter {
@@ -76,6 +75,11 @@ test("buildSidecarEnv uses an allowlist and does not inherit unrelated secrets",
       SystemRoot: "C:\\Windows",
       OPENAI_API_KEY: "sk-should-not-inherit",
       RANDOM_SECRET: "nope",
+      // Sidecar must read the token from the env-file at SIDECAR_ENV_TOKEN_FILE,
+      // never inherit it from Clawd's process.env. If a stray CLAWD_TG_BOT_TOKEN
+      // leaks into Clawd's environment (e.g. shell export), it MUST NOT be
+      // forwarded to the child.
+      CLAWD_TG_BOT_TOKEN: "123:should-not-inherit",
     },
     configPath: "C:\\Users\\me\\AppData\\Roaming\\Clawd on Desk\\cc-connect-clawd\\clawd-bridge.toml",
     tokenEnvFilePath: "C:\\Users\\me\\AppData\\Roaming\\Clawd on Desk\\telegram-approval.env",
@@ -86,7 +90,20 @@ test("buildSidecarEnv uses an allowlist and does not inherit unrelated secrets",
   assert.equal(env.RANDOM_SECRET, undefined);
   assert.equal(env[SIDECAR_ENV_CONFIG].endsWith("clawd-bridge.toml"), true);
   assert.equal(env[SIDECAR_ENV_TOKEN_FILE].endsWith("telegram-approval.env"), true);
-  assert.equal(env[SIDECAR_ENV_TOKEN], undefined);
+  assert.equal(env.CLAWD_TG_BOT_TOKEN, undefined);
+});
+
+test("buildSidecarEnv ignores any botToken option — token must come from the env-file", () => {
+  // Defensive: even if a future caller mistakenly passes a token through the
+  // options bag, buildSidecarEnv must not put it in the child env.
+  const env = buildSidecarEnv({
+    platform: "linux",
+    baseEnv: { PATH: "/usr/bin" },
+    configPath: "/userdata/cc-connect-clawd/clawd-bridge.toml",
+    tokenEnvFilePath: "/userdata/telegram-approval.env",
+    botToken: "123:caller-tried-to-pass-a-token",
+  });
+  assert.equal(env.CLAWD_TG_BOT_TOKEN, undefined);
 });
 
 test("sidecar manager parses handshake and creates a client", async () => {

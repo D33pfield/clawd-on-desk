@@ -1235,7 +1235,6 @@ function getTelegramApprovalTokenStatus() {
   return telegramApprovalSettings.tokenStatus({
     fs,
     filePath: paths.tokenEnvFilePath,
-    env: process.env,
   });
 }
 
@@ -1246,7 +1245,6 @@ function buildTelegramApprovalSignature(config, paths, tokenStatus) {
     targetSessionKey: config.targetSessionKey,
     configPath: paths.configPath,
     tokenEnvFilePath: paths.tokenEnvFilePath,
-    envTokenConfigured: tokenStatus.envTokenConfigured === true,
     tokenStored: tokenStatus.tokenStored === true,
     tokenFileMtimeMs: tokenStatus.tokenFileMtimeMs || 0,
     tokenRevision: telegramApprovalTokenRevision,
@@ -1267,7 +1265,6 @@ function getTelegramApprovalStatus() {
     reason: ready.reason || "",
     message: sidecarStatus.message || ready.message || "",
     tokenStored: token.tokenStored === true,
-    envTokenConfigured: token.envTokenConfigured === true,
   };
 }
 
@@ -1324,12 +1321,10 @@ function startTelegramApprovalSidecar() {
     return true;
   }
   if (telegramApprovalSidecar) return true;
-  // CLAWD_TG_BOT_TOKEN is a dev/test-only escape hatch: shell-exporting the
-  // token lets a developer run the sidecar without going through the Settings
-  // UI. Production users configure the token via Settings → it lands in the
-  // userData env-file. tokenStatus only exposes envTokenConfigured as a bool,
-  // never the string. If you don't want this knob, drop the line below.
-  const envBotToken = process.env.CLAWD_TG_BOT_TOKEN || "";
+  // The bot token only ever lives at userData/telegram-approval.env on disk.
+  // The sidecar reads it from there directly — Clawd's main process must never
+  // pipe a token value through process.env or child env, so there is no
+  // botToken option here and no CLAWD_TG_BOT_TOKEN read from process.env.
   telegramApprovalSidecar = createTelegramApprovalSidecar({
     baseEnv: process.env,
     env: process.env,
@@ -1338,11 +1333,7 @@ function startTelegramApprovalSidecar() {
     isPackaged: app.isPackaged,
     configPath: paths.configPath,
     tokenEnvFilePath: paths.tokenEnvFilePath,
-    botToken: envBotToken,
-    redactionSecrets: [
-      ...telegramApprovalSettings.redactionSecretsForTelegramApproval(config),
-      ...(envBotToken ? [envBotToken] : []),
-    ],
+    redactionSecrets: telegramApprovalSettings.redactionSecretsForTelegramApproval(config),
     log: telegramApprovalLog,
   });
   telegramApprovalConfigSignature = signature;

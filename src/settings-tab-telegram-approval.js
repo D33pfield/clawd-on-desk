@@ -99,7 +99,7 @@
     const message = document.createElement("span");
     message.className = "remote-ssh-status-message";
     const bits = [];
-    bits.push(s.tokenStored || s.envTokenConfigured ? t("telegramApprovalTokenStored") : t("telegramApprovalTokenMissing"));
+    bits.push(s.tokenStored ? t("telegramApprovalTokenStored") : t("telegramApprovalTokenMissing"));
     if (s.message) bits.push(s.message);
     else if (s.reason && s.reason !== "disabled") bits.push(t("telegramApprovalReason_" + s.reason));
     message.textContent = bits.filter(Boolean).join(" · ");

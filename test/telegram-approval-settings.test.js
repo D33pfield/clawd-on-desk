@@ -86,7 +86,7 @@ test("writeTokenEnvFile validates and stores token outside prefs", () => {
   assert.equal(text, `CLAWD_TG_BOT_TOKEN=${token}\n`);
 });
 
-test("tokenStatus checks env/file presence without reading the token file", () => {
+test("tokenStatus checks file presence without reading the token file", () => {
   const calls = [];
   const fakeFs = {
     existsSync(filePath) {
@@ -105,18 +105,31 @@ test("tokenStatus checks env/file presence without reading the token file", () =
   const status = settings.tokenStatus({
     fs: fakeFs,
     filePath: "C:\\Users\\me\\AppData\\Roaming\\Clawd on Desk\\telegram-approval.env",
-    env: {},
   });
   assert.deepEqual(status, {
     tokenConfigured: true,
     tokenStored: true,
-    envTokenConfigured: false,
     tokenFileMtimeMs: 1234,
   });
   assert.deepEqual(calls, [
     ["existsSync", "C:\\Users\\me\\AppData\\Roaming\\Clawd on Desk\\telegram-approval.env"],
     ["statSync", "C:\\Users\\me\\AppData\\Roaming\\Clawd on Desk\\telegram-approval.env"],
   ]);
+});
+
+test("tokenStatus ignores process.env.CLAWD_TG_BOT_TOKEN — file is the only signal", () => {
+  // Old behaviour: env-exported token would flip tokenConfigured=true without
+  // any file on disk. New behaviour: the env value is ignored so the bot token
+  // never has a route into Clawd's main process.
+  const fakeFs = { existsSync: () => false, statSync: () => ({ mtimeMs: 0 }) };
+  const status = settings.tokenStatus({
+    fs: fakeFs,
+    filePath: "/nonexistent/telegram-approval.env",
+    env: { CLAWD_TG_BOT_TOKEN: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi" },
+  });
+  assert.equal(status.tokenConfigured, false);
+  assert.equal(status.tokenStored, false);
+  assert.equal(Object.prototype.hasOwnProperty.call(status, "envTokenConfigured"), false);
 });
 
 test("redactionSecretsForTelegramApproval includes whole session key and numeric parts", () => {
@@ -130,4 +143,29 @@ test("redactionSecretsForTelegramApproval includes whole session key and numeric
     "-100987654321",
     "55",
   ]);
+});
+
+test("invariant: Clawd source never reads process.env.CLAWD_TG_BOT_TOKEN", () => {
+  // The bot token is only allowed to live at userData/telegram-approval.env on
+  // disk. Any code that reads process.env.CLAWD_TG_BOT_TOKEN pulls the token
+  // string into Clawd's main process, defeating that invariant. This grep
+  // test fails loudly if a future refactor re-introduces the read.
+  //
+  // Note: the literal string "CLAWD_TG_BOT_TOKEN" is allowed to appear in
+  // src/telegram-approval-settings.js (it writes that key into the env-file
+  // content for the sidecar to read) and in src/telegram-approval-sidecar.js
+  // (handshake constants and child env stripping). What's forbidden is
+  // process.env access to that specific name in Clawd's own code.
+  const sourceFiles = [
+    path.join(__dirname, "..", "src", "main.js"),
+    path.join(__dirname, "..", "src", "telegram-approval-sidecar.js"),
+    path.join(__dirname, "..", "src", "telegram-approval-settings.js"),
+  ];
+  const offenders = [];
+  const needle = "process.env.CLAWD_TG_BOT_TOKEN";
+  for (const file of sourceFiles) {
+    const text = fs.readFileSync(file, "utf8");
+    if (text.includes(needle)) offenders.push(file);
+  }
+  assert.deepEqual(offenders, [], `forbidden read of ${needle} in: ${offenders.join(", ")}`);
 });

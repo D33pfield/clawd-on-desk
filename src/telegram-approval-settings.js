@@ -186,10 +186,13 @@ function writeBridgeConfigFile({ fs, path: pathModule = path, filePath, config }
   }
 }
 
-function tokenStatus({ fs, filePath, env = process.env } = {}) {
-  const envToken = typeof env.CLAWD_TG_BOT_TOKEN === "string" && env.CLAWD_TG_BOT_TOKEN.trim()
-    ? validateTelegramBotToken(env.CLAWD_TG_BOT_TOKEN).status === "ok"
-    : false;
+// Token state is derived solely from the userData env-file on disk. Earlier
+// versions also accepted the bot-token env var as a "configured" signal, but
+// that path pulled the token value into Clawd's main process and violated the
+// "bot token only ever lives at userData/telegram-approval.env" invariant.
+// The `env` parameter is retained for signature compatibility but is
+// intentionally ignored.
+function tokenStatus({ fs, filePath } = {}) {
   let fileExists = false;
   let tokenFileMtimeMs = 0;
   if (fs && filePath && typeof fs.existsSync === "function") {
@@ -204,9 +207,8 @@ function tokenStatus({ fs, filePath, env = process.env } = {}) {
     }
   }
   return {
-    tokenConfigured: envToken || fileExists,
+    tokenConfigured: fileExists,
     tokenStored: fileExists,
-    envTokenConfigured: envToken,
     tokenFileMtimeMs,
   };
 }

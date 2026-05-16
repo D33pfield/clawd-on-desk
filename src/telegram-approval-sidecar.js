@@ -13,8 +13,11 @@ const DEFAULT_RESTART_BACKOFF_MS = 1000;
 const MAX_HANDSHAKE_BUFFER = 8192;
 const SIDECAR_ENV_CONFIG = "CLAWD_BRIDGE_CONFIG";
 const SIDECAR_ENV_TOKEN_FILE = "CLAWD_TG_BOT_TOKEN_FILE";
-const SIDECAR_ENV_TOKEN = "CLAWD_TG_BOT_TOKEN";
 const SIDE_CAR_PATH_ENV = "CLAWD_CC_CONNECT_CLAWD_PATH";
+// Note: the sidecar reads the token from the env-file at SIDECAR_ENV_TOKEN_FILE
+// (which itself contains a line like `CLAWD_TG_BOT_TOKEN=<token>`). Clawd's
+// main process MUST NOT pipe a token into the child env directly — that path
+// was removed so the token can only live on disk at the userData env-file.
 
 const WINDOWS_ENV_ALLOWLIST = [
   "SystemRoot",
@@ -88,7 +91,6 @@ function buildSidecarEnv(options = {}) {
   }
   if (options.configPath) env[SIDECAR_ENV_CONFIG] = String(options.configPath);
   if (options.tokenEnvFilePath) env[SIDECAR_ENV_TOKEN_FILE] = String(options.tokenEnvFilePath);
-  if (options.botToken) env[SIDECAR_ENV_TOKEN] = String(options.botToken);
   return env;
 }
 
@@ -146,7 +148,6 @@ class TelegramApprovalSidecar extends EventEmitter {
     const userDataDir = options.userDataDir || "";
     this.configPath = options.configPath || defaultConfigPath(userDataDir);
     this.tokenEnvFilePath = options.tokenEnvFilePath || defaultTokenEnvFilePath(userDataDir);
-    this.botToken = options.botToken || "";
     this.status = { status: "stopped" };
     this.child = null;
     this.client = null;
@@ -302,7 +303,6 @@ class TelegramApprovalSidecar extends EventEmitter {
       platform: this.platform,
       configPath: this.configPath,
       tokenEnvFilePath: this.tokenEnvFilePath,
-      botToken: this.botToken,
     });
   }
 
@@ -457,6 +457,5 @@ module.exports = {
   redactText,
   SIDECAR_ENV_CONFIG,
   SIDECAR_ENV_TOKEN_FILE,
-  SIDECAR_ENV_TOKEN,
   SIDE_CAR_PATH_ENV,
 };
