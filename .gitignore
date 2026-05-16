@@ -73,6 +73,12 @@ tools/check_dark.py
 # Debug logs
 logs/
 
+# Telegram approval sidecar build artifacts
+bin/cc-connect-clawd/*/cc-connect-clawd
+bin/cc-connect-clawd/*/cc-connect-clawd.exe
+!bin/cc-connect-clawd/
+!bin/cc-connect-clawd/README.md
+
 # GIF recording tools (not part of main project)
 scripts/*
 !scripts/remote-deploy.sh

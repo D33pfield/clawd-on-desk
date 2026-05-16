@@ -2,6 +2,7 @@
 
 const childProcess = require("child_process");
 const { EventEmitter } = require("events");
+const fs = require("fs");
 const path = require("path");
 const { TelegramApprovalClient } = require("./telegram-approval-client");
 
@@ -14,6 +15,8 @@ const MAX_HANDSHAKE_BUFFER = 8192;
 const SIDECAR_ENV_CONFIG = "CLAWD_BRIDGE_CONFIG";
 const SIDECAR_ENV_TOKEN_FILE = "CLAWD_TG_BOT_TOKEN_FILE";
 const SIDE_CAR_PATH_ENV = "CLAWD_CC_CONNECT_CLAWD_PATH";
+const SIDECAR_BINARY_BASENAME = "cc-connect-clawd";
+const SIDECAR_RESOURCE_ROOT = path.join("sidecars", "cc-connect-clawd");
 // Note: the sidecar reads the token from the env-file at SIDECAR_ENV_TOKEN_FILE
 // (which itself contains a line like `CLAWD_TG_BOT_TOKEN=<token>`). Clawd's
 // main process MUST NOT pipe a token into the child env directly — that path
@@ -95,20 +98,81 @@ function buildSidecarEnv(options = {}) {
 }
 
 function sidecarExecutableName(platform = process.platform) {
-  return platform === "win32" ? "cc-connect-clawd.exe" : "cc-connect-clawd";
+  return platform === "win32" ? `${SIDECAR_BINARY_BASENAME}.exe` : SIDECAR_BINARY_BASENAME;
+}
+
+function sidecarPlatformName(platform = process.platform) {
+  if (platform === "win32") return "windows";
+  if (platform === "darwin") return "darwin";
+  if (platform === "linux") return "linux";
+  return String(platform || "").trim() || "unknown";
+}
+
+function sidecarArchName(arch = process.arch) {
+  return String(arch || "").trim() || "unknown";
+}
+
+function sidecarPlatformArchDir(options = {}) {
+  return `${sidecarPlatformName(options.platform)}-${sidecarArchName(options.arch)}`;
+}
+
+function sidecarResourceRelativePath(options = {}) {
+  return path.join(
+    SIDECAR_RESOURCE_ROOT,
+    sidecarPlatformArchDir(options),
+    sidecarExecutableName(options.platform)
+  );
+}
+
+function resolveOverrideBinaryPath(rawValue, options = {}) {
+  const value = String(rawValue || "").trim();
+  if (!value) return "";
+  const platform = options.platform || process.platform;
+  const fsModule = options.fs || fs;
+  try {
+    if (fsModule && typeof fsModule.statSync === "function") {
+      const stat = fsModule.statSync(value);
+      if (stat && typeof stat.isDirectory === "function" && stat.isDirectory()) {
+        return path.join(value, sidecarExecutableName(platform));
+      }
+    }
+  } catch {
+    // Fall through to treating the override as an executable path.
+  }
+  if (/[\\/]$/.test(value)) return path.join(value, sidecarExecutableName(platform));
+  return value;
+}
+
+function resolveSidecarBinary(options = {}) {
+  if (options.binaryPath) {
+    return { path: options.binaryPath, source: "explicit" };
+  }
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
+  const arch = options.arch || process.arch;
+  if (env[SIDE_CAR_PATH_ENV]) {
+    return {
+      path: resolveOverrideBinaryPath(env[SIDE_CAR_PATH_ENV], { platform, fs: options.fs }),
+      source: "env",
+    };
+  }
+
+  const resourceRoot = options.resourcesPath || (options.isPackaged ? process.resourcesPath : "");
+  if (resourceRoot && options.isPackaged !== false) {
+    return {
+      path: path.join(resourceRoot, sidecarResourceRelativePath({ platform, arch })),
+      source: "packaged",
+    };
+  }
+
+  return {
+    path: path.join(__dirname, "..", "bin", "cc-connect-clawd", sidecarPlatformArchDir({ platform, arch }), sidecarExecutableName(platform)),
+    source: "dev",
+  };
 }
 
 function resolveSidecarBinaryPath(options = {}) {
-  if (options.binaryPath) return options.binaryPath;
-  const env = options.env || process.env;
-  if (env[SIDE_CAR_PATH_ENV]) return env[SIDE_CAR_PATH_ENV];
-
-  const platform = options.platform || process.platform;
-  const exe = sidecarExecutableName(platform);
-  if (options.resourcesPath) return path.join(options.resourcesPath, exe);
-  if (process.resourcesPath && options.isPackaged) return path.join(process.resourcesPath, exe);
-
-  return path.join(__dirname, "..", "bin", exe);
+  return resolveSidecarBinary(options).path;
 }
 
 function defaultConfigPath(userDataDir) {
@@ -123,6 +187,7 @@ class TelegramApprovalSidecar extends EventEmitter {
   constructor(options = {}) {
     super();
     this.spawn = options.spawn || childProcess.spawn;
+    this.fs = options.fs || fs;
     this.log = typeof options.log === "function" ? options.log : () => {};
     this.setTimer = options.setTimeout || setTimeout;
     this.clearTimer = options.clearTimeout || clearTimeout;
@@ -138,13 +203,18 @@ class TelegramApprovalSidecar extends EventEmitter {
     this.httpRequest = options.httpRequest;
     this.requestTimeoutMs = options.requestTimeoutMs;
     this.redactionSecrets = Array.isArray(options.redactionSecrets) ? options.redactionSecrets.slice() : [];
-    this.binaryPath = resolveSidecarBinaryPath({
+    const binary = resolveSidecarBinary({
       binaryPath: options.binaryPath,
       env: options.env || this.baseEnv,
       platform: this.platform,
+      arch: options.arch || process.arch,
       resourcesPath: options.resourcesPath,
       isPackaged: options.isPackaged,
+      fs: this.fs,
     });
+    this.binaryPath = binary.path;
+    this.binaryPathSource = binary.source;
+    this.skipBinaryExistsCheck = options.skipBinaryExistsCheck === true || binary.source === "explicit";
     const userDataDir = options.userDataDir || "";
     this.configPath = options.configPath || defaultConfigPath(userDataDir);
     this.tokenEnvFilePath = options.tokenEnvFilePath || defaultTokenEnvFilePath(userDataDir);
@@ -182,6 +252,12 @@ class TelegramApprovalSidecar extends EventEmitter {
   start() {
     if (this.client && this.status.status === "running") return Promise.resolve(this.client);
     if (this.startPromise) return this.startPromise;
+    const binaryError = this._getBinaryAvailabilityError();
+    if (binaryError) {
+      const message = this._redact(binaryError);
+      this._setStatus({ status: "failed", message });
+      return Promise.reject(new Error(message));
+    }
     this.requestedStop = false;
     this._clearRestartTimer();
     this._setStatus({ status: "starting" });
@@ -304,6 +380,16 @@ class TelegramApprovalSidecar extends EventEmitter {
       configPath: this.configPath,
       tokenEnvFilePath: this.tokenEnvFilePath,
     });
+  }
+
+  _getBinaryAvailabilityError() {
+    if (this.skipBinaryExistsCheck) return "";
+    if (!this.binaryPath) return "telegram approval sidecar binary path is empty";
+    if (!this.fs || typeof this.fs.existsSync !== "function") return "";
+    try {
+      if (this.fs.existsSync(this.binaryPath)) return "";
+    } catch {}
+    return `telegram approval sidecar binary not found: ${this.binaryPath}`;
   }
 
   _handleStdout(chunk, finishReady, failStartup) {
@@ -451,11 +537,19 @@ module.exports = {
   createTelegramApprovalSidecar,
   parseHandshakeLine,
   buildSidecarEnv,
+  resolveSidecarBinary,
   resolveSidecarBinaryPath,
+  resolveOverrideBinaryPath,
+  sidecarExecutableName,
+  sidecarPlatformName,
+  sidecarArchName,
+  sidecarPlatformArchDir,
+  sidecarResourceRelativePath,
   defaultConfigPath,
   defaultTokenEnvFilePath,
   redactText,
   SIDECAR_ENV_CONFIG,
   SIDECAR_ENV_TOKEN_FILE,
   SIDE_CAR_PATH_ENV,
+  SIDECAR_RESOURCE_ROOT,
 };

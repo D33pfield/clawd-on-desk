@@ -99,6 +99,7 @@ function makeServer(overrides = {}) {
     setTimeout: timers.setTimeout,
     clearTimeout: timers.clearTimeout,
     getPortCandidates: () => [23333],
+    readRuntimePort: () => null,
     writeRuntimeConfig: () => true,
     clearRuntimeConfig: () => true,
     fs: {

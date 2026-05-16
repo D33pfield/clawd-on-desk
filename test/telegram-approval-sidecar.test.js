@@ -9,12 +9,18 @@ const {
   TelegramApprovalSidecar,
   parseHandshakeLine,
   buildSidecarEnv,
+  resolveSidecarBinary,
   resolveSidecarBinaryPath,
+  resolveOverrideBinaryPath,
+  sidecarExecutableName,
+  sidecarPlatformArchDir,
+  sidecarResourceRelativePath,
   defaultConfigPath,
   defaultTokenEnvFilePath,
   redactText,
   SIDECAR_ENV_CONFIG,
   SIDECAR_ENV_TOKEN_FILE,
+  SIDE_CAR_PATH_ENV,
 } = require("../src/telegram-approval-sidecar");
 
 class FakeStream extends EventEmitter {
@@ -275,15 +281,72 @@ test("sidecar manager restarts unexpected exits with a rate limit", async () => 
   assert.match(sidecar.getStatus().message, /rate limit/);
 });
 
-test("resolveSidecarBinaryPath honors explicit and env paths", () => {
+test("resolveSidecarBinaryPath honors explicit and env executable paths", () => {
   assert.equal(resolveSidecarBinaryPath({ binaryPath: "explicit.exe" }), "explicit.exe");
   assert.equal(resolveSidecarBinaryPath({
-    env: { CLAWD_CC_CONNECT_CLAWD_PATH: "env.exe" },
+    env: { [SIDE_CAR_PATH_ENV]: "env.exe" },
   }), "env.exe");
+});
+
+test("resolveOverrideBinaryPath accepts a directory override for dev builds", () => {
+  const fakeFs = {
+    statSync: () => ({ isDirectory: () => true }),
+  };
+  assert.equal(
+    resolveOverrideBinaryPath("D:\\tmp\\cc-connect-clawd", { platform: "win32", fs: fakeFs }),
+    path.join("D:\\tmp\\cc-connect-clawd", "cc-connect-clawd.exe")
+  );
+});
+
+test("resolveSidecarBinaryPath uses packaged resources path by platform and arch", () => {
   assert.equal(resolveSidecarBinaryPath({
     resourcesPath: "C:\\resources",
     platform: "win32",
-  }), path.join("C:\\resources", "cc-connect-clawd.exe"));
+    arch: "arm64",
+    isPackaged: true,
+  }), path.join("C:\\resources", "sidecars", "cc-connect-clawd", "windows-arm64", "cc-connect-clawd.exe"));
+});
+
+test("resolveSidecarBinaryPath ignores resourcesPath in source mode and falls back to repo bin", () => {
+  const resolved = resolveSidecarBinary({
+    resourcesPath: "C:\\resources",
+    platform: "linux",
+    arch: "x64",
+    isPackaged: false,
+  });
+  assert.equal(resolved.source, "dev");
+  assert.equal(
+    resolved.path,
+    path.join(__dirname, "..", "bin", "cc-connect-clawd", "linux-x64", "cc-connect-clawd")
+  );
+});
+
+test("sidecar binary names are stable across packaged platforms", () => {
+  assert.equal(sidecarExecutableName("win32"), "cc-connect-clawd.exe");
+  assert.equal(sidecarExecutableName("darwin"), "cc-connect-clawd");
+  assert.equal(sidecarExecutableName("linux"), "cc-connect-clawd");
+  assert.equal(sidecarPlatformArchDir({ platform: "win32", arch: "x64" }), "windows-x64");
+  assert.equal(sidecarPlatformArchDir({ platform: "darwin", arch: "arm64" }), "darwin-arm64");
+  assert.equal(
+    sidecarResourceRelativePath({ platform: "linux", arch: "x64" }),
+    path.join("sidecars", "cc-connect-clawd", "linux-x64", "cc-connect-clawd")
+  );
+});
+
+test("sidecar manager reports a clear missing binary error for resolved paths", async () => {
+  const sidecar = new TelegramApprovalSidecar({
+    env: {},
+    baseEnv: {},
+    platform: "win32",
+    arch: "x64",
+    isPackaged: true,
+    resourcesPath: "C:\\resources",
+    fs: { existsSync: () => false },
+  });
+
+  await assert.rejects(sidecar.start(), /sidecar binary not found/);
+  assert.equal(sidecar.getStatus().status, "failed");
+  assert.match(sidecar.getStatus().message, /windows-x64/);
 });
 
 test("redactText masks known Telegram identifiers and token-like values", () => {
