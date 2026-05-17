@@ -12,7 +12,7 @@ const FETCH_COMMAND = "node scripts/fetch-sidecar-binaries.js";
 const DEFAULT_RELEASE = Object.freeze({
   owner: "rullerzhou-afk",
   repo: "cc-connect-clawd",
-  tag: "clawd-sidecar-v0.1.0",
+  tag: "clawd-sidecar-v0.1.1",
 });
 
 const TARGETS = Object.freeze([

@@ -27,11 +27,11 @@ test("release source is pinned to the public Clawd fork tag", () => {
   assert.deepEqual(DEFAULT_RELEASE, {
     owner: "rullerzhou-afk",
     repo: "cc-connect-clawd",
-    tag: "clawd-sidecar-v0.1.0",
+    tag: "clawd-sidecar-v0.1.1",
   });
   assert.equal(
     releaseAssetUrl("checksums.txt"),
-    "https://github.com/rullerzhou-afk/cc-connect-clawd/releases/download/clawd-sidecar-v0.1.0/checksums.txt"
+    "https://github.com/rullerzhou-afk/cc-connect-clawd/releases/download/clawd-sidecar-v0.1.1/checksums.txt"
   );
 });
 
