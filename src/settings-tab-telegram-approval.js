@@ -9,6 +9,7 @@
     status: null,
     statusSeq: 0,
     statusLoading: false,
+    statusForceRenderPending: false,
     tokenPending: false,
     configPending: false,
     testPending: false,
@@ -57,17 +58,39 @@
   }
 
   function refreshStatus({ forceRender = false } = {}) {
-    if (view.statusLoading) return;
+    if (view.statusLoading) {
+      if (forceRender) view.statusForceRenderPending = true;
+      return;
+    }
     view.statusLoading = true;
     const seq = ++view.statusSeq;
     callCommand("telegramApproval.status").then((result) => {
       if (seq !== view.statusSeq) return;
       view.statusLoading = false;
-      const hadStatus = !!view.status;
+      const previousStatus = view.status;
+      const hadStatus = !!previousStatus;
       const updated = result && result.status === "ok";
+      const nextStatus = updated ? result.state || null : previousStatus;
+      const shouldForceRender = forceRender || view.statusForceRenderPending;
+      view.statusForceRenderPending = false;
+      const changed = updated && statusRenderKey(previousStatus) !== statusRenderKey(nextStatus);
       if (updated) view.status = result.state || null;
-      if ((forceRender || (updated && !hadStatus)) && state.activeTab === "telegram-approval") ops.requestRender({ content: true });
+      if ((shouldForceRender || (updated && (!hadStatus || changed))) && state.activeTab === "telegram-approval") {
+        ops.requestRender({ content: true });
+      }
     });
+  }
+
+  function statusRenderKey(status) {
+    const s = status && typeof status === "object" ? status : {};
+    return [
+      s.status || "",
+      s.enabled === true ? "1" : "0",
+      s.configured === true ? "1" : "0",
+      s.reason || "",
+      s.message || "",
+      s.tokenStored === true ? "1" : "0",
+    ].join("\u001f");
   }
 
   function render(parent) {

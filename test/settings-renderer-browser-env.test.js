@@ -902,6 +902,7 @@ function loadTelegramApprovalTabForTest({
   body.appendChild(content);
   const updates = [];
   const commands = [];
+  const renderRequests = [];
 
   const document = {
     body,
@@ -966,7 +967,9 @@ function loadTelegramApprovalTabForTest({
       },
     },
     ops: {
-      requestRender: () => {},
+      requestRender: (payload) => {
+        renderRequests.push(payload || {});
+      },
       showToast: () => {},
     },
     tabs: {},
@@ -978,7 +981,7 @@ function loadTelegramApprovalTabForTest({
   }
   render();
 
-  return { core, content, updates, commands, render };
+  return { core, content, updates, commands, render, renderRequests };
 }
 
 function loadAnimOverridesTabForTest({
@@ -1268,6 +1271,65 @@ describe("settings renderer browser environment", () => {
 
     testButton.dispatchEvent({ type: "click" });
     assert.equal(commandCalls.some((call) => call.name === "telegramApproval.test"), false);
+  });
+
+  it("repaints Telegram approval after forced status refresh overlaps pending status", async () => {
+    const staleStatus = createDeferred();
+    const updatedStatus = createDeferred();
+    const statusResponses = [staleStatus, updatedStatus];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: true,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            const next = statusResponses.shift();
+            assert.ok(next, "unexpected Telegram status request");
+            return next.promise;
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+
+    harness.content.querySelectorAll("button")[2].dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    const beforeStatusResolve = harness.renderRequests.length;
+
+    staleStatus.resolve({
+      status: "ok",
+      state: {
+        status: "stopped",
+        configured: false,
+        reason: "missing-token",
+        message: "Telegram bot token is not configured",
+        tokenStored: false,
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(harness.renderRequests.length, beforeStatusResolve + 1);
+
+    harness.render();
+    updatedStatus.resolve({
+      status: "ok",
+      state: {
+        status: "running",
+        configured: true,
+        reason: "",
+        message: "",
+        tokenStored: true,
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(harness.renderRequests.length, beforeStatusResolve + 2);
   });
 
   it("wires Clawd Doctor through Settings with Step 2 connection actions", () => {
