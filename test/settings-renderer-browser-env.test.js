@@ -1187,7 +1187,7 @@ describe("settings renderer browser environment", () => {
     }
   });
 
-  it("keeps Telegram approval drafts local across toggles and rerenders", () => {
+  it("keeps Telegram approval drafts local across toggles and rerenders", async () => {
     const harness = loadTelegramApprovalTabForTest({
       snapshot: {
         tgApproval: {
@@ -1212,6 +1212,9 @@ describe("settings renderer browser environment", () => {
         targetSessionKey: "telegram:123456789",
       },
     }]);
+
+    await Promise.resolve();
+    await Promise.resolve();
 
     harness.core.state.snapshot = {
       ...harness.core.state.snapshot,

@@ -1406,13 +1406,6 @@ async function sendTelegramApprovalTest() {
     return { status: "error", message: telegramApprovalUnavailableMessage(beforeStatus) };
   }
   await queueTelegramApprovalSidecarSync("test");
-  if (telegramApprovalSidecar && !getTelegramApprovalClient() && typeof telegramApprovalSidecar.start === "function") {
-    try {
-      await telegramApprovalSidecar.start();
-    } catch (err) {
-      return { status: "error", message: err && err.message ? err.message : "Telegram approval sidecar failed to start" };
-    }
-  }
   const client = getTelegramApprovalClient();
   if (!client || typeof client.requestApproval !== "function") {
     return { status: "error", message: telegramApprovalUnavailableMessage(getTelegramApprovalStatus()) };

@@ -151,7 +151,7 @@
     sw.setAttribute("role", "switch");
     sw.setAttribute("tabindex", "0");
     helpers.setSwitchVisual(sw, cfg.enabled, { pending: view.configPending });
-    const toggle = () => saveConfig({ ...cfg, enabled: !cfg.enabled });
+    const toggle = () => saveConfig({ ...cfg, enabled: !cfg.enabled }, { resetDraft: false });
     sw.addEventListener("click", toggle);
     sw.addEventListener("keydown", (ev) => {
       if (ev.key === " " || ev.key === "Enter") {
@@ -285,7 +285,7 @@
     return field;
   }
 
-  function saveConfig(next) {
+  function saveConfig(next, options = {}) {
     if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") {
       ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
       return;
@@ -300,7 +300,7 @@
         return;
       }
       ops.showToast(t("telegramApprovalConfigSaved"));
-      resetFormDraft();
+      if (options.resetDraft !== false) resetFormDraft();
       view.status = null;
       refreshStatus({ forceRender: true });
     }).catch((err) => {
