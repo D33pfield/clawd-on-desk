@@ -21,7 +21,7 @@
     "prebuild:mac": "node scripts/verify-sidecar-binaries.js",
     "prebuild:linux": "node scripts/verify-sidecar-binaries.js",
     "prebuild:all": "node scripts/verify-sidecar-binaries.js",
-    "test": "node --test test/*.test.js",
+    "test": "node test/run-tests.js",
     "create-theme": "node scripts/create-theme.js",
     "export-agent-icons": "node scripts/export-agent-icons.js",
     "install:claude-hooks": "node hooks/install.js",
