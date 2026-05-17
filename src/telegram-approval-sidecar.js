@@ -193,6 +193,7 @@ class TelegramApprovalSidecar extends EventEmitter {
     this.clearTimer = options.clearTimeout || clearTimeout;
     this.now = options.now || (() => Date.now());
     this.platform = options.platform || process.platform;
+    this.arch = options.arch || process.arch;
     this.baseEnv = options.baseEnv || process.env;
     this.startupTimeoutMs = options.startupTimeoutMs == null ? DEFAULT_STARTUP_TIMEOUT_MS : Number(options.startupTimeoutMs);
     this.stopGraceMs = options.stopGraceMs == null ? DEFAULT_STOP_GRACE_MS : Number(options.stopGraceMs);
@@ -207,7 +208,7 @@ class TelegramApprovalSidecar extends EventEmitter {
       binaryPath: options.binaryPath,
       env: options.env || this.baseEnv,
       platform: this.platform,
-      arch: options.arch || process.arch,
+      arch: this.arch,
       resourcesPath: options.resourcesPath,
       isPackaged: options.isPackaged,
       fs: this.fs,
@@ -391,7 +392,11 @@ class TelegramApprovalSidecar extends EventEmitter {
     try {
       if (this.fs.existsSync(this.binaryPath)) return "";
     } catch {}
-    return `telegram approval sidecar binary not found: ${this.binaryPath}`;
+    const message = `telegram approval sidecar binary not found: ${this.binaryPath}`;
+    if (this.binaryPathSource === "dev") {
+      return `${message}. For source checkouts, run: npm run fetch:sidecars -- --target ${sidecarPlatformArchDir({ platform: this.platform, arch: this.arch })}`;
+    }
+    return message;
   }
 
   _handleStdout(chunk, finishReady, failStartup) {

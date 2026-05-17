@@ -18,6 +18,11 @@ Clawd release builds fetch the pinned public fork release with:
 
   npm run fetch:sidecars
 
+Source checkouts run a lightweight preflight before `npm start`. It downloads
+the current platform's pinned sidecar when missing, verifies checksums, and then
+continues launching Clawd. To skip that network preflight, set
+`CLAWD_SKIP_SIDECAR_FETCH=1`.
+
 The fetch script downloads release archives from
 `rullerzhou-afk/cc-connect-clawd`, verifies `checksums.txt`, and extracts the
 binaries into this directory layout. Do not use upstream latest artifacts.

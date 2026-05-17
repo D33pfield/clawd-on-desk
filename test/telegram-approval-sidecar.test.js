@@ -377,6 +377,7 @@ test("sidecar manager reports a clear missing binary error for source-mode fallb
   assert.equal(sidecar.getStatus().status, "failed");
   assert.equal(sidecar.getStatus().binaryPathSource, "dev");
   assert.match(sidecar.getStatus().message, /linux-x64/);
+  assert.match(sidecar.getStatus().message, /npm run fetch:sidecars -- --target linux-x64/);
 });
 
 test("sidecar manager fails closed when binary availability cannot be checked", async () => {
