@@ -9,9 +9,12 @@
     status: null,
     statusSeq: 0,
     statusLoading: false,
+    statusForceRenderPending: false,
     tokenPending: false,
     configPending: false,
     testPending: false,
+    formDraft: null,
+    formDirty: false,
   };
 
   function t(key) {
@@ -27,6 +30,22 @@
     };
   }
 
+  function getFormDraft() {
+    if (!view.formDraft || !view.formDirty) view.formDraft = { ...currentConfig() };
+    return view.formDraft;
+  }
+
+  function setFormDraftValue(key, value) {
+    const draft = getFormDraft();
+    draft[key] = value;
+    view.formDirty = true;
+  }
+
+  function resetFormDraft() {
+    view.formDraft = null;
+    view.formDirty = false;
+  }
+
   function callCommand(action, payload) {
     if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
       ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
@@ -39,15 +58,39 @@
   }
 
   function refreshStatus({ forceRender = false } = {}) {
-    if (view.statusLoading) return;
+    if (view.statusLoading) {
+      if (forceRender) view.statusForceRenderPending = true;
+      return;
+    }
     view.statusLoading = true;
     const seq = ++view.statusSeq;
     callCommand("telegramApproval.status").then((result) => {
       if (seq !== view.statusSeq) return;
       view.statusLoading = false;
-      if (result && result.status === "ok") view.status = result.state || null;
-      if (forceRender && state.activeTab === "telegram-approval") ops.requestRender({ content: true });
+      const previousStatus = view.status;
+      const hadStatus = !!previousStatus;
+      const updated = result && result.status === "ok";
+      const nextStatus = updated ? result.state || null : previousStatus;
+      const shouldForceRender = forceRender || view.statusForceRenderPending;
+      view.statusForceRenderPending = false;
+      const changed = updated && statusRenderKey(previousStatus) !== statusRenderKey(nextStatus);
+      if (updated) view.status = result.state || null;
+      if ((shouldForceRender || (updated && (!hadStatus || changed))) && state.activeTab === "telegram-approval") {
+        ops.requestRender({ content: true });
+      }
     });
+  }
+
+  function statusRenderKey(status) {
+    const s = status && typeof status === "object" ? status : {};
+    return [
+      s.status || "",
+      s.enabled === true ? "1" : "0",
+      s.configured === true ? "1" : "0",
+      s.reason || "",
+      s.message || "",
+      s.tokenStored === true ? "1" : "0",
+    ].join("\u001f");
   }
 
   function render(parent) {
@@ -131,7 +174,7 @@
     sw.setAttribute("role", "switch");
     sw.setAttribute("tabindex", "0");
     helpers.setSwitchVisual(sw, cfg.enabled, { pending: view.configPending });
-    const toggle = () => saveConfig({ ...cfg, enabled: !cfg.enabled });
+    const toggle = () => saveConfig({ ...cfg, enabled: !cfg.enabled }, { resetDraft: false });
     sw.addEventListener("click", toggle);
     sw.addEventListener("keydown", (ev) => {
       if (ev.key === " " || ev.key === "Enter") {
@@ -200,7 +243,7 @@
   }
 
   function buildConfigFormRow() {
-    const cfg = currentConfig();
+    const cfg = getFormDraft();
     const row = document.createElement("div");
     row.className = "row telegram-approval-config-row";
 
@@ -211,12 +254,14 @@
       label: t("telegramApprovalAllowedUser"),
       value: cfg.allowedTgUserId,
       hint: t("telegramApprovalAllowedUserHint"),
+      onInput: (value) => setFormDraftValue("allowedTgUserId", value),
     }));
     form.appendChild(buildField({
       id: "telegramTargetSessionKey",
       label: t("telegramApprovalTargetSession"),
       value: cfg.targetSessionKey,
       hint: t("telegramApprovalTargetSessionHint"),
+      onInput: (value) => setFormDraftValue("targetSessionKey", value),
     }));
 
     const actions = document.createElement("div");
@@ -228,9 +273,9 @@
     saveBtn.disabled = view.configPending;
     saveBtn.addEventListener("click", () => {
       saveConfig({
-        enabled: cfg.enabled,
-        allowedTgUserId: form.querySelector("#telegramAllowedUserId").value.trim(),
-        targetSessionKey: form.querySelector("#telegramTargetSessionKey").value.trim(),
+        enabled: currentConfig().enabled,
+        allowedTgUserId: String(getFormDraft().allowedTgUserId || "").trim(),
+        targetSessionKey: String(getFormDraft().targetSessionKey || "").trim(),
       });
     });
     actions.appendChild(saveBtn);
@@ -239,7 +284,7 @@
     return row;
   }
 
-  function buildField({ id, label, value, hint }) {
+  function buildField({ id, label, value, hint, onInput }) {
     const field = document.createElement("label");
     field.className = "remote-ssh-field telegram-approval-field";
     field.setAttribute("for", id);
@@ -251,6 +296,9 @@
     input.id = id;
     input.value = value || "";
     input.spellcheck = false;
+    if (typeof onInput === "function") {
+      input.addEventListener("input", () => onInput(input.value));
+    }
     const hintEl = document.createElement("span");
     hintEl.className = "remote-ssh-field-hint";
     hintEl.textContent = hint;
@@ -260,7 +308,7 @@
     return field;
   }
 
-  function saveConfig(next) {
+  function saveConfig(next, options = {}) {
     if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") {
       ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
       return;
@@ -275,6 +323,7 @@
         return;
       }
       ops.showToast(t("telegramApprovalConfigSaved"));
+      if (options.resetDraft !== false) resetFormDraft();
       view.status = null;
       refreshStatus({ forceRender: true });
     }).catch((err) => {
@@ -285,6 +334,8 @@
   }
 
   function buildTestRow() {
+    const unavailableMessage = telegramApprovalTestUnavailableMessage();
+    const testDisabled = view.testPending || !!unavailableMessage;
     const row = document.createElement("div");
     row.className = "row";
     const text = document.createElement("div");
@@ -305,8 +356,10 @@
     btn.type = "button";
     btn.className = "soft-btn accent";
     btn.textContent = view.testPending ? t("telegramApprovalTesting") : t("telegramApprovalSendTest");
-    btn.disabled = view.testPending;
+    btn.disabled = testDisabled;
+    if (unavailableMessage) btn.title = unavailableMessage;
     btn.addEventListener("click", () => {
+      if (testDisabled) return;
       view.testPending = true;
       ops.requestRender({ content: true });
       callCommand("telegramApproval.test").then((result) => {
@@ -323,6 +376,15 @@
     ctrl.appendChild(btn);
     row.appendChild(ctrl);
     return row;
+  }
+
+  function telegramApprovalTestUnavailableMessage() {
+    const s = view.status;
+    if (!s) return t("telegramApprovalTestUnavailable");
+    if (s.configured === true) return "";
+    if (s.message) return s.message;
+    if (s.reason && s.reason !== "disabled") return t("telegramApprovalReason_" + s.reason);
+    return t("telegramApprovalTestUnavailable");
   }
 
   function init(core) {
