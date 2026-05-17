@@ -34,7 +34,7 @@ test("normalizeTelegramApproval trims ids and accepts numeric chat id shorthand"
   });
 });
 
-test("validateTelegramApproval requires user and target only when enabled", () => {
+test("validateTelegramApproval permits incomplete saved config but rejects malformed ids", () => {
   assert.equal(settings.validateTelegramApproval({
     enabled: false,
     allowedTgUserId: "",
@@ -44,7 +44,7 @@ test("validateTelegramApproval requires user and target only when enabled", () =
     enabled: true,
     allowedTgUserId: "",
     targetSessionKey: "telegram:987654321",
-  }).status, "error");
+  }).status, "ok");
   assert.equal(settings.validateTelegramApproval({
     enabled: true,
     allowedTgUserId: "123456789",
@@ -61,6 +61,28 @@ test("validateTelegramApproval requires user and target only when enabled", () =
     targetSessionKey: "",
     botToken: "123:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi",
   }).status, "error");
+});
+
+test("readiness blocks enabled Telegram approval until ids and token are configured", () => {
+  assert.deepEqual(settings.readiness({
+    enabled: true,
+    allowedTgUserId: "",
+    targetSessionKey: "telegram:987654321",
+  }, { tokenConfigured: true }), {
+    ready: false,
+    reason: "invalid-config",
+    message: "Telegram allowed user id is not configured",
+    config: {
+      enabled: true,
+      allowedTgUserId: "",
+      targetSessionKey: "telegram:987654321",
+    },
+  });
+  assert.equal(settings.readiness({
+    enabled: true,
+    allowedTgUserId: "123456789",
+    targetSessionKey: "telegram:987654321",
+  }, { tokenConfigured: false }).reason, "missing-token");
 });
 
 test("buildBridgeConfigToml writes sidecar config without bot token fields", () => {
@@ -84,6 +106,19 @@ test("writeTokenEnvFile validates and stores token outside prefs", () => {
   assert.equal(result.status, "ok");
   const text = fs.readFileSync(filePath, "utf8");
   assert.equal(text, `CLAWD_TG_BOT_TOKEN=${token}\n`);
+});
+
+test("writeTokenEnvFile tightens an existing token file on POSIX", { skip: process.platform === "win32" }, () => {
+  const filePath = path.join(tempDir(), "telegram-approval.env");
+  const token = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi_jklmnop";
+  fs.writeFileSync(filePath, "CLAWD_TG_BOT_TOKEN=old\n", { encoding: "utf8", mode: 0o644 });
+  fs.chmodSync(filePath, 0o644);
+
+  const result = settings.writeTokenEnvFile({ fs, path, filePath, token, platform: process.platform });
+
+  assert.equal(result.status, "ok");
+  assert.equal(fs.statSync(filePath).mode & 0o777, 0o600);
+  assert.equal(fs.readFileSync(filePath, "utf8"), `CLAWD_TG_BOT_TOKEN=${token}\n`);
 });
 
 test("tokenStatus checks file presence without reading the token file", () => {

@@ -201,7 +201,7 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.themeOverrides("nope", deps).status, "error");
   });
 
-  it("tgApproval validates the settings object without accepting missing enabled config", () => {
+  it("tgApproval validates the settings object while allowing incomplete saved config", () => {
     const deps = { snapshot: baseSnapshot };
     assert.strictEqual(updateRegistry.tgApproval({
       enabled: false,
@@ -217,7 +217,7 @@ describe("updateRegistry pure-data validators", () => {
       enabled: true,
       allowedTgUserId: "",
       targetSessionKey: "telegram:987654321",
-    }, deps).status, "error");
+    }, deps).status, "ok");
     assert.strictEqual(updateRegistry.tgApproval({
       enabled: true,
       allowedTgUserId: "123456789",

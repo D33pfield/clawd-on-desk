@@ -1284,7 +1284,7 @@ function writeTelegramApprovalToken(token) {
   return result;
 }
 
-function startTelegramApprovalSidecar() {
+async function startTelegramApprovalSidecar() {
   const config = getTelegramApprovalPrefs();
   const paths = getTelegramApprovalPaths();
   const token = getTelegramApprovalTokenStatus();
@@ -1311,16 +1311,21 @@ function startTelegramApprovalSidecar() {
   }
   const signature = buildTelegramApprovalSignature(config, paths, token);
   if (telegramApprovalSidecar && telegramApprovalConfigSignature === signature) {
-    if (typeof telegramApprovalSidecar.isRunning !== "function" || !telegramApprovalSidecar.isRunning()) {
-      telegramApprovalSidecar.start()
-        .then(() => telegramApprovalLog("info", "running"))
-        .catch((err) => telegramApprovalLog("warn", "start failed", {
+    const sidecar = telegramApprovalSidecar;
+    if (typeof sidecar.isRunning !== "function" || !sidecar.isRunning()) {
+      try {
+        await sidecar.start();
+        if (telegramApprovalSidecar === sidecar) telegramApprovalLog("info", "running");
+      } catch (err) {
+        telegramApprovalLog("warn", "start failed", {
           error: err && err.message ? err.message : String(err),
-        }));
+        });
+        return false;
+      }
     }
-    return true;
+    return telegramApprovalSidecar === sidecar;
   }
-  if (telegramApprovalSidecar) return true;
+  if (telegramApprovalSidecar) await stopTelegramApprovalSidecar();
   // The bot token only ever lives at userData/telegram-approval.env on disk.
   // The sidecar reads it from there directly — Clawd's main process must never
   // pipe a token value through process.env or child env, so there is no
@@ -1337,12 +1342,19 @@ function startTelegramApprovalSidecar() {
     log: telegramApprovalLog,
   });
   telegramApprovalConfigSignature = signature;
-  telegramApprovalSidecar.start()
-    .then(() => telegramApprovalLog("info", "running"))
-    .catch((err) => telegramApprovalLog("warn", "start failed", {
+  const sidecar = telegramApprovalSidecar;
+  try {
+    await sidecar.start();
+    if (telegramApprovalSidecar === sidecar) {
+      telegramApprovalLog("info", "running");
+      return true;
+    }
+  } catch (err) {
+    telegramApprovalLog("warn", "start failed", {
       error: err && err.message ? err.message : String(err),
-    }));
-  return true;
+    });
+  }
+  return false;
 }
 
 function stopTelegramApprovalSidecar() {
@@ -1368,7 +1380,7 @@ async function syncTelegramApprovalSidecar(reason = "settings") {
   if (telegramApprovalSidecar && telegramApprovalConfigSignature !== nextSignature) {
     await stopTelegramApprovalSidecar();
   }
-  const started = startTelegramApprovalSidecar();
+  const started = await startTelegramApprovalSidecar();
   if (started) telegramApprovalLog("debug", `sync ${reason}`);
   return started;
 }
@@ -1380,7 +1392,19 @@ function queueTelegramApprovalSidecarSync(reason) {
   return telegramApprovalSyncPromise;
 }
 
+function telegramApprovalUnavailableMessage(status) {
+  if (status && status.message) return status.message;
+  if (status && status.reason === "disabled") return "Telegram approval is disabled";
+  if (status && status.reason === "missing-token") return "Telegram bot token is not configured";
+  if (status && status.reason === "invalid-config") return "Telegram approval config is incomplete";
+  return "Telegram approval sidecar is not running";
+}
+
 async function sendTelegramApprovalTest() {
+  const beforeStatus = getTelegramApprovalStatus();
+  if (beforeStatus.configured !== true) {
+    return { status: "error", message: telegramApprovalUnavailableMessage(beforeStatus) };
+  }
   await queueTelegramApprovalSidecarSync("test");
   if (telegramApprovalSidecar && !getTelegramApprovalClient() && typeof telegramApprovalSidecar.start === "function") {
     try {
@@ -1391,7 +1415,7 @@ async function sendTelegramApprovalTest() {
   }
   const client = getTelegramApprovalClient();
   if (!client || typeof client.requestApproval !== "function") {
-    return { status: "error", message: "Telegram approval sidecar is not running" };
+    return { status: "error", message: telegramApprovalUnavailableMessage(getTelegramApprovalStatus()) };
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 60 * 1000);

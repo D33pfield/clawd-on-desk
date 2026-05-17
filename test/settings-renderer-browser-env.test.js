@@ -892,6 +892,95 @@ function loadAnimMapTabForTest({
   };
 }
 
+function loadTelegramApprovalTabForTest({
+  snapshot,
+  settingsAPI = {},
+} = {}) {
+  const body = new FakeElement("body");
+  const content = new FakeElement("main");
+  content.id = "content";
+  body.appendChild(content);
+  const updates = [];
+  const commands = [];
+
+  const document = {
+    body,
+    createElement: (tagName) => new FakeElement(tagName),
+    getElementById(id) {
+      if (id === "content") return content;
+      return null;
+    },
+  };
+  const api = {
+    update: (key, value) => {
+      updates.push({ key, value });
+      return Promise.resolve({ status: "ok" });
+    },
+    command: (name, payload) => {
+      commands.push({ name, payload });
+      if (name === "telegramApproval.status") {
+        return Promise.resolve({ status: "ok", state: { status: "stopped", tokenStored: false } });
+      }
+      return Promise.resolve({ status: "ok" });
+    },
+    ...settingsAPI,
+  };
+  const context = {
+    console,
+    document,
+    requestAnimationFrame: (cb) => {
+      cb();
+      return 1;
+    },
+    window: null,
+    globalThis: null,
+    settingsAPI: api,
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8"), context);
+
+  const core = {
+    state: {
+      snapshot: snapshot || {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      activeTab: "telegram-approval",
+    },
+    helpers: {
+      t: (key) => key,
+      buildSection: (_title, rows) => {
+        const section = document.createElement("section");
+        for (const row of rows) section.appendChild(row);
+        return section;
+      },
+      setSwitchVisual: (el, checked, options = {}) => {
+        el.classList.toggle("on", !!checked);
+        el.classList.toggle("pending", !!options.pending);
+        el.setAttribute("aria-checked", checked ? "true" : "false");
+      },
+    },
+    ops: {
+      requestRender: () => {},
+      showToast: () => {},
+    },
+    tabs: {},
+  };
+  context.ClawdSettingsTabTelegramApproval.init(core);
+  function render() {
+    content.innerHTML = "";
+    core.tabs["telegram-approval"].render(content, core);
+  }
+  render();
+
+  return { core, content, updates, commands, render };
+}
+
 function loadAnimOverridesTabForTest({
   runtime,
   modalRoot,
@@ -1096,6 +1185,86 @@ describe("settings renderer browser environment", () => {
       assert.ok(!source.includes("settingsAPI.onShortcutRecordKey"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutRecordKey`);
       assert.ok(!source.includes("settingsAPI.onShortcutFailuresChanged"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutFailuresChanged`);
     }
+  });
+
+  it("keeps Telegram approval drafts local across toggles and rerenders", () => {
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+    });
+    const inputs = harness.content.querySelectorAll("input");
+    const allowedInput = inputs[1];
+    allowedInput.value = "987654321";
+    allowedInput.dispatchEvent({ type: "input" });
+
+    harness.content.querySelector(".switch").dispatchEvent({ type: "click" });
+
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), [{
+      key: "tgApproval",
+      value: {
+        enabled: true,
+        allowedTgUserId: "123456789",
+        targetSessionKey: "telegram:123456789",
+      },
+    }]);
+
+    harness.core.state.snapshot = {
+      ...harness.core.state.snapshot,
+      tgApproval: {
+        enabled: true,
+        allowedTgUserId: "555555555",
+        targetSessionKey: "telegram:555555555",
+      },
+    };
+    harness.render();
+
+    assert.equal(harness.content.querySelectorAll("input")[1].value, "987654321");
+  });
+
+  it("disables Telegram approval test until runtime status is ready", async () => {
+    const commandCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: true,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "",
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: {
+                status: "stopped",
+                configured: false,
+                reason: "invalid-config",
+                message: "Telegram target session key is not configured",
+                tokenStored: true,
+              },
+            });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    const testButton = harness.content.querySelectorAll("button")[0];
+    assert.equal(testButton.disabled, true);
+    assert.match(testButton.title, /target session key/);
+
+    testButton.dispatchEvent({ type: "click" });
+    assert.equal(commandCalls.some((call) => call.name === "telegramApproval.test"), false);
   });
 
   it("wires Clawd Doctor through Settings with Step 2 connection actions", () => {

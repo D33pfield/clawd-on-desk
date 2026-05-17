@@ -80,14 +80,6 @@ function validateTelegramApproval(value) {
   if (target && !normalizedTarget) {
     return { status: "error", message: "tgApproval.targetSessionKey must be telegram:<numeric chat id>" };
   }
-  if (value.enabled) {
-    if (!allowed) {
-      return { status: "error", message: "tgApproval.allowedTgUserId is required when enabled" };
-    }
-    if (!normalizedTarget) {
-      return { status: "error", message: "tgApproval.targetSessionKey is required when enabled" };
-    }
-  }
   return { status: "ok" };
 }
 
@@ -154,8 +146,32 @@ function writeTokenEnvFile({ fs, path: pathModule = path, filePath, token, platf
     return { status: "error", message: "Telegram token env file path is required" };
   }
   try {
-    fs.mkdirSync(pathModule.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, built.text, { encoding: "utf8", mode: 0o600 });
+    const dir = pathModule.dirname(filePath);
+    const base = pathModule.basename(filePath);
+    fs.mkdirSync(dir, { recursive: true });
+    const suffix = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+    const tmpPath = pathModule.join(dir, `.${base}.${suffix}.tmp`);
+    let fd = null;
+    try {
+      fd = fs.openSync(tmpPath, "wx", 0o600);
+      fs.writeFileSync(fd, built.text, { encoding: "utf8" });
+      fs.closeSync(fd);
+      fd = null;
+      if (platform !== "win32" && typeof fs.chmodSync === "function") {
+        fs.chmodSync(tmpPath, 0o600);
+      }
+      fs.renameSync(tmpPath, filePath);
+    } catch (err) {
+      if (fd != null && typeof fs.closeSync === "function") {
+        try { fs.closeSync(fd); } catch {}
+      }
+      if (typeof fs.rmSync === "function") {
+        try { fs.rmSync(tmpPath, { force: true }); } catch {}
+      } else if (typeof fs.unlinkSync === "function") {
+        try { fs.unlinkSync(tmpPath); } catch {}
+      }
+      throw err;
+    }
     if (platform !== "win32" && typeof fs.chmodSync === "function") {
       try { fs.chmodSync(filePath, 0o600); } catch {}
     }
@@ -174,6 +190,13 @@ function writeBridgeConfigFile({ fs, path: pathModule = path, filePath, config }
   }
   const validated = validateTelegramApproval({ ...normalizeTelegramApproval(config), enabled: true });
   if (validated.status !== "ok") return validated;
+  const normalized = normalizeTelegramApproval(config);
+  if (!normalized.allowedTgUserId) {
+    return { status: "error", message: "tgApproval.allowedTgUserId is required" };
+  }
+  if (!normalized.targetSessionKey) {
+    return { status: "error", message: "tgApproval.targetSessionKey is required" };
+  }
   try {
     fs.mkdirSync(pathModule.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, buildBridgeConfigToml(config), { encoding: "utf8", mode: 0o600 });
@@ -231,6 +254,12 @@ function readiness(config, token) {
   if (!normalized.enabled) return { ready: false, reason: "disabled", config: normalized };
   const valid = validateTelegramApproval(normalized);
   if (valid.status !== "ok") return { ready: false, reason: "invalid-config", message: valid.message, config: normalized };
+  if (!normalized.allowedTgUserId) {
+    return { ready: false, reason: "invalid-config", message: "Telegram allowed user id is not configured", config: normalized };
+  }
+  if (!normalized.targetSessionKey) {
+    return { ready: false, reason: "invalid-config", message: "Telegram target session key is not configured", config: normalized };
+  }
   if (!token || token.tokenConfigured !== true) {
     return { ready: false, reason: "missing-token", message: "Telegram bot token is not configured", config: normalized };
   }
