@@ -53,6 +53,10 @@ docs/**
 .tmp_*
 *.tmp
 
+# Root-level scratch files (tmp-*.md / tmp-*.json / tmp-*.sh etc.)
+# Matches files like tmp-pr301-comment.md, tmp-issues.json at repo root only.
+/tmp-*
+
 # Local manual test / tuning scratch docs (root-level dotfile md)
 .*-test-*.md
 .*-tune-*.md
