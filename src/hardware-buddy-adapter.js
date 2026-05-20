@@ -439,6 +439,42 @@ function createHardwareBuddyAdapter(options = {}) {
     });
   }
 
+  function createController(HardwareBuddyController) {
+    return new HardwareBuddyController({
+      transport: sidecar && sidecar.transport,
+      getSessionSnapshot: () => callSafely(options.getSessionSnapshot || (() => ({ sessions: [] })), log) || { sessions: [] },
+      getPendingPermissions,
+      getDoNotDisturb: () => !!callSafely(options.getDoNotDisturb || (() => false), log),
+      isAgentEnabled: options.isAgentEnabled,
+      isAgentPermissionsEnabled: options.isAgentPermissionsEnabled,
+      resolvePermissionEntry: activeConfig.permissionsEnabled && typeof options.resolvePermissionEntry === "function"
+        ? options.resolvePermissionEntry
+        : null,
+      statePriority: options.statePriority,
+      keepaliveMs,
+      log: (message) => log(`controller: ${message}`),
+    });
+  }
+
+  function stopController() {
+    if (controller && typeof controller.stop === "function") {
+      try {
+        controller.stop();
+      } catch (err) {
+        log(`controller stop failed: ${err && err.message ? err.message : err}`);
+      }
+    }
+    controller = null;
+  }
+
+  function rebuildControllerForCurrentTransport(HardwareBuddyController) {
+    stopController();
+    controller = createController(HardwareBuddyController);
+    controller.start();
+    publishStatus();
+    return true;
+  }
+
   function start() {
     if (started) return true;
     activeConfig = readRuntimeConfig(options, env);
@@ -459,21 +495,7 @@ function createHardwareBuddyAdapter(options = {}) {
       }
 
       sidecar = createSidecar(SidecarClient);
-
-      controller = new HardwareBuddyController({
-        transport: sidecar.transport,
-        getSessionSnapshot: () => callSafely(options.getSessionSnapshot || (() => ({ sessions: [] })), log) || { sessions: [] },
-        getPendingPermissions,
-        getDoNotDisturb: () => !!callSafely(options.getDoNotDisturb || (() => false), log),
-        isAgentEnabled: options.isAgentEnabled,
-        isAgentPermissionsEnabled: options.isAgentPermissionsEnabled,
-        resolvePermissionEntry: activeConfig.permissionsEnabled && typeof options.resolvePermissionEntry === "function"
-          ? options.resolvePermissionEntry
-          : null,
-        statePriority: options.statePriority,
-        keepaliveMs,
-        log: (message) => log(`controller: ${message}`),
-      });
+      controller = createController(HardwareBuddyController);
 
       sidecar.start();
       controller.start();
@@ -522,9 +544,14 @@ function createHardwareBuddyAdapter(options = {}) {
     }
     if (permissionChanged) {
       // The bridge-core controller captures resolvePermissionEntry at construction
-      // time, so permission opt-in changes need a fresh controller.
-      cleanupStartedParts({ keepConfig: true });
-      return start();
+      // time, so permission opt-in changes need a fresh controller. Keep the
+      // sidecar and BLE link alive; only the approval plumbing changes.
+      const modules = options.coreModules || loadCoreModules(coreRoot);
+      const HardwareBuddyController = options.HardwareBuddyController || modules.HardwareBuddyController;
+      if (activeConfig.permissionsEnabled && typeof options.resolvePermissionEntry !== "function") {
+        log("permissions requested but resolvePermissionEntry is unavailable; hardware permission replies will be ignored");
+      }
+      return rebuildControllerForCurrentTransport(HardwareBuddyController);
     }
     publishStatus();
     return true;

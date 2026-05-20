@@ -554,7 +554,7 @@ describe("hardware buddy adapter", () => {
     assert.deepStrictEqual(sidecar.connects, [{ address: "00:4B:12:A1:9E:A6" }]);
   });
 
-  it("restarts the controller when permission opt-in changes so replies can resolve", () => {
+  it("rebuilds the controller without reconnecting when permission opt-in changes", () => {
     resetFakes();
     const fakeTimers = createFakeTimers();
     const pending = [{ toolName: "Bash" }];
@@ -583,6 +583,7 @@ describe("hardware buddy adapter", () => {
     const firstSidecar = FakeSidecarClient.instances[0];
     assert.strictEqual(firstController.options.resolvePermissionEntry, null);
 
+    firstSidecar.setConnected(true);
     firstSidecar.setSecure(true);
     adapter.notifyPermissionsChanged();
     assert.strictEqual(firstSidecar.lastSent().snapshot.prompt, undefined);
@@ -593,19 +594,26 @@ describe("hardware buddy adapter", () => {
     }), true);
 
     assert.strictEqual(firstController.stopped, true);
-    assert.strictEqual(firstSidecar.stopped, true);
+    assert.strictEqual(firstSidecar.stopped, false);
     assert.strictEqual(PromptingHardwareBuddyController.instances.length, 2);
-    assert.strictEqual(FakeSidecarClient.instances.length, 2);
+    assert.strictEqual(FakeSidecarClient.instances.length, 1);
 
     const secondController = PromptingHardwareBuddyController.instances[1];
-    const secondSidecar = FakeSidecarClient.instances[1];
     assert.strictEqual(typeof secondController.options.resolvePermissionEntry, "function");
+    assert.strictEqual(secondController.options.transport, firstSidecar.transport);
+    assert.deepStrictEqual(
+      {
+        permissionsEnabled: adapter.getStatus().permissionsEnabled,
+        connected: adapter.getStatus().connected,
+        secure: adapter.getStatus().secure,
+      },
+      { permissionsEnabled: true, connected: true, secure: true }
+    );
 
-    secondSidecar.setSecure(true);
     adapter.notifyPermissionsChanged();
-    assert.strictEqual(secondSidecar.lastSent().snapshot.prompt.tool, "Bash");
+    assert.strictEqual(firstSidecar.lastSent().snapshot.prompt.tool, "Bash");
 
-    secondSidecar.injectCommand({ cmd: "permission", id: "hb_1", decision: "once" });
+    firstSidecar.injectCommand({ cmd: "permission", id: "hb_1", decision: "once" });
     assert.deepStrictEqual(resolved, [{ entry: pending[0], behavior: "allow" }]);
   });
 
