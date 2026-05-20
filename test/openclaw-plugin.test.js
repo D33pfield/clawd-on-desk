@@ -49,12 +49,30 @@ const FORBIDDEN_POST_FIELDS = [
   "model_output",
 ];
 
+let nextMtimeMs = Date.now();
+
+function bumpMtime(filePath) {
+  nextMtimeMs += 2000;
+  const mtime = new Date(nextMtimeMs);
+  fs.utimesSync(filePath, mtime, mtime);
+}
+
+function writeOpenClawConfigFile(configPath, config) {
+  fs.writeFileSync(configPath, JSON.stringify(config), "utf8");
+  bumpMtime(configPath);
+}
+
+function writeOpenClawConfigRaw(configPath, raw) {
+  fs.writeFileSync(configPath, raw, "utf8");
+  bumpMtime(configPath);
+}
+
 function writeOpenClawConfig(config, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-openclaw-plugin-"));
   const stateDir = options.stateDir ? path.join(root, options.stateDir) : root;
   fs.mkdirSync(stateDir, { recursive: true });
   const configPath = path.join(stateDir, "openclaw.json");
-  fs.writeFileSync(configPath, JSON.stringify(config), "utf8");
+  writeOpenClawConfigFile(configPath, config);
   return { root, stateDir, configPath };
 }
 
@@ -252,6 +270,186 @@ describe("openclaw plugin runtime", () => {
         assert.strictEqual(posts[0].session_title.endsWith("\u2026"), true);
         assert.strictEqual(/[\u0000-\u001F\u007F-\u009F]/.test(posts[0].session_title), false);
         assert.ok(Buffer.byteLength(JSON.stringify(posts[0]), "utf8") < 4096);
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes configured id fallback when display fields collapse to empty", async () => {
+    const api = await loadPluginModule();
+    const { root, configPath } = writeOpenClawConfig({
+      agents: {
+        list: [
+          {
+            id: "bad\u0000id",
+            name: "\n",
+            identity: { name: "\u0000\t" },
+          },
+        ],
+      },
+    });
+
+    try {
+      await withEnv({ OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: undefined }, async () => {
+        const { runtime, posts } = makeRuntime(api);
+
+        runtime.handleHook("session_start", {
+          sessionKey: "agent:bad\u0000id:tui:run-1",
+        });
+
+        assert.strictEqual(posts.length, 1);
+        assert.strictEqual(posts[0].session_title, "bad id");
+        assert.strictEqual(/[\u0000-\u001F\u007F-\u009F]/.test(posts[0].session_title), false);
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not split UTF-16 surrogate pairs when truncating session_title", async () => {
+    const api = await loadPluginModule();
+    const { root, configPath } = writeOpenClawConfig({
+      agents: {
+        list: [
+          {
+            id: "emoji-boundary",
+            identity: { name: `${"a".repeat(78)}\u{1F600}tail` },
+          },
+        ],
+      },
+    });
+
+    try {
+      await withEnv({ OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: undefined }, async () => {
+        const { runtime, posts } = makeRuntime(api);
+
+        runtime.handleHook("session_start", {
+          sessionKey: "agent:emoji-boundary:tui:run-1",
+        });
+
+        assert.strictEqual(posts.length, 1);
+        assert.strictEqual(posts[0].session_title, `${"a".repeat(78)}\u2026`);
+        assert.strictEqual(/[\uD800-\uDFFF]/.test(posts[0].session_title), false);
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes cached agent titles when the config mtime changes", async () => {
+    const api = await loadPluginModule();
+    const { root, configPath } = writeOpenClawConfig({
+      agents: { list: [{ id: "cache-agent", identity: { name: "Before" } }] },
+    });
+
+    try {
+      await withEnv({ OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: undefined }, async () => {
+        const { runtime, posts } = makeRuntime(api);
+
+        runtime.handleHook("session_start", { sessionKey: "agent:cache-agent:tui:run-1" });
+        writeOpenClawConfigFile(configPath, {
+          agents: { list: [{ id: "cache-agent", identity: { name: "After" } }] },
+        });
+        runtime.handleHook("session_start", { sessionKey: "agent:cache-agent:tui:run-2" });
+
+        assert.deepStrictEqual(posts.map((entry) => entry.session_title), ["Before", "After"]);
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps same-path cached titles through a transient parse failure", async () => {
+    const api = await loadPluginModule();
+    const { root, configPath } = writeOpenClawConfig({
+      agents: { list: [{ id: "stable-agent", identity: { name: "Stable" } }] },
+    });
+
+    try {
+      await withEnv({ OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: undefined }, async () => {
+        const { runtime, posts } = makeRuntime(api);
+
+        runtime.handleHook("session_start", { sessionKey: "agent:stable-agent:tui:run-1" });
+        writeOpenClawConfigRaw(configPath, "{");
+        runtime.handleHook("session_start", { sessionKey: "agent:stable-agent:tui:run-2" });
+
+        assert.deepStrictEqual(posts.map((entry) => entry.session_title), ["Stable", "Stable"]);
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses fallback id while config is missing and reloads after it is recreated", async () => {
+    const api = await loadPluginModule();
+    const { root, configPath } = writeOpenClawConfig({
+      agents: { list: [{ id: "recreate-agent", identity: { name: "Before Delete" } }] },
+    });
+
+    try {
+      await withEnv({ OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: undefined }, async () => {
+        const { runtime, posts } = makeRuntime(api);
+
+        runtime.handleHook("session_start", { sessionKey: "agent:recreate-agent:tui:run-1" });
+        fs.unlinkSync(configPath);
+        runtime.handleHook("session_start", { sessionKey: "agent:recreate-agent:tui:run-2" });
+        writeOpenClawConfigFile(configPath, {
+          agents: { list: [{ id: "recreate-agent", identity: { name: "After Recreate" } }] },
+        });
+        runtime.handleHook("session_start", { sessionKey: "agent:recreate-agent:tui:run-3" });
+
+        assert.deepStrictEqual(
+          posts.map((entry) => entry.session_title),
+          ["Before Delete", "recreate-agent", "After Recreate"]
+        );
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("invalidates the agent title cache when OPENCLAW_CONFIG_PATH changes", async () => {
+    const api = await loadPluginModule();
+    const first = writeOpenClawConfig({
+      agents: { list: [{ id: "switch-agent", identity: { name: "First Config" } }] },
+    });
+    const second = writeOpenClawConfig({
+      agents: { list: [{ id: "switch-agent", identity: { name: "Second Config" } }] },
+    });
+
+    try {
+      await withEnv({ OPENCLAW_CONFIG_PATH: first.configPath, OPENCLAW_STATE_DIR: undefined }, async () => {
+        const { runtime, posts } = makeRuntime(api);
+
+        runtime.handleHook("session_start", { sessionKey: "agent:switch-agent:tui:run-1" });
+        process.env.OPENCLAW_CONFIG_PATH = second.configPath;
+        runtime.handleHook("session_start", { sessionKey: "agent:switch-agent:tui:run-2" });
+
+        assert.deepStrictEqual(posts.map((entry) => entry.session_title), ["First Config", "Second Config"]);
+      });
+    } finally {
+      fs.rmSync(first.root, { recursive: true, force: true });
+      fs.rmSync(second.root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to normalized id for malformed agents.list", async () => {
+    const api = await loadPluginModule();
+    const { root, configPath } = writeOpenClawConfig({
+      agents: { list: {} },
+    });
+
+    try {
+      await withEnv({ OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: undefined }, async () => {
+        const { runtime, posts } = makeRuntime(api);
+
+        runtime.handleHook("session_start", {
+          sessionKey: "agent:malformed\u0000agent:tui:run-1",
+        });
+
+        assert.strictEqual(posts.length, 1);
+        assert.strictEqual(posts[0].session_title, "malformed agent");
       });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

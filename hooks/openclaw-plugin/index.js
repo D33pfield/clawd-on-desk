@@ -81,18 +81,20 @@ function normalizeTitle(value) {
     .replace(/\s+/g, " ")
     .trim();
   if (!collapsed) return "";
-  return collapsed.length > SESSION_TITLE_MAX
-    ? `${collapsed.slice(0, SESSION_TITLE_MAX - 1)}\u2026`
-    : collapsed;
+  if (collapsed.length <= SESSION_TITLE_MAX) return collapsed;
+  let end = SESSION_TITLE_MAX - 1;
+  const lastCodeUnit = collapsed.charCodeAt(end - 1);
+  if (lastCodeUnit >= 0xD800 && lastCodeUnit <= 0xDBFF) end -= 1;
+  return `${collapsed.slice(0, end)}\u2026`;
 }
 
 function resolveOpenClawConfigPath() {
   const env = process.env || {};
-  if (typeof env.OPENCLAW_CONFIG_PATH === "string" && env.OPENCLAW_CONFIG_PATH.trim()) {
-    return env.OPENCLAW_CONFIG_PATH.trim();
+  if (typeof env.OPENCLAW_CONFIG_PATH === "string" && env.OPENCLAW_CONFIG_PATH) {
+    return env.OPENCLAW_CONFIG_PATH;
   }
-  const stateDir = typeof env.OPENCLAW_STATE_DIR === "string" && env.OPENCLAW_STATE_DIR.trim()
-    ? env.OPENCLAW_STATE_DIR.trim()
+  const stateDir = typeof env.OPENCLAW_STATE_DIR === "string" && env.OPENCLAW_STATE_DIR
+    ? env.OPENCLAW_STATE_DIR
     : DEFAULT_OPENCLAW_STATE_DIR;
   return join(stateDir, "openclaw.json");
 }
@@ -129,8 +131,8 @@ function loadAgentIndex() {
     const identity = entry.identity && typeof entry.identity === "object" ? entry.identity : {};
     const display = firstString(identity.name, entry.name) || entry.id;
     const emoji = normalizeTitle(identity.emoji);
-    const title = normalizeTitle(emoji ? `${emoji} ${display}` : display) || entry.id;
-    index.set(entry.id, title);
+    const title = normalizeTitle(emoji ? `${emoji} ${display}` : display) || normalizeTitle(entry.id);
+    if (title) index.set(entry.id, title);
   }
   cachedAgentIndex = index;
   cachedAgentIndexMtimeMs = mtimeMs;
