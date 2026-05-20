@@ -3,6 +3,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
@@ -47,6 +48,32 @@ const FORBIDDEN_POST_FIELDS = [
   "model_input",
   "model_output",
 ];
+
+function writeOpenClawConfig(config, options = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-openclaw-plugin-"));
+  const stateDir = options.stateDir ? path.join(root, options.stateDir) : root;
+  fs.mkdirSync(stateDir, { recursive: true });
+  const configPath = path.join(stateDir, "openclaw.json");
+  fs.writeFileSync(configPath, JSON.stringify(config), "utf8");
+  return { root, stateDir, configPath };
+}
+
+async function withEnv(vars, fn) {
+  const previous = {};
+  for (const key of Object.keys(vars)) previous[key] = process.env[key];
+  try {
+    for (const [key, value] of Object.entries(vars)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    return await fn();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
 describe("openclaw plugin runtime", () => {
   it("keeps the runtime free of child_process so OpenClaw install scan accepts it", () => {
@@ -136,6 +163,98 @@ describe("openclaw plugin runtime", () => {
     assert.strictEqual(posts[0].error_present, true);
     for (const field of FORBIDDEN_POST_FIELDS) {
       assert.strictEqual(Object.prototype.hasOwnProperty.call(posts[0], field), false, `${field} leaked`);
+    }
+  });
+
+  it("uses OpenClaw agent display name from OPENCLAW_CONFIG_PATH", async () => {
+    const api = await loadPluginModule();
+    const { root, configPath } = writeOpenClawConfig({
+      agents: {
+        list: [
+          {
+            id: "vultr-ops",
+            name: "Fallback Name",
+            identity: { name: "Vultr Admin", emoji: "OC" },
+          },
+        ],
+      },
+    });
+
+    try {
+      await withEnv({ OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: undefined }, async () => {
+        const { runtime, posts } = makeRuntime(api);
+
+        runtime.handleHook("session_start", {
+          sessionKey: "agent:vultr-ops:tui:run-1",
+        });
+
+        assert.strictEqual(posts.length, 1);
+        assert.strictEqual(posts[0].session_title, "OC Vultr Admin");
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses OPENCLAW_STATE_DIR and falls back to agent id when no display entry exists", async () => {
+    const api = await loadPluginModule();
+    const { root, stateDir } = writeOpenClawConfig({
+      agents: {
+        list: [
+          { id: "router-admin", identity: { name: "Router Admin" } },
+        ],
+      },
+    }, { stateDir: ".openclaw" });
+
+    try {
+      await withEnv({ OPENCLAW_CONFIG_PATH: undefined, OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const { runtime, posts } = makeRuntime(api);
+
+        runtime.handleHook("session_start", {
+          sessionKey: "agent:vultr-ops:tui:run-1",
+        });
+
+        assert.strictEqual(posts.length, 1);
+        assert.strictEqual(posts[0].session_title, "vultr-ops");
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes and truncates OpenClaw session_title before posting", async () => {
+    const api = await loadPluginModule();
+    const { root, configPath } = writeOpenClawConfig({
+      agents: {
+        list: [
+          {
+            id: "long-agent",
+            identity: {
+              name: `  Fix\tlogin\nbug ${"x".repeat(120)}  `,
+              emoji: "OC",
+            },
+          },
+        ],
+      },
+    });
+
+    try {
+      await withEnv({ OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_STATE_DIR: undefined }, async () => {
+        const { runtime, posts } = makeRuntime(api);
+
+        runtime.handleHook("session_start", {
+          sessionKey: "agent:long-agent:tui:run-1",
+        });
+
+        assert.strictEqual(posts.length, 1);
+        assert.strictEqual(posts[0].session_title.length, 80);
+        assert.strictEqual(posts[0].session_title.startsWith("OC Fix login bug "), true);
+        assert.strictEqual(posts[0].session_title.endsWith("\u2026"), true);
+        assert.strictEqual(/[\u0000-\u001F\u007F-\u009F]/.test(posts[0].session_title), false);
+        assert.ok(Buffer.byteLength(JSON.stringify(posts[0]), "utf8") < 4096);
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 

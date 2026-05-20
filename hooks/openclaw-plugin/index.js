@@ -9,9 +9,11 @@ export const STOP_DEBOUNCE_MS = 1500;
 
 const CLAWD_DIR = join(homedir(), ".clawd");
 const RUNTIME_CONFIG_PATH = join(CLAWD_DIR, "runtime.json");
-const OPENCLAW_CONFIG_PATH = join(homedir(), ".openclaw", "openclaw.json");
+const DEFAULT_OPENCLAW_STATE_DIR = join(homedir(), ".openclaw");
 const SERVER_PORTS = [23333, 23334, 23335, 23336, 23337];
 const POST_TIMEOUT_MS = 1000;
+const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
+const SESSION_TITLE_MAX = 80;
 
 const HOOK_NAMES = [
   "session_start",
@@ -72,6 +74,29 @@ function firstNumber(...values) {
   return null;
 }
 
+function normalizeTitle(value) {
+  if (typeof value !== "string") return "";
+  const collapsed = value
+    .replace(SESSION_TITLE_CONTROL_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!collapsed) return "";
+  return collapsed.length > SESSION_TITLE_MAX
+    ? `${collapsed.slice(0, SESSION_TITLE_MAX - 1)}\u2026`
+    : collapsed;
+}
+
+function resolveOpenClawConfigPath() {
+  const env = process.env || {};
+  if (typeof env.OPENCLAW_CONFIG_PATH === "string" && env.OPENCLAW_CONFIG_PATH.trim()) {
+    return env.OPENCLAW_CONFIG_PATH.trim();
+  }
+  const stateDir = typeof env.OPENCLAW_STATE_DIR === "string" && env.OPENCLAW_STATE_DIR.trim()
+    ? env.OPENCLAW_STATE_DIR.trim()
+    : DEFAULT_OPENCLAW_STATE_DIR;
+  return join(stateDir, "openclaw.json");
+}
+
 // OpenClaw `sessionKey` is structured like `agent:<agentId>:<channel>:...`.
 // Extract the agent id segment.
 function getAgentIdFromSession(event, ctx) {
@@ -85,13 +110,17 @@ function getAgentIdFromSession(event, ctx) {
 // refreshed when the config file mtime changes.
 let cachedAgentIndex = null;
 let cachedAgentIndexMtimeMs = 0;
+let cachedAgentIndexPath = "";
 function loadAgentIndex() {
+  const configPath = resolveOpenClawConfigPath();
   let mtimeMs;
-  try { mtimeMs = statSync(OPENCLAW_CONFIG_PATH).mtimeMs; } catch { return null; }
-  if (cachedAgentIndex && mtimeMs === cachedAgentIndexMtimeMs) return cachedAgentIndex;
+  try { mtimeMs = statSync(configPath).mtimeMs; } catch { return null; }
+  if (cachedAgentIndex && configPath === cachedAgentIndexPath && mtimeMs === cachedAgentIndexMtimeMs) {
+    return cachedAgentIndex;
+  }
   let parsed;
-  try { parsed = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf8")); }
-  catch { return cachedAgentIndex; }
+  try { parsed = JSON.parse(readFileSync(configPath, "utf8")); }
+  catch { return configPath === cachedAgentIndexPath ? cachedAgentIndex : null; }
   const list = parsed && parsed.agents && Array.isArray(parsed.agents.list)
     ? parsed.agents.list : [];
   const index = new Map();
@@ -99,12 +128,13 @@ function loadAgentIndex() {
     if (!entry || typeof entry.id !== "string" || !entry.id) continue;
     const identity = entry.identity && typeof entry.identity === "object" ? entry.identity : {};
     const display = firstString(identity.name, entry.name) || entry.id;
-    const emoji = firstString(identity.emoji);
-    const title = emoji ? `${emoji} ${display}` : display;
+    const emoji = normalizeTitle(identity.emoji);
+    const title = normalizeTitle(emoji ? `${emoji} ${display}` : display) || entry.id;
     index.set(entry.id, title);
   }
   cachedAgentIndex = index;
   cachedAgentIndexMtimeMs = mtimeMs;
+  cachedAgentIndexPath = configPath;
   return index;
 }
 
@@ -113,7 +143,7 @@ function getAgentDisplayName(event, ctx) {
   if (!id) return "";
   const index = loadAgentIndex();
   if (index && index.has(id)) return index.get(id);
-  return id;
+  return normalizeTitle(id);
 }
 
 function getSessionId(event, ctx) {
