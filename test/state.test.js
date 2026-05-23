@@ -2067,6 +2067,41 @@ describe("requiresCompletionAck lifecycle", () => {
     assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
   });
 
+  it("remote Codex stale-cleanup preserves an unacknowledged completion", () => {
+    update(api, { id: "s1", state: "attention", event: "event_msg:task_complete", agentId: "codex", host: "ssh:example.com" });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+
+    update(api, { id: "s1", state: "sleeping", event: "stale-cleanup", agentId: "codex", host: "ssh:example.com" });
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.requiresCompletionAck, true);
+    assert.strictEqual(session.recentEvents.at(-1).event, "stale-cleanup");
+    const entry = api.buildSessionSnapshot().sessions.find((s) => s.id === "s1");
+    assert.strictEqual(entry.badge, "done");
+    assert.strictEqual(entry.requiresCompletionAck, true);
+  });
+
+  it("remote Codex stale-cleanup alone does not create an ack requirement", () => {
+    update(api, { id: "s1", state: "sleeping", event: "stale-cleanup", agentId: "codex", host: "ssh:example.com" });
+    assert.notStrictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+  });
+
+  it("remote Codex activity after stale-cleanup clears the previous ack requirement", () => {
+    update(api, { id: "s1", state: "attention", event: "event_msg:task_complete", agentId: "codex", host: "ssh:example.com" });
+    update(api, { id: "s1", state: "sleeping", event: "stale-cleanup", agentId: "codex", host: "ssh:example.com" });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+
+    update(api, { id: "s1", state: "thinking", event: "UserPromptSubmit", agentId: "codex", host: "ssh:example.com" });
+    assert.notStrictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+  });
+
+  it("ackSessionCompletion works after remote Codex stale-cleanup", () => {
+    update(api, { id: "s1", state: "attention", event: "event_msg:task_complete", agentId: "codex", host: "ssh:example.com" });
+    update(api, { id: "s1", state: "sleeping", event: "stale-cleanup", agentId: "codex", host: "ssh:example.com" });
+
+    assert.strictEqual(api.ackSessionCompletion("s1"), true);
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, false);
+  });
+
   it("LOCAL Codex Stop does NOT set the flag (host=null)", () => {
     update(api, { id: "s1", state: "idle", event: "Stop", agentId: "codex", host: null });
     const session = api.sessions.get("s1");

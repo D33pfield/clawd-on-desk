@@ -739,20 +739,31 @@ function evictOldestSessionIfNeeded(sessionId) {
 // `ackedAt` is intentionally NOT touched here. It's only set in
 // ackSessionCompletion (user-initiated). The reconciler just toggles the
 // boolean flag.
+function isRemoteCodexCompletionEvent(srcAgentId, srcHost, event) {
+  return srcAgentId === "codex"
+    && !!srcHost
+    && (event === "Stop" || event === "event_msg:task_complete");
+}
+
+function isAckPreservingHousekeepingEvent(srcAgentId, srcHost, event) {
+  return srcAgentId === "codex"
+    && !!srcHost
+    && event === "stale-cleanup";
+}
+
 function reconcileAckFlag(sessionId, srcAgentId, srcHost, event) {
   const entry = sessions.get(sessionId);
   if (!entry) return; // session was deleted by this update — nothing to do
-  const isRemoteCodexCompletion =
-    srcAgentId === "codex"
-    && !!srcHost
-    && (event === "Stop" || event === "event_msg:task_complete");
-  if (isRemoteCodexCompletion) {
+  if (isRemoteCodexCompletionEvent(srcAgentId, srcHost, event)) {
     entry.requiresCompletionAck = true;
-  } else if (entry.requiresCompletionAck) {
-    // Strict equality on "Stop": any other event (including null/undefined,
-    // which in practice means a state-derived refresh with no semantic
-    // carry) clears the flag. Locked in by a test so future refactors that
-    // want to preserve the flag on null events have to update it consciously.
+  } else if (
+    entry.requiresCompletionAck
+    && !isAckPreservingHousekeepingEvent(srcAgentId, srcHost, event)
+  ) {
+    // Strict equality on completion events: any other semantic event
+    // (including null/undefined refreshes) clears the flag. Remote Codex
+    // stale-cleanup is housekeeping from the JSONL monitor, so it must not
+    // erase an unacknowledged completion.
     entry.requiresCompletionAck = false;
   }
 }
@@ -904,7 +915,12 @@ function updateSession(sessionId, state, event, opts = {}) {
   const pidReachable = resolvePidReachable(existing, srcAgentPid, srcPid);
 
   const recentEvents = pushRecentEvent(existing, preservedState || state, event);
+  const preserveCompletionAck =
+    existing
+    && existing.requiresCompletionAck === true
+    && isAckPreservingHousekeepingEvent(srcAgentId, srcHost, event);
   const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, sessionTitle: srcSessionTitle, recentEvents, pidReachable };
+  if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.
   evictOldestSessionIfNeeded(sessionId);
