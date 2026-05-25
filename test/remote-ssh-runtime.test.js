@@ -10,6 +10,7 @@ const {
   parseOpenSshVersion,
   isUnsupportedWindowsOpenSsh,
   classifyStderr,
+  looksLikeWindowsCmdStderr,
   classifyProbeExit,
   buildProbeCommand,
   backoffMsForAttempt,
@@ -325,6 +326,31 @@ test("buildProbeCommand returns valid JS that exits with each code under expecte
   const statusIdx = raw.indexOf("statusCode===200");
   assert.ok(headerIdx >= 0 && statusIdx >= 0);
   assert.ok(headerIdx < statusIdx, "header check must precede status check");
+});
+
+// ── looksLikeWindowsCmdStderr ──
+//
+// One-shot suppression of the "remote Node resolver failed after probe
+// success" log on Windows-cmd remotes: every reconnect would otherwise
+// reprobe and re-fail with the same "sh is not recognized" stderr.
+test("looksLikeWindowsCmdStderr matches the English cmd.exe error", () => {
+  assert.ok(looksLikeWindowsCmdStderr("'sh' is not recognized as an internal or external command, operable program or batch file."));
+  assert.ok(looksLikeWindowsCmdStderr("ssh: 'node' is NOT RECOGNIZED AS AN INTERNAL OR EXTERNAL COMMAND"));
+});
+
+test("looksLikeWindowsCmdStderr matches localized cmd.exe error (zh/zh-TW/ja/ko/de)", () => {
+  assert.ok(looksLikeWindowsCmdStderr("'sh' 不是内部或外部命令，也不是可运行的程序或批处理文件。"));
+  assert.ok(looksLikeWindowsCmdStderr("'sh' 不是內部或外部命令，也不是可執行的程式或批次檔。"));
+  assert.ok(looksLikeWindowsCmdStderr("'sh' は、内部コマンドまたは外部コマンド、操作可能なプログラムまたはバッチ ファイルとして認識されていません。"));
+  assert.ok(looksLikeWindowsCmdStderr("'sh'은(는) 내부 명령 또는 외부 명령, 실행할 수 있는 프로그램, 또는 배치 파일이 아닙니다."));
+  assert.ok(looksLikeWindowsCmdStderr("Der Befehl 'sh' ist entweder falsch geschrieben oder konnte nicht als interner oder externer Befehl gefunden werden."));
+});
+
+test("looksLikeWindowsCmdStderr ignores unrelated POSIX errors", () => {
+  assert.equal(looksLikeWindowsCmdStderr(""), false);
+  assert.equal(looksLikeWindowsCmdStderr("bash: sh: command not found"), false);
+  assert.equal(looksLikeWindowsCmdStderr("Permission denied (publickey)."), false);
+  assert.equal(looksLikeWindowsCmdStderr("sh: line 1: syntax error"), false);
 });
 
 // ── backoffMsForAttempt ──
@@ -796,6 +822,67 @@ test("connect emits remote-node-detected when background resolver succeeds", asy
   assert.equal(events[0].id, "p1");
   assert.equal(events[0].nodeBin, "/usr/local/bin/node");
   assert.equal(events[0].expectedTarget.host, "pi");
+  rt.cleanup();
+});
+
+test("windows-cmd shell cache suppresses automatic resolver retries but clears after manual reconnect", async () => {
+  clearRemoteNodeCache();
+  const children = [];
+  let resolverCalls = 0;
+  const spawn = () => {
+    const child = makeMockChild();
+    children.push(child);
+    return child;
+  };
+  const timers = makeFakeTimers();
+  const profile = { id: "p1", host: "user@win", remoteForwardPort: 23333 };
+  const rt = createRemoteSshRuntime({
+    spawn,
+    getHookServerPort: () => 23335,
+    setTimeout: timers.setTimeoutFn,
+    clearTimeout: timers.clearTimeoutFn,
+    resolveRemoteNodeBin: () => {
+      resolverCalls += 1;
+      return {
+        ok: false,
+        stderr: "'sh' is not recognized as an internal or external command",
+        message: "Remote Node.js not found",
+      };
+    },
+  });
+
+  rt.connect(profile);
+  timers.flushWhere((t) => t.ms === 0);
+  children[1]._fakeExit(0);
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(rt.getProfileStatus("p1").status, "connected");
+  assert.equal(resolverCalls, 1, "first bare-node success starts the resolver");
+
+  children[0]._fakeStderr("ssh: connect to host win port 22: Connection timed out");
+  await new Promise((r) => setImmediate(r));
+  children[0]._fakeExit(255);
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(rt.getProfileStatus("p1").status, "reconnecting");
+
+  timers.flushWhere((t) => t.ms === BACKOFF_SCHEDULE_MS[0]);
+  timers.flushWhere((t) => t.ms === 0);
+  children[3]._fakeExit(0);
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(rt.getProfileStatus("p1").status, "connected");
+  assert.equal(resolverCalls, 1,
+    "automatic reconnect keeps the one-shot windows-cmd cache");
+
+  rt.disconnect("p1");
+  rt.connect(profile);
+  timers.flushWhere((t) => t.ms === 0);
+  children[children.length - 1]._fakeExit(0);
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(resolverCalls, 2,
+    "manual reconnect clears the cache so a fixed remote shell can recover");
   rt.cleanup();
 });
 

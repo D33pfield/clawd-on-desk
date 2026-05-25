@@ -37,9 +37,25 @@ const {
   clearCachedRemoteNodeBin,
   buildRemoteNodeEvalCommand,
 } = require("./remote-ssh-node");
+const { decodeShellBytes } = require("./remote-ssh-decode");
 
 const SSH_BASE_OPTS = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
 const SCP_BASE_OPTS = ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
+
+// "cmd is not recognized" — emitted by Windows OpenSSH when the remote
+// default shell is cmd.exe and our `sh -c <script>` probe lands on it.
+// Multi-language because the Windows console respects the user locale
+// (zh-CN/zh-TW/ja/ko/de). When the resolver fails with this pattern we
+// know the host is windows-cmd and there's no point retrying the resolver
+// or logging the same expected failure on every reconnect — the bare
+// `node` health probe already keeps the tunnel green on Windows hosts
+// that happen to have node.exe on PATH.
+const WINDOWS_CMD_STDERR_RX =
+  /not recognized as an internal or external command|不是内部或外部命令|不是內部或外部命令|内部コマンドまたは外部コマンド|내부 명령 또는 외부 명령|nicht als interner oder externer/i;
+
+function looksLikeWindowsCmdStderr(stderr) {
+  return WINDOWS_CMD_STDERR_RX.test(String(stderr || ""));
+}
 
 const PROBE_WINDOW_MS = 12000;
 const PROBE_MIN_GAP_MS = 250;
@@ -305,7 +321,9 @@ function createRemoteSshRuntime(deps = {}) {
       lastError: null,
       lastErrorReason: null,
       sshChild: null,
-      stderrBuf: "",
+      // Accumulated raw stderr bytes — decoded once on read so a GBK/CP936
+      // remote (Windows cmd, zh-locale Linux) doesn't show up as mojibake.
+      stderrBuf: Buffer.alloc(0),
       probeChild: null,
       probeInFlight: false,
       probeStartedAt: 0,
@@ -317,6 +335,13 @@ function createRemoteSshRuntime(deps = {}) {
       remoteNodeSource: null,
       allowBareNodeProbe: false,
       remoteNodeResolveInFlight: false,
+      // Set to "windows-cmd" the first time the resolver fails with the
+      // "is not recognized" stderr pattern. Acts as a one-shot negative
+      // cache for the background resolver and any future resolver retry
+      // call site, so we don't spam the user with the same expected
+      // failure every time the tunnel reconnects.
+      remoteShell: null,
+      remoteShellTarget: null,
       backoffTimer: null,
       retryAttempt: 0,
       unknownStrikes: 0,
@@ -367,8 +392,12 @@ function createRemoteSshRuntime(deps = {}) {
     if (!profile || !profile.id) throw new Error("connect: profile.id required");
     let state = states.get(profile.id);
     if (state) {
+      const targetChanged = remoteShellCacheKey(state.profile) !== remoteShellCacheKey(profile);
       // Replace profile snapshot — caller may have just edited fields.
       state.profile = profile;
+      if (targetChanged) {
+        clearRemoteShellCache(state);
+      }
       // If already connecting / connected, no-op (idempotent).
       if (state.status === "connecting" || state.status === "connected"
           || state.status === "reconnecting") {
@@ -378,6 +407,7 @@ function createRemoteSshRuntime(deps = {}) {
       state.retryAttempt = 0;
       state.unknownStrikes = 0;
       state.stopped = false;
+      clearRemoteShellCache(state);
     } else {
       state = newState(profile);
       states.set(profile.id, state);
@@ -457,7 +487,7 @@ function createRemoteSshRuntime(deps = {}) {
     }
 
     state.sshChild = child;
-    state.stderrBuf = "";
+    state.stderrBuf = Buffer.alloc(0);
 
     // All handlers below identity-gate against `child` (closure-captured) so
     // a stale exit/error from a previous Disconnect→Connect cycle can't
@@ -482,7 +512,10 @@ function createRemoteSshRuntime(deps = {}) {
     if (child.stderr) {
       child.stderr.on("data", (chunk) => {
         if (state.sshChild !== child) return;
-        state.stderrBuf += chunk.toString();
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+        state.stderrBuf = state.stderrBuf.length === 0
+          ? buf
+          : Buffer.concat([state.stderrBuf, buf]);
         // Cap buffer at 8KB to avoid unbounded growth on noisy hosts.
         if (state.stderrBuf.length > 8192) {
           state.stderrBuf = state.stderrBuf.slice(-8192);
@@ -505,6 +538,25 @@ function createRemoteSshRuntime(deps = {}) {
       remoteForwardPort: profile && profile.remoteForwardPort,
       hostPrefix: profile && profile.hostPrefix,
     };
+  }
+
+  function remoteShellCacheKey(profile) {
+    return JSON.stringify({
+      host: profile && profile.host || "",
+      port: Number.isInteger(profile && profile.port) ? profile.port : 22,
+      identityFile: profile && profile.identityFile || "",
+    });
+  }
+
+  function clearRemoteShellCache(state) {
+    if (!state) return;
+    state.remoteShell = null;
+    state.remoteShellTarget = null;
+  }
+
+  function markRemoteShell(state, shell, target) {
+    state.remoteShell = shell;
+    state.remoteShellTarget = target || remoteShellCacheKey(state.profile);
   }
 
   function startProbeLoopWithRemoteNode(state, child) {
@@ -567,6 +619,14 @@ function createRemoteSshRuntime(deps = {}) {
 
   function resolveRemoteNodeInBackground(state, child) {
     if (state.remoteNodeResolveInFlight) return;
+    const shellTarget = remoteShellCacheKey(state.profile);
+    // One-shot negative cache: once we've seen this remote reject `sh`,
+    // every later resolver call is guaranteed to fail the same way.
+    // Stay on bare-node-probe mode and don't bother (or spam log).
+    if (state.remoteShell === "windows-cmd") {
+      if (state.remoteShellTarget === shellTarget) return;
+      clearRemoteShellCache(state);
+    }
     state.remoteNodeResolveInFlight = true;
     const finish = (resolved) => {
       if (state.sshChild !== child) return;
@@ -587,11 +647,15 @@ function createRemoteSshRuntime(deps = {}) {
           return;
         }
         if (state.status === "connected") {
-          // TODO(remote-ssh): add a short-lived negative cache for resolver
-          // failures. Some hosts can pass the bare `node` health probe but
-          // still fail this absolute-path resolver; without a retry-after
-          // cache, every reconnect pays another background resolver attempt.
-          log("remote-ssh: remote Node resolver failed after probe success:", resolved && resolved.message);
+          // Stay connected — bare `node` health probe is already keeping
+          // the tunnel green. Only log this once-per-host: if the stderr
+          // is the Windows-cmd "is not recognized" pattern, flip the
+          // one-shot cache so we don't repeat this every reconnect.
+          if (looksLikeWindowsCmdStderr(resolved && resolved.stderr)) {
+            markRemoteShell(state, "windows-cmd", shellTarget);
+          } else {
+            log("remote-ssh: remote Node resolver failed after probe success:", resolved && resolved.message);
+          }
           return;
         }
         finishFailure(state, {
@@ -628,11 +692,13 @@ function createRemoteSshRuntime(deps = {}) {
         return;
       }
       if (state.status === "connected") {
-        // TODO(remote-ssh): add a short-lived negative cache for resolver
-        // failures. Some hosts can pass the bare `node` health probe but
-        // still fail this absolute-path resolver; without a retry-after
-        // cache, every reconnect pays another background resolver attempt.
-        log("remote-ssh: remote Node resolver threw after probe success:", err && err.message);
+        // Same one-shot suppression as finish(): if the throw came from
+        // a Windows-cmd remote rejecting `sh`, flip the cache silently.
+        if (looksLikeWindowsCmdStderr(err && err.stderr)) {
+          markRemoteShell(state, "windows-cmd", shellTarget);
+        } else {
+          log("remote-ssh: remote Node resolver threw after probe success:", err && err.message);
+        }
         return;
       }
       finishFailure(state, {
@@ -680,7 +746,7 @@ function createRemoteSshRuntime(deps = {}) {
     //   (a) connect attempt failed before probe succeeded
     //   (b) connected → ssh died (ServerAlive timed out, network drop)
     //   (c) immediate failure (ENOENT-by-other-means caught here)
-    const stderr = state.stderrBuf || "";
+    const stderr = decodeShellBytes(state.stderrBuf);
     const cls = classifyStderr(stderr);
     const wasConnected = state.status === "connected";
 
@@ -1028,6 +1094,7 @@ function createRemoteSshRuntime(deps = {}) {
     state.retryAttempt = 0;
     state.unknownStrikes = 0;
     state.remoteNodeResolveInFlight = false;
+    clearRemoteShellCache(state);
     setStatus(state, "idle", {
       message: null,
       hint: null,
@@ -1097,7 +1164,12 @@ function killChild(child) {
 }
 
 function stderrSummary(stderr) {
-  const text = (stderr || "").toString().trim();
+  let text;
+  if (Buffer.isBuffer(stderr)) {
+    text = decodeShellBytes(stderr).trim();
+  } else {
+    text = (stderr || "").toString().trim();
+  }
   if (!text) return null;
   return text.length > 200 ? text.slice(0, 200) + "..." : text;
 }
@@ -1127,6 +1199,8 @@ module.exports = {
   classifyProbeExit,
   buildProbeCommand,
   backoffMsForAttempt,
+  looksLikeWindowsCmdStderr,
+  WINDOWS_CMD_STDERR_RX,
   // factory
   createRemoteSshRuntime,
   // constants
