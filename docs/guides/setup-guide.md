@@ -1,6 +1,6 @@
 # Setup Guide
 
-[Back to README](../README.md)
+[Back to README](../../README.md)
 
 ## Agent Setup
 
@@ -8,7 +8,7 @@
 
 **Codex CLI** — works out of the box. Clawd auto-registers official Codex hooks in `~/.codex/hooks.json` when Codex is installed, and enables `[features].hooks = true` unless the user explicitly set hooks to `false`. The installer migrates the deprecated `[features].codex_hooks` key to `hooks` while preserving an explicit false value. The official hook path gives live state updates plus real Allow/Deny permission bubbles. JSONL polling of `~/.codex/sessions/` remains as a fallback for hook-disabled sessions and events Codex hooks do not cover.
 
-**Copilot CLI** — local installs still need a manual `~/.copilot/hooks/hooks.json` (Clawd does not auto-sync Copilot at startup). Remote SSH installs are automatic via `scripts/remote-deploy.sh`. See [copilot-setup.md](copilot-setup.md) for both flows.
+**Copilot CLI** — local installs still need a manual `~/.copilot/hooks/hooks.json` (Clawd does not auto-sync Copilot at startup). Remote SSH installs are automatic via the in-app **Settings → Remote SSH → One-click deploy** (or the `scripts/remote-deploy.sh` source-checkout fallback). See [copilot-setup.md](copilot-setup.md) for both flows.
 
 **Gemini CLI** — hooks live in `~/.gemini/settings.json`. Clawd auto-registers them on launch when Gemini is installed, or you can run `npm run install:gemini-hooks` manually.
 
@@ -39,35 +39,39 @@ token ownership, supported agents, and fallback behavior.
 
 ## Remote SSH (Claude Code, Codex CLI & Copilot CLI)
 
-<img src="../assets/screenshot-remote-ssh.png" width="560" alt="Remote SSH — permission bubble from Raspberry Pi">
+<img src="../../assets/screenshot-remote-ssh.png" width="560" alt="Remote SSH — permission bubble from Raspberry Pi">
 
 Clawd can sense AI agent activity on remote servers via SSH reverse port forwarding. Hook events and permission requests travel through the SSH tunnel back to your local Clawd — no code changes needed on the Clawd side.
 
-**One-click deploy:**
+**Primary flow: in-app Settings → Remote SSH → One-click deploy**
+
+DMG / installer users add a profile under **Settings → Remote SSH** (host
+`user@remote-host`, optional private key, forward port), then click
+**One-click deploy**. Clawd opens and maintains the `ssh -R` reverse tunnel
+and deploys hooks to the remote. Full walkthrough, Doctor boundary, and
+troubleshooting (port conflicts, no Node.js, missing remote sessions, etc.)
+in the dedicated guide:
+
+**→ [docs/guides/guide-remote-ssh.md](guide-remote-ssh.md)**
+
+**How it works:**
+- **Claude Code** — command hooks on the remote server POST state changes to `localhost:23333`, which the SSH tunnel forwards back to your local Clawd. Permission bubbles work too — the HTTP round-trip goes through the tunnel.
+- **Codex CLI** — official hooks on the remote server POST state changes and permission requests through the same tunnel. If Codex hooks are unavailable or disabled on the remote install, use the fallback log monitor: `node ~/.claude/hooks/codex-remote-monitor.js --port 23333`
+- **Copilot CLI** — one-click deploy writes `~/.copilot/hooks/hooks.json` on the remote (when Copilot CLI is installed, i.e. `~/.copilot/` exists). Hooks POST state and session titles through the same tunnel.
+
+Remote hooks run in `CLAWD_REMOTE` mode which skips PID collection (remote PIDs are meaningless locally). Terminal focus is not available for remote sessions.
+
+**Source-checkout fallback:** the older shell script is only needed when
+running from a source checkout (`npm start` debugging):
 
 ```bash
 bash scripts/remote-deploy.sh user@remote-host
 ```
 
-This copies hook files to the remote server, registers Claude Code hooks, Codex official hooks, and Copilot CLI hooks in remote mode, and prints SSH configuration instructions.
-
-**SSH configuration** (add to your local `~/.ssh/config`):
-
-```
-Host my-server
-    HostName remote-host
-    User user
-    RemoteForward 127.0.0.1:23333 127.0.0.1:23333
-    ServerAliveInterval 30
-    ServerAliveCountMax 3
-```
-
-**How it works:**
-- **Claude Code** — command hooks on the remote server POST state changes to `localhost:23333`, which the SSH tunnel forwards back to your local Clawd. Permission bubbles work too — the HTTP round-trip goes through the tunnel.
-- **Codex CLI** — official hooks on the remote server POST state changes and permission requests through the same tunnel. If Codex hooks are unavailable or disabled on the remote install, use the fallback log monitor: `node ~/.claude/hooks/codex-remote-monitor.js --port 23333`
-- **Copilot CLI** — `scripts/remote-deploy.sh` writes `~/.copilot/hooks/hooks.json` on the remote (when Copilot CLI is installed, i.e. `~/.copilot/` exists). Hooks POST state and session titles through the same tunnel.
-
-Remote hooks run in `CLAWD_REMOTE` mode which skips PID collection (remote PIDs are meaningless locally). Terminal focus is not available for remote sessions.
+It copies hooks from the current source tree and prints manual SSH config
+suggestions (add `RemoteForward 127.0.0.1:23333 127.0.0.1:23333` to
+`~/.ssh/config`). DMG / installer users don't need a source checkout — use
+the in-app one-click deploy instead.
 
 > Thanks to [@Magic-Bytes](https://github.com/Magic-Bytes) for the original SSH tunneling idea ([#9](https://github.com/rullerzhou-afk/clawd-on-desk/issues/9)).
 
@@ -96,7 +100,7 @@ node ~/.claude/hooks/codex-install.js --remote
 node ~/.claude/hooks/copilot-install.js --remote
 ```
 
-If you have SSH enabled in WSL, the one-click deploy script also works:
+If you have SSH enabled in WSL, the source-checkout fallback script also works:
 
 ```bash
 # From Windows (Git Bash / PowerShell):

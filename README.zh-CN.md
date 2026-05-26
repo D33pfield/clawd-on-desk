@@ -148,6 +148,8 @@ npm start
 
 **Claude Code** 和 **Codex CLI** 会自动注册 hooks，开箱即用。**Gemini CLI**、**Cursor Agent**、**CodeBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**opencode**、**Pi**、**OpenClaw**、**Hermes Agent** 在已安装前提下会在 Clawd 启动时自动同步（OpenClaw 还需要已有配置）；**Copilot CLI** 仍需一次性手动配置 hooks。也涵盖远程 SSH、WSL 及平台说明（macOS / Linux）：**[docs/guides/setup-guide.zh-CN.md](docs/guides/setup-guide.zh-CN.md)**
 
+想在远程服务器上跑 Claude Code / Codex CLI 并把状态和权限气泡转发到本地 Clawd？应用内 **Settings → 远程 SSH → 一键部署** 即可。完整步骤、Doctor 边界和 FAQ 见：**[docs/guides/guide-remote-ssh.zh-CN.md](docs/guides/guide-remote-ssh.zh-CN.md)**
+
 关于 `Codex + WSL` 的官方现状、Clawd 当前实现边界、以及为什么容易被误解，见：**[docs/guides/codex-wsl-clarification.zh-CN.md](docs/guides/codex-wsl-clarification.zh-CN.md)**
 
 ## 已知限制
