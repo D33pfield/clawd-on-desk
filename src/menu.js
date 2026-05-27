@@ -415,6 +415,7 @@ module.exports = function initMenu(ctx) {
     rebuildAllMenus,
     createTray,
     destroyTray,
+    getTray: () => ctx.tray,
     applyDockVisibility,
     ensureContextMenuOwner,
     popupMenuAt,
