@@ -1986,6 +1986,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(badge.querySelectorAll("span")[1].textContent, "hardwareBuddyStatus_secure");
     assert.ok(badge.classList.contains("tg-approval-badge-running"));
     assert.strictEqual(replyBadge.textContent, "hardwareBuddyRepliesOn");
+    assert.strictEqual(hardwareBuddy.querySelector(".hardware-buddy-repo-button"), null);
     assert.strictEqual(testButton.textContent, "hardwareBuddyTestButton");
     assert.strictEqual(hardwareBuddy.querySelector(".hardware-buddy-summary-control"), null);
     assert.strictEqual(hardwareBuddy.querySelector(".hardware-buddy-quick-command-row"), null);

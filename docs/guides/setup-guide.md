@@ -32,7 +32,7 @@
 
 **Hermes Agent** — install Hermes from [hermes-agent.org](https://hermes-agent.org/) or [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). Clawd shows Hermes in Settings by default, but startup auto-sync is no-op until Hermes is installed. Once Hermes exists (`%LOCALAPPDATA%\hermes` on Windows or `~/.hermes` on macOS/Linux), Clawd copies its plugin into Hermes' managed plugin directory and enables it through `hermes plugins enable clawd-on-desk`. You can force a manual sync with `npm run install:hermes-plugin`, or remove Clawd's Hermes plugin with `npm run uninstall:hermes-plugin`.
 
-**Hardware Buddy** — optional local approval companion support. It is disabled by default; enable it from Settings when you have a supported BLE/fake backend available. By default it sends state-only session snapshots, and permission replies stay behind the separate Hardware Buddy permission toggle.
+**Hardware Buddy** — optional local approval companion support for the [Clawstick hardware repo](https://github.com/rullerzhou-afk/clawstick). Clawd does not bundle the Clawstick runtime in v0.8.1; install or checkout Clawstick separately, place it next to this repo as `../clawstick`, or set `CLAWD_HARDWARE_BUDDY_ROOT` to its path. Hardware Buddy is disabled by default; enable it from Settings when the BLE/fake backend is available. By default it sends state-only session snapshots, and permission replies stay behind the separate Hardware Buddy permission toggle.
 
 ## Telegram Approval
 

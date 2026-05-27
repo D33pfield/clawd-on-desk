@@ -276,6 +276,12 @@ describe("hardware buddy adapter", () => {
     }), false);
   });
 
+  it("defaults the development hardware core checkout to clawstick", () => {
+    const source = fs.readFileSync(path.join(__dirname, "..", "src", "hardware-buddy-adapter.js"), "utf8");
+    assert.match(source, /path\.resolve\(__dirname,\s*"\.\.",\s*"\.\.",\s*"clawstick"\)/);
+    assert.doesNotMatch(source, /ClaudeBuddy/);
+  });
+
   it("sanitizes unpaired surrogates in hardware payload strings", () => {
     const sanitized = sanitizeHardwareBuddyPayload({
       msg: "run \udcae now",
@@ -311,6 +317,29 @@ describe("hardware buddy adapter", () => {
     assert.strictEqual(adapter.start(), false);
     assert.strictEqual(FakeSidecarClient.instances.length, 0);
     assert.strictEqual(FakeHardwareBuddyController.instances.length, 0);
+  });
+
+  it("reports a missing Clawstick core checkout without throwing during startup", () => {
+    resetFakes();
+    const adapter = createHardwareBuddyAdapter({
+      settings: {
+        enabled: true,
+        backend: "bleak",
+        address: "",
+        namePrefix: "Clawstick",
+        permissionsEnabled: false,
+      },
+      coreRoot: path.join(__dirname, "missing-clawstick-core"),
+    });
+
+    assert.strictEqual(adapter.start(), false);
+    assert.strictEqual(adapter.isStarted(), false);
+    assert.strictEqual(adapter.getSidecar(), null);
+    assert.strictEqual(adapter.getController(), null);
+    const status = adapter.getStatus();
+    assert.strictEqual(status.lastError.category, "core_missing");
+    assert.strictEqual(status.lastError.retryable, false);
+    assert.match(status.lastError.hint, /github\.com\/rullerzhou-afk\/clawstick/);
   });
 
   it("starts state-only controller and suppresses pending permissions by default", () => {

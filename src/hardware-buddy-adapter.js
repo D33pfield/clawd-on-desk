@@ -1,5 +1,6 @@
 "use strict";
 
+const fs = require("fs");
 const path = require("path");
 const {
   normalizeHardwareBuddySettings,
@@ -222,12 +223,22 @@ function numberFromEnv(value, fallback) {
 
 function defaultCoreRoot(env = process.env) {
   return env.CLAWD_HARDWARE_BUDDY_ROOT
-    || path.resolve(__dirname, "..", "..", "ClaudeBuddy");
+    || path.resolve(__dirname, "..", "..", "clawstick");
 }
 
 function loadCoreModules(coreRoot) {
   const controllerPath = path.join(coreRoot, "src", "hardware-buddy", "controller.js");
   const sidecarPath = path.join(coreRoot, "src", "hardware-buddy", "sidecar-client.js");
+  const missingPaths = [controllerPath, sidecarPath].filter((p) => !fs.existsSync(p));
+  if (missingPaths.length) {
+    const err = new Error(
+      "Hardware Buddy core modules are missing. Clone https://github.com/rullerzhou-afk/clawstick next to this repo or set CLAWD_HARDWARE_BUDDY_ROOT."
+    );
+    err.code = "CORE_MISSING";
+    err.coreRoot = coreRoot;
+    err.missingPaths = missingPaths;
+    throw err;
+  }
   return {
     HardwareBuddyController: require(controllerPath).HardwareBuddyController,
     SidecarClient: require(sidecarPath).SidecarClient,
@@ -402,6 +413,15 @@ function classifyHardwareBuddyIssue(err) {
       retryable: false,
       message,
       hint: "Check the Hardware Buddy settings.",
+    };
+  }
+  if (code === "CORE_MISSING") {
+    return {
+      code,
+      category: "core_missing",
+      retryable: false,
+      message: message || "Hardware Buddy core modules are missing",
+      hint: "Clone https://github.com/rullerzhou-afk/clawstick next to this repo or set CLAWD_HARDWARE_BUDDY_ROOT.",
     };
   }
   if (code === "SIDECAR_EXIT") {
@@ -700,9 +720,11 @@ function createHardwareBuddyAdapter(options = {}) {
     throttledLog(`issue:${issue.category}:${issue.code}`, `sidecar ${issue.category}: ${issue.message}`, err);
     const delay = retryDelay(issue);
     publishStatus({ retryDelayMs: delay || 0, nextRetryAt: delay ? now() + delay : null });
+    if (issue.category === "core_missing") return issue;
     if (!delay) return;
     if (restart) scheduleRestart(delay);
     else scheduleAutoConnect(delay);
+    return issue;
   }
 
   function clearStateNotifyTimer() {
@@ -875,7 +897,8 @@ function createHardwareBuddyAdapter(options = {}) {
       started = true;
     } catch (err) {
       cleanupStartedParts({ keepConfig: true });
-      handleIssue(err, { restart: true });
+      const issue = handleIssue(err, { restart: true });
+      if (issue && issue.category === "core_missing") return false;
       throw err;
     }
     log(`started backend=${activeConfig.backend} permissions=${activeConfig.permissionsEnabled ? "on" : "off"}`);
