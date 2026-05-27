@@ -66,6 +66,7 @@
     ],
     "mac": {
       "icon": "assets/icon.png",
+      "artifactName": "Clawd-on-Desk-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "dmg",
