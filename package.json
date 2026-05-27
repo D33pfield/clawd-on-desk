@@ -99,6 +99,7 @@
       "maintainer": "rullerzhou-afk <rullerzhou-afk@users.noreply.github.com>",
       "icon": "assets/icons",
       "category": "Utility",
+      "artifactName": "Clawd-on-Desk-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "AppImage",

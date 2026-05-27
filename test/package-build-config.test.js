@@ -125,6 +125,27 @@ describe("package build config", () => {
     });
   });
 
+  describe("Linux artifact targets", () => {
+    it("uses Linux artifact names without spaces so latest-linux.yml URLs match uploaded assets", () => {
+      const artifactName = pkg.build.linux && pkg.build.linux.artifactName;
+      assert.strictEqual(
+        typeof artifactName,
+        "string",
+        "build.linux.artifactName should be a string"
+      );
+      assert.match(
+        artifactName,
+        /\$\{arch\}/,
+        "Linux artifactName should include ${arch} so architecture-specific assets stay explicit"
+      );
+      assert.doesNotMatch(
+        artifactName,
+        /\s/,
+        "Linux artifactName should not contain spaces so latest-linux.yml URLs match uploaded assets"
+      );
+    });
+  });
+
   // getWindowsShellIconPath has a three-step fallback:
   //   1. resourcesPath/icon.ico            ← extraResources copy
   //   2. resourcesPath/app.asar.unpacked/assets/icon.ico
