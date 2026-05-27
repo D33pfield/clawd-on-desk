@@ -8,6 +8,7 @@ const path = require("node:path");
 const {
   createHardwareBuddyAdapter,
   isEnabledFromEnv,
+  classifyHardwareBuddyIssue,
   sanitizeHardwareBuddyPayload,
   buildSidecarSpawnOptions,
 } = require("../src/hardware-buddy-adapter");
@@ -912,6 +913,18 @@ describe("hardware buddy adapter", () => {
     assert.strictEqual(status.lastError.category, "missing_bleak");
     assert.strictEqual(status.lastError.retryable, false);
     assert.strictEqual(fakeTimers.timers.filter((timer) => !timer.cleared).length, 1);
+  });
+
+  it("classifies Windows canceled BLE prompts as pairing required", () => {
+    const issue = classifyHardwareBuddyIssue({
+      code: "UNHANDLED",
+      message: "[WinError -2147023673] \u64cd\u4f5c\u5df2\u88ab\u7528\u6237\u53d6\u6d88\u3002",
+    });
+
+    assert.strictEqual(issue.code, "AUTH_REQUIRED");
+    assert.strictEqual(issue.category, "auth_required");
+    assert.strictEqual(issue.retryable, true);
+    assert.match(issue.hint, /accept the connection prompt/);
   });
 
   it("passes the fake secure setting through to the sidecar", () => {

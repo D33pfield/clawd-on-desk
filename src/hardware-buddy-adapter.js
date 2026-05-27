@@ -359,13 +359,13 @@ function classifyHardwareBuddyIssue(err) {
       hint: "Install the Hardware Buddy sidecar requirements.",
     };
   }
-  if (code === "AUTH_REQUIRED") {
+  if (code === "AUTH_REQUIRED" || looksLikeUserCanceledBlePrompt(message, lower)) {
     return {
-      code,
+      code: code === "AUTH_REQUIRED" ? code : "AUTH_REQUIRED",
       category: "auth_required",
       retryable: true,
-      message: message || "BLE pairing is required",
-      hint: "Pair the device in Windows Bluetooth settings.",
+      message: message || "BLE pairing or connection approval is required",
+      hint: "Pair the device in Windows Bluetooth settings and accept the connection prompt.",
     };
   }
   if (code === "NO_DEVICE" || lower.includes("device not found")) {
@@ -420,6 +420,16 @@ function classifyHardwareBuddyIssue(err) {
     message: message || "sidecar error",
     hint: "Hardware Buddy sidecar reported an error.",
   };
+}
+
+function looksLikeUserCanceledBlePrompt(message, lower = String(message || "").toLowerCase()) {
+  if (!message) return false;
+  return lower.includes("winerror -2147023673")
+    || lower.includes("operation was canceled")
+    || lower.includes("operation was cancelled")
+    || lower.includes("user canceled")
+    || lower.includes("user cancelled")
+    || message.includes("\u64cd\u4f5c\u5df2\u88ab\u7528\u6237\u53d6\u6d88");
 }
 
 function createHardwareBuddyAdapter(options = {}) {

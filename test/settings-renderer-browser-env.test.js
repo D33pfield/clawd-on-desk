@@ -1986,12 +1986,12 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(replyBadge.textContent, "hardwareBuddyRepliesOn");
     assert.strictEqual(testButton.textContent, "hardwareBuddyTestButton");
     assert.strictEqual(hardwareBuddy.querySelector(".hardware-buddy-summary-control"), null);
+    assert.strictEqual(hardwareBuddy.querySelector(".hardware-buddy-quick-command-row"), null);
+    assert.strictEqual(hardwareBuddy.textContent.includes("hardwareBuddyQuickCommands"), false);
     assert.ok(/\.remote-approval-channel-card\.collapsible-group\s*\{[\s\S]*margin:\s*8px 0 14px;/.test(css));
     assert.ok(/\.tg-approval-channel-header\s*\{[\s\S]*justify-content:\s*space-between;/.test(css));
     assert.ok(/\.hardware-buddy-status-control\s*\{[\s\S]*display:\s*inline-flex;/.test(css));
     assert.ok(/\.hardware-buddy-test-button\s*\{[\s\S]*border:\s*1px solid var\(--accent\);/.test(css));
-    assert.ok(/\.hardware-buddy-quick-command-control\s*\{[\s\S]*display:\s*flex;/.test(css));
-    assert.ok(/\.hardware-buddy-quick-command-button\s*\{[\s\S]*min-height:\s*28px;/.test(css));
   });
 
   it("sends a Hardware Buddy test approval from the settings panel", async () => {
@@ -2085,7 +2085,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(desc.textContent, "hardwareBuddyTestDisabled");
   });
 
-  it("renders Hardware Buddy Quick Command presets without adding stop and sends a command event", async () => {
+  it("does not render Hardware Buddy Quick Command controls", () => {
     const calls = [];
     const harness = loadTelegramApprovalTabForTest({
       snapshot: {
@@ -2104,6 +2104,13 @@ describe("settings renderer browser environment", () => {
         },
       },
       settingsAPI: {
+        getQuickCommandPresets: () => {
+          calls.push("presets");
+          return Promise.resolve({
+            enabled: true,
+            presets: [{ id: "plan_first", label: "先列计划" }],
+          });
+        },
         sendQuickCommand: (payload) => {
           calls.push(payload);
           return Promise.resolve({ status: "ok", quickCommand: { id: payload.id } });
@@ -2119,100 +2126,11 @@ describe("settings renderer browser environment", () => {
     };
     harness.render();
 
-    const buttons = harness.content.querySelectorAll(".hardware-buddy-quick-command-button");
-    assert.deepStrictEqual(buttons.map((button) => button.textContent), ["先列计划", "show diff"]);
-    assert.ok(!buttons.some((button) => button.textContent === "停"));
-
-    buttons[0].dispatchEvent({ type: "click" });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    assert.strictEqual(calls.length, 1);
-    assert.strictEqual(calls[0].id, "plan_first");
-    assert.match(calls[0].clientRequestId, /^clawd-settings-plan_first-/);
-    assert.deepStrictEqual(Object.keys(calls[0]).sort(), ["clientRequestId", "id"]);
-  });
-
-  it("keeps Hardware Buddy Quick Command presets disabled while the feature is off", () => {
-    const calls = [];
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: {
-          enabled: false,
-          allowedTgUserId: "123456789",
-          targetSessionKey: "telegram:123456789",
-        },
-        hardwareBuddy: {
-          enabled: false,
-          backend: "bleak",
-          address: "",
-          namePrefix: "Clawstick",
-          permissionsEnabled: false,
-          quickCommandsEnabled: false,
-        },
-      },
-      settingsAPI: {
-        sendQuickCommand: (payload) => {
-          calls.push(payload);
-          return Promise.resolve({ status: "ok" });
-        },
-      },
-    });
-    harness.core.runtime.quickCommandPresets = {
-      enabled: true,
-      presets: [{ id: "plan_first", label: "先列计划" }],
-    };
-    harness.render();
-
-    const button = harness.content.querySelector(".hardware-buddy-quick-command-button");
-    assert.strictEqual(button.disabled, true);
-    button.dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.content.querySelector(".hardware-buddy-quick-command-row"), null);
+    assert.strictEqual(harness.content.querySelector(".hardware-buddy-quick-command-button"), null);
+    assert.strictEqual(harness.content.textContent.includes("hardwareBuddyQuickCommands"), false);
+    assert.strictEqual(harness.content.textContent.includes("先列计划"), false);
     assert.strictEqual(calls.length, 0);
-  });
-
-  it("keeps a pending Hardware Buddy Quick Command disabled across rerenders", async () => {
-    const calls = [];
-    let resolveCommand;
-    const harness = loadTelegramApprovalTabForTest({
-      snapshot: {
-        tgApproval: {
-          enabled: false,
-          allowedTgUserId: "123456789",
-          targetSessionKey: "telegram:123456789",
-        },
-        hardwareBuddy: {
-          enabled: false,
-          backend: "bleak",
-          address: "",
-          namePrefix: "Clawstick",
-          permissionsEnabled: false,
-          quickCommandsEnabled: true,
-        },
-      },
-      settingsAPI: {
-        sendQuickCommand: (payload) => {
-          calls.push(payload);
-          return new Promise((resolve) => { resolveCommand = resolve; });
-        },
-      },
-    });
-    harness.core.runtime.quickCommandPresets = {
-      enabled: true,
-      presets: [{ id: "plan_first", label: "先列计划" }],
-    };
-    harness.render();
-
-    harness.content.querySelector(".hardware-buddy-quick-command-button").dispatchEvent({ type: "click" });
-    harness.render();
-
-    const pendingButton = harness.content.querySelector(".hardware-buddy-quick-command-button");
-    assert.strictEqual(pendingButton.disabled, true);
-    pendingButton.dispatchEvent({ type: "click" });
-    assert.strictEqual(calls.length, 1);
-
-    resolveCommand({ status: "ok", quickCommand: { id: "plan_first" } });
-    await Promise.resolve();
-    await Promise.resolve();
   });
 
   it("adds hover affordance to General size and volume sliders", () => {
