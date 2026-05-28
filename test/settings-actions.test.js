@@ -488,6 +488,59 @@ describe("telegram approval commands", () => {
     const missing = await commandRegistry["telegramApproval.tokenInfo"](null, {});
     assert.equal(missing.status, "error");
   });
+
+  it("telegramApproval.deleteTokenFile proxies the guarded main-process helper", async () => {
+    const calls = [];
+    const result = await commandRegistry["telegramApproval.deleteTokenFile"](null, {
+      deleteTelegramApprovalTokenFile: async () => {
+        calls.push(true);
+        return { status: "ok", deleted: true };
+      },
+    });
+    assert.deepStrictEqual(result, { status: "ok", deleted: true });
+    assert.deepStrictEqual(calls, [true]);
+
+    const guarded = await commandRegistry["telegramApproval.deleteTokenFile"](null, {
+      deleteTelegramApprovalTokenFile: async () => ({
+        status: "error",
+        code: "TOKEN_FILE_IN_USE",
+        message: "Native Telegram currently uses the shared token file.",
+      }),
+    });
+    assert.strictEqual(guarded.status, "error");
+    assert.strictEqual(guarded.code, "TOKEN_FILE_IN_USE");
+
+    const missing = await commandRegistry["telegramApproval.deleteTokenFile"](null, {});
+    assert.equal(missing.status, "error");
+  });
+
+  it("telegramMigration.dispatch only accepts renderer-callable user events", async () => {
+    const calls = [];
+    const deps = {
+      telegramMigration: {
+        getSnapshot: () => ({ state: "TESTING_NATIVE" }),
+        dispatch: async (event) => {
+          calls.push(event);
+          return { ok: true, state: "TESTING_NATIVE" };
+        },
+      },
+    };
+
+    const allowed = await commandRegistry["telegramMigration.dispatch"](
+      { type: "USER_TEST_NATIVE" },
+      deps,
+    );
+    assert.strictEqual(allowed.status, "ok");
+    assert.deepStrictEqual(calls, [{ type: "USER_TEST_NATIVE" }]);
+
+    const blocked = await commandRegistry["telegramMigration.dispatch"](
+      { type: "TEST_SUCCESS", at: 123 },
+      deps,
+    );
+    assert.strictEqual(blocked.status, "error");
+    assert.strictEqual(blocked.errorCode, "EVENT_NOT_ALLOWED");
+    assert.deepStrictEqual(calls, [{ type: "USER_TEST_NATIVE" }]);
+  });
 });
 
 describe("bubble policy commands", () => {
