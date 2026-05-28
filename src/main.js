@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage } = require("electron");
+const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { EventEmitter } = require("events");
@@ -663,6 +663,7 @@ let detachedIdleStaleMs = _settingsController.get("detachedIdleStaleMs");
 let soundMuted = _settingsController.get("soundMuted");
 let soundVolume = _settingsController.get("soundVolume");
 let lowPowerIdleMode = _settingsController.get("lowPowerIdleMode");
+let keepAwakeWhileWorking = _settingsController.get("keepAwakeWhileWorking");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
 
@@ -1127,6 +1128,7 @@ const _stateCtx = {
     broadcastDashboardSessionSnapshot(snapshot);
     broadcastSessionHudSnapshot(snapshot);
     repositionFloatingBubbles();
+    reconcilePowerSaveBlocker();
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.notifyStateChanged();
   },
   // Phase 3b: 读 prefs.themeOverrides 判断某个 oneshot state 是否被用户禁用。
@@ -1171,6 +1173,42 @@ const { setState, applyState, updateSession, resolveDisplayState, getSvgOverride
         startWakePoll, stopWakePoll, detectRunningAgentProcesses,
         startStartupRecovery: _startStartupRecovery } = _state;
 const sessions = _state.sessions;
+
+// ── Keep-awake: block OS sleep while any agent task is in progress ──
+// A session counts as "in progress" when its state is anything other than
+// idle/sleeping (mirrors deriveSessionBadge's "running" semantics). headless
+// sessions never participate.
+let powerSaveBlockerId = null;
+function anySessionInProgress() {
+  for (const [, s] of sessions) {
+    if (!s || s.headless) continue;
+    if (s.state === "idle" || s.state === "sleeping") continue;
+    return true;
+  }
+  return false;
+}
+function reconcilePowerSaveBlocker() {
+  try {
+    const shouldBlock = keepAwakeWhileWorking && anySessionInProgress();
+    const active = powerSaveBlockerId !== null && powerSaveBlocker.isStarted(powerSaveBlockerId);
+    if (shouldBlock && !active) {
+      powerSaveBlockerId = powerSaveBlocker.start("prevent-app-suspension");
+    } else if (!shouldBlock && active) {
+      powerSaveBlocker.stop(powerSaveBlockerId);
+      powerSaveBlockerId = null;
+    }
+  } catch (err) {
+    console.warn("Clawd: reconcilePowerSaveBlocker failed:", err);
+  }
+}
+function releasePowerSaveBlocker() {
+  try {
+    if (powerSaveBlockerId !== null && powerSaveBlocker.isStarted(powerSaveBlockerId)) {
+      powerSaveBlocker.stop(powerSaveBlockerId);
+    }
+  } catch {}
+  powerSaveBlockerId = null;
+}
 
 // ── Hit-test: SVG bounding box → screen coordinates ──
 function getHitRectScreen(bounds) { return petWindowRuntime.getHitRectScreen(bounds); }
@@ -2197,6 +2235,7 @@ const SETTINGS_MIRROR_SETTERS = {
   sessionStaleMs: (v) => { sessionStaleMs = v; }, workingStaleMs: (v) => { workingStaleMs = v; },
   detachedIdleStaleMs: (v) => { detachedIdleStaleMs = v; },
   soundMuted: (v) => { soundMuted = v; }, soundVolume: (v) => { soundVolume = v; }, lowPowerIdleMode: (v) => { lowPowerIdleMode = v; },
+  keepAwakeWhileWorking: (v) => { keepAwakeWhileWorking = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; },
 };
 
@@ -2240,6 +2279,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
   },
   reclampPetAfterEdgePinningChange,
   rebuildAllMenus,
+  reconcilePowerSaveBlocker,
   logWarn: console.warn,
 });
 settingsEffectRouter.start();
@@ -2844,6 +2884,7 @@ if (!gotTheLock) {
   app.on("before-quit", () => {
     isQuitting = true;
     try { stopUpdateScheduler(); } catch {}
+    releasePowerSaveBlocker();
     flushRuntimeStateToPrefs();
     globalShortcut.unregisterAll();
     void settingsSizePreviewSession.cleanup();

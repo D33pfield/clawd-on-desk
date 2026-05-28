@@ -154,6 +154,9 @@ const SCHEMA = {
     validate: (v) => Number.isInteger(v) && v >= 0 && v <= 60000,
   },
   lowPowerIdleMode: { type: "boolean", default: false },
+  // When true, prevent the OS from sleeping while any agent task is in
+  // progress (working/thinking/etc.); allow sleep again once tasks finish.
+  keepAwakeWhileWorking: { type: "boolean", default: false },
   allowEdgePinning: { type: "boolean", default: false },
   // When true, moving the pet between displays does not trigger a
   // proportional pixel-size recomputation. The pet keeps its current
