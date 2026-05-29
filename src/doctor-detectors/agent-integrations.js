@@ -11,6 +11,7 @@ const { ANTIGRAVITY_HOOK_EVENTS, HOOK_GROUP_ID: ANTIGRAVITY_HOOK_GROUP_ID } = re
 const { QWEN_CODE_HOOK_EVENTS } = require("../../hooks/qwen-code-install");
 const {
   hasUserPermissionHookInOtherFiles,
+  hasUserPermissionHookInSettingsJson,
   isCopilotPermissionRegistrable,
 } = require("../../hooks/copilot-install");
 const { findKimiHookCommands } = require("../../hooks/kimi-install");
@@ -49,7 +50,16 @@ function fileExists(fsImpl, filePath) {
 }
 
 function readJson(fsImpl, filePath) {
-  return JSON.parse(fsImpl.readFileSync(filePath, "utf8"));
+  // Strip the UTF-8 BOM (U+FEFF). PowerShell `Set-Content -Encoding utf8`
+  // and some Notepad saves prepend it; Node's JSON.parse refuses to parse
+  // a leading BOM. Without this, a user who hand-edits hooks.json in those
+  // tools makes the doctor pane silently flip to config-corrupt while
+  // installers (which already strip BOM) keep working — the mismatch makes
+  // the offered Fix button useless because clicking it doesn't reproduce
+  // the parse error path.
+  let raw = fsImpl.readFileSync(filePath, "utf8");
+  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+  return JSON.parse(raw);
 }
 
 function withAgentBubbleNote(detail, prefs, agentId) {
@@ -390,7 +400,13 @@ function validateCopilotHookEvents(descriptor, settings, settingsJson, options) 
   const hasCrossFileUserHook = hooksDirForScan
     ? hasUserPermissionHookInOtherFiles(hooksDirForScan, descriptor.configPath, { fs: options.fs })
     : false;
-  const permissionOwnedByUser = hasInFileUserHook || hasCrossFileUserHook;
+  // settings.json inline `hooks` block also merges into Copilot's hook chain.
+  // Doctor only covers installer-time signals here — repo-level
+  // .github/hooks/*.json is checked at request time by copilot-hook.js.
+  const hasInlineSettingsHook = descriptor.settingsPath
+    ? hasUserPermissionHookInSettingsJson(descriptor.settingsPath, { fs: options.fs })
+    : false;
+  const permissionOwnedByUser = hasInFileUserHook || hasCrossFileUserHook || hasInlineSettingsHook;
 
   const events = (Array.isArray(descriptor.hookEvents) ? descriptor.hookEvents : [])
     .filter((e) => !(permissionOwnedByUser && e === "permissionRequest"));
