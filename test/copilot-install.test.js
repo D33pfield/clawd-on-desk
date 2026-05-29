@@ -18,6 +18,7 @@ const {
   unregisterCopilotHooks,
   isCopilotPermissionRegistrable,
   hasUserPermissionHookInOtherFiles,
+  hasUserPermissionHookInSettingsJson,
   timeoutSecForCopilotEvent,
 } = require("../hooks/copilot-install");
 
@@ -230,6 +231,81 @@ describe("hasUserPermissionHookInOtherFiles", () => {
         version: 1, hooks: { permissionRequest: [] },
       }));
       assert.strictEqual(hasUserPermissionHookInOtherFiles(hooksDir, hooksPath), false);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("hasUserPermissionHookInSettingsJson", () => {
+  // Codex review 3 — Copilot CLI merges inline `hooks` from
+  // ~/.copilot/settings.json into the same chain as hooks/*.json. Safe-v1
+  // must see those too.
+  function makeTmpSettings() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-copilot-settings-"));
+    return { root, settingsPath: path.join(root, "settings.json") };
+  }
+
+  it("returns false when settings.json is missing", () => {
+    const { root, settingsPath } = makeTmpSettings();
+    try {
+      assert.strictEqual(hasUserPermissionHookInSettingsJson(settingsPath), false);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("returns false when settings.json has no inline hooks block", () => {
+    const { root, settingsPath } = makeTmpSettings();
+    try {
+      fs.writeFileSync(settingsPath, JSON.stringify({ disableAllHooks: false }));
+      assert.strictEqual(hasUserPermissionHookInSettingsJson(settingsPath), false);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("returns false when hooks block has no permissionRequest", () => {
+    const { root, settingsPath } = makeTmpSettings();
+    try {
+      fs.writeFileSync(settingsPath, JSON.stringify({
+        hooks: { preToolUse: [{ type: "command", bash: "echo p" }] },
+      }));
+      assert.strictEqual(hasUserPermissionHookInSettingsJson(settingsPath), false);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("returns true when an inline permissionRequest hook exists", () => {
+    const { root, settingsPath } = makeTmpSettings();
+    try {
+      fs.writeFileSync(settingsPath, JSON.stringify({
+        hooks: { permissionRequest: [{ type: "command", bash: "/usr/bin/audit" }] },
+      }));
+      assert.strictEqual(hasUserPermissionHookInSettingsJson(settingsPath), true);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("parses settings.json written with a UTF-8 BOM", () => {
+    const { root, settingsPath } = makeTmpSettings();
+    try {
+      const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+      const body = Buffer.from(JSON.stringify({
+        hooks: { permissionRequest: [{ type: "command", bash: "/usr/bin/audit" }] },
+      }));
+      fs.writeFileSync(settingsPath, Buffer.concat([bom, body]));
+      assert.strictEqual(hasUserPermissionHookInSettingsJson(settingsPath), true);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("returns false for malformed settings.json (transient FS hiccup must not block Clawd)", () => {
+    const { root, settingsPath } = makeTmpSettings();
+    try {
+      fs.writeFileSync(settingsPath, "{ not valid json");
+      assert.strictEqual(hasUserPermissionHookInSettingsJson(settingsPath), false);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("treats an empty permissionRequest array as 'no hook'", () => {
+    const { root, settingsPath } = makeTmpSettings();
+    try {
+      fs.writeFileSync(settingsPath, JSON.stringify({
+        hooks: { permissionRequest: [] },
+      }));
+      assert.strictEqual(hasUserPermissionHookInSettingsJson(settingsPath), false);
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 });
@@ -994,6 +1070,67 @@ describe("registerCopilotHooks", () => {
     assert.strictEqual(settings.hooks.permissionRequest.length, 1,
       "old Clawd entry must be stripped despite the BOM");
     assert.deepStrictEqual(settings.hooks.permissionRequest[0], userHook);
+  });
+
+  it("safe-v1: skips permissionRequest when settings.json declares an inline hook", () => {
+    // Codex review 3 — settings.json `hooks` block participates in Copilot's
+    // merged hook chain. Installer + doctor must both treat it as user-owned
+    // and refuse to register Clawd permissionRequest.
+    const { homeDir, hooksPath } = makeTempHomeWithCopilot({
+      version: 1,
+      hooks: {}, // hooks.json clean
+    });
+    const settingsPath = path.join(homeDir, ".copilot", "settings.json");
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      hooks: { permissionRequest: [{ type: "command", bash: "/usr/local/bin/inline-audit" }] },
+    }, null, 2), "utf8");
+
+    const result = registerCopilotHooks({
+      silent: true,
+      homeDir,
+      nodeBin: "/usr/local/bin/node",
+      hookScript: "/srv/clawd/hooks/copilot-hook.js",
+    });
+
+    assert.strictEqual(result.permissionSkippedDueToUserHook, true,
+      "settings.json inline hook must trigger the same skip flag as in-file/sibling safe-v1");
+    const settings = readJson(hooksPath);
+    assert.ok(
+      !Array.isArray(settings.hooks.permissionRequest) || settings.hooks.permissionRequest.length === 0,
+      "hooks.json permissionRequest array must remain empty when settings.json owns the event",
+    );
+  });
+
+  it("safe-v1: strips a leftover Clawd entry when settings.json inline hook appears later", () => {
+    const oldClawd = {
+      type: "command",
+      bash: "\"/old/node\" \"/old/copilot-hook.js\" \"permissionRequest\"",
+      powershell: "& \"/old/node\" \"/old/copilot-hook.js\" \"permissionRequest\"",
+      timeoutSec: 60,
+    };
+    const { homeDir, hooksPath } = makeTempHomeWithCopilot({
+      version: 1,
+      hooks: { permissionRequest: [oldClawd] },
+    });
+    const settingsPath = path.join(homeDir, ".copilot", "settings.json");
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      hooks: { permissionRequest: [{ type: "command", bash: "/usr/local/bin/inline-audit" }] },
+    }, null, 2), "utf8");
+
+    const result = registerCopilotHooks({
+      silent: true,
+      homeDir,
+      nodeBin: "/usr/local/bin/node",
+      hookScript: "/srv/clawd/hooks/copilot-hook.js",
+    });
+
+    assert.strictEqual(result.permissionSkippedDueToUserHook, true);
+    const settings = readJson(hooksPath);
+    assert.strictEqual(
+      Array.isArray(settings.hooks.permissionRequest) ? settings.hooks.permissionRequest.length : 0,
+      0,
+      "Clawd entry in hooks.json must be stripped when settings.json owns the event",
+    );
   });
 
   it("safe-v1: still updates Clawd-managed permissionRequest entry in place", () => {

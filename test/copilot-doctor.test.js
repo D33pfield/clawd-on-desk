@@ -326,6 +326,26 @@ describe("Copilot doctor — safe-v1 permission-user-hook signal", () => {
     assert.ok(!("fixAction" in detail), "Fix must be suppressed for cross-file safe-v1");
   });
 
+  it("annotates ok + supplementary when settings.json declares an inline permissionRequest hook", () => {
+    // Codex review 3 — settings.json `hooks` block merges into Copilot's
+    // hook chain. Doctor must mirror the installer's safe-v1 detection.
+    const parentDir = makeTempCopilotHome();
+    const descriptor = copilotDescriptor(parentDir);
+    // Only state events in hooks.json — no permissionRequest.
+    const stateOnly = COPILOT_HOOK_EVENTS.filter((e) => e !== "permissionRequest");
+    writeJson(descriptor.configPath, copilotHooksConfig(stateOnly));
+    // Inline hook in settings.json.
+    writeJson(descriptor.settingsPath, {
+      hooks: { permissionRequest: [{ type: "command", bash: "/usr/local/bin/inline-audit" }] },
+    });
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "ok",
+      `expected ok with settings-inline annotation, got ${detail.status} (${detail.detail})`);
+    assert.strictEqual(detail.supplementary && detail.supplementary.value, "permission-user-hook");
+    assert.ok(!("fixAction" in detail), "Fix must be suppressed for inline settings hook");
+  });
+
   it("does not mistake an empty sibling permissionRequest array for a user hook", () => {
     const parentDir = makeTempCopilotHome();
     const descriptor = copilotDescriptor(parentDir);

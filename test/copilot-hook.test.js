@@ -391,12 +391,17 @@ const {
   normalizePermissionSuggestions,
   parseClawdPermissionResponse,
   writeCopilotDecision,
+  hasUserPermissionHookInRepoHooks,
   HOOK_TOOL_INPUT_STRING_MAX,
   HOOK_TOOL_INPUT_KEYS_MAX,
   HOOK_TOOL_INPUT_ARRAY_MAX,
   HOOK_TOOL_INPUT_DEPTH_MAX,
   HOOK_PERMISSION_BODY_MAX_BYTES,
 } = require("../hooks/copilot-hook.js");
+
+const fsTest = require("fs");
+const osTest = require("os");
+const pathTest = require("path");
 
 // Phase 0 captured payload (`edit` tool, file create).
 const SAMPLE_EDIT_PAYLOAD = {
@@ -706,5 +711,175 @@ describe("writeCopilotDecision", () => {
     writeCopilotDecision({ behavior: "deny", message: "x", interrupt: true }, (chunk) => { written += chunk; });
     const parsed = JSON.parse(written);
     assert.strictEqual(parsed.interrupt, true);
+  });
+});
+
+describe("hasUserPermissionHookInRepoHooks — repo-level safe-v1 (codex review 3)", () => {
+  // Copilot CLI merges <cwd>/.github/hooks/*.json into the user-level hook
+  // chain. Installer doesn't know cwd; hook itself does. If the repo ships
+  // its own permissionRequest hook, the Clawd hook MUST fall open (empty
+  // stdout, exit 0) so the project audit/deny rule isn't silently overridden.
+
+  function makeTmpRepo() {
+    const root = fsTest.mkdtempSync(pathTest.join(osTest.tmpdir(), "clawd-copilot-repo-"));
+    const hooksDir = pathTest.join(root, ".github", "hooks");
+    fsTest.mkdirSync(hooksDir, { recursive: true });
+    return { root, hooksDir };
+  }
+
+  it("returns false when cwd is missing or non-absolute", () => {
+    assert.strictEqual(hasUserPermissionHookInRepoHooks(""), false);
+    assert.strictEqual(hasUserPermissionHookInRepoHooks(null), false);
+    assert.strictEqual(hasUserPermissionHookInRepoHooks(undefined), false);
+    assert.strictEqual(hasUserPermissionHookInRepoHooks("relative/path"), false);
+    assert.strictEqual(hasUserPermissionHookInRepoHooks(42), false);
+  });
+
+  it("returns false when the repo has no .github/hooks/ directory", () => {
+    const { root } = makeTmpRepo();
+    try {
+      fsTest.rmSync(pathTest.join(root, ".github"), { recursive: true, force: true });
+      assert.strictEqual(hasUserPermissionHookInRepoHooks(root), false);
+    } finally { fsTest.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("returns false when .github/hooks/ contains no permissionRequest entries", () => {
+    const { root, hooksDir } = makeTmpRepo();
+    try {
+      fsTest.writeFileSync(pathTest.join(hooksDir, "state-only.json"),
+        JSON.stringify({ version: 1, hooks: { preToolUse: [{ type: "command", bash: "echo p" }] } }));
+      assert.strictEqual(hasUserPermissionHookInRepoHooks(root), false);
+    } finally { fsTest.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("returns true when ANY .github/hooks/*.json declares a permissionRequest", () => {
+    const { root, hooksDir } = makeTmpRepo();
+    try {
+      fsTest.writeFileSync(pathTest.join(hooksDir, "audit.json"),
+        JSON.stringify({ version: 1, hooks: { permissionRequest: [{ type: "command", bash: "/usr/bin/audit" }] } }));
+      assert.strictEqual(hasUserPermissionHookInRepoHooks(root), true);
+    } finally { fsTest.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("parses repo hooks with a UTF-8 BOM (regression for PowerShell-edited audit hooks)", () => {
+    const { root, hooksDir } = makeTmpRepo();
+    try {
+      const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+      const body = Buffer.from(JSON.stringify({
+        version: 1, hooks: { permissionRequest: [{ type: "command", bash: "/usr/bin/audit" }] },
+      }));
+      fsTest.writeFileSync(pathTest.join(hooksDir, "audit.json"), Buffer.concat([bom, body]));
+      assert.strictEqual(hasUserPermissionHookInRepoHooks(root), true);
+    } finally { fsTest.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("ignores non-json files in .github/hooks/", () => {
+    const { root, hooksDir } = makeTmpRepo();
+    try {
+      fsTest.writeFileSync(pathTest.join(hooksDir, "README.md"), "permissionRequest");
+      assert.strictEqual(hasUserPermissionHookInRepoHooks(root), false);
+    } finally { fsTest.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("returns false on malformed JSON (transient FS hiccup must not block Clawd)", () => {
+    const { root, hooksDir } = makeTmpRepo();
+    try {
+      fsTest.writeFileSync(pathTest.join(hooksDir, "broken.json"), "{ not valid");
+      assert.strictEqual(hasUserPermissionHookInRepoHooks(root), false);
+    } finally { fsTest.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("treats an empty permissionRequest array as 'no hook'", () => {
+    const { root, hooksDir } = makeTmpRepo();
+    try {
+      fsTest.writeFileSync(pathTest.join(hooksDir, "empty.json"),
+        JSON.stringify({ hooks: { permissionRequest: [] } }));
+      assert.strictEqual(hasUserPermissionHookInRepoHooks(root), false);
+    } finally { fsTest.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("finds .github/hooks/*.json declared at an ANCESTOR of cwd (subdir invocation)", () => {
+    // Codex review 4: Copilot's repo-level hooks live at the repository
+    // root, but the user may invoke Copilot deep inside a subdirectory.
+    // The helper must walk upward.
+    const { root, hooksDir } = makeTmpRepo();
+    try {
+      fsTest.writeFileSync(pathTest.join(hooksDir, "audit.json"),
+        JSON.stringify({ hooks: { permissionRequest: [{ type: "command", bash: "/usr/bin/audit" }] } }));
+      const nestedCwd = pathTest.join(root, "packages", "web", "src");
+      fsTest.mkdirSync(nestedCwd, { recursive: true });
+      assert.strictEqual(hasUserPermissionHookInRepoHooks(nestedCwd), true);
+    } finally { fsTest.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("returns false when no ancestor up to fs root declares a permissionRequest", () => {
+    // Walking up the chain must not produce false positives on directories
+    // that don't carry any of the 5 known sources.
+    const tmpRoot = fsTest.mkdtempSync(pathTest.join(osTest.tmpdir(), "clawd-copilot-noancestor-"));
+    try {
+      const deepDir = pathTest.join(tmpRoot, "a", "b", "c");
+      fsTest.mkdirSync(deepDir, { recursive: true });
+      assert.strictEqual(hasUserPermissionHookInRepoHooks(deepDir), false);
+    } finally { fsTest.rmSync(tmpRoot, { recursive: true, force: true }); }
+  });
+
+  for (const inline of [
+    [".github", "copilot", "settings.json"],
+    [".github", "copilot", "settings.local.json"],
+    [".claude", "settings.json"],
+    [".claude", "settings.local.json"],
+  ]) {
+    it(`detects an inline permissionRequest in ${inline.join("/")} at an ancestor`, () => {
+      // All four inline-settings sources are merged into Copilot's hook
+      // chain per the official docs (including cross-tool .claude/*).
+      const tmpRoot = fsTest.mkdtempSync(pathTest.join(osTest.tmpdir(), "clawd-copilot-inline-"));
+      try {
+        const targetDir = pathTest.join(tmpRoot, ...inline.slice(0, -1));
+        fsTest.mkdirSync(targetDir, { recursive: true });
+        fsTest.writeFileSync(
+          pathTest.join(tmpRoot, ...inline),
+          JSON.stringify({ hooks: { permissionRequest: [{ type: "command", bash: "/usr/bin/audit" }] } }),
+        );
+        const nestedCwd = pathTest.join(tmpRoot, "deep", "nested", "subdir");
+        fsTest.mkdirSync(nestedCwd, { recursive: true });
+        assert.strictEqual(hasUserPermissionHookInRepoHooks(nestedCwd), true);
+      } finally { fsTest.rmSync(tmpRoot, { recursive: true, force: true }); }
+    });
+  }
+
+  it("parses inline settings written with a UTF-8 BOM", () => {
+    const tmpRoot = fsTest.mkdtempSync(pathTest.join(osTest.tmpdir(), "clawd-copilot-bom-inline-"));
+    try {
+      const claudeDir = pathTest.join(tmpRoot, ".claude");
+      fsTest.mkdirSync(claudeDir, { recursive: true });
+      const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+      const body = Buffer.from(JSON.stringify({
+        hooks: { permissionRequest: [{ type: "command", bash: "/usr/bin/audit" }] },
+      }));
+      fsTest.writeFileSync(pathTest.join(claudeDir, "settings.json"), Buffer.concat([bom, body]));
+      assert.strictEqual(hasUserPermissionHookInRepoHooks(tmpRoot), true);
+    } finally { fsTest.rmSync(tmpRoot, { recursive: true, force: true }); }
+  });
+
+  it("returns false for malformed inline settings (transient FS hiccup must not block Clawd)", () => {
+    const tmpRoot = fsTest.mkdtempSync(pathTest.join(osTest.tmpdir(), "clawd-copilot-bad-inline-"));
+    try {
+      const claudeDir = pathTest.join(tmpRoot, ".claude");
+      fsTest.mkdirSync(claudeDir, { recursive: true });
+      fsTest.writeFileSync(pathTest.join(claudeDir, "settings.json"), "{ not valid");
+      assert.strictEqual(hasUserPermissionHookInRepoHooks(tmpRoot), false);
+    } finally { fsTest.rmSync(tmpRoot, { recursive: true, force: true }); }
+  });
+
+  it("early-exits when the FIRST level matched (does not unnecessarily walk up)", () => {
+    // Strategy: verify behavior, not internal call count — if the helper
+    // were buggy and over-walked it could still pass-by-accident here, but
+    // an audit hook RIGHT IN cwd is the most common case and must work.
+    const { root, hooksDir } = makeTmpRepo();
+    try {
+      fsTest.writeFileSync(pathTest.join(hooksDir, "audit.json"),
+        JSON.stringify({ hooks: { permissionRequest: [{ type: "command", bash: "/usr/bin/audit" }] } }));
+      assert.strictEqual(hasUserPermissionHookInRepoHooks(root), true);
+    } finally { fsTest.rmSync(root, { recursive: true, force: true }); }
   });
 });

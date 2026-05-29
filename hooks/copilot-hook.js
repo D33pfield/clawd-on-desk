@@ -380,6 +380,89 @@ function buildStateBody(event, payload, resolve, options = {}) {
   return body;
 }
 
+// Per Copilot CLI hooks reference, the repo-level merged hook chain includes
+// FIVE sources beyond user-level (https://docs.github.com/en/copilot/reference/hooks-configuration):
+//
+//   1. <repo>/.github/hooks/*.json
+//   2. <repo>/.github/copilot/settings.json         (inline `hooks` block)
+//   3. <repo>/.github/copilot/settings.local.json   (inline `hooks` block)
+//   4. <repo>/.claude/settings.json                 (cross-tool inline)
+//   5. <repo>/.claude/settings.local.json           (cross-tool inline)
+//
+// AND the docs are silent on whether Copilot itself discovers <repo> from a
+// subdirectory invocation. We take the conservative position: if a user
+// could plausibly hit a project audit/deny hook by running Copilot somewhere
+// inside their repo tree, we must fall open from anywhere inside that tree.
+// So this helper walks cwd's ancestor chain and checks every level for any
+// of the 5 sources. As soon as ONE level + ONE source declares
+// permissionRequest, we return true so the Clawd hook fails open.
+//
+// Cost: per cwd, ~depth × (one readdir + 4 statSync + at most a handful of
+// small reads). Path depths are short in practice (< 20) and the directories
+// we look for don't exist in most repos at all, so the early-exit makes this
+// a sub-millisecond check in the common case.
+//
+// Conservative: any FS / parse error treats the source as "no hook" so a
+// transient hiccup doesn't permanently force fail-open into native flow on
+// every request.
+
+function fileDeclaresPermissionHook(filePath, fsImpl) {
+  let raw;
+  try { raw = fsImpl.readFileSync(filePath, "utf8"); } catch { return false; }
+  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { return false; }
+  if (!parsed || typeof parsed !== "object") return false;
+  const hooks = parsed.hooks;
+  if (!hooks || typeof hooks !== "object") return false;
+  const arr = hooks.permissionRequest;
+  return Array.isArray(arr) && arr.length > 0;
+}
+
+function dirHasPermissionHookJson(dir, fsImpl, pathImpl) {
+  let entries;
+  try { entries = fsImpl.readdirSync(dir); } catch { return false; }
+  for (const name of entries) {
+    if (!name.endsWith(".json")) continue;
+    if (fileDeclaresPermissionHook(pathImpl.join(dir, name), fsImpl)) return true;
+  }
+  return false;
+}
+
+function levelDeclaresPermissionHook(level, fsImpl, pathImpl) {
+  // 1. <level>/.github/hooks/*.json
+  if (dirHasPermissionHookJson(pathImpl.join(level, ".github", "hooks"), fsImpl, pathImpl)) return true;
+  // 2-5. inline `hooks` blocks across .github/copilot/* and cross-tool .claude/*
+  const inlineFiles = [
+    pathImpl.join(level, ".github", "copilot", "settings.json"),
+    pathImpl.join(level, ".github", "copilot", "settings.local.json"),
+    pathImpl.join(level, ".claude", "settings.json"),
+    pathImpl.join(level, ".claude", "settings.local.json"),
+  ];
+  for (const filePath of inlineFiles) {
+    if (fileDeclaresPermissionHook(filePath, fsImpl)) return true;
+  }
+  return false;
+}
+
+function hasUserPermissionHookInRepoHooks(cwd, options = {}) {
+  const fsImpl = options.fs || fs;
+  const pathImpl = options.path || path;
+  if (typeof cwd !== "string" || !cwd) return false;
+  if (!pathImpl.isAbsolute(cwd)) return false;
+
+  let level = cwd;
+  // Walk up until fs root. 64-level cap defends against pathological
+  // symlink loops; real paths never approach that depth.
+  for (let i = 0; i < 64; i++) {
+    if (levelDeclaresPermissionHook(level, fsImpl, pathImpl)) return true;
+    const parent = pathImpl.dirname(level);
+    if (parent === level) return false; // fs root
+    level = parent;
+  }
+  return false;
+}
+
 function buildResolver() {
   const config = getPlatformConfig();
   return createPidResolver({
@@ -419,6 +502,17 @@ function runStatePath(event, resolve, safeExit) {
 
 function runPermissionPath(resolve, safeExit) {
   readStdinJson().then((payload) => {
+    // Repo-level safe-v1: if the workspace ships its own permissionRequest
+    // hook in .github/hooks/*.json, fall open into Copilot's native chain
+    // so a project-authored audit/deny rule isn't silently overridden.
+    const cwdField = (payload && typeof payload === "object" && typeof payload.cwd === "string")
+      ? payload.cwd
+      : "";
+    if (cwdField && hasUserPermissionHookInRepoHooks(cwdField)) {
+      safeExit(0);
+      return;
+    }
+
     let body;
     try {
       body = buildPermissionBody(payload || {}, resolve);
@@ -492,6 +586,7 @@ module.exports = {
   normalizePermissionSuggestions,
   parseClawdPermissionResponse,
   writeCopilotDecision,
+  hasUserPermissionHookInRepoHooks,
   normalizeTitle,
   parseWorkspaceYamlName,
   readCopilotSessionTitle,

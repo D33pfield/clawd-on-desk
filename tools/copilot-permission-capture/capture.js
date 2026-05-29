@@ -1,5 +1,9 @@
 #!/usr/bin/env node
-// Phase 0 one-shot capture script — DELETE after investigation lands.
+// Copilot CLI permissionRequest diagnostic harness.
+//
+// Originally written for Phase 0 schema capture; kept around as a long-lived
+// ops aid for re-verifying Copilot CLI wire format whenever a new version
+// ships. See tools/copilot-permission-capture/README.md for the playbook.
 //
 // Usage: invoked by Copilot CLI as a permissionRequest hook. Behavior switches
 // on argv[2]:

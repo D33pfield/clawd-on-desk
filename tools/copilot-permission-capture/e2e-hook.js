@@ -32,11 +32,21 @@ const SAMPLE_PAYLOAD = {
 // One mock server per scenario. We make headers + body explicit so the
 // hook's parseClawdPermissionResponse sees what Clawd's real route sends.
 function startMockServer(responder) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       let body = "";
       req.on("data", (c) => { body += c; });
       req.on("end", () => responder(req, body, res));
+    });
+    server.once("error", (err) => {
+      if (err && err.code === "EADDRINUSE") {
+        reject(new Error(
+          `Port ${PORT} already in use — likely a real Clawd instance is running. ` +
+          `Stop Clawd (tray → quit) before running this harness so the mock can take its port.`,
+        ));
+      } else {
+        reject(err);
+      }
     });
     server.listen(PORT, "127.0.0.1", () => resolve(server));
   });
@@ -194,6 +204,12 @@ async function runOne(scenario) {
     } catch (err) {
       results.push({ scenario, error: err.message, pass: false });
       console.log(`ERROR: ${err.message}`);
+      // EADDRINUSE on the very first scenario means Clawd is still running and
+      // every other scenario is going to fail the same way — bail early so the
+      // user sees the helpful "stop Clawd" message at the top of the output.
+      if (results.length === 1 && /already in use/i.test(err.message)) {
+        process.exit(1);
+      }
     }
   }
   const passed = results.filter((r) => r.pass).length;

@@ -193,6 +193,29 @@ function hasUserPermissionHookInOtherFiles(hooksDir, hooksPath, options = {}) {
   return false;
 }
 
+// Return true if the user-level settings.json declares an inline
+// `hooks.permissionRequest` entry. Per Copilot CLI hooks reference, the
+// settings.json `hooks` block participates in the same merged hook chain
+// as user-level hooks/*.json and repo-level .github/hooks/*.json, so a
+// user audit/deny hook here also needs to block Clawd's safe-v1 path.
+//
+// Same conservative posture as hasUserPermissionHookInOtherFiles: any read
+// or parse error is treated as "no inline hook" so a transient FS hiccup
+// doesn't permanently break Clawd registration.
+function hasUserPermissionHookInSettingsJson(settingsPath, options = {}) {
+  const fsImpl = options.fs || fs;
+  let raw;
+  try { raw = fsImpl.readFileSync(settingsPath, "utf-8"); } catch { return false; }
+  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { return false; }
+  if (!parsed || typeof parsed !== "object") return false;
+  const hooks = parsed.hooks;
+  if (!hooks || typeof hooks !== "object") return false;
+  const arr = hooks.permissionRequest;
+  return Array.isArray(arr) && arr.length > 0;
+}
+
 function entryMatches(existing, desired) {
   if (!existing || typeof existing !== "object") return false;
   return existing.type === desired.type
@@ -280,8 +303,17 @@ function registerCopilotHooks(options = {}) {
   // Pre-compute the cross-file safe-v1 signal once before the per-event
   // loop. Re-checking inside the loop would re-read the directory for every
   // event, but only permissionRequest cares.
+  //
+  // Two user-level locations participate in the merged Copilot hook chain
+  // alongside hooks.json: sibling *.json files in the same hooks/ dir, and
+  // the inline `hooks` block in user-level settings.json. Repo-level
+  // .github/hooks/*.json also merges, but the installer doesn't know the
+  // user's future cwd — the hook runtime in copilot-hook.js handles that
+  // case at request time.
   const hooksDir = path.dirname(hooksPath);
+  const settingsPath = options.settingsPath || resolveCopilotSettingsPath(options);
   const hasOtherFilePermissionHook = hasUserPermissionHookInOtherFiles(hooksDir, hooksPath);
+  const hasInlineSettingsHook = hasUserPermissionHookInSettingsJson(settingsPath);
 
   for (const event of COPILOT_HOOK_EVENTS) {
     if (!Array.isArray(settings.hooks[event])) {
@@ -306,7 +338,9 @@ function registerCopilotHooks(options = {}) {
     // a warning afterwards so the user can wire Clawd in manually if they
     // want to.
     if (event === "permissionRequest"
-        && (!isCopilotPermissionRegistrable(arr) || hasOtherFilePermissionHook)) {
+        && (!isCopilotPermissionRegistrable(arr)
+            || hasOtherFilePermissionHook
+            || hasInlineSettingsHook)) {
       permissionSkippedDueToUserHook = true;
       const beforeLen = arr.length;
       const cleaned = arr.filter((entry) => !entryHasMarker(entry));
@@ -404,6 +438,7 @@ module.exports = {
   timeoutSecForCopilotEvent,
   isCopilotPermissionRegistrable,
   hasUserPermissionHookInOtherFiles,
+  hasUserPermissionHookInSettingsJson,
   resolveCopilotHome,
   resolveCopilotHooksPath,
   resolveCopilotSettingsPath,
