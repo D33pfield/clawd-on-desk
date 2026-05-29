@@ -35,6 +35,7 @@ docs/**
 !docs/investigations/
 !docs/investigations/permission-hook-fail-deny-investigation.md
 !docs/investigations/codex-subagent-session-meta.md
+!docs/investigations/anthropic-compliance-and-account-risk.md
 !docs/project/
 !docs/project/agent-runtime-architecture.md
 !docs/project/release-process.md
