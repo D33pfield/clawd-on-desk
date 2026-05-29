@@ -1284,6 +1284,9 @@ describe("settings renderer browser environment", () => {
         enabled: true,
         allowedTgUserId: "123456789",
         targetSessionKey: "telegram:123456789",
+        // Preserved across saves so a user's notifyOnComplete=false is not
+        // reset to default by a recipient/toggle save (see currentConfig).
+        notifyOnComplete: true,
       },
     }]);
 
@@ -1301,6 +1304,48 @@ describe("settings renderer browser environment", () => {
     harness.render();
 
     assert.equal(harness.content.querySelectorAll("input")[0].value, "987654321");
+  });
+
+  it("preserves notifyOnComplete=false through a Telegram approval toggle save", async () => {
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+          notifyOnComplete: false,
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "stopped", configured: true, tokenStored: true },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    harness.content.querySelector(".switch").dispatchEvent({ type: "click" });
+
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), [{
+      key: "tgApproval",
+      value: {
+        enabled: true,
+        allowedTgUserId: "123456789",
+        targetSessionKey: "telegram:123456789",
+        notifyOnComplete: false,
+      },
+    }]);
   });
 
   it("disables Telegram approval test until runtime status is ready", async () => {

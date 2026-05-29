@@ -33,6 +33,10 @@
       enabled: !!(cfg && cfg.enabled),
       allowedTgUserId: cfg && typeof cfg.allowedTgUserId === "string" ? cfg.allowedTgUserId : "",
       targetSessionKey: cfg && typeof cfg.targetSessionKey === "string" ? cfg.targetSessionKey : "",
+      // Preserve notifyOnComplete across saves: recipient/toggle payloads are
+      // built from this object, so omitting it would let normalize() reset a
+      // user's `false` back to the default `true` on the next save.
+      notifyOnComplete: !(cfg && cfg.notifyOnComplete === false),
     };
   }
 
@@ -613,6 +617,7 @@
         // `telegram:` prefix. Private-chat scenarios always have chat_id ===
         // user_id in Telegram, so this is correct for the supported path.
         targetSessionKey: raw,
+        notifyOnComplete: currentConfig().notifyOnComplete,
       });
     });
 

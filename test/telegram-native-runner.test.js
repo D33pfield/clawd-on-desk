@@ -297,3 +297,117 @@ test("native runner requestApproval is disabled until polling with a valid paylo
   assert.equal(await runner.requestApproval({ title: "x", detail: "y" }), null);
   assert.equal(await runner.requestApproval({ title: "", detail: "y" }), null);
 });
+
+// ── R1a sendNotification ──────────────────────────────────────────────────
+
+// Start polling against a getUpdates that never resolves so `polling` stays
+// true (the gate sendNotification checks) without consuming scripted sends.
+async function startPolling(server, opts = {}) {
+  server.enqueue("getUpdates", () => new Promise(() => {}));
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+    ...opts,
+  });
+  await runner.start();
+  await tick();
+  return runner;
+}
+
+test("sendNotification posts a plain message with no inline keyboard", async () => {
+  const server = createFakeTelegramServer();
+  const runner = await startPolling(server);
+  server.enqueueOk("sendMessage", { message_id: 7 });
+
+  const res = await runner.sendNotification("done: task X");
+  assert.deepEqual(res, { ok: true });
+  const send = server.calls.find((c) => c.method === "sendMessage");
+  assert.equal(send.payload.chat_id, "123");
+  assert.equal(send.payload.text, "done: task X");
+  assert.equal(send.payload.reply_markup, undefined);
+  await runner.stop();
+});
+
+test("sendNotification returns not_active when not polling", async () => {
+  const server = createFakeTelegramServer();
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+  const res = await runner.sendNotification("nope");
+  assert.deepEqual(res, { ok: false, errorClass: "not_active" });
+  assert.equal(server.calls.length, 0, "must not call Telegram when inactive");
+});
+
+test("sendNotification returns not_active when chat id is missing", async () => {
+  const server = createFakeTelegramServer();
+  const runner = await startPolling(server, { getChatId: () => "" });
+  const res = await runner.sendNotification("nope");
+  assert.deepEqual(res, { ok: false, errorClass: "not_active" });
+  await runner.stop();
+});
+
+test("sendNotification retries once on 429 then succeeds", async () => {
+  const server = createFakeTelegramServer();
+  const slept = [];
+  const runner = await startPolling(server, {
+    sleep: async (ms) => { slept.push(ms); },
+  });
+  server.enqueueError("sendMessage", { status: 429, parameters: { retry_after: 2 } });
+  server.enqueueOk("sendMessage", { message_id: 9 });
+
+  const res = await runner.sendNotification("retry me");
+  assert.deepEqual(res, { ok: true });
+  assert.deepEqual(slept, [2000], "honours retry_after seconds");
+  assert.equal(server.calls.filter((c) => c.method === "sendMessage").length, 2);
+  await runner.stop();
+});
+
+test("sendNotification re-reads chat id before the 429 retry", async () => {
+  const server = createFakeTelegramServer();
+  let chat = "123";
+  const runner = await startPolling(server, {
+    getChatId: () => chat,
+    sleep: async () => { chat = ""; }, // user re-targets during retry_after
+  });
+  server.enqueueError("sendMessage", { status: 429, parameters: { retry_after: 1 } });
+
+  const res = await runner.sendNotification("retarget mid-retry");
+  assert.deepEqual(res, { ok: false, errorClass: "not_active" });
+  // Only the first attempt hit the wire; the retry bailed on the cleared chat.
+  assert.equal(server.calls.filter((c) => c.method === "sendMessage").length, 1);
+  await runner.stop();
+});
+
+test("sendNotification bails when the chat target changes during the 429 retry", async () => {
+  const server = createFakeTelegramServer();
+  let chat = "123";
+  const runner = await startPolling(server, {
+    getChatId: () => chat,
+    sleep: async () => { chat = "456"; }, // re-targeted to a DIFFERENT chat
+  });
+  server.enqueueError("sendMessage", { status: 429, parameters: { retry_after: 1 } });
+
+  const res = await runner.sendNotification("retargeted mid-retry");
+  assert.deepEqual(res, { ok: false, errorClass: "not_active" });
+  assert.equal(server.calls.filter((c) => c.method === "sendMessage").length, 1,
+    "must not re-fire the ping at the new chat");
+  await runner.stop();
+});
+
+test("sendNotification drops on 403 without retrying", async () => {
+  const server = createFakeTelegramServer();
+  const runner = await startPolling(server);
+  server.enqueueError("sendMessage", { status: 403, description: "bot was blocked" });
+
+  const res = await runner.sendNotification("blocked");
+  assert.deepEqual(res, { ok: false, errorClass: "403" });
+  assert.equal(server.calls.filter((c) => c.method === "sendMessage").length, 1);
+  await runner.stop();
+});

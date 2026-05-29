@@ -219,6 +219,7 @@ let telegramApprovalConfigSignature = "";
 let telegramApprovalTokenRevision = 0;
 let _telegramMigrationController = null;
 let telegramNativeRunner = null;
+let telegramCompanion = null;
 let suppressTelegramApprovalSidecarSync = 0;
 let hardwareBuddyAdapter = null;
 let hardwareBuddyStatus = null;
@@ -1132,6 +1133,11 @@ const _stateCtx = {
     broadcastSessionHudSnapshot(snapshot);
     repositionFloatingBubbles();
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.notifyStateChanged();
+    // R1a: best-effort completion notifications. Must never throw or block the
+    // broadcast — the companion computes synchronously and fires sends async.
+    if (telegramCompanion) {
+      try { telegramCompanion.onSnapshot(snapshot); } catch {}
+    }
   },
   // Phase 3b: 读 prefs.themeOverrides 判断某个 oneshot state 是否被用户禁用。
   // state.js gate 调这个做 early-return。不做白名单校验——settings-actions
@@ -1414,6 +1420,23 @@ function getTelegramApprovalClient() {
   }
   if (!telegramApprovalSidecar || typeof telegramApprovalSidecar.getClient !== "function") return null;
   return telegramApprovalSidecar.getClient();
+}
+
+// R1a companion notifications are native-only: the legacy sidecar has no
+// sendNotification surface, so legacy users silently lack completion pings
+// (Settings copy must say so — tracked for a follow-up UI pass). Unlike
+// getTelegramApprovalClient this never falls back to the sidecar.
+function getTelegramCompanionClient() {
+  const controller = _telegramMigrationController;
+  if (controller && typeof controller.getSnapshot === "function") {
+    const snap = controller.getSnapshot() || {};
+    if (snap.state === "NATIVE_ACTIVE"
+      && telegramNativeRunner
+      && typeof telegramNativeRunner.sendNotification === "function") {
+      return telegramNativeRunner;
+    }
+  }
+  return null;
 }
 
 function telegramApprovalLog(level, message, meta = {}) {
@@ -1731,6 +1754,20 @@ async function initTelegramMigrationController() {
     log: telegramApprovalLog,
   });
   telegramNativeRunner = nativeRunner;
+
+  // R1a: completion notifications ride the existing snapshot fanout. The
+  // companion holds its own dedupe state (the snapshot carries no prev) and
+  // only sends while native is the active owner + the user left the toggle on.
+  const { createTelegramCompanion } = require("./telegram-companion");
+  telegramCompanion = createTelegramCompanion({
+    getClient: () => getTelegramCompanionClient(),
+    // Mirror the send gate exactly: native-active client present + toggle on.
+    // When false the companion still advances its dedupe map (so flipping the
+    // toggle on later never backfills) but sends nothing.
+    isEnabled: () => getTelegramApprovalPrefs().notifyOnComplete === true
+      && !!getTelegramCompanionClient(),
+    log: telegramApprovalLog,
+  });
 
   _telegramMigrationController = createTelegramMigrationController({
     sidecar: sidecarHandle,

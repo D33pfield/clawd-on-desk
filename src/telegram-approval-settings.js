@@ -6,6 +6,12 @@ const DEFAULT_TG_APPROVAL = Object.freeze({
   enabled: false,
   allowedTgUserId: "",
   targetSessionKey: "",
+  // R1a: push a short "session finished" notification to Telegram when a
+  // session reaches a done/interrupted badge. Native-only (legacy sidecar
+  // users silently lack it — see getTelegramCompanionClient in main.js).
+  // Default ON: R1a sends only a few lines (title + ids), no transcript
+  // output, so the privacy surface is minimal.
+  notifyOnComplete: true,
 });
 
 const BOT_TOKEN_RE = /^\d+:[A-Za-z0-9_-]{30,}$/;
@@ -46,9 +52,11 @@ function normalizeTelegramApproval(value, defaultsValue = DEFAULT_TG_APPROVAL) {
     enabled: defaults.enabled === true,
     allowedTgUserId: trimString(defaults.allowedTgUserId, 64),
     targetSessionKey: normalizeTelegramSessionKey(defaults.targetSessionKey),
+    notifyOnComplete: defaults.notifyOnComplete !== false,
   };
   if (!isPlainObject(value)) return out;
   if (typeof value.enabled === "boolean") out.enabled = value.enabled;
+  if (typeof value.notifyOnComplete === "boolean") out.notifyOnComplete = value.notifyOnComplete;
   if (typeof value.allowedTgUserId === "string") {
     const candidate = trimString(value.allowedTgUserId, 64);
     out.allowedTgUserId = isValidTelegramUserId(candidate) ? candidate : "";
@@ -64,12 +72,16 @@ function validateTelegramApproval(value) {
     return { status: "error", message: "tgApproval must be a plain object" };
   }
   for (const key of Object.keys(value)) {
-    if (key !== "enabled" && key !== "allowedTgUserId" && key !== "targetSessionKey") {
+    if (key !== "enabled" && key !== "allowedTgUserId" && key !== "targetSessionKey"
+      && key !== "notifyOnComplete") {
       return { status: "error", message: `tgApproval.${key} is not supported` };
     }
   }
   if (typeof value.enabled !== "boolean") {
     return { status: "error", message: "tgApproval.enabled must be a boolean" };
+  }
+  if (value.notifyOnComplete !== undefined && typeof value.notifyOnComplete !== "boolean") {
+    return { status: "error", message: "tgApproval.notifyOnComplete must be a boolean" };
   }
   const allowed = trimString(value.allowedTgUserId, 64);
   if (allowed && !isValidTelegramUserId(allowed)) {

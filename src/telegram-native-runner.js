@@ -25,6 +25,12 @@ const { EVENTS } = require("./telegram-migration-state");
 const APPROVAL_CALLBACK_RE = /^clawdperm:([a-z0-9]+):(allow|deny)$/;
 const MAX_MESSAGE_TEXT = 3800;
 const DEFAULT_APPROVAL_TIMEOUT_MS = 90000;
+// R1a notifications are fire-and-forget: a slow send must not pile up behind
+// the snapshot fanout that triggers it. Bound each send and drop on timeout.
+const DEFAULT_NOTIFY_TIMEOUT_MS = 10000;
+// Telegram 429s carry retry_after (seconds). Retry once, but never park a
+// notification longer than this — a stale "done" ping is worthless.
+const MAX_NOTIFY_RETRY_DELAY_MS = 30000;
 
 function randomId() {
   return Math.random().toString(36).slice(2, 12);
@@ -57,6 +63,9 @@ function createTelegramNativeRunner({
   log = () => {},
   longPollTimeoutMs = 25, // Telegram seconds
   approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS,
+  notifyTimeoutMs = DEFAULT_NOTIFY_TIMEOUT_MS,
+  // Injectable so tests can drive 429 retry without real timers.
+  sleep = (ms) => new Promise((r) => { const t = setTimeout(r, ms); if (t && t.unref) t.unref(); }),
 }) {
   const client = new TelegramNativeClient({ tokenStore, transport });
 
@@ -321,6 +330,82 @@ function createTelegramNativeRunner({
     });
   }
 
+  // Send one plain-text message with a bounded timeout. No inline keyboard,
+  // no pending lifecycle — this is the building block for fire-and-forget
+  // notifications (R1a). Returns the raw message or throws a classified error.
+  // The injected logger ultimately does a synchronous file write
+  // (telegramApprovalLog → permLog → rotatedAppend), which can throw on a
+  // bad path / EACCES. Notifications are fire-and-forget on an async chain, so
+  // a throwing log must not turn into an unhandled rejection.
+  function safeLog(level, message, meta) {
+    try { log(level, message, meta); } catch {}
+  }
+
+  async function sendBoundedMessage(chatId, text) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      try { controller.abort(); } catch {}
+    }, Math.max(1, notifyTimeoutMs));
+    if (timer && typeof timer.unref === "function") timer.unref();
+    try {
+      return await client.sendMessage(
+        { chat_id: chatId, text },
+        { signal: controller.signal },
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Public R1a entry point. Best-effort: never throws, always resolves to a
+  // structured result so callers (the snapshot fanout) can log without
+  // branching on exceptions. One 429 retry honouring retry_after; everything
+  // else (403 blocked, timeout, network) is logged and dropped.
+  async function sendNotification(text) {
+    const chatId = getChatId();
+    const body = compactMessageText(text);
+    if (!polling || !chatId || !body) {
+      return { ok: false, errorClass: "not_active" };
+    }
+    try {
+      await sendBoundedMessage(chatId, body);
+      return { ok: true };
+    } catch (err) {
+      const cls = classifyError(err);
+      if (cls === ERROR_CLASSES.RATE_LIMITED) {
+        const retryAfter = Number(err && err.parameters && err.parameters.retry_after);
+        const delayMs = Math.min(
+          MAX_NOTIFY_RETRY_DELAY_MS,
+          Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 1000,
+        );
+        safeLog("warn", "native notification rate limited, retrying once", { delayMs });
+        try {
+          await sleep(delayMs);
+          // Re-read chat id: the user may have re-targeted Telegram during the
+          // retry_after window. Bail if polling stopped, the chat was cleared,
+          // OR the target changed — re-firing a "done" ping at a different chat
+          // than the one in flight is worse than dropping it.
+          const retryChatId = getChatId();
+          if (!polling || !retryChatId || retryChatId !== chatId) {
+            return { ok: false, errorClass: "not_active" };
+          }
+          await sendBoundedMessage(retryChatId, body);
+          return { ok: true };
+        } catch (err2) {
+          const cls2 = classifyError(err2);
+          safeLog("warn", "native notification send failed", { errorClass: cls2 });
+          return { ok: false, errorClass: cls2 };
+        }
+      }
+      if (cls === ERROR_CLASSES.TOKEN_MISSING) {
+        safeLog("debug", "native notification skipped: no token");
+      } else {
+        safeLog("warn", "native notification send failed", { errorClass: cls });
+      }
+      return { ok: false, errorClass: cls };
+    }
+  }
+
   return {
     isEnabled,
     isPolling,
@@ -328,6 +413,7 @@ function createTelegramNativeRunner({
     stop,
     sendTestCard,
     requestApproval,
+    sendNotification,
     _client: client,
     _pendingApprovals: pendingApprovals,
   };
