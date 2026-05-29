@@ -186,6 +186,7 @@ describe("Superset deep-link focus (macOS)", () => {
 describe("Ghostty focus (macOS)", () => {
   it("dispatches Ghostty AppleScript with cwd literal when source is ghostty", (t, done) => {
     const calls = [];
+    const logs = [];
     const { initFocus, cleanup } = loadFocusWithMock(function mockExecFile(cmd, args, opts, cb) {
       if (typeof opts === "function") { cb = opts; opts = {}; }
       calls.push({ cmd, args: [...args] });
@@ -194,13 +195,13 @@ describe("Ghostty focus (macOS)", () => {
         return;
       }
       if (cmd === "osascript") {
-        if (cb) cb(null, "", "");
+        if (cb) cb(null, "ok-cwd\n", "");
         return;
       }
       if (cb) cb(null, "", "");
     });
 
-    const { focusTerminalWindow } = initFocus({});
+    const { focusTerminalWindow } = initFocus({ focusLog: (msg) => logs.push(msg) });
     focusTerminalWindow(11940, "/some/cwd-for-ghostty", null, [11940]);
 
     setTimeout(() => {
@@ -215,12 +216,21 @@ describe("Ghostty focus (macOS)", () => {
         )
       );
       assert.ok(ghosttyScript, "Should run Ghostty AppleScript carrying the cwd literal");
+      assert.ok(
+        logs.some((line) => line.includes("branch=ghostty reason=no-pid-candidates")),
+        `Should log Ghostty no-pid-candidates before cwd fallback, got ${logs.join("\n")}`
+      );
+      assert.ok(
+        logs.some((line) => line.includes("branch=ghostty reason=cwd-fallback")),
+        `Should log Ghostty cwd fallback, got ${logs.join("\n")}`
+      );
       done();
     }, 1500);
   });
 
   it("tries Ghostty tty precision before cwd fallback when pidChain has a tty", (t, done) => {
     const calls = [];
+    const logs = [];
     const { initFocus, cleanup } = loadFocusWithMock(function mockExecFile(cmd, args, opts, cb) {
       if (typeof opts === "function") { cb = opts; opts = {}; }
       calls.push({ cmd, args: [...args] });
@@ -247,7 +257,7 @@ describe("Ghostty focus (macOS)", () => {
       if (cb) cb(null, "", "");
     });
 
-    const { focusTerminalWindow } = initFocus({});
+    const { focusTerminalWindow } = initFocus({ focusLog: (msg) => logs.push(msg) });
     focusTerminalWindow(11940, "/same/project", null, [200, 201, 11940]);
 
     setTimeout(() => {
@@ -272,12 +282,21 @@ describe("Ghostty focus (macOS)", () => {
         !ghosttyScripts.some((script) => script.includes("working directory")),
         "Should not run cwd fallback after precise Ghostty focus succeeds"
       );
+      assert.ok(
+        logs.some((line) => line.includes("branch=ghostty reason=ok-tty")),
+        `Should log Ghostty tty success, got ${logs.join("\n")}`
+      );
+      assert.ok(
+        !logs.some((line) => line.includes("branch=ghostty reason=cwd-fallback")),
+        "Should not log cwd fallback after tty success"
+      );
       done();
     }, 1800);
   });
 
   it("uses Ghostty pid precision when tty misses", (t, done) => {
     const calls = [];
+    const logs = [];
     const { initFocus, cleanup } = loadFocusWithMock(function mockExecFile(cmd, args, opts, cb) {
       if (typeof opts === "function") { cb = opts; opts = {}; }
       calls.push({ cmd, args: [...args] });
@@ -308,7 +327,7 @@ describe("Ghostty focus (macOS)", () => {
       if (cb) cb(null, "", "");
     });
 
-    const { focusTerminalWindow } = initFocus({});
+    const { focusTerminalWindow } = initFocus({ focusLog: (msg) => logs.push(msg) });
     focusTerminalWindow(11940, "/same/project", null, [200, 11940]);
 
     setTimeout(() => {
@@ -329,12 +348,25 @@ describe("Ghostty focus (macOS)", () => {
         !ghosttyScripts.some((script) => script.includes("working directory")),
         "Should not run cwd fallback after pid focus succeeds"
       );
+      assert.ok(
+        logs.some((line) => line.includes("branch=ghostty reason=miss-tty")),
+        `Should log Ghostty tty miss, got ${logs.join("\n")}`
+      );
+      assert.ok(
+        logs.some((line) => line.includes("branch=ghostty reason=ok-pid")),
+        `Should log Ghostty pid success, got ${logs.join("\n")}`
+      );
+      assert.ok(
+        !logs.some((line) => line.includes("branch=ghostty reason=cwd-fallback")),
+        "Should not log cwd fallback after pid success"
+      );
       done();
     }, 1800);
   });
 
   it("falls back to Ghostty cwd focus when tty precision is unavailable", (t, done) => {
     const calls = [];
+    const logs = [];
     const { initFocus, cleanup } = loadFocusWithMock(function mockExecFile(cmd, args, opts, cb) {
       if (typeof opts === "function") { cb = opts; opts = {}; }
       calls.push({ cmd, args: [...args] });
@@ -365,7 +397,7 @@ describe("Ghostty focus (macOS)", () => {
       if (cb) cb(null, "", "");
     });
 
-    const { focusTerminalWindow } = initFocus({});
+    const { focusTerminalWindow } = initFocus({ focusLog: (msg) => logs.push(msg) });
     focusTerminalWindow(11940, "/same/project", null, [200, 11940]);
 
     setTimeout(() => {
@@ -388,6 +420,80 @@ describe("Ghostty focus (macOS)", () => {
           script.includes("/same/project")
         ),
         "Should fall back to cwd focus when precise Ghostty focus fails"
+      );
+      assert.ok(
+        logs.some((line) => line.includes("branch=ghostty reason=osascript-failed-tty:Error")),
+        `Should log Ghostty tty osascript failure, got ${logs.join("\n")}`
+      );
+      assert.ok(
+        logs.some((line) => line.includes("branch=ghostty reason=miss-pid")),
+        `Should log Ghostty pid miss, got ${logs.join("\n")}`
+      );
+      assert.ok(
+        logs.some((line) => line.includes("branch=ghostty reason=cwd-fallback")),
+        `Should log Ghostty cwd fallback, got ${logs.join("\n")}`
+      );
+      assert.ok(
+        logs.some((line) => line.includes("branch=ghostty reason=ok-cwd")),
+        `Should log Ghostty cwd success, got ${logs.join("\n")}`
+      );
+      done();
+    }, 2400);
+  });
+
+  it("logs best-effort Ghostty unsupported statuses when AppleScript returns them", (t, done) => {
+    const calls = [];
+    const logs = [];
+    const { initFocus, cleanup } = loadFocusWithMock(function mockExecFile(cmd, args, opts, cb) {
+      if (typeof opts === "function") { cb = opts; opts = {}; }
+      calls.push({ cmd, args: [...args] });
+      if (cmd === "ps") {
+        const joined = args.join(" ");
+        if (joined.includes("comm=")) {
+          if (cb) cb(null, commLine("ghostty"), "");
+          return;
+        }
+        if (joined.includes("tty=")) {
+          if (cb) cb(null, "  200 ttys010\n", "");
+          return;
+        }
+      }
+      if (cmd === "osascript") {
+        const script = args.find((a) => typeof a === "string" && a.includes('tell application "Ghostty"')) || "";
+        if (script.includes('tell application "Ghostty"') && script.includes("whose tty ends with")) {
+          if (cb) cb(null, "unsupported-tty:-2753\n", "");
+          return;
+        }
+        if (script.includes('tell application "Ghostty"') && script.includes("whose pid is")) {
+          if (cb) cb(null, "unsupported-pid:-2753\n", "");
+          return;
+        }
+        if (cb) cb(null, "miss-cwd\n", "");
+        return;
+      }
+      if (cb) cb(null, "", "");
+    });
+
+    const { focusTerminalWindow } = initFocus({ focusLog: (msg) => logs.push(msg) });
+    focusTerminalWindow(11940, "/same/project", null, [200, 11940]);
+
+    setTimeout(() => {
+      cleanup();
+      assert.ok(
+        calls.some((c) => c.cmd === "osascript" && c.args.some((a) => typeof a === "string" && a.includes("on error errMsg number errNum"))),
+        "Ghostty precise scripts should include AppleScript error capture"
+      );
+      assert.ok(
+        logs.some((line) => line.includes("branch=ghostty reason=unsupported-tty:-2753")),
+        `Should log best-effort tty unsupported status, got ${logs.join("\n")}`
+      );
+      assert.ok(
+        logs.some((line) => line.includes("branch=ghostty reason=unsupported-pid:-2753")),
+        `Should log best-effort pid unsupported status, got ${logs.join("\n")}`
+      );
+      assert.ok(
+        logs.some((line) => line.includes("branch=ghostty reason=cwd-fallback")),
+        `Should still fall back to cwd after unsupported precise paths, got ${logs.join("\n")}`
       );
       done();
     }, 2400);

@@ -713,7 +713,7 @@ function buildGhosttyCwdFocusScript(cwdCandidates) {
             return "ok-cwd"
           end if
         end repeat
-        return "miss"
+        return "miss-cwd"
       end tell`;
 }
 
@@ -730,9 +730,11 @@ function buildGhosttyTtyFocusScript(ttyName) {
               focus (item 1 of matches)
               return "ok-tty"
             end if
+          on error errMsg number errNum
+            return "unsupported-tty:" & errNum
           end try
         end repeat
-        return "miss"
+        return "miss-tty"
       end tell`;
 }
 
@@ -749,10 +751,27 @@ function buildGhosttyPidFocusScript(pidCandidates) {
               focus (item 1 of matches)
               return "ok-pid"
             end if
+          on error errMsg number errNum
+            return "unsupported-pid:" & errNum
           end try
         end repeat
-        return "miss"
+        return "miss-pid"
       end tell`;
+}
+
+function normalizeGhosttyScriptStatus(label, osaErr, osaOut) {
+  if (osaErr) {
+    const code = safeLogValue(osaErr.code || osaErr.name || "error");
+    return `osascript-failed-${label}:${code}`;
+  }
+  const out = String(osaOut || "").trim();
+  if (!out) return `miss-${label}`;
+  if (out === "miss") return `miss-${label}`;
+  return safeLogValue(out);
+}
+
+function logGhosttyFocusResult(reason) {
+  logFocusResult(`branch=ghostty reason=${safeLogValue(reason)}`);
 }
 
 function buildCmuxBinPath(appPath) {
@@ -1041,9 +1060,15 @@ function scheduleGhosttyFocus(sourcePid, cwd, pidChain) {
   // System Events activate is needed.
   if (!isMac || !sourcePid || !cwd) return;
   execFile("ps", ["-o", "comm=", "-p", String(sourcePid)], { encoding: "utf8", timeout: 500 }, (err, stdout) => {
-    if (err) return;
+    if (err) {
+      logGhosttyFocusResult("source-lookup-failed");
+      return;
+    }
     const name = path.basename(stdout.trim()).toLowerCase();
-    if (name !== "ghostty") return;
+    if (name !== "ghostty") {
+      logGhosttyFocusResult("source-not-ghostty");
+      return;
+    }
 
     const cwdCandidates = [cwd];
     try {
@@ -1053,43 +1078,49 @@ function scheduleGhosttyFocus(sourcePid, cwd, pidChain) {
 
     const runFallback = () => {
       const script = buildGhosttyCwdFocusScript(cwdCandidates);
-      setTimeout(() => {
-        execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, () => {});
-      }, 400);
+      logGhosttyFocusResult("cwd-fallback");
+      runGhosttyScript(script, "cwd", null);
     };
 
     const pidCandidates = buildGhosttyPidCandidates(sourcePid, pidChain);
-    const runGhosttyScript = (script, onMiss) => {
+    const runGhosttyScript = (script, label, onMiss) => {
       if (!script) {
-        onMiss();
+        logGhosttyFocusResult(label === "tty" ? "no-tty" : `no-${label}-script`);
+        if (onMiss) onMiss();
         return;
       }
       setTimeout(() => {
         execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, (osaErr, osaOut) => {
-          if (!osaErr && String(osaOut || "").trim().startsWith("ok-")) return;
-          onMiss();
+          const status = normalizeGhosttyScriptStatus(label, osaErr, osaOut);
+          logGhosttyFocusResult(status);
+          if (String(status || "").startsWith("ok-")) return;
+          if (onMiss) onMiss();
         });
       }, 400);
     };
     const runPidOrFallback = () => {
       const pidScript = buildGhosttyPidFocusScript(pidCandidates);
       if (!pidScript) {
+        logGhosttyFocusResult("no-pid-candidates");
         runFallback();
         return;
       }
-      runGhosttyScript(pidScript, runFallback);
+      runGhosttyScript(pidScript, "pid", runFallback);
     };
     const runPreciseOrFallback = (ttyName) => {
-      runGhosttyScript(buildGhosttyTtyFocusScript(ttyName), runPidOrFallback);
+      const ttyScript = buildGhosttyTtyFocusScript(ttyName);
+      runGhosttyScript(ttyScript, "tty", runPidOrFallback);
     };
 
     if (!pidCandidates.length) {
-      runPreciseOrFallback(null);
+      logGhosttyFocusResult("no-pid-candidates");
+      runFallback();
       return;
     }
 
     const pidsArg = pidCandidates.join(",");
     execFile("ps", ["-o", "pid=,tty=", "-p", pidsArg], { encoding: "utf8", timeout: 500 }, (psErr, psOut) => {
+      if (psErr || !psOut) logGhosttyFocusResult("tty-lookup-failed");
       const ttyName = psErr || !psOut ? null : findFirstValidTty(psOut);
       runPreciseOrFallback(ttyName);
     });
