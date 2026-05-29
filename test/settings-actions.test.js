@@ -6,6 +6,7 @@ const assert = require("node:assert");
 const {
   updateRegistry,
   commandRegistry,
+  MANAGED_CLEANUP_AGENT_IDS,
   requireBoolean,
   requireFiniteNumber,
   requireEnum,
@@ -827,6 +828,33 @@ describe("hook commands", () => {
     assert.strictEqual(r.status, "error");
     assert.match(r.message, /disk locked/);
     assert.deepStrictEqual(calls, ["stop", "uninstall", "start"]);
+  });
+
+  it("cleanupIntegrations disables all managed agents before running cleanup", async () => {
+    const calls = [];
+    const snapshot = prefs.getDefaults();
+    const result = await commandRegistry.cleanupIntegrations(null, {
+      snapshot,
+      stopIntegrationForAgent: (agentId) => calls.push(["stopIntegration", agentId]),
+      stopMonitorForAgent: (agentId) => calls.push(["stopMonitor", agentId]),
+      clearSessionsByAgent: (agentId) => calls.push(["clearSessions", agentId]),
+      dismissPermissionsByAgent: (agentId) => calls.push(["dismissPermissions", agentId]),
+      cleanupIntegrations: (options) => {
+        calls.push(["cleanup", options.source]);
+        return {
+          mode: "apply",
+          summary: { agentsChecked: 14, agentsAffected: 2, entriesRemoved: 3, skipped: 12, failed: 0 },
+        };
+      },
+    });
+
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(result.cleanup.summary.entriesRemoved, 3);
+    for (const agentId of MANAGED_CLEANUP_AGENT_IDS) {
+      assert.strictEqual(result.commit.agents[agentId].enabled, false, `${agentId} should be disabled`);
+    }
+    assert.deepStrictEqual(calls.at(-1), ["cleanup", "about"]);
+    assert.deepStrictEqual(calls[0], ["stopIntegration", "claude-code"]);
   });
 });
 

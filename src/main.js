@@ -248,6 +248,10 @@ const _settingsController = createSettingsController({
     repairIntegrationForAgent: (id, options) =>
       agentRuntime ? agentRuntime.repairIntegrationForAgent(id, options) : false,
     stopIntegrationForAgent: (id) => agentRuntime ? agentRuntime.stopIntegrationForAgent(id) : false,
+    cleanupIntegrations: (options = {}) => {
+      const { cleanupIntegrations } = require("../hooks/cleanup-integrations.js");
+      return cleanupIntegrations({ ...options, backup: true, silent: true });
+    },
     repairLocalServer: () => _server && typeof _server.repairRuntimeStatus === "function"
       ? _server.repairRuntimeStatus()
       : false,
