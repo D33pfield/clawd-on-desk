@@ -48,6 +48,7 @@ const {
   getSessionFocusTarget,
 } = require("./session-focus");
 const { focusCodexThreadTarget } = require("./session-focus-handoff");
+const { isSessionInProgress } = require("./state-session-snapshot");
 const { getAllAgents } = require("../agents/registry");
 
 // ── Autoplay policy: allow sound playback without user gesture ──
@@ -1125,10 +1126,10 @@ const _stateCtx = {
   buildTrayMenu: () => buildTrayMenu(),
   debugLog: (msg) => sessionLog(msg),
   broadcastSessionSnapshot: (snapshot) => {
+    reconcilePowerSaveBlocker();
     broadcastDashboardSessionSnapshot(snapshot);
     broadcastSessionHudSnapshot(snapshot);
     repositionFloatingBubbles();
-    reconcilePowerSaveBlocker();
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.notifyStateChanged();
   },
   // Phase 3b: 读 prefs.themeOverrides 判断某个 oneshot state 是否被用户禁用。
@@ -1175,15 +1176,12 @@ const { setState, applyState, updateSession, resolveDisplayState, getSvgOverride
 const sessions = _state.sessions;
 
 // ── Keep-awake: block OS sleep while any agent task is in progress ──
-// A session counts as "in progress" when its state is anything other than
-// idle/sleeping (mirrors deriveSessionBadge's "running" semantics). headless
-// sessions never participate.
+// State→in-progress mapping lives in state-session-snapshot.isSessionInProgress
+// (kept as a pure helper so the semantics are unit-tested).
 let powerSaveBlockerId = null;
 function anySessionInProgress() {
   for (const [, s] of sessions) {
-    if (!s || s.headless) continue;
-    if (s.state === "idle" || s.state === "sleeping") continue;
-    return true;
+    if (isSessionInProgress(s)) return true;
   }
   return false;
 }
