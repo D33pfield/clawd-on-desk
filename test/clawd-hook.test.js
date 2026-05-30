@@ -564,6 +564,20 @@ describe("extractLastAssistantTextFromEntries", () => {
     assert.strictEqual(result, null);
   });
 
+  it("does not cross a user boundary to reuse an older assistant answer", () => {
+    const result = extractLastAssistantTextFromEntries([
+      { type: "assistant", sessionId: "sid-1", message: { content: "older answer" } },
+      { type: "user", sessionId: "sid-1", message: { content: "new prompt" } },
+      {
+        type: "assistant",
+        sessionId: "sid-1",
+        message: { content: [{ type: "tool_use", name: "Bash", input: { command: "npm test" } }] },
+      },
+    ], "sid-1");
+
+    assert.strictEqual(result, null);
+  });
+
   it("clamps long assistant text with a truncation marker", () => {
     const result = extractLastAssistantTextFromEntries([
       { type: "assistant", sessionId: "sid-1", message: { content: "a".repeat(100) + "TAIL" } },

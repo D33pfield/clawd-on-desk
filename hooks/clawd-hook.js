@@ -171,6 +171,12 @@ function assistantEntryLooksSubagent(entry) {
     || entry.subagent === true;
 }
 
+function assistantEntryIsTurnBoundary(entry, sessionId) {
+  if (!entry || typeof entry !== "object") return false;
+  if (entry.type !== "user") return false;
+  return assistantEntryMatchesSession(entry, sessionId);
+}
+
 function assistantTextPartsFromContent(content) {
   if (typeof content === "string") return [content];
   if (!Array.isArray(content)) return [];
@@ -207,6 +213,7 @@ function extractLastAssistantTextFromEntries(entries, sessionId, options = {}) {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (!entry || typeof entry !== "object") continue;
+    if (assistantEntryIsTurnBoundary(entry, sessionId)) break;
     if (entry.type !== "assistant") continue;
     if (entry.isApiErrorMessage === true) continue;
     if (!assistantEntryMatchesSession(entry, sessionId)) continue;
