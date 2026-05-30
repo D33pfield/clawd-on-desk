@@ -33,6 +33,8 @@ const DEFAULT_NOTIFY_TIMEOUT_MS = 10000;
 // Telegram 429s carry retry_after (seconds). Retry once, but never park a
 // notification longer than this — a stale "done" ping is worthless.
 const MAX_NOTIFY_RETRY_DELAY_MS = 30000;
+const DEFAULT_POLL_RETRY_INITIAL_MS = 1000;
+const DEFAULT_POLL_RETRY_MAX_MS = 30000;
 
 function randomId() {
   return Math.random().toString(36).slice(2, 12);
@@ -114,6 +116,8 @@ function createTelegramNativeRunner({
   longPollTimeoutMs = 25, // Telegram seconds
   approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS,
   notifyTimeoutMs = DEFAULT_NOTIFY_TIMEOUT_MS,
+  pollRetryInitialMs = DEFAULT_POLL_RETRY_INITIAL_MS,
+  pollRetryMaxMs = DEFAULT_POLL_RETRY_MAX_MS,
   // Injectable so tests can drive 429 retry without real timers.
   sleep = (ms) => new Promise((r) => { const t = setTimeout(r, ms); if (t && t.unref) t.unref(); }),
 }) {
@@ -124,6 +128,7 @@ function createTelegramNativeRunner({
   let pendingTest = null; // { nonce, chatId, allowedUser, messageId }
   const pendingApprovals = new Map(); // id -> { resolve, chatId, allowedUser, messageId, timer, signal, onAbort, suggestionIndexes }
   let lastError = null;
+  let pollRetryDelayMs = Math.max(1, pollRetryInitialMs);
 
   function isPolling() {
     return polling;
@@ -148,6 +153,33 @@ function createTelegramNativeRunner({
       errorClass: compactMessageText(errorClass || "unknown", 48),
       at: Date.now(),
     };
+  }
+
+  function resetPollRetryDelay() {
+    pollRetryDelayMs = Math.max(1, pollRetryInitialMs);
+  }
+
+  function isFatalPollError(errorClass) {
+    return errorClass === ERROR_CLASSES.UNAUTHORIZED
+      || errorClass === ERROR_CLASSES.FORBIDDEN
+      || errorClass === ERROR_CLASSES.BAD_REQUEST
+      || errorClass === ERROR_CLASSES.WEBHOOK_CONFLICT
+      || errorClass === ERROR_CLASSES.TOKEN_MISSING;
+  }
+
+  function nextPollRetryDelay(err, errorClass) {
+    if (errorClass === ERROR_CLASSES.RATE_LIMITED) {
+      const retryAfter = Number(err && err.parameters && err.parameters.retry_after);
+      const delay = Math.min(
+        Math.max(1, pollRetryMaxMs),
+        Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : pollRetryDelayMs,
+      );
+      pollRetryDelayMs = Math.min(Math.max(1, pollRetryMaxMs), Math.max(delay + 1, delay * 2));
+      return delay;
+    }
+    const delay = Math.min(Math.max(1, pollRetryMaxMs), pollRetryDelayMs);
+    pollRetryDelayMs = Math.min(Math.max(1, pollRetryMaxMs), Math.max(delay + 1, delay * 2));
+    return delay;
   }
 
   async function start() {
@@ -177,18 +209,25 @@ function createTelegramNativeRunner({
 
   async function loopFirst(signal) {
     try {
-      await pollWithConflictRetry(() => client.getUpdates({ timeout: 0, signal }), { signal });
+      await pollWithConflictRetry(
+        () => client.getUpdates({ timeout: 0, signal }),
+        { signal, sleep },
+      );
     } catch (err) {
       const cls = classifyError(err);
       if (cls === ERROR_CLASSES.TIMEOUT) return; // aborted
-      if (cls === ERROR_CLASSES.CONFLICT || cls === ERROR_CLASSES.WEBHOOK_CONFLICT) {
+      if (pendingTest && (cls === ERROR_CLASSES.CONFLICT || isFatalPollError(cls))) {
         await failTest(err, cls);
         return;
       }
-      // Any other class: pass through to normal loop so consistent classification.
-      await failTest(err, cls);
-      return;
+      noteError("polling", cls);
+      if (isFatalPollError(cls)) return;
+      const delayMs = nextPollRetryDelay(err, cls);
+      safeLog("warn", "native initial polling error, retrying", { errorClass: cls, delayMs });
+      await sleep(delayMs);
+      return loop(signal);
     }
+    resetPollRetryDelay();
     return loop(signal);
   }
 
@@ -200,11 +239,25 @@ function createTelegramNativeRunner({
       } catch (err) {
         const cls = classifyError(err);
         if (cls === ERROR_CLASSES.TIMEOUT) return; // aborted
-        await failTest(err, cls);
-        return;
+        noteError("polling", cls);
+        if (isFatalPollError(cls)) {
+          if (pendingTest) await failTest(err, cls);
+          return;
+        }
+        const delayMs = nextPollRetryDelay(err, cls);
+        safeLog("warn", "native polling error, retrying", { errorClass: cls, delayMs });
+        await sleep(delayMs);
+        continue;
       }
-      for (const u of updates) {
-        await handleUpdate(u);
+      resetPollRetryDelay();
+      const batch = Array.isArray(updates) ? updates : [];
+      for (const u of batch) {
+        try {
+          await handleUpdate(u);
+        } catch (err) {
+          noteError("update", "handler_error");
+          safeLog("warn", "native update handler failed", { error: err && err.message });
+        }
       }
     }
   }

@@ -691,3 +691,85 @@ test("native runner ignores /status while command handling is disabled", async (
   assert.equal(server.calls.some((call) => call.method === "sendMessage"), false);
   await runner.stop();
 });
+
+test("native runner retries transient polling errors and keeps handling updates", async () => {
+  const server = createFakeTelegramServer();
+  let commandCount = 0;
+  const slept = [];
+
+  server.enqueue("getUpdates", () => {
+    throw Object.assign(new Error("socket reset"), { code: "ECONNRESET" });
+  });
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [{
+      update_id: 1,
+      message: {
+        text: "/status",
+        from: { id: 777 },
+        chat: { id: 123 },
+      },
+    }],
+  }));
+  server.enqueue("sendMessage", (payload) => {
+    assert.equal(payload.text, "still alive");
+    return { ok: true, result: { message_id: 12 } };
+  });
+
+  let runner;
+  runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+    pollRetryInitialMs: 25,
+    sleep: async (ms) => { slept.push(ms); },
+    onCommand: () => {
+      commandCount += 1;
+      runner.stop();
+      return "still alive";
+    },
+  });
+
+  await runner.start();
+  await tick();
+  await tick();
+  await tick();
+  await tick();
+
+  assert.deepEqual(slept, [25]);
+  assert.equal(commandCount, 1);
+  assert.equal(server.calls.filter((call) => call.method === "sendMessage").length, 1);
+  await runner.stop();
+});
+
+test("native runner stops polling on fatal webhook conflicts", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  const events = [];
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueueError("getUpdates", {
+    status: 409,
+    description: "Conflict: can't use getUpdates method while webhook is active",
+  });
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async (event) => { events.push(event); },
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+
+  await runner.start();
+  await tick();
+  releaseFirstPoll({ ok: true, result: [] });
+  await tick();
+  await tick();
+
+  assert.equal(runner.isPolling(), false);
+  assert.equal(runner.getStatus().lastError.errorClass, "409_webhook");
+  assert.deepEqual(events, [], "active polling failures should not dispatch TEST_FAILED without a pending test");
+});

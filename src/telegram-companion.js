@@ -30,6 +30,39 @@ const COMPLETION_EVENTS = new Set([
 ]);
 const DONE_BADGES = new Set(["done", "interrupted"]);
 
+const NOTIFICATION_LOCALES = Object.freeze({
+  en: {
+    session: "session",
+    done: "done",
+    interrupted: "interrupted",
+    wrapStatus: (status) => `(${status})`,
+  },
+  zh: {
+    session: "会话",
+    done: "已完成",
+    interrupted: "已中断",
+    wrapStatus: (status) => `（${status}）`,
+  },
+  "zh-TW": {
+    session: "工作階段",
+    done: "已完成",
+    interrupted: "已中斷",
+    wrapStatus: (status) => `（${status}）`,
+  },
+  ko: {
+    session: "세션",
+    done: "완료",
+    interrupted: "중단됨",
+    wrapStatus: (status) => `(${status})`,
+  },
+  ja: {
+    session: "セッション",
+    done: "完了",
+    interrupted: "中断",
+    wrapStatus: (status) => `（${status}）`,
+  },
+});
+
 function dedupeKey(entry) {
   const le = entry && entry.lastEvent;
   return `${entry.id}:${le ? le.rawEvent : ""}:${le ? le.at : ""}`;
@@ -53,25 +86,33 @@ function shortId(id) {
   return s.length > 6 ? s.slice(0, 6) : s;
 }
 
+function getNotificationLocale(lang) {
+  return NOTIFICATION_LOCALES[lang] || NOTIFICATION_LOCALES.en;
+}
+
 // Privacy note: displayTitle is the same session title shown on the desktop
 // HUD / tray (it can derive from the user's prompt first line via
 // sessionTitle). R1a intentionally mirrors the desktop surface rather than
 // over-restricting — the message carries the title + identity fields, but
 // never transcript output. The Telegram carrier itself (screenshots /
 // forwarding / server storage) is the only added exposure vs. the desktop.
-function formatNotification(entry) {
+function formatNotification(entry, options = {}) {
   if (!entry) return "";
+  const locale = getNotificationLocale(options.lang);
   const interrupted = entry.badge === "interrupted";
   const icon = interrupted ? "⚠️" : "✅"; // ⚠️ / ✅
-  const status = interrupted ? "interrupted" : "done";
-  const title = entry.displayTitle || (entry.id ? `${shortId(entry.id)}..` : "session");
+  const status = interrupted ? locale.interrupted : locale.done;
+  const title = entry.displayTitle || (entry.id ? `${shortId(entry.id)}..` : locale.session);
   const meta = [];
   if (entry.agentId) meta.push(entry.agentId);
   const folder = folderName(entry.cwd);
   if (folder) meta.push(folder);
   if (entry.host) meta.push(entry.host);
   if (entry.id) meta.push(`#${shortId(entry.id)}`);
-  const head = `${icon} ${title} (${status})`;
+  const wrapStatus = typeof locale.wrapStatus === "function"
+    ? locale.wrapStatus(status)
+    : `(${status})`;
+  const head = `${icon} ${title} ${wrapStatus}`;
   return meta.length ? `${head}\n${meta.join(" · ")}` : head; // " · "
 }
 
@@ -79,7 +120,8 @@ function createTelegramCompanion({
   getClient,
   isEnabled,
   log = () => {},
-  formatText = formatNotification,
+  getLang = () => "en",
+  formatText = null,
 } = {}) {
   const lastNotified = new Map(); // id -> last dedupe key
   let primed = false;
@@ -126,7 +168,14 @@ function createTelegramCompanion({
     if (!client || typeof client.sendNotification !== "function") return;
 
     for (const entry of toSend) {
-      const text = formatText(entry);
+      let lang = "en";
+      try {
+        const value = typeof getLang === "function" ? getLang() : "";
+        if (typeof value === "string" && value) lang = value;
+      } catch {}
+      const text = typeof formatText === "function"
+        ? formatText(entry, { lang })
+        : formatNotification(entry, { lang });
       if (!text) continue;
       // Fire-and-forget: do NOT await — we are on the synchronous broadcast
       // path. sendNotification never throws, but guard anyway.

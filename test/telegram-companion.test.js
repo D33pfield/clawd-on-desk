@@ -36,11 +36,12 @@ function makeClient() {
   };
 }
 
-function makeCompanion({ enabled = true, client } = {}) {
+function makeCompanion({ enabled = true, client, getLang } = {}) {
   const sink = client || makeClient();
   const comp = createTelegramCompanion({
     getClient: () => sink.client,
     isEnabled: () => enabled,
+    getLang,
   });
   return { comp, sent: sink.sent };
 }
@@ -144,6 +145,23 @@ test("interrupted badge uses the warning marker", async () => {
   await tick();
   assert.equal(sent.length, 1);
   assert.match(sent[0], /interrupted/);
+});
+
+test("completion notification follows the current Clawd language", async () => {
+  let lang = "zh";
+  const { comp, sent } = makeCompanion({ getLang: () => lang });
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry()] });
+  await tick();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /已完成/);
+  assert.doesNotMatch(sent[0], /\(done\)/);
+
+  lang = "ja";
+  comp.onSnapshot({ sessions: [doneEntry({ lastEvent: { rawEvent: "Stop", at: 2000 } })] });
+  await tick();
+  assert.equal(sent.length, 2);
+  assert.match(sent[1], /完了/);
 });
 
 test("forgets sessions that drop out of the snapshot", async () => {

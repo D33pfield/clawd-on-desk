@@ -1851,6 +1851,7 @@ async function initTelegramMigrationController() {
   const { createTelegramCompanion } = require("./telegram-companion");
   telegramCompanion = createTelegramCompanion({
     getClient: () => getTelegramCompanionClient(),
+    getLang: () => _settingsController.get("lang") || lang || "en",
     // Mirror the send gate exactly: native-active client present + toggle on.
     // When false the companion still advances its dedupe map (so flipping the
     // toggle on later never backfills) but sends nothing.
