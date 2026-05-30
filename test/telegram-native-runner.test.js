@@ -539,3 +539,155 @@ test("sendNotification drops on 403 without retrying", async () => {
   assert.equal(server.calls.filter((c) => c.method === "sendMessage").length, 1);
   await runner.stop();
 });
+
+// ── R2 /status command ────────────────────────────────────────────────────
+
+test("native runner replies to /status from the configured Telegram user and chat", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  let runner;
+  const commands = [];
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [{
+      update_id: 1,
+      message: {
+        message_id: 10,
+        text: "/status all",
+        from: { id: 777 },
+        chat: { id: 123 },
+      },
+    }],
+  }));
+  server.enqueue("sendMessage", (payload) => {
+    assert.equal(payload.chat_id, "123");
+    assert.equal(payload.text, "status: all");
+    assert.equal(payload.reply_markup, undefined);
+    return { ok: true, result: { message_id: 11 } };
+  });
+
+  runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+    onCommand: ({ command, args, chatId, fromId }) => {
+      commands.push({ command, args, chatId, fromId });
+      runner.stop();
+      return "status: all";
+    },
+  });
+
+  await runner.start();
+  await tick();
+  releaseFirstPoll({ ok: true, result: [] });
+  await tick();
+  await tick();
+  await tick();
+
+  assert.deepEqual(commands, [{
+    command: "status",
+    args: "all",
+    chatId: "123",
+    fromId: "777",
+  }]);
+  assert.equal(server.calls.filter((call) => call.method === "sendMessage").length, 1);
+  assert.equal(runner.getStatus().pendingApprovalCount, 0);
+  await runner.stop();
+});
+
+test("native runner ignores /status from the wrong Telegram user or chat", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  let commandCount = 0;
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [
+      {
+        update_id: 1,
+        message: {
+          text: "/status",
+          from: { id: 999 },
+          chat: { id: 123 },
+        },
+      },
+      {
+        update_id: 2,
+        message: {
+          text: "/status",
+          from: { id: 777 },
+          chat: { id: 456 },
+        },
+      },
+    ],
+  }));
+  server.enqueue("getUpdates", () => new Promise(() => {}));
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+    onCommand: () => {
+      commandCount += 1;
+      return "should not send";
+    },
+  });
+
+  await runner.start();
+  await tick();
+  releaseFirstPoll({ ok: true, result: [] });
+  await tick();
+  await tick();
+
+  assert.equal(commandCount, 0);
+  assert.equal(server.calls.some((call) => call.method === "sendMessage"), false);
+  await runner.stop();
+});
+
+test("native runner ignores /status while command handling is disabled", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  let commandCount = 0;
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [{
+      update_id: 1,
+      message: {
+        text: "/status",
+        from: { id: 777 },
+        chat: { id: 123 },
+      },
+    }],
+  }));
+  server.enqueue("getUpdates", () => new Promise(() => {}));
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+    isCommandEnabled: () => false,
+    onCommand: () => {
+      commandCount += 1;
+      return "should not send";
+    },
+  });
+
+  await runner.start();
+  await tick();
+  releaseFirstPoll({ ok: true, result: [] });
+  await tick();
+  await tick();
+
+  assert.equal(commandCount, 0);
+  assert.equal(server.calls.some((call) => call.method === "sendMessage"), false);
+  await runner.stop();
+});
