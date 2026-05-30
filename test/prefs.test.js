@@ -66,6 +66,7 @@ describe("prefs.getDefaults", () => {
       allowedTgUserId: "",
       targetSessionKey: "",
       notifyOnComplete: true,
+      completionOutputMode: "off",
     });
   });
 
@@ -262,6 +263,7 @@ describe("prefs.validate", () => {
       allowedTgUserId: "123456789",
       targetSessionKey: "telegram:987654321",
       notifyOnComplete: true,
+      completionOutputMode: "off",
     });
     assert.strictEqual(Object.prototype.hasOwnProperty.call(v.tgApproval, "botToken"), false);
   });

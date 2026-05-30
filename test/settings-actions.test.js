@@ -224,6 +224,18 @@ describe("updateRegistry pure-data validators", () => {
       allowedTgUserId: "123456789",
       targetSessionKey: "telegram:0",
     }, deps).status, "error");
+    assert.strictEqual(updateRegistry.tgApproval({
+      enabled: true,
+      allowedTgUserId: "123456789",
+      targetSessionKey: "telegram:987654321",
+      completionOutputMode: "full",
+    }, deps).status, "ok");
+    assert.strictEqual(updateRegistry.tgApproval({
+      enabled: true,
+      allowedTgUserId: "123456789",
+      targetSessionKey: "telegram:987654321",
+      completionOutputMode: "summary",
+    }, deps).status, "error");
   });
 
   it("hardwareBuddy accepts only the normalized product settings shape", () => {

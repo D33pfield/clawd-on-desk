@@ -3491,6 +3491,9 @@ html, body {
   outline-offset: 1px;
   border-color: var(--accent);
 }
+.tg-approval-output-select {
+  min-width: 180px;
+}
 
 .tg-approval-prereq-row .row-desc {
   color: var(--toast-error);

@@ -899,6 +899,7 @@ function loadAnimMapTabForTest({
 function loadTelegramApprovalTabForTest({
   snapshot,
   settingsAPI = {},
+  confirm = () => true,
 } = {}) {
   const body = new FakeElement("body");
   const content = new FakeElement("main");
@@ -943,6 +944,7 @@ function loadTelegramApprovalTabForTest({
     window: null,
     globalThis: null,
     settingsAPI: api,
+    confirm,
   };
   context.window = context;
   context.globalThis = context;
@@ -1355,6 +1357,7 @@ describe("settings renderer browser environment", () => {
         allowedTgUserId: "123456789",
         targetSessionKey: "telegram:123456789",
         notifyOnComplete: false,
+        completionOutputMode: "off",
       },
     }]);
     assert.ok(
@@ -1410,6 +1413,7 @@ describe("settings renderer browser environment", () => {
         allowedTgUserId: "123456789",
         targetSessionKey: "telegram:123456789",
         notifyOnComplete: true,
+        completionOutputMode: "off",
       },
     }]);
     // …and turning OFF must ALSO stop the native transport, otherwise the poller
@@ -1419,6 +1423,68 @@ describe("settings renderer browser environment", () => {
         && c.payload && c.payload.type === "USER_DISABLE"),
       "turning the switch off should dispatch USER_DISABLE",
     );
+  });
+
+  it("requires confirmation before enabling full Telegram completion output", async () => {
+    const confirmCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: true,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+          notifyOnComplete: true,
+          completionOutputMode: "off",
+        },
+      },
+      confirm: (message) => {
+        confirmCalls.push(message);
+        return false;
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const select = harness.content.querySelector(".tg-approval-output-select");
+    assert.deepStrictEqual(select.children.map((option) => option.value), ["off", "full"]);
+    select.value = "full";
+    select.dispatchEvent({ type: "change" });
+
+    assert.deepStrictEqual(confirmCalls, ["telegramApprovalCompletionOutputFullConfirm"]);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), []);
+    assert.equal(select.value, "off");
+
+    const confirmed = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: true,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+          notifyOnComplete: true,
+          completionOutputMode: "off",
+        },
+      },
+      confirm: () => true,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    confirmed.render();
+
+    const confirmedSelect = confirmed.content.querySelector(".tg-approval-output-select");
+    confirmedSelect.value = "full";
+    confirmedSelect.dispatchEvent({ type: "change" });
+
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(confirmed.updates)), [{
+      key: "tgApproval",
+      value: {
+        enabled: true,
+        allowedTgUserId: "123456789",
+        targetSessionKey: "telegram:123456789",
+        notifyOnComplete: true,
+        completionOutputMode: "full",
+      },
+    }]);
   });
 
   it("shows native-active Telegram approval as enabled even when the legacy flag is false", async () => {

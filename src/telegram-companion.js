@@ -29,36 +29,49 @@ const COMPLETION_EVENTS = new Set([
   "event_msg:task_complete",
 ]);
 const DONE_BADGES = new Set(["done", "interrupted"]);
+const COMPLETION_OUTPUT_MODES = new Set(["off", "full"]);
+const OUTPUT_FULL_MAX = 2600;
+const NOTIFICATION_TEXT_MAX = 3600;
 
 const NOTIFICATION_LOCALES = Object.freeze({
   en: {
     session: "session",
     done: "done",
     interrupted: "interrupted",
+    assistantOutput: "Assistant output",
+    truncated: "truncated",
     wrapStatus: (status) => `(${status})`,
   },
   zh: {
     session: "会话",
     done: "已完成",
     interrupted: "已中断",
+    assistantOutput: "Assistant 输出",
+    truncated: "已截断",
     wrapStatus: (status) => `（${status}）`,
   },
   "zh-TW": {
     session: "工作階段",
     done: "已完成",
     interrupted: "已中斷",
+    assistantOutput: "Assistant 輸出",
+    truncated: "已截斷",
     wrapStatus: (status) => `（${status}）`,
   },
   ko: {
     session: "세션",
     done: "완료",
     interrupted: "중단됨",
+    assistantOutput: "Assistant 출력",
+    truncated: "잘림",
     wrapStatus: (status) => `(${status})`,
   },
   ja: {
     session: "セッション",
     done: "完了",
     interrupted: "中断",
+    assistantOutput: "Assistant 出力",
+    truncated: "省略",
     wrapStatus: (status) => `（${status}）`,
   },
 });
@@ -90,12 +103,71 @@ function getNotificationLocale(lang) {
   return NOTIFICATION_LOCALES[lang] || NOTIFICATION_LOCALES.en;
 }
 
+function normalizeCompletionOutputMode(value) {
+  if (value === "tail") return "full";
+  return typeof value === "string" && COMPLETION_OUTPUT_MODES.has(value) ? value : "off";
+}
+
+function redactAssistantOutputText(value) {
+  let text = typeof value === "string" ? value : "";
+  text = text
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+  if (!text) return "";
+  text = text.replace(/\b\d+:[A-Za-z0-9_-]{20,}\b/g, "<redacted:telegram-token>");
+  text = text.replace(/\b(?:Bearer|Token)\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, "Bearer <redacted>");
+  text = text.replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,})\b/g, "<redacted:token>");
+  text = text.replace(/\bAKIA[0-9A-Z]{16}\b/g, "<redacted:aws-key>");
+  text = text.replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|password|secret)\s*[:=]\s*\S+/gi, "$1=<redacted>");
+  text = text.replace(/\b[A-Za-z0-9+/=_-]{48,}\b/g, "<redacted:secretish>");
+  return text;
+}
+
+function truncateWithMiddle(text, maxLen) {
+  if (text.length <= maxLen) return { text, truncated: false };
+  const marker = "\n...[truncated]...\n";
+  if (maxLen <= marker.length + 20) {
+    return { text: text.slice(0, maxLen), truncated: true };
+  }
+  const keep = maxLen - marker.length;
+  const head = Math.ceil(keep / 2);
+  const tail = Math.floor(keep / 2);
+  return {
+    text: `${text.slice(0, head)}${marker}${text.slice(text.length - tail)}`,
+    truncated: true,
+  };
+}
+
+function formatAssistantOutputSection(entry, mode, locale) {
+  const outputMode = normalizeCompletionOutputMode(mode);
+  if (outputMode === "off") return "";
+  const raw = entry && typeof entry.assistantLastOutput === "string" ? entry.assistantLastOutput : "";
+  const redacted = redactAssistantOutputText(raw);
+  if (!redacted) return "";
+  const limited = truncateWithMiddle(redacted, OUTPUT_FULL_MAX);
+  const truncated = limited.truncated || !!(entry && entry.assistantLastOutputTruncated === true);
+  const label = locale.assistantOutput || NOTIFICATION_LOCALES.en.assistantOutput;
+  const suffix = truncated
+    ? ` (${locale.truncated || NOTIFICATION_LOCALES.en.truncated})`
+    : "";
+  return `\n\n${label}${suffix}:\n${limited.text}`;
+}
+
+function truncateNotificationText(text, locale) {
+  if (text.length <= NOTIFICATION_TEXT_MAX) return text;
+  const marker = `\n... ${locale.truncated || NOTIFICATION_LOCALES.en.truncated}`;
+  return `${text.slice(0, Math.max(0, NOTIFICATION_TEXT_MAX - marker.length))}${marker}`;
+}
+
 // Privacy note: displayTitle is the same session title shown on the desktop
 // HUD / tray (it can derive from the user's prompt first line via
 // sessionTitle). R1a intentionally mirrors the desktop surface rather than
 // over-restricting — the message carries the title + identity fields, but
-// never transcript output. The Telegram carrier itself (screenshots /
-// forwarding / server storage) is the only added exposure vs. the desktop.
+// transcript output is included only when the user opts into R1b full-output
+// mode. The Telegram carrier itself (screenshots / forwarding / server
+// storage) is the added exposure vs. the desktop.
 function formatNotification(entry, options = {}) {
   if (!entry) return "";
   const locale = getNotificationLocale(options.lang);
@@ -113,7 +185,9 @@ function formatNotification(entry, options = {}) {
     ? locale.wrapStatus(status)
     : `(${status})`;
   const head = `${icon} ${title} ${wrapStatus}`;
-  return meta.length ? `${head}\n${meta.join(" · ")}` : head; // " · "
+  const base = meta.length ? `${head}\n${meta.join(" · ")}` : head; // " · "
+  const withOutput = `${base}${formatAssistantOutputSection(entry, options.completionOutputMode, locale)}`;
+  return truncateNotificationText(withOutput, locale);
 }
 
 function createTelegramCompanion({
@@ -121,6 +195,7 @@ function createTelegramCompanion({
   isEnabled,
   log = () => {},
   getLang = () => "en",
+  getCompletionOutputMode = () => "off",
   formatText = null,
 } = {}) {
   const lastNotified = new Map(); // id -> last dedupe key
@@ -173,9 +248,15 @@ function createTelegramCompanion({
         const value = typeof getLang === "function" ? getLang() : "";
         if (typeof value === "string" && value) lang = value;
       } catch {}
+      let completionOutputMode = "off";
+      try {
+        completionOutputMode = normalizeCompletionOutputMode(
+          typeof getCompletionOutputMode === "function" ? getCompletionOutputMode() : "off"
+        );
+      } catch {}
       const text = typeof formatText === "function"
-        ? formatText(entry, { lang })
-        : formatNotification(entry, { lang });
+        ? formatText(entry, { lang, completionOutputMode })
+        : formatNotification(entry, { lang, completionOutputMode });
       if (!text) continue;
       // Fire-and-forget: do NOT await — we are on the synchronous broadcast
       // path. sendNotification never throws, but guard anyway.
@@ -205,6 +286,8 @@ function createTelegramCompanion({
 module.exports = {
   createTelegramCompanion,
   formatNotification,
+  formatAssistantOutputSection,
+  redactAssistantOutputText,
   isCompletion,
   dedupeKey,
   COMPLETION_EVENTS,

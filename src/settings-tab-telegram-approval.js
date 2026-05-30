@@ -37,6 +37,9 @@
       // built from this object, so omitting it would let normalize() reset a
       // user's `false` back to the default `true` on the next save.
       notifyOnComplete: !(cfg && cfg.notifyOnComplete === false),
+      completionOutputMode: cfg && cfg.completionOutputMode === "full"
+        ? "full"
+        : (cfg && cfg.completionOutputMode === "tail" ? "full" : "off"),
     };
   }
 
@@ -674,6 +677,7 @@
         // user_id in Telegram, so this is correct for the supported path.
         targetSessionKey: raw,
         notifyOnComplete: currentConfig().notifyOnComplete,
+        completionOutputMode: currentConfig().completionOutputMode,
       });
     });
 
@@ -697,6 +701,7 @@
       rows.push(buildPrerequisitesRow({ tokenConfigured, recipientConfigured }));
     }
     rows.push(buildEnabledRow({ ready }));
+    rows.push(buildCompletionOutputRow());
     rows.push(buildTestRow({ ready }));
     return helpers.buildSection(t("telegramApprovalStep3Title"), rows);
   }
@@ -785,6 +790,55 @@
       });
     }
     ctrl.appendChild(sw);
+    row.appendChild(ctrl);
+    return row;
+  }
+
+  function buildCompletionOutputRow() {
+    const cfg = currentConfig();
+    const mode = ["off", "full"].includes(cfg.completionOutputMode)
+      ? cfg.completionOutputMode
+      : "off";
+    const row = document.createElement("div");
+    row.className = "row tg-approval-completion-output-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("telegramApprovalCompletionOutput");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("telegramApprovalCompletionOutputDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control";
+    const select = document.createElement("select");
+    select.className = "tg-approval-input tg-approval-output-select";
+    select.disabled = view.configPending;
+    for (const value of ["off", "full"]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = t("telegramApprovalCompletionOutput_" + value);
+      select.appendChild(option);
+    }
+    select.value = mode;
+    select.addEventListener("change", () => {
+      const nextMode = ["off", "full"].includes(select.value) ? select.value : "off";
+      if (nextMode === mode) return;
+      if (nextMode === "full") {
+        const ok = window.confirm(t("telegramApprovalCompletionOutputFullConfirm"));
+        if (!ok) {
+          select.value = mode;
+          return;
+        }
+      }
+      saveConfig({ ...cfg, completionOutputMode: nextMode }, { resetDraft: false });
+    });
+    ctrl.appendChild(select);
     row.appendChild(ctrl);
     return row;
   }

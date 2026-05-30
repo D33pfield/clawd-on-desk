@@ -22,6 +22,8 @@ function doneEntry(overrides = {}) {
     host: null,
     badge: "done",
     lastEvent: { rawEvent: "Stop", at: 1000 },
+    assistantLastOutput: null,
+    assistantLastOutputTruncated: false,
     ...overrides,
   };
 }
@@ -36,12 +38,13 @@ function makeClient() {
   };
 }
 
-function makeCompanion({ enabled = true, client, getLang } = {}) {
+function makeCompanion({ enabled = true, client, getLang, getCompletionOutputMode } = {}) {
   const sink = client || makeClient();
   const comp = createTelegramCompanion({
     getClient: () => sink.client,
     isEnabled: () => enabled,
     getLang,
+    getCompletionOutputMode,
   });
   return { comp, sent: sink.sent };
 }
@@ -162,6 +165,81 @@ test("completion notification follows the current Clawd language", async () => {
   await tick();
   assert.equal(sent.length, 2);
   assert.match(sent[1], /完了/);
+});
+
+test("output mode off keeps the R1a bare notification", async () => {
+  const { comp, sent } = makeCompanion({
+    getCompletionOutputMode: () => "off",
+  });
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({ assistantLastOutput: "assistant text" })] });
+  await tick();
+  assert.equal(sent.length, 1);
+  assert.doesNotMatch(sent[0], /assistant text/);
+  assert.doesNotMatch(sent[0], /Assistant output/);
+});
+
+test("full output mode appends redacted assistant text", async () => {
+  const { comp, sent } = makeCompanion({
+    getCompletionOutputMode: () => "full",
+  });
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({
+    sessions: [doneEntry({
+      assistantLastOutput: `${"line ".repeat(600)}\nsecret=sk-1234567890abcdef\nTAIL`,
+    })],
+  });
+  await tick();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /Assistant output \(truncated\):/);
+  assert.match(sent[0], /TAIL/);
+  assert.match(sent[0], /secret=<redacted>/);
+  assert.doesNotMatch(sent[0], /sk-1234567890abcdef/);
+  assert.doesNotMatch(sent[0], /Last output/);
+});
+
+test("legacy tail output mode is treated as full output", async () => {
+  const { comp, sent } = makeCompanion({
+    getCompletionOutputMode: () => "tail",
+  });
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({
+    sessions: [doneEntry({ assistantLastOutput: "Implemented the fix." })],
+  });
+  await tick();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /Assistant output:/);
+  assert.match(sent[0], /Implemented the fix/);
+  assert.doesNotMatch(sent[0], /Last output/);
+});
+
+test("full output mode appends assistant text and marks extractor truncation", async () => {
+  const { comp, sent } = makeCompanion({
+    getCompletionOutputMode: () => "full",
+  });
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({
+    sessions: [doneEntry({
+      assistantLastOutput: "Implemented X.\nTests pass.",
+      assistantLastOutputTruncated: true,
+    })],
+  });
+  await tick();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /Assistant output \(truncated\):/);
+  assert.match(sent[0], /Implemented X/);
+  assert.match(sent[0], /Tests pass/);
+});
+
+test("enabled output mode degrades to R1a when no assistant text is available", async () => {
+  const { comp, sent } = makeCompanion({
+    getCompletionOutputMode: () => "full",
+  });
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry()] });
+  await tick();
+  assert.equal(sent.length, 1);
+  assert.doesNotMatch(sent[0], /Assistant output/);
 });
 
 test("forgets sessions that drop out of the snapshot", async () => {
