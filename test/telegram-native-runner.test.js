@@ -773,3 +773,38 @@ test("native runner stops polling on fatal webhook conflicts", async () => {
   assert.equal(runner.getStatus().lastError.errorClass, "409_webhook");
   assert.deepEqual(events, [], "active polling failures should not dispatch TEST_FAILED without a pending test");
 });
+
+test("native runner reports initial webhook conflict during migration test setup", async () => {
+  const server = createFakeTelegramServer();
+  const events = [];
+  let releaseSend;
+
+  server.enqueueError("getUpdates", {
+    status: 409,
+    description: "Conflict: can't use getUpdates method while webhook is active",
+  });
+  server.enqueue("sendMessage", () => new Promise((resolve) => { releaseSend = resolve; }));
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async (event) => { events.push(event); },
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+
+  await runner.start();
+  const sendPromise = runner.sendTestCard();
+  await tick();
+  await tick();
+
+  assert.equal(events.length, 1, "fatal setup errors should fail the migration test immediately");
+  assert.equal(events[0].type, EVENTS.TEST_FAILED);
+  assert.equal(events[0].errorClass, "409_webhook");
+  assert.equal(runner.isPolling(), false);
+  assert.equal(runner.getStatus().pendingTest, false);
+
+  releaseSend({ ok: true, result: { message_id: 55, chat: { id: 123 } } });
+  await sendPromise;
+  assert.equal(runner.getStatus().pendingTest, false, "late sendMessage success must not resurrect the test card");
+});

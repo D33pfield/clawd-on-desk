@@ -428,6 +428,17 @@ function createTelegramNativeRunner({
       return;
     }
     const nonce = randomId();
+    // Register before the network send resolves. The migration path starts
+    // native polling and then sends the test card; if the first getUpdates()
+    // hits a fatal setup error (for example webhook conflict) before
+    // sendMessage returns, loopFirst must still dispatch TEST_FAILED instead
+    // of leaving a clickable card with no poller behind it.
+    pendingTest = {
+      nonce,
+      chatId,
+      allowedUser,
+      messageId: null,
+    };
     try {
       const msg = await client.sendMessage({
         chat_id: chatId,
@@ -436,15 +447,15 @@ function createTelegramNativeRunner({
           inline_keyboard: [[{ text: "Confirm", callback_data: `clawd-test:${nonce}` }]],
         },
       });
-      pendingTest = {
-        nonce,
-        chatId,
-        allowedUser,
-        messageId: msg && msg.message_id,
-      };
+      if (pendingTest && pendingTest.nonce === nonce) {
+        pendingTest.messageId = msg && msg.message_id;
+      }
     } catch (err) {
-      noteError("test", classifyError(err));
-      await failTest(err, classifyError(err), { defer: true });
+      const cls = classifyError(err);
+      noteError("test", cls);
+      if (pendingTest && pendingTest.nonce === nonce) {
+        await failTest(err, cls, { defer: true });
+      }
     }
   }
 
