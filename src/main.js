@@ -18,6 +18,10 @@ const initPermission = require("./permission");
 const { registerPermissionIpc } = initPermission;
 const { createTelegramApprovalSidecar } = require("./telegram-approval-sidecar");
 const telegramApprovalSettings = require("./telegram-approval-settings");
+const {
+  buildTelegramApprovalStatus,
+  isNativeTelegramApprovalSelected,
+} = require("./telegram-approval-runtime-status");
 const { createTelegramMigrationController } = require("./telegram-migration-controller");
 const initUpdateBubble = require("./update-bubble");
 const { registerUpdateBubbleIpc } = initUpdateBubble;
@@ -1412,10 +1416,15 @@ function getTelegramApprovalClient() {
   const controller = _telegramMigrationController;
   if (controller && typeof controller.getSnapshot === "function") {
     const snap = controller.getSnapshot() || {};
-    if (snap.state === "NATIVE_ACTIVE"
-      && telegramNativeRunner
-      && typeof telegramNativeRunner.requestApproval === "function") {
-      return telegramNativeRunner;
+    if (isNativeTelegramApprovalSelected(snap)) {
+      if (snap.state === "NATIVE_ACTIVE"
+        && telegramNativeRunner
+        && typeof telegramNativeRunner.isPolling === "function"
+        && telegramNativeRunner.isPolling()
+        && typeof telegramNativeRunner.requestApproval === "function") {
+        return telegramNativeRunner;
+      }
+      return null;
     }
   }
   if (!telegramApprovalSidecar || typeof telegramApprovalSidecar.getClient !== "function") return null;
@@ -1566,18 +1575,22 @@ function buildTelegramApprovalSignature(config, paths, tokenStatus) {
 function getTelegramApprovalStatus() {
   const config = getTelegramApprovalPrefs();
   const token = getTelegramApprovalTokenStatus();
-  const ready = telegramApprovalSettings.readiness(config, token);
   const sidecarStatus = telegramApprovalSidecar && typeof telegramApprovalSidecar.getStatus === "function"
     ? telegramApprovalSidecar.getStatus()
     : { status: "stopped" };
-  return {
-    ...sidecarStatus,
-    enabled: config.enabled === true,
-    configured: ready.ready === true,
-    reason: ready.reason || "",
-    message: sidecarStatus.message || ready.message || "",
-    tokenStored: token.tokenStored === true,
-  };
+  const migrationSnapshot = _telegramMigrationController && typeof _telegramMigrationController.getSnapshot === "function"
+    ? _telegramMigrationController.getSnapshot()
+    : null;
+  const nativePolling = telegramNativeRunner
+    && typeof telegramNativeRunner.isPolling === "function"
+    && telegramNativeRunner.isPolling();
+  return buildTelegramApprovalStatus({
+    config,
+    token,
+    sidecarStatus,
+    migrationSnapshot,
+    nativePolling,
+  });
 }
 
 function writeTelegramApprovalToken(token) {
@@ -1874,6 +1887,9 @@ function telegramApprovalUnavailableMessage(status) {
   if (status && status.reason === "disabled") return "Telegram approval is disabled";
   if (status && status.reason === "missing-token") return "Telegram bot token is not configured";
   if (status && status.reason === "invalid-config") return "Telegram approval config is incomplete";
+  if (status && status.reason === "native-inactive") return "Native Telegram approval is not active";
+  if (status && status.reason === "native-testing") return "Native Telegram approval test is already in progress";
+  if (status && status.transport === "native") return "Native Telegram approval is not active";
   return "Telegram approval sidecar is not running";
 }
 
@@ -1882,7 +1898,9 @@ async function sendTelegramApprovalTest() {
   if (beforeStatus.configured !== true) {
     return { status: "error", message: telegramApprovalUnavailableMessage(beforeStatus) };
   }
-  await queueTelegramApprovalSidecarSync("test");
+  if (!(beforeStatus && beforeStatus.transport === "native")) {
+    await queueTelegramApprovalSidecarSync("test");
+  }
   const client = getTelegramApprovalClient();
   if (!client || typeof client.requestApproval !== "function") {
     return { status: "error", message: telegramApprovalUnavailableMessage(getTelegramApprovalStatus()) };

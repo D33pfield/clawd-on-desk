@@ -164,6 +164,36 @@
   let migrationPending = false;
   let migrationSnapshotSeq = 0;
 
+  function migrationState() {
+    return migrationSnapshot && typeof migrationSnapshot.state === "string"
+      ? migrationSnapshot.state
+      : "";
+  }
+
+  function isNativeMigrationSelected() {
+    const s = migrationState();
+    return s === "NATIVE_ACTIVE"
+      || s === "TESTING_NATIVE"
+      || !!(migrationSnapshot && migrationSnapshot.transport === "native");
+  }
+
+  function isNativeMigrationActive() {
+    const s = migrationState();
+    const owner = migrationSnapshot && migrationSnapshot.ownerSnapshot
+      ? migrationSnapshot.ownerSnapshot
+      : {};
+    return s === "NATIVE_ACTIVE" || s === "TESTING_NATIVE" || owner.nativePolling === true;
+  }
+
+  function canStartNativeFromSwitch() {
+    const s = migrationState();
+    return s === "IDLE" || s === "NEEDS_SETUP" || s === "LEGACY_ACTIVE";
+  }
+
+  function effectiveTelegramApprovalEnabled(cfg) {
+    return !!(cfg && cfg.enabled) || isNativeMigrationActive();
+  }
+
   function buildTelegramMigrationCard() {
     migrationCardEl = document.createElement("div");
     migrationCardEl.className = "tg-migration-card";
@@ -667,6 +697,7 @@
 
   function buildEnabledRow({ ready }) {
     const cfg = currentConfig();
+    const effectiveEnabled = effectiveTelegramApprovalEnabled(cfg);
     const row = document.createElement("div");
     row.className = "row";
     if (!ready) row.classList.add("tg-approval-row-disabled");
@@ -689,13 +720,35 @@
     sw.className = "switch";
     sw.setAttribute("role", "switch");
     sw.setAttribute("tabindex", "0");
-    helpers.setSwitchVisual(sw, cfg.enabled, { pending: view.configPending });
-    if (!ready) {
+    helpers.setSwitchVisual(sw, effectiveEnabled, { pending: view.configPending || migrationPending });
+    if (!ready || !migrationSnapshot || migrationPending) {
       sw.classList.add("disabled");
       sw.setAttribute("aria-disabled", "true");
       sw.removeAttribute("tabindex");
     } else {
-      const toggle = () => saveConfig({ ...cfg, enabled: !cfg.enabled }, { resetDraft: false });
+      const toggle = () => {
+        const turningOff = effectiveEnabled === true;
+        // Stop-the-bleed (zombie switch — see docs audit-r1a-notification-switch-2026-05-30):
+        // this toggle only writes tgApproval.enabled, but v0.9.0 native runtime
+        // (completion notifications + approval transport) is owned by the migration
+        // state machine and never reads that field. Turning the switch OFF must also
+        // dispatch USER_DISABLE, otherwise the native poller + completion pings keep
+        // running and the user thinks they switched it off when they didn't. The
+        // ON path now goes through the same native Test flow as the migration
+        // card instead of reviving the legacy sidecar flag.
+        if (turningOff) {
+          if (cfg.enabled === true) {
+            saveConfig({ ...cfg, enabled: false }, { resetDraft: false });
+          }
+          migrationDispatch("USER_DISABLE");
+          return;
+        }
+        if (canStartNativeFromSwitch()) {
+          ops.requestRender({ content: true });
+          migrationDispatch("USER_TEST_NATIVE");
+          return;
+        }
+      };
       sw.addEventListener("click", toggle);
       sw.addEventListener("keydown", (ev) => {
         if (ev.key === " " || ev.key === "Enter") {
@@ -712,7 +765,9 @@
   function buildTestRow({ ready }) {
     const s = view.status || {};
     const runtimeReady = s.configured === true;
-    const testDisabled = view.testPending || !ready || !runtimeReady;
+    const nativeStatus = s.transport === "native" || isNativeMigrationSelected();
+    const nativeReady = !nativeStatus || (migrationState() === "NATIVE_ACTIVE" && s.status === "running");
+    const testDisabled = view.testPending || !ready || !runtimeReady || !nativeReady;
     const row = document.createElement("div");
     row.className = "row";
     if (!ready) row.classList.add("tg-approval-row-disabled");

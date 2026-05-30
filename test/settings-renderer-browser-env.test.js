@@ -1241,6 +1241,7 @@ describe("settings renderer browser environment", () => {
   });
 
   it("keeps Telegram approval drafts local across toggles and rerenders", async () => {
+    const commandCalls = [];
     const harness = loadTelegramApprovalTabForTest({
       snapshot: {
         tgApproval: {
@@ -1250,7 +1251,14 @@ describe("settings renderer browser environment", () => {
         },
       },
       settingsAPI: {
-        command: (name) => {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: { state: "IDLE", transport: "off", ownerSnapshot: {} },
+            });
+          }
           if (name === "telegramApproval.status") {
             return Promise.resolve({
               status: "ok",
@@ -1278,17 +1286,12 @@ describe("settings renderer browser environment", () => {
 
     harness.content.querySelector(".switch").dispatchEvent({ type: "click" });
 
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), [{
-      key: "tgApproval",
-      value: {
-        enabled: true,
-        allowedTgUserId: "123456789",
-        targetSessionKey: "telegram:123456789",
-        // Preserved across saves so a user's notifyOnComplete=false is not
-        // reset to default by a recipient/toggle save (see currentConfig).
-        notifyOnComplete: true,
-      },
-    }]);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), []);
+    assert.ok(
+      commandCalls.some((c) => c.name === "telegramMigration.dispatch"
+        && c.payload && c.payload.type === "USER_TEST_NATIVE"),
+      "turning on should use the native migration test flow",
+    );
 
     await Promise.resolve();
     await Promise.resolve();
@@ -1306,18 +1309,195 @@ describe("settings renderer browser environment", () => {
     assert.equal(harness.content.querySelectorAll("input")[0].value, "987654321");
   });
 
-  it("preserves notifyOnComplete=false through a Telegram approval toggle save", async () => {
+  it("preserves notifyOnComplete=false through a Telegram approval disable save", async () => {
+    const commandCalls = [];
     const harness = loadTelegramApprovalTabForTest({
       snapshot: {
         tgApproval: {
-          enabled: false,
+          enabled: true,
           allowedTgUserId: "123456789",
           targetSessionKey: "telegram:123456789",
           notifyOnComplete: false,
         },
       },
       settingsAPI: {
-        command: (name) => {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: { state: "LEGACY_ACTIVE", transport: "legacy", ownerSnapshot: { sidecarRunning: true } },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "running", configured: true, tokenStored: true },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    harness.content.querySelector(".switch").dispatchEvent({ type: "click" });
+
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), [{
+      key: "tgApproval",
+      value: {
+        enabled: false,
+        allowedTgUserId: "123456789",
+        targetSessionKey: "telegram:123456789",
+        notifyOnComplete: false,
+      },
+    }]);
+    assert.ok(
+      commandCalls.some((c) => c.name === "telegramMigration.dispatch"
+        && c.payload && c.payload.type === "USER_DISABLE"),
+      "turning off should dispatch USER_DISABLE",
+    );
+  });
+
+  it("dispatches USER_DISABLE when the enabled switch is turned off (zombie-switch fix)", async () => {
+    const commandCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: true,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: { state: "LEGACY_ACTIVE", transport: "legacy", ownerSnapshot: { sidecarRunning: true } },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "running", configured: true, tokenStored: true },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    harness.content.querySelector(".switch").dispatchEvent({ type: "click" });
+
+    // The legacy switch still writes tgApproval.enabled = false…
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), [{
+      key: "tgApproval",
+      value: {
+        enabled: false,
+        allowedTgUserId: "123456789",
+        targetSessionKey: "telegram:123456789",
+        notifyOnComplete: true,
+      },
+    }]);
+    // …and turning OFF must ALSO stop the native transport, otherwise the poller
+    // + completion notifications keep running (the zombie-switch bug).
+    assert.ok(
+      commandCalls.some((c) => c.name === "telegramMigration.dispatch"
+        && c.payload && c.payload.type === "USER_DISABLE"),
+      "turning the switch off should dispatch USER_DISABLE",
+    );
+  });
+
+  it("shows native-active Telegram approval as enabled even when the legacy flag is false", async () => {
+    const commandCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "NATIVE_ACTIVE",
+                transport: "native",
+                ownerSnapshot: { nativePolling: true },
+              },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: {
+                status: "running",
+                transport: "native",
+                configured: true,
+                tokenStored: true,
+              },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok", snapshot: { state: "IDLE", transport: "off" } });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const sw = harness.content.querySelector(".switch");
+    assert.equal(sw.getAttribute("aria-checked"), "true");
+
+    sw.dispatchEvent({ type: "click" });
+
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), []);
+    assert.ok(
+      commandCalls.some((c) => c.name === "telegramMigration.dispatch"
+        && c.payload && c.payload.type === "USER_DISABLE"),
+      "turning off native-active approval should dispatch USER_DISABLE",
+    );
+  });
+
+  it("turning the Telegram approval switch on starts the native migration test", async () => {
+    const commandCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: { state: "IDLE", transport: "off", ownerSnapshot: {} },
+            });
+          }
           if (name === "telegramApproval.status") {
             return Promise.resolve({
               status: "ok",
@@ -1337,15 +1517,125 @@ describe("settings renderer browser environment", () => {
 
     harness.content.querySelector(".switch").dispatchEvent({ type: "click" });
 
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), [{
-      key: "tgApproval",
-      value: {
-        enabled: true,
-        allowedTgUserId: "123456789",
-        targetSessionKey: "telegram:123456789",
-        notifyOnComplete: false,
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), []);
+    assert.equal(
+      commandCalls.some((c) => c.name === "telegramMigration.dispatch"
+        && c.payload && c.payload.type === "USER_TEST_NATIVE"),
+      true,
+      "turning the switch on should dispatch the native test flow",
+    );
+    assert.equal(
+      commandCalls.some((c) => c.name === "telegramMigration.dispatch"
+        && c.payload && c.payload.type === "USER_DISABLE"),
+      false,
+      "turning the switch on should not dispatch USER_DISABLE",
+    );
+  });
+
+  it("does not show Telegram approval enabled for broken native setup debt", async () => {
+    const commandCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
       },
-    }]);
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: { state: "NEEDS_SETUP", transport: "native", ownerSnapshot: {} },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: {
+                status: "stopped",
+                transport: "native",
+                configured: true,
+                reason: "native-inactive",
+                message: "Native Telegram approval is not active",
+                tokenStored: true,
+              },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const sw = harness.content.querySelector(".switch");
+    assert.equal(sw.getAttribute("aria-checked"), "false");
+
+    sw.dispatchEvent({ type: "click" });
+    assert.ok(
+      commandCalls.some((c) => c.name === "telegramMigration.dispatch"
+        && c.payload && c.payload.type === "USER_TEST_NATIVE"),
+      "turning on from broken native setup should retry the native test flow",
+    );
+  });
+
+  it("disables the independent Telegram approval test while native migration is testing", async () => {
+    const commandCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: { state: "TESTING_NATIVE", ownerSnapshot: { nativePolling: true } },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: {
+                status: "starting",
+                transport: "native",
+                configured: true,
+                reason: "native-testing",
+                message: "Native Telegram approval test is already in progress",
+                tokenStored: true,
+              },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const testButton = harness.content.querySelectorAll("button")
+      .find((button) => button.textContent === "telegramApprovalSendTest");
+    assert.equal(testButton.disabled, true);
+    assert.match(testButton.title, /Native Telegram approval test/);
+
+    testButton.dispatchEvent({ type: "click" });
+    assert.equal(commandCalls.some((call) => call.name === "telegramApproval.test"), false);
   });
 
   it("disables Telegram approval test until runtime status is ready", async () => {
