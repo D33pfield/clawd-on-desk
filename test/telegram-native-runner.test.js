@@ -162,14 +162,71 @@ test("native runner requestApproval resolves allow for matching callback", async
     detail: "Summary: Run tests",
   });
   await tick();
-  assert.match(allowData, /^clawdperm:[a-z0-9]+:allow$/);
-  assert.match(denyData, /^clawdperm:[a-z0-9]+:deny$/);
+  assert.match(allowData, /^cp:[a-z0-9]+:a$/);
+  assert.match(denyData, /^cp:[a-z0-9]+:d$/);
 
   releaseFirstPoll({ ok: true, result: [] });
   const decision = await decisionPromise;
-  assert.equal(decision, "allow");
+  assert.deepEqual(decision, { action: "allow" });
   assert.equal(server.calls.some((call) => call.method === "answerCallbackQuery"), true);
   assert.equal(server.calls.some((call) => call.method === "editMessageReplyMarkup"), true);
+  await runner.stop();
+});
+
+test("native runner requestApproval renders suggestions and returns suggestion decisions", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  let suggestionData = "";
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("sendMessage", (payload) => {
+    const keyboard = payload.reply_markup.inline_keyboard;
+    assert.deepEqual(keyboard[0].map((button) => button.text), ["Allow once", "Deny"]);
+    assert.equal(keyboard[1][0].text, "Always Bash");
+    assert.equal(keyboard[2][0].text, "Auto edits");
+    assert.match(keyboard[1][0].callback_data, /^cp:[a-z0-9]+:s0$/);
+    assert.match(keyboard[2][0].callback_data, /^cp:[a-z0-9]+:s3$/);
+    suggestionData = keyboard[2][0].callback_data;
+    return { ok: true, result: { message_id: 101, chat: { id: 123 } } };
+  });
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [{
+      update_id: 1,
+      callback_query: {
+        id: "cb-suggestion",
+        from: { id: 777 },
+        message: { message_id: 101, chat: { id: 123 } },
+        data: suggestionData,
+      },
+    }],
+  }));
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueueOk("editMessageReplyMarkup", { message_id: 101 });
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestApproval({
+    title: "claude-code requests Bash",
+    detail: "Summary: Run tests",
+    suggestions: [
+      { index: 0, label: "Always Bash" },
+      { index: 3, label: "Auto edits" },
+    ],
+  });
+  await tick();
+
+  releaseFirstPoll({ ok: true, result: [] });
+  const decision = await decisionPromise;
+  assert.deepEqual(decision, { action: "suggestion", index: 3 });
   await runner.stop();
 });
 
@@ -177,10 +234,13 @@ test("native runner requestApproval ignores wrong user and resolves later callba
   const server = createFakeTelegramServer();
   let releaseFirstPoll;
   let denyData = "";
+  let legacyDenyData = "";
 
   server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
   server.enqueue("sendMessage", (payload) => {
     denyData = payload.reply_markup.inline_keyboard[0][1].callback_data;
+    assert.match(denyData, /^cp:([a-z0-9]+):d$/);
+    legacyDenyData = denyData.replace(/^cp:([a-z0-9]+):d$/, "clawdperm:$1:deny");
     return { ok: true, result: { message_id: 100, chat: { id: 123 } } };
   });
   server.enqueue("getUpdates", () => ({
@@ -192,7 +252,7 @@ test("native runner requestApproval ignores wrong user and resolves later callba
           id: "cb-wrong-user",
           from: { id: 999 },
           message: { message_id: 100, chat: { id: 123 } },
-          data: denyData,
+          data: legacyDenyData,
         },
       },
       {
@@ -201,7 +261,7 @@ test("native runner requestApproval ignores wrong user and resolves later callba
           id: "cb-deny",
           from: { id: 777 },
           message: { message_id: 100, chat: { id: 123 } },
-          data: denyData,
+          data: legacyDenyData,
         },
       },
     ],
@@ -227,7 +287,7 @@ test("native runner requestApproval ignores wrong user and resolves later callba
   await tick();
   releaseFirstPoll({ ok: true, result: [] });
 
-  assert.equal(await decisionPromise, "deny");
+  assert.deepEqual(await decisionPromise, { action: "deny" });
   assert.equal(
     server.calls.filter((call) => call.method === "answerCallbackQuery").length,
     2,

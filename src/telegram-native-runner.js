@@ -9,8 +9,8 @@
 //   - test-card lifecycle: build a nonce, sendMessage with inline keyboard,
 //     watch incoming callback_queries for matching nonce + allowed user
 //   - real approval lifecycle: requestApproval(payload, { signal }) Promise
-//     that resolves allow/deny on a matching Telegram callback, or null on
-//     abort/timeout/send failure
+//     that resolves a typed allow/deny/suggestion decision on a matching
+//     Telegram callback, or null on abort/timeout/send failure
 //   - dispatch TEST_SUCCESS / TEST_FAILED back to the migration controller
 
 const {
@@ -22,8 +22,10 @@ const {
 
 const { EVENTS } = require("./telegram-migration-state");
 
-const APPROVAL_CALLBACK_RE = /^clawdperm:([a-z0-9]+):(allow|deny)$/;
+const APPROVAL_CALLBACK_RE = /^cp:([a-z0-9]+):(a|d|s(\d+))$/;
+const LEGACY_APPROVAL_CALLBACK_RE = /^clawdperm:([a-z0-9]+):(allow|deny)$/;
 const MAX_MESSAGE_TEXT = 3800;
+const MAX_BUTTON_TEXT = 32;
 const DEFAULT_APPROVAL_TIMEOUT_MS = 90000;
 // R1a notifications are fire-and-forget: a slow send must not pile up behind
 // the snapshot fanout that triggers it. Bound each send and drop on timeout.
@@ -54,6 +56,52 @@ function buildApprovalText(payload) {
   return detail ? `${title}\n\n${detail}` : title;
 }
 
+function normalizeApprovalSuggestions(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const suggestions = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const index = Number(item.index);
+    if (!Number.isInteger(index) || index < 0 || seen.has(index)) continue;
+    const label = compactMessageText(item.label, MAX_BUTTON_TEXT);
+    if (!label) continue;
+    seen.add(index);
+    suggestions.push({ index, label });
+  }
+  return suggestions;
+}
+
+function parseApprovalCallbackData(data) {
+  if (typeof data !== "string") return null;
+  const match = data.match(APPROVAL_CALLBACK_RE);
+  if (match) {
+    const actionCode = match[2];
+    if (actionCode === "a") return { id: match[1], decision: { action: "allow" } };
+    if (actionCode === "d") return { id: match[1], decision: { action: "deny" } };
+    const index = Number(match[3]);
+    if (Number.isInteger(index) && index >= 0) {
+      return { id: match[1], decision: { action: "suggestion", index } };
+    }
+    return null;
+  }
+  const legacyMatch = data.match(LEGACY_APPROVAL_CALLBACK_RE);
+  if (!legacyMatch) return null;
+  return { id: legacyMatch[1], decision: { action: legacyMatch[2] } };
+}
+
+function normalizeApprovalDecision(decision) {
+  if (!decision || typeof decision !== "object") return null;
+  if (decision.action === "allow" || decision.action === "deny") {
+    return { action: decision.action };
+  }
+  if (decision.action === "suggestion") {
+    const index = Number(decision.index);
+    return Number.isInteger(index) && index >= 0 ? { action: "suggestion", index } : null;
+  }
+  return null;
+}
+
 function createTelegramNativeRunner({
   tokenStore,
   transport,
@@ -72,7 +120,7 @@ function createTelegramNativeRunner({
   let abortController = null;
   let polling = false;
   let pendingTest = null; // { nonce, chatId, allowedUser, messageId }
-  const pendingApprovals = new Map(); // id -> { resolve, chatId, allowedUser, messageId, timer, signal, onAbort }
+  const pendingApprovals = new Map(); // id -> { resolve, chatId, allowedUser, messageId, timer, signal, onAbort, suggestionIndexes }
 
   function isPolling() {
     return polling;
@@ -181,9 +229,9 @@ function createTelegramNativeRunner({
 
   async function handleApprovalCallback(cb, { fromId, chatId }) {
     const data = typeof cb.data === "string" ? cb.data : "";
-    const match = data.match(APPROVAL_CALLBACK_RE);
-    if (!match) return false;
-    const entry = pendingApprovals.get(match[1]);
+    const parsed = parseApprovalCallbackData(data);
+    if (!parsed) return false;
+    const entry = pendingApprovals.get(parsed.id);
     if (!entry) {
       try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: "Expired" }); } catch {}
       return true;
@@ -195,11 +243,15 @@ function createTelegramNativeRunner({
       return true;
     }
 
-    const decision = match[2];
+    const decision = parsed.decision;
+    if (decision.action === "suggestion" && !entry.suggestionIndexes.has(decision.index)) {
+      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: "Unavailable" }); } catch {}
+      return true;
+    }
     try {
       await client.answerCallbackQuery({
         callback_query_id: cb.id,
-        text: decision === "allow" ? "Allowed" : "Denied",
+        text: decision.action === "allow" ? "Allowed" : (decision.action === "deny" ? "Denied" : "Applied"),
       });
     } catch {}
     try {
@@ -209,7 +261,7 @@ function createTelegramNativeRunner({
         reply_markup: { inline_keyboard: [] },
       });
     } catch {}
-    finishApproval(match[1], decision);
+    finishApproval(parsed.id, decision);
     return true;
   }
 
@@ -273,7 +325,7 @@ function createTelegramNativeRunner({
     if (entry.signal && entry.onAbort) {
       try { entry.signal.removeEventListener("abort", entry.onAbort); } catch {}
     }
-    entry.resolve(decision === "allow" || decision === "deny" ? decision : null);
+    entry.resolve(normalizeApprovalDecision(decision));
   }
 
   function clearAllApprovals() {
@@ -285,12 +337,22 @@ function createTelegramNativeRunner({
     const chatId = getChatId();
     const allowedUser = getAllowedUserId();
     const text = buildApprovalText(payload);
+    const suggestions = normalizeApprovalSuggestions(payload && payload.suggestions);
     const signal = options && options.signal;
     if (!polling || !chatId || !text || (signal && signal.aborted)) {
       return Promise.resolve(null);
     }
     const id = randomId();
-    const callbackBase = `clawdperm:${id}`;
+    const callbackBase = `cp:${id}`;
+    const inlineKeyboard = [[
+      { text: "Allow once", callback_data: `${callbackBase}:a` },
+      { text: "Deny", callback_data: `${callbackBase}:d` },
+    ]];
+    for (const suggestion of suggestions) {
+      inlineKeyboard.push([
+        { text: suggestion.label, callback_data: `${callbackBase}:s${suggestion.index}` },
+      ]);
+    }
     return new Promise((resolve) => {
       const entry = {
         resolve,
@@ -300,6 +362,7 @@ function createTelegramNativeRunner({
         timer: null,
         signal,
         onAbort: null,
+        suggestionIndexes: new Set(suggestions.map((suggestion) => suggestion.index)),
       };
       pendingApprovals.set(id, entry);
 
@@ -315,10 +378,7 @@ function createTelegramNativeRunner({
         chat_id: chatId,
         text,
         reply_markup: {
-          inline_keyboard: [[
-            { text: "Allow", callback_data: `${callbackBase}:allow` },
-            { text: "Deny", callback_data: `${callbackBase}:deny` },
-          ]],
+          inline_keyboard: inlineKeyboard,
         },
       }).then((msg) => {
         const current = pendingApprovals.get(id);
