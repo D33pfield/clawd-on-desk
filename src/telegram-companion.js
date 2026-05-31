@@ -155,6 +155,13 @@ function formatAssistantOutputSection(entry, mode, locale) {
   return `\n\n${label}${suffix}:\n${limited.text}`;
 }
 
+function hasAssistantOutputSection(entry, mode) {
+  const outputMode = normalizeCompletionOutputMode(mode);
+  if (outputMode === "off") return false;
+  const raw = entry && typeof entry.assistantLastOutput === "string" ? entry.assistantLastOutput : "";
+  return !!redactAssistantOutputText(raw);
+}
+
 function truncateNotificationText(text, locale) {
   if (text.length <= NOTIFICATION_TEXT_MAX) return text;
   const marker = `\n... ${locale.truncated || NOTIFICATION_LOCALES.en.truncated}`;
@@ -163,14 +170,16 @@ function truncateNotificationText(text, locale) {
 
 // Privacy note: displayTitle is the same session title shown on the desktop
 // HUD / tray (it can derive from the user's prompt first line via
-// sessionTitle). R1a intentionally mirrors the desktop surface rather than
-// over-restricting — the message carries the title + identity fields, but
-// transcript output is included only when the user opts into R1b full-output
-// mode. The Telegram carrier itself (screenshots / forwarding / server
-// storage) is the added exposure vs. the desktop.
+// sessionTitle). The message carries the title + identity fields only when
+// bare completion pings are enabled, or when assistant output is present.
+// The Telegram carrier itself (screenshots / forwarding / server storage) is
+// the added exposure vs. the desktop.
 function formatNotification(entry, options = {}) {
   if (!entry) return "";
   const locale = getNotificationLocale(options.lang);
+  const completionOutputMode = normalizeCompletionOutputMode(options.completionOutputMode);
+  const outputSection = formatAssistantOutputSection(entry, completionOutputMode, locale);
+  if (!outputSection && options.includeBare === false) return "";
   const interrupted = entry.badge === "interrupted";
   const icon = interrupted ? "⚠️" : "✅"; // ⚠️ / ✅
   const status = interrupted ? locale.interrupted : locale.done;
@@ -186,7 +195,7 @@ function formatNotification(entry, options = {}) {
     : `(${status})`;
   const head = `${icon} ${title} ${wrapStatus}`;
   const base = meta.length ? `${head}\n${meta.join(" · ")}` : head; // " · "
-  const withOutput = `${base}${formatAssistantOutputSection(entry, options.completionOutputMode, locale)}`;
+  const withOutput = `${base}${outputSection}`;
   return truncateNotificationText(withOutput, locale);
 }
 
@@ -196,6 +205,7 @@ function createTelegramCompanion({
   log = () => {},
   getLang = () => "en",
   getCompletionOutputMode = () => "off",
+  getNotifyOnComplete = () => true,
   formatText = null,
 } = {}) {
   const lastNotified = new Map(); // id -> last dedupe key
@@ -254,9 +264,14 @@ function createTelegramCompanion({
           typeof getCompletionOutputMode === "function" ? getCompletionOutputMode() : "off"
         );
       } catch {}
+      let includeBare = true;
+      try {
+        includeBare = typeof getNotifyOnComplete === "function" ? getNotifyOnComplete() === true : true;
+      } catch {}
+      if (!includeBare && !hasAssistantOutputSection(entry, completionOutputMode)) continue;
       const text = typeof formatText === "function"
-        ? formatText(entry, { lang, completionOutputMode })
-        : formatNotification(entry, { lang, completionOutputMode });
+        ? formatText(entry, { lang, completionOutputMode, includeBare })
+        : formatNotification(entry, { lang, completionOutputMode, includeBare });
       if (!text) continue;
       // Fire-and-forget: do NOT await — we are on the synchronous broadcast
       // path. sendNotification never throws, but guard anyway.

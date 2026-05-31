@@ -595,6 +595,10 @@ function buildTelegramStatusDiagnostic({
   const polling = nativePolling === true || runnerStatus.polling === true || owner.nativePolling === true;
   const tokenStored = !!(token && token.tokenStored === true) || approvalStatus?.tokenStored === true;
   const recipientConfigured = !!(normalizedConfig.allowedTgUserId && normalizedConfig.targetSessionKey);
+  const completionOutputMode = telegramApprovalSettings.normalizeCompletionOutputMode(
+    normalizedConfig.completionOutputMode
+  );
+  const completionEnabled = normalizedConfig.notifyOnComplete === true || completionOutputMode !== "off";
   // For diagnostics, "configured" means the required pieces are present. It
   // intentionally does not fold in the enable/transport flag, otherwise an
   // explicit OFF state would misleadingly look like missing setup.
@@ -619,8 +623,10 @@ function buildTelegramStatusDiagnostic({
     nativePolling: polling,
     approvalAvailable,
     completionNotifications: {
-      enabled: normalizedConfig.notifyOnComplete === true,
-      effective: transport === "native" && polling && normalizedConfig.notifyOnComplete === true,
+      enabled: completionEnabled,
+      effective: transport === "native" && polling && completionEnabled,
+      outputMode: completionOutputMode,
+      bare: normalizedConfig.notifyOnComplete === true,
     },
     tokenStored,
     recipientConfigured,

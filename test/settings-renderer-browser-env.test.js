@@ -1357,7 +1357,7 @@ describe("settings renderer browser environment", () => {
         allowedTgUserId: "123456789",
         targetSessionKey: "telegram:123456789",
         notifyOnComplete: false,
-        completionOutputMode: "off",
+        completionOutputMode: "full",
       },
     }]);
     assert.ok(
@@ -1412,8 +1412,8 @@ describe("settings renderer browser environment", () => {
         enabled: false,
         allowedTgUserId: "123456789",
         targetSessionKey: "telegram:123456789",
-        notifyOnComplete: true,
-        completionOutputMode: "off",
+        notifyOnComplete: false,
+        completionOutputMode: "full",
       },
     }]);
     // …and turning OFF must ALSO stop the native transport, otherwise the poller

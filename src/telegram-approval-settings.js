@@ -6,16 +6,14 @@ const DEFAULT_TG_APPROVAL = Object.freeze({
   enabled: false,
   allowedTgUserId: "",
   targetSessionKey: "",
-  // R1a: push a short "session finished" notification to Telegram when a
-  // session reaches a done/interrupted badge. Native-only (legacy sidecar
+  // R1a bare ping gate: when false, Clawd will not send a "finished" message
+  // unless there is assistant output to include. Native-only (legacy sidecar
   // users silently lack it — see getTelegramCompanionClient in main.js).
-  // Default ON: R1a sends only a few lines (title + ids), no transcript
-  // output, so the privacy surface is minimal.
-  notifyOnComplete: true,
-  // R1b privacy contract: "off" keeps the R1a bare completion ping, while
-  // "full" appends the assistant final text as fully as Telegram limits allow.
-  // Default stays conservative.
-  completionOutputMode: "off",
+  notifyOnComplete: false,
+  // R1b default: send the assistant's final text when available. If the
+  // extractor has no text and notifyOnComplete is false, no bare fallback ping
+  // is sent.
+  completionOutputMode: "full",
 });
 
 const BOT_TOKEN_RE = /^\d+:[A-Za-z0-9_-]{30,}$/;
@@ -64,7 +62,7 @@ function normalizeTelegramApproval(value, defaultsValue = DEFAULT_TG_APPROVAL) {
     enabled: defaults.enabled === true,
     allowedTgUserId: trimString(defaults.allowedTgUserId, 64),
     targetSessionKey: normalizeTelegramSessionKey(defaults.targetSessionKey),
-    notifyOnComplete: defaults.notifyOnComplete !== false,
+    notifyOnComplete: defaults.notifyOnComplete === true,
     completionOutputMode: normalizeCompletionOutputMode(defaults.completionOutputMode),
   };
   if (!isPlainObject(value)) return out;

@@ -1852,12 +1852,12 @@ async function initTelegramMigrationController() {
   telegramCompanion = createTelegramCompanion({
     getClient: () => getTelegramCompanionClient(),
     getLang: () => _settingsController.get("lang") || lang || "en",
-    getCompletionOutputMode: () => getTelegramApprovalPrefs().completionOutputMode || "off",
-    // Mirror the send gate exactly: native-active client present + toggle on.
-    // When false the companion still advances its dedupe map (so flipping the
-    // toggle on later never backfills) but sends nothing.
-    isEnabled: () => getTelegramApprovalPrefs().notifyOnComplete === true
-      && !!getTelegramCompanionClient(),
+    getCompletionOutputMode: () => getTelegramApprovalPrefs().completionOutputMode || "full",
+    getNotifyOnComplete: () => getTelegramApprovalPrefs().notifyOnComplete === true,
+    // Native-active client present. The companion still advances its dedupe map
+    // while native is inactive, and internally decides whether to send a bare
+    // ping or require assistant output based on tgApproval prefs.
+    isEnabled: () => !!getTelegramCompanionClient(),
     log: telegramApprovalLog,
   });
 

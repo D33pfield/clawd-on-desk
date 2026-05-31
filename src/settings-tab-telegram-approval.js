@@ -35,11 +35,11 @@
       targetSessionKey: cfg && typeof cfg.targetSessionKey === "string" ? cfg.targetSessionKey : "",
       // Preserve notifyOnComplete across saves: recipient/toggle payloads are
       // built from this object, so omitting it would let normalize() reset a
-      // user's `false` back to the default `true` on the next save.
-      notifyOnComplete: !(cfg && cfg.notifyOnComplete === false),
-      completionOutputMode: cfg && cfg.completionOutputMode === "full"
+      // user's explicit bare-ping choice on the next save.
+      notifyOnComplete: !!(cfg && cfg.notifyOnComplete === true),
+      completionOutputMode: !cfg || cfg.completionOutputMode === undefined || cfg.completionOutputMode === "full"
         ? "full"
-        : (cfg && cfg.completionOutputMode === "tail" ? "full" : "off"),
+        : (cfg.completionOutputMode === "tail" ? "full" : "off"),
     };
   }
 

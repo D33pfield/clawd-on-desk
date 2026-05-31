@@ -65,8 +65,8 @@ describe("prefs.getDefaults", () => {
       enabled: false,
       allowedTgUserId: "",
       targetSessionKey: "",
-      notifyOnComplete: true,
-      completionOutputMode: "off",
+      notifyOnComplete: false,
+      completionOutputMode: "full",
     });
   });
 
@@ -262,8 +262,8 @@ describe("prefs.validate", () => {
       enabled: true,
       allowedTgUserId: "123456789",
       targetSessionKey: "telegram:987654321",
-      notifyOnComplete: true,
-      completionOutputMode: "off",
+      notifyOnComplete: false,
+      completionOutputMode: "full",
     });
     assert.strictEqual(Object.prototype.hasOwnProperty.call(v.tgApproval, "botToken"), false);
   });

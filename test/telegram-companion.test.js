@@ -38,13 +38,14 @@ function makeClient() {
   };
 }
 
-function makeCompanion({ enabled = true, client, getLang, getCompletionOutputMode } = {}) {
+function makeCompanion({ enabled = true, client, getLang, getCompletionOutputMode, getNotifyOnComplete } = {}) {
   const sink = client || makeClient();
   const comp = createTelegramCompanion({
     getClient: () => sink.client,
     isEnabled: () => enabled,
     getLang,
     getCompletionOutputMode,
+    getNotifyOnComplete,
   });
   return { comp, sent: sink.sent };
 }
@@ -196,6 +197,39 @@ test("full output mode appends redacted assistant text", async () => {
   assert.match(sent[0], /secret=<redacted>/);
   assert.doesNotMatch(sent[0], /sk-1234567890abcdef/);
   assert.doesNotMatch(sent[0], /Last output/);
+});
+
+test("full output mode with bare ping disabled skips completions with no assistant text", async () => {
+  const { comp, sent } = makeCompanion({
+    getCompletionOutputMode: () => "full",
+    getNotifyOnComplete: () => false,
+  });
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry()] });
+  await tick();
+  assert.deepEqual(sent, [], "no assistant text means no default bare completion ping");
+
+  comp.onSnapshot({
+    sessions: [doneEntry({
+      lastEvent: { rawEvent: "Stop", at: 2000 },
+      assistantLastOutput: "Implemented the fix.",
+    })],
+  });
+  await tick();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /Assistant output:/);
+  assert.match(sent[0], /Implemented the fix/);
+});
+
+test("output mode off with bare ping disabled sends no completion message", async () => {
+  const { comp, sent } = makeCompanion({
+    getCompletionOutputMode: () => "off",
+    getNotifyOnComplete: () => false,
+  });
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({ assistantLastOutput: "assistant text" })] });
+  await tick();
+  assert.deepEqual(sent, []);
 });
 
 test("legacy tail output mode is treated as full output", async () => {
