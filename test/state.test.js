@@ -956,6 +956,25 @@ describe("updateSession()", () => {
     assert.strictEqual(api.getCurrentState(), "idle");
   });
 
+  it("stores one-shot visuals as idle while permission prompts preserve active work", () => {
+    update(api, { id: "notify", state: "notification", event: "Notification", agentId: "claude-code" });
+    assert.strictEqual(api.sessions.get("notify").state, "idle");
+
+    update(api, { id: "done", state: "attention", event: "Stop", agentId: "claude-code" });
+    assert.strictEqual(api.sessions.get("done").state, "idle");
+
+    update(api, { id: "perm-active", state: "working", event: "PreToolUse", agentId: "codex" });
+    update(api, {
+      id: "perm-active",
+      state: "notification",
+      event: "PermissionRequest",
+      agentId: "codex",
+      sourcePid: 456,
+    });
+
+    assert.strictEqual(api.sessions.get("perm-active").state, "working");
+  });
+
   it("clearPermissionNotification releases a persisted notification session immediately", () => {
     api.sessions.set("codex:stale-permission", rawSession("notification", {
       agentId: "codex",

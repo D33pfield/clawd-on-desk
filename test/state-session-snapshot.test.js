@@ -36,12 +36,10 @@ function session(state, overrides = {}) {
 }
 
 describe("isSessionInProgress state mapping", () => {
-  it("treats active states as in-progress and idle/sleeping/headless as not", () => {
+  it("treats persisted running states as in-progress and idle/sleeping/headless as not", () => {
     assert.strictEqual(isSessionInProgress(session("working")), true);
     assert.strictEqual(isSessionInProgress(session("thinking")), true);
     assert.strictEqual(isSessionInProgress(session("juggling")), true);
-    assert.strictEqual(isSessionInProgress(session("notification")), true);
-    assert.strictEqual(isSessionInProgress(session("attention")), true);
     assert.strictEqual(isSessionInProgress(session("idle")), false);
     assert.strictEqual(isSessionInProgress(session("sleeping")), false);
   });

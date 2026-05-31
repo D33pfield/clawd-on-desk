@@ -54,10 +54,11 @@ function sessionUpdatedAt(session) {
   return Number.isFinite(updatedAt) ? updatedAt : 0;
 }
 
-// A session counts as "in progress" when it is non-headless and its state is
-// anything other than idle/sleeping (mirrors deriveSessionBadge's "running"
-// semantics). Note: a session waiting on a permission prompt keeps its prior
-// working/thinking state, so it is intentionally treated as in-progress.
+// A persisted session counts as "in progress" when it is non-headless and its
+// stored state is anything other than idle/sleeping (mirrors deriveSessionBadge's
+// "running" semantics). One-shot visuals like attention/notification are
+// normally stored as idle by updateSession(); permission prompts stay awake by
+// preserving the prior working/thinking state.
 function isSessionInProgress(session) {
   if (!session || session.headless) return false;
   if (session.state === "idle" || session.state === "sleeping") return false;
