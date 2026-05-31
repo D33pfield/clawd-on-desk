@@ -9,6 +9,11 @@ const { findHookCommands } = require("../../hooks/json-utils");
 const { GEMINI_HOOK_EVENTS } = require("../../hooks/gemini-install");
 const { ANTIGRAVITY_HOOK_EVENTS, HOOK_GROUP_ID: ANTIGRAVITY_HOOK_GROUP_ID } = require("../../hooks/antigravity-install");
 const { QWEN_CODE_HOOK_EVENTS } = require("../../hooks/qwen-code-install");
+const {
+  hasUserPermissionHookInOtherFiles,
+  hasUserPermissionHookInSettingsJson,
+  isCopilotPermissionRegistrable,
+} = require("../../hooks/copilot-install");
 const { findKimiHookCommands } = require("../../hooks/kimi-install");
 const { getAgentDescriptors } = require("./agent-descriptors");
 const { commandContainsFragment, validateHookCommand } = require("./agent-node-bin-parser");
@@ -45,7 +50,16 @@ function fileExists(fsImpl, filePath) {
 }
 
 function readJson(fsImpl, filePath) {
-  return JSON.parse(fsImpl.readFileSync(filePath, "utf8"));
+  // Strip the UTF-8 BOM (U+FEFF). PowerShell `Set-Content -Encoding utf8`
+  // and some Notepad saves prepend it; Node's JSON.parse refuses to parse
+  // a leading BOM. Without this, a user who hand-edits hooks.json in those
+  // tools makes the doctor pane silently flip to config-corrupt while
+  // installers (which already strip BOM) keep working — the mismatch makes
+  // the offered Fix button useless because clicking it doesn't reproduce
+  // the parse error path.
+  let raw = fsImpl.readFileSync(filePath, "utf8");
+  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+  return JSON.parse(raw);
 }
 
 function withAgentBubbleNote(detail, prefs, agentId) {
@@ -98,9 +112,13 @@ function withAgentFixAction(detail, descriptor) {
     && detail.supplementary
     && detail.supplementary.key === "copilot_hooks"
     && typeof detail.supplementary.value === "string"
-    && detail.supplementary.value.startsWith("disabled")
+    && (detail.supplementary.value.startsWith("disabled")
+        || detail.supplementary.value === "permission-user-hook")
   ) {
-    // User explicitly set disableAllHooks; Clawd must not overwrite that intent.
+    // disabled-*: user set disableAllHooks; Clawd must not override.
+    // permission-user-hook: user (or a sibling *.json) owns permissionRequest;
+    // running Fix would re-trigger the same safe-v1 skip — surface a warning
+    // without a button so the user wires Clawd in manually if they want it.
     return detail;
   }
   const fixAction = { type: "agent-integration", agentId: descriptor.agentId };
@@ -362,7 +380,36 @@ function validateCopilotHookEvents(descriptor, settings, settingsJson, options) 
     });
   }
 
-  const events = Array.isArray(descriptor.hookEvents) ? descriptor.hookEvents : [];
+  // Safe-v1 cross-file check. Mirrors hooks/copilot-install.js so the
+  // installer's silent skip is visible to the user via the doctor pane:
+  //   - in-file: another (non-Clawd) entry in hooks.json's permissionRequest
+  //   - cross-file: any sibling *.json in the same hooks/ dir declares the event
+  // When triggered, permissionRequest is removed from the per-event validation
+  // pass and the result is annotated with `permission-user-hook`. The Fix
+  // button is suppressed at attachFixAction() so the user cannot trigger an
+  // install that the installer itself will reject. Without this layer the
+  // doctor reports "missing permissionRequest" and offers a Fix that never
+  // does anything.
+  const inFileArr = (settings && settings.hooks && Array.isArray(settings.hooks.permissionRequest))
+    ? settings.hooks.permissionRequest
+    : [];
+  const hasInFileUserHook = !isCopilotPermissionRegistrable(inFileArr);
+  const hooksDirForScan = descriptor.configPath
+    ? require("path").dirname(descriptor.configPath)
+    : null;
+  const hasCrossFileUserHook = hooksDirForScan
+    ? hasUserPermissionHookInOtherFiles(hooksDirForScan, descriptor.configPath, { fs: options.fs })
+    : false;
+  // settings.json inline `hooks` block also merges into Copilot's hook chain.
+  // Doctor only covers installer-time signals here — repo-level
+  // .github/hooks/*.json is checked at request time by copilot-hook.js.
+  const hasInlineSettingsHook = descriptor.settingsPath
+    ? hasUserPermissionHookInSettingsJson(descriptor.settingsPath, { fs: options.fs })
+    : false;
+  const permissionOwnedByUser = hasInFileUserHook || hasCrossFileUserHook || hasInlineSettingsHook;
+
+  const events = (Array.isArray(descriptor.hookEvents) ? descriptor.hookEvents : [])
+    .filter((e) => !(permissionOwnedByUser && e === "permissionRequest"));
   const missingEvents = [];
   let commandCount = 0;
   let firstOk = null;
@@ -395,12 +442,17 @@ function validateCopilotHookEvents(descriptor, settings, settingsJson, options) 
   }
 
   if (missingEvents.length) {
-    return makeDetail(descriptor, "not-connected", {
+    const detail = {
       level: "warning",
       detail: `${descriptor.configPath} missing Copilot hook event(s): ${missingEvents.join(", ")}`,
       commandCount,
       missingCopilotHookEvents: missingEvents,
-    });
+    };
+    if (permissionOwnedByUser) {
+      detail.supplementary = { key: "copilot_hooks", value: "permission-user-hook" };
+      detail.permissionUserHook = true;
+    }
+    return makeDetail(descriptor, "not-connected", detail);
   }
 
   if (firstFailure) {
@@ -414,6 +466,17 @@ function validateCopilotHookEvents(descriptor, settings, settingsJson, options) 
       scriptPath: first.scriptPath || null,
       commandFragment: first.fragment || String(firstFailure.command || "").slice(0, 128),
       brokenCopilotHookEvent: firstFailure.eventName,
+    });
+  }
+
+  if (permissionOwnedByUser) {
+    return makeDetail(descriptor, "ok", {
+      level: "warning",
+      detail: `${descriptor.configPath} Copilot state hooks registered; permissionRequest left to user hook`,
+      commandCount,
+      scriptPath: firstOk && firstOk.scriptPath ? firstOk.scriptPath : null,
+      supplementary: { key: "copilot_hooks", value: "permission-user-hook" },
+      permissionUserHook: true,
     });
   }
 

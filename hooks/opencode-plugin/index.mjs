@@ -26,6 +26,13 @@ import { homedir, platform } from "os";
 import { join } from "path";
 import { randomBytes, timingSafeEqual } from "crypto";
 import { execFileSync, execSync } from "child_process";
+import {
+  DEFAULT_SESSION_ID,
+  getEventSessionId,
+  normalizeOpencodeSessionId,
+  resolveOpencodeSessionId,
+  shouldDropMappedEventWithoutSessionId,
+} from "./session-ids.mjs";
 
 const CLAWD_DIR = join(homedir(), ".clawd");
 const RUNTIME_CONFIG_PATH = join(CLAWD_DIR, "runtime.json");
@@ -37,6 +44,7 @@ const STATE_PATH = "/state";
 // (main → renderer → main) ran under load and silently timed out.
 const POST_TIMEOUT_MS = 1000;
 const AGENT_ID = "opencode";
+const HOOK_SOURCE = "opencode-plugin";
 
 // Process tree walk config — mirrors hooks/clawd-hook.js exactly, minus the
 // Claude-specific detection. See docs/plans/plan-opencode-integration.md Phase 4.
@@ -328,28 +336,36 @@ function postPermissionToClawd(body) {
   postToClawd("/permission", body, `PERM tool=${body.tool_name} req=${body.request_id}`);
 }
 
+function buildStateBody(state, eventName, sessionId) {
+  if (!state || !eventName) return null;
+  const clawdSessionId = normalizeOpencodeSessionId(sessionId) || DEFAULT_SESSION_ID;
+  return {
+    state,
+    session_id: clawdSessionId,
+    event: eventName,
+    agent_id: AGENT_ID,
+    hook_source: HOOK_SOURCE,
+  };
+}
+
 // Clawd uses PascalCase event names matching Claude Code's hook vocabulary so
 // state.js transition rules (e.g. SubagentStop → working whitelist) are
 // reusable across agents.
 function sendState(state, eventName, sessionId) {
-  if (!state || !eventName) return;
+  const body = buildStateBody(state, eventName, sessionId);
+  if (!body) return;
 
-  const lastState = _lastStatePerSession.get(sessionId) || null;
+  const lastState = _lastStatePerSession.get(body.session_id) || null;
 
   // Per-session dedup: skip only if the SAME session repeats the SAME state.
-  if (state === lastState) {
+  if (body.state === lastState) {
     return;
   }
 
-  debugLog(`SEND ${lastState || "null"} → ${state} event=${eventName} session=${sessionId}`);
-  _lastStatePerSession.set(sessionId, state);
+  debugLog(`SEND ${lastState || "null"} → ${body.state} event=${body.event} session=${body.session_id}`);
+  _lastStatePerSession.set(body.session_id, body.state);
 
-  postStateToClawd({
-    state,
-    session_id: sessionId || "default",
-    event: eventName,
-    agent_id: AGENT_ID,
-  });
+  postStateToClawd(body);
 }
 
 // Translate an opencode event into a Clawd (state, eventName) pair, or null
@@ -359,6 +375,7 @@ function sendState(state, eventName, sessionId) {
 function translateEvent(event) {
   if (!event || typeof event.type !== "string") return null;
   const props = event.properties || {};
+  const sessionId = getEventSessionId(event);
 
   switch (event.type) {
     case "session.created":
@@ -404,8 +421,7 @@ function translateEvent(event) {
       // SessionEnd so Clawd removes them from its tracking map — no happy
       // flash, no menu pollution. If _rootSessionId is null (no session
       // seen yet, should never happen), fall through to old behavior.
-      const sid = props.sessionID || event.sessionID || null;
-      if (_rootSessionId && sid && sid !== _rootSessionId) {
+      if (_rootSessionId && sessionId && sessionId !== _rootSessionId) {
         return { state: "sleeping", event: "SessionEnd" };
       }
       return { state: "attention", event: "Stop" };
@@ -422,6 +438,11 @@ function translateEvent(event) {
       return null;
   }
 }
+
+export const __test = {
+  buildStateBody,
+  translateEvent,
+};
 
 // Normalize ctx.serverUrl into a string with a trailing slash. opencode passes
 // a URL object in practice but we coerce defensively in case future versions
@@ -448,11 +469,12 @@ function handlePermissionAsked(event) {
   }
   postPermissionToClawd({
     agent_id: AGENT_ID,
+    hook_source: HOOK_SOURCE,
     tool_name: p.permission || "unknown",
     tool_input: p.metadata || {},
     patterns: Array.isArray(p.patterns) ? p.patterns : [],
     always: Array.isArray(p.always) ? p.always : [],
-    session_id: _lastSeenSessionId || _rootSessionId || "default",
+    session_id: resolveOpencodeSessionId(null, _lastSeenSessionId || _rootSessionId),
     request_id: requestId,
     server_url: _serverUrl,         // debug only, not used for replies
     bridge_url: _bridgeUrl,         // ← Clawd POSTs decisions here
@@ -584,7 +606,7 @@ export default async (ctx) => {
         // its session.idle will be downgraded to SessionEnd in translateEvent.
         // The session ID may be in event.properties.sessionID (most events)
         // or event.sessionID (session.created in some runtimes).
-        const sid = (event.properties && event.properties.sessionID) || event.sessionID || null;
+        const sid = getEventSessionId(event);
         if (sid && !_rootSessionId) {
           _rootSessionId = sid;
           debugLog(`ROOT session captured id=${sid}`);
@@ -611,7 +633,14 @@ export default async (ctx) => {
           }
           return;
         }
-        const sessionId = (event.properties && event.properties.sessionID) || event.sessionID || "default";
+        if (shouldDropMappedEventWithoutSessionId(event, mapped)) {
+          debugLog(`DROP ${event.type} event=${mapped.event} reason=no-session-id`);
+          return;
+        }
+        const sessionId = resolveOpencodeSessionId(
+          getEventSessionId(event),
+          _lastSeenSessionId || _rootSessionId
+        );
         debugLog(`MAP ${event.type} → state=${mapped.state} event=${mapped.event}`);
         sendState(mapped.state, mapped.event, sessionId);
       } catch (err) {
