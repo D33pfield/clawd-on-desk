@@ -14,6 +14,8 @@ const STATUS_LOCALES = Object.freeze({
       nativePolling: "Native polling",
       approval: "Approval",
       completionNotifications: "Completion notifications",
+      completionOutput: "output",
+      completionBare: "bare fallback",
       token: "Token",
       config: "Config",
       pendingApprovals: "Pending approvals",
@@ -62,6 +64,7 @@ const STATUS_LOCALES = Object.freeze({
       updated: "updated",
     },
     error: { scope: "scope", code: "code", event: "event" },
+    completionOutputMode: { off: "off", full: "full answer" },
     completionInactiveSuffix: " (inactive until native is running)",
     truncated: "... truncated",
   },
@@ -73,6 +76,8 @@ const STATUS_LOCALES = Object.freeze({
       nativePolling: "原生轮询",
       approval: "审批",
       completionNotifications: "完成通知",
+      completionOutput: "输出",
+      completionBare: "裸通知",
       token: "Token",
       config: "配置",
       pendingApprovals: "待处理审批",
@@ -121,6 +126,7 @@ const STATUS_LOCALES = Object.freeze({
       updated: "更新于",
     },
     error: { scope: "范围", code: "代码", event: "事件" },
+    completionOutputMode: { off: "关闭", full: "完整回答" },
     completionInactiveSuffix: "（原生运行后生效）",
     truncated: "... 已截断",
   },
@@ -132,6 +138,8 @@ const STATUS_LOCALES = Object.freeze({
       nativePolling: "原生輪詢",
       approval: "審批",
       completionNotifications: "完成通知",
+      completionOutput: "輸出",
+      completionBare: "裸通知",
       token: "Token",
       config: "設定",
       pendingApprovals: "待處理審批",
@@ -180,6 +188,7 @@ const STATUS_LOCALES = Object.freeze({
       updated: "更新於",
     },
     error: { scope: "範圍", code: "代碼", event: "事件" },
+    completionOutputMode: { off: "關閉", full: "完整回答" },
     completionInactiveSuffix: "（原生執行後生效）",
     truncated: "... 已截斷",
   },
@@ -191,6 +200,8 @@ const STATUS_LOCALES = Object.freeze({
       nativePolling: "네이티브 폴링",
       approval: "승인",
       completionNotifications: "완료 알림",
+      completionOutput: "출력",
+      completionBare: "기본 알림",
       token: "토큰",
       config: "설정",
       pendingApprovals: "대기 중인 승인",
@@ -239,6 +250,7 @@ const STATUS_LOCALES = Object.freeze({
       updated: "업데이트",
     },
     error: { scope: "범위", code: "코드", event: "이벤트" },
+    completionOutputMode: { off: "꺼짐", full: "전체 답변" },
     completionInactiveSuffix: " (네이티브 실행 후 활성)",
     truncated: "... 잘림",
   },
@@ -250,6 +262,8 @@ const STATUS_LOCALES = Object.freeze({
       nativePolling: "ネイティブポーリング",
       approval: "承認",
       completionNotifications: "完了通知",
+      completionOutput: "出力",
+      completionBare: "完了のみ通知",
       token: "トークン",
       config: "設定",
       pendingApprovals: "保留中の承認",
@@ -298,6 +312,7 @@ const STATUS_LOCALES = Object.freeze({
       updated: "更新",
     },
     error: { scope: "範囲", code: "コード", event: "イベント" },
+    completionOutputMode: { off: "オフ", full: "全文" },
     completionInactiveSuffix: "（ネイティブ実行後に有効）",
     truncated: "... 省略",
   },
@@ -598,7 +613,8 @@ function buildTelegramStatusDiagnostic({
   const completionOutputMode = telegramApprovalSettings.normalizeCompletionOutputMode(
     normalizedConfig.completionOutputMode
   );
-  const completionEnabled = normalizedConfig.notifyOnComplete === true || completionOutputMode !== "off";
+  const completionConfigured = normalizedConfig.notifyOnComplete === true || completionOutputMode !== "off";
+  const completionEnabled = transport !== "off" && completionConfigured;
   // For diagnostics, "configured" means the required pieces are present. It
   // intentionally does not fold in the enable/transport flag, otherwise an
   // explicit OFF state would misleadingly look like missing setup.
@@ -624,7 +640,8 @@ function buildTelegramStatusDiagnostic({
     approvalAvailable,
     completionNotifications: {
       enabled: completionEnabled,
-      effective: transport === "native" && polling && completionEnabled,
+      effective: transport === "native" && polling && completionConfigured,
+      configured: completionConfigured,
       outputMode: completionOutputMode,
       bare: normalizedConfig.notifyOnComplete === true,
     },
@@ -668,6 +685,24 @@ function formatLastError(error, locale = STATUS_LOCALES.en) {
   return parts.join(" ");
 }
 
+function completionOutputModeWord(locale, mode) {
+  const key = mode === "full" ? "full" : "off";
+  const map = locale && locale.completionOutputMode
+    ? locale.completionOutputMode
+    : STATUS_LOCALES.en.completionOutputMode;
+  return map[key] || STATUS_LOCALES.en.completionOutputMode[key] || key;
+}
+
+function formatCompletionNotificationStatus(completion, locale = STATUS_LOCALES.en) {
+  const labels = (locale && locale.labels) || STATUS_LOCALES.en.labels;
+  const c = completion && typeof completion === "object" ? completion : {};
+  const enabled = c.enabled === true;
+  const base = `${statusWord(locale, enabled ? "on" : "off")}, `
+    + `${labels.completionOutput || "output"}=${completionOutputModeWord(locale, c.outputMode)}, `
+    + `${labels.completionBare || "bare fallback"}=${statusWord(locale, c.bare === true ? "on" : "off")}`;
+  return base + (enabled && c.effective !== true ? locale.completionInactiveSuffix : "");
+}
+
 function formatTelegramStatusDiagnostic(diagnostic, { all = false, lang = "en" } = {}) {
   const d = diagnostic && typeof diagnostic === "object" ? diagnostic : {};
   const locale = getStatusLocale(lang);
@@ -678,10 +713,7 @@ function formatTelegramStatusDiagnostic(diagnostic, { all = false, lang = "en" }
     `${labels.health}: ${statusValue(locale, "health", d.health || "unknown")}`,
     `${labels.nativePolling}: ${statusWord(locale, d.nativePolling === true ? "running" : "stopped")}`,
     `${labels.approval}: ${statusWord(locale, d.approvalAvailable === true ? "available" : "unavailable")}`,
-    `${labels.completionNotifications}: ${statusWord(locale, d.completionNotifications && d.completionNotifications.enabled ? "on" : "off")}`
-      + (d.completionNotifications && d.completionNotifications.enabled && !d.completionNotifications.effective
-        ? locale.completionInactiveSuffix
-        : ""),
+    `${labels.completionNotifications}: ${formatCompletionNotificationStatus(d.completionNotifications, locale)}`,
     `${labels.token}: ${statusWord(locale, d.tokenStored === true ? "stored" : "missing")}`,
     `${labels.config}: ${statusWord(locale, d.configured === true ? "complete" : "incomplete")}`,
     `${labels.pendingApprovals}: ${d.pendingApprovals && Number.isFinite(d.pendingApprovals.total) ? d.pendingApprovals.total : 0}`,

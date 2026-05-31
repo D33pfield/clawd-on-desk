@@ -164,6 +164,9 @@ test("R2 diagnostic reports native active healthy without exposing recipient ids
   assert.equal(diagnostic.nativePolling, true);
   assert.equal(diagnostic.approvalAvailable, true);
   assert.equal(diagnostic.completionNotifications.enabled, true);
+  assert.equal(diagnostic.completionNotifications.effective, true);
+  assert.equal(diagnostic.completionNotifications.outputMode, "full");
+  assert.equal(diagnostic.completionNotifications.bare, false);
   assert.equal(diagnostic.tokenStored, true);
   assert.deepEqual(diagnostic.pendingApprovals, { total: 2, nativeCards: 1 });
 
@@ -171,6 +174,7 @@ test("R2 diagnostic reports native active healthy without exposing recipient ids
   assert.match(text, /Transport: native/);
   assert.match(text, /Native polling: running/);
   assert.match(text, /Approval: available/);
+  assert.match(text, /Completion notifications: on, output=full answer, bare fallback=off/);
   assert.match(text, /Pending approvals: 2/);
   assert.match(text, /PreToolUse 3s ago/);
   assert.equal(text.includes("123456789"), false);
@@ -210,7 +214,7 @@ test("R3 diagnostic formatter follows the Clawd language setting", () => {
   assert.match(text, /健康状态: 正常/);
   assert.match(text, /原生轮询: 运行中/);
   assert.match(text, /审批: 可用/);
-  assert.match(text, /完成通知: 开启/);
+  assert.match(text, /完成通知: 开启, 输出=完整回答, 裸通知=关闭/);
   assert.match(text, /待处理审批: 2/);
   assert.match(text, /最新会话: claude-code #session- 状态=working 标记=running; 最近 hook: PreToolUse 3 秒前/);
   assert.doesNotMatch(text, /Transport:|Native polling:|Latest session:/);
@@ -293,7 +297,15 @@ test("R2 diagnostic distinguishes off transport from legacy stopped", () => {
   assert.equal(diagnostic.transport, "off");
   assert.equal(diagnostic.health, "off");
   assert.equal(diagnostic.approvalAvailable, false);
-  assert.match(formatTelegramStatusDiagnostic(diagnostic), /Transport: off/);
+  assert.equal(diagnostic.completionNotifications.enabled, false);
+  assert.equal(diagnostic.completionNotifications.effective, false);
+  assert.equal(diagnostic.completionNotifications.configured, true);
+  assert.equal(diagnostic.completionNotifications.outputMode, "full");
+  assert.equal(diagnostic.completionNotifications.bare, false);
+  const text = formatTelegramStatusDiagnostic(diagnostic);
+  assert.match(text, /Transport: off/);
+  assert.match(text, /Completion notifications: off, output=full answer, bare fallback=off/);
+  assert.doesNotMatch(text, /inactive until native is running/);
 });
 
 test("R2 diagnostic reports legacy fallback without pretending native is polling", () => {
@@ -323,7 +335,10 @@ test("R2 diagnostic reports legacy fallback without pretending native is polling
   assert.equal(diagnostic.health, "healthy");
   assert.equal(diagnostic.nativePolling, false);
   assert.equal(diagnostic.approvalAvailable, true);
+  assert.equal(diagnostic.completionNotifications.enabled, true);
   assert.equal(diagnostic.completionNotifications.effective, false);
+  assert.equal(diagnostic.completionNotifications.outputMode, "full");
+  assert.equal(diagnostic.completionNotifications.bare, false);
 });
 
 test("R2 diagnostic redacts token, Telegram ids, paths, and tool-like secrets from errors", () => {

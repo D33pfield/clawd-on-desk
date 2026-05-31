@@ -1367,6 +1367,61 @@ describe("settings renderer browser environment", () => {
     );
   });
 
+  it("preserves notifyOnComplete=true through a Telegram recipient save", async () => {
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: true,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+          notifyOnComplete: true,
+          completionOutputMode: "off",
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: { state: "LEGACY_ACTIVE", transport: "legacy", ownerSnapshot: { sidecarRunning: true } },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "running", configured: true, tokenStored: true },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const input = harness.content.querySelectorAll("input")[0];
+    input.value = "987654321";
+    input.dispatchEvent({ type: "input" });
+    const saveButton = harness.content.querySelectorAll("button")
+      .find((button) => button.textContent === "telegramApprovalSaveRecipient");
+    saveButton.dispatchEvent({ type: "click" });
+
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), [{
+      key: "tgApproval",
+      value: {
+        enabled: true,
+        allowedTgUserId: "987654321",
+        targetSessionKey: "987654321",
+        notifyOnComplete: true,
+        completionOutputMode: "off",
+      },
+    }]);
+  });
+
   it("dispatches USER_DISABLE when the enabled switch is turned off (zombie-switch fix)", async () => {
     const commandCalls = [];
     const harness = loadTelegramApprovalTabForTest({

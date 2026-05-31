@@ -57,8 +57,27 @@ test("first snapshot primes dedupe without notifying", async () => {
   assert.deepEqual(sent, [], "backlog of already-finished sessions must not re-ping on start");
 });
 
-test("notifies a fresh completion after priming", async () => {
+test("factory defaults to full output without bare completion fallback", async () => {
   const { comp, sent } = makeCompanion();
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry()] });
+  await tick();
+  assert.deepEqual(sent, [], "default factory should not send a bare ping");
+
+  comp.onSnapshot({
+    sessions: [doneEntry({
+      lastEvent: { rawEvent: "Stop", at: 2000 },
+      assistantLastOutput: "Implemented the fix.",
+    })],
+  });
+  await tick();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /Assistant output:/);
+  assert.match(sent[0], /Implemented the fix/);
+});
+
+test("notifies a fresh completion after priming", async () => {
+  const { comp, sent } = makeCompanion({ getNotifyOnComplete: () => true });
   comp.onSnapshot({ sessions: [] }); // prime empty
   comp.onSnapshot({ sessions: [doneEntry()] });
   await tick();
@@ -68,7 +87,7 @@ test("notifies a fresh completion after priming", async () => {
 });
 
 test("dedupes repeated broadcasts of the same completion", async () => {
-  const { comp, sent } = makeCompanion();
+  const { comp, sent } = makeCompanion({ getNotifyOnComplete: () => true });
   comp.onSnapshot({ sessions: [] });
   comp.onSnapshot({ sessions: [doneEntry()] });
   await tick();
@@ -79,7 +98,7 @@ test("dedupes repeated broadcasts of the same completion", async () => {
 });
 
 test("a later completion on the same session (new at) notifies again", async () => {
-  const { comp, sent } = makeCompanion();
+  const { comp, sent } = makeCompanion({ getNotifyOnComplete: () => true });
   comp.onSnapshot({ sessions: [] });
   comp.onSnapshot({ sessions: [doneEntry()] });
   await tick();
@@ -107,7 +126,7 @@ test("disabled: advances dedupe but sends nothing, and never backfills", async (
 });
 
 test("notifies each completing session with identity fields", async () => {
-  const { comp, sent } = makeCompanion();
+  const { comp, sent } = makeCompanion({ getNotifyOnComplete: () => true });
   comp.onSnapshot({ sessions: [] });
   comp.onSnapshot({
     sessions: [
@@ -141,7 +160,7 @@ test("ignores non-completion badges and events", async () => {
 });
 
 test("interrupted badge uses the warning marker", async () => {
-  const { comp, sent } = makeCompanion();
+  const { comp, sent } = makeCompanion({ getNotifyOnComplete: () => true });
   comp.onSnapshot({ sessions: [] });
   comp.onSnapshot({
     sessions: [doneEntry({ badge: "interrupted", lastEvent: { rawEvent: "ApiError", at: 5 } })],
@@ -153,7 +172,7 @@ test("interrupted badge uses the warning marker", async () => {
 
 test("completion notification follows the current Clawd language", async () => {
   let lang = "zh";
-  const { comp, sent } = makeCompanion({ getLang: () => lang });
+  const { comp, sent } = makeCompanion({ getLang: () => lang, getNotifyOnComplete: () => true });
   comp.onSnapshot({ sessions: [] });
   comp.onSnapshot({ sessions: [doneEntry()] });
   await tick();
@@ -171,6 +190,7 @@ test("completion notification follows the current Clawd language", async () => {
 test("output mode off keeps the R1a bare notification", async () => {
   const { comp, sent } = makeCompanion({
     getCompletionOutputMode: () => "off",
+    getNotifyOnComplete: () => true,
   });
   comp.onSnapshot({ sessions: [] });
   comp.onSnapshot({ sessions: [doneEntry({ assistantLastOutput: "assistant text" })] });
@@ -265,9 +285,10 @@ test("full output mode appends assistant text and marks extractor truncation", a
   assert.match(sent[0], /Tests pass/);
 });
 
-test("enabled output mode degrades to R1a when no assistant text is available", async () => {
+test("full output mode with bare ping enabled degrades to R1a when no assistant text is available", async () => {
   const { comp, sent } = makeCompanion({
     getCompletionOutputMode: () => "full",
+    getNotifyOnComplete: () => true,
   });
   comp.onSnapshot({ sessions: [] });
   comp.onSnapshot({ sessions: [doneEntry()] });

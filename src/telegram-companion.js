@@ -204,8 +204,8 @@ function createTelegramCompanion({
   isEnabled,
   log = () => {},
   getLang = () => "en",
-  getCompletionOutputMode = () => "off",
-  getNotifyOnComplete = () => true,
+  getCompletionOutputMode = () => "full",
+  getNotifyOnComplete = () => false,
   formatText = null,
 } = {}) {
   const lastNotified = new Map(); // id -> last dedupe key
@@ -258,10 +258,10 @@ function createTelegramCompanion({
         const value = typeof getLang === "function" ? getLang() : "";
         if (typeof value === "string" && value) lang = value;
       } catch {}
-      let completionOutputMode = "off";
+      let completionOutputMode = "full";
       try {
         completionOutputMode = normalizeCompletionOutputMode(
-          typeof getCompletionOutputMode === "function" ? getCompletionOutputMode() : "off"
+          typeof getCompletionOutputMode === "function" ? getCompletionOutputMode() : "full"
         );
       } catch {}
       let includeBare = true;
