@@ -1273,7 +1273,7 @@ const { initFocusHelper, killFocusHelper, focusTerminalWindow, clearMacFocusCool
 
 function getFocusableLocalHudSessionIds() {
   if (!_state || typeof _state.buildSessionSnapshot !== "function") return [];
-  return selectFocusableLocalHudSessionIds(_state.buildSessionSnapshot());
+  return selectFocusableLocalHudSessionIds(_state.buildSessionSnapshot(), { osPlatform: process.platform });
 }
 
 function focusTerminalSession(session, sessionId, requestSource) {
@@ -1305,7 +1305,7 @@ function focusDashboardSession(sessionId, options = {}) {
   }
 
   const focusEntry = { ...(session || {}), ...(fallbackEntry || {}), id };
-  const focusTarget = getSessionFocusTarget(focusEntry);
+  const focusTarget = getSessionFocusTarget(focusEntry, { osPlatform: process.platform });
   if (focusTarget.type === "codex-thread" && focusTarget.url) {
     focusCodexThreadTarget({
       shell,

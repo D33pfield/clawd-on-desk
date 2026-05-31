@@ -39,6 +39,7 @@ function makeCtx(overrides = {}) {
     resolvePermissionEntry: () => {},
     dismissPermissionsForDnd: () => {},
     focusTerminalWindow: () => {},
+    focusHostPlatform: "darwin",
     // Default: all pids dead
     processKill: () => { const e = new Error("ESRCH"); e.code = "ESRCH"; throw e; },
     getCursorScreenPoint: () => ({ x: 100, y: 100 }),
@@ -943,6 +944,36 @@ describe("updateSession()", () => {
       type: "codex-thread",
       url: "codex://threads/019e115a-4df2-7ed0-b90e-8e6345aca777",
     });
+  });
+
+  it("Codex Desktop focus metadata downgrades on Windows", () => {
+    api = require("../src/state")(makeCtx({ focusHostPlatform: "win32" }));
+
+    update(api, {
+      id: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+      state: "notification",
+      event: "PermissionRequest",
+      agentId: "codex",
+      sourcePid: 456,
+      agentPid: 456,
+      codexOriginator: "Codex Desktop",
+    });
+    update(api, {
+      id: "codex:019e115b-4df2-7ed0-b90e-8e6345aca777",
+      state: "working",
+      event: "PreToolUse",
+      agentId: "codex",
+      codexOriginator: "Codex Desktop",
+    });
+
+    const byId = new Map(api.getLastSessionSnapshot().sessions.map((entry) => [entry.id, entry]));
+    assert.strictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").canFocus, true);
+    assert.deepStrictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").focusTarget, {
+      type: "terminal",
+      url: null,
+    });
+    assert.strictEqual(byId.get("codex:019e115b-4df2-7ed0-b90e-8e6345aca777").canFocus, false);
+    assert.strictEqual(byId.get("codex:019e115b-4df2-7ed0-b90e-8e6345aca777").focusTarget, null);
   });
 
   it("keeps wtHwnd sticky when later events do not provide one", () => {
