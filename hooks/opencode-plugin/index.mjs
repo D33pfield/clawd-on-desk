@@ -38,12 +38,6 @@ const STATE_PATH = "/state";
 const POST_TIMEOUT_MS = 1000;
 const AGENT_ID = "opencode";
 
-// opencode emits session.status=busy between every tool call as the LLM
-// deliberates the next step; without this gate the pet would flash
-// thinking ↔ working on every invocation. Active states listed here
-// suppress the "back to thinking" regression.
-const ACTIVE_STATES_BLOCKING_THINKING = new Set(["working", "sweeping"]);
-
 // Process tree walk config — mirrors hooks/clawd-hook.js exactly, minus the
 // Claude-specific detection. See docs/plans/plan-opencode-integration.md Phase 4.
 // Spike confirmed (2026-04-05): plugin runs in-process with opencode, so walk
@@ -76,8 +70,14 @@ const EDITOR_MAP_LINUX = { "code": "code", "cursor": "cursor", "code-insiders": 
 
 // Per plugin-instance state (scoped to one opencode process).
 let _cachedPort = null;
-let _lastState = null;
-let _lastSessionId = null;
+// Per-session last-state tracking. Keyed by sessionId so that subagent
+// sessions (spawned by the `task` tool) don't clobber the root session's
+// dedup state. Each value is the last Clawd state sent for that session.
+const _lastStatePerSession = new Map();
+// Fallback session ID for permission.asked events, which lack sessionID
+// in their properties. Updated on every session.*/message.part.updated
+// event so it stays fresh. Not used for state dedup.
+let _lastSeenSessionId = null;
 let _reqCounter = 0;
 // Phase 3: opencode subtasks are full child sessions (not subtask parts). The
 // parent session's `task` tool spawns a `session.created` with a new sessionID
@@ -334,18 +334,15 @@ function postPermissionToClawd(body) {
 function sendState(state, eventName, sessionId) {
   if (!state || !eventName) return;
 
-  if (state === "thinking" && ACTIVE_STATES_BLOCKING_THINKING.has(_lastState)) {
-    debugLog(`GATE busy→thinking blocked (lastState=${_lastState}, session=${sessionId})`);
+  const lastState = _lastStatePerSession.get(sessionId) || null;
+
+  // Per-session dedup: skip only if the SAME session repeats the SAME state.
+  if (state === lastState) {
     return;
   }
 
-  if (state === _lastState && sessionId === _lastSessionId) {
-    return;
-  }
-
-  debugLog(`SEND ${_lastState || "null"} → ${state} event=${eventName} session=${sessionId}`);
-  _lastState = state;
-  _lastSessionId = sessionId;
+  debugLog(`SEND ${lastState || "null"} → ${state} event=${eventName} session=${sessionId}`);
+  _lastStatePerSession.set(sessionId, state);
 
   postStateToClawd({
     state,
@@ -401,16 +398,18 @@ function translateEvent(event) {
     case "session.compacted":
       return { state: "sweeping", event: "PreCompact" };
 
-    case "session.idle":
+    case "session.idle": {
       // Phase 3 (plan A): only the root session's idle fires the happy
       // animation. Subtask sessions (spawned by the `task` tool) end with
       // SessionEnd so Clawd removes them from its tracking map — no happy
       // flash, no menu pollution. If _rootSessionId is null (no session
       // seen yet, should never happen), fall through to old behavior.
-      if (_rootSessionId && props.sessionID && props.sessionID !== _rootSessionId) {
+      const sid = props.sessionID || event.sessionID || null;
+      if (_rootSessionId && sid && sid !== _rootSessionId) {
         return { state: "sleeping", event: "SessionEnd" };
       }
       return { state: "attention", event: "Stop" };
+    }
 
     case "session.error":
       return { state: "error", event: "StopFailure" };
@@ -436,10 +435,10 @@ function normalizeServerUrl(raw) {
 
 // Handle v2 permission.asked event — see Phase 2 Spike in
 // docs/plans/plan-opencode-integration.md. The payload has no sessionID in its
-// properties (only `id` = requestID), so we borrow _lastSessionId which is
-// kept fresh by session.*/message.part.updated events. Phase 1 dedup/state
-// machine logic does not run for permission events — they ride a parallel
-// channel and never translate to a Clawd state transition.
+// properties (only `id` = requestID), so we use _lastSeenSessionId (the most
+// recently seen session from state events) as a fallback, then _rootSessionId.
+// Phase 1 dedup/state machine logic does not run for permission events — they
+// ride a parallel channel and never translate to a Clawd state transition.
 function handlePermissionAsked(event) {
   const p = (event && event.properties) || {};
   const requestId = p.id;
@@ -453,7 +452,7 @@ function handlePermissionAsked(event) {
     tool_input: p.metadata || {},
     patterns: Array.isArray(p.patterns) ? p.patterns : [],
     always: Array.isArray(p.always) ? p.always : [],
-    session_id: _lastSessionId || "default",
+    session_id: _lastSeenSessionId || _rootSessionId || "default",
     request_id: requestId,
     server_url: _serverUrl,         // debug only, not used for replies
     bridge_url: _bridgeUrl,         // ← Clawd POSTs decisions here
@@ -583,11 +582,14 @@ export default async (ctx) => {
         // Phase 3: capture the root session on first sighting. Any later
         // sessionID is a subtask spawned by the parent's `task` tool, and
         // its session.idle will be downgraded to SessionEnd in translateEvent.
-        const sid = event.properties && event.properties.sessionID;
+        // The session ID may be in event.properties.sessionID (most events)
+        // or event.sessionID (session.created in some runtimes).
+        const sid = (event.properties && event.properties.sessionID) || event.sessionID || null;
         if (sid && !_rootSessionId) {
           _rootSessionId = sid;
           debugLog(`ROOT session captured id=${sid}`);
         }
+        if (sid) _lastSeenSessionId = sid;
 
         // Phase 2: permission.asked rides a parallel channel — forward to Clawd
         // and skip state translation. Clawd replies directly to opencode's own
@@ -609,7 +611,7 @@ export default async (ctx) => {
           }
           return;
         }
-        const sessionId = (event.properties && event.properties.sessionID) || "default";
+        const sessionId = (event.properties && event.properties.sessionID) || event.sessionID || "default";
         debugLog(`MAP ${event.type} → state=${mapped.state} event=${mapped.event}`);
         sendState(mapped.state, mapped.event, sessionId);
       } catch (err) {
