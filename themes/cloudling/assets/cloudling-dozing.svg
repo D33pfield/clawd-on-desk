@@ -81,6 +81,28 @@ const controlGrid = document.getElementById('control-grid');
 let playing = true;
 let startMs = performance.now();
 let pausedT = 0;
+let lowPowerPaused = false;
+let rafId = 0;
+
+function scheduleLoop() {
+  if (!lowPowerPaused && !rafId) rafId = requestAnimationFrame(loop);
+}
+
+window.__clawdSetLowPowerPaused = paused => {
+  const next = !!paused;
+  if (lowPowerPaused === next) return;
+  lowPowerPaused = next;
+  if (next) {
+    pausedT = currentTime(performance.now());
+    playing = false;
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = 0;
+    return;
+  }
+  playing = true;
+  startMs = performance.now() - pausedT * 1000;
+  scheduleLoop();
+};
 
 function clamp01(v) { return Math.max(0, Math.min(1, v)); }
 function lerp(a, b, t) { return a + (b - a) * t; }
@@ -324,11 +346,13 @@ function currentTime(now) {
 }
 
 function loop(now) {
+  rafId = 0;
+  if (lowPowerPaused) return;
   renderFrame(currentTime(now));
-  requestAnimationFrame(loop);
+  scheduleLoop();
 }
 
 renderFrame(0);
-requestAnimationFrame(loop);
+scheduleLoop();
 ]]></script>
 </svg>
