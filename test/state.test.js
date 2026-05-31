@@ -1037,6 +1037,22 @@ describe("updateSession()", () => {
     assert.strictEqual(api.getCurrentState(), "idle");
   });
 
+  it("Codex transient PermissionRequest preserves focus without keeping a waiting tail", () => {
+    update(api, { id: "codex:native", state: "working", event: "PreToolUse", agentId: "codex" });
+
+    api.updateSession("codex:native", "notification", "PermissionRequest", {
+      agentId: "codex",
+      sourcePid: 456,
+      transientPermissionEvent: true,
+    });
+
+    const session = api.sessions.get("codex:native");
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.sourcePid, 456);
+    assert.strictEqual(session.recentEvents.at(-1).event, "PreToolUse");
+    assert.ok(!session.recentEvents.some((entry) => entry.event === "PermissionRequest"));
+  });
+
   it("stores one-shot visuals as idle while permission prompts preserve active work", () => {
     update(api, { id: "notify", state: "notification", event: "Notification", agentId: "claude-code" });
     assert.strictEqual(api.sessions.get("notify").state, "idle");
@@ -1070,6 +1086,83 @@ describe("updateSession()", () => {
 
     assert.strictEqual(api.sessions.get("codex:stale-permission").state, "idle");
     assert.strictEqual(api.getCurrentState(), "idle");
+  });
+
+  it("clearPermissionNotification removes a resolved PermissionRequest tail event", () => {
+    update(api, { id: "perm-active", state: "working", event: "PreToolUse", agentId: "codex" });
+    update(api, {
+      id: "perm-active",
+      state: "notification",
+      event: "PermissionRequest",
+      agentId: "codex",
+      sourcePid: 456,
+    });
+
+    assert.strictEqual(api.sessions.get("perm-active").recentEvents.at(-1).event, "PermissionRequest");
+
+    assert.strictEqual(api.clearPermissionNotification("perm-active"), true);
+
+    const session = api.sessions.get("perm-active");
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.recentEvents.at(-1).event, "PreToolUse");
+    assert.strictEqual(api.resolveDisplayState(), "working");
+  });
+
+  it("clearPermissionNotification restores Codex work state after stale idle downgrade", () => {
+    api.sessions.set("codex:stale-approved", rawSession("idle", {
+      agentId: "codex",
+      sourcePid: 456,
+      pidReachable: true,
+      recentEvents: [
+        { event: "PreToolUse", state: "working", at: Date.now() - 360000 },
+        { event: "PermissionRequest", state: "working", at: Date.now() - 350000 },
+      ],
+    }));
+
+    assert.strictEqual(api.clearPermissionNotification("codex:stale-approved"), true);
+
+    const session = api.sessions.get("codex:stale-approved");
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.recentEvents.at(-1).event, "PreToolUse");
+    assert.strictEqual(api.getCurrentState(), "working");
+  });
+
+  it("clearPermissionNotification keeps the tail while another permission is pending", () => {
+    api.sessions.set("codex:stacked", rawSession("working", {
+      agentId: "codex",
+      sourcePid: 456,
+      pidReachable: true,
+      recentEvents: [
+        { event: "PreToolUse", state: "working", at: Date.now() - 2000 },
+        { event: "PermissionRequest", state: "working", at: Date.now() - 1000 },
+      ],
+    }));
+
+    assert.strictEqual(
+      api.clearPermissionNotification("codex:stacked", { hasPendingForSession: true }),
+      false,
+    );
+
+    const session = api.sessions.get("codex:stacked");
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.recentEvents.at(-1).event, "PermissionRequest");
+  });
+
+  it("clearPermissionNotification also strips a resolved remote Codex tail", () => {
+    api.sessions.set("codex:remote-approved", rawSession("idle", {
+      agentId: "codex",
+      host: "ssh://devbox",
+      recentEvents: [
+        { event: "PreToolUse", state: "working", at: Date.now() - 360000 },
+        { event: "PermissionRequest", state: "working", at: Date.now() - 350000 },
+      ],
+    }));
+
+    assert.strictEqual(api.clearPermissionNotification("codex:remote-approved"), true);
+
+    const session = api.sessions.get("codex:remote-approved");
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.recentEvents.at(-1).event, "PreToolUse");
   });
 
   it("SessionEnd + sweeping → plays sweeping even with other active sessions", () => {

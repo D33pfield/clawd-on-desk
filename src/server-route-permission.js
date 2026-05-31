@@ -425,6 +425,7 @@ function handlePermissionPost(req, res, options) {
           if (shouldMuteCodexNativeNotificationSound(ctx)) {
             nativeSessionOptions.muteNotificationSound = true;
           }
+          nativeSessionOptions.transientPermissionEvent = true;
           ctx.updateSession(sessionId, "notification", "PermissionRequest", nativeSessionOptions);
           ctx.permLog(`codex native permission mode -> no decision, native prompt fallback (tool=${toolName})`);
           recordRequestHookEvent.accepted();

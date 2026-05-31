@@ -16,6 +16,7 @@ const {
 } = require("./state-visual-resolver");
 const {
   getStaleSessionDecision,
+  isWorkingLikeState,
 } = require("./state-stale-cleanup");
 const {
   createHitboxRuntime,
@@ -898,6 +899,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     hookSource = null,
     agentIdDefaulted = false,
     muteNotificationSound = false,
+    transientPermissionEvent = false,
   } = opts;
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
@@ -948,7 +950,9 @@ function updateSession(sessionId, state, event, opts = {}) {
       // later hook arrives for that synthetic session, auto-return keeps
       // resolving back to notification forever.
       const storedState = existing && existing.state ? existing.state : "idle";
-      const recentEvents = pushRecentEvent(existing, storedState, event);
+      const recentEvents = transientPermissionEvent === true
+        ? (Array.isArray(existing && existing.recentEvents) ? existing.recentEvents.slice() : [])
+        : pushRecentEvent(existing, storedState, event);
       sessions.set(sessionId, {
         state: storedState,
         updatedAt: Date.now(),
@@ -1326,18 +1330,47 @@ function dismissSession(sessionId) {
   return true;
 }
 
+function takeTrailingPermissionRequest(session) {
+  const events = Array.isArray(session && session.recentEvents)
+    ? session.recentEvents
+    : null;
+  if (!events || events.length === 0) return null;
+  const last = events[events.length - 1];
+  if (!last || last.event !== "PermissionRequest") return null;
+  session.recentEvents = events.slice(0, -1);
+  return last;
+}
+
 function clearPermissionNotification(sessionId, options = {}) {
   const id = typeof sessionId === "string" ? sessionId : "";
   if (!id || options.hasPendingForSession === true) return false;
 
   let changed = false;
   const session = sessions.get(id);
-  if (session && session.state === "notification") {
-    session.state = "idle";
-    session.updatedAt = Date.now();
-    session.displayHint = null;
-    session.resumeState = null;
-    changed = true;
+  if (session) {
+    const trailingPermission = takeTrailingPermissionRequest(session);
+    if (session.state === "notification") {
+      session.state = "idle";
+      session.displayHint = null;
+      session.resumeState = null;
+      changed = true;
+    } else if (
+      session.state === "idle"
+      && trailingPermission
+      && isWorkingLikeState(trailingPermission.state)
+    ) {
+      // A stale sweep may downgrade a Codex session while the approval is
+      // still pending. Once the permission resolves, restore the work state
+      // recorded at request time so long commands do not stay visually idle.
+      session.state = trailingPermission.state;
+      changed = true;
+    }
+    if (trailingPermission) {
+      session.updatedAt = Date.now();
+      changed = true;
+    } else if (changed) {
+      session.updatedAt = Date.now();
+    }
   }
 
   // Leave the one-shot notification immediately after the permission channel
