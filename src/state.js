@@ -720,6 +720,7 @@ function buildSessionSnapshot() {
     getAgentIconUrl,
     statePriority: STATE_PRIORITY,
     sessionHudCleanupDetached: ctx.sessionHudCleanupDetached === true,
+    focusHostPlatform: ctx.focusHostPlatform || process.platform,
     isProcessAlive,
   });
 }

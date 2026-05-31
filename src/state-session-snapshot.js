@@ -170,7 +170,9 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
   const state = (session && session.state) || "idle";
   const hiddenFromHud = shouldAutoClearDetachedSession(session, badge, options);
   const focusTarget = session && !session.headless && state !== "sleeping" && !hiddenFromHud
-    ? getSessionFocusTarget({ ...(session || {}), id })
+    ? getSessionFocusTarget({ ...(session || {}), id }, {
+      osPlatform: options.focusHostPlatform || options.osPlatform,
+    })
     : { canFocus: false, type: null, url: null };
   return {
     id,

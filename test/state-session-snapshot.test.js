@@ -213,6 +213,40 @@ describe("state-session-snapshot builder", () => {
     assert.strictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").codexSource, "vscode");
   });
 
+  it("downgrades Codex Desktop focus targets on Windows snapshots", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["codex:019e115a-4df2-7ed0-b90e-8e6345aca777", session("working", {
+        agentId: "codex",
+        codexOriginator: "Codex Desktop",
+        sourcePid: 123,
+      })],
+      ["codex:019e115b-4df2-7ed0-b90e-8e6345aca777", session("working", {
+        agentId: "codex",
+        codexOriginator: "Codex Desktop",
+      })],
+    ]), { focusHostPlatform: "win32" });
+
+    const byId = new Map(snapshot.sessions.map((entry) => [entry.id, entry]));
+    assert.strictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").canFocus, true);
+    assert.deepStrictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").focusTarget, {
+      type: "terminal",
+      url: null,
+    });
+    assert.strictEqual(byId.get("codex:019e115b-4df2-7ed0-b90e-8e6345aca777").canFocus, false);
+    assert.strictEqual(byId.get("codex:019e115b-4df2-7ed0-b90e-8e6345aca777").focusTarget, null);
+
+    const nonWindowsSnapshot = buildSessionSnapshot(new Map([
+      ["codex:019e115b-4df2-7ed0-b90e-8e6345aca777", session("working", {
+        agentId: "codex",
+        codexOriginator: "Codex Desktop",
+      })],
+    ]), { focusHostPlatform: "darwin" });
+    assert.deepStrictEqual(nonWindowsSnapshot.sessions[0].focusTarget, {
+      type: "codex-thread",
+      url: "codex://threads/019e115b-4df2-7ed0-b90e-8e6345aca777",
+    });
+  });
+
   it("exposes assistant last output for completion companion consumers", () => {
     const snapshot = buildSessionSnapshot(new Map([
       ["done", session("idle", {
