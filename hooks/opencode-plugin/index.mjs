@@ -398,16 +398,18 @@ function translateEvent(event) {
     case "session.compacted":
       return { state: "sweeping", event: "PreCompact" };
 
-    case "session.idle":
+    case "session.idle": {
       // Phase 3 (plan A): only the root session's idle fires the happy
       // animation. Subtask sessions (spawned by the `task` tool) end with
       // SessionEnd so Clawd removes them from its tracking map — no happy
       // flash, no menu pollution. If _rootSessionId is null (no session
       // seen yet, should never happen), fall through to old behavior.
-      if (_rootSessionId && props.sessionID && props.sessionID !== _rootSessionId) {
+      const sid = props.sessionID || event.sessionID || null;
+      if (_rootSessionId && sid && sid !== _rootSessionId) {
         return { state: "sleeping", event: "SessionEnd" };
       }
       return { state: "attention", event: "Stop" };
+    }
 
     case "session.error":
       return { state: "error", event: "StopFailure" };
