@@ -811,6 +811,44 @@ describe("updateSession()", () => {
     assert.ok(api.sessions.get("s1").updatedAt >= t1);
   });
 
+  it("defaulted Claude attribution does not overwrite a remembered agent id", () => {
+    api.updateSession("opencode-s1", "thinking", "UserPromptSubmit", {
+      agentId: "opencode",
+      cwd: "/repo",
+    });
+    api.updateSession("opencode-s1", "working", "PreToolUse", {
+      agentId: "claude-code",
+      agentIdDefaulted: true,
+    });
+
+    assert.strictEqual(api.sessions.get("opencode-s1").agentId, "opencode");
+  });
+
+  it("defaulted Claude attribution is still used for new legacy sessions", () => {
+    api.updateSession("legacy-s1", "working", "PreToolUse", {
+      agentId: "claude-code",
+      agentIdDefaulted: true,
+    });
+
+    assert.strictEqual(api.sessions.get("legacy-s1").agentId, "claude-code");
+  });
+
+  it("opencode namespaced ids do not collide with bare Claude session ids", () => {
+    api.updateSession("opencode:shared-sid", "thinking", "UserPromptSubmit", {
+      agentId: "opencode",
+      sessionTitle: "hello",
+    });
+    api.updateSession("shared-sid", "attention", "Stop", {
+      agentId: "claude-code",
+      sessionTitle: "hi",
+    });
+
+    assert.strictEqual(api.sessions.get("opencode:shared-sid").agentId, "opencode");
+    assert.strictEqual(api.sessions.get("opencode:shared-sid").sessionTitle, "hello");
+    assert.strictEqual(api.sessions.get("shared-sid").agentId, "claude-code");
+    assert.strictEqual(api.sessions.get("shared-sid").sessionTitle, "hi");
+  });
+
   it("juggling + working (non-SubagentStop) → keeps juggling", () => {
     update(api, { id: "s1", state: "juggling", event: "SubagentStart" });
     assert.strictEqual(api.sessions.get("s1").state, "juggling");

@@ -858,6 +858,12 @@ function ackSessionCompletion(sessionId) {
   return true;
 }
 
+function resolveIncomingAgentId(existing, incomingAgentId, incomingDefaulted) {
+  const remembered = existing && existing.agentId ? existing.agentId : null;
+  if (incomingDefaulted && remembered) return remembered;
+  return incomingAgentId || remembered || null;
+}
+
 // ── Session management ──
 // Session-related fields go through `opts`. Earlier versions took 13
 // positional params — refactored in B2 to an options bag so new fields
@@ -886,6 +892,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     permissionSuspect = false,
     preserveState = false,
     hookSource = null,
+    agentIdDefaulted = false,
     muteNotificationSound = false,
   } = opts;
   if (startupRecoveryActive) {
@@ -894,7 +901,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   }
 
   const sessionForPerm = sessions.get(sessionId);
-  const permAgentId = agentId || (sessionForPerm && sessionForPerm.agentId) || null;
+  const permAgentId = resolveIncomingAgentId(sessionForPerm, agentId, agentIdDefaulted);
 
   if (event === "PermissionRequest") {
     if (permAgentId === "codex") cancelCodexExitProbe(sessionId, "PermissionRequest");
@@ -922,7 +929,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcEditor = editor || (existing && existing.editor) || null;
       const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
       const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
-      const srcAgentId = agentId || (existing && existing.agentId) || null;
+      const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
       const srcHost = host || (existing && existing.host) || null;
       const srcHeadless = headless || (existing && existing.headless) || false;
       const srcPlatform = platform || (existing && existing.platform) || null;
@@ -975,7 +982,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcEditor = editor || (existing && existing.editor) || null;
   const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
   const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
-  const srcAgentId = agentId || (existing && existing.agentId) || null;
+  const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
   const srcHost = host || (existing && existing.host) || null;
   const srcHeadless = headless || (existing && existing.headless) || false;
   const srcPlatform = platform || (existing && existing.platform) || null;
