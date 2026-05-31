@@ -830,6 +830,19 @@ describe("prefs.migrate v7 → v8 (Telegram bare completion default)", () => {
     assert.strictEqual(validated.tgApproval.completionOutputMode, "full");
     assert.strictEqual(validated.tgApproval.enabled, true);
   });
+
+  it("migrates older prefs without Telegram approval settings safely", () => {
+    const upgraded = prefs.migrate({
+      version: 6,
+      lang: "zh",
+    });
+    const validated = prefs.validate(upgraded);
+
+    assert.strictEqual(validated.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(validated.lang, "zh");
+    assert.strictEqual(validated.tgApproval.notifyOnComplete, false);
+    assert.strictEqual(validated.tgApproval.completionOutputMode, "full");
+  });
 });
 
 describe("prefs.load", () => {
