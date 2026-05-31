@@ -5,6 +5,7 @@ const assert = require("node:assert");
 
 const {
   deriveSessionBadge,
+  isSessionInProgress,
   buildSessionSnapshot,
   getActiveSessionAliasKeys,
   sessionSnapshotSignature,
@@ -33,6 +34,28 @@ function session(state, overrides = {}) {
     ...overrides,
   };
 }
+
+describe("isSessionInProgress state mapping", () => {
+  it("treats active states as in-progress and idle/sleeping/headless as not", () => {
+    assert.strictEqual(isSessionInProgress(session("working")), true);
+    assert.strictEqual(isSessionInProgress(session("thinking")), true);
+    assert.strictEqual(isSessionInProgress(session("juggling")), true);
+    assert.strictEqual(isSessionInProgress(session("notification")), true);
+    assert.strictEqual(isSessionInProgress(session("attention")), true);
+    assert.strictEqual(isSessionInProgress(session("idle")), false);
+    assert.strictEqual(isSessionInProgress(session("sleeping")), false);
+  });
+
+  it("never counts headless sessions, even when active", () => {
+    assert.strictEqual(isSessionInProgress(session("working", { headless: true })), false);
+    assert.strictEqual(isSessionInProgress(session("thinking", { headless: true })), false);
+  });
+
+  it("returns false for nullish sessions", () => {
+    assert.strictEqual(isSessionInProgress(null), false);
+    assert.strictEqual(isSessionInProgress(undefined), false);
+  });
+});
 
 describe("state-session-snapshot badges", () => {
   it("derives running, done, interrupted, and idle badges", () => {

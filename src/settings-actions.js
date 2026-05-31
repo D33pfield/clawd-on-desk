@@ -188,6 +188,7 @@ const updateRegistry = {
   flashIntervalMs: requireNumberInRange("flashIntervalMs", 200, 2000),
   flashDurationMs: requireNumberInRange("flashDurationMs", 0, 60000),
   lowPowerIdleMode: requireBoolean("lowPowerIdleMode"),
+  keepAwakeWhileWorking: requireBoolean("keepAwakeWhileWorking"),
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
   sessionHudEnabled: requireBoolean("sessionHudEnabled"),
   sessionHudShowStateLabels: requireBoolean("sessionHudShowStateLabels"),

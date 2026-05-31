@@ -54,6 +54,16 @@ function sessionUpdatedAt(session) {
   return Number.isFinite(updatedAt) ? updatedAt : 0;
 }
 
+// A session counts as "in progress" when it is non-headless and its state is
+// anything other than idle/sleeping (mirrors deriveSessionBadge's "running"
+// semantics). Note: a session waiting on a permission prompt keeps its prior
+// working/thinking state, so it is intentionally treated as in-progress.
+function isSessionInProgress(session) {
+  if (!session || session.headless) return false;
+  if (session.state === "idle" || session.state === "sleeping") return false;
+  return true;
+}
+
 function deriveSessionBadge(session) {
   if (!session) return "idle";
   if (session.state !== "idle" && session.state !== "sleeping") return "running";
@@ -311,6 +321,7 @@ module.exports = {
   SESSION_TITLE_MAX,
   normalizeTitle,
   sessionUpdatedAt,
+  isSessionInProgress,
   deriveSessionBadge,
   shouldAutoClearDetachedSession,
   getSessionAliasEntry,
