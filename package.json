@@ -133,6 +133,7 @@
       "assets/icons/agents/**/*",
       "assets/svg/**/*",
       "assets/sounds/**/*",
+      "assets/dock-icon.png",
       "assets/tray-icon*.png",
       "hooks/**/*",
       "extensions/**/*",
