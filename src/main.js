@@ -1424,6 +1424,25 @@ const _serverCtx = {
 const _server = require("./server")(_serverCtx);
 const { startHttpServer, getHookServerPort } = _server;
 
+// ── LAN WebSocket bridge for PWA mobile clients ──
+const { initMobilePreviewServer } = require("./network/mobile-preview-server");
+const _lanWss = initMobilePreviewServer({
+  sessions,
+  getPendingPermissions: () => pendingPermissions,
+  getSettingsSnapshot: () => _settingsController.getSnapshot(),
+  isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
+});
+const _origOnPermissionsChanged = _permCtx.onPermissionsChanged;
+_permCtx.onPermissionsChanged = () => {
+  _origOnPermissionsChanged();
+  _lanWss.onPermissionBroadcast();
+};
+const _origOnPermissionResolved = _permCtx.onPermissionResolved;
+_permCtx.onPermissionResolved = (permEntry, options) => {
+  _origOnPermissionResolved(permEntry, options);
+  _lanWss.onPermissionResolved(permEntry);
+};
+
 function updateLog(msg) {
   if (!updateDebugLog) return;
   const { rotatedAppend } = require("./log-rotate");
@@ -2470,6 +2489,9 @@ _settingsController.subscribeKey("tgApproval", () => {
   if (suppressTelegramApprovalSidecarSync > 0) return;
   queueTelegramApprovalSidecarSync("settings");
 });
+_settingsController.subscribeKey("mobilePreviewEnabled", (enabled) => {
+  if (enabled) { _lanWss.start(); } else { _lanWss.cleanup(); }
+});
 
 animationOverridesMain = createSettingsAnimationOverridesMain({
   app,
@@ -2675,6 +2697,7 @@ registerSessionIpc({
       console.warn("Clawd: failed to pin Session HUD:", result.message);
     }
   },
+  getLanWsServer: () => _lanWss,
 });
 
 function createWindow() {
@@ -2805,6 +2828,7 @@ function createWindow() {
   initFocusHelper();
   startMainTick();
   startHttpServer();
+  if (_settingsController.get("mobilePreviewEnabled") === true) _lanWss.start();
   startStaleCleanup();
   // Wait for renderer to be ready before sending initial state
   // If hooks arrived during startup, respect them instead of forcing idle
@@ -3079,6 +3103,7 @@ if (!gotTheLock) {
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.stop();
     _perm.cleanup();
     _server.cleanup();
+    _lanWss.cleanup();
     _updateBubble.cleanup();
     _state.cleanup();
     _tick.cleanup();
