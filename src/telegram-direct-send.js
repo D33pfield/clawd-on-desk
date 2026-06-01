@@ -42,16 +42,32 @@ function findSession(snapshot, sessionId) {
   return sessions.find((entry) => entry && entry.id === sessionId) || null;
 }
 
-function isLikelyPermissionPending(entry) {
+function isInteractivePermissionEntryForSession(permEntry, sessionId) {
+  return !!permEntry
+    && String(permEntry.sessionId || "") === String(sessionId || "")
+    && permEntry.isCodexNotify !== true
+    && permEntry.isKimiNotify !== true
+    && permEntry.isHardwareBuddyTest !== true;
+}
+
+function hasInteractivePermissionPending(entry, getPendingPermissions) {
   if (!entry || typeof entry !== "object") return false;
-  return entry.permissionPending === true
-    || entry.pendingPermission === true
-    || entry.permissionLocked === true
-    || entry.state === "notification";
+  if (typeof getPendingPermissions === "function") {
+    let pending;
+    try {
+      pending = getPendingPermissions();
+    } catch {
+      return true;
+    }
+    const list = Array.isArray(pending) ? pending : [];
+    return list.some((permEntry) => isInteractivePermissionEntryForSession(permEntry, entry.id));
+  }
+  return entry.state === "notification";
 }
 
 function createTelegramDirectSend({
   getSessionSnapshot,
+  getPendingPermissions,
   focusSession,
   isEnabled = () => false,
   now = () => Date.now(),
@@ -100,6 +116,8 @@ function createTelegramDirectSend({
 
   async function handleTextMessage(payload = {}) {
     if (typeof isEnabled === "function" && !isEnabled()) return null;
+    // Slice 3a consumes the text only for empty-message filtering. Slice 3b is
+    // where sanitized prompt text will matter for delivery.
     const promptText = normalizePromptText(payload.text);
     if (!promptText) {
       return {
@@ -127,7 +145,7 @@ function createTelegramDirectSend({
       };
     }
 
-    if (isLikelyPermissionPending(entry)) {
+    if (hasInteractivePermissionPending(entry, getPendingPermissions)) {
       safeLog("info", "direct-send rejected: session waiting for permission", { sessionId: entry.id });
       return {
         status: "permission_pending",

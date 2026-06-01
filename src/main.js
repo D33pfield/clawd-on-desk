@@ -1492,6 +1492,12 @@ function telegramApprovalLog(level, message, meta = {}) {
   const parts = [`telegram approval ${level}: ${message}`];
   if (meta && meta.text) parts.push(String(meta.text).trim());
   if (meta && meta.error) parts.push(String(meta.error).trim());
+  for (const key of ["errorClass", "errorCode", "delayMs", "id", "sessionId", "messageId"]) {
+    const value = meta && meta[key];
+    if (value !== undefined && value !== null && value !== "") {
+      parts.push(`${key}=${String(value).trim()}`);
+    }
+  }
   permLog(parts.filter(Boolean).join(" | "));
 }
 
@@ -1862,6 +1868,7 @@ async function initTelegramMigrationController() {
     getSessionSnapshot: () => _state && typeof _state.buildSessionSnapshot === "function"
       ? _state.buildSessionSnapshot()
       : { sessions: [] },
+    getPendingPermissions: () => pendingPermissions,
     focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
     isEnabled: () => {
       const snap = _telegramMigrationController && typeof _telegramMigrationController.getSnapshot === "function"
@@ -1974,7 +1981,10 @@ function makeFetchTransport({ tokenStore }) {
       });
     } catch (err) {
       if (err && err.name === "AbortError") throw err;
-      throw Object.assign(new Error(err && err.message), { code: err && err.code });
+      throw Object.assign(new Error(err && err.message ? err.message : String(err)), {
+        code: (err && (err.code || (err.cause && err.cause.code))) || undefined,
+        causeCode: err && err.cause && err.cause.code,
+      });
     }
     const status = res.status;
     let body;

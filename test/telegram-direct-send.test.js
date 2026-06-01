@@ -116,6 +116,45 @@ test("direct send never focuses remote, headless, sleeping, or permission-pendin
   }
 });
 
+test("direct send rejects sessions with an authoritative interactive pending permission", async () => {
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [localTerminalEntry()] }),
+    getPendingPermissions: () => [{ sessionId: "sess-local-1", agentId: "claude-code" }],
+    focusSession: () => { throw new Error("must not focus"); },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 42, sessionId: "sess-local-1" });
+  const res = await direct.handleTextMessage({ text: "continue", replyToMessageId: 42 });
+
+  assert.equal(res.status, "permission_pending");
+});
+
+test("direct send does not treat passive notify or hardware test entries as pending permissions", async () => {
+  const focused = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [localTerminalEntry()] }),
+    getPendingPermissions: () => [
+      { sessionId: "sess-local-1", isCodexNotify: true },
+      { sessionId: "sess-local-1", isKimiNotify: true },
+      { sessionId: "sess-local-1", isHardwareBuddyTest: true },
+    ],
+    focusSession: (sessionId) => {
+      focused.push(sessionId);
+      return true;
+    },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 42, sessionId: "sess-local-1" });
+  const res = await direct.handleTextMessage({ text: "continue", replyToMessageId: 42 });
+
+  assert.equal(res.status, "focused");
+  assert.deepEqual(focused, ["sess-local-1"]);
+});
+
 test("direct send expires notification mappings", async () => {
   let ts = 1000;
   const direct = createTelegramDirectSend({

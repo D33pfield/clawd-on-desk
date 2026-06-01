@@ -601,6 +601,15 @@ function createTelegramNativeRunner({
     try { log(level, message, meta); } catch {}
   }
 
+  function errorLogMeta(err, extra = {}) {
+    const code = err && (err.code || err.causeCode || (err.cause && err.cause.code));
+    return {
+      ...extra,
+      error: err && err.message ? err.message : "",
+      errorCode: code || "",
+    };
+  }
+
   async function sendBoundedMessage(chatId, text) {
     const controller = new AbortController();
     const timer = setTimeout(() => {
@@ -654,7 +663,7 @@ function createTelegramNativeRunner({
         } catch (err2) {
           const cls2 = classifyError(err2);
           noteError("notification", cls2);
-          safeLog("warn", "native notification send failed", { errorClass: cls2 });
+          safeLog("warn", "native notification send failed", errorLogMeta(err2, { errorClass: cls2 }));
           return { ok: false, errorClass: cls2 };
         }
       }
@@ -662,7 +671,7 @@ function createTelegramNativeRunner({
       if (cls === ERROR_CLASSES.TOKEN_MISSING) {
         safeLog("debug", "native notification skipped: no token");
       } else {
-        safeLog("warn", "native notification send failed", { errorClass: cls });
+        safeLog("warn", "native notification send failed", errorLogMeta(err, { errorClass: cls }));
       }
       return { ok: false, errorClass: cls };
     }
