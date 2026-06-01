@@ -67,6 +67,7 @@ describe("prefs.getDefaults", () => {
       targetSessionKey: "",
       notifyOnComplete: false,
       completionOutputMode: "full",
+      r3DirectSendEnabled: false,
     });
   });
 
@@ -264,6 +265,7 @@ describe("prefs.validate", () => {
       targetSessionKey: "telegram:987654321",
       notifyOnComplete: false,
       completionOutputMode: "full",
+      r3DirectSendEnabled: false,
     });
     assert.strictEqual(Object.prototype.hasOwnProperty.call(v.tgApproval, "botToken"), false);
   });
