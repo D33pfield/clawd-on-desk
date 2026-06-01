@@ -227,6 +227,7 @@ let telegramApprovalTokenRevision = 0;
 let _telegramMigrationController = null;
 let telegramNativeRunner = null;
 let telegramCompanion = null;
+let telegramDirectSend = null;
 let suppressTelegramApprovalSidecarSync = 0;
 let hardwareBuddyAdapter = null;
 let hardwareBuddyStatus = null;
@@ -1293,7 +1294,7 @@ function focusTerminalSession(session, sessionId, requestSource) {
 }
 
 function focusDashboardSession(sessionId, options = {}) {
-  if (!sessionId) return;
+  if (!sessionId) return false;
   const requestSource = options.requestSource || "dashboard";
   const id = String(sessionId);
   const session = sessions.get(id);
@@ -1302,7 +1303,7 @@ function focusDashboardSession(sessionId, options = {}) {
     : null;
   if (!session && !fallbackEntry) {
     focusLog(`focus result branch=none reason=session-not-found source=${requestSource} sid=${id}`);
-    return;
+    return false;
   }
 
   const focusEntry = { ...(session || {}), ...(fallbackEntry || {}), id };
@@ -1317,12 +1318,11 @@ function focusDashboardSession(sessionId, options = {}) {
       focusLog,
       focusTerminalSession,
     });
-    return;
+    return true;
   }
 
   if (focusTarget.type === "terminal") {
-    focusTerminalSession(focusEntry, id, requestSource);
-    return;
+    return focusTerminalSession(focusEntry, id, requestSource);
   }
 
   if (focusEntry.platform === "webui") {
@@ -1330,6 +1330,7 @@ function focusDashboardSession(sessionId, options = {}) {
   } else {
     focusLog(`focus result branch=none reason=no-source-pid source=${requestSource} sid=${id}`);
   }
+  return false;
 }
 
 function hideDashboardSession(sessionId) {
@@ -1491,6 +1492,12 @@ function telegramApprovalLog(level, message, meta = {}) {
   const parts = [`telegram approval ${level}: ${message}`];
   if (meta && meta.text) parts.push(String(meta.text).trim());
   if (meta && meta.error) parts.push(String(meta.error).trim());
+  for (const key of ["errorClass", "errorCode", "delayMs", "id", "sessionId", "messageId"]) {
+    const value = meta && meta[key];
+    if (value !== undefined && value !== null && value !== "") {
+      parts.push(`${key}=${String(value).trim()}`);
+    }
+  }
   permLog(parts.filter(Boolean).join(" | "));
 }
 
@@ -1854,8 +1861,25 @@ async function initTelegramMigrationController() {
   // Native handle: spike-level real implementation. Token comes from the same
   // env file the sidecar uses; production transport closes over the token.
   const { envFileTokenStore } = require("./telegram-token-store");
+  const { createTelegramDirectSend } = require("./telegram-direct-send");
   const { createTelegramNativeRunner } = require("./telegram-native-runner");
   const tokenStore = envFileTokenStore({ filePath: paths.tokenEnvFilePath });
+  telegramDirectSend = createTelegramDirectSend({
+    getSessionSnapshot: () => _state && typeof _state.buildSessionSnapshot === "function"
+      ? _state.buildSessionSnapshot()
+      : { sessions: [] },
+    getPendingPermissions: () => pendingPermissions,
+    focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
+    isEnabled: () => {
+      const snap = _telegramMigrationController && typeof _telegramMigrationController.getSnapshot === "function"
+        ? _telegramMigrationController.getSnapshot()
+        : null;
+      return !!(snap && snap.state === "NATIVE_ACTIVE"
+        && getTelegramApprovalPrefs().r3DirectSendEnabled === true);
+    },
+    osPlatform: process.platform,
+    log: telegramApprovalLog,
+  });
   const nativeRunner = createTelegramNativeRunner({
     tokenStore,
     transport: makeFetchTransport({ tokenStore }),
@@ -1878,6 +1902,14 @@ async function initTelegramMigrationController() {
       return !!(snap && snap.state === "NATIVE_ACTIVE");
     },
     onCommand: (payload) => handleTelegramNativeCommand(payload),
+    isTextMessageEnabled: () => {
+      const snap = _telegramMigrationController && typeof _telegramMigrationController.getSnapshot === "function"
+        ? _telegramMigrationController.getSnapshot()
+        : null;
+      return !!(snap && snap.state === "NATIVE_ACTIVE"
+        && getTelegramApprovalPrefs().r3DirectSendEnabled === true);
+    },
+    onTextMessage: (payload) => telegramDirectSend && telegramDirectSend.handleTextMessage(payload),
     log: telegramApprovalLog,
   });
   telegramNativeRunner = nativeRunner;
@@ -1895,6 +1927,14 @@ async function initTelegramMigrationController() {
     // while native is inactive, and internally decides whether to send a bare
     // ping or require assistant output based on tgApproval prefs.
     isEnabled: () => !!getTelegramCompanionClient(),
+    onNotificationSent: ({ entry, messageId }) => {
+      if (telegramDirectSend && typeof telegramDirectSend.registerCompletionNotification === "function") {
+        telegramDirectSend.registerCompletionNotification({
+          messageId,
+          sessionId: entry && entry.id,
+        });
+      }
+    },
     log: telegramApprovalLog,
   });
 
@@ -1941,7 +1981,10 @@ function makeFetchTransport({ tokenStore }) {
       });
     } catch (err) {
       if (err && err.name === "AbortError") throw err;
-      throw Object.assign(new Error(err && err.message), { code: err && err.code });
+      throw Object.assign(new Error(err && err.message ? err.message : String(err)), {
+        code: (err && (err.code || (err.cause && err.cause.code))) || undefined,
+        causeCode: err && err.cause && err.cause.code,
+      });
     }
     const status = res.status;
     let body;
