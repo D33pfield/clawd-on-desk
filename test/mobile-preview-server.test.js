@@ -161,7 +161,8 @@ describe("Mobile Preview Server", () => {
     assert.ok(snapshot.timestamp > 0);
     assert.ok(snapshot.sessions.s1);
     assert.strictEqual(snapshot.sessions.s1.state, "working");
-    assert.strictEqual(snapshot.sessions.s1.agentId, "claude-code");
+    assert.strictEqual(snapshot.sessions.s1.title, "Session s1");
+    assert.strictEqual(snapshot.sessions.s1.basename, "project");
 
     client.close();
     await new Promise((r) => setTimeout(r, 100));

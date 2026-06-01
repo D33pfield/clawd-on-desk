@@ -1424,24 +1424,16 @@ const _serverCtx = {
 const _server = require("./server")(_serverCtx);
 const { startHttpServer, getHookServerPort } = _server;
 
-// ── LAN WebSocket bridge for PWA mobile clients ──
-const { initMobilePreviewServer } = require("./network/mobile-preview-server");
-const _lanWss = initMobilePreviewServer({
-  sessions,
-  getPendingPermissions: () => pendingPermissions,
-  getSettingsSnapshot: () => _settingsController.getSnapshot(),
-  isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
-});
-const _origOnPermissionsChanged = _permCtx.onPermissionsChanged;
-_permCtx.onPermissionsChanged = () => {
-  _origOnPermissionsChanged();
-  _lanWss.onPermissionBroadcast();
-};
-const _origOnPermissionResolved = _permCtx.onPermissionResolved;
-_permCtx.onPermissionResolved = (permEntry, options) => {
-  _origOnPermissionResolved(permEntry, options);
-  _lanWss.onPermissionResolved(permEntry);
-};
+// ── LAN WebSocket bridge for PWA mobile clients (lazy-loaded) ──
+let _lanWss = null;
+if (_settingsController.get("mobilePreviewEnabled") === true) {
+  const { initMobilePreviewServer } = require("./network/mobile-preview-server");
+  _lanWss = initMobilePreviewServer({
+    sessions,
+    getSettingsSnapshot: () => _settingsController.getSnapshot(),
+    isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
+  });
+}
 
 function updateLog(msg) {
   if (!updateDebugLog) return;
@@ -2490,7 +2482,19 @@ _settingsController.subscribeKey("tgApproval", () => {
   queueTelegramApprovalSidecarSync("settings");
 });
 _settingsController.subscribeKey("mobilePreviewEnabled", async (enabled) => {
-  if (enabled) { await _lanWss.start(); } else { _lanWss.cleanup(); }
+  if (enabled) {
+    if (!_lanWss) {
+      const { initMobilePreviewServer } = require("./network/mobile-preview-server");
+      _lanWss = initMobilePreviewServer({
+        sessions,
+        getSettingsSnapshot: () => _settingsController.getSnapshot(),
+        isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
+      });
+    }
+    await _lanWss.start();
+  } else if (_lanWss) {
+    _lanWss.cleanup();
+  }
 });
 
 animationOverridesMain = createSettingsAnimationOverridesMain({
@@ -3104,7 +3108,7 @@ if (!gotTheLock) {
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.stop();
     _perm.cleanup();
     _server.cleanup();
-    _lanWss.cleanup();
+    if (_lanWss) _lanWss.cleanup();
     _updateBubble.cleanup();
     _state.cleanup();
     _tick.cleanup();

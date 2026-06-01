@@ -59,7 +59,6 @@ function initMobilePreviewServer(ctx) {
   const token = loadOrCreateToken();
   const clients = new Set();
   const clientMeta = new Map();
-  const mobilePermissions = new Map();
   let sessionCache = new Map();
   let httpServer = null;
   let wss = null;
@@ -118,52 +117,50 @@ function initMobilePreviewServer(ctx) {
     });
   }
 
-  httpServer = http.createServer(serveStatic);
+  function createServers() {
+    httpServer = http.createServer(serveStatic);
+    wss = new WebSocket.Server({ server: httpServer, path: "/ws" });
 
-  // ── WebSocket server ──
+    wss.on("connection", (ws, req) => {
+      if (closed) { ws.close(1001, "Server shutting down"); return; }
 
-  wss = new WebSocket.Server({ server: httpServer, path: "/ws" });
+      let url;
+      try { url = new URL(req.url, "http://localhost"); } catch { ws.close(1008, "Bad request"); return; }
+      if (url.searchParams.get("token") !== token) {
+        ws.close(1008, "Invalid token");
+        return;
+      }
+      if (clients.size >= MAX_CLIENTS) {
+        ws.close(1013, "Server busy");
+        return;
+      }
 
-  wss.on("connection", (ws, req) => {
-    if (closed) { ws.close(1001, "Server shutting down"); return; }
+      clients.add(ws);
+      const clientId = crypto.randomBytes(8).toString("hex");
+      const clientIp = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
+      clientMeta.set(ws, { messageCount: 0, windowStart: Date.now(), clientId, ip: clientIp, lastPong: Date.now() });
 
-    let url;
-    try { url = new URL(req.url, "http://localhost"); } catch { ws.close(1008, "Bad request"); return; }
-    if (url.searchParams.get("token") !== token) {
-      ws.close(1008, "Invalid token");
-      return;
-    }
-    if (clients.size >= MAX_CLIENTS) {
-      ws.close(1013, "Server busy");
-      return;
-    }
+      // Send snapshot on connect
+      try {
+        const snapshot = {};
+        for (const [sid, data] of sessionCache) snapshot[sid] = data;
+        ws.send(buildMessage("snapshot", { sessions: snapshot }));
+      } catch {}
 
-    clients.add(ws);
-    const clientId = crypto.randomBytes(8).toString("hex");
-    const clientIp = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
-    clientMeta.set(ws, { messageCount: 0, windowStart: Date.now(), clientId, ip: clientIp, lastPong: Date.now() });
-
-    // Send snapshot on connect
-    try {
-      const snapshot = {};
-      for (const [sid, data] of sessionCache) snapshot[sid] = data;
-      ws.send(buildMessage("snapshot", { sessions: snapshot }));
-    } catch {}
-
-    startHeartbeat();
-    ws.isAlive = true;
-    ws.on("pong", () => {
+      startHeartbeat();
       ws.isAlive = true;
-      const meta = clientMeta.get(ws);
-      if (meta) meta.lastPong = Date.now();
-    });
+      ws.on("pong", () => {
+        ws.isAlive = true;
+        const meta = clientMeta.get(ws);
+        if (meta) meta.lastPong = Date.now();
+      });
 
-    ws.on("message", (data) => {
-      if (closed) return;
-      const meta = clientMeta.get(ws);
-      if (!meta) return;
-      const now = Date.now();
-      if (now - meta.windowStart > RATE_WINDOW_MS) { meta.messageCount = 0; meta.windowStart = now; }
+      ws.on("message", (data) => {
+        if (closed) return;
+        const meta = clientMeta.get(ws);
+        if (!meta) return;
+        const now = Date.now();
+        if (now - meta.windowStart > RATE_WINDOW_MS) { meta.messageCount = 0; meta.windowStart = now; }
       if (++meta.messageCount > RATE_MAX) { ws.close(1008, "Rate limit"); return; }
       // M1: read-only — ignore all client messages (rate-limit still applies above)
     });
@@ -175,6 +172,7 @@ function initMobilePreviewServer(ctx) {
     });
     ws.on("error", () => { clients.delete(ws); clientMeta.delete(ws); });
   });
+  }
 
   function startHeartbeat() {
     if (heartbeatTimer) return;
@@ -207,67 +205,17 @@ function initMobilePreviewServer(ctx) {
     }
   }
 
-  // ── Permission events ──
-
-  function onPermissionBroadcast() {
-    const pp = ctx.getPendingPermissions();
-    for (let i = 0; i < pp.length; i++) {
-      const entry = pp[i];
-      if (!entry || entry.isCodexNotify || entry.isKimiNotify) continue;
-      const key = String(entry.createdAt || i);
-      if (mobilePermissions.has(key)) continue;
-      const requestId = "perm_" + key;
-      mobilePermissions.set(key, { requestId, entry });
-      const session = ctx.sessions.get(entry.sessionId);
-      const sessionFolder = session && session.cwd ? path.basename(session.cwd) : null;
-      const summary = entry.toolInput && typeof entry.toolInput === "object"
-        ? (entry.toolInput.description || entry.toolInput.summary || entry.toolInput.reason || null)
-        : null;
-      const isElicitation = !!entry.isElicitation;
-      broadcast(buildMessage(
-        isElicitation ? "elicitation_request" : "permission_request",
-        {
-          requestId,
-          data: {
-            agentId: entry.agentId || "claude-code",
-            toolName: entry.toolName,
-            toolInputSummary: summary,
-            suggestions: entry.suggestions || [],
-            sessionFolder,
-            sessionShortId: entry.sessionId ? String(entry.sessionId).slice(-3) : null,
-            ...(isElicitation && entry.toolInput ? { prompt: entry.toolInput.prompt || "", options: entry.toolInput.options || [] } : {}),
-            timeout: 90000,
-          },
-        }
-      ));
-    }
-  }
-
-  function onPermissionResolved(permEntry) {
-    if (!permEntry) return;
-    for (const [key, mp] of mobilePermissions) {
-      if (mp.entry === permEntry) {
-        mobilePermissions.delete(key);
-        broadcast(buildMessage("permission_dismissed", { requestId: mp.requestId }));
-        return;
-      }
-    }
-  }
-
   // ── Session data ──
 
   function buildPayload(sid, session) {
     if (!session) return null;
-    const recentEvents = Array.isArray(session.recentEvents) ? session.recentEvents : [];
+    const recentEvents = Array.isArray(session.recentEvents) ? session.recentEvents.slice(-10) : [];
     return {
       sessionId: sid,
+      title: session.sessionTitle || session.agentId || null,
+      basename: session.cwd ? path.basename(session.cwd) : null,
       state: session.state || "idle",
-      agentId: session.agentId || null,
-      cwd: session.cwd || "",
-      sessionTitle: session.sessionTitle || null,
-      updatedAt: session.updatedAt || Date.now(),
-      recentEvents: recentEvents.slice(-20),
-      isReal: !!(session.state && session.state !== "idle"),
+      recentEvents,
     };
   }
 
@@ -282,12 +230,15 @@ function initMobilePreviewServer(ctx) {
     const upstream = ctx.sessions;
     if (!upstream) return;
 
-    // First poll: populate cache silently
+    // First poll: populate cache and broadcast snapshot to all clients
     if (sessionCache.size === 0 && upstream.size > 0) {
       for (const [sid, session] of upstream) {
         const payload = buildPayload(sid, session);
         if (payload) sessionCache.set(sid, payload);
       }
+      const snapshot = {};
+      for (const [sid, data] of sessionCache) snapshot[sid] = data;
+      broadcast(buildMessage("snapshot", { sessions: snapshot }));
       return;
     }
 
@@ -296,7 +247,7 @@ function initMobilePreviewServer(ctx) {
       const payload = buildPayload(sid, session);
       if (!payload) continue;
       const cached = sessionCache.get(sid);
-      if (!cached || cached.updatedAt !== payload.updatedAt || cached.state !== payload.state) {
+      if (!cached || JSON.stringify(cached) !== JSON.stringify(payload)) {
         sessionCache.set(sid, payload);
         broadcastState(sid, payload);
       }
@@ -315,6 +266,7 @@ function initMobilePreviewServer(ctx) {
 
   function start() {
     closed = false;
+    createServers();
     const ports = [];
     for (let i = 0; i < PORT_RANGE; i++) ports.push(DEFAULT_PORT + i);
     let idx = 0;
@@ -349,7 +301,6 @@ function initMobilePreviewServer(ctx) {
 
   function cleanup() {
     closed = true;
-    mobilePermissions.clear();
     sessionCache.clear();
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     stopHeartbeat();
@@ -363,8 +314,6 @@ function initMobilePreviewServer(ctx) {
   return {
     start,
     cleanup,
-    onPermissionBroadcast,
-    onPermissionResolved,
     getPort: () => activePort,
     getToken: () => token,
     PROTOCOL_VERSION,

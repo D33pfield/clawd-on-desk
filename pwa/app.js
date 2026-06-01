@@ -118,16 +118,12 @@
       var s = data.state;
       var config = STATE_CONFIG[s];
       if (!config) return;
+      var label = data.title || "Agent";
       if (s === "error" || s === "attention") {
-        this._notify(config.label, (data.agentId || "Agent") + " - " + config.label, s);
+        this._notify(config.label, label + " - " + config.label, s);
       } else if ((prev === "working" || prev === "thinking") && s === "idle") {
-        this._notify("任务完成", (data.agentId || "Agent") + " 已完成任务", "idle");
+        this._notify("任务完成", label + " 已完成任务", "idle");
       }
-    }
-
-    onApprovalNeeded(data) {
-      if (this.permission !== "granted" || document.visibilityState === "visible") return;
-      this._notify("需要操作", (data.agentId || "Agent") + " 请求权限", "notification");
     }
 
     _notify(title, body, tag) {
@@ -140,86 +136,6 @@
           new Notification(title, { body: body, tag: "clawd-" + (tag || "default") });
         }
       } catch {}
-    }
-  }
-
-  // === ApprovalManager ===
-
-  class ApprovalManager {
-    constructor() {
-      this.pending = new Map();
-      this.overlay = document.getElementById("approval-overlay");
-      this.onSend = null;
-    }
-
-    showRequest(msg) {
-      if (!msg.requestId) return;
-      this.pending.set(msg.requestId, msg);
-      this._render();
-      log("Approval: " + (msg.data ? msg.data.toolName || msg.data.prompt || "?" : "?"));
-    }
-
-    dismiss(requestId) { this.pending.delete(requestId); this._render(); }
-
-    _render() {
-      if (this.pending.size === 0) {
-        this.overlay.classList.add("hidden");
-        this.overlay.innerHTML = "";
-        return;
-      }
-      var self = this;
-      var html = '<div class="approval-sheet">';
-      this.pending.forEach(function(msg, requestId) {
-        var data = msg.data || {};
-        var isPerm = msg.type === "permission_request";
-        html += '<div class="approval-card">';
-        html += '<div class="approval-header"><span class="approval-icon">' + icon("shield") + '</span>';
-        html += '<span class="approval-agent">' + esc(data.agentId || "Agent") + '</span>';
-        html += '<span class="approval-type">' + (isPerm ? "权限请求" : "选择操作") + '</span></div>';
-        if (isPerm) {
-          if (data.toolName) html += '<div class="approval-tool">' + icon("tool") + ' ' + esc(data.toolName) + '</div>';
-          if (data.toolInputSummary) html += '<div class="approval-summary">' + esc(data.toolInputSummary) + '</div>';
-          html += '<div class="approval-actions">';
-          html += '<button class="approval-btn allow" data-request="' + requestId + '" data-behavior="allow">允许</button>';
-          html += '<button class="approval-btn deny" data-request="' + requestId + '" data-behavior="deny">拒绝</button>';
-          if (data.suggestions && data.suggestions.length > 0) {
-            for (var i = 0; i < data.suggestions.length; i++) {
-              var sug = data.suggestions[i];
-              if (sug.behavior === "allow" || sug.behavior === "deny") continue;
-              html += '<button class="approval-btn neutral" data-request="' + requestId + '" data-behavior="' + esc(sug.behavior || "") + '" data-index="' + i + '">' + esc(sug.label || sug.behavior || "选择") + '</button>';
-            }
-          }
-          html += '</div>';
-        } else {
-          if (data.prompt) html += '<div class="approval-summary">' + esc(data.prompt) + '</div>';
-          html += '<div class="approval-actions">';
-          if (data.options) for (var j = 0; j < data.options.length; j++) {
-            var opt = data.options[j];
-            html += '<button class="approval-btn neutral" data-request="' + requestId + '" data-elicitation="true" data-value="' + esc(opt.value || "") + '">' + esc(opt.label || opt.value || "选择") + '</button>';
-          }
-          html += '</div>';
-        }
-        html += '<div class="approval-timer"><div class="approval-timer-bar" style="animation-duration:' + (data.timeout || 90000) + 'ms"></div></div>';
-        html += '</div>';
-      });
-      html += '</div>';
-      this.overlay.innerHTML = html;
-      this.overlay.classList.remove("hidden");
-      this.overlay.querySelectorAll(".approval-btn").forEach(function(btn) {
-        btn.addEventListener("click", function() {
-          var rid = this.getAttribute("data-request");
-          var behavior = this.getAttribute("data-behavior");
-          if (this.getAttribute("data-elicitation") === "true") {
-            if (self.onSend) self.onSend({ type: "elicitation_response", requestId: rid, answers: { value: this.getAttribute("data-value") } });
-          } else {
-            var idx = this.getAttribute("data-index");
-            var payload = { type: "permission_response", requestId: rid, behavior: behavior };
-            if (idx !== null && idx !== "") payload.suggestionIndex = parseInt(idx, 10);
-            if (self.onSend) self.onSend(payload);
-          }
-          self.dismiss(rid);
-        });
-      });
     }
   }
 
@@ -313,7 +229,6 @@
       var existing = this.sessions.get(sessionId) || {};
       var merged = {}; for (var k in existing) { if (existing.hasOwnProperty(k)) merged[k] = existing[k]; }
       for (var k2 in data) { if (data.hasOwnProperty(k2)) merged[k2] = data[k2]; }
-      merged.updatedAt = Date.now();
       this.sessions.set(sessionId, merged);
       this.render();
     }
@@ -328,8 +243,7 @@
       entries.sort(function(a, b) {
         var pa = (STATE_CONFIG[a[1].state] || STATE_CONFIG.idle).priority;
         var pb = (STATE_CONFIG[b[1].state] || STATE_CONFIG.idle).priority;
-        if (pa !== pb) return pa - pb;
-        return (b[1].updatedAt || 0) - (a[1].updatedAt || 0);
+        return pa - pb;
       });
 
       if (entries.length === 0) {
@@ -354,14 +268,12 @@
       var stateKey = s.state || "idle";
       var html = '<div class="session-card">';
       html += '<div class="card-header"><div class="card-agent"><div class="agent-dot"></div>';
-      html += '<span class="agent-name">' + esc((s.agentId || "agent").toUpperCase()) + '</span></div>';
+      html += '<span class="agent-name">' + esc((s.title || "agent").toUpperCase()) + '</span></div>';
       html += '<span class="state-badge ' + stateKey + '">' + config.label + '</span></div>';
-      html += '<div class="card-title">' + esc(s.sessionTitle || s.agentId || "") + '</div>';
+      html += '<div class="card-title">' + esc(s.title || "") + '</div>';
       html += '<div class="card-meta">';
-      if (s.agentId) html += '<span class="meta-item">' + icon("tool") + '<span>Agent</span></span>';
-      if (s.cwd) { html += '<div class="meta-divider"></div>'; html += '<span class="meta-item mono">' + icon("folder") + '<span>' + esc(shortPath(s.cwd)) + '</span></span>'; }
+      if (s.basename) { html += '<span class="meta-item mono">' + icon("folder") + '<span>' + esc(s.basename) + '</span></span>'; }
       html += '</div>';
-      if (s.lastOutput && s.lastOutput.output) html += '<div class="card-output">' + esc(s.lastOutput.output) + '</div>';
       html += '<div class="card-divider"></div>';
       html += '<div class="card-footer" data-sid="' + sid + '"><div class="footer-events">' + icon("activity") + '<span>最近事件</span>';
       if (events.length) html += '<span class="event-count">' + events.length + '</span>';
@@ -386,10 +298,9 @@
     startStaleCleanup() {
       var self = this;
       this.staleTimer = setInterval(function() {
-        var now = Date.now(); var changed = false;
+        var changed = false;
         self.sessions.forEach(function(s, sid) {
-          var age = now - (s.updatedAt || 0);
-          if ((s.state === "sleeping" && age > 30000) || age > 600000) { self.sessions.delete(sid); changed = true; }
+          if (s.state === "sleeping") { self.sessions.delete(sid); changed = true; }
         });
         if (changed) self.render();
       }, 15000);
@@ -454,7 +365,6 @@
       this.connection = new ConnectionManager();
       this.renderer = new SessionRenderer(document.getElementById("session-list"));
       this.settingsRenderer = new SettingsRenderer(document.getElementById("settings-content"));
-      this.approval = new ApprovalManager();
       this.notifier = new NotificationManager();
       this.activeTab = "sessions";
 
@@ -462,7 +372,6 @@
 
       this._bindNav();
       this._bindConnection();
-      this._bindApproval();
       this.renderer.startStaleCleanup();
 
       if ("serviceWorker" in navigator) navigator.serviceWorker.register("/mobile/sw.js").catch(function() {});
@@ -500,7 +409,6 @@
       document.getElementById("page-settings").classList.toggle("hidden", tabId !== "settings");
       if (tabId === "settings") {
         this._renderSettings();
-        this.settingsRenderer.fetchPcSettings();
       }
     }
 
@@ -515,15 +423,11 @@
         if (state === "connected") self.notifier.requestPermission();
         if (self.activeTab === "settings") self._renderSettings();
       };
-      this.connection.onDisconnected = function() { self.approval.pending.clear(); self.approval._render(); };
       this.connection.onMessage = function(msg) {
         if (msg.type === "snapshot") { self.renderer.updateFromSnapshot(msg.sessions || {}); log("Snapshot: " + Object.keys(msg.sessions || {}).length + " sessions"); }
         else if (msg.type === "state") { self.renderer.updateState(msg.sessionId, msg.data); self.notifier.onStateChange(msg.sessionId, msg.data); }
         else if (msg.type === "session_deleted") { self.renderer.removeSession(msg.sessionId); }
         else if (msg.type === "tool_output") { var sid = msg.sessionId; var session = self.renderer.sessions.get(sid); if (session) { session.lastOutput = { toolName: msg.data.toolName, output: (msg.data.output || "").substring(0, 200), at: msg.timestamp || Date.now() }; self.renderer.render(); } }
-        else if (msg.type === "permission_request") { self.approval.showRequest({ type: "permission_request", requestId: msg.requestId, data: msg.data || msg }); self.notifier.onApprovalNeeded(msg.data || msg); }
-        else if (msg.type === "elicitation_request") { self.approval.showRequest({ type: "elicitation_request", requestId: msg.requestId, data: msg.data || msg }); self.notifier.onApprovalNeeded(msg.data || msg); }
-        else if (msg.type === "permission_dismissed" && msg.requestId) { self.approval.dismiss(msg.requestId); }
       };
     }
 
@@ -536,10 +440,6 @@
       text.className = "connection-text" + (state === "connected" ? " connected" : "");
     }
 
-    _bindApproval() {
-      var self = this;
-      this.approval.onSend = function(response) { self.connection.send(response); log("Sent: " + response.type); };
-    }
   }
 
   // === Init ===

@@ -90,7 +90,7 @@
 
     const desc = document.createElement("p");
     desc.className = "settings-tab-desc";
-    desc.textContent = t("mobileDesc") || "Connect your phone to monitor sessions and approve permissions remotely.";
+    desc.textContent = t("mobileDesc") || "Connect your phone to monitor sessions remotely.";
     section.appendChild(desc);
 
     // Enable toggle

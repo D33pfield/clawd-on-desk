@@ -55,14 +55,8 @@ Mobile                          Desktop
   │  4. snapshot (full state)      │
   │                                │
   │  ◀─────────────────────────    │  5. state (incremental)
-  │  ◀─────────────────────────    │  6. permission_request
   │                                │
-  │  7. permission_response        │
-  │  ─────────────────────────▶    │
-  │                                │  8. Resolve → HTTP response
-  │  ◀─────────────────────────    │  9. permission_dismissed
-  │                                │
-  │  ◀────── ping ────────────     │  10. Heartbeat (30s)
+  │  ◀────── ping ────────────     │  6. Heartbeat (30s)
   │  ──────── pong ───────────▶    │
   │                                │
 ```
@@ -137,6 +131,36 @@ Incremental session state update.
   "sessionId": "abc123"
 }
 ```
+
+## Limitations
+
+- No TLS — LAN only, not suitable for untrusted networks
+- No authentication beyond shared token — token compromise = full access
+- Session data is eventually consistent (2s poll interval for state changes)
+- Permission requests are real-time; session state changes have up to 2s latency
+- `tool_output` messages are not yet bridged (planned for v2)
+- Max 10 concurrent PWA clients
+- Token is not revocable without manual file deletion
+
+## M2 — Planned (Secure Approval)
+
+The following message types are not implemented in M1 and will be added in M2 once pairing and token rotation are in place.
+
+### Sequence Diagram (M2 additions)
+
+```
+Mobile                          Desktop
+  │                                │
+  │  ◀─────────────────────────    │  permission_request
+  │                                │
+  │  permission_response           │
+  │  ─────────────────────────▶    │
+  │                                │  Resolve → HTTP response
+  │  ◀─────────────────────────    │  permission_dismissed
+  │                                │
+```
+
+### Server → Client
 
 #### `permission_request`
 
@@ -215,13 +239,3 @@ Sent when a permission is resolved (from any client or desktop bubble).
   "answers": { "value": "React" }
 }
 ```
-
-## Limitations
-
-- No TLS — LAN only, not suitable for untrusted networks
-- No authentication beyond shared token — token compromise = full access
-- Session data is eventually consistent (2s poll interval for state changes)
-- Permission requests are real-time; session state changes have up to 2s latency
-- `tool_output` messages are not yet bridged (planned for v2)
-- Max 10 concurrent PWA clients
-- Token is not revocable without manual file deletion
