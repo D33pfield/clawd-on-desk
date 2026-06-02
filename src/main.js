@@ -3009,6 +3009,17 @@ if (!gotTheLock) {
   }
 
   app.whenReady().then(() => {
+    // macOS: override the dock icon with a version that fills the canvas
+    // (the build-time icon.png has transparent margins that make the icon
+    // appear smaller than other apps in the dock).
+    if (isMac && app.dock) {
+      try {
+        app.dock.setIcon(path.join(__dirname, "..", "assets", "dock-icon.png"));
+      } catch (_) {
+        // non-fatal: fall back to the bundled icon
+      }
+    }
+
     const protocolRegistered = codexPetMain.registerProtocolClient();
     if (process.argv.includes(REGISTER_PROTOCOL_DEV_ARG)) {
       console.log(`Clawd: clawd:// dev protocol registration ${protocolRegistered ? "succeeded" : "failed"}`);
