@@ -150,8 +150,7 @@ describe("Mobile Preview Server", () => {
 
   it("connects with valid token and receives snapshot", async () => {
     createSession("s1", "working", "claude-code");
-    // Wait for poll cycle to pick up the session
-    await new Promise((r) => setTimeout(r, 2500));
+    server.onSnapshot(); // Prime cache before connecting
 
     const client = connectClient(port, token);
     await waitForOpen(client.ws);
@@ -176,6 +175,7 @@ describe("Mobile Preview Server", () => {
     // Change session state
     sessions.get("s1").state = "thinking";
     sessions.get("s1").updatedAt = Date.now();
+    server.onSnapshot();
 
     const stateMsg = await client.waitFor("state");
     assert.strictEqual(stateMsg.version, "v1");
@@ -192,6 +192,7 @@ describe("Mobile Preview Server", () => {
     await client.waitFor("snapshot");
 
     sessions.delete("s1");
+    server.onSnapshot();
 
     const delMsg = await client.waitFor("session_deleted");
     assert.strictEqual(delMsg.version, "v1");
