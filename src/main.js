@@ -1423,6 +1423,17 @@ const _serverCtx = {
 const _server = require("./server")(_serverCtx);
 const { startHttpServer, getHookServerPort } = _server;
 
+// ── LAN WebSocket bridge for PWA mobile clients (lazy-loaded) ──
+let _lanWss = null;
+if (_settingsController.get("mobilePreviewEnabled") === true) {
+  const { initMobilePreviewServer } = require("./network/mobile-preview-server");
+  _lanWss = initMobilePreviewServer({
+    sessions,
+    getSettingsSnapshot: () => _settingsController.getSnapshot(),
+    isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
+  });
+}
+
 function updateLog(msg) {
   if (!updateDebugLog) return;
   const { rotatedAppend } = require("./log-rotate");
@@ -2475,6 +2486,21 @@ _settingsController.subscribeKey("tgApproval", () => {
   if (suppressTelegramApprovalSidecarSync > 0) return;
   queueTelegramApprovalSidecarSync("settings");
 });
+_settingsController.subscribeKey("mobilePreviewEnabled", async (enabled) => {
+  if (enabled) {
+    if (!_lanWss) {
+      const { initMobilePreviewServer } = require("./network/mobile-preview-server");
+      _lanWss = initMobilePreviewServer({
+        sessions,
+        getSettingsSnapshot: () => _settingsController.getSnapshot(),
+        isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
+      });
+    }
+    await _lanWss.start();
+  } else if (_lanWss) {
+    _lanWss.cleanup();
+  }
+});
 
 animationOverridesMain = createSettingsAnimationOverridesMain({
   app,
@@ -2657,6 +2683,7 @@ registerSettingsIpc({
     : { status: "error", code: "quick_commands_unavailable", message: "Quick Commands are unavailable" },
   checkForUpdates,
   aboutHeroSvgPath: path.join(__dirname, "..", "assets", "svg", "clawd-about-hero.svg"),
+  getLanWsServer: () => _lanWss,
 });
 
 registerSessionIpc({
@@ -2680,6 +2707,7 @@ registerSessionIpc({
       console.warn("Clawd: failed to pin Session HUD:", result.message);
     }
   },
+  getLanWsServer: () => _lanWss,
 });
 
 function createWindow() {
@@ -2810,6 +2838,7 @@ function createWindow() {
   initFocusHelper();
   startMainTick();
   startHttpServer();
+  if (_settingsController.get("mobilePreviewEnabled") === true) _lanWss.start();
   startStaleCleanup();
   // Wait for renderer to be ready before sending initial state
   // If hooks arrived during startup, respect them instead of forcing idle
@@ -3095,6 +3124,7 @@ if (!gotTheLock) {
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.stop();
     _perm.cleanup();
     _server.cleanup();
+    if (_lanWss) _lanWss.cleanup();
     _updateBubble.cleanup();
     _state.cleanup();
     _tick.cleanup();
