@@ -1547,7 +1547,7 @@ describe("settings renderer browser environment", () => {
     }]);
   });
 
-  it("toggles Telegram Direct Send focus-only mode without changing the approval transport", async () => {
+  it("toggles Telegram Direct Send paste-only mode without changing the approval transport", async () => {
     const commandCalls = [];
     const harness = loadTelegramApprovalTabForTest({
       snapshot: {

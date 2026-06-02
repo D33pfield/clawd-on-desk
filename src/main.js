@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker } = require("electron");
+const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, clipboard } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { EventEmitter } = require("events");
@@ -1280,7 +1280,7 @@ function getFocusableLocalHudSessionIds() {
 
 function focusTerminalSession(session, sessionId, requestSource) {
   if (!session || !session.sourcePid) return false;
-  focusTerminalWindow({
+  return focusTerminalWindow({
     sourcePid: session.sourcePid,
     wtHwnd: session.wtHwnd,
     cwd: session.cwd,
@@ -1290,7 +1290,6 @@ function focusTerminalSession(session, sessionId, requestSource) {
     agentId: session.agentId,
     requestSource,
   });
-  return true;
 }
 
 function focusDashboardSession(sessionId, options = {}) {
@@ -1492,7 +1491,7 @@ function telegramApprovalLog(level, message, meta = {}) {
   const parts = [`telegram approval ${level}: ${message}`];
   if (meta && meta.text) parts.push(String(meta.text).trim());
   if (meta && meta.error) parts.push(String(meta.error).trim());
-  for (const key of ["errorClass", "errorCode", "delayMs", "id", "sessionId", "messageId"]) {
+  for (const key of ["errorClass", "errorCode", "delayMs", "id", "sessionId", "messageId", "status", "reason", "fallbackReason"]) {
     const value = meta && meta[key];
     if (value !== undefined && value !== null && value !== "") {
       parts.push(`${key}=${String(value).trim()}`);
@@ -1861,7 +1860,11 @@ async function initTelegramMigrationController() {
   // Native handle: spike-level real implementation. Token comes from the same
   // env file the sidecar uses; production transport closes over the token.
   const { envFileTokenStore } = require("./telegram-token-store");
-  const { createTelegramDirectSend } = require("./telegram-direct-send");
+  const {
+    createClipboardFallbackDeliveryAdapter,
+    createTelegramDirectSend,
+    createWindowsPasteOnlyDeliveryAdapter,
+  } = require("./telegram-direct-send");
   const { createTelegramNativeRunner } = require("./telegram-native-runner");
   const tokenStore = envFileTokenStore({ filePath: paths.tokenEnvFilePath });
   telegramDirectSend = createTelegramDirectSend({
@@ -1870,6 +1873,8 @@ async function initTelegramMigrationController() {
       : { sessions: [] },
     getPendingPermissions: () => pendingPermissions,
     focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
+    deliveryAdapter: isWin ? createWindowsPasteOnlyDeliveryAdapter({ clipboard }) : undefined,
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({ clipboard }),
     isEnabled: () => {
       const snap = _telegramMigrationController && typeof _telegramMigrationController.getSnapshot === "function"
         ? _telegramMigrationController.getSnapshot()
@@ -2920,7 +2925,7 @@ Object.defineProperties(this || {}, {}); // no-op placeholder
 
 // ── Auto-install VS Code / Cursor terminal-focus extension ──
 const EXT_ID = "clawd.clawd-terminal-focus";
-const EXT_VERSION = "0.1.0";
+const EXT_VERSION = "0.1.1";
 const EXT_DIR_NAME = `${EXT_ID}-${EXT_VERSION}`;
 
 function installTerminalFocusExtension() {
