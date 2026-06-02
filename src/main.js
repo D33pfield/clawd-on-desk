@@ -3012,7 +3012,7 @@ if (!gotTheLock) {
     // macOS: override the dock icon with a version that fills the canvas
     // (the build-time icon.png has transparent margins that make the icon
     // appear smaller than other apps in the dock).
-    if (isMac && app.dock) {
+    if (isMac && app.dock && _settingsController.get("showDock") !== false) {
       try {
         app.dock.setIcon(path.join(__dirname, "..", "assets", "dock-icon.png"));
       } catch (_) {
