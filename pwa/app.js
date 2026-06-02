@@ -83,18 +83,27 @@
     }
   }
 
-  function showToast(message, type) {
+  function showToast(message, type, persist) {
     type = type || "info";
     var container = document.getElementById("toast-container");
     var toast = document.createElement("div");
-    toast.className = "toast " + type;
+    toast.className = "toast " + type + (persist ? " toast-persist" : "");
     toast.textContent = message;
+    if (persist) {
+      var close = document.createElement("span");
+      close.className = "toast-close";
+      close.textContent = "✕";
+      close.onclick = function() { toast.remove(); };
+      toast.appendChild(close);
+    }
     container.appendChild(toast);
-    setTimeout(function() {
-      toast.style.opacity = "0";
-      toast.style.transition = "opacity 0.3s";
-      setTimeout(function() { toast.remove(); }, 300);
-    }, 3000);
+    if (!persist) {
+      setTimeout(function() {
+        toast.style.opacity = "0";
+        toast.style.transition = "opacity 0.3s";
+        setTimeout(function() { toast.remove(); }, 300);
+      }, 3000);
+    }
   }
 
   // === NotificationManager ===
@@ -146,9 +155,10 @@
       this.ws = null; this.config = null;
       this.reconnectDelay = 1000; this.maxReconnectDelay = 30000;
       this.reconnectTimer = null; this.state = "disconnected";
-      this.retryCount = 0; this.maxRetries = 10;
-      this._closingIntentionally = false;
+      this.retryCount = 0;
       this.onStateChange = null; this.onMessage = null; this.onDisconnected = null;
+      this._hiddenAt = 0;
+      this._bindVisibility();
     }
 
     connect(config) {
@@ -162,26 +172,40 @@
 
     _doConnect() {
       if (!this.config) return;
-      if (this.ws) {
-        this._closingIntentionally = true;
-        try { this.ws.close(); } catch {}
+      // Tear down old socket — clear callbacks first to prevent stale events
+      var old = this.ws;
+      if (old) {
+        old.onopen = old.onmessage = old.onclose = old.onerror = null;
+        try { old.close(); } catch {}
       }
       var url = "ws://" + this.config.host + ":" + this.config.port + "/ws?token=" + this.config.token;
       this._setState("connecting");
       log("Connecting to " + this.config.host + ":" + this.config.port + "...");
-      try { this.ws = new WebSocket(url); } catch (err) { this._closingIntentionally = false; log("WS create failed: " + err.message); this._scheduleReconnect(); return; }
+      var socket;
+      try { socket = new WebSocket(url); } catch (err) { log("WS create failed: " + err.message); this._scheduleReconnect(); return; }
+      this.ws = socket;
       var self = this;
       var connected = false;
-      this.ws.onopen = function() { self._closingIntentionally = false; connected = true; self.retryCount = 0; self.reconnectDelay = 1000; self._setState("connected"); log("Connected"); showToast("已连接到桌面端", "success"); };
-      this.ws.onmessage = function(event) { try { var msg = JSON.parse(event.data); if (self.onMessage) self.onMessage(msg); } catch {} };
-      this.ws.onclose = function(event) {
-        if (self._closingIntentionally) return;
-        if (event.code === 1008) { self._setState("auth_failed"); log("Auth failed"); showToast("认证失败", "error"); return; }
+      socket.onopen = function() {
+        if (socket !== self.ws) return; // stale socket — ignore
+        connected = true; self.retryCount = 0; self.reconnectDelay = 1000;
+        self._setState("connected"); log("Connected"); showToast("已连接到桌面端", "success");
+        // Dismiss any persistent toasts (e.g. retry hint)
+        var persisted = document.querySelectorAll(".toast-persist");
+        for (var i = 0; i < persisted.length; i++) { persisted[i].remove(); }
+      };
+      socket.onmessage = function(event) {
+        if (socket !== self.ws) return;
+        try { var msg = JSON.parse(event.data); if (self.onMessage) self.onMessage(msg); } catch {}
+      };
+      socket.onclose = function(event) {
+        if (socket !== self.ws) return; // stale socket — ignore
+        if (event.code === 1008) { self._setState("auth_failed"); log("Auth failed"); showToast("Token 已过期，请重新连接", "error"); return; }
         if (connected) log("Disconnected (code: " + event.code + ")");
         if (self.onDisconnected) self.onDisconnected();
         self._scheduleReconnect();
       };
-      this.ws.onerror = function() {};
+      socket.onerror = function() {};
     }
 
     send(data) { if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(typeof data === "string" ? data : JSON.stringify(data)); }
@@ -189,13 +213,11 @@
     _scheduleReconnect() {
       if (!this.config) return;
       this.retryCount++;
-      if (this.retryCount > this.maxRetries) {
-        this._setState("disconnected");
-        log("Max retries (" + this.maxRetries + ") reached, stopping");
-        showToast("连接失败，请检查地址和 Token", "error");
-        return;
-      }
       this._setState("reconnecting");
+      // After several retries, give actionable feedback (don't stop — just inform)
+      if (this.retryCount === 5) {
+        showToast("仍在重连…请检查地址、端口或桌面端是否已开启", "info", true);
+      }
       var self = this;
       this.reconnectTimer = setTimeout(function() { self.reconnectDelay = Math.min(self.reconnectDelay * 2, self.maxReconnectDelay); self._doConnect(); }, this.reconnectDelay);
     }
@@ -212,6 +234,25 @@
 
     getHistory() { try { return JSON.parse(localStorage.getItem("clawd-history") || "[]"); } catch { return []; } }
     deleteHistory(index) { var h = this.getHistory(); h.splice(index, 1); localStorage.setItem("clawd-history", JSON.stringify(h)); }
+
+    _bindVisibility() {
+      var self = this;
+      document.addEventListener("visibilitychange", function() {
+        if (document.visibilityState !== "visible") {
+          self._hiddenAt = Date.now();
+          return;
+        }
+        if (!self.config) return;
+        var hiddenFor = self._hiddenAt ? Date.now() - self._hiddenAt : 0;
+        // Short tab switch: trust OPEN. Background > 30s: force reconnect (zombie guard)
+        if (hiddenFor < 30000 && self.ws && self.ws.readyState === WebSocket.OPEN) return;
+        log("Page visible after " + Math.round(hiddenFor / 1000) + "s, reconnecting...");
+        self.retryCount = 0;
+        self.reconnectDelay = 1000;
+        clearTimeout(self.reconnectTimer);
+        self._doConnect();
+      });
+    }
   }
 
   // === SessionRenderer ===

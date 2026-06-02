@@ -207,6 +207,9 @@ body { display: flex; flex-direction: column; height: 100%; }
 .toast { background: var(--card); color: var(--text); padding: 12px 20px; border-radius: 8px; font-size: 14px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); border: 1px solid var(--card-border); animation: toast-in 0.3s ease-out; pointer-events: auto; }
 .toast.success { border-left: 3px solid var(--green); }
 .toast.error { border-left: 3px solid var(--red); }
+.toast-persist { display: flex; align-items: center; gap: 12px; }
+.toast-close { cursor: pointer; opacity: 0.5; font-size: 12px; padding: 2px 4px; flex-shrink: 0; }
+.toast-close:hover { opacity: 1; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
 
 /* === Scrollbar === */
