@@ -66,6 +66,7 @@ const sessions = new Map();
 const MAX_SESSIONS = 20;
 const ASSISTANT_OUTPUT_MAX = 2400;
 const CODEX_EXIT_PROBE_DELAYS_MS = [1000, 3000, 8000, 15000];
+const POST_COMPLETION_EVENTS = new Set(["Stop", "PostCompact", "event_msg:task_complete"]);
 let lastSessionSnapshotSignature = null;
 let lastSessionSnapshot = null;
 let startupRecoveryActive = false;
@@ -167,6 +168,22 @@ function parseSuspectDelay() {
 function hasPermissionAnimationLock() {
   // Kimi-only lock: do not alter Claude/Codex/opencode permission behavior.
   return kimiPermissionHolds.size > 0;
+}
+
+function resolveAwaitingInputSinceStop(existing, event) {
+  if (POST_COMPLETION_EVENTS.has(event)) return true;
+  if (event === "Notification") return !!(existing && existing.awaitingInputSinceStop === true);
+  if (!event || event === "stale-cleanup") return !!(existing && existing.awaitingInputSinceStop === true);
+  return false;
+}
+
+function shouldMuteMiniPostCompletionNotification(state, event, session) {
+  return !!ctx.miniMode
+    && state === "notification"
+    && event === "Notification"
+    && session
+    && session.awaitingInputSinceStop === true
+    && !hasPermissionAnimationLock();
 }
 
 // ── Qwen Code self-submit filter ──
@@ -1057,7 +1074,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcLastStopAt = isStopBoundary
     ? Date.now()
     : (existing && Number.isFinite(existing.lastStopAt) ? existing.lastStopAt : null);
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, sessionTitle: srcSessionTitle, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, muteNotificationSound: state === "notification" && muteNotificationSound === true };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, sessionTitle: srcSessionTitle, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.
@@ -1199,6 +1216,18 @@ function updateSession(sessionId, state, event, opts = {}) {
     // keep the pet on notification and block all other one-shot visuals.
     // (One-shot branch normally bypasses resolveDisplayState()).
     if (hasPermissionAnimationLock() && state !== "notification") {
+      return;
+    }
+    // Mini mode already celebrated completion with mini-happy. Keep the idle
+    // wait-for-input event in session history, but do not make the tucked-away
+    // pet pop a second strong alert for the same completed turn.
+    if (
+      event === "Notification"
+      && state === "notification"
+      && shouldMuteMiniPostCompletionNotification(state, event, sessions.get(sessionId))
+    ) {
+      const displayState = resolveDisplayState();
+      setState(displayState, getSvgOverride(displayState));
       return;
     }
     // Per-agent Notification-hook mute: presentation-layer only. By this
