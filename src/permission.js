@@ -636,11 +636,11 @@ function showPermissionBubble(permEntry) {
   bub.on("closed", () => {
     const idx = pendingPermissions.indexOf(permEntry);
     if (idx !== -1) {
-      // Qwen + Copilot are fail-open agents: a closed bubble means "no
+      // Qwen + Copilot + Hermes are fail-open agents: a closed bubble means "no
       // decision, let the native flow run" so the user isn't forced into a
       // deny they didn't pick. CC/CodeBuddy still get an explicit deny so
       // the hook unblocks instead of waiting for the long timeout.
-      const behavior = (permEntry.isQwenCode || permEntry.isCopilotCli) ? "no-decision" : "deny";
+      const behavior = (permEntry.isQwenCode || permEntry.isCopilotCli || permEntry.isHermes) ? "no-decision" : "deny";
       resolvePermissionEntry(permEntry, behavior, "Bubble window closed by user");
     }
   });
@@ -1148,6 +1148,23 @@ function applyPermissionSuggestion(perm, index, options = {}) {
     return;
   }
 
+  if (permEntry.isHermes) {
+    if (behavior === "no-decision") {
+      sendHermesNoDecisionResponse(res, message || "fallback");
+    } else if (permEntry.isElicitation && behavior === "allow" && permEntry.resolvedUpdatedInput) {
+      sendHermesPermissionResponse(res, {
+        decision: "allow",
+        answers: permEntry.resolvedUpdatedInput.answers || {},
+      });
+    } else {
+      sendHermesPermissionResponse(res, {
+        decision: behavior === "deny" ? "deny" : "allow",
+        message: message || undefined,
+      });
+    }
+    return;
+  }
+
   if (permEntry.isElicitation) {
     if (behavior === "no-decision") {
       // Autoclose: drop the socket so CC stops waiting, then refocus the
@@ -1359,6 +1376,22 @@ function sendAntigravityPermissionResponse(res, decisionOrBehavior, message) {
   return true;
 }
 
+function sendHermesNoDecisionResponse(res, reason = "") {
+  return sendNoDecisionResponse(res, reason, "hermes");
+}
+
+function sendHermesPermissionResponse(res, responseObj) {
+  if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
+  const responseBody = JSON.stringify(responseObj);
+  permLog(`hermes response: ${responseBody}`);
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
+  });
+  res.end(responseBody);
+  return true;
+}
+
 function handleBubbleHeight(event, height) {
   const senderWin = BrowserWindow.fromWebContents(event.sender);
   const perm = pendingPermissions.find(p => p.bubble === senderWin);
@@ -1422,6 +1455,22 @@ function handleDecide(event, behavior) {
   }
   if (perm.isAntigravity && behavior !== "allow" && behavior !== "deny") {
     resolvePermissionEntry(perm, "no-decision", `Unsupported Antigravity bubble action: ${String(behavior)}`);
+    if (behavior === "deny-and-focus") {
+      ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+    }
+    return;
+  }
+  if (perm.isHermes) {
+    if (behavior === "allow" || behavior === "deny") {
+      resolvePermissionEntry(perm, behavior);
+      return;
+    }
+    if (perm.isElicitation && behavior && typeof behavior === "object" && behavior.type === "elicitation-submit") {
+      perm.resolvedUpdatedInput = buildElicitationUpdatedInput(perm.toolInput, behavior.answers);
+      resolvePermissionEntry(perm, "allow");
+      return;
+    }
+    resolvePermissionEntry(perm, "no-decision", `Unsupported Hermes bubble action: ${String(behavior)}`);
     if (behavior === "deny-and-focus") {
       ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
     }
@@ -1603,6 +1652,8 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
     sendCopilotNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isAntigravity) {
     sendAntigravityNoDecisionResponse(perm.res, reason || "permission-dismissed");
+  } else if (perm.isHermes) {
+    sendHermesNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (!perm.isOpencode && perm.res && !perm.res.destroyed) {
     try { perm.res.destroy(); } catch {}
   }
@@ -1693,7 +1744,7 @@ function cleanup() {
   for (const perm of [...pendingPermissions]) {
     if (perm._delayTimer) clearTimeout(perm._delayTimer);
     if (perm.autoExpireTimer) clearTimeout(perm.autoExpireTimer);
-    if (perm.isCodex || perm.isQwenCode || perm.isCopilotCli || perm.isAntigravity) resolvePermissionEntry(perm, "no-decision", "Clawd is quitting");
+    if (perm.isCodex || perm.isQwenCode || perm.isCopilotCli || perm.isAntigravity || perm.isHermes) resolvePermissionEntry(perm, "no-decision", "Clawd is quitting");
     else resolvePermissionEntry(perm, "deny", "Clawd is quitting");
   }
 }
