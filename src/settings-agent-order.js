@@ -16,6 +16,7 @@ function buildSettingsAgentOrderExports() {
     "cursor-agent",
     "copilot-cli",
     "kiro-cli",
+    "codewhale",
     "pi",
     "openclaw",
     "hermes",

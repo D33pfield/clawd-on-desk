@@ -21,6 +21,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "kiro-cli",
   "kimi-cli",
   "qwen-code",
+  "codewhale",
   "opencode",
   "hermes",
 ]);

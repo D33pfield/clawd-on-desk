@@ -297,6 +297,20 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncCodewhaleHooks() {
+    try {
+      if (typeof ctx.syncCodewhaleHooksImpl === 'function') return ctx.syncCodewhaleHooksImpl();
+      var r = require('../hooks/codewhale-install.js');
+      var result = r.registerCodewhaleHooks({ silent: true });
+      var added = result.added, updated = result.updated;
+      if (added > 0 || updated > 0) console.log('Clawd: synced CodeWhale hooks');
+      return { status: 'ok', added: added, updated: updated };
+    } catch (err) {
+      console.warn('Clawd: failed to sync CodeWhale hooks:', err.message);
+      return { status: 'error', message: err && err.message ? err.message : 'Failed to sync CodeWhale hooks' };
+    }
+  }
+
   const AGENT_INTEGRATION_SYNCERS = Object.freeze({
     "gemini-cli": syncGeminiHooks,
     "antigravity-cli": syncAntigravityHooks,
@@ -311,6 +325,7 @@ function createIntegrationSyncRuntime(options = {}) {
     pi: syncPiExtension,
     openclaw: syncOpenClawPlugin,
     hermes: syncHermesPlugin,
+    codewhale: syncCodewhaleHooks,
   });
 
   const AGENT_INTEGRATION_REPAIRERS = Object.freeze({
@@ -373,7 +388,9 @@ function createIntegrationSyncRuntime(options = {}) {
     syncOpencodePlugin,
     syncPiExtension,
     syncOpenClawPlugin,
+
     syncHermesPlugin,
+    syncCodewhaleHooks,
     repairCodexHooks,
     repairOpenClawPlugin,
     syncIntegrationForAgent,

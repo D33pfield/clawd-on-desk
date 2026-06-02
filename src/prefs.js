@@ -4,16 +4,16 @@
 //
 // This module is the canonical schema definition + load/save/migrate/validate
 // for `clawd-prefs.json`. It has zero dependencies on Electron, the store, the
-// controller, or anything stateful â€” it deals in plain snapshots.
+// controller, or anything stateful â€?it deals in plain snapshots.
 //
-// `load(prefsPath)`  â€” read file, migrate to current version, validate, return snapshot
-// `save(prefsPath, snapshot)` â€” validate (lightly) + write JSON
-// `getDefaults()` â€” fresh defaults snapshot (every call returns a new object â€” never share refs)
-// `validate(snapshot)` â€” coerces an arbitrary object into a valid snapshot, dropping bad fields
-// `migrate(raw)` â€” applies version-to-version migrations, returns the upgraded raw snapshot
+// `load(prefsPath)`  â€?read file, migrate to current version, validate, return snapshot
+// `save(prefsPath, snapshot)` â€?validate (lightly) + write JSON
+// `getDefaults()` â€?fresh defaults snapshot (every call returns a new object â€?never share refs)
+// `validate(snapshot)` â€?coerces an arbitrary object into a valid snapshot, dropping bad fields
+// `migrate(raw)` â€?applies version-to-version migrations, returns the upgraded raw snapshot
 //
-// Bad-file handling: read failure â†’ backup as `clawd-prefs.json.bak` â†’ return defaults.
-// Future-version handling: read succeeds but version > current â†’ warn + refuse to overwrite
+// Bad-file handling: read failure â†?backup as `clawd-prefs.json.bak` â†?return defaults.
+// Future-version handling: read succeeds but version > current â†?warn + refuse to overwrite
 //   (caller still gets a valid snapshot, but `save()` becomes a no-op via the locked flag).
 
 const fs = require("fs");
@@ -71,7 +71,7 @@ const SCHEMA = {
   size: {
     type: "string",
     default: "P:9",
-    // Accept "S"/"M"/"L" (legacy) or "P:<num>" â€” full migration happens elsewhere.
+    // Accept "S"/"M"/"L" (legacy) or "P:<num>" â€?full migration happens elsewhere.
     validate: (v) =>
       typeof v === "string" &&
       (v === "S" || v === "M" || v === "L" || /^P:\d+(?:\.\d+)?$/.test(v)),
@@ -169,7 +169,7 @@ const SCHEMA = {
   },
   // Theme
   theme: { type: "string", default: "clawd" },
-  // Phase 2/3 placeholders â€” schema reserves the keys so future migrations don't need v2.
+  // Phase 2/3 placeholders â€?schema reserves the keys so future migrations don't need v2.
   agents: {
     type: "object",
     defaultFactory: () => ({
@@ -178,7 +178,7 @@ const SCHEMA = {
       "copilot-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "cursor-agent": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "gemini-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
-      // Antigravity is state-only post-D2 â€” Clawd never surfaces a permission
+      // Antigravity is state-only post-D2 â€?Clawd never surfaces a permission
       // bubble for agy regardless of this flag (see server-route-permission.js
       // antigravity branch). Default kept as false so legacy reads don't see a
       // stale "true" implying bubbles are enabled.
@@ -187,6 +187,7 @@ const SCHEMA = {
       "kiro-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "qwen-code": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      "codewhale": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
       "opencode": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "pi": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
       "openclaw": { enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
@@ -213,7 +214,7 @@ const SCHEMA = {
     normalize: normalizeSessionAliases,
   },
   // Remote SSH (Phase 2 plan-remote-ssh-one-click v7). Stores user-defined
-  // SSH tunnel profiles. The runtime is owned by `remote-ssh-runtime.js` â€”
+  // SSH tunnel profiles. The runtime is owned by `remote-ssh-runtime.js` â€?
   // this field is data only.
   remoteSsh: {
     type: "object",
@@ -305,7 +306,7 @@ function isValidValue(field, value) {
   return true;
 }
 
-// Coerce an arbitrary object into a valid snapshot â€” drop bad fields, fill
+// Coerce an arbitrary object into a valid snapshot â€?drop bad fields, fill
 // missing fields from defaults, run normalize() on objects.
 function validate(raw) {
   const out = getDefaults();
@@ -330,7 +331,7 @@ function validate(raw) {
 // clawd-prefs.json, clamp workingStaleMs down to sessionStaleMs at load time
 // so the live mirror is consistent. Primary enforcement lives in the
 // per-key validators in settings-actions.js and the
-// commandRegistry["sessionCleanup.setTriple"] command â€” this function is
+// commandRegistry["sessionCleanup.setTriple"] command â€?this function is
 // only the boot-time safety net for files that bypass the controller.
 function normalizeStaleTriple(out) {
   if (
@@ -347,15 +348,15 @@ function normalizeStaleTriple(out) {
 // Apply version-to-version migrations on raw input. Returns the upgraded raw
 // object (still needs to be passed through validate()).
 //
-// v0 â†’ v1: add `version`, `agents`, `themeOverrides` fields. Existing fields
+// v0 â†?v1: add `version`, `agents`, `themeOverrides` fields. Existing fields
 //   stay as-is and get re-validated downstream. Pre-existing prefs files have
-//   no `version` key â€” that's the v0 marker.
-// v1 â†’ v2: historical Pi permission-subgate backfill. Version 2 is also the
+//   no `version` key â€?that's the v0 marker.
+// v1 â†?v2: historical Pi permission-subgate backfill. Version 2 is also the
 //   first schema version that includes Hermes in the built-in agent defaults.
-// v2 â†’ v3: raise passive notification bubble default from 3s to 6s. Users
+// v2 â†?v3: raise passive notification bubble default from 3s to 6s. Users
 //   who explicitly chose 3s in v2 are indistinguishable from defaulted-3 and
 //   are migrated too; other non-default values are preserved.
-// v3 â†’ v4: Pi returns to a state-only integration. Clawd no longer inserts a
+// v3 â†?v4: Pi returns to a state-only integration. Clawd no longer inserts a
 //   permission prompt into Pi's default YOLO flow, so the Pi permission subgate
 //   is reset off.
 function migrate(raw) {
@@ -426,7 +427,7 @@ function migrate(raw) {
     };
     out.version = 4;
   }
-  // v4 â†’ v5: Session HUD hover/auto-hide mode removed in favor of explicit
+  // v4 â†?v5: Session HUD hover/auto-hide mode removed in favor of explicit
   // click-to-reveal. Users who explicitly opted out of auto-hide (
   // `sessionHudAutoHide === false`, meaning "always show") get auto-pinned so
   // their visual behavior is preserved. The deprecated field is dropped.
@@ -437,14 +438,14 @@ function migrate(raw) {
     delete out.sessionHudAutoHide;
     out.version = 5;
   }
-  // v5 â†’ v6: introduce autoUpdateCheck / pendingUpdateVersion /
+  // v5 â†?v6: introduce autoUpdateCheck / pendingUpdateVersion /
   // dismissedUpdateVersions for the #329 scheduler. No data conversion
-  // needed â€” new keys fill in from schema defaults via validate(); the
+  // needed â€?new keys fill in from schema defaults via validate(); the
   // version bump just records that the schema grew.
   if (out.version < 6) {
     out.version = 6;
   }
-  // v6 â†’ v7: Codex Native permission prompt sound now defaults off. Early
+  // v6 â†?v7: Codex Native permission prompt sound now defaults off. Early
   // builds may have written the old default true into prefs, so reset that
   // default-like value during migration; users can turn the switch back on.
   if (out.version < 7) {
@@ -603,7 +604,7 @@ function normalizeStateOverridesMap(value) {
 // duration, disabled, or sourceThemeId). We reuse normalizeSlotOverride to
 // strip the animation-only fields, then enforce path-segment safety on both
 // the key (used as filename stem when copying) and the file (joined into the
-// overrides dir at load time) â€” defence in depth against malicious themes or
+// overrides dir at load time) â€?defence in depth against malicious themes or
 // hand-edited pref files.
 // Strips any path segments and rejects traversal-only names. Returns null if
 // the result isn't a usable basename, otherwise the (optionally capped) name.
@@ -732,7 +733,7 @@ function normalizeThemeVariant(value, defaultsValue) {
 // â”€â”€ Disk I/O â”€â”€
 
 // Read prefs from disk. Returns `{ snapshot, locked }`:
-//   - snapshot: a valid prefs object (always â€” falls back to defaults on any error)
+//   - snapshot: a valid prefs object (always â€?falls back to defaults on any error)
 //   - locked: true if the file came from a future version; save() should be a no-op
 //             to avoid clobbering it.
 function load(prefsPath) {
@@ -741,11 +742,11 @@ function load(prefsPath) {
     const text = fs.readFileSync(prefsPath, "utf8");
     raw = JSON.parse(text);
   } catch (err) {
-    // Missing file is normal on first run â€” return defaults silently.
+    // Missing file is normal on first run â€?return defaults silently.
     if (err && err.code === "ENOENT") {
       return { snapshot: getDefaults(), locked: false };
     }
-    // Any other error (parse fail, permission, etc.) â†’ backup + defaults
+    // Any other error (parse fail, permission, etc.) â†?backup + defaults
     try {
       const bak = prefsPath + ".bak";
       fs.copyFileSync(prefsPath, bak);
