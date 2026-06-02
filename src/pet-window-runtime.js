@@ -451,6 +451,20 @@ function createPetWindowRuntime(options = {}) {
     }
 
     if (isWin) renderWin.setAlwaysOnTop(true, topmostLevel);
+    if (isWin) {
+      let sessionEndFlushed = false;
+      const flushForSessionEnd = () => {
+        if (sessionEndFlushed) return;
+        sessionEndFlushed = true;
+        try {
+          flushRuntimeStateToPrefs();
+        } catch (err) {
+          console.warn("Clawd: failed to persist prefs during Windows session end:", err && err.message);
+        }
+      };
+      renderWin.on("query-session-end", flushForSessionEnd);
+      renderWin.on("session-end", flushForSessionEnd);
+    }
     renderWin.loadFile(optionsArg.loadFilePath);
     applyPetWindowBounds(optionsArg.initialVirtualBounds);
     renderWin.showInactive();
