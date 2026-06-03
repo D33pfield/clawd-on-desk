@@ -19,6 +19,7 @@
 //   node codewhale-hook.js tool_call_before
 //   ...
 
+const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { postStateToRunningServer } = require("./server-config");
@@ -26,6 +27,28 @@ const { readStdinJson } = require("./shared-process");
 
 const AGENT_ID = "codewhale";
 const HOOK_SOURCE = "codewhale-hook";
+
+// ── Stable Session ID Cache ───────────────────────────────────────────────────
+// Some events (e.g. mode_change) may fire without DEEPSEEK_SESSION_ID set.
+// We cache the last known session id so all events for the same codewhale
+// instance map to the same Clawd session, preventing duplicate HUD labels.
+const SESSION_CACHE = path.join(os.tmpdir(), "codewhale-hook-session");
+
+function readCachedSessionId() {
+  try {
+    const raw = fs.readFileSync(SESSION_CACHE, "utf8").trim();
+    if (raw) return raw;
+  } catch {}
+  return null;
+}
+
+function writeCachedSessionId(id) {
+  try { fs.writeFileSync(SESSION_CACHE, String(id), "utf8"); } catch {}
+}
+
+function clearCachedSessionId() {
+  try { fs.unlinkSync(SESSION_CACHE); } catch {}
+}
 
 // ── Event Translation ────────────────────────────────────────────────────────
 // CodeWhale snake_case lifecycle events → Clawd PascalCase + state.
@@ -66,7 +89,15 @@ function buildPayload(codewhaleEventName, env, messageSubmitPayload) {
   const mapping = EVENT_MAP[codewhaleEventName];
   if (!mapping) return null;
 
-  const sessionId = safeString(env.DEEPSEEK_SESSION_ID, "default");
+  // Stable session id: use DEEPSEEK_SESSION_ID when available, fall back to
+  // cached value so events like mode_change (which may lack the env var) still
+  // map to the same Clawd session instead of creating duplicate labels.
+  let sessionId = safeString(env.DEEPSEEK_SESSION_ID, null) || readCachedSessionId();
+  if (!sessionId) {
+    sessionId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  }
+  writeCachedSessionId(sessionId);
+
   const payload = {
     agent_id: AGENT_ID,
     hook_source: HOOK_SOURCE,
@@ -77,7 +108,14 @@ function buildPayload(codewhaleEventName, env, messageSubmitPayload) {
 
   // Workspace → cwd (for session menu label in Clawd)
   const workspace = safeString(env.DEEPSEEK_WORKSPACE, "");
-  if (workspace) payload.cwd = workspace;
+  if (workspace) {
+    payload.cwd = workspace;
+    // Override display title so HUD shows "CodeWhale" instead of
+    // path.basename(cwd) (which would be e.g. "claude_on_desk").
+    payload.session_title = "CodeWhale";
+  } else {
+    payload.session_title = "CodeWhale";
+  }
 
   // Model info
   const model = safeString(env.DEEPSEEK_MODEL, "");
@@ -148,6 +186,12 @@ async function main() {
 
   const payload = buildPayload(eventName, process.env, messageSubmitPayload);
   if (!payload) process.exit(0);
+
+  // Clear the session cache on session_end so the next codewhale instance
+  // starts fresh instead of inheriting the stale session id.
+  if (eventName === "session_end") {
+    clearCachedSessionId();
+  }
 
   const shouldAwait = AWAIT_EVENTS.has(eventName);
   postStateToRunningServer(

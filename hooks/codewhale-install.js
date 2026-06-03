@@ -49,7 +49,9 @@ function normalizePath(p) {
 }
 
 function buildHookEntry(event, background, hookScriptPath) {
-  const nodeBin = process.execPath || "node";
+  // process.execPath is the Electron binary when Clawd calls us via
+  // integration-sync.js — fall back to "node" (on PATH) in that case.
+  const nodeBin = process.versions.electron ? "node" : (process.execPath || "node");
   const nodePath = normalizePath(nodeBin);
   const hookPath = normalizePath(hookScriptPath);
 

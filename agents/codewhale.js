@@ -26,12 +26,12 @@ module.exports = {
     PostCompact: "attention",
   },
   capabilities: {
-    httpHook: false,            // Phase 1: no HTTP permission hooks
-    permissionApproval: false,  // Phase 2
+    httpHook: false,
+    permissionApproval: false,  // Phase 2 requires CodeWhale source changes
     notificationHook: false,
     interactiveBubble: false,
     sessionEnd: true,
-    subagent: false,            // Phase 3
+    subagent: false,
   },
   pidField: "codewhale_pid",
 };
