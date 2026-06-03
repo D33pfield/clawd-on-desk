@@ -19,7 +19,6 @@ const CLIENT_TIMEOUT_MS = 90000;
 const RATE_WINDOW_MS = 60000;
 const RATE_MAX = 60;
 const MAX_CLIENTS = 10;
-const SESSION_POLL_MS = 2000;
 
 const PWA_DIR = path.resolve(__dirname, "../../pwa");
 const TOKEN_PATH = path.join(os.homedir(), ".clawd", "mobile-token.json");
@@ -68,7 +67,6 @@ function initMobilePreviewServer(ctx) {
   let httpServer = null;
   let wss = null;
   let activePort = null;
-  let pollTimer = null;
   let heartbeatTimer = null;
   let closed = false;
 
@@ -301,14 +299,13 @@ function initMobilePreviewServer(ctx) {
     });
 
     httpServer.listen(ports[0], "0.0.0.0");
-    pollTimer = setInterval(pollSessions, SESSION_POLL_MS);
+    pollSessions(); // Prime cache from current state
     return ready;
   }
 
   function cleanup() {
     closed = true;
     sessionCache.clear();
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     stopHeartbeat();
     for (const c of clients) { try { c.close(1001, "Server shutting down"); } catch {} }
     clients.clear();
@@ -317,9 +314,15 @@ function initMobilePreviewServer(ctx) {
     if (httpServer) { try { httpServer.close(); } catch {} }
   }
 
+  function onSnapshot() {
+    if (closed) return;
+    pollSessions();
+  }
+
   return {
     start,
     cleanup,
+    onSnapshot,
     getPort: () => activePort,
     getToken: () => token,
     PROTOCOL_VERSION,

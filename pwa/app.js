@@ -217,7 +217,7 @@
   // === SessionRenderer ===
 
   class SessionRenderer {
-    constructor(container) { this.container = container; this.sessions = new Map(); this.staleTimer = null; this.expandedSet = new Set(); }
+    constructor(container) { this.container = container; this.sessions = new Map(); this.staleTimer = null; this.expandedSet = new Set(); this._startTimerUpdater(); }
 
     updateFromSnapshot(sessions) {
       this.sessions.clear();
@@ -234,7 +234,12 @@
     }
 
     removeSession(sessionId) { this.sessions.delete(sessionId); this.expandedSet.delete(sessionId); this.render(); }
-    toggleExpand(sid) { if (this.expandedSet.has(sid)) this.expandedSet.delete(sid); else this.expandedSet.add(sid); this.render(); }
+    toggleExpand(sid) {
+      var wasExpanded = this.expandedSet.has(sid);
+      if (wasExpanded) this.expandedSet.delete(sid); else this.expandedSet.add(sid);
+      this._animatingSid = sid;
+      this.render();
+    }
 
     render() {
       var self = this;
@@ -259,6 +264,20 @@
       this.container.querySelectorAll(".card-footer").forEach(function(el) {
         el.addEventListener("click", function() { self.toggleExpand(this.getAttribute("data-sid")); });
       });
+      if (this._animatingSid) {
+        var animatingSid = this._animatingSid;
+        this._animatingSid = null;
+        if (this.expandedSet.has(animatingSid)) {
+          var cards = this.container.querySelectorAll('.session-card');
+          cards.forEach(function(card) {
+            var footer = card.querySelector('.card-footer');
+            if (footer && footer.getAttribute('data-sid') === animatingSid) {
+              var eh = card.querySelector('.event-history');
+              if (eh) requestAnimationFrame(function() { eh.classList.add('show'); });
+            }
+          });
+        }
+      }
     }
 
     _renderCard(sid, s) {
@@ -278,21 +297,34 @@
       html += '<div class="card-footer" data-sid="' + sid + '"><div class="footer-events">' + icon("activity") + '<span>最近事件</span>';
       if (events.length) html += '<span class="event-count">' + events.length + '</span>';
       html += '</div><span class="footer-chevron">' + (isExpanded ? icon("collapse") : icon("expand")) + '</span></div>';
-      if (isExpanded && events.length) html += this._renderEvents(events);
+      if (events.length) html += this._renderEvents(events, isExpanded, this._animatingSid === sid);
       html += '</div>';
       return html;
     }
 
-    _renderEvents(events) {
-      var html = '<div class="event-history">';
+    _renderEvents(events, expanded, animate) {
+      var showClass = (expanded && !animate) ? ' show' : '';
+      var html = '<div class="event-history' + showClass + '"><div class="event-timeline">';
       for (var i = 0; i < events.length; i++) {
         var ev = events[i]; var c = STATE_CONFIG[ev.state] || STATE_CONFIG.idle;
         html += '<div class="event-row"><div class="event-dot" style="background:' + c.color + '"></div>';
         html += '<div class="event-line" style="background:' + c.color + '"></div>';
         html += '<span class="event-label">' + esc(eventLabel(ev.event)) + '</span>';
-        html += '<span class="event-time">' + formatAgo(ev.at) + '</span></div>';
+        html += '<span class="event-time"' + (ev.at ? ' data-ts="' + ev.at + '"' : '') + '>' + formatAgo(ev.at) + '</span></div>';
       }
-      return html + '</div>';
+      return html + '</div></div>';
+    }
+
+    _startTimerUpdater() {
+      var self = this;
+      setInterval(function() {
+        if (document.visibilityState !== 'visible') return;
+        var els = self.container.querySelectorAll('.event-time[data-ts]');
+        for (var i = 0; i < els.length; i++) {
+          var ts = parseInt(els[i].getAttribute('data-ts'), 10);
+          if (!isNaN(ts)) els[i].textContent = formatAgo(ts);
+        }
+      }, 1000);
     }
 
     startStaleCleanup() {

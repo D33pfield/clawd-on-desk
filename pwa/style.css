@@ -117,8 +117,10 @@ body { display: flex; flex-direction: column; height: 100%; }
 .footer-chevron svg { width: 14px; height: 14px; color: var(--faint); }
 
 /* === Event History === */
-.event-history { margin-top: 8px; padding-left: 4px; animation: slideDown 0.2s ease-out; }
-@keyframes slideDown { from { opacity: 0; max-height: 0; } to { opacity: 1; max-height: 500px; } }
+.event-history { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.28s cubic-bezier(0.2, 0.9, 0.4, 1.1); }
+.event-history.show { grid-template-rows: 1fr; }
+.event-history > .event-timeline { overflow: hidden; min-height: 0; }
+.event-timeline { padding-left: 4px; }
 .event-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; position: relative; }
 .event-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; position: relative; z-index: 1; }
 .event-line { position: absolute; left: 3.5px; top: 13px; bottom: -5px; width: 1px; opacity: 0.3; }
