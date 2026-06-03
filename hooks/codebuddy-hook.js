@@ -39,39 +39,58 @@ function stdoutForEvent(hookName) {
   return "{}";
 }
 
-readStdinJson().then((payload) => {
-  const hookName = (payload && payload.hook_event_name) || "";
-  const mapped = HOOK_MAP[hookName];
+// Safety timeout: guarantee valid JSON on stdout even if stdin never arrives
+// or the process tree walk hangs. Without this CodeBuddy would see empty stdout
+// which is invalid JSON and logs an error on every hook invocation.
+const SAFETY_TIMEOUT_MS = 800;
+let _done = false;
 
-  if (!mapped) {
-    process.stdout.write(stdoutForEvent(hookName) + "\n");
-    process.exit(0);
-    return;
-  }
+function finish(outLine) {
+  if (_done) return;
+  _done = true;
+  process.stdout.write(outLine + "\n");
+  process.exit(0);
+}
 
-  const { state, event } = mapped;
-  if (hookName === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
+setTimeout(() => finish("{}"), SAFETY_TIMEOUT_MS);
 
-  const sessionId = (payload && payload.session_id) || "default";
-  const cwd = (payload && payload.cwd) || "";
+readStdinJson()
+  .then((payload) => {
+    const hookName = (payload && payload.hook_event_name) || "";
+    const mapped = HOOK_MAP[hookName];
+    const outLine = stdoutForEvent(hookName);
 
-  const { stablePid, agentPid, detectedEditor, pidChain } = resolve();
+    if (!mapped) {
+      finish(outLine);
+      return;
+    }
 
-  const body = { state, session_id: sessionId, event };
-  body.agent_id = "codebuddy";
-  if (cwd) body.cwd = cwd;
-  if (process.env.CLAWD_REMOTE) {
-    body.host = readHostPrefix();
-  } else {
-    body.source_pid = stablePid;
-    if (detectedEditor) body.editor = detectedEditor;
-    if (agentPid) body.agent_pid = agentPid;
-    if (pidChain.length) body.pid_chain = pidChain;
-  }
+    const { state, event } = mapped;
+    if (hookName === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
 
-  const outLine = stdoutForEvent(hookName);
-  postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => {
-    process.stdout.write(outLine + "\n");
-    process.exit(0);
-  });
-});
+    const sessionId = (payload && payload.session_id) || "default";
+    const cwd = (payload && payload.cwd) || "";
+
+    const { stablePid, agentPid, detectedEditor, pidChain } = resolve();
+
+    const body = { state, session_id: sessionId, event };
+    body.agent_id = "codebuddy";
+    if (cwd) body.cwd = cwd;
+    if (process.env.CLAWD_REMOTE) {
+      body.host = readHostPrefix();
+    } else {
+      body.source_pid = stablePid;
+      if (detectedEditor) body.editor = detectedEditor;
+      if (agentPid) body.agent_pid = agentPid;
+      if (pidChain.length) body.pid_chain = pidChain;
+    }
+
+    // Write response to CodeBuddy immediately so it never sees empty stdout.
+    // Then fire-and-forget the POST to Clawd.
+    finish(outLine);
+
+    postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => {
+      // no-op: stdout already written, process will exit via finish()
+    });
+  })
+  .catch(() => finish("{}"));

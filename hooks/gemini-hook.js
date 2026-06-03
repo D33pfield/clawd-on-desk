@@ -133,23 +133,40 @@ function sendHookEvent(payload, argvEvent, deps = {}) {
   });
 }
 
+// Safety timeout: guarantee valid JSON on stdout even if stdin never arrives.
+const SAFETY_TIMEOUT_MS = 800;
+let _done = false;
+
+function finish(outLine) {
+  if (_done) return;
+  _done = true;
+  process.stdout.write(outLine + "\n");
+  process.exit(0);
+}
+
+setTimeout(() => finish("{}"), SAFETY_TIMEOUT_MS);
+
 async function main(argvEvent = process.argv[2], deps = {}) {
   const payload = deps.payload !== undefined
     ? deps.payload
     : await (deps.readStdinJson || readStdinJson)();
-  const result = await sendHookEvent(payload, argvEvent, {
+  const hookName = resolveHookName(payload, argvEvent);
+  const outLine = stdoutForEvent(hookName);
+
+  // Write response to Gemini immediately so it never sees empty stdout.
+  // Then fire-and-forget the POST to Clawd.
+  finish(outLine);
+
+  sendHookEvent(payload, argvEvent, {
     env: deps.env || process.env,
     postState: deps.postState || postStateToRunningServer,
     readHostPrefix: deps.readHostPrefix || readHostPrefix,
     resolvePid: deps.resolvePid || resolve,
-  });
-  process.stdout.write(result.stdout + "\n");
+  }).catch(() => {});
 }
 
 if (require.main === module) {
-  main().then(() => {
-    process.exit(0);
-  });
+  main().catch(() => finish("{}"));
 }
 
 module.exports = {

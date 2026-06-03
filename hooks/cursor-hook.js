@@ -36,7 +36,7 @@ function displaySvgFromToolHook(hookName, payload) {
   const name = payload && payload.tool_name;
   if (!name || typeof name !== "string") return undefined;
   if (name === "Shell" || name.startsWith("MCP:")) return "clawd-working-building.svg";
-  if (name === "Task") return "clawd-working-juggling.svg";
+  if (name === "Task") return "clawd-headphones-groove.svg";
   if (name === "Write" || name === "Delete") return "clawd-working-typing.svg";
   if (name === "Read" || name === "Grep") return "clawd-idle-reading.svg";
   return undefined;
@@ -52,48 +52,68 @@ function resolveStateAndEvent(payload, hookName) {
   return HOOK_TO_STATE[hookName] || null;
 }
 
-readStdinJson().then((payload) => {
-  const argvOverride = process.argv[2];
-  const hookNameResolved = argvOverride || (payload && payload.hook_event_name) || "";
-  const mapped = resolveStateAndEvent(payload, hookNameResolved);
-  if (!mapped) {
-    process.stdout.write(stdoutForCursorHook(hookNameResolved) + "\n");
-    process.exit(0);
-    return;
-  }
+// Safety timeout: guarantee valid JSON on stdout within 1s even if stdin never
+// arrives or the process tree walk hangs. Without this Cursor would see empty
+// stdout which is invalid JSON and logs an error on every hook invocation.
+const SAFETY_TIMEOUT_MS = 800;
+let _done = false;
 
-  const { state, event } = mapped;
-  if (hookNameResolved === "sessionStart" && !process.env.CLAWD_REMOTE) resolve();
+function finish(outLine) {
+  if (_done) return;
+  _done = true;
+  process.stdout.write(outLine + "\n");
+  process.exit(0);
+}
 
-  const sessionId =
-    (payload && (payload.conversation_id || payload.session_id)) || "default";
-  let cwd = (payload && payload.cwd) || "";
-  if (!cwd && payload && Array.isArray(payload.workspace_roots) && payload.workspace_roots[0]) {
-    cwd = payload.workspace_roots[0];
-  }
+setTimeout(() => finish("{}"), SAFETY_TIMEOUT_MS);
 
-  const { stablePid, agentPid, detectedEditor, pidChain } = resolve();
+readStdinJson()
+  .then((payload) => {
+    const argvOverride = process.argv[2];
+    const hookNameResolved = argvOverride || (payload && payload.hook_event_name) || "";
+    const mapped = resolveStateAndEvent(payload, hookNameResolved);
+    const outLine = stdoutForCursorHook(hookNameResolved);
 
-  const body = { state, session_id: sessionId, event };
-  body.agent_id = "cursor-agent";
-  const hint = displaySvgFromToolHook(hookNameResolved, payload);
-  if (hint !== undefined) body.display_svg = hint;
-  if (cwd) body.cwd = cwd;
-  if (process.env.CLAWD_REMOTE) {
-    body.host = readHostPrefix();
-  } else {
-    body.source_pid = stablePid;
-    body.editor = detectedEditor || "cursor";
-    if (agentPid) {
-      body.agent_pid = agentPid;
-      body.cursor_pid = agentPid;
+    if (!mapped) {
+      finish(outLine);
+      return;
     }
-    if (pidChain.length) body.pid_chain = pidChain;
-  }
 
-  const outLine = stdoutForCursorHook(hookNameResolved);
-  postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => {
-    process.stdout.write(outLine + "\n");
-    process.exit(0);
-  });
-});
+    const { state, event } = mapped;
+    if (hookNameResolved === "sessionStart" && !process.env.CLAWD_REMOTE) resolve();
+
+    const sessionId =
+      (payload && (payload.conversation_id || payload.session_id)) || "default";
+    let cwd = (payload && payload.cwd) || "";
+    if (!cwd && payload && Array.isArray(payload.workspace_roots) && payload.workspace_roots[0]) {
+      cwd = payload.workspace_roots[0];
+    }
+
+    const { stablePid, agentPid, detectedEditor, pidChain } = resolve();
+
+    const body = { state, session_id: sessionId, event };
+    body.agent_id = "cursor-agent";
+    const hint = displaySvgFromToolHook(hookNameResolved, payload);
+    if (hint !== undefined) body.display_svg = hint;
+    if (cwd) body.cwd = cwd;
+    if (process.env.CLAWD_REMOTE) {
+      body.host = readHostPrefix();
+    } else {
+      body.source_pid = stablePid;
+      body.editor = detectedEditor || "cursor";
+      if (agentPid) {
+        body.agent_pid = agentPid;
+        body.cursor_pid = agentPid;
+      }
+      if (pidChain.length) body.pid_chain = pidChain;
+    }
+
+    // Write response to Cursor immediately so it never sees empty/malformed stdout.
+    // Then fire-and-forget the POST to Clawd — it doesn't need to block the response.
+    finish(outLine);
+
+    postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => {
+      // no-op: stdout already written, process will exit naturally
+    });
+  })
+  .catch(() => finish("{}"));
