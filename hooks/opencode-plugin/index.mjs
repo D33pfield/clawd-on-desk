@@ -90,11 +90,10 @@ const _lastStatePerSession = new Map();
 // event so it stays fresh. Not used for state dedup.
 let _lastSeenSessionId = null;
 let _reqCounter = 0;
-// Phase 3: opencode subtasks are full child sessions (not subtask parts). The
-// parent session's `task` tool spawns a `session.created` with a new sessionID
-// and agent="explore"/other. Clawd's multi-session fanout already handles this
-// visually (1→typing, 2→juggling, 3+→building). The only fix needed is to
-// prevent subtask `session.idle` from firing the happy animation — only the
+// Phase 3: opencode subtasks are full child sessions (not subtask parts). When
+// session.created carries event.properties.info.parentID, Clawd treats the
+// child as background/headless work owned by its parent: no HUD/focus/fanout,
+// and child session.idle maps to SessionEnd instead of the root happy path.
 // Root session fallback used for legacy idle/permission association.
 // Child/headless detection is explicit: _sessionParentById is populated
 // from event.properties.info.parentID on session.created.
