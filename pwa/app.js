@@ -67,6 +67,20 @@
     return EVENT_LABELS_CN[eventName] || (typeof EVENT_LABELS !== "undefined" && EVENT_LABELS[eventName]) || eventName || "";
   }
 
+  var EVENT_ICONS = {
+    UserPromptSubmit: "💬", PreToolUse: "⚙️", PostToolUse: "✅",
+    PostToolUseFailure: "❌", Stop: "🏁", StopFailure: "❌",
+    SessionStart: "▶️", SessionEnd: "⏹️",
+    PermissionRequest: "🔒", Notification: "🔔",
+    SubagentStart: "🔀", SubagentStop: "🔀",
+    AfterAgent: "✅", ApiError: "❌",
+    Elicitation: "❓", WorktreeCreate: "🌿",
+  };
+
+  function eventIcon(eventName) {
+    return EVENT_ICONS[eventName] || "●";
+  }
+
   function log(msg) {
     var now = new Date();
     var ts = [now.getHours(), now.getMinutes(), now.getSeconds()]
@@ -326,13 +340,16 @@
       var isExpanded = this.expandedSet.has(sid);
       var events = s.recentEvents || [];
       var stateKey = s.state || "idle";
+      var agentLabel = (s.agentId || "agent").toUpperCase();
+      var sessionTitle = s.title || "";
       var html = '<div class="session-card">';
       html += '<div class="card-header"><div class="card-agent"><div class="agent-dot"></div>';
-      html += '<span class="agent-name">' + esc((s.title || "agent").toUpperCase()) + '</span></div>';
+      html += '<span class="agent-name">' + esc(agentLabel) + '</span></div>';
       html += '<span class="state-badge ' + stateKey + '">' + config.label + '</span></div>';
-      html += '<div class="card-title">' + esc(s.title || "") + '</div>';
+      if (sessionTitle) html += '<div class="card-title">' + esc(sessionTitle) + '</div>';
       html += '<div class="card-meta">';
       if (s.basename) { html += '<span class="meta-item mono">' + icon("folder") + '<span>' + esc(s.basename) + '</span></span>'; }
+      if (s.updatedAt) { html += '<span class="meta-sep">&middot;</span><span class="meta-item">' + formatAgo(s.updatedAt) + '</span>'; }
       html += '</div>';
       html += '<div class="card-divider"></div>';
       html += '<div class="card-footer" data-sid="' + sid + '"><div class="footer-events">' + icon("activity") + '<span>最近事件</span>';
@@ -350,6 +367,7 @@
         var ev = events[i]; var c = STATE_CONFIG[ev.state] || STATE_CONFIG.idle;
         html += '<div class="event-row"><div class="event-dot" style="background:' + c.color + '"></div>';
         html += '<div class="event-line" style="background:' + c.color + '"></div>';
+        html += '<span class="event-icon">' + eventIcon(ev.event) + '</span>';
         html += '<span class="event-label">' + esc(eventLabel(ev.event)) + '</span>';
         html += '<span class="event-time"' + (ev.at ? ' data-ts="' + ev.at + '"' : '') + '>' + formatAgo(ev.at) + '</span></div>';
       }

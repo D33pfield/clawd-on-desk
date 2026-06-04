@@ -216,9 +216,11 @@ function initMobilePreviewServer(ctx) {
     const recentEvents = Array.isArray(session.recentEvents) ? session.recentEvents.slice(-10) : [];
     return {
       sessionId: sid,
-      title: session.sessionTitle || session.agentId || null,
+      agentId: session.agentId || null,
+      title: session.sessionTitle || null,
       basename: session.cwd ? path.basename(session.cwd) : null,
       state: session.state || "idle",
+      updatedAt: session.updatedAt || null,
       recentEvents,
     };
   }
