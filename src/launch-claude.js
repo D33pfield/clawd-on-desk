@@ -10,6 +10,8 @@ const {
   escapeAppleScriptString,
 } = require("./remote-ssh-quote");
 
+const SAFE_CLAUDE_SESSION_ID = /^[A-Za-z0-9_-]+$/;
+
 // PowerShell single-quoted string quoting.
 //
 // Inside a PowerShell single-quoted string the only character that needs
@@ -24,6 +26,32 @@ function quoteForPowerShell(arg) {
     throw new TypeError("quoteForPowerShell: arg must be a string");
   }
   return "'" + arg.replace(/'/g, "''") + "'";
+}
+
+function quoteCmdExecutablePath(arg) {
+  if (typeof arg !== "string") {
+    throw new TypeError("quoteCmdExecutablePath: arg must be a string");
+  }
+  if (arg.includes('"')) {
+    throw new TypeError("quoteCmdExecutablePath: executable path must not contain double quotes");
+  }
+  return `"${arg}"`;
+}
+
+function buildCmdLaunchCommand(executablePath, args) {
+  return `"${[quoteCmdExecutablePath(executablePath), ...args.map(quoteForCmd)].join(" ")}"`;
+}
+
+function normalizeClaudeSessionId(sessionId) {
+  if (sessionId == null || sessionId === "") return "";
+  if (typeof sessionId !== "string") {
+    throw new TypeError("normalizeClaudeSessionId: sessionId must be a string");
+  }
+  const normalized = sessionId.trim();
+  if (!normalized || !SAFE_CLAUDE_SESSION_ID.test(normalized)) {
+    throw new Error("Invalid Claude session ID. Use only letters, numbers, underscores, and hyphens.");
+  }
+  return normalized;
 }
 
 // Spawn a detached terminal process. Resolves { ok: true } once the process
@@ -106,22 +134,27 @@ function buildClaudeArgs(mode, sessionId) {
   const args = [];
   if (mode === "dangerous" || mode === "resume-dangerous") args.push("--dangerously-skip-permissions");
   if (mode === "continue") args.push("-c");
-  if ((mode === "resume" || mode === "resume-dangerous") && sessionId) args.push("--resume", sessionId);
+  if (mode === "resume" || mode === "resume-dangerous") {
+    const normalizedSessionId = normalizeClaudeSessionId(sessionId);
+    if (normalizedSessionId) args.push("--resume", normalizedSessionId);
+  }
   return args;
 }
 
-// Build the ordered list of terminal launch candidates. Every candidate that
-// must hand a single command string to a shell routes the claude path AND every
-// arg (including the user-supplied sessionId) through a platform quoting helper,
-// so spaces in the path and shell metacharacters in the sessionId can neither
-// break the command nor inject. The argv-array candidates (wt.exe `--`) need no
+// Build the ordered list of terminal launch candidates. Shell-backed
+// candidates quote the resolved claude path and args for their shell layer; the
+// only user-entered arg is the resume session ID, which buildClaudeArgs
+// validates before this point. The argv-array candidates (wt.exe `--`) need no
 // quoting — the OS passes argv verbatim without a shell.
 function buildTerminalCandidates(claudePath, claudeArgs, plat = platform()) {
   if (plat === "win32") {
-    // cmd.exe /k: mirror remote-ssh-ipc — caret-escape each token, pass
-    // verbatim. With /s and a payload that does not start with a quote
-    // (quoteForCmd output starts with `^`), cmd leaves the quoting intact.
-    const cmdLine = [claudePath, ...claudeArgs].map(quoteForCmd).join(" ");
+    // cmd.exe /k: command paths with spaces must use cmd's special
+    // `""C:\Program Files\...\claude.cmd" args"` form. Plain quoteForCmd on
+    // the first token starts with a caret-escaped quote, which cmd.exe does not
+    // treat as the executable delimiter. Args still use quoteForCmd, and the
+    // only user-entered arg (resume session ID) has already been allow-listed
+    // before cmd.exe can pass it through an npm .cmd shim's second parse.
+    const cmdLine = buildCmdLaunchCommand(claudePath, claudeArgs);
     // powershell.exe -Command: call operator `&` + single-quoted PS strings.
     const psCmd = "& " + [claudePath, ...claudeArgs].map(quoteForPowerShell).join(" ");
     return [
@@ -190,6 +223,9 @@ module.exports = {
   buildClaudeArgs,
   buildTerminalCandidates,
   findClaudeCmd,
+  buildCmdLaunchCommand,
+  normalizeClaudeSessionId,
+  quoteCmdExecutablePath,
   quoteForPowerShell,
   tryLaunch,
 };

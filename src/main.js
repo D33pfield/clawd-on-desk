@@ -2377,7 +2377,8 @@ function showResumeInput(t) {
       inputWin.webContents.executeJavaScript(
         "new Promise(r=>{window._resolve=r})"
       ).then((val) => {
-        resolve(val || null);
+        const sessionId = typeof val === "string" ? val.trim() : "";
+        resolve(sessionId || null);
         try { inputWin.close(); } catch {}
       });
     });

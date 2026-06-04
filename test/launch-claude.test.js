@@ -1,11 +1,18 @@
 "use strict";
 
 const assert = require("node:assert");
+const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { describe, it } = require("node:test");
 
 const {
   buildClaudeArgs,
   buildTerminalCandidates,
+  buildCmdLaunchCommand,
+  normalizeClaudeSessionId,
+  quoteCmdExecutablePath,
   quoteForPowerShell,
   launchClaudeSession,
 } = require("../src/launch-claude");
@@ -29,6 +36,13 @@ describe("buildClaudeArgs", () => {
     assert.deepStrictEqual(buildClaudeArgs("resume", "abc123"), ["--resume", "abc123"]);
   });
 
+  it("trims valid resume session IDs", () => {
+    assert.deepStrictEqual(buildClaudeArgs("resume", "  019d23d4-f1a9-7633-b9c7-758327137228  "), [
+      "--resume",
+      "019d23d4-f1a9-7633-b9c7-758327137228",
+    ]);
+  });
+
   it("resume-dangerous combines skip-permissions and --resume", () => {
     assert.deepStrictEqual(
       buildClaudeArgs("resume-dangerous", "abc123"),
@@ -41,9 +55,20 @@ describe("buildClaudeArgs", () => {
     assert.deepStrictEqual(buildClaudeArgs("resume", ""), []);
   });
 
-  it("keeps the sessionId as a single argv element (no shell parsing)", () => {
-    const args = buildClaudeArgs("resume", "a b; rm -rf ~");
-    assert.deepStrictEqual(args, ["--resume", "a b; rm -rf ~"]);
+  it("rejects unsafe resume session IDs before terminal command construction", () => {
+    assert.throws(() => buildClaudeArgs("resume", "a b"), /Invalid Claude session ID/);
+    assert.throws(() => buildClaudeArgs("resume", 'a" & calc & "b'), /Invalid Claude session ID/);
+    assert.throws(() => buildClaudeArgs("resume", "   "), /Invalid Claude session ID/);
+  });
+});
+
+describe("normalizeClaudeSessionId", () => {
+  it("accepts alphanumeric, hyphen, and underscore", () => {
+    assert.strictEqual(normalizeClaudeSessionId("abc_DEF-123"), "abc_DEF-123");
+  });
+
+  it("rejects non-string session IDs", () => {
+    assert.throws(() => normalizeClaudeSessionId(123), TypeError);
   });
 });
 
@@ -65,6 +90,24 @@ describe("quoteForPowerShell", () => {
   });
 });
 
+describe("cmd executable quoting", () => {
+  it("wraps executable paths in real cmd quotes", () => {
+    assert.strictEqual(quoteCmdExecutablePath(WIN_PATH), `"${WIN_PATH}"`);
+  });
+
+  it("rejects executable paths containing double quotes", () => {
+    assert.throws(() => quoteCmdExecutablePath('bad"path'), TypeError);
+  });
+
+  it("builds cmd's outer-quoted command form for paths with spaces", () => {
+    const cmdLine = buildCmdLaunchCommand(WIN_PATH, ["--resume", 'x" & calc & "y']);
+    assert.ok(cmdLine.startsWith(`""${WIN_PATH}" `));
+    assert.ok(cmdLine.endsWith('"'));
+    assert.ok(!cmdLine.includes(' & calc & '), "bare & command-chaining must be escaped");
+    assert.ok(cmdLine.includes("^&"), "ampersands must be caret-escaped");
+  });
+});
+
 describe("buildTerminalCandidates - Windows", () => {
   it("orders fallbacks wt -> cmd -> powershell", () => {
     const cands = buildTerminalCandidates("claude", [], "win32");
@@ -81,23 +124,95 @@ describe("buildTerminalCandidates - Windows", () => {
     const cands = buildTerminalCandidates(WIN_PATH, [], "win32");
     const cmd = cands.find((c) => c.bin === "cmd.exe");
     const cmdLine = cmd.args[cmd.args.length - 1];
-    // The path must be quoted (it contains spaces) — a bare path would break cmd.
-    assert.ok(/Program Files/.test(cmdLine));
-    assert.ok(cmdLine.includes('"'), "path must be wrapped in quotes");
-    // Carets escape the quotes for cmd's metacharacter parser.
-    assert.ok(cmdLine.includes('^"'), "quotes must be caret-escaped for cmd /k");
+    assert.strictEqual(cmdLine, `""${WIN_PATH}""`);
     assert.deepStrictEqual(cmd.args.slice(0, 4), ["/d", "/v:off", "/s", "/k"]);
     assert.deepStrictEqual(cmd.extraOpts, { shell: false, windowsVerbatimArguments: true });
   });
 
-  it("cmd.exe neutralizes shell metacharacters in the sessionId", () => {
+  it("cmd.exe caret-escapes shell metacharacters in the command string", () => {
     const cands = buildTerminalCandidates("claude", ["--resume", 'x" & calc & "y'], "win32");
     const cmd = cands.find((c) => c.bin === "cmd.exe");
     const cmdLine = cmd.args[cmd.args.length - 1];
-    // The raw injected sequence `" & calc & "` must not survive verbatim — the
-    // ampersands are caret-escaped so cmd can't treat them as command chaining.
+    // The raw sequence `" & calc & "` must not survive verbatim. Production
+    // resume IDs are also allow-listed before buildTerminalCandidates runs,
+    // which avoids npm .cmd shim second-parse hazards.
     assert.ok(!cmdLine.includes(' & calc & '), "bare & command-chaining must be escaped");
     assert.ok(cmdLine.includes("^&"), "ampersands must be caret-escaped");
+  });
+
+  it("round-trips a spaced executable path through real cmd.exe", { skip: process.platform !== "win32" }, () => {
+    const values = [
+      "a&b",
+      "%CLAWD_QUOTE_TEST%",
+      "!CLAWD_QUOTE_TEST!",
+      'x" & echo injected & "y',
+    ];
+    const cands = buildTerminalCandidates(
+      process.execPath,
+      ["-p", "JSON.stringify(process.argv.slice(1))", ...values],
+      "win32",
+    );
+    const cmd = cands.find((c) => c.bin === "cmd.exe");
+    const cmdLine = cmd.args[cmd.args.length - 1];
+    const result = spawnSync("cmd.exe", ["/d", "/v:off", "/s", "/c", cmdLine], {
+      encoding: "utf8",
+      env: { ...process.env, CLAWD_QUOTE_TEST: 'bad"&echo injected' },
+      windowsVerbatimArguments: true,
+    });
+    const detail = JSON.stringify({
+      status: result.status,
+      error: result.error && result.error.message,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
+    assert.strictEqual(result.status, 0, detail);
+    assert.deepStrictEqual(JSON.parse(result.stdout.trim()), values, detail);
+  });
+
+  it("round-trips a spaced npm-style .cmd shim through real cmd.exe", { skip: process.platform !== "win32" }, () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "launch claude cmd shim-"));
+    try {
+      const shimPath = path.join(tmpDir, "claude.cmd");
+      const echoPath = path.join(tmpDir, "echo-argv.js");
+      fs.writeFileSync(echoPath, 'console.log(JSON.stringify(process.argv.slice(2)));\n', "utf8");
+      fs.writeFileSync(
+        shimPath,
+        [
+          "@ECHO off",
+          "GOTO start",
+          ":find_dp0",
+          "SET dp0=%~dp0",
+          "EXIT /b",
+          ":start",
+          "SETLOCAL",
+          "CALL :find_dp0",
+          'SET "_prog=node"',
+          'endLocal & goto #_undefined_# 2>NUL || "%_prog%"  "%dp0%echo-argv.js" %*',
+          "",
+        ].join("\r\n"),
+        "utf8",
+      );
+
+      const claudeArgs = buildClaudeArgs("resume", "safe_sid-123");
+      const cands = buildTerminalCandidates(shimPath, claudeArgs, "win32");
+      const cmd = cands.find((c) => c.bin === "cmd.exe");
+      const cmdLine = cmd.args[cmd.args.length - 1];
+      const result = spawnSync("cmd.exe", ["/d", "/v:off", "/s", "/c", cmdLine], {
+        encoding: "utf8",
+        windowsVerbatimArguments: true,
+      });
+      const detail = JSON.stringify({
+        status: result.status,
+        error: result.error && result.error.message,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      });
+      assert.strictEqual(result.status, 0, detail);
+      assert.deepStrictEqual(JSON.parse(result.stdout.trim()), claudeArgs, detail);
+      assert.throws(() => buildClaudeArgs("resume", 'a" & echo injected & "b'), /Invalid Claude session ID/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("powershell.exe single-quotes path and args, neutralizing injection", () => {
@@ -211,7 +326,16 @@ describe("launchClaudeSession - terminal fallback", () => {
 
   it("passes the resolved claude path and quoted args through to the terminal", async () => {
     const { attempted, deps } = makeDeps({ plat: "win32", okBins: ["wt.exe"], findResult: WIN_PATH });
-    await launchClaudeSession("resume", undefined, "sid 1", deps);
-    assert.deepStrictEqual(attempted[0].args, ["--", WIN_PATH, "--resume", "sid 1"]);
+    await launchClaudeSession("resume", undefined, "sid_1", deps);
+    assert.deepStrictEqual(attempted[0].args, ["--", WIN_PATH, "--resume", "sid_1"]);
+  });
+
+  it("rejects unsafe resume IDs before trying any terminal", async () => {
+    const { attempted, deps } = makeDeps({ plat: "win32", okBins: ["wt.exe"], findResult: WIN_PATH });
+    await assert.rejects(
+      launchClaudeSession("resume", undefined, 'sid" & calc & "x', deps),
+      /Invalid Claude session ID/,
+    );
+    assert.deepStrictEqual(attempted, []);
   });
 });
