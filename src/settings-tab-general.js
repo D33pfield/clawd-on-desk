@@ -106,6 +106,11 @@
         descKey: "rowAllowEdgePinningDesc",
       }),
       helpers.buildSwitchRow({
+        key: "miniAutoSnap",
+        labelKey: "rowMiniAutoSnap",
+        descKey: "rowMiniAutoSnapDesc",
+      }),
+      helpers.buildSwitchRow({
         key: "keepSizeAcrossDisplays",
         labelKey: "rowKeepSizeAcrossDisplays",
         descKey: "rowKeepSizeAcrossDisplaysDesc",

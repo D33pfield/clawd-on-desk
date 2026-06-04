@@ -67,6 +67,9 @@ function createSettingsEffectRouter(options = {}) {
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
   const handleSessionHudPinnedChanged = options.handleSessionHudPinnedChanged || noop;
   const reclampPetAfterEdgePinningChange = options.reclampPetAfterEdgePinningChange || noop;
+  const checkMiniModeSnap = options.checkMiniModeSnap || noop;
+  const exitMiniMode = options.exitMiniMode || noop;
+  const getMiniMode = options.getMiniMode || (() => false);
   const rebuildAllMenus = options.rebuildAllMenus || noop;
   const reconcilePowerSaveBlocker = options.reconcilePowerSaveBlocker || noop;
 
@@ -228,6 +231,17 @@ function createSettingsEffectRouter(options = {}) {
         "Clawd: allowEdgePinning re-clamp failed:",
         reclampPetAfterEdgePinningChange
       );
+    }
+    if ("miniAutoSnap" in changes) {
+      if (changes.miniAutoSnap) {
+        // ON: if pet is near edge, snap into mini mode
+        safeCall(logWarn, "Clawd: miniAutoSnap snap failed:", checkMiniModeSnap);
+      } else {
+        // OFF: if currently in mini mode, exit
+        if (getMiniMode()) {
+          safeCall(logWarn, "Clawd: miniAutoSnap exit failed:", exitMiniMode);
+        }
+      }
     }
 
     // 3. Menu rebuild: only for menu-affecting keys to avoid thrashing on
