@@ -1272,7 +1272,13 @@ const { startMainTick, resetIdleTimer } = _tick;
 
 // ── Terminal focus — delegated to src/focus.js ──
 const _focus = require("./focus")({ _allowSetForeground, focusLog });
-const { initFocusHelper, killFocusHelper, focusTerminalWindow, clearMacFocusCooldownTimer } = _focus;
+const {
+  initFocusHelper,
+  killFocusHelper,
+  focusTerminalWindow,
+  captureGhosttyTerminalId,
+  clearMacFocusCooldownTimer,
+} = _focus;
 
 function getFocusableLocalHudSessionIds() {
   if (!_state || typeof _state.buildSessionSnapshot !== "function") return [];
@@ -1287,6 +1293,7 @@ function focusTerminalSession(session, sessionId, requestSource) {
     cwd: session.cwd,
     editor: session.editor,
     pidChain: session.pidChain,
+    ghosttyTerminalId: session.ghosttyTerminalId,
     sessionId: String(sessionId),
     agentId: session.agentId,
     requestSource,
@@ -1389,6 +1396,7 @@ agentRuntime = createAgentRuntimeMain({
   getPermissionRuntime: () => _perm,
   isAgentEnabled: (agentId) => _isAgentEnabled(_settingsController.getSnapshot(), agentId),
   updateSession: (sessionId, state, event, opts) => updateSession(sessionId, state, event, opts),
+  captureGhosttyTerminalId,
   showCodexNotifyBubble: (payload) => showCodexNotifyBubble(payload),
   clearCodexNotifyBubbles: (...args) => clearCodexNotifyBubbles(...args),
 });
