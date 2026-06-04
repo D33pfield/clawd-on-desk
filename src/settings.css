@@ -2933,23 +2933,6 @@ html, body {
 }
 .about-check-update-btn:hover { background: var(--accent-hover); }
 .about-check-update-btn:disabled { opacity: 0.6; cursor: default; }
-.about-contributors-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 0 6px;
-  border-top: 1px solid var(--row-border);
-}
-.about-contributors-toggle {
-  font-size: 12px;
-  color: var(--accent);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-.about-contributors-toggle:hover { background: var(--sidebar-hover); }
 .about-contributors-list {
   display: flex;
   flex-wrap: wrap;
@@ -2957,7 +2940,6 @@ html, body {
   padding: 6px 0 14px;
   line-height: 1.8;
 }
-.about-contributors-list.collapsed { display: none; }
 .about-contributor-link {
   color: var(--text-primary);
   font-size: 13px;

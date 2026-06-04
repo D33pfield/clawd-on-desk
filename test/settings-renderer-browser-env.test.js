@@ -31,6 +31,13 @@ const TAB_MODULES = [
   path.join(SRC_DIR, "settings-tab-about.js"),
   path.join(SRC_DIR, "settings-hardware-buddy-panel.js"),
 ];
+const VERIFIED_GITHUB_CONTRIBUTORS = [
+  "Bynlk",
+  "zxypro1",
+  "NeroAyase",
+  "divergentD",
+  "Ne9roni",
+];
 
 function createDeferred() {
   const deferred = {};
@@ -41,12 +48,16 @@ function createDeferred() {
   return deferred;
 }
 
-function loadSettingsI18nForTest() {
+function loadSettingsI18nBundleForTest() {
   const context = { globalThis: null };
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(SETTINGS_I18N, "utf8"), context);
-  return context.ClawdSettingsI18n.STRINGS;
+  return context.ClawdSettingsI18n;
+}
+
+function loadSettingsI18nForTest() {
+  return loadSettingsI18nBundleForTest().STRINGS;
 }
 
 function loadSettingsCoreForTest(settingsAPI) {
@@ -1239,6 +1250,22 @@ describe("settings renderer browser environment", () => {
       assert.ok(!source.includes("settingsAPI.onChanged"), `${path.basename(file)} must not subscribe to settingsAPI.onChanged`);
       assert.ok(!source.includes("settingsAPI.onShortcutRecordKey"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutRecordKey`);
       assert.ok(!source.includes("settingsAPI.onShortcutFailuresChanged"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutFailuresChanged`);
+    }
+  });
+
+  it("keeps About contributors visible and includes verified GitHub contributors", () => {
+    const aboutSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-about.js"), "utf8");
+    const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    const i18nBundle = loadSettingsI18nBundleForTest();
+
+    assert.ok(!aboutSource.includes("about-contributors-toggle"));
+    assert.ok(!aboutSource.includes("contributorsExpanded"));
+    assert.ok(!coreSource.includes("contributorsExpanded"));
+    assert.ok(!css.includes(".about-contributors-list.collapsed"));
+
+    for (const login of VERIFIED_GITHUB_CONTRIBUTORS) {
+      assert.ok(i18nBundle.CONTRIBUTORS.includes(login), `About contributors should include ${login}`);
     }
   });
 
