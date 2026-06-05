@@ -249,7 +249,7 @@ const updateRegistry = {
   },
   detachedIdleStaleMs: requireIntegerInRange("detachedIdleStaleMs", 5_000, 300_000),
   allowEdgePinning: requireBoolean("allowEdgePinning"),
-  miniAutoSnap: requireBoolean("miniAutoSnap"),
+  disableMiniMode: requireBoolean("disableMiniMode"),
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
   mobilePreviewEnabled: requireBoolean("mobilePreviewEnabled"),
 

@@ -17,6 +17,7 @@ const MENU_AFFECTING_KEYS = new Set([
   "theme",
   "size",
   "sessionAliases",
+  "disableMiniMode",
 ]);
 
 function requiredDependency(value, name) {
@@ -67,7 +68,6 @@ function createSettingsEffectRouter(options = {}) {
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
   const handleSessionHudPinnedChanged = options.handleSessionHudPinnedChanged || noop;
   const reclampPetAfterEdgePinningChange = options.reclampPetAfterEdgePinningChange || noop;
-  const checkMiniModeSnap = options.checkMiniModeSnap || noop;
   const exitMiniMode = options.exitMiniMode || noop;
   const getMiniMode = options.getMiniMode || (() => false);
   const rebuildAllMenus = options.rebuildAllMenus || noop;
@@ -232,16 +232,8 @@ function createSettingsEffectRouter(options = {}) {
         reclampPetAfterEdgePinningChange
       );
     }
-    if ("miniAutoSnap" in changes) {
-      if (changes.miniAutoSnap) {
-        // ON: if pet is near edge, snap into mini mode
-        safeCall(logWarn, "Clawd: miniAutoSnap snap failed:", checkMiniModeSnap);
-      } else {
-        // OFF: if currently in mini mode, exit
-        if (getMiniMode()) {
-          safeCall(logWarn, "Clawd: miniAutoSnap exit failed:", exitMiniMode);
-        }
-      }
+    if ("disableMiniMode" in changes && changes.disableMiniMode && getMiniMode()) {
+      safeCall(logWarn, "Clawd: disableMiniMode exit failed:", exitMiniMode);
     }
 
     // 3. Menu rebuild: only for menu-affecting keys to avoid thrashing on
