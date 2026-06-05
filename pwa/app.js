@@ -141,7 +141,7 @@
       var s = data.state;
       var config = STATE_CONFIG[s];
       if (!config) return;
-      var label = data.title || "Agent";
+      var label = data.title || data.agentId || "Agent";
       if (s === "error" || s === "attention") {
         this._notify(config.label, label + " - " + config.label, s);
       } else if ((prev === "working" || prev === "thinking") && s === "idle") {
@@ -349,7 +349,7 @@
       if (sessionTitle) html += '<div class="card-title">' + esc(sessionTitle) + '</div>';
       html += '<div class="card-meta">';
       if (s.basename) { html += '<span class="meta-item mono">' + icon("folder") + '<span>' + esc(s.basename) + '</span></span>'; }
-      if (s.updatedAt) { html += '<span class="meta-sep">&middot;</span><span class="meta-item">' + formatAgo(s.updatedAt) + '</span>'; }
+      if (s.updatedAt) { html += '<span class="meta-sep">&middot;</span><span class="meta-item meta-time" data-ts="' + s.updatedAt + '">' + formatAgo(s.updatedAt) + '</span>'; }
       html += '</div>';
       html += '<div class="card-divider"></div>';
       html += '<div class="card-footer" data-sid="' + sid + '"><div class="footer-events">' + icon("activity") + '<span>最近事件</span>';
@@ -378,7 +378,7 @@
       var self = this;
       setInterval(function() {
         if (document.visibilityState !== 'visible') return;
-        var els = self.container.querySelectorAll('.event-time[data-ts]');
+        var els = self.container.querySelectorAll('.event-time[data-ts], .meta-time[data-ts]');
         for (var i = 0; i < els.length; i++) {
           var ts = parseInt(els[i].getAttribute('data-ts'), 10);
           if (!isNaN(ts)) els[i].textContent = formatAgo(ts);
