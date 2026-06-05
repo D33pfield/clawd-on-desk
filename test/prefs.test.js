@@ -67,7 +67,7 @@ describe("prefs.getDefaults", () => {
       allowedTgUserId: "",
       targetSessionKey: "",
       notifyOnComplete: false,
-      completionOutputMode: "full",
+      completionOutputMode: "off",
       r3DirectSendEnabled: false,
     });
   });
@@ -269,7 +269,7 @@ describe("prefs.validate", () => {
       allowedTgUserId: "123456789",
       targetSessionKey: "telegram:987654321",
       notifyOnComplete: false,
-      completionOutputMode: "full",
+      completionOutputMode: "off",
       r3DirectSendEnabled: false,
     });
     assert.strictEqual(Object.prototype.hasOwnProperty.call(v.tgApproval, "botToken"), false);
@@ -845,7 +845,7 @@ describe("prefs.migrate v7 → v8 (Telegram bare completion default)", () => {
     assert.strictEqual(validated.version, prefs.CURRENT_VERSION);
     assert.strictEqual(validated.lang, "zh");
     assert.strictEqual(validated.tgApproval.notifyOnComplete, false);
-    assert.strictEqual(validated.tgApproval.completionOutputMode, "full");
+    assert.strictEqual(validated.tgApproval.completionOutputMode, "off");
   });
 });
 

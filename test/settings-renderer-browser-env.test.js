@@ -1385,7 +1385,7 @@ describe("settings renderer browser environment", () => {
         allowedTgUserId: "123456789",
         targetSessionKey: "telegram:123456789",
         notifyOnComplete: false,
-        completionOutputMode: "full",
+        completionOutputMode: "off",
         r3DirectSendEnabled: false,
       },
     }]);
@@ -1499,7 +1499,7 @@ describe("settings renderer browser environment", () => {
         allowedTgUserId: "123456789",
         targetSessionKey: "telegram:123456789",
         notifyOnComplete: false,
-        completionOutputMode: "full",
+        completionOutputMode: "off",
         r3DirectSendEnabled: false,
       },
     }]);

@@ -21,6 +21,10 @@ const COMPLETE_CONFIG_ENABLED = {
   ...COMPLETE_CONFIG_DISABLED,
   enabled: true,
 };
+const COMPLETE_CONFIG_OUTPUT_FULL = {
+  ...COMPLETE_CONFIG_DISABLED,
+  completionOutputMode: "full",
+};
 
 function sessionSnapshot() {
   return {
@@ -39,7 +43,7 @@ function sessionSnapshot() {
 
 test("native active status ignores the legacy enabled flag and sidecar stopped state", () => {
   const status = buildTelegramApprovalStatus({
-    config: COMPLETE_CONFIG_DISABLED,
+    config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
     sidecarStatus: { status: "stopped" },
     migrationSnapshot: { state: "NATIVE_ACTIVE", transport: "native" },
@@ -62,7 +66,7 @@ test("native active status ignores the legacy enabled flag and sidecar stopped s
 
 test("native active status reports native inactive instead of legacy sidecar unavailable", () => {
   const status = buildTelegramApprovalStatus({
-    config: COMPLETE_CONFIG_DISABLED,
+    config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
     sidecarStatus: { status: "stopped" },
     migrationSnapshot: { state: "NATIVE_ACTIVE", transport: "native" },
@@ -78,7 +82,7 @@ test("native active status reports native inactive instead of legacy sidecar una
 
 test("native testing status carries a native reason instead of falling through to sidecar copy", () => {
   const status = buildTelegramApprovalStatus({
-    config: COMPLETE_CONFIG_DISABLED,
+    config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
     sidecarStatus: { status: "stopped" },
     migrationSnapshot: { state: "TESTING_NATIVE" },
@@ -95,7 +99,7 @@ test("native testing status carries a native reason instead of falling through t
 
 test("native transport setup debt uses native copy without showing as enabled", () => {
   const status = buildTelegramApprovalStatus({
-    config: COMPLETE_CONFIG_DISABLED,
+    config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
     sidecarStatus: { status: "stopped" },
     migrationSnapshot: { state: "NEEDS_SETUP", transport: "native" },
@@ -112,7 +116,7 @@ test("native transport setup debt uses native copy without showing as enabled", 
 
 test("off transport keeps the legacy disabled reason after USER_DISABLE", () => {
   const status = buildTelegramApprovalStatus({
-    config: COMPLETE_CONFIG_DISABLED,
+    config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
     sidecarStatus: { status: "stopped" },
     migrationSnapshot: { state: "IDLE", transport: "off" },
@@ -134,7 +138,7 @@ test("native selection includes persisted native transport while excluding off",
 
 test("R2 diagnostic reports native active healthy without exposing recipient ids", () => {
   const approvalStatus = buildTelegramApprovalStatus({
-    config: COMPLETE_CONFIG_DISABLED,
+    config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
     sidecarStatus: { status: "stopped" },
     migrationSnapshot: {
@@ -145,7 +149,7 @@ test("R2 diagnostic reports native active healthy without exposing recipient ids
     nativePolling: true,
   });
   const diagnostic = buildTelegramStatusDiagnostic({
-    config: COMPLETE_CONFIG_DISABLED,
+    config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
     approvalStatus,
     migrationSnapshot: {
@@ -183,7 +187,7 @@ test("R2 diagnostic reports native active healthy without exposing recipient ids
 
 test("R3 diagnostic formatter follows the Clawd language setting", () => {
   const approvalStatus = buildTelegramApprovalStatus({
-    config: COMPLETE_CONFIG_DISABLED,
+    config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
     sidecarStatus: { status: "stopped" },
     migrationSnapshot: {
@@ -194,7 +198,7 @@ test("R3 diagnostic formatter follows the Clawd language setting", () => {
     nativePolling: true,
   });
   const diagnostic = buildTelegramStatusDiagnostic({
-    config: COMPLETE_CONFIG_DISABLED,
+    config: COMPLETE_CONFIG_OUTPUT_FULL,
     token: TOKEN_STORED,
     approvalStatus,
     migrationSnapshot: {
@@ -299,12 +303,12 @@ test("R2 diagnostic distinguishes off transport from legacy stopped", () => {
   assert.equal(diagnostic.approvalAvailable, false);
   assert.equal(diagnostic.completionNotifications.enabled, false);
   assert.equal(diagnostic.completionNotifications.effective, false);
-  assert.equal(diagnostic.completionNotifications.configured, true);
-  assert.equal(diagnostic.completionNotifications.outputMode, "full");
+  assert.equal(diagnostic.completionNotifications.configured, false);
+  assert.equal(diagnostic.completionNotifications.outputMode, "off");
   assert.equal(diagnostic.completionNotifications.bare, false);
   const text = formatTelegramStatusDiagnostic(diagnostic);
   assert.match(text, /Transport: off/);
-  assert.match(text, /Completion notifications: off, output=full answer, bare fallback=off/);
+  assert.match(text, /Completion notifications: off, output=off, bare fallback=off/);
   assert.doesNotMatch(text, /inactive until native is running/);
 });
 
@@ -335,9 +339,9 @@ test("R2 diagnostic reports legacy fallback without pretending native is polling
   assert.equal(diagnostic.health, "healthy");
   assert.equal(diagnostic.nativePolling, false);
   assert.equal(diagnostic.approvalAvailable, true);
-  assert.equal(diagnostic.completionNotifications.enabled, true);
+  assert.equal(diagnostic.completionNotifications.enabled, false);
   assert.equal(diagnostic.completionNotifications.effective, false);
-  assert.equal(diagnostic.completionNotifications.outputMode, "full");
+  assert.equal(diagnostic.completionNotifications.outputMode, "off");
   assert.equal(diagnostic.completionNotifications.bare, false);
 });
 

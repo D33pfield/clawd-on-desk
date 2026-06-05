@@ -2975,7 +2975,7 @@
     "TVpoet", "zeus6768", "anhtrinh919", "tomaioo", "v-avuso", "livlign", "tongguang2",
     "Ziy1-Tan", "tatsuyanakanogaroinc", "yeonhub", "joshua-wu", "nmsn", "sunnysonx", "YuChenYunn", "jhseo-b",
     "Hwasowl", "XiangZheng2002", "keiyo118", "pan93412", "taehwanis", "linnin233", "xiyouMc",
-    "Bynlk", "zxypro1", "NeroAyase", "divergentD", "Ne9roni",
+    "Bynlk", "zxypro1", "NeroAyase", "divergentD", "Ne9roni", "QingXB", "29206394",
   ];
 
   root.ClawdSettingsI18n = {

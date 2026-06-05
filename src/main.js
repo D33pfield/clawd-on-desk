@@ -1914,7 +1914,10 @@ async function initTelegramMigrationController() {
       : { sessions: [] },
     getPendingPermissions: () => pendingPermissions,
     focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
-    deliveryAdapter: isWin ? createWindowsPasteOnlyDeliveryAdapter({ clipboard }) : undefined,
+    deliveryAdapter: createWindowsPasteOnlyDeliveryAdapter({
+      clipboard,
+      restoreClipboardOnSuccess: true,
+    }),
     fallbackAdapter: createClipboardFallbackDeliveryAdapter({ clipboard }),
     isEnabled: () => {
       const snap = _telegramMigrationController && typeof _telegramMigrationController.getSnapshot === "function"
@@ -1967,7 +1970,7 @@ async function initTelegramMigrationController() {
   telegramCompanion = createTelegramCompanion({
     getClient: () => getTelegramCompanionClient(),
     getLang: () => _settingsController.get("lang") || lang || "en",
-    getCompletionOutputMode: () => getTelegramApprovalPrefs().completionOutputMode || "full",
+    getCompletionOutputMode: () => getTelegramApprovalPrefs().completionOutputMode || "off",
     getNotifyOnComplete: () => getTelegramApprovalPrefs().notifyOnComplete === true,
     // Native-active client present. The companion still advances its dedupe map
     // while native is inactive, and internally decides whether to send a bare
