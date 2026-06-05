@@ -203,7 +203,7 @@ function createWindowsPasteOnlyDeliveryAdapter({
       if (!promptText) {
         return { status: "failed", delivered: false, errorClass: "empty_prompt" };
       }
-      if (promptText.includes("\n")) {
+      if (/[\r\n]/.test(promptText)) {
         return { status: "failed", delivered: false, errorClass: "multiline_unsupported" };
       }
       if (!clipboard || typeof clipboard.writeText !== "function") {

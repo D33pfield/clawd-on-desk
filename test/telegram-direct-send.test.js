@@ -111,6 +111,49 @@ test("direct send falls back to clipboard when the platform paste adapter is uns
   assert.doesNotMatch(res.text, /focus-only dogfood mode/);
 });
 
+test("direct send treats bare carriage returns as multiline and falls back to clipboard", async () => {
+  const pasteWrites = [];
+  const fallbackWrites = [];
+  const execCalls = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [localTerminalEntry()] }),
+    focusSession: () => confirmedFocusResult(),
+    deliveryAdapter: createWindowsPasteOnlyDeliveryAdapter({
+      osPlatform: "win32",
+      clipboard: {
+        readText: () => "previous",
+        writeText: (value) => pasteWrites.push(value),
+      },
+      execFile: (cmd, args, opts, cb) => {
+        execCalls.push({ cmd, args, opts });
+        cb(null, "", "");
+      },
+    }),
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({
+      clipboard: {
+        writeText: (value, type) => fallbackWrites.push({ value, type }),
+        readText: () => "line one\nline two",
+      },
+    }),
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 42, sessionId: "sess-local-1" });
+  const res = await direct.handleTextMessage({
+    text: "line one\rline two",
+    replyToMessageId: 42,
+    messageId: 99,
+  });
+
+  assert.equal(res.status, "fallback_copied");
+  assert.equal(direct._deliveries.get(res.deliveryId).promptText, "line one\nline two");
+  assert.equal(direct._deliveries.get(res.deliveryId).fallbackReason, "multiline_unsupported");
+  assert.deepEqual(pasteWrites, []);
+  assert.deepEqual(execCalls, []);
+  assert.deepEqual(fallbackWrites, [{ value: "line one\nline two", type: "clipboard" }]);
+});
+
 test("direct send ignores normal text while the feature flag is disabled", async () => {
   const direct = createTelegramDirectSend({
     isEnabled: () => false,
