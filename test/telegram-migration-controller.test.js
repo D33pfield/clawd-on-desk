@@ -7,6 +7,7 @@ const {
   createTelegramMigrationController,
 } = require("../src/telegram-migration-controller");
 const { STATES, EVENTS } = require("../src/telegram-migration-state");
+const { buildTelegramStatusDiagnostic } = require("../src/telegram-approval-runtime-status");
 
 class FakeSidecar {
   constructor() { this.running = false; this.stopCalls = []; this.failStart = false; }
@@ -292,4 +293,45 @@ test("switching legacy→native clears stale legacy runtime failure (no /status 
   const rs = env.ctrl.getSnapshot().runtimeStatus;
   assert.equal(rs.status, "stopped");
   assert.equal(rs.transport, "off");
+});
+
+test("/status diagnostic does not leak a stale legacy failure after switching to native", async () => {
+  const env = makeController({
+    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true, nativeConfigComplete: true },
+  });
+  await env.ctrl.init();
+  await env.ctrl.dispatch({ type: EVENTS.SIDECAR_RUNTIME_FAILED, reason: "died", message: "boom" });
+  await env.ctrl.dispatch({ type: EVENTS.USER_TEST_NATIVE });
+  await env.ctrl.dispatch({ type: EVENTS.TEST_SUCCESS, at: 1 });
+
+  // Feed the real post-flow snapshot into the Telegram /status builder.
+  const diagnostic = buildTelegramStatusDiagnostic({
+    config: { enabled: true, allowedTgUserId: "1", targetSessionKey: "telegram:1" },
+    token: { tokenConfigured: true, tokenStored: true },
+    approvalStatus: { status: "stopped", transport: "native" },
+    migrationSnapshot: env.ctrl.getSnapshot(),
+    nativeRunnerStatus: { polling: true },
+    pendingApprovalCount: 0,
+    sessionSnapshot: { sessions: [] },
+    now: 1000,
+  });
+  assert.equal(diagnostic.lastError, null);
+});
+
+test("Retry legacy (USER_ENABLE_LEGACY) failing again refreshes the stale runtime message", async () => {
+  const env = makeController({
+    initialFiles: { hasLegacyEnvFile: true, legacyConfigComplete: true },
+  });
+  await env.ctrl.init(); // LEGACY_ACTIVE, sidecar running
+  await env.ctrl.dispatch({ type: EVENTS.SIDECAR_RUNTIME_FAILED, reason: "old", message: "old failure" });
+  assert.equal(env.ctrl.getSnapshot().runtimeStatus.message, "old failure");
+
+  env.sidecar.failStart = true; // retry will fail again
+  const res = await env.ctrl.dispatch({ type: EVENTS.USER_ENABLE_LEGACY });
+  assert.equal(res.ok, false);
+  assert.equal(res.state, STATES.LEGACY_ACTIVE); // stays legacy-selected
+  const rs = env.ctrl.getSnapshot().runtimeStatus;
+  assert.equal(rs.status, "failed");
+  assert.equal(rs.reason, "SIDECAR_START_FAILED");
+  assert.notEqual(rs.message, "old failure"); // refreshed, not stale
 });

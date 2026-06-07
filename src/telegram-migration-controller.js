@@ -139,6 +139,18 @@ function createTelegramMigrationController({
           };
           state = result.state;
         }
+      } else if (state === STATES.LEGACY_ACTIVE
+        && hasEffect(result.sideEffects, SIDE_EFFECTS.START_SIDECAR)) {
+        // "Retry legacy sidecar" (USER_ENABLE_LEGACY while already LEGACY_ACTIVE)
+        // failed again: refresh runtime-status so the badge failure detail isn't
+        // stale. A fresh enable from IDLE is intentionally left un-promoted —
+        // state stays IDLE and no runtime failure is recorded.
+        try {
+          await applyRuntimeFailure({
+            reason: lastError.code || "sidecar_start_failed",
+            message: lastError.message || "",
+          });
+        } catch {}
       }
       // Best-effort recover: re-read the world so state mirrors reality.
       return { ok: false, errorCode: lastError.code, message: lastError.message, state };
