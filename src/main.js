@@ -59,10 +59,37 @@ const {
 const { focusCodexThreadTarget } = require("./session-focus-handoff");
 const { isSessionInProgress } = require("./state-session-snapshot");
 const { getAllAgents } = require("../agents/registry");
+const { resolveLinuxOzonePlatform } = require("./linux-ozone");
 
 // ── Autoplay policy: allow sound playback without user gesture ──
 // MUST be set before any BrowserWindow is created (before app.whenReady)
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
+
+// ── Linux/Wayland: default to XWayland so the pet can position itself and be
+// dragged (issue #441). Native Wayland ignores client window positioning and
+// blocks global cursor queries; XWayland restores both. Priority: an explicit
+// CLAWD_OZONE_PLATFORM (wayland|x11|auto) > an --ozone-platform already on argv
+// > auto-detection. MUST run before app.whenReady. ──
+const _cliOzonePlatform = app.commandLine.hasSwitch("ozone-platform")
+  ? app.commandLine.getSwitchValue("ozone-platform")
+  : null;
+const _ozonePlatform = resolveLinuxOzonePlatform({
+  platform: process.platform,
+  env: process.env,
+  cliOzonePlatform: _cliOzonePlatform,
+});
+if (_ozonePlatform) {
+  const _cliOzoneNorm = String(_cliOzonePlatform || "").trim().toLowerCase();
+  if (_cliOzoneNorm !== _ozonePlatform) {
+    // CLAWD_OZONE_PLATFORM overrides a differing CLI switch (remove then re-add).
+    if (_cliOzoneNorm) app.commandLine.removeSwitch("ozone-platform");
+    app.commandLine.appendSwitch("ozone-platform", _ozonePlatform);
+    console.log(
+      `Clawd: Linux — using --ozone-platform=${_ozonePlatform} ` +
+      `(override with CLAWD_OZONE_PLATFORM=wayland|x11|auto)`
+    );
+  }
+}
 
 const isMac = process.platform === "darwin";
 const isLinux = process.platform === "linux";
