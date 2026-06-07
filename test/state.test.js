@@ -82,6 +82,7 @@ function update(api, o = {}) {
       headless: o.headless || false,
       displayHint: o.displayHint,
       sessionTitle: o.sessionTitle ?? null,
+      contextUsage: o.contextUsage ?? null,
       platform: o.platform ?? null,
       model: o.model ?? null,
       provider: o.provider ?? null,
@@ -1405,6 +1406,68 @@ describe("updateSession()", () => {
     assert.strictEqual(api.sessions.get("s1").platform, "webui");
     assert.strictEqual(api.sessions.get("s1").model, "gpt-5.4");
     assert.strictEqual(api.sessions.get("s1").provider, "openai");
+  });
+
+  it("stores contextUsage from updateSession opts", () => {
+    update(api, {
+      id: "s1",
+      state: "working",
+      contextUsage: {
+        used: 1000,
+        limit: 200000,
+        percent: 1,
+        source: "claude",
+      },
+    });
+
+    assert.deepStrictEqual(api.sessions.get("s1").contextUsage, {
+      used: 1000,
+      limit: 200000,
+      percent: 1,
+      source: "claude",
+    });
+  });
+
+  it("keeps contextUsage sticky when later events omit it", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      contextUsage: { used: 1000, source: "claude" },
+    });
+    update(api, { id: "s1", state: "working" });
+
+    assert.deepStrictEqual(api.sessions.get("s1").contextUsage, {
+      used: 1000,
+      source: "claude",
+    });
+  });
+
+  it("updates contextUsage without changing state when preserveState is true", () => {
+    update(api, {
+      id: "codex:abc",
+      state: "working",
+      agentId: "codex",
+    });
+    api.updateSession("codex:abc", "idle", "event_msg:task_complete", {
+      agentId: "codex",
+      cwd: "/tmp",
+      preserveState: true,
+      contextUsage: {
+        used: 49961,
+        limit: 258400,
+        percent: 19,
+        source: "codex",
+      },
+    });
+
+    const session = api.sessions.get("codex:abc");
+    assert.strictEqual(session.state, "working");
+    assert.deepStrictEqual(session.contextUsage, {
+      used: 49961,
+      limit: 258400,
+      percent: 19,
+      source: "codex",
+    });
   });
 
   it("trims whitespace on sessionTitle", () => {

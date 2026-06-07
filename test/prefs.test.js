@@ -53,6 +53,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.sessionHudEnabled, true);
     assert.strictEqual(d.sessionHudShowStateLabels, true);
     assert.strictEqual(d.sessionHudShowElapsed, true);
+    assert.strictEqual(d.sessionHudShowContextUsage, true);
     assert.strictEqual(d.sessionHudCleanupDetached, false);
     assert.strictEqual("sessionHudAutoHide" in d, false);
     assert.strictEqual(d.sessionHudPinned, false);
@@ -150,6 +151,7 @@ describe("prefs.validate", () => {
       sessionHudEnabled: "yes",
       sessionHudShowStateLabels: "yes",
       sessionHudShowElapsed: "yes",
+      sessionHudShowContextUsage: "yes",
       sessionHudCleanupDetached: "yes",
       hideBubbles: 0,        // wrong type
       permissionBubblesEnabled: "yes",
@@ -170,6 +172,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.sessionHudEnabled, true);
     assert.strictEqual(v.sessionHudShowStateLabels, true);
     assert.strictEqual(v.sessionHudShowElapsed, true);
+    assert.strictEqual(v.sessionHudShowContextUsage, true);
     assert.strictEqual(v.sessionHudCleanupDetached, false);
     assert.strictEqual(v.hideBubbles, false);
     assert.strictEqual(v.permissionBubblesEnabled, true);
@@ -285,6 +288,7 @@ describe("prefs.validate", () => {
       sessionHudEnabled: false,
       sessionHudShowStateLabels: false,
       sessionHudShowElapsed: false,
+      sessionHudShowContextUsage: false,
       sessionHudCleanupDetached: true,
       allowEdgePinning: true,
       disableMiniMode: true,
@@ -305,6 +309,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.sessionHudEnabled, false);
     assert.strictEqual(v.sessionHudShowStateLabels, false);
     assert.strictEqual(v.sessionHudShowElapsed, false);
+    assert.strictEqual(v.sessionHudShowContextUsage, false);
     assert.strictEqual(v.sessionHudCleanupDetached, true);
     assert.strictEqual(v.allowEdgePinning, true);
     assert.strictEqual(v.disableMiniMode, true);

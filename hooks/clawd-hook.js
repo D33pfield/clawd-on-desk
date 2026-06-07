@@ -6,6 +6,7 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const { postStateToRunningServer, readHostPrefix } = require("./server-config");
+const { extractClaudeContextUsageFromEntries } = require("./context-usage");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 
 const TRANSCRIPT_TAIL_BYTES = 262144; // 256 KB
@@ -368,6 +369,14 @@ function buildStateBody(event, payload, resolve) {
   // Read transcript tail once and reuse for both session title extraction and
   // API error detection (Stop only). Avoids two file reads per hook invocation.
   const transcriptEntries = readTranscriptTailEntries(payload.transcript_path);
+  // Pass the raw session id (null when the hook payload omits it), not the
+  // "default" placeholder above: a transcript whose entries carry a real
+  // sessionId must not be filtered out just because session_id was missing.
+  const contextUsage = extractClaudeContextUsageFromEntries(
+    transcriptEntries,
+    payload.session_id || null,
+  );
+  if (contextUsage) body.context_usage = contextUsage;
   const sessionTitle =
     normalizeTitle(payload.session_title) ||
     extractSessionTitleFromEntries(transcriptEntries);

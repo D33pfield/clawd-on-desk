@@ -672,6 +672,7 @@ let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
 let sessionHudEnabled = _settingsController.get("sessionHudEnabled");
 let sessionHudShowStateLabels = _settingsController.get("sessionHudShowStateLabels");
 let sessionHudShowElapsed = _settingsController.get("sessionHudShowElapsed");
+let sessionHudShowContextUsage = _settingsController.get("sessionHudShowContextUsage");
 let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetached");
 let sessionHudPinned = _settingsController.get("sessionHudPinned");
 let sessionStaleMs = _settingsController.get("sessionStaleMs");
@@ -1391,6 +1392,7 @@ const _sessionHud = require("./session-hud")({
   get sessionHudEnabled() { return sessionHudEnabled; },
   get sessionHudShowStateLabels() { return sessionHudShowStateLabels; },
   get sessionHudShowElapsed() { return sessionHudShowElapsed; },
+  get sessionHudShowContextUsage() { return sessionHudShowContextUsage; },
   get sessionHudPinned() { return sessionHudPinned; },
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
@@ -2635,7 +2637,9 @@ const SETTINGS_MIRROR_SETTERS = {
   autoStartWithClaude: (v) => { autoStartWithClaude = v; }, openAtLogin: (v) => { openAtLogin = v; },
   bubbleFollowPet: (v) => { bubbleFollowPet = v; }, sessionHudEnabled: (v) => { sessionHudEnabled = v; },
   sessionHudShowStateLabels: (v) => { sessionHudShowStateLabels = v; },
-  sessionHudShowElapsed: (v) => { sessionHudShowElapsed = v; }, sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
+  sessionHudShowElapsed: (v) => { sessionHudShowElapsed = v; },
+  sessionHudShowContextUsage: (v) => { sessionHudShowContextUsage = v; },
+  sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
   sessionHudPinned: (v) => { sessionHudPinned = v; },
   sessionStaleMs: (v) => { sessionStaleMs = v; }, workingStaleMs: (v) => { workingStaleMs = v; },
   detachedIdleStaleMs: (v) => { detachedIdleStaleMs = v; },
