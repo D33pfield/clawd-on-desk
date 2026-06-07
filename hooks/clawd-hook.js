@@ -446,15 +446,17 @@ function main() {
   // Remote mode: skip PID collection — remote PIDs are meaningless on the local machine
   if (event === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
 
-  readStdinJson().then((payload) => {
-    const body = buildStateBody(event, payload || {}, resolve);
-    if (!body) process.exit(0);
-    postStateToRunningServer(
-      JSON.stringify(body),
-      { timeoutMs: 100 },
-      () => process.exit(0)
-    );
-  });
+  readStdinJson()
+    .then((payload) => {
+      const body = buildStateBody(event, payload || {}, resolve);
+      if (!body) process.exit(0);
+      postStateToRunningServer(
+        JSON.stringify(body),
+        { timeoutMs: 100 },
+        () => process.exit(0)
+      );
+    })
+    .catch(() => process.exit(0));
 }
 
 if (require.main === module) main();

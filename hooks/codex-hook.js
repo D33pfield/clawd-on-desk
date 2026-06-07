@@ -397,20 +397,22 @@ function main() {
     platformConfig: config,
   });
 
-  readStdinJson().then((payload) => {
-    const permissionBody = buildPermissionBody(payload || {}, resolve);
-    if (permissionBody) {
-      requestCodexPermission(permissionBody, (output) => {
-        process.stdout.write(`${output}\n`);
-        process.exit(0);
-      });
-      return;
-    }
+  readStdinJson()
+    .then((payload) => {
+      const permissionBody = buildPermissionBody(payload || {}, resolve);
+      if (permissionBody) {
+        requestCodexPermission(permissionBody, (output) => {
+          process.stdout.write(`${output}\n`);
+          process.exit(0);
+        });
+        return;
+      }
 
-    const body = buildStateBody(payload || {}, resolve);
-    if (!body) process.exit(0);
-    postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => process.exit(0));
-  });
+      const body = buildStateBody(payload || {}, resolve);
+      if (!body) process.exit(0);
+      postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => process.exit(0));
+    })
+    .catch(() => process.exit(0));
 }
 
 if (require.main === module) main();
