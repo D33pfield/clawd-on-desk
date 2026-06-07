@@ -591,10 +591,10 @@ function showPermissionBubble(permEntry) {
     skipTaskbar: true,
     hasShadow: false,
     ...(isLinux ? { type: LINUX_WINDOW_TYPE } : {}),
-    ...(isMac ? { type: "panel", acceptsFirstMouse: true } : {}),
+    ...(isMac ? { type: "panel", acceptFirstMouse: true } : {}),
     // Elicitation needs keyboard focus for the Other/textarea input path.
     // Permission prompts need focusable: true on macOS to receive clicks,
-    // but acceptsFirstMouse allows click-through without stealing focus.
+    // while acceptFirstMouse lets the first click hit the inactive panel.
     // ExitPlanMode needs keyboard focus for the "Tell Claude what to change"
     // textarea feedback path on other platforms.
     focusable: isMac ? true : !!(permEntry.isElicitation || permEntry.toolName === "ExitPlanMode"),

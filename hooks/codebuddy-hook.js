@@ -43,16 +43,28 @@ function stdoutForEvent(hookName) {
 // or the process tree walk hangs. Without this CodeBuddy would see empty stdout
 // which is invalid JSON and logs an error on every hook invocation.
 const SAFETY_TIMEOUT_MS = 800;
-let _done = false;
+let _wrote = false;
+let _exited = false;
+let safetyTimer = null;
+
+// Write the stdout response exactly once. Kept separate from process exit so the
+// hook can answer CodeBuddy immediately yet still let the fire-and-forget POST
+// to Clawd leave the process before it exits.
+function writeStdoutOnce(outLine) {
+  if (_wrote) return;
+  _wrote = true;
+  process.stdout.write(outLine + "\n");
+}
 
 function finish(outLine) {
-  if (_done) return;
-  _done = true;
-  process.stdout.write(outLine + "\n");
+  writeStdoutOnce(outLine);
+  if (_exited) return;
+  _exited = true;
+  if (safetyTimer) clearTimeout(safetyTimer);
   process.exit(0);
 }
 
-setTimeout(() => finish("{}"), SAFETY_TIMEOUT_MS);
+safetyTimer = setTimeout(() => finish("{}"), SAFETY_TIMEOUT_MS);
 
 readStdinJson()
   .then((payload) => {
@@ -85,12 +97,13 @@ readStdinJson()
       if (pidChain.length) body.pid_chain = pidChain;
     }
 
-    // Write response to CodeBuddy immediately so it never sees empty stdout.
-    // Then fire-and-forget the POST to Clawd.
-    finish(outLine);
+    // Answer CodeBuddy immediately so it never sees empty stdout, but don't
+    // exit yet — the fire-and-forget POST below still needs to leave the
+    // process, so we exit in its callback (with the safety timer as backstop).
+    writeStdoutOnce(outLine);
 
     postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => {
-      // no-op: stdout already written, process will exit via finish()
+      finish(outLine);
     });
   })
   .catch(() => finish("{}"));

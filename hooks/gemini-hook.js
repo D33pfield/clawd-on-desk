@@ -135,16 +135,26 @@ function sendHookEvent(payload, argvEvent, deps = {}) {
 
 // Safety timeout: guarantee valid JSON on stdout even if stdin never arrives.
 const SAFETY_TIMEOUT_MS = 800;
-let _done = false;
+let _wrote = false;
+let _exited = false;
+let safetyTimer = null;
 
-function finish(outLine) {
-  if (_done) return;
-  _done = true;
+// Write the stdout response exactly once. Kept separate from process exit so the
+// hook can answer Gemini immediately yet still let the fire-and-forget POST to
+// Clawd leave the process before it tears down.
+function writeStdoutOnce(outLine) {
+  if (_wrote) return;
+  _wrote = true;
   process.stdout.write(outLine + "\n");
-  process.exit(0);
 }
 
-setTimeout(() => finish("{}"), SAFETY_TIMEOUT_MS);
+function finish(outLine) {
+  writeStdoutOnce(outLine);
+  if (_exited) return;
+  _exited = true;
+  if (safetyTimer) clearTimeout(safetyTimer);
+  process.exit(0);
+}
 
 async function main(argvEvent = process.argv[2], deps = {}) {
   const payload = deps.payload !== undefined
@@ -153,19 +163,24 @@ async function main(argvEvent = process.argv[2], deps = {}) {
   const hookName = resolveHookName(payload, argvEvent);
   const outLine = stdoutForEvent(hookName);
 
-  // Write response to Gemini immediately so it never sees empty stdout.
-  // Then fire-and-forget the POST to Clawd.
-  finish(outLine);
+  // Answer Gemini immediately so it never sees empty stdout, but do NOT exit
+  // here — exiting would kill the POST below before it leaves the process.
+  writeStdoutOnce(outLine);
 
-  sendHookEvent(payload, argvEvent, {
+  await sendHookEvent(payload, argvEvent, {
     env: deps.env || process.env,
     postState: deps.postState || postStateToRunningServer,
     readHostPrefix: deps.readHostPrefix || readHostPrefix,
     resolvePid: deps.resolvePid || resolve,
   }).catch(() => {});
+
+  finish(outLine);
 }
 
 if (require.main === module) {
+  // Arm the safety timer only on the CLI path so importing this module in tests
+  // never leaves a stray timer that pollutes stdout or kills the test runner.
+  safetyTimer = setTimeout(() => finish("{}"), SAFETY_TIMEOUT_MS);
   main().catch(() => finish("{}"));
 }
 
