@@ -82,6 +82,11 @@ const CODEX_EXIT_PROBE_DELAYS_MS = [1000, 3000, 8000, 15000];
 // PostCompact intentionally excluded (#406): compaction finishing is not a turn
 // completion, so it must not flip awaitingInputSinceStop.
 const POST_COMPLETION_EVENTS = new Set(["Stop", "event_msg:task_complete"]);
+const COMPLETION_HOUSEKEEPING_EVENTS = new Set([
+  "Notification",
+  "stale-cleanup",
+  "event_msg:token_count",
+]);
 // #406: forward progress for a session cancels its pending (debounced)
 // completion — these events all mean the agent loop is still running.
 const COMPLETION_CANCEL_EVENTS = new Set([
@@ -208,8 +213,7 @@ function hasPermissionAnimationLock() {
 
 function resolveAwaitingInputSinceStop(existing, event) {
   if (POST_COMPLETION_EVENTS.has(event)) return true;
-  if (event === "Notification") return !!(existing && existing.awaitingInputSinceStop === true);
-  if (!event || event === "stale-cleanup") return !!(existing && existing.awaitingInputSinceStop === true);
+  if (!event || COMPLETION_HOUSEKEEPING_EVENTS.has(event)) return !!(existing && existing.awaitingInputSinceStop === true);
   return false;
 }
 
@@ -218,7 +222,7 @@ function hasCompletionTailWithoutProgress(session) {
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i] && events[i].event;
     if (POST_COMPLETION_EVENTS.has(event)) return true;
-    if (event === "Notification" || event === "stale-cleanup" || event == null) continue;
+    if (event == null || COMPLETION_HOUSEKEEPING_EVENTS.has(event)) continue;
     return false;
   }
   return false;
@@ -340,19 +344,39 @@ function shouldDropForDnd() {
   return !!ctx.doNotDisturb;
 }
 
+function scheduleAutoReturn(state) {
+  autoReturnTimer = setTimeout(() => {
+    autoReturnTimer = null;
+    if (ctx.miniMode) {
+      if (ctx.mouseOverPet && !ctx.doNotDisturb) {
+        if (state === "mini-peek") {
+          // Peek animation done — stay peeked but show idle (don't re-trigger peek)
+          ctx.miniPeeked = true;
+          applyState("mini-idle");
+        } else {
+          ctx.miniPeekIn();
+          applyState("mini-peek");
+        }
+      } else {
+        applyState(ctx.doNotDisturb ? "mini-sleep" : "mini-idle");
+      }
+    } else {
+      applyResolvedDisplayState();
+    }
+  }, AUTO_RETURN_MS[state]);
+}
+
+function clearPendingStateTimer() {
+  if (!pendingTimer) return;
+  clearTimeout(pendingTimer);
+  pendingTimer = null;
+  pendingState = null;
+}
+
 function setState(newState, svgOverride, options = {}) {
   if (shouldDropForDnd()) return;
 
   if (newState === "yawning" && SLEEP_SEQUENCE.has(currentState)) return;
-
-  if (pendingTimer) {
-    if (pendingState && getStatePriority(newState, STATE_PRIORITY) < getStatePriority(pendingState, STATE_PRIORITY)) {
-      return;
-    }
-    clearTimeout(pendingTimer);
-    pendingTimer = null;
-    pendingState = null;
-  }
 
   const sameState = newState === currentState;
   const sameSvg = !svgOverride || svgOverride === currentSvg;
@@ -361,13 +385,20 @@ function setState(newState, svgOverride, options = {}) {
     // notification animation keeps cycling while the user is reviewing
     // the permission prompt.
     if (hasPermissionAnimationLock() && newState === "notification" && AUTO_RETURN_MS[newState]) {
+      clearPendingStateTimer();
       if (autoReturnTimer) { clearTimeout(autoReturnTimer); autoReturnTimer = null; }
-      autoReturnTimer = setTimeout(() => {
-        autoReturnTimer = null;
-        applyResolvedDisplayState();
-      }, AUTO_RETURN_MS[newState]);
+      scheduleAutoReturn(newState);
+    } else if (AUTO_RETURN_MS[newState] && !autoReturnTimer && !pendingTimer) {
+      scheduleAutoReturn(newState);
     }
     return;
+  }
+
+  if (pendingTimer) {
+    if (pendingState && getStatePriority(newState, STATE_PRIORITY) < getStatePriority(pendingState, STATE_PRIORITY)) {
+      return;
+    }
+    clearPendingStateTimer();
   }
 
   const minTime = MIN_DISPLAY_MS[currentState] || 0;
@@ -577,25 +608,7 @@ function applyState(state, svgOverride, options = {}) {
       applyResolvedDisplayState();
     }, WAKE_DURATION);
   } else if (AUTO_RETURN_MS[state]) {
-    autoReturnTimer = setTimeout(() => {
-      autoReturnTimer = null;
-      if (ctx.miniMode) {
-        if (ctx.mouseOverPet && !ctx.doNotDisturb) {
-          if (state === "mini-peek") {
-            // Peek animation done — stay peeked but show idle (don't re-trigger peek)
-            ctx.miniPeeked = true;
-            applyState("mini-idle");
-          } else {
-            ctx.miniPeekIn();
-            applyState("mini-peek");
-          }
-        } else {
-          applyState(ctx.doNotDisturb ? "mini-sleep" : "mini-idle");
-        }
-      } else {
-        applyResolvedDisplayState();
-      }
-    }, AUTO_RETURN_MS[state]);
+    scheduleAutoReturn(state);
   }
 }
 
@@ -901,7 +914,7 @@ function isRemoteCodexCompletionEvent(srcAgentId, srcHost, event) {
 function isAckPreservingHousekeepingEvent(srcAgentId, srcHost, event) {
   return srcAgentId === "codex"
     && !!srcHost
-    && event === "stale-cleanup";
+    && COMPLETION_HOUSEKEEPING_EVENTS.has(event);
 }
 
 function reconcileAckFlag(sessionId, srcAgentId, srcHost, event) {

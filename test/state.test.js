@@ -1408,6 +1408,58 @@ describe("updateSession()", () => {
     assert.strictEqual(api.getCurrentState(), "idle");
   });
 
+  it("Codex Stop followed by token_count and task_complete still auto-returns from attention", () => {
+    const soundsPlayed = [];
+    const stateChanges = [];
+    api.cleanup();
+    ctx = makeCtx({
+      processKill: () => true,
+      playSound: (name) => soundsPlayed.push(name),
+      sendToRenderer: (channel, state) => {
+        if (channel === "state-change") stateChanges.push(state);
+      },
+    });
+    api = require("../src/state")(ctx);
+
+    api.updateSession("codex:s1", "working", "PreToolUse", {
+      agentId: "codex",
+      cwd: "/tmp",
+      hookSource: "codex-official",
+    });
+    mock.timers.tick(1000);
+    stateChanges.length = 0;
+
+    api.updateSession("codex:s1", "attention", "Stop", {
+      agentId: "codex",
+      cwd: "/tmp",
+      hookSource: "codex-official",
+    });
+    assert.strictEqual(api.getCurrentState(), "attention");
+    assert.deepStrictEqual(stateChanges, ["attention"]);
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 1);
+
+    mock.timers.tick(900);
+    api.updateSession("codex:s1", "working", "event_msg:token_count", {
+      agentId: "codex",
+      cwd: "/tmp",
+      preserveState: true,
+      contextUsage: { used: 100, limit: 1000, percent: 10, source: "codex" },
+    });
+    assert.strictEqual(api.getCurrentState(), "attention");
+    assert.strictEqual(api.sessions.get("codex:s1").awaitingInputSinceStop, true);
+
+    api.updateSession("codex:s1", "attention", "event_msg:task_complete", {
+      agentId: "codex",
+      cwd: "/tmp",
+    });
+    assert.strictEqual(api.getCurrentState(), "attention");
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 1);
+    assert.deepStrictEqual(stateChanges, ["attention"]);
+
+    mock.timers.tick(3100);
+    assert.strictEqual(api.getCurrentState(), "idle");
+  });
+
   it("does not replay remote Codex task_complete after the completion animation returned to idle", () => {
     const soundsPlayed = [];
     const stateChanges = [];
@@ -2710,6 +2762,25 @@ describe("requiresCompletionAck lifecycle", () => {
     const entry = api.buildSessionSnapshot().sessions.find((s) => s.id === "s1");
     assert.strictEqual(entry.badge, "done");
     assert.strictEqual(entry.requiresCompletionAck, true);
+  });
+
+  it("remote Codex housekeeping preserves an unacknowledged completion", () => {
+    update(api, { id: "s1", state: "attention", event: "event_msg:task_complete", agentId: "codex", host: "ssh:example.com" });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+
+    api.updateSession("s1", "idle", "event_msg:token_count", {
+      agentId: "codex",
+      host: "ssh:example.com",
+      preserveState: true,
+      contextUsage: { used: 100, limit: 1000, percent: 10, source: "codex" },
+    });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
+
+    api.updateSession("s1", "notification", "Notification", {
+      agentId: "codex",
+      host: "ssh:example.com",
+    });
+    assert.strictEqual(api.sessions.get("s1").requiresCompletionAck, true);
   });
 
   it("#414: unacknowledged remote completion is deleted by the session timeout (no 24h hold)", () => {
