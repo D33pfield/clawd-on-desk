@@ -1,4 +1,45 @@
 const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, clipboard } = require("electron");
+
+// ── Linux/Wayland: relaunch under XWayland so the pet is draggable (issue #441) ──
+// Native Wayland ignores client-side window positioning and blocks global cursor
+// queries, so the pet spawns centered, can't be dragged, and has no tracking;
+// --ozone-platform=x11 (XWayland) restores positioning + drag.
+//
+// This canNOT be done with app.commandLine.appendSwitch from here: Electron
+// selects AND instantiates the Ozone backend in C++ PreEarlyInitialization
+// (ui::SetOzonePlatformForLinuxIfNeeded + ui::OzonePlatform::PreEarlyInitialization),
+// which runs BEFORE this main script (PostEarlyInitialization → JoinAppCode) —
+// so any in-process switch change lands after the backend is already chosen.
+// SetOzonePlatformForLinuxIfNeeded DOES honor a --ozone-platform already on argv,
+// so the fix is to relaunch ourselves with that flag: this first process selects
+// Wayland but exits before creating any window; the second boots into XWayland.
+const { planXWaylandRelaunch } = require("./linux-ozone");
+const _xwaylandRelaunch = planXWaylandRelaunch({
+  platform: process.platform,
+  env: process.env,
+  argv: process.argv,
+});
+if (_xwaylandRelaunch) {
+  console.log(
+    "Clawd: Linux — relaunching under XWayland (--ozone-platform=x11) " +
+    "(issue #441; override with CLAWD_OZONE_PLATFORM=wayland|x11|auto)"
+  );
+  process.env.CLAWD_OZONE_RELAUNCHED = "1";
+  const _relaunched = app.relaunch({
+    args: _xwaylandRelaunch.args,
+    execPath: process.env.APPIMAGE || process.execPath,
+  });
+  if (_relaunched) {
+    app.exit(0);
+    return; // throwaway first process — stop before loading the rest of main.js
+  }
+  // app.relaunch() returns false when the relauncher helper can't start. Do NOT
+  // app.exit() into nothing — clear the sentinel and fall through to a normal
+  // (native Wayland) startup so the app still runs, just without drag (issue #441).
+  delete process.env.CLAWD_OZONE_RELAUNCHED;
+  console.error("Clawd: XWayland relaunch failed; continuing under native Wayland (issue #441).");
+}
+
 const path = require("path");
 const fs = require("fs");
 const { EventEmitter } = require("events");
@@ -59,37 +100,9 @@ const {
 const { focusCodexThreadTarget } = require("./session-focus-handoff");
 const { isSessionInProgress } = require("./state-session-snapshot");
 const { getAllAgents } = require("../agents/registry");
-const { resolveLinuxOzonePlatform } = require("./linux-ozone");
-
 // ── Autoplay policy: allow sound playback without user gesture ──
 // MUST be set before any BrowserWindow is created (before app.whenReady)
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
-
-// ── Linux/Wayland: default to XWayland so the pet can position itself and be
-// dragged (issue #441). Native Wayland ignores client window positioning and
-// blocks global cursor queries; XWayland restores both. Priority: an explicit
-// CLAWD_OZONE_PLATFORM (wayland|x11|auto) > an --ozone-platform already on argv
-// > auto-detection. MUST run before app.whenReady. ──
-const _cliOzonePlatform = app.commandLine.hasSwitch("ozone-platform")
-  ? app.commandLine.getSwitchValue("ozone-platform")
-  : null;
-const _ozonePlatform = resolveLinuxOzonePlatform({
-  platform: process.platform,
-  env: process.env,
-  cliOzonePlatform: _cliOzonePlatform,
-});
-if (_ozonePlatform) {
-  const _cliOzoneNorm = String(_cliOzonePlatform || "").trim().toLowerCase();
-  if (_cliOzoneNorm !== _ozonePlatform) {
-    // CLAWD_OZONE_PLATFORM overrides a differing CLI switch (remove then re-add).
-    if (_cliOzoneNorm) app.commandLine.removeSwitch("ozone-platform");
-    app.commandLine.appendSwitch("ozone-platform", _ozonePlatform);
-    console.log(
-      `Clawd: Linux — using --ozone-platform=${_ozonePlatform} ` +
-      `(override with CLAWD_OZONE_PLATFORM=wayland|x11|auto)`
-    );
-  }
-}
 
 const isMac = process.platform === "darwin";
 const isLinux = process.platform === "linux";
