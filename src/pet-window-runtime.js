@@ -28,6 +28,20 @@ function isLiveWindow(win) {
   return !!(win && typeof win.isDestroyed === "function" && !win.isDestroyed());
 }
 
+function reloadWindowWebContents(win) {
+  try {
+    if (!isLiveWindow(win)) return false;
+    const contents = win.webContents;
+    if (!contents) return false;
+    if (typeof contents.isDestroyed === "function" && contents.isDestroyed()) return false;
+    if (typeof contents.reload !== "function") return false;
+    contents.reload();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function createPetWindowRuntime(options = {}) {
   const screen = options.screen || {};
   const isWin = !!options.isWin;
@@ -460,7 +474,7 @@ function createPetWindowRuntime(options = {}) {
       renderWin.on("unresponsive", () => {
         if (isQuitting()) return;
         console.warn("Clawd: renderer unresponsive — reloading");
-        renderWin.webContents.reload();
+        reloadWindowWebContents(renderWin);
       });
     }
 
@@ -535,7 +549,7 @@ function createPetWindowRuntime(options = {}) {
         optionsArg.onRenderProcessGone(details, hitWin);
         return;
       }
-      hitWin.webContents.reload();
+      reloadWindowWebContents(hitWin);
     });
     return hitWin;
   }
@@ -776,6 +790,7 @@ function createPetWindowRuntime(options = {}) {
     getInitialHitWindowBounds,
     createRenderWindow,
     createHitWindow,
+    reloadWindowWebContents,
     setDragLocked,
     isDragLocked,
     beginDragSnapshot,

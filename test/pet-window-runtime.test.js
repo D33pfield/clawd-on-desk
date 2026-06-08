@@ -18,8 +18,10 @@ function makeWindow(bounds = { x: 10, y: 20, width: 100, height: 100 }) {
     destroyed: false,
     visible: true,
     webContents: {
+      destroyed: false,
       on: (event, cb) => listeners.set(event, cb),
       reload: () => calls.push(["reload"]),
+      isDestroyed() { return this.destroyed; },
     },
     isDestroyed: () => win.destroyed,
     isVisible: () => win.visible,
@@ -167,6 +169,33 @@ describe("pet-window-runtime", () => {
       true,
       "pop-up-menu",
     ]);
+  });
+
+  it("reloadWindowWebContents ignores destroyed windows and webContents", () => {
+    const harness = createRuntime();
+    const live = makeWindow();
+    const destroyedWindow = makeWindow();
+    const destroyedContents = makeWindow();
+
+    destroyedWindow.destroyed = true;
+    destroyedContents.webContents.destroyed = true;
+
+    assert.equal(harness.runtime.reloadWindowWebContents(live), true);
+    assert.equal(harness.runtime.reloadWindowWebContents(destroyedWindow), false);
+    assert.equal(harness.runtime.reloadWindowWebContents(destroyedContents), false);
+    assert.deepStrictEqual(live.calls, [["reload"]]);
+    assert.deepStrictEqual(destroyedWindow.calls, []);
+    assert.deepStrictEqual(destroyedContents.calls, []);
+  });
+
+  it("uses safe reload helpers for pet render-process-gone handlers", () => {
+    const runtimeSource = fs.readFileSync(path.join(SRC_DIR, "pet-window-runtime.js"), "utf8");
+    const mainSource = fs.readFileSync(path.join(SRC_DIR, "main.js"), "utf8");
+
+    assert.match(runtimeSource, /reloadWindowWebContents\(hitWin\)/);
+    assert.match(mainSource, /petWindowRuntime\.reloadWindowWebContents\(ownedHitWin\)/);
+    assert.match(mainSource, /petWindowRuntime\.reloadWindowWebContents\(win\)/);
+    assert.doesNotMatch(mainSource, /ownedHitWin\.webContents\.reload\(\)/);
   });
 
   it("creates the render window as non-focusable and materializes the initial virtual bounds", () => {

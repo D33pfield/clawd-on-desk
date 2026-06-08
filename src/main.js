@@ -2956,7 +2956,7 @@ function createWindow() {
     },
     onRenderProcessGone: (details, ownedHitWin) => {
       safeConsoleError("hitWin renderer crashed:", details.reason);
-      ownedHitWin.webContents.reload();
+      petWindowRuntime.reloadWindowWebContents(ownedHitWin);
     },
   });
 
@@ -3041,7 +3041,7 @@ function createWindow() {
     petWindowRuntime.setDragLocked(false);
     idlePaused = false;
     mouseOverPet = false;
-    win.webContents.reload();
+    petWindowRuntime.reloadWindowWebContents(win);
   });
 
   guardAlwaysOnTop(win);
