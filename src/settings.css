@@ -3503,7 +3503,7 @@ html, body {
   padding: 20px 0;
 }
 .mobile-info-error {
-  color: var(--red);
+  color: var(--toast-error);
   font-size: 13px;
   padding: 10px 0;
 }
@@ -3552,3 +3552,21 @@ html, body {
   transition: background 0.15s;
 }
 .mobile-copy-btn:hover { background: var(--accent); color: #fff; }
+.mobile-conn-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.mobile-action-btn {
+  font-size: 11px;
+  background: var(--sidebar-hover);
+  border: 1px solid var(--border, #3f3f46);
+  border-radius: 4px;
+  padding: 5px 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.mobile-action-btn:hover { background: var(--accent); color: #fff; }
+.mobile-action-danger { border-color: var(--red, #7f1d1d); color: var(--red, #fca5a5); }
+.mobile-action-danger:hover { background: var(--red, #7f1d1d); color: #fff; }
