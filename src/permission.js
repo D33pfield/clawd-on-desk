@@ -753,6 +753,9 @@ function buildPermissionBubblePayload(permEntry) {
     isElicitation: permEntry.isElicitation || false,
     isOpencode: permEntry.isOpencode || false,
     isAntigravity: permEntry.isAntigravity || false,
+    // Provenance for the renderer: lets the bubble relabel Codex MCP tool calls
+    // (issue #445) without touching approval semantics. Mirrors the flags above.
+    isCodex: permEntry.isCodex || false,
     opencodeAlways: permEntry.opencodeAlwaysCandidates || [],
     opencodePatterns: permEntry.opencodePatterns || [],
     sessionFolder,
