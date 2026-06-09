@@ -83,7 +83,7 @@ function isHeadlessPermissionRequest(ctx, sessionId, data) {
   }
   if (data && data.headless === true) return true;
   return !!(data
-    && data.agent_id === "codex"
+    && (data.agent_id === "codex" || data.hook_source === CODEX_OFFICIAL_HOOK_SOURCE)
     && data.codex_session_role === CODEX_SESSION_ROLE_SUBAGENT);
 }
 

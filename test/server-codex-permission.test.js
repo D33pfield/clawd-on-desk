@@ -277,7 +277,6 @@ describe("Codex official /permission path", () => {
       isCodexPermissionInterceptEnabled: () => true,
     });
     const res = await callPermission(handler, {
-      agent_id: "codex",
       hook_source: "codex-official",
       codex_session_role: "subagent",
       session_id: "codex:sub",
