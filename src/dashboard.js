@@ -140,6 +140,10 @@ module.exports = function initDashboard(ctx) {
     const placement = getDashboardPlacement(options);
     if (isUsableBounds(placement.bounds) && typeof dashboardWindow.setBounds === "function") {
       dashboardWindow.setBounds(placement.bounds);
+      // The anchored placement can land the window on a display with a
+      // different textScale; re-zoom right away (memoized — cheap no-op when
+      // nothing changed).
+      applyTextScaleToWindow();
     }
   }
 
@@ -258,6 +262,7 @@ module.exports = function initDashboard(ctx) {
     if (typeof dashboardWindow.setMinimumSize === "function") {
       dashboardWindow.setMinimumSize(metrics.minWidth, metrics.minHeight);
     }
+    if (typeof dashboardWindow.getBounds !== "function") return;
     const bounds = dashboardWindow.getBounds();
     if (bounds.width < metrics.minWidth || bounds.height < metrics.minHeight) {
       dashboardWindow.setBounds({

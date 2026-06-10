@@ -312,7 +312,7 @@ module.exports = function initSessionHud(ctx) {
     return clickRevealed === true;
   }
 
-  function computeExpectedHudContentBounds(snapshot) {
+  function computeExpectedHudContentBounds(snapshot, scale = getTextScale()) {
     if (!ctx.win || ctx.win.isDestroyed()) return null;
     const petBounds = typeof ctx.getPetWindowBounds === "function" ? ctx.getPetWindowBounds() : null;
     if (!petBounds) return null;
@@ -334,7 +334,11 @@ module.exports = function initSessionHud(ctx) {
       ctx.sessionHudShowStateLabels !== false,
       ctx.sessionHudShowContextUsage !== false
     );
-    const computed = computeSessionHudBounds({ hitRect, anchorRect, workArea, width, height });
+    // Must carry the SAME scale the visible HUD was laid out with — an
+    // unscaled expectation makes the auto-hide hot zone smaller than the
+    // real window, so the cursor "leaves" while still visually over the HUD
+    // (unreachable pin at 150%).
+    const computed = computeSessionHudBounds({ hitRect, anchorRect, workArea, width, height, scale });
     return { hitRect, contentBounds: computed && computed.contentBounds };
   }
 
@@ -351,11 +355,14 @@ module.exports = function initSessionHud(ctx) {
     }
     let inHotZone = false;
     if (cursor) {
-      const expected = computeExpectedHudContentBounds(latestSnapshot);
+      // Single scale resolve for the whole evaluation: expected bounds and
+      // pad must describe the same (scaled) HUD the user actually sees.
+      const scale = getTextScale();
+      const expected = computeExpectedHudContentBounds(latestSnapshot, scale);
       const hotZone = computeAutoHideHotZone({
         petHitRect: expected && expected.hitRect,
         expectedHudContentBounds: expected && expected.contentBounds,
-        pad: HOT_ZONE_PAD,
+        pad: Math.round(HOT_ZONE_PAD * scale),
       });
       inHotZone = pointInHotZone(cursor, hotZone);
     }

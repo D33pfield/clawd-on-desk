@@ -172,6 +172,40 @@ describe("session HUD geometry", () => {
     });
     assert.strictEqual(result.contentBounds.width, Math.round(constants.HUD_WIDTH * 1.6));
   });
+
+  it("keeps the scaled pin corner inside the auto-hide hot zone at 150%", () => {
+    // Regression: the hot zone used to be computed from UNSCALED expected
+    // bounds, so at 150% the cursor "left" the zone while still visually over
+    // the HUD — making the pin unreachable (HUD hid before you could click).
+    const scale = 1.5;
+    const hitRect = { left: 100, top: 80, right: 260, bottom: 240 };
+    const workArea = { x: 0, y: 0, width: 2000, height: 1200 };
+    const width = constants.HUD_WIDTH_LABELS + constants.HUD_CONTEXT_USAGE_WIDTH_BUMP; // 356
+
+    const scaled = computeSessionHudBounds({ hitRect, workArea, width, scale });
+    const pad = Math.round(constants.HOT_ZONE_PAD * scale);
+    const hotZone = computeAutoHideHotZone({
+      petHitRect: hitRect,
+      expectedHudContentBounds: scaled.contentBounds,
+      pad,
+    });
+
+    // The pin lives near the top-right corner of the visible (scaled) HUD.
+    const pinPoint = {
+      x: scaled.contentBounds.x + scaled.contentBounds.width - 10,
+      y: scaled.contentBounds.y + 10,
+    };
+    assert.strictEqual(pointInHotZone(pinPoint, hotZone), true);
+
+    // Sanity: the OLD bug (unscaled expectation) excludes that same point.
+    const unscaled = computeSessionHudBounds({ hitRect, workArea, width });
+    const buggyZone = computeAutoHideHotZone({
+      petHitRect: hitRect,
+      expectedHudContentBounds: unscaled.contentBounds,
+      pad: constants.HOT_ZONE_PAD,
+    });
+    assert.strictEqual(pointInHotZone(pinPoint, buggyZone), false);
+  });
 });
 
 describe("session HUD layout", () => {
