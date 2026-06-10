@@ -49,7 +49,7 @@ function atomicWrite(tokenPath, state) {
   } catch {}
 }
 
-function loadOrCreateTokenState(tokenPath) {
+function loadOrCreateTokenState(tokenPath, nowFn) {
   try {
     const raw = JSON.parse(fs.readFileSync(tokenPath, "utf8"));
     if (raw && typeof raw.token === "string" && /^[a-f0-9]{32,64}$/.test(raw.token)) {
@@ -57,7 +57,7 @@ function loadOrCreateTokenState(tokenPath) {
         token: raw.token,
         previous: raw.previous || null,
         graceUntil: typeof raw.graceUntil === "number" ? raw.graceUntil : null,
-        rotatedAt: typeof raw.rotatedAt === "number" ? raw.rotatedAt : 0,
+        rotatedAt: typeof raw.rotatedAt === "number" ? raw.rotatedAt : nowFn(),
       };
       // Backward compat: rewrite file if it was in old { token } format
       if (raw.rotatedAt === undefined) atomicWrite(tokenPath, state);
@@ -65,7 +65,7 @@ function loadOrCreateTokenState(tokenPath) {
     }
   } catch {}
   const token = crypto.randomBytes(16).toString("hex");
-  const state = { token, previous: null, graceUntil: null, rotatedAt: 0 };
+  const state = { token, previous: null, graceUntil: null, rotatedAt: nowFn() };
   atomicWrite(tokenPath, state);
   return state;
 }
@@ -82,7 +82,7 @@ function isPathInside(parent, child) {
 function initMobilePreviewServer(ctx) {
   const tokenPath = (ctx && ctx.tokenPath) || TOKEN_PATH;
   const now = () => (ctx && ctx.now && ctx.now()) || Date.now();
-  const tokenState = loadOrCreateTokenState(tokenPath);
+  const tokenState = loadOrCreateTokenState(tokenPath, now);
   const clients = new Set();
   const clientMeta = new Map();
   let sessionCache = new Map();
@@ -210,11 +210,13 @@ function initMobilePreviewServer(ctx) {
 
       // Token validation with grace-period support
       const clientToken = url.searchParams.get("token");
+      let graceAccepted = false;
       if (clientToken !== tokenState.token) {
         // Check grace period for previous token
         if (tokenState.previous && clientToken === tokenState.previous
             && tokenState.graceUntil !== null && now() < tokenState.graceUntil) {
           // Accept via grace — client hasn't acked the rotation yet
+          graceAccepted = true;
         } else {
           ws.close(1008, "Invalid token");
           return;
@@ -237,6 +239,18 @@ function initMobilePreviewServer(ctx) {
         for (const [sid, data] of sessionCache) snapshot[sid] = data;
         ws.send(buildMessage("snapshot", { sessions: snapshot }));
       } catch {}
+
+      // If client connected via grace-period token, send the new token immediately
+      if (graceAccepted) {
+        const meta = clientMeta.get(ws);
+        if (meta) meta.pendingRotationAcks = 1;
+        try {
+          ws.send(buildMessage("token_rotate", {
+            newToken: tokenState.token,
+            expiresAt: tokenState.graceUntil,
+          }));
+        } catch {}
+      }
 
       startHeartbeat();
       ws.isAlive = true;

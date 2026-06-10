@@ -464,7 +464,7 @@ describe("Token Rotation", () => {
     assert.strictEqual(persisted.token, oldToken);
     assert.strictEqual(persisted.previous, null);
     assert.strictEqual(persisted.graceUntil, null);
-    assert.strictEqual(persisted.rotatedAt, 0);
+    assert.ok(persisted.rotatedAt > 0, "rotatedAt should be set to current time on migration");
 
     // Should connect fine
     const client = connectClient(port, loadedToken);
@@ -582,7 +582,7 @@ describe("Token Rotation", () => {
     assert.strictEqual(initial.token, freshToken);
     assert.strictEqual(initial.previous, null);
     assert.strictEqual(initial.graceUntil, null);
-    assert.strictEqual(initial.rotatedAt, 0);
+    assert.ok(initial.rotatedAt > 0, "rotatedAt should be set to current time on creation");
 
     // Regenerate
     const newToken = server.regenerateToken();
@@ -594,6 +594,75 @@ describe("Token Rotation", () => {
     assert.strictEqual(after.graceUntil, null); // regenerate clears grace
     assert.strictEqual(typeof after.rotatedAt, "number");
     assert.ok(after.rotatedAt > 0);
+    await new Promise((r) => setTimeout(r, 100));
+  });
+
+  it("Gap A: legacy file → token unchanged after startup (no immediate rotation)", async () => {
+    server.cleanup();
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Write a legacy M1 format file (bare { token }, no rotatedAt)
+    const legacyToken = "face0ff0".repeat(4);
+    fs.writeFileSync(tokenFile, JSON.stringify({ token: legacyToken }, null, 2));
+
+    server = initMobilePreviewServer({
+      sessions,
+      tokenPath: tokenFile,
+    });
+    port = await server.start();
+    const tokenBefore = server.getToken();
+
+    // Wait a bit — if rotatedAt were 0, scheduleRotation would fire immediately
+    await new Promise((r) => setTimeout(r, 300));
+
+    const tokenAfter = server.getToken();
+    assert.strictEqual(tokenBefore, legacyToken,
+      "token should be the legacy token on startup");
+    assert.strictEqual(tokenAfter, legacyToken,
+      "token must not change after brief wait — no immediate rotation");
+
+    await new Promise((r) => setTimeout(r, 100));
+  });
+
+  it("Gap B: grace-period client receives token_rotate, acks, and is not kicked", async () => {
+    // Set up a rotated state with an active grace window
+    const oldToken = server.getToken();
+    const newToken = "11223344".repeat(4);
+    const state = {
+      token: newToken,
+      previous: oldToken,
+      graceUntil: Date.now() + 5 * 60 * 1000,
+      rotatedAt: Date.now(),
+    };
+    fs.writeFileSync(tokenFile, JSON.stringify(state, null, 2));
+
+    // Reload server to pick up the new state
+    server.cleanup();
+    await new Promise((r) => setTimeout(r, 200));
+    server = initMobilePreviewServer({
+      sessions,
+      tokenPath: tokenFile,
+    });
+    port = await server.start();
+
+    // Connect with the OLD (grace-period) token
+    const client = connectClient(port, oldToken);
+    await waitForOpen(client.ws);
+
+    // Should receive token_rotate with the new token
+    const rotateMsg = await client.waitFor("token_rotate");
+    assert.strictEqual(rotateMsg.newToken, newToken);
+    assert.ok(rotateMsg.expiresAt > Date.now(), "expiresAt should be in the future");
+
+    // Send ack back
+    client.ws.send(JSON.stringify({ type: "token_rotate_ack" }));
+
+    // Wait through a heartbeat cycle — client should NOT be kicked
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.strictEqual(client.ws.readyState, WebSocket.OPEN,
+      "client should stay connected after acking the rotation");
+
+    client.close();
     await new Promise((r) => setTimeout(r, 100));
   });
 });
