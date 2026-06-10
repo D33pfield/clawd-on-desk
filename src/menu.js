@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, screen, Menu, Tray, nativeImage } = require("electron");
+const { app, BrowserWindow, screen, Menu, Tray, nativeImage, dialog } = require("electron");
 const path = require("path");
 const { keepOutOfTaskbar } = require("./taskbar");
 
@@ -49,6 +49,51 @@ module.exports = function initMenu(ctx) {
         if (inMiniMode) return ctx.exitMiniMode();
         if (miniDisabled) return undefined;
         return ctx.enterMiniViaMenu();
+      },
+    };
+  }
+
+  // DANGER "auto-pilot" quick toggle. Enabling auto-approves EVERY agent
+  // permission request with no prompt, so the enable path is gated behind a
+  // native modal confirm. Disabling is immediate. After either decision we
+  // rebuild menus so the checkbox reflects the committed value (Electron has
+  // already flipped the visual optimistically on click).
+  function buildAutoApproveMenuItem() {
+    return {
+      label: t("menuAutoApproveAll"),
+      type: "checkbox",
+      checked: !!ctx.autoApproveAllPermissions,
+      click: (menuItem) => {
+        const wantOn = menuItem.checked;
+        if (!wantOn) {
+          ctx.autoApproveAllPermissions = false;
+          return;
+        }
+        // Revert the optimistic check until the user confirms.
+        menuItem.checked = false;
+        // No parent window: attaching the dialog to ctx.win (the small pet
+        // window) makes macOS render it as a sheet centered on the pet. A
+        // parentless dialog is a standalone window centered on the screen,
+        // which is what a danger confirmation should be.
+        Promise.resolve(
+          dialog.showMessageBox({
+            type: "warning",
+            buttons: [t("autoApproveAllConfirmEnable"), t("autoApproveAllConfirmCancel")],
+            defaultId: 1,
+            cancelId: 1,
+            title: t("autoApproveAllConfirmTitle"),
+            message: t("autoApproveAllConfirmTitle"),
+            detail: t("autoApproveAllConfirmDetail"),
+          })
+        ).then((res) => {
+          if (res && res.response === 0) {
+            ctx.autoApproveAllPermissions = true;
+          }
+          rebuildAllMenus();
+        }).catch((err) => {
+          console.warn("Clawd: auto-pilot confirm failed:", err && err.message);
+          rebuildAllMenus();
+        });
       },
     };
   }
@@ -119,6 +164,7 @@ module.exports = function initMenu(ctx) {
         checked: ctx.hideBubbles,
         click: (menuItem) => { ctx.hideBubbles = menuItem.checked; },
       },
+      buildAutoApproveMenuItem(),
       {
         label: t("soundEffects"),
         type: "checkbox",
@@ -323,6 +369,8 @@ module.exports = function initMenu(ctx) {
         label: ctx.doNotDisturb ? t("wake") : t("sleep"),
         click: () => ctx.doNotDisturb ? ctx.disableDoNotDisturb() : ctx.enableDoNotDisturb(),
       },
+      { type: "separator" },
+      buildAutoApproveMenuItem(),
       { type: "separator" },
       {
         label: t("openDashboard"),

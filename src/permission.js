@@ -571,7 +571,64 @@ function repositionBubbles() {
   }
 }
 
+// DANGER "auto-pilot" chokepoint. Every agent branch in the /permission route
+// funnels through showPermissionBubble after its DND / per-agent / headless
+// gates have already run, so this is the single place to honor the
+// autoApproveAllPermissions toggle without auto-approving requests those gates
+// meant to drop. Passive notifications (codex/kimi) and the hardware-buddy
+// self-test are excluded — they are not approvals and carry no HTTP response
+// to satisfy. Returns true when it consumed the entry (caller must NOT build a
+// bubble), false otherwise.
+
+// Default reply used to answer AskUserQuestion / clarify prompts while
+// auto-pilot is on. The user isn't present to type, so we explicitly defer the
+// choice back to the agent rather than sending blank answers.
+const AUTO_APPROVE_ELICITATION_ANSWER = "You choose whatever is best.";
+
+// Build an answers map that assigns the deferral reply to every question in the
+// elicitation toolInput. Mirrors the question-key shape buildElicitationUpdatedInput
+// expects (keyed by the question text), so each prompt gets a real answer rather
+// than being dropped as empty.
+function buildAutoApproveElicitationAnswers(toolInput) {
+  const input = toolInput && typeof toolInput === "object" ? toolInput : {};
+  const questions = Array.isArray(input.questions) ? input.questions : [];
+  const answers = {};
+  for (const question of questions) {
+    if (!question || typeof question.question !== "string" || !question.question) continue;
+    answers[question.question] = AUTO_APPROVE_ELICITATION_ANSWER;
+  }
+  return answers;
+}
+
+function maybeAutoApprovePermission(permEntry) {
+  if (!permEntry) return false;
+  if (typeof ctx.isAutoApproveAllEnabled !== "function" || !ctx.isAutoApproveAllEnabled()) {
+    return false;
+  }
+  if (permEntry.isCodexNotify || permEntry.isKimiNotify) return false;
+  if (isHardwareBuddyTestPermission(permEntry)) return false;
+
+  // Elicitation (AskUserQuestion / Hermes clarify): a bare "allow" with no
+  // resolvedUpdatedInput is sent as a DENY downstream (see resolvePermissionEntry).
+  // Auto-pilot can't surface the questions to the user, so answer each one with
+  // a neutral "defer to the agent" reply rather than leaving it blank — an empty
+  // answers map makes the agent re-ask or fall back unpredictably.
+  if (permEntry.isElicitation) {
+    permEntry.resolvedUpdatedInput = buildElicitationUpdatedInput(
+      permEntry.toolInput,
+      buildAutoApproveElicitationAnswers(permEntry.toolInput)
+    );
+  }
+
+  permLog(`auto-approve: tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "claude-code"}`);
+  resolvePermissionEntry(permEntry, "allow");
+  return true;
+}
+
 function showPermissionBubble(permEntry) {
+  // Auto-pilot: if enabled, approve immediately and never render a bubble.
+  if (maybeAutoApprovePermission(permEntry)) return;
+
   const sugCount = (permEntry.suggestions || []).length;
   const wa = getAnchorWorkArea();
   const bh = clampBubbleHeight(estimateBubbleHeight(sugCount), wa.height);
@@ -953,6 +1010,11 @@ function dismissPermissionForTerminal(perm) {
 
 function maybeStartRemoteApproval(permEntry) {
   if (!isRemoteApprovalActionable(permEntry)) return false;
+  // Auto-pilot resolves synchronously inside showPermissionBubble, but the CC
+  // and Codex route branches call startRemoteApproval right after. If the
+  // entry is already gone from the pending list it was resolved (auto-approved
+  // or otherwise) — don't fire a Telegram card for a closed request.
+  if (pendingPermissions.indexOf(permEntry) === -1) return false;
   const client = getTelegramApprovalClient();
   if (!client || typeof client.requestApproval !== "function") return false;
   if (typeof client.isEnabled === "function" && !client.isEnabled()) return false;

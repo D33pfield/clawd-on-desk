@@ -38,7 +38,7 @@ const {
 } = require("./bubble-policy");
 const { normalizeSessionAliases } = require("./session-alias");
 
-const CURRENT_VERSION = 8;
+const CURRENT_VERSION = 9;
 
 // ── Schema ──
 // Each field has: type, default OR defaultFactory, optional enum/normalize/validate.
@@ -122,6 +122,23 @@ const SCHEMA = {
   },
   hideBubbles: { type: "boolean", default: false },
   permissionBubblesEnabled: { type: "boolean", default: true },
+  // DANGER: "auto-pilot". When true, every agent permission request is
+  // auto-approved without showing a bubble or asking the user. Default false;
+  // the only way to flip it on is the explicit, confirmation-gated toggle in
+  // Settings. DND and per-agent permissionsEnabled gates still win — they are
+  // checked before showPermissionBubble, which is where auto-approve hooks in.
+  // Headless sessions are also stopped before that chokepoint, but their
+  // downstream fallback is agent-specific: Claude/CodeBuddy auto-deny, while
+  // Codex/Qwen/Copilot/Hermes return no-decision and opencode silently falls
+  // back to its TUI prompt. Codex subagent permission payloads are treated as
+  // headless even if no prior session-state event has populated the runtime map.
+  //
+  // `ephemeral: true` — this field is runtime-only. It is NOT written to disk
+  // by save(), and load()/validate() force it back to the default. So enabling
+  // auto-pilot lasts only for the current app session: quit and relaunch and
+  // it's off again, requiring a fresh confirmation. A dangerous "approve
+  // everything" mode must never silently persist across restarts.
+  autoApproveAllPermissions: { type: "boolean", default: false, ephemeral: true },
   notificationBubbleAutoCloseSeconds: {
     type: "number",
     default: NOTIFICATION_DEFAULT_SECONDS,
@@ -321,6 +338,10 @@ function validate(raw) {
   for (const key of SCHEMA_KEYS) {
     if (!(key in raw)) continue;
     const field = SCHEMA[key];
+    // Ephemeral (runtime-only) fields are never restored from a snapshot —
+    // they always reset to their default on load. This is how auto-pilot stays
+    // off across restarts even if a value somehow landed on disk.
+    if (field.ephemeral) continue;
     let value = raw[key];
     if (field.type === "object" && typeof field.normalize === "function") {
       value = field.normalize(value, out[key]);
@@ -472,6 +493,15 @@ function migrate(raw) {
       out.tgApproval.notifyOnComplete = false;
     }
     out.version = 8;
+  }
+  // v8 -> v9: introduce autoApproveAllPermissions ("auto-pilot"). Force the
+  // value OFF on upgrade — a v8 prefs file could not have legitimately set this
+  // key (it didn't exist yet), so any pre-existing value is stale or planted.
+  // Clearing it guarantees an upgrading user never silently inherits
+  // auto-approval; the only way to turn it on is the confirmation-gated path.
+  if (out.version < 9) {
+    out.autoApproveAllPermissions = false;
+    out.version = 9;
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
@@ -781,6 +811,12 @@ function load(prefsPath) {
 
 function save(prefsPath, snapshot) {
   const validated = validate(snapshot);
+  // Ephemeral (runtime-only) fields never touch disk — drop them so a
+  // dangerous mode like auto-pilot can't persist across restarts, and so the
+  // prefs file never contains a scary `autoApproveAllPermissions: true`.
+  for (const key of SCHEMA_KEYS) {
+    if (SCHEMA[key].ephemeral) delete validated[key];
+  }
   // Ensure parent directory exists (Electron userData is normally created by the
   // framework, but we can't assume it for tests).
   try {

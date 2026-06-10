@@ -4,7 +4,10 @@ const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
 } = require("../hooks/server-config");
-const { CODEX_OFFICIAL_HOOK_SOURCE } = require("./server-codex-official-turns");
+const {
+  CODEX_OFFICIAL_HOOK_SOURCE,
+  CODEX_SESSION_ROLE_SUBAGENT,
+} = require("./server-codex-official-turns");
 const {
   truncateDeep,
   normalizePermissionSuggestions,
@@ -86,6 +89,17 @@ function shouldInterceptCodexPermission(ctx) {
 function shouldMuteCodexNativeNotificationSound(ctx) {
   if (typeof ctx.isCodexNativeNotificationSoundEnabled !== "function") return false;
   return ctx.isCodexNativeNotificationSoundEnabled() === false;
+}
+
+function isHeadlessPermissionRequest(ctx, sessionId, data) {
+  if (ctx && ctx.sessions && typeof ctx.sessions.get === "function") {
+    const session = ctx.sessions.get(sessionId);
+    if (session && session.headless) return true;
+  }
+  if (data && data.headless === true) return true;
+  return !!(data
+    && (data.agent_id === "codex" || data.hook_source === CODEX_OFFICIAL_HOOK_SOURCE)
+    && data.codex_session_role === CODEX_SESSION_ROLE_SUBAGENT);
 }
 
 function arePermissionBubblesEnabled(ctx) {
@@ -355,6 +369,12 @@ function handlePermissionPost(req, res, options) {
           return;
         }
 
+        if (isHeadlessPermissionRequest(ctx, sessionId, data)) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`opencode headless session=${sessionId} → silent drop, TUI fallback — request=${requestId}`);
+          return;
+        }
+
         // No HTTP connection to hold open — only degradation is to
         // not render a bubble and let the TUI prompt handle it.
         const opencodeSubGateBypass = shouldBypassOpencodeBubble(ctx);
@@ -454,6 +474,13 @@ function handlePermissionPost(req, res, options) {
         if (ctx.doNotDisturb) {
           recordRequestHookEvent.droppedByDnd();
           ctx.permLog(`codex DND -> no decision, native prompt fallback (tool=${toolName})`);
+          sendCodexPermissionNoDecision(res);
+          return;
+        }
+
+        if (isHeadlessPermissionRequest(ctx, sessionId, data)) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`codex headless session=${sessionId} -> no decision, native prompt fallback (tool=${toolName})`);
           sendCodexPermissionNoDecision(res);
           return;
         }
@@ -563,6 +590,13 @@ function handlePermissionPost(req, res, options) {
           return;
         }
 
+        if (isHeadlessPermissionRequest(ctx, sessionId, data)) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`qwen headless session=${sessionId} -> no decision, native prompt fallback (tool=${toolName})`);
+          sendQwenCodePermissionNoDecision(res);
+          return;
+        }
+
         if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled("qwen-code")) {
           recordRequestHookEvent.droppedByDisabled();
           ctx.permLog(`qwen disabled -> no decision, native prompt fallback (tool=${toolName})`);
@@ -658,6 +692,13 @@ function handlePermissionPost(req, res, options) {
         if (ctx.doNotDisturb) {
           recordRequestHookEvent.droppedByDnd();
           ctx.permLog(`copilot DND -> no decision, native prompt fallback (tool=${toolName})`);
+          sendCopilotPermissionNoDecision(res);
+          return;
+        }
+
+        if (isHeadlessPermissionRequest(ctx, sessionId, data)) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`copilot headless session=${sessionId} -> no decision, native prompt fallback (tool=${toolName})`);
           sendCopilotPermissionNoDecision(res);
           return;
         }
@@ -766,6 +807,13 @@ function handlePermissionPost(req, res, options) {
         if (ctx.doNotDisturb) {
           recordRequestHookEvent.droppedByDnd();
           ctx.permLog(`hermes DND -> no decision, native fallback (tool=${toolName})`);
+          sendHermesPermissionNoDecision(res);
+          return;
+        }
+
+        if (isHeadlessPermissionRequest(ctx, sessionId, data)) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`hermes headless session=${sessionId} -> no decision, native fallback (tool=${toolName})`);
           sendHermesPermissionNoDecision(res);
           return;
         }
