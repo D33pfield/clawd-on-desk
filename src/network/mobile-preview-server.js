@@ -247,7 +247,10 @@ function initMobilePreviewServer(ctx) {
         ws.send(buildMessage("snapshot", { sessions: snapshot }));
       } catch {}
 
+      startHeartbeat();
+
       // If client connected via grace-period token, send the new token immediately
+      // (after startHeartbeat so the first heartbeat tick doesn't duplicate the send)
       if (graceAccepted) {
         const meta = clientMeta.get(ws);
         if (meta) meta.pendingRotationAcks = 1;
@@ -258,8 +261,6 @@ function initMobilePreviewServer(ctx) {
           }));
         } catch {}
       }
-
-      startHeartbeat();
       ws.isAlive = true;
       ws.on("pong", () => {
         ws.isAlive = true;
