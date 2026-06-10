@@ -132,48 +132,72 @@ describe("per-display resolution", () => {
 });
 
 describe("applyZoomToWindow", () => {
-  function makeWindow({ destroyed = false, throws = false } = {}) {
+  function makeWindow({ destroyed = false, throws = false, rejectInsert = () => false } = {}) {
     const factorCalls = [];
-    const jsCalls = [];
+    const cssCalls = [];
+    const removedKeys = [];
+    const listeners = {};
+    let nextKey = 1;
+    const wc = {
+      isDestroyed: () => false,
+      on(event, handler) {
+        listeners[event] = listeners[event] || [];
+        listeners[event].push(handler);
+      },
+      setZoomFactor(factor) {
+        if (throws) throw new Error("boom");
+        factorCalls.push(factor);
+      },
+      insertCSS(css) {
+        cssCalls.push(css);
+        if (rejectInsert(css)) return Promise.reject(new Error("page not loaded"));
+        return Promise.resolve(`key-${nextKey++}`);
+      },
+      removeInsertedCSS(key) {
+        removedKeys.push(key);
+        return Promise.resolve();
+      },
+    };
     return {
       factorCalls,
-      jsCalls,
+      cssCalls,
+      removedKeys,
+      listeners,
       isDestroyed: () => destroyed,
-      webContents: {
-        isDestroyed: () => false,
-        setZoomFactor(factor) {
-          if (throws) throw new Error("boom");
-          factorCalls.push(factor);
-        },
-        executeJavaScript(code) {
-          jsCalls.push(code);
-          return Promise.resolve();
-        },
-      },
+      webContents: wc,
     };
   }
 
-  it("neutralizes the shared zoom map and injects root CSS zoom", () => {
+  function settle() {
+    return new Promise((resolve) => setImmediate(resolve));
+  }
+
+  it("neutralizes the shared zoom map and inserts a root zoom stylesheet (CSP-immune)", async () => {
     const win = makeWindow();
     assert.strictEqual(applyZoomToWindow(win, 1.25), true);
+    await settle();
     assert.deepStrictEqual(win.factorCalls, [1]);
-    assert.deepStrictEqual(win.jsCalls, ['document.documentElement.style.zoom = "1.25"']);
+    assert.deepStrictEqual(win.cssCalls, [":root { zoom: 1.25 !important; }"]);
   });
 
-  it("memoizes per webContents and re-injects only on a changed value", () => {
+  it("memoizes per webContents and swaps the stylesheet on a changed value", async () => {
     const win = makeWindow();
     applyZoomToWindow(win, 1.25);
     applyZoomToWindow(win, 1.25);
-    assert.strictEqual(win.jsCalls.length, 1);
+    await settle();
+    assert.strictEqual(win.cssCalls.length, 1);
     applyZoomToWindow(win, 1.4);
-    assert.strictEqual(win.jsCalls.length, 2);
-    assert.strictEqual(win.jsCalls[1], 'document.documentElement.style.zoom = "1.4"');
+    await settle();
+    assert.strictEqual(win.cssCalls.length, 2);
+    assert.strictEqual(win.cssCalls[1], ":root { zoom: 1.4 !important; }");
+    assert.deepStrictEqual(win.removedKeys, ["key-1"], "previous sheet must be removed");
   });
 
-  it("still injects explicitly at the default scale", () => {
+  it("still injects explicitly at the default scale", async () => {
     const win = makeWindow();
     assert.strictEqual(applyZoomToWindow(win, 1), true);
-    assert.deepStrictEqual(win.jsCalls, ['document.documentElement.style.zoom = "1"']);
+    await settle();
+    assert.deepStrictEqual(win.cssCalls, [":root { zoom: 1 !important; }"]);
   });
 
   it("is safe on destroyed/missing windows and swallows setter errors", () => {
@@ -188,27 +212,45 @@ describe("applyZoomToWindow", () => {
     // the did-finish-load re-apply gets skipped and a scaled window keeps
     // unzoomed content (HUD "very long" / clipped symptoms).
     let shouldReject = true;
-    const jsCalls = [];
-    const win = {
-      isDestroyed: () => false,
-      webContents: {
-        isDestroyed: () => false,
-        setZoomFactor() {},
-        executeJavaScript(code) {
-          jsCalls.push(code);
-          return shouldReject ? Promise.reject(new Error("page not loaded")) : Promise.resolve();
-        },
-      },
-    };
+    const win = makeWindow({ rejectInsert: () => shouldReject });
 
     assert.strictEqual(applyZoomToWindow(win, 1.35), true);
-    await new Promise((resolve) => setImmediate(resolve));
+    await settle();
     shouldReject = false;
     assert.strictEqual(applyZoomToWindow(win, 1.35), true);
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.strictEqual(jsCalls.length, 2, "same value must re-inject after a failure");
+    await settle();
+    assert.strictEqual(win.cssCalls.length, 2, "same value must re-inject after a failure");
 
     assert.strictEqual(applyZoomToWindow(win, 1.35), true);
-    assert.strictEqual(jsCalls.length, 2, "successful injection memoizes again");
+    await settle();
+    assert.strictEqual(win.cssCalls.length, 2, "successful injection memoizes again");
+  });
+
+  it("clears the memo on reload so the zoom is re-applied to the fresh document", async () => {
+    const win = makeWindow();
+    applyZoomToWindow(win, 1.35);
+    await settle();
+    assert.strictEqual(win.cssCalls.length, 1);
+
+    for (const handler of win.listeners["did-finish-load"] || []) handler();
+    assert.strictEqual(applyZoomToWindow(win, 1.35), true);
+    await settle();
+    assert.strictEqual(win.cssCalls.length, 2, "reload must trigger a fresh injection");
+  });
+
+  it("serializes rapid value changes and keeps exactly one live sheet", async () => {
+    const win = makeWindow();
+    applyZoomToWindow(win, 1.2);
+    applyZoomToWindow(win, 1.3);
+    applyZoomToWindow(win, 1.4);
+    await settle();
+    await settle();
+    await settle();
+    assert.deepStrictEqual(win.cssCalls, [
+      ":root { zoom: 1.2 !important; }",
+      ":root { zoom: 1.3 !important; }",
+      ":root { zoom: 1.4 !important; }",
+    ]);
+    assert.deepStrictEqual(win.removedKeys, ["key-1", "key-2"], "only the newest sheet survives");
   });
 });

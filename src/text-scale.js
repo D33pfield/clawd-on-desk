@@ -48,30 +48,52 @@ function applyZoomToWindow(win, scale) {
   const wc = win.webContents;
   if (!wc) return false;
   if (typeof wc.isDestroyed === "function" && wc.isDestroyed()) return false;
+  // The text-window pages ship CSP without 'unsafe-eval', which makes the
+  // page reject webContents.executeJavaScript — so the zoom travels as an
+  // embedder-level stylesheet (insertCSS), which page CSP cannot block.
+  if (typeof wc.insertCSS !== "function") return false;
   const s = clampTextScale(scale);
-  // Reposition paths call this every frame during pet drags; re-injecting the
-  // same value would spam executeJavaScript, so memoize per webContents.
+  // Reposition paths call this every frame during pet drags; memoize per
+  // webContents. Inserted CSS does not survive reloads, so the
+  // did-finish-load hook below clears the memo and the next call re-injects.
   if (wc.__clawdAppliedTextZoom === s) return true;
   try {
-    // Neutralize any shared HostZoomMap factor first — including values that
-    // earlier setZoomFactor-based builds persisted into the partition — so
-    // the injected root CSS zoom is the only scaling in effect.
-    if (typeof wc.setZoomFactor === "function") wc.setZoomFactor(1);
-    if (typeof wc.executeJavaScript !== "function") return false;
-    const result = wc.executeJavaScript(
-      `document.documentElement.style.zoom = "${s}"`,
-      true
-    );
-    // Memoize optimistically (reposition paths call this every frame), but
-    // roll the memo back if the injection rejects — otherwise a pre-load
-    // failure would permanently skip the did-finish-load re-apply and leave
-    // a scaled window with unzoomed content.
-    wc.__clawdAppliedTextZoom = s;
-    if (result && typeof result.catch === "function") {
-      result.catch(() => {
-        if (wc.__clawdAppliedTextZoom === s) wc.__clawdAppliedTextZoom = undefined;
+    if (!wc.__clawdTextZoomReloadHooked && typeof wc.on === "function") {
+      wc.__clawdTextZoomReloadHooked = true;
+      wc.on("did-finish-load", () => {
+        wc.__clawdAppliedTextZoom = undefined;
+        wc.__clawdTextZoomCssKey = undefined;
       });
     }
+    // Neutralize any shared HostZoomMap factor left behind by the earlier
+    // setZoomFactor-based builds.
+    if (typeof wc.setZoomFactor === "function") wc.setZoomFactor(1);
+
+    wc.__clawdAppliedTextZoom = s;
+    const runInjection = () => {
+      const insertion = wc.insertCSS(`:root { zoom: ${s} !important; }`);
+      if (!insertion || typeof insertion.then !== "function") return insertion;
+      return insertion.then((key) => {
+        // Swap-then-remove keeps exactly one zoom stylesheet alive; removal
+        // failures are harmless (the newer sheet wins the cascade).
+        const previousKey = wc.__clawdTextZoomCssKey;
+        wc.__clawdTextZoomCssKey = key;
+        if (previousKey != null && typeof wc.removeInsertedCSS === "function") {
+          const removal = wc.removeInsertedCSS(previousKey);
+          if (removal && typeof removal.catch === "function") removal.catch(() => {});
+        }
+      }, () => {
+        // Pre-load injections reject; clearing the memo lets the
+        // did-finish-load / next reposition apply retry.
+        if (wc.__clawdAppliedTextZoom === s) wc.__clawdAppliedTextZoom = undefined;
+      });
+    };
+    // Serialize insert/remove pairs per webContents so rapid slider drags
+    // can't interleave and resurrect a stale sheet.
+    const queue = wc.__clawdTextZoomQueue;
+    wc.__clawdTextZoomQueue = queue && typeof queue.then === "function"
+      ? queue.then(runInjection, runInjection)
+      : runInjection();
     return true;
   } catch {
     wc.__clawdAppliedTextZoom = undefined;
