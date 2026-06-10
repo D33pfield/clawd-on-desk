@@ -960,6 +960,61 @@ function buildGhosttyCwdCandidates(cwd) {
   return candidates;
 }
 
+// Bringing an OFF-SCREEN NSWindow on-screen attaches it to the *current*
+// Space. Both Ghostty's `focus` (makeKeyAndOrderFront) and `select tab`
+// (native tab swap) do this when the target terminal lives in a non-selected
+// tab of a window on another Space — the window gets yanked to the user
+// instead of the user switching Spaces. The only verified-safe operation is
+// focusing a terminal in the window's currently-SELECTED tab.
+//
+// So these read-only probes report how to reach the target: "direct" when
+// its tab is already selected, "via:<terminal-id>" naming the selected tab's
+// terminal as a stepping stone otherwise. The caller focuses the stepping
+// stone first (safe Space switch), then the target — the tab swap then
+// happens within the now-active Space and nothing is yanked.
+function buildGhosttyCwdProbeScript(cwdCandidates) {
+  const literalList = buildAppleScriptStringList(cwdCandidates);
+  return `
+      tell application "Ghostty"
+        set targetCwds to {${literalList}}
+        repeat with cwdLiteral in targetCwds
+          repeat with w in windows
+            repeat with t in tabs of w
+              try
+                set matches to (every terminal of t whose working directory is (contents of cwdLiteral))
+                if (count of matches) > 0 then
+                  if selected of t is true then return "direct"
+                  return "via:" & ((id of (focused terminal of (selected tab of w))) as text)
+                end if
+              end try
+            end repeat
+          end repeat
+        end repeat
+        return "miss"
+      end tell`;
+}
+
+function buildGhosttyIdProbeScript(terminalId) {
+  const id = normalizeGhosttyTerminalId(terminalId);
+  if (!id) return null;
+  return `
+      tell application "Ghostty"
+        set targetId to "${escapeAppleScriptString(id)}"
+        repeat with w in windows
+          repeat with t in tabs of w
+            try
+              set matches to (every terminal of t whose id is targetId)
+              if (count of matches) > 0 then
+                if selected of t is true then return "direct"
+                return "via:" & ((id of (focused terminal of (selected tab of w))) as text)
+              end if
+            end try
+          end repeat
+        end repeat
+        return "miss"
+      end tell`;
+}
+
 function buildGhosttyCwdFocusScript(cwdCandidates) {
   const literalList = buildAppleScriptStringList(cwdCandidates);
   return `
@@ -1499,6 +1554,36 @@ function scheduleGhosttyFocus(sourcePid, cwd, pidChain, ghosttyTerminalId = null
         });
       }, 400);
     };
+    // Cross-Space fix: probe (read-only) how to reach the target. "via:<id>"
+    // means its tab is not selected, so focus the selected tab's terminal
+    // first — the only operation verified to switch Spaces instead of
+    // yanking the window — wait for the Space switch, then focus the target
+    // (the tab swap now happens within the active Space). "direct"/"miss"
+    // fall through to the legacy focus script unchanged.
+    const runWithSteppingStone = (probeScript, thenFn) => {
+      if (!probeScript) {
+        thenFn();
+        return;
+      }
+      execFile("osascript", ["-e", probeScript], { timeout: MAC_FOCUS_TIMEOUT_MS }, (probeErr, probeOut) => {
+        const status = probeErr ? "error" : (String(probeOut || "").trim() || "empty");
+        if (!status.startsWith("via:")) {
+          logGhosttyFocusResult(`probe-${status}`);
+          thenFn();
+          return;
+        }
+        logGhosttyFocusResult("probe-via");
+        const stoneScript = buildGhosttyIdFocusScript(status.slice(4));
+        if (!stoneScript) {
+          thenFn();
+          return;
+        }
+        execFile("osascript", ["-e", stoneScript], { timeout: MAC_FOCUS_TIMEOUT_MS }, () => {
+          setTimeout(thenFn, 450);
+        });
+      });
+    };
+
     const runFallback = () => {
       if (!cwdCandidates.length) {
         logGhosttyFocusResult("no-cwd-fallback");
@@ -1506,7 +1591,9 @@ function scheduleGhosttyFocus(sourcePid, cwd, pidChain, ghosttyTerminalId = null
       }
       const script = buildGhosttyCwdFocusScript(cwdCandidates);
       logGhosttyFocusResult("cwd-fallback");
-      runGhosttyScript(script, "cwd", null);
+      runWithSteppingStone(buildGhosttyCwdProbeScript(cwdCandidates), () => {
+        runGhosttyScript(script, "cwd", null);
+      });
     };
 
     const pidCandidates = buildGhosttyPidCandidates(sourcePid, pidChain);
@@ -1543,7 +1630,9 @@ function scheduleGhosttyFocus(sourcePid, cwd, pidChain, ghosttyTerminalId = null
         runPrecisePath();
         return;
       }
-      runGhosttyScript(idScript, "id", runPrecisePath);
+      runWithSteppingStone(buildGhosttyIdProbeScript(ghosttyTerminalId), () => {
+        runGhosttyScript(idScript, "id", runPrecisePath);
+      });
     };
 
     runIdOrPrecise();
@@ -1839,6 +1928,8 @@ return {
     scheduleTmuxPaneFocus,
     __setTmuxBin,
     resolveTmuxBin,
+    buildGhosttyIdProbeScript,
+    buildGhosttyCwdProbeScript,
   },
 };
 
