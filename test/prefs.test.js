@@ -99,6 +99,21 @@ describe("prefs.getDefaults", () => {
     }
   });
 
+  it("seeds the subagent permission sub-gate on claude-code only (#451)", () => {
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.agents["claude-code"].subagentPermissionsEnabled, true);
+    // Other agents must not carry the flag — normalizeAgents only accepts
+    // flags present in an agent's default entry, which keeps this sub-gate
+    // claude-code-scoped.
+    for (const id of ["codex", "codebuddy", "hermes", "copilot-cli"]) {
+      assert.strictEqual(
+        Object.prototype.hasOwnProperty.call(d.agents[id], "subagentPermissionsEnabled"),
+        false,
+        `${id} must not carry subagentPermissionsEnabled`
+      );
+    }
+  });
+
   it("defaults OpenClaw permission bubbles off", () => {
     const d = prefs.getDefaults();
     assert.strictEqual(d.agents.openclaw.enabled, true);
@@ -375,6 +390,29 @@ describe("prefs.validate", () => {
     // Bad flag falls back to the default for that agent (true), not dropped
     // altogether — the entry has a valid flag so it survives.
     assert.strictEqual(v.agents["claude-code"].permissionsEnabled, true);
+  });
+
+  it("normalizes agents: preserves subagentPermissionsEnabled for claude-code, strips it elsewhere", () => {
+    const v = prefs.validate({
+      agents: {
+        "claude-code": { enabled: true, subagentPermissionsEnabled: false },
+        codex: { enabled: true, subagentPermissionsEnabled: false },
+      },
+    });
+    assert.strictEqual(v.agents["claude-code"].subagentPermissionsEnabled, false);
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(v.agents.codex, "subagentPermissionsEnabled"),
+      false
+    );
+  });
+
+  it("normalizes agents: fills missing subagentPermissionsEnabled from defaults (pre-#451 prefs)", () => {
+    const v = prefs.validate({
+      agents: {
+        "claude-code": { enabled: false },
+      },
+    });
+    assert.strictEqual(v.agents["claude-code"].subagentPermissionsEnabled, true);
   });
 
   it("normalizes agents: preserves Hermes permission/notification flags", () => {

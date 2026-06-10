@@ -73,6 +73,12 @@ function setAgentFlag(payload, deps) {
       if (!value && typeof deps.dismissPermissionsByAgent === "function") {
         deps.dismissPermissionsByAgent(agentId);
       }
+    } else if (flag === "subagentPermissionsEnabled") {
+      // #451: flipping the subagent sub-gate off dismisses only the pending
+      // bubbles that came from a CC subagent; main-thread ones stay up.
+      if (!value && typeof deps.dismissPermissionsByAgent === "function") {
+        deps.dismissPermissionsByAgent(agentId, { subagentOnly: true });
+      }
     }
   } catch (err) {
     return {

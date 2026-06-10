@@ -176,7 +176,10 @@ const SCHEMA = {
   agents: {
     type: "object",
     defaultFactory: () => ({
-      "claude-code": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
+      // subagentPermissionsEnabled (#451): bubbles for PermissionRequests
+      // fired inside a Task subagent. Only claude-code carries the flag —
+      // normalizeAgents drops it for agents whose default entry lacks it.
+      "claude-code": { enabled: true, permissionsEnabled: true, subagentPermissionsEnabled: true, notificationHookEnabled: true },
       "codex": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true, permissionMode: "intercept", nativeNotificationSoundEnabled: false },
       "copilot-cli": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       "cursor-agent": { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
@@ -477,7 +480,7 @@ function migrate(raw) {
   return out;
 }
 
-const AGENT_FLAGS = ["enabled", "permissionsEnabled", "notificationHookEnabled", "nativeNotificationSoundEnabled"];
+const AGENT_FLAGS = ["enabled", "permissionsEnabled", "subagentPermissionsEnabled", "notificationHookEnabled", "nativeNotificationSoundEnabled"];
 const CODEX_PERMISSION_MODES = ["native", "intercept"];
 
 function normalizeDismissedUpdateVersions(value) {
