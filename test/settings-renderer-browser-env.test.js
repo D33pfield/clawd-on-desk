@@ -3965,6 +3965,98 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(soundSwitch.element.attributes.tabindex, "0");
   });
 
+  it("mounts the Claude subagent permission switch and greys it with the permission gate (#451)", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "claude-code": {
+            enabled: true,
+            permissionsEnabled: true,
+            subagentPermissionsEnabled: true,
+          },
+        },
+      },
+      agentMetadata: [{
+        id: "claude-code",
+        name: "Claude Code",
+        eventSource: "hook",
+        capabilities: {
+          permissionApproval: true,
+        },
+      }],
+      collapsedGroups: {
+        "agents:claude-code": false,
+      },
+    });
+
+    harness.core.ops.requestRender({ content: true });
+    harness.raf.flush();
+
+    const subagentSwitch = [...harness.core.state.mountedControls.agentSwitches.values()]
+      .find((meta) => meta.agentId === "claude-code" && meta.flag === "subagentPermissionsEnabled");
+    assert.ok(subagentSwitch, "Claude subagent permission switch should be mounted");
+    assert.strictEqual(subagentSwitch.element.classList.contains("disabled"), false);
+
+    harness.core.ops.applyChanges({
+      changes: {
+        agents: {
+          "claude-code": {
+            enabled: true,
+            permissionsEnabled: false,
+            subagentPermissionsEnabled: true,
+          },
+        },
+      },
+      snapshot: {
+        agents: {
+          "claude-code": {
+            enabled: true,
+            permissionsEnabled: false,
+            subagentPermissionsEnabled: true,
+          },
+        },
+      },
+    });
+
+    assert.strictEqual(subagentSwitch.element.classList.contains("disabled"), true);
+    assert.strictEqual(subagentSwitch.element.attributes["aria-disabled"], "true");
+    assert.strictEqual(subagentSwitch.element.attributes.tabindex, "-1");
+  });
+
+  it("does not render the subagent permission switch for non-Claude agents (#451)", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          codebuddy: {
+            enabled: true,
+            permissionsEnabled: true,
+          },
+        },
+      },
+      agentMetadata: [{
+        id: "codebuddy",
+        name: "CodeBuddy",
+        eventSource: "hook",
+        capabilities: {
+          permissionApproval: true,
+        },
+      }],
+      collapsedGroups: {
+        "agents:codebuddy": false,
+      },
+    });
+
+    harness.core.ops.requestRender({ content: true });
+    harness.raf.flush();
+
+    const subagentSwitch = [...harness.core.state.mountedControls.agentSwitches.values()]
+      .find((meta) => meta.flag === "subagentPermissionsEnabled");
+    assert.strictEqual(subagentSwitch, undefined);
+    const permissionsSwitch = [...harness.core.state.mountedControls.agentSwitches.values()]
+      .find((meta) => meta.agentId === "codebuddy" && meta.flag === "permissionsEnabled");
+    assert.ok(permissionsSwitch, "CodeBuddy permission switch should still be mounted");
+  });
+
   it("slides the Codex permission mode pill when mode broadcasts patch in place", () => {
     const harness = loadAgentsTabForTest({
       snapshot: {

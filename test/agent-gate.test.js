@@ -395,6 +395,23 @@ describe("setAgentFlag command", () => {
     );
   });
 
+  it("rejects subagentPermissionsEnabled for non-claude agents before any side effect (#451)", () => {
+    // Yunbao review E: a kimi-cli call would otherwise reach
+    // agent-runtime-main's dismissPermissionsByAgent, whose Kimi branch
+    // disposes permission state regardless of options/removed count.
+    const dismissCalls = [];
+    const { deps } = makeDeps({
+      dismissPermissionsByAgent: (id, options) => dismissCalls.push([id, options]),
+    });
+    const r = commandRegistry.setAgentFlag(
+      { agentId: "kimi-cli", flag: "subagentPermissionsEnabled", value: false },
+      deps
+    );
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /claude-code/);
+    assert.deepStrictEqual(dismissCalls, []);
+  });
+
   it("disabling subagentPermissionsEnabled dismisses only subagent bubbles (#451)", () => {
     const dismissCalls = [];
     const { deps, calls } = makeDeps({

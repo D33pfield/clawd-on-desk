@@ -1101,6 +1101,61 @@ describe("server-route-permission POST — CC subagent requests (#451)", () => {
     assert.strictEqual(res.ctx.pendingPermissions[0].toolName, "ExitPlanMode");
   });
 
+  it("lets the headless guard win over the subagent sub-gate (auto-deny, no destroy)", async () => {
+    const res = await callPermissionPost(subagentBody(), {
+      ctx: {
+        sessions: new Map([["sid", { headless: true }]]),
+        isAgentSubagentPermissionsEnabled: () => false,
+      },
+    });
+
+    assert.strictEqual(res.destroyed, false);
+    assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, [{
+      behavior: "deny",
+      message: "Non-interactive session; auto-denied",
+    }]);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+  });
+
+  it("lets PASSTHROUGH tools auto-allow before the subagent sub-gate", async () => {
+    const res = await callPermissionPost(subagentBody({
+      tool_name: "TaskList",
+      tool_input: {},
+    }), {
+      ctx: {
+        PASSTHROUGH_TOOLS: new Set(["TaskList"]),
+        isAgentSubagentPermissionsEnabled: () => false,
+      },
+    });
+
+    assert.strictEqual(res.destroyed, false);
+    assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, [{
+      behavior: "allow",
+      message: undefined,
+    }]);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+  });
+
+  it("keeps CodeBuddy requests on the explicit identity, unaffected by the subagent sub-gate", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "codebuddy",
+      session_id: "cb:sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    }), {
+      ctx: {
+        isAgentSubagentPermissionsEnabled: () => false,
+      },
+    });
+
+    assert.strictEqual(res.destroyed, false);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.agentId, "codebuddy");
+    assert.strictEqual(entry.subagentId, null);
+    assert.strictEqual(entry.subagentType, null);
+  });
+
   it("applies the per-agent permission subgate to subagent requests (uuid no longer dodges it)", async () => {
     const res = await callPermissionPost(subagentBody(), {
       ctx: {
