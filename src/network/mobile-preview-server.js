@@ -46,7 +46,11 @@ function atomicWrite(tokenPath, state) {
     const tmpPath = tokenPath + ".tmp";
     fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), "utf8");
     fs.renameSync(tmpPath, tokenPath);
-  } catch {}
+    return true;
+  } catch (err) {
+    console.error("[mobile-preview] atomicWrite failed:", err.message);
+    return false;
+  }
 }
 
 function loadOrCreateTokenState(tokenPath, nowFn) {
@@ -143,6 +147,9 @@ function initMobilePreviewServer(ctx) {
     return newToken;
   }
 
+  // Full reset: regenerates token AND will revoke all device registrations
+  // in Slice 2+ (device-list semantics). regenerateToken() only rotates the
+  // token and kicks connected clients, but does not clear the device roster.
   function resetMobileAccess() {
     return regenerateToken();
   }
