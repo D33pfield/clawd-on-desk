@@ -271,6 +271,41 @@ function createPidResolver(options) {
       pid = parentPid;
     }
 
+    if (!isWin && !terminalPid && process.env.TMUX) {
+      const tmuxParts = process.env.TMUX.split(",");
+      const tmuxServerPid = tmuxParts.length >= 2 ? parseInt(tmuxParts[1], 10) : 0;
+      const walkReachedTmux = tmuxServerPid > 1 && pidChain.includes(tmuxServerPid);
+      if (walkReachedTmux) try {
+        const clientPidStr = execFileSync(
+          "tmux", ["display-message", "-p", "#{client_pid}"],
+          { encoding: "utf8", timeout: 500 }
+        ).trim();
+        const clientPid = parseInt(clientPidStr, 10);
+        if (clientPid > 1) {
+          let walkPid = clientPid;
+          for (let t = 0; t < 4; t++) {
+            let tName, tParent;
+            try {
+              const tComm = execFileSync("ps", ["-o", "comm=", "-p", String(walkPid)],
+                { encoding: "utf8", timeout: 500 }).trim();
+              tName = require("path").basename(tComm).toLowerCase();
+              tParent = parseInt(
+                execFileSync("ps", ["-o", "ppid=", "-p", String(walkPid)],
+                  { encoding: "utf8", timeout: 500 }).trim(), 10);
+            } catch { break; }
+            if (terminalNames.has(tName)) {
+              terminalPid = walkPid;
+              pidChain.push(walkPid);
+              break;
+            }
+            if (!tParent || tParent <= 1 || tParent === walkPid) break;
+            pidChain.push(walkPid);
+            walkPid = tParent;
+          }
+        }
+      } catch {}
+    }
+
     _cached = { stablePid: terminalPid || lastGoodPid, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd };
     return _cached;
   };

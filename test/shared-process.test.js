@@ -124,6 +124,37 @@ describe("createPidResolver()", () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
+// createPidResolver() — tmux resolution
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("createPidResolver() — tmux resolution", { skip: !process.env.TMUX }, () => {
+  it("resolves GUI terminal through tmux client when inside tmux", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ platformConfig: cfg, startPid: process.ppid });
+    const { stablePid, pidChain } = resolve();
+    // stablePid should be a GUI terminal, not the tmux server
+    const { execFileSync } = require("child_process");
+    const comm = require("path").basename(
+      execFileSync("ps", ["-o", "comm=", "-p", String(stablePid)], { encoding: "utf8" }).trim()
+    ).toLowerCase();
+    assert.ok(cfg.terminalNames.has(comm), `stablePid comm "${comm}" should be a known terminal`);
+    // The tmux server PID (from $TMUX) should be in the chain but not be the stablePid
+    const tmuxServerPid = parseInt(process.env.TMUX.split(",")[1], 10);
+    assert.ok(pidChain.includes(tmuxServerPid), "pidChain should include tmux server PID");
+    assert.notStrictEqual(stablePid, tmuxServerPid, "stablePid should not be tmux server");
+  });
+
+  it("skips tmux resolution when walk does not reach tmux server", () => {
+    const cfg = getPlatformConfig();
+    // startPid=1 means the walk ends immediately (PID 1 has no parent)
+    const resolve = createPidResolver({ platformConfig: cfg, startPid: 1, maxDepth: 1 });
+    const { pidChain } = resolve();
+    // Should not have tmux client PIDs appended
+    assert.ok(pidChain.length <= 1);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
 // buildElectronLaunchConfig()
 // ═════════════════════════════════════════════════════════════════════════════
 

@@ -1088,6 +1088,75 @@ function scheduleITermTabFocus(sourcePid, pidChain) {
   });
 }
 
+let _resolvedTmuxBin = null;
+function resolveTmuxBin() {
+  if (_resolvedTmuxBin !== null) return _resolvedTmuxBin;
+  const candidates = [
+    "/opt/homebrew/bin/tmux",
+    "/usr/local/bin/tmux",
+    "/usr/bin/tmux",
+    "/bin/tmux",
+  ];
+  for (const p of candidates) {
+    try { if (fs.statSync(p).isFile()) { _resolvedTmuxBin = p; return p; } } catch {}
+  }
+  _resolvedTmuxBin = "";
+  return "";
+}
+
+function scheduleTmuxPaneFocus(pidChain) {
+  if (!Array.isArray(pidChain) || pidChain.length < 2) return;
+  const tmuxBin = resolveTmuxBin();
+  if (!tmuxBin) return;
+  const candidates = pidChain.filter(p => Number.isFinite(p) && p > 0);
+  if (candidates.length < 2) return;
+
+  const pidsArg = candidates.slice(0, 8).join(",");
+  execFile("ps", ["-o", "pid=,comm=", "-p", pidsArg], { encoding: "utf8", timeout: 500 }, (err, stdout) => {
+    if (err || !stdout) return;
+    const tmuxPids = new Set();
+    for (const line of stdout.trim().split("\n")) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length >= 2 && path.basename(parts[parts.length - 1]).toLowerCase() === "tmux") {
+        tmuxPids.add(parseInt(parts[0], 10));
+      }
+    }
+    if (!tmuxPids.size) return;
+
+    // The pane shell is the PID immediately before the tmux server in the chain.
+    // Collect all candidate pane PIDs (entries preceding a tmux PID that aren't tmux themselves).
+    const paneCandidates = [];
+    for (let i = 1; i < candidates.length; i++) {
+      if (tmuxPids.has(candidates[i]) && !tmuxPids.has(candidates[i - 1])) {
+        paneCandidates.push(candidates[i - 1]);
+      }
+    }
+    if (!paneCandidates.length) return;
+
+    execFile(tmuxBin, ["list-panes", "-a", "-F", "#{pane_pid} #{session_name}:#{window_index}.#{pane_index}"],
+      { encoding: "utf8", timeout: 500 }, (tmuxErr, tmuxOut) => {
+      if (tmuxErr || !tmuxOut) return;
+      for (const panePid of paneCandidates) {
+        for (const line of tmuxOut.trim().split("\n")) {
+          const spaceIdx = line.indexOf(" ");
+          if (spaceIdx < 1) continue;
+          if (parseInt(line.substring(0, spaceIdx), 10) === panePid) {
+            const target = line.substring(spaceIdx + 1).trim();
+            const dotIdx = target.lastIndexOf(".");
+            const windowTarget = dotIdx > 0 ? target.substring(0, dotIdx) : target;
+            setTimeout(() => {
+              execFile(tmuxBin, ["select-window", "-t", windowTarget], { timeout: 500 }, () => {
+                execFile(tmuxBin, ["select-pane", "-t", target], { timeout: 500 }, () => {});
+              });
+            }, 400);
+            return;
+          }
+        }
+      }
+    });
+  });
+}
+
 function scheduleCmuxWorkspaceSwitch(pidChain) {
   if (!isMac || !Array.isArray(pidChain) || !pidChain.length) return;
   const pids = pidChain.filter(p => Number.isFinite(p) && p > 0);
@@ -1251,6 +1320,7 @@ function executeMacFocusRequest(request) {
   focusTerminalWindowLegacy(request, finalize);
   scheduleTerminalTabFocus(request.editor, request.pidChain);
   scheduleITermTabFocus(request.sourcePid, request.pidChain);
+  scheduleTmuxPaneFocus(request.pidChain);
   scheduleCmuxWorkspaceSwitch(request.pidChain);
   scheduleSupersetFocus(request.sourcePid, request.cwd);
   scheduleGhosttyFocus(request.sourcePid, request.cwd, request.pidChain, request.ghosttyTerminalId);
@@ -1445,6 +1515,7 @@ function focusTerminalWindow(sourcePidOrRequest, cwd, editor, pidChain, meta) {
   if (isLinux) {
     focusTerminalWindowLegacy(request);
     scheduleTerminalTabFocus(request.editor, request.pidChain);
+    scheduleTmuxPaneFocus(request.pidChain);
     logFocusResult("branch=linux-command-submitted");
     return normalizeFocusResultPayload({ reason: "linux-command-submitted" });
   }
@@ -1601,6 +1672,7 @@ return {
     buildGhosttyTtyFocusScript,
     buildGhosttyPidFocusScript,
     buildGhosttyCwdFocusScript,
+    scheduleTmuxPaneFocus,
   },
 };
 
