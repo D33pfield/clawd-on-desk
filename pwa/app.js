@@ -207,6 +207,9 @@
         // Dismiss any persistent toasts (e.g. retry hint)
         var persisted = document.querySelectorAll(".toast-persist");
         for (var i = 0; i < persisted.length; i++) { persisted[i].remove(); }
+        // Strip query params from URL so stale ?token= from QR codes
+        // won't overwrite a rotated token in history on next auto-connect.
+        if (window.location.search) { history.replaceState(null, "", window.location.pathname); }
       };
       socket.onmessage = function(event) {
         if (socket !== self.ws) return;
@@ -248,6 +251,16 @@
 
     getHistory() { try { return JSON.parse(localStorage.getItem("clawd-history") || "[]"); } catch { return []; } }
     deleteHistory(index) { var h = this.getHistory(); h.splice(index, 1); localStorage.setItem("clawd-history", JSON.stringify(h)); }
+
+    _updateHistoryToken(host, port, newToken) {
+      var history = this.getHistory();
+      for (var i = 0; i < history.length; i++) {
+        if (history[i].host === host && history[i].port === port) {
+          history[i].token = newToken;
+        }
+      }
+      localStorage.setItem("clawd-history", JSON.stringify(history));
+    }
 
     _bindVisibility() {
       var self = this;
@@ -519,6 +532,16 @@
         else if (msg.type === "state") { self.renderer.updateState(msg.sessionId, msg.data); self.notifier.onStateChange(msg.sessionId, msg.data); }
         else if (msg.type === "session_deleted") { self.renderer.removeSession(msg.sessionId); }
         else if (msg.type === "tool_output") { var sid = msg.sessionId; var session = self.renderer.sessions.get(sid); if (session) { session.lastOutput = { toolName: msg.data.toolName, output: (msg.data.output || "").substring(0, 200), at: msg.timestamp || Date.now() }; self.renderer.render(); } }
+        else if (msg.type === "token_rotate") {
+          var newToken = msg.newToken;
+          if (newToken && self.connection.config) {
+            self.connection.config.token = newToken;
+            self.connection._updateHistoryToken(self.connection.config.host, self.connection.config.port, newToken);
+            self.connection.send({ type: "token_rotate_ack" });
+            log("Token rotated");
+            showToast("令牌已更新", "success");
+          }
+        }
       };
     }
 
