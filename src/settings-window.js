@@ -158,6 +158,18 @@ function createSettingsWindowRuntime(options = {}) {
     return clampTextScale(typeof options.getTextScale === "function" ? options.getTextScale() : 1);
   }
 
+  // The text-scale slider shows the committed percent of the display this
+  // window sits on, which it can only learn via getTextScaleContext() — a
+  // display change never goes through the settings store, so without this
+  // poke the slider keeps showing the previous display's value (and a nudge
+  // would commit from that stale base).
+  function notifyTextScaleContextChanged(win) {
+    const wc = win && win.webContents;
+    if (!wc || (typeof wc.isDestroyed === "function" && wc.isDestroyed())) return;
+    if (typeof wc.send !== "function") return;
+    try { wc.send("settings:text-scale-context-changed"); } catch {}
+  }
+
   // textScale changed while settings is open: re-zoom, raise the minimum
   // size, and only grow the window if it now sits below that minimum — never
   // touch a user-chosen size otherwise.
@@ -166,6 +178,7 @@ function createSettingsWindowRuntime(options = {}) {
     if (!isLiveWindow(win)) return;
     const scale = getTextScale();
     applyZoomToWindow(win, scale);
+    notifyTextScaleContextChanged(win);
     const minW = scaleWidth(MIN_WIDTH, scale);
     const minH = scaleHeight(MIN_HEIGHT, scale);
     if (typeof win.setMinimumSize === "function") win.setMinimumSize(minW, minH);

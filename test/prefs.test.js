@@ -925,6 +925,44 @@ describe("prefs.migrate v8 → v9 (auto-approve auto-pilot)", () => {
   });
 });
 
+describe("prefs.migrate v9 → v10 (compact HUD defaults are fresh-install only)", () => {
+  it("backfills the old HUD defaults for pre-v10 files missing the keys", () => {
+    // save() normally bakes every key, but files from pre-HUD-toggle builds
+    // (or hand-trimmed ones) lack these two — without the backfill validate()
+    // would hand existing users the flipped fresh-install defaults.
+    for (const version of [8, 9]) {
+      const validated = prefs.validate(prefs.migrate({ version, lang: "en" }));
+      assert.strictEqual(validated.version, prefs.CURRENT_VERSION);
+      assert.strictEqual(validated.sessionHudShowElapsed, true, `v${version}: elapsed stays on for upgraders`);
+      assert.strictEqual(validated.sessionHudCleanupDetached, false, `v${version}: cleanup stays off for upgraders`);
+    }
+  });
+
+  it("preserves explicit values that match neither old nor new default", () => {
+    const validated = prefs.validate(prefs.migrate({
+      version: 9,
+      sessionHudShowElapsed: false,
+      sessionHudCleanupDetached: true,
+    }));
+    assert.strictEqual(validated.sessionHudShowElapsed, false);
+    assert.strictEqual(validated.sessionHudCleanupDetached, true);
+  });
+
+  it("fresh defaults (no prefs file, migrate never runs) get the compact HUD", () => {
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.sessionHudShowElapsed, false);
+    assert.strictEqual(d.sessionHudCleanupDetached, true);
+  });
+
+  it("is idempotent on v10 input (a fresh-install save is not re-backfilled)", () => {
+    // A v10 file that legitimately lacks the keys does not exist (save()
+    // bakes them), but the branch must still not fire for v10 input.
+    const upgraded = prefs.migrate({ version: 10 });
+    assert.strictEqual("sessionHudShowElapsed" in upgraded, false);
+    assert.strictEqual("sessionHudCleanupDetached" in upgraded, false);
+  });
+});
+
 describe("prefs ephemeral fields (auto-pilot does not persist)", () => {
   it("validate() never restores a persisted autoApproveAllPermissions=true", () => {
     assert.strictEqual(prefs.validate({ autoApproveAllPermissions: true }).autoApproveAllPermissions, false);

@@ -74,6 +74,7 @@
       size: null,
       soundSummary: null,
       soundVolume: null,
+      textScale: null,
     },
     shortcutRecordingActionId: null,
     shortcutRecordingError: "",
@@ -797,6 +798,12 @@
     if (state.mountedControls.soundVolume && typeof state.mountedControls.soundVolume.dispose === "function") {
       state.mountedControls.soundVolume.dispose();
     }
+    // Rolls back a transient text-scale preview that a full re-render would
+    // otherwise strand in the main process (the row's blur never fires when
+    // its subtree is dropped wholesale).
+    if (state.mountedControls.textScale && typeof state.mountedControls.textScale.dispose === "function") {
+      state.mountedControls.textScale.dispose();
+    }
     state.mountedControls.generalSwitches.clear();
     state.mountedControls.bubblePolicyControls.clear();
     state.mountedControls.sessionCleanupControls.clear();
@@ -811,6 +818,7 @@
     state.mountedControls.size = null;
     state.mountedControls.soundSummary = null;
     state.mountedControls.soundVolume = null;
+    state.mountedControls.textScale = null;
   }
 
   function syncMountedSizeControl({ fromBroadcast = false } = {}) {

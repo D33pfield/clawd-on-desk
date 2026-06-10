@@ -1398,6 +1398,11 @@
       readout.textContent = `${pct}%`;
     }
 
+    // True from the first drag tick until commit (change) or rollback (blur).
+    // Context-changed pokes arriving mid-drag must NOT repaint the slider to
+    // the committed value — the preview itself triggers such pokes.
+    let previewLive = false;
+
     // Single-flight gate instead of a timer: at most one preview IPC in the
     // air, the freshest dragged value queued behind it.
     let previewInFlight = false;
@@ -1441,22 +1446,35 @@
     }
 
     slider.addEventListener("input", () => {
+      previewLive = true;
       const pct = Number(slider.value);
       paint(pct);
       sendPreview(pct);
     });
     slider.addEventListener("change", () => {
+      previewLive = false;
       commit(Number(slider.value));
     });
     slider.addEventListener("blur", () => {
       // A real edit already committed via change (which clears the preview in
       // the main process); this only rolls back an abandoned preview.
+      previewLive = false;
       rollbackPreview();
     });
     readout.addEventListener("click", () => {
       paint(TEXT_SCALE_UI_DEFAULT);
       commit(TEXT_SCALE_UI_DEFAULT);
     });
+
+    // The window landed on a display with a different committed value (drag
+    // across screens, topology change) — re-pull. No store change happens in
+    // that case, so the settings-changed broadcast can't cover it.
+    const unsubscribeContextChanged =
+      window.settingsAPI && typeof window.settingsAPI.onTextScaleContextChanged === "function"
+        ? window.settingsAPI.onTextScaleContextChanged(() => {
+            if (!previewLive) syncFromContext();
+          })
+        : null;
 
     paint(TEXT_SCALE_UI_DEFAULT);
     syncFromContext();
@@ -1467,6 +1485,7 @@
         syncFromContext();
       },
       dispose() {
+        if (typeof unsubscribeContextChanged === "function") unsubscribeContextChanged();
         rollbackPreview();
       },
     };

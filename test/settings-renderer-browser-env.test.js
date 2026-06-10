@@ -2336,6 +2336,34 @@ describe("settings renderer browser environment", () => {
     assert.match(mainSource, /height:calc\(100vh \/ \$\{resumeScale\}\)/);
   });
 
+  it("keeps the text-scale slider in sync across display moves without fighting a live drag", () => {
+    const tabSource = fs.readFileSync(SETTINGS_TAB_GENERAL, "utf8");
+    const uiCoreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    // The committed percent is per-display and lives main-side; a window move
+    // never produces a settings-changed broadcast, so the row must subscribe
+    // to the context-changed poke from the settings-window runtime…
+    assert.ok(/onTextScaleContextChanged\(\(\) => \{\s*if \(!previewLive\) syncFromContext\(\);/.test(tabSource),
+      "text-scale row must re-pull context on display change, gated on previewLive");
+    // …and must not repaint to the committed value mid-drag (the preview
+    // itself triggers pokes via applyTextScaleNow).
+    assert.ok(/previewLive = true;/.test(tabSource));
+    // Both preview exits clear the flag: commit (change) and rollback (blur).
+    // (Lookbehind excludes the `let previewLive = false;` declaration.)
+    assert.strictEqual((tabSource.match(/(?<!let )previewLive = false;/g) || []).length, 2);
+    // Full re-renders must dispose the row (unsubscribe + roll back a
+    // stranded transient preview) — see clearMountedControls.
+    assert.ok(/unsubscribeContextChanged\(\);/.test(tabSource));
+    assert.ok(/mountedControls\.textScale && typeof state\.mountedControls\.textScale\.dispose === "function"/.test(uiCoreSource),
+      "clearMountedControls must dispose the text-scale control");
+    assert.ok(/state\.mountedControls\.textScale = null;/.test(uiCoreSource));
+    // Renderer-side rollback rides IPC and can't be trusted during window
+    // teardown — main must clear the transient preview when settings closes,
+    // or a mid-drag ⌘W pins the preview scale to the display until restart.
+    const mainSource = fs.readFileSync(MAIN_PROCESS, "utf8");
+    assert.ok(/onBeforeClosed: \(\) => \{[^}]*endTextScalePreview\(\);/.test(mainSource),
+      "settings onBeforeClosed must end a live text-scale preview");
+  });
+
   it("makes both percent readouts clickable reset buttons", () => {
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
     const tabSource = fs.readFileSync(SETTINGS_TAB_GENERAL, "utf8");

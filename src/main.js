@@ -456,6 +456,11 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
     bumpAnimationOverridePreviewPosterGeneration();
     if (shortcutRuntime) shortcutRuntime.stopRecording();
     void settingsSizePreviewSession.cleanup();
+    // The renderer-side rollback (slider blur / control dispose) rides IPC
+    // and can't be trusted while the window is being torn down — without
+    // this, closing mid-drag leaves the transient preview scale applied to
+    // the display until the next commit or restart.
+    endTextScalePreview();
   },
   onAfterClosed: () => maybeDestroyIdleAnimationPreviewPosterWindow(),
 });

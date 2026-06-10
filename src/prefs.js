@@ -44,7 +44,7 @@ const {
   normalizeTextScaleByDisplay,
 } = require("./text-scale");
 
-const CURRENT_VERSION = 9;
+const CURRENT_VERSION = 10;
 
 // ── Schema ──
 // Each field has: type, default OR defaultFactory, optional enum/normalize/validate.
@@ -523,6 +523,18 @@ function migrate(raw) {
   if (out.version < 9) {
     out.autoApproveAllPermissions = false;
     out.version = 9;
+  }
+  // v9 -> v10: sessionHudShowElapsed / sessionHudCleanupDetached flipped their
+  // schema defaults for FRESH INSTALLS ONLY (compact HUD by default). Existing
+  // files normally carry both keys explicitly (save() bakes the full
+  // snapshot), but a file written by a pre-HUD-toggle build or hand-trimmed
+  // by the user lacks them — without this backfill validate() would hand
+  // those users the new defaults and visibly change their HUD. Pin the old
+  // defaults for every pre-v10 file; fresh installs never run migrate().
+  if (out.version < 10) {
+    if (!("sessionHudShowElapsed" in out)) out.sessionHudShowElapsed = true;
+    if (!("sessionHudCleanupDetached" in out)) out.sessionHudCleanupDetached = false;
+    out.version = 10;
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
