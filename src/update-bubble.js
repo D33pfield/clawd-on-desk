@@ -225,13 +225,12 @@ module.exports = function initUpdateBubble(ctx) {
     return bubble;
   }
 
-  function computeBounds() {
+  function computeBounds(scale = getTextScale()) {
     if (!ctx.win || ctx.win.isDestroyed()) return null;
     const petBounds = ctx.getPetWindowBounds();
     const cx = petBounds.x + petBounds.width / 2;
     const cy = petBounds.y + petBounds.height / 2;
     const wa = ctx.getNearestWorkArea(cx, cy);
-    const scale = getTextScale();
     const height = scaleHeight(measuredHeight || estimateHeight(activePayload), scale);
     const reservedHeight = getPermissionStackHeight();
     const anchorRect = ctx.bubbleFollowPet && typeof ctx.getUpdateBubbleAnchorRect === "function"
@@ -256,10 +255,11 @@ module.exports = function initUpdateBubble(ctx) {
 
   function repositionUpdateBubble() {
     if (!bubble || bubble.isDestroyed()) return;
-    // Re-resolve zoom: the pet may have crossed onto a display with a
-    // different textScale (memoized — no-op when unchanged).
-    applyZoomToWindow(bubble, getTextScale());
-    const bounds = computeBounds();
+    // Resolve the scale ONCE and feed the same value to both the zoom
+    // injection and the bounds math (see session-hud syncSessionHud).
+    const scale = getTextScale();
+    applyZoomToWindow(bubble, scale);
+    const bounds = computeBounds(scale);
     if (bounds) bubble.setBounds(bounds);
   }
 

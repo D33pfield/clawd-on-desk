@@ -563,7 +563,7 @@ module.exports = function initSessionHud(ctx) {
     notifyReservedOffsetIfChanged();
   }
 
-  function computeBounds(snapshot) {
+  function computeBounds(snapshot, scale = getTextScale()) {
     if (!ctx.win || ctx.win.isDestroyed()) return null;
     const petBounds = typeof ctx.getPetWindowBounds === "function" ? ctx.getPetWindowBounds() : null;
     if (!petBounds) return null;
@@ -586,7 +586,7 @@ module.exports = function initSessionHud(ctx) {
       ctx.sessionHudShowContextUsage !== false
     );
     lastHudHeight = height;
-    return computeSessionHudBounds({ hitRect, anchorRect, workArea, width, height, scale: getTextScale() });
+    return computeSessionHudBounds({ hitRect, anchorRect, workArea, width, height, scale });
   }
 
   function showSessionHud(win) {
@@ -617,14 +617,17 @@ module.exports = function initSessionHud(ctx) {
     const win = ensureSessionHud();
     if (!win || win.isDestroyed()) return;
 
-    const computed = computeBounds(snapshot);
+    // Resolve the scale ONCE per sync and feed the same value to both the
+    // zoom injection and the bounds math — two separate reads could disagree
+    // mid-display-crossing and produce a scaled window with unzoomed content
+    // (or the clipped inverse).
+    const scale = getTextScale();
+    const computed = computeBounds(snapshot, scale);
     if (!computed) {
       hideSessionHud();
       return;
     }
-    // Re-resolve zoom: the pet may have crossed onto a display with a
-    // different textScale (memoized — no-op when unchanged).
-    applyZoomToWindow(win, getTextScale());
+    applyZoomToWindow(win, scale);
     hudFlippedAbove = !!computed.flippedAbove;
     win.setBounds(computed.bounds);
     if (options.sendSnapshot !== false) sendSnapshot(snapshot);

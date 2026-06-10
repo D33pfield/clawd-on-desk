@@ -182,4 +182,33 @@ describe("applyZoomToWindow", () => {
     assert.strictEqual(applyZoomToWindow({ isDestroyed: () => false }, 1.2), false);
     assert.strictEqual(applyZoomToWindow(makeWindow({ throws: true }), 1.2), false);
   });
+
+  it("rolls the memo back on injection failure so the next call re-injects", async () => {
+    // Regression: a rejected pre-load injection must not poison the memo, or
+    // the did-finish-load re-apply gets skipped and a scaled window keeps
+    // unzoomed content (HUD "very long" / clipped symptoms).
+    let shouldReject = true;
+    const jsCalls = [];
+    const win = {
+      isDestroyed: () => false,
+      webContents: {
+        isDestroyed: () => false,
+        setZoomFactor() {},
+        executeJavaScript(code) {
+          jsCalls.push(code);
+          return shouldReject ? Promise.reject(new Error("page not loaded")) : Promise.resolve();
+        },
+      },
+    };
+
+    assert.strictEqual(applyZoomToWindow(win, 1.35), true);
+    await new Promise((resolve) => setImmediate(resolve));
+    shouldReject = false;
+    assert.strictEqual(applyZoomToWindow(win, 1.35), true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(jsCalls.length, 2, "same value must re-inject after a failure");
+
+    assert.strictEqual(applyZoomToWindow(win, 1.35), true);
+    assert.strictEqual(jsCalls.length, 2, "successful injection memoizes again");
+  });
 });

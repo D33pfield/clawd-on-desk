@@ -708,7 +708,23 @@ function getDisplayKeyForBounds(bounds) {
 }
 
 function getPetDisplayKey() {
-  try { return getDisplayKeyForBounds(getPetWindowBounds()); } catch { return null; }
+  // Resolve from the pet's CENTER POINT, not the window rect: the pet windows
+  // use enableLargerThanScreen and can overhang display edges, which makes
+  // getDisplayMatching unstable. Nearest-point matches the same anchor the
+  // bubble/HUD geometry uses (getNearestWorkArea of the pet center), so the
+  // zoom value and the layout always agree on which display they are on.
+  try {
+    const bounds = getPetWindowBounds();
+    if (!bounds) return null;
+    const point = {
+      x: Math.round(bounds.x + bounds.width / 2),
+      y: Math.round(bounds.y + bounds.height / 2),
+    };
+    const display = screen.getDisplayNearestPoint(point);
+    return display && display.id != null ? String(display.id) : null;
+  } catch {
+    return null;
+  }
 }
 
 function getWindowDisplayKey(win) {

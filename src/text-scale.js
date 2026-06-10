@@ -62,10 +62,19 @@ function applyZoomToWindow(win, scale) {
       `document.documentElement.style.zoom = "${s}"`,
       true
     );
-    if (result && typeof result.catch === "function") result.catch(() => {});
+    // Memoize optimistically (reposition paths call this every frame), but
+    // roll the memo back if the injection rejects — otherwise a pre-load
+    // failure would permanently skip the did-finish-load re-apply and leave
+    // a scaled window with unzoomed content.
     wc.__clawdAppliedTextZoom = s;
+    if (result && typeof result.catch === "function") {
+      result.catch(() => {
+        if (wc.__clawdAppliedTextZoom === s) wc.__clawdAppliedTextZoom = undefined;
+      });
+    }
     return true;
   } catch {
+    wc.__clawdAppliedTextZoom = undefined;
     return false;
   }
 }
