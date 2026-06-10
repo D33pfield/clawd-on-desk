@@ -192,6 +192,23 @@ const updateRegistry = {
   soundMuted: requireBoolean("soundMuted"),
   soundVolume: requireNumberInRange("soundVolume", 0, 1),
   textScale: requireNumberInRange("textScale", TEXT_SCALE_MIN, TEXT_SCALE_MAX),
+  // Committed by the setTextScaleForDisplay command (the controller requires
+  // every commit key to have a registry entry). Strict per-entry validation
+  // so a direct settings:update can't park junk in the in-memory store.
+  textScaleByDisplay: (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "textScaleByDisplay must be an object map" };
+    }
+    for (const [key, raw] of Object.entries(value)) {
+      if (typeof key !== "string" || !key.trim() || !isValidTextScale(raw)) {
+        return {
+          status: "error",
+          message: `textScaleByDisplay entry "${key}" must map a display id to ${TEXT_SCALE_MIN}–${TEXT_SCALE_MAX}`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
   flashTaskbarOnComplete: requireBoolean("flashTaskbarOnComplete"),
   flashIntervalMs: requireNumberInRange("flashIntervalMs", 200, 2000),
   flashDurationMs: requireNumberInRange("flashDurationMs", 0, 60000),

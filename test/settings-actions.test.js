@@ -2178,6 +2178,24 @@ describe("importAnimationOverrides command", () => {
   });
 });
 
+describe("textScaleByDisplay validator", () => {
+  it("has a registry entry so command commits pass controller validation", () => {
+    // Regression: the controller rejects command commits whose keys lack a
+    // registry validator ("unknown settings key textScaleByDisplay").
+    assert.strictEqual(typeof updateRegistry.textScaleByDisplay, "function");
+  });
+
+  it("accepts a valid display map and rejects junk entries", () => {
+    assert.strictEqual(updateRegistry.textScaleByDisplay({ "1": 1.35, "2": 0.8 }).status, "ok");
+    assert.strictEqual(updateRegistry.textScaleByDisplay({}).status, "ok");
+    assert.strictEqual(updateRegistry.textScaleByDisplay(null).status, "error");
+    assert.strictEqual(updateRegistry.textScaleByDisplay([1.2]).status, "error");
+    assert.strictEqual(updateRegistry.textScaleByDisplay({ "1": 99 }).status, "error");
+    assert.strictEqual(updateRegistry.textScaleByDisplay({ "1": "1.2" }).status, "error");
+    assert.strictEqual(updateRegistry.textScaleByDisplay({ " ": 1.2 }).status, "error");
+  });
+});
+
 describe("setTextScaleForDisplay command", () => {
   it("writes the entry for the resolved display and keeps other displays", () => {
     const r = commandRegistry.setTextScaleForDisplay({ value: 1.35 }, {
