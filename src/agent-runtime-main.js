@@ -143,11 +143,11 @@ function createAgentRuntimeMain(options = {}) {
       : 0;
   }
 
-  function dismissPermissionsByAgent(agentId) {
+  function dismissPermissionsByAgent(agentId, options) {
     const perm = getPermissionRuntime();
     const state = getStateRuntime();
     const removed = perm && typeof perm.dismissPermissionsByAgent === "function"
-      ? perm.dismissPermissionsByAgent(agentId)
+      ? perm.dismissPermissionsByAgent(agentId, options)
       : 0;
     // Kimi keeps a state-side permission hold for passive notifications; when
     // an agent is disabled, dismissing the bubble must release that hold too.

@@ -12,6 +12,7 @@ const {
   MAX_PERMISSION_BODY_BYTES,
   handlePermissionPost,
   shouldBypassCCBubble,
+  shouldBypassCCSubagentBubble,
   shouldBypassCodexBubble,
   shouldBypassCopilotBubble,
   shouldBypassOpencodeBubble,
@@ -71,6 +72,7 @@ function makeCtx(overrides = {}) {
     permLog: (message) => calls.logs.push(message),
     isAgentEnabled: () => true,
     isAgentPermissionsEnabled: () => true,
+    isAgentSubagentPermissionsEnabled: () => true,
     updateSession: (...args) => calls.updateSession.push(args),
     showPermissionBubble: (entry) => calls.showPermissionBubble.push(entry),
     sendPermissionResponse: (res, behavior, message) => {
@@ -145,6 +147,22 @@ describe("server-route-permission helpers", () => {
     assert.strictEqual(shouldBypassCopilotBubble({
       isAgentPermissionsEnabled: () => true,
     }), false);
+  });
+
+  it("bypasses CC subagent bubbles only for subagent-origin requests with the sub-gate off", () => {
+    const gateOff = { isAgentSubagentPermissionsEnabled: () => false };
+    const gateOn = { isAgentSubagentPermissionsEnabled: () => true };
+    const subagent = { source: "subagent", subagentId: "uuid-1", subagentType: "Explore" };
+    const mainThread = { source: "explicit" };
+
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, "Bash", "claude-code", subagent), true);
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOn, "Bash", "claude-code", subagent), false);
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, "Bash", "claude-code", mainThread), false);
+    // UX flows stay exempt, mirroring shouldBypassCCBubble.
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, "ExitPlanMode", "claude-code", subagent), false);
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, "AskUserQuestion", "claude-code", subagent), false);
+    // Missing gate reader (older ctx) keeps current behavior: bubble.
+    assert.strictEqual(shouldBypassCCSubagentBubble({}, "Bash", "claude-code", subagent), false);
   });
 
 });
@@ -960,5 +978,242 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.ctx.calls.resolved.length, 1);
     assert.strictEqual(res.ctx.calls.resolved[0].entry, entry);
     assert.strictEqual(res.ctx.calls.resolved[0].behavior, "no-decision");
+  });
+});
+
+// ── Claude Code subagent requests (#451) ──
+// CC ≥ 2.1.x stamps PermissionRequest hook input with agent_id (per-instance
+// subagent uuid) + agent_type when the request fires from inside a Task
+// subagent. resolveHookAgentId normalizes that to claude-code, and the
+// per-agent subagent sub-gate decides whether to bubble or drop the
+// connection (CC terminal fallback).
+describe("server-route-permission POST — CC subagent requests (#451)", () => {
+  const SUBAGENT_UUID = "0199f2c5-1bb8-7892-9e3b-1d6f4a1c2b3d";
+
+  function subagentBody(overrides = {}) {
+    return JSON.stringify({
+      agent_id: SUBAGENT_UUID,
+      agent_type: "code-reviewer",
+      session_id: "sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_use_id: "tool-1",
+      ...overrides,
+    });
+  }
+
+  it("bubbles a subagent permission under the claude-code identity by default", async () => {
+    const res = await callPermissionPost(subagentBody());
+
+    assert.strictEqual(res.statusCode, null);
+    assert.strictEqual(res.destroyed, false);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    // Regression guard: the uuid used to leak into permEntry.agentId /
+    // updateSession, mislabeling the session and dodging every per-agent gate.
+    assert.strictEqual(entry.agentId, "claude-code");
+    assert.strictEqual(entry.subagentId, SUBAGENT_UUID);
+    assert.strictEqual(entry.subagentType, "code-reviewer");
+    assert.deepStrictEqual(res.ctx.calls.updateSession, [[
+      "sid",
+      "notification",
+      "PermissionRequest",
+      { agentId: "claude-code" },
+    ]]);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
+  });
+
+  it("stamps main-thread CC entries with null subagent fields", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    }));
+
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.subagentId, null);
+    assert.strictEqual(entry.subagentType, null);
+  });
+
+  it("destroys the connection when the subagent sub-gate is off", async () => {
+    const res = await callPermissionPost(subagentBody(), {
+      ctx: {
+        isAgentSubagentPermissionsEnabled: (agentId) => agentId !== "claude-code",
+      },
+    });
+
+    assert.strictEqual(res.destroyed, true);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
+    assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["accepted"]);
+  });
+
+  it("keeps bubbling main-thread requests while the subagent sub-gate is off", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      session_id: "sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    }), {
+      ctx: {
+        isAgentSubagentPermissionsEnabled: () => false,
+      },
+    });
+
+    assert.strictEqual(res.statusCode, null);
+    assert.strictEqual(res.destroyed, false);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    assert.strictEqual(res.ctx.pendingPermissions[0].agentId, "claude-code");
+  });
+
+  it("still bubbles subagent AskUserQuestion as elicitation when the sub-gate is off", async () => {
+    const res = await callPermissionPost(subagentBody({
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question: "Continue?" }] },
+    }), {
+      ctx: {
+        isAgentSubagentPermissionsEnabled: () => false,
+      },
+    });
+
+    assert.strictEqual(res.destroyed, false);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.isElicitation, true);
+    assert.strictEqual(entry.agentId, "claude-code");
+    assert.strictEqual(entry.subagentId, SUBAGENT_UUID);
+  });
+
+  it("still bubbles subagent ExitPlanMode when the sub-gate is off", async () => {
+    const res = await callPermissionPost(subagentBody({
+      tool_name: "ExitPlanMode",
+      tool_input: { plan: "ship it" },
+    }), {
+      ctx: {
+        isAgentSubagentPermissionsEnabled: () => false,
+      },
+    });
+
+    assert.strictEqual(res.destroyed, false);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    assert.strictEqual(res.ctx.pendingPermissions[0].toolName, "ExitPlanMode");
+  });
+
+  it("handles a verbatim CC 2.1.169 subagent payload (live capture 2026-06-10)", async () => {
+    // Captured from a real Claude Code 2.1.169 Task-subagent run via an
+    // isolated PermissionRequest HTTP hook (paths anonymized). Ground truth
+    // for the field shapes the #451 gate relies on: agent_id is a 17-hex
+    // instance id (NOT a uuid), agent_type is the subagent type, and
+    // session_id is the PARENT session's id.
+    const realBody = {
+      session_id: "0c2c2e1a-614f-4928-84bf-f4baf5e197f4",
+      transcript_path: "/Users/tester/.claude/projects/-Users-tester-repo/0c2c2e1a-614f-4928-84bf-f4baf5e197f4.jsonl",
+      cwd: "/Users/tester/repo",
+      permission_mode: "default",
+      agent_id: "a8fb8638225be89d4",
+      agent_type: "general-purpose",
+      hook_event_name: "PermissionRequest",
+      tool_name: "Bash",
+      tool_input: { command: "touch /tmp/cc451-proof.txt", description: "Create proof file" },
+      permission_suggestions: [
+        { type: "addDirectories", directories: ["/tmp"], destination: "session" },
+        { type: "setMode", mode: "acceptEdits", destination: "session" },
+      ],
+    };
+
+    const bubbled = await callPermissionPost(JSON.stringify(realBody));
+    assert.strictEqual(bubbled.ctx.pendingPermissions.length, 1);
+    const entry = bubbled.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.agentId, "claude-code");
+    assert.strictEqual(entry.subagentId, "a8fb8638225be89d4");
+    assert.strictEqual(entry.subagentType, "general-purpose");
+    assert.strictEqual(entry.suggestions.length, 2);
+
+    const suppressed = await callPermissionPost(JSON.stringify(realBody), {
+      ctx: { isAgentSubagentPermissionsEnabled: () => false },
+    });
+    assert.strictEqual(suppressed.destroyed, true);
+    assert.deepStrictEqual(suppressed.ctx.pendingPermissions, []);
+  });
+
+  it("lets the headless guard win over the subagent sub-gate (auto-deny, no destroy)", async () => {
+    const res = await callPermissionPost(subagentBody(), {
+      ctx: {
+        sessions: new Map([["sid", { headless: true }]]),
+        isAgentSubagentPermissionsEnabled: () => false,
+      },
+    });
+
+    assert.strictEqual(res.destroyed, false);
+    assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, [{
+      behavior: "deny",
+      message: "Non-interactive session; auto-denied",
+    }]);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+  });
+
+  it("lets PASSTHROUGH tools auto-allow before the subagent sub-gate", async () => {
+    const res = await callPermissionPost(subagentBody({
+      tool_name: "TaskList",
+      tool_input: {},
+    }), {
+      ctx: {
+        PASSTHROUGH_TOOLS: new Set(["TaskList"]),
+        isAgentSubagentPermissionsEnabled: () => false,
+      },
+    });
+
+    assert.strictEqual(res.destroyed, false);
+    assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, [{
+      behavior: "allow",
+      message: undefined,
+    }]);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+  });
+
+  it("keeps CodeBuddy requests on the explicit identity, unaffected by the subagent sub-gate", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "codebuddy",
+      session_id: "cb:sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    }), {
+      ctx: {
+        isAgentSubagentPermissionsEnabled: () => false,
+      },
+    });
+
+    assert.strictEqual(res.destroyed, false);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.agentId, "codebuddy");
+    assert.strictEqual(entry.subagentId, null);
+    assert.strictEqual(entry.subagentType, null);
+  });
+
+  it("applies the per-agent permission subgate to subagent requests (uuid no longer dodges it)", async () => {
+    const res = await callPermissionPost(subagentBody(), {
+      ctx: {
+        isAgentPermissionsEnabled: (agentId) => agentId !== "claude-code",
+      },
+    });
+
+    assert.strictEqual(res.destroyed, true);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+  });
+
+  it("applies the agent master switch to subagent requests (uuid no longer dodges it)", async () => {
+    const res = await callPermissionPost(subagentBody(), {
+      ctx: {
+        isAgentEnabled: (agentId) => agentId !== "claude-code",
+      },
+    });
+
+    assert.strictEqual(res.destroyed, true);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["disabled"]);
   });
 });

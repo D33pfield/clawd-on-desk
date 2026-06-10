@@ -16,6 +16,11 @@ function readFlag(snapshot, agentId, flag, defaultValue = true) {
 
 const isAgentEnabled = (snapshot, agentId) => readFlag(snapshot, agentId, "enabled");
 const isAgentPermissionsEnabled = (snapshot, agentId) => readFlag(snapshot, agentId, "permissionsEnabled");
+// #451 sub-gate under permissionsEnabled: bubbles for PermissionRequests that
+// fire from inside a Claude Code subagent (Task tool). Only claude-code's
+// prefs entry carries the flag; other agents read default-true and are
+// unaffected.
+const isAgentSubagentPermissionsEnabled = (snapshot, agentId) => readFlag(snapshot, agentId, "subagentPermissionsEnabled");
 const isAgentNotificationHookEnabled = (snapshot, agentId) => readFlag(snapshot, agentId, "notificationHookEnabled");
 const isCodexNativeNotificationSoundEnabled = (snapshot) =>
   readFlag(snapshot, "codex", "nativeNotificationSoundEnabled", false);
@@ -30,6 +35,7 @@ module.exports = {
   getCodexPermissionMode,
   isAgentEnabled,
   isAgentPermissionsEnabled,
+  isAgentSubagentPermissionsEnabled,
   isAgentNotificationHookEnabled,
   isCodexNativeNotificationSoundEnabled,
   isCodexPermissionInterceptEnabled,

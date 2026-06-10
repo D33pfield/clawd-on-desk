@@ -45,6 +45,17 @@ function setAgentFlag(payload, deps) {
       message: `setAgentFlag.flag must be one of: ${AGENT_FLAGS.join(", ")}`,
     };
   }
+  // #451: the subagent sub-gate is claude-code-scoped. normalizeAgents already
+  // strips the flag for other agents on persist; reject here too so a direct
+  // command-API call can't trigger the { subagentOnly } dismiss side effect
+  // for agents whose dismissal path has agent-specific cleanup (e.g. Kimi's
+  // permission-state disposal in agent-runtime-main.js).
+  if (flag === "subagentPermissionsEnabled" && agentId !== "claude-code") {
+    return {
+      status: "error",
+      message: "setAgentFlag.subagentPermissionsEnabled only supports claude-code",
+    };
+  }
   const valueCheck = _validateAgentFlagValue(value);
   if (valueCheck.status !== "ok") return valueCheck;
   const snapshot = deps && deps.snapshot;
@@ -72,6 +83,12 @@ function setAgentFlag(payload, deps) {
     } else if (flag === "permissionsEnabled") {
       if (!value && typeof deps.dismissPermissionsByAgent === "function") {
         deps.dismissPermissionsByAgent(agentId);
+      }
+    } else if (flag === "subagentPermissionsEnabled") {
+      // #451: flipping the subagent sub-gate off dismisses only the pending
+      // bubbles that came from a CC subagent; main-thread ones stay up.
+      if (!value && typeof deps.dismissPermissionsByAgent === "function") {
+        deps.dismissPermissionsByAgent(agentId, { subagentOnly: true });
       }
     }
   } catch (err) {

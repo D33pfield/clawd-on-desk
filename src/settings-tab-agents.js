@@ -131,6 +131,26 @@
           text.appendChild(desc);
         },
       }));
+      // #451: only Claude Code marks subagent-origin permission requests
+      // (agent_id in the common hook fields), so only it gets the sub-gate.
+      if (agent.id === "claude-code") {
+        rows.push(buildAgentSwitchRow({
+          agent,
+          flag: "subagentPermissionsEnabled",
+          extraClass: "row-sub",
+          disabled: computeAgentSubSwitchDisabled(agent.id, "subagentPermissionsEnabled"),
+          buildText: (text) => {
+            const label = document.createElement("span");
+            label.className = "row-label";
+            label.textContent = t("rowAgentSubagentPermissions");
+            text.appendChild(label);
+            const desc = document.createElement("span");
+            desc.className = "row-desc";
+            desc.textContent = t("rowAgentSubagentPermissionsDesc");
+            text.appendChild(desc);
+          },
+        }));
+      }
     }
     if (caps.notificationHook) {
       rows.push(buildAgentSwitchRow({
@@ -162,6 +182,11 @@
     }
     if (agentId === "codex" && flag === "nativeNotificationSoundEnabled") {
       return readers.readAgentPermissionMode(agentId) !== "native";
+    }
+    // Subagent sub-gate sits under the permission switch: pointless to toggle
+    // while the parent permission gate already suppresses every CC bubble.
+    if (flag === "subagentPermissionsEnabled") {
+      return !readers.readAgentFlagValue(agentId, "permissionsEnabled");
     }
     return false;
   }

@@ -113,6 +113,9 @@ opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
     → main.js 创建 bubble 窗口（bubble.html）显示权限卡片
     → 用户点击 Allow / Deny / suggestion → HTTP 响应 { behavior }
     → Claude Code 执行对应行为
+    → 子 agent（Task）内触发的请求带 agent_id（实例 uuid）/ agent_type；server-agent-id.js 归一化为
+      claude-code 并标记 subagent 来源，`agents["claude-code"].subagentPermissionsEnabled=false`（#451
+      子开关）时直接断开连接让 CC 回落终端提示（ExitPlanMode / AskUserQuestion 豁免）
 
 权限决策流（Codex official PermissionRequest command hook，阻塞）：
   Codex PermissionRequest
@@ -143,7 +146,7 @@ opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
 - `agents/codex-log-monitor.js` — Codex JSONL fallback 增量轮询器（文件监视 + 增量读取 + approval heuristic）
 - `agents/gemini-log-monitor.js` — legacy Gemini session JSON 轮询器；当前 hook-only 路径不启动
 
-运行时的 agent 启停 / 权限气泡开关通过 `src/agent-gate.js` 读 `prefs.agents[id].enabled` / `.permissionsEnabled`（默认 true，snapshot 缺字段时也 true 以兼容旧版），供 `state.js` 和 `server.js` 判断是否处理该 agent 的事件。
+运行时的 agent 启停 / 权限气泡开关通过 `src/agent-gate.js` 读 `prefs.agents[id].enabled` / `.permissionsEnabled`（默认 true，snapshot 缺字段时也 true 以兼容旧版），供 `state.js` 和 `server.js` 判断是否处理该 agent 的事件。Claude Code 额外有 `.subagentPermissionsEnabled` 子开关（#451，仅 claude-code 默认条目携带该 flag），控制 Task 子 agent 发起的 PermissionRequest 是否弹泡泡。
 
 ## Hook And Plugin Sync
 

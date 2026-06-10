@@ -1689,21 +1689,29 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
 
 // Mirrors the DND dispatcher: CC res.destroy() so it falls back to chat,
 // opencode skips the bridge reply so TUI takes over, codex just closes.
-function dismissPermissionsByAgent(agentId) {
+// options.subagentOnly (#451) restricts the sweep to entries that came from a
+// CC subagent, mirroring the shouldBypassCCSubagentBubble exemptions —
+// plan-review and elicitation bubbles stay up even when that sub-gate flips
+// off, so dismissal must not reap them either.
+function dismissPermissionsByAgent(agentId, options = {}) {
   if (!agentId) return 0;
-  const toDismiss = pendingPermissions.filter((p) => p && p.agentId === agentId);
+  const subagentOnly = !!(options && options.subagentOnly);
+  const matchesScope = (p) => !subagentOnly
+    || (p.subagentId && p.toolName !== "ExitPlanMode" && p.toolName !== "AskUserQuestion");
+  const toDismiss = pendingPermissions.filter((p) => p && p.agentId === agentId && matchesScope(p));
   if (toDismiss.length === 0) return 0;
+  const reason = subagentOnly ? `dismiss-by-agent-subagent:${agentId}` : `dismiss-by-agent:${agentId}`;
   for (const perm of toDismiss) {
     if (perm.isCodexNotify || perm.isKimiNotify) {
-      dismissPassiveNotify(perm, `dismiss-by-agent:${agentId}`);
+      dismissPassiveNotify(perm, reason);
       continue;
     }
-    dismissInteractivePermissionWithoutDecision(perm, `dismiss-by-agent:${agentId}`);
+    dismissInteractivePermissionWithoutDecision(perm, reason);
   }
   repositionBubbles();
   repositionDependentBubbles();
   syncPermissionShortcuts();
-  permLog(`dismissPermissionsByAgent(${agentId}): cleared ${toDismiss.length}`);
+  permLog(`dismissPermissionsByAgent(${agentId}${subagentOnly ? ", subagent-only" : ""}): cleared ${toDismiss.length}`);
   return toDismiss.length;
 }
 

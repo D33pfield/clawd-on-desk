@@ -7,6 +7,7 @@ const {
   getCodexPermissionMode,
   isAgentEnabled,
   isAgentPermissionsEnabled,
+  isAgentSubagentPermissionsEnabled,
   isAgentNotificationHookEnabled,
   isCodexNativeNotificationSoundEnabled,
   isCodexPermissionInterceptEnabled,
@@ -196,6 +197,53 @@ describe("Codex permission mode gate", () => {
   });
 });
 
+describe("isAgentSubagentPermissionsEnabled", () => {
+  it("returns true when the flag is absent (pre-#451 prefs file)", () => {
+    assert.strictEqual(isAgentSubagentPermissionsEnabled(null, "claude-code"), true);
+    assert.strictEqual(isAgentSubagentPermissionsEnabled({}, "claude-code"), true);
+    assert.strictEqual(
+      isAgentSubagentPermissionsEnabled(
+        { agents: { "claude-code": { enabled: true, permissionsEnabled: true } } },
+        "claude-code"
+      ),
+      true
+    );
+  });
+
+  it("returns false only when subagentPermissionsEnabled === false", () => {
+    assert.strictEqual(
+      isAgentSubagentPermissionsEnabled(
+        { agents: { "claude-code": { subagentPermissionsEnabled: false } } },
+        "claude-code"
+      ),
+      false
+    );
+    assert.strictEqual(
+      isAgentSubagentPermissionsEnabled(
+        { agents: { "claude-code": { subagentPermissionsEnabled: true } } },
+        "claude-code"
+      ),
+      true
+    );
+  });
+
+  it("is independent of the master / permission gates", () => {
+    assert.strictEqual(
+      isAgentSubagentPermissionsEnabled(
+        { agents: { "claude-code": { enabled: false, permissionsEnabled: false, subagentPermissionsEnabled: true } } },
+        "claude-code"
+      ),
+      true
+    );
+  });
+
+  it("defaults true for agents that never carry the flag", () => {
+    const snap = prefs.getDefaults();
+    assert.strictEqual(isAgentSubagentPermissionsEnabled(snap, "codex"), true);
+    assert.strictEqual(isAgentSubagentPermissionsEnabled(snap, "future-agent-id"), true);
+  });
+});
+
 describe("Codex native notification sound gate", () => {
   it("defaults off for missing / legacy prefs", () => {
     assert.strictEqual(isCodexNativeNotificationSoundEnabled(null), false);
@@ -345,6 +393,61 @@ describe("setAgentFlag command", () => {
       false,
       "permissionsEnabled flag must survive a master-switch flip"
     );
+  });
+
+  it("rejects subagentPermissionsEnabled for non-claude agents before any side effect (#451)", () => {
+    // Yunbao review E: a kimi-cli call would otherwise reach
+    // agent-runtime-main's dismissPermissionsByAgent, whose Kimi branch
+    // disposes permission state regardless of options/removed count.
+    const dismissCalls = [];
+    const { deps } = makeDeps({
+      dismissPermissionsByAgent: (id, options) => dismissCalls.push([id, options]),
+    });
+    const r = commandRegistry.setAgentFlag(
+      { agentId: "kimi-cli", flag: "subagentPermissionsEnabled", value: false },
+      deps
+    );
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /claude-code/);
+    assert.deepStrictEqual(dismissCalls, []);
+  });
+
+  it("disabling subagentPermissionsEnabled dismisses only subagent bubbles (#451)", () => {
+    const dismissCalls = [];
+    const { deps, calls } = makeDeps({
+      dismissPermissionsByAgent: (id, options) => dismissCalls.push([id, options]),
+    });
+    const r = commandRegistry.setAgentFlag(
+      { agentId: "claude-code", flag: "subagentPermissionsEnabled", value: false },
+      deps
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(dismissCalls, [["claude-code", { subagentOnly: true }]]);
+    assert.strictEqual(calls.stopMonitorForAgent.length, 0);
+    assert.strictEqual(calls.clearSessionsByAgent.length, 0);
+    assert.strictEqual(r.commit.agents["claude-code"].subagentPermissionsEnabled, false);
+    assert.strictEqual(
+      r.commit.agents["claude-code"].permissionsEnabled,
+      true,
+      "sibling permission flag must survive the subagent sub-gate flip"
+    );
+  });
+
+  it("enabling subagentPermissionsEnabled is a pure data flip — no side effects", () => {
+    const seeded = prefs.getDefaults();
+    seeded.agents["claude-code"] = { enabled: true, permissionsEnabled: true, subagentPermissionsEnabled: false };
+    const dismissCalls = [];
+    const { deps } = makeDeps({
+      snapshot: seeded,
+      dismissPermissionsByAgent: (id, options) => dismissCalls.push([id, options]),
+    });
+    const r = commandRegistry.setAgentFlag(
+      { agentId: "claude-code", flag: "subagentPermissionsEnabled", value: true },
+      deps
+    );
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(dismissCalls, []);
+    assert.strictEqual(r.commit.agents["claude-code"].subagentPermissionsEnabled, true);
   });
 
   it("disabling permissionsEnabled only dismisses bubbles — no monitor/session churn", () => {

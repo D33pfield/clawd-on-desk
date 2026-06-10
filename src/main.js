@@ -270,7 +270,7 @@ const _settingsController = createSettingsController({
       : false,
     restartClawd: _restartClawdNow,
     clearSessionsByAgent: (id) => agentRuntime ? agentRuntime.clearSessionsByAgent(id) : 0,
-    dismissPermissionsByAgent: (id) => agentRuntime ? agentRuntime.dismissPermissionsByAgent(id) : 0,
+    dismissPermissionsByAgent: (id, options) => agentRuntime ? agentRuntime.dismissPermissionsByAgent(id, options) : 0,
     resizePet: _deferredResizePet,
     getActiveSessionAliasKeys: () =>
       _state && typeof _state.getActiveSessionAliasKeys === "function"
@@ -988,6 +988,7 @@ const {
 const {
   isAgentEnabled: _isAgentEnabled,
   isAgentPermissionsEnabled: _isAgentPermissionsEnabled,
+  isAgentSubagentPermissionsEnabled: _isAgentSubagentPermissionsEnabled,
   isAgentNotificationHookEnabled: _isAgentNotificationHookEnabled,
   isCodexNativeNotificationSoundEnabled: _isCodexNativeNotificationSoundEnabled,
   isCodexPermissionInterceptEnabled: _isCodexPermissionInterceptEnabled,
@@ -1439,6 +1440,7 @@ const _serverCtx = {
   get sessions() { return sessions; },
   isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
   isAgentPermissionsEnabled: (agentId) => _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+  isAgentSubagentPermissionsEnabled: (agentId) => _isAgentSubagentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
   isCodexNativeNotificationSoundEnabled: () => _isCodexNativeNotificationSoundEnabled({ agents: _settingsController.get("agents") }),
   isCodexPermissionInterceptEnabled: () => _isCodexPermissionInterceptEnabled({ agents: _settingsController.get("agents") }),
   codexSubagentClassifier: agentRuntime.getCodexSubagentClassifier(),
