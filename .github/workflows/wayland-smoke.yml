@@ -1,0 +1,55 @@
+# Headless-Wayland smoke test for the XWayland auto-relaunch (issue #441, PR #443).
+#
+# We have no Linux/Wayland hardware to verify on — this job stands in: it boots
+# a REAL Wayland compositor (weston headless) + Xwayland on the runner and runs
+# the EXACT AppImage artifact that was handed to the reporter on #441
+# (run 27110582080, head 2d8b540), asserting the app relaunches itself onto
+# XWayland and comes up healthy. See ci/wayland-smoke.sh for the assertions.
+name: Wayland smoke (issue 441)
+
+on:
+  push:
+    branches: [ci/wayland-smoke-441]
+
+permissions:
+  contents: read
+  actions: read # gh run download of the pinned artifact
+
+concurrency:
+  group: wayland-smoke
+  cancel-in-progress: true
+
+env:
+  # The build posted to the reporter on #441 — same binary, byte for byte.
+  ARTIFACT_RUN_ID: "27110582080"
+
+jobs:
+  xwayland-relaunch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install headless Wayland stack
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            weston xwayland libfuse2t64 x11-utils xdotool
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces (AppArmor), which
+      # breaks Chromium's sandbox. Relax the restriction instead of passing
+      # --no-sandbox: the test must run the AppImage exactly as the reporter
+      # does — no extra argv.
+      - name: Allow Chromium userns sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Download the reporter's AppImage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$ARTIFACT_RUN_ID" -R "$GITHUB_REPOSITORY" \
+            -n linux-installer -D dist-artifact
+          ls -l dist-artifact
+
+      - name: Smoke test
+        run: bash ci/wayland-smoke.sh dist-artifact/*.AppImage
