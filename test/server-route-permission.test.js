@@ -1101,6 +1101,43 @@ describe("server-route-permission POST — CC subagent requests (#451)", () => {
     assert.strictEqual(res.ctx.pendingPermissions[0].toolName, "ExitPlanMode");
   });
 
+  it("handles a verbatim CC 2.1.169 subagent payload (live capture 2026-06-10)", async () => {
+    // Captured from a real Claude Code 2.1.169 Task-subagent run via an
+    // isolated PermissionRequest HTTP hook (paths anonymized). Ground truth
+    // for the field shapes the #451 gate relies on: agent_id is a 17-hex
+    // instance id (NOT a uuid), agent_type is the subagent type, and
+    // session_id is the PARENT session's id.
+    const realBody = {
+      session_id: "0c2c2e1a-614f-4928-84bf-f4baf5e197f4",
+      transcript_path: "/Users/tester/.claude/projects/-Users-tester-repo/0c2c2e1a-614f-4928-84bf-f4baf5e197f4.jsonl",
+      cwd: "/Users/tester/repo",
+      permission_mode: "default",
+      agent_id: "a8fb8638225be89d4",
+      agent_type: "general-purpose",
+      hook_event_name: "PermissionRequest",
+      tool_name: "Bash",
+      tool_input: { command: "touch /tmp/cc451-proof.txt", description: "Create proof file" },
+      permission_suggestions: [
+        { type: "addDirectories", directories: ["/tmp"], destination: "session" },
+        { type: "setMode", mode: "acceptEdits", destination: "session" },
+      ],
+    };
+
+    const bubbled = await callPermissionPost(JSON.stringify(realBody));
+    assert.strictEqual(bubbled.ctx.pendingPermissions.length, 1);
+    const entry = bubbled.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.agentId, "claude-code");
+    assert.strictEqual(entry.subagentId, "a8fb8638225be89d4");
+    assert.strictEqual(entry.subagentType, "general-purpose");
+    assert.strictEqual(entry.suggestions.length, 2);
+
+    const suppressed = await callPermissionPost(JSON.stringify(realBody), {
+      ctx: { isAgentSubagentPermissionsEnabled: () => false },
+    });
+    assert.strictEqual(suppressed.destroyed, true);
+    assert.deepStrictEqual(suppressed.ctx.pendingPermissions, []);
+  });
+
   it("lets the headless guard win over the subagent sub-gate (auto-deny, no destroy)", async () => {
     const res = await callPermissionPost(subagentBody(), {
       ctx: {
