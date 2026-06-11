@@ -305,7 +305,21 @@ describe("hit-renderer OS file drop (#459)", () => {
     assert.strictEqual(h.apiCalls.filter((c) => c[0] === "playClickReaction").length, 1);
   });
 
-  it("accepted drop stays silent when the theme has no double reaction or pet is busy", () => {
+  it("accepted drop falls back to the click poke for double-less themes (Calico)", () => {
+    const h = createHarness();
+    h.apiHandlers.themeConfig({ reactions: {
+      clickLeft: { file: "left.svg", duration: 2500 },
+      clickRight: { file: "right.svg", duration: 2500 },
+      drag: { file: "drag.svg" },
+    } });
+    h.apiHandlers.dropAccepted();
+    const plays = h.apiCalls.filter((c) => c[0] === "playClickReaction");
+    assert.strictEqual(plays.length, 1);
+    assert.ok(["left.svg", "right.svg"].includes(plays[0][1]), plays[0][1]);
+    assert.strictEqual(plays[0][2], 2500);
+  });
+
+  it("accepted drop stays silent for drag-only themes (Cloudling) or a busy pet", () => {
     const noReact = createHarness();
     noReact.apiHandlers.themeConfig({ reactions: { drag: { file: "drag.svg" } } });
     noReact.apiHandlers.dropAccepted();

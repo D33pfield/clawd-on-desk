@@ -248,24 +248,35 @@ function buildShellTerminalCandidates(dir, plat = platform()) {
     if (dir.includes('"')) {
       throw new TypeError("buildShellTerminalCandidates: dir must not contain double quotes");
     }
-    return [
+    const candidates = [
       // wt -d is a native flag (no shim → no 0x800700c1 class); Node's default
       // arg quoting protects spaces. tryLaunch can only observe whether wt
       // itself spawned, not whether the tab landed in `dir`.
       { bin: "wt.exe", args: ["-d", dir] },
+    ];
+    // cmd.exe quoting matrix for the quoted `cd /d "<dir>"` payload: `^ & ( )`
+    // are literal inside the quotes, `!` stays literal because we pass /v:off,
+    // `"` is rejected above — but `%VAR%` expands on the cmd command line EVEN
+    // inside quotes and has no command-line escape (caret can't escape %, %%
+    // only works in batch files). A %-containing dir therefore skips cmd and
+    // falls through to wt / PowerShell, which pass the path literally.
+    if (!dir.includes("%")) {
       // Single pre-quoted string after /k — same "command must not start with
       // a quote" rule as buildTerminalCandidates, satisfied by the `cd` prefix.
-      {
+      candidates.push({
         bin: "cmd.exe",
         args: ["/d", "/v:off", "/s", "/k", `cd /d "${dir}"`],
         extraOpts: { shell: false, windowsVerbatimArguments: true },
-      },
+      });
+    }
+    candidates.push(
       // -LiteralPath: plain Set-Location glob-expands `[]` / `?` in paths.
       {
         bin: "powershell.exe",
         args: ["-NoExit", "-Command", `Set-Location -LiteralPath ${quoteForPowerShell(dir)}`],
       },
-    ];
+    );
+    return candidates;
   }
 
   if (plat === "darwin") {

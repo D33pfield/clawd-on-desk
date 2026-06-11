@@ -281,14 +281,22 @@ area.addEventListener("drop", (e) => {
 });
 
 // Main confirmed the drop opened a terminal → react. Routed back through the
-// local playReaction so isReacting gating stays consistent; best-effort only —
-// themes without a "double" reaction (e.g. Cloudling) stay still.
+// local playReaction so isReacting gating stays consistent. Best-effort with a
+// fallback chain: double (Clawd) → clickLeft/clickRight poke (Calico) →
+// nothing (Cloudling only ships a drag reaction; no new theme capability is
+// invented for drops).
 window.hitAPI.onDropAccepted(() => {
+  if (!canPlayReactionNow()) return;
   const doubleReact = _getReaction("double");
-  if (!doubleReact || !canPlayReactionNow()) return;
-  const files = doubleReact.files || [doubleReact.file];
-  const file = files[Math.floor(Math.random() * files.length)];
-  playReaction(file, doubleReact.duration || 3500);
+  if (doubleReact) {
+    const files = doubleReact.files || [doubleReact.file];
+    playReaction(files[Math.floor(Math.random() * files.length)], doubleReact.duration || 3500);
+    return;
+  }
+  const left = _getReaction("clickLeft");
+  const right = _getReaction("clickRight");
+  const poke = left && right ? (Math.random() < 0.5 ? left : right) : (left || right);
+  if (poke) playReaction(poke.file, poke.duration || 2500);
 });
 
 // --- Right-click context menu ---

@@ -427,6 +427,43 @@ describe("buildShellTerminalCandidates (#459)", () => {
     );
   });
 
+  it("win32: a %-containing dir skips the cmd.exe candidate (no command-line escape exists)", () => {
+    const cands = buildShellTerminalCandidates("C:\\100% done", "win32");
+    assert.deepStrictEqual(cands.map((c) => c.bin), ["wt.exe", "powershell.exe"]);
+    // The survivors both pass the path literally.
+    assert.deepStrictEqual(cands[0].args, ["-d", "C:\\100% done"]);
+    assert.strictEqual(
+      cands[1].args[cands[1].args.length - 1],
+      "Set-Location -LiteralPath 'C:\\100% done'",
+    );
+  });
+
+  it("win32: `!` and `^ &` dirs keep the cmd.exe candidate (/v:off + quotes make them literal)", () => {
+    const cands = buildShellTerminalCandidates("C:\\bang!dir & spec^ial", "win32");
+    assert.deepStrictEqual(cands.map((c) => c.bin), ["wt.exe", "cmd.exe", "powershell.exe"]);
+    const cmd = cands[1];
+    assert.ok(cmd.args.includes("/v:off"), "delayed expansion must stay disabled");
+    assert.strictEqual(cmd.args[cmd.args.length - 1], 'cd /d "C:\\bang!dir & spec^ial"');
+  });
+
+  it("round-trips a spaced/special dir through real cmd.exe cd", { skip: process.platform !== "win32" }, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd drop & test^ "));
+    try {
+      const cands = buildShellTerminalCandidates(dir, "win32");
+      const cmd = cands.find((c) => c.bin === "cmd.exe");
+      assert.ok(cmd, "non-% dir must keep the cmd candidate");
+      const payload = cmd.args[cmd.args.length - 1];
+      const result = spawnSync("cmd.exe", ["/d", "/v:off", "/s", "/c", `${payload} && cd`], {
+        encoding: "utf8",
+        windowsVerbatimArguments: true,
+      });
+      assert.strictEqual(result.status, 0, JSON.stringify({ stdout: result.stdout, stderr: result.stderr }));
+      assert.strictEqual(result.stdout.trim(), dir);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("darwin: single osascript candidate with explicit cd -- and two-layer quoting", () => {
     const cands = buildShellTerminalCandidates("/Users/me/proj dir", "darwin");
     assert.strictEqual(cands.length, 1);
