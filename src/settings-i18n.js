@@ -3074,7 +3074,7 @@
   };
 
   const MAINTAINERS = [
-    "rullerzhou-afk", "YOIMIYA66",
+    "rullerzhou-afk", "YOIMIYA66", "Bynlk",
   ];
 
   const CONTRIBUTORS = [
@@ -3086,6 +3086,7 @@
     "Ziy1-Tan", "tatsuyanakanogaroinc", "yeonhub", "joshua-wu", "nmsn", "sunnysonx", "YuChenYunn", "jhseo-b",
     "Hwasowl", "XiangZheng2002", "keiyo118", "pan93412", "taehwanis", "linnin233", "xiyouMc",
     "Bynlk", "zxypro1", "NeroAyase", "divergentD", "Ne9roni", "QingXB", "29206394",
+    "Tsdsj", "godlockin",
   ];
 
   root.ClawdSettingsI18n = {
