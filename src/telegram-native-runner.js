@@ -36,6 +36,15 @@ const MAX_NOTIFY_RETRY_DELAY_MS = 30000;
 const DEFAULT_POLL_RETRY_INITIAL_MS = 1000;
 const DEFAULT_POLL_RETRY_MAX_MS = 30000;
 
+// Status lines appended to an approval card whose decision landed somewhere
+// other than this Telegram chat, so the chat history shows the outcome
+// (issue #457). Keyed by the reason finishApproval received a null decision.
+const APPROVAL_RESOLVED_ELSEWHERE_STATUS = Object.freeze({
+  desktop: "\u2705 Resolved on desktop",
+  timeout: "\u23F3 Timed out",
+  stopped: "\u23F9 Session ended",
+});
+
 function randomId() {
   return Math.random().toString(36).slice(2, 12);
 }
@@ -135,7 +144,7 @@ function createTelegramNativeRunner({
   let abortController = null;
   let polling = false;
   let pendingTest = null; // { nonce, chatId, allowedUser, messageId }
-  const pendingApprovals = new Map(); // id -> { resolve, chatId, allowedUser, messageId, timer, signal, onAbort, suggestionIndexes }
+  const pendingApprovals = new Map(); // id -> { resolve, chatId, allowedUser, messageId, text, timer, signal, onAbort, suggestionIndexes }
   let lastError = null;
   let pollRetryDelayMs = Math.max(1, pollRetryInitialMs);
 
@@ -517,7 +526,27 @@ function createTelegramNativeRunner({
     }).catch(() => {});
   }
 
-  function finishApproval(id, decision) {
+  // Best-effort: rewrite an approval card whose decision landed somewhere
+  // other than this Telegram chat, appending a status line so the chat
+  // history shows the outcome. editMessageText without reply_markup also
+  // drops the inline keyboard; if the rewrite fails (deleted message, edit
+  // window expired, ...) fall back to stripping just the keyboard so the
+  // stale prompt still can't be tapped. Never throws.
+  function markApprovalResolvedElsewhere(entry, reason) {
+    if (!entry || !entry.messageId || !entry.chatId) return;
+    const status = APPROVAL_RESOLVED_ELSEWHERE_STATUS[reason];
+    if (!status || !entry.text) {
+      clearApprovalKeyboard(entry);
+      return;
+    }
+    client.editMessageText({
+      chat_id: entry.chatId,
+      message_id: entry.messageId,
+      text: `${entry.text}\n\n${status}`,
+    }).catch(() => clearApprovalKeyboard(entry));
+  }
+
+  function finishApproval(id, decision, reason = "desktop") {
     const entry = pendingApprovals.get(id);
     if (!entry) return;
     pendingApprovals.delete(id);
@@ -530,14 +559,15 @@ function createTelegramNativeRunner({
     // handleApprovalCallback before we get here. A null decision means the
     // approval was resolved elsewhere — answered on the desktop, timed out, or
     // polling stopped — leaving a still-clickable card that would later answer
-    // "Expired". Pull its buttons so the stale prompt can't be tapped.
-    if (!normalized) clearApprovalKeyboard(entry);
+    // "Expired". Rewrite it with the outcome (and without buttons) so the
+    // stale prompt can't be tapped and the chat history shows what happened.
+    if (!normalized) markApprovalResolvedElsewhere(entry, reason);
     entry.resolve(normalized);
   }
 
   function clearAllApprovals() {
     const ids = Array.from(pendingApprovals.keys());
-    for (const id of ids) finishApproval(id, null);
+    for (const id of ids) finishApproval(id, null, "stopped");
   }
 
   function requestApproval(payload, options = {}) {
@@ -569,6 +599,9 @@ function createTelegramNativeRunner({
         chatId,
         allowedUser,
         messageId: null,
+        // Card body as sent, kept so a resolved-elsewhere edit can rebuild the
+        // text with a status line appended (issue #457).
+        text,
         timer: null,
         signal,
         onAbort: null,
@@ -576,11 +609,11 @@ function createTelegramNativeRunner({
       };
       pendingApprovals.set(id, entry);
 
-      entry.timer = setTimeout(() => finishApproval(id, null), Math.max(1, approvalTimeoutMs));
+      entry.timer = setTimeout(() => finishApproval(id, null, "timeout"), Math.max(1, approvalTimeoutMs));
       if (entry.timer && typeof entry.timer.unref === "function") entry.timer.unref();
 
       if (signal) {
-        entry.onAbort = () => finishApproval(id, null);
+        entry.onAbort = () => finishApproval(id, null, "desktop");
         signal.addEventListener("abort", entry.onAbort, { once: true });
       }
 

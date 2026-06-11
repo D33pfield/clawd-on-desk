@@ -463,13 +463,13 @@ test("native runner aborts an in-flight approval send before a late Telegram suc
   await runner.stop();
 });
 
-test("native runner strips approval keyboard when resolved on desktop (abort)", async () => {
+test("native runner rewrites approval card with status when resolved on desktop (abort)", async () => {
   const server = createFakeTelegramServer();
   let releaseFirstPoll;
 
   server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
   server.enqueueOk("sendMessage", { message_id: 99, chat: { id: 123 } });
-  server.enqueueOk("editMessageReplyMarkup", { message_id: 99 });
+  server.enqueueOk("editMessageText", { message_id: 99 });
 
   const runner = createTelegramNativeRunner({
     tokenStore: tokenStore(),
@@ -496,11 +496,138 @@ test("native runner strips approval keyboard when resolved on desktop (abort)", 
   assert.equal(await decisionPromise, null);
   await tick();
 
-  const editCalls = server.calls.filter((call) => call.method === "editMessageReplyMarkup");
-  assert.equal(editCalls.length, 1, "stale approval card must have its keyboard stripped");
+  const editCalls = server.calls.filter((call) => call.method === "editMessageText");
+  assert.equal(editCalls.length, 1, "stale approval card must be rewritten with the outcome");
   assert.equal(editCalls[0].payload.chat_id, "123");
   assert.equal(editCalls[0].payload.message_id, 99);
-  assert.deepEqual(editCalls[0].payload.reply_markup, { inline_keyboard: [] });
+  assert.equal(
+    editCalls[0].payload.text,
+    "claude-code requests Bash\n\nSummary: Run tests\n\n\u2705 Resolved on desktop",
+  );
+  assert.equal(
+    editCalls[0].payload.reply_markup,
+    undefined,
+    "editMessageText without reply_markup drops the inline keyboard",
+  );
+  assert.equal(
+    server.calls.some((call) => call.method === "editMessageReplyMarkup"),
+    false,
+    "no separate keyboard strip when the text rewrite succeeds",
+  );
+
+  releaseFirstPoll({ ok: true, result: [] });
+  await runner.stop();
+});
+
+test("native runner appends timeout status when an approval expires", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueueOk("sendMessage", { message_id: 77, chat: { id: 123 } });
+  server.enqueueOk("editMessageText", { message_id: 77 });
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+    approvalTimeoutMs: 10,
+  });
+
+  await runner.start();
+  await tick();
+
+  const decision = await runner.requestApproval({ title: "claude-code requests Bash", detail: "Summary: Run tests" });
+  assert.equal(decision, null);
+  await tick();
+
+  const editCalls = server.calls.filter((call) => call.method === "editMessageText");
+  assert.equal(editCalls.length, 1);
+  assert.equal(editCalls[0].payload.message_id, 77);
+  assert.equal(
+    editCalls[0].payload.text,
+    "claude-code requests Bash\n\nSummary: Run tests\n\n\u23F3 Timed out",
+  );
+
+  releaseFirstPoll({ ok: true, result: [] });
+  await runner.stop();
+});
+
+test("native runner appends session-ended status when polling stops with a pending approval", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueueOk("sendMessage", { message_id: 55, chat: { id: 123 } });
+  server.enqueueOk("editMessageText", { message_id: 55 });
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+
+  await runner.start();
+  await tick();
+
+  const decisionPromise = runner.requestApproval({ title: "claude-code requests Bash", detail: "Summary: Run tests" });
+  await tick();
+
+  releaseFirstPoll({ ok: true, result: [] });
+  await runner.stop();
+  assert.equal(await decisionPromise, null);
+  await tick();
+
+  const editCalls = server.calls.filter((call) => call.method === "editMessageText");
+  assert.equal(editCalls.length, 1);
+  assert.equal(editCalls[0].payload.message_id, 55);
+  assert.equal(
+    editCalls[0].payload.text,
+    "claude-code requests Bash\n\nSummary: Run tests\n\n\u23F9 Session ended",
+  );
+});
+
+test("native runner falls back to stripping the keyboard when the status rewrite fails", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueueOk("sendMessage", { message_id: 88, chat: { id: 123 } });
+  server.enqueueError("editMessageText", { status: 400, description: "Bad Request: message can't be edited" });
+  server.enqueueOk("editMessageReplyMarkup", { message_id: 88 });
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+
+  await runner.start();
+  await tick();
+
+  const controller = new AbortController();
+  const decisionPromise = runner.requestApproval(
+    { title: "claude-code requests Bash", detail: "Summary: Run tests" },
+    { signal: controller.signal },
+  );
+  await tick();
+
+  controller.abort();
+  assert.equal(await decisionPromise, null);
+  await tick();
+  await tick();
+
+  const stripCalls = server.calls.filter((call) => call.method === "editMessageReplyMarkup");
+  assert.equal(stripCalls.length, 1, "PR #446 guarantee: stale card must lose its keyboard even if the rewrite fails");
+  assert.equal(stripCalls[0].payload.chat_id, "123");
+  assert.equal(stripCalls[0].payload.message_id, 88);
+  assert.deepEqual(stripCalls[0].payload.reply_markup, { inline_keyboard: [] });
 
   releaseFirstPoll({ ok: true, result: [] });
   await runner.stop();
