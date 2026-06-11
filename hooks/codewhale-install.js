@@ -21,10 +21,16 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { asarUnpackedPath } = require("./json-utils");
+const {
+  asarUnpackedPath,
+  formatNodeHookCommand,
+} = require("./json-utils");
 
-const CODEXWHALE_CONFIG_PATH = path.join(os.homedir(), ".codewhale", "config.toml");
-const MANAGED_MARKER = "# managed by clawd-on-desk";
+const CODEWHALE_CONFIG_PATH = path.join(os.homedir(), ".codewhale", "config.toml");
+const CODEXWHALE_CONFIG_PATH = CODEWHALE_CONFIG_PATH;
+const MANAGED_MARKER = "managed by clawd-on-desk";
+const HOOK_SCRIPT_MARKER = "codewhale-hook.js";
+const TOML_HEADER_RE = /^\s*\[[^\]]+\]/;
 
 // Hook events to register. Each entry: [event, background]
 // session_end is NOT background — must await delivery.
@@ -48,22 +54,48 @@ function normalizePath(p) {
   return String(p || "").replace(/\\/g, "/");
 }
 
-function buildHookEntry(event, background, hookScriptPath) {
+function envConfigPath(options = {}) {
+  const env = options.env || process.env;
+  const value = env && (
+    (typeof env.CODEWHALE_CONFIG_PATH === "string" && env.CODEWHALE_CONFIG_PATH.trim())
+    || (typeof env.DEEPSEEK_CONFIG_PATH === "string" && env.DEEPSEEK_CONFIG_PATH.trim())
+  );
+  return value ? path.resolve(String(value).trim()) : null;
+}
+
+function resolveCodewhaleConfigPath(options = {}) {
+  if (typeof options.configPath === "string" && options.configPath.trim()) {
+    return path.resolve(options.configPath);
+  }
+  return envConfigPath(options) || CODEWHALE_CONFIG_PATH;
+}
+
+function hasExplicitConfigPath(options = {}) {
+  return !!(typeof options.configPath === "string" && options.configPath.trim()) || !!envConfigPath(options);
+}
+
+function buildHookEntry(event, background, hookScriptPath, options = {}) {
   // process.execPath is the Electron binary when Clawd calls us via
   // integration-sync.js — fall back to "node" (on PATH) in that case.
-  const nodeBin = process.versions.electron ? "node" : (process.execPath || "node");
+  const nodeBin = options.nodeBin !== undefined
+    ? options.nodeBin
+    : (process.versions.electron ? "node" : (process.execPath || "node"));
   const nodePath = normalizePath(nodeBin);
   const hookPath = normalizePath(hookScriptPath);
 
   // Use the same node binary that runs Clawd, so the hook can require() our
   // shared modules (server-config, shared-process). Windows node.exe must be
   // quoted in TOML when the path contains spaces.
-  const command = `${nodePath} "${hookPath}" ${event}`;
+  const command = formatNodeHookCommand(nodePath, hookPath, {
+    platform: options.platform || process.platform,
+    windowsWrapper: "none",
+    args: [event],
+  });
 
   const lines = [];
   lines.push("");
-  lines.push(`# ${MANAGED_MARKER}`);
   lines.push("[[hooks.hooks]]");
+  lines.push(`# ${MANAGED_MARKER}`);
   lines.push(`event = "${event}"`);
   lines.push(`command = '''${command}'''`);
   if (background) {
@@ -87,16 +119,24 @@ function parseTomlSections(content) {
   let current = { header: null, startLine: 0, lines: [] };
   let inHooksTable = false;
 
+  function takeTrailingManagedMarker(lines) {
+    let markerIndex = lines.length - 1;
+    while (markerIndex >= 0 && !String(lines[markerIndex] || "").trim()) markerIndex--;
+    if (markerIndex < 0 || !String(lines[markerIndex]).includes(MANAGED_MARKER)) return [];
+    return lines.splice(markerIndex);
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trim();
 
     // Detect [[hooks.hooks]] entries
     if (/^\[\[hooks\.hooks\]\]/.test(trimmed)) {
+      const leadingMarker = takeTrailingManagedMarker(current.lines);
       if (current.lines.length > 0 || current.header) {
         sections.push({ ...current, endLine: i - 1 });
       }
-      current = { header: "hooks.hooks", startLine: i, lines: [line] };
+      current = { header: "hooks.hooks", startLine: i - leadingMarker.length, lines: [...leadingMarker, line] };
       inHooksTable = true;
       continue;
     }
@@ -111,8 +151,8 @@ function parseTomlSections(content) {
       continue;
     }
 
-    // End of hooks-related section when hitting a different top-level section
-    if (inHooksTable && /^\[[a-z]/.test(trimmed) && !trimmed.startsWith("[[")) {
+    // End of hooks-related section when hitting any different TOML table.
+    if (inHooksTable && TOML_HEADER_RE.test(trimmed)) {
       sections.push({ ...current, endLine: i - 1 });
       current = { header: null, startLine: i, lines: [line] };
       inHooksTable = false;
@@ -132,17 +172,44 @@ function sectionHasMarker(section) {
   return section.lines.some((line) => line.includes(MANAGED_MARKER));
 }
 
-function buildClawdHookSections(hookScriptPath) {
+function sectionHasClawdHookCommand(section) {
+  return section.lines.some((line) => (
+    /^\s*command\s*=/.test(String(line || "")) &&
+    String(line || "").includes(HOOK_SCRIPT_MARKER)
+  ));
+}
+
+function sectionIsManagedHook(section) {
+  if (!section || section.header !== "hooks.hooks") return false;
+  return sectionHasMarker(section) || sectionHasClawdHookCommand(section);
+}
+
+function ensureHooksEnabled(section) {
+  if (!section || section.header !== "hooks") return false;
+  const enabledIdx = section.lines.findIndex((line) => /^\s*enabled\s*=/.test(String(line || "")));
+  if (enabledIdx >= 0) {
+    if (/^\s*enabled\s*=\s*true(?:\s*(?:#.*)?)?$/.test(String(section.lines[enabledIdx] || ""))) {
+      return false;
+    }
+    section.lines[enabledIdx] = "enabled = true";
+    return true;
+  }
+  section.lines.splice(1, 0, "enabled = true");
+  return true;
+}
+
+function buildClawdHookSections(hookScriptPath, options = {}) {
   const sections = [];
   for (const [event, background] of HOOK_ENTRIES) {
-    sections.push(buildHookEntry(event, background, hookScriptPath));
+    sections.push(buildHookEntry(event, background, hookScriptPath, options));
   }
   return sections;
 }
 
 function registerCodewhaleHooks(options = {}) {
   const hookScriptPath = options.hookScriptPath || resolveHookScriptPath();
-  const configPath = options.configPath || CODEXWHALE_CONFIG_PATH;
+  const configPath = resolveCodewhaleConfigPath(options);
+  const explicitConfigPath = hasExplicitConfigPath(options);
 
   // Check if ~/.codewhale/ exists
   const configDir = path.dirname(configPath);
@@ -150,7 +217,7 @@ function registerCodewhaleHooks(options = {}) {
   try {
     configDirExists = fs.statSync(configDir).isDirectory();
   } catch {}
-  if (!configDirExists && !options.configPath) {
+  if (!configDirExists && !explicitConfigPath) {
     if (!options.silent) {
       console.log("Clawd: ~/.codewhale/ not found — skipping CodeWhale hook registration");
     }
@@ -170,7 +237,7 @@ function registerCodewhaleHooks(options = {}) {
 
   // If config doesn't exist or is empty → bootstrap with [hooks] + entries
   if (!content.trim()) {
-    const hookSections = buildClawdHookSections(hookScriptPath);
+    const hookSections = buildClawdHookSections(hookScriptPath, options);
     const newContent = [
       "# codewhale Configuration",
       "",
@@ -197,38 +264,33 @@ function registerCodewhaleHooks(options = {}) {
   // Find existing clawd-managed hook entries
   const managedHookIndices = [];
   for (let i = 0; i < sections.length; i++) {
-    if (sections[i].header === "hooks.hooks" && sectionHasMarker(sections[i])) {
+    if (sectionIsManagedHook(sections[i])) {
       managedHookIndices.push(i);
     }
   }
 
-  // Check if [hooks] section exists
-  const hooksSection = sections.find((s) => s.header === "hooks");
-  const hooksEnabled = hooksSection
-    ? hooksSection.lines.some((l) => /^\s*enabled\s*=\s*true/.test(l))
-    : false;
-
   // Build new managed entries
-  const newEntries = buildClawdHookSections(hookScriptPath);
+  const newEntries = buildClawdHookSections(hookScriptPath, options);
 
   // Remove old managed entries
-  let removed = managedHookIndices.length;
+  const matchedManagedHooks = managedHookIndices.length;
   for (const idx of managedHookIndices.reverse()) {
     sections.splice(idx, 1);
   }
 
   // Insert new entries after [hooks] section or at end
-  const hooksIdx = sections.findIndex((s) => s.header === "hooks");
-  const insertIdx = hooksIdx >= 0 ? hooksIdx + 1 : sections.length;
+  let hooksIdx = sections.findIndex((s) => s.header === "hooks");
 
   // If no [hooks] section, add one
   if (hooksIdx < 0) {
     sections.push({ header: "hooks", startLine: -1, lines: ["[hooks]", "enabled = true"] });
-  } else if (!hooksEnabled) {
-    sections[hooksIdx].lines.splice(1, 0, "enabled = true");
+    hooksIdx = sections.length - 1;
+  } else {
+    ensureHooksEnabled(sections[hooksIdx]);
   }
 
   // Insert managed entries (as raw strings — we insert them into the sections array)
+  let insertIdx = hooksIdx + 1;
   for (const entry of newEntries) {
     const entryLines = entry.split("\n");
     sections.splice(insertIdx, 0, {
@@ -236,6 +298,7 @@ function registerCodewhaleHooks(options = {}) {
       startLine: -1,
       lines: entryLines,
     });
+    insertIdx++;
   }
 
   // Reconstruct TOML
@@ -250,6 +313,7 @@ function registerCodewhaleHooks(options = {}) {
 
   const newContent = newLines.join("\n").trim() + "\n";
   const updated = newContent !== content;
+  const removed = updated ? matchedManagedHooks : 0;
 
   if (updated) {
     // Atomic write
@@ -258,13 +322,13 @@ function registerCodewhaleHooks(options = {}) {
     fs.renameSync(tmpPath, configPath);
   }
 
-  const added = HOOK_ENTRIES.length;
+  const added = updated ? HOOK_ENTRIES.length : 0;
   if (!options.silent) {
     console.log(`Clawd CodeWhale hooks → ${configPath}`);
     if (updated) {
       console.log(`  Registered ${added} hooks (removed ${removed} old entries)`);
     } else {
-      console.log(`  Already up to date (${added} hooks)`);
+      console.log(`  Already up to date (${HOOK_ENTRIES.length} hooks)`);
     }
   }
 
@@ -272,7 +336,7 @@ function registerCodewhaleHooks(options = {}) {
 }
 
 function unregisterCodewhaleHooks(options = {}) {
-  const configPath = options.configPath || CODEXWHALE_CONFIG_PATH;
+  const configPath = resolveCodewhaleConfigPath(options);
 
   let content;
   try {
@@ -289,7 +353,7 @@ function unregisterCodewhaleHooks(options = {}) {
   let removed = 0;
 
   for (let i = sections.length - 1; i >= 0; i--) {
-    if (sections[i].header === "hooks.hooks" && sectionHasMarker(sections[i])) {
+    if (sectionIsManagedHook(sections[i])) {
       sections.splice(i, 1);
       removed++;
     }
@@ -323,16 +387,24 @@ function unregisterCodewhaleHooks(options = {}) {
 }
 
 module.exports = {
+  CODEWHALE_CONFIG_PATH,
   CODEXWHALE_CONFIG_PATH,
   HOOK_ENTRIES,
+  parseTomlSections,
   registerCodewhaleHooks,
+  resolveCodewhaleConfigPath,
   unregisterCodewhaleHooks,
   // Exposed for tests
   __test: {
     buildHookEntry,
     parseTomlSections,
     sectionHasMarker,
+    sectionHasClawdHookCommand,
+    sectionIsManagedHook,
+    ensureHooksEnabled,
     buildClawdHookSections,
+    envConfigPath,
+    hasExplicitConfigPath,
     resolveHookScriptPath,
     normalizePath,
   },

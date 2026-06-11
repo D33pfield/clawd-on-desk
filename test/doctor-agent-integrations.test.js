@@ -12,6 +12,7 @@ const {
 const { GEMINI_HOOK_EVENTS } = require("../hooks/gemini-install");
 const { ANTIGRAVITY_HOOK_EVENTS, __test: antigravityInstallTest } = require("../hooks/antigravity-install");
 const { QWEN_CODE_HOOK_EVENTS, buildQwenCodeHookCommand } = require("../hooks/qwen-code-install");
+const { HOOK_ENTRIES: CODEWHALE_HOOK_ENTRIES } = require("../hooks/codewhale-install");
 
 const tempDirs = [];
 
@@ -124,6 +125,37 @@ function qwenHooksConfig(commandForEvent = (event) => `"/node" "/app/hooks/qwen-
     }];
   }
   return { hooks };
+}
+
+function codewhaleDescriptor() {
+  const root = makeTempDir();
+  const parentDir = path.join(root, ".codewhale");
+  return baseDescriptor({
+    agentId: "codewhale",
+    agentName: "CodeWhale",
+    marker: "managed by clawd-on-desk",
+    commandMarker: "codewhale-hook.js",
+    parentDir,
+    configPath: path.join(parentDir, "config.toml"),
+    configMode: "codewhale-hooks-toml",
+    hookEvents: CODEWHALE_HOOK_ENTRIES.map((entry) => entry[0]),
+  });
+}
+
+function codewhaleToml(events = CODEWHALE_HOOK_ENTRIES.map((entry) => entry[0]), commandForEvent = (event) => `"/node" "/app/hooks/codewhale-hook.js" "${event}"`) {
+  return [
+    "[hooks]",
+    "enabled = true",
+    "",
+    ...events.flatMap((event) => [
+      "[[hooks.hooks]]",
+      "# managed by clawd-on-desk",
+      `event = "${event}"`,
+      `command = '''${commandForEvent(event)}'''`,
+      "background = true",
+      "",
+    ]),
+  ].join("\n");
 }
 
 function codexDescriptor() {
@@ -644,6 +676,81 @@ describe("checkAgentIntegrations", () => {
       detail: "clawd.enabled is false",
     });
     assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("validates CodeWhale TOML hooks for every required event", () => {
+    const descriptor = codewhaleDescriptor();
+    fs.mkdirSync(descriptor.parentDir, { recursive: true });
+    fs.writeFileSync(descriptor.configPath, codewhaleToml(), "utf8");
+
+    const seen = [];
+    const detail = runOne(descriptor, {
+      validateCommand: (command) => {
+        seen.push(command);
+        return {
+          ok: true,
+          nodeBin: "/node",
+          scriptPath: "/app/hooks/codewhale-hook.js",
+        };
+      },
+    });
+
+    assert.strictEqual(seen.length, CODEWHALE_HOOK_ENTRIES.length);
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.commandCount, CODEWHALE_HOOK_ENTRIES.length);
+    assert.strictEqual(detail.scriptPath, "/app/hooks/codewhale-hook.js");
+  });
+
+  it("warns when CodeWhale TOML is missing any required hook event", () => {
+    const descriptor = codewhaleDescriptor();
+    fs.mkdirSync(descriptor.parentDir, { recursive: true });
+    fs.writeFileSync(descriptor.configPath, codewhaleToml(["session_start"]), "utf8");
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.level, "warning");
+    assert.ok(detail.missingCodewhaleHookEvents.includes("session_end"));
+    assert.ok(detail.missingCodewhaleHookEvents.includes("tool_call_after"));
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "codewhale" });
+  });
+
+  it("warns when CodeWhale hooks are explicitly disabled", () => {
+    const descriptor = codewhaleDescriptor();
+    fs.mkdirSync(descriptor.parentDir, { recursive: true });
+    fs.writeFileSync(descriptor.configPath, codewhaleToml().replace("enabled = true", "enabled = false"), "utf8");
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.level, "warning");
+    assert.strictEqual(detail.detail, "CodeWhale hooks are disabled in config.toml; Clawd will not receive hook events");
+    assert.deepStrictEqual(detail.supplementary, {
+      key: "codewhale_hooks",
+      value: "disabled",
+      detail: "[hooks].enabled is false",
+    });
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "codewhale" });
+  });
+
+  it("returns broken-path when CodeWhale hook commands fail validation", () => {
+    const descriptor = codewhaleDescriptor();
+    fs.mkdirSync(descriptor.parentDir, { recursive: true });
+    fs.writeFileSync(descriptor.configPath, codewhaleToml(), "utf8");
+
+    const detail = runOne(descriptor, {
+      validateCommand: () => ({
+        ok: false,
+        issue: "scriptPath-missing",
+        nodeBin: "/node",
+        scriptPath: "/missing/codewhale-hook.js",
+      }),
+    });
+
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.hookCommandIssue, "scriptPath-missing");
+    assert.strictEqual(detail.brokenCodewhaleHookEvent, "session_start");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "codewhale" });
   });
 
   it("returns broken-path when all matching commands fail validation", () => {

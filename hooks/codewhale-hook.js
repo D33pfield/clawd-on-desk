@@ -34,20 +34,20 @@ const HOOK_SOURCE = "codewhale-hook";
 // instance map to the same Clawd session, preventing duplicate HUD labels.
 const SESSION_CACHE = path.join(os.tmpdir(), "codewhale-hook-session");
 
-function readCachedSessionId() {
+function readCachedSessionId(cachePath = SESSION_CACHE) {
   try {
-    const raw = fs.readFileSync(SESSION_CACHE, "utf8").trim();
+    const raw = fs.readFileSync(cachePath, "utf8").trim();
     if (raw) return raw;
   } catch {}
   return null;
 }
 
-function writeCachedSessionId(id) {
-  try { fs.writeFileSync(SESSION_CACHE, String(id), "utf8"); } catch {}
+function writeCachedSessionId(id, cachePath = SESSION_CACHE) {
+  try { fs.writeFileSync(cachePath, String(id), "utf8"); } catch {}
 }
 
-function clearCachedSessionId() {
-  try { fs.unlinkSync(SESSION_CACHE); } catch {}
+function clearCachedSessionId(cachePath = SESSION_CACHE) {
+  try { fs.unlinkSync(cachePath); } catch {}
 }
 
 // ── Event Translation ────────────────────────────────────────────────────────
@@ -85,18 +85,21 @@ function safePositiveInt(value) {
 
 // ── Payload Construction ─────────────────────────────────────────────────────
 
-function buildPayload(codewhaleEventName, env, messageSubmitPayload) {
+function buildPayload(codewhaleEventName, env, messageSubmitPayload, options = {}) {
   const mapping = EVENT_MAP[codewhaleEventName];
   if (!mapping) return null;
+  const cachePath = options.sessionCachePath || SESSION_CACHE;
+  const readSession = options.readCachedSessionId || (() => readCachedSessionId(cachePath));
+  const writeSession = options.writeCachedSessionId || ((id) => writeCachedSessionId(id, cachePath));
 
   // Stable session id: use DEEPSEEK_SESSION_ID when available, fall back to
   // cached value so events like mode_change (which may lack the env var) still
   // map to the same Clawd session instead of creating duplicate labels.
-  let sessionId = safeString(env.DEEPSEEK_SESSION_ID, null) || readCachedSessionId();
+  let sessionId = safeString(env.DEEPSEEK_SESSION_ID, null) || readSession();
   if (!sessionId) {
     sessionId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   }
-  writeCachedSessionId(sessionId);
+  writeSession(sessionId);
 
   const payload = {
     agent_id: AGENT_ID,
@@ -160,17 +163,16 @@ function buildPayload(codewhaleEventName, env, messageSubmitPayload) {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-async function main() {
-  const eventName = process.argv[2] || "";
+async function run(eventName = process.argv[2] || "", deps = {}) {
   if (!eventName) {
     // Called without an event name — nothing to do.
-    return;
+    return { eventName, payload: null, posted: false, port: null };
   }
 
   const mapping = EVENT_MAP[eventName];
   if (!mapping) {
     // Unknown event (e.g. shell_env which we ignore in Phase 1)
-    return;
+    return { eventName, payload: null, posted: false, port: null };
   }
 
   // message_submit is special: CodeWhale v0.8.47+ sends a JSON payload on stdin
@@ -178,34 +180,55 @@ async function main() {
   let messageSubmitPayload = null;
   if (eventName === "message_submit") {
     try {
-      messageSubmitPayload = await readStdinJson({ timeoutMs: 500 });
+      const readJson = deps.readStdinJson || readStdinJson;
+      messageSubmitPayload = await readJson({ timeoutMs: 500 });
     } catch {
       // message_submit without stdin → pre-RFC 1364, env vars only
     }
   }
 
-  const payload = buildPayload(eventName, process.env, messageSubmitPayload);
-  if (!payload) process.exit(0);
+  const env = deps.env || process.env;
+  const payload = buildPayload(eventName, env, messageSubmitPayload, deps);
+  if (!payload) return { eventName, payload: null, posted: false, port: null };
 
   // Clear the session cache on session_end so the next codewhale instance
   // starts fresh instead of inheriting the stale session id.
   if (eventName === "session_end") {
-    clearCachedSessionId();
+    if (deps.clearCachedSessionId) deps.clearCachedSessionId();
+    else clearCachedSessionId(deps.sessionCachePath || SESSION_CACHE);
   }
 
   const shouldAwait = AWAIT_EVENTS.has(eventName);
-  postStateToRunningServer(
-    JSON.stringify(payload),
-    { timeoutMs: shouldAwait ? 2000 : 100 },
-    () => {
-      process.exit(0);
-    }
-  );
-
-  // For fire-and-forget events, exit synchronously after starting the POST.
-  // The callback above ensures Clawd receives the state even if the hook
-  // process exits before the HTTP response arrives. session_end is the only
-  // event that blocks on the callback before exiting.
+  const postState = deps.postState || postStateToRunningServer;
+  const options = { timeoutMs: shouldAwait ? 2000 : 100 };
+  return await new Promise((resolve) => {
+    postState(JSON.stringify(payload), options, (posted, port) => {
+      resolve({ eventName, payload, posted: !!posted, port: port || null, options });
+    });
+  });
 }
 
-main();
+async function main() {
+  await run();
+}
+
+if (require.main === module) {
+  main().then(() => {
+    process.exit(0);
+  });
+}
+
+module.exports = {
+  __test: {
+    AWAIT_EVENTS,
+    EVENT_MAP,
+    buildPayload,
+    clearCachedSessionId,
+    readCachedSessionId,
+    run,
+    safeBool,
+    safePositiveInt,
+    safeString,
+    writeCachedSessionId,
+  },
+};

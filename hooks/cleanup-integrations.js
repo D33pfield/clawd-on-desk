@@ -18,6 +18,7 @@ const { unregisterOpencodePlugin } = require("./opencode-install");
 const { unregisterPiExtension } = require("./pi-install");
 const { unregisterOpenClawPlugin } = require("./openclaw-install");
 const { resolveHermesHome, unregisterHermesPlugin } = require("./hermes-install");
+const { unregisterCodewhaleHooks } = require("./codewhale-install");
 
 const CODEX_MARKERS = ["codex-hook.js", "codex-debug-hook.js"];
 
@@ -36,6 +37,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "pi",
   "openclaw",
   "hermes",
+  "codewhale",
 ]);
 
 const AGENT_DISPLAY_NAMES = Object.freeze({
@@ -53,6 +55,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   pi: "Pi",
   openclaw: "OpenClaw",
   hermes: "Hermes Agent",
+  codewhale: "CodeWhale",
 });
 
 function normalizeHomeDir(value) {
@@ -177,6 +180,10 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         hermesHome,
         hermesCommand: options.hermesCommand,
       },
+      codewhale: {
+        ...common,
+        configPath: path.join(homeDir, ".codewhale", "config.toml"),
+      },
     },
   };
 }
@@ -196,6 +203,7 @@ const AGENT_CLEANERS = Object.freeze({
   pi: unregisterPiExtension,
   openclaw: unregisterOpenClawPlugin,
   hermes: unregisterHermesPlugin,
+  codewhale: unregisterCodewhaleHooks,
 });
 
 function removedCountFromResult(result) {

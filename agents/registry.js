@@ -1,4 +1,4 @@
-// Agent registry â€?loads all agent configs, provides lookup API
+// Agent registry - loads all agent configs, provides lookup API
 // Used by main.js for process detection and session tracking
 
 const claudeCode = require("./claude-code");

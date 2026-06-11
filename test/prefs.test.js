@@ -88,7 +88,7 @@ describe("prefs.getDefaults", () => {
         `${id} should default permissionsEnabled`
       );
     }
-    for (const id of ["antigravity-cli", "pi", "openclaw"]) {
+    for (const id of ["antigravity-cli", "codewhale", "pi", "openclaw"]) {
       assert.strictEqual(
         d.agents[id].permissionsEnabled,
         false,
@@ -109,6 +109,13 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.agents.pi.enabled, true);
     assert.strictEqual(d.agents.pi.permissionsEnabled, false);
     assert.strictEqual(d.agents.pi.notificationHookEnabled, true);
+  });
+
+  it("defaults CodeWhale permission bubbles off", () => {
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.agents.codewhale.enabled, true);
+    assert.strictEqual(d.agents.codewhale.permissionsEnabled, false);
+    assert.strictEqual(d.agents.codewhale.notificationHookEnabled, true);
   });
 
   it("defaults Codex permissions to intercept mode", () => {
@@ -431,7 +438,7 @@ describe("prefs.validate", () => {
 
   it("seeds all known agents with notificationHookEnabled=true", () => {
     const d = prefs.getDefaults();
-    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "opencode", "pi", "openclaw", "hermes"]) {
+    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "codewhale", "opencode", "pi", "openclaw", "hermes"]) {
       assert.strictEqual(
         d.agents[id].notificationHookEnabled,
         true,

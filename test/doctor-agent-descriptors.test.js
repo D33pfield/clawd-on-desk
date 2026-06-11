@@ -23,6 +23,7 @@ describe("doctor agent descriptors", () => {
         "kiro-cli",
         "kimi-cli",
         "qwen-code",
+        "codewhale",
         "opencode",
         "pi",
         "openclaw",
@@ -46,6 +47,7 @@ describe("doctor agent descriptors", () => {
     const pi = require("../hooks/pi-install");
     const openclaw = require("../hooks/openclaw-install");
     const hermes = require("../hooks/hermes-install");
+    const codewhale = require("../hooks/codewhale-install");
 
     assert.strictEqual(getAgentDescriptor("claude-code").parentDir, claude.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("claude-code").configPath, claude.DEFAULT_CONFIG_PATH);
@@ -99,6 +101,11 @@ describe("doctor agent descriptors", () => {
       getAgentDescriptor("hermes").configPath,
       path.join(hermes.resolveHermesHome(), "plugins", hermes.PLUGIN_ID)
     );
+
+    assert.strictEqual(codewhale.CODEWHALE_CONFIG_PATH, codewhale.CODEXWHALE_CONFIG_PATH);
+    assert.strictEqual(getAgentDescriptor("codewhale").parentDir, path.dirname(codewhale.resolveCodewhaleConfigPath()));
+    assert.strictEqual(getAgentDescriptor("codewhale").configPath, codewhale.resolveCodewhaleConfigPath());
+    assert.deepStrictEqual(getAgentDescriptor("codewhale").hookEvents, codewhale.HOOK_ENTRIES.map((entry) => entry[0]));
   });
 
   it("returns copies from public accessors", () => {
@@ -134,6 +141,42 @@ describe("doctor agent descriptors", () => {
     assert.strictEqual(descriptor.autoInstall, true);
     assert.strictEqual(descriptor.marker, copilot.MARKER);
     assert.deepStrictEqual(descriptor.hookEvents, copilot.COPILOT_HOOK_EVENTS);
+  });
+
+  it("checks CodeWhale hooks with the dedicated TOML mode", () => {
+    const codewhale = require("../hooks/codewhale-install");
+    const descriptor = getAgentDescriptor("codewhale");
+
+    assert.strictEqual(descriptor.eventSource, "hook");
+    assert.strictEqual(descriptor.configMode, "codewhale-hooks-toml");
+    assert.strictEqual(descriptor.marker, "managed by clawd-on-desk");
+    assert.strictEqual(descriptor.commandMarker, "codewhale-hook.js");
+    assert.deepStrictEqual(descriptor.hookEvents, codewhale.HOOK_ENTRIES.map((entry) => entry[0]));
+  });
+
+  it("CodeWhale descriptor honors CODEWHALE_CONFIG_PATH at module-load time", () => {
+    const descriptorsPath = require.resolve("../src/doctor-detectors/agent-descriptors");
+    const codewhalePath = require.resolve("../hooks/codewhale-install");
+    const oldCodewhaleConfigPath = process.env.CODEWHALE_CONFIG_PATH;
+    const oldDeepseekConfigPath = process.env.DEEPSEEK_CONFIG_PATH;
+    process.env.CODEWHALE_CONFIG_PATH = path.join(__dirname, "tmp-codewhale.toml");
+    delete process.env.DEEPSEEK_CONFIG_PATH;
+    delete require.cache[descriptorsPath];
+    delete require.cache[codewhalePath];
+    try {
+      const { getAgentDescriptor: getFresh } = require("../src/doctor-detectors/agent-descriptors");
+      const descriptor = getFresh("codewhale");
+      assert.strictEqual(descriptor.configPath, process.env.CODEWHALE_CONFIG_PATH);
+      assert.strictEqual(descriptor.parentDir, path.dirname(process.env.CODEWHALE_CONFIG_PATH));
+    } finally {
+      if (oldCodewhaleConfigPath === undefined) delete process.env.CODEWHALE_CONFIG_PATH;
+      else process.env.CODEWHALE_CONFIG_PATH = oldCodewhaleConfigPath;
+      if (oldDeepseekConfigPath === undefined) delete process.env.DEEPSEEK_CONFIG_PATH;
+      else process.env.DEEPSEEK_CONFIG_PATH = oldDeepseekConfigPath;
+      delete require.cache[descriptorsPath];
+      delete require.cache[codewhalePath];
+      require("../src/doctor-detectors/agent-descriptors");
+    }
   });
 
   it("Copilot descriptor honors $COPILOT_HOME at module-load time", () => {

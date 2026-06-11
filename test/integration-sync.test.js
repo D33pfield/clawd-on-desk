@@ -36,6 +36,7 @@ function makeRuntime(overrides = {}) {
       return { status: "ok", message: "done" };
     },
     syncHermesPluginImpl: () => calls.push({ name: "hermes" }),
+    syncCodewhaleHooksImpl: () => calls.push({ name: "codewhale" }),
     ...(overrides.ctx || {}),
   };
   const runtime = createIntegrationSyncRuntime({
@@ -87,6 +88,7 @@ describe("integration sync runtime", () => {
       "pi",
       "openclaw",
       "hermes",
+      "codewhale",
     ]);
   });
 
@@ -175,6 +177,33 @@ describe("integration sync runtime", () => {
       assert.deepStrictEqual(logs, []);
     } finally {
       piInstall.registerPiExtension = originalRegister;
+      console.log = originalLog;
+    }
+  });
+
+  it("does not log CodeWhale hook sync when the config is already current", () => {
+    const codewhaleInstall = require("../hooks/codewhale-install");
+    const originalRegister = codewhaleInstall.registerCodewhaleHooks;
+    const originalLog = console.log;
+    const logs = [];
+    codewhaleInstall.registerCodewhaleHooks = () => ({
+      added: 0,
+      removed: 7,
+      updated: false,
+      skipped: true,
+    });
+    console.log = (message) => logs.push(message);
+
+    try {
+      const { runtime } = makeRuntime({ ctx: { syncCodewhaleHooksImpl: undefined } });
+      const result = runtime.syncCodewhaleHooks();
+
+      assert.strictEqual(result.status, "ok");
+      assert.strictEqual(result.added, 0);
+      assert.strictEqual(result.updated, false);
+      assert.deepStrictEqual(logs, []);
+    } finally {
+      codewhaleInstall.registerCodewhaleHooks = originalRegister;
       console.log = originalLog;
     }
   });
