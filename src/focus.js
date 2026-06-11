@@ -505,6 +505,11 @@ let psProc = null;
 // macOS Accessibility/System Events calls can pile up fast, so serialize focus attempts.
 const MAC_FOCUS_THROTTLE_MS = 1500;
 const MAC_FOCUS_TIMEOUT_MS = 1500;
+// The generic frontmost fallback can block on the macOS Automation consent
+// dialog on first use; killing it early dismisses the dialog before the user
+// can answer (#465), so that one script gets a human-scale timeout.
+const MAC_FOCUS_CONSENT_TIMEOUT_MS = 15000;
+const MAC_OPEN_TIMEOUT_MS = 3000;
 const WINDOWS_FOCUS_DEDUP_MS = 400;
 const WINDOWS_FOCUS_RESULT_TIMEOUT_MS = 3000;
 const WINDOWS_FOCUS_POSITIVE_REASONS = new Set([
@@ -1461,6 +1466,66 @@ function focusTerminalWindow(sourcePidOrRequest, cwd, editor, pidChain, meta) {
   return result;
 }
 
+// macOS generic window focus (#465). Prefer LaunchServices activation
+// (`open <bundle>`) over System Events `set frontmost`: `open` carries
+// Dock-click reopen semantics, so it also restores minimized windows —
+// `set frontmost` activates the app but leaves them in the Dock — and it
+// needs no Automation consent. System Events stays as the fallback for
+// source processes that don't live inside an .app bundle.
+
+function extractMacAppBundlePath(commPath) {
+  const text = typeof commPath === "string" ? commPath.trim() : "";
+  if (!text.startsWith("/")) return null;
+  // Match the outermost bundle: helpers live at
+  // <bundle>.app/Contents/Frameworks/<helper>.app/Contents/MacOS/<bin>.
+  const idx = text.indexOf(".app/Contents/");
+  return idx > 0 ? text.slice(0, idx + 4) : null;
+}
+
+function resolveMacAppBundle(pidCandidates, callback) {
+  execFile("ps", ["-o", "pid=,comm=", "-p", pidCandidates.join(",")], { encoding: "utf8", timeout: 1000 }, (_err, stdout) => {
+    // ps exits non-zero when any pid in the list is already gone but still
+    // prints the live rows, so parse stdout regardless of the exit code.
+    const commByPid = new Map();
+    for (const line of String(stdout || "").split("\n")) {
+      const match = line.match(/^\s*(\d+)\s+(.+)$/);
+      if (match) commByPid.set(Number(match[1]), match[2]);
+    }
+    for (const pid of pidCandidates) {
+      const bundlePath = extractMacAppBundlePath(commByPid.get(pid));
+      if (bundlePath) return callback(bundlePath);
+    }
+    callback(null);
+  });
+}
+
+function focusMacAppViaSystemEvents(pidCandidates, onDone) {
+  const applePidList = pidCandidates.join(", ");
+  const script = `
+    tell application "System Events"
+      repeat with targetPid in {${applePidList}}
+        set pidValue to contents of targetPid
+        set pList to every process whose unix id is pidValue
+        if (count of pList) > 0 then
+          set frontmost of item 1 of pList to true
+          exit repeat
+        end if
+      end repeat
+    end tell`;
+  execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_CONSENT_TIMEOUT_MS }, (err, _stdout, stderr) => {
+    if (err) {
+      const detail = String(stderr || err.message || "").split("\n")[0].slice(0, 160);
+      const reason = detail.includes("-1743")
+        ? "automation-denied"
+        : `osascript-failed:${safeLogValue(err.signal || err.code || "error")}`;
+      logFocusResult(`branch=mac-frontmost reason=${reason} detail=${safeLogValue(detail)}`);
+    } else {
+      logFocusResult("branch=mac-frontmost reason=ok");
+    }
+    if (onDone) onDone();
+  });
+}
+
 function focusTerminalWindowLegacy(request, onDone) {
   const { sourcePid } = request;
   const cwd = request.cwd;
@@ -1480,21 +1545,20 @@ function focusTerminalWindowLegacy(request, onDone) {
         if (pidCandidates.length >= 3) break;
       }
     }
-    const applePidList = pidCandidates.join(", ");
-    const script = `
-      tell application "System Events"
-        repeat with targetPid in {${applePidList}}
-          set pidValue to contents of targetPid
-          set pList to every process whose unix id is pidValue
-          if (count of pList) > 0 then
-            set frontmost of item 1 of pList to true
-            exit repeat
-          end if
-        end repeat
-      end tell`;
-    execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, (err) => {
-      if (err) console.warn("focusTerminal macOS failed:", err.message);
-      if (onDone) onDone();
+    resolveMacAppBundle(pidCandidates, (bundlePath) => {
+      if (!bundlePath) {
+        focusMacAppViaSystemEvents(pidCandidates, onDone);
+        return;
+      }
+      execFile("/usr/bin/open", [bundlePath], { timeout: MAC_OPEN_TIMEOUT_MS }, (openErr) => {
+        if (!openErr) {
+          logFocusResult(`branch=mac-open reason=ok bundle=${safeLogValue(path.basename(bundlePath))}`);
+          if (onDone) onDone();
+          return;
+        }
+        logFocusResult(`branch=mac-open reason=open-failed bundle=${safeLogValue(path.basename(bundlePath))} error=${safeLogValue(openErr.signal || openErr.code || "error")}`);
+        focusMacAppViaSystemEvents(pidCandidates, onDone);
+      });
     });
     return true;
   }
@@ -1583,6 +1647,7 @@ return {
   cleanup,
   __test: {
     makeFocusCmd,
+    extractMacAppBundlePath,
     buildWindowsTitleCandidates,
     confirmForeground,
     isPositiveFocusReason,
