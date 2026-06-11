@@ -312,8 +312,10 @@ module.exports = function initMenu(ctx) {
         // ctx.petHidden guard: the menu's own Hide item may have just hidden
         // the pet, and the click handler can fire on either side of this close
         // callback — an unconditional showInactive() would resurrect a window
-        // setPetHidden() just hid. The show path re-asserts taskbar/mac flags
-        // itself (showPetWindows), so skipping here loses nothing.
+        // setPetHidden() just hid. Skipping is safe: showPetWindows() re-asserts
+        // taskbar/mac flags on the next show, and Windows topmost is held by
+        // the window's alwaysOnTop flag plus the topmost-runtime watchdog, not
+        // by this callback.
         if (ctx.win && !ctx.win.isDestroyed() && !ctx.petHidden) {
           ctx.win.showInactive();
           keepOutOfTaskbar(ctx.win);
