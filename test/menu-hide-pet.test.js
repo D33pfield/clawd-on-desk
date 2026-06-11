@@ -91,7 +91,7 @@ function buildBaseCtx(overrides = {}) {
 }
 
 describe("context menu hide pet action (#460)", () => {
-  it("exposes a Hide Clawd item right before Quit that toggles visibility", () => {
+  it("exposes a Hide Pet item right before Quit that toggles visibility", () => {
     const initMenu = loadMenuWithElectron(fakeElectron());
     let toggles = 0;
     const ctx = buildBaseCtx({
@@ -102,18 +102,18 @@ describe("context menu hide pet action (#460)", () => {
     menu.buildContextMenu();
 
     const labels = ctx.contextMenu.template.map((item) => item.label);
-    const hideIdx = labels.indexOf("Hide Clawd");
+    const hideIdx = labels.indexOf("Hide Pet");
     const quitIdx = labels.indexOf("Quit");
-    assert.ok(hideIdx !== -1, "context menu should expose Hide Clawd");
+    assert.ok(hideIdx !== -1, "context menu should expose Hide Pet");
     assert.strictEqual(quitIdx, labels.length - 1, "Quit should stay the last item");
-    assert.strictEqual(hideIdx, quitIdx - 2, "Hide Clawd should sit just above Quit");
+    assert.strictEqual(hideIdx, quitIdx - 2, "Hide Pet should sit just above Quit");
     assert.strictEqual(ctx.contextMenu.template[hideIdx + 1].type, "separator");
 
     ctx.contextMenu.template[hideIdx].click();
     assert.strictEqual(toggles, 1);
   });
 
-  it("labels the item Show Clawd while the pet is hidden", () => {
+  it("labels the item Show Pet while the pet is hidden", () => {
     const initMenu = loadMenuWithElectron(fakeElectron());
     const ctx = buildBaseCtx({ petHidden: true });
 
@@ -121,8 +121,8 @@ describe("context menu hide pet action (#460)", () => {
     menu.buildContextMenu();
 
     const labels = ctx.contextMenu.template.map((item) => item.label);
-    assert.ok(labels.includes("Show Clawd"), "hidden pet should flip the label to Show Clawd");
-    assert.ok(!labels.includes("Hide Clawd"));
+    assert.ok(labels.includes("Show Pet"), "hidden pet should flip the label to Show Pet");
+    assert.ok(!labels.includes("Hide Pet"));
   });
 
   it("popup close callback does not resurrect a pet the menu just hid", () => {
@@ -156,7 +156,7 @@ describe("context menu hide pet action (#460)", () => {
 
     initMenu(ctx).popupMenuAt({
       popup({ callback }) {
-        // Simulate the Hide Clawd click landing before the close callback.
+        // Simulate the Hide Pet click landing before the close callback.
         ctx.petHidden = true;
         callback();
       },
