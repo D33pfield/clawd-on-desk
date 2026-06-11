@@ -251,6 +251,46 @@ function endDragReaction() {
   window.hitAPI.endDragReaction();
 }
 
+// --- OS file drop → open terminal at that directory (#459) ---
+// Affordance gating lives HERE (not only in main): in mini mode dragover must
+// not preventDefault, so the OS shows "no drop" instead of a copy cursor that
+// would then do nothing. Main re-checks mini as the second layer.
+function dragHasFiles(e) {
+  const types = e.dataTransfer && e.dataTransfer.types;
+  if (!types) return false;
+  for (const t of types) { if (t === "Files") return true; }
+  return false;
+}
+
+area.addEventListener("dragover", (e) => {
+  if (miniMode || !dragHasFiles(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+});
+
+area.addEventListener("drop", (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  if (miniMode) return;
+  const paths = [];
+  for (const file of e.dataTransfer.files || []) {
+    const p = window.hitAPI.getPathForFile(file);
+    if (typeof p === "string" && p) paths.push(p);
+  }
+  if (paths.length) window.hitAPI.dropPaths(paths);
+});
+
+// Main confirmed the drop opened a terminal → react. Routed back through the
+// local playReaction so isReacting gating stays consistent; best-effort only —
+// themes without a "double" reaction (e.g. Cloudling) stay still.
+window.hitAPI.onDropAccepted(() => {
+  const doubleReact = _getReaction("double");
+  if (!doubleReact || !canPlayReactionNow()) return;
+  const files = doubleReact.files || [doubleReact.file];
+  const file = files[Math.floor(Math.random() * files.length)];
+  playReaction(file, doubleReact.duration || 3500);
+});
+
 // --- Right-click context menu ---
 document.addEventListener("contextmenu", (e) => {
   e.preventDefault();
