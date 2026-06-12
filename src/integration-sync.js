@@ -397,6 +397,18 @@ function createIntegrationSyncRuntime(options = {}) {
     } catch (err) {
       console.warn("Clawd: failed to sync CodeWhale hooks:", err.message);
       return { status: "error", message: err && err.message ? err.message : "Failed to sync CodeWhale hooks" };
+  function syncReasonixHooks() {
+    try {
+      if (typeof ctx.syncReasonixHooksImpl === "function") return ctx.syncReasonixHooksImpl();
+      const { registerReasonixHooks } = require("../hooks/reasonix-install.js");
+      const { added, updated } = registerReasonixHooks({ silent: true });
+      if (added > 0 || updated > 0) {
+        console.log(`Clawd: synced Reasonix hooks (added ${added}, updated ${updated})`);
+      }
+      return { status: "ok", added, updated };
+    } catch (err) {
+      console.warn("Clawd: failed to sync Reasonix hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync Reasonix hooks" };
     }
   }
 
@@ -416,6 +428,7 @@ function createIntegrationSyncRuntime(options = {}) {
     openclaw: syncOpenClawPlugin,
     hermes: syncHermesPlugin,
     qoder: syncQoderHooks,
+    reasonix: syncReasonixHooks,
   });
 
   const AGENT_INTEGRATION_REPAIRERS = Object.freeze({
@@ -514,6 +527,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncOpenClawPlugin,
     syncHermesPlugin,
     syncQoderHooks,
+    syncReasonixHooks,
     repairCodexHooks,
     repairOpenClawPlugin,
     syncIntegrationForAgent,

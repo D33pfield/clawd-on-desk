@@ -29,6 +29,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "opencode",
   "hermes",
   "qoder",
+  "reasonix"
 ]);
 
 const INSTALLABLE_AGENT_IDS = new Set([
