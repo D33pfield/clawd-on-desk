@@ -496,6 +496,22 @@ function clearAgentCleanupHints(payload, deps = {}) {
   return { status: "ok", commit: { dismissedAgentCleanupHints: next } };
 }
 
+function clearAgentInstallHints(payload, deps = {}) {
+  const normalized = normalizeDismissAgentHintPayload(payload, _validateDismissInstallHintId, "clearAgentInstallHints");
+  if (normalized.status !== "ok") return normalized;
+  const snapshot = deps.snapshot || {};
+  const current = snapshot.dismissedAgentInstallHints;
+  const next = current && typeof current === "object" && !Array.isArray(current) ? { ...current } : {};
+  let changed = false;
+  for (const agentId of normalized.agentIds) {
+    if (next[agentId] !== true) continue;
+    delete next[agentId];
+    changed = true;
+  }
+  if (!changed) return { status: "ok", noop: true };
+  return { status: "ok", commit: { dismissedAgentInstallHints: next } };
+}
+
 setAgentFlag.lockKey = "agentIntegration";
 setAgentPermissionMode.lockKey = "agentIntegration";
 installAgentIntegration.lockKey = "agentIntegration";
@@ -504,9 +520,11 @@ repairAgentIntegration.lockKey = "agentIntegration";
 dismissAgentInstallHints.lockKey = "agentIntegration";
 dismissAgentCleanupHints.lockKey = "agentIntegration";
 clearAgentCleanupHints.lockKey = "agentIntegration";
+clearAgentInstallHints.lockKey = "agentIntegration";
 
 module.exports = {
   clearAgentCleanupHints,
+  clearAgentInstallHints,
   dismissAgentCleanupHints,
   dismissAgentInstallHints,
   installAgentIntegration,

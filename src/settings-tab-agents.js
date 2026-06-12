@@ -16,6 +16,7 @@
   ];
   const INSTALL_HINT_CONFIDENCES = new Set(["high", "medium"]);
   let agentHintActionPending = false;
+  let agentInstallHintResetPending = false;
   let agentCleanupHintResetPending = false;
 
   function t(key) {
@@ -26,6 +27,7 @@
     if (ops && typeof ops.fetchAgentInstallationHints === "function") {
       ops.fetchAgentInstallationHints();
     }
+    resetMissingInstallDismissals();
     resetRestoredCleanupDismissals();
 
     const h1 = document.createElement("h1");
@@ -177,6 +179,34 @@
         && dismissed[entry.agentId] === true
       )
       .map((entry) => entry.agentId);
+  }
+
+  function getMissingInstallDismissalAgentIds() {
+    const hints = runtime.agentInstallationHints;
+    const entries = hints && Array.isArray(hints.agents) ? hints.agents : [];
+    const dismissed = state.snapshot && state.snapshot.dismissedAgentInstallHints;
+    if (!dismissed || typeof dismissed !== "object") return [];
+    return entries
+      .filter((entry) =>
+        entry
+        && typeof entry.agentId === "string"
+        && entry.detectedInstalled === false
+        && dismissed[entry.agentId] === true
+      )
+      .map((entry) => entry.agentId);
+  }
+
+  function resetMissingInstallDismissals() {
+    if (agentInstallHintResetPending) return;
+    if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") return;
+    const agentIds = getMissingInstallDismissalAgentIds();
+    if (agentIds.length === 0) return;
+    agentInstallHintResetPending = true;
+    window.settingsAPI.command("clearAgentInstallHints", { agentIds }).catch((err) => {
+      console.warn("settings: clearAgentInstallHints failed", err);
+    }).finally(() => {
+      agentInstallHintResetPending = false;
+    });
   }
 
   function resetRestoredCleanupDismissals() {
@@ -732,6 +762,7 @@
           ops.showToast(formatHintResult(t("agentIntegrationInstallSkipped"), {
             agents: agent.name || agent.id,
           }), { ttl: 5000 });
+          refreshInstallationHints();
           syncAgentIntegrationAction(meta);
           return;
         }

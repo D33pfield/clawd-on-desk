@@ -162,6 +162,18 @@ describe("agent installation detector", () => {
     assert.strictEqual(hermes.reason, "config-file");
   });
 
+  it("treats a bare Hermes home directory as low-confidence residue", () => {
+    const homeDir = makeHome();
+    mkdirp(path.join(homeDir, ".hermes"));
+
+    const report = detectAgentInstallations({ homeDir, now: 1 });
+    const hermes = byId(report, "hermes");
+
+    assert.strictEqual(hermes.detectedInstalled, true);
+    assert.strictEqual(hermes.confidence, "low");
+    assert.strictEqual(hermes.reason, "parent-dir");
+  });
+
   it("uses only read-style fs operations", () => {
     const homeDir = makeHome();
     mkdirp(path.join(homeDir, ".config", "opencode"));

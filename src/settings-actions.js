@@ -85,6 +85,7 @@ const {
 } = require("./settings-actions-shortcuts");
 const {
   clearAgentCleanupHints,
+  clearAgentInstallHints,
   dismissAgentCleanupHints,
   installAgentIntegration,
   dismissAgentInstallHints,
@@ -1284,6 +1285,7 @@ const commandRegistry = {
   uninstallHooks,
   cleanupIntegrations: cleanupIntegrationsCommand,
   clearAgentCleanupHints,
+  clearAgentInstallHints,
   dismissAgentCleanupHints,
   dismissAgentInstallHints,
   installAgentIntegration,

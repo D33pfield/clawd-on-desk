@@ -4122,6 +4122,46 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelector(".agent-install-hint-banner"), null);
   });
 
+  it("clears install dismissals when the detector no longer sees the agent", async () => {
+    const calls = [];
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          codex: { integrationInstalled: false, enabled: false },
+          "qwen-code": { integrationInstalled: false, enabled: false },
+        },
+        dismissedAgentInstallHints: {
+          codex: true,
+          "qwen-code": true,
+        },
+      },
+      agentMetadata: [
+        { id: "codex", name: "Codex", eventSource: "hook", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+      ],
+      settingsAPI: {
+        command: (action, payload) => {
+          calls.push([action, payload]);
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 1,
+      agents: [{ agentId: "qwen-code", detectedInstalled: false, confidence: "low" }],
+      skippedAgentIds: ["codex"],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+
+    harness.core.ops.requestRender({ content: true });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.strictEqual(harness.content.querySelector(".agent-install-hint-banner"), null);
+    assert.strictEqual(calls[0][0], "clearAgentInstallHints");
+    assert.deepStrictEqual([...calls[0][1].agentIds], ["qwen-code"]);
+  });
+
   it("wires install hint banner buttons to bulk install and dismiss commands", async () => {
     const calls = [];
     const detectionResult = {

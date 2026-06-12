@@ -252,7 +252,7 @@ function detectHermesInstallation(paths, options) {
     return installationResult(true, "high", "cli-path", "Hermes CLI runtime was found");
   }
   if (dirExists(fsImpl, paths.hermesHome)) {
-    return installationResult(true, "medium", "parent-dir", `${paths.hermesHome} exists`);
+    return installationResult(true, "low", "parent-dir", `${paths.hermesHome} exists`);
   }
   return notFound();
 }

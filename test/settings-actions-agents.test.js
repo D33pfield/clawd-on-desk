@@ -9,6 +9,7 @@ const agentCommands = require("../src/settings-actions-agents");
 test("settings agent actions expose the command surface", () => {
   assert.deepStrictEqual(Object.keys(agentCommands).sort(), [
     "clearAgentCleanupHints",
+    "clearAgentInstallHints",
     "dismissAgentCleanupHints",
     "dismissAgentInstallHints",
     "installAgentIntegration",
@@ -28,6 +29,7 @@ test("settings agent integration commands share a serialization lock", () => {
   assert.strictEqual(agentCommands.dismissAgentInstallHints.lockKey, "agentIntegration");
   assert.strictEqual(agentCommands.dismissAgentCleanupHints.lockKey, "agentIntegration");
   assert.strictEqual(agentCommands.clearAgentCleanupHints.lockKey, "agentIntegration");
+  assert.strictEqual(agentCommands.clearAgentInstallHints.lockKey, "agentIntegration");
 });
 
 test("settings agent actions enable an agent and preserve sibling flags", () => {
@@ -255,6 +257,18 @@ test("settings agent actions clear agent cleanup hints in one commit", () => {
 
   assert.strictEqual(result.status, "ok");
   assert.deepStrictEqual(result.commit.dismissedAgentCleanupHints, { hermes: true });
+});
+
+test("settings agent actions clear agent install hints in one commit", () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.dismissedAgentInstallHints = { "qwen-code": true, hermes: true };
+
+  const result = agentCommands.clearAgentInstallHints({
+    agentIds: ["qwen-code", "copilot-cli"],
+  }, { snapshot });
+
+  assert.strictEqual(result.status, "ok");
+  assert.deepStrictEqual(result.commit.dismissedAgentInstallHints, { hermes: true });
 });
 
 test("settings agent actions do not commit uninstall failures", async () => {
