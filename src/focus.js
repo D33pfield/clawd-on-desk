@@ -548,8 +548,16 @@ function normalizeGhosttyTerminalId(value) {
 function normalizeTmuxSocket(value) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
-  if (!trimmed || trimmed === "default") return null;
-  return /^[\w.-]{1,64}$/.test(trimmed) ? trimmed : null;
+  if (!trimmed || trimmed.length > 4096 || /[\0\r\n]/.test(trimmed)) return null;
+  if (trimmed.startsWith("/")) return trimmed;
+  return trimmed !== "default" && /^[\w.-]{1,64}$/.test(trimmed) ? trimmed : null;
+}
+
+function normalizeTmuxClient(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 256 || trimmed.startsWith("-")) return null;
+  return /^[\w./:-]+$/.test(trimmed) ? trimmed : null;
 }
 
 function normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta = {}) {
@@ -566,6 +574,7 @@ function normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta =
       requestSource: typeof request.requestSource === "string" ? request.requestSource : null,
       ghosttyTerminalId: normalizeGhosttyTerminalId(request.ghosttyTerminalId ?? request.ghostty_terminal_id),
       tmuxSocket: normalizeTmuxSocket(request.tmuxSocket ?? request.tmux_socket),
+      tmuxClient: normalizeTmuxClient(request.tmuxClient ?? request.tmux_client),
     };
   }
 
@@ -580,6 +589,7 @@ function normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta =
     requestSource: meta && typeof meta.requestSource === "string" ? meta.requestSource : null,
     ghosttyTerminalId: normalizeGhosttyTerminalId(meta && (meta.ghosttyTerminalId ?? meta.ghostty_terminal_id)),
     tmuxSocket: normalizeTmuxSocket(meta && (meta.tmuxSocket ?? meta.tmux_socket)),
+    tmuxClient: normalizeTmuxClient(meta && (meta.tmuxClient ?? meta.tmux_client)),
   };
 }
 
@@ -1122,15 +1132,23 @@ function resolveTmuxBin() {
   return "";
 }
 
-function scheduleTmuxPaneFocus(pidChain, tmuxSocket) {
+function buildTmuxSocketArgs(tmuxSocket) {
+  const socket = normalizeTmuxSocket(tmuxSocket);
+  if (!socket) return [];
+  if (socket.startsWith("/")) return ["-S", socket];
+  return socket !== "default" ? ["-L", socket] : [];
+}
+
+function scheduleTmuxPaneFocus(pidChain, tmuxSocket, tmuxClient) {
   if (!Array.isArray(pidChain) || pidChain.length < 2) return;
   const tmuxBin = resolveTmuxBin();
   if (!tmuxBin) return;
   const candidates = pidChain.filter(p => Number.isFinite(p) && p > 0);
   if (candidates.length < 2) return;
 
-  const socketArgs = (typeof tmuxSocket === "string" && tmuxSocket && tmuxSocket !== "default")
-    ? ["-L", tmuxSocket] : [];
+  const socketArgs = buildTmuxSocketArgs(tmuxSocket);
+  const tmuxClientTarget = normalizeTmuxClient(tmuxClient);
+  const clientArgs = tmuxClientTarget ? ["-c", tmuxClientTarget] : [];
 
   const pidsArg = candidates.slice(0, 8).join(",");
   execFile("ps", ["-o", "pid=,comm=", "-p", pidsArg], { encoding: "utf8", timeout: 500 }, (err, stdout) => {
@@ -1166,7 +1184,7 @@ function scheduleTmuxPaneFocus(pidChain, tmuxSocket) {
           const paneId = parts[2];
           const session = parts.slice(3).join(" ");
           setTimeout(() => {
-            execFile(tmuxBin, [...socketArgs, "switch-client", "-t", session], { timeout: 500 }, () => {
+            execFile(tmuxBin, [...socketArgs, "switch-client", ...clientArgs, "-t", session], { timeout: 500 }, () => {
               execFile(tmuxBin, [...socketArgs, "select-window", "-t", windowId], { timeout: 500 }, () => {
                 execFile(tmuxBin, [...socketArgs, "select-pane", "-t", paneId], { timeout: 500 }, () => {});
               });
@@ -1342,7 +1360,7 @@ function executeMacFocusRequest(request) {
   focusTerminalWindowLegacy(request, finalize);
   scheduleTerminalTabFocus(request.editor, request.pidChain);
   scheduleITermTabFocus(request.sourcePid, request.pidChain);
-  scheduleTmuxPaneFocus(request.pidChain, request.tmuxSocket);
+  scheduleTmuxPaneFocus(request.pidChain, request.tmuxSocket, request.tmuxClient);
   scheduleCmuxWorkspaceSwitch(request.pidChain);
   scheduleSupersetFocus(request.sourcePid, request.cwd);
   scheduleGhosttyFocus(request.sourcePid, request.cwd, request.pidChain, request.ghosttyTerminalId);
@@ -1537,7 +1555,7 @@ function focusTerminalWindow(sourcePidOrRequest, cwd, editor, pidChain, meta) {
   if (isLinux) {
     focusTerminalWindowLegacy(request);
     scheduleTerminalTabFocus(request.editor, request.pidChain);
-    scheduleTmuxPaneFocus(request.pidChain, request.tmuxSocket);
+    scheduleTmuxPaneFocus(request.pidChain, request.tmuxSocket, request.tmuxClient);
     logFocusResult("branch=linux-command-submitted");
     return normalizeFocusResultPayload({ reason: "linux-command-submitted" });
   }

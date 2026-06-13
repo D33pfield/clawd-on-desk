@@ -36,7 +36,7 @@ readStdinJson()
     const sessionId = "default";
     const cwd = (payload && payload.cwd) || "";
 
-    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket } = resolve();
+    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
 
     const body = { state, session_id: sessionId, event };
     body.agent_id = "kiro-cli";
@@ -49,6 +49,7 @@ readStdinJson()
       if (agentPid) body.agent_pid = agentPid;
       if (pidChain.length) body.pid_chain = pidChain;
       if (tmuxSocket) body.tmux_socket = tmuxSocket;
+      if (tmuxClient) body.tmux_client = tmuxClient;
     }
 
     postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => {

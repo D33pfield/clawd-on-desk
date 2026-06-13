@@ -155,7 +155,7 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
       ["ps -o comm= -p 100", "zsh\n"],
       ["ps -o ppid= -p 200", "1\n"],
       ["ps -o comm= -p 200", "tmux\n"],
-      ["tmux list-clients -t %1 -F #{client_pid}", "300\n"],
+      ["tmux list-clients -t %1 -F #{client_pid}\t#{client_tty}", "300\t/dev/pts/7\n"],
       ["ps -o comm= -p 300", "alacritty\n"],
       ["ps -o ppid= -p 300", "1\n"],
     ];
@@ -167,10 +167,12 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
     try {
       const cfg = mod.getPlatformConfig();
       const resolve = mod.createPidResolver({ platformConfig: cfg, startPid: 100 });
-      const { stablePid, pidChain } = resolve();
+      const { stablePid, pidChain, tmuxSocket, tmuxClient } = resolve();
       assert.strictEqual(stablePid, 300, "stablePid should be the terminal pid");
       assert.ok(pidChain.includes(200), "pidChain should include tmux server pid");
       assert.ok(pidChain.includes(300), "pidChain should include terminal pid");
+      assert.strictEqual(tmuxSocket, "/tmp/tmux-1000/default");
+      assert.strictEqual(tmuxClient, "/dev/pts/7");
     } finally {
       cleanup();
     }
@@ -204,7 +206,7 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
       ["ps -o comm= -p 100", "zsh\n"],
       ["ps -o ppid= -p 200", "1\n"],
       ["ps -o comm= -p 200", "tmux\n"],
-      ["tmux list-clients -t %1 -F #{client_pid}", "\n"],
+      ["tmux list-clients -t %1 -F #{client_pid}\t#{client_tty}", "\n"],
     ];
     const { mod, cleanup } = loadSharedProcessWithMock({
       execFileSyncMock: makeMock(routes),
@@ -229,7 +231,7 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
       ["ps -o comm= -p 100", "zsh\n"],
       ["ps -o ppid= -p 200", "1\n"],
       ["ps -o comm= -p 200", "tmux\n"],
-      ["tmux list-clients -t %1 -F #{client_pid}", "\n"],
+      ["tmux list-clients -t %1 -F #{client_pid}\t#{client_tty}", "\n"],
     ];
     const { mod, cleanup } = loadSharedProcessWithMock({
       execFileSyncMock: makeMock(routes),
@@ -239,13 +241,13 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
     try {
       const cfg = mod.getPlatformConfig();
       const result = mod.createPidResolver({ platformConfig: cfg, startPid: 100 })();
-      assert.strictEqual(result.tmuxSocket, "work");
+      assert.strictEqual(result.tmuxSocket, "/tmp/tmux-1000/work");
     } finally {
       cleanup();
     }
   });
 
-  it("(e) default socket → tmuxSocket is null", () => {
+  it("(e) default socket path is preserved for -S focus", () => {
     const routes = [
       ["ps -o ppid= -p 100", "1\n"],
       ["ps -o comm= -p 100", "zsh\n"],
@@ -260,7 +262,7 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
       const result = mod.createPidResolver({
         platformConfig: cfg, startPid: 100, maxDepth: 1,
       })();
-      assert.strictEqual(result.tmuxSocket, null);
+      assert.strictEqual(result.tmuxSocket, "/tmp/tmux-1000/default");
     } finally {
       cleanup();
     }

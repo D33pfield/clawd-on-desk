@@ -36,6 +36,20 @@ const DEFAULT_EDITOR_PATH_CHECKS = [
 const WINDOWS_TERMINAL_WINDOW_CLASS = "CASCADIA_HOSTING_WINDOW_CLASS";
 const WINDOWS_TERMINAL_PROCESS_NAMES = new Set(["windowsterminal.exe", "windowsterminalpreview.exe"]);
 
+function normalizeTmuxSocketPath(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > 4096 || !text.startsWith("/")) return null;
+  return /[\0\r\n]/.test(text) ? null : text;
+}
+
+function normalizeTmuxClientTarget(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > 256 || text.startsWith("-")) return null;
+  return /^[\w./:-]+$/.test(text) ? text : null;
+}
+
 // ── getPlatformConfig ────────────────────────────────────────────────────────
 // Returns { terminalNames: Set, systemBoundary: Set, editorMap: Object, editorPathChecks: Array }
 // Options:
@@ -271,6 +285,7 @@ function createPidResolver(options) {
       pid = parentPid;
     }
 
+    let tmuxClient = null;
     if (!isWin && !terminalPid && process.env.TMUX && process.env.TMUX_PANE) {
       const tmuxParts = process.env.TMUX.split(",");
       const tmuxServerPid = tmuxParts.length >= 2 ? parseInt(tmuxParts[1], 10) : 0;
@@ -278,14 +293,21 @@ function createPidResolver(options) {
       if (walkReachedTmux) {
         try {
           const raw = execFileSync(
-            "tmux", ["list-clients", "-t", process.env.TMUX_PANE, "-F", "#{client_pid}"],
+            "tmux", ["list-clients", "-t", process.env.TMUX_PANE, "-F", "#{client_pid}\t#{client_tty}"],
             { encoding: "utf8", timeout: 500 }
           );
-          const clientPids = raw.split("\n")
-            .map(s => parseInt(s.trim(), 10))
-            .filter(p => Number.isFinite(p) && p > 1);
-          outer: for (const clientPid of clientPids) {
-            let walkPid = clientPid;
+          const clients = raw.split("\n")
+            .map((line) => {
+              const parts = line.split("\t");
+              const pid = parseInt((parts[0] || "").trim(), 10);
+              return {
+                pid,
+                target: normalizeTmuxClientTarget(parts.slice(1).join("\t")),
+              };
+            })
+            .filter(c => Number.isFinite(c.pid) && c.pid > 1);
+          outer: for (const client of clients) {
+            let walkPid = client.pid;
             const localAdds = [];
             for (let t = 0; t < 4; t++) {
               let tName, tParent;
@@ -299,6 +321,7 @@ function createPidResolver(options) {
               } catch { break; }
               if (terminalNames.has(tName)) {
                 terminalPid = walkPid;
+                tmuxClient = client.target;
                 pidChain.push(...localAdds, walkPid);
                 break outer;
               }
@@ -314,13 +337,10 @@ function createPidResolver(options) {
     let tmuxSocket = null;
     if (process.env.TMUX) {
       const socketPath = process.env.TMUX.split(",")[0];
-      if (socketPath) {
-        const name = require("path").basename(socketPath);
-        if (name && name !== "default") tmuxSocket = name;
-      }
+      tmuxSocket = normalizeTmuxSocketPath(socketPath);
     }
 
-    _cached = { stablePid: terminalPid || lastGoodPid, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket };
+    _cached = { stablePid: terminalPid || lastGoodPid, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient };
     return _cached;
   };
 }

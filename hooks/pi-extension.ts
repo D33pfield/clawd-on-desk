@@ -23,6 +23,7 @@ type ProcessMetadata = {
   pidChain?: number[];
   editor?: "code" | "cursor";
   tmuxSocket?: string;
+  tmuxClient?: string;
 };
 
 type ProcessInfo = {
@@ -283,11 +284,22 @@ function getProcessMetadata(): ProcessMetadata {
   }
 
   let tmuxSocket: string | undefined;
+  let tmuxClient: string | undefined;
   if (process.env.TMUX) {
     const socketPath = process.env.TMUX.split(",")[0];
-    if (socketPath) {
-      const name = require("path").basename(socketPath);
-      if (name && name !== "default" && /^[\w.-]{1,64}$/.test(name)) tmuxSocket = name;
+    if (socketPath && socketPath.startsWith("/") && socketPath.length <= 4096 && !/[\0\r\n]/.test(socketPath)) {
+      tmuxSocket = socketPath;
+    }
+    if (process.env.TMUX_PANE) {
+      try {
+        const { execFileSync } = require("child_process");
+        const raw = execFileSync("tmux", ["list-clients", "-t", process.env.TMUX_PANE, "-F", "#{client_tty}"],
+          { encoding: "utf8", timeout: 500 });
+        const target = String(raw || "").split("\n").map((s) => s.trim()).find(Boolean);
+        if (target && target.length <= 256 && !target.startsWith("-") && /^[\w./:-]+$/.test(target)) {
+          tmuxClient = target;
+        }
+      } catch {}
     }
   }
 
@@ -297,6 +309,7 @@ function getProcessMetadata(): ProcessMetadata {
     pidChain: pidChain.length > 0 ? pidChain : [process.pid],
     editor,
     tmuxSocket,
+    tmuxClient,
   };
   processMetadataCache = { at: now, value };
   return value;

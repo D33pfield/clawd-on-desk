@@ -45,7 +45,7 @@ describe("scheduleTmuxPaneFocus", () => {
     const { initFocus, cleanup } = loadFocusWithMock(mock, { platform: "linux" });
     const focusInstance = initFocus({});
     focusInstance.__test.__setTmuxBin("/usr/bin/tmux");
-    focusInstance.__test.scheduleTmuxPaneFocus([100, 200, 300]);
+    focusInstance.__test.scheduleTmuxPaneFocus([100, 200, 300], "/tmp/tmux-1000/default", "/dev/pts/7");
 
     setTimeout(() => {
       cleanup();
@@ -54,6 +54,9 @@ describe("scheduleTmuxPaneFocus", () => {
       const selectWindow = tmuxCalls.find(c => c.args.includes("select-window"));
       const selectPane = tmuxCalls.find(c => c.args.includes("select-pane"));
       assert.ok(switchClient, "switch-client should run");
+      assert.deepStrictEqual(switchClient.args.slice(0, 2), ["-S", "/tmp/tmux-1000/default"], "switch-client uses full socket path");
+      assert.ok(switchClient.args.includes("-c"), "switch-client should specify target client");
+      assert.ok(switchClient.args.includes("/dev/pts/7"), "switch-client -c client tty");
       assert.ok(switchClient.args.includes("work"), "switch-client -t work");
       assert.ok(selectWindow, "select-window should run");
       assert.ok(selectWindow.args.includes("@3"), "select-window -t @3");
@@ -121,7 +124,35 @@ describe("scheduleTmuxPaneFocus", () => {
     }, 700);
   });
 
-  it("prepends -L <socket> to every tmux invocation when a custom socket is given", (t, done) => {
+  it("prepends -S <socket path> to every tmux invocation when a full socket path is given", (t, done) => {
+    const { calls, mock } = makeMock({
+      ps: (args, cb) => cb(null, "100 zsh\n200 tmux\n", ""),
+      "/usr/bin/tmux": (args, cb) => {
+        if (args.includes("list-panes")) {
+          cb(null, "100 @1 %1 work\n", "");
+          return;
+        }
+        cb(null, "", "");
+      },
+    });
+    const { initFocus, cleanup } = loadFocusWithMock(mock, { platform: "linux" });
+    const focusInstance = initFocus({});
+    focusInstance.__test.__setTmuxBin("/usr/bin/tmux");
+    focusInstance.__test.scheduleTmuxPaneFocus([100, 200], "/tmp/custom/work.sock");
+
+    setTimeout(() => {
+      cleanup();
+      const tmuxCalls = calls.filter(c => c.cmd === "/usr/bin/tmux");
+      assert.ok(tmuxCalls.length > 0, "tmux ran at least once");
+      for (const c of tmuxCalls) {
+        assert.strictEqual(c.args[0], "-S", "every tmux call leads with -S");
+        assert.strictEqual(c.args[1], "/tmp/custom/work.sock", "socket path passed");
+      }
+      done();
+    }, 700);
+  });
+
+  it("keeps legacy -L <socket-name> compatibility for old session metadata", (t, done) => {
     const { calls, mock } = makeMock({
       ps: (args, cb) => cb(null, "100 zsh\n200 tmux\n", ""),
       "/usr/bin/tmux": (args, cb) => {
@@ -142,7 +173,7 @@ describe("scheduleTmuxPaneFocus", () => {
       const tmuxCalls = calls.filter(c => c.cmd === "/usr/bin/tmux");
       assert.ok(tmuxCalls.length > 0, "tmux ran at least once");
       for (const c of tmuxCalls) {
-        assert.strictEqual(c.args[0], "-L", "every tmux call leads with -L");
+        assert.strictEqual(c.args[0], "-L", "legacy socket names still use -L");
         assert.strictEqual(c.args[1], "work-socket", "socket name passed");
       }
       done();

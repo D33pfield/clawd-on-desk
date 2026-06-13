@@ -1067,6 +1067,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     editor = null,
     pidChain = null,
     tmuxSocket = null,
+    tmuxClient = null,
     agentPid = null,
     agentId = null,
     host = null,
@@ -1121,7 +1122,8 @@ function updateSession(sessionId, state, event, opts = {}) {
     ) return;
     const shouldPersistCodexPermissionFocus = permAgentId === "codex" && (
       sourcePid || wtHwnd || agentPid || (pidChain && pidChain.length) || cwd || host ||
-      model || provider || codexOriginator || codexSource || platform || ghosttyTerminalId
+      model || provider || codexOriginator || codexSource || platform || ghosttyTerminalId ||
+      tmuxSocket || tmuxClient
     );
     if (shouldPersistCodexPermissionFocus) {
       const existing = sessions.get(sessionId);
@@ -1132,6 +1134,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcEditor = editor || (existing && existing.editor) || null;
       const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
       const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
+      const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
       const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
       const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
       const srcHost = host || (existing && existing.host) || null;
@@ -1163,6 +1166,7 @@ function updateSession(sessionId, state, event, opts = {}) {
         editor: srcEditor,
         pidChain: srcPidChain,
         tmuxSocket: srcTmuxSocket,
+        tmuxClient: srcTmuxClient,
         agentPid: srcAgentPid,
         agentId: srcAgentId,
         host: srcHost,
@@ -1193,6 +1197,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcEditor = editor || (existing && existing.editor) || null;
   const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
   const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
+  const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
   const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
   const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
   const srcHost = host || (existing && existing.host) || null;
@@ -1314,7 +1319,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcLastStopAt = isStopBoundary
     ? Date.now()
     : (existing && Number.isFinite(existing.lastStopAt) ? existing.lastStopAt : null);
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.
