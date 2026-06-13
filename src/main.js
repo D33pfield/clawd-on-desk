@@ -15,7 +15,7 @@ const { registerSettingsIpc } = require("./settings-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
 const { registerSessionIpc } = require("./session-ipc");
 const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
-const { launchClaudeSession } = require("./launch-claude");
+const { launchClaudeSession, openTerminalAt } = require("./launch-claude");
 const { dialog: electronDialog } = require("electron");
 const initPermission = require("./permission");
 const { registerPermissionIpc } = initPermission;
@@ -3176,6 +3176,9 @@ function createWindow() {
         _sessionHud.revealFromPet();
       }
     },
+    statPath: (p) => fs.promises.stat(p),
+    openTerminalAt: (dir) => openTerminalAt(dir),
+    dropLog: (message) => console.log(`Clawd: ${message}`),
   });
 
   registerPermissionIpc({

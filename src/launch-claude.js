@@ -171,7 +171,7 @@ function buildClaudeArgs(mode, sessionId) {
 // only user-entered arg is the resume session ID, which buildClaudeArgs
 // validates before this point. The argv-array candidates (wt.exe `--`) need no
 // quoting — the OS passes argv verbatim without a shell.
-function buildTerminalCandidates(claudePath, claudeArgs, plat = platform()) {
+function buildTerminalCandidates(claudePath, claudeArgs, plat = platform(), workDir) {
   if (plat === "win32") {
     // cmd.exe /k: command paths with spaces must use cmd's special
     // `""C:\Program Files\...\claude.cmd" args"` form. Plain quoteForCmd on
@@ -215,7 +215,11 @@ function buildTerminalCandidates(claudePath, claudeArgs, plat = platform()) {
   if (plat === "darwin") {
     // Two-layer quoting: POSIX shell quote each token → join → AppleScript
     // string escape → embed in `do script "..."`.
-    const cmd = [claudePath, ...claudeArgs].map(quoteForPosixShellArg).join(" ");
+    // Terminal.app's `do script` shell always starts at $HOME — it does NOT
+    // inherit the osascript process cwd — so the working directory must be an
+    // explicit `cd` inside the command (`--` guards leading-dash dir names).
+    const claudeCmd = [claudePath, ...claudeArgs].map(quoteForPosixShellArg).join(" ");
+    const cmd = workDir ? `cd -- ${quoteForPosixShellArg(workDir)} && ${claudeCmd}` : claudeCmd;
     const appleScript = `tell application "Terminal" to do script "${escapeAppleScriptString(cmd)}"`;
     return [{ bin: "osascript", args: ["-e", appleScript] }];
   }
@@ -234,6 +238,100 @@ function buildTerminalCandidates(claudePath, claudeArgs, plat = platform()) {
   ];
 }
 
+// #459: open a plain terminal at a directory without launching any agent.
+// Same candidate philosophy as buildTerminalCandidates, but the "inner
+// command" is just establishing the working directory and leaving a shell.
+function buildShellTerminalCandidates(dir, plat = platform()) {
+  if (plat === "win32") {
+    // NTFS forbids `"` in paths; reject anyway so a crafted string can never
+    // splice extra cmd.exe commands after the embedded quote.
+    if (dir.includes('"')) {
+      throw new TypeError("buildShellTerminalCandidates: dir must not contain double quotes");
+    }
+    const candidates = [
+      // wt -d is a native flag (no shim → no 0x800700c1 class); Node's default
+      // arg quoting protects spaces. tryLaunch can only observe whether wt
+      // itself spawned, not whether the tab landed in `dir`.
+      { bin: "wt.exe", args: ["-d", dir] },
+    ];
+    // cmd.exe quoting matrix for the quoted `cd /d "<dir>"` payload: `^ & ( )`
+    // are literal inside the quotes, `!` stays literal because we pass /v:off,
+    // `"` is rejected above — but `%VAR%` expands on the cmd command line EVEN
+    // inside quotes and has no command-line escape (caret can't escape %, %%
+    // only works in batch files). A %-containing dir therefore skips cmd and
+    // falls through to wt / PowerShell, which pass the path literally.
+    if (!dir.includes("%")) {
+      // Single pre-quoted string after /k — same "command must not start with
+      // a quote" rule as buildTerminalCandidates, satisfied by the `cd` prefix.
+      candidates.push({
+        bin: "cmd.exe",
+        args: ["/d", "/v:off", "/s", "/k", `cd /d "${dir}"`],
+        extraOpts: { shell: false, windowsVerbatimArguments: true },
+      });
+    }
+    candidates.push(
+      // -LiteralPath: plain Set-Location glob-expands `[]` / `?` in paths.
+      {
+        bin: "powershell.exe",
+        args: ["-NoExit", "-Command", `Set-Location -LiteralPath ${quoteForPowerShell(dir)}`],
+      },
+    );
+    return candidates;
+  }
+
+  if (plat === "darwin") {
+    // Same two-layer quoting and explicit-cd constraint as the darwin branch
+    // of buildTerminalCandidates (do script shells start at $HOME).
+    const cmd = `cd -- ${quoteForPosixShellArg(dir)} && clear`;
+    const appleScript = `tell application "Terminal" to do script "${escapeAppleScriptString(cmd)}"`;
+    return [{ bin: "osascript", args: ["-e", appleScript] }];
+  }
+
+  // Linux terminals inherit the spawn cwd, so the command only needs to keep
+  // the shell alive.
+  return [
+    { bin: "x-terminal-emulator", args: ["-e", "bash", "-c", "exec bash"] },
+    { bin: "xterm", args: ["-e", "bash", "-c", "exec bash"] },
+    { bin: "gnome-terminal", args: ["--", "bash", "-c", "exec bash"] },
+    { bin: "konsole", args: ["-e", "bash", "-c", "exec bash"] },
+    { bin: "alacritty", args: ["-e", "bash", "-c", "exec bash"] },
+    { bin: "kitty", args: ["--", "bash", "-c", "exec bash"] },
+  ];
+}
+
+async function openTerminalAt(dir, deps = {}) {
+  const _platform = deps.platform || platform;
+  const _tryLaunch = deps.tryLaunch || tryLaunch;
+
+  if (typeof dir !== "string" || !dir) {
+    return { ok: false, message: "openTerminalAt: dir must be a non-empty string" };
+  }
+
+  const plat = _platform();
+  const opts = { detached: true, stdio: "ignore", windowsHide: false, cwd: dir };
+
+  let candidates;
+  try {
+    candidates = buildShellTerminalCandidates(dir, plat);
+  } catch (err) {
+    return { ok: false, message: err.message };
+  }
+  let lastError = null;
+  for (const candidate of candidates) {
+    const result = await _tryLaunch(candidate.bin, candidate.args, {
+      ...opts,
+      ...(candidate.extraOpts || {}),
+    });
+    if (result.ok) return { ok: true, terminal: candidate.bin };
+    lastError = result.error;
+  }
+
+  return {
+    ok: false,
+    message: (lastError && lastError.message) || "could not spawn terminal",
+  };
+}
+
 async function launchClaudeSession(mode, cwd, sessionId, deps = {}) {
   const _platform = deps.platform || platform;
   const _findClaudeCmd = deps.findClaudeCmd || findClaudeCmd;
@@ -245,7 +343,7 @@ async function launchClaudeSession(mode, cwd, sessionId, deps = {}) {
   const workDir = cwd || homedir();
   const opts = { detached: true, stdio: "ignore", windowsHide: false, cwd: workDir };
 
-  const candidates = buildTerminalCandidates(claudePath, claudeArgs, plat);
+  const candidates = buildTerminalCandidates(claudePath, claudeArgs, plat, workDir);
   let lastError = null;
   for (const candidate of candidates) {
     const result = await _tryLaunch(candidate.bin, candidate.args, {
@@ -266,6 +364,8 @@ module.exports = {
   launchClaudeSession,
   buildClaudeArgs,
   buildTerminalCandidates,
+  buildShellTerminalCandidates,
+  openTerminalAt,
   findClaudeCmd,
   buildCmdLaunchCommand,
   normalizeClaudeSessionId,
