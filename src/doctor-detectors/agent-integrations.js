@@ -27,13 +27,6 @@ const { validateOpencodeEntry } = require("./opencode-entry-validator");
 const { validateOpenClawEntry } = require("./openclaw-entry-validator");
 const { hasIncludeDirective } = require("../../hooks/openclaw-install");
 
-const INFO_ONLY_STATUSES = new Set([
-  "disabled",
-  "manual-managed",
-  "manual-only",
-  "not-managed",
-  "not-installed",
-]);
 const REPAIRABLE_AGENT_STATUSES = new Set(["not-connected", "broken-path"]);
 const GEMINI_HOOKS_DISABLED_DETAIL = "Gemini hooks are disabled in settings.json; Clawd preserves this user setting and will not receive hook events";
 const ANTIGRAVITY_HOOKS_DISABLED_DETAIL = "Antigravity Clawd hooks are disabled in hooks.json; Clawd preserves this user setting and will not receive hook events";
@@ -1734,10 +1727,12 @@ function summarize(details) {
   if (warningCount > 0) {
     status = "warning";
     level = "warning";
-  } else if (okCount === 0 && details.every((detail) => INFO_ONLY_STATUSES.has(detail.status))) {
-    status = "critical";
-    level = "critical";
   }
+  // An all-info aggregate (every integration disabled / manual-managed / not
+  // installed) is a deliberate user or environment choice, not a fault, so the
+  // summary stays green (#490). The "nothing is wired up" hint is surfaced as
+  // info-level UI copy instead, and a genuinely broken local server is still
+  // flagged red by the separate local-server check.
   return { status, level, counts, okCount, warningCount };
 }
 
