@@ -72,6 +72,7 @@ function createHarness(overrides = {}) {
       return state.clampedBounds;
     },
     applyPetWindowBounds: (bounds) => calls.push(["applyPetWindowBounds", bounds]),
+    flushRuntimeStateToPrefs: () => calls.push(["flushRuntimeStateToPrefs"]),
     reassertWinTopmost: () => calls.push(["reassertWinTopmost"]),
     scheduleHwndRecovery: () => calls.push(["scheduleHwndRecovery"]),
     repositionFloatingBubbles: () => calls.push(["repositionFloatingBubbles"]),
@@ -215,6 +216,7 @@ test("pet interaction IPC finalizes drag end and always clears drag state", () =
     ["checkMiniModeSnap"],
     ["computeDragEndBounds", state.petWindowBounds, state.currentPixelSize],
     ["applyPetWindowBounds", state.clampedBounds],
+    ["flushRuntimeStateToPrefs"],
     ["reassertWinTopmost"],
     ["scheduleHwndRecovery"],
     ["syncHitWin"],
@@ -224,6 +226,7 @@ test("pet interaction IPC finalizes drag end and always clears drag state", () =
     ["checkMiniModeSnap"],
     ["computeDragEndBounds", state.petWindowBounds, { width: 120, height: 80 }],
     ["applyPetWindowBounds", state.clampedBounds],
+    ["flushRuntimeStateToPrefs"],
     ["reassertWinTopmost"],
     ["scheduleHwndRecovery"],
     ["syncHitWin"],
@@ -250,6 +253,25 @@ test("pet interaction IPC skips drag-end clamp when mini snap starts", () => {
   ]);
 });
 
+test("pet interaction IPC does not persist when drag-end has no clamped bounds", () => {
+  const { ipcMain, calls } = createHarness({
+    state: { clampedBounds: null },
+  });
+
+  ipcMain.send("drag-end");
+
+  assert.deepStrictEqual(calls, [
+    ["checkMiniModeSnap"],
+    ["computeDragEndBounds", { x: 10, y: 20, width: 120, height: 80 }, { width: 90, height: 60 }],
+    ["reassertWinTopmost"],
+    ["scheduleHwndRecovery"],
+    ["syncHitWin"],
+    ["repositionFloatingBubbles"],
+    ["setDragLocked", false],
+    ["clearDragSnapshot"],
+  ]);
+});
+
 test("pet interaction IPC disables mini snap without skipping drag-end cleanup", () => {
   const { ipcMain, calls, state } = createHarness({
     state: { disableMiniMode: true },
@@ -260,6 +282,7 @@ test("pet interaction IPC disables mini snap without skipping drag-end cleanup",
   assert.deepStrictEqual(calls, [
     ["computeDragEndBounds", state.petWindowBounds, state.currentPixelSize],
     ["applyPetWindowBounds", state.clampedBounds],
+    ["flushRuntimeStateToPrefs"],
     ["reassertWinTopmost"],
     ["scheduleHwndRecovery"],
     ["syncHitWin"],

@@ -3163,6 +3163,7 @@ function createWindow() {
     computeDragEndBounds: (virtualBounds, size) =>
       computeFinalDragBounds(virtualBounds, size, clampToScreenVisual),
     applyPetWindowBounds: (bounds) => applyPetWindowBounds(bounds),
+    flushRuntimeStateToPrefs: () => flushRuntimeStateToPrefs(),
     reassertWinTopmost: () => reassertWinTopmost(),
     scheduleHwndRecovery: () => scheduleHwndRecovery(),
     repositionFloatingBubbles: () => repositionFloatingBubbles(),

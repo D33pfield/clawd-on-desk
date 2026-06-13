@@ -32,6 +32,10 @@ function registerPetInteractionIpc(options = {}) {
   const getCurrentPixelSize = requiredDependency(options.getCurrentPixelSize, "getCurrentPixelSize");
   const computeDragEndBounds = requiredDependency(options.computeDragEndBounds, "computeDragEndBounds");
   const applyPetWindowBounds = requiredDependency(options.applyPetWindowBounds, "applyPetWindowBounds");
+  const flushRuntimeStateToPrefs = requiredDependency(
+    options.flushRuntimeStateToPrefs,
+    "flushRuntimeStateToPrefs"
+  );
   const reassertWinTopmost = requiredDependency(options.reassertWinTopmost, "reassertWinTopmost");
   const scheduleHwndRecovery = requiredDependency(options.scheduleHwndRecovery, "scheduleHwndRecovery");
   const repositionFloatingBubbles = requiredDependency(
@@ -110,7 +114,10 @@ function registerPetInteractionIpc(options = {}) {
             ? { width: virtualBounds.width, height: virtualBounds.height }
             : getCurrentPixelSize();
           const clamped = computeDragEndBounds(virtualBounds, size);
-          if (clamped) applyPetWindowBounds(clamped);
+          if (clamped) {
+            applyPetWindowBounds(clamped);
+            flushRuntimeStateToPrefs();
+          }
           reassertWinTopmost();
           scheduleHwndRecovery();
           syncHitWin();
