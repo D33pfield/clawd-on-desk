@@ -1396,9 +1396,10 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.permissionBubbleDetail, "permission bubbles disabled for this agent");
   });
 
-  it("aggregates all-info states as critical when no integration is ok", () => {
-    // none-global agents (info status `manual-only`) + missing agents only:
-    // no real `ok` integrations means the overall summary is critical.
+  it("aggregates all-info states as pass (no false critical) when nothing is active", () => {
+    // none-global agents (info status `manual-only`) + missing agents only.
+    // Every integration being disabled / manual / not installed is a user or
+    // environment choice, not a fault, so the summary must stay green (#490).
     const result = checkAgentIntegrations({
       fs,
       descriptors: [
@@ -1406,8 +1407,28 @@ describe("checkAgentIntegrations", () => {
         baseDescriptor({ agentId: "missing-agent" }),
       ],
     });
-    assert.strictEqual(result.status, "critical");
-    assert.strictEqual(result.level, "critical");
+    assert.strictEqual(result.status, "pass");
+    assert.strictEqual(result.level, null);
+  });
+
+  it("stays warning when a real problem coexists with info-only integrations", () => {
+    // One auto-install agent with a missing config (not-connected → warning)
+    // plus a disabled agent (info). The warning must still drive the summary;
+    // the #490 de-escalation only applies when nothing is actually wrong.
+    const brokenDescriptor = baseDescriptor({ agentId: "broken-agent", marker: "broken-hook.js" });
+    fs.mkdirSync(brokenDescriptor.parentDir, { recursive: true });
+    const disabledDescriptor = baseDescriptor({ agentId: "off-agent", marker: "off-hook.js" });
+
+    const result = checkAgentIntegrations({
+      fs,
+      prefs: { agents: { "off-agent": { enabled: false } } },
+      descriptors: [brokenDescriptor, disabledDescriptor],
+    });
+
+    assert.strictEqual(result.status, "warning");
+    assert.strictEqual(result.level, "warning");
+    assert.strictEqual(result.warningCount, 1);
+    assert.strictEqual(result.okCount, 0);
   });
 
   it("keeps the integration summary in warning when Gemini hooks are disabled", () => {
