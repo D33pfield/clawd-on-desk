@@ -20,7 +20,7 @@ module.exports = {
     PreToolUse: "working",
     PostToolUse: "working",
     PostToolUseFailure: "error",
-    Stop: "attention",
+    Notification: "attention",
     StopFailure: "error",
     PreCompact: "sweeping",
     PostCompact: "attention",
@@ -28,7 +28,7 @@ module.exports = {
   capabilities: {
     httpHook: false,
     permissionApproval: false,  // Phase 2 requires CodeWhale source changes
-    notificationHook: false,
+    notificationHook: true,
     interactiveBubble: false,
     sessionEnd: true,
     subagent: false,

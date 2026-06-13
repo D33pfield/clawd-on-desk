@@ -25,7 +25,7 @@ describe("CodeWhale hook script", () => {
       DEEPSEEK_SESSION_ID: "sess-1",
       DEEPSEEK_WORKSPACE: "/repo",
       DEEPSEEK_MODEL: "deepseek-v4",
-    }, null, cache);
+    }, cache);
 
     assert.strictEqual(payload.agent_id, "codewhale");
     assert.strictEqual(payload.hook_source, "codewhale-hook");
@@ -43,10 +43,10 @@ describe("CodeWhale hook script", () => {
     const payload = __test.buildPayload("mode_change", {
       DEEPSEEK_MODE: "agent",
       DEEPSEEK_PREVIOUS_MODE: "plan",
-    }, null, cache);
+    }, cache);
 
     assert.strictEqual(payload.session_id, "codewhale:sess-previous");
-    assert.strictEqual(payload.event, "Stop");
+    assert.strictEqual(payload.event, "Notification");
     assert.strictEqual(payload.state, "attention");
   });
 
@@ -55,7 +55,7 @@ describe("CodeWhale hook script", () => {
       DEEPSEEK_SESSION_ID: "sess-1",
       DEEPSEEK_TOOL_NAME: "bash",
       DEEPSEEK_TOOL_SUCCESS: "false",
-    }, null, cacheDeps());
+    }, cacheDeps());
 
     assert.strictEqual(payload.event, "PostToolUseFailure");
     assert.strictEqual(payload.state, "error");
@@ -70,7 +70,6 @@ describe("CodeWhale hook script", () => {
         DEEPSEEK_WORKSPACE: "/repo",
       },
       ...cacheDeps(),
-      readStdinJson: async () => ({ prompt: "hello" }),
       postState: (body, options, callback) => {
         posted.push({ body: JSON.parse(body), options });
         callback(true, 23333);

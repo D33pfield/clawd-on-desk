@@ -23,7 +23,6 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { postStateToRunningServer } = require("./server-config");
-const { readStdinJson } = require("./shared-process");
 
 const AGENT_ID = "codewhale";
 const HOOK_SOURCE = "codewhale-hook";
@@ -85,7 +84,7 @@ function safePositiveInt(value) {
 
 // ── Payload Construction ─────────────────────────────────────────────────────
 
-function buildPayload(codewhaleEventName, env, messageSubmitPayload, options = {}) {
+function buildPayload(codewhaleEventName, env, options = {}) {
   const mapping = EVENT_MAP[codewhaleEventName];
   if (!mapping) return null;
   const cachePath = options.sessionCachePath || SESSION_CACHE;
@@ -143,7 +142,7 @@ function buildPayload(codewhaleEventName, env, messageSubmitPayload, options = {
     const prevMode = safeString(env.DEEPSEEK_PREVIOUS_MODE, "").toLowerCase();
     // Only treat compact transitions as sweeping; other mode changes → attention
     if (mode !== "compact" && prevMode !== "compact") {
-      payload.event = "Stop";
+      payload.event = "Notification";
       payload.state = "attention";
     }
   }
@@ -151,12 +150,6 @@ function buildPayload(codewhaleEventName, env, messageSubmitPayload, options = {
   // Error info
   const errorMsg = safeString(env.DEEPSEEK_ERROR, "");
   if (errorMsg) payload.error_message = errorMsg;
-
-  // message_submit: piggyback stdin JSON when available (RFC 1364)
-  if (codewhaleEventName === "message_submit" && messageSubmitPayload) {
-    // No mutation needed here — we're observer-only (background=true).
-    // But we can extract extra fields for richer session context.
-  }
 
   return payload;
 }
@@ -175,20 +168,8 @@ async function run(eventName = process.argv[2] || "", deps = {}) {
     return { eventName, payload: null, posted: false, port: null };
   }
 
-  // message_submit is special: CodeWhale v0.8.47+ sends a JSON payload on stdin
-  // (RFC 1364 PR 1). Other events are observer-only with env vars.
-  let messageSubmitPayload = null;
-  if (eventName === "message_submit") {
-    try {
-      const readJson = deps.readStdinJson || readStdinJson;
-      messageSubmitPayload = await readJson({ timeoutMs: 500 });
-    } catch {
-      // message_submit without stdin → pre-RFC 1364, env vars only
-    }
-  }
-
   const env = deps.env || process.env;
-  const payload = buildPayload(eventName, env, messageSubmitPayload, deps);
+  const payload = buildPayload(eventName, env, deps);
   if (!payload) return { eventName, payload: null, posted: false, port: null };
 
   // Clear the session cache on session_end so the next codewhale instance

@@ -27,7 +27,6 @@ const {
 } = require("./json-utils");
 
 const CODEWHALE_CONFIG_PATH = path.join(os.homedir(), ".codewhale", "config.toml");
-const CODEXWHALE_CONFIG_PATH = CODEWHALE_CONFIG_PATH;
 const MANAGED_MARKER = "managed by clawd-on-desk";
 const HOOK_SCRIPT_MARKER = "codewhale-hook.js";
 const TOML_HEADER_RE = /^\s*\[[^\]]+\]/;
@@ -388,7 +387,6 @@ function unregisterCodewhaleHooks(options = {}) {
 
 module.exports = {
   CODEWHALE_CONFIG_PATH,
-  CODEXWHALE_CONFIG_PATH,
   HOOK_ENTRIES,
   parseTomlSections,
   registerCodewhaleHooks,
