@@ -47,15 +47,21 @@ if (_xwaylandRelaunch) {
   } catch {
     _xwaylandChild = null;
   }
+  if (_xwaylandChild && typeof _xwaylandChild.on === "function") {
+    _xwaylandChild.on("error", (err) => {
+      console.error("Clawd: XWayland relaunch spawn error:", err && err.message ? err.message : err);
+    });
+  }
   if (_xwaylandChild && typeof _xwaylandChild.pid === "number") {
     _xwaylandChild.unref();
     app.exit(0);
     return; // throwaway first process — stop before loading the rest of main.js
   }
-  // No pid ⇒ the spawn failed at the syscall level (libuv reports exec errors
-  // like ENOENT synchronously). Do NOT exit into nothing — clear the sentinel
-  // and fall through to a normal (native Wayland) startup so the app still
-  // runs, just without drag (issue #441).
+  // No pid ⇒ the spawn failed before creating a child. Do NOT exit into
+  // nothing — clear the sentinel and fall through to a normal (native Wayland)
+  // startup so the app still runs, just without drag (issue #441). The error
+  // listener above also prevents async exec failures (ENOENT/EACCES) from
+  // crashing this fallback path.
   delete process.env.CLAWD_OZONE_RELAUNCHED;
   console.error("Clawd: XWayland relaunch failed; continuing under native Wayland (issue #441).");
 }
