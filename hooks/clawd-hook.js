@@ -421,7 +421,7 @@ function buildStateBody(event, payload, resolve) {
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
   } else {
-    const { stablePid, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd } = resolve();
+    const { stablePid, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolve();
     body.source_pid = stablePid;
     if (detectedEditor) body.editor = detectedEditor;
     if (agentPid) {
@@ -432,6 +432,8 @@ function buildStateBody(event, payload, resolve) {
       }
     }
     if (pidChain.length) body.pid_chain = pidChain;
+    if (tmuxSocket) body.tmux_socket = tmuxSocket;
+    if (tmuxClient) body.tmux_client = tmuxClient;
     if (shouldReportForegroundWtHwnd(event) && foregroundWtHwnd) {
       body.wt_hwnd = String(foregroundWtHwnd);
     }
