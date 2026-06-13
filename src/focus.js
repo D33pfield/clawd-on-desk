@@ -242,7 +242,7 @@ function psSingleQuotedString(value) {
   return `'${String(value || "").replace(/'/g, "''")}'`;
 }
 
-function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = null, focusToken = "") {
+function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = null, focusToken = "", cacheCwdCandidates = cwdCandidates) {
   // Walk up the process tree (same proven logic as before).
   // Windows Terminal needs title matching because one WT process can represent
   // multiple tabs/windows. Other parent windows keep direct PID focus.
@@ -254,6 +254,10 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
       }).join(",")
     : "";
   const titleNames = psNames ? `@(${psNames})` : "@()";
+  const psCacheNames = Array.isArray(cacheCwdCandidates) && cacheCwdCandidates.length
+    ? cacheCwdCandidates.map(c => psUtf8Expression(c)).join(",")
+    : "";
+  const cacheTitleNames = psCacheNames ? `@(${psCacheNames})` : "@()";
   const cacheKey = focusCacheKey ? psUtf8Expression(focusCacheKey) : "$null";
   const wtHwndLiteral = normalizeHwndString(wtHwnd) || "0";
   const tokenLiteral = psSingleQuotedString(focusToken);
@@ -273,7 +277,6 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
                 if ($pidWindows.Count -eq 1) {
                     [WinFocus]::Focus($pidWindows[0])
                     $selectedTargetHwnd = $pidWindows[0]
-                    Save-ClawdFocusCache $pidWindows[0]
                     $focused = $true
                     $reason = 'wt-parent-pid-window'
                 } elseif ($pidWindows.Count -gt 1) {
@@ -281,6 +284,19 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
                 } else {
                     $reason = 'wt-parent-no-pid-window'
                 }
+            }
+        } elseif ($editorProcessNames -contains $proc.ProcessName) {
+            $matches = @([WinFocus]::FindByPidTitles([uint32]$curPid, [string[]]$cacheTitleNames))
+            if ($matches.Count -eq 1) {
+                [WinFocus]::Focus($matches[0])
+                $selectedTargetHwnd = $matches[0]
+                Save-ClawdFocusCache $matches[0]
+                $focused = $true
+                $reason = 'editor-parent-title-match'
+            } elseif ($matches.Count -gt 1) {
+                $reason = 'editor-parent-title-ambiguous'
+            } else {
+                $reason = 'editor-parent-no-title-match'
             }
         } else {
             [WinFocus]::Focus($proc.MainWindowHandle)
@@ -290,7 +306,9 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
             $reason = 'parent-direct'
         }
         break` : `
-        if ($wtProcessNames -notcontains $proc.ProcessName) {
+        if ($editorProcessNames -contains $proc.ProcessName) {
+            $reason = 'editor-parent-no-title'
+        } elseif ($wtProcessNames -notcontains $proc.ProcessName) {
             [WinFocus]::Focus($proc.MainWindowHandle)
             $selectedTargetHwnd = $proc.MainWindowHandle
             Save-ClawdFocusCache $proc.MainWindowHandle
@@ -330,7 +348,6 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
         if ($pidWindows.Count -eq 1) {
             [WinFocus]::Focus($pidWindows[0])
             $selectedTargetHwnd = $pidWindows[0]
-            Save-ClawdFocusCache $pidWindows[0]
             $focused = $true
             $reason = 'wt-title-mismatch-pid-window'
         } elseif ($pidWindows.Count -gt 1) {
@@ -340,7 +357,6 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
             if ($singleWtWindows.Count -eq 1) {
                 [WinFocus]::Focus($singleWtWindows[0])
                 $selectedTargetHwnd = $singleWtWindows[0]
-                Save-ClawdFocusCache $singleWtWindows[0]
                 $focused = $true
                 $reason = 'wt-title-mismatch-single-wt-window'
             } elseif ($singleWtWindows.Count -gt 1) {
@@ -355,29 +371,72 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
   return `
 $focusToken = ${tokenLiteral}
 $titleNames = ${titleNames}
+$cacheTitleNames = ${cacheTitleNames}
 $wtProcessNames = @('WindowsTerminal', 'WindowsTerminalPreview')
+$editorProcessNames = @('Code', 'Cursor')
 $chainWindowsTerminalPids = @()
 $focusCacheKey = ${cacheKey}
+$focusCacheSourcePid = [int64]${sourcePid}
 $wtHwndFromHook = [IntPtr]([int64]${wtHwndLiteral})
 if ($null -eq $global:ClawdFocusWindowCache) {
     $global:ClawdFocusWindowCache = @{}
 }
+function Test-ClawdWindowTitleMatch([IntPtr]$hwnd, [string[]]$names) {
+    if ($hwnd -eq [IntPtr]::Zero -or -not $names -or $names.Count -eq 0) { return $false }
+    $len = [WinFocus]::GetWindowTextLength($hwnd)
+    if ($len -le 0) { return $false }
+    $sb = New-Object System.Text.StringBuilder -ArgumentList ($len + 1)
+    [void][WinFocus]::GetWindowText($hwnd, $sb, $sb.Capacity)
+    $title = $sb.ToString()
+    foreach ($name in @($names)) {
+        if (-not [string]::IsNullOrWhiteSpace($name) -and $title.IndexOf($name, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $true
+        }
+    }
+    return $false
+}
 function Save-ClawdFocusCache([IntPtr]$hwnd) {
     if (-not $focusCacheKey -or $hwnd -eq [IntPtr]::Zero) { return }
-    $global:ClawdFocusWindowCache[$focusCacheKey] = $hwnd.ToInt64()
+    if (-not $cacheTitleNames -or $cacheTitleNames.Count -eq 0) { return }
+    $global:ClawdFocusWindowCache[$focusCacheKey] = @{
+        hwnd = $hwnd.ToInt64()
+        sourcePid = $focusCacheSourcePid
+        titleNames = @($cacheTitleNames)
+    }
 }
 function Get-ClawdCachedWindow() {
     if (-not $focusCacheKey) { return [IntPtr]::Zero }
     if (-not $global:ClawdFocusWindowCache.ContainsKey($focusCacheKey)) { return [IntPtr]::Zero }
+    $rawEntry = $global:ClawdFocusWindowCache[$focusCacheKey]
+    $rawHwnd = $rawEntry
+    $entrySourcePid = 0
+    if ($rawEntry -is [System.Collections.IDictionary]) {
+        $rawHwnd = $rawEntry['hwnd']
+        try { $entrySourcePid = [int64]$rawEntry['sourcePid'] } catch { $entrySourcePid = 0 }
+    }
     try {
-        $hwnd = [IntPtr]([int64]$global:ClawdFocusWindowCache[$focusCacheKey])
+        $hwnd = [IntPtr]([int64]$rawHwnd)
     } catch {
         $global:ClawdFocusWindowCache.Remove($focusCacheKey)
         return [IntPtr]::Zero
     }
-    if ([WinFocus]::IsUsableWindow($hwnd)) { return $hwnd }
-    $global:ClawdFocusWindowCache.Remove($focusCacheKey)
-    return [IntPtr]::Zero
+    if (-not [WinFocus]::IsUsableWindow($hwnd)) {
+        $global:ClawdFocusWindowCache.Remove($focusCacheKey)
+        return [IntPtr]::Zero
+    }
+    if ($entrySourcePid -gt 0 -and $focusCacheSourcePid -gt 0 -and $entrySourcePid -ne $focusCacheSourcePid) {
+        $global:ClawdFocusWindowCache.Remove($focusCacheKey)
+        return [IntPtr]::Zero
+    }
+    if (-not $cacheTitleNames -or $cacheTitleNames.Count -eq 0) {
+        $global:ClawdFocusWindowCache.Remove($focusCacheKey)
+        return [IntPtr]::Zero
+    }
+    if (-not (Test-ClawdWindowTitleMatch $hwnd ([string[]]$cacheTitleNames))) {
+        $global:ClawdFocusWindowCache.Remove($focusCacheKey)
+        return [IntPtr]::Zero
+    }
+    return $hwnd
 }
 function Get-ClawdVisiblePidWindows([int[]]$pids) {
     $windows = @()
@@ -469,7 +528,6 @@ if (-not $focused -and $pendingConsoleHwnd -ne [IntPtr]::Zero) {
         $reason -eq 'wt-title-mismatch-no-pid-window') {
         [WinFocus]::Focus($pendingConsoleHwnd)
         $selectedTargetHwnd = $pendingConsoleHwnd
-        Save-ClawdFocusCache $pendingConsoleHwnd
         $focused = $true
         $reason = 'legacy-conhost-window'
     }
@@ -516,6 +574,7 @@ const WINDOWS_FOCUS_POSITIVE_REASONS = new Set([
   "legacy-conhost-window",
   "parent-direct",
   "parent-direct-no-title",
+  "editor-parent-title-match",
   "wt-parent-title-match",
   "wt-title-match",
 ]);
@@ -1607,7 +1666,7 @@ function focusTerminalWindowLegacy(request, onDone) {
 
   // Windows: send command to persistent PowerShell process (near-instant)
   const titleCandidates = buildWindowsTitleCandidates(request, cwdCandidates);
-  const cmd = makeFocusCmd(sourcePid, titleCandidates, buildFocusCacheKey(request), request.wtHwnd, request.focusToken);
+  const cmd = makeFocusCmd(sourcePid, titleCandidates, buildFocusCacheKey(request), request.wtHwnd, request.focusToken, cwdCandidates);
   if (psProc && psProc.stdin.writable) {
     psProc.stdin.write(cmd + "\n");
     return true;
