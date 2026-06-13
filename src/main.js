@@ -1,5 +1,4 @@
 const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, clipboard } = require("electron");
-
 // ── Linux/Wayland: relaunch under XWayland so the pet is draggable (issue #441) ──
 // Native Wayland ignores client-side window positioning and blocks global cursor
 // queries, so the pet spawns centered, can't be dragged, and has no tracking;
@@ -61,6 +60,7 @@ if (_xwaylandRelaunch) {
   console.error("Clawd: XWayland relaunch failed; continuing under native Wayland (issue #441).");
 }
 
+const { clampTextScale, scaleWidth, scaleHeight, resolveTextScaleForKey } = require("./text-scale");
 const path = require("path");
 const fs = require("fs");
 const { EventEmitter } = require("events");
@@ -76,7 +76,7 @@ const { registerSettingsIpc } = require("./settings-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
 const { registerSessionIpc } = require("./session-ipc");
 const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
-const { launchClaudeSession } = require("./launch-claude");
+const { launchClaudeSession, openTerminalAt } = require("./launch-claude");
 const { dialog: electronDialog } = require("electron");
 const initPermission = require("./permission");
 const { registerPermissionIpc } = initPermission;
@@ -89,6 +89,7 @@ const {
   formatTelegramStatusDiagnostic,
 } = require("./telegram-approval-runtime-status");
 const { createTelegramMigrationController } = require("./telegram-migration-controller");
+const { createTelegramSidecarStatusBridge } = require("./telegram-sidecar-status-bridge");
 const initUpdateBubble = require("./update-bubble");
 const { registerUpdateBubbleIpc } = initUpdateBubble;
 const createSettingsAnimationOverridesMain = require("./settings-animation-overrides-main");
@@ -307,6 +308,7 @@ const _settingsController = createSettingsController({
   injectedDeps: {
     installAutoStart: _installAutoStartHook,
     uninstallAutoStart: _uninstallAutoStartHook,
+    resolveTextScaleDisplayKey: () => getSettingsDisplayKey(),
     syncClaudeHooksNow: () => {
       const { registerHooksAsync } = require("../hooks/install.js");
       return registerHooksAsync({ silent: true, autoStart: autoStartWithClaude, port: getHookServerPort() });
@@ -321,6 +323,7 @@ const _settingsController = createSettingsController({
     repairIntegrationForAgent: (id, options) =>
       agentRuntime ? agentRuntime.repairIntegrationForAgent(id, options) : false,
     stopIntegrationForAgent: (id) => agentRuntime ? agentRuntime.stopIntegrationForAgent(id) : false,
+    uninstallIntegrationForAgent: (id) => agentRuntime ? agentRuntime.uninstallIntegrationForAgent(id) : false,
     cleanupIntegrations: (options = {}) => {
       const { cleanupIntegrations } = require("../hooks/cleanup-integrations.js");
       return cleanupIntegrations({ ...options, backup: true, silent: true });
@@ -330,7 +333,7 @@ const _settingsController = createSettingsController({
       : false,
     restartClawd: _restartClawdNow,
     clearSessionsByAgent: (id) => agentRuntime ? agentRuntime.clearSessionsByAgent(id) : 0,
-    dismissPermissionsByAgent: (id) => agentRuntime ? agentRuntime.dismissPermissionsByAgent(id) : 0,
+    dismissPermissionsByAgent: (id, options) => agentRuntime ? agentRuntime.dismissPermissionsByAgent(id, options) : 0,
     resizePet: _deferredResizePet,
     getActiveSessionAliasKeys: () =>
       _state && typeof _state.getActiveSessionAliasKeys === "function"
@@ -508,11 +511,17 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
   path,
   getPetWindowBounds: () => getPetWindowBounds(),
   getNearestWorkArea: (cx, cy) => getNearestWorkArea(cx, cy),
+  getTextScale: () => effectiveTextScaleForKey(getSettingsDisplayKey()),
   onBeforeCreate: () => bumpAnimationOverridePreviewPosterGeneration(),
   onBeforeClosed: () => {
     bumpAnimationOverridePreviewPosterGeneration();
     if (shortcutRuntime) shortcutRuntime.stopRecording();
     void settingsSizePreviewSession.cleanup();
+    // The renderer-side rollback (slider blur / control dispose) rides IPC
+    // and can't be trusted while the window is being torn down — without
+    // this, closing mid-drag leaves the transient preview scale applied to
+    // the display until the next commit or restart.
+    endTextScalePreview();
   },
   onAfterClosed: () => maybeDestroyIdleAnimationPreviewPosterWindow(),
 });
@@ -746,6 +755,106 @@ let keepAwakeWhileWorking = _settingsController.get("keepAwakeWhileWorking");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let disableMiniModeCached = _settingsController.get("disableMiniMode");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
+let textScale = _settingsController.get("textScale");
+let textScaleByDisplay = _settingsController.get("textScaleByDisplay");
+// Transient slider-drag override for ONE display — the one the settings
+// window sits on (what you see is what you tune). Applied to live windows but
+// never written to the store; cleared on commit (mirror setters) or rollback
+// (endTextScalePreview).
+let textScalePreview = null; // { key: string, value: number }
+
+function getDisplayKeyForBounds(bounds) {
+  if (!bounds) return null;
+  try {
+    const display = screen.getDisplayMatching(bounds);
+    return display && display.id != null ? String(display.id) : null;
+  } catch {
+    return null;
+  }
+}
+
+function getPetDisplayKey() {
+  // Resolve from the pet's CENTER POINT, not the window rect: the pet windows
+  // use enableLargerThanScreen and can overhang display edges, which makes
+  // getDisplayMatching unstable. Nearest-point matches the same anchor the
+  // bubble/HUD geometry uses (getNearestWorkArea of the pet center), so the
+  // zoom value and the layout always agree on which display they are on.
+  try {
+    const bounds = getPetWindowBounds();
+    if (!bounds) return null;
+    const point = {
+      x: Math.round(bounds.x + bounds.width / 2),
+      y: Math.round(bounds.y + bounds.height / 2),
+    };
+    const display = screen.getDisplayNearestPoint(point);
+    return display && display.id != null ? String(display.id) : null;
+  } catch {
+    return null;
+  }
+}
+
+function getWindowDisplayKey(win) {
+  if (!win || typeof win.isDestroyed !== "function" || win.isDestroyed()) return null;
+  try { return getDisplayKeyForBounds(win.getBounds()); } catch { return null; }
+}
+
+function getSettingsDisplayKey() {
+  return getWindowDisplayKey(settingsWindowRuntime.getWindow()) || getPetDisplayKey();
+}
+
+function effectiveTextScaleForKey(key) {
+  if (textScalePreview && key && textScalePreview.key === key) {
+    return clampTextScale(textScalePreview.value);
+  }
+  return resolveTextScaleForKey(textScaleByDisplay, textScale, key);
+}
+
+// Pet-anchored floating windows (permission bubbles, update bubble, session
+// HUD) all read the scale of whichever display the pet is on right now.
+function getTextScaleForPetWindows() {
+  return effectiveTextScaleForKey(getPetDisplayKey());
+}
+
+// textScale changed (commit, preview tick, or display change): the resizable
+// windows re-zoom themselves against their own display, and the pet-anchored
+// floating windows re-resolve scale + re-inject zoom inside their reposition
+// paths (applyZoomToWindow memoizes, so this is cheap to call broadly).
+function applyTextScaleNow() {
+  try {
+    if (settingsWindowRuntime && typeof settingsWindowRuntime.applyTextScaleToWindow === "function") {
+      settingsWindowRuntime.applyTextScaleToWindow();
+    }
+  } catch (err) {
+    console.warn("Clawd: settings window text scale failed:", err && err.message);
+  }
+  try {
+    if (_dashboard && typeof _dashboard.applyTextScaleToWindow === "function") {
+      _dashboard.applyTextScaleToWindow();
+    }
+  } catch (err) {
+    console.warn("Clawd: dashboard text scale failed:", err && err.message);
+  }
+  repositionAnchoredFloatingSurfaces();
+}
+
+function previewTextScale(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    textScalePreview = null;
+  } else {
+    const key = getSettingsDisplayKey();
+    textScalePreview = key ? { key, value: clampTextScale(n) } : null;
+  }
+  applyTextScaleNow();
+  return { status: "ok" };
+}
+
+function endTextScalePreview() {
+  if (!textScalePreview) return { status: "ok", noop: true };
+  textScalePreview = null;
+  applyTextScaleNow();
+  return { status: "ok" };
+}
 
 function getRuntimeBubblePolicy(kind) {
   return getBubblePolicy(_settingsController.getSnapshot(), kind);
@@ -1048,9 +1157,11 @@ const {
 const {
   isAgentEnabled: _isAgentEnabled,
   isAgentPermissionsEnabled: _isAgentPermissionsEnabled,
+  isAgentSubagentPermissionsEnabled: _isAgentSubagentPermissionsEnabled,
   isAgentNotificationHookEnabled: _isAgentNotificationHookEnabled,
   isCodexNativeNotificationSoundEnabled: _isCodexNativeNotificationSoundEnabled,
   isCodexPermissionInterceptEnabled: _isCodexPermissionInterceptEnabled,
+  shouldSyncAgentIntegration: _shouldSyncAgentIntegration,
 } = require("./agent-gate");
 const _permCtx = {
   get win() { return win; },
@@ -1066,10 +1177,18 @@ const _permCtx = {
   getNearestWorkArea,
   getHitRectScreen,
   getHudReservedOffset: () => getSessionHudReservedOffset(),
+  getTextScale: () => getTextScaleForPetWindows(),
   guardAlwaysOnTop,
   reapplyMacVisibility,
   isAgentPermissionsEnabled: (agentId) =>
     _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+  // DANGER "auto-pilot": when true, showPermissionBubble auto-approves every
+  // request instead of rendering a bubble. DND / per-agent / headless gates
+  // run earlier in the route, so they still win — this only fires once a
+  // bubble would otherwise show. Headless fallback stays agent-specific
+  // (no-decision/native fallback, opencode silent TUI fallback, or CC deny).
+  isAutoApproveAllEnabled: () =>
+    _settingsController.get("autoApproveAllPermissions") === true,
   focusTerminalForSession: (sessionId, options = {}) => {
     focusDashboardSession(sessionId, {
       requestSource: options.requestSource || "permission-bubble",
@@ -1130,6 +1249,7 @@ const _updateBubbleCtx = {
   getUpdateBubbleAnchorRect,
   getHitRectScreen,
   getHudReservedOffset: () => getSessionHudReservedOffset(),
+  getTextScale: () => getTextScaleForPetWindows(),
   guardAlwaysOnTop,
   reapplyMacVisibility,
 };
@@ -1441,6 +1561,9 @@ const _dashboard = require("./dashboard")({
   getPetWindowBounds,
   getNearestWorkArea,
   getSettingsWindow: () => settingsWindowRuntime.getWindow(),
+  getTextScale: () => effectiveTextScaleForKey(
+    getWindowDisplayKey(_dashboard ? _dashboard.getWindow() : null) || getPetDisplayKey()
+  ),
   iconPath: settingsWindowRuntime.getIconPath(),
 });
 showDashboard = _dashboard.showDashboard;
@@ -1463,6 +1586,7 @@ const _sessionHud = require("./session-hud")({
   getHitRectScreen,
   getSessionHudAnchorRect,
   getNearestWorkArea,
+  getTextScale: () => getTextScaleForPetWindows(),
   guardAlwaysOnTop,
   reapplyMacVisibility,
   onReservedOffsetChange: () => repositionFloatingBubbles(),
@@ -1498,7 +1622,10 @@ const _serverCtx = {
   get STATE_SVGS() { return _state.STATE_SVGS; },
   get sessions() { return sessions; },
   isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
+  shouldSyncAgentIntegration: (agentId) =>
+    _shouldSyncAgentIntegration({ agents: _settingsController.get("agents") }, agentId),
   isAgentPermissionsEnabled: (agentId) => _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+  isAgentSubagentPermissionsEnabled: (agentId) => _isAgentSubagentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
   isCodexNativeNotificationSoundEnabled: () => _isCodexNativeNotificationSoundEnabled({ agents: _settingsController.get("agents") }),
   isCodexPermissionInterceptEnabled: () => _isCodexPermissionInterceptEnabled({ agents: _settingsController.get("agents") }),
   codexSubagentClassifier: agentRuntime.getCodexSubagentClassifier(),
@@ -1867,6 +1994,26 @@ async function deleteTelegramApprovalTokenFile() {
   }
 }
 
+// Bridge a freshly-created legacy sidecar's status-changed stream into the
+// migration controller. A new bridge per instance keeps everReady/dedupe state
+// scoped to that process; the controller is referenced lazily because it may be
+// created after the first sidecar (init drives the first start).
+function attachTelegramSidecarStatusBridge(sidecar) {
+  if (!sidecar || typeof sidecar.on !== "function") return;
+  const bridge = createTelegramSidecarStatusBridge({
+    getSnapshot: () => (_telegramMigrationController
+      && typeof _telegramMigrationController.getSnapshot === "function"
+      ? _telegramMigrationController.getSnapshot()
+      : null),
+    dispatch: (event) => (_telegramMigrationController
+      && typeof _telegramMigrationController.dispatch === "function"
+      ? _telegramMigrationController.dispatch(event)
+      : Promise.resolve()),
+    log: telegramApprovalLog,
+  });
+  sidecar.on("status-changed", (status) => bridge.onStatusChanged(status));
+}
+
 async function startTelegramApprovalSidecar() {
   const config = getTelegramApprovalPrefs();
   const paths = getTelegramApprovalPaths();
@@ -1924,6 +2071,7 @@ async function startTelegramApprovalSidecar() {
     redactionSecrets: telegramApprovalSettings.redactionSecretsForTelegramApproval(config),
     log: telegramApprovalLog,
   });
+  attachTelegramSidecarStatusBridge(telegramApprovalSidecar);
   telegramApprovalConfigSignature = signature;
   const sidecar = telegramApprovalSidecar;
   try {
@@ -2451,9 +2599,12 @@ async function runLaunchClaudeSession(t, mode, cwd, sessionId) {
 
 function showResumeInput(t) {
   return new Promise((resolve) => {
+    // data: URL — outside the file:// zoom map, so the scale is baked into the
+    // window size and an inline body zoom instead.
+    const resumeScale = getTextScaleForPetWindows();
     const inputWin = new BrowserWindow({
-      width: 420,
-      height: 180,
+      width: scaleWidth(420, resumeScale),
+      height: scaleHeight(180, resumeScale),
       resizable: false,
       alwaysOnTop: true,
       frame: false,
@@ -2469,7 +2620,7 @@ function showResumeInput(t) {
     const cancelLabel = t("dismiss") || "Cancel";
     const html = `<!DOCTYPE html><html><head><style>
       *{margin:0;padding:0;box-sizing:border-box}
-      body{font-family:system-ui,-apple-system,sans-serif;background:#1e1e2e;color:#cdd6f4;display:flex;flex-direction:column;height:100vh;padding:16px;border-radius:12px;overflow:hidden}
+      body{zoom:${resumeScale};font-family:system-ui,-apple-system,sans-serif;background:#1e1e2e;color:#cdd6f4;display:flex;flex-direction:column;height:calc(100vh / ${resumeScale});padding:16px;border-radius:12px;overflow:hidden}
       .title{font-size:14px;font-weight:600;margin-bottom:12px}
       input{width:100%;padding:8px 12px;border:1px solid #45475a;border-radius:6px;background:#313244;color:#cdd6f4;font-size:13px;outline:none}
       input:focus{border-color:#89b4fa}
@@ -2530,6 +2681,16 @@ const _menuCtx = {
   set hideBubbles(v) { _settingsController.applyCommand("setAllBubblesHidden", { hidden: !!v }).catch((err) => {
     console.warn("Clawd: setAllBubblesHidden failed:", err && err.message);
   }); },
+  get autoApproveAllPermissions() { return _settingsController.get("autoApproveAllPermissions") === true; },
+  // Route through the gated command. The menu shows its own native danger
+  // confirm before setting true, so it passes confirmed:true; disabling needs
+  // no confirmation. applyUpdate is intentionally NOT used — the field is
+  // gated so the confirm dialog is a real boundary, not UI-only.
+  set autoApproveAllPermissions(v) {
+    _settingsController.applyCommand("setAutoApproveAll", { enabled: !!v, confirmed: true }).catch((err) => {
+      console.warn("Clawd: setAutoApproveAll failed:", err && err.message);
+    });
+  },
   get soundMuted() { return soundMuted; },
   set soundMuted(v) { _settingsController.applyUpdate("soundMuted", v); },
   get soundVolume() { return soundVolume; },
@@ -2675,6 +2836,8 @@ const SETTINGS_MIRROR_SETTERS = {
   soundMuted: (v) => { soundMuted = v; }, soundVolume: (v) => { soundVolume = v; }, lowPowerIdleMode: (v) => { lowPowerIdleMode = v; },
   keepAwakeWhileWorking: (v) => { keepAwakeWhileWorking = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, disableMiniMode: (v) => { disableMiniModeCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; },
+  textScale: (v) => { textScale = v; textScalePreview = null; },
+  textScaleByDisplay: (v) => { textScaleByDisplay = v; textScalePreview = null; },
 };
 
 function updateSettingsMirrors(changes) { for (const [key, value] of Object.entries(changes)) if (SETTINGS_MIRROR_SETTERS[key]) SETTINGS_MIRROR_SETTERS[key](value); }
@@ -2709,6 +2872,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
   hideUpdateBubbleForPolicy: () => callRuntimeMethod(_updateBubble, "hideForPolicy"),
   refreshUpdateBubbleAutoClose: () => callRuntimeMethod(_updateBubble, "refreshAutoCloseForPolicy"),
   repositionFloatingBubbles,
+  applyTextScale: () => applyTextScaleNow(),
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
   handleSessionHudPinnedChanged: (next) => {
     if (_sessionHud && typeof _sessionHud.handlePinnedChanged === "function") {
@@ -2907,6 +3071,13 @@ registerSettingsIpc({
   getLang: () => lang,
   settingsSizePreviewSession,
   isValidSizePreviewKey,
+  previewTextScale,
+  endTextScalePreview,
+  getTextScaleContext: () => ({
+    percent: Math.round(
+      resolveTextScaleForKey(textScaleByDisplay, textScale, getSettingsDisplayKey()) * 100
+    ),
+  }),
   sendToRenderer,
   getDoNotDisturb: () => doNotDisturb,
   getSoundMuted: () => soundMuted,
@@ -3017,7 +3188,7 @@ function createWindow() {
     },
     onRenderProcessGone: (details, ownedHitWin) => {
       safeConsoleError("hitWin renderer crashed:", details.reason);
-      ownedHitWin.webContents.reload();
+      petWindowRuntime.reloadWindowWebContents(ownedHitWin);
     },
   });
 
@@ -3052,6 +3223,7 @@ function createWindow() {
     computeDragEndBounds: (virtualBounds, size) =>
       computeFinalDragBounds(virtualBounds, size, clampToScreenVisual),
     applyPetWindowBounds: (bounds) => applyPetWindowBounds(bounds),
+    flushRuntimeStateToPrefs: () => flushRuntimeStateToPrefs(),
     reassertWinTopmost: () => reassertWinTopmost(),
     scheduleHwndRecovery: () => scheduleHwndRecovery(),
     repositionFloatingBubbles: () => repositionFloatingBubbles(),
@@ -3065,6 +3237,9 @@ function createWindow() {
         _sessionHud.revealFromPet();
       }
     },
+    statPath: (p) => fs.promises.stat(p),
+    openTerminalAt: (dir) => openTerminalAt(dir),
+    dropLog: (message) => console.log(`Clawd: ${message}`),
   });
 
   registerPermissionIpc({
@@ -3102,7 +3277,7 @@ function createWindow() {
     petWindowRuntime.setDragLocked(false);
     idlePaused = false;
     mouseOverPet = false;
-    win.webContents.reload();
+    petWindowRuntime.reloadWindowWebContents(win);
   });
 
   guardAlwaysOnTop(win);
@@ -3111,6 +3286,21 @@ function createWindow() {
   screen.on("display-metrics-changed", () => petWindowRuntime.handleDisplayMetricsChanged());
   screen.on("display-removed", () => petWindowRuntime.handleDisplayRemoved());
   screen.on("display-added", () => petWindowRuntime.handleDisplayAdded());
+
+  // textScale is per-display: when the topology changes, window→display
+  // mappings (and therefore effective scales) can change wholesale. Debounced
+  // because these events arrive in bursts during reconnects.
+  let textScaleTopologyTimer = null;
+  const reapplyTextScaleAfterTopologyChange = () => {
+    if (textScaleTopologyTimer) clearTimeout(textScaleTopologyTimer);
+    textScaleTopologyTimer = setTimeout(() => {
+      textScaleTopologyTimer = null;
+      applyTextScaleNow();
+    }, 400);
+  };
+  screen.on("display-metrics-changed", reapplyTextScaleAfterTopologyChange);
+  screen.on("display-removed", reapplyTextScaleAfterTopologyChange);
+  screen.on("display-added", reapplyTextScaleAfterTopologyChange);
 }
 
 // Read primary display safely — getPrimaryDisplay() can also throw during

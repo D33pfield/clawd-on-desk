@@ -17,6 +17,7 @@ describe("Agent Registry", () => {
       "kiro-cli",
       "kimi-cli",
       "qwen-code",
+      "codewhale",
       "opencode",
       "pi",
       "openclaw",
@@ -35,6 +36,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(registry.getAgent("codebuddy").name, "CodeBuddy");
     assert.strictEqual(registry.getAgent("kiro-cli").name, "Kiro CLI");
     assert.strictEqual(registry.getAgent("qwen-code").name, "Qwen Code");
+    assert.strictEqual(registry.getAgent("codewhale").name, "CodeWhale");
     assert.strictEqual(registry.getAgent("pi").name, "Pi");
     assert.strictEqual(registry.getAgent("openclaw").name, "OpenClaw");
     assert.strictEqual(registry.getAgent("hermes").name, "Hermes Agent");
@@ -75,6 +77,9 @@ describe("Agent Registry", () => {
     const qwen = registry.getAgent("qwen-code");
     assert.deepStrictEqual(qwen.processNames.win, ["qwen.exe"]);
 
+    const codewhale = registry.getAgent("codewhale");
+    assert.deepStrictEqual(codewhale.processNames.win, ["codewhale.exe"]);
+
     const qoder = registry.getAgent("qoder");
     assert.deepStrictEqual(qoder.processNames.win, ["qoder.exe", "qodercli.exe", "qoder-cli.exe"]);
   });
@@ -113,6 +118,9 @@ describe("Agent Registry", () => {
     const qwen = registry.getAgent("qwen-code");
     assert.deepStrictEqual(qwen.processNames.linux, ["qwen"]);
 
+    const codewhale = registry.getAgent("codewhale");
+    assert.deepStrictEqual(codewhale.processNames.linux, ["codewhale"]);
+
     const qoder = registry.getAgent("qoder");
     assert.deepStrictEqual(qoder.processNames.linux, ["qoder", "qodercli", "qoder-cli"]);
   });
@@ -138,6 +146,7 @@ describe("Agent Registry", () => {
     assert.ok(agentIds.includes("cursor-agent"));
     assert.ok(agentIds.includes("kiro-cli"));
     assert.ok(agentIds.includes("qwen-code"));
+    assert.ok(agentIds.includes("codewhale"));
     assert.ok(agentIds.includes("pi"));
     assert.ok(agentIds.includes("pi"));
     assert.ok(agentIds.includes("hermes"));
@@ -221,6 +230,14 @@ describe("Agent Registry", () => {
     assert.strictEqual(qwen.capabilities.sessionEnd, true);
     assert.strictEqual(qwen.capabilities.subagent, false);
 
+    const codewhale = registry.getAgent("codewhale");
+    assert.strictEqual(codewhale.capabilities.httpHook, false);
+    assert.strictEqual(codewhale.capabilities.permissionApproval, false);
+    assert.strictEqual(codewhale.capabilities.interactiveBubble, false);
+    assert.strictEqual(codewhale.capabilities.notificationHook, true);
+    assert.strictEqual(codewhale.capabilities.sessionEnd, true);
+    assert.strictEqual(codewhale.capabilities.subagent, false);
+
     const qoder = registry.getAgent("qoder");
     assert.strictEqual(qoder.capabilities.httpHook, false);
     // Phase 1 state-only: no permission approval, no interactive bubble.
@@ -289,6 +306,16 @@ describe("Agent Registry", () => {
     // The PostToolUse → UserPromptSubmit self-submit that used to clobber it
     // is dropped by src/state.js's lastBoundaryAt filter.
     assert.strictEqual(qwen.eventMap.Stop, "attention");
+
+    const codewhale = registry.getAgent("codewhale");
+    assert.strictEqual(codewhale.eventSource, "hook");
+    assert.strictEqual(codewhale.eventMap.SessionStart, "idle");
+    assert.strictEqual(codewhale.eventMap.UserPromptSubmit, "thinking");
+    assert.strictEqual(codewhale.eventMap.PostToolUseFailure, "error");
+    assert.strictEqual(codewhale.eventMap.Notification, "attention");
+    assert.strictEqual(codewhale.eventMap.Stop, undefined);
+    assert.strictEqual(codewhale.eventMap.PreCompact, "sweeping");
+    assert.strictEqual(codewhale.eventMap.SessionEnd, "sleeping");
 
     const qoder = registry.getAgent("qoder");
     assert.strictEqual(qoder.eventMap.SessionStart, "idle");

@@ -242,7 +242,7 @@ function psSingleQuotedString(value) {
   return `'${String(value || "").replace(/'/g, "''")}'`;
 }
 
-function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = null, focusToken = "") {
+function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = null, focusToken = "", cacheCwdCandidates = cwdCandidates) {
   // Walk up the process tree (same proven logic as before).
   // Windows Terminal needs title matching because one WT process can represent
   // multiple tabs/windows. Other parent windows keep direct PID focus.
@@ -254,6 +254,10 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
       }).join(",")
     : "";
   const titleNames = psNames ? `@(${psNames})` : "@()";
+  const psCacheNames = Array.isArray(cacheCwdCandidates) && cacheCwdCandidates.length
+    ? cacheCwdCandidates.map(c => psUtf8Expression(c)).join(",")
+    : "";
+  const cacheTitleNames = psCacheNames ? `@(${psCacheNames})` : "@()";
   const cacheKey = focusCacheKey ? psUtf8Expression(focusCacheKey) : "$null";
   const wtHwndLiteral = normalizeHwndString(wtHwnd) || "0";
   const tokenLiteral = psSingleQuotedString(focusToken);
@@ -273,7 +277,6 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
                 if ($pidWindows.Count -eq 1) {
                     [WinFocus]::Focus($pidWindows[0])
                     $selectedTargetHwnd = $pidWindows[0]
-                    Save-ClawdFocusCache $pidWindows[0]
                     $focused = $true
                     $reason = 'wt-parent-pid-window'
                 } elseif ($pidWindows.Count -gt 1) {
@@ -281,6 +284,19 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
                 } else {
                     $reason = 'wt-parent-no-pid-window'
                 }
+            }
+        } elseif ($editorProcessNames -contains $proc.ProcessName) {
+            $matches = @([WinFocus]::FindByPidTitles([uint32]$curPid, [string[]]$cacheTitleNames))
+            if ($matches.Count -eq 1) {
+                [WinFocus]::Focus($matches[0])
+                $selectedTargetHwnd = $matches[0]
+                Save-ClawdFocusCache $matches[0]
+                $focused = $true
+                $reason = 'editor-parent-title-match'
+            } elseif ($matches.Count -gt 1) {
+                $reason = 'editor-parent-title-ambiguous'
+            } else {
+                $reason = 'editor-parent-no-title-match'
             }
         } else {
             [WinFocus]::Focus($proc.MainWindowHandle)
@@ -290,7 +306,9 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
             $reason = 'parent-direct'
         }
         break` : `
-        if ($wtProcessNames -notcontains $proc.ProcessName) {
+        if ($editorProcessNames -contains $proc.ProcessName) {
+            $reason = 'editor-parent-no-title'
+        } elseif ($wtProcessNames -notcontains $proc.ProcessName) {
             [WinFocus]::Focus($proc.MainWindowHandle)
             $selectedTargetHwnd = $proc.MainWindowHandle
             Save-ClawdFocusCache $proc.MainWindowHandle
@@ -330,7 +348,6 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
         if ($pidWindows.Count -eq 1) {
             [WinFocus]::Focus($pidWindows[0])
             $selectedTargetHwnd = $pidWindows[0]
-            Save-ClawdFocusCache $pidWindows[0]
             $focused = $true
             $reason = 'wt-title-mismatch-pid-window'
         } elseif ($pidWindows.Count -gt 1) {
@@ -340,7 +357,6 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
             if ($singleWtWindows.Count -eq 1) {
                 [WinFocus]::Focus($singleWtWindows[0])
                 $selectedTargetHwnd = $singleWtWindows[0]
-                Save-ClawdFocusCache $singleWtWindows[0]
                 $focused = $true
                 $reason = 'wt-title-mismatch-single-wt-window'
             } elseif ($singleWtWindows.Count -gt 1) {
@@ -355,29 +371,72 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
   return `
 $focusToken = ${tokenLiteral}
 $titleNames = ${titleNames}
+$cacheTitleNames = ${cacheTitleNames}
 $wtProcessNames = @('WindowsTerminal', 'WindowsTerminalPreview')
+$editorProcessNames = @('Code', 'Cursor')
 $chainWindowsTerminalPids = @()
 $focusCacheKey = ${cacheKey}
+$focusCacheSourcePid = [int64]${sourcePid}
 $wtHwndFromHook = [IntPtr]([int64]${wtHwndLiteral})
 if ($null -eq $global:ClawdFocusWindowCache) {
     $global:ClawdFocusWindowCache = @{}
 }
+function Test-ClawdWindowTitleMatch([IntPtr]$hwnd, [string[]]$names) {
+    if ($hwnd -eq [IntPtr]::Zero -or -not $names -or $names.Count -eq 0) { return $false }
+    $len = [WinFocus]::GetWindowTextLength($hwnd)
+    if ($len -le 0) { return $false }
+    $sb = New-Object System.Text.StringBuilder -ArgumentList ($len + 1)
+    [void][WinFocus]::GetWindowText($hwnd, $sb, $sb.Capacity)
+    $title = $sb.ToString()
+    foreach ($name in @($names)) {
+        if (-not [string]::IsNullOrWhiteSpace($name) -and $title.IndexOf($name, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $true
+        }
+    }
+    return $false
+}
 function Save-ClawdFocusCache([IntPtr]$hwnd) {
     if (-not $focusCacheKey -or $hwnd -eq [IntPtr]::Zero) { return }
-    $global:ClawdFocusWindowCache[$focusCacheKey] = $hwnd.ToInt64()
+    if (-not $cacheTitleNames -or $cacheTitleNames.Count -eq 0) { return }
+    $global:ClawdFocusWindowCache[$focusCacheKey] = @{
+        hwnd = $hwnd.ToInt64()
+        sourcePid = $focusCacheSourcePid
+        titleNames = @($cacheTitleNames)
+    }
 }
 function Get-ClawdCachedWindow() {
     if (-not $focusCacheKey) { return [IntPtr]::Zero }
     if (-not $global:ClawdFocusWindowCache.ContainsKey($focusCacheKey)) { return [IntPtr]::Zero }
+    $rawEntry = $global:ClawdFocusWindowCache[$focusCacheKey]
+    $rawHwnd = $rawEntry
+    $entrySourcePid = 0
+    if ($rawEntry -is [System.Collections.IDictionary]) {
+        $rawHwnd = $rawEntry['hwnd']
+        try { $entrySourcePid = [int64]$rawEntry['sourcePid'] } catch { $entrySourcePid = 0 }
+    }
     try {
-        $hwnd = [IntPtr]([int64]$global:ClawdFocusWindowCache[$focusCacheKey])
+        $hwnd = [IntPtr]([int64]$rawHwnd)
     } catch {
         $global:ClawdFocusWindowCache.Remove($focusCacheKey)
         return [IntPtr]::Zero
     }
-    if ([WinFocus]::IsUsableWindow($hwnd)) { return $hwnd }
-    $global:ClawdFocusWindowCache.Remove($focusCacheKey)
-    return [IntPtr]::Zero
+    if (-not [WinFocus]::IsUsableWindow($hwnd)) {
+        $global:ClawdFocusWindowCache.Remove($focusCacheKey)
+        return [IntPtr]::Zero
+    }
+    if ($entrySourcePid -gt 0 -and $focusCacheSourcePid -gt 0 -and $entrySourcePid -ne $focusCacheSourcePid) {
+        $global:ClawdFocusWindowCache.Remove($focusCacheKey)
+        return [IntPtr]::Zero
+    }
+    if (-not $cacheTitleNames -or $cacheTitleNames.Count -eq 0) {
+        $global:ClawdFocusWindowCache.Remove($focusCacheKey)
+        return [IntPtr]::Zero
+    }
+    if (-not (Test-ClawdWindowTitleMatch $hwnd ([string[]]$cacheTitleNames))) {
+        $global:ClawdFocusWindowCache.Remove($focusCacheKey)
+        return [IntPtr]::Zero
+    }
+    return $hwnd
 }
 function Get-ClawdVisiblePidWindows([int[]]$pids) {
     $windows = @()
@@ -469,7 +528,6 @@ if (-not $focused -and $pendingConsoleHwnd -ne [IntPtr]::Zero) {
         $reason -eq 'wt-title-mismatch-no-pid-window') {
         [WinFocus]::Focus($pendingConsoleHwnd)
         $selectedTargetHwnd = $pendingConsoleHwnd
-        Save-ClawdFocusCache $pendingConsoleHwnd
         $focused = $true
         $reason = 'legacy-conhost-window'
     }
@@ -505,12 +563,18 @@ let psProc = null;
 // macOS Accessibility/System Events calls can pile up fast, so serialize focus attempts.
 const MAC_FOCUS_THROTTLE_MS = 1500;
 const MAC_FOCUS_TIMEOUT_MS = 1500;
+// The generic frontmost fallback can block on the macOS Automation consent
+// dialog on first use; killing it early dismisses the dialog before the user
+// can answer (#465), so that one script gets a human-scale timeout.
+const MAC_FOCUS_CONSENT_TIMEOUT_MS = 15000;
+const MAC_OPEN_TIMEOUT_MS = 3000;
 const WINDOWS_FOCUS_DEDUP_MS = 400;
 const WINDOWS_FOCUS_RESULT_TIMEOUT_MS = 3000;
 const WINDOWS_FOCUS_POSITIVE_REASONS = new Set([
   "legacy-conhost-window",
   "parent-direct",
   "parent-direct-no-title",
+  "editor-parent-title-match",
   "wt-parent-title-match",
   "wt-title-match",
 ]);
@@ -1461,6 +1525,66 @@ function focusTerminalWindow(sourcePidOrRequest, cwd, editor, pidChain, meta) {
   return result;
 }
 
+// macOS generic window focus (#465). Prefer LaunchServices activation
+// (`open <bundle>`) over System Events `set frontmost`: `open` carries
+// Dock-click reopen semantics, so it also restores minimized windows —
+// `set frontmost` activates the app but leaves them in the Dock — and it
+// needs no Automation consent. System Events stays as the fallback for
+// source processes that don't live inside an .app bundle.
+
+function extractMacAppBundlePath(commPath) {
+  const text = typeof commPath === "string" ? commPath.trim() : "";
+  if (!text.startsWith("/")) return null;
+  // Match the outermost bundle: helpers live at
+  // <bundle>.app/Contents/Frameworks/<helper>.app/Contents/MacOS/<bin>.
+  const idx = text.indexOf(".app/Contents/");
+  return idx > 0 ? text.slice(0, idx + 4) : null;
+}
+
+function resolveMacAppBundle(pidCandidates, callback) {
+  execFile("ps", ["-o", "pid=,comm=", "-p", pidCandidates.join(",")], { encoding: "utf8", timeout: 1000 }, (_err, stdout) => {
+    // ps exits non-zero when any pid in the list is already gone but still
+    // prints the live rows, so parse stdout regardless of the exit code.
+    const commByPid = new Map();
+    for (const line of String(stdout || "").split("\n")) {
+      const match = line.match(/^\s*(\d+)\s+(.+)$/);
+      if (match) commByPid.set(Number(match[1]), match[2]);
+    }
+    for (const pid of pidCandidates) {
+      const bundlePath = extractMacAppBundlePath(commByPid.get(pid));
+      if (bundlePath) return callback(bundlePath);
+    }
+    callback(null);
+  });
+}
+
+function focusMacAppViaSystemEvents(pidCandidates, onDone) {
+  const applePidList = pidCandidates.join(", ");
+  const script = `
+    tell application "System Events"
+      repeat with targetPid in {${applePidList}}
+        set pidValue to contents of targetPid
+        set pList to every process whose unix id is pidValue
+        if (count of pList) > 0 then
+          set frontmost of item 1 of pList to true
+          exit repeat
+        end if
+      end repeat
+    end tell`;
+  execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_CONSENT_TIMEOUT_MS }, (err, _stdout, stderr) => {
+    if (err) {
+      const detail = String(stderr || err.message || "").split("\n")[0].slice(0, 160);
+      const reason = detail.includes("-1743")
+        ? "automation-denied"
+        : `osascript-failed:${safeLogValue(err.signal || err.code || "error")}`;
+      logFocusResult(`branch=mac-frontmost reason=${reason} detail=${safeLogValue(detail)}`);
+    } else {
+      logFocusResult("branch=mac-frontmost reason=ok");
+    }
+    if (onDone) onDone();
+  });
+}
+
 function focusTerminalWindowLegacy(request, onDone) {
   const { sourcePid } = request;
   const cwd = request.cwd;
@@ -1480,21 +1604,20 @@ function focusTerminalWindowLegacy(request, onDone) {
         if (pidCandidates.length >= 3) break;
       }
     }
-    const applePidList = pidCandidates.join(", ");
-    const script = `
-      tell application "System Events"
-        repeat with targetPid in {${applePidList}}
-          set pidValue to contents of targetPid
-          set pList to every process whose unix id is pidValue
-          if (count of pList) > 0 then
-            set frontmost of item 1 of pList to true
-            exit repeat
-          end if
-        end repeat
-      end tell`;
-    execFile("osascript", ["-e", script], { timeout: MAC_FOCUS_TIMEOUT_MS }, (err) => {
-      if (err) console.warn("focusTerminal macOS failed:", err.message);
-      if (onDone) onDone();
+    resolveMacAppBundle(pidCandidates, (bundlePath) => {
+      if (!bundlePath) {
+        focusMacAppViaSystemEvents(pidCandidates, onDone);
+        return;
+      }
+      execFile("/usr/bin/open", [bundlePath], { timeout: MAC_OPEN_TIMEOUT_MS }, (openErr) => {
+        if (!openErr) {
+          logFocusResult(`branch=mac-open reason=ok bundle=${safeLogValue(path.basename(bundlePath))}`);
+          if (onDone) onDone();
+          return;
+        }
+        logFocusResult(`branch=mac-open reason=open-failed bundle=${safeLogValue(path.basename(bundlePath))} error=${safeLogValue(openErr.signal || openErr.code || "error")}`);
+        focusMacAppViaSystemEvents(pidCandidates, onDone);
+      });
     });
     return true;
   }
@@ -1543,7 +1666,7 @@ function focusTerminalWindowLegacy(request, onDone) {
 
   // Windows: send command to persistent PowerShell process (near-instant)
   const titleCandidates = buildWindowsTitleCandidates(request, cwdCandidates);
-  const cmd = makeFocusCmd(sourcePid, titleCandidates, buildFocusCacheKey(request), request.wtHwnd, request.focusToken);
+  const cmd = makeFocusCmd(sourcePid, titleCandidates, buildFocusCacheKey(request), request.wtHwnd, request.focusToken, cwdCandidates);
   if (psProc && psProc.stdin.writable) {
     psProc.stdin.write(cmd + "\n");
     return true;
@@ -1583,6 +1706,7 @@ return {
   cleanup,
   __test: {
     makeFocusCmd,
+    extractMacAppBundlePath,
     buildWindowsTitleCandidates,
     confirmForeground,
     isPositiveFocusReason,
