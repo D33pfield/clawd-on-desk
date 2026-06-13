@@ -7,6 +7,7 @@ function buildSettingsAgentOrderExports() {
     "gemini-cli",
     "kimi-cli",
     "qwen-code",
+    "codewhale",
     "opencode",
     "codebuddy",
     "qoder",
