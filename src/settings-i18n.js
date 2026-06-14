@@ -3232,6 +3232,7 @@
     "Hwasowl", "XiangZheng2002", "keiyo118", "pan93412", "taehwanis", "linnin233", "xiyouMc",
     "Bynlk", "zxypro1", "NeroAyase", "divergentD", "Ne9roni", "QingXB", "29206394",
     "Tsdsj", "godlockin",
+    "sLingli", "ustin-star", "cod3hulk", "lxgxhsy", "rebootcrab-blip",
   ];
 
   root.ClawdSettingsI18n = {
