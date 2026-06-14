@@ -445,15 +445,18 @@ function createTelegramNativeRunner({
       try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: "Unavailable" }); } catch {}
       return true;
     }
-    try {
-      await client.answerCallbackQuery({
-        callback_query_id: cb.id,
-        text: decision.action === "allow" ? "Allowed" : (decision.action === "deny" ? "Denied" : "Applied"),
-      });
-    } catch {}
+    // Acknowledge the tap (best-effort, NON-blocking) and then claim the
+    // decision SYNCHRONOUSLY via finishApproval before any await. Awaiting the
+    // toast or the card rewrite first would yield the event loop, and a
+    // concurrent timeout / signal abort / stop could delete this pending entry
+    // mid-flight and drop a real Allow/Deny. finishApproval resolves the
+    // promise up front and fire-and-forgets the status-line rewrite.
+    client.answerCallbackQuery({
+      callback_query_id: cb.id,
+      text: decision.action === "allow" ? "Allowed" : (decision.action === "deny" ? "Denied" : "Applied"),
+    }).catch(() => {});
     const messageId = entry.messageId || (cb.message && cb.message.message_id);
-    await appendApprovalStatus(entry, APPROVAL_DECIDED_STATUS[decision.action], messageId);
-    finishApproval(parsed.id, decision);
+    finishApproval(parsed.id, decision, undefined, messageId);
     return true;
   }
 
@@ -548,10 +551,19 @@ function createTelegramNativeRunner({
     }).catch(() => stripApprovalKeyboard(chatId, messageId));
   }
 
-  // `reason` has no default on purpose: a caller that forgets to pass one
-  // falls into the `!status` branch below and degrades to stripping just the
-  // keyboard (the #446 behavior), rather than mislabeling the outcome.
-  function finishApproval(id, decision, reason) {
+  // Single resolution point for an approval, used by every exit: a Telegram
+  // tap, a desktop answer (abort), a timeout, polling stop, or a send failure.
+  //
+  // The entry is claimed SYNCHRONOUSLY (pulled from the map, timer + abort
+  // listener cleared, promise resolved) before any network I/O, so two exits
+  // racing on the same id can't both act — the second finds no entry and no-ops.
+  // The card rewrite is then fire-and-forget so a slow edit never blocks or
+  // re-opens that race.
+  //
+  // `reason` has no default on purpose: a null-decision caller that forgets to
+  // pass one yields `status === undefined`, which degrades to stripping just
+  // the keyboard (the #446 behavior) rather than mislabeling the outcome.
+  function finishApproval(id, decision, reason, messageIdOverride) {
     const entry = pendingApprovals.get(id);
     if (!entry) return;
     pendingApprovals.delete(id);
@@ -560,14 +572,15 @@ function createTelegramNativeRunner({
       try { entry.signal.removeEventListener("abort", entry.onAbort); } catch {}
     }
     const normalized = normalizeApprovalDecision(decision);
-    // A Telegram-side decision already strips the keyboard in
-    // handleApprovalCallback before we get here. A null decision means the
-    // approval was resolved elsewhere — answered on the desktop, timed out, or
-    // polling stopped — leaving a still-clickable card that would later answer
-    // "Expired". Rewrite it with the outcome (and without buttons) so the
-    // stale prompt can't be tapped and the chat history shows what happened.
-    if (!normalized) appendApprovalStatus(entry, APPROVAL_RESOLVED_ELSEWHERE_STATUS[reason], entry.messageId);
     entry.resolve(normalized);
+    // Rewrite the card so the chat history shows the outcome and the inline
+    // keyboard is dropped. A Telegram-side decision shows the chosen action; a
+    // null decision (resolved elsewhere / timeout / polling stopped) shows the
+    // neutral reason. Best-effort — appendApprovalStatus never throws.
+    const status = normalized
+      ? APPROVAL_DECIDED_STATUS[normalized.action]
+      : APPROVAL_RESOLVED_ELSEWHERE_STATUS[reason];
+    appendApprovalStatus(entry, status, messageIdOverride || entry.messageId);
   }
 
   function clearAllApprovals() {

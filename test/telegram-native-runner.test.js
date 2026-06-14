@@ -168,6 +168,8 @@ test("native runner requestApproval resolves allow for matching callback", async
   releaseFirstPoll({ ok: true, result: [] });
   const decision = await decisionPromise;
   assert.deepEqual(decision, { action: "allow" });
+  // The toast and the card rewrite are fire-and-forget now; let them land.
+  await tick();
   assert.equal(server.calls.some((call) => call.method === "answerCallbackQuery"), true);
   const allowEdit = server.calls.find((call) => call.method === "editMessageText");
   assert.ok(allowEdit, "tapping Allow rewrites the card body with the outcome");
@@ -176,6 +178,66 @@ test("native runner requestApproval resolves allow for matching callback", async
     "claude-code requests Bash\n\nSummary: Run tests\n\n\u2705 Allowed",
   );
   assert.equal(allowEdit.payload.reply_markup, undefined);
+  await runner.stop();
+});
+
+test("native runner claims a Telegram tap atomically so a racing abort can't drop it", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  let allowData = "";
+  const controller = new AbortController();
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("sendMessage", (payload) => {
+    allowData = payload.reply_markup.inline_keyboard[0][0].callback_data;
+    return { ok: true, result: { message_id: 70, chat: { id: 123 } } };
+  });
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [{
+      update_id: 1,
+      callback_query: {
+        id: "cb-allow",
+        from: { id: 777 },
+        message: { message_id: 70, chat: { id: 123 } },
+        data: allowData,
+      },
+    }],
+  }));
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueueOk("editMessageText", { message_id: 70 });
+
+  const runner = createTelegramNativeRunner({
+    tokenStore: tokenStore(),
+    transport: server.transport,
+    getDispatch: () => async () => {},
+    getChatId: () => "123",
+    getAllowedUserId: () => "777",
+  });
+
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestApproval(
+    { title: "claude-code requests Bash", detail: "Summary: Run tests" },
+    { signal: controller.signal },
+  );
+  await tick();
+
+  releaseFirstPoll({ ok: true, result: [] });
+  const decision = await decisionPromise;
+  // The tap is claimed synchronously, so the desktop answering immediately
+  // afterwards (signal abort) is a no-op rather than a null drop.
+  assert.deepEqual(decision, { action: "allow" });
+
+  controller.abort();
+  await tick();
+
+  const edits = server.calls.filter((call) => call.method === "editMessageText");
+  assert.equal(edits.length, 1, "the late abort must not fire a second, conflicting card rewrite");
+  assert.equal(
+    edits[0].payload.text,
+    "claude-code requests Bash\n\nSummary: Run tests\n\n\u2705 Allowed",
+  );
   await runner.stop();
 });
 
@@ -296,6 +358,8 @@ test("native runner rejects forged suggestion callbacks and waits for a valid de
   releaseFirstPoll({ ok: true, result: [] });
   const decision = await decisionPromise;
   assert.deepEqual(decision, { action: "suggestion", index: 0 });
+  // The valid tap's toast + card rewrite are fire-and-forget now; let them land.
+  await tick();
 
   const callbackAnswers = server.calls.filter((call) => call.method === "answerCallbackQuery");
   assert.equal(callbackAnswers[0].payload.text, "Unavailable");
@@ -367,6 +431,8 @@ test("native runner requestApproval ignores wrong user and resolves later callba
   releaseFirstPoll({ ok: true, result: [] });
 
   assert.deepEqual(await decisionPromise, { action: "deny" });
+  // The valid tap's toast + card rewrite are fire-and-forget now; let them land.
+  await tick();
   assert.equal(
     server.calls.filter((call) => call.method === "answerCallbackQuery").length,
     2,
