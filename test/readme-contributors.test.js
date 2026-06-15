@@ -22,6 +22,8 @@ const VERIFIED_GITHUB_CONTRIBUTORS = [
   "Ne9roni",
   "QingXB",
   "29206394",
+  "Tsdsj",
+  "godlockin",
 ];
 
 function extractContributorTable(markdown, filename) {

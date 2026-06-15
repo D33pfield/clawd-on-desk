@@ -73,10 +73,15 @@ describe("prefs.getDefaults", () => {
     });
   });
 
-  it("seeds all known agents as enabled", () => {
+  it("seeds only default-installed agents as enabled", () => {
     const d = prefs.getDefaults();
-    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "antigravity-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "opencode", "pi", "openclaw", "hermes", "qoder"]) {
+    for (const id of ["claude-code", "codex"]) {
       assert.strictEqual(d.agents[id].enabled, true, `${id} should default enabled`);
+      assert.strictEqual(d.agents[id].integrationInstalled, true, `${id} should default installed`);
+    }
+    for (const id of ["copilot-cli", "cursor-agent", "gemini-cli", "antigravity-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "codewhale", "opencode", "pi", "openclaw", "hermes", "qoder"]) {
+      assert.strictEqual(d.agents[id].enabled, false, `${id} should default disabled`);
+      assert.strictEqual(d.agents[id].integrationInstalled, false, `${id} should default not installed`);
     }
   });
 
@@ -90,7 +95,7 @@ describe("prefs.getDefaults", () => {
         `${id} should default permissionsEnabled`
       );
     }
-    for (const id of ["antigravity-cli", "pi", "openclaw", "qoder"]) {
+    for (const id of ["antigravity-cli", "codewhale", "pi", "openclaw", "qoder"]) {
       assert.strictEqual(
         d.agents[id].permissionsEnabled,
         false,
@@ -116,21 +121,32 @@ describe("prefs.getDefaults", () => {
 
   it("defaults OpenClaw permission bubbles off", () => {
     const d = prefs.getDefaults();
-    assert.strictEqual(d.agents.openclaw.enabled, true);
+    assert.strictEqual(d.agents.openclaw.integrationInstalled, false);
+    assert.strictEqual(d.agents.openclaw.enabled, false);
     assert.strictEqual(d.agents.openclaw.permissionsEnabled, false);
     assert.strictEqual(d.agents.openclaw.notificationHookEnabled, true);
   });
 
   it("defaults Qoder permission bubbles off (state-only)", () => {
     const d = prefs.getDefaults();
-    assert.strictEqual(d.agents.qoder.enabled, true);
+    assert.strictEqual(d.agents.qoder.integrationInstalled, false);
+    assert.strictEqual(d.agents.qoder.enabled, false);
     assert.strictEqual(d.agents.qoder.permissionsEnabled, false);
     assert.strictEqual(d.agents.qoder.notificationHookEnabled, true);
   });
 
+  it("defaults CodeWhale permission bubbles off (state-only)", () => {
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.agents.codewhale.integrationInstalled, false);
+    assert.strictEqual(d.agents.codewhale.enabled, false);
+    assert.strictEqual(d.agents.codewhale.permissionsEnabled, false);
+    assert.strictEqual(d.agents.codewhale.notificationHookEnabled, true);
+  });
+
   it("defaults Pi permission bubbles off", () => {
     const d = prefs.getDefaults();
-    assert.strictEqual(d.agents.pi.enabled, true);
+    assert.strictEqual(d.agents.pi.integrationInstalled, false);
+    assert.strictEqual(d.agents.pi.enabled, false);
     assert.strictEqual(d.agents.pi.permissionsEnabled, false);
     assert.strictEqual(d.agents.pi.notificationHookEnabled, true);
   });
@@ -431,7 +447,12 @@ describe("prefs.validate", () => {
         hermes: { enabled: true, permissionsEnabled: true, notificationHookEnabled: true },
       },
     });
-    assert.deepStrictEqual(v.agents.hermes, { enabled: true, permissionsEnabled: true, notificationHookEnabled: true });
+    assert.deepStrictEqual(v.agents.hermes, {
+      integrationInstalled: false,
+      enabled: true,
+      permissionsEnabled: true,
+      notificationHookEnabled: true,
+    });
   });
 
   it("normalizes agents: preserves Antigravity permission flag but strips notification flag", () => {
@@ -440,7 +461,11 @@ describe("prefs.validate", () => {
         "antigravity-cli": { enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       },
     });
-    assert.deepStrictEqual(v.agents["antigravity-cli"], { enabled: false, permissionsEnabled: false });
+    assert.deepStrictEqual(v.agents["antigravity-cli"], {
+      integrationInstalled: false,
+      enabled: false,
+      permissionsEnabled: false,
+    });
   });
 
   it("normalizes agents: preserves notificationHookEnabled flag", () => {
@@ -451,6 +476,25 @@ describe("prefs.validate", () => {
     });
     assert.strictEqual(v.agents["claude-code"].enabled, true);
     assert.strictEqual(v.agents["claude-code"].notificationHookEnabled, false);
+  });
+
+  it("normalizes agents: preserves integrationInstalled for every known agent", () => {
+    const d = prefs.getDefaults();
+    const inputAgents = {};
+    for (const agentId of Object.keys(d.agents)) {
+      inputAgents[agentId] = {
+        integrationInstalled: !d.agents[agentId].integrationInstalled,
+        enabled: d.agents[agentId].enabled,
+      };
+    }
+    const v = prefs.validate({ agents: inputAgents });
+    for (const agentId of Object.keys(d.agents)) {
+      assert.strictEqual(
+        v.agents[agentId].integrationInstalled,
+        !d.agents[agentId].integrationInstalled,
+        `${agentId} should preserve integrationInstalled`
+      );
+    }
   });
 
   it("normalizes agents: preserves valid Codex permissionMode", () => {
@@ -485,6 +529,25 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.agents["claude-code"].notificationHookEnabled, true);
   });
 
+  it("normalizes dismissed agent hint maps as true-only maps", () => {
+    const v = prefs.validate({
+      dismissedAgentInstallHints: {
+        "qwen-code": true,
+        hermes: false,
+        "": true,
+        pi: "yes",
+      },
+      dismissedAgentCleanupHints: {
+        "copilot-cli": true,
+        openclaw: false,
+        "": true,
+      },
+    });
+
+    assert.deepStrictEqual(v.dismissedAgentInstallHints, { "qwen-code": true });
+    assert.deepStrictEqual(v.dismissedAgentCleanupHints, { "copilot-cli": true });
+  });
+
   it("normalizes agents: fills missing Codex nativeNotificationSoundEnabled from defaults", () => {
     const v = prefs.validate({
       agents: {
@@ -496,7 +559,7 @@ describe("prefs.validate", () => {
 
   it("seeds all known agents with notificationHookEnabled=true", () => {
     const d = prefs.getDefaults();
-    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "opencode", "pi", "openclaw", "hermes", "qoder"]) {
+    for (const id of ["claude-code", "codex", "copilot-cli", "cursor-agent", "gemini-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "codewhale", "opencode", "pi", "openclaw", "hermes", "qoder", "reasonix"]) {
       assert.strictEqual(
         d.agents[id].notificationHookEnabled,
         true,
@@ -960,6 +1023,86 @@ describe("prefs.migrate v9 → v10 (compact HUD defaults are fresh-install only)
     const upgraded = prefs.migrate({ version: 10 });
     assert.strictEqual("sessionHudShowElapsed" in upgraded, false);
     assert.strictEqual("sessionHudCleanupDetached" in upgraded, false);
+  });
+});
+
+describe("prefs.migrate v10 → v11 (on-demand agent integrations)", () => {
+  it("keeps missing old agent entries on the v11 fresh defaults", () => {
+    const validated = prefs.validate(prefs.migrate({ version: 10, lang: "en" }));
+    assert.strictEqual(validated.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(validated.agents["claude-code"].integrationInstalled, true);
+    assert.strictEqual(validated.agents["claude-code"].enabled, true);
+    assert.strictEqual(validated.agents.codex.integrationInstalled, true);
+    assert.strictEqual(validated.agents.codex.enabled, true);
+    assert.strictEqual(validated.agents["gemini-cli"].integrationInstalled, false);
+    assert.strictEqual(validated.agents["gemini-cli"].enabled, false);
+  });
+
+  it("preserves existing enabled flags while backfilling installed intent", () => {
+    const validated = prefs.validate(prefs.migrate({
+      version: 10,
+      agents: {
+        codex: { enabled: false },
+        "copilot-cli": { enabled: true },
+      },
+    }));
+    assert.strictEqual(validated.agents.codex.enabled, false);
+    assert.strictEqual(validated.agents.codex.integrationInstalled, true);
+    assert.strictEqual(validated.agents["copilot-cli"].enabled, true);
+    assert.strictEqual(validated.agents["copilot-cli"].integrationInstalled, true);
+  });
+
+  it("does not mark agent entries missing from old prefs as installed", () => {
+    const validated = prefs.validate(prefs.migrate({
+      version: 10,
+      agents: {
+        "claude-code": { enabled: true },
+        codex: { enabled: true },
+        "copilot-cli": { enabled: true },
+      },
+    }));
+    assert.strictEqual(validated.agents["copilot-cli"].integrationInstalled, true);
+    assert.strictEqual(validated.agents.qoder.integrationInstalled, false);
+    assert.strictEqual(validated.agents.qoder.enabled, false);
+  });
+
+  it("does not mark v0 default-seeded agent entries as installed", () => {
+    const validated = prefs.validate(prefs.migrate({ lang: "en" }));
+    assert.strictEqual(validated.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(validated.agents["claude-code"].integrationInstalled, true);
+    assert.strictEqual(validated.agents.codex.integrationInstalled, true);
+    assert.strictEqual(validated.agents["gemini-cli"].integrationInstalled, false);
+    assert.strictEqual(validated.agents["gemini-cli"].enabled, false);
+  });
+
+  it("does not mark migration-created Pi or missing v0 agent entries as installed", () => {
+    const validated = prefs.validate(prefs.migrate({
+      agents: {
+        "claude-code": { enabled: true },
+        "gemini-cli": { enabled: true },
+      },
+    }));
+    assert.strictEqual(validated.agents["gemini-cli"].integrationInstalled, true);
+    assert.strictEqual(validated.agents.qoder.integrationInstalled, false);
+    assert.strictEqual(validated.agents.qoder.enabled, false);
+    assert.strictEqual(validated.agents.pi.integrationInstalled, false);
+    assert.strictEqual(validated.agents.pi.enabled, true);
+  });
+
+  it("does not resurrect an integrationInstalled=false value from current-version prefs", () => {
+    const validated = prefs.validate(prefs.migrate({
+      version: prefs.CURRENT_VERSION,
+      agents: {
+        "copilot-cli": {
+          integrationInstalled: false,
+          enabled: false,
+          permissionsEnabled: true,
+          notificationHookEnabled: true,
+        },
+      },
+    }));
+    assert.strictEqual(validated.agents["copilot-cli"].integrationInstalled, false);
+    assert.strictEqual(validated.agents["copilot-cli"].enabled, false);
   });
 });
 

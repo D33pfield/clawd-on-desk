@@ -53,7 +53,7 @@ function atomicWrite(tokenPath, state) {
   }
 }
 
-function loadOrCreateTokenState(tokenPath, nowFn) {
+function loadOrCreateTokenState(tokenPath, nowFn, writeTokenState = atomicWrite) {
   try {
     const raw = JSON.parse(fs.readFileSync(tokenPath, "utf8"));
     if (raw && typeof raw.token === "string" && /^[a-f0-9]{32,64}$/.test(raw.token)) {
@@ -62,15 +62,16 @@ function loadOrCreateTokenState(tokenPath, nowFn) {
         previous: raw.previous || null,
         graceUntil: typeof raw.graceUntil === "number" ? raw.graceUntil : null,
         rotatedAt: typeof raw.rotatedAt === "number" ? raw.rotatedAt : nowFn(),
+        rotationPending: typeof raw.rotationPending === "boolean" ? raw.rotationPending : false,
       };
       // Backward compat: rewrite file if it was in old { token } format
-      if (raw.rotatedAt === undefined) atomicWrite(tokenPath, state);
+      if (raw.rotatedAt === undefined) writeTokenState(tokenPath, state);
       return state;
     }
   } catch {}
   const token = crypto.randomBytes(16).toString("hex");
-  const state = { token, previous: null, graceUntil: null, rotatedAt: nowFn() };
-  atomicWrite(tokenPath, state);
+  const state = { token, previous: null, graceUntil: null, rotatedAt: nowFn(), rotationPending: false };
+  writeTokenState(tokenPath, state);
   return state;
 }
 
@@ -86,7 +87,10 @@ function isPathInside(parent, child) {
 function initMobilePreviewServer(ctx) {
   const tokenPath = (ctx && ctx.tokenPath) || TOKEN_PATH;
   const now = () => (ctx && ctx.now && ctx.now()) || Date.now();
-  const tokenState = loadOrCreateTokenState(tokenPath, now);
+  const writeTokenState = ctx && typeof ctx.writeTokenState === "function"
+    ? ctx.writeTokenState
+    : atomicWrite;
+  const tokenState = loadOrCreateTokenState(tokenPath, now, writeTokenState);
   const clients = new Set();
   const clientMeta = new Map();
   let sessionCache = new Map();
@@ -99,18 +103,40 @@ function initMobilePreviewServer(ctx) {
 
   // ── Token rotation ──
 
+  function persistTokenState(nextState) {
+    if (!writeTokenState(tokenPath, nextState)) return false;
+    Object.assign(tokenState, nextState);
+    return true;
+  }
+
+  function scheduleRotationRetry() {
+    if (rotationTimer) clearTimeout(rotationTimer);
+    rotationTimer = setTimeout(() => {
+      rotationTimer = null;
+      scheduleRotation();
+    }, RATE_WINDOW_MS);
+  }
+
   function rotateToken() {
     const newToken = crypto.randomBytes(16).toString("hex");
-    tokenState.previous = tokenState.token;
-    tokenState.token = newToken;
-    tokenState.graceUntil = now() + GRACE_PERIOD_MS;
-    tokenState.rotatedAt = now();
-    atomicWrite(tokenPath, tokenState);
+    const rotatedAt = now();
+    const nextState = {
+      ...tokenState,
+      previous: tokenState.token,
+      token: newToken,
+      graceUntil: rotatedAt + GRACE_PERIOD_MS,
+      rotatedAt,
+      rotationPending: false,
+    };
+    if (!persistTokenState(nextState)) return null;
     return newToken;
   }
 
   function performRotation() {
-    rotateToken();
+    if (!rotateToken()) {
+      console.error("[mobile-preview] token rotation skipped: failed to persist token state");
+      return false;
+    }
     // Track which clients need to ack this rotation
     for (const meta of clientMeta.values()) {
       meta.pendingRotationAcks = (meta.pendingRotationAcks || 0) + 1;
@@ -119,24 +145,45 @@ function initMobilePreviewServer(ctx) {
       newToken: tokenState.token,
       expiresAt: tokenState.graceUntil,
     }));
+    return true;
   }
 
   function scheduleRotation() {
+    if (tokenState.rotationPending) return;
     if (rotationTimer) clearTimeout(rotationTimer);
     const msUntilRotate = Math.max(0, (tokenState.rotatedAt + ROTATION_INTERVAL_MS) - now());
     rotationTimer = setTimeout(() => {
-      performRotation();
-      scheduleRotation(); // schedule next
+      rotationTimer = null;
+      if (clients.size > 0) {
+        if (!performRotation()) {
+          scheduleRotationRetry();
+          return;
+        }
+      } else {
+        const nextState = { ...tokenState, rotationPending: true };
+        if (!persistTokenState(nextState)) {
+          console.error("[mobile-preview] pending token rotation skipped: failed to persist token state");
+          scheduleRotationRetry();
+          return;
+        }
+      }
+      scheduleRotation(); // schedule next (if rotationPending, early-exits)
     }, msUntilRotate);
   }
 
   function regenerateToken() {
     const newToken = crypto.randomBytes(16).toString("hex");
-    tokenState.previous = null;      // no grace — old token dies now
-    tokenState.graceUntil = null;
-    tokenState.token = newToken;
-    tokenState.rotatedAt = now();
-    atomicWrite(tokenPath, tokenState);
+    const nextState = {
+      ...tokenState,
+      rotationPending: false,
+      previous: null,      // no grace — old token dies now
+      graceUntil: null,
+      token: newToken,
+      rotatedAt: now(),
+    };
+    if (!persistTokenState(nextState)) {
+      throw new Error("Failed to persist mobile token state");
+    }
     // Kick all connected clients (they have stale tokens)
     for (const c of clients) {
       try { c.close(1008, "Token regenerated"); } catch {}
@@ -239,6 +286,13 @@ function initMobilePreviewServer(ctx) {
       const clientId = crypto.randomBytes(8).toString("hex");
       const clientIp = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
       clientMeta.set(ws, { messageCount: 0, windowStart: Date.now(), clientId, ip: clientIp, lastPong: Date.now() });
+
+      // If a rotation was pending and this client has the current token, rotate now
+      if (tokenState.rotationPending && clientToken === tokenState.token) {
+        if (performRotation()) {
+          scheduleRotation(); // arm the next 24h timer
+        }
+      }
 
       // Send snapshot on connect
       try {

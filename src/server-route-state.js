@@ -29,6 +29,21 @@ function normalizeHwndString(value) {
   }
 }
 
+function normalizeTmuxSocket(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > 4096 || /[\0\r\n]/.test(text)) return null;
+  if (text.startsWith("/")) return text;
+  return text !== "default" && /^[\w.-]{1,64}$/.test(text) ? text : null;
+}
+
+function normalizeTmuxClient(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > 256 || text.startsWith("-")) return null;
+  return /^[\w./:-]+$/.test(text) ? text : null;
+}
+
 function normalizeAssistantLastOutput(value) {
   if (typeof value !== "string") return null;
   const text = value
@@ -107,6 +122,8 @@ function handleStatePost(req, res, options) {
       const cwd = typeof data.cwd === "string" ? data.cwd : "";
       const editor = (data.editor === "code" || data.editor === "cursor") ? data.editor : null;
       const pidChain = Array.isArray(data.pid_chain) ? data.pid_chain.filter(n => Number.isFinite(n) && n > 0) : null;
+      const tmuxSocket = normalizeTmuxSocket(data.tmux_socket);
+      const tmuxClient = normalizeTmuxClient(data.tmux_client);
       const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
       const agentPid = Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null;
       const agentIdentity = resolveHookAgentId(data);
@@ -244,6 +261,8 @@ function handleStatePost(req, res, options) {
             cwd,
             editor,
             pidChain,
+            tmuxSocket,
+            tmuxClient,
             agentPid,
             agentId,
             host,

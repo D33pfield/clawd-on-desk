@@ -198,6 +198,10 @@ describe("updateRegistry pure-data validators", () => {
     const deps = { snapshot: baseSnapshot };
     assert.strictEqual(updateRegistry.agents({}, deps).status, "ok");
     assert.strictEqual(updateRegistry.agents([], deps).status, "error");
+    assert.strictEqual(updateRegistry.dismissedAgentInstallHints({ "qwen-code": true }, deps).status, "ok");
+    assert.strictEqual(updateRegistry.dismissedAgentInstallHints({ "qwen-code": false }, deps).status, "error");
+    assert.strictEqual(updateRegistry.dismissedAgentCleanupHints({ "qwen-code": true }, deps).status, "ok");
+    assert.strictEqual(updateRegistry.dismissedAgentCleanupHints({ "qwen-code": false }, deps).status, "error");
     assert.strictEqual(updateRegistry.themeOverrides({}, deps).status, "ok");
     assert.strictEqual(updateRegistry.themeOverrides("nope", deps).status, "error");
   });
@@ -878,6 +882,12 @@ describe("hook commands", () => {
   it("cleanupIntegrations disables all managed agents before running cleanup", async () => {
     const calls = [];
     const snapshot = prefs.getDefaults();
+    snapshot.dismissedAgentInstallHints = { hermes: true };
+    snapshot.dismissedAgentCleanupHints = { "qwen-code": true, hermes: true };
+    assert.ok(
+      MANAGED_CLEANUP_AGENT_IDS.includes("reasonix"),
+      "bulk cleanup should include Reasonix hooks"
+    );
     const result = await commandRegistry.cleanupIntegrations(null, {
       snapshot,
       stopIntegrationForAgent: (agentId) => calls.push(["stopIntegration", agentId]),
@@ -888,16 +898,24 @@ describe("hook commands", () => {
         calls.push(["cleanup", options.source]);
         return {
           mode: "apply",
-          summary: { agentsChecked: 14, agentsAffected: 2, entriesRemoved: 3, skipped: 12, failed: 0 },
+          summary: { agentsChecked: 15, agentsAffected: 2, entriesRemoved: 3, skipped: 13, failed: 0 },
         };
       },
     });
 
     assert.strictEqual(result.status, "ok");
+    assert.strictEqual(commandRegistry.cleanupIntegrations.lockKey, "agentIntegration");
     assert.strictEqual(result.cleanup.summary.entriesRemoved, 3);
     for (const agentId of MANAGED_CLEANUP_AGENT_IDS) {
       assert.strictEqual(result.commit.agents[agentId].enabled, false, `${agentId} should be disabled`);
+      assert.strictEqual(result.commit.agents[agentId].integrationInstalled, false, `${agentId} should be uninstalled`);
+      assert.strictEqual(
+        result.commit.dismissedAgentInstallHints[agentId],
+        true,
+        `${agentId} install hint should be dismissed after bulk cleanup`
+      );
     }
+    assert.deepStrictEqual(result.commit.dismissedAgentCleanupHints, {});
     assert.deepStrictEqual(calls.at(-1), ["cleanup", "about"]);
     assert.deepStrictEqual(calls[0], ["stopIntegration", "claude-code"]);
   });
@@ -936,8 +954,11 @@ describe("doctor repair commands", () => {
 
   it("accepts Copilot CLI through the standard auto-repair path", async () => {
     const calls = [];
+    const snapshot = prefs.getDefaults();
+    snapshot.agents["copilot-cli"].integrationInstalled = true;
+    snapshot.agents["copilot-cli"].enabled = true;
     const r = await commandRegistry.repairAgentIntegration({ agentId: "copilot-cli" }, {
-      snapshot: prefs.getDefaults(),
+      snapshot,
       repairIntegrationForAgent: (agentId) => {
         calls.push(agentId);
         return { status: "ok", added: 10, updated: 0 };

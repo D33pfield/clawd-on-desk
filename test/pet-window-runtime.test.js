@@ -229,6 +229,52 @@ describe("pet-window-runtime", () => {
     assert.equal(harness.runtime.getViewportOffsetY(), 25);
   });
 
+  it("flushes runtime prefs once during Windows session end", () => {
+    const instances = [];
+    const harness = createRuntime();
+
+    harness.runtime.createRenderWindow({
+      BrowserWindow: makeBrowserWindow(instances),
+      size: { width: 120, height: 120 },
+      initialWindowBounds: { x: 40, y: 0, width: 120, height: 120 },
+      initialVirtualBounds: { x: 40, y: 0, width: 120, height: 120 },
+      preloadPath: "preload.js",
+      loadFilePath: "index.html",
+      themeConfig: { ok: true },
+      setRenderWindow: harness.setRenderWin,
+      isQuitting: () => false,
+    });
+
+    instances[0].emit("query-session-end");
+    instances[0].emit("session-end");
+
+    assert.deepStrictEqual(harness.calls.filter((call) => call[0] === "flushRuntimeStateToPrefs"), [
+      ["flushRuntimeStateToPrefs"],
+    ]);
+  });
+
+  it("does not flush runtime prefs for session-end events on non-Windows platforms", () => {
+    const instances = [];
+    const harness = createRuntime({ isWin: false });
+
+    harness.runtime.createRenderWindow({
+      BrowserWindow: makeBrowserWindow(instances),
+      size: { width: 120, height: 120 },
+      initialWindowBounds: { x: 40, y: 0, width: 120, height: 120 },
+      initialVirtualBounds: { x: 40, y: 0, width: 120, height: 120 },
+      preloadPath: "preload.js",
+      loadFilePath: "index.html",
+      themeConfig: { ok: true },
+      setRenderWindow: harness.setRenderWin,
+      isQuitting: () => false,
+    });
+
+    instances[0].emit("query-session-end");
+    instances[0].emit("session-end");
+
+    assert.deepStrictEqual(harness.calls.filter((call) => call[0] === "flushRuntimeStateToPrefs"), []);
+  });
+
   it("keeps Linux hit windows non-focusable", () => {
     const instances = [];
     const harness = createRuntime({ isWin: false, isLinux: true });
