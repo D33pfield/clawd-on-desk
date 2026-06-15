@@ -42,9 +42,14 @@ function buildReasonixHookEntry(command) {
 }
 
 function buildReasonixHookCommand(nodeBin, hookScript, options = {}) {
-  // Reasonix already wraps commands with `cmd /c` on Windows (see hook.go
-  // shellInvocation). Use "none" so we output a bare command — adding our own
-  // `cmd /d /s /c` wrapper would double-wrap and break path resolution.
+  // Reasonix wraps commands with `cmd /c` on Windows (see hook.go shellInvocation).
+  // cmd /c cannot handle a quoted first token or forward-slash paths, so use
+  // bare `node` + unquoted backslash path when the node binary path has spaces.
+  const platform = options.platform || process.platform;
+  if (platform === "win32" && typeof nodeBin === "string" && nodeBin.includes(" ")) {
+    const winPath = hookScript.replace(/\//g, "\\");
+    return `node ${winPath}`;
+  }
   return formatNodeHookCommand(nodeBin, hookScript, { ...options, windowsWrapper: "none" });
 }
 
