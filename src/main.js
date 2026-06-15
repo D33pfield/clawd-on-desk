@@ -3392,11 +3392,18 @@ const _roamCtx = {
   getPetWindowBounds,
   applyPetWindowPosition,
   syncHitWin: () => syncHitWin(),
+  repositionSessionHud: () => repositionSessionHud(),
   repositionAnchoredSurfaces: () => repositionAnchoredFloatingSurfaces(),
+  repositionBubbles: () => repositionFloatingBubbles(),
+  get bubbleFollowPet() { return bubbleFollowPet; },
+  get pendingPermissions() { return pendingPermissions; },
   getNearestWorkArea,
   clampToScreenVisual,
   getMiniMode: () => _mini.getMiniMode(),
   getCurrentState: () => _state.getCurrentState(),
+  get miniTransitioning() { return _mini.getMiniTransitioning(); },
+  applyState: (state, svgOverride, opts) => _state.applyState(state, svgOverride, opts),
+  setState: (state, svgOverride, opts) => _state.setState(state, svgOverride, opts),
 };
 const _roam = require("./roam")(_roamCtx);
 
