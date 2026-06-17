@@ -6,8 +6,8 @@
 //   • Before moving the window, the visual state switches to "roam" (which
 //     falls back to idle SVG for themes without a dedicated roam animation).
 //     This prevents the "idle pet dragged across the desktop" regression.
-//   • Movement goes through applyPetWindowPosition + syncHitWin + repositionAnchoredSurfaces
-//     every frame, matching mini.js animateWindowX's per-frame sync contract.
+//   • Movement goes through applyPetWindowPosition every frame so virtual bounds,
+//     hit window, HUD, and anchored surfaces stay in sync with the pet.
 //   • Each animation step re-checks isRoamAllowed() so a state change to working /
 //     notification / permission cancels the roam immediately — no "pet drifting while
 //     working" regression.
@@ -84,11 +84,6 @@ module.exports = function initRoam(ctx) {
       finalX = clamped.x;
       finalY = clamped.y;
     }
-    const realBounds = win.getBounds();
-    const viewportOffsetY = realBounds.y - startY;
-    const currentWidth = startBounds.width;
-    const currentHeight = startBounds.height;
-
     // ── Calculate duration based on distance (speed = 80px/s) ──
     const dx = finalX - startX;
     const dy = finalY - startY;
@@ -128,13 +123,9 @@ module.exports = function initRoam(ctx) {
       const vy = Math.round(startY + (finalY - startY) * eased);
       if (!Number.isFinite(vx) || !Number.isFinite(vy)) { roamActive = false; return; }
 
-      // Move the render window
-      win.setBounds({ x: vx, y: vy + viewportOffsetY, width: currentWidth, height: currentHeight });
-
-      // ── Per-frame sync (matches mini.js animateWindowX contract) ──
+      // ── Per-frame sync ──
       ctx.applyPetWindowPosition(vx, vy);
       if (typeof ctx.syncHitWin === "function") ctx.syncHitWin();
-      if (typeof ctx.repositionSessionHud === "function") ctx.repositionSessionHud();
       if (typeof ctx.repositionAnchoredSurfaces === "function") ctx.repositionAnchoredSurfaces();
       // Throttle bubble reposition to every 3rd frame (~20fps) — same as mini.js
       if (typeof ctx.repositionBubbles === "function" && ctx.bubbleFollowPet && ctx.pendingPermissions.length && (++frameCount % 3 === 0 || t >= 1)) {
@@ -184,8 +175,13 @@ module.exports = function initRoam(ctx) {
   }
 
   function cancelRoam() {
+    const shouldRestoreIdle = roamActive
+      && typeof ctx.getCurrentState === "function"
+      && ctx.getCurrentState() === "roam"
+      && typeof ctx.setState === "function";
     cleanupTimers();
     roamActive = false;
+    if (shouldRestoreIdle) ctx.setState("idle");
   }
 
   function tick() {

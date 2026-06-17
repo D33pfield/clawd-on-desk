@@ -23,7 +23,12 @@ function makeCtx(overrides = {}) {
       isDestroyed() { return false; },
     },
     getPetWindowBounds() { return { ...bounds }; },
-    applyPetWindowPosition(x, y) { bounds.x = x; bounds.y = y; },
+    applyPetWindowPosition(x, y) {
+      bounds.x = x;
+      bounds.y = y;
+      realBounds.x = x;
+      realBounds.y = y;
+    },
     syncHitWin() { syncLog.push("syncHitWin"); },
     repositionSessionHud() { syncLog.push("repositionSessionHud"); },
     repositionAnchoredSurfaces() { syncLog.push("repositionAnchoredSurfaces"); },
@@ -132,7 +137,7 @@ describe("roam module", () => {
       "pet should stop moving after state changes to working");
   });
 
-  it("cancels roam when mouse moves (via cancelRoam)", () => {
+  it("stops an active roam via cancelRoam", () => {
     const ctx = makeCtx();
     const roam = roamModule(ctx);
     roam.setEnabled(true);
@@ -320,6 +325,10 @@ describe("roam module", () => {
     mock.timers.tick(500);
     assert.equal(ctx._realBounds.x, posBeforeDisable.x,
       "pet should stop after setEnabled(false)");
+    assert.equal(ctx.getCurrentState(), "idle",
+      "pet should return to idle after disabling free roam mid-animation");
+    assert.ok(ctx._stateLog.some(e => e.type === "setState" && e.state === "idle"),
+      "disable should restore the visual state from roam to idle");
     assert.equal(roam.enabled, false);
   });
 
