@@ -413,6 +413,26 @@ function hydrateSystemBackedSettings() {
   }
 }
 
+// First-run only: seed the UI language from the device locale. A brand-new
+// install has no prefs file, so `lang` would otherwise sit at the schema default
+// ("en") regardless of the user's OS language. Gated on _initialPrefsLoad.fresh
+// (missing-file load) so a RETURNING user's chosen language is never touched.
+// MUST run inside app.whenReady() — app.getLocale() is only stable after ready —
+// and before createWindow() so the first menu/tray render is already localized.
+function hydrateFreshInstallLanguage() {
+  if (!_initialPrefsLoad || !_initialPrefsLoad.fresh) return;
+  let detected = "en";
+  try {
+    detected = prefsModule.mapLocaleToLang(app.getLocale());
+  } catch (err) {
+    console.warn("Clawd: failed to detect device locale for language:", err && err.message);
+    return;
+  }
+  if (detected && detected !== _settingsController.get("lang")) {
+    _settingsController.applyUpdate("lang", detected);
+  }
+}
+
 // Capture window/mini runtime state into the controller and write to disk.
 // Replaces the legacy `savePrefs()` callsites — they used to read fresh
 // `win.getBounds()` and `_mini.*` at save time, so we mirror that here.
@@ -3537,6 +3557,9 @@ if (!gotTheLock) {
     // Must run before createWindow() so the first menu draw sees the
     // hydrated value rather than the schema default.
     hydrateSystemBackedSettings();
+    // First-run only: seed UI language from the device locale, before createWindow
+    // so the very first menu/tray render is already in the user's language.
+    hydrateFreshInstallLanguage();
 
     permDebugLog = path.join(app.getPath("userData"), "permission-debug.log");
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
