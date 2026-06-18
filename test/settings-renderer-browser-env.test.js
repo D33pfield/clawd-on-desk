@@ -1232,6 +1232,7 @@ describe("settings renderer browser environment", () => {
       "settings-tab-about.js",
       "settings-tab-remote-ssh.js",
       "settings-doctor-modal.js",
+      "settings-icons.js",
       "settings-renderer.js",
     ];
 
