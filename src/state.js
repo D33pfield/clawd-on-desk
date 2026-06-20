@@ -171,12 +171,10 @@ const UPDATE_VISUAL_PRIORITY_MAP = {
 
 // ── Wake poll ──
 const WAKE_POLL_START_DELAY_MS = 500;
-// Responsive default cadence. Low-power idle mode trades wake latency for
-// fewer cursor samples + timer wakeups while the idle SVG animation is paused.
+// Cursor-sample cadence while dozing/collapsing/sleeping. (A low-power idle-mode
+// slowdown was tried here and removed: real-machine powermetrics showed no wakeup
+// or CPU win — macOS timer coalescing absorbs a 200ms timer — for added latency.)
 const WAKE_POLL_MS = 200;
-const LOW_POWER_DOZING_WAKE_POLL_MS = 500;
-const LOW_POWER_COLLAPSING_WAKE_POLL_MS = 500;
-const LOW_POWER_SLEEPING_WAKE_POLL_MS = 1000;
 let wakePollStartTimer = null;
 let wakePollStartState = null;
 let wakePollTimer = null;
@@ -652,14 +650,6 @@ function scheduleWakePollStart(state) {
   }, WAKE_POLL_START_DELAY_MS);
 }
 
-function getWakePollDelay() {
-  // Only low-power idle mode slows the cadence; default mode stays responsive.
-  if (!ctx.lowPowerIdleMode) return WAKE_POLL_MS;
-  if (currentState === "sleeping") return LOW_POWER_SLEEPING_WAKE_POLL_MS;
-  if (currentState === "collapsing") return LOW_POWER_COLLAPSING_WAKE_POLL_MS;
-  return LOW_POWER_DOZING_WAKE_POLL_MS;
-}
-
 function startWakePoll() {
   if (!_getCursor || wakePollTimer) return;
   if (!isWakePollState(currentState) || ctx.doNotDisturb) return;
@@ -669,7 +659,7 @@ function startWakePoll() {
   scheduleWakePollTick();
 }
 
-function scheduleWakePollTick(delay = getWakePollDelay()) {
+function scheduleWakePollTick(delay = WAKE_POLL_MS) {
   if (!_getCursor || wakePollTimer) return;
   clearWakePollStartTimer();
   wakePollTimer = setTimeout(runWakePollTick, delay);

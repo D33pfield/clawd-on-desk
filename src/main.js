@@ -1308,7 +1308,6 @@ const _stateCtx = {
   get hitWin() { return hitWin; },
   get doNotDisturb() { return doNotDisturb; },
   set doNotDisturb(v) { doNotDisturb = v; },
-  get lowPowerIdleMode() { return lowPowerIdleMode; },
   get miniMode() { return _mini.getMiniMode(); },
   get miniTransitioning() { return _mini.getMiniTransitioning(); },
   get mouseOverPet() { return mouseOverPet; },

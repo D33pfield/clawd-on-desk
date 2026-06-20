@@ -19,7 +19,6 @@ function makeCtx(overrides = {}) {
     lang: "en",
     theme: _defaultTheme,
     doNotDisturb: false,
-    lowPowerIdleMode: false,
     miniTransitioning: false,
     miniMode: false,
     mouseOverPet: false,
@@ -543,9 +542,7 @@ describe("wake poll behavior", () => {
   beforeEach(() => {
     mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
     fakeCursor = { x: 100, y: 100 };
-    // This block exercises the slower wake-poll cadence, which only applies in
-    // low-power idle mode. Default-mode (responsive 200ms) is covered separately.
-    ctx = makeCtx({ lowPowerIdleMode: true, getCursorScreenPoint: () => ({ ...fakeCursor }) });
+    ctx = makeCtx({ getCursorScreenPoint: () => ({ ...fakeCursor }) });
     api = require("../src/state")(ctx);
   });
   afterEach(() => {
@@ -561,7 +558,7 @@ describe("wake poll behavior", () => {
     mock.timers.tick(500);
     // now move cursor
     fakeCursor.x = 200;
-    mock.timers.tick(500); // dozing wake poll interval
+    mock.timers.tick(200); // wake poll interval
     assert.ok(events.includes("wake-from-doze"));
     mock.timers.tick(350);
     assert.strictEqual(api.getCurrentState(), "idle");
@@ -571,7 +568,7 @@ describe("wake poll behavior", () => {
     api.applyState("collapsing");
     mock.timers.tick(500); // wake poll delay
     fakeCursor.x = 200;
-    mock.timers.tick(500);
+    mock.timers.tick(200);
     assert.strictEqual(api.getCurrentState(), "waking");
   });
 
@@ -579,87 +576,8 @@ describe("wake poll behavior", () => {
     api.applyState("sleeping");
     mock.timers.tick(500);
     fakeCursor.x = 200;
-    mock.timers.tick(999);
-    assert.strictEqual(api.getCurrentState(), "sleeping");
-    mock.timers.tick(1);
+    mock.timers.tick(200);
     assert.strictEqual(api.getCurrentState(), "waking");
-  });
-
-  it("uses the responsive 200ms cadence when low power idle mode is off", () => {
-    api.cleanup();
-    // Default mode (lowPowerIdleMode: false) keeps the snappy wake cadence.
-    ctx = makeCtx({ lowPowerIdleMode: false, getCursorScreenPoint: () => ({ ...fakeCursor }) });
-    api = require("../src/state")(ctx);
-
-    api.applyState("sleeping");
-    mock.timers.tick(500); // start delay (mode-independent)
-    fakeCursor.x = 200;
-    mock.timers.tick(199);
-    // A 1000ms low-power tick would NOT have fired yet — proves the gate.
-    assert.strictEqual(api.getCurrentState(), "sleeping");
-    mock.timers.tick(1);
-    assert.strictEqual(api.getCurrentState(), "waking");
-  });
-
-  it("uses the sleeping wake-poll cadence after an existing poll crosses into sleeping", () => {
-    api.applyState("collapsing");
-    mock.timers.tick(500); // start wake poll from collapsing
-    api.applyState("sleeping");
-    mock.timers.tick(500); // existing collapsing-cadence tick fires and reschedules from sleeping
-    assert.strictEqual(api.getCurrentState(), "sleeping");
-
-    fakeCursor.x = 200;
-    mock.timers.tick(999);
-    assert.strictEqual(api.getCurrentState(), "sleeping");
-    mock.timers.tick(1);
-    assert.strictEqual(api.getCurrentState(), "waking");
-  });
-
-  it("does not reset the wake cursor baseline when state changes while polling", () => {
-    api.applyState("collapsing");
-    mock.timers.tick(500); // start wake poll from collapsing
-    api.applyState("sleeping");
-    fakeCursor.x = 200;
-    mock.timers.tick(500); // existing poll should still see movement from the original baseline
-    assert.strictEqual(api.getCurrentState(), "waking");
-  });
-
-  it("cleanup clears a pending wake-poll start before it samples the cursor", () => {
-    let cursorCalls = 0;
-    api.cleanup();
-    ctx = makeCtx({
-      lowPowerIdleMode: true,
-      getCursorScreenPoint: () => {
-        cursorCalls += 1;
-        return { ...fakeCursor };
-      },
-    });
-    api = require("../src/state")(ctx);
-
-    api.applyState("dozing");
-    api.cleanup();
-    mock.timers.tick(500);
-
-    assert.strictEqual(cursorCalls, 0);
-  });
-
-  it("DND clears a pending wake-poll start before it samples the cursor", () => {
-    let cursorCalls = 0;
-    api.cleanup();
-    ctx = makeCtx({
-      lowPowerIdleMode: true,
-      getCursorScreenPoint: () => {
-        cursorCalls += 1;
-        return { ...fakeCursor };
-      },
-    });
-    api = require("../src/state")(ctx);
-
-    api.applyState("dozing");
-    api.enableDoNotDisturb();
-    mock.timers.tick(500);
-
-    assert.strictEqual(cursorCalls, 0);
   });
 
   it("direct sleep without waking art returns straight to idle on mouse move", () => {
@@ -669,13 +587,13 @@ describe("wake poll behavior", () => {
     theme._stateBindings.waking = { files: [], fallbackTo: null };
 
     api.cleanup();
-    ctx = makeCtx({ theme, lowPowerIdleMode: true, getCursorScreenPoint: () => ({ ...fakeCursor }) });
+    ctx = makeCtx({ theme, getCursorScreenPoint: () => ({ ...fakeCursor }) });
     api = require("../src/state")(ctx);
 
     api.applyState("sleeping");
     mock.timers.tick(500);
     fakeCursor.x = 200;
-    mock.timers.tick(1000);
+    mock.timers.tick(200);
     assert.strictEqual(api.getCurrentState(), "idle");
     assert.strictEqual(api.getCurrentSvg(), "clawd-idle-follow.svg");
   });
@@ -684,8 +602,49 @@ describe("wake poll behavior", () => {
     ctx.mouseStillSince = Date.now() - 600000;
     api.applyState("dozing");
     mock.timers.tick(500); // wake poll delay
-    mock.timers.tick(500); // poll fires, checks DEEP_SLEEP_TIMEOUT
+    mock.timers.tick(200); // poll fires, checks DEEP_SLEEP_TIMEOUT
     assert.strictEqual(api.getCurrentState(), "collapsing");
+  });
+
+  // ── wake-poll lifecycle hardening (kept after the low-power cadence change was
+  // dropped): the start timer is now tracked so it can't fire after teardown. ──
+  it("keeps the wake cursor baseline when state changes mid-poll", () => {
+    api.applyState("collapsing");
+    mock.timers.tick(500); // start delay → wake poll begins, baseline = current cursor
+    api.applyState("sleeping"); // state change must NOT reset the baseline or the timer
+    fakeCursor.x = 200;
+    mock.timers.tick(200); // existing poll still sees movement from the original baseline
+    assert.strictEqual(api.getCurrentState(), "waking");
+  });
+
+  it("cleanup clears a pending wake-poll start before it samples the cursor", () => {
+    let cursorCalls = 0;
+    api.cleanup();
+    ctx = makeCtx({
+      getCursorScreenPoint: () => { cursorCalls += 1; return { ...fakeCursor }; },
+    });
+    api = require("../src/state")(ctx);
+
+    api.applyState("dozing"); // schedules the 500ms wake-poll start
+    api.cleanup();            // must cancel the pending start timer
+    mock.timers.tick(500);
+
+    assert.strictEqual(cursorCalls, 0);
+  });
+
+  it("DND clears a pending wake-poll start before it samples the cursor", () => {
+    let cursorCalls = 0;
+    api.cleanup();
+    ctx = makeCtx({
+      getCursorScreenPoint: () => { cursorCalls += 1; return { ...fakeCursor }; },
+    });
+    api = require("../src/state")(ctx);
+
+    api.applyState("dozing");
+    api.enableDoNotDisturb(); // leaving the wake-poll states must cancel the pending start
+    mock.timers.tick(500);
+
+    assert.strictEqual(cursorCalls, 0);
   });
 });
 
