@@ -171,9 +171,12 @@ const UPDATE_VISUAL_PRIORITY_MAP = {
 
 // ── Wake poll ──
 const WAKE_POLL_START_DELAY_MS = 500;
-const DOZING_WAKE_POLL_MS = 500;
-const COLLAPSING_WAKE_POLL_MS = 500;
-const SLEEPING_WAKE_POLL_MS = 1000;
+// Responsive default cadence. Low-power idle mode trades wake latency for
+// fewer cursor samples + timer wakeups while the idle SVG animation is paused.
+const WAKE_POLL_MS = 200;
+const LOW_POWER_DOZING_WAKE_POLL_MS = 500;
+const LOW_POWER_COLLAPSING_WAKE_POLL_MS = 500;
+const LOW_POWER_SLEEPING_WAKE_POLL_MS = 1000;
 let wakePollStartTimer = null;
 let wakePollStartState = null;
 let wakePollTimer = null;
@@ -650,9 +653,11 @@ function scheduleWakePollStart(state) {
 }
 
 function getWakePollDelay() {
-  if (currentState === "sleeping") return SLEEPING_WAKE_POLL_MS;
-  if (currentState === "collapsing") return COLLAPSING_WAKE_POLL_MS;
-  return DOZING_WAKE_POLL_MS;
+  // Only low-power idle mode slows the cadence; default mode stays responsive.
+  if (!ctx.lowPowerIdleMode) return WAKE_POLL_MS;
+  if (currentState === "sleeping") return LOW_POWER_SLEEPING_WAKE_POLL_MS;
+  if (currentState === "collapsing") return LOW_POWER_COLLAPSING_WAKE_POLL_MS;
+  return LOW_POWER_DOZING_WAKE_POLL_MS;
 }
 
 function startWakePoll() {

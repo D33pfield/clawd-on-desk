@@ -19,6 +19,7 @@ function makeCtx(overrides = {}) {
     lang: "en",
     theme: _defaultTheme,
     doNotDisturb: false,
+    lowPowerIdleMode: false,
     miniTransitioning: false,
     miniMode: false,
     mouseOverPet: false,
@@ -542,7 +543,9 @@ describe("wake poll behavior", () => {
   beforeEach(() => {
     mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
     fakeCursor = { x: 100, y: 100 };
-    ctx = makeCtx({ getCursorScreenPoint: () => ({ ...fakeCursor }) });
+    // This block exercises the slower wake-poll cadence, which only applies in
+    // low-power idle mode. Default-mode (responsive 200ms) is covered separately.
+    ctx = makeCtx({ lowPowerIdleMode: true, getCursorScreenPoint: () => ({ ...fakeCursor }) });
     api = require("../src/state")(ctx);
   });
   afterEach(() => {
@@ -582,6 +585,22 @@ describe("wake poll behavior", () => {
     assert.strictEqual(api.getCurrentState(), "waking");
   });
 
+  it("uses the responsive 200ms cadence when low power idle mode is off", () => {
+    api.cleanup();
+    // Default mode (lowPowerIdleMode: false) keeps the snappy wake cadence.
+    ctx = makeCtx({ lowPowerIdleMode: false, getCursorScreenPoint: () => ({ ...fakeCursor }) });
+    api = require("../src/state")(ctx);
+
+    api.applyState("sleeping");
+    mock.timers.tick(500); // start delay (mode-independent)
+    fakeCursor.x = 200;
+    mock.timers.tick(199);
+    // A 1000ms low-power tick would NOT have fired yet — proves the gate.
+    assert.strictEqual(api.getCurrentState(), "sleeping");
+    mock.timers.tick(1);
+    assert.strictEqual(api.getCurrentState(), "waking");
+  });
+
   it("uses the sleeping wake-poll cadence after an existing poll crosses into sleeping", () => {
     api.applyState("collapsing");
     mock.timers.tick(500); // start wake poll from collapsing
@@ -609,6 +628,7 @@ describe("wake poll behavior", () => {
     let cursorCalls = 0;
     api.cleanup();
     ctx = makeCtx({
+      lowPowerIdleMode: true,
       getCursorScreenPoint: () => {
         cursorCalls += 1;
         return { ...fakeCursor };
@@ -627,6 +647,7 @@ describe("wake poll behavior", () => {
     let cursorCalls = 0;
     api.cleanup();
     ctx = makeCtx({
+      lowPowerIdleMode: true,
       getCursorScreenPoint: () => {
         cursorCalls += 1;
         return { ...fakeCursor };
@@ -648,7 +669,7 @@ describe("wake poll behavior", () => {
     theme._stateBindings.waking = { files: [], fallbackTo: null };
 
     api.cleanup();
-    ctx = makeCtx({ theme, getCursorScreenPoint: () => ({ ...fakeCursor }) });
+    ctx = makeCtx({ theme, lowPowerIdleMode: true, getCursorScreenPoint: () => ({ ...fakeCursor }) });
     api = require("../src/state")(ctx);
 
     api.applyState("sleeping");

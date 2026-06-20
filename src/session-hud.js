@@ -456,11 +456,16 @@ module.exports = function initSessionHud(ctx) {
   }
 
   function scheduleHiddenDestroy() {
+    // Reclaiming the hidden HUD renderer is a low-power-idle-mode behavior;
+    // default mode keeps the window warm so reveals stay instant.
+    if (!ctx.lowPowerIdleMode) return;
     if (!hudWindow || hudWindow.isDestroyed()) return;
     if (hudWindow.isVisible()) return;
     if (hiddenDestroyTimer) return;
     hiddenDestroyTimer = setTimeout(() => {
       hiddenDestroyTimer = null;
+      // Re-check the flag: the user may have left low-power mode while hidden.
+      if (!ctx.lowPowerIdleMode) return;
       if (!hudWindow || hudWindow.isDestroyed() || hudWindow.isVisible()) return;
       hudWindow.destroy();
     }, HIDDEN_WINDOW_DESTROY_MS);

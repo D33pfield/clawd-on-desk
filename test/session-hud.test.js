@@ -571,10 +571,14 @@ describe("session HUD v5 three-state runtime contracts (source-level)", () => {
       "session-hud must not send hudAutoHide in snapshot");
   });
 
-  it("destroys hidden HUD windows after a delay to release renderer memory", () => {
+  it("destroys hidden HUD windows (low power idle mode) to release renderer memory", () => {
     assert.ok(
       /const\s+HIDDEN_WINDOW_DESTROY_MS\s*=\s*30000/.test(src),
       "session-hud should define a hidden-window destroy delay"
+    );
+    assert.ok(
+      /function scheduleHiddenDestroy\(\)\s*\{[\s\S]*?if\s*\(!ctx\.lowPowerIdleMode\)\s*return;/.test(src),
+      "hidden-window destroy must be gated behind low power idle mode"
     );
     assert.ok(
       /function scheduleHiddenDestroy\(\)\s*\{[\s\S]*?hudWindow\.destroy\(\)/.test(src),
