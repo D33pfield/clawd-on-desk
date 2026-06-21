@@ -9,6 +9,11 @@ M1 does not expose remote approval, elicitation, writes, terminal control, raw
 tool inputs, prompts, full cwd paths, or transcript/output sync. Permission
 approval remains on the desktop surfaces and other existing remote channels.
 
+M2 Slice 2 adds read-only permission broadcasting: permission requests are
+pushed to all connected PWA clients so the user can observe pending approvals
+from their phone. The PWA cannot respond — the desktop bubble remains the sole
+approval surface.
+
 ## Architecture
 
 ```text
@@ -142,6 +147,67 @@ Sent when a session disappears from the desktop session cache.
 }
 ```
 
+### `permission_request`
+
+Sent when a permission bubble appears on the desktop. Read-only observation —
+the PWA cannot respond to the request; the desktop bubble remains the sole
+approval surface.
+
+```json
+{
+  "version": "v1",
+  "type": "permission_request",
+  "timestamp": 1717200003000,
+  "permId": "abc123:Bash:1717200003000",
+  "sessionId": "abc123",
+  "toolName": "Bash",
+  "agentId": "claude-code",
+  "basename": "my-project",
+  "suggestionCount": 2,
+  "isElicitation": false,
+  "createdAt": 1717200003000
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `permId` | string | Unique permission identifier (`sessionId:toolName:createdAt`) |
+| `sessionId` | string | Session that triggered the request |
+| `toolName` | string | Name of the tool requesting permission |
+| `agentId` | string | Agent that triggered the request |
+| `basename` | string or null | Basename of the session's cwd |
+| `suggestionCount` | number | Number of permission suggestions available |
+| `isElicitation` | boolean | True if this is an AskUserQuestion / elicitation |
+| `createdAt` | number | Unix ms when the permission was created |
+
+### `permission_resolved`
+
+Sent when a pending permission is resolved (allow, deny, dismiss, auto-close,
+DND, etc.). Clients should remove or visually mark the corresponding
+`permission_request` card.
+
+```json
+{
+  "version": "v1",
+  "type": "permission_resolved",
+  "timestamp": 1717200015000,
+  "permId": "abc123:Bash:1717200003000",
+  "sessionId": "abc123",
+  "toolName": "Bash",
+  "reason": "resolved"
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `permId` | string | Matches the `permId` from the original `permission_request` |
+| `sessionId` | string | Session that triggered the request |
+| `toolName` | string | Name of the tool that requested permission |
+| `reason` | string | Resolution reason (see below) |
+
+`reason` values: `"resolved"` (user allow/deny), `"deny-and-focus"` (go to
+terminal), `"auto-closed"`, `"dnd-enabled"`, `"no-decision"`, `"dismissed"`.
+
 ## Client To Server
 
 M1 defines no write messages. The server accepts WebSocket frames only to apply
@@ -184,6 +250,9 @@ token. Pairing URLs are shown from Settings only.
 - Max 10 concurrent PWA clients.
 - No remote approval, elicitation, terminal control, prompt sync, tool output
   sync, or transcript sync in M1.
+- Permission broadcasting (M2 Slice 2) is read-only observation. The PWA
+  cannot approve or deny permissions — the desktop bubble is the sole approval
+  surface.
 
 ## M2 Planned Work
 

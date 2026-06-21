@@ -117,6 +117,28 @@ body { display: flex; flex-direction: column; height: 100%; }
 .footer-chevron { display: flex; align-items: center; transition: transform 0.2s; }
 .footer-chevron svg { width: 14px; height: 14px; color: var(--faint); }
 
+/* === Permission Card (Slice 2) === */
+.permission-card { background: var(--card); border: 1px solid var(--orange-border); border-radius: var(--radius); padding: 12px 14px; animation: perm-pulse 2s ease-in-out infinite; }
+.permission-card.pending { border-color: var(--orange); }
+.permission-card.dismissed { border-color: var(--card-border); animation: none; opacity: 0.6; transition: opacity 0.3s; }
+@keyframes perm-pulse {
+  0%, 100% { border-color: var(--orange-border); }
+  50% { border-color: var(--orange); box-shadow: 0 0 8px rgba(217, 119, 87, 0.15); }
+}
+.perm-header { display: flex; align-items: center; justify-content: space-between; }
+.perm-agent { display: flex; align-items: center; gap: 5px; }
+.perm-badge { font-size: 10px; font-weight: 600; padding: 3px 8px; border-radius: var(--radius-sm); border: 0.5px solid var(--badge-border); }
+.perm-badge.pending { color: var(--orange); background: var(--orange-dim); border-color: var(--orange-border); }
+.perm-badge.dismissed { color: var(--subtle); background: var(--badge-bg); border-color: var(--badge-border); }
+.perm-tool { font-size: 13px; font-weight: 600; color: var(--text); margin-top: 6px; display: flex; align-items: center; gap: 5px; }
+.perm-tool svg { width: 14px; height: 14px; color: var(--orange); flex-shrink: 0; }
+.perm-summary { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+.perm-meta { display: flex; gap: 8px; align-items: center; margin-top: 4px; font-size: 11px; color: var(--muted); }
+.perm-countdown { font-variant-numeric: tabular-nums; color: var(--orange); font-weight: 600; }
+.perm-suggestions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.perm-suggestion-label { font-size: 10px; padding: 2px 6px; border-radius: var(--radius-sm); background: var(--badge-bg); border: 0.5px solid var(--card-border); color: var(--subtle); }
+.perm-notice { font-size: 11px; color: var(--faint); margin-top: 8px; padding-top: 8px; border-top: 0.5px solid var(--divider); }
+
 /* === Event History === */
 .event-history { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.28s cubic-bezier(0.2, 0.9, 0.4, 1.1); }
 .event-history.show { grid-template-rows: 1fr; }

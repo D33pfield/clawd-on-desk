@@ -1,6 +1,8 @@
 // src/network/mobile-preview-server.js — LAN WebSocket bridge for PWA mobile clients
 // Protocol v1 — serves static PWA files + WebSocket on 0.0.0.0 for LAN access.
 // M1: read-only snapshot/state push. No write or approval operations.
+// M2: read-only permission broadcasting (Slice 2). Permission requests are
+//     pushed to all connected PWA clients; the PWA cannot respond.
 // Token rotation: 24h auto-rotation with 5-minute grace window.
 
 "use strict";
@@ -90,6 +92,10 @@ function initMobilePreviewServer(ctx) {
   const writeTokenState = ctx && typeof ctx.writeTokenState === "function"
     ? ctx.writeTokenState
     : atomicWrite;
+  // Slice 2: getter for pending permissions (used to include in snapshots)
+  const getPendingPermissions = ctx && typeof ctx.getPendingPermissions === "function"
+    ? ctx.getPendingPermissions
+    : null;
   const tokenState = loadOrCreateTokenState(tokenPath, now, writeTokenState);
   const clients = new Set();
   const clientMeta = new Map();
@@ -298,7 +304,10 @@ function initMobilePreviewServer(ctx) {
       try {
         const snapshot = {};
         for (const [sid, data] of sessionCache) snapshot[sid] = data;
-        ws.send(buildMessage("snapshot", { sessions: snapshot }));
+        const pendingPerms = buildPendingPermissionsSnapshot();
+        const snapPayload = { sessions: snapshot };
+        if (pendingPerms.length > 0) snapPayload.pendingPermissions = pendingPerms;
+        ws.send(buildMessage("snapshot", snapPayload));
       } catch {}
 
       startHeartbeat();
@@ -397,6 +406,45 @@ function initMobilePreviewServer(ctx) {
     }
   }
 
+  // ── Permission broadcasting (Slice 2) ──
+
+  // Schema: Section 2.9 — permission_request (server → mobile)
+  function broadcastPermissionEvent(payload) {
+    if (closed || clients.size === 0) return;
+    broadcast(buildMessage("permission_request", payload));
+  }
+
+  // Schema: Section 2.9 — permission_dismissed (server → mobile)
+  function broadcastPermissionDismissed(payload) {
+    if (closed || clients.size === 0) return;
+    broadcast(buildMessage("permission_dismissed", payload));
+  }
+
+  // Build pending permissions for snapshot extension (Section 2.9).
+  // Only entries with _mobileRequestId were broadcast (passed isMobileApprovalActionable).
+  // Reads _mobile* fields stored by main.js onPermissionAdded.
+  function buildPendingPermissionsSnapshot() {
+    if (!getPendingPermissions) return [];
+    const perms = getPendingPermissions();
+    if (!Array.isArray(perms) || perms.length === 0) return [];
+    const result = [];
+    for (const p of perms) {
+      if (!p || !p._mobileRequestId) continue;
+      result.push({
+        requestId: p._mobileRequestId,
+        agentId: p.agentId || "claude-code",
+        toolName: p.toolName,
+        toolInputSummary: p._mobileToolInputSummary || null,
+        suggestions: Array.isArray(p._mobileSuggestions) ? p._mobileSuggestions : [],
+        sessionFolder: p._mobileSessionFolder || null,
+        sessionShortId: p.sessionId ? String(p.sessionId).slice(-3) : null,
+        timeout: p._mobileTimeout || null,
+        createdAt: p.createdAt || 0,
+      });
+    }
+    return result;
+  }
+
   // ── Session data ──
 
   function buildPayload(sid, session) {
@@ -432,7 +480,10 @@ function initMobilePreviewServer(ctx) {
       }
       const snapshot = {};
       for (const [sid, data] of sessionCache) snapshot[sid] = data;
-      broadcast(buildMessage("snapshot", { sessions: snapshot }));
+      const pendingPerms = buildPendingPermissionsSnapshot();
+      const snapPayload = { sessions: snapshot };
+      if (pendingPerms.length > 0) snapPayload.pendingPermissions = pendingPerms;
+      broadcast(buildMessage("snapshot", snapPayload));
       return;
     }
 
@@ -515,6 +566,8 @@ function initMobilePreviewServer(ctx) {
     start,
     cleanup,
     onSnapshot,
+    broadcastPermissionEvent,
+    broadcastPermissionDismissed,
     getPort: () => activePort,
     getToken: () => tokenState.token,
     regenerateToken,

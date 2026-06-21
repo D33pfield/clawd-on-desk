@@ -1190,6 +1190,39 @@ const {
   isCodexPermissionInterceptEnabled: _isCodexPermissionInterceptEnabled,
   shouldSyncAgentIntegration: _shouldSyncAgentIntegration,
 } = require("./agent-gate");
+
+// Slice 2: build requestId for mobile permission broadcast (perm_<ts>_<random>)
+function buildMobileRequestId(permEntry) {
+  return "perm_" + (permEntry.createdAt || Date.now()) + "_" + Math.random().toString(36).slice(2, 8);
+}
+
+// Slice 2: map internal reason strings to protocol reason values
+function mapPermissionDismissReason(reason) {
+  switch (reason) {
+    case "resolved": return "desktop_bubble";
+    case "deny-and-focus": return "desktop_bubble";
+    case "auto-closed": return "timeout";
+    case "dnd-enabled": return "dnd";
+    case "no-decision": return "agent_disconnect";
+    case "dismissed": return "desktop_bubble";
+    default: return "desktop_bubble";
+  }
+}
+
+// Slice 2: build suggestion array for mobile broadcast (labels only, no raw data)
+function buildMobileSuggestions(permEntry) {
+  const suggestions = Array.isArray(permEntry.suggestions) ? permEntry.suggestions : [];
+  const result = [];
+  const seen = new Set();
+  suggestions.forEach((suggestion, index) => {
+    const label = buildRemoteSuggestionLabel(suggestion);
+    if (!label || seen.has(label)) return;
+    seen.add(label);
+    result.push({ index, label, behavior: "allow" });
+  });
+  return result;
+}
+
 const _permCtx = {
   get win() { return win; },
   get lang() { return lang; },
@@ -1236,10 +1269,52 @@ const _permCtx = {
   onPermissionResolved: (permEntry, options = {}) => {
     if (!_state || typeof _state.clearPermissionNotification !== "function") return;
     _state.clearPermissionNotification(permEntry && permEntry.sessionId, options);
+    // Slice 2: broadcast permission_dismissed to mobile PWA clients.
+    if (_lanWss && permEntry && permEntry._mobileRequestId) {
+      try {
+        _lanWss.broadcastPermissionDismissed({
+          requestId: permEntry._mobileRequestId,
+          reason: mapPermissionDismissReason(options.reason),
+        });
+      } catch {}
+    }
+  },
+  // Slice 2: broadcast permission_request to mobile PWA clients.
+  onPermissionAdded: (permEntry) => {
+    if (!_lanWss) return;
+    if (!isMobileApprovalActionable(permEntry)) return;
+    try {
+      const requestId = buildMobileRequestId(permEntry);
+      permEntry._mobileRequestId = requestId;
+      const sess = sessions.get(permEntry.sessionId);
+      const summary = buildRemoteApprovalSummary(permEntry) || compactRemoteApprovalText(permEntry.toolName || "Unknown", 80) || "Unknown tool";
+      const suggestions = buildMobileSuggestions(permEntry);
+      const sessionFolder = sess && sess.cwd ? path.basename(sess.cwd) : null;
+      const timeoutPolicy = getRuntimeBubblePolicy("permission");
+      const timeoutMs = timeoutPolicy && timeoutPolicy.autoCloseMs > 0 ? timeoutPolicy.autoCloseMs : null;
+      // Store on entry for snapshot reconciliation (buildPendingPermissionsSnapshot)
+      permEntry._mobileToolInputSummary = summary;
+      permEntry._mobileSuggestions = suggestions;
+      permEntry._mobileSessionFolder = sessionFolder;
+      permEntry._mobileTimeout = timeoutMs;
+      _lanWss.broadcastPermissionEvent({
+        requestId,
+        data: {
+          agentId: permEntry.agentId || "claude-code",
+          toolName: permEntry.toolName,
+          toolInputSummary: summary,
+          suggestions,
+          sessionFolder,
+          sessionShortId: permEntry.sessionId ? String(permEntry.sessionId).slice(-3) : null,
+          timeout: timeoutMs,
+          createdAt: permEntry.createdAt || Date.now(),
+        },
+      });
+    } catch {}
   },
 };
 const _perm = initPermission(_permCtx);
-const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, maybeStartRemoteApproval, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
+const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, maybeStartRemoteApproval, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission, isMobileApprovalActionable, buildRemoteApprovalSummary, buildRemoteSuggestionLabel, compactRemoteApprovalText } = _perm;
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
@@ -1791,6 +1866,7 @@ if (_settingsController.get("mobilePreviewEnabled") === true) {
   const { initMobilePreviewServer } = require("./network/mobile-preview-server");
   _lanWss = initMobilePreviewServer({
     sessions,
+    getPendingPermissions: () => pendingPermissions,
     getSettingsSnapshot: () => _settingsController.getSnapshot(),
     isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
   });
@@ -3041,6 +3117,7 @@ _settingsController.subscribeKey("mobilePreviewEnabled", async (enabled) => {
       const { initMobilePreviewServer } = require("./network/mobile-preview-server");
       _lanWss = initMobilePreviewServer({
         sessions,
+        getPendingPermissions: () => pendingPermissions,
         getSettingsSnapshot: () => _settingsController.getSnapshot(),
         isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
       });

@@ -807,6 +807,14 @@ function notifyPermissionResolved(permEntry, reason) {
 function addPendingPermission(permEntry, reason = "added") {
   pendingPermissions.push(permEntry);
   notifyPermissionsChanged(reason);
+  // Slice 2: notify mobile clients about the new permission request.
+  // Passive notifications (codex/kimi) are not broadcast — they're
+  // non-interactive display-only bubbles.
+  if (!permEntry.isCodexNotify && !permEntry.isKimiNotify) {
+    if (typeof ctx.onPermissionAdded === "function") {
+      try { ctx.onPermissionAdded(permEntry); } catch {}
+    }
+  }
   return permEntry;
 }
 
@@ -890,6 +898,23 @@ function isRemoteApprovalActionable(permEntry) {
   if (PASSTHROUGH_TOOLS.has(permEntry.toolName)) return false;
   // Headless sessions auto-deny locally; mirror that on the Telegram side so a
   // non-interactive Codex/CC run never sends an actionable approval card.
+  const session = ctx.sessions && typeof ctx.sessions.get === "function"
+    ? ctx.sessions.get(permEntry.sessionId)
+    : null;
+  if (session && session.headless) return false;
+  return true;
+}
+
+// Slice 2: mobile-specific actionability gate. Same as isRemoteApprovalActionable
+// but includes hermes (has permission bubbles since PR #387, mobile latency is
+// low enough for LAN). Excludes: opencode, antigravity, copilot-cli, elicitation,
+// passive notifications, ExitPlanMode, PASSTHROUGH_TOOLS, headless sessions.
+function isMobileApprovalActionable(permEntry) {
+  if (!permEntry || typeof permEntry !== "object") return false;
+  if (permEntry.isElicitation || permEntry.isCodexNotify || permEntry.isKimiNotify) return false;
+  if (permEntry.isOpencode || permEntry.isAntigravity || permEntry.isCopilotCli) return false;
+  if (permEntry.toolName === "ExitPlanMode" || permEntry.toolName === "AskUserQuestion") return false;
+  if (PASSTHROUGH_TOOLS.has(permEntry.toolName)) return false;
   const session = ctx.sessions && typeof ctx.sessions.get === "function"
     ? ctx.sessions.get(permEntry.sessionId)
     : null;
@@ -1895,6 +1920,10 @@ return {
   dismissPermissionsForDnd,
   syncPermissionShortcuts,
   replyOpencodePermission,
+  isMobileApprovalActionable,
+  buildRemoteApprovalSummary,
+  buildRemoteSuggestionLabel,
+  compactRemoteApprovalText,
 };
 
 };

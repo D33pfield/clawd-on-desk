@@ -149,6 +149,12 @@
       }
     }
 
+    onPermissionRequest(perm) {
+      if (this.permission !== "granted" || document.visibilityState === "visible") return;
+      var label = perm.agentId || "Agent";
+      this._notify("需要权限", label + " 请求 " + (perm.toolName || "权限"), "perm-" + (perm.sessionId || "unknown"));
+    }
+
     _notify(title, body, tag) {
       try {
         if (navigator.serviceWorker && navigator.serviceWorker.controller) {
@@ -462,6 +468,167 @@
     }
   }
 
+  // === PermissionBanner (Slice 2) ===
+
+  class PermissionBanner {
+    constructor(container) {
+      this.container = container;
+      this.permissions = new Map(); // requestId → entry
+      this._countdownTimer = null;
+      this._startCountdownUpdater();
+    }
+
+    clear() {
+      this.permissions.clear();
+      this.render();
+    }
+
+    // Schema: Section 2.9 — permission_request data
+    addPermission(requestId, data) {
+      this.permissions.set(requestId, {
+        requestId: requestId,
+        agentId: data.agentId || "agent",
+        toolName: data.toolName || "Unknown",
+        toolInputSummary: data.toolInputSummary || "",
+        suggestions: Array.isArray(data.suggestions) ? data.suggestions : [],
+        sessionFolder: data.sessionFolder || null,
+        sessionShortId: data.sessionShortId || null,
+        timeout: data.timeout || null,
+        createdAt: data.createdAt || Date.now(),
+        dismissedAt: null,
+        dismissReason: null,
+      });
+      this.render();
+    }
+
+    // Schema: Section 2.9 — permission_dismissed
+    dismissPermission(requestId, reason) {
+      var entry = this.permissions.get(requestId);
+      if (!entry) return;
+      entry.dismissedAt = Date.now();
+      entry.dismissReason = reason || "desktop_bubble";
+      this.render();
+      var self = this;
+      setTimeout(function() {
+        self.permissions.delete(requestId);
+        self.render();
+      }, 3000);
+    }
+
+    getPendingCount() {
+      var count = 0;
+      this.permissions.forEach(function(e) { if (!e.dismissedAt) count++; });
+      return count;
+    }
+
+    render() {
+      var old = this.container.querySelectorAll(".permission-card");
+      for (var i = 0; i < old.length; i++) old[i].remove();
+
+      if (this.permissions.size === 0) return;
+
+      var entries = [];
+      this.permissions.forEach(function(v) { entries.push(v); });
+      entries.sort(function(a, b) {
+        if (!a.dismissedAt && b.dismissedAt) return -1;
+        if (a.dismissedAt && !b.dismissedAt) return 1;
+        if (!a.dismissedAt && !b.dismissedAt) return b.createdAt - a.createdAt;
+        return (b.dismissedAt || 0) - (a.dismissedAt || 0);
+      });
+
+      var fragment = document.createDocumentFragment();
+      for (var j = 0; j < entries.length; j++) {
+        fragment.appendChild(this._renderCard(entries[j]));
+      }
+      var firstChild = this.container.firstChild;
+      if (firstChild) {
+        this.container.insertBefore(fragment, firstChild);
+      } else {
+        this.container.appendChild(fragment);
+      }
+    }
+
+    _renderCard(entry) {
+      var isPending = !entry.dismissedAt;
+      var stateClass = isPending ? "pending" : "dismissed";
+      var badgeLabel = isPending ? "等待审批" : this._dismissLabel(entry.dismissReason);
+      var agentLabel = (entry.agentId || "agent").toUpperCase();
+
+      var card = document.createElement("div");
+      card.className = "permission-card " + stateClass;
+      card.setAttribute("data-request-id", entry.requestId);
+
+      var html = '<div class="perm-header">';
+      html += '<div class="perm-agent"><div class="agent-dot"></div>';
+      html += '<span class="agent-name">' + esc(agentLabel) + '</span></div>';
+      html += '<span class="perm-badge ' + stateClass + '">' + badgeLabel + '</span></div>';
+      html += '<div class="perm-tool">' + icon("shield") + ' ' + esc(entry.toolName) + '</div>';
+      if (entry.toolInputSummary) {
+        html += '<div class="perm-summary">' + esc(entry.toolInputSummary) + '</div>';
+      }
+      html += '<div class="perm-meta">';
+      if (entry.sessionFolder) html += '<span class="meta-item mono">' + icon("folder") + '<span>' + esc(entry.sessionFolder) + '</span></span>';
+      html += '<span class="meta-sep">&middot;</span><span class="meta-item meta-time" data-ts="' + entry.createdAt + '">' + formatAgo(entry.createdAt) + '</span>';
+      if (isPending && entry.timeout) {
+        var remaining = this._computeRemaining(entry);
+        html += '<span class="meta-sep">&middot;</span><span class="perm-countdown" data-timeout="' + entry.timeout + '" data-created="' + entry.createdAt + '">' + this._formatCountdown(remaining) + '</span>';
+      }
+      html += '</div>';
+      if (isPending && entry.suggestions.length > 0) {
+        html += '<div class="perm-suggestions">';
+        for (var si = 0; si < entry.suggestions.length; si++) {
+          html += '<span class="perm-suggestion-label">' + esc(entry.suggestions[si].label) + '</span>';
+        }
+        html += '</div>';
+      }
+      if (isPending) {
+        html += '<div class="perm-notice">请在桌面端处理此权限请求</div>';
+      }
+
+      card.innerHTML = html;
+      return card;
+    }
+
+    _dismissLabel(reason) {
+      switch (reason) {
+        case "timeout": return "已超时";
+        case "dnd": return "免打扰";
+        case "agent_disconnect": return "已断开";
+        default: return "已处理";
+      }
+    }
+
+    _computeRemaining(entry) {
+      if (!entry.timeout) return 0;
+      var elapsed = Date.now() - entry.createdAt;
+      return Math.max(0, entry.timeout - elapsed);
+    }
+
+    _formatCountdown(ms) {
+      if (ms <= 0) return "0:00";
+      var sec = Math.ceil(ms / 1000);
+      var m = Math.floor(sec / 60);
+      var s = sec % 60;
+      return m + ":" + (s < 10 ? "0" : "") + s;
+    }
+
+    _startCountdownUpdater() {
+      var self = this;
+      this._countdownTimer = setInterval(function() {
+        if (document.visibilityState !== "visible") return;
+        var els = self.container.querySelectorAll(".perm-countdown");
+        for (var i = 0; i < els.length; i++) {
+          var el = els[i];
+          var timeout = parseInt(el.getAttribute("data-timeout"), 10);
+          var created = parseInt(el.getAttribute("data-created"), 10);
+          if (isNaN(timeout) || isNaN(created)) continue;
+          var remaining = Math.max(0, timeout - (Date.now() - created));
+          el.textContent = self._formatCountdown(remaining);
+        }
+      }, 1000);
+    }
+  }
+
   // === App ===
 
   class App {
@@ -470,6 +637,7 @@
       this.renderer = new SessionRenderer(document.getElementById("session-list"));
       this.settingsRenderer = new SettingsRenderer(document.getElementById("settings-content"));
       this.notifier = new NotificationManager();
+      this.permissionBanner = new PermissionBanner(document.getElementById("session-list"));
       this.activeTab = "sessions";
 
       window._clawdApp = this;
@@ -528,7 +696,18 @@
         if (self.activeTab === "settings") self._renderSettings();
       };
       this.connection.onMessage = function(msg) {
-        if (msg.type === "snapshot") { self.renderer.updateFromSnapshot(msg.sessions || {}); log("Snapshot: " + Object.keys(msg.sessions || {}).length + " sessions"); }
+        if (msg.type === "snapshot") {
+          self.renderer.updateFromSnapshot(msg.sessions || {});
+          // Slice 2: clear stale permission cards on reconnect and load pending ones
+          self.permissionBanner.clear();
+          if (Array.isArray(msg.pendingPermissions)) {
+            for (var pi = 0; pi < msg.pendingPermissions.length; pi++) {
+              var pp = msg.pendingPermissions[pi];
+              self.permissionBanner.addPermission(pp.requestId, pp);
+            }
+          }
+          log("Snapshot: " + Object.keys(msg.sessions || {}).length + " sessions" + (msg.pendingPermissions ? ", " + msg.pendingPermissions.length + " permissions" : ""));
+        }
         else if (msg.type === "state") { self.renderer.updateState(msg.sessionId, msg.data); self.notifier.onStateChange(msg.sessionId, msg.data); }
         else if (msg.type === "session_deleted") { self.renderer.removeSession(msg.sessionId); }
         else if (msg.type === "tool_output") { var sid = msg.sessionId; var session = self.renderer.sessions.get(sid); if (session) { session.lastOutput = { toolName: msg.data.toolName, output: (msg.data.output || "").substring(0, 200), at: msg.timestamp || Date.now() }; self.renderer.render(); } }
@@ -541,6 +720,15 @@
             log("Token rotated");
             showToast("令牌已更新", "success");
           }
+        }
+        else if (msg.type === "permission_request") {
+          self.permissionBanner.addPermission(msg.requestId, msg.data || {});
+          self.notifier.onPermissionRequest(msg.data || {});
+          log("Permission: " + ((msg.data || {}).toolName || "?") + " (" + ((msg.data || {}).agentId || "?") + ")");
+        }
+        else if (msg.type === "permission_dismissed") {
+          self.permissionBanner.dismissPermission(msg.requestId, msg.reason);
+          log("Permission dismissed: " + (msg.requestId || "?") + " -> " + (msg.reason || "?"));
         }
       };
     }
