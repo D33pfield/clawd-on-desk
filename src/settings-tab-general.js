@@ -89,32 +89,15 @@
     parent.appendChild(subtitle);
     parent.appendChild(buildTutorialReplayHint());
 
+    // General tab IA: sections are ordered by how often they're touched, with
+    // the danger section pinned last. Appearance stays first (language sits at
+    // the top of settings by convention); Session ranks high because it's
+    // checked often; Behavior & position and System & startup are set-once, so
+    // they sink toward the bottom.
     parent.appendChild(helpers.buildSection(t("sectionAppearance"), [
       buildLanguageRow(),
       buildSizeSliderRow(),
       buildTextScaleRow(),
-      buildSoundGroup(),
-      buildFlashGroup(),
-      helpers.buildSwitchRow({
-        key: "allowEdgePinning",
-        labelKey: "rowAllowEdgePinning",
-        descKey: "rowAllowEdgePinningDesc",
-      }),
-      helpers.buildSwitchRow({
-        key: "disableMiniMode",
-        labelKey: "rowDisableMiniMode",
-        descKey: "rowDisableMiniModeDesc",
-      }),
-      helpers.buildSwitchRow({
-        key: "freeRoam",
-        labelKey: "rowFreeRoam",
-        descKey: "rowFreeRoamDesc",
-      }),
-      helpers.buildSwitchRow({
-        key: "keepSizeAcrossDisplays",
-        labelKey: "rowKeepSizeAcrossDisplays",
-        descKey: "rowKeepSizeAcrossDisplaysDesc",
-      }),
     ]));
 
     parent.appendChild(helpers.buildSection(t("sectionSession"), [
@@ -123,31 +106,11 @@
       buildDashboardRow(),
     ]));
 
-    // System: global power / system behaviors that aren't per-session and
-    // aren't appearance. Both toggles affect the whole machine's power state
-    // (low-power idle throttling; blocking OS sleep while any task runs).
-    parent.appendChild(helpers.buildSection(t("sectionSystem"), [
-      helpers.buildSwitchRow({
-        key: "lowPowerIdleMode",
-        labelKey: "rowLowPowerIdleMode",
-        descKey: "rowLowPowerIdleModeDesc",
-      }),
-      helpers.buildSwitchRow({
-        key: "keepAwakeWhileWorking",
-        labelKey: "rowKeepAwakeWhileWorking",
-        descKey: "rowKeepAwakeWhileWorkingDesc",
-      }),
-    ]));
-
-    parent.appendChild(helpers.buildSection(t("sectionStartup"), [
-      helpers.buildSwitchRow({
-        key: "openAtLogin",
-        labelKey: "rowOpenAtLogin",
-        descKey: "rowOpenAtLoginDesc",
-      }),
-    ]));
-
-    parent.appendChild(helpers.buildSection(t("sectionBubbles"), [
+    // Alerts & feedback: every way the pet gets your attention — sound, screen
+    // flash, and the bubble preferences (visibility, auto-close policy, follow).
+    parent.appendChild(helpers.buildSection(t("sectionAlerts"), [
+      buildSoundGroup(),
+      buildFlashGroup(),
       helpers.buildSwitchRow({
         key: "hideBubbles",
         labelKey: "rowHideBubbles",
@@ -162,9 +125,53 @@
       }),
     ]));
 
-    // Permissions is its own section (not "Bubbles") because auto-pilot is a
-    // permission-handling behavior, not a bubble-display preference. Kept last
-    // so the danger toggle sits at the bottom, away from everyday settings.
+    // Behavior & position: how the pet moves and sits on screen. Rarely changed
+    // after first setup, so it sits below the everyday sections.
+    parent.appendChild(helpers.buildSection(t("sectionBehavior"), [
+      helpers.buildSwitchRow({
+        key: "freeRoam",
+        labelKey: "rowFreeRoam",
+        descKey: "rowFreeRoamDesc",
+      }),
+      helpers.buildSwitchRow({
+        key: "allowEdgePinning",
+        labelKey: "rowAllowEdgePinning",
+        descKey: "rowAllowEdgePinningDesc",
+      }),
+      helpers.buildSwitchRow({
+        key: "disableMiniMode",
+        labelKey: "rowDisableMiniMode",
+        descKey: "rowDisableMiniModeDesc",
+      }),
+      helpers.buildSwitchRow({
+        key: "keepSizeAcrossDisplays",
+        labelKey: "rowKeepSizeAcrossDisplays",
+        descKey: "rowKeepSizeAcrossDisplaysDesc",
+      }),
+    ]));
+
+    // System & startup: machine-level toggles (low-power idle throttling and
+    // blocking OS sleep while working) plus launch-at-login. Set-once, near bottom.
+    parent.appendChild(helpers.buildSection(t("sectionSystemStartup"), [
+      helpers.buildSwitchRow({
+        key: "lowPowerIdleMode",
+        labelKey: "rowLowPowerIdleMode",
+        descKey: "rowLowPowerIdleModeDesc",
+      }),
+      helpers.buildSwitchRow({
+        key: "keepAwakeWhileWorking",
+        labelKey: "rowKeepAwakeWhileWorking",
+        descKey: "rowKeepAwakeWhileWorkingDesc",
+      }),
+      helpers.buildSwitchRow({
+        key: "openAtLogin",
+        labelKey: "rowOpenAtLogin",
+        descKey: "rowOpenAtLoginDesc",
+      }),
+    ]));
+
+    // Permissions is kept last so the danger toggle (auto-approve everything)
+    // sits at the bottom, away from everyday settings.
     parent.appendChild(helpers.buildSection(t("sectionPermissions"), [
       helpers.buildSwitchRow({
         key: "autoApproveAllPermissions",
