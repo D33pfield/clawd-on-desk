@@ -35,6 +35,10 @@ const {
   sessionSnapshotSignature,
 } = require("./state-session-snapshot");
 const { getAgentIconUrl } = require("./state-agent-icons");
+const {
+  readTranscriptTailEntries: readClaudeTranscriptTailEntries,
+  extractLastAssistantTextFromEntries: extractLastClaudeAssistantTextFromEntries,
+} = require("../hooks/clawd-hook");
 
 module.exports = function initState(ctx) {
 
@@ -105,6 +109,10 @@ const HEADLESS_COMPLETION_DEBOUNCE_MS = 2000;
 // Stop as tentative, not permanently working, when the hook also extracted the
 // assistant's final text.
 const BACKGROUND_TASKS_COMPLETION_DEBOUNCE_MS = 2000;
+const CLAUDE_ELICITATION_COMPLETION_PROBE_DELAY_MS = 2000;
+const CLAUDE_ELICITATION_COMPLETION_PROBE_INTERVAL_MS = 3000;
+const CLAUDE_ELICITATION_COMPLETION_PROBE_MAX_MS = 5 * 60 * 1000;
+const CLAUDE_ELICITATION_COMPLETION_TOOLS = new Set(["AskUserQuestion"]);
 function getCompletionDebounceMs(headless) {
   const raw = process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
   const n = Number.parseInt(raw, 10);
@@ -129,6 +137,7 @@ let startupRecoveryActive = false;
 let startupRecoveryTimer = null;
 const STARTUP_RECOVERY_MAX_MS = 300000;
 const codexExitProbes = new Map();
+const claudeTranscriptCompletionProbes = new Map();
 
 function normalizeAssistantOutput(value) {
   if (typeof value !== "string") return null;
@@ -141,6 +150,20 @@ function normalizeAssistantOutput(value) {
   return text.length > ASSISTANT_OUTPUT_MAX
     ? text.slice(0, ASSISTANT_OUTPUT_MAX)
     : text;
+}
+
+function normalizeTranscriptPath(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > 4096 || /[\0\r\n]/.test(text)) return null;
+  return text;
+}
+
+function normalizeToolName(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > 160 || /[\0\r\n]/.test(text)) return null;
+  return text;
 }
 
 // ── Hit-test bounding boxes (from theme) ──
@@ -1080,6 +1103,66 @@ function clearAllCompletionDebounces() {
   pendingCompletionTimers.clear();
 }
 
+function cancelClaudeTranscriptCompletionProbe(sessionId, reason) {
+  const existing = claudeTranscriptCompletionProbes.get(sessionId);
+  if (!existing) return;
+  clearTimeout(existing.timer);
+  claudeTranscriptCompletionProbes.delete(sessionId);
+  debugSession(`claude-transcript-stop-probe cancel sid=${sessionId} by=${reason || "-"}`);
+}
+
+function clearAllClaudeTranscriptCompletionProbes() {
+  for (const { timer } of claudeTranscriptCompletionProbes.values()) clearTimeout(timer);
+  claudeTranscriptCompletionProbes.clear();
+}
+
+function isClaudeElicitationCompletionTool(toolName) {
+  return CLAUDE_ELICITATION_COMPLETION_TOOLS.has(toolName);
+}
+
+function scheduleClaudeTranscriptCompletionProbe(sessionId, transcriptPath) {
+  const safePath = normalizeTranscriptPath(transcriptPath);
+  if (!safePath) return;
+
+  cancelClaudeTranscriptCompletionProbe(sessionId, "reschedule");
+
+  const startedAt = Date.now();
+  const probe = { timer: null, transcriptPath: safePath, startedAt };
+
+  const runProbe = () => {
+    const session = sessions.get(sessionId);
+    if (!session || session.agentId !== "claude-code" || session.state !== "working") {
+      claudeTranscriptCompletionProbes.delete(sessionId);
+      return;
+    }
+    if (Date.now() - startedAt > CLAUDE_ELICITATION_COMPLETION_PROBE_MAX_MS) {
+      claudeTranscriptCompletionProbes.delete(sessionId);
+      debugSession(`claude-transcript-stop-probe expire sid=${sessionId}`);
+      return;
+    }
+
+    const assistantOutput = extractLastClaudeAssistantTextFromEntries(
+      readClaudeTranscriptTailEntries(safePath),
+      sessionId
+    );
+    if (assistantOutput && assistantOutput.text) {
+      claudeTranscriptCompletionProbes.delete(sessionId);
+      session.assistantLastOutput = normalizeAssistantOutput(assistantOutput.text);
+      session.assistantLastOutputTruncated = assistantOutput.truncated === true;
+      debugSession(`claude-transcript-stop-probe promote sid=${sessionId}`);
+      promoteCompletion(sessionId);
+      return;
+    }
+
+    probe.timer = setTimeout(runProbe, CLAUDE_ELICITATION_COMPLETION_PROBE_INTERVAL_MS);
+    claudeTranscriptCompletionProbes.set(sessionId, probe);
+  };
+
+  probe.timer = setTimeout(runProbe, CLAUDE_ELICITATION_COMPLETION_PROBE_DELAY_MS);
+  claudeTranscriptCompletionProbes.set(sessionId, probe);
+  debugSession(`claude-transcript-stop-probe schedule sid=${sessionId}`);
+}
+
 // Debounce window elapsed with no forward progress → the turn really ended.
 // Replay the real Stop the gate withheld: append a Stop event (so the badge →
 // "done" and the Telegram completion fires exactly once, re-asserting a Stop
@@ -1138,6 +1221,8 @@ function updateSession(sessionId, state, event, opts = {}) {
     contextUsage = null,
     assistantLastOutput = null,
     assistantLastOutputTruncated = false,
+    toolName = null,
+    transcriptPath = null,
     permissionSuspect = false,
     preserveState = false,
     hookSource = null,
@@ -1157,6 +1242,9 @@ function updateSession(sessionId, state, event, opts = {}) {
   // the PermissionRequest early-return so a permission prompt cancels too.
   if (event !== "Stop" && COMPLETION_CANCEL_EVENTS.has(event)) {
     cancelCompletionDebounce(sessionId, event);
+  }
+  if (event === "Stop" || COMPLETION_CANCEL_EVENTS.has(event)) {
+    cancelClaudeTranscriptCompletionProbe(sessionId, event);
   }
 
   const sessionForPerm = sessions.get(sessionId);
@@ -1269,6 +1357,8 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcContextUsage = normalizeContextUsage(contextUsage) || (existing && existing.contextUsage) || null;
   const srcAssistantLastOutput = normalizeAssistantOutput(assistantLastOutput);
   const srcAssistantLastOutputTruncated = !!(srcAssistantLastOutput && assistantLastOutputTruncated === true);
+  const srcToolName = normalizeToolName(toolName) || (existing && existing.lastToolName) || null;
+  const srcTranscriptPath = normalizeTranscriptPath(transcriptPath) || (existing && existing.transcriptPath) || null;
   const srcResumeState = (existing && existing.resumeState) || null;
   const isSubagentStart = event === "SubagentStart" || event === "subagentStart";
   const isSubagentStop = event === "SubagentStop" || event === "subagentStop";
@@ -1386,7 +1476,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcLastStopAt = isStopBoundary
     ? Date.now()
     : (existing && Number.isFinite(existing.lastStopAt) ? existing.lastStopAt : null);
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, agentPid: srcAgentPid, agentId: srcAgentId, host: srcHost, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.
@@ -1480,6 +1570,14 @@ function updateSession(sessionId, state, event, opts = {}) {
   }
   cleanStaleSessions();
   updateCodexExitProbe(sessionId, srcAgentId, event);
+  if (
+    srcAgentId === "claude-code"
+    && event === "PostToolUse"
+    && isClaudeElicitationCompletionTool(srcToolName)
+    && srcTranscriptPath
+  ) {
+    scheduleClaudeTranscriptCompletionProbe(sessionId, srcTranscriptPath);
+  }
   // Any Kimi event other than the PreToolUse that originally opened the hold
   // means the user already answered (Approve / Reject / Reject-and-tell-model)
   // and the agent loop has moved on. We must NOT keep the pet stuck on the
@@ -2004,6 +2102,7 @@ function enableDoNotDisturb() {
   if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; pendingState = null; }
   if (autoReturnTimer) { clearTimeout(autoReturnTimer); autoReturnTimer = null; }
   clearAllCompletionDebounces();
+  clearAllClaudeTranscriptCompletionProbes();
   stopWakePoll();
   if (ctx.miniMode) {
     applyState("mini-sleep");
@@ -2052,6 +2151,7 @@ function cleanup() {
   pendingState = null;
   if (autoReturnTimer) clearTimeout(autoReturnTimer);
   clearAllCompletionDebounces();
+  clearAllClaudeTranscriptCompletionProbes();
   if (eyeResendTimer) clearTimeout(eyeResendTimer);
   if (startupRecoveryTimer) clearTimeout(startupRecoveryTimer);
   stopWakePoll();

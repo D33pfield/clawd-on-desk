@@ -91,6 +91,8 @@ function update(api, o = {}) {
       ghosttyTerminalId: o.ghosttyTerminalId ?? null,
       assistantLastOutput: o.assistantLastOutput ?? null,
       assistantLastOutputTruncated: o.assistantLastOutputTruncated ?? false,
+      toolName: o.toolName ?? null,
+      transcriptPath: o.transcriptPath ?? null,
       backgroundTasksCount: o.backgroundTasksCount ?? 0,
       sessionCronsCount: o.sessionCronsCount ?? 0,
       stopHookActive: o.stopHookActive ?? false,
@@ -2598,6 +2600,88 @@ describe("Stop completion gate (#406)", () => {
       if (saved === undefined) delete process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
       else process.env.CLAWD_COMPLETION_DEBOUNCE_MS = saved;
     }
+  });
+
+  it("Claude AskUserQuestion PostToolUse falls back to transcript completion when Stop is missed", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
+    const transcript = path.join(dir, "transcript.jsonl");
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "assistant", sessionId: "s1", message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
+      JSON.stringify({ type: "user", sessionId: "s1", message: { content: [{ type: "tool_result", content: "Allow" }] } }),
+    ].join("\n") + "\n");
+
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "PostToolUse",
+      toolName: "AskUserQuestion",
+      transcriptPath: transcript,
+    });
+
+    mock.timers.tick(1999);
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.deepStrictEqual(soundsPlayed, []);
+
+    fs.appendFileSync(transcript, JSON.stringify({
+      type: "assistant",
+      sessionId: "s1",
+      message: { content: "Final answer from Claude Desktop." },
+    }) + "\n");
+    mock.timers.tick(1);
+
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.state, "idle");
+    assert.strictEqual(session.assistantLastOutput, "Final answer from Claude Desktop.");
+    assert.strictEqual(api.getCurrentState(), "attention");
+    assert.ok(soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(session), "done");
+  });
+
+  it("Claude transcript completion fallback is limited to AskUserQuestion tool results", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
+    const transcript = path.join(dir, "transcript.jsonl");
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "user", sessionId: "s1", message: { content: [{ type: "tool_result", content: "ok" }] } }),
+      JSON.stringify({ type: "assistant", sessionId: "s1", message: { content: "Intermediate explanation." } }),
+    ].join("\n") + "\n");
+
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "PostToolUse",
+      toolName: "Read",
+      transcriptPath: transcript,
+    });
+    mock.timers.tick(10000);
+
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.ok(!soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "running");
+  });
+
+  it("Claude transcript completion fallback cancels when work resumes", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
+    const transcript = path.join(dir, "transcript.jsonl");
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "assistant", sessionId: "s1", message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
+      JSON.stringify({ type: "user", sessionId: "s1", message: { content: [{ type: "tool_result", content: "Allow" }] } }),
+      JSON.stringify({ type: "assistant", sessionId: "s1", message: { content: "Continuing after answer." } }),
+    ].join("\n") + "\n");
+
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "PostToolUse",
+      toolName: "AskUserQuestion",
+      transcriptPath: transcript,
+    });
+    mock.timers.tick(500);
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    mock.timers.tick(10000);
+
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.ok(!soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "running");
   });
 });
 

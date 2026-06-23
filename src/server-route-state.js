@@ -17,6 +17,7 @@ const { resolveCodexOfficialHookState } = require("./server-codex-official-turns
 // local-only 127.0.0.1 endpoint - not an Internet DoS concern.
 const MAX_STATE_BODY_BYTES = 4096;
 const ASSISTANT_LAST_OUTPUT_MAX = 2400;
+const TRANSCRIPT_PATH_MAX = 4096;
 
 function normalizeHwndString(value) {
   if (value === null || value === undefined) return null;
@@ -55,6 +56,13 @@ function normalizeAssistantLastOutput(value) {
   return text.length > ASSISTANT_LAST_OUTPUT_MAX
     ? text.slice(0, ASSISTANT_LAST_OUTPUT_MAX)
     : text;
+}
+
+function normalizeTranscriptPath(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > TRANSCRIPT_PATH_MAX || /[\0\r\n]/.test(text)) return null;
+  return text;
 }
 
 function normalizeContextUsage(value) {
@@ -163,6 +171,7 @@ function handleStatePost(req, res, options) {
       const contextUsage = normalizeContextUsage(data.context_usage);
       const assistantLastOutput = normalizeAssistantLastOutput(data.assistant_last_output);
       const assistantLastOutputTruncated = data.assistant_last_output_truncated === true;
+      const transcriptPath = normalizeTranscriptPath(data.transcript_path);
       const permissionSuspect = data.permission_suspect === true;
       const preserveState = data.preserve_state === true;
       const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
@@ -278,6 +287,8 @@ function handleStatePost(req, res, options) {
             contextUsage,
             assistantLastOutput,
             assistantLastOutputTruncated,
+            toolName,
+            transcriptPath,
             permissionSuspect,
             preserveState,
             hookSource,
