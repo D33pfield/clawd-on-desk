@@ -35,6 +35,7 @@ const {
   sessionSnapshotSignature,
 } = require("./state-session-snapshot");
 const { getAgentIconUrl } = require("./state-agent-icons");
+const { normalizeTranscriptPath } = require("./transcript-path");
 const {
   readTranscriptTailEntries: readClaudeTranscriptTailEntries,
   extractLastAssistantTextFromEntries: extractLastClaudeAssistantTextFromEntries,
@@ -150,13 +151,6 @@ function normalizeAssistantOutput(value) {
   return text.length > ASSISTANT_OUTPUT_MAX
     ? text.slice(0, ASSISTANT_OUTPUT_MAX)
     : text;
-}
-
-function normalizeTranscriptPath(value) {
-  if (typeof value !== "string") return null;
-  const text = value.trim();
-  if (!text || text.length > 4096 || /[\0\r\n]/.test(text)) return null;
-  return text;
 }
 
 function normalizeToolName(value) {

@@ -11,13 +11,13 @@ const {
 } = require("./server-permission-utils");
 const { resolveHookAgentId } = require("./server-agent-id");
 const { resolveCodexOfficialHookState } = require("./server-codex-official-turns");
+const { normalizeTranscriptPath } = require("./transcript-path");
 
 // /state POST body size cap. Raised from 1024 to 4096 to give new fields
 // (session_title) headroom on top of cwd / pid_chain / host / etc. Still a
 // local-only 127.0.0.1 endpoint - not an Internet DoS concern.
 const MAX_STATE_BODY_BYTES = 4096;
 const ASSISTANT_LAST_OUTPUT_MAX = 2400;
-const TRANSCRIPT_PATH_MAX = 4096;
 
 function normalizeHwndString(value) {
   if (value === null || value === undefined) return null;
@@ -56,13 +56,6 @@ function normalizeAssistantLastOutput(value) {
   return text.length > ASSISTANT_LAST_OUTPUT_MAX
     ? text.slice(0, ASSISTANT_LAST_OUTPUT_MAX)
     : text;
-}
-
-function normalizeTranscriptPath(value) {
-  if (typeof value !== "string") return null;
-  const text = value.trim();
-  if (!text || text.length > TRANSCRIPT_PATH_MAX || /[\0\r\n]/.test(text)) return null;
-  return text;
 }
 
 function normalizeContextUsage(value) {
