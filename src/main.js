@@ -3336,7 +3336,9 @@ function createWindow() {
     },
     onRenderProcessGone: (details, ownedHitWin) => {
       safeConsoleError("hitWin renderer crashed:", details.reason);
-      petWindowRuntime.reloadWindowWebContents(ownedHitWin);
+      petWindowRuntime.setDragLocked(false);
+      petWindowRuntime.clearDragSnapshot();
+      petWindowRuntime.reloadWindowWebContents(ownedHitWin, { crashKey: "hitWin", details });
     },
   });
 
@@ -3425,7 +3427,7 @@ function createWindow() {
     petWindowRuntime.setDragLocked(false);
     idlePaused = false;
     mouseOverPet = false;
-    petWindowRuntime.reloadWindowWebContents(win);
+    petWindowRuntime.reloadWindowWebContents(win, { crashKey: "renderWin", details });
   });
 
   guardAlwaysOnTop(win);
@@ -3626,13 +3628,17 @@ if (!gotTheLock) {
   app.quit();
 } else {
   app.on("second-instance", (_event, commandLine) => {
-    if (win) {
-      win.showInactive();
-      keepOutOfTaskbar(win);
-    }
-    if (hitWin && !hitWin.isDestroyed()) {
-      hitWin.showInactive();
-      keepOutOfTaskbar(hitWin);
+    if (petWindowRuntime.isPetHidden()) {
+      petWindowRuntime.setPetHidden(false);
+    } else {
+      if (win) {
+        win.showInactive();
+        keepOutOfTaskbar(win);
+      }
+      if (hitWin && !hitWin.isDestroyed()) {
+        hitWin.showInactive();
+        keepOutOfTaskbar(hitWin);
+      }
     }
     if (shouldOpenSettingsWindowFromArgv(commandLine)) {
       settingsWindowRuntime.openWhenReady();
