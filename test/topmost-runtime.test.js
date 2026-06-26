@@ -435,6 +435,29 @@ describe("topmost runtime Windows recovery", () => {
     assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
   });
 
+  it("guardAlwaysOnTop still reasserts helper windows while a fullscreen app is foreground (#538)", () => {
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    const bubble = new FakeWindow();
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      isForegroundFullscreen: () => true,
+    });
+
+    runtime.guardAlwaysOnTop(bubble);
+    bubble.emit("always-on-top-changed", null, false);
+
+    // Permission/update/HUD windows are deliberate interruptions; fullscreen
+    // only suppresses pet + hit layer recovery.
+    assert.deepStrictEqual(bubble.calls, [
+      ["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL],
+    ]);
+    assert.deepStrictEqual(win.calls, []);
+    assert.deepStrictEqual(hitWin.calls, []);
+  });
+
   it("guardAlwaysOnTop does not fight topmost loss while a fullscreen app is foreground (#538)", () => {
     const timers = makeTimers();
     const win = new FakeWindow();

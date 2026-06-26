@@ -157,11 +157,13 @@ function createTopmostRuntime(options = {}) {
     if (!isWin || !winToGuard || typeof winToGuard.on !== "function") return;
     winToGuard.on("always-on-top-changed", (_event, isOnTop) => {
       if (isOnTop || !isLiveWindow(winToGuard)) return;
+      const renderWin = getWin();
+      const hitLayerWin = getHitWin();
       // A fullscreen app legitimately took topmost — don't fight back (no
       // re-top, no 1px nudge, no HWND recovery). The 5s watchdog restores the
       // pet within a cycle once the user leaves fullscreen (#538).
-      if (isForegroundFullscreen()) return;
-      if (winToGuard === getWin()) {
+      if ((winToGuard === renderWin || winToGuard === hitLayerWin) && isForegroundFullscreen()) return;
+      if (winToGuard === renderWin) {
         // Re-topping only the render window would re-insert it at the top of
         // the topmost band, briefly leaving the hit window beneath it
         // (z-order inversion). reassertWinTopmost re-tops win then hitWin, so
