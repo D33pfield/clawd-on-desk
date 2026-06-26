@@ -20,8 +20,12 @@ test("second-instance relaunch exits hidden state through the pet visibility sta
   const handler = source.slice(start, end);
   assert.match(
     handler,
-    /if \(petWindowRuntime\.isPetHidden\(\)\) \{\s*petWindowRuntime\.setPetHidden\(false\);\s*\} else \{/,
+    /if \(petWindowRuntime\.isPetHidden\(\)\) \{\s*prepManualPetVisibility\(\);\s*petWindowRuntime\.setPetHidden\(false\);\s*\} else \{/,
     "hidden relaunch must use setPetHidden(false), not bare showInactive()"
+  );
+  assert.ok(
+    handler.indexOf("prepManualPetVisibility()") < handler.indexOf("petWindowRuntime.setPetHidden(false)"),
+    "hidden relaunch should use the shared manual visibility prep before showing the pet"
   );
   assert.ok(
     handler.indexOf("petWindowRuntime.setPetHidden(false)") < handler.indexOf("win.showInactive()"),

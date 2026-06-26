@@ -3629,6 +3629,7 @@ if (!gotTheLock) {
 } else {
   app.on("second-instance", (_event, commandLine) => {
     if (petWindowRuntime.isPetHidden()) {
+      prepManualPetVisibility();
       petWindowRuntime.setPetHidden(false);
     } else {
       if (win) {
