@@ -546,6 +546,78 @@ describe("topmost runtime Windows recovery", () => {
     assert.deepStrictEqual(hitWin.calls, []);
     assert.deepStrictEqual(win.calls, []);
   });
+
+  // ── #562 fullscreen-overlay mode (opt-in via the fullscreenOverlay pref) ──
+  // The pet floats ON TOP of a foreground fullscreen app instead of standing
+  // down. Topmost keeps re-asserting, but the hit window stays non-activating so
+  // a click can't steal the game's foreground — cursor-drag needs no activation.
+
+  it("reassertWinTopmost floats on top under fullscreen when overlay mode is on (#562)", () => {
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      isForegroundFullscreen: () => true,
+      getFullscreenOverlay: () => true,
+    });
+
+    runtime.reassertWinTopmost();
+
+    // Overlay mode deliberately keeps re-topping over the fullscreen app rather
+    // than standing down (#538), so the pet stays visible and draggable.
+    assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
+    assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
+  });
+
+  it("watchdog floats the pet on top yet keeps it non-activating under fullscreen overlay (#562)", () => {
+    const timers = makeTimers();
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    const focusableCalls = [];
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      isForegroundFullscreen: () => true,
+      getFullscreenOverlay: () => true,
+      setHitWinFocusable: (focusable) => focusableCalls.push(focusable),
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+
+    runtime.startTopmostWatchdog();
+    timers.intervals[0].fn();
+
+    // Topmost keeps re-asserting so the pet floats over the game...
+    assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
+    assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
+    // ...but the decoupled focusable decision still drops activation: a
+    // fullscreen foreground must never have its focus stolen, overlay or not.
+    // This is the #562 fix — float-on-top and don't-steal-focus are independent.
+    assert.deepStrictEqual(focusableCalls, [false]);
+  });
+
+  it("guardAlwaysOnTop re-tops the hit layer over a fullscreen app in overlay mode (#562)", () => {
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      isForegroundFullscreen: () => true,
+      getFullscreenOverlay: () => true,
+      getPetWindowBounds: () => ({ x: 100, y: 100, width: 200, height: 200 }),
+    });
+
+    runtime.guardAlwaysOnTop(hitWin);
+    hitWin.emit("always-on-top-changed", null, false);
+
+    // Unlike the #538 stand-down, overlay mode re-tops the hit layer back over
+    // the fullscreen app so the pet stays on top and draggable.
+    assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
+  });
 });
 
 describe("topmost runtime macOS visibility", () => {

@@ -21,6 +21,7 @@
     "disableMiniMode",
     "freeRoam",
     "keepSizeAcrossDisplays",
+    "fullscreenOverlay",
     "openAtLogin",
     "hideBubbles",
     "bubbleFollowPet",
@@ -147,6 +148,11 @@
         key: "keepSizeAcrossDisplays",
         labelKey: "rowKeepSizeAcrossDisplays",
         descKey: "rowKeepSizeAcrossDisplaysDesc",
+      }),
+      helpers.buildSwitchRow({
+        key: "fullscreenOverlay",
+        labelKey: "rowFullscreenOverlay",
+        descKey: "rowFullscreenOverlayDesc",
       }),
     ]));
 

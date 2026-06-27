@@ -40,6 +40,14 @@ function createTopmostRuntime(options = {}) {
   // every tick (#538). Defaults to "never fullscreen" so non-Windows and any
   // FFI-load failure keep the original always-reassert behavior.
   const isForegroundFullscreen = options.isForegroundFullscreen || (() => false);
+  // Windows-only (#562): when the user opts into fullscreen-overlay mode the pet
+  // floats ON TOP of a foreground fullscreen app instead of standing down. The
+  // topmost watchdog/guard keep re-asserting (pet stays visible + draggable over
+  // e.g. a borderless game); only the focus-stealing activation still stands
+  // down so a click can't yank the game's foreground. Defaults off → the
+  // original #538 stand-down. Off Windows isForegroundFullscreen is always false
+  // so this is moot.
+  const getFullscreenOverlay = options.getFullscreenOverlay || (() => false);
   // Windows-only: toggle the hit window's activation with the fullscreen state.
   // While a fullscreen app owns the foreground we make the hit window
   // non-activating so a click on the pet can't steal focus from an
@@ -72,7 +80,9 @@ function createTopmostRuntime(options = {}) {
     // mid-drag (pet-window-runtime nudges topmost near a work-area edge) and on
     // drag-end, and HWND recovery re-enters it on a timer. Without the guard a
     // single drag would yank the pet back in front of the fullscreen game.
-    if (isForegroundFullscreen()) return;
+    // #562: in fullscreen-overlay mode keep re-topping over the fullscreen app
+    // rather than standing down here (drag funnels through this function).
+    if (isForegroundFullscreen() && !getFullscreenOverlay()) return;
     const win = getWin();
     const hitWin = getHitWin();
     if (isLiveWindow(win)) win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
@@ -177,7 +187,7 @@ function createTopmostRuntime(options = {}) {
       // A fullscreen app legitimately took topmost — don't fight back (no
       // re-top, no 1px nudge, no HWND recovery). The 5s watchdog restores the
       // pet within a cycle once the user leaves fullscreen (#538).
-      if ((winToGuard === renderWin || winToGuard === hitLayerWin) && isForegroundFullscreen()) return;
+      if ((winToGuard === renderWin || winToGuard === hitLayerWin) && isForegroundFullscreen() && !getFullscreenOverlay()) return;
       if (winToGuard === renderWin) {
         // Re-topping only the render window would re-insert it at the top of
         // the topmost band, briefly leaving the hit window beneath it
@@ -225,13 +235,17 @@ function createTopmostRuntime(options = {}) {
       // Only the pet + hit windows stand down under a fullscreen foreground.
       // Permission bubbles / HUD below are deliberate interruptions the user
       // must act on, so they keep re-asserting even over a fullscreen app.
-      const skipTopmost = isForegroundFullscreen();
-      // Keep the hit window non-activating while a fullscreen app is foreground
-      // so a click on the pet can't yank focus off an exclusive-fullscreen game
-      // and minimize it; re-enable activation (drag needs it, #545) once it
-      // ends. The switch lags by up to one watchdog interval after entering
-      // fullscreen — an accepted trade-off of the watchdog-driven approach.
-      setHitWinFocusable(!skipTopmost);
+      // #562: stand down topmost over a fullscreen foreground app UNLESS the
+      // user opted into overlay mode (then keep floating on top). The hit window
+      // goes non-activating whenever a fullscreen app owns the foreground
+      // (overlay or not) so a click can't steal focus and minimize an
+      // exclusive-fullscreen game; cursor-drag needs no activation, so overlay
+      // drag still works over a borderless game. Re-enable activation off
+      // fullscreen because desktop drag needs it (#545). The switch lags by up to
+      // one watchdog interval after entering fullscreen — accepted trade-off.
+      const fsForeground = isForegroundFullscreen();
+      const skipTopmost = fsForeground && !getFullscreenOverlay();
+      setHitWinFocusable(!fsForeground);
       reassertWindowAndTaskbar(getWin(), { skipTopmost });
       reassertWindowAndTaskbar(getHitWin(), { skipTopmost });
 

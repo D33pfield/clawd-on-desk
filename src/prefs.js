@@ -212,6 +212,11 @@ const SCHEMA = {
   keepSizeAcrossDisplays: { type: "boolean", default: false },
   // Free roam: when enabled and the pet is idle, it will wander around the screen
   freeRoam: { type: "boolean", default: false },
+  // #562: Windows-only. When ON, the pet floats ON TOP of a foreground
+  // fullscreen app (e.g. a borderless game) and stays draggable, instead of
+  // standing down below it (#538). Default ON — most users want to glance at
+  // the pet while gaming. Exclusive-fullscreen games may not honor the overlay.
+  fullscreenOverlay: { type: "boolean", default: true },
   // Text-window zoom (bubbles, HUD, dashboard, settings, resume input). The
   // pet itself scales via `size` and is never zoomed. `textScale` is the
   // global default; `textScaleByDisplay` overrides it per display id (the
