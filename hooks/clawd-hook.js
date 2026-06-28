@@ -485,6 +485,7 @@ function main() {
       // Byte-fit the body so a long CJK assistant_last_output can't push it past
       // the server's /state cap and trigger a headerless 413 (read back as
       // posted=false, dropping the happy completion). hooks/state-payload-size.js.
+      const rawBodyBytes = utf8ByteLength(JSON.stringify(body)); // TEMP DEBUG: pre-fit size
       const fitted = fitStateBodyToByteBudget(body);
       postStateToRunningServer(
         JSON.stringify(fitted.body),
@@ -502,7 +503,7 @@ function main() {
               const assistantBytes = utf8ByteLength(body.assistant_last_output || "");
               fs.appendFileSync(
                 `${process.env.APPDATA}\\clawd-on-desk\\stop-gate-debug.log`,
-                `${new Date().toISOString()} POST-RESULT event=Stop posted=${JSON.stringify(posted)} port=${JSON.stringify(port)} elapsedMs=${Date.now() - postStartedAt} timeoutMs=${statePostTimeoutMs} bodyBytes=${fitted.bytes} assistantChars=${assistantChars} assistantBytes=${assistantBytes} fitTruncated=${fitted.assistantTruncated} fitDropped=${fitted.assistantDropped}\n`
+                `${new Date().toISOString()} POST-RESULT event=Stop posted=${JSON.stringify(posted)} port=${JSON.stringify(port)} elapsedMs=${Date.now() - postStartedAt} timeoutMs=${statePostTimeoutMs} rawBodyBytes=${rawBodyBytes} bodyBytes=${fitted.bytes} assistantChars=${assistantChars} assistantBytes=${assistantBytes} fitTruncated=${fitted.assistantTruncated} fitDropped=${fitted.assistantDropped}\n`
               );
             } catch {}
           }

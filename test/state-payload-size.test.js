@@ -33,6 +33,15 @@ describe("state-payload-size truncateToUtf8Bytes", () => {
     assert.strictEqual(truncateToUtf8Bytes("你好", -5), "");
     assert.strictEqual(truncateToUtf8Bytes(null, 10), "");
   });
+
+  it("truncates 4-byte emoji on a codepoint boundary", () => {
+    const s = "😀".repeat(10); // each 😀 is 4 UTF-8 bytes (40 bytes total)
+    const out = truncateToUtf8Bytes(s, 10); // room for 2 whole emoji (8 bytes)
+    assert.ok(Buffer.byteLength(out, "utf8") <= 10);
+    assert.ok(!out.includes("�"));
+    assert.ok([...out].every((ch) => ch === "😀"));
+    assert.strictEqual([...out].length, 2);
+  });
 });
 
 describe("state-payload-size fitStateBodyToByteBudget", () => {
@@ -112,5 +121,40 @@ describe("state-payload-size fitStateBodyToByteBudget", () => {
     const r = fitStateBodyToByteBudget(body, { targetBytes: 200 });
     assert.ok(r.bytes <= 200);
     assert.ok(r.assistantTruncated || r.assistantDropped);
+  });
+
+  it("treats a body exactly at the budget as fitted and untouched", () => {
+    const body = { state: "x" };
+    const exact = Buffer.byteLength(JSON.stringify(body), "utf8");
+    const r = fitStateBodyToByteBudget(body, { targetBytes: exact });
+    assert.strictEqual(r.fitted, true);
+    assert.strictEqual(r.bytes, exact);
+    assert.strictEqual(r.body, body);
+  });
+
+  it("ships an oversized body unchanged when there is no assistant_last_output to trim", () => {
+    const body = { state: "working", session_id: "sid", session_title: "t".repeat(500) };
+    const r = fitStateBodyToByteBudget(body, { targetBytes: 100 });
+    assert.strictEqual(r.fitted, false);
+    assert.strictEqual(r.assistantTruncated, false);
+    assert.strictEqual(r.assistantDropped, false);
+    assert.strictEqual(r.body, body); // structural fields are never trimmed
+    assert.ok(r.bytes > 100);
+  });
+
+  it("drops assistant_last_output when JSON escaping inflates a trimmed copy back over budget", () => {
+    // Every char is a double-quote: 1 raw byte, but 2 bytes once JSON-escaped (\").
+    // There IS raw-byte room to trim into, yet escaping pushes the trimmed copy
+    // back over budget — the helper must fall back to dropping, not ship oversized.
+    const body = {
+      state: "attention",
+      session_id: "sid",
+      event: "Stop",
+      assistant_last_output: '"'.repeat(5000),
+    };
+    const r = fitStateBodyToByteBudget(body, { targetBytes: 250 });
+    assert.strictEqual(r.assistantDropped, true);
+    assert.strictEqual(r.fitted, true);
+    assert.ok(Buffer.byteLength(JSON.stringify(r.body), "utf8") <= 250);
   });
 });
