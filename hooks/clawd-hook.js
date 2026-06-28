@@ -6,6 +6,7 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const { postStateToRunningServer, readHostPrefix } = require("./server-config");
+const { fitStateBodyToByteBudget, utf8ByteLength } = require("./state-payload-size");
 const { extractClaudeContextUsageFromEntries } = require("./context-usage");
 const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
 
@@ -481,19 +482,27 @@ function main() {
       const isCompletionEvent = body.event === "Stop";
       const statePostTimeoutMs = isCompletionEvent ? 1500 : 100;
       const postStartedAt = Date.now();
+      // Byte-fit the body so a long CJK assistant_last_output can't push it past
+      // the server's /state cap and trigger a headerless 413 (read back as
+      // posted=false, dropping the happy completion). hooks/state-payload-size.js.
+      const fitted = fitStateBodyToByteBudget(body);
       postStateToRunningServer(
-        JSON.stringify(body),
+        JSON.stringify(fitted.body),
         { timeoutMs: statePostTimeoutMs },
         (posted, port) => {
           // TEMP DEBUG (happy-not-playing diag) — record POST delivery result,
-          // elapsed time, and the timeout used for Stop. elapsedMs ≈ timeoutMs
-          // means a real timeout (port alive but slow); elapsedMs ≈ 0 means
-          // connection-refused (port not listening). REMOVE after diagnosis.
+          // elapsed time, the Stop timeout, the serialized body size, and what
+          // byte-fitting did to assistant_last_output. bodyBytes near the cap
+          // means size was the culprit; posted=false with bodyBytes well under
+          // the cap points elsewhere. REMOVE after diagnosis.
           if (body.event === "Stop") {
             try {
+              const assistantChars = typeof body.assistant_last_output === "string"
+                ? body.assistant_last_output.length : 0;
+              const assistantBytes = utf8ByteLength(body.assistant_last_output || "");
               fs.appendFileSync(
                 `${process.env.APPDATA}\\clawd-on-desk\\stop-gate-debug.log`,
-                `${new Date().toISOString()} POST-RESULT event=Stop posted=${JSON.stringify(posted)} port=${JSON.stringify(port)} elapsedMs=${Date.now() - postStartedAt} timeoutMs=${statePostTimeoutMs}\n`
+                `${new Date().toISOString()} POST-RESULT event=Stop posted=${JSON.stringify(posted)} port=${JSON.stringify(port)} elapsedMs=${Date.now() - postStartedAt} timeoutMs=${statePostTimeoutMs} bodyBytes=${fitted.bytes} assistantChars=${assistantChars} assistantBytes=${assistantBytes} fitTruncated=${fitted.assistantTruncated} fitDropped=${fitted.assistantDropped}\n`
               );
             } catch {}
           }
