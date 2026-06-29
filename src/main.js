@@ -3836,6 +3836,7 @@ if (!gotTheLock) {
       createCloakDiagnostic({
         isWin,
         powerMonitor,
+        screen,
         getWindows: () => [{ name: "render", win }, { name: "hit", win: hitWin }],
         logPath: path.join(app.getPath("userData"), "cloak-diagnostic.log"),
       }).start();
