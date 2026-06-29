@@ -3830,6 +3830,19 @@ if (!gotTheLock) {
       ),
     });
     systemWakeRecovery.start();
+    // ── 临时诊断（#525 DWM cloak）——用完删除整块 + src/win-cloak-diagnostic.js ──
+    try {
+      const { createCloakDiagnostic } = require("./win-cloak-diagnostic");
+      createCloakDiagnostic({
+        isWin,
+        powerMonitor,
+        getWindows: () => [{ name: "render", win }, { name: "hit", win: hitWin }],
+        logPath: path.join(app.getPath("userData"), "cloak-diagnostic.log"),
+      }).start();
+    } catch (err) {
+      console.warn("Clawd: cloak diagnostic init failed:", err && err.message);
+    }
+    // ── 临时诊断结束 ──
     // macOS: bridge the OS app-hidden state (⌘H / Dock right-click → 隐藏) to the
     // pet. Pet windows are setCanHide:NO, so the OS marks the app hidden but the
     // windows refuse to vanish, and an inactive-app Dock Hide fires no
