@@ -469,7 +469,8 @@ describe("roam module", () => {
     // workArea 1000×1000, pet 120px, margin = round(1000*0.15) = 150 →
     // xMin=150, xMax=1000-120-150=730. Math.random()=0.5 →
     // targetX = 150 + floor(0.5*580) = 440, same for Y. Pet sits at (440,440)
-    // so every attempt has dist 0; the farthest corner is (xMin,yMin)=(150,150).
+    // so every attempt has dist 0. All four corners are equidistant from
+    // (440,440); the impl tie-breaks to the first in its list, (xMin,yMin)=(150,150).
     mock.method(Math, "random", () => 0.5);
     const bounds = { x: 440, y: 440, width: 120, height: 120 };
     const realBounds = { ...bounds };
@@ -495,8 +496,9 @@ describe("roam module", () => {
       if (ctx._stateLog.some(e => e.type === "setState" && e.state === "idle")) break;
     }
 
-    // Fallback target was the farthest corner (150,150): the pet must have
-    // actually moved there, not stalled at its start (the old null-return bug).
+    // Fallback ties between all four equidistant corners; the impl keeps the
+    // first, (150,150). The pet must have actually moved there — not stalled at
+    // its start (the old null-return bug).
     assert.ok(Math.abs(realBounds.x - 150) < 5 && Math.abs(realBounds.y - 150) < 5,
       `expected move to farthest corner (150,150), got (${realBounds.x},${realBounds.y})`);
   });
