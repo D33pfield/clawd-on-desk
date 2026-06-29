@@ -3833,13 +3833,15 @@ if (!gotTheLock) {
     // ── 临时诊断（#525 DWM cloak）——用完删除整块 + src/win-cloak-diagnostic.js ──
     try {
       const { createCloakDiagnostic } = require("./win-cloak-diagnostic");
-      createCloakDiagnostic({
+      const cloakDiag = createCloakDiagnostic({
         isWin,
         powerMonitor,
         screen,
         getWindows: () => [{ name: "render", win }, { name: "hit", win: hitWin }],
         logPath: path.join(app.getPath("userData"), "cloak-diagnostic.log"),
-      }).start();
+      });
+      cloakDiag.start();
+      app.once("before-quit", () => { try { cloakDiag.stop(); } catch {} });
     } catch (err) {
       console.warn("Clawd: cloak diagnostic init failed:", err && err.message);
     }

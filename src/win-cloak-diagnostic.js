@@ -1,19 +1,24 @@
 "use strict";
 
 // ── 临时诊断模块（#525 宠物消失根因）────────────────────────────────────
-// 采集 render/hit 窗口的完整可见性快照：DWMWA_CLOAKED flag + HRESULT、
-// isVisible、bounds、isAlwaysOnTop，外加 display 快照。在 flag 变化、电源
-// 事件(suspend/resume/lock/unlock)、显示器变化时各 dump 一次完整快照；并对
+// 默认【纯只读】：采集 render/hit 窗口的完整可见性快照——DWMWA_CLOAKED
+// flag + HRESULT、isVisible、isAlwaysOnTop、bounds、与各 display 的交集
+// (onScreen)，外加 display 布局。在 flag 变化、电源事件、显示器变化时各
+// dump 一次完整快照。best-effort：非 Windows / FFI 失败时 no-op，绝不影响
+// 正式逻辑；timer 与所有事件回调都包了 try/catch，异步异常也不拖垮主进程。
+// 日志写 userData/cloak-diagnostic.log。
+//
+// 可选 mutation（默认关）：设环境变量 CLAWD_CLOAK_DIAG_UNCLOAK=1 时，才对
 // APP-cloak(flag=1) 试一次 DwmSetWindowAttribute(DWMWA_CLOAK=false) 验证
-// uncloak 原语是否有效。best-effort：非 Windows / FFI 失败时 no-op，绝不
-// 影响正式逻辑。日志写 userData/cloak-diagnostic.log。
+// uncloak 原语；该写操作会改窗口状态，日志以 [MUTATE] 标明。默认只读，避免
+// 恢复动作掩盖根因。
 //
 //   ⚠ 用完即删：删本文件 + main.js 里 "临时诊断（#525）" 整块接入代码。
 //
 // 判读（宠物消失瞬间看日志）：
 //   • flag 非 0 → 确实 DWM cloak；看值 APP=1 / SHELL=2 / INHERITED=4。
-//   • flag = 0  → 不是 cloak；看 bounds（被挪出屏幕?）、isVisible、aot、
-//                 display 快照（拓扑/DPI 变化?）定位真因。
+//   • flag = 0  → 不是 cloak；看 onScreen（被挪出所有屏幕?）、bounds、
+//                 isVisible、aot、display 快照（拓扑/DPI 变化?）定位真因。
 
 const fs = require("fs");
 
@@ -21,6 +26,8 @@ const DWMWA_CLOAK = 13;     // set：让本进程 cloak/uncloak 自己的窗口
 const DWMWA_CLOAKED = 14;   // get：读 cloak 状态(0 / APP=1 / SHELL=2 / INHERITED=4)
 const POLL_MS = 2000;
 const HEARTBEAT_EVERY = 15; // 每 ~30s 打一次单行心跳，即使 flag 没变
+// 默认纯只读；仅显式 opt-in 才试写 uncloak（见文件头说明）。
+const UNCLOAK_OPT_IN = process.env.CLAWD_CLOAK_DIAG_UNCLOAK === "1";
 
 function createCloakDiagnostic(options = {}) {
   const isWin = options.isWin != null ? !!options.isWin : process.platform === "win32";
@@ -54,8 +61,15 @@ function createCloakDiagnostic(options = {}) {
   }
 
   const lastFlag = new Map();
+  const powerListeners = [];
+  const screenListeners = [];
   let timer = null;
   let ticks = 0;
+
+  function hrStr(hr) {
+    if (typeof hr !== "number") return String(hr);
+    return hr === 0 ? "0" : `0x${(hr >>> 0).toString(16)}`;
+  }
 
   function hwndOf(win) {
     try {
@@ -71,7 +85,8 @@ function createCloakDiagnostic(options = {}) {
     try {
       const out = Buffer.alloc(4);
       const hr = dwmGet(hwnd, DWMWA_CLOAKED, out, 4);
-      return { hr, flag: hr === 0 ? out.readInt32LE(0) : null };
+      // DWMWA_CLOAKED 是 DWORD（无符号）：0 / APP=1 / SHELL=2 / INHERITED=4
+      return { hr, flag: hr === 0 ? out.readUInt32LE(0) : null };
     } catch (err) {
       return { hr: `throw:${err && err.message}`, flag: null };
     }
@@ -86,7 +101,31 @@ function createCloakDiagnostic(options = {}) {
     }
   }
 
-  // 单窗口完整状态：cloak flag/hr + isVisible + alwaysOnTop + bounds
+  // 窗口 bounds 与哪个 display 有交集、交集面积——直接回答"窗口在不在屏幕可见区"。
+  function coverage(bounds) {
+    if (!screen || typeof screen.getAllDisplays !== "function" || !bounds) return "onScreen=?";
+    try {
+      let best = null;
+      for (const d of screen.getAllDisplays()) {
+        const db = d.bounds || {};
+        const x = Math.max(bounds.x, db.x);
+        const y = Math.max(bounds.y, db.y);
+        const r = Math.min(bounds.x + bounds.width, db.x + db.width);
+        const btm = Math.min(bounds.y + bounds.height, db.y + db.height);
+        const w = r - x;
+        const h = btm - y;
+        if (w > 0 && h > 0) {
+          const area = w * h;
+          if (!best || area > best.area) best = { id: d.id, area };
+        }
+      }
+      return best ? `onScreen=YES display#${best.id} interArea=${best.area}` : "onScreen=NO";
+    } catch {
+      return "onScreen=err";
+    }
+  }
+
+  // 单窗口完整状态：cloak flag/hr + isVisible + alwaysOnTop + bounds + onScreen
   function winSnapshot(name, win) {
     if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) {
       return `${name}: <destroyed/null>`;
@@ -96,12 +135,13 @@ function createCloakDiagnostic(options = {}) {
     const { hr, flag } = readCloaked(hwnd);
     const vis = typeof win.isVisible === "function" ? win.isVisible() : "?";
     const aot = typeof win.isAlwaysOnTop === "function" ? win.isAlwaysOnTop() : "?";
+    let bounds = null;
     let b = "?";
     try {
-      const r = win.getBounds();
-      b = `${r.x},${r.y} ${r.width}x${r.height}`;
+      bounds = win.getBounds();
+      b = `${bounds.x},${bounds.y} ${bounds.width}x${bounds.height}`;
     } catch {}
-    return `${name}: flag=${flag} hr=${hr} visible=${vis} aot=${aot} bounds=[${b}]`;
+    return `${name}: flag=${flag} hr=${hrStr(hr)} visible=${vis} aot=${aot} bounds=[${b}] ${coverage(bounds)}`;
   }
 
   function displaySnapshot() {
@@ -129,43 +169,60 @@ function createCloakDiagnostic(options = {}) {
   }
 
   function tick() {
-    ticks += 1;
-    const heartbeat = ticks % HEARTBEAT_EVERY === 0;
-    for (const entry of getWindows()) {
-      const name = entry && entry.name;
-      const win = entry && entry.win;
-      if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) continue;
-      const hwnd = hwndOf(win);
-      if (!hwnd) { if (heartbeat) log(`${name}: no hwnd`); continue; }
-      const { flag } = readCloaked(hwnd);
-      const prev = lastFlag.get(name);
-      if (flag !== prev) {
-        lastFlag.set(name, flag);
-        dumpFull(`${name} flag ${prev} -> ${flag}`);
-        // 仅对 APP(1) 试 uncloak：验证 DwmSetWindowAttribute(CLOAK=false) 原语
-        if (flag === 1) {
-          const setHr = tryUncloak(hwnd);
-          const after = readCloaked(hwnd);
-          log(`  ${name}: APP uncloak -> setHr=${setHr}, flag now=${after.flag} (hr=${after.hr})`);
+    try {
+      ticks += 1;
+      const heartbeat = ticks % HEARTBEAT_EVERY === 0;
+      for (const entry of getWindows()) {
+        const name = entry && entry.name;
+        const win = entry && entry.win;
+        if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) continue;
+        const hwnd = hwndOf(win);
+        if (!hwnd) { if (heartbeat) log(`${name}: no hwnd`); continue; }
+        const { flag } = readCloaked(hwnd);
+        const prev = lastFlag.get(name);
+        if (flag !== prev) {
+          lastFlag.set(name, flag);
+          dumpFull(`${name} flag ${prev} -> ${flag}`);
+          // 默认只读；仅在显式 opt-in 时对 APP(1) 试 uncloak（会改窗口状态）。
+          if (flag === 1 && UNCLOAK_OPT_IN) {
+            const setHr = tryUncloak(hwnd);
+            const after = readCloaked(hwnd);
+            log(`  [MUTATE] ${name}: APP uncloak -> setHr=${hrStr(setHr)}, flag now=${after.flag} (hr=${hrStr(after.hr)})`);
+          }
+        } else if (heartbeat) {
+          log(winSnapshot(name, win));
         }
-      } else if (heartbeat) {
-        log(winSnapshot(name, win));
       }
+    } catch (err) {
+      log(`tick error: ${err && err.message}`);
     }
+  }
+
+  function onPowerEvent(ev) {
+    try { log(`*** powerMonitor:${ev} ***`); dumpFull(`power:${ev}`); }
+    catch (err) { log(`power handler error: ${err && err.message}`); }
+  }
+  function onScreenEvent(ev) {
+    try { log(`*** screen:${ev} ***`); dumpFull(`screen:${ev}`); }
+    catch (err) { log(`screen handler error: ${err && err.message}`); }
   }
 
   return {
     start() {
-      log(`=== start poll=${POLL_MS}ms ptrSize=${ptrSize} ===`);
-      dumpFull("startup");
+      log(`=== start poll=${POLL_MS}ms ptrSize=${ptrSize} uncloak=${UNCLOAK_OPT_IN ? "on" : "off"} ===`);
+      try { dumpFull("startup"); } catch (err) { log(`startup dump error: ${err && err.message}`); }
       if (powerMonitor && typeof powerMonitor.on === "function") {
         for (const ev of ["suspend", "resume", "lock-screen", "unlock-screen"]) {
-          powerMonitor.on(ev, () => { log(`*** powerMonitor:${ev} ***`); dumpFull(`power:${ev}`); });
+          const h = () => onPowerEvent(ev);
+          powerListeners.push([ev, h]);
+          powerMonitor.on(ev, h);
         }
       }
       if (screen && typeof screen.on === "function") {
         for (const ev of ["display-added", "display-removed", "display-metrics-changed"]) {
-          screen.on(ev, () => { log(`*** screen:${ev} ***`); dumpFull(`screen:${ev}`); });
+          const h = () => onScreenEvent(ev);
+          screenListeners.push([ev, h]);
+          screen.on(ev, h);
         }
       }
       timer = setInterval(tick, POLL_MS);
@@ -173,6 +230,14 @@ function createCloakDiagnostic(options = {}) {
     },
     stop() {
       if (timer) { clearInterval(timer); timer = null; }
+      if (powerMonitor && typeof powerMonitor.removeListener === "function") {
+        for (const [ev, h] of powerListeners) powerMonitor.removeListener(ev, h);
+      }
+      if (screen && typeof screen.removeListener === "function") {
+        for (const [ev, h] of screenListeners) screen.removeListener(ev, h);
+      }
+      powerListeners.length = 0;
+      screenListeners.length = 0;
       log("=== stop ===");
     },
   };
