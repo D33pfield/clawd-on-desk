@@ -1326,7 +1326,7 @@ const _permCtx = {
   },
 };
 const _perm = initPermission(_permCtx);
-const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, maybeStartRemoteApproval, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
+const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, maybeStartRemoteApproval, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
@@ -1835,7 +1835,6 @@ agentRuntime = createAgentRuntimeMain({
   isAgentEnabled: (agentId) => _isAgentEnabled(_settingsController.getSnapshot(), agentId),
   updateSession: (sessionId, state, event, opts) => updateSession(sessionId, state, event, opts),
   captureGhosttyTerminalId,
-  showCodexNotifyBubble: (payload) => showCodexNotifyBubble(payload),
   clearCodexNotifyBubbles: (...args) => clearCodexNotifyBubbles(...args),
 });
 
@@ -3788,6 +3787,52 @@ if (!gotTheLock) {
     }
   }
 
+  // ── Codex official-hook health nudge ──
+  //
+  // Codex approval awareness now depends entirely on the official
+  // PermissionRequest hook (the JSONL approval heuristic was removed). If that
+  // hook silently failed to register — or [features].hooks=false, or it needs
+  // Codex /hooks review — the user gets NO approval prompts and no fallback.
+  // Nudge once, edge-triggered: notify only when the breakage KIND changes
+  // (deduped via the persisted signature) and reset when healthy, so a broken
+  // hook warns at most once per distinct breakage, never every launch. The
+  // Windows tray balloon is the active nudge; the Agents-tab badge is the
+  // always-on, cross-platform surface.
+  function fireCodexHookNudge(verdict) {
+    try {
+      const tray = _menu && typeof _menu.getTray === "function" ? _menu.getTray() : null;
+      if (tray && process.platform === "win32" && typeof tray.displayBalloon === "function") {
+        tray.displayBalloon({
+          iconType: "warning",
+          title: t("codexHookHealthNudgeTitle"),
+          content: t("codexHookHealthNudgeBody"),
+        });
+      }
+    } catch (err) {
+      console.warn("Clawd: Codex hook balloon failed:", err && err.message);
+    }
+    console.warn(`Clawd: Codex official hook needs attention (${verdict.signature}): ${verdict.detailText || ""}`);
+  }
+
+  function maybeNudgeCodexHookHealth() {
+    try {
+      const { getCodexHookHealth, decideCodexHookNotification } = require("./codex-hook-health");
+      const snapshot = _settingsController.getSnapshot();
+      const verdict = getCodexHookHealth({ prefs: snapshot });
+      const prevSignature = _settingsController.get("codexHookHealthLastNotified") || "";
+      const decision = decideCodexHookNotification(verdict, prevSignature, {
+        codexEnabled: _isAgentEnabled(snapshot, "codex"),
+        notifyEnabled: _settingsController.get("codexHookHealthNotifyEnabled") !== false,
+      });
+      if (decision.nextSignature !== prevSignature) {
+        _settingsController.applyUpdate("codexHookHealthLastNotified", decision.nextSignature);
+      }
+      if (decision.shouldNotify) fireCodexHookNudge(verdict);
+    } catch (err) {
+      console.warn("Clawd: Codex hook health nudge failed:", err && err.message);
+    }
+  }
+
   app.whenReady().then(() => {
     // macOS: override the dock icon with a version padded to the macOS icon
     // grid (~80.5% of the canvas, ~100px transparent margin per side) so the
@@ -3904,6 +3949,11 @@ if (!gotTheLock) {
     // and startUpdateScheduler() short-circuits on !app.isPackaged.
     try { reconcilePendingOnStartup(); } catch (err) { updateLog(`reconcile failed: ${err && err.message}`); }
     try { startUpdateScheduler(); } catch (err) { updateLog(`scheduler start failed: ${err && err.message}`); }
+
+    // Deferred so any startup Codex hook sync has settled before we read the
+    // on-disk hook state; unref'd so it never blocks a fast quit.
+    const codexHookNudgeTimer = setTimeout(maybeNudgeCodexHookHealth, 4000);
+    if (codexHookNudgeTimer && typeof codexHookNudgeTimer.unref === "function") codexHookNudgeTimer.unref();
   });
 
   app.on("before-quit", () => {
