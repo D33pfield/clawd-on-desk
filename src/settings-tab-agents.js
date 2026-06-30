@@ -611,6 +611,15 @@
           text.appendChild(desc);
         },
       }));
+      // Startup nudge gate: warn (once per breakage) when the official hook —
+      // now the ONLY Codex approval path — is disabled / needs review / inactive.
+      const codexHookNotifyRow = helpers.buildSwitchRow({
+        key: "codexHookHealthNotifyEnabled",
+        labelKey: "rowCodexHookHealthNotify",
+        descKey: "rowCodexHookHealthNotifyDesc",
+      });
+      codexHookNotifyRow.classList.add("row-sub");
+      rows.push(codexHookNotifyRow);
     }
     if (caps.permissionApproval || caps.interactiveBubble) {
       rows.push(buildAgentSwitchRow({
@@ -790,6 +799,28 @@
     const installed = readers.readAgentIntegrationInstalled(agentId);
     badge.classList.toggle("not-installed", !installed);
     badge.textContent = t(installed ? "agentIntegrationInstalled" : "agentIntegrationNotInstalled");
+    if (agentId === "codex") annotateCodexHookHealth(badge, installed);
+  }
+
+  // Codex approval awareness now depends ENTIRELY on the official PermissionRequest
+  // hook (JSONL no longer infers approvals). A hook that is registered but
+  // disabled / needs-review / mis-registered still reads as "Installed" from
+  // prefs, yet Codex never runs it — so the pet shows no approval prompts. Overlay
+  // an amber warning, sourced from the same check the Doctor uses (so they agree),
+  // with the specific reason in the tooltip. Async + best-effort: if the probe is
+  // unavailable or healthy, the badge keeps its base "Installed" state.
+  function annotateCodexHookHealth(badge, installed) {
+    if (!badge) return;
+    badge.classList.remove("hook-warning");
+    badge.removeAttribute("title");
+    if (!installed || !window.doctor || typeof window.doctor.codexHookHealth !== "function") return;
+    window.doctor.codexHookHealth().then((health) => {
+      if (!health || health.healthy || !health.signature) return;
+      if (!readers.readAgentIntegrationInstalled("codex")) return;
+      badge.classList.add("hook-warning");
+      badge.textContent = t("agentCodexHookNeedsAttention");
+      if (health.reasonKey) badge.title = t(health.reasonKey);
+    }).catch(() => {});
   }
 
   function syncAgentIntegrationAction(meta) {

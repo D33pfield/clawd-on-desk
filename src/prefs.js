@@ -115,6 +115,13 @@ const SCHEMA = {
   showDock: { type: "boolean", default: false },
   manageClaudeHooksAutomatically: { type: "boolean", default: true },
   autoStartWithClaude: { type: "boolean", default: false },
+  // Codex approval awareness depends entirely on the official PermissionRequest
+  // hook (JSONL no longer infers approvals). These surface its health: the
+  // toggle gates the startup nudge, and LastNotified is the edge-trigger dedup
+  // signature (empty = healthy/never-warned) so a broken hook nags at most once
+  // per distinct breakage, not every launch. See codex-hook-health.js.
+  codexHookHealthNotifyEnabled: { type: "boolean", default: true },
+  codexHookHealthLastNotified: { type: "string", default: "" },
   // System-backed: actual truth lives in OS login items / autostart files.
   // `openAtLoginHydrated` starts false; main.js's startup hydrate helper imports
   // the current system value into prefs on first run, then flips this flag.
