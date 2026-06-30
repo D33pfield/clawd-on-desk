@@ -331,6 +331,11 @@ function windowsPowerShellBin(options = {}) {
 function buildWindowsEncodedNodeHookCommand(nodeBin, scriptPath, args, options = {}) {
   const argv = Array.isArray(args) ? args : [];
   const psCommand = [
+    // Silence PowerShell's progress stream first. On a host where modules have
+    // not been cached yet, auto-loading emits a CLIXML "Preparing modules for
+    // first use." record on stderr even on success, which a hook runner may
+    // surface as noise or misread as a failure.
+    "$ProgressPreference = 'SilentlyContinue';",
     "&",
     quotePowerShellSingleArg(nodeBin),
     quotePowerShellSingleArg(scriptPath),
@@ -341,7 +346,16 @@ function buildWindowsEncodedNodeHookCommand(nodeBin, scriptPath, args, options =
 }
 
 function decodeWindowsEncodedCommand(command) {
-  const match = String(command || "").match(/(?:^|\s)-(?:EncodedCommand|enc|e)\s+([A-Za-z0-9+/=]+)/i);
+  const text = String(command || "").trim();
+  // Only decode when the command's executable — its first token — is PowerShell.
+  // A loose substring search would misfire on an unrelated command that merely
+  // mentions powershell elsewhere (e.g. `echo powershell -enc <base64>`).
+  const head = text.match(/^"([^"]+)"|^'([^']+)'|^(\S+)/);
+  const exe = ((head && (head[1] || head[2] || head[3])) || "").replace(/^.*[\\/]/, "").toLowerCase();
+  if (exe !== "powershell" && exe !== "powershell.exe" && exe !== "pwsh" && exe !== "pwsh.exe") {
+    return null;
+  }
+  const match = text.match(/(?:^|\s)-(?:EncodedCommand|enc|e)\s+([A-Za-z0-9+/=]+)/i);
   if (!match) return null;
   try {
     const decoded = Buffer.from(match[1], "base64").toString("utf16le").trim();
@@ -352,7 +366,13 @@ function decodeWindowsEncodedCommand(command) {
 }
 
 function extractFirstQuotedToken(command) {
-  const text = String(command || "").trim().replace(/^&\s+/, "");
+  let text = String(command || "").trim();
+  // The encoded payload may prepend PowerShell statements (e.g.
+  // `$ProgressPreference = 'SilentlyContinue';`) before the `&` call operator.
+  // Anchor on a call operator at a statement boundary (start, or after `;`) so a
+  // `& ` inside a preceding string literal can't be mistaken for the operator.
+  const call = text.match(/(?:^|;)\s*&\s+/);
+  if (call) text = text.slice(call.index + call[0].length).trim();
   const single = text.match(/^'((?:''|[^'])*)'/);
   if (single) return single[1].replace(/''/g, "'");
   const double = text.match(/^"((?:\\"|[^"])*)"/);

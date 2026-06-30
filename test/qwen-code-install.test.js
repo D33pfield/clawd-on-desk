@@ -187,9 +187,13 @@ describe("Qwen Code hook installer", () => {
       command.startsWith("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "),
       `unexpected command prefix: ${command}`
     );
-    assert.strictEqual(
-      decodeWindowsEncodedCommand(command),
-      `& '${nodeBin}' 'D:/clawd/hooks/qwen-code-hook.js' 'PermissionRequest'`
+    // The decoded payload is prefixed with a progress-silencing statement, so
+    // assert the call-operator portion via endsWith rather than exact equality.
+    assert.ok(
+      decodeWindowsEncodedCommand(command).endsWith(
+        `& '${nodeBin}' 'D:/clawd/hooks/qwen-code-hook.js' 'PermissionRequest'`
+      ),
+      `unexpected decoded payload: ${decodeWindowsEncodedCommand(command)}`
     );
   });
 

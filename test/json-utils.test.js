@@ -3,7 +3,46 @@ const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { extractExistingNodeBin, extractExistingNodeBinFromCommands, formatNodeHookCommand, writeJsonAtomicAsync, createBackup, writeJsonAtomicWithBackup, writeJsonAtomicWithBackupAsync, pruneOldBackups, pruneOldBackupsAsync, DEFAULT_BACKUP_KEEP } = require("../hooks/json-utils");
+const { extractExistingNodeBin, extractExistingNodeBinFromCommands, formatNodeHookCommand, writeJsonAtomicAsync, createBackup, writeJsonAtomicWithBackup, writeJsonAtomicWithBackupAsync, pruneOldBackups, pruneOldBackupsAsync, DEFAULT_BACKUP_KEEP, decodeWindowsEncodedCommand, extractFirstQuotedToken } = require("../hooks/json-utils");
+
+describe("decodeWindowsEncodedCommand", () => {
+  const payload = Buffer.from("& 'C:/x/reasonix-hook.js'", "utf16le").toString("base64");
+
+  it("decodes when the executable (first token) is PowerShell", () => {
+    const cmd = `C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -EncodedCommand ${payload}`;
+    assert.match(decodeWindowsEncodedCommand(cmd), /reasonix-hook\.js/);
+  });
+
+  it("decodes a quoted pwsh executable", () => {
+    assert.match(decodeWindowsEncodedCommand(`"C:/pwsh/pwsh.exe" -enc ${payload}`), /reasonix-hook\.js/);
+  });
+
+  it("returns null when the first token is not PowerShell", () => {
+    // An unrelated command that merely mentions powershell must not be decoded.
+    assert.strictEqual(decodeWindowsEncodedCommand(`echo powershell -enc ${payload}`), null);
+  });
+});
+
+describe("extractFirstQuotedToken", () => {
+  it("reads the binary after a leading PowerShell statement prefix", () => {
+    assert.strictEqual(
+      extractFirstQuotedToken("$ProgressPreference = 'SilentlyContinue'; & 'C:/n/node.exe' 'h.js'"),
+      "C:/n/node.exe"
+    );
+  });
+
+  it("ignores a `& ` inside a preceding string literal (statement-boundary anchor)", () => {
+    assert.strictEqual(
+      extractFirstQuotedToken("$x = 'A & B'; & 'C:/Tools/node.exe' 'h.js'"),
+      "C:/Tools/node.exe"
+    );
+  });
+
+  it("handles a bare call operator and a legacy quoted command", () => {
+    assert.strictEqual(extractFirstQuotedToken("& 'node' 'h.js'"), "node");
+    assert.strictEqual(extractFirstQuotedToken('"node" "h.js"'), "node");
+  });
+});
 
 describe("extractExistingNodeBin", () => {
   it("extracts node path from flat command format", () => {

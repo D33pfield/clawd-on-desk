@@ -34,7 +34,11 @@ const REASONIX_HOOK_EVENTS = [
 ];
 
 function isClawdHookCommand(command) {
-  return typeof command === "string" && command.includes(MARKER);
+  // Reuse the shared matcher so we still recognize our own hooks when they were
+  // written as a PowerShell -EncodedCommand: the marker is base64-encoded inside
+  // the payload, so a plain substring check would miss them and we'd re-append
+  // duplicate entries on every run (breaking idempotency).
+  return commandMatchesMarker(command, MARKER);
 }
 
 function buildReasonixHookEntry(command) {
@@ -42,10 +46,23 @@ function buildReasonixHookEntry(command) {
 }
 
 function buildReasonixHookCommand(nodeBin, hookScript, options = {}) {
-  // Reasonix already wraps commands with `cmd /c` on Windows (see hook.go
-  // shellInvocation). Use "none" so we output a bare command — adding our own
-  // `cmd /d /s /c` wrapper would double-wrap and break path resolution.
-  return formatNodeHookCommand(nodeBin, hookScript, { ...options, windowsWrapper: "none" });
+  // Reasonix appears to run hook commands through `cmd /c <command>` on Windows.
+  // NOTE: inferred from PR #503's bug report + a local `cmd /c` simulation, not
+  // yet confirmed against Reasonix's own source — a real Reasonix CLI Windows
+  // smoke test is still pending. Under that assumption, cmd's quote rules corrupt
+  // the command in two independent ways:
+  //   1. a quoted first token — `cmd /c "node" "script"` becomes `node" "script`
+  //      after cmd strips the leading/trailing quote (its >2-quote rule);
+  //   2. any quoted path containing a space.
+  // A bare/unquoted form would fix node but then break on spaced script paths
+  // (e.g. Clawd installed under `C:\Users\John Doe\`). So on Windows we always
+  // wrap in PowerShell -EncodedCommand: the base64 payload bypasses cmd's
+  // parser entirely and works for bare `node`, absolute paths, and spaces alike.
+  const platform = options.platform || process.platform;
+  if (platform === "win32") {
+    return formatNodeHookCommand(nodeBin, hookScript, { ...options, windowsWrapper: "encoded" });
+  }
+  return formatNodeHookCommand(nodeBin, hookScript, options);
 }
 
 function isDesiredReasonixHookEntry(entry, desiredCommand) {
