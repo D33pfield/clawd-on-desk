@@ -21,6 +21,17 @@ let mainTickTimer = null;
 let mainTickActive = false;
 let nextMainTickAt = 0;
 
+// ── Spin detection: tracks cursor circling to trigger dizzy animation ──
+let lastCursorAngle = null;             // last cursor angle (radians) relative to eye-tracking origin
+let accumulatedSpin = 0;                // signed accumulated angular displacement
+let dizzyCooldownUntil = 0;             // timestamp until which dizzy cannot re-trigger
+let lastSpinTickAt = 0;                 // timestamp of last spin tick
+
+const SPIN_THRESHOLD = Math.PI * 4;     // 2 full circles (signed) to trigger dizzy
+const SPIN_IDLE_RESET_MS = 500;         // a pause longer than this resets the spin meter
+const SPIN_MIN_RADIUS = 24;             // cursor must be this many px from center to count
+const DIZZY_COOLDOWN_MS = 12000;        // can't re-trigger dizzy for 12s
+
 const FAST_TICK_MS = 50;
 const BOOST_TICK_MS = 100;
 const IDLE_TICK_MS = 250;
@@ -41,6 +52,7 @@ let MOUSE_SLEEP_TIMEOUT = 0;
 let SVG_IDLE_FOLLOW = null;
 let IDLE_ANIMS = [];
 let SLEEP_MODE = "full";
+let THEME_SUPPORTS_DIZZY = false;
 
 function refreshTheme() {
   theme = ctx.theme;
@@ -49,6 +61,11 @@ function refreshTheme() {
   SVG_IDLE_FOLLOW = theme.states.idle[0];
   IDLE_ANIMS = (theme.idleAnimations || []).map(a => ({ svg: a.file, duration: a.duration }));
   SLEEP_MODE = theme.sleepSequence && theme.sleepSequence.mode === "direct" ? "direct" : "full";
+  // Precompute dizzy support so the per-tick spin detector can gate cheaply and skip all
+  // its math on themes that don't define a real dizzy state (e.g. Calico, Cloudling).
+  THEME_SUPPORTS_DIZZY = !!(theme.states && Array.isArray(theme.states.dizzy) && theme.states.dizzy.length > 0
+    && theme.timings && theme.timings.autoReturn
+    && Number.isFinite(theme.timings.autoReturn.dizzy) && theme.timings.autoReturn.dizzy > 0);
 }
 
 refreshTheme();
@@ -170,6 +187,9 @@ function runMainTickOnce() {
       mouseStillSince = Date.now();
       lastEyeDx = 0;
       lastEyeDy = 0;
+      lastCursorAngle = null;
+      accumulatedSpin = 0;
+      lastSpinTickAt = 0;
       if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
       if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
     }
@@ -360,6 +380,51 @@ function runMainTickOnce() {
       ctx.sendToRenderer("eye-move", eyeDx, eyeDy);
     }
 
+    // --- Spin detection: detect sustained circling around the pet to trigger dizzy ---
+    // Only active during normal idle eye-follow (not mini-idle, not idle-look), and only
+    // when the active theme actually supports dizzy (THEME_SUPPORTS_DIZZY) — so unsupported
+    // themes (Calico, Cloudling) skip the math entirely and keep normal idle behavior.
+    //
+    // We accumulate SIGNED angular displacement: circling one way keeps the same sign and
+    // builds toward the threshold, while back-and-forth wiggling cancels out. The meter
+    // resets on a pause, or when the cursor is too close to the eye-tracking origin (where
+    // the angle is dominated by sub-pixel jitter), instead of decaying every tick — so a
+    // genuine two-circle gesture reaches ±SPIN_THRESHOLD precisely.
+    if (idleNow && !miniIdleNow && !isMouseIdle && moved && THEME_SUPPORTS_DIZZY) {
+      const now = Date.now();
+
+      if (dist < SPIN_MIN_RADIUS) {
+        // Too close to the center — angle is unreliable; break the accumulation chain.
+        lastCursorAngle = null;
+        accumulatedSpin = 0;
+      } else {
+        const angle = Math.atan2(relY, relX);
+        const stalled = lastSpinTickAt > 0 && (now - lastSpinTickAt) > SPIN_IDLE_RESET_MS;
+        if (lastCursorAngle === null || stalled) {
+          // First sample, or resumed after a pause → (re)start the meter.
+          accumulatedSpin = 0;
+        } else {
+          let delta = angle - lastCursorAngle;
+          if (delta > Math.PI) delta -= 2 * Math.PI;
+          if (delta < -Math.PI) delta += 2 * Math.PI;
+          accumulatedSpin += delta; // signed: reversing direction cancels progress
+
+          if (Math.abs(accumulatedSpin) >= SPIN_THRESHOLD && now > dizzyCooldownUntil) {
+            accumulatedSpin = 0;
+            lastCursorAngle = null;
+            lastSpinTickAt = 0;
+            dizzyCooldownUntil = now + DIZZY_COOLDOWN_MS;
+            lastEyeDx = 0;
+            lastEyeDy = 0;
+            ctx.setState("dizzy");
+            return nextDelay();
+          }
+        }
+        lastCursorAngle = angle;
+      }
+      lastSpinTickAt = now;
+    }
+
     return nextDelay();
 }
 
@@ -383,6 +448,10 @@ function cleanup() {
   lastEyeDy = 0;
   lastPointerBridgeKey = null;
   lastPointerBridgePayload = null;
+  lastCursorAngle = null;
+  accumulatedSpin = 0;
+  dizzyCooldownUntil = 0;
+  lastSpinTickAt = 0;
 }
 
 // Expose mouseStillSince for wake poll (state.js deep sleep timeout)
