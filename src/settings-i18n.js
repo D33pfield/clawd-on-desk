@@ -3303,6 +3303,7 @@
     "Bynlk", "zxypro1", "NeroAyase", "divergentD", "Ne9roni", "QingXB", "29206394",
     "Tsdsj", "godlockin",
     "sLingli", "ustin-star", "cod3hulk", "lxgxhsy", "rebootcrab-blip",
+    "zhaoxv210", "serenNan", "IatomicreactorI", "quantai1314", "Git-creat7", "undownding", "chrono-meta",
   ];
 
   root.ClawdSettingsI18n = {
