@@ -69,7 +69,7 @@ const REASONIX_HOOK_EVENTS = [
 ];
 
 function isClawdHookCommand(command) {
-  return typeof command === "string" && command.includes(MARKER);
+  return commandMatchesMarker(command, MARKER);
 }
 
 function buildReasonixHookEntry(command) {

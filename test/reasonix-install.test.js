@@ -100,6 +100,70 @@ describe("Reasonix hook installer", () => {
     assert.strictEqual(result.skipped, REASONIX_HOOK_EVENTS.length);
   });
 
+  it("is idempotent for Windows EncodedCommand hooks", () => {
+    const homeDir = makeTempHome();
+    const options = {
+      silent: true,
+      homeDir,
+      platform: "win32",
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+      powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    };
+
+    const first = registerReasonixHooks(options);
+    const second = registerReasonixHooks(options);
+
+    assert.strictEqual(first.added, REASONIX_HOOK_EVENTS.length);
+    assert.strictEqual(second.added, 0);
+    assert.strictEqual(second.updated, 0);
+    assert.strictEqual(second.skipped, REASONIX_HOOK_EVENTS.length);
+
+    const settings = readJson(path.join(homeDir, ".reasonix", "settings.json"));
+    for (const event of REASONIX_HOOK_EVENTS) {
+      assert.strictEqual(settings.hooks[event].length, 1, `duplicate encoded hook for ${event}`);
+      assert.match(settings.hooks[event][0].command, /-EncodedCommand /);
+      assert.match(decodeWindowsEncodedCommand(settings.hooks[event][0].command), /reasonix-hook\.js/);
+    }
+  });
+
+  it("rewrites and dedupes existing Windows EncodedCommand hooks", () => {
+    const homeDir = makeTempHome();
+    const settingsPath = path.join(homeDir, ".reasonix", "settings.json");
+    const options = {
+      silent: true,
+      homeDir,
+      platform: "win32",
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+      powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    };
+    const staleCommand = __test.buildReasonixHookCommand(
+      "C:\\Old Node\\node.exe",
+      "C:/old-clawd/hooks/reasonix-hook.js",
+      options
+    );
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      hooks: {
+        Stop: [
+          { match: "*", command: staleCommand },
+          { match: "*", command: "echo user-hook" },
+          { match: "*", command: staleCommand },
+        ],
+      },
+    }));
+
+    const result = registerReasonixHooks(options);
+
+    assert.strictEqual(result.added, REASONIX_HOOK_EVENTS.length - 1);
+    assert.strictEqual(result.updated, 1);
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.hooks.Stop.length, 2);
+    assert.strictEqual(settings.hooks.Stop[1].command, "echo user-hook");
+    const decoded = decodeWindowsEncodedCommand(settings.hooks.Stop[0].command);
+    assert.match(decoded, /reasonix-hook\.js/);
+    assert.doesNotMatch(decoded, /old-clawd/);
+    assert.match(decoded, /C:\\Program Files\\nodejs\\node\.exe/);
+  });
+
   it("generates bare node command on Windows without spaces", () => {
     const command = __test.buildReasonixHookCommand(
       "C:\\nodejs\\node.exe",
