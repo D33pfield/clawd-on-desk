@@ -135,6 +135,7 @@
       "NOTICE.md",
       "src/**/*",
       "assets/icon.ico",
+      "assets/icon.png",
       "assets/icons/**/*",
       "assets/icons/agents/**/*",
       "assets/svg/**/*",
