@@ -35,9 +35,12 @@ const ANTIGRAVITY_HOOK_EVENTS = [
 ];
 const DEFAULT_HOOK_TIMEOUT_SECONDS = 10;
 // #568 budget: stdin timeout + child timeout must stay below
-// DEFAULT_HOOK_TIMEOUT_SECONDS with headroom for shell startup, or the outer
-// hooks.json timeout kills the wrapper before the fallback line is printed.
-const FAIL_OPEN_CHILD_TIMEOUT_SECONDS = 7;
+// DEFAULT_HOOK_TIMEOUT_SECONDS with real headroom, or the outer hooks.json
+// timeout kills the wrapper before the fallback line is printed. Measured
+// worst case (never-closed stdin + hung child) at 2+7 was 9.5-9.7s on a warm
+// machine — a PowerShell cold start under AV scanning would blow past 10s —
+// so the child watchdog stays at 6s to keep ~2s of startup headroom.
+const FAIL_OPEN_CHILD_TIMEOUT_SECONDS = 6;
 const FAIL_OPEN_STDIN_TIMEOUT_SECONDS = 2;
 
 function fallbackStdoutForEvent(event) {
