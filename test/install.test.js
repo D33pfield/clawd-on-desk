@@ -3,7 +3,16 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { registerHooks, unregisterHooks, registerHooksAsync, unregisterHooksAsync, __test } = require("../hooks/install");
+const {
+  registerHooks,
+  unregisterHooks,
+  registerHooksAsync,
+  unregisterHooksAsync,
+  registerClaudeStatusline,
+  unregisterClaudeStatusline,
+  STATUSLINE_MARKER,
+  __test,
+} = require("../hooks/install");
 const { buildPermissionUrl, SERVER_PORTS } = require("../hooks/server-config");
 const {
   parseClaudeVersion,
@@ -1624,5 +1633,162 @@ describe("Hook installer settings backup", () => {
     assert.strictEqual(countBaks(), 3, `backups must stay capped at backupKeep, found ${countBaks()}`);
     // The live file still has Clawd's hooks plus the user's own hook preserved.
     assert.ok(getClawdCommands(readSettings(settingsPath), "Stop").length > 0, "Clawd hooks still installed");
+  });
+});
+
+describe("Claude Code statusline installer", () => {
+  it("registers the statusline command when settings.json has none", () => {
+    const settingsPath = makeTempSettings({});
+
+    const result = registerClaudeStatusline({ silent: true, settingsPath, platform: "darwin", nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.installed, true);
+    assert.strictEqual(result.changed, true);
+    assert.strictEqual(result.skippedExisting, false);
+    const settings = readSettings(settingsPath);
+    assert.strictEqual(settings.statusLine.type, "command");
+    assert.ok(settings.statusLine.command.includes(STATUSLINE_MARKER));
+    assert.ok(settings.statusLine.command.includes("/usr/local/bin/node"));
+  });
+
+  it("is idempotent on second run", () => {
+    const settingsPath = makeTempSettings({});
+    registerClaudeStatusline({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const result = registerClaudeStatusline({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.changed, false);
+  });
+
+  // On Windows Claude Code runs statusLine.command through Git Bash whenever
+  // Git is installed (a Claude Code install prerequisite), so the PowerShell
+  // call-operator form (`& "..."`) is a bash syntax error and the statusline
+  // dies silently. statusLine has no `shell` field to pin PowerShell.
+  it("win32: writes a bash-safe command (bare node) when the node path has spaces", () => {
+    const settingsPath = makeTempSettings({});
+
+    registerClaudeStatusline({
+      silent: true,
+      settingsPath,
+      platform: "win32",
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+    });
+
+    const command = readSettings(settingsPath).statusLine.command;
+    assert.ok(!command.startsWith("& "), command);
+    assert.ok(command.startsWith('node "'), command);
+    assert.ok(command.includes(STATUSLINE_MARKER));
+  });
+
+  it("win32: keeps a space-free absolute node path, unquoted with forward slashes", () => {
+    const settingsPath = makeTempSettings({});
+
+    registerClaudeStatusline({
+      silent: true,
+      settingsPath,
+      platform: "win32",
+      nodeBin: "C:\\nvm\\v20.11.0\\node.exe",
+    });
+
+    const command = readSettings(settingsPath).statusLine.command;
+    assert.ok(command.startsWith('C:/nvm/v20.11.0/node.exe "'), command);
+  });
+
+  it("win32: rewrites our own legacy PowerShell-only command on re-register (startup sync migration)", () => {
+    const settingsPath = makeTempSettings({
+      statusLine: {
+        type: "command",
+        command: '& "C:\\Program Files\\nodejs\\node.exe" "C:/app/hooks/claude-statusline.js"',
+        padding: 0,
+      },
+    });
+
+    const result = registerClaudeStatusline({
+      silent: true,
+      settingsPath,
+      platform: "win32",
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+    });
+
+    assert.strictEqual(result.changed, true);
+    assert.strictEqual(result.skippedExisting, false);
+    const command = readSettings(settingsPath).statusLine.command;
+    assert.ok(!command.startsWith("& "), command);
+    assert.ok(command.includes(STATUSLINE_MARKER));
+  });
+
+  it("never overwrites a pre-existing third-party statusline", () => {
+    const settingsPath = makeTempSettings({
+      statusLine: { type: "command", command: "~/.claude/my-custom-statusline.sh" },
+    });
+
+    const result = registerClaudeStatusline({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.skippedExisting, true);
+    assert.strictEqual(readSettings(settingsPath).statusLine.command, "~/.claude/my-custom-statusline.sh");
+  });
+
+  it("preserves other settings.json keys", () => {
+    const settingsPath = makeTempSettings({ model: "opus" });
+
+    registerClaudeStatusline({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readSettings(settingsPath);
+    assert.strictEqual(settings.model, "opus");
+    assert.ok(settings.statusLine.command.includes(STATUSLINE_MARKER));
+  });
+
+  it("registers into a UTF-8-BOM'd settings.json instead of throwing (Notepad's default save format)", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-install-"));
+    const settingsPath = path.join(tmpDir, "settings.json");
+    fs.writeFileSync(settingsPath, "﻿" + JSON.stringify({ model: "opus" }), "utf8");
+    tempDirs.push(tmpDir);
+
+    const result = registerClaudeStatusline({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.installed, true);
+    assert.strictEqual(result.changed, true);
+    const settings = readSettings(settingsPath);
+    assert.strictEqual(settings.model, "opus");
+    assert.ok(settings.statusLine.command.includes(STATUSLINE_MARKER));
+  });
+
+  it("unregisters from a UTF-8-BOM'd settings.json instead of throwing", () => {
+    const settingsPath = makeTempSettings({});
+    registerClaudeStatusline({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    const withBom = "﻿" + fs.readFileSync(settingsPath, "utf8");
+    fs.writeFileSync(settingsPath, withBom, "utf8");
+
+    const result = unregisterClaudeStatusline({ silent: true, settingsPath });
+
+    assert.strictEqual(result.removed, 1);
+    assert.strictEqual(readSettings(settingsPath).statusLine, undefined);
+  });
+
+  it("unregister removes only a Clawd-owned statusline", () => {
+    const settingsPath = makeTempSettings({});
+    registerClaudeStatusline({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const result = unregisterClaudeStatusline({ silent: true, settingsPath, backup: true });
+
+    assert.deepStrictEqual(result, {
+      installed: true,
+      removed: 1,
+      changed: true,
+      settingsPath,
+      backupPath: result.backupPath,
+    });
+    assert.strictEqual(readSettings(settingsPath).statusLine, undefined);
+  });
+
+  it("unregister leaves a third-party statusline untouched", () => {
+    const settingsPath = makeTempSettings({
+      statusLine: { type: "command", command: "~/.claude/my-custom-statusline.sh" },
+    });
+
+    const result = unregisterClaudeStatusline({ silent: true, settingsPath });
+
+    assert.deepStrictEqual(result, { installed: true, removed: 0, changed: false, settingsPath });
+    assert.strictEqual(readSettings(settingsPath).statusLine.command, "~/.claude/my-custom-statusline.sh");
   });
 });
