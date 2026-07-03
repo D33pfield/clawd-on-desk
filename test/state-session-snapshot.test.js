@@ -9,6 +9,7 @@ const {
   buildSessionSnapshot,
   getActiveSessionAliasKeys,
   sessionSnapshotSignature,
+  sessionDisplayTitle,
 } = require("../src/state-session-snapshot");
 
 const STATE_PRIORITY = {
@@ -52,6 +53,33 @@ describe("isSessionInProgress state mapping", () => {
   it("returns false for nullish sessions", () => {
     assert.strictEqual(isSessionInProgress(null), false);
     assert.strictEqual(isSessionInProgress(undefined), false);
+  });
+});
+
+describe("sessionDisplayTitle cwd fallback", () => {
+  it("falls back to path.basename(cwd) for normal project paths", () => {
+    assert.strictEqual(
+      sessionDisplayTitle("qoderwork:abc123", session("working", { cwd: "/home/me/projects/myapp" })),
+      "myapp"
+    );
+  });
+
+  it("skips QoderWork internal workspace cwds so the HUD never shows a raw workspace id", () => {
+    assert.strictEqual(
+      sessionDisplayTitle("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "/Users/me/.qoderwork/workspace/mqgw60jiigjsjcid" })),
+      "qoderw.."
+    );
+    assert.strictEqual(
+      sessionDisplayTitle("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "C:\\Users\\me\\.qoderwork\\workspace\\abc123" })),
+      "qoderw.."
+    );
+  });
+
+  it("keeps the cwd basename for non-QoderWork agents even inside a QoderWork workspace dir", () => {
+    assert.strictEqual(
+      sessionDisplayTitle("claude:xyz789", session("working", { agentId: "claude-code", cwd: "/Users/me/.qoderwork/workspace/mqgw60jiigjsjcid" })),
+      "mqgw60jiigjsjcid"
+    );
   });
 });
 

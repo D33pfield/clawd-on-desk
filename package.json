@@ -48,6 +48,8 @@
     "uninstall:qoder-hooks": "node hooks/qoder-install.js --uninstall",
     "install:reasonix-hooks": "node hooks/reasonix-install.js",
     "uninstall:reasonix-hooks": "node hooks/reasonix-install.js --uninstall",
+    "install:qoderwork-hooks": "node hooks/qoderwork-install.js",
+    "uninstall:qoderwork-hooks": "node hooks/qoderwork-install.js --uninstall",
     "cleanup:integrations": "node hooks/cleanup-integrations.js --apply",
     "register-protocol:dev": "node launch.js --register-protocol"
   },
