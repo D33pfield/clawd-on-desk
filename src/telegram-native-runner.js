@@ -25,9 +25,22 @@ const { createTranslator } = require("./i18n");
 
 const APPROVAL_CALLBACK_RE = /^cp:([a-z0-9]+):(a|d|s(\d+))$/;
 const LEGACY_APPROVAL_CALLBACK_RE = /^clawdperm:([a-z0-9]+):(allow|deny)$/;
+// Elicitation (AskUserQuestion) callback actions:
+//   o<question>_<option> - select option <option> of question <question>
+//   x<question>          - pick "Other" on question <question> (free-text reply follows)
+//   c<question>          - confirm the in-progress multi-select answer for question <question>
+//   b<question>          - go back to the question before <question>
+//   t                     - bail out to the terminal (parity with Deny's "go to terminal")
+const ELICITATION_CALLBACK_RE = /^cq:([a-z0-9]+):(o(\d+)_(\d+)|x(\d+)|c(\d+)|b(\d+)|t)$/;
 const MAX_MESSAGE_TEXT = 3800;
 const MAX_BUTTON_TEXT = 32;
 const DEFAULT_APPROVAL_TIMEOUT_MS = 90000;
+// Elicitation waits on the user to read (possibly several) questions and think
+// through an answer, not just tap Allow/Deny - give it more room than a plain
+// approval before treating silence as a timeout.
+const DEFAULT_ELICITATION_TIMEOUT_MS = 300000;
+const MAX_ELICITATION_QUESTIONS = 5;
+const MAX_ELICITATION_OPTIONS = 5;
 // R1a notifications are fire-and-forget: a slow send must not pile up behind
 // the snapshot fanout that triggers it. Bound each send and drop on timeout.
 const DEFAULT_NOTIFY_TIMEOUT_MS = 10000;
@@ -131,6 +144,135 @@ function normalizeApprovalDecision(decision) {
   return null;
 }
 
+function clampText(value, maxLen) {
+  const text = compactMessageText(value, maxLen);
+  return text;
+}
+
+// Mirrors feishu-approval-client.js's normalizeElicitationPayload clamping
+// rules so a malformed or oversized AskUserQuestion payload can't blow past
+// Telegram's message/button length limits or produce an unbounded card.
+function normalizeElicitationPayload(payload) {
+  const title = clampText(payload && payload.title, 120);
+  if (!title) return null;
+  const rawQuestions = Array.isArray(payload && payload.questions) ? payload.questions : [];
+  const questions = rawQuestions
+    .slice(0, MAX_ELICITATION_QUESTIONS)
+    .map((question) => {
+      if (!question || typeof question !== "object") return null;
+      const questionText = clampText(question.question, 240);
+      if (!questionText) return null;
+      const options = Array.isArray(question.options)
+        ? question.options
+          .slice(0, MAX_ELICITATION_OPTIONS)
+          .map((option) => {
+            if (!option || typeof option !== "object") return null;
+            const label = clampText(option.label, MAX_BUTTON_TEXT);
+            if (!label) return null;
+            return { label };
+          })
+          .filter(Boolean)
+        : [];
+      return {
+        header: clampText(question.header, 80),
+        question: questionText,
+        multiSelect: question.multiSelect === true,
+        options,
+      };
+    })
+    .filter(Boolean);
+  if (!questions.length) return null;
+  return {
+    title,
+    detail: payload && payload.detail != null ? clampText(payload.detail, MAX_MESSAGE_TEXT) : "",
+    agentId: clampText(payload && payload.agentId, 80),
+    folder: clampText(payload && payload.folder, 80),
+    questions,
+  };
+}
+
+function buildElicitationHeaderText(payload) {
+  const parts = [payload.title];
+  if (payload.detail) parts.push(payload.detail);
+  return parts.join("\n\n");
+}
+
+// Renders the currently active question as the full message body: the
+// (stable) header built once from the payload, plus a progress line and the
+// question itself. The whole message is re-sent via editMessageText on every
+// navigation step - there is no separate "card body" that stays fixed the way
+// requestApproval's does, since which question is showing IS the body.
+function buildElicitationQuestionText(payload, questionIndex) {
+  const header = buildElicitationHeaderText(payload);
+  const total = payload.questions.length;
+  const question = payload.questions[questionIndex];
+  const progress = `Question ${questionIndex + 1}/${total}`;
+  const questionLines = [progress];
+  if (question.header) questionLines.push(question.header);
+  questionLines.push(question.question);
+  return `${header}\n\n${questionLines.join("\n")}`;
+}
+
+function buildElicitationOtherPromptText(payload, questionIndex) {
+  const base = buildElicitationQuestionText(payload, questionIndex);
+  return `${base}\n\nReply to this message with your answer.`;
+}
+
+// selectedSet is the in-progress (unconfirmed) multi-select toggle state for
+// the currently active question - always empty for a single-select question,
+// since tapping an option there resolves immediately instead of toggling.
+function buildElicitationKeyboard(payload, questionIndex, selectedSet) {
+  const question = payload.questions[questionIndex];
+  const callbackBase = `cq:${payload._id}`;
+  const rows = question.options.map((option, optionIndex) => {
+    const checked = selectedSet && selectedSet.has(optionIndex);
+    const label = question.multiSelect ? `${checked ? "☑" : "☐"} ${option.label}` : option.label;
+    return [{ text: clampText(label, MAX_BUTTON_TEXT), callback_data: `${callbackBase}:o${questionIndex}_${optionIndex}` }];
+  });
+  rows.push([{ text: "Other", callback_data: `${callbackBase}:x${questionIndex}` }]);
+  if (question.multiSelect) {
+    rows.push([{ text: "Confirm selection", callback_data: `${callbackBase}:c${questionIndex}` }]);
+  }
+  const navRow = [];
+  if (questionIndex > 0) navRow.push({ text: "◀ Back", callback_data: `${callbackBase}:b${questionIndex}` });
+  navRow.push({ text: "Go to terminal", callback_data: `${callbackBase}:t` });
+  rows.push(navRow);
+  return rows;
+}
+
+function parseElicitationCallbackData(data) {
+  if (typeof data !== "string") return null;
+  const match = data.match(ELICITATION_CALLBACK_RE);
+  if (!match) return null;
+  const id = match[1];
+  if (match[3] !== undefined) {
+    const questionIndex = Number(match[3]);
+    const optionIndex = Number(match[4]);
+    if (!Number.isInteger(questionIndex) || !Number.isInteger(optionIndex)) return null;
+    return { id, action: { type: "option", questionIndex, optionIndex } };
+  }
+  if (match[5] !== undefined) {
+    const questionIndex = Number(match[5]);
+    if (!Number.isInteger(questionIndex)) return null;
+    return { id, action: { type: "other", questionIndex } };
+  }
+  if (match[6] !== undefined) {
+    const questionIndex = Number(match[6]);
+    if (!Number.isInteger(questionIndex)) return null;
+    return { id, action: { type: "confirm", questionIndex } };
+  }
+  if (match[7] !== undefined) {
+    const questionIndex = Number(match[7]);
+    if (!Number.isInteger(questionIndex)) return null;
+    return { id, action: { type: "back", questionIndex } };
+  }
+  return { id, action: { type: "terminal" } };
+}
+
+function findNextUnansweredQuestionIndex(payload, answers) {
+  return payload.questions.findIndex((question) => !Object.prototype.hasOwnProperty.call(answers, question.question));
+}
+
 function extractTelegramMessageId(result) {
   const id = result && result.message_id;
   if (typeof id === "number" && Number.isInteger(id) && id > 0) return id;
@@ -152,6 +294,7 @@ function createTelegramNativeRunner({
   log = () => {},
   longPollTimeoutMs = 25, // Telegram seconds
   approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS,
+  elicitationTimeoutMs = DEFAULT_ELICITATION_TIMEOUT_MS,
   notifyTimeoutMs = DEFAULT_NOTIFY_TIMEOUT_MS,
   pollRetryInitialMs = DEFAULT_POLL_RETRY_INITIAL_MS,
   pollRetryMaxMs = DEFAULT_POLL_RETRY_MAX_MS,
@@ -165,6 +308,9 @@ function createTelegramNativeRunner({
   let polling = false;
   let pendingTest = null; // { nonce, chatId, allowedUser, messageId }
   const pendingApprovals = new Map(); // id -> { resolve, chatId, allowedUser, messageId, text, timer, signal, onAbort, suggestionIndexes }
+  // id -> { resolve, chatId, allowedUser, messageId, payload, activeQuestionIndex,
+  //         answers, multiSelectSelections, awaitingOtherFor, timer, signal, onAbort }
+  const pendingElicitations = new Map();
   let lastError = null;
   let pollRetryDelayMs = Math.max(1, pollRetryInitialMs);
 
@@ -181,6 +327,7 @@ function createTelegramNativeRunner({
       polling,
       pendingTest: !!pendingTest,
       pendingApprovalCount: pendingApprovals.size,
+      pendingElicitationCount: pendingElicitations.size,
       lastError,
     };
   }
@@ -243,6 +390,7 @@ function createTelegramNativeRunner({
       abortController = null;
     }
     clearAllApprovals();
+    clearAllElicitations();
   }
 
   async function loopFirst(signal) {
@@ -374,7 +522,14 @@ function createTelegramNativeRunner({
       return true;
     }
 
-    if (typeof onTextMessage !== "function" || !text.trim()) return false;
+    if (!text.trim()) return false;
+    const replyToMessageId = message.reply_to_message && message.reply_to_message.message_id;
+    const handledOther = replyToMessageId
+      ? await handleElicitationOtherReply({ text, replyToMessageId, message })
+      : false;
+    if (handledOther) return true;
+
+    if (typeof onTextMessage !== "function") return false;
     if (typeof isTextMessageEnabled === "function" && !isTextMessageEnabled()) return true;
     const auth = getAuthorizedMessageContext(message);
     if (!auth) return true;
@@ -406,7 +561,9 @@ function createTelegramNativeRunner({
     }
 
     const handledApproval = await handleApprovalCallback(cb, { fromId, chatId });
-    if (!handledApproval) return;
+    if (handledApproval) return;
+
+    await handleElicitationCallback(cb, { fromId, chatId });
   }
 
   async function handleTestCallback(cb, { fromId, chatId }) {
@@ -669,6 +826,262 @@ function createTelegramNativeRunner({
     });
   }
 
+  // Best-effort: rewrite the elicitation card in place, either to show the
+  // next/previous question (with a fresh keyboard) or - when called without a
+  // keyboard - to show a final status line with no keyboard, mirroring
+  // appendApprovalStatus's fallback-to-stripped-keyboard behavior on failure.
+  function renderElicitationCard(entry, text, keyboard) {
+    if (!entry.chatId || !entry.messageId) return Promise.resolve();
+    const payload = { chat_id: entry.chatId, message_id: entry.messageId, text };
+    if (keyboard) payload.reply_markup = { inline_keyboard: keyboard };
+    return client.editMessageText(payload).catch(() => {
+      if (!keyboard) return undefined;
+      return stripApprovalKeyboard(entry.chatId, entry.messageId);
+    });
+  }
+
+  function renderElicitationQuestion(entry) {
+    const text = entry.awaitingOtherFor != null
+      ? buildElicitationOtherPromptText(entry.payload, entry.awaitingOtherFor)
+      : buildElicitationQuestionText(entry.payload, entry.activeQuestionIndex);
+    const keyboard = entry.awaitingOtherFor != null
+      ? null
+      : buildElicitationKeyboard(entry.payload, entry.activeQuestionIndex, entry.multiSelectSelections);
+    return renderElicitationCard(entry, text, keyboard || [[{ text: "Go to terminal", callback_data: `cq:${entry.payload._id}:t` }]]);
+  }
+
+  // Single resolution point for an elicitation, used by every exit: a
+  // Telegram-side submit/terminal tap, a desktop answer (abort), a timeout, or
+  // polling stop. Claims the entry synchronously before any network I/O, same
+  // race-safety reasoning as finishApproval.
+  function finishElicitation(id, decision, reason) {
+    const entry = pendingElicitations.get(id);
+    if (!entry) return;
+    pendingElicitations.delete(id);
+    if (entry.timer) clearTimeout(entry.timer);
+    if (entry.signal && entry.onAbort) {
+      try { entry.signal.removeEventListener("abort", entry.onAbort); } catch {}
+    }
+    entry.resolve(decision);
+    const status = decision === "terminal"
+      ? "🖥️ Continuing in terminal"
+      : (decision && typeof decision === "object" && decision.type === "elicitation-submit")
+        ? "✅ Submitted"
+        : APPROVAL_RESOLVED_ELSEWHERE_STATUS[reason];
+    const baseText = entry.awaitingOtherFor != null
+      ? buildElicitationOtherPromptText(entry.payload, entry.awaitingOtherFor)
+      : buildElicitationQuestionText(entry.payload, entry.activeQuestionIndex);
+    if (!entry.chatId || !entry.messageId) return;
+    renderElicitationCard(entry, status ? `${baseText}\n\n${status}` : baseText, null);
+  }
+
+  function clearAllElicitations() {
+    const ids = Array.from(pendingElicitations.keys());
+    for (const id of ids) finishElicitation(id, null, "stopped");
+  }
+
+  // Records an answer for the active question and moves the entry forward:
+  // to the next unanswered question, or - once every question has an answer -
+  // resolves the whole request with the collected answers.
+  function advanceElicitation(id, entry) {
+    entry.multiSelectSelections = new Set();
+    entry.awaitingOtherFor = null;
+    const nextIndex = findNextUnansweredQuestionIndex(entry.payload, entry.answers);
+    if (nextIndex === -1) {
+      finishElicitation(id, { type: "elicitation-submit", answers: entry.answers });
+      return;
+    }
+    entry.activeQuestionIndex = nextIndex;
+    renderElicitationQuestion(entry).catch(() => {});
+  }
+
+  async function handleElicitationCallback(cb, { fromId, chatId }) {
+    const data = typeof cb.data === "string" ? cb.data : "";
+    const parsed = parseElicitationCallbackData(data);
+    if (!parsed) return false;
+    const entry = pendingElicitations.get(parsed.id);
+    if (!entry) {
+      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: "Expired" }); } catch {}
+      return true;
+    }
+    const isAllowedUser = !entry.allowedUser || fromId === String(entry.allowedUser);
+    const isExpectedChat = !entry.chatId || chatId === String(entry.chatId);
+    if (!isAllowedUser || !isExpectedChat) {
+      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: "Not allowed" }); } catch {}
+      return true;
+    }
+
+    const { action } = parsed;
+
+    if (action.type === "terminal") {
+      client.answerCallbackQuery({ callback_query_id: cb.id, text: "Continuing in terminal" }).catch(() => {});
+      finishElicitation(parsed.id, "terminal");
+      return true;
+    }
+
+    // Every other action targets a specific question; a tap on a stale
+    // rendering of a question that's no longer active (double-tap, or the
+    // card already moved on) is a no-op rather than corrupting a later
+    // question's state.
+    if (action.questionIndex !== entry.activeQuestionIndex) {
+      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: "Expired" }); } catch {}
+      return true;
+    }
+    const question = entry.payload.questions[entry.activeQuestionIndex];
+    if (!question) return true;
+
+    if (action.type === "back") {
+      if (entry.activeQuestionIndex <= 0) {
+        try { await client.answerCallbackQuery({ callback_query_id: cb.id }); } catch {}
+        return true;
+      }
+      client.answerCallbackQuery({ callback_query_id: cb.id }).catch(() => {});
+      entry.activeQuestionIndex -= 1;
+      entry.multiSelectSelections = new Set();
+      entry.awaitingOtherFor = null;
+      renderElicitationQuestion(entry).catch(() => {});
+      return true;
+    }
+
+    if (action.type === "other") {
+      client.answerCallbackQuery({ callback_query_id: cb.id }).catch(() => {});
+      entry.awaitingOtherFor = entry.activeQuestionIndex;
+      renderElicitationQuestion(entry).catch(() => {});
+      return true;
+    }
+
+    if (action.type === "option") {
+      const option = question.options[action.optionIndex];
+      if (!option) {
+        try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: "Unavailable" }); } catch {}
+        return true;
+      }
+      if (question.multiSelect) {
+        client.answerCallbackQuery({ callback_query_id: cb.id }).catch(() => {});
+        if (entry.multiSelectSelections.has(action.optionIndex)) {
+          entry.multiSelectSelections.delete(action.optionIndex);
+        } else {
+          entry.multiSelectSelections.add(action.optionIndex);
+        }
+        renderElicitationQuestion(entry).catch(() => {});
+        return true;
+      }
+      client.answerCallbackQuery({ callback_query_id: cb.id, text: "Answered" }).catch(() => {});
+      entry.answers[question.question] = option.label;
+      advanceElicitation(parsed.id, entry);
+      return true;
+    }
+
+    if (action.type === "confirm") {
+      if (!question.multiSelect) return true;
+      if (entry.multiSelectSelections.size === 0) {
+        try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: "Pick at least one" }); } catch {}
+        return true;
+      }
+      client.answerCallbackQuery({ callback_query_id: cb.id, text: "Answered" }).catch(() => {});
+      const labels = Array.from(entry.multiSelectSelections)
+        .sort((a, b) => a - b)
+        .map((optionIndex) => question.options[optionIndex].label);
+      entry.answers[question.question] = labels.join(", ");
+      advanceElicitation(parsed.id, entry);
+      return true;
+    }
+
+    return true;
+  }
+
+  // Answers the active "Other" question with free-text typed as a reply to
+  // the elicitation card, mirroring how a Telegram button tap answers a fixed
+  // option. Must run BEFORE the generic onTextMessage (Direct Send) handler:
+  // a pending elicitation blocks the agent on this decision, so its reply
+  // belongs to the question, not to whatever session Direct Send would guess
+  // from the completion-notification mapping.
+  async function handleElicitationOtherReply({ text, replyToMessageId, message }) {
+    let match = null;
+    for (const [id, entry] of pendingElicitations) {
+      if (entry.awaitingOtherFor != null && entry.messageId === replyToMessageId) {
+        match = { id, entry };
+        break;
+      }
+    }
+    if (!match) return false;
+    const { id, entry } = match;
+    const fromId = message.from && String(message.from.id);
+    const chatId = message.chat && String(message.chat.id);
+    const isAllowedUser = !entry.allowedUser || fromId === String(entry.allowedUser);
+    const isExpectedChat = !entry.chatId || chatId === String(entry.chatId);
+    if (!isAllowedUser || !isExpectedChat) return false;
+    const question = entry.payload.questions[entry.awaitingOtherFor];
+    const answer = compactMessageText(text, 500);
+    if (!question || !answer) return true;
+    entry.answers[question.question] = answer;
+    advanceElicitation(id, entry);
+    return true;
+  }
+
+  function requestElicitation(payload, options = {}) {
+    const chatId = getChatId();
+    const allowedUser = getAllowedUserId();
+    const normalized = normalizeElicitationPayload(payload);
+    const signal = options && options.signal;
+    if (!polling || !chatId || !normalized || (signal && signal.aborted)) {
+      const reason = !polling ? "not polling"
+        : (!chatId ? "missing chat" : (!normalized ? "invalid payload" : "aborted"));
+      log("debug", `native elicitation skipped: ${reason}`);
+      return Promise.resolve(null);
+    }
+    const id = randomId();
+    normalized._id = id;
+    const text = buildElicitationQuestionText(normalized, 0);
+    const keyboard = buildElicitationKeyboard(normalized, 0, null);
+
+    return new Promise((resolve) => {
+      const entry = {
+        resolve,
+        chatId,
+        allowedUser,
+        messageId: null,
+        payload: normalized,
+        activeQuestionIndex: 0,
+        answers: {},
+        multiSelectSelections: new Set(),
+        awaitingOtherFor: null,
+        timer: null,
+        signal,
+        onAbort: null,
+      };
+      pendingElicitations.set(id, entry);
+
+      entry.timer = setTimeout(() => finishElicitation(id, null, "timeout"), Math.max(1, elicitationTimeoutMs));
+      if (entry.timer && typeof entry.timer.unref === "function") entry.timer.unref();
+
+      if (signal) {
+        entry.onAbort = () => finishElicitation(id, null, "elsewhere");
+        signal.addEventListener("abort", entry.onAbort, { once: true });
+      }
+
+      client.sendMessage({
+        chat_id: chatId,
+        text,
+        reply_markup: { inline_keyboard: keyboard },
+      }, signal ? { signal } : undefined).then((msg) => {
+        const current = pendingElicitations.get(id);
+        if (!current || (signal && signal.aborted)) return;
+        current.messageId = msg && msg.message_id;
+        safeLog("debug", "native elicitation card sent");
+      }).catch((err) => {
+        if (signal && signal.aborted) {
+          safeLog("debug", "native elicitation send aborted");
+          finishElicitation(id, null);
+          return;
+        }
+        safeLog("warn", "native elicitation send failed", { error: err && err.message });
+        noteError("elicitation", classifyError(err));
+        finishElicitation(id, null);
+      });
+    });
+  }
+
   // Send one plain-text message with a bounded timeout. No inline keyboard,
   // no pending lifecycle — this is the building block for fire-and-forget
   // notifications (R1a). Returns the raw message or throws a classified error.
@@ -763,10 +1176,12 @@ function createTelegramNativeRunner({
     stop,
     sendTestCard,
     requestApproval,
+    requestElicitation,
     sendNotification,
     getStatus,
     _client: client,
     _pendingApprovals: pendingApprovals,
+    _pendingElicitations: pendingElicitations,
   };
 }
 
