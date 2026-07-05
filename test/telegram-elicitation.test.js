@@ -333,6 +333,51 @@ test("requestElicitation answers the active question from a text reply after tap
   await runner.stop();
 });
 
+test("requestElicitation still answers an Other reply that looks like a slash command", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  let otherData = "";
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("sendMessage", (msg) => {
+    otherData = msg.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.includes(":x0")).callback_data;
+    return { ok: true, result: { message_id: 902, chat: { id: 123 } } };
+  });
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [callbackUpdate({ id: 1, messageId: 902, fromId: 777, data: otherData })],
+  }));
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueueOk("editMessageText", { message_id: 902 });
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    // "/tmp/output.log" parses as a slash command (command="tmp") - it must
+    // still answer the pending question rather than being swallowed as an
+    // unrecognized command.
+    result: [textUpdate({ id: 2, fromId: 777, text: "/tmp/output.log", replyToMessageId: 902 })],
+  }));
+  server.enqueueOk("editMessageText", { message_id: 902 });
+
+  const runner = makeRunner(server);
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestElicitation(singleQuestionPayload());
+  await tick();
+
+  releaseFirstPoll({ ok: true, result: [] });
+  await tick();
+  await tick();
+  await tick();
+
+  const decision = await decisionPromise;
+  assert.deepEqual(decision, {
+    type: "elicitation-submit",
+    answers: { "Pick A or B": "/tmp/output.log" },
+  });
+
+  await runner.stop();
+});
+
 test("requestElicitation ignores option taps and Other replies from a different user", async () => {
   const server = createFakeTelegramServer();
   let releaseFirstPoll;

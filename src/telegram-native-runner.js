@@ -511,6 +511,19 @@ function createTelegramNativeRunner({
   async function handleMessage(message) {
     if (!message) return false;
     const text = typeof message.text === "string" ? message.text : "";
+
+    // Checked before command parsing: a free-text "Other" answer that
+    // happens to start with "/" (e.g. "/help", "/tmp/foo") would otherwise
+    // look like a slash command and get silently swallowed below instead of
+    // answering the question it's a reply to.
+    if (text.trim()) {
+      const replyToMessageId = message.reply_to_message && message.reply_to_message.message_id;
+      const handledOther = replyToMessageId
+        ? await handleElicitationOtherReply({ text, replyToMessageId, message })
+        : false;
+      if (handledOther) return true;
+    }
+
     const parsed = parseMessageCommand(text);
     if (parsed) {
       if (parsed.command !== "status" || typeof onCommand !== "function") return false;
@@ -534,11 +547,6 @@ function createTelegramNativeRunner({
     }
 
     if (!text.trim()) return false;
-    const replyToMessageId = message.reply_to_message && message.reply_to_message.message_id;
-    const handledOther = replyToMessageId
-      ? await handleElicitationOtherReply({ text, replyToMessageId, message })
-      : false;
-    if (handledOther) return true;
 
     if (typeof onTextMessage !== "function") return false;
     if (typeof isTextMessageEnabled === "function" && !isTextMessageEnabled()) return true;
