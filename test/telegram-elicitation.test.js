@@ -171,6 +171,47 @@ test("requestElicitation advances through multiple questions and submits once al
   await runner.stop();
 });
 
+test("requestElicitation still renders the card when a tap races ahead of the sendMessage response", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  let releaseSend;
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("sendMessage", () => new Promise((resolve) => { releaseSend = resolve; }));
+
+  const runner = makeRunner(server);
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestElicitation(singleQuestionPayload());
+  await tick();
+
+  // The callback_data is generated synchronously before sendMessage is even
+  // called, so a real Telegram tap can reach us before that call resolves -
+  // and Telegram itself already knows the message_id it assigned, even
+  // though our client hasn't read it back yet.
+  const sendCall = server.calls.find((call) => call.method === "sendMessage");
+  const optionData = sendCall.payload.reply_markup.inline_keyboard[0][0].callback_data;
+
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [callbackUpdate({ id: 1, messageId: 950, fromId: 777, data: optionData })],
+  }));
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueueOk("editMessageText", { message_id: 950 });
+
+  releaseFirstPoll({ ok: true, result: [] });
+  const decision = await decisionPromise;
+  assert.deepEqual(decision, { type: "elicitation-submit", answers: { "Pick A or B": "A" } });
+
+  await tick();
+  const edit = server.calls.find((call) => call.method === "editMessageText");
+  assert.ok(edit, "the race must not silently drop the final card edit");
+  assert.equal(edit.payload.message_id, 950);
+
+  releaseSend({ ok: true, result: { message_id: 950, chat: { id: 123 } } });
+  await runner.stop();
+});
+
 test("requestElicitation's back button re-renders the previous question without resolving", async () => {
   const server = createFakeTelegramServer();
   let releaseFirstPoll;
@@ -329,6 +370,60 @@ test("requestElicitation answers the active question from a text reply after tap
     type: "elicitation-submit",
     answers: { "Pick A or B": "My custom answer" },
   });
+
+  await runner.stop();
+});
+
+test("requestElicitation's Cancel button returns from the Other prompt to the option list", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  let otherData = "";
+  let cancelData = "";
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("sendMessage", (msg) => {
+    otherData = msg.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.includes(":x0")).callback_data;
+    return { ok: true, result: { message_id: 950, chat: { id: 123 } } };
+  });
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [callbackUpdate({ id: 1, messageId: 950, fromId: 777, data: otherData })],
+  }));
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueue("editMessageText", (edit) => {
+    assert.match(edit.text, /reply to this message/i);
+    cancelData = edit.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.includes(":z0")).callback_data;
+    return { ok: true, result: { message_id: 950 } };
+  });
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [callbackUpdate({ id: 2, messageId: 950, fromId: 777, data: cancelData })],
+  }));
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueue("editMessageText", (edit) => {
+    // Back on the option list for the same (still unanswered) question - not
+    // stuck waiting for text, and not forced to bail out to the terminal.
+    assert.doesNotMatch(edit.text, /reply to this message/i);
+    assert.ok(edit.reply_markup.inline_keyboard.flat().some((btn) => btn.callback_data.endsWith(":o0_0")));
+    return { ok: true, result: { message_id: 950 } };
+  });
+
+  const runner = makeRunner(server);
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestElicitation(singleQuestionPayload());
+  await tick();
+
+  releaseFirstPoll({ ok: true, result: [] });
+  await tick();
+  await tick();
+  await tick();
+  await tick();
+
+  let resolved = false;
+  decisionPromise.then(() => { resolved = true; });
+  await tick();
+  assert.equal(resolved, false, "cancelling Other must not resolve or advance the elicitation");
 
   await runner.stop();
 });

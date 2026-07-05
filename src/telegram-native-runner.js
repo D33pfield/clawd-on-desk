@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 // Bridges TelegramNativeClient (raw API primitives) and the owner-manager's
 // expected handle shape:
@@ -28,10 +28,11 @@ const LEGACY_APPROVAL_CALLBACK_RE = /^clawdperm:([a-z0-9]+):(allow|deny)$/;
 // Elicitation (AskUserQuestion) callback actions:
 //   o<question>_<option> - select option <option> of question <question>
 //   x<question>          - pick "Other" on question <question> (free-text reply follows)
+//   z<question>          - cancel "Other" on question <question>, back to its option list
 //   c<question>          - confirm the in-progress multi-select answer for question <question>
 //   b<question>          - go back to the question before <question>
 //   t                     - bail out to the terminal (parity with Deny's "go to terminal")
-const ELICITATION_CALLBACK_RE = /^cq:([a-z0-9]+):(o(\d+)_(\d+)|x(\d+)|c(\d+)|b(\d+)|t)$/;
+const ELICITATION_CALLBACK_RE = /^cq:([a-z0-9]+):(o(\d+)_(\d+)|x(\d+)|z(\d+)|c(\d+)|b(\d+)|t)$/;
 const MAX_MESSAGE_TEXT = 3800;
 const MAX_BUTTON_TEXT = 32;
 const DEFAULT_APPROVAL_TIMEOUT_MS = 90000;
@@ -144,11 +145,6 @@ function normalizeApprovalDecision(decision) {
   return null;
 }
 
-function clampText(value, maxLen) {
-  const text = compactMessageText(value, maxLen);
-  return text;
-}
-
 // Function-form replacement: dynamic values (question progress numbers) must
 // never be interpolated with the string form of String.replace, which parses
 // $$/$&/$`/$' as special sequences.
@@ -160,28 +156,28 @@ function interpolate(template, token, value) {
 // rules so a malformed or oversized AskUserQuestion payload can't blow past
 // Telegram's message/button length limits or produce an unbounded card.
 function normalizeElicitationPayload(payload) {
-  const title = clampText(payload && payload.title, 120);
+  const title = compactMessageText(payload && payload.title, 120);
   if (!title) return null;
   const rawQuestions = Array.isArray(payload && payload.questions) ? payload.questions : [];
   const questions = rawQuestions
     .slice(0, MAX_ELICITATION_QUESTIONS)
     .map((question) => {
       if (!question || typeof question !== "object") return null;
-      const questionText = clampText(question.question, 240);
+      const questionText = compactMessageText(question.question, 240);
       if (!questionText) return null;
       const options = Array.isArray(question.options)
         ? question.options
           .slice(0, MAX_ELICITATION_OPTIONS)
           .map((option) => {
             if (!option || typeof option !== "object") return null;
-            const label = clampText(option.label, MAX_BUTTON_TEXT);
+            const label = compactMessageText(option.label, MAX_BUTTON_TEXT);
             if (!label) return null;
             return { label };
           })
           .filter(Boolean)
         : [];
       return {
-        header: clampText(question.header, 80),
+        header: compactMessageText(question.header, 80),
         question: questionText,
         multiSelect: question.multiSelect === true,
         options,
@@ -191,9 +187,9 @@ function normalizeElicitationPayload(payload) {
   if (!questions.length) return null;
   return {
     title,
-    detail: payload && payload.detail != null ? clampText(payload.detail, MAX_MESSAGE_TEXT) : "",
-    agentId: clampText(payload && payload.agentId, 80),
-    folder: clampText(payload && payload.folder, 80),
+    detail: payload && payload.detail != null ? compactMessageText(payload.detail, MAX_MESSAGE_TEXT) : "",
+    agentId: compactMessageText(payload && payload.agentId, 80),
+    folder: compactMessageText(payload && payload.folder, 80),
     questions,
   };
 }
@@ -238,7 +234,7 @@ function buildElicitationKeyboard(payload, questionIndex, selectedSet, t) {
   const rows = question.options.map((option, optionIndex) => {
     const checked = selectedSet && selectedSet.has(optionIndex);
     const label = question.multiSelect ? `${checked ? "☑" : "☐"} ${option.label}` : option.label;
-    return [{ text: clampText(label, MAX_BUTTON_TEXT), callback_data: `${callbackBase}:o${questionIndex}_${optionIndex}` }];
+    return [{ text: compactMessageText(label, MAX_BUTTON_TEXT), callback_data: `${callbackBase}:o${questionIndex}_${optionIndex}` }];
   });
   rows.push([{ text: t("telegramElicitationOtherButton"), callback_data: `${callbackBase}:x${questionIndex}` }]);
   if (question.multiSelect) {
@@ -270,10 +266,15 @@ function parseElicitationCallbackData(data) {
   if (match[6] !== undefined) {
     const questionIndex = Number(match[6]);
     if (!Number.isInteger(questionIndex)) return null;
-    return { id, action: { type: "confirm", questionIndex } };
+    return { id, action: { type: "cancelOther", questionIndex } };
   }
   if (match[7] !== undefined) {
     const questionIndex = Number(match[7]);
+    if (!Number.isInteger(questionIndex)) return null;
+    return { id, action: { type: "confirm", questionIndex } };
+  }
+  if (match[8] !== undefined) {
+    const questionIndex = Number(match[8]);
     if (!Number.isInteger(questionIndex)) return null;
     return { id, action: { type: "back", questionIndex } };
   }
@@ -860,13 +861,22 @@ function createTelegramNativeRunner({
   }
 
   function renderElicitationQuestion(entry) {
-    const text = entry.awaitingOtherFor != null
-      ? buildElicitationOtherPromptText(entry.payload, entry.awaitingOtherFor, t)
-      : buildElicitationQuestionText(entry.payload, entry.activeQuestionIndex, t);
-    const keyboard = entry.awaitingOtherFor != null
-      ? null
-      : buildElicitationKeyboard(entry.payload, entry.activeQuestionIndex, entry.multiSelectSelections, t);
-    return renderElicitationCard(entry, text, keyboard || [[{ text: t("telegramElicitationTerminalButton"), callback_data: `cq:${entry.payload._id}:t` }]]);
+    if (entry.awaitingOtherFor != null) {
+      const text = buildElicitationOtherPromptText(entry.payload, entry.awaitingOtherFor, t);
+      const callbackBase = `cq:${entry.payload._id}`;
+      // A dead end otherwise: without a way back to the option list, tapping
+      // Other by mistake (or changing your mind) would force either typing
+      // something or giving up and bailing to the terminal, discarding every
+      // answer already collected for the other questions.
+      const keyboard = [
+        [{ text: t("telegramElicitationCancelOtherButton"), callback_data: `${callbackBase}:z${entry.awaitingOtherFor}` }],
+        [{ text: t("telegramElicitationTerminalButton"), callback_data: `${callbackBase}:t` }],
+      ];
+      return renderElicitationCard(entry, text, keyboard);
+    }
+    const text = buildElicitationQuestionText(entry.payload, entry.activeQuestionIndex, t);
+    const keyboard = buildElicitationKeyboard(entry.payload, entry.activeQuestionIndex, entry.multiSelectSelections, t);
+    return renderElicitationCard(entry, text, keyboard);
   }
 
   // Single resolution point for an elicitation, used by every exit: a
@@ -923,6 +933,13 @@ function createTelegramNativeRunner({
       try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramElicitationToastExpired") }); } catch {}
       return true;
     }
+    // Backfill from the callback's own message id if the in-flight sendMessage
+    // for this card hasn't resolved yet (a fast enough tap can race it) -
+    // every render below reads entry.messageId, and without this every card
+    // edit for this exchange would silently no-op forever, not just once.
+    if (!entry.messageId) {
+      entry.messageId = (cb.message && cb.message.message_id) || entry.messageId;
+    }
     const isAllowedUser = !entry.allowedUser || fromId === String(entry.allowedUser);
     const isExpectedChat = !entry.chatId || chatId === String(entry.chatId);
     if (!isAllowedUser || !isExpectedChat) {
@@ -969,6 +986,13 @@ function createTelegramNativeRunner({
       return true;
     }
 
+    if (action.type === "cancelOther") {
+      client.answerCallbackQuery({ callback_query_id: cb.id }).catch(() => {});
+      entry.awaitingOtherFor = null;
+      renderElicitationQuestion(entry).catch(() => {});
+      return true;
+    }
+
     if (action.type === "option") {
       const option = question.options[action.optionIndex];
       if (!option) {
@@ -992,7 +1016,10 @@ function createTelegramNativeRunner({
     }
 
     if (action.type === "confirm") {
-      if (!question.multiSelect) return true;
+      if (!question.multiSelect) {
+        client.answerCallbackQuery({ callback_query_id: cb.id }).catch(() => {});
+        return true;
+      }
       if (entry.multiSelectSelections.size === 0) {
         try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramElicitationToastPickAtLeastOne") }); } catch {}
         return true;
@@ -1029,7 +1056,15 @@ function createTelegramNativeRunner({
     const chatId = message.chat && String(message.chat.id);
     const isAllowedUser = !entry.allowedUser || fromId === String(entry.allowedUser);
     const isExpectedChat = !entry.chatId || chatId === String(entry.chatId);
-    if (!isAllowedUser || !isExpectedChat) return false;
+    // A reply to a pending elicitation card is this feature's business either
+    // way: returning `false` here (instead of the button-tap handler's
+    // equivalent "not allowed" `true`) would let an unauthorized reply fall
+    // through to the generic Direct Send text pipeline, which re-derives its
+    // own authorization from the same allowedUser/chatId config - harmless
+    // when that config is set, but if it's ever unset (misconfiguration) both
+    // checks degrade to "anyone is authorized" and the reply could get
+    // treated as a Direct Send paste instead of being dropped here.
+    if (!isAllowedUser || !isExpectedChat) return true;
     const question = entry.payload.questions[entry.awaitingOtherFor];
     const answer = compactMessageText(text, 500);
     if (!question || !answer) return true;
@@ -1105,7 +1140,7 @@ function createTelegramNativeRunner({
   // no pending lifecycle — this is the building block for fire-and-forget
   // notifications (R1a). Returns the raw message or throws a classified error.
   // The injected logger ultimately does a synchronous file write
-  // (telegramApprovalLog → permLog → rotatedAppend), which can throw on a
+  // (telegramApprovalLog 鈫?permLog 鈫?rotatedAppend), which can throw on a
   // bad path / EACCES. Notifications are fire-and-forget on an async chain, so
   // a throwing log must not turn into an unhandled rejection.
   function safeLog(level, message, meta) {
