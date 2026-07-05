@@ -473,6 +473,49 @@ test("requestElicitation still answers an Other reply that looks like a slash co
   await runner.stop();
 });
 
+test("requestElicitation fails closed (not open) when allowedUser is unset - both a tap and an Other reply are rejected", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  let optionData = "";
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("sendMessage", (msg) => {
+    optionData = msg.reply_markup.inline_keyboard[0][0].callback_data;
+    return { ok: true, result: { message_id: 1301, chat: { id: 123 } } };
+  });
+  // Unlike the approval flow's "unset allowedUser skips the check" convention,
+  // an elicitation answer must not be acceptable from just anyone in the chat
+  // when allowedUser is blank (misconfigured) - it feeds straight back into
+  // the agent's next step.
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [callbackUpdate({ id: 1, messageId: 1301, fromId: 555, data: optionData })],
+  }));
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [textUpdate({ id: 2, fromId: 555, text: "should also be rejected", replyToMessageId: 1301 })],
+  }));
+
+  const runner = makeRunner(server, { getAllowedUserId: () => "" });
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestElicitation(singleQuestionPayload());
+  await tick();
+
+  releaseFirstPoll({ ok: true, result: [] });
+  await tick();
+  await tick();
+  await tick();
+
+  let resolved = false;
+  decisionPromise.then(() => { resolved = true; });
+  await tick();
+  assert.equal(resolved, false, "neither the tap nor the Other-style reply may answer the question when allowedUser is unset");
+
+  await runner.stop();
+});
+
 test("requestElicitation ignores option taps and Other replies from a different user", async () => {
   const server = createFakeTelegramServer();
   let releaseFirstPoll;

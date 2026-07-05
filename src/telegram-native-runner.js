@@ -285,6 +285,17 @@ function findNextUnansweredQuestionIndex(payload, answers) {
   return payload.questions.findIndex((question) => !Object.prototype.hasOwnProperty.call(answers, question.question));
 }
 
+// Deliberately stricter than the approval flow's equivalent check (which
+// treats an unset allowedUser/chatId as "skip this check", inherited from
+// requestApproval/handleApprovalCallback): an elicitation answer feeds
+// directly back into the agent's next step, so a misconfigured (blank)
+// allowedUser/chatId must fail closed here rather than silently accept
+// input from anyone who can reach the chat.
+function isElicitationCallerAuthorized(entry, fromId, chatId) {
+  if (!entry.allowedUser || !entry.chatId) return false;
+  return fromId === String(entry.allowedUser) && chatId === String(entry.chatId);
+}
+
 function extractTelegramMessageId(result) {
   const id = result && result.message_id;
   if (typeof id === "number" && Number.isInteger(id) && id > 0) return id;
@@ -940,9 +951,7 @@ function createTelegramNativeRunner({
     if (!entry.messageId) {
       entry.messageId = (cb.message && cb.message.message_id) || entry.messageId;
     }
-    const isAllowedUser = !entry.allowedUser || fromId === String(entry.allowedUser);
-    const isExpectedChat = !entry.chatId || chatId === String(entry.chatId);
-    if (!isAllowedUser || !isExpectedChat) {
+    if (!isElicitationCallerAuthorized(entry, fromId, chatId)) {
       try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramElicitationToastNotAllowed") }); } catch {}
       return true;
     }
@@ -1054,17 +1063,12 @@ function createTelegramNativeRunner({
     const { id, entry } = match;
     const fromId = message.from && String(message.from.id);
     const chatId = message.chat && String(message.chat.id);
-    const isAllowedUser = !entry.allowedUser || fromId === String(entry.allowedUser);
-    const isExpectedChat = !entry.chatId || chatId === String(entry.chatId);
     // A reply to a pending elicitation card is this feature's business either
     // way: returning `false` here (instead of the button-tap handler's
     // equivalent "not allowed" `true`) would let an unauthorized reply fall
-    // through to the generic Direct Send text pipeline, which re-derives its
-    // own authorization from the same allowedUser/chatId config - harmless
-    // when that config is set, but if it's ever unset (misconfiguration) both
-    // checks degrade to "anyone is authorized" and the reply could get
-    // treated as a Direct Send paste instead of being dropped here.
-    if (!isAllowedUser || !isExpectedChat) return true;
+    // through to the generic Direct Send text pipeline instead of being
+    // dropped here.
+    if (!isElicitationCallerAuthorized(entry, fromId, chatId)) return true;
     const question = entry.payload.questions[entry.awaitingOtherFor];
     const answer = compactMessageText(text, 500);
     if (!question || !answer) return true;
