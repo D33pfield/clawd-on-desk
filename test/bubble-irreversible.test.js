@@ -138,6 +138,34 @@ describe("detectIrreversible — command-position anchoring (quoted/echoed text 
   }
 });
 
+describe("detectIrreversible — separators inside quotes never create fake segments", () => {
+  // ★cross-family R2 블로커 회귀잠금: 나이브 분할이 인용부 안의 &&/;/|에서 쪼개면
+  // 인용 텍스트가 가짜 명령-위치가 되어 오탐. quote-aware 스캐너로 봉쇄.
+  const quiet = [
+    ["&& inside double quotes", 'git commit -m "docs && git push --force"'],
+    ["; inside double quotes", 'git commit -m "release; npm publish"'],
+    ["; inside echo quotes", 'echo "note; rm -rf build"'],
+    ["| inside nested quotes", 'node -e "console.log(\'x | kubectl delete pods\')"'],
+    ["newline inside single quotes", "printf 'hello\nnpm publish\n'"],
+    ["unbalanced quote stays quiet", 'git commit -m "unclosed && rm -rf x'],
+  ];
+  for (const [label, cmd] of quiet) {
+    it(`quiet: ${label}`, () => {
+      assert.strictEqual(detectIrreversible("Bash", { command: cmd }), null, cmd);
+    });
+  }
+  it("flags: separator OUTSIDE quotes still splits (quoted arg + real force-push)", () => {
+    const r = detectIrreversible("Bash", { command: 'git commit -m "msg" && git push --force' });
+    assert.ok(r && r.tag === "force-push");
+  });
+  it("quote-bomb input is fast", () => {
+    const t0 = process.hrtime.bigint();
+    detectIrreversible("Bash", { command: '"a;'.repeat(60000) });
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(ms < 100, `took ${ms}ms`);
+  });
+});
+
 describe("detectIrreversible — input robustness (attacker-influenced string)", () => {
   it("repeated-prefix adversarial input is fast (quadratic-stall regression lock)", () => {
     // ★cross-family 감사 High 회귀잠금: 비앵커 + [^\n]* 조합이 'git push '.repeat(40k)에서

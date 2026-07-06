@@ -119,12 +119,39 @@
   // Wrappers that prefix a command without changing what it runs.
   const WRAPPER = /^(sudo(\s+-[A-Za-z]+)*|env|nohup|time|command)\s+|^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
 
+  function splitOutsideQuotes(cmd) {
+    // Quote-aware split: separators (&&, ||, ;, |, newline) only count OUTSIDE
+    // quotes — `git commit -m "docs && git push --force"` must stay ONE segment,
+    // or the quoted text becomes a fake command position (false positive). Single
+    // linear pass over the (already 4KB-capped) string; an unbalanced quote keeps
+    // the rest as quoted = no split = the quiet direction (precision over recall).
+    const segs = [];
+    let cur = "", quote = null;
+    for (let i = 0; i < cmd.length; i++) {
+      const ch = cmd[i];
+      if (quote) {
+        if (quote === '"' && ch === "\\") { cur += ch + (cmd[i + 1] || ""); i++; continue; }
+        if (ch === quote) quote = null;
+        cur += ch;
+        continue;
+      }
+      if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
+      if (ch === "\n" || ch === ";" || ch === "|" || (ch === "&" && cmd[i + 1] === "&")) {
+        if (ch === "&") i++;                    // consume '&&'
+        if (cmd[i + 1] === "|" && ch === "|") i++;  // consume '||' second bar
+        segs.push(cur); cur = "";
+        if (segs.length >= 50) return segs;     // segment cap
+        continue;
+      }
+      cur += ch;
+    }
+    segs.push(cur);
+    return segs;
+  }
+
   function segmentCommands(cmd) {
-    // Split on shell separators; cap segment count — with the 4KB prefix cap this
-    // bounds total regex work by construction (anchored patterns, short segments).
-    const segs = cmd.split(/&&|\|\||;|\||\n/).slice(0, 50);
     const out = [];
-    for (let seg of segs) {
+    for (let seg of splitOutsideQuotes(cmd)) {
       seg = seg.trim();
       let guard = 0;
       while (WRAPPER.test(seg) && guard++ < 5) seg = seg.replace(WRAPPER, "");
