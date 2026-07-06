@@ -89,6 +89,46 @@
   // last two segments. Returns null for anything that is not MCP-shaped, so the
   // caller falls back to the raw name. This must never throw and must never
   // decide safety/approval behavior.
+  // Irreversible-action hint (display-only). Conservative patterns — precision over
+  // recall: a false badge is noise on a minimalist pet, a missed one just means no hint.
+  // Like the MCP relabel (#445), this never touches Allow/Deny semantics or the
+  // no-decision fallback — it only routes the human's attention to decisions that
+  // cannot be undone (force-push, publish, bulk delete, history rewrite).
+  const IRREVERSIBLE_PATTERNS = [
+    { tag: "force-push", re: /\bgit\s+push\b[^\n]*(\s--force(-with-lease)?\b|\s-f\b)/ },
+    { tag: "remote-delete", re: /\bgit\s+push\b[^\n]*\s--delete\b/ },
+    { tag: "branch-delete", re: /\bgit\s+branch\b[^\n]*\s-D\b/ },
+    { tag: "history-rewrite", re: /\bgit\s+(reset\s+--hard|filter-branch|filter-repo)\b/ },
+    { tag: "file-delete", re: /\brm\s+-[a-zA-Z]*[rf]/ },
+    { tag: "git-clean", re: /\bgit\s+clean\b[^\n]*\s-[a-zA-Z]*f/ },
+    { tag: "publish", re: /\b(npm|pnpm|yarn)\s+publish\b|\btwine\s+upload\b|\bgem\s+push\b|\bcargo\s+publish\b/ },
+    { tag: "repo-delete", re: /\bgh\s+(repo|release)\s+delete\b/ },
+    { tag: "go-public", re: /\bgh\s+repo\s+(create|edit)\b[^\n]*--(public\b|visibility[= ]public)/ },
+    { tag: "db-destroy", re: /\b(DROP\s+(TABLE|DATABASE|SCHEMA)|TRUNCATE\s+TABLE)\b/i },
+    { tag: "infra-destroy", re: /\bterraform\s+destroy\b|\bkubectl\s+delete\b/ },
+  ];
+  const SHELL_TOOLS = new Set(["bash", "shell", "run_command", "exec", "run_terminal_cmd"]);
+
+  function detectIrreversible(name, input) {
+    const toolName = typeof name === "string" ? name.trim().toLowerCase() : "";
+    const obj = input && typeof input === "object" ? input : {};
+    // Shell-ish tools: scan the command string.
+    if (SHELL_TOOLS.has(toolName)) {
+      const cmd = firstStringValue(obj, ["command", "CommandLine", "Command", "cmd", "script"]);
+      if (!cmd) return null;
+      for (const p of IRREVERSIBLE_PATTERNS) {
+        if (p.re.test(cmd)) return { tag: p.tag };
+      }
+      return null;
+    }
+    // Explicit destructive file tools only (generic "delete" substrings would
+    // over-match MCP tools like delete_draft — stay conservative).
+    if (toolName === "delete_file" || toolName === "deletefile" || toolName === "remove_file") {
+      return { tag: "file-delete" };
+    }
+    return null;
+  }
+
   function parseMcpToolName(toolName) {
     if (typeof toolName !== "string" || !toolName) return null;
     const segs = toolName.split("__");
@@ -104,7 +144,7 @@
     return { server, tool, display };
   }
 
-  const api = { formatDetail, formatAntigravityDetail, truncate, firstStringValue, parseMcpToolName };
+  const api = { formatDetail, formatAntigravityDetail, truncate, firstStringValue, parseMcpToolName, detectIrreversible };
 
   if (typeof module === "object" && module.exports) {
     module.exports = api;

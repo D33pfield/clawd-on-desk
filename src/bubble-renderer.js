@@ -1,4 +1,4 @@
-const { formatDetail, truncate, parseMcpToolName } = window.ClawdBubbleFormat;
+const { formatDetail, truncate, parseMcpToolName, detectIrreversible } = window.ClawdBubbleFormat;
 const card = document.getElementById("card");
 const toolPill = document.getElementById("toolPill");
 const toolPillText = document.getElementById("toolPillText");
@@ -15,6 +15,7 @@ function startMarqueeIfOverflowing() {
 toolPill.addEventListener("mouseenter", startMarqueeIfOverflowing);
 toolPill.addEventListener("mouseleave", stopMarquee);
 const commandBlock = document.getElementById("commandBlock");
+const irreversibleBadge = document.getElementById("irreversibleBadge");
 const elicitationForm = document.getElementById("elicitationForm");
 const elicitationProgress = document.getElementById("elicitationProgress");
 const planFeedbackForm = document.getElementById("planFeedbackForm");
@@ -54,6 +55,7 @@ function setSessionTag(data) {
 
 const BUBBLE_STRINGS = {
   en: {
+    irreversibleHint: "Irreversible action \u2014 cannot be undone",
     autoAcceptEdits: "Auto-accept edits",
     switchToPlanMode: "Switch to plan mode",
     allowInDir: "Allow {tool} in {dir}/",
@@ -89,6 +91,7 @@ const BUBBLE_STRINGS = {
     back: "Back",
   },
   zh: {
+    irreversibleHint: "\u4E0D\u53EF\u9006\u64CD\u4F5C\u2014\u2014\u65E0\u6CD5\u64A4\u9500",
     autoAcceptEdits: "\u81EA\u52A8\u63A5\u53D7\u7F16\u8F91",
     switchToPlanMode: "\u5207\u6362\u5230 Plan \u6A21\u5F0F",
     allowInDir: "\u5141\u8BB8 {tool} \u5728 {dir}/",
@@ -124,6 +127,7 @@ const BUBBLE_STRINGS = {
     back: "\u8FD4\u56DE",
   },
   "zh-TW": {
+    irreversibleHint: "\u4E0D\u53EF\u9006\u64CD\u4F5C\u2014\u2014\u7121\u6CD5\u5FA9\u539F",
     autoAcceptEdits: "自動接受編輯",
     switchToPlanMode: "切換到計劃模式",
     allowInDir: "允許 {tool} 在 {dir}/",
@@ -159,6 +163,7 @@ const BUBBLE_STRINGS = {
     back: "返回",
   },
   ko: {
+    irreversibleHint: "\uBE44\uAC00\uC5ED \uC791\uC5C5 \u2014 \uB418\uB3CC\uB9B4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4",
     autoAcceptEdits: "\uD3B8\uC9D1 \uC790\uB3D9 \uC2B9\uC778",
     switchToPlanMode: "Plan \uBAA8\uB4DC\uB85C \uC804\uD658",
     allowInDir: "{dir}/\uC5D0\uC11C {tool} \uD5C8\uC6A9",
@@ -194,6 +199,7 @@ const BUBBLE_STRINGS = {
     back: "\uB4A4\uB85C",
   },
   ja: {
+    irreversibleHint: "\u53D6\u308A\u6D88\u305B\u306A\u3044\u64CD\u4F5C \u2014 \u5143\u306B\u623B\u305B\u307E\u305B\u3093",
     autoAcceptEdits: "編集を自動承認",
     switchToPlanMode: "Plan モードに切り替え",
     allowInDir: "{dir}/ で {tool} を許可",
@@ -839,6 +845,19 @@ function show(data) {
 
   // Command block (textContent only — never innerHTML)
   commandBlock.textContent = formatDetail(data.toolName, data.toolInput, { isAntigravity: !!data.isAntigravity });
+
+  // Irreversible-action hint — display-only (like the MCP relabel above): routes the
+  // human's attention to decisions that cannot be undone. Allow/Deny semantics, the
+  // suggestion buttons, and the no-decision fallback are untouched. textContent only.
+  const irreversible = detectIrreversible(data.toolName, data.toolInput);
+  if (irreversible && !isPlanReview) {
+    irreversibleBadge.textContent = "\u26A0 " + bubbleText(data.lang, "irreversibleHint");
+    irreversibleBadge.setAttribute("data-reason", irreversible.tag);
+    irreversibleBadge.style.display = "";
+  } else {
+    irreversibleBadge.textContent = "";
+    irreversibleBadge.style.display = "none";
+  }
 
   // Button labels
   btnAllow.textContent = isPlanReview ? bubbleText(data.lang, "approve") : bubbleText(data.lang, "allow");
