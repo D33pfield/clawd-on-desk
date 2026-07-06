@@ -135,6 +135,10 @@
         cur += ch;
         continue;
       }
+      if (ch === "\\") {                    // escaped char outside quotes = literal
+        cur += ch + (cmd[i + 1] || ""); i++;  // (`echo docs\; npm publish` must not split)
+        continue;
+      }
       if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
       if (ch === "\n" || ch === ";" || ch === "|" || (ch === "&" && cmd[i + 1] === "&")) {
         if (ch === "&") i++;                    // consume '&&'

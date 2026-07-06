@@ -158,6 +158,15 @@ describe("detectIrreversible — separators inside quotes never create fake segm
     const r = detectIrreversible("Bash", { command: 'git commit -m "msg" && git push --force' });
     assert.ok(r && r.tag === "force-push");
   });
+  it("quiet: escaped separators outside quotes are literal (R3 lock)", () => {
+    // shell은 \;를 리터럴로 취급 — 분할하면 인용-오탐과 같은 클래스의 가짜 세그먼트
+    assert.strictEqual(detectIrreversible("Bash", { command: "echo docs\\; npm publish" }), null);
+    assert.strictEqual(detectIrreversible("Bash", { command: "echo docs\\| kubectl delete pods" }), null);
+  });
+  it("flags: unescaped separator still splits", () => {
+    const r = detectIrreversible("Bash", { command: "echo docs; npm publish" });
+    assert.ok(r && r.tag === "publish");
+  });
   it("quote-bomb input is fast", () => {
     const t0 = process.hrtime.bigint();
     detectIrreversible("Bash", { command: '"a;'.repeat(60000) });
