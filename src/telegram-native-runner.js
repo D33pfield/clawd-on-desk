@@ -907,7 +907,7 @@ function createTelegramNativeRunner({
       ? t("telegramElicitationTerminalStatus")
       : (decision && typeof decision === "object" && decision.type === "elicitation-submit")
         ? t("telegramElicitationSubmittedStatus")
-        : APPROVAL_RESOLVED_ELSEWHERE_STATUS[reason];
+        : approvalResolvedElsewhereStatusText(t, reason);
     const baseText = entry.awaitingOtherFor != null
       ? buildElicitationOtherPromptText(entry.payload, entry.awaitingOtherFor, t)
       : buildElicitationQuestionText(entry.payload, entry.activeQuestionIndex, t);
