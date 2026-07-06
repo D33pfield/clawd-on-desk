@@ -95,4 +95,80 @@ describe("bubble wiring — badge is display-only", () => {
   it("badge style exists", () => {
     assert.match(bubbleCss, /\.irreversible-badge \{/);
   });
+  it("badge is cleared by resetBubbleContent (no leakage into the next bubble)", () => {
+    const reset = bubbleRenderer.slice(
+      bubbleRenderer.indexOf("function resetBubbleContent"),
+      bubbleRenderer.indexOf("function show"));
+    assert.match(reset, /irreversibleBadge\.style\.display = "none"/);
+    assert.match(reset, /irreversibleBadge\.textContent = ""/);
+  });
+  it("badge text makes a defensible claim (no 'cannot be undone' overclaim)", () => {
+    // force-push / branch -D are reflog-recoverable — the hint must not overclaim.
+    assert.doesNotMatch(bubbleRenderer, /cannot be undone/);
+    assert.match(bubbleRenderer, /may not be recoverable/);
+  });
+});
+
+describe("detectIrreversible — command-position anchoring (quoted/echoed text never flags)", () => {
+  // ★cross-family 감사 Medium 회귀잠금: 어디서나-매칭이던 v1은 인용 인자/echo 텍스트를 오탐.
+  // v2는 세그먼트 명령-위치 앵커링 — 인자는 명령이 아니므로 구조적으로 못 flag.
+  const quiet = [
+    ["quoted in commit message", 'git commit -m "git push --force"'],
+    ["echoed force-push", "echo git push --force"],
+    ["echoed publish", "echo npm publish docs"],
+    ["node string literal", 'node -e "console.log(\'npm publish\')"'],
+    ["echoed SQL", "echo 'DROP TABLE users'"],
+  ];
+  for (const [label, cmd] of quiet) {
+    it(`quiet: ${label}`, () => {
+      assert.strictEqual(detectIrreversible("Bash", { command: cmd }), null, cmd);
+    });
+  }
+  const hits = [
+    ["wrapper: sudo", "sudo rm -rf /var/tmp/x", "file-delete"],
+    ["wrapper: env assignment", "FOO=1 git push --force", "force-push"],
+    ["second segment after &&", 'node -e "x" && npm publish', "publish"],
+    ["db client with SQL", 'psql -c "DROP TABLE users"', "db-destroy"],
+  ];
+  for (const [label, cmd, tag] of hits) {
+    it(`flags: ${label}`, () => {
+      const r = detectIrreversible("Bash", { command: cmd });
+      assert.ok(r && r.tag === tag, `${cmd} → ${r && r.tag}`);
+    });
+  }
+});
+
+describe("detectIrreversible — input robustness (attacker-influenced string)", () => {
+  it("repeated-prefix adversarial input is fast (quadratic-stall regression lock)", () => {
+    // ★cross-family 감사 High 회귀잠금: 비앵커 + [^\n]* 조합이 'git push '.repeat(40k)에서
+    // ~12초 stall(권한 버블 = 도구 실행 블로킹 표면). 4KB 캡 + 세그먼트 앵커로 봉쇄.
+    const t0 = process.hrtime.bigint();
+    detectIrreversible("Bash", { command: "git push ".repeat(40000) });
+    detectIrreversible("Bash", { command: "gh repo edit ".repeat(40000) });
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(ms < 100, `took ${ms}ms`);
+  });
+  it("throwing property accessor never propagates (display-only helper must not break the bubble)", () => {
+    const evil = { get command() { throw new Error("boom"); } };
+    assert.strictEqual(detectIrreversible("Bash", evil), null);
+  });
+
+  it("compound commands are caught anywhere in the chain", () => {
+    const r = detectIrreversible("Bash", { command: "cd repo && rm -rf build && echo done" });
+    assert.ok(r);
+    assert.strictEqual(r.tag, "file-delete");
+  });
+  it("megabyte input returns quickly and does not throw (4KB scan cap)", () => {
+    const huge = "a ".repeat(500000) + "git push --force";  // hit beyond cap → quiet is fine
+    const t0 = process.hrtime.bigint();
+    const r = detectIrreversible("Bash", { command: huge });
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(ms < 200, `took ${ms}ms`);
+    assert.strictEqual(r, null);   // beyond the cap — precision-first: quiet, never slow
+  });
+  it("destructive prefix within the cap is still caught on huge input", () => {
+    const huge = "rm -rf / --no-preserve-root " + "x".repeat(1000000);
+    const r = detectIrreversible("Bash", { command: huge });
+    assert.ok(r && r.tag === "file-delete");
+  });
 });

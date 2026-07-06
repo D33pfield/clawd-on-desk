@@ -89,44 +89,80 @@
   // last two segments. Returns null for anything that is not MCP-shaped, so the
   // caller falls back to the raw name. This must never throw and must never
   // decide safety/approval behavior.
-  // Irreversible-action hint (display-only). Conservative patterns — precision over
-  // recall: a false badge is noise on a minimalist pet, a missed one just means no hint.
+  // Irreversible-action hint (display-only). Conservative by construction:
+  // the command string is split into shell segments (&&, ||, ;, |, newline) and each
+  // pattern is anchored at the segment's command position — so quoted arguments
+  // (`git commit -m "git push --force"`) and echoed text (`echo npm publish`) can
+  // never flag, because they are not the command being run. Precision over recall:
+  // a false badge is noise on a minimalist pet, a missed one just means no hint.
   // Like the MCP relabel (#445), this never touches Allow/Deny semantics or the
-  // no-decision fallback — it only routes the human's attention to decisions that
-  // cannot be undone (force-push, publish, bulk delete, history rewrite).
+  // no-decision fallback — it only routes the human's attention to destructive
+  // decisions (force-push, publish, bulk delete, history rewrite).
   const IRREVERSIBLE_PATTERNS = [
-    { tag: "force-push", re: /\bgit\s+push\b[^\n]*(\s--force(-with-lease)?\b|\s-f\b)/ },
-    { tag: "remote-delete", re: /\bgit\s+push\b[^\n]*\s--delete\b/ },
-    { tag: "branch-delete", re: /\bgit\s+branch\b[^\n]*\s-D\b/ },
-    { tag: "history-rewrite", re: /\bgit\s+(reset\s+--hard|filter-branch|filter-repo)\b/ },
-    { tag: "file-delete", re: /\brm\s+-[a-zA-Z]*[rf]/ },
-    { tag: "git-clean", re: /\bgit\s+clean\b[^\n]*\s-[a-zA-Z]*f/ },
-    { tag: "publish", re: /\b(npm|pnpm|yarn)\s+publish\b|\btwine\s+upload\b|\bgem\s+push\b|\bcargo\s+publish\b/ },
-    { tag: "repo-delete", re: /\bgh\s+(repo|release)\s+delete\b/ },
-    { tag: "go-public", re: /\bgh\s+repo\s+(create|edit)\b[^\n]*--(public\b|visibility[= ]public)/ },
-    { tag: "db-destroy", re: /\b(DROP\s+(TABLE|DATABASE|SCHEMA)|TRUNCATE\s+TABLE)\b/i },
-    { tag: "infra-destroy", re: /\bterraform\s+destroy\b|\bkubectl\s+delete\b/ },
+    { tag: "force-push", re: /^git\s+push\b[^\n]*(\s--force(-with-lease)?\b|\s-f\b)/ },
+    { tag: "remote-delete", re: /^git\s+push\b[^\n]*\s--delete\b/ },
+    { tag: "branch-delete", re: /^git\s+branch\b[^\n]*\s-D\b/ },
+    { tag: "history-rewrite", re: /^git\s+(reset\s+--hard|filter-branch|filter-repo)\b/ },
+    { tag: "file-delete", re: /^rm\s+-[a-zA-Z]*[rf]/ },
+    { tag: "git-clean", re: /^git\s+clean\b[^\n]*\s-[a-zA-Z]*f/ },
+    { tag: "publish", re: /^(npm|pnpm|yarn)\s+publish\b|^twine\s+upload\b|^gem\s+push\b|^cargo\s+publish\b/ },
+    { tag: "repo-delete", re: /^gh\s+(repo|release)\s+delete\b/ },
+    { tag: "go-public", re: /^gh\s+repo\s+(create|edit)\b[^\n]*--(public\b|visibility[= ]public)/ },
+    { tag: "infra-destroy", re: /^terraform\s+destroy\b|^kubectl\s+delete\b/ },
   ];
+  // SQL destroys are quoted almost by definition (psql -c 'DROP TABLE …'), so they
+  // get their own rule: the segment's command must be a database client AND the
+  // segment must contain the destructive SQL. `echo 'DROP TABLE'` stays quiet.
+  const DB_CLIENTS = /^(psql|mysql|mysqlsh|sqlite3|mongosh|mongo)\b/;
+  const DB_DESTROY = /\b(DROP\s+(TABLE|DATABASE|SCHEMA)|TRUNCATE\s+TABLE)\b/i;
   const SHELL_TOOLS = new Set(["bash", "shell", "run_command", "exec", "run_terminal_cmd"]);
+  // Wrappers that prefix a command without changing what it runs.
+  const WRAPPER = /^(sudo(\s+-[A-Za-z]+)*|env|nohup|time|command)\s+|^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
+
+  function segmentCommands(cmd) {
+    // Split on shell separators; cap segment count — with the 4KB prefix cap this
+    // bounds total regex work by construction (anchored patterns, short segments).
+    const segs = cmd.split(/&&|\|\||;|\||\n/).slice(0, 50);
+    const out = [];
+    for (let seg of segs) {
+      seg = seg.trim();
+      let guard = 0;
+      while (WRAPPER.test(seg) && guard++ < 5) seg = seg.replace(WRAPPER, "");
+      if (seg) out.push(seg);
+    }
+    return out;
+  }
 
   function detectIrreversible(name, input) {
-    const toolName = typeof name === "string" ? name.trim().toLowerCase() : "";
-    const obj = input && typeof input === "object" ? input : {};
-    // Shell-ish tools: scan the command string.
-    if (SHELL_TOOLS.has(toolName)) {
-      const cmd = firstStringValue(obj, ["command", "CommandLine", "Command", "cmd", "script"]);
-      if (!cmd) return null;
-      for (const p of IRREVERSIBLE_PATTERNS) {
-        if (p.re.test(cmd)) return { tag: p.tag };
+    try {
+      const toolName = typeof name === "string" ? name.trim().toLowerCase() : "";
+      const obj = input && typeof input === "object" ? input : {};
+      // Shell-ish tools: scan the command string, anchored per segment.
+      if (SHELL_TOOLS.has(toolName)) {
+        let cmd = firstStringValue(obj, ["command", "CommandLine", "Command", "cmd", "script"]);
+        if (!cmd) return null;
+        // Cap the scanned prefix: the command string is attacker-influenced (a
+        // prompt-injected agent controls it). Hard cap = O(4KB) by construction.
+        if (cmd.length > 4096) cmd = cmd.slice(0, 4096);
+        for (const seg of segmentCommands(cmd)) {
+          for (const p of IRREVERSIBLE_PATTERNS) {
+            if (p.re.test(seg)) return { tag: p.tag };
+          }
+          if (DB_CLIENTS.test(seg) && DB_DESTROY.test(seg)) return { tag: "db-destroy" };
+        }
+        return null;
+      }
+      // Explicit destructive file tools only (generic "delete" substrings would
+      // over-match MCP tools like delete_draft — stay conservative).
+      if (toolName === "delete_file" || toolName === "deletefile" || toolName === "remove_file") {
+        return { tag: "file-delete" };
       }
       return null;
+    } catch (_e) {
+      // Display-only helper on the permission path — a hint must never be able to
+      // break the bubble (which blocks tool execution). Any surprise → no hint.
+      return null;
     }
-    // Explicit destructive file tools only (generic "delete" substrings would
-    // over-match MCP tools like delete_draft — stay conservative).
-    if (toolName === "delete_file" || toolName === "deletefile" || toolName === "remove_file") {
-      return { tag: "file-delete" };
-    }
-    return null;
   }
 
   function parseMcpToolName(toolName) {
