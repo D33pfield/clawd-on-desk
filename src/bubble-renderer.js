@@ -348,6 +348,7 @@ function resetBubbleContent() {
   commandBlock.textContent = "";
   irreversibleBadge.style.display = "none";
   irreversibleBadge.textContent = "";
+  irreversibleBadge.removeAttribute("data-reason");
   elicitationForm.innerHTML = "";
   elicitationForm.style.maxHeight = "";
   elicitationForm.classList.remove("visible");
@@ -859,6 +860,7 @@ function show(data) {
   } else {
     irreversibleBadge.textContent = "";
     irreversibleBadge.style.display = "none";
+    irreversibleBadge.removeAttribute("data-reason");
   }
 
   // Button labels
