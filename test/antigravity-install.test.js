@@ -3,7 +3,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const {
   HOOK_GROUP_ID,
   MARKER,
@@ -53,6 +53,63 @@ function runWindowsHookCommand(command, options = {}) {
     encoding: "utf8",
     timeout: options.timeout,
   });
+}
+
+// #568 repro helper: run a wrapper command while stdin stays open — written
+// to or not, but never closed — the way the Antigravity IDE hook runner
+// behaves. Resolves once the child has exited AND its stdout pipe has closed:
+// exit alone is not enough, because a leaked watchdog orphan holding the
+// wrapper's stdout keeps the pipe open past exit and stalls any hook runner
+// that waits for EOF instead of process exit. Kills the child as a backstop.
+function runWithOpenStdin(bin, args, { write, killAfterMs = 15000 } = {}) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let timedOut = false;
+    let exited = false;
+    let exitCode = null;
+    let elapsedMs = null;
+    let stdoutClosed = false;
+    let stdoutCloseElapsedMs = null;
+    const settle = () => {
+      if (!exited || !stdoutClosed) return;
+      clearTimeout(killer);
+      resolve({ code: exitCode, stdout, timedOut, elapsedMs, stdoutCloseElapsedMs });
+    };
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stdin.on("error", () => {});
+    // 'close' fires only after every writer of the pipe is gone, orphans included.
+    child.stdout.on("close", () => {
+      stdoutClosed = true;
+      stdoutCloseElapsedMs = Date.now() - started;
+      settle();
+    });
+    child.on("exit", (code) => {
+      exited = true;
+      exitCode = code;
+      elapsedMs = Date.now() - started;
+      settle();
+    });
+    const killer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+      child.stdout.destroy();
+    }, killAfterMs);
+    if (write) child.stdin.write(write);
+  });
+}
+
+function writeEchoHook(dirPrefix) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), dirPrefix));
+  tempDirs.push(tmpDir);
+  const scriptPath = path.join(tmpDir, "antigravity-hook.js");
+  fs.writeFileSync(
+    scriptPath,
+    'let s="";process.stdin.on("data",(c)=>s+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify({got:s})+"\\n"));',
+    "utf8"
+  );
+  return scriptPath;
 }
 
 afterEach(() => {
@@ -369,6 +426,80 @@ describe("Antigravity hook installer", () => {
     assert.ok(Date.now() - started < 4000, "wrapper should not wait for the child timer");
   });
 
+  it("guards the POSIX stdin read with its own watchdog (#568)", () => {
+    const command = __test.buildAntigravityHookCommand(
+      "/usr/local/bin/node",
+      "/x/antigravity-hook.js",
+      "PreInvocation",
+      { platform: "linux" }
+    );
+
+    // Background lists get /dev/null as stdin in non-interactive shells, so
+    // the real stdin must be handed to the background cat through fd 3.
+    assert.ok(command.includes("{ cat <&3 > \"$in_file\" 2>/dev/null & pid=$!; } 3<&0"));
+    assert.ok(command.includes("( sleep 2; kill \"$pid\" 2>/dev/null ) > /dev/null 2>&1"));
+    assert.ok(command.includes("( sleep 6; kill \"$pid\" 2>/dev/null ) > /dev/null 2>&1"));
+    // A watchdog subshell without the redirect leaks an orphaned sleep that
+    // holds our stdout open past exit and stalls EOF-waiting hook runners.
+    assert.ok(!command.includes(") & watchdog="), "every watchdog subshell must detach from our stdout/stderr");
+    assert.ok(!command.includes("cat > \"$in_file\""), "stdin must not be read in the foreground");
+  });
+
+  it("keeps the stdin + child watchdog budget under the outer hook timeout (#568)", () => {
+    const outerTimeoutSeconds = __test.buildAntigravityHooks(() => "x")[HOOK_GROUP_ID].PreInvocation[0].timeout;
+    const stdinSeconds = __test.normalizeStdinTimeoutSeconds();
+    const childSeconds = __test.normalizeFailOpenTimeoutSeconds();
+
+    // Measured: 2s+7s peaked at 9.5-9.7s with a hung child on a warm machine,
+    // so one second of headroom is not enough for a PowerShell cold start.
+    assert.ok(
+      stdinSeconds + childSeconds <= outerTimeoutSeconds - 2,
+      `stdin (${stdinSeconds}s) + child (${childSeconds}s) watchdogs need >=2s headroom under the ${outerTimeoutSeconds}s hook timeout for shell cold starts and the fallback line`
+    );
+  });
+
+  it("does not stall when the hook runner never closes stdin (#568)", posixOnly, async () => {
+    const scriptPath = writeEchoHook("clawd-antigravity-openstdin-");
+    const command = __test.buildAntigravityHookCommand(
+      process.execPath,
+      scriptPath,
+      "PreInvocation",
+      { platform: "linux", stdinTimeoutSeconds: 1 }
+    );
+
+    // No write and no close, like the Antigravity IDE hook runner. (spawnSync
+    // without `input` closes stdin immediately, so it cannot model this.)
+    const result = await runWithOpenStdin("/bin/sh", ["-c", command]);
+
+    assert.strictEqual(result.timedOut, false, "wrapper must exit on its own");
+    assert.strictEqual(result.code, 0);
+    assert.deepStrictEqual(JSON.parse(result.stdout), { got: "" });
+    assert.ok(result.elapsedMs >= 900, "wrapper must actually sit out the stdin watchdog");
+    assert.ok(result.elapsedMs < 6000, "stdin watchdog must cut the blocked read");
+    assert.ok(result.stdoutCloseElapsedMs < 6000, "no watchdog orphan may hold our stdout past exit");
+  });
+
+  it("delivers a payload that arrives without a stdin close (#568)", posixOnly, async () => {
+    const scriptPath = writeEchoHook("clawd-antigravity-nocdata-");
+    const command = __test.buildAntigravityHookCommand(
+      process.execPath,
+      scriptPath,
+      "PreInvocation",
+      { platform: "linux", stdinTimeoutSeconds: 1 }
+    );
+
+    const result = await runWithOpenStdin("/bin/sh", ["-c", command], {
+      write: JSON.stringify({ conversationId: "c1" }),
+    });
+
+    assert.strictEqual(result.timedOut, false, "wrapper must exit on its own");
+    assert.strictEqual(result.code, 0);
+    assert.deepStrictEqual(JSON.parse(result.stdout), { got: JSON.stringify({ conversationId: "c1" }) });
+    assert.ok(result.elapsedMs >= 900, "wrapper must actually sit out the stdin watchdog");
+    assert.ok(result.elapsedMs < 6000, "stdin watchdog must cut the blocked read");
+    assert.ok(result.stdoutCloseElapsedMs < 6000, "no watchdog orphan may hold our stdout past exit");
+  });
+
   it("fail-opens Windows hook commands when Node cannot start", windowsOnly, () => {
     const command = __test.buildAntigravityHookCommand(
       "C:/definitely/missing/node.exe",
@@ -442,6 +573,29 @@ describe("Antigravity hook installer", () => {
     assert.ok(Date.now() - started < 4000, "wrapper should not wait for the child timer");
   });
 
+  it("does not stall on Windows when the hook runner never closes stdin (#568)", windowsOnly, async () => {
+    const scriptPath = writeEchoHook("clawd-antigravity-winopenstdin-");
+    const command = __test.buildAntigravityHookCommand(
+      process.execPath,
+      scriptPath,
+      "PreInvocation",
+      { platform: "win32", stdinTimeoutSeconds: 1 }
+    );
+    const idx = command.indexOf(" -NoProfile");
+    assert.notStrictEqual(idx, -1, "expected PowerShell command");
+
+    const result = await runWithOpenStdin(command.slice(0, idx), command.slice(idx + 1).split(/\s+/));
+
+    assert.strictEqual(result.timedOut, false, "wrapper must exit on its own");
+    assert.strictEqual(result.code, 0);
+    // The async stdin read times out without EOF, so the hook sees "" and
+    // fails open on an empty payload.
+    assert.deepStrictEqual(JSON.parse(result.stdout), { got: "" });
+    assert.ok(result.elapsedMs >= 900, "wrapper must actually sit out the stdin timeout");
+    assert.ok(result.elapsedMs < 10000, "stdin timeout must cut the blocked read");
+    assert.ok(result.stdoutCloseElapsedMs < 10000, "stdout must reach EOF promptly after exit");
+  });
+
   it("builds Windows PowerShell bridge commands with fail-open fallback", () => {
     const command = __test.buildAntigravityHookCommand(
       "C:\\Program Files\\nodejs\\node.exe",
@@ -456,7 +610,12 @@ describe("Antigravity hook installer", () => {
     assert.ok(decoded.includes("$psi = New-Object System.Diagnostics.ProcessStartInfo"));
     assert.ok(decoded.includes("$psi.FileName = 'C:\\Program Files\\nodejs\\node.exe'"));
     assert.ok(decoded.includes("$psi.Arguments = 'D:/clawd/hooks/antigravity-hook.js PreToolUse'"));
-    assert.ok(decoded.includes("if ($proc.WaitForExit(8000))"));
+    assert.ok(decoded.includes("if ($proc.WaitForExit(6000))"));
+    // #568: [Console]::In.ReadToEnd() blocks forever when the runner never
+    // closes stdin; the raw-stream reader honors the Wait() timeout.
+    assert.ok(decoded.includes("New-Object System.IO.StreamReader([Console]::OpenStandardInput())"));
+    assert.ok(decoded.includes("$stdinTask.Wait(2000)"));
+    assert.ok(!decoded.includes("[Console]::In.ReadToEnd()"));
     assert.ok(decoded.includes("ConvertFrom-Json -ErrorAction Stop"));
     assert.ok(decoded.includes("[Console]::Out.WriteLine( '{\"decision\":\"ask\"}' )"));
     assert.ok(decoded.endsWith("exit 0"));
