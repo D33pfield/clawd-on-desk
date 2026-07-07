@@ -55,7 +55,12 @@ function normalizeElicitationPayload(payload) {
   const rawQuestions = Array.isArray(payload && payload.questions) ? payload.questions : [];
   const questions = rawQuestions
     .slice(0, MAX_ELICITATION_QUESTIONS)
-    .map((question) => {
+    // `index` is the question's position in the ORIGINAL payload.questions
+    // (i.e. toolInput.questions on the permission side) and is the key the
+    // submitted answers map uses. Clamped question text can't serve as the
+    // key: it no longer matches the original for long or whitespace-heavy
+    // questions, and dropped invalid entries below would shift positions.
+    .map((question, index) => {
       if (!question || typeof question !== "object") return null;
       const questionText = clampText(question.question, 240);
       if (!questionText) return null;
@@ -74,6 +79,7 @@ function normalizeElicitationPayload(payload) {
           .filter(Boolean)
         : [];
       return {
+        index,
         header: clampText(question.header, 80),
         question: questionText,
         multiSelect: question.multiSelect === true,
@@ -175,17 +181,17 @@ function buildAnsweredSummaries(questions, answers, activeQuestionIndex) {
   for (let i = 0; i < questions.length; i += 1) {
     if (i === activeQuestionIndex) continue;
     const question = questions[i];
-    const questionText = question && question.question;
-    if (!questionText || !answers || !answers[questionText]) continue;
+    const answerText = question && answers ? answers[question.index] : undefined;
+    if (!question || !question.question || !answerText) continue;
     const title = question.header || `问题 ${i + 1}`;
-    lines.push(`**${title}**：${answers[questionText]}`);
+    lines.push(`**${title}**：${answerText}`);
   }
   return lines.join("\n");
 }
 
 function buildQuestionInput(question, questionIndex, answers = {}) {
   if (!question.options.length) return null;
-  const selected = parseAnswerParts(answers[question.question]);
+  const selected = parseAnswerParts(answers[question.index]);
   const component = {
     tag: question.multiSelect ? "multi_select_static" : "select_static",
     name: questionFormName(questionIndex),
@@ -203,7 +209,7 @@ function buildQuestionInput(question, questionIndex, answers = {}) {
 }
 
 function buildOtherInput(question, questionIndex, answers = {}) {
-  const selected = parseAnswerParts(answers[question.question]);
+  const selected = parseAnswerParts(answers[question.index]);
   const optionValues = new Set(question.options.map((option) => optionValue(option.label)));
   const otherText = selected.filter((value) => !optionValues.has(value)).join(", ");
   return {
@@ -526,8 +532,8 @@ function countAnsweredQuestions(questions, answers) {
   const normalizedQuestions = Array.isArray(questions) ? questions : [];
   const normalizedAnswers = answers && typeof answers === "object" && !Array.isArray(answers) ? answers : {};
   return normalizedQuestions.reduce((count, question) => {
-    const questionText = question && typeof question.question === "string" ? question.question : "";
-    return questionText && normalizedAnswers[questionText] ? count + 1 : count;
+    const key = question && Number.isInteger(question.index) ? String(question.index) : "";
+    return key && normalizedAnswers[key] ? count + 1 : count;
   }, 0);
 }
 
@@ -608,7 +614,7 @@ function normalizeElicitationActionEvent(event, questions, idType = "open_id") {
     const answerText = buildQuestionAnswer(question, questionIndex, formValue);
     if (!answerText) return null;
     const answers = {};
-    answers[question.question] = answerText;
+    answers[question.index] = answerText;
     return {
       operatorId,
       requestId,
@@ -1145,8 +1151,8 @@ class FeishuApprovalClient {
       const answeredCount = countAnsweredQuestions(entry.payload.questions, entry.answers);
       if (answeredCount < entry.payload.questions.length) {
         const firstMissingIndex = entry.payload.questions.findIndex((question) => {
-          const questionText = question && typeof question.question === "string" ? question.question : "";
-          return !questionText || !entry.answers[questionText];
+          const key = question && Number.isInteger(question.index) ? String(question.index) : "";
+          return !key || !entry.answers[key];
         });
         const nextIndex = firstMissingIndex >= 0 ? firstMissingIndex : entry.activeQuestionIndex;
         entry.activeQuestionIndex = nextIndex;

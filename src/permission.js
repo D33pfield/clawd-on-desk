@@ -375,6 +375,30 @@ function buildElicitationUpdatedInput(toolInput, answers) {
   };
 }
 
+// Remote clients (Feishu / Telegram) clamp question text to card / message
+// limits before display (240 chars, trimmed, control chars stripped), so the
+// text they hold no longer round-trips to toolInput for long or
+// whitespace-heavy questions. They therefore key submitted answers by the
+// question's index in toolInput.questions; this maps those index keys back to
+// the original-text keys buildElicitationUpdatedInput expects. Desktop bubble
+// and auto-pilot answers keep using original text keys and never pass through
+// here.
+function remapIndexedElicitationAnswers(toolInput, indexedAnswers) {
+  const input = toolInput && typeof toolInput === "object" ? toolInput : {};
+  const questions = Array.isArray(input.questions) ? input.questions : [];
+  const source = indexedAnswers && typeof indexedAnswers === "object" && !Array.isArray(indexedAnswers)
+    ? indexedAnswers
+    : {};
+  const answers = {};
+  for (let i = 0; i < questions.length; i++) {
+    const question = questions[i];
+    if (!question || typeof question.question !== "string" || !question.question) continue;
+    if (!Object.prototype.hasOwnProperty.call(source, String(i))) continue;
+    answers[question.question] = source[String(i)];
+  }
+  return answers;
+}
+
 function buildPermissionFocusEntry(perm) {
   if (!perm || typeof perm !== "object") return null;
   const sessionId = String(perm.sessionId || "");
@@ -1411,7 +1435,10 @@ function handleRemoteApprovalDecision(permEntry, decision, sourceName) {
   }
 
   if (permEntry.isElicitation && decision && typeof decision === "object" && decision.type === "elicitation-submit") {
-    permEntry.resolvedUpdatedInput = buildElicitationUpdatedInput(permEntry.toolInput, decision.answers);
+    permEntry.resolvedUpdatedInput = buildElicitationUpdatedInput(
+      permEntry.toolInput,
+      remapIndexedElicitationAnswers(permEntry.toolInput, decision.answers)
+    );
     setRemoteResolutionOutcome(permEntry, {
       decision: "elicitation-submit",
       actionLabel: "提交输入",
@@ -2269,4 +2296,5 @@ module.exports.__test = {
   sanitizeAntigravityPermissionDecision,
   buildAntigravityPermissionResponseBody,
   buildElicitationUpdatedInput,
+  remapIndexedElicitationAnswers,
 };

@@ -103,7 +103,7 @@ test("requestElicitation resolves elicitation-submit when a single-select questi
 
   releaseFirstPoll({ ok: true, result: [] });
   const decision = await decisionPromise;
-  assert.deepEqual(decision, { type: "elicitation-submit", answers: { "Pick A or B": "A" } });
+  assert.deepEqual(decision, { type: "elicitation-submit", answers: { "0": "A" } });
 
   await tick();
   const edit = server.calls.find((call) => call.method === "editMessageText");
@@ -165,7 +165,68 @@ test("requestElicitation advances through multiple questions and submits once al
   const decision = await decisionPromise;
   assert.deepEqual(decision, {
     type: "elicitation-submit",
-    answers: { "Pick A or B": "A", "Pick C or D": "C" },
+    answers: { "0": "A", "1": "C" },
+  });
+
+  await runner.stop();
+});
+
+test("requestElicitation keys answers by original question index even when the display text is clamped", async () => {
+  const server = createFakeTelegramServer();
+  let releaseFirstPoll;
+  let q1Data = "";
+  let q2Data = "";
+
+  // Q1 blows past the 240-char display clamp; Q2 carries \r\n and trailing
+  // whitespace that compactMessageText rewrites. Neither display string can
+  // round-trip to the original toolInput text - which is exactly why the
+  // submitted answers must be keyed by question index, not question text.
+  const longQuestion = `Pick one: ${"x".repeat(300)}`;
+  const crlfQuestion = "Line one\r\nLine two  ";
+  const payload = {
+    title: "claude-code needs input",
+    questions: [
+      { question: longQuestion, options: [{ label: "A" }, { label: "B" }] },
+      { question: crlfQuestion, options: [{ label: "C" }, { label: "D" }] },
+    ],
+  };
+
+  server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
+  server.enqueue("sendMessage", (msg) => {
+    q1Data = msg.reply_markup.inline_keyboard[0][0].callback_data;
+    return { ok: true, result: { message_id: 701, chat: { id: 123 } } };
+  });
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [callbackUpdate({ id: 1, messageId: 701, fromId: 777, data: q1Data })],
+  }));
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueue("editMessageText", (edit) => {
+    q2Data = edit.reply_markup.inline_keyboard[0][0].callback_data;
+    return { ok: true, result: { message_id: 701 } };
+  });
+  server.enqueue("getUpdates", () => ({
+    ok: true,
+    result: [callbackUpdate({ id: 2, messageId: 701, fromId: 777, data: q2Data })],
+  }));
+  server.enqueueOk("answerCallbackQuery", true);
+  server.enqueueOk("editMessageText", { message_id: 701 });
+
+  const runner = makeRunner(server);
+  await runner.start();
+  await tick();
+  const decisionPromise = runner.requestElicitation(payload);
+  await tick();
+
+  releaseFirstPoll({ ok: true, result: [] });
+  await tick();
+  await tick();
+  await tick();
+
+  const decision = await decisionPromise;
+  assert.deepEqual(decision, {
+    type: "elicitation-submit",
+    answers: { "0": "A", "1": "C" },
   });
 
   await runner.stop();
@@ -201,7 +262,7 @@ test("requestElicitation still renders the card when a tap races ahead of the se
 
   releaseFirstPoll({ ok: true, result: [] });
   const decision = await decisionPromise;
-  assert.deepEqual(decision, { type: "elicitation-submit", answers: { "Pick A or B": "A" } });
+  assert.deepEqual(decision, { type: "elicitation-submit", answers: { "0": "A" } });
 
   await tick();
   const edit = server.calls.find((call) => call.method === "editMessageText");
@@ -323,7 +384,7 @@ test("requestElicitation requires Confirm selection before advancing a multi-sel
   const decision = await decisionPromise;
   assert.deepEqual(decision, {
     type: "elicitation-submit",
-    answers: { "Pick your toppings": "Cheese" },
+    answers: { "0": "Cheese" },
   });
 
   await runner.stop();
@@ -368,7 +429,7 @@ test("requestElicitation answers the active question from a text reply after tap
   const decision = await decisionPromise;
   assert.deepEqual(decision, {
     type: "elicitation-submit",
-    answers: { "Pick A or B": "My custom answer" },
+    answers: { "0": "My custom answer" },
   });
 
   await runner.stop();
@@ -467,7 +528,7 @@ test("requestElicitation still answers an Other reply that looks like a slash co
   const decision = await decisionPromise;
   assert.deepEqual(decision, {
     type: "elicitation-submit",
-    answers: { "Pick A or B": "/tmp/output.log" },
+    answers: { "0": "/tmp/output.log" },
   });
 
   await runner.stop();

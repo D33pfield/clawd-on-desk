@@ -381,10 +381,13 @@ describe("permission telegram remote approval", () => {
     assert.equal(requests.length, 1);
     assert.equal(requests[0].payload.questions[0].question, "您当前正在进行什么类型的工作？");
 
+    // Remote clients key submitted answers by the question's index in
+    // toolInput.questions (their display text is clamped and can't round-trip);
+    // the hook response must still carry original-text keys for the agent.
     resolveElicitation({
       type: "elicitation-submit",
       answers: {
-        "您当前正在进行什么类型的工作？": "开发新功能\n正在开发新的业务功能或模块",
+        "0": "开发新功能\n正在开发新的业务功能或模块",
       },
     });
     await flush();
@@ -398,6 +401,61 @@ describe("permission telegram remote approval", () => {
         questions: entry.toolInput.questions,
         answers: {
           "您当前正在进行什么类型的工作？": "开发新功能\n正在开发新的业务功能或模块",
+        },
+      },
+    });
+  });
+
+  it("keeps answers for clamped questions: index keys map back to full original question text", async () => {
+    let resolveElicitation;
+    const requests = [];
+    const feishuClient = {
+      isEnabled: () => true,
+      requestApproval: () => {
+        throw new Error("normal approval should not be used for elicitation");
+      },
+      requestElicitation: (payload, options) => {
+        requests.push({ payload, options });
+        return new Promise((resolve) => { resolveElicitation = resolve; });
+      },
+    };
+    const perm = initPermission(makeCtx({ getRemoteApprovalClients: () => [{ name: "feishu", client: feishuClient }] }));
+    // Q1 exceeds the remote clients' 240-char display clamp; Q2 carries \r\n
+    // and trailing whitespace their text normalization rewrites. Text-keyed
+    // answers would silently miss both (the pre-index-key contract bug).
+    const longQuestion = `请从以下部署方案中选择一个：${"细".repeat(300)}`;
+    const crlfQuestion = "第一行\r\n第二行  ";
+    const entry = makePermEntry({
+      isElicitation: true,
+      toolName: "AskUserQuestion",
+      toolInput: {
+        questions: [
+          { question: longQuestion, options: [{ label: "方案A" }] },
+          { question: crlfQuestion, options: [{ label: "继续" }] },
+        ],
+      },
+    });
+    perm.pendingPermissions.push(entry);
+
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    assert.equal(requests.length, 1);
+
+    resolveElicitation({
+      type: "elicitation-submit",
+      answers: { "0": "方案A", "1": "继续" },
+    });
+    await flush();
+    await flush();
+
+    assert.equal(perm.pendingPermissions.length, 0);
+    const body = JSON.parse(entry.res.captured.body);
+    assert.deepEqual(body.hookSpecificOutput.decision, {
+      behavior: "allow",
+      updatedInput: {
+        questions: entry.toolInput.questions,
+        answers: {
+          [longQuestion]: "方案A",
+          [crlfQuestion]: "继续",
         },
       },
     });

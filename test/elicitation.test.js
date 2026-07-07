@@ -2,7 +2,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const permission = require("../src/permission");
-const { buildElicitationUpdatedInput } = permission.__test;
+const { buildElicitationUpdatedInput, remapIndexedElicitationAnswers } = permission.__test;
 
 describe("elicitation updated input builder", () => {
   it("echoes original questions and attaches normalized answers", () => {
@@ -62,5 +62,52 @@ describe("elicitation updated input builder", () => {
       mode: "prompt",
       answers: {},
     });
+  });
+});
+
+describe("indexed elicitation answer remapping", () => {
+  it("maps remote index keys back to original question text, including clamp-hostile text", () => {
+    const longQuestion = `Which one? ${"x".repeat(300)}`;
+    const crlfQuestion = "Line one\r\nLine two  ";
+    const input = {
+      questions: [
+        { question: longQuestion, options: [{ label: "A" }] },
+        { question: crlfQuestion, options: [{ label: "B" }] },
+      ],
+    };
+
+    assert.deepStrictEqual(remapIndexedElicitationAnswers(input, { "0": "A", "1": "B" }), {
+      [longQuestion]: "A",
+      [crlfQuestion]: "B",
+    });
+  });
+
+  it("skips indices without answers, invalid questions, and non-object answer maps", () => {
+    const input = {
+      questions: [
+        { question: "First?" },
+        { header: "no question text" },
+        { question: "Third?" },
+      ],
+    };
+
+    assert.deepStrictEqual(remapIndexedElicitationAnswers(input, { "1": "lost", "2": "kept" }), {
+      "Third?": "kept",
+    });
+    assert.deepStrictEqual(remapIndexedElicitationAnswers(input, null), {});
+    assert.deepStrictEqual(remapIndexedElicitationAnswers(input, ["array", "not", "map"]), {});
+    assert.deepStrictEqual(remapIndexedElicitationAnswers(null, { "0": "A" }), {});
+  });
+
+  it("round-trips through buildElicitationUpdatedInput without losing answers", () => {
+    const longQuestion = `Deploy where? ${"y".repeat(280)}`;
+    const input = { questions: [{ question: longQuestion, options: [{ label: "prod" }] }] };
+
+    const updatedInput = buildElicitationUpdatedInput(
+      input,
+      remapIndexedElicitationAnswers(input, { "0": " prod " })
+    );
+
+    assert.deepStrictEqual(updatedInput.answers, { [longQuestion]: "prod" });
   });
 });

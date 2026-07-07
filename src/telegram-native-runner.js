@@ -161,7 +161,12 @@ function normalizeElicitationPayload(payload) {
   const rawQuestions = Array.isArray(payload && payload.questions) ? payload.questions : [];
   const questions = rawQuestions
     .slice(0, MAX_ELICITATION_QUESTIONS)
-    .map((question) => {
+    // `index` is the question's position in the ORIGINAL payload.questions
+    // (i.e. toolInput.questions on the permission side) and is the key the
+    // submitted answers map uses. Compacted question text can't serve as the
+    // key: it no longer matches the original for long or whitespace-heavy
+    // questions, and dropped invalid entries below would shift positions.
+    .map((question, index) => {
       if (!question || typeof question !== "object") return null;
       const questionText = compactMessageText(question.question, 240);
       if (!questionText) return null;
@@ -177,6 +182,7 @@ function normalizeElicitationPayload(payload) {
           .filter(Boolean)
         : [];
       return {
+        index,
         header: compactMessageText(question.header, 80),
         question: questionText,
         multiSelect: question.multiSelect === true,
@@ -282,7 +288,7 @@ function parseElicitationCallbackData(data) {
 }
 
 function findNextUnansweredQuestionIndex(payload, answers) {
-  return payload.questions.findIndex((question) => !Object.prototype.hasOwnProperty.call(answers, question.question));
+  return payload.questions.findIndex((question) => !Object.prototype.hasOwnProperty.call(answers, String(question.index)));
 }
 
 // Deliberately stricter than the approval flow's equivalent check (which
@@ -1019,7 +1025,7 @@ function createTelegramNativeRunner({
         return true;
       }
       client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramElicitationToastAnswered") }).catch(() => {});
-      entry.answers[question.question] = option.label;
+      entry.answers[question.index] = option.label;
       advanceElicitation(parsed.id, entry);
       return true;
     }
@@ -1037,7 +1043,7 @@ function createTelegramNativeRunner({
       const labels = Array.from(entry.multiSelectSelections)
         .sort((a, b) => a - b)
         .map((optionIndex) => question.options[optionIndex].label);
-      entry.answers[question.question] = labels.join(", ");
+      entry.answers[question.index] = labels.join(", ");
       advanceElicitation(parsed.id, entry);
       return true;
     }
@@ -1072,7 +1078,7 @@ function createTelegramNativeRunner({
     const question = entry.payload.questions[entry.awaitingOtherFor];
     const answer = compactMessageText(text, 500);
     if (!question || !answer) return true;
-    entry.answers[question.question] = answer;
+    entry.answers[question.index] = answer;
     advanceElicitation(id, entry);
     return true;
   }

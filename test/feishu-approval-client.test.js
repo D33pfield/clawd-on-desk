@@ -687,13 +687,14 @@ test("buildElicitationCard creates a form stepper with selection and other input
   const restored = buildElicitationCard({
     title: "claude-code needs input",
     questions: [{
+      index: 0,
       question: "您当前正在进行什么类型的工作？",
       multiSelect: true,
       options: [{ label: "开发新功能" }, { label: "修复Bug" }],
     }],
   }, {
     requestId: "req_q",
-    answers: { "您当前正在进行什么类型的工作？": "开发新功能, 自定义工作" },
+    answers: { "0": "开发新功能, 自定义工作" },
   });
   const restoredForm = restored.elements.find((element) => element.tag === "form");
   const restoredSelect = restoredForm.elements.find((element) => element.name === "q_0");
@@ -771,8 +772,8 @@ test("FeishuApprovalClient only resolves elicitation after final step submit", a
   assert.deepEqual(await promise, {
     type: "elicitation-submit",
     answers: {
-      "Current work?": "Feature, Bugfix, API cleanup",
-      "Constraints?": "Keep API stable",
+      "0": "Feature, Bugfix, API cleanup",
+      "1": "Keep API stable",
     },
   });
   assert.match(JSON.parse(updated[1].data.content).header.title.content, /已提交输入/);
@@ -864,8 +865,8 @@ test("FeishuApprovalClient supports back navigation without resolving elicitatio
   assert.deepEqual(await promise, {
     type: "elicitation-submit",
     answers: {
-      "Current work?": "Custom feature",
-      "Constraints?": "Keep API stable",
+      "0": "Custom feature",
+      "1": "Keep API stable",
     },
   });
 });
@@ -886,6 +887,7 @@ test("Feishu elicitation helpers validate payloads and action events", () => {
     agentId: "claude-code",
     folder: "project-alpha",
     questions: [{
+      index: 0,
       header: "H",
       question: "Q?",
       multiSelect: false,
@@ -893,6 +895,18 @@ test("Feishu elicitation helpers validate payloads and action events", () => {
     }],
   });
   assert.throws(() => normalizeElicitationPayload({ title: "x", questions: [] }), /questions/);
+  // A dropped invalid question must not shift later questions' answer keys:
+  // `index` stays pinned to the position in the ORIGINAL questions array.
+  const shifted = normalizeElicitationPayload({
+    title: "Need input",
+    questions: [
+      { question: "   " },
+      { question: `Long? ${"x".repeat(300)}` },
+    ],
+  });
+  assert.equal(shifted.questions.length, 1);
+  assert.equal(shifted.questions[0].index, 1);
+  assert.equal(shifted.questions[0].question.length, 240);
   assert.deepEqual(normalizeElicitationActionEvent({
     operator: { open_id: "ou_1" },
     action: {
@@ -904,10 +918,10 @@ test("Feishu elicitation helpers validate payloads and action events", () => {
       }),
       form_value: { q_0: [{ value: "A", text: { content: "A" } }], q_0_other: "typed answer" },
     },
-  }, [{ question: "Q?", multiSelect: true, options: [{ label: "A" }] }], "open_id"), {
+  }, [{ index: 0, question: "Q?", multiSelect: true, options: [{ label: "A" }] }], "open_id"), {
     operatorId: "ou_1",
       requestId: "req_q",
-      decision: { type: "elicitation-step", questionIndex: 0, final: true, answers: { "Q?": "A, typed answer" } },
+      decision: { type: "elicitation-step", questionIndex: 0, final: true, answers: { "0": "A, typed answer" } },
   });
   assert.equal(normalizeElicitationActionEvent({
     operator: { open_id: "ou_1" },
