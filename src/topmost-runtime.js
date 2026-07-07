@@ -101,16 +101,32 @@ function createTopmostRuntime(options = {}) {
 
   function reapplyMacVisibility() {
     if (!isMac) return;
+    const applyElectronCrossSpace = (win) => {
+      const options = { visibleOnFullScreen: true };
+      if (!getShowDock()) options.skipTransformProcessType = true;
+      win.setVisibleOnAllWorkspaces(true, options);
+    };
     const apply = (win) => {
       if (!isLiveWindow(win)) return;
       const deferUntil = Number(win.__clawdMacDeferredVisibilityUntil) || 0;
       if (deferUntil > Date.now()) return;
       if (deferUntil) delete win.__clawdMacDeferredVisibilityUntil;
+      // A bubble hosting a focused text input temporarily drops out of
+      // always-on-top so the IME candidate window can surface (permission.js
+      // handleImeEditing). Don't re-assert topmost mid-edit or we'd re-occlude
+      // it; the flag is cleared on blur, restoring normal topmost behavior.
+      if (win.__clawdMacImeEditing) return;
       win.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
+      // Text-input bubbles stay cross-space visible via Electron only — the
+      // native stationary path (applyStationaryCollectionBehavior) delegates the
+      // window into a SkyLight private space that occludes the OS IME candidate
+      // window, so it's skipped here (permission.js __clawdMacTextInputBubble).
+      if (win.__clawdMacTextInputBubble) {
+        applyElectronCrossSpace(win);
+        return;
+      }
       if (!applyStationaryCollectionBehavior(win)) {
-        const options = { visibleOnFullScreen: true };
-        if (!getShowDock()) options.skipTransformProcessType = true;
-        win.setVisibleOnAllWorkspaces(true, options);
+        applyElectronCrossSpace(win);
         // First try the native flicker-free path. If Electron's fallback is
         // needed, retry native behavior because Electron can reset collection
         // behavior while changing cross-space visibility.

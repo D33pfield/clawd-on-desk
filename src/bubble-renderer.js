@@ -1015,5 +1015,29 @@ planFeedbackBack.addEventListener("click", () => {
   exitPlanFeedbackMode();
 });
 
+// While a text input inside the bubble is focused, tell the main process so it
+// can drop the bubble out of always-on-top on macOS — otherwise the OS IME
+// candidate window (Chinese/Japanese/Korean input popup) is occluded by the
+// topmost bubble. focusin/focusout bubble up from any current or future text
+// field (elicitation "Other", ExitPlanMode feedback) without per-field wiring.
+function isTextInputElement(el) {
+  if (!el) return false;
+  if (el.tagName === "TEXTAREA") return true;
+  if (el.tagName === "INPUT") {
+    const type = (el.getAttribute("type") || "text").toLowerCase();
+    return type === "text" || type === "search";
+  }
+  return false;
+}
+
+if (window.bubbleAPI && typeof window.bubbleAPI.setImeEditing === "function") {
+  document.addEventListener("focusin", (e) => {
+    if (isTextInputElement(e.target)) window.bubbleAPI.setImeEditing(true);
+  });
+  document.addEventListener("focusout", (e) => {
+    if (isTextInputElement(e.target)) window.bubbleAPI.setImeEditing(false);
+  });
+}
+
 window.bubbleAPI.onPermissionShow(show);
 window.bubbleAPI.onPermissionHide(hide);
