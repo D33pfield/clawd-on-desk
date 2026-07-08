@@ -7,8 +7,17 @@ module.exports = {
   id: "workbuddy",
   name: "WorkBuddy",
   processNames: {
+    // NOTE on process names — WorkBuddy is a GUI Electron app, not a bare CLI
+    // like `claude`/`codebuddy`. Hooks fire from inside the app, so this list
+    // only feeds src/state.js zero-session startup recovery (it never creates
+    // or reaps tracked sessions). Verified on macOS: the app bundle ships
+    // "WorkBuddy Helper", "WorkBuddy Helper (Renderer|GPU|Plugin)"; the main
+    // executable is the bare "Electron" binary, which we deliberately DO NOT
+    // list — matching it would false-positive on dev-mode Clawd and other
+    // unrenamed Electron apps. Windows/Linux names are best-guess assumptions
+    // pending real-device confirmation (tasklist / ps).
     win: ["WorkBuddy.exe", "workbuddy.exe"],
-    mac: ["WorkBuddy"],
+    mac: ["WorkBuddy Helper", "WorkBuddy Helper (Renderer)"],
     linux: ["workbuddy", "WorkBuddy"],
   },
   eventSource: "hook",

@@ -287,6 +287,7 @@ function detectInstallation(descriptor, paths, options) {
     case "copilot-cli":
     case "cursor-agent":
     case "codebuddy":
+    case "workbuddy":
     case "qwen-code":
     case "codewhale":
     case "opencode":

@@ -151,6 +151,7 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "gemini-cli",
   "antigravity-cli",
   "codebuddy",
+  "workbuddy",
   "kiro-cli",
   "kimi-cli",
   "qwen-code",
