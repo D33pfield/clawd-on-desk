@@ -748,21 +748,48 @@ describe("topmost runtime macOS visibility", () => {
     assert.deepStrictEqual(win.calls, []);
   });
 
-  it("skips re-asserting topmost on a bubble that is mid-IME-edit", () => {
-    // A text-input bubble drops out of always-on-top while its input is focused
-    // so the IME candidate window can surface (permission.js handleImeEditing).
-    // reapplyMacVisibility must not fight that by re-asserting topmost mid-edit.
+  it("forces a mid-IME-edit text-input bubble non-topmost but keeps it cross-space visible", () => {
+    // While its input is focused, the bubble must drop out of always-on-top so
+    // the IME candidate window can surface (permission.js handleImeEditing), but
+    // stay cross-space visible so a Space switch mid-edit doesn't strand it. It
+    // must NOT get topmost or the native stationary path (both re-occlude IME).
     const bubble = new FakeWindow();
     bubble.__clawdMacImeEditing = true;
+    bubble.__clawdMacTextInputBubble = true;
+    const stationaryCalls = [];
     const runtime = createTopmostRuntime({
       isMac: true,
       getPendingPermissions: () => [{ bubble }],
+      getShowDock: () => false,
+      applyStationaryCollectionBehavior: (win) => {
+        stationaryCalls.push(win);
+        return true;
+      },
+    });
+
+    runtime.reapplyMacVisibility();
+
+    assert.deepStrictEqual(bubble.calls, [
+      ["setAlwaysOnTop", false],
+      ["setVisibleOnAllWorkspaces", true, { visibleOnFullScreen: true, skipTransformProcessType: true }],
+    ]);
+    assert.deepStrictEqual(stationaryCalls, [], "must not run the native SkyLight path mid-edit");
+  });
+
+  it("forces a mid-IME-edit non-text-input window non-topmost without cross-space", () => {
+    // Defensive: the editing flag is only ever set on text-input bubbles, but if
+    // it lands on any other window the branch still just drops always-on-top.
+    const win = new FakeWindow();
+    win.__clawdMacImeEditing = true;
+    const runtime = createTopmostRuntime({
+      isMac: true,
+      getWin: () => win,
       applyStationaryCollectionBehavior: () => true,
     });
 
     runtime.reapplyMacVisibility();
 
-    assert.deepStrictEqual(bubble.calls, []);
+    assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", false]]);
   });
 
   it("keeps a text-input bubble cross-space visible via Electron, skipping the native SkyLight path", () => {

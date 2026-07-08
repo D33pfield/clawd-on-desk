@@ -7,6 +7,7 @@ const { keepOutOfTaskbar } = require("./taskbar");
 const { clampTextScale, scaleWidth, scaleHeight, applyZoomToWindow } = require("./text-scale");
 const { createTranslator } = require("./i18n");
 const { firstStringValue } = require("./bubble-format");
+const { MAC_TOPMOST_LEVEL } = require("./topmost-runtime");
 const path = require("path");
 const http = require("http");
 const {
@@ -755,9 +756,11 @@ function showPermissionBubble(permEntry) {
   });
 
   // macOS: set alwaysOnTop BEFORE showInactive to prevent bubble from sinking.
-  // Text-input bubbles use a lower level so the IME candidate window surfaces.
+  // (Text-input bubbles later drop out of always-on-top per-edit — and skip the
+  // native SkyLight path — so their IME candidate window can surface; that's
+  // handled by handleImeEditing + reapplyMacVisibility, not a lower level here.)
   if (isMac) {
-    bub.setAlwaysOnTop(true, "screen-saver");
+    bub.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
   }
 
   repositionBubbles();
@@ -1868,26 +1871,23 @@ function handleBubbleHeight(event, height) {
   }
 }
 
-// macOS only: while a text input inside the bubble is focused, drop the bubble
-// out of always-on-top so the OS IME candidate window (Chinese/Japanese/Korean
-// input popup) can surface — it floats above normal windows only, so any
-// always-on-top level occludes it. The bubble is the key window while the user
-// types, so it stays in front of normal windows at the normal level anyway;
-// on blur we restore the topmost level so it can't sink behind other windows.
-// The __clawdMacImeEditing flag keeps reapplyMacVisibility() from re-asserting
-// topmost mid-edit (topmost-runtime.js honors it).
+// macOS only: while a text input inside the bubble is focused, the bubble must
+// drop out of always-on-top so the OS IME candidate window (Chinese/Japanese/
+// Korean input popup) can surface — it floats above normal windows only, so any
+// always-on-top level (and the native SkyLight stationary path) occludes it.
+// We only flip the __clawdMacImeEditing flag here and let reapplyMacVisibility()
+// apply the actual editing-vs-normal window state, so both directions round-trip
+// through one place (topmost-runtime.js) instead of being hand-rolled twice.
+// The renderer clears the flag on element blur AND on window blur (e.g. Cmd-Tab
+// away mid-composition), so it can't get stuck and strand the bubble.
 function handleImeEditing(event, editing) {
   if (!isMac) return;
   const senderWin = BrowserWindow.fromWebContents(event.sender);
   const perm = pendingPermissions.find(p => p.bubble === senderWin);
   if (!perm || !perm.bubble || perm.bubble.isDestroyed()) return;
-  if (editing) {
-    perm.bubble.__clawdMacImeEditing = true;
-    perm.bubble.setAlwaysOnTop(false);
-  } else {
-    delete perm.bubble.__clawdMacImeEditing;
-    perm.bubble.setAlwaysOnTop(true, "screen-saver");
-  }
+  if (editing) perm.bubble.__clawdMacImeEditing = true;
+  else delete perm.bubble.__clawdMacImeEditing;
+  if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
 }
 
 function handleDecide(event, behavior) {

@@ -111,11 +111,18 @@ function createTopmostRuntime(options = {}) {
       const deferUntil = Number(win.__clawdMacDeferredVisibilityUntil) || 0;
       if (deferUntil > Date.now()) return;
       if (deferUntil) delete win.__clawdMacDeferredVisibilityUntil;
-      // A bubble hosting a focused text input temporarily drops out of
-      // always-on-top so the IME candidate window can surface (permission.js
-      // handleImeEditing). Don't re-assert topmost mid-edit or we'd re-occlude
-      // it; the flag is cleared on blur, restoring normal topmost behavior.
-      if (win.__clawdMacImeEditing) return;
+      // While a text field inside a bubble is focused it must drop out of
+      // always-on-top so the OS IME candidate window can surface (permission.js
+      // handleImeEditing sets __clawdMacImeEditing). This branch is the single
+      // source of truth for that editing state: force non-topmost, but keep the
+      // bubble cross-space visible so switching Spaces mid-edit doesn't strand
+      // it. Re-asserting topmost or the native stationary path here would
+      // re-occlude the IME, so both are skipped until the flag clears.
+      if (win.__clawdMacImeEditing) {
+        win.setAlwaysOnTop(false);
+        if (win.__clawdMacTextInputBubble) applyElectronCrossSpace(win);
+        return;
+      }
       win.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
       // Text-input bubbles stay cross-space visible via Electron only — the
       // native stationary path (applyStationaryCollectionBehavior) delegates the

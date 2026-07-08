@@ -1031,11 +1031,31 @@ function isTextInputElement(el) {
 }
 
 if (window.bubbleAPI && typeof window.bubbleAPI.setImeEditing === "function") {
+  // Dedupe so redundant transitions don't spam the main process (and so the
+  // window-blur/focus net below only fires a real state change).
+  let imeEditing = false;
+  const setImeEditing = (active) => {
+    if (active === imeEditing) return;
+    imeEditing = active;
+    window.bubbleAPI.setImeEditing(active);
+  };
   document.addEventListener("focusin", (e) => {
-    if (isTextInputElement(e.target)) window.bubbleAPI.setImeEditing(true);
+    if (isTextInputElement(e.target)) setImeEditing(true);
   });
   document.addEventListener("focusout", (e) => {
-    if (isTextInputElement(e.target)) window.bubbleAPI.setImeEditing(false);
+    if (isTextInputElement(e.target)) setImeEditing(false);
+  });
+  // focusin/focusout are element-level: they do NOT fire when the whole window
+  // loses/regains OS focus (e.g. Cmd-Tab away mid-composition to check a
+  // reference — a routine CJK move). Without this, the editing flag would stay
+  // set and reapplyMacVisibility() would strand the bubble out of always-on-top
+  // for good. Mirror the window-blur listener used elsewhere in the app
+  // (hit-renderer.js, tutorial-renderer.js): restore normal topmost while the
+  // window is backgrounded, and re-drop it on return if a text field still
+  // holds focus.
+  window.addEventListener("blur", () => setImeEditing(false));
+  window.addEventListener("focus", () => {
+    if (isTextInputElement(document.activeElement)) setImeEditing(true);
   });
 }
 
