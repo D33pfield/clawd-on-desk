@@ -101,16 +101,39 @@ function createTopmostRuntime(options = {}) {
 
   function reapplyMacVisibility() {
     if (!isMac) return;
+    const applyElectronCrossSpace = (win) => {
+      const options = { visibleOnFullScreen: true };
+      if (!getShowDock()) options.skipTransformProcessType = true;
+      win.setVisibleOnAllWorkspaces(true, options);
+    };
     const apply = (win) => {
       if (!isLiveWindow(win)) return;
       const deferUntil = Number(win.__clawdMacDeferredVisibilityUntil) || 0;
       if (deferUntil > Date.now()) return;
       if (deferUntil) delete win.__clawdMacDeferredVisibilityUntil;
+      // While a text field inside a bubble is focused it must drop out of
+      // always-on-top so the OS IME candidate window can surface (permission.js
+      // handleImeEditing sets __clawdMacImeEditing). This branch is the single
+      // source of truth for that editing state: force non-topmost, but keep the
+      // bubble cross-space visible so switching Spaces mid-edit doesn't strand
+      // it. Re-asserting topmost or the native stationary path here would
+      // re-occlude the IME, so both are skipped until the flag clears.
+      if (win.__clawdMacImeEditing) {
+        win.setAlwaysOnTop(false);
+        if (win.__clawdMacTextInputBubble) applyElectronCrossSpace(win);
+        return;
+      }
       win.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
+      // Text-input bubbles stay cross-space visible via Electron only — the
+      // native stationary path (applyStationaryCollectionBehavior) delegates the
+      // window into a SkyLight private space that occludes the OS IME candidate
+      // window, so it's skipped here (permission.js __clawdMacTextInputBubble).
+      if (win.__clawdMacTextInputBubble) {
+        applyElectronCrossSpace(win);
+        return;
+      }
       if (!applyStationaryCollectionBehavior(win)) {
-        const options = { visibleOnFullScreen: true };
-        if (!getShowDock()) options.skipTransformProcessType = true;
-        win.setVisibleOnAllWorkspaces(true, options);
+        applyElectronCrossSpace(win);
         // First try the native flicker-free path. If Electron's fallback is
         // needed, retry native behavior because Electron can reset collection
         // behavior while changing cross-space visibility.

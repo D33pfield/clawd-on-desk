@@ -7,6 +7,7 @@ const { keepOutOfTaskbar } = require("./taskbar");
 const { clampTextScale, scaleWidth, scaleHeight, applyZoomToWindow } = require("./text-scale");
 const { createTranslator } = require("./i18n");
 const { firstStringValue } = require("./bubble-format");
+const { MAC_TOPMOST_LEVEL } = require("./topmost-runtime");
 const path = require("path");
 const http = require("http");
 const {
@@ -69,6 +70,9 @@ function registerPermissionIpc(options = {}) {
 
   on("bubble-height", (event, height) => permission.handleBubbleHeight(event, height));
   on("permission-decide", (event, behavior) => permission.handleDecide(event, behavior));
+  if (typeof permission.handleImeEditing === "function") {
+    on("bubble-ime-editing", (event, editing) => permission.handleImeEditing(event, editing));
+  }
 
   return {
     dispose() {
@@ -690,6 +694,12 @@ function showPermissionBubble(permEntry) {
   // Temporary position — repositionBubbles() will finalize after renderer reports real height
   const pos = { x: 0, y: 0, width: getBubbleWidth(scale, wa), height: bh };
 
+  // Bubbles that host a text input (elicitation "Other", ExitPlanMode
+  // feedback) need keyboard focus. On macOS, the topmost level is dropped
+  // per-edit at runtime instead (see handleImeEditing) so the IME candidate
+  // window isn't occluded.
+  const needsTextInput = !!(permEntry.isElicitation || permEntry.toolName === "ExitPlanMode");
+
   const bub = new BrowserWindow({
     width: pos.width,
     height: pos.height,
@@ -709,7 +719,7 @@ function showPermissionBubble(permEntry) {
     // while acceptFirstMouse lets the first click hit the inactive panel.
     // ExitPlanMode needs keyboard focus for the "Tell Claude what to change"
     // textarea feedback path on other platforms.
-    focusable: isMac ? true : !!(permEntry.isElicitation || permEntry.toolName === "ExitPlanMode"),
+    focusable: isMac ? true : needsTextInput,
     webPreferences: {
       preload: path.join(__dirname, "preload-bubble.js"),
       nodeIntegration: false,
@@ -719,6 +729,11 @@ function showPermissionBubble(permEntry) {
 
   permEntry.bubble = bub;
   permEntry.bubbleReady = false;
+  // macOS: text-input bubbles skip the native stationary treatment (SkyLight
+  // private space) that occludes the OS IME candidate window. They stay
+  // cross-space visible via Electron and drop out of always-on-top while a text
+  // field is focused (handleImeEditing) so CJK input popups can surface.
+  if (isMac && needsTextInput) bub.__clawdMacTextInputBubble = true;
 
   if (isWin) {
     bub.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
@@ -740,9 +755,12 @@ function showPermissionBubble(permEntry) {
     }
   });
 
-  // macOS: set alwaysOnTop BEFORE showInactive to prevent bubble from sinking
+  // macOS: set alwaysOnTop BEFORE showInactive to prevent bubble from sinking.
+  // (Text-input bubbles later drop out of always-on-top per-edit — and skip the
+  // native SkyLight path — so their IME candidate window can surface; that's
+  // handled by handleImeEditing + reapplyMacVisibility, not a lower level here.)
   if (isMac) {
-    bub.setAlwaysOnTop(true, "screen-saver");
+    bub.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
   }
 
   repositionBubbles();
@@ -1853,6 +1871,25 @@ function handleBubbleHeight(event, height) {
   }
 }
 
+// macOS only: while a text input inside the bubble is focused, the bubble must
+// drop out of always-on-top so the OS IME candidate window (Chinese/Japanese/
+// Korean input popup) can surface — it floats above normal windows only, so any
+// always-on-top level (and the native SkyLight stationary path) occludes it.
+// We only flip the __clawdMacImeEditing flag here and let reapplyMacVisibility()
+// apply the actual editing-vs-normal window state, so both directions round-trip
+// through one place (topmost-runtime.js) instead of being hand-rolled twice.
+// The renderer clears the flag on element blur AND on window blur (e.g. Cmd-Tab
+// away mid-composition), so it can't get stuck and strand the bubble.
+function handleImeEditing(event, editing) {
+  if (!isMac) return;
+  const senderWin = BrowserWindow.fromWebContents(event.sender);
+  const perm = pendingPermissions.find(p => p.bubble === senderWin);
+  if (!perm || !perm.bubble || perm.bubble.isDestroyed()) return;
+  if (editing) perm.bubble.__clawdMacImeEditing = true;
+  else delete perm.bubble.__clawdMacImeEditing;
+  if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
+}
+
 function handleDecide(event, behavior) {
   // Identify which permission this bubble belongs to via sender webContents
   const senderWin = BrowserWindow.fromWebContents(event.sender);
@@ -2241,7 +2278,7 @@ return {
   addPendingPermission, removePendingPermission,
   maybeStartRemoteApproval,
   dismissPermissionForTerminal,
-  handleBubbleHeight, handleDecide, cleanup,
+  handleBubbleHeight, handleDecide, handleImeEditing, cleanup,
   showCodexNotifyBubble, clearCodexNotifyBubbles,
   showKimiNotifyBubble, clearKimiNotifyBubbles,
   refreshPassiveNotifyAutoClose,

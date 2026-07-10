@@ -1038,5 +1038,49 @@ planFeedbackBack.addEventListener("click", () => {
   exitPlanFeedbackMode();
 });
 
+// While a text input inside the bubble is focused, tell the main process so it
+// can drop the bubble out of always-on-top on macOS — otherwise the OS IME
+// candidate window (Chinese/Japanese/Korean input popup) is occluded by the
+// topmost bubble. focusin/focusout bubble up from any current or future text
+// field (elicitation "Other", ExitPlanMode feedback) without per-field wiring.
+function isTextInputElement(el) {
+  if (!el) return false;
+  if (el.tagName === "TEXTAREA") return true;
+  if (el.tagName === "INPUT") {
+    const type = (el.getAttribute("type") || "text").toLowerCase();
+    return type === "text" || type === "search";
+  }
+  return false;
+}
+
+if (window.bubbleAPI && typeof window.bubbleAPI.setImeEditing === "function") {
+  // Dedupe so redundant transitions don't spam the main process (and so the
+  // window-blur/focus net below only fires a real state change).
+  let imeEditing = false;
+  const setImeEditing = (active) => {
+    if (active === imeEditing) return;
+    imeEditing = active;
+    window.bubbleAPI.setImeEditing(active);
+  };
+  document.addEventListener("focusin", (e) => {
+    if (isTextInputElement(e.target)) setImeEditing(true);
+  });
+  document.addEventListener("focusout", (e) => {
+    if (isTextInputElement(e.target)) setImeEditing(false);
+  });
+  // focusin/focusout are element-level: they do NOT fire when the whole window
+  // loses/regains OS focus (e.g. Cmd-Tab away mid-composition to check a
+  // reference — a routine CJK move). Without this, the editing flag would stay
+  // set and reapplyMacVisibility() would strand the bubble out of always-on-top
+  // for good. Mirror the window-blur listener used elsewhere in the app
+  // (hit-renderer.js, tutorial-renderer.js): restore normal topmost while the
+  // window is backgrounded, and re-drop it on return if a text field still
+  // holds focus.
+  window.addEventListener("blur", () => setImeEditing(false));
+  window.addEventListener("focus", () => {
+    if (isTextInputElement(document.activeElement)) setImeEditing(true);
+  });
+}
+
 window.bubbleAPI.onPermissionShow(show);
 window.bubbleAPI.onPermissionHide(hide);
