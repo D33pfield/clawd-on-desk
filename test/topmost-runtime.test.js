@@ -11,6 +11,7 @@ class FakeWindow extends EventEmitter {
     super();
     this.destroyed = !!options.destroyed;
     this.visible = options.visible !== false;
+    this.bounds = options.bounds || null;
     this.calls = [];
   }
 
@@ -28,6 +29,18 @@ class FakeWindow extends EventEmitter {
 
   setVisibleOnAllWorkspaces(...args) {
     this.calls.push(["setVisibleOnAllWorkspaces", ...args]);
+  }
+
+  getBounds() {
+    return this.bounds ? { ...this.bounds } : { x: 0, y: 0, width: 0, height: 0 };
+  }
+
+  setOpacity(value) {
+    this.calls.push(["setOpacity", value]);
+  }
+
+  setIgnoreMouseEvents(...args) {
+    this.calls.push(["setIgnoreMouseEvents", ...args]);
   }
 }
 
@@ -817,5 +830,130 @@ describe("topmost runtime macOS visibility", () => {
       ["setVisibleOnAllWorkspaces", true, { visibleOnFullScreen: true, skipTransformProcessType: true }],
     ]);
     assert.deepStrictEqual(stationaryCalls, []);
+  });
+});
+
+describe("IME editing pet dodge (#640)", () => {
+  function makeDodgeSetup(overrides = {}) {
+    const pet = new FakeWindow();
+    const hit = new FakeWindow();
+    const bubble = new FakeWindow({ bounds: { x: 100, y: 100, width: 300, height: 200 } });
+    bubble.__clawdMacImeEditing = true;
+    bubble.__clawdMacTextInputBubble = true;
+    const runtime = createTopmostRuntime({
+      isMac: true,
+      getWin: () => pet,
+      getHitWin: () => hit,
+      getPendingPermissions: () => [{ bubble }],
+      // Sprite rect intersecting the bubble unless overridden
+      getHitRectScreen: () => ({ x: 320, y: 240, width: 120, height: 120 }),
+      imeEditingFadeMs: 0,
+      applyStationaryCollectionBehavior: () => true,
+      ...overrides,
+    });
+    return { pet, hit, bubble, runtime };
+  }
+
+  it("fades the pet and lets clicks through while the editing bubble overlaps the sprite", () => {
+    const { pet, hit, runtime } = makeDodgeSetup();
+
+    runtime.syncImeEditingPetDodge();
+
+    assert.deepStrictEqual(pet.calls, [
+      ["setOpacity", createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY],
+    ]);
+    assert.deepStrictEqual(hit.calls, [["setIgnoreMouseEvents", true]]);
+  });
+
+  it("is edge-triggered: repeated syncs while overlapping do not repeat window calls", () => {
+    const { pet, hit, runtime } = makeDodgeSetup();
+
+    runtime.syncImeEditingPetDodge();
+    runtime.syncImeEditingPetDodge();
+    runtime.syncImeEditingPetDodge();
+
+    assert.strictEqual(pet.calls.length, 1);
+    assert.strictEqual(hit.calls.length, 1);
+  });
+
+  it("restores the pet when the text field blurs (flag cleared)", () => {
+    const { pet, hit, bubble, runtime } = makeDodgeSetup();
+
+    runtime.syncImeEditingPetDodge();
+    delete bubble.__clawdMacImeEditing;
+    runtime.syncImeEditingPetDodge();
+
+    assert.deepStrictEqual(pet.calls, [
+      ["setOpacity", createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY],
+      ["setOpacity", 1],
+    ]);
+    assert.deepStrictEqual(hit.calls, [
+      ["setIgnoreMouseEvents", true],
+      ["setIgnoreMouseEvents", false],
+    ]);
+  });
+
+  it("restores the pet when the editing bubble is removed (closed mid-edit)", () => {
+    const perms = [];
+    const { pet, hit, bubble, runtime } = makeDodgeSetup({
+      getPendingPermissions: () => perms,
+    });
+    perms.push({ bubble });
+
+    runtime.syncImeEditingPetDodge();
+    perms.length = 0;
+    runtime.syncImeEditingPetDodge();
+
+    assert.deepStrictEqual(pet.calls.map((c) => c[0]), ["setOpacity", "setOpacity"]);
+    assert.deepStrictEqual(pet.calls[1], ["setOpacity", 1]);
+    assert.deepStrictEqual(hit.calls[1], ["setIgnoreMouseEvents", false]);
+  });
+
+  it("does nothing while editing without geometric overlap", () => {
+    const { pet, hit, runtime } = makeDodgeSetup({
+      getHitRectScreen: () => ({ x: 900, y: 900, width: 120, height: 120 }),
+    });
+
+    runtime.syncImeEditingPetDodge();
+
+    assert.deepStrictEqual(pet.calls, []);
+    assert.deepStrictEqual(hit.calls, []);
+  });
+
+  it("falls back to the pet window bounds when no sprite rect is available", () => {
+    const { pet, runtime } = makeDodgeSetup({
+      getHitRectScreen: () => null,
+      getPetWindowBounds: () => ({ x: 150, y: 150, width: 200, height: 200 }),
+    });
+
+    runtime.syncImeEditingPetDodge();
+
+    assert.deepStrictEqual(pet.calls, [
+      ["setOpacity", createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY],
+    ]);
+  });
+
+  it("does nothing off macOS", () => {
+    const { pet, hit, runtime } = makeDodgeSetup({ isMac: false });
+
+    runtime.syncImeEditingPetDodge();
+
+    assert.deepStrictEqual(pet.calls, []);
+    assert.deepStrictEqual(hit.calls, []);
+  });
+
+  it("runs as part of reapplyMacVisibility so every visibility pass self-heals", () => {
+    const { pet, hit, runtime } = makeDodgeSetup();
+
+    runtime.reapplyMacVisibility();
+
+    assert.deepStrictEqual(
+      pet.calls.filter((c) => c[0] === "setOpacity"),
+      [["setOpacity", createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY]]
+    );
+    assert.deepStrictEqual(
+      hit.calls.filter((c) => c[0] === "setIgnoreMouseEvents"),
+      [["setIgnoreMouseEvents", true]]
+    );
   });
 });

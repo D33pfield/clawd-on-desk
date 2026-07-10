@@ -624,6 +624,11 @@ function repositionBubbles() {
       // with a different textScale (applyZoomToWindow memoizes, so this is
       // a no-op when nothing changed).
       applyZoomToWindow(perm.bubble, scale);
+      // #640: a bubble whose text field is being typed into holds its
+      // position — followPet anchoring must not yank the input box around
+      // mid-composition (pet drag; roam is separately paused while editing).
+      // Fresh bubbles never carry the flag, so they still get placed.
+      if (perm.bubble.__clawdMacImeEditing) continue;
       perm.bubble.setBounds(bounds[i]);
     }
   }
@@ -859,6 +864,14 @@ function removePendingPermission(permEntry, reason = "removed") {
   if (idx === -1) return false;
   pendingPermissions.splice(idx, 1);
   notifyPermissionsChanged(reason);
+  // #640: if this bubble closed while its text field was still focused, the
+  // pet may be faded + click-through (syncImeEditingPetDodge) with no blur
+  // event coming to undo it. Re-run the visibility pass — it re-scans
+  // pendingPermissions and restores the pet once no editing bubble remains.
+  if (isMac && permEntry.bubble && permEntry.bubble.__clawdMacImeEditing
+      && typeof ctx.reapplyMacVisibility === "function") {
+    ctx.reapplyMacVisibility();
+  }
   return true;
 }
 

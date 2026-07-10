@@ -1283,6 +1283,8 @@ const topmostRuntime = createTopmostRuntime({
   getContextMenuOwner: () => contextMenuOwner,
   getNearestWorkArea,
   getPetWindowBounds,
+  // #640: tight sprite rect for the editing-overlap dodge test
+  getHitRectScreen: (bounds) => getHitRectScreen(bounds),
   getShowDock: () => showDock,
   isDragLocked: () => petWindowRuntime.isDragLocked(),
   isMiniAnimating: () => _mini.getIsAnimating(),
@@ -1437,7 +1439,12 @@ function repositionFloatingBubbles() {
 }
 
 function repositionAnchoredFloatingSurfaces() {
-  return floatingWindowRuntime.repositionAnchoredSurfaces();
+  const result = floatingWindowRuntime.repositionAnchoredSurfaces();
+  // #640: pet bounds changed — re-evaluate the editing-overlap dodge (a drag
+  // can slide the pet over the bubble being typed into; the bubble itself is
+  // frozen while editing, and roam is paused, so the pet is the mover here).
+  topmostRuntime.syncImeEditingPetDodge();
+  return result;
 }
 
 function syncSessionHudVisibilityAndBubbles() {
@@ -3967,6 +3974,10 @@ const _roamCtx = {
   applyState: (state, svgOverride, opts) => _state.applyState(state, svgOverride, opts),
   setState: (state, svgOverride, opts) => _state.setState(state, svgOverride, opts),
   setRoamHeading: (headingLeft) => sendToRenderer("roam-heading", !!headingLeft),
+  // #640: hold still while the user types into a bubble text field (macOS)
+  isImeEditingActive: () => pendingPermissions.some(
+    (p) => p && p.bubble && !p.bubble.isDestroyed() && p.bubble.__clawdMacImeEditing
+  ),
 };
 const _roam = require("./roam")(_roamCtx);
 
