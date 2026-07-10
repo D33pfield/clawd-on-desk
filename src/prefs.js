@@ -27,6 +27,10 @@ const {
   normalizeTelegramApproval,
 } = require("./telegram-approval-settings");
 const {
+  cloneDefaultDiscordPresence,
+  normalizeDiscordPresence,
+} = require("./discord-presence-settings");
+const {
   cloneDefaultFeishuApproval,
   normalizeFeishuApproval,
 } = require("./feishu-approval-settings");
@@ -332,6 +336,11 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => cloneDefaultTelegramApproval(),
     normalize: normalizeTelegramApproval,
+  },
+  discordPresence: {
+    type: "object",
+    defaultFactory: () => cloneDefaultDiscordPresence(),
+    normalize: normalizeDiscordPresence,
   },
   feishuApproval: {
     type: "object",

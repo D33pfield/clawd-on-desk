@@ -91,6 +91,8 @@ const initPermission = require("./permission");
 const { registerPermissionIpc } = initPermission;
 const { createTelegramApprovalSidecar } = require("./telegram-approval-sidecar");
 const telegramApprovalSettings = require("./telegram-approval-settings");
+const discordPresenceSettings = require("./discord-presence-settings");
+const { createDiscordPresenceBridge } = require("./discord-presence-rpc");
 const { FeishuApprovalClient } = require("./feishu-approval-client");
 const feishuApprovalSettings = require("./feishu-approval-settings");
 const {
@@ -314,6 +316,7 @@ let _telegramMigrationController = null;
 let telegramNativeRunner = null;
 let telegramCompanion = null;
 let telegramDirectSend = null;
+let discordPresenceBridge = null;
 let suppressTelegramApprovalSidecarSync = 0;
 let feishuApprovalClient = null;
 let feishuApprovalSyncPromise = Promise.resolve();
@@ -582,6 +585,7 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
   isWin,
   nativeTheme,
   path,
+  discordDefaultAppIdPresent: !!discordPresenceSettings.DEFAULT_CLAWD_DISCORD_APP_ID,
   getPetWindowBounds: () => getPetWindowBounds(),
   getNearestWorkArea: (cx, cy) => getNearestWorkArea(cx, cy),
   getTextScale: () => effectiveTextScaleForKey(getSettingsDisplayKey()),
@@ -1511,6 +1515,9 @@ const _stateCtx = {
     // broadcast — the companion computes synchronously and fires sends async.
     if (telegramCompanion) {
       try { telegramCompanion.onSnapshot(snapshot); } catch {}
+    }
+    if (discordPresenceBridge) {
+      try { discordPresenceBridge.onSnapshot(snapshot); } catch {}
     }
     if (_lanWss) { try { _lanWss.onSnapshot(); } catch {} }
   },
@@ -2785,6 +2792,40 @@ function queueTelegramApprovalSidecarSync(reason) {
   return telegramApprovalSyncPromise;
 }
 
+// In-process IPC bridge fed by the session-snapshot subscription.
+function startDiscordPresence() {
+  const config = _settingsController.getSnapshot().discordPresence;
+  const ready = discordPresenceSettings.readiness(config);
+  if (!ready.ready) return false;
+  if (!discordPresenceBridge) {
+    discordPresenceBridge = createDiscordPresenceBridge({
+      getConfig: () => _settingsController.getSnapshot().discordPresence,
+      log: (level, msg) => {
+        try { sessionLog(`[discord-presence] ${level}: ${msg}`); } catch {}
+        // Surface warnings (e.g. wrong App ID) on the house channel; the debug
+        // log alone is invisible to an ordinary user.
+        if (level === "warn") { try { console.warn(`Clawd: discord presence: ${msg}`); } catch {} }
+      },
+    });
+  }
+  discordPresenceBridge.start();
+  // Force a replay; the broadcast is otherwise change-gated.
+  try { _state.emitSessionSnapshot({ force: true }); } catch {}
+  return true;
+}
+
+function syncDiscordPresence(reason = "settings") {
+  const config = _settingsController.getSnapshot().discordPresence;
+  const ready = discordPresenceSettings.readiness(config);
+  if (!ready.ready) {
+    if (discordPresenceBridge) discordPresenceBridge.stop();
+    try { sessionLog(`[discord-presence] sync ${reason}: off (${ready.reason})`); } catch {}
+    return false;
+  }
+  try { sessionLog(`[discord-presence] sync ${reason}: on`); } catch {}
+  return startDiscordPresence();
+}
+
 function telegramApprovalUnavailableMessage(status) {
   if (status && status.message) return status.message;
   if (status && status.reason === "disabled") return translate("telegramApprovalDisabledMessage");
@@ -3409,6 +3450,9 @@ settingsEffectRouter.start();
 _settingsController.subscribeKey("tgApproval", () => {
   if (suppressTelegramApprovalSidecarSync > 0) return;
   queueTelegramApprovalSidecarSync("settings");
+});
+_settingsController.subscribeKey("discordPresence", () => {
+  syncDiscordPresence("settings");
 });
 _settingsController.subscribeKey("feishuApproval", () => {
   queueFeishuApprovalSync("settings");
@@ -4162,6 +4206,8 @@ if (!gotTheLock) {
     initTelegramMigrationController().catch((err) => {
       console.warn("Clawd: migration controller init failed:", err && err.message);
     });
+    try { syncDiscordPresence("startup"); }
+    catch (err) { console.warn("Clawd: discord presence startup failed:", err && err.message); }
     queueFeishuApprovalSync("startup");
     createWindow();
     // WSL agent detection is NOT started here: scanning runs a command inside
@@ -4263,6 +4309,7 @@ if (!gotTheLock) {
     globalShortcut.unregisterAll();
     void settingsSizePreviewSession.cleanup();
     stopTelegramApprovalSidecar();
+    if (discordPresenceBridge) discordPresenceBridge.stop();
     stopFeishuApprovalClient();
     if (typeof unsubscribeHardwareBuddySettings === "function") {
       unsubscribeHardwareBuddySettings();

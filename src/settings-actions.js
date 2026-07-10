@@ -128,6 +128,7 @@ const {
   validateTelegramApproval,
   validateTelegramBotToken,
 } = require("./telegram-approval-settings");
+const { validateDiscordPresence } = require("./discord-presence-settings");
 const {
   validateFeishuApproval,
 } = require("./feishu-approval-settings");
@@ -462,6 +463,9 @@ const updateRegistry = {
   },
   tgApproval(value) {
     return validateTelegramApproval(value);
+  },
+  discordPresence(value) {
+    return validateDiscordPresence(value);
   },
   feishuApproval(value) {
     return validateFeishuApproval(value);
