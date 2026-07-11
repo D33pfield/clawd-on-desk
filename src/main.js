@@ -716,6 +716,9 @@ const petWindowRuntime = createPetWindowRuntime({
   keepOutOfTaskbar,
   repositionSessionHud: () => repositionSessionHud(),
   repositionAnchoredSurfaces: () => repositionAnchoredFloatingSurfaces(),
+  // #640: hitbox changes without a window move (state switch, theme reload)
+  // must re-answer the editing-overlap question. (Lazy — defined below.)
+  syncImeEditingPetDodge: () => topmostRuntime.syncImeEditingPetDodge(),
   repositionFloatingBubbles: () => repositionFloatingBubbles(),
   showFloatingSurfacesForPet: () => floatingWindowRuntime.showFloatingSurfacesForPet(),
   hideFloatingSurfacesForPet: () => floatingWindowRuntime.hideFloatingSurfacesForPet(),
@@ -1214,6 +1217,10 @@ let getSessionHudWindow = () => null;
 const themeFadeSequencer = createThemeFadeSequencer({
   getRenderWindow: () => win,
   getHitWindow: () => hitWin,
+  // #640: while the pet dodges an editing bubble its baseline opacity is the
+  // faded value, not 1 — restoring to 1 mid-edit would plant an opaque pet on
+  // top of the box being typed into. (Lazy: topmostRuntime is defined below.)
+  getRestoreOpacity: () => topmostRuntime.getPetTargetOpacity(),
   fadeOutMs: THEME_SWITCH_FADE_OUT_MS,
   fadeInMs: THEME_SWITCH_FADE_IN_MS,
   fallbackMs: THEME_SWITCH_FADE_FALLBACK_MS,
@@ -1280,6 +1287,8 @@ const topmostRuntime = createTopmostRuntime({
   getContextMenuOwner: () => contextMenuOwner,
   getNearestWorkArea,
   getPetWindowBounds,
+  // #640: tight sprite rect for the editing-overlap dodge test
+  getHitRectScreen: (bounds) => getHitRectScreen(bounds),
   getShowDock: () => showDock,
   isDragLocked: () => petWindowRuntime.isDragLocked(),
   isMiniAnimating: () => _mini.getIsAnimating(),
@@ -1329,6 +1338,10 @@ const _permCtx = {
   getTextScale: () => getTextScaleForPetWindows(),
   guardAlwaysOnTop,
   reapplyMacVisibility,
+  // #640: permission.js re-runs the editing-overlap dodge scan whenever the
+  // pendingPermissions list changes (notifyPermissionsChanged), so a bubble
+  // that leaves the list mid-edit can't strand the pet faded + click-through.
+  syncImeEditingPetDodge: () => topmostRuntime.syncImeEditingPetDodge(),
   isAgentPermissionsEnabled: (agentId) =>
     _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
   // DANGER "auto-pilot": when true, showPermissionBubble auto-approves every
@@ -1431,7 +1444,12 @@ function repositionFloatingBubbles() {
 }
 
 function repositionAnchoredFloatingSurfaces() {
-  return floatingWindowRuntime.repositionAnchoredSurfaces();
+  const result = floatingWindowRuntime.repositionAnchoredSurfaces();
+  // #640: pet bounds changed — re-evaluate the editing-overlap dodge (a drag
+  // can slide the pet over the bubble being typed into; the bubble itself is
+  // frozen while editing, and roam is paused, so the pet is the mover here).
+  topmostRuntime.syncImeEditingPetDodge();
+  return result;
 }
 
 function syncSessionHudVisibilityAndBubbles() {
@@ -3502,6 +3520,7 @@ function createWindow() {
     beginDragSnapshot: () => beginDragSnapshot(),
     clearDragSnapshot: () => clearDragSnapshot(),
     syncHitWin: () => syncHitWin(),
+    syncImeEditingPetDodge: () => topmostRuntime.syncImeEditingPetDodge(),
     isMiniMode: () => _mini.getMiniMode(),
     checkMiniModeSnap: () => checkMiniModeSnap(),
     getDisableMiniMode: () => disableMiniModeCached,
@@ -3712,6 +3731,10 @@ const _roamCtx = {
   applyState: (state, svgOverride, opts) => _state.applyState(state, svgOverride, opts),
   setState: (state, svgOverride, opts) => _state.setState(state, svgOverride, opts),
   setRoamHeading: (headingLeft) => sendToRenderer("roam-heading", !!headingLeft),
+  // #640: hold still while the user types into a bubble text field (macOS)
+  isImeEditingActive: () => pendingPermissions.some(
+    (p) => p && p.bubble && !p.bubble.isDestroyed() && p.bubble.__clawdMacImeEditing
+  ),
 };
 const _roam = require("./roam")(_roamCtx);
 

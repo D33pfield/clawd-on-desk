@@ -619,6 +619,11 @@ function repositionBubbles() {
       // with a different textScale (applyZoomToWindow memoizes, so this is
       // a no-op when nothing changed).
       applyZoomToWindow(perm.bubble, scale);
+      // #640: a bubble whose text field is being typed into holds its
+      // position — followPet anchoring must not yank the input box around
+      // mid-composition (pet drag; roam is separately paused while editing).
+      // Fresh bubbles never carry the flag, so they still get placed.
+      if (perm.bubble.__clawdMacImeEditing) continue;
       perm.bubble.setBounds(bounds[i]);
     }
   }
@@ -777,6 +782,12 @@ function showPermissionBubble(permEntry) {
     }
   });
 
+  // #640: a dead renderer can never send the focusout/window-blur IPC that
+  // clears the editing flag — without this, a crash while a text field was
+  // focused leaves the flag stuck and the pet faded + click-through for as
+  // long as the entry lives.
+  bub.webContents.on("render-process-gone", () => handleBubbleRendererGone(bub));
+
   ctx.guardAlwaysOnTop(bub);
   syncPermissionShortcuts();
   armPermissionAutoCloseTimer(permEntry);
@@ -815,6 +826,20 @@ function dismissPermissionWithoutDecision(permEntry, message) {
 }
 
 function notifyPermissionsChanged(reason) {
+  // #640: every path that adds or removes a pendingPermissions entry funnels
+  // through here — including resolvePermissionEntry's inline splice, which is
+  // what Allow/Deny clicks, Enter submits, and the auto-close timer all use.
+  // A bubble can leave the list while its text field still holds focus (no
+  // blur ever fires, and handleImeEditing can't match a spliced entry), so
+  // this is the one reliable place to re-run the editing-overlap dodge scan
+  // and restore the pet. Cheap + edge-triggered; platform gate lives inside.
+  if (typeof ctx.syncImeEditingPetDodge === "function") {
+    try {
+      ctx.syncImeEditingPetDodge();
+    } catch (err) {
+      permLog(`syncImeEditingPetDodge failed: ${err && err.message ? err.message : err}`);
+    }
+  }
   if (typeof ctx.onPermissionsChanged !== "function") return;
   try {
     ctx.onPermissionsChanged(reason);
@@ -1884,6 +1909,16 @@ function handleImeEditing(event, editing) {
   if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
 }
 
+// #640: the editing flag is normally cleared by renderer focusout/window-blur
+// IPC (see handleImeEditing) — a crashed renderer can't send either, so the
+// flag would stay stuck and keep the pet faded + click-through. Called from
+// the bubble's render-process-gone listener.
+function handleBubbleRendererGone(bubble) {
+  if (!bubble || !bubble.__clawdMacImeEditing) return;
+  delete bubble.__clawdMacImeEditing;
+  if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
+}
+
 function handleDecide(event, behavior) {
   // Identify which permission this bubble belongs to via sender webContents
   const senderWin = BrowserWindow.fromWebContents(event.sender);
@@ -2272,7 +2307,7 @@ return {
   addPendingPermission, removePendingPermission,
   maybeStartRemoteApproval,
   dismissPermissionForTerminal,
-  handleBubbleHeight, handleDecide, handleImeEditing, cleanup,
+  handleBubbleHeight, handleDecide, handleImeEditing, handleBubbleRendererGone, cleanup,
   showCodexNotifyBubble, clearCodexNotifyBubbles,
   showKimiNotifyBubble, clearKimiNotifyBubbles,
   refreshPassiveNotifyAutoClose,
