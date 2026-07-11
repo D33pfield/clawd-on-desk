@@ -94,7 +94,18 @@ function createThemeFadeSequencer(options = {}) {
     clearFadeFallback();
     const target = restoreOpacity();
     animateOpacity(seq, target, fadeInMs).then((ok) => {
-      if (!ok && isCurrent(seq)) setWindowOpacity(getRenderWindow(), restoreOpacity());
+      if (!isCurrent(seq)) return;
+      if (!ok) {
+        setWindowOpacity(getRenderWindow(), restoreOpacity());
+        return;
+      }
+      // #640: the baseline can move WHILE this fade-in runs (the dodge engages
+      // or releases mid-animation, racing this loop with its own independent
+      // one — separate cancel signals, last writer wins). Whoever finishes
+      // last must land on the CURRENT baseline, so re-read it at completion
+      // and converge instead of trusting the target chosen at start.
+      const finalTarget = restoreOpacity();
+      if (finalTarget !== target) setWindowOpacity(getRenderWindow(), finalTarget);
     });
   }
 

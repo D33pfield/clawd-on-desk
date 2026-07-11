@@ -788,6 +788,12 @@ function showPermissionBubble(permEntry) {
     }
   });
 
+  // #640: a dead renderer can never send the focusout/window-blur IPC that
+  // clears the editing flag — without this, a crash while a text field was
+  // focused leaves the flag stuck and the pet faded + click-through for as
+  // long as the entry lives.
+  bub.webContents.on("render-process-gone", () => handleBubbleRendererGone(bub));
+
   ctx.guardAlwaysOnTop(bub);
   syncPermissionShortcuts();
   armPermissionAutoCloseTimer(permEntry);
@@ -1909,6 +1915,16 @@ function handleImeEditing(event, editing) {
   if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
 }
 
+// #640: the editing flag is normally cleared by renderer focusout/window-blur
+// IPC (see handleImeEditing) — a crashed renderer can't send either, so the
+// flag would stay stuck and keep the pet faded + click-through. Called from
+// the bubble's render-process-gone listener.
+function handleBubbleRendererGone(bubble) {
+  if (!bubble || !bubble.__clawdMacImeEditing) return;
+  delete bubble.__clawdMacImeEditing;
+  if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
+}
+
 function handleDecide(event, behavior) {
   // Identify which permission this bubble belongs to via sender webContents
   const senderWin = BrowserWindow.fromWebContents(event.sender);
@@ -2297,7 +2313,7 @@ return {
   addPendingPermission, removePendingPermission,
   maybeStartRemoteApproval,
   dismissPermissionForTerminal,
-  handleBubbleHeight, handleDecide, handleImeEditing, cleanup,
+  handleBubbleHeight, handleDecide, handleImeEditing, handleBubbleRendererGone, cleanup,
   showCodexNotifyBubble, clearCodexNotifyBubbles,
   showKimiNotifyBubble, clearKimiNotifyBubbles,
   refreshPassiveNotifyAutoClose,

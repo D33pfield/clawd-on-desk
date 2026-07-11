@@ -959,6 +959,57 @@ describe("IME editing pet dodge (#640)", () => {
     );
   });
 
+  // #640/F3: Electron's setIgnoreMouseEvents makes no promise about toggling
+  // mid-gesture, so the click-through write is deferred while a drag is in
+  // flight; the fade is not (the mid-drag fade transition is the hands-on-
+  // verified experience). Drag-lock release re-runs the sync to apply it.
+  describe("drag-lock deferral", () => {
+    it("fades mid-drag but defers the click-through write", () => {
+      const { pet, hit, runtime } = makeDodgeSetup({ isDragLocked: () => true });
+
+      runtime.syncImeEditingPetDodge();
+
+      assert.deepStrictEqual(pet.calls, [
+        ["setOpacity", createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY],
+      ], "the fade still runs mid-drag");
+      assert.deepStrictEqual(hit.calls, [],
+        "the ignore-mouse write must wait until the drag ends");
+    });
+
+    it("applies the deferred click-through on the first sync after the drag ends", () => {
+      let dragging = true;
+      const { pet, hit, runtime } = makeDodgeSetup({ isDragLocked: () => dragging });
+
+      runtime.syncImeEditingPetDodge();
+      dragging = false;
+      runtime.syncImeEditingPetDodge();
+
+      assert.deepStrictEqual(hit.calls, [["setIgnoreMouseEvents", true]]);
+      assert.strictEqual(pet.calls.length, 1,
+        "the fade already ran mid-drag; the post-drag sync only applies the write");
+
+      runtime.syncImeEditingPetDodge();
+      assert.strictEqual(hit.calls.length, 1, "the applied write is edge-triggered");
+    });
+
+    it("skips the write entirely when the overlap ended before the drag did", () => {
+      let dragging = true;
+      const { pet, hit, bubble, runtime } = makeDodgeSetup({ isDragLocked: () => dragging });
+
+      runtime.syncImeEditingPetDodge();       // overlap while dragging → fade only
+      delete bubble.__clawdMacImeEditing;     // edit ends mid-drag
+      runtime.syncImeEditingPetDodge();       // fade back, still no write
+      dragging = false;
+      runtime.syncImeEditingPetDodge();       // drag ends: nothing left to apply
+
+      assert.deepStrictEqual(pet.calls.map((c) => c[1]), [
+        createTopmostRuntime.IME_EDIT_PET_FADE_OPACITY, 1,
+      ]);
+      assert.deepStrictEqual(hit.calls, [],
+        "never went click-through, so nothing to undo");
+    });
+  });
+
   // #640: external opacity writers (theme-switch fade) restore to this value
   // instead of a hardcoded 1, so a theme reload mid-edit lands back on the
   // dodge baseline rather than planting an opaque pet over the input box.

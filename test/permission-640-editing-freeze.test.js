@@ -159,3 +159,33 @@ describe("pendingPermissions changes re-run the dodge scan (#640)", () => {
     assert.strictEqual(pendingPermissions.length, 0);
   });
 });
+
+// #640: a crashed bubble renderer can never send the focusout/window-blur IPC
+// that clears the editing flag — the render-process-gone listener routes here.
+describe("handleBubbleRendererGone (#640)", () => {
+  it("clears a stuck editing flag and re-runs the visibility pass", () => {
+    const reapply = [];
+    const ctx = makeCtx({ reapplyMacVisibility: () => reapply.push(true) });
+    const { handleBubbleRendererGone } = initPermission(ctx);
+
+    const bubble = makeBubble();
+    bubble.__clawdMacImeEditing = true;
+
+    handleBubbleRendererGone(bubble);
+
+    assert.strictEqual(bubble.__clawdMacImeEditing, undefined,
+      "a dead renderer can't clear the flag itself — this must");
+    assert.strictEqual(reapply.length, 1);
+  });
+
+  it("does nothing for a bubble that was not mid-edit", () => {
+    const reapply = [];
+    const ctx = makeCtx({ reapplyMacVisibility: () => reapply.push(true) });
+    const { handleBubbleRendererGone } = initPermission(ctx);
+
+    handleBubbleRendererGone(makeBubble());
+    handleBubbleRendererGone(null);
+
+    assert.strictEqual(reapply.length, 0);
+  });
+});

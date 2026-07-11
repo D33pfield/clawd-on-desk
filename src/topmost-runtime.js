@@ -120,6 +120,10 @@ function createTopmostRuntime(options = {}) {
   // #640 editing-overlap dodge state: true while the pet is faded +
   // click-through because it overlaps the bubble being typed into.
   let imeEditingPetDodge = false;
+  // Tracked separately from the dodge boolean: the hit window's click-through
+  // write is deferred while a drag is in flight (see syncImeEditingPetDodge),
+  // so "what we want" and "what we last wrote" can legitimately differ.
+  let imeEditingHitIgnoreApplied = false;
   let imeEditingFadeCancel = null;
 
   function reassertWinTopmost() {
@@ -248,12 +252,24 @@ function createTopmostRuntime(options = {}) {
       try { bubbleRect = editingBubble.getBounds(); } catch { bubbleRect = null; }
       overlap = rectsIntersect(petRect, bubbleRect);
     }
-    if (overlap === imeEditingPetDodge) return;
-    imeEditingPetDodge = overlap;
-    fadePetWindow(overlap ? IME_EDIT_PET_FADE_OPACITY : 1);
+    if (overlap !== imeEditingPetDodge) {
+      imeEditingPetDodge = overlap;
+      fadePetWindow(overlap ? IME_EDIT_PET_FADE_OPACITY : 1);
+    }
+    // The click-through write is deferred while a drag is in flight: an
+    // established macOS mouse-tracking session keeps delivering the drag's
+    // events, but Electron's setIgnoreMouseEvents contract makes no promise
+    // about toggling mid-gesture — flipping it here could strand the drag
+    // with dragLocked stuck true. The fade above still runs mid-drag (that
+    // transition is the hands-on-verified experience); the ignore-mouse state
+    // is applied on the next sync after the drag ends (pet-interaction-ipc
+    // re-runs this on drag-lock release).
+    if (isDragLocked()) return;
+    if (imeEditingHitIgnoreApplied === imeEditingPetDodge) return;
     const hitWin = getHitWin();
     if (isLiveWindow(hitWin) && typeof hitWin.setIgnoreMouseEvents === "function") {
-      hitWin.setIgnoreMouseEvents(overlap);
+      hitWin.setIgnoreMouseEvents(imeEditingPetDodge);
+      imeEditingHitIgnoreApplied = imeEditingPetDodge;
     }
   }
 

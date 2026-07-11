@@ -281,6 +281,53 @@ describe("theme fade sequencer restore opacity (#640)", () => {
     assert.strictEqual(animations[1].targetOpacity, 0.18);
   });
 
+  it("converges on the current baseline when the dodge flips during the fade-in", async () => {
+    // The dodge runs its own animateWindowOpacity loop with a separate cancel
+    // signal — last writer wins. Whoever finishes last must land on the
+    // CURRENT baseline, so fade-in completion re-reads it.
+    let base = 1;
+    const { animations, hitWin, renderWin, sequencer } = createHarness({
+      autoResolveAnimation: false,
+      getRestoreOpacity: () => base,
+    });
+
+    sequencer.run();
+    animations[0].resolve(true); // fade-out done → reload starts
+    await flushMicrotasks();
+    renderWin.webContents.emit("did-finish-load");
+    hitWin.webContents.emit("did-finish-load");
+    await flushMicrotasks();
+
+    assert.strictEqual(animations[1].targetOpacity, 1,
+      "fade-in starts toward the baseline read at start");
+
+    base = 0.18;                 // dodge engages while the fade-in is running
+    animations[1].resolve(true); // fade-in loop finishes (has written 1)
+    await flushMicrotasks();
+
+    assert.deepStrictEqual(renderWin.opacityWrites, [0.18],
+      "completion must re-read the baseline and converge");
+  });
+
+  it("does not double-write when the baseline held still through the fade-in", async () => {
+    const { animations, hitWin, renderWin, sequencer } = createHarness({
+      autoResolveAnimation: false,
+      getRestoreOpacity: () => 0.18,
+    });
+
+    sequencer.run();
+    animations[0].resolve(true);
+    await flushMicrotasks();
+    renderWin.webContents.emit("did-finish-load");
+    hitWin.webContents.emit("did-finish-load");
+    await flushMicrotasks();
+    animations[1].resolve(true);
+    await flushMicrotasks();
+
+    assert.deepStrictEqual(renderWin.opacityWrites, [],
+      "an unchanged baseline needs no converge write");
+  });
+
   it("clamps garbage restore values back to 1", async () => {
     const { animations, hitWin, renderWin, sequencer } = createHarness({
       getRestoreOpacity: () => { throw new Error("boom"); },

@@ -127,6 +127,10 @@ function createPetWindowRuntime(options = {}) {
   const buildTrayMenu = options.buildTrayMenu || noop;
   const buildContextMenu = options.buildContextMenu || noop;
   const reapplyMacVisibility = options.reapplyMacVisibility || noop;
+  // #640: re-run the editing-overlap dodge whenever the hit geometry syncs —
+  // the hitbox can change without the window moving (state switches between
+  // hitboxes, theme reload), which changes the overlap answer.
+  const syncImeEditingPetDodge = options.syncImeEditingPetDodge || noop;
   const reassertWinTopmost = options.reassertWinTopmost || noop;
   const scheduleHwndRecovery = options.scheduleHwndRecovery || noop;
   const isNearWorkAreaEdge = options.isNearWorkAreaEdge || (() => false);
@@ -488,6 +492,10 @@ function createPetWindowRuntime(options = {}) {
       hitWin.setShape([{ x: 0, y: 0, width: w, height: h }]);
     }
     repositionSessionHud();
+    // #640: the hit rect just (re)resolved — state switches and theme reloads
+    // change hitboxes without moving the window, so the overlap answer can
+    // flip right here. Cheap + edge-triggered inside.
+    syncImeEditingPetDodge();
   }
 
   function getInitialHitWindowBounds(renderBounds = getPetWindowBounds()) {
