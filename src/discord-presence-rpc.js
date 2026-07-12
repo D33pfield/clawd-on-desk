@@ -10,14 +10,32 @@ const { normalizeDiscordPresence, DEFAULT_CLAWD_DISCORD_APP_ID } = require("./di
 
 const OP = Object.freeze({ HANDSHAKE: 0, FRAME: 1, CLOSE: 2, PING: 3, PONG: 4 });
 
-// External URL works for large_image, so BYO users needn't upload an asset.
-const CLAWD_ICON_URL = "https://raw.githubusercontent.com/rullerzhou-afk/clawd-on-desk/main/assets/icon.png";
+// External GIF URLs animate in large_image (uploaded portal assets can't), so the
+// presence mirrors the live clawd sprite without anyone uploading art. These are the
+// enlarged variants (assets/discord-presence, built by tools/build-discord-presence-gifs.py)
+// that fill the card instead of floating tiny in the source canvas. Pinned to a fork commit
+// so the media proxy gets a stable, cache-clean URL; bump the SHA when sprites are regenerated.
+const GIF_BASE_URL = "https://raw.githubusercontent.com/KaiC5504/clawd-on-desk/d844d99dcf9d6e33d1ec0ae34012ac6ac8182bc2/assets/discord-presence";
 
-const COARSE_LABEL = Object.freeze({
+// Clawd sprite + label per resolved presence state (see resolvePresenceState).
+const STATE_GIF = Object.freeze({
+  idle: "clawd-idle.gif",
+  sleeping: "clawd-sleeping.gif",
+  thinking: "clawd-thinking.gif",
+  working: "clawd-typing.gif",
+  juggling: "clawd-juggling.gif",
+  attention: "clawd-happy.gif",
+  error: "clawd-error.gif",
+});
+
+const PRESENCE_LABEL = Object.freeze({
   idle: "Idle",
+  sleeping: "Sleeping",
   thinking: "Thinking",
   working: "Working",
-  waiting: "Waiting for input",
+  juggling: "Working",
+  attention: "Waiting for input",
+  error: "Error",
 });
 
 const READY_TIMEOUT_MS = 5000;
@@ -27,13 +45,23 @@ const ACTIVITY_FIELD_MAX = 128;
 // Discord rate-limits SET_ACTIVITY (~5/20s); coalesce rapid flips.
 const MIN_SEND_INTERVAL_MS = 4000;
 
-// Canonical session.state, never currentState (mini-mode remaps it).
-function toCoarseState(state) {
-  const s = String(state || "").replace(/^mini-/, "");
+// The snapshot only persists active states (idle/thinking/working/juggling);
+// finished + failed turns collapse to idle, so the badge recovers "done" /
+// "interrupted". mini-* shares its base sprite.
+function resolvePresenceState(session) {
+  if (!session) return "idle";
+  const s = String(session.state || "").replace(/^mini-/, "");
   if (s === "thinking") return "thinking";
-  if (s === "working" || s === "juggling" || s === "carrying" || s === "sweeping") return "working";
-  if (s === "notification" || s === "attention" || s === "error") return "waiting";
+  if (s === "juggling") return "juggling";
+  if (s === "working" || s === "carrying" || s === "sweeping") return "working";
+  if (session.badge === "interrupted") return "error";
+  if (session.badge === "done" || session.requiresCompletionAck === true) return "attention";
+  if (s === "sleeping") return "sleeping";
   return "idle";
+}
+
+function presenceImageUrl(presenceState) {
+  return `${GIF_BASE_URL}/${STATE_GIF[presenceState] || STATE_GIF.idle}`;
 }
 
 function agentLabel(agentId) {
@@ -42,25 +70,26 @@ function agentLabel(agentId) {
 }
 
 function buildPresencePayload(session, privacy = {}) {
-  const coarse = toCoarseState(session && session.state);
+  const ps = resolvePresenceState(session);
+  const label = PRESENCE_LABEL[ps] || PRESENCE_LABEL.idle;
   const agentId = session && session.agentId;
   const activity = {
     details: isCustomApplicationNamespace(agentId)
       ? "Custom agent"
       : ((session && session.agentName) || agentLabel(agentId)),
-    state: COARSE_LABEL[coarse],
-    assets: { large_image: CLAWD_ICON_URL, large_text: "Clawd on Desk" },
+    state: label,
+    assets: { large_image: presenceImageUrl(ps), large_text: "Clawd on Desk" },
   };
   if (privacy.privacyShowProject && session && session.cwd) {
     // win32.basename splits on both \ and /, so a Windows cwd seen on a POSIX
     // host yields just the folder name instead of leaking the whole path.
-    const state = `${COARSE_LABEL[coarse]} · ${path.win32.basename(session.cwd)}`;
+    const state = `${label} · ${path.win32.basename(session.cwd)}`;
     // Truncate by code point: a long folder name would otherwise make Discord
     // silently drop the whole activity update.
     activity.state = Array.from(state).slice(0, ACTIVITY_FIELD_MAX).join("");
   }
-  // Allowlist by design: the snapshot also carries sensitive fields
-  // (sessionTitle, assistantLastOutput, ...) we deliberately never read.
+  // Allowlist by design: only coarse status (state, badge, completion flag) is
+  // read; sensitive snapshot fields (sessionTitle, assistantLastOutput, ...) never are.
   return activity;
 }
 
@@ -364,8 +393,8 @@ function createDiscordPresenceBridge({ getConfig, log, createConnection, ipcPath
 
 module.exports = {
   OP,
-  CLAWD_ICON_URL,
-  toCoarseState,
+  resolvePresenceState,
+  presenceImageUrl,
   buildPresencePayload,
   encodeFrame,
   decodeFrames,

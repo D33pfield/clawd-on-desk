@@ -6,7 +6,8 @@ const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
-  toCoarseState,
+  resolvePresenceState,
+  presenceImageUrl,
   buildPresencePayload,
   pickDominantSession,
   encodeFrame,
@@ -32,20 +33,22 @@ function firstFrame(socket) {
 
 const READY_FRAME = encodeFrame(OP.FRAME, { cmd: "DISPATCH", evt: "READY" });
 
-test("toCoarseState collapses canonical session states into 4 coarse buckets", () => {
-  assert.strictEqual(toCoarseState("working"), "working");
-  assert.strictEqual(toCoarseState("juggling"), "working");
-  assert.strictEqual(toCoarseState("carrying"), "working");
-  assert.strictEqual(toCoarseState("thinking"), "thinking");
-  assert.strictEqual(toCoarseState("notification"), "waiting"); // permission pending => waiting on user
-  assert.strictEqual(toCoarseState("attention"), "waiting");
-  assert.strictEqual(toCoarseState("error"), "waiting");        // highest-priority state; it dominates the display
-  assert.strictEqual(toCoarseState("idle"), "idle");
-  assert.strictEqual(toCoarseState("sleeping"), "idle");
-  assert.strictEqual(toCoarseState("mini-working"), "working"); // tolerate a leaked mini-* just in case
+test("resolvePresenceState maps active states and recovers done/error from the badge", () => {
+  assert.strictEqual(resolvePresenceState({ state: "thinking" }), "thinking");
+  assert.strictEqual(resolvePresenceState({ state: "working" }), "working");
+  assert.strictEqual(resolvePresenceState({ state: "juggling" }), "juggling");
+  assert.strictEqual(resolvePresenceState({ state: "mini-working" }), "working"); // mini-* shares its base
+  // one-shot states (error/attention/notification/...) collapse to idle in the
+  // snapshot; the badge is how we recover them
+  assert.strictEqual(resolvePresenceState({ state: "idle", badge: "interrupted" }), "error");
+  assert.strictEqual(resolvePresenceState({ state: "idle", badge: "done" }), "attention");
+  assert.strictEqual(resolvePresenceState({ state: "idle", requiresCompletionAck: true }), "attention");
+  assert.strictEqual(resolvePresenceState({ state: "working", requiresCompletionAck: true }), "working"); // busy now wins
+  assert.strictEqual(resolvePresenceState({ state: "idle" }), "idle");
+  assert.strictEqual(resolvePresenceState(null), "idle");
 });
 
-test("buildPresencePayload exposes ONLY agent + coarse state + icon by default", () => {
+test("buildPresencePayload exposes ONLY agent + coarse state + sprite by default", () => {
   const session = {
     agentId: "claude-code",
     state: "working",
@@ -58,7 +61,21 @@ test("buildPresencePayload exposes ONLY agent + coarse state + icon by default",
   assert.strictEqual(blob.includes("fix the thing"), false);  // session title never leaks
   assert.match(out.state, /working/i);            // coarse state present
   assert.ok(out.details);                         // agent label present
-  assert.ok(out.assets && out.assets.large_image); // icon present
+  assert.ok(out.assets && out.assets.large_image); // sprite present
+});
+
+test("large_image + label follow the resolved presence state", () => {
+  const img = (s) => buildPresencePayload(s, {}).assets.large_image;
+  const label = (s) => buildPresencePayload(s, {}).state;
+  assert.match(img({ state: "thinking" }), /clawd-thinking\.gif$/);
+  assert.match(img({ state: "working" }), /clawd-typing\.gif$/);
+  assert.match(img({ state: "juggling" }), /clawd-juggling\.gif$/);
+  assert.match(img({ state: "idle", badge: "interrupted" }), /clawd-error\.gif$/);
+  assert.match(img({ state: "idle", requiresCompletionAck: true }), /clawd-happy\.gif$/);
+  assert.match(img({ state: "idle" }), /clawd-idle\.gif$/);
+  assert.strictEqual(label({ state: "idle", requiresCompletionAck: true }), "Waiting for input");
+  assert.strictEqual(label({ state: "idle", badge: "interrupted" }), "Error");
+  assert.match(presenceImageUrl("totally-unknown"), /clawd-idle\.gif$/); // unknown falls back to idle
 });
 
 test("buildPresencePayload keeps custom executable names out of public presence", () => {
