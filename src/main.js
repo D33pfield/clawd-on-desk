@@ -1105,6 +1105,11 @@ function bringPetToPrimaryDisplay() {
 
 function sendToRenderer(channel, ...args) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
+  // Every visual the pet displays flows through this channel (applyState and
+  // the tick.js idle rotation), so it doubles as the presence mirror feed.
+  if (channel === "state-change" && discordPresenceBridge) {
+    try { discordPresenceBridge.onVisual(args[0], args[1]); } catch {}
+  }
 }
 function sendToHitWin(channel, ...args) {
   if (hitWin && !hitWin.isDestroyed()) hitWin.webContents.send(channel, ...args);
@@ -2984,6 +2989,8 @@ function startDiscordPresence() {
     });
   }
   discordPresenceBridge.start();
+  // Prime the visual mirror — the next state-change may be minutes away.
+  try { discordPresenceBridge.onVisual(_state.getCurrentState(), _state.getCurrentSvg()); } catch {}
   // Force a replay; the broadcast is otherwise change-gated.
   try { _state.emitSessionSnapshot({ force: true }); } catch {}
   return true;

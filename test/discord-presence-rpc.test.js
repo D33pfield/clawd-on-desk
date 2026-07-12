@@ -297,3 +297,76 @@ test("stop() resets the reconnect backoff so a later start() dials at the base d
     global.setTimeout = realSetTimeout;
   }
 });
+
+// ── Visual mirroring: presence follows the pet's on-screen animation ──
+
+test("buildPresencePayload mirrors a known on-screen visual (image + label)", () => {
+  const img = (visual, session = null) => buildPresencePayload(session, {}, visual).assets.large_image;
+  const label = (visual, session = null) => buildPresencePayload(session, {}, visual).state;
+  // idle variants keep state "idle" but swap the svg (tick.js idle rotation)
+  assert.match(img({ state: "idle", svg: "clawd-idle-bubble.svg" }), /clawd-bubble\.gif$/);
+  assert.match(img({ state: "idle", svg: "clawd-idle-reading.svg" }), /clawd-idle-reading\.gif$/);
+  assert.strictEqual(label({ state: "idle", svg: "clawd-idle-bubble.svg" }), "Idle");
+  // session-count working tiers
+  assert.match(img({ state: "working", svg: "clawd-working-building.svg" }), /clawd-building\.gif$/);
+  assert.strictEqual(label({ state: "working", svg: "clawd-working-building.svg" }), "Working");
+  // sleep chain: dozing shows the sleeping sprite and reads as Sleeping
+  assert.match(img({ state: "dozing", svg: "clawd-idle-doze.svg" }), /clawd-sleeping\.gif$/);
+  assert.strictEqual(label({ state: "dozing", svg: "clawd-idle-doze.svg" }), "Sleeping");
+  // one-shots
+  assert.match(img({ state: "notification", svg: "clawd-notification.svg" }), /clawd-notification\.gif$/);
+  assert.strictEqual(label({ state: "notification", svg: "clawd-notification.svg" }), "Waiting for input");
+  // svgs with no gif of their own fall back to the nearest sprite
+  assert.match(img({ state: "dizzy", svg: "clawd-dizzy.svg" }), /clawd-idle\.gif$/);
+  assert.match(img({ state: "waking", svg: "clawd-wake.svg" }), /clawd-idle\.gif$/);
+  // mini mode
+  assert.match(img({ state: "mini-working", svg: "clawd-mini-typing.svg" }), /clawd-typing\.gif$/);
+  assert.strictEqual(label({ state: "mini-working", svg: "clawd-mini-typing.svg" }), "Working");
+  assert.match(img({ state: "roam", svg: "clawd-mini-crabwalk.svg" }), /clawd-mini-crabwalk\.gif$/);
+  assert.strictEqual(label({ state: "roam", svg: "clawd-mini-crabwalk.svg" }), "Idle");
+});
+
+test("an unknown visual svg (other themes) falls back to the session-derived sprite", () => {
+  const session = { agentId: "claude-code", state: "working" };
+  const out = buildPresencePayload(session, {}, { state: "working", svg: "calico-typing.svg" });
+  assert.match(out.assets.large_image, /clawd-typing\.gif$/); // no dead links for non-clawd themes
+  assert.strictEqual(out.state, "Working");
+});
+
+test("a mirrored visual renders even with no active session", () => {
+  const out = buildPresencePayload(null, {}, { state: "idle", svg: "clawd-idle-bubble.svg" });
+  assert.match(out.assets.large_image, /clawd-bubble\.gif$/);
+  assert.strictEqual(out.state, "Idle");
+  assert.ok(out.details); // generic agent label still present
+});
+
+test("project-name opt-in composes with the mirrored label", () => {
+  const session = { agentId: "claude-code", state: "idle", cwd: "D:\\Repos\\Apps\\demo" };
+  const out = buildPresencePayload(session, { privacyShowProject: true }, { state: "idle", svg: "clawd-idle-reading.svg" });
+  assert.strictEqual(out.state, "Idle · demo");
+  assert.match(out.assets.large_image, /clawd-idle-reading\.gif$/);
+});
+
+test("onVisual publishes the mirrored sprite over the live IPC socket", () => {
+  const cfg = { enabled: true, applicationId: "111111111111111111" };
+  const sockets = [];
+  const bridge = createDiscordPresenceBridge({
+    getConfig: () => cfg,
+    ipcPaths: () => ["fake-pipe"],
+    createConnection: () => { const s = new FakeIpcSocket(); sockets.push(s); return s; },
+  });
+  bridge.start();
+  sockets[0].emit("connect");
+  sockets[0].emit("data", READY_FRAME);
+
+  bridge.onVisual("idle", "clawd-idle-bubble.svg");
+  const activities = sockets[0].writes
+    .map((b) => decodeFrames(b).frames[0])
+    .filter((f) => f.op === OP.FRAME && f.data.cmd === "SET_ACTIVITY");
+  assert.ok(activities.length >= 1, "onVisual should publish an activity");
+  const last = activities.at(-1).data.args.activity;
+  assert.match(last.assets.large_image, /clawd-bubble\.gif$/);
+  assert.strictEqual(last.state, "Idle");
+
+  bridge.stop();
+});
