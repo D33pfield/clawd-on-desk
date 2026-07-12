@@ -19,7 +19,7 @@ from PIL import Image, ImageSequence
 SRC_DIR = os.path.join("assets", "gif")
 OUT_DIR = os.path.join("assets", "discord-presence")
 
-# Mirror STATE_GIF in src/discord-presence-rpc.js — keep in sync.
+# Mirror the SVG_GIF targets in src/discord-presence-rpc.js — keep in sync.
 FILES = [
     "clawd-idle.gif",
     "clawd-sleeping.gif",
@@ -28,6 +28,21 @@ FILES = [
     "clawd-juggling.gif",
     "clawd-happy.gif",
     "clawd-error.gif",
+    "clawd-bubble.gif",
+    "clawd-idle-reading.gif",
+    "clawd-building.gif",
+    "clawd-conducting.gif",
+    "clawd-debugger.gif",
+    "clawd-sweeping.gif",
+    "clawd-carrying.gif",
+    "clawd-notification.gif",
+    "clawd-headphones-groove.gif",
+    "clawd-mini-idle.gif",
+    "clawd-mini-alert.gif",
+    "clawd-mini-happy.gif",
+    "clawd-mini-enter.gif",
+    "clawd-mini-peek.gif",
+    "clawd-mini-crabwalk.gif",
 ]
 
 MARGIN = 0.08   # breathing room so Discord's rounded corners never clip the sprite
