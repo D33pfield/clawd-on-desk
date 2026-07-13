@@ -39,6 +39,39 @@ function stdoutForEvent(hookName) {
   return "{}";
 }
 
+const SESSION_TITLE_MAX = 60;
+
+// Derive the session title Clawd shows in the HUD. Without it the HUD falls
+// back to the agent label ("WorkBuddy") and two same-session bubbles can't be
+// told apart (#648). Only high-quality sources are used — we deliberately do
+// NOT fall back to cwd/session_id: the server already resolves
+// path.basename(cwd) when no title is stored, and a low-quality value would
+// overwrite a good title via the server's sticky `||` chain on later events.
+// Priority: payload.session_title (WorkBuddy /rename, if present) → first
+// non-blank line of the user prompt on UserPromptSubmit (matches
+// clawd-hook.js / qoderwork-hook.js behaviour). Returns null when nothing
+// high-quality is available.
+function deriveSessionTitle(hookName, payload) {
+  const rawTitle =
+    payload && typeof payload.session_title === "string" ? payload.session_title.trim() : "";
+  if (rawTitle) {
+    return rawTitle.length > SESSION_TITLE_MAX
+      ? `${rawTitle.slice(0, SESSION_TITLE_MAX - 1)}\u2026`
+      : rawTitle;
+  }
+  if (hookName === "UserPromptSubmit" && payload && typeof payload.prompt === "string") {
+    for (const line of payload.prompt.split(/\r?\n/)) {
+      const candidate = line.trim();
+      if (candidate) {
+        return candidate.length > SESSION_TITLE_MAX
+          ? `${candidate.slice(0, SESSION_TITLE_MAX - 1)}\u2026`
+          : candidate;
+      }
+    }
+  }
+  return null;
+}
+
 // Safety timeout: guarantee valid JSON on stdout even if stdin never arrives
 // or the process tree walk hangs. Without this WorkBuddy would see empty stdout
 // which is invalid JSON and logs an error on every hook invocation.
@@ -66,46 +99,63 @@ function finish(outLine) {
 
 safetyTimer = setTimeout(() => finish("{}"), SAFETY_TIMEOUT_MS);
 
-readStdinJson()
-  .then((payload) => {
-    const hookName = (payload && payload.hook_event_name) || "";
-    const mapped = HOOK_MAP[hookName];
-    const outLine = stdoutForEvent(hookName);
+function run() {
+  readStdinJson()
+    .then((payload) => {
+      const hookName = (payload && payload.hook_event_name) || "";
+      const mapped = HOOK_MAP[hookName];
+      const outLine = stdoutForEvent(hookName);
 
-    if (!mapped) {
-      finish(outLine);
-      return;
-    }
+      if (!mapped) {
+        finish(outLine);
+        return;
+      }
 
-    const { state, event } = mapped;
-    if (hookName === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
+      const { state, event } = mapped;
+      if (hookName === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
 
-    const sessionId = (payload && payload.session_id) || "default";
-    const cwd = (payload && payload.cwd) || "";
+      const sessionId = (payload && payload.session_id) || "default";
+      const cwd = (payload && payload.cwd) || "";
 
-    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
+      const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
 
-    const body = { state, session_id: sessionId, event };
-    body.agent_id = "workbuddy";
-    if (cwd) body.cwd = cwd;
-    if (process.env.CLAWD_REMOTE) {
-      body.host = readHostPrefix();
-    } else {
-      body.source_pid = stablePid;
-      if (detectedEditor) body.editor = detectedEditor;
-      if (agentPid) body.agent_pid = agentPid;
-      if (pidChain.length) body.pid_chain = pidChain;
-      if (tmuxSocket) body.tmux_socket = tmuxSocket;
-      if (tmuxClient) body.tmux_client = tmuxClient;
-    }
+      const body = { state, session_id: sessionId, event };
+      body.agent_id = "workbuddy";
+      if (cwd) body.cwd = cwd;
 
-    // Answer WorkBuddy immediately so it never sees empty stdout, but don't
-    // exit yet — the fire-and-forget POST below still needs to leave the
-    // process, so we exit in its callback (with the safety timer as backstop).
-    writeStdoutOnce(outLine);
+      const sessionTitle = deriveSessionTitle(hookName, payload);
+      if (sessionTitle) body.session_title = sessionTitle;
 
-    postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => {
-      finish(outLine);
-    });
-  })
-  .catch(() => finish("{}"));
+      if (process.env.CLAWD_REMOTE) {
+        body.host = readHostPrefix();
+      } else {
+        body.source_pid = stablePid;
+        if (detectedEditor) body.editor = detectedEditor;
+        if (agentPid) body.agent_pid = agentPid;
+        if (pidChain.length) body.pid_chain = pidChain;
+        if (tmuxSocket) body.tmux_socket = tmuxSocket;
+        if (tmuxClient) body.tmux_client = tmuxClient;
+      }
+
+      // Answer WorkBuddy immediately so it never sees empty stdout, but don't
+      // exit yet — the fire-and-forget POST below still needs to leave the
+      // process, so we exit in its callback (with the safety timer as backstop).
+      writeStdoutOnce(outLine);
+
+      postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => {
+        finish(outLine);
+      });
+    })
+    .catch(() => finish("{}"));
+}
+
+if (require.main === module) {
+  run();
+} else {
+  // Imported for unit testing (deriveSessionTitle). The safety timer above must
+  // not keep the test runner alive or fire a stray stdout write.
+  if (safetyTimer) clearTimeout(safetyTimer);
+  _exited = true;
+}
+
+module.exports = { HOOK_MAP, stdoutForEvent, deriveSessionTitle, SESSION_TITLE_MAX };
