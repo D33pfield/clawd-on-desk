@@ -2018,7 +2018,11 @@ function detectRunningAgentProcesses(callback) {
       (err, stdout) => done(!err && /\d+/.test(stdout))
     );
   } else {
-    exec("pgrep -f 'claude-code|codex|copilot|codebuddy|kimi|@earendil-works/pi-coding-agent|pi-coding-agent/dist/cli\\.js' || pgrep -x 'gemini' || pgrep -x 'agy' || pgrep -x 'kiro-cli' || pgrep -x 'codewhale' || pgrep -x 'opencode' || pgrep -x 'hermes' || pgrep -x 'qodercli' || pgrep -x 'qoder-cli' || pgrep -x '[Qq]oder[Ww]ork'", { timeout: 3000 },
+    // WorkBuddy is a GUI Electron app: its verified macOS renderer helper is
+    // "WorkBuddy Helper" (matched via pgrep -f here). The Windows/Linux process
+    // names are not yet confirmed on real hardware, so they are intentionally
+    // omitted from the WQL filter above until verified (see agents/workbuddy.js).
+    exec("pgrep -f 'claude-code|codex|copilot|codebuddy|kimi|@earendil-works/pi-coding-agent|pi-coding-agent/dist/cli\\.js' || pgrep -x 'gemini' || pgrep -x 'agy' || pgrep -x 'kiro-cli' || pgrep -x 'codewhale' || pgrep -x 'opencode' || pgrep -x 'hermes' || pgrep -x 'qodercli' || pgrep -x 'qoder-cli' || pgrep -x '[Qq]oder[Ww]ork' || pgrep -f 'WorkBuddy Helper'", { timeout: 3000 },
       (err) => done(!err)
     );
   }

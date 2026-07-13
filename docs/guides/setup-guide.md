@@ -20,6 +20,8 @@ Fresh installs enable and install only Claude Code and Codex by default. For oth
 
 **CodeBuddy** — uses Claude Code-compatible hooks in `~/.codebuddy/settings.json`. Install it from **Settings → Agents** when you want local CodeBuddy tracking; after that Clawd keeps the hooks synced on launch while CodeBuddy remains enabled. You can also run `node hooks/codebuddy-install.js` manually.
 
+**WorkBuddy** — uses Claude Code-compatible hooks in `~/.workbuddy/settings.json`. Install it from **Settings → Agents** when you want local WorkBuddy tracking; after that Clawd keeps the hooks synced on launch while WorkBuddy remains enabled. You can also run `node hooks/workbuddy-install.js` manually. WorkBuddy is a macOS/Windows Electron desktop app with no standalone Linux/WSL CLI; state-driven animations have been verified on macOS.
+
 **Kiro CLI** — install it from **Settings → Agents** when you want local Kiro tracking, or run `npm run install:kiro-hooks` if you want hooks registered before launching Clawd. Kiro's built-in `kiro_default` agent is not backed by an editable JSON file, so Clawd creates a custom `clawd` agent and re-syncs it from the latest `kiro_default` each time Clawd starts after the integration is installed, then appends hooks. Use `kiro-cli --agent clawd` for a new chat, or `/agent swap clawd` inside an existing Kiro session, when you want hooks enabled. On macOS and Windows, state-driven animations have been verified; native terminal permission prompts such as `t / y / n` still need to be answered in the terminal.
 
 **Kimi Code** — Clawd supports both Kimi generations through one integration. The modern Kimi Code (TypeScript CLI) keeps hooks in `~/.kimi-code/config.toml` and the legacy Kimi CLI (Python, discontinued upstream) in `~/.kimi/config.toml`; Clawd installs into whichever directories exist (both, if both are present). Install it from **Settings → Agents**; after that Clawd keeps the hooks synced on launch while Kimi remains enabled. You can also run `npm run install:kimi-hooks` manually. Kimi is hook-only in Clawd: state updates and permission notifications come from hook events, not log polling. On Kimi Code, permission bubbles are driven by the CLI's native `PermissionRequest`/`PermissionResult` hook events — they show the exact command awaiting approval and clear as soon as you answer in the terminal, with no configuration needed. If you migrated from the legacy CLI using Kimi Code's built-in migration, Clawd's next sync automatically upgrades the copied hook entries to the new format (the old env-prefix command style does not execute on Windows). The legacy-CLI-only `CLAWD_KIMI_PERMISSION_MODE=explicit|suspect` switch still works for `~/.kimi` installs exactly as before: set it before running the installer and the value is written into each hook `command` so later auto-syncs preserve it. Heads up: the auto-sync rewrites the `command` field in-place if it diverges from the expected line, so manual edits to that field will be silently restored on the next launch.
@@ -171,6 +173,9 @@ node hooks/antigravity-install.js
 
 # CodeBuddy
 node hooks/codebuddy-install.js
+
+# WorkBuddy
+node hooks/workbuddy-install.js
 
 # opencode
 node hooks/opencode-install.js
