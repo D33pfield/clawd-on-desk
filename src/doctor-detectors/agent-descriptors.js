@@ -237,6 +237,7 @@ const AGENT_DESCRIPTORS = Object.freeze([
     marker: qoder.MARKER,
     nested: true,
     hookEvents: qoder.QODER_HOOK_EVENTS,
+    hookGroupId: "clawd",
   }),
   Object.freeze({
     agentId: "reasonix",
@@ -261,6 +262,7 @@ const AGENT_DESCRIPTORS = Object.freeze([
     marker: qoderwork.MARKER,
     nested: true,
     hookEvents: qoderwork.QODERWORK_HOOK_EVENTS,
+    hookGroupId: "clawd",
   }),
 ]);
 
