@@ -401,6 +401,7 @@ const _settingsController = createSettingsController({
       themeRuntime.refreshActiveThemeHitboxOverrides(id, overrideMap),
     getThemeInfo: (id) => themeRuntime.getThemeInfo(id),
     removeThemeDir: (id) => themeRuntime.removeThemeDir(id),
+    getActiveTheme: () => themeRuntime.getActiveTheme(),
     globalShortcut,
     shortcutHandlers,
     // The controller is created before shortcutRuntime because each side needs
@@ -1478,6 +1479,24 @@ let sendDashboardI18n = () => {};
 // after the updater module is constructed below.
 let notifyUpdaterSilentExit = () => {};
 
+// #509: user-selected default idle visual, resolved against the live active
+// theme so reads never go stale across theme switches. Returns null when
+// unset/invalid — callers keep their existing fallback. The visible repaint
+// on a pref change is the refreshIdleVisual router hook's job, further down.
+const { resolveIdleVisualChoice } = require("./idle-visual");
+function getIdleVisualChoice() {
+  return resolveIdleVisualChoice(getActiveTheme(), _settingsController.get("idleVisual"));
+}
+
+// Renderer theme config with the idle choice stamped on — the renderer's
+// pre-IPC first frame should already show the selected visual, not flash the
+// follow sprite. getRendererConfig() returns a fresh object, safe to extend.
+function buildRendererThemeConfig() {
+  const cfg = themeRuntime.getRendererConfig();
+  if (cfg) cfg.idleDefaultVisual = getIdleVisualChoice();
+  return cfg;
+}
+
 const _stateCtx = {
   get theme() { return getActiveTheme(); },
   get win() { return win; },
@@ -1560,6 +1579,7 @@ const _stateCtx = {
     detachedIdleStaleMs,
   }),
   getSessionAliases: () => _settingsController.get("sessionAliases"),
+  getIdleVisualChoice,
   hasAnyEnabledAgent: () => {
     // `get("agents")` returns the live reference (no clone) — we're only
     // reading. Missing agents field falls back to "assume enabled" (the
@@ -1650,6 +1670,7 @@ const _tickCtx = {
   sendToHitWin,
   setState,
   applyState,
+  getIdleVisualChoice,
   miniPeekIn: () => miniPeekIn(),
   miniPeekOut: () => miniPeekOut(),
   getObjRect,
@@ -3200,6 +3221,13 @@ const settingsEffectRouter = createSettingsEffectRouter({
   reclampPetAfterEdgePinningChange,
   exitMiniMode: () => exitMiniMode(),
   getMiniMode: () => _mini.getMiniMode(),
+  // #509: re-rest the pet on the newly selected idle visual right away, but
+  // only while actually idle — task/sleep/mini states pick it up on their
+  // next natural revert instead.
+  refreshIdleVisual: () => {
+    if (_state.getCurrentState() !== "idle") return;
+    _state.applyState("idle", _state.getSvgOverride("idle"));
+  },
   rebuildAllMenus,
   reconcilePowerSaveBlocker,
   logWarn: console.warn,
@@ -3496,7 +3524,7 @@ function createWindow() {
     initialVirtualBounds,
     preloadPath: path.join(__dirname, "preload.js"),
     loadFilePath: path.join(__dirname, "index.html"),
-    themeConfig: themeRuntime.getRendererConfig(),
+    themeConfig: buildRendererThemeConfig(),
     setRenderWindow: (createdWindow) => { win = createdWindow; },
     isQuitting: () => isQuitting,
     applyDockVisibility,
@@ -3614,7 +3642,7 @@ function createWindow() {
     setLowPowerIdlePaused(false);
   });
   win.webContents.on("did-finish-load", () => {
-    sendToRenderer("theme-config", themeRuntime.getRendererConfig());
+    sendToRenderer("theme-config", buildRendererThemeConfig());
     sendToRenderer("viewport-offset", petWindowRuntime.getViewportOffsetY());
     if (themeRuntime.isReloadInProgress()) return;
     syncRendererStateAfterLoad();

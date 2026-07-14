@@ -78,6 +78,7 @@ const {
   requireString,
   requirePlainObject,
 } = require("./settings-validators");
+const { listIdleVisualOptions } = require("./idle-visual");
 const {
   registerShortcut,
   resetShortcut,
@@ -440,6 +441,10 @@ const updateRegistry = {
   // Letting this field have an effect would double-activate when the UI
   // updates `theme` and `themeVariant` separately.
   themeVariant: requirePlainObject("themeVariant"),
+  // #509: per-theme default idle visual. Writes go through the `setIdleVisual`
+  // command (which validates the file against the active theme); this entry
+  // exists so applyCommand's commit re-validation accepts the key.
+  idleVisual: requirePlainObject("idleVisual"),
 
   // Remote SSH profile store. Plain validator — actual CRUD goes through
   // commandRegistry below to keep id-uniqueness, default-fill, and
@@ -750,6 +755,7 @@ async function removeTheme(payload, deps) {
   const snapshot = deps.snapshot || {};
   const currentOverrides = snapshot.themeOverrides || {};
   const currentVariantMap = snapshot.themeVariant || {};
+  const currentIdleVisual = snapshot.idleVisual || {};
   const nextCommit = {};
   if (currentOverrides[themeId]) {
     const nextOverrides = { ...currentOverrides };
@@ -760,6 +766,11 @@ async function removeTheme(payload, deps) {
     const nextVariantMap = { ...currentVariantMap };
     delete nextVariantMap[themeId];
     nextCommit.themeVariant = nextVariantMap;
+  }
+  if (currentIdleVisual[themeId] !== undefined) {
+    const nextIdleVisual = { ...currentIdleVisual };
+    delete nextIdleVisual[themeId];
+    nextCommit.idleVisual = nextIdleVisual;
   }
   if (Object.keys(nextCommit).length > 0) {
     return { status: "ok", commit: nextCommit };
@@ -813,6 +824,51 @@ function setThemeSelection(payload, deps) {
     status: "ok",
     commit: { theme: themeId, themeVariant: nextVariantMap },
   };
+}
+
+// #509: default idle visual picker.
+//   payload: { themeId: string, file: string|null }  (null = back to theme default)
+// Validates against the LOADED active theme (only it knows the real file list
+// after variants/overrides), so only the active theme's entry can be written.
+const _validateSetIdleVisualThemeId = requireString("setIdleVisual.themeId");
+function setIdleVisual(payload, deps) {
+  const themeId = payload && payload.themeId;
+  const file = payload && typeof payload === "object" ? payload.file : undefined;
+  const idCheck = _validateSetIdleVisualThemeId(themeId);
+  if (idCheck.status !== "ok") return idCheck;
+  if (file !== null && (typeof file !== "string" || !file)) {
+    return { status: "error", message: "setIdleVisual.file must be a non-empty string or null" };
+  }
+
+  if (!deps || typeof deps.getActiveTheme !== "function") {
+    return { status: "error", message: "setIdleVisual effect requires getActiveTheme dep" };
+  }
+  const activeTheme = deps.getActiveTheme();
+  if (!activeTheme || activeTheme._id !== themeId) {
+    return { status: "error", message: `setIdleVisual: theme "${themeId}" is not the active theme` };
+  }
+
+  let nextFile = file;
+  if (nextFile !== null) {
+    const match = listIdleVisualOptions(activeTheme).find((option) => option.file === nextFile);
+    if (!match) {
+      return { status: "error", message: `setIdleVisual: "${nextFile}" is not an idle visual of theme "${themeId}"` };
+    }
+    // Theme default is represented by the absence of an entry.
+    if (match.isThemeDefault) nextFile = null;
+  }
+
+  const snapshot = (deps && deps.snapshot) || {};
+  const currentMap = snapshot.idleVisual || {};
+  const nextMap = { ...currentMap };
+  if (nextFile === null) {
+    if (nextMap[themeId] === undefined) return { status: "ok", noop: true };
+    delete nextMap[themeId];
+    return { status: "ok", commit: { idleVisual: nextMap } };
+  }
+  if (nextMap[themeId] === nextFile) return { status: "ok", noop: true };
+  nextMap[themeId] = nextFile;
+  return { status: "ok", commit: { idleVisual: nextMap } };
 }
 
 function resizePet(payload, deps) {
@@ -1372,6 +1428,7 @@ const commandRegistry = {
   importAnimationOverrides,
   setWideHitboxOverride,
   setThemeSelection,
+  setIdleVisual,
   "remoteSsh.add": remoteSshAddProfile,
   "remoteSsh.update": remoteSshUpdateProfile,
   "remoteSsh.delete": remoteSshDeleteProfile,

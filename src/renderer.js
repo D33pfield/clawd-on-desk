@@ -48,7 +48,8 @@ function initWithConfig(cfg) {
   _fileViewBoxes = tc.fileViewBoxes || {};
   _dragSvg = tc.dragSvg || null;
   _dragSvgs = tc.dragSvgs || {};
-  _idleFollowSvg = tc.idleFollowSvg || "clawd-idle-follow.svg";
+  // Pre-IPC first frame rests on the user-selected idle visual when one is set.
+  _initialIdleSvg = tc.idleDefaultVisual || tc.idleFollowSvg || "clawd-idle-follow.svg";
   _glyphFlipDefs = tc.glyphFlips || { "pixel-z": 4, "pixel-z-small": 3 };
 
   // Layered tracking: detect if theme uses multi-layer config
@@ -371,7 +372,7 @@ let _fileViewBoxes = {};
 let _dragSvg;
 let _dragSvgs;
 let currentDragSvg = null;
-let _idleFollowSvg;
+let _initialIdleSvg;
 let _glyphFlipDefs;
 let _objectScaleCSS;
 let _fileScales = {};
@@ -1695,7 +1696,7 @@ window.electronAPI.onWakeFromDoze(() => {
 });
 
 // --- Initial frame: always go through swapToFile so the right channel and theme scaling apply ---
-if (!currentDisplayedSvg && _idleFollowSvg) {
-  currentIdleSvg = _idleFollowSvg;
-  swapToFile(_idleFollowSvg, "idle");
+if (!currentDisplayedSvg && _initialIdleSvg) {
+  currentIdleSvg = _initialIdleSvg;
+  swapToFile(_initialIdleSvg, "idle");
 }

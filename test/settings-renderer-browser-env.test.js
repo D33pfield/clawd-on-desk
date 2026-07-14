@@ -1113,11 +1113,20 @@ function loadAnimOverridesTabForTest({
   readersOverrides = {},
   helpersOverrides = {},
 }) {
+  const documentListeners = new Map();
   const document = {
     body: new FakeElement("body"),
     createElement: (tagName) => new FakeElement(tagName),
     getElementById: (id) => (id === "modalRoot" ? modalRoot : null),
     querySelector: () => null,
+    addEventListener(type, handler) {
+      if (!documentListeners.has(type)) documentListeners.set(type, new Set());
+      documentListeners.get(type).add(handler);
+    },
+    removeEventListener(type, handler) {
+      const listeners = documentListeners.get(type);
+      if (listeners) listeners.delete(handler);
+    },
   };
   const context = {
     console,
@@ -1147,7 +1156,7 @@ function loadAnimOverridesTabForTest({
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8"), context);
   const core = {
-    state: { activeTab: "animOverrides" },
+    state: { activeTab: "animOverrides", mountedControls: {} },
     runtime,
     helpers: {
       t: (key) => key,
@@ -1188,7 +1197,32 @@ function loadAnimOverridesTabForTest({
     tabs: {},
   };
   context.ClawdSettingsTabAnimOverrides.init(core);
-  return { core, document };
+  return {
+    core,
+    document,
+    documentListenerCount: (type) => (documentListeners.get(type) || new Set()).size,
+  };
+}
+
+function createIdleVisualRuntime(selectedFile = null) {
+  const card = createAnimOverrideCard({ id: "state:idle", stateKey: "idle", triggerKind: "idle" });
+  return createAnimOverridesRuntime(card, {
+    animationOverridesData: {
+      theme: { id: "clawd", name: "Clawd" },
+      assets: [],
+      sections: [{ id: "idle", cards: [card] }],
+      cards: [card],
+      sounds: [],
+      idleDefaultVisual: {
+        themeId: "clawd",
+        selectedFile,
+        options: [
+          { file: "clawd-idle-follow.svg", isThemeDefault: true, label: "Idle Follow" },
+          { file: "clawd-idle-reading.svg", isThemeDefault: false, label: "Idle Reading" },
+        ],
+      },
+    },
+  });
 }
 
 function createAnimOverrideCard(overrides = {}) {
@@ -5586,6 +5620,87 @@ describe("settings renderer browser environment", () => {
 
     assert.strictEqual(patchCount, 1);
     assert.strictEqual(contentRenderCount, 0);
+  });
+
+  it("renders the idle visual picker and submits setIdleVisual for the chosen option", async () => {
+    const commandCalls = [];
+    const runtime = createIdleVisualRuntime();
+    const modalRoot = new FakeElement("div");
+    const { core, document } = loadAnimOverridesTabForTest({
+      runtime,
+      modalRoot,
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    const parent = new FakeElement("main");
+    document.body.appendChild(parent);
+    core.tabs.animOverrides.render(parent, core);
+
+    assert.strictEqual(parent.querySelectorAll(".anim-idle-visual-row").length, 1);
+    const valueEl = parent.querySelector(".anim-idle-visual-row .language-picker-value");
+    assert.strictEqual(valueEl.textContent, "animIdleVisualThemeDefault");
+    const options = parent.querySelectorAll(".anim-idle-visual-row .language-picker-option");
+    assert.strictEqual(options.length, 2);
+
+    options[1].dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.strictEqual(commandCalls.length, 1);
+    assert.strictEqual(commandCalls[0].name, "setIdleVisual");
+    // spread: the payload object comes from the VM realm, whose Object
+    // prototype fails deepStrictEqual against test-realm literals.
+    assert.deepStrictEqual(
+      { ...commandCalls[0].payload },
+      { themeId: "clawd", file: "clawd-idle-reading.svg" }
+    );
+    assert.strictEqual(valueEl.textContent, "Idle Reading", "optimistic display should show the pick immediately");
+  });
+
+  it("patches idleVisual-only broadcasts in place and re-syncs the mounted picker", () => {
+    const runtime = createIdleVisualRuntime();
+    const modalRoot = new FakeElement("div");
+    const { core, document } = loadAnimOverridesTabForTest({ runtime, modalRoot });
+    const parent = new FakeElement("main");
+    document.body.appendChild(parent);
+    core.tabs.animOverrides.render(parent, core);
+    const valueEl = parent.querySelector(".anim-idle-visual-row .language-picker-value");
+    assert.strictEqual(valueEl.textContent, "animIdleVisualThemeDefault");
+
+    const handled = core.tabs.animOverrides.patchInPlace({ idleVisual: { clawd: "clawd-idle-reading.svg" } });
+    assert.strictEqual(handled, true, "idleVisual-only broadcast must not trigger a full re-render");
+    assert.strictEqual(runtime.animationOverridesData.idleDefaultVisual.selectedFile, "clawd-idle-reading.svg");
+    assert.strictEqual(valueEl.textContent, "Idle Reading");
+
+    const handledReset = core.tabs.animOverrides.patchInPlace({ idleVisual: {} });
+    assert.strictEqual(handledReset, true);
+    assert.strictEqual(runtime.animationOverridesData.idleDefaultVisual.selectedFile, null);
+    assert.strictEqual(valueEl.textContent, "animIdleVisualThemeDefault");
+  });
+
+  it("cleans up idle visual picker document listeners through the mounted-control dispose contract", () => {
+    const runtime = createIdleVisualRuntime();
+    const modalRoot = new FakeElement("div");
+    const { core, document, documentListenerCount } = loadAnimOverridesTabForTest({ runtime, modalRoot });
+    const parent = new FakeElement("main");
+    document.body.appendChild(parent);
+    core.tabs.animOverrides.render(parent, core);
+
+    assert.strictEqual(documentListenerCount("click"), 1);
+    assert.strictEqual(documentListenerCount("keydown"), 1);
+    const picker = core.state.mountedControls.idleVisualPicker;
+    assert.strictEqual(typeof picker.dispose, "function");
+    picker.dispose();
+    assert.strictEqual(documentListenerCount("click"), 0);
+    assert.strictEqual(documentListenerCount("keydown"), 0);
+
+    // settings-ui-core owns calling dispose between renders — pin that wiring.
+    const uiCoreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    assert.ok(uiCoreSource.includes("state.mountedControls.idleVisualPicker.dispose()"));
+    assert.ok(uiCoreSource.includes("state.mountedControls.idleVisualPicker = null;"));
+    assert.ok(uiCoreSource.includes("idleVisualPicker: null,"));
   });
 
   it("renders visible loading text for the initial Animation Overrides fetch", () => {

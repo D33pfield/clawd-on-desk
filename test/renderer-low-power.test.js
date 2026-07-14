@@ -96,7 +96,11 @@ function createRendererHarness(options = {}) {
   container.isConnected = true;
   const clawd = new FakeElement("object");
   clawd.id = "clawd";
-  clawd.data = "../assets/svg/current.svg";
+  // index.html ships the object tag without data; tests that don't care get a
+  // pre-displayed file so the initial-frame swap stays out of their way.
+  clawd.data = Object.prototype.hasOwnProperty.call(options, "initialObjectData")
+    ? options.initialObjectData
+    : "../assets/svg/current.svg";
   clawd.style.opacity = "0";
   container.appendChild(clawd);
 
@@ -794,6 +798,30 @@ describe("renderer sound preload and warmup", () => {
     assert.strictEqual(harness.audioInstances.length, 2);
     assert.strictEqual(harness.audioInstances[1].url, "file:///complete.mp3");
     assert.strictEqual(harness.audioInstances[1].playCalls, 1);
+  });
+});
+
+describe("renderer initial frame idle visual", () => {
+  it("rests on the user-selected idle visual when the theme config carries one", () => {
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: {
+        idleFollowSvg: "clawd-idle-follow.svg",
+        idleDefaultVisual: "clawd-idle-reading.svg",
+      },
+    });
+    assert.strictEqual(harness.api.pendingSvgFile, "clawd-idle-reading.svg");
+  });
+
+  it("falls back to the follow sprite when no visual is selected", () => {
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: {
+        idleFollowSvg: "clawd-idle-follow.svg",
+        idleDefaultVisual: null,
+      },
+    });
+    assert.strictEqual(harness.api.pendingSvgFile, "clawd-idle-follow.svg");
   });
 });
 

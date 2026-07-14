@@ -570,6 +570,25 @@ describe("wake poll behavior", () => {
     assert.strictEqual(api.getCurrentState(), "idle");
   });
 
+  it("wake-from-doze returns to the user-selected idle visual", () => {
+    api.cleanup();
+    ctx = makeCtx({
+      getCursorScreenPoint: () => ({ ...fakeCursor }),
+      getIdleVisualChoice: () => "clawd-idle-reading.svg",
+    });
+    const changes = [];
+    ctx.sendToRenderer = (ev, ...args) => { if (ev === "state-change") changes.push(args); };
+    api = require("../src/state")(ctx);
+
+    api.applyState("dozing");
+    mock.timers.tick(500);
+    fakeCursor.x = 200;
+    mock.timers.tick(200);
+    mock.timers.tick(350);
+    assert.strictEqual(api.getCurrentState(), "idle");
+    assert.deepStrictEqual(changes[changes.length - 1], ["idle", "clawd-idle-reading.svg"]);
+  });
+
   it("collapsing + mouse move → waking", () => {
     api.applyState("collapsing");
     mock.timers.tick(500); // wake poll delay
@@ -668,6 +687,19 @@ describe("cleanStaleSessions()", () => {
     api.sessions.set("s1", rawSession("working", { agentPid: 9999, pidReachable: true }));
     api.cleanStaleSessions();
     assert.strictEqual(api.sessions.size, 0);
+  });
+
+  it("empty-session return rests on the user-selected idle visual", () => {
+    const changes = [];
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set()),
+      getIdleVisualChoice: () => "clawd-idle-reading.svg",
+      sendToRenderer: (ev, ...args) => { if (ev === "state-change") changes.push(args); },
+    }));
+    api.sessions.set("s1", rawSession("working", { agentPid: 9999, pidReachable: true }));
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 0);
+    assert.deepStrictEqual(changes[changes.length - 1], ["idle", "clawd-idle-reading.svg"]);
   });
 
   it("agentPid alive + sourcePid dead + stale → delete", () => {

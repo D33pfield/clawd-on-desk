@@ -640,6 +640,37 @@ describe("prefs.validate", () => {
     assert.deepStrictEqual(w.themeVariant, {});
   });
 
+  // #509: idleVisual field
+  it("idleVisual defaults to empty object (no migration needed)", () => {
+    const d = prefs.getDefaults();
+    assert.deepStrictEqual(d.idleVisual, {});
+  });
+
+  it("idleVisual keeps string/string pairs, drops malformed and path-y entries", () => {
+    const v = prefs.validate({
+      idleVisual: {
+        clawd: "clawd-idle-reading.svg",
+        calico: "calico-idle-stretch.svg",
+        bogus: 42,                          // wrong value type
+        "": "x.svg",                        // empty themeId
+        emptyVal: "",                       // empty file
+        sneaky: "../outside.svg",           // path traversal
+        sneakier: "sub\\dir.svg",           // backslash path
+      },
+    });
+    assert.deepStrictEqual(v.idleVisual, {
+      clawd: "clawd-idle-reading.svg",
+      calico: "calico-idle-stretch.svg",
+    });
+  });
+
+  it("idleVisual falls back to defaults when not an object", () => {
+    const v = prefs.validate({ idleVisual: "nope" });
+    assert.deepStrictEqual(v.idleVisual, {});
+    const w = prefs.validate({ idleVisual: ["a.svg"] });
+    assert.deepStrictEqual(w.idleVisual, {});
+  });
+
   it("sessionAliases normalizes valid entries and drops malformed values", () => {
     const v = prefs.validate({
       sessionAliases: {

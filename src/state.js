@@ -607,7 +607,12 @@ function applyState(state, svgOverride, options = {}) {
     if (!applyOptions.muteNotificationSound) ctx.playSound("confirm");
   }
 
-  const svg = svgOverride || resolveVisualBinding(state);
+  // #509: no-override idle entries (e.g. roam ending) also rest on the
+  // user-selected idle visual instead of a random states.idle pick.
+  const userIdle = (state === "idle" && !svgOverride && typeof ctx.getIdleVisualChoice === "function")
+    ? ctx.getIdleVisualChoice()
+    : null;
+  const svg = svgOverride || userIdle || resolveVisualBinding(state);
   currentSvg = svg;
 
   // Force eye resend after SVG load completes (~300ms)
@@ -738,7 +743,7 @@ function wakeFromDoze() {
   ctx.sendToRenderer("wake-from-doze");
   setTimeout(() => {
     if (currentState === "dozing") {
-      applyState("idle", SVG_IDLE_FOLLOW);
+      applyState("idle", getSvgOverride("idle"));
     }
   }, 350);
 }
@@ -1842,7 +1847,7 @@ function cleanStaleSessions() {
     }
   }
   if (changed && sessions.size === 0) {
-    setState("idle", SVG_IDLE_FOLLOW);
+    setState("idle", getSvgOverride("idle"));
   } else if (changed) {
     const resolved = resolveDisplayState();
     setState(resolved, getSvgOverride(resolved));
@@ -2173,6 +2178,7 @@ function getSvgOverride(state) {
     updateVisualState,
     updateVisualSvgOverride,
     idleFollowSvg: SVG_IDLE_FOLLOW,
+    idleDefaultVisual: typeof ctx.getIdleVisualChoice === "function" ? ctx.getIdleVisualChoice() : null,
     sessions,
     displayHintMap: DISPLAY_HINT_MAP,
     theme,

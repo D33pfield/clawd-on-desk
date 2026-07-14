@@ -298,6 +298,22 @@ describe("settings-effect-router", () => {
     ]);
   });
 
+  // #509: idleVisual changes re-rest the pet without rebuilding menus.
+  it("refreshes the idle visual on idleVisual changes, without a menu rebuild", () => {
+    const { calls, emit } = createHarness({
+      routerOptions: {
+        refreshIdleVisual: () => calls.push(["refreshIdleVisual"]),
+      },
+    });
+
+    emit({ idleVisual: { clawd: "clawd-idle-reading.svg" } });
+
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { idleVisual: { clawd: "clawd-idle-reading.svg" } }],
+      ["refreshIdleVisual"],
+    ]);
+  });
+
   it("rebuilds menus only once for menu-affecting keys", () => {
     const { calls, emit } = createHarness();
 
