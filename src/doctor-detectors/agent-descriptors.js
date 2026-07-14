@@ -14,6 +14,7 @@ const codebuddy = require("../../hooks/codebuddy-install");
 const kiro = require("../../hooks/kiro-install");
 const kimi = require("../../hooks/kimi-install");
 const qwen = require("../../hooks/qwen-code-install");
+const zcode = require("../../hooks/zcode-install");
 const codewhale = require("../../hooks/codewhale-install");
 const opencode = require("../../hooks/opencode-install");
 const mimocode = require("../../hooks/mimocode-install");
@@ -194,6 +195,18 @@ const AGENT_DESCRIPTORS = Object.freeze([
     marker: qwen.MARKER,
     nested: true,
     hookEvents: qwen.QWEN_CODE_HOOK_EVENTS,
+  }),
+  Object.freeze({
+    agentId: "zcode",
+    agentName: agentName("zcode"),
+    eventSource: agentEventSource("zcode"),
+    parentDir: zcode.DEFAULT_PARENT_DIR,
+    configPath: zcode.DEFAULT_CONFIG_PATH,
+    configMode: "file",
+    autoInstall: true,
+    marker: zcode.MARKER,
+    nested: true,
+    hookEvents: zcode.ZCODE_HOOK_EVENTS,
   }),
   Object.freeze({
     agentId: "codewhale",
