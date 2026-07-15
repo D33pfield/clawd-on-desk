@@ -1422,6 +1422,122 @@ test("FeishuApprovalClient hands the platform to an injected wsFactory", async (
   assert.deepEqual(seen, ["feishu", "lark", "feishu"]);
 });
 
+// Real-machine finding (2026-07-15): a live Lark stepper logged every step as
+// `decision=[object Object]`, because the logger stringifies whatever it gets
+// and elicitation decisions are objects. That is the only diagnostic this
+// channel has, so the shape has to survive — without dragging the answers in.
+test("elicitation steps log a readable decision shape, never [object Object]", async () => {
+  const logs = [];
+  const client = new FeishuApprovalClient({
+    appId: "cli_1",
+    appSecret: "s",
+    approverId: "ou_1",
+    idType: "open_id",
+    log: (level, message, meta) => logs.push({ level, message, meta }),
+    larkClient: { im: { v1: { message: {
+      create: async () => ({ data: { message_id: "om_1" } }),
+      patch: async () => ({ data: {} }),
+    } } } },
+  });
+  client.requestElicitation({
+    title: "Q",
+    questions: [
+      { question: "First?", options: [{ label: "A" }, { label: "B" }] },
+      { question: "Second?", options: [{ label: "C" }] },
+    ],
+  });
+  await flush();
+  const requestId = [...client.pending.keys()][0];
+
+  client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, kind: "elicitation-step", questionIndex: 0, final: false }, form_value: { q_0: "0" } },
+  });
+  client.handleCardAction({
+    operator: { open_id: "ou_1" },
+    action: { value: { requestId, kind: "elicitation-back", questionIndex: 1 } },
+  });
+
+  const decisions = logs.filter((l) => l.message === "card action received").map((l) => l.meta.decision);
+  assert.equal(decisions.length, 2);
+  for (const d of decisions) {
+    assert.ok(!String(d).includes("[object Object]"), `unreadable decision logged: ${d}`);
+  }
+  assert.equal(decisions[0], "elicitation-step:q0:answers=1");
+  assert.equal(decisions[1], "elicitation-back:q1");
+
+  // The answers themselves are user/agent content and must not ride the log.
+  assert.ok(!JSON.stringify(logs).includes("First?"), "question text must not be logged");
+  client.close();
+});
+
+test("approval decisions still log as plain strings", async () => {
+  const logs = [];
+  const client = new FeishuApprovalClient({
+    appId: "cli_1",
+    appSecret: "s",
+    approverId: "ou_1",
+    log: (level, message, meta) => logs.push({ level, message, meta }),
+    larkClient: { im: { v1: { message: {
+      create: async () => ({ data: { message_id: "om_1" } }),
+      patch: async () => ({ data: {} }),
+    } } } },
+  });
+  const p = client.requestApproval({ title: "Run", detail: "d" });
+  await flush();
+  const requestId = [...client.pending.keys()][0];
+  client.handleCardAction({ operator: { open_id: "ou_1" }, action: { value: { requestId, decision: "deny" } } });
+  assert.equal(await p, "deny");
+  assert.equal(logs.find((l) => l.message === "card action received").meta.decision, "deny");
+  client.close();
+});
+
+// Real-machine finding (2026-07-15): pointing a real Lark app at
+// open.feishu.cn does NOT fail at the token or bot-info endpoints — those
+// accept the app on either gateway. It fails at the WS endpoint, with
+// `code=1000040351, msg=Incorrect domain name`. That is the #493 shape exactly
+// (cards send, callbacks never arrive) and the most likely user mistake, so it
+// gets a stable code instead of leaking "pullConnectConfig failed: …".
+test("a wrong-platform gateway rejection is tagged so the UI can explain it", async () => {
+  const client = new FeishuApprovalClient({
+    appId: "cli_1",
+    appSecret: "s",
+    approverId: "ou_1",
+    platform: "feishu",
+    wsFactory: (params) => {
+      setImmediate(() => params.onError(new Error("pullConnectConfig failed: code=1000040351, msg=Incorrect domain name")));
+      return { wsClient: { start: async () => {}, close: () => {} }, dispatcher: {} };
+    },
+  });
+  await client.start();
+  await flush();
+  const status = client.getStatus();
+  assert.equal(status.status, "failed");
+  assert.equal(status.errorCode, "wrong-platform");
+  assert.match(status.message, /Incorrect domain name/, "the raw diagnostic is kept for logs");
+  client.close();
+});
+
+test("an unrelated SDK failure keeps an empty code so its raw text still shows", async () => {
+  const client = new FeishuApprovalClient({
+    appId: "cli_1",
+    appSecret: "s",
+    approverId: "ou_1",
+    platform: "lark",
+    wsFactory: (params) => {
+      setImmediate(() => params.onError(new Error("app ticket is invalid")));
+      return { wsClient: { start: async () => {}, close: () => {} }, dispatcher: {} };
+    },
+  });
+  await client.start();
+  await flush();
+  const status = client.getStatus();
+  assert.equal(status.status, "failed");
+  assert.equal(status.errorCode, "", "no code -> the renderer shows the upstream string");
+  assert.equal(status.message, "app ticket is invalid");
+  client.close();
+});
+
 test("FeishuApprovalClient resolves null on send failure by default but rejects with rejectOnSendError", async () => {
   const sendError = new Error("invalid receive_id");
   const fakeClient = {

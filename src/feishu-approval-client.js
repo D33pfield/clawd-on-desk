@@ -728,6 +728,28 @@ function normalizeElicitationActionEvent(event, questions, idType = "open_id") {
   return null;
 }
 
+// Approval decisions are strings, but elicitation decisions are objects — and
+// the logger stringifies whatever it is given, so an elicitation step used to
+// log as a useless `decision=[object Object]`. That is the one line you have
+// when debugging a stepper that misbehaves on a real tenant (#493 was diagnosed
+// entirely from this log), so describe the shape instead.
+//
+// Deliberately omits `answers`: those are user/agent content and have no place
+// in a diagnostic line.
+function describeDecision(decision) {
+  if (!decision) return "";
+  if (typeof decision === "string") return decision;
+  if (typeof decision !== "object") return String(decision);
+  const type = typeof decision.type === "string" ? decision.type : "unknown";
+  const parts = [type];
+  if (Number.isInteger(decision.questionIndex)) parts.push(`q${decision.questionIndex}`);
+  if (decision.final === true) parts.push("final");
+  if (decision.answers && typeof decision.answers === "object") {
+    parts.push(`answers=${Object.keys(decision.answers).length}`);
+  }
+  return parts.join(":");
+}
+
 function normalizeApiMessageId(response) {
   return response && response.data && typeof response.data.message_id === "string"
     ? response.data.message_id
@@ -977,11 +999,20 @@ class FeishuApprovalClient {
       onError: ifCurrent((err) => {
         this.clearConnectionTimer();
         this.connectionState = "failed";
-        // No code: the SDK's message is an arbitrary upstream string, so there
-        // is nothing to map it to. The renderer falls back to showing it raw,
-        // which beats hiding the only diagnostic the user has.
-        this.lastErrorCode = "";
-        this.lastErrorMessage = err && err.message ? err.message : String(err || "Long connection failed");
+        const raw = err && err.message ? err.message : String(err || "Long connection failed");
+        // Gateway code 1000040351 ("Incorrect domain name") is the platform
+        // rejecting an app that lives on the other deployment — i.e. the
+        // platform picker is set wrong. It is the single most likely
+        // misconfiguration here, and the SDK only surfaces it as English
+        // internals ("pullConnectConfig failed: code=…"), so give it a code the
+        // settings page can turn into an actionable sentence. Verified against
+        // a real Lark app pointed at open.feishu.cn (2026-07-15).
+        //
+        // Matched on the numeric code, not the English text, which is the
+        // stabler half of the response. Anything else keeps an empty code and
+        // falls back to showing the SDK's raw string.
+        this.lastErrorCode = /\b1000040351\b/.test(raw) ? "wrong-platform" : "";
+        this.lastErrorMessage = raw;
         this.log("warn", "connection failed", { error: this.lastErrorMessage });
         this.notifyStatusChange();
       }),
@@ -1283,7 +1314,7 @@ class FeishuApprovalClient {
       : action;
     this.log("debug", "card action received", {
       requestId,
-      decision: normalizedAction && normalizedAction.decision ? normalizedAction.decision : "",
+      decision: describeDecision(normalizedAction && normalizedAction.decision),
       matched: !!(normalizedAction && normalizedAction.operatorId === this.approverId && entry),
     });
     if (!normalizedAction || normalizedAction.operatorId !== this.approverId) return false;

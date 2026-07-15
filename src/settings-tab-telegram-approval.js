@@ -71,6 +71,11 @@
   const FEISHU_CONNECTION_ERROR_KEYS = Object.freeze({
     "connection-timeout": "feishuApprovalErrorConnectionTimeout",
     "reconnect-timeout": "feishuApprovalErrorReconnectTimeout",
+    // The platform gateway rejected the app outright: the picker is on the
+    // wrong deployment. Raw SDK text for this reads
+    // "pullConnectConfig failed: code=1000040351, msg=Incorrect domain name",
+    // which never tells the user what to actually do.
+    "wrong-platform": "feishuApprovalErrorWrongPlatform",
   });
 
   // readiness() rejects a saved-but-unusable config with a stable reason while
@@ -1216,7 +1221,9 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.dataset.platform = platform;
-      btn.textContent = t(platform === "lark" ? "feishuApprovalPlatformLark" : "feishuApprovalPlatformFeishu");
+      // Same source of truth as the {brand} token, so the button and the copy
+      // it controls can never drift apart.
+      btn.textContent = feishuBrand(platform);
       btn.classList.toggle("active", cfg.platform === platform);
       btn.disabled = feishuView.configPending;
       btn.addEventListener("click", () => {
