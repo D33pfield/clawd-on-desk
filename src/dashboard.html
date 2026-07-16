@@ -359,8 +359,27 @@ h1 {
 
 .actions {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
+}
+
+.focus-unavailable-reason,
+.session-action-feedback {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: right;
+}
+
+.session-action-feedback:empty { display: none; }
+
+.open-folder-button {
+  background: var(--surface-alt);
+  color: var(--text);
+  border-color: var(--border);
 }
 
 .mark-read-button {
@@ -476,6 +495,7 @@ button:disabled {
     </header>
     <main id="content" class="content" aria-live="polite"></main>
   </div>
+  <script src="./session-focus-unavailable.js"></script>
   <script src="./dashboard-renderer.js"></script>
 </body>
 </html>

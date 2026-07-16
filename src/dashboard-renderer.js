@@ -1,5 +1,7 @@
 "use strict";
 
+const { canOfferLocalFolder, focusUnavailableReasonKey } = globalThis.ClawdSessionFocusUnavailable;
+
 const AGENT_LABELS = {
   "claude-code": "Claude Code",
   codex: "Codex",
@@ -456,6 +458,17 @@ function createHideButton(session) {
   return button;
 }
 
+function focusUnavailableText(session) {
+  return t(focusUnavailableReasonKey(session));
+}
+
+function openFolderFailureText(result) {
+  if (result && result.status === "error" && result.message) {
+    return t("sessionOpenFolderFailed").replace("{reason}", result.message);
+  }
+  return t("sessionOpenFolderUnavailable");
+}
+
 function createCard(session, now) {
   const card = document.createElement("article");
   card.className = "card";
@@ -486,6 +499,9 @@ function createCard(session, now) {
     ? t("dashboardOpenCodexSession")
     : t("dashboardJumpTerminal");
   button.disabled = session.canFocus !== true;
+  if (button.disabled) {
+    button.title = focusUnavailableText(session);
+  }
   button.addEventListener("click", async () => {
     window.dashboardAPI.focusSession(session.id);
     // Best-effort ack alongside focus. Most remote-Codex sessions have
@@ -498,6 +514,37 @@ function createCard(session, now) {
     }
   });
   actions.appendChild(button);
+
+  if (session.canFocus !== true) {
+    const reason = focusUnavailableText(session);
+    actions.appendChild(createText("span", "focus-unavailable-reason", reason));
+    const feedback = createText("span", "session-action-feedback", "");
+    feedback.setAttribute("aria-live", "polite");
+    actions.appendChild(feedback);
+
+    if (canOfferLocalFolder(session)) {
+      const openFolder = document.createElement("button");
+      openFolder.type = "button";
+      openFolder.className = "open-folder-button";
+      openFolder.textContent = t("dashboardOpenFolder");
+      openFolder.addEventListener("click", async () => {
+        openFolder.disabled = true;
+        try {
+          const result = await window.dashboardAPI.openSessionFolder(session.id);
+          if (!result || result.status !== "ok") {
+            openFolder.disabled = false;
+            feedback.textContent = openFolderFailureText(result);
+          }
+        } catch (err) {
+          openFolder.disabled = false;
+          feedback.textContent = t("sessionOpenFolderFailed")
+            .replace("{reason}", err && err.message ? err.message : String(err));
+          console.warn("open session folder threw:", err);
+        }
+      });
+      actions.appendChild(openFolder);
+    }
+  }
 
   if (session.requiresCompletionAck === true) {
     actions.appendChild(createMarkReadButton(session));

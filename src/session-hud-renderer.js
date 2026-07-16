@@ -1,5 +1,7 @@
 "use strict";
 
+const { canOfferLocalFolder, focusUnavailableReasonKey } = globalThis.ClawdSessionFocusUnavailable;
+
 const HUD_MAX_EXPANDED_ROWS = 3;
 const HUD_MAX_EXPANDED_ROWS_LABELS = 5;
 const HUD_TITLE_MAX_UNITS = 15;
@@ -205,9 +207,25 @@ function splitHudLayout(sessions) {
 }
 
 function focusUnavailableTooltip(session) {
-  return session && session.host
-    ? t("sessionHudRemoteFocusUnavailableTooltip")
-    : t("sessionHudFocusUnavailableTooltip");
+  return t(focusUnavailableReasonKey(session));
+}
+
+function showSessionFeedback(message) {
+  let feedback = hudEl.querySelector(".session-action-feedback");
+  if (!feedback) {
+    feedback = document.createElement("div");
+    feedback.className = "session-action-feedback";
+    feedback.setAttribute("aria-live", "polite");
+    hudEl.appendChild(feedback);
+  }
+  feedback.textContent = message;
+}
+
+function openFolderFailureText(result) {
+  if (result && result.status === "error" && result.message) {
+    return t("sessionOpenFolderFailed").replace("{reason}", result.message);
+  }
+  return t("sessionOpenFolderUnavailable");
 }
 
 function createRowForSession(session, now) {
@@ -262,6 +280,7 @@ function createRowForSession(session, now) {
     bell.innerHTML = BELL_SVG;
     right.appendChild(bell);
     hasRightContent = true;
+
   }
 
   if (!canFocus) {
@@ -272,6 +291,31 @@ function createRowForSession(session, now) {
     marker.setAttribute("aria-label", focusUnavailableTooltip(session));
     right.appendChild(marker);
     hasRightContent = true;
+
+    if (canOfferLocalFolder(session)) {
+      const openFolder = document.createElement("button");
+      openFolder.type = "button";
+      openFolder.className = "open-folder-button";
+      openFolder.textContent = t("dashboardOpenFolder");
+      openFolder.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        openFolder.disabled = true;
+        try {
+          const result = await window.sessionHudAPI.openSessionFolder(session.id);
+          if (!result || result.status !== "ok") {
+            openFolder.disabled = false;
+            showSessionFeedback(openFolderFailureText(result));
+          }
+        } catch (err) {
+          openFolder.disabled = false;
+          showSessionFeedback(t("sessionOpenFolderFailed")
+            .replace("{reason}", err && err.message ? err.message : String(err)));
+          console.warn("open session folder threw:", err);
+        }
+      });
+      right.appendChild(openFolder);
+      hasRightContent = true;
+    }
   }
 
   const chipInfo = stateChipInfo(session);
@@ -310,6 +354,7 @@ function createRowForSession(session, now) {
     unreadSessions.delete(session.id);
     render();
     if (canFocus) window.sessionHudAPI.focusSession(session.id);
+    else showSessionFeedback(focusUnavailableTooltip(session));
     // Fire-and-forget: the row click's primary intent is focus / unread
     // dismissal. ack failure shouldn't block the UI — the next snapshot
     // will reconcile the lifecycle flag.
