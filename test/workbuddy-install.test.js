@@ -38,7 +38,7 @@ afterEach(() => {
 });
 
 describe("WorkBuddy hook installer", () => {
-  it("registers all command events + PermissionRequest HTTP hook on fresh install", () => {
+  it("registers command events only — no PermissionRequest HTTP hook (state + Notification only, #618)", () => {
     const settingsPath = makeTempSettingsFile({});
     const result = registerWorkBuddyHooks({
       silent: true,
@@ -46,8 +46,9 @@ describe("WorkBuddy hook installer", () => {
       nodeBin: "/usr/local/bin/node",
     });
 
-    // 8 command hooks + 1 HTTP hook = 9
-    assert.strictEqual(result.added, 9);
+    // 8 command hooks, and NOTHING else — desktop WorkBuddy owns its permission
+    // loop natively, so Clawd never registers a /permission HTTP hook.
+    assert.strictEqual(result.added, 8);
     assert.strictEqual(result.skipped, 0);
     assert.strictEqual(result.updated, 0);
 
@@ -66,15 +67,9 @@ describe("WorkBuddy hook installer", () => {
       assert.ok(entry.hooks[0].command.includes("/usr/local/bin/node"));
     }
 
-    // Verify PermissionRequest HTTP hook
-    const permEntries = settings.hooks.PermissionRequest;
-    assert.ok(Array.isArray(permEntries));
-    assert.strictEqual(permEntries.length, 1);
-    const permHook = permEntries[0].hooks[0];
-    assert.strictEqual(permHook.type, "http");
-    assert.ok(permHook.url.includes("127.0.0.1"));
-    assert.ok(permHook.url.includes("/permission"));
-    assert.strictEqual(permHook.timeout, 600);
+    // No PermissionRequest hook is created on a fresh install.
+    assert.strictEqual(settings.hooks.PermissionRequest, undefined);
+    assert.ok(!WORKBUDDY_HOOK_EVENTS.includes("PermissionRequest"));
   });
 
   it("is idempotent on second run", () => {
@@ -161,10 +156,10 @@ describe("WorkBuddy hook installer", () => {
     assert.ok(settings.hooks.PostToolUse[0].command.includes("/home/user/.volta/bin/node"));
   });
 
-  it("updates a stale managed PermissionRequest HTTP URL in place", () => {
-    // 23337 is inside SERVER_PORTS, so this is a URL an older install could
-    // have written — eligible for the in-place refresh. Anything outside the
-    // managed set is foreign (see the zero-destruction tests below).
+  it("prunes a stale managed PermissionRequest HTTP hook left by an old installer", () => {
+    // 23337 is inside SERVER_PORTS, so this is a URL a pre-#618 install could
+    // have written. Re-running the (now notification-only) installer must clean
+    // it up rather than refresh it — the endpoint is dead.
     const stale = "http://127.0.0.1:23337/permission";
     const settingsPath = makeTempSettingsFile({
       hooks: {
@@ -181,14 +176,15 @@ describe("WorkBuddy hook installer", () => {
       nodeBin: "/usr/local/bin/node",
     });
 
+    // 8 command hooks added; the stale managed HTTP hook is removed (counted as
+    // an update), leaving no PermissionRequest key behind.
+    assert.strictEqual(result.added, 8);
+    assert.ok(result.updated >= 1);
     const settings = readJson(settingsPath);
-    const permHook = settings.hooks.PermissionRequest[0].hooks[0];
-    assert.ok(__test.isManagedPermissionUrl(permHook.url));
-    assert.strictEqual(settings.hooks.PermissionRequest.length, 1);
-    if (permHook.url !== stale) assert.ok(result.updated >= 1);
+    assert.strictEqual(settings.hooks.PermissionRequest, undefined);
   });
 
-  it("leaves foreign PermissionRequest URLs untouched and appends the managed hook", () => {
+  it("leaves a foreign PermissionRequest URL untouched and never re-adds a managed one", () => {
     const foreign = { type: "http", url: "https://approval.corp.example/permission", timeout: 30 };
     const settingsPath = makeTempSettingsFile({
       hooks: {
@@ -202,16 +198,17 @@ describe("WorkBuddy hook installer", () => {
       nodeBin: "/usr/local/bin/node",
     });
 
-    // 8 command hooks + appended managed HTTP hook
-    assert.strictEqual(result.added, 9);
+    // Only the 8 command hooks are added; the foreign endpoint is preserved and
+    // no managed /permission hook is appended.
+    assert.strictEqual(result.added, 8);
     const settings = readJson(settingsPath);
     assert.deepStrictEqual(settings.hooks.PermissionRequest[0].hooks, [foreign]);
     const managed = settings.hooks.PermissionRequest
       .flatMap((entry) => entry.hooks || [])
       .filter((hook) => __test.isManagedPermissionUrl(hook.url));
-    assert.strictEqual(managed.length, 1);
+    assert.strictEqual(managed.length, 0);
 
-    // Second run must not churn: managed entry matched, foreign still intact.
+    // Second run must not churn: nothing to add, foreign still intact.
     const contentBefore = fs.readFileSync(settingsPath, "utf8");
     const again = registerWorkBuddyHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
     assert.strictEqual(again.added, 0);
@@ -219,20 +216,23 @@ describe("WorkBuddy hook installer", () => {
     assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), contentBefore);
   });
 
-  it("leaves a foreign flat-format PermissionRequest URL untouched", () => {
+  it("prunes a managed hook while preserving a co-located foreign one", () => {
+    const foreign = { type: "http", url: "http://localhost:23333/permission", timeout: 600 };
+    const managedStale = { type: "http", url: "http://127.0.0.1:23333/permission", timeout: 600 };
     const settingsPath = makeTempSettingsFile({
       hooks: {
-        PermissionRequest: [{ type: "http", url: "http://localhost:23333/permission", timeout: 600 }],
+        PermissionRequest: [{ matcher: "", hooks: [{ ...managedStale }, { ...foreign }] }],
       },
     });
 
     registerWorkBuddyHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
 
     const settings = readJson(settingsPath);
-    assert.strictEqual(settings.hooks.PermissionRequest[0].url, "http://localhost:23333/permission");
-    const nested = settings.hooks.PermissionRequest.filter((entry) => Array.isArray(entry.hooks));
-    assert.strictEqual(nested.length, 1);
-    assert.ok(__test.isManagedPermissionUrl(nested[0].hooks[0].url));
+    // The managed URL is gone; the foreign one survives.
+    const urls = settings.hooks.PermissionRequest
+      .flatMap((entry) => entry.hooks || [])
+      .map((hook) => hook.url);
+    assert.deepStrictEqual(urls, ["http://localhost:23333/permission"]);
   });
 
   it("unregister removes only managed command hooks and managed PermissionRequest URLs", () => {

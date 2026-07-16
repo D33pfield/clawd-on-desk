@@ -112,9 +112,23 @@ function run() {
       }
 
       const { state, event } = mapped;
+
+      // #618 / #648: a hook event with no session_id cannot be attributed to a
+      // session. Forwarding it under a synthetic "default" id creates a phantom
+      // bubble that no later event can update or clear — the root cause behind
+      // the duplicate "thinking" bubbles and stuck sessions (per @200780381's
+      // suggestion ②). So we answer the gate and stop here: no POST, no
+      // placeholder session is ever produced.
+      const rawSessionId = payload && payload.session_id;
+      const sessionId =
+        rawSessionId != null && String(rawSessionId).trim() !== "" ? String(rawSessionId).trim() : "";
+      if (!sessionId) {
+        finish(outLine);
+        return;
+      }
+
       if (hookName === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
 
-      const sessionId = (payload && payload.session_id) || "default";
       const cwd = (payload && payload.cwd) || "";
 
       const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();

@@ -7,10 +7,7 @@ const path = require("path");
 const os = require("os");
 const {
   resolveNodeBin,
-  buildPermissionUrl,
   isManagedPermissionUrl,
-  DEFAULT_SERVER_PORT,
-  readRuntimePort,
 } = require("./server-config");
 const {
   readJsonFile,
@@ -137,42 +134,24 @@ function registerWorkBuddyHooks(options = {}) {
     changed = true;
   }
 
-  // Register PermissionRequest HTTP hook (blocking, for permission bubble)
-  const hookPort = readRuntimePort() || DEFAULT_SERVER_PORT;
-  const permissionUrl = buildPermissionUrl(hookPort);
-  const permEvent = "PermissionRequest";
-  if (!Array.isArray(settings.hooks[permEvent])) {
-    settings.hooks[permEvent] = [];
-    changed = true;
-  }
-  let permFound = false;
-  for (const entry of settings.hooks[permEvent]) {
-    if (!entry || typeof entry !== "object") continue;
-    const innerHooks = entry.hooks;
-    if (Array.isArray(innerHooks)) {
-      for (const h of innerHooks) {
-        if (!h || h.type !== "http" || typeof h.url !== "string") continue;
-        // Only URLs we wrote ourselves are eligible for the in-place port
-        // refresh; foreign endpoints are skipped and we append our own entry.
-        if (!isManagedPermissionUrl(h.url)) continue;
-        permFound = true;
-        if (h.url !== permissionUrl) { h.url = permissionUrl; updated++; changed = true; }
-        break;
-      }
+  // Legacy cleanup (state + Notification only, #618): earlier builds of this
+  // installer registered a blocking PermissionRequest HTTP hook pointing at
+  // Clawd's /permission endpoint. Desktop WorkBuddy resolves permissions in its
+  // own native sandbox + GUI and never calls that endpoint, so we no longer
+  // register it — and anyone who ran an old installer should have the dead
+  // managed URL pruned. This is strictly marker-scoped: only URLs WE wrote
+  // (isManagedPermissionUrl) are removed; a user's own foreign PermissionRequest
+  // endpoint is left completely untouched.
+  if (Array.isArray(settings.hooks.PermissionRequest)) {
+    const cleanup = removeMatchingHttpHooks(settings.hooks.PermissionRequest, (hook) =>
+      hook && hook.type === "http" && isManagedPermissionUrl(hook.url)
+    );
+    if (cleanup.changed) {
+      updated += cleanup.removed;
+      changed = true;
+      if (cleanup.entries.length > 0) settings.hooks.PermissionRequest = cleanup.entries;
+      else delete settings.hooks.PermissionRequest;
     }
-    if (!permFound && entry.type === "http" && typeof entry.url === "string" && isManagedPermissionUrl(entry.url)) {
-      permFound = true;
-      if (entry.url !== permissionUrl) { entry.url = permissionUrl; updated++; changed = true; }
-    }
-    if (permFound) break;
-  }
-  if (!permFound) {
-    settings.hooks[permEvent].push({
-      matcher: "",
-      hooks: [{ type: "http", url: permissionUrl, timeout: 600 }],
-    });
-    added++;
-    changed = true;
   }
 
   if (added > 0 || changed) {

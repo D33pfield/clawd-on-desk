@@ -288,8 +288,13 @@ describe("Agent Registry", () => {
     assert.strictEqual(qoderwork.capabilities.subagent, false);
 
     const workbuddy = registry.getAgent("workbuddy");
-    assert.strictEqual(workbuddy.capabilities.httpHook, true);
-    assert.strictEqual(workbuddy.capabilities.permissionApproval, true);
+    // State-only (#618): the desktop app resolves permissions in its own
+    // native sandbox + GUI, so Clawd never registers a /permission HTTP hook
+    // and never renders an approval bubble. It only mirrors state and pops a
+    // waiting Notification.
+    assert.strictEqual(workbuddy.capabilities.httpHook, false);
+    assert.strictEqual(workbuddy.capabilities.permissionApproval, false);
+    assert.strictEqual(workbuddy.capabilities.interactiveBubble, false);
     assert.strictEqual(workbuddy.capabilities.notificationHook, true);
     assert.strictEqual(workbuddy.capabilities.sessionEnd, true);
     assert.strictEqual(workbuddy.capabilities.subagent, false);
@@ -405,7 +410,10 @@ describe("Agent Registry", () => {
     assert.strictEqual(workbuddy.eventMap.PreToolUse, "working");
     assert.strictEqual(workbuddy.eventMap.PostToolUse, "working");
     assert.strictEqual(workbuddy.eventMap.Stop, "attention");
-    assert.strictEqual(workbuddy.eventMap.PermissionRequest, "notification");
+    // #618: no PermissionRequest mapping — the kernel has no standalone
+    // PermissionRequest event, and desktop approval never reaches Clawd.
+    // Permission surfaces only through Notification.
+    assert.strictEqual(workbuddy.eventMap.PermissionRequest, undefined);
     assert.strictEqual(workbuddy.eventMap.Notification, "notification");
     assert.strictEqual(workbuddy.eventMap.PreCompact, "sweeping");
     assert.strictEqual(workbuddy.eventMap.SessionEnd, "sleeping");

@@ -21,7 +21,14 @@ module.exports = {
     linux: ["workbuddy", "WorkBuddy"],
   },
   eventSource: "hook",
-  // PascalCase event names — identical to Claude Code hook system
+  // PascalCase event names — identical to Claude Code hook system.
+  // NOTE: no PermissionRequest entry. Desktop WorkBuddy resolves the entire
+  // permission loop inside its own native sandbox (sandbox-core/tsbx) and GUI
+  // confirmation cards; Clawd's /permission endpoint is never called in the
+  // desktop form factor (verified on Windows). A permission prompt surfaces to
+  // Clawd only as a Notification (notification_type "permission_prompt"), which
+  // is enough for the bell/attention cue — so WorkBuddy is notification-only,
+  // like qoderwork.
   eventMap: {
     SessionStart:     "idle",
     SessionEnd:       "sleeping",
@@ -29,13 +36,13 @@ module.exports = {
     PreToolUse:       "working",
     PostToolUse:      "working",
     Stop:             "attention",
-    PermissionRequest:"notification",
     Notification:     "notification",
     PreCompact:       "sweeping",
   },
   capabilities: {
-    httpHook: true,
-    permissionApproval: true,
+    httpHook: false,
+    permissionApproval: false,
+    interactiveBubble: false,
     notificationHook: true,
     sessionEnd: true,
     subagent: false,

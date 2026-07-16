@@ -280,8 +280,10 @@ const SCHEMA = {
       // uses a distinct data dir (~/.workbuddy). Opt-in like every other
       // non-default agent — agent-gate.js fail-opens missing entries, so this
       // default MUST exist or startup sync would auto-install for any user who
-      // merely has a ~/.workbuddy/ directory.
-      "workbuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
+      // merely has a ~/.workbuddy/ directory. State + Notification only: the
+      // desktop app owns its permission loop natively, so permission bubbles
+      // default off (like qoderwork).
+      "workbuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },

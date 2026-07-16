@@ -50,7 +50,13 @@ const BUBBLE_HEIGHT_RESERVE = 24;
 const BUBBLE_BASE_WIDTH = 340;
 // Hard cap so a scaled bubble can't swallow a small work area.
 const BUBBLE_MAX_WORK_AREA_WIDTH_RATIO = 0.9;
-const REMOTE_RICH_APPROVAL_AGENT_IDS = new Set(["claude-code", "codebuddy", "workbuddy"]);
+// WorkBuddy is intentionally absent: its desktop form factor resolves the
+// permission loop inside its own native sandbox + GUI, so Clawd never issues a
+// rich remote approval for it (see agents/workbuddy.js). If a future CLI form
+// factor emits a real PermissionRequest, re-adding it will need a source-owned
+// endpoint or server-side identity injection first (WorkBuddy's native events
+// carry client:"WorkBuddy", not an agent_id server-agent-id.js recognizes).
+const REMOTE_RICH_APPROVAL_AGENT_IDS = new Set(["claude-code", "codebuddy"]);
 
 function requiredDependency(value, name, owner) {
   if (!value) throw new Error(`${owner} requires ${name}`);
