@@ -15,7 +15,7 @@ const {
   shouldBypassCCSubagentBubble,
   shouldBypassCodexBubble,
   shouldBypassCopilotBubble,
-  shouldBypassOpencodeBubble,
+  shouldBypassFamilyBubble,
 } = require("../src/server-route-permission");
 
 function makeReq(body) {
@@ -57,7 +57,7 @@ function makeCtx(overrides = {}) {
     updateSession: [],
     showPermissionBubble: [],
     sendPermissionResponse: [],
-    replyOpencodePermission: [],
+    replyOpencodeFamilyPermission: [],
     resolved: [],
     maybeStartRemoteApproval: [],
     addPendingPermission: [],
@@ -80,7 +80,7 @@ function makeCtx(overrides = {}) {
       res.writeHead(200);
       res.end(behavior);
     },
-    replyOpencodePermission: (payload) => calls.replyOpencodePermission.push(payload),
+    replyOpencodeFamilyPermission: (payload) => calls.replyOpencodeFamilyPermission.push(payload),
     resolvePermissionEntry: (entry, behavior, message) => calls.resolved.push({ entry, behavior, message }),
     maybeStartRemoteApproval: (entry) => calls.maybeStartRemoteApproval.push(entry),
     addPendingPermission(entry) {
@@ -137,9 +137,9 @@ describe("server-route-permission helpers", () => {
     assert.strictEqual(shouldBypassCodexBubble({
       isAgentPermissionsEnabled: (agentId) => agentId !== "codex",
     }), true);
-    assert.strictEqual(shouldBypassOpencodeBubble({
+    assert.strictEqual(shouldBypassFamilyBubble({
       isAgentPermissionsEnabled: (agentId) => agentId !== "opencode",
-    }), true);
+    }, "opencode"), true);
     assert.strictEqual(shouldBypassCopilotBubble({ hideBubbles: true }), true);
     assert.strictEqual(shouldBypassCopilotBubble({
       isAgentPermissionsEnabled: (agentId) => agentId !== "copilot-cli",
@@ -298,7 +298,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.body, "ok");
     assert.deepStrictEqual(res.recorder.map((entry) => entry.outcome).filter(Boolean), ["disabled"]);
     assert.deepStrictEqual(res.ctx.pendingPermissions, []);
-    assert.deepStrictEqual(res.ctx.calls.replyOpencodePermission, []);
+    assert.deepStrictEqual(res.ctx.calls.replyOpencodeFamilyPermission, []);
   });
 
   it("routes opencode permissions by hook_source when agent_id is missing", async () => {
@@ -317,7 +317,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.ctx.pendingPermissions.length, 1);
     const entry = res.ctx.pendingPermissions[0];
     assert.strictEqual(entry.agentId, "opencode");
-    assert.strictEqual(entry.isOpencode, true);
+    assert.strictEqual(entry.familyRequestId, "req-1");
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
       "opencode:s1",
       "notification",
@@ -348,7 +348,7 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.recorder.map((entry) => entry.outcome).filter(Boolean), ["accepted"]);
     assert.deepStrictEqual(res.ctx.pendingPermissions, []);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
-    assert.deepStrictEqual(res.ctx.calls.replyOpencodePermission, []);
+    assert.deepStrictEqual(res.ctx.calls.replyOpencodeFamilyPermission, []);
   });
 
   it("destroys the Claude/CodeBuddy connection during DND", async () => {
