@@ -1495,6 +1495,88 @@ describe("checkAgentIntegrations", () => {
     );
   });
 
+  function makeValidFamilyPlugin(root, pluginDirName) {
+    const hooksDir = path.join(root, "hooks");
+    const pluginPath = path.join(hooksDir, pluginDirName);
+    const familyDir = path.join(hooksDir, "opencode-family-plugin");
+    fs.mkdirSync(pluginPath, { recursive: true });
+    fs.writeFileSync(path.join(pluginPath, "index.mjs"), "export default async () => ({});\n", "utf8");
+    fs.mkdirSync(familyDir, { recursive: true });
+    fs.writeFileSync(path.join(familyDir, "core.mjs"), "export function createOpencodeFamilyPlugin() {}\n", "utf8");
+    fs.writeFileSync(path.join(familyDir, "session-ids.mjs"), "export function createSessionIdHelpers() {}\n", "utf8");
+    return pluginPath;
+  }
+
+  function mimocodeDescriptor(root, overrides = {}) {
+    const parentDir = path.join(root, ".config", "mimocode");
+    fs.mkdirSync(parentDir, { recursive: true });
+    return baseDescriptor({
+      agentId: "mimocode",
+      marker: "mimocode-plugin",
+      parentDir,
+      configPath: path.join(parentDir, "mimocode.jsonc"),
+      detection: "opencode-plugin",
+      configJsonc: true,
+      ...overrides,
+    });
+  }
+
+  it("parses mimocode's JSONC config (comments + trailing commas) as healthy, not config-corrupt", () => {
+    const root = makeTempDir();
+    const pluginPath = makeValidFamilyPlugin(root, "mimocode-plugin");
+    const descriptor = mimocodeDescriptor(root);
+    fs.writeFileSync(
+      descriptor.configPath,
+      `{\n  // Clawd pet plugin\n  "plugin": [\n    ${JSON.stringify(pluginPath)},\n  ],\n}\n`,
+      "utf8"
+    );
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "ok", `expected ok, got ${detail.status}: ${detail.detail}`);
+  });
+
+  it("still reports genuinely corrupt mimocode JSONC as config-corrupt", () => {
+    const root = makeTempDir();
+    const descriptor = mimocodeDescriptor(root);
+    fs.writeFileSync(descriptor.configPath, '{\n  "plugin": [\n', "utf8");
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "config-corrupt");
+    assert.match(detail.detail, /invalid JSONC/);
+  });
+
+  it("routes ONLY configJsonc descriptors through the JSONC parser", () => {
+    // Without the flag, the same commented config must fail JSON.parse — this
+    // locks the routing to the descriptor flag rather than a blanket parser
+    // swap (opencode.json stays strict JSON).
+    const root = makeTempDir();
+    const descriptor = mimocodeDescriptor(root, { configJsonc: undefined });
+    fs.writeFileSync(descriptor.configPath, '{\n  // comment\n  "plugin": [],\n}\n', "utf8");
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "config-corrupt");
+  });
+
+  it("descriptor configJsonc matches the family registry's jsonc flag (drift lock)", () => {
+    // eslint-disable-next-line global-require
+    const { AGENT_DESCRIPTORS } = require("../src/doctor-detectors/agent-descriptors");
+    // eslint-disable-next-line global-require
+    const { OPENCODE_FAMILY } = require("../agents/opencode-family");
+    for (const [agentId, cfg] of Object.entries(OPENCODE_FAMILY)) {
+      const descriptor = AGENT_DESCRIPTORS.find((d) => d.agentId === agentId);
+      assert.ok(descriptor, `family member ${agentId} must have a doctor descriptor`);
+      assert.strictEqual(
+        !!descriptor.configJsonc,
+        !!cfg.jsonc,
+        `${agentId}: doctor descriptor configJsonc must mirror the registry's jsonc flag`
+      );
+      assert.ok(
+        descriptor.configPath.endsWith(cfg.configFileName),
+        `${agentId}: descriptor configPath must target ${cfg.configFileName}`
+      );
+    }
+  });
+
   function openClawDescriptor() {
     const root = makeTempDir();
     const parentDir = path.join(root, ".openclaw");

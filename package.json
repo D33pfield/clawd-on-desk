@@ -38,6 +38,8 @@
     "uninstall:pi-extension": "node hooks/pi-install.js --uninstall",
     "install:openclaw-plugin": "node hooks/openclaw-install.js",
     "uninstall:openclaw-plugin": "node hooks/openclaw-install.js --uninstall",
+    "install:mimocode-plugin": "node hooks/mimocode-install.js",
+    "uninstall:mimocode-plugin": "node hooks/mimocode-install.js --uninstall",
     "install:codex-hooks": "node hooks/codex-install.js",
     "uninstall:codex-hooks": "node hooks/codex-install.js --uninstall",
     "install:codex-debug-hooks": "node hooks/codex-debug-install.js",
@@ -182,6 +184,7 @@
     "@larksuiteoapi/node-sdk": "^1.66.0",
     "electron-updater": "^6.8.3",
     "htmlparser2": "^12.0.0",
+    "jsonc-parser": "^3.3.1",
     "koffi": "^2.15.2",
     "ws": "^8.21.0"
   }

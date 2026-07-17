@@ -66,6 +66,25 @@ function readJson(fsImpl, filePath) {
   return JSON.parse(raw);
 }
 
+// JSONC-aware sibling of readJson for descriptors with configJsonc: true
+// (mimocode's ~/.config/mimocode/mimocode.jsonc). Comments and trailing
+// commas are LEGAL there — parsing with bare JSON.parse would flip a healthy
+// config to "config-corrupt". Genuinely broken files still throw, keeping
+// the config-corrupt path meaningful. jsonc-parser is lazy-required so the
+// doctor pays for it only when a JSONC agent is actually inspected.
+function readJsonc(fsImpl, filePath) {
+  let raw = fsImpl.readFileSync(filePath, "utf8");
+  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+  // eslint-disable-next-line global-require
+  const { parse } = require("jsonc-parser");
+  const errors = [];
+  const tree = parse(raw, errors, { allowTrailingComma: true });
+  if (errors.length) {
+    throw new Error(`invalid JSONC (${errors.length} parse error${errors.length === 1 ? "" : "s"})`);
+  }
+  return tree;
+}
+
 function withAgentBubbleNote(detail, prefs, agentId) {
   // State-only agents (capabilities.permissionApproval === false) never
   // surface a Clawd bubble in the first place, so annotating them as
@@ -903,7 +922,9 @@ function checkFileMode(descriptor, options) {
 
   let settings;
   try {
-    settings = readJson(options.fs, descriptor.configPath);
+    settings = descriptor.configJsonc
+      ? readJsonc(options.fs, descriptor.configPath)
+      : readJson(options.fs, descriptor.configPath);
   } catch (err) {
     return makeDetail(descriptor, "config-corrupt", {
       level: "warning",

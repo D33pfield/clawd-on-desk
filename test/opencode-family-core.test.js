@@ -207,11 +207,9 @@ describe("opencode-family registry", () => {
     // (plan §3.1 CJS/ESM note).
     for (const [agentId, cfg] of Object.entries(OPENCODE_FAMILY)) {
       const entryPath = path.join(HOOKS_DIR, cfg.pluginDirName, "index.mjs");
-      if (!fs.existsSync(entryPath)) {
-        // mimocode's entry lands with the #607 rebase; opencode must exist NOW.
-        assert.notStrictEqual(agentId, "opencode", "opencode entry must exist");
-        continue;
-      }
+      // Every registry member ships its thin entry — a missing one must fail
+      // loudly here, not silently skip (the pre-#607 escape hatch is gone).
+      assert.ok(fs.existsSync(entryPath), `${agentId} plugin entry missing: ${entryPath}`);
       const source = fs.readFileSync(entryPath, "utf8");
       const expectations = {
         agentId,
