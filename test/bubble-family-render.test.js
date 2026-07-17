@@ -158,12 +158,14 @@ describe("bubble-renderer family branch (executed)", () => {
     assert.strictEqual(r2.el("commandBlock").textContent, JSON.stringify({ weird: 1 }));
   });
 
-  it("shows the Always button only with candidates; tooltip carries the display name (twice, no {agent})", () => {
+  it("shows Always only with candidates (plus the #704 terminal fallback); tooltip carries the display name (twice, no {agent})", () => {
     const withAlways = makeRenderer();
     withAlways.show(familyPayload());
+    // #704 appends a Go-to-Terminal fallback after the Always action.
     const btns = withAlways.el("suggestions").children;
-    assert.strictEqual(btns.length, 1);
+    assert.strictEqual(btns.length, 2, "Always + Go-to-Terminal fallback");
     assert.strictEqual(btns[0].textContent, "Always Allow (blanket)");
+    assert.strictEqual(btns[1].textContent, "Go to Terminal");
     const occurrences = btns[0].title.split("OpenCode").length - 1;
     assert.strictEqual(occurrences, 2, `tooltip must name the product twice: ${btns[0].title}`);
     assert.strictEqual(btns[0].title.includes("{agent}"), false);
@@ -171,7 +173,9 @@ describe("bubble-renderer family branch (executed)", () => {
 
     const withoutAlways = makeRenderer();
     withoutAlways.show(familyPayload({ familyAlways: [] }));
-    assert.strictEqual(withoutAlways.el("suggestions").children.length, 0);
+    const fallbackOnly = withoutAlways.el("suggestions").children;
+    assert.strictEqual(fallbackOnly.length, 1, "no Always without candidates — fallback only");
+    assert.strictEqual(fallbackOnly[0].textContent, "Go to Terminal");
   });
 
   it("clicking Always emits the single family-always behavior and disables ALL buttons", () => {
@@ -183,6 +187,7 @@ describe("bubble-renderer family branch (executed)", () => {
     assert.strictEqual(r.el("btnAllow").disabled, true);
     assert.strictEqual(r.el("btnDeny").disabled, true);
     assert.strictEqual(alwaysBtn.disabled, true, "the clicked Always button itself must be disabled");
+    assert.strictEqual(r.el("suggestions").children[1].disabled, true, "the terminal fallback must be disabled too");
     // Double-click through the now-disabled button must not fire a second decide.
     alwaysBtn.click();
     assert.deepStrictEqual(r.decideCalls, ["family-always"]);
