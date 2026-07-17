@@ -23,6 +23,7 @@ const {
   clampAssistantOutputText,
   extractAssistantTextFromRecord,
 } = require("./codex-assistant-output");
+const { parseCodexUserInputRecord } = require("./codex-user-input");
 
 // ── Inline config from agents/codex.js (zero-dependency requirement) ──
 
@@ -100,6 +101,19 @@ function buildPostStateBody(sessionId, state, event, cwd, isSubagent, host, extr
     body.assistant_last_output = extra.assistantLastOutput;
     if (extra.assistantLastOutputTruncated === true) body.assistant_last_output_truncated = true;
   }
+  if (extra && extra.codexUserInput) {
+    const request = extra.codexUserInput;
+    body.codex_user_input = {
+      phase: request.phase,
+      call_id: request.callId,
+    };
+    if (request.phase === "request") {
+      body.codex_user_input.questions = request.questions;
+      if (request.autoResolutionMs) {
+        body.codex_user_input.auto_resolution_ms = request.autoResolutionMs;
+      }
+    }
+  }
   return JSON.stringify(body);
 }
 
@@ -130,6 +144,29 @@ function processLine(line, entry, options = {}) {
   if (type === "session_meta" && payload) {
     entry.cwd = payload.cwd || "";
     entry.isSubagent = classifySessionMeta(payload) === "subagent";
+  }
+
+  const userInputRecord = parseCodexUserInputRecord(obj);
+  if (userInputRecord) {
+    if (!(entry.pendingUserInputs instanceof Map)) entry.pendingUserInputs = new Map();
+    const postStateFn = typeof options.postState === "function" ? options.postState : postState;
+    if (userInputRecord.phase === "request") {
+      entry.pendingUserInputs.set(userInputRecord.callId, userInputRecord);
+      if (!entry.isSubagent && !entry.initializing) {
+        postStateFn(entry.sessionId, "notification", "CodexUserInputRequest", entry.cwd, false, {
+          codexUserInput: userInputRecord,
+        });
+      }
+      return;
+    }
+    if (!entry.pendingUserInputs.has(userInputRecord.callId)) return;
+    entry.pendingUserInputs.delete(userInputRecord.callId);
+    if (!entry.isSubagent && !entry.initializing) {
+      postStateFn(entry.sessionId, "idle", "CodexUserInputResolved", entry.cwd, false, {
+        codexUserInput: userInputRecord,
+      });
+    }
+    return;
   }
 
   const assistantText = extractAssistantTextFromRecord(obj);
@@ -190,6 +227,8 @@ function pollFile(filePath, fileName, options = {}) {
       lastState: null,
       assistantLastOutput: null,
       assistantLastOutputTruncated: false,
+      pendingUserInputs: new Map(),
+      initializing: true,
       partial: "",
       stale: false,
     };
@@ -235,6 +274,17 @@ function pollFile(filePath, fileName, options = {}) {
   for (const line of lines) {
     if (!line.trim()) continue;
     processLine(line, entry, options);
+  }
+  if (entry.initializing) {
+    entry.initializing = false;
+    if (!entry.isSubagent && entry.pendingUserInputs instanceof Map) {
+      const postStateFn = typeof options.postState === "function" ? options.postState : postState;
+      for (const request of entry.pendingUserInputs.values()) {
+        postStateFn(entry.sessionId, "notification", "CodexUserInputRequest", entry.cwd, false, {
+          codexUserInput: request,
+        });
+      }
+    }
   }
 }
 

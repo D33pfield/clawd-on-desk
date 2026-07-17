@@ -98,6 +98,45 @@ describe("Codex remote monitor", () => {
     assert.strictEqual(complete.assistant_last_output, "Remote Codex answer");
   });
 
+  it("posts request_user_input details and a correlated resolution", () => {
+    const entry = {
+      sessionId: "codex:root",
+      cwd: "/repo",
+      isSubagent: false,
+      lastEventTime: 0,
+      lastState: null,
+      pendingUserInputs: new Map(),
+    };
+    const posted = [];
+    const postState = (sessionId, state, event, cwd, isSubagent, extra) => {
+      posted.push(JSON.parse(__test.buildPostStateBody(
+        sessionId, state, event, cwd, isSubagent, "remote-box", extra
+      )));
+    };
+    __test.processLine(JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "request_user_input",
+        call_id: "call_remote",
+        arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [
+          { label: "A", description: "First" },
+          { label: "B", description: "Second" },
+        ] }] }),
+      },
+    }), entry, { postState });
+    __test.processLine(JSON.stringify({
+      type: "response_item",
+      payload: { type: "function_call_output", call_id: "call_remote", output: "{}" },
+    }), entry, { postState });
+
+    assert.strictEqual(posted[0].event, "CodexUserInputRequest");
+    assert.strictEqual(posted[0].codex_user_input.call_id, "call_remote");
+    assert.strictEqual(posted[0].codex_user_input.questions[0].question, "Pick one");
+    assert.strictEqual(posted[1].event, "CodexUserInputResolved");
+    assert.deepStrictEqual(posted[1].codex_user_input, { phase: "resolved", call_id: "call_remote" });
+  });
+
   it("marks subagent bodies headless and maps task_complete to idle", () => {
     const entry = {
       sessionId: "codex:sub",
@@ -185,6 +224,37 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
     assert.strictEqual(
       s.posted.filter((p) => p.event === "event_msg:task_complete").length, 1,
       "historical task_complete must not re-fire on resume"
+    );
+  });
+
+  it("reconstructs pending questions on initial attach without flashing resolved history", () => {
+    const request = {
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "request_user_input",
+        call_id: "call_initial",
+        arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+      },
+    };
+    const output = {
+      type: "response_item",
+      payload: { type: "function_call_output", call_id: "call_initial", output: "{}" },
+    };
+    const resolvedFile = track([META, request, output]);
+    const resolvedSpy = spy();
+    __test.pollFile(resolvedFile, ROLLOUT_NAME, { postState: resolvedSpy.postState });
+    assert.strictEqual(
+      resolvedSpy.posted.filter((post) => post.event === "CodexUserInputRequest").length,
+      0
+    );
+
+    const pendingFile = track([META, request]);
+    const pendingSpy = spy();
+    __test.pollFile(pendingFile, ROLLOUT_NAME, { postState: pendingSpy.postState });
+    assert.strictEqual(
+      pendingSpy.posted.filter((post) => post.event === "CodexUserInputRequest").length,
+      1
     );
   });
 

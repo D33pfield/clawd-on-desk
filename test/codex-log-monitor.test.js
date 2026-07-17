@@ -98,6 +98,81 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(events[0].extra.codexSource, "vscode");
   });
 
+  it("emits request_user_input and closes only the matching call", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/projects/foo", source: "cli" } }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: "call_question",
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [
+            { label: "A", description: "First" },
+            { label: "B", description: "Second" },
+          ] }] }),
+        },
+      }),
+    ].join("\n") + "\n");
+
+    const requests = [];
+    const resolved = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      onUserInputRequest: (...args) => requests.push(args),
+      onUserInputResolved: (...args) => resolved.push(args),
+    });
+    monitor._findCodexWriterPid = () => null;
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.strictEqual(requests.length, 1);
+    assert.strictEqual(requests[0][0], EXPECTED_SID);
+    assert.strictEqual(requests[0][1].callId, "call_question");
+    assert.strictEqual(requests[0][2].cwd, "/projects/foo");
+
+    fs.appendFileSync(testFile, JSON.stringify({
+      type: "response_item",
+      payload: { type: "function_call_output", call_id: "unrelated", output: "{}" },
+    }) + "\n");
+    monitor._pollFile(testFile, path.basename(testFile));
+    assert.deepStrictEqual(resolved, []);
+
+    fs.appendFileSync(testFile, JSON.stringify({
+      type: "response_item",
+      payload: { type: "function_call_output", call_id: "call_question", output: "{}" },
+    }) + "\n");
+    monitor._pollFile(testFile, path.basename(testFile));
+    assert.deepStrictEqual(resolved, [[EXPECTED_SID, "call_question"]]);
+  });
+
+  it("does not flash a request_user_input already resolved before initial attach", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: "call_done",
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: { type: "function_call_output", call_id: "call_done", output: "{}" },
+      }),
+    ].join("\n") + "\n");
+    const requests = [];
+    const resolved = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      onUserInputRequest: (...args) => requests.push(args),
+      onUserInputResolved: (...args) => resolved.push(args),
+    });
+    monitor._pollFile(testFile, path.basename(testFile));
+    assert.deepStrictEqual(requests, []);
+    assert.deepStrictEqual(resolved, []);
+  });
+
   it("uses stale Codex Desktop session_meta for later live events without replaying it", () => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, JSON.stringify({

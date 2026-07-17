@@ -23,6 +23,7 @@ const {
   clampAssistantOutputText,
   extractAssistantTextFromRecord,
 } = require("../hooks/codex-assistant-output");
+const { parseCodexUserInputRecord } = require("../hooks/codex-user-input");
 
 const MAX_TRACKED_FILES = 50;
 const MAX_RETIRED_TRACKED_FILES = 100;
@@ -94,6 +95,12 @@ class CodexLogMonitor {
     this._config = agentConfig;
     this._onStateChange = onStateChange;
     this._classifier = options.classifier || new CodexSubagentClassifier();
+    this._onUserInputRequest = typeof options.onUserInputRequest === "function"
+      ? options.onUserInputRequest
+      : null;
+    this._onUserInputResolved = typeof options.onUserInputResolved === "function"
+      ? options.onUserInputResolved
+      : null;
     this._interval = null;
     // Map<filePath, { offset, sessionId, cwd, lastEventTime, lastState, partial }>
     this._tracked = new Map();
@@ -348,6 +355,10 @@ class CodexLogMonitor {
         assistantLastOutput: retired ? retired.assistantLastOutput || null : null,
         assistantLastOutputTruncated: retired ? retired.assistantLastOutputTruncated === true : false,
         contextUsage: retired ? retired.contextUsage || null : null,
+        pendingUserInputs: retired && retired.pendingUserInputs instanceof Map
+          ? new Map(retired.pendingUserInputs)
+          : new Map(),
+        initializingUserInputs: !retired,
         // Backfill mode: only a file whose last write predates monitor
         // start (by more than BACKFILL_GRACE_MS) is treated as stale
         // history — we replay it silently to advance offset + pick up
@@ -399,6 +410,10 @@ class CodexLogMonitor {
       this._emitBackfillSnapshot(tracked);
       tracked.backfilling = false;
     }
+    if (tracked.initializingUserInputs) {
+      tracked.initializingUserInputs = false;
+      this._emitPendingUserInputRequests(tracked);
+    }
   }
 
   _processLine(line, tracked) {
@@ -429,6 +444,8 @@ class CodexLogMonitor {
       const ts = Date.parse(obj.timestamp);
       if (!tracked.backfilling && Number.isFinite(ts) && ts < this._startedAtMs - 1500) return;
     }
+
+    if (this._processCodexUserInputRecord(obj, tracked)) return;
 
     const assistantText = extractAssistantTextFromRecord(obj);
     if (assistantText) {
@@ -646,6 +663,9 @@ class CodexLogMonitor {
       assistantLastOutput: tracked.assistantLastOutput || null,
       assistantLastOutputTruncated: tracked.assistantLastOutputTruncated === true,
       contextUsage: tracked.contextUsage || null,
+      pendingUserInputs: tracked.pendingUserInputs instanceof Map
+        ? new Map(tracked.pendingUserInputs)
+        : new Map(),
     });
     while (this._retiredTracked.size > MAX_RETIRED_TRACKED_FILES) {
       const oldest = this._retiredTracked.keys().next().value;
@@ -654,6 +674,7 @@ class CodexLogMonitor {
   }
 
   _emitBackfillSnapshot(tracked) {
+    if (tracked.pendingUserInputs instanceof Map && tracked.pendingUserInputs.size > 0) return;
     const snapshotState = tracked.lastState;
     if (!SUSTAINED_ACTIVE_STATES.has(snapshotState)) {
       if (tracked.contextUsage) {
@@ -667,6 +688,47 @@ class CodexLogMonitor {
       tracked.lastStateEvent || "session_meta",
       null
     );
+  }
+
+  _processCodexUserInputRecord(obj, tracked) {
+    const record = parseCodexUserInputRecord(obj);
+    if (!record) return false;
+    if (!(tracked.pendingUserInputs instanceof Map)) tracked.pendingUserInputs = new Map();
+    if (record.phase === "request") {
+      tracked.pendingUserInputs.set(record.callId, record);
+      tracked.hadToolUse = true;
+      if (!tracked.backfilling && !tracked.initializingUserInputs) {
+        this._emitUserInputRequest(tracked, record);
+      }
+      return true;
+    }
+    if (!tracked.pendingUserInputs.has(record.callId)) return true;
+    tracked.pendingUserInputs.delete(record.callId);
+    if (!tracked.backfilling && !tracked.initializingUserInputs && this._onUserInputResolved) {
+      this._onUserInputResolved(tracked.sessionId, record.callId);
+    }
+    return true;
+  }
+
+  _emitPendingUserInputRequests(tracked) {
+    if (!(tracked.pendingUserInputs instanceof Map)) return;
+    for (const request of tracked.pendingUserInputs.values()) {
+      this._emitUserInputRequest(tracked, request);
+    }
+  }
+
+  _emitUserInputRequest(tracked, request) {
+    if (!this._onUserInputRequest || this._isTrackedSubagent(tracked)) return;
+    const agentPid = this._resolveTrackedAgentPid(tracked);
+    this._onUserInputRequest(tracked.sessionId, request, {
+      cwd: tracked.cwd,
+      sourcePid: agentPid,
+      agentPid,
+      sessionTitle: tracked.sessionTitle,
+      codexOriginator: tracked.codexOriginator || null,
+      codexSource: tracked.codexSource || null,
+      headless: false,
+    });
   }
 
   _assistantOutputExtra(tracked) {

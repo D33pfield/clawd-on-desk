@@ -93,3 +93,21 @@ describe("AskUserQuestion bubble stepper", () => {
     assert.match(body, /r\.addEventListener\("change", \(\) => updateOtherTextarea\(\{ updateSubmitState: false \}\)\);/);
   });
 });
+
+describe("Codex request_user_input preview", () => {
+  it("renders a read-only stepped preview and delegates answering to Codex", () => {
+    const cardBody = functionBody("createCodexUserInputQuestionCard");
+    const stepBody = functionBody("renderCodexUserInputStep");
+    assert.match(cardBody, /question\.options/);
+    assert.doesNotMatch(cardBody, /createElement\("input"\)|createElement\("textarea"\)/);
+    assert.match(stepBody, /activeQuestionIndex -= 1/);
+    assert.match(stepBody, /activeQuestionIndex \+= 1/);
+    assert.match(bubbleRenderer, /window\.bubbleAPI\.decide\("codex-user-input-focus"\)/);
+  });
+
+  it("shows a remote handoff instead of claiming it can focus a local terminal", () => {
+    const body = functionBody("renderCodexUserInputStep");
+    assert.match(body, /if \(data\.isRemote\)/);
+    assert.match(body, /returnToRemoteCodex/);
+  });
+});
