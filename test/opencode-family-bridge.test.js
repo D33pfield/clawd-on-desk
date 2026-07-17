@@ -47,12 +47,13 @@ after(() => {
 });
 
 async function initInstance(params, { sdk } = {}) {
-  const captured = { fetch: null, hostname: null, port: null };
+  const captured = { fetch: null, hostname: null, port: null, requestedPort: null };
   globalThis.Bun = {
     serve(opts) {
       captured.fetch = opts.fetch;
       captured.hostname = opts.hostname;
-      captured.port = ++bridgePortCounter; // opts.port is 0 = "pick one"
+      captured.requestedPort = opts.port;
+      captured.port = ++bridgePortCounter; // stand-in for the OS-assigned port
       return { port: captured.port };
     },
   };
@@ -102,6 +103,9 @@ describe("opencode-family reverse bridge (plugin side, real handler)", () => {
     for (const inst of [oc, mc]) {
       assert.strictEqual(typeof inst.captured.fetch, "function", "Bun.serve fetch handler not captured");
       assert.strictEqual(inst.captured.hostname, "127.0.0.1");
+      // A fixed port would EADDRINUSE against Clawd itself (23333-23337) and
+      // silently degrade every bubble to the TUI fallback.
+      assert.strictEqual(inst.captured.requestedPort, 0, "bridge must ask the OS for a port (port: 0)");
       assert.match(inst.plugin.__test._bridgeUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
       assert.match(inst.plugin.__test._bridgeTokenHex, /^[a-f0-9]{64}$/);
     }

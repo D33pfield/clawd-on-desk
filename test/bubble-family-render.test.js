@@ -52,7 +52,8 @@ function fakeEl(tag = "div") {
     querySelector() { return fakeEl(); },
     querySelectorAll() { return []; },
     focus() {},
-    click() { if (this.listeners.click) this.listeners.click({ preventDefault() {} }); },
+    // Real DOM: a disabled button dispatches no click events.
+    click() { if (!this.disabled && this.listeners.click) this.listeners.click({ preventDefault() {} }); },
     getBoundingClientRect() { return { width: 0, height: 0, top: 0, left: 0 }; },
   };
   return el;
@@ -140,6 +141,13 @@ describe("bubble-renderer family branch (executed)", () => {
     assert.strictEqual(r.el("commandBlock").textContent, "a.md");
   });
 
+  it("renders the url as the FINAL detail for url-shaped input (e.g. webfetch)", () => {
+    const r = makeRenderer();
+    r.show(familyPayload({ toolName: "webfetch", toolInput: { url: "https://example.com/private" } }));
+    assert.strictEqual(r.el("toolPillText").textContent, "Webfetch");
+    assert.strictEqual(r.el("commandBlock").textContent, "https://example.com/private");
+  });
+
   it("falls back to deduped familyPatterns, then raw JSON", () => {
     const r = makeRenderer();
     r.show(familyPayload({ toolInput: {}, familyPatterns: ["npm *", "npm *"] }));
@@ -166,13 +174,18 @@ describe("bubble-renderer family branch (executed)", () => {
     assert.strictEqual(withoutAlways.el("suggestions").children.length, 0);
   });
 
-  it("clicking Always emits the single family-always behavior and disables the buttons", () => {
+  it("clicking Always emits the single family-always behavior and disables ALL buttons", () => {
     const r = makeRenderer();
     r.show(familyPayload());
-    r.el("suggestions").children[0].click();
+    const alwaysBtn = r.el("suggestions").children[0];
+    alwaysBtn.click();
     assert.deepStrictEqual(r.decideCalls, ["family-always"]);
     assert.strictEqual(r.el("btnAllow").disabled, true);
     assert.strictEqual(r.el("btnDeny").disabled, true);
+    assert.strictEqual(alwaysBtn.disabled, true, "the clicked Always button itself must be disabled");
+    // Double-click through the now-disabled button must not fire a second decide.
+    alwaysBtn.click();
+    assert.deepStrictEqual(r.decideCalls, ["family-always"]);
   });
 
   it("falls back to familyAgentId when no display name is provided", () => {
