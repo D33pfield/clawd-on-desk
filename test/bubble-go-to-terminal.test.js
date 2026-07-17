@@ -142,12 +142,17 @@ describe("permission bubble terminal fallback (issue #689)", () => {
     assert.deepStrictEqual(harness.decisions, []);
   });
 
-  it("shows exactly one fallback for opencode and preserves its Always action", () => {
+  it("shows exactly one fallback for opencode-family cards and preserves the Always action", () => {
     const harness = createHarness();
+    // Family cards are selected by familyAgentId (the post-#706 payload
+    // vocabulary; buildPermissionBubblePayload no longer emits isOpencode /
+    // opencodeAlways for the renderer).
     harness.show({
       toolName: "bash",
-      isOpencode: true,
-      opencodeAlways: ["bash"],
+      familyAgentId: "opencode",
+      familyDisplayName: "OpenCode",
+      familyAlways: ["bash"],
+      familyPatterns: [],
       toolInput: { command: "pwd" },
     });
 
