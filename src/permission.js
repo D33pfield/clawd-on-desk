@@ -15,6 +15,7 @@ const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
 } = require("../hooks/server-config");
+const { isOpencodeFamilyEntry, getFamilyConfig } = require("../agents/opencode-family");
 
 const isMac = process.platform === "darwin";
 const isLinux = process.platform === "linux";
@@ -904,7 +905,13 @@ function buildPermissionBubblePayload(permEntry) {
     suggestions: permEntry.suggestions || [],
     lang: ctx.lang,
     isElicitation: permEntry.isElicitation || false,
-    isOpencode: permEntry.isOpencode || false,
+    // opencode-family provenance for the renderer, which has no registry
+    // access: presence of familyAgentId selects the family render branch;
+    // familyDisplayName templates the blanket-always tooltip (plan §3.5).
+    familyAgentId: isOpencodeFamilyEntry(permEntry) ? permEntry.agentId : null,
+    familyDisplayName: isOpencodeFamilyEntry(permEntry)
+      ? ((getFamilyConfig(permEntry.agentId) || {}).displayName || permEntry.agentId)
+      : null,
     isAntigravity: permEntry.isAntigravity || false,
     // Provenance for the renderer: lets the bubble relabel Codex MCP tool calls
     // (issue #445) without touching approval semantics. Mirrors the flags above.
@@ -919,8 +926,8 @@ function buildPermissionBubblePayload(permEntry) {
     // standard cue path (formatDetail) while the card stays dismiss-only.
     kimiToolName: permEntry.kimiToolName || null,
     kimiToolInput: permEntry.kimiToolInput || null,
-    opencodeAlways: permEntry.opencodeAlwaysCandidates || [],
-    opencodePatterns: permEntry.opencodePatterns || [],
+    familyAlways: permEntry.familyAlwaysCandidates || [],
+    familyPatterns: permEntry.familyPatterns || [],
     sessionFolder,
     sessionShortId,
   };
@@ -965,7 +972,7 @@ function isRemoteRichApprovalSupported(permEntry) {
 function isRemoteApprovalActionable(permEntry) {
   if (!permEntry || typeof permEntry !== "object") return false;
   if (permEntry.isElicitation) return true;
-  if (permEntry.isCodexNotify || permEntry.isKimiNotify || permEntry.isOpencode || permEntry.isAntigravity || permEntry.isCopilotCli) return false;
+  if (permEntry.isCodexNotify || permEntry.isKimiNotify || isOpencodeFamilyEntry(permEntry) || permEntry.isAntigravity || permEntry.isCopilotCli) return false;
   if (permEntry.toolName === "ExitPlanMode" || permEntry.toolName === "AskUserQuestion") return false;
   if (PASSTHROUGH_TOOLS.has(permEntry.toolName)) return false;
   // Headless sessions auto-deny locally; mirror that on the Telegram side so a
@@ -1580,22 +1587,23 @@ function applyPermissionSuggestion(perm, index, options = {}) {
   repositionDependentBubbles();
   syncPermissionShortcuts();
 
-  // opencode: decisions go back via the plugin's reverse bridge (Bun.serve
-  // on a random localhost port). The plugin then calls opencode's in-process
-  // Hono route. Plugin sent us a fire-and-forget POST — no HTTP response to
-  // complete on this connection.
-  if (permEntry.isOpencode) {
-    // Autoclose: silent drop — same DND semantics. opencode TUI falls back
+  // opencode-family: decisions go back via the plugin's reverse bridge
+  // (Bun.serve on a random localhost port). The plugin then calls the host's
+  // in-process Hono route. Plugin sent us a fire-and-forget POST — no HTTP
+  // response to complete on this connection.
+  if (isOpencodeFamilyEntry(permEntry)) {
+    // Autoclose: silent drop — same DND semantics. The host TUI falls back
     // to its built-in prompt so the user can answer in the terminal.
     if (behavior === "no-decision") return;
     let reply;
     if (behavior === "deny") reply = "reject";
-    else if (permEntry.opencodeAlwaysPicked) reply = "always";
+    else if (permEntry.familyAlwaysPicked) reply = "always";
     else reply = "once";
-    replyOpencodePermission({
-      bridgeUrl: permEntry.opencodeBridgeUrl,
-      bridgeToken: permEntry.opencodeBridgeToken,
-      requestId: permEntry.opencodeRequestId,
+    replyOpencodeFamilyPermission({
+      agentId: permEntry.agentId,
+      bridgeUrl: permEntry.familyBridgeUrl,
+      bridgeToken: permEntry.familyBridgeToken,
+      requestId: permEntry.familyRequestId,
       reply,
       toolName: permEntry.toolName,
     });
@@ -1714,12 +1722,12 @@ function permLog(msg) {
   rotatedAppend(ctx.permDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
-// Fire-and-forget POST to the opencode plugin's reverse bridge. The plugin
-// runs inside opencode's Bun process and does NOT expose opencode's own
+// Fire-and-forget POST to the family plugin's reverse bridge. The plugin
+// runs inside the host's Bun process and does NOT expose the host's own
 // permission route externally — TUI mode has no TCP listener at all (see
 // Phase 2 Spike in docs/plans/plan-opencode-integration.md). Instead the plugin
 // starts its own Bun.serve on a random localhost port and forwards our
-// decision to opencode's in-process Hono router via ctx.client._client.post().
+// decision to the host's in-process Hono router via ctx.client._client.post().
 //
 // Shape: POST http://127.0.0.1:<plugin-port>/reply
 //   Authorization: Bearer <hex token>
@@ -1727,20 +1735,21 @@ function permLog(msg) {
 //
 // Uses raw http.request (not fetch) to avoid Electron main-process fetch
 // polyfill concerns. Bridge is always 127.0.0.1 bound by the plugin so no
-// IPv4/IPv6 gotcha. 5s timeout — on failure the opencode TUI still falls
+// IPv4/IPv6 gotcha. 5s timeout — on failure the host TUI still falls
 // back to terminal-based approval.
-function replyOpencodePermission({ bridgeUrl, bridgeToken, requestId, reply, toolName }) {
+function replyOpencodeFamilyPermission({ agentId, bridgeUrl, bridgeToken, requestId, reply, toolName }) {
+  const tag = agentId || "opencode-family";
   if (!bridgeUrl || !bridgeToken || !requestId) {
     const missing = !bridgeUrl ? "bridgeUrl" : (!bridgeToken ? "bridgeToken" : "requestId");
-    permLog(`opencode reply skipped: missing ${missing}`);
+    permLog(`${tag} reply skipped: missing ${missing}`);
     return;
   }
   const fullUrl = `${bridgeUrl.replace(/\/$/, "")}/reply`;
-  permLog(`opencode reply: tool=${toolName || "?"} request=${requestId} reply=${reply} url=${fullUrl}`);
+  permLog(`${tag} reply: tool=${toolName || "?"} request=${requestId} reply=${reply} url=${fullUrl}`);
 
   let parsed;
   try { parsed = new URL(fullUrl); } catch {
-    permLog(`opencode reply skipped: invalid bridge URL ${fullUrl}`);
+    permLog(`${tag} reply skipped: invalid bridge URL ${fullUrl}`);
     return;
   }
   const body = JSON.stringify({ request_id: requestId, reply });
@@ -1761,18 +1770,18 @@ function replyOpencodePermission({ bridgeUrl, bridgeToken, requestId, reply, too
     res.setEncoding("utf8");
     res.on("data", (chunk) => { if (respBody.length < 500) respBody += chunk; });
     res.on("end", () => {
-      permLog(`opencode reply status=${res.statusCode} request=${requestId} body=${respBody.trim() || "(empty)"}`);
+      permLog(`${tag} reply status=${res.statusCode} request=${requestId} body=${respBody.trim() || "(empty)"}`);
     });
   });
   req.on("error", (err) => {
     const info = err
       ? `code=${err.code || ""} errno=${err.errno || ""} syscall=${err.syscall || ""} msg=${err.message || ""}`
       : "null";
-    permLog(`opencode reply ERR ${info} request=${requestId}`);
+    permLog(`${tag} reply ERR ${info} request=${requestId}`);
   });
   req.on("timeout", () => {
     req.destroy();
-    permLog(`opencode reply timeout request=${requestId}`);
+    permLog(`${tag} reply timeout request=${requestId}`);
   });
   req.write(body);
   req.end();
@@ -1984,7 +1993,7 @@ function handleDecide(event, behavior) {
       return;
     }
     // Mirror Codex/Qwen: any non-allow/deny UI action (deny-and-focus,
-    // suggestion picker, opencode-always) is unsupported for Copilot's
+    // suggestion picker, family-always) is unsupported for Copilot's
     // simple {behavior, message} wire format. Resolve as no-decision so
     // the hook returns empty stdout and Copilot's native menu owns the
     // call rather than the bubble parking until timeout.
@@ -2049,9 +2058,9 @@ function handleDecide(event, behavior) {
     resolvePermissionEntry(perm, "deny", feedback);
     return;
   }
-  // opencode "Always" button — map to reply="always" via resolvePermissionEntry
-  if (behavior === "opencode-always") {
-    perm.opencodeAlwaysPicked = true;
+  // opencode-family "Always" button — map to reply="always" via resolvePermissionEntry
+  if (behavior === "family-always") {
+    perm.familyAlwaysPicked = true;
     resolvePermissionEntry(perm, "allow");
     return;
   }
@@ -2258,7 +2267,7 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
     sendAntigravityNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isHermes) {
     sendHermesNoDecisionResponse(perm.res, reason || "permission-dismissed");
-  } else if (!perm.isOpencode && perm.res && !perm.res.destroyed) {
+  } else if (!isOpencodeFamilyEntry(perm) && perm.res && !perm.res.destroyed) {
     try { perm.res.destroy(); } catch {}
   }
 }
@@ -2379,7 +2388,10 @@ return {
   dismissPermissionsByAgent, dismissInteractivePermissionBubbles,
   dismissPermissionsForDnd,
   syncPermissionShortcuts,
-  replyOpencodePermission,
+  replyOpencodeFamilyPermission,
+  // Exposed for the payload↔renderer contract test (plan §3.5/§9): the
+  // builder closes over ctx, so it can only be reached through an instance.
+  buildPermissionBubblePayload,
 };
 
 };

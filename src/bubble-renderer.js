@@ -65,7 +65,7 @@ const BUBBLE_STRINGS = {
     allow: "Allow",
     deny: "Deny",
     alwaysAllowBlanket: "Always Allow (blanket)",
-    alwaysAllowBlanketTitle: "Warning: opencode's 'always' rule auto-approves every subsequent tool call of the same category in this session (including rm and similar destructive commands). The rule lives only in memory — restart opencode to revoke.",
+    alwaysAllowBlanketTitle: "Warning: {agent}'s 'always' rule auto-approves every subsequent tool call of the same category in this session (including rm and similar destructive commands). The rule lives only in memory — restart {agent} to revoke.",
     needsInput: "Needs Input",
     goToTerminal: "Go to Terminal",
     submitAnswer: "Submit Answer",
@@ -101,7 +101,7 @@ const BUBBLE_STRINGS = {
     allow: "\u6279\u51C6",
     deny: "\u62D2\u7EDD",
     alwaysAllowBlanket: "\u59CB\u7EC8\u5141\u8BB8\uFF08\u901A\u914D\uFF09",
-    alwaysAllowBlanketTitle: "\u8B66\u544A\uFF1Aopencode \u7684 always \u89C4\u5219\u4F1A\u8BA9\u672C\u6B21 session \u5185\u4E0B\u4E00\u6B21\u6240\u6709\u540C\u7C7B\u5DE5\u5177\u8C03\u7528\u81EA\u52A8\u653E\u884C\uFF08\u5305\u62EC rm \u7B49\u5371\u9669\u547D\u4EE4\uFF09\u3002\u8BE5\u89C4\u5219\u53EA\u5728\u5185\u5B58\u4E2D\uFF0C\u91CD\u542F opencode \u5373\u6062\u590D\u3002",
+    alwaysAllowBlanketTitle: "\u8B66\u544A\uFF1A{agent} \u7684 always \u89C4\u5219\u4F1A\u8BA9\u672C\u6B21 session \u5185\u4E0B\u4E00\u6B21\u6240\u6709\u540C\u7C7B\u5DE5\u5177\u8C03\u7528\u81EA\u52A8\u653E\u884C\uFF08\u5305\u62EC rm \u7B49\u5371\u9669\u547D\u4EE4\uFF09\u3002\u8BE5\u89C4\u5219\u53EA\u5728\u5185\u5B58\u4E2D\uFF0C\u91CD\u542F {agent} \u5373\u6062\u590D\u3002",
     needsInput: "\u9700\u8981\u8F93\u5165",
     goToTerminal: "\u524D\u5F80\u7EC8\u7AEF",
     submitAnswer: "\u63D0\u4EA4\u56DE\u7B54",
@@ -137,7 +137,7 @@ const BUBBLE_STRINGS = {
     allow: "允許",
     deny: "拒絕",
     alwaysAllowBlanket: "一律允許（全部）",
-    alwaysAllowBlanketTitle: "警告：opencode 的 'always' 規則會自動允許本次工作階段中後續所有同類工具呼叫（包含 rm 等破壞性命令）。此規則只儲存在記憶體中，重新啟動 opencode 即可取消此規則。",
+    alwaysAllowBlanketTitle: "警告：{agent} 的 'always' 規則會自動允許本次工作階段中後續所有同類工具呼叫（包含 rm 等破壞性命令）。此規則只儲存在記憶體中，重新啟動 {agent} 即可取消此規則。",
     needsInput: "需要回應",
     goToTerminal: "跳至終端機",
     submitAnswer: "送出答案",
@@ -173,7 +173,7 @@ const BUBBLE_STRINGS = {
     allow: "\uD5C8\uC6A9",
     deny: "\uAC70\uBD80",
     alwaysAllowBlanket: "\uD56D\uC0C1 \uD5C8\uC6A9 (\uC804\uCCB4)",
-    alwaysAllowBlanketTitle: "\uACBD\uACE0: opencode\uC758 'always' \uADDC\uCE59\uC740 \uC774 \uC138\uC158\uC5D0\uC11C \uAC19\uC740 \uC885\uB958\uC758 \uC774\uD6C4 \uBAA8\uB4E0 \uB3C4\uAD6C \uD638\uCD9C\uC744 \uC790\uB3D9 \uC2B9\uC778\uD569\uB2C8\uB2E4. (rm \uAC19\uC740 \uD30C\uAD34\uC801 \uBA85\uB839 \uD3EC\uD568) \uC774 \uADDC\uCE59\uC740 \uBA54\uBAA8\uB9AC\uC5D0\uB9CC \uB0A8\uC73C\uBA70, opencode\uB97C \uC7AC\uC2DC\uC791\uD558\uBA74 \uD574\uC81C\uB429\uB2C8\uB2E4.",
+    alwaysAllowBlanketTitle: "\uACBD\uACE0: {agent}\uC758 'always' \uADDC\uCE59\uC740 \uC774 \uC138\uC158\uC5D0\uC11C \uAC19\uC740 \uC885\uB958\uC758 \uC774\uD6C4 \uBAA8\uB4E0 \uB3C4\uAD6C \uD638\uCD9C\uC744 \uC790\uB3D9 \uC2B9\uC778\uD569\uB2C8\uB2E4. (rm \uAC19\uC740 \uD30C\uAD34\uC801 \uBA85\uB839 \uD3EC\uD568) \uC774 \uADDC\uCE59\uC740 \uBA54\uBAA8\uB9AC\uC5D0\uB9CC \uB0A8\uC73C\uBA70, {agent}\uB97C \uC7AC\uC2DC\uC791\uD558\uBA74 \uD574\uC81C\uB429\uB2C8\uB2E4.",
     needsInput: "\uC785\uB825 \uD544\uC694",
     goToTerminal: "\uD130\uBBF8\uB110\uB85C \uC774\uB3D9",
     submitAnswer: "\uB2F5\uBCC0 \uC81C\uCD9C",
@@ -209,7 +209,7 @@ const BUBBLE_STRINGS = {
     allow: "許可",
     deny: "拒否",
     alwaysAllowBlanket: "常に許可（包括）",
-    alwaysAllowBlanketTitle: "警告: opencode の 'always' ルールは、このセッション内で同じ種類の以後すべてのツール呼び出しを自動承認します（rm などの破壊的なコマンドを含む）。このルールはメモリ上だけに保存され、opencode を再起動すると解除されます。",
+    alwaysAllowBlanketTitle: "警告: {agent} の 'always' ルールは、このセッション内で同じ種類の以後すべてのツール呼び出しを自動承認します（rm などの破壊的なコマンドを含む）。このルールはメモリ上だけに保存され、{agent} を再起動すると解除されます。",
     needsInput: "入力が必要",
     goToTerminal: "ターミナルへ移動",
     submitAnswer: "回答を送信",
@@ -241,7 +241,10 @@ function bubbleText(lang, key, vars) {
   let value = dict[key] || BUBBLE_STRINGS.en[key] || key;
   if (!vars) return value;
   for (const [name, replacement] of Object.entries(vars)) {
-    value = value.replace(`{${name}}`, replacement);
+    // replaceAll: some templates repeat a placeholder (e.g. {agent} appears
+    // twice in alwaysAllowBlanketTitle); every existing key uses each
+    // placeholder at most once, so this is behavior-preserving for them.
+    value = value.split(`{${name}}`).join(replacement);
   }
   return value;
 }
@@ -731,14 +734,16 @@ function show(data) {
   elicitationMode = data.isElicitation || false;
   setSessionTag(data);
 
-  // opencode branch — Phase 2. Three differences from CC:
+  // opencode-family branch — Phase 2. Payload carries neutral family* fields
+  // (familyAgentId presence selects this branch; the renderer has no registry
+  // access). Three differences from CC:
   //   1. tool names are lowercase (edit/bash/write) — we PascalCase them so
   //      existing tool-pill CSS rules match (data-tool="Edit" etc).
   //   2. toolInput shape is opencode-native ({filepath,diff}/{command}/{url}),
   //      not CC's {file_path,command,pattern}. Custom picker below.
-  //   3. "Always Allow" button maps to reply="always" via "opencode-always"
-  //      behavior (handleDecide special-cases this).
-  if (data.isOpencode) {
+  //   3. "Always Allow" button maps to reply="always" via the single
+  //      "family-always" behavior (handleDecide special-cases this).
+  if (data.familyAgentId) {
     headerTitle.textContent = bubbleText(data.lang, "permissionRequest");
 
     const rawName = data.toolName || "unknown";
@@ -758,8 +763,8 @@ function show(data) {
       detail = input.command;
     } else if (typeof input.url === "string" && input.url) {
       detail = input.url;
-    } else if (Array.isArray(data.opencodePatterns) && data.opencodePatterns.length) {
-      detail = [...new Set(data.opencodePatterns)].join(", ");
+    } else if (Array.isArray(data.familyPatterns) && data.familyPatterns.length) {
+      detail = [...new Set(data.familyPatterns)].join(", ");
     } else {
       try { detail = JSON.stringify(input); } catch { detail = "(n/a)"; }
     }
@@ -772,22 +777,24 @@ function show(data) {
     btnAllow.disabled = false;
     btnDeny.disabled = false;
 
-    // Always Allow button — shown only when opencode provided persist candidates.
-    // ⚠ opencode's reply="always" is a BLANKET session rule: a single click
+    // Always Allow button — shown only when the host provided persist candidates.
+    // ⚠ The host's reply="always" is a BLANKET session rule: a single click
     // auto-approves every subsequent tool call of the same category in this
     // session (e.g. ALL bash commands including rm -rf). Unlike Claude Code,
-    // opencode does not scope "always" to the specific pattern of this request.
-    // We keep the button to respect opencode's native UX, but the label + tooltip
-    // make the blast radius explicit.
+    // opencode-family hosts do not scope "always" to the specific pattern of
+    // this request. We keep the button to respect the native UX, but the label
+    // + tooltip make the blast radius explicit — templated with the member's
+    // real product name so a MiMo user never reads "opencode" in the warning.
     suggestionsContainer.innerHTML = "";
-    if (Array.isArray(data.opencodeAlways) && data.opencodeAlways.length > 0) {
+    if (Array.isArray(data.familyAlways) && data.familyAlways.length > 0) {
+      const agentName = data.familyDisplayName || data.familyAgentId;
       const btn = document.createElement("button");
       btn.className = "btn-suggestion";
       btn.textContent = bubbleText(data.lang, "alwaysAllowBlanket");
-      btn.title = bubbleText(data.lang, "alwaysAllowBlanketTitle");
+      btn.title = bubbleText(data.lang, "alwaysAllowBlanketTitle", { agent: agentName });
       btn.addEventListener("click", () => {
         disableAll();
-        window.bubbleAPI.decide("opencode-always");
+        window.bubbleAPI.decide("family-always");
       });
       suggestionsContainer.appendChild(btn);
     }

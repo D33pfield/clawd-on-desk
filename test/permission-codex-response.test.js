@@ -329,7 +329,7 @@ describe("Codex permission response sanitizer", () => {
   });
 
   it("does not let Codex take suggestion or opencode-only decision paths", () => {
-    for (const behavior of ["suggestion:0", "opencode-always"]) {
+    for (const behavior of ["suggestion:0", "family-always"]) {
       const { api } = createCodexDecisionHarness();
       const res = createFakeRes();
       const bubble = createFakeBubble();
@@ -480,7 +480,6 @@ describe("Codex permission response sanitizer", () => {
         bubble: opencodeBubble,
         hideTimer: null,
         agentId: "opencode",
-        isOpencode: true,
         bridgeUrl: "http://127.0.0.1:9",
         bridgeToken: "token",
         requestId: "req-1",
