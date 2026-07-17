@@ -77,13 +77,20 @@ function startBridge() {
         if (waiter) { const w = waiter; waiter = null; w(); }
       });
     });
+    server.on("error", (err) => { throw err; });
     server.listen(0, "127.0.0.1", () => {
       resolveStart({
         requests,
         url: `http://127.0.0.1:${server.address().port}`,
-        firstRequest: () => new Promise((r) => {
-          if (requests.length) return r();
-          waiter = r;
+        // Hard deadline: a mutated reply path that stops POSTing must turn
+        // this red within the window, not hang the runner.
+        firstRequest: (timeoutMs = 2000) => new Promise((resolve, reject) => {
+          if (requests.length) return resolve();
+          const timer = setTimeout(
+            () => reject(new Error(`bridge received no request within ${timeoutMs}ms`)),
+            timeoutMs
+          );
+          waiter = () => { clearTimeout(timer); resolve(); };
         }),
         close: () => new Promise((r) => server.close(r)),
       });
