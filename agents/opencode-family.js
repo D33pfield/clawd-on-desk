@@ -27,6 +27,23 @@ const OPENCODE_FAMILY = Object.freeze({
     jsonc: false,
     schema: "https://opencode.ai/config.json",
   }),
+  // MiMo Code — opencode-derived runtime (Phase 0 spike against 1.3.13
+  // verified the identical plugin loader + event wire contract). Its config
+  // is JSONC (comments/trailing commas legal), so installer/doctor edits go
+  // through hooks/opencode-family-jsonc.js instead of JSON.parse/stringify.
+  // No $schema: mimocode does not publish one, and writing opencode's URL
+  // into a mimocode config (as the pre-family installer did) is wrong.
+  mimocode: Object.freeze({
+    displayName: "MiMo Code",
+    sessionIdPrefix: "mimocode:",
+    hookSource: "mimocode-plugin",
+    pluginDirName: "mimocode-plugin",
+    logFileName: "mimocode-plugin.log",
+    configDirSegments: Object.freeze([".config", "mimocode"]),
+    configFileName: "mimocode.jsonc",
+    jsonc: true,
+    schema: null,
+  }),
 });
 
 // Clawd-internal event names (PascalCase) shared by every family member —
