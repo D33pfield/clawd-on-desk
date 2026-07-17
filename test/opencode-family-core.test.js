@@ -200,6 +200,22 @@ describe("opencode-family registry", () => {
     }
   });
 
+  it("registered plugin path is byte-identical to the pre-refactor installer", () => {
+    // Existing user configs hold the absolute path of hooks/opencode-plugin.
+    // The shared installer must keep producing exactly that string — dev and
+    // packaged (asar.unpacked) shapes — or every install would need a config
+    // migration (plan §3.2). Windows-native shapes are covered on real
+    // hardware (path.resolve is platform-bound).
+    const { resolvePluginDir } = require("../hooks/opencode-install");
+    assert.strictEqual(resolvePluginDir("/app/clawd/hooks"), "/app/clawd/hooks/opencode-plugin");
+    assert.strictEqual(
+      resolvePluginDir("/Applications/Clawd.app/Contents/Resources/app.asar/hooks"),
+      "/Applications/Clawd.app/Contents/Resources/app.asar.unpacked/hooks/opencode-plugin"
+    );
+    // The shared core dir must never leak into the registered string.
+    assert.strictEqual(resolvePluginDir("/x/hooks").includes("opencode-family-plugin"), false);
+  });
+
   it("registry config paths match the installer defaults", () => {
     const opencodeInstall = require("../hooks/opencode-install");
     const cfg = OPENCODE_FAMILY.opencode;
