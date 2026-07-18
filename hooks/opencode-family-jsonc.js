@@ -115,9 +115,29 @@ function candidatePaths(cfg, configPath) {
   return paths;
 }
 
+// A duplicate top-level "plugin" key makes the file AMBIGUOUS to edit:
+// parse() resolves to the LAST value (what the host runs), but
+// modify()/findNodeAtLocation() target the FIRST property node — an edit
+// would change a dead array while reporting success, and a sweep would
+// count matches in one array and delete from another (R10/GPT-5.5 P2,
+// reproduced). Same do-not-clobber stance as a parse failure: refuse.
+function assertSinglePluginProperty(text, configPath) {
+  const root = parseTree(text, [], PARSE_OPTIONS);
+  if (!root || root.type !== "object" || !Array.isArray(root.children)) return;
+  let count = 0;
+  for (const prop of root.children) {
+    const keyNode = Array.isArray(prop.children) ? prop.children[0] : null;
+    if (keyNode && keyNode.value === "plugin") count++;
+  }
+  if (count > 1) {
+    throw new Error(`Failed to read ${configPath}: duplicate top-level "plugin" keys (${count}) — refusing to edit an ambiguous config`);
+  }
+}
+
 // Read every candidate: { path, exists, text, tree }. Throws on a candidate
-// that exists but cannot be parsed — editing around a file we cannot fully
-// understand risks masking or clobbering user content.
+// that exists but cannot be parsed or carries duplicate "plugin" keys —
+// editing around a file we cannot fully understand risks masking or
+// clobbering user content.
 function readCandidates(cfg, configPath) {
   return candidatePaths(cfg, configPath).map((candidate) => {
     let text = null;
@@ -127,7 +147,9 @@ function readCandidates(cfg, configPath) {
       if (err.code === "ENOENT") return { path: candidate, exists: false, text: null, tree: null };
       throw new Error(`Failed to read ${candidate}: ${err.message}`);
     }
-    return { path: candidate, exists: true, text, tree: parseJsoncStrict(text, candidate) };
+    const tree = parseJsoncStrict(text, candidate);
+    assertSinglePluginProperty(text, candidate);
+    return { path: candidate, exists: true, text, tree };
   });
 }
 

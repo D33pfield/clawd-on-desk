@@ -385,6 +385,28 @@ describe("mimocode JSONC installer — merged dual-file semantics", () => {
     assert.deepStrictEqual(parseJsonc(text).plugin, ["@vendor/a", "@vendor/b"]);
   });
 
+  it("refuses to edit a file with DUPLICATE top-level plugin keys (R10 P2)", () => {
+    // parse() resolves duplicates to the LAST value, but element edits land
+    // on the FIRST property node — register would "succeed" against a dead
+    // array and unregister would count one array while deleting from
+    // another. Ambiguous configs are refused untouched.
+    const regText = '{\n  "plugin": ["@vendor/user"],\n  "plugin": []\n}';
+    const reg = tmpConfig(regText);
+    assert.throws(
+      () => registerMimocodePlugin({ silent: true, configPath: reg.configPath, pluginDir: PLUGIN_DIR }),
+      /duplicate top-level "plugin" keys/
+    );
+    assert.strictEqual(fs.readFileSync(reg.configPath, "utf8"), regText, "ambiguous config must be left untouched");
+
+    const unregText = `{\n  "plugin": ["@vendor/user"],\n  "plugin": ["${PLUGIN_DIR}"]\n}`;
+    const unreg = tmpConfig(unregText);
+    assert.throws(
+      () => unregisterMimocodePlugin({ silent: true, configPath: unreg.configPath, pluginDir: PLUGIN_DIR }),
+      /duplicate top-level "plugin" keys/
+    );
+    assert.strictEqual(fs.readFileSync(unreg.configPath, "utf8"), unregText);
+  });
+
   it("refuses to edit when ANY existing candidate is corrupt", () => {
     const dir = tmpDir();
     const jsoncPath = inDir(dir, "mimocode.jsonc", '{\n  "plugin": [],\n}');

@@ -615,6 +615,7 @@ deployToWsl.lockKey = "agentIntegration";
 removeFromWsl.lockKey = "agentIntegration";
 
 module.exports = {
+  AUTO_REPAIRABLE_AGENT_IDS,
   INSTALLABLE_AGENT_IDS,
   clearAgentCleanupHints,
   clearAgentInstallHints,
