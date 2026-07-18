@@ -28,6 +28,13 @@ Remove-Item -Recurse -Force node_modules/electron
 npm install
 ```
 
+For custom development distributions, a Linux launch with
+`ELECTRON_OVERRIDE_DIST_PATH` mirrors Electron's resolver and falls back to the
+`electron` executable at the override root when `path.txt` is absent. macOS and
+Windows overrides must retain Electron's exact standard `path.txt` because
+their supported executable layouts use an app bundle and `electron.exe` rather
+than the Linux root executable.
+
 ## Agent Setup
 
 Fresh installs enable and install only Claude Code and Codex by default. For other local agents, open **Settings → Agents** and click **Install** for that agent first; after that, Clawd keeps the hook/plugin/extension synced on launch while the agent remains enabled. Turning an enabled agent off stops event intake but does not uninstall files. **Uninstall** removes only Clawd-managed hook/plugin/extension entries and also disables that agent.
