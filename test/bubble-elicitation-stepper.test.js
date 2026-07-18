@@ -105,6 +105,16 @@ describe("Codex request_user_input preview", () => {
     assert.match(bubbleRenderer, /window\.bubbleAPI\.decide\("codex-user-input-focus"\)/);
   });
 
+  it("marks every option as visually non-interactive, unlike the real elicitation picker", () => {
+    const cardBody = functionBody("createCodexUserInputQuestionCard");
+    const elicitationBody = functionBody("createElicitationQuestionCard");
+    // Both regular options and the synthesized "Other" row must carry the
+    // readonly modifier — .option-item alone still has a pointer cursor.
+    assert.match(cardBody, /item\.className = "option-item option-item-readonly"/);
+    assert.match(cardBody, /other\.className = "option-item option-item-other option-item-readonly"/);
+    assert.doesNotMatch(elicitationBody, /option-item-readonly/);
+  });
+
   it("shows a remote handoff instead of claiming it can focus a local terminal", () => {
     const body = functionBody("renderCodexUserInputStep");
     assert.match(body, /if \(data\.isRemote\)/);

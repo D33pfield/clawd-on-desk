@@ -88,6 +88,7 @@ const { formatLocalTimestamp } = require("./log-timestamp");
 const { launchClaudeSession, openTerminalAt } = require("./launch-claude");
 const { dialog: electronDialog } = require("electron");
 const initPermission = require("./permission");
+const { isPassiveNotifyEntry } = require("./passive-notify-entry");
 const { registerPermissionIpc } = initPermission;
 const { createTelegramApprovalSidecar } = require("./telegram-approval-sidecar");
 const telegramApprovalSettings = require("./telegram-approval-settings");
@@ -2446,12 +2447,7 @@ function getTelegramApprovalStatus() {
 }
 
 function getPendingTelegramApprovalCount() {
-  return pendingPermissions.filter((entry) =>
-    entry
-    && !entry.isCodexNotify
-    && !entry.isCodexUserInputNotify
-    && !entry.isKimiNotify
-  ).length;
+  return pendingPermissions.filter((entry) => entry && !isPassiveNotifyEntry(entry)).length;
 }
 
 function getTelegramNativeRunnerStatus() {
@@ -3205,6 +3201,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
   syncPermissionShortcuts,
   dismissInteractivePermissionBubbles: () => callRuntimeMethod(_perm, "dismissInteractivePermissionBubbles"),
   clearCodexNotifyBubbles,
+  clearCodexUserInputBubbles,
   clearKimiNotifyBubbles,
   refreshPassiveNotifyAutoClose: () => callRuntimeMethod(_perm, "refreshPassiveNotifyAutoClose"),
   refreshPermissionAutoCloseForPolicy: () => callRuntimeMethod(_perm, "refreshPermissionAutoCloseForPolicy"),

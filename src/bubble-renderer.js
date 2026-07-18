@@ -775,7 +775,7 @@ function createCodexUserInputQuestionCard(question, questionIndex) {
   const options = Array.isArray(question.options) ? question.options : [];
   for (const option of options) {
     const item = document.createElement("div");
-    item.className = "option-item";
+    item.className = "option-item option-item-readonly";
     const copy = document.createElement("span");
     copy.className = "option-item-copy";
     const label = document.createElement("span");
@@ -793,7 +793,7 @@ function createCodexUserInputQuestionCard(question, questionIndex) {
   }
   if (question.isOther) {
     const other = document.createElement("div");
-    other.className = "option-item option-item-other";
+    other.className = "option-item option-item-other option-item-readonly";
     const label = document.createElement("span");
     label.className = "option-item-label";
     label.textContent = bubbleText(currentLang, "otherInCodex");

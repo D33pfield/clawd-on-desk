@@ -16,6 +16,7 @@ const {
   CLAWD_SERVER_ID,
 } = require("../hooks/server-config");
 const { isOpencodeFamilyEntry, getFamilyConfig } = require("../agents/opencode-family");
+const { isPassiveNotifyEntry } = require("./passive-notify-entry");
 
 const isMac = process.platform === "darwin";
 const isLinux = process.platform === "linux";
@@ -234,14 +235,6 @@ function buildCopilotPermissionResponseBody(decisionOrBehavior, message) {
   return decision ? JSON.stringify(decision) : "{}";
 }
 
-function isPassiveNotifyEntry(permEntry) {
-  return !!(permEntry && (
-    permEntry.isCodexNotify
-    || permEntry.isCodexUserInputNotify
-    || permEntry.isKimiNotify
-  ));
-}
-
 function computePassiveNotifyRemainingMs(createdAt, autoCloseMs, now = Date.now()) {
   const totalMs = Number(autoCloseMs);
   if (!Number.isFinite(totalMs) || totalMs <= 0) return 0;
@@ -457,9 +450,7 @@ function verifyUnregister(accelerator) {
 function getActionablePermissions() {
   return pendingPermissions.filter(
     p => !p.isElicitation
-      && !p.isCodexNotify
-      && !p.isCodexUserInputNotify
-      && !p.isKimiNotify
+      && !isPassiveNotifyEntry(p)
       && p.toolName !== "ExitPlanMode"
   );
 }
@@ -866,9 +857,7 @@ function notifyPermissionResolved(permEntry, reason) {
   const hasPendingForSession = pendingPermissions.some((entry) =>
     entry
     && entry.sessionId === permEntry.sessionId
-    && !entry.isCodexNotify
-    && !entry.isCodexUserInputNotify
-    && !entry.isKimiNotify
+    && !isPassiveNotifyEntry(entry)
   );
   try {
     ctx.onPermissionResolved(permEntry, {
@@ -2148,9 +2137,15 @@ function showCodexUserInputBubble({
     permLog(`codex user-input suppressed: session=${sessionId} dnd=${ctx.doNotDisturb} notificationEnabled=${policy.enabled}`);
     return false;
   }
+  // autoResolutionMs is validated/clamped at the protocol boundary
+  // (hooks/codex-user-input.js) but has no reader in the bubble UI — nothing
+  // auto-closes this card but a matching function_call_output or an
+  // explicit lifecycle end (see agent-runtime-main.js), so it's deliberately
+  // left out of toolInput rather than threaded somewhere that implies a
+  // countdown exists.
   const existing = findCodexUserInputEntry(sessionId, callId);
   if (existing) {
-    existing.toolInput = { questions, autoResolutionMs: autoResolutionMs || null };
+    existing.toolInput = { questions };
     existing.createdAt = Date.now();
     syncPermissionBubbleContent(existing);
     return true;
@@ -2163,7 +2158,7 @@ function showCodexUserInputBubble({
     bubble: null,
     hideTimer: null,
     toolName: "CodexUserInput",
-    toolInput: { questions, autoResolutionMs: autoResolutionMs || null },
+    toolInput: { questions },
     codexUserInputCallId: callId,
     resolvedSuggestion: null,
     createdAt: Date.now(),
