@@ -288,6 +288,11 @@ function writeTextAtomic(filePath, text, encodingOrOptions = "utf-8") {
   fs.mkdirSync(dir, { recursive: true });
   try {
     fs.writeFileSync(tmpPath, text, opts.mode === undefined ? encoding : { encoding, mode: opts.mode });
+    // open()'s mode is masked by the process umask (022 turns 0664 into
+    // 0644), so writeFileSync alone only "preserves" bits the umask happens
+    // to allow. chmod is umask-immune — apply the exact bits before the
+    // rename (dual-review S-F1).
+    if (opts.mode !== undefined) fs.chmodSync(tmpPath, opts.mode);
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
     try { fs.unlinkSync(tmpPath); } catch {}

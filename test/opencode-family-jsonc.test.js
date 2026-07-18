@@ -175,16 +175,21 @@ describe("mimocode JSONC installer — unregister", () => {
     assert.deepStrictEqual(parseJsonc(text).plugin, ["@vendor/other"]);
   });
 
-  it("preserves file mode across register and unregister (0600 secrets stay 0600, R8 P1)", (t) => {
+  it("preserves file mode across register and unregister — incl. umask-sensitive bits (R8 P1 + S-F1)", (t) => {
     if (process.platform === "win32") return t.skip("posix file modes");
-    const { configPath } = tmpConfig(`{\n  // token inside\n  "plugin": ["${PLUGIN_DIR}", "@vendor/keep"],\n}`);
-    fs.chmodSync(configPath, 0o600);
+    // 0600 has no bits a typical umask would strip — it passes even without
+    // real preservation. 0664 (group-write) is the honest probe: a 022 umask
+    // silently narrows it unless the writer chmods explicitly.
+    for (const mode of [0o600, 0o664]) {
+      const { configPath } = tmpConfig(`{\n  // token inside\n  "plugin": ["${PLUGIN_DIR}", "@vendor/keep"],\n}`);
+      fs.chmodSync(configPath, mode);
 
-    unregisterMimocodePlugin({ silent: true, configPath, pluginDir: PLUGIN_DIR });
-    assert.strictEqual(fs.statSync(configPath).mode & 0o777, 0o600, "unregister must not widen permissions");
+      unregisterMimocodePlugin({ silent: true, configPath, pluginDir: PLUGIN_DIR });
+      assert.strictEqual(fs.statSync(configPath).mode & 0o777, mode, `unregister must keep 0${mode.toString(8)}`);
 
-    registerMimocodePlugin({ silent: true, configPath, pluginDir: PLUGIN_DIR });
-    assert.strictEqual(fs.statSync(configPath).mode & 0o777, 0o600, "register must not widen permissions");
+      registerMimocodePlugin({ silent: true, configPath, pluginDir: PLUGIN_DIR });
+      assert.strictEqual(fs.statSync(configPath).mode & 0o777, mode, `register must keep 0${mode.toString(8)}`);
+    }
   });
 
   it("sweeps a MASKED stale path in a lower-priority file (R8 P1 scenario)", () => {
@@ -336,6 +341,48 @@ describe("mimocode JSONC installer — merged dual-file semantics", () => {
     const res = unregisterMimocodePlugin({ silent: true, configPath: jsoncPath, pluginDir: PLUGIN_DIR });
     assert.strictEqual(res.removed, 2);
     assert.deepStrictEqual(parseJsonc(fs.readFileSync(jsoncPath, "utf8")).plugin, ["@vendor/keep"]);
+  });
+
+  it("matches the target file's TAB indentation when inserting (S-F4)", () => {
+    const dir = tmpDir();
+    const jsoncPath = inDir(dir, "mimocode.jsonc", `{\n\t// tabs not spaces\n\t"plugin": [\n\t\t"@vendor/x"\n\t]\n}`);
+    registerMimocodePlugin({ silent: true, configPath: jsoncPath, pluginDir: PLUGIN_DIR });
+    const text = fs.readFileSync(jsoncPath, "utf8");
+    assert.ok(text.includes(`\t"${PLUGIN_DIR}"`), `inserted element must be tab-indented: ${JSON.stringify(text)}`);
+    assert.ok(!/\n {2}"/.test(text), "no space-indented lines may be introduced into a tab file");
+    assert.deepStrictEqual(parseJsonc(text).plugin, ["@vendor/x", PLUGIN_DIR]);
+  });
+
+  it("merges overlapping spans when the last two adjacent elements share a comma", () => {
+    // Element N eats its FOLLOWING comma; the last element eats its
+    // PRECEDING one — removing both claims the same comma. Without the span
+    // union the second slice would use stale offsets and corrupt the file.
+    const dir = tmpDir();
+    const jsoncPath = inDir(dir, "mimocode.jsonc", `{\n  "plugin": [\n    "@vendor/keep",\n    "${PLUGIN_DIR}",\n    "${PLUGIN_DIR}"\n  ]\n}`);
+    const res = unregisterMimocodePlugin({ silent: true, configPath: jsoncPath, pluginDir: PLUGIN_DIR });
+    assert.strictEqual(res.removed, 2);
+    assert.deepStrictEqual(parseJsonc(fs.readFileSync(jsoncPath, "utf8")).plugin, ["@vendor/keep"]);
+  });
+
+  it("keeps the file VALID when a comment sits between the removed element and its comma (R9 F1)", () => {
+    // The comma scan must cross trivia; stopping at the comment used to
+    // strand a dangling comma and corrupt the file. The comment annotates
+    // the removed element and goes with it.
+    const dir = tmpDir();
+    const jsoncPath = inDir(dir, "mimocode.jsonc", `{\n  "plugin": [\n    "${PLUGIN_DIR}" /* mid */,\n    "@vendor/keep"\n  ]\n}`);
+    const res = unregisterMimocodePlugin({ silent: true, configPath: jsoncPath, pluginDir: PLUGIN_DIR });
+    assert.strictEqual(res.removed, 1);
+    assert.deepStrictEqual(parseJsonc(fs.readFileSync(jsoncPath, "utf8")).plugin, ["@vendor/keep"]);
+  });
+
+  it("leaves no blank line after removing a middle element from a CRLF file (R9 F2)", () => {
+    const dir = tmpDir();
+    const jsoncPath = inDir(dir, "mimocode.jsonc", `{\r\n  "plugin": [\r\n    "@vendor/a",\r\n    "${PLUGIN_DIR}",\r\n    "@vendor/b"\r\n  ]\r\n}`);
+    const res = unregisterMimocodePlugin({ silent: true, configPath: jsoncPath, pluginDir: PLUGIN_DIR });
+    assert.strictEqual(res.removed, 1);
+    const text = fs.readFileSync(jsoncPath, "utf8");
+    assert.ok(!/\n[ \t]+\r?\n/.test(text), `no whitespace-only line may remain: ${JSON.stringify(text)}`);
+    assert.deepStrictEqual(parseJsonc(text).plugin, ["@vendor/a", "@vendor/b"]);
   });
 
   it("refuses to edit when ANY existing candidate is corrupt", () => {

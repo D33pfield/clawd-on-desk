@@ -38,8 +38,17 @@ const {
   writeTextAtomicWithBackup,
 } = require("./json-utils");
 
-// Match the repo's 2-space JSON style for inserted elements.
+// Default 2-space style for inserted elements (fresh files, space-indented
+// configs).
 const FORMATTING = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
+
+// Match the TARGET file's own indentation: hardcoding spaces would leave a
+// tab-indented user config with mixed indentation (dual-review S-F4).
+function formattingFor(text) {
+  return /\n\t/.test(text)
+    ? { formattingOptions: { insertSpaces: false, tabSize: 1 } }
+    : FORMATTING;
+}
 
 const PARSE_OPTIONS = { allowTrailingComma: true, disallowComments: false };
 
@@ -136,10 +145,32 @@ function declaresPlugin(state) {
 // live in the plugin array — are never touched because they aren't absolute).
 function findManagedIndex(pluginArray, pluginDir, pluginDirName) {
   for (let i = 0; i < pluginArray.length; i++) {
-    if (pluginArray[i] === pluginDir) return i;
     if (isManagedEntry(pluginArray[i], pluginDir, pluginDirName)) return i;
   }
   return -1;
+}
+
+// Position of the next non-trivia character at/after `pos`: skips whitespace
+// (incl. newlines) and both comment forms. Used to find an element's
+// separating comma even when a comment sits between them — scanning only
+// horizontal whitespace would stop at the comment and leave a dangling comma
+// behind (dual-review F1).
+function skipTriviaForward(text, pos) {
+  let cursor = pos;
+  for (;;) {
+    while (cursor < text.length && /[ \t\r\n]/.test(text[cursor])) cursor++;
+    if (text[cursor] === "/" && text[cursor + 1] === "/") {
+      while (cursor < text.length && text[cursor] !== "\n") cursor++;
+      continue;
+    }
+    if (text[cursor] === "/" && text[cursor + 1] === "*") {
+      const close = text.indexOf("*/", cursor + 2);
+      if (close === -1) return cursor;
+      cursor = close + 2;
+      continue;
+    }
+    return cursor;
+  }
 }
 
 // Element removal is done with CUSTOM span surgery instead of jsonc-parser's
@@ -160,10 +191,12 @@ function removeEntriesFromText(text, matches) {
     let start = node.offset;
     let end = node.offset + node.length;
 
-    // Prefer eating the FOLLOWING comma (same line, horizontal whitespace
-    // only); for a last element, eat the PRECEDING comma instead.
-    let cursor = end;
-    while (cursor < text.length && (text[cursor] === " " || text[cursor] === "\t")) cursor++;
+    // Prefer eating the FOLLOWING comma — the next non-trivia token after
+    // the element. Trivia between the element and its comma (e.g. an inline
+    // /* note */) annotates the REMOVED element and goes with it; leaving it
+    // would strand a dangling comma and corrupt the file. For a last
+    // element, eat the PRECEDING comma instead.
+    const cursor = skipTriviaForward(text, end);
     if (text[cursor] === ",") {
       end = cursor + 1;
     } else {
@@ -177,7 +210,9 @@ function removeEntriesFromText(text, matches) {
     while (lineStart > 0 && text[lineStart - 1] !== "\n") lineStart--;
     let lineEnd = end;
     while (lineEnd < text.length && text[lineEnd] !== "\n") lineEnd++;
-    if (/^[ \t]*$/.test(text.slice(lineStart, start)) && /^[ \t]*$/.test(text.slice(end, lineEnd))) {
+    // \r counts as blank so CRLF files don't keep a whitespace-only line
+    // after a mid-array removal (dual-review F2).
+    if (/^[ \t]*$/.test(text.slice(lineStart, start)) && /^[ \t\r]*$/.test(text.slice(end, lineEnd))) {
       start = lineStart;
       end = Math.min(lineEnd + 1, text.length);
     }
@@ -232,18 +267,18 @@ function registerJsonc({ cfg, agentId, configPath, pluginDir, options = {} }) {
       added = true;
     } else if (!Array.isArray(target.tree.plugin)) {
       // Missing or non-array "plugin" — (re)write just that property.
-      text = applyEdits(text, modify(text, ["plugin"], [pluginDir], FORMATTING));
+      text = applyEdits(text, modify(text, ["plugin"], [pluginDir], formattingFor(text)));
       writeTextAtomic(target.path, text, { mode });
       added = true;
     } else {
       const matchIndex = findManagedIndex(target.tree.plugin, pluginDir, cfg.pluginDirName);
       if (matchIndex === -1) {
-        text = applyEdits(text, modify(text, ["plugin", -1], pluginDir, { ...FORMATTING, isArrayInsertion: true }));
+        text = applyEdits(text, modify(text, ["plugin", -1], pluginDir, { ...formattingFor(text), isArrayInsertion: true }));
         writeTextAtomic(target.path, text, { mode });
         added = true;
       } else if (target.tree.plugin[matchIndex] !== pluginDir) {
         // Stale path (e.g. old install location) — update the element in place
-        text = applyEdits(text, modify(text, ["plugin", matchIndex], pluginDir, FORMATTING));
+        text = applyEdits(text, modify(text, ["plugin", matchIndex], pluginDir, formattingFor(text)));
         writeTextAtomic(target.path, text, { mode });
         added = true;
       } else {
