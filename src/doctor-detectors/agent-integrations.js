@@ -66,6 +66,25 @@ function readJson(fsImpl, filePath) {
   return JSON.parse(raw);
 }
 
+// JSONC-aware sibling of readJson for descriptors with configJsonc: true
+// (mimocode's ~/.config/mimocode/mimocode.jsonc). Comments and trailing
+// commas are LEGAL there — parsing with bare JSON.parse would flip a healthy
+// config to "config-corrupt". Genuinely broken files still throw, keeping
+// the config-corrupt path meaningful. jsonc-parser is lazy-required so the
+// doctor pays for it only when a JSONC agent is actually inspected.
+function readJsonc(fsImpl, filePath) {
+  let raw = fsImpl.readFileSync(filePath, "utf8");
+  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+  // eslint-disable-next-line global-require
+  const { parse } = require("jsonc-parser");
+  const errors = [];
+  const tree = parse(raw, errors, { allowTrailingComma: true });
+  if (errors.length) {
+    throw new Error(`invalid JSONC (${errors.length} parse error${errors.length === 1 ? "" : "s"})`);
+  }
+  return tree;
+}
+
 function withAgentBubbleNote(detail, prefs, agentId) {
   // State-only agents (capabilities.permissionApproval === false) never
   // surface a Clawd bubble in the first place, so annotating them as
@@ -890,7 +909,55 @@ function applyAntigravitySupplementary(detail, descriptor, settings) {
   };
 }
 
+// MiMo-style merged config (descriptor.configCandidates, highest-priority
+// first): EVERY existing candidate loads, each parsed as JSONC exactly like
+// the host's own loader, and the "plugin" array is REPLACED by the
+// highest-priority file that declares it. The doctor must validate that
+// EFFECTIVE view — checking one fixed file would bless a masked entry or
+// miss the live one (#607 review). Only opencode-family JSONC members set
+// configCandidates, so this always funnels into checkOpencodeSettings.
+function checkMergedJsoncConfig(descriptor, options) {
+  const existing = [];
+  for (const candidate of descriptor.configCandidates) {
+    if (!fileExists(options.fs, candidate)) continue;
+    let tree;
+    try {
+      tree = readJsonc(options.fs, candidate);
+    } catch (err) {
+      return makeDetail(descriptor, "config-corrupt", {
+        level: "warning",
+        parentDirExists: true,
+        configFileExists: true,
+        configPath: candidate,
+        detail: `${candidate}: ${err && err.message ? err.message : "config parse failed"}`,
+      });
+    }
+    existing.push({ candidate, tree });
+  }
+
+  if (!existing.length) {
+    return makeDetail(descriptor, descriptor.autoInstall ? "not-connected" : "manual-only", {
+      level: descriptor.autoInstall ? "warning" : "info",
+      parentDirExists: true,
+      configFileExists: false,
+      configPath: descriptor.configPath,
+      detail: `${descriptor.configPath} missing`,
+    });
+  }
+
+  const owner = existing.find((entry) => (
+    entry.tree && typeof entry.tree === "object" && !Array.isArray(entry.tree)
+    && Object.prototype.hasOwnProperty.call(entry.tree, "plugin")
+  ));
+  const effective = owner || existing[0];
+  // Point every downstream message at the file whose plugin array is live.
+  return checkOpencodeSettings({ ...descriptor, configPath: effective.candidate }, effective.tree, options);
+}
+
 function checkFileMode(descriptor, options) {
+  if (Array.isArray(descriptor.configCandidates) && descriptor.configCandidates.length) {
+    return checkMergedJsoncConfig(descriptor, options);
+  }
   if (!fileExists(options.fs, descriptor.configPath)) {
     return makeDetail(descriptor, descriptor.autoInstall ? "not-connected" : "manual-only", {
       level: descriptor.autoInstall ? "warning" : "info",
@@ -903,7 +970,9 @@ function checkFileMode(descriptor, options) {
 
   let settings;
   try {
-    settings = readJson(options.fs, descriptor.configPath);
+    settings = descriptor.configJsonc
+      ? readJsonc(options.fs, descriptor.configPath)
+      : readJson(options.fs, descriptor.configPath);
   } catch (err) {
     return makeDetail(descriptor, "config-corrupt", {
       level: "warning",
