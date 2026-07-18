@@ -2,6 +2,32 @@
 
 [Back to README](../../README.md)
 
+## Source Development Prerequisites
+
+Use Node.js 24.18.0 (the repository `.nvmrc`) for installs, tests, and local
+launches. Electron's maintained installer requires Node.js 22.12.0 or newer.
+
+Node 24.16.x and 24.17.x have a known stream compatibility regression that can
+silently truncate ZIP extraction when an older `extract-zip` / `yauzl` chain is
+present ([nodejs/node#63487](https://github.com/nodejs/node/issues/63487)). The
+current Electron dependency no longer uses that chain, but 24.18.0 is the
+supported development baseline for the repository and for adjacent tooling.
+
+If Electron reports a missing Framework or the integrity check fails, remove
+the whole package and reinstall; do not create only `path.txt`:
+
+```bash
+rm -rf node_modules/electron
+npm install
+```
+
+PowerShell equivalent:
+
+```powershell
+Remove-Item -Recurse -Force node_modules/electron
+npm install
+```
+
 ## Agent Setup
 
 Fresh installs enable and install only Claude Code and Codex by default. For other local agents, open **Settings → Agents** and click **Install** for that agent first; after that, Clawd keeps the hook/plugin/extension synced on launch while the agent remains enabled. Turning an enabled agent off stops event intake but does not uninstall files. **Uninstall** removes only Clawd-managed hook/plugin/extension entries and also disables that agent.
