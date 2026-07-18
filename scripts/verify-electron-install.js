@@ -108,9 +108,16 @@ function verifyElectronInstall(options = {}) {
 
   if (platformPath && isExistingDirectory(fsModule, packageRoot)) {
     const pathFile = pathModule.join(packageRoot, "path.txt");
-    if (!existingFileStat(fsModule, pathFile)) {
+    // Electron's resolver falls back to `<override>/electron` when path.txt is
+    // absent. That filename matches the shipped Linux launcher. macOS and
+    // Windows keep the exact path.txt requirement because their supported
+    // executable layouts use an app bundle and electron.exe, respectively.
+    const allowLinuxOverrideFallback =
+      context === "launch" && platform === "linux" && Boolean(env.ELECTRON_OVERRIDE_DIST_PATH);
+    const pathFileStat = existingFileStat(fsModule, pathFile);
+    if (!pathFileStat && !allowLinuxOverrideFallback) {
       missing.push(pathFile);
-    } else {
+    } else if (pathFileStat) {
       const actualPath = fsModule.readFileSync(pathFile, "utf8");
       if (actualPath !== platformPath) {
         invalid.push({

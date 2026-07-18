@@ -233,6 +233,73 @@ test("launch validates the effective ELECTRON_OVERRIDE_DIST_PATH", () => {
   assert.ok(failing.missing.includes(frameworksRoot));
 });
 
+test("Linux launch override mirrors Electron's path.txt-free executable fallback", () => {
+  const fixture = createFixture("linux");
+  const overrideRoot = path.join(fixture.rootDir, "custom-electron");
+  fs.renameSync(fixture.distRoot, overrideRoot);
+  fs.rmSync(path.join(fixture.packageRoot, "path.txt"));
+
+  const result = verifyFixture(fixture, "linux", {
+    context: "launch",
+    env: { ELECTRON_OVERRIDE_DIST_PATH: overrideRoot },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.executablePath, path.join(overrideRoot, "electron"));
+});
+
+test("Linux launch override reports the exact fallback executable when it is missing", () => {
+  const fixture = createFixture("linux");
+  const overrideRoot = path.join(fixture.rootDir, "custom-electron");
+  fs.renameSync(fixture.distRoot, overrideRoot);
+  fs.rmSync(path.join(fixture.packageRoot, "path.txt"));
+  const executablePath = path.join(overrideRoot, "electron");
+  fs.rmSync(executablePath);
+
+  const result = verifyFixture(fixture, "linux", {
+    context: "launch",
+    env: { ELECTRON_OVERRIDE_DIST_PATH: overrideRoot },
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.missing.includes(executablePath));
+  assert.ok(!result.missing.includes(path.join(fixture.packageRoot, "path.txt")));
+});
+
+test("Linux override fallback applies only to launch context", () => {
+  const fixture = createFixture("linux");
+  const overrideRoot = path.join(fixture.rootDir, "custom-electron");
+  fs.renameSync(fixture.distRoot, overrideRoot);
+  const pathFile = path.join(fixture.packageRoot, "path.txt");
+  fs.rmSync(pathFile);
+
+  const result = verifyFixture(fixture, "linux", {
+    context: "verify",
+    env: { ELECTRON_OVERRIDE_DIST_PATH: overrideRoot },
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.missing.includes(pathFile));
+});
+
+test("macOS and Windows overrides retain their exact path.txt requirement", () => {
+  for (const platform of ["darwin", "win32"]) {
+    const fixture = createFixture(platform);
+    const overrideRoot = path.join(fixture.rootDir, `custom-electron-${platform}`);
+    fs.renameSync(fixture.distRoot, overrideRoot);
+    const pathFile = path.join(fixture.packageRoot, "path.txt");
+    fs.rmSync(pathFile);
+
+    const result = verifyFixture(fixture, platform, {
+      context: "launch",
+      env: { ELECTRON_OVERRIDE_DIST_PATH: overrideRoot },
+    });
+
+    assert.equal(result.ok, false, platform);
+    assert.ok(result.missing.includes(pathFile), platform);
+  }
+});
+
 test("failure output explains the false green and safe recovery", () => {
   const fixture = createFixture("darwin");
   fs.rmSync(path.join(fixture.distRoot, "Electron.app", "Contents", "Frameworks"), {
