@@ -495,11 +495,14 @@ describe("CodexLogMonitor", () => {
   });
 
   it("does not lose a trailing partial line split by the recovery scan's read window", () => {
-    // #707 follow-up review, finding 5: recovery must not silently swallow
-    // a line that's genuinely still being appended — the caller resumes
-    // exactly where the scan stopped, so the partial has to survive intact
-    // for the next normal poll to complete it.
+    // #700 follow-up: recovery must not silently swallow a line that's
+    // genuinely still being appended. #700 removed the tracker's `partial`
+    // buffer entirely (offset now stops at the last complete newline; an
+    // incomplete tail is simply left on disk for the next poll to reread
+    // whole), so recovery must follow the same convention instead of
+    // consuming through true EOF and stashing the fragment separately.
     const testFile = path.join(dateDir, TEST_FILENAME);
+    const sessionMetaLine = JSON.stringify({ type: "session_meta", payload: { cwd: "/projects/foo" } });
     const requestLine = JSON.stringify({
       type: "response_item",
       payload: {
@@ -511,7 +514,7 @@ describe("CodexLogMonitor", () => {
     });
     fs.writeFileSync(
       testFile,
-      JSON.stringify({ type: "session_meta", payload: { cwd: "/projects/foo" } }) + "\n"
+      sessionMetaLine + "\n"
       + requestLine + "\n"
       + '{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_partial_ta' // deliberately unterminated
     );
@@ -521,21 +524,82 @@ describe("CodexLogMonitor", () => {
     monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
     const recovered = monitor._recoverStalePendingUserInput(testFile, path.basename(testFile));
     assert.ok(recovered, "the request itself is still genuinely pending");
-    assert.strictEqual(recovered.partial, '{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_partial_ta');
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(recovered, "partial"), false,
+      "#700's tracker shape has no `partial` field — the incomplete tail stays on disk instead"
+    );
     assert.strictEqual(
       recovered.offset,
-      Buffer.byteLength(fs.readFileSync(testFile, "utf8"), "utf8"),
-      "offset must land at true EOF (matching _pollFile's own convention) with the partial preserved separately, not stop short of it"
+      Buffer.byteLength(sessionMetaLine + "\n" + requestLine + "\n", "utf8"),
+      "offset must stop at the last complete newline (matching _pollFile's own commit convention), not run through the unterminated tail"
     );
+    assert.notStrictEqual(recovered.fileIdentity, null);
 
     // Completing the line on a normal poll must resolve the question — this
-    // is what an unconditional offset-to-EOF would have permanently broken.
+    // is what an unconditional offset-to-EOF would have permanently broken
+    // once _pollFile stopped reading a `partial` prefix.
     monitor._tracked.set(testFile, recovered);
     fs.appendFileSync(testFile, 'il","output":"{}"}}\n');
     const resolved = [];
     monitor._onUserInputResolved = (...args) => resolved.push(args);
     monitor._pollFile(testFile, path.basename(testFile));
     assert.deepStrictEqual(resolved, [[recovered.sessionId, "call_partial_tail"]]);
+  });
+
+  it("seeds fileIdentity on the recovered tracker and mirrors it into the read-position ledger", () => {
+    // _runRecoverySweep bypasses _pollFile's normal new-tracker construction,
+    // which is where fileIdentity and _readPositions are otherwise populated
+    // together. Leaving fileIdentity unset reads as "identity changed" on
+    // the very next regular poll (undefined !== null, same as a real
+    // identity string would), silently resetting the offset to EOF and
+    // dropping whatever landed between the sweep and that poll. Leaving the
+    // ledger unseeded defeats #700's own fix the next time this tracker is
+    // evicted from both LRUs.
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/projects/foo" } }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: "call_identity_check",
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }),
+    ].join("\n") + "\n");
+    const oldTime = new Date(Date.now() - 600000);
+    fs.utimesSync(testFile, oldTime, oldTime);
+
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
+    const expectedIdentity = monitor._getFileIdentity(fs.statSync(testFile));
+    assert.notStrictEqual(expectedIdentity, null, "sanity: this file must have a real dev/ino identity");
+
+    monitor._runRecoverySweep([{
+      filePath: testFile,
+      file: path.basename(testFile),
+      mtimeMs: oldTime.getTime(),
+      size: fs.statSync(testFile).size,
+    }]);
+    const tracked = monitor._tracked.get(testFile);
+    assert.ok(tracked);
+    assert.strictEqual(tracked.fileIdentity, expectedIdentity);
+    assert.deepStrictEqual(monitor._readPositions.get(testFile), {
+      offset: tracked.offset,
+      identity: expectedIdentity,
+    });
+
+    // Prove the fix actually matters: a normal poll right after recovery
+    // must not misfire the identityChanged guard and skip freshly appended
+    // bytes.
+    fs.appendFileSync(testFile, JSON.stringify({
+      type: "response_item",
+      payload: { type: "function_call_output", call_id: "call_identity_check", output: "{}" },
+    }) + "\n");
+    const resolved = [];
+    monitor._onUserInputResolved = (...args) => resolved.push(args);
+    monitor._pollFile(testFile, path.basename(testFile));
+    assert.deepStrictEqual(resolved, [[tracked.sessionId, "call_identity_check"]]);
   });
 
   it("resets the recovery sweep on every real start(), not just the first one this instance ever saw", (_, done) => {
@@ -1311,6 +1375,292 @@ describe("CodexLogMonitor", () => {
     }, 200);
   });
 
+  it("advances only by bytesRead when a poll encounters a short read", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const firstLine = '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n';
+    fs.writeFileSync(testFile, firstLine +
+      '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
+      events.push({ sid, state, event });
+    });
+
+    const originalReadSync = fs.readSync;
+    fs.readSync = (fd, buffer, offset, length, position) =>
+      originalReadSync(fd, buffer, offset, Math.min(length, Buffer.byteLength(firstLine)), position);
+    try {
+      monitor._poll();
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+    assert.deepStrictEqual(events.map((entry) => entry.state), ["idle"]);
+
+    monitor._poll();
+    assert.deepStrictEqual(events.map((entry) => entry.state), ["idle", "thinking"]);
+  });
+
+  it("closes the rollout fd and preserves its offset when readSync throws", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n');
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state) => events.push({ sid, state }));
+
+    const originalReadSync = fs.readSync;
+    const originalCloseSync = fs.closeSync;
+    let closes = 0;
+    fs.readSync = () => { throw new Error("simulated read failure"); };
+    fs.closeSync = (fd) => {
+      closes += 1;
+      return originalCloseSync(fd);
+    };
+    try {
+      monitor._poll();
+    } finally {
+      fs.readSync = originalReadSync;
+      fs.closeSync = originalCloseSync;
+    }
+    assert.strictEqual(closes, 1);
+    assert.deepStrictEqual(events, []);
+
+    monitor._poll();
+    assert.deepStrictEqual(events.map((entry) => entry.state), ["idle"]);
+  });
+
+  it("keeps successfully read bytes when closeSync reports an error", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n');
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state) => events.push({ sid, state }));
+
+    const originalCloseSync = fs.closeSync;
+    fs.closeSync = (fd) => {
+      originalCloseSync(fd);
+      throw new Error("simulated close failure");
+    };
+    try {
+      monitor._poll();
+    } finally {
+      fs.closeSync = originalCloseSync;
+    }
+    assert.deepStrictEqual(events.map((entry) => entry.state), ["idle"]);
+  });
+
+  it("recovers when a rollout is truncated between statSync and readSync", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n');
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
+      events.push({ sid, state, event });
+    });
+    monitor._poll();
+    events.length = 0;
+    fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+
+    const originalReadSync = fs.readSync;
+    fs.readSync = () => {
+      fs.truncateSync(testFile, 0);
+      return 0;
+    };
+    try {
+      monitor._poll();
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+    assert.deepStrictEqual(events, []);
+
+    monitor._poll();
+    fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+    monitor._poll();
+    assert.deepStrictEqual(events, [{
+      sid: EXPECTED_SID,
+      state: "thinking",
+      event: "event_msg:task_started",
+    }]);
+  });
+
+  it("uses birthtime identity when Windows reports dev and ino as zero", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const initial = '{"type":"session_meta","payload":{"cwd":"/old"}}\n';
+    fs.writeFileSync(testFile, initial);
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
+      events.push({ sid, state, event });
+    });
+
+    const originalStatSync = fs.statSync;
+    const originalFstatSync = fs.fstatSync;
+    let simulatedBirthtime = 1000;
+    fs.statSync = (candidate) => {
+      const stat = originalStatSync(candidate);
+      if (candidate !== testFile) return stat;
+      return { ...stat, dev: 0, ino: 0, birthtimeMs: simulatedBirthtime };
+    };
+    fs.fstatSync = (fd) => {
+      const stat = originalFstatSync(fd);
+      return { ...stat, dev: 0, ino: 0, birthtimeMs: simulatedBirthtime };
+    };
+    try {
+      monitor._poll();
+      events.length = 0;
+      fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+      monitor._poll();
+      assert.deepStrictEqual(events.map((entry) => entry.state), ["thinking"]);
+      events.length = 0;
+
+      const replacement = path.join(dateDir, "windows-zero-identity.jsonl");
+      fs.writeFileSync(replacement, " ".repeat(Buffer.byteLength(initial)) +
+        '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+      fs.renameSync(replacement, testFile);
+      simulatedBirthtime = 2000;
+      monitor._poll();
+      assert.deepStrictEqual(events, []);
+
+      fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+      monitor._poll();
+      assert.deepStrictEqual(events.map((entry) => entry.state), ["thinking"]);
+    } finally {
+      fs.statSync = originalStatSync;
+      fs.fstatSync = originalFstatSync;
+    }
+  });
+
+  it("silently rebaselines an actively tracked rollout after truncation", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/old"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command"}}',
+    ].join("\n") + "\n");
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
+      events.push({ sid, state, event });
+    });
+    monitor._poll();
+    events.length = 0;
+
+    fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/new"}}\n');
+    monitor._poll();
+    assert.deepStrictEqual(events, []);
+
+    fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+    monitor._poll();
+    assert.deepStrictEqual(events, [{
+      sid: EXPECTED_SID,
+      state: "thinking",
+      event: "event_msg:task_started",
+    }]);
+  });
+
+  it("silently rebaselines an actively tracked rollout after inode replacement", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const initial = '{"type":"session_meta","payload":{"cwd":"/old"}}\n';
+    fs.writeFileSync(testFile, initial);
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
+      events.push({ sid, state, event });
+    });
+    monitor._poll();
+    events.length = 0;
+
+    const replacement = path.join(dateDir, "active-replacement.jsonl");
+    fs.writeFileSync(replacement, " ".repeat(Buffer.byteLength(initial)) +
+      '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+    fs.renameSync(replacement, testFile);
+    monitor._poll();
+    assert.deepStrictEqual(events, []);
+
+    fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+    monitor._poll();
+    assert.deepStrictEqual(events, [{
+      sid: EXPECTED_SID,
+      state: "thinking",
+      event: "event_msg:task_started",
+    }]);
+  });
+
+  it("silently rebaselines when a rollout is replaced between statSync and openSync", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const initial = '{"type":"session_meta","payload":{"cwd":"/old"}}\n';
+    const taskStarted = '{"type":"event_msg","payload":{"type":"task_started"}}\n';
+    fs.writeFileSync(testFile, initial);
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
+      events.push({ sid, state, event });
+    });
+    monitor._poll();
+    events.length = 0;
+
+    fs.appendFileSync(testFile, taskStarted);
+    const replacement = path.join(dateDir, "stat-open-replacement.jsonl");
+    fs.writeFileSync(replacement, " ".repeat(Buffer.byteLength(initial)) + taskStarted);
+    const originalOpenSync = fs.openSync;
+    let replaced = false;
+    fs.openSync = (candidate, flags, mode) => {
+      if (candidate === testFile && !replaced) {
+        replaced = true;
+        fs.renameSync(replacement, testFile);
+      }
+      return originalOpenSync(candidate, flags, mode);
+    };
+    try {
+      monitor._poll();
+    } finally {
+      fs.openSync = originalOpenSync;
+    }
+    assert.strictEqual(replaced, true);
+    assert.deepStrictEqual(events, []);
+
+    fs.appendFileSync(testFile, taskStarted);
+    monitor._poll();
+    assert.deepStrictEqual(events, [{
+      sid: EXPECTED_SID,
+      state: "thinking",
+      event: "event_msg:task_started",
+    }]);
+  });
+
+  it("closes the rollout fd without advancing when fstatSync fails", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n');
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state) => events.push({ sid, state }));
+
+    const originalOpenSync = fs.openSync;
+    const originalFstatSync = fs.fstatSync;
+    const originalCloseSync = fs.closeSync;
+    let rolloutFd = null;
+    let closes = 0;
+    fs.openSync = (candidate, flags, mode) => {
+      const fd = originalOpenSync(candidate, flags, mode);
+      if (candidate === testFile) rolloutFd = fd;
+      return fd;
+    };
+    fs.fstatSync = (fd) => {
+      if (fd === rolloutFd) throw new Error("simulated fstat failure");
+      return originalFstatSync(fd);
+    };
+    fs.closeSync = (fd) => {
+      if (fd === rolloutFd) {
+        closes += 1;
+        rolloutFd = null;
+      }
+      return originalCloseSync(fd);
+    };
+    try {
+      monitor._poll();
+    } finally {
+      fs.openSync = originalOpenSync;
+      fs.fstatSync = originalFstatSync;
+      fs.closeSync = originalCloseSync;
+    }
+    assert.strictEqual(closes, 1);
+    assert.deepStrictEqual(events, []);
+    assert.strictEqual(monitor._tracked.get(testFile).offset, 0);
+
+    monitor._poll();
+    assert.deepStrictEqual(events.map((entry) => entry.state), ["idle"]);
+  });
+
   it("should ignore unmapped event types", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [
@@ -1755,6 +2105,221 @@ describe("CodexLogMonitor", () => {
       event: "event_msg:task_started",
       cwd: "/tmp",
       contextUsage: { used: 1200, limit: 12000, percent: 10, source: "codex" },
+    }]);
+  });
+
+  it("does not replay a rollout after its active and retired trackers are both evicted", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/target"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command"}}',
+      '{"type":"event_msg","payload":{"type":"task_complete"}}',
+    ].join("\n") + "\n");
+
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
+      events.push({ sid, state, event });
+    });
+
+    // Exercise the public polling seam throughout: first consume the target,
+    // then force it out of both the 50 active and 100 retired tracker LRUs.
+    monitor._poll();
+    for (let i = 0; i < 150; i++) {
+      const suffix = String(i + 1).padStart(12, "0");
+      const fileName = `rollout-2026-03-25T15-11-51-019d23d4-f1a9-7633-b9c7-${suffix}.jsonl`;
+      fs.writeFileSync(
+        path.join(dateDir, fileName),
+        `{"type":"session_meta","payload":{"cwd":"/filler-${i}"}}\n`
+      );
+    }
+    monitor._poll();
+
+    assert.strictEqual(monitor._tracked.has(testFile), false);
+    assert.strictEqual(monitor._retiredTracked.has(testFile), false);
+    events.length = 0;
+
+    // A live append makes the old path discoverable again. Only that append
+    // should emit; the historical thinking/working/attention turn must not.
+    fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+    monitor._poll();
+
+    assert.deepStrictEqual(events.filter((entry) => entry.sid === EXPECTED_SID), [{
+      sid: EXPECTED_SID,
+      state: "thinking",
+      event: "event_msg:task_started",
+    }]);
+  });
+
+  it("emits exactly one request when a pending question arrives after both trackers are evicted", () => {
+    // #700/#707 integration: the read-position ledger must let a rollout
+    // resume from its saved offset after eviction from both the 50-active
+    // and 100-retired LRUs — this exercises that same real _poll() reattach
+    // path for a request_user_input line rather than a plain state event.
+    // The request must fire exactly once: not zero (silently absorbed by a
+    // stale-identity reattach or a ledger that failed to survive eviction),
+    // and not duplicated by initializingUserInputs' deferred-emit firing on
+    // top of an inline one.
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/target"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command"}}',
+      '{"type":"event_msg","payload":{"type":"task_complete"}}',
+    ].join("\n") + "\n");
+
+    const states = [];
+    const requests = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
+      states.push({ sid, state, event });
+    }, {
+      onUserInputRequest: (...args) => requests.push(args),
+    });
+    monitor._findCodexWriterPid = () => null;
+
+    monitor._poll();
+    for (let i = 0; i < 150; i++) {
+      const suffix = String(i + 1).padStart(12, "0");
+      const fileName = `rollout-2026-03-25T15-16-51-019d23d4-f1a9-7633-b9c7-${suffix}.jsonl`;
+      fs.writeFileSync(
+        path.join(dateDir, fileName),
+        `{"type":"session_meta","payload":{"cwd":"/filler-${i}"}}\n`
+      );
+    }
+    monitor._poll();
+
+    assert.strictEqual(monitor._tracked.has(testFile), false);
+    assert.strictEqual(monitor._retiredTracked.has(testFile), false);
+    assert.strictEqual(monitor._readPositions.has(testFile), true, "the ledger must survive double eviction");
+    states.length = 0;
+    requests.length = 0;
+
+    fs.appendFileSync(testFile, JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "request_user_input",
+        call_id: "call_after_double_eviction",
+        arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+      },
+    }) + "\n");
+    monitor._poll();
+
+    assert.deepStrictEqual(
+      states.filter((entry) => entry.sid === EXPECTED_SID), [],
+      "the historical turn must not replay"
+    );
+    assert.strictEqual(requests.length, 1, "the fresh request must fire exactly once");
+    assert.strictEqual(requests[0][0], EXPECTED_SID);
+    assert.strictEqual(requests[0][1].callId, "call_after_double_eviction");
+  });
+
+  it("preserves an incomplete JSONL record across 150-file tracker churn", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile,
+      '{"type":"session_meta","payload":{"cwd":"/target"}}\n' +
+      '{"type":"event_msg","payload":{"type":"task_');
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
+      events.push({ sid, state, event });
+    });
+    monitor._poll();
+
+    for (let i = 0; i < 150; i++) {
+      const suffix = String(i + 601).padStart(12, "0");
+      const fileName = `rollout-2026-03-25T15-14-51-019d23d4-f1a9-7633-b9c7-${suffix}.jsonl`;
+      fs.writeFileSync(path.join(dateDir, fileName), '{"type":"session_meta","payload":{}}\n');
+    }
+    monitor._poll();
+    assert.strictEqual(monitor._tracked.has(testFile), false);
+    assert.strictEqual(monitor._retiredTracked.has(testFile), false);
+    events.length = 0;
+
+    fs.appendFileSync(testFile, 'started"}}\n');
+    monitor._poll();
+    assert.deepStrictEqual(events.filter((entry) => entry.sid === EXPECTED_SID), [{
+      sid: EXPECTED_SID,
+      state: "thinking",
+      event: "event_msg:task_started",
+    }]);
+  });
+
+  it("silently rebaselines a truncated rollout after its rich trackers are evicted", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/old"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command"}}',
+    ].join("\n") + "\n");
+
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
+      events.push({ sid, state, event });
+    });
+    monitor._poll();
+    for (let i = 0; i < 150; i++) {
+      const suffix = String(i + 201).padStart(12, "0");
+      const fileName = `rollout-2026-03-25T15-12-51-019d23d4-f1a9-7633-b9c7-${suffix}.jsonl`;
+      fs.writeFileSync(path.join(dateDir, fileName), '{"type":"session_meta","payload":{}}\n');
+    }
+    monitor._poll();
+    assert.strictEqual(monitor._tracked.has(testFile), false);
+    assert.strictEqual(monitor._retiredTracked.has(testFile), false);
+    events.length = 0;
+
+    fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/replacement"}}\n');
+    monitor._poll();
+    assert.deepStrictEqual(events.filter((entry) => entry.sid === EXPECTED_SID), []);
+
+    fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+    monitor._poll();
+    assert.deepStrictEqual(events.filter((entry) => entry.sid === EXPECTED_SID), [{
+      sid: EXPECTED_SID,
+      state: "thinking",
+      event: "event_msg:task_started",
+    }]);
+  });
+
+  it("silently rebaselines a replaced rollout after its rich trackers are evicted", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const initial = [
+      '{"type":"session_meta","payload":{"cwd":"/old"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+    ].join("\n") + "\n";
+    fs.writeFileSync(testFile, initial);
+
+    const events = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
+      events.push({ sid, state, event });
+    });
+    monitor._poll();
+    for (let i = 0; i < 150; i++) {
+      const suffix = String(i + 401).padStart(12, "0");
+      const fileName = `rollout-2026-03-25T15-13-51-019d23d4-f1a9-7633-b9c7-${suffix}.jsonl`;
+      fs.writeFileSync(path.join(dateDir, fileName), '{"type":"session_meta","payload":{}}\n');
+    }
+    monitor._poll();
+    assert.strictEqual(monitor._tracked.has(testFile), false);
+    assert.strictEqual(monitor._retiredTracked.has(testFile), false);
+    events.length = 0;
+
+    // Replace the inode with a larger file whose valid events begin exactly
+    // at the old offset. Offset-only recovery would replay these records.
+    const replacement = path.join(dateDir, "replacement.jsonl");
+    fs.writeFileSync(replacement, " ".repeat(Buffer.byteLength(initial)) + [
+      '{"type":"session_meta","payload":{"cwd":"/replacement"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+    ].join("\n") + "\n");
+    fs.renameSync(replacement, testFile);
+    monitor._poll();
+    assert.deepStrictEqual(events.filter((entry) => entry.sid === EXPECTED_SID), []);
+
+    fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_started"}}\n');
+    monitor._poll();
+    assert.deepStrictEqual(events.filter((entry) => entry.sid === EXPECTED_SID), [{
+      sid: EXPECTED_SID,
+      state: "thinking",
+      event: "event_msg:task_started",
     }]);
   });
 

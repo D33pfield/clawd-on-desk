@@ -132,9 +132,15 @@ class CodexLogMonitor {
       ? options.onUserInputResolved
       : null;
     this._interval = null;
-    // Map<filePath, { offset, sessionId, cwd, lastEventTime, lastState, partial }>
+    // Map<filePath, { offset, sessionId, cwd, lastEventTime, lastState }>
+    // offset is the byte immediately after the last committed newline. An
+    // incomplete tail stays on disk and is reread after tracker eviction.
     this._tracked = new Map();
     this._retiredTracked = new Map();
+    // Lightweight, process-lifetime tail positions outlive both rich tracker
+    // LRUs. A long-running monitor may see more than their combined capacity;
+    // forgetting the byte offset would replay that rollout when it next grows.
+    this._readPositions = new Map();
     this._baseDir = this._resolveBaseDir();
     this._codexDir = options.codexDir || null;
     this._recentDayDirsCache = [];
@@ -182,6 +188,7 @@ class CodexLogMonitor {
     }
     this._tracked.clear();
     this._retiredTracked.clear();
+    this._readPositions.clear();
   }
 
   _poll() {
@@ -245,32 +252,43 @@ class CodexLogMonitor {
       const recovered = this._recoverStalePendingUserInput(candidate.filePath, candidate.file);
       if (recovered) {
         this._tracked.set(candidate.filePath, recovered);
+        // Bypasses _pollFile's normal new-tracker construction, which is
+        // where the ledger is otherwise seeded — without this, evicting this
+        // tracker later has no read position to resume from and a reattach
+        // falls back to a full replay (defeats #700's own fix).
+        this._readPositions.set(candidate.filePath, {
+          offset: recovered.offset,
+          identity: recovered.fileIdentity,
+        });
         this._emitPendingUserInputRequests(recovered);
       }
     }
   }
 
-  // Returns { text, bytesRead }. bytesRead is the TRUE byte count read from
-  // disk — callers doing offset math must use it, not
-  // Buffer.byteLength(text): if `start` lands mid-character in a multi-byte
-  // UTF-8 sequence (any non-ASCII content — CJK cwd/output is common),
-  // decoding replaces the truncated leading bytes with U+FFFD, whose own
-  // UTF-8 length does not equal the raw bytes it replaced. Re-deriving the
-  // byte count from the decoded string can overshoot the file's true size,
-  // and an offset past real EOF either silently skips the next genuine
-  // write forever or gets misread elsewhere as a truncated/rotated file and
-  // triggers a full replay from 0 — the exact unbounded read this sweep
-  // exists to avoid.
+  // Returns { text, bytesRead, buf }. bytesRead is the TRUE byte count read
+  // from disk — callers doing offset math must use it (or `buf`, already
+  // sliced to that length), not Buffer.byteLength(text): if `start` lands
+  // mid-character in a multi-byte UTF-8 sequence (any non-ASCII content —
+  // CJK cwd/output is common), decoding replaces the truncated leading bytes
+  // with U+FFFD, whose own UTF-8 length does not equal the raw bytes it
+  // replaced. Re-deriving the byte count from the decoded string can
+  // overshoot the file's true size, and an offset past real EOF either
+  // silently skips the next genuine write forever or gets misread elsewhere
+  // as a truncated/rotated file and triggers a full replay from 0 — the
+  // exact unbounded read this sweep exists to avoid. `buf` exists for the
+  // same reason: a byte-precise search (e.g. the last newline) must run
+  // against raw bytes, never against a string that may contain replacement
+  // characters.
   _readByteRange(filePath, start, length) {
-    if (length <= 0) return { text: "", bytesRead: 0 };
+    if (length <= 0) return { text: "", bytesRead: 0, buf: Buffer.alloc(0) };
     let fd;
     try {
       fd = fs.openSync(filePath, "r");
       const buf = Buffer.alloc(length);
       const bytesRead = fs.readSync(fd, buf, 0, length, start);
-      return { text: buf.toString("utf8", 0, bytesRead), bytesRead };
+      return { text: buf.toString("utf8", 0, bytesRead), bytesRead, buf: buf.subarray(0, bytesRead) };
     } catch {
-      return { text: "", bytesRead: 0 };
+      return { text: "", bytesRead: 0, buf: Buffer.alloc(0) };
     } finally {
       if (fd !== undefined) {
         try { fs.closeSync(fd); } catch {}
@@ -364,16 +382,25 @@ class CodexLogMonitor {
     // Codex stops writing once it's blocked waiting for an answer.
     const tailLen = Math.min(stat.size, RECOVERY_TAIL_SCAN_BYTES);
     const tailStart = stat.size - tailLen;
-    const { text: tailText, bytesRead: tailBytesRead } = this._readByteRange(filePath, tailStart, tailLen);
+    const { buf: tailBuf } = this._readByteRange(filePath, tailStart, tailLen);
+    // Find the last complete (newline-terminated) record in RAW BYTE space —
+    // 0x0A can never appear inside a multi-byte UTF-8 sequence, so this index
+    // is exact even when the window start cuts a leading character in half
+    // and decoding replaces it with U+FFFD (see _readByteRange). Everything
+    // after this index is a genuinely incomplete final line; it is left on
+    // disk rather than buffered as `partial`, mirroring _pollFile's own
+    // newline-commit convention so a normal poll rereads it whole once it
+    // completes.
+    const lastNewlineInTail = tailBuf.lastIndexOf(0x0a);
+    if (lastNewlineInTail < 0) return null; // no complete record anywhere in the scan window
+    const committedTailBytes = lastNewlineInTail + 1;
+    const tailText = tailBuf.toString("utf8", 0, committedTailBytes);
     const rawLines = tailText.split("\n");
+    rawLines.pop(); // trailing "" — tailText always ends in the newline we just found
     // The window can start mid-line when tailStart > 0 — that first fragment
     // is unparseable garbage, not a real record; drop it rather than risk a
     // false JSON.parse failure silently masking a genuine question.
     if (tailStart > 0) rawLines.shift();
-    // The window always ends at true EOF, so a non-empty last element is a
-    // genuinely incomplete final line — mirror _pollFile's own `partial`
-    // handling instead of consuming those bytes without ever parsing them.
-    const trailingPartial = rawLines.pop() || "";
 
     const pending = new Map();
     const pendingTimestampMs = new Map();
@@ -416,19 +443,20 @@ class CodexLogMonitor {
       return null;
     }
 
-    const cappedPartial = trailingPartial.length > MAX_PARTIAL_BYTES ? "" : trailingPartial;
-    // Advance PAST the partial's bytes using the TRUE bytes read (see
-    // _readByteRange) — `partial` is what reconstructs the line once the
-    // rest of it lands on a normal poll. Getting this pair wrong either
-    // double-reads the partial's bytes (offset not advanced + partial kept)
-    // or silently drops them (offset advanced + partial discarded); this is
-    // the offset half.
-    const consumedThroughScanWindow = tailStart + tailBytesRead;
-
     return {
-      offset: consumedThroughScanWindow,
+      // Stops at the last complete newline, not true EOF — matches
+      // _pollFile's own offset convention. A still-growing final line is
+      // simply left on disk and reread whole by the next normal poll,
+      // instead of needing a separately tracked `partial` fragment here.
+      offset: tailStart + committedTailBytes,
       sessionId: "codex:" + sessionId,
       filePath,
+      // _pollFile's reattach path compares tracked.fileIdentity against a
+      // freshly computed value on every poll; leaving this unset here would
+      // read as "identity changed" (undefined !== null) on the very next
+      // poll and silently reset the offset to EOF, dropping whatever landed
+      // between recovery and that poll.
+      fileIdentity: this._getFileIdentity(stat),
       cwd,
       sessionTitle: null,
       codexOriginator: null,
@@ -441,7 +469,6 @@ class CodexLogMonitor {
       // entry becomes a first-priority eviction candidate under
       // MAX_TRACKED_FILES pressure despite genuinely being live.
       hasEmittedState: true,
-      partial: cappedPartial,
       hadToolUse: false,
       isSubagent,
       agentPid: null,
@@ -607,7 +634,19 @@ class CodexLogMonitor {
       return;
     }
 
+    const fileIdentity = this._getFileIdentity(stat);
     let tracked = this._tracked.get(filePath);
+    if (tracked) {
+      const identityChanged = tracked.fileIdentity !== null
+        && fileIdentity !== null
+        && tracked.fileIdentity !== fileIdentity;
+      if (identityChanged || stat.size < tracked.offset) {
+        tracked.offset = stat.size;
+        tracked.fileIdentity = fileIdentity;
+        this._readPositions.set(filePath, { offset: stat.size, identity: fileIdentity });
+        return;
+      }
+    }
     if (!tracked) {
       // New file — extract session ID from filename
       // Format: rollout-YYYY-MM-DDTHH-MM-SS-<uuid>.jsonl
@@ -618,13 +657,29 @@ class CodexLogMonitor {
         this._pruneTrackedFilesIfNeeded();
         if (this._tracked.size >= MAX_TRACKED_FILES) return;
       }
-      const retired = this._retiredTracked.get(filePath) || null;
-      const resumeOffset = retired && stat.size >= retired.offset ? retired.offset : 0;
-      if (retired) this._retiredTracked.delete(filePath);
+      const retiredEntry = this._retiredTracked.get(filePath) || null;
+      const savedPosition = this._readPositions.get(filePath) || null;
+      const savedOffset = savedPosition && Number.isFinite(savedPosition.offset)
+        ? savedPosition.offset
+        : null;
+      const sameFile = savedPosition
+        && savedPosition.identity !== null
+        && fileIdentity !== null
+        && savedPosition.identity === fileIdentity;
+      const retired = retiredEntry && (!savedPosition || sameFile) ? retiredEntry : null;
+      const resumeOffset = savedPosition
+        ? sameFile
+          ? Math.min(savedOffset, stat.size)
+          : stat.size
+        : retired && stat.size >= retired.offset
+          ? retired.offset
+          : 0;
+      if (retiredEntry) this._retiredTracked.delete(filePath);
       tracked = {
         offset: resumeOffset,
         sessionId: "codex:" + sessionId,
         filePath,
+        fileIdentity,
         cwd: retired ? retired.cwd : "",
         sessionTitle: retired ? retired.sessionTitle : null,
         codexOriginator: retired ? retired.codexOriginator : null,
@@ -633,7 +688,6 @@ class CodexLogMonitor {
         lastState: retired ? retired.lastState : null,
         lastStateEvent: retired ? retired.lastStateEvent : null,
         hasEmittedState: retired ? retired.hasEmittedState === true : false,
-        partial: "",
         hadToolUse: retired ? retired.hadToolUse === true : false,
         isSubagent: retired ? retired.isSubagent === true : false,
         agentPid: retired ? retired.agentPid : null,
@@ -652,37 +706,71 @@ class CodexLogMonitor {
         // Empty files have nothing to replay.
         backfilling:
           !retired &&
+          !savedPosition &&
           stat.size > 0 &&
           stat.mtimeMs < this._startedAtMs - BACKFILL_GRACE_MS,
       };
       this._tracked.set(filePath, tracked);
+      this._readPositions.set(filePath, { offset: resumeOffset, identity: fileIdentity });
     }
 
     // No new data
     if (stat.size <= tracked.offset) return;
 
-    // Read incremental bytes
+    // Read incremental bytes. The file can shrink after statSync; readSync's
+    // return value, not the earlier size, is authoritative.
+    let fd = null;
     let buf;
+    let bytesRead = 0;
+    let openedStat;
+    let openedIdentity = fileIdentity;
     try {
-      const fd = fs.openSync(filePath, "r");
-      const readLen = stat.size - tracked.offset;
+      fd = fs.openSync(filePath, "r");
+      openedStat = fs.fstatSync(fd);
+      openedIdentity = this._getFileIdentity(openedStat);
+      const openedIdentityChanged = openedIdentity !== fileIdentity
+        && (openedIdentity !== null || fileIdentity !== null);
+      if (openedIdentityChanged || openedStat.size < tracked.offset) {
+        tracked.offset = openedStat.size;
+        tracked.fileIdentity = openedIdentity;
+        this._readPositions.set(filePath, {
+          offset: openedStat.size,
+          identity: openedIdentity,
+        });
+        return;
+      }
+      const readLen = openedStat.size - tracked.offset;
+      if (readLen <= 0) return;
       buf = Buffer.alloc(readLen);
-      fs.readSync(fd, buf, 0, readLen, tracked.offset);
-      fs.closeSync(fd);
+      bytesRead = fs.readSync(fd, buf, 0, readLen, tracked.offset);
     } catch {
       return;
+    } finally {
+      if (fd !== null) {
+        try { fs.closeSync(fd); } catch {}
+      }
     }
-    tracked.offset = stat.size;
+    if (!Number.isFinite(bytesRead) || bytesRead <= 0) return;
+    buf = buf.subarray(0, Math.min(bytesRead, buf.length));
 
-    // Split into lines, handle partial last line
-    const text = tracked.partial + buf.toString("utf8");
+    // Commit only complete newline-delimited bytes. An incomplete tail stays
+    // behind the offset and will be reread on the next poll. Oversized lines
+    // retain the existing 64KB discard behavior without retaining memory.
+    const lastNewline = buf.lastIndexOf(0x0a);
+    if (lastNewline < 0) {
+      if (buf.length > MAX_PARTIAL_BYTES) {
+        tracked.offset += buf.length;
+        this._readPositions.set(filePath, { offset: tracked.offset, identity: openedIdentity });
+      }
+      return;
+    }
+    const committedBytes = lastNewline + 1;
+    const text = buf.subarray(0, committedBytes).toString("utf8");
+    tracked.offset += committedBytes;
+    tracked.fileIdentity = openedIdentity;
+    this._readPositions.set(filePath, { offset: tracked.offset, identity: openedIdentity });
     const lines = text.split("\n");
-    // Last element might be incomplete — save for next poll.
-    // Cap at 64KB: lines larger than this (e.g. huge tool output) are discarded —
-    // both halves will fail JSON.parse so one state update is silently lost, which
-    // is harmless for the pet's display state.
-    const remainder = lines.pop() || "";
-    tracked.partial = remainder.length > MAX_PARTIAL_BYTES ? "" : remainder;
+    lines.pop();
 
     for (const line of lines) {
       if (!line.trim()) continue;
@@ -691,7 +779,7 @@ class CodexLogMonitor {
 
     // First pass drained the historical bytes we picked up on attach;
     // subsequent writes to this file are live and must emit normally.
-    if (tracked.backfilling) {
+    if (tracked.backfilling && tracked.offset >= openedStat.size) {
       this._emitBackfillSnapshot(tracked);
       tracked.backfilling = false;
     }
@@ -699,6 +787,20 @@ class CodexLogMonitor {
       tracked.initializingUserInputs = false;
       this._emitPendingUserInputRequests(tracked);
     }
+  }
+
+  _getFileIdentity(stat) {
+    if (!stat) return null;
+    const dev = Number(stat.dev);
+    const ino = Number(stat.ino);
+    if (Number.isFinite(dev) && Number.isFinite(ino) && (dev !== 0 || ino !== 0)) {
+      return `inode:${dev}:${ino}`;
+    }
+    const birthtimeMs = Number(stat.birthtimeMs);
+    if (Number.isFinite(birthtimeMs) && birthtimeMs > 0) {
+      return `birth:${birthtimeMs}`;
+    }
+    return null;
   }
 
   _processLine(line, tracked) {
