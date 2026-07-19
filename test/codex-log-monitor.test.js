@@ -77,7 +77,7 @@ describe("CodexLogMonitor", () => {
       type: "session_meta",
       payload: {
         cwd: "/projects/foo",
-        originator: "Codex Desktop",
+        originator: "codex_work_desktop",
         source: "vscode",
       },
     }) + "\n");
@@ -94,7 +94,7 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(events[0].sid, EXPECTED_SID);
     assert.strictEqual(events[0].state, "idle");
     assert.strictEqual(events[0].extra.cwd, "/projects/foo");
-    assert.strictEqual(events[0].extra.codexOriginator, "Codex Desktop");
+    assert.strictEqual(events[0].extra.codexOriginator, "codex_work_desktop");
     assert.strictEqual(events[0].extra.codexSource, "vscode");
   });
 

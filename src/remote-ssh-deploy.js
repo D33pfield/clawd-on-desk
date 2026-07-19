@@ -60,6 +60,7 @@ const HOOK_FILES = [
   "clawd-hook.js",
   "install.js",
   "codex-hook.js",
+  "codex-originator.js",
   "codex-assistant-output.js",
   "codex-user-input.js",
   "codex-install.js",

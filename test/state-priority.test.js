@@ -107,13 +107,13 @@ describe("state-priority display selection", () => {
       ["codex:desktop-a", session("working", {
         agentId: "codex",
         agentPid: 4242,
-        codexOriginator: " Codex Desktop ",
+        codexOriginator: " codex_work_desktop ",
         updatedAt: 1000,
       })],
       ["codex:desktop-b", session("thinking", {
         agentId: "codex",
         agentPid: 4242,
-        codexOriginator: "codex desktop",
+        codexOriginator: "CODEX_WORK_DESKTOP",
         updatedAt: 2000,
       })],
     ])), "working");
@@ -140,12 +140,14 @@ describe("state-priority display selection", () => {
         agentId: "codex",
         agentPid: 4242,
         host: "remote-box",
+        codexOriginator: "codex_work_desktop",
         updatedAt: 1000,
       })],
       ["codex:remote-new", session("idle", {
         agentId: "codex",
         agentPid: 4242,
         host: "remote-box",
+        codexOriginator: "codex_work_desktop",
         updatedAt: 2000,
       })],
     ])), "working");
