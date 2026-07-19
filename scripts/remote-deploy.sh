@@ -142,6 +142,7 @@ FILES=(
   "$HOOKS_DIR/clawd-hook.js"
   "$HOOKS_DIR/install.js"
   "$HOOKS_DIR/codex-hook.js"
+  "$HOOKS_DIR/codex-originator.js"
   "$HOOKS_DIR/codex-assistant-output.js"
   "$HOOKS_DIR/codex-user-input.js"
   "$HOOKS_DIR/codex-install.js"
