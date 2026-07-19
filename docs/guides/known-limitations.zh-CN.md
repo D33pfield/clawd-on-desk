@@ -4,8 +4,9 @@
 
 | 限制 | 说明 |
 |------|------|
-| **Codex CLI：无法跳转终端** | Codex official hooks 和 JSONL fallback 都不携带可用终端 PID，点击桌宠仍无法跳转到 Codex 终端。Claude Code 和 Copilot CLI 正常。 |
+| **Codex CLI：终端跳转是 best-effort** | `request_user_input` 卡片会在 official hook / session metadata 能定位本地窗口时跳回 Codex。仅靠 JSONL 可能拿不到可用终端 PID；Remote SSH 会话也无法从本机聚焦远端窗口，此时卡片只作为只读提醒。 |
 | **Codex CLI：hook 覆盖仍不完整** | Official hooks 已覆盖实时状态和 `PermissionRequest` 观察 / intercept 模式，但不是所有运行时信号都有 hook。Clawd 会保留 JSONL 轮询，用于 hook 被禁用的会话，以及 web search、context compaction、turn aborted 等 fallback-only 状态 / metadata 事件；这些事件仍可能有轮询延迟。审批不再从 JSONL 猜测，必须依赖 official `PermissionRequest` hook。 |
+| **Codex CLI：用户提问卡片只读** | Codex official hook 事件集目前不包含 `request_user_input`。Clawd 从 JSONL transcript 观察它，因此提醒可能有一个轮询周期的延迟。选项和自由输入仍在 Codex 原生界面完成；Clawd 不注入按键，也不会把这些问题变成 Telegram / 飞书可操作审批。 |
 | **Copilot CLI：暂无 Telegram 远程审批** | Copilot 的本地权限气泡已可用，v1 接入时主动排除了 Telegram 远程审批。`edit` 工具的 full diff 是最坏 payload，必须先做一套安全摘要 formatter 才能走桥接发出去。本地气泡链路不受影响。 |
 | **Gemini CLI：无权限气泡** | Gemini 仍在终端内处理工具审批。Clawd 会观察 Gemini hook 事件，但除非 Gemini 未来提供兼容的阻塞式审批协议，否则不显示权限气泡。 |
 | **Antigravity CLI：无权限气泡（仅状态同步）** | Clawd **不会为 agy 弹任何权限气泡**。所有 Allow / Deny / Always-allow 决策都在 agy 自己的 5 选项终端菜单里完成（同意 / 同意并持久 / 拒绝 / 永远拒绝 / 永远拒绝并持久）。想要永久规则就在 agy 菜单里选择标有「Persist to settings.json」的选项 —— 规则落到 `~/.gemini/antigravity-cli/settings.json`，你也可以在那里清理。dogfooding 显示在它之上再加 Clawd bubble 会让单次任务变 8-10 次确认，因此设计上让 agy 完全拥有权限流程。桌宠仍通过 PreInvocation / PostToolUse / Stop hook 反映 working / idle / attention 状态。 |
@@ -18,7 +19,8 @@
 | **Kiro CLI：无 subagent 检测** | Kiro CLI 没有 subagent 事件，不会触发杂耍/指挥动画。 |
 | **Kiro CLI：终端权限确认仍在终端处理** | macOS 与 Windows 上 Kiro 的状态 hooks 已验证可用；但当 Kiro 显示 `t / y / n` 这类原生权限确认时，当前仍需在终端里处理，Clawd 不接管这类确认。 |
 | **Kimi Code CLI（Kimi-CLI）：hook-only 运行路径** | Kimi 在 Clawd 中采用 hook-only 集成（`~/.kimi/config.toml`）。如果未来某个 Kimi 版本让 hooks 失效，回退方式是恢复 commit `e57679a` 里的旧日志轮询实现（当前 `agents/kimi-log-monitor.js` 只是兼容 stub）。 |
-| **Kimi Code CLI（Kimi-CLI）：引用 `kimi-hook.js` 的 `[[hooks]]` block 由 Clawd 接管** | Clawd 每次启动（以及执行 `npm run install:kimi-hooks`）都会自动同步 Kimi hooks。凡是 `command` 里引用 `kimi-hook.js` 的 `[[hooks]]` block，都会被视为 Clawd-owned：这些 block 会被整批删除并重写为标准 13 个事件（包括之前安装时写入的 `CLAWD_KIMI_PERMISSION_MODE=…` 前缀；如果这次没传 env，就沿用旧值）。`config.toml` 里其他非 hook 段（如 `[server]`、`[mcp]`、`[[tools]]`）和你自己写的、但不引用 `kimi-hook.js` 的 `[[hooks]]` block 不会被动。想调整权限模式，请先设置环境变量（例如 `CLAWD_KIMI_PERMISSION_MODE`）再重新运行安装脚本，不要直接手改 `command` 字段。 |
+| **Kimi Code CLI（Kimi-CLI）：引用 `kimi-hook.js` 的 `[[hooks]]` block 由 Clawd 接管** | Clawd 每次启动（以及执行 `npm run install:kimi-hooks`）都会自动同步 Kimi hooks。凡是 `command` 里引用 `kimi-hook.js` 的 `[[hooks]]` block，都会被视为 Clawd-owned：这些 block 会被整批删除并重写为标准 13 个事件，命令上带 `--permission-mode=<mode>` 参数（此前安装选过的模式——包括用已停用的 `CLAWD_KIMI_PERMISSION_MODE=…` env 前缀形式写入的——在没传 env 时沿用旧值；全新安装默认 `suspect`）。`config.toml` 里其他非 hook 段（如 `[server]`、`[mcp]`、`[[tools]]`）和你自己写的、但不引用 `kimi-hook.js` 的 `[[hooks]]` block 不会被动。想调整权限模式，请先设置环境变量（例如 `CLAWD_KIMI_PERMISSION_MODE`）再重新运行安装脚本，不要直接手改 `command` 字段。 |
+| **旧版 Kimi CLI：suspect 启发式可能闪现误报提示卡** | 旧版 `~/.kimi` 安装的权限提示默认使用 suspect 启发式（现行 kimi-cli 不发显式审批字段，旧的 explicit-only 默认下提示卡从不出现；自批量审批修复后，同一条消息里排队的每个审批都会各自重新弹卡）。代价是：*已免审*的门控命令若运行超过约 0.8 秒，会短暂弹出一张仿佛在等审批的提示卡——卡片几秒后自动关闭，宠物会保持通知姿势直到该命令跑完。想退出：重新运行安装脚本前设置 `CLAWD_KIMI_PERMISSION_MODE=explicit`（持久化），或在 kimi-cli 运行时用同一环境变量临时覆盖，或在 **Settings → Agents** 里整体关闭 Kimi 权限提示。另注意：旧版事件词汇表里，*下一个*排队审批的提示卡要等上一个工具的 `PostToolUse` 之后才会重弹，所以第一个工具耗时很长时第二张卡会迟到（迟到但正确）。 |
 | **opencode：child session 仅作为后台工作** | 当 opencode 的 `session.created` 明确带 `event.properties.info.parentID` 时，Clawd 会把该 child / subtask 视为 root session 拥有的 headless 后台工作。它不会出现在 HUD / focus 表面，也不会参与多会话 fanout 动画。 |
 | **opencode：终端聚焦锚定启动窗口** | Plugin 跑在 opencode 进程内，`source_pid` 指向启动 opencode 的那个终端。如果你用 `opencode attach` 从另一个窗口接入，点击桌宠只会聚焦到最初的启动窗口。 |
 | **Pi：仅状态同步** | Clawd 通过全局 extension 观察 Pi 交互式会话生命周期和工具事件，但不接管权限、不新增确认弹窗。Pi 会保留默认 YOLO 执行行为。 |

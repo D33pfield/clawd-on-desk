@@ -14,6 +14,20 @@ const { ANTIGRAVITY_HOOK_EVENTS, __test: antigravityInstallTest } = require("../
 const { QWEN_CODE_HOOK_EVENTS, buildQwenCodeHookCommand } = require("../hooks/qwen-code-install");
 const { HOOK_ENTRIES: CODEWHALE_HOOK_ENTRIES } = require("../hooks/codewhale-install");
 const { QODER_HOOK_EVENTS, buildQoderHookCommand } = require("../hooks/qoder-install");
+const { KIMI_HOOK_EVENTS } = require("../hooks/kimi-install");
+
+// Complete healthy legacy Kimi config: every event registered, every command
+// carrying the canonical argv mode flag.
+function kimiLegacyToml({ events = KIMI_HOOK_EVENTS, command = '"node" "/app/hooks/kimi-hook.js" --permission-mode=suspect' } = {}) {
+  return events.map((event) => [
+    "[[hooks]]",
+    `event = "${event}"`,
+    `command = '${command}'`,
+    'matcher = ""',
+    "timeout = 30",
+    "",
+  ].join("\n")).join("\n");
+}
 
 const tempDirs = [];
 
@@ -1148,11 +1162,10 @@ describe("checkAgentIntegrations", () => {
       ],
     });
     fs.mkdirSync(legacyDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(legacyDir, "config.toml"),
-      '[[hooks]]\nevent = "Stop"\ncommand = \'"node" "/app/hooks/kimi-hook.js"\'\n',
-      "utf8"
-    );
+    // A COMPLETE healthy legacy install (all events + mode flag) — this test
+    // is about target selection; completeness itself is covered by the
+    // legacy-supplement suite below.
+    fs.writeFileSync(path.join(legacyDir, "config.toml"), kimiLegacyToml(), "utf8");
 
     const detail = runOne(descriptor);
     assert.strictEqual(detail.status, "ok");
@@ -1446,6 +1459,194 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.status, "broken-path");
     assert.strictEqual(detail.opencodeEntryIssue, "directory-missing");
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "opencode" });
+  });
+
+  it("surfaces WHICH shared family file is missing in the broken-path detail", () => {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".config", "opencode");
+    const hooksDir = path.join(root, "hooks");
+    const pluginPath = path.join(hooksDir, "opencode-plugin");
+    const familyDir = path.join(hooksDir, "opencode-family-plugin");
+    // Entry + core present, session-ids MISSING — the packaging false-green
+    // scenario the two-level closure check exists for (plan §3.4).
+    fs.mkdirSync(pluginPath, { recursive: true });
+    fs.writeFileSync(path.join(pluginPath, "index.mjs"), "export default async () => ({});\n", "utf8");
+    fs.mkdirSync(familyDir, { recursive: true });
+    fs.writeFileSync(path.join(familyDir, "core.mjs"), "export function createOpencodeFamilyPlugin() {}\n", "utf8");
+
+    const descriptor = baseDescriptor({
+      agentId: "opencode",
+      marker: "opencode-plugin",
+      parentDir,
+      configPath: path.join(parentDir, "opencode.json"),
+      detection: "opencode-plugin",
+    });
+    writeJson(descriptor.configPath, { plugin: [pluginPath] });
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.opencodeEntryIssue, "family-core-missing");
+    // The modal renders detail verbatim (no i18n layer) — the user must see
+    // a readable phrase AND the concrete missing path, not the raw key.
+    assert.match(detail.detail, /shared opencode-family file/);
+    assert.ok(
+      detail.detail.includes(path.join(familyDir, "session-ids.mjs")),
+      `detail should name the missing file: ${detail.detail}`
+    );
+  });
+
+  function makeValidFamilyPlugin(root, pluginDirName) {
+    const hooksDir = path.join(root, "hooks");
+    const pluginPath = path.join(hooksDir, pluginDirName);
+    const familyDir = path.join(hooksDir, "opencode-family-plugin");
+    fs.mkdirSync(pluginPath, { recursive: true });
+    fs.writeFileSync(path.join(pluginPath, "index.mjs"), "export default async () => ({});\n", "utf8");
+    fs.mkdirSync(familyDir, { recursive: true });
+    fs.writeFileSync(path.join(familyDir, "core.mjs"), "export function createOpencodeFamilyPlugin() {}\n", "utf8");
+    fs.writeFileSync(path.join(familyDir, "session-ids.mjs"), "export function createSessionIdHelpers() {}\n", "utf8");
+    return pluginPath;
+  }
+
+  function mimocodeDescriptor(root, overrides = {}) {
+    const parentDir = path.join(root, ".config", "mimocode");
+    fs.mkdirSync(parentDir, { recursive: true });
+    return baseDescriptor({
+      agentId: "mimocode",
+      marker: "mimocode-plugin",
+      parentDir,
+      configPath: path.join(parentDir, "mimocode.jsonc"),
+      detection: "opencode-plugin",
+      configJsonc: true,
+      ...overrides,
+    });
+  }
+
+  it("parses mimocode's JSONC config (comments + trailing commas) as healthy, not config-corrupt", () => {
+    const root = makeTempDir();
+    const pluginPath = makeValidFamilyPlugin(root, "mimocode-plugin");
+    const descriptor = mimocodeDescriptor(root);
+    fs.writeFileSync(
+      descriptor.configPath,
+      `{\n  // Clawd pet plugin\n  "plugin": [\n    ${JSON.stringify(pluginPath)},\n  ],\n}\n`,
+      "utf8"
+    );
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "ok", `expected ok, got ${detail.status}: ${detail.detail}`);
+  });
+
+  it("still reports genuinely corrupt mimocode JSONC as config-corrupt", () => {
+    const root = makeTempDir();
+    const descriptor = mimocodeDescriptor(root);
+    fs.writeFileSync(descriptor.configPath, '{\n  "plugin": [\n', "utf8");
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "config-corrupt");
+    assert.match(detail.detail, /invalid JSONC/);
+  });
+
+  it("routes ONLY configJsonc descriptors through the JSONC parser", () => {
+    // Without the flag, the same commented config must fail JSON.parse — this
+    // locks the routing to the descriptor flag rather than a blanket parser
+    // swap (opencode.json stays strict JSON).
+    const root = makeTempDir();
+    const descriptor = mimocodeDescriptor(root, { configJsonc: undefined });
+    fs.writeFileSync(descriptor.configPath, '{\n  // comment\n  "plugin": [],\n}\n', "utf8");
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "config-corrupt");
+  });
+
+  function mimocodeMergedDescriptor(root, overrides = {}) {
+    const parentDir = path.join(root, ".config", "mimocode");
+    return mimocodeDescriptor(root, {
+      configCandidates: ["mimocode.jsonc", "mimocode.json", "config.json"].map((name) => path.join(parentDir, name)),
+      ...overrides,
+    });
+  }
+
+  it("merged view: validates the live plugin owner (.json) when .jsonc exists without plugin", () => {
+    const root = makeTempDir();
+    const pluginPath = makeValidFamilyPlugin(root, "mimocode-plugin");
+    const descriptor = mimocodeMergedDescriptor(root);
+    fs.writeFileSync(path.join(path.dirname(descriptor.configPath), "mimocode.json"), JSON.stringify({ plugin: [pluginPath] }), "utf8");
+    fs.writeFileSync(descriptor.configPath, '{\n  // prefs only\n  "model": "mimo/base",\n}\n', "utf8");
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "ok", `expected ok, got ${detail.status}: ${detail.detail}`);
+    assert.ok(detail.configPath.endsWith("mimocode.json"), "detail must point at the file whose plugin is live");
+  });
+
+  it("merged view: a managed entry MASKED by a higher-priority plugin array is not connected", () => {
+    const root = makeTempDir();
+    const pluginPath = makeValidFamilyPlugin(root, "mimocode-plugin");
+    const descriptor = mimocodeMergedDescriptor(root);
+    // .jsonc declares plugin (empty) → it REPLACES .json's array at runtime,
+    // so the valid entry in .json is dead. The doctor must see the merge.
+    fs.writeFileSync(descriptor.configPath, '{\n  "plugin": [],\n}\n', "utf8");
+    fs.writeFileSync(path.join(path.dirname(descriptor.configPath), "mimocode.json"), JSON.stringify({ plugin: [pluginPath] }), "utf8");
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "not-connected", `masked entry must not count: ${detail.detail}`);
+  });
+
+  it("merged view: no candidate exists → not-connected missing", () => {
+    const root = makeTempDir();
+    const descriptor = mimocodeMergedDescriptor(root);
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.configFileExists, false);
+  });
+
+  it("merged view: a corrupt candidate is config-corrupt and names the file", () => {
+    const root = makeTempDir();
+    const descriptor = mimocodeMergedDescriptor(root);
+    fs.writeFileSync(descriptor.configPath, '{\n  "plugin": [],\n}\n', "utf8");
+    fs.writeFileSync(path.join(path.dirname(descriptor.configPath), "mimocode.json"), "{ broken", "utf8");
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "config-corrupt");
+    assert.ok(detail.detail.includes("mimocode.json"), `detail must name the corrupt file: ${detail.detail}`);
+  });
+
+  it("descriptor configJsonc matches the family registry's jsonc flag (drift lock)", () => {
+    // eslint-disable-next-line global-require
+    const { AGENT_DESCRIPTORS } = require("../src/doctor-detectors/agent-descriptors");
+    // eslint-disable-next-line global-require
+    const { OPENCODE_FAMILY } = require("../agents/opencode-family");
+    for (const [agentId, cfg] of Object.entries(OPENCODE_FAMILY)) {
+      const descriptor = AGENT_DESCRIPTORS.find((d) => d.agentId === agentId);
+      assert.ok(descriptor, `family member ${agentId} must have a doctor descriptor`);
+      assert.strictEqual(
+        !!descriptor.configJsonc,
+        !!cfg.jsonc,
+        `${agentId}: doctor descriptor configJsonc must mirror the registry's jsonc flag`
+      );
+      assert.ok(
+        descriptor.configPath.endsWith(cfg.configFileName),
+        `${agentId}: descriptor configPath must target ${cfg.configFileName}`
+      );
+      if (cfg.configCandidates) {
+        assert.deepStrictEqual(
+          (descriptor.configCandidates || []).map((p) => path.basename(p)),
+          [...cfg.configCandidates],
+          `${agentId}: descriptor configCandidates must mirror the registry (order matters — highest priority first)`
+        );
+      }
+      // marker feeds the plugin-entry basename match; detection routes into
+      // the family validator — a drift in either silently breaks the doctor
+      // for a healthy install (R8 P2).
+      assert.strictEqual(
+        descriptor.marker,
+        cfg.pluginDirName,
+        `${agentId}: descriptor marker must equal the registry pluginDirName`
+      );
+      assert.strictEqual(
+        descriptor.detection,
+        "opencode-plugin",
+        `${agentId}: family members must route through the opencode-plugin validator`
+      );
+    }
   });
 
   function openClawDescriptor() {
@@ -1762,5 +1963,147 @@ describe("findOpenClawPluginEntry", () => {
       findOpenClawPluginEntry(["vendor/openclaw-plugin", absEntry], "openclaw-plugin"),
       absEntry
     );
+  });
+});
+
+// Legacy-supplement checks: the generic command check only asserts "some
+// command exists and its script resolves"; these pin the completeness layer
+// (13 events + consistent --permission-mode flag) that the suspect-default
+// work depends on.
+describe("kimi legacy permission-mode supplement", () => {
+  function kimiDescriptor() {
+    const root = makeTempDir();
+    const legacyDir = path.join(root, ".kimi");
+    const kimiCodeDir = path.join(root, ".kimi-code");
+    return {
+      descriptor: baseDescriptor({
+        agentId: "kimi-cli",
+        marker: "kimi-hook.js",
+        configMode: "toml-text",
+        parentDir: legacyDir,
+        configPath: path.join(legacyDir, "config.toml"),
+        configTargets: [
+          { label: "kimi-code", parentDir: kimiCodeDir, configPath: path.join(kimiCodeDir, "config.toml") },
+          { label: "legacy", parentDir: legacyDir, configPath: path.join(legacyDir, "config.toml") },
+        ],
+      }),
+      legacyDir,
+      kimiCodeDir,
+    };
+  }
+
+  it("a complete argv-mode legacy install stays ok (explicit is a valid user choice too)", () => {
+    const { descriptor, legacyDir } = kimiDescriptor();
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(descriptor.configPath, kimiLegacyToml(), "utf8");
+    assert.strictEqual(runOne(descriptor).status, "ok");
+
+    fs.writeFileSync(
+      descriptor.configPath,
+      kimiLegacyToml({ command: '"node" "/app/hooks/kimi-hook.js" --permission-mode=explicit' }),
+      "utf8"
+    );
+    assert.strictEqual(runOne(descriptor).status, "ok");
+  });
+
+  it("flags the retired env-prefix form even when the active kimi-code target is healthy", () => {
+    const { descriptor, legacyDir, kimiCodeDir } = kimiDescriptor();
+    fs.mkdirSync(kimiCodeDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(kimiCodeDir, "config.toml"),
+      '[[hooks]]\nevent = "PermissionRequest"\ncommand = \'"node" "/app/hooks/kimi-hook.js"\'\nmatcher = ""\ntimeout = 30\n',
+      "utf8"
+    );
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      descriptor.configPath,
+      kimiLegacyToml({ command: 'CLAWD_KIMI_PERMISSION_MODE=suspect "node" "/app/hooks/kimi-hook.js"' }),
+      "utf8"
+    );
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "needs-review");
+    assert.ok(detail.detail.includes("retired env-prefix"));
+    assert.deepStrictEqual(detail.supplementary, { key: "kimi_legacy_mode", value: "stale" });
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "kimi-cli" });
+  });
+
+  it("flags a command carrying BOTH the retired prefix and a valid argv flag (dead on Windows despite the flag)", () => {
+    const { descriptor, legacyDir } = kimiDescriptor();
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      descriptor.configPath,
+      kimiLegacyToml({ command: 'CLAWD_KIMI_PERMISSION_MODE=explicit "node" "/app/hooks/kimi-hook.js" --permission-mode=suspect' }),
+      "utf8"
+    );
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "needs-review");
+    assert.ok(detail.detail.includes("retired env-prefix"));
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "kimi-cli" });
+  });
+
+  it("flags missing --permission-mode flags on an otherwise valid legacy install", () => {
+    const { descriptor, legacyDir } = kimiDescriptor();
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      descriptor.configPath,
+      kimiLegacyToml({ command: '"node" "/app/hooks/kimi-hook.js"' }),
+      "utf8"
+    );
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "needs-review");
+    assert.ok(detail.detail.includes("--permission-mode flag"));
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "kimi-cli" });
+  });
+
+  it("flags an incomplete event set — only-Stop-registered no longer passes as healthy", () => {
+    const { descriptor, legacyDir } = kimiDescriptor();
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      descriptor.configPath,
+      kimiLegacyToml({ events: ["Stop"] }),
+      "utf8"
+    );
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "needs-review");
+    assert.ok(detail.detail.includes("missing hook events"));
+    assert.ok(detail.detail.includes("PreToolUse"));
+  });
+
+  it("flags inconsistent mode values across commands", () => {
+    const { descriptor, legacyDir } = kimiDescriptor();
+    fs.mkdirSync(legacyDir, { recursive: true });
+    const mixed = kimiLegacyToml().replace(
+      "--permission-mode=suspect'",
+      "--permission-mode=explicit'"
+    );
+    fs.writeFileSync(descriptor.configPath, mixed, "utf8");
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "needs-review");
+    assert.ok(detail.detail.includes("inconsistent --permission-mode"));
+  });
+
+  it("never masks a primary finding and skips when legacy carries no Clawd hooks", () => {
+    const { descriptor, legacyDir, kimiCodeDir } = kimiDescriptor();
+    // Primary finding: legacy active, config missing entirely.
+    fs.mkdirSync(legacyDir, { recursive: true });
+    const missing = runOne(descriptor);
+    assert.strictEqual(missing.status, "not-connected");
+
+    // kimi-code healthy + legacy dir exists but has no Clawd hooks: the
+    // supplement must not invent a warning for a deliberate non-install.
+    fs.mkdirSync(kimiCodeDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(kimiCodeDir, "config.toml"),
+      '[[hooks]]\nevent = "PermissionRequest"\ncommand = \'"node" "/app/hooks/kimi-hook.js"\'\nmatcher = ""\ntimeout = 30\n',
+      "utf8"
+    );
+    fs.writeFileSync(descriptor.configPath, 'default_model = "kimi-for-coding"\n', "utf8");
+    const clean = runOne(descriptor);
+    assert.strictEqual(clean.status, "ok");
   });
 });

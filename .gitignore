@@ -105,6 +105,7 @@ scripts/*
 !scripts/create-theme.js
 !scripts/export-agent-icons.js
 !scripts/verify-sidecar-binaries.js
+!scripts/verify-electron-install.js
 !scripts/fetch-sidecar-binaries.js
 
 # oh-my-cursor state

@@ -88,6 +88,7 @@ const { formatLocalTimestamp } = require("./log-timestamp");
 const { launchClaudeSession, openTerminalAt } = require("./launch-claude");
 const { dialog: electronDialog } = require("electron");
 const initPermission = require("./permission");
+const { isPassiveNotifyEntry } = require("./passive-notify-entry");
 const { registerPermissionIpc } = initPermission;
 const { createTelegramApprovalSidecar } = require("./telegram-approval-sidecar");
 const telegramApprovalSettings = require("./telegram-approval-settings");
@@ -168,6 +169,15 @@ const { createForegroundFullscreenProbe } = require("./win-fullscreen-detect");
 const _isForegroundFullscreen = createForegroundFullscreenProbe({
   isWin,
   onError: (err) => console.warn("Clawd: win-fullscreen-detect not available:", err && err.message),
+});
+
+// ── Windows: DWM cloak inspection + un-cloak (#525 self-heal) ──
+// Best-effort; degrades to "never cloaked / recovery no-op" when koffi/dwmapi
+// or the virtual-desktop COM manager is unavailable.
+const { createCloakInspector } = require("./win-cloak-recovery");
+const _cloakInspector = createCloakInspector({
+  isWin,
+  log: (line) => console.warn(`Clawd: ${line}`),
 });
 
 // ── Windows: foreground Windows Terminal probe (server-side wt_hwnd sample,
@@ -745,6 +755,8 @@ const petWindowRuntime = createPetWindowRuntime({
   reapplyMacVisibility: () => reapplyMacVisibility(),
   reassertWinTopmost: () => reassertWinTopmost(),
   scheduleHwndRecovery: () => scheduleHwndRecovery(),
+  cloakInspector: _cloakInspector,
+  isMiniAnimating: () => _mini.getIsAnimating(),
   isNearWorkAreaEdge: (bounds) => isNearWorkAreaEdge(bounds),
   flushRuntimeStateToPrefs: () => flushRuntimeStateToPrefs(),
   handleMiniDisplayChange: () => _mini.handleDisplayChange(),
@@ -1297,6 +1309,7 @@ const topmostRuntime = createTopmostRuntime({
   isMac,
   getWin: () => win,
   getHitWin: () => hitWin,
+  recoverCloakedPet: () => petWindowRuntime.recoverIfCloaked(),
   getPendingPermissions: () => pendingPermissions,
   getUpdateBubbleWindow: () => _updateBubble.getBubbleWindow(),
   getSessionHudWindow: () => getSessionHudWindow(),
@@ -1393,7 +1406,7 @@ const _permCtx = {
   },
 };
 const _perm = initPermission(_permCtx);
-const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, maybeStartRemoteApproval, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
+const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, maybeStartRemoteApproval, clearCodexNotifyBubbles, showCodexUserInputBubble, clearCodexUserInputBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodeFamilyPermission } = _perm;
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
@@ -1910,6 +1923,8 @@ agentRuntime = createAgentRuntimeMain({
   updateSession: (sessionId, state, event, opts) => updateSession(sessionId, state, event, opts),
   captureGhosttyTerminalId,
   clearCodexNotifyBubbles: (...args) => clearCodexNotifyBubbles(...args),
+  showCodexUserInputBubble: (...args) => showCodexUserInputBubble(...args),
+  clearCodexUserInputBubbles: (...args) => clearCodexUserInputBubbles(...args),
 });
 
 // ── HTTP server — delegated to src/server.js ──
@@ -1945,8 +1960,10 @@ const _serverCtx = {
   addPendingPermission,
   removePendingPermission,
   showPermissionBubble,
+  showCodexUserInputBubble,
+  clearCodexUserInputBubbles,
   maybeStartRemoteApproval,
-  replyOpencodePermission,
+  replyOpencodeFamilyPermission,
   syncPermissionShortcuts,
   permLog,
 };
@@ -2430,11 +2447,7 @@ function getTelegramApprovalStatus() {
 }
 
 function getPendingTelegramApprovalCount() {
-  return pendingPermissions.filter((entry) =>
-    entry
-    && !entry.isCodexNotify
-    && !entry.isKimiNotify
-  ).length;
+  return pendingPermissions.filter((entry) => entry && !isPassiveNotifyEntry(entry)).length;
 }
 
 function getTelegramNativeRunnerStatus() {
@@ -3188,6 +3201,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
   syncPermissionShortcuts,
   dismissInteractivePermissionBubbles: () => callRuntimeMethod(_perm, "dismissInteractivePermissionBubbles"),
   clearCodexNotifyBubbles,
+  clearCodexUserInputBubbles,
   clearKimiNotifyBubbles,
   refreshPassiveNotifyAutoClose: () => callRuntimeMethod(_perm, "refreshPassiveNotifyAutoClose"),
   refreshPermissionAutoCloseForPolicy: () => callRuntimeMethod(_perm, "refreshPermissionAutoCloseForPolicy"),
@@ -3866,6 +3880,10 @@ if (!gotTheLock) {
         hitWin.showInactive();
         keepOutOfTaskbar(hitWin);
       }
+      // #525: relaunching while the pet is nominally visible is a "where is my
+      // pet?" signal — showInactive() alone cannot clear a DWM cloak, so run
+      // the cloak recovery path too.
+      petWindowRuntime.recoverIfCloaked();
     }
     if (shouldOpenSettingsWindowFromArgv(commandLine)) {
       settingsWindowRuntime.openWhenReady();
@@ -3988,6 +4006,16 @@ if (!gotTheLock) {
       ),
     });
     systemWakeRecovery.start();
+    // #525: sleep/wake and lock/unlock are prime DWM-cloak moments. Hang the
+    // cloak recovery directly on powerMonitor rather than onRecovered above:
+    // onRecovered only fires after a renderer round-trip and is skipped on
+    // timeout (system-wake-recovery.js finishWithTimeout), while un-cloaking is
+    // a main-process concern that must not depend on renderer health. The two
+    // paths coexist; recoverIfCloaked() is a no-op when nothing is cloaked.
+    if (isWin) {
+      powerMonitor.on("resume", () => petWindowRuntime.recoverIfCloaked());
+      powerMonitor.on("unlock-screen", () => petWindowRuntime.recoverIfCloaked());
+    }
     // macOS: bridge the OS app-hidden state (⌘H / Dock right-click → 隐藏) to the
     // pet. Pet windows are setCanHide:NO, so the OS marks the app hidden but the
     // windows refuse to vanish, and an inactive-app Dock Hide fires no
@@ -4053,6 +4081,9 @@ if (!gotTheLock) {
   app.on("before-quit", () => {
     isQuitting = true;
     if (systemWakeRecovery) systemWakeRecovery.dispose();
+    // #525: release the IVirtualDesktopManager COM ref and pay back our own
+    // CoInitializeEx count (see win-cloak-recovery.js dispose()).
+    _cloakInspector.dispose();
     try { stopUpdateScheduler(); } catch {}
     releasePowerSaveBlocker();
     flushRuntimeStateToPrefs();
