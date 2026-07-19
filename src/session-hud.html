@@ -184,6 +184,12 @@ body { padding: 2px 3px 8px; }
   color: var(--text);
 }
 
+.session-inline-feedback {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+
 .row-folded .title {
   font-weight: 500;
   color: var(--text-muted);
@@ -285,34 +291,20 @@ body { padding: 2px 3px 8px; }
 
 .open-folder-button {
   flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
   border: 0;
   border-radius: 4px;
-  padding: 2px 5px;
+  padding: 0;
   background: rgba(59, 130, 246, 0.14);
   color: var(--text);
-  font: inherit;
-  font-size: 10px;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .open-folder-button:disabled { opacity: 0.55; }
-
-.session-action-feedback {
-  position: absolute;
-  left: 6px;
-  right: 6px;
-  bottom: 3px;
-  z-index: 4;
-  padding: 3px 6px;
-  border-radius: 5px;
-  background: var(--hud-bg);
-  box-shadow: 0 1px 4px var(--shadow);
-  color: var(--text);
-  font-size: 10px;
-  line-height: 1.25;
-  text-align: center;
-  pointer-events: none;
-}
 
 @keyframes bell-ring {
   0%   { transform: rotate(0deg); }

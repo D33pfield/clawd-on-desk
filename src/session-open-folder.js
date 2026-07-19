@@ -23,7 +23,7 @@ function createSessionFolderOpener(options = {}) {
       return { status: "not-available", reason: "invalid-cwd" };
     }
     try {
-      if (!fs.statSync(cwd).isDirectory()) {
+      if (!(await fs.promises.stat(cwd)).isDirectory()) {
         return { status: "not-available", reason: "invalid-cwd" };
       }
     } catch (_err) {

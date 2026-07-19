@@ -21,6 +21,9 @@ let snapshot = { sessions: [], groups: [], orderedIds: [] };
 let i18nPayload = { lang: "en", translations: {} };
 let activeEdit = null;
 
+const SESSION_FOLDER_FEEDBACK_MS = 4000;
+const sessionFolderActionState = new Map();
+
 const titleEl = document.getElementById("title");
 const countEl = document.getElementById("count");
 const contentEl = document.getElementById("content");
@@ -469,9 +472,42 @@ function openFolderFailureText(result) {
   return t("sessionOpenFolderUnavailable");
 }
 
+function pruneSessionFolderActionState(sessions, now) {
+  const currentIds = new Set(sessions.map((session) => session && session.id).filter(Boolean));
+  for (const [sessionId, state] of sessionFolderActionState) {
+    if (!currentIds.has(sessionId)
+        || (!state.pending && (!state.feedbackText || state.feedbackUntil <= now))) {
+      sessionFolderActionState.delete(sessionId);
+    }
+  }
+}
+
+function beginSessionFolderAction(sessionId) {
+  const current = sessionFolderActionState.get(sessionId);
+  if (current && current.pending) return false;
+  sessionFolderActionState.set(sessionId, {
+    pending: true,
+    feedbackText: "",
+    feedbackUntil: 0,
+  });
+  return true;
+}
+
+function finishSessionFolderAction(sessionId, feedbackText = "") {
+  if (!feedbackText) {
+    sessionFolderActionState.delete(sessionId);
+    return;
+  }
+  sessionFolderActionState.set(sessionId, {
+    pending: false,
+    feedbackText,
+    feedbackUntil: Date.now() + SESSION_FOLDER_FEEDBACK_MS,
+  });
+}
+
 function createCard(session, now) {
   const card = document.createElement("article");
-  card.className = "card";
+  card.className = session.canFocus === true ? "card" : "card card-unfocusable";
 
   if (session.id) {
     const idTail = String(session.id).slice(-3);
@@ -518,7 +554,12 @@ function createCard(session, now) {
   if (session.canFocus !== true) {
     const reason = focusUnavailableText(session);
     actions.appendChild(createText("span", "focus-unavailable-reason", reason));
-    const feedback = createText("span", "session-action-feedback", "");
+    const folderState = sessionFolderActionState.get(session.id) || null;
+    const feedback = createText(
+      "span",
+      "session-action-feedback",
+      folderState && folderState.feedbackUntil > now ? folderState.feedbackText : ""
+    );
     feedback.setAttribute("aria-live", "polite");
     actions.appendChild(feedback);
 
@@ -527,20 +568,30 @@ function createCard(session, now) {
       openFolder.type = "button";
       openFolder.className = "open-folder-button";
       openFolder.textContent = t("dashboardOpenFolder");
+      openFolder.disabled = !!(folderState && folderState.pending);
       openFolder.addEventListener("click", async () => {
+        if (!beginSessionFolderAction(session.id)) return;
         openFolder.disabled = true;
+        feedback.textContent = "";
+        render();
         try {
           const result = await window.dashboardAPI.openSessionFolder(session.id);
           if (!result || result.status !== "ok") {
-            openFolder.disabled = false;
-            feedback.textContent = openFolderFailureText(result);
+            const message = openFolderFailureText(result);
+            finishSessionFolderAction(session.id, message);
+            feedback.textContent = message;
+          } else {
+            finishSessionFolderAction(session.id);
           }
         } catch (err) {
-          openFolder.disabled = false;
-          feedback.textContent = t("sessionOpenFolderFailed")
+          const message = t("sessionOpenFolderFailed")
             .replace("{reason}", err && err.message ? err.message : String(err));
+          finishSessionFolderAction(session.id, message);
+          feedback.textContent = message;
           console.warn("open session folder threw:", err);
         }
+        openFolder.disabled = false;
+        render();
       });
       actions.appendChild(openFolder);
     }
@@ -600,6 +651,8 @@ function render(options = {}) {
   if (activeEdit && !options.force) return;
   const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
   const count = sessions.length;
+  const now = Date.now();
+  pruneSessionFolderActionState(sessions, now);
   titleEl.textContent = t("dashboardWindowTitle");
   countEl.textContent = t("dashboardCount").replace("{n}", count);
   document.title = t("dashboardWindowTitle");
@@ -610,7 +663,6 @@ function render(options = {}) {
     return;
   }
 
-  const now = Date.now();
   const byId = new Map(sessions.map((session) => [session.id, session]));
   const fragment = document.createDocumentFragment();
 

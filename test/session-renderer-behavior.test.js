@@ -89,11 +89,7 @@ function translations() {
     dashboardWindowTitle: "Sessions",
     dashboardCount: "{n} active",
     dashboardJumpTerminal: "Jump",
-    dashboardFocusUnavailable: "Cannot focus this local terminal.",
-    dashboardRemoteFocusUnavailable: "Cannot focus this remote terminal.",
     dashboardOpenFolder: "Open Folder",
-    sessionHudFocusUnavailableTooltip: "Cannot focus this local terminal.",
-    sessionHudRemoteFocusUnavailableTooltip: "Cannot focus this remote terminal.",
     sessionFocusUnavailableRemote: "Remote sessions cannot focus a terminal on this computer.",
     sessionFocusUnavailableWebui: "WebUI sessions do not have a local terminal window.",
     sessionFocusUnavailableMissingTerminalInfo: "This session did not provide terminal window information.",
@@ -127,48 +123,77 @@ function session(id, overrides = {}) {
 async function loadDashboard(sessions, openResult = { status: "ok" }) {
   const document = createDocument(["title", "count", "content", "quotaSummary"]);
   const openCalls = [];
+  let renderInterval = null;
   const api = {
     onLangChange: () => {},
     onSessionSnapshot: () => {},
     getI18n: async () => ({ lang: "en", translations: translations() }),
     getSnapshot: async () => ({ sessions, groups: [{ host: "", ids: sessions.map((s) => s.id) }] }),
-    openSessionFolder: async (...args) => { openCalls.push(args); return openResult; },
+    openSessionFolder: async (...args) => {
+      openCalls.push(args);
+      return typeof openResult === "function" ? openResult(...args) : openResult;
+    },
     focusSession: () => {},
     ackCompletion: async () => ({ status: "noop" }),
     hideSession: async () => ({ status: "ok" }),
   };
   const context = vm.createContext({
-    window: { dashboardAPI: api }, document, console, Intl, Date, setInterval: () => 0,
+    window: { dashboardAPI: api }, document, console, Intl, Date,
+    setInterval: (callback) => { renderInterval = callback; return 1; },
     requestAnimationFrame: (cb) => cb(),
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "session-focus-unavailable.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8"), context);
   await flush();
-  return { root: document.elements.get("content"), openCalls };
+  return {
+    root: document.elements.get("content"),
+    openCalls,
+    tickRender: () => { if (renderInterval) renderInterval(); },
+  };
 }
 
 async function loadHud(sessions, openResult = { status: "ok" }) {
   const document = createDocument(["hud"]);
   const openCalls = [];
   let snapshotListener = null;
+  let feedbackTimeout = null;
   const api = {
     onLangChange: () => {},
     onSessionSnapshot: (listener) => { snapshotListener = listener; },
     getI18n: async () => ({ lang: "en", translations: translations() }),
-    openSessionFolder: async (...args) => { openCalls.push(args); return openResult; },
+    openSessionFolder: async (...args) => {
+      openCalls.push(args);
+      return typeof openResult === "function" ? openResult(...args) : openResult;
+    },
     focusSession: () => {},
     ackCompletion: async () => ({ status: "noop" }),
     openDashboard: () => {},
     setPinned: () => {},
   };
   const context = vm.createContext({
-    window: { sessionHudAPI: api }, document, console, Date, setInterval: () => 0,
+    window: { sessionHudAPI: api }, document, console, Date,
+    setInterval: () => 0,
+    setTimeout: (callback) => { feedbackTimeout = callback; return 1; },
+    clearTimeout: () => { feedbackTimeout = null; },
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "session-focus-unavailable.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "session-hud-renderer.js"), "utf8"), context);
   await flush();
   snapshotListener({ sessions, orderedIds: sessions.map((entry) => entry.id) });
-  return { root: document.elements.get("hud"), openCalls };
+  return {
+    root: document.elements.get("hud"),
+    openCalls,
+    pushSnapshot: (nextSessions = sessions) => snapshotListener({
+      sessions: nextSessions,
+      orderedIds: nextSessions.map((entry) => entry.id),
+    }),
+    expireFeedback: async () => {
+      const callback = feedbackTimeout;
+      feedbackTimeout = null;
+      if (callback) callback();
+      await flush();
+    },
+  };
 }
 
 test("Dashboard renders local/remote/webui reasons and only local folder action", async () => {
@@ -177,6 +202,7 @@ test("Dashboard renders local/remote/webui reasons and only local folder action"
     session("remote", { sourceType: "ssh", host: "host" }),
     session("webui", { platform: "webui" }),
   ]);
+  assert.strictEqual(byClass(root, "card-unfocusable").length, 3);
   assert.deepStrictEqual(byClass(root, "focus-unavailable-reason").map((el) => el.textContent), [
     "This session did not provide terminal window information.",
     "Remote sessions cannot focus a terminal on this computer.",
@@ -195,6 +221,33 @@ test("Dashboard folder click sends only id and exposes open failure", async () =
   assert.strictEqual(feedback.textContent, "Could not open folder: denied");
 });
 
+test("Dashboard preserves folder pending and failure state across interval renders", async () => {
+  let resolveOpen;
+  const pendingResult = new Promise((resolve) => { resolveOpen = resolve; });
+  const { root, openCalls, tickRender } = await loadDashboard(
+    [session("local")],
+    () => pendingResult
+  );
+
+  const clickPromise = byClass(root, "open-folder-button")[0].dispatch("click");
+  await flush();
+  tickRender();
+
+  const replacementButton = byClass(root, "open-folder-button")[0];
+  assert.strictEqual(replacementButton.disabled, true);
+  await replacementButton.dispatch("click");
+  assert.deepStrictEqual(openCalls, [["local"]]);
+
+  resolveOpen({ status: "error", message: "slow denial" });
+  await clickPromise;
+  tickRender();
+  assert.strictEqual(
+    byClass(root, "session-action-feedback")[0].textContent,
+    "Could not open folder: slow denial"
+  );
+  assert.strictEqual(byClass(root, "open-folder-button")[0].disabled, false);
+});
+
 test("HUD unfocusable click explains why and offers folder only for local non-webui", async () => {
   const { root } = await loadHud([
     session("local"),
@@ -209,7 +262,7 @@ test("HUD unfocusable click explains why and offers folder only for local non-we
   ]);
   await rows[0].dispatch("click");
   assert.strictEqual(
-    byClass(root, "session-action-feedback")[0].textContent,
+    byClass(root, "session-inline-feedback")[0].textContent,
     "This session did not provide terminal window information."
   );
   assert.strictEqual(byClass(root, "open-folder-button").length, 1);
@@ -219,13 +272,44 @@ test("HUD folder click sends only id and exposes open failure", async () => {
   const { root, openCalls } = await loadHud([session("local")], { status: "not-available" });
   await byClass(root, "open-folder-button")[0].dispatch("click");
   assert.deepStrictEqual(openCalls, [["local"]]);
-  assert.strictEqual(byClass(root, "session-action-feedback")[0].textContent, "This folder is no longer available.");
+  assert.strictEqual(byClass(root, "session-inline-feedback")[0].textContent, "This folder is no longer available.");
+});
+
+test("HUD preserves folder pending state across snapshot renders", async () => {
+  let resolveOpen;
+  const pendingResult = new Promise((resolve) => { resolveOpen = resolve; });
+  const harness = await loadHud([session("local")], () => pendingResult);
+
+  const clickPromise = byClass(harness.root, "open-folder-button")[0].dispatch("click");
+  await flush();
+  harness.pushSnapshot();
+
+  const replacementButton = byClass(harness.root, "open-folder-button")[0];
+  assert.strictEqual(replacementButton.disabled, true);
+  await replacementButton.dispatch("click");
+  assert.deepStrictEqual(harness.openCalls, [["local"]]);
+
+  resolveOpen({ status: "ok" });
+  await clickPromise;
+  assert.strictEqual(byClass(harness.root, "open-folder-button")[0].disabled, false);
+});
+
+test("HUD feedback survives snapshot renders and clears on its timeout", async () => {
+  const harness = await loadHud([session("local")]);
+  await byClass(harness.root, "row-unfocusable")[0].dispatch("click");
+  harness.pushSnapshot();
+  assert.strictEqual(
+    byClass(harness.root, "session-inline-feedback")[0].textContent,
+    "This session did not provide terminal window information."
+  );
+
+  await harness.expireFeedback();
+  assert.strictEqual(byClass(harness.root, "session-inline-feedback").length, 0);
+  assert.strictEqual(byClass(harness.root, "title")[0].textContent, "local");
 });
 
 test("unfocusable and folder feedback copy exists in all supported languages", () => {
   const keys = [
-    "dashboardFocusUnavailable",
-    "dashboardRemoteFocusUnavailable",
     "dashboardOpenFolder",
     "sessionOpenFolderFailed",
     "sessionOpenFolderUnavailable",
