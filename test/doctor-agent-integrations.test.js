@@ -186,6 +186,18 @@ function qoderWorkDescriptor() {
   return managedFileDescriptor("qoderwork", ".qoderwork");
 }
 
+function workBuddyDescriptor() {
+  const descriptor = managedFileDescriptor("workbuddy", ".workbuddy-ai");
+  return {
+    ...descriptor,
+    configTargets: [{
+      label: "workbuddy-ai",
+      parentDir: descriptor.parentDir,
+      configPath: descriptor.configPath,
+    }],
+  };
+}
+
 function flatHooksConfig(events, marker) {
   return Object.fromEntries(events.map((event) => [
     event,
@@ -1017,6 +1029,64 @@ describe("checkAgentIntegrations", () => {
         agentId: descriptor.agentId,
       });
     }
+  });
+
+  it("validates every required WorkBuddy hook event", () => {
+    const descriptor = workBuddyDescriptor();
+    writeJson(descriptor.configPath, {
+      hooks: nestedHooksConfig(descriptor.hookEvents, descriptor.marker),
+    });
+
+    const seen = [];
+    const detail = runOne(descriptor, {
+      validateCommand: (command) => {
+        seen.push(command);
+        return { ok: true, nodeBin: "/node", scriptPath: "/app/hooks/workbuddy-hook.js" };
+      },
+    });
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.commandCount, descriptor.hookEvents.length);
+    assert.strictEqual(seen.length, descriptor.hookEvents.length);
+    assert.ok(seen.every((command) => command.includes(descriptor.marker)));
+  });
+
+  it("offers WorkBuddy repair when one required hook event is missing", () => {
+    const descriptor = workBuddyDescriptor();
+    const hooks = nestedHooksConfig(descriptor.hookEvents, descriptor.marker);
+    const missingEvent = descriptor.hookEvents[4];
+    delete hooks[missingEvent];
+    writeJson(descriptor.configPath, { hooks });
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.deepStrictEqual(detail.missingHookEvents, [missingEvent]);
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "workbuddy" });
+  });
+
+  it("reports the WorkBuddy event whose command path is broken", () => {
+    const descriptor = workBuddyDescriptor();
+    writeJson(descriptor.configPath, {
+      hooks: nestedHooksConfig(descriptor.hookEvents, descriptor.marker),
+    });
+    const brokenEvent = descriptor.hookEvents[3];
+
+    const detail = runOne(descriptor, {
+      validateCommand: (command) => command.endsWith(` ${brokenEvent}`)
+        ? {
+          ok: false,
+          issue: "scriptPath-missing",
+          nodeBin: "/node",
+          scriptPath: "/missing/workbuddy-hook.js",
+        }
+        : { ok: true, nodeBin: "/node", scriptPath: "/app/hooks/workbuddy-hook.js" },
+    });
+
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.brokenHookEvent, brokenEvent);
+    assert.strictEqual(detail.hookCommandIssue, "scriptPath-missing");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "workbuddy" });
   });
 
   it("does not offer repair when a managed hook group is disabled", () => {

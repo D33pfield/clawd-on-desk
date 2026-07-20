@@ -11,6 +11,7 @@ function buildSettingsAgentOrderExports() {
     "opencode",
     "mimocode",
     "codebuddy",
+    "workbuddy",
     "qoder",
     "qoderwork",
   ];

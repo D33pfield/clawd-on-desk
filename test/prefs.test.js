@@ -105,7 +105,7 @@ describe("prefs.getDefaults", () => {
         `${id} should default permissionsEnabled`
       );
     }
-    for (const id of ["antigravity-cli", "codewhale", "pi", "openclaw", "qoder"]) {
+    for (const id of ["antigravity-cli", "codewhale", "pi", "openclaw", "qoder", "workbuddy"]) {
       assert.strictEqual(
         d.agents[id].permissionsEnabled,
         false,
@@ -143,6 +143,16 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.agents.qoder.enabled, false);
     assert.strictEqual(d.agents.qoder.permissionsEnabled, false);
     assert.strictEqual(d.agents.qoder.notificationHookEnabled, true);
+  });
+
+  it("defaults WorkBuddy permission bubbles off (state-only, #618)", () => {
+    // The desktop app owns the permission loop in its native sandbox + GUI;
+    // Clawd only mirrors state and pops a waiting Notification.
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.agents.workbuddy.integrationInstalled, false);
+    assert.strictEqual(d.agents.workbuddy.enabled, false);
+    assert.strictEqual(d.agents.workbuddy.permissionsEnabled, false);
+    assert.strictEqual(d.agents.workbuddy.notificationHookEnabled, true);
   });
 
   it("defaults CodeWhale permission bubbles off (state-only)", () => {

@@ -10,7 +10,7 @@
 //   2. RECORD every execFileSync and refuse to actually run it. Recording is the
 //      real assertion: with the #681 gate working, the count is 0. Refusing to
 //      run it means a broken gate fails in milliseconds instead of cold-starting
-//      a real PowerShell (~270ms) per adapter × 13.
+//      a real PowerShell (~270ms) per adapter × 14.
 //   3. Dump the recording on exit, since the parent can only see stdout/stderr
 //      and the hooks own their stdout (that contract is under test too).
 //

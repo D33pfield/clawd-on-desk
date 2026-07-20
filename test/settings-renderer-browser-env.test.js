@@ -5282,6 +5282,47 @@ describe("settings renderer browser environment", () => {
     assert.ok(permissionsSwitch, "CodeBuddy permission switch should still be mounted");
   });
 
+  it("does not render a permission toggle on the WorkBuddy row (state-only, #618)", () => {
+    // The desktop app owns the permission loop in its native sandbox + GUI, so
+    // capabilities.permissionApproval is false and the row must offer no
+    // permission switch — only the notification (waiting) toggle.
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          workbuddy: {
+            enabled: true,
+            notificationHookEnabled: true,
+          },
+        },
+      },
+      agentMetadata: [{
+        id: "workbuddy",
+        name: "WorkBuddy",
+        eventSource: "hook",
+        capabilities: {
+          notificationHook: true,
+        },
+      }],
+      collapsedGroups: {
+        "agents:workbuddy": false,
+      },
+    });
+
+    harness.core.ops.requestRender({ content: true });
+    harness.raf.flush();
+
+    const permissionsSwitch = [...harness.core.state.mountedControls.agentSwitches.values()]
+      .find((meta) => meta.agentId === "workbuddy" && meta.flag === "permissionsEnabled");
+    assert.strictEqual(
+      permissionsSwitch,
+      undefined,
+      "WorkBuddy is state-only, so no permission toggle should be mounted"
+    );
+    const notificationSwitch = [...harness.core.state.mountedControls.agentSwitches.values()]
+      .find((meta) => meta.agentId === "workbuddy" && meta.flag === "notificationHookEnabled");
+    assert.ok(notificationSwitch, "WorkBuddy waiting-notification switch should still be mounted");
+  });
+
   it("slides the Codex permission mode pill when mode broadcasts patch in place", () => {
     const harness = loadAgentsTabForTest({
       snapshot: {

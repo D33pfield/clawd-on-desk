@@ -14,6 +14,7 @@ const AGENT_LABELS = {
   opencode: "opencode",
   mimocode: "MiMo Code",
   codebuddy: "CodeBuddy",
+  workbuddy: "WorkBuddy",
   pi: "Pi",
   openclaw: "OpenClaw",
 };

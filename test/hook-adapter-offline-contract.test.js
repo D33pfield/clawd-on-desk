@@ -1,14 +1,16 @@
 // test/hook-adapter-offline-contract.test.js — #681 Slice A1, adapter contract.
 //
 // The claim this file has to earn: tightening the SHARED resolver to return an
-// unavailable shape is safe for all 13 adapters WITHOUT touching any of them.
+// unavailable shape is safe for all 14 adapters WITHOUT touching any of them.
 //
-// It is not enough to assert the shape in isolation. Six adapters (codex,
-// copilot, cursor, kimi, kiro, codebuddy) do a bare `pidChain.length` with no
-// Array.isArray guard, and two of those (cursor, codebuddy) would swallow the
-// resulting TypeError in a .catch() that rewrites their gating stdout — cursor's
-// {"continue":true} and codebuddy's {"decision":"allow"} would silently become
-// {}. A shape-only unit test cannot see that. So each adapter is run here as its
+// It is not enough to assert the shape in isolation. Seven adapters (codex,
+// copilot, cursor, kimi, kiro, codebuddy, workbuddy) do a bare `pidChain.length`
+// with no Array.isArray guard, and three of those (cursor, codebuddy, workbuddy)
+// would swallow the resulting TypeError in a .catch() that rewrites their gating
+// stdout — cursor's {"continue":true} and codebuddy's {"decision":"allow"}
+// would silently become {}; WorkBuddy intentionally emits {} on every path.
+// A shape-only unit test cannot
+// see that. So each adapter is run here as its
 // REAL script, in a subprocess, with:
 //
 //   - USERPROFILE/HOME pointed at an empty dir  → no runtime.json → gate fires
@@ -33,7 +35,7 @@ const HOOKS_DIR = path.resolve(__dirname, "..", "hooks");
 const PROBE = path.resolve(__dirname, "helpers", "hook-offline-probe.js");
 
 // Every createPidResolver consumer. Cross-checked against
-// `grep -l createPidResolver hooks/*.js` — if a 14th adapter appears without a
+// `grep -l createPidResolver hooks/*.js` — if a 15th adapter appears without a
 // row here, the count assertion at the bottom fails.
 //
 // `stdout` is the EXACT bytes the agent must still receive while Clawd is
@@ -62,6 +64,12 @@ const ADAPTERS = [
   { name: "qoderwork-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: null },
   { name: "qwen-code-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: null },
   { name: "reasonix-hook.js", payload: { event: "PreToolUse", cwd: "D:/repo", toolName: "bash" }, stdout: "" },
+  // WorkBuddy reads pidChain.length bare too, so the tightened resolver's
+  // []-not-null offline shape is still load-bearing here. session_id is
+  // REQUIRED: workbuddy-hook.js
+  // drops any event without one before it ever resolves (#618/#648), which would
+  // otherwise make the vacuity guard below see zero spawns and fail.
+  { name: "workbuddy-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
 ];
 
 let fakeHome;
@@ -152,14 +160,14 @@ describe("#681 — every adapter survives a clean offline with zero spawn", { sk
     }
   });
 
-  it("covers every createPidResolver consumer in hooks/ (fails when a 14th adapter lands)", () => {
+  it("covers every createPidResolver consumer in hooks/ (fails when a 15th adapter lands)", () => {
     const consumers = fs.readdirSync(HOOKS_DIR)
       .filter((f) => f.endsWith("-hook.js"))
       .filter((f) => fs.readFileSync(path.join(HOOKS_DIR, f), "utf8").includes("createPidResolver("))
       .sort();
     assert.deepStrictEqual(consumers, ADAPTERS.map((a) => a.name).sort(),
       "a new createPidResolver adapter must be added to ADAPTERS above and proven offline-safe");
-    assert.strictEqual(consumers.length, 13, "the plan and AGENTS.md both say 13");
+    assert.strictEqual(consumers.length, 14, "the plan and AGENTS.md both say 14 (workbuddy joined in #618)");
   });
 });
 

@@ -23,6 +23,7 @@ const { resolveHermesHome, unregisterHermesPlugin } = require("./hermes-install"
 const { unregisterQoderHooks } = require("./qoder-install");
 const { unregisterReasonixHooks } = require("./reasonix-install");
 const { unregisterQoderWorkHooks } = require("./qoderwork-install");
+const { unregisterWorkBuddyHooks } = require("./workbuddy-install");
 
 const CODEX_MARKERS = ["codex-hook.js", "codex-debug-hook.js"];
 
@@ -46,6 +47,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "qoder",
   "reasonix",
   "qoderwork",
+  "workbuddy",
 ]);
 
 const AGENT_DISPLAY_NAMES = Object.freeze({
@@ -55,6 +57,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   "cursor-agent": "Cursor Agent",
   "copilot-cli": "GitHub Copilot CLI",
   codebuddy: "CodeBuddy",
+  workbuddy: "WorkBuddy",
   "kiro-cli": "Kiro CLI",
   "kimi-cli": "Kimi Code",
   "qwen-code": "Qwen Code",
@@ -217,6 +220,13 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         ...common,
         settingsPath: path.join(homeDir, ".qoderwork", "settings.json"),
       },
+      workbuddy: {
+        ...common,
+        settingsPaths: [
+          path.join(homeDir, ".workbuddy-ai", "settings.json"),
+          path.join(homeDir, ".workbuddy", "settings.json"),
+        ],
+      },
     },
   };
 }
@@ -265,6 +275,7 @@ const AGENT_CLEANERS = Object.freeze({
   qoder: unregisterQoderHooks,
   reasonix: unregisterReasonixHooks,
   qoderwork: unregisterQoderWorkHooks,
+  workbuddy: unregisterWorkBuddyHooks,
 });
 
 function removedCountFromResult(result) {

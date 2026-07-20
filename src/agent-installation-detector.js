@@ -284,6 +284,14 @@ function detectInstallation(descriptor, paths, options) {
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
       return notFound();
     }
+    case "workbuddy":
+      for (const target of paths.configTargets || []) {
+        if (dirExists(fsImpl, target.parentDir)) {
+          return installationResult(true, "high", "parent-dir", `${target.parentDir} exists`);
+        }
+      }
+      if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
+      return notFound();
     case "copilot-cli":
     case "cursor-agent":
     case "codebuddy":
