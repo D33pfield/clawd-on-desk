@@ -1,12 +1,35 @@
 "use strict";
 
-const { describe, it } = require("node:test");
+const { afterEach, beforeEach, describe, it } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
 const { createIntegrationSyncRuntime } = require("../src/integration-sync");
+
+const missingFakeImpls = [];
+let integrationFailureWarnings = [];
+let allowedIntegrationFailureWarningPatterns = [];
+let restoreConsoleWarn = null;
+
+function createGuardedIntegrationCtx(target, calls) {
+  return new Proxy(target, {
+    get(obj, prop, receiver) {
+      if (Object.prototype.hasOwnProperty.call(obj, prop)) {
+        return Reflect.get(obj, prop, receiver);
+      }
+      if (typeof prop !== "string" || !/^(sync|repair)[A-Z]\w*Impl$/.test(prop)) {
+        return Reflect.get(obj, prop, receiver);
+      }
+      return () => {
+        calls.push({ name: `missing-fake:${prop}` });
+        missingFakeImpls.push(prop);
+        throw new Error(`Missing integration test fake: ${prop}`);
+      };
+    },
+  });
+}
 
 function withPatchedExport(modulePath, exportName, replacement, run) {
   const moduleExports = require(modulePath);
@@ -22,7 +45,8 @@ function withPatchedExport(modulePath, exportName, replacement, run) {
 function makeRuntime(overrides = {}) {
   const calls = [];
   const repairOptions = [];
-  const ctx = {
+  const { ctx: ctxOverrides = {}, ...runtimeOverrides } = overrides;
+  const ctx = createGuardedIntegrationCtx({
     autoStartWithClaude: true,
     syncClawdHooksImpl: (options) => {
       calls.push({ name: "claude", options });
@@ -53,10 +77,11 @@ function makeRuntime(overrides = {}) {
     },
     syncHermesPluginImpl: () => calls.push({ name: "hermes" }),
     syncQoderHooksImpl: () => calls.push({ name: "qoder" }),
-    ...(overrides.ctx || {}),
-  };
+    syncReasonixHooksImpl: () => calls.push({ name: "reasonix" }),
+    syncQoderWorkHooksImpl: () => calls.push({ name: "qoderwork" }),
+    ...ctxOverrides,
+  }, calls);
   const runtime = createIntegrationSyncRuntime({
-    ctx,
     getHookServerPort: () => 24444,
     shouldManageClaudeHooks: () => true,
     isAgentEnabled: () => true,
@@ -65,12 +90,74 @@ function makeRuntime(overrides = {}) {
       calls.push({ name: "watcher:stop" });
       return "stopped";
     },
-    ...overrides,
+    ...runtimeOverrides,
+    ctx,
   });
   return { runtime, calls, repairOptions };
 }
 
 describe("integration sync runtime", () => {
+  beforeEach(() => {
+    const originalWarn = console.warn;
+    integrationFailureWarnings = [];
+    allowedIntegrationFailureWarningPatterns = [];
+    restoreConsoleWarn = () => {
+      console.warn = originalWarn;
+    };
+    console.warn = (...args) => {
+      const message = args.map((arg) => String(arg)).join(" ");
+      if (/^Clawd:\s+failed to (?:sync|repair)\b/i.test(message)) {
+        integrationFailureWarnings.push(message);
+        return;
+      }
+      originalWarn(...args);
+    };
+  });
+
+  afterEach(() => {
+    if (restoreConsoleWarn) restoreConsoleWarn();
+    restoreConsoleWarn = null;
+    const missing = missingFakeImpls.splice(0);
+    const warnings = integrationFailureWarnings;
+    integrationFailureWarnings = [];
+    const unexpectedWarnings = warnings.filter((message) => (
+      !allowedIntegrationFailureWarningPatterns.some((pattern) => pattern.test(message))
+    ));
+    allowedIntegrationFailureWarningPatterns = [];
+    assert.deepStrictEqual(
+      { missingFakeImpls: missing, unexpectedIntegrationFailureWarnings: unexpectedWarnings },
+      { missingFakeImpls: [], unexpectedIntegrationFailureWarnings: [] }
+    );
+  });
+
+  it("test ctx guard records missing sync/repair fakes and blocks real fallbacks", () => {
+    const calls = [];
+    const ctx = createGuardedIntegrationCtx({}, calls);
+    const runtime = createIntegrationSyncRuntime({ ctx });
+    allowedIntegrationFailureWarningPatterns.push(
+      /^Clawd:\s+failed to sync Reasonix hooks:\s+Missing integration test fake: syncReasonixHooksImpl$/
+    );
+
+    const result = runtime.syncReasonixHooks();
+    assert.throws(
+      () => ctx.repairFuturePluginImpl(),
+      /Missing integration test fake: repairFuturePluginImpl/
+    );
+
+    assert.deepStrictEqual(result, {
+      status: "error",
+      message: "Missing integration test fake: syncReasonixHooksImpl",
+    });
+    assert.deepStrictEqual(calls, [
+      { name: "missing-fake:syncReasonixHooksImpl" },
+      { name: "missing-fake:repairFuturePluginImpl" },
+    ]);
+    assert.deepStrictEqual(missingFakeImpls.splice(0), [
+      "syncReasonixHooksImpl",
+      "repairFuturePluginImpl",
+    ]);
+  });
+
   it("syncClawdHooks passes auto-start, the current server port, and sync provenance", () => {
     const { runtime, calls } = makeRuntime();
 
@@ -193,6 +280,8 @@ describe("integration sync runtime", () => {
       "openclaw",
       "hermes",
       "qoder",
+      "reasonix",
+      "qoderwork",
     ]);
   });
 
@@ -220,6 +309,8 @@ describe("integration sync runtime", () => {
       "openclaw",
       "hermes",
       "qoder",
+      "reasonix",
+      "qoderwork",
     ]);
   });
 
