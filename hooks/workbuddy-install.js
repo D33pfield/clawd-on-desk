@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Merge Clawd WorkBuddy hooks into ~/.workbuddy/settings.json (append-only, idempotent)
+// Merge Clawd WorkBuddy hooks into the active WorkBuddy settings.json
+// (current WorkBuddy AI: ~/.workbuddy-ai; legacy WorkBuddy: ~/.workbuddy).
 // WorkBuddy uses Claude Code-compatible hook format: { matcher, hooks: [{ type, command }] }
 
 const fs = require("fs");
@@ -20,8 +21,46 @@ const {
   removeMatchingHttpHooks,
 } = require("./json-utils");
 const MARKER = "workbuddy-hook.js";
-const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".workbuddy");
+const CURRENT_PARENT_DIR = path.join(os.homedir(), ".workbuddy-ai");
+const CURRENT_CONFIG_PATH = path.join(CURRENT_PARENT_DIR, "settings.json");
+const LEGACY_PARENT_DIR = path.join(os.homedir(), ".workbuddy");
+const LEGACY_CONFIG_PATH = path.join(LEGACY_PARENT_DIR, "settings.json");
+const DEFAULT_PARENT_DIR = CURRENT_PARENT_DIR;
 const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "settings.json");
+
+function workBuddySettingsCandidates(options = {}) {
+  const homeDir = options.homeDir || os.homedir();
+  return [
+    {
+      label: "workbuddy-ai",
+      parentDir: path.join(homeDir, ".workbuddy-ai"),
+      settingsPath: path.join(homeDir, ".workbuddy-ai", "settings.json"),
+    },
+    {
+      label: "legacy",
+      parentDir: path.join(homeDir, ".workbuddy"),
+      settingsPath: path.join(homeDir, ".workbuddy", "settings.json"),
+    },
+  ];
+}
+
+// WorkBuddy AI 5.2.3 sets WORKBUDDY_CONFIG_DIR to ~/.workbuddy-ai while also
+// keeping toolchain binaries under ~/.workbuddy. Directory existence alone is
+// therefore ambiguous: prefer the current settings file/dir before the legacy
+// one, and never let the binaries directory pull hook installation back to the
+// config path the desktop runtime does not read.
+function resolveWorkBuddySettingsPath(options = {}) {
+  if (typeof options.settingsPath === "string" && options.settingsPath) return options.settingsPath;
+  const fsImpl = options.fs || fs;
+  const [current, legacy] = workBuddySettingsCandidates(options);
+  if (fsImpl.existsSync(current.settingsPath) || fsImpl.existsSync(current.parentDir)) {
+    return current.settingsPath;
+  }
+  if (fsImpl.existsSync(legacy.settingsPath) || fsImpl.existsSync(legacy.parentDir)) {
+    return legacy.settingsPath;
+  }
+  return current.settingsPath;
+}
 
 // WorkBuddy supported hook events (Claude Code-compatible)
 const WORKBUDDY_HOOK_EVENTS = [
@@ -36,7 +75,7 @@ const WORKBUDDY_HOOK_EVENTS = [
 ];
 
 /**
- * Register Clawd hooks into ~/.workbuddy/settings.json
+ * Register Clawd hooks into the active WorkBuddy settings.json.
  * Uses Claude Code-compatible nested format: { matcher, hooks: [{ type, command }] }
  * @param {object} [options]
  * @param {boolean} [options.silent]
@@ -44,13 +83,13 @@ const WORKBUDDY_HOOK_EVENTS = [
  * @returns {{ added: number, skipped: number, updated: number }}
  */
 function registerWorkBuddyHooks(options = {}) {
-  const settingsPath = options.settingsPath || path.join(os.homedir(), ".workbuddy", "settings.json");
+  const settingsPath = resolveWorkBuddySettingsPath(options);
 
-  // Skip if ~/.workbuddy/ doesn't exist (WorkBuddy not installed)
+  // Skip if neither current nor legacy WorkBuddy config directory exists.
   const workbuddyDir = path.dirname(settingsPath);
   if (!options.settingsPath && !fs.existsSync(workbuddyDir)) {
-    if (!options.silent) console.log("Clawd: ~/.workbuddy/ not found — skipping WorkBuddy hook registration");
-    return { added: 0, skipped: 0, updated: 0 };
+    if (!options.silent) console.log("Clawd: WorkBuddy config directory not found — skipping hook registration");
+    return { added: 0, skipped: 0, updated: 0, settingsPath };
   }
 
   const hookScript = asarUnpackedPath(path.resolve(__dirname, "workbuddy-hook.js").replace(/\\/g, "/"));
@@ -158,23 +197,67 @@ function registerWorkBuddyHooks(options = {}) {
     writeJsonAtomic(settingsPath, settings);
   }
 
+  // Only after the active config was read and (if needed) written successfully,
+  // migrate marker-scoped Clawd hooks away from the inactive generation. This
+  // preserves foreign hooks and prevents Settings from leaving a temporary
+  // checkout reference in ~/.workbuddy after installing the live hooks into
+  // ~/.workbuddy-ai. An unreadable inactive config still fails closed instead
+  // of silently leaving executable stale commands behind. Invalid JSON is the
+  // one safe exception: WorkBuddy cannot execute hooks from an unparseable file,
+  // so record the skipped path without poisoning an already-successful install.
+  let migratedRemoved = 0;
+  let migrationBackupPaths = [];
+  const migrationSkippedPaths = [];
+  if (!options.settingsPath) {
+    const inactivePaths = workBuddySettingsCandidates(options)
+      .map((candidate) => candidate.settingsPath)
+      .filter((candidatePath) => candidatePath !== settingsPath && fs.existsSync(candidatePath));
+    for (const inactivePath of inactivePaths) {
+      try {
+        const migration = unregisterWorkBuddyHooks({
+          ...options,
+          silent: true,
+          backup: true,
+          settingsPaths: [inactivePath],
+        });
+        migratedRemoved += migration.removed || 0;
+        migrationBackupPaths.push(...(migration.backupPaths || []));
+      } catch (err) {
+        if (!err || err.code !== "INVALID_JSON") throw err;
+        migrationSkippedPaths.push(inactivePath);
+        if (!options.silent) {
+          console.warn(`Clawd: skipped invalid inactive WorkBuddy config ${inactivePath}`);
+        }
+      }
+    }
+  }
+
   if (!options.silent) {
     console.log(`Clawd WorkBuddy hooks → ${settingsPath}`);
     console.log(`  Added: ${added}, updated: ${updated}, skipped: ${skipped}`);
   }
 
-  return { added, skipped, updated };
+  return {
+    added,
+    skipped,
+    updated,
+    settingsPath,
+    migratedRemoved,
+    migrationBackupPaths,
+    migrationSkippedPaths,
+  };
 }
 
-function unregisterWorkBuddyHooks(options = {}) {
-  const settingsPath = options.settingsPath || path.join(os.homedir(), ".workbuddy", "settings.json");
-
+function unregisterWorkBuddyHooksAtPath(settingsPath, options = {}) {
   let settings = {};
   try {
     settings = readJsonFile(settingsPath);
   } catch (err) {
     if (err.code === "ENOENT") return { removed: 0, changed: false, settingsPath };
-    throw new Error(`Failed to read settings.json: ${err.message}`);
+    const wrapped = new Error(`Failed to read settings.json: ${err.message}`);
+    wrapped.code = err instanceof SyntaxError ? "INVALID_JSON" : err.code;
+    wrapped.settingsPath = settingsPath;
+    throw wrapped;
   }
 
   if (!settings.hooks || typeof settings.hooks !== "object") {
@@ -208,19 +291,55 @@ function unregisterWorkBuddyHooks(options = {}) {
 
   let backupPath = null;
   if (changed) backupPath = writeJsonAtomicWithBackup(settingsPath, settings, options);
-  if (!options.silent) console.log(`Clawd WorkBuddy hooks removed: ${removed}`);
   const result = { removed, changed, settingsPath };
   if (options.backup === true) result.backupPath = backupPath;
   return result;
 }
 
+/**
+ * Remove marker-scoped Clawd hooks from WorkBuddy config(s). Default: current
+ * and legacy generations. options.settingsPaths/settingsPath can narrow it.
+ */
+function unregisterWorkBuddyHooks(options = {}) {
+  const paths = Array.isArray(options.settingsPaths) && options.settingsPaths.length > 0
+    ? options.settingsPaths
+    : options.settingsPath
+      ? [options.settingsPath]
+      : workBuddySettingsCandidates(options).map((candidate) => candidate.settingsPath);
+  const uniquePaths = [...new Set(paths)];
+  const results = uniquePaths.map((settingsPath) => unregisterWorkBuddyHooksAtPath(settingsPath, options));
+  const removed = results.reduce((sum, result) => sum + (result.removed || 0), 0);
+  const changed = results.some((result) => result.changed);
+  if (!options.silent) console.log(`Clawd WorkBuddy hooks removed: ${removed}`);
+  const primary = results.find((result) => result.changed) || results[0];
+  const aggregate = {
+    removed,
+    changed,
+    settingsPath: primary ? primary.settingsPath : uniquePaths[0],
+    results,
+  };
+  if (options.backup === true) {
+    aggregate.backupPaths = results
+      .map((result) => result.backupPath)
+      .filter((backupPath) => typeof backupPath === "string" && backupPath);
+    aggregate.backupPath = aggregate.backupPaths[0] || null;
+  }
+  return aggregate;
+}
+
 module.exports = {
   DEFAULT_PARENT_DIR,
   DEFAULT_CONFIG_PATH,
+  CURRENT_PARENT_DIR,
+  CURRENT_CONFIG_PATH,
+  LEGACY_PARENT_DIR,
+  LEGACY_CONFIG_PATH,
   MARKER,
   registerWorkBuddyHooks,
   unregisterWorkBuddyHooks,
   WORKBUDDY_HOOK_EVENTS,
+  resolveWorkBuddySettingsPath,
+  workBuddySettingsCandidates,
   __test: { isManagedPermissionUrl },
 };
 

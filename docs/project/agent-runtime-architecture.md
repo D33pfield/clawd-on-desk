@@ -64,7 +64,7 @@ WorkBuddy 状态与通知同步（Claude Code 兼容 hook，command）：
   WorkBuddy 触发 SessionStart / SessionEnd / UserPromptSubmit / PreToolUse / PostToolUse / Stop / Notification / PreCompact
     → hooks/workbuddy-hook.js（PascalCase 事件 → agents/workbuddy.js 映射 → HTTP POST）
     → 同上状态机（agent_id: workbuddy）
-  Hook 注册到 ~/.workbuddy/settings.json。集成为 state + Notification only：不注册 PermissionRequest HTTP hook，
+  Hook 注册到当前 WorkBuddy AI 的 ~/.workbuddy-ai/settings.json（旧版兼容 ~/.workbuddy/settings.json）。集成为 state + Notification only：不注册 PermissionRequest HTTP hook，
   审批始终由 WorkBuddy 原生沙箱与 GUI 处理；无 session_id 的事件在返回合法 stdout 后直接丢弃，不进入 /state。
 
 Kimi Code CLI（Kimi-CLI）状态同步（hook-only，config.toml）：

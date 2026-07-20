@@ -277,10 +277,10 @@ const SCHEMA = {
       "antigravity-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: false },
       "codebuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       // WorkBuddy shares CodeBuddy's Claude-Code-compatible hook protocol but
-      // uses a distinct data dir (~/.workbuddy). Opt-in like every other
+      // uses a distinct data dir (~/.workbuddy-ai; legacy: ~/.workbuddy). Opt-in like every other
       // non-default agent — agent-gate.js fail-opens missing entries, so this
       // default MUST exist or startup sync would auto-install for any user who
-      // merely has a ~/.workbuddy/ directory. State + Notification only: the
+      // merely has a WorkBuddy data directory. State + Notification only: the
       // desktop app owns its permission loop natively, so permission bubbles
       // default off (like qoderwork).
       "workbuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },

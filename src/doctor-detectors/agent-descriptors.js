@@ -125,6 +125,22 @@ const AGENT_DESCRIPTORS = Object.freeze([
     eventSource: agentEventSource("workbuddy"),
     parentDir: workbuddy.DEFAULT_PARENT_DIR,
     configPath: workbuddy.DEFAULT_CONFIG_PATH,
+    // Current WorkBuddy AI uses ~/.workbuddy-ai, while older WorkBuddy builds
+    // used ~/.workbuddy. Prefer the current generation when both exist; the
+    // legacy directory may still exist solely to hold WorkBuddy-managed
+    // toolchain binaries and is not proof that its settings.json is active.
+    configTargets: Object.freeze([
+      Object.freeze({
+        label: "workbuddy-ai",
+        parentDir: workbuddy.CURRENT_PARENT_DIR,
+        configPath: workbuddy.CURRENT_CONFIG_PATH,
+      }),
+      Object.freeze({
+        label: "legacy",
+        parentDir: workbuddy.LEGACY_PARENT_DIR,
+        configPath: workbuddy.LEGACY_CONFIG_PATH,
+      }),
+    ]),
     configMode: "file",
     autoInstall: true,
     marker: workbuddy.MARKER,

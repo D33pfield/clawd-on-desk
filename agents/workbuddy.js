@@ -1,6 +1,6 @@
 // WorkBuddy IDE/CLI agent configuration
 // Hook-based integration — Claude Code-compatible hook format
-// Settings: ~/.workbuddy/settings.json
+// Settings: ~/.workbuddy-ai/settings.json (current) or ~/.workbuddy/settings.json (legacy)
 // Docs: https://www.codebuddy.cn/docs/workbuddy/Overview
 
 module.exports = {
@@ -11,13 +11,19 @@ module.exports = {
     // like `claude`/`codebuddy`. Hooks fire from inside the app, so this list
     // only feeds src/state.js zero-session startup recovery (it never creates
     // or reaps tracked sessions). Verified on macOS: the app bundle ships
-    // "WorkBuddy Helper", "WorkBuddy Helper (Renderer|GPU|Plugin)"; the main
+    // Current 5.2.3 ships "WorkBuddy AI Helper" variants; older builds shipped
+    // "WorkBuddy Helper" variants. The main
     // executable is the bare "Electron" binary, which we deliberately DO NOT
     // list — matching it would false-positive on dev-mode Clawd and other
     // unrenamed Electron apps. Windows/Linux names are best-guess assumptions
     // pending real-device confirmation (tasklist / ps).
     win: ["WorkBuddy.exe", "workbuddy.exe"],
-    mac: ["WorkBuddy Helper", "WorkBuddy Helper (Renderer)"],
+    mac: [
+      "WorkBuddy AI Helper",
+      "WorkBuddy AI Helper (Renderer)",
+      "WorkBuddy Helper",
+      "WorkBuddy Helper (Renderer)",
+    ],
     linux: ["workbuddy", "WorkBuddy"],
   },
   eventSource: "hook",

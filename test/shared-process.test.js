@@ -142,6 +142,74 @@ describe("createPidResolver()", () => {
   });
 });
 
+describe("createPidResolver() — POSIX non-Node command-line probe", () => {
+  const { loadSharedProcessWithMock } = require("./helpers/load-shared-process-with-mock");
+
+  function workBuddyProcessMock(onCommandProbe = () => {}) {
+    return (command, args) => {
+      const invocation = `${command} ${args.join(" ")}`;
+      if (invocation === "ps -o ppid= -p 610") return "1\n";
+      if (invocation === "ps -o comm= -p 610") {
+        return "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron\n";
+      }
+      if (invocation === "ps -o command= -p 610") {
+        onCommandProbe();
+        return "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron "
+          + "/Applications/WorkBuddy AI.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy "
+          + "--serve --session-id session-1\n";
+      }
+      const err = new Error(`unexpected command: ${invocation}`);
+      err.code = "ENOENT";
+      throw err;
+    };
+  }
+
+  it("sets agentPid for an explicitly scoped Electron command-line match on macOS", () => {
+    let commandProbes = 0;
+    const { mod, cleanup } = loadSharedProcessWithMock({
+      execFileSyncMock: workBuddyProcessMock(() => { commandProbes++; }),
+      platform: "darwin",
+    });
+    try {
+      const resolve = mod.createPidResolver({
+        ...LIVE_GATE,
+        platformConfig: mod.getPlatformConfig(),
+        startPid: 610,
+        agentCmdlineCheck: (cmdline) => cmdline.includes("/cli/bin/codebuddy")
+          && cmdline.includes("--session-id"),
+        agentCmdlineNames: new Set(["electron"]),
+      });
+      const result = resolve();
+      assert.strictEqual(result.agentPid, 610);
+      assert.strictEqual(commandProbes, 1);
+      assert.ok(result.agentCommandLine.includes("--session-id"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("does not probe Electron command lines unless the caller opts in", () => {
+    let commandProbes = 0;
+    const { mod, cleanup } = loadSharedProcessWithMock({
+      execFileSyncMock: workBuddyProcessMock(() => { commandProbes++; }),
+      platform: "darwin",
+    });
+    try {
+      const resolve = mod.createPidResolver({
+        ...LIVE_GATE,
+        platformConfig: mod.getPlatformConfig(),
+        startPid: 610,
+        agentCmdlineCheck: () => true,
+      });
+      const result = resolve();
+      assert.strictEqual(result.agentPid, null);
+      assert.strictEqual(commandProbes, 0);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 // createPidResolver() — tmux resolution
 // ═════════════════════════════════════════════════════════════════════════════
@@ -509,6 +577,23 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
       const { agentPid, agentCommandLine } = resolve();
       assert.strictEqual(agentPid, 600);
       assert.ok(agentCommandLine.includes("claude-code"));
+    });
+  });
+
+  it("supports an explicitly scoped non-Node command-line probe", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ ...LIVE_GATE,
+      platformConfig: cfg,
+      startPid: 610,
+      agentCmdlineCheck: (cmdline) => cmdline.includes("/cli/bin/codebuddy --serve --session-id"),
+      agentCmdlineNames: new Set(["electron.exe"]),
+    });
+    withMockedExec(() => snapshotJson([
+      { pid: 610, name: "electron.exe", ppid: 0, cmd: "C:/WorkBuddy/Electron C:/WorkBuddy/cli/bin/codebuddy --serve --session-id s-1" },
+    ]), () => {
+      const { agentPid, agentCommandLine } = resolve();
+      assert.strictEqual(agentPid, 610);
+      assert.ok(agentCommandLine.includes("--session-id"));
     });
   });
 });

@@ -7,8 +7,9 @@
 // copilot, cursor, kimi, kiro, codebuddy, workbuddy) do a bare `pidChain.length`
 // with no Array.isArray guard, and three of those (cursor, codebuddy, workbuddy)
 // would swallow the resulting TypeError in a .catch() that rewrites their gating
-// stdout — cursor's {"continue":true} and codebuddy's / workbuddy's
-// {"decision":"allow"} would silently become {}. A shape-only unit test cannot
+// stdout — cursor's {"continue":true} and codebuddy's {"decision":"allow"}
+// would silently become {}; WorkBuddy intentionally emits {} on every path.
+// A shape-only unit test cannot
 // see that. So each adapter is run here as its
 // REAL script, in a subprocess, with:
 //
@@ -63,12 +64,12 @@ const ADAPTERS = [
   { name: "qoderwork-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: null },
   { name: "qwen-code-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: null },
   { name: "reasonix-hook.js", payload: { event: "PreToolUse", cwd: "D:/repo", toolName: "bash" }, stdout: "" },
-  // WorkBuddy gates PreToolUse with {"decision":"allow"} like codebuddy, and it
-  // reads pidChain.length bare too — so the tightened resolver's []-not-null
-  // offline shape is load-bearing here. session_id is REQUIRED: workbuddy-hook.js
+  // WorkBuddy reads pidChain.length bare too, so the tightened resolver's
+  // []-not-null offline shape is still load-bearing here. session_id is
+  // REQUIRED: workbuddy-hook.js
   // drops any event without one before it ever resolves (#618/#648), which would
   // otherwise make the vacuity guard below see zero spawns and fail.
-  { name: "workbuddy-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: `${JSON.stringify({ decision: "allow" })}\n` },
+  { name: "workbuddy-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
 ];
 
 let fakeHome;

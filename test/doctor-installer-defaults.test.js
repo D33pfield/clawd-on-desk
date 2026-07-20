@@ -39,8 +39,10 @@ describe("installer default path exports", () => {
     assert.strictEqual(codebuddy.DEFAULT_PARENT_DIR, path.join(home, ".codebuddy"));
     assert.strictEqual(codebuddy.DEFAULT_CONFIG_PATH, path.join(home, ".codebuddy", "settings.json"));
 
-    assert.strictEqual(workbuddy.DEFAULT_PARENT_DIR, path.join(home, ".workbuddy"));
-    assert.strictEqual(workbuddy.DEFAULT_CONFIG_PATH, path.join(home, ".workbuddy", "settings.json"));
+    assert.strictEqual(workbuddy.DEFAULT_PARENT_DIR, path.join(home, ".workbuddy-ai"));
+    assert.strictEqual(workbuddy.DEFAULT_CONFIG_PATH, path.join(home, ".workbuddy-ai", "settings.json"));
+    assert.strictEqual(workbuddy.LEGACY_PARENT_DIR, path.join(home, ".workbuddy"));
+    assert.strictEqual(workbuddy.LEGACY_CONFIG_PATH, path.join(home, ".workbuddy", "settings.json"));
 
     assert.strictEqual(kiro.DEFAULT_PARENT_DIR, path.join(home, ".kiro"));
     assert.strictEqual(kiro.DEFAULT_AGENTS_DIR, path.join(home, ".kiro", "agents"));

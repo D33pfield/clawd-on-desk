@@ -222,7 +222,10 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       },
       workbuddy: {
         ...common,
-        settingsPath: path.join(homeDir, ".workbuddy", "settings.json"),
+        settingsPaths: [
+          path.join(homeDir, ".workbuddy-ai", "settings.json"),
+          path.join(homeDir, ".workbuddy", "settings.json"),
+        ],
       },
     },
   };

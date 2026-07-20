@@ -81,6 +81,10 @@ describe("doctor agent descriptors", () => {
 
     assert.strictEqual(getAgentDescriptor("workbuddy").parentDir, workbuddy.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("workbuddy").configPath, workbuddy.DEFAULT_CONFIG_PATH);
+    assert.deepStrictEqual(
+      getAgentDescriptor("workbuddy").configTargets.map((target) => target.configPath),
+      [workbuddy.CURRENT_CONFIG_PATH, workbuddy.LEGACY_CONFIG_PATH]
+    );
 
     assert.strictEqual(getAgentDescriptor("kiro-cli").parentDir, kiro.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("kiro-cli").configPath, kiro.DEFAULT_AGENTS_DIR);
@@ -295,5 +299,9 @@ describe("doctor agent descriptors", () => {
     assert.strictEqual(descriptor.autoInstall, true);
     assert.strictEqual(descriptor.marker, workbuddy.MARKER);
     assert.deepStrictEqual(descriptor.hookEvents, workbuddy.WORKBUDDY_HOOK_EVENTS);
+    assert.deepStrictEqual(
+      descriptor.configTargets.map((target) => target.configPath),
+      [workbuddy.CURRENT_CONFIG_PATH, workbuddy.LEGACY_CONFIG_PATH]
+    );
   });
 });

@@ -128,7 +128,8 @@ function getPlatformConfig(options) {
 // Options:
 //   platformConfig       — result of getPlatformConfig()
 //   agentNames           — { win: Set, mac: Set, linux?: Set }  (linux falls back to mac)
-//   agentCmdlineCheck    — (cmdline: string) => boolean  (optional, for node.exe cmdline probes)
+//   agentCmdlineCheck    — (cmdline: string) => boolean  (optional command-line probe)
+//   agentCmdlineNames    — Set<string> (optional; defaults to node/node.exe)
 //   startPid             — number (default process.ppid)
 //   maxDepth             — number (default 8)
 
@@ -461,6 +462,9 @@ function createPidResolver(options) {
   const an = options.agentNames;
   const agentNameSet = an ? (pick(an.win, an.linux || an.mac, an.mac) || null) : null;
   const agentCmdlineCheck = options.agentCmdlineCheck || null;
+  const agentCmdlineNames = options.agentCmdlineNames instanceof Set
+    ? options.agentCmdlineNames
+    : new Set(["node.exe", "node"]);
 
   // #681 seams. Injected so tests never read the real ~/.clawd/runtime.json and
   // never depend on whether the developer's Clawd happens to be running.
@@ -560,7 +564,7 @@ function createPidResolver(options) {
               agentCommandLine = execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 500 });
             } catch {}
           }
-        } else if (agentCmdlineCheck && (name === "node.exe" || name === "node")) {
+        } else if (agentCmdlineCheck && agentCmdlineNames.has(name)) {
           try {
             const cmdOut = isWin
               ? commandLine

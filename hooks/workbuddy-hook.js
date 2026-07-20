@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Clawd — WorkBuddy hook (stdin JSON with hook_event_name; stdout JSON for gating hooks)
-// Registered in ~/.workbuddy/settings.json by hooks/workbuddy-install.js
+// Registered in the active WorkBuddy settings.json by hooks/workbuddy-install.js
 // WorkBuddy uses Claude Code-compatible hook format with identical event names.
 
 const { postStateToRunningServer, readHostPrefix } = require("./server-config");
@@ -30,18 +30,51 @@ const config = getPlatformConfig({
 });
 const WORKBUDDY_AGENT_NAMES = Object.freeze({
   win: new Set(["workbuddy.exe"]),
-  // shared-process normalizes macOS basename(comm) to lowercase before exact matching.
-  mac: new Set(["workbuddy helper", "workbuddy helper (renderer)"]),
+  // Fallback for builds that spawn hooks under a Helper. Current WorkBuddy AI
+  // 5.2.3 instead spawns them under its bundled CLI task runner, matched below.
+  mac: new Set([
+    "workbuddy ai helper",
+    "workbuddy ai helper (renderer)",
+    "workbuddy helper",
+    "workbuddy helper (renderer)",
+  ]),
   linux: new Set(["workbuddy"]),
 });
+
+// Current macOS WorkBuddy's GUI Helpers are siblings of the task runner, not
+// ancestors of command hooks. The real immediate ancestor is a bundled Electron
+// process running app.asar(.unpacked)/cli/bin/codebuddy with a per-task
+// --session-id. Require the bundle executable path, exact CLI entry, --serve,
+// and --session-id together so the main app, daemon, sidecar, persistent
+// connector server, or another Electron app can never become agent_pid. Legacy
+// WorkBuddy.app remains supported.
+function isWorkBuddyCliCommand(commandLine) {
+  const normalized = String(commandLine || "").replace(/\\/g, "/").toLowerCase();
+  const bundleNames = ["workbuddy ai.app", "workbuddy.app"];
+  const isBundledTaskRunner = bundleNames.some((bundleName) => {
+    const executable = `/${bundleName}/contents/macos/electron`;
+    const packedCli = `/${bundleName}/contents/resources/app.asar/cli/bin/codebuddy`;
+    const unpackedCli = `/${bundleName}/contents/resources/app.asar.unpacked/cli/bin/codebuddy`;
+    const executableAt = normalized.indexOf(executable);
+    const cliAt = Math.max(normalized.indexOf(packedCli), normalized.indexOf(unpackedCli));
+    return executableAt >= 0 && cliAt > executableAt;
+  });
+  return isBundledTaskRunner
+    && /\s--serve(?:\s|$)/.test(normalized)
+    && /\s--session-id(?:[=\s]|$)/.test(normalized);
+}
+
 const resolve = createPidResolver({
   agentNames: WORKBUDDY_AGENT_NAMES,
+  agentCmdlineCheck: isWorkBuddyCliCommand,
+  agentCmdlineNames: new Set(["electron"]),
   platformConfig: config,
 });
 
-// WorkBuddy PreToolUse gating — allow by default
-function stdoutForEvent(hookName) {
-  if (hookName === "PreToolUse") return JSON.stringify({ decision: "allow" });
+// State-only integration: never make a tool or permission decision. WorkBuddy's
+// hook contract treats an empty JSON object as "continue with the native flow";
+// an explicit allow can bypass the product permission UI.
+function stdoutForEvent() {
   return "{}";
 }
 
@@ -184,4 +217,5 @@ module.exports = {
   deriveSessionTitle,
   SESSION_TITLE_MAX,
   WORKBUDDY_AGENT_NAMES,
+  isWorkBuddyCliCommand,
 };

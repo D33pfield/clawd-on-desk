@@ -187,7 +187,15 @@ function qoderWorkDescriptor() {
 }
 
 function workBuddyDescriptor() {
-  return managedFileDescriptor("workbuddy", ".workbuddy");
+  const descriptor = managedFileDescriptor("workbuddy", ".workbuddy-ai");
+  return {
+    ...descriptor,
+    configTargets: [{
+      label: "workbuddy-ai",
+      parentDir: descriptor.parentDir,
+      configPath: descriptor.configPath,
+    }],
+  };
 }
 
 function flatHooksConfig(events, marker) {

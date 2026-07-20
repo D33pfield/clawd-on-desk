@@ -98,6 +98,10 @@ describe("Agent Registry", () => {
 
     const workbuddy = registry.getAgent("workbuddy");
     assert.deepStrictEqual(workbuddy.processNames.win, ["WorkBuddy.exe", "workbuddy.exe"]);
+    assert.deepStrictEqual(workbuddy.processNames.mac.slice(0, 2), [
+      "WorkBuddy AI Helper",
+      "WorkBuddy AI Helper (Renderer)",
+    ]);
   });
 
   it("should include explicit Linux process names", () => {

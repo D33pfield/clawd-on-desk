@@ -7,6 +7,8 @@ const {
   registerWorkBuddyHooks,
   unregisterWorkBuddyHooks,
   WORKBUDDY_HOOK_EVENTS,
+  resolveWorkBuddySettingsPath,
+  workBuddySettingsCandidates,
   __test,
 } = require("../hooks/workbuddy-install");
 
@@ -19,6 +21,17 @@ function makeTempSettingsFile(initial = {}) {
   fs.writeFileSync(settingsPath, JSON.stringify(initial, null, 2), "utf8");
   tempDirs.push(tmpDir);
   return settingsPath;
+}
+
+function makeTempHome() {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-workbuddy-home-"));
+  tempDirs.push(homeDir);
+  return homeDir;
+}
+
+function writeSettings(settingsPath, value) {
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  fs.writeFileSync(settingsPath, JSON.stringify(value, null, 2), "utf8");
 }
 
 function readJson(filePath) {
@@ -38,6 +51,143 @@ afterEach(() => {
 });
 
 describe("WorkBuddy hook installer", () => {
+  it("prefers current ~/.workbuddy-ai even when a legacy settings file also exists", () => {
+    const homeDir = makeTempHome();
+    const [current, legacy] = workBuddySettingsCandidates({ homeDir });
+    writeSettings(current.settingsPath, {});
+    writeSettings(legacy.settingsPath, {});
+
+    assert.strictEqual(resolveWorkBuddySettingsPath({ homeDir }), current.settingsPath);
+  });
+
+  it("treats an existing current config directory as authoritative over stale legacy settings", () => {
+    const homeDir = makeTempHome();
+    const [current, legacy] = workBuddySettingsCandidates({ homeDir });
+    fs.mkdirSync(current.parentDir, { recursive: true });
+    writeSettings(legacy.settingsPath, { legacy: true });
+
+    assert.strictEqual(resolveWorkBuddySettingsPath({ homeDir }), current.settingsPath);
+  });
+
+  it("falls back to legacy ~/.workbuddy for older WorkBuddy builds", () => {
+    const homeDir = makeTempHome();
+    const [, legacy] = workBuddySettingsCandidates({ homeDir });
+    writeSettings(legacy.settingsPath, {});
+
+    assert.strictEqual(resolveWorkBuddySettingsPath({ homeDir }), legacy.settingsPath);
+  });
+
+  it("installs into current settings and marker-scoped cleans stale legacy hooks", () => {
+    const homeDir = makeTempHome();
+    const [current, legacy] = workBuddySettingsCandidates({ homeDir });
+    writeSettings(current.settingsPath, { theme: "dark" });
+    writeSettings(legacy.settingsPath, {
+      hooks: {
+        Stop: [{
+          matcher: "",
+          hooks: [
+            { type: "command", command: '"/old/node" "/tmp/checkout/hooks/workbuddy-hook.js"' },
+            { type: "command", command: "echo keep" },
+          ],
+        }],
+      },
+    });
+
+    const result = registerWorkBuddyHooks({ homeDir, silent: true, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.settingsPath, current.settingsPath);
+    assert.strictEqual(result.added, WORKBUDDY_HOOK_EVENTS.length);
+    assert.strictEqual(result.migratedRemoved, 1);
+    assert.strictEqual(result.migrationBackupPaths.length, 1);
+    const active = readJson(current.settingsPath);
+    assert.strictEqual(active.theme, "dark");
+    assert.ok(active.hooks.SessionStart[0].hooks[0].command.includes(MARKER));
+    assert.deepStrictEqual(readJson(legacy.settingsPath).hooks.Stop, [{
+      matcher: "",
+      hooks: [{ type: "command", command: "echo keep" }],
+    }]);
+  });
+
+  it("keeps a successful current install when the inactive legacy config is invalid JSON", () => {
+    const homeDir = makeTempHome();
+    const [current, legacy] = workBuddySettingsCandidates({ homeDir });
+    writeSettings(current.settingsPath, { theme: "dark" });
+    fs.mkdirSync(legacy.parentDir, { recursive: true });
+    fs.writeFileSync(legacy.settingsPath, "{ invalid legacy json", "utf8");
+
+    const result = registerWorkBuddyHooks({ homeDir, silent: true, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.settingsPath, current.settingsPath);
+    assert.strictEqual(result.added, WORKBUDDY_HOOK_EVENTS.length);
+    assert.deepStrictEqual(result.migrationSkippedPaths, [legacy.settingsPath]);
+    assert.strictEqual(result.migratedRemoved, 0);
+    assert.deepStrictEqual(result.migrationBackupPaths, []);
+    const active = readJson(current.settingsPath);
+    assert.strictEqual(active.theme, "dark");
+    assert.ok(active.hooks.SessionStart[0].hooks[0].command.includes(MARKER));
+    assert.strictEqual(fs.readFileSync(legacy.settingsPath, "utf8"), "{ invalid legacy json");
+  });
+
+  it("still rejects invalid JSON in the active config", () => {
+    const homeDir = makeTempHome();
+    const [current] = workBuddySettingsCandidates({ homeDir });
+    fs.mkdirSync(current.parentDir, { recursive: true });
+    fs.writeFileSync(current.settingsPath, "{ invalid active json", "utf8");
+
+    assert.throws(
+      () => registerWorkBuddyHooks({ homeDir, silent: true, nodeBin: "/usr/local/bin/node" }),
+      /Failed to read settings\.json/
+    );
+    assert.strictEqual(fs.readFileSync(current.settingsPath, "utf8"), "{ invalid active json");
+  });
+
+  it("still fails closed when an inactive config cannot be read for reasons other than invalid JSON", () => {
+    const homeDir = makeTempHome();
+    const [current, legacy] = workBuddySettingsCandidates({ homeDir });
+    writeSettings(current.settingsPath, {});
+    writeSettings(legacy.settingsPath, {});
+    const realReadFileSync = fs.readFileSync;
+    fs.readFileSync = (filePath, ...args) => {
+      if (filePath === legacy.settingsPath) {
+        const err = new Error("permission denied");
+        err.code = "EACCES";
+        throw err;
+      }
+      return realReadFileSync(filePath, ...args);
+    };
+
+    try {
+      assert.throws(
+        () => registerWorkBuddyHooks({ homeDir, silent: true, nodeBin: "/usr/local/bin/node" }),
+        (err) => err && err.code === "EACCES" && err.settingsPath === legacy.settingsPath
+      );
+    } finally {
+      fs.readFileSync = realReadFileSync;
+    }
+  });
+
+  it("default uninstall removes managed hooks from current and legacy configs only", () => {
+    const homeDir = makeTempHome();
+    const [current, legacy] = workBuddySettingsCandidates({ homeDir });
+    const managedEntry = {
+      matcher: "",
+      hooks: [{ type: "command", command: '"/node" "/clawd/workbuddy-hook.js"' }],
+    };
+    writeSettings(current.settingsPath, {
+      hooks: { Stop: [managedEntry, { matcher: "", hooks: [{ type: "command", command: "echo current" }] }] },
+    });
+    writeSettings(legacy.settingsPath, {
+      hooks: { Stop: [managedEntry, { matcher: "", hooks: [{ type: "command", command: "echo legacy" }] }] },
+    });
+
+    const result = unregisterWorkBuddyHooks({ homeDir, silent: true });
+
+    assert.strictEqual(result.removed, 2);
+    assert.strictEqual(result.changed, true);
+    assert.deepStrictEqual(readJson(current.settingsPath).hooks.Stop[0].hooks[0].command, "echo current");
+    assert.deepStrictEqual(readJson(legacy.settingsPath).hooks.Stop[0].hooks[0].command, "echo legacy");
+  });
+
   it("registers command events only — no PermissionRequest HTTP hook (state + Notification only, #618)", () => {
     const settingsPath = makeTempSettingsFile({});
     const result = registerWorkBuddyHooks({
