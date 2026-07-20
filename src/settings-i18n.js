@@ -639,7 +639,7 @@
       animOverridesSectionIdleAnimated: "Idle random pool",
       animOverridesSectionIdleStatic: "Single static idle",
       animIdleVisualLabel: "Default idle animation",
-      animIdleVisualDesc: "Which look the pet rests in while idle. Agent activity, sleep, and reactions still take over as usual. Non-default visuals do not follow the cursor or trigger spin-to-dizzy.",
+      animIdleVisualDesc: "Which look the pet rests in while idle. Agent activity, sleep, and reactions still take over as usual. Non-default visuals do not track the cursor with their eyes or get dizzy when you circle the cursor around the pet.",
       animIdleVisualThemeDefault: "Theme default",
       animOverridesSectionSleepFull: "Full sleep sequence",
       animOverridesSectionSleepDirect: "Direct sleep only",
