@@ -14,7 +14,7 @@ const HOOK_MAP = {
   PreToolUse:       { state: "working",      event: "PreToolUse" },
   PostToolUse:      { state: "working",      event: "PostToolUse" },
   Stop:             { state: "attention",    event: "Stop" },
-  // PermissionRequest: handled by HTTP hook (blocking), not this command hook
+  // Permission prompts arrive as Notification; WorkBuddy owns approval natively.
   Notification:     { state: "notification", event: "Notification" },
   PreCompact:       { state: "sweeping",     event: "PreCompact" },
 };
@@ -28,8 +28,14 @@ const config = getPlatformConfig({
   },
   extraEditorPathChecks: [["workbuddy", "workbuddy"]],
 });
+const WORKBUDDY_AGENT_NAMES = Object.freeze({
+  win: new Set(["workbuddy.exe"]),
+  // shared-process normalizes macOS basename(comm) to lowercase before exact matching.
+  mac: new Set(["workbuddy helper", "workbuddy helper (renderer)"]),
+  linux: new Set(["workbuddy"]),
+});
 const resolve = createPidResolver({
-  agentNames: { win: new Set(["workbuddy.exe"]), mac: new Set(["workbuddy"]), linux: new Set(["workbuddy"]) },
+  agentNames: WORKBUDDY_AGENT_NAMES,
   platformConfig: config,
 });
 
@@ -172,4 +178,10 @@ if (require.main === module) {
   _exited = true;
 }
 
-module.exports = { HOOK_MAP, stdoutForEvent, deriveSessionTitle, SESSION_TITLE_MAX };
+module.exports = {
+  HOOK_MAP,
+  stdoutForEvent,
+  deriveSessionTitle,
+  SESSION_TITLE_MAX,
+  WORKBUDDY_AGENT_NAMES,
+};

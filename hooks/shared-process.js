@@ -5,6 +5,11 @@
 // server-config.js does NOT require this module, so there is no cycle.
 
 const { isRemoteHookMode, readRuntimeIdentity } = require("./server-config");
+const path = require("path");
+
+function normalizePosixProcessName(comm) {
+  return path.posix.basename(String(comm || "")).toLowerCase();
+}
 
 // ── Base platform constants ──────────────────────────────────────────────────
 
@@ -531,7 +536,7 @@ function createPidResolver(options) {
         } else {
           const ppidOut = execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 1000 }).trim();
           const commOut = execFileSync("ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8", timeout: 1000 }).trim();
-          name = require("path").basename(commOut).toLowerCase();
+          name = normalizePosixProcessName(commOut);
           if (!detectedEditor) {
             const fullLower = commOut.toLowerCase();
             for (const [pattern, editor] of editorPathChecks) {
@@ -983,4 +988,5 @@ module.exports = {
   processAlive,
   WINDOWS_TERMINAL_WINDOW_CLASS,
   WINDOWS_TERMINAL_PROCESS_NAMES,
+  normalizePosixProcessName,
 };

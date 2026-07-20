@@ -217,6 +217,7 @@ function unregisterWorkBuddyHooks(options = {}) {
 module.exports = {
   DEFAULT_PARENT_DIR,
   DEFAULT_CONFIG_PATH,
+  MARKER,
   registerWorkBuddyHooks,
   unregisterWorkBuddyHooks,
   WORKBUDDY_HOOK_EVENTS,

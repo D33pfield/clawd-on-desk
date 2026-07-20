@@ -286,12 +286,14 @@ describe("doctor agent descriptors", () => {
   });
 
   it("checks WorkBuddy hooks as a state-only nested settings file", () => {
+    const workbuddy = require("../hooks/workbuddy-install");
     const descriptor = getAgentDescriptor("workbuddy");
 
     assert.strictEqual(descriptor.eventSource, "hook");
     assert.strictEqual(descriptor.configMode, "file");
     assert.strictEqual(descriptor.nested, true);
     assert.strictEqual(descriptor.autoInstall, true);
-    assert.strictEqual(descriptor.marker, "workbuddy-hook.js");
+    assert.strictEqual(descriptor.marker, workbuddy.MARKER);
+    assert.deepStrictEqual(descriptor.hookEvents, workbuddy.WORKBUDDY_HOOK_EVENTS);
   });
 });

@@ -9,7 +9,9 @@ const {
   stdoutForEvent,
   deriveSessionTitle,
   SESSION_TITLE_MAX,
+  WORKBUDDY_AGENT_NAMES,
 } = require("../hooks/workbuddy-hook");
+const { normalizePosixProcessName } = require("../hooks/shared-process");
 
 describe("WorkBuddy hook runtime", () => {
   it("maps lifecycle events to idle / thinking / sleeping", () => {
@@ -32,6 +34,22 @@ describe("WorkBuddy hook runtime", () => {
     assert.strictEqual(stdoutForEvent("PreToolUse"), JSON.stringify({ decision: "allow" }));
     assert.strictEqual(stdoutForEvent("UserPromptSubmit"), "{}");
     assert.strictEqual(stdoutForEvent("Stop"), "{}");
+  });
+});
+
+describe("WorkBuddy macOS process-name contract", () => {
+  it("matches normalized verified helpers, but not raw case or bare Electron", () => {
+    const macNames = WORKBUDDY_AGENT_NAMES.mac;
+    const helper = normalizePosixProcessName("/Applications/WorkBuddy.app/Contents/Frameworks/WorkBuddy Helper");
+    const renderer = normalizePosixProcessName("/Applications/WorkBuddy.app/Contents/Frameworks/WorkBuddy Helper (Renderer)");
+    const electron = normalizePosixProcessName("/Applications/WorkBuddy.app/Contents/MacOS/Electron");
+
+    assert.strictEqual(helper, "workbuddy helper");
+    assert.strictEqual(renderer, "workbuddy helper (renderer)");
+    assert.strictEqual(macNames.has(helper), true);
+    assert.strictEqual(macNames.has(renderer), true);
+    assert.strictEqual(macNames.has("WorkBuddy Helper"), false, "raw mixed case must be normalized first");
+    assert.strictEqual(macNames.has(electron), false, "bare Electron would false-positive on unrelated apps");
   });
 });
 

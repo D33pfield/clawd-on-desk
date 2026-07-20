@@ -127,8 +127,9 @@ const AGENT_DESCRIPTORS = Object.freeze([
     configPath: workbuddy.DEFAULT_CONFIG_PATH,
     configMode: "file",
     autoInstall: true,
-    marker: "workbuddy-hook.js",
+    marker: workbuddy.MARKER,
     nested: true,
+    hookEvents: workbuddy.WORKBUDDY_HOOK_EVENTS,
   }),
   Object.freeze({
     agentId: "kiro-cli",
