@@ -1,0 +1,55 @@
+const assert = require("node:assert/strict");
+const { describe, it } = require("node:test");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const MAIN_JS = path.join(__dirname, "..", "src", "main.js");
+
+describe("main default idle visual wiring", () => {
+  const mainSource = fs.readFileSync(MAIN_JS, "utf8");
+
+  it("resolves the choice against the live theme and exposes it to both runtime ctxs", () => {
+    assert.ok(mainSource.includes('require("./idle-visual")'));
+    assert.match(
+      mainSource,
+      /function getIdleVisualChoice\(\) \{\s*return resolveIdleVisualChoice\(getActiveTheme\(\), _settingsController\.get\("idleVisual"\)\);/
+    );
+    const ctxExposures = mainSource.match(/^  getIdleVisualChoice,$/gm) || [];
+    assert.strictEqual(
+      ctxExposures.length,
+      2,
+      "state ctx and tick ctx should both expose getIdleVisualChoice"
+    );
+  });
+
+  it("stamps idleDefaultVisual on both renderer theme-config delivery paths", () => {
+    assert.match(
+      mainSource,
+      /function buildRendererThemeConfig\(\) \{[^}]*idleDefaultVisual = getIdleVisualChoice\(\);/
+    );
+    assert.ok(
+      mainSource.includes("themeConfig: buildRendererThemeConfig(),"),
+      "createRenderWindow should carry the stamped config"
+    );
+    assert.ok(
+      mainSource.includes('sendToRenderer("theme-config", buildRendererThemeConfig());'),
+      "did-finish-load re-send should carry the stamped config"
+    );
+    assert.ok(
+      !mainSource.includes("themeConfig: themeRuntime.getRendererConfig()"),
+      "an un-stamped renderer config must not reach the render window"
+    );
+  });
+
+  it("re-rests the pet through the effect-router hook only while idle", () => {
+    const hookIndex = mainSource.indexOf("refreshIdleVisual: () => {");
+    assert.ok(hookIndex !== -1, "main should wire the refreshIdleVisual router option");
+    const hook = mainSource.slice(hookIndex, mainSource.indexOf("},", hookIndex));
+    assert.ok(hook.includes('if (_state.getCurrentState() !== "idle") return;'));
+    assert.ok(hook.includes('_state.applyState("idle", _state.getSvgOverride("idle"))'));
+  });
+
+  it("gives the settings controller the active-theme dep that setIdleVisual validates against", () => {
+    assert.ok(mainSource.includes("getActiveTheme: () => themeRuntime.getActiveTheme(),"));
+  });
+});

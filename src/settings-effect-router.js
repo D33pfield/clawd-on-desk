@@ -73,6 +73,7 @@ function createSettingsEffectRouter(options = {}) {
   const reclampPetAfterEdgePinningChange = options.reclampPetAfterEdgePinningChange || noop;
   const exitMiniMode = options.exitMiniMode || noop;
   const getMiniMode = options.getMiniMode || (() => false);
+  const refreshIdleVisual = options.refreshIdleVisual || noop;
   const rebuildAllMenus = options.rebuildAllMenus || noop;
   const reconcilePowerSaveBlocker = options.reconcilePowerSaveBlocker || noop;
 
@@ -244,6 +245,9 @@ function createSettingsEffectRouter(options = {}) {
     }
     if ("disableMiniMode" in changes && changes.disableMiniMode && getMiniMode()) {
       safeCall(logWarn, "Clawd: disableMiniMode exit failed:", exitMiniMode);
+    }
+    if ("idleVisual" in changes) {
+      safeCall(logWarn, "Clawd: idle visual refresh failed:", refreshIdleVisual);
     }
 
     // 3. Menu rebuild: only for menu-affecting keys to avoid thrashing on
