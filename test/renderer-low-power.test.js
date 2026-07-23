@@ -1305,7 +1305,8 @@ describe("renderer pet accessory wardrobe", () => {
     assert.ok(css.includes("#pet-container.roam-walk #pet-motion-stage"));
     assert.ok(css.includes("translate: 3px 0;"));
     assert.ok(renderer.includes('mediaLayer.querySelectorAll("object.clawd-object, img.clawd-img")'));
-    assert.ok(renderer.includes('assetDirectionStage.style.scale = shouldApplyMiniAssetFlip(state) ? "-1 1" : "none";'));
+    assert.ok(renderer.includes("const activeFlip = shouldApplyMiniAssetFlip(state);"));
+    assert.ok(renderer.includes('assetDirectionStage.style.scale = activeFlip ? "-1 1" : "none";'));
     assert.ok(preload.includes(
       'onPetAccessoryChange: (cb) => ipcRenderer.on("pet-accessory-change", (_, payload) => cb(payload))'
     ));
@@ -1486,6 +1487,35 @@ describe("renderer file-aware idle eye tracking", () => {
 });
 
 describe("renderer glyph flip compensation", () => {
+  it("preserves each fading media element's stamped direction when the shared stage flips", () => {
+    const harness = createRendererHarness({
+      themeConfig: {
+        hasRoamVisual: true,
+        transitions: {
+          "roam.svg": { out: 500 },
+        },
+      },
+    });
+
+    harness.electronHandlers.onRoamHeading(true);
+    harness.api.swapToFile("roam.svg", "roam", false);
+    const roam = harness.api.pendingNext;
+    roam.listeners.get("load")();
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "-1 1");
+    assert.strictEqual(roam.style.scale, "none");
+
+    harness.api.swapToFile("working.svg", "working", false);
+    const working = harness.api.pendingNext;
+    working.listeners.get("load")();
+
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "none");
+    assert.strictEqual(working.style.scale, "none");
+    assert.strictEqual(roam.isConnected, true, "old media should still be fading");
+    assert.strictEqual(roam.style.opacity, "0");
+    assert.strictEqual(roam.style.scale, "-1 1");
+    assert.match(roam.style.transformOrigin, /px 50%$/);
+  });
+
   it("flips reverse-drawn mini crabwalk assets during pre-entry without entering mini layout", () => {
     const source = fs.readFileSync(RENDERER, "utf8");
 

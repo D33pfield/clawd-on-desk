@@ -460,9 +460,32 @@ function shouldApplyMiniAssetFlip(state) {
   return _miniFlipAssets && (_inMiniMode || (_miniPreEntryMode && state === "mini-crabwalk"));
 }
 
-function applyMiniFlip(_el, state = currentState) {
+function applyMiniFlip(el, state = currentState) {
   if (!assetDirectionStage || !assetDirectionStage.style) return;
-  assetDirectionStage.style.scale = shouldApplyMiniAssetFlip(state) ? "-1 1" : "none";
+  const activeFlip = shouldApplyMiniAssetFlip(state);
+  if (el) el.__clawdAssetDirectionFlip = activeFlip;
+  assetDirectionStage.style.scale = activeFlip ? "-1 1" : "none";
+
+  // A media crossfade can leave older children alive after the shared stage
+  // adopts the new file's direction. Counter-flip only those older children
+  // whose stamped direction differs, using the stage's horizontal center so
+  // their fading position and orientation stay visually unchanged.
+  const stageWidth = assetDirectionStage.clientWidth || assetDirectionStage.offsetWidth;
+  for (const child of getPetMediaElements()) {
+    const childFlip = child === el
+      ? activeFlip
+      : child.__clawdAssetDirectionFlip === true;
+    if (childFlip === activeFlip) {
+      child.style.scale = "none";
+      child.style.transformOrigin = "";
+      continue;
+    }
+    const originX = Number.isFinite(stageWidth) && Number.isFinite(child.offsetLeft)
+      ? (stageWidth / 2) - child.offsetLeft
+      : null;
+    child.style.transformOrigin = originX == null ? "50% 50%" : `${originX}px 50%`;
+    child.style.scale = "-1 1";
+  }
 }
 
 // ── Layered tracking state (multi-layer eye/head/body tracking) ──
@@ -934,8 +957,8 @@ window.electronAPI.onMiniModeChange((enabled, edge, options) => {
 // rest away so the half that physically crosses onto the neighbouring
 // monitor renders nothing there — the local display keeps the half-body peek.
 //
-// The clip is applied to #pet-clip, which (unlike #pet-container) never
-// carries transform: scaleX(-1). A clip-path on the flipped container would
+// The clip is applied to #pet-clip outside #pet-facing-stage, which carries
+// the left-edge mini-mode flip. A clip-path inside that flipped stage would
 // be mirrored too, so a left-edge clip would land on the wrong half; the
 // unflipped wrapper keeps `inset()` in screen space for both edges.
 function applyMiniClip(info) {
