@@ -7,6 +7,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const RENDERER = path.join(__dirname, "..", "src", "renderer.js");
+const ACCESSORY_LAYOUT = path.join(__dirname, "..", "src", "pet-accessory-layout.js");
 const PRELOAD = path.join(__dirname, "..", "src", "preload.js");
 const MAIN = path.join(__dirname, "..", "src", "main.js");
 
@@ -35,16 +36,41 @@ class FakeElement {
     this.contentDocument = null;
     this.contentWindow = {};
     this.listeners = new Map();
+    this.offsetLeft = 0;
+    this.offsetTop = 0;
+    this.offsetWidth = 220;
+    this._offsetHeight = 220;
+    this.clientWidth = 220;
+    this.clientHeight = 220;
     this.classList = {
-      toggle: () => {},
-      contains: () => false,
-      add: () => {},
-      remove: () => {},
+      toggle: (name, force) => {
+        const names = new Set(String(this.className).split(/\s+/).filter(Boolean));
+        const enabled = force === undefined ? !names.has(name) : !!force;
+        if (enabled) names.add(name);
+        else names.delete(name);
+        this.className = [...names].join(" ");
+        return enabled;
+      },
+      contains: (name) => String(this.className).split(/\s+/).includes(name),
+      add: (...namesToAdd) => {
+        const names = new Set(String(this.className).split(/\s+/).filter(Boolean));
+        namesToAdd.forEach((name) => names.add(name));
+        this.className = [...names].join(" ");
+      },
+      remove: (...namesToRemove) => {
+        const names = new Set(String(this.className).split(/\s+/).filter(Boolean));
+        namesToRemove.forEach((name) => names.delete(name));
+        this.className = [...names].join(" ");
+      },
     };
   }
 
   get offsetHeight() {
-    return 1;
+    return this._offsetHeight;
+  }
+
+  set offsetHeight(value) {
+    this._offsetHeight = value;
   }
 
   setAttribute(name, value) {
@@ -61,6 +87,7 @@ class FakeElement {
 
   appendChild(child) {
     child.parentNode = this;
+    child.offsetParent = this;
     child.isConnected = true;
     this.children.push(child);
     return child;
@@ -78,11 +105,26 @@ class FakeElement {
     this.listeners.set(event, callback);
   }
 
-  querySelectorAll() {
-    return this.children.filter((child) => (
-      child.tagName === "OBJECT"
-      || (child.tagName === "IMG" && String(child.className).split(/\s+/).includes("clawd-img"))
-    ));
+  querySelectorAll(selector = "object, img.clawd-img") {
+    const descendants = [];
+    const visit = (node) => {
+      for (const child of node.children) {
+        descendants.push(child);
+        visit(child);
+      }
+    };
+    visit(this);
+    return descendants.filter((child) => {
+      if (selector.includes("object.clawd-object")
+          && child.tagName === "OBJECT"
+          && child.classList.contains("clawd-object")) return true;
+      if (selector.includes("object") && !selector.includes("object.clawd-object")
+          && child.tagName === "OBJECT") return true;
+      if (selector.includes("img.clawd-img")
+          && child.tagName === "IMG"
+          && child.classList.contains("clawd-img")) return true;
+      return false;
+    });
   }
 }
 
@@ -94,24 +136,72 @@ function createRendererHarness(options = {}) {
   const container = new FakeElement("div");
   container.id = "pet-container";
   container.isConnected = true;
+  const facingStage = new FakeElement("div");
+  facingStage.id = "pet-facing-stage";
+  const motionStage = new FakeElement("div");
+  motionStage.id = "pet-motion-stage";
+  const assetDirectionStage = new FakeElement("div");
+  assetDirectionStage.id = "pet-asset-direction-stage";
+  const mediaLayer = new FakeElement("div");
+  mediaLayer.id = "pet-media-layer";
+  const accessoryLayer = new FakeElement("div");
+  accessoryLayer.id = "pet-accessory-layer";
+  const accessory = new FakeElement("img");
+  accessory.id = "clawd-accessory";
+  accessory.className = "clawd-accessory";
+  const effectStage = new FakeElement("div");
+  effectStage.id = "pet-effect-stage";
+  const particleLayer = new FakeElement("div");
+  particleLayer.id = "pet-particle-layer";
   const clawd = new FakeElement("object");
   clawd.id = "clawd";
+  clawd.className = "clawd-object";
+  clawd.offsetLeft = -99;
+  clawd.offsetTop = -55;
+  clawd.clientWidth = 418;
+  clawd.clientHeight = 286;
+  clawd.offsetWidth = 418;
+  clawd.offsetHeight = 286;
   // index.html ships the object tag without data; tests that don't care get a
   // pre-displayed file so the initial-frame swap stays out of their way.
   clawd.data = Object.prototype.hasOwnProperty.call(options, "initialObjectData")
     ? options.initialObjectData
     : "../assets/svg/current.svg";
   clawd.style.opacity = "0";
-  container.appendChild(clawd);
+  container.appendChild(facingStage);
+  facingStage.appendChild(motionStage);
+  motionStage.appendChild(assetDirectionStage);
+  assetDirectionStage.appendChild(mediaLayer);
+  assetDirectionStage.appendChild(accessoryLayer);
+  mediaLayer.appendChild(clawd);
+  accessoryLayer.appendChild(accessory);
+  container.appendChild(effectStage);
+  effectStage.appendChild(particleLayer);
+
+  const elementsById = new Map([
+    ["pet-container", container],
+    ["pet-facing-stage", facingStage],
+    ["pet-motion-stage", motionStage],
+    ["pet-asset-direction-stage", assetDirectionStage],
+    ["pet-media-layer", mediaLayer],
+    ["pet-accessory-layer", accessoryLayer],
+    ["pet-effect-stage", effectStage],
+    ["pet-particle-layer", particleLayer],
+    ["clawd", clawd],
+    ["clawd-accessory", accessory],
+  ]);
+  const documentListeners = new Map();
 
   const document = {
+    hidden: false,
     getElementById(id) {
-      if (id === "pet-container") return container;
-      if (id === "clawd") return clawd;
-      return null;
+      return elementsById.get(id) || null;
     },
     createElement(tagName) {
       return new FakeElement(tagName);
+    },
+    addEventListener(event, callback) {
+      documentListeners.set(event, callback);
     },
   };
   const electronAPI = new Proxy({}, {
@@ -123,6 +213,7 @@ function createRendererHarness(options = {}) {
       return (...args) => { electronCalls.push({ name, args }); };
     },
   });
+  const windowListeners = new Map();
   const context = {
     document,
     window: {
@@ -137,6 +228,9 @@ function createRendererHarness(options = {}) {
       },
       electronAPI,
       getComputedStyle: (el) => ({ opacity: el.style.opacity || "1" }),
+      addEventListener(event, callback) {
+        windowListeners.set(event, callback);
+      },
     },
     console: { warn() {} },
     setTimeout(callback, ms) {
@@ -168,7 +262,8 @@ function createRendererHarness(options = {}) {
   };
   context.globalThis = context;
 
-  const source = `${readNormalized(RENDERER)}
+  const source = `${readNormalized(ACCESSORY_LAYOUT)}
+${readNormalized(RENDERER)}
 globalThis.__rendererTest = {
   swapToFile,
   pauseCurrentSvgForLowPower,
@@ -185,6 +280,8 @@ globalThis.__rendererTest = {
   getPetMediaElements,
   normalizePetTintPayload,
   applyPetTintToAllMedia,
+  normalizeAccessoryPayload,
+  refreshAccessoryLayout,
   get pendingNext() { return pendingNext; },
   get pendingSvgFile() { return pendingSvgFile; },
   get activeSwapToken() { return activeSwapToken; },
@@ -197,6 +294,10 @@ globalThis.__rendererTest = {
   return {
     context,
     container,
+    mediaLayer,
+    accessoryLayer,
+    assetDirectionStage,
+    accessory,
     clawd,
     timers,
     audioInstances,
@@ -204,6 +305,8 @@ globalThis.__rendererTest = {
     electronHandlers,
     api: context.__rendererTest,
     activeTimers: () => timers.filter((timer) => !timer.cleared),
+    documentListeners,
+    windowListeners,
   };
 }
 
@@ -549,7 +652,7 @@ describe("renderer low-power idle mode", () => {
     assert.ok(retryObject);
     assert.notStrictEqual(retryObject, firstObject);
     assert.equal(harness.api.activeSwapToken, firstSwapToken + 1);
-    assert.equal(harness.container.children.some((element) => element.tagName === "IMG"), false);
+    assert.equal(harness.mediaLayer.children.some((element) => element.tagName === "IMG"), false);
 
     attachFakeSvgDocument(retryObject, { withEyes: true });
     retryObject.listeners.get("load")();
@@ -576,7 +679,7 @@ describe("renderer low-power idle mode", () => {
 
     assert.strictEqual(harness.api.clawdEl, harness.clawd);
     assert.equal(harness.api.pendingNext, null);
-    assert.equal(harness.container.children.some((element) => element.tagName === "IMG"), false);
+    assert.equal(harness.mediaLayer.children.some((element) => element.tagName === "IMG"), false);
     const report = harness.electronCalls.find((call) => call.name === "reportSystemWakeStatus");
     assert.equal(report.args[0].result, "error");
     assert.equal(report.args[0].objectReloaded, false);
@@ -914,6 +1017,177 @@ describe("renderer pet tint", () => {
     assert.ok(main.includes(
       "const tintId = getPetTintIdForTheme(petTint, activeTheme && activeTheme._id);"
     ));
+  });
+});
+
+describe("renderer pet accessory wardrobe", () => {
+  function accessoryConfig(overrides = {}) {
+    return {
+      viewBox: { x: 0, y: 0, width: 100, height: 100 },
+      eyeTracking: { states: [] },
+      idleFollowSvg: "first.svg",
+      accessorySupported: true,
+      accessoryPayload: {
+        id: "cowboy-hat",
+        assetFile: "cowboy-hat.svg",
+        aspect: 16 / 7,
+        widthScale: 1,
+        offsetY: 0,
+      },
+      accessoryAttachments: {
+        default: {
+          staticFrame: { cx: 50, baseY: 40, width: 20 },
+        },
+        files: {},
+      },
+      ...overrides,
+    };
+  }
+
+  it("primes the fixed catalog asset before the initial pet swap and reveals it after load", () => {
+    const filter = "grayscale(1) brightness(1.05)";
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: accessoryConfig({
+        petTintSupported: true,
+        petTintPayload: { id: "mono", filter },
+      }),
+    });
+
+    assert.strictEqual(harness.accessory.src, "../assets/accessories/cowboy-hat.svg");
+    assert.ok(harness.api.pendingNext, "initial media should be loading");
+    assert.strictEqual(harness.api.pendingNext.style.filter, filter);
+
+    harness.api.pendingNext.listeners.get("load")();
+    assert.ok(harness.api.pendingNext, "pet commit should wait for the selected accessory asset");
+    assert.strictEqual(harness.accessory.style.display, "none");
+    harness.accessory.onload();
+
+    assert.strictEqual(harness.api.pendingNext, null);
+    assert.strictEqual(harness.accessory.style.display, "block");
+    assert.strictEqual(harness.accessory.style.filter, "none");
+    assert.match(harness.accessory.style.transform, /^matrix\(/);
+  });
+
+  it("keeps the old anchor through a pending swap, hides declared sleep files, and restores reactions", () => {
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: accessoryConfig({
+        accessoryAttachments: {
+          default: {
+            staticFrame: { cx: 50, baseY: 40, width: 20 },
+          },
+          files: {
+            "sleep.svg": { visibility: "hidden" },
+          },
+        },
+      }),
+    });
+    harness.api.pendingNext.listeners.get("load")();
+    harness.accessory.onload();
+    const originalTransform = harness.accessory.style.transform;
+
+    harness.api.swapToFile("sleep.svg", "sleeping", false);
+    assert.strictEqual(harness.accessory.style.display, "block");
+    assert.strictEqual(harness.accessory.style.transform, originalTransform);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(harness.accessory.style.display, "none");
+
+    harness.api.swapToFile("reaction.svg", null, false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(harness.accessory.style.display, "block");
+  });
+
+  it("follows an exact object target CTM and cancels that RAF on the next media commit", () => {
+    const harness = createRendererHarness({
+      themeConfig: accessoryConfig({
+        accessoryAttachments: {
+          default: {
+            staticFrame: { cx: 50, baseY: 40, width: 20 },
+          },
+          files: {
+            "dynamic.svg": {
+              staticFrame: { cx: 50, baseY: 40, width: 20 },
+              followTarget: {
+                id: "body-js",
+                frame: { cx: 8, baseY: 6, width: 4 },
+              },
+            },
+          },
+        },
+      }),
+    });
+    harness.accessory.onload();
+
+    let matrix = { a: 2, b: 0, c: 0, d: 2, e: 10, f: 12 };
+    harness.api.swapToFile("dynamic.svg", "working", true);
+    const dynamicObject = harness.api.pendingNext;
+    dynamicObject.contentDocument = {
+      getElementById(id) {
+        return id === "body-js" ? { getCTM: () => matrix } : null;
+      },
+    };
+    dynamicObject.listeners.get("load")();
+    const firstTransform = harness.accessory.style.transform;
+    const followTimer = harness.activeTimers().find((timer) => timer.ms === 16);
+    assert.ok(followTimer, "dynamic target should own one RAF");
+
+    matrix = { ...matrix, e: 14 };
+    followTimer.callback();
+    assert.notStrictEqual(harness.accessory.style.transform, firstTransform);
+
+    const nextFollowTimer = harness.activeTimers().find((timer) => timer.ms === 16 && timer !== followTimer);
+    harness.api.swapToFile("static.svg", "working", false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(nextFollowTimer.cleared, true);
+  });
+
+  it("keeps sibling objects outside tint and pet-media swap cleanup", () => {
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: accessoryConfig(),
+    });
+    harness.api.pendingNext.listeners.get("load")();
+    harness.accessory.onload();
+    const siblingObject = harness.context.document.createElement("object");
+    siblingObject.className = "decorative-object";
+    harness.accessoryLayer.appendChild(siblingObject);
+
+    harness.electronHandlers.onPetTintChange({
+      id: "mono",
+      filter: "grayscale(1) brightness(1.05)",
+    });
+    assert.strictEqual(siblingObject.style.filter, undefined);
+
+    harness.api.swapToFile("next.svg", "working", false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(siblingObject.isConnected, true);
+    assert.strictEqual(harness.accessory.isConnected, true);
+  });
+
+  it("rejects paths, unbounded geometry, and malformed none payloads", () => {
+    const harness = createRendererHarness();
+    const normalize = harness.api.normalizeAccessoryPayload;
+
+    assert.strictEqual(normalize({ id: "hat", assetFile: "../hat.svg", aspect: 1, widthScale: 1, offsetY: 0 }).id, "none");
+    assert.strictEqual(normalize({ id: "hat", assetFile: "hat.svg", aspect: Infinity, widthScale: 1, offsetY: 0 }).id, "none");
+    assert.strictEqual(normalize({ id: "hat", assetFile: "hat.svg", aspect: 1, widthScale: 99, offsetY: 0 }).id, "none");
+    assert.strictEqual(normalize({ id: "none", assetFile: "hat.svg", aspect: 1, widthScale: 1, offsetY: 0 }).id, "none");
+  });
+
+  it("keeps the structural stages full-size and uses independent transform properties", () => {
+    const html = readNormalized(path.join(__dirname, "..", "src", "index.html"));
+    const css = readNormalized(path.join(__dirname, "..", "src", "styles.css"));
+    const renderer = readNormalized(RENDERER);
+
+    assert.ok(html.indexOf('id="pet-media-layer"') < html.indexOf('id="pet-accessory-layer"'));
+    assert.ok(html.indexOf('src="pet-accessory-layout.js"') < html.indexOf('src="renderer.js"'));
+    assert.ok(css.includes("#pet-container.mini-left #pet-facing-stage"));
+    assert.ok(css.includes("scale: -1 1;"));
+    assert.ok(css.includes("#pet-container.roam-walk #pet-motion-stage"));
+    assert.ok(css.includes("translate: 3px 0;"));
+    assert.ok(renderer.includes('mediaLayer.querySelectorAll("object.clawd-object, img.clawd-img")'));
+    assert.ok(renderer.includes('assetDirectionStage.style.scale = shouldApplyMiniAssetFlip(state) ? "-1 1" : "none";'));
   });
 });
 
