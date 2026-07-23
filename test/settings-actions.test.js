@@ -89,6 +89,28 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.petTint(null, deps).status, "error");
   });
 
+  it("petAccessory accepts only safe per-theme catalog selections", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.petAccessory({}, deps).status, "ok");
+    assert.strictEqual(
+      updateRegistry.petAccessory({ clawd: "wizard-hat", cloudling: "halo" }, deps).status,
+      "ok"
+    );
+    assert.strictEqual(updateRegistry.petAccessory({ clawd: "none" }, deps).status, "error");
+    assert.strictEqual(updateRegistry.petAccessory({ clawd: "seasonal" }, deps).status, "error");
+    assert.strictEqual(
+      updateRegistry.petAccessory({ "../unsafe": "halo" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(
+      updateRegistry.petAccessory({ clawd: "file:///secret.svg" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(updateRegistry.petAccessory("wizard-hat", deps).status, "error");
+    assert.strictEqual(updateRegistry.petAccessory([], deps).status, "error");
+    assert.strictEqual(updateRegistry.petAccessory(null, deps).status, "error");
+  });
+
   it("x/y/preMiniX/preMiniY require finite numbers", () => {
     const deps = { snapshot: baseSnapshot };
     assert.strictEqual(updateRegistry.x(0, deps).status, "ok");

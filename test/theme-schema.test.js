@@ -118,8 +118,153 @@ describe("theme schema validation", () => {
     );
     assert.deepStrictEqual(
       schema.mergeDefaults(validThemeJson()).customization,
-      { petTint: false }
+      { petTint: false, accessories: null }
     );
+  });
+
+  it("derives accessory capability from complete raw and normalized coverage", () => {
+    const raw = validThemeJson({
+      customization: {
+        petTint: true,
+        accessories: {
+          default: {
+            staticFrame: { cx: 50, baseY: 20, width: 30 },
+          },
+          files: {
+            "idle.svg": {
+              staticFrame: { cx: 50, baseY: 20, width: 30 },
+              followTarget: {
+                id: "body-js",
+                frame: { cx: 12, baseY: 4, width: 16 },
+              },
+            },
+            "sleeping.svg": {
+              visibility: "hidden",
+            },
+          },
+        },
+      },
+    });
+    const normalized = schema.mergeDefaults(raw, "demo", true);
+
+    assert.deepStrictEqual(schema.validateTheme(raw), []);
+    assert.strictEqual(schema.deriveAccessoryCapability(raw), true);
+    assert.strictEqual(schema.deriveAccessoryCapability(normalized), true);
+    assert.strictEqual(schema.buildCapabilities(raw).accessories, true);
+    assert.strictEqual(schema.buildCapabilities(normalized).accessories, true);
+    assert.deepStrictEqual(
+      normalized.customization.accessories.files["sleeping.svg"],
+      { visibility: "hidden" }
+    );
+  });
+
+  it("fails accessory capability closed on incomplete viewBox coverage or stale file descriptors", () => {
+    const miniStates = Object.fromEntries(
+      schema.MINI_REQUIRED_STATES.map((state) => [state, [`${state}.svg`]])
+    );
+    const missingMini = validThemeJson({
+      miniMode: {
+        supported: true,
+        viewBox: { x: -10, y: -10, width: 40, height: 40 },
+        states: miniStates,
+      },
+      customization: {
+        accessories: {
+          default: { staticFrame: { cx: 50, baseY: 20, width: 30 } },
+        },
+      },
+    });
+    assert.strictEqual(schema.deriveAccessoryCapability(missingMini), false);
+
+    const missingFileOverride = validThemeJson({
+      fileViewBoxes: {
+        "thinking.svg": { x: -20, y: -20, width: 50, height: 50 },
+      },
+      customization: {
+        accessories: {
+          default: { staticFrame: { cx: 50, baseY: 20, width: 30 } },
+        },
+      },
+    });
+    assert.strictEqual(schema.deriveAccessoryCapability(missingFileOverride), false);
+
+    const staleDescriptor = validThemeJson({
+      customization: {
+        accessories: {
+          default: { staticFrame: { cx: 50, baseY: 20, width: 30 } },
+          files: {
+            "not-reachable.svg": {
+              staticFrame: { cx: 50, baseY: 20, width: 30 },
+            },
+          },
+        },
+      },
+    });
+    assert.strictEqual(schema.deriveAccessoryCapability(staleDescriptor), false);
+  });
+
+  it("rejects malformed accessory metadata instead of guessing targets or coordinates", () => {
+    for (const accessories of [
+      "yes",
+      {
+        default: { staticFrame: { cx: 50, baseY: 20, width: 1000 } },
+      },
+      {
+        default: { staticFrame: { cx: 50, baseY: 20, width: 30 } },
+        files: {
+          "../idle.svg": { staticFrame: { cx: 50, baseY: 20, width: 30 } },
+        },
+      },
+      {
+        default: { staticFrame: { cx: 50, baseY: 20, width: 30 } },
+        files: {
+          "idle.svg": {
+            staticFrame: { cx: 50, baseY: 20, width: 30 },
+            followTarget: {
+              id: "[id^=eye]",
+              frame: { cx: 12, baseY: 4, width: 16 },
+            },
+          },
+        },
+      },
+      {
+        default: { staticFrame: { cx: 50, baseY: 20, width: 30 } },
+        files: {
+          "sleeping.svg": {
+            visibility: "hidden",
+            staticFrame: { cx: 50, baseY: 20, width: 30 },
+          },
+        },
+      },
+    ]) {
+      const errors = schema.validateTheme(validThemeJson({
+        customization: { accessories },
+      }));
+      assert.ok(
+        errors.some((error) => error.includes("customization.accessories")),
+        JSON.stringify(accessories)
+      );
+    }
+  });
+
+  it("rejects one basename resolving through multiple effective viewBoxes", () => {
+    const miniStates = Object.fromEntries(
+      schema.MINI_REQUIRED_STATES.map((state) => [state, ["idle.svg"]])
+    );
+    const raw = validThemeJson({
+      miniMode: {
+        supported: true,
+        viewBox: { x: -10, y: -10, width: 40, height: 40 },
+        states: miniStates,
+      },
+      customization: {
+        accessories: {
+          default: { staticFrame: { cx: 50, baseY: 20, width: 30 } },
+          mini: { staticFrame: { cx: 10, baseY: 4, width: 15 } },
+        },
+      },
+    });
+    assert.strictEqual(schema.deriveAccessoryCapability(raw), false);
   });
 
   it("mergeDefaults carries roamFlipAssets and defaults it to false", () => {
@@ -233,10 +378,12 @@ describe("theme schema defaults and normalization", () => {
       },
       displayHintMap: { old: "../hint.svg" },
       updateVisuals: { checking: "../checking.svg" },
+      timings: { dndSleepTransitionSvg: "../dnd-sleep.svg" },
     });
 
     assert.deepStrictEqual(files.sort(), [
       "checking.svg",
+      "dnd-sleep.svg",
       "double.svg",
       "drag-left.svg",
       "drag-right.svg",

@@ -182,11 +182,18 @@ function validateTheme(cfg) {
   if (cfg.customization !== undefined) {
     if (!isPlainObject(cfg.customization)) {
       errors.push("customization must be an object when present");
-    } else if (
-      cfg.customization.petTint !== undefined
-      && typeof cfg.customization.petTint !== "boolean"
-    ) {
-      errors.push(`customization.petTint must be a boolean, got ${JSON.stringify(cfg.customization.petTint)}`);
+    } else {
+      if (
+        cfg.customization.petTint !== undefined
+        && typeof cfg.customization.petTint !== "boolean"
+      ) {
+        errors.push(`customization.petTint must be a boolean, got ${JSON.stringify(cfg.customization.petTint)}`);
+      }
+      const accessoryResult = normalizeAccessoryAttachments(
+        cfg.customization.accessories,
+        cfg
+      );
+      errors.push(...accessoryResult.errors);
     }
   }
 
@@ -361,6 +368,397 @@ function derivePowerProfile(cfg, options = {}) {
   return hasScriptedSvgRuntime(cfg, options) ? "scripted" : "standard";
 }
 
+function addVisualUsage(out, stateFamily, file, source) {
+  const safe = basenameOnly(file);
+  if (!safe) return;
+  out.push({ stateFamily, file: safe, source });
+}
+
+function addVisualBinding(out, stateFamily, binding, source) {
+  for (const file of getStateFiles(binding)) {
+    addVisualUsage(out, stateFamily, file, source);
+  }
+}
+
+function getCanonicalFileViewBoxes(cfg) {
+  const out = {};
+  if (!isPlainObject(cfg && cfg.fileViewBoxes)) return out;
+  for (const [rawFile, rawViewBox] of Object.entries(cfg.fileViewBoxes)) {
+    const file = basenameOnly(rawFile);
+    const viewBox = normalizeViewBox(rawViewBox);
+    if (file && viewBox) out[file] = viewBox;
+  }
+  return out;
+}
+
+/**
+ * Canonical projection of every runtime-reachable visual usage. Unlike the
+ * historical filename Set this retains the state family and effective
+ * viewBox, so accessory coverage cannot accidentally apply root coordinates
+ * to mini art. This is intentionally pure and works on raw or normalized
+ * theme objects.
+ */
+function projectThemeVisualUsages(cfg) {
+  const usages = [];
+  for (const [state, binding] of Object.entries((cfg && cfg.states) || {})) {
+    addVisualBinding(usages, `normal:${state}`, binding, `states.${state}`);
+  }
+  for (const [state, binding] of Object.entries(
+    (cfg && cfg.miniMode && cfg.miniMode.states) || {}
+  )) {
+    addVisualBinding(usages, `mini:${state}`, binding, `miniMode.states.${state}`);
+  }
+  for (const [groupName, group] of [
+    ["workingTiers", cfg && cfg.workingTiers],
+    ["jugglingTiers", cfg && cfg.jugglingTiers],
+    ["idleAnimations", cfg && cfg.idleAnimations],
+  ]) {
+    for (const entry of Array.isArray(group) ? group : []) {
+      if (entry && typeof entry.file === "string") {
+        addVisualUsage(usages, `normal:${groupName}`, entry.file, groupName);
+      }
+    }
+  }
+  for (const [name, entry] of Object.entries((cfg && cfg.reactions) || {})) {
+    if (!isPlainObject(entry)) continue;
+    for (const key of ["file", "fileLeft", "fileRight"]) {
+      if (typeof entry[key] === "string") {
+        addVisualUsage(usages, `reaction:${name}`, entry[key], `reactions.${name}.${key}`);
+      }
+    }
+    for (const file of Array.isArray(entry.files) ? entry.files : []) {
+      addVisualUsage(usages, `reaction:${name}`, file, `reactions.${name}.files`);
+    }
+  }
+  for (const [hint, file] of Object.entries((cfg && cfg.displayHintMap) || {})) {
+    if (typeof file === "string") {
+      addVisualUsage(usages, `display-hint:${hint}`, file, `displayHintMap.${hint}`);
+    }
+  }
+  if (
+    isPlainObject(cfg && cfg.updateVisuals)
+    && typeof cfg.updateVisuals.checking === "string"
+  ) {
+    addVisualUsage(
+      usages,
+      "normal:update-checking",
+      cfg.updateVisuals.checking,
+      "updateVisuals.checking"
+    );
+  }
+  if (
+    isPlainObject(cfg && cfg.timings)
+    && typeof cfg.timings.dndSleepTransitionSvg === "string"
+  ) {
+    addVisualUsage(
+      usages,
+      "dnd:sleep-transition",
+      cfg.timings.dndSleepTransitionSvg,
+      "timings.dndSleepTransitionSvg"
+    );
+  }
+  const lowPower = cfg
+    && cfg.rendering
+    && cfg.rendering.lowPowerStaticImageOverrides;
+  for (const [state, override] of Object.entries(lowPower || {})) {
+    if (!isPlainObject(override)) continue;
+    if (typeof override.from === "string") {
+      addVisualUsage(
+        usages,
+        `low-power-source:${state}`,
+        override.from,
+        `rendering.lowPowerStaticImageOverrides.${state}.from`
+      );
+    }
+    if (typeof override.to === "string") {
+      addVisualUsage(
+        usages,
+        `low-power-static:${state}`,
+        override.to,
+        `rendering.lowPowerStaticImageOverrides.${state}.to`
+      );
+    }
+  }
+
+  const rootViewBox = normalizeViewBox(cfg && cfg.viewBox);
+  const miniViewBox = normalizeViewBox(cfg && cfg.miniMode && cfg.miniMode.viewBox);
+  const fileViewBoxes = getCanonicalFileViewBoxes(cfg);
+  return usages.map((usage) => {
+    const fileViewBox = fileViewBoxes[usage.file];
+    const isMini = usage.stateFamily.startsWith("mini:");
+    const effectiveViewBox = fileViewBox || (isMini && miniViewBox) || rootViewBox;
+    return {
+      ...usage,
+      effectiveViewBox: effectiveViewBox ? { ...effectiveViewBox } : null,
+      viewBoxSource: fileViewBox ? "file" : (isMini && miniViewBox ? "mini" : "root"),
+    };
+  });
+}
+
+function hasOnlyKeys(value, allowed, pathName, errors) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) errors.push(`${pathName}.${key} is not supported`);
+  }
+}
+
+function normalizeAccessoryFrame(value, viewBox, pathName, errors, targetLocal = false) {
+  if (!isPlainObject(value)) {
+    errors.push(`${pathName} must be an object`);
+    return null;
+  }
+  hasOnlyKeys(value, new Set(["cx", "baseY", "width"]), pathName, errors);
+  const { cx, baseY, width } = value;
+  if (![cx, baseY, width].every(Number.isFinite) || width <= 0) {
+    errors.push(`${pathName} must contain finite cx/baseY and positive width`);
+    return null;
+  }
+  if (targetLocal) {
+    if (Math.abs(cx) > 1_000_000 || Math.abs(baseY) > 1_000_000 || width > 1_000_000) {
+      errors.push(`${pathName} exceeds target-local numeric limits`);
+      return null;
+    }
+  } else {
+    if (!viewBox) {
+      errors.push(`${pathName} cannot be validated without an effective viewBox`);
+      return null;
+    }
+    if (
+      width > 4 * viewBox.width
+      || cx < viewBox.x - viewBox.width
+      || cx > viewBox.x + 2 * viewBox.width
+      || baseY < viewBox.y - viewBox.height
+      || baseY > viewBox.y + 2 * viewBox.height
+    ) {
+      errors.push(`${pathName} exceeds effective viewBox bounds`);
+      return null;
+    }
+  }
+  return { cx, baseY, width };
+}
+
+function normalizeAccessoryFollowTarget(value, pathName, errors) {
+  if (!isPlainObject(value)) {
+    errors.push(`${pathName} must be an object`);
+    return null;
+  }
+  hasOnlyKeys(value, new Set(["id", "frame"]), pathName, errors);
+  if (
+    typeof value.id !== "string"
+    || !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(value.id)
+  ) {
+    errors.push(`${pathName}.id must be a safe exact SVG id`);
+  }
+  const frame = normalizeAccessoryFrame(
+    value.frame,
+    null,
+    `${pathName}.frame`,
+    errors,
+    true
+  );
+  if (
+    typeof value.id !== "string"
+    || !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(value.id)
+    || !frame
+  ) {
+    return null;
+  }
+  return { id: value.id, frame };
+}
+
+function normalizeAccessoryStaticSection(value, viewBox, pathName, errors) {
+  if (!isPlainObject(value)) {
+    errors.push(`${pathName} must be an object`);
+    return null;
+  }
+  hasOnlyKeys(value, new Set(["staticFrame"]), pathName, errors);
+  const staticFrame = normalizeAccessoryFrame(
+    value.staticFrame,
+    viewBox,
+    `${pathName}.staticFrame`,
+    errors
+  );
+  return staticFrame ? { staticFrame } : null;
+}
+
+function viewBoxKey(viewBox) {
+  if (!viewBox) return "missing";
+  return [viewBox.x, viewBox.y, viewBox.width, viewBox.height].join(",");
+}
+
+function normalizeAccessoryFileDescriptor(value, viewBox, pathName, errors) {
+  if (!isPlainObject(value)) {
+    errors.push(`${pathName} must be an object`);
+    return null;
+  }
+  hasOnlyKeys(
+    value,
+    new Set(["visibility", "staticFrame", "followTarget"]),
+    pathName,
+    errors
+  );
+  if (value.visibility !== undefined) {
+    if (value.visibility !== "hidden") {
+      errors.push(`${pathName}.visibility must be "hidden"`);
+      return null;
+    }
+    if (value.staticFrame !== undefined || value.followTarget !== undefined) {
+      errors.push(`${pathName} hidden descriptors cannot define placement`);
+      return null;
+    }
+    return { visibility: "hidden" };
+  }
+  const staticFrame = normalizeAccessoryFrame(
+    value.staticFrame,
+    viewBox,
+    `${pathName}.staticFrame`,
+    errors
+  );
+  const followTarget = value.followTarget === undefined
+    ? null
+    : normalizeAccessoryFollowTarget(
+      value.followTarget,
+      `${pathName}.followTarget`,
+      errors
+    );
+  if (!staticFrame || (value.followTarget !== undefined && !followTarget)) return null;
+  return followTarget ? { staticFrame, followTarget } : { staticFrame };
+}
+
+/**
+ * Strictly normalize customization.accessories. Structural errors are
+ * returned to validateTheme; coverage gaps are intentionally handled by
+ * deriveAccessoryCapability so an otherwise valid theme can simply opt out.
+ */
+function normalizeAccessoryAttachments(value, cfg) {
+  const errors = [];
+  if (value === undefined || value === false || value === null) {
+    return { value: null, errors };
+  }
+  if (!isPlainObject(value)) {
+    return {
+      value: null,
+      errors: ["customization.accessories must be an object or false"],
+    };
+  }
+  hasOnlyKeys(
+    value,
+    new Set(["default", "mini", "files"]),
+    "customization.accessories",
+    errors
+  );
+
+  const rootViewBox = normalizeViewBox(cfg && cfg.viewBox);
+  const miniViewBox = normalizeViewBox(cfg && cfg.miniMode && cfg.miniMode.viewBox);
+  const usages = projectThemeVisualUsages(cfg);
+  const usagesByFile = new Map();
+  for (const usage of usages) {
+    const existing = usagesByFile.get(usage.file) || [];
+    existing.push(usage);
+    usagesByFile.set(usage.file, existing);
+  }
+
+  const normalized = { files: {} };
+  if (value.default !== undefined) {
+    const defaultSection = normalizeAccessoryStaticSection(
+      value.default,
+      rootViewBox,
+      "customization.accessories.default",
+      errors
+    );
+    if (defaultSection) normalized.default = defaultSection;
+  }
+  if (value.mini !== undefined) {
+    const miniSection = normalizeAccessoryStaticSection(
+      value.mini,
+      miniViewBox,
+      "customization.accessories.mini",
+      errors
+    );
+    if (miniSection) normalized.mini = miniSection;
+  }
+  if (value.files !== undefined) {
+    if (!isPlainObject(value.files)) {
+      errors.push("customization.accessories.files must be an object map");
+    } else {
+      for (const [rawFile, descriptor] of Object.entries(value.files)) {
+        const file = basenameOnly(rawFile);
+        if (
+          typeof rawFile !== "string"
+          || rawFile !== file
+          || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(file)
+        ) {
+          errors.push(`customization.accessories.files["${rawFile}"] must be a safe basename`);
+          continue;
+        }
+        const fileUsages = usagesByFile.get(file) || [];
+        const uniqueViewBoxes = new Map();
+        for (const usage of fileUsages) {
+          uniqueViewBoxes.set(viewBoxKey(usage.effectiveViewBox), usage.effectiveViewBox);
+        }
+        if (uniqueViewBoxes.size > 1) {
+          errors.push(`customization.accessories.files["${file}"] has multiple effective viewBoxes`);
+          continue;
+        }
+        const effectiveViewBox = uniqueViewBoxes.size === 1
+          ? [...uniqueViewBoxes.values()][0]
+          : (getCanonicalFileViewBoxes(cfg)[file] || rootViewBox);
+        const normalizedDescriptor = normalizeAccessoryFileDescriptor(
+          descriptor,
+          effectiveViewBox,
+          `customization.accessories.files["${file}"]`,
+          errors
+        );
+        if (normalizedDescriptor) normalized.files[file] = normalizedDescriptor;
+      }
+    }
+  }
+  return {
+    value: errors.length === 0 ? normalized : null,
+    errors,
+  };
+}
+
+function deriveAccessoryCapability(cfg) {
+  const parsed = normalizeAccessoryAttachments(
+    cfg && cfg.customization && cfg.customization.accessories,
+    cfg
+  );
+  if (parsed.errors.length > 0 || !parsed.value) return false;
+  const attachments = parsed.value;
+  const usages = projectThemeVisualUsages(cfg);
+  if (usages.length === 0) return false;
+
+  const usageFiles = new Set(usages.map((usage) => usage.file));
+  for (const file of Object.keys(attachments.files)) {
+    if (!usageFiles.has(file)) return false;
+  }
+
+  const viewBoxesByFile = new Map();
+  for (const usage of usages) {
+    const keys = viewBoxesByFile.get(usage.file) || new Set();
+    keys.add(viewBoxKey(usage.effectiveViewBox));
+    viewBoxesByFile.set(usage.file, keys);
+  }
+  if ([...viewBoxesByFile.values()].some((keys) => keys.size !== 1)) return false;
+
+  for (const usage of usages) {
+    if (!usage.effectiveViewBox) return false;
+    const fileDescriptor = attachments.files[usage.file];
+    if (fileDescriptor) {
+      if (fileDescriptor.visibility === "hidden") continue;
+      if (!fileDescriptor.staticFrame) return false;
+      continue;
+    }
+    if (usage.viewBoxSource === "file") return false;
+    if (usage.viewBoxSource === "mini") {
+      if (!attachments.mini || !attachments.mini.staticFrame) return false;
+      continue;
+    }
+    if (!attachments.default || !attachments.default.staticFrame) return false;
+  }
+  return true;
+}
+
 function buildCapabilities(cfg, options = {}) {
   return {
     eyeTracking: !!(
@@ -380,6 +778,7 @@ function buildCapabilities(cfg, options = {}) {
       isPlainObject(cfg && cfg.customization)
       && cfg.customization.petTint === true
     ),
+    accessories: deriveAccessoryCapability(cfg),
   };
 }
 
@@ -390,54 +789,8 @@ function addThemeAssetFile(out, filename) {
 
 function collectRequiredAssetFiles(theme) {
   const files = new Set();
-  if (theme && theme.states) {
-    for (const stateFiles of Object.values(theme.states)) {
-      if (!Array.isArray(stateFiles)) continue;
-      for (const file of stateFiles) addThemeAssetFile(files, file);
-    }
-  }
-  if (theme && theme.miniMode && theme.miniMode.states) {
-    for (const stateFiles of Object.values(theme.miniMode.states)) {
-      if (!Array.isArray(stateFiles)) continue;
-      for (const file of stateFiles) addThemeAssetFile(files, file);
-    }
-  }
-  for (const group of [theme && theme.workingTiers, theme && theme.jugglingTiers]) {
-    if (!Array.isArray(group)) continue;
-    for (const entry of group) {
-      if (entry && typeof entry.file === "string") addThemeAssetFile(files, entry.file);
-    }
-  }
-  if (Array.isArray(theme && theme.idleAnimations)) {
-    for (const entry of theme.idleAnimations) {
-      if (entry && typeof entry.file === "string") addThemeAssetFile(files, entry.file);
-    }
-  }
-  if (isPlainObject(theme && theme.reactions)) {
-    for (const entry of Object.values(theme.reactions)) {
-      if (!entry || typeof entry !== "object") continue;
-      if (typeof entry.file === "string") addThemeAssetFile(files, entry.file);
-      if (typeof entry.fileLeft === "string") addThemeAssetFile(files, entry.fileLeft);
-      if (typeof entry.fileRight === "string") addThemeAssetFile(files, entry.fileRight);
-      if (Array.isArray(entry.files)) {
-        for (const file of entry.files) addThemeAssetFile(files, file);
-      }
-    }
-  }
-  if (isPlainObject(theme && theme.displayHintMap)) {
-    for (const file of Object.values(theme.displayHintMap)) {
-      if (typeof file === "string") addThemeAssetFile(files, file);
-    }
-  }
-  if (isPlainObject(theme && theme.updateVisuals) && typeof theme.updateVisuals.checking === "string") {
-    addThemeAssetFile(files, theme.updateVisuals.checking);
-  }
-  if (isPlainObject(theme && theme.rendering) && isPlainObject(theme.rendering.lowPowerStaticImageOverrides)) {
-    for (const override of Object.values(theme.rendering.lowPowerStaticImageOverrides)) {
-      if (!isPlainObject(override)) continue;
-      if (typeof override.from === "string") addThemeAssetFile(files, override.from);
-      if (typeof override.to === "string") addThemeAssetFile(files, override.to);
-    }
+  for (const usage of projectThemeVisualUsages(theme)) {
+    addThemeAssetFile(files, usage.file);
   }
   return [...files];
 }
@@ -620,6 +973,7 @@ function mergeDefaults(raw, themeId, isBuiltin) {
       isPlainObject(raw.customization)
       && raw.customization.petTint === true
     ),
+    accessories: null,
   };
 
   // objectScale
@@ -688,6 +1042,11 @@ function mergeDefaults(raw, themeId, isBuiltin) {
   } else {
     theme.miniMode = { supported: false, states: {}, viewBox: null, timings: { minDisplay: {}, autoReturn: {} }, glyphFlips: {} };
   }
+
+  theme.customization.accessories = normalizeAccessoryAttachments(
+    isPlainObject(raw.customization) ? raw.customization.accessories : undefined,
+    theme
+  ).value;
 
   // Merge mini timings into main timings for state.js convenience
   if (theme.miniMode.timings) {
@@ -769,6 +1128,13 @@ function mergeDefaults(raw, themeId, isBuiltin) {
       delete theme.updateVisuals.checking;
     }
   }
+  if (
+    theme.timings
+    && typeof theme.timings.dndSleepTransitionSvg === "string"
+    && theme.timings.dndSleepTransitionSvg
+  ) {
+    theme.timings.dndSleepTransitionSvg = bn(theme.timings.dndSleepTransitionSvg);
+  }
   if (Array.isArray(theme.wideHitboxFiles)) theme.wideHitboxFiles = theme.wideHitboxFiles.map(bn);
   if (Array.isArray(theme.sleepingHitboxFiles)) theme.sleepingHitboxFiles = theme.sleepingHitboxFiles.map(bn);
 
@@ -800,6 +1166,9 @@ module.exports = {
   deriveIdleMode,
   deriveSleepMode,
   buildCapabilities,
+  projectThemeVisualUsages,
+  normalizeAccessoryAttachments,
+  deriveAccessoryCapability,
   collectRequiredAssetFiles,
   deepMergeObject,
   basenameOnly,

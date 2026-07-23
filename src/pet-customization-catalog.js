@@ -1,8 +1,8 @@
 "use strict";
 
-// Canonical catalog for pet customization choices. Persisted settings store
+// Canonical catalogs for pet customization choices. Persisted settings store
 // stable ids only; renderer-facing values are resolved here so neither menus
-// nor untrusted preference data can supply arbitrary CSS filters.
+// nor untrusted preference data can supply CSS filters or asset paths.
 
 const PET_TINT_CATALOG = Object.freeze([
   Object.freeze({
@@ -46,6 +46,87 @@ const PET_TINT_THEME_ALIASES = Object.freeze({
   }),
 });
 
+function freezeAccessory({
+  id,
+  labelKey,
+  file = null,
+  viewBox = null,
+  widthScale = 1,
+  offsetY = 0,
+}) {
+  return Object.freeze({
+    id,
+    labelKey,
+    file,
+    viewBox: viewBox ? Object.freeze({ ...viewBox }) : null,
+    widthScale,
+    offsetY,
+  });
+}
+
+const PET_ACCESSORY_CATALOG = Object.freeze([
+  freezeAccessory({
+    id: "none",
+    labelKey: "accessoryNone",
+  }),
+  freezeAccessory({
+    id: "cowboy-hat",
+    labelKey: "accessoryCowboyHat",
+    file: "cowboy-hat.svg",
+    viewBox: { x: 0, y: 0, width: 16, height: 7 },
+  }),
+  freezeAccessory({
+    id: "party-hat",
+    labelKey: "accessoryPartyHat",
+    file: "party-hat.svg",
+    viewBox: { x: 0, y: 0, width: 11, height: 14 },
+    widthScale: 0.7,
+    offsetY: 0.3,
+  }),
+  freezeAccessory({
+    id: "wizard-hat",
+    labelKey: "accessoryWizardHat",
+    file: "wizard-hat.svg",
+    viewBox: { x: 0, y: 0, width: 15, height: 16 },
+    widthScale: 0.95,
+    offsetY: 0.3,
+  }),
+  freezeAccessory({
+    id: "top-hat",
+    labelKey: "accessoryTopHat",
+    file: "top-hat.svg",
+    viewBox: { x: 0, y: 0, width: 14, height: 10 },
+    widthScale: 0.88,
+    offsetY: 0.2,
+  }),
+  freezeAccessory({
+    id: "santa-hat",
+    labelKey: "accessorySantaHat",
+    file: "santa-hat.svg",
+    viewBox: { x: 0, y: 0, width: 16, height: 9 },
+    offsetY: 0.2,
+  }),
+  freezeAccessory({
+    id: "pumpkin-hat",
+    labelKey: "accessoryPumpkinHat",
+    file: "pumpkin-hat.svg",
+    viewBox: { x: 0, y: 0, width: 13, height: 9 },
+    widthScale: 0.85,
+    offsetY: 0.4,
+  }),
+  freezeAccessory({
+    id: "halo",
+    labelKey: "accessoryHalo",
+    file: "halo.svg",
+    viewBox: { x: 0, y: 0, width: 14, height: 5 },
+    widthScale: 1.15,
+    offsetY: -1.4,
+  }),
+]);
+
+const PET_ACCESSORY_BY_ID = new Map(PET_ACCESSORY_CATALOG.map((entry) => [entry.id, entry]));
+const PET_ACCESSORY_IDS = Object.freeze(PET_ACCESSORY_CATALOG.map((entry) => entry.id));
+
 function isPetTintId(value) {
   return typeof value === "string" && PET_TINT_BY_ID.has(value);
 }
@@ -86,6 +167,50 @@ function listPetTintOptions() {
   return PET_TINT_CATALOG.map(({ id, labelKey }) => ({ id, labelKey }));
 }
 
+function isPetAccessoryId(value) {
+  return typeof value === "string" && PET_ACCESSORY_BY_ID.has(value);
+}
+
+function getPetAccessory(value) {
+  return PET_ACCESSORY_BY_ID.get(value) || PET_ACCESSORY_BY_ID.get("none");
+}
+
+function getPetAccessoryIdForTheme(selections, themeId) {
+  if (!selections || typeof selections !== "object" || Array.isArray(selections)) return "none";
+  if (typeof themeId !== "string" || !themeId) return "none";
+  return getPetAccessory(selections[themeId]).id;
+}
+
+function isPetAccessorySupportedForTheme(theme) {
+  if (!theme) return false;
+  return !!(theme._capabilities && theme._capabilities.accessories === true);
+}
+
+function resolvePetAccessoryPayload(value, theme = null) {
+  const entry = getPetAccessory(value);
+  const supported = isPetAccessorySupportedForTheme(theme);
+  if (!supported || entry.id === "none") {
+    return {
+      id: "none",
+      file: null,
+      viewBox: null,
+      widthScale: 1,
+      offsetY: 0,
+    };
+  }
+  return {
+    id: entry.id,
+    file: entry.file,
+    viewBox: { ...entry.viewBox },
+    widthScale: entry.widthScale,
+    offsetY: entry.offsetY,
+  };
+}
+
+function listPetAccessoryOptions() {
+  return PET_ACCESSORY_CATALOG.map(({ id, labelKey }) => ({ id, labelKey }));
+}
+
 module.exports = {
   PET_TINT_CATALOG,
   PET_TINT_IDS,
@@ -95,4 +220,12 @@ module.exports = {
   isPetTintSupportedForTheme,
   resolvePetTintPayload,
   listPetTintOptions,
+  PET_ACCESSORY_CATALOG,
+  PET_ACCESSORY_IDS,
+  isPetAccessoryId,
+  getPetAccessory,
+  getPetAccessoryIdForTheme,
+  isPetAccessorySupportedForTheme,
+  resolvePetAccessoryPayload,
+  listPetAccessoryOptions,
 };

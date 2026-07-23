@@ -63,7 +63,10 @@ const {
   isValidTextScale,
   normalizeTextScaleByDisplay,
 } = require("./text-scale");
-const { isPetTintId } = require("./pet-customization-catalog");
+const {
+  isPetTintId,
+  isPetAccessoryId,
+} = require("./pet-customization-catalog");
 const { isValidDisplaySnapshot } = require("./work-area");
 const {
   MAX_AUTO_CLOSE_SECONDS,
@@ -277,6 +280,24 @@ const updateRegistry = {
         return {
           status: "error",
           message: `petTint entry "${themeId}" must map a safe theme id to a non-default catalog tint id`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
+  petAccessory(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "petAccessory must be a theme-to-accessory object" };
+    }
+    for (const [themeId, accessoryId] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || !isPetAccessoryId(accessoryId)
+        || accessoryId === "none"
+      ) {
+        return {
+          status: "error",
+          message: `petAccessory entry "${themeId}" must map a safe theme id to a non-default catalog accessory id`,
         };
       }
     }

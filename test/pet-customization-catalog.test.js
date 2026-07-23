@@ -12,6 +12,14 @@ const {
   isPetTintSupportedForTheme,
   resolvePetTintPayload,
   listPetTintOptions,
+  PET_ACCESSORY_CATALOG,
+  PET_ACCESSORY_IDS,
+  isPetAccessoryId,
+  getPetAccessory,
+  getPetAccessoryIdForTheme,
+  isPetAccessorySupportedForTheme,
+  resolvePetAccessoryPayload,
+  listPetAccessoryOptions,
 } = require("../src/pet-customization-catalog");
 
 describe("pet customization catalog", () => {
@@ -105,6 +113,103 @@ describe("pet customization catalog", () => {
         assert.ok(entry.filter.split(/\s+/).every((part) => token.test(part)), entry.filter);
       }
       assert.doesNotMatch(entry.filter, /url|var|;|#/i);
+    }
+  });
+
+  it("keeps one ordered, deeply immutable source of truth for accessory ids and geometry", () => {
+    assert.deepStrictEqual(
+      PET_ACCESSORY_IDS,
+      [
+        "none",
+        "cowboy-hat",
+        "party-hat",
+        "wizard-hat",
+        "top-hat",
+        "santa-hat",
+        "pumpkin-hat",
+        "halo",
+      ]
+    );
+    assert.strictEqual(new Set(PET_ACCESSORY_IDS).size, PET_ACCESSORY_IDS.length);
+    assert.ok(Object.isFrozen(PET_ACCESSORY_CATALOG));
+    assert.ok(PET_ACCESSORY_CATALOG.every(Object.isFrozen));
+    assert.ok(PET_ACCESSORY_CATALOG.filter((entry) => entry.viewBox).every((entry) => (
+      Object.isFrozen(entry.viewBox)
+    )));
+    assert.ok(Object.isFrozen(PET_ACCESSORY_IDS));
+  });
+
+  it("exposes only accessory ids and labels to Settings", () => {
+    const options = listPetAccessoryOptions();
+    assert.deepStrictEqual(
+      options,
+      PET_ACCESSORY_CATALOG.map(({ id, labelKey }) => ({ id, labelKey }))
+    );
+    for (const entry of options) {
+      assert.deepStrictEqual(Object.keys(entry).sort(), ["id", "labelKey"]);
+    }
+  });
+
+  it("resolves safe accessory payloads only for capable themes", () => {
+    const clawd = { _id: "clawd", _capabilities: { accessories: true } };
+    const calico = { _id: "calico", _capabilities: { accessories: false } };
+
+    assert.strictEqual(isPetAccessoryId("wizard-hat"), true);
+    assert.strictEqual(isPetAccessoryId("seasonal"), false);
+    assert.strictEqual(getPetAccessory("custom").id, "none");
+    assert.strictEqual(isPetAccessorySupportedForTheme(clawd), true);
+    assert.strictEqual(isPetAccessorySupportedForTheme(calico), false);
+    assert.deepStrictEqual(resolvePetAccessoryPayload("wizard-hat", clawd), {
+      id: "wizard-hat",
+      file: "wizard-hat.svg",
+      viewBox: { x: 0, y: 0, width: 15, height: 16 },
+      widthScale: 0.95,
+      offsetY: 0.3,
+    });
+    assert.deepStrictEqual(resolvePetAccessoryPayload("wizard-hat", calico), {
+      id: "none",
+      file: null,
+      viewBox: null,
+      widthScale: 1,
+      offsetY: 0,
+    });
+    assert.deepStrictEqual(resolvePetAccessoryPayload("custom", clawd), {
+      id: "none",
+      file: null,
+      viewBox: null,
+      widthScale: 1,
+      offsetY: 0,
+    });
+  });
+
+  it("resolves accessories per theme without accepting the discarded global scalar shape", () => {
+    const selections = {
+      clawd: "wizard-hat",
+      cloudling: "halo",
+      calico: "seasonal",
+    };
+    assert.strictEqual(getPetAccessoryIdForTheme(selections, "clawd"), "wizard-hat");
+    assert.strictEqual(getPetAccessoryIdForTheme(selections, "cloudling"), "halo");
+    assert.strictEqual(getPetAccessoryIdForTheme(selections, "calico"), "none");
+    assert.strictEqual(getPetAccessoryIdForTheme(selections, "missing"), "none");
+    assert.strictEqual(getPetAccessoryIdForTheme("wizard-hat", "clawd"), "none");
+    assert.strictEqual(getPetAccessoryIdForTheme(null, "clawd"), "none");
+  });
+
+  it("keeps accessory assets and geometry inside a narrow local grammar", () => {
+    for (const entry of PET_ACCESSORY_CATALOG) {
+      assert.match(entry.id, /^[a-z][a-z0-9-]{0,31}$/);
+      assert.match(entry.labelKey, /^[A-Za-z][A-Za-z0-9]{0,63}$/);
+      assert.ok(Number.isFinite(entry.widthScale) && entry.widthScale > 0);
+      assert.ok(Number.isFinite(entry.offsetY));
+      if (entry.id === "none") {
+        assert.strictEqual(entry.file, null);
+        assert.strictEqual(entry.viewBox, null);
+      } else {
+        assert.match(entry.file, /^[a-z0-9][a-z0-9-]*\.svg$/);
+        assert.ok(entry.viewBox.width > 0);
+        assert.ok(entry.viewBox.height > 0);
+      }
     }
   });
 });

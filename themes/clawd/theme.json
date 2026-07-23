@@ -6,7 +6,63 @@
   "description": "The original pixel crab — Clawd the Claude Code mascot",
   "repo": "https://github.com/nicepkg/clawd",
   "customization": {
-    "petTint": true
+    "petTint": true,
+    "accessories": {
+      "default": {
+        "staticFrame": {
+          "cx": 7.5,
+          "baseY": 6.5,
+          "width": 16
+        }
+      },
+      "files": {
+        "clawd-idle-follow.svg": {
+          "staticFrame": {
+            "cx": 7.5,
+            "baseY": 6.5,
+            "width": 16
+          },
+          "followTarget": {
+            "id": "body-js",
+            "frame": {
+              "cx": 7.5,
+              "baseY": 6.5,
+              "width": 16
+            }
+          }
+        },
+        "clawd-mini-idle.svg": {
+          "staticFrame": {
+            "cx": 7.5,
+            "baseY": 6.5,
+            "width": 16
+          },
+          "followTarget": {
+            "id": "body-js",
+            "frame": {
+              "cx": 7.5,
+              "baseY": 6.5,
+              "width": 16
+            }
+          }
+        },
+        "clawd-collapse-sleep.svg": {
+          "visibility": "hidden"
+        },
+        "clawd-sleeping.svg": {
+          "visibility": "hidden"
+        },
+        "clawd-wake.svg": {
+          "visibility": "hidden"
+        },
+        "clawd-mini-enter-sleep.svg": {
+          "visibility": "hidden"
+        },
+        "clawd-mini-sleep.svg": {
+          "visibility": "hidden"
+        }
+      }
+    }
   },
   "viewBox": {
     "x": -15,
