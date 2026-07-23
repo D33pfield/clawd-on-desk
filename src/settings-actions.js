@@ -928,11 +928,25 @@ function setThemeSelection(payload, deps) {
   const resolvedVariant = (resolved && typeof resolved === "object" && typeof resolved.variantId === "string")
     ? resolved.variantId
     : targetVariant;
+  const activeTheme = typeof deps.getActiveTheme === "function" ? deps.getActiveTheme() : null;
+  const customizationCapabilities = (
+    activeTheme
+    && activeTheme._id === themeId
+    && activeTheme._capabilities
+    && typeof activeTheme._capabilities === "object"
+    && !Array.isArray(activeTheme._capabilities)
+  )
+    ? {
+        petTint: activeTheme._capabilities.petTint === true,
+        accessories: activeTheme._capabilities.accessories === true,
+      }
+    : null;
 
   const nextVariantMap = { ...currentVariantMap, [themeId]: resolvedVariant };
   return {
     status: "ok",
     commit: { theme: themeId, themeVariant: nextVariantMap },
+    customizationCapabilities,
   };
 }
 

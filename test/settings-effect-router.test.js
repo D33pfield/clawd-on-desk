@@ -438,6 +438,48 @@ describe("settings-effect-router", () => {
     ]);
   });
 
+  it("resolves the active theme's accessory without rebuilding quick menus", () => {
+    let activeTheme = {
+      _id: "clawd",
+      _builtin: true,
+      _capabilities: { accessories: true },
+    };
+    const { calls, emit } = createHarness({
+      routerOptions: { getActiveTheme: () => activeTheme },
+    });
+
+    emit({ petAccessory: { clawd: "wizard-hat", cloudling: "halo" } });
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { petAccessory: { clawd: "wizard-hat", cloudling: "halo" } }],
+      ["sendToRenderer", "pet-accessory-change", {
+        id: "wizard-hat",
+        assetFile: "wizard-hat.svg",
+        aspect: 15 / 16,
+        widthScale: 0.95,
+        offsetY: 0.3,
+      }],
+    ]);
+
+    calls.length = 0;
+    activeTheme = {
+      _id: "calico",
+      _builtin: true,
+      _capabilities: { accessories: false },
+    };
+    emit({ petAccessory: { calico: "halo" } });
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { petAccessory: { calico: "halo" } }],
+      ["sendToRenderer", "pet-accessory-change", {
+        id: "none",
+        assetFile: null,
+        aspect: 1,
+        widthScale: 1,
+        offsetY: 0,
+      }],
+    ]);
+    assert.strictEqual(calls.some((call) => call[0] === "rebuildAllMenus"), false);
+  });
+
   it("broadcasts settings changes only to live renderer windows", () => {
     const calls = [];
     const windows = [

@@ -1415,7 +1415,8 @@ html, body {
   background: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
 }
-.pet-tint-select {
+.pet-tint-select,
+.pet-accessory-select {
   min-width: 176px;
   max-width: 240px;
   padding: 7px 30px 7px 10px;
@@ -1427,12 +1428,16 @@ html, body {
   cursor: pointer;
 }
 .pet-tint-select:hover:not(:disabled),
-.pet-tint-select:focus-visible {
+.pet-tint-select:focus-visible,
+.pet-accessory-select:hover:not(:disabled),
+.pet-accessory-select:focus-visible {
   border-color: var(--accent);
   outline: none;
 }
 .pet-tint-select.pending,
-.pet-tint-select:disabled {
+.pet-tint-select:disabled,
+.pet-accessory-select.pending,
+.pet-accessory-select:disabled {
   cursor: wait;
   opacity: 0.62;
 }
@@ -1763,7 +1768,8 @@ html, body {
     flex-direction: column;
   }
   .theme-customization-row .row-control,
-  .theme-customization-row .pet-tint-select {
+  .theme-customization-row .pet-tint-select,
+  .theme-customization-row .pet-accessory-select {
     width: 100%;
     max-width: none;
   }

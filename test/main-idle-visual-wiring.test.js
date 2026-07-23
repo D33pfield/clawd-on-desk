@@ -37,6 +37,13 @@ describe("main default idle visual wiring", () => {
       mainSource,
       /cfg\.petTintPayload = resolvePetTintPayload\(tintId, activeTheme\);/
     );
+    assert.match(
+      mainSource,
+      /cfg\.accessoryPayload = resolvePetAccessoryPayload\(accessoryId, activeTheme\);/
+    );
+    assert.ok(mainSource.includes(
+      'sendToRenderer("pet-accessory-change", resolvePetAccessoryPayload(accessoryId, activeTheme));'
+    ));
     assert.ok(
       mainSource.includes("themeConfig: buildRendererThemeConfig(),"),
       "createRenderWindow should carry the stamped config"

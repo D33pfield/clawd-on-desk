@@ -192,16 +192,16 @@ function resolvePetAccessoryPayload(value, theme = null) {
   if (!supported || entry.id === "none") {
     return {
       id: "none",
-      file: null,
-      viewBox: null,
+      assetFile: null,
+      aspect: 1,
       widthScale: 1,
       offsetY: 0,
     };
   }
   return {
     id: entry.id,
-    file: entry.file,
-    viewBox: { ...entry.viewBox },
+    assetFile: entry.file,
+    aspect: entry.viewBox.width / entry.viewBox.height,
     widthScale: entry.widthScale,
     offsetY: entry.offsetY,
   };

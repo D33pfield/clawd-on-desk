@@ -3,6 +3,8 @@
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
+  getPetAccessoryIdForTheme,
+  resolvePetAccessoryPayload,
 } = require("./pet-customization-catalog");
 
 const MENU_AFFECTING_KEYS = new Set([
@@ -120,6 +122,17 @@ function createSettingsEffectRouter(options = {}) {
       const activeTheme = getActiveTheme();
       const tintId = getPetTintIdForTheme(changes.petTint, activeTheme && activeTheme._id);
       sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
+    }
+    if ("petAccessory" in changes) {
+      const activeTheme = getActiveTheme();
+      const accessoryId = getPetAccessoryIdForTheme(
+        changes.petAccessory,
+        activeTheme && activeTheme._id
+      );
+      sendToRenderer(
+        "pet-accessory-change",
+        resolvePetAccessoryPayload(accessoryId, activeTheme)
+      );
     }
     if ("keepAwakeWhileWorking" in changes) {
       safeCall(logWarn, "Clawd: reconcilePowerSaveBlocker failed:", reconcilePowerSaveBlocker);

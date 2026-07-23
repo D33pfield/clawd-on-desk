@@ -161,22 +161,22 @@ describe("pet customization catalog", () => {
     assert.strictEqual(isPetAccessorySupportedForTheme(calico), false);
     assert.deepStrictEqual(resolvePetAccessoryPayload("wizard-hat", clawd), {
       id: "wizard-hat",
-      file: "wizard-hat.svg",
-      viewBox: { x: 0, y: 0, width: 15, height: 16 },
+      assetFile: "wizard-hat.svg",
+      aspect: 15 / 16,
       widthScale: 0.95,
       offsetY: 0.3,
     });
     assert.deepStrictEqual(resolvePetAccessoryPayload("wizard-hat", calico), {
       id: "none",
-      file: null,
-      viewBox: null,
+      assetFile: null,
+      aspect: 1,
       widthScale: 1,
       offsetY: 0,
     });
     assert.deepStrictEqual(resolvePetAccessoryPayload("custom", clawd), {
       id: "none",
-      file: null,
-      viewBox: null,
+      assetFile: null,
+      aspect: 1,
       widthScale: 1,
       offsetY: 0,
     });

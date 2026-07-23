@@ -8,7 +8,10 @@ const path = require("node:path");
 const zlib = require("node:zlib");
 
 const { registerSettingsIpc } = require("../src/settings-ipc");
-const { listPetTintOptions } = require("../src/pet-customization-catalog");
+const {
+  listPetTintOptions,
+  listPetAccessoryOptions,
+} = require("../src/pet-customization-catalog");
 
 class FakeIpcMain {
   constructor() {
@@ -211,6 +214,7 @@ test("settings IPC registers owned channels and leaves animation override channe
   assert.ok(ipcMain.handlers.has("settings:get-snapshot"));
   assert.ok(ipcMain.handlers.has("settings:get-quota-source-count"));
   assert.ok(ipcMain.handlers.has("settings:get-pet-tint-options"));
+  assert.ok(ipcMain.handlers.has("settings:get-pet-accessory-options"));
   assert.ok(ipcMain.handlers.has("settings:pick-sound-file"));
   assert.ok(ipcMain.handlers.has("settings:list-themes"));
   assert.ok(ipcMain.handlers.has("settings:detect-agent-installations"));
@@ -247,6 +251,33 @@ test("settings IPC reports quota source count and fails closed when the provider
   });
   assert.strictEqual(await broken.ipcMain.invoke("settings:get-quota-source-count"), 0);
   broken.runtime.dispose();
+});
+
+test("settings:list-themes uses active runtime capabilities over raw metadata", async () => {
+  const { ipcMain } = createHarness({
+    activeTheme: {
+      _id: "clawd",
+      _capabilities: { petTint: true, accessories: false },
+      sounds: {},
+    },
+    themeLoader: {
+      getPreviewSoundUrl: () => null,
+      getSoundOverridesDir: () => null,
+      getSoundUrl: () => null,
+      listThemesWithMetadata: () => [{
+        id: "clawd",
+        capabilities: { petTint: true, accessories: true, reactions: true },
+      }],
+      getThemeMetadata: () => null,
+      ensureUserThemesDir: () => null,
+    },
+  });
+
+  assert.deepStrictEqual(await ipcMain.invoke("settings:list-themes"), [{
+    id: "clawd",
+    active: true,
+    capabilities: { petTint: true, accessories: false, reactions: true },
+  }]);
 });
 
 test("settings IPC opens the tutorial from Settings", async () => {
@@ -304,6 +335,10 @@ test("settings IPC delegates controller and size preview handlers", async () => 
   assert.deepStrictEqual(
     await ipcMain.invoke("settings:get-pet-tint-options"),
     listPetTintOptions()
+  );
+  assert.deepStrictEqual(
+    await ipcMain.invoke("settings:get-pet-accessory-options"),
+    listPetAccessoryOptions()
   );
   assert.deepStrictEqual(
     await ipcMain.invoke("settings:update", null),

@@ -8,6 +8,7 @@
 //                                       hardcoded (maintainer-shipped)
 //   getSnapshot()                       Promise<snapshot>
 //   getPetTintOptions()                 Promise<Array<{id, labelKey}>>
+//   getPetAccessoryOptions()            Promise<Array<{id, labelKey}>>
 //   update(key, value)                  Promise<{ status, message? }>
 //   command(action, payload)            Promise<{ status, message? }>
 //   listAgents()                        Promise<Array<{id, name, ...}>>
@@ -95,6 +96,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   getSnapshot: () => ipcRenderer.invoke("settings:get-snapshot"),
   getQuotaSourceCount: () => ipcRenderer.invoke("settings:get-quota-source-count"),
   getPetTintOptions: () => ipcRenderer.invoke("settings:get-pet-tint-options"),
+  getPetAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-accessory-options"),
   getShortcutFailures: () => ipcRenderer.invoke("settings:getShortcutFailures"),
   getAnimationOverridesData: () => ipcRenderer.invoke("settings:get-animation-overrides-data"),
   openThemeAssetsDir: () => ipcRenderer.invoke("settings:open-theme-assets-dir"),

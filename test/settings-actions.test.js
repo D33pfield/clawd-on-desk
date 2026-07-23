@@ -1683,6 +1683,10 @@ describe("setThemeSelection command", () => {
         const resolved = variantId === "dead" ? "default" : variantId;
         return { themeId, variantId: resolved };
       },
+      getActiveTheme: () => ({
+        _id: calls.activateTheme.at(-1)?.themeId || "clawd",
+        _capabilities: { petTint: true, accessories: true },
+      }),
       ...overrides,
     };
     return { deps, calls };
@@ -1751,6 +1755,24 @@ describe("setThemeSelection command", () => {
     assert.ok(r.commit, "commit field expected");
     assert.strictEqual(r.commit.theme, "clawd");
     assert.deepStrictEqual(r.commit.themeVariant, { clawd: "chill" });
+    assert.deepStrictEqual(r.customizationCapabilities, {
+      petTint: true,
+      accessories: true,
+    });
+  });
+
+  it("returns the activated theme's fail-closed customization capabilities", () => {
+    const { deps } = makeDeps({
+      getActiveTheme: () => ({
+        _id: "clawd",
+        _capabilities: { petTint: true, accessories: false },
+      }),
+    });
+    const r = commandRegistry.setThemeSelection({ themeId: "clawd" }, deps);
+    assert.deepStrictEqual(r.customizationCapabilities, {
+      petTint: true,
+      accessories: false,
+    });
   });
 
   it("preserves other themes' variantIds when committing", () => {

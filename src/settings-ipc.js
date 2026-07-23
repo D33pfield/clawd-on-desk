@@ -4,7 +4,10 @@ const defaultFs = require("fs");
 const defaultPath = require("path");
 const { detectAgentInstallations: defaultDetectAgentInstallations } = require("./agent-installation-detector");
 const settingsThemeImporter = require("./settings-theme-importer");
-const { listPetTintOptions } = require("./pet-customization-catalog");
+const {
+  listPetTintOptions,
+  listPetAccessoryOptions,
+} = require("./pet-customization-catalog");
 
 const SOUND_OVERRIDE_ASSET_EXTS = new Set([".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"]);
 const SOUND_OVERRIDE_DIALOG_STRINGS = {
@@ -200,6 +203,7 @@ function registerSettingsIpc(options = {}) {
     }
   });
   handle("settings:get-pet-tint-options", () => listPetTintOptions());
+  handle("settings:get-pet-accessory-options", () => listPetAccessoryOptions());
   handle("settings:update", (_event, payload) => {
     if (!payload || typeof payload !== "object") {
       return { status: "error", message: "settings:update payload must be { key, value }" };
@@ -360,12 +364,21 @@ function registerSettingsIpc(options = {}) {
     try {
       const activeTheme = getActiveTheme();
       const activeId = activeTheme ? activeTheme._id : "clawd";
-      return themeLoader.listThemesWithMetadata().map((theme) =>
-        codexPetMain.decorateThemeMetadata({
+      return themeLoader.listThemesWithMetadata().map((theme) => {
+        const active = theme.id === activeId;
+        const runtimeCapabilities = active
+          && activeTheme
+          && isPlainObject(activeTheme._capabilities)
+          ? activeTheme._capabilities
+          : null;
+        return codexPetMain.decorateThemeMetadata({
           ...theme,
-          active: theme.id === activeId,
-        })
-      );
+          active,
+          ...(runtimeCapabilities
+            ? { capabilities: { ...(theme.capabilities || {}), ...runtimeCapabilities } }
+            : {}),
+        });
+      });
     } catch (err) {
       console.warn("Clawd: settings:list-themes failed:", err && err.message);
       return [];

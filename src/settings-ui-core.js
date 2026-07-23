@@ -97,6 +97,7 @@
     codexPetRemovalPendingThemeId: null,
     animationOverridesData: null,
     petTintOptions: [],
+    petAccessoryOptions: [],
     animationOverridesFetchSeq: 0,
     animationPosterRenderPending: false,
     animationPosterRenderFlags: null,

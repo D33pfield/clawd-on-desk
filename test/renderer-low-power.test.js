@@ -1179,6 +1179,7 @@ describe("renderer pet accessory wardrobe", () => {
     const html = readNormalized(path.join(__dirname, "..", "src", "index.html"));
     const css = readNormalized(path.join(__dirname, "..", "src", "styles.css"));
     const renderer = readNormalized(RENDERER);
+    const preload = readNormalized(PRELOAD);
 
     assert.ok(html.indexOf('id="pet-media-layer"') < html.indexOf('id="pet-accessory-layer"'));
     assert.ok(html.indexOf('src="pet-accessory-layout.js"') < html.indexOf('src="renderer.js"'));
@@ -1188,6 +1189,9 @@ describe("renderer pet accessory wardrobe", () => {
     assert.ok(css.includes("translate: 3px 0;"));
     assert.ok(renderer.includes('mediaLayer.querySelectorAll("object.clawd-object, img.clawd-img")'));
     assert.ok(renderer.includes('assetDirectionStage.style.scale = shouldApplyMiniAssetFlip(state) ? "-1 1" : "none";'));
+    assert.ok(preload.includes(
+      'onPetAccessoryChange: (cb) => ipcRenderer.on("pet-accessory-change", (_, payload) => cb(payload))'
+    ));
   });
 });
 
