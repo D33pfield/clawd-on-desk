@@ -787,7 +787,7 @@ function applyAccessoryLayout(layout) {
 
 function accessoryFollowTick(expectedKey) {
   _accessoryRaf = null;
-  if (document.hidden === true) return;
+  if (document.hidden === true || shouldSuppressPassiveTrackingForLowPower()) return;
   const context = getCurrentAccessoryContext();
   if (!context || context.descriptor.visibility === "hidden") {
     hideAccessory();
@@ -814,7 +814,7 @@ function accessoryFollowTick(expectedKey) {
 
 function startAccessoryFollow(context) {
   const follow = context.descriptor.followTarget;
-  if (!follow) return;
+  if (!follow || shouldSuppressPassiveTrackingForLowPower()) return;
   const key = `${context.file}|${_accessoryPayload.id}|${follow.id}`;
   cancelAccessoryFollow();
   _accessoryFollowKey = key;

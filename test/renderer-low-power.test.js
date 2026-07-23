@@ -1210,6 +1210,8 @@ describe("renderer pet accessory wardrobe", () => {
     const firstFollow = harness.activeTimers().find((timer) => timer.ms === 16);
     assert.ok(firstFollow, "dynamic target should start one follow RAF");
 
+    harness.api.setCurrentState("idle");
+    harness.api.setLowPowerIdleMode(true);
     harness.api.setLowPowerSvgPaused(true);
     assert.strictEqual(firstFollow.cleared, true);
     const callsAtPause = getCtmCalls;
@@ -1218,8 +1220,32 @@ describe("renderer pet accessory wardrobe", () => {
       0
     );
 
+    harness.windowListeners.get("resize")();
+    harness.context.document.hidden = true;
+    harness.documentListeners.get("visibilitychange")();
+    harness.context.document.hidden = false;
+    harness.documentListeners.get("visibilitychange")();
+    harness.electronHandlers.onPetAccessoryChange({
+      id: "wizard-hat",
+      assetFile: "wizard-hat.svg",
+      aspect: 15 / 16,
+      widthScale: 0.95,
+      offsetY: 0.3,
+    });
+    harness.accessory.onload();
+    assert.ok(
+      getCtmCalls > callsAtPause,
+      "paused refreshes may recompute a one-shot layout without starting a loop"
+    );
+    assert.strictEqual(
+      harness.activeTimers().filter((timer) => timer.ms === 16).length,
+      0,
+      "refresh, visibility restore, and asset load must not restart follow while paused"
+    );
+
+    const callsBeforeResume = getCtmCalls;
     harness.api.setLowPowerSvgPaused(false);
-    assert.ok(getCtmCalls > callsAtPause, "resume should refresh the dynamic layout once");
+    assert.ok(getCtmCalls > callsBeforeResume, "resume should refresh the dynamic layout once");
     assert.strictEqual(
       harness.activeTimers().filter((timer) => timer.ms === 16).length,
       1,
