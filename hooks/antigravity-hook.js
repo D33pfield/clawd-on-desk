@@ -161,6 +161,25 @@ function resolveCwd(payload) {
   return "";
 }
 
+// #634: cross-process pid cache context for the shared resolver. Antigravity
+// has no session-start hook (earliest event is PreInvocation), so every event
+// uses the "event" lifecycle — first resolve populates the cache, later ones
+// hit it (zero snapshot spawns). cacheable compares against the exact
+// normalizeSessionId fallback so an id-less payload ("antigravity:default",
+// cf. #583) never keys a shared entry; the transcript-dirname fallback is a
+// real per-conversation id and stays cacheable.
+function pidCacheContext(payload) {
+  const sessionId = normalizeSessionId(payload && payload.conversationId, payload);
+  const cwd = resolveCwd(payload);
+  return {
+    namespace: "antigravity-cli",
+    sessionId,
+    cacheCwd: cwd,
+    lifecycle: "event",
+    cacheable: sessionId !== "antigravity:default" && !!cwd,
+  };
+}
+
 function normalizeToolInputValue(value, depth = 0) {
   if (depth > TOOL_INPUT_DEPTH_MAX) return null;
   if (Array.isArray(value)) {
@@ -403,7 +422,7 @@ async function sendHookEvent(payload, argvEvent, deps = {}) {
   const outLine = stdoutForEvent(hookName);
   const remote = !!env.CLAWD_REMOTE;
   const pidMeta = shouldResolvePid(hookName, env)
-    ? (deps.resolvePid ? deps.resolvePid() : undefined)
+    ? (deps.resolvePid ? deps.resolvePid(pidCacheContext(payload)) : undefined)
     : undefined;
   const body = buildStateBody(hookName, payload || {}, {
     remote,

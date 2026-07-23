@@ -200,7 +200,22 @@ function shouldReportForegroundWtHwnd(event) {
 }
 
 function applyLocalProcessFields(body, resolve, options = {}) {
-  const { stablePid, agentPid, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolve();
+  // #634: cross-process pid cache via the shared resolver. Lifecycle keys off
+  // the state event (permission bodies carry no event → "event"); codex has no
+  // SessionEnd hook and Stop is deliberately NOT "end" (turn completion). The
+  // cacheable guard compares against the exact normalizeCodexSessionId
+  // fallback, so an id-less payload (raw "default", cf. #583) never keys a
+  // shared cache entry.
+  const lifecycle = options.event === "SessionStart" ? "start"
+    : options.event === "UserPromptSubmit" ? "prompt"
+    : "event";
+  const { stablePid, agentPid, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolve({
+    namespace: "codex",
+    sessionId: body.session_id,
+    cacheCwd: body.cwd || "",
+    lifecycle,
+    cacheable: body.session_id !== "codex:default" && !!body.cwd,
+  });
   const sourcePid = options.preferAgentPid && agentPid ? agentPid : stablePid;
   body.source_pid = sourcePid;
   if (detectedEditor) body.editor = detectedEditor;

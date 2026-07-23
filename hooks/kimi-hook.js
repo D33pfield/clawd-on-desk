@@ -381,6 +381,16 @@ function shouldRemapPreToolToPermission(event, payload) {
   return classifyPreTool(event, payload) === "immediate";
 }
 
+// #634: lifecycle for the shared resolver's cross-process pid cache. Keyed on
+// the incoming hook event; Stop/StopFailure are deliberately NOT "end" (turn
+// completion — dropping the cache there would force a snapshot flash on the
+// next tool event).
+const EVENT_TO_LIFECYCLE = {
+  SessionStart: "start",
+  UserPromptSubmit: "prompt",
+  SessionEnd: "end",
+};
+
 function buildStateBody(event, payload, resolve) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
@@ -493,7 +503,16 @@ function buildStateBody(event, payload, resolve) {
     applyWslSourceFields(body, { remote: true });
   } else {
     applyWslSourceFields(body);
-    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
+    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve({
+      namespace: "kimi-cli",
+      sessionId,
+      cacheCwd: cwd,
+      // `event` may have been remapped to PermissionRequest above; both it and
+      // the original PreToolUse fall through to "event" here, so the remap
+      // cannot change the lifecycle.
+      lifecycle: EVENT_TO_LIFECYCLE[event] || "event",
+      cacheable: rawSessionId !== "default" && !!cwd,
+    });
     body.source_pid = stablePid;
     if (detectedEditor) body.editor = detectedEditor;
     if (agentPid) {

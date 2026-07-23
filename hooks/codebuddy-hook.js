@@ -19,6 +19,15 @@ const HOOK_MAP = {
   PreCompact:       { state: "sweeping",     event: "PreCompact" },
 };
 
+// #634: lifecycle for the shared resolver's cross-process pid cache. Stop is
+// deliberately NOT "end" (turn completion, not session end — dropping the
+// cache there would force a fresh snapshot flash on the next tool event).
+const EVENT_TO_LIFECYCLE = {
+  SessionStart: "start",
+  UserPromptSubmit: "prompt",
+  SessionEnd: "end",
+};
+
 const config = getPlatformConfig({
   extraTerminals: { win: ["codebuddy.exe"] },
   extraEditors: {
@@ -83,7 +92,13 @@ readStdinJson()
     const sessionId = (payload && payload.session_id) || "default";
     const cwd = (payload && payload.cwd) || "";
 
-    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
+    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve({
+      namespace: "codebuddy",
+      sessionId,
+      cacheCwd: cwd,
+      lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
+      cacheable: sessionId !== "default" && !!cwd,
+    });
 
     const body = { state, session_id: sessionId, event };
     body.agent_id = "codebuddy";

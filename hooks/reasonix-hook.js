@@ -21,6 +21,14 @@ const EVENT_TO_STATE = {
   PreCompact: "sweeping",
 };
 
+// #634: lifecycle for the shared resolver's cross-process pid cache. Stop is
+// deliberately NOT "end" (turn completion; Reasonix even delays its Stop POST).
+const EVENT_TO_LIFECYCLE = {
+  SessionStart: "start",
+  UserPromptSubmit: "prompt",
+  SessionEnd: "end",
+};
+
 const config = getPlatformConfig();
 const resolve = createPidResolver({
   agentNames: {
@@ -99,7 +107,16 @@ readStdinJson()
       applyWslSourceFields(body, { remote: true });
     } else {
       applyWslSourceFields(body);
-      const { stablePid, agentPid, detectedEditor, pidChain } = resolve();
+      // #634: cacheable keys off the RAW session id — the normalized value is
+      // prefixed, so its "reasonix:default" fallback would defeat the #583 guard.
+      const rawSessionId = (payload && payload.session_id) || "";
+      const { stablePid, agentPid, detectedEditor, pidChain } = resolve({
+        namespace: "reasonix",
+        sessionId: body.session_id,
+        cacheCwd: body.cwd || "",
+        lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
+        cacheable: !!rawSessionId && !!body.cwd,
+      });
       if (Number.isFinite(stablePid) && stablePid > 0) body.source_pid = Math.floor(stablePid);
       if (detectedEditor) body.editor = detectedEditor;
       if (Number.isFinite(agentPid) && agentPid > 0) body.agent_pid = Math.floor(agentPid);

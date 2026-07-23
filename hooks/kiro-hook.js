@@ -36,7 +36,18 @@ readStdinJson()
     const sessionId = "default";
     const cwd = (payload && payload.cwd) || "";
 
-    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
+    // #634: no stable session id → cacheable stays false (never key a
+    // cross-process cache under the shared "default" sid, cf. #583) and no
+    // "prompt" mapping (cache-only would ship empty fields where today's
+    // per-event fresh snapshot ships real ones). agentSpawn→"start" keeps the
+    // sweep + v1-drop hygiene; everything else stays a plain fresh snapshot.
+    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve({
+      namespace: "kiro-cli",
+      sessionId,
+      cacheCwd: cwd,
+      lifecycle: hookName === "agentSpawn" ? "start" : "event",
+      cacheable: false,
+    });
 
     const body = { state, session_id: sessionId, event };
     body.agent_id = "kiro-cli";

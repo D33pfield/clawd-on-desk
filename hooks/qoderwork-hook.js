@@ -144,6 +144,29 @@ const TOOL_METADATA_EVENTS = new Set([
   "PermissionDenied",
 ]);
 
+// #634: lifecycle for the shared resolver's cross-process pid cache. QoderWork
+// has no SessionEnd hook; Stop is deliberately NOT "end" (turn completion).
+// cacheable keys off the RAW session id — normalizeSessionId prefixes, so its
+// "qoderwork:default" fallback would defeat the #583 same-key guard.
+const EVENT_TO_LIFECYCLE = {
+  SessionStart: "start",
+  UserPromptSubmit: "prompt",
+};
+
+function pidCacheContext(hookName, payload) {
+  const raw = payload && payload.session_id != null && payload.session_id !== ""
+    ? String(payload.session_id)
+    : "";
+  const cwd = payload && typeof payload.cwd === "string" ? payload.cwd : "";
+  return {
+    namespace: "qoderwork",
+    sessionId: normalizeSessionId(payload && payload.session_id),
+    cacheCwd: cwd,
+    lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
+    cacheable: !!raw && !!cwd,
+  };
+}
+
 function maybeAddToolMetadata(body, payload) {
   const toolName = typeof payload.tool_name === "string" && payload.tool_name ? payload.tool_name : null;
   const toolUseId = normalizeToolUseId(payload.tool_use_id ?? payload.toolUseId ?? payload.toolUseID);
@@ -225,7 +248,7 @@ function sendHookEvent(payload, argvEvent, deps = {}) {
     remote,
     host: remote && deps.readHostPrefix ? deps.readHostPrefix() : undefined,
     pidMeta: shouldResolvePid(hookName, env)
-      ? (deps.resolvePid ? deps.resolvePid() : undefined)
+      ? (deps.resolvePid ? deps.resolvePid(pidCacheContext(hookName, payload)) : undefined)
       : undefined,
   });
 
