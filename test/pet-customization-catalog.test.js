@@ -182,6 +182,29 @@ describe("pet customization catalog", () => {
     });
   });
 
+  it("applies the smaller halo scale only to the built-in Clawd theme", () => {
+    const builtinClawd = {
+      _id: "clawd",
+      _builtin: true,
+      _capabilities: { accessories: true },
+    };
+    const builtinCloudling = {
+      _id: "cloudling",
+      _builtin: true,
+      _capabilities: { accessories: true },
+    };
+    const externalClawd = {
+      _id: "clawd",
+      _builtin: false,
+      _capabilities: { accessories: true },
+    };
+
+    assert.strictEqual(resolvePetAccessoryPayload("halo", builtinClawd).widthScale, 0.9);
+    assert.strictEqual(resolvePetAccessoryPayload("halo", builtinCloudling).widthScale, 1.15);
+    assert.strictEqual(resolvePetAccessoryPayload("halo", externalClawd).widthScale, 1.15);
+    assert.strictEqual(resolvePetAccessoryPayload("wizard-hat", builtinClawd).widthScale, 0.95);
+  });
+
   it("resolves accessories per theme without accepting the discarded global scalar shape", () => {
     const selections = {
       clawd: "wizard-hat",
@@ -202,6 +225,13 @@ describe("pet customization catalog", () => {
       assert.match(entry.labelKey, /^[A-Za-z][A-Za-z0-9]{0,63}$/);
       assert.ok(Number.isFinite(entry.widthScale) && entry.widthScale > 0);
       assert.ok(Number.isFinite(entry.offsetY));
+      if (entry.themeWidthScales) {
+        assert.ok(Object.isFrozen(entry.themeWidthScales));
+        for (const [themeId, widthScale] of Object.entries(entry.themeWidthScales)) {
+          assert.match(themeId, /^[a-z][a-z0-9-]{0,31}$/);
+          assert.ok(Number.isFinite(widthScale) && widthScale >= 0.25 && widthScale <= 2.5);
+        }
+      }
       if (entry.id === "none") {
         assert.strictEqual(entry.file, null);
         assert.strictEqual(entry.viewBox, null);

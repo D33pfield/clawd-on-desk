@@ -53,6 +53,7 @@ function freezeAccessory({
   viewBox = null,
   widthScale = 1,
   offsetY = 0,
+  themeWidthScales = null,
 }) {
   return Object.freeze({
     id,
@@ -61,6 +62,9 @@ function freezeAccessory({
     viewBox: viewBox ? Object.freeze({ ...viewBox }) : null,
     widthScale,
     offsetY,
+    themeWidthScales: themeWidthScales
+      ? Object.freeze({ ...themeWidthScales })
+      : null,
   });
 }
 
@@ -121,6 +125,7 @@ const PET_ACCESSORY_CATALOG = Object.freeze([
     viewBox: { x: 0, y: 0, width: 14, height: 5 },
     widthScale: 1.15,
     offsetY: -1.4,
+    themeWidthScales: { clawd: 0.9 },
   }),
 ]);
 
@@ -202,7 +207,12 @@ function resolvePetAccessoryPayload(value, theme = null) {
     id: entry.id,
     assetFile: entry.file,
     aspect: entry.viewBox.width / entry.viewBox.height,
-    widthScale: entry.widthScale,
+    widthScale: (
+      theme
+      && theme._builtin === true
+      && entry.themeWidthScales
+      && entry.themeWidthScales[theme._id]
+    ) || entry.widthScale,
     offsetY: entry.offsetY,
   };
 }

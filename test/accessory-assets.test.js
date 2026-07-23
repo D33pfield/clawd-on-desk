@@ -45,11 +45,15 @@ describe("accessory asset audit", () => {
       const tags = [...markup.matchAll(/<\s*\/?\s*([A-Za-z][A-Za-z0-9:-]*)/g)]
         .map((match) => match[1].toLowerCase());
 
-      assert.ok(tags.every((tag) => ["svg", "g", "rect"].includes(tag)), `${file}: ${tags.join(",")}`);
+      assert.ok(tags.every((tag) => ["svg", "g", "rect", "ellipse", "path"].includes(tag)), `${file}: ${tags.join(",")}`);
       assert.doesNotMatch(source, /<script|<foreignObject|<image|<use|<!DOCTYPE/i);
       assert.doesNotMatch(source, /\bon[a-z]+\s*=|\bhref\s*=|url\s*\(|data:/i);
-      for (const fill of source.matchAll(/\bfill="([^"]+)"/g)) {
-        assert.match(fill[1], /^#[0-9a-f]{6}$/i, `${file}: unsafe fill ${fill[1]}`);
+      for (const paint of source.matchAll(/\b(fill|stroke)="([^"]+)"/g)) {
+        assert.match(
+          paint[2],
+          /^(?:none|#[0-9a-f]{6})$/i,
+          `${file}: unsafe ${paint[1]} ${paint[2]}`
+        );
       }
     }
   });
@@ -65,5 +69,16 @@ describe("accessory asset audit", () => {
     assert.ok(brim, "Santa hat should declare its bottom seating brim");
     const centerX = Number(brim[1]) + Number(brim[2]) / 2;
     assert.strictEqual(centerX, 8, "the seating brim should match the 16-unit canvas center");
+  });
+
+  it("renders the angel halo as a smooth, centered elliptical ring", () => {
+    const source = fs.readFileSync(path.join(ASSET_DIR, "halo.svg"), "utf8");
+    assert.doesNotMatch(source, /shape-rendering="crispEdges"|<rect\b/);
+    assert.match(
+      source,
+      /<ellipse cx="7" cy="2\.5" rx="5\.5" ry="1\.55" fill="none" stroke="#ffd84d" stroke-width="0\.8"/
+    );
+    assert.match(source, /<path\b[^>]*stroke="#fff3b0"[^>]*stroke-width="0\.3"/);
+    assert.doesNotMatch(source, /stroke="#e9a928"/);
   });
 });

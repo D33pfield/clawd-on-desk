@@ -1,15 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Halo — pixel art (14x5 grid). Blocky golden ring. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 5" shape-rendering="crispEdges" width="14" height="5">
-  <g fill="#ffd84d">
-    <rect x="4" y="0" width="6" height="1"/>
-    <rect x="2" y="1" width="2" height="1"/>
-    <rect x="10" y="1" width="2" height="1"/>
-    <rect x="1" y="2" width="1" height="1"/>
-    <rect x="12" y="2" width="1" height="1"/>
-    <rect x="2" y="3" width="2" height="1"/>
-    <rect x="10" y="3" width="2" height="1"/>
-    <rect x="4" y="4" width="6" height="1"/>
-  </g>
-  <rect x="4" y="0" width="6" height="1" fill="#fff3b0"/>
+<!-- Smooth angel halo — a thin golden ellipse with a soft upper highlight. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 5" width="14" height="5">
+  <ellipse cx="7" cy="2.5" rx="5.5" ry="1.55" fill="none" stroke="#ffd84d" stroke-width="0.8"/>
+  <path d="M 2.5 1.62 C 4.45 0.72 9.55 0.72 11.5 1.62" fill="none" stroke="#fff3b0" stroke-width="0.3" stroke-linecap="round"/>
 </svg>
