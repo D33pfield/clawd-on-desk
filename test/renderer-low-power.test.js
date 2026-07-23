@@ -267,6 +267,7 @@ ${readNormalized(RENDERER)}
 globalThis.__rendererTest = {
   swapToFile,
   pauseCurrentSvgForLowPower,
+  setLowPowerSvgPaused,
   recoverFromSystemWake,
   attachEyeTracking,
   isEyeTrackingReady,
@@ -397,7 +398,10 @@ describe("renderer low-power idle mode", () => {
     assert.ok(source.includes("function shouldSuppressPassiveTrackingForLowPower()"));
     assert.ok(source.includes("return lowPowerIdleMode && lowPowerSvgPaused && shouldPauseForLowPower();"));
     assert.ok(source.includes("function _cancelLayerAnimLoop()"));
-    assert.ok(source.includes("if (next) _cancelLayerAnimLoop();"));
+    assert.match(
+      source,
+      /if \(next\) \{\s+_cancelLayerAnimLoop\(\);\s+cancelAccessoryFollow\(\);\s+\} else \{\s+refreshAccessoryLayout\(\);\s+\}/
+    );
     assert.ok(source.includes("if (shouldSuppressPassiveTrackingForLowPower()) { _layerAnimFrame = null; return; }"));
     assert.ok(source.includes("if (shouldSuppressPassiveTrackingForLowPower()) {\n    _cancelLayerAnimLoop();\n    return;\n  }"));
     assert.ok(source.includes("if (shouldSuppressPassiveTrackingForLowPower()) return;\n  if (!shouldUseCloudlingPointerBridge"));
@@ -1142,6 +1146,87 @@ describe("renderer pet accessory wardrobe", () => {
     assert.strictEqual(nextFollowTimer.cleared, true);
   });
 
+  it("keeps a newly selected asset alive when an old load waiter re-enters cleanup", () => {
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: accessoryConfig(),
+    });
+    const pendingPet = harness.api.pendingNext;
+    pendingPet.listeners.get("load")();
+    assert.ok(harness.api.pendingNext, "the initial pet swap should wait for accessory A");
+
+    harness.electronHandlers.onPetAccessoryChange({
+      id: "wizard-hat",
+      assetFile: "wizard-hat.svg",
+      aspect: 15 / 16,
+      widthScale: 0.95,
+      offsetY: 0.3,
+    });
+
+    assert.strictEqual(harness.accessory.src, "../assets/accessories/wizard-hat.svg");
+    assert.strictEqual(typeof harness.accessory.onload, "function");
+    harness.accessory.onload();
+    assert.strictEqual(harness.api.pendingNext, null);
+    assert.strictEqual(harness.accessory.style.display, "block");
+  });
+
+  it("stops dynamic accessory follow while low-power SVG animation is paused", () => {
+    const harness = createRendererHarness({
+      themeConfig: accessoryConfig({
+        accessoryAttachments: {
+          default: {
+            staticFrame: { cx: 50, baseY: 40, width: 20 },
+          },
+          files: {
+            "dynamic.svg": {
+              staticFrame: { cx: 50, baseY: 40, width: 20 },
+              followTarget: {
+                id: "body-js",
+                frame: { cx: 8, baseY: 6, width: 4 },
+              },
+            },
+          },
+        },
+      }),
+    });
+    harness.accessory.onload();
+
+    let getCtmCalls = 0;
+    harness.api.swapToFile("dynamic.svg", "idle", true);
+    const dynamicObject = harness.api.pendingNext;
+    dynamicObject.contentDocument = {
+      getElementById(id) {
+        return id === "body-js"
+          ? {
+              getCTM() {
+                getCtmCalls++;
+                return { a: 2, b: 0, c: 0, d: 2, e: 10, f: 12 };
+              },
+            }
+          : null;
+      },
+    };
+    dynamicObject.listeners.get("load")();
+    const firstFollow = harness.activeTimers().find((timer) => timer.ms === 16);
+    assert.ok(firstFollow, "dynamic target should start one follow RAF");
+
+    harness.api.setLowPowerSvgPaused(true);
+    assert.strictEqual(firstFollow.cleared, true);
+    const callsAtPause = getCtmCalls;
+    assert.strictEqual(
+      harness.activeTimers().filter((timer) => timer.ms === 16).length,
+      0
+    );
+
+    harness.api.setLowPowerSvgPaused(false);
+    assert.ok(getCtmCalls > callsAtPause, "resume should refresh the dynamic layout once");
+    assert.strictEqual(
+      harness.activeTimers().filter((timer) => timer.ms === 16).length,
+      1,
+      "resume should restore exactly one follow RAF"
+    );
+  });
+
   it("keeps sibling objects outside tint and pet-media swap cleanup", () => {
     const harness = createRendererHarness({
       initialObjectData: "",
@@ -1182,7 +1267,13 @@ describe("renderer pet accessory wardrobe", () => {
     const preload = readNormalized(PRELOAD);
 
     assert.ok(html.indexOf('id="pet-media-layer"') < html.indexOf('id="pet-accessory-layer"'));
+    assert.ok(html.includes('<div id="pet-effect-stage">'));
+    assert.ok(html.includes('<div id="pet-particle-layer"></div>'));
     assert.ok(html.indexOf('src="pet-accessory-layout.js"') < html.indexOf('src="renderer.js"'));
+    assert.match(
+      css,
+      /#pet-effect-stage,\s*#pet-particle-layer\s*\{[^}]*pointer-events: none;[^}]*transform: none;[^}]*translate: none;[^}]*scale: none;[^}]*rotate: none;[^}]*\}/
+    );
     assert.ok(css.includes("#pet-container.mini-left #pet-facing-stage"));
     assert.ok(css.includes("scale: -1 1;"));
     assert.ok(css.includes("#pet-container.roam-walk #pet-motion-stage"));

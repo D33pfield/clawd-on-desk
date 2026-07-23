@@ -292,6 +292,7 @@ Accessories render outside the pet media, so they keep their own colors and do n
 ```
 
 - `staticFrame` uses the effective viewBox of that visual. `cx` is the head center, `baseY` is the accessory resting line, and `width` is the reference head width.
+- Accessory projection currently supports the SVG default `preserveAspectRatio="xMidYMid meet"` only (omitting the attribute has that default). Themes using `none`, `slice`, or another alignment must not opt into accessories until that projection mode is supported.
 - `default` covers root-viewBox files. `mini` covers mini-viewBox files. A file with its own `fileViewBoxes` entry needs an exact `files[basename]` descriptor.
 - `followTarget.id` is an exact SVG element id, not a CSS selector. It is used only while that file renders through an accessible `<object>` document; `<img>`, PNG, APNG, GIF, and WebP use the required static fallback.
 - Use `{ "visibility": "hidden" }` for poses where an accessory should disappear, such as a covered sleeping pose. Do not combine `visibility` with placement fields.

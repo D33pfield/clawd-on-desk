@@ -403,10 +403,12 @@ function projectThemeVisualUsages(cfg) {
   for (const [state, binding] of Object.entries((cfg && cfg.states) || {})) {
     addVisualBinding(usages, `normal:${state}`, binding, `states.${state}`);
   }
-  for (const [state, binding] of Object.entries(
-    (cfg && cfg.miniMode && cfg.miniMode.states) || {}
-  )) {
-    addVisualBinding(usages, `mini:${state}`, binding, `miniMode.states.${state}`);
+  if (isMiniSupported(cfg)) {
+    for (const [state, binding] of Object.entries(
+      (cfg && cfg.miniMode && cfg.miniMode.states) || {}
+    )) {
+      addVisualBinding(usages, `mini:${state}`, binding, `miniMode.states.${state}`);
+    }
   }
   for (const [groupName, group] of [
     ["workingTiers", cfg && cfg.workingTiers],

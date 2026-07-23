@@ -203,6 +203,32 @@ describe("theme schema validation", () => {
     assert.strictEqual(schema.deriveAccessoryCapability(staleDescriptor), false);
   });
 
+  it("does not require unreachable mini attachments when mini mode is disabled", () => {
+    const raw = validThemeJson({
+      miniMode: {
+        supported: false,
+        viewBox: { x: -10, y: -10, width: 40, height: 40 },
+        states: {
+          "mini-idle": ["legacy-mini-idle.svg"],
+        },
+      },
+      customization: {
+        accessories: {
+          default: { staticFrame: { cx: 50, baseY: 20, width: 30 } },
+        },
+      },
+    });
+    const normalized = schema.mergeDefaults(raw, "external-demo", false);
+
+    assert.strictEqual(schema.buildCapabilities(raw).miniMode, false);
+    assert.strictEqual(schema.deriveAccessoryCapability(raw), true);
+    assert.strictEqual(schema.deriveAccessoryCapability(normalized), true);
+    assert.strictEqual(
+      schema.projectThemeVisualUsages(raw).some((usage) => usage.stateFamily.startsWith("mini:")),
+      false
+    );
+  });
+
   it("rejects malformed accessory metadata instead of guessing targets or coordinates", () => {
     for (const accessories of [
       "yes",

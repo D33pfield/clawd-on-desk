@@ -1,9 +1,9 @@
 # 计划：PR #529 配饰衣柜核心
 
-> 状态：草稿 v3（Phase 0 Electron spike 已完成并回填；仅计划，暂无配饰功能代码）
+> 状态：已实施并提交 Draft PR #730；Phase 0 结论、实机修正与独立审查修复已回填
 > 日期：2026-07-23
 > 来源：PR #529
-> 基线：`origin/main` @ `b8a0e50`（PR #728 宠物颜色滤镜已合并）
+> 原计划基线：`origin/main` @ `b8a0e50`（PR #728 宠物颜色滤镜已合并）；实现分支提交前已 rebase 到最新 `origin/main`
 > 计划分支：`feat/pr529-accessory-wardrobe`
 > 目标 PR：配饰衣柜核心（原拆分方案中的 PR B）
 
@@ -108,7 +108,7 @@ Cloudling SVG 内的可跟随 group id 并不统一：不同文件分别出现 `
 
 可评估复用：
 
-- `assets/accessories/` 下 7 个静态像素 SVG；
+- `assets/accessories/` 下 7 个静态 SVG（6 个像素风配饰 + 1 个圆润渐变光环）；
 - 配饰名称与五语翻译的语义；
 - 原作者对产品方向的贡献。
 
@@ -216,7 +216,7 @@ Settings IPC 只返回 UI 必需的 `{ id, labelKey }`，不把资源路径或 r
         "clawd-idle-follow.svg": {
           "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 },
           "followTarget": {
-            "id": "body-js",
+            "id": "torso",
             "frame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
           }
         },
@@ -544,7 +544,7 @@ Cloudling：
 - root `getCTM()` 与独立 `xMidYMid meet` helper 的 stage 投影最大差为 `0.258 CSS px`；Clawd root、Cloudling root、Cloudling mini viewBox 与 `cloudling-mini-crabwalk.svg` file override 均通过。
 - CTM 投影后的 target bbox 与 Chromium 实际 bbox 最大差为 `0.000069 CSS px`。此处 `getBBox()` 只用于 spike 诊断对账，生产实现仍禁止用它猜 attachment。
 - SVG script transform 会实时进入 CTM。Cloudling typing 若错误绑定 `cloud-group`，帽子会随云身旋转到脚下并产生约 `143px` 底部越界；改绑精确 `eye-group` 后保持在头顶并随呼吸缩放。因此 target 必须逐文件声明。
-- CSS/SVG 目标只继承该 target 自身及祖先的 transform，不会自动包含其子节点动画。Clawd `body-js` 仍用于承接 renderer 的 body shift；子节点轻微 breathe 不作为动态跟随依据。
+- CSS/SVG 目标只继承该 target 自身及祖先的 transform，不会自动包含其子节点动画。Spike 最初用 `body-js` 验证 renderer body shift；后续实机发现 Clawd idle 的呼吸位于其子节点 `torso`，生产配置已改为精确绑定 `torso`。`clawd-mini-idle.svg` 仍绑定 `body-js`。
 
 #### Stage、滤镜与性能
 
@@ -560,7 +560,7 @@ Cloudling：
 
 | 主题文件 | follow target | target-local frame | 结论 |
 |---|---|---|---|
-| `clawd-idle-follow.svg` | `body-js` | `{ cx:7.5, baseY:6.5, width:16 }` | 通过 |
+| `clawd-idle-follow.svg` | `torso` | `{ cx:7.5, baseY:6.5, width:16 }` | 通过；实机修正确保帽子随呼吸 |
 | `clawd-mini-idle.svg` | `body-js` | `{ cx:7.5, baseY:6.5, width:16 }` | 通过 |
 | `cloudling-idle.svg` | `cloud-group` | `{ cx:12, baseY:4, width:16 }` | 通过 |
 | `cloudling-typing.svg` | `eye-group` | `{ cx:12, baseY:4, width:16 }` | 通过；明确拒绝 `cloud-group` |
@@ -919,7 +919,7 @@ PR 正文链接并致谢 #529。
 assets/accessories/*.svg
 src/pet-accessory-layout.js
 test/pet-accessory-layout.test.js
-test/renderer-accessory.test.js
+test/renderer-low-power.test.js
 test/accessory-assets.test.js
 ```
 

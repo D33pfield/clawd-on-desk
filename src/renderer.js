@@ -185,7 +185,12 @@ function setLowPowerSvgPaused(paused) {
   const next = !!paused;
   if (lowPowerSvgPaused === next) return;
   lowPowerSvgPaused = next;
-  if (next) _cancelLayerAnimLoop();
+  if (next) {
+    _cancelLayerAnimLoop();
+    cancelAccessoryFollow();
+  } else {
+    refreshAccessoryLayout();
+  }
   if (window.electronAPI && typeof window.electronAPI.setLowPowerIdlePaused === "function") {
     window.electronAPI.setLowPowerIdlePaused(next);
   }
@@ -584,14 +589,18 @@ function clearAccessoryRuntime(options = {}) {
   hideAccessory();
   _accessoryDiagnostics.clear();
   if (!options.clearAsset) return;
+  // Fully detach the old request before releasing pet-swap waiters. A waiter
+  // may synchronously re-enter ensureAccessoryAsset() for a newly selected
+  // accessory; no old cleanup is allowed to clear that new request afterward.
+  if (accessoryEl) {
+    accessoryEl.onload = null;
+    accessoryEl.onerror = null;
+    try { accessoryEl.src = ""; } catch {}
+  }
   _accessoryAssetFile = null;
   _accessoryAssetReady = false;
   _accessoryAssetSettled = true;
   flushAccessoryAssetWaiters();
-  if (!accessoryEl) return;
-  accessoryEl.onload = null;
-  accessoryEl.onerror = null;
-  try { accessoryEl.src = ""; } catch {}
 }
 
 function noteAccessoryDiagnostic(file, reason) {
