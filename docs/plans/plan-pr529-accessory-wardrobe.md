@@ -1,6 +1,6 @@
 # 计划：PR #529 配饰衣柜核心
 
-> 状态：草稿 v1（仅计划，暂无配饰功能代码）
+> 状态：草稿 v2（已完成首轮独立交叉审查；仅计划，暂无配饰功能代码）
 > 日期：2026-07-23
 > 来源：PR #529
 > 基线：`origin/main` @ `b8a0e50`（PR #728 宠物颜色滤镜已合并）
@@ -97,6 +97,12 @@ container.querySelectorAll("object, img.clawd-img")
 | Calico | 26 个 APNG + 1 个 SVG | 本轮不支持；产品决定为不显示装扮入口 |
 
 Cloudling SVG 内的可跟随 group id 并不统一：不同文件分别出现 `cloud-group`、`eye-group`、`body-js`、`eyes-js` 等。不能使用 `[id^="eye"]` 或按 DOM 顺序猜测节点。
+
+当前有效 viewBox 口径也不同：
+
+- Clawd 只有根 viewBox `-15 -25 45 45`，没有 `fileViewBoxes` 或独立 mini viewBox；
+- Cloudling 的根 viewBox 是 `-32 -24 88 72`，mini viewBox 是 `-12 -12 48 48`，`cloudling-mini-crabwalk.svg` 另有一个等于根 viewBox 的 file override；
+- Calico 只有根 viewBox `0 0 266 200`，但本轮不声明配饰能力。
 
 ### 2.5 PR #529 原实现中可保留与不可保留的内容
 
@@ -222,28 +228,54 @@ Settings IPC 只返回 UI 必需的 `{ id, labelKey }`，不把资源路径或 r
 
 规范：
 
-- `staticFrame` 使用该文件实际 viewBox 的坐标；
+- `default.staticFrame` 只表示主题根 viewBox 坐标下的默认 frame；
+- 主题有 `miniMode.viewBox` 时，可用独立的 `mini.staticFrame` 表示 mini viewBox 坐标；不能把 root default 直接当成 mini coverage；
+- `fileViewBoxes` 中出现的每个文件都必须在 `files` 中显式给出 `staticFrame`，即使该 override 数值碰巧等于根 viewBox；
+- 同一 basename 如果在不同状态下会解析到多个不同 viewBox，v1 attachment schema 不允许只用一个 file descriptor：主题必须用 `fileViewBoxes` 把它统一到一个有效 viewBox，否则 capability 为 false；
+- `staticFrame` 使用该文件/usage 最终解析出的有效 viewBox 坐标；
 - `followTarget.frame` 使用目标元素的局部坐标；
 - `followTarget.id` 必须通过 `getElementById()` 精确查找；
 - 禁止 CSS selector、前缀匹配、class 猜测和 `getBBox()` 猜锚点；
-- `width` 必须是有限正数，所有坐标必须有限并受合理上限约束；
 - file key 必须是安全 basename；
 - file descriptor 必须是完整对象，不做隐式深层拼接；
-- `default` 只提供静态 frame；动态 target 必须按文件显式声明；
+- `default` / `mini` 只提供静态 frame；动态 target 必须按文件显式声明；
 - 某文件没有动态 target 时仍可用该文件明确解析到的 static frame；
 - 不能退回 renderer 内置的“Clawd 默认头部坐标”。
+
+数值边界不是“有限即可”：
+
+- 对 static frame：`0 < width <= 4 * viewBox.width`；
+- `cx` 必须落在 `[viewBox.x - viewBox.width, viewBox.x + 2 * viewBox.width]`；
+- `baseY` 必须落在 `[viewBox.y - viewBox.height, viewBox.y + 2 * viewBox.height]`；
+- follow-target 局部坐标无法用根 viewBox 约束，因此还需绝对上限：`abs(cx/baseY) <= 1_000_000`、`0 < width <= 1_000_000`；
+- renderer 投影后再次校验 finite，并拒绝宽/高超过 stage 四倍或完全落在 stage 外一整个宽/高以上的结果。
 
 ### 4.2 完整覆盖
 
 能力 `capabilities.accessories` 不是简单读取一个 boolean，而是规范化后的结果：
 
 1. `customization.accessories` 形状合法；
-2. 主题所有可达 normal / mini / reaction / idle-pool / display-hint 视觉文件都能解析到 static frame；
+2. 主题所有可达 normal / mini / reaction / idle-pool / display-hint 视觉 usage 都能解析到 static frame；
 3. 每个 descriptor 都通过数值和 basename 校验。
 
 任何一项不满足，整个主题的 `capabilities.accessories` 为 false，Settings 不显示配饰行。不能在运行到某个状态时才突然发现没有锚点。
 
-Clawd 与 Cloudling 的内置配置必须由测试枚举全部可达素材并断言 coverage。Calico 显式保持 false / omitted。
+coverage 不能只使用 `collectRequiredAssetFiles()` 得到的去重 basename 集合，因为它会丢失 state family 与有效 viewBox。实现需要一个规范化 usage projection，至少保留：
+
+```text
+{ stateFamily, file, effectiveViewBox }
+```
+
+`collectRequiredAssetFiles()` 仍用于资源全集对账；attachment coverage 用 usage projection 判定 root default、mini default 或 file descriptor 是否真正适用。
+
+`buildCapabilities()` 当前有两个调用口径：
+
+- `theme-metadata.js` 对 raw theme 调用，供 Settings 列表使用；
+- `theme-loader.js` 对 `mergeDefaults()` 后的 normalized theme 调用，供运行时使用。
+
+accessory capability 必须由同一个纯 `deriveAccessoryCapability()` 对 canonical projection 计算；不得分别实现 raw/normalized 分支。测试对同一主题同时断言 metadata capability 与 runtime capability 完全一致，避免 Settings 显示配饰但 renderer 判不支持，或反过来。
+
+Clawd 与 Cloudling 的内置配置必须由测试枚举全部可达 usage 并断言 coverage。Calico 显式保持 false / omitted。
 
 ### 4.3 外部主题
 
@@ -284,6 +316,9 @@ attachment 元数据本身只包含 basename、id 和有限数字，不授予脚
 
 职责硬约束：
 
+- `#pet-facing-stage`、`#pet-motion-stage`、`#pet-asset-direction-stage`、`#pet-media-layer`、`#pet-accessory-layer`、`#pet-effect-stage`、`#pet-particle-layer` 全部使用 `position: absolute; inset: 0; width: 100%; height: 100%`；
+- `#pet-media-layer` 必须成为 `#clawd` 的最近 containing block，保证现有 `left: -45%`、`width: 190%` 等百分比始终相对于一个与 `#pet-container` 等尺寸的 box 计算；
+- 所有 visual stage 的 `transform-origin` 固定为 `50% 50%`，inactive 时 individual transform 使用 `none`，不能用 `translate: 0` / `scale: 1` 冒充 none；
 - `#pet-facing-stage` 只处理屏幕边缘方向；
 - `#pet-motion-stage` 的 bob 使用 CSS individual `translate`；
 - `#pet-asset-direction-stage` 的方向镜像使用 CSS individual `scale`；
@@ -293,7 +328,28 @@ attachment 元数据本身只包含 basename、id 和有限数字，不授予脚
 - 配饰不进入媒体 filter；
 - effect / particle 不依赖配饰 pref 或 catalog。
 
-`#pet-effect-stage` / `#pet-particle-layer` 在本 PR 不播放测试反应，仅建立不会与 mini/roam transform 冲突的 DOM 边界，供后续独立 PR 使用。
+CSS individual `translate` / `scale` 的非 `none` 值同样会建立 containing block 和 stacking context，因此“所有 stage 满尺寸 + media layer 是最近 containing block”是正确性要求，不只是样式偏好。
+
+现有：
+
+```css
+#pet-container.roam-walk #clawd { animation: roam-walk-bob ... }
+@keyframes roam-walk-bob { 50% { transform: translateX(3px); } }
+```
+
+必须同步改为：
+
+```css
+#pet-container.roam-walk #pet-motion-stage { animation: roam-walk-bob ... }
+@keyframes roam-walk-bob {
+  0%, 100% { translate: none; }
+  50% { translate: 3px 0; }
+}
+```
+
+零点帧使用 `translate: none`，不能继续在 keyframe 中写 `transform`。
+
+`#pet-effect-stage` / `#pet-particle-layer` 在本 PR 明确保留，作为后续独立 test-reaction PR 的依赖边界；本 PR 中它们必须为空、无 animation、无 timer/listener，且 transform/translate/scale 均为 none。结构测试需证明这两个空层不改变 mini、roam 或宠物媒体定位。
 
 ### 5.2 媒体 selector 收窄
 
@@ -315,6 +371,14 @@ img.clawd-accessory
 - pending/current 媒体遍历。
 
 配饰层只由 accessory runtime 管理，不能被 state swap 当成旧媒体删除。
+
+收窄必须同步覆盖以下现有点位：
+
+1. `src/index.html` 的静态占位 `<object id="clawd">` 增加 `clawd-object`；
+2. `swapToFile()` 动态创建 object 时，在 append/tint 前增加同一 class；
+3. `getPetMediaElements()` 改为 `object.clawd-object, img.clawd-img`；
+4. object-channel 与 img-channel swap commit 中的两处旧媒体内联查询使用同一 selector；
+5. `applyPetTintToElement()` 再做一次 class allowlist 防御，不能仅凭 `tagName` 接受任意 sibling object/img。
 
 ### 5.3 Dodge、窗口边界与 hitbox
 
@@ -386,10 +450,12 @@ Phase 1 只支持已由 spike 验证的 `xMidYMid meet`。若外部主题素材�
 
 ### 6.4 动态跟随
 
-当当前媒体是可访问 contentDocument 的 `<object>`，且该文件声明 `followTarget`：
+本节在 Phase 0 回填前是设计意图，不是已验证算法。当前仓库没有任何 `getCTM()` / `getScreenCTM()` 实现可供复用；只有访问 `<object>.contentDocument` 和精确 `getElementById()` 的现有能力。
+
+只有 spike 证明 CTM 方案成立后，当当前媒体是可访问 contentDocument 的 `<object>` 且该文件声明 `followTarget`，才按以下方向实现：
 
 1. 用 `contentDocument.getElementById(targetId)` 精确获取目标；
-2. 读取目标 CTM；
+2. 使用 spike 选定的 `getCTM()` 或 `getScreenCTM()` 路径；
 3. 将 target-local frame 通过完整 affine matrix 投影到 accessory stage；
 4. 帽子继承平移、缩放、旋转和斜切；
 5. 仅在动态目标存在且媒体可见时使用一个 `requestAnimationFrame` 跟随循环；
@@ -450,10 +516,15 @@ Cloudling：
 4. 外层 facing / motion / asset-direction stage 变换后，帽子是否仍与目标一致？
 5. rAF 跟随在 idle 静置时的 CPU 是否可接受，能否在无变化时避免 style churn？
 6. static frame 在 `<img>` reaction 与 Cloudling PNG fallback 上是否达到可接受观感？
+7. root default、mini default 与 file override 是否按 effective viewBox 正确分流；同 basename 多 viewBox usage 是否被拒绝而不是误判 coverage？
+8. 所有 full-size stage 在 translate/scale 开关前后是否保持 `#clawd` containing block、百分比定位和 `50% 50%` 翻转中心完全不变？
+9. 空的 effect/particle 层是否保持 identity，不产生 layout、stacking、命中或动画副作用？
 
 ### 7.3 Stop gate
 
 - 禁止为了让 spike “看起来能用”而恢复 DOM selector heuristics。
+- §6.4 的 CTM 投影在 Q1/Q2 通过前不得进入生产实现。
+- Q7/Q8 任一失败时先修 attachment schema / stage CSS，不得靠逐状态像素补丁掩盖。
 - Clawd 与 Cloudling 都通过上述矩阵，才进入完整实现。
 - 若 Cloudling 无法稳定跟随，暂停并让产品重新决定；不能静默把它标为支持。
 - Calico 不参与 spike，也不能因为 Clawd/Cloudling 成功而顺带开启。
@@ -607,15 +678,16 @@ build.asarUnpack: assets/accessories/**/*
 | `pet-customization-catalog.test.js` | id 唯一、资源 basename 安全、UI 输出不泄露路径、未知 id -> none |
 | `prefs.test.js` | 默认空 map、per-theme 保存、none 删除、非法 id/theme id 清理、引用隔离 |
 | `settings-actions.test.js` | 只接受安全具体 id，不接受 none/path/URL/数组/字符串 |
-| `theme-schema.test.js` | accessories 形状、有限数字、正 width、safe basename/target id、错误提示 |
-| `theme-metadata.test.js` | capability 由完整 attachment coverage 决定 |
-| `theme-loader.test.js` | 内置/外部主题规范化，外部主题不能提供任意资源 URL |
+| `theme-schema.test.js` | capability 主逻辑、usage/effective-viewBox coverage、具体数值边界、safe basename/target id、同 basename 多 viewBox 拒绝 |
+| `theme-metadata.test.js` | raw metadata capability 与 canonical projection 一致，只测试透传/双口径一致性 |
+| `theme-loader.test.js` | normalized runtime capability 与 metadata 一致；内置/外部主题规范化；外部主题不能提供任意资源 URL |
 | `theme-context.test.js` | renderer config 只收到规范化 attachment 数据 |
 | `settings-ipc.test.js` | options IPC 只返回 `{id,labelKey}` |
 | `settings-effect-router.test.js` | pref 变化解析 active theme 后发送 payload；不支持主题发送 none |
 | `settings-renderer-browser-env.test.js` | 按 capability 显示行、inactive theme 流程、pending/rollback、Calico 无入口 |
 | `pet-accessory-layout.test.js` | viewBox meet 映射、matrix 投影、mini/file viewBox、有限数防线 |
 | renderer accessory 测试 | 首帧、swap commit、reaction state 为空、fade ownership、timer/rAF cleanup、selector 隔离 |
+| renderer DOM/CSS 结构测试 | 全 stage 满尺寸、固定 transform-origin、media containing block、roam keyframe 使用 individual translate、空 effect/particle 保持 identity |
 | `package-build-config.test.js` | files + asarUnpack |
 | accessory asset audit | 7 个文件存在且不含脚本/外链/事件属性 |
 | i18n 测试 | 五语 key 齐全 |
@@ -714,14 +786,16 @@ Clawd、Cloudling 分别组合：
 
 1. Phase 0 spike 已回填，Clawd 与 Cloudling 均通过。
 2. 无 selector heuristic、无 Clawd 全局 fallback。
-3. 所有可达素材通过 attachment coverage 测试。
-4. accessory 不改变 object/img channel。
-5. accessory 永远不被 pet tint 命中。
-6. reaction、mini、roam、sleep、fade、reload 和首帧均通过。
-7. Calico 没有入口且不会泄漏上一主题帽子。
-8. 没有 tray / 右键入口。
-9. 无 seasonal / test reaction / cost tracker 回流。
-10. 全量测试、Electron 验证、Windows 实机和 packaged asset smoke 通过。
+3. 所有可达 usage 按 effective viewBox 通过 attachment coverage 测试。
+4. raw metadata 与 normalized runtime 的 accessory capability 完全一致。
+5. full-size stage、media containing block、翻转中心和 individual transform 约束均通过结构/实机验证。
+6. accessory 不改变 object/img channel。
+7. accessory 永远不被 pet tint 命中。
+8. reaction、mini、roam、sleep、fade、reload 和首帧均通过。
+9. Calico 没有入口且不会泄漏上一主题帽子。
+10. 没有 tray / 右键入口。
+11. 无 seasonal / test reaction / cost tracker 回流。
+12. 全量测试、Electron 验证、Windows 实机和 packaged asset smoke 通过。
 
 ---
 
