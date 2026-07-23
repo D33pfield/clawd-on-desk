@@ -46,6 +46,7 @@ let _accessoryAttachments = null;
 let _accessoryAssetFile = null;
 let _accessoryAssetReady = false;
 let _accessoryAssetSettled = true;
+let _accessoryAssetLoadTimer = null;
 let _accessoryAssetWaiters = [];
 let _accessoryRaf = null;
 let _accessoryLastLayout = null;
@@ -577,9 +578,7 @@ function normalizeAccessoryPayload(payload) {
   if (!payload || typeof payload !== "object") return none;
   const id = typeof payload.id === "string" ? payload.id : "";
   if (!/^[a-z][a-z0-9-]{0,31}$/.test(id)) return none;
-  if (id === "none") {
-    return payload.assetFile == null ? none : none;
-  }
+  if (id === "none") return none;
   const assetFile = typeof payload.assetFile === "string" ? payload.assetFile : "";
   if (!/^[a-z][a-z0-9-]{0,63}\.svg$/.test(assetFile)) return none;
   if (assetFile.includes("/") || assetFile.includes("\\")) return none;
@@ -608,6 +607,12 @@ function hideAccessory() {
   accessoryEl.style.transform = "";
 }
 
+function clearAccessoryAssetLoadTimer() {
+  if (_accessoryAssetLoadTimer == null) return;
+  clearTimeout(_accessoryAssetLoadTimer);
+  _accessoryAssetLoadTimer = null;
+}
+
 function clearAccessoryRuntime(options = {}) {
   hideAccessory();
   _accessoryDiagnostics.clear();
@@ -615,6 +620,7 @@ function clearAccessoryRuntime(options = {}) {
   // Fully detach the old request before releasing pet-swap waiters. A waiter
   // may synchronously re-enter ensureAccessoryAsset() for a newly selected
   // accessory; no old cleanup is allowed to clear that new request afterward.
+  clearAccessoryAssetLoadTimer();
   if (accessoryEl) {
     accessoryEl.onload = null;
     accessoryEl.onerror = null;
@@ -675,6 +681,7 @@ function ensureAccessoryAsset() {
   accessoryEl.style.display = "none";
   accessoryEl.onload = () => {
     if (_accessoryAssetFile !== file) return;
+    clearAccessoryAssetLoadTimer();
     _accessoryAssetReady = true;
     _accessoryAssetSettled = true;
     refreshAccessoryLayout();
@@ -682,12 +689,23 @@ function ensureAccessoryAsset() {
   };
   accessoryEl.onerror = () => {
     if (_accessoryAssetFile !== file) return;
+    clearAccessoryAssetLoadTimer();
     _accessoryAssetReady = false;
     _accessoryAssetSettled = true;
     hideAccessory();
     noteAccessoryDiagnostic(file, "asset-load-failed");
     flushAccessoryAssetWaiters();
   };
+  const loadTimer = setTimeout(() => {
+    if (_accessoryAssetLoadTimer !== loadTimer || _accessoryAssetFile !== file) return;
+    _accessoryAssetLoadTimer = null;
+    _accessoryAssetReady = false;
+    _accessoryAssetSettled = true;
+    hideAccessory();
+    noteAccessoryDiagnostic(file, "asset-load-timeout");
+    flushAccessoryAssetWaiters();
+  }, SWAP_LOAD_FALLBACK_MS);
+  _accessoryAssetLoadTimer = loadTimer;
   accessoryEl.src = `../assets/accessories/${file}`;
   return false;
 }

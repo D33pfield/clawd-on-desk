@@ -287,6 +287,8 @@ globalThis.__rendererTest = {
   get pendingSvgFile() { return pendingSvgFile; },
   get activeSwapToken() { return activeSwapToken; },
   get clawdEl() { return clawdEl; },
+  get accessoryAssetLoadTimer() { return _accessoryAssetLoadTimer; },
+  get accessoryAssetSettled() { return _accessoryAssetSettled; },
   get lowPowerSvgPaused() { return lowPowerSvgPaused; },
   get eyeTarget() { return eyeTarget; },
 };`;
@@ -1170,6 +1172,55 @@ describe("renderer pet accessory wardrobe", () => {
     assert.strictEqual(harness.accessory.style.display, "block");
   });
 
+  it("fails open once when an accessory asset never settles and accepts a late load", () => {
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: accessoryConfig(),
+    });
+    const pendingPet = harness.api.pendingNext;
+    pendingPet.listeners.get("load")();
+    assert.ok(harness.api.pendingNext, "the first pet visual should briefly wait for its accessory");
+
+    const loadTimer = harness.api.accessoryAssetLoadTimer;
+    assert.ok(loadTimer, "the accessory request should own one bounded load timer");
+    loadTimer.cleared = true;
+    loadTimer.callback();
+
+    assert.strictEqual(harness.api.accessoryAssetSettled, true);
+    assert.strictEqual(harness.api.accessoryAssetLoadTimer, null);
+    assert.strictEqual(harness.api.pendingNext, null, "timeout must release the waiting pet visual");
+    assert.strictEqual(harness.accessory.style.display, "none");
+    assert.strictEqual(
+      harness.electronCalls.filter((call) => call.name === "notifyPetVisualReady").length,
+      1,
+      "the first visible pet must still notify main exactly once"
+    );
+
+    harness.accessory.onload();
+    assert.strictEqual(harness.accessory.style.display, "block", "a late successful load should recover");
+  });
+
+  it("fails open when an accessory asset reports an error", () => {
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: accessoryConfig(),
+    });
+    harness.api.pendingNext.listeners.get("load")();
+    const loadTimer = harness.api.accessoryAssetLoadTimer;
+    assert.ok(loadTimer);
+
+    harness.accessory.onerror();
+
+    assert.strictEqual(loadTimer.cleared, true);
+    assert.strictEqual(harness.api.accessoryAssetSettled, true);
+    assert.strictEqual(harness.api.pendingNext, null);
+    assert.strictEqual(harness.accessory.style.display, "none");
+    assert.strictEqual(
+      harness.electronCalls.filter((call) => call.name === "notifyPetVisualReady").length,
+      1
+    );
+  });
+
   it("stops dynamic accessory follow while low-power SVG animation is paused", () => {
     const harness = createRendererHarness({
       themeConfig: accessoryConfig({
@@ -1500,6 +1551,7 @@ describe("renderer glyph flip compensation", () => {
     harness.electronHandlers.onRoamHeading(true);
     harness.api.swapToFile("roam.svg", "roam", false);
     const roam = harness.api.pendingNext;
+    roam.offsetLeft = 37;
     roam.listeners.get("load")();
     assert.strictEqual(harness.assetDirectionStage.style.scale, "-1 1");
     assert.strictEqual(roam.style.scale, "none");
@@ -1513,7 +1565,7 @@ describe("renderer glyph flip compensation", () => {
     assert.strictEqual(roam.isConnected, true, "old media should still be fading");
     assert.strictEqual(roam.style.opacity, "0");
     assert.strictEqual(roam.style.scale, "-1 1");
-    assert.match(roam.style.transformOrigin, /px 50%$/);
+    assert.strictEqual(roam.style.transformOrigin, "73px 50%");
   });
 
   it("flips reverse-drawn mini crabwalk assets during pre-entry without entering mini layout", () => {
