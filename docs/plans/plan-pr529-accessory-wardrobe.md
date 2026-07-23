@@ -1,6 +1,6 @@
 # 计划：PR #529 配饰衣柜核心
 
-> 状态：草稿 v2（已完成首轮独立交叉审查；仅计划，暂无配饰功能代码）
+> 状态：草稿 v3（Phase 0 Electron spike 已完成并回填；仅计划，暂无配饰功能代码）
 > 日期：2026-07-23
 > 来源：PR #529
 > 基线：`origin/main` @ `b8a0e50`（PR #728 宠物颜色滤镜已合并）
@@ -18,7 +18,7 @@
 - 内置 7 件配饰与“无”；
 - 按主题分别保存选择；
 - 入口只在 `Settings -> Theme -> 对应桌宠 -> 装扮`；
-- Clawd 与 Cloudling 在满足技术 spike 门槛后启用；
+- Clawd 与 Cloudling 已通过 Phase 0 技术 spike，生产实现按本文回填结论启用；
 - Calico 明确不启用，不显示“装扮”入口；
 - 配饰是宠物媒体元素的兄弟层，不能被宠物颜色滤镜染色；
 - 不改变当前 SVG `<object>` / `<img>` 通道选择。
@@ -93,7 +93,7 @@ container.querySelectorAll("object, img.clawd-img")
 | 主题 | 素材格式 | 配饰结论 |
 |---|---:|---|
 | Clawd | 36 个 SVG | 目标支持；需覆盖 normal / mini / reaction / roam 文件 |
-| Cloudling | 27 个 SVG + 1 个 PNG | 目标支持；scripted SVG 可做动态跟随，PNG 走显式静态锚点 |
+| Cloudling | 28 个 SVG + 1 个 PNG | 目标支持；scripted SVG 可做动态跟随，PNG 走显式静态锚点或 hidden policy |
 | Calico | 26 个 APNG + 1 个 SVG | 本轮不支持；产品决定为不显示装扮入口 |
 
 Cloudling SVG 内的可跟随 group id 并不统一：不同文件分别出现 `cloud-group`、`eye-group`、`body-js`、`eyes-js` 等。不能使用 `[id^="eye"]` 或按 DOM 顺序猜测节点。
@@ -219,6 +219,9 @@ Settings IPC 只返回 UI 必需的 `{ id, labelKey }`，不把资源路径或 r
             "id": "body-js",
             "frame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
           }
+        },
+        "clawd-sleeping.svg": {
+          "visibility": "hidden"
         }
       }
     }
@@ -236,6 +239,8 @@ Settings IPC 只返回 UI 必需的 `{ id, labelKey }`，不把资源路径或 r
 - `followTarget.frame` 使用目标元素的局部坐标；
 - `followTarget.id` 必须通过 `getElementById()` 精确查找；
 - 禁止 CSS selector、前缀匹配、class 猜测和 `getBBox()` 猜锚点；
+- 文件 descriptor 可用 `{ "visibility": "hidden" }` 显式声明该视觉不显示配饰；它不能同时带 `staticFrame` / `followTarget`，也不能由 renderer 按状态名临时猜测；
+- `visibility: "hidden"` 只隐藏当前视觉中的有效配饰，不修改用户的 per-theme 选择；切到下一个可见视觉时按原选择恢复；
 - file key 必须是安全 basename；
 - file descriptor 必须是完整对象，不做隐式深层拼接；
 - `default` / `mini` 只提供静态 frame；动态 target 必须按文件显式声明；
@@ -255,18 +260,18 @@ Settings IPC 只返回 UI 必需的 `{ id, labelKey }`，不把资源路径或 r
 能力 `capabilities.accessories` 不是简单读取一个 boolean，而是规范化后的结果：
 
 1. `customization.accessories` 形状合法；
-2. 主题所有可达 normal / mini / reaction / idle-pool / display-hint 视觉 usage 都能解析到 static frame；
+2. 主题所有可达 normal / mini / reaction / idle-pool / display-hint 视觉 usage 都能解析到 static frame，或命中该 basename 的显式 `visibility: "hidden"` descriptor；
 3. 每个 descriptor 都通过数值和 basename 校验。
 
 任何一项不满足，整个主题的 `capabilities.accessories` 为 false，Settings 不显示配饰行。不能在运行到某个状态时才突然发现没有锚点。
 
-coverage 不能只使用 `collectRequiredAssetFiles()` 得到的去重 basename 集合，因为它会丢失 state family 与有效 viewBox。实现需要一个规范化 usage projection，至少保留：
+coverage 不能只使用 `collectRequiredAssetFiles()` 得到的去重 basename 集合，因为它会丢失 state family 与有效 viewBox，且当前实现还漏收 `timings.dndSleepTransitionSvg`。实现需要一个规范化 usage projection，至少保留：
 
 ```text
 { stateFamily, file, effectiveViewBox }
 ```
 
-`collectRequiredAssetFiles()` 仍用于资源全集对账；attachment coverage 用 usage projection 判定 root default、mini default 或 file descriptor 是否真正适用。
+`collectRequiredAssetFiles()` 仍用于资源全集对账，但本 PR 必须先把 `timings.dndSleepTransitionSvg` 纳入 collector；attachment coverage 再用 usage projection 判定 root default、mini default 或 file descriptor 是否真正适用。对应 schema / importer / loader 测试必须证明 DND transition 素材缺失时会被拒绝。
 
 `buildCapabilities()` 当前有两个调用口径：
 
@@ -439,7 +444,7 @@ renderer 再做防御性校验：
 
 ### 6.3 静态定位
 
-所有支持配饰的文件都必须有 static frame。纯 helper 负责：
+除显式 `visibility: "hidden"` 的文件外，所有支持配饰的文件都必须有 static frame。纯 helper 负责：
 
 1. 取当前文件的实际 viewBox（含 `fileViewBoxes` / `miniMode.viewBox`）；
 2. 取媒体元素在 `#pet-asset-direction-stage` 内的实际 CSS box；
@@ -450,12 +455,10 @@ Phase 1 只支持已由 spike 验证的 `xMidYMid meet`。若外部主题素材�
 
 ### 6.4 动态跟随
 
-本节在 Phase 0 回填前是设计意图，不是已验证算法。当前仓库没有任何 `getCTM()` / `getScreenCTM()` 实现可供复用；只有访问 `<object>.contentDocument` 和精确 `getElementById()` 的现有能力。
-
-只有 spike 证明 CTM 方案成立后，当当前媒体是可访问 contentDocument 的 `<object>` 且该文件声明 `followTarget`，才按以下方向实现：
+Phase 0 已证明 `getCTM()` 方案可行；当前仓库仍没有可复用的 CTM 实现，生产代码需按本节新增。当当前媒体是可访问 contentDocument 的 `<object>` 且该文件声明 `followTarget`，按以下方向实现：
 
 1. 用 `contentDocument.getElementById(targetId)` 精确获取目标；
-2. 使用 spike 选定的 `getCTM()` 或 `getScreenCTM()` 路径；
+2. 使用 spike 选定的 `target.getCTM()`，把 target-local 坐标映射到 `<object>` viewport，再叠加宠物媒体相对 `#pet-media-layer` 的偏移；
 3. 将 target-local frame 通过完整 affine matrix 投影到 accessory stage；
 4. 帽子继承平移、缩放、旋转和斜切；
 5. 仅在动态目标存在且媒体可见时使用一个 `requestAnimationFrame` 跟随循环；
@@ -476,6 +479,7 @@ Phase 1 只支持已由 spike 验证的 `xMidYMid meet`。若外部主题素材�
 - fade-out 媒体不能重新抢回配饰 anchor；
 - click / drag reaction 即使 `state` 为空，也按 `currentDisplayedSvg` 的 basename 解析；
 - `<img>` SVG、PNG、APNG 统一走 static frame；
+- 当前 basename 命中 `visibility: "hidden"` 时清空配饰媒体但保留 pref；视觉切换后重新解析；
 - mini / roam 镜像由共同 stage 处理，不在坐标 helper 中手工反号；
 - viewport offset、窗口 resize、mini edge 变化和 roam heading 变化后重新计算。
 
@@ -483,7 +487,7 @@ Phase 1 只支持已由 spike 验证的 `xMidYMid meet`。若外部主题素材�
 
 ## 7. Phase 0：非合并技术 spike
 
-正式实现前先做一个可丢弃 spike，验证 Chromium/Electron 中的坐标投影。spike 结果回填到本文档后才开始生产实现。
+已在仓库外 `D:\tmp\pr529-accessory-spike` 完成可丢弃 spike，使用项目实际 Electron 41.10.2 / Chromium 146.0.7680.216。实验未修改生产文件；结果已回填如下。
 
 ### 7.1 必测样本
 
@@ -528,6 +532,62 @@ Cloudling：
 - Clawd 与 Cloudling 都通过上述矩阵，才进入完整实现。
 - 若 Cloudling 无法稳定跟随，暂停并让产品重新决定；不能静默把它标为支持。
 - Calico 不参与 spike，也不能因为 Clawd/Cloudling 成功而顺带开启。
+
+### 7.4 Phase 0 实测结论（2026-07-23）
+
+结论：Clawd 与 Cloudling 均可进入生产实现，但必须采用下述 target、mini frame 与睡眠隐藏规则，不能退回原 PR 的 selector / `getBBox()` 猜测。
+
+#### 坐标与 CTM
+
+- 18 个代表场景全部真实加载并截图；覆盖 Clawd idle / working / click / drag / mini 左右 / roam 左右 / halo / sleeping，以及 Cloudling idle / typing A-B / mini idle / mini crabwalk / drag / sleeping SVG / low-power PNG。
+- `getCTM()` 与 `getScreenCTM()` 在本次嵌套 `<object>` 样本中的最大矩阵分量差为 `0.000023`；选择语义更直接的 `getCTM()`。
+- root `getCTM()` 与独立 `xMidYMid meet` helper 的 stage 投影最大差为 `0.258 CSS px`；Clawd root、Cloudling root、Cloudling mini viewBox 与 `cloudling-mini-crabwalk.svg` file override 均通过。
+- CTM 投影后的 target bbox 与 Chromium 实际 bbox 最大差为 `0.000069 CSS px`。此处 `getBBox()` 只用于 spike 诊断对账，生产实现仍禁止用它猜 attachment。
+- SVG script transform 会实时进入 CTM。Cloudling typing 若错误绑定 `cloud-group`，帽子会随云身旋转到脚下并产生约 `143px` 底部越界；改绑精确 `eye-group` 后保持在头顶并随呼吸缩放。因此 target 必须逐文件声明。
+- CSS/SVG 目标只继承该 target 自身及祖先的 transform，不会自动包含其子节点动画。Clawd `body-js` 仍用于承接 renderer 的 body shift；子节点轻微 breathe 不作为动态跟随依据。
+
+#### Stage、滤镜与性能
+
+- 所有 full-size stage 的尺寸误差为 `0`；媒体 `offsetParent` 始终为 `#pet-media-layer`。
+- roam bob 的个体 `translate` 实测位移精确为 `3px`；asset-direction / facing 翻转中心最大漂移 `0.01px`。
+- 空 effect / particle 层的 `transform` / `translate` / `scale` / `rotate` 均为 identity，particle 层无子节点；`pointer-events:none`，未产生布局或命中副作用。
+- Cloudling 的两套实际 recipe（`hue-rotate(75deg)...` 与 `hue-rotate(265deg)...`）均已运行；宠物媒体有 filter，外置 sibling 配饰始终为 `filter:none`。
+- 跟随回调最坏平均 `0.356ms/帧`，按 60fps 约占单核 `2.14%` 的同步 JS 时间上限。Clawd 静止样本 97 帧只写 1 次 style；Cloudling 只有 CTM 真实呼吸/旋转/位移时持续写。生产实现仍须只在可见动态 target 上启用单一 rAF，并按 matrix epsilon 跳过无变化写入。
+
+#### Attachment 结果
+
+动态 target 只为 spike 已验证的文件开启：
+
+| 主题文件 | follow target | target-local frame | 结论 |
+|---|---|---|---|
+| `clawd-idle-follow.svg` | `body-js` | `{ cx:7.5, baseY:6.5, width:16 }` | 通过 |
+| `clawd-mini-idle.svg` | `body-js` | `{ cx:7.5, baseY:6.5, width:16 }` | 通过 |
+| `cloudling-idle.svg` | `cloud-group` | `{ cx:12, baseY:4, width:16 }` | 通过 |
+| `cloudling-typing.svg` | `eye-group` | `{ cx:12, baseY:4, width:16 }` | 通过；明确拒绝 `cloud-group` |
+| `cloudling-mini-idle.svg` | `breath-js` | `{ cx:12, baseY:5, width:14 }` | 通过；高帽无顶边裁剪 |
+| `cloudling-mini-crabwalk.svg` | `body-layer` | `{ cx:12, baseY:4, width:14 }` | 通过；跟随滚动/缩放 |
+
+其余可见文件走显式 effective-viewBox static frame。Cloudling root 默认 frame 为 `{ cx:12, baseY:4, width:16 }`，mini 默认 frame 为 `{ cx:12, baseY:5, width:14 }`；`cloudling-mini-crabwalk.svg` 因 file viewBox override 必须保留自己的 file descriptor。Clawd root 默认 frame 为 `{ cx:7.5, baseY:6.5, width:16 }`。
+
+最坏高度的 `wizard-hat.svg` 与 `halo.svg` 均做过顶边检查；Cloudling mini 从 width 16 收敛到 14 后，非负向控制场景最大裁剪为 `0px`。
+
+睡眠姿态不能使用默认静态锚点：Clawd sleeping 会让帽子悬空；Cloudling sleeping SVG / PNG 自带睡帽，会发生双帽重叠。因此以下 basename 必须显式 `visibility: "hidden"`，醒来后恢复原选择：
+
+- Clawd：`clawd-collapse-sleep.svg`、`clawd-sleeping.svg`、`clawd-wake.svg`、`clawd-mini-enter-sleep.svg`、`clawd-mini-sleep.svg`；
+- Cloudling：`cloudling-idle-to-sleeping.svg`、`cloudling-dozing-to-sleeping.svg`、`cloudling-sleeping.svg`、`cloudling-sleeping-static.png`、`cloudling-sleeping-to-idle.svg`、`cloudling-mini-enter-sleep.svg`、`cloudling-mini-sleep.svg`。
+
+#### Coverage inventory
+
+用与 loader 一致的 `mergeDefaults(raw, themeId, true)` 口径建立 usage projection：
+
+| 主题 | 可达 usage | 唯一文件 | effective viewBox 分组 | 对账 |
+|---|---:|---:|---|---|
+| Clawd | 49 | 36 | 36 root | 与 `collectRequiredAssetFiles()` 完全一致 |
+| Cloudling | 41 | 29 | 20 root / 8 mini / 1 file override | 当前 collector 漏 1 个 DND transition 文件，Phase 1 修复后应完全一致 |
+
+两主题均无同 basename 多 effective-viewBox 冲突。Clawd projection 与当前 collector 完全一致；Cloudling projection 比当前 collector 多出运行时真实使用的 `cloudling-idle-to-sleeping.svg`，来源是 `timings.dndSleepTransitionSvg`。这是 spike 新发现的既有资产清点盲区，不得把错误的 28 文件 collector 结果当作 capability 真相。生产实现必须先修 collector，使 Cloudling 29 个文件对账一致；不能把本次一次性脚本搬进 runtime。
+
+Phase 0 stop gate：**通过**。实验代码继续留在仓库外，不进入提交；生产实现可从 Phase 1 开始。
 
 ---
 
@@ -631,17 +691,17 @@ build.asarUnpack: assets/accessories/**/*
 
 ### Phase 0：Spike
 
-1. 在隔离实验代码中建立最小 sibling accessory layer。
-2. 验证 CTM、viewBox、outer transforms 和 rAF 成本。
-3. 盘点 Clawd / Cloudling 每个可达文件的 static frame 与可选 follow target。
-4. 把结论与不能动态跟随的文件清单回填本文档。
-5. 删除实验代码或整理为可审查的第一批纯 helper。
+1. [x] 在隔离实验代码中建立最小 sibling accessory layer。
+2. [x] 验证 CTM、viewBox、outer transforms 和 rAF 成本。
+3. [x] 盘点 Clawd / Cloudling 每个可达 usage 的 static frame / hidden policy 与可选 follow target。
+4. [x] 把结论与不能动态跟随的文件清单回填本文档。
+5. [x] 实验代码保留在仓库外，不进入生产提交。
 
 ### Phase 1：数据与 schema
 
 6. 扩展 accessory catalog。
 7. 新增 `petAccessory` prefs map、normalizer 与 settings validator。
-8. 扩展 theme schema、metadata、loader normalization 与 capability。
+8. 扩展 theme schema、metadata、loader normalization 与 capability，并修复 `collectRequiredAssetFiles()` 漏收 `timings.dndSleepTransitionSvg`。
 9. 为 Clawd / Cloudling 填完整 attachment 数据；Calico 保持 false。
 10. 更新 template 与主题作者指南。
 
