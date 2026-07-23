@@ -53,4 +53,17 @@ describe("accessory asset audit", () => {
       }
     }
   });
+
+  it("centers the Santa hat by its seating brim rather than its pompom silhouette", () => {
+    const source = fs.readFileSync(
+      path.join(ASSET_DIR, "santa-hat.svg"),
+      "utf8"
+    );
+    const brim = source.match(
+      /<rect x="([^"]+)" y="8" width="([^"]+)" height="1" fill="#e3e3e3"\/>/
+    );
+    assert.ok(brim, "Santa hat should declare its bottom seating brim");
+    const centerX = Number(brim[1]) + Number(brim[2]) / 2;
+    assert.strictEqual(centerX, 8, "the seating brim should match the 16-unit canvas center");
+  });
 });
