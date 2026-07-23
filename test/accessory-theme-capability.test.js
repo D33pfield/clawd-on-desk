@@ -88,6 +88,23 @@ describe("built-in accessory capability contracts", () => {
     }
   });
 
+  it("anchors Clawd idle accessories inside the breathing transform", () => {
+    const raw = readRawTheme("clawd");
+    const idleDescriptor =
+      raw.customization.accessories.files["clawd-idle-follow.svg"];
+    assert.strictEqual(idleDescriptor.followTarget.id, "torso");
+
+    const source = fs.readFileSync(
+      path.join(ROOT, "assets", "svg", "clawd-idle-follow.svg"),
+      "utf8"
+    );
+    assert.match(
+      source,
+      /<g class="breathe-anim">[\s\S]*?<rect id="torso"/,
+      "the exact target must inherit the visible body's breathing transform"
+    );
+  });
+
   it("projects all Cloudling usages including DND and verifies exact dynamic targets", () => {
     const { raw, normalized } = capabilityPair("cloudling");
     const usages = projectThemeVisualUsages(raw);

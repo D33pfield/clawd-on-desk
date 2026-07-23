@@ -23,7 +23,7 @@
             "width": 16
           },
           "followTarget": {
-            "id": "body-js",
+            "id": "torso",
             "frame": {
               "cx": 7.5,
               "baseY": 6.5,
