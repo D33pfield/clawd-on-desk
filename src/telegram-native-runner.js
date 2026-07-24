@@ -23,6 +23,10 @@ const {
 const { EVENTS } = require("./telegram-migration-state");
 const { createTranslator } = require("./i18n");
 const { redactSecrets } = require("./secret-redact");
+const {
+  MAX_ELICITATION_OPTION_LABEL,
+  clampPreviewText,
+} = require("./server-permission-utils");
 
 const APPROVAL_CALLBACK_RE = /^cp:([a-z0-9]+):(a|d|s(\d+))$/;
 const LEGACY_APPROVAL_CALLBACK_RE = /^clawdperm:([a-z0-9]+):(allow|deny)$/;
@@ -162,7 +166,12 @@ function normalizeElicitationPayload(payload) {
   const rawQuestions = Array.isArray(payload && payload.questions) ? payload.questions : [];
   const questions = rawQuestions
     .slice(0, MAX_ELICITATION_QUESTIONS)
-    .map((question) => {
+    // `index` is the question's position in the ORIGINAL payload.questions
+    // (i.e. toolInput.questions on the permission side) and is the key the
+    // submitted answers map uses. Compacted question text can't serve as the
+    // key: it no longer matches the original for long or whitespace-heavy
+    // questions, and dropped invalid entries below would shift positions.
+    .map((question, index) => {
       if (!question || typeof question !== "object") return null;
       const questionText = compactMessageText(question.question, 240);
       if (!questionText) return null;
@@ -171,13 +180,20 @@ function normalizeElicitationPayload(payload) {
           .slice(0, MAX_ELICITATION_OPTIONS)
           .map((option) => {
             if (!option || typeof option !== "object") return null;
-            const label = compactMessageText(option.label, MAX_BUTTON_TEXT);
+            // Keep the canonical answer value byte-for-byte aligned with the
+            // server's normalization. Telegram-specific cleanup and the
+            // 32-character cap are presentation concerns handled later by
+            // buildElicitationKeyboard; applying compactMessageText here would
+            // rewrite CRLF, control characters, and whitespace in the value
+            // returned to the agent.
+            const label = clampPreviewText(option.label, MAX_ELICITATION_OPTION_LABEL);
             if (!label) return null;
             return { label };
           })
           .filter(Boolean)
         : [];
       return {
+        index,
         header: compactMessageText(question.header, 80),
         question: questionText,
         multiSelect: question.multiSelect === true,
@@ -216,9 +232,9 @@ function buildElicitationQuestionText(payload, questionIndex, t) {
     String(total),
   );
   const questionLines = [progress];
-  // Redact secrets from the DISPLAYED question text only (the raw text stays the
-  // answer-map key elsewhere, so this can't desync answer round-tripping): an
-  // agent that quotes a key in its question must not leak it into the chat log.
+  // Redact secrets from the DISPLAYED question text only. Answers are keyed by
+  // the question's original payload index and remapped on the permission side,
+  // so display redaction can't desync answer round-tripping.
   if (question.header) questionLines.push(redactSecrets(question.header));
   questionLines.push(redactSecrets(question.question));
   return `${header}\n\n${questionLines.join("\n")}`;
@@ -289,7 +305,7 @@ function parseElicitationCallbackData(data) {
 }
 
 function findNextUnansweredQuestionIndex(payload, answers) {
-  return payload.questions.findIndex((question) => !Object.prototype.hasOwnProperty.call(answers, question.question));
+  return payload.questions.findIndex((question) => !Object.prototype.hasOwnProperty.call(answers, String(question.index)));
 }
 
 // Shared fail-closed authorization for both remote approval and elicitation
@@ -1038,7 +1054,7 @@ function createTelegramNativeRunner({
         return true;
       }
       client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramElicitationToastAnswered") }).catch(() => {});
-      entry.answers[question.question] = option.label;
+      entry.answers[question.index] = option.label;
       advanceElicitation(parsed.id, entry);
       return true;
     }
@@ -1056,7 +1072,7 @@ function createTelegramNativeRunner({
       const labels = Array.from(entry.multiSelectSelections)
         .sort((a, b) => a - b)
         .map((optionIndex) => question.options[optionIndex].label);
-      entry.answers[question.question] = labels.join(", ");
+      entry.answers[question.index] = labels.join(", ");
       advanceElicitation(parsed.id, entry);
       return true;
     }
@@ -1091,7 +1107,7 @@ function createTelegramNativeRunner({
     const question = entry.payload.questions[entry.awaitingOtherFor];
     const answer = compactMessageText(text, 500);
     if (!question || !answer) return true;
-    entry.answers[question.question] = answer;
+    entry.answers[question.index] = answer;
     advanceElicitation(id, entry);
     return true;
   }
