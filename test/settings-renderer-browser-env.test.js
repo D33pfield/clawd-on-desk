@@ -9,6 +9,8 @@ const vm = require("node:vm");
 const SRC_DIR = path.join(__dirname, "..", "src");
 const SETTINGS_HTML = path.join(SRC_DIR, "settings.html");
 const SETTINGS_CSS = path.join(SRC_DIR, "settings.css");
+const LANGUAGE_PICKER_JS = path.join(SRC_DIR, "language-picker.js");
+const LANGUAGE_PICKER_CSS = path.join(SRC_DIR, "language-picker.css");
 const SETTINGS_TAB_GENERAL = path.join(SRC_DIR, "settings-tab-general.js");
 const SETTINGS_RENDERER = path.join(SRC_DIR, "settings-renderer.js");
 const SETTINGS_UI_CORE = path.join(SRC_DIR, "settings-ui-core.js");
@@ -462,6 +464,7 @@ function loadGeneralLanguageRowForTest({
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
   const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8")
@@ -500,6 +503,11 @@ function loadGeneralLanguageRowForTest({
     getDocumentListenerCount: (type) => {
       const listeners = documentListeners.get(type);
       return listeners ? listeners.length : 0;
+    },
+    dispatchDocumentEvent: (type, event = {}) => {
+      const listeners = documentListeners.get(type) || [];
+      const payload = { ...event, type };
+      for (const listener of [...listeners]) listener(payload);
     },
     getToastText: () => {
       const toast = toastStack.querySelector(".toast");
@@ -581,6 +589,7 @@ function loadGeneralTabForTest({
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8"), context);
@@ -3575,29 +3584,33 @@ describe("settings renderer browser environment", () => {
   it("renders the Settings language picker as a dropdown over all supported langs", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
-    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    const pickerSource = fs.readFileSync(LANGUAGE_PICKER_JS, "utf8");
+    const pickerCss = fs.readFileSync(LANGUAGE_PICKER_CSS, "utf8");
+    const settingsHtml = fs.readFileSync(SETTINGS_HTML, "utf8");
 
     assert.ok(new RegExp(
       String.raw`const LANGUAGE_OPTIONS = \[` +
       SUPPORTED_LANGS.map((lang) => String.raw`"${lang}"`).join(String.raw`,\s*`) +
       String.raw`\];`
     ).test(generalSource));
-    assert.ok(generalSource.includes(`class="language-picker"`));
-    assert.ok(generalSource.includes(`aria-haspopup="listbox"`));
-    assert.ok(generalSource.includes(`role="listbox"`));
-    assert.ok(generalSource.includes(`aria-hidden="true"`));
-    assert.ok(generalSource.includes(`role", "option"`));
-    assert.ok(!generalSource.includes(`<select class="language-select"`));
+    assert.ok(generalSource.includes("createLanguagePicker"));
+    assert.ok(pickerSource.includes(`className = "language-picker"`));
+    assert.ok(pickerSource.includes(`aria-haspopup", "listbox"`));
+    assert.ok(pickerSource.includes(`role", "listbox"`));
+    assert.ok(pickerSource.includes(`aria-hidden", "true"`));
+    assert.ok(pickerSource.includes(`role", "option"`));
+    assert.ok(settingsHtml.includes(`href="language-picker.css"`));
+    assert.ok(settingsHtml.includes(`src="language-picker.js"`));
     assert.ok(!generalSource.includes("language-segmented"));
     assert.ok(!generalSource.includes("runtime.languageTransition"));
     assert.ok(!generalSource.includes("--language-active-index"));
     assert.ok(!coreSource.includes("languageTransition"));
-    assert.ok(/\.language-picker-menu\s*\{[\s\S]*box-shadow:/.test(css));
-    assert.ok(/\.language-picker-option:hover,[\s\S]*\.language-picker-option:focus-visible\s*\{[\s\S]*background:/.test(css));
-    assert.ok(/\.language-picker-option\.selected\s*\{[\s\S]*color:\s*var\(--accent\);/.test(css));
-    assert.ok(/@media \(prefers-color-scheme:\s*dark\)\s*\{[\s\S]*\.language-picker-menu/.test(css));
-    assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.language-picker-trigger,[\s\S]*\.language-picker-chevron,[\s\S]*\.language-picker-menu[\s\S]*transition:\s*none;/.test(css));
-    assert.ok(!css.includes(".language-segmented"));
+    assert.ok(/\.language-picker-menu\s*\{[\s\S]*box-shadow:/.test(pickerCss));
+    assert.ok(/\.language-picker-option:hover,[\s\S]*\.language-picker-option:focus-visible\s*\{[\s\S]*background:/.test(pickerCss));
+    assert.ok(/\.language-picker-option\.selected\s*\{[\s\S]*color:\s*var\(--accent\);/.test(pickerCss));
+    assert.ok(/@media \(prefers-color-scheme:\s*dark\)\s*\{[\s\S]*\.language-picker-menu/.test(pickerCss));
+    assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.language-picker-trigger,[\s\S]*\.language-picker-chevron,[\s\S]*\.language-picker-menu[\s\S]*transition:\s*none;/.test(pickerCss));
+    assert.ok(!pickerCss.includes(".language-segmented"));
   });
 
   it("populates the language picker with current selection and propagates click changes", () => {
@@ -3676,7 +3689,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getLangPicker().classList.contains("open"), true);
     const options = harness.getLangOptions();
     options[1].dispatchEvent(createKeyboardEventForTest("Enter"));
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
 
     assert.deepStrictEqual(harness.updateCalls, [{ key: "lang", value: "zh" }]);
     assert.strictEqual(harness.getLangValue().textContent, "English");
@@ -3695,6 +3708,26 @@ describe("settings renderer browser environment", () => {
     harness.core.ops.requestRender({ content: true });
     assert.strictEqual(harness.getDocumentListenerCount("click"), 1);
     assert.strictEqual(harness.getDocumentListenerCount("keydown"), 1);
+  });
+
+  it("closes the language picker from outside clicks and Escape", () => {
+    const harness = loadGeneralLanguageRowForTest({
+      snapshot: { lang: "en" },
+    });
+
+    harness.core.ops.requestRender({ content: true });
+    harness.getLangTrigger().dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.getLangPicker().classList.contains("open"), true);
+
+    harness.dispatchDocumentEvent("click", { target: new FakeElement("body") });
+    assert.strictEqual(harness.getLangPicker().classList.contains("open"), false);
+
+    harness.getLangTrigger().dispatchEvent({ type: "click" });
+    harness.dispatchDocumentEvent("keydown", {
+      key: "Escape",
+      preventDefault() { this.defaultPrevented = true; },
+    });
+    assert.strictEqual(harness.getLangPicker().classList.contains("open"), false);
   });
 
   it("exposes aggregate and split bubble controls in the General tab", () => {

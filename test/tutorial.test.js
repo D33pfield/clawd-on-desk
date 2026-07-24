@@ -2,10 +2,14 @@
 
 const assert = require("node:assert");
 const EventEmitter = require("node:events");
+const fs = require("node:fs");
 const Module = require("node:module");
+const path = require("node:path");
 const { describe, it } = require("node:test");
 
 const TUTORIAL_MODULE_PATH = require.resolve("../src/tutorial");
+const TUTORIAL_RENDERER_PATH = path.join(__dirname, "..", "src", "tutorial-renderer.js");
+const TUTORIAL_HTML_PATH = path.join(__dirname, "..", "src", "tutorial.html");
 
 function loadTutorialWithElectron(fakeElectron) {
   delete require.cache[TUTORIAL_MODULE_PATH];
@@ -140,6 +144,21 @@ function createHarness(ctxOverrides = {}) {
 }
 
 describe("tutorial window shell", () => {
+  it("uses the shared custom language picker in the welcome step", () => {
+    const renderer = fs.readFileSync(TUTORIAL_RENDERER_PATH, "utf8");
+    const html = fs.readFileSync(TUTORIAL_HTML_PATH, "utf8");
+
+    assert.ok(renderer.includes("createLanguagePicker"));
+    assert.ok(renderer.includes("LANG_LABELS"));
+    assert.ok(renderer.includes("api.setLang(next)"));
+    assert.ok(renderer.includes("languagePickerControl.dispose()"));
+    assert.ok(!renderer.includes("<select"));
+    assert.ok(!renderer.includes("lang-select"));
+    assert.ok(html.includes(`href="language-picker.css"`));
+    assert.ok(html.includes(`src="language-picker.js"`));
+    assert.match(html, /style-src 'self' 'unsafe-inline'/);
+  });
+
   it("opens a centered, framed window and loads tutorial.html", () => {
     const h = createHarness();
     h.tutorial.open();
