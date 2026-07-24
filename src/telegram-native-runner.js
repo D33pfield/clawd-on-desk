@@ -23,7 +23,10 @@ const {
 const { EVENTS } = require("./telegram-migration-state");
 const { createTranslator } = require("./i18n");
 const { redactSecrets } = require("./secret-redact");
-const { MAX_ELICITATION_OPTION_LABEL } = require("./server-permission-utils");
+const {
+  MAX_ELICITATION_OPTION_LABEL,
+  clampPreviewText,
+} = require("./server-permission-utils");
 
 const APPROVAL_CALLBACK_RE = /^cp:([a-z0-9]+):(a|d|s(\d+))$/;
 const LEGACY_APPROVAL_CALLBACK_RE = /^clawdperm:([a-z0-9]+):(allow|deny)$/;
@@ -177,11 +180,13 @@ function normalizeElicitationPayload(payload) {
           .slice(0, MAX_ELICITATION_OPTIONS)
           .map((option) => {
             if (!option || typeof option !== "object") return null;
-            // Keep the full server-normalized answer value here. Telegram's
-            // 32-character limit is a presentation concern handled later by
-            // buildElicitationKeyboard; storing that compacted button text
-            // would silently change the value returned to the agent.
-            const label = compactMessageText(option.label, MAX_ELICITATION_OPTION_LABEL);
+            // Keep the canonical answer value byte-for-byte aligned with the
+            // server's normalization. Telegram-specific cleanup and the
+            // 32-character cap are presentation concerns handled later by
+            // buildElicitationKeyboard; applying compactMessageText here would
+            // rewrite CRLF, control characters, and whitespace in the value
+            // returned to the agent.
+            const label = clampPreviewText(option.label, MAX_ELICITATION_OPTION_LABEL);
             if (!label) return null;
             return { label };
           })

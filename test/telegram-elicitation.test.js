@@ -114,12 +114,12 @@ test("requestElicitation resolves elicitation-submit when a single-select questi
   await runner.stop();
 });
 
-test("requestElicitation keeps the full single-select value while truncating only the button text", async () => {
+test("requestElicitation keeps the server-normalized single-select value while compacting only the button text", async () => {
   const server = createFakeTelegramServer();
   let releaseFirstPoll;
   let optionData = "";
   let buttonText = "";
-  const fullLabel = "Refactor the module before adding another integration layer";
+  const fullLabel = "Refactor the module  \r\nbefore\u0007adding another integration layer";
 
   server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
   server.enqueue("sendMessage", (payload) => {
@@ -145,6 +145,7 @@ test("requestElicitation keeps the full single-select value while truncating onl
 
   assert.equal(buttonText.length, 32);
   assert.notEqual(buttonText, fullLabel);
+  assert.doesNotMatch(buttonText, /\r|\u0007| {2}\n/);
   assert.match(buttonText, /\.\.\.$/);
 
   releaseFirstPoll({ ok: true, result: [] });
@@ -420,13 +421,13 @@ test("requestElicitation's back button re-renders the previous question without 
   await runner.stop();
 });
 
-test("requestElicitation requires Confirm selection before advancing a multi-select question", async () => {
+test("requestElicitation requires Confirm and preserves the server-normalized multi-select value", async () => {
   const server = createFakeTelegramServer();
   let releaseFirstPoll;
   let optionAData = "";
   let optionAButtonText = "";
   let confirmData = "";
-  const fullLabel = "Refactor the module before adding another integration layer";
+  const fullLabel = "Refactor the module  \r\nbefore\u0007adding another integration layer";
 
   const payload = {
     title: "claude-code needs input",
@@ -469,6 +470,7 @@ test("requestElicitation requires Confirm selection before advancing a multi-sel
   await tick();
   assert.equal(optionAButtonText.length, 32);
   assert.notEqual(optionAButtonText, fullLabel);
+  assert.doesNotMatch(optionAButtonText, /\r|\u0007| {2}\n/);
 
   releaseFirstPoll({ ok: true, result: [] });
   await tick();
