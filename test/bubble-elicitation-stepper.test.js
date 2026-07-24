@@ -61,11 +61,12 @@ describe("AskUserQuestion bubble stepper", () => {
     assert.match(backBody, /activeQuestionIndex -= 1;/);
   });
 
-  it("submits all answers together with the existing elicitation response contract", () => {
+  it("submits all answers by stable question id, never by display copy", () => {
     const collectBody = functionBody("collectElicitationAnswers");
     const primaryBody = functionBody("handleElicitationPrimaryAction");
 
-    assert.match(collectBody, /answers\[question\.question\] = answerText;/);
+    assert.match(collectBody, /answers\[String\(i\)\] = answerText;/);
+    assert.doesNotMatch(collectBody, /answers\[question\.question\]/);
     assert.match(primaryBody, /const answers = collectElicitationAnswers\(\);/);
     assert.match(primaryBody, /window\.bubbleAPI\.decide\(\{ type: "elicitation-submit", answers \}\);/);
   });

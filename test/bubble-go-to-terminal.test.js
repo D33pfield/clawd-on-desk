@@ -8,6 +8,20 @@ const vm = require("node:vm");
 
 const SOURCE = fs.readFileSync(path.join(__dirname, "..", "src", "bubble-renderer.js"), "utf8");
 
+function interaction(intent, capabilities = {}) {
+  return {
+    intent,
+    automationEligibility: { autoTools: true, unattended: true },
+    capabilities: {
+      allowDeny: false,
+      answerQuestions: false,
+      planFeedback: false,
+      nativeFallback: false,
+      ...capabilities,
+    },
+  };
+}
+
 class ClassList {
   constructor() { this.values = new Set(); }
   add(...names) { names.forEach((name) => this.values.add(name)); }
@@ -114,13 +128,18 @@ function createHarness() {
 }
 
 describe("permission bubble terminal fallback (issue #689)", () => {
-  // The bubble payload (buildPermissionBubblePayload) only forwards the
-  // provenance flags isElicitation/isOpencode/isAntigravity/isCodex/isHermes.
-  // Claude Code, CodeBuddy, Qwen, Copilot and other CC-protocol forks all
-  // reach the renderer as a flagless default card — one case covers them.
+  // Every actionable payload carries route-owned interaction semantics.
+  // Provenance flags remain wire-format adapters, not renderer policy.
   for (const [name, data] of [
-    ["default cards (Claude Code / CC-protocol forks)", { toolName: "Bash" }],
-    ["Codex interactive", { toolName: "Bash", isCodex: true }],
+    ["default cards (Claude Code / CC-protocol forks)", {
+      toolName: "Bash",
+      interaction: interaction("tool-approval", { allowDeny: true, nativeFallback: true }),
+    }],
+    ["Codex interactive", {
+      toolName: "Bash",
+      isCodex: true,
+      interaction: interaction("tool-approval", { allowDeny: true, nativeFallback: true }),
+    }],
   ]) {
     it(`shows exactly one fallback for ${name} and emits only deny-and-focus`, () => {
       const harness = createHarness();
@@ -136,7 +155,11 @@ describe("permission bubble terminal fallback (issue #689)", () => {
 
   it("does not offer a terminal fallback when Hermes has no native approval prompt", () => {
     const harness = createHarness();
-    harness.show({ toolName: "Bash", isHermes: true });
+    harness.show({
+      toolName: "Bash",
+      isHermes: true,
+      interaction: interaction("tool-approval", { allowDeny: true }),
+    });
 
     assert.strictEqual(harness.terminalButtons().length, 0);
     assert.deepStrictEqual(harness.decisions, []);
@@ -154,6 +177,7 @@ describe("permission bubble terminal fallback (issue #689)", () => {
       familyAlways: ["bash"],
       familyPatterns: [],
       toolInput: { command: "pwd" },
+      interaction: interaction("tool-approval", { allowDeny: true, nativeFallback: true }),
     });
 
     assert.ok(harness.actionTexts().includes("Always Allow (blanket)"));
@@ -172,7 +196,12 @@ describe("permission bubble terminal fallback (issue #689)", () => {
 
   it("keeps elicitation's single terminal action and deny semantics", () => {
     const harness = createHarness();
-    harness.show({ isElicitation: true, toolName: "AskUserQuestion", toolInput: { questions: [] } });
+    harness.show({
+      isElicitation: true,
+      toolName: "AskUserQuestion",
+      toolInput: { questions: [] },
+      interaction: interaction("human-question", { answerQuestions: true, nativeFallback: true }),
+    });
 
     const buttons = harness.terminalButtons();
     assert.strictEqual(buttons.length, 1);
@@ -187,6 +216,7 @@ describe("permission bubble terminal fallback (issue #689)", () => {
       isHermes: true,
       toolName: "clarify",
       toolInput: { questions: [] },
+      interaction: interaction("human-question", { answerQuestions: true, nativeFallback: true }),
     });
 
     const buttons = harness.terminalButtons();
@@ -197,7 +227,14 @@ describe("permission bubble terminal fallback (issue #689)", () => {
 
   it("keeps plan review's single terminal action and deny-and-focus semantics", () => {
     const harness = createHarness();
-    harness.show({ toolName: "ExitPlanMode" });
+    harness.show({
+      toolName: "ExitPlanMode",
+      interaction: interaction("plan-review", {
+        allowDeny: true,
+        planFeedback: true,
+        nativeFallback: true,
+      }),
+    });
 
     const buttons = harness.terminalButtons();
     assert.strictEqual(buttons.length, 1);

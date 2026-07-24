@@ -4,7 +4,8 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 
 const initPermission = require("../src/permission");
-const { normalizeElicitationToolInput } = require("../src/server-permission-utils");
+const { prepareElicitationToolInput } = require("../src/server-permission-utils");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 
 function flush() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -77,7 +78,7 @@ function makeCtx(overrides = {}) {
 }
 
 function makePermEntry(overrides = {}) {
-  return {
+  const entry = {
     res: createMockResponse(),
     abortHandler: () => {},
     suggestions: [],
@@ -97,6 +98,12 @@ function makePermEntry(overrides = {}) {
     agentId: "claude-code",
     ...overrides,
   };
+  entry.interaction = entry.interaction || classifyPermissionInteraction({
+    agentId: entry.agentId,
+    eventKind: entry.isCodexNotify || entry.isKimiNotify ? "notification" : "permission",
+    toolName: entry.toolName,
+  });
+  return entry;
 }
 
 describe("permission telegram remote approval", () => {
@@ -335,7 +342,7 @@ describe("permission telegram remote approval", () => {
     };
     const perm = initPermission(makeCtx({ getTelegramApprovalClient: () => client }));
     const entries = [
-      makePermEntry({ isElicitation: true }),
+      makePermEntry({ isElicitation: true, toolName: "AskUserQuestion" }),
       makePermEntry({ isCodexNotify: true }),
       makePermEntry({ isKimiNotify: true }),
       makePermEntry({ agentId: "opencode" }),
@@ -427,21 +434,23 @@ describe("permission telegram remote approval", () => {
     // display. Index keys must survive either transformation.
     const rawLongQuestion = `请从以下部署方案中选择一个：${"细".repeat(300)}`;
     const rawCrlfQuestion = "第一行  \r\n第二行  ";
-    const normalizedInput = normalizeElicitationToolInput({
+    const rawInput = {
       questions: [
         { question: rawLongQuestion, options: [{ label: "方案A" }] },
         { question: rawCrlfQuestion, options: [{ label: "继续" }] },
       ],
-    });
-    const longQuestion = normalizedInput.questions[0].question;
-    const crlfQuestion = normalizedInput.questions[1].question;
-    assert.notEqual(longQuestion, rawLongQuestion);
-    assert.equal(longQuestion.length, 240);
-    assert.equal(crlfQuestion, "第一行  \r\n第二行");
+    };
+    const prepared = prepareElicitationToolInput(rawInput);
+    const displayInput = prepared.displayInput;
+    assert.equal(prepared.canAnswer, true);
+    assert.notEqual(displayInput.questions[0].question, rawLongQuestion);
+    assert.equal(displayInput.questions[0].question.length, 240);
+    assert.equal(displayInput.questions[1].question, "第一行  \r\n第二行");
     const entry = makePermEntry({
       isElicitation: true,
       toolName: "AskUserQuestion",
-      toolInput: normalizedInput,
+      toolInput: displayInput,
+      elicitationWireInput: prepared.wireInput,
     });
     perm.pendingPermissions.push(entry);
 
@@ -460,10 +469,10 @@ describe("permission telegram remote approval", () => {
     assert.deepEqual(body.hookSpecificOutput.decision, {
       behavior: "allow",
       updatedInput: {
-        questions: entry.toolInput.questions,
+        questions: rawInput.questions,
         answers: {
-          [longQuestion]: "方案A",
-          [crlfQuestion]: "继续",
+          [rawLongQuestion]: "方案A",
+          [rawCrlfQuestion]: "继续",
         },
       },
     });
@@ -487,6 +496,7 @@ describe("permission telegram remote approval", () => {
       isElicitation: true,
       isHermes: true,
       agentId: "hermes",
+      toolName: "clarify",
       toolInput: { questions: [{ question: "Which environment?" }] },
     });
     perm.pendingPermissions.push(entry);

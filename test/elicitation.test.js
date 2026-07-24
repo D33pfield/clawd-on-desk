@@ -2,7 +2,11 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const permission = require("../src/permission");
-const { buildElicitationUpdatedInput, remapIndexedElicitationAnswers } = permission.__test;
+const {
+  buildElicitationUpdatedInput,
+  remapIndexedElicitationAnswers,
+  validateAndRemapIndexedElicitationAnswers,
+} = permission.__test;
 
 describe("elicitation updated input builder", () => {
   it("echoes original questions and attaches normalized answers", () => {
@@ -109,5 +113,49 @@ describe("indexed elicitation answer remapping", () => {
     );
 
     assert.deepStrictEqual(updatedInput.answers, { [longQuestion]: "prod" });
+  });
+
+  it("accepts only a complete, exact, non-empty answer map", () => {
+    const input = {
+      questions: [
+        { question: "First?" },
+        { question: "Second?" },
+      ],
+    };
+    assert.deepStrictEqual(
+      validateAndRemapIndexedElicitationAnswers(input, {
+        "0": " yes ",
+        "1": "no",
+      }),
+      {
+        ok: true,
+        answers: {
+          "First?": "yes",
+          "Second?": "no",
+        },
+      }
+    );
+
+    for (const invalid of [
+      { "0": "yes" },
+      { "0": "yes", "1": " " },
+      { "0": "yes", "1": "no", "2": "extra" },
+      ["yes", "no"],
+      null,
+    ]) {
+      assert.strictEqual(
+        validateAndRemapIndexedElicitationAnswers(input, invalid).ok,
+        false
+      );
+    }
+  });
+
+  it("rejects duplicate upstream question keys instead of overwriting an answer", () => {
+    const result = validateAndRemapIndexedElicitationAnswers(
+      { questions: [{ question: "Same?" }, { question: "Same?" }] },
+      { "0": "A", "1": "B" }
+    );
+    assert.strictEqual(result.ok, false);
+    assert.match(result.reason, /duplicate/);
   });
 });

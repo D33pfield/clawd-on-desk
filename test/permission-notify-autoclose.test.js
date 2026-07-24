@@ -6,6 +6,9 @@ const Module = require("node:module");
 const os = require("node:os");
 const path = require("node:path");
 const { describe, it, afterEach, mock } = require("node:test");
+const {
+  classifyPermissionInteraction,
+} = require("../src/permission-automation-policy");
 
 const PERMISSION_MODULE_PATH = require.resolve("../src/permission");
 const tempLogPaths = new Set();
@@ -33,7 +36,12 @@ function createTempLogPath() {
   return logPath;
 }
 
-function createPermissionHarness({ logPath = null, agentPermissionsEnabled = true } = {}) {
+function createPermissionHarness({
+  logPath = null,
+  agentPermissionsEnabled = true,
+  loadBehavior = "success",
+} = {}) {
+  const createdWindows = [];
   class FakeBrowserWindow {
     constructor() {
       this.destroyed = false;
@@ -49,6 +57,7 @@ function createPermissionHarness({ logPath = null, agentPermissionsEnabled = tru
             if (this._loadFileCalled) { cb(); return; }
             this._didFinishLoad = cb;
           }
+          if (event === "did-fail-load") this._didFailLoad = cb;
         },
         on: (event, cb) => {
           if (event === "render-process-gone") this._renderGoneHandler = cb;
@@ -58,12 +67,23 @@ function createPermissionHarness({ logPath = null, agentPermissionsEnabled = tru
         },
       };
       this.sentEvents = [];
+      createdWindows.push(this);
     }
 
     setAlwaysOnTop() {}
     setBounds(bounds) { this.bounds = bounds; }
     loadFile() {
       this._loadFileCalled = true;
+      if (loadBehavior === "throw") throw new Error("bubble html missing");
+      if (loadBehavior === "reject") {
+        return Promise.reject(new Error("bubble html rejected"));
+      }
+      if (loadBehavior === "event") {
+        if (typeof this._didFailLoad === "function") {
+          this._didFailLoad({}, -6, "FILE_NOT_FOUND");
+        }
+        return;
+      }
       if (typeof this._didFinishLoad === "function") this._didFinishLoad();
     }
     showInactive() {}
@@ -126,6 +146,7 @@ function createPermissionHarness({ logPath = null, agentPermissionsEnabled = tru
   return {
     api,
     focused,
+    createdWindows,
     setNotificationAutoCloseMs(value) {
       notificationAutoCloseMs = value;
     },
@@ -546,6 +567,164 @@ describe("Kimi passive cue rebuild after dismissal (gate-ledger joint lifecycle)
     assert.notStrictEqual(second, first);
     assert.strictEqual(second.kimiToolName, "shell");
     assert.ok(second.bubble && !second.bubble.destroyed);
+  });
+});
+
+describe("interactive permission bubble fatal fallback", () => {
+  afterEach(() => {
+    mock.timers.reset();
+    delete require.cache[PERMISSION_MODULE_PATH];
+    for (const logPath of tempLogPaths) {
+      try { fs.unlinkSync(logPath); } catch {}
+    }
+    tempLogPaths.clear();
+  });
+
+  function makeBlockingEntry() {
+    const response = {
+      writableEnded: false,
+      destroyed: false,
+      destroyCalls: 0,
+      on() {},
+      removeListener() {},
+      destroy() {
+        this.destroyCalls += 1;
+        this.destroyed = true;
+      },
+    };
+    return {
+      response,
+      entry: {
+        res: response,
+        abortHandler() {},
+        suggestions: [],
+        sessionId: "claude-fatal-bubble",
+        bubble: null,
+        hideTimer: null,
+        toolName: "Bash",
+        toolInput: { command: "npm test" },
+        createdAt: Date.now(),
+        agentId: "claude-code",
+        interaction: classifyPermissionInteraction({
+          agentId: "claude-code",
+          eventKind: "permission",
+          toolName: "Bash",
+        }),
+      },
+    };
+  }
+
+  it("returns no-decision immediately when bubble.html cannot be loaded", () => {
+    const harness = createPermissionHarness({ loadBehavior: "throw" });
+    const { entry, response } = makeBlockingEntry();
+    harness.api.pendingPermissions.push(entry);
+
+    assert.doesNotThrow(() => harness.api.showPermissionBubble(entry));
+    assert.strictEqual(harness.api.pendingPermissions.length, 0);
+    assert.strictEqual(response.destroyed, true);
+  });
+
+  it("returns no-decision when loadFile rejects asynchronously", async () => {
+    const harness = createPermissionHarness({ loadBehavior: "reject" });
+    const { entry, response } = makeBlockingEntry();
+    harness.api.pendingPermissions.push(entry);
+
+    harness.api.showPermissionBubble(entry);
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(harness.api.pendingPermissions.length, 0);
+    assert.strictEqual(response.destroyed, true);
+    assert.strictEqual(response.destroyCalls, 1);
+  });
+
+  it("returns no-decision when the main frame emits did-fail-load", () => {
+    const harness = createPermissionHarness({ loadBehavior: "event" });
+    const { entry, response } = makeBlockingEntry();
+    harness.api.pendingPermissions.push(entry);
+
+    assert.doesNotThrow(() => harness.api.showPermissionBubble(entry));
+
+    assert.strictEqual(harness.api.pendingPermissions.length, 0);
+    assert.strictEqual(response.destroyed, true);
+    assert.strictEqual(response.destroyCalls, 1);
+  });
+
+  it("does not turn a fatal no-decision into a second deny when closed fires", () => {
+    const harness = createPermissionHarness({ loadBehavior: "throw" });
+    const { entry, response } = makeBlockingEntry();
+    harness.api.pendingPermissions.push(entry);
+
+    harness.api.showPermissionBubble(entry);
+    const bubble = harness.createdWindows[0];
+    bubble._closedHandler();
+
+    assert.strictEqual(harness.api.pendingPermissions.length, 0);
+    assert.strictEqual(response.destroyCalls, 1);
+  });
+
+  it("skips permission-hide cleanly when a live bubble has no webContents", () => {
+    const logPath = createTempLogPath();
+    const harness = createPermissionHarness({ logPath });
+    const { entry, response } = makeBlockingEntry();
+    entry.createdAt = Date.now() - 5000;
+    harness.api.pendingPermissions.push(entry);
+    harness.api.showPermissionBubble(entry);
+    entry.bubble.webContents = null;
+
+    assert.doesNotThrow(() => {
+      harness.api.resolvePermissionEntry(entry, "no-decision", "test cleanup");
+    });
+
+    assert.strictEqual(response.destroyCalls, 1);
+    const logText = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "";
+    assert.doesNotMatch(logText, /permission bubble hide failed/);
+  });
+
+  it("returns no-decision exactly once when the renderer process exits", () => {
+    const harness = createPermissionHarness();
+    const { entry, response } = makeBlockingEntry();
+    harness.api.pendingPermissions.push(entry);
+    harness.api.showPermissionBubble(entry);
+    assert.strictEqual(harness.api.pendingPermissions.length, 1);
+
+    const bubble = harness.createdWindows[0];
+    bubble._renderGoneHandler({}, { reason: "crashed" });
+    bubble._renderGoneHandler({}, { reason: "crashed" });
+
+    assert.strictEqual(harness.api.pendingPermissions.length, 0);
+    assert.strictEqual(response.destroyed, true);
+  });
+
+  it("dismisses a passive notification safely when its renderer process exits", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    mock.timers.setTime(100_000);
+    const logPath = createTempLogPath();
+    const harness = createPermissionHarness({ logPath });
+    harness.api.showKimiNotifyBubble({
+      sessionId: "kimi-renderer-gone",
+      toolName: "shell",
+      permissionAction: "execute",
+    });
+    assert.strictEqual(harness.api.pendingPermissions.length, 1);
+
+    const entry = harness.api.pendingPermissions[0];
+    const bubble = entry.bubble;
+    bubble.webContents.isDestroyed = () => true;
+    bubble.webContents.send = () => {
+      throw new Error("send must not target destroyed webContents");
+    };
+
+    assert.doesNotThrow(() => {
+      bubble._renderGoneHandler({}, { reason: "crashed" });
+      bubble._renderGoneHandler({}, { reason: "crashed" });
+    });
+    assert.strictEqual(harness.api.pendingPermissions.length, 0);
+    const logText = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "";
+    assert.doesNotMatch(logText, /permission bubble hide failed/);
+
+    mock.timers.tick(250);
+    assert.strictEqual(bubble.destroyed, true);
   });
 });
 

@@ -172,22 +172,22 @@ const SCHEMA = {
   },
   hideBubbles: { type: "boolean", default: false },
   permissionBubblesEnabled: { type: "boolean", default: true },
-  // DANGER: "auto-pilot". When true, every agent permission request is
-  // auto-approved without showing a bubble or asking the user. Default false;
-  // the only way to flip it on is the explicit, confirmation-gated toggle in
-  // Settings. DND and per-agent permissionsEnabled gates still win — they are
-  // checked before showPermissionBubble, which is where auto-approve hooks in.
-  // Headless sessions are also stopped before that chokepoint, but their
-  // downstream fallback is agent-specific: Claude/CodeBuddy auto-deny, while
-  // Codex/Qwen/Copilot/Hermes return no-decision and opencode silently falls
-  // back to its TUI prompt. Codex subagent permission payloads are treated as
-  // headless even if no prior session-state event has populated the runtime map.
-  //
-  // `ephemeral: true` — this field is runtime-only. It is NOT written to disk
-  // by save(), and load()/validate() force it back to the default. So enabling
-  // auto-pilot lasts only for the current app session: quit and relaunch and
-  // it's off again, requiring a fresh confirmation. A dangerous "approve
-  // everything" mode must never silently persist across restarts.
+  // Global permission automation keeps the user's safe startup preference.
+  // `off` and `auto-tools` survive relaunches; `unattended` is a runtime-only
+  // elevation that validate() always downgrades to `auto-tools` for disk/load.
+  permissionAutomationMode: {
+    type: "string",
+    default: "off",
+    enum: ["off", "auto-tools", "unattended"],
+  },
+  // Risk acknowledgements persist independently from the selected mode.
+  // Each trust level is remembered separately so acknowledging auto-tools can
+  // never suppress the stronger unattended warning.
+  permissionAutomationAutoToolsWarningDismissed: { type: "boolean", default: false },
+  permissionAutomationUnattendedWarningDismissed: { type: "boolean", default: false },
+  // One-release tombstone for old files/tests. It can never become the current
+  // automation source: validation forces ephemeral fields to defaults, save()
+  // drops them, and no product writer targets this key.
   autoApproveAllPermissions: { type: "boolean", default: false, ephemeral: true },
   notificationBubbleAutoCloseSeconds: {
     type: "number",
@@ -487,8 +487,7 @@ function validate(raw) {
     if (!(key in raw)) continue;
     const field = SCHEMA[key];
     // Ephemeral (runtime-only) fields are never restored from a snapshot —
-    // they always reset to their default on load. This is how auto-pilot stays
-    // off across restarts even if a value somehow landed on disk.
+    // they always reset to their default on load.
     if (field.ephemeral) continue;
     let value = raw[key];
     if ((field.type === "object" || field.type === "array") && typeof field.normalize === "function") {
@@ -498,6 +497,13 @@ function validate(raw) {
       out[key] = value;
     }
     // else: keep default already in `out`
+  }
+  // `unattended` is intentionally valid in the live settings store, but never
+  // as a startup state. validate() is used on both load and save, so this one
+  // normalization makes hand-edited files safe and writes the next-launch
+  // fallback while leaving the controller's current in-memory mode untouched.
+  if (out.permissionAutomationMode === "unattended") {
+    out.permissionAutomationMode = "auto-tools";
   }
   if (!("customToolDiscoveryPaths" in raw)) {
     const legacy = raw.agents && raw.agents.custom && raw.agents.custom.customDiscoveryPaths;
@@ -1153,9 +1159,9 @@ function load(prefsPath) {
 
 function save(prefsPath, snapshot) {
   const validated = validate(snapshot);
-  // Ephemeral (runtime-only) fields never touch disk — drop them so a
-  // dangerous mode like auto-pilot can't persist across restarts, and so the
-  // prefs file never contains a scary `autoApproveAllPermissions: true`.
+  // Ephemeral fields never touch disk. permissionAutomationMode is persisted
+  // separately: validate() keeps off/auto-tools and downgrades unattended to
+  // auto-tools, making full automation a current-process elevation only.
   for (const key of SCHEMA_KEYS) {
     if (SCHEMA[key].ephemeral) delete validated[key];
   }

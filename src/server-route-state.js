@@ -10,7 +10,17 @@ const {
   normalizeHookToolUseId,
   findPendingPermissionForStateEvent,
 } = require("./server-permission-utils");
-const { resolveHookAgentId } = require("./server-agent-id");
+const {
+  INTERACTION_INTENT,
+  classifyPermissionInteraction,
+  isDecisionInteraction,
+} = require("./permission-automation-policy");
+const {
+  MAX_SUBAGENT_ID_LENGTH,
+  MAX_SUBAGENT_TYPE_LENGTH,
+  normalizeSubagentMetadata,
+  resolveHookAgentId,
+} = require("./server-agent-id");
 const { resolveCodexOfficialHookState } = require("./server-codex-official-turns");
 const { normalizeTranscriptPath } = require("./transcript-path");
 const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
@@ -169,6 +179,18 @@ function handleStatePost(req, res, options) {
       const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
       const agentPid = Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null;
       const agentId = agentIdentity.agentId;
+      const reportedSubagentId = agentId === "claude-code"
+        ? normalizeSubagentMetadata(data.subagent_id, MAX_SUBAGENT_ID_LENGTH)
+        : null;
+      const reportedSubagentType = reportedSubagentId
+        ? normalizeSubagentMetadata(data.subagent_type, MAX_SUBAGENT_TYPE_LENGTH)
+        : null;
+      const subagentId = agentIdentity.source === "subagent"
+        ? agentIdentity.subagentId
+        : reportedSubagentId;
+      const subagentType = agentIdentity.source === "subagent"
+        ? agentIdentity.subagentType
+        : reportedSubagentType;
       // State sessions share one process-wide Map keyed only by session id.
       // Registered custom applications commonly send generic ids such as
       // "default" or "project-a", so namespace them at the trust boundary to
@@ -451,9 +473,36 @@ function handleStatePost(req, res, options) {
         if (event === "UserPromptSubmit" && typeof ctx.debugLog === "function") {
           ctx.debugLog(`wt-hwnd sid=${sid} event=${event} source=${wtHwndSource}`);
         }
+        const stateEventInteraction = classifyPermissionInteraction({
+          agentId,
+          toolName,
+        });
+        const pendingForSessionAgent = () => ctx.pendingPermissions.filter((perm) => (
+          perm
+          && perm.res
+          && perm.sessionId === sid
+          && perm.agentId === agentId
+        ));
+        const pendingForSource = () => pendingForSessionAgent().filter(
+          (perm) => (perm.subagentId || null) === subagentId
+        );
+        const resolveOnlyUnambiguous = (candidates, behavior, message) => {
+          if (candidates.length !== 1) {
+            if (candidates.length > 1 && typeof ctx.permLog === "function") {
+              ctx.permLog(
+                `decision sweep ambiguous: event=${event} session=${sid} agent=${agentId}`
+                + ` subagent=${subagentId || "main"} candidates=${candidates.length}`
+              );
+            }
+            return;
+          }
+          ctx.resolvePermissionEntry(candidates[0], behavior, message);
+        };
         if (event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop") {
           const perm = findPendingPermissionForStateEvent(ctx.pendingPermissions, {
             sessionId: sid,
+            agentId,
+            subagentId,
             toolName,
             toolUseId,
             toolInputFingerprint,
@@ -463,41 +512,58 @@ function handleStatePost(req, res, options) {
             const behavior = perm.isQwenCode ? "no-decision" : "deny";
             ctx.resolvePermissionEntry(perm, behavior, "User answered in terminal");
           }
-          // Stale blocking-tool sweep: both AskUserQuestion (elicitation) and
-          // ExitPlanMode (plan review) are blocking tool calls. Any forward
-          // progress in the same session means the user already answered in the
-          // terminal. The exact-match above may miss the entry when tool_use_id
-          // or tool_input_fingerprint diverge between /permission and /state.
-          for (const stale of [...ctx.pendingPermissions]) {
-            if (
-              stale !== perm
-              && stale.res
-              && stale.sessionId === sid
-              && (stale.isElicitation || stale.toolName === "ExitPlanMode")
-            ) {
-              ctx.resolvePermissionEntry(stale, "deny", "User answered in terminal");
-            }
+          // A later hook event may be the only evidence that the user answered
+          // a decision in the agent's native terminal UI. Never sweep across
+          // agent/subagent sources, and never guess when more than one decision
+          // remains for the same canonical source.
+          // An exact match already identifies which decision completed. Do
+          // not infer that a sibling decision from the same session/subagent
+          // also completed — concurrent questions can legitimately coexist.
+          if (!perm || !isDecisionInteraction(perm.interaction)) {
+            const staleDecisions = pendingForSource().filter((stale) => (
+              stale !== perm && isDecisionInteraction(stale.interaction)
+            ));
+            resolveOnlyUnambiguous(
+              staleDecisions,
+              "deny",
+              "User answered in terminal"
+            );
           }
         }
-        // Stale ExitPlanMode sweep for events outside the PostToolUse/Stop block:
+        // Decision lifecycle for events outside the PostToolUse/Stop block:
         // UserPromptSubmit = user typed feedback in plan TUI ("Tell Claude what to
         // change"); PreToolUse(non-ExitPlanMode) = Claude started executing after
-        // plan approval; SessionEnd = session torn down.
-        if (
-          event === "UserPromptSubmit"
-          || event === "SessionEnd"
-          || (event === "PreToolUse" && toolName !== "ExitPlanMode")
-        ) {
-          for (const stale of [...ctx.pendingPermissions]) {
-            if (
-              stale
-              && stale.res
-              && stale.sessionId === sid
-              && stale.toolName === "ExitPlanMode"
-            ) {
-              ctx.resolvePermissionEntry(stale, "deny", "Plan dialog dismissed in terminal");
-            }
+        // plan approval. SessionEnd is authoritative and clears both plan and
+        // human-question entries without inventing a user decision.
+        if (event === "SessionEnd") {
+          // A main-thread SessionEnd is authoritative for the whole agent
+          // session and must clear requests from every subagent. A SessionEnd
+          // emitted by a subagent only closes that subagent's own requests; its
+          // siblings and parent session can still be live.
+          const sessionEndPending = subagentId
+            ? pendingForSource()
+            : pendingForSessionAgent();
+          for (const stale of sessionEndPending.filter((entry) => (
+            isDecisionInteraction(entry.interaction)
+          ))) {
+            ctx.resolvePermissionEntry(stale, "no-decision", "Session ended");
           }
+        } else if (
+          event === "UserPromptSubmit"
+          || (
+            event === "PreToolUse"
+            && stateEventInteraction.intent !== INTERACTION_INTENT.PLAN_REVIEW
+          )
+        ) {
+          const stalePlans = pendingForSource().filter((entry) => (
+            entry.interaction
+            && entry.interaction.intent === INTERACTION_INTENT.PLAN_REVIEW
+          ));
+          resolveOnlyUnambiguous(
+            stalePlans,
+            "deny",
+            "Plan dialog dismissed in terminal"
+          );
         }
         recordRequestHookEvent.acceptedUnlessDnd(shouldDropForDnd());
         if (svg) {
@@ -514,6 +580,8 @@ function handleStatePost(req, res, options) {
             tmuxClient,
             agentPid,
             agentId,
+            ...(subagentId ? { subagentId } : {}),
+            ...(subagentType ? { subagentType } : {}),
             ...(trustedProfileId === "local" ? {} : {
               profileId: sessionIdentity.profileId,
               rawSessionId: sessionIdentity.rawSessionId,

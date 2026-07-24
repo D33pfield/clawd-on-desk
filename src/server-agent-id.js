@@ -8,6 +8,8 @@ const {
 
 const DEFAULT_HOOK_AGENT_ID = "claude-code";
 const MAX_REJECTED_AGENT_ID_LENGTH = 80;
+const MAX_SUBAGENT_ID_LENGTH = 256;
+const MAX_SUBAGENT_TYPE_LENGTH = 128;
 
 // Hook scripts / plugins stamp their own registry id into `agent_id`
 // (codebuddy-hook.js, hermes plugin, codex-hook.js, ...). Claude Code ≥ 2.1.x
@@ -32,6 +34,13 @@ const HOOK_SOURCE_AGENT_IDS = new Map([
 
 function normalizeHookText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeSubagentMetadata(value, maxLength) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > maxLength || /[\0\r\n]/.test(text)) return null;
+  return text;
 }
 
 function resolveHookAgentId(data, options = {}) {
@@ -61,12 +70,24 @@ function resolveHookAgentId(data, options = {}) {
   }
 
   if (explicit) {
+    const subagentId = normalizeSubagentMetadata(explicit, MAX_SUBAGENT_ID_LENGTH);
+    if (!subagentId) {
+      return {
+        agentId: null,
+        source: "rejected-subagent",
+        rejected: true,
+        rawAgentId: explicit.slice(0, MAX_REJECTED_AGENT_ID_LENGTH),
+      };
+    }
     return {
       agentId: DEFAULT_HOOK_AGENT_ID,
       source: "subagent",
       defaulted: false,
-      subagentId: explicit,
-      subagentType: normalizeHookText(data && data.agent_type) || null,
+      subagentId,
+      subagentType: normalizeSubagentMetadata(
+        data && data.agent_type,
+        MAX_SUBAGENT_TYPE_LENGTH
+      ),
     };
   }
 
@@ -78,5 +99,8 @@ module.exports = {
   HOOK_SOURCE_AGENT_IDS,
   KNOWN_HOOK_AGENT_IDS,
   MAX_REJECTED_AGENT_ID_LENGTH,
+  MAX_SUBAGENT_ID_LENGTH,
+  MAX_SUBAGENT_TYPE_LENGTH,
+  normalizeSubagentMetadata,
   resolveHookAgentId,
 };

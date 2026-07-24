@@ -438,6 +438,31 @@ function buildStateBody(event, payload, resolve) {
 
   const body = { state: resolvedState, session_id: sessionId, event: resolvedEvent };
   body.agent_id = "claude-code";
+  // Claude's command-hook payload uses agent_id/agent_type for subagent
+  // provenance. Keep the public Clawd agent_id canonical, but preserve that
+  // identity separately so a SubagentStop/PostToolUse event can settle only
+  // the matching subagent's pending permission.
+  const reportedSubagentId = typeof payload.agent_id === "string"
+    ? payload.agent_id.trim()
+    : "";
+  if (
+    reportedSubagentId
+    && reportedSubagentId !== "claude-code"
+    && reportedSubagentId.length <= 256
+    && !/[\0\r\n]/.test(reportedSubagentId)
+  ) {
+    body.subagent_id = reportedSubagentId;
+    const reportedSubagentType = typeof payload.agent_type === "string"
+      ? payload.agent_type.trim()
+      : "";
+    if (
+      reportedSubagentType
+      && reportedSubagentType.length <= 128
+      && !/[\0\r\n]/.test(reportedSubagentType)
+    ) {
+      body.subagent_type = reportedSubagentType;
+    }
+  }
   if (cwd) body.cwd = cwd;
   const toolName = typeof payload.tool_name === "string" && payload.tool_name ? payload.tool_name : null;
   const toolUseId = normalizeToolUseId(payload.tool_use_id ?? payload.toolUseId ?? payload.toolUseID);

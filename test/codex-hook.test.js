@@ -401,6 +401,17 @@ describe("Codex official hook", () => {
     assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "codex_session_role"), false);
   });
 
+  it("fails closed instead of posting a PermissionRequest with an unknown tool", () => {
+    for (const tool_name of [undefined, "", "  ", "Unknown", "unknown"]) {
+      assert.strictEqual(buildPermissionBody({
+        hook_event_name: "PermissionRequest",
+        session_id: "s1",
+        tool_name,
+        tool_input: {},
+      }, mockResolve), null);
+    }
+  });
+
   it("carries Codex Desktop metadata on PermissionRequest payloads", () => {
     withTempTranscript([
       JSON.stringify({
@@ -545,6 +556,8 @@ describe("Codex official hook", () => {
     const permissionResult = await runCodexHook({
       hook_event_name: "PermissionRequest",
       session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
     }, options);
 
     assert.strictEqual(resolveCalls, 2);

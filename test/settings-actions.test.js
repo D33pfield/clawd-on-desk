@@ -720,34 +720,90 @@ describe("bubble policy commands", () => {
   });
 });
 
-describe("setAutoApproveAll danger gate", () => {
-  it("refuses to enable without confirmed:true (dialog is a real boundary)", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: true }, {});
+describe("setPermissionAutomationMode danger gate", () => {
+  it("refuses auto-tools without confirmed:true (dialog is a real boundary)", async () => {
+    const r = await commandRegistry.setPermissionAutomationMode({ mode: "auto-tools" }, {});
     assert.strictEqual(r.status, "error");
-    assert.match(r.message, /confirmed:true/);
+    assert.match(r.message, /current or remembered confirmation/);
   });
 
-  it("refuses to enable when confirmed is falsy", async () => {
+  it("refuses either automatic mode when confirmed is falsy", async () => {
     for (const bad of [false, "true", 1, null, undefined]) {
-      const r = await commandRegistry.setAutoApproveAll({ enabled: true, confirmed: bad }, {});
-      assert.strictEqual(r.status, "error", `confirmed=${JSON.stringify(bad)} must be rejected`);
+      for (const mode of ["auto-tools", "unattended"]) {
+        const r = await commandRegistry.setPermissionAutomationMode({ mode, confirmed: bad }, {});
+        assert.strictEqual(r.status, "error", `${mode} confirmed=${JSON.stringify(bad)} must be rejected`);
+      }
     }
   });
 
-  it("enables only with explicit confirmed:true", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: true, confirmed: true }, {});
-    assert.strictEqual(r.status, "ok");
-    assert.deepStrictEqual(r.commit, { autoApproveAllPermissions: true });
+  it("enables both automatic modes only with explicit confirmed:true", async () => {
+    for (const mode of ["auto-tools", "unattended"]) {
+      const r = await commandRegistry.setPermissionAutomationMode({ mode, confirmed: true }, {});
+      assert.strictEqual(r.status, "ok");
+      assert.deepStrictEqual(r.commit, { permissionAutomationMode: mode });
+    }
   });
 
-  it("disables immediately with no confirmation required", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: false }, {});
-    assert.strictEqual(r.status, "ok");
-    assert.deepStrictEqual(r.commit, { autoApproveAllPermissions: false });
+  it("accepts a remembered confirmation for only its matching mode", async () => {
+    const autoTools = await commandRegistry.setPermissionAutomationMode(
+      { mode: "auto-tools", confirmed: false },
+      { snapshot: { permissionAutomationAutoToolsWarningDismissed: true } }
+    );
+    assert.deepStrictEqual(autoTools.commit, { permissionAutomationMode: "auto-tools" });
+
+    const unattended = await commandRegistry.setPermissionAutomationMode(
+      { mode: "unattended", confirmed: false },
+      { snapshot: { permissionAutomationAutoToolsWarningDismissed: true } }
+    );
+    assert.strictEqual(unattended.status, "error");
   });
 
-  it("rejects a non-boolean enabled", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: "yes", confirmed: true }, {});
+  it("persists don't-show-again atomically only with a current confirmation", async () => {
+    const r = await commandRegistry.setPermissionAutomationMode({
+      mode: "auto-tools",
+      confirmed: true,
+      suppressFutureConfirmation: true,
+    }, {});
+    assert.deepStrictEqual(r.commit, {
+      permissionAutomationMode: "auto-tools",
+      permissionAutomationAutoToolsWarningDismissed: true,
+    });
+
+    const rejected = await commandRegistry.setPermissionAutomationMode({
+      mode: "auto-tools",
+      confirmed: false,
+      suppressFutureConfirmation: true,
+    }, { snapshot: { permissionAutomationAutoToolsWarningDismissed: true } });
+    assert.strictEqual(rejected.status, "error");
+    assert.match(rejected.message, /requires confirmed:true/);
+  });
+
+  it("rejects malformed or off-mode warning suppression", async () => {
+    assert.strictEqual(
+      (await commandRegistry.setPermissionAutomationMode({
+        mode: "auto-tools",
+        confirmed: true,
+        suppressFutureConfirmation: "yes",
+      }, {})).status,
+      "error"
+    );
+    assert.strictEqual(
+      (await commandRegistry.setPermissionAutomationMode({
+        mode: "off",
+        suppressFutureConfirmation: true,
+      }, {})).status,
+      "error"
+    );
+  });
+
+  it("switches off immediately with no confirmation required", async () => {
+    const r = await commandRegistry.setPermissionAutomationMode({ mode: "off" }, {});
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit, { permissionAutomationMode: "off" });
+  });
+
+  it("rejects an unknown mode", async () => {
+    const r = await commandRegistry.setPermissionAutomationMode({ mode: "yolo", confirmed: true }, {});
     assert.strictEqual(r.status, "error");
   });
 });
