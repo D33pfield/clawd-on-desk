@@ -22,6 +22,14 @@ const AUTOMATION_ACTION = Object.freeze({
   AUTO_ANSWER: "auto-answer",
 });
 
+const DECISION_TOOL_KIND = Object.freeze({
+  ASK_USER_QUESTION: "askuserquestion",
+  EXIT_PLAN_MODE: "exitplanmode",
+  CLARIFY: "clarify",
+});
+
+const DECISION_TOOL_BASENAMES = new Set(Object.values(DECISION_TOOL_KIND));
+
 const KNOWN_PERMISSION_AGENTS = new Set([
   "claude-code",
   "codebuddy",
@@ -156,6 +164,17 @@ function isMissingToolName(toolName) {
   return !toolName || /^unknown$/i.test(toolName);
 }
 
+function getDecisionToolKind(toolName) {
+  if (!toolName) return null;
+  const normalized = toolName.toLowerCase();
+  if (DECISION_TOOL_BASENAMES.has(normalized)) return normalized;
+  if (normalized.endsWith("tool")) {
+    const withoutToolSuffix = normalized.slice(0, -4);
+    if (DECISION_TOOL_BASENAMES.has(withoutToolSuffix)) return withoutToolSuffix;
+  }
+  return null;
+}
+
 function isNamespacedMcpTool(toolName) {
   const parts = toolName.split("__");
   return parts.length >= 3
@@ -201,10 +220,23 @@ function classifyPermissionInteraction({
     });
   }
 
-  const isQuestion = trustedToolName === "AskUserQuestion"
-    || (trustedAgentId === "hermes" && trustedToolName === "clarify");
-  if (isQuestion) {
-    if (trustedAgentId === "claude-code" || trustedAgentId === "hermes") {
+  // Decision protocols share the PermissionRequest transport with ordinary
+  // tools. Upstream built-ins have historically gained a "Tool" suffix (and
+  // adapters may vary casing), so recognize only these reviewed aliases before
+  // any generic tool/UNKNOWN compatibility path can automate them.
+  const decisionToolKind = getDecisionToolKind(trustedToolName);
+  if (
+    decisionToolKind === DECISION_TOOL_KIND.ASK_USER_QUESTION
+    || decisionToolKind === DECISION_TOOL_KIND.CLARIFY
+  ) {
+    const canAnswerQuestions = (
+      decisionToolKind === DECISION_TOOL_KIND.ASK_USER_QUESTION
+      && (trustedAgentId === "claude-code" || trustedAgentId === "hermes")
+    ) || (
+      decisionToolKind === DECISION_TOOL_KIND.CLARIFY
+      && trustedAgentId === "hermes"
+    );
+    if (canAnswerQuestions) {
       return makeInteraction(INTERACTION_INTENT.HUMAN_QUESTION, {
         autoTools: true,
         unattended: true,
@@ -218,7 +250,7 @@ function classifyPermissionInteraction({
     });
   }
 
-  if (trustedToolName === "ExitPlanMode") {
+  if (decisionToolKind === DECISION_TOOL_KIND.EXIT_PLAN_MODE) {
     if (trustedAgentId === "claude-code") {
       return makeInteraction(INTERACTION_INTENT.PLAN_REVIEW, {
         autoTools: true,

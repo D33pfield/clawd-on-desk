@@ -313,11 +313,53 @@ describe("server-route-permission POST", () => {
     );
     assert.strictEqual(unattended.permission.pendingPermissions.length, 0);
 
-    const autoTools = await callPermissionPostThroughAutomation(body, "auto-tools");
+    const autoTools = await callPermissionPostThroughAutomation(body, "auto-tools", {
+      // Exercise the successful DEFER lifecycle without constructing an
+      // Electron BrowserWindow in the pure Node route test.
+      showPermissionBubble() {},
+    });
     assert.strictEqual(autoTools.statusCode, null);
     assert.strictEqual(autoTools.body, "");
-    assert.strictEqual(autoTools.destroyed, true);
-    assert.strictEqual(autoTools.permission.pendingPermissions.length, 0);
+    assert.strictEqual(autoTools.writableFinished, false);
+    assert.strictEqual(autoTools.destroyed, false);
+    assert.strictEqual(autoTools.permission.pendingPermissions.length, 1);
+  });
+
+  it("normalizes unattended Claude question aliases before generating the wire response", async () => {
+    for (const toolName of ["askuserquestion", "AskUserQuestionTool"]) {
+      const res = await callPermissionPostThroughAutomation(JSON.stringify({
+        agent_id: "claude-code",
+        session_id: `claude:${toolName}`,
+        tool_name: toolName,
+        tool_input: {
+          questions: [{
+            question: "Which approach?",
+            options: [{ label: "A" }, { label: "B" }],
+          }],
+        },
+      }), "unattended");
+
+      assert.strictEqual(res.statusCode, 200, toolName);
+      assert.strictEqual(res.destroyed, false, toolName);
+      assert.strictEqual(res.permission.pendingPermissions.length, 0, toolName);
+      const decision = JSON.parse(res.body).hookSpecificOutput.decision;
+      assert.strictEqual(decision.behavior, "allow", toolName);
+      assert.deepStrictEqual(
+        decision.updatedInput.answers,
+        {
+          "Which approach?": "You choose whatever is best.",
+        },
+        toolName
+      );
+      assert.deepStrictEqual(
+        decision.updatedInput.questions,
+        [{
+          question: "Which approach?",
+          options: [{ label: "A" }, { label: "B" }],
+        }],
+        toolName
+      );
+    }
   });
 
   it("releases a deferred decision entry when the blocking hook client disconnects", async () => {
@@ -1103,7 +1145,13 @@ describe("server-route-permission POST", () => {
   it("hands every known CodeBuddy decision signal back before creating a Claude-shaped entry", async () => {
     for (const [toolName, toolInput] of [
       ["AskUserQuestion", { questions: [{ question: "Continue?" }] }],
+      ["askuserquestion", { questions: [{ question: "Continue?" }] }],
+      ["AskUserQuestionTool", { questions: [{ question: "Continue?" }] }],
       ["ExitPlanMode", { plan: "ship it" }],
+      ["exitplanmode", { plan: "ship it" }],
+      ["ExitPlanModeTool", { plan: "ship it" }],
+      ["clarify", { questions: [{ question: "Continue?" }] }],
+      ["clarifyTool", { questions: [{ question: "Continue?" }] }],
     ]) {
       const res = await callPermissionPost(JSON.stringify({
         agent_id: "codebuddy",

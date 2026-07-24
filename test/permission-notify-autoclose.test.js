@@ -691,6 +691,34 @@ describe("interactive permission bubble fatal fallback", () => {
     assert.strictEqual(harness.api.pendingPermissions.length, 0);
     assert.strictEqual(response.destroyed, true);
   });
+
+  it("dismisses a passive notification safely when its renderer process exits", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    mock.timers.setTime(100_000);
+    const harness = createPermissionHarness();
+    harness.api.showKimiNotifyBubble({
+      sessionId: "kimi-renderer-gone",
+      toolName: "shell",
+      permissionAction: "execute",
+    });
+    assert.strictEqual(harness.api.pendingPermissions.length, 1);
+
+    const entry = harness.api.pendingPermissions[0];
+    const bubble = entry.bubble;
+    bubble.webContents.isDestroyed = () => true;
+    bubble.webContents.send = () => {
+      throw new Error("send must not target destroyed webContents");
+    };
+
+    assert.doesNotThrow(() => {
+      bubble._renderGoneHandler({}, { reason: "crashed" });
+      bubble._renderGoneHandler({}, { reason: "crashed" });
+    });
+    assert.strictEqual(harness.api.pendingPermissions.length, 0);
+
+    mock.timers.tick(250);
+    assert.strictEqual(bubble.destroyed, true);
+  });
 });
 
 // Joint state ↔ permission coverage (codex review request): drive the REAL

@@ -48,6 +48,78 @@ describe("permission automation interaction classifier", () => {
     assert.strictEqual(interaction.capabilities.answerQuestions, true);
   });
 
+  it("normalizes reviewed decision names across casing and Tool suffix aliases", () => {
+    const cases = [
+      {
+        agentId: "claude-code",
+        toolNames: ["AskUserQuestion", "askuserquestion", "AskUserQuestionTool"],
+        intent: INTERACTION_INTENT.HUMAN_QUESTION,
+        unattendedAction: AUTOMATION_ACTION.AUTO_ANSWER,
+      },
+      {
+        agentId: "claude-code",
+        toolNames: ["ExitPlanMode", "exitplanmode", "ExitPlanModeTool"],
+        intent: INTERACTION_INTENT.PLAN_REVIEW,
+        unattendedAction: AUTOMATION_ACTION.AUTO_ALLOW,
+      },
+      {
+        agentId: "hermes",
+        toolNames: ["clarify", "CLARIFY", "clarifyTool"],
+        intent: INTERACTION_INTENT.HUMAN_QUESTION,
+        unattendedAction: AUTOMATION_ACTION.AUTO_ANSWER,
+      },
+    ];
+
+    for (const testCase of cases) {
+      for (const toolName of testCase.toolNames) {
+        const interaction = classifyPermissionInteraction({
+          agentId: testCase.agentId,
+          toolName,
+        });
+        assert.strictEqual(interaction.intent, testCase.intent, `${testCase.agentId}:${toolName}`);
+        assert.strictEqual(
+          evaluate(PERMISSION_AUTOMATION_MODE.AUTO_TOOLS, interaction),
+          AUTOMATION_ACTION.DEFER,
+          `${testCase.agentId}:${toolName}:auto-tools`
+        );
+        assert.strictEqual(
+          evaluate(PERMISSION_AUTOMATION_MODE.UNATTENDED, interaction),
+          testCase.unattendedAction,
+          `${testCase.agentId}:${toolName}:unattended`
+        );
+      }
+    }
+  });
+
+  it("never lets a reviewed decision alias fall through as an ordinary tool approval", () => {
+    const aliases = [
+      "askuserquestion",
+      "AskUserQuestionTool",
+      "exitplanmode",
+      "ExitPlanModeTool",
+      "CLARIFY",
+      "clarifyTool",
+    ];
+    for (const agentId of [
+      "claude-code",
+      "codebuddy",
+      "codex",
+      "qwen-code",
+      "copilot-cli",
+      "hermes",
+      "opencode",
+    ]) {
+      for (const toolName of aliases) {
+        const interaction = classifyPermissionInteraction({ agentId, toolName });
+        assert.notStrictEqual(
+          interaction.intent,
+          INTERACTION_INTENT.TOOL_APPROVAL,
+          `${agentId}:${toolName}`
+        );
+      }
+    }
+  });
+
   it("keeps Codex native user input and passive notifications out of automation", () => {
     const nativeQuestion = classifyPermissionInteraction({
       agentId: "codex",
@@ -67,7 +139,16 @@ describe("permission automation interaction classifier", () => {
   });
 
   it("makes CodeBuddy decision interactions non-automatable", () => {
-    for (const toolName of ["AskUserQuestion", "ExitPlanMode"]) {
+    for (const toolName of [
+      "AskUserQuestion",
+      "askuserquestion",
+      "AskUserQuestionTool",
+      "ExitPlanMode",
+      "exitplanmode",
+      "ExitPlanModeTool",
+      "clarify",
+      "clarifyTool",
+    ]) {
       const interaction = classifyPermissionInteraction({
         agentId: "codebuddy",
         toolName,
@@ -88,14 +169,16 @@ describe("permission automation interaction classifier", () => {
       "hermes",
       "opencode",
     ]) {
-      const interaction = classifyPermissionInteraction({
-        agentId,
-        toolName: "ExitPlanMode",
-      });
-      assert.strictEqual(interaction.intent, INTERACTION_INTENT.UNKNOWN, agentId);
-      assert.strictEqual(interaction.capabilities.planFeedback, false, agentId);
-      assert.strictEqual(interaction.automationEligibility.autoTools, false, agentId);
-      assert.strictEqual(interaction.automationEligibility.unattended, false, agentId);
+      for (const toolName of ["ExitPlanMode", "exitplanmode", "ExitPlanModeTool"]) {
+        const interaction = classifyPermissionInteraction({
+          agentId,
+          toolName,
+        });
+        assert.strictEqual(interaction.intent, INTERACTION_INTENT.UNKNOWN, `${agentId}:${toolName}`);
+        assert.strictEqual(interaction.capabilities.planFeedback, false, `${agentId}:${toolName}`);
+        assert.strictEqual(interaction.automationEligibility.autoTools, false, `${agentId}:${toolName}`);
+        assert.strictEqual(interaction.automationEligibility.unattended, false, `${agentId}:${toolName}`);
+      }
     }
   });
 

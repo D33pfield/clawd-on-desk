@@ -908,6 +908,11 @@ function showPermissionBubble(permEntry) {
     }
     permEntry._bubbleFatalHandled = true;
     handleBubbleRendererGone(bub);
+    if (isPassiveNotifyEntry(permEntry)) {
+      permLog(`passive notification bubble failed; dismissing: ${reason} tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
+      dismissPassiveNotify(permEntry, `bubble-failed:${reason}`);
+      return true;
+    }
     permLog(`permission bubble failed; returning no-decision: ${reason} tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
     resolvePermissionEntry(permEntry, "no-decision", reason);
     return true;
@@ -1436,6 +1441,58 @@ function cancelRemoteApproval(permEntry, options = {}) {
 // path and the bypass gate in server-route-permission.js). For opencode the
 // destroy is a no-op behind the writableEnded guard: its fire-and-forget POST
 // was 200-ACKed on arrival and the native TUI prompt owns the request.
+// All permission cleanup paths share the same defensive renderer teardown.
+// A renderer crash may leave the BrowserWindow alive while webContents is
+// already gone, so never assume either object can still receive IPC.
+function hidePermissionBubbleSafely(permEntry) {
+  const bub = permEntry && permEntry.bubble;
+  if (!bub) return false;
+
+  let bubbleDestroyed = false;
+  try {
+    bubbleDestroyed = typeof bub.isDestroyed === "function" && bub.isDestroyed();
+  } catch (err) {
+    permLog(`permission bubble state check failed: ${err && err.message ? err.message : String(err)}`);
+    bubbleDestroyed = true;
+  }
+  if (bubbleDestroyed) return false;
+
+  try {
+    const bubbleContents = bub.webContents;
+    if (
+      bubbleContents
+      && typeof bubbleContents.send === "function"
+      && (
+        typeof bubbleContents.isDestroyed !== "function"
+        || !bubbleContents.isDestroyed()
+      )
+    ) {
+      bubbleContents.send("permission-hide");
+    }
+  } catch (err) {
+    permLog(`permission bubble hide failed: ${err && err.message ? err.message : String(err)}`);
+  }
+
+  if (permEntry.hideTimer) clearTimeout(permEntry.hideTimer);
+  permEntry.hideTimer = setTimeout(() => {
+    try {
+      if (
+        bub
+        && (
+          typeof bub.isDestroyed !== "function"
+          || !bub.isDestroyed()
+        )
+        && typeof bub.destroy === "function"
+      ) {
+        bub.destroy();
+      }
+    } catch (err) {
+      permLog(`permission bubble destroy failed: ${err && err.message ? err.message : String(err)}`);
+    }
+  }, 250);
+  return true;
+}
+
 // A remote-only entry (bubbles disabled, decided over Feishu/Telegram) has no
 // desktop bubble to drop — route it through the shared no-decision path.
 function dismissPermissionForTerminal(perm) {
@@ -1469,12 +1526,7 @@ function dismissPermissionForTerminal(perm) {
   if (res && !res.writableEnded && !res.destroyed) {
     try { res.destroy(); } catch {}
   }
-  if (perm.bubble && !perm.bubble.isDestroyed()) {
-    perm.bubble.webContents.send("permission-hide");
-    if (perm.hideTimer) clearTimeout(perm.hideTimer);
-    const bub = perm.bubble;
-    perm.hideTimer = setTimeout(() => { if (!bub.isDestroyed()) bub.destroy(); }, 250);
-  }
+  hidePermissionBubbleSafely(perm);
   repositionBubbles();
   repositionDependentBubbles();
   syncPermissionShortcuts();
@@ -1780,31 +1832,11 @@ function applyPermissionSuggestion(perm, index, options = {}) {
     permEntry.autoCloseTimer = null;
   }
 
-  const { res, abortHandler, bubble: bub } = permEntry;
+  const { res, abortHandler } = permEntry;
   if (res && abortHandler) res.removeListener("close", abortHandler);
 
   // Hide this bubble (fade out + destroy)
-  if (bub && !bub.isDestroyed()) {
-    try {
-      const bubbleContents = bub.webContents;
-      if (
-        bubbleContents
-        && typeof bubbleContents.send === "function"
-        && (
-          typeof bubbleContents.isDestroyed !== "function"
-          || !bubbleContents.isDestroyed()
-        )
-      ) {
-        bubbleContents.send("permission-hide");
-      }
-    } catch (err) {
-      permLog(`permission bubble hide failed: ${err && err.message ? err.message : String(err)}`);
-    }
-    if (permEntry.hideTimer) clearTimeout(permEntry.hideTimer);
-    permEntry.hideTimer = setTimeout(() => {
-      if (bub && !bub.isDestroyed()) bub.destroy();
-    }, 250);
-  }
+  hidePermissionBubbleSafely(permEntry);
 
   // Reposition remaining bubbles to fill the gap
   repositionBubbles();
@@ -2550,11 +2582,7 @@ function dismissPassiveNotify(permEntry, reason = "unknown") {
   notifyPermissionsChanged("passive-dismissed");
   if (permEntry.autoExpireTimer) clearTimeout(permEntry.autoExpireTimer);
   if (permEntry.hideTimer) clearTimeout(permEntry.hideTimer);
-  if (permEntry.bubble && !permEntry.bubble.isDestroyed()) {
-    permEntry.bubble.webContents.send("permission-hide");
-    const bub = permEntry.bubble;
-    setTimeout(() => { if (!bub.isDestroyed()) bub.destroy(); }, 250);
-  }
+  hidePermissionBubbleSafely(permEntry);
   repositionBubbles();
   repositionDependentBubbles();
   syncPermissionShortcuts();
@@ -2613,14 +2641,7 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
   if (perm.abortHandler && perm.res) {
     try { perm.res.removeListener("close", perm.abortHandler); } catch {}
   }
-  if (perm.hideTimer) clearTimeout(perm.hideTimer);
-  if (perm.bubble && !perm.bubble.isDestroyed()) {
-    try { perm.bubble.webContents.send("permission-hide"); } catch {}
-    const bub = perm.bubble;
-    perm.hideTimer = setTimeout(() => {
-      if (bub && !bub.isDestroyed()) bub.destroy();
-    }, 250);
-  }
+  hidePermissionBubbleSafely(perm);
   // Do not answer approval requests on the user's behalf. Dropping the UI
   // means Codex/Antigravity receive no decision, CC/CodeBuddy fall back
   // via socket close, and opencode falls back by receiving no bridge reply.
