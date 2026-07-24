@@ -574,6 +574,10 @@ describe("interactive permission bubble fatal fallback", () => {
   afterEach(() => {
     mock.timers.reset();
     delete require.cache[PERMISSION_MODULE_PATH];
+    for (const logPath of tempLogPaths) {
+      try { fs.unlinkSync(logPath); } catch {}
+    }
+    tempLogPaths.clear();
   });
 
   function makeBlockingEntry() {
@@ -695,7 +699,8 @@ describe("interactive permission bubble fatal fallback", () => {
   it("dismisses a passive notification safely when its renderer process exits", () => {
     mock.timers.enable({ apis: ["setTimeout", "Date"] });
     mock.timers.setTime(100_000);
-    const harness = createPermissionHarness();
+    const logPath = createTempLogPath();
+    const harness = createPermissionHarness({ logPath });
     harness.api.showKimiNotifyBubble({
       sessionId: "kimi-renderer-gone",
       toolName: "shell",
@@ -715,6 +720,8 @@ describe("interactive permission bubble fatal fallback", () => {
       bubble._renderGoneHandler({}, { reason: "crashed" });
     });
     assert.strictEqual(harness.api.pendingPermissions.length, 0);
+    const logText = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "";
+    assert.doesNotMatch(logText, /permission bubble hide failed/);
 
     mock.timers.tick(250);
     assert.strictEqual(bubble.destroyed, true);

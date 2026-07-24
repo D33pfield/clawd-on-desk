@@ -97,8 +97,6 @@ describe("permission automation interaction classifier", () => {
       "AskUserQuestionTool",
       "exitplanmode",
       "ExitPlanModeTool",
-      "CLARIFY",
-      "clarifyTool",
     ];
     for (const agentId of [
       "claude-code",
@@ -115,6 +113,50 @@ describe("permission automation interaction classifier", () => {
           interaction.intent,
           INTERACTION_INTENT.TOOL_APPROVAL,
           `${agentId}:${toolName}`
+        );
+      }
+    }
+  });
+
+  it("keeps Hermes-only clarify names on each non-Hermes agent's ordinary compatibility path", () => {
+    const cases = [
+      {
+        agentId: "claude-code",
+        intent: INTERACTION_INTENT.UNKNOWN,
+        autoToolsAction: AUTOMATION_ACTION.DEFER,
+        unattendedAction: AUTOMATION_ACTION.AUTO_ALLOW,
+      },
+      {
+        agentId: "qwen-code",
+        intent: INTERACTION_INTENT.UNKNOWN,
+        autoToolsAction: AUTOMATION_ACTION.DEFER,
+        unattendedAction: AUTOMATION_ACTION.AUTO_ALLOW,
+      },
+      ...["codebuddy", "codex", "copilot-cli", "opencode"].map((agentId) => ({
+        agentId,
+        intent: INTERACTION_INTENT.TOOL_APPROVAL,
+        autoToolsAction: AUTOMATION_ACTION.AUTO_ALLOW,
+        unattendedAction: AUTOMATION_ACTION.AUTO_ALLOW,
+      })),
+    ];
+
+    for (const testCase of cases) {
+      for (const toolName of ["clarify", "CLARIFY", "clarifyTool", "ClarifyTool"]) {
+        const interaction = classifyPermissionInteraction({
+          agentId: testCase.agentId,
+          toolName,
+        });
+        assert.strictEqual(interaction.intent, testCase.intent, `${testCase.agentId}:${toolName}`);
+        assert.strictEqual(interaction.capabilities.allowDeny, true, `${testCase.agentId}:${toolName}`);
+        assert.strictEqual(
+          evaluate(PERMISSION_AUTOMATION_MODE.AUTO_TOOLS, interaction),
+          testCase.autoToolsAction,
+          `${testCase.agentId}:${toolName}:auto-tools`
+        );
+        assert.strictEqual(
+          evaluate(PERMISSION_AUTOMATION_MODE.UNATTENDED, interaction),
+          testCase.unattendedAction,
+          `${testCase.agentId}:${toolName}:unattended`
         );
       }
     }
@@ -146,8 +188,6 @@ describe("permission automation interaction classifier", () => {
       "ExitPlanMode",
       "exitplanmode",
       "ExitPlanModeTool",
-      "clarify",
-      "clarifyTool",
     ]) {
       const interaction = classifyPermissionInteraction({
         agentId: "codebuddy",

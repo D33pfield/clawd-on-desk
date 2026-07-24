@@ -225,10 +225,12 @@ function classifyPermissionInteraction({
   // adapters may vary casing), so recognize only these reviewed aliases before
   // any generic tool/UNKNOWN compatibility path can automate them.
   const decisionToolKind = getDecisionToolKind(trustedToolName);
-  if (
-    decisionToolKind === DECISION_TOOL_KIND.ASK_USER_QUESTION
-    || decisionToolKind === DECISION_TOOL_KIND.CLARIFY
-  ) {
+  const isQuestion = decisionToolKind === DECISION_TOOL_KIND.ASK_USER_QUESTION
+    || (
+      decisionToolKind === DECISION_TOOL_KIND.CLARIFY
+      && trustedAgentId === "hermes"
+    );
+  if (isQuestion) {
     const canAnswerQuestions = (
       decisionToolKind === DECISION_TOOL_KIND.ASK_USER_QUESTION
       && (trustedAgentId === "claude-code" || trustedAgentId === "hermes")

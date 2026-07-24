@@ -277,25 +277,33 @@ describe("server-route-permission POST", () => {
     }
   });
 
-  it("runs route → classification → auto-tools chokepoint → CodeBuddy HTTP allow end to end", async () => {
-    const res = await callPermissionPostThroughAutomation(JSON.stringify({
-      agent_id: "codebuddy",
-      session_id: "codebuddy:auto-tools",
-      tool_name: "Bash",
-      tool_input: { command: "npm test" },
-    }), "auto-tools");
+  it("runs ordinary CodeBuddy tools, including Hermes-only clarify names, through auto-tools end to end", async () => {
+    for (const [toolName, toolInput] of [
+      ["Bash", { command: "npm test" }],
+      ["clarify", { topic: "release notes" }],
+      ["clarifyTool", { topic: "release notes" }],
+    ]) {
+      const res = await callPermissionPostThroughAutomation(JSON.stringify({
+        agent_id: "codebuddy",
+        session_id: `codebuddy:auto-tools:${toolName}`,
+        tool_name: toolName,
+        tool_input: toolInput,
+      }), "auto-tools");
 
-    assert.strictEqual(res.statusCode, 200);
-    assert.strictEqual(res.permission.pendingPermissions.length, 0);
-    assert.strictEqual(res.destroyed, false);
-    assert.strictEqual(
-      JSON.parse(res.body).hookSpecificOutput.decision.behavior,
-      "allow"
-    );
-    assert.deepStrictEqual(
-      res.recorder.map((item) => item.outcome).filter(Boolean),
-      ["accepted"]
-    );
+      assert.strictEqual(res.statusCode, 200, toolName);
+      assert.strictEqual(res.permission.pendingPermissions.length, 0, toolName);
+      assert.strictEqual(res.destroyed, false, toolName);
+      assert.strictEqual(
+        JSON.parse(res.body).hookSpecificOutput.decision.behavior,
+        "allow",
+        toolName
+      );
+      assert.deepStrictEqual(
+        res.recorder.map((item) => item.outcome).filter(Boolean),
+        ["accepted"],
+        toolName
+      );
+    }
   });
 
   it("runs an unreviewed non-empty Claude tool through unattended compatibility without weakening auto-tools", async () => {
@@ -1150,8 +1158,6 @@ describe("server-route-permission POST", () => {
       ["ExitPlanMode", { plan: "ship it" }],
       ["exitplanmode", { plan: "ship it" }],
       ["ExitPlanModeTool", { plan: "ship it" }],
-      ["clarify", { questions: [{ question: "Continue?" }] }],
-      ["clarifyTool", { questions: [{ question: "Continue?" }] }],
     ]) {
       const res = await callPermissionPost(JSON.stringify({
         agent_id: "codebuddy",
