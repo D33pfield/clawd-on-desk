@@ -1231,7 +1231,19 @@ describe("prefs.migrate v11 → v12 (showDock default off for fresh installs)", 
   });
 });
 
-describe("prefs ephemeral fields (auto-pilot does not persist)", () => {
+describe("prefs permission automation safe startup persistence", () => {
+  it("defaults to off, preserves auto-tools, and downgrades unattended", () => {
+    assert.strictEqual(prefs.getDefaults().permissionAutomationMode, "off");
+    assert.strictEqual(
+      prefs.validate({ permissionAutomationMode: "auto-tools" }).permissionAutomationMode,
+      "auto-tools"
+    );
+    assert.strictEqual(
+      prefs.validate({ permissionAutomationMode: "unattended" }).permissionAutomationMode,
+      "auto-tools"
+    );
+  });
+
   it("validate() never restores a persisted autoApproveAllPermissions=true", () => {
     assert.strictEqual(prefs.validate({ autoApproveAllPermissions: true }).autoApproveAllPermissions, false);
   });
@@ -1244,6 +1256,24 @@ describe("prefs ephemeral fields (auto-pilot does not persist)", () => {
     assert.strictEqual(onDisk.lang, "zh", "non-ephemeral fields still persist");
   });
 
+  it("save() persists off and auto-tools as their matching startup modes", () => {
+    for (const mode of ["off", "auto-tools"]) {
+      const p = makeTempPath();
+      prefs.save(p, { ...prefs.getDefaults(), permissionAutomationMode: mode, lang: "zh" });
+      const onDisk = JSON.parse(fs.readFileSync(p, "utf8"));
+      assert.strictEqual(onDisk.permissionAutomationMode, mode);
+      assert.strictEqual(prefs.load(p).snapshot.permissionAutomationMode, mode);
+    }
+  });
+
+  it("save() persists unattended as the safe auto-tools startup mode", () => {
+    const p = makeTempPath();
+    prefs.save(p, { ...prefs.getDefaults(), permissionAutomationMode: "unattended", lang: "zh" });
+    const onDisk = JSON.parse(fs.readFileSync(p, "utf8"));
+    assert.strictEqual(onDisk.permissionAutomationMode, "auto-tools");
+    assert.strictEqual(prefs.load(p).snapshot.permissionAutomationMode, "auto-tools");
+  });
+
   it("survives a quit/relaunch as OFF even after being enabled mid-session", () => {
     const p = makeTempPath();
     // Session 1: user turned auto-pilot on, then the app persisted prefs.
@@ -1253,10 +1283,36 @@ describe("prefs ephemeral fields (auto-pilot does not persist)", () => {
     assert.strictEqual(snapshot.autoApproveAllPermissions, false, "auto-pilot must be off on relaunch");
   });
 
+  it("persists each automatic-mode warning acknowledgement independently", () => {
+    const p = makeTempPath();
+    prefs.save(p, {
+      ...prefs.getDefaults(),
+      permissionAutomationMode: "auto-tools",
+      permissionAutomationAutoToolsWarningDismissed: true,
+      permissionAutomationUnattendedWarningDismissed: false,
+    });
+    const { snapshot } = prefs.load(p);
+    assert.strictEqual(snapshot.permissionAutomationMode, "auto-tools");
+    assert.strictEqual(snapshot.permissionAutomationAutoToolsWarningDismissed, true);
+    assert.strictEqual(snapshot.permissionAutomationUnattendedWarningDismissed, false);
+  });
+
   it("load() ignores a hand-edited autoApproveAllPermissions:true in the file", () => {
     const p = makeTempPath();
     fs.writeFileSync(p, JSON.stringify({ version: prefs.CURRENT_VERSION, autoApproveAllPermissions: true }));
     const { snapshot } = prefs.load(p);
+    assert.strictEqual(snapshot.autoApproveAllPermissions, false);
+  });
+
+  it("load() safely downgrades a hand-edited unattended mode and ignores old true", () => {
+    const p = makeTempPath();
+    fs.writeFileSync(p, JSON.stringify({
+      version: prefs.CURRENT_VERSION,
+      permissionAutomationMode: "unattended",
+      autoApproveAllPermissions: true,
+    }));
+    const { snapshot } = prefs.load(p);
+    assert.strictEqual(snapshot.permissionAutomationMode, "auto-tools");
     assert.strictEqual(snapshot.autoApproveAllPermissions, false);
   });
 });

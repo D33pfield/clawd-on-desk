@@ -275,9 +275,8 @@ function buildPermissionBody(payload, resolve) {
   const description = typeof rawToolInput.description === "string" && rawToolInput.description.trim()
     ? rawToolInput.description.trim().slice(0, 500)
     : null;
-  const toolName = typeof payload.tool_name === "string" && payload.tool_name
-    ? payload.tool_name
-    : "Unknown";
+  const toolName = typeof payload.tool_name === "string" ? payload.tool_name.trim() : "";
+  if (!toolName || /^unknown$/i.test(toolName)) return null;
   const sessionMeta = readFirstSessionMeta(payload.transcript_path);
 
   const body = {

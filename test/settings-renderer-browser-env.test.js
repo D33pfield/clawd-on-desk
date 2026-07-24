@@ -3909,24 +3909,40 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("claudeHooksDisconnectConfirmKeep"));
   });
 
-  it("wires the danger auto-pilot toggle with a confirm modal and red label", () => {
+  it("renders three permission automation modes with two confirmation-gated automatic choices", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
-    // Row is registered with danger:true and routes the enable path through a confirm.
-    assert.ok(generalSource.includes('key: "autoApproveAllPermissions"'));
-    assert.ok(generalSource.includes("danger: true"));
-    assert.ok(generalSource.includes("confirmAutoApproveAll"));
-    assert.ok(generalSource.includes("showAutoApproveAllConfirmModal"));
-    assert.ok(generalSource.includes('{ id: "enable", label: t("autoApproveAllConfirmEnable"), tone: "danger" }'));
-    // buildSwitchRow honors danger by painting the label red.
-    assert.ok(coreSource.includes("row-label-danger"));
-    assert.ok(css.includes(".row-label.row-label-danger"));
-    // Simple title + localized confirm strings exist.
-    assert.ok(i18nSource.includes('rowAutoApproveAll: "Auto-approve all requests"'));
-    assert.ok(i18nSource.includes('rowAutoApproveAll: "自动放行所有请求"'));
-    assert.ok(i18nSource.includes("autoApproveAllConfirmTitle"));
+    assert.ok(generalSource.includes("PERMISSION_AUTOMATION_OPTIONS"));
+    assert.ok(generalSource.includes('{ id: "off", labelKey: "permissionAutomationOff" }'));
+    assert.ok(generalSource.includes('{ id: "auto-tools", labelKey: "permissionAutomationAutoTools" }'));
+    assert.ok(generalSource.includes('{ id: "unattended", labelKey: "permissionAutomationUnattended" }'));
+    assert.ok(generalSource.includes('window.settingsAPI.command("setPermissionAutomationMode"'));
+    assert.ok(generalSource.includes("confirmed: true"));
+    assert.ok(generalSource.includes("showPermissionAutomationConfirmModal"));
+    assert.ok(generalSource.includes("permissionAutomationUnattendedConfirmTitle"));
+    assert.ok(generalSource.includes("permissionAutomationAutoToolsWarningDismissed"));
+    assert.ok(generalSource.includes("permissionAutomationUnattendedWarningDismissed"));
+    assert.ok(generalSource.includes("permissionAutomationAutoToolsDontShowAgain"));
+    assert.ok(generalSource.includes("permissionAutomationUnattendedDontShowAgain"));
+    assert.ok(generalSource.includes("suppressFutureConfirmation: result.checkboxChecked === true"));
+    assert.ok(generalSource.includes("isPermissionAutomationWarningDismissed(mode)"));
+    assert.ok(i18nSource.includes("permissionAutomationAutoToolsDontShowAgain"));
+    assert.ok(i18nSource.includes("permissionAutomationUnattendedDontShowAgain"));
+    assert.ok(css.includes(".settings-confirm-checkbox"));
+    assert.ok(coreSource.includes("checkboxLabel = \"\""));
+    assert.ok(coreSource.includes('checkboxInput.type = "checkbox"'));
+    assert.ok(coreSource.includes("checkboxChecked: !!(checkboxInput && checkboxInput.checked)"));
+    assert.ok(css.includes("grid-template-columns: repeat(3, minmax(0, 1fr))"));
+    assert.ok(generalSource.includes('segmented.setAttribute("role", "group")'));
+    assert.ok(generalSource.includes('segmented.setAttribute("aria-label", t("rowPermissionAutomation"))'));
+    assert.ok(generalSource.includes('btn.setAttribute("aria-pressed", selected ? "true" : "false")'));
+    assert.ok(i18nSource.includes('rowPermissionAutomation: "Permission request handling"'));
+    assert.ok(i18nSource.includes('rowPermissionAutomation: "权限请求处理"'));
+    assert.ok(i18nSource.includes("permissionAutomationAutoToolsConfirmTitle"));
+    assert.ok(i18nSource.includes("CodeBuddy"));
+    assert.ok(!generalSource.includes("autoApproveAllPermissions"));
     // Lives in its own Permissions section, not under Bubbles.
     assert.ok(generalSource.includes('t("sectionPermissions")'));
     assert.ok(i18nSource.includes('sectionPermissions: "Permissions"'));

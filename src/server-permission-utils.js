@@ -61,41 +61,97 @@ function normalizePermissionSuggestions(rawSuggestions) {
 }
 
 function normalizeElicitationToolInput(toolInput) {
-  if (!toolInput || typeof toolInput !== "object") return toolInput;
-  if (!Array.isArray(toolInput.questions)) return toolInput;
+  return prepareElicitationToolInput(toolInput).displayInput;
+}
 
-  const questions = toolInput.questions
-    .slice(0, MAX_ELICITATION_QUESTIONS)
-    .map((question) => {
-      if (!question || typeof question !== "object") return null;
-      const options = Array.isArray(question.options)
-        ? question.options
-          .slice(0, MAX_ELICITATION_OPTIONS)
-          .map((option) => {
-            if (!option || typeof option !== "object") return null;
-            return {
-              ...option,
-              label: clampPreviewText(option.label, MAX_ELICITATION_OPTION_LABEL),
-              description: clampPreviewText(option.description, MAX_ELICITATION_OPTION_DESCRIPTION),
-            };
-          })
-          .filter(Boolean)
-        : [];
+// Keep the renderer's bounded display text separate from the protocol payload
+// used to build updatedInput. The wire answer key is the exact upstream
+// question string; putting that string through preview clamping before reply
+// silently changes the key and makes Claude/Hermes discard the answer.
+//
+// Unsupported/ambiguous shapes are not partially rendered. The route hands
+// those requests back to the agent's native UI, because truncating questions
+// or options would let the user approve a different choice set than the agent
+// actually sent.
+function prepareElicitationToolInput(toolInput) {
+  const wireInput = toolInput && typeof toolInput === "object" && !Array.isArray(toolInput)
+    ? toolInput
+    : {};
+  const rawQuestions = Array.isArray(wireInput.questions) ? wireInput.questions : [];
+  if (!rawQuestions.length) {
+    return { displayInput: { questions: [] }, wireInput, canAnswer: false, reason: "no-questions" };
+  }
+  if (rawQuestions.length > MAX_ELICITATION_QUESTIONS) {
+    return { displayInput: { questions: [] }, wireInput, canAnswer: false, reason: "too-many-questions" };
+  }
 
-      const normalized = {
-        ...question,
-        header: clampPreviewText(question.header, MAX_ELICITATION_HEADER),
-        question: clampPreviewText(question.question, MAX_ELICITATION_PROMPT),
-        options,
-      };
-      if (!normalized.question) return null;
-      return normalized;
-    })
-    .filter(Boolean);
+  const answerKeys = new Set();
+  const displayQuestions = new Set();
+  const questions = [];
+  for (let index = 0; index < rawQuestions.length; index++) {
+    const question = rawQuestions[index];
+    if (!question || typeof question !== "object" || Array.isArray(question)) {
+      return { displayInput: { questions: [] }, wireInput, canAnswer: false, reason: "invalid-question" };
+    }
+    const answerKey = typeof question.question === "string" ? question.question : "";
+    if (!answerKey.trim()) {
+      return { displayInput: { questions: [] }, wireInput, canAnswer: false, reason: "missing-answer-key" };
+    }
+    if (answerKeys.has(answerKey)) {
+      return { displayInput: { questions: [] }, wireInput, canAnswer: false, reason: "duplicate-answer-key" };
+    }
+    answerKeys.add(answerKey);
+
+    const rawOptions = Array.isArray(question.options) ? question.options : [];
+    if (rawOptions.length > MAX_ELICITATION_OPTIONS) {
+      return { displayInput: { questions: [] }, wireInput, canAnswer: false, reason: "too-many-options" };
+    }
+    const options = [];
+    const optionAnswerKeys = new Set();
+    for (const option of rawOptions) {
+      if (!option || typeof option !== "object" || Array.isArray(option)) {
+        return { displayInput: { questions: [] }, wireInput, canAnswer: false, reason: "invalid-option" };
+      }
+      const rawLabel = typeof option.label === "string" ? option.label : "";
+      const displayLabel = clampPreviewText(rawLabel, MAX_ELICITATION_OPTION_LABEL);
+      // The renderer returns the displayed label as the answer value. Until
+      // the wire contract carries stable option ids too, never render a label
+      // whose preview normalization would change the upstream answer.
+      if (!displayLabel) {
+        return { displayInput: { questions: [] }, wireInput, canAnswer: false, reason: "missing-option-label" };
+      }
+      if (displayLabel !== rawLabel) {
+        return { displayInput: { questions: [] }, wireInput, canAnswer: false, reason: "unsafe-option-label-preview" };
+      }
+      if (optionAnswerKeys.has(rawLabel)) {
+        return { displayInput: { questions: [] }, wireInput, canAnswer: false, reason: "duplicate-option-label" };
+      }
+      optionAnswerKeys.add(rawLabel);
+      options.push({
+        label: displayLabel,
+        description: clampPreviewText(option.description, MAX_ELICITATION_OPTION_DESCRIPTION),
+      });
+    }
+    const displayQuestion = clampPreviewText(answerKey, MAX_ELICITATION_PROMPT);
+    if (displayQuestions.has(displayQuestion)) {
+      return { displayInput: { questions: [] }, wireInput, canAnswer: false, reason: "duplicate-display-question" };
+    }
+    displayQuestions.add(displayQuestion);
+    questions.push({
+      id: String(index),
+      header: clampPreviewText(question.header, MAX_ELICITATION_HEADER),
+      question: displayQuestion,
+      displayQuestion,
+      multiSelect: question.multiSelect === true,
+      options,
+    });
+  }
 
   return {
-    ...toolInput,
-    questions,
+    displayInput: { questions },
+    wireInput,
+    canAnswer: true,
+    reason: null,
   };
 }
 
@@ -152,8 +208,17 @@ function findPendingPermissionForStateEvent(pendingPermissions, options) {
   const sessionId = typeof options.sessionId === "string" && options.sessionId
     ? options.sessionId
     : "default";
+  const sourceAgentId = typeof options.agentId === "string" && options.agentId
+    ? options.agentId
+    : null;
+  const hasSubagentScope = Object.prototype.hasOwnProperty.call(options, "subagentId");
+  const sourceSubagentId = typeof options.subagentId === "string" && options.subagentId
+    ? options.subagentId
+    : null;
   const sessionPending = pendingPermissions.filter((perm) => (
     perm && perm.res && perm.sessionId === sessionId
+      && (!sourceAgentId || perm.agentId === sourceAgentId)
+      && (!hasSubagentScope || (perm.subagentId || null) === sourceSubagentId)
   ));
   if (!sessionPending.length) return null;
 
@@ -199,6 +264,7 @@ module.exports = {
   clampPreviewText,
   normalizePermissionSuggestions,
   normalizeElicitationToolInput,
+  prepareElicitationToolInput,
   normalizeHookToolUseId,
   normalizeToolMatchValue,
   buildToolInputFingerprint,

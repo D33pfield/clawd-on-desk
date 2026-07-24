@@ -225,9 +225,10 @@ function buildPermissionBody(hookName, payload, resolve, options = {}) {
   const rawToolInput = payload && payload.tool_input && typeof payload.tool_input === "object"
     ? payload.tool_input
     : {};
-  const toolName = payload && typeof payload.tool_name === "string" && payload.tool_name
-    ? payload.tool_name
-    : "Unknown";
+  const toolName = payload && typeof payload.tool_name === "string"
+    ? payload.tool_name.trim()
+    : "";
+  if (!toolName || /^unknown$/i.test(toolName)) return null;
   const body = {
     agent_id: "qwen-code",
     session_id: normalizeQwenSessionId(payload && payload.session_id),

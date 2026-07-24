@@ -13,11 +13,27 @@ const {
   sendStateHealthResponse,
   handleStatePost,
 } = require("../src/server-route-state");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
+const { buildStateBody } = require("../hooks/clawd-hook");
 const { makeSessionKey } = require("../src/session-key");
 const localSessionKey = (rawSessionId) => makeSessionKey({
   profileId: "local",
   rawSessionId,
 });
+
+function makePlanPermission(rawSessionId) {
+  return {
+    res: {},
+    sessionId: localSessionKey(rawSessionId),
+    toolName: "ExitPlanMode",
+    agentId: "claude-code",
+    subagentId: null,
+    interaction: classifyPermissionInteraction({
+      agentId: "claude-code",
+      toolName: "ExitPlanMode",
+    }),
+  };
+}
 
 function makeReq(body) {
   const req = new EventEmitter();
@@ -63,6 +79,7 @@ function callStatePost(body, overrides = {}) {
         working: "x.svg",
         attention: "x.svg",
         notification: "x.svg",
+        sleeping: "x.svg",
         "mini-idle": "x.svg",
       },
       pendingPermissions: [],
@@ -113,6 +130,44 @@ describe("server-route-state health", () => {
 });
 
 describe("server-route-state POST", () => {
+  it("settles only the matching Claude subagent decision from the real hook body", async () => {
+    const matching = {
+      ...makePlanPermission("subagent-session"),
+      subagentId: "agent-child-a",
+    };
+    const sibling = {
+      ...makePlanPermission("subagent-session"),
+      subagentId: "agent-child-b",
+    };
+    const body = buildStateBody(
+      "SessionEnd",
+      {
+        session_id: "subagent-session",
+        agent_id: "agent-child-a",
+        agent_type: "Explore",
+      },
+      () => ({
+        stablePid: null,
+        agentPid: null,
+        detectedEditor: null,
+        pidChain: [],
+      })
+    );
+
+    const res = await callStatePost(JSON.stringify(body), {
+      ctx: { pendingPermissions: [matching, sibling] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(
+      res.calls.resolved.map(({ perm, behavior }) => ({ perm, behavior })),
+      [{ perm: matching, behavior: "no-decision" }]
+    );
+    const updateOptions = res.calls.updateSession[0][3];
+    assert.strictEqual(updateOptions.subagentId, "agent-child-a");
+    assert.strictEqual(updateOptions.subagentType, "Explore");
+  });
+
   it("uses trusted profile scope for identical remote raw ids, host labels, quota, and user-input actions", async () => {
     const rawSessionId = "shared-raw-id";
     const postFor = (profileId) => callStatePost(JSON.stringify({
@@ -1152,7 +1207,7 @@ describe("server-route-state wt_hwnd sampling (#627 residual)", () => {
 
 describe("server-route-state ExitPlanMode stale sweep", () => {
   it("clears stale ExitPlanMode on UserPromptSubmit for same session", async () => {
-    const stalePerm = { res: {}, sessionId: localSessionKey("sid"), toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1169,7 +1224,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("does NOT clear ExitPlanMode for a different session", async () => {
-    const stalePerm = { res: {}, sessionId: localSessionKey("other-sid"), toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("other-sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1183,7 +1238,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("does NOT trigger sweep on PreToolUse(ExitPlanMode)", async () => {
-    const stalePerm = { res: {}, sessionId: localSessionKey("sid"), toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1198,7 +1253,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("triggers sweep on PreToolUse with a different tool", async () => {
-    const stalePerm = { res: {}, sessionId: localSessionKey("sid"), toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1214,7 +1269,14 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("does NOT clear non-ExitPlanMode pending permissions", async () => {
-    const otherPerm = { res: {}, sessionId: localSessionKey("sid"), toolName: "Bash" };
+    const otherPerm = {
+      res: {},
+      sessionId: localSessionKey("sid"),
+      toolName: "Bash",
+      agentId: "claude-code",
+      subagentId: null,
+      interaction: classifyPermissionInteraction({ agentId: "claude-code", toolName: "Bash" }),
+    };
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1228,7 +1290,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("skips entries with no res (already cleaned up)", async () => {
-    const stalePerm = { res: null, sessionId: localSessionKey("sid"), toolName: "ExitPlanMode" };
+    const stalePerm = { ...makePlanPermission("sid"), res: null };
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1242,7 +1304,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("clears stale ExitPlanMode on PostToolUse(ExitPlanMode) as fallback", async () => {
-    const stalePerm = { res: {}, sessionId: localSessionKey("sid"), toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1256,5 +1318,33 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
     assert.strictEqual(res.calls.resolved.length, 1);
     assert.strictEqual(res.calls.resolved[0].perm, stalePerm);
     assert.strictEqual(res.calls.resolved[0].message, "User answered in terminal");
+  });
+
+  it("does not sweep a sibling decision after an exact decision match", async () => {
+    const exact = makePlanPermission("sid");
+    exact.toolUseId = "tool-exact";
+    const sibling = {
+      ...makePlanPermission("sid"),
+      toolName: "AskUserQuestion",
+      interaction: classifyPermissionInteraction({
+        agentId: "claude-code",
+        toolName: "AskUserQuestion",
+      }),
+    };
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "PostToolUse",
+      tool_name: "ExitPlanMode",
+      tool_use_id: "tool-exact",
+    }), {
+      ctx: { pendingPermissions: [exact, sibling] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(
+      res.calls.resolved.map(({ perm }) => perm),
+      [exact]
+    );
   });
 });

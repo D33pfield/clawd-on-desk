@@ -1456,6 +1456,24 @@ html, body {
   gap: 0;
   overflow: hidden;
 }
+
+.permission-automation-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.permission-automation-row .row-control {
+  width: 100%;
+}
+.permission-automation-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: 100%;
+}
+.permission-automation-segmented button {
+  white-space: nowrap;
+  padding-inline: 9px;
+}
 .codex-permission-mode-segmented::before {
   content: "";
   position: absolute;
@@ -2424,6 +2442,20 @@ html, body {
   color: var(--text-secondary);
   line-height: 1.55;
   font-size: 13px;
+}
+.settings-confirm-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+.settings-confirm-checkbox input {
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
 }
 .settings-confirm-actions {
   display: grid;

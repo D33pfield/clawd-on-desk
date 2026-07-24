@@ -121,6 +121,16 @@ function familyPayload(overrides = {}) {
     familyAlways: ["bash"],
     familyPatterns: [],
     suggestions: [],
+    interaction: {
+      intent: "tool-approval",
+      automationEligibility: { autoTools: true, unattended: true },
+      capabilities: {
+        allowDeny: true,
+        answerQuestions: false,
+        planFeedback: false,
+        nativeFallback: true,
+      },
+    },
     ...overrides,
   };
 }

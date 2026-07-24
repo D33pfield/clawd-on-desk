@@ -16,6 +16,7 @@ const fs = require("fs");
 const path = require("path");
 
 const initPermission = require("../src/permission");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 
 function makeCtx(overrides = {}) {
   return {
@@ -70,6 +71,10 @@ function buildPayload(entryOverrides) {
     createdAt: Date.now(),
     ...entryOverrides,
   };
+  permEntry.interaction = permEntry.interaction || classifyPermissionInteraction({
+    agentId: permEntry.agentId,
+    toolName: permEntry.toolName,
+  });
   return perm.buildPermissionBubblePayload(permEntry);
 }
 
@@ -112,7 +117,7 @@ describe("bubble-renderer family contract (static)", () => {
   // (detail chain, pill, Always wiring) fails a specific assertion instead of
   // surviving a loose includes() check.
   function familyBranch() {
-    const start = source.indexOf("if (data.familyAgentId) {");
+    const start = source.indexOf('if (data.familyAgentId && interactionIntent === "tool-approval") {');
     assert.notStrictEqual(start, -1, "family branch not found");
     const end = source.indexOf("revealCard();", start);
     assert.notStrictEqual(end, -1, "family branch end not found");

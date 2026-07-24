@@ -16,6 +16,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const initPermission = require("../src/permission");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 
 function createMockResponse() {
   const captured = {
@@ -109,6 +110,35 @@ function makePermEntry(overrides = {}) {
 }
 
 describe("permission autoclose: no-decision dismiss semantics", () => {
+  it("never arms decision timers and clears any stale timer during policy refresh", () => {
+    const ctx = makeCtx({
+      getBubblePolicy: () => ({ enabled: true, autoCloseMs: 60000 }),
+    });
+    const api = initPermission(ctx);
+    const tool = makePermEntry({
+      agentId: "claude-code",
+      createdAt: Date.now(),
+      interaction: classifyPermissionInteraction({ agentId: "claude-code", toolName: "Bash" }),
+    });
+    const question = makePermEntry({
+      agentId: "claude-code",
+      toolName: "AskUserQuestion",
+      createdAt: Date.now(),
+      interaction: classifyPermissionInteraction({
+        agentId: "claude-code",
+        toolName: "AskUserQuestion",
+      }),
+    });
+    question.autoCloseTimer = setTimeout(() => {}, 60000);
+    api.pendingPermissions.push(tool, question);
+
+    api.refreshPermissionAutoCloseForPolicy();
+
+    assert.ok(tool.autoCloseTimer, "ordinary tool keeps the configured permission timer");
+    assert.strictEqual(question.autoCloseTimer, null, "decision timer is cleared and never re-armed");
+    api.cleanup();
+  });
+
   it("CC default branch destroys the socket without sending a decision", () => {
     const ctx = makeCtx();
     const { resolvePermissionEntry, pendingPermissions } = initPermission(ctx);

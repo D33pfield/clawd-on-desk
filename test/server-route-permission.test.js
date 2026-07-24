@@ -17,10 +17,19 @@ const {
   shouldBypassCopilotBubble,
   shouldBypassFamilyBubble,
 } = require("../src/server-route-permission");
+const {
+  INTERACTION_INTENT,
+  classifyPermissionInteraction,
+  isValidInteraction,
+} = require("../src/permission-automation-policy");
 const { makeSessionKey } = require("../src/session-key");
 
 function localSessionKey(rawSessionId) {
   return makeSessionKey({ profileId: "local", rawSessionId });
+}
+
+function interaction(agentId, toolName) {
+  return classifyPermissionInteraction({ agentId, toolName });
 }
 
 function makeReq(body) {
@@ -137,9 +146,9 @@ function callPermissionPost(body, overrides = {}) {
 
 describe("server-route-permission helpers", () => {
   it("preserves bubble bypass decisions for CC, Codex, and opencode", () => {
-    assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, "Bash", "claude-code"), true);
-    assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, "ExitPlanMode", "claude-code"), false);
-    assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, "AskUserQuestion", "claude-code"), false);
+    assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, interaction("claude-code", "Bash"), "claude-code"), true);
+    assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, interaction("claude-code", "ExitPlanMode"), "claude-code"), false);
+    assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, interaction("claude-code", "AskUserQuestion"), "claude-code"), false);
     assert.strictEqual(shouldBypassCodexBubble({ hideBubbles: true }), true);
     assert.strictEqual(shouldBypassCodexBubble({
       isAgentPermissionsEnabled: (agentId) => agentId !== "codex",
@@ -162,19 +171,92 @@ describe("server-route-permission helpers", () => {
     const subagent = { source: "subagent", subagentId: "uuid-1", subagentType: "Explore" };
     const mainThread = { source: "explicit" };
 
-    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, "Bash", "claude-code", subagent), true);
-    assert.strictEqual(shouldBypassCCSubagentBubble(gateOn, "Bash", "claude-code", subagent), false);
-    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, "Bash", "claude-code", mainThread), false);
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, interaction("claude-code", "Bash"), "claude-code", subagent), true);
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOn, interaction("claude-code", "Bash"), "claude-code", subagent), false);
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, interaction("claude-code", "Bash"), "claude-code", mainThread), false);
     // UX flows stay exempt, mirroring shouldBypassCCBubble.
-    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, "ExitPlanMode", "claude-code", subagent), false);
-    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, "AskUserQuestion", "claude-code", subagent), false);
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, interaction("claude-code", "ExitPlanMode"), "claude-code", subagent), false);
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, interaction("claude-code", "AskUserQuestion"), "claude-code", subagent), false);
     // Missing gate reader (older ctx) keeps current behavior: bubble.
-    assert.strictEqual(shouldBypassCCSubagentBubble({}, "Bash", "claude-code", subagent), false);
+    assert.strictEqual(shouldBypassCCSubagentBubble({}, interaction("claude-code", "Bash"), "claude-code", subagent), false);
   });
 
 });
 
 describe("server-route-permission POST", () => {
+  it("stamps a valid tool-approval interaction on every entry-producing adapter", async () => {
+    const cases = [
+      { agentId: "claude-code", body: {} },
+      { agentId: "codebuddy", body: {} },
+      { agentId: "codex", body: {} },
+      { agentId: "qwen-code", body: {} },
+      { agentId: "copilot-cli", body: {} },
+      { agentId: "hermes", body: {} },
+      {
+        agentId: "opencode",
+        body: {
+          request_id: "req-stamp",
+          bridge_url: "http://127.0.0.1:9",
+          bridge_token: "stamp-token",
+        },
+      },
+    ];
+
+    for (const { agentId, body } of cases) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: agentId,
+        session_id: `${agentId}:stamp`,
+        tool_name: "Bash",
+        tool_input: { command: "npm test" },
+        ...body,
+      }));
+      assert.strictEqual(res.ctx.pendingPermissions.length, 1, agentId);
+      const entry = res.ctx.pendingPermissions[0];
+      assert.strictEqual(isValidInteraction(entry.interaction), true, agentId);
+      assert.strictEqual(entry.interaction.intent, INTERACTION_INTENT.TOOL_APPROVAL, agentId);
+    }
+  });
+
+  it("stamps questions conservatively and treats unverified plan-name collisions as unknown", async () => {
+    const cases = [
+      { agentId: "codex", toolName: "AskUserQuestion", intent: INTERACTION_INTENT.HUMAN_QUESTION },
+      { agentId: "qwen-code", toolName: "AskUserQuestion", intent: INTERACTION_INTENT.HUMAN_QUESTION },
+      { agentId: "copilot-cli", toolName: "ExitPlanMode", intent: INTERACTION_INTENT.UNKNOWN },
+      { agentId: "hermes", toolName: "clarify", intent: INTERACTION_INTENT.HUMAN_QUESTION },
+      {
+        agentId: "opencode",
+        toolName: "ExitPlanMode",
+        intent: INTERACTION_INTENT.UNKNOWN,
+        extra: {
+          request_id: "req-decision-stamp",
+          bridge_url: "http://127.0.0.1:9",
+          bridge_token: "stamp-token",
+        },
+      },
+    ];
+
+    for (const { agentId, toolName, intent, extra = {} } of cases) {
+      const toolInput = intent === INTERACTION_INTENT.HUMAN_QUESTION
+        ? { questions: [{ question: "Continue?" }] }
+        : { plan: "ship it" };
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: agentId,
+        session_id: `${agentId}:decision-stamp`,
+        tool_name: toolName,
+        tool_input: toolInput,
+        ...extra,
+      }));
+      assert.strictEqual(res.ctx.pendingPermissions.length, 1, `${agentId}:${toolName}`);
+      const entry = res.ctx.pendingPermissions[0];
+      assert.strictEqual(isValidInteraction(entry.interaction), true, `${agentId}:${toolName}`);
+      assert.strictEqual(entry.interaction.intent, intent, `${agentId}:${toolName}`);
+      if (agentId !== "hermes") {
+        assert.strictEqual(entry.interaction.capabilities.answerQuestions, false, agentId);
+        assert.strictEqual(entry.interaction.capabilities.planFeedback, false, agentId);
+      }
+    }
+  });
+
   it("keeps identical remote raw ids in separate permission queues with trusted profile metadata", async () => {
     const body = JSON.stringify({
       agent_id: "claude-code",
@@ -854,28 +936,23 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [entry]);
   });
 
-  it("stamps elicitation session updates with the resolved agent id", async () => {
-    // The shared CC path also serves codebuddy (and future CC-compatible
-    // agents). The Elicitation session update must carry the resolved agent
-    // id, not a hardcoded claude-code, or the session gets relabeled.
-    const res = await callPermissionPost(JSON.stringify({
-      agent_id: "codebuddy",
-      session_id: "cb-elicit",
-      tool_name: "AskUserQuestion",
-      tool_input: { questions: [{ question: "Continue?" }] },
-    }));
+  it("hands every known CodeBuddy decision signal back before creating a Claude-shaped entry", async () => {
+    for (const [toolName, toolInput] of [
+      ["AskUserQuestion", { questions: [{ question: "Continue?" }] }],
+      ["ExitPlanMode", { plan: "ship it" }],
+    ]) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: "codebuddy",
+        session_id: `cb-${toolName}`,
+        tool_name: toolName,
+        tool_input: toolInput,
+      }));
 
-    assert.strictEqual(res.statusCode, null);
-    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
-    const entry = res.ctx.pendingPermissions[0];
-    assert.strictEqual(entry.isElicitation, true);
-    assert.strictEqual(entry.agentId, "codebuddy");
-    assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      localSessionKey("cb-elicit"),
-      "notification",
-      "Elicitation",
-      { agentId: "codebuddy" },
-    ]]);
+      assert.strictEqual(res.destroyed, true, toolName);
+      assert.deepStrictEqual(res.ctx.pendingPermissions, [], toolName);
+      assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [], toolName);
+      assert.deepStrictEqual(res.ctx.calls.updateSession, [], toolName);
+    }
   });
 
   it("keeps local Claude permission pending if remote approval startup throws", async () => {

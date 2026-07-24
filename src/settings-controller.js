@@ -107,11 +107,11 @@ function createSettingsController({
     };
   }
 
-  function persistInternal() {
+  function persistInternal(snapshot = store.getSnapshot()) {
     if (locked) return { status: "ok", noop: true, locked: true };
     if (!prefsPath) return { status: "ok", noop: true };
     try {
-      prefs.save(prefsPath, store.getSnapshot());
+      prefs.save(prefsPath, snapshot);
       return { status: "ok" };
     } catch (err) {
       console.warn("Clawd: failed to persist prefs:", err && err.message);
@@ -129,6 +129,26 @@ function createSettingsController({
     if (typeof entry === "function") return entry;
     if (entry && typeof entry.validate === "function") return entry.validate;
     return null;
+  }
+
+  function isCommandOnlyEntry(entry) {
+    return Boolean(entry && typeof entry === "object" && entry.commandOnly === true);
+  }
+
+  function rejectCommandOnly(key, operation) {
+    if (!isCommandOnlyEntry(updates[key])) return null;
+    return {
+      status: "error",
+      message: `${key}: command-only setting cannot be changed via ${operation}`,
+    };
+  }
+
+  function buildChangedPartial(partial, snapshot = store.getSnapshot()) {
+    const changed = {};
+    for (const key of Object.keys(partial || {})) {
+      if (snapshot[key] !== partial[key]) changed[key] = partial[key];
+    }
+    return changed;
   }
 
   // Resolve an entry's pre-commit effect (object-form only). Function-form
@@ -216,10 +236,12 @@ function createSettingsController({
       };
     }
     if (actionResult.noop) return { status: "ok", noop: true };
-    const { changed } = store._commit({ [key]: value });
-    if (changed) {
-      const persisted = persistInternal();
+    const currentSnapshot = store.getSnapshot();
+    const changedPartial = buildChangedPartial({ [key]: value }, currentSnapshot);
+    if (Object.keys(changedPartial).length > 0) {
+      const persisted = persistInternal({ ...currentSnapshot, ...changedPartial });
       if (persisted.status !== "ok") return persisted;
+      store._commit(changedPartial);
     }
     return { status: "ok" };
   }
@@ -234,6 +256,8 @@ function createSettingsController({
   // because returning sync `{ok}` while a pending commit is about to stomp
   // the same key would be a lie.
   function applyUpdate(key, value) {
+    const commandOnlyError = rejectCommandOnly(key, "applyUpdate");
+    if (commandOnlyError) return commandOnlyError;
     const lockKey = resolveUpdateLockKey(key);
     const pending = _asyncLocks.get(lockKey);
     if (pending) {
@@ -254,6 +278,8 @@ function createSettingsController({
   }
 
   function _doApplyUpdate(key, value) {
+    const commandOnlyError = rejectCommandOnly(key, "applyUpdate");
+    if (commandOnlyError) return commandOnlyError;
     const actionResult = invokeAction(key, value);
     if (isThenable(actionResult)) {
       return actionResult.then((r) => finishSingle(key, value, r));
@@ -277,6 +303,8 @@ function createSettingsController({
     // rollback — not to relax this guard.
     for (const key of Object.keys(partial)) {
       const entry = updates[key];
+      const commandOnlyError = rejectCommandOnly(key, "applyBulk");
+      if (commandOnlyError) return commandOnlyError;
       if (entry && resolveEffect(entry)) {
         return {
           status: "error",
@@ -342,10 +370,12 @@ function createSettingsController({
   }
 
   function commitBulk(accumulated) {
-    const { changed } = store._commit(accumulated);
-    if (changed) {
-      const persisted = persistInternal();
+    const currentSnapshot = store.getSnapshot();
+    const changedPartial = buildChangedPartial(accumulated, currentSnapshot);
+    if (Object.keys(changedPartial).length > 0) {
+      const persisted = persistInternal({ ...currentSnapshot, ...changedPartial });
       if (persisted.status !== "ok") return persisted;
+      store._commit(changedPartial);
     }
     return { status: "ok" };
   }
@@ -361,6 +391,10 @@ function createSettingsController({
   function hydrate(partial) {
     if (!partial || typeof partial !== "object") {
       return { status: "error", message: "hydrate: partial must be an object" };
+    }
+    for (const key of Object.keys(partial)) {
+      const commandOnlyError = rejectCommandOnly(key, "hydrate");
+      if (commandOnlyError) return commandOnlyError;
     }
     const entries = Object.keys(partial).map((key) => ({
       key,
@@ -451,10 +485,15 @@ function createSettingsController({
         }
         if (!recheck || recheck.status !== "ok") return recheck;
       }
-      const { changed } = store._commit(result.commit);
-      if (changed) {
-        const persisted = persistInternal();
+      const currentSnapshot = store.getSnapshot();
+      const changedPartial = buildChangedPartial(result.commit, currentSnapshot);
+      if (Object.keys(changedPartial).length > 0) {
+        const persisted = persistInternal({
+          ...currentSnapshot,
+          ...changedPartial,
+        });
         if (persisted.status !== "ok") return persisted;
+        store._commit(changedPartial);
       }
     }
     // Pass through command-produced metadata (noop / reason / targetDrift /

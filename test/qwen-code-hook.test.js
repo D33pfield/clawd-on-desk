@@ -98,6 +98,16 @@ describe("Qwen Code hook", () => {
     assert.strictEqual(body.agent_pid, 456);
   });
 
+  it("fails closed instead of posting a PermissionRequest with an unknown tool", () => {
+    for (const tool_name of [undefined, "", "  ", "Unknown", "unknown"]) {
+      assert.strictEqual(buildPermissionBody("PermissionRequest", {
+        session_id: "s1",
+        tool_name,
+        tool_input: {},
+      }, mockResolve), null);
+    }
+  });
+
   it("uses host instead of local pid fields in remote mode", () => {
     const body = buildPermissionBody("PermissionRequest", {
       session_id: "s1",
