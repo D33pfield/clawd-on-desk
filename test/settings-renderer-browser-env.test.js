@@ -193,6 +193,7 @@ class FakeElement {
     this.title = "";
     this.type = "";
     this.disabled = false;
+    this.focused = false;
     this.open = false;
     this.parentNode = null;
     this.scrollTop = 0;
@@ -254,6 +255,10 @@ class FakeElement {
   addEventListener(type, cb) {
     if (!this.eventListeners[type]) this.eventListeners[type] = [];
     this.eventListeners[type].push(cb);
+  }
+
+  focus() {
+    this.focused = true;
   }
 
   dispatchEvent(event) {
@@ -3646,6 +3651,7 @@ describe("settings renderer browser environment", () => {
       "clicking a language option should call settingsAPI.update with the new lang"
     );
     assert.strictEqual(picker.classList.contains("open"), false);
+    assert.strictEqual(trigger.focused, true);
     assert.strictEqual(harness.getLangMenu().attributes["aria-hidden"], "true");
     for (const option of options) assert.strictEqual(option.tabIndex, -1);
     assert.strictEqual(harness.getLangValue().textContent, "Chinese");
@@ -3693,6 +3699,7 @@ describe("settings renderer browser environment", () => {
 
     assert.deepStrictEqual(harness.updateCalls, [{ key: "lang", value: "zh" }]);
     assert.strictEqual(harness.getLangValue().textContent, "English");
+    assert.strictEqual(trigger.focused, true);
     assert.strictEqual(harness.getToastText(), "Failed: synthetic failure");
   });
 

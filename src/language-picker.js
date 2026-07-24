@@ -105,13 +105,13 @@
       const entry = findOption(value);
       if (!entry) return;
       if (entry.data.value === activeValue) {
-        setOpen(false);
+        setOpen(false, { focusTrigger: true });
         return;
       }
 
       const previous = activeValue;
       paintValue(entry.data.value);
-      setOpen(false);
+      setOpen(false, { focusTrigger: true });
       const seq = ++changeSeq;
       let result;
       try {
