@@ -11,6 +11,7 @@ const {
   detectAgentInstallations,
 } = require("../src/agent-installation-detector");
 const { getAgentDescriptor } = require("../src/doctor-detectors/agent-descriptors");
+const { registerReasonixHooks } = require("../hooks/reasonix-install");
 
 const tempDirs = [];
 
@@ -82,6 +83,69 @@ describe("agent installation detector", () => {
     assert.strictEqual(codewhale.detectedInstalled, true);
     assert.strictEqual(codewhale.confidence, "high");
     assert.strictEqual(codewhale.reason, "parent-dir");
+  });
+
+  it("detects a Windows Reasonix installation from the legacy fallback home", () => {
+    const homeDir = makeHome();
+    const appData = path.join(homeDir, "AppData", "Roaming");
+    const legacySettings = path.join(homeDir, ".reasonix", "settings.json");
+    const marker = getAgentDescriptor("reasonix").marker;
+    writeJson(legacySettings, {
+      hooks: {
+        Stop: [{ match: "*", command: `"node" "/app/hooks/${marker}"` }],
+      },
+    });
+
+    const report = detectAgentInstallations({
+      homeDir,
+      platform: "win32",
+      env: { APPDATA: appData },
+      now: 1,
+    });
+    const reasonix = byId(report, "reasonix");
+
+    assert.strictEqual(reasonix.detectedInstalled, true);
+    assert.strictEqual(reasonix.reason, "parent-dir");
+    assert.strictEqual(reasonix.detail, `${path.join(homeDir, ".reasonix")} exists`);
+    assert.deepStrictEqual(
+      reasonix.paths.configTargets.map((target) => target.label),
+      ["current", "legacy"]
+    );
+    assert.strictEqual(reasonix.clawdIntegration.detected, true);
+    assert.strictEqual(reasonix.clawdIntegration.paths.configPath, legacySettings);
+  });
+
+  it("recognizes installer-produced Windows EncodedCommand Reasonix hooks", () => {
+    const homeDir = makeHome();
+    const appData = path.join(homeDir, "AppData", "Roaming");
+    const settingsPath = path.join(appData, "reasonix", "settings.json");
+    const marker = getAgentDescriptor("reasonix").marker;
+    mkdirp(path.dirname(settingsPath));
+
+    const installed = registerReasonixHooks({
+      silent: true,
+      platform: "win32",
+      env: { APPDATA: appData },
+      userHomeDir: homeDir,
+      nodeBin: "D:\\npm\\node.exe",
+      powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    });
+    const raw = fs.readFileSync(settingsPath, "utf8");
+
+    assert.strictEqual(installed.added, 9);
+    assert.match(raw, /-EncodedCommand /);
+    assert.strictEqual(raw.includes(marker), false, "marker should be hidden inside base64");
+
+    const report = detectAgentInstallations({
+      homeDir,
+      platform: "win32",
+      env: { APPDATA: appData },
+      now: 1,
+    });
+    const reasonix = byId(report, "reasonix");
+
+    assert.strictEqual(reasonix.clawdIntegration.detected, true);
+    assert.strictEqual(reasonix.clawdIntegration.paths.configPath, settingsPath);
   });
 
   it("does not confuse Antigravity's ~/.gemini/config with Gemini CLI", () => {

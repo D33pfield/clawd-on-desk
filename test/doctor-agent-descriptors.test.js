@@ -129,6 +129,8 @@ describe("doctor agent descriptors", () => {
     const reasonix = require("../hooks/reasonix-install");
     assert.strictEqual(getAgentDescriptor("reasonix").parentDir, reasonix.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("reasonix").configPath, reasonix.DEFAULT_CONFIG_PATH);
+    assert.deepStrictEqual(getAgentDescriptor("reasonix").configTargets, reasonix.DEFAULT_CONFIG_TARGETS);
+    assert.strictEqual(getAgentDescriptor("reasonix").preferExistingConfigFile, true);
     assert.strictEqual(getAgentDescriptor("reasonix").marker, reasonix.MARKER);
     assert.deepStrictEqual(getAgentDescriptor("reasonix").hookEvents, reasonix.REASONIX_HOOK_EVENTS);
 

@@ -8,6 +8,8 @@ const { getAgentDescriptors } = require("./doctor-detectors/agent-descriptors");
 const { DEFAULT_INTEGRATION_INSTALLED_IDS, normalizePathList } = require("./prefs");
 const copilot = require("../hooks/copilot-install");
 const hermes = require("../hooks/hermes-install");
+const reasonix = require("../hooks/reasonix-install");
+const { commandMatchesMarker } = require("../hooks/json-utils");
 const { identifyCustomApplication } = require("./custom-applications");
 
 const DEFAULT_SKIPPED_AGENT_IDS = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
@@ -168,6 +170,20 @@ function resolveAgentPaths(descriptor, options) {
     }, options);
   }
 
+  if (descriptor.agentId === "reasonix") {
+    const configTargets = reasonix.resolveReasonixConfigTargets({
+      env,
+      platform,
+      userHomeDir: homeDir,
+    });
+    const primary = configTargets[0];
+    return finalizeAgentPaths(descriptor, {
+      parentDir: primary.parentDir,
+      configPath: primary.configPath,
+      configTargets,
+    }, options);
+  }
+
   const parentDir = rebaseHomePath(descriptor.parentDir, homeDir);
   const configPath = rebaseHomePath(descriptor.configPath, homeDir);
   const paths = { parentDir, configPath };
@@ -206,7 +222,26 @@ function notFound(detail = "No local installation signal found") {
 }
 
 function hasClawdMarkerText(text, marker) {
-  return typeof text === "string" && typeof marker === "string" && marker && text.includes(marker);
+  if (typeof text !== "string" || typeof marker !== "string" || !marker) return false;
+  if (commandMatchesMarker(text, marker)) return true;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text);
+  } catch {
+    return false;
+  }
+
+  const containsCommandMarker = (value) => {
+    if (!value || typeof value !== "object") return false;
+    if (Array.isArray(value)) return value.some((entry) => containsCommandMarker(entry));
+    for (const [key, entry] of Object.entries(value)) {
+      if (key === "command" && commandMatchesMarker(entry, marker)) return true;
+      if (containsCommandMarker(entry)) return true;
+    }
+    return false;
+  };
+  return containsCommandMarker(parsed);
 }
 
 function hasNonClawdHookCommand(value, marker) {
@@ -344,6 +379,13 @@ function detectInstallation(descriptor, paths, options) {
     case "qoder":
     case "qoderwork":
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
+      return notFound();
+    case "reasonix":
+      for (const target of paths.configTargets || []) {
+        if (dirExists(fsImpl, target.parentDir)) {
+          return installationResult(true, "medium", "parent-dir", `${target.parentDir} exists`);
+        }
+      }
       return notFound();
     case "kiro-cli":
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);

@@ -300,6 +300,8 @@ const AGENT_DESCRIPTORS = Object.freeze([
     eventSource: agentEventSource("reasonix"),
     parentDir: reasonix.DEFAULT_PARENT_DIR,
     configPath: reasonix.DEFAULT_CONFIG_PATH,
+    configTargets: reasonix.DEFAULT_CONFIG_TARGETS,
+    preferExistingConfigFile: true,
     configMode: "file",
     autoInstall: true,
     marker: reasonix.MARKER,

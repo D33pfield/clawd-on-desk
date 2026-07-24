@@ -34,6 +34,7 @@ describe("cleanupIntegrations", () => {
     const plan = buildCleanupOptionsForHome(homeDir, {
       env: {
         HERMES_HOME: path.join(os.tmpdir(), "admin-hermes"),
+        REASONIX_HOME: path.join(os.tmpdir(), "admin-reasonix"),
         LOCALAPPDATA: inheritedLocalAppData,
         APPDATA: path.join(os.tmpdir(), "admin-appdata"),
       },
@@ -51,11 +52,93 @@ describe("cleanupIntegrations", () => {
     assert.strictEqual(plan.byAgent.codewhale.configPath, path.join(homeDir, ".codewhale", "config.toml"));
     assert.strictEqual(plan.byAgent.opencode.configPath, path.join(homeDir, ".config", "opencode", "opencode.json"));
     assert.strictEqual(plan.byAgent.pi.parentDir, path.join(homeDir, ".pi", "agent"));
+    assert.deepStrictEqual(plan.byAgent.reasonix.settingsPaths, [
+      path.join(targetAppData, "reasonix", "settings.json"),
+      path.join(homeDir, ".reasonix", "settings.json"),
+    ]);
     assert.strictEqual(plan.env.LOCALAPPDATA, targetLocalAppData);
     assert.strictEqual(plan.env.APPDATA, targetAppData);
     assert.strictEqual(plan.env.HERMES_HOME, undefined);
+    assert.strictEqual(plan.env.REASONIX_HOME, undefined);
     assert.strictEqual(plan.byAgent.hermes.env.LOCALAPPDATA, targetLocalAppData);
     assert.notStrictEqual(plan.byAgent.hermes.hermesHome, path.join(inheritedLocalAppData, "hermes"));
+  });
+
+  it("cleans Reasonix hooks from both current and legacy Windows homes", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-reasonix-"));
+    const homeDir = path.join(root, "home");
+    const currentSettings = path.join(homeDir, "AppData", "Roaming", "reasonix", "settings.json");
+    const legacySettings = path.join(homeDir, ".reasonix", "settings.json");
+    for (const settingsPath of [currentSettings, legacySettings]) {
+      writeJson(settingsPath, {
+        hooks: {
+          Stop: [
+            { match: "*", command: 'node "C:/clawd/hooks/reasonix-hook.js"' },
+            { match: "*", command: "echo keep-user-hook" },
+          ],
+        },
+      });
+    }
+
+    try {
+      const result = cleanupIntegrations({
+        homeDir,
+        platform: "win32",
+        env: { REASONIX_HOME: "" },
+        backup: true,
+        silent: true,
+        hermesCommand: false,
+      });
+      const reasonix = result.agents.find((entry) => entry.agentId === "reasonix");
+
+      assert.strictEqual(reasonix.status, "applied");
+      assert.strictEqual(reasonix.removed, 2);
+      for (const settingsPath of [currentSettings, legacySettings]) {
+        assert.deepStrictEqual(readJson(settingsPath).hooks.Stop, [
+          { match: "*", command: "echo keep-user-hook" },
+        ]);
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a partial Reasonix cleanup failure after still cleaning the other home", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-reasonix-error-"));
+    const homeDir = path.join(root, "home");
+    const currentSettings = path.join(homeDir, "AppData", "Roaming", "reasonix", "settings.json");
+    const legacySettings = path.join(homeDir, ".reasonix", "settings.json");
+    fs.mkdirSync(path.dirname(currentSettings), { recursive: true });
+    fs.writeFileSync(currentSettings, "{ invalid json", "utf8");
+    writeJson(legacySettings, {
+      hooks: {
+        Stop: [
+          { match: "*", command: 'node "C:/clawd/hooks/reasonix-hook.js"' },
+          { match: "*", command: "echo keep-user-hook" },
+        ],
+      },
+    });
+
+    try {
+      const result = cleanupIntegrations({
+        homeDir,
+        platform: "win32",
+        backup: true,
+        silent: true,
+        hermesCommand: false,
+      });
+      const reasonix = result.agents.find((entry) => entry.agentId === "reasonix");
+
+      assert.strictEqual(reasonix.status, "failed");
+      assert.strictEqual(reasonix.removed, 1);
+      assert.match(reasonix.error, /Failed to clean Reasonix hooks/);
+      assert.strictEqual(result.summary.failed >= 1, true);
+      assert.deepStrictEqual(readJson(legacySettings).hooks.Stop, [
+        { match: "*", command: "echo keep-user-hook" },
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("removes managed hooks/plugins safely, backs up once, and is idempotent", () => {
