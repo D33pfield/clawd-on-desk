@@ -133,6 +133,44 @@ describe("agent-runtime-main", () => {
     ]);
   });
 
+  it("routes Codex user-input monitor callbacks to a passive card and transient state", () => {
+    const instances = [];
+    const calls = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      isAgentEnabled: () => true,
+      codexSubagentClassifier: {},
+      updateSession: (...args) => calls.push(["update", ...args]),
+      showCodexUserInputBubble: (input) => { calls.push(["show", input]); return true; },
+      clearCodexUserInputBubbles: (...args) => calls.push(["clear", ...args]),
+    });
+    const monitor = runtime.startCodexLogMonitor();
+    const request = {
+      callId: "call_1",
+      questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }],
+      autoResolutionMs: null,
+    };
+    const extra = { cwd: "/repo", sourcePid: 42, agentPid: 42, headless: false };
+
+    monitor.options.onUserInputRequest("codex:s1", request, extra);
+    monitor.options.onUserInputResolved("codex:s1", "call_1");
+
+    assert.deepStrictEqual(calls[0], ["show", {
+      sessionId: "codex:s1",
+      callId: "call_1",
+      questions: request.questions,
+      autoResolutionMs: null,
+      ...extra,
+    }]);
+    assert.strictEqual(calls[1][0], "update");
+    assert.strictEqual(calls[1][2], "notification");
+    assert.strictEqual(calls[1][3], "CodexUserInputRequest");
+    assert.strictEqual(calls[1][4].transientPermissionEvent, true);
+    assert.deepStrictEqual(calls[2], ["clear", "codex:s1", "call_1", "codex-user-input-resolved"]);
+  });
+
   it("handles JSONL token_count as metadata without clearing bubbles or changing state", () => {
     const instances = [];
     const calls = [];
@@ -171,6 +209,51 @@ describe("agent-runtime-main", () => {
         headless: false,
         preserveState: true,
       }],
+    ]);
+  });
+
+  it("routes JSONL codexQuota to the session-independent store, never updateSession opts", () => {
+    const instances = [];
+    const calls = [];
+    const quotaCalls = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      isAgentEnabled: (agentId) => agentId === "codex",
+      updateSession: (...args) => calls.push(["update", ...args]),
+      clearCodexNotifyBubbles: (...args) => calls.push(["clear", ...args]),
+      getStateRuntime: () => ({
+        updateAccountQuota: (...args) => quotaCalls.push(args),
+      }),
+      codexSubagentClassifier: {},
+    });
+    const monitor = runtime.startCodexLogMonitor();
+
+    const codexQuota = {
+      codexFiveHour: { usedPercent: 1, resetAt: 1783669570000 },
+      codexWeekly: { usedPercent: 43, resetAt: 1784256370000 },
+    };
+    monitor.emit("codex:abc", "working", "event_msg:token_count", {
+      cwd: "D:\\repo",
+      contextUsage: { used: 23959, limit: 258400, percent: 9, source: "codex" },
+      codexQuota,
+    });
+    // Quota-only refresh (no contextUsage): must not enter the updateSession
+    // lifecycle machine at all, only feed the store.
+    monitor.emit("codex:abc", "working", "event_msg:token_count", { codexQuota });
+
+    // updateSession must never see codexQuota in its opts: account quota is
+    // not session state (src/state-account-quota.js).
+    for (const call of calls) {
+      if (call[0] !== "update") continue;
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(call[4], "codexQuota"), false);
+    }
+    assert.strictEqual(calls.filter((c) => c[0] === "update").length, 1);
+    // Local monitor reports as the local source (null host).
+    assert.deepStrictEqual(quotaCalls, [
+      [null, { codexQuota }],
+      [null, { codexQuota }],
     ]);
   });
 

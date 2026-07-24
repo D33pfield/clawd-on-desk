@@ -69,6 +69,7 @@
       animMapSwitches: new Map(),
       animMapReset: null,
       animOverrideTimingSliders: new Map(),
+      idleVisualPicker: null,
       bubblePolicySummary: null,
       sessionHudSummary: null,
       languagePicker: null,
@@ -95,6 +96,7 @@
     userThemeZipImportPending: false,
     codexPetRemovalPendingThemeId: null,
     animationOverridesData: null,
+    petTintOptions: [],
     animationOverridesFetchSeq: 0,
     animationPosterRenderPending: false,
     animationPosterRenderFlags: null,
@@ -102,6 +104,10 @@
     pendingAnimationOverrideEdits: new Map(),
     nextAnimationOverrideEditSeq: 1,
     animOverridesSubtab: "map",
+    // null = not chosen yet; the Agents tab resolves it from what is connected.
+    agentsSubtab: null,
+    agentsUnavailableQuery: "",
+    remoteApprovalSubtab: "channels",
     expandedOverrideRowIds: new Set(),
     assetPicker: {
       state: null,
@@ -168,6 +174,38 @@
     const entry = state.snapshot && state.snapshot.agents && state.snapshot.agents[agentId];
     if (agentId === "codex" && entry && entry.permissionMode === "intercept") return "intercept";
     return "native";
+  }
+
+  function readAgentCustomPermissionUrl(agentId) {
+    const entry = state.snapshot && state.snapshot.agents && state.snapshot.agents[agentId];
+    return entry && typeof entry.customPermissionUrl === "string" ? entry.customPermissionUrl : "";
+  }
+
+  function readAgentCustomDiscoveryPaths(agentId) {
+    if (agentId === "custom") {
+      const value = state.snapshot && state.snapshot.customToolDiscoveryPaths;
+      return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+    }
+    const entry = state.snapshot && state.snapshot.agents && state.snapshot.agents[agentId];
+    const value = entry && entry.customDiscoveryPaths;
+    return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+  }
+
+  function readCustomToolDetectionResults() {
+    const hints = runtime.agentInstallationHints;
+    const value = hints && hints.customTools;
+    return Array.isArray(value) ? value.filter((item) => item && typeof item.path === "string") : [];
+  }
+
+  function readCustomAgentDetectionResults() {
+    const hints = runtime.agentInstallationHints;
+    const value = hints && hints.customAgents;
+    return Array.isArray(value) ? value.filter((item) => item && typeof item.agentId === "string") : [];
+  }
+
+  function readCustomApplications() {
+    const value = state.snapshot && state.snapshot.customApplications;
+    return Array.isArray(value) ? value.filter((item) => item && typeof item.id === "string") : [];
   }
 
   function getShortcutValue(actionId) {
@@ -804,6 +842,9 @@
     if (state.mountedControls.languagePicker && typeof state.mountedControls.languagePicker.dispose === "function") {
       state.mountedControls.languagePicker.dispose();
     }
+    if (state.mountedControls.idleVisualPicker && typeof state.mountedControls.idleVisualPicker.dispose === "function") {
+      state.mountedControls.idleVisualPicker.dispose();
+    }
     if (state.mountedControls.size && typeof state.mountedControls.size.dispose === "function") {
       Promise.resolve(state.mountedControls.size.dispose()).catch(() => {});
     }
@@ -828,6 +869,7 @@
     state.mountedControls.bubblePolicySummary = null;
     state.mountedControls.sessionHudSummary = null;
     state.mountedControls.languagePicker = null;
+    state.mountedControls.idleVisualPicker = null;
     state.mountedControls.size = null;
     state.mountedControls.soundSummary = null;
     state.mountedControls.soundVolume = null;
@@ -886,6 +928,8 @@
     const normalized = {
       checkedAt: Number.isFinite(source.checkedAt) ? source.checkedAt : null,
       agents: Array.isArray(source.agents) ? source.agents : [],
+      customAgents: Array.isArray(source.customAgents) ? source.customAgents : [],
+      customTools: Array.isArray(source.customTools) ? source.customTools : [],
       skippedAgentIds: Array.isArray(source.skippedAgentIds) ? source.skippedAgentIds : [],
       wslAgents: Array.isArray(source.wslAgents) ? source.wslAgents : [],
       wslDistros: Array.isArray(source.wslDistros) ? source.wslDistros : [],
@@ -900,6 +944,8 @@
     const result = {
       checkedAt: null,
       agents: [],
+      customAgents: [],
+      customTools: [],
       skippedAgentIds: [],
       wslAgents: [],
       wslDistros: [],
@@ -988,13 +1034,21 @@
       runtime.themeList = [];
       return Promise.resolve([]);
     }
+    const previousThemeList = Array.isArray(runtime.themeList) ? runtime.themeList : [];
     return window.settingsAPI.listThemes().then((list) => {
-      runtime.themeList = Array.isArray(list) ? list : [];
+      const nextThemeList = Array.isArray(list) ? list : [];
+      // Built-in themes make an empty successful list impossible in a healthy
+      // install. Main also returns [] when enumeration throws, so preserve an
+      // already-rendered list instead of blanking the entire Theme tab.
+      if (nextThemeList.length === 0 && previousThemeList.length > 0) {
+        return previousThemeList;
+      }
+      runtime.themeList = nextThemeList;
       return runtime.themeList;
     }).catch((err) => {
       console.warn("settings: listThemes failed", err);
-      runtime.themeList = [];
-      return [];
+      runtime.themeList = previousThemeList;
+      return previousThemeList;
     });
   }
 
@@ -1290,6 +1344,11 @@
     readAgentFlagValue,
     readAgentIntegrationInstalled,
     readAgentPermissionMode,
+    readAgentCustomPermissionUrl,
+    readAgentCustomDiscoveryPaths,
+    readCustomToolDetectionResults,
+    readCustomAgentDetectionResults,
+    readCustomApplications,
     getShortcutValue,
     getLang,
     readThemeOverrideMap,

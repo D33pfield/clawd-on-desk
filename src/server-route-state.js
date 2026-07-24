@@ -15,6 +15,9 @@ const { normalizeTranscriptPath } = require("./transcript-path");
 const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
 const { ANTIGRAVITY_QUOTA_FIELDS } = require("../hooks/antigravity-context-usage");
 const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
+const { CODEX_QUOTA_FIELDS } = require("../hooks/codex-rate-limits");
+const { extractPermissionToolInput } = require("../hooks/kimi-hook");
+const { normalizeCodexUserInputWire } = require("../hooks/codex-user-input");
 
 // /state POST body size cap. Raised 1024 → 4096 → 16384: a CJK
 // assistant_last_output (3 UTF-8 bytes/char) on a Stop completion blew past
@@ -97,6 +100,10 @@ function normalizeClaudeQuota(value) {
   return normalizeQuotaGroup(value, CLAUDE_QUOTA_FIELDS);
 }
 
+function normalizeCodexQuota(value) {
+  return normalizeQuotaGroup(value, CODEX_QUOTA_FIELDS);
+}
+
 function sendStateHealthResponse(res, options) {
   const body = JSON.stringify({ ok: true, app: CLAWD_SERVER_ID, port: options.getHookServerPort() });
   res.writeHead(200, {
@@ -113,6 +120,10 @@ function handleStatePost(req, res, options) {
     shouldDropForDnd,
     codexOfficialTurns,
     pathApi = path,
+    // #627 residual: injectable so unit tests never load the real koffi FFI.
+    // Defaults to the real host OS check / a probe that never samples.
+    isWinHost = process.platform === "win32",
+    captureForegroundWindowsTerminal = () => null,
   } = options;
   let body = "";
   let bodySize = 0;
@@ -131,7 +142,16 @@ function handleStatePost(req, res, options) {
     }
     try {
       const data = JSON.parse(body);
-      const recordRequestHookEvent = createRequestHookRecorder(data, "state");
+      const agentIdentity = resolveHookAgentId(data, {
+        customAgentIds: typeof ctx.getCustomAgentIds === "function" ? ctx.getCustomAgentIds() : [],
+      });
+      const recordRequestHookEvent = createRequestHookRecorder(agentIdentity, data, "state");
+      if (agentIdentity.rejected) {
+        recordRequestHookEvent.droppedInvalidAgent();
+        res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+        res.end();
+        return;
+      }
       let { state, svg, session_id, event } = data;
       let display_svg;
       if (data.display_svg === null) display_svg = null;
@@ -146,8 +166,21 @@ function handleStatePost(req, res, options) {
       const tmuxClient = normalizeTmuxClient(data.tmux_client);
       const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
       const agentPid = Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null;
-      const agentIdentity = resolveHookAgentId(data);
       const agentId = agentIdentity.agentId;
+      // State sessions share one process-wide Map keyed only by session id.
+      // Registered custom applications commonly send generic ids such as
+      // "default" or "project-a", so namespace them at the trust boundary to
+      // prevent two custom apps (or a custom app and a built-in agent) from
+      // overwriting or ending each other's sessions.
+      if (agentIdentity.source === "custom") {
+        const rawCustomSessionId = typeof session_id === "string" && session_id.trim()
+          ? session_id.trim()
+          : "default";
+        const customSessionPrefix = `${agentId}:`;
+        session_id = rawCustomSessionId.startsWith(customSessionPrefix)
+          ? rawCustomSessionId
+          : `${customSessionPrefix}${rawCustomSessionId}`;
+      }
       const host = typeof data.host === "string" ? data.host : null;
       const wslDistro = typeof data.wsl_distro === "string" && data.wsl_distro.trim()
         ? data.wsl_distro.trim()
@@ -199,6 +232,7 @@ function handleStatePost(req, res, options) {
       const contextUsage = normalizeContextUsage(data.context_usage);
       const antigravityQuota = normalizeAntigravityQuota(data.antigravity_quota);
       const claudeQuota = normalizeClaudeQuota(data.claude_quota);
+      const codexQuota = normalizeCodexQuota(data.codex_quota);
       const assistantLastOutput = normalizeAssistantLastOutput(data.assistant_last_output);
       const assistantLastOutputTruncated = data.assistant_last_output_truncated === true;
       const transcriptPath = normalizeTranscriptPath(data.transcript_path);
@@ -211,6 +245,19 @@ function handleStatePost(req, res, options) {
         : null;
       const permissionCommand = typeof data.permission_command === "string" && data.permission_command.trim()
         ? data.permission_command.trim().slice(0, 500)
+        : null;
+      // Whitelisted tool_input subset from a Kimi Code native
+      // PermissionRequest. Same validator the hook runs before POSTing —
+      // re-run here at the trust boundary rather than trusted from the hook,
+      // matching normalizeContextUsage.
+      const permissionToolInput = extractPermissionToolInput(data.permission_tool_input);
+      // Kimi legacy gate-ledger markers (batched-approvals fix). Booleans plus
+      // a clamped opaque tool_call_id, re-validated at the trust boundary like
+      // permission_suspect above — the hook's word alone is not enough.
+      const permissionGateOpen = data.permission_gate_open === true;
+      const permissionGated = data.permission_gated === true;
+      const permissionGateId = typeof data.permission_gate_id === "string" && data.permission_gate_id.trim()
+        ? data.permission_gate_id.trim().slice(0, 100)
         : null;
       const preserveState = data.preserve_state === true;
       // Statusline refresh POSTs are metadata, not lifecycle (#590 B2): they
@@ -227,6 +274,7 @@ function handleStatePost(req, res, options) {
       const sessionCronsCount = Number.isFinite(data.session_crons_count)
         ? data.session_crons_count : 0;
       const stopHookActive = data.stop_hook_active === true;
+      const codexUserInput = normalizeCodexUserInputWire(data.codex_user_input);
       // Agent gate: user disabled this agent in the settings panel. Drop
       // with 204 so hook scripts get a quick no-op response instead of
       // hanging on our HTTP connection. Still surfaces as a success code
@@ -237,18 +285,64 @@ function handleStatePost(req, res, options) {
         res.end();
         return;
       }
+      // Account quota goes to the session-independent per-source store,
+      // regardless of POST shape — it must survive with no live session at
+      // all ("check the remote's quota before starting work"), so it is
+      // never gated on the session lookup that contextUsage annotation
+      // performs. The source is the reporting host (null = this machine).
+      // `host` is client-supplied and cannot be origin-verified (every
+      // remote's reverse tunnel lands on the same local port) — same trust
+      // model as the session cards' host grouping: machines the user
+      // deployed Clawd hooks to. The store shape-sanitizes the label.
+      if (typeof ctx.updateAccountQuota === "function"
+        && (antigravityQuota || claudeQuota || codexQuota)) {
+        ctx.updateAccountQuota(host, { antigravityQuota, claudeQuota, codexQuota });
+      }
+      if (agentId === "codex" && codexUserInput) {
+        const sid = session_id || "default";
+        if (codexUserInput.phase === "resolved") {
+          if (typeof ctx.clearCodexUserInputBubbles === "function") {
+            ctx.clearCodexUserInputBubbles(sid, codexUserInput.callId, "codex-user-input-resolved");
+          }
+          res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+          res.end("ok");
+          return;
+        }
+        if (headless || shouldDropForDnd()) {
+          recordRequestHookEvent.droppedByDnd();
+          res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+          res.end();
+          return;
+        }
+        const shown = typeof ctx.showCodexUserInputBubble === "function"
+          && ctx.showCodexUserInputBubble({
+            sessionId: sid,
+            callId: codexUserInput.callId,
+            questions: codexUserInput.questions,
+            autoResolutionMs: codexUserInput.autoResolutionMs,
+            sourcePid: source_pid,
+            agentPid,
+            cwd,
+            host,
+            codexOriginator,
+            codexSource,
+          });
+        if (!shown) {
+          res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+          res.end();
+          return;
+        }
+        state = "notification";
+        event = "CodexUserInputRequest";
+      }
       if (metadataOnly) {
         // Deliberately NOT recorded in the recent-hook-events ring: a
         // statusline refreshing every few hundred ms would evict the real
         // hook events the diagnostics exist to show. 204 either way — the
         // statusline script never reads the response, and "session unknown"
         // is the designed drop, not an error.
-        if (typeof ctx.updateSessionMetadata === "function") {
-          ctx.updateSessionMetadata(session_id || "default", {
-            contextUsage,
-            antigravityQuota,
-            claudeQuota,
-          });
+        if (contextUsage && typeof ctx.updateSessionMetadata === "function") {
+          ctx.updateSessionMetadata(session_id || "default", { contextUsage });
         }
         res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
         res.end();
@@ -272,6 +366,74 @@ function handleStatePost(req, res, options) {
           res.writeHead(400);
           res.end("mini states require svg override");
           return;
+        }
+        // #627 residual: UserPromptSubmit no longer carries a fresh wt_hwnd
+        // from the hook (cache-only prompt path, hooks/clawd-hook.js) — sample
+        // the foreground Windows Terminal window synchronously here instead
+        // (koffi FFI inside the already-running Electron process, never a
+        // subprocess, so it cannot reproduce the console flash #627 was
+        // about). Priority: incoming hook wt_hwnd (older hook versions, or a
+        // pre-#627-residual sample) > this sample > existing session's last
+        // value (state.js:1431 MERGE, handled automatically by passing null
+        // through when we have nothing new).
+        //
+        // Placed AFTER resolveCodexOfficialHookState on purpose: a codex
+        // subagent prompt is classified headless THERE, and that verdict must
+        // join the effective metadata below — otherwise a first-seen subagent
+        // prompt arriving without a hook wt_hwnd could sample the local
+        // foreground WT before anything knows the session is headless
+        // (matters most once PR2/#634 makes the codex hook cache-only too).
+        // Dropped/invalid requests above never reach the probe at all.
+        //
+        // The eligibility check below MUST use "effective" metadata —
+        // incoming body fields merged with the existing session's known
+        // fields — not just the incoming body: a cache-miss prompt
+        // deliberately omits process metadata (host/wslDistro/platform/
+        // headless/sourcePid), and judging eligibility on the bare incoming
+        // body would misjudge an already-known headless/remote session as
+        // interactive and sample a Windows Terminal window that has nothing
+        // to do with it. See docs/plans/plan-issue-627-residual-userprompt-flash.md §4.2.
+        const existingSession = ctx.sessions && typeof ctx.sessions.get === "function"
+          ? ctx.sessions.get(sid)
+          : null;
+        const effHost = host || (existingSession && existingSession.host) || null;
+        const effWslDistro = wslDistro || (existingSession && existingSession.wslDistro) || null;
+        const effPlatform = platform || (existingSession && existingSession.platform) || null;
+        const effHeadless = headless === true
+          || codexHookState.headless === true
+          || (existingSession && existingSession.headless) === true;
+        const effSourcePid = source_pid || (existingSession && existingSession.sourcePid) || null;
+        // effectiveSourcePid gate: the focus entry point is a hard sourcePid
+        // requirement (src/session-focus.js:41, src/main.js:1668) — sampling
+        // for a session nobody can focus yet risks mis-attributing whatever
+        // WT window the user happens to have foreground to a headless/unknown
+        // session. A cache HIT (server already knows sourcePid) still samples
+        // normally; only a miss on a completely unknown session skips.
+        let sampledWtHwnd = null;
+        const wtHwndSamplingEligible = !wtHwnd
+          && event === "UserPromptSubmit"
+          && isWinHost
+          && !effHost
+          && !effWslDistro
+          && effPlatform !== "webui"
+          && !effHeadless
+          && !!effSourcePid;
+        if (wtHwndSamplingEligible) {
+          try { sampledWtHwnd = captureForegroundWindowsTerminal(); } catch { sampledWtHwnd = null; }
+        }
+        // Failure/ineligibility red line: never anything but null here — no
+        // hook-side PowerShell fallback is ever triggered by this route.
+        const effectiveWtHwnd = wtHwnd || sampledWtHwnd || null;
+        const wtHwndSource = wtHwnd
+          ? "hook"
+          : (sampledWtHwnd
+            ? "server"
+            : ((existingSession && existingSession.wtHwnd) ? "previous" : "none"));
+        // Provenance is only meaningful where sampling can happen; logging it
+        // on every PreToolUse/PostToolUse would flood session-debug.log
+        // (sessionLog is unconditionally enabled once the app is ready).
+        if (event === "UserPromptSubmit" && typeof ctx.debugLog === "function") {
+          ctx.debugLog(`wt-hwnd sid=${sid} event=${event} source=${wtHwndSource}`);
         }
         if (event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop") {
           const perm = findPendingPermissionForStateEvent(ctx.pendingPermissions, {
@@ -328,7 +490,7 @@ function handleStatePost(req, res, options) {
         } else {
           ctx.updateSession(sid, state, event, {
             sourcePid: source_pid,
-            wtHwnd,
+            wtHwnd: effectiveWtHwnd,
             cwd,
             editor,
             pidChain,
@@ -348,8 +510,6 @@ function handleStatePost(req, res, options) {
             displayHint: display_svg,
             sessionTitle,
             contextUsage,
-            antigravityQuota,
-            claudeQuota,
             assistantLastOutput,
             assistantLastOutputTruncated,
             toolName,
@@ -357,12 +517,17 @@ function handleStatePost(req, res, options) {
             permissionSuspect,
             permissionAction,
             permissionCommand,
+            permissionToolInput,
+            permissionGateOpen,
+            permissionGated,
+            permissionGateId,
             preserveState,
             hookSource,
             backgroundTasksCount,
             sessionCronsCount,
             stopHookActive,
             stdinDiag,
+            ...(codexUserInput ? { transientPermissionEvent: true } : {}),
             ...(agentIdentity.defaulted ? { agentIdDefaulted: true } : {}),
           });
         }

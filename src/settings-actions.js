@@ -48,13 +48,22 @@
 // prefs without writing them right back. Object-form entries must therefore
 // keep validate side-effect-free.
 
-const { CURRENT_VERSION } = require("./prefs");
+const {
+  CURRENT_VERSION,
+  MAX_CUSTOM_DISCOVERY_PATHS,
+  normalizePathList,
+} = require("./prefs");
+const {
+  MAX_CUSTOM_APPLICATIONS,
+  normalizeCustomApplications,
+} = require("./custom-applications");
 const {
   TEXT_SCALE_MIN,
   TEXT_SCALE_MAX,
   isValidTextScale,
   normalizeTextScaleByDisplay,
 } = require("./text-scale");
+const { isPetTintId } = require("./pet-customization-catalog");
 const { isValidDisplaySnapshot } = require("./work-area");
 const {
   MAX_AUTO_CLOSE_SECONDS,
@@ -78,12 +87,14 @@ const {
   requireString,
   requirePlainObject,
 } = require("./settings-validators");
+const { listIdleVisualOptions } = require("./idle-visual");
 const {
   registerShortcut,
   resetShortcut,
   resetAllShortcuts,
 } = require("./settings-actions-shortcuts");
 const {
+  addCustomApplication,
   clearAgentCleanupHints,
   clearAgentInstallHints,
   deployToWsl,
@@ -91,6 +102,9 @@ const {
   installAgentIntegration,
   dismissAgentInstallHints,
   removeFromWsl,
+  removeCustomApplication,
+  setAgentCustomDiscoveryPaths,
+  setAgentCustomPermissionUrl,
   setAgentFlag,
   setAgentPermissionMode,
   uninstallAgentIntegration,
@@ -123,23 +137,26 @@ const {
   isValidDetectedRemoteNodeSource,
   deployTargetFingerprint,
   deployTargetDrift,
+  normalizeManagedDeployTargets,
+  sanitizeManagedDeployTarget,
+  remoteAccountKey,
 } = require("./remote-ssh-profile");
 const {
   validateTelegramApproval,
   validateTelegramBotToken,
 } = require("./telegram-approval-settings");
+const { validateDiscordPresence } = require("./discord-presence-settings");
 const {
   validateFeishuApproval,
 } = require("./feishu-approval-settings");
 const { EVENTS: TELEGRAM_MIGRATION_EVENTS } = require("./telegram-migration-state");
-const {
-  validateHardwareBuddySettings,
-} = require("./hardware-buddy-settings");
 
+// Only the Step-3 enable switch dispatches from the renderer since the
+// migration card retired: turn-on tests native, turn-off disables. The
+// legacy-enable / rollback transitions stay in the reducer for main-side
+// integrity but are no longer renderer-callable.
 const TELEGRAM_MIGRATION_RENDERER_EVENTS = new Set([
   TELEGRAM_MIGRATION_EVENTS.USER_TEST_NATIVE,
-  TELEGRAM_MIGRATION_EVENTS.USER_ENABLE_LEGACY,
-  TELEGRAM_MIGRATION_EVENTS.USER_ROLLBACK_TO_LEGACY,
   TELEGRAM_MIGRATION_EVENTS.USER_DISABLE,
 ]);
 
@@ -151,11 +168,13 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "gemini-cli",
   "antigravity-cli",
   "codebuddy",
+  "workbuddy",
   "kiro-cli",
   "kimi-cli",
   "qwen-code",
   "codewhale",
   "opencode",
+  "mimocode",
   "pi",
   "openclaw",
   "hermes",
@@ -245,11 +264,40 @@ const updateRegistry = {
   codexHookHealthLastNotified: requireString("codexHookHealthLastNotified", { allowEmpty: true }),
   lowPowerIdleMode: requireBoolean("lowPowerIdleMode"),
   keepAwakeWhileWorking: requireBoolean("keepAwakeWhileWorking"),
+  petTint(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "petTint must be a theme-to-tint object" };
+    }
+    for (const [themeId, tintId] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || !isPetTintId(tintId)
+        || tintId === "none"
+      ) {
+        return {
+          status: "error",
+          message: `petTint entry "${themeId}" must map a safe theme id to a non-default catalog tint id`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
   sessionHudEnabled: requireBoolean("sessionHudEnabled"),
   sessionHudShowStateLabels: requireBoolean("sessionHudShowStateLabels"),
   sessionHudShowElapsed: requireBoolean("sessionHudShowElapsed"),
   sessionHudShowContextUsage: requireBoolean("sessionHudShowContextUsage"),
+  sessionHudShowQuota: requireBoolean("sessionHudShowQuota"),
+  claudeQuotaCollectionEnabled: {
+    validate: requireBoolean("claudeQuotaCollectionEnabled"),
+    effect(value, deps = {}) {
+      if (typeof deps.setClaudeQuotaCollectionEnabled !== "function") {
+        return { status: "error", message: "Claude quota collection is unavailable" };
+      }
+      return deps.setClaudeQuotaCollectionEnabled(value);
+    },
+  },
+  quotaMergeSources: requireBoolean("quotaMergeSources"),
   sessionHudCleanupDetached: requireBoolean("sessionHudCleanupDetached"),
   sessionHudPinned: requireBoolean("sessionHudPinned"),
   hideBubbles: requireBoolean("hideBubbles"),
@@ -420,6 +468,48 @@ const updateRegistry = {
     return { status: "ok" };
   },
 
+  // Custom application commands commit these top-level prefs fields. Keep
+  // strict registry entries here because the controller rejects every command
+  // commit key that is not registered, even when prefs.js already knows it.
+  customToolDiscoveryPaths(value) {
+    if (!Array.isArray(value)) {
+      return { status: "error", message: "customToolDiscoveryPaths must be an array" };
+    }
+    const normalized = normalizePathList(value, { maxEntries: MAX_CUSTOM_DISCOVERY_PATHS + 1 });
+    if (
+      normalized.length !== value.length
+      || normalized.length > MAX_CUSTOM_DISCOVERY_PATHS
+      || normalized.some((entry, index) => entry !== value[index])
+    ) {
+      return {
+        status: "error",
+        message: `customToolDiscoveryPaths must contain at most ${MAX_CUSTOM_DISCOVERY_PATHS} normalized unique paths`,
+      };
+    }
+    return { status: "ok" };
+  },
+  customApplications(value) {
+    if (!Array.isArray(value) || value.length > MAX_CUSTOM_APPLICATIONS) {
+      return {
+        status: "error",
+        message: `customApplications must be an array with at most ${MAX_CUSTOM_APPLICATIONS} entries`,
+      };
+    }
+    const normalized = normalizeCustomApplications(value);
+    const allowedKeys = new Set(["id", "name", "sourcePath", "executablePath", "processName", "category"]);
+    const isNormalized = normalized.length === value.length && normalized.every((entry, index) => {
+      const original = value[index];
+      return original
+        && typeof original === "object"
+        && !Array.isArray(original)
+        && Object.keys(original).every((key) => allowedKeys.has(key))
+        && Object.keys(entry).every((key) => entry[key] === original[key]);
+    });
+    return isNormalized
+      ? { status: "ok" }
+      : { status: "error", message: "customApplications must contain normalized unique custom application entries" };
+  },
+
   // ── Phase 2/3 placeholders — schema reserves these so applyUpdate accepts them ──
   agents: requirePlainObject("agents"),
   themeOverrides: requirePlainObject("themeOverrides"),
@@ -440,6 +530,10 @@ const updateRegistry = {
   // Letting this field have an effect would double-activate when the UI
   // updates `theme` and `themeVariant` separately.
   themeVariant: requirePlainObject("themeVariant"),
+  // #509: per-theme default idle visual. Writes go through the `setIdleVisual`
+  // command (which validates the file against the active theme); this entry
+  // exists so applyCommand's commit re-validation accepts the key.
+  idleVisual: requirePlainObject("idleVisual"),
 
   // Remote SSH profile store. Plain validator — actual CRUD goes through
   // commandRegistry below to keep id-uniqueness, default-fill, and
@@ -462,6 +556,9 @@ const updateRegistry = {
   },
   tgApproval(value) {
     return validateTelegramApproval(value);
+  },
+  discordPresence(value) {
+    return validateDiscordPresence(value);
   },
   feishuApproval(value) {
     return validateFeishuApproval(value);
@@ -492,10 +589,6 @@ const updateRegistry = {
       return { status: "error", message: "tgMigration.migration must be an object" };
     }
     return { status: "ok" };
-  },
-
-  hardwareBuddy(value) {
-    return validateHardwareBuddySettings(value);
   },
 
   shortcuts: {
@@ -751,6 +844,7 @@ async function removeTheme(payload, deps) {
   const snapshot = deps.snapshot || {};
   const currentOverrides = snapshot.themeOverrides || {};
   const currentVariantMap = snapshot.themeVariant || {};
+  const currentIdleVisual = snapshot.idleVisual || {};
   const nextCommit = {};
   if (currentOverrides[themeId]) {
     const nextOverrides = { ...currentOverrides };
@@ -761,6 +855,11 @@ async function removeTheme(payload, deps) {
     const nextVariantMap = { ...currentVariantMap };
     delete nextVariantMap[themeId];
     nextCommit.themeVariant = nextVariantMap;
+  }
+  if (currentIdleVisual[themeId] !== undefined) {
+    const nextIdleVisual = { ...currentIdleVisual };
+    delete nextIdleVisual[themeId];
+    nextCommit.idleVisual = nextIdleVisual;
   }
   if (Object.keys(nextCommit).length > 0) {
     return { status: "ok", commit: nextCommit };
@@ -814,6 +913,51 @@ function setThemeSelection(payload, deps) {
     status: "ok",
     commit: { theme: themeId, themeVariant: nextVariantMap },
   };
+}
+
+// #509: default idle visual picker.
+//   payload: { themeId: string, file: string|null }  (null = back to theme default)
+// Validates against the LOADED active theme (only it knows the real file list
+// after variants/overrides), so only the active theme's entry can be written.
+const _validateSetIdleVisualThemeId = requireString("setIdleVisual.themeId");
+function setIdleVisual(payload, deps) {
+  const themeId = payload && payload.themeId;
+  const file = payload && typeof payload === "object" ? payload.file : undefined;
+  const idCheck = _validateSetIdleVisualThemeId(themeId);
+  if (idCheck.status !== "ok") return idCheck;
+  if (file !== null && (typeof file !== "string" || !file)) {
+    return { status: "error", message: "setIdleVisual.file must be a non-empty string or null" };
+  }
+
+  if (!deps || typeof deps.getActiveTheme !== "function") {
+    return { status: "error", message: "setIdleVisual effect requires getActiveTheme dep" };
+  }
+  const activeTheme = deps.getActiveTheme();
+  if (!activeTheme || activeTheme._id !== themeId) {
+    return { status: "error", message: `setIdleVisual: theme "${themeId}" is not the active theme` };
+  }
+
+  let nextFile = file;
+  if (nextFile !== null) {
+    const match = listIdleVisualOptions(activeTheme).find((option) => option.file === nextFile);
+    if (!match) {
+      return { status: "error", message: `setIdleVisual: "${nextFile}" is not an idle visual of theme "${themeId}"` };
+    }
+    // Theme default is represented by the absence of an entry.
+    if (match.isThemeDefault) nextFile = null;
+  }
+
+  const snapshot = (deps && deps.snapshot) || {};
+  const currentMap = snapshot.idleVisual || {};
+  const nextMap = { ...currentMap };
+  if (nextFile === null) {
+    if (nextMap[themeId] === undefined) return { status: "ok", noop: true };
+    delete nextMap[themeId];
+    return { status: "ok", commit: { idleVisual: nextMap } };
+  }
+  if (nextMap[themeId] === nextFile) return { status: "ok", noop: true };
+  nextMap[themeId] = nextFile;
+  return { status: "ok", commit: { idleVisual: nextMap } };
 }
 
 function resizePet(payload, deps) {
@@ -905,6 +1049,10 @@ function remoteSshAddProfile(payload, deps) {
   if (next.profiles.some((p) => p.id === profile.id)) {
     return { status: "error", message: `remoteSsh.add: profile id "${profile.id}" already exists` };
   }
+  // Ownership metadata is server-issued only after a successful deploy.
+  // Renderer input must never be able to manufacture cleanup authority.
+  delete profile.managedDeployTargets;
+  delete profile.lastDeployedAt;
   next.profiles.push(profile);
   return { status: "ok", commit: { remoteSsh: next } };
 }
@@ -940,8 +1088,18 @@ function remoteSshUpdateProfile(payload, deps) {
   // false-flag "port drift" when prev had port:22 and the UI saveBtn omitted
   // the default 22 from the payload.
   const drift = deployTargetDrift(deployTargetFingerprint(prev), deployTargetFingerprint(profile));
+  // Deployment stamps and cleanup ownership are server-issued metadata.
+  // Ignore anything supplied by the renderer, then restore only the trusted
+  // values already present in the current settings snapshot.
+  delete profile.lastDeployedAt;
+  delete profile.managedDeployTargets;
+  // Ownership history is independent of whether the current form still
+  // points at the deployed target. Preserve it across A → B edits so delete
+  // later cleans the actual managed account(s), never the current guess.
+  const managedDeployTargets = normalizeManagedDeployTargets(prev.managedDeployTargets);
+  if (managedDeployTargets.length) profile.managedDeployTargets = managedDeployTargets;
   if (drift === null) {
-    if (Number.isFinite(prev.lastDeployedAt) && !Number.isFinite(payload.lastDeployedAt)) {
+    if (Number.isFinite(prev.lastDeployedAt)) {
       profile.lastDeployedAt = prev.lastDeployedAt;
     }
     if (profile.detectedRemoteNodeBin === undefined) {
@@ -982,6 +1140,24 @@ function remoteSshMarkDeployed(payload, deps) {
     return { status: "ok", noop: true, reason: "profile_deleted" };
   }
   const current = next.profiles[idx];
+  const remoteNode = normalizeRemoteNodeDetection(payload.remoteNode || payload, deployedAt);
+  const targetAtDeployStart = expectedTarget && typeof expectedTarget === "object"
+    ? expectedTarget
+    : current;
+  const ownedTarget = sanitizeManagedDeployTarget({
+    ...deployTargetFingerprint(targetAtDeployStart),
+    ...(remoteNode || {}),
+    deployedAt,
+  });
+  if (!ownedTarget) {
+    return { status: "error", message: "remoteSsh.markDeployed: invalid deployment ownership target" };
+  }
+  const ownedTargets = normalizeManagedDeployTargets([
+    ...(current.managedDeployTargets || []).filter(
+      (target) => remoteAccountKey(target) !== remoteAccountKey(ownedTarget)
+    ),
+    ownedTarget,
+  ]);
   if (expectedTarget && typeof expectedTarget === "object") {
     // Normalize both sides through deployTargetFingerprint so port-22 vs
     // undefined / empty-string vs missing don't false-flag drift. This also
@@ -992,20 +1168,27 @@ function remoteSshMarkDeployed(payload, deps) {
       deployTargetFingerprint(expectedTarget)
     );
     if (drift) {
+      const updatedProfile = { ...current, managedDeployTargets: ownedTargets };
+      const newProfiles = next.profiles.slice();
+      newProfiles[idx] = updatedProfile;
       return {
         status: "ok",
+        commit: { remoteSsh: { profiles: newProfiles } },
         noop: true,
         reason: "target_drift",
         targetDrift: drift,
-        message: `remoteSsh.markDeployed: profile ${id}.${drift} changed during deploy; not stamping`,
+        message: `remoteSsh.markDeployed: profile ${id}.${drift} changed during deploy; ownership recorded without stamping current target`,
       };
     }
   }
   // Only mutate deployment metadata — every other field stays as-is so
   // concurrent user edits (label / autoStartCodexMonitor / connectOnLaunch)
   // survive.
-  const updatedProfile = { ...current, lastDeployedAt: deployedAt };
-  const remoteNode = normalizeRemoteNodeDetection(payload.remoteNode || payload, deployedAt);
+  const updatedProfile = {
+    ...current,
+    lastDeployedAt: deployedAt,
+    managedDeployTargets: ownedTargets,
+  };
   if (remoteNode) copyRemoteNodeDetection(updatedProfile, remoteNode);
   const newProfiles = next.profiles.slice();
   newProfiles[idx] = updatedProfile;
@@ -1085,14 +1268,6 @@ async function telegramApprovalSetToken(payload, deps = {}) {
   return { status: "ok", tokenStored: true };
 }
 
-async function telegramApprovalDeleteTokenFile(_payload, deps = {}) {
-  if (!deps || typeof deps.deleteTelegramApprovalTokenFile !== "function") {
-    return { status: "error", message: "telegramApproval.deleteTokenFile requires deleteTelegramApprovalTokenFile dep" };
-  }
-  const result = await deps.deleteTelegramApprovalTokenFile();
-  return result || { status: "error", message: "Telegram token file delete returned no result" };
-}
-
 function telegramApprovalStatus(_payload, deps = {}) {
   if (!deps || typeof deps.getTelegramApprovalStatus !== "function") {
     return { status: "error", message: "telegramApproval.status requires getTelegramApprovalStatus dep" };
@@ -1150,7 +1325,6 @@ async function telegramMigrationDispatch(payload, deps = {}) {
 }
 
 telegramMigrationDispatch.lockKey = "tgApproval";
-telegramApprovalDeleteTokenFile.lockKey = "tgApproval";
 
 async function telegramApprovalSendTest(_payload, deps = {}) {
   if (!deps || typeof deps.sendTelegramApprovalTest !== "function") {
@@ -1165,9 +1339,11 @@ async function feishuApprovalSetSecrets(payload, deps = {}) {
   if (!deps || typeof deps.writeFeishuApprovalSecrets !== "function") {
     return { status: "error", message: "feishuApproval.setSecrets requires writeFeishuApprovalSecrets dep" };
   }
+  // Pass the writer's result through untouched: it carries the `code` the
+  // settings page localizes and the English detail naming the real cause.
   const result = await deps.writeFeishuApprovalSecrets(secrets);
   if (!result || result.status !== "ok") {
-    return result || { status: "error", message: "Feishu approval secrets write failed" };
+    return result || { status: "error", code: "write-failed", message: "Secrets write returned no result" };
   }
   return { status: "ok", secretsStored: true };
 }
@@ -1193,7 +1369,9 @@ async function feishuApprovalSendTest(_payload, deps = {}) {
     return { status: "error", message: "feishuApproval.test requires sendFeishuApprovalTest dep" };
   }
   const result = await deps.sendFeishuApprovalTest();
-  return result || { status: "error", message: "Feishu approval test returned no result" };
+  // Defensive only, but the renderer shows a code-less `message` verbatim — so
+  // it stays brand-neutral like every other user-visible string on this path.
+  return result || { status: "error", message: "Remote approval test returned no result" };
 }
 
 function cleanupMessage(result) {
@@ -1348,6 +1526,7 @@ function setTextScaleForDisplay(payload, deps) {
 }
 
 const commandRegistry = {
+  addCustomApplication,
   removeTheme,
   installHooks,
   uninstallHooks,
@@ -1359,7 +1538,10 @@ const commandRegistry = {
   dismissAgentInstallHints,
   installAgentIntegration,
   removeFromWsl,
+  removeCustomApplication,
   repairAgentIntegration,
+  setAgentCustomDiscoveryPaths,
+  setAgentCustomPermissionUrl,
   uninstallAgentIntegration,
   repairLocalServer,
   repairDoctorIssue,
@@ -1382,13 +1564,13 @@ const commandRegistry = {
   importAnimationOverrides,
   setWideHitboxOverride,
   setThemeSelection,
+  setIdleVisual,
   "remoteSsh.add": remoteSshAddProfile,
   "remoteSsh.update": remoteSshUpdateProfile,
   "remoteSsh.delete": remoteSshDeleteProfile,
   "remoteSsh.markDeployed": remoteSshMarkDeployed,
   "remoteSsh.markRemoteNode": remoteSshMarkRemoteNode,
   "telegramApproval.setToken": telegramApprovalSetToken,
-  "telegramApproval.deleteTokenFile": telegramApprovalDeleteTokenFile,
   "telegramApproval.status": telegramApprovalStatus,
   "telegramApproval.tokenInfo": telegramApprovalTokenInfo,
   "telegramApproval.test": telegramApprovalSendTest,

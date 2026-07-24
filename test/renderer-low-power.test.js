@@ -96,7 +96,11 @@ function createRendererHarness(options = {}) {
   container.isConnected = true;
   const clawd = new FakeElement("object");
   clawd.id = "clawd";
-  clawd.data = "../assets/svg/current.svg";
+  // index.html ships the object tag without data; tests that don't care get a
+  // pre-displayed file so the initial-frame swap stays out of their way.
+  clawd.data = Object.prototype.hasOwnProperty.call(options, "initialObjectData")
+    ? options.initialObjectData
+    : "../assets/svg/current.svg";
   clawd.style.opacity = "0";
   container.appendChild(clawd);
 
@@ -125,6 +129,10 @@ function createRendererHarness(options = {}) {
       themeConfig: {
         assetsPath: "../assets/svg",
         eyeTracking: { states: ["idle"] },
+        petTintSupported: true,
+        // Matches the pre-displayed file above, so tests that don't care about
+        // the #509 idle choice keep resting on the "follow" sprite.
+        idleFollowSvg: "current.svg",
         ...(options.themeConfig || {}),
       },
       electronAPI,
@@ -175,6 +183,8 @@ globalThis.__rendererTest = {
     _layeredTrackingDocument = document;
   },
   getPetMediaElements,
+  normalizePetTintPayload,
+  applyPetTintToAllMedia,
   get pendingNext() { return pendingNext; },
   get pendingSvgFile() { return pendingSvgFile; },
   get activeSwapToken() { return activeSwapToken; },
@@ -618,6 +628,7 @@ describe("renderer low-power idle mode", () => {
   it("reattaches a stale single eye target before applying the next eye move", () => {
     const harness = createRendererHarness();
     attachFakeSvgDocument(harness.clawd, { withEyes: true });
+    harness.api.setCurrentState("idle");
     harness.api.attachEyeTracking(harness.clawd);
     const replacementSvg = attachFakeSvgDocument(harness.clawd, { withEyes: true });
 
@@ -665,25 +676,31 @@ describe("renderer object-channel selection", () => {
         },
       },
     });
+    const filter = "grayscale(1) brightness(1.05)";
+    harness.electronHandlers.onPetTintChange({ id: "mono", filter });
 
     harness.electronHandlers.onStateChange("sleeping", "sleep.svg");
     assert.strictEqual(harness.api.pendingNext.tagName, "OBJECT");
     assert.strictEqual(harness.api.pendingSvgFile, "sleep.svg");
+    assert.strictEqual(harness.api.pendingNext.style.filter, filter);
 
     harness.electronHandlers.onLowPowerIdleModeChange(true);
     assert.strictEqual(harness.api.pendingNext.tagName, "IMG");
     assert.strictEqual(harness.api.pendingSvgFile, "sleep-static.png");
+    assert.strictEqual(harness.api.pendingNext.style.filter, filter);
 
     harness.electronHandlers.onLowPowerIdleModeChange(false);
     assert.strictEqual(harness.api.pendingNext.tagName, "OBJECT");
     assert.strictEqual(harness.api.pendingSvgFile, "sleep.svg");
+    assert.strictEqual(harness.api.pendingNext.style.filter, filter);
   });
 
-  it("keeps eye-tracking attachment state-based only", () => {
+  it("gates idle eye-tracking attachment on the follow-idle file", () => {
     const source = readNormalized(RENDERER);
 
     assert.ok(source.includes("function needsEyeTracking(state)"));
-    assert.match(source, /if \(state && needsEyeTracking\(state\)\) {\r?\n\s+attachEyeTracking\(next\);/);
+    assert.ok(source.includes("function tracksEyesForFile(state, file)"));
+    assert.match(source, /if \(state && tracksEyesForFile\(state, file\)\) {\r?\n\s+attachEyeTracking\(next\);/);
   });
 
   it("does not hard-code click or drag reactions to the img channel", () => {
@@ -752,6 +769,152 @@ describe("renderer object-channel selection", () => {
     assert.strictEqual(harness.api.pendingNext.tagName, "OBJECT");
     assert.strictEqual(harness.api.pendingSvgFile, "next.svg");
   });
+
+  it("notifies main once the first pet visual is actually swapped into view", () => {
+    const harness = createRendererHarness();
+
+    harness.api.swapToFile("first.svg", "idle", false);
+    harness.api.pendingNext.listeners.get("load")();
+    harness.api.swapToFile("second.svg", "working", false);
+    harness.api.pendingNext.listeners.get("load")();
+
+    assert.deepStrictEqual(
+      harness.electronCalls.filter((call) => call.name === "notifyPetVisualReady"),
+      [{ name: "notifyPetVisualReady", args: [] }]
+    );
+  });
+});
+
+describe("renderer pet tint", () => {
+  it("applies the stamped tint before the pre-IPC initial media load", () => {
+    const filter = "sepia(0.8) saturate(2.2) hue-rotate(-18deg) brightness(1.05)";
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: {
+        idleFollowSvg: "first.svg",
+        petTintPayload: { id: "gold", filter },
+      },
+    });
+
+    assert.ok(harness.api.pendingNext, "the initial idle visual should be loading");
+    assert.strictEqual(harness.api.pendingNext.style.filter, filter);
+  });
+
+  it("applies the selected filter to current, pending, and fading media elements", () => {
+    const harness = createRendererHarness({
+      themeConfig: {
+        transitions: {
+          "current.svg": { out: 500 },
+        },
+      },
+    });
+    const setTint = harness.electronHandlers.onPetTintChange;
+    const gold = {
+      id: "gold",
+      filter: "sepia(0.8) saturate(2.2) hue-rotate(-18deg) brightness(1.05)",
+    };
+
+    assert.strictEqual(typeof setTint, "function");
+    setTint(gold);
+    assert.strictEqual(harness.clawd.style.filter, gold.filter);
+
+    harness.api.swapToFile("next.png", "working", false);
+    const pending = harness.api.pendingNext;
+    assert.strictEqual(pending.tagName, "IMG");
+    assert.strictEqual(pending.style.filter, gold.filter);
+
+    pending.listeners.get("load")();
+    assert.strictEqual(harness.api.clawdEl, pending);
+    assert.strictEqual(harness.clawd.isConnected, true, "old media should still be fading");
+
+    const mono = { id: "mono", filter: "grayscale(1) brightness(1.05)" };
+    setTint(mono);
+    const filters = [...harness.api.getPetMediaElements()].map((element) => element.style.filter);
+    assert.deepStrictEqual(filters, [mono.filter, mono.filter]);
+  });
+
+  it("clears invalid or custom CSS payloads instead of applying them", () => {
+    const harness = createRendererHarness();
+    const setTint = harness.electronHandlers.onPetTintChange;
+
+    setTint({ id: "mono", filter: "grayscale(1) brightness(1.05)" });
+    assert.strictEqual(harness.clawd.style.filter, "grayscale(1) brightness(1.05)");
+    setTint({ id: "none", filter: "" });
+    assert.strictEqual(harness.clawd.style.filter, "");
+
+    setTint({ id: "custom", filter: "url(file:///secret)" });
+    assert.strictEqual(harness.clawd.style.filter, "");
+
+    setTint({ id: "none", filter: "grayscale(1)" });
+    assert.strictEqual(harness.clawd.style.filter, "");
+
+    setTint("grayscale(1)");
+    assert.strictEqual(harness.clawd.style.filter, "");
+  });
+
+  it("keeps tint through same-file dedup and theme config reload", () => {
+    const harness = createRendererHarness();
+    const filter = "hue-rotate(265deg) saturate(1.6) contrast(1.05)";
+    harness.electronHandlers.onPetTintChange({ id: "vaporwave", filter });
+
+    harness.api.swapToFile("rest.svg", "working", false);
+    harness.api.pendingNext.listeners.get("load")();
+    const displayed = harness.api.clawdEl;
+    assert.strictEqual(displayed.style.filter, filter);
+
+    harness.electronHandlers.onStateChange("working", "rest.svg");
+    assert.strictEqual(harness.api.pendingNext, null);
+    assert.strictEqual(harness.api.clawdEl, displayed);
+    assert.strictEqual(displayed.style.filter, filter);
+
+    harness.electronHandlers.onThemeConfig({
+      assetsPath: "../themes/other",
+      eyeTracking: { states: [] },
+      idleFollowSvg: "idle.svg",
+      petTintSupported: true,
+    });
+    assert.strictEqual(harness.api.clawdEl, displayed);
+    assert.strictEqual(displayed.style.filter, filter);
+  });
+
+  it("clears a persisted tint when the active theme opts out and restores it when support returns", () => {
+    const harness = createRendererHarness();
+    const filter = "hue-rotate(265deg) saturate(1.6) contrast(1.05)";
+    harness.electronHandlers.onPetTintChange({ id: "vaporwave", filter });
+    assert.strictEqual(harness.clawd.style.filter, filter);
+
+    harness.electronHandlers.onThemeConfig({
+      assetsPath: "../themes/calico",
+      eyeTracking: { states: [] },
+      idleFollowSvg: "idle.png",
+      petTintSupported: false,
+    });
+    assert.strictEqual(harness.clawd.style.filter, "");
+
+    harness.electronHandlers.onThemeConfig({
+      assetsPath: "../themes/clawd",
+      eyeTracking: { states: ["idle"] },
+      idleFollowSvg: "idle.svg",
+      petTintSupported: true,
+    });
+    assert.strictEqual(harness.clawd.style.filter, filter);
+  });
+
+  it("wires an initial resolved payload and a narrow preload event channel", () => {
+    const source = readNormalized(RENDERER);
+    const preload = readNormalized(PRELOAD);
+    const main = readNormalized(MAIN);
+
+    assert.ok(source.includes('let _petTintPayload = { id: "none", filter: "" };'));
+    assert.ok(source.includes("applyPetTintToElement(next);"));
+    assert.ok(source.includes("for (const element of getPetMediaElements()) applyPetTintToElement(element);"));
+    assert.ok(preload.includes(
+      'onPetTintChange: (cb) => ipcRenderer.on("pet-tint-change", (_, payload) => cb(payload))'
+    ));
+    assert.ok(main.includes(
+      "const tintId = getPetTintIdForTheme(petTint, activeTheme && activeTheme._id);"
+    ));
+  });
 });
 
 describe("renderer Cloudling pointer bridge", () => {
@@ -794,6 +957,136 @@ describe("renderer sound preload and warmup", () => {
     assert.strictEqual(harness.audioInstances.length, 2);
     assert.strictEqual(harness.audioInstances[1].url, "file:///complete.mp3");
     assert.strictEqual(harness.audioInstances[1].playCalls, 1);
+  });
+});
+
+describe("renderer initial frame idle visual", () => {
+  it("rests on the user-selected idle visual when the theme config carries one", () => {
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: {
+        idleFollowSvg: "clawd-idle-follow.svg",
+        idleDefaultVisual: "clawd-idle-reading.svg",
+      },
+    });
+    assert.strictEqual(harness.api.pendingSvgFile, "clawd-idle-reading.svg");
+  });
+
+  it("falls back to the follow sprite when no visual is selected", () => {
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: {
+        idleFollowSvg: "clawd-idle-follow.svg",
+        idleDefaultVisual: null,
+      },
+    });
+    assert.strictEqual(harness.api.pendingSvgFile, "clawd-idle-follow.svg");
+  });
+});
+
+describe("renderer file-aware idle eye tracking", () => {
+  function restOnIdleVisual(harness, file, { withEyes } = {}) {
+    harness.electronHandlers.onStateChange("idle", file);
+    const next = harness.api.pendingNext;
+    assert.ok(next, `state change to ${file} should start a swap`);
+    attachFakeSvgDocument(next, { withEyes: !!withEyes });
+    next.listeners.get("load")();
+    return next;
+  }
+
+  it("attaches eye tracking when idle rests on the follow sprite", () => {
+    const harness = createRendererHarness({
+      themeConfig: { idleFollowSvg: "clawd-idle-follow.svg" },
+    });
+    restOnIdleVisual(harness, "clawd-idle-follow.svg", { withEyes: true });
+
+    assert.ok(harness.api.eyeTarget, "follow sprite must keep eye tracking");
+  });
+
+  it("never attaches eye tracking to a non-follow idle visual, even one with eye targets", () => {
+    const harness = createRendererHarness({
+      themeConfig: { idleFollowSvg: "clawd-idle-follow.svg" },
+    });
+    restOnIdleVisual(harness, "clawd-idle-reading.svg", { withEyes: true });
+    drainActiveTimers(harness, (timer) => timer.ms === 16 && !timer.cleared);
+
+    assert.strictEqual(harness.api.eyeTarget, null);
+  });
+
+  it("does not reattach stale eye tracking on eye move for a non-follow idle visual", () => {
+    const harness = createRendererHarness({
+      themeConfig: { idleFollowSvg: "clawd-idle-follow.svg" },
+    });
+    const nonFollowObject = restOnIdleVisual(
+      harness,
+      "clawd-idle-reading.svg",
+      { withEyes: true }
+    );
+
+    // Simulate tracking left behind by an older renderer or a theme reload,
+    // then replace the object's document so onEyeMove sees a stale target.
+    harness.api.attachEyeTracking(nonFollowObject);
+    assert.ok(harness.api.eyeTarget);
+    const replacementSvg = attachFakeSvgDocument(nonFollowObject, { withEyes: true });
+
+    harness.electronHandlers.onEyeMove(2, -1);
+
+    assert.strictEqual(harness.api.eyeTarget, null);
+    assert.equal(replacementSvg.elements.get("eyes-js").getAttribute("transform"), "");
+    assert.equal(
+      drainActiveTimers(harness, (timer) => timer.ms === 16 && !timer.cleared),
+      0,
+      "non-follow idle must not schedule an eye-target reattach retry"
+    );
+  });
+
+  it("detaches stale eye tracking when the same non-follow idle visual is re-entered", () => {
+    const harness = createRendererHarness({
+      themeConfig: { idleFollowSvg: "clawd-idle-follow.svg" },
+    });
+    const nonFollowObject = restOnIdleVisual(
+      harness,
+      "clawd-idle-reading.svg",
+      { withEyes: true }
+    );
+    harness.api.attachEyeTracking(nonFollowObject);
+    assert.ok(harness.api.eyeTarget);
+
+    harness.electronHandlers.onStateChange("idle", "clawd-idle-reading.svg");
+
+    assert.strictEqual(harness.api.clawdEl, nonFollowObject);
+    assert.strictEqual(harness.api.pendingNext, null, "same-file re-entry must not swap media");
+    assert.strictEqual(harness.api.eyeTarget, null);
+  });
+
+  it("still attaches eye tracking for mini-idle regardless of the idle choice", () => {
+    const harness = createRendererHarness({
+      themeConfig: { idleFollowSvg: "clawd-idle-follow.svg" },
+    });
+    harness.electronHandlers.onStateChange("mini-idle", "clawd-mini.svg");
+    const next = harness.api.pendingNext;
+    assert.ok(next);
+    attachFakeSvgDocument(next, { withEyes: true });
+    next.listeners.get("load")();
+
+    assert.ok(harness.api.eyeTarget, "mini-idle eye tracking is not file-gated");
+  });
+
+  it("skips the wake eye-object reload and reports resumed on a non-follow resting visual", () => {
+    const harness = createRendererHarness({
+      themeConfig: { idleFollowSvg: "clawd-idle-follow.svg" },
+    });
+    restOnIdleVisual(harness, "clawd-idle-reading.svg");
+    harness.api.setLowPowerIdleMode(true);
+
+    harness.electronHandlers.onSystemWake({ id: "wake-nonfollow-1", trigger: "resume", attempt: 0 });
+
+    assert.strictEqual(harness.api.pendingNext, null, "no eye-object reload should start");
+    const report = harness.electronCalls.find((call) => call.name === "reportSystemWakeStatus");
+    assert.ok(report, "wake must report immediately instead of waiting for eye targets");
+    assert.equal(report.args[0].id, "wake-nonfollow-1");
+    assert.equal(report.args[0].result, "resumed");
+    assert.equal(report.args[0].eyeTrackingReady, true);
   });
 });
 

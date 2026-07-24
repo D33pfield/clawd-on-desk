@@ -34,6 +34,7 @@ describe("cleanupIntegrations", () => {
     const plan = buildCleanupOptionsForHome(homeDir, {
       env: {
         HERMES_HOME: path.join(os.tmpdir(), "admin-hermes"),
+        REASONIX_HOME: path.join(os.tmpdir(), "admin-reasonix"),
         LOCALAPPDATA: inheritedLocalAppData,
         APPDATA: path.join(os.tmpdir(), "admin-appdata"),
       },
@@ -51,11 +52,93 @@ describe("cleanupIntegrations", () => {
     assert.strictEqual(plan.byAgent.codewhale.configPath, path.join(homeDir, ".codewhale", "config.toml"));
     assert.strictEqual(plan.byAgent.opencode.configPath, path.join(homeDir, ".config", "opencode", "opencode.json"));
     assert.strictEqual(plan.byAgent.pi.parentDir, path.join(homeDir, ".pi", "agent"));
+    assert.deepStrictEqual(plan.byAgent.reasonix.settingsPaths, [
+      path.join(targetAppData, "reasonix", "settings.json"),
+      path.join(homeDir, ".reasonix", "settings.json"),
+    ]);
     assert.strictEqual(plan.env.LOCALAPPDATA, targetLocalAppData);
     assert.strictEqual(plan.env.APPDATA, targetAppData);
     assert.strictEqual(plan.env.HERMES_HOME, undefined);
+    assert.strictEqual(plan.env.REASONIX_HOME, undefined);
     assert.strictEqual(plan.byAgent.hermes.env.LOCALAPPDATA, targetLocalAppData);
     assert.notStrictEqual(plan.byAgent.hermes.hermesHome, path.join(inheritedLocalAppData, "hermes"));
+  });
+
+  it("cleans Reasonix hooks from both current and legacy Windows homes", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-reasonix-"));
+    const homeDir = path.join(root, "home");
+    const currentSettings = path.join(homeDir, "AppData", "Roaming", "reasonix", "settings.json");
+    const legacySettings = path.join(homeDir, ".reasonix", "settings.json");
+    for (const settingsPath of [currentSettings, legacySettings]) {
+      writeJson(settingsPath, {
+        hooks: {
+          Stop: [
+            { match: "*", command: 'node "C:/clawd/hooks/reasonix-hook.js"' },
+            { match: "*", command: "echo keep-user-hook" },
+          ],
+        },
+      });
+    }
+
+    try {
+      const result = cleanupIntegrations({
+        homeDir,
+        platform: "win32",
+        env: { REASONIX_HOME: "" },
+        backup: true,
+        silent: true,
+        hermesCommand: false,
+      });
+      const reasonix = result.agents.find((entry) => entry.agentId === "reasonix");
+
+      assert.strictEqual(reasonix.status, "applied");
+      assert.strictEqual(reasonix.removed, 2);
+      for (const settingsPath of [currentSettings, legacySettings]) {
+        assert.deepStrictEqual(readJson(settingsPath).hooks.Stop, [
+          { match: "*", command: "echo keep-user-hook" },
+        ]);
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a partial Reasonix cleanup failure after still cleaning the other home", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-reasonix-error-"));
+    const homeDir = path.join(root, "home");
+    const currentSettings = path.join(homeDir, "AppData", "Roaming", "reasonix", "settings.json");
+    const legacySettings = path.join(homeDir, ".reasonix", "settings.json");
+    fs.mkdirSync(path.dirname(currentSettings), { recursive: true });
+    fs.writeFileSync(currentSettings, "{ invalid json", "utf8");
+    writeJson(legacySettings, {
+      hooks: {
+        Stop: [
+          { match: "*", command: 'node "C:/clawd/hooks/reasonix-hook.js"' },
+          { match: "*", command: "echo keep-user-hook" },
+        ],
+      },
+    });
+
+    try {
+      const result = cleanupIntegrations({
+        homeDir,
+        platform: "win32",
+        backup: true,
+        silent: true,
+        hermesCommand: false,
+      });
+      const reasonix = result.agents.find((entry) => entry.agentId === "reasonix");
+
+      assert.strictEqual(reasonix.status, "failed");
+      assert.strictEqual(reasonix.removed, 1);
+      assert.match(reasonix.error, /Failed to clean Reasonix hooks/);
+      assert.strictEqual(result.summary.failed >= 1, true);
+      assert.deepStrictEqual(readJson(legacySettings).hooks.Stop, [
+        { match: "*", command: "echo keep-user-hook" },
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("removes managed hooks/plugins safely, backs up once, and is idempotent", () => {
@@ -169,5 +252,59 @@ describe("cleanupIntegrations", () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("records a precomputed Claude cleanup result instead of unregistering Claude a second time", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-claude-"));
+    const homeDir = path.join(root, "home");
+    const claudeSettingsPath = path.join(homeDir, ".claude", "settings.json");
+    // A real Clawd hook that WOULD be removed if the generic claude-code
+    // cleaner ran — asserting it survives proves the precomputed result path
+    // is taken instead of a second, queue-external unregister.
+    writeJson(claudeSettingsPath, {
+      hooks: {
+        Stop: [{ matcher: "", hooks: [{ type: "command", command: 'node "C:/clawd/hooks/clawd-hook.js" Stop' }] }],
+      },
+    });
+
+    try {
+      const result = cleanupIntegrations({
+        homeDir,
+        backup: true,
+        silent: true,
+        hermesCommand: false,
+        claudeCleanupResult: { status: "ok", removed: 3, changed: true, backupPaths: ["/fake/backup.bak"] },
+      });
+
+      const claudeAgent = result.agents.find((agent) => agent.agentId === "claude-code");
+      assert.strictEqual(claudeAgent.status, "applied");
+      assert.strictEqual(claudeAgent.removed, 3);
+      assert.deepStrictEqual(claudeAgent.backupPaths, ["/fake/backup.bak"]);
+      assert.strictEqual(result.summary.entriesRemoved >= 3, true);
+
+      const settingsAfter = readJson(claudeSettingsPath);
+      assert.ok(
+        settingsAfter.hooks.Stop.some((entry) => entry.hooks.some((h) => h.command.includes("clawd-hook.js"))),
+        "the real settings.json must be untouched — the precomputed result replaces a second unregister call"
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("marks the claude-code agent failed when the precomputed cleanup result is an error", () => {
+    const homeDir = path.join(os.tmpdir(), "clawd-cleanup-claude-error-home");
+    const result = cleanupIntegrations({
+      homeDir,
+      backup: true,
+      silent: true,
+      hermesCommand: false,
+      claudeCleanupResult: { status: "error", message: "queue disposed" },
+    });
+
+    const claudeAgent = result.agents.find((agent) => agent.agentId === "claude-code");
+    assert.strictEqual(claudeAgent.status, "failed");
+    assert.strictEqual(claudeAgent.error, "queue disposed");
+    assert.strictEqual(result.summary.failed >= 1, true);
   });
 });

@@ -18,6 +18,10 @@
 
 const fs = require("fs");
 const path = require("path");
+const {
+  isCustomApplicationNamespace,
+  normalizeCustomApplications,
+} = require("./custom-applications");
 const { isPlainObject } = require("./theme-loader");
 const { normalizeShortcuts, getDefaultShortcuts } = require("./shortcut-actions");
 const { isValidDisplaySnapshot } = require("./work-area");
@@ -27,13 +31,13 @@ const {
   normalizeTelegramApproval,
 } = require("./telegram-approval-settings");
 const {
+  cloneDefaultDiscordPresence,
+  normalizeDiscordPresence,
+} = require("./discord-presence-settings");
+const {
   cloneDefaultFeishuApproval,
   normalizeFeishuApproval,
 } = require("./feishu-approval-settings");
-const {
-  DEFAULT_HARDWARE_BUDDY_SETTINGS,
-  normalizeHardwareBuddySettings,
-} = require("./hardware-buddy-settings");
 const {
   NOTIFICATION_DEFAULT_SECONDS,
   UPDATE_DEFAULT_SECONDS,
@@ -47,6 +51,7 @@ const {
   TEXT_SCALE_DEFAULT,
   normalizeTextScaleByDisplay,
 } = require("./text-scale");
+const { PET_TINT_IDS } = require("./pet-customization-catalog");
 
 const CURRENT_VERSION = 12;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
@@ -138,6 +143,12 @@ const SCHEMA = {
   sessionHudShowStateLabels: { type: "boolean", default: true },
   sessionHudShowElapsed: { type: "boolean", default: false },
   sessionHudShowContextUsage: { type: "boolean", default: true },
+  sessionHudShowQuota: { type: "boolean", default: true },
+  // Claude Code exposes subscription limits only through its visible,
+  // single-slot statusline. Keep collection opt-in so a fresh Clawd install
+  // never changes the user's terminal UI without an explicit choice.
+  claudeQuotaCollectionEnabled: { type: "boolean", default: false },
+  quotaMergeSources: { type: "boolean", default: false },
   sessionHudCleanupDetached: { type: "boolean", default: true },
   sessionHudPinned: { type: "boolean", default: false },
   // Stale-cleanup intervals (ms). Defaults match the historical constants in
@@ -258,6 +269,15 @@ const SCHEMA = {
   },
   // Theme
   theme: { type: "string", default: "clawd" },
+  // Per-theme color filter choice, e.g. { clawd: "matcha", cloudling: "mono" }.
+  // Missing entries preserve the theme's native colors. The normalizer also
+  // accepts the short-lived pre-detail-view string shape and seeds supported
+  // built-ins with that value so Draft PR testers do not lose their choice.
+  petTint: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizePetTint,
+  },
   // Phase 2/3 placeholders — schema reserves the keys so future migrations don't need v2.
   agents: {
     type: "object",
@@ -275,12 +295,21 @@ const SCHEMA = {
       // antigravity branch). Default kept as false so legacy reads don't see a
       // stale "true" implying bubbles are enabled.
       "antigravity-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: false },
-      "codebuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
+      "codebuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true, customPermissionUrl: "" },
+      // WorkBuddy shares CodeBuddy's Claude-Code-compatible hook protocol but
+      // uses a distinct data dir (~/.workbuddy-ai; legacy: ~/.workbuddy). Opt-in like every other
+      // non-default agent — agent-gate.js fail-opens missing entries, so this
+      // default MUST exist or startup sync would auto-install for any user who
+      // merely has a WorkBuddy data directory. State + Notification only: the
+      // desktop app owns its permission loop natively, so permission bubbles
+      // default off (like qoderwork).
+      "workbuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "codewhale": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "opencode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
+      "mimocode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "pi": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "openclaw": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "hermes": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
@@ -291,6 +320,16 @@ const SCHEMA = {
       "qoderwork": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
     }),
     normalize: normalizeAgents,
+  },
+  customToolDiscoveryPaths: {
+    type: "array",
+    defaultFactory: () => [],
+    normalize: normalizePathList,
+  },
+  customApplications: {
+    type: "array",
+    defaultFactory: () => [],
+    normalize: normalizeCustomApplications,
   },
   dismissedAgentInstallHints: {
     type: "object",
@@ -315,6 +354,16 @@ const SCHEMA = {
     defaultFactory: () => ({}),
     normalize: normalizeThemeVariant,
   },
+  // #509: per-theme default idle visual (e.g. {clawd: "clawd-idle-reading.svg"}).
+  // Missing key for a theme = that theme's stock idle behavior. Values are bare
+  // filenames validated against the LOADED theme at resolve time
+  // (idle-visual.js), never here, so a theme update that drops the file
+  // degrades gracefully to the theme default.
+  idleVisual: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeIdleVisual,
+  },
   sessionAliases: {
     type: "object",
     defaultFactory: () => ({}),
@@ -332,6 +381,11 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => cloneDefaultTelegramApproval(),
     normalize: normalizeTelegramApproval,
+  },
+  discordPresence: {
+    type: "object",
+    defaultFactory: () => cloneDefaultDiscordPresence(),
+    normalize: normalizeDiscordPresence,
   },
   feishuApproval: {
     type: "object",
@@ -366,11 +420,6 @@ const SCHEMA = {
       };
     },
   },
-  hardwareBuddy: {
-    type: "object",
-    defaultFactory: () => ({ ...DEFAULT_HARDWARE_BUDDY_SETTINGS }),
-    normalize: normalizeHardwareBuddySettings,
-  },
   // Background update-check toggle. When true, the scheduler in updater.js
   // runs a quiet GitHub discovery on a 12-hour cycle (packaged builds only).
   // Default on per #329.
@@ -382,7 +431,8 @@ const SCHEMA = {
   pendingUpdateVersion: { type: "string", default: "" },
   // Versions the user explicitly dismissed (clicked Later on the scheduler
   // bubble after actually seeing it). Object map of `{ "v0.9.0": true }`
-  // because prefs.js does not support `type: "array"` (see isValidValue).
+  // Keep this as a true-only object map so membership remains explicit and
+  // older prefs readers do not need array-specific dismissal semantics.
   dismissedUpdateVersions: {
     type: "object",
     defaultFactory: () => ({}),
@@ -418,6 +468,7 @@ function getDefaults() {
 
 function isValidValue(field, value) {
   if (value === undefined || value === null) return false;
+  if (field.type === "array") return Array.isArray(value);
   if (field.type === "object") {
     return typeof value === "object" && !Array.isArray(value);
   }
@@ -440,7 +491,7 @@ function validate(raw) {
     // off across restarts even if a value somehow landed on disk.
     if (field.ephemeral) continue;
     let value = raw[key];
-    if (field.type === "object" && typeof field.normalize === "function") {
+    if ((field.type === "object" || field.type === "array") && typeof field.normalize === "function") {
       value = field.normalize(value, out[key]);
     }
     if (isValidValue(field, value)) {
@@ -448,6 +499,11 @@ function validate(raw) {
     }
     // else: keep default already in `out`
   }
+  if (!("customToolDiscoveryPaths" in raw)) {
+    const legacy = raw.agents && raw.agents.custom && raw.agents.custom.customDiscoveryPaths;
+    out.customToolDiscoveryPaths = normalizePathList(legacy);
+  }
+  normalizeCustomAgentGates(out);
   normalizeStaleTriple(out);
   return out;
 }
@@ -661,6 +717,42 @@ const AGENT_FLAGS = [
   "nativeNotificationSoundEnabled",
 ];
 const CODEX_PERMISSION_MODES = ["native", "intercept"];
+const MAX_CUSTOM_DISCOVERY_PATHS = 64;
+const MAX_CUSTOM_DISCOVERY_PATH_LENGTH = 2048;
+
+function normalizePathList(value, options = {}) {
+  const raw = Array.isArray(value)
+    ? value
+    : (typeof value === "string" ? value.split(/[;\n]/g) : []);
+  const platform = typeof options.platform === "string" ? options.platform : process.platform;
+  const maxEntries = Number.isInteger(options.maxEntries) && options.maxEntries >= 0
+    ? options.maxEntries
+    : MAX_CUSTOM_DISCOVERY_PATHS;
+  const out = [];
+  const seen = new Set();
+  for (const entry of raw) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.replace(/\0/g, "").trim().slice(0, MAX_CUSTOM_DISCOVERY_PATH_LENGTH);
+    const compareKey = platform === "win32" ? trimmed.toLowerCase() : trimmed;
+    if (!trimmed || seen.has(compareKey)) continue;
+    seen.add(compareKey);
+    out.push(trimmed);
+    if (out.length >= maxEntries) break;
+  }
+  return out;
+}
+
+function normalizeOptionalHttpUrl(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? trimmed : "";
+  } catch {
+    return "";
+  }
+}
 
 function normalizeDismissedUpdateVersions(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -712,6 +804,9 @@ function normalizeAgents(value, defaultsValue) {
   if (!value || typeof value !== "object") return defaultsValue;
   const out = { ...defaultsValue };
   for (const id of Object.keys(value)) {
+    // Early #652 builds stored shared path checks as a phantom agent. The
+    // dedicated top-level field now owns that data; never rehydrate this id.
+    if (id === "custom") continue;
     const entry = value[id];
     if (!entry || typeof entry !== "object") continue;
     const base = (defaultsValue && defaultsValue[id])
@@ -734,8 +829,48 @@ function normalizeAgents(value, defaultsValue) {
       merged.permissionMode = entry.permissionMode;
       touched = true;
     }
+    if (Object.prototype.hasOwnProperty.call(base, "customPermissionUrl")) {
+      const customPermissionUrl = normalizeOptionalHttpUrl(entry.customPermissionUrl);
+      if (customPermissionUrl || typeof entry.customPermissionUrl === "string") {
+        merged.customPermissionUrl = customPermissionUrl;
+        touched = true;
+      }
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(base, "customDiscoveryPaths")
+      || Object.prototype.hasOwnProperty.call(entry, "customDiscoveryPaths")
+    ) {
+      const customDiscoveryPaths = normalizePathList(entry.customDiscoveryPaths);
+      if (customDiscoveryPaths.length > 0 || Object.prototype.hasOwnProperty.call(entry, "customDiscoveryPaths")) {
+        merged.customDiscoveryPaths = customDiscoveryPaths;
+        touched = true;
+      }
+    }
     if (touched) out[id] = merged;
   }
+  return out;
+}
+
+function normalizeCustomAgentGates(out) {
+  const applications = Array.isArray(out.customApplications) ? out.customApplications : [];
+  const registeredIds = new Set(applications.map((application) => application.id));
+  const agents = out.agents && typeof out.agents === "object" ? { ...out.agents } : {};
+
+  for (const id of Object.keys(agents)) {
+    if (isCustomApplicationNamespace(id) && !registeredIds.has(id)) delete agents[id];
+  }
+  for (const application of applications) {
+    const current = agents[application.id];
+    agents[application.id] = {
+      integrationInstalled: false,
+      enabled: current && typeof current.enabled === "boolean" ? current.enabled : true,
+      permissionsEnabled: false,
+      notificationHookEnabled: current && typeof current.notificationHookEnabled === "boolean"
+        ? current.notificationHookEnabled
+        : true,
+    };
+  }
+  out.agents = agents;
   return out;
 }
 
@@ -939,6 +1074,35 @@ function normalizeThemeVariant(value, defaultsValue) {
   return out;
 }
 
+function normalizePetTint(value, defaultsValue) {
+  if (typeof value === "string") {
+    if (!PET_TINT_IDS.includes(value) || value === "none") return {};
+    return { clawd: value, cloudling: value };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
+  const out = {};
+  for (const [themeId, tintId] of Object.entries(value)) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)) continue;
+    if (!PET_TINT_IDS.includes(tintId)) continue;
+    if (tintId !== "none") out[themeId] = tintId;
+  }
+  return out;
+}
+
+function normalizeIdleVisual(value, defaultsValue) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
+  const out = {};
+  for (const themeId of Object.keys(value)) {
+    const file = value[themeId];
+    if (typeof themeId !== "string" || !themeId) continue;
+    if (typeof file !== "string" || !file) continue;
+    // Bare filenames only — asset paths are resolved by the theme loader.
+    if (file.includes("/") || file.includes("\\")) continue;
+    out[themeId] = file;
+  }
+  return out;
+}
+
 // ── Disk I/O ──
 
 // Read prefs from disk. Returns `{ snapshot, locked, fresh? }`:
@@ -1035,5 +1199,10 @@ module.exports = {
   save,
   mapLocaleToLang,
   normalizeThemeOverrides,
+  normalizePetTint,
   normalizeShortcuts,
+  normalizeOptionalHttpUrl,
+  normalizePathList,
+  MAX_CUSTOM_DISCOVERY_PATHS,
+  MAX_CUSTOM_DISCOVERY_PATH_LENGTH,
 };

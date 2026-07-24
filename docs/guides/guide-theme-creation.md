@@ -86,7 +86,7 @@ my-theme/
 
 1. Start from `themes/template/`
 2. Choose whether you want eye tracking:
-   - `eyeTracking.enabled: true` → your `idle` asset must be SVG and include `#eyes-js`
+   - `eyeTracking.enabled: true` → every file in a state listed by `eyeTracking.states` must be SVG. In the template, `idle` is listed: only `states.idle[0]` follows the cursor and it must include the legacy `#eyes-js` target; put additional non-SVG idle visuals in `idleAnimations`
    - `eyeTracking.enabled: false` → idle can also be GIF / APNG / WebP / PNG / JPG / JPEG
 3. Create simple frame animations (4-12 frames) for other states using [Piskel](https://www.piskelapp.com/) (free, browser-based) or [Aseprite](https://www.aseprite.org/) (paid, pixel art pro tool)
 4. Export as APNG / WebP / GIF, or use single-frame PNG / JPG / JPEG for static poses
@@ -258,6 +258,7 @@ The existing schema fields are the only runtime truth. They already act as the t
 | `reactions` | Optional click/drag reaction block. Omit it to disable click and drag reactions entirely. |
 | `workingTiers` | Optional multi-session working overrides. Omit to fall back to `states.working[0]`. |
 | `jugglingTiers` | Optional subagent juggling overrides. Omit to fall back to `states.juggling[0]` if you provide that state. |
+| `customization.petTint` | Opts the theme into the app's built-in pet color filters. Omit it or set it to `false` when filters distort authored colors. Themes cannot provide custom CSS filter strings. |
 
 The loader also derives read-only metadata such as `idleMode` (`tracked` / `animated` / `static`) from these fields, but that metadata is not a second schema authority.
 

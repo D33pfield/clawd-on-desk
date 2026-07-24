@@ -1,5 +1,10 @@
 "use strict";
 
+const {
+  getPetTintIdForTheme,
+  resolvePetTintPayload,
+} = require("./pet-customization-catalog");
+
 const MENU_AFFECTING_KEYS = new Set([
   "lang",
   "soundMuted",
@@ -60,6 +65,7 @@ function createSettingsEffectRouter(options = {}) {
   const syncPermissionShortcuts = options.syncPermissionShortcuts || noop;
   const dismissInteractivePermissionBubbles = options.dismissInteractivePermissionBubbles || noop;
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || noop;
+  const clearCodexUserInputBubbles = options.clearCodexUserInputBubbles || noop;
   const clearKimiNotifyBubbles = options.clearKimiNotifyBubbles || noop;
   const refreshPassiveNotifyAutoClose = options.refreshPassiveNotifyAutoClose || noop;
   const refreshPermissionAutoCloseForPolicy = options.refreshPermissionAutoCloseForPolicy || noop;
@@ -72,6 +78,8 @@ function createSettingsEffectRouter(options = {}) {
   const reclampPetAfterEdgePinningChange = options.reclampPetAfterEdgePinningChange || noop;
   const exitMiniMode = options.exitMiniMode || noop;
   const getMiniMode = options.getMiniMode || (() => false);
+  const getActiveTheme = options.getActiveTheme || (() => null);
+  const refreshIdleVisual = options.refreshIdleVisual || noop;
   const rebuildAllMenus = options.rebuildAllMenus || noop;
   const reconcilePowerSaveBlocker = options.reconcilePowerSaveBlocker || noop;
 
@@ -98,6 +106,20 @@ function createSettingsEffectRouter(options = {}) {
     }
     if ("lowPowerIdleMode" in changes) {
       sendToRenderer("low-power-idle-mode-change", changes.lowPowerIdleMode);
+      // If the HUD/ring were already hidden when low-power mode was enabled,
+      // no visibility transition would otherwise schedule their delayed
+      // destruction. Re-sync after mirrors update so hidden windows are
+      // reclaimed under the new policy.
+      safeCall(
+        logWarn,
+        "Clawd: low-power Session HUD sync failed:",
+        syncSessionHudVisibility
+      );
+    }
+    if ("petTint" in changes) {
+      const activeTheme = getActiveTheme();
+      const tintId = getPetTintIdForTheme(changes.petTint, activeTheme && activeTheme._id);
+      sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
     }
     if ("keepAwakeWhileWorking" in changes) {
       safeCall(logWarn, "Clawd: reconcilePowerSaveBlocker failed:", reconcilePowerSaveBlocker);
@@ -135,6 +157,7 @@ function createSettingsEffectRouter(options = {}) {
     ) {
       try {
         clearCodexNotifyBubbles(undefined, "settings-policy-disabled");
+        clearCodexUserInputBubbles(undefined, undefined, "settings-policy-disabled");
         clearKimiNotifyBubbles(undefined, "settings-policy-disabled");
       } catch (err) {
         warn(logWarn, "Clawd: clear notification bubbles failed:", err);
@@ -198,12 +221,22 @@ function createSettingsEffectRouter(options = {}) {
       || "sessionHudShowStateLabels" in changes
       || "sessionHudShowElapsed" in changes
       || "sessionHudShowContextUsage" in changes
+      || "sessionHudShowQuota" in changes
     ) {
       try {
         syncSessionHudVisibility();
         repositionFloatingBubbles();
       } catch (err) {
         warn(logWarn, "Clawd: session HUD setting sync failed:", err);
+      }
+    }
+    if ("quotaMergeSources" in changes) {
+      try {
+        // Snapshot CONTENT changes (merged vs per-source accountQuota), so a
+        // forced re-emit is needed for the Dashboard/HUD to pick it up.
+        emitSessionSnapshot({ force: true });
+      } catch (err) {
+        warn(logWarn, "Clawd: quota merge mode re-emit failed:", err);
       }
     }
     if ("sessionHudCleanupDetached" in changes && changes.sessionHudCleanupDetached === true) {
@@ -242,6 +275,9 @@ function createSettingsEffectRouter(options = {}) {
     }
     if ("disableMiniMode" in changes && changes.disableMiniMode && getMiniMode()) {
       safeCall(logWarn, "Clawd: disableMiniMode exit failed:", exitMiniMode);
+    }
+    if ("idleVisual" in changes) {
+      safeCall(logWarn, "Clawd: idle visual refresh failed:", refreshIdleVisual);
     }
 
     // 3. Menu rebuild: only for menu-affecting keys to avoid thrashing on

@@ -461,6 +461,18 @@ const STATE_HOOK_TIMEOUT_SECONDS = 5;
 const REMOTE_STATE_HOOK_TIMEOUT_SECONDS = Math.ceil(REMOTE_HOOK_HTTP_TIMEOUT_MS / 1000) + 5;
 const AUTO_START_HOOK_TIMEOUT_SECONDS = 15;
 
+// Authoritative script paths — the single source of truth for both what
+// registerHooks()/registerHooksAsync() write and what runtime health checks
+// (src/claude-hook-health.js) compare against. Computing this in two places
+// would let the installer and the health inspector silently drift apart.
+function getClaudeHookScriptPath() {
+  return asarUnpackedPath(path.resolve(__dirname, "clawd-hook.js").replace(/\\/g, "/"));
+}
+
+function getClaudeAutoStartScriptPath() {
+  return asarUnpackedPath(path.resolve(__dirname, "auto-start.js").replace(/\\/g, "/"));
+}
+
 function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
   const platform = options.platform || process.platform;
   const argSuffix = args ? ` ${args}` : "";
@@ -828,7 +840,7 @@ function registerHooks(options = {}) {
   const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
   const writePath = resolveWritePath(settingsPath);
   const hookPort = getHookServerPort(options.port);
-  const hookScript = asarUnpackedPath(path.resolve(__dirname, "clawd-hook.js").replace(/\\/g, "/"));
+  const hookScript = getClaudeHookScriptPath();
   const platform = options.platform || process.platform;
   const wslDistro = resolveInstallWslDistro(options);
 
@@ -933,7 +945,7 @@ function registerHooks(options = {}) {
 
   // Register auto-start hook for SessionStart (launches app if not running)
   if (options.autoStart) {
-    const autoStartScript = asarUnpackedPath(path.resolve(__dirname, "auto-start.js").replace(/\\/g, "/"));
+    const autoStartScript = getClaudeAutoStartScriptPath();
 
     if (!Array.isArray(settings.hooks.SessionStart)) {
       settings.hooks.SessionStart = [];
@@ -1075,11 +1087,43 @@ function registerHooks(options = {}) {
   };
 }
 
+// #317: an explicit options.nodeBin is the caller's authoritative choice
+// (Remote/WSL/test injection) and must never be re-validated against this
+// machine's filesystem. A Node path already extracted from the user's existing
+// config only needs one lightweight existence check — not a full resolver
+// probe — to avoid reintroducing the shell/version spawn #317 removed.
+// Resolution only escalates to the async resolver (which may spawn a shell)
+// when there is no existing path, or the existing path fails that check.
+async function resolveConfiguredNodeBinAsync(options, settings) {
+  if (options.nodeBin !== undefined) return options.nodeBin;
+
+  const existing = extractExistingNodeBin(settings, MARKER, { nested: true });
+  if (existing) {
+    const access = options.access || fs.promises.access.bind(fs.promises);
+    // Match the doctor validator and resolver: POSIX requires the execute
+    // bit (X_OK) — a Node path that merely exists but lost its executable
+    // permission would otherwise be preserved here, then judged broken by
+    // the health inspector on the very next check, forcing pointless repair
+    // cycles. Windows has no equivalent executable-bit semantics, so F_OK
+    // (existence) matches resolveWindowsNodeBinSync/Async's own checks.
+    const platform = options.platform || process.platform;
+    const mode = platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK;
+    try {
+      await access(existing, mode);
+      return existing;
+    } catch {
+      // existing path is gone/inaccessible — fall through to the resolver
+    }
+  }
+
+  return (await resolveNodeBinAsync(options)) || "node";
+}
+
 async function registerHooksAsync(options = {}) {
   const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
   const writePath = resolveWritePath(settingsPath);
   const hookPort = getHookServerPort(options.port);
-  const hookScript = asarUnpackedPath(path.resolve(__dirname, "clawd-hook.js").replace(/\\/g, "/"));
+  const hookScript = getClaudeHookScriptPath();
   const platform = options.platform || process.platform;
   const wslDistro = resolveInstallWslDistro(options);
 
@@ -1096,12 +1140,7 @@ async function registerHooksAsync(options = {}) {
 
   if (!settings.hooks) settings.hooks = {};
 
-  const configuredNodeBin = options.nodeBin !== undefined
-    ? options.nodeBin
-    : extractExistingNodeBin(settings, MARKER, { nested: true });
-  const nodeBin = configuredNodeBin
-    || await resolveNodeBinAsync(options)
-    || "node";
+  const nodeBin = await resolveConfiguredNodeBinAsync(options, settings);
 
   let added = 0;
   let skipped = 0;
@@ -1171,7 +1210,7 @@ async function registerHooksAsync(options = {}) {
   }
 
   if (options.autoStart) {
-    const autoStartScript = asarUnpackedPath(path.resolve(__dirname, "auto-start.js").replace(/\\/g, "/"));
+    const autoStartScript = getClaudeAutoStartScriptPath();
 
     if (!Array.isArray(settings.hooks.SessionStart)) {
       settings.hooks.SessionStart = [];
@@ -1466,9 +1505,33 @@ function isAutoStartRegistered() {
 }
 
 const STATUSLINE_MARKER = "claude-statusline.js";
+const STATUSLINE_CHAIN_FLAG = "--chain";
 
 function hasClaudeSettingsDir(homeDir) {
   return fs.existsSync(path.join(homeDir, ".claude"));
+}
+
+// Chain mode sidecar: holds the user's original statusLine object verbatim
+// while our command occupies the slot with `--chain`. The statusline script
+// executes the sidecar's command (their rendering survives), and unregister
+// restores the object from here. A sidecar file instead of a CLI argument
+// because real third-party statusline commands are arbitrarily-quoted shell
+// one-liners - embedding one inside another quoted command is exactly the
+// escaping swamp buildPortableStatuslineCommand exists to avoid.
+function statuslineChainSidecarPath(homeDir) {
+  return path.join(homeDir, ".claude", "hooks", "clawd-statusline-chain.json");
+}
+
+function readChainSidecarStatusLine(sidecarPath) {
+  try {
+    const raw = readJsonFile(sidecarPath);
+    const statusLine = raw && typeof raw === "object" ? raw.statusLine : null;
+    if (statusLine && typeof statusLine === "object" && !Array.isArray(statusLine)
+      && typeof statusLine.command === "string" && statusLine.command.trim()) {
+      return statusLine;
+    }
+  } catch {}
+  return null;
 }
 
 // Claude Code's statusLine setting is a single slot, not an event-keyed map
@@ -1498,9 +1561,52 @@ function registerClaudeStatusline(options = {}) {
   const existing = settings.statusLine && typeof settings.statusLine === "object" ? settings.statusLine : null;
   const existingIsOurs = !!(existing && typeof existing.command === "string" && existing.command.includes(STATUSLINE_MARKER));
 
-  if (existing && !existingIsOurs) {
+  // Chain opt-in is remote-only in v1: the remote deploy path guarantees a
+  // POSIX shell, while a local Windows chain would need a cross-shell
+  // runner - the exact swamp buildPortableStatuslineCommand crawled out of.
+  const chainRequested = options.remote === true && options.chainExisting === true;
+  const chainExplicitlyDisabled = options.remote === true && options.chainExisting === false;
+  const sidecarPath = options.chainSidecarPath || statuslineChainSidecarPath(homeDir);
+
+  if (existing && !existingIsOurs && !chainRequested) {
     if (!options.silent) console.log(`Clawd: existing Claude Code statusline detected at ${settingsPath} - leaving it in place`);
     return { installed: true, changed: false, skippedExisting: true, settingsPath };
+  }
+
+  let chainActive = false;
+  if (existing && !existingIsOurs && chainRequested) {
+    // Capture the user's statusLine object verbatim BEFORE taking the slot -
+    // the sidecar is the single source for both the chained exec and the
+    // unregister restore.
+    writeJsonAtomic(sidecarPath, { statusLine: existing });
+    chainActive = true;
+  } else if (existingIsOurs && existing.command.includes(STATUSLINE_CHAIN_FLAG)) {
+    const chainedOriginal = readChainSidecarStatusLine(sidecarPath);
+    if (chainExplicitlyDisabled && chainedOriginal) {
+      // A profile toggle is an explicit deploy target, not an omitted repair
+      // preference. Turning it off restores the third-party slot and consumes
+      // the sidecar exactly like unregister; otherwise Settings would mark an
+      // off profile deployed while the remote silently kept --chain.
+      settings.statusLine = chainedOriginal;
+      writeJsonAtomic(writePath, settings);
+      try { fs.unlinkSync(sidecarPath); } catch {}
+      if (!options.silent) console.log(`Clawd: restored existing Claude Code statusline at ${settingsPath}`);
+      return {
+        installed: true,
+        changed: true,
+        skippedExisting: true,
+        chained: false,
+        restoredChained: true,
+        settingsPath,
+      };
+    }
+    // An omitted preference is a repair/startup refresh: preserve an existing
+    // chain and never rewrite its sidecar. If the sidecar vanished (or an
+    // explicit disable cannot restore it), degrade to our plain mode.
+    if (chainExplicitlyDisabled) {
+      try { fs.unlinkSync(sidecarPath); } catch {}
+    }
+    chainActive = !chainExplicitlyDisabled && !!chainedOriginal;
   }
 
   const scriptPath = asarUnpackedPath(path.resolve(__dirname, "claude-statusline.js").replace(/\\/g, "/"));
@@ -1510,7 +1616,18 @@ function registerClaudeStatusline(options = {}) {
   // Code runs this through Git Bash when Git is installed - the PowerShell
   // call-operator form is a bash syntax error and the statusline dies
   // silently. See buildPortableStatuslineCommand.
-  const command = buildPortableStatuslineCommand(nodeBin, scriptPath, { platform });
+  //
+  // Remote installs (install.js --remote, run ON the remote from
+  // ~/.claude/hooks/) target POSIX shells only (deploy aborts on cmd.exe),
+  // so the bash-style env prefix is safe - same convention as
+  // buildCommandHookSpec's remote hook form. CLAWD_REMOTE=1 is what makes
+  // claude-statusline.js stamp body.host so its best-effort quota POSTs ride
+  // the reverse tunnel onto the right sessions.
+  // nodeBin needs no remote resolution here: this code already runs under
+  // the remote's own node, so resolveNodeBin() IS the remote path.
+  const portableCommand = buildPortableStatuslineCommand(nodeBin, scriptPath, { platform });
+  const prefixed = options.remote === true ? `CLAWD_REMOTE=1 ${portableCommand}` : portableCommand;
+  const command = chainActive ? `${prefixed} ${STATUSLINE_CHAIN_FLAG}` : prefixed;
   const desired = { type: "command", command, padding: 0 };
 
   const changed = !existing || JSON.stringify(existing) !== JSON.stringify(desired);
@@ -1520,10 +1637,10 @@ function registerClaudeStatusline(options = {}) {
   }
 
   if (!options.silent) {
-    console.log(`Clawd Claude Code statusline -> ${settingsPath}${changed ? " (updated)" : " (already up to date)"}`);
+    console.log(`Clawd Claude Code statusline -> ${settingsPath}${changed ? " (updated)" : " (already up to date)"}${chainActive ? " (chained)" : ""}`);
   }
 
-  return { installed: true, changed, skippedExisting: false, settingsPath };
+  return { installed: true, changed, skippedExisting: false, chained: chainActive, settingsPath };
 }
 
 function unregisterClaudeStatusline(options = {}) {
@@ -1545,12 +1662,38 @@ function unregisterClaudeStatusline(options = {}) {
     return { installed: !!existing, removed: 0, changed: false, settingsPath };
   }
 
-  delete settings.statusLine;
+  // A chained slot restores the user's original statusLine object from the
+  // sidecar instead of leaving the slot empty; the sidecar is consumed
+  // either way so no stale copy outlives the registration it served.
+  const sidecarPath = options.chainSidecarPath || statuslineChainSidecarPath(homeDir);
+  const chained = existing.command.includes(STATUSLINE_CHAIN_FLAG)
+    ? readChainSidecarStatusLine(sidecarPath)
+    : null;
+  if (chained) settings.statusLine = chained;
+  else delete settings.statusLine;
   const backupPath = writeJsonAtomicWithBackup(writePath, settings, options);
-  if (!options.silent) console.log(`Clawd Claude Code statusline removed -> ${settingsPath}`);
+  try { fs.unlinkSync(sidecarPath); } catch {}
+  if (!options.silent) {
+    console.log(`Clawd Claude Code statusline ${chained ? "restored chained original" : "removed"} -> ${settingsPath}`);
+  }
   const result = { installed: true, removed: 1, changed: true, settingsPath };
+  if (chained) result.restoredChained = true;
   if (options.backup === true) result.backupPath = backupPath;
   return result;
+}
+
+function parseClaudeInstallCliOptions(argv = []) {
+  const args = Array.isArray(argv) ? argv : [];
+  const remote = args.includes("--remote");
+  return {
+    remote,
+    chainExisting: args.includes("--chain-existing"),
+    // Remote deploy is itself an explicit quota-collection action. Locally,
+    // installing/reinstalling command hooks must not silently opt the user into
+    // the visible single-slot statusLine; Settings owns that preference unless
+    // the debug CLI receives an explicit --statusline.
+    installStatusline: remote || args.includes("--statusline"),
+  };
 }
 
 // Export for use by main.js
@@ -1558,6 +1701,9 @@ module.exports = {
   DEFAULT_PARENT_DIR,
   DEFAULT_CONFIG_PATH,
   STATUSLINE_MARKER,
+  CLAUDE_CORE_HOOK_EVENTS: Object.freeze([...CORE_HOOKS]),
+  getClaudeHookScriptPath,
+  getClaudeAutoStartScriptPath,
   registerHooks,
   registerHooksAsync,
   unregisterHooks,
@@ -1587,19 +1733,23 @@ module.exports = {
     reconcileVersionedHooks,
     shouldReconcileVersionedHooks,
     buildCommandHookSpec,
+    parseClaudeInstallCliOptions,
   },
 };
 
-// CLI: run directly with `node hooks/install.js [--remote]`
+// CLI: run directly with `node hooks/install.js [--remote] [--statusline]`
 if (require.main === module) {
   try {
-    const remote = process.argv.includes("--remote");
+    const { remote, chainExisting, installStatusline } =
+      parseClaudeInstallCliOptions(process.argv.slice(2));
     registerHooks({ remote });
-    // Keep the CLI symmetric with hooks/uninstall.js, which unregisters the
-    // statusline: without this, a manual uninstall + reinstall cycle loses
-    // the statusline until the next app startup sync. Remote installs skip
-    // it - remote/SSH statusline support is an intentional non-goal.
-    if (!remote) registerClaudeStatusline();
+    if (installStatusline) {
+      // Remote installs register the statusline automatically (with the
+      // CLAWD_REMOTE=1 env prefix) so quota can ride the SSH tunnel. Local
+      // debug/reinstall commands require --statusline and otherwise preserve
+      // the default-off collection preference and the user's visible slot.
+      registerClaudeStatusline({ remote, chainExisting });
+    }
   } catch (err) {
     console.error(err.message);
     process.exit(1);

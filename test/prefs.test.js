@@ -46,6 +46,7 @@ describe("prefs.getDefaults", () => {
     const d = prefs.getDefaults();
     assert.strictEqual(d.manageClaudeHooksAutomatically, true);
     assert.strictEqual(d.autoStartWithClaude, false);
+    assert.deepStrictEqual(d.petTint, {});
     assert.strictEqual(d.lowPowerIdleMode, false);
     assert.strictEqual(d.allowEdgePinning, false);
     assert.strictEqual(d.disableMiniMode, false);
@@ -54,6 +55,9 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.sessionHudShowStateLabels, true);
     assert.strictEqual(d.sessionHudShowElapsed, false);
     assert.strictEqual(d.sessionHudShowContextUsage, true);
+    assert.strictEqual(d.sessionHudShowQuota, true);
+    assert.strictEqual(d.claudeQuotaCollectionEnabled, false);
+    assert.strictEqual(d.quotaMergeSources, false);
     assert.strictEqual(d.sessionHudCleanupDetached, true);
     assert.strictEqual("sessionHudAutoHide" in d, false);
     assert.strictEqual(d.sessionHudPinned, false);
@@ -74,6 +78,9 @@ describe("prefs.getDefaults", () => {
     });
     assert.deepStrictEqual(d.feishuApproval, {
       enabled: false,
+      // Feishu (China) is the default so existing users keep the platform they
+      // were implicitly on before this field existed.
+      platform: "feishu",
       idType: "open_id",
       approverId: "",
       connectionTimeoutSeconds: 15,
@@ -102,7 +109,7 @@ describe("prefs.getDefaults", () => {
         `${id} should default permissionsEnabled`
       );
     }
-    for (const id of ["antigravity-cli", "codewhale", "pi", "openclaw", "qoder"]) {
+    for (const id of ["antigravity-cli", "codewhale", "pi", "openclaw", "qoder", "workbuddy"]) {
       assert.strictEqual(
         d.agents[id].permissionsEnabled,
         false,
@@ -142,6 +149,16 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.agents.qoder.notificationHookEnabled, true);
   });
 
+  it("defaults WorkBuddy permission bubbles off (state-only, #618)", () => {
+    // The desktop app owns the permission loop in its native sandbox + GUI;
+    // Clawd only mirrors state and pops a waiting Notification.
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.agents.workbuddy.integrationInstalled, false);
+    assert.strictEqual(d.agents.workbuddy.enabled, false);
+    assert.strictEqual(d.agents.workbuddy.permissionsEnabled, false);
+    assert.strictEqual(d.agents.workbuddy.notificationHookEnabled, true);
+  });
+
   it("defaults CodeWhale permission bubbles off (state-only)", () => {
     const d = prefs.getDefaults();
     assert.strictEqual(d.agents.codewhale.integrationInstalled, false);
@@ -164,17 +181,6 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.agents.codex.nativeNotificationSoundEnabled, false);
   });
 
-  it("defaults Hardware Buddy to disabled state-only BLE", () => {
-    const d = prefs.getDefaults();
-    assert.deepStrictEqual(d.hardwareBuddy, {
-      enabled: false,
-      backend: "bleak",
-      address: "",
-      namePrefix: "Clawstick",
-      permissionsEnabled: false,
-      quickCommandsEnabled: false,
-    });
-  });
 });
 
 describe("prefs.validate", () => {
@@ -183,6 +189,7 @@ describe("prefs.validate", () => {
       lang: "klingon",       // not in enum
       soundMuted: "yes",     // wrong type
       soundVolume: 2,        // out of range → default 1
+      petTint: "custom-css",
       lowPowerIdleMode: "yes",
       x: NaN,                // not finite
       bubbleFollowPet: true, // ok
@@ -205,6 +212,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.lang, d.lang);
     assert.strictEqual(v.soundMuted, false);
     assert.strictEqual(v.soundVolume, 1);
+    assert.deepStrictEqual(v.petTint, {});
     assert.strictEqual(v.lowPowerIdleMode, false);
     assert.strictEqual(v.x, 0);
     assert.strictEqual(v.bubbleFollowPet, true);
@@ -341,6 +349,7 @@ describe("prefs.validate", () => {
       size: "P:15",
       miniEdge: "left",
       theme: "calico",
+      petTint: { clawd: "gold", cloudling: "matcha" },
     });
     assert.strictEqual(v.lang, "ko");
     assert.strictEqual(v.soundMuted, true);
@@ -363,6 +372,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.size, "P:15");
     assert.strictEqual(v.miniEdge, "left");
     assert.strictEqual(v.theme, "calico");
+    assert.deepStrictEqual(v.petTint, { clawd: "gold", cloudling: "matcha" });
   });
 
   it("accepts soundVolume 0 (silent playback is valid)", () => {
@@ -508,6 +518,77 @@ describe("prefs.validate", () => {
     }
   });
 
+  it("keeps custom tool discovery paths outside the registered agent map", () => {
+    const direct = prefs.validate({
+      customToolDiscoveryPaths: [" C:\\Tools\\AI.exe ", "C:\\Tools\\AI.exe", "C:\\Tools\\AI"],
+    });
+    assert.deepStrictEqual(direct.customToolDiscoveryPaths, ["C:\\Tools\\AI.exe", "C:\\Tools\\AI"]);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(direct.agents, "custom"), false);
+
+    const legacy = prefs.validate({
+      agents: { custom: { customDiscoveryPaths: ["C:\\Legacy\\AI.exe"] } },
+    });
+    assert.deepStrictEqual(legacy.customToolDiscoveryPaths, ["C:\\Legacy\\AI.exe"]);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(legacy.agents, "custom"), false);
+  });
+
+  it("normalizes custom applications and enforces state-only agent gates", () => {
+    const application = {
+      id: "custom-nova-ai-0123456789ab",
+      name: "Nova AI",
+      sourcePath: "C:\\NovaAI",
+      executablePath: "C:\\NovaAI\\NovaAI.exe",
+      processName: "NovaAI.exe",
+      category: "code",
+    };
+    const value = prefs.validate({
+      customApplications: [application, application, { id: "bad" }],
+      agents: { [application.id]: { integrationInstalled: true, enabled: false, permissionsEnabled: true } },
+    });
+    assert.deepStrictEqual(value.customApplications, [application]);
+    assert.strictEqual(value.agents[application.id].integrationInstalled, false);
+    assert.strictEqual(value.agents[application.id].enabled, false);
+    assert.strictEqual(value.agents[application.id].permissionsEnabled, false);
+    assert.strictEqual(value.agents[application.id].notificationHookEnabled, true);
+  });
+
+  it("keeps custom application records and explicit gates in lockstep", () => {
+    const application = {
+      id: "custom-nova-ai-0123456789ab",
+      name: "Nova AI",
+      sourcePath: "C:\\NovaAI",
+      executablePath: "C:\\NovaAI\\NovaAI.exe",
+      processName: "NovaAI.exe",
+      category: "code",
+    };
+    const value = prefs.validate({
+      customApplications: [application],
+      agents: {
+        "custom-stale-abcdef012345": { integrationInstalled: true, enabled: true },
+        "future-agent": { enabled: false },
+      },
+    });
+
+    assert.deepStrictEqual(value.agents[application.id], {
+      integrationInstalled: false,
+      enabled: true,
+      permissionsEnabled: false,
+      notificationHookEnabled: true,
+    });
+    assert.strictEqual(value.agents["custom-stale-abcdef012345"], undefined);
+    assert.strictEqual(value.agents["future-agent"].enabled, false);
+  });
+
+  it("caps existing discovery paths and preserves semicolons in array values", () => {
+    const paths = Array.from({ length: 70 }, (_, index) => `C:\\Tools\\AI-${index}`);
+    paths[0] = "C:\\Tools;Lab\\AI";
+    paths[1] = "c:\\tools;lab\\ai";
+    const value = prefs.validate({ customToolDiscoveryPaths: paths });
+
+    assert.strictEqual(value.customToolDiscoveryPaths.length, 64);
+    assert.strictEqual(value.customToolDiscoveryPaths[0], "C:\\Tools;Lab\\AI");
+  });
+
   it("normalizes agents: preserves valid Codex permissionMode", () => {
     const v = prefs.validate({
       agents: {
@@ -651,6 +732,37 @@ describe("prefs.validate", () => {
     assert.deepStrictEqual(w.themeVariant, {});
   });
 
+  // #509: idleVisual field
+  it("idleVisual defaults to empty object (no migration needed)", () => {
+    const d = prefs.getDefaults();
+    assert.deepStrictEqual(d.idleVisual, {});
+  });
+
+  it("idleVisual keeps string/string pairs, drops malformed and path-y entries", () => {
+    const v = prefs.validate({
+      idleVisual: {
+        clawd: "clawd-idle-reading.svg",
+        calico: "calico-idle-stretch.svg",
+        bogus: 42,                          // wrong value type
+        "": "x.svg",                        // empty themeId
+        emptyVal: "",                       // empty file
+        sneaky: "../outside.svg",           // path traversal
+        sneakier: "sub\\dir.svg",           // backslash path
+      },
+    });
+    assert.deepStrictEqual(v.idleVisual, {
+      clawd: "clawd-idle-reading.svg",
+      calico: "calico-idle-stretch.svg",
+    });
+  });
+
+  it("idleVisual falls back to defaults when not an object", () => {
+    const v = prefs.validate({ idleVisual: "nope" });
+    assert.deepStrictEqual(v.idleVisual, {});
+    const w = prefs.validate({ idleVisual: ["a.svg"] });
+    assert.deepStrictEqual(w.idleVisual, {});
+  });
+
   it("sessionAliases normalizes valid entries and drops malformed values", () => {
     const v = prefs.validate({
       sessionAliases: {
@@ -782,27 +894,6 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.workingStaleMs, 600_000);
   });
 
-  it("normalizes Hardware Buddy settings", () => {
-    const v = prefs.validate({
-      hardwareBuddy: {
-        enabled: true,
-        backend: "fake",
-        address: "  FAKE:CLAWSTICK  ",
-        namePrefix: "  Claude  ",
-        permissionsEnabled: true,
-        quickCommandsEnabled: true,
-      },
-    });
-    assert.deepStrictEqual(v.hardwareBuddy, {
-      enabled: true,
-      backend: "fake",
-      address: "FAKE:CLAWSTICK",
-      namePrefix: "Claude",
-      permissionsEnabled: true,
-      quickCommandsEnabled: true,
-    });
-    assert.deepStrictEqual(prefs.validate({ hardwareBuddy: "bad" }).hardwareBuddy, prefs.getDefaults().hardwareBuddy);
-  });
 });
 
 describe("prefs.migrate", () => {
@@ -1267,6 +1358,32 @@ describe("prefs.save", () => {
     assert.strictEqual(snapshot.bubbleFollowPet, true);
     assert.strictEqual(snapshot.x, 42);
     assert.strictEqual(snapshot.version, prefs.CURRENT_VERSION);
+  });
+
+  it("round-trips per-theme pet tints and drops invalid entries before writing", () => {
+    const p = makeTempPath();
+    prefs.save(p, {
+      ...prefs.getDefaults(),
+      petTint: { clawd: "vaporwave", cloudling: "matcha" },
+    });
+    assert.deepStrictEqual(
+      prefs.load(p).snapshot.petTint,
+      { clawd: "vaporwave", cloudling: "matcha" }
+    );
+
+    prefs.save(p, {
+      ...prefs.getDefaults(),
+      petTint: { clawd: "custom", "../unsafe": "gold", calico: "none" },
+    });
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(p, "utf8")).petTint, {});
+  });
+
+  it("migrates the short-lived global pet tint to supported built-in themes", () => {
+    assert.deepStrictEqual(
+      prefs.validate({ petTint: "gold" }).petTint,
+      { clawd: "gold", cloudling: "gold" }
+    );
+    assert.deepStrictEqual(prefs.validate({ petTint: "none" }).petTint, {});
   });
 
   it("validates before writing — bad fields fall back to defaults on disk", () => {

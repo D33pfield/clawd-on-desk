@@ -12,8 +12,8 @@ const SIDEBAR_TABS = [
   { id: "animOverrides", labelKey: "sidebarAnimOverrides", available: true },
   { id: "shortcuts", labelKey: "sidebarShortcuts", available: true },
   { id: "telegram-approval", labelKey: "sidebarTelegramApproval", available: true },
+  { id: "discord-presence", labelKey: "sidebarDiscordPresence", available: true },
   { id: "remote-ssh", labelKey: "sidebarRemoteSsh", available: true },
-  { id: "mobile", labelKey: "sidebarMobile", available: true },
   { id: "about", labelKey: "sidebarAbout", available: true },
 ];
 
@@ -90,12 +90,20 @@ globalThis.ClawdSettingsTabAnimMap.init(core);
 globalThis.ClawdSettingsTabAnimOverrides.init(core);
 globalThis.ClawdSettingsTabShortcuts.init(core);
 if (globalThis.ClawdSettingsTabTelegramApproval) globalThis.ClawdSettingsTabTelegramApproval.init(core);
+if (globalThis.ClawdSettingsTabDiscordPresence) globalThis.ClawdSettingsTabDiscordPresence.init(core);
 globalThis.ClawdSettingsTabAbout.init(core);
 if (globalThis.ClawdSettingsTabRemoteSsh) globalThis.ClawdSettingsTabRemoteSsh.init(core);
 if (globalThis.ClawdSettingsTabMobile) globalThis.ClawdSettingsTabMobile.init(core);
 
 if (window.settingsAPI && typeof window.settingsAPI.onChanged === "function") {
   window.settingsAPI.onChanged((payload) => core.ops.applyChanges(payload));
+}
+
+if (window.settingsAPI && typeof window.settingsAPI.onAgentActivity === "function") {
+  window.settingsAPI.onAgentActivity((payload) => {
+    const tab = core.tabs.agents;
+    if (tab && typeof tab.applyAgentActivity === "function") tab.applyAgentActivity(payload);
+  });
 }
 
 if (window.settingsAPI && typeof window.settingsAPI.onAnimationPreviewPosterReady === "function") {
@@ -128,7 +136,18 @@ if (window.settingsAPI && typeof window.settingsAPI.getShortcutFailures === "fun
 }
 
 if (window.settingsAPI && typeof window.settingsAPI.getSnapshot === "function") {
-  window.settingsAPI.getSnapshot().then((snapshot) => {
+  const tintOptionsPromise =
+    typeof window.settingsAPI.getPetTintOptions === "function"
+      ? window.settingsAPI.getPetTintOptions().catch((err) => {
+        console.warn("settings: getPetTintOptions failed", err);
+        return [];
+      })
+      : Promise.resolve([]);
+  Promise.all([
+    window.settingsAPI.getSnapshot(),
+    tintOptionsPromise,
+  ]).then(([snapshot, petTintOptions]) => {
+    core.runtime.petTintOptions = Array.isArray(petTintOptions) ? petTintOptions : [];
     core.ops.applyBootstrap(snapshot);
   });
 }

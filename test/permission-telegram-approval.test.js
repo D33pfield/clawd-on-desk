@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 
 const initPermission = require("../src/permission");
+const { normalizeElicitationToolInput } = require("../src/server-permission-utils");
 
 function flush() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -337,7 +338,7 @@ describe("permission telegram remote approval", () => {
       makePermEntry({ isElicitation: true }),
       makePermEntry({ isCodexNotify: true }),
       makePermEntry({ isKimiNotify: true }),
-      makePermEntry({ isOpencode: true }),
+      makePermEntry({ agentId: "opencode" }),
       makePermEntry({ isAntigravity: true, agentId: "antigravity-cli" }),
       makePermEntry({ toolName: "ExitPlanMode" }),
       makePermEntry({ toolName: "AskUserQuestion" }),
@@ -406,10 +407,10 @@ describe("permission telegram remote approval", () => {
     });
   });
 
-  it("keeps answers for clamped questions: index keys map back to full original question text", async () => {
+  it("maps indexed remote answers back to server-normalized question keys", async () => {
     let resolveElicitation;
     const requests = [];
-    const feishuClient = {
+    const remoteClient = {
       isEnabled: () => true,
       requestApproval: () => {
         throw new Error("normal approval should not be used for elicitation");
@@ -419,21 +420,28 @@ describe("permission telegram remote approval", () => {
         return new Promise((resolve) => { resolveElicitation = resolve; });
       },
     };
-    const perm = initPermission(makeCtx({ getRemoteApprovalClients: () => [{ name: "feishu", client: feishuClient }] }));
-    // Q1 exceeds the remote clients' 240-char display clamp; Q2 carries \r\n
-    // and trailing whitespace their text normalization rewrites. Text-keyed
-    // answers would silently miss both (the pre-index-key contract bug).
-    const longQuestion = `请从以下部署方案中选择一个：${"细".repeat(300)}`;
-    const crlfQuestion = "第一行\r\n第二行  ";
+    const perm = initPermission(makeCtx({ getRemoteApprovalClients: () => [{ name: "telegram", client: remoteClient }] }));
+    // Exercise the same normalization performed by /permission before the
+    // request reaches permission.js. Q1 is clamped server-side; Q2 keeps its
+    // internal CRLF/line-end spaces there, while Telegram rewrites both for
+    // display. Index keys must survive either transformation.
+    const rawLongQuestion = `请从以下部署方案中选择一个：${"细".repeat(300)}`;
+    const rawCrlfQuestion = "第一行  \r\n第二行  ";
+    const normalizedInput = normalizeElicitationToolInput({
+      questions: [
+        { question: rawLongQuestion, options: [{ label: "方案A" }] },
+        { question: rawCrlfQuestion, options: [{ label: "继续" }] },
+      ],
+    });
+    const longQuestion = normalizedInput.questions[0].question;
+    const crlfQuestion = normalizedInput.questions[1].question;
+    assert.notEqual(longQuestion, rawLongQuestion);
+    assert.equal(longQuestion.length, 240);
+    assert.equal(crlfQuestion, "第一行  \r\n第二行");
     const entry = makePermEntry({
       isElicitation: true,
       toolName: "AskUserQuestion",
-      toolInput: {
-        questions: [
-          { question: longQuestion, options: [{ label: "方案A" }] },
-          { question: crlfQuestion, options: [{ label: "继续" }] },
-        ],
-      },
+      toolInput: normalizedInput,
     });
     perm.pendingPermissions.push(entry);
 

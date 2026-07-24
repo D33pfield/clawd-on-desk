@@ -37,6 +37,8 @@ function createAgentRuntimeMain(options = {}) {
   const updateSession = options.updateSession || (() => {});
   const captureGhosttyTerminalId = options.captureGhosttyTerminalId || null;
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || (() => {});
+  const showCodexUserInputBubble = options.showCodexUserInputBubble || (() => false);
+  const clearCodexUserInputBubbles = options.clearCodexUserInputBubbles || (() => {});
 
   let codexMonitor = null;
   const codexOfficialHookSessions = new Map();
@@ -121,8 +123,8 @@ function createAgentRuntimeMain(options = {}) {
     return server && typeof server[method] === "function" ? server[method](...args) : false;
   }
 
-  function syncIntegrationForAgent(agentId) {
-    return callServer("syncIntegrationForAgent", agentId);
+  function syncIntegrationForAgent(agentId, optionsArg) {
+    return callServer("syncIntegrationForAgent", agentId, optionsArg);
   }
 
   function repairIntegrationForAgent(agentId, optionsArg) {
@@ -171,35 +173,63 @@ function createAgentRuntimeMain(options = {}) {
       const CodexLogMonitor = loadCodexLogMonitor();
       const codexAgent = loadCodexAgent();
       codexMonitor = new CodexLogMonitor(codexAgent, (sid, state, event, extra) => {
+        // Subscription quota is account state, not session state: it goes
+        // to the session-independent per-source store (null host = this
+        // machine), never into updateSession opts — see state.js
+        // updateAccountQuota and src/state-account-quota.js.
+        const { codexQuota, ...sessionOptions } = buildCodexMonitorUpdateOptions(extra, {
+          includeHeadless: true,
+        });
+        const annotateCodexQuota = () => {
+          if (!codexQuota) return;
+          const stateRuntime = getStateRuntime();
+          if (stateRuntime && typeof stateRuntime.updateAccountQuota === "function") {
+            stateRuntime.updateAccountQuota(null, { codexQuota });
+          }
+        };
         if (isCodexMonitorMetadataOnlyEvent(event, extra)) {
-          const metadataOptions = buildCodexMonitorUpdateOptions(extra, {
-            includeHeadless: true,
-          });
-          if (metadataOptions.contextUsage) {
+          if (sessionOptions.contextUsage) {
             updateSession(sid, state, event, {
-              ...metadataOptions,
+              ...sessionOptions,
               preserveState: true,
             });
           }
+          annotateCodexQuota();
           return;
         }
         if (shouldSuppressCodexLogEvent(sid, state, event)) {
-          const metadataOptions = buildCodexMonitorUpdateOptions(extra, {
-            includeHeadless: true,
-          });
-          if (metadataOptions.contextUsage) {
+          if (sessionOptions.contextUsage) {
             updateSession(sid, state, event, {
-              ...metadataOptions,
+              ...sessionOptions,
               preserveState: true,
             });
           }
+          annotateCodexQuota();
           return;
         }
         clearCodexNotifyBubbles(sid, `codex-state-transition:${state}`);
-        updateSession(sid, state, event, buildCodexMonitorUpdateOptions(extra, {
-          includeHeadless: true,
-        }));
-      }, { classifier: codexSubagentClassifier });
+        updateSession(sid, state, event, sessionOptions);
+        annotateCodexQuota();
+      }, {
+        classifier: codexSubagentClassifier,
+        onUserInputRequest: (sid, request, extra) => {
+          const shown = showCodexUserInputBubble({
+            sessionId: sid,
+            callId: request.callId,
+            questions: request.questions,
+            autoResolutionMs: request.autoResolutionMs,
+            ...extra,
+          });
+          if (!shown) return;
+          updateSession(sid, "notification", "CodexUserInputRequest", {
+            ...buildCodexMonitorUpdateOptions(extra, { includeHeadless: true }),
+            transientPermissionEvent: true,
+          });
+        },
+        onUserInputResolved: (sid, callId) => {
+          clearCodexUserInputBubbles(sid, callId, "codex-user-input-resolved");
+        },
+      });
       if (isAgentEnabled("codex")) {
         codexMonitor.start();
       }

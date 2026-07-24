@@ -25,6 +25,10 @@ let pendingSystemWakeId = null;
 let queuedSystemWakePayload = null;
 let queuedSystemWakeReplayTimer = null;
 let _lowPowerStaticImageOverrides = {};
+let _petTintPayload = { id: "none", filter: "" };
+let _petTintSupported = false;
+const PET_TINT_FILTER_TOKEN_RE =
+  /^(?:hue-rotate\(-?\d+(?:\.\d+)?deg\)|(?:saturate|brightness|contrast|sepia|grayscale)\(\d+(?:\.\d+)?\))$/;
 
 // ── Theme config (injected via preload.js additionalArguments) ──
 let tc = window.themeConfig || {};
@@ -43,12 +47,18 @@ function initWithConfig(cfg) {
   _trustedScriptedSvgFiles = new Set(Array.isArray(tc.trustedScriptedSvgFiles) ? tc.trustedScriptedSvgFiles : []);
   _forceSvgObjectChannel = !!(tc.rendering && tc.rendering.svgChannel === "object");
   _lowPowerStaticImageOverrides = (tc.rendering && tc.rendering.lowPowerStaticImageOverrides) || {};
+  _petTintSupported = tc.petTintSupported === true;
+  if (Object.prototype.hasOwnProperty.call(tc, "petTintPayload")) {
+    _petTintPayload = normalizePetTintPayload(tc.petTintPayload);
+  }
   _imgCacheBustSeq = 0;
   _miniViewBox = tc.miniModeViewBox || null;
   _fileViewBoxes = tc.fileViewBoxes || {};
   _dragSvg = tc.dragSvg || null;
   _dragSvgs = tc.dragSvgs || {};
   _idleFollowSvg = tc.idleFollowSvg || "clawd-idle-follow.svg";
+  // Pre-IPC first frame rests on the user-selected idle visual when one is set.
+  _initialIdleSvg = tc.idleDefaultVisual || _idleFollowSvg;
   _glyphFlipDefs = tc.glyphFlips || { "pixel-z": 4, "pixel-z-small": 3 };
 
   // Layered tracking: detect if theme uses multi-layer config
@@ -372,6 +382,7 @@ let _dragSvg;
 let _dragSvgs;
 let currentDragSvg = null;
 let _idleFollowSvg;
+let _initialIdleSvg;
 let _glyphFlipDefs;
 let _objectScaleCSS;
 let _fileScales = {};
@@ -434,11 +445,52 @@ window.electronAPI.onThemeConfig((newConfig) => {
   // Clean up layered tracking before reinitializing
   _cleanupLayeredTracking();
   initWithConfig(newConfig);
+  applyPetTintToAllMedia();
 });
 
 window.electronAPI.onViewportOffset((offsetY) => {
   setViewportOffset(offsetY);
 });
+
+// ── Pet color tint ──
+// Main resolves a persisted catalog id to this small payload. The renderer
+// still rejects URL/variable/custom CSS syntax before projecting the filter
+// onto every live pet media element (current, pending, and fading-out).
+function isSafePetTintFilter(value) {
+  if (value === "") return true;
+  if (typeof value !== "string" || value.length > 240) return false;
+  const tokens = value.trim().split(/\s+/);
+  return tokens.length > 0 && tokens.every((token) => PET_TINT_FILTER_TOKEN_RE.test(token));
+}
+
+function normalizePetTintPayload(payload) {
+  if (!payload || typeof payload !== "object") return { id: "none", filter: "" };
+  const id = typeof payload.id === "string" ? payload.id : "";
+  const filter = typeof payload.filter === "string" ? payload.filter.trim() : "";
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(id)) return { id: "none", filter: "" };
+  if (!isSafePetTintFilter(filter)) return { id: "none", filter: "" };
+  if (id === "none") return filter === "" ? { id, filter } : { id: "none", filter: "" };
+  if (!filter) return { id: "none", filter: "" };
+  return { id, filter };
+}
+
+function applyPetTintToElement(element) {
+  if (!element || (element.tagName !== "OBJECT" && element.tagName !== "IMG")) return;
+  element.style.filter = _petTintSupported ? _petTintPayload.filter : "";
+}
+
+function applyPetTintToAllMedia() {
+  for (const element of getPetMediaElements()) applyPetTintToElement(element);
+}
+
+function setPetTintPayload(payload) {
+  _petTintPayload = normalizePetTintPayload(payload);
+  applyPetTintToAllMedia();
+}
+
+if (window.electronAPI && typeof window.electronAPI.onPetTintChange === "function") {
+  window.electronAPI.onPetTintChange(setPetTintPayload);
+}
 
 // Release an <object> SVG element: navigate away to unload the SVG document
 // (stops CSS animations and frees the internal frame), then remove from DOM.
@@ -575,6 +627,18 @@ function getObjectSvgName(objectEl) {
  */
 function needsEyeTracking(state) {
   return _eyeTrackingStates.includes(state);
+}
+
+/**
+ * Determine if this state+file combination should attach eye tracking.
+ * Idle can rest on a non-follow visual (#509); only the follow sprite carries
+ * eye targets, and tick.js only streams eye movement for that exact file —
+ * attaching to anything else retries until timeout, or freezes stale offsets
+ * into a third-party SVG that happens to expose targets.
+ */
+function tracksEyesForFile(state, file) {
+  if (!needsEyeTracking(state)) return false;
+  return state !== "idle" || file === _idleFollowSvg;
 }
 
 /**
@@ -732,7 +796,15 @@ let pendingSvgFile = null; // tracks the SVG currently being loaded (for dedup)
 let pendingAssetUrl = null;
 let activeSwapToken = 0;
 let swapVisibilityRescueTimer = null;
+let petVisualReadyNotified = false;
 currentIdleSvg = currentDisplayedSvg;
+
+function notifyPetVisualReadyOnce() {
+  if (petVisualReadyNotified) return;
+  if (!window.electronAPI || typeof window.electronAPI.notifyPetVisualReady !== "function") return;
+  petVisualReadyNotified = true;
+  window.electronAPI.notifyPetVisualReady();
+}
 
 /**
  * Swap to a new animation file.
@@ -850,6 +922,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     next.style.opacity = "0";
     applyObjectScaleStyle(next, file, state);
     applyMiniFlip(next, state);
+    applyPetTintToElement(next);
     let swapCallbackSettled = false;
     const finishSwapReady = () => {
       if (swapCallbackSettled) return;
@@ -892,8 +965,9 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       clawdEl = next;
       currentDisplayedSvg = file;
       currentDisplayedAssetUrl = url;
+      notifyPetVisualReadyOnce();
 
-      if (state && needsEyeTracking(state)) {
+      if (state && tracksEyesForFile(state, file)) {
         attachEyeTracking(next);
       }
       if (miniLeftFlip) applyGlyphFlipCompensation(next);
@@ -941,6 +1015,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     next.style.opacity = "0";
     applyObjectScaleStyle(next, file, state);
     applyMiniFlip(next, state);
+    applyPetTintToElement(next);
 
     const swap = () => {
       if (pendingNext !== next) return;
@@ -969,6 +1044,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       clawdEl = next;
       currentDisplayedSvg = file;
       currentDisplayedAssetUrl = url;
+      notifyPetVisualReadyOnce();
       scheduleLowPowerIdlePause();
     };
 
@@ -1043,9 +1119,9 @@ function renderStateFile(state, svg) {
     if (alreadyDisplayed) applyMiniFlip(clawdEl, state);
     if (alreadyPending && pendingNext) applyMiniFlip(pendingNext, state);
     if (alreadyDisplayed) {
-      if (needsEyeTracking(state) && !eyeTarget && !_trackingLayers) {
+      if (tracksEyesForFile(state, effectiveSvg) && !eyeTarget && !_trackingLayers) {
         if (clawdEl.tagName === "OBJECT") attachEyeTracking(clawdEl);
-      } else if (!needsEyeTracking(state)) {
+      } else if (!tracksEyesForFile(state, effectiveSvg)) {
         detachEyeTracking();
       }
       if (shouldUseCloudlingPointerBridge(state, effectiveSvg) && lastCloudlingPointerPayload) {
@@ -1438,7 +1514,7 @@ function recoverFromSystemWake(payload) {
   resumeCurrentSvgForLowPower();
   if (lowPowerIdleMode) scheduleLowPowerIdlePause();
 
-  const needsEyes = needsEyeTracking(currentState);
+  const needsEyes = tracksEyesForFile(currentState, currentDisplayedSvg);
   const shouldReloadEyeObject = lowPowerIdleMode
     && needsEyes
     && clawdEl
@@ -1551,7 +1627,8 @@ window.electronAPI.onEyeMove((dx, dy) => {
 
   if ((eyeTarget || _trackingLayers) && !isEyeTrackingReady()) {
     detachEyeTracking();
-    if (clawdEl && clawdEl.isConnected && clawdEl.tagName === "OBJECT") attachEyeTracking(clawdEl);
+    if (clawdEl && clawdEl.isConnected && clawdEl.tagName === "OBJECT"
+      && tracksEyesForFile(currentState, currentDisplayedSvg)) attachEyeTracking(clawdEl);
     return;
   }
 
@@ -1695,7 +1772,7 @@ window.electronAPI.onWakeFromDoze(() => {
 });
 
 // --- Initial frame: always go through swapToFile so the right channel and theme scaling apply ---
-if (!currentDisplayedSvg && _idleFollowSvg) {
-  currentIdleSvg = _idleFollowSvg;
-  swapToFile(_idleFollowSvg, "idle");
+if (!currentDisplayedSvg && _initialIdleSvg) {
+  currentIdleSvg = _initialIdleSvg;
+  swapToFile(_initialIdleSvg, "idle");
 }
