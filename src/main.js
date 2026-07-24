@@ -143,6 +143,7 @@ const { focusCodexThreadTarget } = require("./session-focus-handoff");
 const { isSessionInProgress } = require("./state-session-snapshot");
 const { restoreSessionsFromRecoveryLeases } = require("./session-recovery-loader");
 const { getAllAgents, getAgent } = require("../agents/registry");
+const { getAgentIconUrl } = require("./state-agent-icons");
 // ── Autoplay policy: allow sound playback without user gesture ──
 // MUST be set before any BrowserWindow is created (before app.whenReady)
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -1913,6 +1914,7 @@ function buildTutorialAgentOnboardingState() {
     detectionAgents: detection.agents,
     agentsPref: _settingsController.get("agents") || {},
     installableIds: INSTALLABLE_AGENT_IDS,
+    getAgentIconUrl,
   });
 }
 

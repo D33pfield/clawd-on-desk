@@ -220,13 +220,6 @@
     }, label);
   }
 
-  function initials(name) {
-    const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
-    if (!parts.length) return "?";
-    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-    return (parts[0][0] + parts[1][0]).toUpperCase();
-  }
-
   function statusBadge(kind) {
     if (kind === "active") return el("span", { class: "ag-tag ok" }, i18n("tutorialAgentsActiveTag", "On"));
     if (kind === "install") return el("span", { class: "ag-tag info" }, i18n("tutorialAgentsInstallTag", "Found"));
@@ -240,7 +233,34 @@
   }
 
   function agentAvatar(a, kind) {
-    return el("span", { class: "ag-avatar " + kind }, initials(agentLabel(a)));
+    const avatar = el("span", { class: "ag-avatar " + kind });
+    const iconUrl = a && typeof a.iconUrl === "string" ? a.iconUrl : "";
+    const fallbackUrl = typeof STATE.heroSrc === "string" ? STATE.heroSrc : "";
+    let showingFallback = !iconUrl;
+    const initialUrl = iconUrl || fallbackUrl;
+
+    if (!initialUrl) {
+      avatar.classList.add("fallback");
+      return avatar;
+    }
+
+    const image = el("img", {
+      class: "ag-avatar-icon",
+      src: initialUrl,
+      alt: "",
+      draggable: "false",
+    });
+    image.addEventListener("error", () => {
+      if (!showingFallback && fallbackUrl && fallbackUrl !== iconUrl) {
+        showingFallback = true;
+        image.setAttribute("src", fallbackUrl);
+        return;
+      }
+      image.setAttribute("hidden", "");
+      avatar.classList.add("fallback");
+    });
+    avatar.appendChild(image);
+    return avatar;
   }
 
   function selectableAgentRow(a, kind) {
