@@ -83,7 +83,7 @@ describe("Reasonix hook installer", () => {
         },
         userHomeDir,
       }),
-      path.join(userHomeDir, "AppData", "Roaming", "reasonix")
+      path.resolve("")
     );
   });
 
@@ -103,6 +103,14 @@ describe("Reasonix hook installer", () => {
       __test.resolveLegacyReasonixHome({
         platform: "win32",
         env: { APPDATA: appData, REASONIX_HOME: path.join(userHomeDir, "portable") },
+        userHomeDir,
+      }),
+      ""
+    );
+    assert.strictEqual(
+      __test.resolveLegacyReasonixHome({
+        platform: "win32",
+        env: { APPDATA: appData, REASONIX_HOME: "${MISSING}" },
         userHomeDir,
       }),
       ""

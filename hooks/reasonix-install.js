@@ -48,8 +48,11 @@ function resolveReasonixHome(options = {}) {
   // the override is a fake OS home, not the Reasonix home itself.
   if (options.homeDir) return path.join(options.homeDir, SETTINGS_DIRNAME);
 
-  const explicit = expandHomePath(env.REASONIX_HOME, options.userHomeDir || os.homedir(), env);
-  if (explicit) return path.resolve(explicit);
+  const configuredHome = String(env.REASONIX_HOME || "").trim();
+  if (configuredHome) {
+    const explicit = expandHomePath(configuredHome, options.userHomeDir || os.homedir(), env);
+    return path.resolve(explicit);
+  }
 
   if (platform === "win32") {
     const appData = String(env.APPDATA || env.AppData || "").trim();
@@ -68,7 +71,7 @@ function resolveLegacyReasonixHome(options = {}) {
   // Reasonix treats both the test-only home override and REASONIX_HOME as
   // isolated runtimes. Neither is allowed to fall back to another user config.
   if (options.homeDir) return "";
-  if (expandHomePath(env.REASONIX_HOME, options.userHomeDir || os.homedir(), env)) return "";
+  if (String(env.REASONIX_HOME || "").trim()) return "";
   if (platform !== "win32") return "";
 
   const legacy = path.join(options.userHomeDir || os.homedir(), SETTINGS_DIRNAME);

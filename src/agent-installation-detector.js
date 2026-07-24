@@ -9,6 +9,7 @@ const { DEFAULT_INTEGRATION_INSTALLED_IDS, normalizePathList } = require("./pref
 const copilot = require("../hooks/copilot-install");
 const hermes = require("../hooks/hermes-install");
 const reasonix = require("../hooks/reasonix-install");
+const { commandMatchesMarker } = require("../hooks/json-utils");
 const { identifyCustomApplication } = require("./custom-applications");
 
 const DEFAULT_SKIPPED_AGENT_IDS = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
@@ -221,7 +222,26 @@ function notFound(detail = "No local installation signal found") {
 }
 
 function hasClawdMarkerText(text, marker) {
-  return typeof text === "string" && typeof marker === "string" && marker && text.includes(marker);
+  if (typeof text !== "string" || typeof marker !== "string" || !marker) return false;
+  if (commandMatchesMarker(text, marker)) return true;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text);
+  } catch {
+    return false;
+  }
+
+  const containsCommandMarker = (value) => {
+    if (!value || typeof value !== "object") return false;
+    if (Array.isArray(value)) return value.some((entry) => containsCommandMarker(entry));
+    for (const [key, entry] of Object.entries(value)) {
+      if (key === "command" && commandMatchesMarker(entry, marker)) return true;
+      if (containsCommandMarker(entry)) return true;
+    }
+    return false;
+  };
+  return containsCommandMarker(parsed);
 }
 
 function hasNonClawdHookCommand(value, marker) {
