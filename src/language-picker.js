@@ -102,6 +102,7 @@
     }
 
     function choose(value) {
+      if (disposed) return;
       const entry = findOption(value);
       if (!entry) return;
       if (entry.data.value === activeValue) {

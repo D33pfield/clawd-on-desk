@@ -3709,12 +3709,16 @@ describe("settings renderer browser environment", () => {
     });
 
     harness.core.ops.requestRender({ content: true });
+    const staleOption = harness.getLangOptions()[1];
     assert.strictEqual(harness.getDocumentListenerCount("click"), 1);
     assert.strictEqual(harness.getDocumentListenerCount("keydown"), 1);
 
     harness.core.ops.requestRender({ content: true });
     assert.strictEqual(harness.getDocumentListenerCount("click"), 1);
     assert.strictEqual(harness.getDocumentListenerCount("keydown"), 1);
+
+    staleOption.dispatchEvent({ type: "click" });
+    assert.deepStrictEqual(harness.updateCalls, []);
   });
 
   it("closes the language picker from outside clicks and Escape", () => {
