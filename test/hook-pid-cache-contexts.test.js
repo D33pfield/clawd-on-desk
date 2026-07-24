@@ -124,6 +124,9 @@ describe("#634 ctx contract — buildStateBody seams", () => {
     const capNoSid = capture();
     mod.buildStateBody("PreToolUse", { cwd: "D:/repo" }, capNoSid, {});
     assert.strictEqual(capNoSid.calls[0].cacheable, false, "qwen-code:default must not be cacheable");
+    const capLiteral = capture();
+    mod.buildStateBody("PreToolUse", { session_id: "default", cwd: "D:/repo" }, capLiteral, {});
+    assert.strictEqual(capLiteral.calls[0].cacheable, false, "a literal raw \"default\" id must not be cacheable either");
     const capPerm = capture();
     mod.buildPermissionBody("PermissionRequest", { session_id: "qw1", cwd: "D:/repo", tool_name: "bash" }, capPerm, {});
     assert.strictEqual(capPerm.calls[0].lifecycle, "event", "permission bodies use the event lifecycle");
@@ -159,10 +162,11 @@ describe("#634 ctx contract — sendHookEvent seams", () => {
   });
 
   for (const [file, ns] of [["qoder-hook.js", "qoder"], ["qoderwork-hook.js", "qoderwork"]]) {
-    it(`${ns}: SessionStart/UserPromptSubmit map; prefixed default not cacheable`, async () => {
+    it(`${ns}: SessionStart/UserPromptSubmit/SessionEnd map; default ids not cacheable`, async () => {
       const mod = require(`../hooks/${file}`);
       for (const [event, lifecycle] of [
-        ["SessionStart", "start"], ["UserPromptSubmit", "prompt"], ["PreToolUse", "event"], ["Stop", "event"],
+        ["SessionStart", "start"], ["UserPromptSubmit", "prompt"], ["SessionEnd", "end"],
+        ["PreToolUse", "event"], ["Stop", "event"],
       ]) {
         const cap = capture();
         await mod.sendHookEvent({ hook_event_name: event, session_id: "q1", cwd: "D:/repo" }, "", { env: {}, resolvePid: cap, postState: stubPost });
@@ -175,6 +179,9 @@ describe("#634 ctx contract — sendHookEvent seams", () => {
       const cap = capture();
       await mod.sendHookEvent({ hook_event_name: "PreToolUse", cwd: "D:/repo" }, "", { env: {}, resolvePid: cap, postState: stubPost });
       assert.strictEqual(cap.calls[0].cacheable, false, `${ns}:default must not key a shared cache entry`);
+      const capLiteral = capture();
+      await mod.sendHookEvent({ hook_event_name: "PreToolUse", session_id: "default", cwd: "D:/repo" }, "", { env: {}, resolvePid: capLiteral, postState: stubPost });
+      assert.strictEqual(capLiteral.calls[0].cacheable, false, "a literal raw \"default\" id must not be cacheable either");
     });
   }
 
@@ -201,6 +208,29 @@ describe("#634 ctx contract — sendHookEvent seams", () => {
     await send({ hookEventName: "PreToolUse", workspacePaths: ["D:/repo"] }, "", deps(capNone));
     assert.strictEqual(capNone.calls[0].sessionId, "antigravity:default");
     assert.strictEqual(capNone.calls[0].cacheable, false, "antigravity:default must not key a shared cache entry");
+  });
+
+  it("antigravity: cache key stays stable while toolCall.args.Cwd varies within one conversation", async () => {
+    const mod = require("../hooks/antigravity-hook.js");
+    const send = mod.sendHookEvent || (mod.__test && mod.__test.sendHookEvent);
+    const deps = (cap) => ({ env: {}, resolvePid: cap, postState: stubPost, postPermission: stubPost });
+
+    // Same conversation + workspace; the per-tool cwd wanders across subdirs
+    // and slash spellings. resolveCwd() legitimately follows it for the event
+    // body, but the CACHE key must not — each drift would be a fresh v2 file
+    // and a snapshot-spawning miss.
+    const toolCwds = ["D:/repo", "D:\\repo", "D:/repo/src", undefined];
+    const seen = [];
+    for (const toolCwd of toolCwds) {
+      const cap = capture();
+      const payload = { hookEventName: "PreToolUse", conversationId: "ag-stable", workspacePaths: ["D:/repo"] };
+      if (toolCwd !== undefined) payload.toolCall = { args: { Cwd: toolCwd } };
+      await send(payload, "", deps(cap));
+      seen.push(cap.calls[0].cacheCwd);
+      assert.strictEqual(cap.calls[0].cacheable, true, String(toolCwd));
+    }
+    assert.deepStrictEqual(seen, ["D:/repo", "D:/repo", "D:/repo", "D:/repo"],
+      "cacheCwd must be the stable workspacePaths[0], never the per-tool cwd");
   });
 });
 
@@ -288,5 +318,69 @@ describe("#634 subprocess — cache hits spawn nothing; kiro degrades gracefully
     });
     assert.ok(Array.isArray(r.spawns), `cursor did not report — stderr=${r.stderr}`);
     assert.deepStrictEqual(r.spawns, [], "prompt is cache-only: no snapshot spawn, hit or miss");
+  });
+
+  it("qoder-hook.js: SessionEnd drops the live cache entry without spawning", () => {
+    const raw = sid("qd-end");
+    const cacheSid = `qoder:${raw}`;
+    seedLiveCache("qoder", cacheSid, "D:/repo");
+    const file = pc.cacheFilePathV2("qoder", cacheSid, "D:/repo");
+    assert.ok(fs.existsSync(file), "seeded entry exists before SessionEnd");
+    const r = runHook("qoder-hook.js", { hook_event_name: "SessionEnd", session_id: raw, cwd: "D:/repo" });
+    assert.ok(Array.isArray(r.spawns), `qoder did not report — stderr=${r.stderr}`);
+    assert.deepStrictEqual(r.spawns, [], "end is cache-only: no snapshot spawn");
+    assert.strictEqual(fs.existsSync(file), false, "SessionEnd must delete the session's v2 cache entry");
+  });
+
+  it("qoder-hook.js: SessionEnd on a cache miss stays spawn-free", () => {
+    const r = runHook("qoder-hook.js", { hook_event_name: "SessionEnd", session_id: sid("qd-end-miss"), cwd: "D:/repo" });
+    assert.ok(Array.isArray(r.spawns), `qoder did not report — stderr=${r.stderr}`);
+    assert.deepStrictEqual(r.spawns, [], "the end contract never takes a fresh snapshot, hit or miss");
+  });
+
+  it("reasonix-hook.js: a literal \"default\" session id ignores a seeded entry and stays fresh", () => {
+    seedLiveCache("reasonix", "reasonix:default", "D:/repo");
+    const r = runHook("reasonix-hook.js", { event: "PreToolUse", session_id: "default", cwd: "D:/repo", toolName: "bash" });
+    assert.ok(Array.isArray(r.spawns), `reasonix did not report — stderr=${r.stderr}`);
+    assert.strictEqual(r.spawns.length, 1, "literal default must not be cacheable: per-event fresh snapshot, like kiro");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// C. Consumer contract — no adapter silently stays on the bare (uncached) path
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("#634 consumer contract — ctx or explicit exemption", () => {
+  // The offline-contract test locks the consumer COUNT; this locks the cache
+  // MIGRATION: a createPidResolver consumer must build a cache context
+  // (recognized by its `namespace: "` literal) or be exempted here on purpose.
+  // Prewarm-style bare resolve() calls are fine — this only catches files with
+  // no context anywhere.
+  const EXEMPT = new Set([
+    // #634 scopes exactly 12 adapters; WorkBuddy joined the resolver later
+    // (#618) and is tracked as an explicit follow-up on the issue — remove
+    // this exemption when it migrates.
+    "workbuddy-hook.js",
+  ]);
+
+  it("every createPidResolver consumer passes a cache context or is exempted", () => {
+    const consumers = fs.readdirSync(HOOKS_DIR)
+      .filter((f) => f.endsWith("-hook.js"))
+      .filter((f) => fs.readFileSync(path.join(HOOKS_DIR, f), "utf8").includes("createPidResolver("));
+    assert.ok(consumers.length >= 14, "sanity: the resolver consumers are all visible to this scan");
+    const bare = consumers.filter((f) => {
+      if (EXEMPT.has(f)) return false;
+      return !fs.readFileSync(path.join(HOOKS_DIR, f), "utf8").includes('namespace: "');
+    });
+    assert.deepStrictEqual(bare, [],
+      "these adapters call createPidResolver but never build a cache context — migrate them or add an explicit exemption with a reason");
+  });
+
+  it("exemptions stay honest — an exempted file must still be a consumer", () => {
+    for (const f of EXEMPT) {
+      const p = path.join(HOOKS_DIR, f);
+      assert.ok(fs.existsSync(p), `${f} exempted but missing`);
+      assert.ok(fs.readFileSync(p, "utf8").includes("createPidResolver("), `${f} exempted but no longer a consumer — drop the exemption`);
+    }
   });
 });

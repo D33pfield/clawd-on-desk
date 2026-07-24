@@ -137,13 +137,16 @@ const TOOL_METADATA_EVENTS = new Set([
   "PermissionDenied",
 ]);
 
-// #634: lifecycle for the shared resolver's cross-process pid cache. Qoder has
-// no SessionEnd hook; Stop is deliberately NOT "end" (turn completion).
-// cacheable keys off the RAW session id — normalizeSessionId prefixes, so its
-// "qoder:default" fallback would defeat the #583 same-key guard.
+// #634: lifecycle for the shared resolver's cross-process pid cache. Stop is
+// deliberately NOT "end" (turn completion); SessionEnd IS a true session end
+// (registered by qoder-install.js) and drops the cache. cacheable keys off the
+// RAW session id — normalizeSessionId prefixes, so its "qoder:default"
+// fallback would defeat the #583 same-key guard — and rejects a literal
+// "default" id for the same reason.
 const EVENT_TO_LIFECYCLE = {
   SessionStart: "start",
   UserPromptSubmit: "prompt",
+  SessionEnd: "end",
 };
 
 function pidCacheContext(hookName, payload) {
@@ -156,7 +159,7 @@ function pidCacheContext(hookName, payload) {
     sessionId: normalizeSessionId(payload && payload.session_id),
     cacheCwd: cwd,
     lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
-    cacheable: !!raw && !!cwd,
+    cacheable: !!raw && raw !== "default" && !!cwd,
   };
 }
 

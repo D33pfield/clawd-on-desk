@@ -134,7 +134,8 @@ const EVENT_TO_LIFECYCLE = {
 };
 
 // cacheable keys off the RAW session id: normalizeQwenSessionId prefixes, so
-// its "qwen-code:default" fallback would defeat the #583 same-key guard.
+// its "qwen-code:default" fallback would defeat the #583 same-key guard; a
+// literal raw "default" is rejected for the same reason.
 function pidCacheContext(hookName, payload, body) {
   const raw = payload && payload.session_id != null && payload.session_id !== ""
     ? String(payload.session_id)
@@ -144,7 +145,7 @@ function pidCacheContext(hookName, payload, body) {
     sessionId: body.session_id,
     cacheCwd: body.cwd || "",
     lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
-    cacheable: !!raw && !!body.cwd,
+    cacheable: !!raw && raw !== "default" && !!body.cwd,
   };
 }
 

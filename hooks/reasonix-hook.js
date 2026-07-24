@@ -108,14 +108,15 @@ readStdinJson()
     } else {
       applyWslSourceFields(body);
       // #634: cacheable keys off the RAW session id — the normalized value is
-      // prefixed, so its "reasonix:default" fallback would defeat the #583 guard.
+      // prefixed, so its "reasonix:default" fallback would defeat the #583
+      // guard; a literal raw "default" is rejected for the same reason.
       const rawSessionId = (payload && payload.session_id) || "";
       const { stablePid, agentPid, detectedEditor, pidChain } = resolve({
         namespace: "reasonix",
         sessionId: body.session_id,
         cacheCwd: body.cwd || "",
         lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
-        cacheable: !!rawSessionId && !!body.cwd,
+        cacheable: !!rawSessionId && rawSessionId !== "default" && !!body.cwd,
       });
       if (Number.isFinite(stablePid) && stablePid > 0) body.source_pid = Math.floor(stablePid);
       if (detectedEditor) body.editor = detectedEditor;

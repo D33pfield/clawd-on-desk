@@ -168,15 +168,29 @@ function resolveCwd(payload) {
 // normalizeSessionId fallback so an id-less payload ("antigravity:default",
 // cf. #583) never keys a shared entry; the transcript-dirname fallback is a
 // real per-conversation id and stays cacheable.
+//
+// The cache key deliberately does NOT use resolveCwd(): that helper prefers
+// toolCall.args.Cwd, which varies per tool call (subdirs, slash spelling) and
+// would fragment one conversation across many v2 cache files — each a miss
+// that can spawn another snapshot. The key needs a per-SESSION constant, so it
+// uses workspacePaths[0] only; the event/body cwd keeps resolveCwd() behavior.
+function stableWorkspaceCwd(payload) {
+  if (payload && Array.isArray(payload.workspacePaths)) {
+    const first = payload.workspacePaths.find((entry) => typeof entry === "string" && entry);
+    if (first) return first;
+  }
+  return "";
+}
+
 function pidCacheContext(payload) {
   const sessionId = normalizeSessionId(payload && payload.conversationId, payload);
-  const cwd = resolveCwd(payload);
+  const cacheCwd = stableWorkspaceCwd(payload);
   return {
     namespace: "antigravity-cli",
     sessionId,
-    cacheCwd: cwd,
+    cacheCwd,
     lifecycle: "event",
-    cacheable: sessionId !== "antigravity:default" && !!cwd,
+    cacheable: sessionId !== "antigravity:default" && !!cacheCwd,
   };
 }
 
