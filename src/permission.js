@@ -554,7 +554,8 @@ function getActionablePermissions() {
   return pendingPermissions.filter(
     p => !isPassiveNotifyEntry(p)
       && isValidInteraction(p.interaction)
-      && p.interaction.intent === INTERACTION_INTENT.TOOL_APPROVAL
+      && p.interaction.capabilities.allowDeny === true
+      && !isDecisionInteraction(p.interaction)
   );
 }
 
@@ -785,6 +786,11 @@ function maybeAutoApprovePermission(permEntry) {
   if (action === AUTOMATION_ACTION.DEFER) {
     if (!isValidInteraction(permEntry.interaction)) {
       permLog(`automation defer: invalid interaction tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
+    } else if (
+      mode !== PERMISSION_AUTOMATION_MODE.OFF
+      && permEntry.interaction.intent === INTERACTION_INTENT.UNKNOWN
+    ) {
+      permLog(`automation defer: unknown interaction mode=${mode} tool=${permEntry.toolName || "(missing)"} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
     }
     return false;
   }
@@ -1780,8 +1786,16 @@ function applyPermissionSuggestion(perm, index, options = {}) {
   // Hide this bubble (fade out + destroy)
   if (bub && !bub.isDestroyed()) {
     try {
-      if (!bub.webContents || !bub.webContents.isDestroyed || !bub.webContents.isDestroyed()) {
-        bub.webContents.send("permission-hide");
+      const bubbleContents = bub.webContents;
+      if (
+        bubbleContents
+        && typeof bubbleContents.send === "function"
+        && (
+          typeof bubbleContents.isDestroyed !== "function"
+          || !bubbleContents.isDestroyed()
+        )
+      ) {
+        bubbleContents.send("permission-hide");
       }
     } catch (err) {
       permLog(`permission bubble hide failed: ${err && err.message ? err.message : String(err)}`);

@@ -39,34 +39,53 @@ const KNOWN_PERMISSION_AGENTS = new Set([
 const CLAUDE_COMPATIBLE_TOOL_APPROVAL_NAMES = new Set([
   "agent",
   "activate_skill",
+  "artifact",
   "bash",
+  "bashoutput",
+  "bashoutputtool",
   "croncreate",
   "crondelete",
   "cronlist",
   "edit",
   "edit_file",
   "enterplanmode",
+  "enterworktree",
   "execute_bash",
+  "exitworktree",
   "glob",
   "google_web_search",
   "grep",
   "grep_search",
   "kill_shell",
   "killshell",
+  // Current Claude Code names carry the Tool suffix. Keep the two historical
+  // aliases below as compatibility entries for older Claude-compatible hooks.
   "listmcpresources",
+  "listmcpresourcestool",
   "lsp",
+  "monitor",
   "notebookedit",
   "powershell",
+  "pushnotification",
   "read",
   "read_file",
   "readmcpresource",
+  "readmcpresourcetool",
+  "remotetrigger",
   "replace",
+  "reportfindings",
   "run_command",
   "run_shell_command",
   "save_memory",
+  "schedulewakeup",
   "search_file_content",
+  "sendmessage",
+  "senduserfile",
+  "shareonboardingguide",
   "shell",
   "skill",
+  "slashcommand",
+  "slashcommandtool",
   "task",
   "taskcreate",
   "taskget",
@@ -76,9 +95,11 @@ const CLAUDE_COMPATIBLE_TOOL_APPROVAL_NAMES = new Set([
   "taskupdate",
   "todowrite",
   "toolsearch",
+  "waitformcpservers",
   "web_fetch",
   "webfetch",
   "websearch",
+  "workflow",
   "write",
   "write_file",
   "write_to_file",
@@ -158,14 +179,13 @@ function classifyPermissionInteraction({
   agentId,
   eventKind = "permission",
   toolName,
-  legacyFlags = {},
 } = {}) {
   const trustedAgentId = typeof agentId === "string" ? agentId : "";
   const trustedToolName = typeof toolName === "string" ? toolName.trim() : "";
 
-  if (isPassiveEventKind(eventKind) || legacyFlags.passive === true) {
+  if (isPassiveEventKind(eventKind)) {
     return makeInteraction(INTERACTION_INTENT.NOTIFICATION, {
-      nativeFallback: eventKind === "native-question" || legacyFlags.nativeFallback === true,
+      nativeFallback: eventKind === "native-question",
     });
   }
 
@@ -173,13 +193,16 @@ function classifyPermissionInteraction({
   // identity is never evidence that the request is an ordinary tool approval.
   if (isMissingToolName(trustedToolName)) {
     return makeInteraction(INTERACTION_INTENT.UNKNOWN, {
+      // A known permission adapter can still present a generic request and
+      // return the user's explicit Allow/Deny choice. Missing identity is never
+      // enough to automate it, though.
+      allowDeny: isKnownPermissionAgent(trustedAgentId),
       nativeFallback: true,
     });
   }
 
   const isQuestion = trustedToolName === "AskUserQuestion"
-    || (trustedAgentId === "hermes" && trustedToolName === "clarify")
-    || legacyFlags.isElicitation === true;
+    || (trustedAgentId === "hermes" && trustedToolName === "clarify");
   if (isQuestion) {
     if (trustedAgentId === "claude-code" || trustedAgentId === "hermes") {
       return makeInteraction(INTERACTION_INTENT.HUMAN_QUESTION, {
@@ -190,11 +213,12 @@ function classifyPermissionInteraction({
       });
     }
     return makeInteraction(INTERACTION_INTENT.HUMAN_QUESTION, {
+      allowDeny: isOpencodeFamily(trustedAgentId),
       nativeFallback: true,
     });
   }
 
-  if (trustedToolName === "ExitPlanMode" || legacyFlags.isPlanReview === true) {
+  if (trustedToolName === "ExitPlanMode") {
     if (trustedAgentId === "claude-code") {
       return makeInteraction(INTERACTION_INTENT.PLAN_REVIEW, {
         autoTools: true,
@@ -212,13 +236,14 @@ function classifyPermissionInteraction({
     // No other adapter has a verified plan-review response contract. A name
     // collision must defer instead of inheriting Claude's UI/capabilities.
     return makeInteraction(INTERACTION_INTENT.UNKNOWN, {
+      allowDeny: isOpencodeFamily(trustedAgentId),
       nativeFallback: true,
     });
   }
 
   if (trustedAgentId === "codebuddy") {
     return makeInteraction(INTERACTION_INTENT.TOOL_APPROVAL, {
-      autoTools: false,
+      autoTools: true,
       unattended: true,
       allowDeny: true,
       nativeFallback: true,
@@ -231,6 +256,20 @@ function classifyPermissionInteraction({
   ) {
     return makeInteraction(INTERACTION_INTENT.TOOL_APPROVAL, {
       autoTools: true,
+      unattended: true,
+      allowDeny: true,
+      nativeFallback: true,
+    });
+  }
+
+  // A non-empty PermissionRequest from a Claude-compatible adapter is still
+  // manually actionable even when its name is newer than this reviewed list.
+  // auto-tools remains fail-closed so a newly introduced decision protocol
+  // cannot be mistaken for an ordinary tool. Unattended intentionally keeps
+  // the legacy "handle every request" behavior after all known decision tools
+  // above have been classified.
+  if (trustedAgentId === "claude-code" || trustedAgentId === "qwen-code") {
+    return makeInteraction(INTERACTION_INTENT.UNKNOWN, {
       unattended: true,
       allowDeny: true,
       nativeFallback: true,
@@ -268,7 +307,13 @@ function evaluatePermissionAutomation({ mode, interaction } = {}) {
   if (!eligibility) return AUTOMATION_ACTION.DEFER;
 
   if (
-    interaction.intent === INTERACTION_INTENT.TOOL_APPROVAL
+    (
+      interaction.intent === INTERACTION_INTENT.TOOL_APPROVAL
+      || (
+        mode === PERMISSION_AUTOMATION_MODE.UNATTENDED
+        && interaction.intent === INTERACTION_INTENT.UNKNOWN
+      )
+    )
     && interaction.capabilities.allowDeny
   ) {
     return AUTOMATION_ACTION.AUTO_ALLOW;

@@ -117,7 +117,7 @@ describe("bubble-renderer family contract (static)", () => {
   // (detail chain, pill, Always wiring) fails a specific assertion instead of
   // surviving a loose includes() check.
   function familyBranch() {
-    const start = source.indexOf('if (data.familyAgentId && interactionIntent === "tool-approval") {');
+    const start = source.indexOf("if (data.familyAgentId) {");
     assert.notStrictEqual(start, -1, "family branch not found");
     const end = source.indexOf("revealCard();", start);
     assert.notStrictEqual(end, -1, "family branch end not found");

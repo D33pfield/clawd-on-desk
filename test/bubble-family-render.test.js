@@ -145,6 +145,28 @@ describe("bubble-renderer family branch (executed)", () => {
     assert.strictEqual(r.el("commandBlock").textContent, "rm -rf /tmp/x");
   });
 
+  it("keeps the family UI and Always action when a missing tool name is classified unknown", () => {
+    const r = makeRenderer();
+    r.show(familyPayload({
+      toolName: "unknown",
+      toolInput: { command: "custom action" },
+      interaction: {
+        intent: "unknown",
+        automationEligibility: { autoTools: false, unattended: false },
+        capabilities: {
+          allowDeny: true,
+          answerQuestions: false,
+          planFeedback: false,
+          nativeFallback: true,
+        },
+      },
+    }));
+
+    assert.strictEqual(r.el("toolPillText").textContent, "Unknown");
+    assert.strictEqual(r.el("commandBlock").textContent, "custom action");
+    assert.strictEqual(r.el("suggestions").children[0].textContent, "Always Allow (blanket)");
+  });
+
   it("dedupes repeated filepath segments", () => {
     const r = makeRenderer();
     r.show(familyPayload({ toolName: "edit", toolInput: { filepath: "a.md, a.md" } }));

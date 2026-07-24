@@ -3,6 +3,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const { EventEmitter } = require("node:events");
+const initPermission = require("../src/permission");
 
 const {
   CLAWD_SERVER_HEADER,
@@ -144,6 +145,65 @@ function callPermissionPost(body, overrides = {}) {
   });
 }
 
+function callPermissionPostThroughAutomation(body, mode, options = {}) {
+  return new Promise((resolve) => {
+    const res = makeRes();
+    const ctx = makeCtx({
+      focusTerminalForSession() {},
+      getSettingsSnapshot: () => ({}),
+      getPermissionAutomationMode: () => mode,
+      getBubblePolicy: () => ({ enabled: true, autoCloseMs: 0 }),
+      getPetWindowBounds: () => null,
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
+      getHitRectScreen: () => null,
+      getHudReservedOffset: () => 0,
+      guardAlwaysOnTop() {},
+      reapplyMacVisibility() {},
+      repositionUpdateBubble() {},
+      subscribeShortcuts: () => () => {},
+      reportShortcutFailure() {},
+      clearShortcutFailure() {},
+      maybeStartRemoteApproval: () => false,
+      win: null,
+      bubbleFollowPet: false,
+      petHidden: false,
+    });
+    const permission = initPermission(ctx);
+    Object.assign(ctx, {
+      pendingPermissions: permission.pendingPermissions,
+      PASSTHROUGH_TOOLS: permission.PASSTHROUGH_TOOLS,
+      addPendingPermission: permission.addPendingPermission,
+      removePendingPermission: permission.removePendingPermission,
+      showPermissionBubble: options.showPermissionBubble || permission.showPermissionBubble,
+      resolvePermissionEntry: permission.resolvePermissionEntry,
+      sendPermissionResponse: permission.sendPermissionResponse,
+      syncPermissionShortcuts: permission.syncPermissionShortcuts,
+    });
+    const recorder = [];
+    handlePermissionPost(makeReq(body), res, {
+      ctx,
+      createRequestHookRecorder: (identity, data, route) => {
+        recorder.push({ identity, data, route });
+        return {
+          accepted: () => recorder.push({ outcome: "accepted" }),
+          droppedByDisabled: () => recorder.push({ outcome: "disabled" }),
+          droppedByDnd: () => recorder.push({ outcome: "dnd" }),
+          droppedInvalidAgent: () => recorder.push({ outcome: "invalid-agent" }),
+          droppedUnsupported: () => recorder.push({ outcome: "unsupported" }),
+        };
+      },
+    });
+    setImmediate(() => {
+      setImmediate(() => {
+        res.ctx = ctx;
+        res.permission = permission;
+        res.recorder = recorder;
+        resolve(res);
+      });
+    });
+  });
+}
+
 describe("server-route-permission helpers", () => {
   it("preserves bubble bypass decisions for CC, Codex, and opencode", () => {
     assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, interaction("claude-code", "Bash"), "claude-code"), true);
@@ -215,6 +275,73 @@ describe("server-route-permission POST", () => {
       assert.strictEqual(isValidInteraction(entry.interaction), true, agentId);
       assert.strictEqual(entry.interaction.intent, INTERACTION_INTENT.TOOL_APPROVAL, agentId);
     }
+  });
+
+  it("runs route → classification → auto-tools chokepoint → CodeBuddy HTTP allow end to end", async () => {
+    const res = await callPermissionPostThroughAutomation(JSON.stringify({
+      agent_id: "codebuddy",
+      session_id: "codebuddy:auto-tools",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    }), "auto-tools");
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.permission.pendingPermissions.length, 0);
+    assert.strictEqual(res.destroyed, false);
+    assert.strictEqual(
+      JSON.parse(res.body).hookSpecificOutput.decision.behavior,
+      "allow"
+    );
+    assert.deepStrictEqual(
+      res.recorder.map((item) => item.outcome).filter(Boolean),
+      ["accepted"]
+    );
+  });
+
+  it("runs an unreviewed non-empty Claude tool through unattended compatibility without weakening auto-tools", async () => {
+    const body = JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "claude:new-tool",
+      tool_name: "FutureBuiltinTool",
+      tool_input: { action: "run" },
+    });
+    const unattended = await callPermissionPostThroughAutomation(body, "unattended");
+    assert.strictEqual(unattended.statusCode, 200);
+    assert.strictEqual(
+      JSON.parse(unattended.body).hookSpecificOutput.decision.behavior,
+      "allow"
+    );
+    assert.strictEqual(unattended.permission.pendingPermissions.length, 0);
+
+    const autoTools = await callPermissionPostThroughAutomation(body, "auto-tools");
+    assert.strictEqual(autoTools.statusCode, null);
+    assert.strictEqual(autoTools.body, "");
+    assert.strictEqual(autoTools.destroyed, true);
+    assert.strictEqual(autoTools.permission.pendingPermissions.length, 0);
+  });
+
+  it("releases a deferred decision entry when the blocking hook client disconnects", async () => {
+    const res = await callPermissionPostThroughAutomation(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "claude:disconnect-question",
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [{
+          question: "Continue?",
+          options: [{ label: "Yes" }, { label: "No" }],
+        }],
+      },
+    }), "auto-tools", {
+      // Keep the real entry/resolver lifecycle while avoiding an Electron
+      // window in this route-level integration test.
+      showPermissionBubble() {},
+    });
+
+    assert.strictEqual(res.permission.pendingPermissions.length, 1);
+    res.emit("close");
+    assert.strictEqual(res.permission.pendingPermissions.length, 0);
+    assert.strictEqual(res.destroyed, true);
+    assert.strictEqual(res.body, "");
   });
 
   it("stamps questions conservatively and treats unverified plan-name collisions as unknown", async () => {
@@ -453,6 +580,29 @@ describe("server-route-permission POST", () => {
       { agentId: "opencode" },
     ]]);
     assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["accepted"]);
+  });
+
+  it("keeps an opencode permission with a missing tool name manually actionable but never automatable", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "opencode",
+      session_id: "opencode:unknown",
+      tool_input: { command: "custom action" },
+      request_id: "req-unknown",
+      bridge_url: "http://127.0.0.1:1234",
+      bridge_token: "token",
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.toolName, "unknown");
+    assert.strictEqual(entry.interaction.intent, INTERACTION_INTENT.UNKNOWN);
+    assert.strictEqual(entry.interaction.capabilities.allowDeny, true);
+    assert.deepStrictEqual(
+      { ...entry.interaction.automationEligibility },
+      { autoTools: false, unattended: false }
+    );
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
   });
 
   it("silently drops headless opencode sessions before auto-pilot can bridge allow", async () => {
@@ -733,6 +883,20 @@ describe("server-route-permission POST", () => {
       agent_id: "custom-stale-0123456789ab",
       hook_source: "copilot-hook",
       session_id: "stale:sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    }));
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 0);
+    assert.strictEqual(res.ctx.calls.showPermissionBubble.length, 0);
+    assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["invalid-agent"]);
+  });
+
+  it("rejects an invalid overlong Claude subagent id instead of creating an unmatchable entry", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "x".repeat(257),
+      session_id: "sid-overlong-subagent",
       tool_name: "Bash",
       tool_input: { command: "npm test" },
     }));

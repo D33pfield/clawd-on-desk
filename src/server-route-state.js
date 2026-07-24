@@ -15,7 +15,12 @@ const {
   classifyPermissionInteraction,
   isDecisionInteraction,
 } = require("./permission-automation-policy");
-const { resolveHookAgentId } = require("./server-agent-id");
+const {
+  MAX_SUBAGENT_ID_LENGTH,
+  MAX_SUBAGENT_TYPE_LENGTH,
+  normalizeSubagentMetadata,
+  resolveHookAgentId,
+} = require("./server-agent-id");
 const { resolveCodexOfficialHookState } = require("./server-codex-official-turns");
 const { normalizeTranscriptPath } = require("./transcript-path");
 const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
@@ -73,13 +78,6 @@ function normalizeAssistantLastOutput(value) {
   return text.length > ASSISTANT_LAST_OUTPUT_MAX
     ? text.slice(0, ASSISTANT_LAST_OUTPUT_MAX)
     : text;
-}
-
-function normalizeSubagentMetadata(value, maxLength) {
-  if (typeof value !== "string") return null;
-  const text = value.trim();
-  if (!text || text.length > maxLength || /[\0\r\n]/.test(text)) return null;
-  return text;
 }
 
 function normalizeContextUsage(value) {
@@ -182,10 +180,10 @@ function handleStatePost(req, res, options) {
       const agentPid = Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null;
       const agentId = agentIdentity.agentId;
       const reportedSubagentId = agentId === "claude-code"
-        ? normalizeSubagentMetadata(data.subagent_id, 256)
+        ? normalizeSubagentMetadata(data.subagent_id, MAX_SUBAGENT_ID_LENGTH)
         : null;
       const reportedSubagentType = reportedSubagentId
-        ? normalizeSubagentMetadata(data.subagent_type, 128)
+        ? normalizeSubagentMetadata(data.subagent_type, MAX_SUBAGENT_TYPE_LENGTH)
         : null;
       const subagentId = agentIdentity.source === "subagent"
         ? agentIdentity.subagentId
@@ -479,15 +477,25 @@ function handleStatePost(req, res, options) {
           agentId,
           toolName,
         });
-        const pendingForSource = () => ctx.pendingPermissions.filter((perm) => (
+        const pendingForSessionAgent = () => ctx.pendingPermissions.filter((perm) => (
           perm
           && perm.res
           && perm.sessionId === sid
           && perm.agentId === agentId
-          && (perm.subagentId || null) === subagentId
         ));
+        const pendingForSource = () => pendingForSessionAgent().filter(
+          (perm) => (perm.subagentId || null) === subagentId
+        );
         const resolveOnlyUnambiguous = (candidates, behavior, message) => {
-          if (candidates.length !== 1) return;
+          if (candidates.length !== 1) {
+            if (candidates.length > 1 && typeof ctx.permLog === "function") {
+              ctx.permLog(
+                `decision sweep ambiguous: event=${event} session=${sid} agent=${agentId}`
+                + ` subagent=${subagentId || "main"} candidates=${candidates.length}`
+              );
+            }
+            return;
+          }
           ctx.resolvePermissionEntry(candidates[0], behavior, message);
         };
         if (event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop") {
@@ -528,7 +536,14 @@ function handleStatePost(req, res, options) {
         // plan approval. SessionEnd is authoritative and clears both plan and
         // human-question entries without inventing a user decision.
         if (event === "SessionEnd") {
-          for (const stale of pendingForSource().filter((entry) => (
+          // A main-thread SessionEnd is authoritative for the whole agent
+          // session and must clear requests from every subagent. A SessionEnd
+          // emitted by a subagent only closes that subagent's own requests; its
+          // siblings and parent session can still be live.
+          const sessionEndPending = subagentId
+            ? pendingForSource()
+            : pendingForSessionAgent();
+          for (const stale of sessionEndPending.filter((entry) => (
             isDecisionInteraction(entry.interaction)
           ))) {
             ctx.resolvePermissionEntry(stale, "no-decision", "Session ended");

@@ -897,7 +897,7 @@ function show(data) {
   //      not CC's {file_path,command,pattern}. Custom picker below.
   //   3. "Always Allow" button maps to reply="always" via the single
   //      "family-always" behavior (handleDecide special-cases this).
-  if (data.familyAgentId && interactionIntent === "tool-approval") {
+  if (data.familyAgentId) {
     headerTitle.textContent = bubbleText(data.lang, "permissionRequest");
 
     const rawName = data.toolName || "unknown";

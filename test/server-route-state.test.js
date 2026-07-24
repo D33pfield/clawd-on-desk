@@ -70,6 +70,7 @@ function callStatePost(body, overrides = {}) {
       setState: [],
       recorder: [],
       resolved: [],
+      logs: [],
       userInputShown: [],
       userInputCleared: [],
     };
@@ -89,6 +90,7 @@ function callStatePost(body, overrides = {}) {
       updateSession: (...args) => calls.updateSession.push(args),
       updateAccountQuota: (...args) => calls.updateAccountQuota.push(args),
       resolvePermissionEntry: (perm, behavior, message) => calls.resolved.push({ perm, behavior, message }),
+      permLog: (message) => calls.logs.push(message),
       showCodexUserInputBubble: (input) => { calls.userInputShown.push(input); return true; },
       clearCodexUserInputBubbles: (...args) => calls.userInputCleared.push(args),
       ...overrides.ctx,
@@ -166,6 +168,53 @@ describe("server-route-state POST", () => {
     const updateOptions = res.calls.updateSession[0][3];
     assert.strictEqual(updateOptions.subagentId, "agent-child-a");
     assert.strictEqual(updateOptions.subagentType, "Explore");
+  });
+
+  it("clears main-thread and all subagent decisions on a main-session SessionEnd", async () => {
+    const main = makePlanPermission("whole-session");
+    const childPlan = {
+      ...makePlanPermission("whole-session"),
+      subagentId: "agent-child-a",
+    };
+    const childQuestion = {
+      ...makePlanPermission("whole-session"),
+      subagentId: "agent-child-b",
+      toolName: "AskUserQuestion",
+      interaction: classifyPermissionInteraction({
+        agentId: "claude-code",
+        toolName: "AskUserQuestion",
+      }),
+    };
+    const otherSession = makePlanPermission("other-session");
+    const otherAgent = {
+      ...makePlanPermission("whole-session"),
+      agentId: "codebuddy",
+      interaction: classifyPermissionInteraction({
+        agentId: "codebuddy",
+        toolName: "ExitPlanMode",
+      }),
+    };
+
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "whole-session",
+      event: "SessionEnd",
+      agent_id: "claude-code",
+    }), {
+      ctx: {
+        pendingPermissions: [main, childPlan, childQuestion, otherSession, otherAgent],
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(
+      res.calls.resolved.map(({ perm, behavior }) => ({ perm, behavior })),
+      [
+        { perm: main, behavior: "no-decision" },
+        { perm: childPlan, behavior: "no-decision" },
+        { perm: childQuestion, behavior: "no-decision" },
+      ]
+    );
   });
 
   it("uses trusted profile scope for identical remote raw ids, host labels, quota, and user-input actions", async () => {
@@ -1346,5 +1395,22 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
       res.calls.resolved.map(({ perm }) => perm),
       [exact]
     );
+  });
+
+  it("logs and preserves ambiguous decision sweeps instead of guessing", async () => {
+    const first = makePlanPermission("sid");
+    const second = makePlanPermission("sid");
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "UserPromptSubmit",
+      agent_id: "claude-code",
+    }), {
+      ctx: { pendingPermissions: [first, second] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(res.calls.resolved, []);
+    assert.match(res.calls.logs.join("\n"), /decision sweep ambiguous:.*candidates=2/);
   });
 });

@@ -580,9 +580,11 @@ describe("interactive permission bubble fatal fallback", () => {
     const response = {
       writableEnded: false,
       destroyed: false,
+      destroyCalls: 0,
       on() {},
       removeListener() {},
       destroy() {
+        this.destroyCalls += 1;
         this.destroyed = true;
       },
     };
@@ -616,6 +618,63 @@ describe("interactive permission bubble fatal fallback", () => {
     assert.doesNotThrow(() => harness.api.showPermissionBubble(entry));
     assert.strictEqual(harness.api.pendingPermissions.length, 0);
     assert.strictEqual(response.destroyed, true);
+  });
+
+  it("returns no-decision when loadFile rejects asynchronously", async () => {
+    const harness = createPermissionHarness({ loadBehavior: "reject" });
+    const { entry, response } = makeBlockingEntry();
+    harness.api.pendingPermissions.push(entry);
+
+    harness.api.showPermissionBubble(entry);
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(harness.api.pendingPermissions.length, 0);
+    assert.strictEqual(response.destroyed, true);
+    assert.strictEqual(response.destroyCalls, 1);
+  });
+
+  it("returns no-decision when the main frame emits did-fail-load", () => {
+    const harness = createPermissionHarness({ loadBehavior: "event" });
+    const { entry, response } = makeBlockingEntry();
+    harness.api.pendingPermissions.push(entry);
+
+    assert.doesNotThrow(() => harness.api.showPermissionBubble(entry));
+
+    assert.strictEqual(harness.api.pendingPermissions.length, 0);
+    assert.strictEqual(response.destroyed, true);
+    assert.strictEqual(response.destroyCalls, 1);
+  });
+
+  it("does not turn a fatal no-decision into a second deny when closed fires", () => {
+    const harness = createPermissionHarness({ loadBehavior: "throw" });
+    const { entry, response } = makeBlockingEntry();
+    harness.api.pendingPermissions.push(entry);
+
+    harness.api.showPermissionBubble(entry);
+    const bubble = harness.createdWindows[0];
+    bubble._closedHandler();
+
+    assert.strictEqual(harness.api.pendingPermissions.length, 0);
+    assert.strictEqual(response.destroyCalls, 1);
+  });
+
+  it("skips permission-hide cleanly when a live bubble has no webContents", () => {
+    const logPath = createTempLogPath();
+    const harness = createPermissionHarness({ logPath });
+    const { entry, response } = makeBlockingEntry();
+    entry.createdAt = Date.now() - 5000;
+    harness.api.pendingPermissions.push(entry);
+    harness.api.showPermissionBubble(entry);
+    entry.bubble.webContents = null;
+
+    assert.doesNotThrow(() => {
+      harness.api.resolvePermissionEntry(entry, "no-decision", "test cleanup");
+    });
+
+    assert.strictEqual(response.destroyCalls, 1);
+    const logText = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "";
+    assert.doesNotMatch(logText, /permission bubble hide failed/);
   });
 
   it("returns no-decision exactly once when the renderer process exits", () => {

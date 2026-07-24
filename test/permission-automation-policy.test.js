@@ -99,14 +99,14 @@ describe("permission automation interaction classifier", () => {
     }
   });
 
-  it("preserves only legacy unattended eligibility for ordinary CodeBuddy permissions", () => {
+  it("automates ordinary CodeBuddy permissions in both automatic modes", () => {
     const interaction = classifyPermissionInteraction({
       agentId: "codebuddy",
       toolName: "Bash",
     });
     assert.deepStrictEqual(
       { ...interaction.automationEligibility },
-      { autoTools: false, unattended: true }
+      { autoTools: true, unattended: true }
     );
     assert.strictEqual(interaction.capabilities.allowDeny, true);
   });
@@ -139,6 +139,11 @@ describe("permission automation interaction classifier", () => {
         assert.strictEqual(interaction.automationEligibility.autoTools, false);
         assert.strictEqual(interaction.automationEligibility.unattended, false);
         assert.strictEqual(
+          interaction.capabilities.allowDeny,
+          true,
+          `${agentId} missing-name manual capability`
+        );
+        assert.strictEqual(
           evaluatePermissionAutomation({
             mode: PERMISSION_AUTOMATION_MODE.AUTO_TOOLS,
             interaction,
@@ -156,7 +161,7 @@ describe("permission automation interaction classifier", () => {
     }
   });
 
-  it("fails closed for an unreviewed Claude-compatible built-in tool", () => {
+  it("fails closed in auto-tools but preserves unattended for a non-empty unreviewed Claude-compatible tool", () => {
     for (const agentId of ["claude-code", "qwen-code"]) {
       const interaction = classifyPermissionInteraction({
         agentId,
@@ -168,13 +173,36 @@ describe("permission automation interaction classifier", () => {
           mode: PERMISSION_AUTOMATION_MODE.AUTO_TOOLS,
           interaction,
         }),
-        AUTOMATION_ACTION.DEFER
+          AUTOMATION_ACTION.DEFER
+      );
+      assert.strictEqual(interaction.automationEligibility.unattended, true);
+      assert.strictEqual(interaction.capabilities.allowDeny, true);
+      assert.strictEqual(
+        evaluatePermissionAutomation({
+          mode: PERMISSION_AUTOMATION_MODE.UNATTENDED,
+          interaction,
+        }),
+        AUTOMATION_ACTION.AUTO_ALLOW
       );
     }
   });
 
-  it("keeps reviewed Claude-compatible tools and namespaced MCP calls eligible", () => {
-    for (const toolName of ["Bash", "write_file", "MCP__SERVER__DO_THING"]) {
+  it("keeps reviewed current Claude tools, compatibility aliases, and namespaced MCP calls eligible", () => {
+    for (const toolName of [
+      "Bash",
+      "BashOutput",
+      "BashOutputTool",
+      "SlashCommand",
+      "SlashCommandTool",
+      "write_file",
+      "ListMcpResourcesTool",
+      "ReadMcpResourceTool",
+      "Monitor",
+      "EnterWorktree",
+      "ShareOnboardingGuide",
+      "Workflow",
+      "MCP__SERVER__DO_THING",
+    ]) {
       const interaction = classifyPermissionInteraction({
         agentId: "claude-code",
         toolName,
@@ -263,12 +291,12 @@ describe("evaluatePermissionAutomation", () => {
     assert.strictEqual(isValidInteraction(null), false);
   });
 
-  it("does not auto-resolve CodeBuddy in auto-tools", () => {
+  it("auto-tools handles CodeBuddy tools but defers CodeBuddy decisions", () => {
     const tool = classifyPermissionInteraction({ agentId: "codebuddy", toolName: "Bash" });
     const question = classifyPermissionInteraction({ agentId: "codebuddy", toolName: "AskUserQuestion" });
     assert.strictEqual(
       evaluate(PERMISSION_AUTOMATION_MODE.AUTO_TOOLS, tool),
-      AUTOMATION_ACTION.DEFER
+      AUTOMATION_ACTION.AUTO_ALLOW
     );
     assert.strictEqual(
       evaluate(PERMISSION_AUTOMATION_MODE.AUTO_TOOLS, question),

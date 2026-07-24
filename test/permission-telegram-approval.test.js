@@ -102,10 +102,6 @@ function makePermEntry(overrides = {}) {
     agentId: entry.agentId,
     eventKind: entry.isCodexNotify || entry.isKimiNotify ? "notification" : "permission",
     toolName: entry.toolName,
-    legacyFlags: {
-      isElicitation: entry.isElicitation === true,
-      passive: entry.isCodexNotify === true || entry.isKimiNotify === true,
-    },
   });
   return entry;
 }
@@ -346,7 +342,7 @@ describe("permission telegram remote approval", () => {
     };
     const perm = initPermission(makeCtx({ getTelegramApprovalClient: () => client }));
     const entries = [
-      makePermEntry({ isElicitation: true }),
+      makePermEntry({ isElicitation: true, toolName: "AskUserQuestion" }),
       makePermEntry({ isCodexNotify: true }),
       makePermEntry({ isKimiNotify: true }),
       makePermEntry({ agentId: "opencode" }),
@@ -500,6 +496,7 @@ describe("permission telegram remote approval", () => {
       isElicitation: true,
       isHermes: true,
       agentId: "hermes",
+      toolName: "clarify",
       toolInput: { questions: [{ question: "Which environment?" }] },
     });
     perm.pendingPermissions.push(entry);
