@@ -8,6 +8,7 @@ const { getAgentDescriptors } = require("./doctor-detectors/agent-descriptors");
 const { DEFAULT_INTEGRATION_INSTALLED_IDS, normalizePathList } = require("./prefs");
 const copilot = require("../hooks/copilot-install");
 const hermes = require("../hooks/hermes-install");
+const reasonix = require("../hooks/reasonix-install");
 const { identifyCustomApplication } = require("./custom-applications");
 
 const DEFAULT_SKIPPED_AGENT_IDS = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
@@ -165,6 +166,20 @@ function resolveAgentPaths(descriptor, options) {
       configPath: path.join(hermesHome, "plugins", hermes.PLUGIN_ID),
       configFilePath: path.join(hermesHome, "config.yaml"),
       commandPaths: hermesCommandPaths(hermesHome, platform, env),
+    }, options);
+  }
+
+  if (descriptor.agentId === "reasonix") {
+    const configTargets = reasonix.resolveReasonixConfigTargets({
+      env,
+      platform,
+      userHomeDir: homeDir,
+    });
+    const primary = configTargets[0];
+    return finalizeAgentPaths(descriptor, {
+      parentDir: primary.parentDir,
+      configPath: primary.configPath,
+      configTargets,
     }, options);
   }
 
@@ -344,6 +359,13 @@ function detectInstallation(descriptor, paths, options) {
     case "qoder":
     case "qoderwork":
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
+      return notFound();
+    case "reasonix":
+      for (const target of paths.configTargets || []) {
+        if (dirExists(fsImpl, target.parentDir)) {
+          return installationResult(true, "medium", "parent-dir", `${target.parentDir} exists`);
+        }
+      }
       return notFound();
     case "kiro-cli":
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);

@@ -1906,16 +1906,20 @@ function checkAgent(descriptor, options) {
     });
   }
 
-  // Multi-generation agents (#563: kimi legacy + kimi-code) declare ordered
-  // configTargets; the first whose directory exists is the one doctor judges.
-  const activeTarget = Array.isArray(descriptor.configTargets)
-    ? descriptor.configTargets.find((target) => {
+  // Multi-home agents declare ordered configTargets. Most use the first
+  // existing directory; WorkBuddy's legacy target requires a real config file,
+  // while Reasonix mirrors its own compatibility loader by preferring an
+  // existing current/legacy settings file before a bare home.
+  const configTargets = Array.isArray(descriptor.configTargets) ? descriptor.configTargets : [];
+  const activeTarget = descriptor.preferExistingConfigFile
+    ? configTargets.find((target) => fileExists(options.fs, target.configPath))
+      || configTargets.find((target) => dirExists(options.fs, target.parentDir))
+    : configTargets.find((target) => {
       if (descriptor.agentId === "workbuddy" && target.label === "legacy") {
         return fileExists(options.fs, target.configPath);
       }
       return dirExists(options.fs, target.parentDir);
-    })
-    : null;
+    });
   const effectiveDescriptor = activeTarget
     ? { ...descriptor, parentDir: activeTarget.parentDir, configPath: activeTarget.configPath }
     : descriptor;

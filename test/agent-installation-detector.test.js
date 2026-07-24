@@ -84,6 +84,36 @@ describe("agent installation detector", () => {
     assert.strictEqual(codewhale.reason, "parent-dir");
   });
 
+  it("detects a Windows Reasonix installation from the legacy fallback home", () => {
+    const homeDir = makeHome();
+    const appData = path.join(homeDir, "AppData", "Roaming");
+    const legacySettings = path.join(homeDir, ".reasonix", "settings.json");
+    const marker = getAgentDescriptor("reasonix").marker;
+    writeJson(legacySettings, {
+      hooks: {
+        Stop: [{ match: "*", command: `"node" "/app/hooks/${marker}"` }],
+      },
+    });
+
+    const report = detectAgentInstallations({
+      homeDir,
+      platform: "win32",
+      env: { APPDATA: appData },
+      now: 1,
+    });
+    const reasonix = byId(report, "reasonix");
+
+    assert.strictEqual(reasonix.detectedInstalled, true);
+    assert.strictEqual(reasonix.reason, "parent-dir");
+    assert.strictEqual(reasonix.detail, `${path.join(homeDir, ".reasonix")} exists`);
+    assert.deepStrictEqual(
+      reasonix.paths.configTargets.map((target) => target.label),
+      ["current", "legacy"]
+    );
+    assert.strictEqual(reasonix.clawdIntegration.detected, true);
+    assert.strictEqual(reasonix.clawdIntegration.paths.configPath, legacySettings);
+  });
+
   it("does not confuse Antigravity's ~/.gemini/config with Gemini CLI", () => {
     const homeDir = makeHome();
     writeJson(path.join(homeDir, ".gemini", "config", "hooks.json"), {

@@ -21,7 +21,7 @@ const { unregisterPiExtension } = require("./pi-install");
 const { unregisterOpenClawPlugin } = require("./openclaw-install");
 const { resolveHermesHome, unregisterHermesPlugin } = require("./hermes-install");
 const { unregisterQoderHooks } = require("./qoder-install");
-const { unregisterReasonixHooks } = require("./reasonix-install");
+const { resolveReasonixConfigTargets, unregisterReasonixHooks } = require("./reasonix-install");
 const { unregisterQoderWorkHooks } = require("./qoderwork-install");
 const { unregisterWorkBuddyHooks } = require("./workbuddy-install");
 
@@ -87,6 +87,11 @@ function buildTargetEnv(homeDir, options = {}) {
   } else if (options.ignoreInheritedHermesHome) {
     delete env.HERMES_HOME;
   }
+  if (typeof options.reasonixHome === "string" && options.reasonixHome.trim()) {
+    env.REASONIX_HOME = path.resolve(options.reasonixHome);
+  } else if (options.ignoreInheritedReasonixHome) {
+    delete env.REASONIX_HOME;
+  }
   if ((options.platform || process.platform) === "win32") {
     env.LOCALAPPDATA = options.localAppData || path.join(homeDir, "AppData", "Local");
     env.APPDATA = options.appData || path.join(homeDir, "AppData", "Roaming");
@@ -110,6 +115,7 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
   const env = buildTargetEnv(homeDir, {
     ...options,
     ignoreInheritedHermesHome: explicitHomeDir && !options.hermesHome,
+    ignoreInheritedReasonixHome: explicitHomeDir && !options.reasonixHome,
   });
   const backup = options.backup !== false;
   const silent = options.silent !== false;
@@ -214,7 +220,11 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       },
       reasonix: {
         ...common,
-        settingsPath: path.join(homeDir, ".reasonix", "settings.json"),
+        settingsPaths: resolveReasonixConfigTargets({
+          env,
+          platform: options.platform || process.platform,
+          userHomeDir: homeDir,
+        }).map((target) => target.configPath),
       },
       qoderwork: {
         ...common,
@@ -387,7 +397,12 @@ function cleanupIntegrations(options = {}) {
         agent.warnings = warningsFromResult(agentId, result);
         agent.notes = notesFromResult(agentId, result);
         agent.result = result;
-        if (changed || removed > 0) {
+        if (result && result.status === "error") {
+          agent.status = "failed";
+          agent.error = result.message || `Failed to clean ${agent.displayName} integration`;
+          failed++;
+          if (changed || removed > 0) agentsAffected++;
+        } else if (changed || removed > 0) {
           agent.status = "applied";
           agentsAffected++;
         } else {

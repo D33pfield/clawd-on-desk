@@ -179,7 +179,16 @@ function qoderHooksConfig(commandForEvent) {
 }
 
 function reasonixDescriptor() {
-  return managedFileDescriptor("reasonix", ".reasonix");
+  const descriptor = managedFileDescriptor("reasonix", ".reasonix");
+  return {
+    ...descriptor,
+    configTargets: [{
+      label: "current",
+      parentDir: descriptor.parentDir,
+      configPath: descriptor.configPath,
+    }],
+    preferExistingConfigFile: true,
+  };
 }
 
 function qoderWorkDescriptor() {
@@ -1029,6 +1038,40 @@ describe("checkAgentIntegrations", () => {
         agentId: descriptor.agentId,
       });
     }
+  });
+
+  it("checks the legacy Reasonix settings file when the current home has no settings", () => {
+    const root = makeTempDir();
+    const currentDir = path.join(root, "AppData", "Roaming", "reasonix");
+    const legacyDir = path.join(root, ".reasonix");
+    const descriptor = {
+      ...getAgentDescriptor("reasonix"),
+      parentDir: currentDir,
+      configPath: path.join(currentDir, "settings.json"),
+      configTargets: [
+        {
+          label: "current",
+          parentDir: currentDir,
+          configPath: path.join(currentDir, "settings.json"),
+        },
+        {
+          label: "legacy",
+          parentDir: legacyDir,
+          configPath: path.join(legacyDir, "settings.json"),
+        },
+      ],
+      preferExistingConfigFile: true,
+    };
+    fs.mkdirSync(currentDir, { recursive: true });
+    writeJson(path.join(legacyDir, "settings.json"), {
+      hooks: flatHooksConfig(descriptor.hookEvents, descriptor.marker),
+    });
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.configPath, path.join(legacyDir, "settings.json"));
+    assert.strictEqual(detail.commandCount, descriptor.hookEvents.length);
   });
 
   it("validates every required WorkBuddy hook event", () => {
