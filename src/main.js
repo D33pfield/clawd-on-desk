@@ -3330,7 +3330,11 @@ const settingsEffectRouter = createSettingsEffectRouter({
   sendSessionHudI18n: () => sendSessionHudI18n(),
   syncWindowTitles: () => {
     settingsWindowRuntime.applyTitleToWindow();
-    _tutorial.applyTitleToWindow();
+    // syncLocalization pushes BOTH the native title AND fresh renderer state
+    // (dictionary/lang), so an external language change (Settings/tray) keeps
+    // the tutorial body, buttons, and document.title in sync with the new
+    // language — not just the native title bar.
+    _tutorial.syncLocalization();
   },
   emitSessionSnapshot: (options) => _state.emitSessionSnapshot(options),
   cleanStaleSessions: () => _state.cleanStaleSessions(),
