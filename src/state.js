@@ -308,6 +308,18 @@ function hasConfirmedPermissionAnimationLock() {
   return [...kimiPermissionHolds.values()].some((hold) => hold && hold.source === "confirmed");
 }
 
+// Later events legitimately omit the pane key, so it has to be sticky — but a
+// SessionStart means the agent just (re)attached to a terminal, and then the key
+// must come from that event's own environment or not at all. `--resume` of the
+// same session id from a different terminal would otherwise keep the old Orca
+// key and, because the pane key outranks every other focus signal, raise Orca
+// instead of the terminal the agent actually moved to.
+function mergeOrcaPaneKey(orcaPaneKey, existing, event) {
+  if (orcaPaneKey) return orcaPaneKey;
+  if (event === "SessionStart") return null;
+  return (existing && existing.orcaPaneKey) || null;
+}
+
 function resolveAwaitingInputSinceStop(existing, event) {
   if (POST_COMPLETION_EVENTS.has(event)) return true;
   if (!event || COMPLETION_HOUSEKEEPING_EVENTS.has(event)) return !!(existing && existing.awaitingInputSinceStop === true);
@@ -1425,7 +1437,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
       const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
       const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
-      const srcOrcaPaneKey = orcaPaneKey || (existing && existing.orcaPaneKey) || null;
+      const srcOrcaPaneKey = mergeOrcaPaneKey(orcaPaneKey, existing, event);
       const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
       const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
       const srcHost = host || (existing && existing.host) || null;
@@ -1526,7 +1538,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
   const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
   const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
-  const srcOrcaPaneKey = orcaPaneKey || (existing && existing.orcaPaneKey) || null;
+  const srcOrcaPaneKey = mergeOrcaPaneKey(orcaPaneKey, existing, event);
   const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
   const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
   const srcHost = host || (existing && existing.host) || null;

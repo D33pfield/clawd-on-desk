@@ -1027,10 +1027,15 @@ function resolveOrcaHandle(orcaPaneKey, cwd, callback) {
     if (err && err.message === "orca-cli-not-found") return callback(null, "orca-cli-not-found");
     if (err || !data || data.ok !== true || !data.result) return callback(null);
     const terminals = Array.isArray(data.result.terminals) ? data.result.terminals : [];
-    const sep = orcaPaneKey.indexOf(":");
-    const tabId = orcaPaneKey.slice(0, sep);
-    const leafId = orcaPaneKey.slice(sep + 1);
-    const byPane = terminals.find((t) => t && t.tabId === tabId && t.leafId === leafId);
+    // normalizeOrcaPaneKey guarantees the tabId:leafId shape three layers up, but
+    // this function is also an exported test seam: without the guard a colon-less
+    // string would silently match on nonsense ids instead of falling through.
+    const sep = typeof orcaPaneKey === "string" ? orcaPaneKey.indexOf(":") : -1;
+    const tabId = sep > 0 ? orcaPaneKey.slice(0, sep) : "";
+    const leafId = sep > 0 ? orcaPaneKey.slice(sep + 1) : "";
+    const byPane = tabId && leafId
+      ? terminals.find((t) => t && t.tabId === tabId && t.leafId === leafId)
+      : null;
     if (byPane && byPane.handle) return callback(byPane.handle);
     // The pane itself is gone (tab reopened, split rearranged). Falling back to
     // the worktree still lands the user in the right project.

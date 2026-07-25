@@ -181,6 +181,33 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
   });
 });
 
+describe("Orca pane key validator copies", () => {
+  it("shares one pattern across all five copies", () => {
+    // The pane key is validated at five trust boundaries, duplicated rather than
+    // shared because pi-extension-core.js ships standalone and the tmux siblings
+    // set that precedent. Two copies have already drifted (a missing trim(), and
+    // Python's Unicode \w), so pin the pattern itself.
+    const fs = require("fs");
+    const repo = path.join(__dirname, "..");
+    const jsCopies = [
+      "hooks/shared-process.js",
+      "hooks/pi-extension-core.js",
+      "src/server-route-state.js",
+      "src/server-route-permission.js",
+      "src/focus.js",
+    ];
+    for (const rel of jsCopies) {
+      const src = fs.readFileSync(path.join(repo, rel), "utf8");
+      assert.ok(src.includes("/^[\\w-]+:[\\w-]+$/"), `${rel} must use the canonical pane-key pattern`);
+      assert.ok(/\.trim\(\)/.test(src), `${rel} must trim before matching`);
+    }
+    const py = fs.readFileSync(path.join(repo, "hooks/hermes-plugin/__init__.py"), "utf8");
+    assert.ok(py.includes(String.raw`r"[\w-]+:[\w-]+"`), "the Python copy must use the same pattern");
+    assert.ok(/re\.fullmatch\(r"\[\\w-\]\+:\[\\w-\]\+", pane_key, re\.ASCII\)/.test(py),
+      "the Python copy must pin \\w to ASCII so it is not laxer than the JS copies");
+  });
+});
+
 describe("Orca window raise off Windows", () => {
   it("raises the Orca window before switching the pane on macOS", async () => {
     await withFocus({ platform: "darwin" }, async (t, cli) => {

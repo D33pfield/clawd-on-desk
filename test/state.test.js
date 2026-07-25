@@ -1304,8 +1304,9 @@ describe("updateSession()", () => {
   });
 
   it("keeps the Orca pane key sticky across later events that omit it", () => {
-    // Orca only ships the pane key on events whose hook could read the env; a
-    // later event without it must not blank the key or focus loses the pane.
+    // Remote bodies never carry the pane key and some agents post state without
+    // the process-metadata block at all, so a later event without it must not
+    // blank the key or focus loses the pane.
     update(api, {
       id: "s1",
       state: "thinking",
@@ -1326,6 +1327,35 @@ describe("updateSession()", () => {
       orcaPaneKey: "tab-2:leaf-2",
     });
     assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-2:leaf-2");
+  });
+
+  it("drops a stale Orca pane key when the session restarts in another terminal", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "UserPromptSubmit",
+      sourcePid: 100,
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    // Resuming the same session id from a different terminal posts a SessionStart
+    // whose env has no pane key. Keeping the old one would raise Orca instead of
+    // the terminal the agent actually moved to, and the pane key outranks the
+    // wt_hwnd that would have been correct.
+    update(api, { id: "s1", state: "idle", event: "SessionStart", sourcePid: 200, wtHwnd: "4660" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, null);
+    assert.strictEqual(api.sessions.get("s1").wtHwnd, "4660");
+
+    // A SessionStart that does carry one still wins.
+    update(api, {
+      id: "s1",
+      state: "idle",
+      event: "SessionStart",
+      sourcePid: 300,
+      orcaPaneKey: "tab-9:leaf-9",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-9:leaf-9");
   });
 
   it("keeps Ghostty terminal id sticky and allows focus-only metadata updates", () => {
