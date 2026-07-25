@@ -77,6 +77,7 @@ describe("built-in accessory capability contracts", () => {
     assertDeclaredTargetsExist("clawd", raw);
 
     for (const hidden of [
+      "clawd-error.svg",
       "clawd-collapse-sleep.svg",
       "clawd-sleeping.svg",
       "clawd-wake.svg",

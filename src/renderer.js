@@ -897,10 +897,12 @@ function setAccessoryPayload(payload) {
   _accessoryPayload = next;
   if (next.id === "none" || !_accessorySupported) {
     clearAccessoryRuntime({ clearAsset: true });
+    refreshAccessoryMediaChannel();
     return;
   }
   if (fileChanged) clearAccessoryRuntime({ clearAsset: true });
   refreshAccessoryLayout();
+  refreshAccessoryMediaChannel();
 }
 
 if (window.electronAPI && typeof window.electronAPI.onPetAccessoryChange === "function") {
@@ -1074,7 +1076,43 @@ function tracksEyesForFile(state, file) {
  */
 function needsObjectChannel(state, file) {
   if (!isSvgFile(file)) return false;
-  return _forceSvgObjectChannel || needsEyeTracking(state) || _trustedScriptedSvgFiles.has(file);
+  const accessoryDescriptor = getAccessoryDescriptor(file, state);
+  const needsAccessoryFollow = !!(
+    _accessoryPayload.id !== "none"
+    && accessoryDescriptor
+    && accessoryDescriptor.followTarget
+  );
+  return _forceSvgObjectChannel
+    || needsEyeTracking(state)
+    || _trustedScriptedSvgFiles.has(file)
+    || needsAccessoryFollow;
+}
+
+function refreshAccessoryMediaChannel() {
+  if (pendingNext && pendingSvgFile) {
+    const pendingState = getPendingSwapState(pendingNext, currentState);
+    const wantsObject = needsObjectChannel(pendingState, pendingSvgFile);
+    const pendingIsObject = pendingNext.tagName === "OBJECT";
+    if (wantsObject !== pendingIsObject) {
+      const file = pendingSvgFile;
+      cancelPendingSwap();
+      detachEyeTracking();
+      swapToFile(file, pendingState);
+      return true;
+    }
+  }
+  // A correctly-channelled pending swap already represents the newest state.
+  // Do not let the older displayed file cancel and replace it merely because
+  // that displayed element still needs a channel correction.
+  if (pendingNext) return false;
+  if (!clawdEl || !clawdEl.isConnected || !currentDisplayedSvg) return false;
+  const wantsObject = needsObjectChannel(currentDisplayedState, currentDisplayedSvg);
+  const currentIsObject = clawdEl.tagName === "OBJECT";
+  if (wantsObject === currentIsObject) return false;
+  cancelPendingSwap();
+  detachEyeTracking();
+  swapToFile(currentDisplayedSvg, currentDisplayedState);
+  return true;
 }
 
 function resolveLowPowerStaticImageOverride(state, file) {
@@ -1298,7 +1336,7 @@ function scheduleSwapVisibilityRescue(token, file, state) {
     if (hasVisiblePetElement()) return;
 
     if (pendingNext && pendingSvgFile === file) {
-      forceImageChannelReload(file, state);
+      forceImageChannelReload(file, getPendingSwapState(pendingNext, state));
       return;
     }
 
@@ -1306,6 +1344,16 @@ function scheduleSwapVisibilityRescue(token, file, state) {
     forceImageChannelReload(file, state);
   }, getSwapVisibilityRescueDelay(file));
   swapVisibilityRescueTimer = timer;
+}
+
+function getPendingSwapState(next, fallbackState) {
+  if (
+    next
+    && Object.prototype.hasOwnProperty.call(next, "__clawdPendingState")
+  ) {
+    return next.__clawdPendingState;
+  }
+  return fallbackState;
 }
 
 function forceImageChannelReload(file, state, allowImageFallback = true) {
@@ -1350,6 +1398,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     next.className = "clawd-object";
     next.id = "clawd";
     next.style.opacity = "0";
+    next.__clawdPendingState = state;
     applyObjectScaleStyle(next, file, state);
     applyPetTintToElement(next);
     let swapCallbackSettled = false;
@@ -1369,7 +1418,8 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
 
     const swap = () => {
       if (pendingNext !== next) return;
-      if (deferSwapUntilAccessorySettles(file, state, next, swap)) return;
+      const commitState = getPendingSwapState(next, state);
+      if (deferSwapUntilAccessorySettles(file, commitState, next, swap)) return;
       if (swapToken === activeSwapToken) clearSwapVisibilityRescueTimer();
       const fadeInMs = (_transitions[file] && _transitions[file].in) || 0;
       const fadeOutMs = (currentDisplayedSvg && _transitions[currentDisplayedSvg] && _transitions[currentDisplayedSvg].out) || 0;
@@ -1394,13 +1444,13 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       pendingAssetUrl = null;
       clawdEl = next;
       currentDisplayedSvg = file;
-      currentDisplayedState = state;
+      currentDisplayedState = commitState;
       currentDisplayedAssetUrl = url;
-      applyMiniFlip(next, state);
+      applyMiniFlip(next, commitState);
       refreshAccessoryLayout();
       notifyPetVisualReadyOnce();
 
-      if (state && tracksEyesForFile(state, file)) {
+      if (commitState && tracksEyesForFile(commitState, file)) {
         attachEyeTracking(next);
       }
       if (miniLeftFlip) applyGlyphFlipCompensation(next);
@@ -1427,6 +1477,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       if (pendingNext !== next) return;
       try {
         if (!next.contentDocument) {
+          const retryState = getPendingSwapState(next, state);
           releaseObject(next);
           if (pendingNext === next) {
             pendingNext = null;
@@ -1434,7 +1485,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
             pendingAssetUrl = null;
           }
           finishSwapError("object-document-unavailable");
-          if (!pendingNext) forceImageChannelReload(file, state, allowImageFallback);
+          if (!pendingNext) forceImageChannelReload(file, retryState, allowImageFallback);
           return;
         }
       } catch {}
@@ -1446,12 +1497,14 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     next.className = "clawd-img";
     next.id = "clawd";
     next.style.opacity = "0";
+    next.__clawdPendingState = state;
     applyObjectScaleStyle(next, file, state);
     applyPetTintToElement(next);
 
     const swap = () => {
       if (pendingNext !== next) return;
-      if (deferSwapUntilAccessorySettles(file, state, next, swap)) return;
+      const commitState = getPendingSwapState(next, state);
+      if (deferSwapUntilAccessorySettles(file, commitState, next, swap)) return;
       if (swapToken === activeSwapToken) clearSwapVisibilityRescueTimer();
       const fadeInMs = (_transitions[file] && _transitions[file].in) || 0;
       const fadeOutMs = (currentDisplayedSvg && _transitions[currentDisplayedSvg] && _transitions[currentDisplayedSvg].out) || 0;
@@ -1476,9 +1529,9 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       pendingAssetUrl = null;
       clawdEl = next;
       currentDisplayedSvg = file;
-      currentDisplayedState = state;
+      currentDisplayedState = commitState;
       currentDisplayedAssetUrl = url;
-      applyMiniFlip(next, state);
+      applyMiniFlip(next, commitState);
       refreshAccessoryLayout();
       notifyPetVisualReadyOnce();
       scheduleLowPowerIdlePause();
@@ -1547,6 +1600,10 @@ function renderStateFile(state, svg) {
     && pendingAssetUrl === desiredAssetUrl;
   const pendingChannelMatches = !alreadyPending || ((pendingNext.tagName === "OBJECT") === desiredObjectChannel);
 
+  if (alreadyPending && !pendingChannelMatches) {
+    cancelPendingSwap();
+  }
+
   if ((alreadyDisplayed && displayedChannelMatches) || (alreadyPending && pendingChannelMatches)) {
     // Same file, no swap — but the flip is state-dependent (mini flip vs roam
     // heading), so re-apply it for the incoming state. E.g. a leftward roam
@@ -1556,6 +1613,14 @@ function renderStateFile(state, svg) {
       currentDisplayedState = state;
       applyMiniFlip(clawdEl, state);
       refreshAccessoryLayout();
+    }
+    if (alreadyPending && pendingChannelMatches) {
+      // The file/channel can be reused while its state-dependent presentation
+      // cannot. Retarget the pending commit so its eventual direction,
+      // attachment descriptor, layout, and eye-tracking decision all use the
+      // newest state rather than the state captured when loading began.
+      pendingNext.__clawdPendingState = state;
+      applyObjectScaleStyle(pendingNext, effectiveSvg, state);
     }
     if (alreadyDisplayed) {
       if (tracksEyesForFile(state, effectiveSvg) && !eyeTarget && !_trackingLayers) {

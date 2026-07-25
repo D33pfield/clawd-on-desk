@@ -158,6 +158,44 @@ describe("theme schema validation", () => {
     );
   });
 
+  it("projects mini low-power overrides through the mini viewBox", () => {
+    const miniStates = Object.fromEntries(
+      schema.MINI_REQUIRED_STATES.map((state) => [state, [`${state}.svg`]])
+    );
+    const raw = validThemeJson({
+      miniMode: {
+        supported: true,
+        viewBox: { x: 0, y: 0, width: 20, height: 20 },
+        states: miniStates,
+      },
+      rendering: {
+        lowPowerStaticImageOverrides: {
+          "mini-idle": {
+            from: "mini-idle.svg",
+            to: "mini-idle-static.png",
+          },
+        },
+      },
+      customization: {
+        accessories: {
+          default: { staticFrame: { cx: 50, baseY: 20, width: 30 } },
+          mini: { staticFrame: { cx: 10, baseY: 4, width: 6 } },
+        },
+      },
+    });
+
+    assert.deepStrictEqual(schema.validateTheme(raw), []);
+    assert.strictEqual(schema.deriveAccessoryCapability(raw), true);
+    const lowPowerUsages = schema.projectThemeVisualUsages(raw)
+      .filter((usage) => usage.source.startsWith(
+        "rendering.lowPowerStaticImageOverrides.mini-idle"
+      ));
+    assert.strictEqual(lowPowerUsages.length, 2);
+    assert.ok(lowPowerUsages.every((usage) => usage.stateFamily.startsWith("mini:")));
+    assert.ok(lowPowerUsages.every((usage) => usage.viewBoxSource === "mini"));
+    assert.ok(lowPowerUsages.every((usage) => usage.effectiveViewBox.width === 20));
+  });
+
   it("fails accessory capability closed on incomplete viewBox coverage or stale file descriptors", () => {
     const miniStates = Object.fromEntries(
       schema.MINI_REQUIRED_STATES.map((state) => [state, [`${state}.svg`]])

@@ -1653,6 +1653,20 @@ describe("removeTheme command", () => {
     assert.deepStrictEqual(r.commit.idleVisual, { clawd: "clawd-idle-reading.svg" });
   });
 
+  it("strips pet tint and accessory entries on success when they exist", async () => {
+    const snapshotWithCustomization = {
+      ...baseSnapshot,
+      petTint: { cat: "matcha", clawd: "gold" },
+      petAccessory: { cat: "halo", clawd: "wizard-hat" },
+    };
+    const { deps } = makeDeps({ snapshot: snapshotWithCustomization });
+    const r = await commandRegistry.removeTheme("cat", deps);
+    assert.strictEqual(r.status, "ok");
+    assert.ok(r.commit, "commit field expected");
+    assert.deepStrictEqual(r.commit.petTint, { clawd: "gold" });
+    assert.deepStrictEqual(r.commit.petAccessory, { clawd: "wizard-hat" });
+  });
+
   it("surfaces removeThemeDir throws as error status", async () => {
     const { deps } = makeDeps({
       removeThemeDir: async () => { throw new Error("EBUSY"); },

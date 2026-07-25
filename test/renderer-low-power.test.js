@@ -287,6 +287,7 @@ globalThis.__rendererTest = {
   get pendingSvgFile() { return pendingSvgFile; },
   get activeSwapToken() { return activeSwapToken; },
   get clawdEl() { return clawdEl; },
+  get currentDisplayedState() { return currentDisplayedState; },
   get accessoryAssetLoadTimer() { return _accessoryAssetLoadTimer; },
   get accessoryAssetSettled() { return _accessoryAssetSettled; },
   get lowPowerSvgPaused() { return lowPowerSvgPaused; },
@@ -760,7 +761,8 @@ describe("renderer object-channel selection", () => {
 
     assert.ok(source.includes("_trustedScriptedSvgFiles = new Set"));
     assert.ok(source.includes("_forceSvgObjectChannel"));
-    assert.ok(source.includes("return _forceSvgObjectChannel || needsEyeTracking(state) || _trustedScriptedSvgFiles.has(file);"));
+    assert.ok(source.includes("|| _trustedScriptedSvgFiles.has(file)"));
+    assert.ok(source.includes("|| needsAccessoryFollow;"));
   });
 
   it("uses state-specific static image overrides only while low-power mode is enabled", () => {
@@ -809,7 +811,10 @@ describe("renderer object-channel selection", () => {
 
     assert.ok(source.includes("function needsEyeTracking(state)"));
     assert.ok(source.includes("function tracksEyesForFile(state, file)"));
-    assert.match(source, /if \(state && tracksEyesForFile\(state, file\)\) {\r?\n\s+attachEyeTracking\(next\);/);
+    assert.match(
+      source,
+      /if \(commitState && tracksEyesForFile\(commitState, file\)\) {\r?\n\s+attachEyeTracking\(next\);/
+    );
   });
 
   it("does not hard-code click or drag reactions to the img channel", () => {
@@ -1146,6 +1151,142 @@ describe("renderer pet accessory wardrobe", () => {
     harness.api.swapToFile("static.svg", "working", false);
     harness.api.pendingNext.listeners.get("load")();
     assert.strictEqual(nextFollowTimer.cleared, true);
+  });
+
+  it("switches to the object channel only while a selected accessory needs to follow the body", () => {
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: accessoryConfig({
+        eyeTrackingStates: [],
+        accessoryPayload: {
+          id: "none",
+          assetFile: null,
+          aspect: 1,
+          widthScale: 1,
+          offsetY: 0,
+        },
+        accessoryAttachments: {
+          default: {
+            staticFrame: { cx: 50, baseY: 40, width: 20 },
+          },
+          files: {
+            "first.svg": {
+              staticFrame: { cx: 50, baseY: 40, width: 20 },
+              followTarget: {
+                id: "accessory-anchor",
+                frame: { cx: 8, baseY: 6, width: 4 },
+              },
+            },
+          },
+        },
+      }),
+    });
+
+    const initialImage = harness.api.pendingNext;
+    assert.strictEqual(initialImage.tagName, "IMG");
+    initialImage.listeners.get("load")();
+    assert.strictEqual(harness.api.clawdEl.tagName, "IMG");
+
+    harness.electronHandlers.onPetAccessoryChange({
+      id: "cowboy-hat",
+      assetFile: "cowboy-hat.svg",
+      aspect: 16 / 7,
+      widthScale: 1,
+      offsetY: 0,
+    });
+
+    const followingObject = harness.api.pendingNext;
+    assert.strictEqual(followingObject.tagName, "OBJECT");
+    followingObject.contentDocument = {
+      getElementById(id) {
+        return id === "accessory-anchor"
+          ? {
+              getCTM() {
+                return { a: 2, b: 0, c: 0, d: 2, e: 10, f: 12 };
+              },
+            }
+          : null;
+      },
+    };
+    followingObject.listeners.get("load")();
+    assert.strictEqual(harness.api.pendingNext, followingObject);
+    harness.accessory.onload();
+
+    assert.strictEqual(harness.api.pendingNext, null);
+    assert.strictEqual(harness.api.clawdEl.tagName, "OBJECT");
+    assert.strictEqual(harness.accessory.style.display, "block");
+
+    harness.electronHandlers.onPetAccessoryChange({
+      id: "none",
+      assetFile: null,
+      aspect: 1,
+      widthScale: 1,
+      offsetY: 0,
+    });
+
+    const restoredImage = harness.api.pendingNext;
+    assert.strictEqual(restoredImage.tagName, "IMG");
+    restoredImage.listeners.get("load")();
+    assert.strictEqual(harness.api.clawdEl.tagName, "IMG");
+    assert.strictEqual(harness.accessory.style.display, "none");
+  });
+
+  it("keeps the latest state swap pending when an accessory payload is rebroadcast", () => {
+    const attachment = {
+      staticFrame: { cx: 50, baseY: 40, width: 20 },
+      followTarget: {
+        id: "accessory-anchor",
+        frame: { cx: 8, baseY: 6, width: 4 },
+      },
+    };
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: accessoryConfig({
+        eyeTrackingStates: [],
+        accessoryPayload: {
+          id: "none",
+          assetFile: null,
+          aspect: 1,
+          widthScale: 1,
+          offsetY: 0,
+        },
+        accessoryAttachments: {
+          default: {
+            staticFrame: { cx: 50, baseY: 40, width: 20 },
+          },
+          files: {
+            "first.svg": attachment,
+            "working.svg": attachment,
+          },
+        },
+      }),
+    });
+
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(harness.api.clawdEl.tagName, "IMG");
+
+    const payload = {
+      id: "cowboy-hat",
+      assetFile: "cowboy-hat.svg",
+      aspect: 16 / 7,
+      widthScale: 1,
+      offsetY: 0,
+    };
+    harness.electronHandlers.onPetAccessoryChange(payload);
+    harness.electronHandlers.onStateChange("working", "working.svg");
+
+    const workingObject = harness.api.pendingNext;
+    assert.strictEqual(workingObject.tagName, "OBJECT");
+    assert.strictEqual(harness.api.pendingSvgFile, "working.svg");
+
+    harness.electronHandlers.onPetAccessoryChange(payload);
+
+    assert.strictEqual(
+      harness.api.pendingNext,
+      workingObject,
+      "a repeated payload must not replace the latest state with the displayed file"
+    );
+    assert.strictEqual(harness.api.pendingSvgFile, "working.svg");
   });
 
   it("keeps a newly selected asset alive when an old load waiter re-enters cleanup", () => {
@@ -1538,6 +1679,94 @@ describe("renderer file-aware idle eye tracking", () => {
 });
 
 describe("renderer glyph flip compensation", () => {
+  it("cancels a stale opposite-channel load when the displayed file already matches again", () => {
+    const harness = createRendererHarness({
+      themeConfig: {
+        eyeTracking: { states: ["idle"] },
+        idleFollowSvg: "shared.svg",
+      },
+    });
+
+    harness.electronHandlers.onStateChange("idle", "shared.svg");
+    const displayedObject = harness.api.pendingNext;
+    assert.strictEqual(displayedObject.tagName, "OBJECT");
+    attachFakeSvgDocument(displayedObject, { withEyes: true });
+    displayedObject.listeners.get("load")();
+
+    harness.electronHandlers.onStateChange("roam", "shared.svg");
+    const staleImage = harness.api.pendingNext;
+    assert.strictEqual(staleImage.tagName, "IMG");
+
+    harness.electronHandlers.onStateChange("idle", "shared.svg");
+
+    assert.strictEqual(harness.api.pendingNext, null);
+    assert.strictEqual(harness.api.clawdEl, displayedObject);
+    assert.strictEqual(harness.api.currentDisplayedState, "idle");
+    staleImage.listeners.get("load")();
+    assert.strictEqual(harness.api.clawdEl, displayedObject);
+    assert.strictEqual(harness.api.currentDisplayedState, "idle");
+  });
+
+  it("retargets a pending same-file swap to the latest state before commit", () => {
+    const harness = createRendererHarness({
+      themeConfig: {
+        hasRoamVisual: true,
+        roamFlipAssets: true,
+        miniFlipAssets: false,
+      },
+    });
+
+    harness.electronHandlers.onRoamHeading(true);
+    harness.electronHandlers.onStateChange("roam", "shared-crabwalk.svg");
+    const pending = harness.api.pendingNext;
+    assert.ok(pending);
+
+    harness.electronHandlers.onMiniModeChange(true, "right", { preEntry: true });
+    harness.electronHandlers.onStateChange("mini-crabwalk", "shared-crabwalk.svg");
+
+    assert.strictEqual(
+      harness.api.pendingNext,
+      pending,
+      "the loaded asset should stay deduplicated while its commit state is retargeted"
+    );
+    pending.listeners.get("load")();
+
+    assert.strictEqual(harness.api.currentDisplayedState, "mini-crabwalk");
+    assert.strictEqual(
+      harness.assetDirectionStage.style.scale,
+      "none",
+      "miniFlipAssets=false must clear the leftward roam mirror at commit"
+    );
+  });
+
+  it("retargets a pending same-file object swap to the latest state before commit", () => {
+    const harness = createRendererHarness({
+      themeConfig: {
+        hasRoamVisual: true,
+        roamFlipAssets: true,
+        miniFlipAssets: false,
+        rendering: {
+          svgChannel: "object",
+        },
+      },
+    });
+
+    harness.electronHandlers.onRoamHeading(true);
+    harness.electronHandlers.onStateChange("roam", "shared-crabwalk.svg");
+    const pending = harness.api.pendingNext;
+    assert.ok(pending);
+    assert.strictEqual(pending.tagName, "OBJECT");
+
+    harness.electronHandlers.onMiniModeChange(true, "right", { preEntry: true });
+    harness.electronHandlers.onStateChange("mini-crabwalk", "shared-crabwalk.svg");
+
+    assert.strictEqual(harness.api.pendingNext, pending);
+    pending.listeners.get("load")();
+
+    assert.strictEqual(harness.api.currentDisplayedState, "mini-crabwalk");
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "none");
+  });
+
   it("preserves each fading media element's stamped direction when the shared stage flips", () => {
     const harness = createRendererHarness({
       themeConfig: {
@@ -1575,7 +1804,7 @@ describe("renderer glyph flip compensation", () => {
     assert.ok(source.includes("_miniPreEntryMode = !!enabled && preEntry;"));
     assert.ok(source.includes("_miniPreEntryMode && state === \"mini-crabwalk\""));
     assert.ok(source.includes("_inMiniMode = !!enabled && !preEntry;"));
-    assert.ok(source.includes("applyMiniFlip(next, state);"));
+    assert.ok(source.includes("applyMiniFlip(next, commitState);"));
   });
 
   it("notifies object-channel SVGs when mini-left glyph compensation changes", () => {

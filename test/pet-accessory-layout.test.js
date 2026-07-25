@@ -98,6 +98,13 @@ describe("pet accessory layout", () => {
       accessory: ACCESSORY,
       stageSize: base.stageSize,
     }), null);
+    assert.strictEqual(computeDynamicAccessoryLayout({
+      mediaOffset: { x: 0, y: 0 },
+      matrix: { a: 0, b: 0, c: 0, d: 0, e: 20, f: 20 },
+      frame: base.frame,
+      accessory: ACCESSORY,
+      stageSize: base.stageSize,
+    }), null);
   });
 
   it("compares only finite layout geometry with an epsilon", () => {

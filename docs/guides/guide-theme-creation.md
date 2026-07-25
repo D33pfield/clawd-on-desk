@@ -265,7 +265,7 @@ The loader also derives read-only metadata such as `idleMode` (`tracked` / `anim
 
 #### Accessory attachments
 
-Accessories render outside the pet media, so they keep their own colors and do not force SVG/object rendering. A theme must provide complete attachment coverage before Settings exposes the accessory picker:
+Accessories render outside the pet media, so they keep their own colors. Static attachments stay on the normal media channel; while a selected accessory uses `followTarget`, that SVG is rendered through the object channel so the external accessory layer can follow its animated target. A theme must provide complete attachment coverage before Settings exposes the accessory picker:
 
 ```json
 "customization": {
@@ -294,7 +294,7 @@ Accessories render outside the pet media, so they keep their own colors and do n
 - `staticFrame` uses the effective viewBox of that visual. `cx` is the head center, `baseY` is the accessory resting line, and `width` is the reference head width.
 - Accessory projection currently supports the SVG default `preserveAspectRatio="xMidYMid meet"` only (omitting the attribute has that default). Themes using `none`, `slice`, or another alignment must not opt into accessories until that projection mode is supported.
 - `default` covers root-viewBox files. `mini` covers mini-viewBox files. A file with its own `fileViewBoxes` entry needs an exact `files[basename]` descriptor.
-- `followTarget.id` is an exact SVG element id, not a CSS selector. It is used only while that file renders through an accessible `<object>` document; `<img>`, PNG, APNG, GIF, and WebP use the required static fallback.
+- `followTarget.id` is an exact SVG element id, not a CSS selector. Its `frame` coordinates are expressed in that target element's local SVG coordinate system, before the target's own and ancestor transforms. It is used only while that file renders through an accessible `<object>` document; `<img>`, PNG, APNG, GIF, and WebP use the required static fallback.
 - Use `{ "visibility": "hidden" }` for poses where an accessory should disappear, such as a covered sleeping pose. Do not combine `visibility` with placement fields.
 - Every reachable state, reaction, idle animation, tier, display hint, mini state, low-power override, update visual, and DND sleep transition must be covered. Incomplete or stale metadata makes the entire `accessories` capability false.
 - Themes choose attachment geometry only. They cannot add accessory files, URLs, scripts, selector heuristics, or custom renderer code.

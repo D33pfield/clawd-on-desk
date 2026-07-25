@@ -866,6 +866,8 @@ async function removeTheme(payload, deps) {
   const currentOverrides = snapshot.themeOverrides || {};
   const currentVariantMap = snapshot.themeVariant || {};
   const currentIdleVisual = snapshot.idleVisual || {};
+  const currentPetTint = snapshot.petTint || {};
+  const currentPetAccessory = snapshot.petAccessory || {};
   const nextCommit = {};
   if (currentOverrides[themeId]) {
     const nextOverrides = { ...currentOverrides };
@@ -881,6 +883,16 @@ async function removeTheme(payload, deps) {
     const nextIdleVisual = { ...currentIdleVisual };
     delete nextIdleVisual[themeId];
     nextCommit.idleVisual = nextIdleVisual;
+  }
+  if (currentPetTint[themeId] !== undefined) {
+    const nextPetTint = { ...currentPetTint };
+    delete nextPetTint[themeId];
+    nextCommit.petTint = nextPetTint;
+  }
+  if (currentPetAccessory[themeId] !== undefined) {
+    const nextPetAccessory = { ...currentPetAccessory };
+    delete nextPetAccessory[themeId];
+    nextCommit.petAccessory = nextPetAccessory;
   }
   if (Object.keys(nextCommit).length > 0) {
     return { status: "ok", commit: nextCommit };

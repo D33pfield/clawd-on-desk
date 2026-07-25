@@ -182,6 +182,30 @@
     return !!(caps && (caps.petTint === true || caps.accessories === true));
   }
 
+  function mirrorThemeSelectionResult(themeId, result) {
+    if (!Array.isArray(runtime.themeList)) return null;
+    const runtimeCapabilities = (
+      result
+      && result.customizationCapabilities
+      && typeof result.customizationCapabilities === "object"
+      && !Array.isArray(result.customizationCapabilities)
+    )
+      ? result.customizationCapabilities
+      : null;
+    runtime.themeList = runtime.themeList.map((entry) => (
+      entry
+        ? {
+            ...entry,
+            active: entry.id === themeId,
+            capabilities: entry.id === themeId && runtimeCapabilities
+              ? { ...(entry.capabilities || {}), ...runtimeCapabilities }
+              : entry.capabilities,
+          }
+        : entry
+    ));
+    return runtime.themeList.find((entry) => entry && entry.id === themeId) || null;
+  }
+
   function openThemeCustomization(theme) {
     if (!theme || !supportsThemeCustomization(theme)) return;
     if (theme.active) {
@@ -206,26 +230,7 @@
         // returning ok. Mirror that acknowledged result into the renderer's
         // metadata cache so opening the detail does not depend on a second IPC
         // fetch that can fail independently.
-        if (Array.isArray(runtime.themeList)) {
-          runtime.themeList = runtime.themeList.map((entry) => (
-            entry
-              ? {
-                  ...entry,
-                  active: entry.id === theme.id,
-                  capabilities: (
-                    entry.id === theme.id
-                    && result.customizationCapabilities
-                    && typeof result.customizationCapabilities === "object"
-                  )
-                    ? { ...(entry.capabilities || {}), ...result.customizationCapabilities }
-                    : entry.capabilities,
-                }
-              : entry
-          ));
-        }
-        const activeEntry = Array.isArray(runtime.themeList)
-          ? runtime.themeList.find((entry) => entry && entry.id === theme.id)
-          : null;
+        const activeEntry = mirrorThemeSelectionResult(theme.id, result);
         customizingThemeId = supportsThemeCustomization(activeEntry) ? theme.id : null;
       })
       .catch((err) => {
@@ -681,7 +686,16 @@
     card.appendChild(footer);
 
     if (!theme.active) {
-      helpers.attachActivation(card, () => window.settingsAPI.command("setThemeSelection", { themeId: theme.id }));
+      helpers.attachActivation(card, () => (
+        Promise.resolve(window.settingsAPI.command("setThemeSelection", { themeId: theme.id }))
+          .then((result) => {
+            if (result && result.status === "ok") {
+              mirrorThemeSelectionResult(theme.id, result);
+              if (state.activeTab === "theme") ops.requestRender({ content: true });
+            }
+            return result;
+          })
+      ));
     }
     return card;
   }

@@ -121,6 +121,7 @@
     if (!normalizedMatrix || !rect) return null;
     const bounds = transformedBounds(normalizedMatrix, rect.width, rect.height);
     if (![bounds.x, bounds.y, bounds.width, bounds.height].every(finite)) return null;
+    if (bounds.width <= 0 || bounds.height <= 0) return null;
     if (stageSize) {
       const stage = normalizeBox({ x: 0, y: 0, ...stageSize });
       if (!stage) return null;

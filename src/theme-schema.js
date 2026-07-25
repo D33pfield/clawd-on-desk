@@ -464,10 +464,13 @@ function projectThemeVisualUsages(cfg) {
     && cfg.rendering.lowPowerStaticImageOverrides;
   for (const [state, override] of Object.entries(lowPower || {})) {
     if (!isPlainObject(override)) continue;
+    const isMiniState = state.startsWith("mini-");
+    if (isMiniState && !isMiniSupported(cfg)) continue;
+    const usageFamily = isMiniState ? "mini:" : "";
     if (typeof override.from === "string") {
       addVisualUsage(
         usages,
-        `low-power-source:${state}`,
+        `${usageFamily}low-power-source:${state}`,
         override.from,
         `rendering.lowPowerStaticImageOverrides.${state}.from`
       );
@@ -475,7 +478,7 @@ function projectThemeVisualUsages(cfg) {
     if (typeof override.to === "string") {
       addVisualUsage(
         usages,
-        `low-power-static:${state}`,
+        `${usageFamily}low-power-static:${state}`,
         override.to,
         `rendering.lowPowerStaticImageOverrides.${state}.to`
       );
