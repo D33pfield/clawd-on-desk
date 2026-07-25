@@ -97,6 +97,7 @@
     codexPetRemovalPendingThemeId: null,
     animationOverridesData: null,
     petTintOptions: [],
+    petAccessoryOptions: [],
     animationOverridesFetchSeq: 0,
     animationPosterRenderPending: false,
     animationPosterRenderFlags: null,
@@ -1307,7 +1308,7 @@
         return;
       }
       if (state.activeTab === "animOverrides" || runtime.assetPicker.state) {
-        fetchAnimationOverridesData().then(() => {
+        Promise.all([fetchAnimationOverridesData(), fetchThemes()]).then(() => {
           normalizeAssetPickerSelection();
           requestRender({ sidebar: true, content: true, modal: true });
         });

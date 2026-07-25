@@ -84,6 +84,8 @@ const createSettingsEffectRouter = require("./settings-effect-router");
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
+  getPetAccessoryIdForTheme,
+  resolvePetAccessoryPayload,
 } = require("./pet-customization-catalog");
 const { registerSessionIpc } = require("./session-ipc");
 const { createSessionFolderOpener } = require("./session-open-folder");
@@ -970,6 +972,7 @@ let soundVolume = _settingsController.get("soundVolume");
 let lowPowerIdleMode = _settingsController.get("lowPowerIdleMode");
 let keepAwakeWhileWorking = _settingsController.get("keepAwakeWhileWorking");
 let petTint = _settingsController.get("petTint");
+let petAccessory = _settingsController.get("petAccessory");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let disableMiniModeCached = _settingsController.get("disableMiniMode");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
@@ -1151,6 +1154,8 @@ function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
   const activeTheme = getActiveTheme();
   const tintId = getPetTintIdForTheme(petTint, activeTheme && activeTheme._id);
   sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
+  const accessoryId = getPetAccessoryIdForTheme(petAccessory, activeTheme && activeTheme._id);
+  sendToRenderer("pet-accessory-change", resolvePetAccessoryPayload(accessoryId, activeTheme));
   sendToRenderer("low-power-idle-mode-change", lowPowerIdleMode);
   if (_mini.getMiniMode()) {
     sendToRenderer("mini-mode-change", true, _mini.getMiniEdge());
@@ -1593,8 +1598,14 @@ function buildRendererThemeConfig() {
     const activeTheme = getActiveTheme();
     const tintSelections = _settingsController.get("petTint");
     const tintId = getPetTintIdForTheme(tintSelections, activeTheme && activeTheme._id);
+    const accessorySelections = _settingsController.get("petAccessory");
+    const accessoryId = getPetAccessoryIdForTheme(
+      accessorySelections,
+      activeTheme && activeTheme._id
+    );
     cfg.idleDefaultVisual = getIdleVisualChoice();
     cfg.petTintPayload = resolvePetTintPayload(tintId, activeTheme);
+    cfg.accessoryPayload = resolvePetAccessoryPayload(accessoryId, activeTheme);
   }
   return cfg;
 }
@@ -3344,6 +3355,7 @@ const SETTINGS_MIRROR_SETTERS = {
   soundMuted: (v) => { soundMuted = v; }, soundVolume: (v) => { soundVolume = v; }, lowPowerIdleMode: (v) => { lowPowerIdleMode = v; },
   keepAwakeWhileWorking: (v) => { keepAwakeWhileWorking = v; },
   petTint: (v) => { petTint = v; },
+  petAccessory: (v) => { petAccessory = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, disableMiniMode: (v) => { disableMiniModeCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; resetKeepSizeFrozen(); },
   fullscreenOverlay: (v) => { fullscreenOverlayCached = v; },
   freeRoam: (v) => { _roam.setEnabled(v); },

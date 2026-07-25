@@ -51,7 +51,10 @@ const {
   TEXT_SCALE_DEFAULT,
   normalizeTextScaleByDisplay,
 } = require("./text-scale");
-const { PET_TINT_IDS } = require("./pet-customization-catalog");
+const {
+  PET_TINT_IDS,
+  PET_ACCESSORY_IDS,
+} = require("./pet-customization-catalog");
 
 const CURRENT_VERSION = 12;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
@@ -277,6 +280,14 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => ({}),
     normalize: normalizePetTint,
+  },
+  // Per-theme wardrobe choice. Missing entries mean no accessory. The
+  // discarded PR #529 global scalar was never shipped, so it is deliberately
+  // not treated as a migration source.
+  petAccessory: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizePetAccessory,
   },
   // Phase 2/3 placeholders — schema reserves the keys so future migrations don't need v2.
   agents: {
@@ -1091,6 +1102,17 @@ function normalizePetTint(value, defaultsValue) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)) continue;
     if (!PET_TINT_IDS.includes(tintId)) continue;
     if (tintId !== "none") out[themeId] = tintId;
+  }
+  return out;
+}
+
+function normalizePetAccessory(value, defaultsValue) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
+  const out = {};
+  for (const [themeId, accessoryId] of Object.entries(value)) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)) continue;
+    if (!PET_ACCESSORY_IDS.includes(accessoryId)) continue;
+    if (accessoryId !== "none") out[themeId] = accessoryId;
   }
   return out;
 }

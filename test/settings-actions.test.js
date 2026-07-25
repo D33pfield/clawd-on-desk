@@ -89,6 +89,28 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.petTint(null, deps).status, "error");
   });
 
+  it("petAccessory accepts only safe per-theme catalog selections", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.petAccessory({}, deps).status, "ok");
+    assert.strictEqual(
+      updateRegistry.petAccessory({ clawd: "wizard-hat", cloudling: "halo" }, deps).status,
+      "ok"
+    );
+    assert.strictEqual(updateRegistry.petAccessory({ clawd: "none" }, deps).status, "error");
+    assert.strictEqual(updateRegistry.petAccessory({ clawd: "seasonal" }, deps).status, "error");
+    assert.strictEqual(
+      updateRegistry.petAccessory({ "../unsafe": "halo" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(
+      updateRegistry.petAccessory({ clawd: "file:///secret.svg" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(updateRegistry.petAccessory("wizard-hat", deps).status, "error");
+    assert.strictEqual(updateRegistry.petAccessory([], deps).status, "error");
+    assert.strictEqual(updateRegistry.petAccessory(null, deps).status, "error");
+  });
+
   it("x/y/preMiniX/preMiniY require finite numbers", () => {
     const deps = { snapshot: baseSnapshot };
     assert.strictEqual(updateRegistry.x(0, deps).status, "ok");
@@ -1687,6 +1709,20 @@ describe("removeTheme command", () => {
     assert.deepStrictEqual(r.commit.idleVisual, { clawd: "clawd-idle-reading.svg" });
   });
 
+  it("strips pet tint and accessory entries on success when they exist", async () => {
+    const snapshotWithCustomization = {
+      ...baseSnapshot,
+      petTint: { cat: "matcha", clawd: "gold" },
+      petAccessory: { cat: "halo", clawd: "wizard-hat" },
+    };
+    const { deps } = makeDeps({ snapshot: snapshotWithCustomization });
+    const r = await commandRegistry.removeTheme("cat", deps);
+    assert.strictEqual(r.status, "ok");
+    assert.ok(r.commit, "commit field expected");
+    assert.deepStrictEqual(r.commit.petTint, { clawd: "gold" });
+    assert.deepStrictEqual(r.commit.petAccessory, { clawd: "wizard-hat" });
+  });
+
   it("surfaces removeThemeDir throws as error status", async () => {
     const { deps } = makeDeps({
       removeThemeDir: async () => { throw new Error("EBUSY"); },
@@ -1717,6 +1753,10 @@ describe("setThemeSelection command", () => {
         const resolved = variantId === "dead" ? "default" : variantId;
         return { themeId, variantId: resolved };
       },
+      getActiveTheme: () => ({
+        _id: calls.activateTheme.at(-1)?.themeId || "clawd",
+        _capabilities: { petTint: true, accessories: true },
+      }),
       ...overrides,
     };
     return { deps, calls };
@@ -1785,6 +1825,24 @@ describe("setThemeSelection command", () => {
     assert.ok(r.commit, "commit field expected");
     assert.strictEqual(r.commit.theme, "clawd");
     assert.deepStrictEqual(r.commit.themeVariant, { clawd: "chill" });
+    assert.deepStrictEqual(r.customizationCapabilities, {
+      petTint: true,
+      accessories: true,
+    });
+  });
+
+  it("returns the activated theme's fail-closed customization capabilities", () => {
+    const { deps } = makeDeps({
+      getActiveTheme: () => ({
+        _id: "clawd",
+        _capabilities: { petTint: true, accessories: false },
+      }),
+    });
+    const r = commandRegistry.setThemeSelection({ themeId: "clawd" }, deps);
+    assert.deepStrictEqual(r.customizationCapabilities, {
+      petTint: true,
+      accessories: false,
+    });
   });
 
   it("preserves other themes' variantIds when committing", () => {

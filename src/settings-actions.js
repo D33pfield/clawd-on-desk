@@ -63,7 +63,10 @@ const {
   isValidTextScale,
   normalizeTextScaleByDisplay,
 } = require("./text-scale");
-const { isPetTintId } = require("./pet-customization-catalog");
+const {
+  isPetTintId,
+  isPetAccessoryId,
+} = require("./pet-customization-catalog");
 const { isValidDisplaySnapshot } = require("./work-area");
 const {
   MAX_AUTO_CLOSE_SECONDS,
@@ -293,6 +296,24 @@ const updateRegistry = {
         return {
           status: "error",
           message: `petTint entry "${themeId}" must map a safe theme id to a non-default catalog tint id`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
+  petAccessory(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "petAccessory must be a theme-to-accessory object" };
+    }
+    for (const [themeId, accessoryId] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || !isPetAccessoryId(accessoryId)
+        || accessoryId === "none"
+      ) {
+        return {
+          status: "error",
+          message: `petAccessory entry "${themeId}" must map a safe theme id to a non-default catalog accessory id`,
         };
       }
     }
@@ -927,6 +948,8 @@ async function removeTheme(payload, deps) {
   const currentOverrides = snapshot.themeOverrides || {};
   const currentVariantMap = snapshot.themeVariant || {};
   const currentIdleVisual = snapshot.idleVisual || {};
+  const currentPetTint = snapshot.petTint || {};
+  const currentPetAccessory = snapshot.petAccessory || {};
   const nextCommit = {};
   if (currentOverrides[themeId]) {
     const nextOverrides = { ...currentOverrides };
@@ -942,6 +965,16 @@ async function removeTheme(payload, deps) {
     const nextIdleVisual = { ...currentIdleVisual };
     delete nextIdleVisual[themeId];
     nextCommit.idleVisual = nextIdleVisual;
+  }
+  if (currentPetTint[themeId] !== undefined) {
+    const nextPetTint = { ...currentPetTint };
+    delete nextPetTint[themeId];
+    nextCommit.petTint = nextPetTint;
+  }
+  if (currentPetAccessory[themeId] !== undefined) {
+    const nextPetAccessory = { ...currentPetAccessory };
+    delete nextPetAccessory[themeId];
+    nextCommit.petAccessory = nextPetAccessory;
   }
   if (Object.keys(nextCommit).length > 0) {
     return { status: "ok", commit: nextCommit };
@@ -989,11 +1022,25 @@ function setThemeSelection(payload, deps) {
   const resolvedVariant = (resolved && typeof resolved === "object" && typeof resolved.variantId === "string")
     ? resolved.variantId
     : targetVariant;
+  const activeTheme = typeof deps.getActiveTheme === "function" ? deps.getActiveTheme() : null;
+  const customizationCapabilities = (
+    activeTheme
+    && activeTheme._id === themeId
+    && activeTheme._capabilities
+    && typeof activeTheme._capabilities === "object"
+    && !Array.isArray(activeTheme._capabilities)
+  )
+    ? {
+        petTint: activeTheme._capabilities.petTint === true,
+        accessories: activeTheme._capabilities.accessories === true,
+      }
+    : null;
 
   const nextVariantMap = { ...currentVariantMap, [themeId]: resolvedVariant };
   return {
     status: "ok",
     commit: { theme: themeId, themeVariant: nextVariantMap },
+    customizationCapabilities,
   };
 }
 

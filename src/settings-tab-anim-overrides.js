@@ -750,7 +750,13 @@
       // stale (e.g. "reset all" wipes the whole theme's overrides). Drop the
       // cache so the Animations/Sounds subtabs refetch when next opened; the
       // map subtab never reads it, so it stays a pure in-place patch.
-      if (handled) runtime.animationOverridesData = null;
+      if (handled) {
+        runtime.animationOverridesData = null;
+        // Theme overrides can change the reachable visual set and therefore
+        // the runtime-derived accessory capability. Keep the Theme tab cache
+        // coherent even though the mounted Animation Map stays in place.
+        ops.fetchThemes();
+      }
       return handled;
     }
     if (!changes || typeof changes !== "object") return false;

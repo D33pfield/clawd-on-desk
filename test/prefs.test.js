@@ -29,6 +29,8 @@ describe("prefs.getDefaults", () => {
     assert.notStrictEqual(a, b);
     assert.notStrictEqual(a.agents, b.agents);
     assert.notStrictEqual(a.themeOverrides, b.themeOverrides);
+    assert.notStrictEqual(a.petTint, b.petTint);
+    assert.notStrictEqual(a.petAccessory, b.petAccessory);
     assert.notStrictEqual(a.shortcuts, b.shortcuts);
     assert.notStrictEqual(a.sessionAliases, b.sessionAliases);
     assert.notStrictEqual(a.tgApproval, b.tgApproval);
@@ -47,6 +49,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.manageClaudeHooksAutomatically, true);
     assert.strictEqual(d.autoStartWithClaude, false);
     assert.deepStrictEqual(d.petTint, {});
+    assert.deepStrictEqual(d.petAccessory, {});
     assert.strictEqual(d.lowPowerIdleMode, false);
     assert.strictEqual(d.allowEdgePinning, false);
     assert.strictEqual(d.disableMiniMode, false);
@@ -190,6 +193,7 @@ describe("prefs.validate", () => {
       soundMuted: "yes",     // wrong type
       soundVolume: 2,        // out of range → default 1
       petTint: "custom-css",
+      petAccessory: "wizard-hat",
       lowPowerIdleMode: "yes",
       x: NaN,                // not finite
       bubbleFollowPet: true, // ok
@@ -213,6 +217,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.soundMuted, false);
     assert.strictEqual(v.soundVolume, 1);
     assert.deepStrictEqual(v.petTint, {});
+    assert.deepStrictEqual(v.petAccessory, {});
     assert.strictEqual(v.lowPowerIdleMode, false);
     assert.strictEqual(v.x, 0);
     assert.strictEqual(v.bubbleFollowPet, true);
@@ -350,6 +355,7 @@ describe("prefs.validate", () => {
       miniEdge: "left",
       theme: "calico",
       petTint: { clawd: "gold", cloudling: "matcha" },
+      petAccessory: { clawd: "wizard-hat", cloudling: "halo" },
     });
     assert.strictEqual(v.lang, "ko");
     assert.strictEqual(v.soundMuted, true);
@@ -373,6 +379,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.miniEdge, "left");
     assert.strictEqual(v.theme, "calico");
     assert.deepStrictEqual(v.petTint, { clawd: "gold", cloudling: "matcha" });
+    assert.deepStrictEqual(v.petAccessory, { clawd: "wizard-hat", cloudling: "halo" });
   });
 
   it("accepts soundVolume 0 (silent playback is valid)", () => {
@@ -1440,6 +1447,29 @@ describe("prefs.save", () => {
       { clawd: "gold", cloudling: "gold" }
     );
     assert.deepStrictEqual(prefs.validate({ petTint: "none" }).petTint, {});
+  });
+
+  it("round-trips per-theme accessories and rejects the discarded global scalar shape", () => {
+    const p = makeTempPath();
+    prefs.save(p, {
+      ...prefs.getDefaults(),
+      petAccessory: { clawd: "wizard-hat", cloudling: "halo" },
+    });
+    assert.deepStrictEqual(
+      prefs.load(p).snapshot.petAccessory,
+      { clawd: "wizard-hat", cloudling: "halo" }
+    );
+
+    prefs.save(p, {
+      ...prefs.getDefaults(),
+      petAccessory: {
+        clawd: "seasonal",
+        "../unsafe": "halo",
+        calico: "none",
+      },
+    });
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(p, "utf8")).petAccessory, {});
+    assert.deepStrictEqual(prefs.validate({ petAccessory: "wizard-hat" }).petAccessory, {});
   });
 
   it("validates before writing — bad fields fall back to defaults on disk", () => {
