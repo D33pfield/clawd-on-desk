@@ -32,9 +32,9 @@ const EVENT_TO_LIFECYCLE = {
 const config = getPlatformConfig();
 const resolve = createPidResolver({
   agentNames: {
-    win: new Set(["reasonix.exe"]),
-    mac: new Set(["reasonix"]),
-    linux: new Set(["reasonix"]),
+    win: new Set(["reasonix.exe", "reasonix-desktop.exe", "reasonix-cli.exe"]),
+    mac: new Set(["reasonix", "reasonix-desktop"]),
+    linux: new Set(["reasonix", "reasonix-desktop"]),
   },
   platformConfig: config,
 });
