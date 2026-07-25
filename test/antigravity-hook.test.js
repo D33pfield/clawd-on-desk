@@ -48,6 +48,26 @@ describe("Antigravity hook script", () => {
     assert.strictEqual(postedBodies[0].cwd, process.cwd());
   });
 
+  it("threads the resolved env into the bodies it builds", async () => {
+    const postedBodies = [];
+    await __test.sendHookEvent({
+      conversationId: "c1",
+      workspacePaths: [process.cwd()],
+    }, "PreInvocation", {
+      // sendHookEvent resolves deps.env for its own reads, and the body builders
+      // have to receive that same object: otherwise every env-derived field is
+      // read from the real process environment and an injected env is a no-op.
+      env: { TERM_PROGRAM: "Orca", ORCA_PANE_KEY: "8ce1fff7-tab:9813824b-leaf" },
+      postState: (body, _options, callback) => {
+        postedBodies.push(JSON.parse(body));
+        callback(true, 23333);
+      },
+    });
+
+    assert.strictEqual(postedBodies.length, 1);
+    assert.strictEqual(postedBodies[0].orca_pane_key, "8ce1fff7-tab:9813824b-leaf");
+  });
+
   it("uses tool Cwd before workspace paths", () => {
     assert.strictEqual(
       __test.resolveCwd({

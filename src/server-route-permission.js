@@ -705,7 +705,6 @@ function handlePermissionPost(req, res, options) {
           pidChain: codexSessionOptions.pidChain || null,
           tmuxSocket: codexSessionOptions.tmuxSocket || null,
           tmuxClient: codexSessionOptions.tmuxClient || null,
-
           orcaPaneKey: codexSessionOptions.orcaPaneKey || null,
           host: codexSessionOptions.host || null,
           platform: codexSessionOptions.platform || null,
@@ -819,7 +818,6 @@ function handlePermissionPost(req, res, options) {
           pidChain: qwenSessionOptions.pidChain || null,
           tmuxSocket: qwenSessionOptions.tmuxSocket || null,
           tmuxClient: qwenSessionOptions.tmuxClient || null,
-
           orcaPaneKey: qwenSessionOptions.orcaPaneKey || null,
           host: qwenSessionOptions.host || null,
           platform: qwenSessionOptions.platform || null,
@@ -940,7 +938,6 @@ function handlePermissionPost(req, res, options) {
           pidChain: copilotSessionOptions.pidChain || null,
           tmuxSocket: copilotSessionOptions.tmuxSocket || null,
           tmuxClient: copilotSessionOptions.tmuxClient || null,
-
           orcaPaneKey: copilotSessionOptions.orcaPaneKey || null,
           host: copilotSessionOptions.host || null,
         };
@@ -1087,7 +1084,6 @@ function handlePermissionPost(req, res, options) {
             pidChain: hermesSessionOptions.pidChain || null,
             tmuxSocket: hermesSessionOptions.tmuxSocket || null,
             tmuxClient: hermesSessionOptions.tmuxClient || null,
-
             orcaPaneKey: hermesSessionOptions.orcaPaneKey || null,
             editor: hermesSessionOptions.editor || null,
           };
@@ -1152,7 +1148,6 @@ function handlePermissionPost(req, res, options) {
           pidChain: hermesSessionOptions.pidChain || null,
           tmuxSocket: hermesSessionOptions.tmuxSocket || null,
           tmuxClient: hermesSessionOptions.tmuxClient || null,
-
           orcaPaneKey: hermesSessionOptions.orcaPaneKey || null,
           editor: hermesSessionOptions.editor || null,
         };

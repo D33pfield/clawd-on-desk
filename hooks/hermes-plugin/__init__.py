@@ -632,6 +632,15 @@ def _resolve_process_metadata(start_pid: Optional[int] = None) -> Dict[str, Any]
                     meta["tmux_client"] = target
             except Exception:
                 pass
+    # Orca hosts its terminals in a detached daemon that never appears in the
+    # walk above, so the pane key from the environment is the only way Clawd can
+    # focus the right tab. WT_SESSION means a Windows Terminal shell inherited
+    # the key from the Orca pane it was launched from — see orcaPaneKeyFromEnv
+    # in hooks/shared-process.js for why that copy must not be trusted.
+    if os.environ.get("TERM_PROGRAM") == "Orca" and not os.environ.get("WT_SESSION"):
+        pane_key = (os.environ.get("ORCA_PANE_KEY") or "").strip()
+        if pane_key and len(pane_key) <= 256 and re.fullmatch(r"[\w-]+:[\w-]+", pane_key):
+            meta["orca_pane_key"] = pane_key
     return meta
 
 
@@ -690,6 +699,9 @@ def _add_process_meta(payload: Dict[str, Any]) -> None:
     tmux_client = meta.get("tmux_client")
     if isinstance(tmux_client, str) and tmux_client:
         payload["tmux_client"] = tmux_client
+    orca_pane_key = meta.get("orca_pane_key")
+    if isinstance(orca_pane_key, str) and orca_pane_key:
+        payload["orca_pane_key"] = orca_pane_key
 
 
 def _first_string(*values: Any) -> str:

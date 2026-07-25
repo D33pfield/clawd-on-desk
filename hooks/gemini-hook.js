@@ -101,6 +101,10 @@ function buildStateBody(hookName, payload, options = {}) {
   }
   applyWslSourceFields(body);
 
+  // Before the pidMeta gate: the pane key comes from the environment, so it has
+  // to survive the events where shouldResolvePid skips the process snapshot.
+  applyOrcaPaneKey(body);
+
   const pidMeta = options.pidMeta;
   if (!pidMeta || typeof pidMeta !== "object") return body;
   if (Number.isFinite(pidMeta.stablePid) && pidMeta.stablePid > 0) body.source_pid = Math.floor(pidMeta.stablePid);
@@ -109,7 +113,6 @@ function buildStateBody(hookName, payload, options = {}) {
   if (Array.isArray(pidMeta.pidChain) && pidMeta.pidChain.length) body.pid_chain = pidMeta.pidChain;
   if (pidMeta.tmuxSocket) body.tmux_socket = pidMeta.tmuxSocket;
   if (pidMeta.tmuxClient) body.tmux_client = pidMeta.tmuxClient;
-  applyOrcaPaneKey(body);
   return body;
 }
 

@@ -486,34 +486,21 @@ $selectedTargetHwnd = [IntPtr]::Zero
 $pendingConsoleHwnd = [IntPtr]::Zero
 $consoleShimSkipped = $false
 $wtHwndFromHookInvalid = $false
-$cachedHwnd = Get-ClawdCachedWindow
-if ($cachedHwnd -ne [IntPtr]::Zero) {
-    [WinFocus]::Focus($cachedHwnd)
-    $selectedTargetHwnd = $cachedHwnd
-    $focused = $true
-    $reason = 'cached-window'
-}
-if (-not $focused -and $wtHwndFromHook -ne [IntPtr]::Zero) {
-    if ([WinFocus]::IsUsableWindowsTerminalWindow($wtHwndFromHook)) {
-        [WinFocus]::Focus($wtHwndFromHook)
-        $selectedTargetHwnd = $wtHwndFromHook
-        Save-ClawdFocusCache $wtHwndFromHook
-        $focused = $true
-        $reason = 'wt-hwnd-from-hook'
-    } else {
-        $wtHwndFromHookInvalid = $true
-    }
-}
 # Orca runs every terminal under a detached daemon whose own parent is already
 # dead, and Orca.exe itself descends from explorer — so it is NEVER an ancestor
 # of the agent and the walk below cannot reach it. Its window title is just
 # "Orca" (no cwd), so title matching cannot find it either. Resolve it by
-# process name instead, and do it BEFORE the walk: otherwise an Orca session
-# with a single Windows Terminal window open anywhere would fall through to
-# 'wt-title-mismatch-single-wt-window' and focus that unrelated terminal.
-# Deliberately not cached — Save-ClawdFocusCache validates entries by matching
-# the window title against the cwd candidates, which "Orca" never satisfies.
-if (-not $focused -and $orcaHosted) {
+# process name instead, and try it FIRST: a pane key proves the agent lives in
+# an Orca pane (TERM_PROGRAM=Orca and no WT_SESSION), so every other branch in
+# this script can only ever name a window that is not the agent's. The two that
+# would otherwise win are gated off rather than merely ordered after, because on
+# 'orca-window-missing' they would report an unrelated window as a *successful*
+# focus: $wtHwndFromHook is only whatever happened to be foreground when the
+# hook fired, and the cache is keyed on a cwd/title match. That last point is
+# also why an Orca window is never saved to the cache — Get-ClawdCachedWindow
+# re-checks the stored title against the cwd candidates on read, and "Orca"
+# never satisfies it.
+if ($orcaHosted) {
     $orcaWindows = @(Get-ClawdOrcaWindows)
     if ($orcaWindows.Count -eq 1) {
         [WinFocus]::Focus($orcaWindows[0])
@@ -524,6 +511,24 @@ if (-not $focused -and $orcaHosted) {
         $reason = 'orca-window-ambiguous'
     } else {
         $reason = 'orca-window-missing'
+    }
+}
+$cachedHwnd = Get-ClawdCachedWindow
+if (-not $focused -and -not $orcaHosted -and $cachedHwnd -ne [IntPtr]::Zero) {
+    [WinFocus]::Focus($cachedHwnd)
+    $selectedTargetHwnd = $cachedHwnd
+    $focused = $true
+    $reason = 'cached-window'
+}
+if (-not $focused -and -not $orcaHosted -and $wtHwndFromHook -ne [IntPtr]::Zero) {
+    if ([WinFocus]::IsUsableWindowsTerminalWindow($wtHwndFromHook)) {
+        [WinFocus]::Focus($wtHwndFromHook)
+        $selectedTargetHwnd = $wtHwndFromHook
+        Save-ClawdFocusCache $wtHwndFromHook
+        $focused = $true
+        $reason = 'wt-hwnd-from-hook'
+    } else {
+        $wtHwndFromHookInvalid = $true
     }
 }
 if (-not $focused) {
@@ -957,9 +962,9 @@ function scheduleTerminalTabFocus(editor, pidChain) {
 // Orca is not a VS Code fork, so the extension route above cannot serve it, and
 // its terminals live in a detached daemon so the process walk cannot either.
 // What it does ship is a first-class CLI: `orca terminal switch` brings a
-// specific tab to the front. That only moves the tab *inside* Orca — raising the
-// window itself stays the platform helper's job (see the $orcaHosted branch in
-// makeFocusCmd), so both halves have to run for a focus to actually land.
+// specific tab to the front. That only moves the tab *inside* Orca, so a focus
+// only lands if a window raise runs too — the $orcaHosted branch in
+// makeFocusCmd on Windows, raiseOrcaWindow() on every other platform.
 const ORCA_CLI_TIMEOUT_MS = 2500;
 // The window raise already ran and is instant; the tab switch only has to catch
 // up, so keep the CLI round-trip off the click's synchronous path.
@@ -1027,9 +1032,49 @@ function resolveOrcaHandle(orcaPaneKey, cwd, callback) {
   });
 }
 
+// `orca terminal switch` moves the tab inside Orca but never brings the window
+// forward, so the raise is a separate step. On Windows the generated PowerShell
+// already did it (the $orcaHosted branch in makeFocusCmd); everywhere else the
+// platform helpers cannot, because they resolve a window from the agent's pid
+// chain and Orca's terminals hang off a detached daemon. Match Orca by name
+// instead — the same thing the Windows branch does with $orcaProcessNames.
+//
+// macOS uses `open -a` rather than System Events `set frontmost` for the reason
+// given above focusMacAppViaSystemEvents: it carries Dock-click reopen semantics
+// (so a minimized Orca actually comes back) and needs no Automation consent.
+// Linux mirrors focusTerminalWindowLegacy's wmctrl-then-xdotool ordering, but
+// matches on WM_CLASS instead of --pid for the detached-daemon reason above.
+// Only the Windows branch has been verified on real hardware; on Linux the
+// WM_CLASS is assumed to be "orca", which is also GNOME's screen reader, so a
+// miss there raises the wrong window rather than none.
+function raiseOrcaWindow(onDone) {
+  const done = () => { if (onDone) onDone(); };
+  if (isMac) {
+    execFile("open", ["-a", "Orca"], { timeout: MAC_OPEN_TIMEOUT_MS }, (err) => {
+      logFocusResult(`branch=orca-raise reason=${err ? `open-failed:${safeLogValue(err.code || "error")}` : "ok"}`);
+      done();
+    });
+    return;
+  }
+  execFile("wmctrl", ["-x", "-a", "orca"], { timeout: 1000 }, (wmErr) => {
+    if (!wmErr) {
+      logFocusResult("branch=orca-raise reason=ok");
+      return done();
+    }
+    execFile("xdotool", ["search", "--class", "orca", "windowactivate", "--sync", "%1"], { timeout: 1000 }, (xdoErr) => {
+      logFocusResult(`branch=orca-raise reason=${xdoErr ? `raise-failed:${safeLogValue(xdoErr.code || "error")}` : "ok"}`);
+      done();
+    });
+  });
+}
+
 function scheduleOrcaPaneFocus(orcaPaneKey, cwd) {
   if (!orcaPaneKey) return;
   setTimeout(() => {
+    // The raise runs first so the tab switch settles on an already-frontmost
+    // window; off Windows it also has to out-race focusTerminalWindowLegacy,
+    // which was dispatched on the same click and may raise the wrong app.
+    if (!isWin) raiseOrcaWindow();
     const switchTo = (handle, mayReresolve) => {
       runOrcaCli(["terminal", "switch", "--terminal", handle, "--json"], (err, data) => {
         if (!err && data && data.ok === true) {

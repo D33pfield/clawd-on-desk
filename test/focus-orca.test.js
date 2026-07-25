@@ -54,6 +54,12 @@ function mockOrcaCli(opts = {}) {
       return;
     }
 
+    // Window-raise helpers used off Windows; they carry no payload.
+    if (cmd === "open" || cmd === "wmctrl" || cmd === "xdotool") {
+      if (cb) cb(null, "", "");
+      return;
+    }
+
     const joined = args.join(" ");
     if (joined.startsWith("terminal list")) {
       if (cb) cb(null, listPayload !== null ? listPayload : terminalListPayload(terminals), "");
@@ -108,6 +114,21 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
     assert.strictEqual(orcaPaneKeyFromEnv(null), null);
   });
 
+  it("rejects a pane key inherited by a Windows Terminal shell", () => {
+    // Launch WT from inside an Orca pane and the child inherits TERM_PROGRAM and
+    // ORCA_PANE_KEY while genuinely living in WT. A pane key outranks every other
+    // signal in the focus script, so that copy would raise Orca instead of the
+    // terminal the agent is really in. Only WT sets WT_SESSION.
+    assert.strictEqual(
+      orcaPaneKeyFromEnv({ TERM_PROGRAM: "Orca", ORCA_PANE_KEY: PANE_KEY, WT_SESSION: "b3e1-…" }),
+      null
+    );
+    assert.deepStrictEqual(
+      applyOrcaPaneKey({ a: 1 }, { TERM_PROGRAM: "Orca", ORCA_PANE_KEY: PANE_KEY, WT_SESSION: "b3e1-…" }),
+      { a: 1 }
+    );
+  });
+
   it("adds orca_pane_key to a body only when the env supplies one", () => {
     assert.deepStrictEqual(
       applyOrcaPaneKey({ a: 1 }, { TERM_PROGRAM: "Orca", ORCA_PANE_KEY: PANE_KEY }),
@@ -116,12 +137,74 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
     assert.deepStrictEqual(applyOrcaPaneKey({ a: 1 }, {}), { a: 1 });
   });
 
-  it("stays out of the frozen resolver result shape (#674 red line)", () => {
-    // The pane key owes nothing to the process walk, and growing the no-arg
-    // resolve() object is exactly what that red line forbids.
-    const shared = require("../hooks/shared-process");
-    assert.strictEqual(typeof shared.applyOrcaPaneKey, "function");
-    assert.strictEqual(typeof shared.orcaPaneKeyFromEnv, "function");
+  // The pane key is read per body rather than added to the resolver result: the
+  // #674 no-arg red line freezes that shape (defended by the NO_ARG_FIELDS
+  // assertion in test/pid-resolver-context.test.js), and reading it per body also
+  // survives a cache hit and a failed snapshot, neither of which has room for it.
+  // The cost is that every producer needs its own line, so check them by source.
+  it("is carried by every producer that already carries tmux terminal identity", () => {
+    const fs = require("fs");
+    const hooksDir = path.join(__dirname, "..", "hooks");
+    const files = [];
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.(js|mjs|py)$/.test(entry.name)) files.push(full);
+      }
+    };
+    walk(hooksDir);
+
+    const missing = [];
+    for (const file of files) {
+      const src = fs.readFileSync(file, "utf8");
+      // tmux_client is the sibling terminal-identity field on the same seam, so
+      // any producer that emits it is one that focus can act on.
+      if (!/["']?tmux_client["']?\s*[:=]/.test(src)) continue;
+      if (!src.includes("orca_pane_key") && !src.includes("applyOrcaPaneKey")) {
+        missing.push(path.relative(hooksDir, file));
+      }
+    }
+    assert.deepStrictEqual(missing, [], "producers emitting tmux_client but not orca_pane_key");
+  });
+});
+
+describe("Orca window raise off Windows", () => {
+  it("raises the Orca window before switching the pane on macOS", async () => {
+    await withFocus({ platform: "darwin" }, async (t, cli) => {
+      t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
+      await settle(t);
+      const cmds = cli.calls.map((c) => `${c.cmd} ${c.args.join(" ")}`);
+      const raiseAt = cmds.findIndex((c) => c.startsWith("open -a Orca"));
+      const switchAt = cmds.findIndex((c) => c.includes("terminal switch"));
+      assert.ok(raiseAt >= 0, `expected an Orca raise, got ${JSON.stringify(cmds)}`);
+      assert.ok(switchAt >= 0);
+      // `orca terminal switch` only moves the tab inside Orca; without the raise
+      // the correct pane comes forward behind whatever window is in front.
+      assert.ok(raiseAt < switchAt, "the raise must precede the pane switch");
+    });
+  });
+
+  it("falls back from wmctrl to xdotool on Linux", async () => {
+    await withFocus({ platform: "linux", missingBinaries: ["wmctrl"] }, async (t, cli) => {
+      t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
+      await settle(t);
+      const cmds = cli.calls.map((c) => c.cmd);
+      assert.ok(cmds.includes("wmctrl"), "wmctrl is tried first");
+      assert.ok(cmds.includes("xdotool"), "a wmctrl miss must fall back to xdotool");
+    });
+  });
+
+  it("does not raise from Node on Windows, where the focus script already did", async () => {
+    await withFocus({ platform: "win32" }, async (t, cli) => {
+      t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
+      await settle(t);
+      for (const call of cli.calls) {
+        assert.ok(/orca/i.test(call.cmd) || call.cmd === "orca",
+          `unexpected raise helper spawned on Windows: ${call.cmd}`);
+      }
+      assert.ok(cli.switchCalls().length > 0, "the pane switch still runs");
+    });
   });
 });
 
@@ -342,7 +425,7 @@ describe("Windows Orca window fallback", () => {
       for (const script of [off, on]) {
         assert.match(script, /\$orcaProcessNames = @\('Orca'\)/);
         assert.match(script, /function Get-ClawdOrcaWindows/);
-        assert.match(script, /if \(-not \$focused -and \$orcaHosted\)/);
+        assert.match(script, /if \(\$orcaHosted\) \{/);
         assert.match(script, /\$reason = 'orca-window'/);
         assert.match(script, /\$reason = 'orca-window-ambiguous'/);
         assert.match(script, /\$reason = 'orca-window-missing'/);
@@ -350,19 +433,41 @@ describe("Windows Orca window fallback", () => {
     });
   });
 
-  it("resolves the Orca window before the Windows Terminal fallbacks", () => {
+  it("tries the Orca window before every other branch in the script", () => {
     withFocus({ platform: "win32" }, (t) => {
-      const script = t.makeFocusCmd(4242, ["clawd-on-desk"], null, null, "tok", ["clawd-on-desk"], true);
-      // An Orca session with one unrelated WT window open would otherwise land
-      // on 'wt-title-mismatch-single-wt-window' and focus that terminal.
-      const orcaAt = script.indexOf("if (-not $focused -and $orcaHosted)");
+      const script = t.makeFocusCmd(4242, ["clawd-on-desk"], "key", 4660, "tok", ["clawd-on-desk"], true);
+      const orcaAt = script.indexOf("if ($orcaHosted) {");
+      const cacheAt = script.indexOf("$reason = 'cached-window'");
+      const wtHwndAt = script.indexOf("$reason = 'wt-hwnd-from-hook'");
       const walkAt = script.indexOf("for ($i = 0; $i -lt 8; $i++)");
       // Anchor on the assignment, not the bare reason string — the explanatory
       // comment above the Orca branch mentions that reason by name too.
       const wtFallbackAt = script.indexOf("$reason = 'wt-title-mismatch-single-wt-window'");
-      assert.ok(orcaAt > 0 && walkAt > 0 && wtFallbackAt > 0);
-      assert.ok(orcaAt < walkAt, "Orca branch must precede the process-tree walk");
-      assert.ok(orcaAt < wtFallbackAt, "Orca branch must precede the WT fallbacks");
+      assert.ok(orcaAt > 0 && cacheAt > 0 && wtHwndAt > 0 && walkAt > 0 && wtFallbackAt > 0);
+      for (const [label, at] of [["cached-window", cacheAt], ["wt-hwnd-from-hook", wtHwndAt],
+        ["the process-tree walk", walkAt], ["the WT title fallbacks", wtFallbackAt]]) {
+        assert.ok(orcaAt < at, `Orca branch must precede ${label}`);
+      }
+    });
+  });
+
+  it("keeps a recorded wt_hwnd and a stale cache from pre-empting an Orca session", () => {
+    withFocus({ platform: "win32" }, (t) => {
+      // Both fields ride the same request: wt_hwnd is whatever happened to be
+      // foreground when the hook fired (hooks/shared-process.js foregroundWtHwnd),
+      // and src/state.js makes it sticky, so one SessionStart next to a Windows
+      // Terminal window would otherwise focus that terminal for the rest of the
+      // session — and report it as a success.
+      const script = t.makeFocusCmd(4242, ["clawd-on-desk"], "key", 4660, "tok", ["clawd-on-desk"], true);
+      assert.match(script, /\$wtHwndFromHook = \[IntPtr\]\(\[int64\]4660\)/);
+      assert.match(script, /\$orcaHosted = \$true/);
+      assert.ok(script.includes("if (-not $focused -and -not $orcaHosted -and $cachedHwnd -ne [IntPtr]::Zero)"),
+        "the window cache must be gated off for Orca sessions");
+      assert.ok(script.includes("if (-not $focused -and -not $orcaHosted -and $wtHwndFromHook -ne [IntPtr]::Zero)"),
+        "the recorded wt_hwnd must be gated off for Orca sessions");
+      // On orca-window-missing the reason must stay negative rather than being
+      // overwritten by a fallback that focused an unrelated window.
+      assert.strictEqual(t.isPositiveFocusReason("orca-window-missing"), false);
     });
   });
 
@@ -370,8 +475,8 @@ describe("Windows Orca window fallback", () => {
     withFocus({ platform: "win32" }, (t) => {
       const script = t.makeFocusCmd(4242, ["clawd-on-desk"], "key", null, "tok", ["clawd-on-desk"], true);
       const block = script.slice(
-        script.indexOf("if (-not $focused -and $orcaHosted)"),
-        script.indexOf("if (-not $focused) {\nfor ($i = 0")
+        script.indexOf("if ($orcaHosted) {"),
+        script.indexOf("$cachedHwnd = Get-ClawdCachedWindow")
       );
       assert.ok(block.length > 0);
       assert.ok(!block.includes("Save-ClawdFocusCache"),

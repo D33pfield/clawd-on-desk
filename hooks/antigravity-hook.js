@@ -264,6 +264,11 @@ function buildStateBody(hookName, payload, options = {}) {
     return body;
   }
   applyWslSourceFields(body);
+  // Before the pidMeta gate, not after: the pane key comes from the environment
+  // and owes nothing to the process walk, so it must survive the events where
+  // shouldResolvePid skips the snapshot entirely. Still inside the local branch —
+  // a remote session must never carry a local pane key.
+  applyOrcaPaneKey(body, options.env);
 
   const pidMeta = options.pidMeta;
   if (!pidMeta || typeof pidMeta !== "object") return body;
@@ -273,7 +278,6 @@ function buildStateBody(hookName, payload, options = {}) {
   if (Array.isArray(pidMeta.pidChain) && pidMeta.pidChain.length) body.pid_chain = pidMeta.pidChain;
   if (pidMeta.tmuxSocket) body.tmux_socket = pidMeta.tmuxSocket;
   if (pidMeta.tmuxClient) body.tmux_client = pidMeta.tmuxClient;
-  applyOrcaPaneKey(body, options.env);
   return body;
 }
 
@@ -304,6 +308,11 @@ function buildPermissionBody(hookName, payload, options = {}) {
     return body;
   }
   applyWslSourceFields(body);
+  // Before the pidMeta gate, not after: the pane key comes from the environment
+  // and owes nothing to the process walk, so it must survive the events where
+  // shouldResolvePid skips the snapshot entirely. Still inside the local branch —
+  // a remote session must never carry a local pane key.
+  applyOrcaPaneKey(body, options.env);
 
   const pidMeta = options.pidMeta;
   if (!pidMeta || typeof pidMeta !== "object") return body;
@@ -313,7 +322,6 @@ function buildPermissionBody(hookName, payload, options = {}) {
   if (Array.isArray(pidMeta.pidChain) && pidMeta.pidChain.length) body.pid_chain = pidMeta.pidChain;
   if (pidMeta.tmuxSocket) body.tmux_socket = pidMeta.tmuxSocket;
   if (pidMeta.tmuxClient) body.tmux_client = pidMeta.tmuxClient;
-  applyOrcaPaneKey(body, options.env);
   return body;
 }
 
@@ -411,11 +419,13 @@ async function sendHookEvent(payload, argvEvent, deps = {}) {
     remote,
     host: remote && deps.readHostPrefix ? deps.readHostPrefix() : undefined,
     pidMeta,
+    env,
   });
   const permissionBody = buildPermissionBody(hookName, payload || {}, {
     remote,
     host: remote && deps.readHostPrefix ? deps.readHostPrefix() : undefined,
     pidMeta,
+    env,
   });
 
   if (permissionBody) {

@@ -194,6 +194,7 @@ export function createOpencodeFamilyPlugin(config) {
   let _detectedEditor = null;
   let _tmuxSocket = null;
   let _tmuxClient = null;
+  let _orcaPaneKey = null;
   // Project directory — captured from ctx.directory at init, sent with every
   // POST so state.js can display path.basename(cwd) as the session menu label
   // (otherwise it falls back to the session_id prefix, e.g. "ses 2a..").
@@ -347,6 +348,19 @@ export function createOpencodeFamilyPlugin(config) {
       }
     }
 
+    // Orca's terminals live in a detached daemon that the walk above can never
+    // reach, so the pane key from the environment is the only handle on the tab
+    // that has to come forward. WT_SESSION means a Windows Terminal shell
+    // inherited the key from the Orca pane it was launched from — see
+    // orcaPaneKeyFromEnv in hooks/shared-process.js.
+    _orcaPaneKey = null;
+    if (process.env.TERM_PROGRAM === "Orca" && !process.env.WT_SESSION) {
+      const paneKey = String(process.env.ORCA_PANE_KEY || "").trim();
+      if (paneKey && paneKey.length <= 256 && /^[\w-]+:[\w-]+$/.test(paneKey)) {
+        _orcaPaneKey = paneKey;
+      }
+    }
+
     debugLog(`PID resolved stable=${_stablePid} editor=${_detectedEditor || "none"} chain=[${_pidChain.join(",")}]`);
     return _stablePid;
   }
@@ -364,6 +378,7 @@ export function createOpencodeFamilyPlugin(config) {
       if (_detectedEditor) body.editor = _detectedEditor;
       if (_tmuxSocket) body.tmux_socket = _tmuxSocket;
       if (_tmuxClient) body.tmux_client = _tmuxClient;
+      if (_orcaPaneKey) body.orca_pane_key = _orcaPaneKey;
     }
     if (_cwd) body.cwd = _cwd;
     body.agent_pid = process.pid;

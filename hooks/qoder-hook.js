@@ -120,6 +120,9 @@ function shouldResolvePid(hookName, env = process.env) {
 }
 
 function applyLocalProcessFields(body, pidMeta) {
+  // Before the pidMeta gate: the pane key comes from the environment, so it has
+  // to survive the events where shouldResolvePid skips the process snapshot.
+  applyOrcaPaneKey(body);
   if (!pidMeta || typeof pidMeta !== "object") return;
   if (Number.isFinite(pidMeta.stablePid) && pidMeta.stablePid > 0) body.source_pid = Math.floor(pidMeta.stablePid);
   if (pidMeta.detectedEditor) body.editor = pidMeta.detectedEditor;
@@ -127,7 +130,6 @@ function applyLocalProcessFields(body, pidMeta) {
   if (Array.isArray(pidMeta.pidChain) && pidMeta.pidChain.length) body.pid_chain = pidMeta.pidChain;
   if (pidMeta.tmuxSocket) body.tmux_socket = pidMeta.tmuxSocket;
   if (pidMeta.tmuxClient) body.tmux_client = pidMeta.tmuxClient;
-  applyOrcaPaneKey(body);
 }
 
 const TOOL_METADATA_EVENTS = new Set([

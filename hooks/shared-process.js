@@ -81,8 +81,16 @@ function normalizeOrcaPaneKey(value) {
 // does not (`orca terminal switch` rejects it with terminal_handle_stale), so
 // the pane key is the only durable identifier worth shipping. Requiring
 // TERM_PROGRAM too keeps an inherited pane key from claiming a nested shell.
+//
+// TERM_PROGRAM alone is not enough, though: launch Windows Terminal from inside
+// an Orca pane and the child shell inherits both TERM_PROGRAM and ORCA_PANE_KEY
+// while genuinely living in WT. Because a pane key outranks every other signal
+// in the focus script, that inherited copy would send the focus to Orca's
+// window instead of the terminal the agent is actually in. Only WT sets
+// WT_SESSION, and a real Orca pane has no WT_SESSION, so its presence means the
+// innermost terminal is WT and the pane key must not be trusted.
 function orcaPaneKeyFromEnv(env = process.env) {
-  if (!env || env.TERM_PROGRAM !== "Orca") return null;
+  if (!env || env.TERM_PROGRAM !== "Orca" || env.WT_SESSION) return null;
   return normalizeOrcaPaneKey(env.ORCA_PANE_KEY);
 }
 

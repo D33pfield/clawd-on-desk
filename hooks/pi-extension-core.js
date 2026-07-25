@@ -129,9 +129,13 @@ function buildPayload(options = {}) {
   // runs in-process with the Pi CLI, so Orca's pane key is simply in the env.
   // Validated locally rather than imported because this module ships standalone
   // inside the Pi extension. `options.env` keeps payload assertions hermetic.
+  // WT_SESSION means a Windows Terminal shell inherited the pane key from the
+  // Orca pane it was launched from — see orcaPaneKeyFromEnv in shared-process.js.
   const env = options.env || process.env;
-  const rawPaneKey = env && env.TERM_PROGRAM === "Orca" ? env.ORCA_PANE_KEY : null;
-  const orcaPaneKey = typeof rawPaneKey === "string"
+  const inOrcaPane = !!env && env.TERM_PROGRAM === "Orca" && !env.WT_SESSION;
+  const rawPaneKey = inOrcaPane && typeof env.ORCA_PANE_KEY === "string"
+    ? env.ORCA_PANE_KEY.trim() : null;
+  const orcaPaneKey = rawPaneKey
     && rawPaneKey.length <= 256
     && /^[\w-]+:[\w-]+$/.test(rawPaneKey)
     ? rawPaneKey : null;
