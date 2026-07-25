@@ -77,6 +77,7 @@ const {
   shouldOpenSettingsWindowFromArgv,
 } = require("./settings-window-icon");
 const createSettingsWindowRuntime = require("./settings-window");
+const createPermissionAutomationConfirmationRuntime = require("./permission-automation-confirmation");
 const {
   createSettingsSizePreviewSession,
 } = require("./settings-size-preview-session");
@@ -703,6 +704,15 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
     endTextScalePreview();
   },
   onAfterClosed: () => maybeDestroyIdleAnimationPreviewPosterWindow(),
+});
+
+const permissionAutomationConfirmationRuntime = createPermissionAutomationConfirmationRuntime({
+  BrowserWindow,
+  ipcMain,
+  nativeTheme,
+  screen,
+  path,
+  iconPath: settingsWindowRuntime.getIconPath(),
 });
 
 function getSettingsWindow() {
@@ -1780,24 +1790,16 @@ async function showSessionAutomationWarning(entry) {
     entry,
     petWindow: win,
   });
-  const result = await electronDialog.showMessageBox(parent, {
-    type: "warning",
-    buttons: [
-      translate("sessionAutomationConfirmEnable"),
-      translate("permissionAutomationCancel"),
-    ],
-    defaultId: 1,
-    cancelId: 1,
+  return permissionAutomationConfirmationRuntime.confirmPermissionAutomation({
+    parent,
+    lang: _settingsController.get("lang") || lang || "en",
     title: translate("sessionAutomationConfirmTitle"),
     message: translate("sessionAutomationConfirmMessage"),
     detail: translate("sessionAutomationConfirmDetail"),
     checkboxLabel: translate("permissionAutomationAutoToolsDontShowAgain"),
-    checkboxChecked: false,
+    confirmLabel: translate("sessionAutomationConfirmEnable"),
+    cancelLabel: translate("permissionAutomationCancel"),
   });
-  return {
-    confirmed: result.response === 0,
-    suppressFutureConfirmation: result.response === 0 && result.checkboxChecked === true,
-  };
 }
 
 sessionAutomationStore = createSessionAutomationStore({
@@ -3260,6 +3262,12 @@ const _menuCtx = {
       return { status: "error", message: err && err.message };
     });
   },
+  confirmPermissionAutomation: (payload) => (
+    permissionAutomationConfirmationRuntime.confirmPermissionAutomation(payload)
+  ),
+  showPermissionAutomationError: (payload) => (
+    permissionAutomationConfirmationRuntime.showPermissionAutomationError(payload)
+  ),
   get soundMuted() { return soundMuted; },
   set soundMuted(v) { _settingsController.applyUpdate("soundMuted", v); },
   get soundVolume() { return soundVolume; },
@@ -4411,6 +4419,7 @@ if (!gotTheLock) {
     flushRuntimeStateToPrefs();
     globalShortcut.unregisterAll();
     void settingsSizePreviewSession.cleanup();
+    permissionAutomationConfirmationRuntime.dispose();
     if (_telegramMigrationController
       && typeof _telegramMigrationController.dispose === "function") {
       void _telegramMigrationController.dispose();
