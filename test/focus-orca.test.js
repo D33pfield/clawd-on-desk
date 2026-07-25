@@ -396,7 +396,10 @@ describe("scheduleOrcaPaneFocus", () => {
         t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
         await settle(t);
         assert.strictEqual(cli.switchCalls().length, 0);
-        assert.ok(logs.some(l => l.includes("reason=orca-pane-not-found")), logs.join("|"));
+        // Not orca-pane-not-found: "Orca is not installed / not on PATH" and
+        // "that pane is gone" need different fixes, and focus-debug.log is the
+        // only place anyone will see the difference.
+        assert.ok(logs.some(l => l.includes("reason=orca-cli-not-found")), logs.join("|"));
       });
     } finally {
       if (prev !== undefined) process.env.LOCALAPPDATA = prev;

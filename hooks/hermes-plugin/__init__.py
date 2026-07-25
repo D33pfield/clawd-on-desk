@@ -639,7 +639,9 @@ def _resolve_process_metadata(start_pid: Optional[int] = None) -> Dict[str, Any]
     # in hooks/shared-process.js for why that copy must not be trusted.
     if os.environ.get("TERM_PROGRAM") == "Orca" and not os.environ.get("WT_SESSION"):
         pane_key = (os.environ.get("ORCA_PANE_KEY") or "").strip()
-        if pane_key and len(pane_key) <= 256 and re.fullmatch(r"[\w-]+:[\w-]+", pane_key):
+        # ASCII-only: Python's \w matches Unicode word characters, which would
+        # make this copy of the validator laxer than the four JavaScript ones.
+        if pane_key and len(pane_key) <= 256 and re.fullmatch(r"[\w-]+:[\w-]+", pane_key, re.ASCII):
             meta["orca_pane_key"] = pane_key
     return meta
 

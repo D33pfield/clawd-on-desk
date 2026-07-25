@@ -517,6 +517,7 @@ describe("server-route-permission POST", () => {
       pid_chain: [789, 456, -1],
       tmux_socket: "/tmp/tmux-1000/work",
       tmux_client: "/dev/pts/7",
+      orca_pane_key: "8ce1fff7-tab:9813824b-leaf",
       cwd: "/repo",
       platform: "webui",
       model: "gpt-5.4",
@@ -535,6 +536,7 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(entry.pidChain, [789, 456]);
     assert.strictEqual(entry.tmuxSocket, "/tmp/tmux-1000/work");
     assert.strictEqual(entry.tmuxClient, "/dev/pts/7");
+    assert.strictEqual(entry.orcaPaneKey, "8ce1fff7-tab:9813824b-leaf");
     assert.strictEqual(entry.cwd, "/repo");
     assert.strictEqual(entry.platform, "webui");
     assert.strictEqual(entry.model, "gpt-5.4");
@@ -552,6 +554,7 @@ describe("server-route-permission POST", () => {
         pidChain: [789, 456],
         tmuxSocket: "/tmp/tmux-1000/work",
         tmuxClient: "/dev/pts/7",
+        orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
         cwd: "/repo",
         platform: "webui",
         model: "gpt-5.4",
@@ -562,6 +565,32 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
     assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [entry]);
     assert.deepStrictEqual(res.ctx.calls.addPendingPermission, [entry]);
+  });
+
+  it("keeps every permission focus entry carrying the same terminal identity fields", () => {
+    // The test above covers the shared applyTerminalSessionOptions and the Codex
+    // entry. The qwen, copilot and two hermes entries are hand-copied versions of
+    // that same object, so dropping one field from one of them kills Orca tab
+    // focus for that agent without failing any behavioural test. Assert the
+    // replication directly rather than duplicating four whole bubble tests.
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const lines = fs
+      .readFileSync(path.join(__dirname, "..", "src", "server-route-permission.js"), "utf8")
+      .split("\n");
+
+    const sites = [];
+    lines.forEach((line, idx) => {
+      if (/tmuxClient: \w+SessionOptions\.tmuxClient \|\| null,/.test(line)) sites.push(idx);
+    });
+    assert.ok(sites.length >= 5, `expected at least 5 focus-entry sites, found ${sites.length}`);
+    for (const idx of sites) {
+      assert.match(
+        lines.slice(idx + 1, idx + 3).join("\n"),
+        /orcaPaneKey: \w+SessionOptions\.orcaPaneKey \|\| null,/,
+        `focus entry at src/server-route-permission.js:${idx + 1} does not carry orcaPaneKey`
+      );
+    }
   });
 
   it("returns no-decision for headless Codex sessions before auto-pilot can allow", async () => {

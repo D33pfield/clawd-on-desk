@@ -491,15 +491,17 @@ $wtHwndFromHookInvalid = $false
 # of the agent and the walk below cannot reach it. Its window title is just
 # "Orca" (no cwd), so title matching cannot find it either. Resolve it by
 # process name instead, and try it FIRST: a pane key proves the agent lives in
-# an Orca pane (TERM_PROGRAM=Orca and no WT_SESSION), so every other branch in
-# this script can only ever name a window that is not the agent's. The two that
-# would otherwise win are gated off rather than merely ordered after, because on
+# an Orca pane (TERM_PROGRAM=Orca and no WT_SESSION), so the guesswork branches
+# below cannot name the agent's window at all. The two that would otherwise win
+# are gated off rather than merely ordered after, because on
 # 'orca-window-missing' they would report an unrelated window as a *successful*
 # focus: $wtHwndFromHook is only whatever happened to be foreground when the
 # hook fired, and the cache is keyed on a cwd/title match. That last point is
 # also why an Orca window is never saved to the cache — Get-ClawdCachedWindow
 # re-checks the stored title against the cwd candidates on read, and "Orca"
-# never satisfies it.
+# never satisfies it. The ancestry walk below deliberately stays enabled: an
+# ancestor that owns a window is a real identity signal, not a guess, and for a
+# true Orca session it finds nothing anyway.
 if ($orcaHosted) {
     $orcaWindows = @(Get-ClawdOrcaWindows)
     if ($orcaWindows.Count -eq 1) {
@@ -1016,6 +1018,9 @@ function normalizeOrcaWorktreePath(value) {
 
 function resolveOrcaHandle(orcaPaneKey, cwd, callback) {
   runOrcaCli(["terminal", "list", "--json"], (err, data) => {
+    // Distinguish "no CLI" from "no such pane": focus-debug.log is the only
+    // surface for diagnosing this, and the two have different fixes.
+    if (err && err.message === "orca-cli-not-found") return callback(null, "orca-cli-not-found");
     if (err || !data || data.ok !== true || !data.result) return callback(null);
     const terminals = Array.isArray(data.result.terminals) ? data.result.terminals : [];
     const sep = orcaPaneKey.indexOf(":");
@@ -1089,9 +1094,9 @@ function scheduleOrcaPaneFocus(orcaPaneKey, cwd) {
       });
     };
     const resolveThenSwitch = (mayReresolve) => {
-      resolveOrcaHandle(orcaPaneKey, cwd, (handle) => {
+      resolveOrcaHandle(orcaPaneKey, cwd, (handle, failure) => {
         if (!handle) {
-          logFocusResult("branch=orca reason=orca-pane-not-found");
+          logFocusResult(`branch=orca reason=${failure || "orca-pane-not-found"}`);
           return;
         }
         switchTo(handle, mayReresolve);
