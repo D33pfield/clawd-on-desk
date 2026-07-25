@@ -634,10 +634,15 @@ def _resolve_process_metadata(start_pid: Optional[int] = None) -> Dict[str, Any]
                 pass
     # Orca hosts its terminals in a detached daemon that never appears in the
     # walk above, so the pane key from the environment is the only way Clawd can
-    # focus the right tab. WT_SESSION means a Windows Terminal shell inherited
-    # the key from the Orca pane it was launched from — see orcaPaneKeyFromEnv
-    # in hooks/shared-process.js for why that copy must not be trusted.
-    if os.environ.get("TERM_PROGRAM") == "Orca" and not os.environ.get("WT_SESSION"):
+    # focus the right tab. A terminal that advertises itself in the environment
+    # means a real terminal inherited the key from the Orca pane it was launched
+    # from — see orcaPaneKeyFromEnv in hooks/shared-process.js for the list and
+    # the residual gap.
+    nested_terminal = any(os.environ.get(key) for key in (
+        "WT_SESSION", "ALACRITTY_WINDOW_ID", "WEZTERM_PANE", "KITTY_WINDOW_ID",
+        "KONSOLE_VERSION", "GNOME_TERMINAL_SCREEN", "ConEmuPID",
+    ))
+    if os.environ.get("TERM_PROGRAM") == "Orca" and not nested_terminal:
         pane_key = (os.environ.get("ORCA_PANE_KEY") or "").strip()
         # ASCII-only: Python's \w matches Unicode word characters, which would
         # make this copy of the validator laxer than the four JavaScript ones.

@@ -114,18 +114,23 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
     assert.strictEqual(orcaPaneKeyFromEnv(null), null);
   });
 
-  it("rejects a pane key inherited by a Windows Terminal shell", () => {
-    // Launch WT from inside an Orca pane and the child inherits TERM_PROGRAM and
-    // ORCA_PANE_KEY while genuinely living in WT. A pane key outranks every other
-    // signal in the focus script, so that copy would raise Orca instead of the
-    // terminal the agent is really in. Only WT sets WT_SESSION.
+  it("rejects a pane key inherited by a terminal launched inside the pane", () => {
+    // Launch a terminal from inside an Orca pane and the child inherits
+    // TERM_PROGRAM and ORCA_PANE_KEY while living in its own window. A pane key
+    // outranks every other signal in the focus script, so that copy would raise
+    // Orca instead of the terminal the agent is really in.
+    for (const marker of ["WT_SESSION", "ALACRITTY_WINDOW_ID", "WEZTERM_PANE", "KITTY_WINDOW_ID",
+      "KONSOLE_VERSION", "GNOME_TERMINAL_SCREEN", "ConEmuPID"]) {
+      const env = { TERM_PROGRAM: "Orca", ORCA_PANE_KEY: PANE_KEY, [marker]: "1" };
+      assert.strictEqual(orcaPaneKeyFromEnv(env), null, `${marker} must veto the pane key`);
+      assert.deepStrictEqual(applyOrcaPaneKey({ a: 1 }, env), { a: 1 });
+    }
+
+    // tmux is the exception: it runs inside the pane, so Orca is still the window
+    // that has to come forward.
     assert.strictEqual(
-      orcaPaneKeyFromEnv({ TERM_PROGRAM: "Orca", ORCA_PANE_KEY: PANE_KEY, WT_SESSION: "b3e1-…" }),
-      null
-    );
-    assert.deepStrictEqual(
-      applyOrcaPaneKey({ a: 1 }, { TERM_PROGRAM: "Orca", ORCA_PANE_KEY: PANE_KEY, WT_SESSION: "b3e1-…" }),
-      { a: 1 }
+      orcaPaneKeyFromEnv({ TERM_PROGRAM: "Orca", ORCA_PANE_KEY: PANE_KEY, TMUX: "/tmp/tmux-1000/default,123,0" }),
+      PANE_KEY
     );
   });
 
@@ -142,7 +147,7 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
   // assertion in test/pid-resolver-context.test.js), and reading it per body also
   // survives a cache hit and a failed snapshot, neither of which has room for it.
   // The cost is that every producer needs its own line, so check them by source.
-  it("is carried by every producer that already carries tmux terminal identity", () => {
+  it("is carried by every producer that reports a process chain for focus", () => {
     const fs = require("fs");
     const hooksDir = path.join(__dirname, "..", "hooks");
     const files = [];
@@ -155,17 +160,24 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
     };
     walk(hooksDir);
 
+    // AGENTS.md:155 — OpenClaw's Phase 1 integration is state-only, with no
+    // permission bubble and no terminal focus, so it has nothing to focus.
+    const stateOnly = new Set([path.join("openclaw-plugin", "index.js")]);
+
     const missing = [];
     for (const file of files) {
+      if (stateOnly.has(path.relative(hooksDir, file))) continue;
       const src = fs.readFileSync(file, "utf8");
-      // tmux_client is the sibling terminal-identity field on the same seam, so
-      // any producer that emits it is one that focus can act on.
-      if (!/["']?tmux_client["']?\s*[:=]/.test(src)) continue;
+      // pid_chain, not tmux_client: a producer that reports a process chain is
+      // one whose sessions can be focus targets, whether or not it ever grew
+      // tmux support. Keying this on tmux_client is what let reasonix-hook.js
+      // ship without the pane key.
+      if (!/["']?pid_chain["']?\s*[:=]/.test(src)) continue;
       if (!src.includes("orca_pane_key") && !src.includes("applyOrcaPaneKey")) {
         missing.push(path.relative(hooksDir, file));
       }
     }
-    assert.deepStrictEqual(missing, [], "producers emitting tmux_client but not orca_pane_key");
+    assert.deepStrictEqual(missing, [], "focus-capable producers missing orca_pane_key");
   });
 });
 
@@ -471,6 +483,17 @@ describe("Windows Orca window fallback", () => {
       // On orca-window-missing the reason must stay negative rather than being
       // overwritten by a fallback that focused an unrelated window.
       assert.strictEqual(t.isPositiveFocusReason("orca-window-missing"), false);
+
+      // Gating those two off must not also lock out the console recovery further
+      // down, which is an identity signal rather than a guess: its reason
+      // whitelist has to accept the Orca branch's negative outcomes.
+      const conhostGate = script.slice(script.indexOf("$pendingConsoleHwnd -ne [IntPtr]::Zero) {"));
+      assert.match(conhostGate, /\$reason -eq 'orca-window-missing'/);
+      assert.match(conhostGate, /\$reason -eq 'orca-window-ambiguous'/);
+      // The WT title guess stays locked out, though — for an Orca session it can
+      // only ever name an unrelated terminal.
+      assert.ok(script.includes("if (-not $focused -and $reason -eq 'no-parent-window') {"),
+        "the WT title fallback must stay gated on no-parent-window alone");
     });
   });
 

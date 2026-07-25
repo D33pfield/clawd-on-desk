@@ -350,11 +350,13 @@ export function createOpencodeFamilyPlugin(config) {
 
     // Orca's terminals live in a detached daemon that the walk above can never
     // reach, so the pane key from the environment is the only handle on the tab
-    // that has to come forward. WT_SESSION means a Windows Terminal shell
-    // inherited the key from the Orca pane it was launched from — see
-    // orcaPaneKeyFromEnv in hooks/shared-process.js.
+    // that has to come forward. A terminal that advertises itself in the env
+    // means a real terminal inherited the key from the Orca pane it was launched
+    // from — see orcaPaneKeyFromEnv in hooks/shared-process.js for the list.
     _orcaPaneKey = null;
-    if (process.env.TERM_PROGRAM === "Orca" && !process.env.WT_SESSION) {
+    const nestedTerminal = ["WT_SESSION", "ALACRITTY_WINDOW_ID", "WEZTERM_PANE", "KITTY_WINDOW_ID",
+      "KONSOLE_VERSION", "GNOME_TERMINAL_SCREEN", "ConEmuPID"].some((key) => process.env[key]);
+    if (process.env.TERM_PROGRAM === "Orca" && !nestedTerminal) {
       const paneKey = String(process.env.ORCA_PANE_KEY || "").trim();
       if (paneKey && paneKey.length <= 256 && /^[\w-]+:[\w-]+$/.test(paneKey)) {
         _orcaPaneKey = paneKey;

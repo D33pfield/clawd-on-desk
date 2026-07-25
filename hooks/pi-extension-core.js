@@ -3,6 +3,18 @@
 const PI_AGENT_ID = "pi";
 const PI_HOOK_SOURCE = "pi-extension";
 
+// Kept in step with hooks/shared-process.js NESTED_TERMINAL_ENV; duplicated
+// rather than imported because this module ships standalone in the Pi extension.
+const NESTED_TERMINAL_ENV = [
+  "WT_SESSION",
+  "ALACRITTY_WINDOW_ID",
+  "WEZTERM_PANE",
+  "KITTY_WINDOW_ID",
+  "KONSOLE_VERSION",
+  "GNOME_TERMINAL_SCREEN",
+  "ConEmuPID",
+];
+
 const DEFAULT_EVENT_BINDINGS = Object.freeze([
   Object.freeze(["session_start", "SessionStart", "idle"]),
   Object.freeze(["before_agent_start", "UserPromptSubmit", "thinking"]),
@@ -129,10 +141,12 @@ function buildPayload(options = {}) {
   // runs in-process with the Pi CLI, so Orca's pane key is simply in the env.
   // Validated locally rather than imported because this module ships standalone
   // inside the Pi extension. `options.env` keeps payload assertions hermetic.
-  // WT_SESSION means a Windows Terminal shell inherited the pane key from the
-  // Orca pane it was launched from — see orcaPaneKeyFromEnv in shared-process.js.
+  // A terminal that advertises itself in the environment means a real terminal
+  // inherited the pane key from the Orca pane it was launched from and lives in
+  // its own window — see orcaPaneKeyFromEnv in shared-process.js for the list and
+  // the residual gap.
   const env = options.env || process.env;
-  const inOrcaPane = !!env && env.TERM_PROGRAM === "Orca" && !env.WT_SESSION;
+  const inOrcaPane = !!env && env.TERM_PROGRAM === "Orca" && !NESTED_TERMINAL_ENV.some((key) => env[key]);
   const rawPaneKey = inOrcaPane && typeof env.ORCA_PANE_KEY === "string"
     ? env.ORCA_PANE_KEY.trim() : null;
   const orcaPaneKey = rawPaneKey

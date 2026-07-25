@@ -82,15 +82,34 @@ function normalizeOrcaPaneKey(value) {
 // the pane key is the only durable identifier worth shipping. Requiring
 // TERM_PROGRAM too keeps an inherited pane key from claiming a nested shell.
 //
-// TERM_PROGRAM alone is not enough, though: launch Windows Terminal from inside
+// TERM_PROGRAM alone is not enough, though: launch another terminal from inside
 // an Orca pane and the child shell inherits both TERM_PROGRAM and ORCA_PANE_KEY
-// while genuinely living in WT. Because a pane key outranks every other signal
-// in the focus script, that inherited copy would send the focus to Orca's
-// window instead of the terminal the agent is actually in. Only WT sets
-// WT_SESSION, and a real Orca pane has no WT_SESSION, so its presence means the
-// innermost terminal is WT and the pane key must not be trusted.
+// while genuinely living in that terminal's own window. Because a pane key
+// outranks every other signal in the focus script, the inherited copy would
+// raise Orca instead of the terminal the agent is actually in — and report it as
+// a success. So reject the key whenever a terminal that advertises itself in the
+// environment is the inner one.
+//
+// Known residual: a bare conhost / pwsh window sets no marker of its own, so an
+// agent started that way from an Orca pane still looks like the pane. Terminals
+// that DO set TERM_PROGRAM themselves (iTerm, Apple_Terminal, vscode, Hyper,
+// ghostty) are already excluded by the check above.
+//
+// TMUX is deliberately not in this list: tmux runs *inside* the pane, so Orca is
+// still the window to raise.
+const NESTED_TERMINAL_ENV = [
+  "WT_SESSION",            // Windows Terminal
+  "ALACRITTY_WINDOW_ID",   // Alacritty
+  "WEZTERM_PANE",          // WezTerm
+  "KITTY_WINDOW_ID",       // kitty
+  "KONSOLE_VERSION",       // Konsole
+  "GNOME_TERMINAL_SCREEN", // gnome-terminal
+  "ConEmuPID",             // ConEmu / Cmder
+];
+
 function orcaPaneKeyFromEnv(env = process.env) {
-  if (!env || env.TERM_PROGRAM !== "Orca" || env.WT_SESSION) return null;
+  if (!env || env.TERM_PROGRAM !== "Orca") return null;
+  if (NESTED_TERMINAL_ENV.some((key) => env[key])) return null;
   return normalizeOrcaPaneKey(env.ORCA_PANE_KEY);
 }
 

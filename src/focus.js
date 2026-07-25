@@ -499,9 +499,9 @@ $wtHwndFromHookInvalid = $false
 # hook fired, and the cache is keyed on a cwd/title match. That last point is
 # also why an Orca window is never saved to the cache — Get-ClawdCachedWindow
 # re-checks the stored title against the cwd candidates on read, and "Orca"
-# never satisfies it. The ancestry walk below deliberately stays enabled: an
-# ancestor that owns a window is a real identity signal, not a guess, and for a
-# true Orca session it finds nothing anyway.
+# never satisfies it. The ancestry walk below and the console recovery after it
+# deliberately stay reachable: both key off the agent's own process chain rather
+# than a guess, so their whitelists accept the orca-window-missing reason.
 if ($orcaHosted) {
     $orcaWindows = @(Get-ClawdOrcaWindows)
     if ($orcaWindows.Count -eq 1) {
@@ -570,7 +570,9 @@ if (-not $focused -and $pendingConsoleHwnd -ne [IntPtr]::Zero) {
         $reason -eq 'wt-title-ambiguous' -or
         $reason -eq 'wt-title-mismatch-pid-window-ambiguous' -or
         $reason -eq 'wt-title-mismatch-single-wt-window-ambiguous' -or
-        $reason -eq 'wt-title-mismatch-no-pid-window') {
+        $reason -eq 'wt-title-mismatch-no-pid-window' -or
+        $reason -eq 'orca-window-missing' -or
+        $reason -eq 'orca-window-ambiguous') {
         [WinFocus]::Focus($pendingConsoleHwnd)
         $selectedTargetHwnd = $pendingConsoleHwnd
         $focused = $true
@@ -586,7 +588,9 @@ if (-not $focused -and $consoleShimSkipped) {
         $reason -eq 'wt-title-ambiguous' -or
         $reason -eq 'wt-title-mismatch-pid-window-ambiguous' -or
         $reason -eq 'wt-title-mismatch-single-wt-window-ambiguous' -or
-        $reason -eq 'wt-title-mismatch-no-pid-window') {
+        $reason -eq 'wt-title-mismatch-no-pid-window' -or
+        $reason -eq 'orca-window-missing' -or
+        $reason -eq 'orca-window-ambiguous') {
         $reason = 'console-window-shim-skip'
     }
 }
