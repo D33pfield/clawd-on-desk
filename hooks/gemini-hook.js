@@ -3,7 +3,7 @@
 // Registered in ~/.gemini/settings.json by hooks/gemini-install.js
 
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 // Gemini hook event → { state, event } for the Clawd state machine
 const HOOK_MAP = {
@@ -109,6 +109,7 @@ function buildStateBody(hookName, payload, options = {}) {
   if (Array.isArray(pidMeta.pidChain) && pidMeta.pidChain.length) body.pid_chain = pidMeta.pidChain;
   if (pidMeta.tmuxSocket) body.tmux_socket = pidMeta.tmuxSocket;
   if (pidMeta.tmuxClient) body.tmux_client = pidMeta.tmuxClient;
+  applyOrcaPaneKey(body);
   return body;
 }
 

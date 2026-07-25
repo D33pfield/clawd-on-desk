@@ -5,7 +5,7 @@
 // session_id, cwd, tool_name, etc.
 
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 const { processNames: kimiProcessNames } = require("../agents/kimi-cli");
 const fs = require("fs");
 const path = require("path");
@@ -503,6 +503,7 @@ function buildStateBody(event, payload, resolve) {
     if (pidChain.length) body.pid_chain = pidChain;
     if (tmuxSocket) body.tmux_socket = tmuxSocket;
     if (tmuxClient) body.tmux_client = tmuxClient;
+    applyOrcaPaneKey(body);
   }
 
   return body;

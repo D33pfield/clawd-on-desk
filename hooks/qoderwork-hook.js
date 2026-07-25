@@ -10,7 +10,7 @@
 
 const crypto = require("crypto");
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;
@@ -134,6 +134,7 @@ function applyLocalProcessFields(body, pidMeta) {
   if (Array.isArray(pidMeta.pidChain) && pidMeta.pidChain.length) body.pid_chain = pidMeta.pidChain;
   if (pidMeta.tmuxSocket) body.tmux_socket = pidMeta.tmuxSocket;
   if (pidMeta.tmuxClient) body.tmux_client = pidMeta.tmuxClient;
+  applyOrcaPaneKey(body);
 }
 
 const TOOL_METADATA_EVENTS = new Set([

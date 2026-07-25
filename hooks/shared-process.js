@@ -67,6 +67,37 @@ function tmuxSocketFromEnv() {
   return normalizeTmuxSocketPath(process.env.TMUX.split(",")[0]);
 }
 
+function normalizeOrcaPaneKey(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > 256) return null;
+  return /^[\w-]+:[\w-]+$/.test(text) ? text : null;
+}
+
+// Orca runs every terminal under a detached daemon process, so no ancestor of
+// the agent identifies the IDE and no window title carries the cwd — the whole
+// process-tree strategy in src/focus.js cannot see it. ORCA_PANE_KEY is
+// "<tabId>:<leafId>" and survives Orca runtime restarts; ORCA_TERMINAL_HANDLE
+// does not (`orca terminal switch` rejects it with terminal_handle_stale), so
+// the pane key is the only durable identifier worth shipping. Requiring
+// TERM_PROGRAM too keeps an inherited pane key from claiming a nested shell.
+function orcaPaneKeyFromEnv(env = process.env) {
+  if (!env || env.TERM_PROGRAM !== "Orca") return null;
+  return normalizeOrcaPaneKey(env.ORCA_PANE_KEY);
+}
+
+// Deliberately NOT part of the resolver result: the #674 red line freezes the
+// no-arg resolve() shape, and this value owes nothing to the process walk
+// anyway. Reading it per body instead also means it survives a cache hit or a
+// failed snapshot, both of which return a walk-derived object with no room for
+// it. `env` is injectable so a body-shape assertion stays hermetic instead of
+// depending on whether the suite happens to be running inside Orca.
+function applyOrcaPaneKey(body, env = process.env) {
+  const orcaPaneKey = orcaPaneKeyFromEnv(env);
+  if (orcaPaneKey) body.orca_pane_key = orcaPaneKey;
+  return body;
+}
+
 // Liveness probe with ZERO subprocess spawn: process.kill(pid, 0) is a syscall,
 // not a spawn (so it never risks the WindowsTerminal console flash this whole
 // change exists to avoid). ESRCH => process gone; EPERM => alive but not ours.
@@ -1016,6 +1047,8 @@ module.exports = {
   DEFAULT_STDIN_READ_TIMEOUT_MS,
   buildElectronLaunchConfig,
   tmuxSocketFromEnv,
+  orcaPaneKeyFromEnv,
+  applyOrcaPaneKey,
   processAlive,
   WINDOWS_TERMINAL_WINDOW_CLASS,
   WINDOWS_TERMINAL_PROCESS_NAMES,

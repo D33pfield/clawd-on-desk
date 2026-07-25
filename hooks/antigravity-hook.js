@@ -6,7 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { postPermissionToRunningServer, postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 const { stdoutForAntigravityEvent } = require("./antigravity-stdout");
 
 const ANTIGRAVITY_PERMISSION_TIMEOUT_MS = 590000;
@@ -273,6 +273,7 @@ function buildStateBody(hookName, payload, options = {}) {
   if (Array.isArray(pidMeta.pidChain) && pidMeta.pidChain.length) body.pid_chain = pidMeta.pidChain;
   if (pidMeta.tmuxSocket) body.tmux_socket = pidMeta.tmuxSocket;
   if (pidMeta.tmuxClient) body.tmux_client = pidMeta.tmuxClient;
+  applyOrcaPaneKey(body, options.env);
   return body;
 }
 
@@ -312,6 +313,7 @@ function buildPermissionBody(hookName, payload, options = {}) {
   if (Array.isArray(pidMeta.pidChain) && pidMeta.pidChain.length) body.pid_chain = pidMeta.pidChain;
   if (pidMeta.tmuxSocket) body.tmux_socket = pidMeta.tmuxSocket;
   if (pidMeta.tmuxClient) body.tmux_client = pidMeta.tmuxClient;
+  applyOrcaPaneKey(body, options.env);
   return body;
 }
 

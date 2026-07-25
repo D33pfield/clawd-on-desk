@@ -3,7 +3,7 @@
 // Registered in ~/.kiro/agents/clawd.json by hooks/kiro-install.js
 
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 // Kiro CLI hook event → { state, event } for the Clawd state machine
 const HOOK_MAP = {
@@ -52,6 +52,7 @@ readStdinJson()
       if (pidChain.length) body.pid_chain = pidChain;
       if (tmuxSocket) body.tmux_socket = tmuxSocket;
       if (tmuxClient) body.tmux_client = tmuxClient;
+      applyOrcaPaneKey(body);
     }
 
     postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => {

@@ -77,6 +77,7 @@ function update(api, o = {}) {
       cwd: o.cwd || "/tmp",
       editor: o.editor || null,
       pidChain: o.pidChain || null,
+      orcaPaneKey: o.orcaPaneKey ?? null,
       agentPid: o.agentPid ?? null,
       agentId: o.agentId || "claude-code",
       profileId: o.profileId,
@@ -1300,6 +1301,31 @@ describe("updateSession()", () => {
     assert.strictEqual(session.wtHwnd, "123456");
     const entry = api.getLastSessionSnapshot().sessions.find((item) => item.id === "s1");
     assert.strictEqual(entry.wtHwnd, "123456");
+  });
+
+  it("keeps the Orca pane key sticky across later events that omit it", () => {
+    // Orca only ships the pane key on events whose hook could read the env; a
+    // later event without it must not blank the key or focus loses the pane.
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "UserPromptSubmit",
+      sourcePid: 100,
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    update(api, { id: "s1", state: "working", event: "PreToolUse", sourcePid: 100 });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "PreToolUse",
+      sourcePid: 100,
+      orcaPaneKey: "tab-2:leaf-2",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-2:leaf-2");
   });
 
   it("keeps Ghostty terminal id sticky and allows focus-only metadata updates", () => {

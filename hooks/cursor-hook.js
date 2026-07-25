@@ -3,7 +3,7 @@
 // Registered in ~/.cursor/hooks.json by hooks/cursor-install.js
 
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 const HOOK_TO_STATE = {
   sessionStart: { state: "idle", event: "SessionStart" },
@@ -122,6 +122,7 @@ readStdinJson()
       if (pidChain.length) body.pid_chain = pidChain;
       if (tmuxSocket) body.tmux_socket = tmuxSocket;
       if (tmuxClient) body.tmux_client = tmuxClient;
+      applyOrcaPaneKey(body);
     }
 
     // Answer Cursor immediately so it never sees empty/malformed stdout, but

@@ -125,6 +125,18 @@ function buildPayload(options = {}) {
     ? metadata.tmuxClient : null;
   if (tmuxClient) payload.tmux_client = tmuxClient;
 
+  // Unlike the fields above, this one is not resolver metadata — the extension
+  // runs in-process with the Pi CLI, so Orca's pane key is simply in the env.
+  // Validated locally rather than imported because this module ships standalone
+  // inside the Pi extension. `options.env` keeps payload assertions hermetic.
+  const env = options.env || process.env;
+  const rawPaneKey = env && env.TERM_PROGRAM === "Orca" ? env.ORCA_PANE_KEY : null;
+  const orcaPaneKey = typeof rawPaneKey === "string"
+    && rawPaneKey.length <= 256
+    && /^[\w-]+:[\w-]+$/.test(rawPaneKey)
+    ? rawPaneKey : null;
+  if (orcaPaneKey) payload.orca_pane_key = orcaPaneKey;
+
   if (metadata.editor === "code" || metadata.editor === "cursor") {
     payload.editor = metadata.editor;
   }

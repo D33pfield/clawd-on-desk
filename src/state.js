@@ -1340,6 +1340,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     pidChain = null,
     tmuxSocket = null,
     tmuxClient = null,
+    orcaPaneKey = null,
     agentPid = null,
     agentId = null,
     profileId = "local",
@@ -1412,7 +1413,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     const shouldPersistCodexPermissionFocus = permAgentId === "codex" && (
       sourcePid || wtHwnd || agentPid || (pidChain && pidChain.length) || cwd || host || wslDistro ||
       model || provider || codexOriginator || codexSource || platform || ghosttyTerminalId ||
-      tmuxSocket || tmuxClient
+      tmuxSocket || tmuxClient || orcaPaneKey
     );
     if (shouldPersistCodexPermissionFocus) {
       const existing = sessions.get(sessionId);
@@ -1424,6 +1425,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
       const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
       const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
+      const srcOrcaPaneKey = orcaPaneKey || (existing && existing.orcaPaneKey) || null;
       const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
       const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
       const srcHost = host || (existing && existing.host) || null;
@@ -1457,6 +1459,7 @@ function updateSession(sessionId, state, event, opts = {}) {
         pidChain: srcPidChain,
         tmuxSocket: srcTmuxSocket,
         tmuxClient: srcTmuxClient,
+        orcaPaneKey: srcOrcaPaneKey,
         agentPid: srcAgentPid,
         agentId: srcAgentId,
         profileId: (existing && existing.profileId) || profileId || "local",
@@ -1523,6 +1526,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
   const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
   const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
+  const srcOrcaPaneKey = orcaPaneKey || (existing && existing.orcaPaneKey) || null;
   const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
   const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
   const srcHost = host || (existing && existing.host) || null;
@@ -1666,7 +1670,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   // (contextUsage): a lifecycle event that carries it forward from
   // `existing` must not silently reset the freshness stamp.
   const srcMetadataUpdatedAt = existing && Number.isFinite(existing.metadataUpdatedAt) ? existing.metadataUpdatedAt : null;
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.
@@ -1955,6 +1959,7 @@ function restoreSessionFromLease(lease) {
     pidChain: null,
     tmuxSocket: null,
     tmuxClient: null,
+    orcaPaneKey: null,
     agentPid: pid,
     agentId,
     profileId: "local",

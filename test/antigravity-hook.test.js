@@ -73,6 +73,9 @@ describe("Antigravity hook script", () => {
         },
       },
     }, {
+      // Hermetic env: the body carries env-derived terminal fields, so a real
+      // one would leak the developer's own terminal into this exact-shape check.
+      env: {},
       pidMeta: {
         stablePid: 123.9,
         agentPid: 456,

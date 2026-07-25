@@ -1511,6 +1511,7 @@ function getPendingPermissionFocusEntry(sessionId) {
   if (entry.pidChain) focusEntry.pidChain = entry.pidChain;
   if (entry.tmuxSocket) focusEntry.tmuxSocket = entry.tmuxSocket;
   if (entry.tmuxClient) focusEntry.tmuxClient = entry.tmuxClient;
+  if (entry.orcaPaneKey) focusEntry.orcaPaneKey = entry.orcaPaneKey;
   if (entry.host) focusEntry.host = entry.host;
   if (entry.platform) focusEntry.platform = entry.platform;
   if (entry.model) focusEntry.model = entry.model;
@@ -1827,6 +1828,7 @@ function focusTerminalSession(session, sessionId, requestSource) {
     pidChain: session.pidChain,
     tmuxSocket: session.tmuxSocket,
     tmuxClient: session.tmuxClient,
+    orcaPaneKey: session.orcaPaneKey,
     ghosttyTerminalId: session.ghosttyTerminalId,
     sessionId: String(sessionId),
     agentId: session.agentId,

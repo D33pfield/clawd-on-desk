@@ -52,6 +52,9 @@ describe("pi-extension-core", () => {
         toolCallId: "tool-1",
       },
       ctx: makeCtx(),
+      // Hermetic env: the payload picks up Orca's pane key from the environment,
+      // so a real one would leak the developer's own terminal into this check.
+      env: {},
       metadata: {
         cwd: "D:/work/project",
         sourcePid: 1234,
