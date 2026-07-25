@@ -10,6 +10,10 @@ const RENDERER_SOURCE = fs.readFileSync(
   path.join(__dirname, "..", "src", "tutorial-renderer.js"),
   "utf8",
 );
+const TUTORIAL_HTML = fs.readFileSync(
+  path.join(__dirname, "..", "src", "tutorial.html"),
+  "utf8",
+);
 
 class FakeClassList {
   constructor(owner) {
@@ -203,6 +207,17 @@ async function loadAgentsState(agents) {
 }
 
 describe("tutorial agent icon renderer", () => {
+  it("uses a stable rounded frame for every agent icon", () => {
+    assert.match(
+      TUTORIAL_HTML,
+      /\.ag-avatar\s*\{[\s\S]*?flex:\s*0 0 30px;[\s\S]*?width:\s*30px;[\s\S]*?height:\s*30px;[\s\S]*?padding:\s*2px;[\s\S]*?border-radius:\s*8px;/,
+    );
+    assert.match(
+      TUTORIAL_HTML,
+      /\.ag-avatar-icon\s*\{[\s\S]*?width:\s*100%;[\s\S]*?height:\s*100%;[\s\S]*?border-radius:\s*6px;[\s\S]*?background:\s*var\(--surface\);/,
+    );
+  });
+
   it("renders official icons for active, install, and cleanup rows without initials", async () => {
     const harness = await loadAgentsState({
       active: [{ agentId: "claude-code", label: "Claude Code", iconUrl: "file:///claude.png" }],
