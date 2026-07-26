@@ -1296,6 +1296,40 @@ describe("pet-window-runtime", () => {
     assert.deepStrictEqual(harness.hitWin.calls, []);
   });
 
+  it("I5: recovering from suppressed hit geometry must not re-enable input while petHidden is separately true", () => {
+    // §6.3: "petHidden 时恢复几何不能擅自重新启用 hit input" -- degenerate
+    // geometry (a menu mini-entry preload stage, say) can recover to a valid
+    // rect while the pet is ALSO intentionally hidden for an unrelated
+    // reason; applyHitInputState()'s OR-composition must keep the window
+    // non-interactive either way.
+    // No theme is configured, so getHitRectScreen() falls back to the full
+    // window rect (getFullHitRect) -- a 5px-wide window is therefore
+    // directly degenerate (< HIT_MIN_PX), no hitBox override needed.
+    const renderWin = makeWindow({ x: 0, y: 0, width: 5, height: 100 });
+    const harness = createRuntime({ renderWin });
+
+    harness.runtime.setPetHidden(true);
+    assert.ok(
+      harness.hitWin.calls.some((c) => c[0] === "setIgnoreMouseEvents" && c[1] === true),
+      "hiding the pet must ignore hit input"
+    );
+
+    // Sync while ALSO degenerate -- petHidden already forces ignore=true, so
+    // this doesn't change the applied cache (no assertion needed here; it's
+    // the RECOVERY step below that exercises the invariant).
+    harness.runtime.syncHitWin();
+
+    // Recover to a valid-sized window while STILL petHidden.
+    renderWin.bounds = { x: 0, y: 0, width: 100, height: 100 };
+    harness.hitWin.calls.length = 0;
+    harness.runtime.syncHitWin();
+
+    assert.ok(
+      !harness.hitWin.calls.some((c) => c[0] === "setIgnoreMouseEvents" && c[1] === false),
+      "recovering valid geometry must not flip input back on while petHidden is still true"
+    );
+  });
+
   it("re-answers the editing overlap after each hit geometry sync (#640)", () => {
     const dodgeSyncs = [];
     const harness = createRuntime({ syncImeEditingPetDodge: () => dodgeSyncs.push(true) });
