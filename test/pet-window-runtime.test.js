@@ -1375,6 +1375,48 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     assert.equal(bounds.y, 0);
   });
 
+  // PR #751 Codex review #11 (rework batch B-6): resendViewportOffsets()
+  // consolidates did-finish-load's two separate sendToRenderer calls into
+  // one, but also narrows X's behavior — main.js used to unconditionally
+  // resend viewport-offset-x on every single reload, even when it was (as on
+  // Windows/macOS, always) 0. Y keeps the old unconditional-resend behavior
+  // since the renderer has no other way to learn the current value after a
+  // reload wipes its in-memory state.
+  it("resendViewportOffsets() always resends Y but never sends viewport-offset-x when X is 0 (Windows/macOS reload)", () => {
+    const harness = createRuntime({ isWin: true }); // offsetX is always 0 off Linux
+    harness.calls.length = 0; // construction itself sends nothing, but keep this test independent of that fact
+
+    harness.runtime.resendViewportOffsets();
+
+    const sends = harness.calls.filter((c) => c[0] === "sendToRenderer");
+    assert.deepEqual(
+      sends, [["sendToRenderer", "viewport-offset", 0]],
+      "Y must always be resent (even at 0); viewport-offset-x must not be sent at all when X is 0"
+    );
+  });
+
+  it("resendViewportOffsets() resends both Y and a genuine non-zero X (Linux edge-virtualization context)", () => {
+    const harness = create690Fixture();
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    assert.equal(harness.runtime.getViewportOffsetX(), 51, "sanity: the write's own Mutter clamp (1768 -> 1717) produces a genuine non-zero X offset");
+    harness.calls.length = 0; // isolate the resend call from the write's own initial sends
+
+    harness.runtime.resendViewportOffsets();
+
+    const sends = harness.calls.filter((c) => c[0] === "sendToRenderer");
+    assert.deepEqual(
+      sends,
+      [
+        ["sendToRenderer", "viewport-offset", 0],
+        ["sendToRenderer", "viewport-offset-x", 51],
+      ],
+      "both Y and the genuine non-zero X offset must be resent"
+    );
+  });
+
   // PR #751 Codex deep review — rework batch A. Each test below reproduces
   // the reviewer's own exact counter-example timeline; coordinator-verified
   // independently before assigning the fix.

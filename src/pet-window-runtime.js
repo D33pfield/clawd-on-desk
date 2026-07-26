@@ -391,6 +391,25 @@ function createPetWindowRuntime(options = {}) {
     return viewportOffsetX;
   }
 
+  // PR #751 Codex review #11 (rework batch B-6): consolidates
+  // did-finish-load's two separate sendToRenderer("viewport-offset"/"-x")
+  // calls into one. setViewportOffsetY/X() above both short-circuit when the
+  // new value equals the current one, so a reload landing after a value was
+  // already adopted (the common case) would otherwise never get an explicit
+  // resend — the renderer's in-memory state was just wiped by the reload and
+  // has no other way to learn the current value. Y is always resent
+  // unconditionally (old main.js behavior: it always sent Y, even at 0). X is
+  // only resent when non-zero: on Windows/macOS, and on Linux away from an
+  // outer edge, viewportOffsetX is always 0, so unconditionally resending it
+  // on every single reload would just be IPC noise the renderer never needs;
+  // genuine non-zero Linux edge-virtualization offsets still get resent.
+  function resendViewportOffsets() {
+    sendToRenderer("viewport-offset", viewportOffsetY);
+    if (viewportOffsetX !== 0) {
+      sendToRenderer("viewport-offset-x", viewportOffsetX);
+    }
+  }
+
   function logEdgeOnce(reason, detail) {
     if (loggedEdgeReasons.has(reason)) return;
     loggedEdgeReasons.add(reason);
@@ -2150,6 +2169,7 @@ function createPetWindowRuntime(options = {}) {
     setViewportOffsetY,
     getViewportOffsetX,
     setViewportOffsetX,
+    resendViewportOffsets,
     getVisibleContentMargins,
     looseClampPetToDisplays,
     clampToScreenVisual,

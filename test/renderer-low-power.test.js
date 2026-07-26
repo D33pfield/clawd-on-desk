@@ -1912,9 +1912,58 @@ describe("renderer viewport offset X (#690)", () => {
     assert.ok(preload.includes(
       'onViewportOffsetX: (cb) => ipcRenderer.on("viewport-offset-x", (_, offsetX) => cb(offsetX))'
     ));
-    assert.ok(main.includes('sendToRenderer("viewport-offset", petWindowRuntime.getViewportOffsetY());'));
-    assert.ok(main.includes('sendToRenderer("viewport-offset-x", petWindowRuntime.getViewportOffsetX());'));
+    // PR #751 Codex review #11 (rework batch B-6): main.js's did-finish-load
+    // used to send both offsets unconditionally via two separate
+    // sendToRenderer calls; it now delegates to a single runtime method,
+    // which is what actually decides whether X is worth sending at all (see
+    // the behavioral test below).
+    assert.ok(main.includes("petWindowRuntime.resendViewportOffsets();"));
     assert.ok(runtime.includes("getViewportOffsetX,"));
     assert.ok(runtime.includes("setViewportOffsetX,"));
+    assert.ok(runtime.includes("resendViewportOffsets,"));
+  });
+
+  // PR #751 Codex review #11 (rework batch B-6, non-blocking): the old
+  // version of the test above only checked that main.js's SOURCE TEXT
+  // contained two particular sendToRenderer call strings — it could not
+  // distinguish "always sends viewport-offset-x, even at 0" from "only sends
+  // it when non-zero", because it never actually ran the function. This
+  // constructs the real runtime (createPetWindowRuntime has a safe default
+  // for every option, so an empty/minimal options object is enough) and
+  // drives resendViewportOffsets() directly, proving the actual conditional
+  // behavior: a Windows/macOS-shaped reload (offsetX always 0) never
+  // receives viewport-offset-x at all, while a context with a genuine
+  // non-zero X offset (Linux edge-virtualization) does.
+  it("resendViewportOffsets() behaviorally sends Y unconditionally and X only when non-zero", () => {
+    const createPetWindowRuntime = require(path.join(__dirname, "..", "src", "pet-window-runtime.js"));
+    const sent = [];
+    const runtime = createPetWindowRuntime({
+      sendToRenderer: (...args) => sent.push(args),
+    });
+
+    // Windows/macOS reload shape: offsetX was never touched, stays at its
+    // cold-start default of 0.
+    runtime.resendViewportOffsets();
+    assert.deepStrictEqual(
+      sent, [["viewport-offset", 0]],
+      "a reload with X at 0 must resend Y but must NOT send viewport-offset-x at all"
+    );
+
+    // Linux edge-virtualization reload shape: a genuine non-zero X offset is
+    // already in effect (set directly here — legality/clamping is
+    // guardOffsetXLegalDomain's concern, not setViewportOffsetX's own, so
+    // this is a faithful way to put the runtime in that state without
+    // reconstructing a full Mutter-clamp scenario in this renderer-focused
+    // test file; see test/pet-window-runtime.test.js for that scenario).
+    sent.length = 0;
+    runtime.setViewportOffsetX(51);
+    sent.length = 0; // isolate the resend call from setViewportOffsetX's own initial send
+
+    runtime.resendViewportOffsets();
+    assert.deepStrictEqual(
+      sent,
+      [["viewport-offset", 0], ["viewport-offset-x", 51]],
+      "a reload with a genuine non-zero X offset must resend both"
+    );
   });
 });
