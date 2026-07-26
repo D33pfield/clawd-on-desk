@@ -967,4 +967,42 @@ describe("edge virtualization cross-module integration (#690 §6.7)", () => {
     );
     h.dispose();
   });
+
+  // C-5 (Codex B5): reproduces the coordinator's own scenario shape (a
+  // display-added event landing mid-peek must defer, and the peek's own
+  // exit must consume the deferred topology change) — using this harness's
+  // own numbers rather than assuming the coordinator's exact figures came
+  // from an identical fixture (see this batch's report for why: the
+  // coordinator's own "1791/2371" pair didn't reproduce with this fixture's
+  // calcMiniX inputs (MINI_OFFSET_RATIO=0.486, width=203), landing on
+  // 1816/2396 instead once actually run — verified empirically before
+  // finalizing these assertions, same discipline as every other test this
+  // batch).
+  it("C-5: a display-added event landing mid-peek defers instead of reflowing against the stale topology, and the peek's own exit consumes it", () => {
+    const h = createEdgeVirtualizationHarness({ getDisableMiniMode: () => true });
+    h.runtime.applyPetWindowBounds(
+      { x: 1000, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { force: true }
+    );
+    h.mini.enterMiniMode(ISSUE_690_WORK_AREA, false, "right"); // drag path
+    for (let i = 0; i < 40; i++) mock.timers.tick(100); // full entry settle
+    assert.equal(h.runtime.getPetWindowBounds().x, 1816, "sanity: settled in mini mode against the original 1920-wide workArea");
+
+    h.mini.miniPeekIn(); // a genuine ~200ms slide away from the resting position
+    assert.equal(h.mini.getIsAnimating(), true, "sanity: peek is a real, in-flight animation");
+    mock.timers.tick(50); // mid-peek, still animating
+
+    // A display is added, widening the workArea from 1920 to 2500 — landing
+    // WHILE the peek's own write is still in flight.
+    h.setTopology({ workArea: { x: 0, y: 0, width: 2500, height: 1080 } });
+    h.runtime.handleDisplayAdded();
+
+    mock.timers.tick(300); // past the peek's own 200ms — it settles and exits
+
+    assert.equal(
+      h.runtime.getPetWindowBounds().x, 2396,
+      "the peek's own exit must consume the deferred topology change and land against the NEW (2500-wide) workArea, not the stale 1920-wide one the peek itself started under"
+    );
+    h.dispose();
+  });
 });

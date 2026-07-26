@@ -314,13 +314,23 @@ function calcMiniX(wa, size) {
 // event landing during that 200ms window would mark reconcile dirty and
 // then sit unrequeued indefinitely, since animateWindowX's own internal
 // isAnimating=false doesn't itself trigger a re-check.
+//
+// PR #751 second-review C-5 (Codex B5): passes consumeTopologyForMiniRest
+// as the onConsumeTopology callback (was bare finalizeMiniProtectionExit,
+// which only clears pendingTopologyMaterialize without EVER acting on it —
+// see finalizeMiniProtectionExit()'s own comment). pet-window-runtime.js's
+// handleDisplayAdded/Removed/MetricsChanged now also defer during a peek
+// (isMiniAnimating() is part of their own defer condition, alongside
+// getMiniTransitioning()), so a topology change landing mid-peek sets
+// pendingTopologyMaterialize exactly like a full transition would — the
+// peek's own exit point must actually consume it, not just drop the flag.
 function miniPeekIn() {
   const offset = miniEdge === "left" ? PEEK_OFFSET : -PEEK_OFFSET;
-  animateWindowX(currentMiniX + offset, 200, finalizeMiniProtectionExit);
+  animateWindowX(currentMiniX + offset, 200, () => finalizeMiniProtectionExit(consumeTopologyForMiniRest));
 }
 
 function miniPeekOut() {
-  animateWindowX(currentMiniX, 200, finalizeMiniProtectionExit);
+  animateWindowX(currentMiniX, 200, () => finalizeMiniProtectionExit(consumeTopologyForMiniRest));
 }
 
 function getMiniStateFile(state) {

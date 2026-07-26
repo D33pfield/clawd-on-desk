@@ -2210,7 +2210,19 @@ function createPetWindowRuntime(options = {}) {
     // workArea/seam data once the transition settled. Hand it to mini.js
     // instead: it marks pendingTopologyMaterialize and consumes it exactly
     // once at whichever of its own three transition-end points comes next.
-    if (getMiniTransitioning()) {
+    //
+    // PR #751 second-review C-5 (Codex B5): also defer during a PEEK
+    // animation (isMiniAnimating(), true during miniPeekIn()/miniPeekOut()'s
+    // brief slide even though miniMode never leaves "fully mini" and
+    // getMiniTransitioning() stays false) — matching runReconcile()'s own
+    // protection-period condition exactly (dragLocked/miniTransitioning/
+    // isMiniAnimating/settingsSizePreviewSyncFrozen/isRoamAnimating), which
+    // already treats a peek as protected. Without this, a topology event
+    // mid-peek fell through to the getMiniMode() branch below and
+    // re-materialized against the OLD topology WHILE the peek's own
+    // in-flight write was still landing, fighting it — the exact class of
+    // bug 4.5-4 already fixed for full transitions, just not peeks.
+    if (getMiniTransitioning() || isMiniAnimating()) {
       notifyMiniTopologyChangedDuringTransition();
       return;
     }
@@ -2248,7 +2260,10 @@ function createPetWindowRuntime(options = {}) {
     // mini.js the same way: it marks pendingTopologyMaterialize and consumes
     // it exactly once at whichever of its own three transition-end points
     // comes next.
-    if (getMiniTransitioning()) {
+    //
+    // PR #751 second-review C-5 (Codex B5): also defer during a peek
+    // animation — see handleDisplayMetricsChanged()'s own comment above.
+    if (getMiniTransitioning() || isMiniAnimating()) {
       notifyMiniTopologyChangedDuringTransition();
       return;
     }
@@ -2277,7 +2292,10 @@ function createPetWindowRuntime(options = {}) {
       // hand-off as handleDisplayMetricsChanged()/handleDisplayRemoved()
       // above — this function's own transitioning check used to just skip
       // the mini branch entirely instead of deferring it.
-      if (getMiniTransitioning()) {
+      //
+      // PR #751 second-review C-5 (Codex B5): also defer during a peek
+      // animation — see handleDisplayMetricsChanged()'s own comment.
+      if (getMiniTransitioning() || isMiniAnimating()) {
         notifyMiniTopologyChangedDuringTransition();
       } else if (getMiniMode()) {
         handleMiniDisplayChange();
