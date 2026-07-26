@@ -186,6 +186,33 @@ function createEdgeVirtualizationHarness(overrides = {}) {
   // them at the fixed single-display default is a no-op for them.
   let displays = overrides.displays || ISSUE_690_DISPLAYS;
   let workArea = overrides.workArea || ISSUE_690_WORK_AREA;
+  // PR #751 Codex review #10 (rework batch B-5): mini.js and
+  // pet-window-runtime.js each hold their OWN separate reference to
+  // `screen`, so they need separate counters, not one shared one. mini.js's
+  // own resolveMiniTopology() call (src/mini.js ~line 75) was already capped
+  // at exactly 1/transition by Phase 3 (threaded through animCtx as
+  // edgeContext) — that is NOT what B-5 changes. What B-5 fixes is the
+  // RUNTIME's own internal enumeration
+  // (materializeVirtualBounds -> resolveHorizontalClampBounds ->
+  // findDisplayIdForPoint(), unconditional regardless of a provided
+  // edgeContext, plus syncHitWin()'s own clamp-bounds resolution), which
+  // used to run again on every single per-frame applyPetWindowBounds()/
+  // syncHitWin() call — invisible to the OLD mock-based mini.test.js
+  // assertion, since that mock's ctx.applyPetWindowBounds never touched the
+  // real runtime at all (Codex non-blocking finding). Tracking the two
+  // sources separately lets the test attribute each budget to the actual
+  // mechanism that owns it, instead of one combined number that can't tell
+  // an old-and-fine source from a newly-fixed one.
+  let runtimeGetAllDisplaysCallCount = 0;
+  let miniGetAllDisplaysCallCount = 0;
+  function countedRuntimeGetAllDisplays() {
+    runtimeGetAllDisplaysCallCount++;
+    return displays;
+  }
+  function countedMiniGetAllDisplays() {
+    miniGetAllDisplaysCallCount++;
+    return displays;
+  }
 
   const renderWin = overrides.renderWin || makeMutterClampedWindow({
     x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
@@ -194,7 +221,7 @@ function createEdgeVirtualizationHarness(overrides = {}) {
     x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
   });
 
-  const loader = loadMiniWithElectron({ getAllDisplays: () => displays });
+  const loader = loadMiniWithElectron({ getAllDisplays: () => countedMiniGetAllDisplays() });
 
   // Forward-referenced (assigned below) — function declarations are hoisted
   // and closures capture the binding, not a snapshot, so referencing
@@ -218,7 +245,7 @@ function createEdgeVirtualizationHarness(overrides = {}) {
 
   const runtime = createPetWindowRuntime({
     screen: {
-      getAllDisplays: () => displays,
+      getAllDisplays: () => countedRuntimeGetAllDisplays(),
       getCursorScreenPoint: () => cursor,
       getDisplayNearestPoint: () => displays[0],
       getPrimaryDisplay: () => displays[0],
@@ -356,6 +383,8 @@ function createEdgeVirtualizationHarness(overrides = {}) {
     dispose: () => { runtimeApi.dispose(); loader.restore(); },
     setCursor: (point) => { cursor = point; },
     getCheckMiniModeSnapCalls: () => checkMiniModeSnapCalls,
+    getRuntimeGetAllDisplaysCallCount: () => runtimeGetAllDisplaysCallCount,
+    getMiniGetAllDisplaysCallCount: () => miniGetAllDisplaysCallCount,
     // Batch 3 follow-up: lets a test change the effective topology mid-run,
     // to prove pendingTopologyMaterialize's eventual re-materialize actually
     // reflects the NEW displays/workArea rather than the one captured when
@@ -802,6 +831,60 @@ describe("edge virtualization cross-module integration (#690 §6.7)", () => {
       "reconcile must have actually classified the external move (rebase), not left it permanently deferred"
     );
     assert.notEqual(beforeX, 500, "sanity: this is a genuine change from wherever entry had left it");
+    h.dispose();
+  });
+
+  // PR #751 Codex review #10 (rework batch B-5, non-blocking): replaces
+  // test/mini.test.js's mock-based "screen.getAllDisplays() <= 1/2" budget
+  // assertions with a real-assembly version. Those mock-based tests only
+  // ever counted mini.js's OWN resolveMiniTopology() call (src/mini.js
+  // ~line 75, already capped at 1/transition since Phase 3) because their
+  // ctx.applyPetWindowBounds is a plain mock that never reaches the real
+  // pet-window-runtime.js machinery — so they could never have caught the
+  // actual bug Codex found: materializeVirtualBounds() ->
+  // resolveHorizontalClampBounds() -> findDisplayIdForPoint() is
+  // unconditional (runs regardless of whether a providedEdgeContext was
+  // threaded through), and syncHitWin() resolves its own clamp bounds too —
+  // both used to call the real screen.getAllDisplays() again on every
+  // single per-frame applyPetWindowBounds()/syncHitWin() call, all the way
+  // through an entire drag + mini-entry animation. This harness tracks
+  // mini.js's own screen and the runtime's own screen as two SEPARATE
+  // counters (see createEdgeVirtualizationHarness above) since they are two
+  // separate closures in production too — B-5's generation cache only
+  // touches the runtime's side.
+  it("B-5 (Codex #10): a full drag + mini-entry animation causes at most 1 real screen.getAllDisplays() call from the runtime's own internal enumeration, not one per frame", () => {
+    const h = createEdgeVirtualizationHarness();
+
+    runDrag(h, {
+      startBounds: { x: 1000, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      startCursor: { x: 100, y: 100 },
+      endCursor: { x: 840, y: 100 }, // +740 logical -> target 1740, past the 1738 snap threshold (same as task item 7a)
+    });
+    assert.equal(h.mini.getMiniMode(), true, "sanity: this drag must actually trigger mini mode");
+
+    // Full entry animation settle, same budget as task item 7a.
+    for (let i = 0; i < 40; i++) mock.timers.tick(100);
+
+    assert.ok(
+      h.getRuntimeGetAllDisplaysCallCount() <= 1,
+      `expected the runtime's OWN internal enumeration (findDisplayIdForPoint/resolveHorizontalClampBounds via every per-frame applyPetWindowBounds, plus syncHitWin() during the drag) to collapse to <=1 real screen.getAllDisplays() call across the whole drag + entry animation, got ${h.getRuntimeGetAllDisplaysCallCount()}`
+    );
+    // Not a B-5 claim (Phase 3 already achieved this) — included so this
+    // real-assembly test fully subsumes what the old mock-based mini.test.js
+    // assertion covered, instead of only replacing part of it. Bound is 2,
+    // not 1, here: unlike the old mock test (which called enterMiniMode()
+    // directly, in isolation), this test drives the real drag-end IPC, so
+    // it also exercises checkMiniModeSnap()'s OWN direct screen.getAllDisplays()
+    // call (src/mini.js:400, deciding WHICH display/edge to snap to) BEFORE
+    // it hands off to enterMiniMode() -> resolveMiniTopology()'s separate
+    // call (src/mini.js:75, resolving the transition's own topology) — two
+    // independent, legitimate, pre-existing call sites for two different
+    // concerns, same reasoning as the "via-menu" test's own <=2 bound above
+    // (crabwalk + mini handoff), not a regression.
+    assert.ok(
+      h.getMiniGetAllDisplaysCallCount() <= 2,
+      `expected mini.js's own call sites (checkMiniModeSnap's snap-decision + enterMiniMode's resolveMiniTopology, unrelated to B-5) to stay at <=2 calls for the whole transition, got ${h.getMiniGetAllDisplaysCallCount()}`
+    );
     h.dispose();
   });
 });

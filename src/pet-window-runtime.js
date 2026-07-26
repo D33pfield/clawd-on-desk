@@ -310,8 +310,36 @@ function createPetWindowRuntime(options = {}) {
     return getPrimaryWorkAreaSafe() || SYNTHETIC_WORK_AREA;
   }
 
+  // PR #751 Codex review #10 (rework batch B-5): generation-cached wrapper
+  // around screen.getAllDisplays(). Every internal caller here
+  // (resolveEdgeContextForBounds, findDisplayIdForPoint,
+  // getAttachedMiniWorkArea-equivalent lookups, etc.) used to trigger a
+  // fresh native enumeration on every call — including once per mini
+  // animation FRAME via materializeVirtualBounds() ->
+  // resolveHorizontalClampBounds() -> findDisplayIdForPoint(), which is
+  // unconditional (not gated by whether the caller already supplied an
+  // edgeContext) — so mini.js's Phase 3 "cache topology once per animation"
+  // optimization (threading a pre-resolved edgeContext through animCtx)
+  // never actually capped the true underlying enumeration count. The cache
+  // is invalidated (generation bump) only by a real topology change —
+  // handleDisplayAdded()/handleDisplayRemoved()/handleDisplayMetricsChanged()
+  // below — so it stays valid across an entire mini transition's frames,
+  // collapsing dozens of per-frame native calls down to at most one.
+  let displaysCacheGeneration = 0;
+  let cachedDisplays = null;
+  let cachedDisplaysGeneration = -1;
+
+  function invalidateDisplaysCache() {
+    displaysCacheGeneration += 1;
+  }
+
   function getAllDisplays() {
-    return typeof screen.getAllDisplays === "function" ? screen.getAllDisplays() : [];
+    if (cachedDisplaysGeneration === displaysCacheGeneration && cachedDisplays) {
+      return cachedDisplays;
+    }
+    cachedDisplays = typeof screen.getAllDisplays === "function" ? screen.getAllDisplays() : [];
+    cachedDisplaysGeneration = displaysCacheGeneration;
+    return cachedDisplays;
   }
 
   function getCursorScreenPoint() {
@@ -2024,6 +2052,7 @@ function createPetWindowRuntime(options = {}) {
   }
 
   function handleDisplayMetricsChanged() {
+    invalidateDisplaysCache();
     reapplyMacVisibility();
     const win = getRenderWindow();
     if (!isLiveWindow(win)) return;
@@ -2058,6 +2087,7 @@ function createPetWindowRuntime(options = {}) {
   }
 
   function handleDisplayRemoved() {
+    invalidateDisplaysCache();
     reapplyMacVisibility();
     const win = getRenderWindow();
     if (!isLiveWindow(win)) return;
@@ -2084,6 +2114,7 @@ function createPetWindowRuntime(options = {}) {
   }
 
   function handleDisplayAdded() {
+    invalidateDisplaysCache();
     reapplyMacVisibility();
     const win = getRenderWindow();
     if (isLiveWindow(win)) {

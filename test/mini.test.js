@@ -234,6 +234,17 @@ describe("mini mode entry timing", () => {
   });
 });
 
+// PR #751 Codex review #10 (rework batch B-5, non-blocking): every
+// getAllDisplaysCalls assertion in this describe block only ever counts
+// mini.js's OWN direct screen.getAllDisplays() call sites (resolveMiniTopology
+// / checkMiniModeSnap) — makeCtx()'s mock ctx.applyPetWindowBounds never
+// reaches the real pet-window-runtime.js, so it cannot see that runtime's OWN
+// internal enumeration (materializeVirtualBounds -> resolveHorizontalClampBounds
+// -> findDisplayIdForPoint(), plus syncHitWin()), which used to re-run on
+// every single per-frame write/drag-move regardless of these budgets. See
+// test/edge-virtualization.test.js's "B-5 (Codex #10): a full drag +
+// mini-entry animation..." test for the real-runtime-assembled version that
+// actually exercises (and, post-fix, bounds) that call count.
 describe("mini entry animation composite-only guardrails (#690 Phase 3 item 6)", () => {
   let loader;
 
