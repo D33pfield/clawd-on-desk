@@ -237,12 +237,39 @@ function createPetWindowRuntime(options = {}) {
   let writeGen = 0;
   let settleUntil = 0;
   let lastWriteAt = 0; // now() at the most recent applyPetWindowBounds() write — diagnostics only (sinceWriteMs)
-  // PR #751 Codex review #1 (rework batch A-1): true once a quiet-point
-  // reconcile has observed an actual/expected mismatch it could not explain
-  // as a clamp WHILE still inside this write's settle window (deferred, not
-  // adopted — see runReconcile()'s (b2)). Reset to false on every new write
-  // (a fresh generation has made no observations yet).
-  let sawUnexplainedMismatch = false;
+  // PR #751 Codex second-review C-1 (replaces rework batch A-1's
+  // sawUnexplainedMismatch, now retired — see below): true once a native
+  // move/resize event has actually arrived for THIS write generation.
+  // Codex's B1 counter-example broke sawUnexplainedMismatch's proxy
+  // ("a quiet point saw an unexplainable mismatch" standing in for "an event
+  // happened"): a burst of CONSECUTIVE external-move events, each landing
+  // and resetting scheduleReconcile()'s quiet timer before the previous one
+  // could ever fire, means quiet-point classification never runs at all
+  // during the burst — sawUnexplainedMismatch stays false even though real
+  // events kept happening — so when the settle sweep (armed independently at
+  // write time, on its own SETTLE_MS timer that a quiet-point restart cannot
+  // touch) finally fires first, (b3) misread "no quiet point ever flagged
+  // this" as "nothing ever moved" and blind-adopted a genuine external move.
+  // nativeEventSeenThisGen tracks the true fact directly instead of via that
+  // proxy: set unconditionally by onNativeGeometryEvent() (regardless of
+  // protection-period state — see that function's own comment), cleared by
+  // applyPetWindowBounds() on every fresh write (a new generation has seen
+  // no events yet).
+  //
+  // Self-writeback echo safety: our OWN win.setBounds() call inside
+  // applyPetWindowBounds() also generates a native move event later (real
+  // BrowserWindow geometry events are asynchronous), which sets this bit
+  // too — but that is safe. This bit is only ever CONSULTED in (b3), and
+  // (b3) is only reached after (a) sameRect and (b1) clamp-explainable have
+  // already been ruled out for the CURRENT actual/expected pair. A pure
+  // self-writeback echo, by construction, makes actual match expected
+  // (sameRect, branch (a)) or match a clamp of it (branch (b1)) — it can
+  // never be the thing that reaches (b3) still unexplained. So the bit being
+  // "contaminated" by our own echo never changes which action (b3) takes:
+  // the only cell it affects is "unexplainable mismatch, classified by a
+  // sweep" — and in that cell, having a real event on record is exactly the
+  // condition under which rebase (follow the user) is correct.
+  let nativeEventSeenThisGen = false;
   const loggedEdgeReasons = new Set();
 
   // §4.3.9-13 render-side deferred reconcile state.
@@ -709,7 +736,15 @@ function createPetWindowRuntime(options = {}) {
   // §4.3.9: move/resize callbacks carry no geometry and must not read/write
   // anything themselves — their only job is to (re)schedule the debounced
   // quiet-point check. Shared by render move and resize alike.
+  //
+  // PR #751 second-review C-1: also records that a real event happened for
+  // THIS generation, unconditionally — deliberately NOT gated on protection
+  // state (dragLocked/mini/settings-preview/roam), so a burst of events
+  // arriving entirely inside a still-protected window (or entirely between
+  // two quiet-timer resets, never once reaching a quiet point) still leaves
+  // true evidence behind for whatever reconcile pass eventually runs.
   function onNativeGeometryEvent() {
+    nativeEventSeenThisGen = true;
     scheduleReconcile();
   }
 
@@ -752,20 +787,27 @@ function createPetWindowRuntime(options = {}) {
   // entirely at a debounced quiet point — never inside a native event
   // callback (this function's own callers are always a setTimeout body).
   //
-  // PR #751 Codex review #1/#2/#4a (rework batch A): classification order —
+  // PR #751 Codex review #1/#2/#4a (rework batch A) + second-review C-1:
+  // classification order —
   //   (a) sameRect -> accept (unchanged)
   //   (b1) clamp-explainable -> always adopt, regardless of time (unchanged)
   //   (b2) NOT explainable but still inside THIS write's own settle window ->
-  //        DEFER (Codex #1): don't touch expected/offset/logical, just note
-  //        an unexplained mismatch happened and re-check at the next quiet
-  //        point. Settle is bounded (SETTLE_MS), so this can't defer
-  //        forever — it eventually falls through to (b3)/(c).
+  //        DEFER (Codex #1): don't touch expected/offset/logical, just wait
+  //        and re-check at the next quiet point. Settle is bounded
+  //        (SETTLE_MS), so this can't defer forever — it eventually falls
+  //        through to (b3)/(c). (b2) itself needs no "did an event happen"
+  //        evidence: merely being called again with an unexplainable
+  //        mismatch inside settle IS the re-check succeeding.
   //   (b3) NOT explainable, and the settle sweep (or an inherited deferred-
-  //        sweep debt) is what's classifying -> rebase if an earlier quiet
-  //        point already independently saw this as unexplained
-  //        (sawUnexplainedMismatch: a real event happened), otherwise adopt
-  //        (the original "no-event" sweep fallback — §4.3.13 — nothing ever
-  //        positively indicated a real move, so blind-adopt is still safe).
+  //        sweep debt) is what's classifying -> rebase if a real native
+  //        event was ever seen for this generation (nativeEventSeenThisGen —
+  //        C-1, replacing A-1's sawUnexplainedMismatch proxy, which a burst
+  //        of consecutive events landing between quiet-point restarts could
+  //        leave permanently false even though real events kept happening —
+  //        see nativeEventSeenThisGen's own comment for Codex's B1
+  //        counter-example), otherwise adopt (the original "no-event" sweep
+  //        fallback — §4.3.13 — nothing ever positively indicated a real
+  //        move, so blind-adopt is still safe).
   //   (c) everything else -> rebase (unchanged)
   // (b1)/(b2)/(b3) are ALL gated on this write's own eligibility snapshot
   // (expectedWrite.xEligibleLeft || .xEligibleRight) — off that, only (a)
@@ -827,20 +869,22 @@ function createPetWindowRuntime(options = {}) {
     }
 
     // (b2) not explainable, but still inside THIS write's own settle window:
-    // defer instead of adopt (Codex #1).
+    // defer instead of adopt (Codex #1). No flag to set here — see C-1's
+    // nativeEventSeenThisGen comment for why the OLD sawUnexplainedMismatch
+    // (set on this exact line, pre-C-1) was the wrong signal for (b3) to
+    // consult.
     if (xEligible && now() < settleUntil) {
-      sawUnexplainedMismatch = true;
       scheduleReconcile();
       return;
     }
 
     // (b3) not explainable, and the settle sweep (or an inherited deferred-
-    // sweep debt) is classifying: rebase if an earlier quiet point already
-    // saw this exact mismatch as unexplained (a real event happened);
-    // otherwise adopt (nothing ever positively indicated a real move).
+    // sweep debt) is classifying: rebase if a real native event was ever
+    // seen for this generation (C-1: nativeEventSeenThisGen); otherwise
+    // adopt (nothing ever positively indicated a real move).
     if (xEligible && fromSettleSweep) {
-      if (sawUnexplainedMismatch) {
-        logReconcileEvent("render", expected, actual, "rebase", settleState, sinceWriteMs, "reason=defer-expired");
+      if (nativeEventSeenThisGen) {
+        logReconcileEvent("render", expected, actual, "rebase", settleState, sinceWriteMs, "reason=event-seen");
         applyPetWindowBounds({
           x: actual.x + viewportOffsetX,
           y: actual.y - viewportOffsetY,
@@ -996,7 +1040,7 @@ function createPetWindowRuntime(options = {}) {
       xEligibleLeft: m.clampBounds.leftBound !== null,
       xEligibleRight: m.clampBounds.rightBound !== null,
     };
-    sawUnexplainedMismatch = false; // A-1: fresh generation, no observations yet
+    nativeEventSeenThisGen = false; // C-1: fresh generation, no events observed yet
     settleUntil = now() + SETTLE_MS;
     lastWriteAt = now();
 

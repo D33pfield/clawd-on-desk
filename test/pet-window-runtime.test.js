@@ -877,6 +877,21 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     );
   });
 
+  // UPDATED by PR #751 second-review C-1 (a second, coordinator-unanticipated
+  // but mechanistically identical side effect discovered while implementing
+  // C-1 — not something the coordinator's own C-1 assignment named, found by
+  // running the full collateral suite after the core fix and tracing the
+  // failure by hand before touching this assertion; see this batch's report
+  // for how this was verified, same rigor as the R5-4 side effect above).
+  // This test's own PURPOSE — the generation guard (gen1's stale sweep must
+  // not corrupt gen2's bookkeeping) — is untouched by C-1 and still holds:
+  // gen1's sweep never fires as a separate timer at all (scheduleSettleSweep
+  // clears it on every write), which is unrelated to nativeEventSeenThisGen.
+  // What DID change is the FINAL classification gen2's own (correctly
+  // scoped) sweep reaches once it fires: the move event below is a genuine
+  // external move (same modeling as every other "renderWin.emit('move')" in
+  // this file), and C-1 correctly detects it as a real event instead of
+  // letting the sweep's timing win a race against ever seeing one.
   it("does not let a late sweep from an earlier write consume a newer write's settle window", () => {
     const clock = createFakeClock();
     const harness = create690Fixture({ clock });
@@ -891,7 +906,8 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     // reschedules the sweep timer, so gen1's sweep callback never actually
     // fires as a SEPARATE timer; the generation guard is what's under test
     // (gen1's stamped generation must not match writeGen by the time
-    // anything checks it).
+    // anything checks it). x=1700 is not near the 1717 Mutter clamp either,
+    // so this write's own offsetX starts at 0.
     harness.runtime.applyPetWindowBounds({
       x: 1700, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
     }, { force: true });
@@ -904,26 +920,27 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     clock.advance(360); // now at t=410
     const renderWin = harness.renderWin;
     renderWin.bounds = { x: 1600, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height };
-    renderWin.emit("move"); // schedules a quiet-point check due at t=510
-    // PR #751 rework batch A-5: corrected timeline comment — t=560 is PAST
-    // gen2's settle (t=450), not "still within" it as this comment used to
-    // claim. What actually classifies this mismatch is gen2's OWN
-    // settle-sweep (armed at t=50, due at t=450) firing BEFORE the t=510
-    // quiet-point check the move event just scheduled (450 < 510): no prior
-    // quiet-point observation ever flagged this mismatch as "seen and
-    // unexplained" (A-1's sawUnexplainedMismatch), so the sweep's own
-    // "reason=no-event" fallback adopts it. The later t=510 quiet check then
-    // finds actual already matching the just-adopted expected and no-ops.
+    renderWin.emit("move"); // C-1: sets nativeEventSeenThisGen=true for gen2, unconditionally; also schedules a quiet-point check due at t=510
+    // gen2's OWN settle-sweep (armed at t=50, due at t=450) fires BEFORE the
+    // t=510 quiet-point check the move event just scheduled (450 < 510), so
+    // it is what classifies this mismatch. deriveClampObservation() returns
+    // null (expected.x+width=1903 never reaches the 1920 workArea edge —
+    // not clamp-explainable), landing in (b3). Pre-C-1 (git history: this
+    // assertion used to read 1700, via the "reason=no-event" adopt
+    // fallback, since no quiet point had ever independently flagged this
+    // mismatch before the sweep grabbed it): the move event's own evidence
+    // was invisible to sawUnexplainedMismatch, so lastLogicalBounds stayed
+    // stuck at gen2's original 1700 despite a real move having happened.
+    // Post-C-1: nativeEventSeenThisGen is true (set by the move event
+    // above), so (b3) correctly rebases to actual(1600) + gen2's own
+    // offset(0) = 1600. The later t=510 quiet check then finds actual
+    // already matching the just-rebased expected and no-ops.
     clock.advance(150); // t=560
 
-    // The mismatch must be adopted (lastLogicalBounds preserved at gen2's
-    // 1700) via the sweep's no-event fallback, never rebased — which is what
-    // would happen if gen1's stale generation had wrongly been treated as
-    // still live, corrupting gen2's own bookkeeping.
     assert.equal(
       harness.runtime.getPetWindowBounds().x,
-      1700,
-      "gen2's settle window must not have been prematurely closed by gen1's stale sweep generation"
+      1600,
+      "gen2's settle window must not have been prematurely closed by gen1's stale sweep generation (the generation-guard property this test names), AND the real move event C-1 now sees must correctly rebase gen2's own sweep, not blind-adopt it"
     );
   });
 
@@ -1084,50 +1101,47 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     );
   });
 
-  // Issue #690 batch 2 archival (plan §4.3.11): this pins known edge-case
-  // behavior, semantics to be revisited with P1-4. It is NOT a fix — the
-  // implementation is unchanged from the test directly above; only the
-  // *sequencing* differs, and that sequencing difference genuinely changes
-  // the outcome.
+  // Issue #690 batch 2 archival (plan §4.3.11), UPDATED by PR #751
+  // second-review C-1 (coordinator-flagged expected side effect, verified
+  // empirically as instructed rather than assumed): this used to pin a
+  // KNOWN-WRONG edge case ("semantics to be revisited with P1-4"). C-1's
+  // nativeEventSeenThisGen fixes it as a side effect — same mechanism as
+  // C-1's own primary red test above, different specific timeline that
+  // happens to trip the identical flaw.
   //
-  // The test above deliberately keeps roam OFF until the write's own settle
-  // sweep has already resolved cleanly, so no debt survives into roam's
-  // protection period. This test instead has roam ALREADY active when the
-  // write's SETTLE_MS sweep comes due: runReconcile("settle-sweep", gen)
-  // hits the protection-period branch and records
+  // The test directly above deliberately keeps roam OFF until the write's
+  // own settle sweep has already resolved cleanly, so no debt survives into
+  // roam's protection period. This test instead has roam ALREADY active
+  // when the write's SETTLE_MS sweep comes due: runReconcile("settle-sweep",
+  // gen) hits the protection-period branch and records
   // `deferredSweepGen = writeGen` instead of just returning. If ZERO further
   // writes occur before release (no new applyPetWindowBounds() call ever
   // advances writeGen), that debt survives untouched all the way to
-  // releaseReconcileProtection() — batch 2's coordinator review independently
-  // confirmed this exact "zero new writes in between" precondition is what
-  // narrows the trigger window (a single intervening write invalidates the
-  // debt via the gen === writeGen check and this scenario no longer
-  // reproduces).
+  // releaseReconcileProtection().
   //
-  // When a genuinely external move then lands during that same still-
-  // protected window and gets picked up once release's debounced quiet-point
-  // reconcile finally runs, `fromSettleSweep` is true purely because of the
-  // surviving debt — NOT because this particular mismatch is clamp-
-  // explainable (deriveClampObservation() correctly returns null: an
+  // A genuinely external move then lands during that same still-protected
+  // window. onNativeGeometryEvent()'s renderWin.emit("move") sets
+  // nativeEventSeenThisGen = true UNCONDITIONALLY (not gated on protection
+  // state — see that function's own comment), and nothing resets it before
+  // release's debounced quiet-point reconcile finally runs (zero new writes
+  // means the generation never turns over). `fromSettleSweep` is true purely
+  // because of the surviving debt — NOT because this particular mismatch is
+  // clamp-explainable (deriveClampObservation() correctly returns null: an
   // 817px implied inset flunks its own `inset <= expected.width` sanity
-  // check). But the acceptance check is `fromSettleSweep || ... || clampObs
-  // !== null` — a bare OR — so the debt alone forces "adopt-clamp"
-  // regardless of what deriveClampObservation() concluded, misclassifying a
-  // real external move as though it were our own write settling.
+  // check) — so (b3) is reached, and nativeEventSeenThisGen (now true)
+  // correctly routes it to rebase instead of the old blind "no-event" adopt.
   //
-  // The visible symptom: adopt-clamp's recomputeOffsetsFrom() then computes
-  // an 868px "offset" (logical 1768 vs actual 900), which the separate I2
-  // legal-domain backstop rejects (|868| >= width 203) and resets to actual
-  // with the offset zeroed — landing at logical X=900. Had this been
-  // classified correctly as a rebase instead, the formula would have been
-  // `actual.x + the OLD offset (+51)` = 951, preserving the pre-move visual
-  // position. 900 vs 951 is a real ~51px discontinuity this edge case can
-  // produce, which is exactly why it's flagged for a P1-4 revisit rather
-  // than silently left alone — it just isn't this batch's to fix (§4.3.11's
-  // A/B branch is still pending real-machine data, and unpicking the bare OR
-  // above touches the same shared acceptance check every clamp classification
-  // depends on).
-  it("pins known edge-case behavior, semantics to be revisited with P1-4 (§4.3.11): a deferred settle-sweep debt surviving untouched into roam's release misclassifies a later external move as adopt-clamp instead of rebase", () => {
+  // Pre-C-1 (git history: this exact assertion used to read 900, not 951):
+  // adopt-clamp's recomputeOffsetsFrom() computed an 868px "offset" (logical
+  // 1768 vs actual 900), which the separate I2 legal-domain backstop
+  // rejected (|868| >= width 203) and reset to actual with offset zeroed —
+  // landing at logical X=900, silently discarding the pre-move +51 visual
+  // offset. Post-C-1: rebase's formula is `actual.x + the OLD offset (+51)`
+  // = 951, preserving the pre-move visual position exactly as every other
+  // "real external move" case in this file already does. Confirmed red
+  // (900) against the pre-C-1 code via git-show revert, green (951) after
+  // restore — see this batch's commit for the revert log.
+  it("a deferred settle-sweep debt surviving untouched into roam's release now correctly rebases a later external move (fixed as a side effect of C-1's event-evidence bit)", () => {
     let roaming = true; // roam protection is ALREADY active when the write lands
     const clock = createFakeClock();
     const harness = create690Fixture({ clock, isRoamAnimating: () => roaming });
@@ -1149,7 +1163,9 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
 
     // A genuinely external move (something else moved the render window)
     // arrives while STILL protected -- the protection check runs first, so
-    // this also just re-marks reconcileDirty and returns unclassified.
+    // this also just re-marks reconcileDirty and returns unclassified. C-1:
+    // onNativeGeometryEvent() still records nativeEventSeenThisGen=true here
+    // regardless, since that recording is unconditional.
     harness.renderWin.bounds = {
       x: 900, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
     };
@@ -1161,15 +1177,17 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     harness.runtime.releaseReconcileProtection();
     clock.advance(200); // past RECONCILE_QUIET_MS
 
-    // Pinned current actual behavior (not a correctness claim): the debt's
-    // fromSettleSweep short-circuits acceptance, adopt-clamp records the
-    // external move as if it were our own write, and the resulting
-    // out-of-range offset gets reset to actual with offset zeroed.
     assert.equal(
-      harness.runtime.getPetWindowBounds().x, 900,
-      "pins current behavior: external move during a surviving deferred-sweep debt lands at bare actual (900), not the rebase-preserving 951 (900 + the pre-move +51 offset)"
+      harness.runtime.getPetWindowBounds().x, 951,
+      "fixed: the debt's fromSettleSweep reaches (b3), and nativeEventSeenThisGen (set by the external move above, unconditionally) now correctly rebases to actual(900) + the pre-move offset(51), not bare actual(900)"
     );
-    assert.equal(harness.runtime.getViewportOffsetX(), 0, "pins current behavior: offset is zeroed by the I2 backstop, not preserved");
+    // Not a discriminating assertion (both branches land here, for different
+    // reasons): pre-fix, the I2 backstop explicitly zeroed it; post-fix, the
+    // rebase's fresh write at x=951 simply isn't near any clamp boundary
+    // either, so its own materialize naturally computes offsetX=0 — the
+    // whole point of "951" is that the OLD offset was folded into the new
+    // LOGICAL position instead of surviving as a separate offset value.
+    assert.equal(harness.runtime.getViewportOffsetX(), 0, "the pre-move +51 offset is folded into the new logical X (951), not carried forward as a separate offset value");
   });
 
   it("bounds hitWin.setBounds calls to at most 2 when the hit window is constantly clamped at a genuine edge, then adopts and records hitGeometryDrift", () => {
@@ -1594,6 +1612,88 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
       );
     });
   });
+});
+
+// PR #751 Codex second-review (batch C). Codex re-reviewed rework batch B's
+// own new code and found 5 further blocking issues plus 2 non-blocking ones,
+// concentrated in the reconcile machinery batch A/B had just reworked.
+describe("PR #751 second-review batch C: event-evidence bit, per-side clamp eligibility, hit snapshot atomicity, inset candidate lifecycle", () => {
+  // C-1 (Codex B1, P0): reproduces Codex's own counter-example almost
+  // exactly — a burst of external-move events, each landing well inside the
+  // PREVIOUS event's RECONCILE_QUIET_MS window, so scheduleReconcile()'s
+  // clearTimeout/reschedule means the quiet-point check never once actually
+  // runs during the whole burst. Meanwhile the write's own settle sweep is
+  // on a completely independent, unaffected timer (armed once at write
+  // time), so it fires first and is the ONLY thing that ever classifies this
+  // mismatch. Under A-1's retired sawUnexplainedMismatch (only ever set
+  // FROM WITHIN a quiet-point (b2) call), the flag stays false the entire
+  // time — even though 5 real events genuinely happened — misclassifying a
+  // real external move as "nothing happened, blind-adopt".
+  //
+  // Numbers chosen so the two branches cleanly diverge WITHOUT also
+  // incidentally tripping the separate I2 offset-out-of-range backstop in
+  // BOTH branches (which would still prove the fix but muddy the contrast
+  // with a second mechanism): original write x=1000 (single 690-fixture
+  // display, no Mutter clamp at x=1000, so offsetX starts at 0, not 51) —
+  // final actual x=850 is far enough from 1000 that deriveClampObservation
+  // can't explain it (expected.x+width=1203 never even reaches the 1920
+  // workArea edge), but the |logical - actual| delta (150) still stays
+  // under the I2 legal-domain width (203), so the adopt branch's own
+  // recomputeOffsetsFrom() takes its NORMAL (not out-of-range) path too —
+  // isolating the contrast to exactly the (b3) branch decision this fixes.
+  it("C-1: a burst of external-move events landing faster than the quiet debounce still gets rebased by the settle sweep, not blind-adopted as if nothing happened", () => {
+    const clock = createFakeClock();
+    const harness = create690Fixture({ clock });
+    wireNativeGeometryListeners(harness);
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1000, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    assert.equal(harness.runtime.getViewportOffsetX(), 0, "sanity: x=1000 is nowhere near the 1717 Mutter clamp, no initial offset");
+
+    // Codex's own timeline: t=20/100/180/260/340, each gap (80ms) shorter
+    // than RECONCILE_QUIET_MS(100), so every move cancels the previous
+    // event's not-yet-fired quiet timer before it can ever run.
+    const positions = [950, 920, 890, 870, 850];
+    const eventTimes = [20, 100, 180, 260, 340];
+    let clockAt = 0;
+    for (let i = 0; i < positions.length; i++) {
+      clock.advance(eventTimes[i] - clockAt);
+      clockAt = eventTimes[i];
+      harness.renderWin.bounds = {
+        x: positions[i], y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+      };
+      harness.renderWin.emit("move");
+    }
+    // Sanity: none of the 5 quiet timers ever got the chance to fire (each
+    // would have called runReconcile("native-quiet") and, pre-fix, this
+    // assertion would already be moot since sawUnexplainedMismatch would
+    // have been set by whichever one fired first — the burst's whole point
+    // is that none of them do).
+    assert.equal(harness.runtime.getPetWindowBounds().x, 1000, "sanity: no quiet point has fired yet, logical must still read the original write");
+
+    clock.advance(400 - clockAt); // t=400: the write's OWN settle sweep (armed at t=0) fires first
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x, 850,
+      "the settle sweep must rebase to the actual position a real event chain reported, not adopt-clamp it as if nothing had happened"
+    );
+    assert.equal(harness.runtime.getViewportOffsetX(), 0, "rebase's fresh write at x=850 (no clamp there either) resets offset to 0");
+  });
+
+  // Structural note (not a code change): runHitReconcile() has NO
+  // equivalent "blind sweep fallback" for C-1 to fix. Unlike the render
+  // side's scheduleSettleSweep() (an unconditional timer armed once at
+  // WRITE time, independent of whether any native event ever arrives),
+  // the hit side has no settle-sweep timer at all — runHitReconcile() is
+  // reached exclusively via scheduleHitReconcile(), which is exclusively
+  // called from onHitNativeGeometryEvent(), which only ever fires in
+  // direct response to a real native hit-window move/resize event. There is
+  // no code path where runHitReconcile() executes without a native event
+  // having triggered it in the first place, so there is no "was there an
+  // event, or did a blind timer fire instead" ambiguity for a bit like
+  // nativeEventSeenThisGen to resolve — the mere fact it is running already
+  // IS the event. (Verified by grep: no hitSweepGen/hitSettleSweep-style
+  // state exists anywhere in this file.)
 });
 
 describe("pet-window-runtime", () => {
