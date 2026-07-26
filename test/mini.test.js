@@ -70,6 +70,21 @@ function makeCtx(theme, stateLog, initialX = 160) {
     SIZES: { m: { width: 120, height: 120 } },
     getCurrentPixelSize() { return { width: 120, height: 120 }; },
     getPetWindowBounds() { return { ...bounds }; },
+    // Issue #690 Phase 3: mini.js's per-frame/placement writes now go through
+    // this instead of raw ctx.win.setBounds()/setPosition(). This harness has
+    // no Linux/Mutter clamp model (none of these tests set isLinux or mock a
+    // WM clamp — that cross-module scenario lives in
+    // test/edge-virtualization.test.js), so physical always equals logical
+    // here: write straight into the same `bounds` closure win.getBounds()/
+    // getBoundsSnapshot() read, exactly reproducing the old setBounds()
+    // behaviour byte-for-byte for every existing assertion.
+    applyPetWindowBounds(next) {
+      bounds.x = next.x;
+      bounds.y = next.y;
+      bounds.width = next.width;
+      bounds.height = next.height;
+      return { ...bounds };
+    },
     getAnimationAssetCycleMs(file) {
       if (file && file.includes("mini-enter")) return 1000;
       return null;
