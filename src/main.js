@@ -3931,15 +3931,32 @@ function createWindow() {
     if (displayMetricsGeometryTimer) clearTimeout(displayMetricsGeometryTimer);
     displayMetricsGeometryTimer = setTimeout(() => {
       displayMetricsGeometryTimer = null;
-      // §4.3.14: observedClampInset is only valid until the topology it was
-      // learned against changes. Clearing the whole table here is a safe
-      // superset of "clear the affected display's entries" — Electron
-      // doesn't cheaply say WHICH display changed from this event alone.
-      petWindowRuntime.clearObservedClampInsets();
       petWindowRuntime.handleDisplayMetricsChanged();
     }, 400);
   };
-  screen.on("display-metrics-changed", reapplyDisplayGeometryAfterMetricsChange);
+  // PR #751 second-review C-6 (Codex non-blocking): §4.3.14's
+  // observedClampInset is only valid until the topology it was learned
+  // against changes — clearing it (and invalidating the displays cache,
+  // B-5) used to wait for the SAME 400ms debounce as the geometry reflow
+  // above, so a burst of metrics events could keep re-arming the debounce
+  // and delay the clear indefinitely while stale insets kept getting used
+  // for clamp classification in the meantime. Both now run immediately, in
+  // the raw event callback, decoupled from the (still debounced, to avoid
+  // visible jitter) geometry reflow itself. Clearing the whole table here
+  // is a safe superset of "clear the affected display's entries" —
+  // Electron doesn't cheaply say WHICH display changed from this event
+  // alone.
+  screen.on("display-metrics-changed", () => {
+    petWindowRuntime.clearObservedClampInsets();
+    petWindowRuntime.invalidateDisplaysCache();
+    reapplyDisplayGeometryAfterMetricsChange();
+  });
+  // PR #751 second-review C-4 (Codex B4): display-removed/added now also
+  // clear the inset table (handleDisplayRemoved()/handleDisplayAdded()
+  // themselves do this now, as their own first lines alongside their
+  // existing invalidateDisplaysCache() call) — previously only
+  // metrics-changed did, leaving a stale inset alive across a monitor
+  // unplug/replug or a genuine topology addition.
   screen.on("display-removed", () => petWindowRuntime.handleDisplayRemoved());
   screen.on("display-added", () => petWindowRuntime.handleDisplayAdded());
 

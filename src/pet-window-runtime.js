@@ -288,7 +288,14 @@ function createPetWindowRuntime(options = {}) {
   // external move that happens to land on a workArea edge (a one-off event,
   // not a real WM-boundary fact) would otherwise permanently pollute the
   // learned inset from ONE observation. See maybeLearnInset() below.
-  let pendingInsetCandidate = null; // { displayId, edge, inset } | null
+  //
+  // PR #751 second-review C-4 (Codex B4): { displayId, edge, inset, writeGen,
+  // displaysGen } | null — writeGen and displaysGen (this file's own
+  // displaysCacheGeneration, PR #751 B-5) are stamped at candidate CREATION
+  // time. See maybeLearnInset() for how displaysGen gates confirmation
+  // (writeGen is recorded too, per the coordinator's spec, but deliberately
+  // NOT gated on — see that function's own comment for why).
+  let pendingInsetCandidate = null;
 
   // §4.3.11 hit-side reconcile state — deliberately separate from the render
   // fields above; hit has its own quiet period (HIT_QUIET_MS), its own
@@ -540,11 +547,44 @@ function createPetWindowRuntime(options = {}) {
   // not affect acceptance (adopt-clamp) at all — whether a mismatch is
   // EXPLAINED as a clamp and whether it's LEARNED FROM stay two separate
   // questions, exactly as before.
+  // PR #751 second-review C-4 (Codex B4): a pending candidate must also
+  // still be judged against the SAME display topology it was first observed
+  // under — displaysCacheGeneration (B-5) advances whenever
+  // handleDisplayAdded/Removed/MetricsChanged runs (all three now also
+  // clear this whole table — see those functions below), so a candidate
+  // whose stamped displaysGen no longer matches the CURRENT generation is
+  // stale: the same numeric inset re-appearing after a topology change is
+  // coincidence, not confirmation, and must not be treated as the second
+  // half of a genuine streak. A stale candidate is simply replaced by the
+  // new observation (as its own fresh, unconfirmed pending candidate) —
+  // same "overwrite, don't confirm" outcome as an ordinary non-matching
+  // candidate.
+  //
+  // writeGen is ALSO stamped on the candidate (per the coordinator's spec)
+  // but deliberately NOT gated on here: writeGen legitimately (and
+  // necessarily) advances between every candidate and the write that goes
+  // on to confirm it — they are, by construction, two separate
+  // applyPetWindowBounds() calls (see the "inset self-bootstrap" test).
+  // Gating confirmation on writeGen equality would reject every single
+  // confirmation, including the ordinary two-write bootstrap this whole
+  // mechanism exists to support — verified empirically before finalizing
+  // this decision (a literal "any writeGen advance is stale" reading was
+  // tried and it broke that existing, still-required-to-pass test). An
+  // intervening write that itself produces an unexplainable mismatch
+  // already clears pendingInsetCandidate directly (runReconcile()'s
+  // (b2)/(b3)-rebase/(c) branches below) — that is the actual "did
+  // something disruptive happen" signal for writes, kept separate from
+  // topology's own signal here.
   function maybeLearnInset(displayId, clampObs) {
     if (!clampObs || clampObs.axis !== "x" || displayId == null) return;
-    const candidate = { displayId, edge: clampObs.edge, inset: clampObs.inset };
+    const candidate = {
+      displayId, edge: clampObs.edge, inset: clampObs.inset,
+      writeGen, displaysGen: displaysCacheGeneration,
+    };
+    const stale = !!pendingInsetCandidate && pendingInsetCandidate.displaysGen !== displaysCacheGeneration;
     if (
-      pendingInsetCandidate
+      !stale
+      && pendingInsetCandidate
       && pendingInsetCandidate.displayId === candidate.displayId
       && pendingInsetCandidate.edge === candidate.edge
       && pendingInsetCandidate.inset === candidate.inset
@@ -873,7 +913,16 @@ function createPetWindowRuntime(options = {}) {
     // nativeEventSeenThisGen comment for why the OLD sawUnexplainedMismatch
     // (set on this exact line, pre-C-1) was the wrong signal for (b3) to
     // consult.
+    //
+    // PR #751 second-review C-4 (Codex B4): an unexplainable mismatch just
+    // appeared — the environment is no longer trusted enough to let an
+    // in-flight inset candidate ride through to confirmation on its next
+    // observation, even though this branch doesn't itself touch the
+    // observed-inset table. Clearing it here is a superset, not a
+    // discrimination — see maybeLearnInset()'s own comment for why this is
+    // kept separate from that function's displaysGen check.
     if (xEligible && now() < settleUntil) {
+      pendingInsetCandidate = null;
       scheduleReconcile();
       return;
     }
@@ -884,6 +933,7 @@ function createPetWindowRuntime(options = {}) {
     // adopt (nothing ever positively indicated a real move).
     if (xEligible && fromSettleSweep) {
       if (nativeEventSeenThisGen) {
+        pendingInsetCandidate = null; // C-4: same reasoning as (b2) above
         logReconcileEvent("render", expected, actual, "rebase", settleState, sinceWriteMs, "reason=event-seen");
         applyPetWindowBounds({
           x: actual.x + viewportOffsetX,
@@ -909,6 +959,7 @@ function createPetWindowRuntime(options = {}) {
     // offset; Y offset is a non-negative top-lift (physical - logical) so
     // logical follows physical MINUS the old offset. This is a historical
     // sign convention, not a typo, and must never be "unified".
+    pendingInsetCandidate = null; // C-4: same reasoning as (b2) above
     logReconcileEvent("render", expected, actual, "rebase", settleState, sinceWriteMs, null);
     applyPetWindowBounds({
       x: actual.x + viewportOffsetX,
@@ -2142,6 +2193,13 @@ function createPetWindowRuntime(options = {}) {
 
   function handleDisplayMetricsChanged() {
     invalidateDisplaysCache();
+    // PR #751 second-review C-4 (Codex B4): all three topology events now
+    // clear the observed-inset table + any pending candidate (previously
+    // only this one did — see main.js's own immediate, non-debounced call
+    // to this same method, added by C-6, which is what actually makes this
+    // fire promptly for metrics; this call is a self-contained backstop for
+    // any caller that invokes this function directly, e.g. tests).
+    clearObservedClampInsets();
     reapplyMacVisibility();
     const win = getRenderWindow();
     if (!isLiveWindow(win)) return;
@@ -2177,6 +2235,10 @@ function createPetWindowRuntime(options = {}) {
 
   function handleDisplayRemoved() {
     invalidateDisplaysCache();
+    // PR #751 second-review C-4 (Codex B4): see handleDisplayMetricsChanged()'s
+    // own comment above — display-removed used to leave the inset table
+    // untouched entirely, unlike metrics-changed.
+    clearObservedClampInsets();
     reapplyMacVisibility();
     const win = getRenderWindow();
     if (!isLiveWindow(win)) return;
@@ -2204,6 +2266,10 @@ function createPetWindowRuntime(options = {}) {
 
   function handleDisplayAdded() {
     invalidateDisplaysCache();
+    // PR #751 second-review C-4 (Codex B4): see handleDisplayMetricsChanged()'s
+    // own comment above — display-added used to leave the inset table
+    // untouched entirely, unlike metrics-changed.
+    clearObservedClampInsets();
     reapplyMacVisibility();
     const win = getRenderWindow();
     if (isLiveWindow(win)) {
@@ -2272,6 +2338,12 @@ function createPetWindowRuntime(options = {}) {
     releaseReconcileProtection,
     clearObservedClampInsets,
     getObservedClampInset,
+    // PR #751 second-review C-6: exposed so main.js's display-metrics-changed
+    // listener can invalidate the displays cache IMMEDIATELY, without
+    // waiting for handleDisplayMetricsChanged()'s own 400ms geometry-reflow
+    // debounce (that function still calls this itself too, redundantly but
+    // harmlessly, once it eventually fires).
+    invalidateDisplaysCache,
   };
 }
 

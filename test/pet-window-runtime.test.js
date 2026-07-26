@@ -1844,6 +1844,55 @@ describe("PR #751 second-review batch C: event-evidence bit, per-side clamp elig
       "the drifted actual must still be classified as clamp-explainable against the PRESERVED (1920-based) snapshot (one bounded-retry setBounds write), not silently unclassifiable against a wrongly-refreshed (1700-based) boundary (which would leave setBounds calls at 1, never retrying)"
     );
   });
+
+  // C-4 (Codex B4): reproduces the coordinator's own timeline. A candidate
+  // observed BEFORE a topology event must not be confirmed by a
+  // same-value observation appearing AFTER one — the topology having
+  // changed in between makes the repeat coincidental, not confirming.
+  // handleDisplayAdded() now clears pendingInsetCandidate directly (its own
+  // "cleanup point expansion" half of C-4) — this test exercises the
+  // end-to-end outcome through the real handler, which is what actually
+  // matters for the coordinator's own scenario, without needing to isolate
+  // exactly which of the two C-4 mechanisms (the direct clear, or
+  // maybeLearnInset()'s own displaysGen staleness check) is "responsible"
+  // in this particular call sequence — both exist and cooperate; see
+  // maybeLearnInset()'s own comment for a case where ONLY the gen check
+  // would matter (invalidateDisplaysCache() called without a full handler).
+  it("C-4: a pending inset candidate observed before a display-added event is not confirmed by the same value reappearing after it", () => {
+    const clock = createFakeClock();
+    const renderWin = makeInsetMutterClampedWindow(
+      { x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { rightInset: 40 }
+    );
+    const harness = create690Fixture({ renderWin, clock });
+    wireNativeGeometryListeners(harness);
+
+    // First observation: plants the pending candidate (not yet confirmed).
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    harness.renderWin.emit("move");
+    clock.advance(150);
+    assert.equal(harness.runtime.getObservedClampInset(1, "right"), 0, "sanity: a single observation alone must not learn (A-3)");
+
+    // A display is added -- a real topology event lands between the two
+    // observations.
+    harness.runtime.handleDisplayAdded();
+
+    // Second observation: numerically IDENTICAL to the first
+    // (displayId=1, edge=right, inset=40) -- the mock's own clamp behavior
+    // hasn't changed, only the topology-event history has.
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    }, { force: true });
+    harness.renderWin.emit("move");
+    clock.advance(150);
+
+    assert.equal(
+      harness.runtime.getObservedClampInset(1, "right"), 0,
+      "the same-value candidate reappearing after a display-added event must NOT be confirmed -- the streak was broken by the topology change, not genuinely consecutive"
+    );
+  });
 });
 
 describe("pet-window-runtime", () => {
