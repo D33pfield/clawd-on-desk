@@ -168,6 +168,14 @@ function createEdgeVirtualizationHarness(overrides = {}) {
   const edgeLogs = [];
   let checkMiniModeSnapCalls = 0;
   let cursor = { x: 100, y: 100 };
+  // Mutable topology (batch 3 follow-up: handleDisplayAdded/Removed's
+  // pendingTopologyMaterialize regressions need to change the effective
+  // displays/workArea mid-test to prove the eventual re-materialize actually
+  // uses NEW topology, not the one captured at entry). Every other test in
+  // this file only ever reads these through the closures below, so leaving
+  // them at the fixed single-display default is a no-op for them.
+  let displays = overrides.displays || ISSUE_690_DISPLAYS;
+  let workArea = overrides.workArea || ISSUE_690_WORK_AREA;
 
   const renderWin = overrides.renderWin || makeMutterClampedWindow({
     x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
@@ -176,7 +184,7 @@ function createEdgeVirtualizationHarness(overrides = {}) {
     x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
   });
 
-  const loader = loadMiniWithElectron({ getAllDisplays: () => ISSUE_690_DISPLAYS });
+  const loader = loadMiniWithElectron({ getAllDisplays: () => displays });
 
   // Forward-referenced (assigned below) — function declarations are hoisted
   // and closures capture the binding, not a snapshot, so referencing
@@ -200,10 +208,10 @@ function createEdgeVirtualizationHarness(overrides = {}) {
 
   const runtime = createPetWindowRuntime({
     screen: {
-      getAllDisplays: () => ISSUE_690_DISPLAYS,
+      getAllDisplays: () => displays,
       getCursorScreenPoint: () => cursor,
-      getDisplayNearestPoint: () => ISSUE_690_DISPLAYS[0],
-      getPrimaryDisplay: () => ISSUE_690_DISPLAYS[0],
+      getDisplayNearestPoint: () => displays[0],
+      getPrimaryDisplay: () => displays[0],
     },
     isWin: false,
     isMac: false,
@@ -227,8 +235,8 @@ function createEdgeVirtualizationHarness(overrides = {}) {
     getKeepSizeAcrossDisplays: () => false,
     getAllowEdgePinning: () => false,
     isProportionalMode: () => false,
-    getPrimaryWorkAreaSafe: () => ISSUE_690_WORK_AREA,
-    getNearestWorkArea: () => ISSUE_690_WORK_AREA,
+    getPrimaryWorkAreaSafe: () => workArea,
+    getNearestWorkArea: () => workArea,
     sendToRenderer: () => {},
     keepOutOfTaskbar: () => {},
     repositionSessionHud: () => {},
@@ -272,7 +280,7 @@ function createEdgeVirtualizationHarness(overrides = {}) {
     buildTrayMenu: () => {},
     syncHitWin: () => runtime.syncHitWin(),
     repositionBubbles: () => {},
-    getNearestWorkArea: () => ISSUE_690_WORK_AREA,
+    getNearestWorkArea: () => workArea,
     clampToScreenVisual: (x, y, w, h, opts) => runtime.clampToScreenVisual(x, y, w, h, opts),
     resolveDisplayState: () => "idle",
     getSvgOverride: () => null,
@@ -338,6 +346,14 @@ function createEdgeVirtualizationHarness(overrides = {}) {
     dispose: () => { runtimeApi.dispose(); loader.restore(); },
     setCursor: (point) => { cursor = point; },
     getCheckMiniModeSnapCalls: () => checkMiniModeSnapCalls,
+    // Batch 3 follow-up: lets a test change the effective topology mid-run,
+    // to prove pendingTopologyMaterialize's eventual re-materialize actually
+    // reflects the NEW displays/workArea rather than the one captured when
+    // mini's transition started.
+    setTopology: (next) => {
+      if (next.displays) displays = next.displays;
+      if (next.workArea) workArea = next.workArea;
+    },
   };
 }
 
@@ -613,6 +629,88 @@ describe("edge virtualization cross-module integration (#690 §6.7)", () => {
     assert.ok(
       !h.edgeLogs.some((line) => line.includes("edge-offset-out-of-range")),
       `the legal-domain backstop must not fire during the fly-off jump; got: ${JSON.stringify(h.edgeLogs)}`
+    );
+    h.dispose();
+  });
+
+  // Coordinator-directed scope expansion (batch 3 follow-up): handleDisplayAdded()/
+  // handleDisplayRemoved() had the exact same shape of gap
+  // handleDisplayMetricsChanged() had before this batch — silently dropping a
+  // topology change that lands mid-mini-transition instead of deferring it.
+  // Wired the same way: notifyMiniTopologyChangedDuringTransition() ->
+  // pendingTopologyMaterialize -> consumed exactly once at whichever of
+  // mini's own three transition-end points comes next.
+  it("handleDisplayAdded() during mini transitioning defers via pendingTopologyMaterialize and re-materializes against the NEW (wider) topology once settled", () => {
+    const h = createEdgeVirtualizationHarness();
+    h.runtime.applyPetWindowBounds(
+      { x: 1000, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { force: true }
+    );
+
+    h.mini.enterMiniMode(ISSUE_690_WORK_AREA, false, "right"); // drag path
+    assert.equal(h.mini.getMiniTransitioning(), true);
+
+    // Past the 100ms slide, still well inside the long settle (no mini-enter
+    // state file registered in this fixture, so it falls back to
+    // MINI_ENTER_FALLBACK_MS=3200).
+    mock.timers.tick(150);
+    assert.equal(h.mini.getMiniTransitioning(), true, "still mid-transition");
+    const beforeSettle = h.runtime.getPetWindowBounds().x;
+
+    // A display gets added mid-transition, widening the effective workArea.
+    const widerWorkArea = { x: 0, y: 0, width: 2400, height: 1080 };
+    h.setTopology({
+      displays: [{ id: 1, bounds: widerWorkArea, workArea: widerWorkArea }],
+      workArea: widerWorkArea,
+    });
+    h.runtime.handleDisplayAdded();
+
+    // Deferred, not dropped and not applied yet — still transitioning.
+    assert.equal(h.mini.getMiniTransitioning(), true, "must still be deferred, not consumed synchronously");
+
+    for (let i = 0; i < 40 && h.mini.getMiniTransitioning(); i++) mock.timers.tick(100);
+    assert.equal(h.mini.getMiniTransitioning(), false, "the settle timer must have fully completed");
+
+    // calcMiniX() against the NEW (wider) workArea: 2400 - round(203*(1-0.486)) = 2296.
+    assert.equal(
+      h.runtime.getPetWindowBounds().x, 2296,
+      "the deferred topology change must be consumed exactly once at settle, re-materializing against the NEW workArea"
+    );
+    assert.notEqual(beforeSettle, 2296, "sanity: the position actually changed once the deferred topology was consumed");
+    h.dispose();
+  });
+
+  it("handleDisplayRemoved() during mini transitioning defers via pendingTopologyMaterialize and re-materializes against the NEW (narrower) topology once settled, without exiting mini early", () => {
+    const widerWorkArea = { x: 0, y: 0, width: 2400, height: 1080 };
+    const h = createEdgeVirtualizationHarness({
+      displays: [{ id: 1, bounds: widerWorkArea, workArea: widerWorkArea }],
+      workArea: widerWorkArea,
+    });
+    h.runtime.applyPetWindowBounds(
+      { x: 1000, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { force: true }
+    );
+
+    h.mini.enterMiniMode(widerWorkArea, false, "right"); // drag path
+    assert.equal(h.mini.getMiniTransitioning(), true);
+    mock.timers.tick(150);
+    assert.equal(h.mini.getMiniTransitioning(), true, "still mid-transition");
+
+    // A display goes away mid-transition, narrowing the effective workArea
+    // back down to the standard single-display fixture.
+    h.setTopology({ displays: ISSUE_690_DISPLAYS, workArea: ISSUE_690_WORK_AREA });
+    h.runtime.handleDisplayRemoved();
+
+    assert.equal(h.mini.getMiniTransitioning(), true, "must still be deferred, not consumed synchronously");
+    assert.equal(h.mini.getMiniMode(), true, "handleDisplayRemoved()'s normal exitMiniMode() must not fire while transitioning");
+
+    for (let i = 0; i < 40 && h.mini.getMiniTransitioning(); i++) mock.timers.tick(100);
+    assert.equal(h.mini.getMiniTransitioning(), false, "the settle timer must have fully completed");
+
+    // calcMiniX() against the NEW (narrower) workArea: 1920 - round(203*(1-0.486)) = 1816.
+    assert.equal(
+      h.runtime.getPetWindowBounds().x, 1816,
+      "the deferred topology change must be consumed exactly once at settle, re-materializing against the NEW (narrower) workArea"
     );
     h.dispose();
   });

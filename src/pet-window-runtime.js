@@ -1866,7 +1866,16 @@ function createPetWindowRuntime(options = {}) {
     reapplyMacVisibility();
     const win = getRenderWindow();
     if (!isLiveWindow(win)) return;
-    if (getMiniTransitioning()) return;
+    // §4.5 point 4.5-4 (coordinator-directed follow-up, batch 3): the same
+    // gap handleDisplayMetricsChanged() had — a topology change landing
+    // mid-mini-transition used to be silently dropped here too. Hand it to
+    // mini.js the same way: it marks pendingTopologyMaterialize and consumes
+    // it exactly once at whichever of its own three transition-end points
+    // comes next.
+    if (getMiniTransitioning()) {
+      notifyMiniTopologyChangedDuringTransition();
+      return;
+    }
     if (getMiniMode()) {
       exitMiniMode();
       return;
@@ -1882,8 +1891,16 @@ function createPetWindowRuntime(options = {}) {
   function handleDisplayAdded() {
     reapplyMacVisibility();
     const win = getRenderWindow();
-    if (isLiveWindow(win) && !getMiniTransitioning() && getMiniMode()) {
-      handleMiniDisplayChange();
+    if (isLiveWindow(win)) {
+      // §4.5 point 4.5-4 (coordinator-directed follow-up, batch 3): same
+      // hand-off as handleDisplayMetricsChanged()/handleDisplayRemoved()
+      // above — this function's own transitioning check used to just skip
+      // the mini branch entirely instead of deferring it.
+      if (getMiniTransitioning()) {
+        notifyMiniTopologyChangedDuringTransition();
+      } else if (getMiniMode()) {
+        handleMiniDisplayChange();
+      }
     }
     repositionAnchoredSurfaces();
   }
