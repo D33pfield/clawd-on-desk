@@ -2362,6 +2362,17 @@ function createPetWindowRuntime(options = {}) {
     // debounce (that function still calls this itself too, redundantly but
     // harmlessly, once it eventually fires).
     invalidateDisplaysCache,
+    // PR #751 second-review C-7 (Codex non-blocking): test-only surface —
+    // no production caller needs this (runReconcile() is only ever invoked
+    // internally, from scheduleReconcile()/scheduleSettleSweep()'s own
+    // timers). Exposed specifically so a test can call it with an EXPLICIT,
+    // frozen `gen` argument that's deliberately stale relative to the
+    // CURRENT writeGen — proving the `gen === writeGen` generation guard
+    // itself rejects it, rather than only ever observing that rejection
+    // indirectly through a same-rect no-op (which passes regardless of
+    // whether the guard does anything at all — see the test this replaces
+    // for the finding that motivated this).
+    runReconcile,
   };
 }
 

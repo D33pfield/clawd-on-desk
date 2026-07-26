@@ -944,73 +944,67 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     );
   });
 
-  // PR #751 rework batch A-5: the test above only proves the generation
-  // guard works when the timer mechanism cancels gen1's stale sweep cleanly
-  // (scheduleSettleSweep() clears the previous timer on every write) — by
-  // its own admission, "there is no separate gen1 timer left to fire at
-  // all". This companion test instead captures gen1's ACTUAL sweep callback
-  // closure directly (bypassing clock.clearTimeout()'s `cancelled` flag
-  // entirely) and invokes it after gen2 has already written, proving
-  // runReconcile()'s own `gen === writeGen` check rejects a stale generation
-  // even in a hypothetical race where the callback fires anyway — defense in
-  // depth beyond "the timer never got the chance to fire".
-  it("rejects a stale sweep generation even if its captured callback is invoked directly, bypassing timer cancellation entirely", () => {
+  // PR #751 second-review C-7 (Codex non-blocking NB2): the ORIGINAL
+  // version of this test (git history) tried to prove the generation guard
+  // by capturing gen1's sweep closure via a spied setTimeout and invoking
+  // it after gen2 had already written — but scheduleSettleSweep()'s
+  // callback reads `sweepGen`, a variable SHARED across every scheduling
+  // call, not a value frozen into each individual closure, so the
+  // "stale" closure actually read gen2's OWN CURRENT sweepGen by the time
+  // it ran (trivially equal to writeGen) — what actually kept that test
+  // green was runReconcile()'s (a) sameRect() no-op, not the generation
+  // guard at all (documented as a finding in that test's own comment,
+  // rather than silently passing off a name that didn't match what was
+  // actually tested). This version instead calls the now-exposed
+  // runReconcile() DIRECTLY with an explicit, frozen `gen` argument that is
+  // genuinely stale relative to the CURRENT writeGen, with a genuine
+  // (non-sameRect) mismatch in play, so the ONLY thing that can be
+  // preventing an immediate rebase/adopt is the `gen === writeGen` check
+  // itself.
+  it("the settle-sweep generation guard rejects a stale generation, verified via a direct runReconcile() call with an explicit frozen gen", () => {
     const clock = createFakeClock();
-    const capturedFns = [];
-    const spyClock = {
-      now: clock.now,
-      setTimeout: (fn, delay) => {
-        capturedFns.push(fn);
-        return clock.setTimeout(fn, delay);
-      },
-      clearTimeout: clock.clearTimeout,
-    };
-    const harness = create690Fixture({ clock: spyClock });
+    const harness = create690Fixture({ clock });
     wireNativeGeometryListeners(harness);
 
-    // gen1 write at t=0 -- its own applyPetWindowBounds() call schedules
-    // exactly one setTimeout (scheduleSettleSweep(), no "move" event emitted
-    // yet to also schedule a quiet timer), so capturedFns[0] is unambiguously
-    // gen1's settle-sweep closure.
+    // gen1 write at t=0.
     harness.runtime.applyPetWindowBounds({
       x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
     });
-    const staleGen1SweepFn = capturedFns[0];
-    assert.equal(typeof staleGen1SweepFn, "function", "sanity: captured gen1's sweep closure");
-
     clock.advance(50);
-    // gen2 write -- cancels gen1's sweep via clearTimeoutFn (the fake clock
-    // marks it `cancelled`), but staleGen1SweepFn is a direct reference the
-    // spy already holds independent of that bookkeeping.
+    // gen2 write at t=50 (settle until t=450) -- writeGen is now 2; gen1's
+    // own stamped gen (1) is what "a stale generation" means below. x=1700
+    // is not near the 1717 Mutter clamp, so this write's own offsetX is 0.
     harness.runtime.applyPetWindowBounds({
       x: 1700, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
     }, { force: true });
 
-    // Fire the STALE closure directly -- simulates a race where the
-    // callback runs despite having been marked cancelled.
-    //
-    // Finding while writing this test (worth recording, not papering over):
-    // scheduleSettleSweep()'s callback reads `sweepGen` — a variable shared
-    // across every scheduling call, not a value frozen into each individual
-    // closure — so invoking a "stale" captured closure late does not
-    // actually pass a stale generation number into runReconcile(); it reads
-    // whatever `sweepGen` currently is (gen2's, by now), which trivially
-    // equals writeGen. What actually keeps this call harmless is
-    // runReconcile()'s OWN (a) sameRect(actual, expected) check: gen2's
-    // physical window already sits exactly where gen2's write left it, so
-    // this "stale" invocation is a same-rect no-op regardless of which
-    // generation it believes it's checking — not a generation-guard
-    // rejection. A genuinely stale cross-generation value (deferredSweepGen
-    // surviving a protection period across a newer write) is a materially
-    // different mechanism, already covered by the roam-protection tests
-    // above (batch 2's "marks reconcile dirty during roam animation and
-    // compensates once released").
-    staleGen1SweepFn();
+    clock.advance(50); // t=100, well within gen2's own settle window (until t=450)
+    // A genuine external move -- NOT clamp-explainable (expected.x+width=1903
+    // never reaches the raw 1920 workArea edge), so this is not a same-rect
+    // no-op and not adopt-clamp either; the only question is which of (b2)
+    // defer or (b3)/(c) rebase handles it.
+    harness.renderWin.bounds = { x: 1500, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height };
+    harness.renderWin.emit("move"); // also sets nativeEventSeenThisGen=true (C-1) -- deliberately, see below
+
+    // Direct call with gen=1 (gen1's own value) while writeGen is
+    // CURRENTLY 2 -- reason="settle-sweep" but gen !== writeGen, so
+    // fromSettleSweep must evaluate false. If the generation guard did
+    // NOT reject this (fromSettleSweep wrongly true), settleUntil would
+    // be reset to 0 BEFORE the (b2) check below even runs, skipping
+    // straight to (b3) -- and nativeEventSeenThisGen is true (the move
+    // above set it), so (b3) would IMMEDIATELY rebase to 1500 + gen2's own
+    // offset (0) = 1500, bypassing gen2's still-active settle window
+    // entirely. With the guard correctly rejecting it, fromSettleSweep
+    // stays false, settleUntil is untouched (still active until t=450),
+    // and xEligible && now()<settleUntil routes this to (b2) DEFER
+    // instead -- no state change at all.
+    harness.runtime.runReconcile("settle-sweep", 1);
 
     assert.equal(
       harness.runtime.getPetWindowBounds().x, 1700,
-      "the stale gen1 sweep callback firing directly must not corrupt gen2's state (a harmless same-rect no-op)"
+      "a stale-gen direct call must be deferred (b2), not treated as gen2's own authoritative sweep (b3) -- logical must stay at gen2's own 1700, not jump to 1500"
     );
+    assert.equal(harness.runtime.getViewportOffsetX(), 0, "sanity: gen2's own offset (0) must also be untouched by the rejected stale-gen call");
   });
 
   it("does not orphan the quiet timer when a settle sweep fires first", () => {
