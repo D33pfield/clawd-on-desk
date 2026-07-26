@@ -1694,6 +1694,62 @@ describe("PR #751 second-review batch C: event-evidence bit, per-side clamp elig
   // nativeEventSeenThisGen to resolve — the mere fact it is running already
   // IS the event. (Verified by grep: no hitSweepGen/hitSettleSweep-style
   // state exists anywhere in this file.)
+
+  // C-2 (Codex B2): reproduces Codex's own dual-display counter-example.
+  // Two displays [0,1000) and [1000,2000) side by side. A write at x=900
+  // width=100 has its right edge (1000) sitting EXACTLY on the internal
+  // seam — clampBounds.rightBound must be null there (an adjacent display
+  // continues past it, not an outer edge), while clampBounds.leftBound is
+  // non-null (x=0 IS the outer-left edge for this topology). An external
+  // move to actual x=880 is an 8-ish-percent leftward drift — genuinely
+  // unexplainable noise, not a real clamp, since the side it would have to
+  // be explained through (right) was never eligible.
+  //
+  // Pre-C-2: deriveClampObservation() fell back to the RAW workArea
+  // boundary (wa.x+wa.width=1000) whenever clampBounds.rightBound was null
+  // — the exact same numeric value an outer-edge clamp there WOULD have
+  // used, so the seam-side mismatch was indistinguishable from a genuine
+  // clamp and got adopted (inset=20, viewportOffsetX=20), silently
+  // swallowing a real external move into a fabricated "clamp".
+  // Post-C-2: a null bound on the side dx implicates returns null
+  // immediately — the mismatch falls through to (c)'s unconditional
+  // rebase, correctly following the external move instead.
+  it("C-2: a seam-side mismatch is no longer explained away via the OTHER side's boundary — per-side eligibility, not the old raw-workArea fallback", () => {
+    const clock = createFakeClock();
+    const renderWin = makeWindow({ x: 900, y: 100, width: 100, height: 100 });
+    const harness = createRuntime({
+      isWin: false,
+      isLinux: true,
+      renderWin,
+      clock,
+      displays: [
+        { id: 1, bounds: { x: 0, y: 0, width: 1000, height: 800 }, workArea: { x: 0, y: 0, width: 1000, height: 800 } },
+        { id: 2, bounds: { x: 1000, y: 0, width: 1000, height: 800 }, workArea: { x: 1000, y: 0, width: 1000, height: 800 } },
+      ],
+    });
+    wireNativeGeometryListeners(harness);
+
+    harness.runtime.applyPetWindowBounds({ x: 900, y: 100, width: 100, height: 100 });
+    assert.equal(harness.runtime.getViewportOffsetX(), 0, "sanity: x=900 isn't clamped by anything at write time (right edge sits exactly on the seam, not past any outer boundary)");
+
+    // Let the write's own settle sweep resolve first (actual still matches
+    // expected at this point — a clean no-op (a) classification), so the
+    // LATER external move below is classified by a plain quiet-point check,
+    // not entangled with settle-sweep timing (that's C-1's own concern, not
+    // C-2's).
+    clock.advance(500); // past SETTLE_MS(400)
+    assert.equal(harness.runtime.getPetWindowBounds().x, 900, "sanity: nothing moved yet");
+
+    renderWin.bounds = { x: 880, y: 100, width: 100, height: 100 };
+    renderWin.emit("move");
+    clock.advance(150); // past RECONCILE_QUIET_MS, settle already long expired -- lands in (c)
+
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x, 880,
+      "the seam-side mismatch must be rebased (logical follows the real external move), not adopted as a fabricated clamp"
+    );
+    assert.equal(harness.runtime.getViewportOffsetX(), 0, "a fresh rebase write at x=880 (not clamped by anything either) must not carry forward the old adopt-clamp's fabricated inset offset");
+  });
 });
 
 describe("pet-window-runtime", () => {

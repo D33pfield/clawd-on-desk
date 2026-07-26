@@ -944,9 +944,27 @@ function createPetWindowRuntime(options = {}) {
   // prediction time) with a STRICT inequality, so "expected sits exactly on
   // the boundary it was clamped to" reads as "genuinely overflowed", while a
   // position that only happens to be near an edge without ever being clamped
-  // still falls through to null. `clampBounds` is optional and Y is
-  // unaffected (Y is never inset-learned) — a caller that omits it falls
-  // back to the original raw-`wa` comparison.
+  // still falls through to null.
+  //
+  // PR #751 second-review C-2 (Codex B2): removed the old
+  // `?? (wa.x + wa.width)` / `?? wa.x` raw-workArea fallback for a null
+  // clampBounds side. That fallback was rework batch A-2's leftover from
+  // when clampBounds was an optional parameter some callers didn't have —
+  // both current callers now always pass their own write-time snapshot
+  // (expectedWrite.clampBounds / lastHitClampBounds), so a null bound is
+  // never "caller didn't supply one", it is the eligibility answer itself: a
+  // seam, off-Linux, or escape-hatch context where THAT side was never
+  // topologically able to clamp anything. Falling back to the raw workArea
+  // boundary there let a seam-side mismatch get misread as a genuine outer-
+  // edge clamp (Codex's own dual-display counter-example: [0,1000)/
+  // [1000,2000), snapshot left=eligible/right=null (an internal seam), a
+  // write at x=900 w=100 that then reads back at 880 — an 8px mismatch
+  // wholly explainable as noise, but only via the right side, which this
+  // write's own snapshot says was never eligible). dx<0 can only ever be
+  // explained by a RIGHT-side clamp; dx>0 only by a LEFT-side clamp — so
+  // each branch below checks only its own side's bound and returns null
+  // immediately if that side was never eligible, instead of silently
+  // reaching for the other axis' boundary value.
   function deriveClampObservation(actual, expected, wa, clampBounds) {
     if (!actual || !expected || !isValidWorkArea(wa)) return null;
     if (actual.width !== expected.width || actual.height !== expected.height) return null;
@@ -955,16 +973,14 @@ function createPetWindowRuntime(options = {}) {
     if ((dx !== 0) === (dy !== 0)) return null; // a clamp changes exactly one axis
     if (dx !== 0) {
       const edge = dx < 0 ? "right" : "left";
-      const effectiveRight = (clampBounds && Number.isFinite(clampBounds.rightBound))
-        ? clampBounds.rightBound
-        : (wa.x + wa.width);
-      const effectiveLeft = (clampBounds && Number.isFinite(clampBounds.leftBound))
-        ? clampBounds.leftBound
-        : wa.x;
+      const bound = edge === "right"
+        ? (clampBounds ? clampBounds.rightBound : null)
+        : (clampBounds ? clampBounds.leftBound : null);
+      if (!Number.isFinite(bound)) return null; // this side was never eligible to clamp anything
       // A clamp only ever pushes the window INWARD, so the original request
       // must genuinely have reached the boundary it was clamped against.
-      if (edge === "right" && expected.x + expected.width < effectiveRight) return null;
-      if (edge === "left" && expected.x > effectiveLeft) return null;
+      if (edge === "right" && expected.x + expected.width < bound) return null;
+      if (edge === "left" && expected.x > bound) return null;
       // The learned inset itself is always relative to the RAW workArea
       // (that's its definition: how far Mutter's real usable edge sits
       // inside Electron's reported one), never the already-adjusted boundary.
