@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Theme config push (for hot-switch; additionalArguments won't update on reload)
   onThemeConfig: (cb) => ipcRenderer.on("theme-config", (_, cfg) => cb(cfg)),
   onViewportOffset: (cb) => ipcRenderer.on("viewport-offset", (_, offsetY) => cb(offsetY)),
+  onViewportOffsetX: (cb) => ipcRenderer.on("viewport-offset-x", (_, offsetX) => cb(offsetX)),
   onPetTintChange: (cb) => ipcRenderer.on("pet-tint-change", (_, payload) => cb(payload)),
   onPetAccessoryChange: (cb) => ipcRenderer.on("pet-accessory-change", (_, payload) => cb(payload)),
   // State sync from main
