@@ -930,6 +930,94 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     );
   });
 
+  // Issue #690 batch 2 archival (plan §4.3.11): this pins known edge-case
+  // behavior, semantics to be revisited with P1-4. It is NOT a fix — the
+  // implementation is unchanged from the test directly above; only the
+  // *sequencing* differs, and that sequencing difference genuinely changes
+  // the outcome.
+  //
+  // The test above deliberately keeps roam OFF until the write's own settle
+  // sweep has already resolved cleanly, so no debt survives into roam's
+  // protection period. This test instead has roam ALREADY active when the
+  // write's SETTLE_MS sweep comes due: runReconcile("settle-sweep", gen)
+  // hits the protection-period branch and records
+  // `deferredSweepGen = writeGen` instead of just returning. If ZERO further
+  // writes occur before release (no new applyPetWindowBounds() call ever
+  // advances writeGen), that debt survives untouched all the way to
+  // releaseReconcileProtection() — batch 2's coordinator review independently
+  // confirmed this exact "zero new writes in between" precondition is what
+  // narrows the trigger window (a single intervening write invalidates the
+  // debt via the gen === writeGen check and this scenario no longer
+  // reproduces).
+  //
+  // When a genuinely external move then lands during that same still-
+  // protected window and gets picked up once release's debounced quiet-point
+  // reconcile finally runs, `fromSettleSweep` is true purely because of the
+  // surviving debt — NOT because this particular mismatch is clamp-
+  // explainable (deriveClampObservation() correctly returns null: an
+  // 817px implied inset flunks its own `inset <= expected.width` sanity
+  // check). But the acceptance check is `fromSettleSweep || ... || clampObs
+  // !== null` — a bare OR — so the debt alone forces "adopt-clamp"
+  // regardless of what deriveClampObservation() concluded, misclassifying a
+  // real external move as though it were our own write settling.
+  //
+  // The visible symptom: adopt-clamp's recomputeOffsetsFrom() then computes
+  // an 868px "offset" (logical 1768 vs actual 900), which the separate I2
+  // legal-domain backstop rejects (|868| >= width 203) and resets to actual
+  // with the offset zeroed — landing at logical X=900. Had this been
+  // classified correctly as a rebase instead, the formula would have been
+  // `actual.x + the OLD offset (+51)` = 951, preserving the pre-move visual
+  // position. 900 vs 951 is a real ~51px discontinuity this edge case can
+  // produce, which is exactly why it's flagged for a P1-4 revisit rather
+  // than silently left alone — it just isn't this batch's to fix (§4.3.11's
+  // A/B branch is still pending real-machine data, and unpicking the bare OR
+  // above touches the same shared acceptance check every clamp classification
+  // depends on).
+  it("pins known edge-case behavior, semantics to be revisited with P1-4 (§4.3.11): a deferred settle-sweep debt surviving untouched into roam's release misclassifies a later external move as adopt-clamp instead of rebase", () => {
+    let roaming = true; // roam protection is ALREADY active when the write lands
+    const clock = createFakeClock();
+    const harness = create690Fixture({ clock, isRoamAnimating: () => roaming });
+    wireNativeGeometryListeners(harness);
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    assert.equal(harness.runtime.getViewportOffsetX(), 51, "sanity: the usual 1768/1717 offset before anything moves");
+
+    // The write's own settle sweep (SETTLE_MS=400) becomes due WHILE roam is
+    // still protected -- the protection-period branch records
+    // deferredSweepGen = writeGen instead of returning outright.
+    clock.advance(400);
+    assert.equal(harness.runtime.getPetWindowBounds().x, 1768, "still protected: the sweep must not resolve yet");
+
+    // Zero new writes happen here -- writeGen must not advance, or the
+    // debt above would no longer match and this scenario would not occur.
+
+    // A genuinely external move (something else moved the render window)
+    // arrives while STILL protected -- the protection check runs first, so
+    // this also just re-marks reconcileDirty and returns unclassified.
+    harness.renderWin.bounds = {
+      x: 900, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    };
+    harness.renderWin.emit("move");
+    clock.advance(50);
+    assert.equal(harness.runtime.getPetWindowBounds().x, 1768, "still protected: the external move must not be classified yet");
+
+    roaming = false;
+    harness.runtime.releaseReconcileProtection();
+    clock.advance(200); // past RECONCILE_QUIET_MS
+
+    // Pinned current actual behavior (not a correctness claim): the debt's
+    // fromSettleSweep short-circuits acceptance, adopt-clamp records the
+    // external move as if it were our own write, and the resulting
+    // out-of-range offset gets reset to actual with offset zeroed.
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x, 900,
+      "pins current behavior: external move during a surviving deferred-sweep debt lands at bare actual (900), not the rebase-preserving 951 (900 + the pre-move +51 offset)"
+    );
+    assert.equal(harness.runtime.getViewportOffsetX(), 0, "pins current behavior: offset is zeroed by the I2 backstop, not preserved");
+  });
+
   it("bounds hitWin.setBounds calls to at most 2 when the hit window is constantly clamped at a genuine edge, then adopts and records hitGeometryDrift", () => {
     const clock = createFakeClock();
     const edgeLogs = [];
