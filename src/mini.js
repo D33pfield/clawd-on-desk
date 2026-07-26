@@ -315,18 +315,23 @@ function calcMiniX(wa, size) {
 // then sit unrequeued indefinitely, since animateWindowX's own internal
 // isAnimating=false doesn't itself trigger a re-check.
 //
-// PR #751 second-review C-5 (Codex B5): passes consumeTopologyForMiniRest
-// as the onConsumeTopology callback (was bare finalizeMiniProtectionExit,
-// which only clears pendingTopologyMaterialize without EVER acting on it —
-// see finalizeMiniProtectionExit()'s own comment). pet-window-runtime.js's
+// PR #751 second-review C-5 (Codex B5): passes a topology-consuming
+// callback as onConsumeTopology (was bare finalizeMiniProtectionExit, which
+// only clears pendingTopologyMaterialize without EVER acting on it — see
+// finalizeMiniProtectionExit()'s own comment). pet-window-runtime.js's
 // handleDisplayAdded/Removed/MetricsChanged now also defer during a peek
 // (isMiniAnimating() is part of their own defer condition, alongside
 // getMiniTransitioning()), so a topology change landing mid-peek sets
 // pendingTopologyMaterialize exactly like a full transition would — the
 // peek's own exit point must actually consume it, not just drop the flag.
+//
+// PR #751 second-review C-5b: miniPeekIn() specifically uses
+// consumeTopologyForMiniPeekIn() (not the plain consumeTopologyForMiniRest()
+// miniPeekOut() below still uses) — see that function's own comment for
+// why landing at the bare resting position would be wrong here.
 function miniPeekIn() {
   const offset = miniEdge === "left" ? PEEK_OFFSET : -PEEK_OFFSET;
-  animateWindowX(currentMiniX + offset, 200, () => finalizeMiniProtectionExit(consumeTopologyForMiniRest));
+  animateWindowX(currentMiniX + offset, 200, () => finalizeMiniProtectionExit(consumeTopologyForMiniPeekIn));
 }
 
 function miniPeekOut() {
@@ -357,6 +362,31 @@ function getMiniRestState() {
 // re-resolution is the correct target, not a bespoke duplicate of it.
 function consumeTopologyForMiniRest() {
   if (miniMode) handleDisplayChange();
+}
+
+// PR #751 second-review C-5b (coordinator refinement after C-5): a topology
+// change consumed at miniPeekIn()'s own exit must NOT land at the plain
+// resting position consumeTopologyForMiniRest() (handleDisplayChange()
+// alone) produces — that would silently un-peek, splitting the
+// isAnimating-driven "peeked" state from the actual on-screen position for
+// a full cycle (self-heals on the next peek/peek-out, but hit input and the
+// visual sprite sit PEEK_OFFSET px off from where they're supposed to be in
+// the meantime). Reuses miniPeekIn()'s own existing target expression
+// (currentMiniX + offset) verbatim — same offset sign/source as the peek-in
+// path itself, no new formula — applied AFTER handleDisplayChange() has
+// already recomputed currentMiniX (the resting X) against the NEW topology.
+// miniPeekOut()'s own exit deliberately keeps using consumeTopologyForMiniRest()
+// unchanged: landing at the resting position IS correct there (a peek-out
+// is already headed back to rest).
+function consumeTopologyForMiniPeekIn() {
+  handleDisplayChange();
+  if (!miniMode) return;
+  const offset = miniEdge === "left" ? PEEK_OFFSET : -PEEK_OFFSET;
+  ctx.applyPetWindowBounds(
+    { x: currentMiniX + offset, y: miniSnap.y, width: miniSnap.width, height: miniSnap.height },
+    { workArea: lastMiniWorkArea }
+  );
+  ctx.syncHitWin();
 }
 
 // PR #751 Codex review #8 (rework batch B-1, P0): the single convergence

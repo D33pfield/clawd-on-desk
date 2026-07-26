@@ -972,13 +972,22 @@ describe("edge virtualization cross-module integration (#690 §6.7)", () => {
   // display-added event landing mid-peek must defer, and the peek's own
   // exit must consume the deferred topology change) — using this harness's
   // own numbers rather than assuming the coordinator's exact figures came
-  // from an identical fixture (see this batch's report for why: the
-  // coordinator's own "1791/2371" pair didn't reproduce with this fixture's
-  // calcMiniX inputs (MINI_OFFSET_RATIO=0.486, width=203), landing on
-  // 1816/2396 instead once actually run — verified empirically before
-  // finalizing these assertions, same discipline as every other test this
-  // batch).
-  it("C-5: a display-added event landing mid-peek defers instead of reflowing against the stale topology, and the peek's own exit consumes it", () => {
+  // from an identical fixture (the coordinator's own "1791/2371" pair
+  // didn't reproduce with this fixture's calcMiniX inputs
+  // (MINI_OFFSET_RATIO=0.486, width=203) on the first attempt, landing on
+  // 1816/2396 instead — verified empirically before finalizing these
+  // assertions, same discipline as every other test this batch).
+  //
+  // PR #751 second-review C-5b (coordinator refinement after C-5): the
+  // FIRST version of this test asserted 2396 (the resting position) here —
+  // the coordinator's own follow-up ruling identified that as the actual
+  // bug, not a paraphrase error: 2371 IS the correct peeked-position target
+  // (2396 - PEEK_OFFSET(25)), and landing at the bare resting position
+  // instead silently un-peeks for a full cycle. This assertion is now 2371,
+  // matching the coordinator's ORIGINAL cited number exactly once
+  // miniPeekIn()'s own consumeTopologyForMiniPeekIn() (C-5b) is in effect —
+  // confirming the coordinator's diagnosis was precise.
+  it("C-5/C-5b: a display-added event landing mid-peekIn defers instead of reflowing against the stale topology, and the peek's own exit consumes it while preserving the peeked (not resting) position", () => {
     const h = createEdgeVirtualizationHarness({ getDisableMiniMode: () => true });
     h.runtime.applyPetWindowBounds(
       { x: 1000, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
@@ -1000,8 +1009,47 @@ describe("edge virtualization cross-module integration (#690 §6.7)", () => {
     mock.timers.tick(300); // past the peek's own 200ms — it settles and exits
 
     assert.equal(
+      h.runtime.getPetWindowBounds().x, 2371,
+      "miniPeekIn()'s own exit must consume the deferred topology change AND preserve peek semantics: the new resting position (2396) plus the SAME peek offset (-25, right edge) miniPeekIn() itself used to get there — not the bare resting position, which would silently un-peek for a full cycle"
+    );
+    h.dispose();
+  });
+
+  // C-5b's other half: miniPeekOut()'s own exit is headed BACK to rest in
+  // the first place, so consuming a deferred topology change there through
+  // the plain consumeTopologyForMiniRest() (landing at the resting
+  // position) is already correct — no C-5b-style peek-offset adjustment
+  // needed. This is the coordinator-required "confirm the existing behavior
+  // is right" companion assertion, not a new fix.
+  it("C-5b companion: a display-added event landing mid-peekOut still lands at the new resting position (already correct, no C-5b adjustment needed)", () => {
+    const h = createEdgeVirtualizationHarness({ getDisableMiniMode: () => true });
+    h.runtime.applyPetWindowBounds(
+      { x: 1000, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { force: true }
+    );
+    h.mini.enterMiniMode(ISSUE_690_WORK_AREA, false, "right"); // drag path
+    for (let i = 0; i < 40; i++) mock.timers.tick(100); // full entry settle
+    assert.equal(h.runtime.getPetWindowBounds().x, 1816, "sanity: settled in mini mode against the original 1920-wide workArea");
+
+    // Peek in first (instant settle, well clear of the topology event
+    // below), then peek OUT -- a genuine slide back toward the resting
+    // position, which is what this test needs to interrupt mid-flight.
+    h.mini.miniPeekIn();
+    mock.timers.tick(300);
+    assert.equal(h.mini.getIsAnimating(), false, "sanity: peek-in settled first");
+
+    h.mini.miniPeekOut();
+    assert.equal(h.mini.getIsAnimating(), true, "sanity: peek-out is a real, in-flight animation");
+    mock.timers.tick(50); // mid-peek-out, still animating
+
+    h.setTopology({ workArea: { x: 0, y: 0, width: 2500, height: 1080 } });
+    h.runtime.handleDisplayAdded();
+
+    mock.timers.tick(300); // past the peek-out's own 200ms -- it settles and exits
+
+    assert.equal(
       h.runtime.getPetWindowBounds().x, 2396,
-      "the peek's own exit must consume the deferred topology change and land against the NEW (2500-wide) workArea, not the stale 1920-wide one the peek itself started under"
+      "miniPeekOut()'s own exit must consume the deferred topology change and land at the NEW resting position — correct as-is, no peek-offset adjustment needed since peek-out is already headed to rest"
     );
     h.dispose();
   });
