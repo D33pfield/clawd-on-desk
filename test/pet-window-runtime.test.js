@@ -1674,6 +1674,102 @@ describe("PR #751 second-review batch C: event-evidence bit, per-side clamp elig
     assert.equal(harness.runtime.getViewportOffsetX(), 0, "rebase's fresh write at x=850 (no clamp there either) resets offset to 0");
   });
 
+  // D-1 (Codex third-review #1, blocking): reproduces Codex's own
+  // counter-example. gen1's OWN native move echo — real BrowserWindow
+  // geometry events are asynchronous, so it can arrive well after gen2 has
+  // already started — lands LATE and sets nativeEventSeenThisGen=true for
+  // gen2, even though it is pure stale evidence about gen1's write settling,
+  // not gen2's. A quiet point then observes actual === expected (gen2's own
+  // write landed exactly as requested) and takes (a) — pre-fix, (a) left
+  // the bit untouched, so it stayed "true" on that stale echo. A LATER,
+  // genuinely event-less silent WM reposition (no move event fires for it
+  // at all) then reaches the settle sweep with the bit still wrongly true,
+  // misreading "no evidence for THIS specific mismatch" as "a real event
+  // happened", and REBASES a silent WM clamp straight into logical — a
+  // ratchet variant of the exact class C-1 fixed, just entering through (a)
+  // instead of the sweep path directly.
+  it("D-1: a stale native-move echo consumed at a quiet-point (a) must not authorize a LATER, genuinely event-less silent reposition to rebase", () => {
+    const clock = createFakeClock();
+    const harness = create690Fixture({ clock });
+    wireNativeGeometryListeners(harness);
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1000, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    clock.advance(10);
+    // gen2 write -- resets nativeEventSeenThisGen=false (a fresh generation
+    // has seen no events yet). x=900 is nowhere near the 1717 Mutter clamp,
+    // so this write's own offsetX starts at 0. settleUntil = 10+400 = 410.
+    harness.runtime.applyPetWindowBounds({
+      x: 900, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    }, { force: true });
+
+    clock.advance(20); // t=30: gen1's own async move echo arrives late
+    // Bounds are UNCHANGED (still exactly gen2's own 900) -- this is a pure
+    // echo of gen1's write settling, carrying no information about gen2 at
+    // all, but onNativeGeometryEvent() sets the bit unconditionally anyway.
+    harness.renderWin.emit("move");
+
+    clock.advance(100); // t=130: the quiet timer the echo armed fires
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x, 900,
+      "sanity: the echo caused no actual change, so this quiet point must land on (a) sameRect, not rebase anything yet"
+    );
+
+    clock.advance(80); // t=210 (200ms after gen2's own write): a genuinely
+    // event-less silent WM reposition -- deliberately NOT emitting "move",
+    // modeling a change no native event ever reports at all.
+    harness.renderWin.bounds = {
+      x: 850, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    };
+
+    clock.advance(200); // t=410: gen2's own settle sweep (armed at t=10, due at t=410) fires
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x, 900,
+      "the settle sweep must adopt-clamp the silent reposition (logical stays at gen2's own 900, absorbed as an offset) -- NOT rebase it into logical as if a real event had reported it"
+    );
+    assert.equal(
+      harness.runtime.getViewportOffsetX(), 50,
+      "the 850 physical / 900 logical gap must be absorbed as a +50 offset (adopt), not zeroed by a fresh rebase write"
+    );
+  });
+
+  // D-1 verification matrix item 4: after (a) consumes a stale echo, a
+  // GENUINE later external event must still correctly re-arm the bit and
+  // rebase -- the D-1 fix narrows evidence to "not stale", it must not make
+  // the bit permanently inert.
+  it("D-1 (verification item 4): a genuine external move arriving AFTER a quiet-point (a) consumption still correctly re-arms the bit and rebases", () => {
+    const clock = createFakeClock();
+    const harness = create690Fixture({ clock });
+    wireNativeGeometryListeners(harness);
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1000, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    clock.advance(10);
+    harness.runtime.applyPetWindowBounds({
+      x: 900, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    }, { force: true });
+
+    clock.advance(20); // t=30: stale echo, no actual change
+    harness.renderWin.emit("move");
+    clock.advance(100); // t=130: quiet point consumes it via (a)
+    assert.equal(harness.runtime.getPetWindowBounds().x, 900, "sanity: (a) consumed the stale echo, no rebase yet");
+
+    clock.advance(70); // t=200 (190ms after gen2's write): a GENUINE external move this time
+    harness.renderWin.bounds = {
+      x: 700, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    };
+    harness.renderWin.emit("move"); // a real event -- must re-arm nativeEventSeenThisGen
+
+    clock.advance(250); // t=450: past gen2's own settle (410) and whatever quiet/defer cycles land in between
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x, 700,
+      "the genuine external move after the consumption point must still correctly rebase (the bit must have been re-armed, not left permanently inert by D-1's fix)"
+    );
+    assert.equal(harness.runtime.getViewportOffsetX(), 0, "rebase's fresh write at x=700 (no clamp there either) resets offset to 0");
+  });
+
   // Structural note (not a code change): runHitReconcile() has NO
   // equivalent "blind sweep fallback" for C-1 to fix. Unlike the render
   // side's scheduleSettleSweep() (an unconditional timer armed once at

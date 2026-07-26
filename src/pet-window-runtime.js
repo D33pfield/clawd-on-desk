@@ -891,7 +891,51 @@ function createPetWindowRuntime(options = {}) {
     const expected = expectedWrite.physical;
 
     // (a) our own write landed exactly as requested.
-    if (sameRect(actual, expected)) { syncDerivedSurfaces(); return; }
+    //
+    // PR #751 third-review D-1 (Codex #1, blocking): consumes
+    // nativeEventSeenThisGen here. Codex's counter-example: gen1 writes,
+    // gen2 writes (resetting the bit to false), then gen1's OWN native move
+    // echo — real BrowserWindow geometry events are asynchronous, so it can
+    // arrive AFTER gen2's write already started — lands late and sets the
+    // bit true again, even though it says nothing about gen2's actual
+    // position. A quiet point at this point sees actual === expected (a),
+    // and — before this fix — returned without touching the bit, leaving it
+    // "true" on stale, unrelated evidence. A LATER, genuinely event-less
+    // silent WM reposition (no move event of its own at all) would then
+    // reach the settle sweep with the bit still wrongly true, misreading
+    // "no evidence for THIS mismatch" as "an event happened", and rebasing
+    // a silent WM clamp into logical — a ratchet variant of the same class
+    // C-1 fixed, just entering through (a) instead of the sweep path
+    // directly.
+    //
+    // Semantics: confirming actual === expected at a quiet point means
+    // whatever event(s) landed since the last write have been fully
+    // explained as our own write settling (a self-writeback echo, per
+    // nativeEventSeenThisGen's own comment) — that evidence is spent, not
+    // carried forward to judge some LATER, unrelated mismatch. Coordinator
+    // explicitly rejected Codex's own suggested alternative (binding the
+    // bit to a specific expected write via some counted/matched echo
+    // scheme): an off-by-one in that accounting would swallow a genuine
+    // external event as if it were an echo, flipping the failure direction
+    // from conservative (occasionally over-attributing evidence) to
+    // dangerous (silently discarding real evidence of a real move).
+    //
+    // Residual window (theoretical floor, not fully closable without an
+    // event source tag Electron doesn't provide): if gen1's echo arrives
+    // even LATER than this exact quiet point — i.e., AFTER (a) has already
+    // consumed whatever was true so far — and lands in the narrow gap
+    // between this quiet point and whatever reconcile pass next observes
+    // it, it can still re-arm the bit for a mismatch it doesn't actually
+    // explain. This is the same fundamentally-irreducible ambiguity C-1's
+    // own comment already names (a bare geometry event carries no
+    // "which write do I belong to" marker) — narrowed by this fix from "any
+    // stale echo, indefinitely" to "an echo landing inside one specific,
+    // already-short window", not eliminated outright.
+    if (sameRect(actual, expected)) {
+      nativeEventSeenThisGen = false;
+      syncDerivedSurfaces();
+      return;
+    }
 
     const xEligible = expectedWrite.xEligibleLeft || expectedWrite.xEligibleRight;
     const clampObs = xEligible
