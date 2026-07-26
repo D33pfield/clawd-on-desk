@@ -1153,7 +1153,14 @@ function getPetWindowBounds() { return petWindowRuntime.getPetWindowBounds(); }
 // petWindowRuntime.applyPetWindowBounds() — this wrapper used to silently
 // drop a second argument, which would have made assertNoYOffset a no-op.
 function applyPetWindowBounds(bounds, opts) { return petWindowRuntime.applyPetWindowBounds(bounds, opts); }
-function applyPetWindowPosition(x, y) { return petWindowRuntime.applyPetWindowPosition(x, y); }
+// PR #751 Codex deep review, rework batch A (coordinator-attributed fix):
+// this sibling wrapper had the exact same 2-param bug applyPetWindowBounds
+// above was fixed for — topmost-runtime.js's applyFreshNudge() (#525) calls
+// applyPetWindowPosition(x, y, { force: true }) specifically so the
+// compositor-refresh nudge writes natively even when the materialized
+// physical rect already matches current live bounds, but this wrapper
+// silently dropped that third argument, making force:true a no-op.
+function applyPetWindowPosition(x, y, opts) { return petWindowRuntime.applyPetWindowPosition(x, y, opts); }
 
 function syncHitStateAfterLoad() {
   sendToHitWin("hit-state-sync", {
