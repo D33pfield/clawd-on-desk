@@ -177,8 +177,14 @@ function defaultDelay(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
 
-function isEditorHostedEntry(entry) {
-  return !!entry && (entry.editor === "code" || entry.editor === "cursor");
+// These hosts complete their terminal-tab switch asynchronously, after the
+// window focus has already been confirmed. On the default ready delay the paste
+// lands in whichever tab was previously active — and this path presses Enter
+// too, so it would submit into another session. Orca's switch is two sequential
+// `orca` CLI spawns (measured 700-850ms), slower than the editor extensions.
+function isAsyncTabSwitchEntry(entry) {
+  if (!entry) return false;
+  return entry.editor === "code" || entry.editor === "cursor" || !!entry.orcaPaneKey;
 }
 
 function createWindowsPasteOnlyDeliveryAdapter({
@@ -226,7 +232,7 @@ function createWindowsPasteOnlyDeliveryAdapter({
       }
 
       try {
-        const effectiveReadyDelayMs = isEditorHostedEntry(payload.entry)
+        const effectiveReadyDelayMs = isAsyncTabSwitchEntry(payload.entry)
           ? Math.max(readyDelayMs, WINDOWS_EDITOR_PASTE_READY_DELAY_MS)
           : readyDelayMs;
         await delay(effectiveReadyDelayMs);
