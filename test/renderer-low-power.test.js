@@ -1815,3 +1815,106 @@ describe("renderer glyph flip compensation", () => {
     assert.ok(source.includes("svgWindow.__clawdSetGlyphFlipCompensation(false);"));
   });
 });
+
+// Issue #690 Phase 2 item 3: renderer applies a composite-only signed X
+// translate to the existing #pet-container for the Linux outer-edge viewport
+// offset. §6.5 of docs/plans/plan-issue-690-gnome-mini-edge-snap.md: the
+// harness here is node:vm + a hand-written DOM stub with no real layout
+// engine, so these tests can only prove translate is written to the right
+// element/layer and that the handler is composite-only — the actual visual
+// direction under the mini-left mirror needs the real-machine QA in §7.
+describe("renderer viewport offset X (#690)", () => {
+  it("writes a signed composite-only translate to #pet-container", () => {
+    const harness = createRendererHarness();
+
+    harness.electronHandlers.onViewportOffsetX(99);
+    assert.strictEqual(harness.container.style.translate, "99px 0");
+
+    harness.electronHandlers.onViewportOffsetX(-99);
+    assert.strictEqual(harness.container.style.translate, "-99px 0");
+  });
+
+  it("does not touch per-asset bottom, applyObjectScaleStyle(), or refreshAccessoryLayout() (composite-only)", () => {
+    const harness = createRendererHarness();
+    harness.clawd.style.bottom = "calc(5% + 3px)";
+    harness.accessory.style.transform = "matrix(1,0,0,1,4,5)";
+    const bottomBefore = harness.clawd.style.bottom;
+    const accessoryTransformBefore = harness.accessory.style.transform;
+
+    harness.electronHandlers.onViewportOffsetX(40);
+
+    assert.strictEqual(
+      harness.clawd.style.bottom,
+      bottomBefore,
+      "X offset must never touch per-asset bottom — that is the Y-offset layout path (plan §4.4 point 4)"
+    );
+    assert.strictEqual(
+      harness.accessory.style.transform,
+      accessoryTransformBefore,
+      "X offset must not trigger an accessory layout refresh"
+    );
+  });
+
+  it("keeps the setViewportOffsetX handler source strictly composite-only", () => {
+    const source = readNormalized(RENDERER);
+    const match = source.match(/function setViewportOffsetX\(offsetX\) \{[\s\S]*?\n\}/);
+    assert.ok(match, "setViewportOffsetX() must exist in the renderer");
+    const body = match[0];
+
+    assert.ok(!body.includes("applyObjectScaleStyle"), "must not call applyObjectScaleStyle()");
+    assert.ok(!body.includes("refreshAccessoryLayout"), "must not call refreshAccessoryLayout()");
+    assert.ok(!body.includes(".bottom"), "must not write any element's bottom");
+    assert.ok(!body.includes(".left"), "must not write any element's left");
+    assert.ok(body.includes("container.style.translate"), "must write the composite-only translate property");
+  });
+
+  it("writes the translate on #pet-container only, not on any descendant layer", () => {
+    const harness = createRendererHarness();
+
+    harness.electronHandlers.onViewportOffsetX(30);
+
+    assert.strictEqual(harness.container.id, "pet-container");
+    assert.strictEqual(harness.container.style.translate, "30px 0");
+    // #pet-facing-stage (mini-left's mirror layer) and #pet-effect-stage are
+    // both direct children of #pet-container in the real DOM (src/index.html)
+    // and in this harness (container.appendChild(facingStage) /
+    // container.appendChild(effectStage)). Neither should receive its own
+    // translate from this handler — the shift must come from the parent
+    // alone so descendants inherit it "for free".
+    for (const child of harness.container.children) {
+      assert.strictEqual(
+        child.style.translate,
+        undefined,
+        `${child.id} must not receive its own translate from the X-offset handler`
+      );
+    }
+  });
+
+  it("leaves non-composite properties of media, accessory, and effect layers alone across repeated offset changes", () => {
+    const harness = createRendererHarness();
+    const clawdBottomBefore = harness.clawd.style.bottom;
+    const accessoryDisplayBefore = harness.accessory.style.display;
+
+    harness.electronHandlers.onViewportOffsetX(12);
+    harness.electronHandlers.onViewportOffsetX(-7);
+    harness.electronHandlers.onViewportOffsetX(0);
+
+    assert.strictEqual(harness.container.style.translate, "0px 0");
+    assert.strictEqual(harness.clawd.style.bottom, clawdBottomBefore);
+    assert.strictEqual(harness.accessory.style.display, accessoryDisplayBefore);
+  });
+
+  it("restores the current offset through the same did-finish-load resend path as viewport-offset (Y)", () => {
+    const preload = readNormalized(PRELOAD);
+    const main = readNormalized(MAIN);
+    const runtime = readNormalized(path.join(__dirname, "..", "src", "pet-window-runtime.js"));
+
+    assert.ok(preload.includes(
+      'onViewportOffsetX: (cb) => ipcRenderer.on("viewport-offset-x", (_, offsetX) => cb(offsetX))'
+    ));
+    assert.ok(main.includes('sendToRenderer("viewport-offset", petWindowRuntime.getViewportOffsetY());'));
+    assert.ok(main.includes('sendToRenderer("viewport-offset-x", petWindowRuntime.getViewportOffsetX());'));
+    assert.ok(runtime.includes("getViewportOffsetX,"));
+    assert.ok(runtime.includes("setViewportOffsetX,"));
+  });
+});
