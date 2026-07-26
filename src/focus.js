@@ -507,6 +507,11 @@ if ($orcaHosted) {
         $focused = $true
         $reason = 'orca-window'
     } elseif ($orcaWindows.Count -gt 1) {
+        # Known limitation: "Orca" is the whole window title, so with more than one
+        # window open there is nothing to pick by — unlike the Windows Terminal
+        # cascade, which still has a cwd to match. Nothing is raised, and because an
+        # Orca-hosted agent has no conhost to recover to, the pane switch in
+        # scheduleOrcaPaneFocus still moves the tab in a window that stays behind.
         $reason = 'orca-window-ambiguous'
     } else {
         $reason = 'orca-window-missing'
@@ -972,9 +977,13 @@ function scheduleTerminalTabFocus(editor, pidChain) {
 // specific tab to the front. That only moves the tab *inside* Orca, so a focus
 // only lands if a window raise runs too — the $orcaHosted branch in
 // makeFocusCmd on Windows, raiseOrcaWindow() on every other platform.
-const ORCA_CLI_TIMEOUT_MS = 2500;
-// The window raise already ran and is instant; the tab switch only has to catch
-// up, so keep the CLI round-trip off the click's synchronous path.
+// Warm round-trips measure 330-420ms, but the first call after Orca has been idle
+// has been observed to blow past 2.5s — and a killed call is indistinguishable
+// from a missing pane unless it is reported separately, which is what
+// orca-cli-timeout is for. Generous because the whole hop is fire-and-forget.
+const ORCA_CLI_TIMEOUT_MS = 6000;
+// Keeps the CLI round-trip off the click's synchronous path. Nothing has been
+// raised yet at this point: the raise waits for a successful switch.
 const ORCA_PANE_FOCUS_DELAY_MS = 150;
 // paneKey → live handle. Purely a fast path: handles are reissued per Orca
 // runtime session, and a switch against an old one fails with
@@ -1008,6 +1017,10 @@ function runOrcaCli(args, callback) {
       let parsed = null;
       try { parsed = JSON.parse(stdout); } catch {}
       if (parsed) return callback(null, parsed);
+      // A timeout kill has to be its own reason: focus-debug.log is the only
+      // surface for this, and "the pane is gone" would send the reader looking in
+      // entirely the wrong place for a CLI that simply had not warmed up yet.
+      if (err && err.killed) return callback(new Error("orca-cli-timeout"), null);
       return callback(err || new Error("orca-cli-bad-json"), null);
     });
   };
@@ -1015,22 +1028,24 @@ function runOrcaCli(args, callback) {
 }
 
 // Orca reports worktreePath with either separator depending on how the worktree
-// was registered — "D:/repo" and "D:\repo" both occur in one `terminal list`.
+// was registered — "D:/repo" and "D:\repo" both occur in one `terminal list` — so
+// settle on forward slashes. Case-fold only where the filesystem does: on Linux
+// ~/work/Repo and ~/work/repo are different directories, and folding them makes
+// the fallback below pick whichever terminal happens to be listed first.
 function normalizeOrcaWorktreePath(value) {
   if (typeof value !== "string" || !value.trim()) return null;
-  // Orca reports worktreePath with either separator depending on the entry, so
-  // settle on forward slashes. Case-fold only where the filesystem does: on Linux
-  // ~/work/Repo and ~/work/repo are different directories, and folding them makes
-  // the fallback below pick whichever terminal happens to be listed first.
   const text = value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
   return isWin ? text.toLowerCase() : text;
 }
 
 function resolveOrcaHandle(orcaPaneKey, cwd, callback) {
   runOrcaCli(["terminal", "list", "--json"], (err, data) => {
-    // Distinguish "no CLI" from "no such pane": focus-debug.log is the only
-    // surface for diagnosing this, and the two have different fixes.
-    if (err && err.message === "orca-cli-not-found") return callback(null, "orca-cli-not-found");
+    // Distinguish "no CLI" and "the CLI never answered" from "no such pane":
+    // focus-debug.log is the only surface for diagnosing this, and all three have
+    // different fixes.
+    if (err && (err.message === "orca-cli-not-found" || err.message === "orca-cli-timeout")) {
+      return callback(null, err.message);
+    }
     if (err || !data || data.ok !== true || !data.result) return callback(null);
     const terminals = Array.isArray(data.result.terminals) ? data.result.terminals : [];
     // normalizeOrcaPaneKey already guarantees the tabId:leafId shape upstream, but
@@ -1071,23 +1086,17 @@ function resolveOrcaHandle(orcaPaneKey, cwd, callback) {
 // matches on WM_CLASS instead of --pid for the detached-daemon reason above.
 // On Linux the WM_CLASS is assumed to be "orca", which is also GNOME's screen
 // reader, so a miss there raises the wrong window rather than none.
-function raiseOrcaWindow(onDone) {
-  const done = () => { if (onDone) onDone(); };
+function raiseOrcaWindow() {
   if (isMac) {
-    execFile("open", ["-a", "Orca"], { timeout: MAC_OPEN_TIMEOUT_MS }, (err) => {
+    execFile("/usr/bin/open", ["-a", "Orca"], { timeout: MAC_OPEN_TIMEOUT_MS }, (err) => {
       logFocusResult(`branch=orca-raise reason=${err ? `open-failed:${safeLogValue(err.code || "error")}` : "ok"}`);
-      done();
     });
     return;
   }
   execFile("wmctrl", ["-x", "-a", "orca"], { timeout: 1000 }, (wmErr) => {
-    if (!wmErr) {
-      logFocusResult("branch=orca-raise reason=ok");
-      return done();
-    }
+    if (!wmErr) return logFocusResult("branch=orca-raise reason=ok");
     execFile("xdotool", ["search", "--class", "orca", "windowactivate", "--sync", "%1"], { timeout: 1000 }, (xdoErr) => {
       logFocusResult(`branch=orca-raise reason=${xdoErr ? `raise-failed:${safeLogValue(xdoErr.code || "error")}` : "ok"}`);
-      done();
     });
   });
 }
@@ -1095,35 +1104,42 @@ function raiseOrcaWindow(onDone) {
 function scheduleOrcaPaneFocus(orcaPaneKey, cwd) {
   if (!orcaPaneKey) return;
   setTimeout(() => {
-    // The raise runs first so the tab switch settles on an already-frontmost
-    // window; off Windows it also has to out-race focusTerminalWindowLegacy,
-    // which was dispatched on the same click and may raise the wrong app.
-    if (!isWin) raiseOrcaWindow();
     const switchTo = (handle, mayReresolve) => {
       runOrcaCli(["terminal", "switch", "--terminal", handle, "--json"], (err, data) => {
         if (!err && data && data.ok === true) {
           orcaHandleCache.set(orcaPaneKey, handle);
+          // Raise only now, and only off Windows. A successful switch is the proof
+          // that Orca is actually running: `open -a` on macOS launches it when it
+          // is not, and because Orca's terminal daemon outlives the window a sticky
+          // pane key can point at a session whose window is long gone — clicking
+          // that would cold-start the IDE. Raising last also settles the race with
+          // focusTerminalWindowLegacy, dispatched on the same click, which may have
+          // raised the wrong app.
+          if (!isWin) raiseOrcaWindow();
           logFocusResult("branch=orca reason=orca-pane-switched");
           return;
         }
         orcaHandleCache.delete(orcaPaneKey);
         const stale = !!(data && data.error && data.error.code === "terminal_handle_stale");
-        if (stale && mayReresolve) return resolveThenSwitch(false);
-        logFocusResult(`branch=orca reason=${stale ? "orca-handle-stale" : "orca-switch-failed"}`);
+        if (stale && mayReresolve) return resolveThenSwitch();
+        const timedOut = !!(err && err.message === "orca-cli-timeout");
+        logFocusResult(`branch=orca reason=${stale ? "orca-handle-stale" : timedOut ? "orca-cli-timeout" : "orca-switch-failed"}`);
       });
     };
-    const resolveThenSwitch = (mayReresolve) => {
+    // Never re-resolves from here: the handle just came out of `terminal list`, so
+    // a stale rejection means the pane really is gone rather than the cache lying.
+    const resolveThenSwitch = () => {
       resolveOrcaHandle(orcaPaneKey, cwd, (handle, failure) => {
         if (!handle) {
           logFocusResult(`branch=orca reason=${failure || "orca-pane-not-found"}`);
           return;
         }
-        switchTo(handle, mayReresolve);
+        switchTo(handle, false);
       });
     };
     const cached = orcaHandleCache.get(orcaPaneKey);
     if (cached) switchTo(cached, true);
-    else resolveThenSwitch(false);
+    else resolveThenSwitch();
   }, ORCA_PANE_FOCUS_DELAY_MS);
 }
 
