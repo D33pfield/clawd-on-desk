@@ -57,6 +57,52 @@ function makeBrowserWindow(instances) {
   };
 }
 
+// Issue #690's reconcile machinery (§4.3.9-13) schedules real setTimeout-based
+// debounce/sweep timers using PRODUCTION constants (RECONCILE_QUIET_MS=100 /
+// SETTLE_MS=400 / HIT_QUIET_MS=250) — shrinking the thresholds to make tests
+// fast would only prove the shrunk thresholds work, not production timing.
+// This fake clock instead supplies now()/setTimeout()/clearTimeout() together
+// so `advance(ms)` deterministically fires whatever timers become due, in due
+// -time order, without any real sleep. Firing a timer can itself schedule new
+// timers within the same advance window (e.g. a settle sweep re-arming
+// itself) — the loop keeps consuming newly-due timers until none remain
+// before the target time, then lands the clock exactly on target.
+function createFakeClock(startAt = 0) {
+  let current = startAt;
+  let seq = 0;
+  const timers = [];
+  return {
+    now: () => current,
+    setTimeout: (fn, delay) => {
+      const id = ++seq;
+      const due = current + (Number.isFinite(delay) ? delay : 0);
+      timers.push({ id, due, fn, cancelled: false, fired: false });
+      return id;
+    },
+    clearTimeout: (id) => {
+      const t = timers.find((entry) => entry.id === id);
+      if (t) t.cancelled = true;
+    },
+    advance(ms) {
+      const target = current + (Number.isFinite(ms) ? ms : 0);
+      for (;;) {
+        const due = timers
+          .filter((t) => !t.cancelled && !t.fired && t.due <= target)
+          .sort((a, b) => a.due - b.due || a.id - b.id);
+        if (due.length === 0) break;
+        const next = due[0];
+        next.fired = true;
+        current = next.due;
+        next.fn();
+      }
+      current = target;
+    },
+    pendingCount() {
+      return timers.filter((t) => !t.cancelled && !t.fired).length;
+    },
+  };
+}
+
 function createRuntime(overrides = {}) {
   const calls = [];
   let renderWin = overrides.renderWin || makeWindow();
@@ -119,6 +165,10 @@ function createRuntime(overrides = {}) {
     scheduleHwndRecovery: () => calls.push(["scheduleHwndRecovery"]),
     ...(overrides.cloakInspector ? { cloakInspector: overrides.cloakInspector } : {}),
     ...(overrides.isMiniAnimating ? { isMiniAnimating: overrides.isMiniAnimating } : {}),
+    ...(overrides.isRoamAnimating ? { isRoamAnimating: overrides.isRoamAnimating } : {}),
+    ...(overrides.isEdgeVirtualizationDisabled
+      ? { isEdgeVirtualizationDisabled: overrides.isEdgeVirtualizationDisabled }
+      : {}),
     ...(overrides.now ? { now: overrides.now } : {}),
     ...(overrides.edgeLog ? { edgeLog: overrides.edgeLog } : {}),
     isNearWorkAreaEdge: () => overrides.nearEdge || false,
@@ -128,7 +178,13 @@ function createRuntime(overrides = {}) {
     crashReloadLimit: overrides.crashReloadLimit,
     crashReloadWindowMs: overrides.crashReloadWindowMs,
     crashReloadLog: overrides.crashReloadLog,
-    now: overrides.now,
+    // A fake clock (createFakeClock() below) supplies now/setTimeout/
+    // clearTimeout TOGETHER so reconcile's timers advance deterministically
+    // with simulated time instead of a real sleep — placed last so it wins
+    // over the plain overrides.now spread above for tests that need it.
+    ...(overrides.clock
+      ? { now: overrides.clock.now, setTimeout: overrides.clock.setTimeout, clearTimeout: overrides.clock.clearTimeout }
+      : { now: overrides.now }),
   });
   return {
     runtime,
@@ -186,6 +242,122 @@ function create690Fixture(overrides = {}) {
     renderWin,
   });
 }
+
+// Mirrors main.js's actual wiring (src/main.js's win.on("move"/"resize", ...)
+// / hitWin.on("move"/"resize", ...)) so unit tests can drive the reconcile
+// machinery the same way a real native window event would, without
+// constructing all of main.js.
+function wireNativeGeometryListeners(harness) {
+  harness.renderWin.on("move", () => harness.runtime.onNativeGeometryEvent());
+  harness.renderWin.on("resize", () => harness.runtime.onNativeGeometryEvent());
+  harness.hitWin.on("move", () => harness.runtime.onHitNativeGeometryEvent());
+  harness.hitWin.on("resize", () => harness.runtime.onHitNativeGeometryEvent());
+}
+
+describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 red fixtures)", () => {
+  it("rebases logical bounds after a WM externally moves the render window while offset is non-zero", () => {
+    const clock = createFakeClock();
+    const harness = create690Fixture({ clock });
+    wireNativeGeometryListeners(harness);
+
+    // Establish a non-zero X offset: logical 1768 clamps to physical 1717
+    // (the Phase 0 fixture's exact numbers), offsetX=+51.
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    assert.equal(harness.runtime.getViewportOffsetX(), 51);
+
+    // Let this write's own settle window (400ms) fully expire — and its
+    // harmless no-op sweep fire (actual already matches expected) — before
+    // simulating an UNRELATED, later external move. A mismatch discovered
+    // WITHIN the original write's settle period is deliberately adopt-
+    // clamped instead of rebased (§4.3.10's generous acceptance window), so
+    // this ordering is what makes the difference observable.
+    clock.advance(500);
+
+    // Simulate an external WM move (e.g. GNOME Super+drag of the render
+    // window) — mutating .bounds directly, NOT via applyPetWindowBounds(),
+    // represents a physical write our own code never issued.
+    harness.renderWin.bounds = {
+      x: 800, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    };
+    harness.renderWin.emit("move");
+    clock.advance(200); // past RECONCILE_QUIET_MS
+
+    // I2's rebase formula: logical = actualPhysicalX + oldViewportOffsetX =
+    // 800 + 51 = 851. This is the ONLY assertion needed to prove the bug/fix:
+    // pre-fix, getPetWindowBounds() has no path back to a WM-moved physical
+    // window at all (no listener, no reconcile exist), so it stays frozen at
+    // the stale 1768 forever — a permanent visual/hit misalignment, not a
+    // temporary lag.
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x,
+      851,
+      "logical X must rebase onto the externally-moved physical position, preserving the visual offset"
+    );
+  });
+
+  it("distinguishes a mid-drag pause from a confirmed grab end on the hit window (two-level judgment)", () => {
+    // §4.3.11 public premise 2: Mutter grab-ignores position writes rather
+    // than clamping them — the hit window's actual stays wherever the user
+    // is dragging it, completely independent of what we last requested.
+    // Public premise 4's deadlock: a single-level "no hit move event for
+    // HIT_QUIET_MS => grab ended" judgment can't tell a genuine release
+    // apart from the user merely pausing mid-drag (a trackpad re-grip alone
+    // can exceed 250ms) — misjudging the pause as "grab ended" and acting on
+    // it (rebase/bounce-back in a later batch) would fight the still-active
+    // drag. This fixture proves the two-level judgment (confirm across TWO
+    // consecutive HIT_QUIET_MS periods) correctly waits through the pause
+    // instead of firing on the first one.
+    const clock = createFakeClock();
+    const edgeLogs = [];
+    const hitWin = makeWindow({ x: 100, y: 100, width: 100, height: 100 });
+    // Grab-ignore mock: setBounds() is silently swallowed (Mutter mid-grab
+    // never applies our writes), exactly public premise 2's "static/free"
+    // retries -- getBounds() keeps returning whatever the user's drag last
+    // put there, set directly by the test below.
+    hitWin.setBounds = () => {};
+    const harness = createRuntime({ hitWin, clock, edgeLog: (message) => edgeLogs.push(message) });
+    wireNativeGeometryListeners(harness);
+    // Seed a "requested" target so runHitReconcile() has something to
+    // compare actual against (normally established by syncHitWin()).
+    harness.runtime.applyPetWindowBounds({ x: 100, y: 100, width: 100, height: 100 });
+    harness.runtime.syncHitWin();
+
+    // User grabs the hit window (Super+drag) and moves it to P1, then pauses
+    // for exactly one HIT_QUIET_MS period.
+    hitWin.bounds = { x: 500, y: 500, width: 100, height: 100 };
+    hitWin.emit("move");
+    clock.advance(250);
+
+    assert.ok(
+      !edgeLogs.some((line) => line.includes("edge-hit-external-move-candidate")),
+      "a single stable observation must NOT be treated as a confirmed grab end"
+    );
+
+    // User resumes dragging to a different point, P2 -- proving the pause
+    // didn't get latched into anything: this is still "the user is
+    // dragging", not a rejected retry or a stuck state.
+    hitWin.bounds = { x: 650, y: 500, width: 100, height: 100 };
+    hitWin.emit("move");
+    clock.advance(250);
+
+    assert.ok(
+      !edgeLogs.some((line) => line.includes("edge-hit-external-move-candidate")),
+      "resuming the drag must reset the stability streak, not carry over toward confirmation"
+    );
+
+    // Now the user genuinely releases at P2 and nothing moves again — two
+    // consecutive HIT_QUIET_MS periods stable at the SAME value confirms the
+    // grab ended.
+    clock.advance(250);
+
+    assert.ok(
+      edgeLogs.some((line) => line.includes("edge-hit-external-move-candidate") && line.includes("650,500")),
+      "two consecutive stable periods at the post-release position must confirm the grab ended"
+    );
+  });
+});
 
 describe("pet-window-runtime edge virtualization (#690 Phase 0 fixture)", () => {
   it("keeps the logical X at the requested value when the physical window is clamped back into the work area", () => {
