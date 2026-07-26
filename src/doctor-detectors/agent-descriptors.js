@@ -207,6 +207,11 @@ const AGENT_DESCRIPTORS = Object.freeze([
     marker: zcode.MARKER,
     nested: true,
     hookEvents: zcode.ZCODE_HOOK_EVENTS,
+    // ZCode config-file hooks nest under hooks.events.* (NOT hooks.* like the
+    // Claude/Qwen settings.json schema). Generic findHookCommandsForEvent reads
+    // this to locate the per-event arrays; without it the doctor would scan the
+    // wrong container and always report not-connected.
+    hookEventsContainer: ["hooks", "events"],
   }),
   Object.freeze({
     agentId: "codewhale",

@@ -352,7 +352,19 @@ function validateCommandList(descriptor, commands, options) {
 
 function findHookCommandsForEvent(settings, eventName, marker, options) {
   if (!settings || !settings.hooks || typeof marker !== "string" || !marker) return [];
-  const entries = settings.hooks[eventName];
+  // Most agents keep per-event arrays directly under settings.hooks.<Event>
+  // (the Claude Code / Qwen settings.json schema). ZCode config-file hooks nest
+  // one level deeper under settings.hooks.events.<Event>; descriptor.hookEventsContainer
+  // selects the container path (defaults to ["hooks"]).
+  const containerPath = (options && Array.isArray(options.hookEventsContainer) && options.hookEventsContainer.length)
+    ? options.hookEventsContainer
+    : ["hooks"];
+  let container = settings;
+  for (const key of containerPath) {
+    if (!container || typeof container !== "object") return [];
+    container = container[key];
+  }
+  const entries = container ? container[eventName] : null;
   if (!Array.isArray(entries)) return [];
 
   const nested = options && options.nested;
@@ -380,7 +392,10 @@ function validateGeminiHookEvents(descriptor, settings, options) {
   let firstFailure = null;
 
   for (const eventName of GEMINI_HOOK_EVENTS) {
-    const commands = findHookCommandsForEvent(settings, eventName, descriptor.marker, { nested: !!descriptor.nested });
+    const commands = findHookCommandsForEvent(settings, eventName, descriptor.marker, {
+      nested: !!descriptor.nested,
+      hookEventsContainer: descriptor.hookEventsContainer,
+    });
     commandCount += commands.length;
     if (!commands.length) {
       missingEvents.push(eventName);
@@ -447,7 +462,10 @@ function validateFileHookEvents(descriptor, settings, options) {
   let firstFailure = null;
 
   for (const eventName of events) {
-    const commands = findHookCommandsForEvent(settings, eventName, descriptor.marker, { nested: !!descriptor.nested });
+    const commands = findHookCommandsForEvent(settings, eventName, descriptor.marker, {
+      nested: !!descriptor.nested,
+      hookEventsContainer: descriptor.hookEventsContainer,
+    });
     commandCount += commands.length;
     if (!commands.length) {
       missingEvents.push(eventName);

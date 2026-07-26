@@ -5,12 +5,13 @@ const path = require("path");
 const os = require("os");
 const {
   MARKER,
+  CLAUDE_MARKER,
   ZCODE_HOOK_EVENTS,
   buildZcodeHookCommand,
   matcherForZcodeEvent,
   registerZcodeHooks,
   unregisterZcodeHooks,
-  timeoutForZcodeEvent,
+  timeoutMsForZcodeEvent,
 } = require("../hooks/zcode-install");
 const { decodeWindowsEncodedCommand } = require("../hooks/json-utils");
 
@@ -85,7 +86,8 @@ describe("ZCode hook installer", () => {
       // load. Clawd's entries must NOT carry "name".
       assert.ok(!("name" in entry.hooks[0]), `${event}: hook must not carry "name" (zcode rejects it)`);
       assert.strictEqual(entry.hooks[0].type, "command");
-      assert.strictEqual(entry.hooks[0].timeout, timeoutForZcodeEvent(event));
+      // timeoutMs (ms), NOT timeout (seconds). `timeout: 30000` would be 8.3h.
+      assert.strictEqual(entry.hooks[0].timeoutMs, timeoutMsForZcodeEvent(event));
       const payload = commandPayload(entry.hooks[0].command);
       assert.ok(payload.includes(MARKER), `${event}: ${payload}`);
       assert.ok(payload.includes("/usr/local/bin/node"), `${event}: ${payload}`);
@@ -240,9 +242,18 @@ describe("ZCode hook installer", () => {
     const decoded = decodeWindowsEncodedCommand(entry.command);
     assert.ok(decoded.includes(MARKER));
     assert.ok(decoded.endsWith("'PreToolUse'"));
+    // Migration: the pre-fix form carried `name` + `timeout: 30000` (8.3h under
+    // zcode's seconds-semantics). A re-run must strip `name` (zcode rejects it)
+    // and rewrite to `timeoutMs` (ms).
+    assert.ok(!("name" in entry), "legacy `name` key must be stripped on rewrite");
+    assert.strictEqual(entry.timeoutMs, timeoutMsForZcodeEvent());
+    assert.ok(!("timeout" in entry), "legacy `timeout` (seconds) must be removed in favor of `timeoutMs`");
   });
 
   it("preserves an existing Windows absolute node path through the encoded command", () => {
+    // First install pins a Windows node path. A second run with nodeBin:null
+    // must reuse that path (not fall back to "node") via the events-aware
+    // extractor. Uses the current desired form so the entry is skipped intact.
     const settingsPath = makeTempConfigFile({});
     registerZcodeHooks({
       silent: true,
@@ -286,7 +297,7 @@ describe("ZCode hook installer", () => {
                   "PreToolUse",
                   { platform: "win32" }
                 ),
-                timeout: 30000,
+                timeoutMs: 30000,
               },
               { name: "user", type: "command", command: "echo keep", timeout: 30 },
             ],
@@ -330,5 +341,148 @@ describe("ZCode hook installer", () => {
     // hooks wrapper fully cleaned up (no stale enabled/events), unrelated keys kept.
     assert.strictEqual(settings.hooks, undefined);
     assert.deepStrictEqual(settings.plugins, { "keep-me": { enabled: true } });
+  });
+});
+
+// #734: if a user imports their Claude config into ZCode (via ZCode's Hooks
+// settings), Clawd's Claude hook (clawd-hook.js) lands in ~/.zcode/cli/config.json.
+// Because clawd-hook.js hardcodes agent_id="claude-code", a real ZCode session
+// would then ALSO spawn a mis-attributed Claude-Code session. The installer must
+// strip ONLY those Clawd-owned Claude entries, preserve third-party hooks, and
+// never touch ~/.claude/settings.json.
+describe("ZCode #734 — strip Claude-config hooks migrated into zcode config", () => {
+  // A Claude-imported clawd-hook.js entry (the form install.js writes, minus the
+  // zcode-specific wrapper). It carries the "clawd-hook.js" marker.
+  function claudeHookCommand(event) {
+    return `"/usr/local/bin/node" "/some/path/clawd-hook.js" ${event}`;
+  }
+
+  it("removes a dedicated clawd-hook.js entry and reports it, leaving zcode-hook.js as the only Clawd hook", () => {
+    const settingsPath = makeTempConfigFile({
+      hooks: {
+        enabled: true,
+        events: {
+          SessionStart: [{ hooks: [{ type: "command", command: claudeHookCommand("SessionStart") }] }],
+        },
+      },
+    });
+
+    const result = registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.migratedClaudeHooks, 1, "must report the stripped Claude hook");
+    const settings = readJson(settingsPath);
+    // SessionStart now holds only the zcode hook (the dedicated Claude entry was removed).
+    const commands = settings.hooks.events.SessionStart.flatMap((e) => e.hooks.map((h) => h.command));
+    assert.strictEqual(commands.length, 1);
+    assert.ok(commandPayload(commands[0]).includes(MARKER));
+    assert.ok(!commandPayload(commands[0]).includes(CLAUDE_MARKER));
+  });
+
+  it("splits a shared entry: drops clawd-hook.js, keeps a third-party hook, then adds the zcode hook", () => {
+    const settingsPath = makeTempConfigFile({
+      hooks: {
+        enabled: true,
+        events: {
+          PreToolUse: [{
+            matcher: "Bash",
+            hooks: [
+              { type: "command", command: "echo third-party" },
+              { type: "command", command: claudeHookCommand("PreToolUse") },
+            ],
+          }],
+        },
+      },
+    });
+
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    const entries = settings.hooks.events.PreToolUse;
+    // The user's matcher-scoped third-party hook survives, minus clawd-hook.js.
+    assert.deepStrictEqual(entries[0], {
+      matcher: "Bash",
+      hooks: [{ type: "command", command: "echo third-party" }],
+    });
+    // The zcode hook is added as its own matcherless entry.
+    const zcodeEntry = entries.find((e) => !e.matcher);
+    assert.ok(zcodeEntry, "zcode hook entry must exist");
+    assert.ok(commandPayload(zcodeEntry.hooks[0].command).includes(MARKER));
+    // No clawd-hook.js remains anywhere under events.
+    const allCommands = JSON.stringify(settings.hooks.events);
+    assert.ok(!allCommands.includes(CLAUDE_MARKER), "no clawd-hook.js must remain");
+  });
+
+  it("strips a Windows EncodedCommand clawd-hook.js entry migrated from Claude", () => {
+    // Reuse the Windows wrapper to build an encoded clawd-hook.js command.
+    const encodedClaudeCommand = buildZcodeHookCommand(
+      "C:\\Program Files\\nodejs\\node.exe",
+      "D:/claude/hooks/clawd-hook.js", // NOTE: claude marker, not zcode
+      "Stop",
+      { platform: "win32", powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" }
+    );
+    const settingsPath = makeTempConfigFile({
+      hooks: {
+        enabled: true,
+        events: {
+          Stop: [{ hooks: [{ type: "command", command: encodedClaudeCommand }] }],
+        },
+      },
+    });
+
+    const result = registerZcodeHooks({
+      silent: true,
+      settingsPath,
+      platform: "win32",
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+      powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    });
+
+    assert.ok(result.migratedClaudeHooks >= 1);
+    const settings = readJson(settingsPath);
+    const allCommands = JSON.stringify(settings.hooks.events);
+    assert.ok(!decodeWindowsEncodedCommand(allCommands) || !allCommands.includes("clawd-hook.js"));
+    // zcode hook present.
+    const stopCommands = settings.hooks.events.Stop.flatMap((e) => e.hooks.map((h) => h.command));
+    assert.ok(stopCommands.some((c) => commandPayload(c).includes(MARKER)));
+  });
+
+  it("does not touch ~/.claude/settings.json (only the zcode config is modified)", () => {
+    // Sanity: the installer takes a single settingsPath scoped to the zcode
+    // config; it has no path to ~/.claude. Encode that as a structural check:
+    // a Claude marker in an unrelated top-level key is left alone.
+    const settingsPath = makeTempConfigFile({
+      hooks: { enabled: true, events: {} },
+      // An unrelated reference to the claude marker that is NOT a hook command
+      // must not be touched (only hook commands under hooks.events.* are scoped).
+      notes: "see clawd-hook.js docs",
+    });
+
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.notes, "see clawd-hook.js docs");
+  });
+
+  it("unregister also removes migrated clawd-hook.js entries", () => {
+    const settingsPath = makeTempConfigFile({
+      hooks: {
+        enabled: true,
+        events: {
+          SessionStart: [
+            { hooks: [{ type: "command", command: claudeHookCommand("SessionStart") }] },
+            { hooks: [{ type: "command", command: "echo keep" }] },
+          ],
+        },
+      },
+    });
+
+    const result = unregisterZcodeHooks({ silent: true, settingsPath });
+
+    assert.ok(result.changed);
+    assert.ok(result.removed >= 1, "the migrated Claude hook counts as removed");
+    const settings = readJson(settingsPath);
+    // Third-party hook preserved; clawd-hook.js gone.
+    const sessionCommands = settings.hooks.events.SessionStart.flatMap((e) => e.hooks.map((h) => h.command));
+    assert.deepStrictEqual(sessionCommands, ["echo keep"]);
   });
 });

@@ -32,7 +32,7 @@ const EVENT_TO_STATE = {
   UserPromptSubmit: "thinking",
   PreToolUse: "working",
   PostToolUse: "working",
-  PostToolUseFailure: "attention",
+  PostToolUseFailure: "error",
   Stop: "attention",
 };
 
@@ -111,15 +111,21 @@ function appendHookDebug(entry, env = process.env) {
   } catch {}
 }
 
-// zcode-cli is the agent runtime spawned by the ZCode desktop app. It is not
-// on PATH; argv[0] is reported as `zcode-cli`. Match that, plus any node
-// launcher that references the zcode hook script.
+// Detect the ZCode agent runtime across platforms:
+//   - macOS/Linux: a standalone `zcode-cli` binary (verified on 3.4.2).
+//   - Windows: the ZCode desktop shell reuses `ZCode.exe` to run
+//     `resources/glm/zcode.cjs app-server --stdio` (ELECTRON_RUN_AS_NODE=1),
+//     so the working process is the AMBIGUOUS desktop-shell name and is only
+//     identifiable by a `zcode.cjs` cmdline token. Matching `zcode.cjs` (not
+//     the bare `ZCode.exe`) is what keeps the always-running shell from being
+//     mis-credited as a live agent session.
 function isZcodeAgentCommandLine(cmd) {
   if (typeof cmd !== "string") return false;
   const normalized = cmd.toLowerCase().replace(/\\/g, "/");
   return /(^|[\s"'/])zcode-cli(\.js|\.exe)?($|[\s"'/])/.test(normalized)
     || normalized.includes("/zcode-cli")
-    || normalized.includes("zcode-hook.js");
+    || normalized.includes("zcode-hook.js")
+    || normalized.includes("zcode.cjs");
 }
 
 function applyLocalProcessFields(body, resolve) {
@@ -206,6 +212,12 @@ async function main(argvEvent = process.argv[2], deps = {}) {
     const resolve = deps.resolvePid || createPidResolver({
       agentNames: { win: new Set(["zcode-cli.exe"]), mac: new Set(["zcode-cli"]), linux: new Set(["zcode-cli"]) },
       agentCmdlineCheck: isZcodeAgentCommandLine,
+      // On Windows the agent runtime is the desktop shell `ZCode.exe` running
+      // `... zcode.cjs app-server` (not a node CLI). Add it to the cmdline-name
+      // gate so isZcodeAgentCommandLine runs against its command line; the
+      // `zcode.cjs` token in the check is what rejects the bare shell. Keep the
+      // default node/node.exe entries for a node-launched zcode.cjs fallback.
+      agentCmdlineNames: new Set(["zcode.exe", "node.exe", "node"]),
       platformConfig: config,
     });
     const result = await run(payload || {}, argvEvent, {

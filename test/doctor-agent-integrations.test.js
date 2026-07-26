@@ -16,6 +16,7 @@ const { QWEN_CODE_HOOK_EVENTS, buildQwenCodeHookCommand } = require("../hooks/qw
 const { HOOK_ENTRIES: CODEWHALE_HOOK_ENTRIES } = require("../hooks/codewhale-install");
 const { QODER_HOOK_EVENTS, buildQoderHookCommand } = require("../hooks/qoder-install");
 const { KIMI_HOOK_EVENTS } = require("../hooks/kimi-install");
+const { ZCODE_HOOK_EVENTS, buildZcodeHookCommand } = require("../hooks/zcode-install");
 
 // Complete healthy legacy Kimi config: every event registered, every command
 // carrying the canonical argv mode flag.
@@ -254,6 +255,35 @@ function qwenHooksConfig(commandForEvent = (event) => `"/node" "/app/hooks/qwen-
     }];
   }
   return { hooks };
+}
+
+// ZCode config-file hooks nest under hooks.events.* (NOT hooks.*), and require
+// hooks.enabled:true. The doctor's generic event scanner must follow
+// descriptor.hookEventsContainer=["hooks","events"] to find them.
+function zcodeDescriptor() {
+  const root = makeTempDir();
+  const parentDir = path.join(root, ".zcode", "cli");
+  return baseDescriptor({
+    agentId: "zcode",
+    agentName: "ZCode",
+    marker: "zcode-hook.js",
+    parentDir,
+    configPath: path.join(parentDir, "config.json"),
+    configMode: "file",
+    nested: true,
+    hookEvents: ZCODE_HOOK_EVENTS,
+    hookEventsContainer: ["hooks", "events"],
+  });
+}
+
+function zcodeHooksConfig(commandForEvent = (event) => `"/node" "/app/hooks/zcode-hook.js" ${event}`) {
+  const events = {};
+  for (const event of ZCODE_HOOK_EVENTS) {
+    events[event] = [{
+      hooks: [{ type: "command", command: commandForEvent(event) }],
+    }];
+  }
+  return { hooks: { enabled: true, events } };
 }
 
 function codexDescriptor() {
@@ -944,6 +974,71 @@ describe("checkAgentIntegrations", () => {
       detail: "disableAllHooks is true",
     });
     assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("validates ZCode hooks nested under hooks.events.* for every required event", () => {
+    // Regression: the generic event scanner only saw settings.hooks.<Event>,
+    // so a correctly-installed ZCode config (hooks.events.*) was always reported
+    // as not-connected. descriptor.hookEventsContainer routes the scan to the
+    // nested container.
+    const descriptor = zcodeDescriptor();
+    writeJson(descriptor.configPath, zcodeHooksConfig());
+
+    const seen = [];
+    const detail = runOne(descriptor, {
+      validateCommand: (command) => {
+        seen.push(command);
+        return { ok: true, nodeBin: "/node", scriptPath: "/app/hooks/zcode-hook.js" };
+      },
+    });
+
+    assert.strictEqual(seen.length, ZCODE_HOOK_EVENTS.length);
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.commandCount, ZCODE_HOOK_EVENTS.length);
+    assert.strictEqual(detail.scriptPath, "/app/hooks/zcode-hook.js");
+  });
+
+  it("warns when ZCode hooks.events is missing any required event", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    // Drop the Stop entry to simulate an incomplete install.
+    delete config.hooks.events.Stop;
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.level, "warning");
+    assert.ok(detail.missingHookEvents.includes("Stop"));
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "zcode" });
+  });
+
+  it("validates Windows ZCode EncodedCommand hooks nested under hooks.events.*", () => {
+    const descriptor = zcodeDescriptor();
+    const scriptPath = "D:/app/hooks/zcode-hook.js";
+    writeJson(descriptor.configPath, zcodeHooksConfig((event) =>
+      buildZcodeHookCommand(
+        "C:\\Program Files\\nodejs\\node.exe",
+        scriptPath,
+        event,
+        {
+          platform: "win32",
+          powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        }
+      )
+    ));
+
+    const detail = runOne(descriptor, {
+      platform: "win32",
+      validateCommand: (command) => {
+        assert.ok(command.includes("-EncodedCommand"), `unexpected command: ${command}`);
+        return { ok: true, nodeBin: "C:\\Program Files\\nodejs\\node.exe", scriptPath };
+      },
+    });
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.commandCount, ZCODE_HOOK_EVENTS.length);
+    assert.strictEqual(detail.scriptPath, scriptPath);
   });
 
   it("validates Qoder state-only hooks through the generic file-mode path", () => {

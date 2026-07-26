@@ -1,7 +1,7 @@
 // test/hook-adapter-offline-contract.test.js — #681 Slice A1, adapter contract.
 //
 // The claim this file has to earn: tightening the SHARED resolver to return an
-// unavailable shape is safe for all 14 adapters WITHOUT touching any of them.
+// unavailable shape is safe for all 15 adapters WITHOUT touching any of them.
 //
 // It is not enough to assert the shape in isolation. Seven adapters (codex,
 // copilot, cursor, kimi, kiro, codebuddy, workbuddy) do a bare `pidChain.length`
@@ -35,7 +35,7 @@ const HOOKS_DIR = path.resolve(__dirname, "..", "hooks");
 const PROBE = path.resolve(__dirname, "helpers", "hook-offline-probe.js");
 
 // Every createPidResolver consumer. Cross-checked against
-// `grep -l createPidResolver hooks/*.js` — if a 15th adapter appears without a
+// `grep -l createPidResolver hooks/*.js` — if a 16th adapter appears without a
 // row here, the count assertion at the bottom fails.
 //
 // `stdout` is the EXACT bytes the agent must still receive while Clawd is
@@ -63,6 +63,10 @@ const ADAPTERS = [
   { name: "qoder-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: null },
   { name: "qoderwork-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: null },
   { name: "qwen-code-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: null },
+  // zcode-hook.js is state-only: stdout is always "{}\n" on every path
+  // (offline, online, error). session_id is required for state POSTing and
+  // avoids the early-drop seen on other adapters.
+  { name: "zcode-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
   { name: "reasonix-hook.js", payload: { event: "PreToolUse", cwd: "D:/repo", toolName: "bash" }, stdout: "" },
   // WorkBuddy reads pidChain.length bare too, so the tightened resolver's
   // []-not-null offline shape is still load-bearing here. session_id is
@@ -167,7 +171,7 @@ describe("#681 — every adapter survives a clean offline with zero spawn", { sk
       .sort();
     assert.deepStrictEqual(consumers, ADAPTERS.map((a) => a.name).sort(),
       "a new createPidResolver adapter must be added to ADAPTERS above and proven offline-safe");
-    assert.strictEqual(consumers.length, 14, "the plan and AGENTS.md both say 14 (workbuddy joined in #618)");
+    assert.strictEqual(consumers.length, 15, "zcode-hook.js joined the createPidResolver consumers");
   });
 });
 

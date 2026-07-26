@@ -64,6 +64,14 @@ function extractNodeBinFromCommand(command) {
 }
 
 const MARKER = "zcode-hook.js";
+// Claude Code's state hook. When a user imports their Claude config into ZCode
+// (via ZCode's Hooks settings), `clawd-hook.js` entries can end up in
+// ~/.zcode/cli/config.json. Because clawd-hook.js hardcodes agent_id="claude-code"
+// (it does not detect the host process), a ZCode session would then produce a
+// spurious Claude-Code-attributed session alongside the correct zcode one. We
+// strip ONLY these Clawd-owned Claude entries from the zcode config — third-party
+// hooks are untouched, and ~/.claude/settings.json is NEVER modified.
+const CLAUDE_MARKER = "clawd-hook.js";
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".zcode");
 const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "cli", "config.json");
 
@@ -79,9 +87,16 @@ const ZCODE_HOOK_EVENTS = [
   "Stop",
 ];
 
-function timeoutForZcodeEvent() {
+function timeoutMsForZcodeEvent() {
   // State-only: no blocking PermissionRequest, so every event is a fire-and
-  // -forget state report. 30s mirrors the non-permission Qwen events.
+  // -forget state report. 30000ms (30s) mirrors the non-permission Qwen events.
+  //
+  // IMPORTANT: ZCode's hook schema differs from Claude Code / Qwen in timeout
+  // units. The `timeout` field is in SECONDS (internally ×1000), so writing
+  // `timeout: 30000` would mean ~8.3 hours and block inline hooks on a hang.
+  // Use `timeoutMs` (milliseconds) explicitly — it also takes precedence over
+  // `timeout`. (Qwen's `timeout: 30000` is millisecond-semantic because Qwen
+  // uses the Claude Code schema; do NOT copy that field across.)
   return 30000;
 }
 
@@ -98,6 +113,65 @@ function isClawdHookCommand(command) {
   if (command.includes(MARKER)) return true;
   const decoded = decodeWindowsEncodedCommand(command);
   return !!(decoded && decoded.includes(MARKER));
+}
+
+// Detect Clawd's Claude hook (clawd-hook.js) that was imported into the zcode
+// config. Matches both raw and PowerShell -EncodedCommand forms, like
+// isClawdHookCommand does for the zcode marker.
+function isClaudeHookCommand(command) {
+  if (typeof command !== "string") return false;
+  if (command.includes(CLAUDE_MARKER)) return true;
+  const decoded = decodeWindowsEncodedCommand(command);
+  return !!(decoded && decoded.includes(CLAUDE_MARKER));
+}
+
+// Strip Clawd's Claude hook entries (clawd-hook.js) migrated into the zcode
+// config's hooks.events.* by a ZCode Claude-config import. This is a pure
+// subtraction: clawd-hook.js uses an un-prefixed session_id + agent_id
+// "claude-code", so removing it cannot merge into or corrupt any zcode
+// session. Third-party hooks in the same entry are preserved.
+//
+// Returns { changed, removed } — removed counts stripped Clawd Claude commands
+// (used only for reporting; it is NOT mixed into the register() added/updated
+// counters, which track the zcode hooks specifically).
+function stripMigratedClaudeHooks(events) {
+  let changed = false;
+  let removed = 0;
+  if (!events || typeof events !== "object") return { changed, removed };
+
+  for (const eventName of Object.keys(events)) {
+    const entries = events[eventName];
+    if (!Array.isArray(entries)) continue;
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (!entry || typeof entry !== "object") continue;
+      if (typeof entry.command === "string" && isClaudeHookCommand(entry.command)) {
+        entries.splice(i, 1);
+        i--;
+        removed++;
+        changed = true;
+        continue;
+      }
+      if (Array.isArray(entry.hooks)) {
+        const before = entry.hooks.length;
+        entry.hooks = entry.hooks.filter((h) => {
+          if (h && typeof h.command === "string" && isClaudeHookCommand(h.command)) {
+            removed++;
+            changed = true;
+            return false;
+          }
+          return true;
+        });
+        // Drop the entry entirely if it was a Clawd-only Claude entry now empty.
+        if (entry.hooks.length === 0 && before > 0) {
+          entries.splice(i, 1);
+          i--;
+        }
+      }
+    }
+    if (entries.length === 0) delete events[eventName];
+  }
+  return { changed, removed };
 }
 
 // Mirror the Qwen / Antigravity Windows handling: wrap the command as a
@@ -117,7 +191,7 @@ function buildZcodeHookEntry(command, event) {
     hooks: [{
       type: "command",
       command,
-      timeout: timeoutForZcodeEvent(),
+      timeoutMs: timeoutMsForZcodeEvent(),
     }],
   };
   if (matcher !== null) entry.matcher = matcher;
@@ -147,7 +221,10 @@ function isDesiredHookEntry(entry, desiredCommand, event) {
     && !("name" in entry.hooks[0])
     && entry.hooks[0].type === "command"
     && entry.hooks[0].command === desiredCommand
-    && entry.hooks[0].timeout === timeoutForZcodeEvent()
+    // Must use timeoutMs (ms). A pre-fix entry carrying `timeout: 30000`
+    // (8.3h under ZCode's seconds-semantics) is treated as not-desired so a
+    // re-run rewrites it into the correct timeoutMs form.
+    && entry.hooks[0].timeoutMs === timeoutMsForZcodeEvent()
   );
 }
 
@@ -267,6 +344,14 @@ function registerZcodeHooks(options = {}) {
   }
   const events = settings.hooks.events;
 
+  // Migration (#734): if the user imported their Claude config into ZCode,
+  // Clawd's Claude hook (clawd-hook.js) may already be in hooks.events.* and
+  // would fire alongside zcode-hook.js — producing a spurious Claude-Code
+  // session for a real ZCode session. Strip those Clawd-owned entries first
+  // (third-party hooks preserved, ~/.claude/settings.json untouched).
+  const migrated = stripMigratedClaudeHooks(events);
+  if (migrated.changed) changed = true;
+
   let added = 0;
   let skipped = 0;
   let updated = 0;
@@ -306,10 +391,13 @@ function registerZcodeHooks(options = {}) {
   if (!options.silent) {
     console.log(`Clawd ZCode hooks -> ${settingsPath}`);
     console.log(`  Added: ${added}, updated: ${updated}, skipped: ${skipped}`);
+    if (migrated.removed > 0) {
+      console.log(`  Migrated: removed ${migrated.removed} stale Clawd Claude hook(s) imported from Claude config`);
+    }
     for (const warning of warnings) console.warn(`  Warning: ${warning}`);
   }
 
-  return { added, skipped, updated, warnings };
+  return { added, skipped, updated, migratedClaudeHooks: migrated.removed, warnings };
 }
 
 function unregisterZcodeHooks(options = {}) {
@@ -347,6 +435,16 @@ function unregisterZcodeHooks(options = {}) {
     else delete events[event];
   }
 
+  // Also strip any Clawd Claude hooks (clawd-hook.js) imported from a Claude
+  // config — they only ever produce spurious Claude-Code sessions here, so
+  // uninstalling the ZCode integration removes them too. Third-party hooks
+  // remain; ~/.claude/settings.json is never touched.
+  const migrated = stripMigratedClaudeHooks(events);
+  if (migrated.changed) {
+    removed += migrated.removed;
+    changed = true;
+  }
+
   // If Clawd was the only config-file hook source, clean up the now-empty
   // hooks wrapper (drop the enabled flag + empty events object) so the user's
   // config.json is left pristine, not carrying a stale "enabled": true.
@@ -374,12 +472,15 @@ module.exports = {
   DEFAULT_PARENT_DIR,
   DEFAULT_CONFIG_PATH,
   MARKER,
+  CLAUDE_MARKER,
   ZCODE_HOOK_EVENTS,
   buildZcodeHookCommand,
   matcherForZcodeEvent,
   registerZcodeHooks,
   unregisterZcodeHooks,
-  timeoutForZcodeEvent,
+  timeoutMsForZcodeEvent,
+  isClaudeHookCommand,
+  stripMigratedClaudeHooks,
 };
 
 if (require.main === module) {

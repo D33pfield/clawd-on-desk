@@ -2190,12 +2190,19 @@ function detectRunningAgentProcesses(callback) {
     .filter((entry) => entry && entry.name && entry.agentId && isEnabled(entry.agentId));
   // Preserve node-shaped CLI detection only as a weak keep-awake fallback.
   // A match here never creates a session or publishes a task-level state.
+  // An optional `processName` overrides the default `node.exe` host for an
+  // entry — used by agents whose Windows runtime is a different binary (e.g.
+  // ZCode reuses the `ZCode.exe` desktop shell to run `zcode.cjs`).
   const commandLineNeedles = [
     { agentId: "claude-code", needle: "claude-code" },
     { agentId: "codex", needle: "codex" },
     { agentId: "copilot-cli", needle: "copilot" },
     { agentId: "codebuddy", needle: "codebuddy" },
     { agentId: "kimi-cli", needle: "kimi-code" },
+    // ZCode's Windows runtime is the desktop shell ZCode.exe running
+    // resources/glm/zcode.cjs app-server; only the cmdline token disambiguates
+    // the working process from the always-running shell.
+    { agentId: "zcode", needle: "zcode.cjs", processName: "zcode.exe" },
   ].filter((entry) => isEnabled(entry.agentId));
   const platformCommandLineNeedles = process.platform === "win32" || !isEnabled("pi")
     ? commandLineNeedles
@@ -2220,8 +2227,11 @@ function detectRunningAgentProcesses(callback) {
     const psScript =
       `$names = @(${quotedNames}); ` +
       `$nodeNeedles = @(${quotedNeedles}); ` +
+      // Each needle may carry its own host process name (default node.exe) so a
+      // non-node runtime like ZCode.exe can be matched by name+cmdline jointly.
+      `$nodeNeedleNames = @(${platformCommandLineNeedles.map((entry) => `'${String(entry.processName || "node.exe").replace(/'/g, "''")}'`).join(",")}); ` +
       "$nameFilters = $names | ForEach-Object { \"Name='$_'\" }; " +
-      "$nodeFilters = $nodeNeedles | ForEach-Object { \"(Name='node.exe' AND CommandLine LIKE '%$_%')\" }; " +
+      "$nodeFilters = for ($i = 0; $i -lt $nodeNeedles.Length; $i++) { \"(Name='$($nodeNeedleNames[$i])' AND CommandLine LIKE '%$($nodeNeedles[$i])%')\" }; " +
       "$filter = (@($nameFilters) + @($nodeFilters)) -join ' OR '; " +
       "$match = Get-CimInstance Win32_Process -Filter $filter | Select-Object -First 1; " +
       "if ($match) { $match.ProcessId }";
