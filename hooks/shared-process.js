@@ -74,29 +74,29 @@ function normalizeOrcaPaneKey(value) {
   return /^[\w-]+:[\w-]+$/.test(text) ? text : null;
 }
 
-// Orca runs every terminal under a detached daemon process, so no ancestor of
-// the agent identifies the IDE and no window title carries the cwd — the whole
-// process-tree strategy in src/focus.js cannot see it. ORCA_PANE_KEY is
-// "<tabId>:<leafId>" and survives Orca runtime restarts; ORCA_TERMINAL_HANDLE
-// does not (`orca terminal switch` rejects it with terminal_handle_stale), so
-// the pane key is the only durable identifier worth shipping. Requiring
-// TERM_PROGRAM too keeps an inherited pane key from claiming a nested shell.
+// Orca runs every terminal under a detached daemon, so no ancestor of the agent
+// identifies the IDE and no window title carries the cwd — the process-tree
+// strategy in src/focus.js cannot see it at all. ORCA_PANE_KEY ("<tabId>:<leafId>")
+// survives Orca runtime restarts; ORCA_TERMINAL_HANDLE does not (`orca terminal
+// switch` rejects it with terminal_handle_stale), so the pane key is the only
+// durable identifier worth shipping. Orca is a third-party CLI with no stability
+// guarantee: both env vars and the `terminal list` JSON shape were observed on
+// Orca 1.4.156, 2026-07-27.
 //
-// TERM_PROGRAM alone is not enough, though: launch another terminal from inside
-// an Orca pane and the child shell inherits both TERM_PROGRAM and ORCA_PANE_KEY
-// while genuinely living in that terminal's own window. Because a pane key
-// outranks every other signal in the focus script, the inherited copy would
-// raise Orca instead of the terminal the agent is actually in — and report it as
-// a success. So reject the key whenever a terminal that advertises itself in the
-// environment is the inner one.
+// Both checks in orcaPaneKeyFromEnv are load-bearing. TERM_PROGRAM alone is not
+// enough: launch another terminal from inside an Orca pane and the child inherits
+// TERM_PROGRAM and ORCA_PANE_KEY while genuinely living in that terminal's own
+// window. On Windows a pane key outranks the title-matched window cache and the
+// hook's wt_hwnd, so the inherited copy would raise Orca and report it as a
+// success. Reject the key whenever an inner terminal advertises itself.
+//
+// TMUX is on the list because a tmux server outlives the pane that started it:
+// re-attaching the session from another terminal would carry the stale pane key.
+// tmux >= 3.2 sets TERM_PROGRAM=tmux and is already excluded by the first check;
+// the entry covers older versions, which leave the inherited value in place.
 //
 // Known residual: a bare conhost / pwsh window sets no marker of its own, so an
-// agent started that way from an Orca pane still looks like the pane. Terminals
-// that DO set TERM_PROGRAM themselves (iTerm, Apple_Terminal, vscode, Hyper,
-// ghostty) are already excluded by the check above.
-//
-// TMUX is deliberately not in this list: tmux runs *inside* the pane, so Orca is
-// still the window to raise.
+// agent started that way from an Orca pane still looks like the pane itself.
 const NESTED_TERMINAL_ENV = [
   "WT_SESSION",            // Windows Terminal
   "ALACRITTY_WINDOW_ID",   // Alacritty
@@ -105,6 +105,7 @@ const NESTED_TERMINAL_ENV = [
   "KONSOLE_VERSION",       // Konsole
   "GNOME_TERMINAL_SCREEN", // gnome-terminal
   "ConEmuPID",             // ConEmu / Cmder
+  "TMUX",                  // tmux server env outlives the pane
 ];
 
 function orcaPaneKeyFromEnv(env = process.env) {
@@ -1076,6 +1077,7 @@ module.exports = {
   tmuxSocketFromEnv,
   orcaPaneKeyFromEnv,
   applyOrcaPaneKey,
+  NESTED_TERMINAL_ENV,
   processAlive,
   WINDOWS_TERMINAL_WINDOW_CLASS,
   WINDOWS_TERMINAL_PROCESS_NAMES,
