@@ -3866,6 +3866,7 @@ function createWindow() {
   win.webContents.on("did-finish-load", () => {
     sendToRenderer("theme-config", buildRendererThemeConfig());
     sendToRenderer("viewport-offset", petWindowRuntime.getViewportOffsetY());
+    sendToRenderer("viewport-offset-x", petWindowRuntime.getViewportOffsetX());
     if (themeRuntime.isReloadInProgress()) return;
     syncRendererStateAfterLoad();
   });
