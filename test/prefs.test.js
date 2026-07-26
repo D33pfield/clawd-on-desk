@@ -29,6 +29,8 @@ describe("prefs.getDefaults", () => {
     assert.notStrictEqual(a, b);
     assert.notStrictEqual(a.agents, b.agents);
     assert.notStrictEqual(a.themeOverrides, b.themeOverrides);
+    assert.notStrictEqual(a.petTint, b.petTint);
+    assert.notStrictEqual(a.petAccessory, b.petAccessory);
     assert.notStrictEqual(a.shortcuts, b.shortcuts);
     assert.notStrictEqual(a.sessionAliases, b.sessionAliases);
     assert.notStrictEqual(a.tgApproval, b.tgApproval);
@@ -47,6 +49,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.manageClaudeHooksAutomatically, true);
     assert.strictEqual(d.autoStartWithClaude, false);
     assert.deepStrictEqual(d.petTint, {});
+    assert.deepStrictEqual(d.petAccessory, {});
     assert.strictEqual(d.lowPowerIdleMode, false);
     assert.strictEqual(d.allowEdgePinning, false);
     assert.strictEqual(d.disableMiniMode, false);
@@ -190,6 +193,7 @@ describe("prefs.validate", () => {
       soundMuted: "yes",     // wrong type
       soundVolume: 2,        // out of range → default 1
       petTint: "custom-css",
+      petAccessory: "wizard-hat",
       lowPowerIdleMode: "yes",
       x: NaN,                // not finite
       bubbleFollowPet: true, // ok
@@ -213,6 +217,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.soundMuted, false);
     assert.strictEqual(v.soundVolume, 1);
     assert.deepStrictEqual(v.petTint, {});
+    assert.deepStrictEqual(v.petAccessory, {});
     assert.strictEqual(v.lowPowerIdleMode, false);
     assert.strictEqual(v.x, 0);
     assert.strictEqual(v.bubbleFollowPet, true);
@@ -350,6 +355,7 @@ describe("prefs.validate", () => {
       miniEdge: "left",
       theme: "calico",
       petTint: { clawd: "gold", cloudling: "matcha" },
+      petAccessory: { clawd: "wizard-hat", cloudling: "halo" },
     });
     assert.strictEqual(v.lang, "ko");
     assert.strictEqual(v.soundMuted, true);
@@ -373,6 +379,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.miniEdge, "left");
     assert.strictEqual(v.theme, "calico");
     assert.deepStrictEqual(v.petTint, { clawd: "gold", cloudling: "matcha" });
+    assert.deepStrictEqual(v.petAccessory, { clawd: "wizard-hat", cloudling: "halo" });
   });
 
   it("accepts soundVolume 0 (silent playback is valid)", () => {
@@ -1231,7 +1238,19 @@ describe("prefs.migrate v11 → v12 (showDock default off for fresh installs)", 
   });
 });
 
-describe("prefs ephemeral fields (auto-pilot does not persist)", () => {
+describe("prefs permission automation safe startup persistence", () => {
+  it("defaults to off, preserves auto-tools, and downgrades unattended", () => {
+    assert.strictEqual(prefs.getDefaults().permissionAutomationMode, "off");
+    assert.strictEqual(
+      prefs.validate({ permissionAutomationMode: "auto-tools" }).permissionAutomationMode,
+      "auto-tools"
+    );
+    assert.strictEqual(
+      prefs.validate({ permissionAutomationMode: "unattended" }).permissionAutomationMode,
+      "auto-tools"
+    );
+  });
+
   it("validate() never restores a persisted autoApproveAllPermissions=true", () => {
     assert.strictEqual(prefs.validate({ autoApproveAllPermissions: true }).autoApproveAllPermissions, false);
   });
@@ -1244,6 +1263,24 @@ describe("prefs ephemeral fields (auto-pilot does not persist)", () => {
     assert.strictEqual(onDisk.lang, "zh", "non-ephemeral fields still persist");
   });
 
+  it("save() persists off and auto-tools as their matching startup modes", () => {
+    for (const mode of ["off", "auto-tools"]) {
+      const p = makeTempPath();
+      prefs.save(p, { ...prefs.getDefaults(), permissionAutomationMode: mode, lang: "zh" });
+      const onDisk = JSON.parse(fs.readFileSync(p, "utf8"));
+      assert.strictEqual(onDisk.permissionAutomationMode, mode);
+      assert.strictEqual(prefs.load(p).snapshot.permissionAutomationMode, mode);
+    }
+  });
+
+  it("save() persists unattended as the safe auto-tools startup mode", () => {
+    const p = makeTempPath();
+    prefs.save(p, { ...prefs.getDefaults(), permissionAutomationMode: "unattended", lang: "zh" });
+    const onDisk = JSON.parse(fs.readFileSync(p, "utf8"));
+    assert.strictEqual(onDisk.permissionAutomationMode, "auto-tools");
+    assert.strictEqual(prefs.load(p).snapshot.permissionAutomationMode, "auto-tools");
+  });
+
   it("survives a quit/relaunch as OFF even after being enabled mid-session", () => {
     const p = makeTempPath();
     // Session 1: user turned auto-pilot on, then the app persisted prefs.
@@ -1253,10 +1290,36 @@ describe("prefs ephemeral fields (auto-pilot does not persist)", () => {
     assert.strictEqual(snapshot.autoApproveAllPermissions, false, "auto-pilot must be off on relaunch");
   });
 
+  it("persists each automatic-mode warning acknowledgement independently", () => {
+    const p = makeTempPath();
+    prefs.save(p, {
+      ...prefs.getDefaults(),
+      permissionAutomationMode: "auto-tools",
+      permissionAutomationAutoToolsWarningDismissed: true,
+      permissionAutomationUnattendedWarningDismissed: false,
+    });
+    const { snapshot } = prefs.load(p);
+    assert.strictEqual(snapshot.permissionAutomationMode, "auto-tools");
+    assert.strictEqual(snapshot.permissionAutomationAutoToolsWarningDismissed, true);
+    assert.strictEqual(snapshot.permissionAutomationUnattendedWarningDismissed, false);
+  });
+
   it("load() ignores a hand-edited autoApproveAllPermissions:true in the file", () => {
     const p = makeTempPath();
     fs.writeFileSync(p, JSON.stringify({ version: prefs.CURRENT_VERSION, autoApproveAllPermissions: true }));
     const { snapshot } = prefs.load(p);
+    assert.strictEqual(snapshot.autoApproveAllPermissions, false);
+  });
+
+  it("load() safely downgrades a hand-edited unattended mode and ignores old true", () => {
+    const p = makeTempPath();
+    fs.writeFileSync(p, JSON.stringify({
+      version: prefs.CURRENT_VERSION,
+      permissionAutomationMode: "unattended",
+      autoApproveAllPermissions: true,
+    }));
+    const { snapshot } = prefs.load(p);
+    assert.strictEqual(snapshot.permissionAutomationMode, "auto-tools");
     assert.strictEqual(snapshot.autoApproveAllPermissions, false);
   });
 });
@@ -1384,6 +1447,29 @@ describe("prefs.save", () => {
       { clawd: "gold", cloudling: "gold" }
     );
     assert.deepStrictEqual(prefs.validate({ petTint: "none" }).petTint, {});
+  });
+
+  it("round-trips per-theme accessories and rejects the discarded global scalar shape", () => {
+    const p = makeTempPath();
+    prefs.save(p, {
+      ...prefs.getDefaults(),
+      petAccessory: { clawd: "wizard-hat", cloudling: "halo" },
+    });
+    assert.deepStrictEqual(
+      prefs.load(p).snapshot.petAccessory,
+      { clawd: "wizard-hat", cloudling: "halo" }
+    );
+
+    prefs.save(p, {
+      ...prefs.getDefaults(),
+      petAccessory: {
+        clawd: "seasonal",
+        "../unsafe": "halo",
+        calico: "none",
+      },
+    });
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(p, "utf8")).petAccessory, {});
+    assert.deepStrictEqual(prefs.validate({ petAccessory: "wizard-hat" }).petAccessory, {});
   });
 
   it("validates before writing — bad fields fall back to defaults on disk", () => {

@@ -15,9 +15,9 @@ html, body {
 }
 
 /* Seam clip layer — wraps #pet-container so the multi-monitor seam
-   clip-path is applied in screen space. #pet-container itself carries
-   transform: scaleX(-1) in left-edge mini mode, which would mirror a
-   clip-path applied directly to it; this outer layer is never flipped. */
+   clip-path is applied in screen space. #pet-facing-stage carries the
+   left-edge mini-mode flip; this outer layer remains untransformed so
+   the screen-space clip is never mirrored. */
 #pet-clip {
   width: 100%;
   height: 100%;
@@ -38,6 +38,42 @@ html, body {
   cursor: grabbing;
 }
 
+#pet-facing-stage,
+#pet-motion-stage,
+#pet-asset-direction-stage,
+#pet-media-layer,
+#pet-accessory-layer,
+#pet-effect-stage,
+#pet-particle-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform-origin: 50% 50%;
+}
+
+#pet-facing-stage,
+#pet-asset-direction-stage {
+  scale: none;
+}
+
+#pet-motion-stage {
+  translate: none;
+}
+
+#pet-effect-stage,
+#pet-particle-layer {
+  pointer-events: none;
+  transform: none;
+  translate: none;
+  scale: none;
+  rotate: none;
+}
+
+#pet-media-layer {
+  overflow: visible;
+}
+
 #clawd {
   width: 190%;
   height: 130%;
@@ -47,23 +83,34 @@ html, body {
   pointer-events: none;
 }
 
-#pet-container.mini-left {
-  transform: scaleX(-1);
+#pet-container.mini-left #pet-facing-stage {
+  scale: -1 1;
+}
+
+.clawd-accessory {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: none;
+  pointer-events: none;
+  transform-origin: 0 0;
+  image-rendering: pixelated;
+  filter: none;
 }
 
 /* ── Roam walk animation ──
    When the pet is roaming (free-roam mode), add a subtle horizontal bob
    to simulate walking even if the theme doesn't have a dedicated roam SVG.
    The animation is a gentle sway that makes the idle pose look alive. */
-#pet-container.roam-walk #clawd {
+#pet-container.roam-walk #pet-motion-stage {
   animation: roam-walk-bob 0.4s ease-in-out infinite;
 }
 
 @keyframes roam-walk-bob {
   0%, 100% {
-    transform: translateX(0);
+    translate: none;
   }
   50% {
-    transform: translateX(3px);
+    translate: 3px 0;
   }
 }

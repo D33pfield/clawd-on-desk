@@ -121,6 +121,16 @@ function familyPayload(overrides = {}) {
     familyAlways: ["bash"],
     familyPatterns: [],
     suggestions: [],
+    interaction: {
+      intent: "tool-approval",
+      automationEligibility: { autoTools: true, unattended: true },
+      capabilities: {
+        allowDeny: true,
+        answerQuestions: false,
+        planFeedback: false,
+        nativeFallback: true,
+      },
+    },
     ...overrides,
   };
 }
@@ -133,6 +143,28 @@ describe("bubble-renderer family branch (executed)", () => {
     assert.strictEqual(r.el("toolPill").getAttribute("data-tool"), "Bash");
     // Final state — a later mutation blanking the block fails HERE.
     assert.strictEqual(r.el("commandBlock").textContent, "rm -rf /tmp/x");
+  });
+
+  it("keeps the family UI and Always action when a missing tool name is classified unknown", () => {
+    const r = makeRenderer();
+    r.show(familyPayload({
+      toolName: "unknown",
+      toolInput: { command: "custom action" },
+      interaction: {
+        intent: "unknown",
+        automationEligibility: { autoTools: false, unattended: false },
+        capabilities: {
+          allowDeny: true,
+          answerQuestions: false,
+          planFeedback: false,
+          nativeFallback: true,
+        },
+      },
+    }));
+
+    assert.strictEqual(r.el("toolPillText").textContent, "Unknown");
+    assert.strictEqual(r.el("commandBlock").textContent, "custom action");
+    assert.strictEqual(r.el("suggestions").children[0].textContent, "Always Allow (blanket)");
   });
 
   it("dedupes repeated filepath segments", () => {

@@ -84,6 +84,8 @@ const createSettingsEffectRouter = require("./settings-effect-router");
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
+  getPetAccessoryIdForTheme,
+  resolvePetAccessoryPayload,
 } = require("./pet-customization-catalog");
 const { registerSessionIpc } = require("./session-ipc");
 const { createSessionFolderOpener } = require("./session-open-folder");
@@ -143,6 +145,7 @@ const { focusCodexThreadTarget } = require("./session-focus-handoff");
 const { isSessionInProgress } = require("./state-session-snapshot");
 const { restoreSessionsFromRecoveryLeases } = require("./session-recovery-loader");
 const { getAllAgents, getAgent } = require("../agents/registry");
+const { getAgentIconUrl } = require("./state-agent-icons");
 // ── Autoplay policy: allow sound playback without user gesture ──
 // MUST be set before any BrowserWindow is created (before app.whenReady)
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -970,6 +973,7 @@ let soundVolume = _settingsController.get("soundVolume");
 let lowPowerIdleMode = _settingsController.get("lowPowerIdleMode");
 let keepAwakeWhileWorking = _settingsController.get("keepAwakeWhileWorking");
 let petTint = _settingsController.get("petTint");
+let petAccessory = _settingsController.get("petAccessory");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let disableMiniModeCached = _settingsController.get("disableMiniMode");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
@@ -1151,6 +1155,8 @@ function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
   const activeTheme = getActiveTheme();
   const tintId = getPetTintIdForTheme(petTint, activeTheme && activeTheme._id);
   sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
+  const accessoryId = getPetAccessoryIdForTheme(petAccessory, activeTheme && activeTheme._id);
+  sendToRenderer("pet-accessory-change", resolvePetAccessoryPayload(accessoryId, activeTheme));
   sendToRenderer("low-power-idle-mode-change", lowPowerIdleMode);
   if (_mini.getMiniMode()) {
     sendToRenderer("mini-mode-change", true, _mini.getMiniEdge());
@@ -1453,13 +1459,10 @@ const _permCtx = {
   syncImeEditingPetDodge: () => topmostRuntime.syncImeEditingPetDodge(),
   isAgentPermissionsEnabled: (agentId) =>
     _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
-  // DANGER "auto-pilot": when true, showPermissionBubble auto-approves every
-  // request instead of rendering a bubble. DND / per-agent / headless gates
-  // run earlier in the route, so they still win — this only fires once a
-  // bubble would otherwise show. Headless fallback stays agent-specific
-  // (no-decision/native fallback, opencode silent TUI fallback, or CC deny).
-  isAutoApproveAllEnabled: () =>
-    _settingsController.get("autoApproveAllPermissions") === true,
+  // The permission layer consumes one normalized runtime mode. DND,
+  // headless, per-agent and bubble gates run before this chokepoint.
+  getPermissionAutomationMode: () =>
+    _settingsController.get("permissionAutomationMode") || "off",
   focusTerminalForSession: (sessionId, options = {}) => {
     focusDashboardSession(sessionId, {
       requestSource: options.requestSource || "permission-bubble",
@@ -1596,8 +1599,14 @@ function buildRendererThemeConfig() {
     const activeTheme = getActiveTheme();
     const tintSelections = _settingsController.get("petTint");
     const tintId = getPetTintIdForTheme(tintSelections, activeTheme && activeTheme._id);
+    const accessorySelections = _settingsController.get("petAccessory");
+    const accessoryId = getPetAccessoryIdForTheme(
+      accessorySelections,
+      activeTheme && activeTheme._id
+    );
     cfg.idleDefaultVisual = getIdleVisualChoice();
     cfg.petTintPayload = resolvePetTintPayload(tintId, activeTheme);
+    cfg.accessoryPayload = resolvePetAccessoryPayload(accessoryId, activeTheme);
   }
   return cfg;
 }
@@ -1916,6 +1925,7 @@ function buildTutorialAgentOnboardingState() {
     detectionAgents: detection.agents,
     agentsPref: _settingsController.get("agents") || {},
     installableIds: INSTALLABLE_AGENT_IDS,
+    getAgentIconUrl,
   });
 }
 
@@ -3177,14 +3187,25 @@ const _menuCtx = {
   set hideBubbles(v) { _settingsController.applyCommand("setAllBubblesHidden", { hidden: !!v }).catch((err) => {
     console.warn("Clawd: setAllBubblesHidden failed:", err && err.message);
   }); },
-  get autoApproveAllPermissions() { return _settingsController.get("autoApproveAllPermissions") === true; },
-  // Route through the gated command. The menu shows its own native danger
-  // confirm before setting true, so it passes confirmed:true; disabling needs
-  // no confirmation. applyUpdate is intentionally NOT used — the field is
-  // gated so the confirm dialog is a real boundary, not UI-only.
-  set autoApproveAllPermissions(v) {
-    _settingsController.applyCommand("setAutoApproveAll", { enabled: !!v, confirmed: true }).catch((err) => {
-      console.warn("Clawd: setAutoApproveAll failed:", err && err.message);
+  get permissionAutomationMode() {
+    return _settingsController.get("permissionAutomationMode") || "off";
+  },
+  isPermissionAutomationWarningDismissed(mode) {
+    const key = mode === "auto-tools"
+      ? "permissionAutomationAutoToolsWarningDismissed"
+      : (mode === "unattended"
+        ? "permissionAutomationUnattendedWarningDismissed"
+        : null);
+    return key ? _settingsController.get(key) === true : false;
+  },
+  setPermissionAutomationMode(mode, options = {}) {
+    return _settingsController.applyCommand("setPermissionAutomationMode", {
+      mode,
+      confirmed: options.confirmed === true,
+      suppressFutureConfirmation: options.suppressFutureConfirmation === true,
+    }).catch((err) => {
+      console.warn("Clawd: setPermissionAutomationMode failed:", err && err.message);
+      return { status: "error", message: err && err.message };
     });
   },
   get soundMuted() { return soundMuted; },
@@ -3336,6 +3357,7 @@ const SETTINGS_MIRROR_SETTERS = {
   soundMuted: (v) => { soundMuted = v; }, soundVolume: (v) => { soundVolume = v; }, lowPowerIdleMode: (v) => { lowPowerIdleMode = v; },
   keepAwakeWhileWorking: (v) => { keepAwakeWhileWorking = v; },
   petTint: (v) => { petTint = v; },
+  petAccessory: (v) => { petAccessory = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, disableMiniMode: (v) => { disableMiniModeCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; resetKeepSizeFrozen(); },
   fullscreenOverlay: (v) => { fullscreenOverlayCached = v; },
   freeRoam: (v) => { _roam.setEnabled(v); },

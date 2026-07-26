@@ -891,6 +891,7 @@ describe("theme-loader capability metadata", () => {
       sleepMode: "full",
       powerProfile: "standard",
       petTint: false,
+      accessories: false,
     });
   });
 
@@ -907,6 +908,7 @@ describe("theme-loader capability metadata", () => {
       sleepMode: "full",
       powerProfile: "standard",
       petTint: false,
+      accessories: false,
     });
 
     const listed = themeLoader.listThemesWithMetadata().find((theme) => theme.id === "capTheme");

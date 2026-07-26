@@ -59,6 +59,35 @@ describe("buildStateBody", () => {
     assert.strictEqual(body.cwd, "/tmp/p");
   });
 
+  it("preserves Claude subagent provenance without replacing the canonical agent id", () => {
+    const body = buildStateBody(
+      "SessionEnd",
+      {
+        session_id: "sid-subagent",
+        agent_id: "agent-7f3a",
+        agent_type: "Explore",
+      },
+      mockResolve
+    );
+    assert.strictEqual(body.agent_id, "claude-code");
+    assert.strictEqual(body.subagent_id, "agent-7f3a");
+    assert.strictEqual(body.subagent_type, "Explore");
+  });
+
+  it("drops malformed subagent metadata", () => {
+    const body = buildStateBody(
+      "SessionEnd",
+      {
+        session_id: "sid-subagent",
+        agent_id: "bad\nagent",
+        agent_type: "Explore",
+      },
+      mockResolve
+    );
+    assert.strictEqual(body.subagent_id, undefined);
+    assert.strictEqual(body.subagent_type, undefined);
+  });
+
   it("maps PreToolUse to working state", () => {
     const body = buildStateBody("PreToolUse", { session_id: "s" }, mockResolve);
     assert.strictEqual(body.state, "working");

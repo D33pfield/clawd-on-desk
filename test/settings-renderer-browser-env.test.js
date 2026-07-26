@@ -631,6 +631,7 @@ function makeGeneralSnapshot(overrides = {}) {
     lang: "en",
     theme: "clawd",
     petTint: {},
+    petAccessory: {},
     size: 50,
     sessionHudEnabled: true,
     sessionHudShowStateLabels: true,
@@ -799,6 +800,7 @@ function loadThemeTabForTest({
   themes,
   snapshot,
   petTintOptions,
+  petAccessoryOptions,
   settingsAPI = {},
 } = {}) {
   const body = new FakeElement("body");
@@ -822,10 +824,20 @@ function loadThemeTabForTest({
     command: (name, payload) => {
       commands.push({ name, payload });
       if (name === "setThemeSelection" && payload && typeof payload.themeId === "string") {
+        const target = themeListState.find((theme) => theme && theme.id === payload.themeId);
         themeListState = themeListState.map((theme) => ({
           ...theme,
           active: theme.id === payload.themeId,
         }));
+        return Promise.resolve({
+          status: "ok",
+          customizationCapabilities: target
+            ? {
+                petTint: target.capabilities && target.capabilities.petTint === true,
+                accessories: target.capabilities && target.capabilities.accessories === true,
+              }
+            : null,
+        });
       }
       return Promise.resolve({ status: "ok" });
     },
@@ -878,10 +890,18 @@ function loadThemeTabForTest({
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-theme.js"), "utf8"), context);
 
   const core = context.ClawdSettingsCore;
-  core.state.snapshot = { lang: "en", petTint: {}, ...(snapshot || {}) };
+  core.state.snapshot = {
+    lang: "en",
+    petTint: {},
+    petAccessory: {},
+    ...(snapshot || {}),
+  };
   core.state.activeTab = "theme";
   core.runtime.themeList = themeListState;
   core.runtime.petTintOptions = Array.isArray(petTintOptions) ? petTintOptions : [];
+  core.runtime.petAccessoryOptions = Array.isArray(petAccessoryOptions)
+    ? petAccessoryOptions
+    : [];
   context.ClawdSettingsTabTheme.init(core);
   const renderContent = () => {
     content.innerHTML = "";
@@ -1059,6 +1079,7 @@ function loadAgentsTabForTest({
 
 function loadAnimMapTabForTest({
   snapshot,
+  settingsAPI = {},
 } = {}) {
   const body = new FakeElement("body");
   const content = new FakeElement("main");
@@ -1089,6 +1110,7 @@ function loadAnimMapTabForTest({
     globalThis: null,
     settingsAPI: {
       command: () => Promise.resolve({ status: "ok" }),
+      ...settingsAPI,
     },
     ClawdSettingsSizeSlider: {
       SIZE_UI_MIN: 1,
@@ -1515,11 +1537,15 @@ describe("settings renderer browser environment", () => {
     assert.ok(rendererSource.includes("globalThis.ClawdSettingsCore"));
     assert.ok(rendererSource.includes("settingsAPI.onRemoteApprovalStatusChanged"));
     assert.ok(rendererSource.includes("settingsAPI.getPetTintOptions"));
+    assert.ok(rendererSource.includes("settingsAPI.getPetAccessoryOptions"));
     assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
       'getPetTintOptions: () => ipcRenderer.invoke("settings:get-pet-tint-options")'
     ));
     assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
       'getQuotaSourceCount: () => ipcRenderer.invoke("settings:get-quota-source-count")'
+    ));
+    assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
+      'getPetAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-accessory-options")'
     ));
     assert.ok(rendererSource.includes("tab.refreshRuntimeStatus(payload)"));
     assert.ok(coreSource.includes("ClawdSettingsSizeSlider"));
@@ -3618,6 +3644,21 @@ describe("settings renderer browser environment", () => {
     assert.ok(!pickerCss.includes(".language-segmented"));
   });
 
+  it("lets the open language picker escape its section without changing closed-card clipping", () => {
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    const sectionRowsRule = css.match(/\.section-rows\s*\{([^}]*)\}/);
+    const openSectionRule = css.match(/\.section:has\(\.language-picker\.open\)\s*\{([^}]*)\}/);
+    const openRowsRule = css.match(/\.section-rows:has\(\.language-picker\.open\)\s*\{([^}]*)\}/);
+
+    assert.ok(sectionRowsRule, "settings cards should retain their base clipping rule");
+    assert.match(sectionRowsRule[1], /overflow:\s*hidden;/);
+    assert.ok(openSectionRule, "the section containing an open language picker should be raised");
+    assert.match(openSectionRule[1], /position:\s*relative;/);
+    assert.match(openSectionRule[1], /z-index:\s*1;/);
+    assert.ok(openRowsRule, "the open language picker should escape the settings card");
+    assert.match(openRowsRule[1], /overflow:\s*visible;/);
+  });
+
   it("populates the language picker with current selection and propagates click changes", () => {
     const harness = loadGeneralLanguageRowForTest({
       snapshot: { lang: "en" },
@@ -3953,24 +3994,40 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("claudeHooksDisconnectConfirmKeep"));
   });
 
-  it("wires the danger auto-pilot toggle with a confirm modal and red label", () => {
+  it("renders three permission automation modes with two confirmation-gated automatic choices", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
-    // Row is registered with danger:true and routes the enable path through a confirm.
-    assert.ok(generalSource.includes('key: "autoApproveAllPermissions"'));
-    assert.ok(generalSource.includes("danger: true"));
-    assert.ok(generalSource.includes("confirmAutoApproveAll"));
-    assert.ok(generalSource.includes("showAutoApproveAllConfirmModal"));
-    assert.ok(generalSource.includes('{ id: "enable", label: t("autoApproveAllConfirmEnable"), tone: "danger" }'));
-    // buildSwitchRow honors danger by painting the label red.
-    assert.ok(coreSource.includes("row-label-danger"));
-    assert.ok(css.includes(".row-label.row-label-danger"));
-    // Simple title + localized confirm strings exist.
-    assert.ok(i18nSource.includes('rowAutoApproveAll: "Auto-approve all requests"'));
-    assert.ok(i18nSource.includes('rowAutoApproveAll: "自动放行所有请求"'));
-    assert.ok(i18nSource.includes("autoApproveAllConfirmTitle"));
+    assert.ok(generalSource.includes("PERMISSION_AUTOMATION_OPTIONS"));
+    assert.ok(generalSource.includes('{ id: "off", labelKey: "permissionAutomationOff" }'));
+    assert.ok(generalSource.includes('{ id: "auto-tools", labelKey: "permissionAutomationAutoTools" }'));
+    assert.ok(generalSource.includes('{ id: "unattended", labelKey: "permissionAutomationUnattended" }'));
+    assert.ok(generalSource.includes('window.settingsAPI.command("setPermissionAutomationMode"'));
+    assert.ok(generalSource.includes("confirmed: true"));
+    assert.ok(generalSource.includes("showPermissionAutomationConfirmModal"));
+    assert.ok(generalSource.includes("permissionAutomationUnattendedConfirmTitle"));
+    assert.ok(generalSource.includes("permissionAutomationAutoToolsWarningDismissed"));
+    assert.ok(generalSource.includes("permissionAutomationUnattendedWarningDismissed"));
+    assert.ok(generalSource.includes("permissionAutomationAutoToolsDontShowAgain"));
+    assert.ok(generalSource.includes("permissionAutomationUnattendedDontShowAgain"));
+    assert.ok(generalSource.includes("suppressFutureConfirmation: result.checkboxChecked === true"));
+    assert.ok(generalSource.includes("isPermissionAutomationWarningDismissed(mode)"));
+    assert.ok(i18nSource.includes("permissionAutomationAutoToolsDontShowAgain"));
+    assert.ok(i18nSource.includes("permissionAutomationUnattendedDontShowAgain"));
+    assert.ok(css.includes(".settings-confirm-checkbox"));
+    assert.ok(coreSource.includes("checkboxLabel = \"\""));
+    assert.ok(coreSource.includes('checkboxInput.type = "checkbox"'));
+    assert.ok(coreSource.includes("checkboxChecked: !!(checkboxInput && checkboxInput.checked)"));
+    assert.ok(css.includes("grid-template-columns: repeat(3, minmax(0, 1fr))"));
+    assert.ok(generalSource.includes('segmented.setAttribute("role", "group")'));
+    assert.ok(generalSource.includes('segmented.setAttribute("aria-label", t("rowPermissionAutomation"))'));
+    assert.ok(generalSource.includes('btn.setAttribute("aria-pressed", selected ? "true" : "false")'));
+    assert.ok(i18nSource.includes('rowPermissionAutomation: "Permission request handling"'));
+    assert.ok(i18nSource.includes('rowPermissionAutomation: "权限请求处理"'));
+    assert.ok(i18nSource.includes("permissionAutomationAutoToolsConfirmTitle"));
+    assert.ok(i18nSource.includes("CodeBuddy"));
+    assert.ok(!generalSource.includes("autoApproveAllPermissions"));
     // Lives in its own Permissions section, not under Bubbles.
     assert.ok(generalSource.includes('t("sectionPermissions")'));
     assert.ok(i18nSource.includes('sectionPermissions: "Permissions"'));
@@ -4748,6 +4805,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("themeCustomize"));
     assert.ok(i18nSource.includes("themeBackToPets"));
     assert.ok(i18nSource.includes("themeAppearanceTitle"));
+    assert.ok(i18nSource.includes("rowPetAccessory"));
+    assert.ok(i18nSource.includes("accessoryCowboyHat"));
 
     const strings = loadSettingsI18nForTest();
     assert.strictEqual(strings.en.themeActionGroupCodexPets, "Codex Pets");
@@ -4759,7 +4818,11 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(strings.en.themeRefreshThemes, "Refresh themes");
     assert.strictEqual(strings.en.themeCapabilityFineMotion, "Fine motion");
     assert.strictEqual(strings.en.themeCustomize, "Customize");
+    assert.strictEqual(strings.en.rowPetAccessory, "Accessory");
+    assert.strictEqual(strings.en.accessoryWizardHat, "Wizard hat");
     assert.strictEqual(strings.zh.themeCustomize, "装扮");
+    assert.strictEqual(strings.zh.rowPetAccessory, "配饰");
+    assert.strictEqual(strings.zh.accessoryWizardHat, "巫师帽");
     assert.strictEqual(strings.zh.themeImportPetZip, "导入 Codex Pet 包（.zip）");
     assert.strictEqual(strings.zh.themeCapabilityFineMotion, "精细动效");
     assert.strictEqual(strings.zh.themeActionGroupCodexPets, "Codex Pets");
@@ -4839,14 +4902,14 @@ describe("settings renderer browser environment", () => {
           name: "Calico",
           builtin: true,
           active: false,
-          capabilities: { petTint: false },
+          capabilities: { petTint: false, accessories: false },
         },
         {
           id: "cloudling",
           name: "Cloudling",
           builtin: true,
           active: false,
-          capabilities: { petTint: true },
+          capabilities: { petTint: false, accessories: true },
         },
       ],
     });
@@ -4866,7 +4929,7 @@ describe("settings renderer browser environment", () => {
           name: "Calico",
           builtin: true,
           active: true,
-          capabilities: { petTint: false },
+          capabilities: { petTint: false, accessories: false },
         },
       ],
     });
@@ -4890,7 +4953,7 @@ describe("settings renderer browser environment", () => {
           name: "Cloudling",
           builtin: true,
           active: false,
-          capabilities: { petTint: true },
+          capabilities: { petTint: false, accessories: true },
         },
       ],
       settingsAPI: {
@@ -4918,8 +4981,113 @@ describe("settings renderer browser environment", () => {
 
     assert.ok(harness.content.querySelector(".theme-detail-hero"));
     assert.ok(collectText(harness.content.querySelector(".theme-detail-heading")).includes("Cloudling"));
+    assert.ok(harness.content.querySelector(".pet-accessory-select"));
+    assert.strictEqual(harness.content.querySelector(".pet-tint-select"), null);
     assert.strictEqual(harness.content.querySelector(".theme-grid"), null);
     assert.strictEqual(listThemesCalls, 0, "opening details should not depend on a second theme fetch");
+  });
+
+  it("does not open stale customization when the activated runtime disables it", async () => {
+    const harness = loadThemeTabForTest({
+      themes: [
+        {
+          id: "clawd",
+          name: "Clawd",
+          builtin: true,
+          active: true,
+          capabilities: { petTint: true, accessories: true },
+        },
+        {
+          id: "custom",
+          name: "Custom",
+          builtin: false,
+          active: false,
+          capabilities: { petTint: false, accessories: true },
+        },
+      ],
+      settingsAPI: {
+        command: () => Promise.resolve({
+          status: "ok",
+          customizationCapabilities: { petTint: false, accessories: false },
+        }),
+      },
+    });
+    const customButton = harness.content.querySelectorAll(".theme-customize-btn")[1];
+    assert.ok(customButton);
+
+    customButton.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(harness.content.querySelector(".theme-detail-hero"), null);
+    assert.strictEqual(harness.content.querySelector(".pet-accessory-select"), null);
+    const runtimeCustom = harness.core.runtime.themeList
+      .find((theme) => theme && theme.id === "custom");
+    assert.strictEqual(runtimeCustom.active, true);
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(runtimeCustom.capabilities)),
+      { petTint: false, accessories: false }
+    );
+    const activeCustomCard = harness.content.querySelectorAll(".theme-card")
+      .find((card) => {
+        const name = card.querySelector(".theme-card-name");
+        return name && collectText(name).includes("Custom");
+      });
+    assert.strictEqual(activeCustomCard.getAttribute("aria-checked"), "true");
+  });
+
+  it("updates customization capability after normal theme-card activation", async () => {
+    const harness = loadThemeTabForTest({
+      themes: [
+        {
+          id: "clawd",
+          name: "Clawd",
+          builtin: true,
+          active: true,
+          capabilities: { petTint: true, accessories: true },
+        },
+        {
+          id: "custom",
+          name: "Custom",
+          builtin: false,
+          active: false,
+          capabilities: { petTint: false, accessories: false },
+        },
+      ],
+      settingsAPI: {
+        command: () => Promise.resolve({
+          status: "ok",
+          customizationCapabilities: { petTint: false, accessories: true },
+        }),
+      },
+    });
+    const customCard = harness.content.querySelectorAll(".theme-card")
+      .find((card) => {
+        const name = card.querySelector(".theme-card-name");
+        return name && collectText(name).includes("Custom");
+      });
+    assert.ok(customCard);
+    assert.strictEqual(customCard.querySelector(".theme-customize-btn"), null);
+
+    customCard.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const activeCustom = harness.core.runtime.themeList
+      .find((theme) => theme && theme.id === "custom");
+    assert.strictEqual(activeCustom.active, true);
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(activeCustom.capabilities)),
+      { petTint: false, accessories: true }
+    );
+    const rerenderedCard = harness.content.querySelectorAll(".theme-card")
+      .find((card) => {
+        const name = card.querySelector(".theme-card-name");
+        return name && collectText(name).includes("Custom");
+      });
+    assert.ok(rerenderedCard.querySelector(".theme-customize-btn"));
   });
 
   it("keeps existing theme cards when a refresh returns an impossible empty list", async () => {
@@ -4958,11 +5126,12 @@ describe("settings renderer browser environment", () => {
           builtin: true,
           active: true,
           previewFileUrl: "file:///clawd.svg",
-          capabilities: { petTint: true },
+          capabilities: { petTint: true, accessories: true },
         },
       ],
       snapshot: {
         petTint: { clawd: "matcha", cloudling: "vaporwave" },
+        petAccessory: { clawd: "wizard-hat", cloudling: "halo" },
       },
       petTintOptions: [
         { id: "none", labelKey: "tintNone" },
@@ -4972,12 +5141,18 @@ describe("settings renderer browser environment", () => {
         { id: "matcha", labelKey: "tintMatcha" },
         { id: "mono", labelKey: "tintMono" },
       ],
+      petAccessoryOptions: [
+        { id: "none", labelKey: "accessoryNone" },
+        { id: "cowboy-hat", labelKey: "accessoryCowboyHat" },
+        { id: "wizard-hat", labelKey: "accessoryWizardHat" },
+        { id: "halo", labelKey: "accessoryHalo" },
+      ],
     });
 
     harness.content.querySelector(".theme-customize-btn").dispatchEvent({ type: "click" });
     assert.ok(harness.content.querySelector(".theme-detail-back"));
     assert.ok(harness.content.querySelector(".theme-detail-hero"));
-    assert.ok(harness.content.querySelector(".theme-customization-row"));
+    assert.strictEqual(harness.content.querySelectorAll(".theme-customization-row").length, 2);
     assert.strictEqual(harness.content.querySelector(".theme-grid"), null);
 
     const select = harness.content.querySelector(".pet-tint-select");
@@ -5003,6 +5178,27 @@ describe("settings renderer browser environment", () => {
     await new Promise((resolve) => setImmediate(resolve));
     assert.strictEqual(select.disabled, false);
     assert.strictEqual(select.classList.contains("pending"), false);
+
+    const accessorySelect = harness.content.querySelector(".pet-accessory-select");
+    assert.strictEqual(accessorySelect.value, "wizard-hat");
+    assert.deepStrictEqual(
+      accessorySelect.children.map((option) => option.textContent),
+      ["None", "Cowboy hat", "Wizard hat", "Halo"]
+    );
+    accessorySelect.value = "halo";
+    accessorySelect.dispatchEvent({ type: "change" });
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(harness.updates[1])),
+      {
+        key: "petAccessory",
+        value: { clawd: "halo", cloudling: "halo" },
+      }
+    );
+    assert.strictEqual(accessorySelect.disabled, true);
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(accessorySelect.disabled, false);
 
     harness.content.querySelector(".theme-detail-back").dispatchEvent({ type: "click" });
     assert.ok(harness.content.querySelector(".theme-grid"));
@@ -6703,15 +6899,31 @@ describe("settings renderer browser environment", () => {
     );
   });
 
-  it("drops the cached animation/sound card data when the map subtab patches a theme-override change", () => {
+  it("invalidates animation cards and refreshes theme capabilities after a map override patch", async () => {
+    let listThemesCalls = 0;
     const harness = loadAnimMapTabForTest({
       snapshot: {
         theme: "clawd",
         themeOverrides: { clawd: { states: { error: { disabled: false } } } },
       },
+      settingsAPI: {
+        listThemes: () => {
+          listThemesCalls++;
+          return Promise.resolve([{
+            id: "clawd",
+            active: true,
+            capabilities: { petTint: true, accessories: false },
+          }]);
+        },
+      },
     });
     // Simulate having opened the Animations subtab earlier: its card data is cached.
     harness.core.runtime.animationOverridesData = { theme: { id: "clawd" }, cards: [], sounds: [] };
+    harness.core.runtime.themeList = [{
+      id: "clawd",
+      active: true,
+      capabilities: { petTint: true, accessories: true },
+    }];
     // A mounted map switch so patchMapInPlace takes the in-place themeOverrides branch.
     const sw = new FakeElement("div");
     sw.className = "switch on";
@@ -6731,6 +6943,13 @@ describe("settings renderer browser environment", () => {
       harness.core.runtime.animationOverridesData,
       null,
       "a map-subtab theme-override patch must invalidate the cached cards so Animations/Sounds refetch"
+    );
+    assert.strictEqual(listThemesCalls, 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(
+      harness.core.runtime.themeList[0].capabilities.accessories,
+      false,
+      "the registered map-tab fast path must not leave Theme capability metadata stale"
     );
   });
 
@@ -8494,6 +8713,64 @@ describe("settings renderer browser environment", () => {
       "unrelated themeOverrides broadcasts should fall through to a full content refresh"
     );
     assert.strictEqual(fetchCount, 1);
+  });
+
+  it("refreshes cached theme capabilities after Animation Overrides changes", async () => {
+    let themeFetches = 0;
+    const core = loadSettingsCoreForTest({
+      listThemes: () => {
+        themeFetches++;
+        return Promise.resolve([{
+          id: "custom",
+          name: "Custom",
+          active: true,
+          capabilities: { petTint: false, accessories: false },
+        }]);
+      },
+      getAnimationOverridesData: () => Promise.resolve({
+        theme: { id: "custom", name: "Custom" },
+        assets: [],
+        sections: [],
+        cards: [],
+        sounds: [],
+      }),
+    });
+    core.state.activeTab = "animOverrides";
+    core.state.snapshot = { theme: "custom", themeOverrides: {} };
+    core.runtime.themeList = [{
+      id: "custom",
+      name: "Custom",
+      active: true,
+      capabilities: { petTint: false, accessories: true },
+    }];
+    core.ops.installRenderHooks({
+      sidebar: () => {},
+      content: () => {},
+      modal: () => {},
+    });
+
+    const nextSnapshot = {
+      theme: "custom",
+      themeOverrides: {
+        custom: {
+          states: {
+            idle: { sourceThemeId: "custom", file: "replacement.svg" },
+          },
+        },
+      },
+    };
+    core.ops.applyChanges({
+      changes: { themeOverrides: nextSnapshot.themeOverrides },
+      snapshot: nextSnapshot,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(themeFetches, 1);
+    assert.strictEqual(
+      core.runtime.themeList[0].capabilities.accessories,
+      false,
+      "returning to Theme must not reuse capability metadata from before the override"
+    );
   });
 
   it("routes matching Animation Overrides timing broadcasts through applyChanges in place", () => {

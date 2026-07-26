@@ -10,6 +10,7 @@ const {
   buildToolInputFingerprint,
   findPendingPermissionForStateEvent,
 } = require("../src/server-permission-utils");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 const { makeSessionKey } = require("../src/session-key");
 
 const localSessionKey = (rawSessionId) => makeSessionKey({
@@ -92,6 +93,18 @@ function makeCtx(overrides = {}) {
     updateLog: () => {},
     ...overrides,
   };
+  ctx.pendingPermissions = (ctx.pendingPermissions || []).map((entry) => {
+    const agentId = entry.agentId || (entry.isQwenCode ? "qwen-code" : "claude-code");
+    return {
+      ...entry,
+      agentId,
+      subagentId: entry.subagentId || null,
+      interaction: entry.interaction || classifyPermissionInteraction({
+        agentId,
+        toolName: entry.toolName,
+      }),
+    };
+  });
   return { ctx, resolved };
 }
 
@@ -267,6 +280,7 @@ describe("/state permission cleanup", () => {
     const { handler, resolved } = startServer({ pendingPermissions });
 
     const res = await callHandler(handler, makeReq("POST", "/state", JSON.stringify({
+      agent_id: "qwen-code",
       state: "working",
       session_id: "qwen-code:sid",
       event: "PostToolUse",

@@ -179,7 +179,31 @@
 
   function supportsThemeCustomization(theme) {
     const caps = theme && theme.capabilities;
-    return !!(caps && caps.petTint === true);
+    return !!(caps && (caps.petTint === true || caps.accessories === true));
+  }
+
+  function mirrorThemeSelectionResult(themeId, result) {
+    if (!Array.isArray(runtime.themeList)) return null;
+    const runtimeCapabilities = (
+      result
+      && result.customizationCapabilities
+      && typeof result.customizationCapabilities === "object"
+      && !Array.isArray(result.customizationCapabilities)
+    )
+      ? result.customizationCapabilities
+      : null;
+    runtime.themeList = runtime.themeList.map((entry) => (
+      entry
+        ? {
+            ...entry,
+            active: entry.id === themeId,
+            capabilities: entry.id === themeId && runtimeCapabilities
+              ? { ...(entry.capabilities || {}), ...runtimeCapabilities }
+              : entry.capabilities,
+          }
+        : entry
+    ));
+    return runtime.themeList.find((entry) => entry && entry.id === themeId) || null;
   }
 
   function openThemeCustomization(theme) {
@@ -206,12 +230,8 @@
         // returning ok. Mirror that acknowledged result into the renderer's
         // metadata cache so opening the detail does not depend on a second IPC
         // fetch that can fail independently.
-        if (Array.isArray(runtime.themeList)) {
-          runtime.themeList = runtime.themeList.map((entry) => (
-            entry ? { ...entry, active: entry.id === theme.id } : entry
-          ));
-        }
-        customizingThemeId = theme.id;
+        const activeEntry = mirrorThemeSelectionResult(theme.id, result);
+        customizingThemeId = supportsThemeCustomization(activeEntry) ? theme.id : null;
       })
       .catch((err) => {
         if (requestSeq !== customizationSelectionSeq) return;
@@ -269,7 +289,9 @@
     const title = document.createElement("h2");
     title.textContent = t("themeAppearanceTitle");
     section.appendChild(title);
-    section.appendChild(buildThemeTintRow(theme));
+    const caps = theme.capabilities || {};
+    if (caps.petTint === true) section.appendChild(buildThemeTintRow(theme));
+    if (caps.accessories === true) section.appendChild(buildThemeAccessoryRow(theme));
     parent.appendChild(section);
   }
 
@@ -290,6 +312,26 @@
     const value = typeof selections === "string"
       ? selections
       : (selections && typeof selections === "object" ? selections[themeId] : null);
+    return options.some((entry) => entry.id === value) ? value : "none";
+  }
+
+  function getAccessoryOptions() {
+    return Array.isArray(runtime.petAccessoryOptions)
+      ? runtime.petAccessoryOptions.filter((entry) => (
+        entry
+        && typeof entry.id === "string"
+        && /^[a-z][a-z0-9-]{0,31}$/.test(entry.id)
+        && typeof entry.labelKey === "string"
+        && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(entry.labelKey)
+      ))
+      : [];
+  }
+
+  function getThemeAccessoryId(themeId, options) {
+    const selections = state.snapshot && state.snapshot.petAccessory;
+    const value = selections && typeof selections === "object" && !Array.isArray(selections)
+      ? selections[themeId]
+      : null;
     return options.some((entry) => entry.id === value) ? value : "none";
   }
 
@@ -348,6 +390,87 @@
       select.classList.add("pending");
       select.disabled = true;
       Promise.resolve(window.settingsAPI.update("petTint", nextMap))
+        .then((result) => {
+          if (result && result.status === "ok") return;
+          const message = (result && result.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + message, { error: true });
+          syncFromSnapshot();
+        })
+        .catch((err) => {
+          const message = (err && err.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + message, { error: true });
+          syncFromSnapshot();
+        })
+        .finally(() => {
+          if (document.body.contains(select)) {
+            select.classList.remove("pending");
+            select.disabled = options.length === 0;
+          }
+        });
+    });
+
+    control.appendChild(select);
+    row.appendChild(text);
+    row.appendChild(control);
+    syncFromSnapshot();
+    return row;
+  }
+
+  function buildThemeAccessoryRow(theme) {
+    const row = document.createElement("div");
+    row.className = "row theme-customization-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowPetAccessory");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("themePetAccessoryDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+
+    const control = document.createElement("div");
+    control.className = "row-control";
+    const select = document.createElement("select");
+    select.className = "pet-accessory-select";
+    select.setAttribute("aria-label", t("rowPetAccessory"));
+    const options = getAccessoryOptions();
+    for (const entry of options) {
+      const option = document.createElement("option");
+      option.value = entry.id;
+      option.textContent = t(entry.labelKey);
+      select.appendChild(option);
+    }
+    if (options.length === 0) {
+      const option = document.createElement("option");
+      option.value = "none";
+      option.textContent = t("accessoryNone");
+      select.appendChild(option);
+      select.disabled = true;
+    }
+
+    function syncFromSnapshot() {
+      select.value = getThemeAccessoryId(theme.id, options);
+      select.classList.remove("pending");
+      select.disabled = options.length === 0;
+    }
+
+    select.addEventListener("change", () => {
+      if (select.disabled || select.classList.contains("pending")) return;
+      const next = select.value;
+      const committed = getThemeAccessoryId(theme.id, options);
+      if (next === committed) return;
+      const current = state.snapshot && state.snapshot.petAccessory;
+      const nextMap = current && typeof current === "object" && !Array.isArray(current)
+        ? { ...current }
+        : {};
+      if (next === "none") delete nextMap[theme.id];
+      else nextMap[theme.id] = next;
+      select.classList.add("pending");
+      select.disabled = true;
+      Promise.resolve(window.settingsAPI.update("petAccessory", nextMap))
         .then((result) => {
           if (result && result.status === "ok") return;
           const message = (result && result.message) || "unknown error";
@@ -563,7 +686,16 @@
     card.appendChild(footer);
 
     if (!theme.active) {
-      helpers.attachActivation(card, () => window.settingsAPI.command("setThemeSelection", { themeId: theme.id }));
+      helpers.attachActivation(card, () => (
+        Promise.resolve(window.settingsAPI.command("setThemeSelection", { themeId: theme.id }))
+          .then((result) => {
+            if (result && result.status === "ok") {
+              mirrorThemeSelectionResult(theme.id, result);
+              if (state.activeTab === "theme") ops.requestRender({ content: true });
+            }
+            return result;
+          })
+      ));
     }
     return card;
   }

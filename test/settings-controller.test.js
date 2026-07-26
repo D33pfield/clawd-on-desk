@@ -47,6 +47,125 @@ describe("createSettingsController construction", () => {
   });
 });
 
+describe("permission automation safe startup persistence", () => {
+  it("keeps off across a relaunch", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath: p });
+    const result = await ctrl.applyCommand("setPermissionAutomationMode", { mode: "off" });
+    assert.strictEqual(result.status, "ok");
+    ctrl.persist();
+    assert.strictEqual(prefs.load(p).snapshot.permissionAutomationMode, "off");
+  });
+
+  it("keeps auto-tools across a relaunch", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath: p });
+    const result = await ctrl.applyCommand("setPermissionAutomationMode", {
+      mode: "auto-tools",
+      confirmed: true,
+    });
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(ctrl.get("permissionAutomationMode"), "auto-tools");
+    assert.strictEqual(prefs.load(p).snapshot.permissionAutomationMode, "auto-tools");
+  });
+
+  it("keeps unattended for this process but relaunches in auto-tools", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath: p });
+    const result = await ctrl.applyCommand("setPermissionAutomationMode", {
+      mode: "unattended",
+      confirmed: true,
+    });
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(
+      ctrl.get("permissionAutomationMode"),
+      "unattended",
+      "the current process must stay fully automatic"
+    );
+    const onDisk = JSON.parse(fs.readFileSync(p, "utf8"));
+    assert.strictEqual(onDisk.permissionAutomationMode, "auto-tools");
+    const relaunched = createSettingsController({ prefsPath: p });
+    assert.strictEqual(relaunched.get("permissionAutomationMode"), "auto-tools");
+  });
+
+  it("does not publish or commit a mode change when persistence fails", async () => {
+    const snapshot = { ...prefs.getDefaults() };
+    const failingPrefs = {
+      load: () => ({ snapshot, locked: false }),
+      save: () => {
+        throw new Error("disk full");
+      },
+    };
+    const ctrl = createSettingsController({
+      prefsPath: "unused-in-memory-path",
+      prefs: failingPrefs,
+    });
+    let broadcasts = 0;
+    ctrl.subscribe(() => {
+      broadcasts += 1;
+    });
+
+    const result = await ctrl.applyCommand("setPermissionAutomationMode", {
+      mode: "unattended",
+      confirmed: true,
+    });
+
+    assert.strictEqual(result.status, "error");
+    assert.match(result.message, /disk full/);
+    assert.strictEqual(ctrl.get("permissionAutomationMode"), "off");
+    assert.strictEqual(broadcasts, 0);
+  });
+
+  it("keeps the previous automatic mode when switching off cannot persist", async () => {
+    const snapshot = {
+      ...prefs.getDefaults(),
+      permissionAutomationMode: "auto-tools",
+      permissionAutomationAutoToolsWarningDismissed: true,
+    };
+    const failingPrefs = {
+      load: () => ({ snapshot, locked: false }),
+      save: () => {
+        throw new Error("read only");
+      },
+    };
+    const ctrl = createSettingsController({
+      prefsPath: "unused-in-memory-path",
+      prefs: failingPrefs,
+    });
+
+    const result = await ctrl.applyCommand("setPermissionAutomationMode", {
+      mode: "off",
+    });
+
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(ctrl.get("permissionAutomationMode"), "auto-tools");
+  });
+
+  it("rejects generic writers for mode and warning-gate fields", async () => {
+    const ctrl = createSettingsController({ prefsPath: makeTempPath() });
+    const cases = [
+      ctrl.applyUpdate("permissionAutomationMode", "unattended"),
+      ctrl.applyBulk({ permissionAutomationAutoToolsWarningDismissed: true }),
+      ctrl.hydrate({ permissionAutomationUnattendedWarningDismissed: true }),
+      ctrl.applyUpdate("autoApproveAllPermissions", true),
+    ];
+    for (const result of cases) {
+      assert.strictEqual((await result).status, "error");
+      assert.match((await result).message, /command-only/);
+    }
+    assert.strictEqual(ctrl.get("permissionAutomationMode"), "off");
+    assert.strictEqual(
+      ctrl.get("permissionAutomationAutoToolsWarningDismissed"),
+      false
+    );
+    assert.strictEqual(
+      ctrl.get("permissionAutomationUnattendedWarningDismissed"),
+      false
+    );
+    assert.strictEqual(ctrl.get("autoApproveAllPermissions"), false);
+  });
+});
+
 describe("setTextScaleForDisplay end-to-end commit", () => {
   it("commits the per-display map through the controller and persists it", async () => {
     // Regression: the command's commit key must pass the controller's
