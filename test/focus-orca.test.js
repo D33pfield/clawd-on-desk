@@ -39,6 +39,7 @@ function mockOrcaCli(opts = {}) {
     listPayload = null,
     switchResults = [{ ok: true }],
     missingBinaries = [],
+    timeoutOn = [],
   } = opts;
   const calls = [];
   let switchIdx = 0;
@@ -55,12 +56,19 @@ function mockOrcaCli(opts = {}) {
     }
 
     // Window-raise helpers used off Windows; they carry no payload.
-    if (cmd === "open" || cmd === "wmctrl" || cmd === "xdotool") {
+    if (cmd === "/usr/bin/open" || cmd === "wmctrl" || cmd === "xdotool") {
       if (cb) cb(null, "", "");
       return;
     }
 
     const joined = args.join(" ");
+    if (timeoutOn.some((prefix) => joined.startsWith(prefix))) {
+      // execFile's own timeout kill: non-zero exit, empty stdout, killed set.
+      const err = new Error(`spawn ${cmd} ETIMEDOUT`);
+      err.killed = true;
+      if (cb) cb(err, "", "");
+      return;
+    }
     if (joined.startsWith("terminal list")) {
       if (cb) cb(null, listPayload !== null ? listPayload : terminalListPayload(terminals), "");
       return;
@@ -119,7 +127,7 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
     // TERM_PROGRAM and ORCA_PANE_KEY while living in its own window. A pane key
     // outranks every other signal in the focus script, so that copy would raise
     // Orca instead of the terminal the agent is really in.
-    assert.ok(NESTED_TERMINAL_ENV.length >= 8, "expected the full nested-terminal marker list");
+    assert.ok(NESTED_TERMINAL_ENV.length >= 10, "expected the full nested-terminal marker list");
     for (const marker of NESTED_TERMINAL_ENV) {
       const env = { TERM_PROGRAM: "Orca", ORCA_PANE_KEY: PANE_KEY, [marker]: "1" };
       assert.strictEqual(orcaPaneKeyFromEnv(env), null, `${marker} must veto the pane key`);
@@ -228,18 +236,27 @@ describe("Orca pane key validator copies", () => {
 });
 
 describe("Orca window raise off Windows", () => {
-  it("raises the Orca window before switching the pane on macOS", async () => {
+  it("raises the Orca window only once the pane switch has succeeded on macOS", async () => {
     await withFocus({ platform: "darwin" }, async (t, cli) => {
       t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
       await settle(t);
       const cmds = cli.calls.map((c) => `${c.cmd} ${c.args.join(" ")}`);
-      const raiseAt = cmds.findIndex((c) => c.startsWith("open -a Orca"));
+      const raiseAt = cmds.findIndex((c) => c.startsWith("/usr/bin/open -a Orca"));
       const switchAt = cmds.findIndex((c) => c.includes("terminal switch"));
+      // `orca terminal switch` only moves the tab inside Orca, so the raise is
+      // still required — but it has to come second: `open -a` launches Orca when it
+      // is not running, and the terminal daemon outlives the window, so a sticky
+      // pane key can point at a closed one. A successful switch is the proof.
       assert.ok(raiseAt >= 0, `expected an Orca raise, got ${JSON.stringify(cmds)}`);
-      assert.ok(switchAt >= 0);
-      // `orca terminal switch` only moves the tab inside Orca; without the raise
-      // the correct pane comes forward behind whatever window is in front.
-      assert.ok(raiseAt < switchAt, "the raise must precede the pane switch");
+      assert.ok(switchAt >= 0 && raiseAt > switchAt, "the raise must follow the switch");
+    });
+  });
+
+  it("never raises Orca when no pane resolves, so a dead session cannot launch it", async () => {
+    await withFocus({ platform: "darwin", terminals: [] }, async (t, cli) => {
+      t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
+      await settle(t);
+      assert.deepStrictEqual(cli.calls.filter((c) => c.cmd === "/usr/bin/open"), []);
     });
   });
 
@@ -596,6 +613,24 @@ describe("Windows Orca window fallback", () => {
   });
 });
 
+describe("Orca CLI that never answers", () => {
+  // Warm round-trips are ~400ms, but the first call after Orca has been idle can
+  // exceed the timeout and get killed. Reporting that as a missing pane sends
+  // whoever reads focus-debug.log looking in entirely the wrong place.
+  for (const step of ["terminal list", "terminal switch"]) {
+    it(`reports a killed \`${step}\` as a timeout rather than a missing pane`, async () => {
+      await withFocus({ platform: "win32", timeoutOn: [step] }, async (t, cli, logs) => {
+        t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
+        await settle(t);
+        assert.ok(logs.some((l) => l.includes("reason=orca-cli-timeout")),
+          `expected orca-cli-timeout, got ${JSON.stringify(logs)}`);
+        assert.ok(!logs.some((l) => /orca-pane-not-found|orca-switch-failed/.test(l)),
+          `a timeout must not be reported as pane-not-found or switch-failed: ${JSON.stringify(logs)}`);
+      });
+    });
+  }
+});
+
 // Every test above reaches into __test and drives the helpers directly, so none
 // of them would notice a platform branch losing the pane key or swapping its two
 // arguments. These go through the public focusTerminalWindow instead.
@@ -611,27 +646,29 @@ function withFocusApi(opts, fn) {
 }
 
 describe("Orca focus wiring", () => {
-  it("reaches the pane switch from the Linux focus branch with the key and cwd in order", async () => {
-    await withFocusApi({ platform: "linux" }, async (api, cli) => {
-      api.focusTerminalWindow({
-        sourcePid: 4242,
-        cwd: CWD,
-        sessionId: "s-linux",
-        agentId: "claude-code",
-        orcaPaneKey: PANE_KEY,
-      });
-      await settle(api.__test);
+  for (const platform of ["linux", "darwin"]) {
+    it(`reaches the pane switch from the ${platform} focus branch with the key and cwd in order`, async () => {
+      await withFocusApi({ platform }, async (api, cli) => {
+        api.focusTerminalWindow({
+          sourcePid: 4242,
+          cwd: CWD,
+          sessionId: `s-${platform}`,
+          agentId: "claude-code",
+          orcaPaneKey: PANE_KEY,
+        });
+        await settle(api.__test);
 
-      const switches = cli.switchCalls();
-      assert.strictEqual(switches.length, 1, "expected exactly one terminal switch");
-      // Only the exact pane match yields LIVE_HANDLE. Swap the two arguments and
-      // indexOf(":") lands on the drive-letter colon instead, no pane matches, and
-      // the worktree fallback still resolves *a* terminal in the same project — so
-      // the wrong tab comes forward and the log still says orca-pane-switched.
-      assert.deepStrictEqual(switches[0].args,
-        ["terminal", "switch", "--terminal", LIVE_HANDLE, "--json"]);
+        const switches = cli.switchCalls();
+        assert.strictEqual(switches.length, 1, "expected exactly one terminal switch");
+        // Only the exact pane match yields LIVE_HANDLE. Swap the two arguments and
+        // indexOf(":") lands on the drive-letter colon instead, no pane matches, and
+        // the worktree fallback still resolves *a* terminal in the same project — so
+        // the wrong tab comes forward and the log still says orca-pane-switched.
+        assert.deepStrictEqual(switches[0].args,
+          ["terminal", "switch", "--terminal", LIVE_HANDLE, "--json"]);
+      });
     });
-  });
+  }
 
   it("does not touch the Orca CLI when the request carries no pane key", async () => {
     await withFocusApi({ platform: "linux" }, async (api, cli) => {
@@ -649,15 +686,17 @@ describe("Orca focus wiring", () => {
   it("carries the pane key through every focus-entry builder", () => {
     const fs = require("fs");
     const repo = path.join(__dirname, "..");
-    // These assignments are the only thing putting the pane key on the entry that
-    // reaches normalizeFocusRequest, and the permission bubble's "go to terminal"
-    // is the gesture the whole feature exists for. No fixture in
-    // test/permission-*.test.js sets a pane key, so deleting one of these lines
-    // otherwise fails nothing.
+    // These assignments are the only thing putting the pane key on the entries that
+    // reach normalizeFocusRequest and the Direct Send paste delay, and the
+    // permission bubble's "go to terminal" is the gesture the whole feature exists
+    // for. No fixture in test/permission-*.test.js sets a pane key, so deleting one
+    // of these lines otherwise fails nothing. The snapshot entry is a whitelist:
+    // omit it there and the field silently never reaches Telegram Direct Send.
     const sites = [
       ["src/main.js", "if (entry.orcaPaneKey) focusEntry.orcaPaneKey = entry.orcaPaneKey;"],
       ["src/main.js", "orcaPaneKey: session.orcaPaneKey,"],
       ["src/permission.js", "if (perm.orcaPaneKey) focusEntry.orcaPaneKey = perm.orcaPaneKey;"],
+      ["src/state-session-snapshot.js", "orcaPaneKey: (session && session.orcaPaneKey) || null,"],
     ];
     for (const [rel, needle] of sites) {
       const src = fs.readFileSync(path.join(repo, rel), "utf8");

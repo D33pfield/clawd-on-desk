@@ -381,6 +381,64 @@ describe("Windows terminal focus", () => {
     }
   });
 
+  it("reaches the Orca pane switch from the Windows focus dispatch", async () => {
+    const calls = [];
+    const stdout = new EventEmitter();
+    stdout.setEncoding = () => {};
+    stdout.unref = () => {};
+    const { initFocus, cleanup } = loadFocusWithMock({
+      execFile: (cmd, args, opts, cb) => {
+        if (typeof opts === "function") cb = opts;
+        calls.push({ cmd, args: [...(args || [])] });
+        const joined = (args || []).join(" ");
+        if (joined.startsWith("terminal list")) {
+          return cb(null, JSON.stringify({
+            ok: true,
+            result: { terminals: [{ handle: "term_live", tabId: "8ce1fff7-tab", leafId: "9813824b-leaf" }] },
+          }), "");
+        }
+        if (joined.startsWith("terminal switch")) return cb(null, JSON.stringify({ ok: true }), "");
+        return cb(null, "", "");
+      },
+      spawn: () => ({
+        pid: 9997,
+        stdin: { writable: true, write() {}, on() {} },
+        stdout,
+        on() {},
+        unref() {},
+        kill() {},
+      }),
+    });
+
+    try {
+      const focus = initFocus({ focusLog: () => {} });
+      focus.initFocusHelper();
+      focus.focusTerminalWindow({
+        sourcePid: 3333,
+        cwd: "D:\\Repos\\Apps\\clawd-on-desk",
+        sessionId: "session-orca-switch",
+        agentId: "claude-code",
+        orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+      });
+      // The switch sits behind a timer, so this has to wait it out. Asserting only
+      // the generated script text leaves the Windows dispatch line free to be
+      // deleted with the whole suite still green: the window would rise and the tab
+      // would never change.
+      await new Promise((r) => setTimeout(r, focus.__test.ORCA_PANE_FOCUS_DELAY_MS + 250));
+
+      const switches = calls.filter((c) => c.args.join(" ").startsWith("terminal switch"));
+      assert.equal(switches.length, 1);
+      assert.deepEqual(switches[0].args, ["terminal", "switch", "--terminal", "term_live", "--json"]);
+      // Windows raises inside the generated script, so Node must spawn no raise.
+      assert.deepEqual(
+        calls.filter((c) => ["/usr/bin/open", "wmctrl", "xdotool"].includes(c.cmd)),
+        []
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
   it("correlates concurrent Windows helper results by token", async () => {
     const writes = [];
     const logs = [];
