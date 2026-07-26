@@ -9,8 +9,15 @@ contextBridge.exposeInMainWorld("themeConfig", themeConfig);
 contextBridge.exposeInMainWorld("electronAPI", {
   // Theme config push (for hot-switch; additionalArguments won't update on reload)
   onThemeConfig: (cb) => ipcRenderer.on("theme-config", (_, cfg) => cb(cfg)),
-  onViewportOffset: (cb) => ipcRenderer.on("viewport-offset", (_, offsetY) => cb(offsetY)),
-  onViewportOffsetX: (cb) => ipcRenderer.on("viewport-offset-x", (_, offsetX) => cb(offsetX)),
+  // PR #751 Codex review #12 (rework batch B-8, non-blocking): normalize a
+  // non-finite value (NaN, +/-Infinity, or anything main.js might someday
+  // send that isn't a plain number) to 0 right at the IPC bridge boundary,
+  // instead of trusting main.js to always send a legal number. The renderer
+  // side already defends against this independently (renderer.js's own
+  // offset handlers), but that's a second, redundant line of defense, not a
+  // reason to let an illegal value cross the bridge in the first place.
+  onViewportOffset: (cb) => ipcRenderer.on("viewport-offset", (_, offsetY) => cb(Number.isFinite(offsetY) ? offsetY : 0)),
+  onViewportOffsetX: (cb) => ipcRenderer.on("viewport-offset-x", (_, offsetX) => cb(Number.isFinite(offsetX) ? offsetX : 0)),
   onPetTintChange: (cb) => ipcRenderer.on("pet-tint-change", (_, payload) => cb(payload)),
   onPetAccessoryChange: (cb) => ipcRenderer.on("pet-accessory-change", (_, payload) => cb(payload)),
   // State sync from main

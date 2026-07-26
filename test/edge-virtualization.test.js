@@ -214,6 +214,26 @@ function createEdgeVirtualizationHarness(overrides = {}) {
     return displays;
   }
 
+  // PR #751 Codex review #12 (rework batch B-8, non-blocking): src/main.js
+  // wires the SAME underlying repositionSessionHud() function to both
+  // mini.js's ctx (src/main.js's _miniCtx) and the runtime's own option
+  // (src/main.js's petWindowRuntime options) — a single shared counter here
+  // mirrors that real identity, the same way countedRuntimeGetAllDisplays/
+  // countedMiniGetAllDisplays above mirror getAllDisplays' actually-separate
+  // identity. Before batch B-8, mini's own per-frame step called this AND
+  // the runtime's applyPetWindowBounds() tail end called it again for the
+  // same frame — a genuine duplicate now removed.
+  let repositionSessionHudCallCount = 0;
+  function countedRepositionSessionHud() {
+    repositionSessionHudCallCount++;
+  }
+  // Every write during a mini animation goes through mini's own
+  // applyPetWindowBounds (no other concurrent write source runs at the same
+  // time), so this is the exact expected repositionSessionHud count post-fix
+  // (1 per write, from the runtime's own tail-end call only) — a robust
+  // ratio assertion instead of guessing an animation's exact frame count.
+  let miniApplyPetWindowBoundsCallCount = 0;
+
   const renderWin = overrides.renderWin || makeMutterClampedWindow({
     x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
   });
@@ -276,7 +296,7 @@ function createEdgeVirtualizationHarness(overrides = {}) {
     getNearestWorkArea: () => workArea,
     sendToRenderer: () => {},
     keepOutOfTaskbar: () => {},
-    repositionSessionHud: () => {},
+    repositionSessionHud: () => countedRepositionSessionHud(),
     repositionAnchoredSurfaces: () => {},
     repositionFloatingBubbles: () => {},
     showFloatingSurfacesForPet: () => {},
@@ -307,7 +327,10 @@ function createEdgeVirtualizationHarness(overrides = {}) {
     getCurrentPixelSize: () => ISSUE_690_WINDOW_SIZE,
     getEffectiveCurrentPixelSize: () => ISSUE_690_WINDOW_SIZE,
     getPetWindowBounds: () => runtime.getPetWindowBounds(),
-    applyPetWindowBounds: (bounds, opts) => runtime.applyPetWindowBounds(bounds, opts),
+    applyPetWindowBounds: (bounds, opts) => {
+      miniApplyPetWindowBoundsCallCount++;
+      return runtime.applyPetWindowBounds(bounds, opts);
+    },
     setViewportOffsetY: (y) => runtime.setViewportOffsetY(y),
     getAnimationAssetCycleMs: () => null,
     stopWakePoll: () => {},
@@ -317,6 +340,7 @@ function createEdgeVirtualizationHarness(overrides = {}) {
     buildTrayMenu: () => {},
     syncHitWin: () => runtime.syncHitWin(),
     repositionBubbles: () => {},
+    repositionSessionHud: () => countedRepositionSessionHud(),
     getNearestWorkArea: () => workArea,
     clampToScreenVisual: (x, y, w, h, opts) => runtime.clampToScreenVisual(x, y, w, h, opts),
     resolveDisplayState: () => "idle",
@@ -385,6 +409,8 @@ function createEdgeVirtualizationHarness(overrides = {}) {
     getCheckMiniModeSnapCalls: () => checkMiniModeSnapCalls,
     getRuntimeGetAllDisplaysCallCount: () => runtimeGetAllDisplaysCallCount,
     getMiniGetAllDisplaysCallCount: () => miniGetAllDisplaysCallCount,
+    getRepositionSessionHudCallCount: () => repositionSessionHudCallCount,
+    getMiniApplyPetWindowBoundsCallCount: () => miniApplyPetWindowBoundsCallCount,
     // Batch 3 follow-up: lets a test change the effective topology mid-run,
     // to prove pendingTopologyMaterialize's eventual re-materialize actually
     // reflects the NEW displays/workArea rather than the one captured when
@@ -884,6 +910,60 @@ describe("edge virtualization cross-module integration (#690 §6.7)", () => {
     assert.ok(
       h.getMiniGetAllDisplaysCallCount() <= 2,
       `expected mini.js's own call sites (checkMiniModeSnap's snap-decision + enterMiniMode's resolveMiniTopology, unrelated to B-5) to stay at <=2 calls for the whole transition, got ${h.getMiniGetAllDisplaysCallCount()}`
+    );
+    h.dispose();
+  });
+
+  // PR #751 Codex review #12 (rework batch B-8, non-blocking): src/main.js
+  // wires the exact same underlying repositionSessionHud() function to both
+  // mini.js's ctx and pet-window-runtime.js's own options (see this
+  // harness's countedRepositionSessionHud, wired the same way). Per frame,
+  // TWO calls are legitimate and NOT duplicates of each other: the runtime's
+  // applyPetWindowBounds() (the render window moved) and its syncHitWin()
+  // (the hit window's geometry was resynced) each have their own tail-end
+  // repositionSessionHud() call — two different windows, two independent
+  // reasons. mini's per-frame step called ctx.syncHitWin() (getting that
+  // legitimate second call) AND THEN called repositionSessionHud() a THIRD
+  // time directly, itself — a genuine duplicate of the first call, not a
+  // third legitimate reason. This test proves the count is back down to the
+  // 2 legitimate calls, not 3. Neither test/mini.test.js's mock ctx (whose
+  // applyPetWindowBounds/syncHitWin never reach the real runtime, so it can
+  // only ever see mini's OWN direct call) nor the pre-B-8 version of this
+  // harness (which never wired repositionSessionHud into miniCtx at all)
+  // could see this — this is the first assembly wiring both sides to the
+  // SAME counted function, matching src/main.js's real identity.
+  it("B-8 (non-blocking): one mini animation frame triggers repositionSessionHud() exactly twice (render write + hit resync), not three times", () => {
+    const h = createEdgeVirtualizationHarness({ getDisableMiniMode: () => true });
+    h.runtime.applyPetWindowBounds(
+      { x: 1000, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { force: true }
+    );
+
+    // Snapshot AFTER the initial forced placement (its own legitimate,
+    // separate reposition call) but BEFORE entering mini mode. Deliberately
+    // NOT advancing any mock timers around this call: animateWindowX() (the
+    // drag-path entry's slide) runs its first step() SYNCHRONOUSLY inside
+    // enterMiniMode() itself (see src/mini.js's animateWindowX, which calls
+    // step() directly, not just schedules it) — so this single call already
+    // produces exactly one applyMiniFrameBounds() write (and one syncHitWin()
+    // call), with zero elapsed time. That keeps this test clear of
+    // reconcile's OWN independent settle-sweep/rebase timers (100ms+ delays),
+    // which can also legitimately call runtime.applyPetWindowBounds() (and
+    // therefore repositionSessionHud()) on a longer real-clock run — a
+    // genuinely separate concern from this per-frame duplicate, not
+    // something this test needs to account for.
+    const reposBefore = h.getRepositionSessionHudCallCount();
+    const writesBefore = h.getMiniApplyPetWindowBoundsCallCount();
+
+    h.mini.enterMiniMode(ISSUE_690_WORK_AREA, false, "right"); // drag path
+    assert.equal(h.mini.getMiniTransitioning(), true, "sanity: this must actually start a mini transition");
+
+    const writesDuring = h.getMiniApplyPetWindowBoundsCallCount() - writesBefore;
+    const reposDuring = h.getRepositionSessionHudCallCount() - reposBefore;
+    assert.equal(writesDuring, 1, "sanity: enterMiniMode's first animation frame runs synchronously, exactly once, before any tick");
+    assert.equal(
+      reposDuring, 2,
+      `expected exactly 2 repositionSessionHud() calls for this one animation frame (applyPetWindowBounds's own tail end + syncHitWin's own tail end — two legitimate, different-window reasons), not a 3rd duplicate from mini.js itself; got ${reposDuring}`
     );
     h.dispose();
   });

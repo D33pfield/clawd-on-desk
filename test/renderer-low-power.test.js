@@ -21,6 +21,60 @@ function matchSource(source, pattern, message) {
   return match;
 }
 
+// PR #751 Codex review #12 (rework batch B-8, §6.6): loads the REAL
+// src/preload.js against a minimal mocked electron module (same
+// require.cache-swap technique as test/mini.test.js's loadMiniWithElectron),
+// so its own onViewportOffset/onViewportOffsetX normalization can be
+// exercised directly — createRendererHarness() below's electronAPI is a
+// hand-written Proxy that stores the renderer's callback straight into
+// electronHandlers, never touching preload.js's real ipcRenderer.on(...)
+// wrapping at all, so it cannot prove anything about THIS boundary.
+function loadPreloadWithElectron() {
+  const electronPath = require.resolve("electron");
+  const preloadPath = require.resolve("../src/preload");
+  const previousElectron = Object.prototype.hasOwnProperty.call(require.cache, electronPath)
+    ? require.cache[electronPath]
+    : null;
+  const previousPreload = Object.prototype.hasOwnProperty.call(require.cache, preloadPath)
+    ? require.cache[preloadPath]
+    : null;
+
+  const ipcListeners = new Map();
+  const exposed = {};
+
+  require.cache[electronPath] = {
+    id: electronPath,
+    filename: electronPath,
+    loaded: true,
+    exports: {
+      contextBridge: {
+        exposeInMainWorld: (name, api) => { exposed[name] = api; },
+      },
+      ipcRenderer: {
+        on: (event, handler) => { ipcListeners.set(event, handler); },
+      },
+    },
+  };
+  delete require.cache[preloadPath];
+  require("../src/preload"); // runs preload.js's top-level contextBridge.exposeInMainWorld call
+
+  return {
+    electronAPI: exposed.electronAPI,
+    // Simulates main.js's ipcRenderer send arriving at whatever handler
+    // preload.js registered for `event` via ipcRenderer.on(event, ...).
+    emitFromMain: (event, ...args) => {
+      const handler = ipcListeners.get(event);
+      if (handler) handler(null, ...args);
+    },
+    restore() {
+      if (previousElectron) require.cache[electronPath] = previousElectron;
+      else delete require.cache[electronPath];
+      if (previousPreload) require.cache[preloadPath] = previousPreload;
+      else delete require.cache[preloadPath];
+    },
+  };
+}
+
 class FakeElement {
   constructor(tagName) {
     this.tagName = tagName.toUpperCase();
@@ -1909,8 +1963,12 @@ describe("renderer viewport offset X (#690)", () => {
     const main = readNormalized(MAIN);
     const runtime = readNormalized(path.join(__dirname, "..", "src", "pet-window-runtime.js"));
 
+    // PR #751 Codex review #12 (rework batch B-8): preload's bridge now
+    // normalizes a non-finite value to 0 (see the "§6.6" behavioral test
+    // below for the actual proof) — this string check just confirms the
+    // bridge still exists and still forwards to cb(...) at all.
     assert.ok(preload.includes(
-      'onViewportOffsetX: (cb) => ipcRenderer.on("viewport-offset-x", (_, offsetX) => cb(offsetX))'
+      'onViewportOffsetX: (cb) => ipcRenderer.on("viewport-offset-x", (_, offsetX) => cb(Number.isFinite(offsetX) ? offsetX : 0))'
     ));
     // PR #751 Codex review #11 (rework batch B-6): main.js's did-finish-load
     // used to send both offsets unconditionally via two separate
@@ -1965,5 +2023,38 @@ describe("renderer viewport offset X (#690)", () => {
       [["viewport-offset", 0], ["viewport-offset-x", 51]],
       "a reload with a genuine non-zero X offset must resend both"
     );
+  });
+
+  // PR #751 Codex review #12 (rework batch B-8, §6.6, non-blocking): loads
+  // the REAL src/preload.js (not createRendererHarness()'s hand-written
+  // electronAPI Proxy, which bypasses preload.js's real ipcRenderer.on(...)
+  // wrapping entirely) and proves the bridge itself zeroes a non-finite
+  // value before it ever reaches the renderer's callback — a defense-in-depth
+  // layer independent of whatever the renderer side does with the value.
+  it("§6.6: preload's onViewportOffset/onViewportOffsetX zero a non-finite value at the bridge boundary", () => {
+    const loader = loadPreloadWithElectron();
+    try {
+      const receivedY = [];
+      const receivedX = [];
+      loader.electronAPI.onViewportOffset((offsetY) => receivedY.push(offsetY));
+      loader.electronAPI.onViewportOffsetX((offsetX) => receivedX.push(offsetX));
+
+      loader.emitFromMain("viewport-offset", NaN);
+      loader.emitFromMain("viewport-offset", Infinity);
+      loader.emitFromMain("viewport-offset", -Infinity);
+      loader.emitFromMain("viewport-offset", undefined);
+      loader.emitFromMain("viewport-offset", 20); // legal value must still pass through untouched
+
+      loader.emitFromMain("viewport-offset-x", NaN);
+      loader.emitFromMain("viewport-offset-x", Infinity);
+      loader.emitFromMain("viewport-offset-x", -Infinity);
+      loader.emitFromMain("viewport-offset-x", undefined);
+      loader.emitFromMain("viewport-offset-x", -51); // legal negative value must still pass through untouched
+
+      assert.deepStrictEqual(receivedY, [0, 0, 0, 0, 20], "every non-finite Y value must be zeroed; a legal value must pass through unchanged");
+      assert.deepStrictEqual(receivedX, [0, 0, 0, 0, -51], "every non-finite X value must be zeroed; a legal negative value must pass through unchanged");
+    } finally {
+      loader.restore();
+    }
   });
 });

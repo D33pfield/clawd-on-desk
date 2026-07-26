@@ -40,10 +40,6 @@ function syncSessionHudVisibility() {
   if (typeof ctx.syncSessionHudVisibility === "function") ctx.syncSessionHudVisibility();
 }
 
-function repositionSessionHud() {
-  if (typeof ctx.repositionSessionHud === "function") ctx.repositionSessionHud();
-}
-
 function refreshTheme() {
   MINI_OFFSET_RATIO = ctx.theme.miniMode.offsetRatio;
 }
@@ -187,7 +183,15 @@ function animateWindowX(targetX, durationMs, onDone, animCtx) {
       return;
     }
     ctx.syncHitWin();
-    repositionSessionHud();
+    // PR #751 Codex review #12 (rework batch B-8, non-blocking): no
+    // repositionSessionHud() call here — applyMiniFrameBounds() above
+    // already went through ctx.applyPetWindowBounds(), whose own tail end
+    // (pet-window-runtime.js's applyPetWindowBounds()) unconditionally calls
+    // repositionSessionHud() for this exact frame already. Calling it again
+    // here was a genuine duplicate (same underlying function, both wired to
+    // it in src/main.js), not a distinct concern — the runtime's own
+    // tail-end call is the single source of truth for every write, mini's
+    // per-frame or otherwise.
     syncContainedClip();
     // Throttle bubble reposition to every 3rd frame (~20fps) — visually identical, less overhead
     if (ctx.bubbleFollowPet && ctx.pendingPermissions.length && (++frameCount % 3 === 0 || t >= 1)) ctx.repositionBubbles();
@@ -243,7 +247,15 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone, animCtx) {
       return;
     }
     ctx.syncHitWin();
-    repositionSessionHud();
+    // PR #751 Codex review #12 (rework batch B-8, non-blocking): no
+    // repositionSessionHud() call here — applyMiniFrameBounds() above
+    // already went through ctx.applyPetWindowBounds(), whose own tail end
+    // (pet-window-runtime.js's applyPetWindowBounds()) unconditionally calls
+    // repositionSessionHud() for this exact frame already. Calling it again
+    // here was a genuine duplicate (same underlying function, both wired to
+    // it in src/main.js), not a distinct concern — the runtime's own
+    // tail-end call is the single source of truth for every write, mini's
+    // per-frame or otherwise.
     syncContainedClip();
     // Throttle bubble reposition to every 3rd frame (~20fps) — visually identical, less overhead
     if (ctx.bubbleFollowPet && ctx.pendingPermissions.length && (++frameCount % 3 === 0 || t >= 1)) ctx.repositionBubbles();
