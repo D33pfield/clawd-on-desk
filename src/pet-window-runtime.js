@@ -218,17 +218,31 @@ function createPetWindowRuntime(options = {}) {
   // never consumed — §3 I2).
   let viewportOffsetX = 0;
   let lastLogicalBounds = null;
-  // expectedPhysical: the physical rect requested by the most recent
-  // applyPetWindowBounds() write. lastResolvedWorkArea: the workArea that
-  // write was materialized against — deriveClampObservation() and
-  // resolveHorizontalClampBounds()'s inset lookup both need this exact
-  // workArea, not a workArea re-resolved fresh (which could disagree if
-  // topology changed between the write and the reconcile).
-  let expectedPhysical = null;
-  let lastResolvedWorkArea = null;
+  // PR #751 Codex review #2 (rework batch A-2): everything a later reconcile
+  // pass needs to judge THIS write's outcome, frozen at write time instead of
+  // recomputed fresh at reconcile time (which could disagree with what was
+  // actually used to materialize the write if state — most importantly the
+  // observedClampInsets table — changed in between). Shape once set:
+  //   physical: the physical rect requested by this write (was expectedPhysical)
+  //   workArea: the workArea materialized against (was lastResolvedWorkArea)
+  //   gen: writeGen's value at this write
+  //   clampBounds: resolveHorizontalClampBounds()'s return for this write
+  //     ({ leftBound, rightBound, displayId })
+  //   displayId: clampBounds.displayId, hoisted for convenience
+  //   xEligibleLeft / xEligibleRight: whether that side's bound is non-null —
+  //     i.e. whether THIS write happened in a context (Linux, escape hatch
+  //     off, outer workArea edge) where an X clamp could have explained a
+  //     later mismatch at all (rework batch A-4's eligibility gate).
+  let expectedWrite = null;
   let writeGen = 0;
   let settleUntil = 0;
   let lastWriteAt = 0; // now() at the most recent applyPetWindowBounds() write — diagnostics only (sinceWriteMs)
+  // PR #751 Codex review #1 (rework batch A-1): true once a quiet-point
+  // reconcile has observed an actual/expected mismatch it could not explain
+  // as a clamp WHILE still inside this write's settle window (deferred, not
+  // adopted — see runReconcile()'s (b2)). Reset to false on every new write
+  // (a fresh generation has made no observations yet).
+  let sawUnexplainedMismatch = false;
   const loggedEdgeReasons = new Set();
 
   // §4.3.9-13 render-side deferred reconcile state.
@@ -241,6 +255,13 @@ function createPetWindowRuntime(options = {}) {
   // §4.3.14 observedClampInset: Map<"displayId:edge", insetPx>. Not persisted
   // (I7) — relearned every process lifetime, per edge.
   const observedClampInsets = new Map();
+  // PR #751 Codex review #3 (rework batch A-3): a clamp-explainable candidate
+  // must be observed TWICE in a row with the identical (displayId, edge,
+  // inset) before it's actually written to observedClampInsets — a single
+  // external move that happens to land on a workArea edge (a one-off event,
+  // not a real WM-boundary fact) would otherwise permanently pollute the
+  // learned inset from ONE observation. See maybeLearnInset() below.
+  let pendingInsetCandidate = null; // { displayId, edge, inset } | null
 
   // §4.3.11 hit-side reconcile state — deliberately separate from the render
   // fields above; hit has its own quiet period (HIT_QUIET_MS), its own
@@ -248,6 +269,12 @@ function createPetWindowRuntime(options = {}) {
   // action plus a conservative grab-candidate log, never a rebase/follow.
   let lastRequestedHitRect = null;
   let lastHitWorkArea = null;
+  // PR #751 Codex review #2 (rework batch A-2, hit-side symmetric fix):
+  // resolveClampAwareBounds(lastHitWorkArea)'s result AT THE MOMENT
+  // syncHitWin() wrote lastRequestedHitRect — runHitReconcile() must judge
+  // against what was true then, not recompute fresh (which could disagree if
+  // the inset table changed in between, e.g. clearObservedClampInsets()).
+  let lastHitClampBounds = null;
   let hitQuietTimer = null;
   let hitConfirmTimer = null;    // explicit re-check for the two-level grab judgment (§4.3.11 public premise 3)
   let hitLastObservedActual = null;
@@ -417,15 +444,46 @@ function createPetWindowRuntime(options = {}) {
     edgeLog(`Clawd: inset-drift display=${displayId} edge=${edge} old=${Number.isFinite(prev) ? prev : 0} new=${inset}`);
   }
 
+  // PR #751 Codex review #3 (rework batch A-3): the gate in front of
+  // updateObservedClampInset() above. A single clamp-explainable observation
+  // is not enough evidence to commit to the learned-inset table — it might
+  // be a one-off external move that merely happens to land on a workArea
+  // edge, not a real, stable fact about the WM's usable region. Only a
+  // SECOND consecutive candidate with the identical (displayId, edge, inset)
+  // actually gets written; any other candidate in between overwrites the
+  // pending one instead of learning (so a fluke can't "vote" alongside a
+  // later real one — the streak must be genuinely consecutive). This does
+  // not affect acceptance (adopt-clamp) at all — whether a mismatch is
+  // EXPLAINED as a clamp and whether it's LEARNED FROM stay two separate
+  // questions, exactly as before.
+  function maybeLearnInset(displayId, clampObs) {
+    if (!clampObs || clampObs.axis !== "x" || displayId == null) return;
+    const candidate = { displayId, edge: clampObs.edge, inset: clampObs.inset };
+    if (
+      pendingInsetCandidate
+      && pendingInsetCandidate.displayId === candidate.displayId
+      && pendingInsetCandidate.edge === candidate.edge
+      && pendingInsetCandidate.inset === candidate.inset
+    ) {
+      updateObservedClampInset(candidate.displayId, candidate.edge, candidate.inset);
+      pendingInsetCandidate = null;
+    } else {
+      pendingInsetCandidate = candidate;
+    }
+  }
+
   // Wired to display-metrics-changed's debounce handler (main.js) per §4.3.14:
   // "inset 只在同一 (displayId, edge) 内有效...里必须显式清空对应 display 的
   // 表项". Clearing the whole table on any topology-metrics event is a safe
   // superset — Electron doesn't cheaply tell us WHICH display changed from
   // this event alone, and re-learning an unchanged inset on the next clamp is
   // a harmless, self-healing cost (worst case: one extra "predicted != actual"
-  // frame, never a correctness bug).
+  // frame, never a correctness bug). Also clears any pending (unconfirmed)
+  // inset candidate (A-3) — a topology change invalidates whatever streak was
+  // building toward confirmation.
   function clearObservedClampInsets() {
     observedClampInsets.clear();
+    pendingInsetCandidate = null;
   }
 
   // §4.2's leftBound/rightBound: null means "don't clamp that side". I3 is
@@ -438,11 +496,14 @@ function createPetWindowRuntime(options = {}) {
   // §4.3.14's inset narrows the predicted boundary so predicted physical
   // converges to actual physical instead of jumping "predicted -> measured"
   // after the fact (see runReconcile()'s adopt-clamp branch, which is the
-  // only writer of observedClampInset).
+  // only writer of observedClampInset). `displayId` is included in the
+  // return value (PR #751 Codex review #2, rework batch A-2) purely so
+  // applyPetWindowBounds() can fold it straight into expectedWrite's
+  // snapshot without a second findDisplayIdForPoint() call.
   function resolveHorizontalClampBounds(bounds, workArea, providedEdgeContext) {
-    if (!isLinux || isEdgeVirtualizationDisabled()) return { leftBound: null, rightBound: null };
+    if (!isLinux || isEdgeVirtualizationDisabled()) return { leftBound: null, rightBound: null, displayId: null };
     const edge = providedEdgeContext || resolveEdgeContextForBounds(bounds, workArea);
-    if (!edge) return { leftBound: null, rightBound: null };
+    if (!edge) return { leftBound: null, rightBound: null, displayId: null };
     const displayId = isValidWorkArea(workArea)
       ? findDisplayIdForPoint(workArea.x + workArea.width / 2, workArea.y + workArea.height / 2)
       : null;
@@ -453,6 +514,7 @@ function createPetWindowRuntime(options = {}) {
       rightBound: edge.right.isOuterWorkAreaEdge
         ? edge.right.workAreaBoundary - getObservedClampInset(displayId, "right")
         : null,
+      displayId,
     };
   }
 
@@ -465,7 +527,14 @@ function createPetWindowRuntime(options = {}) {
     if (!bounds) return null;
     const resolvedWorkArea = isValidWorkArea(workArea) ? workArea : resolveWorkAreaFor(bounds);
     const clampBounds = resolveHorizontalClampBounds(bounds, resolvedWorkArea, opts.edgeContext);
-    return materializeVirtualBoundsRaw(bounds, resolvedWorkArea, clampBounds);
+    const raw = materializeVirtualBoundsRaw(bounds, resolvedWorkArea, clampBounds);
+    if (!raw) return null;
+    // PR #751 Codex review #2 (rework batch A-2): surface the workArea and
+    // clampBounds this call actually resolved/used, purely additive to the
+    // existing { bounds, viewportOffsetX, viewportOffsetY } shape — so
+    // applyPetWindowBounds() can snapshot them into expectedWrite without
+    // resolveHorizontalClampBounds() being called a second time.
+    return { ...raw, workArea: resolvedWorkArea, clampBounds };
   }
 
   function sameRect(a, b) {
@@ -477,18 +546,27 @@ function createPetWindowRuntime(options = {}) {
   // §4.3.2's recomputeOffsetsFrom: rederives both offsets from a known-good
   // (logical, actualPhysical) pair without going through materialize. Callers:
   // the I2 backstop below (with logical===actualPhysical, trivially valid,
-  // see the comment there), and runReconcile()'s adopt-clamp branch — the
-  // latter is a REAL, unguarded write point (§12.18: the legal-domain
-  // backstop must fire at every offset write point, not just materialize's
-  // own result), since lastLogicalBounds and actual there come from genuine
-  // reconciliation, not a controlled reset. The rebase branch doesn't need
-  // its own guard here: it always calls back through applyPetWindowBounds(),
-  // which already runs guardOffsetXLegalDomain() on its own materialize
-  // result.
-  function recomputeOffsetsFrom(logical, actualPhysical) {
-    const rawOffsetX = (isLinux && !isEdgeVirtualizationDisabled())
-      ? (logical.x - actualPhysical.x)
-      : 0;
+  // see the comment there — `eligible` doesn't matter in that call since the
+  // two rects are identical either way, so it passes false), and
+  // runReconcile()'s adopt-clamp branches — the latter are REAL, unguarded
+  // write points (§12.18: the legal-domain backstop must fire at every
+  // offset write point, not just materialize's own result), since
+  // lastLogicalBounds and actual there come from genuine reconciliation, not
+  // a controlled reset. The rebase branch doesn't need its own guard here:
+  // it always calls back through applyPetWindowBounds(), which already runs
+  // guardOffsetXLegalDomain() on its own materialize result.
+  //
+  // `eligible` (PR #751 Codex review #4a, rework batch A-4): replaces the
+  // former unconditional `isLinux && !isEdgeVirtualizationDisabled()` check.
+  // The caller passes whether THIS write's own snapshot says an X clamp was
+  // even possible (expectedWrite.xEligibleLeft || .xEligibleRight) — on a
+  // Linux internal seam (both bounds null) `isLinux` alone used to be true
+  // even though no clamp could legitimately explain anything there, letting
+  // an adopt-clamp classification send a spurious non-zero X offset IPC (an
+  // I3 violation: X offset must be exactly 0 off any Linux-outer-edge
+  // context). Gating on the snapshot's own eligibility instead closes that.
+  function recomputeOffsetsFrom(logical, actualPhysical, eligible) {
+    const rawOffsetX = eligible ? (logical.x - actualPhysical.x) : 0;
     const width = actualPhysical.width;
     if (Number.isFinite(rawOffsetX) && width > 0 && Math.abs(rawOffsetX) < width) {
       setViewportOffsetX(rawOffsetX);
@@ -525,7 +603,7 @@ function createPetWindowRuntime(options = {}) {
       "offset-out-of-range",
       `axis=x offsetX=${offsetX} width=${width} expected=${JSON.stringify(materialized.bounds)}`
     );
-    recomputeOffsetsFrom(materialized.bounds, materialized.bounds);
+    recomputeOffsetsFrom(materialized.bounds, materialized.bounds, false); // logical===actual here; eligibility is moot
     lastLogicalBounds = { x: materialized.bounds.x, y: materialized.bounds.y };
     // I2 point 3: "触发一次 syncDerivedSurfaces()" — the backstop just moved
     // logical bounds without going through the normal apply path below, so
@@ -606,6 +684,26 @@ function createPetWindowRuntime(options = {}) {
   // whatever the physical window actually is against what we last asked for,
   // entirely at a debounced quiet point — never inside a native event
   // callback (this function's own callers are always a setTimeout body).
+  //
+  // PR #751 Codex review #1/#2/#4a (rework batch A): classification order —
+  //   (a) sameRect -> accept (unchanged)
+  //   (b1) clamp-explainable -> always adopt, regardless of time (unchanged)
+  //   (b2) NOT explainable but still inside THIS write's own settle window ->
+  //        DEFER (Codex #1): don't touch expected/offset/logical, just note
+  //        an unexplained mismatch happened and re-check at the next quiet
+  //        point. Settle is bounded (SETTLE_MS), so this can't defer
+  //        forever — it eventually falls through to (b3)/(c).
+  //   (b3) NOT explainable, and the settle sweep (or an inherited deferred-
+  //        sweep debt) is what's classifying -> rebase if an earlier quiet
+  //        point already independently saw this as unexplained
+  //        (sawUnexplainedMismatch: a real event happened), otherwise adopt
+  //        (the original "no-event" sweep fallback — §4.3.13 — nothing ever
+  //        positively indicated a real move, so blind-adopt is still safe).
+  //   (c) everything else -> rebase (unchanged)
+  // (b1)/(b2)/(b3) are ALL gated on this write's own eligibility snapshot
+  // (expectedWrite.xEligibleLeft || .xEligibleRight) — off that, only (a)
+  // and (c) exist: physical is truth, exactly like non-Linux/escape-hatch/
+  // Linux-internal-seam contexts always behaved pre-#690 (A-4).
   function runReconcile(reason = "native-quiet", gen = -1) {
     // Sweep entries must NOT blindly null reconcileTimer: a quiet timer that's
     // still legitimately counting down would become an orphan no one can
@@ -635,48 +733,72 @@ function createPetWindowRuntime(options = {}) {
     deferredSweepGen = -1; // one-shot consumption, never sticky
 
     const win = getRenderWindow();
-    if (!isLiveWindow(win) || !expectedPhysical || !lastLogicalBounds) return;
+    if (!isLiveWindow(win) || !expectedWrite || !lastLogicalBounds) return;
     const actual = win.getBounds();
     if (fromSettleSweep) settleUntil = 0; // the only consumption point for this generation's settle
 
     const settleState = now() < settleUntil ? "active" : "expired";
     const sinceWriteMs = now() - lastWriteAt;
+    const expected = expectedWrite.physical;
 
     // (a) our own write landed exactly as requested.
-    if (sameRect(actual, expectedPhysical)) { syncDerivedSurfaces(); return; }
+    if (sameRect(actual, expected)) { syncDerivedSurfaces(); return; }
 
-    // (b) explainable as a clamp, OR still within this write's settle window.
-    // Acceptance and learning are two SEPARATE questions evaluated in that
-    // order — acceptance can be generous (worst case: converge one quiet
-    // point late), but only a clamp-explainable observation is ever allowed
-    // to update observedClampInset (a short-circuit OR here would let size
-    // changes, two-axis moves, and misclassified external moves pollute it).
-    const wa = lastResolvedWorkArea || resolveWorkAreaFor(expectedPhysical);
-    const clampObs = deriveClampObservation(actual, expectedPhysical, wa, resolveClampAwareBounds(wa));
-    const acceptAsOwnWrite = fromSettleSweep || now() < settleUntil || clampObs !== null;
-    if (acceptAsOwnWrite) {
-      const reasonTag = clampObs
-        ? `edge=${clampObs.edge}`
-        : (reason === "settle-sweep" && !(now() < settleUntil) ? "reason=no-event" : "reason=within-settle");
-      logReconcileEvent("render", expectedPhysical, actual, "adopt-clamp", settleState, sinceWriteMs, reasonTag);
-      expectedPhysical = { ...actual };
-      recomputeOffsetsFrom(lastLogicalBounds, actual);
-      if (clampObs && clampObs.axis === "x" && isValidWorkArea(wa)) {
-        const displayId = findDisplayIdForPoint(wa.x + wa.width / 2, wa.y + wa.height / 2);
-        updateObservedClampInset(displayId, clampObs.edge, clampObs.inset);
-      }
+    const xEligible = expectedWrite.xEligibleLeft || expectedWrite.xEligibleRight;
+    const clampObs = xEligible
+      ? deriveClampObservation(actual, expected, expectedWrite.workArea, expectedWrite.clampBounds)
+      : null;
+
+    // (b1) explainable as a clamp -> always adopt, regardless of time.
+    if (clampObs !== null) {
+      logReconcileEvent("render", expected, actual, "adopt-clamp", settleState, sinceWriteMs, `edge=${clampObs.edge}`);
+      expectedWrite = { ...expectedWrite, physical: { ...actual } };
+      recomputeOffsetsFrom(lastLogicalBounds, actual, xEligible);
+      if (clampObs.axis === "x") maybeLearnInset(expectedWrite.displayId, clampObs);
       syncDerivedSurfaces();
       return;
     }
 
-    // (c) a real external move — keep the current VISUAL position with the
-    // old offset, then rebase logical bounds onto the new physical position.
+    // (b2) not explainable, but still inside THIS write's own settle window:
+    // defer instead of adopt (Codex #1).
+    if (xEligible && now() < settleUntil) {
+      sawUnexplainedMismatch = true;
+      scheduleReconcile();
+      return;
+    }
+
+    // (b3) not explainable, and the settle sweep (or an inherited deferred-
+    // sweep debt) is classifying: rebase if an earlier quiet point already
+    // saw this exact mismatch as unexplained (a real event happened);
+    // otherwise adopt (nothing ever positively indicated a real move).
+    if (xEligible && fromSettleSweep) {
+      if (sawUnexplainedMismatch) {
+        logReconcileEvent("render", expected, actual, "rebase", settleState, sinceWriteMs, "reason=defer-expired");
+        applyPetWindowBounds({
+          x: actual.x + viewportOffsetX,
+          y: actual.y - viewportOffsetY,
+          width: actual.width,
+          height: actual.height,
+        });
+        syncDerivedSurfaces();
+        return;
+      }
+      logReconcileEvent("render", expected, actual, "adopt-clamp", settleState, sinceWriteMs, "reason=no-event");
+      expectedWrite = { ...expectedWrite, physical: { ...actual } };
+      recomputeOffsetsFrom(lastLogicalBounds, actual, xEligible);
+      syncDerivedSurfaces();
+      return;
+    }
+
+    // (c) everything else (a real external move, or ANY mismatch at all in a
+    // non-eligible context) — keep the current VISUAL position with the old
+    // offset, then rebase logical bounds onto the new physical position.
     // The two axes use opposite-signed formulas by design (I2): X offset is
     // signed (logical - physical) so logical follows physical PLUS the old
     // offset; Y offset is a non-negative top-lift (physical - logical) so
     // logical follows physical MINUS the old offset. This is a historical
     // sign convention, not a typo, and must never be "unified".
-    logReconcileEvent("render", expectedPhysical, actual, "rebase", settleState, sinceWriteMs, null);
+    logReconcileEvent("render", expected, actual, "rebase", settleState, sinceWriteMs, null);
     applyPetWindowBounds({
       x: actual.x + viewportOffsetX,
       y: actual.y - viewportOffsetY,
@@ -793,9 +915,21 @@ function createPetWindowRuntime(options = {}) {
     // from inside win.setBounds itself — observes the new logical position,
     // never a stale or WM-polluted one.
     lastLogicalBounds = { x: next.x, y: next.y, width: next.width, height: next.height };
-    expectedPhysical = { ...m.bounds };
-    lastResolvedWorkArea = wa;
     writeGen += 1;
+    // PR #751 Codex review #2 (rework batch A-2): freeze this write's own
+    // clamp-eligibility basis — a later reconcile pass judges THIS write's
+    // outcome against what was true right now, not whatever the inset table
+    // says by the time it gets around to checking.
+    expectedWrite = {
+      physical: { ...m.bounds },
+      workArea: wa,
+      gen: writeGen,
+      clampBounds: m.clampBounds,
+      displayId: m.clampBounds.displayId,
+      xEligibleLeft: m.clampBounds.leftBound !== null,
+      xEligibleRight: m.clampBounds.rightBound !== null,
+    };
+    sawUnexplainedMismatch = false; // A-1: fresh generation, no observations yet
     settleUntil = now() + SETTLE_MS;
     lastWriteAt = now();
 
@@ -1318,6 +1452,9 @@ function createPetWindowRuntime(options = {}) {
     }
 
     lastHitWorkArea = hitWa;
+    // A-2 hit-side snapshot: freeze the inset-aware boundary NOW, for
+    // runHitReconcile() to judge this exact write against later.
+    lastHitClampBounds = resolveClampAwareBounds(hitWa);
     const target = { x, y, width: w, height: h };
     const wasSuppressed = hitGeometrySuppressed;
     if (wasSuppressed || !sameRect(lastRequestedHitRect, target)) {
@@ -1407,8 +1544,11 @@ function createPetWindowRuntime(options = {}) {
       return;
     }
 
+    // A-2: judge against the boundary snapshotted when this rect was WRITTEN
+    // (syncHitWin()), not one recomputed fresh here against whatever the
+    // CURRENT inset table says.
     const clampObs = deriveClampObservation(
-      actual, lastRequestedHitRect, lastHitWorkArea, resolveClampAwareBounds(lastHitWorkArea)
+      actual, lastRequestedHitRect, lastHitWorkArea, lastHitClampBounds
     );
     if (clampObs) {
       // §12.21: recoverable, not a one-shot lockout. The SAME target gets at
