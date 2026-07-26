@@ -471,9 +471,31 @@ function createPetWindowRuntime(options = {}) {
 
   // §4.3.2's recomputeOffsetsFrom: rederives both offsets from a known-good
   // (logical, actualPhysical) pair without going through materialize. Callers:
-  // the I2 backstop below, and runReconcile()'s adopt-clamp/rebase branches.
+  // the I2 backstop below (with logical===actualPhysical, trivially valid,
+  // see the comment there), and runReconcile()'s adopt-clamp branch — the
+  // latter is a REAL, unguarded write point (§12.18: the legal-domain
+  // backstop must fire at every offset write point, not just materialize's
+  // own result), since lastLogicalBounds and actual there come from genuine
+  // reconciliation, not a controlled reset. The rebase branch doesn't need
+  // its own guard here: it always calls back through applyPetWindowBounds(),
+  // which already runs guardOffsetXLegalDomain() on its own materialize
+  // result.
   function recomputeOffsetsFrom(logical, actualPhysical) {
-    setViewportOffsetX((isLinux && !isEdgeVirtualizationDisabled()) ? (logical.x - actualPhysical.x) : 0);
+    const rawOffsetX = (isLinux && !isEdgeVirtualizationDisabled())
+      ? (logical.x - actualPhysical.x)
+      : 0;
+    const width = actualPhysical.width;
+    if (Number.isFinite(rawOffsetX) && width > 0 && Math.abs(rawOffsetX) < width) {
+      setViewportOffsetX(rawOffsetX);
+      clearLoggedEdgeReason("offset-out-of-range");
+    } else {
+      logEdgeOnce(
+        "offset-out-of-range",
+        `axis=x offsetX=${rawOffsetX} width=${width} expected=${JSON.stringify(actualPhysical)}`
+      );
+      lastLogicalBounds = { x: actualPhysical.x, y: actualPhysical.y };
+      setViewportOffsetX(0);
+    }
     setViewportOffsetY(Math.max(0, actualPhysical.y - logical.y));
   }
 

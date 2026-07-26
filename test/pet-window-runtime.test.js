@@ -1012,6 +1012,40 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     );
     assert.equal(harness.runtime.getViewportOffsetX(), 0, "X offset must stay 0 throughout, even while reconcile is actively rebasing");
   });
+
+  it("I2's offset legal-domain backstop also fires from runReconcile()'s adopt-clamp branch (§12.18)", () => {
+    // §12.18 asks whether the backstop fires at EVERY offset write point,
+    // not just applyPetWindowBounds()'s own materialize result. This is a
+    // second, independent write point: runReconcile()'s adopt-clamp branch
+    // calls recomputeOffsetsFrom() directly from a genuinely reconciled
+    // (lastLogicalBounds, actual) pair, which is not guaranteed to be legal
+    // just because materialize's own guard already passed once earlier.
+    const clock = createFakeClock();
+    const edgeLogs = [];
+    const harness = createRuntime({ isLinux: true, clock, edgeLog: (m) => edgeLogs.push(m) });
+    wireNativeGeometryListeners(harness);
+
+    harness.runtime.applyPetWindowBounds({ x: 10, y: 20, width: 100, height: 100 });
+
+    // Still within THIS write's settle window -- any mismatch here is
+    // accepted as adopt-clamp regardless of edge-explainability (the accept
+    // condition is deliberately generous). Move the window somewhere far
+    // enough away that the derived offsetX would reach the window's own
+    // width -- exactly the scenario the plan's I2 backstop exists to catch,
+    // reached via reconcile's own recompute this time, not materialize's.
+    harness.renderWin.bounds = { x: 900, y: 20, width: 100, height: 100 };
+    harness.renderWin.emit("move");
+    clock.advance(150);
+
+    assert.ok(
+      edgeLogs.some((line) => line.includes("edge-offset-out-of-range")),
+      "the backstop must fire from the adopt-clamp branch too, not just materialize's own result"
+    );
+    assert.equal(harness.runtime.getViewportOffsetX(), 0);
+    const bounds = harness.runtime.getPetWindowBounds();
+    assert.equal(bounds.x, 900, "lastLogicalBounds must hard-resync to actual, not stay at the polluted original logical value");
+    assert.equal(bounds.y, 20);
+  });
 });
 
 describe("pet-window-runtime", () => {
