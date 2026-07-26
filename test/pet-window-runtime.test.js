@@ -1841,6 +1841,65 @@ describe("PR #751 second-review batch C: event-evidence bit, per-side clamp elig
     assert.equal(harness.runtime.getViewportOffsetX(), 0, "a fresh rebase write at x=880 (not clamped by anything either) must not carry forward the old adopt-clamp's fabricated inset offset");
   });
 
+  // D-3 matrix gap 1 (Codex third-review non-blocking #2): C-2 tightened
+  // deriveClampObservation() to check only the relevant side's OWN bound —
+  // this is the mirror-image regression guard, proving that per-side check
+  // does NOT over-correct into rejecting a genuine clamp on the eligible
+  // side itself. Same two-display topology as C-2 (left=eligible outer
+  // edge, right=ineligible internal seam for a write on display 1), but
+  // this time the mismatch is a REAL, yet-unlearned LEFT-edge inset (e.g. a
+  // screen-edge dock) that the software's own materialize did not predict.
+  it("D-3 (matrix gap 1): a genuine LEFT-edge clamp on the ELIGIBLE side is still correctly adopted — per-side eligibility does not over-reject the eligible side itself", () => {
+    const clock = createFakeClock();
+    // Constructed away from x=0 deliberately: if the mock's initial bounds
+    // already happened to match the write's own materialized physical
+    // target, applyPetWindowBounds()'s own same-rect skip
+    // (`if (opts.force || !sameRect(cur, m.bounds)) win.setBounds(...)`)
+    // would never call setBounds() at all, and this mock's own inset
+    // simulation (and therefore the whole adopt-clamp reconcile path this
+    // test exists to exercise) would never run — found empirically while
+    // verifying this test actually exercises deriveClampObservation() at
+    // all, not just the write-time materialize.
+    const renderWin = makeWindow({ x: 500, y: 100, width: 100, height: 100 });
+    renderWin.setBounds = (next) => {
+      renderWin.calls.push(["setBounds", next]);
+      // The software's own materialize predicts physical=max(logical, 0)
+      // (raw leftBound=0, no inset learned yet) -- this mock simulates a
+      // REAL WM enforcing a further 20px inset past that, same pattern as
+      // makeInsetMutterClampedWindow() but on the left edge instead.
+      const clampedX = next.x < 20 ? 20 : next.x;
+      renderWin.bounds = { ...next, x: clampedX };
+      renderWin.emit("move");
+    };
+    const harness = createRuntime({
+      isWin: false,
+      isLinux: true,
+      renderWin,
+      clock,
+      displays: [
+        { id: 1, bounds: { x: 0, y: 0, width: 1000, height: 800 }, workArea: { x: 0, y: 0, width: 1000, height: 800 } },
+        { id: 2, bounds: { x: 1000, y: 0, width: 1000, height: 800 }, workArea: { x: 1000, y: 0, width: 1000, height: 800 } },
+      ],
+    });
+    wireNativeGeometryListeners(harness);
+
+    // x=-20 requests past the outer-left edge -- software predicts
+    // physical=0 (max(-20, leftBound 0)), but the mock's own emit("move")
+    // (fired synchronously inside its setBounds() override) reports the
+    // REAL, further-clamped actual=20 before this call even returns.
+    harness.runtime.applyPetWindowBounds({ x: -20, y: 100, width: 100, height: 100 });
+    clock.advance(150); // past RECONCILE_QUIET_MS -- classifies the predicted(0) vs actual(20) mismatch
+
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x, -20,
+      "the genuine left-edge clamp must still be adopted (logical stays at the original -20 request) -- eligible-side classification must not have been over-corrected into rejecting a real clamp too"
+    );
+    assert.equal(
+      harness.runtime.getViewportOffsetX(), -40,
+      "offset must absorb the full logical(-20)-to-actual(20) gap via recomputeOffsetsFrom(), confirming this landed in (b1) adopt-clamp (not a rebase, which would have used a fresh materialize instead)"
+    );
+  });
+
   // C-3 (Codex B3): reproduces Codex's own timeline. lastHitWorkArea/
   // lastHitClampBounds used to refresh unconditionally on every syncHitWin()
   // call, including the two branches that do NOT write anything (same-target
@@ -1981,6 +2040,158 @@ describe("PR #751 second-review batch C: event-evidence bit, per-side clamp elig
     assert.equal(
       harness.runtime.getObservedClampInset(1, "right"), 0,
       "the same-value candidate reappearing after a display-added event must NOT be confirmed -- the streak was broken by the topology change, not genuinely consecutive"
+    );
+  });
+
+  // D-3 matrix gap 2 (Codex third-review non-blocking #2): C-4's own test
+  // above only exercises display-added -- before this batch, ONLY
+  // display-metrics-changed cleared the inset table/candidate at all
+  // (display-added/removed left it completely untouched). This is the
+  // display-removed sibling, same exact pattern.
+  it("D-3 (matrix gap 2a): a pending inset candidate observed before a display-removed event is not confirmed by the same value reappearing after it", () => {
+    const clock = createFakeClock();
+    const renderWin = makeInsetMutterClampedWindow(
+      { x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { rightInset: 40 }
+    );
+    const harness = create690Fixture({ renderWin, clock });
+    wireNativeGeometryListeners(harness);
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    harness.renderWin.emit("move");
+    clock.advance(150);
+    assert.equal(harness.runtime.getObservedClampInset(1, "right"), 0, "sanity: a single observation alone must not learn (A-3)");
+
+    harness.runtime.handleDisplayRemoved();
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    }, { force: true });
+    harness.renderWin.emit("move");
+    clock.advance(150);
+
+    assert.equal(
+      harness.runtime.getObservedClampInset(1, "right"), 0,
+      "the same-value candidate reappearing after a display-removed event must NOT be confirmed either"
+    );
+  });
+
+  // D-3 matrix gap 2 (Codex third-review non-blocking #2): the
+  // display-metrics-changed sibling. This one WAS already correct even
+  // before C-4 (it's the one event that already cleared the table) -- this
+  // test locks that continuing to hold true, alongside its two new siblings
+  // above/below, as one complete three-event matrix instead of leaving
+  // metrics-changed's own coverage implicit.
+  it("D-3 (matrix gap 2b): a pending inset candidate observed before a display-metrics-changed event is not confirmed by the same value reappearing after it", () => {
+    const clock = createFakeClock();
+    const renderWin = makeInsetMutterClampedWindow(
+      { x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { rightInset: 40 }
+    );
+    const harness = create690Fixture({ renderWin, clock });
+    wireNativeGeometryListeners(harness);
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    harness.renderWin.emit("move");
+    clock.advance(150);
+    assert.equal(harness.runtime.getObservedClampInset(1, "right"), 0, "sanity: a single observation alone must not learn (A-3)");
+
+    harness.runtime.handleDisplayMetricsChanged();
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    }, { force: true });
+    harness.renderWin.emit("move");
+    clock.advance(150);
+
+    assert.equal(
+      harness.runtime.getObservedClampInset(1, "right"), 0,
+      "the same-value candidate reappearing after a display-metrics-changed event must NOT be confirmed either"
+    );
+  });
+
+  // D-3 matrix gap 3 (Codex third-review non-blocking #2): C-6 (main.js's
+  // display-metrics-changed listener calling clearObservedClampInsets() +
+  // invalidateDisplaysCache() immediately, decoupled from the still-debounced
+  // geometry reflow) had no assembly-level test at all — only the runtime
+  // function-level tests above. This mirrors src/main.js's EXACT current
+  // wiring shape (verified against the real file below) against a REAL
+  // pet-window-runtime instance, using this harness's own fake clock for the
+  // 400ms debounce, so the "immediate vs debounced" TIMING split itself is
+  // what's under test, not just the two functions' own existence.
+  it("D-3 (matrix gap 3): main.js's display-metrics-changed wiring shape clears the inset table immediately, decoupled from the still-debounced geometry reflow", () => {
+    const clock = createFakeClock();
+    const renderWin = makeInsetMutterClampedWindow(
+      { x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { rightInset: 40 }
+    );
+    const harness = create690Fixture({ renderWin, clock });
+    wireNativeGeometryListeners(harness);
+    const petWindowRuntime = harness.runtime;
+
+    // Learn a real inset first (A-3's two-write confirm), so this test has
+    // something observable to prove gets cleared.
+    petWindowRuntime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    renderWin.emit("move");
+    clock.advance(150);
+    petWindowRuntime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    }, { force: true });
+    renderWin.emit("move");
+    clock.advance(150);
+    assert.equal(petWindowRuntime.getObservedClampInset(1, "right"), 40, "sanity: render side has learned the 40px inset");
+
+    // Spy on the geometry-reflow half specifically, to prove it does NOT
+    // run synchronously with the clear below.
+    let geometryReflowCalls = 0;
+    const originalHandleDisplayMetricsChanged = petWindowRuntime.handleDisplayMetricsChanged;
+    petWindowRuntime.handleDisplayMetricsChanged = (...args) => {
+      geometryReflowCalls++;
+      return originalHandleDisplayMetricsChanged(...args);
+    };
+
+    // Mirrors src/main.js's EXACT current wiring shape (see the structural
+    // cross-check below) -- a mock `screen` capturing the registered
+    // listener, using this harness's own fake clock for the debounce.
+    let displayMetricsListener = null;
+    const screen = { on: (event, cb) => { if (event === "display-metrics-changed") displayMetricsListener = cb; } };
+    let displayMetricsGeometryTimer = null;
+    const reapplyDisplayGeometryAfterMetricsChange = () => {
+      if (displayMetricsGeometryTimer) clock.clearTimeout(displayMetricsGeometryTimer);
+      displayMetricsGeometryTimer = clock.setTimeout(() => {
+        displayMetricsGeometryTimer = null;
+        petWindowRuntime.handleDisplayMetricsChanged();
+      }, 400);
+    };
+    screen.on("display-metrics-changed", () => {
+      petWindowRuntime.clearObservedClampInsets();
+      petWindowRuntime.invalidateDisplaysCache();
+      reapplyDisplayGeometryAfterMetricsChange();
+    });
+
+    displayMetricsListener(); // simulates screen.on("display-metrics-changed", ...) firing
+
+    assert.equal(
+      petWindowRuntime.getObservedClampInset(1, "right"), 0,
+      "the inset table must be cleared IMMEDIATELY, synchronously inside the raw event callback -- not waiting for the 400ms debounce"
+    );
+    assert.equal(geometryReflowCalls, 0, "sanity: the geometry reflow itself must NOT have run yet -- it is still debounced");
+
+    clock.advance(400); // let the debounce elapse
+    assert.equal(geometryReflowCalls, 1, "the geometry reflow must still eventually run, once the debounce elapses");
+  });
+
+  it("D-3 (matrix gap 3, structural cross-check): main.js's actual display-metrics-changed wiring still matches the shape the assembly test above mirrors", () => {
+    const mainSource = fs.readFileSync(path.join(SRC_DIR, "main.js"), "utf8").replace(/\r\n/g, "\n");
+    assert.ok(
+      mainSource.includes('screen.on("display-metrics-changed", () => {\n    petWindowRuntime.clearObservedClampInsets();\n    petWindowRuntime.invalidateDisplaysCache();\n    reapplyDisplayGeometryAfterMetricsChange();\n  });'),
+      "src/main.js's display-metrics-changed listener must keep calling clearObservedClampInsets() + invalidateDisplaysCache() immediately, before the debounced geometry reflow -- a regression back to doing this only inside the debounced callback would be invisible to the runtime-level D-3/C-4 tests, which call the runtime's own methods directly and never exercise main.js's wiring shape at all"
     );
   });
 });
