@@ -625,7 +625,7 @@ function createPetWindowRuntime(options = {}) {
     // to update observedClampInset (a short-circuit OR here would let size
     // changes, two-axis moves, and misclassified external moves pollute it).
     const wa = lastResolvedWorkArea || resolveWorkAreaFor(expectedPhysical);
-    const clampObs = deriveClampObservation(actual, expectedPhysical, wa);
+    const clampObs = deriveClampObservation(actual, expectedPhysical, wa, resolveClampAwareBounds(wa));
     const acceptAsOwnWrite = fromSettleSweep || now() < settleUntil || clampObs !== null;
     if (acceptAsOwnWrite) {
       const reasonTag = clampObs
@@ -666,7 +666,28 @@ function createPetWindowRuntime(options = {}) {
   // at inset=0: the boundary it would compare against is the un-narrowed one,
   // but a clamped window sits on the NARROWED boundary, so the check returns
   // false forever and the first non-zero inset is never learned.
-  function deriveClampObservation(actual, expected, wa) {
+  //
+  // Deviation from the plan's literal pseudocode, verified necessary by
+  // hand-tracing the plan's own §6.3 "inset 自举" numbers (logical X=1768,
+  // width=203, wa.right=1920, Mutter mock inset=40): `expected` here is
+  // always OUR OWN materialized prediction, which by construction already
+  // satisfies `expected.right <= wa.right` (materialize never predicts past
+  // the raw workArea) and equals wa.right EXACTLY whenever a clamp was
+  // actually engaged (inset=0) or equals `wa.right - <the inset used>` once
+  // any inset is already learned. Comparing `expected` against the RAW `wa`
+  // boundary with `<=` therefore returns null in BOTH the very first
+  // (bootstrap, inset=0) clamp and every subsequent "inset changed again"
+  // clamp — i.e. it never fires for the exact scenarios it exists to detect
+  // (confirmed by direct calculation, not just reasoning about it). The fix
+  // compares against the boundary OUR OWN materializer actually clamped
+  // against (`clampBounds`, reflecting whatever inset was current at
+  // prediction time) with a STRICT inequality, so "expected sits exactly on
+  // the boundary it was clamped to" reads as "genuinely overflowed", while a
+  // position that only happens to be near an edge without ever being clamped
+  // still falls through to null. `clampBounds` is optional and Y is
+  // unaffected (Y is never inset-learned) — a caller that omits it falls
+  // back to the original raw-`wa` comparison.
+  function deriveClampObservation(actual, expected, wa, clampBounds) {
     if (!actual || !expected || !isValidWorkArea(wa)) return null;
     if (actual.width !== expected.width || actual.height !== expected.height) return null;
     const dx = actual.x - expected.x;
@@ -674,10 +695,19 @@ function createPetWindowRuntime(options = {}) {
     if ((dx !== 0) === (dy !== 0)) return null; // a clamp changes exactly one axis
     if (dx !== 0) {
       const edge = dx < 0 ? "right" : "left";
+      const effectiveRight = (clampBounds && Number.isFinite(clampBounds.rightBound))
+        ? clampBounds.rightBound
+        : (wa.x + wa.width);
+      const effectiveLeft = (clampBounds && Number.isFinite(clampBounds.leftBound))
+        ? clampBounds.leftBound
+        : wa.x;
       // A clamp only ever pushes the window INWARD, so the original request
-      // must genuinely have overflowed on that side.
-      if (edge === "right" && expected.x + expected.width <= wa.x + wa.width) return null;
-      if (edge === "left" && expected.x >= wa.x) return null;
+      // must genuinely have reached the boundary it was clamped against.
+      if (edge === "right" && expected.x + expected.width < effectiveRight) return null;
+      if (edge === "left" && expected.x > effectiveLeft) return null;
+      // The learned inset itself is always relative to the RAW workArea
+      // (that's its definition: how far Mutter's real usable edge sits
+      // inside Electron's reported one), never the already-adjusted boundary.
       const inset = edge === "right"
         ? (wa.x + wa.width) - (actual.x + actual.width)
         : actual.x - wa.x;
@@ -689,6 +719,23 @@ function createPetWindowRuntime(options = {}) {
     if (edge === "top" && expected.y >= wa.y) return null;
     if (Math.abs(dy) > expected.height) return null;
     return { axis: "y", edge }; // Y is only used for acceptance, never learned
+  }
+
+  // The boundary OUR OWN materializer would clamp against right now for a
+  // given workArea (i.e. resolveHorizontalClampBounds() without needing a
+  // target rect / edge context) — used only to feed deriveClampObservation()
+  // the "effective" boundary explained above. Deliberately NOT platform- or
+  // escape-hatch-gated beyond what getObservedClampInset() itself already
+  // is: on non-Linux (or with the escape hatch on) the inset table is always
+  // empty, so this degrades to exactly the raw wa boundary — byte-identical
+  // to the plan's literal (uncorrected) comparison there.
+  function resolveClampAwareBounds(wa) {
+    if (!isValidWorkArea(wa)) return { leftBound: null, rightBound: null };
+    const displayId = findDisplayIdForPoint(wa.x + wa.width / 2, wa.y + wa.height / 2);
+    return {
+      leftBound: wa.x + getObservedClampInset(displayId, "left"),
+      rightBound: wa.x + wa.width - getObservedClampInset(displayId, "right"),
+    };
   }
 
   // Regulates native writes plus derived offset/log state for one logical
@@ -1333,7 +1380,9 @@ function createPetWindowRuntime(options = {}) {
       return;
     }
 
-    const clampObs = deriveClampObservation(actual, lastRequestedHitRect, lastHitWorkArea);
+    const clampObs = deriveClampObservation(
+      actual, lastRequestedHitRect, lastHitWorkArea, resolveClampAwareBounds(lastHitWorkArea)
+    );
     if (clampObs) {
       // §12.21: recoverable, not a one-shot lockout. The SAME target gets at
       // most one retry write; adopting afterward doesn't disable future
