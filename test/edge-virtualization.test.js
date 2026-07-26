@@ -127,7 +127,15 @@ function makeMutterClampedWindow(bounds) {
   const win = makeWindow(bounds);
   win.setBounds = (next) => {
     win.calls.push(["setBounds", next]);
-    const clampedX = next.x > ISSUE_690_MUTTER_MAX_X ? ISSUE_690_MUTTER_MAX_X : next.x;
+    // require_fully_onscreen clamps BOTH edges symmetrically, not just the
+    // right one — a window can't be pushed off the left edge either. The
+    // original P0-1 fixture only ever requested X > MAX, so the left half
+    // of this was previously untested; the coordinator-directed 1px-shrunk
+    // fly-off jump target fix is the first scenario here that actually
+    // requests a negative X, so the left clamp is filled in now to match.
+    let clampedX = next.x;
+    if (clampedX > ISSUE_690_MUTTER_MAX_X) clampedX = ISSUE_690_MUTTER_MAX_X;
+    if (clampedX < 0) clampedX = 0;
     win.bounds = { ...next, x: clampedX };
   };
   return win;
@@ -157,6 +165,7 @@ function makeMiniTheme(offsetRatio) {
 // construction would leave its internal reconcile timers on the real clock.
 function createEdgeVirtualizationHarness(overrides = {}) {
   const prefs = {};
+  const edgeLogs = [];
   let checkMiniModeSnapCalls = 0;
   let cursor = { x: 100, y: 100 };
 
@@ -235,6 +244,7 @@ function createEdgeVirtualizationHarness(overrides = {}) {
     reassertWinTopmost: () => {},
     scheduleHwndRecovery: () => {},
     isNearWorkAreaEdge: () => false,
+    edgeLog: (message) => edgeLogs.push(message),
     flushRuntimeStateToPrefs: flushPrefs,
     handleMiniDisplayChange: () => mini.handleDisplayChange(),
     notifyMiniTopologyChangedDuringTransition: () => mini.notifyTopologyChangedDuringTransition(),
@@ -324,6 +334,7 @@ function createEdgeVirtualizationHarness(overrides = {}) {
     renderWin,
     hitWin,
     prefs,
+    edgeLogs,
     dispose: () => { runtimeApi.dispose(); loader.restore(); },
     setCursor: (point) => { cursor = point; },
     getCheckMiniModeSnapCalls: () => checkMiniModeSnapCalls,
@@ -502,6 +513,107 @@ describe("edge virtualization cross-module integration (#690 §6.7)", () => {
     assert.equal(h.renderWin.bounds.x, ISSUE_690_MUTTER_MAX_X, "physical window must stay Mutter-safe at 1717");
     assert.equal(h.mini.getMiniMode(), true);
     assert.equal(h.mini.getMiniTransitioning(), false, "the settle timer must have fully completed");
+    h.dispose();
+  });
+
+  // Coordinator-directed follow-up fix: a literal fully-off-screen jump
+  // target (window's near edge exactly flush with the outer screen
+  // boundary) materializes to |offsetX| === width on Linux, which used to
+  // trip pet-window-runtime.js's I2 legal-domain backstop
+  // (guardOffsetXLegalDomain: the legal domain is the OPEN interval
+  // (-width, +width), so exactly ±width is illegal) mid-jump — not a
+  // harmless log, but a visible one-frame flash of the character snapping
+  // onto the physical screen edge (offset slammed to 0, logical bounds
+  // reset to the clamped physical position) before the later preload/settle
+  // frame corrected it. mini.js now shrinks the non-adjacent jump target by
+  // 1px so the materialized |offsetX| is width-1, inside the open interval.
+  it("via-menu non-adjacent entry never trips the I2 offset-out-of-range backstop across the full sequence", () => {
+    const h = createEdgeVirtualizationHarness({ miniTheme: makeMiniTheme(0.486) });
+    h.runtime.applyPetWindowBounds(
+      { x: 1600, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { force: true }
+    );
+
+    h.mini.enterMiniViaMenu();
+    for (let i = 0; i < 60; i++) mock.timers.tick(100); // full crabwalk -> jump -> preload -> settle, see task item 7b above
+
+    assert.ok(
+      !h.edgeLogs.some((line) => line.includes("edge-offset-out-of-range")),
+      `expected no edge-offset-out-of-range log across the whole entry; got: ${JSON.stringify(h.edgeLogs)}`
+    );
+    assert.equal(h.mini.getMiniMode(), true);
+    assert.equal(h.mini.getMiniTransitioning(), false, "the settle timer must have fully completed");
+    h.dispose();
+  });
+
+  // Ticks in small steps and returns true as soon as `mini`'s own
+  // isAnimating flag transitions true -> false — i.e. exactly when the jump
+  // parabola's last frame has landed and its onDone has run synchronously,
+  // but strictly BEFORE the later MINI_ENTER_PRELOAD_MS-delayed settle write
+  // moves things on to the resting mini position. This is deliberately NOT
+  // "poll until getPetWindowBounds().x equals the expected jump target":
+  // with the pre-fix (unshrunk) target, the interpolation's rounding passes
+  // through width-1 (1919/-202) as a transient mid-flight value on its way
+  // to the real (buggy) target, which would make an x-value-based poll
+  // false-pass even without the fix — confirmed empirically while writing
+  // this test.
+  function tickUntilJumpAnimationEnds(mini, maxSteps = 60, stepMs = 10) {
+    let prevAnimating = mini.getIsAnimating();
+    for (let i = 0; i < maxSteps; i++) {
+      mock.timers.tick(stepMs);
+      const nowAnimating = mini.getIsAnimating();
+      if (prevAnimating && !nowAnimating) return true;
+      prevAnimating = nowAnimating;
+    }
+    return false;
+  }
+
+  it("the fly-off jump frame materializes within I2's open legal domain instead of resetting logical bounds (right edge, non-adjacent)", () => {
+    const h = createEdgeVirtualizationHarness();
+    h.runtime.applyPetWindowBounds(
+      { x: 1000, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { force: true }
+    );
+
+    h.mini.enterMiniMode(ISSUE_690_WORK_AREA, true, "right");
+    assert.ok(
+      tickUntilJumpAnimationEnds(h.mini),
+      "the jump animation must complete (isAnimating true -> false) within the polling budget"
+    );
+
+    // maxRight - 1 = 1920 - 1 = 1919 for this fixture's 1920-wide single
+    // display; offsetX = logical(1919) - physical(1717, Mutter-clamped) = 202.
+    assert.equal(h.runtime.getPetWindowBounds().x, 1919, "logical bounds must land on the shrunk jump target, not be reset by the I2 backstop");
+    assert.equal(h.runtime.getViewportOffsetX(), 202, "offsetX must be width-1 (203-1=202), inside I2's open (-203,+203) interval");
+    assert.ok(
+      !h.edgeLogs.some((line) => line.includes("edge-offset-out-of-range")),
+      `the legal-domain backstop must not fire during the fly-off jump; got: ${JSON.stringify(h.edgeLogs)}`
+    );
+    h.dispose();
+  });
+
+  it("the fly-off jump frame materializes within I2's open legal domain instead of resetting logical bounds (left edge, non-adjacent)", () => {
+    const h = createEdgeVirtualizationHarness();
+    h.runtime.applyPetWindowBounds(
+      { x: 1000, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { force: true }
+    );
+
+    h.mini.enterMiniMode(ISSUE_690_WORK_AREA, true, "left");
+    assert.ok(
+      tickUntilJumpAnimationEnds(h.mini),
+      "the jump animation must complete (isAnimating true -> false) within the polling budget"
+    );
+
+    // Shrunk left jump target: minLeft - size.width + 1 = 0 - 203 + 1 = -202.
+    // Mutter's require_fully_onscreen clamps negative X to 0 symmetrically
+    // (see makeMutterClampedWindow above); offsetX = logical(-202) - physical(0) = -202.
+    assert.equal(h.runtime.getPetWindowBounds().x, -202, "logical bounds must land on the shrunk jump target, not be reset by the I2 backstop");
+    assert.equal(h.runtime.getViewportOffsetX(), -202, "offsetX must be -(width-1) = -202, inside I2's open (-203,+203) interval");
+    assert.ok(
+      !h.edgeLogs.some((line) => line.includes("edge-offset-out-of-range")),
+      `the legal-domain backstop must not fire during the fly-off jump; got: ${JSON.stringify(h.edgeLogs)}`
+    );
     h.dispose();
   });
 });

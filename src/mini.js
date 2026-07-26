@@ -456,7 +456,23 @@ function enterMiniMode(wa, viaMenu, edge) {
         maxRight = Math.max(maxRight, d.bounds.x + d.bounds.width);
         minLeft = Math.min(minLeft, d.bounds.x);
       }
-      jumpTarget = miniEdge === "right" ? maxRight : minLeft - size.width;
+      // Coordinator-directed fix: a literal fully-off-screen jump target
+      // (window's near edge exactly flush with the outer screen boundary)
+      // materializes to |offsetX| === width on Linux — I2's offset legal
+      // domain is the OPEN interval (-width, +width) (pet-window-runtime.js's
+      // guardOffsetXLegalDomain: `Math.abs(offsetX) < width`), so that exact
+      // value trips the backstop mid-jump: offset gets slammed to 0 and
+      // logical bounds reset to the clamped physical position. That is not
+      // a harmless log — it's a visible flash of the character snapping
+      // onto the physical screen edge (translate reset to 0) for one frame,
+      // before the later preload/settle frame corrects it. Shrinking the
+      // target by 1px keeps |offsetX| at width-1 (203 shows 202, 1920 shows
+      // 1919 for this fixture's numbers) — inside the open interval, so the
+      // guard never fires — while leaving only 1 of ~200px onscreen, visually
+      // indistinguishable from fully off-screen. This is a mini.js-side
+      // workaround for I2's open-interval boundary, not a change to I2
+      // itself or a mini-specific exemption carved into the guard.
+      jumpTarget = miniEdge === "right" ? maxRight - 1 : minLeft - size.width + 1;
     }
     animateWindowParabola(jumpTarget, start.y, JUMP_DURATION, () => {
       const enterDurationMs = getMiniEnterDurationMs(enterSvgState);
