@@ -1734,6 +1734,42 @@ describe("PR #751 second-review batch C: event-evidence bit, per-side clamp elig
     );
   });
 
+  it("D-1 companion: a native event consumed by adopt-clamp must not authorize a later silent mismatch to rebase", () => {
+    const clock = createFakeClock();
+    const renderWin = makeInsetMutterClampedWindow(
+      { x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { rightInset: 40 }
+    );
+    const harness = create690Fixture({ renderWin, clock });
+    wireNativeGeometryListeners(harness);
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    renderWin.emit("move");
+    clock.advance(150); // t=150: (b1) has fully explained and adopted inset=40
+
+    assert.equal(harness.runtime.getPetWindowBounds().x, 1768, "sanity: the explained clamp must preserve logical X");
+    assert.equal(harness.runtime.getViewportOffsetX(), 91, "sanity: 1768 logical - 1677 physical = 91");
+
+    clock.advance(50); // t=200
+    renderWin.bounds = {
+      x: 1600, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    }; // a later silent, unexplainable mismatch -- deliberately no move event
+
+    clock.advance(200); // t=400: the original write's settle sweep classifies it
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x,
+      1768,
+      "the already-consumed clamp event must not turn this later no-event mismatch into a rebase"
+    );
+    assert.equal(
+      harness.runtime.getViewportOffsetX(),
+      168,
+      "the silent 1600 physical / 1768 logical gap must be adopted as offset, not ratcheted into logical"
+    );
+  });
+
   // D-1 verification matrix item 4: after (a) consumes a stale echo, a
   // GENUINE later external event must still correctly re-arm the bit and
   // rebase -- the D-1 fix narrows evidence to "not stale", it must not make

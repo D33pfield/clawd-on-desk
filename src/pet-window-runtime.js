@@ -256,19 +256,12 @@ function createPetWindowRuntime(options = {}) {
   // applyPetWindowBounds() on every fresh write (a new generation has seen
   // no events yet).
   //
-  // Self-writeback echo safety: our OWN win.setBounds() call inside
-  // applyPetWindowBounds() also generates a native move event later (real
-  // BrowserWindow geometry events are asynchronous), which sets this bit
-  // too — but that is safe. This bit is only ever CONSULTED in (b3), and
-  // (b3) is only reached after (a) sameRect and (b1) clamp-explainable have
-  // already been ruled out for the CURRENT actual/expected pair. A pure
-  // self-writeback echo, by construction, makes actual match expected
-  // (sameRect, branch (a)) or match a clamp of it (branch (b1)) — it can
-  // never be the thing that reaches (b3) still unexplained. So the bit being
-  // "contaminated" by our own echo never changes which action (b3) takes:
-  // the only cell it affects is "unexplainable mismatch, classified by a
-  // sweep" — and in that cell, having a real event on record is exactly the
-  // condition under which rebase (follow the user) is correct.
+  // Self-writeback echo lifecycle: our own setBounds() may set this bit
+  // asynchronously after a write. Branches (a) and (b1) consume it once the
+  // observed rect is fully explained (exact or clamp-adjusted match), and a
+  // fresh write clears it. The bit therefore survives only while native
+  // evidence remains unexplained, including burst/protection debt that a
+  // later settle sweep must reconcile.
   let nativeEventSeenThisGen = false;
   const loggedEdgeReasons = new Set();
 
@@ -948,6 +941,11 @@ function createPetWindowRuntime(options = {}) {
       expectedWrite = { ...expectedWrite, physical: { ...actual } };
       recomputeOffsetsFrom(lastLogicalBounds, actual, xEligible);
       if (clampObs.axis === "x") maybeLearnInset(expectedWrite.displayId, clampObs);
+      // The native evidence has now been fully explained by this clamp
+      // observation. Do not let it authorize a later, unrelated silent
+      // mismatch to rebase at the settle sweep (the same consumption rule
+      // as branch (a), just with a clamp-adjusted expected rect).
+      nativeEventSeenThisGen = false;
       syncDerivedSurfaces();
       return;
     }
