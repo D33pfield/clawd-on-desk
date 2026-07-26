@@ -427,8 +427,14 @@ function createTopmostRuntime(options = {}) {
   function applyFreshNudge(bounds) {
     if (!bounds) return false;
     pendingNudgeRestore = { x: bounds.x, y: bounds.y, nudgedX: bounds.x + 1 };
-    applyPetWindowPosition(bounds.x + 1, bounds.y);
-    applyPetWindowPosition(bounds.x, bounds.y);
+    // force:true is the safety line plan §12.12 calls for: the whole point of
+    // a nudge is a real native write. Today the two positions always differ
+    // physically (Windows-only path, no X virtualization), so the same-rect
+    // skip can't swallow them — but if this ever runs where logical X
+    // materializes onto a clamped boundary, x+1 and x could collapse to the
+    // same physical rect and a non-forced nudge would silently no-op.
+    applyPetWindowPosition(bounds.x + 1, bounds.y, { force: true });
+    applyPetWindowPosition(bounds.x, bounds.y, { force: true });
     return true;
   }
 
