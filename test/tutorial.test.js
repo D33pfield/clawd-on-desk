@@ -108,7 +108,7 @@ function createHarness(ctxOverrides = {}) {
     getDoneHeroSvg: () => "<svg id=\"done-hero\"></svg>",
     setLang: (lang) => { calls.setLang.push(lang); },
     getShortcutsSummary: () => [{ id: "permissionAllow", label: "Allow", accelerator: "CommandOrControl+Shift+Y" }],
-    getAgentOnboardingState: () => ({ install: [{ agentId: "gemini-cli", label: "Gemini CLI" }], cleanup: [], active: [] }),
+    getAgentOnboardingState: () => ({ install: [{ agentId: "gemini-cli", label: "Gemini CLI", iconUrl: "file:///icons/gemini-cli.png" }], cleanup: [], active: [] }),
     installAgent: (agentId) => { calls.installAgent.push(agentId); return Promise.resolve({ status: "ok" }); },
     uninstallAgent: (agentId) => { calls.uninstallAgent.push(agentId); return Promise.resolve({ status: "ok" }); },
     registerShortcut: (payload) => { calls.registerShortcut.push(payload); return Promise.resolve({ status: "ok" }); },
@@ -178,7 +178,11 @@ describe("tutorial window shell", () => {
     assert.deepStrictEqual(stateSend.payload.langs, ["en", "zh", "ja"]);
     assert.strictEqual(stateSend.payload.heroSrc, "data:image/png;base64,hero");
     assert.strictEqual(stateSend.payload.doneHeroSvg, "<svg id=\"done-hero\"></svg>");
-    assert.deepStrictEqual(stateSend.payload.agents.install, [{ agentId: "gemini-cli", label: "Gemini CLI" }]);
+    assert.deepStrictEqual(stateSend.payload.agents.install, [{
+      agentId: "gemini-cli",
+      label: "Gemini CLI",
+      iconUrl: "file:///icons/gemini-cli.png",
+    }]);
     assert.strictEqual(stateSend.payload.shortcuts[0].accelerator, "CommandOrControl+Shift+Y");
   });
 
