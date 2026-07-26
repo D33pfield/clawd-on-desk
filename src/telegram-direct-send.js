@@ -177,11 +177,13 @@ function defaultDelay(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
 
-// These hosts complete their terminal-tab switch asynchronously, after the
-// window focus has already been confirmed. On the default ready delay the paste
-// lands in whichever tab was previously active — and this path presses Enter
-// too, so it would submit into another session. Orca's switch is two sequential
-// `orca` CLI spawns (measured 700-850ms), slower than the editor extensions.
+// These hosts complete their terminal-tab switch asynchronously, after the window
+// focus has already been confirmed. On the default ready delay the paste lands in
+// whichever tab was previously active — dropping the user's reply into another
+// session's prompt, and losing it from the one they answered. Orca's switch is two
+// sequential `orca` CLI spawns (measured 700-850ms), slower than the editors'.
+// The field arrives via buildSessionSnapshotEntry, which is a whitelist — a host
+// added here needs its identifier carried there too or this stays dead code.
 function isAsyncTabSwitchEntry(entry) {
   if (!entry) return false;
   return entry.editor === "code" || entry.editor === "cursor" || !!entry.orcaPaneKey;

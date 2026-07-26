@@ -649,8 +649,7 @@ test("Windows paste-only adapter waits longer for Orca-hosted terminals", async 
 
   // Orca confirms focus as soon as its window is raised, but the tab switch is two
   // further CLI spawns. On the default delay the paste lands in whichever tab was
-  // previously active — possibly another agent's session — and the sibling path
-  // presses Enter on it.
+  // previously active, putting the user's reply into another session's prompt.
   const res = await adapter.deliver({
     promptText: "continue please",
     focusResult: confirmedFocusResult(),
@@ -690,6 +689,45 @@ test("direct send preserves editor metadata from real session snapshots for past
   assert.equal(res.status, "pasted_without_enter");
   assert.equal(deliveredEntries.length, 1);
   assert.equal(deliveredEntries[0].editor, "code");
+});
+
+test("direct send waits out the Orca tab switch using a real session snapshot", async () => {
+  // The adapter test above hand-builds its entry, so it cannot see whether the
+  // field survives buildSessionSnapshotEntry — which is a whitelist. Drive the
+  // real adapter through the real snapshot builder instead: if the pane key is not
+  // carried there, the predicate never fires and this falls back to 25ms.
+  const delays = [];
+  const adapter = createWindowsPasteOnlyDeliveryAdapter({
+    osPlatform: "win32",
+    clipboard: {
+      readText: () => "previous",
+      writeText: () => {},
+    },
+    execFile: (cmd, args, opts, cb) => cb(null, "", ""),
+    delay: async (ms) => { delays.push(ms); },
+    readyDelayMs: 25,
+  });
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => buildSessionSnapshot(new Map([
+      ["sess-local-1", {
+        agentId: "claude-code",
+        state: "idle",
+        updatedAt: 1000,
+        sourcePid: 1234,
+        orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+      }],
+    ])),
+    focusSession: () => confirmedFocusResult(),
+    deliveryAdapter: adapter,
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 43, sessionId: "sess-local-1" });
+  const res = await direct.handleTextMessage({ text: "continue", replyToMessageId: 43 });
+
+  assert.equal(res.status, "pasted_without_enter");
+  assert.deepEqual(delays, [1200]);
 });
 
 test("Windows paste-only adapter refuses multiline text before touching clipboard or keyboard", async () => {
