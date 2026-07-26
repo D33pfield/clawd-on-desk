@@ -179,7 +179,11 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
       // whose sessions can be focus targets, whether or not it ever grew tmux
       // support.
       if (!/["']?pid_chain["']?\s*[:=]/.test(src)) continue;
-      if (!src.includes("orca_pane_key") && !src.includes("applyOrcaPaneKey")) {
+      // A CALL, not a mention: matching the bare name meant the `applyOrcaPaneKey`
+      // in a producer's require destructure satisfied this on its own, so deleting
+      // the actual call left an unused import and a green suite — and there is no
+      // linter here to flag the orphan.
+      if (!src.includes("orca_pane_key") && !/applyOrcaPaneKey\s*\(/.test(src)) {
         missing.push(path.relative(hooksDir, file));
       }
     }
@@ -235,52 +239,24 @@ describe("Orca pane key validator copies", () => {
   });
 });
 
-describe("Orca window raise off Windows", () => {
-  it("raises the Orca window only once the pane switch has succeeded on macOS", async () => {
-    await withFocus({ platform: "darwin" }, async (t, cli) => {
-      t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
-      await settle(t);
-      const cmds = cli.calls.map((c) => `${c.cmd} ${c.args.join(" ")}`);
-      const raiseAt = cmds.findIndex((c) => c.startsWith("/usr/bin/open -a Orca"));
-      const switchAt = cmds.findIndex((c) => c.includes("terminal switch"));
-      // `orca terminal switch` only moves the tab inside Orca, so the raise is
-      // still required — but it has to come second: `open -a` launches Orca when it
-      // is not running, and the terminal daemon outlives the window, so a sticky
-      // pane key can point at a closed one. A successful switch is the proof.
-      assert.ok(raiseAt >= 0, `expected an Orca raise, got ${JSON.stringify(cmds)}`);
-      assert.ok(switchAt >= 0 && raiseAt > switchAt, "the raise must follow the switch");
+describe("Orca window raise stays in the focus script", () => {
+  // The raise is the generated PowerShell's job ($orcaProcessNames), so this path
+  // must spawn nothing but the `orca` CLI. A by-name raise from Node was tried and
+  // deliberately dropped: macOS and Linux are unverified on real hardware, and
+  // WM_CLASS "orca" also matches GNOME's screen reader, so a miss would have
+  // activated the wrong window and logged it as a success.
+  for (const platform of ["win32", "darwin", "linux"]) {
+    it(`spawns only the orca CLI on ${platform}`, async () => {
+      await withFocus({ platform }, async (t, cli) => {
+        t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
+        await settle(t);
+        const strays = cli.calls.filter((c) => !/(^|[\\/])orca(\.exe)?$/i.test(c.cmd));
+        assert.deepStrictEqual(strays.map((c) => c.cmd), [],
+          `no window-raise helper may be spawned from Node: ${JSON.stringify(cli.calls)}`);
+        assert.ok(cli.switchCalls().length > 0, "the pane switch still runs");
+      });
     });
-  });
-
-  it("never raises Orca when no pane resolves, so a dead session cannot launch it", async () => {
-    await withFocus({ platform: "darwin", terminals: [] }, async (t, cli) => {
-      t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
-      await settle(t);
-      assert.deepStrictEqual(cli.calls.filter((c) => c.cmd === "/usr/bin/open"), []);
-    });
-  });
-
-  it("falls back from wmctrl to xdotool on Linux", async () => {
-    await withFocus({ platform: "linux", missingBinaries: ["wmctrl"] }, async (t, cli) => {
-      t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
-      await settle(t);
-      const cmds = cli.calls.map((c) => c.cmd);
-      assert.ok(cmds.includes("wmctrl"), "wmctrl is tried first");
-      assert.ok(cmds.includes("xdotool"), "a wmctrl miss must fall back to xdotool");
-    });
-  });
-
-  it("does not raise from Node on Windows, where the focus script already did", async () => {
-    await withFocus({ platform: "win32" }, async (t, cli) => {
-      t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
-      await settle(t);
-      for (const call of cli.calls) {
-        assert.ok(/orca/i.test(call.cmd) || call.cmd === "orca",
-          `unexpected raise helper spawned on Windows: ${call.cmd}`);
-      }
-      assert.ok(cli.switchCalls().length > 0, "the pane switch still runs");
-    });
-  });
+  }
 });
 
 describe("Orca pane key normalization", () => {
@@ -398,6 +374,21 @@ describe("resolveOrcaHandle", () => {
         resolve();
       });
     }));
+  });
+
+  it("prefers the longest matching worktree so a nested session keeps its own tab", async () => {
+    const terminals = [
+      { handle: "term_outer", tabId: "outer", leafId: "leaf", worktreePath: "D:/Repos/Apps" },
+      { handle: "term_inner", tabId: "inner", leafId: "leaf", worktreePath: "D:/Repos/Apps/clawd-on-desk" },
+    ];
+    await withFocus({ terminals }, async (t) => {
+      const handle = await new Promise((resolve) => {
+        t.resolveOrcaHandle("gone-tab:gone-leaf", `${CWD}\\src`, (h) => resolve(h));
+      });
+      // Both worktrees are prefixes of the cwd and the outer one is listed first;
+      // taking it would switch a different session's tab and still log a success.
+      assert.strictEqual(handle, "term_inner");
+    });
   });
 
   it("returns null when neither the pane nor the worktree matches", async () => {
@@ -631,56 +622,19 @@ describe("Orca CLI that never answers", () => {
   }
 });
 
-// Every test above reaches into __test and drives the helpers directly, so none
-// of them would notice a platform branch losing the pane key or swapping its two
-// arguments. These go through the public focusTerminalWindow instead.
-function withFocusApi(opts, fn) {
-  const cliMock = mockOrcaCli(opts);
-  const logs = [];
-  const { initFocus, cleanup } = loadFocusWithMock(cliMock.mock, { platform: opts.platform });
-  try {
-    return fn(initFocus({ focusLog: (m) => logs.push(String(m)) }), cliMock, logs);
-  } finally {
-    cleanup();
-  }
-}
-
 describe("Orca focus wiring", () => {
-  for (const platform of ["linux", "darwin"]) {
-    it(`reaches the pane switch from the ${platform} focus branch with the key and cwd in order`, async () => {
-      await withFocusApi({ platform }, async (api, cli) => {
-        api.focusTerminalWindow({
-          sourcePid: 4242,
-          cwd: CWD,
-          sessionId: `s-${platform}`,
-          agentId: "claude-code",
-          orcaPaneKey: PANE_KEY,
-        });
-        await settle(api.__test);
-
-        const switches = cli.switchCalls();
-        assert.strictEqual(switches.length, 1, "expected exactly one terminal switch");
-        // Only the exact pane match yields LIVE_HANDLE. Swap the two arguments and
-        // indexOf(":") lands on the drive-letter colon instead, no pane matches, and
-        // the worktree fallback still resolves *a* terminal in the same project — so
-        // the wrong tab comes forward and the log still says orca-pane-switched.
-        assert.deepStrictEqual(switches[0].args,
-          ["terminal", "switch", "--terminal", LIVE_HANDLE, "--json"]);
-      });
-    });
-  }
-
-  it("does not touch the Orca CLI when the request carries no pane key", async () => {
-    await withFocusApi({ platform: "linux" }, async (api, cli) => {
-      api.focusTerminalWindow({
-        sourcePid: 4242,
-        cwd: CWD,
-        sessionId: "s-plain",
-        agentId: "claude-code",
-      });
-      await settle(api.__test);
-      assert.deepStrictEqual(cli.calls.filter((c) => c.cmd.includes("orca")), []);
-    });
+  // The Windows dispatch itself is driven through the public focusTerminalWindow in
+  // test/focus-windows.test.js, which mocks spawn so the real helper never starts.
+  it("is dispatched from the Windows branch alone", () => {
+    const fs = require("fs");
+    const src = fs.readFileSync(path.join(__dirname, "..", "src", "focus.js"), "utf8");
+    const calls = src.match(/scheduleOrcaPaneFocus\(request\./g) || [];
+    // Off Windows there is no raise, so a pane switch there would move a tab in a
+    // window that never comes forward — worse than doing nothing.
+    assert.strictEqual(calls.length, 1, "expected exactly one platform dispatch");
+    const linuxBranch = src.slice(src.indexOf("branch=linux-command-submitted") - 800);
+    assert.ok(!/scheduleOrcaPaneFocus/.test(linuxBranch.slice(0, 800)),
+      "the Linux branch must not dispatch the pane switch");
   });
 
   it("carries the pane key through every focus-entry builder", () => {

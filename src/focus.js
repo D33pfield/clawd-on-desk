@@ -509,9 +509,10 @@ if ($orcaHosted) {
     } elseif ($orcaWindows.Count -gt 1) {
         # Known limitation: "Orca" is the whole window title, so with more than one
         # window open there is nothing to pick by — unlike the Windows Terminal
-        # cascade, which still has a cwd to match. Nothing is raised, and because an
-        # Orca-hosted agent has no conhost to recover to, the pane switch in
-        # scheduleOrcaPaneFocus still moves the tab in a window that stays behind.
+        # cascade, which still has a cwd to match. Refuse rather than guess. The
+        # conhost recovery below can still rescue this (its whitelist accepts this
+        # reason), but when it cannot, scheduleOrcaPaneFocus has already moved the
+        # tab in a window that never comes forward.
         $reason = 'orca-window-ambiguous'
     } else {
         $reason = 'orca-window-missing'
@@ -975,15 +976,16 @@ function scheduleTerminalTabFocus(editor, pidChain) {
 // its terminals live in a detached daemon so the process walk cannot either.
 // What it does ship is a first-class CLI: `orca terminal switch` brings a
 // specific tab to the front. That only moves the tab *inside* Orca, so a focus
-// only lands if a window raise runs too — the $orcaHosted branch in
-// makeFocusCmd on Windows, raiseOrcaWindow() on every other platform.
+// only lands if a window raise runs too — on Windows that is the $orcaHosted
+// branch in makeFocusCmd, which is why this ships for Windows alone.
 // Warm round-trips measure 330-420ms, but the first call after Orca has been idle
 // has been observed to blow past 2.5s — and a killed call is indistinguishable
 // from a missing pane unless it is reported separately, which is what
-// orca-cli-timeout is for. Generous because the whole hop is fire-and-forget.
+// orca-cli-timeout is for. Generous because nothing here is awaited: the focus
+// result is reported on the window raise, without waiting for the tab.
 const ORCA_CLI_TIMEOUT_MS = 6000;
-// Keeps the CLI round-trip off the click's synchronous path. Nothing has been
-// raised yet at this point: the raise waits for a successful switch.
+// Keeps the CLI round-trip off the click's synchronous path. The window raise has
+// already been dispatched by then — it happens inside the generated script.
 const ORCA_PANE_FOCUS_DELAY_MS = 150;
 // paneKey → live handle. Purely a fast path: handles are reissued per Orca
 // runtime session, and a switch against an old one fails with
@@ -1064,43 +1066,32 @@ function resolveOrcaHandle(orcaPaneKey, cwd, callback) {
     if (!target) return callback(null);
     // Prefix, not equality: an agent's cwd is routinely a subdirectory of the
     // worktree root, which an exact match would report as orca-pane-not-found.
-    const byCwd = terminals.find((t) => {
+    // Longest wins, because nested worktrees both match and the shorter one is
+    // someone else's session — picking the first would switch their tab and still
+    // log a successful focus.
+    let byCwd = null;
+    let bestLength = -1;
+    for (const t of terminals) {
       const worktree = normalizeOrcaWorktreePath(t && t.worktreePath);
-      return worktree && (target === worktree || target.startsWith(`${worktree}/`));
-    });
-    return callback(byCwd && byCwd.handle ? byCwd.handle : null);
+      if (!worktree || !t.handle) continue;
+      if (target !== worktree && !target.startsWith(`${worktree}/`)) continue;
+      if (worktree.length > bestLength) {
+        bestLength = worktree.length;
+        byCwd = t;
+      }
+    }
+    return callback(byCwd ? byCwd.handle : null);
   });
 }
 
-// `orca terminal switch` moves the tab inside Orca but never brings the window
-// forward, so the raise is a separate step. On Windows the generated PowerShell
-// already did it (the $orcaHosted branch in makeFocusCmd); everywhere else the
-// platform helpers cannot, because they resolve a window from the agent's pid
-// chain and Orca's terminals hang off a detached daemon. Match Orca by name
-// instead — the same thing the Windows branch does with $orcaProcessNames.
-//
-// macOS uses `open -a` rather than System Events `set frontmost` for the reason
-// given above focusMacAppViaSystemEvents: it carries Dock-click reopen semantics
-// (so a minimized Orca actually comes back) and needs no Automation consent.
-// Linux mirrors focusTerminalWindowLegacy's wmctrl-then-xdotool ordering, but
-// matches on WM_CLASS instead of --pid for the detached-daemon reason above.
-// On Linux the WM_CLASS is assumed to be "orca", which is also GNOME's screen
-// reader, so a miss there raises the wrong window rather than none.
-function raiseOrcaWindow() {
-  if (isMac) {
-    execFile("/usr/bin/open", ["-a", "Orca"], { timeout: MAC_OPEN_TIMEOUT_MS }, (err) => {
-      logFocusResult(`branch=orca-raise reason=${err ? `open-failed:${safeLogValue(err.code || "error")}` : "ok"}`);
-    });
-    return;
-  }
-  execFile("wmctrl", ["-x", "-a", "orca"], { timeout: 1000 }, (wmErr) => {
-    if (!wmErr) return logFocusResult("branch=orca-raise reason=ok");
-    execFile("xdotool", ["search", "--class", "orca", "windowactivate", "--sync", "%1"], { timeout: 1000 }, (xdoErr) => {
-      logFocusResult(`branch=orca-raise reason=${xdoErr ? `raise-failed:${safeLogValue(xdoErr.code || "error")}` : "ok"}`);
-    });
-  });
-}
-
+// Windows only, and dispatched only from executeWindowsFocusRequest. The pane
+// switch alone never brings Orca's window forward, so it is only half a focus
+// without a raise — and the raise cannot reuse the platform helpers, which resolve
+// a window from the agent's pid chain that Orca's detached daemon is absent from.
+// Windows has its own by-name raise in the generated script ($orcaProcessNames);
+// the macOS and Linux equivalents are deliberately not shipped here, because
+// nothing on those platforms has been verified on real hardware and a by-name
+// match there is ambiguous — WM_CLASS "orca" also matches GNOME's screen reader.
 function scheduleOrcaPaneFocus(orcaPaneKey, cwd) {
   if (!orcaPaneKey) return;
   setTimeout(() => {
@@ -1108,14 +1099,6 @@ function scheduleOrcaPaneFocus(orcaPaneKey, cwd) {
       runOrcaCli(["terminal", "switch", "--terminal", handle, "--json"], (err, data) => {
         if (!err && data && data.ok === true) {
           orcaHandleCache.set(orcaPaneKey, handle);
-          // Raise only now, and only off Windows. A successful switch is the proof
-          // that Orca is actually running: `open -a` on macOS launches it when it
-          // is not, and because Orca's terminal daemon outlives the window a sticky
-          // pane key can point at a session whose window is long gone — clicking
-          // that would cold-start the IDE. Raising last also settles the race with
-          // focusTerminalWindowLegacy, dispatched on the same click, which may have
-          // raised the wrong app.
-          if (!isWin) raiseOrcaWindow();
           logFocusResult("branch=orca reason=orca-pane-switched");
           return;
         }
@@ -1805,7 +1788,6 @@ function executeMacFocusRequest(request) {
 
   focusTerminalWindowLegacy(request, finalize);
   scheduleTerminalTabFocus(request.editor, request.pidChain);
-  scheduleOrcaPaneFocus(request.orcaPaneKey, request.cwd);
   scheduleITermTabFocus(request.sourcePid, request.pidChain);
   scheduleTmuxPaneFocus(request.pidChain, request.tmuxSocket, request.tmuxClient);
   scheduleCmuxWorkspaceSwitch(request.pidChain);
@@ -2046,7 +2028,6 @@ function focusTerminalWindow(sourcePidOrRequest, cwd, editor, pidChain, meta) {
   if (isLinux) {
     focusTerminalWindowLegacy(request);
     scheduleTerminalTabFocus(request.editor, request.pidChain);
-    scheduleOrcaPaneFocus(request.orcaPaneKey, request.cwd);
     scheduleTmuxPaneFocus(request.pidChain, request.tmuxSocket, request.tmuxClient);
     logFocusResult("branch=linux-command-submitted");
     return normalizeFocusResultPayload({ reason: "linux-command-submitted" });
