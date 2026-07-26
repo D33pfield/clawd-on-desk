@@ -319,9 +319,13 @@ function hasConfirmedPermissionAnimationLock() {
 // copilot-hook.js posts its raw argv name "sessionStart", and kiro-hook.js posts
 // "agentSpawn". Kiro is the one that matters most — its stdin carries no session
 // id, so it merges every session into "default" and a pane key stored there would
-// otherwise never be cleared. antigravity-hook.js emits no session-start event at
-// all, so a stale key there survives for the life of one session id; that is
-// bounded because its id derives from the transcript path.
+// otherwise never be cleared.
+//
+// antigravity-hook.js has no session-start event at all, so nothing clears a stale
+// key for one of its sessions: resuming the same conversation from a different
+// terminal keeps pointing focus at the old Orca pane until the entry is evicted.
+// Its id normalizes payload.conversationId (falling back to the transcript
+// directory), so a genuinely new conversation gets a new entry and is unaffected.
 const SESSION_START_EVENTS = new Set(["SessionStart", "sessionStart", "agentSpawn"]);
 
 function mergeOrcaPaneKey(orcaPaneKey, existing, event) {
