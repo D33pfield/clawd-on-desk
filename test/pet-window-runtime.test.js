@@ -139,6 +139,95 @@ function createRuntime(overrides = {}) {
   };
 }
 
+// ── #690 Phase 0 fixture — Fedora 44 / GNOME Shell 50.3 / Mutter reproduction ──
+// docs/plans/plan-issue-690-gnome-mini-edge-snap.md §1.2 and §5 Phase 0.
+// 1920x1080 single display, 203x209 pet window — the reporter's exact
+// geometry (xdotool getwindowgeometry: X=1717, WIDTH=203; render 8388612
+// also reports HEIGHT=209). Mutter's require_fully_onscreen constraint means
+// any application-driven setBounds() asking for X > 1717
+// (workArea.width - window.width = 1920 - 203) gets clamped straight back to
+// 1717. Modeled synchronously here (setBounds "lands" already clamped)
+// because this fixture only proves the pre-fix logical/physical pollution —
+// the deferred-reconcile timing (settle sweep, adopt-clamp) is out of scope
+// for this batch and modeled by a later one.
+const ISSUE_690_WORK_AREA = { x: 0, y: 0, width: 1920, height: 1080 };
+const ISSUE_690_WINDOW_SIZE = { width: 203, height: 209 };
+const ISSUE_690_MUTTER_MAX_X = 1717; // workArea.width - window.width
+
+function makeMutterClampedWindow(bounds) {
+  const win = makeWindow(bounds);
+  win.setBounds = (next) => {
+    // Record exactly what the application asked for...
+    win.calls.push(["setBounds", next]);
+    // ...but Mutter only ever lets the physical window land fully on-screen.
+    const clampedX = next.x > ISSUE_690_MUTTER_MAX_X ? ISSUE_690_MUTTER_MAX_X : next.x;
+    win.bounds = { ...next, x: clampedX };
+  };
+  return win;
+}
+
+function create690Fixture(overrides = {}) {
+  const renderWin = overrides.renderWin || makeMutterClampedWindow({
+    x: 0,
+    y: 721,
+    width: ISSUE_690_WINDOW_SIZE.width,
+    height: ISSUE_690_WINDOW_SIZE.height,
+  });
+  return createRuntime({
+    isWin: false,
+    isLinux: true,
+    displays: [{
+      id: 1,
+      bounds: ISSUE_690_WORK_AREA,
+      workArea: ISSUE_690_WORK_AREA,
+    }],
+    ...overrides,
+    renderWin,
+  });
+}
+
+describe("pet-window-runtime edge virtualization (#690 Phase 0 fixture)", () => {
+  it("keeps the logical X at the requested value when Mutter clamps the physical window back into the work area", () => {
+    const harness = create690Fixture();
+
+    // This is the existing 25%-margin rest-clamp target clampToScreenVisual()
+    // already computes for a 203px-wide window: Math.round(203 * 0.25) = 51;
+    // 1920 - 203 + 51 = 1768. The application legitimately wants to place the
+    // pet here.
+    const requested = {
+      x: 1768,
+      y: 721,
+      width: ISSUE_690_WINDOW_SIZE.width,
+      height: ISSUE_690_WINDOW_SIZE.height,
+    };
+    harness.runtime.applyPetWindowBounds(requested);
+
+    assert.ok(
+      harness.renderWin.calls.some((call) => call[0] === "setBounds" && call[1].x === 1768),
+      "the runtime must have attempted to place the window at the intended edge position"
+    );
+
+    // Mutter's fully-onscreen constraint clamps the physical window back to
+    // 1920 - 203 = 1717 — the issue's exact reported geometry.
+    assert.equal(
+      harness.renderWin.getBounds().x,
+      1717,
+      "OS readback must show the Mutter-clamped physical X"
+    );
+
+    // The bug: getPetWindowBounds() must keep reporting the logical intent
+    // (1768), not whatever Mutter did to the physical window. Pre-fix, this
+    // re-derives position from the live (Mutter-polluted) physical bounds, so
+    // it reports 1717 instead — this assertion is red before the Phase 2
+    // runtime fix and green after it.
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x,
+      1768,
+      "logical X must survive an OS-side clamp, not be polluted by the physical readback"
+    );
+  });
+});
+
 describe("pet-window-runtime", () => {
   it("keeps context menu owner creation outside the pet runtime and preserves parent ownership", () => {
     const runtimeSource = fs.readFileSync(path.join(SRC_DIR, "pet-window-runtime.js"), "utf8");
