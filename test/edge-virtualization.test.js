@@ -137,6 +137,16 @@ function makeMutterClampedWindow(bounds) {
     if (clampedX > ISSUE_690_MUTTER_MAX_X) clampedX = ISSUE_690_MUTTER_MAX_X;
     if (clampedX < 0) clampedX = 0;
     win.bounds = { ...next, x: clampedX };
+    // PR #751 rework batch A-5: a real WM clamping a setBounds() request to a
+    // DIFFERENT position than what was literally asked for is itself a native
+    // geometry change — it would fire a real ConfigureNotify/move event, not
+    // land silently. Without this, tests using this mock only ever drove the
+    // reconcile chain when they remembered to call emit("move") manually;
+    // this makes the mock's own clamp automatically wake it up, matching how
+    // a real BrowserWindow would behave. Harmless when a caller ALSO emits
+    // "move" itself afterward — onNativeGeometryEvent()'s scheduleReconcile()
+    // just reschedules the same debounced timer, never double-fires.
+    win.emit("move");
   };
   return win;
 }
@@ -711,6 +721,46 @@ describe("edge virtualization cross-module integration (#690 §6.7)", () => {
     assert.equal(
       h.runtime.getPetWindowBounds().x, 1816,
       "the deferred topology change must be consumed exactly once at settle, re-materializing against the NEW (narrower) workArea"
+    );
+    h.dispose();
+  });
+
+  // PR #751 rework batch A-5: a late-arriving clamp reaching all the way
+  // through the assembled runtime+mini+pet-interaction-ipc chain, not just
+  // pet-window-runtime.test.js's own unit-level "classifies a clamp that
+  // lands after SETTLE_MS as adopt-clamp" coverage.
+  it("a late-arriving clamp (landing after SETTLE_MS, no native event until then) still classifies as adopt-clamp through the full assembled chain, not a rebase ratchet", () => {
+    // Unlike makeMutterClampedWindow (which clamps synchronously inside
+    // setBounds() and now auto-emits "move"), this plain window mock accepts
+    // whatever the runtime asks for immediately with no native event at
+    // all — the WM's TRUE (unlearned, 40px) inset-based clamp only reveals
+    // itself much later, well past this write's own SETTLE_MS, simulating an
+    // async repositioning (e.g. after a compositor round-trip).
+    const renderWin = makeWindow({ x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height });
+    const h = createEdgeVirtualizationHarness({ renderWin, getDisableMiniMode: () => true });
+
+    h.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    assert.equal(
+      renderWin.bounds.x, ISSUE_690_MUTTER_MAX_X,
+      "sanity: the runtime's own (inset-less) prediction lands here immediately, no mock-side clamp involved"
+    );
+
+    // Past SETTLE_MS(400) with no native event at all yet -- the write's own
+    // settle-sweep fires and finds nothing to reconcile (actual still
+    // matches the prediction exactly).
+    mock.timers.tick(500);
+
+    // The WM's TRUE clamp (a 40px inset the runtime never predicted) finally
+    // lands late: 1920-40-203=1677.
+    renderWin.bounds = { x: 1677, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height };
+    renderWin.emit("move");
+    mock.timers.tick(150);
+
+    assert.equal(
+      h.runtime.getPetWindowBounds().x, 1768,
+      "a late clamp must stay adopt-clamp (logical unchanged at 1768), not ratchet inward via a misclassified rebase"
     );
     h.dispose();
   });
