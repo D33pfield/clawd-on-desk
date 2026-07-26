@@ -632,22 +632,6 @@ def _resolve_process_metadata(start_pid: Optional[int] = None) -> Dict[str, Any]
                     meta["tmux_client"] = target
             except Exception:
                 pass
-    # Orca hosts its terminals in a detached daemon that never appears in the
-    # walk above, so the pane key from the environment is the only way Clawd can
-    # focus the right tab. A terminal that advertises itself in the environment
-    # means a real terminal inherited the key from the Orca pane it was launched
-    # from — see orcaPaneKeyFromEnv in hooks/shared-process.js for the list and
-    # the residual gap.
-    nested_terminal = any(os.environ.get(key) for key in (
-        "WT_SESSION", "ALACRITTY_WINDOW_ID", "WEZTERM_PANE", "KITTY_WINDOW_ID",
-        "KONSOLE_VERSION", "GNOME_TERMINAL_SCREEN", "ConEmuPID",
-    ))
-    if os.environ.get("TERM_PROGRAM") == "Orca" and not nested_terminal:
-        pane_key = (os.environ.get("ORCA_PANE_KEY") or "").strip()
-        # ASCII-only: Python's \w matches Unicode word characters, which would
-        # make this copy of the validator laxer than the four JavaScript ones.
-        if pane_key and len(pane_key) <= 256 and re.fullmatch(r"[\w-]+:[\w-]+", pane_key, re.ASCII):
-            meta["orca_pane_key"] = pane_key
     return meta
 
 
@@ -686,6 +670,33 @@ def _cached_process_meta() -> Dict[str, Any]:
         return dict(_process_meta)
 
 
+_NESTED_TERMINAL_ENV = (
+    "WT_SESSION", "ALACRITTY_WINDOW_ID", "WEZTERM_PANE", "KITTY_WINDOW_ID",
+    "KONSOLE_VERSION", "GNOME_TERMINAL_SCREEN", "ConEmuPID", "TMUX",
+)
+
+
+def _orca_pane_key_from_env() -> str:
+    """Orca's pane key, or "" when this process is not an Orca pane.
+
+    Read per payload rather than inside _resolve_process_metadata: that walk runs
+    on a background thread and is cached, so a walk-derived value would be absent
+    from every event posted before the thread finishes and from all of them if the
+    walk raised. NESTED_TERMINAL_ENV in hooks/shared-process.js is the same list
+    and carries the reasoning for each entry.
+    """
+    if os.environ.get("TERM_PROGRAM") != "Orca":
+        return ""
+    if any(os.environ.get(key) for key in _NESTED_TERMINAL_ENV):
+        return ""
+    pane_key = (os.environ.get("ORCA_PANE_KEY") or "").strip()
+    # ASCII-only: Python's \w matches Unicode word characters, which would make
+    # this copy of the validator laxer than the JavaScript ones.
+    if pane_key and len(pane_key) <= 256 and re.fullmatch(r"[\w-]+:[\w-]+", pane_key, re.ASCII):
+        return pane_key
+    return ""
+
+
 def _add_process_meta(payload: Dict[str, Any]) -> None:
     meta = _cached_process_meta()
     source_pid = _int_pid(meta.get("source_pid"))
@@ -706,8 +717,8 @@ def _add_process_meta(payload: Dict[str, Any]) -> None:
     tmux_client = meta.get("tmux_client")
     if isinstance(tmux_client, str) and tmux_client:
         payload["tmux_client"] = tmux_client
-    orca_pane_key = meta.get("orca_pane_key")
-    if isinstance(orca_pane_key, str) and orca_pane_key:
+    orca_pane_key = _orca_pane_key_from_env()
+    if orca_pane_key:
         payload["orca_pane_key"] = orca_pane_key
 
 
