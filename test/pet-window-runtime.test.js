@@ -1344,6 +1344,37 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     assert.equal(bounds.y, 20);
   });
 
+  // PR #751 Codex review #7 (rework batch B-4): recomputeOffsetsFrom()'s
+  // out-of-range branch used to only zero X offset and hard-reset
+  // lastLogicalBounds, then unconditionally fall through to the Y offset
+  // computation at the end of the function — which used the STALE `logical.y`
+  // parameter (pre-reset) against the NEW actualPhysical.y, reintroducing a
+  // non-zero Y offset even though the whole point of the reset was "logical
+  // follows physical, BOTH offsets zero".
+  it("recomputeOffsetsFrom's out-of-range branch also zeros Y offset (hard resync means BOTH offsets, not just X)", () => {
+    const clock = createFakeClock();
+    const harness = createRuntime({ isLinux: true, clock });
+
+    harness.runtime.applyPetWindowBounds({ x: 10, y: -20, width: 100, height: 100 });
+    assert.equal(harness.runtime.getViewportOffsetY(), 20, "sanity: the write's own top-lift clamp (Y=-20 above workArea) produces a legitimate offset");
+
+    // No native move event at all -- the settle-sweep (armed at write time,
+    // due SETTLE_MS later) is what discovers this mismatch, with ZERO prior
+    // quiet-point observations, so it takes the "no-event" adopt fallback
+    // (runReconcile()'s (b3) else branch) regardless of clamp-explainability
+    // — exactly the path that can hand recomputeOffsetsFrom() an arbitrarily
+    // large, illegal offset (Codex's own numbers: logical(10,-20),
+    // actual(300,0), width=100).
+    harness.renderWin.bounds = { x: 300, y: 0, width: 100, height: 100 };
+    clock.advance(500); // past SETTLE_MS(400)
+
+    assert.equal(harness.runtime.getViewportOffsetX(), 0, "X offset must be zeroed by the out-of-range backstop");
+    assert.equal(harness.runtime.getViewportOffsetY(), 0, "Y offset must ALSO be zeroed by the same backstop, not left at a stale non-zero value");
+    const bounds = harness.runtime.getPetWindowBounds();
+    assert.equal(bounds.x, 300, "logical must follow physical exactly");
+    assert.equal(bounds.y, 0);
+  });
+
   // PR #751 Codex deep review — rework batch A. Each test below reproduces
   // the reviewer's own exact counter-example timeline; coordinator-verified
   // independently before assigning the fix.

@@ -588,6 +588,16 @@ function createPetWindowRuntime(options = {}) {
       );
       lastLogicalBounds = { x: actualPhysical.x, y: actualPhysical.y };
       setViewportOffsetX(0);
+      // PR #751 Codex review #7 (rework batch B-4): the hard-resync semantics
+      // here is "logical follows physical, BOTH offsets zero" —
+      // lastLogicalBounds was just reset to actualPhysical (Y included), so Y
+      // offset must ALSO be zeroed, and this function must return here
+      // instead of falling through to the unconditional Y computation below
+      // (which would use the STALE `logical.y` parameter against the NEW
+      // actualPhysical.y, reintroducing a non-zero Y offset this reset was
+      // supposed to eliminate).
+      setViewportOffsetY(0);
+      return;
     }
     setViewportOffsetY(Math.max(0, actualPhysical.y - logical.y));
   }
