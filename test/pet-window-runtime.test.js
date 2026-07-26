@@ -120,6 +120,7 @@ function createRuntime(overrides = {}) {
     ...(overrides.cloakInspector ? { cloakInspector: overrides.cloakInspector } : {}),
     ...(overrides.isMiniAnimating ? { isMiniAnimating: overrides.isMiniAnimating } : {}),
     ...(overrides.now ? { now: overrides.now } : {}),
+    ...(overrides.edgeLog ? { edgeLog: overrides.edgeLog } : {}),
     isNearWorkAreaEdge: () => overrides.nearEdge || false,
     flushRuntimeStateToPrefs: () => calls.push(["flushRuntimeStateToPrefs"]),
     handleMiniDisplayChange: () => calls.push(["handleMiniDisplayChange"]),
@@ -227,6 +228,205 @@ describe("pet-window-runtime edge virtualization (#690 Phase 0 fixture)", () => 
       harness.runtime.getPetWindowBounds().x,
       1768,
       "logical X must survive an OS-side clamp, not be polluted by the physical readback"
+    );
+  });
+});
+
+describe("pet-window-runtime edge virtualization (#690 Phase 2 runtime)", () => {
+  it("computes zero X offset and preserves full physical overflow on non-Linux platforms (I3)", () => {
+    const renderWin = makeWindow({
+      x: 0,
+      y: 721,
+      width: ISSUE_690_WINDOW_SIZE.width,
+      height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    const harness = createRuntime({
+      isWin: true,
+      isLinux: false,
+      renderWin,
+      displays: [{ id: 1, bounds: ISSUE_690_WORK_AREA, workArea: ISSUE_690_WORK_AREA }],
+    });
+    const requested = {
+      x: 1768,
+      y: 721,
+      width: ISSUE_690_WINDOW_SIZE.width,
+      height: ISSUE_690_WINDOW_SIZE.height,
+    };
+
+    const result = harness.runtime.applyPetWindowBounds(requested);
+
+    assert.equal(result.x, 1768, "Windows/macOS keep the existing physical-overflow path unchanged");
+    assert.deepStrictEqual(renderWin.calls.find((call) => call[0] === "setBounds"), ["setBounds", requested]);
+    assert.equal(harness.runtime.getViewportOffsetX(), 0);
+  });
+
+  it("does not materialize X across an internal multi-monitor seam (I3)", () => {
+    // Two 1920x1080 displays side by side — the left display's right edge at
+    // x=1920 is an internal seam (a neighbour continues from there), not an
+    // outer workArea edge, so X must be left completely alone: this is the
+    // existing "physical cross-monitor overflow" behavior, unchanged.
+    const renderWin = makeWindow({ x: 1800, y: 100, width: 203, height: 209 });
+    const harness = createRuntime({
+      isWin: false,
+      isLinux: true,
+      renderWin,
+      displays: [
+        { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1080 } },
+        { id: 2, bounds: { x: 1920, y: 0, width: 1920, height: 1080 }, workArea: { x: 1920, y: 0, width: 1920, height: 1080 } },
+      ],
+    });
+    const requested = { x: 1900, y: 100, width: 203, height: 209 }; // crosses the seam at x=1920
+
+    const result = harness.runtime.applyPetWindowBounds(requested);
+
+    assert.equal(result.x, 1900, "an internal seam must never be materialized into an X offset");
+    assert.equal(harness.runtime.getViewportOffsetX(), 0);
+  });
+
+  it("sends viewport-offset-x once per change and dedupes repeated values", () => {
+    const harness = createRuntime();
+
+    harness.runtime.setViewportOffsetX(50);
+    harness.runtime.setViewportOffsetX(50);
+    harness.runtime.setViewportOffsetX(-10);
+
+    assert.deepStrictEqual(
+      harness.calls.filter((call) => call[0] === "sendToRenderer" && call[1] === "viewport-offset-x"),
+      [
+        ["sendToRenderer", "viewport-offset-x", 50],
+        ["sendToRenderer", "viewport-offset-x", -10],
+      ]
+    );
+    assert.equal(harness.runtime.getViewportOffsetX(), -10);
+  });
+
+  it("skips the native setBounds call when the materialized physical rect already matches live bounds, unless force:true", () => {
+    const renderWin = makeWindow({ x: 500, y: 300, width: 100, height: 100 });
+    const harness = createRuntime({ renderWin });
+
+    const result = harness.runtime.applyPetWindowBounds({ x: 500, y: 300, width: 100, height: 100 });
+
+    assert.deepStrictEqual(renderWin.calls.filter((call) => call[0] === "setBounds"), []);
+    assert.deepStrictEqual(result, { x: 500, y: 300, width: 100, height: 100 });
+
+    harness.runtime.applyPetWindowBounds({ x: 500, y: 300, width: 100, height: 100 }, { force: true });
+
+    assert.deepStrictEqual(renderWin.calls.filter((call) => call[0] === "setBounds"), [
+      ["setBounds", { x: 500, y: 300, width: 100, height: 100 }],
+    ]);
+  });
+
+  it("updates lastLogicalBounds before the native write, so a read triggered synchronously from inside setBounds sees the new logical position", () => {
+    const renderWin = makeWindow({ x: 10, y: 20, width: 100, height: 100 });
+    const harness = createRuntime({ renderWin });
+    let observedDuringWrite = null;
+    const realSetBounds = renderWin.setBounds;
+    renderWin.setBounds = (next) => {
+      // Simulate a WM/event callback re-entering our code mid-write (e.g. a
+      // synchronous "move" notification) before the native call itself
+      // returns.
+      observedDuringWrite = harness.runtime.getPetWindowBounds();
+      realSetBounds(next);
+    };
+
+    harness.runtime.applyPetWindowBounds({ x: 250, y: 60, width: 100, height: 100 });
+
+    assert.deepStrictEqual(observedDuringWrite, { x: 250, y: 60, width: 100, height: 100 });
+  });
+
+  it("assertNoYOffset refuses to forward a non-zero Y offset and logs once without spamming repeated frames", () => {
+    const edgeLogs = [];
+    // A Y offset only becomes non-zero when the logical Y sits above the work
+    // area top (existing top-edge-pinning semantics) — construct that
+    // directly to exercise the assertNoYOffset branch without needing
+    // mini.js's animation loop.
+    const renderWin = makeWindow({ x: 100, y: 0, width: 100, height: 100 });
+    const harness = createRuntime({ renderWin, edgeLog: (message) => edgeLogs.push(message) });
+
+    harness.runtime.applyPetWindowBounds(
+      { x: 100, y: -10, width: 100, height: 100 },
+      { assertNoYOffset: true }
+    );
+    harness.runtime.applyPetWindowBounds(
+      { x: 100, y: -10, width: 100, height: 100 },
+      { assertNoYOffset: true }
+    );
+
+    assert.equal(
+      harness.runtime.getViewportOffsetY(),
+      0,
+      "assertNoYOffset must never let a non-zero Y offset reach the renderer"
+    );
+    assert.equal(
+      edgeLogs.filter((line) => line.includes("edge-assert-no-y-offset")).length,
+      1,
+      "a sustained non-zero-Y streak logs once, not once per frame"
+    );
+
+    // A clean (Y already 0) frame resets the dedup, so a later streak logs again.
+    harness.runtime.applyPetWindowBounds({ x: 100, y: 0, width: 100, height: 100 }, { assertNoYOffset: true });
+    harness.runtime.applyPetWindowBounds(
+      { x: 100, y: -10, width: 100, height: 100 },
+      { assertNoYOffset: true }
+    );
+
+    assert.equal(
+      edgeLogs.filter((line) => line.includes("edge-assert-no-y-offset")).length,
+      2,
+      "a later non-zero-Y streak after a clean frame must log again"
+    );
+  });
+
+  it("I2 backstop: an out-of-range materialized X offset hard-resyncs logical bounds to actual and zeroes both offsets", () => {
+    const edgeLogs = [];
+    const renderWin = makeWindow({ x: 500, y: 0, width: 203, height: 209 });
+    const harness = createRuntime({
+      renderWin,
+      isLinux: true,
+      // A pathologically narrow work area makes the outer-edge rightBound
+      // land far to the left of the requested logical X, producing an
+      // |offsetX| that reaches the window width — exactly the "materialize
+      // predicted something absurd" case I2 exists to catch, independent of
+      // the (not-yet-implemented) observedClampInset learning.
+      displays: [{
+        id: 1,
+        bounds: { x: 0, y: 0, width: 10, height: 1000 },
+        workArea: { x: 0, y: 0, width: 10, height: 1000 },
+      }],
+      edgeLog: (message) => edgeLogs.push(message),
+    });
+
+    const result = harness.runtime.applyPetWindowBounds({ x: 500, y: 0, width: 203, height: 209 });
+
+    assert.ok(
+      edgeLogs.some((line) => line.includes("edge-offset-out-of-range")),
+      "the backstop must log the rejected offset"
+    );
+    assert.equal(harness.runtime.getViewportOffsetX(), 0, "a rejected offset must not reach the renderer");
+    assert.equal(harness.runtime.getViewportOffsetY(), 0);
+    assert.deepStrictEqual(
+      harness.runtime.getPetWindowBounds(),
+      { x: result.x, y: result.y, width: 203, height: 209 },
+      "lastLogicalBounds must hard-resync to the actual physical rect, not the rejected logical target"
+    );
+  });
+
+  it("resolveStartupPlacement() computes a Linux outer-edge-aware initialWindowBounds using the same materializer applyPetWindowBounds uses", () => {
+    const harness = create690Fixture();
+    const prefs = { positionSaved: true, x: 1768, y: 721 };
+    const size = { width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height };
+
+    const placement = harness.runtime.resolveStartupPlacement(prefs, size);
+
+    assert.equal(
+      placement.initialVirtualBounds.x,
+      1768,
+      "the logical/virtual bounds preserve the saved edge position"
+    );
+    assert.equal(
+      placement.initialWindowBounds.x,
+      1717,
+      "the physical bounds used to construct the BrowserWindow must already be Mutter-safe, not off-screen"
     );
   });
 });
