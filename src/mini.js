@@ -393,11 +393,18 @@ function consumeTopologyForMiniPeekIn() {
 // point for every path that ends mini's "transitioning or animating" window
 // — clears miniTransitioning/isAnimating, releases the reconcile protection
 // period (§4.3.10), and consumes any pending topology materialize via
-// `onConsumeTopology` (omit it to just discard the flag with no action,
-// which is correct for cleanup() and peek in/out below — nothing meaningful
-// to re-anchor there). Every animation-end/cancel/exception path converges
-// here: finishMiniEntry()'s settle, cancelMiniTransition(), exitMiniMode()'s
-// parabola onDone, miniPeekIn()/miniPeekOut()'s onDone, and cleanup().
+// `onConsumeTopology` (omit it to just discard the flag with no action —
+// correct only for cleanup() below, a teardown path with nothing left to
+// re-anchor. PR #751 second-review C-5/C-5b: peek in/out below used to also
+// omit it, silently discarding a topology change deferred mid-peek instead
+// of ever re-anchoring against it — both now pass an explicit consumer:
+// miniPeekOut() uses the same consumeTopologyForMiniRest() every other
+// caller here does, and miniPeekIn() uses its own
+// consumeTopologyForMiniPeekIn(), since landing at the bare resting
+// position would silently un-peek there). Every animation-end/cancel/
+// exception path converges here: finishMiniEntry()'s settle,
+// cancelMiniTransition(), exitMiniMode()'s parabola onDone,
+// miniPeekIn()/miniPeekOut()'s onDone, and cleanup().
 //
 // cleanup() is the P0 fix this batch is about: theme-runtime.js's reload
 // path calls mini's cleanup() to tear it down, which used to only clear the
