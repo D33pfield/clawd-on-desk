@@ -187,13 +187,14 @@ function create690Fixture(overrides = {}) {
 }
 
 describe("pet-window-runtime edge virtualization (#690 Phase 0 fixture)", () => {
-  it("keeps the logical X at the requested value when Mutter clamps the physical window back into the work area", () => {
+  it("keeps the logical X at the requested value when the physical window is clamped back into the work area", () => {
     const harness = create690Fixture();
 
     // This is the existing 25%-margin rest-clamp target clampToScreenVisual()
     // already computes for a 203px-wide window: Math.round(203 * 0.25) = 51;
     // 1920 - 203 + 51 = 1768. The application legitimately wants to place the
-    // pet here.
+    // pet here — this is its logical intent, fed straight into
+    // applyPetWindowBounds() exactly like every other caller in this file.
     const requested = {
       x: 1768,
       y: 721,
@@ -202,24 +203,26 @@ describe("pet-window-runtime edge virtualization (#690 Phase 0 fixture)", () => 
     };
     harness.runtime.applyPetWindowBounds(requested);
 
-    assert.ok(
-      harness.renderWin.calls.some((call) => call[0] === "setBounds" && call[1].x === 1768),
-      "the runtime must have attempted to place the window at the intended edge position"
-    );
-
-    // Mutter's fully-onscreen constraint clamps the physical window back to
-    // 1920 - 203 = 1717 — the issue's exact reported geometry.
+    // Whether the runtime blindly asks the OS for 1768 and gets clamped back
+    // (pre-fix — the mock's require_fully_onscreen model fires), or the
+    // runtime's own Linux edge-awareness predicts the identical safe boundary
+    // and asks for it directly (post-fix — see docs/plans/
+    // plan-issue-690-gnome-mini-edge-snap.md §4.2's worked example,
+    // logicalX=1768/physicalX=1717), the physical window must never be left
+    // requesting past the work area: 1920 - 203 = 1717, the issue's exact
+    // reported geometry. This assertion holds on both sides of the fix; it is
+    // not the one that proves the bug (see below).
     assert.equal(
       harness.renderWin.getBounds().x,
       1717,
-      "OS readback must show the Mutter-clamped physical X"
+      "the physical window must stay fully inside the 1920-wide work area"
     );
 
     // The bug: getPetWindowBounds() must keep reporting the logical intent
-    // (1768), not whatever Mutter did to the physical window. Pre-fix, this
-    // re-derives position from the live (Mutter-polluted) physical bounds, so
-    // it reports 1717 instead — this assertion is red before the Phase 2
-    // runtime fix and green after it.
+    // (1768), not whatever the physical window ended up at. Pre-fix, this
+    // re-derives position from the live (clamped) physical bounds, so it
+    // reports 1717 instead — this assertion is red before the Phase 2 runtime
+    // fix and green after it.
     assert.equal(
       harness.runtime.getPetWindowBounds().x,
       1768,
