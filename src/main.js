@@ -832,6 +832,10 @@ const petWindowRuntime = createPetWindowRuntime({
   scheduleHwndRecovery: () => scheduleHwndRecovery(),
   cloakInspector: _cloakInspector,
   isMiniAnimating: () => _mini.getIsAnimating(),
+  // Issue #690 plan §4.3.10's fourth reconcile protection period (lazy-bound
+  // like isMiniAnimating above — _roam is constructed after petWindowRuntime,
+  // but this closure isn't invoked until well after module load finishes).
+  isRoamAnimating: () => _roam.isRoamAnimating(),
   isNearWorkAreaEdge: (bounds) => isNearWorkAreaEdge(bounds),
   flushRuntimeStateToPrefs: () => flushRuntimeStateToPrefs(),
   handleMiniDisplayChange: () => _mini.handleDisplayChange(),
@@ -1413,6 +1417,10 @@ const topmostRuntime = createTopmostRuntime({
   setForceEyeResend,
   applyPetWindowPosition,
   syncHitWin,
+  // I5 (plan §3): report the macOS editing-overlap dodge intent through
+  // pet-window-runtime's single ignore-mouse writer instead of this module
+  // calling hitWin.setIgnoreMouseEvents() directly.
+  setImeEditingPetDodge: (value) => petWindowRuntime.setImeEditingPetDodge(value),
 });
 const {
   reassertWinTopmost,
@@ -3754,9 +3762,19 @@ function createWindow() {
     },
   });
 
-  // Event-level safety net for position sync
-  win.on("move", () => petWindowRuntime.syncFloatingWindowsAfterPetBoundsChange());
-  win.on("resize", () => petWindowRuntime.syncFloatingWindowsAfterPetBoundsChange());
+  // Issue #690 plan §4.3.9: these replace (not supplement) the previous
+  // synchronous "move"/"resize" -> syncFloatingWindowsAfterPetBoundsChange()
+  // wiring. Native move/resize callbacks carry no geometry and must not
+  // read/write anything themselves — onNativeGeometryEvent() only
+  // (re)schedules a debounced quiet-point reconcile, which is what now calls
+  // syncFloatingWindowsAfterPetBoundsChange() (as syncDerivedSurfaces()) once
+  // it has classified the settled geometry.
+  win.on("move", () => petWindowRuntime.onNativeGeometryEvent());
+  win.on("resize", () => petWindowRuntime.onNativeGeometryEvent());
+  // §4.3.11: the hit window gets the same geometry-blind debounced treatment,
+  // on its own (longer) HIT_QUIET_MS quiet period.
+  hitWin.on("move", () => petWindowRuntime.onHitNativeGeometryEvent());
+  hitWin.on("resize", () => petWindowRuntime.onHitNativeGeometryEvent());
 
   syncSessionHudVisibility();
 
@@ -3896,6 +3914,11 @@ function createWindow() {
     if (displayMetricsGeometryTimer) clearTimeout(displayMetricsGeometryTimer);
     displayMetricsGeometryTimer = setTimeout(() => {
       displayMetricsGeometryTimer = null;
+      // §4.3.14: observedClampInset is only valid until the topology it was
+      // learned against changes. Clearing the whole table here is a safe
+      // superset of "clear the affected display's entries" — Electron
+      // doesn't cheaply say WHICH display changed from this event alone.
+      petWindowRuntime.clearObservedClampInsets();
       petWindowRuntime.handleDisplayMetricsChanged();
     }, 400);
   };
@@ -3998,6 +4021,8 @@ const _roamCtx = {
   // #569: lets roam anchor to the keep-size frozen size when that toggle is on
   getEffectiveCurrentPixelSize,
   syncHitWin: () => syncHitWin(),
+  // Issue #690 plan §4.3.10's roam protection-period release point.
+  releaseReconcileProtection: () => petWindowRuntime.releaseReconcileProtection(),
   repositionSessionHud: () => repositionSessionHud(),
   repositionAnchoredSurfaces: () => repositionAnchoredFloatingSurfaces(),
   repositionBubbles: () => repositionFloatingBubbles(),
