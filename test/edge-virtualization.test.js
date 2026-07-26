@@ -430,7 +430,22 @@ describe("edge virtualization cross-module integration (#690 §6.7)", () => {
     h.dispose();
   });
 
-  it("task item 7a: checkMiniModeSnap() reaches X=1738 and enters mini mode using logical bounds", () => {
+  it("task item 7a: checkMiniModeSnap() reaches X=1738, enters mini mode, and settles at the correct logical X (not a stale/physical value)", () => {
+    // checkMiniModeSnap()'s OWN threshold check already read
+    // ctx.getPetWindowBounds() before this batch (an earlier batch's fix,
+    // not Phase 3's) -- verified empirically via git show dbe3045:src/mini.js
+    // (the commit immediately preceding Phase 3's mini.js rewrite): the
+    // getMiniMode()===true assertion alone is GREEN even against that older
+    // mini.js, so it does not by itself discriminate this batch's changes.
+    // What Phase 3 actually fixes is what happens AFTER checkMiniModeSnap()
+    // triggers: pre-Phase 3, enterMiniMode()'s drag-path per-frame writes
+    // (animateWindowX) called ctx.win.setBounds() directly, bypassing
+    // applyPetWindowBounds() entirely -- so lastLogicalBounds was never
+    // updated by that animation, leaving getPetWindowBounds() stale after
+    // mini settles instead of reporting the correct calcMiniX() rest
+    // position. That's the assertion below that is genuinely red pre-Phase-3
+    // (confirmed via the same git-show extraction: stale logical X, not a
+    // thrown TypeError).
     const h = createEdgeVirtualizationHarness();
 
     runDrag(h, {
@@ -441,6 +456,17 @@ describe("edge virtualization cross-module integration (#690 §6.7)", () => {
 
     assert.equal(h.getCheckMiniModeSnapCalls(), 1, "checkMiniModeSnap() must be reached exactly once by drag-end");
     assert.equal(h.mini.getMiniMode(), true, "logical X=1740 (>=1738) must trigger mini mode post-fix");
+
+    // Let the drag-triggered mini-enter animation (100ms slide + mini-enter
+    // SVG + MINI_ENTER_FALLBACK_MS settle, since this fixture registers no
+    // mini-enter state file) fully complete.
+    for (let i = 0; i < 40; i++) mock.timers.tick(100);
+
+    assert.equal(
+      h.runtime.getPetWindowBounds().x, 1816,
+      "logical X must settle at calcMiniX()'s resting position, not a stale pre-entry value"
+    );
+    assert.equal(h.renderWin.bounds.x, ISSUE_690_MUTTER_MAX_X, "physical window stays Mutter-safe at 1717");
     h.dispose();
   });
 
