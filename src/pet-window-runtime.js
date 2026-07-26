@@ -281,6 +281,16 @@ function createPetWindowRuntime(options = {}) {
   let hitStableCount = 0;
   let hitRetriedRect = null;     // the target we've already spent our one WM-clamp retry on
   let hitGeometryDrift = null;   // diagnostic: last adopt-clamp drift on the hit side
+  // PR #751 Codex review #6 (rework batch B-3): { derived, actual } — the
+  // derived target that led to runHitReconcile()'s last adopted (WM-clamped)
+  // outcome, and what actually got adopted for it. syncHitWin() checks this
+  // BEFORE deciding whether to write: if the freshly re-derived target
+  // matches `derived` again (the pet hasn't moved), the adopted `actual` is
+  // kept as settled fact instead of re-initiating a write to the
+  // already-once-rejected derived value — which would otherwise flip-flop
+  // forever (write derived -> WM clamps -> adopt -> next sync re-derives the
+  // same target -> write derived again -> ...).
+  let lastAdoptedHitOutcome = null;
 
   // I5 applyHitInputState() single-writer state.
   let hitGeometrySuppressed = false;
@@ -1479,10 +1489,19 @@ function createPetWindowRuntime(options = {}) {
     lastHitClampBounds = resolveClampAwareBounds(hitWa);
     const target = { x, y, width: w, height: h };
     const wasSuppressed = hitGeometrySuppressed;
-    if (wasSuppressed || !sameRect(lastRequestedHitRect, target)) {
+    // PR #751 Codex review #6 (rework batch B-3): if this derived target
+    // matches whatever derivation last led to an adopted WM-clamped outcome,
+    // keep that outcome as settled fact rather than re-initiating a write to
+    // the derived value runHitReconcile() already established gets clamped
+    // away — recovering from suppression always needs a real write, so that
+    // still takes the normal path even if the derivation happens to match.
+    if (!wasSuppressed && lastAdoptedHitOutcome && sameRect(target, lastAdoptedHitOutcome.derived)) {
+      lastRequestedHitRect = { ...lastAdoptedHitOutcome.actual };
+    } else if (wasSuppressed || !sameRect(lastRequestedHitRect, target)) {
       lastRequestedHitRect = target;
       hitWin.setBounds(target);
       hitRetriedRect = null;
+      lastAdoptedHitOutcome = null;
       resetHitReconcileObservation();
     }
     // Update shape if hitbox dimensions changed (e.g. after resize).
@@ -1584,6 +1603,10 @@ function createPetWindowRuntime(options = {}) {
           "hit", lastRequestedHitRect, actual, "adopt-clamp", "n/a", "n/a",
           `edge=${clampObs.edge} hitDrift=${hitGeometryDrift.x},${hitGeometryDrift.y}`
         );
+        // PR #751 Codex review #6 (rework batch B-3): remember which derived
+        // target led to this adopted outcome — see syncHitWin()'s own
+        // comment for why the next sync needs this to avoid flip-flopping.
+        lastAdoptedHitOutcome = { derived: { ...lastRequestedHitRect }, actual: { ...actual } };
         lastRequestedHitRect = { ...actual };
         hitRetriedRect = null;
       } else {

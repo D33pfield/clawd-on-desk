@@ -1211,6 +1211,50 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     );
   });
 
+  // PR #751 Codex review #6 (rework batch B-3): after adopting a WM-clamped
+  // outcome B for a derived target A, re-syncing with the SAME derivation
+  // (the pet hasn't moved) used to compare the just-adopted B against the
+  // freshly re-derived A, see them differ, and re-initiate a write to A --
+  // undoing the adoption and restarting the whole retry/adopt cycle every
+  // single syncHitWin() call.
+  it("re-syncing with the same derived target after an adopted clamp does not re-initiate a write (no flip-flop)", () => {
+    const clock = createFakeClock();
+    const hitWin = makeWindow({ x: 1717, y: 721, width: 203, height: 209 });
+    hitWin.setBounds = (next) => {
+      hitWin.calls.push(["setBounds", next]);
+      const maxRight = 1900;
+      const clampedX = (next.x + next.width > maxRight) ? (maxRight - next.width) : next.x;
+      hitWin.bounds = { ...next, x: clampedX };
+    };
+    const harness = create690Fixture({ hitWin, clock });
+    wireNativeGeometryListeners(harness);
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    harness.runtime.syncHitWin(); // write #1: derived target, clamped by the mock
+
+    hitWin.emit("move");
+    clock.advance(300); // bounded retry: write #2, same target
+    hitWin.emit("move");
+    clock.advance(300); // adopts the clamped outcome -- no further write
+
+    const setBoundsCallsAfterAdopt = hitWin.calls.filter((c) => c[0] === "setBounds").length;
+    assert.equal(setBoundsCallsAfterAdopt, 2, "sanity: adoption happened after exactly the bounded retry");
+
+    // The pet hasn't moved -- syncHitWin() re-derives the exact same target
+    // every time (the render window's own bounds are unchanged).
+    harness.runtime.syncHitWin();
+    harness.runtime.syncHitWin();
+    harness.runtime.syncHitWin();
+
+    const setBoundsCallsAfterResync = hitWin.calls.filter((c) => c[0] === "setBounds").length;
+    assert.equal(
+      setBoundsCallsAfterResync, setBoundsCallsAfterAdopt,
+      "re-syncing with the same derived target must not re-initiate any new write"
+    );
+  });
+
   it("escape hatch keeps X offset at 0 and skips X IPC, but keeps expected-write/reconcile accounting active", () => {
     const clock = createFakeClock();
     const renderWin = makeWindow({
