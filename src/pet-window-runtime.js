@@ -183,6 +183,11 @@ function createPetWindowRuntime(options = {}) {
     || (() => process.env.CLAWD_DISABLE_EDGE_VIRTUALIZATION === "1");
   const flushRuntimeStateToPrefs = options.flushRuntimeStateToPrefs || noop;
   const handleMiniDisplayChange = options.handleMiniDisplayChange || noop;
+  // Issue #690 plan §4.5 point 4.5-4: handleDisplayMetricsChanged() must hand
+  // a mid-transition topology change to mini.js instead of silently dropping
+  // it (see the call site below).
+  const notifyMiniTopologyChangedDuringTransition =
+    options.notifyMiniTopologyChangedDuringTransition || noop;
   const exitMiniMode = options.exitMiniMode || noop;
   const shouldReloadAfterRenderProcessGone = createRenderProcessGoneReloadGuard(options);
 
@@ -1827,7 +1832,17 @@ function createPetWindowRuntime(options = {}) {
     reapplyMacVisibility();
     const win = getRenderWindow();
     if (!isLiveWindow(win)) return;
-    if (getMiniTransitioning()) return;
+    // §4.5 point 4.5-4: a topology change mid-mini-transition (enter/exit
+    // animation in flight) used to be dropped here entirely — reflowing
+    // against the OLD topology under the animation would fight the
+    // in-progress writes, but doing nothing left mini parked on stale
+    // workArea/seam data once the transition settled. Hand it to mini.js
+    // instead: it marks pendingTopologyMaterialize and consumes it exactly
+    // once at whichever of its own three transition-end points comes next.
+    if (getMiniTransitioning()) {
+      notifyMiniTopologyChangedDuringTransition();
+      return;
+    }
     if (getMiniMode()) {
       handleMiniDisplayChange();
       return;

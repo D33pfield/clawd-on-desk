@@ -839,6 +839,13 @@ const petWindowRuntime = createPetWindowRuntime({
   isNearWorkAreaEdge: (bounds) => isNearWorkAreaEdge(bounds),
   flushRuntimeStateToPrefs: () => flushRuntimeStateToPrefs(),
   handleMiniDisplayChange: () => _mini.handleDisplayChange(),
+  // Issue #690 plan §4.5 point 4.5-4: handleDisplayMetricsChanged() used to
+  // silently swallow topology changes that land mid-mini-transition (the
+  // `if (getMiniTransitioning()) return;` guard). Instead it now hands off to
+  // mini.js so the change isn't lost — mini marks pendingTopologyMaterialize
+  // and does exactly one final re-materialize against fresh topology at
+  // whichever of its own three transition-end points comes next.
+  notifyMiniTopologyChangedDuringTransition: () => _mini.notifyTopologyChangedDuringTransition(),
   exitMiniMode: () => exitMiniMode(),
 });
 
@@ -1141,7 +1148,11 @@ function syncSoundPreloads() {
 
 function setViewportOffsetY(offsetY) { return petWindowRuntime.setViewportOffsetY(offsetY); }
 function getPetWindowBounds() { return petWindowRuntime.getPetWindowBounds(); }
-function applyPetWindowBounds(bounds) { return petWindowRuntime.applyPetWindowBounds(bounds); }
+// Issue #690 Phase 3: mini's per-frame applyMiniFrameBounds() needs opts
+// (workArea/edgeContext/assertNoYOffset) to actually reach
+// petWindowRuntime.applyPetWindowBounds() — this wrapper used to silently
+// drop a second argument, which would have made assertNoYOffset a no-op.
+function applyPetWindowBounds(bounds, opts) { return petWindowRuntime.applyPetWindowBounds(bounds, opts); }
 function applyPetWindowPosition(x, y) { return petWindowRuntime.applyPetWindowPosition(x, y); }
 
 function syncHitStateAfterLoad() {
@@ -3992,6 +4003,9 @@ const _miniCtx = {
   applyPetWindowBounds,
   applyPetWindowPosition,
   setViewportOffsetY,
+  // Issue #690 plan §4.3.10's mini transition+animation reconcile protection
+  // period release point (mirrors _roamCtx's identical wiring below).
+  releaseReconcileProtection: () => petWindowRuntime.releaseReconcileProtection(),
   get bubbleFollowPet() { return bubbleFollowPet; },
   get pendingPermissions() { return pendingPermissions; },
   repositionBubbles: () => repositionFloatingBubbles(),
