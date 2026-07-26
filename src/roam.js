@@ -37,6 +37,17 @@ module.exports = function initRoam(ctx) {
     if (roamPauseTimer) { clearTimeout(roamPauseTimer); roamPauseTimer = null; }
   }
 
+  // Issue #690 plan §4.3.10's roam protection-period release point. Roam's
+  // per-frame applyPetWindowBounds() (ROAM_FRAME_MS=16) is a continuous
+  // native-write period the reconcile state machine must not fight — every
+  // exit from that period (walk finishing naturally below, or being
+  // cancelled) must tell the runtime so a reconcile that was only "marked
+  // dirty" during the walk gets its one terminal pass. No-op when the
+  // runtime hasn't wired this in (e.g. plain unit tests of roam.js alone).
+  function notifyRoamProtectionReleased() {
+    if (typeof ctx.releaseReconcileProtection === "function") ctx.releaseReconcileProtection();
+  }
+
   function isRoamAllowed() {
     if (!enabled) return false;
     if (ctx.getMiniMode && ctx.getMiniMode()) return false;
@@ -191,6 +202,7 @@ module.exports = function initRoam(ctx) {
         roamAnimTimer = setTimeout(step, ROAM_FRAME_MS);
       } else {
         roamActive = false;
+        notifyRoamProtectionReleased();
         // ── Return to idle via setState (respects priority) ──
         // If a higher-priority state was set while the last frame was in
         // flight, setState("idle") won't downgrade it.
@@ -234,8 +246,10 @@ module.exports = function initRoam(ctx) {
       && typeof ctx.getCurrentState === "function"
       && ctx.getCurrentState() === "roam"
       && typeof ctx.setState === "function";
+    const wasActive = roamActive;
     cleanupTimers();
     roamActive = false;
+    if (wasActive) notifyRoamProtectionReleased();
     if (shouldRestoreIdle) ctx.setState("idle");
   }
 
@@ -252,5 +266,16 @@ module.exports = function initRoam(ctx) {
     scheduleNextRoam();
   }
 
-  return { setEnabled, cancelRoam, tick, get enabled() { return enabled; } };
+  // Issue #690 plan §4.3.10's protection-period predicate: pet-window-runtime's
+  // runReconcile() polls this (isRoamAnimating()) alongside dragLocked /
+  // getMiniTransitioning() / isMiniAnimating() / settingsSizePreviewSyncFrozen
+  // so a reconcile pass never fights roam's own per-frame writes.
+  function isRoamAnimating() {
+    return roamActive;
+  }
+
+  return {
+    setEnabled, cancelRoam, tick, isRoamAnimating,
+    get enabled() { return enabled; },
+  };
 };
