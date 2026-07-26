@@ -123,8 +123,25 @@ const ISSUE_690_WINDOW_SIZE = { width: 203, height: 209 };
 const ISSUE_690_MUTTER_MAX_X = 1717; // workArea.width - window.width
 const ISSUE_690_DISPLAYS = [{ id: 1, bounds: ISSUE_690_WORK_AREA, workArea: ISSUE_690_WORK_AREA }];
 
-function makeMutterClampedWindow(bounds) {
+// PR #751 third-review D-2 (Codex non-blocking): `getWorkArea` (defaults to
+// the fixed ISSUE_690_WORK_AREA — a no-op change for every existing caller
+// that never mutates topology) is read FRESH on every setBounds() call,
+// instead of clamping against the module-level ISSUE_690_MUTTER_MAX_X
+// constant unconditionally. That constant was hardcoded against the FIXED
+// 1920-wide default workArea, completely detached from
+// createEdgeVirtualizationHarness()'s own mutable workArea (setTopology()) —
+// a test that widens the workArea mid-run (e.g. C-5/C-5b) could assert on
+// the software's own logical bounds (getPetWindowBounds(), which never
+// touches this mock at all) and pass without the mock's own PHYSICAL clamp
+// ever being exercised against the NEW boundary. Codex's own real-machine
+// verification already confirmed the production path (a real Mutter
+// re-enforcing against the actual, now-changed screen) is correct — this
+// mock just couldn't prove it either way. maxX is derived the same way
+// ISSUE_690_MUTTER_MAX_X itself is (workArea width minus the window's OWN
+// requested width), generalizing it instead of assuming a fixed 203px window.
+function makeMutterClampedWindow(bounds, options = {}) {
   const win = makeWindow(bounds);
+  const getWorkArea = options.getWorkArea || (() => ISSUE_690_WORK_AREA);
   win.setBounds = (next) => {
     win.calls.push(["setBounds", next]);
     // require_fully_onscreen clamps BOTH edges symmetrically, not just the
@@ -133,9 +150,11 @@ function makeMutterClampedWindow(bounds) {
     // of this was previously untested; the coordinator-directed 1px-shrunk
     // fly-off jump target fix is the first scenario here that actually
     // requests a negative X, so the left clamp is filled in now to match.
+    const wa = getWorkArea();
+    const maxX = wa.x + wa.width - next.width;
     let clampedX = next.x;
-    if (clampedX > ISSUE_690_MUTTER_MAX_X) clampedX = ISSUE_690_MUTTER_MAX_X;
-    if (clampedX < 0) clampedX = 0;
+    if (clampedX > maxX) clampedX = maxX;
+    if (clampedX < wa.x) clampedX = wa.x;
     win.bounds = { ...next, x: clampedX };
     // PR #751 rework batch A-5: a real WM clamping a setBounds() request to a
     // DIFFERENT position than what was literally asked for is itself a native
@@ -164,6 +183,28 @@ function makeMiniTheme(offsetRatio) {
     },
   };
 }
+
+// PR #751 third-review D-2: a minimal but REAL theme (no injected
+// hitGeometry/getThemeMarginBox/computeThemeAnchorRect fakes —
+// pet-window-runtime.js's own petGeometryMain construction doesn't accept
+// those as pass-through options, so this has to go through the actual
+// src/hit-geometry.js + src/visible-margins.js code) for verifying
+// getSessionHudAnchorRect() converges to the same X the render/hit windows
+// do. Deliberately omits theme.layout.contentBox, so
+// hit-geometry.js's usesNormalizedLayout()/usesObjectChannel() both take
+// their "false" branch — getAssetRectScreen()'s simplest, non-normalized,
+// non-object-channel path — which resolves to exactly `x: bounds.x`
+// (default imgOffsetX/offsetPxX are both 0). marginBox is set IDENTICAL to
+// viewBox (0,0,100,100), so getContentRectScreen()'s own box-vs-viewBox
+// scale/offset math collapses to `left: artRect.x` too — i.e. this theme's
+// anchor rect .left is guaranteed, by construction, to equal the render
+// window's own logical bounds.x, without needing to reverse-engineer a
+// real production theme's actual layout numbers.
+const HUD_ANCHOR_TEST_THEME = {
+  states: { idle: ["idle.svg"] },
+  viewBox: { x: 0, y: 0, width: 100, height: 100 },
+  layout: { marginBox: { x: 0, y: 0, width: 100, height: 100 } },
+};
 
 // Assembles a real pet-window-runtime + real mini.js + real
 // pet-interaction-ipc against the #690 Phase 0 fixture.
@@ -234,9 +275,13 @@ function createEdgeVirtualizationHarness(overrides = {}) {
   // ratio assertion instead of guessing an animation's exact frame count.
   let miniApplyPetWindowBoundsCallCount = 0;
 
+  // PR #751 third-review D-2: getWorkArea reads the SAME mutable `workArea`
+  // binding setTopology() below reassigns — so a test that widens the
+  // workArea mid-run now also moves this mock's own physical clamp
+  // boundary, instead of leaving it hardcoded to the original topology.
   const renderWin = overrides.renderWin || makeMutterClampedWindow({
     x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
-  });
+  }, { getWorkArea: () => workArea });
   const hitWin = overrides.hitWin || makeWindow({
     x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
   });
@@ -278,7 +323,11 @@ function createEdgeVirtualizationHarness(overrides = {}) {
     getRenderWindow: () => renderWin,
     getHitWindow: () => hitWin,
     getSettingsWindow: () => null,
-    getActiveTheme: () => null,
+    // PR #751 third-review D-2: overridable so a test can verify
+    // getSessionHudAnchorRect() (which needs a real theme with a resolvable
+    // viewBox/marginBox to return anything at all) — every other existing
+    // test in this file never sets this and keeps getting null, unaffected.
+    getActiveTheme: () => overrides.activeTheme || null,
     getCurrentState: () => "idle",
     getCurrentSvg: () => "idle.svg",
     getCurrentHitBox: () => null,
@@ -988,7 +1037,7 @@ describe("edge virtualization cross-module integration (#690 §6.7)", () => {
   // miniPeekIn()'s own consumeTopologyForMiniPeekIn() (C-5b) is in effect —
   // confirming the coordinator's diagnosis was precise.
   it("C-5/C-5b: a display-added event landing mid-peekIn defers instead of reflowing against the stale topology, and the peek's own exit consumes it while preserving the peeked (not resting) position", () => {
-    const h = createEdgeVirtualizationHarness({ getDisableMiniMode: () => true });
+    const h = createEdgeVirtualizationHarness({ getDisableMiniMode: () => true, activeTheme: HUD_ANCHOR_TEST_THEME });
     h.runtime.applyPetWindowBounds(
       { x: 1000, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
       { force: true }
@@ -1011,6 +1060,32 @@ describe("edge virtualization cross-module integration (#690 §6.7)", () => {
     assert.equal(
       h.runtime.getPetWindowBounds().x, 2371,
       "miniPeekIn()'s own exit must consume the deferred topology change AND preserve peek semantics: the new resting position (2396) plus the SAME peek offset (-25, right edge) miniPeekIn() itself used to get there — not the bare resting position, which would silently un-peek for a full cycle"
+    );
+
+    // D-2 (Codex non-blocking, this batch): with the Mutter mock's own
+    // clamp boundary now tied to the SAME mutable workArea setTopology()
+    // just changed (previously hardcoded to the ORIGINAL 1920-wide
+    // topology, so it could never have proven any of this), verify the
+    // physical render window, the hit window, and the session HUD anchor
+    // all actually settle consistently against the NEW topology too — not
+    // just the software's own logical bookkeeping.
+    //
+    // Physical render is 2297, NOT 2371 (verified empirically, not assumed
+    // from the coordinator's own framing) — and this is CORRECT, not a
+    // bug: 2371 + width(203) = 2574 exceeds the new 2500-wide screen by
+    // 74px, so a REAL physical window genuinely cannot sit there fully
+    // onscreen. 2297 is exactly the new Mutter-safe boundary
+    // (2500 - 203), with the 74px gap to the peeked logical position
+    // (2371) bridged by viewportOffsetX — the composite-only virtualization
+    // #690 exists to provide. Hit window and the HUD anchor both track the
+    // LOGICAL/peeked position (2371) instead, which is what the
+    // coordinator's own "collapses to 2371" framing describes correctly.
+    assert.equal(h.renderWin.getBounds().x, 2297, "physical render window must be Mutter-safe against the NEW (2500-wide) topology: 2500-203, not the stale 1920-wide boundary's 1717-equivalent");
+    assert.equal(h.runtime.getViewportOffsetX(), 74, "the logical(2371)/physical(2297) gap must be bridged by viewportOffsetX, not left inconsistent");
+    assert.equal(h.hitWin.getBounds().x, 2371, "hit window must track the peeked LOGICAL position against the NEW topology");
+    assert.equal(
+      h.runtime.getSessionHudAnchorRect(h.runtime.getPetWindowBounds()).left, 2371,
+      "the session HUD anchor, recomputed from the current logical bounds, must also converge on the peeked position against the NEW topology"
     );
     h.dispose();
   });
