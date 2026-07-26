@@ -1750,6 +1750,100 @@ describe("PR #751 second-review batch C: event-evidence bit, per-side clamp elig
     );
     assert.equal(harness.runtime.getViewportOffsetX(), 0, "a fresh rebase write at x=880 (not clamped by anything either) must not carry forward the old adopt-clamp's fabricated inset offset");
   });
+
+  // C-3 (Codex B3): reproduces Codex's own timeline. lastHitWorkArea/
+  // lastHitClampBounds used to refresh unconditionally on every syncHitWin()
+  // call, including the two branches that do NOT write anything (same-target
+  // no-op, and reusing an already-adopted outcome) — so a table change
+  // landing between two such no-op calls silently moved the judging basis
+  // out from under a rect that was never actually re-written.
+  //
+  // Test design note (found empirically, not assumed, after an earlier
+  // Mutter-inset-based attempt at this same scenario turned out to be
+  // structurally unable to discriminate — kept out of the final diff, see
+  // this batch's report): applyOutwardClip() inside syncHitWin() expands the
+  // hit rect to cover the RENDER's own live PHYSICAL bounds, which a
+  // render-side Mutter-clamp mock enforces synchronously and independently
+  // of whatever the software's OWN inset-learning state is — so once the
+  // render settles at its mock-clamped physical spot, every subsequent
+  // syncHitWin() call (learned or not) reproduces byte-identical hit
+  // targets, and the FIRST-ever call (which durably captures
+  // lastHitClampBounds) always lands before learning can commit. This
+  // version instead mutates the shared displays fixture's workArea WIDTH
+  // directly between the write and the no-op resync — resolveClampAwareBounds()
+  // reads that value live on every call it's actually invoked from, with no
+  // inset-learning timing dependency at all, so the fixture is fully
+  // deterministic and the "would a refresh change anything" question is
+  // directly controllable.
+  it("C-3: a same-target no-op syncHitWin() call must not refresh the hit write basis (lastHitWorkArea/lastHitClampBounds)", () => {
+    const clock = createFakeClock();
+    // A mutable reference the harness's screen.getAllDisplays() closes over
+    // — mutating displays[0].workArea.width after construction is visible to
+    // the runtime immediately, the same technique
+    // test/edge-virtualization.test.js's setTopology() uses.
+    const displays = [{
+      id: 1,
+      bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+      workArea: { x: 0, y: 0, width: 1920, height: 1080 },
+    }];
+    // Logical right edge (1800+150=1950) exceeds the workArea (1920), so
+    // materializeVirtualBoundsRaw() software-clamps the PHYSICAL write to
+    // 1920-150=1770 even with no Mutter mock at all — lastLogicalBounds
+    // itself stays at the caller's own uncapped 1800 (#690's whole
+    // logical-vs-physical split).
+    const renderWin = makeWindow({ x: 1800, y: 100, width: 150, height: 100 });
+    const harness = createRuntime({ isWin: false, isLinux: true, renderWin, displays, clock });
+    wireNativeGeometryListeners(harness);
+
+    harness.runtime.applyPetWindowBounds({ x: 1800, y: 100, width: 150, height: 100 });
+    assert.equal(harness.renderWin.getBounds().x, 1770, "sanity: software-clamped physical, no Mutter mock needed");
+
+    // Hit write #1: a genuine write (lastRequestedHitRect was null before
+    // this). Captures lastHitClampBounds = resolveClampAwareBounds(hitWa)
+    // using the CURRENT (unmutated) workArea width, 1920.
+    harness.runtime.syncHitWin();
+    const target1 = harness.hitWin.getBounds();
+    const setBoundsCallsAfterFirstSync = harness.hitWin.calls.filter((c) => c[0] === "setBounds").length;
+    assert.equal(setBoundsCallsAfterFirstSync, 1, "sanity: the first sync is a genuine write");
+
+    // Mutate the SAME display object's workArea width in place -- simulates
+    // a topology change (e.g. taskbar/dock resize) landing between two
+    // syncHitWin() calls, with nothing about the render window itself
+    // moving.
+    displays[0].workArea = { ...displays[0].workArea, width: 1700 };
+
+    // Same render bounds, same target -- syncHitWin() re-derives the
+    // IDENTICAL rect (expectedWrite.clampBounds -- the actual X-clip basis
+    // -- is frozen from the render's last write, unaffected by the
+    // mutation above), landing in the "target unchanged, no write" branch.
+    harness.runtime.syncHitWin();
+    const setBoundsCallsAfterSecondSync = harness.hitWin.calls.filter((c) => c[0] === "setBounds").length;
+    assert.deepStrictEqual(harness.hitWin.getBounds(), target1, "sanity: the second sync must re-derive the identical target");
+    assert.equal(setBoundsCallsAfterSecondSync, 1, "sanity: the second sync must be a genuine no-op (target unchanged), not a second write");
+
+    // A late actual arrives with a small (20px) inward drift from the
+    // ORIGINAL (1920-based) boundary -- clamp-explainable against the
+    // PRESERVED snapshot (inset = 1920 - actual.right = 20, well under the
+    // window's own width, so it passes deriveClampObservation()'s sanity
+    // checks) but NOT against a wrongly-refreshed 1700-based one (inset =
+    // 1700 - actual.right would be deeply NEGATIVE there, since actual.right
+    // sits well past 1700 already -- deriveClampObservation() rejects any
+    // negative inset immediately). One quiet cycle is enough to distinguish
+    // the two outcomes: clampObs non-null takes runHitReconcile()'s
+    // bounded-RETRY branch (a real hitWin.setBounds() call, writing the
+    // target again); clampObs null takes the two-level grab-judgment branch
+    // instead, which never calls setBounds on its own within a single cycle.
+    const actualRight = target1.x + target1.width - 20;
+    harness.hitWin.bounds = { x: actualRight - target1.width, y: target1.y, width: target1.width, height: target1.height };
+    harness.hitWin.emit("move");
+    clock.advance(300); // one hit reconcile cycle (past HIT_QUIET_MS)
+
+    const setBoundsCallsAfterDrift = harness.hitWin.calls.filter((c) => c[0] === "setBounds").length;
+    assert.equal(
+      setBoundsCallsAfterDrift, 2,
+      "the drifted actual must still be classified as clamp-explainable against the PRESERVED (1920-based) snapshot (one bounded-retry setBounds write), not silently unclassifiable against a wrongly-refreshed (1700-based) boundary (which would leave setBounds calls at 1, never retrying)"
+    );
+  });
 });
 
 describe("pet-window-runtime", () => {

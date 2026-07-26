@@ -1600,10 +1600,6 @@ function createPetWindowRuntime(options = {}) {
       return;
     }
 
-    lastHitWorkArea = hitWa;
-    // A-2 hit-side snapshot: freeze the inset-aware boundary NOW, for
-    // runHitReconcile() to judge this exact write against later.
-    lastHitClampBounds = resolveClampAwareBounds(hitWa);
     const target = { x, y, width: w, height: h };
     const wasSuppressed = hitGeometrySuppressed;
     // PR #751 Codex review #6 (rework batch B-3): if this derived target
@@ -1615,6 +1611,20 @@ function createPetWindowRuntime(options = {}) {
     if (!wasSuppressed && lastAdoptedHitOutcome && sameRect(target, lastAdoptedHitOutcome.derived)) {
       lastRequestedHitRect = { ...lastAdoptedHitOutcome.actual };
     } else if (wasSuppressed || !sameRect(lastRequestedHitRect, target)) {
+      // PR #751 second-review C-3 (Codex B3): lastHitWorkArea/lastHitClampBounds
+      // are the write basis runHitReconcile() judges THIS rect against later
+      // (A-2's own point: judge against what was true when written, not
+      // whatever is true when reconcile happens to run) — moved here, INSIDE
+      // the branch that actually calls hitWin.setBounds(target), atomic with
+      // lastRequestedHitRect itself. They used to refresh unconditionally on
+      // every syncHitWin() call, including the two branches above/below that
+      // do NOT write anything (same-target no-op, and the adopted-outcome
+      // reuse) — a table/inset change landing between two such no-op calls
+      // would silently move the goalposts out from under a rect that was
+      // never actually re-written, so runHitReconcile() would judge a STALE
+      // rect against a boundary that was never the basis for it.
+      lastHitWorkArea = hitWa;
+      lastHitClampBounds = resolveClampAwareBounds(hitWa);
       lastRequestedHitRect = target;
       hitWin.setBounds(target);
       hitRetriedRect = null;
