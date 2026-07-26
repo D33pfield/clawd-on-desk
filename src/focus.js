@@ -489,19 +489,16 @@ $wtHwndFromHookInvalid = $false
 # Orca runs every terminal under a detached daemon whose own parent is already
 # dead, and Orca.exe itself descends from explorer — so it is NEVER an ancestor
 # of the agent and the walk below cannot reach it. Its window title is just
-# "Orca" (no cwd), so title matching cannot find it either. Resolve it by
-# process name instead, and try it FIRST: a pane key proves the agent lives in
-# an Orca pane (TERM_PROGRAM=Orca and no WT_SESSION), so the guesswork branches
-# below cannot name the agent's window at all. The two that would otherwise win
-# are gated off rather than merely ordered after, because on
-# 'orca-window-missing' they would report an unrelated window as a *successful*
-# focus: $wtHwndFromHook is only whatever happened to be foreground when the
-# hook fired, and the cache is keyed on a cwd/title match. That last point is
-# also why an Orca window is never saved to the cache — Get-ClawdCachedWindow
-# re-checks the stored title against the cwd candidates on read, and "Orca"
-# never satisfies it. The ancestry walk below and the console recovery after it
-# deliberately stay reachable: both key off the agent's own process chain rather
-# than a guess, so their whitelists accept the orca-window-missing reason.
+# "Orca" (no cwd), so title matching cannot find it either. Resolve it by process
+# name instead, and try it FIRST: on 'orca-window-missing' the guesswork branches
+# would report an unrelated window as a *successful* focus, since
+# $wtHwndFromHook is only whatever happened to be foreground when the hook fired.
+# So the cache and $wtHwndFromHook are gated off outright rather than merely
+# ordered after; the WT title cascade further down is already unreachable through
+# its own 'no-parent-window' guard. The ancestry walk and the console recovery
+# stay reachable because they key off the agent's own process chain, not a guess.
+# Nothing here saves to the focus cache: a cached entry is re-validated against
+# the cwd candidates on read, and the live text "Orca" never satisfies it.
 if ($orcaHosted) {
     $orcaWindows = @(Get-ClawdOrcaWindows)
     if ($orcaWindows.Count -eq 1) {
@@ -515,12 +512,16 @@ if ($orcaHosted) {
         $reason = 'orca-window-missing'
     }
 }
-$cachedHwnd = Get-ClawdCachedWindow
-if (-not $focused -and -not $orcaHosted -and $cachedHwnd -ne [IntPtr]::Zero) {
-    [WinFocus]::Focus($cachedHwnd)
-    $selectedTargetHwnd = $cachedHwnd
-    $focused = $true
-    $reason = 'cached-window'
+if (-not $focused -and -not $orcaHosted) {
+    # Called inside the gate, not before it: on a validation miss this evicts the
+    # stored entry, and an Orca focus has no business dropping another path's cache.
+    $cachedHwnd = Get-ClawdCachedWindow
+    if ($cachedHwnd -ne [IntPtr]::Zero) {
+        [WinFocus]::Focus($cachedHwnd)
+        $selectedTargetHwnd = $cachedHwnd
+        $focused = $true
+        $reason = 'cached-window'
+    }
 }
 if (-not $focused -and -not $orcaHosted -and $wtHwndFromHook -ne [IntPtr]::Zero) {
     if ([WinFocus]::IsUsableWindowsTerminalWindow($wtHwndFromHook)) {
@@ -1017,7 +1018,12 @@ function runOrcaCli(args, callback) {
 // was registered — "D:/repo" and "D:\repo" both occur in one `terminal list`.
 function normalizeOrcaWorktreePath(value) {
   if (typeof value !== "string" || !value.trim()) return null;
-  return value.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  // Orca reports worktreePath with either separator depending on the entry, so
+  // settle on forward slashes. Case-fold only where the filesystem does: on Linux
+  // ~/work/Repo and ~/work/repo are different directories, and folding them makes
+  // the fallback below pick whichever terminal happens to be listed first.
+  const text = value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  return isWin ? text.toLowerCase() : text;
 }
 
 function resolveOrcaHandle(orcaPaneKey, cwd, callback) {
@@ -1027,7 +1033,7 @@ function resolveOrcaHandle(orcaPaneKey, cwd, callback) {
     if (err && err.message === "orca-cli-not-found") return callback(null, "orca-cli-not-found");
     if (err || !data || data.ok !== true || !data.result) return callback(null);
     const terminals = Array.isArray(data.result.terminals) ? data.result.terminals : [];
-    // normalizeOrcaPaneKey guarantees the tabId:leafId shape three layers up, but
+    // normalizeOrcaPaneKey already guarantees the tabId:leafId shape upstream, but
     // this function is also an exported test seam: without the guard a colon-less
     // string would silently match on nonsense ids instead of falling through.
     const sep = typeof orcaPaneKey === "string" ? orcaPaneKey.indexOf(":") : -1;
@@ -1041,7 +1047,12 @@ function resolveOrcaHandle(orcaPaneKey, cwd, callback) {
     // the worktree still lands the user in the right project.
     const target = normalizeOrcaWorktreePath(cwd);
     if (!target) return callback(null);
-    const byCwd = terminals.find((t) => t && normalizeOrcaWorktreePath(t.worktreePath) === target);
+    // Prefix, not equality: an agent's cwd is routinely a subdirectory of the
+    // worktree root, which an exact match would report as orca-pane-not-found.
+    const byCwd = terminals.find((t) => {
+      const worktree = normalizeOrcaWorktreePath(t && t.worktreePath);
+      return worktree && (target === worktree || target.startsWith(`${worktree}/`));
+    });
     return callback(byCwd && byCwd.handle ? byCwd.handle : null);
   });
 }
@@ -1058,9 +1069,8 @@ function resolveOrcaHandle(orcaPaneKey, cwd, callback) {
 // (so a minimized Orca actually comes back) and needs no Automation consent.
 // Linux mirrors focusTerminalWindowLegacy's wmctrl-then-xdotool ordering, but
 // matches on WM_CLASS instead of --pid for the detached-daemon reason above.
-// Only the Windows branch has been verified on real hardware; on Linux the
-// WM_CLASS is assumed to be "orca", which is also GNOME's screen reader, so a
-// miss there raises the wrong window rather than none.
+// On Linux the WM_CLASS is assumed to be "orca", which is also GNOME's screen
+// reader, so a miss there raises the wrong window rather than none.
 function raiseOrcaWindow(onDone) {
   const done = () => { if (onDone) onDone(); };
   if (isMac) {
