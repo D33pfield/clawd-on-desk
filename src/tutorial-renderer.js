@@ -783,6 +783,7 @@
       languagePickerControl.dispose();
       languagePickerControl = null;
     }
+    document.title = i18n("tutorialWindowTitle", "Welcome to Clawd on Desk");
     renderSteps();
     const body = document.getElementById("body");
     body.className = "body step-" + STEPS[step];

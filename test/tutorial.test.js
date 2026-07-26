@@ -69,6 +69,7 @@ function createHarness(ctxOverrides = {}) {
     setMenuBarVisibility() {}
     loadFile(file) { this.loadedFile = file; }
     setBackgroundColor(color) { this.backgroundColors.push(color); }
+    setTitle(title) { this.title = title; }
     once(event, cb) { this.onceCallbacks.set(event, cb); }
     on(event, cb) { this.onCallbacks.set(event, cb); }
     close() {
@@ -217,6 +218,20 @@ describe("tutorial window shell", () => {
     assert.strictEqual(after, before + 1, "state re-pushed after language change");
   });
 
+  it("refreshes the native title when the selected language changes", () => {
+    let lang = "en";
+    const titles = { en: "Welcome to Clawd on Desk", zh: "欢迎使用 Clawd on Desk" };
+    const h = createHarness({
+      t: (key) => key === "tutorialWindowTitle" ? titles[lang] : key,
+      setLang: (value) => { lang = value; h.calls.setLang.push(value); },
+    });
+
+    h.tutorial.open();
+    assert.strictEqual(h.getCreatedWindow().opts.title, titles.en);
+    h.listeners.get("tutorial:set-lang")({}, "zh");
+    assert.strictEqual(h.getCreatedWindow().title, titles.zh);
+  });
+
   it("get-state handler returns the live state", () => {
     const h = createHarness();
     h.tutorial.open();
@@ -303,5 +318,72 @@ describe("tutorial window shell", () => {
     h.nativeTheme.shouldUseDarkColors = true;
     h.nativeTheme.emit("updated");
     assert.ok(win.backgroundColors.includes("#1c1c1f"), "dark background applied on theme change");
+  });
+
+  it("syncLocalization pushes fresh state, dictionary, and native title for external language changes", () => {
+    // Reproduces the review-reported gap: when the language changes through
+    // Settings/tray (not the tutorial's own picker), the centralized language
+    // effect must push fresh renderer state — not just the native title — so
+    // the tutorial body, buttons, and document.title follow the new language.
+    let lang = "en";
+    const titles = { en: "Welcome to Clawd on Desk", zh: "欢迎使用 Clawd on Desk" };
+    const i18nByLang = {
+      en: { tutorialWelcomeTitle: "Welcome to Clawd on Desk" },
+      zh: { tutorialWelcomeTitle: "欢迎使用 Clawd on Desk" },
+    };
+    const h = createHarness({
+      t: (key) => (key === "tutorialWindowTitle" ? titles[lang] : key),
+      getLang: () => lang,
+      getI18n: () => i18nByLang[lang],
+    });
+
+    h.tutorial.open();
+    h.getCreatedWindow().emitWebContents("did-finish-load");
+    const before = h.sends.filter((s) => s.channel === "tutorial:state").length;
+
+    // Simulate the external path: Settings/tray → effect → syncLocalization.
+    lang = "zh";
+    h.tutorial.syncLocalization();
+
+    const stateSends = h.sends.filter((s) => s.channel === "tutorial:state");
+    assert.strictEqual(stateSends.length, before + 1, "state pushed once for external change");
+    const last = stateSends[stateSends.length - 1];
+    assert.strictEqual(last.payload.lang, "zh", "state carries the new lang");
+    assert.strictEqual(
+      last.payload.i18n.tutorialWelcomeTitle,
+      "欢迎使用 Clawd on Desk",
+      "state carries the new dictionary",
+    );
+    assert.strictEqual(h.getCreatedWindow().title, titles.zh, "native title updated to new language");
+  });
+
+  it("tutorial:set-lang does not double-push state when the language effect fires synchronously", () => {
+    // The tutorial's own language picker calls ctx.setLang, which in production
+    // synchronously triggers the centralized effect (syncWindowTitles →
+    // syncLocalization). The re-entrancy guard must suppress that effect-driven
+    // push so the picker handler's own syncLocalization is the only one.
+    let lang = "en";
+    const titles = { en: "Welcome to Clawd on Desk", zh: "欢迎使用 Clawd on Desk" };
+    const h = createHarness({
+      t: (key) => (key === "tutorialWindowTitle" ? titles[lang] : key),
+      getLang: () => lang,
+      setLang: (value) => {
+        lang = value;
+        h.calls.setLang.push(value);
+        // Simulate the settings-controller firing the centralized effect.
+        h.tutorial.syncLocalization();
+      },
+    });
+
+    h.tutorial.open();
+    h.getCreatedWindow().emitWebContents("did-finish-load");
+    const before = h.sends.filter((s) => s.channel === "tutorial:state").length;
+
+    h.listeners.get("tutorial:set-lang")({}, "zh");
+
+    assert.deepStrictEqual(h.calls.setLang, ["zh"]);
+    const after = h.sends.filter((s) => s.channel === "tutorial:state").length;
+    assert.strictEqual(after, before + 1, "state pushed exactly once despite synchronous effect");
+    assert.strictEqual(h.getCreatedWindow().title, titles.zh, "native title updated");
   });
 });

@@ -684,6 +684,7 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
   getPetWindowBounds: () => getPetWindowBounds(),
   getNearestWorkArea: (cx, cy) => getNearestWorkArea(cx, cy),
   getTextScale: () => effectiveTextScaleForKey(getSettingsDisplayKey()),
+  getTitle: () => translate("settingsWindowTitle"),
   onBeforeCreate: () => bumpAnimationOverridePreviewPosterGeneration(),
   onBeforeClosed: () => {
     bumpAnimationOverridePreviewPosterGeneration();
@@ -3386,6 +3387,14 @@ const settingsEffectRouter = createSettingsEffectRouter({
   sendToRenderer,
   sendDashboardI18n: () => sendDashboardI18n(),
   sendSessionHudI18n: () => sendSessionHudI18n(),
+  syncWindowTitles: () => {
+    settingsWindowRuntime.applyTitleToWindow();
+    // syncLocalization pushes BOTH the native title AND fresh renderer state
+    // (dictionary/lang), so an external language change (Settings/tray) keeps
+    // the tutorial body, buttons, and document.title in sync with the new
+    // language — not just the native title bar.
+    _tutorial.syncLocalization();
+  },
   emitSessionSnapshot: (options) => _state.emitSessionSnapshot(options),
   cleanStaleSessions: () => _state.cleanStaleSessions(),
   syncPermissionShortcuts,
