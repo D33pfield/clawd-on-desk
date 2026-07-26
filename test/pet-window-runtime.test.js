@@ -620,7 +620,19 @@ function makeInsetMutterClampedWindow(bounds, { rightInset = 0 } = {}) {
 }
 
 describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile matrix)", () => {
-  it("inset self-bootstrap: the very first clamp teaches the inset, not just later ones", () => {
+  it("inset self-bootstrap: needs a SECOND consistent observation to actually learn (PR #751 rework batch A-3), not the first alone", () => {
+    // Coordinator ruling (R5-7): this test's title/assertion used to be "the
+    // very first clamp teaches the inset" — PR #751 Codex review #3 found
+    // that a single clamp-explainable observation is not enough evidence on
+    // its own (it could be a one-off external move that merely happens to
+    // land on a workArea edge), so updateObservedClampInset() is now gated
+    // behind a pending-candidate confirmation: only a SECOND consecutive
+    // observation with the identical (displayId, edge, inset) actually
+    // commits the learn. deriveClampObservation() itself is unchanged — it
+    // still derives the candidate from actual by subtraction on the very
+    // first clamp (never comparing against an already-known inset, which
+    // would self-deadlock at inset=0) — only maybeLearnInset()'s gate in
+    // front of it is new.
     const clock = createFakeClock();
     const renderWin = makeInsetMutterClampedWindow(
       { x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
@@ -642,8 +654,23 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
 
     assert.equal(
       harness.runtime.getObservedClampInset(1, "right"),
+      0,
+      "A-3: the first observation is only a pending candidate, not yet committed"
+    );
+
+    // A second write reproduces the IDENTICAL candidate (the mock's
+    // rightInset:40 behavior hasn't changed) -- this is the confirming
+    // observation that actually commits the learn.
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    }, { force: true });
+    harness.renderWin.emit("move");
+    clock.advance(150);
+
+    assert.equal(
+      harness.runtime.getObservedClampInset(1, "right"),
       40,
-      "deriveClampObservation must derive the inset from actual on the FIRST clamp, not require a pre-existing non-zero inset to compare against"
+      "deriveClampObservation must derive the inset from actual by subtraction, not require a pre-existing non-zero inset to compare against — confirmed here by the SECOND consistent observation actually committing it"
     );
   });
 
@@ -656,9 +683,18 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     const harness = create690Fixture({ renderWin, clock });
     wireNativeGeometryListeners(harness);
 
+    // A-3: two consistent observations to actually commit the learned inset
+    // (see the self-bootstrap test above).
     harness.runtime.applyPetWindowBounds({
       x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
     });
+    harness.renderWin.emit("move");
+    clock.advance(150);
+    assert.equal(harness.runtime.getObservedClampInset(1, "right"), 0, "still pending after one observation");
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    }, { force: true });
     harness.renderWin.emit("move");
     clock.advance(150);
     assert.equal(harness.runtime.getObservedClampInset(1, "right"), 40);
@@ -694,6 +730,18 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
   });
 
   it("does not pollute the learned inset from size changes, two-axis moves, or non-edge single-axis moves", () => {
+    // PR #751 rework batch A-5: each sub-case below used to advance the fake
+    // clock by only 10ms — well under RECONCILE_QUIET_MS(100) — so
+    // runReconcile() was NEVER actually invoked and the "must not be
+    // learned" assertions passed vacuously (nothing ran that could have
+    // learned anything). Advancing past RECONCILE_QUIET_MS makes each
+    // sub-case genuinely exercise deriveClampObservation()'s rejection of
+    // that shape. Post rework batch A-1, a non-clamp-explainable mismatch
+    // discovered here is DEFERRED (not adopted) since it's still inside the
+    // write's own settle window — either way (deferred or, if settle had
+    // expired, rebased) maybeLearnInset() is never reached for a null
+    // clampObs, so the assertion stays meaningful regardless of which of the
+    // two non-adopt paths handles it.
     const clock = createFakeClock();
     const harness = create690Fixture({ clock });
     wireNativeGeometryListeners(harness);
@@ -701,14 +749,11 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     harness.runtime.applyPetWindowBounds({
       x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
     });
-    // Still within THIS write's settle window (no clock advance yet), so any
-    // mismatch discovered now is adopted regardless of shape — that's what
-    // makes this fixture exercise the "learning must be strict" half.
 
     // (a) size change
     harness.renderWin.bounds = { x: 1717, y: 721, width: 150, height: 209 };
     harness.renderWin.emit("move");
-    clock.advance(10);
+    clock.advance(150); // past RECONCILE_QUIET_MS -- runReconcile() actually runs
     assert.equal(harness.runtime.getObservedClampInset(1, "right"), 0, "size change must not be learned as an inset");
 
     // Re-establish a clean write for the next sub-case.
@@ -719,17 +764,27 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     // (b) two-axis move (both x and y differ)
     harness.renderWin.bounds = { x: 1700, y: 700, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height };
     harness.renderWin.emit("move");
-    clock.advance(10);
+    clock.advance(150);
     assert.equal(harness.runtime.getObservedClampInset(1, "right"), 0, "a two-axis move must not be learned as an inset");
 
     harness.runtime.applyPetWindowBounds({
       x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
     }, { force: true });
 
-    // (c) single-axis but nowhere near an edge (a small unrelated nudge)
-    harness.renderWin.bounds = { x: 1710, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height };
+    // (c) single-axis but nowhere near an edge. Note this write's own
+    // `expected` (1717) already sits exactly ON the workArea's raw right
+    // boundary (1920) — deriveClampObservation()'s "expected genuinely
+    // reached the boundary" check is therefore satisfied for ANY x-only
+    // mismatch here, however large; a merely-small nudge (e.g. 1710, 7px in)
+    // would actually still classify as clamp-explainable with an inferred
+    // inset of 7 (a real, if surprising, consequence of the single-axis-at-
+    // edge heuristic, not a bug this test is about). What genuinely gets
+    // rejected is an inset that would exceed the window's own width
+    // (deriveClampObservation's inset > expected.width check) — 1400 is far
+    // enough in that the implied inset (317) blows past that ceiling.
+    harness.renderWin.bounds = { x: 1400, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height };
     harness.renderWin.emit("move");
-    clock.advance(10);
+    clock.advance(150);
     assert.equal(
       harness.runtime.getObservedClampInset(1, "right"), 0,
       "single-axis but not touching the clamp boundary must not be learned as an inset"
@@ -751,14 +806,34 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     const harness = create690Fixture({ renderWin, clock, edgeLog: (m) => edgeLogs.push(m) });
     wireNativeGeometryListeners(harness);
 
+    // A-3: two consistent observations to commit the initial learn.
     harness.runtime.applyPetWindowBounds({
       x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
     });
     harness.renderWin.emit("move");
     clock.advance(150);
+    assert.equal(harness.runtime.getObservedClampInset(1, "right"), 0, "still pending after one observation");
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    }, { force: true });
+    harness.renderWin.emit("move");
+    clock.advance(150);
     assert.equal(harness.runtime.getObservedClampInset(1, "right"), 40);
 
     insetState.value = 60; // the WM's real usable edge moves further in
+    // A-3: the drift is a NEW candidate (60 != the just-committed 40), so it
+    // ALSO needs two consistent observations before it overwrites the
+    // learned table — the first only overwrites the (now-cleared) pending
+    // slot with 60, still reading back the stale 40.
+    harness.runtime.applyPetWindowBounds(
+      { x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { force: true }
+    );
+    harness.renderWin.emit("move");
+    clock.advance(150);
+    assert.equal(harness.runtime.getObservedClampInset(1, "right"), 40, "still the old learned value after only one drift observation");
+
     harness.runtime.applyPetWindowBounds(
       { x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
       { force: true }
@@ -825,20 +900,99 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     // gen2's settle expires (t=450) -- if gen1's generation were wrongly
     // still "live", a stray consumption here would prematurely end gen2's
     // settle. Since scheduleSettleSweep() clears the previous timer on every
-    // write, there is no separate gen1 timer left to fire at all; assert
-    // gen2's settle is still active at this point.
+    // write, there is no separate gen1 timer left to fire at all.
     clock.advance(360); // now at t=410
     const renderWin = harness.renderWin;
     renderWin.bounds = { x: 1600, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height };
-    renderWin.emit("move");
-    clock.advance(150); // t=560 -- past gen2's RECONCILE_QUIET_MS, still within its own settle (450)...
+    renderWin.emit("move"); // schedules a quiet-point check due at t=510
+    // PR #751 rework batch A-5: corrected timeline comment — t=560 is PAST
+    // gen2's settle (t=450), not "still within" it as this comment used to
+    // claim. What actually classifies this mismatch is gen2's OWN
+    // settle-sweep (armed at t=50, due at t=450) firing BEFORE the t=510
+    // quiet-point check the move event just scheduled (450 < 510): no prior
+    // quiet-point observation ever flagged this mismatch as "seen and
+    // unexplained" (A-1's sawUnexplainedMismatch), so the sweep's own
+    // "reason=no-event" fallback adopts it. The later t=510 quiet check then
+    // finds actual already matching the just-adopted expected and no-ops.
+    clock.advance(150); // t=560
 
-    // A mismatch discovered while gen2's OWN settle is still active must be
-    // adopted (lastLogicalBounds preserved at gen2's 1700), never rebased.
+    // The mismatch must be adopted (lastLogicalBounds preserved at gen2's
+    // 1700) via the sweep's no-event fallback, never rebased — which is what
+    // would happen if gen1's stale generation had wrongly been treated as
+    // still live, corrupting gen2's own bookkeeping.
     assert.equal(
       harness.runtime.getPetWindowBounds().x,
       1700,
       "gen2's settle window must not have been prematurely closed by gen1's stale sweep generation"
+    );
+  });
+
+  // PR #751 rework batch A-5: the test above only proves the generation
+  // guard works when the timer mechanism cancels gen1's stale sweep cleanly
+  // (scheduleSettleSweep() clears the previous timer on every write) — by
+  // its own admission, "there is no separate gen1 timer left to fire at
+  // all". This companion test instead captures gen1's ACTUAL sweep callback
+  // closure directly (bypassing clock.clearTimeout()'s `cancelled` flag
+  // entirely) and invokes it after gen2 has already written, proving
+  // runReconcile()'s own `gen === writeGen` check rejects a stale generation
+  // even in a hypothetical race where the callback fires anyway — defense in
+  // depth beyond "the timer never got the chance to fire".
+  it("rejects a stale sweep generation even if its captured callback is invoked directly, bypassing timer cancellation entirely", () => {
+    const clock = createFakeClock();
+    const capturedFns = [];
+    const spyClock = {
+      now: clock.now,
+      setTimeout: (fn, delay) => {
+        capturedFns.push(fn);
+        return clock.setTimeout(fn, delay);
+      },
+      clearTimeout: clock.clearTimeout,
+    };
+    const harness = create690Fixture({ clock: spyClock });
+    wireNativeGeometryListeners(harness);
+
+    // gen1 write at t=0 -- its own applyPetWindowBounds() call schedules
+    // exactly one setTimeout (scheduleSettleSweep(), no "move" event emitted
+    // yet to also schedule a quiet timer), so capturedFns[0] is unambiguously
+    // gen1's settle-sweep closure.
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    const staleGen1SweepFn = capturedFns[0];
+    assert.equal(typeof staleGen1SweepFn, "function", "sanity: captured gen1's sweep closure");
+
+    clock.advance(50);
+    // gen2 write -- cancels gen1's sweep via clearTimeoutFn (the fake clock
+    // marks it `cancelled`), but staleGen1SweepFn is a direct reference the
+    // spy already holds independent of that bookkeeping.
+    harness.runtime.applyPetWindowBounds({
+      x: 1700, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    }, { force: true });
+
+    // Fire the STALE closure directly -- simulates a race where the
+    // callback runs despite having been marked cancelled.
+    //
+    // Finding while writing this test (worth recording, not papering over):
+    // scheduleSettleSweep()'s callback reads `sweepGen` — a variable shared
+    // across every scheduling call, not a value frozen into each individual
+    // closure — so invoking a "stale" captured closure late does not
+    // actually pass a stale generation number into runReconcile(); it reads
+    // whatever `sweepGen` currently is (gen2's, by now), which trivially
+    // equals writeGen. What actually keeps this call harmless is
+    // runReconcile()'s OWN (a) sameRect(actual, expected) check: gen2's
+    // physical window already sits exactly where gen2's write left it, so
+    // this "stale" invocation is a same-rect no-op regardless of which
+    // generation it believes it's checking — not a generation-guard
+    // rejection. A genuinely stale cross-generation value (deferredSweepGen
+    // surviving a protection period across a newer write) is a materially
+    // different mechanism, already covered by the roam-protection tests
+    // above (batch 2's "marks reconcile dirty during roam animation and
+    // compensates once released").
+    staleGen1SweepFn();
+
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x, 1700,
+      "the stale gen1 sweep callback firing directly must not corrupt gen2's state (a harmless same-rect no-op)"
     );
   });
 
@@ -1108,20 +1262,31 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     // calls recomputeOffsetsFrom() directly from a genuinely reconciled
     // (lastLogicalBounds, actual) pair, which is not guaranteed to be legal
     // just because materialize's own guard already passed once earlier.
+    //
+    // PR #751 rework batch A-1 note: this scenario must be genuinely
+    // clamp-explainable now, not just "any mismatch within settle" — a
+    // non-explainable mismatch within settle is now DEFERRED (Codex #1), not
+    // adopted, so it would never reach the adopt-clamp branch this test
+    // exists to exercise. The 1000-wide default workArea's right edge is the
+    // boundary: write x=950 (width=100, legal offset 50 — right edge sits
+    // exactly at the workArea boundary, satisfying deriveClampObservation's
+    // "genuinely reached the boundary it was clamped against" check), then a
+    // late-discovered clamp lands actual at x=800 — single-axis, inset=100
+    // relative to THIS write's own snapshot (1000-(800+100)=100), right at
+    // deriveClampObservation's own inset<=width legality ceiling, so it's
+    // still classified as clamp-explainable. Recomputing the offset from the
+    // ORIGINAL logical intent (950) against this actual (800) gives 150 —
+    // clearly illegal (>= width) — which is exactly the case the backstop
+    // must catch from INSIDE the adopt-clamp branch, not materialize's own.
     const clock = createFakeClock();
     const edgeLogs = [];
     const harness = createRuntime({ isLinux: true, clock, edgeLog: (m) => edgeLogs.push(m) });
     wireNativeGeometryListeners(harness);
 
-    harness.runtime.applyPetWindowBounds({ x: 10, y: 20, width: 100, height: 100 });
+    harness.runtime.applyPetWindowBounds({ x: 950, y: 20, width: 100, height: 100 });
+    assert.equal(harness.runtime.getViewportOffsetX(), 50, "sanity: the original write itself must still be legal");
 
-    // Still within THIS write's settle window -- any mismatch here is
-    // accepted as adopt-clamp regardless of edge-explainability (the accept
-    // condition is deliberately generous). Move the window somewhere far
-    // enough away that the derived offsetX would reach the window's own
-    // width -- exactly the scenario the plan's I2 backstop exists to catch,
-    // reached via reconcile's own recompute this time, not materialize's.
-    harness.renderWin.bounds = { x: 900, y: 20, width: 100, height: 100 };
+    harness.renderWin.bounds = { x: 800, y: 20, width: 100, height: 100 };
     harness.renderWin.emit("move");
     clock.advance(150);
 
@@ -1131,8 +1296,186 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
     );
     assert.equal(harness.runtime.getViewportOffsetX(), 0);
     const bounds = harness.runtime.getPetWindowBounds();
-    assert.equal(bounds.x, 900, "lastLogicalBounds must hard-resync to actual, not stay at the polluted original logical value");
+    assert.equal(bounds.x, 800, "lastLogicalBounds must hard-resync to actual, not stay at the polluted original logical value");
     assert.equal(bounds.y, 20);
+  });
+
+  // PR #751 Codex deep review — rework batch A. Each test below reproduces
+  // the reviewer's own exact counter-example timeline; coordinator-verified
+  // independently before assigning the fix.
+  describe("PR #751 rework batch A: reconcile classification, write-time snapshots, inset confirmation, eligibility gating", () => {
+    it("Codex #1: an unexplainable mismatch inside settle DEFERS instead of adopting, then rebases once settle expires", () => {
+      // t0 write (500,20). t20 external move to (550,30) — two-axis, never
+      // clamp-explainable. t120 quiet point: still well within SETTLE_MS(400)
+      // of the t0 write. Pre-fix this adopted immediately (any mismatch
+      // within settle was accepted) and, because adopting resets `expected`
+      // to match `actual`, nothing ever rebased afterward even past t400 —
+      // there was nothing left to reconcile against. Post-fix: t120 defers
+      // (A-1's (b2)); the repeated 100ms re-check chain this arms eventually
+      // runs past t400, at which point the independent settle-sweep (armed
+      // at t0, due at t400) fires first and rebases, since an earlier quiet
+      // point already flagged this exact mismatch as unexplained
+      // (sawUnexplainedMismatch) — logical follows actual (550,30) plus the
+      // old (zero) offset.
+      const clock = createFakeClock();
+      const harness = createRuntime({ isLinux: true, clock });
+      wireNativeGeometryListeners(harness);
+
+      harness.runtime.applyPetWindowBounds({ x: 500, y: 20, width: 100, height: 100 });
+      assert.equal(harness.runtime.getViewportOffsetX(), 0, "sanity: 500 isn't near any clamp boundary");
+
+      clock.advance(20);
+      harness.renderWin.bounds = { x: 550, y: 30, width: 100, height: 100 };
+      harness.renderWin.emit("move");
+      clock.advance(100); // t=120: past RECONCILE_QUIET_MS, well within SETTLE_MS(400)
+
+      assert.equal(
+        harness.runtime.getPetWindowBounds().x, 500,
+        "must defer, not adopt: logical bounds untouched while still inside settle"
+      );
+      assert.equal(harness.runtime.getViewportOffsetX(), 0, "offset untouched while deferred");
+
+      clock.advance(300); // t=420: past SETTLE_MS(400) -- the deferred chain must have rebased by now
+
+      const bounds = harness.runtime.getPetWindowBounds();
+      assert.equal(bounds.x, 550, "once settle expires, the deferred mismatch rebases: logical follows actual(550) + old offset(0)");
+      assert.equal(bounds.y, 30, "Y follows the same rebase");
+    });
+
+    it("Codex #2: a write-time clamp-eligibility snapshot survives clearObservedClampInsets() landing before the late actual arrives", () => {
+      // Write x=1768 while inset=40 is already learned -- the prediction
+      // basis (THIS write's OWN snapshot) clamps to physical X=1677
+      // (1920-40-203), recorded as expectedWrite.clampBounds.rightBound=1880.
+      // clearObservedClampInsets() then wipes the CURRENT table (simulating a
+      // display-metrics-changed event landing in between) down to inset=0.
+      // Advance PAST this write's own SETTLE_MS so the classification hinges
+      // purely on clamp-explainability, not the settle-window grace period
+      // (which would otherwise mask the bug either way). THEN a late actual
+      // arrives reflecting the WM's TRUE inset having ALSO independently
+      // drifted to 60 (1920-60-203=1657) — unrelated to our table being
+      // cleared, just a coincidentally-timed second change. Pre-fix,
+      // runReconcile() recomputed the comparison boundary FRESH via
+      // resolveClampAwareBounds(wa) at reconcile time, which now (post-clear)
+      // reads inset=0 -> effectiveRight=1920 -- and 1677+203=1880 < 1920, so
+      // deriveClampObservation() wrongly returns null (not explainable),
+      // misclassifying this genuinely-clamped write as an external move and
+      // ratcheting logical inward via rebase: actual(1657) + the original
+      // write's own offset(91) = 1748. Post-fix: the snapshot's OWN
+      // clampBounds (1880, frozen at write time) is used instead, so
+      // 1677+203=1880 < 1880 is false -- still classified as adopt-clamp,
+      // keeping logical at 1768 (only the offset absorbs the new 111px gap).
+      const clock = createFakeClock();
+      const renderWin = makeInsetMutterClampedWindow(
+        { x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+        { rightInset: 40 }
+      );
+      const harness = create690Fixture({ renderWin, clock });
+      wireNativeGeometryListeners(harness);
+
+      // Learn inset=40 first (two consistent observations, A-3).
+      harness.runtime.applyPetWindowBounds({
+        x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+      });
+      harness.renderWin.emit("move");
+      clock.advance(150);
+      harness.runtime.applyPetWindowBounds({
+        x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+      }, { force: true });
+      harness.renderWin.emit("move");
+      clock.advance(150);
+      assert.equal(harness.runtime.getObservedClampInset(1, "right"), 40, "sanity: inset learned before the scenario starts");
+
+      // The write whose OWN snapshot must survive the clear below.
+      harness.runtime.applyPetWindowBounds(
+        { x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+        { force: true }
+      );
+      assert.equal(renderWin.bounds.x, 1677, "prediction basis: clamped using the learned inset=40");
+      assert.equal(harness.runtime.getViewportOffsetX(), 91, "sanity: 1768-1677");
+
+      harness.runtime.clearObservedClampInsets();
+      assert.equal(harness.runtime.getObservedClampInset(1, "right"), 0, "table cleared -- but the write above already froze its own snapshot");
+
+      clock.advance(450); // past this write's own SETTLE_MS(400) -- no generous accept left to mask the bug
+
+      // Late actual: the WM's TRUE usable edge independently drifted to
+      // inset=60 (not the mock's original 40) -- 1920-60-203=1657.
+      harness.renderWin.bounds = { x: 1657, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height };
+      harness.renderWin.emit("move");
+      clock.advance(150);
+
+      assert.equal(
+        harness.runtime.getPetWindowBounds().x, 1768,
+        "must stay adopt-clamp via the write's OWN snapshot boundary (1880): logical stays at 1768, not ratcheted to the rebase value 1748 (actual 1657 + old offset 91)"
+      );
+    });
+
+    it("Codex #3: a single external one-off mismatch never overwrites the learned inset — needs a second CONSISTENT observation, exactly like initial learning", () => {
+      // Inset=40 already learned. An external move (not a self-write) shifts
+      // actual from 1677 to 1657 -- single-axis, sitting exactly at the
+      // boundary the write's own snapshot used, so it's still classified as
+      // clamp-explainable with a candidate inset of 60. Pre-fix (no pending-
+      // candidate gate), this ONE observation alone would have been written
+      // straight to the learned table and never correctable back. Post-fix:
+      // it only becomes a pending candidate (still != the just-committed 40,
+      // so it does not confirm anything) -- the learned table stays at 40.
+      const clock = createFakeClock();
+      const renderWin = makeInsetMutterClampedWindow(
+        { x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+        { rightInset: 40 }
+      );
+      const harness = create690Fixture({ renderWin, clock });
+      wireNativeGeometryListeners(harness);
+
+      harness.runtime.applyPetWindowBounds({
+        x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+      });
+      harness.renderWin.emit("move");
+      clock.advance(150);
+      harness.runtime.applyPetWindowBounds({
+        x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+      }, { force: true });
+      harness.renderWin.emit("move");
+      clock.advance(150);
+      assert.equal(harness.runtime.getObservedClampInset(1, "right"), 40, "sanity: inset learned before the scenario starts");
+
+      // A one-off external move -- NOT a new write, no new expectedWrite
+      // snapshot; the LAST write's snapshot (boundary 1880) is still current.
+      harness.renderWin.bounds = { x: 1657, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height };
+      harness.renderWin.emit("move");
+      clock.advance(150);
+
+      assert.equal(
+        harness.runtime.getObservedClampInset(1, "right"), 40,
+        "a single external one-off observation must not overwrite the already-learned inset"
+      );
+    });
+
+    it("A-4 Windows context: a move/resize mismatch always rebases — adopt-clamp never applies off Linux", () => {
+      const clock = createFakeClock();
+      const harness = createRuntime({ isWin: true, isLinux: false, clock });
+      wireNativeGeometryListeners(harness);
+
+      harness.runtime.applyPetWindowBounds({ x: 200, y: 100, width: 100, height: 100 });
+      assert.equal(harness.runtime.getViewportOffsetX(), 0, "X offset is always 0 off Linux");
+
+      // A single-axis move that WOULD have been clamp-explainable on Linux
+      // (sitting exactly at this fixture's default 1000-wide workArea's
+      // right edge) must still just rebase on Windows -- adopt-clamp is not
+      // a concept here at all (A-4: xEligible is always false off Linux).
+      harness.renderWin.bounds = { x: 900, y: 100, width: 100, height: 100 };
+      harness.renderWin.emit("move");
+      clock.advance(150);
+
+      const bounds = harness.runtime.getPetWindowBounds();
+      assert.equal(bounds.x, 900, "logical must follow actual directly -- physical is truth off Linux");
+      assert.equal(bounds.y, 100);
+      assert.equal(harness.runtime.getViewportOffsetX(), 0, "X offset stays 0 throughout");
+      assert.ok(
+        harness.calls.some((c) => c[0] === "repositionAnchoredSurfaces" || c[0] === "syncHitWin"),
+        "syncDerivedSurfaces must still run on the Windows rebase path"
+      );
+    });
   });
 });
 
