@@ -892,6 +892,16 @@ describe("IME editing pet dodge (#640)", () => {
     // flag here on purpose: the pet must step back the moment the bubble appears,
     // before the user ever clicks into the box.
     bubble.__clawdMacTextInputBubble = true;
+    // I5: syncImeEditingPetDodge() now reports its intent through this
+    // injected setter (pet-window-runtime's single ignore-mouse writer)
+    // instead of calling hit.setIgnoreMouseEvents() directly. The real
+    // setImeEditingPetDodge() dedupes against its own `imeEditingPetDodge`
+    // flag, which STARTS AT false (not an unset sentinel) and short-circuits
+    // before ever touching applyHitInputState() — mirror both the dedup and
+    // its false starting value here, or a false->false call after a drag
+    // (nothing ever actually went click-through) would wrongly still reach
+    // hit.setIgnoreMouseEvents() in this test double.
+    let lastAppliedDodge = false;
     const runtime = createTopmostRuntime({
       isMac: true,
       getWin: () => pet,
@@ -912,6 +922,12 @@ describe("IME editing pet dodge (#640)", () => {
       deDelegateWindowFromStationarySpace: (window, level) => {
         window.calls.push(["deDelegate", level]);
         return deDelegateResult;
+      },
+      setImeEditingPetDodge: (value) => {
+        const next = !!value;
+        if (next === lastAppliedDodge) return;
+        lastAppliedDodge = next;
+        hit.setIgnoreMouseEvents(next);
       },
       ...overrides,
     });
