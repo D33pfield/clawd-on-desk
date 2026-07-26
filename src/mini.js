@@ -295,13 +295,20 @@ function calcMiniX(wa, size) {
   return wa.x + wa.width - Math.round(size.width * (1 - MINI_OFFSET_RATIO));
 }
 
+// PR #751 Codex review #8 (rework batch B-1): peek in/out sets isAnimating
+// (via animateWindowX) for ~200ms, one of runReconcile()'s four protection
+// conditions — but never passed an onDone before, so nothing ever called
+// releaseReconcileProtection() once the peek settled. A native geometry
+// event landing during that 200ms window would mark reconcile dirty and
+// then sit unrequeued indefinitely, since animateWindowX's own internal
+// isAnimating=false doesn't itself trigger a re-check.
 function miniPeekIn() {
   const offset = miniEdge === "left" ? PEEK_OFFSET : -PEEK_OFFSET;
-  animateWindowX(currentMiniX + offset, 200);
+  animateWindowX(currentMiniX + offset, 200, finalizeMiniProtectionExit);
 }
 
 function miniPeekOut() {
-  animateWindowX(currentMiniX, 200);
+  animateWindowX(currentMiniX, 200, finalizeMiniProtectionExit);
 }
 
 function getMiniStateFile(state) {
@@ -323,15 +330,41 @@ function getMiniRestState() {
   return ctx.doNotDisturb ? "mini-sleep" : "mini-idle";
 }
 
-// §4.5 point 4.5-4: one of mini's three transition-end points. If a topology
-// change landed mid-transition (pendingTopologyMaterialize), consume it here
-// with exactly one fresh re-anchor — mini mode is still active at this
-// point, so handleDisplayChange()'s own workArea/currentMiniX/clampedY
+// §4.5 point 4.5-4 default topology consumption: mini mode is still active,
+// so handleDisplayChange()'s own workArea/currentMiniX/clampedY
 // re-resolution is the correct target, not a bespoke duplicate of it.
-function consumePendingTopologyMaterializeInMini() {
-  if (!pendingTopologyMaterialize) return;
-  pendingTopologyMaterialize = false;
+function consumeTopologyForMiniRest() {
   if (miniMode) handleDisplayChange();
+}
+
+// PR #751 Codex review #8 (rework batch B-1, P0): the single convergence
+// point for every path that ends mini's "transitioning or animating" window
+// — clears miniTransitioning/isAnimating, releases the reconcile protection
+// period (§4.3.10), and consumes any pending topology materialize via
+// `onConsumeTopology` (omit it to just discard the flag with no action,
+// which is correct for cleanup() and peek in/out below — nothing meaningful
+// to re-anchor there). Every animation-end/cancel/exception path converges
+// here: finishMiniEntry()'s settle, cancelMiniTransition(), exitMiniMode()'s
+// parabola onDone, miniPeekIn()/miniPeekOut()'s onDone, and cleanup().
+//
+// cleanup() is the P0 fix this batch is about: theme-runtime.js's reload
+// path calls mini's cleanup() to tear it down, which used to only clear the
+// two timers — leaving miniTransitioning stuck true forever if reload landed
+// mid-transition (a fresh mini.js instance is about to be constructed after
+// reload anyway, but THIS instance's stuck flag was still what
+// runReconcile()'s protection-period check read via getMiniTransitioning()
+// for however long the old instance's closures stayed reachable), which
+// would permanently wedge every future reconcile into "mark dirty, never
+// actually check" since nothing was left to call
+// releaseReconcileProtection().
+function finalizeMiniProtectionExit(onConsumeTopology) {
+  miniTransitioning = false;
+  isAnimating = false;
+  if (typeof ctx.releaseReconcileProtection === "function") ctx.releaseReconcileProtection();
+  if (pendingTopologyMaterialize) {
+    pendingTopologyMaterialize = false;
+    if (typeof onConsumeTopology === "function") onConsumeTopology();
+  }
 }
 
 function finishMiniEntry(delayMs) {
@@ -339,22 +372,15 @@ function finishMiniEntry(delayMs) {
   const settleMs = Number.isFinite(delayMs) && delayMs >= 0 ? delayMs : MINI_ENTER_FALLBACK_MS;
   miniTransitionTimer = setTimeout(() => {
     miniTransitionTimer = null;
-    miniTransitioning = false;
-    // Issue #690 plan §4.3.10's mini transition+animation reconcile
-    // protection release point.
-    if (typeof ctx.releaseReconcileProtection === "function") ctx.releaseReconcileProtection();
-    consumePendingTopologyMaterializeInMini();
+    finalizeMiniProtectionExit(consumeTopologyForMiniRest);
     ctx.applyState(getMiniRestState());
   }, settleMs);
 }
 
 function cancelMiniTransition() {
-  miniTransitioning = false;
   if (miniTransitionTimer) { clearTimeout(miniTransitionTimer); miniTransitionTimer = null; }
   if (peekAnimTimer) { clearTimeout(peekAnimTimer); peekAnimTimer = null; }
-  isAnimating = false;
-  if (typeof ctx.releaseReconcileProtection === "function") ctx.releaseReconcileProtection();
-  consumePendingTopologyMaterializeInMini();
+  finalizeMiniProtectionExit(consumeTopologyForMiniRest);
 }
 
 function _getSize() {
@@ -556,24 +582,20 @@ function exitMiniMode() {
 
   animateWindowParabola(clamped.x, clamped.y, JUMP_DURATION, () => {
     miniMode = false;
-    miniTransitioning = false;
     containedBoundary = null;
-    // Issue #690 plan §4.3.10's mini transition+animation reconcile
-    // protection release point.
-    if (typeof ctx.releaseReconcileProtection === "function") ctx.releaseReconcileProtection();
-    if (pendingTopologyMaterialize) {
-      pendingTopologyMaterialize = false;
-      // Topology changed again mid-exit-animation: `clamped` above may now be
-      // stale (it was resolved before/at animation start). Mini mode has
-      // already ended by this point, so re-resolve the normal (non-mini)
-      // resting position fresh — not handleDisplayChange(), which is mini-
-      // mode-specific — and materialize once more against current topology.
+    // Topology changed again mid-exit-animation: `clamped` above may now be
+    // stale (it was resolved before/at animation start). Mini mode has
+    // already ended by this point (miniMode=false just above), so re-resolve
+    // the normal (non-mini) resting position fresh — not
+    // consumeTopologyForMiniRest()/handleDisplayChange(), which is mini-
+    // mode-specific — and materialize once more against current topology.
+    finalizeMiniProtectionExit(() => {
       const fresh = resolveExitRestingBounds();
       ctx.applyPetWindowBounds(
         { x: fresh.clamped.x, y: fresh.clamped.y, width: fresh.size.width, height: fresh.size.height },
         { workArea: fresh.wa }
       );
-    }
+    });
     ctx.sendToRenderer("mini-clip", null);
     ctx.sendToRenderer("mini-mode-change", false);
     ctx.sendToHitWin("hit-state-sync", { miniMode: false });
@@ -775,9 +797,19 @@ function getPreMiniY() { return preMiniY; }
 function getCurrentMiniX() { return currentMiniX; }
 function getMiniSnap() { return miniSnap; }
 
+// PR #751 Codex review #8 (rework batch B-1, P0): theme-runtime.js's reload
+// path tears mini.js down via this — a fresh instance is constructed right
+// after, so there is nothing meaningful left to re-anchor here (no
+// onConsumeTopology callback: any pending topology materialize is simply
+// discarded, not acted on). What must not be skipped is
+// finalizeMiniProtectionExit() itself: without it, a reload landing
+// mid-transition used to leave miniTransitioning stuck true forever on this
+// (still-referenced-by-closures) instance, permanently wedging
+// runReconcile()'s protection-period check.
 function cleanup() {
   if (miniTransitionTimer) { clearTimeout(miniTransitionTimer); miniTransitionTimer = null; }
   if (peekAnimTimer) { clearTimeout(peekAnimTimer); peekAnimTimer = null; }
+  finalizeMiniProtectionExit();
 }
 
 return {

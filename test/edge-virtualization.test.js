@@ -764,4 +764,44 @@ describe("edge virtualization cross-module integration (#690 §6.7)", () => {
     );
     h.dispose();
   });
+
+  // PR #751 Codex review #8 (rework batch B-1, P0, highest priority): a
+  // reload landing mid-mini-transition (theme-runtime.js's cleanup() call)
+  // used to leave miniTransitioning stuck true forever, permanently wedging
+  // runReconcile()'s protection-period check — every future reconcile would
+  // mark dirty and never actually classify anything again.
+  it("B-1 (P0): mini's cleanup() mid-entry (simulating a theme reload) releases the reconcile protection instead of wedging it forever", () => {
+    const h = createEdgeVirtualizationHarness({ getDisableMiniMode: () => true });
+    h.runtime.applyPetWindowBounds(
+      { x: 1000, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height },
+      { force: true }
+    );
+
+    h.mini.enterMiniMode(ISSUE_690_WORK_AREA, false, "right"); // drag path
+    assert.equal(h.mini.getMiniTransitioning(), true);
+
+    mock.timers.tick(150); // past the 100ms slide; still mid-entry (long settle, no mini-enter state file registered)
+    assert.equal(h.mini.getMiniTransitioning(), true, "still mid-transition");
+
+    // Simulate a theme reload tearing mini.js down mid-entry.
+    h.mini.cleanup();
+
+    assert.equal(h.mini.getMiniTransitioning(), false, "cleanup() must release the stuck transitioning flag");
+
+    // Prove reconcile genuinely recovers, not just that the flag reads
+    // false: an external move must actually get classified (rebased, since
+    // it's unexplainable) rather than sitting dirty-but-never-checked
+    // forever.
+    const beforeX = h.runtime.getPetWindowBounds().x;
+    h.renderWin.bounds = { x: 500, y: 600, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height };
+    h.renderWin.emit("move");
+    mock.timers.tick(500); // past RECONCILE_QUIET_MS and SETTLE_MS
+
+    assert.equal(
+      h.runtime.getPetWindowBounds().x, 500,
+      "reconcile must have actually classified the external move (rebase), not left it permanently deferred"
+    );
+    assert.notEqual(beforeX, 500, "sanity: this is a genuine change from wherever entry had left it");
+    h.dispose();
+  });
 });

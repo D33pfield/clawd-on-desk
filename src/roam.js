@@ -168,7 +168,16 @@ module.exports = function initRoam(ctx) {
     function step() {
       // ── Per-frame cancellation checks ──
       if (!roamActive) return;
-      if (!win || win.isDestroyed()) { roamActive = false; return; }
+      if (!win || win.isDestroyed()) {
+        // PR #751 Codex review (rework batch B-1, non-blocking #3): this
+        // exception exit used to leave the reconcile protection period
+        // un-released — isRoamAnimating() correctly flips false immediately,
+        // but nothing then requeues a check for whatever reconcile went dirty
+        // while roam was active, same class of gap as mini.js's exit points.
+        roamActive = false;
+        notifyRoamProtectionReleased();
+        return;
+      }
       // Re-check state on every frame: if the pet is no longer idle/roam (e.g. a
       // working/notification event arrived), stop the animation immediately.
       if (!isRoamAllowed()) {
@@ -186,7 +195,13 @@ module.exports = function initRoam(ctx) {
       const eased = t * (2 - t);
       const vx = Math.round(startX + (finalX - startX) * eased);
       const vy = Math.round(startY + (finalY - startY) * eased);
-      if (!Number.isFinite(vx) || !Number.isFinite(vy)) { roamActive = false; return; }
+      if (!Number.isFinite(vx) || !Number.isFinite(vy)) {
+        // Same reconcile-protection release gap as the destroyed-window exit
+        // above.
+        roamActive = false;
+        notifyRoamProtectionReleased();
+        return;
+      }
 
       // ── Per-frame sync ──
       // Write the anchored size, never a re-read of live bounds (#569).
