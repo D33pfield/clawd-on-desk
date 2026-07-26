@@ -309,14 +309,24 @@ function hasConfirmedPermissionAnimationLock() {
 }
 
 // Later events legitimately omit the pane key, so it has to be sticky — but a
-// SessionStart means the agent just (re)attached to a terminal, and then the key
+// session start means the agent just (re)attached to a terminal, and then the key
 // must come from that event's own environment or not at all. `--resume` of the
 // same session id from a different terminal would otherwise keep the old Orca
-// key and, because the pane key outranks every other focus signal, raise Orca
-// instead of the terminal the agent actually moved to.
+// key and, because the pane key outranks the Windows window cache and the hook's
+// wt_hwnd, raise Orca instead of the terminal the agent actually moved to.
+//
+// Producers spell the session start three ways: most post "SessionStart",
+// copilot-hook.js posts its raw argv name "sessionStart", and kiro-hook.js posts
+// "agentSpawn". Kiro is the one that matters most — its stdin carries no session
+// id, so it merges every session into "default" and a pane key stored there would
+// otherwise never be cleared. antigravity-hook.js emits no session-start event at
+// all, so a stale key there survives for the life of one session id; that is
+// bounded because its id derives from the transcript path.
+const SESSION_START_EVENTS = new Set(["SessionStart", "sessionStart", "agentSpawn"]);
+
 function mergeOrcaPaneKey(orcaPaneKey, existing, event) {
   if (orcaPaneKey) return orcaPaneKey;
-  if (event === "SessionStart") return null;
+  if (SESSION_START_EVENTS.has(event)) return null;
   return (existing && existing.orcaPaneKey) || null;
 }
 

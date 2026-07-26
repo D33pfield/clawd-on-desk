@@ -1358,6 +1358,27 @@ describe("updateSession()", () => {
     assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-9:leaf-9");
   });
 
+  it("drops a stale Orca pane key on every spelling of a session start", () => {
+    // Producers do not agree on the name: copilot-hook.js posts its raw argv name
+    // "sessionStart" and kiro-hook.js posts "agentSpawn". Matching only
+    // "SessionStart" left both able to keep a stale key indefinitely, and Kiro is
+    // the worst case — its stdin carries no session id, so every session merges
+    // into "default" and the key would never be cleared at all.
+    for (const event of ["SessionStart", "sessionStart", "agentSpawn"]) {
+      update(api, {
+        id: "s1",
+        state: "thinking",
+        event: "UserPromptSubmit",
+        sourcePid: 100,
+        orcaPaneKey: "tab-1:leaf-1",
+      });
+      assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+      update(api, { id: "s1", state: "idle", event, sourcePid: 200, wtHwnd: "4660" });
+      assert.strictEqual(api.sessions.get("s1").orcaPaneKey, null, `${event} must clear the pane key`);
+    }
+  });
+
   it("keeps Ghostty terminal id sticky and allows focus-only metadata updates", () => {
     update(api, {
       id: "s1",
