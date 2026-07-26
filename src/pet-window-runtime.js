@@ -21,6 +21,7 @@ const {
   needsFinalClampAdjustment: needsFinalClampAdjustmentRaw,
   materializeVirtualBounds: materializeVirtualBoundsRaw,
 } = require("./drag-position");
+const { resolveHorizontalEdgeContext } = require("./display-edge");
 const { classifyCloakState } = require("./win-cloak-recovery");
 
 const noop = () => {};
@@ -32,6 +33,19 @@ const NON_RELOADABLE_RENDER_GONE_REASONS = new Set([
   "integrity-failure",
   "launch-failed",
 ]);
+
+// Issue #690 GNOME/XWayland edge-virtualization constants — plan §4.3.
+// RECONCILE_QUIET_MS: debounce window for the (not-yet-wired) native
+// move/resize -> reconcile path. SETTLE_MS: bounded grace period after a
+// write before an unexplained actual/expected mismatch stops being treated
+// as "still settling"; must stay >= 3x RECONCILE_QUIET_MS to cover one WM
+// round trip plus one debounce. HIT_QUIET_MS: the hit window's independent
+// (longer) quiet period, so we don't fight a Mutter interactive grab. None of
+// the reconcile/settle-sweep machinery that consumes these is implemented in
+// this batch — see scheduleSettleSweep() below.
+const RECONCILE_QUIET_MS = 100;
+const SETTLE_MS = 400;
+const HIT_QUIET_MS = 250;
 
 function isLiveWindow(win) {
   return !!(win && typeof win.isDestroyed === "function" && !win.isDestroyed());
@@ -140,6 +154,11 @@ function createPetWindowRuntime(options = {}) {
   const isMiniAnimating = options.isMiniAnimating || (() => false);
   const now = options.now || (() => Date.now());
   const isNearWorkAreaEdge = options.isNearWorkAreaEdge || (() => false);
+  // Low-noise diagnostics for the I2 offset legal-domain backstop and the
+  // assertNoYOffset guard (plan §3 I2, §4.3.2). Mirrors the crashReloadLog
+  // injection point below so tests can capture what would otherwise be a
+  // bare console.warn.
+  const edgeLog = options.edgeLog || ((message) => console.warn(message));
   const flushRuntimeStateToPrefs = options.flushRuntimeStateToPrefs || noop;
   const handleMiniDisplayChange = options.handleMiniDisplayChange || noop;
   const exitMiniMode = options.exitMiniMode || noop;
@@ -166,6 +185,18 @@ function createPetWindowRuntime(options = {}) {
   });
 
   let viewportOffsetY = 0;
+  // Issue #690 X-offset / logical-physical mapping state (plan §4.3 point 2).
+  // lastLogicalBounds is the storage quantity I1/I2 make authoritative: only
+  // its x/y are ever read back (width/height are recorded for log parity but
+  // never consumed — §3 I2). expectedPhysical/writeGen/settleUntil exist so a
+  // later batch can wire up deferred reconcile; this batch only maintains
+  // them, it does not yet read them back anywhere.
+  let viewportOffsetX = 0;
+  let lastLogicalBounds = null;
+  let expectedPhysical = null;
+  let writeGen = 0;
+  let settleUntil = 0;
+  const loggedEdgeReasons = new Set();
   let petHidden = false;
   let dragLocked = false;
   let dragSnapshot = null;
@@ -215,42 +246,222 @@ function createPetWindowRuntime(options = {}) {
     return viewportOffsetY;
   }
 
+  // Signed X counterpart to setViewportOffsetY/getViewportOffsetY (plan §4.3
+  // point 1). Unlike Y, X is never clamped to >= 0 here — I2 defines its
+  // legal domain as the open interval (-width, +width), enforced by the
+  // caller (see guardOffsetXLegalDomain below) because only the caller knows
+  // the window width at the moment of the write.
+  function setViewportOffsetX(offsetX) {
+    const next = Number.isFinite(offsetX) ? Math.round(offsetX) : 0;
+    if (next === viewportOffsetX) return;
+    viewportOffsetX = next;
+    sendToRenderer("viewport-offset-x", viewportOffsetX);
+  }
+
+  function getViewportOffsetX() {
+    return viewportOffsetX;
+  }
+
+  function logEdgeOnce(reason, detail) {
+    if (loggedEdgeReasons.has(reason)) return;
+    loggedEdgeReasons.add(reason);
+    edgeLog(`Clawd: edge-${reason} ${detail}`);
+  }
+
+  function clearLoggedEdgeReason(reason) {
+    loggedEdgeReasons.delete(reason);
+  }
+
+  // getPetWindowBounds()'s null-on-dead-window contract is load-bearing and
+  // MUST NOT change: src/roam.js:104-105, src/tick.js:236-238 and
+  // src/pet-interaction-ipc.js:121-124 all depend on this null to no-op
+  // gracefully, and pet-window-runtime.js's own handleDisplayMetricsChanged()
+  // reads `current.x` with no null-check of its own, relying entirely on this
+  // guard.
+  //
+  // Position now comes from the stored logical bounds (I1/I2): once
+  // applyPetWindowBounds() has adopted a target, that target — not whatever
+  // the live physical window has drifted to — is the position truth. Size is
+  // never virtualized, so it always comes from the live window (plan §3 I2:
+  // "位置" is a storage quantity, "尺寸" is not).
   function getPetWindowBounds() {
     const win = getRenderWindow();
     if (!isLiveWindow(win)) return null;
-    const bounds = win.getBounds();
+    const live = win.getBounds();
+    if (!lastLogicalBounds) return { ...live }; // cold start / never adopted
     return {
-      x: bounds.x,
-      y: bounds.y - viewportOffsetY,
-      width: bounds.width,
-      height: bounds.height,
+      x: lastLogicalBounds.x,
+      y: lastLogicalBounds.y,
+      width: live.width,
+      height: live.height,
     };
   }
 
-  function materializeVirtualBounds(bounds, workArea) {
-    const resolvedWorkArea = workArea || (
-      bounds
-        ? getNearestWorkArea(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
-        : null
+  function resolveWorkAreaFor(bounds) {
+    return bounds
+      ? getNearestWorkArea(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+      : null;
+  }
+
+  // Shared src/display-edge.js topology resolver (plan §4.1), scoped to a
+  // single target rect. Only ever consulted on Linux — see
+  // resolveHorizontalClampBounds below — so this never runs a displays
+  // enumeration on Windows/macOS.
+  function resolveEdgeContextForBounds(bounds, workArea) {
+    if (!bounds || !isValidWorkArea(workArea)) return null;
+    return resolveHorizontalEdgeContext({
+      displays: getAllDisplays(),
+      workArea,
+      yMid: bounds.y + bounds.height / 2,
+    });
+  }
+
+  // §4.2's leftBound/rightBound: null means "don't clamp that side". I3 is
+  // enforced right here — Windows/macOS and any edge the shared helper
+  // reports as an internal seam always get { null, null }, which reproduces
+  // byte-identical pre-#690 physical-overflow behavior via
+  // materializeVirtualBoundsRaw()'s existing null-bound fast path.
+  //
+  // observedClampInset (§4.3.14, "钳制内缩量必须被学习") is NOT implemented
+  // this batch — a later batch subtracts/adds the learned inset here. Until
+  // then this uses the raw workArea boundary, i.e. an inset of 0 throughout.
+  function resolveHorizontalClampBounds(bounds, workArea, providedEdgeContext) {
+    if (!isLinux) return { leftBound: null, rightBound: null };
+    const edge = providedEdgeContext || resolveEdgeContextForBounds(bounds, workArea);
+    if (!edge) return { leftBound: null, rightBound: null };
+    return {
+      leftBound: edge.left.isOuterWorkAreaEdge ? edge.left.workAreaBoundary : null,
+      rightBound: edge.right.isOuterWorkAreaEdge ? edge.right.workAreaBoundary : null,
+    };
+  }
+
+  // Shared materializer (plan §4.2/§4.3 point 4: "resolveStartupPlacement()
+  // ... 使用相同 materializer"). Both applyPetWindowBounds() and
+  // resolveStartupPlacement() call this exact function so a Linux outer-edge
+  // window can never be constructed off-screen and then reconciled — the
+  // startup bounds are already correct on the first native write.
+  function materializeVirtualBounds(bounds, workArea, opts = {}) {
+    if (!bounds) return null;
+    const resolvedWorkArea = isValidWorkArea(workArea) ? workArea : resolveWorkAreaFor(bounds);
+    const clampBounds = resolveHorizontalClampBounds(bounds, resolvedWorkArea, opts.edgeContext);
+    return materializeVirtualBoundsRaw(bounds, resolvedWorkArea, clampBounds);
+  }
+
+  function sameRect(a, b) {
+    return !!a && !!b
+      && a.x === b.x && a.y === b.y
+      && a.width === b.width && a.height === b.height;
+  }
+
+  // §4.3.2's recomputeOffsetsFrom: rederives both offsets from a known-good
+  // (logical, actualPhysical) pair without going through materialize. The
+  // reconcile path that normally calls this (adopt-clamp / rebase) is not
+  // implemented in this batch; today the only caller is the I2 backstop
+  // below, which needs exactly this "make offsets agree with a concrete
+  // actual" computation.
+  function recomputeOffsetsFrom(logical, actualPhysical) {
+    setViewportOffsetX(isLinux ? (logical.x - actualPhysical.x) : 0);
+    setViewportOffsetY(Math.max(0, actualPhysical.y - logical.y));
+  }
+
+  // §3 I2's legal-domain backstop for the one offset write point this batch
+  // adds. #pet-container is a 100%-sized `overflow:hidden` box
+  // (src/styles.css) — an |offsetX| that reaches the window width clips the
+  // character out entirely with no visible affordance left to drag it back.
+  // Refuse that value instead: log once, hard-resync lastLogicalBounds to the
+  // physical rect we actually have, and zero both offsets so logical tracks
+  // physical exactly. This is a rare backstop (a sane leftBound/rightBound
+  // from resolveHorizontalClampBounds should never trigger it) — reconcile-
+  // driven recomputes (adopt-clamp, rebase) will reuse it once a later batch
+  // wires them up. Returns true when it fired (caller must skip the normal
+  // setViewportOffsetX call in that case).
+  function guardOffsetXLegalDomain(materialized) {
+    const offsetX = materialized.viewportOffsetX;
+    const width = materialized.bounds.width;
+    if (Number.isFinite(offsetX) && width > 0 && Math.abs(offsetX) < width) {
+      return false;
+    }
+    logEdgeOnce(
+      "offset-out-of-range",
+      `axis=x offsetX=${offsetX} width=${width} expected=${JSON.stringify(materialized.bounds)}`
     );
-    return materializeVirtualBoundsRaw(bounds, resolvedWorkArea);
+    recomputeOffsetsFrom(materialized.bounds, materialized.bounds);
+    lastLogicalBounds = { x: materialized.bounds.x, y: materialized.bounds.y };
+    return true;
   }
 
-  function applyPetWindowBounds(bounds) {
+  // §4.3.13 stub. The real settle-sweep timer (a one-shot SETTLE_MS timeout
+  // that calls runReconcile("settle-sweep", writeGen) so an unexplained
+  // actual/expected mismatch is adopted even without a native move/resize
+  // event) is not implemented in this batch — reconcile/adopt-clamp are out
+  // of scope here. Left as a deliberate no-op, called from the same call site
+  // the real implementation will occupy, so writeGen/settleUntil/
+  // expectedPhysical already have a consumer to wire up next.
+  function scheduleSettleSweep() {}
+
+  // Regulates native writes plus derived offset/log state for one logical
+  // bounds request. `next` is the caller's intended (possibly off-screen on
+  // Linux) logical position; the return value is the physical rect actually
+  // requested from the OS.
+  //
+  //  - force: write natively even when the materialized physical rect already
+  //    matches the current live bounds (needed by #525's compositor refresh
+  //    and topmost's nudge — see recoverVisiblePetAfterRendererLoad below).
+  //  - workArea / edgeContext: let a caller that already resolved these
+  //    (e.g. a future per-frame mini animation) skip re-resolving them here.
+  //  - assertNoYOffset: mini's future per-frame X-only entry point. When the
+  //    materialize result still has a non-zero Y offset (it shouldn't, if the
+  //    caller clamped Y first), refuse to forward it to the renderer and log
+  //    once instead of reopening the Y layout hot path.
+  function applyPetWindowBounds(next, opts = {}) {
     const win = getRenderWindow();
-    if (!isLiveWindow(win) || !bounds) return null;
-    const materialized = materializeVirtualBounds(bounds);
-    if (!materialized) return null;
-    win.setBounds(materialized.bounds);
-    setViewportOffsetY(materialized.viewportOffsetY);
+    if (!isLiveWindow(win) || !next) return null;
+
+    const m = materializeVirtualBounds(next, opts.workArea, { edgeContext: opts.edgeContext });
+    if (!m) return null;
+
+    // Key ordering (this batch's inviolable contract): the storage
+    // quantities are updated BEFORE the native write below, so any business
+    // read that lands after this point — even one triggered synchronously
+    // from inside win.setBounds itself — observes the new logical position,
+    // never a stale or WM-polluted one.
+    lastLogicalBounds = { x: next.x, y: next.y, width: next.width, height: next.height };
+    expectedPhysical = { ...m.bounds };
+    writeGen += 1;
+    settleUntil = now() + SETTLE_MS;
+
+    const cur = win.getBounds();
+    if (opts.force || !sameRect(cur, m.bounds)) win.setBounds(m.bounds);
+
+    // guardOffsetXLegalDomain(), when it fires, already hard-resyncs BOTH
+    // offsets to 0 via recomputeOffsetsFrom() and overwrites lastLogicalBounds
+    // — the normal per-axis assignments below must be skipped entirely in
+    // that case, or the unconditional Y branch would immediately clobber the
+    // guard's reset back to the original (rejected) m.viewportOffsetY.
+    if (!guardOffsetXLegalDomain(m)) {
+      setViewportOffsetX(m.viewportOffsetX);
+      clearLoggedEdgeReason("offset-out-of-range");
+
+      if (!opts.assertNoYOffset) {
+        setViewportOffsetY(m.viewportOffsetY);
+        clearLoggedEdgeReason("assert-no-y-offset");
+      } else if (m.viewportOffsetY !== 0) {
+        logEdgeOnce("assert-no-y-offset", `viewportOffsetY=${m.viewportOffsetY}`);
+      } else {
+        clearLoggedEdgeReason("assert-no-y-offset");
+      }
+    }
+
+    scheduleSettleSweep();
+
     repositionSessionHud();
-    return materialized.bounds;
+    return m.bounds;
   }
 
-  function applyPetWindowPosition(x, y) {
+  function applyPetWindowPosition(x, y, opts = {}) {
     const bounds = getPetWindowBounds();
     if (!bounds) return null;
-    return applyPetWindowBounds({ ...bounds, x, y });
+    return applyPetWindowBounds({ ...bounds, x, y }, opts);
   }
 
   function isPetHidden() {
@@ -419,10 +630,15 @@ function createPetWindowRuntime(options = {}) {
     // Replaying the exact virtual bounds is intentional: setBounds() gives a
     // transparent HWND a compositor refresh without discarding the user's
     // saved display/edge position. applyPetWindowBounds also preserves a
-    // virtual negative-Y offset used by top-edge pinning.
+    // virtual negative-Y offset used by top-edge pinning. force:true is
+    // required here (plan §4.3 point 3 / §12.12): the materialized physical
+    // rect is normally identical to what's already live, and
+    // applyPetWindowBounds() now skips the native write in that case unless
+    // told not to — but the whole point of this path is the compositor
+    // refresh from a real setBounds() call.
     const bounds = getPetWindowBounds();
     if (bounds) {
-      applyPetWindowBounds(bounds);
+      applyPetWindowBounds(bounds, { force: true });
       syncHitWin();
       repositionAnchoredSurfaces();
     }
@@ -717,7 +933,14 @@ function createPetWindowRuntime(options = {}) {
         try { renderWin.webContents.setZoomFactor(1); } catch {}
       });
     }
-    applyPetWindowBounds(optionsArg.initialVirtualBounds);
+    // force:true: the BrowserWindow constructor above already received
+    // initialWindowBounds (the pre-materialized, safe physical rect), so
+    // re-materializing initialVirtualBounds here will usually match live
+    // bounds exactly and would otherwise be skipped by the "same rect"
+    // optimization. Force a definitive write anyway so offset truth
+    // (lastLogicalBounds/viewportOffsetX/Y) is established the same way
+    // regardless of whether the constructor's bounds happened to match.
+    applyPetWindowBounds(optionsArg.initialVirtualBounds, { force: true });
     renderWin.showInactive();
     keepOutOfTaskbar(renderWin);
     reapplyMacVisibility();
@@ -1019,6 +1242,8 @@ function createPetWindowRuntime(options = {}) {
     bringPetToPrimaryDisplay,
     getViewportOffsetY,
     setViewportOffsetY,
+    getViewportOffsetX,
+    setViewportOffsetX,
     getVisibleContentMargins,
     looseClampPetToDisplays,
     clampToScreenVisual,
