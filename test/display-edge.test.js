@@ -149,13 +149,93 @@ describe("resolveHorizontalEdgeContext", () => {
   });
 
   it("stays conservative when yMid is missing or not finite", () => {
-    const ctx = resolveHorizontalEdgeContext({
-      displays: SIDE_BY_SIDE, workArea: SIDE_BY_SIDE[0].workArea,
+    // Every non-finite-number shape, not just "argument omitted": explicit
+    // NaN, both infinities, and a numeric string (Number.isFinite does not
+    // coerce) must all fail conservative.
+    const unusable = [undefined, null, NaN, Infinity, -Infinity, "300"];
+    for (const yMid of unusable) {
+      const ctx = resolveHorizontalEdgeContext({
+        displays: SIDE_BY_SIDE, workArea: SIDE_BY_SIDE[0].workArea, yMid,
+      });
+
+      assert.equal(ctx.right.hasAdjacentDisplay, false,
+        `yMid=${String(yMid)} matches seamBoundary()'s existing behavior`);
+      assert.equal(ctx.right.isOuterWorkAreaEdge, false,
+        `yMid=${String(yMid)} must not enable virtualization`);
+      assert.equal(ctx.left.isOuterWorkAreaEdge, false, `yMid=${String(yMid)}`);
+    }
+  });
+
+  it("treats the yMid band as a closed interval at the neighbour's top and bottom edges", () => {
+    // overlapsVerticalBand() compares with >= / <= — a pet centre sitting
+    // exactly on the neighbour's bounds.y or bounds.y + height still counts
+    // as covered; one pixel past either edge does not.
+    const displays = [
+      { bounds: bounds(0, 0, 800, 600), workArea: bounds(0, 0, 800, 600) },
+      { bounds: bounds(800, 150, 800, 300), workArea: bounds(800, 150, 800, 300) },
+    ];
+    const wa = displays[0].workArea;
+    const at = (yMid) => resolveHorizontalEdgeContext({ displays, workArea: wa, yMid });
+
+    assert.equal(at(150).right.hasAdjacentDisplay, true, "exactly at the neighbour's top edge");
+    assert.equal(at(450).right.hasAdjacentDisplay, true, "exactly at the neighbour's bottom edge (150+300)");
+    assert.equal(at(149).right.hasAdjacentDisplay, false, "one px above the band");
+    assert.equal(at(451).right.hasAdjacentDisplay, false, "one px below the band");
+  });
+
+  it("honours the 4px seam tolerance boundary exactly", () => {
+    const withGap = (gap) => resolveHorizontalEdgeContext({
+      displays: [
+        { bounds: bounds(0, 0, 800, 600), workArea: bounds(0, 0, 800, 600) },
+        { bounds: bounds(800 + gap, 0, 800, 600), workArea: bounds(800 + gap, 0, 800, 600) },
+      ],
+      workArea: bounds(0, 0, 800, 600),
+      yMid: 300,
     });
 
-    assert.equal(ctx.right.hasAdjacentDisplay, false, "matches seamBoundary()'s existing behavior");
-    assert.equal(ctx.right.isOuterWorkAreaEdge, false, "unknown topology must not enable virtualization");
-    assert.equal(ctx.left.isOuterWorkAreaEdge, false);
+    assert.equal(withGap(4).right.hasAdjacentDisplay, true, "gap == tolerance is still a seam");
+    assert.equal(withGap(4).right.isOuterWorkAreaEdge, false);
+    assert.equal(withGap(5).right.hasAdjacentDisplay, false, "gap just past tolerance is not");
+    assert.equal(withGap(5).right.isOuterWorkAreaEdge, true);
+  });
+
+  it("does not depend on the order of the display list", () => {
+    const reversed = [...SIDE_BY_SIDE].reverse();
+    const ctx = resolveHorizontalEdgeContext({
+      displays: reversed, workArea: SIDE_BY_SIDE[0].workArea, yMid: 300,
+    });
+
+    assert.equal(ctx.right.hasAdjacentDisplay, true);
+    assert.equal(ctx.right.isOuterWorkAreaEdge, false);
+    assert.equal(ctx.left.hasAdjacentDisplay, false);
+    assert.equal(ctx.left.isOuterWorkAreaEdge, true);
+  });
+
+  it("falls back to the caller's workArea when no display contains its centre", () => {
+    // findLocalDisplay() misses → localBounds falls back to the workArea
+    // itself, so the two boundaries collapse on both sides…
+    const orphanWa = bounds(2000, 0, 800, 600);
+    const alone = resolveHorizontalEdgeContext({
+      displays: SINGLE, workArea: orphanWa, yMid: 300,
+    });
+
+    assert.equal(alone.left.physicalBoundary, alone.left.workAreaBoundary);
+    assert.equal(alone.right.physicalBoundary, alone.right.workAreaBoundary);
+    assert.equal(alone.right.isOuterWorkAreaEdge, true, "nothing touches the orphan workArea");
+
+    // …and with local === null every display takes part in the adjacency
+    // check, so a display that happens to touch the orphan workArea's edge
+    // still registers as a seam.
+    const touching = resolveHorizontalEdgeContext({
+      displays: [
+        { bounds: bounds(2800, 0, 800, 600), workArea: bounds(2800, 0, 800, 600) },
+      ],
+      workArea: orphanWa,
+      yMid: 300,
+    });
+
+    assert.equal(touching.right.hasAdjacentDisplay, true);
+    assert.equal(touching.right.isOuterWorkAreaEdge, false);
   });
 
   it("does not count a physical gap between displays as a seam", () => {
@@ -180,6 +260,10 @@ describe("resolveHorizontalEdgeContext", () => {
     assert.equal(empty.left.hasAdjacentDisplay, false);
     assert.equal(empty.left.isOuterWorkAreaEdge, true);
     assert.equal(empty.right.isOuterWorkAreaEdge, true);
+    // The synthetic display is built from the workArea itself, so the two
+    // boundaries must collapse — no dock, no neighbour.
+    assert.equal(empty.left.physicalBoundary, empty.left.workAreaBoundary);
+    assert.equal(empty.right.physicalBoundary, empty.right.workAreaBoundary);
 
     const damaged = resolveHorizontalEdgeContext({
       displays: [
@@ -196,6 +280,8 @@ describe("resolveHorizontalEdgeContext", () => {
     assert.equal(Number.isFinite(damaged.right.physicalBoundary), true);
     assert.equal(damaged.left.isOuterWorkAreaEdge, true);
     assert.equal(damaged.right.isOuterWorkAreaEdge, true);
+    assert.equal(damaged.left.physicalBoundary, damaged.left.workAreaBoundary);
+    assert.equal(damaged.right.physicalBoundary, damaged.right.workAreaBoundary);
   });
 
   it("returns both sides' conclusions from a single call", () => {

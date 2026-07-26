@@ -205,4 +205,50 @@ describe("materializeVirtualBounds", () => {
     // to sit past the workArea — nothing in this function pulls it back.
     assert.equal(result.bounds.x + result.bounds.width, 2000);
   });
+
+  // --- Unsatisfiable two-sided constraints. The documented contract when
+  // leftBound > rightBound - width (crossed bounds, or a window wider than
+  // the feasible interval) is: the left bound wins. rightBound is applied
+  // first and leftBound last, so physical X lands exactly on leftBound and
+  // the right edge overflows. Deterministic and finite — never NaN, never
+  // a left/right flip.
+
+  it("lets the left bound win when the two bounds cross", () => {
+    const result = materializeVirtualBounds(
+      { x: 60, y: 100, width: 20, height: 20 },
+      wa(0, 0, 1920, 1080),
+      { leftBound: 100, rightBound: 50 }
+    );
+
+    assert.equal(result.bounds.x, 100);
+    assert.equal(result.viewportOffsetX, -40);
+  });
+
+  it("lands on the left bound when the window is wider than the bounded interval", () => {
+    const result = materializeVirtualBounds(
+      { x: 100, y: 100, width: 2000, height: 209 },
+      wa(0, 0, 1920, 1080),
+      { leftBound: 0, rightBound: 1920 }
+    );
+
+    assert.equal(result.bounds.x, 0);
+    assert.equal(result.viewportOffsetX, 100);
+    assert.equal(
+      result.bounds.x + result.bounds.width, 2000,
+      "right edge is allowed to overflow past rightBound in the unsatisfiable case"
+    );
+  });
+
+  it("stays finite when both sides overflow at once", () => {
+    const result = materializeVirtualBounds(
+      { x: -50, y: 100, width: 2000, height: 209 },
+      wa(0, 0, 1920, 1080),
+      { leftBound: 0, rightBound: 1920 }
+    );
+
+    assert.equal(result.bounds.x, 0, "left bound wins");
+    assert.equal(result.viewportOffsetX, -50);
+    assert.equal(Number.isFinite(result.bounds.x), true);
+    assert.equal(Number.isFinite(result.viewportOffsetX), true);
+  });
 });

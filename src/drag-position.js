@@ -59,6 +59,14 @@ function needsFinalClampAdjustment(bounds, size, clampPosition) {
 // and `viewportOffsetX: 0`, i.e. zero behavior change. When given, each
 // bound is used exactly as passed (no display lookup happens in here); the
 // two sides are clamped independently of one another.
+//
+// When the two-sided constraint is unsatisfiable — crossed bounds
+// (leftBound > rightBound) or a window wider than the feasible interval
+// (rightBound - leftBound < width) — the LEFT bound wins by design:
+// rightBound is applied first, leftBound last, so physical X lands exactly
+// on leftBound and the right edge overflows past rightBound. The result
+// stays finite and deterministic; callers must not rely on the right edge
+// being contained in that case.
 function materializeVirtualBounds(virtualBounds, workArea, { leftBound = null, rightBound = null } = {}) {
   if (!virtualBounds) return null;
   const minY = workArea && Number.isFinite(workArea.y) ? workArea.y : -Infinity;

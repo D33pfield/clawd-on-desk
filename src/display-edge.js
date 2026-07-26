@@ -99,7 +99,7 @@ function resolveHorizontalEdgeContext({ displays, workArea, yMid } = {}) {
   const wa = isFiniteRect(workArea) ? workArea : { x: 0, y: 0, width: 0, height: 0 };
   const usableDisplays = Array.isArray(displays) ? displays.filter(isUsableDisplay) : [];
 
-  // Rule 3: empty/damaged display list — fall back to a single synthetic
+  // Rule 4: empty/damaged display list — fall back to a single synthetic
   // display built from the caller's own workArea so we never produce NaN.
   // bounds === workArea here: with no real display metadata we can't tell
   // physical bounds from workArea, so both edges collapse to the same
