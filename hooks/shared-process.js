@@ -90,10 +90,11 @@ function normalizeOrcaPaneKey(value) {
 // hook's wt_hwnd, so the inherited copy would raise Orca and report it as a
 // success. Reject the key whenever an inner terminal advertises itself.
 //
-// TMUX is on the list because a tmux server outlives the pane that started it:
-// re-attaching the session from another terminal would carry the stale pane key.
-// tmux >= 3.2 sets TERM_PROGRAM=tmux and is already excluded by the first check;
-// the entry covers older versions, which leave the inherited value in place.
+// The multiplexers are on the list because their server outlives the pane that
+// started it: re-attaching a session from another terminal would carry the stale
+// pane key. tmux >= 3.2 sets TERM_PROGRAM=tmux and is already excluded by the
+// first check, so its entry only covers older versions; screen and zellij set no
+// TERM_PROGRAM at all, so for them the marker is the only thing that catches it.
 //
 // Known residual: a bare conhost / pwsh window sets no marker of its own, so an
 // agent started that way from an Orca pane still looks like the pane itself.
@@ -105,7 +106,9 @@ const NESTED_TERMINAL_ENV = [
   "KONSOLE_VERSION",       // Konsole
   "GNOME_TERMINAL_SCREEN", // gnome-terminal
   "ConEmuPID",             // ConEmu / Cmder
-  "TMUX",                  // tmux server env outlives the pane
+  "TMUX",                  // tmux — server env outlives the pane
+  "STY",                   // GNU screen — same, and sets no TERM_PROGRAM
+  "ZELLIJ",                // zellij — same
 ];
 
 function orcaPaneKeyFromEnv(env = process.env) {

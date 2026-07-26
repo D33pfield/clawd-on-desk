@@ -14,6 +14,8 @@ const NESTED_TERMINAL_ENV = [
   "GNOME_TERMINAL_SCREEN",
   "ConEmuPID",
   "TMUX",
+  "STY",
+  "ZELLIJ",
 ];
 
 const DEFAULT_EVENT_BINDINGS = Object.freeze([

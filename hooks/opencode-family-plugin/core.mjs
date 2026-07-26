@@ -64,7 +64,7 @@ const POST_TIMEOUT_MS = 1000;
 // rather than imported because this plugin ships standalone; NESTED_TERMINAL_ENV
 // in hooks/shared-process.js carries the reasoning for each entry.
 const NESTED_TERMINAL_ENV = ["WT_SESSION", "ALACRITTY_WINDOW_ID", "WEZTERM_PANE", "KITTY_WINDOW_ID",
-  "KONSOLE_VERSION", "GNOME_TERMINAL_SCREEN", "ConEmuPID", "TMUX"];
+  "KONSOLE_VERSION", "GNOME_TERMINAL_SCREEN", "ConEmuPID", "TMUX", "STY", "ZELLIJ"];
 
 export function orcaPaneKeyFromEnv(env = process.env) {
   if (!env || env.TERM_PROGRAM !== "Orca") return null;
