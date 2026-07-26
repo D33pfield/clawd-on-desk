@@ -1833,6 +1833,78 @@ describe("pet-window-runtime", () => {
     );
   });
 
+  // PR #751 Codex review #5 (rework batch B-2): intersectHitWithWorkArea()
+  // used to clip BOTH sides unconditionally against the raw workArea width,
+  // regardless of whether that side was a genuine Linux outer edge or an
+  // internal seam. Codex's own dual-display counter-example: two adjacent
+  // displays [0,1920) / [1920,3840), a non-mini pet at x=1850 (width 203)
+  // straddling the seam at x=1920.
+  it("does not clip a hit rect that legitimately spans an internal monitor seam (only the genuine outer edge, if any, gets clipped)", () => {
+    const displays = [
+      { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1080 } },
+      { id: 2, bounds: { x: 1920, y: 0, width: 1920, height: 1080 }, workArea: { x: 1920, y: 0, width: 1920, height: 1080 } },
+    ];
+    const renderWin = makeWindow({ x: 1850, y: 0, width: 203, height: 120 });
+    const harness = createRuntime({ isLinux: true, renderWin, displays });
+
+    // Establish expectedWrite's snapshot (createRuntime()'s getNearestWorkArea
+    // default always resolves to displays[0]'s workArea regardless of the
+    // pet's actual position — display 1's right edge, at x=1920, is where the
+    // adjacent display 2 begins, an internal seam, so rightBound must be null).
+    harness.runtime.applyPetWindowBounds({ x: 1850, y: 0, width: 203, height: 120 });
+
+    harness.runtime.syncHitWin();
+
+    // Full hit rect [1850,2053) must stay unclipped on the right (seam side)
+    // — it legitimately covers part of display 2. getHitRectScreen() with no
+    // hitBox override returns the bounds themselves (see the sibling test
+    // above), so [1850,2053) is exactly what a correct, unclipped hit rect
+    // must be.
+    assert.deepStrictEqual(
+      harness.hitWin.calls.find((call) => call[0] === "setBounds"),
+      ["setBounds", { x: 1850, y: 0, width: 203, height: 120 }]
+    );
+  });
+
+  // PR #751 Codex review #4c (rework batch B-2): HIT_MIN suppression is
+  // itself a consequence of the workArea intersection possibly narrowing a
+  // rect down to a sliver — off Linux (or with the escape hatch engaged),
+  // that intersection never runs at all, so a narrow rect should be written
+  // as-is instead of suppressed, matching pre-#690 behavior exactly.
+  it("does not suppress a narrow hit rect off Linux (no workArea intersection to have narrowed it in the first place)", () => {
+    const renderWin = makeWindow({ x: 0, y: 0, width: 5, height: 100 });
+    const harness = createRuntime({ isWin: true, isLinux: false, renderWin });
+
+    harness.runtime.syncHitWin();
+
+    assert.deepStrictEqual(
+      harness.hitWin.calls.find((call) => call[0] === "setBounds"),
+      ["setBounds", { x: 0, y: 0, width: 5, height: 100 }],
+      "a narrow rect must be written as-is off Linux, not suppressed"
+    );
+    assert.ok(
+      !harness.hitWin.calls.some((c) => c[0] === "setIgnoreMouseEvents" && c[1] === true),
+      "no HIT_MIN-driven suppression should have applied"
+    );
+  });
+
+  it("does not suppress a narrow hit rect when the escape hatch is engaged, even on Linux", () => {
+    const renderWin = makeWindow({ x: 0, y: 0, width: 5, height: 100 });
+    const harness = createRuntime({ isLinux: true, isEdgeVirtualizationDisabled: () => true, renderWin });
+
+    harness.runtime.syncHitWin();
+
+    assert.deepStrictEqual(
+      harness.hitWin.calls.find((call) => call[0] === "setBounds"),
+      ["setBounds", { x: 0, y: 0, width: 5, height: 100 }],
+      "a narrow rect must be written as-is with the escape hatch engaged, not suppressed"
+    );
+    assert.ok(
+      !harness.hitWin.calls.some((c) => c[0] === "setIgnoreMouseEvents" && c[1] === true),
+      "no HIT_MIN-driven suppression should have applied"
+    );
+  });
+
   it("reasserts Windows topmost when drag movement lands near a work-area edge", () => {
     let cursor = { x: 100, y: 100 };
     const harness = createRuntime({

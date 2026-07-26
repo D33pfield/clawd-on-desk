@@ -1354,12 +1354,24 @@ function createPetWindowRuntime(options = {}) {
   // learned inset. Linux-only at the call site below (I3): Windows/macOS
   // never intersect against workArea here, preserving existing edge-pinning
   // behavior that deliberately sits partially outside it.
-  function intersectHitWithWorkArea(hit, workArea, displayId) {
+  //
+  // PR #751 Codex review #5 (rework batch B-2): only clip whichever side(s)
+  // `clampBounds` (render's own write-time snapshot, expectedWrite.clampBounds
+  // — the exact eligibility basis materialize used for the pet window
+  // itself, reused here rather than re-resolved from a bare displayId) marks
+  // eligible — a null bound means that side is a seam (or otherwise
+  // ineligible): don't clip it at all. The previous displayId-based version
+  // clipped BOTH sides unconditionally against the raw workArea width
+  // regardless of seam/outer-edge status, which cut a hit rect that
+  // legitimately spans onto a neighbouring display down to a single
+  // display's width — Y (top/bottom vs workArea) is unaffected, unchanged.
+  function intersectHitWithWorkArea(hit, workArea, clampBounds) {
     if (!hit || !isValidWorkArea(workArea)) return hit;
-    const leftInset = getObservedClampInset(displayId, "left");
-    const rightInset = getObservedClampInset(displayId, "right");
-    const left = Math.max(hit.left, workArea.x + leftInset);
-    const right = Math.min(hit.right, workArea.x + workArea.width - rightInset);
+    let { left, right } = hit;
+    const leftBound = clampBounds && Number.isFinite(clampBounds.leftBound) ? clampBounds.leftBound : null;
+    const rightBound = clampBounds && Number.isFinite(clampBounds.rightBound) ? clampBounds.rightBound : null;
+    if (leftBound !== null) left = Math.max(left, leftBound);
+    if (rightBound !== null) right = Math.min(right, rightBound);
     const top = Math.max(hit.top, workArea.y);
     const bottom = Math.min(hit.bottom, workArea.y + workArea.height);
     return { left, top, right: Math.max(left, right), bottom: Math.max(top, bottom) };
@@ -1423,10 +1435,16 @@ function createPetWindowRuntime(options = {}) {
     const physical = getPhysicalRenderBounds();
     hit = applyOutwardClip(hit, physical);
     const hitWa = resolveWorkAreaFor(bounds);
-    const hitDisplayId = isLinux && isValidWorkArea(hitWa)
-      ? findDisplayIdForPoint(hitWa.x + hitWa.width / 2, hitWa.y + hitWa.height / 2)
-      : null;
-    if (isLinux) hit = intersectHitWithWorkArea(hit, hitWa, hitDisplayId);
+    // PR #751 Codex review #5/#4c (rework batch B-2): the escape hatch must
+    // revert hit to pre-#690 behavior entirely — no workArea intersection,
+    // no HIT_MIN suppression below — not just skip the X offset itself.
+    const edgeVirtualizationActive = isLinux && !isEdgeVirtualizationDisabled();
+    if (edgeVirtualizationActive) {
+      // Reuse render's own write-time snapshot rather than re-resolving
+      // fresh from a bare displayId lookup.
+      const clampBounds = expectedWrite ? expectedWrite.clampBounds : null;
+      hit = intersectHitWithWorkArea(hit, hitWa, clampBounds);
+    }
     hit = clipHitRectToMiniSeam(hit);
     if (!hit) return;
 
@@ -1435,7 +1453,11 @@ function createPetWindowRuntime(options = {}) {
     const w = Math.round(hit.right - hit.left);
     const h = Math.round(hit.bottom - hit.top);
 
-    if (w < HIT_MIN_PX || h < HIT_MIN_PX) {
+    // Linux-gated (Codex review #4c): off Linux, or with the escape hatch
+    // engaged, a narrow rect is written as-is — no suppression — matching
+    // pre-#690 behavior exactly (HIT_MIN degeneracy is itself a consequence
+    // of the workArea intersection just skipped above).
+    if (edgeVirtualizationActive && (w < HIT_MIN_PX || h < HIT_MIN_PX)) {
       // Degenerate (menu mini-entry's fully-offscreen preload, or a 1-7px
       // transition sliver): don't write a sliver BrowserWindow, and don't
       // leave the OLD rect sitting there interactive either. Suppress FIRST
