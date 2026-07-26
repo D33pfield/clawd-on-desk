@@ -35,17 +35,20 @@ const NON_RELOADABLE_RENDER_GONE_REASONS = new Set([
 ]);
 
 // Issue #690 GNOME/XWayland edge-virtualization constants — plan §4.3.
-// RECONCILE_QUIET_MS: debounce window for the (not-yet-wired) native
-// move/resize -> reconcile path. SETTLE_MS: bounded grace period after a
-// write before an unexplained actual/expected mismatch stops being treated
-// as "still settling"; must stay >= 3x RECONCILE_QUIET_MS to cover one WM
-// round trip plus one debounce. HIT_QUIET_MS: the hit window's independent
-// (longer) quiet period, so we don't fight a Mutter interactive grab. None of
-// the reconcile/settle-sweep machinery that consumes these is implemented in
-// this batch — see scheduleSettleSweep() below.
+// RECONCILE_QUIET_MS: debounce window for the native move/resize -> reconcile
+// path. SETTLE_MS: bounded grace period after a write before an unexplained
+// actual/expected mismatch stops being treated as "still settling"; must stay
+// >= 3x RECONCILE_QUIET_MS to cover one WM round trip plus one debounce.
+// HIT_QUIET_MS: the hit window's independent (longer) quiet period, so we
+// don't fight a Mutter interactive grab.
 const RECONCILE_QUIET_MS = 100;
 const SETTLE_MS = 400;
 const HIT_QUIET_MS = 250;
+
+// I5: below this width/height the hit rect is degenerate (menu mini-entry's
+// fully-offscreen preload stage, or a 1-5px transition sliver) — don't try to
+// write a sliver BrowserWindow, suppress input instead (plan §3 I5).
+const HIT_MIN_PX = 8;
 
 function isLiveWindow(win) {
   return !!(win && typeof win.isDestroyed === "function" && !win.isDestroyed());
@@ -152,13 +155,32 @@ function createPetWindowRuntime(options = {}) {
   // Absent/unavailable inspector degrades every cloak path to a no-op.
   const cloakInspector = options.cloakInspector || null;
   const isMiniAnimating = options.isMiniAnimating || (() => false);
+  // Issue #690 plan §4.3.10's fourth protection period. roam.js's per-frame
+  // applyPetWindowBounds() (ROAM_FRAME_MS=16) is a continuous native-write
+  // period reconcile must not fight, exactly like drag/mini/Settings preview.
+  const isRoamAnimating = options.isRoamAnimating || (() => false);
   const now = options.now || (() => Date.now());
+  // Injectable so reconcile's timers (quiet/sweep/hit-quiet/hit-confirm) can
+  // be driven by a fake clock in tests instead of a real wall-clock sleep —
+  // production constants (RECONCILE_QUIET_MS/SETTLE_MS/HIT_QUIET_MS) stay
+  // real, tests advance a fake `now`/timer queue together instead of shrinking
+  // the thresholds (a shrunk threshold proves nothing about production
+  // timing).
+  const setTimeoutFn = options.setTimeout || setTimeout;
+  const clearTimeoutFn = options.clearTimeout || clearTimeout;
   const isNearWorkAreaEdge = options.isNearWorkAreaEdge || (() => false);
   // Low-noise diagnostics for the I2 offset legal-domain backstop and the
   // assertNoYOffset guard (plan §3 I2, §4.3.2). Mirrors the crashReloadLog
   // injection point below so tests can capture what would otherwise be a
   // bare console.warn.
   const edgeLog = options.edgeLog || ((message) => console.warn(message));
+  // Phase 2 item 8's escape hatch (plan §4.3 point 12 / §11.11). A live
+  // function (not a value captured once) so tests can flip it and so a
+  // real CLAWD_DISABLE_EDGE_VIRTUALIZATION env change take effect without a
+  // restart being architecturally required, matching how isLinux/isWin etc.
+  // are otherwise treated as fixed per-process facts but env vars are not.
+  const isEdgeVirtualizationDisabled = options.isEdgeVirtualizationDisabled
+    || (() => process.env.CLAWD_DISABLE_EDGE_VIRTUALIZATION === "1");
   const flushRuntimeStateToPrefs = options.flushRuntimeStateToPrefs || noop;
   const handleMiniDisplayChange = options.handleMiniDisplayChange || noop;
   const exitMiniMode = options.exitMiniMode || noop;
@@ -188,15 +210,52 @@ function createPetWindowRuntime(options = {}) {
   // Issue #690 X-offset / logical-physical mapping state (plan §4.3 point 2).
   // lastLogicalBounds is the storage quantity I1/I2 make authoritative: only
   // its x/y are ever read back (width/height are recorded for log parity but
-  // never consumed — §3 I2). expectedPhysical/writeGen/settleUntil exist so a
-  // later batch can wire up deferred reconcile; this batch only maintains
-  // them, it does not yet read them back anywhere.
+  // never consumed — §3 I2).
   let viewportOffsetX = 0;
   let lastLogicalBounds = null;
+  // expectedPhysical: the physical rect requested by the most recent
+  // applyPetWindowBounds() write. lastResolvedWorkArea: the workArea that
+  // write was materialized against — deriveClampObservation() and
+  // resolveHorizontalClampBounds()'s inset lookup both need this exact
+  // workArea, not a workArea re-resolved fresh (which could disagree if
+  // topology changed between the write and the reconcile).
   let expectedPhysical = null;
+  let lastResolvedWorkArea = null;
   let writeGen = 0;
   let settleUntil = 0;
+  let lastWriteAt = 0; // now() at the most recent applyPetWindowBounds() write — diagnostics only (sinceWriteMs)
   const loggedEdgeReasons = new Set();
+
+  // §4.3.9-13 render-side deferred reconcile state.
+  let reconcileTimer = null;     // debounced quiet-point timer (RECONCILE_QUIET_MS)
+  let sweepTimer = null;         // one-shot settle-sweep timer (SETTLE_MS)
+  let sweepGen = -1;             // generation the pending sweepTimer belongs to
+  let deferredSweepGen = -1;     // one-shot: a sweep landed during a protection period for this gen
+  let reconcileDirty = false;    // a native geometry event arrived during a protection period
+
+  // §4.3.14 observedClampInset: Map<"displayId:edge", insetPx>. Not persisted
+  // (I7) — relearned every process lifetime, per edge.
+  const observedClampInsets = new Map();
+
+  // §4.3.11 hit-side reconcile state — deliberately separate from the render
+  // fields above; hit has its own quiet period (HIT_QUIET_MS), its own
+  // "requested" rect, and (per this batch's P1-4 scope) only an adopt-clamp
+  // action plus a conservative grab-candidate log, never a rebase/follow.
+  let lastRequestedHitRect = null;
+  let lastHitWorkArea = null;
+  let hitQuietTimer = null;
+  let hitConfirmTimer = null;    // explicit re-check for the two-level grab judgment (§4.3.11 public premise 3)
+  let hitLastObservedActual = null;
+  let hitStableCount = 0;
+  let hitRetriedRect = null;     // the target we've already spent our one WM-clamp retry on
+  let hitGeometryDrift = null;   // diagnostic: last adopt-clamp drift on the hit side
+
+  // I5 applyHitInputState() single-writer state.
+  let hitGeometrySuppressed = false;
+  let settingsSizePreviewIgnoringHit = false;
+  let imeEditingPetDodge = false;
+  let hitInputIgnoreApplied = null; // null = never explicitly applied yet
+
   let petHidden = false;
   let dragLocked = false;
   let dragSnapshot = null;
@@ -316,22 +375,79 @@ function createPetWindowRuntime(options = {}) {
     });
   }
 
+  // §4.3.14's observedClampInset is keyed by (displayId, edge). display-edge.js
+  // (Phase 1, frozen — see its own module comment) doesn't expose a display-id
+  // lookup, so this is a small local equivalent: whichever display's workArea
+  // contains the point wins, mirroring display-edge.js's own findLocalDisplay.
+  function findDisplayIdForPoint(cx, cy) {
+    const displays = getAllDisplays();
+    if (!Array.isArray(displays)) return null;
+    for (const d of displays) {
+      if (!d || !d.workArea) continue;
+      const wa = d.workArea;
+      if (cx >= wa.x && cx <= wa.x + wa.width && cy >= wa.y && cy <= wa.y + wa.height) {
+        return Number.isFinite(d.id) ? d.id : null;
+      }
+    }
+    return null;
+  }
+
+  function getObservedClampInset(displayId, edge) {
+    if (displayId == null) return 0;
+    const value = observedClampInsets.get(`${displayId}:${edge}`);
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  // §4.3.14: "每次学到的 inset 与旧值不同就记一条 inset-drift 日志" — this
+  // fires on every change including the very first 0 -> N learn, not just
+  // later drift, since the plan doesn't carve out an exception for the first
+  // learn and the §6.3 "inset 自举" test only requires that the first learn
+  // itself succeeds (not that it stay silent).
+  function updateObservedClampInset(displayId, edge, inset) {
+    if (displayId == null || !Number.isFinite(inset)) return;
+    const key = `${displayId}:${edge}`;
+    const prev = observedClampInsets.get(key);
+    if (prev === inset) return;
+    observedClampInsets.set(key, inset);
+    edgeLog(`Clawd: inset-drift display=${displayId} edge=${edge} old=${Number.isFinite(prev) ? prev : 0} new=${inset}`);
+  }
+
+  // Wired to display-metrics-changed's debounce handler (main.js) per §4.3.14:
+  // "inset 只在同一 (displayId, edge) 内有效...里必须显式清空对应 display 的
+  // 表项". Clearing the whole table on any topology-metrics event is a safe
+  // superset — Electron doesn't cheaply tell us WHICH display changed from
+  // this event alone, and re-learning an unchanged inset on the next clamp is
+  // a harmless, self-healing cost (worst case: one extra "predicted != actual"
+  // frame, never a correctness bug).
+  function clearObservedClampInsets() {
+    observedClampInsets.clear();
+  }
+
   // §4.2's leftBound/rightBound: null means "don't clamp that side". I3 is
-  // enforced right here — Windows/macOS and any edge the shared helper
-  // reports as an internal seam always get { null, null }, which reproduces
-  // byte-identical pre-#690 physical-overflow behavior via
+  // enforced right here — Windows/macOS, the CLAWD_DISABLE_EDGE_VIRTUALIZATION
+  // escape hatch (Phase 2 item 8, plan §4.3 point 12), and any edge the shared
+  // helper reports as an internal seam all get { null, null }, which
+  // reproduces byte-identical pre-#690 physical-overflow behavior via
   // materializeVirtualBoundsRaw()'s existing null-bound fast path.
   //
-  // observedClampInset (§4.3.14, "钳制内缩量必须被学习") is NOT implemented
-  // this batch — a later batch subtracts/adds the learned inset here. Until
-  // then this uses the raw workArea boundary, i.e. an inset of 0 throughout.
+  // §4.3.14's inset narrows the predicted boundary so predicted physical
+  // converges to actual physical instead of jumping "predicted -> measured"
+  // after the fact (see runReconcile()'s adopt-clamp branch, which is the
+  // only writer of observedClampInset).
   function resolveHorizontalClampBounds(bounds, workArea, providedEdgeContext) {
-    if (!isLinux) return { leftBound: null, rightBound: null };
+    if (!isLinux || isEdgeVirtualizationDisabled()) return { leftBound: null, rightBound: null };
     const edge = providedEdgeContext || resolveEdgeContextForBounds(bounds, workArea);
     if (!edge) return { leftBound: null, rightBound: null };
+    const displayId = isValidWorkArea(workArea)
+      ? findDisplayIdForPoint(workArea.x + workArea.width / 2, workArea.y + workArea.height / 2)
+      : null;
     return {
-      leftBound: edge.left.isOuterWorkAreaEdge ? edge.left.workAreaBoundary : null,
-      rightBound: edge.right.isOuterWorkAreaEdge ? edge.right.workAreaBoundary : null,
+      leftBound: edge.left.isOuterWorkAreaEdge
+        ? edge.left.workAreaBoundary + getObservedClampInset(displayId, "left")
+        : null,
+      rightBound: edge.right.isOuterWorkAreaEdge
+        ? edge.right.workAreaBoundary - getObservedClampInset(displayId, "right")
+        : null,
     };
   }
 
@@ -354,13 +470,10 @@ function createPetWindowRuntime(options = {}) {
   }
 
   // §4.3.2's recomputeOffsetsFrom: rederives both offsets from a known-good
-  // (logical, actualPhysical) pair without going through materialize. The
-  // reconcile path that normally calls this (adopt-clamp / rebase) is not
-  // implemented in this batch; today the only caller is the I2 backstop
-  // below, which needs exactly this "make offsets agree with a concrete
-  // actual" computation.
+  // (logical, actualPhysical) pair without going through materialize. Callers:
+  // the I2 backstop below, and runReconcile()'s adopt-clamp/rebase branches.
   function recomputeOffsetsFrom(logical, actualPhysical) {
-    setViewportOffsetX(isLinux ? (logical.x - actualPhysical.x) : 0);
+    setViewportOffsetX((isLinux && !isEdgeVirtualizationDisabled()) ? (logical.x - actualPhysical.x) : 0);
     setViewportOffsetY(Math.max(0, actualPhysical.y - logical.y));
   }
 
@@ -387,17 +500,196 @@ function createPetWindowRuntime(options = {}) {
     );
     recomputeOffsetsFrom(materialized.bounds, materialized.bounds);
     lastLogicalBounds = { x: materialized.bounds.x, y: materialized.bounds.y };
+    // I2 point 3: "触发一次 syncDerivedSurfaces()" — the backstop just moved
+    // logical bounds without going through the normal apply path below, so
+    // hit/HUD/anchored surfaces need an explicit nudge here too.
+    syncDerivedSurfaces();
     return true;
   }
 
-  // §4.3.13 stub. The real settle-sweep timer (a one-shot SETTLE_MS timeout
-  // that calls runReconcile("settle-sweep", writeGen) so an unexplained
-  // actual/expected mismatch is adopted even without a native move/resize
-  // event) is not implemented in this batch — reconcile/adopt-clamp are out
-  // of scope here. Left as a deliberate no-op, called from the same call site
-  // the real implementation will occupy, so writeGen/settleUntil/
-  // expectedPhysical already have a consumer to wire up next.
-  function scheduleSettleSweep() {}
+  // Unifies the hit/HUD/anchored-surface sync that must follow ANY change to
+  // logical bounds, not just ones that produce a native move/resize event (I6:
+  // "offset 变化也是窗口移动"). This is exactly the pre-existing
+  // syncFloatingWindowsAfterPetBoundsChange() (settingsSizePreviewSyncFrozen
+  // early-return included) — §4.3.9 explicitly calls for the ORIGINAL
+  // win.on("move"/"resize") listener body to move here, not be duplicated.
+  function syncDerivedSurfaces() {
+    syncFloatingWindowsAfterPetBoundsChange();
+  }
+
+  // Low-noise diagnostic line for a reconcile action, matching the field set
+  // in plan §8's example and named explicitly in §12.10: writeGen, settleState,
+  // sinceWriteMs, and a predicted-actual delta. `extra` carries a reason= or
+  // edge= suffix (e.g. "reason=no-event" for §4.3.13's sweep-with-no-event
+  // adopt-clamp).
+  function logReconcileEvent(windowLabel, predicted, actual, action, settleState, sinceWriteMs, extra) {
+    const rectStr = (r) => (r ? `${r.x},${r.y},${r.width},${r.height}` : "n/a");
+    const delta = predicted && actual
+      ? `${actual.x - predicted.x},${actual.y - predicted.y},${actual.width - predicted.width},${actual.height - predicted.height}`
+      : "n/a";
+    edgeLog(
+      `Clawd: edge-reconcile window=${windowLabel} predicted=${rectStr(predicted)} actual=${rectStr(actual)} `
+      + `delta=${delta} writeGen=${writeGen} settleState=${settleState} sinceWriteMs=${sinceWriteMs} `
+      + `action=${action}${extra ? ` ${extra}` : ""}`
+    );
+  }
+
+  // §4.3.9: move/resize callbacks carry no geometry and must not read/write
+  // anything themselves — their only job is to (re)schedule the debounced
+  // quiet-point check. Shared by render move and resize alike.
+  function onNativeGeometryEvent() {
+    scheduleReconcile();
+  }
+
+  function scheduleReconcile() {
+    if (reconcileTimer) clearTimeoutFn(reconcileTimer);
+    reconcileTimer = setTimeoutFn(() => runReconcile("native-quiet"), RECONCILE_QUIET_MS);
+  }
+
+  // §4.3.13: every write also arms a bounded, generation-stamped sweep so an
+  // actual/expected mismatch gets adopted even when no native move/resize
+  // event ever arrives (e.g. Mutter's ConfigureNotify already matches what we
+  // asked and nothing changes again). "New generation invalidates old sweep"
+  // is enforced by both halves here: clearTimeout on re-entry AND the sweepGen
+  // capture that runReconcile() checks against the CURRENT writeGen.
+  function scheduleSettleSweep() {
+    if (sweepTimer) clearTimeoutFn(sweepTimer);
+    sweepGen = writeGen;
+    sweepTimer = setTimeoutFn(() => {
+      sweepTimer = null;
+      runReconcile("settle-sweep", sweepGen);
+    }, SETTLE_MS);
+  }
+
+  // §4.3.10's four protection periods (drag / mini transition+animation /
+  // Settings size preview / roam) only ever mark reconcile dirty while
+  // active — nothing re-triggers a check once the period ends unless the
+  // period's own exit point calls this. It deliberately does not call
+  // runReconcile() synchronously (a release is often immediately followed by
+  // a fresh applyPetWindowBounds() — drag-end is exactly that — and a
+  // synchronous reconcile here would read geometry that hasn't landed yet);
+  // it just requeues the normal debounced quiet-point path.
+  function releaseReconcileProtection() {
+    if (!reconcileDirty && deferredSweepGen < 0) return;
+    reconcileDirty = false;
+    scheduleReconcile();
+  }
+
+  // The render half of §4.3.9-13's expected-write reconcile. Classifies
+  // whatever the physical window actually is against what we last asked for,
+  // entirely at a debounced quiet point — never inside a native event
+  // callback (this function's own callers are always a setTimeout body).
+  function runReconcile(reason = "native-quiet", gen = -1) {
+    // Sweep entries must NOT blindly null reconcileTimer: a quiet timer that's
+    // still legitimately counting down would become an orphan no one can
+    // cancel via scheduleReconcile()'s clearTimeout.
+    if (reason !== "settle-sweep") reconcileTimer = null;
+
+    // Only the sweep whose generation still matches the current write (or a
+    // deferred sweep resuming for that same generation) may consume settle.
+    const fromSettleSweep =
+      (reason === "settle-sweep" && gen === writeGen)
+      || (deferredSweepGen === writeGen);
+
+    // Protection-period judgment — must align with the plan's table exactly:
+    // drag / mini transition+animation / Settings size preview / roam. Missing
+    // any one of these means that period's continuous writes go unprotected.
+    if (
+      dragLocked
+      || getMiniTransitioning()
+      || isMiniAnimating()
+      || settingsSizePreviewSyncFrozen
+      || isRoamAnimating()
+    ) {
+      reconcileDirty = true;
+      if (fromSettleSweep) deferredSweepGen = writeGen; // remember which generation is owed
+      return;
+    }
+    deferredSweepGen = -1; // one-shot consumption, never sticky
+
+    const win = getRenderWindow();
+    if (!isLiveWindow(win) || !expectedPhysical || !lastLogicalBounds) return;
+    const actual = win.getBounds();
+    if (fromSettleSweep) settleUntil = 0; // the only consumption point for this generation's settle
+
+    const settleState = now() < settleUntil ? "active" : "expired";
+    const sinceWriteMs = now() - lastWriteAt;
+
+    // (a) our own write landed exactly as requested.
+    if (sameRect(actual, expectedPhysical)) { syncDerivedSurfaces(); return; }
+
+    // (b) explainable as a clamp, OR still within this write's settle window.
+    // Acceptance and learning are two SEPARATE questions evaluated in that
+    // order — acceptance can be generous (worst case: converge one quiet
+    // point late), but only a clamp-explainable observation is ever allowed
+    // to update observedClampInset (a short-circuit OR here would let size
+    // changes, two-axis moves, and misclassified external moves pollute it).
+    const wa = lastResolvedWorkArea || resolveWorkAreaFor(expectedPhysical);
+    const clampObs = deriveClampObservation(actual, expectedPhysical, wa);
+    const acceptAsOwnWrite = fromSettleSweep || now() < settleUntil || clampObs !== null;
+    if (acceptAsOwnWrite) {
+      const reasonTag = clampObs
+        ? `edge=${clampObs.edge}`
+        : (reason === "settle-sweep" && !(now() < settleUntil) ? "reason=no-event" : "reason=within-settle");
+      logReconcileEvent("render", expectedPhysical, actual, "adopt-clamp", settleState, sinceWriteMs, reasonTag);
+      expectedPhysical = { ...actual };
+      recomputeOffsetsFrom(lastLogicalBounds, actual);
+      if (clampObs && clampObs.axis === "x" && isValidWorkArea(wa)) {
+        const displayId = findDisplayIdForPoint(wa.x + wa.width / 2, wa.y + wa.height / 2);
+        updateObservedClampInset(displayId, clampObs.edge, clampObs.inset);
+      }
+      syncDerivedSurfaces();
+      return;
+    }
+
+    // (c) a real external move — keep the current VISUAL position with the
+    // old offset, then rebase logical bounds onto the new physical position.
+    // The two axes use opposite-signed formulas by design (I2): X offset is
+    // signed (logical - physical) so logical follows physical PLUS the old
+    // offset; Y offset is a non-negative top-lift (physical - logical) so
+    // logical follows physical MINUS the old offset. This is a historical
+    // sign convention, not a typo, and must never be "unified".
+    logReconcileEvent("render", expectedPhysical, actual, "rebase", settleState, sinceWriteMs, null);
+    applyPetWindowBounds({
+      x: actual.x + viewportOffsetX,
+      y: actual.y - viewportOffsetY,
+      width: actual.width,
+      height: actual.height,
+    });
+    syncDerivedSurfaces();
+  }
+
+  // §4.3.10's clamp-explainability test — completely time-independent, and
+  // shared by BOTH the render and (public premise 1, §4.3.11) hit reconcile
+  // paths. Derives the CANDIDATE inset from actual by subtraction; never
+  // compares actual against an already-known inset. The latter self-deadlocks
+  // at inset=0: the boundary it would compare against is the un-narrowed one,
+  // but a clamped window sits on the NARROWED boundary, so the check returns
+  // false forever and the first non-zero inset is never learned.
+  function deriveClampObservation(actual, expected, wa) {
+    if (!actual || !expected || !isValidWorkArea(wa)) return null;
+    if (actual.width !== expected.width || actual.height !== expected.height) return null;
+    const dx = actual.x - expected.x;
+    const dy = actual.y - expected.y;
+    if ((dx !== 0) === (dy !== 0)) return null; // a clamp changes exactly one axis
+    if (dx !== 0) {
+      const edge = dx < 0 ? "right" : "left";
+      // A clamp only ever pushes the window INWARD, so the original request
+      // must genuinely have overflowed on that side.
+      if (edge === "right" && expected.x + expected.width <= wa.x + wa.width) return null;
+      if (edge === "left" && expected.x >= wa.x) return null;
+      const inset = edge === "right"
+        ? (wa.x + wa.width) - (actual.x + actual.width)
+        : actual.x - wa.x;
+      if (!Number.isFinite(inset) || inset < 0 || inset > expected.width) return null;
+      return { axis: "x", edge, inset };
+    }
+    const edge = dy < 0 ? "bottom" : "top";
+    if (edge === "bottom" && expected.y + expected.height <= wa.y + wa.height) return null;
+    if (edge === "top" && expected.y >= wa.y) return null;
+    if (Math.abs(dy) > expected.height) return null;
+    return { axis: "y", edge }; // Y is only used for acceptance, never learned
+  }
 
   // Regulates native writes plus derived offset/log state for one logical
   // bounds request. `next` is the caller's intended (possibly off-screen on
@@ -417,7 +709,8 @@ function createPetWindowRuntime(options = {}) {
     const win = getRenderWindow();
     if (!isLiveWindow(win) || !next) return null;
 
-    const m = materializeVirtualBounds(next, opts.workArea, { edgeContext: opts.edgeContext });
+    const wa = isValidWorkArea(opts.workArea) ? opts.workArea : resolveWorkAreaFor(next);
+    const m = materializeVirtualBounds(next, wa, { edgeContext: opts.edgeContext });
     if (!m) return null;
 
     // Key ordering (this batch's inviolable contract): the storage
@@ -427,8 +720,10 @@ function createPetWindowRuntime(options = {}) {
     // never a stale or WM-polluted one.
     lastLogicalBounds = { x: next.x, y: next.y, width: next.width, height: next.height };
     expectedPhysical = { ...m.bounds };
+    lastResolvedWorkArea = wa;
     writeGen += 1;
     settleUntil = now() + SETTLE_MS;
+    lastWriteAt = now();
 
     const cur = win.getBounds();
     if (opts.force || !sameRect(cur, m.bounds)) win.setBounds(m.bounds);
@@ -525,6 +820,8 @@ function createPetWindowRuntime(options = {}) {
       hideFloatingSurfacesForPet();
       petHidden = true;
     }
+    // I5: petHidden is one of applyHitInputState()'s four OR-ed reasons.
+    applyHitInputState();
     syncSessionHudVisibilityAndBubbles();
     syncPermissionShortcuts();
     buildTrayMenu();
@@ -800,7 +1097,8 @@ function createPetWindowRuntime(options = {}) {
   // transparent surface and would keep capturing clicks over the neighbouring
   // display. Clip the hit rect to the same seam so those clicks fall through.
   // The clamps keep the rect from inverting when the whole hit rect is past
-  // the seam; the w<=0 guard in the callers then drops the degenerate result.
+  // the seam; the degenerate check in callers then drops the tiny/inverted
+  // result via the suppress path instead of writing it.
   function clipHitRectToMiniSeam(hit) {
     if (!hit) return hit;
     const seam = getMiniContainedSeam();
@@ -813,6 +1111,96 @@ function createPetWindowRuntime(options = {}) {
     return { ...hit, left: Math.min(hit.right, seam.boundary) };
   }
 
+  // I5's read-only physical-bounds helper (§4.3 point 8) for hit clipping and
+  // debugging. Business modules must keep treating getPetWindowBounds() as
+  // the only logical-position source of truth — this is never a substitute.
+  function getPhysicalRenderBounds() {
+    const win = getRenderWindow();
+    if (!isLiveWindow(win)) return null;
+    return win.getBounds();
+  }
+
+  // I5's outward clip: hit.right/left/top pull in on whichever side(s) the
+  // CURRENT viewport offset pushed the physical window away from the logical
+  // one — the character is only actually visible inside the physical render
+  // window on that side. hit.bottom is always capped to the physical bottom
+  // regardless of any offset ("所有路径" — I5's fourth bullet). Reacts to
+  // whatever viewportOffsetX/Y already are; no platform gate needed here
+  // since offsetX is always 0 off Linux (I3) and offsetY's top-lift already
+  // applied on any platform before #690.
+  function applyOutwardClip(hit, physical) {
+    if (!hit || !physical) return hit;
+    let { left, top, right, bottom } = hit;
+    if (viewportOffsetX > 0) right = Math.min(right, physical.x + physical.width);
+    if (viewportOffsetX < 0) left = Math.max(left, physical.x);
+    if (viewportOffsetY > 0) top = Math.max(top, physical.y);
+    bottom = Math.min(bottom, physical.y + physical.height);
+    return { left, top, right: Math.max(left, right), bottom: Math.max(top, bottom) };
+  }
+
+  // I5: the hit window is a Linux `toolbar` under the same fully-onscreen
+  // constraint as render — a rect that pokes past the target workArea just
+  // gets moved again by Mutter, stranding the hit region away from the
+  // character. Intersecting with the SAME inset-narrowed edges materialize
+  // uses (§4.3.14 / §12.13) keeps the two from disagreeing by exactly the
+  // learned inset. Linux-only at the call site below (I3): Windows/macOS
+  // never intersect against workArea here, preserving existing edge-pinning
+  // behavior that deliberately sits partially outside it.
+  function intersectHitWithWorkArea(hit, workArea, displayId) {
+    if (!hit || !isValidWorkArea(workArea)) return hit;
+    const leftInset = getObservedClampInset(displayId, "left");
+    const rightInset = getObservedClampInset(displayId, "right");
+    const left = Math.max(hit.left, workArea.x + leftInset);
+    const right = Math.min(hit.right, workArea.x + workArea.width - rightInset);
+    const top = Math.max(hit.top, workArea.y);
+    const bottom = Math.min(hit.bottom, workArea.y + workArea.height);
+    return { left, top, right: Math.max(left, right), bottom: Math.max(top, bottom) };
+  }
+
+  // I5's single ignore-mouse writer. Four independent suppression reasons OR
+  // together. Pre-#690 there were four writers and three separate caches
+  // (hit window creation with no platform gate; Settings size preview,
+  // Windows-only; macOS editing dodge with topmost-runtime.js's own now-
+  // removed imeEditingHitIgnoreApplied cache) — collapsing to one cache
+  // (hitInputIgnoreApplied) means no writer can leave the window in a state a
+  // DIFFERENT writer's stale cache doesn't know about.
+  // `hitWinOverride`: createHitWindow() below needs this at the exact moment
+  // it's constructing the window, before the caller (main.js) has assigned it
+  // to whatever `getHitWindow()` reads — the local reference is correct there,
+  // getHitWindow() is not yet. Every other caller omits it and gets the
+  // normal getHitWindow() lookup, still funneled through this one function.
+  function applyHitInputState(hitWinOverride) {
+    const hitWin = hitWinOverride || getHitWindow();
+    if (!isLiveWindow(hitWin) || typeof hitWin.setIgnoreMouseEvents !== "function") return;
+    const ignore = hitGeometrySuppressed || petHidden
+      || settingsSizePreviewIgnoringHit || imeEditingPetDodge;
+    if (ignore === hitInputIgnoreApplied) return;
+    hitWin.setIgnoreMouseEvents(ignore);
+    hitInputIgnoreApplied = ignore;
+  }
+
+  // The fourth applyHitInputState() reason, fed by topmost-runtime.js's macOS
+  // editing-overlap dodge (#640) instead of that module reaching into
+  // hitWin.setIgnoreMouseEvents() directly (I5's single-writer requirement).
+  function setImeEditingPetDodge(value) {
+    const next = !!value;
+    if (next === imeEditingPetDodge) return;
+    imeEditingPetDodge = next;
+    applyHitInputState();
+  }
+
+  function resetHitReconcileObservation() {
+    hitLastObservedActual = null;
+    hitStableCount = 0;
+    if (hitConfirmTimer) { clearTimeoutFn(hitConfirmTimer); hitConfirmTimer = null; }
+  }
+
+  // syncHitWin() is the ONLY caller that needs the full I5 pipeline in this
+  // exact order (§4.3 point 7: outward clip, THEN internal-seam clip) — it
+  // calls petGeometryMain.getHitRectScreen() directly (bypassing the exposed
+  // getHitRectScreen()/clipHitRectToMiniSeam() pairing used by hover/overlap
+  // callers elsewhere) so seam clipping happens strictly after outward
+  // clipping, not baked in before it.
   function syncHitWin() {
     const hitWin = getHitWindow();
     const win = getRenderWindow();
@@ -821,25 +1209,199 @@ function createPetWindowRuntime(options = {}) {
     // window mid-drag can break pointer capture on Windows.
     if (dragLocked) return;
     const bounds = getPetWindowBounds();
-    const hit = getHitRectScreen(bounds);
+    let hit = petGeometryMain.getHitRectScreen(bounds);
     if (!hit) return;
+
+    const physical = getPhysicalRenderBounds();
+    hit = applyOutwardClip(hit, physical);
+    const hitWa = resolveWorkAreaFor(bounds);
+    const hitDisplayId = isLinux && isValidWorkArea(hitWa)
+      ? findDisplayIdForPoint(hitWa.x + hitWa.width / 2, hitWa.y + hitWa.height / 2)
+      : null;
+    if (isLinux) hit = intersectHitWithWorkArea(hit, hitWa, hitDisplayId);
+    hit = clipHitRectToMiniSeam(hit);
+    if (!hit) return;
+
     const x = Math.round(hit.left);
     const y = Math.round(hit.top);
     const w = Math.round(hit.right - hit.left);
     const h = Math.round(hit.bottom - hit.top);
-    if (w <= 0 || h <= 0) return;
-    hitWin.setBounds({ x, y, width: w, height: h });
+
+    if (w < HIT_MIN_PX || h < HIT_MIN_PX) {
+      // Degenerate (menu mini-entry's fully-offscreen preload, or a 1-7px
+      // transition sliver): don't write a sliver BrowserWindow, and don't
+      // leave the OLD rect sitting there interactive either. Suppress FIRST
+      // — before the syncImeEditingPetDodge() tail call below — so the
+      // OR-composition in applyHitInputState() can never be flipped back to
+      // interactive by a different reason's writer while this rect is
+      // invalid (I5's ordering requirement: today's `return` here would hide
+      // that bug only because it happens to run before the dodge call).
+      hitGeometrySuppressed = true;
+      applyHitInputState();
+      repositionSessionHud();
+      syncImeEditingPetDodge();
+      return;
+    }
+
+    lastHitWorkArea = hitWa;
+    const target = { x, y, width: w, height: h };
+    const wasSuppressed = hitGeometrySuppressed;
+    if (wasSuppressed || !sameRect(lastRequestedHitRect, target)) {
+      lastRequestedHitRect = target;
+      hitWin.setBounds(target);
+      hitRetriedRect = null;
+      resetHitReconcileObservation();
+    }
     // Update shape if hitbox dimensions changed (e.g. after resize).
     if (w !== hitShapeWidth || h !== hitShapeHeight) {
       hitShapeWidth = w;
       hitShapeHeight = h;
       hitWin.setShape([{ x: 0, y: 0, width: w, height: h }]);
     }
+    if (wasSuppressed) {
+      // Recover: geometry is already written above before input flips back
+      // on, so there's no frame where the stale rect is clickable again.
+      hitGeometrySuppressed = false;
+      applyHitInputState();
+    }
     repositionSessionHud();
     // #640: the hit rect just (re)resolved — state switches and theme reloads
     // change hitboxes without moving the window, so the overlap answer can
     // flip right here. Cheap + edge-triggered inside.
     syncImeEditingPetDodge();
+  }
+
+  // §4.3.11's hit-side reconcile. Debounced on its own (longer) quiet period
+  // so we don't fight a Mutter interactive grab; move/resize callbacks here
+  // are just as geometry-blind as the render ones (§4.3.9) — scheduling is
+  // their only job.
+  function onHitNativeGeometryEvent() {
+    scheduleHitReconcile();
+  }
+
+  function scheduleHitReconcile() {
+    if (hitQuietTimer) clearTimeoutFn(hitQuietTimer);
+    // A fresh native event means whatever candidate-stability streak was
+    // building toward "grab ended" (public premise 3 below) reflects a
+    // genuinely new movement, not a pause — the two-level judgment restarts.
+    if (hitConfirmTimer) { clearTimeoutFn(hitConfirmTimer); hitConfirmTimer = null; }
+    hitStableCount = 0;
+    hitQuietTimer = setTimeoutFn(() => {
+      hitQuietTimer = null;
+      runHitReconcile();
+    }, HIT_QUIET_MS);
+  }
+
+  // §4.3.11's public premises, implemented as the shared state machine
+  // regardless of which P1-4 branch (A/B) a later batch picks:
+  //
+  //  1. Explainability beats time: a clamp-explainable difference is ALWAYS
+  //     adopt-clamp, never routed into the grab judgment below, independent
+  //     of whether hit settle has "expired".
+  //  2. Mutter does not clamp during an interactive grab — it silently drops
+  //     the position component of our ConfigureRequest and keeps the window
+  //     wherever the user is dragging it, still sending ConfigureNotify (see
+  //     mutter@50.3 src/x11/window-x11.c meta_window_move_resize_request(),
+  //     called from meta_window_x11_configure_request(): "We ignore configure
+  //     requests while the user is moving/resizing the window ... pretend the
+  //     app asked for the current size/position instead"). That single fact
+  //     is why retrying our own write is FREE here (no visible jitter) and
+  //     why a naive one-shot "target unchanged, actual different => WM
+  //     rejected it" test is not just imprecise but actively wrong during a
+  //     grab: it would read as "permanently rejected" when it is actually
+  //     "try again next quiet point, no cost".
+  //  3. "Grab ended" needs a SECOND, independent signal — "no hit move event
+  //     for HIT_QUIET_MS" is the same signal that triggered this check in the
+  //     first place, so alone it can't distinguish a real release from a
+  //     mid-drag pause (a trackpad re-grip alone can exceed 250ms).
+  //     dragLocked can't help either — it is only set by the hit renderer's
+  //     own DOM pointerdown -> pet-interaction-ipc "drag-lock" IPC, which a
+  //     GNOME Super+drag grab (a compositor-level gesture) never goes
+  //     through. So the second signal here is purely observational: `actual`
+  //     must be independently unchanged across two CONSECUTIVE HIT_QUIET_MS
+  //     periods before we call it a confirmed external move.
+  //  4. Retry/adopt state is recoverable, not a one-shot lockout — see the
+  //     hitRetriedRect comment below.
+  function runHitReconcile() {
+    const hitWin = getHitWindow();
+    if (!isLiveWindow(hitWin) || !lastRequestedHitRect) return;
+    const actual = hitWin.getBounds();
+
+    if (sameRect(actual, lastRequestedHitRect)) {
+      hitRetriedRect = null;
+      resetHitReconcileObservation();
+      return;
+    }
+
+    const clampObs = deriveClampObservation(actual, lastRequestedHitRect, lastHitWorkArea);
+    if (clampObs) {
+      // §12.21: recoverable, not a one-shot lockout. The SAME target gets at
+      // most one retry write; adopting afterward doesn't disable future
+      // retries — a target that later changes (a fresh syncHitWin() write)
+      // re-arms this automatically, since hitRetriedRect no longer matches
+      // the new lastRequestedHitRect.
+      if (sameRect(hitRetriedRect, lastRequestedHitRect)) {
+        hitGeometryDrift = { x: actual.x - lastRequestedHitRect.x, y: actual.y - lastRequestedHitRect.y };
+        logReconcileEvent(
+          "hit", lastRequestedHitRect, actual, "adopt-clamp", "n/a", "n/a",
+          `edge=${clampObs.edge} hitDrift=${hitGeometryDrift.x},${hitGeometryDrift.y}`
+        );
+        lastRequestedHitRect = { ...actual };
+        hitRetriedRect = null;
+      } else {
+        hitRetriedRect = { ...lastRequestedHitRect };
+        hitWin.setBounds(lastRequestedHitRect);
+      }
+      resetHitReconcileObservation();
+      return;
+    }
+
+    // Two-level grab judgment (public premise 3): only promote to "grab
+    // ended" once `actual` is independently observed stable across two
+    // consecutive HIT_QUIET_MS periods.
+    if (hitLastObservedActual && sameRect(hitLastObservedActual, actual)) {
+      hitStableCount += 1;
+    } else {
+      hitStableCount = 1; // first observation of this candidate value
+    }
+    hitLastObservedActual = { ...actual };
+
+    if (hitStableCount >= 2) {
+      handleHitExternalMoveCandidate(actual);
+      resetHitReconcileObservation();
+      return;
+    }
+
+    // Not yet confirmed — nothing else will re-trigger this check (no new
+    // native event arrived since the debounce fired), so explicitly re-arm
+    // for one more HIT_QUIET_MS rather than judging "still dragging" off a
+    // single sample.
+    hitConfirmTimer = setTimeoutFn(() => {
+      hitConfirmTimer = null;
+      runHitReconcile();
+    }, HIT_QUIET_MS);
+  }
+
+  // P1-4 (§4.3.11): the hit window moved externally (most likely a GNOME
+  // Super+drag grabbing the transparent hit layer instead of the visual
+  // render window) and the two-level judgment above confirmed the grab
+  // ended. Phase 0's real-machine active-window sample is the only evidence
+  // that can settle whether Super+drag actually grabs render or hit (plan §5
+  // Phase 0 item 1) — until that data returns and option A ("follow",
+  // modifies lastLogicalBounds) or option B ("bounce back", snaps hitWin
+  // back) is picked, this batch deliberately does NEITHER: no
+  // applyPetWindowBounds() rebase (that's A) and no forced hitWin
+  // setBounds() snap-back (that's B). It only logs, so the confirmed moment
+  // is visible in diagnostics, and lastRequestedHitRect is left exactly
+  // where it was — a later batch's real A/B branch hooks in at this exact
+  // call site.
+  function handleHitExternalMoveCandidate(actualHit) {
+    edgeLog(
+      `Clawd: edge-hit-external-move-candidate action=log-only `
+      + `actual=${actualHit.x},${actualHit.y},${actualHit.width},${actualHit.height} `
+      + `lastRequestedHitRect=${lastRequestedHitRect.x},${lastRequestedHitRect.y},${lastRequestedHitRect.width},${lastRequestedHitRect.height} `
+      + `note=P1-4-pending-real-machine-data`
+    );
   }
 
   function getInitialHitWindowBounds(renderBounds = getPetWindowBounds()) {
@@ -991,10 +1553,11 @@ function createPetWindowRuntime(options = {}) {
     // setShape: native hit region, no per-pixel alpha dependency.
     // hitWin has no visual content, so clipping is irrelevant.
     hitWin.setShape([{ x: 0, y: 0, width: initialHitWindowBounds.width, height: initialHitWindowBounds.height }]);
-    // Baseline: interactive. Only two writers may toggle this — the Windows
-    // settings-size-preview protection (below) and the macOS editing-overlap
-    // dodge (#640, topmost-runtime.js). They are platform-disjoint.
-    hitWin.setIgnoreMouseEvents(false);
+    // I5's single ignore-mouse writer (applyHitInputState()) — baseline at
+    // creation is interactive, since all four suppression reasons start
+    // false. Passed explicitly because getHitWindow() can't resolve to this
+    // window until createHitWindow() returns and the caller assigns it.
+    applyHitInputState(hitWin);
     if (isMac) hitWin.setFocusable(false);
     hitWin.showInactive();
     keepOutOfTaskbar(hitWin);
@@ -1017,8 +1580,16 @@ function createPetWindowRuntime(options = {}) {
     return hitWin;
   }
 
+  // §4.3.10's drag protection-period release point. The plan names two call
+  // sites (src/pet-interaction-ipc.js's drag-lock(false) branch and its
+  // drag-end finally block) — both call this exact setter with false, so
+  // triggering the release on the true->false transition here covers both
+  // without pet-interaction-ipc.js needing to know reconcile internals.
   function setDragLocked(value) {
-    dragLocked = !!value;
+    const next = !!value;
+    const wasLocked = dragLocked;
+    dragLocked = next;
+    if (wasLocked && !next) releaseReconcileProtection();
   }
 
   function isDragLocked() {
@@ -1128,6 +1699,10 @@ function createPetWindowRuntime(options = {}) {
   }
 
   function beginSettingsSizePreviewProtection() {
+    // settingsSizePreviewSyncFrozen gates the reconcile protection period
+    // (§4.3.10) and is set BEFORE the Windows-only early return below on
+    // purpose — that protection is effective on Linux too, even though the
+    // rest of this function's topmost/hit-ignore behavior is Windows-only.
     settingsSizePreviewSyncFrozen = true;
     if (!isWin) return;
     const settingsWindow = getSettingsWindow();
@@ -1138,17 +1713,21 @@ function createPetWindowRuntime(options = {}) {
       settingsWindow.setAlwaysOnTop(true, topmostLevel);
       if (typeof settingsWindow.moveTop === "function") settingsWindow.moveTop();
     }
-    const hitWin = getHitWindow();
-    if (
-      isLiveWindow(hitWin)
-      && typeof hitWin.setIgnoreMouseEvents === "function"
-    ) {
-      hitWin.setIgnoreMouseEvents(true);
-    }
+    // I5: route through the single ignore-mouse writer instead of writing
+    // hitWin.setIgnoreMouseEvents() directly.
+    settingsSizePreviewIgnoringHit = true;
+    applyHitInputState();
   }
 
   function endSettingsSizePreviewProtection() {
     settingsSizePreviewSyncFrozen = false;
+    // §4.3.10's protection-period release point. Called BEFORE the
+    // Windows-only early return below, mirroring beginSettingsSizePreview
+    // Protection()'s freeze flag being set before its own early return —
+    // §12.15 flags this exact ordering as the trap: the freeze (and
+    // therefore its release) is Linux-effective even though the
+    // topmost/hit-ignore behavior past this point is Windows-only.
+    releaseReconcileProtection();
     if (!isWin) return;
     const settingsWindow = getSettingsWindow();
     if (
@@ -1157,12 +1736,10 @@ function createPetWindowRuntime(options = {}) {
     ) {
       settingsWindow.setAlwaysOnTop(false);
     }
+    settingsSizePreviewIgnoringHit = false;
+    applyHitInputState();
     const hitWin = getHitWindow();
-    if (
-      isLiveWindow(hitWin)
-      && typeof hitWin.setIgnoreMouseEvents === "function"
-    ) {
-      hitWin.setIgnoreMouseEvents(false);
+    if (isLiveWindow(hitWin) && typeof hitWin.setAlwaysOnTop === "function") {
       hitWin.setAlwaysOnTop(true, topmostLevel);
     }
     reassertWinTopmost();
@@ -1268,6 +1845,14 @@ function createPetWindowRuntime(options = {}) {
     handleDisplayMetricsChanged,
     handleDisplayRemoved,
     handleDisplayAdded,
+    // Issue #690 Phase 2 items 5-8 (batch 2)
+    getPhysicalRenderBounds,
+    setImeEditingPetDodge,
+    onNativeGeometryEvent,
+    onHitNativeGeometryEvent,
+    releaseReconcileProtection,
+    clearObservedClampInsets,
+    getObservedClampInset,
   };
 }
 

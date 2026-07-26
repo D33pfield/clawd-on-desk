@@ -658,8 +658,15 @@ describe("pet-window-runtime", () => {
       ["repositionSessionHud"],
       ["repositionSessionHud"],
     ]);
+    // I5's outward clip trims the hit rect's top to the physical window's top
+    // (0) since viewportOffsetY=25 lifted the logical rect 25px above it —
+    // the top 25px (logical y=-25..0) isn't actually visible. Height is
+    // therefore 120-25=95, not the untrimmed 120: this fixture has no theme
+    // configured, so getHitRectScreen() falls back to the full logical rect
+    // (bounds.y=-25, height=120, i.e. bottom=95), and outward-clipping that
+    // against physical.y=0/height=120 yields top=0, bottom=95 unchanged.
     assert.deepStrictEqual(harness.hitWin.calls.filter((call) => call[0] === "setShape"), [
-      ["setShape", [{ x: 0, y: 0, width: 120, height: 120 }]],
+      ["setShape", [{ x: 0, y: 0, width: 120, height: 95 }]],
     ]);
   });
 
