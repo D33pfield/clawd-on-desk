@@ -4,7 +4,7 @@ const assert = require("node:assert");
 const path = require("path");
 const { loadFocusWithMock } = require("./helpers/load-focus-with-mock");
 
-const { orcaPaneKeyFromEnv, applyOrcaPaneKey } = require("../hooks/shared-process");
+const { orcaPaneKeyFromEnv, applyOrcaPaneKey, NESTED_TERMINAL_ENV } = require("../hooks/shared-process");
 
 const PANE_KEY = "8ce1fff7-tab:9813824b-leaf";
 const CWD = "D:\\Repos\\Apps\\clawd-on-desk";
@@ -119,19 +119,18 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
     // TERM_PROGRAM and ORCA_PANE_KEY while living in its own window. A pane key
     // outranks every other signal in the focus script, so that copy would raise
     // Orca instead of the terminal the agent is really in.
-    for (const marker of ["WT_SESSION", "ALACRITTY_WINDOW_ID", "WEZTERM_PANE", "KITTY_WINDOW_ID",
-      "KONSOLE_VERSION", "GNOME_TERMINAL_SCREEN", "ConEmuPID"]) {
+    assert.ok(NESTED_TERMINAL_ENV.length >= 8, "expected the full nested-terminal marker list");
+    for (const marker of NESTED_TERMINAL_ENV) {
       const env = { TERM_PROGRAM: "Orca", ORCA_PANE_KEY: PANE_KEY, [marker]: "1" };
       assert.strictEqual(orcaPaneKeyFromEnv(env), null, `${marker} must veto the pane key`);
       assert.deepStrictEqual(applyOrcaPaneKey({ a: 1 }, env), { a: 1 });
     }
 
-    // tmux is the exception: it runs inside the pane, so Orca is still the window
-    // that has to come forward.
-    assert.strictEqual(
-      orcaPaneKeyFromEnv({ TERM_PROGRAM: "Orca", ORCA_PANE_KEY: PANE_KEY, TMUX: "/tmp/tmux-1000/default,123,0" }),
-      PANE_KEY
-    );
+    // tmux is on the list rather than exempt from it: the server outlives the pane
+    // it was started from, so re-attaching the session from another terminal would
+    // carry a stale key. tmux >= 3.2 also sets TERM_PROGRAM=tmux, which the
+    // TERM_PROGRAM check rejects on its own.
+    assert.ok(NESTED_TERMINAL_ENV.includes("TMUX"));
   });
 
   it("adds orca_pane_key to a body only when the env supplies one", () => {
@@ -168,10 +167,9 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
     for (const file of files) {
       if (stateOnly.has(path.relative(hooksDir, file))) continue;
       const src = fs.readFileSync(file, "utf8");
-      // pid_chain, not tmux_client: a producer that reports a process chain is
-      // one whose sessions can be focus targets, whether or not it ever grew
-      // tmux support. Keying this on tmux_client is what let reasonix-hook.js
-      // ship without the pane key.
+      // pid_chain, not tmux_client: a producer that reports a process chain is one
+      // whose sessions can be focus targets, whether or not it ever grew tmux
+      // support.
       if (!/["']?pid_chain["']?\s*[:=]/.test(src)) continue;
       if (!src.includes("orca_pane_key") && !src.includes("applyOrcaPaneKey")) {
         missing.push(path.relative(hooksDir, file));
@@ -182,29 +180,50 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
 });
 
 describe("Orca pane key validator copies", () => {
-  it("shares one pattern across all five copies", () => {
-    // The pane key is validated at five trust boundaries, duplicated rather than
-    // shared because pi-extension-core.js ships standalone and the tmux siblings
-    // set that precedent. Two copies have already drifted (a missing trim(), and
-    // Python's Unicode \w), so pin the pattern itself.
-    const fs = require("fs");
-    const repo = path.join(__dirname, "..");
-    const jsCopies = [
-      "hooks/shared-process.js",
-      "hooks/pi-extension-core.js",
-      "src/server-route-state.js",
-      "src/server-route-permission.js",
-      "src/focus.js",
-    ];
+  const fs = require("fs");
+  const repo = path.join(__dirname, "..");
+  // Duplicated rather than shared because pi-extension-core.js and the
+  // opencode-family plugin each ship standalone, and the tmux siblings set that
+  // precedent. Nothing but this test keeps the copies in step.
+  const jsCopies = [
+    "hooks/shared-process.js",
+    "hooks/pi-extension-core.js",
+    "hooks/opencode-family-plugin/core.mjs",
+    "src/server-route-state.js",
+    "src/server-route-permission.js",
+    "src/focus.js",
+  ];
+
+  it("shares one pattern across every copy", () => {
     for (const rel of jsCopies) {
       const src = fs.readFileSync(path.join(repo, rel), "utf8");
-      assert.ok(src.includes("/^[\\w-]+:[\\w-]+$/"), `${rel} must use the canonical pane-key pattern`);
-      assert.ok(/\.trim\(\)/.test(src), `${rel} must trim before matching`);
+      const at = src.indexOf("/^[\\w-]+:[\\w-]+$/");
+      assert.ok(at > 0, `${rel} must use the canonical pane-key pattern`);
+      // Scoped to the validator: these files carry unrelated .trim() calls, so a
+      // whole-file match would pass no matter what the validator itself did.
+      assert.ok(src.slice(Math.max(0, at - 400), at).includes(".trim()"),
+        `${rel} must trim before matching`);
     }
     const py = fs.readFileSync(path.join(repo, "hooks/hermes-plugin/__init__.py"), "utf8");
     assert.ok(py.includes(String.raw`r"[\w-]+:[\w-]+"`), "the Python copy must use the same pattern");
     assert.ok(/re\.fullmatch\(r"\[\\w-\]\+:\[\\w-\]\+", pane_key, re\.ASCII\)/.test(py),
       "the Python copy must pin \\w to ASCII so it is not laxer than the JS copies");
+  });
+
+  // This gate is what decides whether Clawd hijacks focus to Orca. A marker added
+  // to shared-process.js alone would leave the standalone copies trusting an
+  // inherited key, with the wrong window reported as a successful focus.
+  it("keeps the nested-terminal marker list in step across every copy", () => {
+    for (const rel of ["hooks/pi-extension-core.js", "hooks/opencode-family-plugin/core.mjs",
+      "hooks/hermes-plugin/__init__.py"]) {
+      const src = fs.readFileSync(path.join(repo, rel), "utf8");
+      const match = /NESTED_TERMINAL_ENV\s*=\s*[[(]/.exec(src);
+      assert.ok(match, `${rel} must declare the nested-terminal marker list`);
+      const list = src.slice(match.index, match.index + 400);
+      for (const marker of NESTED_TERMINAL_ENV) {
+        assert.ok(list.includes(`"${marker}"`), `${rel} is missing ${marker} from the list`);
+      }
+    }
   });
 });
 
@@ -263,14 +282,38 @@ describe("Orca pane key normalization", () => {
     });
   });
 
-  it("normalizes worktree paths across separators, trailing slash and case", () => {
-    withFocus({}, (t) => {
+  it("normalizes separators and trailing slash, folding case only where the filesystem does", () => {
+    withFocus({ platform: "win32" }, (t) => {
       assert.strictEqual(
         t.normalizeOrcaWorktreePath("D:\\Repos\\Apps\\clawd-on-desk\\"),
         t.normalizeOrcaWorktreePath("d:/repos/apps/clawd-on-desk")
       );
+    });
+    withFocus({ platform: "linux" }, (t) => {
+      // Here these are two different directories, and folding them would make the
+      // worktree fallback pick whichever pane happens to be listed first.
+      assert.notStrictEqual(
+        t.normalizeOrcaWorktreePath("/home/kai/work/Repo"),
+        t.normalizeOrcaWorktreePath("/home/kai/work/repo")
+      );
+      assert.strictEqual(
+        t.normalizeOrcaWorktreePath("/home/kai/work/repo/"),
+        t.normalizeOrcaWorktreePath("/home/kai/work/repo")
+      );
       assert.strictEqual(t.normalizeOrcaWorktreePath("   "), null);
       assert.strictEqual(t.normalizeOrcaWorktreePath(null), null);
+    });
+  });
+
+  it("falls back to the worktree when the agent's cwd sits below its root", async () => {
+    await withFocus({ platform: "linux" }, async (t, cli) => {
+      // Routine shape: the pane is gone and the agent's cwd is a subdirectory of
+      // the worktree, which an exact match would report as orca-pane-not-found.
+      t.scheduleOrcaPaneFocus("gone-tab:gone-leaf", "D:\\Repos\\Apps\\clawd-on-desk\\src\\hooks");
+      await settle(t);
+      const switches = cli.switchCalls();
+      assert.strictEqual(switches.length, 1, "expected the worktree fallback to switch");
+      assert.strictEqual(switches[0].args[3], LIVE_HANDLE);
     });
   });
 
@@ -503,8 +546,15 @@ describe("Windows Orca window fallback", () => {
       const script = t.makeFocusCmd(4242, ["clawd-on-desk"], "key", 4660, "tok", ["clawd-on-desk"], true);
       assert.match(script, /\$wtHwndFromHook = \[IntPtr\]\(\[int64\]4660\)/);
       assert.match(script, /\$orcaHosted = \$true/);
-      assert.ok(script.includes("if (-not $focused -and -not $orcaHosted -and $cachedHwnd -ne [IntPtr]::Zero)"),
+      assert.ok(script.includes("if (-not $focused -and -not $orcaHosted) {"),
         "the window cache must be gated off for Orca sessions");
+      // Get-ClawdCachedWindow evicts the stored entry on a validation miss, so it
+      // has to be read inside that gate rather than before it — otherwise an Orca
+      // focus drops another path's cache entry as a side effect.
+      const cacheGateAt = script.indexOf("if (-not $focused -and -not $orcaHosted) {");
+      const cacheReadAt = script.indexOf("$cachedHwnd = Get-ClawdCachedWindow");
+      assert.ok(cacheGateAt > 0 && cacheReadAt > cacheGateAt,
+        "the cache must not be read, and evicted, ahead of the Orca gate");
       assert.ok(script.includes("if (-not $focused -and -not $orcaHosted -and $wtHwndFromHook -ne [IntPtr]::Zero)"),
         "the recorded wt_hwnd must be gated off for Orca sessions");
       // On orca-window-missing the reason must stay negative rather than being
@@ -543,5 +593,75 @@ describe("Windows Orca window fallback", () => {
       assert.strictEqual(t.isPositiveFocusReason("orca-window-ambiguous"), false);
       assert.strictEqual(t.isPositiveFocusReason("orca-window-missing"), false);
     });
+  });
+});
+
+// Every test above reaches into __test and drives the helpers directly, so none
+// of them would notice a platform branch losing the pane key or swapping its two
+// arguments. These go through the public focusTerminalWindow instead.
+function withFocusApi(opts, fn) {
+  const cliMock = mockOrcaCli(opts);
+  const logs = [];
+  const { initFocus, cleanup } = loadFocusWithMock(cliMock.mock, { platform: opts.platform });
+  try {
+    return fn(initFocus({ focusLog: (m) => logs.push(String(m)) }), cliMock, logs);
+  } finally {
+    cleanup();
+  }
+}
+
+describe("Orca focus wiring", () => {
+  it("reaches the pane switch from the Linux focus branch with the key and cwd in order", async () => {
+    await withFocusApi({ platform: "linux" }, async (api, cli) => {
+      api.focusTerminalWindow({
+        sourcePid: 4242,
+        cwd: CWD,
+        sessionId: "s-linux",
+        agentId: "claude-code",
+        orcaPaneKey: PANE_KEY,
+      });
+      await settle(api.__test);
+
+      const switches = cli.switchCalls();
+      assert.strictEqual(switches.length, 1, "expected exactly one terminal switch");
+      // Only the exact pane match yields LIVE_HANDLE. Swap the two arguments and
+      // indexOf(":") lands on the drive-letter colon instead, no pane matches, and
+      // the worktree fallback still resolves *a* terminal in the same project — so
+      // the wrong tab comes forward and the log still says orca-pane-switched.
+      assert.deepStrictEqual(switches[0].args,
+        ["terminal", "switch", "--terminal", LIVE_HANDLE, "--json"]);
+    });
+  });
+
+  it("does not touch the Orca CLI when the request carries no pane key", async () => {
+    await withFocusApi({ platform: "linux" }, async (api, cli) => {
+      api.focusTerminalWindow({
+        sourcePid: 4242,
+        cwd: CWD,
+        sessionId: "s-plain",
+        agentId: "claude-code",
+      });
+      await settle(api.__test);
+      assert.deepStrictEqual(cli.calls.filter((c) => c.cmd.includes("orca")), []);
+    });
+  });
+
+  it("carries the pane key through every focus-entry builder", () => {
+    const fs = require("fs");
+    const repo = path.join(__dirname, "..");
+    // These assignments are the only thing putting the pane key on the entry that
+    // reaches normalizeFocusRequest, and the permission bubble's "go to terminal"
+    // is the gesture the whole feature exists for. No fixture in
+    // test/permission-*.test.js sets a pane key, so deleting one of these lines
+    // otherwise fails nothing.
+    const sites = [
+      ["src/main.js", "if (entry.orcaPaneKey) focusEntry.orcaPaneKey = entry.orcaPaneKey;"],
+      ["src/main.js", "orcaPaneKey: session.orcaPaneKey,"],
+      ["src/permission.js", "if (perm.orcaPaneKey) focusEntry.orcaPaneKey = perm.orcaPaneKey;"],
+    ];
+    for (const [rel, needle] of sites) {
+      const src = fs.readFileSync(path.join(repo, rel), "utf8");
+      assert.ok(src.includes(needle), `${rel} must carry the pane key: ${needle}`);
+    }
   });
 });

@@ -329,6 +329,58 @@ describe("Windows terminal focus", () => {
     }
   });
 
+  it("enables the Orca gate in the generated script when the request carries a pane key", () => {
+    const writes = [];
+    const stdout = new EventEmitter();
+    stdout.setEncoding = () => {};
+    stdout.unref = () => {};
+    const { initFocus, cleanup } = loadFocusWithMock({
+      spawn: () => ({
+        pid: 9998,
+        stdin: {
+          writable: true,
+          write: (chunk) => writes.push(String(chunk)),
+          on() {},
+        },
+        stdout,
+        on() {},
+        unref() {},
+        kill() {},
+      }),
+    });
+
+    try {
+      const focus = initFocus({ focusLog: () => {} });
+      focus.initFocusHelper();
+      writes.length = 0;
+
+      focus.focusTerminalWindow({
+        sourcePid: 1111,
+        cwd: "D:\\repo-a",
+        sessionId: "session-orca",
+        agentId: "claude-code",
+        orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+      });
+      // orcaHosted is makeFocusCmd's 7th positional argument, and both array
+      // arguments are in scope at the call site — drop one and the gate silently
+      // becomes $false, re-opening the window cache and the incidental wt_hwnd
+      // that this branch exists to outrank, with the wrong window reported as a
+      // confirmed focus.
+      assert.match(writes.join(""), /\$orcaHosted = \$true/);
+
+      writes.length = 0;
+      focus.focusTerminalWindow({
+        sourcePid: 2222,
+        cwd: "D:\\repo-b",
+        sessionId: "session-plain",
+        agentId: "claude-code",
+      });
+      assert.match(writes.join(""), /\$orcaHosted = \$false/);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("correlates concurrent Windows helper results by token", async () => {
     const writes = [];
     const logs = [];
