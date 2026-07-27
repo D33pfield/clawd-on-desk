@@ -55,9 +55,15 @@
     picker.appendChild(menu);
 
     let activeValue = "";
+    let committedValue = "";
     let isOpen = false;
     let disposed = false;
     let changeSeq = 0;
+    let latestRequestSeq = 0;
+    const pendingChanges = new Map();
+
+    const MENU_GAP_PX = 6;
+    const DEFAULT_MENU_MAX_HEIGHT_PX = 240;
 
     function findOption(value) {
       const wanted = value == null ? "" : String(value);
@@ -81,6 +87,68 @@
       try { element.focus({ preventScroll: true }); } catch (_) { element.focus(); }
     }
 
+    function finiteNumber(value) {
+      return typeof value === "number" && Number.isFinite(value) ? value : null;
+    }
+
+    function findPlacementBoundary() {
+      let current = picker.parentNode;
+      while (current) {
+        const hasBoundary = typeof current.hasAttribute === "function"
+          ? current.hasAttribute("data-language-picker-boundary")
+          : (typeof current.getAttribute === "function"
+            && current.getAttribute("data-language-picker-boundary") != null);
+        if (hasBoundary) return current;
+        current = current.parentNode;
+      }
+      return null;
+    }
+
+    function getPlacementBounds() {
+      const viewportHeight = finiteNumber(root && root.innerHeight)
+        || finiteNumber(document && document.documentElement && document.documentElement.clientHeight);
+      if (!viewportHeight || viewportHeight <= 0) return null;
+
+      let top = 0;
+      let bottom = viewportHeight;
+      const boundary = findPlacementBoundary();
+      if (boundary && typeof boundary.getBoundingClientRect === "function") {
+        const rect = boundary.getBoundingClientRect();
+        const boundaryTop = finiteNumber(rect && rect.top);
+        const boundaryBottom = finiteNumber(rect && rect.bottom);
+        if (boundaryTop != null && boundaryBottom != null && boundaryBottom > boundaryTop) {
+          top = Math.max(top, boundaryTop);
+          bottom = Math.min(bottom, boundaryBottom);
+        }
+      }
+      return bottom > top ? { top, bottom } : null;
+    }
+
+    function positionMenu() {
+      picker.classList.remove("open-up");
+      menu.style.maxHeight = "";
+      if (typeof trigger.getBoundingClientRect !== "function") return;
+
+      const bounds = getPlacementBounds();
+      const triggerRect = trigger.getBoundingClientRect();
+      const triggerTop = finiteNumber(triggerRect && triggerRect.top);
+      const triggerBottom = finiteNumber(triggerRect && triggerRect.bottom);
+      if (!bounds || triggerTop == null || triggerBottom == null) return;
+
+      const naturalHeight = finiteNumber(menu.scrollHeight) || DEFAULT_MENU_MAX_HEIGHT_PX;
+      const availableAbove = Math.max(0, triggerTop - bounds.top - MENU_GAP_PX);
+      const availableBelow = Math.max(0, bounds.bottom - triggerBottom - MENU_GAP_PX);
+      const openUp = availableBelow < naturalHeight && availableAbove > availableBelow;
+      const availableHeight = openUp ? availableAbove : availableBelow;
+
+      picker.classList.toggle("open-up", openUp);
+      menu.style.maxHeight = Math.floor(Math.min(
+        DEFAULT_MENU_MAX_HEIGHT_PX,
+        naturalHeight,
+        availableHeight,
+      )) + "px";
+    }
+
     function setOpen(next, { focusTrigger = false } = {}) {
       if (disposed) return;
       isOpen = !!next && optionElements.length > 0;
@@ -89,6 +157,7 @@
       menu.setAttribute("aria-hidden", isOpen ? "false" : "true");
       paintValue(activeValue);
       if (isOpen) {
+        positionMenu();
         const selected = findOption(activeValue);
         focusElement(selected && selected.element);
       } else if (focusTrigger) {
@@ -96,9 +165,13 @@
       }
     }
 
-    function revertIfCurrent(previous, next, seq) {
-      if (disposed || seq !== changeSeq || activeValue !== next) return;
-      paintValue(previous);
+    function settleChange(seq, next, succeeded) {
+      if (disposed || !pendingChanges.has(seq)) return;
+      pendingChanges.delete(seq);
+      if (succeeded) committedValue = next;
+
+      const latestPending = pendingChanges.get(latestRequestSeq);
+      paintValue(latestPending || committedValue);
     }
 
     function choose(value) {
@@ -110,25 +183,26 @@
         return;
       }
 
-      const previous = activeValue;
+      const previous = committedValue;
       paintValue(entry.data.value);
       setOpen(false, { focusTrigger: true });
       const seq = ++changeSeq;
+      latestRequestSeq = seq;
+      pendingChanges.set(seq, entry.data.value);
       let result;
       try {
         result = typeof config.onChange === "function"
           ? config.onChange(entry.data.value, previous)
           : undefined;
       } catch (_) {
-        revertIfCurrent(previous, entry.data.value, seq);
+        settleChange(seq, entry.data.value, false);
         return;
       }
       Promise.resolve(result).then((outcome) => {
-        if (outcome === false || (outcome && outcome.status === "error")) {
-          revertIfCurrent(previous, entry.data.value, seq);
-        }
+        const succeeded = outcome !== false && !(outcome && outcome.status === "error");
+        settleChange(seq, entry.data.value, succeeded);
       }, () => {
-        revertIfCurrent(previous, entry.data.value, seq);
+        settleChange(seq, entry.data.value, false);
       });
     }
 
@@ -192,6 +266,7 @@
     }
 
     paintValue(config.value);
+    committedValue = activeValue;
     trigger.disabled = optionElements.length === 0;
 
     return {
@@ -199,12 +274,16 @@
       setValue(value) {
         if (disposed) return;
         changeSeq++;
+        latestRequestSeq = changeSeq;
+        pendingChanges.clear();
         paintValue(value);
+        committedValue = activeValue;
       },
       dispose() {
         if (disposed) return;
         disposed = true;
         changeSeq++;
+        pendingChanges.clear();
         if (document && typeof document.removeEventListener === "function") {
           document.removeEventListener("click", closeOnOutsideClick);
           document.removeEventListener("keydown", closeOnEscape);

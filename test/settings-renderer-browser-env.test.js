@@ -376,6 +376,63 @@ class FakeElement {
   }
 }
 
+function loadSharedLanguagePickerForTest({
+  value = "en",
+  options = ["en", "zh", "ja"],
+  onChange = () => Promise.resolve(true),
+  innerHeight = 600,
+} = {}) {
+  const body = new FakeElement("body");
+  const boundary = new FakeElement("div");
+  boundary.setAttribute("data-language-picker-boundary", "");
+  body.appendChild(boundary);
+  const documentListeners = new Map();
+  const document = {
+    body,
+    documentElement: { clientHeight: innerHeight },
+    createElement: (tagName) => new FakeElement(tagName),
+    addEventListener(type, cb) {
+      if (!documentListeners.has(type)) documentListeners.set(type, []);
+      documentListeners.get(type).push(cb);
+    },
+    removeEventListener(type, cb) {
+      const listeners = documentListeners.get(type);
+      if (!listeners) return;
+      const index = listeners.indexOf(cb);
+      if (index !== -1) listeners.splice(index, 1);
+    },
+  };
+  const context = {
+    console,
+    document,
+    innerHeight,
+    window: null,
+    globalThis: null,
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
+
+  const control = context.ClawdLanguagePicker.createLanguagePicker({
+    value,
+    options: options.map((option) => ({ value: option, label: option.toUpperCase() })),
+    ariaLabel: "Language",
+    onChange,
+  });
+  boundary.appendChild(control.element);
+
+  return {
+    boundary,
+    control,
+    picker: control.element,
+    trigger: control.element.querySelector(".language-picker-trigger"),
+    menu: control.element.querySelector(".language-picker-menu"),
+    optionElements: control.element.querySelectorAll(".language-picker-option"),
+    valueElement: control.element.querySelector(".language-picker-value"),
+  };
+}
+
 function loadGeneralLanguageRowForTest({
   snapshot,
   update = () => Promise.resolve({ status: "ok" }),
@@ -3742,6 +3799,80 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getLangValue().textContent, "English");
     assert.strictEqual(trigger.focused, true);
     assert.strictEqual(harness.getToastText(), "Failed: synthetic failure");
+  });
+
+  it("rolls concurrent failed language saves back to the last committed value", async () => {
+    const saves = [];
+    const changes = [];
+    const harness = loadSharedLanguagePickerForTest({
+      onChange: (next, previous) => {
+        const deferred = createDeferred();
+        saves.push(deferred);
+        changes.push({ next, previous });
+        return deferred.promise;
+      },
+    });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.optionElements[1].dispatchEvent({ type: "click" });
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.optionElements[2].dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.valueElement.textContent, "JA");
+    assert.deepStrictEqual(changes, [
+      { next: "zh", previous: "en" },
+      { next: "ja", previous: "en" },
+    ]);
+
+    saves[0].resolve(false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(harness.valueElement.textContent, "JA", "stale failure keeps the latest optimistic value");
+
+    saves[1].resolve(false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(harness.valueElement.textContent, "EN", "latest failure restores the committed value");
+  });
+
+  it("advances the rollback baseline after a concurrent language save succeeds", async () => {
+    const saves = [];
+    const harness = loadSharedLanguagePickerForTest({
+      onChange: () => {
+        const deferred = createDeferred();
+        saves.push(deferred);
+        return deferred.promise;
+      },
+    });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.optionElements[1].dispatchEvent({ type: "click" });
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.optionElements[2].dispatchEvent({ type: "click" });
+
+    saves[0].resolve(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(harness.valueElement.textContent, "JA", "newer optimistic choice remains visible");
+
+    saves[1].resolve(false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(harness.valueElement.textContent, "ZH", "failed latest choice restores the successful save");
+  });
+
+  it("flips and bounds the tutorial picker at minimum-size enlarged-text geometry", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      options: ["en", "zh", "zh-TW", "ko", "ja"],
+      innerHeight: 450,
+    });
+    harness.boundary.getBoundingClientRect = () => ({ top: 52, bottom: 400 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 220, bottom: 274 });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 240 });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+
+    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.menu.style.maxHeight, "162px");
+    assert.ok(parseInt(harness.menu.style.maxHeight, 10) < harness.menu.scrollHeight);
+    const css = fs.readFileSync(LANGUAGE_PICKER_CSS, "utf8");
+    assert.match(css, /\.language-picker-menu\s*\{[\s\S]*overflow-y:\s*auto;/);
+    assert.match(css, /\.language-picker\.open-up \.language-picker-menu\s*\{[\s\S]*bottom:\s*calc\(100% \+ 6px\);/);
   });
 
   it("cleans up language picker document listeners across re-renders", () => {

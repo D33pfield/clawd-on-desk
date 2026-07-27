@@ -157,7 +157,9 @@ describe("tutorial window shell", () => {
     assert.ok(!renderer.includes("lang-select"));
     assert.ok(html.includes(`href="language-picker.css"`));
     assert.ok(html.includes(`src="language-picker.js"`));
-    assert.match(html, /\.step-welcome \.welcome \{[^}]*transform: translateY\(-56px\);/);
+    assert.match(html, /\.step-welcome \.welcome \{[^}]*transform: translateY\(-4px\);/);
+    assert.match(html, /id="body" data-language-picker-boundary/);
+    assert.match(html, /\.body\.step-welcome \{[^}]*overflow-y: auto;[^}]*align-items: safe center;/s);
     assert.match(html, /style-src 'self' 'unsafe-inline'/);
   });
 

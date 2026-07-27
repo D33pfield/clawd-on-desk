@@ -107,9 +107,10 @@ body { user-select: none; }
   padding: 22px 26px;
 }
 .body.step-welcome {
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   display: flex;
-  align-items: center;
+  align-items: safe center;
   justify-content: center;
   padding: 18px 26px;
 }
@@ -151,7 +152,7 @@ body { user-select: none; }
 
 /* Welcome */
 .welcome { text-align: center; padding-top: 8px; }
-.step-welcome .welcome { width: 100%; padding-top: 0; transform: translateY(-56px); }
+.step-welcome .welcome { width: 100%; padding-top: 0; transform: translateY(-4px); }
 .welcome .hero-art { margin-bottom: 10px; }
 .step-welcome .hero-icon,
 .step-welcome .hero-fallback {
@@ -485,7 +486,7 @@ body { user-select: none; }
 <body>
 <div class="app">
   <div class="steps" id="steps"></div>
-  <div class="body" id="body"></div>
+  <div class="body" id="body" data-language-picker-boundary></div>
   <div class="footer" id="footer"></div>
 </div>
 <script src="shortcut-actions.js"></script>
