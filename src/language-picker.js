@@ -126,6 +126,7 @@
 
     function positionMenu() {
       picker.classList.remove("open-up");
+      picker.classList.remove("menu-scrollable");
       menu.style.maxHeight = "";
       if (typeof trigger.getBoundingClientRect !== "function") return;
 
@@ -135,18 +136,23 @@
       const triggerBottom = finiteNumber(triggerRect && triggerRect.bottom);
       if (!bounds || triggerTop == null || triggerBottom == null) return;
 
-      const naturalHeight = finiteNumber(menu.scrollHeight) || DEFAULT_MENU_MAX_HEIGHT_PX;
+      const contentHeight = finiteNumber(menu.scrollHeight) || DEFAULT_MENU_MAX_HEIGHT_PX;
+      const offsetHeight = finiteNumber(menu.offsetHeight) || contentHeight;
+      const clientHeight = finiteNumber(menu.clientHeight) || contentHeight;
+      const naturalHeight = contentHeight + Math.max(0, offsetHeight - clientHeight);
       const availableAbove = Math.max(0, triggerTop - bounds.top - MENU_GAP_PX);
       const availableBelow = Math.max(0, bounds.bottom - triggerBottom - MENU_GAP_PX);
       const openUp = availableBelow < naturalHeight && availableAbove > availableBelow;
       const availableHeight = openUp ? availableAbove : availableBelow;
-
-      picker.classList.toggle("open-up", openUp);
-      menu.style.maxHeight = Math.floor(Math.min(
+      const maxHeight = Math.floor(Math.min(
         DEFAULT_MENU_MAX_HEIGHT_PX,
         naturalHeight,
         availableHeight,
-      )) + "px";
+      ));
+
+      picker.classList.toggle("open-up", openUp);
+      picker.classList.toggle("menu-scrollable", maxHeight < naturalHeight);
+      menu.style.maxHeight = maxHeight + "px";
     }
 
     function setOpen(next, { focusTrigger = false } = {}) {

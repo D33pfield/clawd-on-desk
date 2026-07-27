@@ -66,9 +66,24 @@
   transform: translateY(-4px) scale(0.98);
   transform-origin: top right;
   pointer-events: none;
-  overflow-y: auto;
+  overflow-y: hidden;
   overscroll-behavior: contain;
   transition: opacity 0.14s ease, transform 0.14s ease;
+}
+.language-picker.menu-scrollable .language-picker-menu {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-secondary, var(--muted)) 42%, transparent) transparent;
+}
+.language-picker-menu::-webkit-scrollbar {
+  width: 6px;
+}
+.language-picker-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+.language-picker-menu::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-secondary, var(--muted)) 42%, transparent);
 }
 .language-picker.open-up .language-picker-menu {
   top: auto;

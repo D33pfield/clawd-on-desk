@@ -3864,15 +3864,36 @@ describe("settings renderer browser environment", () => {
     harness.boundary.getBoundingClientRect = () => ({ top: 52, bottom: 400 });
     harness.trigger.getBoundingClientRect = () => ({ top: 220, bottom: 274 });
     Object.defineProperty(harness.menu, "scrollHeight", { value: 240 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 242 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 240 });
 
     harness.trigger.dispatchEvent({ type: "click" });
 
     assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), true);
     assert.strictEqual(harness.menu.style.maxHeight, "162px");
     assert.ok(parseInt(harness.menu.style.maxHeight, 10) < harness.menu.scrollHeight);
     const css = fs.readFileSync(LANGUAGE_PICKER_CSS, "utf8");
-    assert.match(css, /\.language-picker-menu\s*\{[\s\S]*overflow-y:\s*auto;/);
+    assert.match(css, /\.language-picker\.menu-scrollable \.language-picker-menu\s*\{[\s\S]*overflow-y:\s*auto;/);
     assert.match(css, /\.language-picker\.open-up \.language-picker-menu\s*\{[\s\S]*bottom:\s*calc\(100% \+ 6px\);/);
+  });
+
+  it("does not show a scrollbar when an upward menu fits all language options", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      options: ["en", "zh", "zh-TW", "ko", "ja"],
+      innerHeight: 600,
+    });
+    harness.boundary.getBoundingClientRect = () => ({ top: 72, bottom: 502 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 445, bottom: 499 });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 160 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 162 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 160 });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+
+    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), false);
+    assert.strictEqual(harness.menu.style.maxHeight, "162px");
   });
 
   it("cleans up language picker document listeners across re-renders", () => {
