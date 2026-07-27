@@ -170,10 +170,13 @@ function createPetWindowRuntime(options = {}) {
   const clearTimeoutFn = options.clearTimeout || clearTimeout;
   const isNearWorkAreaEdge = options.isNearWorkAreaEdge || (() => false);
   // Low-noise diagnostics for the I2 offset legal-domain backstop and the
-  // assertNoYOffset guard (plan §3 I2, §4.3.2). Mirrors the crashReloadLog
-  // injection point below so tests can capture what would otherwise be a
-  // bare console.warn.
-  const edgeLog = options.edgeLog || ((message) => console.warn(message));
+  // assertNoYOffset guard (plan §3 I2, §4.3.2). Production logging is opt-in
+  // exactly as plan §8 specifies: ordinary `npm start` must not turn expected
+  // native-window reconciliation into warning spam. Tests and diagnostics can
+  // still inject edgeLog directly and therefore do not depend on process env.
+  const edgeLog = options.edgeLog || ((message) => {
+    if (process.env.CLAWD_WINDOW_DEBUG === "1") console.warn(message);
+  });
   // Phase 2 item 8's escape hatch (plan §4.3 point 12 / §11.11). A live
   // function (not a value captured once) so tests can flip it and so a
   // real CLAWD_DISABLE_EDGE_VIRTUALIZATION env change take effect without a
@@ -660,6 +663,27 @@ function createPetWindowRuntime(options = {}) {
       && a.width === b.width && a.height === b.height;
   }
 
+  // Electron's DIP <-> physical-pixel conversion can read a Windows window
+  // back one DIP wider/taller than the exact rect just requested (commonly at
+  // 125% display scale). This is not an external move: x/y are unchanged and
+  // the native size differs by at most one. Rebasing such a readback into the
+  // logical size makes the next write grow again (206 -> 207 -> 208) and also
+  // sends the hit window through the external-grab candidate path.
+  //
+  // Keep this deliberately narrow: position differences are always real, a
+  // size delta larger than one is still a resize, and Linux clamp evidence
+  // continues to use exact rectangles.
+  function isWindowsNativeSizeRounding(expected, actual) {
+    if (!isWin || !expected || !actual) return false;
+    const widthDelta = actual.width - expected.width;
+    const heightDelta = actual.height - expected.height;
+    return expected.x === actual.x
+      && expected.y === actual.y
+      && Math.abs(widthDelta) <= 1
+      && Math.abs(heightDelta) <= 1
+      && (widthDelta !== 0 || heightDelta !== 0);
+  }
+
   // §4.3.2's recomputeOffsetsFrom: rederives both offsets from a known-good
   // (logical, actualPhysical) pair without going through materialize. Callers:
   // the I2 backstop below (with logical===actualPhysical, trivially valid,
@@ -925,6 +949,17 @@ function createPetWindowRuntime(options = {}) {
     // stale echo, indefinitely" to "an echo landing inside one specific,
     // already-short window", not eliminated outright.
     if (sameRect(actual, expected)) {
+      nativeEventSeenThisGen = false;
+      syncDerivedSurfaces();
+      return;
+    }
+
+    // A Windows-only native size-rounding readback is self-write evidence,
+    // not a user/compositor move. Preserve the logical dimensions, accept the
+    // measured physical rect for this write generation, and consume the
+    // resize echo so a later mismatch cannot borrow it as external evidence.
+    if (isWindowsNativeSizeRounding(expected, actual)) {
+      expectedWrite = { ...expectedWrite, physical: { ...actual } };
       nativeEventSeenThisGen = false;
       syncDerivedSurfaces();
       return;
@@ -1800,6 +1835,21 @@ function createPetWindowRuntime(options = {}) {
     const actual = hitWin.getBounds();
 
     if (sameRect(actual, lastRequestedHitRect)) {
+      hitRetriedRect = null;
+      resetHitReconcileObservation();
+      return;
+    }
+
+    // Same Windows DIP rounding as the render window. Remember the derived
+    // target alongside its accepted native outcome so the next syncHitWin()
+    // reuses the settled rect instead of rewriting it and starting the cycle
+    // again. Pure x/y movement never enters this branch.
+    if (isWindowsNativeSizeRounding(lastRequestedHitRect, actual)) {
+      lastAdoptedHitOutcome = {
+        derived: { ...lastRequestedHitRect },
+        actual: { ...actual },
+      };
+      lastRequestedHitRect = { ...actual };
       hitRetriedRect = null;
       resetHitReconcileObservation();
       return;

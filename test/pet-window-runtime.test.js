@@ -1580,7 +1580,7 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
       );
     });
 
-    it("A-4 Windows context: a move/resize mismatch always rebases — adopt-clamp never applies off Linux", () => {
+    it("A-4 Windows context: a genuine position mismatch rebases — adopt-clamp never applies off Linux", () => {
       const clock = createFakeClock();
       const harness = createRuntime({ isWin: true, isLinux: false, clock });
       wireNativeGeometryListeners(harness);
@@ -1604,6 +1604,115 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
         harness.calls.some((c) => c[0] === "repositionAnchoredSurfaces" || c[0] === "syncHitWin"),
         "syncDerivedSurfaces must still run on the Windows rebase path"
       );
+    });
+
+    it("treats a Windows-only 1px size readback as native rounding without feeding it back through setBounds", () => {
+      const clock = createFakeClock();
+      const edgeLogs = [];
+      const renderWin = makeWindow({ x: 0, y: 0, width: 206, height: 206 });
+      const harness = createRuntime({
+        isWin: true,
+        isLinux: false,
+        clock,
+        renderWin,
+        edgeLog: (message) => edgeLogs.push(message),
+      });
+      wireNativeGeometryListeners(harness);
+
+      harness.runtime.applyPetWindowBounds({ x: 300, y: 200, width: 206, height: 206 });
+      const writesBeforeReadback = renderWin.calls.filter((call) => call[0] === "setBounds").length;
+
+      // Windows at fractional display scale can report the just-written
+      // native window one DIP wider while leaving its position unchanged.
+      renderWin.bounds = { x: 300, y: 200, width: 207, height: 206 };
+      renderWin.emit("resize");
+      clock.advance(500);
+
+      assert.deepEqual(
+        harness.runtime.getPetWindowBounds(),
+        { x: 300, y: 200, width: 207, height: 206 },
+        "public bounds keep their existing live-size contract while logical position stays unchanged"
+      );
+      assert.equal(
+        renderWin.calls.filter((call) => call[0] === "setBounds").length,
+        writesBeforeReadback,
+        "reconcile must not feed the rounded native width back through setBounds"
+      );
+      assert.ok(
+        !edgeLogs.some((line) => line.includes("edge-reconcile")),
+        "expected Windows size rounding must not be logged as a rebase"
+      );
+    });
+
+    it("does not classify a Windows hit-window 1px size readback as an external grab", () => {
+      const clock = createFakeClock();
+      const edgeLogs = [];
+      const hitWin = makeWindow({ x: 0, y: 0, width: 1, height: 1 });
+      hitWin.setBounds = (next) => {
+        hitWin.calls.push(["setBounds", next]);
+        hitWin.bounds = { ...next, width: next.width + 1 };
+      };
+      const harness = createRuntime({
+        isWin: true,
+        isLinux: false,
+        clock,
+        hitWin,
+        edgeLog: (message) => edgeLogs.push(message),
+      });
+      wireNativeGeometryListeners(harness);
+
+      harness.runtime.applyPetWindowBounds({ x: 300, y: 200, width: 206, height: 206 });
+      harness.runtime.syncHitWin();
+      hitWin.emit("resize");
+      clock.advance(750);
+
+      const writesAfterRoundingAdoption = hitWin.calls.filter((call) => call[0] === "setBounds").length;
+      harness.runtime.syncHitWin();
+      assert.equal(
+        hitWin.calls.filter((call) => call[0] === "setBounds").length,
+        writesAfterRoundingAdoption,
+        "the settled rounding outcome must be reused instead of rewritten on the next hit sync"
+      );
+      assert.ok(
+        !edgeLogs.some((line) => line.includes("edge-hit-external-move-candidate")),
+        "a size-only native rounding readback must never enter the two-sample external-grab path"
+      );
+    });
+
+    it("keeps edge reconciliation diagnostics silent unless CLAWD_WINDOW_DEBUG=1", () => {
+      const originalDebug = process.env.CLAWD_WINDOW_DEBUG;
+      const originalWarn = console.warn;
+      const warnings = [];
+      console.warn = (message) => warnings.push(String(message));
+
+      try {
+        delete process.env.CLAWD_WINDOW_DEBUG;
+        const quietClock = createFakeClock();
+        const quietHarness = createRuntime({ isWin: true, isLinux: false, clock: quietClock });
+        wireNativeGeometryListeners(quietHarness);
+        quietHarness.runtime.applyPetWindowBounds({ x: 200, y: 100, width: 100, height: 100 });
+        quietHarness.renderWin.bounds = { x: 400, y: 100, width: 100, height: 100 };
+        quietHarness.renderWin.emit("move");
+        quietClock.advance(150);
+        assert.deepEqual(warnings, [], "normal startup/runtime must not emit edge diagnostics");
+
+        process.env.CLAWD_WINDOW_DEBUG = "1";
+        const debugClock = createFakeClock();
+        const debugHarness = createRuntime({ isWin: true, isLinux: false, clock: debugClock });
+        wireNativeGeometryListeners(debugHarness);
+        debugHarness.runtime.applyPetWindowBounds({ x: 200, y: 100, width: 100, height: 100 });
+        debugHarness.renderWin.bounds = { x: 400, y: 100, width: 100, height: 100 };
+        debugHarness.renderWin.emit("move");
+        debugClock.advance(150);
+        assert.ok(
+          warnings.some((line) => line.includes("edge-reconcile") && line.includes("action=rebase")),
+          "the explicit debug switch must retain the diagnostic output"
+        );
+      } finally {
+        console.warn = originalWarn;
+        if (originalDebug === undefined) delete process.env.CLAWD_WINDOW_DEBUG;
+        else process.env.CLAWD_WINDOW_DEBUG = originalDebug;
+      }
     });
   });
 });
