@@ -320,6 +320,86 @@ test("Codex Pet removal confirmation uses zh-TW strings", async (t) => {
   assert.match(showMessageBoxCalls[0].options.detail, /無法復原/);
 });
 
+test("Codex Pet removal clears every preference scoped to the removed theme", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-pet-main-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const petsRoot = path.join(root, "pets");
+  const themesRoot = path.join(root, "themes");
+  const packageDir = path.join(petsRoot, "pet-one");
+  fs.mkdirSync(packageDir, { recursive: true });
+  fs.mkdirSync(path.join(themesRoot, "codex-pet-one"), { recursive: true });
+  fs.writeFileSync(path.join(packageDir, "pet.json"), "{}");
+
+  const themeId = "codex-pet-one";
+  const snapshot = {
+    theme: "clawd",
+    themeOverrides: { [themeId]: { states: {} }, clawd: { states: {} } },
+    themeVariant: { [themeId]: "night", clawd: "default" },
+    idleVisual: { [themeId]: "idle.png", clawd: "clawd-idle-follow.svg" },
+    petTint: { [themeId]: "matcha", clawd: "gold" },
+    petAccessory: { [themeId]: "halo", clawd: "wizard-hat" },
+  };
+  const bulkPatches = [];
+  const runtime = createCodexPetMain({
+    app: {
+      getPath: () => root,
+      isReady: () => false,
+    },
+    dialog: {
+      async showMessageBox() {
+        return { response: 0 };
+      },
+    },
+    shell: {},
+    settingsController: {
+      get: (key) => snapshot[key],
+      applyBulk(patch) {
+        bulkPatches.push(patch);
+        Object.assign(snapshot, patch);
+        return { status: "ok" };
+      },
+    },
+    themeLoader: {
+      ensureUserThemesDir: () => themesRoot,
+      getThemeMetadata: () => ({ name: "Pet One" }),
+    },
+    codexPetAdapter: {
+      readManagedMarker: () => ({
+        sourcePetId: "pet-one",
+        sourcePackagePath: packageDir,
+      }),
+      syncCodexPetThemes: () => ({ removed: 1, themes: [] }),
+    },
+    codexPetImporter: {
+      getDefaultCodexPetsDir: () => petsRoot,
+    },
+  });
+
+  const result = await runtime.removeCodexPet(themeId);
+
+  assert.strictEqual(result.status, "ok");
+  assert.strictEqual(fs.existsSync(packageDir), false);
+  assert.strictEqual(bulkPatches.length, 1);
+  for (const key of [
+    "themeOverrides",
+    "themeVariant",
+    "idleVisual",
+    "petTint",
+    "petAccessory",
+  ]) {
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(bulkPatches[0][key], themeId),
+      false,
+      `${key} must not retain the removed Codex Pet id`
+    );
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(bulkPatches[0][key], "clawd"),
+      `${key} must preserve unrelated themes`
+    );
+  }
+});
+
 test("Codex Pet import queue ignores overlapping flush calls while the first drain is active", async () => {
   let releaseFirstImport;
   let firstImportStarted;

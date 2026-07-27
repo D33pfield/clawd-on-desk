@@ -13,6 +13,27 @@ const {
   sendStateHealthResponse,
   handleStatePost,
 } = require("../src/server-route-state");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
+const { buildStateBody } = require("../hooks/clawd-hook");
+const { makeSessionKey } = require("../src/session-key");
+const localSessionKey = (rawSessionId) => makeSessionKey({
+  profileId: "local",
+  rawSessionId,
+});
+
+function makePlanPermission(rawSessionId) {
+  return {
+    res: {},
+    sessionId: localSessionKey(rawSessionId),
+    toolName: "ExitPlanMode",
+    agentId: "claude-code",
+    subagentId: null,
+    interaction: classifyPermissionInteraction({
+      agentId: "claude-code",
+      toolName: "ExitPlanMode",
+    }),
+  };
+}
 
 function makeReq(body) {
   const req = new EventEmitter();
@@ -49,6 +70,7 @@ function callStatePost(body, overrides = {}) {
       setState: [],
       recorder: [],
       resolved: [],
+      logs: [],
       userInputShown: [],
       userInputCleared: [],
     };
@@ -58,6 +80,7 @@ function callStatePost(body, overrides = {}) {
         working: "x.svg",
         attention: "x.svg",
         notification: "x.svg",
+        sleeping: "x.svg",
         "mini-idle": "x.svg",
       },
       pendingPermissions: [],
@@ -67,6 +90,7 @@ function callStatePost(body, overrides = {}) {
       updateSession: (...args) => calls.updateSession.push(args),
       updateAccountQuota: (...args) => calls.updateAccountQuota.push(args),
       resolvePermissionEntry: (perm, behavior, message) => calls.resolved.push({ perm, behavior, message }),
+      permLog: (message) => calls.logs.push(message),
       showCodexUserInputBubble: (input) => { calls.userInputShown.push(input); return true; },
       clearCodexUserInputBubbles: (...args) => calls.userInputCleared.push(args),
       ...overrides.ctx,
@@ -108,6 +132,192 @@ describe("server-route-state health", () => {
 });
 
 describe("server-route-state POST", () => {
+  it("settles only the matching Claude subagent decision from the real hook body", async () => {
+    const matching = {
+      ...makePlanPermission("subagent-session"),
+      subagentId: "agent-child-a",
+    };
+    const sibling = {
+      ...makePlanPermission("subagent-session"),
+      subagentId: "agent-child-b",
+    };
+    const body = buildStateBody(
+      "SessionEnd",
+      {
+        session_id: "subagent-session",
+        agent_id: "agent-child-a",
+        agent_type: "Explore",
+      },
+      () => ({
+        stablePid: null,
+        agentPid: null,
+        detectedEditor: null,
+        pidChain: [],
+      })
+    );
+
+    const res = await callStatePost(JSON.stringify(body), {
+      ctx: { pendingPermissions: [matching, sibling] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(
+      res.calls.resolved.map(({ perm, behavior }) => ({ perm, behavior })),
+      [{ perm: matching, behavior: "no-decision" }]
+    );
+    const updateOptions = res.calls.updateSession[0][3];
+    assert.strictEqual(updateOptions.subagentId, "agent-child-a");
+    assert.strictEqual(updateOptions.subagentType, "Explore");
+  });
+
+  it("clears main-thread and all subagent decisions on a main-session SessionEnd", async () => {
+    const main = makePlanPermission("whole-session");
+    const childPlan = {
+      ...makePlanPermission("whole-session"),
+      subagentId: "agent-child-a",
+    };
+    const childQuestion = {
+      ...makePlanPermission("whole-session"),
+      subagentId: "agent-child-b",
+      toolName: "AskUserQuestion",
+      interaction: classifyPermissionInteraction({
+        agentId: "claude-code",
+        toolName: "AskUserQuestion",
+      }),
+    };
+    const otherSession = makePlanPermission("other-session");
+    const otherAgent = {
+      ...makePlanPermission("whole-session"),
+      agentId: "codebuddy",
+      interaction: classifyPermissionInteraction({
+        agentId: "codebuddy",
+        toolName: "ExitPlanMode",
+      }),
+    };
+
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "whole-session",
+      event: "SessionEnd",
+      agent_id: "claude-code",
+    }), {
+      ctx: {
+        pendingPermissions: [main, childPlan, childQuestion, otherSession, otherAgent],
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(
+      res.calls.resolved.map(({ perm, behavior }) => ({ perm, behavior })),
+      [
+        { perm: main, behavior: "no-decision" },
+        { perm: childPlan, behavior: "no-decision" },
+        { perm: childQuestion, behavior: "no-decision" },
+      ]
+    );
+  });
+
+  it("uses trusted profile scope for identical remote raw ids, host labels, quota, and user-input actions", async () => {
+    const rawSessionId = "shared-raw-id";
+    const postFor = (profileId) => callStatePost(JSON.stringify({
+      state: "notification",
+      session_id: rawSessionId,
+      event: "CodexUserInputRequest",
+      agent_id: "codex",
+      host: "spoofed-by-hook",
+      codex_quota: { codexWeekly: { usedPercent: 33 } },
+      codex_user_input: {
+        phase: "request",
+        call_id: "same-call",
+        questions: [{
+          id: "scope",
+          header: "Scope",
+          question: "Which scope?",
+          options: [{ label: "Focused", description: "One module" }],
+        }],
+      },
+    }), {
+      options: {
+        remoteProfile: {
+          profileId,
+          displayHost: "same-display-host",
+        },
+      },
+    });
+
+    const [a, b] = await Promise.all([postFor("profile-a"), postFor("profile-b")]);
+    const aId = makeSessionKey({ profileId: "profile-a", rawSessionId });
+    const bId = makeSessionKey({ profileId: "profile-b", rawSessionId });
+    assert.notStrictEqual(aId, bId);
+    assert.strictEqual(a.calls.userInputShown[0].sessionId, aId);
+    assert.strictEqual(b.calls.userInputShown[0].sessionId, bId);
+    assert.deepStrictEqual(a.calls.updateSession[0].slice(0, 3), [
+      aId, "notification", "CodexUserInputRequest",
+    ]);
+    assert.deepStrictEqual(b.calls.updateSession[0].slice(0, 3), [
+      bId, "notification", "CodexUserInputRequest",
+    ]);
+    for (const [res, profileId] of [[a, "profile-a"], [b, "profile-b"]]) {
+      const opts = res.calls.updateSession[0][3];
+      assert.strictEqual(opts.profileId, profileId);
+      assert.strictEqual(opts.rawSessionId, rawSessionId);
+      assert.strictEqual(opts.host, "same-display-host");
+      assert.deepStrictEqual(res.calls.updateAccountQuota[0][0], `remote:${profileId}`);
+      assert.strictEqual(res.calls.updateAccountQuota[0][1].displayHost, "same-display-host");
+    }
+
+    const resolvedA = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: rawSessionId,
+      event: "CodexUserInputResolved",
+      agent_id: "codex",
+      codex_user_input: { phase: "resolved", call_id: "same-call" },
+    }), {
+      options: {
+        remoteProfile: {
+          profileId: "profile-a",
+          displayHost: "same-display-host",
+        },
+      },
+    });
+    assert.deepStrictEqual(resolvedA.calls.userInputCleared, [[
+      aId, "same-call", "codex-user-input-resolved",
+    ]]);
+    assert.notStrictEqual(resolvedA.calls.userInputCleared[0][0], bId);
+  });
+
+  it("keeps Codex official turns separate when two remote profiles reuse the same raw ids", async () => {
+    const turns = new Map();
+    const rawSessionId = "copied-codex-session";
+    const base = {
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: rawSessionId,
+      turn_id: "same-turn",
+    };
+    const post = (profileId, event, state) => callStatePost(JSON.stringify({
+      ...base,
+      event,
+      state,
+      codex_session_role: "root",
+    }), {
+      options: {
+        remoteProfile: { profileId, displayHost: "shared-host" },
+        codexOfficialTurns: turns,
+      },
+    });
+
+    await post("profile-a", "UserPromptSubmit", "thinking");
+    await post("profile-a", "PreToolUse", "working");
+    await post("profile-b", "UserPromptSubmit", "thinking");
+    const bStop = await post("profile-b", "Stop", "idle");
+    const aStop = await post("profile-a", "Stop", "idle");
+
+    assert.strictEqual(bStop.calls.updateSession[0][1], "idle");
+    assert.strictEqual(aStop.calls.updateSession[0][1], "attention");
+    assert.strictEqual(turns.size, 0);
+  });
+
   it("passes normalized metadata to updateSession", async () => {
     const res = await callStatePost(JSON.stringify({
       state: "working",
@@ -141,7 +351,7 @@ describe("server-route-state POST", () => {
 
     assert.strictEqual(res.statusCode, 200);
     assert.deepStrictEqual(res.calls.updateSession, [[
-      "sid",
+      localSessionKey("sid"),
       "working",
       "PreToolUse",
       {
@@ -211,7 +421,7 @@ describe("server-route-state POST", () => {
     assert.strictEqual(request.statusCode, 200);
     assert.strictEqual(request.calls.userInputShown.length, 1);
     assert.deepStrictEqual(request.calls.userInputShown[0], {
-      sessionId: "codex:remote",
+      sessionId: localSessionKey("codex:remote"),
       callId: "call_remote",
       questions: [{
         id: "scope",
@@ -248,7 +458,7 @@ describe("server-route-state POST", () => {
     }));
     assert.strictEqual(resolved.statusCode, 200);
     assert.deepStrictEqual(resolved.calls.userInputCleared, [[
-      "codex:remote", "call_remote", "codex-user-input-resolved",
+      localSessionKey("codex:remote"), "call_remote", "codex-user-input-resolved",
     ]]);
     assert.deepStrictEqual(resolved.calls.updateSession, []);
     assert.deepStrictEqual(resolved.calls.updateAccountQuota, [[
@@ -546,7 +756,7 @@ describe("server-route-state POST", () => {
       claudeWeekly: { usedPercent: 41, resetAt: 1738831180000 },
     });
     assert.strictEqual(metadataCalls.length, 1);
-    assert.strictEqual(metadataCalls[0][0], "sid");
+    assert.strictEqual(metadataCalls[0][0], localSessionKey("sid"));
     assert.deepStrictEqual(metadataCalls[0][1], {
       contextUsage: { used: 50000, limit: 200000, percent: 25, source: "claude" },
     });
@@ -640,7 +850,7 @@ describe("server-route-state POST", () => {
       agent_id: id,
     }), { ctx: { getCustomAgentIds: () => [id] } });
     assert.strictEqual(res.statusCode, 200);
-    assert.strictEqual(res.calls.updateSession[0][0], `${id}:sid`);
+    assert.strictEqual(res.calls.updateSession[0][0], localSessionKey(`${id}:sid`));
     assert.strictEqual(res.calls.updateSession[0][3].agentId, id);
   });
 
@@ -662,10 +872,10 @@ describe("server-route-state POST", () => {
       post("claude-code", "shared"),
     ]);
 
-    assert.strictEqual(first.calls.updateSession[0][0], `${firstId}:shared`);
-    assert.strictEqual(second.calls.updateSession[0][0], `${secondId}:shared`);
-    assert.strictEqual(customDefault.calls.updateSession[0][0], `${firstId}:default`);
-    assert.strictEqual(builtin.calls.updateSession[0][0], "shared");
+    assert.strictEqual(first.calls.updateSession[0][0], localSessionKey(`${firstId}:shared`));
+    assert.strictEqual(second.calls.updateSession[0][0], localSessionKey(`${secondId}:shared`));
+    assert.strictEqual(customDefault.calls.updateSession[0][0], localSessionKey(`${firstId}:default`));
+    assert.strictEqual(builtin.calls.updateSession[0][0], localSessionKey("shared"));
   });
 
   it("rejects stale custom ids before hook_source fallback", async () => {
@@ -857,7 +1067,7 @@ describe("server-route-state wt_hwnd sampling (#627 residual)", () => {
 
   it("effective metadata: an existing session's headless flag blocks sampling even though this body omits it", async () => {
     let probeCalls = 0;
-    const sessions = new Map([["sid", { headless: true, sourcePid: 111 }]]);
+    const sessions = new Map([[localSessionKey("sid"), { headless: true, sourcePid: 111 }]]);
     const res = await callStatePost(samplingBody(), {
       ctx: { sessions },
       options: {
@@ -872,7 +1082,7 @@ describe("server-route-state wt_hwnd sampling (#627 residual)", () => {
 
   it("effective metadata: an existing session's host (remote) blocks sampling", async () => {
     let probeCalls = 0;
-    const sessions = new Map([["sid", { host: "remote-host", sourcePid: 111 }]]);
+    const sessions = new Map([[localSessionKey("sid"), { host: "remote-host", sourcePid: 111 }]]);
     const res = await callStatePost(samplingBody(), {
       ctx: { sessions },
       options: {
@@ -887,7 +1097,7 @@ describe("server-route-state wt_hwnd sampling (#627 residual)", () => {
 
   it("effective metadata: an existing session's wslDistro blocks sampling", async () => {
     let probeCalls = 0;
-    const sessions = new Map([["sid", { wslDistro: "Ubuntu", sourcePid: 111 }]]);
+    const sessions = new Map([[localSessionKey("sid"), { wslDistro: "Ubuntu", sourcePid: 111 }]]);
     const res = await callStatePost(samplingBody(), {
       ctx: { sessions },
       options: {
@@ -902,7 +1112,7 @@ describe("server-route-state wt_hwnd sampling (#627 residual)", () => {
 
   it("effective metadata: an existing session's webui platform blocks sampling", async () => {
     let probeCalls = 0;
-    const sessions = new Map([["sid", { platform: "webui", sourcePid: 111 }]]);
+    const sessions = new Map([[localSessionKey("sid"), { platform: "webui", sourcePid: 111 }]]);
     const res = await callStatePost(samplingBody(), {
       ctx: { sessions },
       options: {
@@ -934,7 +1144,7 @@ describe("server-route-state wt_hwnd sampling (#627 residual)", () => {
 
   it("effectiveSourcePid gate: a cache miss (no incoming source_pid) still samples when the existing session already has one", async () => {
     let probeCalls = 0;
-    const sessions = new Map([["sid", { sourcePid: 4242 }]]);
+    const sessions = new Map([[localSessionKey("sid"), { sourcePid: 4242 }]]);
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -969,7 +1179,7 @@ describe("server-route-state wt_hwnd sampling (#627 residual)", () => {
     });
     // previous: no incoming, probe null, but the existing session already has a wt_hwnd.
     await callStatePost(samplingBody(), {
-      ctx: { debugLog, sessions: new Map([["sid", { wtHwnd: "333", sourcePid: 111 }]]) },
+      ctx: { debugLog, sessions: new Map([[localSessionKey("sid"), { wtHwnd: "333", sourcePid: 111 }]]) },
       options: { isWinHost: true, captureForegroundWindowsTerminal: () => null },
     });
     // none: no incoming, probe null, no existing session at all.
@@ -1033,7 +1243,7 @@ describe("server-route-state wt_hwnd sampling (#627 residual)", () => {
     const logs = [];
     const debugLog = (msg) => logs.push(msg);
     await callStatePost(samplingBody({ event: "PreToolUse" }), {
-      ctx: { debugLog, sessions: new Map([["sid", { wtHwnd: "333", sourcePid: 111 }]]) },
+      ctx: { debugLog, sessions: new Map([[localSessionKey("sid"), { wtHwnd: "333", sourcePid: 111 }]]) },
       options: { isWinHost: true, captureForegroundWindowsTerminal: () => "999" },
     });
     assert.strictEqual(
@@ -1046,7 +1256,7 @@ describe("server-route-state wt_hwnd sampling (#627 residual)", () => {
 
 describe("server-route-state ExitPlanMode stale sweep", () => {
   it("clears stale ExitPlanMode on UserPromptSubmit for same session", async () => {
-    const stalePerm = { res: {}, sessionId: "sid", toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1063,7 +1273,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("does NOT clear ExitPlanMode for a different session", async () => {
-    const stalePerm = { res: {}, sessionId: "other-sid", toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("other-sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1077,7 +1287,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("does NOT trigger sweep on PreToolUse(ExitPlanMode)", async () => {
-    const stalePerm = { res: {}, sessionId: "sid", toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1092,7 +1302,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("triggers sweep on PreToolUse with a different tool", async () => {
-    const stalePerm = { res: {}, sessionId: "sid", toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1108,7 +1318,14 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("does NOT clear non-ExitPlanMode pending permissions", async () => {
-    const otherPerm = { res: {}, sessionId: "sid", toolName: "Bash" };
+    const otherPerm = {
+      res: {},
+      sessionId: localSessionKey("sid"),
+      toolName: "Bash",
+      agentId: "claude-code",
+      subagentId: null,
+      interaction: classifyPermissionInteraction({ agentId: "claude-code", toolName: "Bash" }),
+    };
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1122,7 +1339,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("skips entries with no res (already cleaned up)", async () => {
-    const stalePerm = { res: null, sessionId: "sid", toolName: "ExitPlanMode" };
+    const stalePerm = { ...makePlanPermission("sid"), res: null };
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1136,7 +1353,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("clears stale ExitPlanMode on PostToolUse(ExitPlanMode) as fallback", async () => {
-    const stalePerm = { res: {}, sessionId: "sid", toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1150,5 +1367,50 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
     assert.strictEqual(res.calls.resolved.length, 1);
     assert.strictEqual(res.calls.resolved[0].perm, stalePerm);
     assert.strictEqual(res.calls.resolved[0].message, "User answered in terminal");
+  });
+
+  it("does not sweep a sibling decision after an exact decision match", async () => {
+    const exact = makePlanPermission("sid");
+    exact.toolUseId = "tool-exact";
+    const sibling = {
+      ...makePlanPermission("sid"),
+      toolName: "AskUserQuestion",
+      interaction: classifyPermissionInteraction({
+        agentId: "claude-code",
+        toolName: "AskUserQuestion",
+      }),
+    };
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "PostToolUse",
+      tool_name: "ExitPlanMode",
+      tool_use_id: "tool-exact",
+    }), {
+      ctx: { pendingPermissions: [exact, sibling] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(
+      res.calls.resolved.map(({ perm }) => perm),
+      [exact]
+    );
+  });
+
+  it("logs and preserves ambiguous decision sweeps instead of guessing", async () => {
+    const first = makePlanPermission("sid");
+    const second = makePlanPermission("sid");
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "UserPromptSubmit",
+      agent_id: "claude-code",
+    }), {
+      ctx: { pendingPermissions: [first, second] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(res.calls.resolved, []);
+    assert.match(res.calls.logs.join("\n"), /decision sweep ambiguous:.*candidates=2/);
   });
 });

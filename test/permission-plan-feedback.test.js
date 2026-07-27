@@ -8,6 +8,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const Module = require("node:module");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 
 // ── Mock electron before requiring permission.js ──
 // permission.js does `const { BrowserWindow, globalShortcut } = require("electron")`
@@ -110,7 +111,7 @@ function makeCtx(overrides = {}) {
 }
 
 function makePlanPermEntry(res, overrides = {}) {
-  return {
+  const entry = {
     res,
     abortHandler: () => {},
     suggestions: [],
@@ -121,8 +122,14 @@ function makePlanPermEntry(res, overrides = {}) {
     toolInput: { plan: "Build a React app" },
     resolvedSuggestion: null,
     createdAt: Date.now() - 5000,
+    agentId: "claude-code",
     ...overrides,
   };
+  entry.interaction = entry.interaction || classifyPermissionInteraction({
+    agentId: entry.agentId,
+    toolName: entry.toolName,
+  });
+  return entry;
 }
 
 // Fake bubble window + IPC event. handleDecide() calls
@@ -304,6 +311,19 @@ describe("permission plan-feedback handleDecide routing (IPC entry point)", () =
     assert.strictEqual(perm.pendingPermissions.indexOf(permEntry), -1);
     assert.strictEqual(ctx.focusTerminalCalls.length, 1);
     assert.strictEqual(ctx.focusTerminalCalls[0].sessionId, "plan-session-1");
+  });
+
+  it("rejects oversized plan feedback without sending a deny payload", () => {
+    const { perm, res, bubble, permEntry } = setup();
+
+    perm.handleDecide(makeEventFor(bubble), {
+      type: "plan-feedback",
+      feedback: "x".repeat(4001),
+    });
+
+    assert.strictEqual(res.captured.ended, false);
+    assert.strictEqual(res.destroyed, true);
+    assert.strictEqual(perm.pendingPermissions.indexOf(permEntry), -1);
   });
 
   it("does NOT treat a plan-feedback object as feedback for a non-ExitPlanMode tool", () => {

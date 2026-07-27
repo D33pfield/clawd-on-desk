@@ -8,6 +8,7 @@
 const assert = require("node:assert");
 const Module = require("node:module");
 const { afterEach, test } = require("node:test");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 
 const PERMISSION_MODULE_PATH = require.resolve("../src/permission");
 
@@ -134,6 +135,8 @@ function pushPending(permission, { bubble = null, res = createResponse() } = {})
     hideTimer: null,
     toolName: "Bash",
     toolInput: { command: "echo hi" },
+    agentId: "claude-code",
+    interaction: classifyPermissionInteraction({ agentId: "claude-code", toolName: "Bash" }),
     resolvedSuggestion: null,
     createdAt: Date.now() - 5000,
   };

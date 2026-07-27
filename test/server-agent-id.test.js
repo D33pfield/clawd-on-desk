@@ -6,6 +6,9 @@ const assert = require("node:assert");
 const {
   DEFAULT_HOOK_AGENT_ID,
   KNOWN_HOOK_AGENT_IDS,
+  MAX_SUBAGENT_ID_LENGTH,
+  MAX_SUBAGENT_TYPE_LENGTH,
+  normalizeSubagentMetadata,
   resolveHookAgentId,
 } = require("../src/server-agent-id");
 
@@ -102,6 +105,28 @@ describe("resolveHookAgentId", () => {
     assert.strictEqual(resolved.source, "subagent");
     assert.strictEqual(resolved.subagentId, SUBAGENT_UUID);
     assert.strictEqual(resolved.subagentType, null);
+  });
+
+  it("uses the shared bounded normalizer for subagent ids and types", () => {
+    assert.strictEqual(normalizeSubagentMetadata(` ${SUBAGENT_UUID} `, MAX_SUBAGENT_ID_LENGTH), SUBAGENT_UUID);
+    assert.strictEqual(normalizeSubagentMetadata("reviewer", MAX_SUBAGENT_TYPE_LENGTH), "reviewer");
+    assert.strictEqual(normalizeSubagentMetadata(`x${"\n"}y`, MAX_SUBAGENT_ID_LENGTH), null);
+    assert.strictEqual(normalizeSubagentMetadata("x".repeat(MAX_SUBAGENT_ID_LENGTH + 1), MAX_SUBAGENT_ID_LENGTH), null);
+
+    const overlong = "x".repeat(MAX_SUBAGENT_ID_LENGTH + 1);
+    assert.deepStrictEqual(resolveHookAgentId({ agent_id: overlong }), {
+      agentId: null,
+      source: "rejected-subagent",
+      rejected: true,
+      rawAgentId: overlong.slice(0, 80),
+    });
+
+    const invalidType = resolveHookAgentId({
+      agent_id: SUBAGENT_UUID,
+      agent_type: "x".repeat(MAX_SUBAGENT_TYPE_LENGTH + 1),
+    });
+    assert.strictEqual(invalidType.source, "subagent");
+    assert.strictEqual(invalidType.subagentType, null);
   });
 
   it("prefers hook_source routing over an unknown agent_id", () => {

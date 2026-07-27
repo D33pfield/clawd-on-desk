@@ -3,6 +3,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const { EventEmitter } = require("node:events");
+const initPermission = require("../src/permission");
 
 const {
   CLAWD_SERVER_HEADER,
@@ -17,6 +18,20 @@ const {
   shouldBypassCopilotBubble,
   shouldBypassFamilyBubble,
 } = require("../src/server-route-permission");
+const {
+  INTERACTION_INTENT,
+  classifyPermissionInteraction,
+  isValidInteraction,
+} = require("../src/permission-automation-policy");
+const { makeSessionKey } = require("../src/session-key");
+
+function localSessionKey(rawSessionId) {
+  return makeSessionKey({ profileId: "local", rawSessionId });
+}
+
+function interaction(agentId, toolName) {
+  return classifyPermissionInteraction({ agentId, toolName });
+}
 
 function makeReq(body) {
   const req = new EventEmitter();
@@ -130,11 +145,70 @@ function callPermissionPost(body, overrides = {}) {
   });
 }
 
+function callPermissionPostThroughAutomation(body, mode, options = {}) {
+  return new Promise((resolve) => {
+    const res = makeRes();
+    const ctx = makeCtx({
+      focusTerminalForSession() {},
+      getSettingsSnapshot: () => ({}),
+      getPermissionAutomationMode: () => mode,
+      getBubblePolicy: () => ({ enabled: true, autoCloseMs: 0 }),
+      getPetWindowBounds: () => null,
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
+      getHitRectScreen: () => null,
+      getHudReservedOffset: () => 0,
+      guardAlwaysOnTop() {},
+      reapplyMacVisibility() {},
+      repositionUpdateBubble() {},
+      subscribeShortcuts: () => () => {},
+      reportShortcutFailure() {},
+      clearShortcutFailure() {},
+      maybeStartRemoteApproval: () => false,
+      win: null,
+      bubbleFollowPet: false,
+      petHidden: false,
+    });
+    const permission = initPermission(ctx);
+    Object.assign(ctx, {
+      pendingPermissions: permission.pendingPermissions,
+      PASSTHROUGH_TOOLS: permission.PASSTHROUGH_TOOLS,
+      addPendingPermission: permission.addPendingPermission,
+      removePendingPermission: permission.removePendingPermission,
+      showPermissionBubble: options.showPermissionBubble || permission.showPermissionBubble,
+      resolvePermissionEntry: permission.resolvePermissionEntry,
+      sendPermissionResponse: permission.sendPermissionResponse,
+      syncPermissionShortcuts: permission.syncPermissionShortcuts,
+    });
+    const recorder = [];
+    handlePermissionPost(makeReq(body), res, {
+      ctx,
+      createRequestHookRecorder: (identity, data, route) => {
+        recorder.push({ identity, data, route });
+        return {
+          accepted: () => recorder.push({ outcome: "accepted" }),
+          droppedByDisabled: () => recorder.push({ outcome: "disabled" }),
+          droppedByDnd: () => recorder.push({ outcome: "dnd" }),
+          droppedInvalidAgent: () => recorder.push({ outcome: "invalid-agent" }),
+          droppedUnsupported: () => recorder.push({ outcome: "unsupported" }),
+        };
+      },
+    });
+    setImmediate(() => {
+      setImmediate(() => {
+        res.ctx = ctx;
+        res.permission = permission;
+        res.recorder = recorder;
+        resolve(res);
+      });
+    });
+  });
+}
+
 describe("server-route-permission helpers", () => {
   it("preserves bubble bypass decisions for CC, Codex, and opencode", () => {
-    assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, "Bash", "claude-code"), true);
-    assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, "ExitPlanMode", "claude-code"), false);
-    assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, "AskUserQuestion", "claude-code"), false);
+    assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, interaction("claude-code", "Bash"), "claude-code"), true);
+    assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, interaction("claude-code", "ExitPlanMode"), "claude-code"), false);
+    assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, interaction("claude-code", "AskUserQuestion"), "claude-code"), false);
     assert.strictEqual(shouldBypassCodexBubble({ hideBubbles: true }), true);
     assert.strictEqual(shouldBypassCodexBubble({
       isAgentPermissionsEnabled: (agentId) => agentId !== "codex",
@@ -157,19 +231,248 @@ describe("server-route-permission helpers", () => {
     const subagent = { source: "subagent", subagentId: "uuid-1", subagentType: "Explore" };
     const mainThread = { source: "explicit" };
 
-    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, "Bash", "claude-code", subagent), true);
-    assert.strictEqual(shouldBypassCCSubagentBubble(gateOn, "Bash", "claude-code", subagent), false);
-    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, "Bash", "claude-code", mainThread), false);
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, interaction("claude-code", "Bash"), "claude-code", subagent), true);
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOn, interaction("claude-code", "Bash"), "claude-code", subagent), false);
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, interaction("claude-code", "Bash"), "claude-code", mainThread), false);
     // UX flows stay exempt, mirroring shouldBypassCCBubble.
-    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, "ExitPlanMode", "claude-code", subagent), false);
-    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, "AskUserQuestion", "claude-code", subagent), false);
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, interaction("claude-code", "ExitPlanMode"), "claude-code", subagent), false);
+    assert.strictEqual(shouldBypassCCSubagentBubble(gateOff, interaction("claude-code", "AskUserQuestion"), "claude-code", subagent), false);
     // Missing gate reader (older ctx) keeps current behavior: bubble.
-    assert.strictEqual(shouldBypassCCSubagentBubble({}, "Bash", "claude-code", subagent), false);
+    assert.strictEqual(shouldBypassCCSubagentBubble({}, interaction("claude-code", "Bash"), "claude-code", subagent), false);
   });
 
 });
 
 describe("server-route-permission POST", () => {
+  it("stamps a valid tool-approval interaction on every entry-producing adapter", async () => {
+    const cases = [
+      { agentId: "claude-code", body: {} },
+      { agentId: "codebuddy", body: {} },
+      { agentId: "codex", body: {} },
+      { agentId: "qwen-code", body: {} },
+      { agentId: "copilot-cli", body: {} },
+      { agentId: "hermes", body: {} },
+      {
+        agentId: "opencode",
+        body: {
+          request_id: "req-stamp",
+          bridge_url: "http://127.0.0.1:9",
+          bridge_token: "stamp-token",
+        },
+      },
+    ];
+
+    for (const { agentId, body } of cases) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: agentId,
+        session_id: `${agentId}:stamp`,
+        tool_name: "Bash",
+        tool_input: { command: "npm test" },
+        ...body,
+      }));
+      assert.strictEqual(res.ctx.pendingPermissions.length, 1, agentId);
+      const entry = res.ctx.pendingPermissions[0];
+      assert.strictEqual(isValidInteraction(entry.interaction), true, agentId);
+      assert.strictEqual(entry.interaction.intent, INTERACTION_INTENT.TOOL_APPROVAL, agentId);
+    }
+  });
+
+  it("runs ordinary CodeBuddy tools, including Hermes-only clarify names, through auto-tools end to end", async () => {
+    for (const [toolName, toolInput] of [
+      ["Bash", { command: "npm test" }],
+      ["clarify", { topic: "release notes" }],
+      ["clarifyTool", { topic: "release notes" }],
+    ]) {
+      const res = await callPermissionPostThroughAutomation(JSON.stringify({
+        agent_id: "codebuddy",
+        session_id: `codebuddy:auto-tools:${toolName}`,
+        tool_name: toolName,
+        tool_input: toolInput,
+      }), "auto-tools");
+
+      assert.strictEqual(res.statusCode, 200, toolName);
+      assert.strictEqual(res.permission.pendingPermissions.length, 0, toolName);
+      assert.strictEqual(res.destroyed, false, toolName);
+      assert.strictEqual(
+        JSON.parse(res.body).hookSpecificOutput.decision.behavior,
+        "allow",
+        toolName
+      );
+      assert.deepStrictEqual(
+        res.recorder.map((item) => item.outcome).filter(Boolean),
+        ["accepted"],
+        toolName
+      );
+    }
+  });
+
+  it("runs an unreviewed non-empty Claude tool through unattended compatibility without weakening auto-tools", async () => {
+    const body = JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "claude:new-tool",
+      tool_name: "FutureBuiltinTool",
+      tool_input: { action: "run" },
+    });
+    const unattended = await callPermissionPostThroughAutomation(body, "unattended");
+    assert.strictEqual(unattended.statusCode, 200);
+    assert.strictEqual(
+      JSON.parse(unattended.body).hookSpecificOutput.decision.behavior,
+      "allow"
+    );
+    assert.strictEqual(unattended.permission.pendingPermissions.length, 0);
+
+    const autoTools = await callPermissionPostThroughAutomation(body, "auto-tools", {
+      // Exercise the successful DEFER lifecycle without constructing an
+      // Electron BrowserWindow in the pure Node route test.
+      showPermissionBubble() {},
+    });
+    assert.strictEqual(autoTools.statusCode, null);
+    assert.strictEqual(autoTools.body, "");
+    assert.strictEqual(autoTools.writableFinished, false);
+    assert.strictEqual(autoTools.destroyed, false);
+    assert.strictEqual(autoTools.permission.pendingPermissions.length, 1);
+  });
+
+  it("normalizes unattended Claude question aliases before generating the wire response", async () => {
+    for (const toolName of ["askuserquestion", "AskUserQuestionTool"]) {
+      const res = await callPermissionPostThroughAutomation(JSON.stringify({
+        agent_id: "claude-code",
+        session_id: `claude:${toolName}`,
+        tool_name: toolName,
+        tool_input: {
+          questions: [{
+            question: "Which approach?",
+            options: [{ label: "A" }, { label: "B" }],
+          }],
+        },
+      }), "unattended");
+
+      assert.strictEqual(res.statusCode, 200, toolName);
+      assert.strictEqual(res.destroyed, false, toolName);
+      assert.strictEqual(res.permission.pendingPermissions.length, 0, toolName);
+      const decision = JSON.parse(res.body).hookSpecificOutput.decision;
+      assert.strictEqual(decision.behavior, "allow", toolName);
+      assert.deepStrictEqual(
+        decision.updatedInput.answers,
+        {
+          "Which approach?": "You choose whatever is best.",
+        },
+        toolName
+      );
+      assert.deepStrictEqual(
+        decision.updatedInput.questions,
+        [{
+          question: "Which approach?",
+          options: [{ label: "A" }, { label: "B" }],
+        }],
+        toolName
+      );
+    }
+  });
+
+  it("releases a deferred decision entry when the blocking hook client disconnects", async () => {
+    const res = await callPermissionPostThroughAutomation(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "claude:disconnect-question",
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [{
+          question: "Continue?",
+          options: [{ label: "Yes" }, { label: "No" }],
+        }],
+      },
+    }), "auto-tools", {
+      // Keep the real entry/resolver lifecycle while avoiding an Electron
+      // window in this route-level integration test.
+      showPermissionBubble() {},
+    });
+
+    assert.strictEqual(res.permission.pendingPermissions.length, 1);
+    res.emit("close");
+    assert.strictEqual(res.permission.pendingPermissions.length, 0);
+    assert.strictEqual(res.destroyed, true);
+    assert.strictEqual(res.body, "");
+  });
+
+  it("stamps questions conservatively and treats unverified plan-name collisions as unknown", async () => {
+    const cases = [
+      { agentId: "codex", toolName: "AskUserQuestion", intent: INTERACTION_INTENT.HUMAN_QUESTION },
+      { agentId: "qwen-code", toolName: "AskUserQuestion", intent: INTERACTION_INTENT.HUMAN_QUESTION },
+      { agentId: "copilot-cli", toolName: "ExitPlanMode", intent: INTERACTION_INTENT.UNKNOWN },
+      { agentId: "hermes", toolName: "clarify", intent: INTERACTION_INTENT.HUMAN_QUESTION },
+      {
+        agentId: "opencode",
+        toolName: "ExitPlanMode",
+        intent: INTERACTION_INTENT.UNKNOWN,
+        extra: {
+          request_id: "req-decision-stamp",
+          bridge_url: "http://127.0.0.1:9",
+          bridge_token: "stamp-token",
+        },
+      },
+    ];
+
+    for (const { agentId, toolName, intent, extra = {} } of cases) {
+      const toolInput = intent === INTERACTION_INTENT.HUMAN_QUESTION
+        ? { questions: [{ question: "Continue?" }] }
+        : { plan: "ship it" };
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: agentId,
+        session_id: `${agentId}:decision-stamp`,
+        tool_name: toolName,
+        tool_input: toolInput,
+        ...extra,
+      }));
+      assert.strictEqual(res.ctx.pendingPermissions.length, 1, `${agentId}:${toolName}`);
+      const entry = res.ctx.pendingPermissions[0];
+      assert.strictEqual(isValidInteraction(entry.interaction), true, `${agentId}:${toolName}`);
+      assert.strictEqual(entry.interaction.intent, intent, `${agentId}:${toolName}`);
+      if (agentId !== "hermes") {
+        assert.strictEqual(entry.interaction.capabilities.answerQuestions, false, agentId);
+        assert.strictEqual(entry.interaction.capabilities.planFeedback, false, agentId);
+      }
+    }
+  });
+
+  it("keeps identical remote raw ids in separate permission queues with trusted profile metadata", async () => {
+    const body = JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "same-raw",
+      host: "spoofed-by-hook",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    const postFor = (profileId) => callPermissionPost(body, {
+      options: {
+        remoteProfile: {
+          profileId,
+          displayHost: "same-display-host",
+        },
+      },
+    });
+    const [a, b] = await Promise.all([postFor("profile-a"), postFor("profile-b")]);
+    const aId = makeSessionKey({ profileId: "profile-a", rawSessionId: "same-raw" });
+    const bId = makeSessionKey({ profileId: "profile-b", rawSessionId: "same-raw" });
+    assert.strictEqual(a.ctx.pendingPermissions[0].sessionId, aId);
+    assert.strictEqual(b.ctx.pendingPermissions[0].sessionId, bId);
+    assert.notStrictEqual(a.ctx.pendingPermissions[0].sessionId, b.ctx.pendingPermissions[0].sessionId);
+    assert.deepStrictEqual({
+      profileId: a.ctx.pendingPermissions[0].profileId,
+      rawSessionId: a.ctx.pendingPermissions[0].rawSessionId,
+      host: a.ctx.pendingPermissions[0].host,
+    }, {
+      profileId: "profile-a",
+      rawSessionId: "same-raw",
+      host: "same-display-host",
+    });
+    assert.deepStrictEqual(a.ctx.calls.updateSession[0].slice(0, 3), [
+      aId, "notification", "PermissionRequest",
+    ]);
+    assert.deepStrictEqual(b.ctx.calls.updateSession[0].slice(0, 3), [
+      bId, "notification", "PermissionRequest",
+    ]);
+  });
+
   it("returns 400 for invalid JSON", async () => {
     const res = await callPermissionPost("{not json");
 
@@ -224,7 +527,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.statusCode, null);
     assert.strictEqual(res.ctx.pendingPermissions.length, 1);
     const entry = res.ctx.pendingPermissions[0];
-    assert.strictEqual(entry.sessionId, sessionId);
+    assert.strictEqual(entry.sessionId, localSessionKey(sessionId));
     assert.strictEqual(entry.agentId, "codex");
     assert.strictEqual(entry.isCodex, true);
     assert.strictEqual(entry.sourcePid, 456);
@@ -238,7 +541,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(entry.codexOriginator, "Codex Desktop");
     assert.strictEqual(entry.codexSource, "vscode");
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      sessionId,
+      localSessionKey(sessionId),
       "notification",
       "PermissionRequest",
       {
@@ -270,7 +573,7 @@ describe("server-route-permission POST", () => {
       tool_input: { command: "npm test" },
     }), {
       ctx: {
-        sessions: new Map([[sessionId, { agentId: "codex", headless: true }]]),
+        sessions: new Map([[localSessionKey(sessionId), { agentId: "codex", headless: true }]]),
       },
     });
 
@@ -321,12 +624,35 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(entry.agentId, "opencode");
     assert.strictEqual(entry.familyRequestId, "req-1");
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      "opencode:s1",
+      localSessionKey("opencode:s1"),
       "notification",
       "PermissionRequest",
       { agentId: "opencode" },
     ]]);
     assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["accepted"]);
+  });
+
+  it("keeps an opencode permission with a missing tool name manually actionable but never automatable", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "opencode",
+      session_id: "opencode:unknown",
+      tool_input: { command: "custom action" },
+      request_id: "req-unknown",
+      bridge_url: "http://127.0.0.1:1234",
+      bridge_token: "token",
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.toolName, "unknown");
+    assert.strictEqual(entry.interaction.intent, INTERACTION_INTENT.UNKNOWN);
+    assert.strictEqual(entry.interaction.capabilities.allowDeny, true);
+    assert.deepStrictEqual(
+      { ...entry.interaction.automationEligibility },
+      { autoTools: false, unattended: false }
+    );
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
   });
 
   it("silently drops headless opencode sessions before auto-pilot can bridge allow", async () => {
@@ -341,7 +667,7 @@ describe("server-route-permission POST", () => {
       bridge_token: "token",
     }), {
       ctx: {
-        sessions: new Map([[sessionId, { agentId: "opencode", headless: true }]]),
+        sessions: new Map([[localSessionKey(sessionId), { agentId: "opencode", headless: true }]]),
       },
     });
 
@@ -573,12 +899,12 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.ctx.pendingPermissions.length, 1);
     const entry = res.ctx.pendingPermissions[0];
     assert.strictEqual(entry.res, res);
-    assert.strictEqual(entry.sessionId, "sid");
+    assert.strictEqual(entry.sessionId, localSessionKey("sid"));
     assert.strictEqual(entry.toolName, "Bash");
     assert.strictEqual(entry.toolUseId, "tool-1");
     assert.strictEqual(entry.agentId, "claude-code");
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      "sid",
+      localSessionKey("sid"),
       "notification",
       "PermissionRequest",
       { agentId: "claude-code" },
@@ -607,6 +933,20 @@ describe("server-route-permission POST", () => {
       agent_id: "custom-stale-0123456789ab",
       hook_source: "copilot-hook",
       session_id: "stale:sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    }));
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.ctx.pendingPermissions.length, 0);
+    assert.strictEqual(res.ctx.calls.showPermissionBubble.length, 0);
+    assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["invalid-agent"]);
+  });
+
+  it("rejects an invalid overlong Claude subagent id instead of creating an unmatchable entry", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "x".repeat(257),
+      session_id: "sid-overlong-subagent",
       tool_name: "Bash",
       tool_input: { command: "npm test" },
     }));
@@ -675,15 +1015,46 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.ctx.pendingPermissions.length, 1);
     const entry = res.ctx.pendingPermissions[0];
     assert.strictEqual(entry.bubble, null);
-    assert.strictEqual(entry.sessionId, "sid");
+    assert.strictEqual(entry.sessionId, localSessionKey("sid"));
     assert.strictEqual(entry.agentId, "claude-code");
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      "sid",
+      localSessionKey("sid"),
       "notification",
       "PermissionRequest",
       { agentId: "claude-code" },
     ]]);
+  });
+
+  it("keeps trusted remote profile metadata on Telegram-only approval entries", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "same-raw",
+      host: "spoofed-by-hook",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_use_id: "tool-remote",
+    }), {
+      ctx: {
+        hideBubbles: true,
+        maybeStartRemoteApproval: () => true,
+      },
+      options: {
+        remoteProfile: {
+          profileId: "profile-a",
+          displayHost: "trusted-host",
+        },
+      },
+    });
+
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(
+      entry.sessionId,
+      makeSessionKey({ profileId: "profile-a", rawSessionId: "same-raw" }),
+    );
+    assert.strictEqual(entry.profileId, "profile-a");
+    assert.strictEqual(entry.rawSessionId, "same-raw");
+    assert.strictEqual(entry.host, "trusted-host");
   });
 
   it("falls back to destroying the connection when bubbles are disabled and remote approval has nowhere to send it", async () => {
@@ -779,28 +1150,27 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [entry]);
   });
 
-  it("stamps elicitation session updates with the resolved agent id", async () => {
-    // The shared CC path also serves codebuddy (and future CC-compatible
-    // agents). The Elicitation session update must carry the resolved agent
-    // id, not a hardcoded claude-code, or the session gets relabeled.
-    const res = await callPermissionPost(JSON.stringify({
-      agent_id: "codebuddy",
-      session_id: "cb-elicit",
-      tool_name: "AskUserQuestion",
-      tool_input: { questions: [{ question: "Continue?" }] },
-    }));
+  it("hands every known CodeBuddy decision signal back before creating a Claude-shaped entry", async () => {
+    for (const [toolName, toolInput] of [
+      ["AskUserQuestion", { questions: [{ question: "Continue?" }] }],
+      ["askuserquestion", { questions: [{ question: "Continue?" }] }],
+      ["AskUserQuestionTool", { questions: [{ question: "Continue?" }] }],
+      ["ExitPlanMode", { plan: "ship it" }],
+      ["exitplanmode", { plan: "ship it" }],
+      ["ExitPlanModeTool", { plan: "ship it" }],
+    ]) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: "codebuddy",
+        session_id: `cb-${toolName}`,
+        tool_name: toolName,
+        tool_input: toolInput,
+      }));
 
-    assert.strictEqual(res.statusCode, null);
-    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
-    const entry = res.ctx.pendingPermissions[0];
-    assert.strictEqual(entry.isElicitation, true);
-    assert.strictEqual(entry.agentId, "codebuddy");
-    assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      "cb-elicit",
-      "notification",
-      "Elicitation",
-      { agentId: "codebuddy" },
-    ]]);
+      assert.strictEqual(res.destroyed, true, toolName);
+      assert.deepStrictEqual(res.ctx.pendingPermissions, [], toolName);
+      assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [], toolName);
+      assert.deepStrictEqual(res.ctx.calls.updateSession, [], toolName);
+    }
   });
 
   it("keeps local Claude permission pending if remote approval startup throws", async () => {
@@ -941,7 +1311,7 @@ describe("server-route-permission POST", () => {
       tool_input: { filePath: "a.txt" },
     }), {
       ctx: {
-        sessions: new Map([[sessionId, { agentId: "copilot-cli", headless: true }]]),
+        sessions: new Map([[localSessionKey(sessionId), { agentId: "copilot-cli", headless: true }]]),
       },
     });
 
@@ -973,7 +1343,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.ctx.pendingPermissions.length, 1);
     const entry = res.ctx.pendingPermissions[0];
     assert.strictEqual(entry.res, res);
-    assert.strictEqual(entry.sessionId, sessionId);
+    assert.strictEqual(entry.sessionId, localSessionKey(sessionId));
     assert.strictEqual(entry.agentId, "copilot-cli");
     assert.strictEqual(entry.isCopilotCli, true);
     assert.strictEqual(entry.toolName, "edit");
@@ -984,7 +1354,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(entry.cwd, "D:/repo");
     assert.strictEqual(entry.host, "devbox");
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      sessionId,
+      localSessionKey(sessionId),
       "notification",
       "PermissionRequest",
       {
@@ -1152,7 +1522,7 @@ describe("server-route-permission POST", () => {
       tool_input: { command: "rm -rf /tmp/test" },
     }), {
       ctx: {
-        sessions: new Map([[sessionId, { agentId: "hermes", headless: true }]]),
+        sessions: new Map([[localSessionKey(sessionId), { agentId: "hermes", headless: true }]]),
       },
     });
 
@@ -1184,7 +1554,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.ctx.pendingPermissions.length, 1);
     const entry = res.ctx.pendingPermissions[0];
     assert.strictEqual(entry.res, res);
-    assert.strictEqual(entry.sessionId, sessionId);
+    assert.strictEqual(entry.sessionId, localSessionKey(sessionId));
     assert.strictEqual(entry.agentId, "hermes");
     assert.strictEqual(entry.isHermes, true);
     assert.strictEqual(entry.toolName, "execute_bash");
@@ -1195,7 +1565,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(entry.cwd, "/home/user/repo");
     assert.strictEqual(entry.editor, "cursor");
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      sessionId,
+      localSessionKey(sessionId),
       "notification",
       "PermissionRequest",
       {
@@ -1232,7 +1602,7 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(entry.toolName, "clarify");
     // updateSession should be called with "Elicitation" kind, not "PermissionRequest"
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      sessionId,
+      localSessionKey(sessionId),
       "notification",
       "Elicitation",
       {
@@ -1319,7 +1689,7 @@ describe("server-route-permission POST — CC subagent requests (#451)", () => {
     assert.strictEqual(entry.subagentId, SUBAGENT_UUID);
     assert.strictEqual(entry.subagentType, "code-reviewer");
     assert.deepStrictEqual(res.ctx.calls.updateSession, [[
-      "sid",
+      localSessionKey("sid"),
       "notification",
       "PermissionRequest",
       { agentId: "claude-code" },
@@ -1467,7 +1837,7 @@ describe("server-route-permission POST — CC subagent requests (#451)", () => {
   it("lets the headless guard win over the subagent sub-gate (auto-deny, no destroy)", async () => {
     const res = await callPermissionPost(subagentBody(), {
       ctx: {
-        sessions: new Map([["sid", { headless: true }]]),
+        sessions: new Map([[localSessionKey("sid"), { headless: true }]]),
         isAgentSubagentPermissionsEnabled: () => false,
       },
     });

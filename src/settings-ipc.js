@@ -4,9 +4,29 @@ const defaultFs = require("fs");
 const defaultPath = require("path");
 const { detectAgentInstallations: defaultDetectAgentInstallations } = require("./agent-installation-detector");
 const settingsThemeImporter = require("./settings-theme-importer");
-const { listPetTintOptions } = require("./pet-customization-catalog");
+const {
+  listPetTintOptions,
+  listPetAccessoryOptions,
+} = require("./pet-customization-catalog");
 
 const SOUND_OVERRIDE_ASSET_EXTS = new Set([".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"]);
+// These commands mutate trust material or persist facts learned from an SSH
+// transaction. They are main-process capabilities, not renderer commands.
+// Keeping the check at the IPC boundary means an injected/compromised Settings
+// renderer cannot mint a trusted install binding, advance a deployment
+// transaction, or claim that a remote profile was verified.
+const INTERNAL_SETTINGS_COMMANDS = new Set([
+  "remoteSsh.applyInstallationIdentity",
+  "remoteSsh.beginIdentityRotation",
+  "remoteSsh.updateIdentityStep",
+  "remoteSsh.commitIdentityRotation",
+  "remoteSsh.forceRevoke",
+  "remoteSsh.beginRuntimeModeSwitch",
+  "remoteSsh.advanceRuntimeModeSwitch",
+  "remoteSsh.switchRuntimeMode",
+  "remoteSsh.markDeployed",
+  "remoteSsh.markRemoteNode",
+]);
 const SOUND_OVERRIDE_DIALOG_STRINGS = {
   en: { title: "Choose a sound file", filterName: "Audio" },
   zh: { title: "选择音效文件", filterName: "音频" },
@@ -200,6 +220,7 @@ function registerSettingsIpc(options = {}) {
     }
   });
   handle("settings:get-pet-tint-options", () => listPetTintOptions());
+  handle("settings:get-pet-accessory-options", () => listPetAccessoryOptions());
   handle("settings:update", (_event, payload) => {
     if (!payload || typeof payload !== "object") {
       return { status: "error", message: "settings:update payload must be { key, value }" };
@@ -207,11 +228,18 @@ function registerSettingsIpc(options = {}) {
     if (payload.key === "tgMigration") {
       return { status: "error", message: "tgMigration is internal; use telegramMigration.dispatch" };
     }
-    // DANGER "auto-pilot": never let a plain settings:update flip this on. It
-    // must go through the setAutoApproveAll command, which demands confirmed:true.
-    // This makes the confirmation dialog a real boundary instead of UI-only.
-    if (payload.key === "autoApproveAllPermissions") {
-      return { status: "error", message: "autoApproveAllPermissions is gated; use the setAutoApproveAll command" };
+    // Permission automation is command-only: the command enforces confirmed
+    // transitions for both automatic modes at the data layer.
+    if (
+      payload.key === "permissionAutomationMode"
+      || payload.key === "permissionAutomationAutoToolsWarningDismissed"
+      || payload.key === "permissionAutomationUnattendedWarningDismissed"
+      || payload.key === "autoApproveAllPermissions"
+    ) {
+      return {
+        status: "error",
+        message: "permission automation is gated; use the setPermissionAutomationMode command",
+      };
     }
     return settingsController.applyUpdate(payload.key, payload.value);
   });
@@ -250,6 +278,9 @@ function registerSettingsIpc(options = {}) {
   handle("settings:command", async (_event, payload) => {
     if (!payload || typeof payload !== "object") {
       return { status: "error", message: "settings:command payload must be { action, payload }" };
+    }
+    if (INTERNAL_SETTINGS_COMMANDS.has(payload.action)) {
+      return { status: "error", message: `settings command "${payload.action}" is internal` };
     }
     return settingsController.applyCommand(payload.action, payload.payload);
   });
@@ -360,12 +391,21 @@ function registerSettingsIpc(options = {}) {
     try {
       const activeTheme = getActiveTheme();
       const activeId = activeTheme ? activeTheme._id : "clawd";
-      return themeLoader.listThemesWithMetadata().map((theme) =>
-        codexPetMain.decorateThemeMetadata({
+      return themeLoader.listThemesWithMetadata().map((theme) => {
+        const active = theme.id === activeId;
+        const runtimeCapabilities = active
+          && activeTheme
+          && isPlainObject(activeTheme._capabilities)
+          ? activeTheme._capabilities
+          : null;
+        return codexPetMain.decorateThemeMetadata({
           ...theme,
-          active: theme.id === activeId,
-        })
-      );
+          active,
+          ...(runtimeCapabilities
+            ? { capabilities: { ...(theme.capabilities || {}), ...runtimeCapabilities } }
+            : {}),
+        });
+      });
     } catch (err) {
       console.warn("Clawd: settings:list-themes failed:", err && err.message);
       return [];

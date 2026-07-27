@@ -248,14 +248,29 @@ body { user-select: none; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 30px;
   width: 30px;
   height: 30px;
+  padding: 2px;
+  overflow: hidden;
   border-radius: 8px;
   background: var(--surface-alt);
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0;
+}
+.ag-avatar-icon {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+  background: var(--surface);
+  object-fit: contain;
+}
+.ag-avatar.fallback::after {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-radius: 4px 4px 7px 7px;
+  opacity: 0.72;
 }
 .ag-avatar.install { background: rgba(217, 119, 87, 0.13); color: var(--accent); }
 .ag-avatar.cleanup { background: var(--warn-bg); color: var(--warn); }

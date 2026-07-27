@@ -219,6 +219,10 @@ html, body {
 .section {
   margin-bottom: 28px;
 }
+.section:has(.language-picker.open) {
+  position: relative;
+  z-index: 1;
+}
 .section-title {
   font-size: 11px;
   font-weight: 700;
@@ -253,6 +257,9 @@ html, body {
   border-radius: 10px;
   border: 1px solid var(--border);
   overflow: hidden;
+}
+.section-rows:has(.language-picker.open) {
+  overflow: visible;
 }
 @media (prefers-color-scheme: dark) {
   .section-rows { background: #1a1a1d; }
@@ -1415,7 +1422,8 @@ html, body {
   background: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
 }
-.pet-tint-select {
+.pet-tint-select,
+.pet-accessory-select {
   min-width: 176px;
   max-width: 240px;
   padding: 7px 30px 7px 10px;
@@ -1427,12 +1435,16 @@ html, body {
   cursor: pointer;
 }
 .pet-tint-select:hover:not(:disabled),
-.pet-tint-select:focus-visible {
+.pet-tint-select:focus-visible,
+.pet-accessory-select:hover:not(:disabled),
+.pet-accessory-select:focus-visible {
   border-color: var(--accent);
   outline: none;
 }
 .pet-tint-select.pending,
-.pet-tint-select:disabled {
+.pet-tint-select:disabled,
+.pet-accessory-select.pending,
+.pet-accessory-select:disabled {
   cursor: wait;
   opacity: 0.62;
 }
@@ -1455,6 +1467,24 @@ html, body {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0;
   overflow: hidden;
+}
+
+.permission-automation-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.permission-automation-row .row-control {
+  width: 100%;
+}
+.permission-automation-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: 100%;
+}
+.permission-automation-segmented button {
+  white-space: nowrap;
+  padding-inline: 9px;
 }
 .codex-permission-mode-segmented::before {
   content: "";
@@ -1763,7 +1793,8 @@ html, body {
     flex-direction: column;
   }
   .theme-customization-row .row-control,
-  .theme-customization-row .pet-tint-select {
+  .theme-customization-row .pet-tint-select,
+  .theme-customization-row .pet-accessory-select {
     width: 100%;
     max-width: none;
   }
@@ -2424,6 +2455,20 @@ html, body {
   color: var(--text-secondary);
   line-height: 1.55;
   font-size: 13px;
+}
+.settings-confirm-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+.settings-confirm-checkbox input {
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
 }
 .settings-confirm-actions {
   display: grid;

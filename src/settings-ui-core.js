@@ -97,6 +97,7 @@
     codexPetRemovalPendingThemeId: null,
     animationOverridesData: null,
     petTintOptions: [],
+    petAccessoryOptions: [],
     animationOverridesFetchSeq: 0,
     animationPosterRenderPending: false,
     animationPosterRenderFlags: null,
@@ -1307,7 +1308,7 @@
         return;
       }
       if (state.activeTab === "animOverrides" || runtime.assetPicker.state) {
-        fetchAnimationOverridesData().then(() => {
+        Promise.all([fetchAnimationOverridesData(), fetchThemes()]).then(() => {
           normalizeAssetPickerSelection();
           requestRender({ sidebar: true, content: true, modal: true });
         });
@@ -1355,7 +1356,14 @@
     hasAnyThemeOverride,
   };
 
-  function showSettingsConfirmModal({ title, detail, actions }) {
+  function showSettingsConfirmModal({
+    title,
+    detail,
+    actions,
+    checkboxLabel = "",
+    checkboxChecked = false,
+    returnDetails = false,
+  }) {
     const rootNode = document.getElementById("modalRoot");
     if (!rootNode) return Promise.resolve(null);
     return new Promise((resolve) => {
@@ -1378,6 +1386,20 @@
       const detailNode = document.createElement("p");
       detailNode.textContent = detail;
 
+      let checkboxInput = null;
+      let checkboxRow = null;
+      if (checkboxLabel) {
+        checkboxRow = document.createElement("label");
+        checkboxRow.className = "settings-confirm-checkbox";
+        checkboxInput = document.createElement("input");
+        checkboxInput.type = "checkbox";
+        checkboxInput.checked = checkboxChecked === true;
+        const checkboxText = document.createElement("span");
+        checkboxText.textContent = checkboxLabel;
+        checkboxRow.appendChild(checkboxInput);
+        checkboxRow.appendChild(checkboxText);
+      }
+
       const actionsNode = document.createElement("div");
       actionsNode.className = "settings-confirm-actions";
 
@@ -1386,7 +1408,12 @@
         settled = true;
         document.removeEventListener("keydown", onKeyDown, true);
         rootNode.innerHTML = "";
-        resolve(actionId);
+        resolve(returnDetails
+          ? {
+            actionId,
+            checkboxChecked: !!(checkboxInput && checkboxInput.checked),
+          }
+          : actionId);
       }
 
       function onKeyDown(ev) {
@@ -1413,6 +1440,7 @@
       modal.appendChild(icon);
       modal.appendChild(titleNode);
       modal.appendChild(detailNode);
+      if (checkboxRow) modal.appendChild(checkboxRow);
       modal.appendChild(actionsNode);
       overlay.appendChild(modal);
       rootNode.innerHTML = "";

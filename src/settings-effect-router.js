@@ -3,6 +3,8 @@
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
+  getPetAccessoryIdForTheme,
+  resolvePetAccessoryPayload,
 } = require("./pet-customization-catalog");
 
 const MENU_AFFECTING_KEYS = new Set([
@@ -11,7 +13,7 @@ const MENU_AFFECTING_KEYS = new Set([
   "bubbleFollowPet",
   "hideBubbles",
   "permissionBubblesEnabled",
-  "autoApproveAllPermissions",
+  "permissionAutomationMode",
   "notificationBubbleAutoCloseSeconds",
   "permissionBubbleAutoCloseSeconds",
   "updateBubbleAutoCloseSeconds",
@@ -60,6 +62,7 @@ function createSettingsEffectRouter(options = {}) {
   const sendToRenderer = options.sendToRenderer || noop;
   const sendDashboardI18n = options.sendDashboardI18n || noop;
   const sendSessionHudI18n = options.sendSessionHudI18n || noop;
+  const syncWindowTitles = options.syncWindowTitles || noop;
   const emitSessionSnapshot = options.emitSessionSnapshot || noop;
   const cleanStaleSessions = options.cleanStaleSessions || noop;
   const syncPermissionShortcuts = options.syncPermissionShortcuts || noop;
@@ -121,12 +124,24 @@ function createSettingsEffectRouter(options = {}) {
       const tintId = getPetTintIdForTheme(changes.petTint, activeTheme && activeTheme._id);
       sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
     }
+    if ("petAccessory" in changes) {
+      const activeTheme = getActiveTheme();
+      const accessoryId = getPetAccessoryIdForTheme(
+        changes.petAccessory,
+        activeTheme && activeTheme._id
+      );
+      sendToRenderer(
+        "pet-accessory-change",
+        resolvePetAccessoryPayload(accessoryId, activeTheme)
+      );
+    }
     if ("keepAwakeWhileWorking" in changes) {
       safeCall(logWarn, "Clawd: reconcilePowerSaveBlocker failed:", reconcilePowerSaveBlocker);
     }
     if ("lang" in changes) {
       safeCall(logWarn, "Clawd: dashboard lang broadcast failed:", sendDashboardI18n);
       safeCall(logWarn, "Clawd: session HUD lang broadcast failed:", sendSessionHudI18n);
+      safeCall(logWarn, "Clawd: window title sync failed:", syncWindowTitles);
     }
     if ("sessionAliases" in changes) {
       safeCall(

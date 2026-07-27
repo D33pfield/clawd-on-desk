@@ -8,6 +8,7 @@
 //                                       hardcoded (maintainer-shipped)
 //   getSnapshot()                       Promise<snapshot>
 //   getPetTintOptions()                 Promise<Array<{id, labelKey}>>
+//   getPetAccessoryOptions()            Promise<Array<{id, labelKey}>>
 //   update(key, value)                  Promise<{ status, message? }>
 //   command(action, payload)            Promise<{ status, message? }>
 //   listAgents()                        Promise<Array<{id, name, ...}>>
@@ -95,6 +96,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   getSnapshot: () => ipcRenderer.invoke("settings:get-snapshot"),
   getQuotaSourceCount: () => ipcRenderer.invoke("settings:get-quota-source-count"),
   getPetTintOptions: () => ipcRenderer.invoke("settings:get-pet-tint-options"),
+  getPetAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-accessory-options"),
   getShortcutFailures: () => ipcRenderer.invoke("settings:getShortcutFailures"),
   getAnimationOverridesData: () => ipcRenderer.invoke("settings:get-animation-overrides-data"),
   openThemeAssetsDir: () => ipcRenderer.invoke("settings:open-theme-assets-dir"),
@@ -190,7 +192,7 @@ contextBridge.exposeInMainWorld("doctor", {
 //   status(profileId)              Promise<{ status, state }>
 //   connect(profileId)             Promise<{ status, state? }>
 //   disconnect(profileId)          Promise<{ status, state? }>
-//   deploy(profileId)              Promise<{ status, message?, step? }>
+//   deploy(profileId, options?)    Promise<{ status, message?, step? }>
 //   authenticate(profileId)        Promise<{ status, terminal?, message? }>
 //   openTerminal(profileId)        Promise<{ status, terminal?, message? }>
 //   onStatusChanged(cb)            cb({ profileId, status, ... })
@@ -205,7 +207,18 @@ contextBridge.exposeInMainWorld("remoteSsh", {
   connect: (profileId) => ipcRenderer.invoke("remoteSsh:connect", profileId),
   disconnect: (profileId) => ipcRenderer.invoke("remoteSsh:disconnect", profileId),
   cleanup: (profileId) => ipcRenderer.invoke("remoteSsh:cleanup", profileId),
-  deploy: (profileId) => ipcRenderer.invoke("remoteSsh:deploy", profileId),
+  deploy: (profileId, options = {}) => ipcRenderer.invoke("remoteSsh:deploy", {
+    profileId,
+    legacyMigrationConfirmed: options.legacyMigrationConfirmed === true,
+  }),
+  setRuntimeMode: (profileId, runtimeMode, confirmed) => ipcRenderer.invoke(
+    "remoteSsh:set-runtime-mode",
+    { profileId, runtimeMode, confirmed: confirmed === true }
+  ),
+  forceRevoke: (profileId, mode, confirmed) => ipcRenderer.invoke(
+    "remoteSsh:force-revoke",
+    { profileId, mode, confirmed: confirmed === true }
+  ),
   authenticate: (profileId) => ipcRenderer.invoke("remoteSsh:authenticate", profileId),
   openTerminal: (profileId) => ipcRenderer.invoke("remoteSsh:open-terminal", profileId),
   onStatusChanged: (cb) => {

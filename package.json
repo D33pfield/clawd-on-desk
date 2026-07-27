@@ -148,6 +148,7 @@
       "assets/icons/**/*",
       "assets/icons/agents/**/*",
       "assets/svg/**/*",
+      "assets/accessories/**/*",
       "assets/sounds/**/*",
       "assets/dock-icon.png",
       "assets/tray-icon*.png",
@@ -159,6 +160,7 @@
     ],
     "asarUnpack": [
       "assets/svg/**/*",
+      "assets/accessories/**/*",
       "hooks/**/*",
       "extensions/**/*",
       "agents/**/*",

@@ -130,7 +130,47 @@ test("built-in contexts prefer theme-local assets and expose relative renderer p
     assert.strictEqual(ctx.getRendererSourceAssetsPath(), "../themes/calico/assets");
     assert.strictEqual(ctx.getRendererConfig().assetsPath, "../themes/calico/assets");
     assert.strictEqual(ctx.getRendererConfig().petTintSupported, false);
+    assert.strictEqual(ctx.getRendererConfig().accessorySupported, false);
+    assert.strictEqual(ctx.getRendererConfig().accessoryAttachments, null);
     assert.strictEqual(ctx.getHitRendererConfig().idleFollowSvg, "idle.apng");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("renderer config exposes normalized accessory attachments only for capable themes", () => {
+  const fixture = makeRoot();
+  try {
+    const attachments = {
+      default: {
+        staticFrame: { cx: 50, baseY: 20, width: 40 },
+      },
+      files: {
+        "idle.svg": {
+          staticFrame: { cx: 50, baseY: 20, width: 40 },
+          followTarget: {
+            id: "body-js",
+            frame: { cx: 50, baseY: 20, width: 40 },
+          },
+        },
+      },
+    };
+    const capable = makeTheme({
+      _capabilities: { petTint: true, accessories: true },
+      customization: { petTint: true, accessories: attachments },
+    });
+    const disabled = makeTheme({
+      _capabilities: { petTint: true, accessories: false },
+      customization: { petTint: true, accessories: attachments },
+    });
+
+    assert.strictEqual(createThemeContext(capable, fixture).getRendererConfig().accessorySupported, true);
+    assert.deepStrictEqual(
+      createThemeContext(capable, fixture).getRendererConfig().accessoryAttachments,
+      attachments
+    );
+    assert.strictEqual(createThemeContext(disabled, fixture).getRendererConfig().accessorySupported, false);
+    assert.strictEqual(createThemeContext(disabled, fixture).getRendererConfig().accessoryAttachments, null);
   } finally {
     fixture.cleanup();
   }

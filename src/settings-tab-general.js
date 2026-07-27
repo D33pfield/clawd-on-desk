@@ -28,7 +28,6 @@
     "hideBubbles",
     "bubbleFollowPet",
     "permissionBubblesEnabled",
-    "autoApproveAllPermissions",
     "notificationBubbleAutoCloseSeconds",
     "updateBubbleAutoCloseSeconds",
     "sessionStaleMs",
@@ -69,6 +68,11 @@
     "sessionHudCleanupDetached",
   ]);
   const BUBBLE_SECONDS_AUTO_COMMIT_DELAY_MS = 600;
+  const PERMISSION_AUTOMATION_OPTIONS = [
+    { id: "off", labelKey: "permissionAutomationOff" },
+    { id: "auto-tools", labelKey: "permissionAutomationAutoTools" },
+    { id: "unattended", labelKey: "permissionAutomationUnattended" },
+  ];
 
   let state = null;
   let readers = null;
@@ -183,16 +187,10 @@
       }),
     ]));
 
-    // Permissions is kept last so the danger toggle (auto-approve everything)
-    // sits at the bottom, away from everyday settings.
+    // Permission automation stays last: both automatic modes carry a broad
+    // trust boundary and require an explicit confirmation.
     parent.appendChild(helpers.buildSection(t("sectionPermissions"), [
-      helpers.buildSwitchRow({
-        key: "autoApproveAllPermissions",
-        labelKey: "rowAutoApproveAll",
-        descKey: "rowAutoApproveAllDesc",
-        danger: true,
-        onToggle: ({ nextRaw }) => confirmAutoApproveAll(nextRaw),
-      }),
+      buildPermissionAutomationRow(),
     ]));
   }
 
@@ -226,29 +224,130 @@
     return wrap;
   }
 
-  // DANGER "auto-pilot": enabling auto-approves every agent permission request
-  // (Bash, file writes, rm — everything) with no prompt. Gate the ENABLE path
-  // behind a destructive confirm; disabling is always safe and immediate.
-  function confirmAutoApproveAll(nextRaw) {
-    // Route through the setAutoApproveAll command (not settings:update, which
-    // now rejects this key). Enabling carries confirmed:true only after the
-    // user accepts the danger modal, so the confirmation is a real gate.
-    if (!nextRaw) return window.settingsAPI.command("setAutoApproveAll", { enabled: false });
-    return showAutoApproveAllConfirmModal().then((actionId) => {
-      if (actionId !== "enable") return { status: "ok", noop: true };
-      return window.settingsAPI.command("setAutoApproveAll", { enabled: true, confirmed: true });
+  function readPermissionAutomationMode() {
+    const mode = state.snapshot && state.snapshot.permissionAutomationMode;
+    return PERMISSION_AUTOMATION_OPTIONS.some((option) => option.id === mode)
+      ? mode
+      : "off";
+  }
+
+  function permissionAutomationWarningKey(mode) {
+    if (mode === "auto-tools") return "permissionAutomationAutoToolsWarningDismissed";
+    if (mode === "unattended") return "permissionAutomationUnattendedWarningDismissed";
+    return null;
+  }
+
+  function isPermissionAutomationWarningDismissed(mode) {
+    const key = permissionAutomationWarningKey(mode);
+    return !!(key && state.snapshot && state.snapshot[key] === true);
+  }
+
+  function showPermissionAutomationConfirmModal(mode) {
+    const unattended = mode === "unattended";
+    return helpers.showSettingsConfirmModal({
+      title: t(unattended
+        ? "permissionAutomationUnattendedConfirmTitle"
+        : "permissionAutomationAutoToolsConfirmTitle"),
+      detail: t(unattended
+        ? "permissionAutomationUnattendedConfirmDetail"
+        : "permissionAutomationAutoToolsConfirmDetail"),
+      checkboxLabel: t(unattended
+        ? "permissionAutomationUnattendedDontShowAgain"
+        : "permissionAutomationAutoToolsDontShowAgain"),
+      checkboxChecked: false,
+      returnDetails: true,
+      actions: [
+        {
+          id: "enable",
+          label: t(unattended
+            ? "permissionAutomationEnableUnattended"
+            : "permissionAutomationEnableAutoTools"),
+          tone: "danger",
+        },
+        { id: "cancel", label: t("permissionAutomationCancel"), tone: "accent", defaultFocus: true },
+      ],
     });
   }
 
-  function showAutoApproveAllConfirmModal() {
-    return helpers.showSettingsConfirmModal({
-      title: t("autoApproveAllConfirmTitle"),
-      detail: t("autoApproveAllConfirmDetail"),
-      actions: [
-        { id: "enable", label: t("autoApproveAllConfirmEnable"), tone: "danger" },
-        { id: "cancel", label: t("autoApproveAllConfirmCancel"), tone: "accent", defaultFocus: true },
-      ],
+  function setPermissionAutomationMode(mode) {
+    if (mode === readPermissionAutomationMode()) return Promise.resolve({ status: "ok", noop: true });
+    if (mode === "off") {
+      return window.settingsAPI.command("setPermissionAutomationMode", {
+        mode,
+        confirmed: false,
+      });
+    }
+    if (isPermissionAutomationWarningDismissed(mode)) {
+      return window.settingsAPI.command("setPermissionAutomationMode", {
+        mode,
+        confirmed: false,
+      });
+    }
+    return showPermissionAutomationConfirmModal(mode).then((result) => {
+      if (!result || result.actionId !== "enable") return { status: "ok", noop: true };
+      return window.settingsAPI.command("setPermissionAutomationMode", {
+        mode,
+        confirmed: true,
+        suppressFutureConfirmation: result.checkboxChecked === true,
+      });
     });
+  }
+
+  function buildPermissionAutomationRow() {
+    const row = document.createElement("div");
+    row.className = "row permission-automation-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowPermissionAutomation");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    const current = readPermissionAutomationMode();
+    const descKey = current === "auto-tools"
+      ? "permissionAutomationAutoToolsDesc"
+      : (current === "unattended"
+        ? "permissionAutomationUnattendedDesc"
+        : "permissionAutomationOffDesc");
+    desc.textContent = t(descKey);
+    text.appendChild(label);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control";
+    const segmented = document.createElement("div");
+    segmented.className = "segmented permission-automation-segmented";
+    segmented.setAttribute("role", "group");
+    segmented.setAttribute("aria-label", t("rowPermissionAutomation"));
+    for (const option of PERMISSION_AUTOMATION_OPTIONS) {
+      const btn = document.createElement("button");
+      const selected = current === option.id;
+      btn.type = "button";
+      btn.dataset.mode = option.id;
+      btn.textContent = t(option.labelKey);
+      btn.classList.toggle("active", selected);
+      btn.setAttribute("aria-pressed", selected ? "true" : "false");
+      btn.addEventListener("click", () => {
+        if (btn.classList.contains("active") || btn.disabled) return;
+        for (const candidate of segmented.querySelectorAll("button")) candidate.disabled = true;
+        setPermissionAutomationMode(option.id).then((result) => {
+          if (!result || result.status !== "ok") {
+            const msg = (result && result.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + msg, { error: true });
+          }
+        }).catch((err) => {
+          ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+        }).finally(() => {
+          for (const candidate of segmented.querySelectorAll("button")) candidate.disabled = false;
+        });
+      });
+      segmented.appendChild(btn);
+    }
+    ctrl.appendChild(segmented);
+    row.appendChild(ctrl);
+    return row;
   }
 
   function buildDashboardRow() {

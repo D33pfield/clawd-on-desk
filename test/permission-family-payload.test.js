@@ -16,6 +16,7 @@ const fs = require("fs");
 const path = require("path");
 
 const initPermission = require("../src/permission");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 
 function makeCtx(overrides = {}) {
   return {
@@ -70,6 +71,10 @@ function buildPayload(entryOverrides) {
     createdAt: Date.now(),
     ...entryOverrides,
   };
+  permEntry.interaction = permEntry.interaction || classifyPermissionInteraction({
+    agentId: permEntry.agentId,
+    toolName: permEntry.toolName,
+  });
   return perm.buildPermissionBubblePayload(permEntry);
 }
 
