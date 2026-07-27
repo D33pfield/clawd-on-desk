@@ -13,6 +13,7 @@ const {
 } = require("../hooks/session-recovery-lease");
 
 const HOOK = path.join(__dirname, "..", "hooks", "clawd-hook.js");
+const HTTP_BLOCKER = path.join(__dirname, "hook-http-blocker.js");
 
 describe("Claude hook recovery lease ordering", () => {
   let home;
@@ -44,7 +45,7 @@ describe("Claude hook recovery lease ordering", () => {
   function run(event, payload = {}) {
     const env = { ...process.env, HOME: home, USERPROFILE: home };
     delete env.CLAWD_REMOTE;
-    return spawnSync(process.execPath, [HOOK, event], {
+    return spawnSync(process.execPath, ["--require", HTTP_BLOCKER, HOOK, event], {
       input: `${JSON.stringify({ session_id: "offline-session", cwd: "C:/work/project", ...payload })}\n`,
       encoding: "utf8",
       windowsHide: true,
