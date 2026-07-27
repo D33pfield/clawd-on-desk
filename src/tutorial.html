@@ -112,8 +112,10 @@ body { user-select: none; }
   display: flex;
   align-items: safe center;
   justify-content: center;
-  padding: 18px 26px;
+  padding: 18px 26px 106px;
+  scrollbar-width: none;
 }
+.body.step-welcome::-webkit-scrollbar { width: 0; height: 0; }
 .step-title { margin: 0 0 4px; font-size: 19px; font-weight: 700; }
 .step-sub { margin: 0 0 18px; color: var(--muted); font-size: 13.5px; line-height: 1.55; }
 
@@ -152,7 +154,7 @@ body { user-select: none; }
 
 /* Welcome */
 .welcome { text-align: center; padding-top: 8px; }
-.step-welcome .welcome { width: 100%; padding-top: 0; transform: translateY(-4px); }
+.step-welcome .welcome { width: 100%; padding-top: 0; }
 .welcome .hero-art { margin-bottom: 10px; }
 .step-welcome .hero-icon,
 .step-welcome .hero-fallback {
