@@ -3789,6 +3789,7 @@ function createWindow() {
     },
     setDragLocked: (value) => { petWindowRuntime.setDragLocked(value); },
     setMouseOverPet: (value) => { mouseOverPet = !!value; },
+    cancelRoam: () => _roam.cancelRoam(),
     beginDragSnapshot: () => beginDragSnapshot(),
     clearDragSnapshot: () => clearDragSnapshot(),
     syncHitWin: () => syncHitWin(),
@@ -4003,6 +4004,7 @@ const { enterMiniMode, exitMiniMode, enterMiniViaMenu, miniPeekIn, miniPeekOut,
 // ── Free Roam — initialized here after state and mini modules ──
 const _roamCtx = {
   get win() { return win; },
+  get dragLocked() { return petWindowRuntime.isDragLocked(); },
   getPetWindowBounds,
   applyPetWindowBounds,
   // #569: lets roam anchor to the keep-size frozen size when that toggle is on

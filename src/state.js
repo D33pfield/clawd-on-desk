@@ -508,7 +508,12 @@ function setState(newState, svgOverride, options = {}) {
     clearPendingStateTimer();
   }
 
-  const minTime = MIN_DISPLAY_MS[currentState] || 0;
+  // Internal movement states such as free roam must be interruptible by direct
+  // user interaction. Callers may bypass only the current state's display
+  // hold; DND and pending-state priority checks above still apply unchanged.
+  const minTime = options.bypassMinDisplay === true
+    ? 0
+    : (MIN_DISPLAY_MS[currentState] || 0);
   const elapsed = Date.now() - stateChangedAt;
   const remaining = minTime - elapsed;
 
