@@ -268,8 +268,22 @@ const {
   isAllBubblesHidden,
 } = require("./bubble-policy");
 const loginItemHelpers = require("./login-item");
+const { writeCodexAutoStartGate } = require("../hooks/server-config");
 const PREFS_PATH = path.join(app.getPath("userData"), "clawd-prefs.json");
 const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
+
+function _persistCodexAutoStartGate(enabled) {
+  return writeCodexAutoStartGate(enabled === true);
+}
+
+function _syncCodexAutoStartGate(snapshot, source) {
+  const codex = snapshot && snapshot.agents && snapshot.agents.codex;
+  if (_persistCodexAutoStartGate(!!(codex && codex.enabled === true))) return true;
+  console.warn(`Clawd: failed to sync Codex auto-start gate (${source})`);
+  return false;
+}
+
+_syncCodexAutoStartGate(_initialPrefsLoad.snapshot, "startup");
 
 // Lazy helpers — these run inside the action `effect` callbacks at click time,
 // long after server.js / hooks/install.js are loaded. Wrapping them in closures
@@ -409,6 +423,7 @@ const _settingsController = createSettingsController({
       agentRuntime ? agentRuntime.repairIntegrationForAgent(id, options) : false,
     stopIntegrationForAgent: (id) => agentRuntime ? agentRuntime.stopIntegrationForAgent(id) : false,
     uninstallIntegrationForAgent: (id) => agentRuntime ? agentRuntime.uninstallIntegrationForAgent(id) : false,
+    writeCodexAutoStartGate: _persistCodexAutoStartGate,
     deployHooksToWsl: async (distro, agentId) => {
       const { deployToWsl } = require("./wsl-deploy");
       return deployToWsl(distro, { agentId, isPackaged: app.isPackaged });
@@ -471,6 +486,9 @@ const _settingsController = createSettingsController({
       if (shortcutRuntime) shortcutRuntime.clearFailure(actionId);
     },
   },
+});
+_settingsController.subscribeKey("agents", (_agents, snapshot) => {
+  _syncCodexAutoStartGate(snapshot, "settings");
 });
 let _remoteSshInstallationIdentity = null;
 

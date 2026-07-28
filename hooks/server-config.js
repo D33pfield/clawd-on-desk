@@ -16,6 +16,8 @@ const REMOTE_IDENTITY_FILENAME = "clawd-remote.json";
 const SSH_SECURE_MARKER_FILENAME = "clawd-ssh-secure-v1";
 const HOST_PREFIX_FILENAME = "clawd-host-prefix";
 const REMOTE_LAST_LOG_FILENAME = "clawd-remote-last-error.log";
+const CODEX_AUTO_START_GATE_FILENAME = "codex-auto-start.json";
+const CODEX_AUTO_START_GATE_VERSION = 1;
 const REMOTE_FAILURE_LOG_INTERVAL_MS = 5 * 60 * 1000;
 const ROUTING_NONCE_HEADER = "x-clawd-routing-nonce";
 const REMOTE_IDENTITY_VERSION = 2;
@@ -38,6 +40,49 @@ function normalizePort(value) {
 function defaultRuntimeConfigPath(options = {}) {
   const homeDir = typeof options.homeDir === "string" ? options.homeDir : os.homedir();
   return path.join(homeDir, ".clawd", "runtime.json");
+}
+
+function defaultCodexAutoStartGatePath(options = {}) {
+  const homeDir = typeof options.homeDir === "string" ? options.homeDir : os.homedir();
+  return path.join(homeDir, ".clawd", CODEX_AUTO_START_GATE_FILENAME);
+}
+
+function readCodexAutoStartGate(options = {}) {
+  const fsApi = options.fs || fs;
+  const filePath = options.gatePath || defaultCodexAutoStartGatePath(options);
+  try {
+    const parsed = JSON.parse(fsApi.readFileSync(filePath, "utf8"));
+    return !!(
+      parsed
+      && parsed.app === CLAWD_SERVER_ID
+      && parsed.version === CODEX_AUTO_START_GATE_VERSION
+      && parsed.enabled === true
+    );
+  } catch {
+    return false;
+  }
+}
+
+function writeCodexAutoStartGate(enabled, options = {}) {
+  if (typeof enabled !== "boolean") return false;
+  const fsApi = options.fs || fs;
+  const filePath = options.gatePath || defaultCodexAutoStartGatePath(options);
+  const dir = path.dirname(filePath);
+  const tmpPath = path.join(dir, `.codex-auto-start.${process.pid}.${Date.now()}.tmp`);
+  const body = JSON.stringify({
+    app: CLAWD_SERVER_ID,
+    version: CODEX_AUTO_START_GATE_VERSION,
+    enabled,
+  }, null, 2);
+  try {
+    fsApi.mkdirSync(dir, { recursive: true });
+    fsApi.writeFileSync(tmpPath, body, "utf8");
+    fsApi.renameSync(tmpPath, filePath);
+    return true;
+  } catch {
+    try { fsApi.unlinkSync(tmpPath); } catch {}
+    return false;
+  }
 }
 
 function resolveCoLocatedPath(filename, options = {}, optionKey, envKey) {
@@ -1212,6 +1257,8 @@ async function resolveNodeBinAsync(options = {}) {
 module.exports = {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
+  CODEX_AUTO_START_GATE_FILENAME,
+  CODEX_AUTO_START_GATE_VERSION,
   DEFAULT_HOOK_HTTP_TIMEOUT_MS,
   DEFAULT_SERVER_PORT,
   HOST_PREFIX_FILENAME,
@@ -1229,6 +1276,7 @@ module.exports = {
   STATE_PATH,
   buildPermissionUrl,
   clearRuntimeConfig,
+  defaultCodexAutoStartGatePath,
   defaultRuntimeConfigPath,
   isManagedPermissionUrl,
   isRemoteHookMode,
@@ -1242,6 +1290,7 @@ module.exports = {
   postStateToRunningServer,
   probePort,
   readHostPrefix,
+  readCodexAutoStartGate,
   readRemoteIdentity,
   resolveRemoteIdentityPath,
   resolveRemoteLastLogPath,
@@ -1261,4 +1310,5 @@ module.exports = {
   splitPortCandidates,
   postStateToPort,
   writeRuntimeConfig,
+  writeCodexAutoStartGate,
 };

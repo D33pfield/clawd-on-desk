@@ -276,11 +276,16 @@ test("settings agent actions enable an agent and preserve sibling flags", () => 
   const calls = {
     syncIntegrationForAgent: [],
     startMonitorForAgent: [],
+    writeCodexAutoStartGate: [],
   };
   const deps = {
     snapshot,
     syncIntegrationForAgent: (agentId) => calls.syncIntegrationForAgent.push(agentId),
     startMonitorForAgent: (agentId) => calls.startMonitorForAgent.push(agentId),
+    writeCodexAutoStartGate: (enabled) => {
+      calls.writeCodexAutoStartGate.push(enabled);
+      return true;
+    },
   };
 
   const result = agentCommands.setAgentFlag(
@@ -291,10 +296,61 @@ test("settings agent actions enable an agent and preserve sibling flags", () => 
   assert.strictEqual(result.status, "ok");
   assert.deepStrictEqual(calls.syncIntegrationForAgent, ["codex"]);
   assert.deepStrictEqual(calls.startMonitorForAgent, ["codex"]);
+  assert.deepStrictEqual(calls.writeCodexAutoStartGate, [true]);
   assert.strictEqual(result.commit.agents.codex.enabled, true);
   assert.strictEqual(result.commit.agents.codex.permissionsEnabled, false);
   assert.strictEqual(result.commit.agents.codex.notificationHookEnabled, true);
   assert.strictEqual(result.commit.agents.codex.permissionMode, "intercept");
+});
+
+test("settings agent actions fail closed when the Codex auto-start gate cannot sync", () => {
+  const snapshot = prefs.getDefaults();
+  const calls = [];
+  const result = agentCommands.setAgentFlag(
+    { agentId: "codex", flag: "enabled", value: false },
+    {
+      snapshot,
+      writeCodexAutoStartGate: (enabled) => {
+        calls.push(enabled);
+        return false;
+      },
+      stopMonitorForAgent: () => calls.push("stop"),
+    }
+  );
+
+  assert.strictEqual(result.status, "error");
+  assert.match(result.message, /auto-start gate/);
+  assert.deepStrictEqual(calls, [false]);
+  assert.strictEqual(result.commit, undefined);
+});
+
+test("settings agent actions persist the disabled Codex gate before runtime cleanup", () => {
+  const snapshot = prefs.getDefaults();
+  const calls = [];
+  const result = agentCommands.setAgentFlag(
+    { agentId: "codex", flag: "enabled", value: false },
+    {
+      snapshot,
+      writeCodexAutoStartGate: (enabled) => {
+        calls.push(`gate:${enabled}`);
+        return true;
+      },
+      stopMonitorForAgent: () => calls.push("stop"),
+      clearSessionAutomationByAgent: () => calls.push("automation"),
+      clearSessionsByAgent: () => calls.push("sessions"),
+      dismissPermissionsByAgent: () => calls.push("permissions"),
+    }
+  );
+
+  assert.strictEqual(result.status, "ok");
+  assert.deepStrictEqual(calls, [
+    "gate:false",
+    "stop",
+    "automation",
+    "sessions",
+    "permissions",
+  ]);
+  assert.strictEqual(result.commit.agents.codex.enabled, false);
 });
 
 test("disabling an agent clears session automation before sessions and permissions", () => {
@@ -562,6 +618,36 @@ test("settings agent actions install an integration and enable ingress", async (
   assert.strictEqual(result.commit.agents["copilot-cli"].enabled, true);
   assert.deepStrictEqual(result.commit.dismissedAgentInstallHints, {});
   assert.deepStrictEqual(result.commit.dismissedAgentCleanupHints, {});
+});
+
+test("settings agent actions synchronize the Codex gate on install and uninstall", async () => {
+  const installSnapshot = prefs.getDefaults();
+  installSnapshot.agents.codex.integrationInstalled = false;
+  installSnapshot.agents.codex.enabled = false;
+  const calls = [];
+  const installed = await agentCommands.installAgentIntegration({ agentId: "codex" }, {
+    snapshot: installSnapshot,
+    syncIntegrationForAgent: async () => ({ status: "ok" }),
+    writeCodexAutoStartGate: (enabled) => {
+      calls.push(`install:${enabled}`);
+      return true;
+    },
+  });
+  assert.strictEqual(installed.status, "ok");
+  assert.strictEqual(installed.commit.agents.codex.enabled, true);
+
+  const uninstallSnapshot = prefs.getDefaults();
+  const uninstalled = await agentCommands.uninstallAgentIntegration({ agentId: "codex" }, {
+    snapshot: uninstallSnapshot,
+    writeCodexAutoStartGate: (enabled) => {
+      calls.push(`uninstall:${enabled}`);
+      return true;
+    },
+    uninstallIntegrationForAgent: async () => ({ status: "ok" }),
+  });
+  assert.strictEqual(uninstalled.status, "ok");
+  assert.strictEqual(uninstalled.commit.agents.codex.enabled, false);
+  assert.deepStrictEqual(calls, ["install:true", "uninstall:false"]);
 });
 
 test("settings agent actions pass CodeBuddy custom hook URL during install", async () => {

@@ -80,6 +80,24 @@ const _validateAgentFlagId = requireString("setAgentFlag.agentId");
 const _validateAgentFlagValue = requireBoolean("setAgentFlag.value");
 const _validateRepairAgentId = requireString("repairAgentIntegration.agentId");
 
+function syncCodexAutoStartGate(agentId, enabled, deps, actionName) {
+  if (agentId !== "codex") return null;
+  if (!deps || typeof deps.writeCodexAutoStartGate !== "function") {
+    return { status: "error", message: `${actionName}: writeCodexAutoStartGate is required` };
+  }
+  try {
+    if (deps.writeCodexAutoStartGate(enabled) !== true) {
+      return { status: "error", message: `${actionName}: failed to persist Codex auto-start gate` };
+    }
+  } catch (err) {
+    return {
+      status: "error",
+      message: `${actionName}: failed to persist Codex auto-start gate: ${err && err.message}`,
+    };
+  }
+  return null;
+}
+
 function setAgentFlag(payload, deps) {
   if (!payload || typeof payload !== "object") {
     return { status: "error", message: "setAgentFlag: payload must be an object" };
@@ -124,6 +142,10 @@ function setAgentFlag(payload, deps) {
   const nextEntry = { ...(currentEntry || {}), [flag]: value };
   const nextAgents = { ...currentAgents, [agentId]: nextEntry };
   const commitResult = { status: "ok", commit: { agents: nextAgents } };
+  if (agentId === "codex" && flag === "enabled" && value === false) {
+    const gateError = syncCodexAutoStartGate(agentId, false, deps, "setAgentFlag");
+    if (gateError) return gateError;
+  }
 
   // Claude Code enable is the one branch with an awaited external mutation:
   // hooks must actually land (via the server-owned operation queue, #657)
@@ -192,6 +214,10 @@ function setAgentFlag(payload, deps) {
     };
   }
 
+  if (agentId === "codex" && flag === "enabled" && value === true) {
+    const gateError = syncCodexAutoStartGate(agentId, true, deps, "setAgentFlag");
+    if (gateError) return gateError;
+  }
   return commitResult;
 }
 
@@ -539,6 +565,8 @@ async function installAgentIntegration(payload, deps = {}) {
       };
     }
     if (typeof deps.startMonitorForAgent === "function") deps.startMonitorForAgent(agentId);
+    const gateError = syncCodexAutoStartGate(agentId, true, deps, "installAgentIntegration");
+    if (gateError) return gateError;
     return {
       status: "ok",
       message: resultMessage(result, `Installed ${agentId}`),
@@ -567,6 +595,8 @@ async function uninstallAgentIntegration(payload, deps = {}) {
   if (!deps || typeof deps.uninstallIntegrationForAgent !== "function") {
     return { status: "error", message: "uninstallAgentIntegration requires uninstallIntegrationForAgent dep" };
   }
+  const gateError = syncCodexAutoStartGate(agentId, false, deps, "uninstallAgentIntegration");
+  if (gateError) return gateError;
 
   try {
     const result = await deps.uninstallIntegrationForAgent(agentId);
