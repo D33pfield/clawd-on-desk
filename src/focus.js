@@ -1243,7 +1243,10 @@ function findCmuxPanelMatch(sessionData, ttyName) {
     const tm = win?.tabManager;
     if (!tm) continue;
     for (const ws of tm.workspaces ?? []) {
-      const workspaceId = typeof ws?.id === "string" ? ws.id : null;
+      // cmux persists the workspace UUID as `workspaceId`; older payloads used `id`.
+      const workspaceId = typeof ws?.workspaceId === "string" ? ws.workspaceId
+        : typeof ws?.id === "string" ? ws.id
+        : null;
       if (!workspaceId) continue;
       for (const p of ws.panels ?? []) {
         if (p?.ttyName === ttyName && typeof p.id === "string" && p.id) {
