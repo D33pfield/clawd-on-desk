@@ -95,6 +95,27 @@
       "owner": "build-release",
       "packaged": true,
       "retentionReason": "Canonical application icon used by packaging, Windows/Linux trays, localized READMEs, and runtime integrations."
+    },
+    {
+      "path": "assets/icon.ico",
+      "class": "runtime-required",
+      "owner": "build-release",
+      "packaged": true,
+      "retentionReason": "Canonical Windows build and shell icon; packaged once as a physical extraResource and embedded into Windows executables by electron-builder."
+    },
+    {
+      "path": "assets/icons/256x256.png",
+      "class": "runtime-required",
+      "owner": "build-release",
+      "packaged": true,
+      "retentionReason": "Canonical 256px runtime icon used by Settings and served at the stable PWA icon URL."
+    },
+    {
+      "path": "assets/icons/512x512.png",
+      "class": "runtime-required",
+      "owner": "build-release",
+      "packaged": true,
+      "retentionReason": "Canonical 512px runtime icon used by Linux packaging and served at the stable PWA icon URL."
     }
   ],
   "duplicatePayloadExemptions": [

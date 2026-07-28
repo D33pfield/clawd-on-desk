@@ -219,13 +219,9 @@ describe("package build config", () => {
     });
   });
 
-  // getWindowsShellIconPath has a three-step fallback:
-  //   1. resourcesPath/icon.ico            ← extraResources copy
-  //   2. resourcesPath/app.asar.unpacked/assets/icon.ico
-  //   3. resourcesPath/app.asar/assets/icon.ico
-  // Fallback 1 only works if extraResources actually copies icon.ico, and
-  // fallback 3 only works if icon.ico is inside build.files. Guard both so a
-  // future refactor to either array can't silently drop the shell icon.
+  // Windows shell consumers need a physical icon resource outside app.asar.
+  // extraResources provides that canonical runtime copy; the packaged EXE
+  // embeds the same build.win.icon and is the fallback if the copy is missing.
   describe("Windows shell icon fallback chain", () => {
     it("has the source icon.ico on disk", () => {
       const src = path.join(ROOT, "assets", "icon.ico");
@@ -246,17 +242,20 @@ describe("package build config", () => {
         "assets/icon.ico",
         "build.win.icon should point at the same file the shell icon chain expects"
       );
+      for (const key of ["installerIcon", "uninstallerIcon", "installerHeaderIcon"]) {
+        assert.strictEqual(
+          pkg.build.nsis && pkg.build.nsis[key],
+          "assets/icon.ico",
+          `build.nsis.${key} should use the canonical Windows icon`
+        );
+      }
     });
 
-    it("packs icon.ico into the asar so fallback 3 resolves", () => {
-      // getWindowsShellIconPath's third fallback reads
-      // resourcesPath/app.asar/assets/icon.ico — which only exists if the
-      // file survives the build.files glob filter. Earlier versions listed
-      // only assets/icons/**/* (subdir), which does NOT match assets/icon.ico
-      // at the root, so fallback 3 was dead. Guard against that regression.
-      assert.ok(
+    it("does not duplicate the shell icon inside app.asar", () => {
+      assert.strictEqual(
         matchedByAnyGlob(pkg.build.files, "assets/icon.ico"),
-        "build.files must include a glob covering assets/icon.ico (fallback 3)"
+        false,
+        "assets/icon.ico should be packaged only once via extraResources"
       );
     });
   });
