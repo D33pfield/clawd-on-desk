@@ -85,6 +85,20 @@ function manifest(files, target = null) {
   };
 }
 
+function fatMachoBuffer({ magic, endian, recordBytes }) {
+  const architectures = [0x01000007, 0x0100000c];
+  const buffer = Buffer.alloc(8 + architectures.length * recordBytes);
+  buffer.writeUInt32BE(magic, 0);
+  const writeUInt32 = endian === "be"
+    ? buffer.writeUInt32BE.bind(buffer)
+    : buffer.writeUInt32LE.bind(buffer);
+  writeUInt32(architectures.length, 4);
+  architectures.forEach((cpuType, index) => {
+    writeUInt32(cpuType, 8 + index * recordBytes);
+  });
+  return buffer;
+}
+
 describe("repository asset audit", () => {
   it("matches recursive package and policy globs consistently", () => {
     assert.strictEqual(matchesGlob("themes/calico/theme.json", "themes/**"), true);
@@ -104,6 +118,14 @@ describe("repository asset audit", () => {
     assert.throws(
       () => matchesGlob("a.png", "*.[pj]ng"),
       /unsupported glob brace or character-class/,
+    );
+    assert.throws(
+      () => matchesGlob("a.png", "+(a|b).png"),
+      /unsupported glob extglob/,
+    );
+    assert.throws(
+      () => matchesGlob("foo.png", "foo?(x).png"),
+      /unsupported glob extglob/,
     );
   });
 
@@ -265,17 +287,43 @@ describe("repository asset audit", () => {
     macho.writeUInt32BE(0x0100000c, 4);
     assert.deepStrictEqual(inspectNativeBuffer(macho), { os: "darwin", arch: "arm64", format: "mach-o" });
 
-    const fatMacho = Buffer.alloc(48);
-    fatMacho.writeUInt32BE(0xcafebabe, 0);
-    fatMacho.writeUInt32BE(2, 4);
-    fatMacho.writeUInt32BE(0x01000007, 8);
-    fatMacho.writeUInt32BE(0x0100000c, 28);
-    assert.deepStrictEqual(inspectNativeBuffer(fatMacho), {
-      os: "darwin",
-      arch: "universal",
-      architectures: ["arm64", "x64"],
-      format: "mach-o-fat",
-    });
+    for (const fat of [
+      { magic: 0xcafebabe, endian: "be", recordBytes: 20 },
+      { magic: 0xbebafeca, endian: "le", recordBytes: 20 },
+      { magic: 0xcafebabf, endian: "be", recordBytes: 32 },
+      { magic: 0xbfbafeca, endian: "le", recordBytes: 32 },
+    ]) {
+      assert.deepStrictEqual(inspectNativeBuffer(fatMachoBuffer(fat)), {
+        os: "darwin",
+        arch: "universal",
+        architectures: ["arm64", "x64"],
+        format: "mach-o-fat",
+      });
+    }
+  });
+
+  it("does not mistake a Java class header for a fat Mach-O", () => {
+    const javaClass = Buffer.alloc(8 + 61 * 20);
+    javaClass.writeUInt32BE(0xcafebabe, 0);
+    javaClass.writeUInt16BE(0, 4);
+    javaClass.writeUInt16BE(61, 6);
+    assert.strictEqual(inspectNativeBuffer(javaClass), null);
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "asset-audit-java-class-"));
+    try {
+      fs.writeFileSync(path.join(root, "Example.class"), javaClass);
+      const extracted = buildExtractedPackageManifest(root, "windows-x64", "abc");
+      const report = analyzeAudit({
+        trackedFiles: [tracked("assets/LICENSE", 5)],
+        manifest: extracted,
+        policy: basePolicy(),
+        packageRoot: root,
+      });
+      assert.deepStrictEqual(report.package.foreignNativeFiles, []);
+      assert.ok(!report.findings.some((finding) => finding.rule === "foreign-target-native"));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("hard-fails a foreign-target native binary in an extracted package", () => {
@@ -344,11 +392,11 @@ describe("repository asset audit", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "asset-audit-fat-macho-"));
     try {
       const executable = path.join(root, "Clawd");
-      const fatMacho = Buffer.alloc(48);
-      fatMacho.writeUInt32BE(0xcafebabe, 0);
-      fatMacho.writeUInt32BE(2, 4);
-      fatMacho.writeUInt32BE(0x01000007, 8);
-      fatMacho.writeUInt32BE(0x0100000c, 28);
+      const fatMacho = fatMachoBuffer({
+        magic: 0xcafebabe,
+        endian: "be",
+        recordBytes: 20,
+      });
       fs.writeFileSync(executable, fatMacho);
 
       const extracted = buildExtractedPackageManifest(root, "darwin-x64", "abc");

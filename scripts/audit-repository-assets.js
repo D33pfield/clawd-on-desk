@@ -26,6 +26,9 @@ const FAT_MACHO_MAGICS = new Map([
   [0xcafebabf, { endian: "be", recordBytes: 32 }],
   [0xbfbafeca, { endian: "le", recordBytes: 32 }],
 ]);
+// CAFEBABE is also the Java class magic; its following version bytes decode as
+// an implausibly large Mach-O slice count (Java class versions start at 45).
+const MAX_FAT_MACHO_ARCHITECTURES = 8;
 
 function normalizePath(value) {
   return String(value || "").replace(/\\/g, "/").replace(/^\.\/+/, "");
@@ -402,7 +405,9 @@ function inspectNativeBuffer(buffer) {
   if (fatMagic) {
     const count = readUInt32(buffer, 4, fatMagic.endian);
     const headerBytes = 8 + count * fatMagic.recordBytes;
-    if (count === 0 || count > 128 || headerBytes > buffer.length) return null;
+    if (count === 0 || count > MAX_FAT_MACHO_ARCHITECTURES || headerBytes > buffer.length) {
+      return null;
+    }
     const architectures = stableSort(Array.from(new Set(
       Array.from({ length: count }, (_, index) => {
         const offset = 8 + index * fatMagic.recordBytes;
