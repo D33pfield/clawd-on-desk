@@ -439,6 +439,113 @@ describe("Windows terminal focus", () => {
     }
   });
 
+  it("holds the focus result until the Orca pane switch has answered", async () => {
+    // Telegram Direct Send acts on this promise. Resolving it on the raise alone
+    // let it press Ctrl+V while the switch was still in flight, so the reply landed
+    // in whichever pane was previously active and was still reported as delivered.
+    const stdout = new EventEmitter();
+    stdout.setEncoding = () => {};
+    stdout.unref = () => {};
+    let releaseSwitch = null;
+    const writes = [];
+    const { initFocus, cleanup } = loadFocusWithMock({
+      execFile: (cmd, args, opts, cb) => {
+        if (typeof opts === "function") cb = opts;
+        const joined = (args || []).join(" ");
+        if (joined.startsWith("terminal list")) {
+          return cb(null, JSON.stringify({
+            ok: true,
+            result: { terminals: [{ handle: "term_live", tabId: "8ce1fff7-tab", leafId: "9813824b-leaf" }] },
+          }), "");
+        }
+        // Held open so the raise can be confirmed first — the exact ordering the
+        // race depends on.
+        if (joined.startsWith("terminal switch")) {
+          releaseSwitch = () => cb(null, JSON.stringify({ ok: true }), "");
+          return;
+        }
+        return cb(null, "", "");
+      },
+      spawn: () => ({
+        pid: 9996,
+        stdin: { writable: true, write: (chunk) => writes.push(String(chunk)), on() {} },
+        stdout,
+        on() {},
+        unref() {},
+        kill() {},
+      }),
+    });
+
+    try {
+      const focus = initFocus({ focusLog: () => {} });
+      focus.initFocusHelper();
+      writes.length = 0;
+
+      const pending = focus.focusTerminalWindow({
+        sourcePid: 3333,
+        cwd: "D:\\Repos\\Apps\\clawd-on-desk",
+        sessionId: "session-orca-gate",
+        agentId: "claude-code",
+        orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+        requestSource: "telegram-direct-send",
+      });
+      const token = writes[0].match(/\$focusToken = '([^']+)'/)[1];
+      stdout.emit("data", `__CLAWD_FOCUS_RESULT__ {"token":"${token}","reason":"orca-window","targetHwnd":"787468","foregroundHwnd":"787468","confirmed":true,"status":"confirmed"}\n`);
+
+      let settledEarly = false;
+      pending.then(() => { settledEarly = true; });
+      await new Promise((r) => setTimeout(r, focus.__test.ORCA_PANE_FOCUS_DELAY_MS + 150));
+      assert.equal(settledEarly, false, "the raise alone must not settle the focus result");
+
+      assert.ok(releaseSwitch, "the pane switch should have been dispatched");
+      releaseSwitch();
+      const result = await pending;
+      assert.equal(result.confirmed, true);
+      assert.deepEqual(result.orcaPane, { ok: true, match: "exact", reason: "orca-pane-switched" });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("does not make non-Orca sessions wait on a pane switch", async () => {
+    const stdout = new EventEmitter();
+    stdout.setEncoding = () => {};
+    stdout.unref = () => {};
+    const writes = [];
+    const { initFocus, cleanup } = loadFocusWithMock({
+      spawn: () => ({
+        pid: 9995,
+        stdin: { writable: true, write: (chunk) => writes.push(String(chunk)), on() {} },
+        stdout,
+        on() {},
+        unref() {},
+        kill() {},
+      }),
+    });
+
+    try {
+      const focus = initFocus({ focusLog: () => {} });
+      focus.initFocusHelper();
+      writes.length = 0;
+
+      const pending = focus.focusTerminalWindow({
+        sourcePid: 4444,
+        cwd: "D:\\Repos\\Apps\\clawd-on-desk",
+        sessionId: "session-plain",
+        agentId: "claude-code",
+        requestSource: "telegram-direct-send",
+      });
+      const token = writes[0].match(/\$focusToken = '([^']+)'/)[1];
+      stdout.emit("data", `__CLAWD_FOCUS_RESULT__ {"token":"${token}","reason":"parent-direct","targetHwnd":"111","foregroundHwnd":"111","confirmed":true,"status":"confirmed"}\n`);
+
+      const result = await pending;
+      assert.equal(result.confirmed, true);
+      assert.equal(result.orcaPane, undefined);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("correlates concurrent Windows helper results by token", async () => {
     const writes = [];
     const logs = [];

@@ -40,6 +40,7 @@ function mockOrcaCli(opts = {}) {
     switchResults = [{ ok: true }],
     missingBinaries = [],
     timeoutOn = [],
+    macBundles = ["/Applications/Orca.app"],
   } = opts;
   const calls = [];
   let switchIdx = 0;
@@ -55,8 +56,22 @@ function mockOrcaCli(opts = {}) {
       return;
     }
 
+    // `open <bundle>` is how the macOS raise probes for Orca: an absent bundle
+    // exits non-zero rather than activating something else, which is the whole
+    // reason the raise names a path instead of an app name.
+    if (cmd === "/usr/bin/open") {
+      if (macBundles.includes(args[0])) {
+        if (cb) cb(null, "", "");
+      } else {
+        const err = new Error(`Unable to find application ${args[0]}`);
+        err.code = 1;
+        if (cb) cb(err, "", "");
+      }
+      return;
+    }
+
     // Window-raise helpers used off Windows; they carry no payload.
-    if (cmd === "/usr/bin/open" || cmd === "wmctrl" || cmd === "xdotool") {
+    if (cmd === "wmctrl" || cmd === "xdotool") {
       if (cb) cb(null, "", "");
       return;
     }
@@ -97,7 +112,7 @@ function withFocus(opts, fn) {
   const { initFocus, cleanup } = loadFocusWithMock(cliMock.mock, { platform: opts.platform || "darwin" });
   try {
     const api = initFocus({ focusLog: (m) => logs.push(String(m)) });
-    return fn(api.__test, cliMock, logs);
+    return fn(api.__test, cliMock, logs, api);
   } finally {
     cleanup();
   }
@@ -239,13 +254,12 @@ describe("Orca pane key validator copies", () => {
   });
 });
 
-describe("Orca window raise stays in the focus script", () => {
-  // The raise is the generated PowerShell's job ($orcaProcessNames), so this path
-  // must spawn nothing but the `orca` CLI. A by-name raise from Node was tried and
-  // deliberately dropped: macOS and Linux are unverified on real hardware, and
-  // WM_CLASS "orca" also matches GNOME's screen reader, so a miss would have
-  // activated the wrong window and logged it as a success.
-  for (const platform of ["win32", "darwin", "linux"]) {
+describe("Orca window raise", () => {
+  // Windows raises inside the generated PowerShell ($orcaProcessNames), so that path
+  // must spawn nothing but the `orca` CLI. Linux has no raise at all: WM_CLASS
+  // "orca" is a substring match that also hits GNOME's screen reader and OrcaSlicer,
+  // so a miss would activate an unrelated window and log it as a success.
+  for (const platform of ["win32", "linux"]) {
     it(`spawns only the orca CLI on ${platform}`, async () => {
       await withFocus({ platform }, async (t, cli) => {
         t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
@@ -257,6 +271,60 @@ describe("Orca window raise stays in the focus script", () => {
       });
     });
   }
+
+  it("activates the Orca bundle by absolute path on macOS", async () => {
+    await withFocus({ platform: "darwin", macBundles: ["/Applications/Orca.app"] }, async (t, cli) => {
+      t.orcaHandleCache.clear();
+      const outcome = await t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
+      const opens = cli.calls.filter((c) => c.cmd === "/usr/bin/open");
+      // An absolute bundle path cannot resolve to OrcaSlicer the way `open -a Orca`
+      // can, needs no Automation consent, and reopens a minimized window.
+      assert.deepStrictEqual(opens.map((c) => c.args), [["/Applications/Orca.app"]]);
+      assert.strictEqual(outcome.ok, true);
+    });
+  });
+
+  it("raises only after the switch has succeeded, so a miss never steals focus", async () => {
+    for (const opts of [
+      { terminals: [] },
+      { switchResults: [{ ok: false, code: "terminal_not_writable" }] },
+    ]) {
+      await withFocus({ platform: "darwin", macBundles: ["/Applications/Orca.app"], ...opts },
+        async (t, cli) => {
+          t.orcaHandleCache.clear();
+          const outcome = await t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
+          assert.strictEqual(outcome.ok, false);
+          assert.deepStrictEqual(cli.calls.filter((c) => c.cmd === "/usr/bin/open"), [],
+            "a failed switch must not pull Orca forward");
+        });
+    }
+  });
+
+  it("reports a missing Orca bundle instead of guessing by name", async () => {
+    await withFocus({ platform: "darwin", macBundles: [] }, async (t, cli, logs) => {
+      t.orcaHandleCache.clear();
+      const outcome = await t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
+      // Every candidate is tried and every one is refused, so nothing is activated.
+      assert.ok(cli.calls.filter((c) => c.cmd === "/usr/bin/open").length > 0);
+      assert.ok(logs.some((l) => l.includes("reason=orca-app-not-found")), logs.join("|"));
+      assert.ok(!logs.some((l) => l.includes("reason=orca-app-raised")), logs.join("|"));
+      // The tab did move, so the switch outcome stays true: only the raise is lost,
+      // which is the same shape as orca-window-ambiguous on Windows.
+      assert.strictEqual(outcome.ok, true);
+    });
+  });
+
+  it("falls through to the per-user Applications folder", async () => {
+    const home = require("os").homedir();
+    const userBundle = path.join(home, "Applications", "Orca.app");
+    await withFocus({ platform: "darwin", macBundles: [userBundle] }, async (t, cli, logs) => {
+      t.orcaHandleCache.clear();
+      await t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
+      const opens = cli.calls.filter((c) => c.cmd === "/usr/bin/open").map((c) => c.args[0]);
+      assert.deepStrictEqual(opens, ["/Applications/Orca.app", userBundle]);
+      assert.ok(logs.some((l) => l.includes("reason=orca-app-raised")), logs.join("|"));
+    });
+  });
 });
 
 describe("Orca pane key normalization", () => {
@@ -358,22 +426,25 @@ describe("Orca CLI discovery", () => {
 });
 
 describe("resolveOrcaHandle", () => {
+  const resolveHandle = (t, key, cwd) => new Promise((resolve) => {
+    t.resolveOrcaHandle(key, cwd, (result) => resolve(result));
+  });
+
   it("resolves the live handle from the pane key", async () => {
-    await withFocus({}, (t) => new Promise((resolve) => {
-      t.resolveOrcaHandle(PANE_KEY, CWD, (handle) => {
-        assert.strictEqual(handle, LIVE_HANDLE);
-        resolve();
-      });
-    }));
+    await withFocus({}, async (t) => {
+      const res = await resolveHandle(t, PANE_KEY, CWD);
+      assert.strictEqual(res.handle, LIVE_HANDLE);
+      // Only an exact pane match is precise enough for Direct Send to paste into.
+      assert.strictEqual(res.match, "exact");
+    });
   });
 
   it("falls back to the worktree path when the pane is gone", async () => {
-    await withFocus({}, (t) => new Promise((resolve) => {
-      t.resolveOrcaHandle("dead-tab:dead-leaf", CWD, (handle) => {
-        assert.strictEqual(handle, LIVE_HANDLE);
-        resolve();
-      });
-    }));
+    await withFocus({}, async (t) => {
+      const res = await resolveHandle(t, "dead-tab:dead-leaf", CWD);
+      assert.strictEqual(res.handle, LIVE_HANDLE);
+      assert.strictEqual(res.match, "cwd");
+    });
   });
 
   it("prefers the longest matching worktree so a nested session keeps its own tab", async () => {
@@ -382,39 +453,64 @@ describe("resolveOrcaHandle", () => {
       { handle: "term_inner", tabId: "inner", leafId: "leaf", worktreePath: "D:/Repos/Apps/clawd-on-desk" },
     ];
     await withFocus({ terminals }, async (t) => {
-      const handle = await new Promise((resolve) => {
-        t.resolveOrcaHandle("gone-tab:gone-leaf", `${CWD}\\src`, (h) => resolve(h));
-      });
+      const res = await resolveHandle(t, "gone-tab:gone-leaf", `${CWD}\\src`);
       // Both worktrees are prefixes of the cwd and the outer one is listed first;
       // taking it would switch a different session's tab and still log a success.
-      assert.strictEqual(handle, "term_inner");
+      assert.strictEqual(res.handle, "term_inner");
+      assert.strictEqual(res.match, "cwd");
+    });
+  });
+
+  it("fails as ambiguous when two terminals share the best worktree match", async () => {
+    // One worktree open in two Orca panes. The old strict > kept whichever Orca
+    // listed first and logged a successful switch, so a Direct Send reply could
+    // land in the other pane's composer.
+    const terminals = [
+      { handle: "term_first", tabId: "a", leafId: "leaf", worktreePath: "D:/Repos/Apps/clawd-on-desk" },
+      { handle: "term_second", tabId: "b", leafId: "leaf", worktreePath: "D:\\Repos\\Apps\\clawd-on-desk" },
+    ];
+    await withFocus({ terminals }, async (t) => {
+      const res = await resolveHandle(t, "gone-tab:gone-leaf", `${CWD}\\src`);
+      assert.strictEqual(res.handle, null);
+      assert.strictEqual(res.match, null);
+      assert.strictEqual(res.failure, "orca-pane-ambiguous");
+    });
+  });
+
+  it("still resolves an exact pane key while other terminals tie on the worktree", async () => {
+    // The tie only decides the fallback; an exact key is never ambiguous.
+    const terminals = [
+      { handle: "term_first", tabId: "a", leafId: "leaf", worktreePath: "D:/Repos/Apps/clawd-on-desk" },
+      { handle: LIVE_HANDLE, tabId: "8ce1fff7-tab", leafId: "9813824b-leaf", worktreePath: "D:/Repos/Apps/clawd-on-desk" },
+    ];
+    await withFocus({ terminals }, async (t) => {
+      const res = await resolveHandle(t, PANE_KEY, CWD);
+      assert.strictEqual(res.handle, LIVE_HANDLE);
+      assert.strictEqual(res.match, "exact");
     });
   });
 
   it("returns null when neither the pane nor the worktree matches", async () => {
-    await withFocus({}, (t) => new Promise((resolve) => {
-      t.resolveOrcaHandle("dead-tab:dead-leaf", "D:\\Repos\\Apps\\Unknown", (handle) => {
-        assert.strictEqual(handle, null);
-        resolve();
-      });
-    }));
+    await withFocus({}, async (t) => {
+      const res = await resolveHandle(t, "dead-tab:dead-leaf", "D:\\Repos\\Apps\\Unknown");
+      assert.strictEqual(res.handle, null);
+      assert.strictEqual(res.match, null);
+    });
   });
 
   it("returns null on an ok:false envelope or unparseable output", async () => {
     await withFocus({ listPayload: JSON.stringify({ ok: false, error: { code: "runtime_unavailable" } }) },
-      (t) => new Promise((resolve) => {
-        t.resolveOrcaHandle(PANE_KEY, CWD, (handle) => {
-          assert.strictEqual(handle, null);
-          resolve();
-        });
-      }));
-
-    await withFocus({ listPayload: "not json" }, (t) => new Promise((resolve) => {
-      t.resolveOrcaHandle(PANE_KEY, CWD, (handle) => {
-        assert.strictEqual(handle, null);
-        resolve();
+      async (t) => {
+        const res = await resolveHandle(t, PANE_KEY, CWD);
+        assert.strictEqual(res.handle, null);
+        assert.strictEqual(res.match, null);
       });
-    }));
+
+    await withFocus({ listPayload: "not json" }, async (t) => {
+      const res = await resolveHandle(t, PANE_KEY, CWD);
+      assert.strictEqual(res.handle, null);
+      assert.strictEqual(res.match, null);
+    });
   });
 });
 
@@ -505,6 +601,68 @@ describe("scheduleOrcaPaneFocus", () => {
       assert.strictEqual(logs.length, 0);
     });
   });
+});
+
+describe("scheduleOrcaPaneFocus outcome", () => {
+  // The switch used to be fire-and-forget, so Telegram Direct Send waited a fixed
+  // 1200ms and pressed Ctrl+V whatever happened. A cold CLI outlasts that wait,
+  // and the reply then lands in whichever pane was previously active — reported as
+  // delivered. The outcome below is what lets Direct Send wait for the real answer.
+  it("reports an exact pane match once the switch succeeds", async () => {
+    await withFocus({ platform: "win32" }, async (t) => {
+      t.orcaHandleCache.clear();
+      const outcome = await t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
+      assert.deepStrictEqual(outcome, { ok: true, match: "exact", reason: "orca-pane-switched" });
+    });
+  });
+
+  it("reports the worktree fallback as a non-exact match", async () => {
+    await withFocus({ platform: "win32" }, async (t) => {
+      t.orcaHandleCache.clear();
+      const outcome = await t.scheduleOrcaPaneFocus("gone-tab:gone-leaf", `${CWD}\\src`);
+      assert.strictEqual(outcome.ok, true);
+      assert.strictEqual(outcome.match, "cwd");
+    });
+  });
+
+  it("never caches a handle found only by the worktree fallback", async () => {
+    await withFocus({ platform: "win32" }, async (t) => {
+      t.orcaHandleCache.clear();
+      await t.scheduleOrcaPaneFocus("gone-tab:gone-leaf", `${CWD}\\src`);
+      // Caching a guess would replay it as a cache hit, and a cache hit cannot tell
+      // Direct Send whether the pane was ever really identified.
+      assert.strictEqual(t.orcaHandleCache.has("gone-tab:gone-leaf"), false);
+    });
+  });
+
+  it("resolves rather than rejects when there is no pane key", async () => {
+    await withFocus({ platform: "win32" }, async (t) => {
+      const outcome = await t.scheduleOrcaPaneFocus(null, CWD);
+      assert.deepStrictEqual(outcome, { ok: false, match: null, reason: "no-pane-key" });
+    });
+  });
+
+  for (const [label, opts, key, reason] of [
+    ["a missing pane", { terminals: [] }, PANE_KEY, "orca-pane-not-found"],
+    ["a CLI that never answers", { timeoutOn: ["terminal list"] }, PANE_KEY, "orca-cli-timeout"],
+    ["a rejected switch", { switchResults: [{ ok: false, code: "terminal_not_writable" }] }, PANE_KEY, "orca-switch-failed"],
+    ["an ambiguous worktree", {
+      terminals: [
+        { handle: "term_first", tabId: "a", leafId: "leaf", worktreePath: "D:/Repos/Apps/clawd-on-desk" },
+        { handle: "term_second", tabId: "b", leafId: "leaf", worktreePath: "D:/Repos/Apps/clawd-on-desk" },
+      ],
+    }, "gone-tab:gone-leaf", "orca-pane-ambiguous"],
+  ]) {
+    it(`reports ${label} as a failed outcome`, async () => {
+      await withFocus({ platform: "win32", ...opts }, async (t) => {
+        t.orcaHandleCache.clear();
+        const outcome = await t.scheduleOrcaPaneFocus(key, CWD);
+        assert.strictEqual(outcome.ok, false, `expected a failure for ${label}`);
+        assert.strictEqual(outcome.match, null);
+        assert.strictEqual(outcome.reason, reason);
+      });
+    });
+  }
 });
 
 describe("Windows Orca window fallback", () => {
@@ -625,16 +783,39 @@ describe("Orca CLI that never answers", () => {
 describe("Orca focus wiring", () => {
   // The Windows dispatch itself is driven through the public focusTerminalWindow in
   // test/focus-windows.test.js, which mocks spawn so the real helper never starts.
-  it("is dispatched from the Windows branch alone", () => {
+  it("is dispatched from the Windows and macOS branches, never Linux", () => {
     const fs = require("fs");
     const src = fs.readFileSync(path.join(__dirname, "..", "src", "focus.js"), "utf8");
     const calls = src.match(/scheduleOrcaPaneFocus\(request\./g) || [];
-    // Off Windows there is no raise, so a pane switch there would move a tab in a
-    // window that never comes forward — worse than doing nothing.
-    assert.strictEqual(calls.length, 1, "expected exactly one platform dispatch");
+    assert.strictEqual(calls.length, 2, "expected one dispatch per supported platform");
+    // Linux still has no raise it can trust — WM_CLASS "orca" also matches GNOME's
+    // screen reader — so a pane switch there would move a tab in a window that never
+    // comes forward, which is worse than doing nothing.
     const linuxBranch = src.slice(src.indexOf("branch=linux-command-submitted") - 800);
     assert.ok(!/scheduleOrcaPaneFocus/.test(linuxBranch.slice(0, 800)),
       "the Linux branch must not dispatch the pane switch");
+  });
+
+  it("reaches the pane switch and the raise through the public macOS focus call", async () => {
+    // The source guard above cannot see whether the dispatch is actually reachable:
+    // the mac branch sits behind a throttle and an in-flight queue.
+    await withFocus({ platform: "darwin" }, async (t, cli, logs, focus) => {
+      t.orcaHandleCache.clear();
+      focus.focusTerminalWindow({
+        sourcePid: 3333,
+        cwd: CWD,
+        sessionId: "session-orca-mac",
+        agentId: "claude-code",
+        orcaPaneKey: PANE_KEY,
+      });
+      await settle(t);
+      assert.strictEqual(cli.switchCalls().length, 1, JSON.stringify(cli.calls));
+      assert.deepStrictEqual(
+        cli.calls.filter((c) => c.cmd === "/usr/bin/open").map((c) => c.args),
+        [["/Applications/Orca.app"]]
+      );
+      assert.ok(logs.some((l) => l.includes("reason=orca-pane-switched")), logs.join("|"));
+    });
   });
 
   it("carries the pane key through every focus-entry builder", () => {
