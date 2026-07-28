@@ -153,6 +153,7 @@ describe("tutorial window shell", () => {
     assert.ok(renderer.includes("LANG_LABELS"));
     assert.ok(renderer.includes("api.setLang(next)"));
     assert.ok(renderer.includes("languagePickerControl.dispose()"));
+    assert.ok(renderer.includes("mountedLanguagePicker.ensureVisible()"));
     assert.ok(!renderer.includes("<select"));
     assert.ok(!renderer.includes("lang-select"));
     assert.ok(html.includes(`href="language-picker.css"`));

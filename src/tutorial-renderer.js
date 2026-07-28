@@ -789,6 +789,19 @@
     body.className = "body step-" + STEPS[step];
     body.textContent = "";
     body.appendChild((BODY_RENDERERS[STEPS[step]] || renderWelcome)());
+    const mountedLanguagePicker = languagePickerControl;
+    if (mountedLanguagePicker && typeof mountedLanguagePicker.ensureVisible === "function") {
+      const ensureMountedPickerVisible = () => {
+        if (languagePickerControl === mountedLanguagePicker) {
+          mountedLanguagePicker.ensureVisible();
+        }
+      };
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(ensureMountedPickerVisible);
+      } else {
+        ensureMountedPickerVisible();
+      }
+    }
     renderFooter();
   }
 

@@ -3878,6 +3878,57 @@ describe("settings renderer browser environment", () => {
     assert.match(css, /\.language-picker\.open-up \.language-picker-menu\s*\{[\s\S]*bottom:\s*calc\(100% \+ 6px\);/);
   });
 
+  it("initially reveals and bounds the tutorial picker at 150% and 160% text scale", () => {
+    const layouts = [
+      { scale: "150%", boundaryBottom: 313.7, triggerTop: 317.1, triggerBottom: 353.1 },
+      { scale: "160%", boundaryBottom: 290.3, triggerTop: 316.6, triggerBottom: 352.6 },
+    ];
+
+    for (const layout of layouts) {
+      const harness = loadSharedLanguagePickerForTest({
+        options: ["en", "zh", "zh-TW", "ko", "ja"],
+        innerHeight: 400,
+      });
+      harness.boundary.getBoundingClientRect = () => ({ top: 52, bottom: layout.boundaryBottom });
+      harness.trigger.getBoundingClientRect = () => ({
+        top: layout.triggerTop - harness.boundary.scrollTop,
+        bottom: layout.triggerBottom - harness.boundary.scrollTop,
+      });
+      Object.defineProperty(harness.menu, "scrollHeight", { value: 160 });
+      Object.defineProperty(harness.menu, "offsetHeight", { value: 162 });
+      Object.defineProperty(harness.menu, "clientHeight", { value: 160 });
+
+      assert.ok(
+        harness.trigger.getBoundingClientRect().top > layout.boundaryBottom,
+        `${layout.scale}: regression setup must start with the trigger behind the footer`,
+      );
+
+      harness.control.ensureVisible();
+      const visibleTrigger = harness.trigger.getBoundingClientRect();
+      assert.ok(visibleTrigger.top >= 52, `${layout.scale}: trigger top stays inside the body`);
+      assert.ok(
+        visibleTrigger.bottom <= layout.boundaryBottom,
+        `${layout.scale}: trigger bottom stays inside the body`,
+      );
+
+      harness.trigger.dispatchEvent({ type: "click" });
+      assert.strictEqual(
+        harness.picker.classList.contains("open-up"),
+        true,
+        `${layout.scale}: menu flips upward`,
+      );
+      const menuBottom = visibleTrigger.top - 6;
+      const menuTop = menuBottom - parseInt(harness.menu.style.maxHeight, 10);
+      const firstOption = { top: menuTop + 6, bottom: menuTop + 36 };
+      const lastOption = { top: menuBottom - 36, bottom: menuBottom - 6 };
+      assert.ok(firstOption.top >= 52, `${layout.scale}: first option stays inside the body`);
+      assert.ok(
+        lastOption.bottom <= layout.boundaryBottom,
+        `${layout.scale}: last option stays inside the body`,
+      );
+    }
+  });
+
   it("does not show a scrollbar when an upward menu fits all language options", () => {
     const harness = loadSharedLanguagePickerForTest({
       options: ["en", "zh", "zh-TW", "ko", "ja"],

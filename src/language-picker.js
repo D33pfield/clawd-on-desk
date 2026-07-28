@@ -124,6 +124,28 @@
       return bottom > top ? { top, bottom } : null;
     }
 
+    function ensureVisible() {
+      if (disposed || typeof trigger.getBoundingClientRect !== "function") return;
+      const boundary = findPlacementBoundary();
+      if (!boundary) return;
+      const bounds = getPlacementBounds();
+      const triggerRect = trigger.getBoundingClientRect();
+      const triggerTop = finiteNumber(triggerRect && triggerRect.top);
+      const triggerBottom = finiteNumber(triggerRect && triggerRect.bottom);
+      if (!bounds || triggerTop == null || triggerBottom == null) return;
+
+      let delta = 0;
+      if (triggerTop < bounds.top + MENU_GAP_PX) {
+        delta = triggerTop - bounds.top - MENU_GAP_PX;
+      } else if (triggerBottom > bounds.bottom - MENU_GAP_PX) {
+        delta = triggerBottom - bounds.bottom + MENU_GAP_PX;
+      }
+      if (!delta) return;
+
+      const currentScrollTop = finiteNumber(boundary.scrollTop) || 0;
+      boundary.scrollTop = Math.max(0, currentScrollTop + delta);
+    }
+
     function positionMenu() {
       picker.classList.remove("open-up");
       picker.classList.remove("menu-scrollable");
@@ -277,6 +299,7 @@
 
     return {
       element: picker,
+      ensureVisible,
       setValue(value) {
         if (disposed) return;
         changeSeq++;
