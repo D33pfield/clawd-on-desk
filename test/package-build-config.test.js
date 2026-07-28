@@ -12,6 +12,37 @@ function matchedByAnyGlob(globs, target) {
 }
 
 describe("package build config", () => {
+  describe("repository asset audit", () => {
+    it("exposes a Windows-compatible npm audit command", () => {
+      assert.strictEqual(
+        pkg.scripts["audit:assets"],
+        "node scripts/audit-repository-assets.js"
+      );
+    });
+
+    it("does not match retained source artwork with package globs", () => {
+      assert.strictEqual(
+        matchedByAnyGlob(pkg.build.files, "assets/source/dock-icon-fullbleed.png"),
+        false,
+        "assets/source/** must stay outside build.files"
+      );
+    });
+
+    it("runs in pull-request CI and uploads stable JSON manifests", () => {
+      const workflowPath = path.join(ROOT, ".github", "workflows", "repository-asset-audit.yml");
+      assert.ok(fs.existsSync(workflowPath), "repository asset audit workflow should exist");
+      const workflow = fs.readFileSync(workflowPath, "utf8");
+      assert.match(workflow, /pull_request:/);
+      assert.match(workflow, /npm run audit:assets/);
+      assert.match(workflow, /dist\/repository-asset-audit\/\*\.json/);
+      assert.match(
+        workflow,
+        /^permissions:\r?\n\s+contents: read$/m,
+        "repository asset audit should use a read-only GitHub token",
+      );
+    });
+  });
+
   it("ships project window icons in packaged builds", () => {
     assert.ok(
       pkg.build.files.includes("assets/icons/**/*"),

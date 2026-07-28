@@ -111,6 +111,7 @@ scripts/*
 !scripts/verify-sidecar-binaries.js
 !scripts/verify-electron-install.js
 !scripts/fetch-sidecar-binaries.js
+!scripts/audit-repository-assets.js
 
 # oh-my-cursor state
 .omc/
