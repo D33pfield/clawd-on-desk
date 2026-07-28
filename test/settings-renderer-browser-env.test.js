@@ -387,6 +387,9 @@ function loadSharedLanguagePickerForTest({
   boundary.setAttribute("data-language-picker-boundary", "");
   body.appendChild(boundary);
   const documentListeners = new Map();
+  const windowListeners = new Map();
+  const animationFrames = new Map();
+  let nextAnimationFrameId = 1;
   const document = {
     body,
     documentElement: { clientHeight: innerHeight },
@@ -406,6 +409,24 @@ function loadSharedLanguagePickerForTest({
     console,
     document,
     innerHeight,
+    addEventListener(type, cb) {
+      if (!windowListeners.has(type)) windowListeners.set(type, []);
+      windowListeners.get(type).push(cb);
+    },
+    removeEventListener(type, cb) {
+      const listeners = windowListeners.get(type);
+      if (!listeners) return;
+      const index = listeners.indexOf(cb);
+      if (index !== -1) listeners.splice(index, 1);
+    },
+    requestAnimationFrame(cb) {
+      const id = nextAnimationFrameId++;
+      animationFrames.set(id, cb);
+      return id;
+    },
+    cancelAnimationFrame(id) {
+      animationFrames.delete(id);
+    },
     window: null,
     globalThis: null,
   };
@@ -430,6 +451,20 @@ function loadSharedLanguagePickerForTest({
     menu: control.element.querySelector(".language-picker-menu"),
     optionElements: control.element.querySelectorAll(".language-picker-option"),
     valueElement: control.element.querySelector(".language-picker-value"),
+    dispatchWindowEvent(type, event = {}) {
+      for (const listener of [...(windowListeners.get(type) || [])]) {
+        listener({ ...event, type });
+      }
+    },
+    flushAnimationFrames() {
+      while (animationFrames.size > 0) {
+        const pending = [...animationFrames.values()];
+        animationFrames.clear();
+        for (const callback of pending) callback();
+      }
+    },
+    getPendingAnimationFrameCount: () => animationFrames.size,
+    getWindowListenerCount: (type) => (windowListeners.get(type) || []).length,
   };
 }
 
@@ -3927,6 +3962,60 @@ describe("settings renderer browser environment", () => {
         `${layout.scale}: last option stays inside the body`,
       );
     }
+  });
+
+  it("reflows an open tutorial picker after the window is resized", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      options: ["en", "zh", "zh-TW", "ko", "ja"],
+      innerHeight: 450,
+    });
+    const layout = {
+      boundaryTop: 52,
+      boundaryBottom: 352.8,
+      triggerTop: 295.7,
+      triggerBottom: 331.7,
+    };
+    harness.boundary.getBoundingClientRect = () => ({
+      top: layout.boundaryTop,
+      bottom: layout.boundaryBottom,
+    });
+    harness.trigger.getBoundingClientRect = () => ({
+      top: layout.triggerTop - harness.boundary.scrollTop,
+      bottom: layout.triggerBottom - harness.boundary.scrollTop,
+    });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 160 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 162 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 160 });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.picker.classList.contains("open"), true);
+    assert.strictEqual(harness.getWindowListenerCount("resize"), 1);
+
+    layout.boundaryBottom = 290.3;
+    layout.triggerTop = 316.6;
+    layout.triggerBottom = 352.6;
+    assert.ok(
+      harness.trigger.getBoundingClientRect().top > layout.boundaryBottom,
+      "regression setup must put the trigger behind the fixed footer",
+    );
+
+    harness.dispatchWindowEvent("resize");
+    harness.dispatchWindowEvent("resize");
+    assert.strictEqual(
+      harness.getPendingAnimationFrameCount(),
+      1,
+      "resize work is coalesced into one animation frame",
+    );
+    harness.flushAnimationFrames();
+
+    const visibleTrigger = harness.trigger.getBoundingClientRect();
+    assert.ok(visibleTrigger.top >= layout.boundaryTop);
+    assert.ok(visibleTrigger.bottom <= layout.boundaryBottom);
+    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.menu.style.maxHeight, "162px");
+
+    harness.control.dispose();
+    assert.strictEqual(harness.getWindowListenerCount("resize"), 0);
   });
 
   it("does not show a scrollbar when an upward menu fits all language options", () => {

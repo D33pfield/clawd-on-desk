@@ -61,6 +61,8 @@
     let changeSeq = 0;
     let latestRequestSeq = 0;
     const pendingChanges = new Map();
+    let reflowScheduled = false;
+    let reflowFrame = null;
 
     const MENU_GAP_PX = 6;
     const DEFAULT_MENU_MAX_HEIGHT_PX = 240;
@@ -175,6 +177,27 @@
       picker.classList.toggle("open-up", openUp);
       picker.classList.toggle("menu-scrollable", maxHeight < naturalHeight);
       menu.style.maxHeight = maxHeight + "px";
+    }
+
+    function reflow() {
+      if (disposed) return;
+      ensureVisible();
+      if (isOpen) positionMenu();
+    }
+
+    function scheduleReflow() {
+      if (disposed || reflowScheduled) return;
+      reflowScheduled = true;
+      const run = () => {
+        reflowScheduled = false;
+        reflowFrame = null;
+        reflow();
+      };
+      if (root && typeof root.requestAnimationFrame === "function") {
+        reflowFrame = root.requestAnimationFrame(run);
+      } else {
+        run();
+      }
     }
 
     function setOpen(next, { focusTrigger = false } = {}) {
@@ -292,6 +315,9 @@
       document.addEventListener("click", closeOnOutsideClick);
       document.addEventListener("keydown", closeOnEscape);
     }
+    if (root && typeof root.addEventListener === "function") {
+      root.addEventListener("resize", scheduleReflow);
+    }
 
     paintValue(config.value);
     committedValue = activeValue;
@@ -300,6 +326,7 @@
     return {
       element: picker,
       ensureVisible,
+      reflow,
       setValue(value) {
         if (disposed) return;
         changeSeq++;
@@ -313,9 +340,18 @@
         disposed = true;
         changeSeq++;
         pendingChanges.clear();
+        if (reflowScheduled && reflowFrame != null
+            && root && typeof root.cancelAnimationFrame === "function") {
+          root.cancelAnimationFrame(reflowFrame);
+        }
+        reflowScheduled = false;
+        reflowFrame = null;
         if (document && typeof document.removeEventListener === "function") {
           document.removeEventListener("click", closeOnOutsideClick);
           document.removeEventListener("keydown", closeOnEscape);
+        }
+        if (root && typeof root.removeEventListener === "function") {
+          root.removeEventListener("resize", scheduleReflow);
         }
       },
     };
