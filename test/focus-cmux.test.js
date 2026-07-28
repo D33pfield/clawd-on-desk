@@ -55,7 +55,7 @@ describe("cmux panel focus (macOS)", () => {
   it("should call cmux focus-panel with matched panel UUID", (t, done) => {
     const panelId = "18AA1EB5-3055-445C-B780-60C88B21341B";
     const { tmpDir, cleanup: cleanupFile } = writeMockSessionFile([{
-      id: "ws-uuid-1",
+      workspaceId: "ws-uuid-1",
       panels: [{ id: panelId, ttyName: "ttys007", type: "terminal" }]
     }]);
     const origHome = process.env.HOME;
@@ -106,12 +106,59 @@ describe("cmux panel focus (macOS)", () => {
     }, 2500);
   });
 
+  // Legacy session payloads keyed the workspace UUID as `id` instead of `workspaceId`.
+  it("should still match workspaces from legacy `id` session payloads", (t, done) => {
+    const panelId = "9C1D2E3F-4A5B-6C7D-8E9F-0A1B2C3D4E5F";
+    const { tmpDir, cleanup: cleanupFile } = writeMockSessionFile([{
+      id: "legacy-ws-uuid",
+      panels: [{ id: panelId, ttyName: "ttys007", type: "terminal" }]
+    }]);
+    const origHome = process.env.HOME;
+    process.env.HOME = tmpDir;
+
+    const calls = [];
+    const mock = function (cmd, args, opts, cb) {
+      if (typeof opts === "function") { cb = opts; opts = {}; }
+      calls.push({ cmd, args: [...args] });
+      if (cmd === "osascript") { if (cb) cb(null, "", ""); return; }
+      if (cmd === "ps") {
+        const a = args.join(" ");
+        if (a.includes("comm=")) {
+          if (cb) cb(null, "501 /bin/zsh\n502 /Applications/cmux.app/Contents/MacOS/cmux\n", "");
+          return;
+        }
+        if (a.includes("tty=")) {
+          if (cb) cb(null, "501 ttys007\n", "");
+          return;
+        }
+      }
+      if (cb) cb(null, "", "");
+    };
+
+    const { initFocus, cleanup } = loadFocusWithMock(mock);
+    const { focusTerminalWindow } = initFocus({});
+    focusTerminalWindow(501, "/test/cwd", null, [501, 502]);
+
+    setTimeout(() => {
+      cleanup();
+      cleanupFile();
+      process.env.HOME = origHome;
+
+      const panelCall = calls.find(c => c.cmd === CMUX_BIN && c.args.includes("focus-panel"));
+      assert.ok(panelCall, "Should still focus a panel for legacy `id` payloads");
+      const workspaceArgIdx = panelCall.args.indexOf("--workspace");
+      assert.strictEqual(panelCall.args[workspaceArgIdx + 1], "legacy-ws-uuid", "Should fall back to the legacy `id` key");
+
+      done();
+    }, 2500);
+  });
+
   // TDD Red 2: fallback to select-workspace when focus-panel fails
   it("should call cmux select-workspace when focus-panel fails", (t, done) => {
     const panelId = "18AA1EB5-3055-445C-B780-60C88B21341B";
     const workspaceId = "ws-uuid-1";
     const { tmpDir, cleanup: cleanupFile } = writeMockSessionFile([{
-      id: workspaceId,
+      workspaceId,
       panels: [{ id: panelId, ttyName: "ttys007", type: "terminal" }]
     }]);
     const origHome = process.env.HOME;
@@ -164,7 +211,7 @@ describe("cmux panel focus (macOS)", () => {
     const panel2Id = "panel-id-2";
     const matchedTty = "ttys003";
     const { tmpDir, cleanup: cleanupFile } = writeMockSessionFile([{
-      id: "ws-split",
+      workspaceId: "ws-split",
       panels: [
         { id: panel1Id, ttyName: "ttys001", type: "terminal" },
         { id: panel2Id, ttyName: matchedTty, type: "terminal" }
