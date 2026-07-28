@@ -20,13 +20,31 @@ const BINARY_MEDIA_EXTENSIONS = new Set([
   ".jpg", ".m4v", ".mkv", ".mov", ".mp3", ".mp4", ".node", ".png",
   ".so", ".svg", ".webm", ".webp",
 ]);
+const FAT_MACHO_MAGICS = new Map([
+  [0xcafebabe, { endian: "be", recordBytes: 20 }],
+  [0xbebafeca, { endian: "le", recordBytes: 20 }],
+  [0xcafebabf, { endian: "be", recordBytes: 32 }],
+  [0xbfbafeca, { endian: "le", recordBytes: 32 }],
+]);
 
 function normalizePath(value) {
   return String(value || "").replace(/\\/g, "/").replace(/^\.\/+/, "");
 }
 
 function globToRegExp(glob) {
+  if (typeof glob !== "string" || !glob.trim()) {
+    throw new TypeError("glob must be a non-empty string");
+  }
   const input = normalizePath(glob);
+  if (input.startsWith("!")) {
+    throw new Error(`unsupported glob negation: ${glob}`);
+  }
+  if (/[{}[\]]/.test(input)) {
+    throw new Error(`unsupported glob brace or character-class syntax: ${glob}`);
+  }
+  if (/[?*+@!]\(/.test(input)) {
+    throw new Error(`unsupported glob extglob syntax: ${glob}`);
+  }
   let source = "^";
   for (let i = 0; i < input.length; i += 1) {
     const char = input[i];
@@ -163,6 +181,7 @@ function packageEntry(fullPath, sourcePath, packagePath, origin, asarUnpack) {
 function buildSourcePackageManifest(repoRoot, build, revision) {
   const buildFiles = stableSort(build.files || []);
   const unpackGlobs = stableSort(build.asarUnpack || []);
+  for (const glob of [...buildFiles, ...unpackGlobs]) globToRegExp(glob);
   const allFiles = walkFiles(repoRoot);
   const appSources = new Map();
 
@@ -247,7 +266,30 @@ function resolvePolicy(policy, filePath) {
   const normalized = normalizePath(filePath);
   const exact = (policy.entries || []).find((entry) => normalizePath(entry.path) === normalized);
   if (exact) return exact;
-  return (policy.pathRules || []).find((rule) => matchesGlob(normalized, rule.pattern)) || null;
+  // Prefer the narrowest matching rule so a broad rule cannot shadow a later
+  // retention or ownership exception merely because the JSON was reordered.
+  const matchingRules = (policy.pathRules || [])
+    .filter((rule) => matchesGlob(normalized, rule.pattern))
+    .map((rule) => {
+      const pattern = normalizePath(rule.pattern);
+      const wildcards = (pattern.match(/[*?]/g) || []).length;
+      const firstWildcard = pattern.search(/[*?]/);
+      return {
+        rule,
+        literalPrefixCharacters: firstWildcard === -1 ? pattern.length : firstWildcard,
+        literalCharacters: pattern.replace(/[*?]/g, "").length,
+        wildcards,
+        pattern,
+      };
+    })
+    .sort((a, b) => (
+      b.literalPrefixCharacters - a.literalPrefixCharacters
+      || b.literalCharacters - a.literalCharacters
+      || a.wildcards - b.wildcards
+      || b.pattern.length - a.pattern.length
+      || compareText(a.pattern, b.pattern)
+    ));
+  return matchingRules.length ? matchingRules[0].rule : null;
 }
 
 function validatePolicy(policy) {
@@ -275,6 +317,13 @@ function validatePolicy(policy) {
   const owners = policy.owners || {};
   const classes = policy.classes || {};
   for (const item of [...(policy.pathRules || []), ...(policy.entries || [])]) {
+    if (item.pattern) {
+      try {
+        globToRegExp(item.pattern);
+      } catch (error) {
+        errors.push(`${item.pattern} is invalid: ${error.message}`);
+      }
+    }
     if (!item.owner || item.owner === "unknown" || !owners[item.owner]) {
       errors.push(`${item.path || item.pattern || "(policy item)"} has an unknown owner`);
     }
@@ -321,6 +370,12 @@ function readUInt32(buffer, offset, endian) {
   return endian === "be" ? buffer.readUInt32BE(offset) : buffer.readUInt32LE(offset);
 }
 
+function darwinArchForCpuType(cpuType) {
+  if (cpuType === 0x01000007) return "x64";
+  if (cpuType === 0x0100000c) return "arm64";
+  return `cpu-0x${cpuType.toString(16)}`;
+}
+
 function inspectNativeBuffer(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 20) return null;
 
@@ -343,14 +398,31 @@ function inspectNativeBuffer(buffer) {
   }
 
   const magicBe = buffer.readUInt32BE(0);
+  const fatMagic = FAT_MACHO_MAGICS.get(magicBe);
+  if (fatMagic) {
+    const count = readUInt32(buffer, 4, fatMagic.endian);
+    const headerBytes = 8 + count * fatMagic.recordBytes;
+    if (count === 0 || count > 128 || headerBytes > buffer.length) return null;
+    const architectures = stableSort(Array.from(new Set(
+      Array.from({ length: count }, (_, index) => {
+        const offset = 8 + index * fatMagic.recordBytes;
+        return darwinArchForCpuType(readUInt32(buffer, offset, fatMagic.endian));
+      }),
+    )));
+    return {
+      os: "darwin",
+      arch: architectures.length === 1 ? architectures[0] : "universal",
+      architectures,
+      format: "mach-o-fat",
+    };
+  }
+
   let endian = null;
   if (magicBe === 0xfeedfacf || magicBe === 0xfeedface) endian = "be";
   if (magicBe === 0xcffaedfe || magicBe === 0xcefaedfe) endian = "le";
   if (endian) {
     const cpuType = readUInt32(buffer, 4, endian);
-    if (cpuType === 0x01000007) return { os: "darwin", arch: "x64", format: "mach-o" };
-    if (cpuType === 0x0100000c) return { os: "darwin", arch: "arm64", format: "mach-o" };
-    return { os: "darwin", arch: `cpu-0x${cpuType.toString(16)}`, format: "mach-o" };
+    return { os: "darwin", arch: darwinArchForCpuType(cpuType), format: "mach-o" };
   }
   return null;
 }
@@ -382,15 +454,20 @@ function findForeignNativeFiles(manifest, repoRoot, packageRoot) {
   if (!manifest.target) return [];
   const foreign = [];
   for (const file of manifest.files) {
-    if (!isNativeCandidate(file)) continue;
-    const tagged = targetTaggedInPath(file.packagePath) || targetTaggedInPath(file.sourcePath);
+    const namedCandidate = isNativeCandidate(file);
+    if (manifest.scope !== "extracted-package" && !namedCandidate) continue;
     let inspected = null;
     const relative = manifest.scope === "extracted-package" ? file.packagePath : file.sourcePath;
     const base = manifest.scope === "extracted-package" ? packageRoot : repoRoot;
     const fullPath = base && path.join(base, ...normalizePath(relative).split("/"));
     if (fullPath && fs.existsSync(fullPath)) inspected = inspectNativeFile(fullPath);
-    const inspectedTarget = inspected && `${inspected.os}-${inspected.arch}`;
-    const detectedTargets = stableSort(Array.from(new Set([tagged, inspectedTarget].filter(Boolean))));
+    if (!namedCandidate && !inspected) continue;
+    const tagged = targetTaggedInPath(file.packagePath) || targetTaggedInPath(file.sourcePath);
+    const inspectedArchitectures = inspected
+      ? (inspected.architectures || [inspected.arch])
+      : [];
+    const inspectedTargets = inspectedArchitectures.map((arch) => `${inspected.os}-${arch}`);
+    const detectedTargets = stableSort(Array.from(new Set([tagged, ...inspectedTargets].filter(Boolean))));
     if (detectedTargets.some((detected) => detected !== manifest.target)) {
       foreign.push({
         packagePath: file.packagePath,

@@ -35,6 +35,11 @@ describe("package build config", () => {
       assert.match(workflow, /pull_request:/);
       assert.match(workflow, /npm run audit:assets/);
       assert.match(workflow, /dist\/repository-asset-audit\/\*\.json/);
+      assert.match(
+        workflow,
+        /^permissions:\r?\n\s+contents: read$/m,
+        "repository asset audit should use a read-only GitHub token",
+      );
     });
   });
 

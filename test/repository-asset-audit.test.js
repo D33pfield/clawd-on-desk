@@ -11,6 +11,8 @@ const {
   buildSourcePackageManifest,
   inspectNativeBuffer,
   matchesGlob,
+  parseArgs,
+  resolvePolicy,
   runAudit,
   stableJson,
   validatePolicy,
@@ -90,11 +92,70 @@ describe("repository asset audit", () => {
     assert.strictEqual(matchesGlob("assets/source/a.png", "assets/icons/**/*"), false);
   });
 
+  it("fails closed on glob syntax the audit engine does not implement", () => {
+    assert.throws(
+      () => matchesGlob("src/x.map", "!**/*.map"),
+      /unsupported glob negation/,
+    );
+    assert.throws(
+      () => matchesGlob("a.png", "*.{png,gif}"),
+      /unsupported glob brace/,
+    );
+    assert.throws(
+      () => matchesGlob("a.png", "*.[pj]ng"),
+      /unsupported glob brace or character-class/,
+    );
+  });
+
   it("requires all policy categories and permanent assets/LICENSE retention", () => {
     assert.deepStrictEqual(validatePolicy(basePolicy()), []);
     const broken = basePolicy();
     broken.entries = [];
     assert.ok(validatePolicy(broken).some((message) => message.includes("assets/LICENSE")));
+
+    const unsupportedGlob = basePolicy();
+    unsupportedGlob.pathRules.push({
+      pattern: "assets/{raw,source}/**",
+      class: "source-of-truth",
+      owner: "design",
+      packaged: false,
+    });
+    assert.ok(validatePolicy(unsupportedGlob).some((message) => (
+      message.includes("unsupported glob brace")
+    )));
+  });
+
+  it("resolves the most specific policy rule regardless of declaration order", () => {
+    const policy = basePolicy();
+    policy.pathRules.unshift({
+      pattern: "assets/**",
+      class: "docs-marketing",
+      owner: "docs",
+      packaged: false,
+    });
+    assert.strictEqual(resolvePolicy(policy, "assets/source/raw.png").owner, "design");
+  });
+
+  it("hard-fails when assets/LICENSE is absent from the tracked tree", () => {
+    const report = analyzeAudit({
+      trackedFiles: [],
+      manifest: manifest([]),
+      policy: basePolicy(),
+    });
+    const finding = report.findings.find((item) => item.rule === "assets-license-retained");
+    assert.strictEqual(finding.level, "error");
+  });
+
+  it("hard-fails the tracked-tree hard budget instead of emitting only a warning", () => {
+    const report = analyzeAudit({
+      trackedFiles: [tracked("assets/LICENSE", 201)],
+      manifest: manifest([]),
+      policy: basePolicy(),
+    });
+    assert.ok(report.findings.some((finding) => (
+      finding.level === "error" && finding.rule === "tracked-tree-hard-budget"
+    )));
+    assert.ok(!report.findings.some((finding) => finding.rule === "tracked-tree-warning-budget"));
   });
 
   it("hard-fails assets/source package matches and ownerless large media", () => {
@@ -186,7 +247,7 @@ describe("repository asset audit", () => {
     });
   });
 
-  it("parses PE, ELF, and Mach-O architecture headers", () => {
+  it("parses PE, ELF, thin Mach-O, and fat Mach-O architecture headers", () => {
     const pe = Buffer.alloc(128);
     pe.write("MZ", 0, "ascii");
     pe.writeUInt32LE(64, 0x3c);
@@ -203,6 +264,18 @@ describe("repository asset audit", () => {
     macho.writeUInt32BE(0xfeedfacf, 0);
     macho.writeUInt32BE(0x0100000c, 4);
     assert.deepStrictEqual(inspectNativeBuffer(macho), { os: "darwin", arch: "arm64", format: "mach-o" });
+
+    const fatMacho = Buffer.alloc(48);
+    fatMacho.writeUInt32BE(0xcafebabe, 0);
+    fatMacho.writeUInt32BE(2, 4);
+    fatMacho.writeUInt32BE(0x01000007, 8);
+    fatMacho.writeUInt32BE(0x0100000c, 28);
+    assert.deepStrictEqual(inspectNativeBuffer(fatMacho), {
+      os: "darwin",
+      arch: "universal",
+      architectures: ["arm64", "x64"],
+      format: "mach-o-fat",
+    });
   });
 
   it("hard-fails a foreign-target native binary in an extracted package", () => {
@@ -239,6 +312,65 @@ describe("repository asset audit", () => {
     }
   });
 
+  it("sniffs extensionless native binaries in extracted packages", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "asset-audit-extensionless-"));
+    try {
+      const executable = path.join(root, "Electron Framework");
+      const macho = Buffer.alloc(32);
+      macho.writeUInt32BE(0xfeedfacf, 0);
+      macho.writeUInt32BE(0x0100000c, 4);
+      fs.writeFileSync(executable, macho);
+
+      const extracted = buildExtractedPackageManifest(root, "windows-x64", "abc");
+      const report = analyzeAudit({
+        trackedFiles: [tracked("assets/LICENSE", 5)],
+        manifest: extracted,
+        policy: basePolicy(),
+        packageRoot: root,
+      });
+      const foreign = report.findings.find((finding) => finding.rule === "foreign-target-native");
+      assert.strictEqual(foreign.level, "error");
+      assert.deepStrictEqual(report.package.foreignNativeFiles, [{
+        packagePath: "Electron Framework",
+        detectedTargets: ["darwin-arm64"],
+        expectedTarget: "windows-x64",
+      }]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("hard-fails a foreign architecture inside an extensionless fat Mach-O", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "asset-audit-fat-macho-"));
+    try {
+      const executable = path.join(root, "Clawd");
+      const fatMacho = Buffer.alloc(48);
+      fatMacho.writeUInt32BE(0xcafebabe, 0);
+      fatMacho.writeUInt32BE(2, 4);
+      fatMacho.writeUInt32BE(0x01000007, 8);
+      fatMacho.writeUInt32BE(0x0100000c, 28);
+      fs.writeFileSync(executable, fatMacho);
+
+      const extracted = buildExtractedPackageManifest(root, "darwin-x64", "abc");
+      const report = analyzeAudit({
+        trackedFiles: [tracked("assets/LICENSE", 5)],
+        manifest: extracted,
+        policy: basePolicy(),
+        packageRoot: root,
+      });
+      assert.deepStrictEqual(report.package.foreignNativeFiles, [{
+        packagePath: "Clawd",
+        detectedTargets: ["darwin-arm64", "darwin-x64"],
+        expectedTarget: "darwin-x64",
+      }]);
+      assert.ok(report.findings.some((finding) => (
+        finding.level === "error" && finding.rule === "foreign-target-native"
+      )));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("builds a deterministic source package manifest including extraResources", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "asset-audit-manifest-"));
     try {
@@ -260,6 +392,47 @@ describe("repository asset audit", () => {
         ["app/package.json", "app/runtime/a.txt", "resources/runtime-copy/a.txt"],
       );
       assert.strictEqual(first.files[1].asarUnpack, true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("validates build globs eagerly even when the repository has no files", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "asset-audit-glob-"));
+    try {
+      assert.throws(
+        () => buildSourcePackageManifest(root, { files: ["!**/*.map"] }, "abc"),
+        /unsupported glob negation/,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("requires an explicit target when auditing an extracted package", () => {
+    assert.throws(
+      () => parseArgs(["--package-root", "dist/unpacked"]),
+      /--package-root requires --target/,
+    );
+  });
+
+  it("fails closed when the policy file is malformed JSON", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "asset-audit-policy-"));
+    try {
+      const policyPath = path.join(root, "policy.json");
+      fs.writeFileSync(policyPath, "{ invalid", "utf8");
+      assert.throws(
+        () => runAudit({
+          repoRoot: root,
+          output: path.join(root, "output"),
+          policyPath,
+          revision: "abc",
+          trackedFiles: [],
+          build: {},
+          manifest: manifest([]),
+        }),
+        /JSON/,
+      );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

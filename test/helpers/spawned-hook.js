@@ -43,6 +43,11 @@ function createSpawnedHookHarness(options = {}) {
     if (!HTTP_CONTRACTS.has(httpContract)) {
       throw new Error(`unknown spawned-hook HTTP contract: ${httpContract}`);
     }
+    if (runOptions.probeProcessSpawns && httpContract !== "block") {
+      throw new Error(
+        `probeProcessSpawns cannot be combined with spawned-hook HTTP contract ${httpContract}`,
+      );
+    }
 
     sequence += 1;
     const attemptsPath = path.join(home, `http-attempts-${sequence}.json`);
