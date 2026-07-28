@@ -152,7 +152,7 @@ describe("detectRunningAgentProcesses() agent coverage", () => {
     });
 
     assert.strictEqual(found, true);
-    assert.match(seenCommand, /claude-code\|codex\|copilot\|codebuddy\|kimi-code/);
+    assert.match(seenCommand, /claude-code\|codex\|copilot\|codebuddy\|kimi-code\|zcode\\\.cjs/);
     assert.match(seenCommand, /pgrep -x 'agy'/);
     assert.match(seenCommand, /pgrep -x 'codewhale'/);
     assert.match(seenCommand, /pgrep -x 'qwen'/);

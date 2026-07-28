@@ -74,12 +74,12 @@ describe("ZCode hook installer", () => {
     assert.ok(settings.hooks.events, "hooks.events must exist");
     for (const event of ZCODE_HOOK_EVENTS) {
       const entry = settings.hooks.events[event][0];
-      // State-only hooks omit the matcher (matcher is a regex; "*" never
-      // matches, and we want to match every tool/prompt).
+      // State-only hooks omit the optional match-all matcher because no event
+      // needs tool filtering.
       assert.strictEqual(
         Object.prototype.hasOwnProperty.call(entry, "matcher"),
         false,
-        `${event}: matcher must be omitted, not "*" (regex that never matches)`
+        `${event}: canonical match-all entry should omit matcher`
       );
       assert.strictEqual(entry.hooks.length, 1);
       // ZCode's hook schema is strict: a "name" key makes config.json fail to
@@ -111,15 +111,105 @@ describe("ZCode hook installer", () => {
     assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), before);
   });
 
-  it("preserves disableAllHooks and returns a warning without changing the flag", () => {
-    const settingsPath = makeTempConfigFile({ disableAllHooks: true });
+  it("preserves an explicit hooks.enabled:false and warns instead of enabling all user hooks", () => {
+    const settingsPath = makeTempConfigFile({ hooks: { enabled: false } });
 
     const result = registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
 
     const settings = readJson(settingsPath);
-    assert.strictEqual(settings.disableAllHooks, true);
+    assert.strictEqual(settings.hooks.enabled, false);
+    assert.strictEqual(Object.keys(settings.hooks.events).length, ZCODE_HOOK_EVENTS.length);
     assert.strictEqual(result.warnings.length, 1);
-    assert.match(result.warnings[0], /disableAllHooks=true/);
+    assert.match(result.warnings[0], /hooks\.enabled=false/);
+  });
+
+  it("preserves nested enabled:false while repairing a stale managed hook", () => {
+    const settingsPath = makeTempConfigFile({
+      hooks: {
+        enabled: true,
+        events: {
+          PreToolUse: [{
+            hooks: [{
+              type: "command",
+              command: '"/old/node" "/old/path/zcode-hook.js" "PreToolUse"',
+              timeout: 30000,
+              enabled: false,
+            }],
+          }],
+        },
+      },
+    });
+
+    const result = registerZcodeHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "/usr/local/bin/node",
+    });
+
+    const settings = readJson(settingsPath);
+    const hook = settings.hooks.events.PreToolUse[0].hooks[0];
+    assert.strictEqual(hook.enabled, false);
+    assert.strictEqual(hook.timeoutMs, timeoutMsForZcodeEvent());
+    assert.ok(commandPayload(hook.command).includes("/usr/local/bin/node"));
+    assert.ok(result.warnings.some((warning) => /PreToolUse/.test(warning)));
+  });
+
+  it("removes invalid entry-level enabled:false instead of treating it as a supported opt-out", () => {
+    const settingsPath = makeTempConfigFile({});
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    const settings = readJson(settingsPath);
+    settings.hooks.events.PreToolUse[0].enabled = false;
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf8");
+
+    const result = registerZcodeHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "/usr/local/bin/node",
+    });
+
+    const repaired = readJson(settingsPath).hooks.events.PreToolUse[0];
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(repaired, "enabled"), false);
+    assert.notStrictEqual(repaired.hooks[0].enabled, false);
+    assert.ok(result.updated >= 1);
+  });
+
+  it("keeps a managed event enabled when any duplicate was still enabled", () => {
+    const settingsPath = makeTempConfigFile({
+      hooks: {
+        enabled: true,
+        events: {
+          Stop: [
+            {
+              hooks: [{
+                type: "command",
+                command: '"/old/node" "/old/path/zcode-hook.js" "Stop"',
+                enabled: false,
+              }],
+            },
+            {
+              hooks: [{
+                type: "command",
+                command: '"/old/node" "/old/path/zcode-hook.js" "Stop"',
+              }],
+            },
+          ],
+        },
+      },
+    });
+
+    const result = registerZcodeHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "/usr/local/bin/node",
+    });
+
+    const settings = readJson(settingsPath);
+    const managed = settings.hooks.events.Stop
+      .flatMap((entry) => entry.hooks || [])
+      .filter((hook) => commandPayload(hook.command).includes(MARKER));
+    assert.strictEqual(managed.length, 1);
+    assert.notStrictEqual(managed[0].enabled, false);
+    assert.ok(!result.warnings.some((warning) => /remain disabled/.test(warning)));
   });
 
   it("splits Clawd out of shared matcher entries under hooks.events", () => {
@@ -340,6 +430,21 @@ describe("ZCode hook installer", () => {
     const settings = readJson(settingsPath);
     // hooks wrapper fully cleaned up (no stale enabled/events), unrelated keys kept.
     assert.strictEqual(settings.hooks, undefined);
+    assert.deepStrictEqual(settings.plugins, { "keep-me": { enabled: true } });
+  });
+
+  it("unregister preserves the user's explicit global disabled setting", () => {
+    const settingsPath = makeTempConfigFile({
+      hooks: { enabled: false },
+      plugins: { "keep-me": { enabled: true } },
+    });
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const result = unregisterZcodeHooks({ silent: true, settingsPath });
+
+    assert.ok(result.changed);
+    const settings = readJson(settingsPath);
+    assert.deepStrictEqual(settings.hooks, { enabled: false });
     assert.deepStrictEqual(settings.plugins, { "keep-me": { enabled: true } });
   });
 });

@@ -206,11 +206,10 @@ describe("Agent Registry", () => {
     assert.ok(!startupAgentIds.has("qoderwork"));
     assert.ok(!startupAgentIds.has("workbuddy"));
 
-    // ZCode is cross-platform asymmetric: macOS/Linux spawn an unambiguous
-    // `zcode-cli` binary (verified on 3.4.2), so they participate; Windows
-    // reuses the ambiguous `ZCode.exe` desktop shell (only distinguishable by
-    // cmdline `zcode.cjs`) and is therefore excluded until state.js supports
-    // name+cmdline joint matching.
+    // ZCode keeps only the unambiguous legacy `zcode-cli` in pure-name startup
+    // recovery. Current macOS/Windows Electron Node-mode runtimes are matched
+    // separately by the `zcode.cjs` command-line marker, never by the bare GUI
+    // executable name.
     const zcode = registry.getAgent("zcode");
     assert.deepStrictEqual(zcode.startupRecoveryProcessNames, {
       win: [],

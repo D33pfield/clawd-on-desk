@@ -2198,16 +2198,17 @@ function detectRunningAgentProcesses(callback) {
   // A match here never creates a session or publishes a task-level state.
   // An optional `processName` overrides the default `node.exe` host for an
   // entry — used by agents whose Windows runtime is a different binary (e.g.
-  // ZCode reuses the `ZCode.exe` desktop shell to run `zcode.cjs`).
+  // ZCode reuses the desktop executable to run `zcode.cjs`). On POSIX the
+  // same marker is matched with pgrep -f, covering current macOS builds without
+  // treating the always-running GUI shell as active work.
   const commandLineNeedles = [
     { agentId: "claude-code", needle: "claude-code" },
     { agentId: "codex", needle: "codex" },
     { agentId: "copilot-cli", needle: "copilot" },
     { agentId: "codebuddy", needle: "codebuddy" },
     { agentId: "kimi-cli", needle: "kimi-code" },
-    // ZCode's Windows runtime is the desktop shell ZCode.exe running
-    // resources/glm/zcode.cjs app-server; only the cmdline token disambiguates
-    // the working process from the always-running shell.
+    // Current ZCode runtimes use resources/glm/zcode.cjs app-server; only the
+    // cmdline token disambiguates the working process from the GUI shell.
     { agentId: "zcode", needle: "zcode.cjs", processName: "zcode.exe" },
   ].filter((entry) => isEnabled(entry.agentId));
   const platformCommandLineNeedles = process.platform === "win32" || !isEnabled("pi")

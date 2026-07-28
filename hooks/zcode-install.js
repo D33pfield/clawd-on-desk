@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 // Merge Clawd ZCode hooks into ~/.zcode/cli/config.json.
 //
-// ZCode (智谱/Z.ai) is an Electron desktop ADE that spawns `zcode-cli` as the
-// per-session agent runtime. `zcode-cli` reads ~/.zcode/cli/config.json. Per the
-// official `zcode-configuration-guide` / `diagnosing-hooks` skills, config-file
-// hooks differ from plugin hooks.json in three ways:
+// ZCode (智谱/Z.ai) is an Electron desktop ADE. Legacy 3.4.x builds spawned a
+// standalone `zcode-cli`; current macOS 3.5.x builds run Resources/glm/zcode.cjs
+// through Electron's Node mode. Both read ~/.zcode/cli/config.json. Per ZCode's
+// official configuration and hook documentation, config-file hooks differ from
+// plugin hooks.json in three ways:
 //   1. They nest under `hooks.events.<EventName>` (plugin hooks.json uses
 //      `hooks.<EventName>` — DO NOT confuse the two, or config.json fails to load).
 //   2. They are DISABLED by default; `hooks.enabled: true` is required.
-//   3. The matcher is a case-sensitive REGEX; "*" silently never matches — so
-//      state-only hooks OMIT the matcher to match every tool.
+//   3. Missing / empty / "*" matchers all match every tool. State-only hooks
+//      omit the matcher because they do not need tool filtering.
 // ZCode supports exactly 7 events: SessionStart, UserPromptSubmit, PreToolUse,
 // PermissionRequest, PostToolUse, PostToolUseFailure, Stop (no SessionEnd /
 // Notification). Phase 1 registers the 6 state-only events (no PermissionRequest).
@@ -100,10 +101,10 @@ function timeoutMsForZcodeEvent() {
   return 30000;
 }
 
-// ZCode's matcher is a case-sensitive REGEX, so "*" silently never matches.
-// For state-only hooks we want every tool/prompt, so we always OMIT the
-// matcher (omitted = match everything). Kept as a helper for symmetry with
-// other installers and for a future Phase 2 PermissionRequest matcher.
+// ZCode treats a missing / empty / "*" matcher as match-all. State-only hooks
+// do not need tool filtering, so use the smallest canonical form and omit it.
+// Kept as a helper for symmetry with other installers and for a future Phase 2
+// PermissionRequest matcher.
 function matcherForZcodeEvent() {
   return null;
 }
@@ -185,14 +186,19 @@ function buildZcodeHookCommand(nodeBin, hookScript, event, options = {}) {
   });
 }
 
-function buildZcodeHookEntry(command, event) {
+function buildZcodeHookEntry(command, event, options = {}) {
   const matcher = matcherForZcodeEvent(event);
+  const hook = {
+    type: "command",
+    command,
+    timeoutMs: timeoutMsForZcodeEvent(),
+  };
+  // `enabled` belongs on each hook object in ZCode's schema. Preserve an
+  // explicit user opt-out when normalizing a stale Clawd command; omitting the
+  // field is the canonical enabled form.
+  if (options.enabled === false) hook.enabled = false;
   const entry = {
-    hooks: [{
-      type: "command",
-      command,
-      timeoutMs: timeoutMsForZcodeEvent(),
-    }],
+    hooks: [hook],
   };
   if (matcher !== null) entry.matcher = matcher;
   return entry;
@@ -203,9 +209,14 @@ function replaceEntry(target, source) {
   Object.assign(target, source);
 }
 
-function isDesiredHookEntry(entry, desiredCommand, event) {
+function isDesiredHookEntry(entry, desiredCommand, event, options = {}) {
   if (!entry || typeof entry !== "object") return false;
   const matcher = matcherForZcodeEvent(event);
+  // The wrapper schema is strict: only matcher + hooks are valid. In our
+  // matcherless canonical form that means exactly one `hooks` key. In
+  // particular, entry-level enabled:false is invalid and must be removed;
+  // the supported opt-out lives on the nested hook object.
+  if (Object.keys(entry).some((key) => key !== "matcher" && key !== "hooks")) return false;
   if (matcher === null) {
     if (Object.prototype.hasOwnProperty.call(entry, "matcher")) return false;
   } else if (entry.matcher !== matcher) {
@@ -221,6 +232,7 @@ function isDesiredHookEntry(entry, desiredCommand, event) {
     && !("name" in entry.hooks[0])
     && entry.hooks[0].type === "command"
     && entry.hooks[0].command === desiredCommand
+    && (entry.hooks[0].enabled === false) === (options.enabled === false)
     // Must use timeoutMs (ms). A pre-fix entry carrying `timeout: 30000`
     // (8.3h under ZCode's seconds-semantics) is treated as not-desired so a
     // re-run rewrites it into the correct timeoutMs form.
@@ -228,9 +240,39 @@ function isDesiredHookEntry(entry, desiredCommand, event) {
   );
 }
 
+function managedHookIntent(entries) {
+  let found = 0;
+  let foundEnabled = false;
+  if (!Array.isArray(entries)) return { found, enabled: true };
+
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    // Old flat command entries are not part of ZCode's current wrapper schema.
+    // Treat them as enabled while migrating; entry-level `enabled` is not a
+    // supported substitute for hook.enabled.
+    if (isClawdHookCommand(entry.command)) {
+      found++;
+      foundEnabled = true;
+    }
+    if (!Array.isArray(entry.hooks)) continue;
+    for (const hook of entry.hooks) {
+      if (!hook || !isClawdHookCommand(hook.command)) continue;
+      found++;
+      if (hook.enabled !== false) foundEnabled = true;
+    }
+  }
+
+  return {
+    found,
+    enabled: found === 0 || foundEnabled,
+  };
+}
+
 function normalizeHookEntries(entries, desiredCommand, event) {
   if (!Array.isArray(entries)) return { matched: false, changed: false };
 
+  const intent = managedHookIntent(entries);
+  const desiredOptions = { enabled: intent.enabled };
   let matched = false;
   let changed = false;
   let dedicatedIndex = -1;
@@ -242,7 +284,7 @@ function normalizeHookEntries(entries, desiredCommand, event) {
     if (isClawdHookCommand(entry.command)) {
       matched = true;
       if (dedicatedIndex === -1) {
-        replaceEntry(entry, buildZcodeHookEntry(desiredCommand, event));
+        replaceEntry(entry, buildZcodeHookEntry(desiredCommand, event, desiredOptions));
         dedicatedIndex = index;
         changed = true;
       } else {
@@ -270,8 +312,8 @@ function normalizeHookEntries(entries, desiredCommand, event) {
     }
 
     if (dedicatedIndex === -1) {
-      if (!isDesiredHookEntry(entry, desiredCommand, event)) {
-        replaceEntry(entry, buildZcodeHookEntry(desiredCommand, event));
+      if (!isDesiredHookEntry(entry, desiredCommand, event, desiredOptions)) {
+        replaceEntry(entry, buildZcodeHookEntry(desiredCommand, event, desiredOptions));
         changed = true;
       }
       dedicatedIndex = index;
@@ -286,13 +328,13 @@ function normalizeHookEntries(entries, desiredCommand, event) {
   if (!matched) return { matched: false, changed: false };
 
   if (dedicatedIndex === -1) {
-    entries.push(buildZcodeHookEntry(desiredCommand, event));
+    entries.push(buildZcodeHookEntry(desiredCommand, event, desiredOptions));
     return { matched: true, changed: true };
   }
 
   const dedicatedEntry = entries[dedicatedIndex];
-  if (!isDesiredHookEntry(dedicatedEntry, desiredCommand, event)) {
-    replaceEntry(dedicatedEntry, buildZcodeHookEntry(desiredCommand, event));
+  if (!isDesiredHookEntry(dedicatedEntry, desiredCommand, event, desiredOptions)) {
+    replaceEntry(dedicatedEntry, buildZcodeHookEntry(desiredCommand, event, desiredOptions));
     changed = true;
   }
   return { matched: true, changed };
@@ -319,9 +361,6 @@ function registerZcodeHooks(options = {}) {
 
   const settings = readSettings(settingsPath);
   const warnings = [];
-  if (settings && settings.disableAllHooks === true) {
-    warnings.push("config.json has disableAllHooks=true; Clawd ZCode hooks will not fire until that flag is removed.");
-  }
 
   const hookScript = asarUnpackedPath(path.resolve(__dirname, MARKER).replace(/\\/g, "/"));
   const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
@@ -332,12 +371,16 @@ function registerZcodeHooks(options = {}) {
   let changed = false;
 
   if (!settings.hooks || typeof settings.hooks !== "object") settings.hooks = {};
-  // Config-file hooks are disabled by default; enable the runner so our hooks
-  // actually fire. Plugin hooks auto-enable the runner, but we cannot rely on
-  // a plugin being present.
-  if (settings.hooks.enabled !== true) {
+  // Config-file hooks are disabled by default. Default an absent/malformed
+  // value to true for a fresh install, but never override an explicit false:
+  // this is ZCode's global runner switch and enabling it would also reactivate
+  // unrelated user hooks.
+  if (settings.hooks.enabled !== true && settings.hooks.enabled !== false) {
     settings.hooks.enabled = true;
     changed = true;
+  }
+  if (settings.hooks.enabled === false) {
+    warnings.push("hooks.enabled=false; Clawd preserves this ZCode-wide user setting, so config-file hooks will not fire.");
   }
   if (!settings.hooks.events || typeof settings.hooks.events !== "object") {
     settings.hooks.events = {};
@@ -355,6 +398,7 @@ function registerZcodeHooks(options = {}) {
   let added = 0;
   let skipped = 0;
   let updated = 0;
+  const disabledManagedEvents = [];
 
   for (const event of ZCODE_HOOK_EVENTS) {
     const desiredCommand = buildZcodeHookCommand(
@@ -369,6 +413,10 @@ function registerZcodeHooks(options = {}) {
       changed = true;
     }
 
+    const existingIntent = managedHookIntent(events[event]);
+    if (existingIntent.found > 0 && existingIntent.enabled === false) {
+      disabledManagedEvents.push(event);
+    }
     const result = normalizeHookEntries(events[event], desiredCommand, event);
     if (result.changed) changed = true;
 
@@ -381,6 +429,9 @@ function registerZcodeHooks(options = {}) {
     events[event].push(buildZcodeHookEntry(desiredCommand, event));
     added++;
     changed = true;
+  }
+  if (disabledManagedEvents.length > 0) {
+    warnings.push(`Clawd ZCode hooks remain disabled for: ${disabledManagedEvents.join(", ")}`);
   }
 
   if (changed) {
@@ -455,7 +506,7 @@ function unregisterZcodeHooks(options = {}) {
       // Only drop `enabled` if nothing else references it; since the runner is
       // only meaningful for config-file hooks (plugin hooks auto-enable), and
       // we own the only config-file hooks, it is safe to drop here.
-      delete settings.hooks.enabled;
+      if (settings.hooks.enabled !== false) delete settings.hooks.enabled;
       if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
     }
   }

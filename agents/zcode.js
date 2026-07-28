@@ -1,11 +1,9 @@
 // ZCode agent configuration
-// ZCode is 智谱/Z.ai's Electron desktop ADE; it spawns `zcode-cli` as the
-// per-session agent runtime. `zcode-cli` reads ~/.zcode/cli/config.json, whose
-// hook schema is documented in ZCode's official `zcode-configuration-guide` /
-// `diagnosing-hooks` skills. Config-file hooks nest under `hooks.events.*`
-// (NOT `hooks.*` like plugin hooks.json), require `hooks.enabled: true`, and
-// the matcher is a case-sensitive REGEX (so "*" silently never matches —
-// omit the matcher to match everything).
+// ZCode is 智谱/Z.ai's Electron desktop ADE. Legacy builds spawned `zcode-cli`;
+// current builds can run Resources/glm/zcode.cjs through Electron's Node mode.
+// Both read ~/.zcode/cli/config.json. Config-file hooks nest under
+// `hooks.events.*` (NOT `hooks.*` like plugin hooks.json), require
+// `hooks.enabled: true`, and treat missing / empty / "*" matchers as match-all.
 // ZCode supports exactly 7 events: SessionStart, UserPromptSubmit, PreToolUse,
 // PermissionRequest, PostToolUse, PostToolUseFailure, Stop. It does NOT support
 // SessionEnd or Notification.
@@ -14,14 +12,16 @@
 module.exports = {
   id: "zcode",
   name: "ZCode",
-  // The ZCode desktop app (Electron) spawns a per-session agent runtime.
-  // Process tree: ZCode (main shell) -> zcode-host-local -> zcode-cli (runtime).
-  // Detect the runtime (zcode-cli), NOT the Electron shell (`ZCode`) or the
-  // host bridge.
+  // The ZCode desktop app (Electron) spawns a per-session agent runtime. Keep
+  // pure-name matching limited to the unambiguous legacy `zcode-cli`; current
+  // Electron Node-mode sessions are identified jointly by executable name and
+  // the `zcode.cjs` command-line token in hooks/zcode-hook.js and src/state.js.
   //
-  // CROSS-PLATFORM NOTE (real-machine smoke, ZCode 3.4.2):
+  // CROSS-PLATFORM NOTE:
   //   - macOS / Linux: the runtime is a standalone binary `zcode-cli` (one per
-  //     live session). Verified on macOS 3.4.2 — confirmed unambiguous.
+  //     live session) in legacy 3.4.x builds. Verified on macOS 3.4.2.
+  //     The signed macOS 3.5.3 bundle instead ships `Resources/glm/zcode.cjs`;
+  //     the name+cmdline resolver covers it without accepting the bare GUI.
   //   - Windows: per reviewer's audit of the 3.3.6 installer, the app reuses
   //     the Electron shell via `ZCode.exe resources/glm/zcode.cjs app-server
   //     --stdio` with ELECTRON_RUN_AS_NODE=1 — i.e. the working process is
@@ -31,8 +31,9 @@ module.exports = {
   //     authoritative Windows signal today.
   processNames: { win: ["zcode-cli.exe"], mac: ["zcode-cli"], linux: ["zcode-cli"] },
   // startupRecoveryProcessNames drives state.js's running-agent detection.
-  //   - mac/linux: `zcode-cli` is the unambiguous standalone runtime (verified
-  //     on macOS 3.4.2), so it participates directly.
+  //   - mac/linux: legacy `zcode-cli` participates directly. Current
+  //     `zcode.cjs` runtimes use state.js's command-line marker fallback; the
+  //     ambiguous GUI executable is intentionally absent from this name list.
   //   - win: the Windows runtime is the desktop shell `ZCode.exe` reused to run
   //     `... zcode.cjs app-server` (ELECTRON_RUN_AS_NODE=1). The bare name is
   //     ambiguous (the always-running shell would be mis-credited), so win

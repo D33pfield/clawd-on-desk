@@ -1,7 +1,10 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
-const { isZcodeAgentCommandLine } = require("../hooks/zcode-hook");
+const {
+  getZcodePidResolverOptions,
+  isZcodeAgentCommandLine,
+} = require("../hooks/zcode-hook");
 
 // The ZCode Windows runtime reuses the ZCode.exe desktop shell to run
 // `resources/glm/zcode.cjs app-server --stdio` (ELECTRON_RUN_AS_NODE=1). The
@@ -24,6 +27,22 @@ describe("isZcodeAgentCommandLine", () => {
       "ZCode.exe resources\\glm\\zcode.cjs app-server --stdio"
     ));
     assert.ok(isZcodeAgentCommandLine("node zcode.cjs app-server"));
+  });
+
+  it("matches the current macOS Electron Node-mode runtime and gates the ambiguous name", () => {
+    const command = [
+      "/Applications/ZCode.app/Contents/MacOS/ZCode",
+      "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs",
+      "app-server",
+      "--stdio",
+    ].join(" ");
+    assert.ok(isZcodeAgentCommandLine(command));
+
+    const options = getZcodePidResolverOptions({});
+    assert.ok(options.agentCmdlineNames.has("zcode"));
+    assert.ok(!options.agentNames.mac.has("zcode"));
+    assert.ok(options.agentCmdlineCheck(command));
+    assert.ok(!options.agentCmdlineCheck("/Applications/ZCode.app/Contents/MacOS/ZCode"));
   });
 
   it("does NOT match the bare ZCode desktop shell without zcode.cjs", () => {

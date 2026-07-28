@@ -996,6 +996,97 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.status, "ok");
     assert.strictEqual(detail.commandCount, ZCODE_HOOK_EVENTS.length);
     assert.strictEqual(detail.scriptPath, "/app/hooks/zcode-hook.js");
+    assert.deepStrictEqual(detail.supplementary, {
+      key: "zcode_hooks",
+      value: "enabled",
+      detail: "config.json allows Clawd ZCode hooks",
+    });
+  });
+
+  it("offers repair when ZCode hooks.enabled is absent rather than treating the runner as healthy", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    delete config.hooks.enabled;
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.level, "warning");
+    assert.strictEqual(detail.supplementary.value, "needs-enable");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "zcode" });
+  });
+
+  it("warns without Fix when ZCode hooks are explicitly disabled globally", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    config.hooks.enabled = false;
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.level, "warning");
+    assert.strictEqual(
+      detail.detail,
+      "ZCode config-file hooks are disabled globally; Clawd preserves hooks.enabled=false and will not receive hook events"
+    );
+    assert.deepStrictEqual(detail.supplementary, {
+      key: "zcode_hooks",
+      value: "disabled-global",
+      detail: "hooks.enabled is false",
+    });
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("warns without Fix when a managed ZCode event hook has enabled:false", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    config.hooks.events.PreToolUse[0].hooks[0].enabled = false;
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.level, "warning");
+    assert.deepStrictEqual(detail.supplementary, {
+      key: "zcode_hooks",
+      value: "disabled-events",
+      detail: "Clawd hooks have enabled=false for: PreToolUse",
+      disabledEvents: ["PreToolUse"],
+    });
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("treats a ZCode event as active when one managed duplicate remains enabled", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    config.hooks.events.Stop.push({
+      hooks: [{
+        type: "command",
+        command: '"/node" "/app/hooks/zcode-hook.js" Stop',
+        enabled: false,
+      }],
+    });
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.supplementary.value, "enabled");
+  });
+
+  it("offers Fix for unsupported entry-level enabled:false instead of preserving invalid schema", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    config.hooks.events.PreToolUse[0].enabled = false;
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.supplementary.value, "invalid-wrapper");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "zcode" });
   });
 
   it("warns when ZCode hooks.events is missing any required event", () => {

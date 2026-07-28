@@ -757,6 +757,71 @@ test("settings agent actions report repair payload errors with the repair comman
   assert.match(result.message, /repairAgentIntegration\.agentId/);
 });
 
+test("settings agent actions install, uninstall, and repair ZCode through the real action gates", async () => {
+  const installSnapshot = prefs.getDefaults();
+  const installCalls = [];
+  const installed = await agentCommands.installAgentIntegration({ agentId: "zcode" }, {
+    snapshot: installSnapshot,
+    syncIntegrationForAgent: async (agentId, options) => {
+      installCalls.push({ agentId, options });
+      return { status: "ok", message: "ZCode hooks installed" };
+    },
+    startMonitorForAgent: (agentId) => installCalls.push({ start: agentId }),
+  });
+
+  assert.strictEqual(installed.status, "ok");
+  assert.deepStrictEqual(installCalls, [
+    {
+      agentId: "zcode",
+      options: { source: "settings-agent-install", automatic: false },
+    },
+    { start: "zcode" },
+  ]);
+  assert.strictEqual(installed.commit.agents.zcode.integrationInstalled, true);
+  assert.strictEqual(installed.commit.agents.zcode.enabled, true);
+
+  const activeSnapshot = {
+    ...installSnapshot,
+    agents: installed.commit.agents,
+  };
+  const repairCalls = [];
+  const repaired = await agentCommands.repairAgentIntegration({ agentId: "zcode" }, {
+    snapshot: activeSnapshot,
+    repairIntegrationForAgent: async (agentId, options) => {
+      repairCalls.push({ agentId, options });
+      return { status: "ok", message: "ZCode hooks repaired" };
+    },
+  });
+
+  assert.strictEqual(repaired.status, "ok");
+  assert.deepStrictEqual(repairCalls, [{
+    agentId: "zcode",
+    options: { forceCodexHooksFeature: false },
+  }]);
+
+  const uninstallCalls = [];
+  const uninstalled = await agentCommands.uninstallAgentIntegration({ agentId: "zcode" }, {
+    snapshot: activeSnapshot,
+    uninstallIntegrationForAgent: async (agentId) => {
+      uninstallCalls.push(["uninstall", agentId]);
+      return { status: "ok" };
+    },
+    stopMonitorForAgent: (agentId) => uninstallCalls.push(["stop", agentId]),
+    clearSessionsByAgent: (agentId) => uninstallCalls.push(["clear", agentId]),
+    dismissPermissionsByAgent: (agentId) => uninstallCalls.push(["dismiss", agentId]),
+  });
+
+  assert.strictEqual(uninstalled.status, "ok");
+  assert.deepStrictEqual(uninstallCalls, [
+    ["uninstall", "zcode"],
+    ["stop", "zcode"],
+    ["clear", "zcode"],
+    ["dismiss", "zcode"],
+  ]);
+  assert.strictEqual(uninstalled.commit.agents.zcode.integrationInstalled, false);
+  assert.strictEqual(uninstalled.commit.agents.zcode.enabled, false);
+});
+
 test("every opencode-family member is installable AND auto-repairable (R10 P3)", () => {
   // AUTO_REPAIRABLE_AGENT_IDS gates repairAgentIntegration; INSTALLABLE
   // gates install/uninstall. Dropping a family member from either set turns

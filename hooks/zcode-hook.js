@@ -2,10 +2,11 @@
 // Clawd - ZCode lifecycle hook (state-only).
 // Registered in ~/.zcode/cli/config.json by hooks/zcode-install.js.
 //
-// ZCode (智谱/Z.ai) is an Electron desktop ADE; it spawns `zcode-cli` as the
-// per-session agent runtime, and `zcode-cli` fires these command hooks. Phase
-// 1: state-only — every event maps to a pet state and POSTs /state; stdout is
-// always "{}" (no blocking permission decisions).
+// ZCode (智谱/Z.ai) is an Electron desktop ADE. Legacy 3.4.x builds spawned a
+// standalone `zcode-cli`; current macOS 3.5.x builds run Resources/glm/zcode.cjs
+// through Electron's Node mode. That per-session runtime fires these command
+// hooks. Phase 1 is state-only: every event maps to a pet state and POSTs
+// /state; stdout is always "{}" (no blocking permission decisions).
 // ZCode supports exactly 7 events (SessionStart, UserPromptSubmit, PreToolUse,
 // PermissionRequest, PostToolUse, PostToolUseFailure, Stop). It does NOT
 // support SessionEnd or Notification — session end relies on Stop + the app's
@@ -111,14 +112,11 @@ function appendHookDebug(entry, env = process.env) {
   } catch {}
 }
 
-// Detect the ZCode agent runtime across platforms:
-//   - macOS/Linux: a standalone `zcode-cli` binary (verified on 3.4.2).
-//   - Windows: the ZCode desktop shell reuses `ZCode.exe` to run
-//     `resources/glm/zcode.cjs app-server --stdio` (ELECTRON_RUN_AS_NODE=1),
-//     so the working process is the AMBIGUOUS desktop-shell name and is only
-//     identifiable by a `zcode.cjs` cmdline token. Matching `zcode.cjs` (not
-//     the bare `ZCode.exe`) is what keeps the always-running shell from being
-//     mis-credited as a live agent session.
+// Detect both the legacy standalone `zcode-cli` and the current Electron
+// Node-mode runtime (`.../ZCode .../Resources/glm/zcode.cjs app-server
+// --stdio`). The executable name is shared with the always-running desktop
+// shell, so `zcode`/`zcode.exe` is only eligible for a command-line probe; the
+// `zcode.cjs` token is what prevents the shell from being mis-credited.
 function isZcodeAgentCommandLine(cmd) {
   if (typeof cmd !== "string") return false;
   const normalized = cmd.toLowerCase().replace(/\\/g, "/");
@@ -126,6 +124,21 @@ function isZcodeAgentCommandLine(cmd) {
     || normalized.includes("/zcode-cli")
     || normalized.includes("zcode-hook.js")
     || normalized.includes("zcode.cjs");
+}
+
+function getZcodePidResolverOptions(platformConfig) {
+  return {
+    agentNames: {
+      win: new Set(["zcode-cli.exe"]),
+      mac: new Set(["zcode-cli"]),
+      linux: new Set(["zcode-cli"]),
+    },
+    agentCmdlineCheck: isZcodeAgentCommandLine,
+    // POSIX ps normalizes /Applications/ZCode.app/Contents/MacOS/ZCode to
+    // "zcode". Keep node fallbacks for unpacked/dev launches.
+    agentCmdlineNames: new Set(["zcode", "zcode.exe", "node.exe", "node"]),
+    platformConfig,
+  };
 }
 
 function applyLocalProcessFields(body, resolve) {
@@ -209,17 +222,7 @@ async function main(argvEvent = process.argv[2], deps = {}) {
       ? deps.payload
       : await (deps.readStdinJson || readStdinJson)();
     const config = getPlatformConfig();
-    const resolve = deps.resolvePid || createPidResolver({
-      agentNames: { win: new Set(["zcode-cli.exe"]), mac: new Set(["zcode-cli"]), linux: new Set(["zcode-cli"]) },
-      agentCmdlineCheck: isZcodeAgentCommandLine,
-      // On Windows the agent runtime is the desktop shell `ZCode.exe` running
-      // `... zcode.cjs app-server` (not a node CLI). Add it to the cmdline-name
-      // gate so isZcodeAgentCommandLine runs against its command line; the
-      // `zcode.cjs` token in the check is what rejects the bare shell. Keep the
-      // default node/node.exe entries for a node-launched zcode.cjs fallback.
-      agentCmdlineNames: new Set(["zcode.exe", "node.exe", "node"]),
-      platformConfig: config,
-    });
+    const resolve = deps.resolvePid || createPidResolver(getZcodePidResolverOptions(config));
     const result = await run(payload || {}, argvEvent, {
       ...deps,
       resolvePid: resolve,
@@ -254,6 +257,7 @@ module.exports = {
   appendHookDebug,
   buildStateBody,
   buildToolInputFingerprint,
+  getZcodePidResolverOptions,
   isZcodeAgentCommandLine,
   main,
   normalizeZcodeSessionId,

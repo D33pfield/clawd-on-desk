@@ -233,6 +233,18 @@ function withAgentFixAction(detail, descriptor) {
     return detail;
   }
   if (
+    descriptor.agentId === "zcode"
+    && detail.supplementary
+    && detail.supplementary.key === "zcode_hooks"
+    && typeof detail.supplementary.value === "string"
+    && detail.supplementary.value.startsWith("disabled")
+  ) {
+    // Both the master runner flag and per-hook enabled:false are explicit
+    // ZCode user choices. Doctor may explain them, but Fix must not reactivate
+    // hooks behind the user's back.
+    return detail;
+  }
+  if (
     descriptor.agentId === "copilot-cli"
     && detail.supplementary
     && detail.supplementary.key === "copilot_hooks"
@@ -924,6 +936,133 @@ function applyQwenSupplementary(detail, descriptor, settings) {
   };
 }
 
+function getZcodeHooksSupplementary(settings, descriptor) {
+  const hooks = settings && typeof settings === "object" ? settings.hooks : null;
+  if (!hooks || typeof hooks !== "object" || hooks.enabled !== true) {
+    if (hooks && hooks.enabled === false) {
+      return {
+        key: "zcode_hooks",
+        value: "disabled-global",
+        detail: "hooks.enabled is false",
+      };
+    }
+    return {
+      key: "zcode_hooks",
+      value: "needs-enable",
+      detail: "hooks.enabled must be true for config-file hooks",
+    };
+  }
+
+  const events = hooks.events && typeof hooks.events === "object" ? hooks.events : {};
+  const disabledEvents = [];
+  const invalidWrapperEvents = [];
+  for (const eventName of descriptor.hookEvents || []) {
+    const entries = Array.isArray(events[eventName]) ? events[eventName] : [];
+    let managedCount = 0;
+    let activeCount = 0;
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      // Flat command entries are legacy/invalid for current ZCode, but the
+      // generic validator still reports their path issue. Do not interpret an
+      // unsupported entry-level enabled flag as a valid user opt-out.
+      if (
+        typeof entry.command === "string"
+        && commandContainsFragment(entry.command, descriptor.marker)
+      ) {
+        managedCount++;
+        activeCount++;
+        invalidWrapperEvents.push(eventName);
+      }
+      if (!Array.isArray(entry.hooks)) continue;
+      const managedNestedHooks = entry.hooks.filter((hook) => (
+        hook
+        && typeof hook.command === "string"
+        && commandContainsFragment(hook.command, descriptor.marker)
+      ));
+      if (
+        managedNestedHooks.length > 0
+        && Object.keys(entry).some((key) => key !== "matcher" && key !== "hooks")
+      ) {
+        invalidWrapperEvents.push(eventName);
+      }
+      for (const hook of managedNestedHooks) {
+        managedCount++;
+        if (hook.enabled !== false) activeCount++;
+      }
+    }
+    if (managedCount > 0 && activeCount === 0) disabledEvents.push(eventName);
+  }
+
+  if (disabledEvents.length > 0) {
+    return {
+      key: "zcode_hooks",
+      value: "disabled-events",
+      detail: `Clawd hooks have enabled=false for: ${disabledEvents.join(", ")}`,
+      disabledEvents,
+    };
+  }
+  if (invalidWrapperEvents.length > 0) {
+    const uniqueEvents = [...new Set(invalidWrapperEvents)];
+    return {
+      key: "zcode_hooks",
+      value: "invalid-wrapper",
+      detail: `Clawd hook wrapper has unsupported fields for: ${uniqueEvents.join(", ")}`,
+      invalidWrapperEvents: uniqueEvents,
+    };
+  }
+  return {
+    key: "zcode_hooks",
+    value: "enabled",
+    detail: "config.json allows Clawd ZCode hooks",
+  };
+}
+
+function applyZcodeSupplementary(detail, descriptor, settings) {
+  if (descriptor.agentId !== "zcode") return detail;
+
+  const supplementary = getZcodeHooksSupplementary(settings, descriptor);
+  if (supplementary.value === "disabled-global") {
+    return {
+      ...detail,
+      status: "not-connected",
+      level: "warning",
+      detail: "ZCode config-file hooks are disabled globally; Clawd preserves hooks.enabled=false and will not receive hook events",
+      supplementary,
+    };
+  }
+  if (supplementary.value === "disabled-events") {
+    return {
+      ...detail,
+      status: "not-connected",
+      level: "warning",
+      detail: `Clawd ZCode hooks are disabled for ${supplementary.disabledEvents.join(", ")}; Clawd preserves each enabled=false setting`,
+      supplementary,
+    };
+  }
+  if (supplementary.value === "needs-enable") {
+    return {
+      ...detail,
+      status: "not-connected",
+      level: "warning",
+      detail: "ZCode config-file hooks require hooks.enabled=true before Clawd can receive events",
+      supplementary,
+    };
+  }
+  if (supplementary.value === "invalid-wrapper") {
+    return {
+      ...detail,
+      status: "not-connected",
+      level: "warning",
+      detail: `ZCode rejected unsupported fields on Clawd hook wrappers for ${supplementary.invalidWrapperEvents.join(", ")}`,
+      supplementary,
+    };
+  }
+  return {
+    ...detail,
+    supplementary,
+  };
+}
+
 function getAntigravityHooksSupplementary(settings) {
   const hookGroup = settings && typeof settings === "object" ? settings[ANTIGRAVITY_HOOK_GROUP_ID] : null;
   if (hookGroup && typeof hookGroup === "object" && hookGroup.enabled === false) {
@@ -1064,7 +1203,8 @@ function checkFileMode(descriptor, options) {
   detail = applyCodexSupplementary(detail, descriptor, options, settings);
   detail = applyDisabledHookGroup(detail, descriptor, settings);
   detail = applyGeminiSupplementary(detail, descriptor, settings);
-  return applyQwenSupplementary(detail, descriptor, settings);
+  detail = applyQwenSupplementary(detail, descriptor, settings);
+  return applyZcodeSupplementary(detail, descriptor, settings);
 }
 
 function checkCopilotHooksMode(descriptor, options) {
