@@ -553,7 +553,7 @@ function analyzeAudit({
         level: "error",
         rule: "sidecar-executable-untracked",
         path: file.path,
-        message: "cc-connect-clawd executables must remain generated/ignored, never tracked.",
+        message: "Retired Telegram sidecar executables must never be tracked.",
       });
     }
   }

@@ -1750,7 +1750,7 @@ async function telegramMigrationDispatch(payload, deps = {}) {
       snapshot: deps.telegramMigration.getSnapshot(),
     };
   }
-  const res = await deps.telegramMigration.dispatch(payload);
+  const res = await deps.telegramMigration.dispatch({ type: payload.type });
   return res && res.ok
     ? { status: "ok", state: res.state, snapshot: deps.telegramMigration.getSnapshot() }
     : {

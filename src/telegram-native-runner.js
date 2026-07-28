@@ -426,7 +426,7 @@ function createTelegramNativeRunner({
     polling = true;
     const controller = new AbortController();
     abortController = controller;
-    // First poll uses retry to absorb 409 from a still-releasing sidecar.
+    // First poll uses retry to absorb 409 from a still-releasing bot consumer.
     loopFirst(controller.signal).catch((err) => {
       log("warn", "native polling stopped", { error: err && err.message });
     }).finally(() => {
