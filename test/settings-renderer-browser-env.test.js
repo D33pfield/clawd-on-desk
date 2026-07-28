@@ -3729,10 +3729,12 @@ describe("settings renderer browser environment", () => {
     assert.ok(!generalSource.includes("--language-active-index"));
     assert.ok(!coreSource.includes("languageTransition"));
     assert.ok(/\.language-picker-menu\s*\{[\s\S]*box-shadow:/.test(pickerCss));
-    assert.ok(/\.language-picker-option:hover,[\s\S]*\.language-picker-option:focus-visible\s*\{[\s\S]*background:/.test(pickerCss));
+    assert.ok(/\.language-picker-option:hover\s*\{[\s\S]*background:/.test(pickerCss));
+    assert.ok(/\.language-picker-option:focus-visible\s*\{[\s\S]*outline:\s*2px solid var\(--text-primary,\s*var\(--text\)\);[\s\S]*outline-offset:\s*-2px;[\s\S]*background:/.test(pickerCss));
     assert.ok(/\.language-picker-option\.selected\s*\{[\s\S]*color:\s*var\(--accent\);/.test(pickerCss));
     assert.ok(/@media \(prefers-color-scheme:\s*dark\)\s*\{[\s\S]*\.language-picker-menu/.test(pickerCss));
     assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.language-picker-trigger,[\s\S]*\.language-picker-chevron,[\s\S]*\.language-picker-menu[\s\S]*transition:\s*none;/.test(pickerCss));
+    assert.ok(/@media \(forced-colors:\s*active\)\s*\{[\s\S]*\.language-picker-trigger:focus-visible,[\s\S]*\.language-picker-option:focus-visible\s*\{[\s\S]*outline-color:\s*Highlight;/.test(pickerCss));
     assert.ok(!pickerCss.includes(".language-segmented"));
   });
 
@@ -3763,6 +3765,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(picker, "language picker should be rendered");
     assert.ok(trigger, "language picker trigger should be rendered");
     assert.strictEqual(harness.getLangValue().textContent, "English");
+    assert.strictEqual(trigger.attributes["aria-label"], "Language: English");
     assert.strictEqual(harness.getLangMenu().attributes["aria-hidden"], "true");
     const options = harness.getLangOptions();
     assert.strictEqual(options.length, SUPPORTED_LANGS.length);
@@ -3788,6 +3791,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getLangMenu().attributes["aria-hidden"], "true");
     for (const option of options) assert.strictEqual(option.tabIndex, -1);
     assert.strictEqual(harness.getLangValue().textContent, "Chinese");
+    assert.strictEqual(trigger.attributes["aria-label"], "Language: Chinese");
 
     trigger.dispatchEvent({ type: "click" });
     options[1].dispatchEvent({ type: "click" });
@@ -3805,6 +3809,7 @@ describe("settings renderer browser environment", () => {
       "clicking back to the committed language while pending should not submit a duplicate update"
     );
     assert.strictEqual(harness.getLangValue().textContent, "English");
+    assert.strictEqual(trigger.attributes["aria-label"], "Language: English");
     assert.strictEqual(options[0].attributes["aria-selected"], "true");
 
     harness.core.ops.applyChanges({
@@ -3813,6 +3818,7 @@ describe("settings renderer browser environment", () => {
     });
     assert.strictEqual(harness.getContentRenderCount(), 2);
     assert.strictEqual(harness.getLangValue().textContent, "Chinese");
+    assert.strictEqual(harness.getLangTrigger().attributes["aria-label"], "Language: Chinese");
     assert.strictEqual(harness.getLangOptions()[1].attributes["aria-selected"], "true");
   });
 

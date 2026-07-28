@@ -120,9 +120,12 @@
   border-radius: 50%;
   background: transparent;
 }
-.language-picker-option:hover,
+.language-picker-option:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
 .language-picker-option:focus-visible {
-  outline: none;
+  outline: 2px solid var(--text-primary, var(--text));
+  outline-offset: -2px;
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .language-picker-option.selected {
@@ -144,5 +147,11 @@
   .language-picker-chevron,
   .language-picker-menu {
     transition: none;
+  }
+}
+@media (forced-colors: active) {
+  .language-picker-trigger:focus-visible,
+  .language-picker-option:focus-visible {
+    outline-color: Highlight;
   }
 }

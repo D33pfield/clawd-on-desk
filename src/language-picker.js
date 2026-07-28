@@ -15,6 +15,7 @@
 
   function createLanguagePicker(config = {}) {
     const options = normalizeOptions(config.options);
+    const ariaLabel = config.ariaLabel == null ? "" : String(config.ariaLabel);
     const picker = document.createElement("div");
     picker.className = "language-picker";
 
@@ -23,7 +24,6 @@
     trigger.className = "language-picker-trigger";
     trigger.setAttribute("aria-haspopup", "listbox");
     trigger.setAttribute("aria-expanded", "false");
-    if (config.ariaLabel) trigger.setAttribute("aria-label", String(config.ariaLabel));
 
     const valueEl = document.createElement("span");
     valueEl.className = "language-picker-value";
@@ -37,7 +37,7 @@
     menu.className = "language-picker-menu";
     menu.setAttribute("role", "listbox");
     menu.setAttribute("aria-hidden", "true");
-    if (config.ariaLabel) menu.setAttribute("aria-label", String(config.ariaLabel));
+    if (ariaLabel) menu.setAttribute("aria-label", ariaLabel);
 
     const optionElements = [];
     for (const option of options) {
@@ -76,6 +76,12 @@
       const entry = findOption(value) || optionElements[0] || null;
       activeValue = entry ? entry.data.value : "";
       valueEl.textContent = entry ? entry.data.label : "";
+      if (ariaLabel) {
+        trigger.setAttribute(
+          "aria-label",
+          valueEl.textContent ? `${ariaLabel}: ${valueEl.textContent}` : ariaLabel,
+        );
+      }
       for (const item of optionElements) {
         const selected = item.data.value === activeValue;
         item.element.classList.toggle("selected", selected);
