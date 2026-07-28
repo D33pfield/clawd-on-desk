@@ -94,15 +94,7 @@
       "class": "runtime-required",
       "owner": "build-release",
       "packaged": true,
-      "retentionReason": "Canonical application icon used by packaging and runtime integrations."
-    },
-    {
-      "path": "assets/tray-icon.png",
-      "class": "runtime-required",
-      "owner": "build-release",
-      "packaged": true,
-      "retentionReason": "Current Windows/Linux tray and README path; canonicalization belongs to PR C1.",
-      "reviewAfter": "2026-10-01"
+      "retentionReason": "Canonical application icon used by packaging, Windows/Linux trays, localized READMEs, and runtime integrations."
     }
   ],
   "duplicatePayloadExemptions": [
