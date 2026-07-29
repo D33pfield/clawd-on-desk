@@ -51,6 +51,60 @@ describe("Antigravity hook script", () => {
     assert.strictEqual(postedBodies[0].cwd, process.cwd());
   });
 
+  it("threads the resolved env into the bodies it builds", async () => {
+    const postedBodies = [];
+    await __test.sendHookEvent({
+      conversationId: "c1",
+      workspacePaths: [process.cwd()],
+    }, "PreInvocation", {
+      // sendHookEvent resolves deps.env for its own reads, and the body builders
+      // have to receive that same object: otherwise every env-derived field is
+      // read from the real process environment and an injected env is a no-op.
+      env: { TERM_PROGRAM: "Orca", ORCA_PANE_KEY: "8ce1fff7-tab:9813824b-leaf" },
+      postState: (body, _options, callback) => {
+        postedBodies.push(JSON.parse(body));
+        callback(true, 23333);
+      },
+    });
+
+    assert.strictEqual(postedBodies.length, 1);
+    assert.strictEqual(postedBodies[0].orca_pane_key, "8ce1fff7-tab:9813824b-leaf");
+  });
+
+  it("preserves Orca's local pane identity without remote PID metadata", () => {
+    const env = {
+      CLAWD_REMOTE: "1",
+      CLAWD_SSH_REMOTE: "1",
+      ORCA_PANE_KEY: "8ce1fff7-tab:9813824b-leaf",
+    };
+    const stateBody = __test.buildStateBody("PreInvocation", {
+      conversationId: "remote-c1",
+      workspacePaths: ["/remote/project"],
+    }, {
+      remote: true,
+      host: "remote-host",
+      env,
+      pidMeta: { stablePid: 4242, pidChain: [4242] },
+    });
+    const permissionBody = __test.buildPermissionBody("PreToolUse", {
+      conversationId: "remote-c1",
+      workspacePaths: ["/remote/project"],
+      toolCall: { name: "run_command", args: { CommandLine: "npm test" } },
+    }, {
+      remote: true,
+      host: "remote-host",
+      env,
+      pidMeta: { stablePid: 4242, pidChain: [4242] },
+    });
+
+    for (const body of [stateBody, permissionBody]) {
+      assert.strictEqual(body.host, "remote-host");
+      assert.strictEqual(body.orca_pane_key, "8ce1fff7-tab:9813824b-leaf");
+      assert.ok(!Object.prototype.hasOwnProperty.call(body, "source_pid"));
+      assert.ok(!Object.prototype.hasOwnProperty.call(body, "pid_chain"));
+    }
+  });
+
   it("uses tool Cwd before workspace paths", () => {
     assert.strictEqual(
       __test.resolveCwd({
@@ -76,6 +130,9 @@ describe("Antigravity hook script", () => {
         },
       },
     }, {
+      // Hermetic env: the body carries env-derived terminal fields, so a real
+      // one would leak the developer's own terminal into this exact-shape check.
+      env: {},
       pidMeta: {
         stablePid: 123.9,
         agentPid: 456,

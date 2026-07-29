@@ -77,6 +77,7 @@ function update(api, o = {}) {
       cwd: o.cwd || "/tmp",
       editor: o.editor || null,
       pidChain: o.pidChain || null,
+      orcaPaneKey: o.orcaPaneKey ?? null,
       agentPid: o.agentPid ?? null,
       agentId: o.agentId || "claude-code",
       profileId: o.profileId,
@@ -1450,6 +1451,137 @@ describe("updateSession()", () => {
     assert.strictEqual(session.wtHwnd, "123456");
     const entry = api.getLastSessionSnapshot().sessions.find((item) => item.id === "s1");
     assert.strictEqual(entry.wtHwnd, "123456");
+  });
+
+  it("keeps the Orca pane key sticky across later events that omit it", () => {
+    // Remote bodies never carry the pane key and some agents post state without
+    // the process-metadata block at all, so a later event without it must not
+    // blank the key or focus loses the pane.
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "UserPromptSubmit",
+      sourcePid: 100,
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    update(api, { id: "s1", state: "working", event: "PreToolUse", sourcePid: 100 });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "PreToolUse",
+      sourcePid: 100,
+      orcaPaneKey: "tab-2:leaf-2",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-2:leaf-2");
+  });
+
+  it("drops a stale Orca pane key when the session restarts in another terminal", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "UserPromptSubmit",
+      sourcePid: 100,
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    // Resuming the same session id from a different terminal posts a SessionStart
+    // whose env has no pane key. Keeping the old one would raise Orca instead of
+    // the terminal the agent actually moved to, and the pane key outranks the
+    // wt_hwnd that would have been correct.
+    update(api, { id: "s1", state: "idle", event: "SessionStart", sourcePid: 200, wtHwnd: "4660" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, null);
+    assert.strictEqual(api.sessions.get("s1").wtHwnd, "4660");
+
+    // A SessionStart that does carry one still wins.
+    update(api, {
+      id: "s1",
+      state: "idle",
+      event: "SessionStart",
+      sourcePid: 300,
+      orcaPaneKey: "tab-9:leaf-9",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-9:leaf-9");
+  });
+
+  it("drops a stale Orca pane key on every spelling of a session start", () => {
+    // Producers do not agree on the name: copilot-hook.js posts its raw argv name
+    // "sessionStart" and kiro-hook.js posts "agentSpawn". Matching only
+    // "SessionStart" left both able to keep a stale key indefinitely, and Kiro is
+    // the worst case — its stdin carries no session id, so every session merges
+    // into "default" and the key would never be cleared at all.
+    for (const event of ["SessionStart", "sessionStart", "agentSpawn"]) {
+      update(api, {
+        id: "s1",
+        state: "thinking",
+        event: "UserPromptSubmit",
+        sourcePid: 100,
+        orcaPaneKey: "tab-1:leaf-1",
+      });
+      assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+      update(api, { id: "s1", state: "idle", event, sourcePid: 200, wtHwnd: "4660" });
+      assert.strictEqual(api.sessions.get("s1").orcaPaneKey, null, `${event} must clear the pane key`);
+    }
+  });
+
+  it("drops a stale Orca pane key when a producer with no session-start event moves terminal", () => {
+    // antigravity-hook.js posts none of the three session-start spellings, so the
+    // event-name rule never fires for it and a pane key outlived its pane forever.
+    // Its id normalizes payload.conversationId, so resuming the same conversation
+    // from another terminal lands back on this same entry.
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "agentMessage",
+      sourcePid: 100,
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    update(api, { id: "s1", state: "working", event: "agentMessage", sourcePid: 200, wtHwnd: "4660" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, null);
+    assert.strictEqual(api.sessions.get("s1").sourcePid, 200);
+    assert.strictEqual(api.sessions.get("s1").wtHwnd, "4660");
+  });
+
+  it("drops a stale Orca pane key when only the terminal window handle changes", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "agentMessage",
+      sourcePid: 100,
+      wtHwnd: "1111",
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    update(api, { id: "s1", state: "working", event: "agentMessage", sourcePid: 100, wtHwnd: "2222" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, null);
+  });
+
+  it("keeps the Orca pane key when a later event carries no new terminal identity", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "agentMessage",
+      sourcePid: 100,
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+
+    // Most events omit the process-metadata block entirely; treating "absent" as
+    // "changed" would blank the key on the very next event and undo the feature.
+    update(api, { id: "s1", state: "working", event: "agentMessage" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    // Producers are not consistent about the wire type of the pid, and a bare
+    // !== would read 100 and "100" as two different terminals.
+    update(api, { id: "s1", state: "working", event: "agentMessage", sourcePid: "100" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
   });
 
   it("keeps Ghostty terminal id sticky and allows focus-only metadata updates", () => {

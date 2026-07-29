@@ -6,7 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { postPermissionToRunningServer, postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 const { stdoutForAntigravityEvent } = require("./antigravity-stdout");
 
 const ANTIGRAVITY_PERMISSION_TIMEOUT_MS = 590000;
@@ -261,9 +261,14 @@ function buildStateBody(hookName, payload, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
     return body;
   }
   applyWslSourceFields(body);
+  // Before the pidMeta gate, not after: the pane key comes from the environment
+  // and owes nothing to the process walk, so it must survive the events where
+  // shouldResolvePid skips the snapshot entirely.
+  applyOrcaPaneKey(body, options.env);
 
   const pidMeta = options.pidMeta;
   if (!pidMeta || typeof pidMeta !== "object") return body;
@@ -300,9 +305,14 @@ function buildPermissionBody(hookName, payload, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
     return body;
   }
   applyWslSourceFields(body);
+  // Before the pidMeta gate, not after: the pane key comes from the environment
+  // and owes nothing to the process walk, so it must survive the events where
+  // shouldResolvePid skips the snapshot entirely.
+  applyOrcaPaneKey(body, options.env);
 
   const pidMeta = options.pidMeta;
   if (!pidMeta || typeof pidMeta !== "object") return body;
@@ -409,11 +419,13 @@ async function sendHookEvent(payload, argvEvent, deps = {}) {
     remote,
     host: remote && deps.readHostPrefix ? deps.readHostPrefix() : undefined,
     pidMeta,
+    env,
   });
   const permissionBody = buildPermissionBody(hookName, payload || {}, {
     remote,
     host: remote && deps.readHostPrefix ? deps.readHostPrefix() : undefined,
     pidMeta,
+    env,
   });
 
   if (permissionBody) {

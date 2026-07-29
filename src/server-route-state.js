@@ -70,6 +70,13 @@ function normalizeTmuxClient(value) {
   return /^[\w./:-]+$/.test(text) ? text : null;
 }
 
+function normalizeOrcaPaneKey(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > 256) return null;
+  return /^[\w-]+:[\w-]+$/.test(text) ? text : null;
+}
+
 function normalizeAssistantLastOutput(value) {
   if (typeof value !== "string") return null;
   const text = value
@@ -179,6 +186,7 @@ function handleStatePost(req, res, options) {
       const pidChain = Array.isArray(data.pid_chain) ? data.pid_chain.filter(n => Number.isFinite(n) && n > 0) : null;
       const tmuxSocket = normalizeTmuxSocket(data.tmux_socket);
       const tmuxClient = normalizeTmuxClient(data.tmux_client);
+      const orcaPaneKey = normalizeOrcaPaneKey(data.orca_pane_key);
       const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
       const agentPid = Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null;
       const agentId = agentIdentity.agentId;
@@ -595,6 +603,7 @@ function handleStatePost(req, res, options) {
             pidChain,
             tmuxSocket,
             tmuxClient,
+            orcaPaneKey,
             agentPid,
             agentId,
             ...(subagentId ? { subagentId } : {}),

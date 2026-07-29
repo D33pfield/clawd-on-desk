@@ -143,15 +143,24 @@ function normalizeTmuxClient(value) {
   return /^[\w./:-]+$/.test(text) ? text : null;
 }
 
+function normalizeOrcaPaneKey(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > 256) return null;
+  return /^[\w-]+:[\w-]+$/.test(text) ? text : null;
+}
+
 function normalizePositiveInteger(value) {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
 }
 
-function applyTmuxSessionOptions(options, data) {
+function applyTerminalSessionOptions(options, data) {
   const tmuxSocket = normalizeTmuxSocket(data.tmux_socket);
   const tmuxClient = normalizeTmuxClient(data.tmux_client);
+  const orcaPaneKey = normalizeOrcaPaneKey(data.orca_pane_key);
   if (tmuxSocket) options.tmuxSocket = tmuxSocket;
   if (tmuxClient) options.tmuxClient = tmuxClient;
+  if (orcaPaneKey) options.orcaPaneKey = orcaPaneKey;
 }
 
 function buildCodexPermissionSessionOptions(data) {
@@ -169,7 +178,7 @@ function buildCodexPermissionSessionOptions(data) {
   if (sourcePid) options.sourcePid = sourcePid;
   if (agentPid) options.agentPid = agentPid;
   if (pidChain && pidChain.length) options.pidChain = pidChain;
-  applyTmuxSessionOptions(options, data);
+  applyTerminalSessionOptions(options, data);
   const cwd = normalizeString(data.cwd);
   const host = normalizeString(data.host);
   const platform = normalizeString(data.platform);
@@ -197,7 +206,7 @@ function buildQwenCodePermissionSessionOptions(data) {
   if (sourcePid) options.sourcePid = sourcePid;
   if (agentPid) options.agentPid = agentPid;
   if (pidChain && pidChain.length) options.pidChain = pidChain;
-  applyTmuxSessionOptions(options, data);
+  applyTerminalSessionOptions(options, data);
   const cwd = normalizeString(data.cwd);
   const host = normalizeString(data.host);
   const platform = normalizeString(data.platform);
@@ -220,7 +229,7 @@ function buildCopilotPermissionSessionOptions(data) {
   if (sourcePid) options.sourcePid = sourcePid;
   if (agentPid) options.agentPid = agentPid;
   if (pidChain && pidChain.length) options.pidChain = pidChain;
-  applyTmuxSessionOptions(options, data);
+  applyTerminalSessionOptions(options, data);
   const cwd = normalizeString(data.cwd);
   const host = normalizeString(data.host);
   if (cwd) options.cwd = cwd;
@@ -239,7 +248,7 @@ function buildHermesPermissionSessionOptions(data) {
   if (sourcePid) options.sourcePid = sourcePid;
   if (agentPid) options.agentPid = agentPid;
   if (pidChain && pidChain.length) options.pidChain = pidChain;
-  applyTmuxSessionOptions(options, data);
+  applyTerminalSessionOptions(options, data);
   const cwd = normalizeString(data.cwd);
   if (cwd) options.cwd = cwd;
   const editor = normalizeString(data.editor);
@@ -729,6 +738,7 @@ function handlePermissionPost(req, res, options) {
           pidChain: codexSessionOptions.pidChain || null,
           tmuxSocket: codexSessionOptions.tmuxSocket || null,
           tmuxClient: codexSessionOptions.tmuxClient || null,
+          orcaPaneKey: codexSessionOptions.orcaPaneKey || null,
           host: codexSessionOptions.host || null,
           platform: codexSessionOptions.platform || null,
           model: codexSessionOptions.model || null,
@@ -843,6 +853,7 @@ function handlePermissionPost(req, res, options) {
           pidChain: qwenSessionOptions.pidChain || null,
           tmuxSocket: qwenSessionOptions.tmuxSocket || null,
           tmuxClient: qwenSessionOptions.tmuxClient || null,
+          orcaPaneKey: qwenSessionOptions.orcaPaneKey || null,
           host: qwenSessionOptions.host || null,
           platform: qwenSessionOptions.platform || null,
           model: qwenSessionOptions.model || null,
@@ -964,6 +975,7 @@ function handlePermissionPost(req, res, options) {
           pidChain: copilotSessionOptions.pidChain || null,
           tmuxSocket: copilotSessionOptions.tmuxSocket || null,
           tmuxClient: copilotSessionOptions.tmuxClient || null,
+          orcaPaneKey: copilotSessionOptions.orcaPaneKey || null,
           host: copilotSessionOptions.host || null,
         };
         // Closed connection => no-decision (NOT deny). Phase 0 §4.2:
@@ -1111,6 +1123,7 @@ function handlePermissionPost(req, res, options) {
             pidChain: hermesSessionOptions.pidChain || null,
             tmuxSocket: hermesSessionOptions.tmuxSocket || null,
             tmuxClient: hermesSessionOptions.tmuxClient || null,
+            orcaPaneKey: hermesSessionOptions.orcaPaneKey || null,
             editor: hermesSessionOptions.editor || null,
           };
           const abortHandler = () => {
@@ -1176,6 +1189,7 @@ function handlePermissionPost(req, res, options) {
           pidChain: hermesSessionOptions.pidChain || null,
           tmuxSocket: hermesSessionOptions.tmuxSocket || null,
           tmuxClient: hermesSessionOptions.tmuxClient || null,
+          orcaPaneKey: hermesSessionOptions.orcaPaneKey || null,
           editor: hermesSessionOptions.editor || null,
         };
         const abortHandler = () => {

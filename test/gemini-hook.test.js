@@ -143,7 +143,11 @@ describe("Gemini hook script", () => {
       session_id: "s1",
       cwd: process.cwd(),
     }, "AfterAgent", {
-      env: { CLAWD_REMOTE: "1" },
+      env: {
+        CLAWD_REMOTE: "1",
+        CLAWD_SSH_REMOTE: "1",
+        ORCA_PANE_KEY: "8ce1fff7-tab:9813824b-leaf",
+      },
       readHostPrefix: () => "remote-host",
       resolvePid: () => {
         resolveCalls++;
@@ -162,6 +166,7 @@ describe("Gemini hook script", () => {
     assert.strictEqual(postedBodies[0].session_id, "gemini:s1");
     assert.strictEqual(postedBodies[0].event, "AfterAgent");
     assert.strictEqual(postedBodies[0].host, "remote-host");
+    assert.strictEqual(postedBodies[0].orca_pane_key, "8ce1fff7-tab:9813824b-leaf");
     assert.ok(!Object.prototype.hasOwnProperty.call(postedBodies[0], "source_pid"));
   });
 

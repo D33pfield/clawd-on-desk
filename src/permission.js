@@ -493,6 +493,7 @@ function buildPermissionFocusEntry(perm) {
   if (perm.pidChain) focusEntry.pidChain = perm.pidChain;
   if (perm.tmuxSocket) focusEntry.tmuxSocket = perm.tmuxSocket;
   if (perm.tmuxClient) focusEntry.tmuxClient = perm.tmuxClient;
+  if (perm.orcaPaneKey) focusEntry.orcaPaneKey = perm.orcaPaneKey;
   if (perm.host) focusEntry.host = perm.host;
   if (perm.platform) focusEntry.platform = perm.platform;
   if (perm.model) focusEntry.model = perm.model;

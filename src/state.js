@@ -308,6 +308,46 @@ function hasConfirmedPermissionAnimationLock() {
   return [...kimiPermissionHolds.values()].some((hold) => hold && hold.source === "confirmed");
 }
 
+// Later events legitimately omit the pane key, so it has to be sticky — but a
+// session start means the agent just (re)attached to a terminal, and then the key
+// must come from that event's own environment or not at all. `--resume` of the
+// same session id from a different terminal would otherwise keep the old Orca
+// key and, because the pane key outranks the Windows window cache and the hook's
+// wt_hwnd, raise Orca instead of the terminal the agent actually moved to.
+//
+// Producers spell the session start three ways: most post "SessionStart",
+// copilot-hook.js posts its raw argv name "sessionStart", and kiro-hook.js posts
+// "agentSpawn". Kiro is the one that matters most — its stdin carries no session
+// id, so it merges every session into "default" and a pane key stored there would
+// otherwise never be cleared.
+//
+// antigravity-hook.js has no session-start event at all, so the event name alone
+// can never clear one of its keys. Its id normalizes payload.conversationId
+// (falling back to the transcript directory), so resuming the same conversation
+// from a different terminal lands back on the same entry — which is why the
+// identity check below exists rather than a longer list of event names.
+const SESSION_START_EVENTS = new Set(["SessionStart", "sessionStart", "agentSpawn"]);
+
+// A pane key names one specific Orca pane, and focus consults it before the
+// sourcePid/wtHwnd that would otherwise be authoritative. So an event reporting a
+// terminal identity that differs from the stored one means the session moved, and
+// keeping the key would send the user to the old pane instead of the terminal that
+// just reported in. Only values present on BOTH sides count: most events carry no
+// process metadata, and reading "absent" as "moved" would blank the key immediately.
+// Producers disagree on the wire type of the pid, so compare as strings.
+function terminalIdentityChanged(existing, incoming) {
+  if (!existing || !incoming) return false;
+  const differs = (next, stored) => !!next && !!stored && String(next) !== String(stored);
+  return differs(incoming.sourcePid, existing.sourcePid) || differs(incoming.wtHwnd, existing.wtHwnd);
+}
+
+function mergeOrcaPaneKey(orcaPaneKey, existing, event, incoming) {
+  if (orcaPaneKey) return orcaPaneKey;
+  if (SESSION_START_EVENTS.has(event)) return null;
+  if (terminalIdentityChanged(existing, incoming)) return null;
+  return (existing && existing.orcaPaneKey) || null;
+}
+
 function resolveAwaitingInputSinceStop(existing, event) {
   if (POST_COMPLETION_EVENTS.has(event)) return true;
   if (!event || COMPLETION_HOUSEKEEPING_EVENTS.has(event)) return !!(existing && existing.awaitingInputSinceStop === true);
@@ -1364,6 +1404,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     pidChain = null,
     tmuxSocket = null,
     tmuxClient = null,
+    orcaPaneKey = null,
     agentPid = null,
     agentId = null,
     profileId = "local",
@@ -1455,7 +1496,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     const shouldPersistCodexPermissionFocus = permAgentId === "codex" && (
       sourcePid || wtHwnd || agentPid || (pidChain && pidChain.length) || cwd || host || wslDistro ||
       model || provider || codexOriginator || codexSource || platform || ghosttyTerminalId ||
-      tmuxSocket || tmuxClient
+      tmuxSocket || tmuxClient || orcaPaneKey
     );
     if (shouldPersistCodexPermissionFocus) {
       const existing = sessions.get(sessionId);
@@ -1467,6 +1508,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
       const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
       const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
+      const srcOrcaPaneKey = mergeOrcaPaneKey(orcaPaneKey, existing, event, { sourcePid, wtHwnd });
       const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
       const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
       const srcHost = host || (existing && existing.host) || null;
@@ -1500,6 +1542,7 @@ function updateSession(sessionId, state, event, opts = {}) {
         pidChain: srcPidChain,
         tmuxSocket: srcTmuxSocket,
         tmuxClient: srcTmuxClient,
+        orcaPaneKey: srcOrcaPaneKey,
         agentPid: srcAgentPid,
         agentId: srcAgentId,
         profileId: (existing && existing.profileId) || profileId || "local",
@@ -1575,6 +1618,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
   const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
   const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
+  const srcOrcaPaneKey = mergeOrcaPaneKey(orcaPaneKey, existing, event, { sourcePid, wtHwnd });
   const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
   const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
   const srcSessionAutomationIdentity = normalizedSessionAutomationIdentity
@@ -1721,7 +1765,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   // (contextUsage): a lifecycle event that carries it forward from
   // `existing` must not silently reset the freshness stamp.
   const srcMetadataUpdatedAt = existing && Number.isFinite(existing.metadataUpdatedAt) ? existing.metadataUpdatedAt : null;
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.
@@ -2021,6 +2065,7 @@ function restoreSessionFromLease(lease) {
     pidChain: null,
     tmuxSocket: null,
     tmuxClient: null,
+    orcaPaneKey: null,
     agentPid: pid,
     agentId,
     profileId: "local",

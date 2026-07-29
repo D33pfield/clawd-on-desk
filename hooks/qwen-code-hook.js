@@ -12,7 +12,7 @@ const {
   readHostPrefix,
   applyWslSourceFields,
 } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;
@@ -132,6 +132,7 @@ function applyLocalProcessFields(body, resolve) {
   if (Array.isArray(pidChain) && pidChain.length) body.pid_chain = pidChain;
   if (tmuxSocket) body.tmux_socket = tmuxSocket;
   if (tmuxClient) body.tmux_client = tmuxClient;
+  applyOrcaPaneKey(body);
 }
 
 function maybeAddToolMetadata(body, payload) {
@@ -169,6 +170,7 @@ function buildStateBody(hookName, payload, resolve, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
   } else {
     applyWslSourceFields(body);
     applyLocalProcessFields(body, resolve);
@@ -254,6 +256,7 @@ function buildPermissionBody(hookName, payload, resolve, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
   } else {
     applyWslSourceFields(body);
     applyLocalProcessFields(body, resolve);

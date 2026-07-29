@@ -8,7 +8,7 @@ const fs = require("fs");
 const { postStateToRunningServer, readHostPrefix, resolveWslDistro } = require("./server-config");
 const { fitStateBodyToByteBudget } = require("./state-payload-size");
 const { extractClaudeContextUsageFromEntries } = require("./context-usage");
-const { createPidResolver, readStdinJsonDetailed, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJsonDetailed, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 const { updateRecoveryLeaseFromStateBody } = require("./session-recovery-lease");
 // #634: the pid cache + lifecycle orchestration is owned by the shared resolver
 // now (hooks/shared-process.js); this adapter no longer touches pid-cache,
@@ -408,6 +408,7 @@ function applyResolvedFields(body, resolved, event) {
   if (pidChain && pidChain.length) body.pid_chain = pidChain;
   if (tmuxSocket) body.tmux_socket = tmuxSocket;
   if (tmuxClient) body.tmux_client = tmuxClient;
+  applyOrcaPaneKey(body);
   if (shouldReportForegroundWtHwnd(event) && foregroundWtHwnd) {
     body.wt_hwnd = String(foregroundWtHwnd);
   }
@@ -556,6 +557,7 @@ function buildStateBody(event, payload, resolve) {
     // separate metadata. Do NOT override the SSH host.
     body.host = readHostPrefix();
     if (wslDistro) body.wsl_distro = wslDistro;
+    applyOrcaPaneKey(body);
   } else {
     // #627/#634: the per-session pid cache + lifecycle orchestration now lives
     // in the shared resolver (hooks/shared-process.js). This hook is the Claude
