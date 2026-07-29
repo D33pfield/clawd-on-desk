@@ -34,6 +34,7 @@ describe("package build config", () => {
       const workflow = fs.readFileSync(workflowPath, "utf8");
       assert.match(workflow, /pull_request:/);
       assert.match(workflow, /npm run audit:assets/);
+      assert.match(workflow, /test\/preload-settings\.test\.js/);
       assert.match(workflow, /dist\/repository-asset-audit\/\*\.json/);
       assert.match(
         workflow,
@@ -260,100 +261,52 @@ describe("package build config", () => {
     });
   });
 
-  describe("Telegram approval sidecar packaging", () => {
-    it("preflights sidecar binaries before source launches", () => {
-      assert.match(pkg.scripts.start, /node scripts\/ensure-sidecar-binaries\.js && node launch\.js/);
+  describe("Telegram legacy retirement packaging", () => {
+    it("starts directly without fetching a retired executable", () => {
+      assert.strictEqual(pkg.scripts.start, "node launch.js");
     });
 
-    it("does not copy the whole cc-connect-clawd workspace into every artifact", () => {
-      const commonExtra = pkg.build.extraResources || [];
-      assert.strictEqual(
-        commonExtra.some((entry) => entry && entry.from === "bin/cc-connect-clawd"),
-        false,
-        "common build.extraResources must not copy the whole sidecar workspace"
-      );
-    });
-
-    it("copies exactly the current platform and architecture sidecar via ${arch}", () => {
-      const expected = {
-        win: {
-          from: "bin/cc-connect-clawd/windows-${arch}",
-          to: "sidecars/cc-connect-clawd/windows-${arch}",
-        },
-        mac: {
-          from: "bin/cc-connect-clawd/darwin-${arch}",
-          to: "sidecars/cc-connect-clawd/darwin-${arch}",
-        },
-        linux: {
-          from: "bin/cc-connect-clawd/linux-${arch}",
-          to: "sidecars/cc-connect-clawd/linux-${arch}",
-        },
-      };
-      for (const [platform, entry] of Object.entries(expected)) {
-        assert.deepStrictEqual(
-          pkg.build[platform] && pkg.build[platform].extraResources,
-          [entry],
-          `${platform}.extraResources must copy only its current \${arch} sidecar`
-        );
+    it("contains no retired scripts, prebuild hooks, or extraResources", () => {
+      for (const key of [
+        "fetch:sidecars",
+        "verify:sidecars",
+        "assert:packaged-sidecar",
+        "prebuild",
+        "prebuild:win:x64",
+        "prebuild:win:arm64",
+        "prebuild:win:all",
+        "prebuild:mac",
+        "prebuild:linux",
+        "prebuild:all",
+      ]) {
+        assert.equal(pkg.scripts[key], undefined, key);
       }
+      for (const platform of ["win", "mac", "linux"]) {
+        const entries = pkg.build[platform] && pkg.build[platform].extraResources;
+        assert.equal(entries, undefined, `${platform} should not package a Telegram sidecar`);
+      }
+      assert.deepEqual(pkg.build.extraResources, [{ from: "assets/icon.ico", to: "icon.ico" }]);
     });
 
-    it("exposes build and package assertion commands for all five targets", () => {
-      assert.strictEqual(
-        pkg.scripts["assert:packaged-sidecar"],
-        "node scripts/assert-packaged-sidecar.js"
-      );
+    it("declares the asar inspector directly and keeps five target build commands", () => {
+      assert.match(pkg.devDependencies["@electron/asar"], /^\^3\./);
       assert.strictEqual(pkg.scripts["build:mac:x64"], "electron-builder --mac dmg:x64");
       assert.strictEqual(pkg.scripts["build:mac:arm64"], "electron-builder --mac dmg:arm64");
       assert.strictEqual(pkg.scripts["build:linux:x64"], "electron-builder --linux AppImage:x64 deb:x64");
     });
 
-    it("documents the expected sidecar binary names in the README", () => {
-      const readme = path.join(ROOT, "bin", "cc-connect-clawd", "README.md");
-      assert.ok(fs.existsSync(readme), "bin/cc-connect-clawd/README.md should document release binary names");
-      const text = fs.readFileSync(readme, "utf8");
-      assert.match(text, /windows-x64\/cc-connect-clawd\.exe/);
-      assert.match(text, /darwin-arm64\/cc-connect-clawd/);
-      assert.match(text, /linux-x64\/cc-connect-clawd/);
-    });
-
-    it("fetches and verifies pinned sidecars before release builds", () => {
+    it("release builds assert the retired sidecar is absent from every unpacked tree", () => {
       const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
-      assertWorkflowOrder(
-        workflow,
-        "npm run fetch:sidecars -- --target windows-x64,windows-arm64",
-        "node scripts/verify-sidecar-binaries.js prebuild:win:all",
-        "npx electron-builder --win --publish never"
-      );
-      assertWorkflowOrder(
-        workflow,
-        "npm run fetch:sidecars -- --target darwin-x64,darwin-arm64",
-        "node scripts/verify-sidecar-binaries.js prebuild:mac",
-        "npx electron-builder --mac --publish never"
-      );
-      assertWorkflowOrder(
-        workflow,
-        "npm run fetch:sidecars -- --target linux-x64",
-        "node scripts/verify-sidecar-binaries.js prebuild:linux",
-        "npx electron-builder --linux --publish never"
-      );
-    });
-
-    it("asserts all five unpacked package targets after release builds", () => {
-      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
-      for (const target of [
-        "windows-x64",
-        "windows-arm64",
-        "darwin-x64",
-        "darwin-arm64",
-        "linux-x64",
+      for (const root of [
+        "dist/win-unpacked/resources",
+        "dist/win-arm64-unpacked/resources",
+        "dist/mac/Clawd on Desk.app/Contents/Resources",
+        "dist/mac-arm64/Clawd on Desk.app/Contents/Resources",
+        "dist/linux-unpacked/resources",
       ]) {
-        assert.match(
-          workflow,
-          new RegExp(`npm run assert:packaged-sidecar -- --target ${target}`),
-          `release workflow should assert ${target}`
-        );
+        assert.match(workflow, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
       }
+      assert.doesNotMatch(workflow, /fetch:sidecars|verify-sidecar|assert:packaged-sidecar/);
     });
 
     it("keeps full tag tests while allowing a manual packaging-only evidence run", () => {
@@ -370,7 +323,7 @@ describe("package build config", () => {
         "only the Windows job should substitute the package-validation tests in evidence mode"
       );
       assert.strictEqual(
-        (workflow.match(/node --test test\/assert-packaged-sidecar\.test\.js test\/package-build-config\.test\.js test\/telegram-approval-sidecar\.test\.js test\/verify-sidecar-binaries\.test\.js/g) || []).length,
+        (workflow.match(/node --test test\/assert-no-retired-telegram-sidecar\.test\.js test\/package-build-config\.test\.js test\/telegram-legacy-retirement\.test\.js test\/telegram-migration-state\.test\.js test\/telegram-migration-controller\.test\.js test\/telegram-migration-user-data\.test\.js/g) || []).length,
         1
       );
       assert.strictEqual(
@@ -381,10 +334,13 @@ describe("package build config", () => {
     });
 
     it("builds and uploads all five target artifacts in pull-request CI", () => {
-      const workflowPath = path.join(ROOT, ".github", "workflows", "sidecar-package-audit.yml");
-      assert.ok(fs.existsSync(workflowPath), "sidecar package audit workflow should exist");
+      const workflowPath = path.join(ROOT, ".github", "workflows", "telegram-retirement-package-audit.yml");
+      assert.ok(fs.existsSync(workflowPath), "Telegram retirement package audit workflow should exist");
       const workflow = fs.readFileSync(workflowPath, "utf8");
       assert.match(workflow, /pull_request:/);
+      assert.match(workflow, /name: Assert installer exists/);
+      assert.match(workflow, /Missing built artifact:/);
+      assert.match(workflow, /if-no-files-found: error/);
       for (const target of [
         "windows-x64",
         "windows-arm64",
@@ -395,10 +351,12 @@ describe("package build config", () => {
         assert.match(workflow, new RegExp(`target: ${target}`));
         assert.match(
           workflow,
-          new RegExp(`sidecar-package-\\$\\{\\{ matrix\\.target \\}\\}`),
+          new RegExp(`telegram-retirement-\\$\\{\\{ matrix\\.target \\}\\}`),
           "five-target CI should upload target-specific artifacts and manifests"
         );
       }
+      assert.match(workflow, /scripts\/assert-no-retired-telegram-sidecar\.js/);
+      assert.doesNotMatch(workflow, /fetch:sidecars|verify-sidecar|assert:packaged-sidecar/);
       assert.match(workflow, /Clawd-on-Desk-\*-x86_64\.AppImage/);
       assert.match(workflow, /Clawd-on-Desk-\*-amd64\.deb/);
     });
@@ -431,15 +389,4 @@ describe("package build config", () => {
 function findWorkflowJobIndex(workflow, jobName) {
   const match = String(workflow || "").match(new RegExp(`(?:^|\\r?\\n)  ${jobName}:\\r?\\n`));
   return match ? match.index : -1;
-}
-
-function assertWorkflowOrder(workflow, fetchCommand, verifyCommand, buildCommand) {
-  const fetchIndex = workflow.indexOf(fetchCommand);
-  const verifyIndex = workflow.indexOf(verifyCommand);
-  const buildIndex = workflow.indexOf(buildCommand);
-  assert.ok(fetchIndex >= 0, `workflow should run: ${fetchCommand}`);
-  assert.ok(verifyIndex >= 0, `workflow should run: ${verifyCommand}`);
-  assert.ok(buildIndex >= 0, `workflow should run: ${buildCommand}`);
-  assert.ok(fetchIndex < verifyIndex, `${fetchCommand} should run before ${verifyCommand}`);
-  assert.ok(verifyIndex < buildIndex, `${verifyCommand} should run before ${buildCommand}`);
 }

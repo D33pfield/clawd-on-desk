@@ -25,16 +25,12 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_validation_only }}
       - name: Run package validation tests
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_validation_only }}
-        run: node --test test/assert-packaged-sidecar.test.js test/package-build-config.test.js test/telegram-approval-sidecar.test.js test/verify-sidecar-binaries.test.js
-      - run: npm run fetch:sidecars -- --target windows-x64,windows-arm64
-      - run: node scripts/verify-sidecar-binaries.js prebuild:win:all
+        run: node --test test/assert-no-retired-telegram-sidecar.test.js test/package-build-config.test.js test/telegram-legacy-retirement.test.js test/telegram-migration-state.test.js test/telegram-migration-controller.test.js test/telegram-migration-user-data.test.js
       - run: npx electron-builder --win --publish never
-      - name: Assert packaged Windows sidecars
+      - name: Assert retired Telegram sidecar is absent
         run: |
-          npm run assert:packaged-sidecar -- --target windows-x64
-          npm run assert:packaged-sidecar -- --target windows-arm64
-          npm run audit:assets -- --package-root dist/win-unpacked/resources/sidecars/cc-connect-clawd --target windows-x64 --output dist/repository-asset-audit/windows-x64
-          npm run audit:assets -- --package-root dist/win-arm64-unpacked/resources/sidecars/cc-connect-clawd --target windows-arm64 --output dist/repository-asset-audit/windows-arm64
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/win-unpacked/resources --output dist/telegram-retirement-manifests/windows-x64.json
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/win-arm64-unpacked/resources --output dist/telegram-retirement-manifests/windows-arm64.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -45,10 +41,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: windows-package-manifests
+          name: windows-telegram-retirement-manifests
           path: |
-            dist/sidecar-package-manifests/*.json
-            dist/repository-asset-audit/*/*.json
+            dist/telegram-retirement-manifests/*.json
           if-no-files-found: warn
 
   build-mac:
@@ -60,15 +55,11 @@ jobs:
           node-version-file: .nvmrc
       - run: npm install
       - run: npm test
-      - run: npm run fetch:sidecars -- --target darwin-x64,darwin-arm64
-      - run: node scripts/verify-sidecar-binaries.js prebuild:mac
       - run: npx electron-builder --mac --publish never
-      - name: Assert packaged macOS sidecars
+      - name: Assert retired Telegram sidecar is absent
         run: |
-          npm run assert:packaged-sidecar -- --target darwin-x64
-          npm run assert:packaged-sidecar -- --target darwin-arm64
-          npm run audit:assets -- --package-root "dist/mac/Clawd on Desk.app/Contents/Resources/sidecars/cc-connect-clawd" --target darwin-x64 --output dist/repository-asset-audit/darwin-x64
-          npm run audit:assets -- --package-root "dist/mac-arm64/Clawd on Desk.app/Contents/Resources/sidecars/cc-connect-clawd" --target darwin-arm64 --output dist/repository-asset-audit/darwin-arm64
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root "dist/mac/Clawd on Desk.app/Contents/Resources" --output dist/telegram-retirement-manifests/darwin-x64.json
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root "dist/mac-arm64/Clawd on Desk.app/Contents/Resources" --output dist/telegram-retirement-manifests/darwin-arm64.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -79,10 +70,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mac-package-manifests
+          name: mac-telegram-retirement-manifests
           path: |
-            dist/sidecar-package-manifests/*.json
-            dist/repository-asset-audit/*/*.json
+            dist/telegram-retirement-manifests/*.json
           if-no-files-found: warn
 
   build-linux:
@@ -94,13 +84,10 @@ jobs:
           node-version-file: .nvmrc
       - run: npm install
       - run: npm test
-      - run: npm run fetch:sidecars -- --target linux-x64
-      - run: node scripts/verify-sidecar-binaries.js prebuild:linux
       - run: npx electron-builder --linux --publish never
-      - name: Assert packaged Linux sidecar
+      - name: Assert retired Telegram sidecar is absent
         run: |
-          npm run assert:packaged-sidecar -- --target linux-x64
-          npm run audit:assets -- --package-root dist/linux-unpacked/resources/sidecars/cc-connect-clawd --target linux-x64 --output dist/repository-asset-audit/linux-x64
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/linux-unpacked/resources --output dist/telegram-retirement-manifests/linux-x64.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -112,10 +99,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: linux-package-manifests
+          name: linux-telegram-retirement-manifests
           path: |
-            dist/sidecar-package-manifests/*.json
-            dist/repository-asset-audit/*/*.json
+            dist/telegram-retirement-manifests/*.json
           if-no-files-found: warn
 
   release:
