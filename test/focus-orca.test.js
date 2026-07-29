@@ -2,6 +2,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const path = require("path");
+const os = require("os");
 const { loadFocusWithMock } = require("./helpers/load-focus-with-mock");
 
 const { orcaPaneKeyFromEnv, applyOrcaPaneKey, NESTED_TERMINAL_ENV } = require("../hooks/shared-process");
@@ -10,6 +11,10 @@ const PANE_KEY = "8ce1fff7-tab:9813824b-leaf";
 const CWD = "D:\\Repos\\Apps\\clawd-on-desk";
 const LIVE_HANDLE = "term_63323b46";
 const STALE_HANDLE = "term_4602ecfa";
+// Orca packages its terminal daemon inside the app bundle, so extractMacAppBundlePath
+// resolves an Orca-hosted session straight to Orca.app — which is what lets the
+// generic macOS raise activate the IDE without consulting the pane switch at all.
+const ORCA_DAEMON_COMM = "/Applications/Orca.app/Contents/Resources/app/bin/orca-terminal-daemon";
 
 function terminalListPayload(terminals) {
   return JSON.stringify({ ok: true, result: { terminals } });
@@ -41,6 +46,11 @@ function mockOrcaCli(opts = {}) {
     missingBinaries = [],
     timeoutOn = [],
     macBundles = ["/Applications/Orca.app"],
+    // `ps -o pid=,comm=` output for the legacy macOS raise. Orca's terminal daemon
+    // lives inside the app bundle, so a real Orca session makes resolveMacAppBundle
+    // hand the generic path Orca.app itself.
+    psComm = null,
+    switchDelayMs = 0,
   } = opts;
   const calls = [];
   let switchIdx = 0;
@@ -48,6 +58,12 @@ function mockOrcaCli(opts = {}) {
   const mock = function (cmd, args, options, cb) {
     if (typeof options === "function") { cb = options; options = {}; }
     calls.push({ cmd, args: [...args] });
+
+    if (cmd === "ps" && psComm && args[1] === "pid=,comm=") {
+      const pids = String(args[3] || "").split(",").filter(Boolean);
+      if (cb) cb(null, pids.map((pid) => `${pid} ${psComm}`).join("\n"), "");
+      return;
+    }
 
     if (missingBinaries.includes(cmd)) {
       const err = new Error(`spawn ${cmd} ENOENT`);
@@ -91,13 +107,17 @@ function mockOrcaCli(opts = {}) {
     if (joined.startsWith("terminal switch")) {
       const result = switchResults[Math.min(switchIdx, switchResults.length - 1)];
       switchIdx += 1;
-      if (result.ok) {
-        if (cb) cb(null, JSON.stringify({ ok: true, result: { focus: { handle: args[3] } } }), "");
-      } else {
-        // A failing `--json` command still prints its envelope on stdout and
-        // exits non-zero, so the error and the payload arrive together.
-        if (cb) cb(new Error("exit 1"), JSON.stringify({ ok: false, error: { code: result.code } }), "");
-      }
+      const answer = () => {
+        if (result.ok) {
+          if (cb) cb(null, JSON.stringify({ ok: true, result: { focus: { handle: args[3] } } }), "");
+        } else {
+          // A failing `--json` command still prints its envelope on stdout and
+          // exits non-zero, so the error and the payload arrive together.
+          if (cb) cb(new Error("exit 1"), JSON.stringify({ ok: false, error: { code: result.code } }), "");
+        }
+      };
+      if (switchDelayMs > 0) setTimeout(answer, switchDelayMs);
+      else answer();
       return;
     }
     if (cb) cb(new Error(`unexpected args: ${joined}`), "", "");
@@ -123,6 +143,8 @@ function withFocus(opts, fn) {
 function settle(t) {
   return new Promise((resolve) => setTimeout(resolve, t.ORCA_PANE_FOCUS_DELAY_MS + 250));
 }
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
   it("reads the pane key only when TERM_PROGRAM confirms Orca", () => {
@@ -418,10 +440,26 @@ describe("Orca CLI discovery", () => {
     }
   });
 
-  it("relies on PATH alone off Windows", () => {
+  it("adds the registered install locations off Windows", () => {
     withFocus({ platform: "darwin" }, (t) => {
-      assert.deepStrictEqual(t.orcaCliCandidates(), ["orca"]);
+      const candidates = t.orcaCliCandidates();
+      assert.strictEqual(candidates[0], "orca");
+      assert.ok(candidates.includes("/usr/local/bin/orca"));
+      assert.ok(candidates.includes(path.join(os.homedir(), ".local", "bin", "orca")));
     });
+  });
+
+  it("keeps the posix install locations off the Windows list", () => {
+    const prev = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = "C:\\Users\\t\\AppData\\Local";
+    try {
+      withFocus({ platform: "win32" }, (t) => {
+        assert.ok(!t.orcaCliCandidates().includes("/usr/local/bin/orca"));
+      });
+    } finally {
+      if (prev === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = prev;
+    }
   });
 });
 
@@ -577,7 +615,11 @@ describe("scheduleOrcaPaneFocus", () => {
     const prev = process.env.LOCALAPPDATA;
     delete process.env.LOCALAPPDATA;
     try {
-      await withFocus({ platform: "darwin", missingBinaries: ["orca"] }, async (t, cli, logs) => {
+      // Every candidate has to be absent. The darwin list is PATH plus Orca's two
+      // registered install locations, so leaving one reachable makes this fixture
+      // exercise a successful switch under a name that claims the opposite.
+      const noOrcaAnywhere = ["orca", "/usr/local/bin/orca", path.join(os.homedir(), ".local", "bin", "orca")];
+      await withFocus({ platform: "darwin", missingBinaries: noOrcaAnywhere }, async (t, cli, logs) => {
         t.orcaHandleCache.clear();
         t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
         await settle(t);
@@ -815,6 +857,78 @@ describe("Orca focus wiring", () => {
         [["/Applications/Orca.app"]]
       );
       assert.ok(logs.some((l) => l.includes("reason=orca-pane-switched")), logs.join("|"));
+    });
+  });
+
+  // The three tests below drive the public path with `ps` reporting the packaged
+  // daemon, which is the fixture the suite was missing: without psComm the generic
+  // raise finds no bundle and silently skips `open`, hiding the ordering entirely.
+  it("never raises Orca on macOS when the pane is gone", async () => {
+    await withFocus({ platform: "darwin", terminals: [], psComm: ORCA_DAEMON_COMM }, async (t, cli, logs, focus) => {
+      t.orcaHandleCache.clear();
+      focus.focusTerminalWindow({
+        sourcePid: 3333,
+        cwd: CWD,
+        sessionId: "session-orca-mac-gone",
+        agentId: "claude-code",
+        orcaPaneKey: PANE_KEY,
+      });
+      await settle(t);
+      // `open` launches Orca, and the terminal daemon outlives its window, so a
+      // sticky key pointing at a dead session would cold-start the IDE on a click.
+      assert.deepStrictEqual(cli.calls.filter((c) => c.cmd === "/usr/bin/open").map((c) => c.args), []);
+      assert.ok(logs.some((l) => l.includes("reason=orca-pane-not-found")), logs.join("|"));
+    });
+  });
+
+  it("completes the pane switch before raising Orca on macOS", async () => {
+    await withFocus({ platform: "darwin", psComm: ORCA_DAEMON_COMM }, async (t, cli, logs, focus) => {
+      t.orcaHandleCache.clear();
+      focus.focusTerminalWindow({
+        sourcePid: 3333,
+        cwd: CWD,
+        sessionId: "session-orca-mac-order",
+        agentId: "claude-code",
+        orcaPaneKey: PANE_KEY,
+      });
+      await settle(t);
+      // Exactly one raise: the generic path must not have contributed a second.
+      assert.deepStrictEqual(
+        cli.calls.filter((c) => c.cmd === "/usr/bin/open").map((c) => c.args),
+        [["/Applications/Orca.app"]]
+      );
+      const switchAt = cli.calls.findIndex((c) => c.args.join(" ").startsWith("terminal switch"));
+      const openAt = cli.calls.findIndex((c) => c.cmd === "/usr/bin/open");
+      assert.ok(switchAt >= 0 && openAt > switchAt, JSON.stringify(cli.calls));
+    });
+  });
+
+  it("holds the macOS in-flight guard until the Orca CLI sequence settles", async () => {
+    await withFocus({
+      platform: "darwin",
+      psComm: ORCA_DAEMON_COMM,
+      switchDelayMs: 2000,
+    }, async (t, cli, logs, focus) => {
+      t.orcaHandleCache.clear();
+      const request = (sourcePid, sessionId) => focus.focusTerminalWindow({
+        sourcePid, cwd: CWD, sessionId, agentId: "claude-code", orcaPaneKey: PANE_KEY,
+      });
+      // Counted by `terminal switch`, not `terminal list`: the second request hits the
+      // handle cache the first one populated and never lists at all.
+      const switches = () => cli.switchCalls().length;
+
+      request(3333, "session-orca-mac-first");
+      // Deliberately past MAC_FOCUS_THROTTLE_MS: inside it the throttle would defer
+      // the second request on its own and prove nothing about the in-flight guard.
+      await wait(1700);
+      request(4444, "session-orca-mac-second");
+      await wait(200);
+      assert.strictEqual(switches(), 1, JSON.stringify(cli.calls));
+
+      // A guard that never releases would deadlock the queue, which the assertion
+      // above cannot tell apart from a working one.
+      await wait(1200);
+      assert.strictEqual(switches(), 2, JSON.stringify(cli.calls));
     });
   });
 

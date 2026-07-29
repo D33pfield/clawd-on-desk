@@ -995,11 +995,22 @@ const ORCA_PANE_FOCUS_DELAY_MS = 150;
 const orcaHandleCache = new Map();
 
 function orcaCliCandidates() {
-  // A normal install puts `orca` on PATH; the explicit Windows path covers an
-  // Electron process that started before the installer's PATH entry existed.
+  // A normal install puts `orca` on PATH; the explicit paths cover a GUI-launched
+  // Electron process that never saw a login shell. On Windows that means one started
+  // before the installer's PATH entry existed; on macOS, LaunchServices hands the app
+  // launchd's default PATH (/usr/bin:/bin:/usr/sbin:/sbin), which contains neither
+  // location Orca's installer registers, so PATH alone finds nothing at all.
   const candidates = ["orca"];
-  if (isWin && process.env.LOCALAPPDATA) {
-    candidates.push(path.join(process.env.LOCALAPPDATA, "Programs", "orca", "resources", "bin", "orca.exe"));
+  if (isWin) {
+    if (process.env.LOCALAPPDATA) {
+      candidates.push(path.join(process.env.LOCALAPPDATA, "Programs", "orca", "resources", "bin", "orca.exe"));
+    }
+    return candidates;
+  }
+  if (isMac) {
+    candidates.push("/usr/local/bin/orca");
+    const home = typeof os.homedir === "function" ? os.homedir() : "";
+    if (home) candidates.push(path.join(home, ".local", "bin", "orca"));
   }
   return candidates;
 }
@@ -1859,7 +1870,15 @@ function executeMacFocusRequest(request) {
     if (macQueuedFocusRequest) flushQueuedMacFocus();
   };
 
-  focusTerminalWindowLegacy(request, finalize);
+  // The generic raise resolves its bundle from the source process's `ps` comm, and
+  // Orca packages its terminal daemon inside Orca.app — so for an Orca session it
+  // activates the IDE immediately, before the switch has said which tab (or whether
+  // the pane still exists). `open` also launches Orca, and the daemon outlives its
+  // window, so a sticky key for a dead session would cold-start the IDE on a click.
+  // Hand the raise to the Orca path, which does it only after a confirmed switch.
+  const orcaOwnsRaise = !!request.orcaPaneKey;
+  if (!orcaOwnsRaise) focusTerminalWindowLegacy(request, finalize);
+
   scheduleTerminalTabFocus(request.editor, request.pidChain);
   scheduleITermTabFocus(request.sourcePid, request.pidChain);
   scheduleTmuxPaneFocus(request.pidChain, request.tmuxSocket, request.tmuxClient);
@@ -1869,7 +1888,10 @@ function executeMacFocusRequest(request) {
   // Unlike the siblings above, this one needs no `ps` comm check to know its host:
   // the pane key is only ever set by an Orca-hosted session, and the ten-marker env
   // gate has already rejected the shells that merely inherited it.
-  scheduleOrcaPaneFocus(request.orcaPaneKey, request.cwd);
+  const orcaPane = scheduleOrcaPaneFocus(request.orcaPaneKey, request.cwd);
+  // The guard must span the CLI hops as well as the raise: released early, the next
+  // request starts a second pane switch while this one is still in flight.
+  if (orcaOwnsRaise) orcaPane.then(finalize, finalize);
 }
 
 function scheduleSupersetFocus(sourcePid, cwd) {
