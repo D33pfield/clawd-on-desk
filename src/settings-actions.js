@@ -1725,9 +1725,9 @@ function telegramApprovalTokenInfo(_payload, deps = {}) {
   };
 }
 
-// v0.9.0 migration: native-vs-sidecar transport controller.
+// Telegram approval transport migration controller.
 // All telegramMigration.* commands lock on the same `tgApproval` domain as the
-// legacy approval commands so they can't race against token writes.
+// approval commands so they can't race against token writes.
 function telegramMigrationSnapshot(_payload, deps = {}) {
   if (!deps || !deps.telegramMigration) {
     return { status: "error", message: "telegramMigration.snapshot requires controller dep" };

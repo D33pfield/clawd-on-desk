@@ -604,13 +604,14 @@
     eyebrow.textContent = t("telegramNativeMigrationEyebrow");
     const title = document.createElement("div");
     title.className = "tg-native-migration-gate-title";
-    const nativeUnverified = origin === "native-unverified";
-    title.textContent = t(nativeUnverified
+    const needsNativeReverification = origin === "native-unverified"
+      || origin === "native-verified-repair";
+    title.textContent = t(needsNativeReverification
       ? "telegramNativeReverifyTitle"
       : "telegramLegacyRetiredTitle");
     const body = document.createElement("div");
     body.className = "tg-native-migration-gate-body";
-    body.textContent = t(nativeUnverified
+    body.textContent = t(needsNativeReverification
       ? "telegramNativeReverifyBody"
       : "telegramLegacyRetiredBody");
     wrap.appendChild(eyebrow);

@@ -67,9 +67,25 @@ test("a retired source hidden inside a real app.asar hard-fails", async (t) => {
   }]);
 });
 
-test("a retired executable anywhere under resources hard-fails", (t) => {
+test("a missing app.asar hard-fails instead of silently skipping archive inspection", (t) => {
   const root = tempDir();
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, "icon.ico"), "icon");
+
+  assert.throws(
+    () => inspectRetiredTelegramSidecar({ resourcesRoot: root }),
+    /Required app\.asar does not exist/,
+  );
+});
+
+test("a retired executable anywhere under resources hard-fails", async (t) => {
+  const root = tempDir();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = path.join(root, "source");
+  fs.mkdirSync(source, { recursive: true });
+  fs.writeFileSync(path.join(source, "clean.txt"), "clean");
+  await asar.createPackage(source, path.join(root, "app.asar"));
+  fs.rmSync(source, { recursive: true, force: true });
   const target = path.join(root, "stale", "cc-connect-clawd.exe");
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, "MZ");

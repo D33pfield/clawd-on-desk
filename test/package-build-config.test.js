@@ -34,6 +34,7 @@ describe("package build config", () => {
       const workflow = fs.readFileSync(workflowPath, "utf8");
       assert.match(workflow, /pull_request:/);
       assert.match(workflow, /npm run audit:assets/);
+      assert.match(workflow, /test\/preload-settings\.test\.js/);
       assert.match(workflow, /dist\/repository-asset-audit\/\*\.json/);
       assert.match(
         workflow,

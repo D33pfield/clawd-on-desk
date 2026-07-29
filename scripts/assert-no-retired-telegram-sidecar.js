@@ -55,7 +55,12 @@ function walkFiles(rootDir, currentDir = rootDir, out = []) {
 }
 
 function listAsarFiles(archivePath, asarModule = asar) {
-  if (!fs.existsSync(archivePath)) return [];
+  if (!fs.existsSync(archivePath)) {
+    throw new Error(`Required app.asar does not exist: ${archivePath}`);
+  }
+  if (!fs.statSync(archivePath).isFile()) {
+    throw new Error(`Required app.asar is not a file: ${archivePath}`);
+  }
   return asarModule.listPackage(archivePath)
     .map((entry) => toPosix(entry))
     .filter(Boolean)

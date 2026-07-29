@@ -1959,6 +1959,56 @@ describe("settings renderer browser environment", () => {
     }
   });
 
+  it("uses native re-verification copy when a previously verified setup is repaired", async () => {
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "NATIVE_MIGRATION_REQUIRED",
+                transport: "native",
+                testOrigin: "native-verified-repair",
+                revision: 2,
+                ownerSnapshot: { nativePolling: false },
+              },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "stopped", transport: "native", configured: true, tokenStored: true },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    assert.equal(
+      harness.content.querySelector(".tg-native-migration-gate-title").textContent,
+      "telegramNativeReverifyTitle",
+    );
+    assert.equal(
+      harness.content.querySelector(".tg-native-migration-gate-body").textContent,
+      "telegramNativeReverifyBody",
+    );
+  });
+
   it("refreshes Telegram migration state from the scoped async revision signal", async () => {
     const commandCalls = [];
     let revision = 1;

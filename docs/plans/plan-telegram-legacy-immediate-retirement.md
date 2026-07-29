@@ -1,9 +1,9 @@
 # Telegram legacy transport 立即退役计划
 
-状态：已通过四轮子代理对抗复审（0 must-fix / 0 should-fix），可实现  
-目标版本：v0.14.0  
-基线：`origin/main@04687b96882bf18b54dd34017bb9c137942f478f`  
-实现分支：`feat/telegram-legacy-immediate-retirement`
+- 状态：已通过四轮子代理对抗复审（0 must-fix / 0 should-fix），可实现
+- 目标版本：v0.14.0
+- 基线：`origin/main@04687b96882bf18b54dd34017bb9c137942f478f`
+- 实现分支：`feat/telegram-legacy-immediate-retirement`
 
 ## 1. 决策摘要
 
