@@ -141,9 +141,7 @@ function createRuntime(overrides = {}) {
     getMiniPeekOffset: () => 0,
     getCurrentPixelSize: () => overrides.currentPixelSize || { width: 100, height: 100 },
     getEffectiveCurrentPixelSize: () => overrides.effectivePixelSize || { width: 100, height: 100 },
-    getKeepSizeAcrossDisplays: () => overrides.keepSizeAcrossDisplays || false,
     getAllowEdgePinning: () => overrides.allowEdgePinning || false,
-    isProportionalMode: () => overrides.proportional || false,
     getPrimaryWorkAreaSafe: () => displays[0].workArea,
     getNearestWorkArea: () => displays[0].workArea,
     sendToRenderer: (...args) => calls.push(["sendToRenderer", ...args]),
@@ -2831,6 +2829,125 @@ describe("pet-window-runtime", () => {
     ]);
   });
 
+  for (const handlerName of ["handleDisplayAdded", "handleDisplayMetricsChanged"]) {
+    it(`${handlerName} re-materializes a Linux outer-edge position when that edge becomes an internal seam`, () => {
+      const displays = [{
+        id: 1,
+        bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        workArea: { x: 0, y: 0, width: 1920, height: 1080 },
+      }];
+      const renderWin = makeWindow({ x: 0, y: 700, width: 203, height: 209 });
+      const harness = createRuntime({
+        isWin: false,
+        isLinux: true,
+        displays,
+        renderWin,
+        currentPixelSize: { width: 203, height: 209 },
+        effectivePixelSize: { width: 203, height: 209 },
+      });
+
+      // On one display, x=1768 is a legal logical edge-pinned position but
+      // Mutter must receive x=1717 so the 203px native window remains fully
+      // on-screen. The renderer supplies the remaining 51px viewport offset.
+      harness.runtime.applyPetWindowBounds({
+        x: 1768,
+        y: 700,
+        width: 203,
+        height: 209,
+      });
+      assert.equal(harness.runtime.getViewportOffsetX(), 51);
+      assert.deepEqual(renderWin.bounds, {
+        x: 1717,
+        y: 700,
+        width: 203,
+        height: 209,
+      });
+
+      renderWin.calls.length = 0;
+      harness.hitWin.calls.length = 0;
+      displays.push({
+        id: 2,
+        bounds: { x: 1920, y: 0, width: 1920, height: 1080 },
+        workArea: { x: 1920, y: 0, width: 1920, height: 1080 },
+      });
+
+      harness.runtime[handlerName]();
+
+      assert.equal(harness.runtime.getViewportOffsetX(), 0);
+      assert.deepEqual(harness.runtime.getPetWindowBounds(), {
+        x: 1768,
+        y: 700,
+        width: 203,
+        height: 209,
+      });
+      assert.deepEqual(
+        renderWin.calls.filter((call) => call[0] === "setBounds"),
+        [["setBounds", { x: 1768, y: 700, width: 203, height: 209 }]]
+      );
+      assert.deepEqual(
+        harness.hitWin.calls.find((call) => call[0] === "setBounds"),
+        ["setBounds", { x: 1768, y: 700, width: 203, height: 209 }]
+      );
+    });
+  }
+
+  it("handleDisplayRemoved re-materializes a Linux internal-seam position when that seam becomes an outer edge", () => {
+    const displays = [{
+      id: 1,
+      bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+      workArea: { x: 0, y: 0, width: 1920, height: 1080 },
+    }, {
+      id: 2,
+      bounds: { x: 1920, y: 0, width: 1920, height: 1080 },
+      workArea: { x: 1920, y: 0, width: 1920, height: 1080 },
+    }];
+    const renderWin = makeWindow({ x: 0, y: 700, width: 203, height: 209 });
+    const harness = createRuntime({
+      isWin: false,
+      isLinux: true,
+      displays,
+      renderWin,
+      currentPixelSize: { width: 203, height: 209 },
+      effectivePixelSize: { width: 203, height: 209 },
+    });
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768,
+      y: 700,
+      width: 203,
+      height: 209,
+    });
+    assert.equal(harness.runtime.getViewportOffsetX(), 0);
+    assert.deepEqual(renderWin.bounds, {
+      x: 1768,
+      y: 700,
+      width: 203,
+      height: 209,
+    });
+
+    renderWin.calls.length = 0;
+    harness.hitWin.calls.length = 0;
+    displays.pop();
+
+    harness.runtime.handleDisplayRemoved();
+
+    assert.equal(harness.runtime.getViewportOffsetX(), 51);
+    assert.deepEqual(harness.runtime.getPetWindowBounds(), {
+      x: 1768,
+      y: 700,
+      width: 203,
+      height: 209,
+    });
+    assert.deepEqual(
+      renderWin.calls.filter((call) => call[0] === "setBounds"),
+      [["setBounds", { x: 1717, y: 700, width: 203, height: 209 }]]
+    );
+    assert.deepEqual(
+      harness.hitWin.calls.find((call) => call[0] === "setBounds"),
+      ["setBounds", { x: 1768, y: 700, width: 152, height: 209 }]
+    );
+  });
+
   it("snaps the pet back to the frozen size when live bounds drift on display-metrics-changed (#408)", () => {
     // Windows sleep/wake can resize the pet without moving it (DPI flux).
     // Even when the clamped position is unchanged, the runtime must re-apply
@@ -2840,8 +2957,6 @@ describe("pet-window-runtime", () => {
       renderWin,
       effectivePixelSize: { width: 100, height: 100 },
       currentPixelSize: { width: 100, height: 100 },
-      keepSizeAcrossDisplays: true,
-      proportional: true,
     });
 
     harness.runtime.handleDisplayMetricsChanged();
@@ -2852,15 +2967,13 @@ describe("pet-window-runtime", () => {
   });
 
   it("leaves the pet alone when live bounds already match the frozen size and no clamp is needed (#408)", () => {
-    // Regression guard for the sizeDrifted branch: in steady state we must
-    // not write bounds unnecessarily.
+    // Regression guard for the sizeDrifted behavior: in steady state the
+    // topology refresh must not issue an unnecessary native bounds write.
     const renderWin = makeWindow({ x: 200, y: 100, width: 100, height: 100 });
     const harness = createRuntime({
       renderWin,
       effectivePixelSize: { width: 100, height: 100 },
       currentPixelSize: { width: 100, height: 100 },
-      keepSizeAcrossDisplays: true,
-      proportional: true,
     });
 
     harness.runtime.handleDisplayMetricsChanged();

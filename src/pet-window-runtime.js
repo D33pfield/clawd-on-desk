@@ -130,9 +130,7 @@ function createPetWindowRuntime(options = {}) {
   const getMiniPeekOffset = options.getMiniPeekOffset || (() => 0);
   const getCurrentPixelSize = options.getCurrentPixelSize || (() => null);
   const getEffectiveCurrentPixelSize = options.getEffectiveCurrentPixelSize || getCurrentPixelSize;
-  const getKeepSizeAcrossDisplays = options.getKeepSizeAcrossDisplays || (() => false);
   const getAllowEdgePinning = options.getAllowEdgePinning || (() => false);
-  const isProportionalMode = options.isProportionalMode || (() => false);
   const sendToRenderer = options.sendToRenderer || noop;
   const keepOutOfTaskbar = options.keepOutOfTaskbar || noop;
   const repositionSessionHud = options.repositionSessionHud || noop;
@@ -453,9 +451,8 @@ function createPetWindowRuntime(options = {}) {
   // getPetWindowBounds()'s null-on-dead-window contract is load-bearing and
   // MUST NOT change: src/roam.js:104-105, src/tick.js:236-238 and
   // src/pet-interaction-ipc.js:121-124 all depend on this null to no-op
-  // gracefully, and pet-window-runtime.js's own handleDisplayMetricsChanged()
-  // reads `current.x` with no null-check of its own, relying entirely on this
-  // guard.
+  // gracefully. Topology re-materialization also treats this null as a no-op
+  // instead of trying to recover geometry from a dead render window.
   //
   // Position now comes from the stored logical bounds (I1/I2): once
   // applyPetWindowBounds() has adopted a target, that target — not whatever
@@ -2283,6 +2280,29 @@ function createPetWindowRuntime(options = {}) {
     repositionAnchoredSurfaces();
   }
 
+  function rematerializePetAfterTopologyChange() {
+    const current = getPetWindowBounds();
+    if (!current) return;
+    const size = getEffectiveCurrentPixelSize();
+    const clamped = clampToScreenVisual(current.x, current.y, size.width, size.height);
+
+    // Only mini transitions defer topology changes: mini caches its workArea
+    // for an animation and has an explicit pending-topology consumer at each
+    // exit. Normal drag/roam/Settings preview have no equivalent hand-off, so
+    // skipping the event could leave this mapping stale indefinitely.
+    // syncHitWin() retains its own drag/pointer-capture guard, and the apply
+    // below skips a native write whenever the physical rect is unchanged.
+    //
+    // Topology can change the logical -> physical mapping even when neither
+    // the logical clamp nor the live window size changes. In particular, a
+    // Linux outer edge can become an internal seam after a display is added:
+    // the old physical clamp/viewport offset must then be cleared. Always
+    // refresh the materialization snapshot; applyPetWindowBounds() already
+    // skips the native setBounds() call when the physical rect is unchanged.
+    applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
+    syncHitWin();
+  }
+
   function handleDisplayMetricsChanged() {
     invalidateDisplaysCache();
     // PR #751 second-review C-4 (Codex B4): all three topology events now
@@ -2322,19 +2342,11 @@ function createPetWindowRuntime(options = {}) {
       handleMiniDisplayChange();
       return;
     }
-    const current = getPetWindowBounds();
-    const size = getEffectiveCurrentPixelSize();
-    const clamped = clampToScreenVisual(current.x, current.y, size.width, size.height);
-    const proportionalRecalc = isProportionalMode() && !getKeepSizeAcrossDisplays();
-    // #408: also re-apply when the live size drifted from the effective size — a
-    // Windows sleep/wake can resize the window without moving it, and keepSize
-    // must snap it back to the frozen size even when no position clamp is needed.
-    const sizeDrifted = current.width !== size.width || current.height !== size.height;
-    if (proportionalRecalc || sizeDrifted || clamped.x !== current.x || clamped.y !== current.y) {
-      applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
-      syncHitWin();
-      repositionAnchoredSurfaces();
-    }
+    // #408 remains covered by the unconditional logical re-materialization:
+    // a Windows sleep/wake size drift is snapped back to the effective size,
+    // while a fully unchanged physical rect still avoids a native write.
+    rematerializePetAfterTopologyChange();
+    repositionAnchoredSurfaces();
   }
 
   function handleDisplayRemoved() {
@@ -2363,11 +2375,7 @@ function createPetWindowRuntime(options = {}) {
       exitMiniMode();
       return;
     }
-    const current = getPetWindowBounds();
-    const size = getEffectiveCurrentPixelSize();
-    const clamped = clampToScreenVisual(current.x, current.y, size.width, size.height);
-    applyPetWindowBounds({ ...clamped, width: size.width, height: size.height });
-    syncHitWin();
+    rematerializePetAfterTopologyChange();
     repositionAnchoredSurfaces();
   }
 
@@ -2391,6 +2399,8 @@ function createPetWindowRuntime(options = {}) {
         notifyMiniTopologyChangedDuringTransition();
       } else if (getMiniMode()) {
         handleMiniDisplayChange();
+      } else {
+        rematerializePetAfterTopologyChange();
       }
     }
     repositionAnchoredSurfaces();
