@@ -20,6 +20,9 @@ const { resolveHookAgentId } = require("./server-agent-id");
 const { isOpencodeFamily } = require("../agents/opencode-family");
 const { resolveSessionIdentity } = require("./session-key");
 const {
+  assessSessionAutomationIdentity,
+} = require("./session-automation-identity");
+const {
   INTERACTION_INTENT,
   classifyPermissionInteraction,
   isDecisionInteraction,
@@ -140,15 +143,24 @@ function normalizeTmuxClient(value) {
   return /^[\w./:-]+$/.test(text) ? text : null;
 }
 
+function normalizeOrcaPaneKey(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > 256) return null;
+  return /^[\w-]+:[\w-]+$/.test(text) ? text : null;
+}
+
 function normalizePositiveInteger(value) {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
 }
 
-function applyTmuxSessionOptions(options, data) {
+function applyTerminalSessionOptions(options, data) {
   const tmuxSocket = normalizeTmuxSocket(data.tmux_socket);
   const tmuxClient = normalizeTmuxClient(data.tmux_client);
+  const orcaPaneKey = normalizeOrcaPaneKey(data.orca_pane_key);
   if (tmuxSocket) options.tmuxSocket = tmuxSocket;
   if (tmuxClient) options.tmuxClient = tmuxClient;
+  if (orcaPaneKey) options.orcaPaneKey = orcaPaneKey;
 }
 
 function buildCodexPermissionSessionOptions(data) {
@@ -166,7 +178,7 @@ function buildCodexPermissionSessionOptions(data) {
   if (sourcePid) options.sourcePid = sourcePid;
   if (agentPid) options.agentPid = agentPid;
   if (pidChain && pidChain.length) options.pidChain = pidChain;
-  applyTmuxSessionOptions(options, data);
+  applyTerminalSessionOptions(options, data);
   const cwd = normalizeString(data.cwd);
   const host = normalizeString(data.host);
   const platform = normalizeString(data.platform);
@@ -194,7 +206,7 @@ function buildQwenCodePermissionSessionOptions(data) {
   if (sourcePid) options.sourcePid = sourcePid;
   if (agentPid) options.agentPid = agentPid;
   if (pidChain && pidChain.length) options.pidChain = pidChain;
-  applyTmuxSessionOptions(options, data);
+  applyTerminalSessionOptions(options, data);
   const cwd = normalizeString(data.cwd);
   const host = normalizeString(data.host);
   const platform = normalizeString(data.platform);
@@ -217,7 +229,7 @@ function buildCopilotPermissionSessionOptions(data) {
   if (sourcePid) options.sourcePid = sourcePid;
   if (agentPid) options.agentPid = agentPid;
   if (pidChain && pidChain.length) options.pidChain = pidChain;
-  applyTmuxSessionOptions(options, data);
+  applyTerminalSessionOptions(options, data);
   const cwd = normalizeString(data.cwd);
   const host = normalizeString(data.host);
   if (cwd) options.cwd = cwd;
@@ -236,7 +248,7 @@ function buildHermesPermissionSessionOptions(data) {
   if (sourcePid) options.sourcePid = sourcePid;
   if (agentPid) options.agentPid = agentPid;
   if (pidChain && pidChain.length) options.pidChain = pidChain;
-  applyTmuxSessionOptions(options, data);
+  applyTerminalSessionOptions(options, data);
   const cwd = normalizeString(data.cwd);
   if (cwd) options.cwd = cwd;
   const editor = normalizeString(data.editor);
@@ -323,6 +335,16 @@ function tryRemoteOnlyApproval(ctx, fields) {
   res.on("close", abortHandler);
   addPendingPermission(ctx, permEntry);
 
+  if (typeof ctx.maybeAutoResolveSessionPermission === "function") {
+    try {
+      if (ctx.maybeAutoResolveSessionPermission(permEntry, { sessionOnly: true })) {
+        return { handled: true, resolution: "session-automation" };
+      }
+    } catch (err) {
+      ctx.permLog(`session automation check failed (remote-only): ${err && err.message ? err.message : err}`);
+    }
+  }
+
   let started = false;
   if (typeof ctx.maybeStartRemoteApproval === "function") {
     try {
@@ -336,19 +358,22 @@ function tryRemoteOnlyApproval(ctx, fields) {
   if (!started) {
     removePendingPermission(ctx, permEntry, "remote-only-approval-unavailable");
     res.removeListener("close", abortHandler);
-    return false;
+    return { handled: false, resolution: "unhandled" };
   }
 
   // Only after a remote client actually took the request: a card is on its
   // way, so the pet's PermissionRequest notification animation has something
   // to announce. Playing it before the `started` check meant a no-op flash
   // when Telegram wasn't available and the caller fell back to res.destroy().
-  ctx.updateSession(fields.sessionId, "notification", "PermissionRequest", { agentId: fields.agentId });
+  ctx.updateSession(fields.sessionId, "notification", "PermissionRequest", {
+    agentId: fields.agentId,
+    sessionAutomationIdentity: fields.sessionAutomationIdentity,
+  });
   if (typeof ctx.syncPermissionShortcuts === "function") {
     try { ctx.syncPermissionShortcuts(); } catch {}
   }
   ctx.permLog(`permission bubbles disabled, routed to Telegram-only approval: tool=${fields.toolName} session=${fields.sessionId}`);
-  return true;
+  return { handled: true, resolution: "remote" };
 }
 
 function startRemoteApproval(ctx, permEntry) {
@@ -435,6 +460,19 @@ function handlePermissionPost(req, res, options) {
     const trustedDisplayHost = remoteProfile && typeof remoteProfile.displayHost === "string"
       ? remoteProfile.displayHost
       : null;
+    const sessionAutomationIdentity = assessSessionAutomationIdentity({
+      agentId,
+      channel: "permission",
+      event: data.hook_event_name || data.event || "PermissionRequest",
+      // This must stay the original wire value. In particular, do not feed the
+      // "default" fallbacks below back into the eligibility decision.
+      rawSessionId: data.session_id,
+      profileId: trustedProfileId,
+      hookSource: data.hook_source,
+      codexOriginator: data.codex_originator,
+      codexSource: data.codex_source,
+      agentPid: normalizePositiveInteger(data.agent_pid),
+    });
     const resolvePermissionSession = (value, fallback) =>
       resolveSessionIdentity(value, trustedProfileId, fallback);
     const remoteSessionFields = (sessionIdentity) => trustedProfileId === "local"
@@ -538,6 +576,7 @@ function handlePermissionPost(req, res, options) {
           resolvedSuggestion: null,
           createdAt: Date.now(),
           interaction,
+          sessionAutomationIdentity,
           // Public identity field — generic consumers (focus, logging, remote
           // approval, disable-agent sweep) key off it; never replace it with a
           // family-specific field (plan §3.5).
@@ -557,6 +596,7 @@ function handlePermissionPost(req, res, options) {
         // mutating session state — so working/thinking is preserved for resolve.
         ctx.updateSession(sessionId, "notification", "PermissionRequest", {
           agentId,
+          sessionAutomationIdentity,
           ...remoteSessionFields(sessionIdentity),
         });
         ctx.permLog(`${agentId} showing bubble: tool=${toolName} session=${sessionId}`);
@@ -626,6 +666,7 @@ function handlePermissionPost(req, res, options) {
           : buildToolInputFingerprint(rawInput);
         const codexSessionOptions = {
           ...buildCodexPermissionSessionOptions(data),
+          sessionAutomationIdentity,
           ...remoteSessionFields(sessionIdentity),
         };
 
@@ -688,6 +729,7 @@ function handlePermissionPost(req, res, options) {
           resolvedSuggestion: null,
           createdAt: Date.now(),
           interaction,
+          sessionAutomationIdentity,
           agentId: "codex",
           isCodex: true,
           sourcePid: codexSessionOptions.sourcePid || null,
@@ -696,6 +738,7 @@ function handlePermissionPost(req, res, options) {
           pidChain: codexSessionOptions.pidChain || null,
           tmuxSocket: codexSessionOptions.tmuxSocket || null,
           tmuxClient: codexSessionOptions.tmuxClient || null,
+          orcaPaneKey: codexSessionOptions.orcaPaneKey || null,
           host: codexSessionOptions.host || null,
           platform: codexSessionOptions.platform || null,
           model: codexSessionOptions.model || null,
@@ -751,6 +794,7 @@ function handlePermissionPost(req, res, options) {
           : buildToolInputFingerprint(rawInput);
         const qwenSessionOptions = {
           ...buildQwenCodePermissionSessionOptions(data),
+          sessionAutomationIdentity,
           ...remoteSessionFields(sessionIdentity),
         };
 
@@ -800,6 +844,7 @@ function handlePermissionPost(req, res, options) {
           resolvedSuggestion: null,
           createdAt: Date.now(),
           interaction,
+          sessionAutomationIdentity,
           agentId: "qwen-code",
           isQwenCode: true,
           sourcePid: qwenSessionOptions.sourcePid || null,
@@ -808,6 +853,7 @@ function handlePermissionPost(req, res, options) {
           pidChain: qwenSessionOptions.pidChain || null,
           tmuxSocket: qwenSessionOptions.tmuxSocket || null,
           tmuxClient: qwenSessionOptions.tmuxClient || null,
+          orcaPaneKey: qwenSessionOptions.orcaPaneKey || null,
           host: qwenSessionOptions.host || null,
           platform: qwenSessionOptions.platform || null,
           model: qwenSessionOptions.model || null,
@@ -870,6 +916,7 @@ function handlePermissionPost(req, res, options) {
           : buildToolInputFingerprint(rawInput);
         const copilotSessionOptions = {
           ...buildCopilotPermissionSessionOptions(data),
+          sessionAutomationIdentity,
           ...remoteSessionFields(sessionIdentity),
         };
 
@@ -919,6 +966,7 @@ function handlePermissionPost(req, res, options) {
           resolvedSuggestion: null,
           createdAt: Date.now(),
           interaction,
+          sessionAutomationIdentity,
           agentId: "copilot-cli",
           isCopilotCli: true,
           sourcePid: copilotSessionOptions.sourcePid || null,
@@ -927,6 +975,7 @@ function handlePermissionPost(req, res, options) {
           pidChain: copilotSessionOptions.pidChain || null,
           tmuxSocket: copilotSessionOptions.tmuxSocket || null,
           tmuxClient: copilotSessionOptions.tmuxClient || null,
+          orcaPaneKey: copilotSessionOptions.orcaPaneKey || null,
           host: copilotSessionOptions.host || null,
         };
         // Closed connection => no-decision (NOT deny). Phase 0 §4.2:
@@ -1042,6 +1091,7 @@ function handlePermissionPost(req, res, options) {
           const elicitationInput = elicitation.displayInput;
           const hermesSessionOptions = {
             ...buildHermesPermissionSessionOptions(data),
+            sessionAutomationIdentity,
             ...remoteSessionFields(sessionIdentity),
           };
           ctx.permLog(`HERMES ELICITATION: tool=${toolName} session=${sessionId}`);
@@ -1063,6 +1113,7 @@ function handlePermissionPost(req, res, options) {
             resolvedSuggestion: null,
             createdAt: Date.now(),
             interaction,
+            sessionAutomationIdentity,
             isElicitation: true,
             isHermes: true,
             agentId: "hermes",
@@ -1072,6 +1123,7 @@ function handlePermissionPost(req, res, options) {
             pidChain: hermesSessionOptions.pidChain || null,
             tmuxSocket: hermesSessionOptions.tmuxSocket || null,
             tmuxClient: hermesSessionOptions.tmuxClient || null,
+            orcaPaneKey: hermesSessionOptions.orcaPaneKey || null,
             editor: hermesSessionOptions.editor || null,
           };
           const abortHandler = () => {
@@ -1107,6 +1159,7 @@ function handlePermissionPost(req, res, options) {
         // General permission request
         const hermesSessionOptions = {
           ...buildHermesPermissionSessionOptions(data),
+          sessionAutomationIdentity,
           ...remoteSessionFields(sessionIdentity),
         };
         ctx.permLog(`HERMES PERMISSION: tool=${toolName} session=${sessionId}`);
@@ -1127,6 +1180,7 @@ function handlePermissionPost(req, res, options) {
           resolvedSuggestion: null,
           createdAt: Date.now(),
           interaction,
+          sessionAutomationIdentity,
           isHermes: true,
           agentId: "hermes",
           cwd: hermesSessionOptions.cwd || "",
@@ -1135,6 +1189,7 @@ function handlePermissionPost(req, res, options) {
           pidChain: hermesSessionOptions.pidChain || null,
           tmuxSocket: hermesSessionOptions.tmuxSocket || null,
           tmuxClient: hermesSessionOptions.tmuxClient || null,
+          orcaPaneKey: hermesSessionOptions.orcaPaneKey || null,
           editor: hermesSessionOptions.editor || null,
         };
         const abortHandler = () => {
@@ -1231,6 +1286,13 @@ function handlePermissionPost(req, res, options) {
         return;
       }
 
+      if (shouldBypassCCSubagentBubble(ctx, interaction, permAgentId, hookIdentity)) {
+        recordRequestHookEvent.accepted();
+        ctx.permLog(`${permAgentId} subagent bubbles disabled → destroy connection, chat fallback (tool=${toolName} subagent=${subagentType || subagentId})`);
+        res.destroy();
+        return;
+      }
+
       if (shouldBypassCCBubble(ctx, interaction, permAgentId)) {
         recordRequestHookEvent.accepted();
         // "Permission bubbles disabled" (the global/local toggle) only means
@@ -1242,25 +1304,19 @@ function handlePermissionPost(req, res, options) {
         const agentGateOff = typeof ctx.isAgentPermissionsEnabled === "function"
           && !ctx.isAgentPermissionsEnabled(permAgentId);
         if (!agentGateOff && !arePermissionBubblesEnabled(ctx)) {
-          const started = tryRemoteOnlyApproval(ctx, {
+          const remoteOnlyResult = tryRemoteOnlyApproval(ctx, {
             res, sessionId, toolName, toolInput, toolUseId, toolInputFingerprint,
             agentId: permAgentId, subagentId, subagentType, suggestions, interaction,
+            sessionAutomationIdentity,
             ...remoteSessionFields(sessionIdentity),
           });
-          if (started) return;
+          if (remoteOnlyResult.handled) return;
           ctx.permLog(`permission bubbles disabled, no remote approval available → destroy connection, chat fallback (tool=${toolName})`);
           res.destroy();
           return;
         }
         const reason = agentGateOff ? `${permAgentId} bubbles disabled` : "permission bubbles disabled";
         ctx.permLog(`${reason} → destroy connection, chat fallback (tool=${toolName})`);
-        res.destroy();
-        return;
-      }
-
-      if (shouldBypassCCSubagentBubble(ctx, interaction, permAgentId, hookIdentity)) {
-        recordRequestHookEvent.accepted();
-        ctx.permLog(`${permAgentId} subagent bubbles disabled → destroy connection, chat fallback (tool=${toolName} subagent=${subagentType || subagentId})`);
         res.destroy();
         return;
       }
@@ -1290,6 +1346,7 @@ function handlePermissionPost(req, res, options) {
         ctx.permLog(`ELICITATION: tool=${toolName} session=${sessionId}`);
         ctx.updateSession(sessionId, "notification", "Elicitation", {
           agentId: permAgentId,
+          sessionAutomationIdentity,
           ...remoteSessionFields(sessionIdentity),
         });
 
@@ -1309,6 +1366,7 @@ function handlePermissionPost(req, res, options) {
           resolvedSuggestion: null,
           createdAt: Date.now(),
           interaction,
+          sessionAutomationIdentity,
           isElicitation: true,
           agentId: permAgentId,
           subagentId,
@@ -1359,6 +1417,7 @@ function handlePermissionPost(req, res, options) {
         resolvedSuggestion: null,
         createdAt: Date.now(),
         interaction,
+        sessionAutomationIdentity,
         agentId: permAgentId,
         subagentId,
         subagentType,
@@ -1380,6 +1439,7 @@ function handlePermissionPost(req, res, options) {
       // mutating session state — so working/thinking is preserved for resolve.
       ctx.updateSession(sessionId, "notification", "PermissionRequest", {
         agentId: permAgentId,
+        sessionAutomationIdentity,
         ...remoteSessionFields(sessionIdentity),
       });
 

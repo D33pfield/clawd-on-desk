@@ -274,7 +274,34 @@ describe("server-route-permission POST", () => {
       const entry = res.ctx.pendingPermissions[0];
       assert.strictEqual(isValidInteraction(entry.interaction), true, agentId);
       assert.strictEqual(entry.interaction.intent, INTERACTION_INTENT.TOOL_APPROVAL, agentId);
+      assert.strictEqual(entry.sessionAutomationIdentity.eligible, false, agentId);
+      assert.strictEqual(Object.isFrozen(entry.sessionAutomationIdentity), true, agentId);
+      assert.deepStrictEqual(
+        res.ctx.calls.updateSession.at(-1)[3].sessionAutomationIdentity,
+        entry.sessionAutomationIdentity,
+        `${agentId} permission identity must reach the main-owned session path`
+      );
     }
+  });
+
+  it("uses the raw permission session id and ignores sender eligibility claims", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "default",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      sessionAutomationEligible: true,
+    }));
+
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    assert.deepStrictEqual(
+      res.ctx.pendingPermissions[0].sessionAutomationIdentity,
+      { eligible: false, reason: "placeholder-session-id" }
+    );
+    assert.deepStrictEqual(
+      res.ctx.calls.updateSession[0][3].sessionAutomationIdentity,
+      { eligible: false, reason: "placeholder-session-id" }
+    );
   });
 
   it("runs ordinary CodeBuddy tools, including Hermes-only clarify names, through auto-tools end to end", async () => {
@@ -517,11 +544,13 @@ describe("server-route-permission POST", () => {
       pid_chain: [789, 456, -1],
       tmux_socket: "/tmp/tmux-1000/work",
       tmux_client: "/dev/pts/7",
+      orca_pane_key: "8ce1fff7-tab:9813824b-leaf",
       cwd: "/repo",
       platform: "webui",
       model: "gpt-5.4",
       codex_originator: "Codex Desktop",
       codex_source: "vscode",
+      hook_source: "codex-official",
     }));
 
     assert.strictEqual(res.statusCode, null);
@@ -535,6 +564,7 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(entry.pidChain, [789, 456]);
     assert.strictEqual(entry.tmuxSocket, "/tmp/tmux-1000/work");
     assert.strictEqual(entry.tmuxClient, "/dev/pts/7");
+    assert.strictEqual(entry.orcaPaneKey, "8ce1fff7-tab:9813824b-leaf");
     assert.strictEqual(entry.cwd, "/repo");
     assert.strictEqual(entry.platform, "webui");
     assert.strictEqual(entry.model, "gpt-5.4");
@@ -552,16 +582,47 @@ describe("server-route-permission POST", () => {
         pidChain: [789, 456],
         tmuxSocket: "/tmp/tmux-1000/work",
         tmuxClient: "/dev/pts/7",
+        orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
         cwd: "/repo",
         platform: "webui",
         model: "gpt-5.4",
         codexOriginator: "Codex Desktop",
         codexSource: "vscode",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "unsupported-codex-session-source",
+        },
       },
     ]]);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
     assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [entry]);
     assert.deepStrictEqual(res.ctx.calls.addPendingPermission, [entry]);
+  });
+
+  it("keeps every permission focus entry carrying the same terminal identity fields", () => {
+    // The test above covers the shared applyTerminalSessionOptions and the Codex
+    // entry. The qwen, copilot and two hermes entries are hand-copied versions of
+    // that same object, so dropping one field from one of them kills Orca tab
+    // focus for that agent without failing any behavioural test. Assert the
+    // replication directly rather than duplicating four whole bubble tests.
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const lines = fs
+      .readFileSync(path.join(__dirname, "..", "src", "server-route-permission.js"), "utf8")
+      .split("\n");
+
+    const sites = [];
+    lines.forEach((line, idx) => {
+      if (/tmuxClient: \w+SessionOptions\.tmuxClient \|\| null,/.test(line)) sites.push(idx);
+    });
+    assert.ok(sites.length >= 5, `expected at least 5 focus-entry sites, found ${sites.length}`);
+    for (const idx of sites) {
+      assert.match(
+        lines.slice(idx + 1, idx + 3).join("\n"),
+        /orcaPaneKey: \w+SessionOptions\.orcaPaneKey \|\| null,/,
+        `focus entry at src/server-route-permission.js:${idx + 1} does not carry orcaPaneKey`
+      );
+    }
   });
 
   it("returns no-decision for headless Codex sessions before auto-pilot can allow", async () => {
@@ -627,7 +688,13 @@ describe("server-route-permission POST", () => {
       localSessionKey("opencode:s1"),
       "notification",
       "PermissionRequest",
-      { agentId: "opencode" },
+      {
+        agentId: "opencode",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "permission-session-association-not-authoritative",
+        },
+      },
     ]]);
     assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["accepted"]);
   });
@@ -907,7 +974,13 @@ describe("server-route-permission POST", () => {
       localSessionKey("sid"),
       "notification",
       "PermissionRequest",
-      { agentId: "claude-code" },
+      {
+        agentId: "claude-code",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "identity-verification-required",
+        },
+      },
     ]]);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
     assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [entry]);
@@ -1022,8 +1095,48 @@ describe("server-route-permission POST", () => {
       localSessionKey("sid"),
       "notification",
       "PermissionRequest",
-      { agentId: "claude-code" },
+      {
+        agentId: "claude-code",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "identity-verification-required",
+        },
+      },
     ]]);
+  });
+
+  it("resolves a remote-only entry from the session override before sending a remote card", async () => {
+    let sawSessionOnly = false;
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "sid",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_use_id: "tool-session-auto",
+    }), {
+      ctx: {
+        hideBubbles: true,
+        maybeAutoResolveSessionPermission(entry, options) {
+          assert.strictEqual(this.pendingPermissions.includes(entry), true);
+          assert.deepStrictEqual(options, { sessionOnly: true });
+          sawSessionOnly = true;
+          this.resolvePermissionEntry(entry, "allow", "session automation");
+          this.removePendingPermission(entry, "resolved-by-session-automation");
+          entry.res.writeHead(200);
+          entry.res.end("allow");
+          return true;
+        },
+        maybeStartRemoteApproval: () => {
+          throw new Error("remote client must not run after session automation");
+        },
+      },
+    });
+
+    assert.strictEqual(sawSessionOnly, true);
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body, "allow");
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.updateSession, []);
   });
 
   it("keeps trusted remote profile metadata on Telegram-only approval entries", async () => {
@@ -1364,6 +1477,10 @@ describe("server-route-permission POST", () => {
         pidChain: [9999, 1234],
         cwd: "D:/repo",
         host: "devbox",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "session-lifecycle-not-authoritative",
+        },
       },
     ]]);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
@@ -1575,6 +1692,10 @@ describe("server-route-permission POST", () => {
         pidChain: [9999, 1234],
         cwd: "/home/user/repo",
         editor: "cursor",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "session-lifecycle-not-authoritative",
+        },
       },
     ]]);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
@@ -1609,6 +1730,10 @@ describe("server-route-permission POST", () => {
         agentId: "hermes",
         cwd: "/home/user/repo",
         agentPid: 5678,
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "session-lifecycle-not-authoritative",
+        },
       },
     ]]);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
@@ -1692,7 +1817,13 @@ describe("server-route-permission POST — CC subagent requests (#451)", () => {
       localSessionKey("sid"),
       "notification",
       "PermissionRequest",
-      { agentId: "claude-code" },
+      {
+        agentId: "claude-code",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "identity-verification-required",
+        },
+      },
     ]]);
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
   });
@@ -1745,6 +1876,25 @@ describe("server-route-permission POST — CC subagent requests (#451)", () => {
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
     assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
     assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["accepted"]);
+  });
+
+  it("checks the subagent gate before the remote-only path", async () => {
+    const remoteCalls = [];
+    const res = await callPermissionPost(subagentBody(), {
+      ctx: {
+        hideBubbles: true,
+        isAgentSubagentPermissionsEnabled: () => false,
+        maybeStartRemoteApproval: (entry) => {
+          remoteCalls.push(entry);
+          return true;
+        },
+      },
+    });
+
+    assert.strictEqual(res.destroyed, true);
+    assert.deepStrictEqual(remoteCalls, []);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
   });
 
   it("keeps bubbling main-thread requests while the subagent sub-gate is off", async () => {

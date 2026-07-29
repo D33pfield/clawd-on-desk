@@ -25,7 +25,7 @@ const {
   readHostPrefix,
   applyWslSourceFields,
 } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 // PERMISSION_HTTP_TIMEOUT_MS is the internal Clawd /permission HTTP timeout.
 // It MUST stay strictly below `permissionRequest` hook `timeoutSec * 1000` so
@@ -287,6 +287,7 @@ function buildPermissionBody(payload, resolve, options = {}) {
     const readHost = options.readHostPrefix || readHostPrefix;
     body.host = readHost();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body);
   } else if (typeof resolve === "function") {
     const { stablePid, agentPid, pidChain, tmuxSocket, tmuxClient } = resolve();
     if (stablePid) body.source_pid = stablePid;
@@ -294,6 +295,7 @@ function buildPermissionBody(payload, resolve, options = {}) {
     if (Array.isArray(pidChain) && pidChain.length) body.pid_chain = pidChain;
     if (tmuxSocket) body.tmux_socket = tmuxSocket;
     if (tmuxClient) body.tmux_client = tmuxClient;
+    applyOrcaPaneKey(body);
     applyWslSourceFields(body);
   } else {
     applyWslSourceFields(body);
@@ -377,6 +379,7 @@ function buildStateBody(event, payload, resolve, options = {}) {
     const readHost = options.readHostPrefix || readHostPrefix;
     body.host = readHost();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body);
   } else {
     applyWslSourceFields(body);
     const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
@@ -386,6 +389,7 @@ function buildStateBody(event, payload, resolve, options = {}) {
     if (pidChain.length) body.pid_chain = pidChain;
     if (tmuxSocket) body.tmux_socket = tmuxSocket;
     if (tmuxClient) body.tmux_client = tmuxClient;
+    applyOrcaPaneKey(body);
   }
 
   return body;

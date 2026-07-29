@@ -10,7 +10,7 @@
 
 const crypto = require("crypto");
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;
@@ -120,6 +120,9 @@ function shouldResolvePid(hookName, env = process.env) {
 }
 
 function applyLocalProcessFields(body, pidMeta) {
+  // Before the pidMeta gate: the pane key comes from the environment, so it has
+  // to survive the events where shouldResolvePid skips the process snapshot.
+  applyOrcaPaneKey(body);
   if (!pidMeta || typeof pidMeta !== "object") return;
   if (Number.isFinite(pidMeta.stablePid) && pidMeta.stablePid > 0) body.source_pid = Math.floor(pidMeta.stablePid);
   if (pidMeta.detectedEditor) body.editor = pidMeta.detectedEditor;
@@ -173,6 +176,7 @@ function buildStateBody(hookName, payload, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
   } else {
     applyWslSourceFields(body);
     applyLocalProcessFields(body, options.pidMeta);

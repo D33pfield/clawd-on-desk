@@ -4,7 +4,7 @@
 // CodeBuddy uses Claude Code-compatible hook format with identical event names.
 
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 // CodeBuddy hook event → { state, event } for the Clawd state machine
 const HOOK_MAP = {
@@ -91,6 +91,7 @@ readStdinJson()
     if (process.env.CLAWD_REMOTE) {
       body.host = readHostPrefix();
       applyWslSourceFields(body, { remote: true });
+      applyOrcaPaneKey(body);
     } else {
       applyWslSourceFields(body);
       body.source_pid = stablePid;
@@ -99,6 +100,7 @@ readStdinJson()
       if (pidChain.length) body.pid_chain = pidChain;
       if (tmuxSocket) body.tmux_socket = tmuxSocket;
       if (tmuxClient) body.tmux_client = tmuxClient;
+      applyOrcaPaneKey(body);
     }
 
     // Answer CodeBuddy immediately so it never sees empty stdout, but don't

@@ -7,7 +7,7 @@
 // Clawd only observes state for the desktop pet animation.
 
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 const EVENT_TO_STATE = {
   SessionStart: "idle",
@@ -97,6 +97,7 @@ readStdinJson()
     if (remote) {
       body.host = host;
       applyWslSourceFields(body, { remote: true });
+      applyOrcaPaneKey(body);
     } else {
       applyWslSourceFields(body);
       const { stablePid, agentPid, detectedEditor, pidChain } = resolve();
@@ -104,6 +105,7 @@ readStdinJson()
       if (detectedEditor) body.editor = detectedEditor;
       if (Number.isFinite(agentPid) && agentPid > 0) body.agent_pid = Math.floor(agentPid);
       if (Array.isArray(pidChain) && pidChain.length) body.pid_chain = pidChain;
+      applyOrcaPaneKey(body);
     }
 
     // For Stop: delay the POST so PostToolUse's POST arrives at the server first

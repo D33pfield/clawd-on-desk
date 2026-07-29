@@ -77,6 +77,7 @@ function update(api, o = {}) {
       cwd: o.cwd || "/tmp",
       editor: o.editor || null,
       pidChain: o.pidChain || null,
+      orcaPaneKey: o.orcaPaneKey ?? null,
       agentPid: o.agentPid ?? null,
       agentId: o.agentId || "claude-code",
       profileId: o.profileId,
@@ -102,6 +103,9 @@ function update(api, o = {}) {
       sessionCronsCount: o.sessionCronsCount ?? 0,
       stopHookActive: o.stopHookActive ?? false,
       transientPermissionEvent: o.transientPermissionEvent === true,
+      sessionAutomationIdentity: o.sessionAutomationIdentity ?? null,
+      subagentId: o.subagentId ?? null,
+      subagentType: o.subagentType ?? null,
     },
   );
 }
@@ -879,6 +883,26 @@ describe("cleanStaleSessions()", () => {
     assert.strictEqual(api.sessions.size, 0);
   });
 
+  it("clears the exact session automation identity before stale deletion", () => {
+    const lifecycle = [];
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set()),
+      onSessionAutomationLifecycleEnd: (payload) => lifecycle.push(payload),
+    }));
+    api.sessions.set("s1", rawSession("working", {
+      agentId: "claude-code",
+      agentPid: 9999,
+      pidReachable: true,
+    }));
+    api.cleanStaleSessions();
+    assert.deepStrictEqual(lifecycle, [{
+      agentId: "claude-code",
+      sessionId: "s1",
+      reason: "stale-delete-agent-exit",
+    }]);
+    assert.strictEqual(api.sessions.size, 0);
+  });
+
   it("empty-session return rests on the user-selected idle visual", () => {
     const changes = [];
     api = require("../src/state")(makeCtx({
@@ -1079,6 +1103,35 @@ describe("updateSession()", () => {
     assert.strictEqual(api.sessions.get("new1").state, "working");
   });
 
+  it("stores only a normalized route-owned session automation assessment", () => {
+    update(api, {
+      id: "automation-identity",
+      sessionAutomationIdentity: {
+        eligible: false,
+        reason: "  placeholder-session-id  ",
+        senderControlledExtra: true,
+      },
+    });
+
+    const stored = api.sessions.get("automation-identity").sessionAutomationIdentity;
+    assert.deepStrictEqual(stored, {
+      eligible: false,
+      reason: "placeholder-session-id",
+    });
+    assert.strictEqual(Object.isFrozen(stored), true);
+
+    update(api, {
+      id: "automation-identity",
+      event: "PostToolUse",
+      sessionAutomationIdentity: { eligible: "yes", reason: "malformed" },
+    });
+    assert.deepStrictEqual(
+      api.sessions.get("automation-identity").sessionAutomationIdentity,
+      { eligible: false, reason: "invalid-route-assessment" },
+      "malformed internal input must fail closed instead of preserving eligibility"
+    );
+  });
+
   // #627 safety net: the pid-snapshot cache omits pid_chain on cache-hit events,
   // relying on updateSession MERGING (keeping the last pidChain) rather than
   // OVERWRITING it to null. If a future refactor flips this to overwrite, the
@@ -1207,6 +1260,34 @@ describe("updateSession()", () => {
     assert.ok(!api.sessions.has("s1"));
   });
 
+  it("clears session automation before a main SessionEnd but not a subagent lifecycle event", () => {
+    api.cleanup();
+    const lifecycle = [];
+    api = require("../src/state")(makeCtx({
+      onSessionAutomationLifecycleEnd: (payload) => lifecycle.push(payload),
+    }));
+    update(api, { id: "main", agentId: "claude-code", state: "working" });
+    update(api, {
+      id: "main",
+      agentId: "claude-code",
+      state: "sleeping",
+      event: "SessionEnd",
+    });
+    update(api, { id: "sub", agentId: "claude-code", state: "working" });
+    update(api, {
+      id: "sub",
+      agentId: "claude-code",
+      state: "sleeping",
+      event: "SessionEnd",
+      subagentId: "child-1",
+    });
+    assert.deepStrictEqual(lifecycle, [{
+      agentId: "claude-code",
+      sessionId: "main",
+      reason: "session-end",
+    }]);
+  });
+
   it("dismissSession removes only Clawd bookkeeping for that session", () => {
     update(api, { id: "s1", state: "working" });
     update(api, { id: "s2", state: "thinking" });
@@ -1219,9 +1300,79 @@ describe("updateSession()", () => {
   });
 
   it("PermissionRequest → notification state, no session creation", () => {
-    update(api, { id: "perm1", state: "notification", event: "PermissionRequest" });
+    update(api, {
+      id: "perm1",
+      state: "notification",
+      event: "PermissionRequest",
+      sessionAutomationIdentity: { eligible: true, reason: "eligible" },
+    });
     assert.ok(!api.sessions.has("perm1"));
     assert.strictEqual(api.getCurrentState(), "notification");
+  });
+
+  it("PermissionRequest refreshes identity only on an existing same-agent session", () => {
+    update(api, {
+      id: "perm-existing",
+      state: "working",
+      event: "PreToolUse",
+      agentId: "claude-code",
+    });
+    const existing = api.sessions.get("perm-existing");
+    existing.startupRecovered = true;
+    assert.strictEqual(existing.sessionAutomationIdentity, null);
+
+    update(api, {
+      id: "perm-existing",
+      state: "notification",
+      event: "PermissionRequest",
+      agentId: "claude-code",
+      sessionAutomationIdentity: { eligible: true, reason: "eligible" },
+    });
+
+    assert.strictEqual(api.sessions.get("perm-existing").state, "working");
+    assert.strictEqual(api.sessions.get("perm-existing").startupRecovered, true);
+    assert.deepStrictEqual(
+      api.sessions.get("perm-existing").sessionAutomationIdentity,
+      { eligible: true, reason: "eligible" }
+    );
+
+    update(api, {
+      id: "perm-existing",
+      state: "notification",
+      event: "PermissionRequest",
+      agentId: "claude-code",
+      sessionAutomationIdentity: { eligible: false, reason: "placeholder-session-id" },
+    });
+    assert.deepStrictEqual(
+      api.sessions.get("perm-existing").sessionAutomationIdentity,
+      { eligible: false, reason: "placeholder-session-id" },
+      "a later fail-closed route assessment must replace stale eligibility"
+    );
+  });
+
+  it("PermissionRequest never writes an identity across an agent collision", () => {
+    update(api, {
+      id: "shared-session-id",
+      state: "working",
+      event: "PreToolUse",
+      agentId: "codex",
+      sessionAutomationIdentity: { eligible: false, reason: "codex-unverified" },
+    });
+
+    update(api, {
+      id: "shared-session-id",
+      state: "notification",
+      event: "PermissionRequest",
+      agentId: "claude-code",
+      sessionAutomationIdentity: { eligible: true, reason: "eligible" },
+    });
+
+    const session = api.sessions.get("shared-session-id");
+    assert.strictEqual(session.agentId, "codex");
+    assert.deepStrictEqual(
+      session.sessionAutomationIdentity,
+      { eligible: false, reason: "codex-unverified" }
+    );
   });
 
   it("Codex user-input request flashes notification while preserving session state", () => {
@@ -1331,6 +1482,137 @@ describe("updateSession()", () => {
     assert.strictEqual(session.wtHwnd, "123456");
     const entry = api.getLastSessionSnapshot().sessions.find((item) => item.id === "s1");
     assert.strictEqual(entry.wtHwnd, "123456");
+  });
+
+  it("keeps the Orca pane key sticky across later events that omit it", () => {
+    // Remote bodies never carry the pane key and some agents post state without
+    // the process-metadata block at all, so a later event without it must not
+    // blank the key or focus loses the pane.
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "UserPromptSubmit",
+      sourcePid: 100,
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    update(api, { id: "s1", state: "working", event: "PreToolUse", sourcePid: 100 });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "PreToolUse",
+      sourcePid: 100,
+      orcaPaneKey: "tab-2:leaf-2",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-2:leaf-2");
+  });
+
+  it("drops a stale Orca pane key when the session restarts in another terminal", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "UserPromptSubmit",
+      sourcePid: 100,
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    // Resuming the same session id from a different terminal posts a SessionStart
+    // whose env has no pane key. Keeping the old one would raise Orca instead of
+    // the terminal the agent actually moved to, and the pane key outranks the
+    // wt_hwnd that would have been correct.
+    update(api, { id: "s1", state: "idle", event: "SessionStart", sourcePid: 200, wtHwnd: "4660" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, null);
+    assert.strictEqual(api.sessions.get("s1").wtHwnd, "4660");
+
+    // A SessionStart that does carry one still wins.
+    update(api, {
+      id: "s1",
+      state: "idle",
+      event: "SessionStart",
+      sourcePid: 300,
+      orcaPaneKey: "tab-9:leaf-9",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-9:leaf-9");
+  });
+
+  it("drops a stale Orca pane key on every spelling of a session start", () => {
+    // Producers do not agree on the name: copilot-hook.js posts its raw argv name
+    // "sessionStart" and kiro-hook.js posts "agentSpawn". Matching only
+    // "SessionStart" left both able to keep a stale key indefinitely, and Kiro is
+    // the worst case — its stdin carries no session id, so every session merges
+    // into "default" and the key would never be cleared at all.
+    for (const event of ["SessionStart", "sessionStart", "agentSpawn"]) {
+      update(api, {
+        id: "s1",
+        state: "thinking",
+        event: "UserPromptSubmit",
+        sourcePid: 100,
+        orcaPaneKey: "tab-1:leaf-1",
+      });
+      assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+      update(api, { id: "s1", state: "idle", event, sourcePid: 200, wtHwnd: "4660" });
+      assert.strictEqual(api.sessions.get("s1").orcaPaneKey, null, `${event} must clear the pane key`);
+    }
+  });
+
+  it("drops a stale Orca pane key when a producer with no session-start event moves terminal", () => {
+    // antigravity-hook.js posts none of the three session-start spellings, so the
+    // event-name rule never fires for it and a pane key outlived its pane forever.
+    // Its id normalizes payload.conversationId, so resuming the same conversation
+    // from another terminal lands back on this same entry.
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "agentMessage",
+      sourcePid: 100,
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    update(api, { id: "s1", state: "working", event: "agentMessage", sourcePid: 200, wtHwnd: "4660" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, null);
+    assert.strictEqual(api.sessions.get("s1").sourcePid, 200);
+    assert.strictEqual(api.sessions.get("s1").wtHwnd, "4660");
+  });
+
+  it("drops a stale Orca pane key when only the terminal window handle changes", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "agentMessage",
+      sourcePid: 100,
+      wtHwnd: "1111",
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    update(api, { id: "s1", state: "working", event: "agentMessage", sourcePid: 100, wtHwnd: "2222" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, null);
+  });
+
+  it("keeps the Orca pane key when a later event carries no new terminal identity", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "agentMessage",
+      sourcePid: 100,
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+
+    // Most events omit the process-metadata block entirely; treating "absent" as
+    // "changed" would blank the key on the very next event and undo the feature.
+    update(api, { id: "s1", state: "working", event: "agentMessage" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    // Producers are not consistent about the wire type of the pid, and a bare
+    // !== would read 100 and "100" as two different terminals.
+    update(api, { id: "s1", state: "working", event: "agentMessage", sourcePid: "100" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
   });
 
   it("keeps Ghostty terminal id sticky and allows focus-only metadata updates", () => {
@@ -2438,6 +2720,7 @@ describe("buildSessionSnapshot", () => {
       lastSessionId: null,
       lastTitle: null,
       accountQuota: [],
+      sessionAutomationOrphans: [],
     });
     assert.doesNotThrow(() => JSON.stringify(snapshot));
   });
