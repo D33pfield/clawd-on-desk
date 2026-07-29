@@ -218,6 +218,12 @@ test("direct send copies fallback when the mapped session is no longer live", as
 test("direct send never focuses remote, headless, sleeping, or permission-pending sessions", async () => {
   const blocked = [
     localTerminalEntry({ id: "remote", host: "server" }),
+    localTerminalEntry({
+      id: "remote-orca",
+      host: "server",
+      sourcePid: null,
+      orcaPaneKey: "tab-remote:leaf-remote",
+    }),
     localTerminalEntry({ id: "headless", headless: true }),
     localTerminalEntry({ id: "sleeping", state: "sleeping" }),
     localTerminalEntry({ id: "permission", state: "notification" }),

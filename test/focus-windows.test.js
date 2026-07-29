@@ -381,6 +381,56 @@ describe("Windows terminal focus", () => {
     }
   });
 
+  it("raises and switches an Orca-managed SSH pane without a local source PID", async () => {
+    const calls = [];
+    const writes = [];
+    const stdout = new EventEmitter();
+    stdout.setEncoding = () => {};
+    stdout.unref = () => {};
+    const { initFocus, cleanup } = loadFocusWithMock({
+      execFile: (cmd, args, opts, cb) => {
+        if (typeof opts === "function") cb = opts;
+        calls.push({ cmd, args: [...(args || [])] });
+        const joined = (args || []).join(" ");
+        if (joined.startsWith("terminal list")) {
+          return cb(null, JSON.stringify({
+            ok: true,
+            result: { terminals: [{ handle: "term_remote", tabId: "tab-remote", leafId: "leaf-remote" }] },
+          }), "");
+        }
+        if (joined.startsWith("terminal switch")) return cb(null, JSON.stringify({ ok: true }), "");
+        return cb(null, "", "");
+      },
+      spawn: () => ({
+        pid: 9996,
+        stdin: { writable: true, write: (chunk) => writes.push(String(chunk)), on() {} },
+        stdout,
+        on() {},
+        unref() {},
+        kill() {},
+      }),
+    });
+
+    try {
+      const focus = initFocus({ focusLog: () => {} });
+      focus.initFocusHelper();
+      writes.length = 0;
+      focus.focusTerminalWindow({
+        cwd: "/remote/worktree",
+        sessionId: "remote:session-orca-win",
+        agentId: "codex",
+        orcaPaneKey: "tab-remote:leaf-remote",
+      });
+      await new Promise((resolve) => setTimeout(resolve, focus.__test.ORCA_PANE_FOCUS_DELAY_MS + 250));
+
+      assert.match(writes.join(""), /\$orcaHosted = \$true/);
+      assert.match(writes.join(""), /\$focusCacheSourcePid = \[int64\]0/);
+      assert.equal(calls.filter((c) => c.args.join(" ").startsWith("terminal switch")).length, 1);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("reaches the Orca pane switch from the Windows focus dispatch", async () => {
     const calls = [];
     const stdout = new EventEmitter();

@@ -542,6 +542,7 @@ function buildStateBody(event, payload, resolve) {
     // separate metadata. Do NOT override the SSH host.
     body.host = readHostPrefix();
     if (wslDistro) body.wsl_distro = wslDistro;
+    applyOrcaPaneKey(body);
   } else {
     // #627/#634: the per-session pid cache + lifecycle orchestration now lives
     // in the shared resolver (hooks/shared-process.js). This hook is the Claude

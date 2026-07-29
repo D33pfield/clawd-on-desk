@@ -314,6 +314,7 @@ function buildPermissionBody(payload, resolve) {
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body);
   } else {
     applyWslSourceFields(body);
     applyLocalProcessFields(body, resolve, {
@@ -382,6 +383,7 @@ function buildStateBody(payload, resolve) {
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body);
   } else {
     applyWslSourceFields(body);
     applyLocalProcessFields(body, resolve, {

@@ -1924,7 +1924,7 @@ function getFocusableLocalHudSessionIds() {
 }
 
 function focusTerminalSession(session, sessionId, requestSource) {
-  if (!session || !session.sourcePid) return false;
+  if (!session || (!session.sourcePid && !session.orcaPaneKey)) return false;
   return focusTerminalWindow({
     sourcePid: session.sourcePid,
     wtHwnd: session.wtHwnd,

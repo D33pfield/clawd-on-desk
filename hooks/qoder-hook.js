@@ -176,6 +176,7 @@ function buildStateBody(hookName, payload, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
   } else {
     applyWslSourceFields(body);
     applyLocalProcessFields(body, options.pidMeta);

@@ -491,6 +491,7 @@ function buildStateBody(event, payload, resolve) {
   if (process.env.CLAWD_REMOTE) {
     body.host = readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body);
   } else {
     applyWslSourceFields(body);
     const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();

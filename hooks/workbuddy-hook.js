@@ -181,6 +181,7 @@ function run() {
 
       if (process.env.CLAWD_REMOTE) {
         body.host = readHostPrefix();
+        applyOrcaPaneKey(body);
       } else {
         body.source_pid = stablePid;
         if (detectedEditor) body.editor = detectedEditor;

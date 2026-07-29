@@ -97,6 +97,7 @@ readStdinJson()
     if (remote) {
       body.host = host;
       applyWslSourceFields(body, { remote: true });
+      applyOrcaPaneKey(body);
     } else {
       applyWslSourceFields(body);
       const { stablePid, agentPid, detectedEditor, pidChain } = resolve();

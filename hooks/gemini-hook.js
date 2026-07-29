@@ -97,13 +97,14 @@ function buildStateBody(hookName, payload, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
     return body;
   }
   applyWslSourceFields(body);
 
   // Before the pidMeta gate: the pane key comes from the environment, so it has
   // to survive the events where shouldResolvePid skips the process snapshot.
-  applyOrcaPaneKey(body);
+  applyOrcaPaneKey(body, options.env);
 
   const pidMeta = options.pidMeta;
   if (!pidMeta || typeof pidMeta !== "object") return body;
@@ -124,6 +125,7 @@ function sendHookEvent(payload, argvEvent, deps = {}) {
   const body = buildStateBody(hookName, payload, {
     remote,
     host: remote && deps.readHostPrefix ? deps.readHostPrefix() : undefined,
+    env,
     pidMeta: shouldResolvePid(hookName, env)
       ? (deps.resolvePid ? deps.resolvePid() : undefined)
       : undefined,

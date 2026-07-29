@@ -155,6 +155,15 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
     assert.strictEqual(orcaPaneKeyFromEnv({ TERM_PROGRAM: "tmux", ORCA_PANE_KEY: PANE_KEY }), null);
     assert.strictEqual(orcaPaneKeyFromEnv({ TERM_PROGRAM: "Orca", ORCA_PANE_KEY: "junk" }), null);
     assert.strictEqual(orcaPaneKeyFromEnv({ TERM_PROGRAM: "Orca" }), null);
+    assert.strictEqual(orcaPaneKeyFromEnv({
+      CLAWD_REMOTE: "1",
+      CLAWD_SSH_REMOTE: "1",
+      ORCA_PANE_KEY: PANE_KEY,
+    }), PANE_KEY);
+    assert.strictEqual(orcaPaneKeyFromEnv({
+      CLAWD_REMOTE: "1",
+      ORCA_PANE_KEY: PANE_KEY,
+    }), null);
     assert.strictEqual(orcaPaneKeyFromEnv({}), null);
     assert.strictEqual(orcaPaneKeyFromEnv(null), null);
   });
@@ -176,6 +185,12 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
     // carry a stale key. tmux >= 3.2 also sets TERM_PROGRAM=tmux, which the
     // TERM_PROGRAM check rejects on its own.
     assert.ok(NESTED_TERMINAL_ENV.includes("TMUX"));
+    assert.strictEqual(orcaPaneKeyFromEnv({
+      CLAWD_REMOTE: "1",
+      CLAWD_SSH_REMOTE: "1",
+      ORCA_PANE_KEY: PANE_KEY,
+      TMUX: "/tmp/tmux.sock,1,0",
+    }), null);
   });
 
   it("adds orca_pane_key to a body only when the env supplies one", () => {
@@ -225,6 +240,37 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
       }
     }
     assert.deepStrictEqual(missing, [], "focus-capable producers missing orca_pane_key");
+  });
+
+  it("is copied before every focus-capable producer leaves through its remote branch", () => {
+    const fs = require("fs");
+    const hooksDir = path.join(__dirname, "..", "hooks");
+    const files = fs.readdirSync(hooksDir)
+      .filter((name) => name.endsWith("-hook.js"))
+      .map((name) => path.join(hooksDir, name))
+      .filter((file) => /["']?pid_chain["']?\s*[:=]/.test(fs.readFileSync(file, "utf8")));
+    const missing = [];
+    let checked = 0;
+
+    for (const file of files) {
+      const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
+      for (let i = 0; i < lines.length; i++) {
+        if (!/^\s*if \((?:process\.env\.CLAWD_REMOTE|options\.remote|remote)\) \{\s*$/.test(lines[i])) continue;
+        const nearby = lines.slice(i, i + 8);
+        if (!nearby.some((line) => /body\.host\s*=/.test(line))) continue;
+        checked += 1;
+        const boundary = nearby.findIndex((line, offset) =>
+          offset > 0 && (/^\s*\}\s*else\b/.test(line) || /^\s*return body;\s*$/.test(line))
+        );
+        const branch = nearby.slice(0, boundary >= 0 ? boundary + 1 : nearby.length).join("\n");
+        if (!/applyOrcaPaneKey\s*\(\s*body\b/.test(branch)) {
+          missing.push(`${path.basename(file)}:${i + 1}`);
+        }
+      }
+    }
+
+    assert.ok(checked >= 18, `expected all remote body branches, checked ${checked}`);
+    assert.deepStrictEqual(missing, [], "remote focus producers drop ORCA_PANE_KEY");
   });
 });
 
@@ -440,11 +486,16 @@ describe("Orca CLI discovery", () => {
     }
   });
 
-  it("adds the registered install locations off Windows", () => {
+  it("adds Homebrew and app-bundled install locations on macOS", () => {
     withFocus({ platform: "darwin" }, (t) => {
       const candidates = t.orcaCliCandidates();
       assert.strictEqual(candidates[0], "orca");
+      assert.ok(candidates.includes("/opt/homebrew/bin/orca"));
       assert.ok(candidates.includes("/usr/local/bin/orca"));
+      assert.ok(candidates.includes("/Applications/Orca.app/Contents/Resources/bin/orca"));
+      assert.ok(candidates.includes(path.join(
+        os.homedir(), "Applications", "Orca.app", "Contents", "Resources", "bin", "orca"
+      )));
       assert.ok(candidates.includes(path.join(os.homedir(), ".local", "bin", "orca")));
     });
   });
@@ -615,10 +666,16 @@ describe("scheduleOrcaPaneFocus", () => {
     const prev = process.env.LOCALAPPDATA;
     delete process.env.LOCALAPPDATA;
     try {
-      // Every candidate has to be absent. The darwin list is PATH plus Orca's two
-      // registered install locations, so leaving one reachable makes this fixture
+      // Every candidate has to be absent. Leaving one reachable makes this fixture
       // exercise a successful switch under a name that claims the opposite.
-      const noOrcaAnywhere = ["orca", "/usr/local/bin/orca", path.join(os.homedir(), ".local", "bin", "orca")];
+      const noOrcaAnywhere = [
+        "orca",
+        "/opt/homebrew/bin/orca",
+        "/usr/local/bin/orca",
+        "/Applications/Orca.app/Contents/Resources/bin/orca",
+        path.join(os.homedir(), "Applications", "Orca.app", "Contents", "Resources", "bin", "orca"),
+        path.join(os.homedir(), ".local", "bin", "orca"),
+      ];
       await withFocus({ platform: "darwin", missingBinaries: noOrcaAnywhere }, async (t, cli, logs) => {
         t.orcaHandleCache.clear();
         t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
@@ -860,6 +917,25 @@ describe("Orca focus wiring", () => {
     });
   });
 
+  it("focuses an Orca-managed SSH pane on macOS without a local source PID", async () => {
+    await withFocus({ platform: "darwin" }, async (t, cli, logs, focus) => {
+      t.orcaHandleCache.clear();
+      focus.focusTerminalWindow({
+        cwd: "/remote/worktree",
+        sessionId: "remote:session-orca-mac",
+        agentId: "codex",
+        orcaPaneKey: PANE_KEY,
+      });
+      await settle(t);
+      assert.strictEqual(cli.switchCalls().length, 1, JSON.stringify(cli.calls));
+      assert.deepStrictEqual(
+        cli.calls.filter((c) => c.cmd === "/usr/bin/open").map((c) => c.args),
+        [["/Applications/Orca.app"]]
+      );
+      assert.ok(!logs.some((l) => l.includes("reason=no-source-pid")), logs.join("|"));
+    });
+  });
+
   // The three tests below drive the public path with `ps` reporting the packaged
   // daemon, which is the fixture the suite was missing: without psComm the generic
   // raise finds no bundle and silently skips `open`, hiding the ordering entirely.
@@ -944,6 +1020,7 @@ describe("Orca focus wiring", () => {
     const sites = [
       ["src/main.js", "if (entry.orcaPaneKey) focusEntry.orcaPaneKey = entry.orcaPaneKey;"],
       ["src/main.js", "orcaPaneKey: session.orcaPaneKey,"],
+      ["src/main.js", "if (!session || (!session.sourcePid && !session.orcaPaneKey)) return false;"],
       ["src/permission.js", "if (perm.orcaPaneKey) focusEntry.orcaPaneKey = perm.orcaPaneKey;"],
       ["src/state-session-snapshot.js", "orcaPaneKey: (session && session.orcaPaneKey) || null,"],
     ];

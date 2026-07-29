@@ -1008,7 +1008,15 @@ function orcaCliCandidates() {
     return candidates;
   }
   if (isMac) {
-    candidates.push("/usr/local/bin/orca");
+    // Homebrew's prefix is /opt/homebrew on Apple Silicon and /usr/local on
+    // Intel. LaunchServices does not add either one to a Finder-launched app's
+    // PATH, so both must be explicit. The official cask also bundles the CLI
+    // inside Orca.app; that path covers direct DMG installs and a cask whose
+    // bin symlink is missing or stale.
+    candidates.push("/opt/homebrew/bin/orca", "/usr/local/bin/orca");
+    for (const appPath of orcaMacAppCandidates()) {
+      candidates.push(path.join(appPath, "Contents", "Resources", "bin", "orca"));
+    }
     const home = typeof os.homedir === "function" ? os.homedir() : "";
     if (home) candidates.push(path.join(home, ".local", "bin", "orca"));
   }
@@ -1796,11 +1804,14 @@ function flushQueuedMacFocus() {
   executeMacFocusRequest(nextRequest);
 }
 
-function getMacFocusRequestKey(sourcePid, pidChain) {
-  const chain = Array.isArray(pidChain)
-    ? pidChain.filter(p => Number.isFinite(p) && p > 0).join(",")
+function getMacFocusRequestKey(request) {
+  if (!request) return "";
+  if (request.sessionId) return `${request.agentId || "agent"}|${request.sessionId}`;
+  if (request.orcaPaneKey) return `orca|${request.orcaPaneKey}`;
+  const chain = Array.isArray(request.pidChain)
+    ? request.pidChain.filter(p => Number.isFinite(p) && p > 0).join(",")
     : "";
-  return `${sourcePid || ""}|${chain}`;
+  return `${request.sourcePid || ""}|${chain}`;
 }
 
 function getWindowsFocusRequestKey(request) {
@@ -2089,7 +2100,7 @@ function captureGhosttyTerminalId(sourcePidOrRequest, callback) {
 function requestMacFocus(request) {
   const elapsed = Date.now() - macFocusLastRunAt;
   const inCooldown = elapsed < MAC_FOCUS_THROTTLE_MS;
-  const key = getMacFocusRequestKey(request.sourcePid, request.pidChain);
+  const key = getMacFocusRequestKey(request);
   if (inCooldown && macFocusLastRequestKey === key) return "dropped-duplicate";
 
   request = { ...request, key };
@@ -2113,7 +2124,11 @@ function requestMacFocus(request) {
 function focusTerminalWindow(sourcePidOrRequest, cwd, editor, pidChain, meta) {
   const request = normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta);
   logFocusRequest(request);
-  if (!request.sourcePid) {
+  // A local source PID is the authority for every traditional terminal path.
+  // Orca is the one exception: its pane key names a local IDE pane even when
+  // the agent process itself runs through Orca's SSH PTY on another host.
+  const paneOnlyOrcaFocus = !!request.orcaPaneKey && (isMac || isWin);
+  if (!request.sourcePid && !paneOnlyOrcaFocus) {
     logFocusResult("branch=none reason=no-source-pid");
     return normalizeFocusResultPayload({ reason: "no-source-pid" });
   }
@@ -2209,7 +2224,10 @@ function focusTerminalWindowLegacy(request, onDone) {
   const cwd = request.cwd;
   const pidChain = request.pidChain;
 
-  if (!sourcePid) {
+  // Windows can raise Orca by its own process name without walking from the
+  // agent PID. macOS pane-only focus is raised by raiseOrcaMacWindow after a
+  // successful switch; every other legacy path still requires a local PID.
+  if (!sourcePid && !(isWin && request.orcaPaneKey)) {
     if (onDone) onDone();
     return false;
   }
@@ -2285,7 +2303,7 @@ function focusTerminalWindowLegacy(request, onDone) {
 
   // Windows: send command to persistent PowerShell process (near-instant)
   const titleCandidates = buildWindowsTitleCandidates(request, cwdCandidates);
-  const cmd = makeFocusCmd(sourcePid, titleCandidates, buildFocusCacheKey(request), request.wtHwnd, request.focusToken, cwdCandidates, !!request.orcaPaneKey);
+  const cmd = makeFocusCmd(sourcePid || 0, titleCandidates, buildFocusCacheKey(request), request.wtHwnd, request.focusToken, cwdCandidates, !!request.orcaPaneKey);
   if (psProc && psProc.stdin.writable) {
     psProc.stdin.write(cmd + "\n");
     return true;

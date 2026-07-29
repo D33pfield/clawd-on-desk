@@ -261,13 +261,13 @@ function buildStateBody(hookName, payload, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
     return body;
   }
   applyWslSourceFields(body);
   // Before the pidMeta gate, not after: the pane key comes from the environment
   // and owes nothing to the process walk, so it must survive the events where
-  // shouldResolvePid skips the snapshot entirely. Still inside the local branch —
-  // a remote session must never carry a local pane key.
+  // shouldResolvePid skips the snapshot entirely.
   applyOrcaPaneKey(body, options.env);
 
   const pidMeta = options.pidMeta;
@@ -305,13 +305,13 @@ function buildPermissionBody(hookName, payload, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
     return body;
   }
   applyWslSourceFields(body);
   // Before the pidMeta gate, not after: the pane key comes from the environment
   // and owes nothing to the process walk, so it must survive the events where
-  // shouldResolvePid skips the snapshot entirely. Still inside the local branch —
-  // a remote session must never carry a local pane key.
+  // shouldResolvePid skips the snapshot entirely.
   applyOrcaPaneKey(body, options.env);
 
   const pidMeta = options.pidMeta;

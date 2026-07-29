@@ -396,18 +396,24 @@ describe("state-session-snapshot builder", () => {
     const snapshot = buildSessionSnapshot(new Map([
       ["terminal", session("working", { sourcePid: 123 })],
       ["webui", session("working", { sourcePid: 456, platform: "webui" })],
+      ["remote-orca", session("working", {
+        host: "remote-box",
+        orcaPaneKey: "tab-remote:leaf-remote",
+      })],
       ["codex:019e115a-4df2-7ed0-b90e-8e6345aca777", session("working", {
         agentId: "codex",
         codexOriginator: "codex_work_desktop",
         codexSource: "vscode",
       })],
-    ]));
+    ]), { focusHostPlatform: "darwin" });
 
     const byId = new Map(snapshot.sessions.map((entry) => [entry.id, entry]));
     assert.strictEqual(byId.get("terminal").canFocus, true);
     assert.deepStrictEqual(byId.get("terminal").focusTarget, { type: "terminal", url: null });
     assert.strictEqual(byId.get("webui").canFocus, false);
     assert.strictEqual(byId.get("webui").focusTarget, null);
+    assert.strictEqual(byId.get("remote-orca").canFocus, true);
+    assert.deepStrictEqual(byId.get("remote-orca").focusTarget, { type: "terminal", url: null });
     assert.strictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").canFocus, true);
     assert.deepStrictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").focusTarget, {
       type: "codex-thread",

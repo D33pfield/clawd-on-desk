@@ -44,6 +44,7 @@ readStdinJson()
     if (process.env.CLAWD_REMOTE) {
       body.host = readHostPrefix();
       applyWslSourceFields(body, { remote: true });
+      applyOrcaPaneKey(body);
     } else {
       applyWslSourceFields(body);
       body.source_pid = stablePid;

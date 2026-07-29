@@ -287,6 +287,7 @@ function buildPermissionBody(payload, resolve, options = {}) {
     const readHost = options.readHostPrefix || readHostPrefix;
     body.host = readHost();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body);
   } else if (typeof resolve === "function") {
     const { stablePid, agentPid, pidChain, tmuxSocket, tmuxClient } = resolve();
     if (stablePid) body.source_pid = stablePid;
@@ -378,6 +379,7 @@ function buildStateBody(event, payload, resolve, options = {}) {
     const readHost = options.readHostPrefix || readHostPrefix;
     body.host = readHost();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body);
   } else {
     applyWslSourceFields(body);
     const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
