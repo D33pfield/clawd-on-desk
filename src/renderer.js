@@ -437,6 +437,7 @@ let _roamHeadingLeft = false; // current walk direction; roam visuals are drawn 
 let _inMiniMode = false;
 let _miniPreEntryMode = false;
 let _viewportOffsetY = 0;
+let _viewportOffsetX = 0;
 
 function setViewportOffset(offsetY) {
   const next = Number.isFinite(offsetY) ? Math.max(0, Math.round(offsetY)) : 0;
@@ -447,6 +448,28 @@ function setViewportOffset(offsetY) {
     applyObjectScaleStyle(pendingNext, getObjectSvgName(pendingNext), currentState);
   }
   refreshAccessoryLayout();
+}
+
+// Issue #690: Linux outer-edge X offset. Deliberately the mirror image of
+// setViewportOffset() above in every way that matters — this is
+// composite-only. It must NOT call applyObjectScaleStyle() or
+// refreshAccessoryLayout(), and must NOT touch any element's `left`/`bottom` —
+// those are the Y-offset layout hot path (plan §4.4 point 4), and re-entering
+// it per X-offset update is exactly the per-frame stall #690's plan warns
+// about for mini's future animation entry point. #pet-container (this
+// function's only target) is the real screen-space layer the plan's DOM
+// layering puts the signed X translate on: `#pet-clip` (unmoved, carries the
+// internal-seam clip-path) -> `#pet-container` (this translate) ->
+// `#pet-facing-stage` (carries the separate mini-left mirror `scale: -1 1`,
+// src/styles.css). Because the flip lives on the child, not this element,
+// the translate here is never re-signed by it, and every descendant —
+// current/pending media, accessory, effect/particle, Cloudling pointer bridge
+// — inherits the shift for free by being painted inside the translated box.
+function setViewportOffsetX(offsetX) {
+  const next = Number.isFinite(offsetX) ? Math.round(offsetX) : 0;
+  if (next === _viewportOffsetX) return;
+  _viewportOffsetX = next;
+  if (container) container.style.translate = `${_viewportOffsetX}px 0`;
 }
 
 function shouldApplyMiniAssetFlip(state) {
@@ -515,6 +538,10 @@ window.electronAPI.onThemeConfig((newConfig) => {
 
 window.electronAPI.onViewportOffset((offsetY) => {
   setViewportOffset(offsetY);
+});
+
+window.electronAPI.onViewportOffsetX((offsetX) => {
+  setViewportOffsetX(offsetX);
 });
 
 // ── Pet color tint ──

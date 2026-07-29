@@ -826,9 +826,7 @@ const petWindowRuntime = createPetWindowRuntime({
   getMiniPeekOffset: () => _mini.PEEK_OFFSET,
   getCurrentPixelSize: () => getCurrentPixelSize(),
   getEffectiveCurrentPixelSize: (workArea) => getEffectiveCurrentPixelSize(workArea),
-  getKeepSizeAcrossDisplays: () => keepSizeAcrossDisplaysCached,
   getAllowEdgePinning: () => allowEdgePinningCached,
-  isProportionalMode: () => isProportionalMode(),
   getPrimaryWorkAreaSafe: () => getPrimaryWorkAreaSafe(),
   getNearestWorkArea,
   sendToRenderer,
@@ -850,9 +848,20 @@ const petWindowRuntime = createPetWindowRuntime({
   scheduleHwndRecovery: () => scheduleHwndRecovery(),
   cloakInspector: _cloakInspector,
   isMiniAnimating: () => _mini.getIsAnimating(),
+  // Issue #690 plan §4.3.10's fourth reconcile protection period (lazy-bound
+  // like isMiniAnimating above — _roam is constructed after petWindowRuntime,
+  // but this closure isn't invoked until well after module load finishes).
+  isRoamAnimating: () => _roam.isRoamAnimating(),
   isNearWorkAreaEdge: (bounds) => isNearWorkAreaEdge(bounds),
   flushRuntimeStateToPrefs: () => flushRuntimeStateToPrefs(),
   handleMiniDisplayChange: () => _mini.handleDisplayChange(),
+  // Issue #690 plan §4.5 point 4.5-4: handleDisplayMetricsChanged() used to
+  // silently swallow topology changes that land mid-mini-transition (the
+  // `if (getMiniTransitioning()) return;` guard). Instead it now hands off to
+  // mini.js so the change isn't lost — mini marks pendingTopologyMaterialize
+  // and does exactly one final re-materialize against fresh topology at
+  // whichever of its own three transition-end points comes next.
+  notifyMiniTopologyChangedDuringTransition: () => _mini.notifyTopologyChangedDuringTransition(),
   exitMiniMode: () => exitMiniMode(),
 });
 
@@ -1155,8 +1164,19 @@ function syncSoundPreloads() {
 
 function setViewportOffsetY(offsetY) { return petWindowRuntime.setViewportOffsetY(offsetY); }
 function getPetWindowBounds() { return petWindowRuntime.getPetWindowBounds(); }
-function applyPetWindowBounds(bounds) { return petWindowRuntime.applyPetWindowBounds(bounds); }
-function applyPetWindowPosition(x, y) { return petWindowRuntime.applyPetWindowPosition(x, y); }
+// Issue #690 Phase 3: mini's per-frame applyMiniFrameBounds() needs opts
+// (workArea/edgeContext/assertNoYOffset) to actually reach
+// petWindowRuntime.applyPetWindowBounds() — this wrapper used to silently
+// drop a second argument, which would have made assertNoYOffset a no-op.
+function applyPetWindowBounds(bounds, opts) { return petWindowRuntime.applyPetWindowBounds(bounds, opts); }
+// PR #751 Codex deep review, rework batch A (coordinator-attributed fix):
+// this sibling wrapper had the exact same 2-param bug applyPetWindowBounds
+// above was fixed for — topmost-runtime.js's applyFreshNudge() (#525) calls
+// applyPetWindowPosition(x, y, { force: true }) specifically so the
+// compositor-refresh nudge writes natively even when the materialized
+// physical rect already matches current live bounds, but this wrapper
+// silently dropped that third argument, making force:true a no-op.
+function applyPetWindowPosition(x, y, opts) { return petWindowRuntime.applyPetWindowPosition(x, y, opts); }
 
 function syncHitStateAfterLoad() {
   sendToHitWin("hit-state-sync", {
@@ -1431,6 +1451,10 @@ const topmostRuntime = createTopmostRuntime({
   setForceEyeResend,
   applyPetWindowPosition,
   syncHitWin,
+  // I5 (plan §3): report the macOS editing-overlap dodge intent through
+  // pet-window-runtime's single ignore-mouse writer instead of this module
+  // calling hitWin.setIgnoreMouseEvents() directly.
+  setImeEditingPetDodge: (value) => petWindowRuntime.setImeEditingPetDodge(value),
 });
 const {
   reassertWinTopmost,
@@ -3846,9 +3870,19 @@ function createWindow() {
     },
   });
 
-  // Event-level safety net for position sync
-  win.on("move", () => petWindowRuntime.syncFloatingWindowsAfterPetBoundsChange());
-  win.on("resize", () => petWindowRuntime.syncFloatingWindowsAfterPetBoundsChange());
+  // Issue #690 plan §4.3.9: these replace (not supplement) the previous
+  // synchronous "move"/"resize" -> syncFloatingWindowsAfterPetBoundsChange()
+  // wiring. Native move/resize callbacks carry no geometry and must not
+  // read/write anything themselves — onNativeGeometryEvent() only
+  // (re)schedules a debounced quiet-point reconcile, which is what now calls
+  // syncFloatingWindowsAfterPetBoundsChange() (as syncDerivedSurfaces()) once
+  // it has classified the settled geometry.
+  win.on("move", () => petWindowRuntime.onNativeGeometryEvent());
+  win.on("resize", () => petWindowRuntime.onNativeGeometryEvent());
+  // §4.3.11: the hit window gets the same geometry-blind debounced treatment,
+  // on its own (longer) HIT_QUIET_MS quiet period.
+  hitWin.on("move", () => petWindowRuntime.onHitNativeGeometryEvent());
+  hitWin.on("resize", () => petWindowRuntime.onHitNativeGeometryEvent());
 
   syncSessionHudVisibility();
 
@@ -3957,7 +3991,7 @@ function createWindow() {
   });
   win.webContents.on("did-finish-load", () => {
     sendToRenderer("theme-config", buildRendererThemeConfig());
-    sendToRenderer("viewport-offset", petWindowRuntime.getViewportOffsetY());
+    petWindowRuntime.resendViewportOffsets();
     if (themeRuntime.isReloadInProgress()) return;
     syncRendererStateAfterLoad();
   });
@@ -3990,7 +4024,29 @@ function createWindow() {
       petWindowRuntime.handleDisplayMetricsChanged();
     }, 400);
   };
-  screen.on("display-metrics-changed", reapplyDisplayGeometryAfterMetricsChange);
+  // PR #751 second-review C-6 (Codex non-blocking): §4.3.14's
+  // observedClampInset is only valid until the topology it was learned
+  // against changes — clearing it (and invalidating the displays cache,
+  // B-5) used to wait for the SAME 400ms debounce as the geometry reflow
+  // above, so a burst of metrics events could keep re-arming the debounce
+  // and delay the clear indefinitely while stale insets kept getting used
+  // for clamp classification in the meantime. Both now run immediately, in
+  // the raw event callback, decoupled from the (still debounced, to avoid
+  // visible jitter) geometry reflow itself. Clearing the whole table here
+  // is a safe superset of "clear the affected display's entries" —
+  // Electron doesn't cheaply say WHICH display changed from this event
+  // alone.
+  screen.on("display-metrics-changed", () => {
+    petWindowRuntime.clearObservedClampInsets();
+    petWindowRuntime.invalidateDisplaysCache();
+    reapplyDisplayGeometryAfterMetricsChange();
+  });
+  // PR #751 second-review C-4 (Codex B4): display-removed/added now also
+  // clear the inset table (handleDisplayRemoved()/handleDisplayAdded()
+  // themselves do this now, as their own first lines alongside their
+  // existing invalidateDisplaysCache() call) — previously only
+  // metrics-changed did, leaving a stale inset alive across a monitor
+  // unplug/replug or a genuine topology addition.
   screen.on("display-removed", () => petWindowRuntime.handleDisplayRemoved());
   screen.on("display-added", () => petWindowRuntime.handleDisplayAdded());
 
@@ -4060,6 +4116,9 @@ const _miniCtx = {
   applyPetWindowBounds,
   applyPetWindowPosition,
   setViewportOffsetY,
+  // Issue #690 plan §4.3.10's mini transition+animation reconcile protection
+  // period release point (mirrors _roamCtx's identical wiring below).
+  releaseReconcileProtection: () => petWindowRuntime.releaseReconcileProtection(),
   get bubbleFollowPet() { return bubbleFollowPet; },
   get pendingPermissions() { return pendingPermissions; },
   repositionBubbles: () => repositionFloatingBubbles(),
@@ -4089,6 +4148,8 @@ const _roamCtx = {
   // #569: lets roam anchor to the keep-size frozen size when that toggle is on
   getEffectiveCurrentPixelSize,
   syncHitWin: () => syncHitWin(),
+  // Issue #690 plan §4.3.10's roam protection-period release point.
+  releaseReconcileProtection: () => petWindowRuntime.releaseReconcileProtection(),
   repositionSessionHud: () => repositionSessionHud(),
   repositionAnchoredSurfaces: () => repositionAnchoredFloatingSurfaces(),
   repositionBubbles: () => repositionFloatingBubbles(),
