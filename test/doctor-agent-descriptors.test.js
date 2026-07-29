@@ -98,6 +98,12 @@ describe("doctor agent descriptors", () => {
     assert.strictEqual(getAgentDescriptor("qwen-code").marker, qwen.MARKER);
     assert.deepStrictEqual(getAgentDescriptor("qwen-code").hookEvents, qwen.QWEN_CODE_HOOK_EVENTS);
 
+    const zcode = require("../hooks/zcode-install");
+    assert.strictEqual(getAgentDescriptor("zcode").parentDir, zcode.DEFAULT_PARENT_DIR);
+    assert.strictEqual(getAgentDescriptor("zcode").configPath, zcode.DEFAULT_CONFIG_PATH);
+    assert.strictEqual(getAgentDescriptor("zcode").hookExecutorShape, "zcode-process");
+    assert.deepStrictEqual(getAgentDescriptor("zcode").hookEvents, zcode.ZCODE_HOOK_EVENTS);
+
     assert.strictEqual(getAgentDescriptor("codewhale").parentDir, path.dirname(codewhale.resolveCodewhaleConfigPath()));
     assert.strictEqual(getAgentDescriptor("codewhale").configPath, codewhale.resolveCodewhaleConfigPath());
     assert.strictEqual(getAgentDescriptor("codewhale").marker, "managed by clawd-on-desk");

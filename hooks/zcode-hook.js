@@ -20,7 +20,11 @@ const {
   readHostPrefix,
   applyWslSourceFields,
 } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const {
+  createPidResolver,
+  readStdinJsonDetailed,
+  getPlatformConfig,
+} = require("./shared-process");
 
 const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;
@@ -37,9 +41,29 @@ const EVENT_TO_STATE = {
   Stop: "attention",
 };
 
+const EVENT_TO_PID_LIFECYCLE = {
+  SessionStart: "start",
+  UserPromptSubmit: "prompt",
+};
+
 function normalizeZcodeSessionId(value) {
   const raw = value != null && value !== "" ? String(value) : "default";
   return raw.startsWith("zcode:") ? raw : `zcode:${raw}`;
+}
+
+function getZcodePidResolverContext(hookName, payload) {
+  const rawSessionId = payload && typeof payload.session_id === "string"
+    ? payload.session_id.trim()
+    : "";
+  const cacheCwd = payload && typeof payload.cwd === "string" ? payload.cwd : "";
+  const isDefaultSession = rawSessionId === "default" || rawSessionId === "zcode:default";
+  return {
+    namespace: "zcode",
+    sessionId: rawSessionId || "default",
+    cacheCwd,
+    lifecycle: EVENT_TO_PID_LIFECYCLE[hookName] || "event",
+    cacheable: !!rawSessionId && !isDefaultSession && !!cacheCwd,
+  };
 }
 
 function normalizeToolUseId(value) {
@@ -112,6 +136,10 @@ function appendHookDebug(entry, env = process.env) {
   } catch {}
 }
 
+function stdinParseErrorCategory(value) {
+  return value ? "invalid-json" : null;
+}
+
 // Detect both the legacy standalone `zcode-cli` and the current Electron
 // Node-mode runtime (`.../ZCode .../Resources/glm/zcode.cjs app-server
 // --stdio`). The executable name is shared with the always-running desktop
@@ -141,8 +169,18 @@ function getZcodePidResolverOptions(platformConfig) {
   };
 }
 
-function applyLocalProcessFields(body, resolve) {
-  const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
+function getZcodePlatformConfig(factory = getPlatformConfig) {
+  return factory({
+    // ZCode is a GUI host, not a terminal. Without this boundary the closest
+    // Windows "terminal" is often the short-lived PowerShell command wrapper,
+    // which makes source_pid die immediately and prevents the durable PID cache
+    // from ever hitting on later events.
+    extraTerminals: { win: ["zcode.exe"] },
+  });
+}
+
+function applyLocalProcessFields(body, resolved = {}) {
+  const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolved;
   if (Number.isFinite(stablePid) && stablePid > 0) body.source_pid = Math.floor(stablePid);
   if (detectedEditor) body.editor = detectedEditor;
   if (Number.isFinite(agentPid) && agentPid > 0) body.agent_pid = Math.floor(agentPid);
@@ -188,7 +226,9 @@ function buildStateBody(hookName, payload, resolve, options = {}) {
     applyWslSourceFields(body, { remote: true });
   } else {
     applyWslSourceFields(body);
-    applyLocalProcessFields(body, resolve);
+    const resolved = resolve(getZcodePidResolverContext(hookName, payload || {})) || {};
+    applyLocalProcessFields(body, resolved);
+    if (typeof options.onProcessMeta === "function") options.onProcessMeta(resolved);
   }
 
   return body;
@@ -204,26 +244,68 @@ async function run(payload, argvEvent, deps = {}) {
   const remote = !!env.CLAWD_REMOTE;
   const resolve = deps.resolvePid || (() => ({}));
   const host = remote && deps.readHostPrefix ? deps.readHostPrefix() : undefined;
+  let processMeta = null;
 
-  const body = buildStateBody(hookName, payload || {}, resolve, { remote, host });
-  if (!body) return { hookName, stdout: buildNoDecisionOutput(), body: null, posted: false };
+  const body = buildStateBody(hookName, payload || {}, resolve, {
+    remote,
+    host,
+    onProcessMeta(meta) {
+      processMeta = meta;
+    },
+  });
+  if (!body) {
+    return {
+      hookName,
+      stdout: buildNoDecisionOutput(),
+      body: null,
+      posted: false,
+      processMeta,
+    };
+  }
 
   return new Promise((resolveRun) => {
     const postState = deps.postState || postStateToRunningServer;
     postState(JSON.stringify(body), { timeoutMs: 100 }, (posted, port) => {
-      resolveRun({ hookName, stdout: buildNoDecisionOutput(), body, posted: !!posted, port: port || null });
+      resolveRun({
+        hookName,
+        stdout: buildNoDecisionOutput(),
+        body,
+        posted: !!posted,
+        port: port || null,
+        processMeta,
+      });
     });
   });
 }
 
 async function main(argvEvent = process.argv[2], deps = {}) {
   try {
-    const payload = deps.payload !== undefined
-      ? deps.payload
-      : await (deps.readStdinJson || readStdinJson)();
-    const config = getPlatformConfig();
+    let stdinResult;
+    if (deps.payload !== undefined) {
+      stdinResult = {
+        payload: deps.payload,
+        bytes: Number.isFinite(deps.stdinBytes) ? deps.stdinBytes : 0,
+        timedOut: false,
+        parseError: null,
+        durationMs: 0,
+      };
+    } else if (typeof deps.readStdinJsonDetailed === "function") {
+      stdinResult = await deps.readStdinJsonDetailed();
+    } else if (typeof deps.readStdinJson === "function") {
+      stdinResult = {
+        payload: await deps.readStdinJson(),
+        bytes: 0,
+        timedOut: false,
+        parseError: null,
+        durationMs: 0,
+      };
+    } else {
+      stdinResult = await readStdinJsonDetailed();
+    }
+    const payload = stdinResult.payload || {};
+    const config = getZcodePlatformConfig();
     const resolve = deps.resolvePid || createPidResolver(getZcodePidResolverOptions(config));
-    const result = await run(payload || {}, argvEvent, {
+    const result = await run(payload, argvEvent, {
       ...deps,
       resolvePid: resolve,
       readHostPrefix: deps.readHostPrefix || readHostPrefix,
@@ -234,6 +316,18 @@ async function main(argvEvent = process.argv[2], deps = {}) {
       posted: result.posted,
       body_event: result.body && result.body.event,
       body_state: result.body && result.body.state,
+      has_session_id: typeof payload.session_id === "string" && !!payload.session_id.trim(),
+      has_cwd: typeof payload.cwd === "string" && !!payload.cwd,
+      stdin_bytes: stdinResult.bytes,
+      stdin_timed_out: stdinResult.timedOut === true,
+      // JSON.parse errors can include input fragments on newer Node releases.
+      // Keep diagnostics useful without copying hook payload into JSONL.
+      stdin_parse_error: stdinParseErrorCategory(stdinResult.parseError),
+      cache_source: result.processMeta && result.processMeta.cacheSource
+        ? result.processMeta.cacheSource
+        : null,
+      source_pid_found: !!(result.body && result.body.source_pid),
+      agent_pid_found: !!(result.body && result.body.agent_pid),
     }, deps.env || process.env);
     process.stdout.write(`${result.stdout}\n`);
   } catch (err) {
@@ -253,15 +347,19 @@ if (require.main === module) {
 }
 
 module.exports = {
+  EVENT_TO_PID_LIFECYCLE,
   EVENT_TO_STATE,
   appendHookDebug,
   buildStateBody,
   buildToolInputFingerprint,
+  getZcodePidResolverContext,
   getZcodePidResolverOptions,
+  getZcodePlatformConfig,
   isZcodeAgentCommandLine,
   main,
   normalizeZcodeSessionId,
   normalizeToolMatchValue,
   resolveHookName,
   run,
+  stdinParseErrorCategory,
 };

@@ -25,7 +25,11 @@ const {
 } = require("../../hooks/kimi-install");
 const { parseTomlSections: parseCodewhaleTomlSections } = require("../../hooks/codewhale-install");
 const { getAgentDescriptors } = require("./agent-descriptors");
-const { commandContainsFragment, validateHookCommand } = require("./agent-node-bin-parser");
+const {
+  commandContainsFragment,
+  validateHookCommand,
+  validateHookTarget,
+} = require("./agent-node-bin-parser");
 const { checkCodexHookTrust, checkCodexHooksFeature } = require("./codex-features-check");
 const { validateOpencodeEntry } = require("./opencode-entry-validator");
 const { validateOpenClawEntry } = require("./openclaw-entry-validator");
@@ -395,6 +399,176 @@ function findHookCommandsForEvent(settings, eventName, marker, options) {
     }
   }
   return commands;
+}
+
+function zcodeHookContainsMarker(hook, marker) {
+  if (!hook || typeof hook !== "object") return false;
+  if (
+    typeof hook.command === "string"
+    && commandContainsFragment(hook.command, marker)
+  ) {
+    return true;
+  }
+  return !!(
+    Array.isArray(hook.args)
+    && hook.args.some((arg) => typeof arg === "string" && arg.includes(marker))
+  );
+}
+
+function findZcodeHooksForEvent(settings, eventName, marker, options) {
+  if (!settings || !settings.hooks || typeof marker !== "string" || !marker) return [];
+  const containerPath = (
+    options
+    && Array.isArray(options.hookEventsContainer)
+    && options.hookEventsContainer.length
+  )
+    ? options.hookEventsContainer
+    : ["hooks", "events"];
+  let container = settings;
+  for (const key of containerPath) {
+    if (!container || typeof container !== "object") return [];
+    container = container[key];
+  }
+  const entries = container ? container[eventName] : null;
+  if (!Array.isArray(entries)) return [];
+
+  const hooks = [];
+  const push = (hook) => {
+    if (!zcodeHookContainsMarker(hook, marker)) return;
+    if (
+      hook.type === "process"
+      && typeof hook.command === "string"
+      && Array.isArray(hook.args)
+    ) {
+      const scriptPath = hook.args.find((arg) => typeof arg === "string" && arg.includes(marker));
+      hooks.push({
+        kind: "process",
+        nodeBin: hook.command,
+        scriptPath,
+        args: hook.args,
+        timeoutMs: hook.timeoutMs,
+        fragment: JSON.stringify({
+          type: hook.type,
+          command: hook.command,
+          args: hook.args,
+          timeoutMs: hook.timeoutMs,
+        }).slice(0, 128),
+      });
+      return;
+    }
+    if (typeof hook.command === "string") {
+      hooks.push({
+        kind: "command",
+        command: hook.command,
+        fragment: hook.command.slice(0, 128),
+      });
+    }
+  };
+
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    if (Array.isArray(entry.hooks)) {
+      for (const hook of entry.hooks) push(hook);
+    }
+    push(entry);
+  }
+  return hooks;
+}
+
+function validateZcodeProcessHook(hook, eventName, descriptor, options) {
+  const args = hook.args;
+  if (
+    !Array.isArray(args)
+    || args.length !== 2
+    || typeof args[0] !== "string"
+    || !args[0].includes(descriptor.marker)
+    || args[1] !== eventName
+    || hook.timeoutMs !== descriptor.processHookTimeoutMs
+  ) {
+    return {
+      ok: false,
+      issue: "process-shape-invalid",
+      nodeBin: hook.nodeBin || null,
+      scriptPath: hook.scriptPath || null,
+    };
+  }
+  return options.validateTarget({
+    nodeBin: hook.nodeBin,
+    scriptPath: hook.scriptPath,
+  }, {
+    platform: options.platform,
+    fs: options.fs,
+    requireAbsoluteNode: true,
+    requireNodeExecutable: true,
+  });
+}
+
+function validateZcodeHookEvents(descriptor, settings, options) {
+  const events = descriptor.hookEvents;
+  const agentName = descriptor.agentName || descriptor.agentId;
+  const missingEvents = [];
+  let commandCount = 0;
+  let firstOk = null;
+  let firstFailure = null;
+
+  for (const eventName of events) {
+    const hooks = findZcodeHooksForEvent(settings, eventName, descriptor.marker, {
+      hookEventsContainer: descriptor.hookEventsContainer,
+    });
+    commandCount += hooks.length;
+    if (!hooks.length) {
+      missingEvents.push(eventName);
+      continue;
+    }
+    const results = hooks.map((hook) => (
+      hook.kind === "process"
+        ? validateZcodeProcessHook(hook, eventName, descriptor, options)
+        : options.validateCommand(hook.command, {
+          platform: options.platform,
+          fs: options.fs,
+        })
+    ));
+    const ok = results.find((result) => result.ok);
+    if (ok) {
+      if (!firstOk) firstOk = ok;
+      continue;
+    }
+    if (!firstFailure) {
+      firstFailure = {
+        eventName,
+        result: results[0] || { issue: "parse-failed" },
+        hook: hooks[0],
+      };
+    }
+  }
+
+  if (missingEvents.length) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      detail: `${descriptor.configPath} missing ${agentName} hook event(s): ${missingEvents.join(", ")}`,
+      commandCount,
+      missingHookEvents: missingEvents,
+    });
+  }
+  if (firstFailure) {
+    const first = firstFailure.result;
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      detail: `${agentName} hook command failed validation for ${firstFailure.eventName}: ${first.issue || "parse-failed"}`,
+      commandCount,
+      hookCommandIssue: first.issue || "parse-failed",
+      nodeBin: first.nodeBin || null,
+      scriptPath: first.scriptPath || null,
+      commandFragment: first.fragment || firstFailure.hook.fragment,
+      brokenHookEvent: firstFailure.eventName,
+    });
+  }
+  return makeDetail(descriptor, "ok", {
+    level: null,
+    detail: `${descriptor.configPath} ${agentName} hooks registered for ${events.length} events, scriptPath verified`,
+    commandCount,
+    scriptPath: firstOk && firstOk.scriptPath ? firstOk.scriptPath : null,
+  });
 }
 
 function validateGeminiHookEvents(descriptor, settings, options) {
@@ -966,8 +1140,7 @@ function getZcodeHooksSupplementary(settings, descriptor) {
       // generic validator still reports their path issue. Do not interpret an
       // unsupported entry-level enabled flag as a valid user opt-out.
       if (
-        typeof entry.command === "string"
-        && commandContainsFragment(entry.command, descriptor.marker)
+        zcodeHookContainsMarker(entry, descriptor.marker)
       ) {
         managedCount++;
         activeCount++;
@@ -975,9 +1148,7 @@ function getZcodeHooksSupplementary(settings, descriptor) {
       }
       if (!Array.isArray(entry.hooks)) continue;
       const managedNestedHooks = entry.hooks.filter((hook) => (
-        hook
-        && typeof hook.command === "string"
-        && commandContainsFragment(hook.command, descriptor.marker)
+        zcodeHookContainsMarker(hook, descriptor.marker)
       ));
       if (
         managedNestedHooks.length > 0
@@ -988,6 +1159,12 @@ function getZcodeHooksSupplementary(settings, descriptor) {
       for (const hook of managedNestedHooks) {
         managedCount++;
         if (hook.enabled !== false) activeCount++;
+        const allowedFields = hook.type === "process"
+          ? new Set(["type", "command", "args", "enabled", "timeoutMs"])
+          : new Set(["type", "command", "shell", "async", "enabled", "timeout", "timeoutMs"]);
+        if (Object.keys(hook).some((key) => !allowedFields.has(key))) {
+          invalidWrapperEvents.push(eventName);
+        }
       }
     }
     if (managedCount > 0 && activeCount === 0) disabledEvents.push(eventName);
@@ -1179,6 +1356,12 @@ function checkFileMode(descriptor, options) {
   let detail;
   if (descriptor.agentId === "gemini-cli") {
     detail = validateGeminiHookEvents(descriptor, settings, options);
+  } else if (
+    descriptor.hookExecutorShape === "zcode-process"
+    && Array.isArray(descriptor.hookEvents)
+    && descriptor.hookEvents.length
+  ) {
+    detail = validateZcodeHookEvents(descriptor, settings, options);
   } else if (Array.isArray(descriptor.hookEvents) && descriptor.hookEvents.length) {
     detail = validateFileHookEvents(descriptor, settings, options);
   } else if (descriptor.agentId === "codex") {
@@ -2226,6 +2409,7 @@ function checkAgentIntegrations(options = {}) {
     prefs: options.prefs || {},
     server: options.server || null,
     validateCommand: options.validateCommand || validateHookCommand,
+    validateTarget: options.validateTarget || validateHookTarget,
   };
   const descriptors = options.descriptors || getAgentDescriptors();
   const details = descriptors.map((descriptor) => checkAgent(descriptor, detectorOptions));

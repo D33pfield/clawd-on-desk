@@ -2,7 +2,9 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const {
+  getZcodePidResolverContext,
   getZcodePidResolverOptions,
+  getZcodePlatformConfig,
   isZcodeAgentCommandLine,
 } = require("../hooks/zcode-hook");
 
@@ -65,5 +67,44 @@ describe("isZcodeAgentCommandLine", () => {
     assert.ok(!isZcodeAgentCommandLine(""));
     assert.ok(!isZcodeAgentCommandLine(null));
     assert.ok(!isZcodeAgentCommandLine(undefined));
+  });
+});
+
+describe("ZCode PID resolver integration", () => {
+  it("adds zcode.exe as a Windows stable source boundary", () => {
+    let received = null;
+    const result = getZcodePlatformConfig((options) => {
+      received = options;
+      return { ok: true };
+    });
+
+    assert.deepStrictEqual(received, {
+      extraTerminals: { win: ["zcode.exe"] },
+    });
+    assert.deepStrictEqual(result, { ok: true });
+  });
+
+  it("maps lifecycle events without ever treating Stop as end", () => {
+    const base = { session_id: "sid-1", cwd: "D:/repo" };
+    assert.strictEqual(getZcodePidResolverContext("SessionStart", base).lifecycle, "start");
+    assert.strictEqual(getZcodePidResolverContext("UserPromptSubmit", base).lifecycle, "prompt");
+    assert.strictEqual(getZcodePidResolverContext("PreToolUse", base).lifecycle, "event");
+    assert.strictEqual(getZcodePidResolverContext("Stop", base).lifecycle, "event");
+  });
+
+  it("only caches a real raw session_id plus cwd", () => {
+    assert.strictEqual(getZcodePidResolverContext("PreToolUse", {
+      session_id: "sid-1",
+      cwd: "D:/repo",
+    }).cacheable, true);
+    for (const sessionId of [undefined, "", "default", "zcode:default"]) {
+      assert.strictEqual(getZcodePidResolverContext("PreToolUse", {
+        session_id: sessionId,
+        cwd: "D:/repo",
+      }).cacheable, false);
+    }
+    assert.strictEqual(getZcodePidResolverContext("PreToolUse", {
+      session_id: "sid-1",
+    }).cacheable, false);
   });
 });

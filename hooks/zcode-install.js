@@ -26,7 +26,6 @@ const {
   asarUnpackedPath,
   formatNodeHookCommand,
   decodeWindowsEncodedCommand,
-  removeMatchingCommandHooks,
 } = require("./json-utils");
 
 // ZCode config-file hooks nest under hooks.events.<Event> (unlike Claude /
@@ -41,10 +40,8 @@ function extractExistingZcodeNodeBin(settings, marker) {
     for (const entry of entries) {
       if (!entry || typeof entry !== "object" || !Array.isArray(entry.hooks)) continue;
       for (const h of entry.hooks) {
-        if (!h || typeof h.command !== "string") continue;
-        if (h.command.includes(marker)) return extractNodeBinFromCommand(h.command);
-        const decoded = decodeWindowsEncodedCommand(h.command);
-        if (decoded && decoded.includes(marker)) return extractNodeBinFromCommand(decoded);
+        const target = extractZcodeHookTarget(h, marker);
+        if (target && target.nodeBin) return target.nodeBin;
       }
     }
   }
@@ -88,9 +85,21 @@ const ZCODE_HOOK_EVENTS = [
   "Stop",
 ];
 
+function isAbsoluteNodeBin(value) {
+  if (typeof value !== "string" || !value) return false;
+  const normalized = value.replace(/\\/g, "/");
+  const base = path.posix.basename(normalized).toLowerCase();
+  return (
+    (path.posix.isAbsolute(value) || path.win32.isAbsolute(value))
+    && (base === "node" || base === "node.exe")
+  );
+}
+
 function timeoutMsForZcodeEvent() {
-  // State-only: no blocking PermissionRequest, so every event is a fire-and
-  // -forget state report. 30000ms (30s) mirrors the non-permission Qwen events.
+  // State-only process hooks are synchronous, but their own bounded work is
+  // much shorter: stdin 400ms + a Windows process snapshot capped at 3s + a
+  // 100ms local POST. Keep enough cold-start headroom without allowing six
+  // events to freeze ZCode for 30s each if a hook wedges.
   //
   // IMPORTANT: ZCode's hook schema differs from Claude Code / Qwen in timeout
   // units. The `timeout` field is in SECONDS (internally ×1000), so writing
@@ -98,7 +107,7 @@ function timeoutMsForZcodeEvent() {
   // Use `timeoutMs` (milliseconds) explicitly — it also takes precedence over
   // `timeout`. (Qwen's `timeout: 30000` is millisecond-semantic because Qwen
   // uses the Claude Code schema; do NOT copy that field across.)
-  return 30000;
+  return 8000;
 }
 
 // ZCode treats a missing / empty / "*" matcher as match-all. State-only hooks
@@ -116,6 +125,42 @@ function isClawdHookCommand(command) {
   return !!(decoded && decoded.includes(MARKER));
 }
 
+function hookArgsContainMarker(hook, marker) {
+  return !!(
+    hook
+    && Array.isArray(hook.args)
+    && hook.args.some((arg) => typeof arg === "string" && arg.includes(marker))
+  );
+}
+
+function isClawdZcodeHook(hook) {
+  if (!hook || typeof hook !== "object") return false;
+  return isClawdHookCommand(hook.command) || hookArgsContainMarker(hook, MARKER);
+}
+
+function extractZcodeHookTarget(hook, marker = MARKER) {
+  if (!hook || typeof hook !== "object") return null;
+  if (
+    hook.type === "process"
+    && typeof hook.command === "string"
+    && hookArgsContainMarker(hook, marker)
+  ) {
+    const scriptPath = hook.args.find((arg) => typeof arg === "string" && arg.includes(marker));
+    return {
+      nodeBin: hook.command,
+      scriptPath,
+    };
+  }
+  if (typeof hook.command !== "string") return null;
+  const decoded = decodeWindowsEncodedCommand(hook.command);
+  const command = decoded && decoded.includes(marker) ? decoded : hook.command;
+  if (!command.includes(marker)) return null;
+  return {
+    nodeBin: extractNodeBinFromCommand(command),
+    scriptPath: null,
+  };
+}
+
 // Detect Clawd's Claude hook (clawd-hook.js) that was imported into the zcode
 // config. Matches both raw and PowerShell -EncodedCommand forms, like
 // isClawdHookCommand does for the zcode marker.
@@ -124,6 +169,17 @@ function isClaudeHookCommand(command) {
   if (command.includes(CLAUDE_MARKER)) return true;
   const decoded = decodeWindowsEncodedCommand(command);
   return !!(decoded && decoded.includes(CLAUDE_MARKER));
+}
+
+function isClawdClaudeHook(hook) {
+  return !!(
+    hook
+    && typeof hook === "object"
+    && (
+      isClaudeHookCommand(hook.command)
+      || hookArgsContainMarker(hook, CLAUDE_MARKER)
+    )
+  );
 }
 
 // Strip Clawd's Claude hook entries (clawd-hook.js) migrated into the zcode
@@ -146,7 +202,7 @@ function stripMigratedClaudeHooks(events) {
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
       if (!entry || typeof entry !== "object") continue;
-      if (typeof entry.command === "string" && isClaudeHookCommand(entry.command)) {
+      if (isClawdClaudeHook(entry)) {
         entries.splice(i, 1);
         i--;
         removed++;
@@ -156,7 +212,7 @@ function stripMigratedClaudeHooks(events) {
       if (Array.isArray(entry.hooks)) {
         const before = entry.hooks.length;
         entry.hooks = entry.hooks.filter((h) => {
-          if (h && typeof h.command === "string" && isClaudeHookCommand(h.command)) {
+          if (isClawdClaudeHook(h)) {
             removed++;
             changed = true;
             return false;
@@ -175,9 +231,9 @@ function stripMigratedClaudeHooks(events) {
   return { changed, removed };
 }
 
-// Mirror the Qwen / Antigravity Windows handling: wrap the command as a
-// PowerShell -EncodedCommand so any shell that strips outer quotes (cmd /s)
-// never mangles a node path containing a space.
+// Legacy command-executor builder retained for recognizing/migrating existing
+// PowerShell -EncodedCommand entries and for uninstall compatibility. New
+// installs use buildZcodeProcessHook() and never invoke a shell.
 function buildZcodeHookCommand(nodeBin, hookScript, event, options = {}) {
   return formatNodeHookCommand(nodeBin, hookScript, {
     ...options,
@@ -186,12 +242,22 @@ function buildZcodeHookCommand(nodeBin, hookScript, event, options = {}) {
   });
 }
 
-function buildZcodeHookEntry(command, event, options = {}) {
+function buildZcodeProcessHook(nodeBin, hookScript, event, options = {}) {
+  const hook = {
+    type: "process",
+    command: nodeBin,
+    args: [hookScript, event],
+    timeoutMs: timeoutMsForZcodeEvent(),
+  };
+  if (options.enabled === false) hook.enabled = false;
+  return hook;
+}
+
+function buildZcodeHookEntry(desiredHook, event, options = {}) {
   const matcher = matcherForZcodeEvent(event);
   const hook = {
-    type: "command",
-    command,
-    timeoutMs: timeoutMsForZcodeEvent(),
+    ...desiredHook,
+    args: Array.isArray(desiredHook.args) ? [...desiredHook.args] : desiredHook.args,
   };
   // `enabled` belongs on each hook object in ZCode's schema. Preserve an
   // explicit user opt-out when normalizing a stale Clawd command; omitting the
@@ -209,7 +275,7 @@ function replaceEntry(target, source) {
   Object.assign(target, source);
 }
 
-function isDesiredHookEntry(entry, desiredCommand, event, options = {}) {
+function isDesiredHookEntry(entry, desiredHook, event, options = {}) {
   if (!entry || typeof entry !== "object") return false;
   const matcher = matcherForZcodeEvent(event);
   // The wrapper schema is strict: only matcher + hooks are valid. In our
@@ -222,21 +288,31 @@ function isDesiredHookEntry(entry, desiredCommand, event, options = {}) {
   } else if (entry.matcher !== matcher) {
     return false;
   }
+  const hook = Array.isArray(entry.hooks) ? entry.hooks[0] : null;
   return !!(
     Array.isArray(entry.hooks)
     && entry.hooks.length === 1
-    && entry.hooks[0]
+    && hook
     // ZCode's hook schema is strict — a "name" key makes config.json fail to
     // load. Treat any entry still carrying "name" as not-desired so a re-run
     // strips it (migration from the pre-fix form).
-    && !("name" in entry.hooks[0])
-    && entry.hooks[0].type === "command"
-    && entry.hooks[0].command === desiredCommand
-    && (entry.hooks[0].enabled === false) === (options.enabled === false)
+    && !Object.keys(hook).some((key) => (
+      key !== "type"
+      && key !== "command"
+      && key !== "args"
+      && key !== "enabled"
+      && key !== "timeoutMs"
+    ))
+    && hook.type === "process"
+    && hook.command === desiredHook.command
+    && Array.isArray(hook.args)
+    && hook.args.length === desiredHook.args.length
+    && hook.args.every((arg, index) => arg === desiredHook.args[index])
+    && (hook.enabled === false) === (options.enabled === false)
     // Must use timeoutMs (ms). A pre-fix entry carrying `timeout: 30000`
     // (8.3h under ZCode's seconds-semantics) is treated as not-desired so a
     // re-run rewrites it into the correct timeoutMs form.
-    && entry.hooks[0].timeoutMs === timeoutMsForZcodeEvent()
+    && hook.timeoutMs === timeoutMsForZcodeEvent()
   );
 }
 
@@ -250,13 +326,13 @@ function managedHookIntent(entries) {
     // Old flat command entries are not part of ZCode's current wrapper schema.
     // Treat them as enabled while migrating; entry-level `enabled` is not a
     // supported substitute for hook.enabled.
-    if (isClawdHookCommand(entry.command)) {
+    if (isClawdZcodeHook(entry)) {
       found++;
       foundEnabled = true;
     }
     if (!Array.isArray(entry.hooks)) continue;
     for (const hook of entry.hooks) {
-      if (!hook || !isClawdHookCommand(hook.command)) continue;
+      if (!isClawdZcodeHook(hook)) continue;
       found++;
       if (hook.enabled !== false) foundEnabled = true;
     }
@@ -268,7 +344,7 @@ function managedHookIntent(entries) {
   };
 }
 
-function normalizeHookEntries(entries, desiredCommand, event) {
+function normalizeHookEntries(entries, desiredHook, event) {
   if (!Array.isArray(entries)) return { matched: false, changed: false };
 
   const intent = managedHookIntent(entries);
@@ -281,10 +357,10 @@ function normalizeHookEntries(entries, desiredCommand, event) {
     const entry = entries[index];
     if (!entry || typeof entry !== "object") continue;
 
-    if (isClawdHookCommand(entry.command)) {
+    if (isClawdZcodeHook(entry)) {
       matched = true;
       if (dedicatedIndex === -1) {
-        replaceEntry(entry, buildZcodeHookEntry(desiredCommand, event, desiredOptions));
+        replaceEntry(entry, buildZcodeHookEntry(desiredHook, event, desiredOptions));
         dedicatedIndex = index;
         changed = true;
       } else {
@@ -299,7 +375,7 @@ function normalizeHookEntries(entries, desiredCommand, event) {
     const otherHooks = [];
     let clawdHookCount = 0;
     for (const hook of entry.hooks) {
-      if (hook && isClawdHookCommand(hook.command)) clawdHookCount++;
+      if (isClawdZcodeHook(hook)) clawdHookCount++;
       else otherHooks.push(hook);
     }
     if (clawdHookCount === 0) continue;
@@ -312,8 +388,8 @@ function normalizeHookEntries(entries, desiredCommand, event) {
     }
 
     if (dedicatedIndex === -1) {
-      if (!isDesiredHookEntry(entry, desiredCommand, event, desiredOptions)) {
-        replaceEntry(entry, buildZcodeHookEntry(desiredCommand, event, desiredOptions));
+      if (!isDesiredHookEntry(entry, desiredHook, event, desiredOptions)) {
+        replaceEntry(entry, buildZcodeHookEntry(desiredHook, event, desiredOptions));
         changed = true;
       }
       dedicatedIndex = index;
@@ -328,13 +404,13 @@ function normalizeHookEntries(entries, desiredCommand, event) {
   if (!matched) return { matched: false, changed: false };
 
   if (dedicatedIndex === -1) {
-    entries.push(buildZcodeHookEntry(desiredCommand, event, desiredOptions));
+    entries.push(buildZcodeHookEntry(desiredHook, event, desiredOptions));
     return { matched: true, changed: true };
   }
 
   const dedicatedEntry = entries[dedicatedIndex];
-  if (!isDesiredHookEntry(dedicatedEntry, desiredCommand, event, desiredOptions)) {
-    replaceEntry(dedicatedEntry, buildZcodeHookEntry(desiredCommand, event, desiredOptions));
+  if (!isDesiredHookEntry(dedicatedEntry, desiredHook, event, desiredOptions)) {
+    replaceEntry(dedicatedEntry, buildZcodeHookEntry(desiredHook, event, desiredOptions));
     changed = true;
   }
   return { matched: true, changed };
@@ -347,6 +423,41 @@ function readSettings(settingsPath) {
     if (err.code === "ENOENT") return {};
     throw new Error(`Failed to read config.json: ${err.message}`);
   }
+}
+
+function removeMatchingZcodeHooks(entries, predicate) {
+  if (!Array.isArray(entries)) return { entries, removed: 0, changed: false };
+
+  let removed = 0;
+  let changed = false;
+  const nextEntries = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") {
+      nextEntries.push(entry);
+      continue;
+    }
+    if (predicate(entry)) {
+      removed++;
+      changed = true;
+      continue;
+    }
+    if (!Array.isArray(entry.hooks)) {
+      nextEntries.push(entry);
+      continue;
+    }
+    const nextHooks = entry.hooks.filter((hook) => {
+      if (!predicate(hook)) return true;
+      removed++;
+      changed = true;
+      return false;
+    });
+    if (nextHooks.length === entry.hooks.length) {
+      nextEntries.push(entry);
+    } else if (nextHooks.length > 0) {
+      nextEntries.push({ ...entry, hooks: nextHooks });
+    }
+  }
+  return { entries: nextEntries, removed, changed };
 }
 
 function registerZcodeHooks(options = {}) {
@@ -365,8 +476,12 @@ function registerZcodeHooks(options = {}) {
   const hookScript = asarUnpackedPath(path.resolve(__dirname, MARKER).replace(/\\/g, "/"));
   const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
   const nodeBin = resolved
-    || extractExistingZcodeNodeBin(settings, MARKER)
-    || "node";
+    || extractExistingZcodeNodeBin(settings, MARKER);
+  if (!isAbsoluteNodeBin(nodeBin)) {
+    throw new Error(
+      "Unable to register ZCode hooks: an absolute Node executable path is required"
+    );
+  }
 
   let changed = false;
 
@@ -401,11 +516,10 @@ function registerZcodeHooks(options = {}) {
   const disabledManagedEvents = [];
 
   for (const event of ZCODE_HOOK_EVENTS) {
-    const desiredCommand = buildZcodeHookCommand(
+    const desiredHook = buildZcodeProcessHook(
       nodeBin,
       hookScript,
-      event,
-      { platform: options.platform || process.platform }
+      event
     );
 
     if (!Array.isArray(events[event])) {
@@ -417,7 +531,7 @@ function registerZcodeHooks(options = {}) {
     if (existingIntent.found > 0 && existingIntent.enabled === false) {
       disabledManagedEvents.push(event);
     }
-    const result = normalizeHookEntries(events[event], desiredCommand, event);
+    const result = normalizeHookEntries(events[event], desiredHook, event);
     if (result.changed) changed = true;
 
     if (result.matched) {
@@ -426,7 +540,7 @@ function registerZcodeHooks(options = {}) {
       continue;
     }
 
-    events[event].push(buildZcodeHookEntry(desiredCommand, event));
+    events[event].push(buildZcodeHookEntry(desiredHook, event));
     added++;
     changed = true;
   }
@@ -478,7 +592,7 @@ function unregisterZcodeHooks(options = {}) {
   for (const event of ZCODE_HOOK_EVENTS) {
     const entries = events[event];
     if (!Array.isArray(entries)) continue;
-    const result = removeMatchingCommandHooks(entries, isClawdHookCommand);
+    const result = removeMatchingZcodeHooks(entries, isClawdZcodeHook);
     if (!result.changed) continue;
     removed += result.removed;
     changed = true;
@@ -526,6 +640,9 @@ module.exports = {
   CLAUDE_MARKER,
   ZCODE_HOOK_EVENTS,
   buildZcodeHookCommand,
+  buildZcodeProcessHook,
+  extractZcodeHookTarget,
+  isClawdZcodeHook,
   matcherForZcodeEvent,
   registerZcodeHooks,
   unregisterZcodeHooks,

@@ -16,7 +16,12 @@ const { QWEN_CODE_HOOK_EVENTS, buildQwenCodeHookCommand } = require("../hooks/qw
 const { HOOK_ENTRIES: CODEWHALE_HOOK_ENTRIES } = require("../hooks/codewhale-install");
 const { QODER_HOOK_EVENTS, buildQoderHookCommand } = require("../hooks/qoder-install");
 const { KIMI_HOOK_EVENTS } = require("../hooks/kimi-install");
-const { ZCODE_HOOK_EVENTS, buildZcodeHookCommand } = require("../hooks/zcode-install");
+const {
+  ZCODE_HOOK_EVENTS,
+  buildZcodeHookCommand,
+  buildZcodeProcessHook,
+  timeoutMsForZcodeEvent,
+} = require("../hooks/zcode-install");
 
 // Complete healthy legacy Kimi config: every event registered, every command
 // carrying the canonical argv mode flag.
@@ -69,6 +74,7 @@ function baseDescriptor(overrides = {}) {
 function runOne(descriptor, options = {}) {
   return checkAgentIntegrations({
     fs,
+    platform: options.platform,
     prefs: options.prefs || {},
     descriptors: [descriptor],
     server: options.server || null,
@@ -76,6 +82,11 @@ function runOne(descriptor, options = {}) {
       ok: true,
       nodeBin: "/node",
       scriptPath: "/app/hooks/test-hook.js",
+    })),
+    validateTarget: options.validateTarget || ((target) => ({
+      ok: true,
+      nodeBin: target.nodeBin,
+      scriptPath: target.scriptPath,
     })),
   }).details[0];
 }
@@ -272,15 +283,19 @@ function zcodeDescriptor() {
     configMode: "file",
     nested: true,
     hookEvents: ZCODE_HOOK_EVENTS,
+    hookExecutorShape: "zcode-process",
+    processHookTimeoutMs: timeoutMsForZcodeEvent(),
     hookEventsContainer: ["hooks", "events"],
   });
 }
 
-function zcodeHooksConfig(commandForEvent = (event) => `"/node" "/app/hooks/zcode-hook.js" ${event}`) {
+function zcodeHooksConfig(hookForEvent = (event) => (
+  buildZcodeProcessHook("/node", "/app/hooks/zcode-hook.js", event)
+)) {
   const events = {};
   for (const event of ZCODE_HOOK_EVENTS) {
     events[event] = [{
-      hooks: [{ type: "command", command: commandForEvent(event) }],
+      hooks: [hookForEvent(event)],
     }];
   }
   return { hooks: { enabled: true, events } };
@@ -986,9 +1001,9 @@ describe("checkAgentIntegrations", () => {
 
     const seen = [];
     const detail = runOne(descriptor, {
-      validateCommand: (command) => {
-        seen.push(command);
-        return { ok: true, nodeBin: "/node", scriptPath: "/app/hooks/zcode-hook.js" };
+      validateTarget: (target) => {
+        seen.push(target);
+        return { ok: true, ...target };
       },
     });
 
@@ -1062,11 +1077,9 @@ describe("checkAgentIntegrations", () => {
     const descriptor = zcodeDescriptor();
     const config = zcodeHooksConfig();
     config.hooks.events.Stop.push({
-      hooks: [{
-        type: "command",
-        command: '"/node" "/app/hooks/zcode-hook.js" Stop',
+      hooks: [buildZcodeProcessHook("/node", "/app/hooks/zcode-hook.js", "Stop", {
         enabled: false,
-      }],
+      })],
     });
     writeJson(descriptor.configPath, config);
 
@@ -1104,11 +1117,86 @@ describe("checkAgentIntegrations", () => {
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "zcode" });
   });
 
-  it("validates Windows ZCode EncodedCommand hooks nested under hooks.events.*", () => {
+  it("validates Windows ZCode process hooks with a spaced absolute node path", () => {
     const descriptor = zcodeDescriptor();
     const scriptPath = "D:/app/hooks/zcode-hook.js";
-    writeJson(descriptor.configPath, zcodeHooksConfig((event) =>
-      buildZcodeHookCommand(
+    writeJson(descriptor.configPath, zcodeHooksConfig((event) => (
+      buildZcodeProcessHook("C:\\Program Files\\nodejs\\node.exe", scriptPath, event)
+    )));
+
+    const detail = runOne(descriptor, {
+      platform: "win32",
+      validateTarget: (target) => {
+        assert.deepStrictEqual(target, {
+          nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+          scriptPath,
+        });
+        return { ok: true, ...target };
+      },
+    });
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.commandCount, ZCODE_HOOK_EVENTS.length);
+    assert.strictEqual(detail.scriptPath, scriptPath);
+  });
+
+  it("reports the failing ZCode process target without sending it through the command parser", () => {
+    const descriptor = zcodeDescriptor();
+    writeJson(descriptor.configPath, zcodeHooksConfig());
+    let commandParserCalls = 0;
+
+    const detail = runOne(descriptor, {
+      validateCommand: () => {
+        commandParserCalls++;
+        return { ok: true };
+      },
+      validateTarget: (target) => ({
+        ok: false,
+        issue: "scriptPath-missing",
+        ...target,
+      }),
+    });
+
+    assert.strictEqual(commandParserCalls, 0);
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.brokenHookEvent, "SessionStart");
+    assert.strictEqual(detail.hookCommandIssue, "scriptPath-missing");
+    assert.strictEqual(detail.nodeBin, "/node");
+    assert.strictEqual(detail.scriptPath, "/app/hooks/zcode-hook.js");
+  });
+
+  it("rejects a ZCode process hook with a non-canonical event argv", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    config.hooks.events.Stop[0].hooks[0].args[1] = "PreToolUse";
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.brokenHookEvent, "Stop");
+    assert.strictEqual(detail.hookCommandIssue, "process-shape-invalid");
+  });
+
+  it("rejects a ZCode process hook with a non-canonical timeout", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    config.hooks.events.SessionStart[0].hooks[0].timeoutMs = 30000;
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.brokenHookEvent, "SessionStart");
+    assert.strictEqual(detail.hookCommandIssue, "process-shape-invalid");
+  });
+
+  it("still validates legacy Windows EncodedCommand hooks before migration", () => {
+    const descriptor = zcodeDescriptor();
+    const scriptPath = "D:/app/hooks/zcode-hook.js";
+    writeJson(descriptor.configPath, zcodeHooksConfig((event) => ({
+      type: "command",
+      command: buildZcodeHookCommand(
         "C:\\Program Files\\nodejs\\node.exe",
         scriptPath,
         event,
@@ -1116,20 +1204,21 @@ describe("checkAgentIntegrations", () => {
           platform: "win32",
           powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
         }
-      )
-    ));
+      ),
+      timeoutMs: 30000,
+    })));
 
+    const seen = [];
     const detail = runOne(descriptor, {
       platform: "win32",
       validateCommand: (command) => {
-        assert.ok(command.includes("-EncodedCommand"), `unexpected command: ${command}`);
+        seen.push(command);
         return { ok: true, nodeBin: "C:\\Program Files\\nodejs\\node.exe", scriptPath };
       },
     });
 
+    assert.strictEqual(seen.length, ZCODE_HOOK_EVENTS.length);
     assert.strictEqual(detail.status, "ok");
-    assert.strictEqual(detail.commandCount, ZCODE_HOOK_EVENTS.length);
-    assert.strictEqual(detail.scriptPath, scriptPath);
   });
 
   it("validates Qoder state-only hooks through the generic file-mode path", () => {
