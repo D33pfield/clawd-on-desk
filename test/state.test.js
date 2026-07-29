@@ -1379,6 +1379,61 @@ describe("updateSession()", () => {
     }
   });
 
+  it("drops a stale Orca pane key when a producer with no session-start event moves terminal", () => {
+    // antigravity-hook.js posts none of the three session-start spellings, so the
+    // event-name rule never fires for it and a pane key outlived its pane forever.
+    // Its id normalizes payload.conversationId, so resuming the same conversation
+    // from another terminal lands back on this same entry.
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "agentMessage",
+      sourcePid: 100,
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    update(api, { id: "s1", state: "working", event: "agentMessage", sourcePid: 200, wtHwnd: "4660" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, null);
+    assert.strictEqual(api.sessions.get("s1").sourcePid, 200);
+    assert.strictEqual(api.sessions.get("s1").wtHwnd, "4660");
+  });
+
+  it("drops a stale Orca pane key when only the terminal window handle changes", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "agentMessage",
+      sourcePid: 100,
+      wtHwnd: "1111",
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    update(api, { id: "s1", state: "working", event: "agentMessage", sourcePid: 100, wtHwnd: "2222" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, null);
+  });
+
+  it("keeps the Orca pane key when a later event carries no new terminal identity", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "agentMessage",
+      sourcePid: 100,
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+
+    // Most events omit the process-metadata block entirely; treating "absent" as
+    // "changed" would blank the key on the very next event and undo the feature.
+    update(api, { id: "s1", state: "working", event: "agentMessage" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+
+    // Producers are not consistent about the wire type of the pid, and a bare
+    // !== would read 100 and "100" as two different terminals.
+    update(api, { id: "s1", state: "working", event: "agentMessage", sourcePid: "100" });
+    assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+  });
+
   it("keeps Ghostty terminal id sticky and allows focus-only metadata updates", () => {
     update(api, {
       id: "s1",

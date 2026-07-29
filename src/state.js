@@ -321,16 +321,30 @@ function hasConfirmedPermissionAnimationLock() {
 // id, so it merges every session into "default" and a pane key stored there would
 // otherwise never be cleared.
 //
-// antigravity-hook.js has no session-start event at all, so nothing clears a stale
-// key for one of its sessions: resuming the same conversation from a different
-// terminal keeps pointing focus at the old Orca pane until the entry is evicted.
-// Its id normalizes payload.conversationId (falling back to the transcript
-// directory), so a genuinely new conversation gets a new entry and is unaffected.
+// antigravity-hook.js has no session-start event at all, so the event name alone
+// can never clear one of its keys. Its id normalizes payload.conversationId
+// (falling back to the transcript directory), so resuming the same conversation
+// from a different terminal lands back on the same entry — which is why the
+// identity check below exists rather than a longer list of event names.
 const SESSION_START_EVENTS = new Set(["SessionStart", "sessionStart", "agentSpawn"]);
 
-function mergeOrcaPaneKey(orcaPaneKey, existing, event) {
+// A pane key names one specific Orca pane, and focus consults it before the
+// sourcePid/wtHwnd that would otherwise be authoritative. So an event reporting a
+// terminal identity that differs from the stored one means the session moved, and
+// keeping the key would send the user to the old pane instead of the terminal that
+// just reported in. Only values present on BOTH sides count: most events carry no
+// process metadata, and reading "absent" as "moved" would blank the key immediately.
+// Producers disagree on the wire type of the pid, so compare as strings.
+function terminalIdentityChanged(existing, incoming) {
+  if (!existing || !incoming) return false;
+  const differs = (next, stored) => !!next && !!stored && String(next) !== String(stored);
+  return differs(incoming.sourcePid, existing.sourcePid) || differs(incoming.wtHwnd, existing.wtHwnd);
+}
+
+function mergeOrcaPaneKey(orcaPaneKey, existing, event, incoming) {
   if (orcaPaneKey) return orcaPaneKey;
   if (SESSION_START_EVENTS.has(event)) return null;
+  if (terminalIdentityChanged(existing, incoming)) return null;
   return (existing && existing.orcaPaneKey) || null;
 }
 
@@ -1451,7 +1465,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
       const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
       const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
-      const srcOrcaPaneKey = mergeOrcaPaneKey(orcaPaneKey, existing, event);
+      const srcOrcaPaneKey = mergeOrcaPaneKey(orcaPaneKey, existing, event, { sourcePid, wtHwnd });
       const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
       const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
       const srcHost = host || (existing && existing.host) || null;
@@ -1552,7 +1566,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
   const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
   const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
-  const srcOrcaPaneKey = mergeOrcaPaneKey(orcaPaneKey, existing, event);
+  const srcOrcaPaneKey = mergeOrcaPaneKey(orcaPaneKey, existing, event, { sourcePid, wtHwnd });
   const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
   const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
   const srcHost = host || (existing && existing.host) || null;
