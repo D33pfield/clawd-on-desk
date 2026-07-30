@@ -60,24 +60,37 @@ function main(deps = {}) {
   });
 }
 
-function launchApp() {
-  const isPackaged = __dirname.includes("app.asar");
-  const isWin = process.platform === "win32";
-  const isMac = process.platform === "darwin";
+function launchApp(options = {}) {
+  const hooksDir = options.hooksDir || __dirname;
+  const platform = options.platform || process.platform;
+  const spawnProcess = options.spawn || spawn;
+  const isPackaged = hooksDir.includes("app.asar");
+  const isWin = platform === "win32";
+  const isMac = platform === "darwin";
 
   try {
     if (isPackaged) {
       if (isWin) {
         // __dirname: <install>/resources/app.asar.unpacked/hooks
         // exe:       <install>/Clawd on Desk.exe
-        const installDir = path.resolve(__dirname, "..", "..", "..");
+        const installDir = path.resolve(hooksDir, "..", "..", "..");
         const exe = path.join(installDir, "Clawd on Desk.exe");
-        spawn(exe, [], { detached: true, stdio: "ignore" }).unref();
+        spawnProcess(exe, [], { detached: true, stdio: "ignore" }).unref();
       } else if (isMac) {
         // __dirname: <name>.app/Contents/Resources/app.asar.unpacked/hooks
         // .app bundle: 4 levels up
-        const appBundle = path.resolve(__dirname, "..", "..", "..", "..");
-        spawn("open", ["-a", appBundle], {
+        const appBundle = path.resolve(hooksDir, "..", "..", "..", "..");
+        const executable = path.join(
+          appBundle,
+          "Contents",
+          "MacOS",
+          path.basename(appBundle, ".app")
+        );
+        // Launch the bundle executable directly. LaunchServices can create a
+        // process without bringing an unpacked or unregistered bundle to a
+        // ready state, which drops the cold SessionStart during packaged
+        // smoke testing.
+        spawnProcess(executable, [], {
           detached: true,
           stdio: "ignore",
         }).unref();
@@ -89,20 +102,20 @@ function launchApp() {
         //   install:   3 levels up
         const appImage = process.env.APPIMAGE;
         if (appImage) {
-          spawn(appImage, [], { detached: true, stdio: "ignore" }).unref();
+          spawnProcess(appImage, [], { detached: true, stdio: "ignore" }).unref();
         } else {
-          const installDir = path.resolve(__dirname, "..", "..", "..");
+          const installDir = path.resolve(hooksDir, "..", "..", "..");
           const exe = path.join(installDir, "clawd-on-desk");
-          spawn(exe, [], { detached: true, stdio: "ignore" }).unref();
+          spawnProcess(exe, [], { detached: true, stdio: "ignore" }).unref();
         }
       }
     } else {
       // Source / development mode: start Electron directly so Windows does not
       // flash a console through the cmd/npm/launch.js process chain.
-      const projectDir = path.resolve(__dirname, "..");
-      const electron = require("electron");
+      const projectDir = path.resolve(hooksDir, "..");
+      const electron = options.electron || require("electron");
       const launchConfig = buildElectronLaunchConfig(projectDir);
-      spawn(electron, launchConfig.args, {
+      spawnProcess(electron, launchConfig.args, {
         cwd: launchConfig.cwd,
         detached: true,
         stdio: "ignore",

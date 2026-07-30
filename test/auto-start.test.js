@@ -7,6 +7,7 @@ const {
   INITIAL_DISCOVER_TIMEOUT_MS,
   STARTUP_DISCOVER_TIMEOUT_MS,
   waitForClawdPort,
+  launchApp,
   main,
 } = require("../hooks/auto-start");
 
@@ -105,5 +106,31 @@ test("waitForClawdPort gives up after the startup deadline", async () => {
     ["timer", 100],
     ["discover", 10, 300],
     ["done", null, 300],
+  ]);
+});
+
+test("packaged macOS auto-start launches the exact bundle executable", () => {
+  const calls = [];
+  const hooksDir = "/tmp/Clawd on Desk.app/Contents/Resources/app.asar.unpacked/hooks";
+  launchApp({
+    platform: "darwin",
+    hooksDir,
+    spawn(command, args, options) {
+      calls.push({ command, args, options });
+      return {
+        unref() {
+          calls.push("unref");
+        },
+      };
+    },
+  });
+
+  assert.deepStrictEqual(calls, [
+    {
+      command: "/tmp/Clawd on Desk.app/Contents/MacOS/Clawd on Desk",
+      args: [],
+      options: { detached: true, stdio: "ignore" },
+    },
+    "unref",
   ]);
 });
