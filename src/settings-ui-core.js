@@ -30,6 +30,7 @@
     || ((data) => data);
   const applyAnimationPosterPayloadToRuntime = animMergeApi.applyAnimationPosterPayload
     || (() => ({ valid: false, stored: false, applied: false }));
+  const selectPickerApi = root.ClawdLanguagePicker || {};
 
   const shortcutApi = root.ClawdShortcutActions || {};
   const SHORTCUT_ACTIONS = shortcutApi.SHORTCUT_ACTIONS || {};
@@ -77,6 +78,8 @@
       soundSummary: null,
       soundVolume: null,
       textScale: null,
+      settingsSelects: new Set(),
+      aboutAutoUpdate: null,
     },
     shortcutRecordingActionId: null,
     shortcutRecordingError: "",
@@ -350,6 +353,21 @@
     return section;
   }
 
+  function buildSettingsSelect(config = {}) {
+    const factory = selectPickerApi.createSettingsSelect || selectPickerApi.createLanguagePicker;
+    if (typeof factory !== "function") {
+      throw new Error("language-picker.js failed to load before settings-ui-core.js");
+    }
+    const className = ["settings-select", config.className || ""].filter(Boolean).join(" ");
+    const control = factory({
+      ...config,
+      className,
+      lockWhilePending: config.lockWhilePending !== false,
+    });
+    state.mountedControls.settingsSelects.add(control);
+    return control;
+  }
+
   function readCollapsedGroupState() {
     try {
       const raw = localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY);
@@ -452,6 +470,13 @@
       body.style.setProperty("--collapsible-body-height", measureCollapsibleBodyHeight());
     }
 
+    function refreshCollapsibleHeight() {
+      if (collapsed || !group.classList.contains("expanding")) return;
+      requestAnimationFrame(() => {
+        if (!collapsed && group.classList.contains("expanding")) setExpandedBodyHeight();
+      });
+    }
+
     function setBodyInteractivity(isCollapsed) {
       body.setAttribute("aria-hidden", isCollapsed ? "true" : "false");
       if ("inert" in body) {
@@ -548,6 +573,7 @@
     requestAnimationFrame(() => {
       if (!collapsed) body.style.setProperty("--collapsible-body-height", "none");
     });
+    group.refreshCollapsibleHeight = refreshCollapsibleHeight;
     return group;
   }
 
@@ -858,6 +884,10 @@
     if (state.mountedControls.textScale && typeof state.mountedControls.textScale.dispose === "function") {
       state.mountedControls.textScale.dispose();
     }
+    for (const control of state.mountedControls.settingsSelects) {
+      if (control && typeof control.dispose === "function") control.dispose();
+    }
+    state.mountedControls.settingsSelects.clear();
     state.mountedControls.generalSwitches.clear();
     state.mountedControls.bubblePolicyControls.clear();
     state.mountedControls.sessionCleanupControls.clear();
@@ -875,6 +905,7 @@
     state.mountedControls.soundSummary = null;
     state.mountedControls.soundVolume = null;
     state.mountedControls.textScale = null;
+    state.mountedControls.aboutAutoUpdate = null;
   }
 
   function syncMountedSizeControl({ fromBroadcast = false } = {}) {
@@ -1461,6 +1492,7 @@
     attachAnimatedSwitch,
     buildSwitchRow,
     buildSection,
+    buildSettingsSelect,
     buildCollapsibleGroup,
     createDisclosureChevron,
     attachActivation,

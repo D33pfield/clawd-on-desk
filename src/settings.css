@@ -535,6 +535,9 @@ html, body {
 .collapsible-group.collapsing .collapsible-group-body {
   pointer-events: none;
 }
+.collapsible-group:not(.collapsed):has(.language-picker.open) > .collapsible-group-body {
+  overflow: visible;
+}
 .agent-subgroup .collapsible-group-body {
   padding: 0;
 }
@@ -944,16 +947,17 @@ html, body {
   min-width: min(100%, 260px);
 }
 .agent-custom-tools-section .custom-tool-discovery-row {
-  align-items: stretch;
-  flex-direction: column;
-  gap: 14px;
-  padding: 18px;
+  align-items: center;
+  flex-direction: row;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px 18px;
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
   background: color-mix(in srgb, var(--panel-bg) 94%, var(--accent) 6%);
 }
 .agent-custom-tools-section .row-text {
-  flex: 0 0 auto;
-  width: 100%;
+  flex: 1 1 360px;
+  min-width: 0;
 }
 .agent-custom-tools-section .row-label {
   color: var(--text-primary);
@@ -974,6 +978,16 @@ html, body {
   flex-wrap: wrap;
   gap: 10px;
   min-width: 0;
+}
+@media (max-width: 760px) {
+  .agent-custom-tools-section .custom-tool-discovery-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .agent-custom-tools-section .row-text {
+    flex-basis: auto;
+  }
 }
 /* Needs the extra .soft-btn to outrank the later `.soft-btn.accent` tinted
    rule — at equal specificity source order wins and the primary action
@@ -1311,32 +1325,20 @@ html, body {
   opacity: 0.48;
   cursor: not-allowed;
 }
-.pet-tint-select,
-.pet-accessory-select {
+.settings-select {
   min-width: 176px;
   max-width: 240px;
-  padding: 7px 30px 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel-bg);
-  color: var(--text-primary);
-  font: inherit;
-  cursor: pointer;
+  width: 220px;
 }
-.pet-tint-select:hover:not(:disabled),
-.pet-tint-select:focus-visible,
-.pet-accessory-select:hover:not(:disabled),
-.pet-accessory-select:focus-visible {
-  border-color: var(--accent);
-  outline: none;
+.settings-select .language-picker-trigger {
+  height: 38px;
 }
-.pet-tint-select.pending,
-.pet-tint-select:disabled,
-.pet-accessory-select.pending,
-.pet-accessory-select:disabled {
-  cursor: wait;
+.settings-select.pending .language-picker-trigger,
+.settings-select.disabled .language-picker-trigger {
   opacity: 0.62;
 }
+.settings-select.pending .language-picker-trigger { cursor: progress; }
+.settings-select.disabled .language-picker-trigger { cursor: not-allowed; }
 .codex-permission-mode-segmented {
   --codex-permission-mode-active-index: 0;
   position: relative;
@@ -3724,7 +3726,7 @@ html, body {
   border-color: var(--accent);
 }
 .tg-approval-output-select {
-  min-width: 180px;
+  min-width: 220px;
 }
 
 .feishu-approval-secrets-grid {

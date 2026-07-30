@@ -352,64 +352,47 @@
 
     const control = document.createElement("div");
     control.className = "row-control";
-    const select = document.createElement("select");
-    select.className = "pet-tint-select";
-    select.setAttribute("aria-label", t("rowPetColor"));
     const options = getTintOptions();
-    for (const entry of options) {
-      const option = document.createElement("option");
-      option.value = entry.id;
-      option.textContent = t(entry.labelKey);
-      select.appendChild(option);
-    }
-    if (options.length === 0) {
-      const option = document.createElement("option");
-      option.value = "none";
-      option.textContent = t("tintNone");
-      select.appendChild(option);
-      select.disabled = true;
-    }
-
-    function syncFromSnapshot() {
-      select.value = getThemeTintId(theme.id, options);
-      select.classList.remove("pending");
-      select.disabled = options.length === 0;
-    }
-
-    select.addEventListener("change", () => {
-      if (select.disabled || select.classList.contains("pending")) return;
-      const next = select.value;
-      const committed = getThemeTintId(theme.id, options);
-      if (next === committed) return;
-      const current = state.snapshot && state.snapshot.petTint;
-      const nextMap = current && typeof current === "object" && !Array.isArray(current)
-        ? { ...current }
-        : {};
-      if (next === "none") delete nextMap[theme.id];
-      else nextMap[theme.id] = next;
-      select.classList.add("pending");
-      select.disabled = true;
-      Promise.resolve(window.settingsAPI.update("petTint", nextMap))
-        .then((result) => {
-          if (result && result.status === "ok") return;
-          const message = (result && result.message) || "unknown error";
-          ops.showToast(t("toastSaveFailed") + message, { error: true });
-          syncFromSnapshot();
-        })
-        .catch((err) => {
-          const message = (err && err.message) || "unknown error";
-          ops.showToast(t("toastSaveFailed") + message, { error: true });
-          syncFromSnapshot();
-        })
-        .finally(() => {
-          if (document.body.contains(select)) {
-            select.classList.remove("pending");
-            select.disabled = options.length === 0;
-          }
-        });
+    const pickerOptions = options.length > 0
+      ? options.map((entry) => ({ value: entry.id, label: t(entry.labelKey) }))
+      : [{ value: "none", label: t("tintNone") }];
+    const picker = helpers.buildSettingsSelect({
+      value: getThemeTintId(theme.id, options),
+      options: pickerOptions,
+      ariaLabel: t("rowPetColor"),
+      className: "pet-tint-select",
+      disabled: options.length === 0,
+      onChange(next) {
+        const committed = getThemeTintId(theme.id, options);
+        if (next === committed) return true;
+        const current = state.snapshot && state.snapshot.petTint;
+        const nextMap = current && typeof current === "object" && !Array.isArray(current)
+          ? { ...current }
+          : {};
+        if (next === "none") delete nextMap[theme.id];
+        else nextMap[theme.id] = next;
+        return Promise.resolve(window.settingsAPI.update("petTint", nextMap))
+          .then((result) => {
+            if (result && result.status === "ok") return true;
+            const message = (result && result.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+            return false;
+          })
+          .catch((err) => {
+            const message = (err && err.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+            return false;
+          });
+      },
     });
 
-    control.appendChild(select);
+    function syncFromSnapshot() {
+      picker.setValue(getThemeTintId(theme.id, options));
+      picker.setPending(false);
+      picker.setDisabled(options.length === 0);
+    }
+
+    control.appendChild(picker.element);
     row.appendChild(text);
     row.appendChild(control);
     syncFromSnapshot();
@@ -433,64 +416,47 @@
 
     const control = document.createElement("div");
     control.className = "row-control";
-    const select = document.createElement("select");
-    select.className = "pet-accessory-select";
-    select.setAttribute("aria-label", t("rowPetAccessory"));
     const options = getAccessoryOptions();
-    for (const entry of options) {
-      const option = document.createElement("option");
-      option.value = entry.id;
-      option.textContent = t(entry.labelKey);
-      select.appendChild(option);
-    }
-    if (options.length === 0) {
-      const option = document.createElement("option");
-      option.value = "none";
-      option.textContent = t("accessoryNone");
-      select.appendChild(option);
-      select.disabled = true;
-    }
-
-    function syncFromSnapshot() {
-      select.value = getThemeAccessoryId(theme.id, options);
-      select.classList.remove("pending");
-      select.disabled = options.length === 0;
-    }
-
-    select.addEventListener("change", () => {
-      if (select.disabled || select.classList.contains("pending")) return;
-      const next = select.value;
-      const committed = getThemeAccessoryId(theme.id, options);
-      if (next === committed) return;
-      const current = state.snapshot && state.snapshot.petAccessory;
-      const nextMap = current && typeof current === "object" && !Array.isArray(current)
-        ? { ...current }
-        : {};
-      if (next === "none") delete nextMap[theme.id];
-      else nextMap[theme.id] = next;
-      select.classList.add("pending");
-      select.disabled = true;
-      Promise.resolve(window.settingsAPI.update("petAccessory", nextMap))
-        .then((result) => {
-          if (result && result.status === "ok") return;
-          const message = (result && result.message) || "unknown error";
-          ops.showToast(t("toastSaveFailed") + message, { error: true });
-          syncFromSnapshot();
-        })
-        .catch((err) => {
-          const message = (err && err.message) || "unknown error";
-          ops.showToast(t("toastSaveFailed") + message, { error: true });
-          syncFromSnapshot();
-        })
-        .finally(() => {
-          if (document.body.contains(select)) {
-            select.classList.remove("pending");
-            select.disabled = options.length === 0;
-          }
-        });
+    const pickerOptions = options.length > 0
+      ? options.map((entry) => ({ value: entry.id, label: t(entry.labelKey) }))
+      : [{ value: "none", label: t("accessoryNone") }];
+    const picker = helpers.buildSettingsSelect({
+      value: getThemeAccessoryId(theme.id, options),
+      options: pickerOptions,
+      ariaLabel: t("rowPetAccessory"),
+      className: "pet-accessory-select",
+      disabled: options.length === 0,
+      onChange(next) {
+        const committed = getThemeAccessoryId(theme.id, options);
+        if (next === committed) return true;
+        const current = state.snapshot && state.snapshot.petAccessory;
+        const nextMap = current && typeof current === "object" && !Array.isArray(current)
+          ? { ...current }
+          : {};
+        if (next === "none") delete nextMap[theme.id];
+        else nextMap[theme.id] = next;
+        return Promise.resolve(window.settingsAPI.update("petAccessory", nextMap))
+          .then((result) => {
+            if (result && result.status === "ok") return true;
+            const message = (result && result.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+            return false;
+          })
+          .catch((err) => {
+            const message = (err && err.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+            return false;
+          });
+      },
     });
 
-    control.appendChild(select);
+    function syncFromSnapshot() {
+      picker.setValue(getThemeAccessoryId(theme.id, options));
+      picker.setPending(false);
+      picker.setDisabled(options.length === 0);
+    }
+
+    control.appendChild(picker.element);
     row.appendChild(text);
     row.appendChild(control);
     syncFromSnapshot();

@@ -1,6 +1,7 @@
 "use strict";
 
 (function initSettingsTabAbout(root) {
+  let state = null;
   let runtime = null;
   let helpers = null;
   let ops = null;
@@ -319,14 +320,71 @@
       autoUpdateLabelWrap.appendChild(autoUpdateDesc);
       const autoUpdateValue = document.createElement("div");
       autoUpdateValue.className = "about-info-value";
-      const autoUpdateBox = document.createElement("input");
-      autoUpdateBox.type = "checkbox";
-      autoUpdateBox.checked = safe.autoUpdateCheck !== false;
-      autoUpdateBox.addEventListener("change", () => {
-        if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") return;
-        window.settingsAPI.update("autoUpdateCheck", autoUpdateBox.checked).catch(() => {});
+      const autoUpdateSwitch = document.createElement("div");
+      autoUpdateSwitch.className = "switch about-auto-update-switch";
+      autoUpdateSwitch.setAttribute("role", "switch");
+      autoUpdateSwitch.setAttribute("tabindex", "0");
+      autoUpdateSwitch.setAttribute("aria-label", t("autoUpdateCheck"));
+      let committedAutoUpdate = safe.autoUpdateCheck !== false;
+      let autoUpdatePending = false;
+
+      function paintAutoUpdate(value, pending = autoUpdatePending) {
+        helpers.setSwitchVisual(autoUpdateSwitch, value, { pending });
+        autoUpdateSwitch.classList.toggle("disabled", pending);
+        autoUpdateSwitch.setAttribute("aria-disabled", pending ? "true" : "false");
+      }
+
+      function syncAutoUpdateFromSnapshot() {
+        const snapshotHasValue = state.snapshot
+          && Object.prototype.hasOwnProperty.call(state.snapshot, "autoUpdateCheck");
+        committedAutoUpdate = snapshotHasValue
+          ? state.snapshot.autoUpdateCheck !== false
+          : runtime.about.infoCache.autoUpdateCheck !== false;
+        runtime.about.infoCache.autoUpdateCheck = committedAutoUpdate;
+        autoUpdatePending = false;
+        paintAutoUpdate(committedAutoUpdate, false);
+      }
+
+      function toggleAutoUpdate() {
+        if (autoUpdatePending || !window.settingsAPI || typeof window.settingsAPI.update !== "function") return;
+        const previous = committedAutoUpdate;
+        const next = !committedAutoUpdate;
+        committedAutoUpdate = next;
+        autoUpdatePending = true;
+        runtime.about.infoCache.autoUpdateCheck = next;
+        paintAutoUpdate(next, true);
+        Promise.resolve(window.settingsAPI.update("autoUpdateCheck", next))
+          .then((result) => {
+            if (!result || result.status !== "ok") {
+              committedAutoUpdate = previous;
+              runtime.about.infoCache.autoUpdateCheck = previous;
+              ops.showToast((result && result.message) || t("toastSaveFailed"), { error: true });
+            }
+          })
+          .catch((err) => {
+            committedAutoUpdate = previous;
+            runtime.about.infoCache.autoUpdateCheck = previous;
+            const message = err && err.message ? err.message : "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+          })
+          .finally(() => {
+            autoUpdatePending = false;
+            if (document.body.contains(autoUpdateSwitch)) paintAutoUpdate(committedAutoUpdate, false);
+          });
+      }
+
+      autoUpdateSwitch.addEventListener("click", toggleAutoUpdate);
+      autoUpdateSwitch.addEventListener("keydown", (event) => {
+        if (event.key !== " " && event.key !== "Enter") return;
+        event.preventDefault();
+        toggleAutoUpdate();
       });
-      autoUpdateValue.appendChild(autoUpdateBox);
+      state.mountedControls.aboutAutoUpdate = {
+        element: autoUpdateSwitch,
+        syncFromSnapshot: syncAutoUpdateFromSnapshot,
+      };
+      paintAutoUpdate(committedAutoUpdate, false);
+      autoUpdateValue.appendChild(autoUpdateSwitch);
       autoUpdateRow.appendChild(autoUpdateLabelWrap);
       autoUpdateRow.appendChild(autoUpdateValue);
       infoSection.appendChild(autoUpdateRow);
@@ -368,12 +426,22 @@
   }
 
   function init(core) {
+    state = core.state;
     runtime = core.runtime;
     helpers = core.helpers;
     ops = core.ops;
     i18n = core.i18n;
     core.tabs.about = {
       render,
+      patchInPlace(changes) {
+        if (!changes || Object.keys(changes).some((key) => key !== "autoUpdateCheck")) return false;
+        if (!Object.prototype.hasOwnProperty.call(changes, "autoUpdateCheck")) return false;
+        const control = state.mountedControls.aboutAutoUpdate;
+        if (!control || !document.body.contains(control.element)) return false;
+        runtime.about.infoCache.autoUpdateCheck = changes.autoUpdateCheck !== false;
+        control.syncFromSnapshot();
+        return true;
+      },
     };
   }
 

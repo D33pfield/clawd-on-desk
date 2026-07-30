@@ -1111,20 +1111,18 @@
     h1.textContent = t("animOverridesTitle");
     parent.appendChild(h1);
 
-    // "On / off" subtab: which interrupt reactions play at all. It reads
-    // themeOverrides straight from the snapshot (no asset data needed), so it
-    // renders before the animationOverridesData loading gate and hands off to
-    // the anim-map module. Its own subtitle carries the explanatory copy.
-    if (runtime.animOverridesSubtab === "map") {
-      parent.appendChild(buildSubtabSwitcher());
-      root.ClawdSettingsTabAnimMap.renderMapSubtab(parent);
-      return;
-    }
-
     const subtitle = document.createElement("p");
     subtitle.className = "subtitle";
     subtitle.textContent = t("animOverridesSubtitle");
     parent.appendChild(subtitle);
+    parent.appendChild(buildSubtabSwitcher());
+
+    // "On / off" reads themeOverrides directly, so it does not wait for the
+    // animation asset payload used by the other two subtabs.
+    if (runtime.animOverridesSubtab === "map") {
+      root.ClawdSettingsTabAnimMap.renderMapSubtab(parent);
+      return;
+    }
 
     if (runtime.animationOverridesData === null) {
       const loading = document.createElement("div");
@@ -1140,8 +1138,6 @@
     reconcilePendingAnimationOverrideEdits();
     reconcilePendingWideHitboxOverrideEdits();
     const data = runtime.animationOverridesData;
-
-    parent.appendChild(buildSubtabSwitcher());
 
     if (runtime.animOverridesSubtab === "sounds") {
       parent.appendChild(buildSoundOverridesSection(data));
@@ -1174,11 +1170,23 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = entry.label;
+      btn.dataset.animOverridesSubtab = entry.key;
       if (entry.key === current) btn.classList.add("active");
       btn.addEventListener("click", () => {
         if (runtime.animOverridesSubtab === entry.key) return;
+        const scroller = document.getElementById("content");
+        const previousScrollTop = scroller ? scroller.scrollTop : 0;
         runtime.animOverridesSubtab = entry.key;
         ops.requestRender({ content: true });
+        if (scroller) {
+          scroller.scrollTop = previousScrollTop;
+          requestAnimationFrame(() => {
+            const activeButton = scroller.querySelector(".anim-override-subtabs .active");
+            if (activeButton && typeof activeButton.focus === "function") {
+              try { activeButton.focus({ preventScroll: true }); } catch (_) { activeButton.focus(); }
+            }
+          });
+        }
       });
       group.appendChild(btn);
     }

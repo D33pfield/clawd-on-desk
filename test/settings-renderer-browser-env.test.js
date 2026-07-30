@@ -888,6 +888,20 @@ function findAncestorByClass(el, className) {
   return null;
 }
 
+function choosePickerOption(picker, value) {
+  picker.querySelector(".language-picker-trigger").dispatchEvent({ type: "click" });
+  const option = picker.querySelectorAll(".language-picker-option")
+    .find((candidate) => candidate.dataset.lang === String(value));
+  assert.ok(option, `picker option ${value} should exist`);
+  option.dispatchEvent({ type: "click" });
+}
+
+function getSelectedPickerValue(picker) {
+  const selected = picker.querySelectorAll(".language-picker-option")
+    .find((option) => option.classList.contains("selected"));
+  return selected ? selected.dataset.lang : null;
+}
+
 function loadThemeTabForTest({
   themes,
   snapshot,
@@ -895,6 +909,7 @@ function loadThemeTabForTest({
   petAccessoryOptions,
   settingsAPI = {},
 } = {}) {
+  const documentListeners = new Map();
   const body = new FakeElement("body");
   const content = new FakeElement("main");
   content.id = "content";
@@ -909,6 +924,14 @@ function loadThemeTabForTest({
     getElementById(id) {
       if (id === "content") return content;
       return null;
+    },
+    addEventListener(type, handler) {
+      if (!documentListeners.has(type)) documentListeners.set(type, new Set());
+      documentListeners.get(type).add(handler);
+    },
+    removeEventListener(type, handler) {
+      const listeners = documentListeners.get(type);
+      if (listeners) listeners.delete(handler);
     },
   };
 
@@ -977,6 +1000,7 @@ function loadThemeTabForTest({
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-theme.js"), "utf8"), context);
@@ -1256,6 +1280,7 @@ function loadTelegramApprovalTabForTest({
   settingsAPI = {},
   confirm = () => true,
 } = {}) {
+  const documentListeners = new Map();
   const body = new FakeElement("body");
   const content = new FakeElement("main");
   content.id = "content";
@@ -1271,6 +1296,14 @@ function loadTelegramApprovalTabForTest({
     getElementById(id) {
       if (id === "content") return content;
       return null;
+    },
+    addEventListener(type, handler) {
+      if (!documentListeners.has(type)) documentListeners.set(type, new Set());
+      documentListeners.get(type).add(handler);
+    },
+    removeEventListener(type, handler) {
+      const listeners = documentListeners.get(type);
+      if (listeners) listeners.delete(handler);
     },
   };
   const api = {
@@ -1318,6 +1351,7 @@ function loadTelegramApprovalTabForTest({
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8"), context);
 
   const core = {
@@ -1336,6 +1370,9 @@ function loadTelegramApprovalTabForTest({
         },
       },
       activeTab: "telegram-approval",
+      mountedControls: {
+        settingsSelects: new Set(),
+      },
     },
     runtime: {},
     helpers: {
@@ -1349,6 +1386,11 @@ function loadTelegramApprovalTabForTest({
         el.classList.toggle("on", !!checked);
         el.classList.toggle("pending", !!options.pending);
         el.setAttribute("aria-checked", checked ? "true" : "false");
+      },
+      buildSettingsSelect: (config) => {
+        const control = context.ClawdLanguagePicker.createSettingsSelect(config);
+        core.state.mountedControls.settingsSelects.add(control);
+        return control;
       },
       // Mirror the real buildCollapsibleGroup just enough that header content,
       // title/summary, and children all end up in the DOM tree; collapsed
@@ -1409,6 +1451,69 @@ function loadTelegramApprovalTabForTest({
   return { core, content, updates, commands, render, renderRequests, timers };
 }
 
+function loadAboutTabForTest({ snapshot = {}, update } = {}) {
+  const body = new FakeElement("body");
+  const content = new FakeElement("main");
+  content.id = "content";
+  body.appendChild(content);
+  const updateCalls = [];
+  const toasts = [];
+  const document = {
+    body,
+    createElement: (tagName) => new FakeElement(tagName),
+    getElementById: (id) => (id === "content" ? content : null),
+  };
+  const context = {
+    console,
+    document,
+    window: null,
+    globalThis: null,
+    settingsAPI: {
+      getAboutInfo: () => Promise.resolve({
+        version: "1.0.0",
+        autoUpdateCheck: snapshot.autoUpdateCheck !== false,
+      }),
+      update: (key, value) => {
+        updateCalls.push({ key, value });
+        return update ? update(key, value) : Promise.resolve({ status: "ok" });
+      },
+      command: () => Promise.resolve({ status: "ok" }),
+      checkForUpdates: () => Promise.resolve({ status: "ok" }),
+    },
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-about.js"), "utf8"), context);
+
+  const core = {
+    state: {
+      snapshot: { autoUpdateCheck: true, ...snapshot },
+      activeTab: "about",
+      mountedControls: { aboutAutoUpdate: null },
+    },
+    runtime: { about: { infoCache: null, clickCount: 0 } },
+    helpers: {
+      t: (key) => key,
+      setSwitchVisual: (element, checked, options = {}) => {
+        element.classList.toggle("on", !!checked);
+        element.classList.toggle("pending", !!options.pending);
+        element.setAttribute("aria-checked", checked ? "true" : "false");
+      },
+      openExternalSafe: () => {},
+      showSettingsConfirmModal: () => Promise.resolve("cancel"),
+    },
+    ops: {
+      showToast: (message, options) => toasts.push({ message, options }),
+    },
+    i18n: { CONTRIBUTORS: [], MAINTAINERS: [] },
+    tabs: {},
+  };
+  context.ClawdSettingsTabAbout.init(core);
+  core.tabs.about.render(content, core);
+  return { core, content, updateCalls, toasts };
+}
+
 function loadAnimOverridesTabForTest({
   runtime,
   modalRoot,
@@ -1418,10 +1523,12 @@ function loadAnimOverridesTabForTest({
   helpersOverrides = {},
 }) {
   const documentListeners = new Map();
+  const content = new FakeElement("main");
+  content.id = "content";
   const document = {
     body: new FakeElement("body"),
     createElement: (tagName) => new FakeElement(tagName),
-    getElementById: (id) => (id === "modalRoot" ? modalRoot : null),
+    getElementById: (id) => (id === "modalRoot" ? modalRoot : id === "content" ? content : null),
     querySelector: () => null,
     addEventListener(type, handler) {
       if (!documentListeners.has(type)) documentListeners.set(type, new Set());
@@ -1432,6 +1539,7 @@ function loadAnimOverridesTabForTest({
       if (listeners) listeners.delete(handler);
     },
   };
+  document.body.appendChild(content);
   const context = {
     console,
     document,
@@ -1503,6 +1611,7 @@ function loadAnimOverridesTabForTest({
   context.ClawdSettingsTabAnimOverrides.init(core);
   return {
     core,
+    content,
     document,
     documentListenerCount: (type) => (documentListeners.get(type) || new Set()).size,
   };
@@ -1762,6 +1871,49 @@ describe("settings renderer browser environment", () => {
     for (const login of VERIFIED_GITHUB_CONTRIBUTORS) {
       assert.ok(i18nBundle.CONTRIBUTORS.includes(login), `About contributors should include ${login}`);
     }
+  });
+
+  it("updates the About auto-update switch in place and blocks rapid duplicate saves", async () => {
+    const save = createDeferred();
+    const harness = loadAboutTabForTest({
+      snapshot: { autoUpdateCheck: true },
+      update: () => save.promise,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const autoUpdateSwitch = harness.content.querySelector(".about-auto-update-switch");
+    assert.ok(autoUpdateSwitch);
+    autoUpdateSwitch.dispatchEvent({ type: "click" });
+    autoUpdateSwitch.dispatchEvent({ type: "click" });
+    assert.deepStrictEqual(harness.updateCalls, [{ key: "autoUpdateCheck", value: false }]);
+    assert.equal(autoUpdateSwitch.classList.contains("pending"), true);
+    assert.equal(autoUpdateSwitch.getAttribute("aria-disabled"), "true");
+
+    save.resolve({ status: "ok" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(autoUpdateSwitch.classList.contains("pending"), false);
+    assert.equal(autoUpdateSwitch.getAttribute("aria-checked"), "false");
+
+    harness.core.state.snapshot.autoUpdateCheck = true;
+    assert.equal(harness.core.tabs.about.patchInPlace({ autoUpdateCheck: true }), true);
+    assert.strictEqual(harness.content.querySelector(".about-auto-update-switch"), autoUpdateSwitch);
+    assert.equal(autoUpdateSwitch.getAttribute("aria-checked"), "true");
+  });
+
+  it("rolls the About auto-update switch back when persistence fails", async () => {
+    const harness = loadAboutTabForTest({
+      snapshot: { autoUpdateCheck: true },
+      update: () => Promise.resolve({ status: "error", message: "disk full" }),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    const autoUpdateSwitch = harness.content.querySelector(".about-auto-update-switch");
+    autoUpdateSwitch.dispatchEvent({ type: "click" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(autoUpdateSwitch.getAttribute("aria-checked"), "true");
+    assert.equal(autoUpdateSwitch.classList.contains("pending"), false);
+    assert.equal(harness.toasts.length, 1);
+    assert.equal(harness.toasts[0].options.error, true);
   });
 
   it("keeps every Telegram retirement gate string in all supported languages", () => {
@@ -2340,13 +2492,16 @@ describe("settings renderer browser environment", () => {
     harness.render();
 
     const select = harness.content.querySelector(".tg-approval-output-select");
-    assert.deepStrictEqual(select.children.map((option) => option.value), ["off", "full"]);
-    select.value = "full";
-    select.dispatchEvent({ type: "change" });
+    assert.deepStrictEqual(
+      select.querySelectorAll(".language-picker-option").map((option) => option.dataset.lang),
+      ["off", "full"]
+    );
+    choosePickerOption(select, "full");
+    await Promise.resolve();
 
     assert.deepStrictEqual(confirmCalls, ["telegramApprovalCompletionOutputFullConfirm"]);
     assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), []);
-    assert.equal(select.value, "off");
+    assert.equal(select.querySelector(".language-picker-value").textContent, "telegramApprovalCompletionOutput_off");
 
     const confirmed = loadTelegramApprovalTabForTest({
       snapshot: {
@@ -2365,8 +2520,7 @@ describe("settings renderer browser environment", () => {
     confirmed.render();
 
     const confirmedSelect = confirmed.content.querySelector(".tg-approval-output-select");
-    confirmedSelect.value = "full";
-    confirmedSelect.dispatchEvent({ type: "change" });
+    choosePickerOption(confirmedSelect, "full");
 
     assert.deepStrictEqual(JSON.parse(JSON.stringify(confirmed.updates)), [{
       key: "tgApproval",
@@ -2953,9 +3107,8 @@ describe("settings renderer browser environment", () => {
 
     const select = harness.content.querySelector(".feishu-approval-timeout-select");
     assert.ok(select, "Feishu timeout select should render");
-    assert.equal(select.value, "15");
-    select.value = "30";
-    select.dispatchEvent({ type: "change" });
+    assert.equal(getSelectedPickerValue(select), "15");
+    choosePickerOption(select, "30");
 
     await Promise.resolve();
     assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates.find((call) => call.key === "feishuApproval"))), {
@@ -4029,8 +4182,10 @@ describe("settings renderer browser environment", () => {
       String.raw`\];`
     ).test(generalSource));
     assert.ok(generalSource.includes("createLanguagePicker"));
-    assert.ok(pickerSource.includes(`className = "language-picker"`));
+    assert.ok(pickerSource.includes("picker.className = `language-picker"));
+    assert.ok(pickerSource.includes(`role", "combobox"`));
     assert.ok(pickerSource.includes(`aria-haspopup", "listbox"`));
+    assert.ok(pickerSource.includes(`aria-controls", menu.id`));
     assert.ok(pickerSource.includes(`role", "listbox"`));
     assert.ok(pickerSource.includes(`aria-hidden", "true"`));
     assert.ok(pickerSource.includes(`role", "option"`));
@@ -4152,6 +4307,39 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getLangValue().textContent, "English");
     assert.strictEqual(trigger.focused, true);
     assert.strictEqual(harness.getToastText(), "Failed: synthetic failure");
+  });
+
+  it("supports Home/End navigation and locks disabled or pending Settings pickers", () => {
+    const harness = loadGeneralLanguageRowForTest({ snapshot: { lang: "en" } });
+    harness.core.ops.requestRender({ content: true });
+    const trigger = harness.getLangTrigger();
+    const options = harness.getLangOptions();
+    trigger.dispatchEvent(createKeyboardEventForTest("ArrowDown"));
+    for (const option of options) option.focused = false;
+    trigger.dispatchEvent(createKeyboardEventForTest("End"));
+    assert.equal(options[options.length - 1].focused, true);
+    for (const option of options) option.focused = false;
+    trigger.dispatchEvent(createKeyboardEventForTest("Home"));
+    assert.equal(options[0].focused, true);
+    assert.equal(trigger.getAttribute("role"), "combobox");
+    assert.equal(trigger.getAttribute("aria-controls"), harness.getLangMenu().id);
+
+    const locked = harness.core.helpers.buildSettingsSelect({
+      value: "a",
+      options: [{ value: "a", label: "A" }, { value: "b", label: "B" }],
+      lockWhilePending: true,
+    });
+    harness.content.appendChild(locked.element);
+    const lockedTrigger = locked.element.querySelector(".language-picker-trigger");
+    locked.setDisabled(true);
+    lockedTrigger.dispatchEvent({ type: "click" });
+    assert.equal(locked.element.classList.contains("open"), false);
+    assert.equal(lockedTrigger.disabled, true);
+    locked.setDisabled(false);
+    locked.setPending(true);
+    lockedTrigger.dispatchEvent({ type: "click" });
+    assert.equal(locked.element.classList.contains("open"), false);
+    assert.equal(lockedTrigger.disabled, true);
   });
 
   it("rolls concurrent failed language saves back to the last committed value", async () => {
@@ -4813,6 +5001,26 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getSwitchMeta("quotaMergeSources").row.style.display, "");
     assert.strictEqual(summary.children.length, 1);
     assert.strictEqual(summary.children[0].textContent, "HUD: off");
+  });
+
+  it("remeasures an expanding quota group when async source options appear", async () => {
+    const sourceCount = createDeferred();
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ quotaMergeSources: false }),
+      settingsAPI: { getQuotaSourceCount: () => sourceCount.promise },
+    });
+    harness.renderContent();
+    const group = harness.content.querySelector(".quota-ring-collapsible");
+    const header = group.querySelector(".collapsible-group-header");
+    const body = group.querySelector(".collapsible-group-body");
+    header.dispatchEvent({ type: "click" });
+    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "40px");
+
+    body.appendChild(new FakeElement("div"));
+    sourceCount.resolve(2);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "80px");
+    assert.equal(harness.getSwitchMeta("quotaMergeSources").row.style.display, "");
   });
 
   it("groups sound and volume into one collapsible control with in-place summary updates", () => {
@@ -5766,14 +5974,13 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelector(".theme-grid"), null);
 
     const select = harness.content.querySelector(".pet-tint-select");
-    assert.strictEqual(select.value, "matcha");
+    assert.strictEqual(getSelectedPickerValue(select), "matcha");
     assert.deepStrictEqual(
-      select.children.map((option) => option.textContent),
+      select.querySelectorAll(".language-picker-option").map((option) => option.textContent),
       ["Default", "🌙 Midnight", "🥇 Gold", "🌸 Vaporwave", "🍵 Matcha", "⬜ Monochrome"]
     );
 
-    select.value = "gold";
-    select.dispatchEvent({ type: "change" });
+    choosePickerOption(select, "gold");
     assert.deepStrictEqual(
       JSON.parse(JSON.stringify(harness.updates)),
       [{
@@ -5781,22 +5988,21 @@ describe("settings renderer browser environment", () => {
         value: { clawd: "gold", cloudling: "vaporwave" },
       }]
     );
-    assert.strictEqual(select.disabled, true);
+    assert.strictEqual(select.querySelector(".language-picker-trigger").disabled, true);
     assert.strictEqual(select.classList.contains("pending"), true);
     await Promise.resolve();
     await Promise.resolve();
     await new Promise((resolve) => setImmediate(resolve));
-    assert.strictEqual(select.disabled, false);
+    assert.strictEqual(select.querySelector(".language-picker-trigger").disabled, false);
     assert.strictEqual(select.classList.contains("pending"), false);
 
     const accessorySelect = harness.content.querySelector(".pet-accessory-select");
-    assert.strictEqual(accessorySelect.value, "wizard-hat");
+    assert.strictEqual(getSelectedPickerValue(accessorySelect), "wizard-hat");
     assert.deepStrictEqual(
-      accessorySelect.children.map((option) => option.textContent),
+      accessorySelect.querySelectorAll(".language-picker-option").map((option) => option.textContent),
       ["None", "Cowboy hat", "Wizard hat", "Halo"]
     );
-    accessorySelect.value = "halo";
-    accessorySelect.dispatchEvent({ type: "change" });
+    choosePickerOption(accessorySelect, "halo");
     assert.deepStrictEqual(
       JSON.parse(JSON.stringify(harness.updates[1])),
       {
@@ -5804,11 +6010,11 @@ describe("settings renderer browser environment", () => {
         value: { clawd: "halo", cloudling: "halo" },
       }
     );
-    assert.strictEqual(accessorySelect.disabled, true);
+    assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").disabled, true);
     await Promise.resolve();
     await Promise.resolve();
     await new Promise((resolve) => setImmediate(resolve));
-    assert.strictEqual(accessorySelect.disabled, false);
+    assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").disabled, false);
 
     harness.content.querySelector(".theme-detail-back").dispatchEvent({ type: "click" });
     assert.ok(harness.content.querySelector(".theme-grid"));
@@ -5995,7 +6201,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(agentsSource.includes('control.className = "custom-tool-wsl-scan"'));
     assert.ok(!agentsSource.includes('toolbar.className = "agent-scan-toolbar"'));
     assert.ok(css.includes(".custom-tool-result-status"));
-    assert.match(css, /\.agent-custom-tools-section \.custom-tool-discovery-row\s*\{[^}]*flex-direction:\s*column;/s);
+    assert.match(css, /\.agent-custom-tools-section \.custom-tool-discovery-row\s*\{[^}]*flex-direction:\s*row;/s);
+    assert.match(css, /@media \(max-width:\s*760px\)\s*\{[\s\S]*?\.agent-custom-tools-section \.custom-tool-discovery-row\s*\{[^}]*flex-direction:\s*column;/);
     // The primary picker must keep a higher-specificity selector than the
     // generic `.soft-btn.accent` tinted rule that follows it, or the cascade
     // falls back to source order and drops the solid accent fill.
@@ -7410,6 +7617,53 @@ describe("settings renderer browser environment", () => {
       harness.core.state.mountedControls.animMapReset,
       "the reset-all control should mount under the subtab"
     );
+  });
+
+  it("keeps Animation subtab headers and scroll position stable across consecutive switches", () => {
+    const harness = loadAnimMapTabForTest({
+      snapshot: { theme: "clawd", themeOverrides: {} },
+    });
+    harness.core.runtime.animationOverridesData = {
+      theme: { id: "clawd", name: "Clawd" },
+      assets: [],
+      sections: [],
+      cards: [],
+      sounds: [],
+    };
+    harness.core.runtime.animOverridesSubtab = "map";
+    const render = () => {
+      harness.content.innerHTML = "";
+      harness.core.tabs.animOverrides.render(harness.content, harness.core);
+    };
+    harness.core.ops.installRenderHooks({ content: render, modal: () => {} });
+    render();
+
+    function headerShape() {
+      return harness.content.children.slice(0, 3).map((child) => ({
+        tag: child.tagName,
+        className: child.className,
+      }));
+    }
+    const expectedHeader = headerShape();
+    assert.deepStrictEqual(expectedHeader, [
+      { tag: "H1", className: "" },
+      { tag: "P", className: "subtitle" },
+      { tag: "DIV", className: "anim-override-subtabs" },
+    ]);
+
+    for (const subtab of ["animations", "sounds", "map"]) {
+      harness.content.scrollTop = 240;
+      const button = harness.content.querySelectorAll("button")
+        .find((candidate) => candidate.dataset.animOverridesSubtab === subtab);
+      assert.ok(button, `${subtab} tab should render`);
+      button.dispatchEvent({ type: "click" });
+      assert.deepStrictEqual(headerShape(), expectedHeader);
+      assert.equal(harness.content.scrollTop, 240);
+      const active = harness.content.querySelectorAll("button")
+        .find((candidate) => candidate.classList.contains("active"));
+      assert.equal(active.dataset.animOverridesSubtab, subtab);
+      assert.equal(active.focused, true);
+    }
   });
 
   it("keeps Animation Map theme override broadcasts in place and syncs the mounted switch", () => {

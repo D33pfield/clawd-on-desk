@@ -1196,29 +1196,26 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
-    const select = document.createElement("select");
-    select.className = "tg-approval-input tg-approval-output-select";
-    select.disabled = view.configPending;
-    for (const value of ["off", "full"]) {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = t("telegramApprovalCompletionOutput_" + value);
-      select.appendChild(option);
-    }
-    select.value = mode;
-    select.addEventListener("change", () => {
-      const nextMode = ["off", "full"].includes(select.value) ? select.value : "off";
-      if (nextMode === mode) return;
-      if (nextMode === "full") {
-        const ok = window.confirm(t("telegramApprovalCompletionOutputFullConfirm"));
-        if (!ok) {
-          select.value = mode;
-          return;
+    const picker = helpers.buildSettingsSelect({
+      value: mode,
+      options: ["off", "full"].map((value) => ({
+        value,
+        label: t("telegramApprovalCompletionOutput_" + value),
+      })),
+      ariaLabel: t("telegramApprovalCompletionOutput"),
+      className: "tg-approval-output-select",
+      disabled: view.configPending,
+      onChange(value) {
+        const nextMode = ["off", "full"].includes(value) ? value : "off";
+        if (nextMode === mode) return true;
+        if (nextMode === "full") {
+          const ok = window.confirm(t("telegramApprovalCompletionOutputFullConfirm"));
+          if (!ok) return false;
         }
-      }
-      saveConfig({ ...cfg, completionOutputMode: nextMode }, { resetDraft: false });
+        return saveConfig({ ...cfg, completionOutputMode: nextMode }, { resetDraft: false });
+      },
     });
-    ctrl.appendChild(select);
+    ctrl.appendChild(picker.element);
     row.appendChild(ctrl);
     return row;
   }
@@ -1719,22 +1716,23 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
-    const select = document.createElement("select");
-    select.className = "tg-approval-input tg-approval-output-select feishu-approval-timeout-select";
-    select.disabled = feishuView.configPending;
-    for (const value of [5, 10, 15, 30, 60]) {
-      const option = document.createElement("option");
-      option.value = String(value);
-      option.textContent = t("feishuApprovalConnectionTimeoutOption").replace("{seconds}", String(value));
-      select.appendChild(option);
-    }
-    select.value = String(cfg.connectionTimeoutSeconds);
-    select.addEventListener("change", () => {
-      const nextTimeout = Number(select.value);
-      if (![5, 10, 15, 30, 60].includes(nextTimeout) || nextTimeout === cfg.connectionTimeoutSeconds) return;
-      saveFeishuConfig({ ...cfg, connectionTimeoutSeconds: nextTimeout }, { resetDraft: false });
+    const picker = helpers.buildSettingsSelect({
+      value: String(cfg.connectionTimeoutSeconds),
+      options: [5, 10, 15, 30, 60].map((value) => ({
+        value: String(value),
+        label: t("feishuApprovalConnectionTimeoutOption").replace("{seconds}", String(value)),
+      })),
+      ariaLabel: t("feishuApprovalConnectionTimeout"),
+      className: "tg-approval-output-select feishu-approval-timeout-select",
+      disabled: feishuView.configPending,
+      onChange(value) {
+        const nextTimeout = Number(value);
+        if (![5, 10, 15, 30, 60].includes(nextTimeout)) return false;
+        if (nextTimeout === cfg.connectionTimeoutSeconds) return true;
+        return saveFeishuConfig({ ...cfg, connectionTimeoutSeconds: nextTimeout }, { resetDraft: false });
+      },
     });
-    ctrl.appendChild(select);
+    ctrl.appendChild(picker.element);
     row.appendChild(ctrl);
     return row;
   }
@@ -1805,50 +1803,54 @@
   function saveConfig(next, options = {}) {
     if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") {
       ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
-      return;
+      return Promise.resolve(false);
     }
     view.configPending = true;
     ops.requestRender({ content: true });
-    window.settingsAPI.update("tgApproval", next).then((result) => {
+    return window.settingsAPI.update("tgApproval", next).then((result) => {
       view.configPending = false;
       if (!result || result.status !== "ok") {
         ops.showToast((result && result.message) || t("toastSaveFailed"), { error: true });
         ops.requestRender({ content: true });
-        return;
+        return false;
       }
       ops.showToast(t("telegramApprovalConfigSaved"));
       if (options.resetDraft !== false) resetFormDraft();
       view.status = null;
       refreshStatus({ forceRender: true });
+      return true;
     }).catch((err) => {
       view.configPending = false;
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
       ops.requestRender({ content: true });
+      return false;
     });
   }
 
   function saveFeishuConfig(next, options = {}) {
     if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") {
       ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
-      return;
+      return Promise.resolve(false);
     }
     feishuView.configPending = true;
     ops.requestRender({ content: true });
-    window.settingsAPI.update("feishuApproval", next).then((result) => {
+    return window.settingsAPI.update("feishuApproval", next).then((result) => {
       feishuView.configPending = false;
       if (!result || result.status !== "ok") {
         ops.showToast((result && result.message) || t("toastSaveFailed"), { error: true });
         ops.requestRender({ content: true });
-        return;
+        return false;
       }
       ops.showToast(tBrand("feishuApprovalConfigSaved"));
       if (options.resetDraft !== false) resetFeishuFormDraft();
       feishuView.status = null;
       refreshFeishuStatus({ forceRender: true });
+      return true;
     }).catch((err) => {
       feishuView.configPending = false;
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
       ops.requestRender({ content: true });
+      return false;
     });
   }
 

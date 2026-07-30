@@ -1,6 +1,8 @@
 "use strict";
 
 (function initLanguagePicker(root) {
+  let nextPickerId = 1;
+
   function normalizeOptions(options) {
     if (!Array.isArray(options)) return [];
     return options.map((option) => {
@@ -17,11 +19,13 @@
     const options = normalizeOptions(config.options);
     const ariaLabel = config.ariaLabel == null ? "" : String(config.ariaLabel);
     const picker = document.createElement("div");
-    picker.className = "language-picker";
+    const extraClassName = config.className == null ? "" : String(config.className).trim();
+    picker.className = `language-picker${extraClassName ? ` ${extraClassName}` : ""}`;
 
     const trigger = document.createElement("button");
     trigger.type = "button";
     trigger.className = "language-picker-trigger";
+    trigger.setAttribute("role", "combobox");
     trigger.setAttribute("aria-haspopup", "listbox");
     trigger.setAttribute("aria-expanded", "false");
 
@@ -35,8 +39,10 @@
 
     const menu = document.createElement("div");
     menu.className = "language-picker-menu";
+    menu.id = `settings-picker-menu-${nextPickerId++}`;
     menu.setAttribute("role", "listbox");
     menu.setAttribute("aria-hidden", "true");
+    trigger.setAttribute("aria-controls", menu.id);
     if (ariaLabel) menu.setAttribute("aria-label", ariaLabel);
 
     const optionElements = [];
@@ -58,6 +64,8 @@
     let committedValue = "";
     let isOpen = false;
     let disposed = false;
+    let disabled = config.disabled === true || optionElements.length === 0;
+    let pending = config.pending === true;
     let changeSeq = 0;
     let latestRequestSeq = 0;
     const pendingChanges = new Map();
@@ -88,6 +96,13 @@
         item.element.setAttribute("aria-selected", selected ? "true" : "false");
         item.element.tabIndex = isOpen && selected ? 0 : -1;
       }
+    }
+
+    function paintInteractivity() {
+      picker.classList.toggle("disabled", disabled);
+      picker.classList.toggle("pending", pending);
+      trigger.disabled = disabled || (config.lockWhilePending === true && pending);
+      trigger.setAttribute("aria-disabled", trigger.disabled ? "true" : "false");
     }
 
     function focusElement(element) {
@@ -208,7 +223,7 @@
 
     function setOpen(next, { focusTrigger = false } = {}) {
       if (disposed) return;
-      isOpen = !!next && optionElements.length > 0;
+      isOpen = !!next && optionElements.length > 0 && !trigger.disabled;
       picker.classList.toggle("open", isOpen);
       trigger.setAttribute("aria-expanded", isOpen ? "true" : "false");
       menu.setAttribute("aria-hidden", isOpen ? "false" : "true");
@@ -229,10 +244,12 @@
 
       const latestPending = pendingChanges.get(latestRequestSeq);
       paintValue(latestPending || committedValue);
+      pending = pendingChanges.size > 0;
+      paintInteractivity();
     }
 
     function choose(value) {
-      if (disposed) return;
+      if (disposed || trigger.disabled) return;
       const entry = findOption(value);
       if (!entry) return;
       if (entry.data.value === activeValue) {
@@ -246,6 +263,8 @@
       const seq = ++changeSeq;
       latestRequestSeq = seq;
       pendingChanges.set(seq, entry.data.value);
+      pending = true;
+      paintInteractivity();
       let result;
       try {
         result = typeof config.onChange === "function"
@@ -284,6 +303,13 @@
       if (event.key === "Escape" && isOpen) {
         event.preventDefault();
         setOpen(false, { focusTrigger: true });
+        return;
+      }
+      if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        setOpen(true);
+        const target = event.key === "Home" ? optionElements[0] : optionElements[optionElements.length - 1];
+        focusElement(target && target.element);
       }
     });
 
@@ -304,6 +330,12 @@
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {
           event.preventDefault();
           moveFocus(index, event.key === "ArrowDown" ? 1 : -1);
+          return;
+        }
+        if (event.key === "Home" || event.key === "End") {
+          event.preventDefault();
+          const target = event.key === "Home" ? optionElements[0] : optionElements[optionElements.length - 1];
+          focusElement(target && target.element);
         }
       });
     }
@@ -327,7 +359,7 @@
 
     paintValue(config.value);
     committedValue = activeValue;
-    trigger.disabled = optionElements.length === 0;
+    paintInteractivity();
 
     return {
       element: picker,
@@ -340,6 +372,21 @@
         pendingChanges.clear();
         paintValue(value);
         committedValue = activeValue;
+      },
+      setDisabled(value) {
+        if (disposed) return;
+        disabled = value === true || optionElements.length === 0;
+        if (disabled) setOpen(false);
+        paintInteractivity();
+      },
+      setPending(value) {
+        if (disposed) return;
+        pending = value === true;
+        if (pending && config.lockWhilePending === true) setOpen(false);
+        paintInteractivity();
+      },
+      getValue() {
+        return activeValue;
       },
       dispose() {
         if (disposed) return;
@@ -363,5 +410,8 @@
     };
   }
 
-  root.ClawdLanguagePicker = { createLanguagePicker };
+  root.ClawdLanguagePicker = {
+    createLanguagePicker,
+    createSettingsSelect: createLanguagePicker,
+  };
 })(globalThis);
