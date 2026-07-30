@@ -2396,6 +2396,33 @@ describe("updateSession()", () => {
     );
   });
 
+  it("broadcasts consecutive Spark-only quota changes for the same source", () => {
+    const broadcasts = [];
+    const localApi = require("../src/state")(makeCtx({
+      broadcastSessionSnapshot: (snapshot) => broadcasts.push(snapshot),
+    }));
+    const resetAt = Date.now() + 3600000;
+    localApi.updateAccountQuota(null, {
+      codexSparkQuota: {
+        codexWeekly: { usedPercent: 7, windowMinutes: 10080, resetAt },
+      },
+    });
+    const afterFirst = broadcasts.length;
+    assert.ok(afterFirst > 0, "first Spark report must broadcast");
+
+    localApi.updateAccountQuota(null, {
+      codexSparkQuota: {
+        codexWeekly: { usedPercent: 9, windowMinutes: 10080, resetAt },
+      },
+    });
+    assert.strictEqual(broadcasts.length, afterFirst + 1);
+    assert.strictEqual(
+      broadcasts.at(-1).accountQuota[0].codexSparkQuota.group.codexWeekly.usedPercent,
+      9
+    );
+    localApi.cleanup();
+  });
+
   it("updateAccountQuota drops invalid groups", () => {
     const applied = api.updateAccountQuota("pi", {
       claudeQuota: { claudeFiveHour: { usedPercent: "not-a-number" } },

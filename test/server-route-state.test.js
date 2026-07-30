@@ -798,6 +798,72 @@ describe("server-route-state POST", () => {
     assert.strictEqual(metadataCalls.length, 0);
   });
 
+  it("routes remote metadata_only Spark quota through its independent provider", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      preserve_state: true,
+      metadata_only: true,
+      session_id: "codex:abc",
+      agent_id: "codex",
+      host: "raspberrypi",
+      codex_spark_quota: {
+        codexWeekly: { usedPercent: 7, windowMinutes: 10080, resetAt: 1784256370000 },
+      },
+    }));
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateSession.length, 0);
+    assert.strictEqual(res.calls.updateAccountQuota.length, 1);
+    assert.strictEqual(res.calls.updateAccountQuota[0][0], "raspberrypi");
+    assert.deepStrictEqual(res.calls.updateAccountQuota[0][1].codexSparkQuota, {
+      codexWeekly: { usedPercent: 7, windowMinutes: 10080, resetAt: 1784256370000 },
+    });
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(res.calls.updateAccountQuota[0][1], "codexSparkQuota"),
+      true
+    );
+  });
+
+  it("keeps valid generic quota when a sibling Spark payload is invalid", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "codex:abc",
+      agent_id: "codex",
+      codex_quota: {
+        codexWeekly: { usedPercent: 12, windowMinutes: 10080 },
+      },
+      codex_spark_quota: {
+        codexWeekly: { usedPercent: "not-a-number" },
+      },
+    }));
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateAccountQuota.length, 1);
+    assert.deepStrictEqual(res.calls.updateAccountQuota[0][1].codexQuota, {
+      codexWeekly: { usedPercent: 12, windowMinutes: 10080 },
+    });
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(res.calls.updateAccountQuota[0][1], "codexSparkQuota"),
+      false
+    );
+  });
+
+  it("does not update account quota for an invalid Spark-only payload", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "codex:abc",
+      agent_id: "codex",
+      codex_spark_quota: {
+        codexWeekly: { usedPercent: "not-a-number" },
+      },
+    }));
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateAccountQuota.length, 0);
+  });
+
   it("metadata_only still respects the disabled-agent gate", async () => {
     const metadataCalls = [];
     const res = await callStatePost(JSON.stringify({

@@ -75,9 +75,9 @@ function contextUsageText(session) {
 // grouped per reporting source (this machine + one group per remote host;
 // snapshot.accountQuota, fed by src/state-account-quota.js), because local
 // and remote can be different subscriptions. Freshest-wins applies within
-// a source only. Three providers, each its own section: Antigravity's own
-// /usage (Gemini + Claude/GPT-via-agy), Claude Code's rate_limits and
-// Codex's rollout rate_limits.
+// a source only. Provider sections cover Antigravity's own /usage (Gemini +
+// Claude/GPT-via-agy), Claude Code's rate_limits, Codex's generic rollout
+// rate_limits, and Dashboard-only Codex Spark quota.
 const QUOTA_WARNING_THRESHOLD = 90;
 // A source that has not confirmed its numbers recently gets an explicit
 // "as of N ago" label instead of presenting old numbers as live.
@@ -329,6 +329,22 @@ function renderQuotaSummary(snapshot) {
   });
   const codexSection = buildQuotaSection("dashboardQuotaSectionCodex", codexRows);
   if (codexSection) sections.push(codexSection);
+
+  const codexSparkRows = sources.map((source) => {
+    const provider = source.codexSparkQuota;
+    const group = provider && provider.group;
+    if (!group) return null;
+    return buildQuotaGroupRow(
+      buildQuotaSourceHeader(source, provider, null),
+      liveBucket(group, "codexFiveHour"),
+      liveBucket(group, "codexWeekly")
+    );
+  });
+  const codexSparkSection = buildQuotaSection(
+    "dashboardQuotaSectionCodexSpark",
+    codexSparkRows
+  );
+  if (codexSparkSection) sections.push(codexSparkSection);
 
   if (!sections.length) {
     quotaSummaryEl.hidden = true;

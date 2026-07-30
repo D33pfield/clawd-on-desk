@@ -2,7 +2,8 @@
 
 const DefaultCodexSubagentClassifier = require("../agents/codex-subagent-classifier");
 const {
-  buildCodexMonitorUpdateOptions,
+  buildCodexMonitorSessionOptions,
+  normalizeCodexMonitorAccountQuotas,
   isCodexMonitorMetadataOnlyEvent,
 } = require("./codex-monitor-callback");
 const { makeSessionKey } = require("./session-key");
@@ -179,14 +180,15 @@ function createAgentRuntimeMain(options = {}) {
         // to the session-independent per-source store (null host = this
         // machine), never into updateSession opts — see state.js
         // updateAccountQuota and src/state-account-quota.js.
-        const { codexQuota, ...sessionOptions } = buildCodexMonitorUpdateOptions(extra, {
+        const sessionOptions = buildCodexMonitorSessionOptions(extra, {
           includeHeadless: true,
         });
-        const annotateCodexQuota = () => {
-          if (!codexQuota) return;
+        const accountQuotas = normalizeCodexMonitorAccountQuotas(extra);
+        const annotateCodexAccountQuota = () => {
+          if (!accountQuotas) return;
           const stateRuntime = getStateRuntime();
           if (stateRuntime && typeof stateRuntime.updateAccountQuota === "function") {
-            stateRuntime.updateAccountQuota(null, { codexQuota });
+            stateRuntime.updateAccountQuota(null, accountQuotas);
           }
         };
         if (isCodexMonitorMetadataOnlyEvent(event, extra)) {
@@ -196,7 +198,7 @@ function createAgentRuntimeMain(options = {}) {
               preserveState: true,
             });
           }
-          annotateCodexQuota();
+          annotateCodexAccountQuota();
           return;
         }
         if (shouldSuppressCodexLogEvent(sessionId, state, event)) {
@@ -206,12 +208,12 @@ function createAgentRuntimeMain(options = {}) {
               preserveState: true,
             });
           }
-          annotateCodexQuota();
+          annotateCodexAccountQuota();
           return;
         }
         clearCodexNotifyBubbles(sessionId, `codex-state-transition:${state}`);
         updateSession(sessionId, state, event, sessionOptions);
-        annotateCodexQuota();
+        annotateCodexAccountQuota();
       }, {
         classifier: codexSubagentClassifier,
         onUserInputRequest: (sid, request, extra) => {
@@ -225,7 +227,7 @@ function createAgentRuntimeMain(options = {}) {
           });
           if (!shown) return;
           updateSession(sessionId, "notification", "CodexUserInputRequest", {
-            ...buildCodexMonitorUpdateOptions(extra, { includeHeadless: true }),
+            ...buildCodexMonitorSessionOptions(extra, { includeHeadless: true }),
             transientPermissionEvent: true,
           });
         },

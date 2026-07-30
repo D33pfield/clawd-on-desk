@@ -248,7 +248,7 @@ describe("dashboard window", () => {
     assert.match(preloadSource, /dashboard:hide-session/);
   });
 
-  it("wires the account-quota summary bar (Antigravity + Claude Code + Codex, per source) into the dashboard header", () => {
+  it("wires account quota (including Dashboard-only Spark) into the dashboard header", () => {
     const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8");
     const htmlSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard.html"), "utf8");
 
@@ -269,12 +269,14 @@ describe("dashboard window", () => {
     // must use reporter metadata rather than the legacy slot label.
     assert.match(rendererSource, /formatQuotaWindowLabel/);
     assert.match(rendererSource, /bucket && bucket\.windowMinutes/);
+    assert.match(rendererSource, /source\.codexSparkQuota/);
     for (const key of [
       "dashboardQuotaSectionAntigravity",
       "dashboardQuotaGroupGemini",
       "dashboardQuotaGroupThirdParty",
       "dashboardQuotaSectionClaudeCode",
       "dashboardQuotaSectionCodex",
+      "dashboardQuotaSectionCodexSpark",
       "dashboardQuotaSourceLocal",
       "dashboardQuotaAsOf",
       "dashboardQuotaFiveHour",

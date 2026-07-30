@@ -618,6 +618,29 @@ describe("state-session-snapshot builder", () => {
     assert.notStrictEqual(sessionSnapshotSignature(a), sessionSnapshotSignature(newerSeen));
   });
 
+  it("snapshot signature tracks Spark group and lastSeenAt changes", () => {
+    const base = { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null };
+    const build = (usedPercent, updatedAt, lastSeenAt) => buildSessionSnapshot(new Map(), {
+      ...base,
+      accountQuota: [{
+        host: null,
+        codexSparkQuota: {
+          group: { codexWeekly: { usedPercent, windowMinutes: 10080 } },
+          updatedAt,
+          lastSeenAt,
+        },
+      }],
+    });
+    const original = build(7, 1, 60000);
+    const stampOnly = build(7, 2, 60000);
+    const changedValue = build(9, 2, 60000);
+    const changedSeen = build(7, 1, 120000);
+
+    assert.strictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(stampOnly));
+    assert.notStrictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(changedValue));
+    assert.notStrictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(changedSeen));
+  });
+
   it("marks detached ended idle sessions hidden from HUD only when cleanup is enabled and pid is dead", () => {
     const sessions = new Map([
       ["done-local", session("idle", {

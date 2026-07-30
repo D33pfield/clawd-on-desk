@@ -474,6 +474,9 @@ function sessionSnapshotSignature(snapshot) {
       codexQuota: entry.codexQuota
         ? { group: entry.codexQuota.group, lastSeenAt: entry.codexQuota.lastSeenAt }
         : null,
+      codexSparkQuota: entry.codexSparkQuota
+        ? { group: entry.codexSparkQuota.group, lastSeenAt: entry.codexSparkQuota.lastSeenAt }
+        : null,
     })),
     sessions: snapshot.sessions.map((entry) => ({
       id: entry.id,
