@@ -289,6 +289,7 @@ function handleStatePost(req, res, options) {
       const antigravityQuota = normalizeAntigravityQuota(data.antigravity_quota);
       const claudeQuota = normalizeClaudeQuota(data.claude_quota);
       const codexQuota = normalizeCodexQuota(data.codex_quota);
+      const codexSparkQuota = normalizeCodexQuota(data.codex_spark_quota);
       const assistantLastOutput = normalizeAssistantLastOutput(data.assistant_last_output);
       const assistantLastOutputTruncated = data.assistant_last_output_truncated === true;
       const transcriptPath = normalizeTranscriptPath(data.transcript_path);
@@ -351,12 +352,13 @@ function handleStatePost(req, res, options) {
       // model as the session cards' host grouping: machines the user
       // deployed Clawd hooks to. The store shape-sanitizes the label.
       if (typeof ctx.updateAccountQuota === "function"
-        && (antigravityQuota || claudeQuota || codexQuota)) {
+        && (antigravityQuota || claudeQuota || codexQuota || codexSparkQuota)) {
         const quotaSource = trustedProfileId === "local" ? host : `remote:${trustedProfileId}`;
         ctx.updateAccountQuota(quotaSource, {
           antigravityQuota,
           claudeQuota,
           codexQuota,
+          ...(codexSparkQuota ? { codexSparkQuota } : {}),
           ...(trustedProfileId === "local" ? {} : { displayHost: host }),
         });
       }
