@@ -484,6 +484,36 @@ describe("setState() debounce", () => {
     assert.strictEqual(api.getCurrentState(), "idle");
   });
 
+  it("bypassMinDisplay immediately exits an interruptible roam hold and clears its pending idle", () => {
+    api.cleanup();
+    const theme = cloneTheme(_defaultTheme);
+    theme.timings.minDisplay.roam = 60000;
+    const stateChanges = [];
+    ctx = makeCtx({
+      theme,
+      sendToRenderer: (channel, state) => {
+        if (channel === "state-change") stateChanges.push(state);
+      },
+    });
+    api = require("../src/state")(ctx);
+
+    api.applyState("roam");
+    stateChanges.length = 0;
+
+    api.setState("idle");
+    assert.strictEqual(api.getCurrentState(), "roam",
+      "a normal transition should still respect the theme's roam min-display");
+
+    api.setState("idle", undefined, { bypassMinDisplay: true });
+    assert.strictEqual(api.getCurrentState(), "idle",
+      "an explicit interruption must restore idle immediately");
+    assert.deepStrictEqual(stateChanges, ["idle"]);
+
+    mock.timers.tick(60000);
+    assert.deepStrictEqual(stateChanges, ["idle"],
+      "the superseded delayed idle must not fire later");
+  });
+
   it("higher priority overrides pending", () => {
     api.setState("working");
     api.setState("idle"); // pending
@@ -498,13 +528,14 @@ describe("setState() debounce", () => {
     // error MIN_DISPLAY_MS = 5000
     api.setState("notification"); // pending, prio 7 (ONESHOT — applies directly)
     api.setState("attention");    // prio 5 < notification 7, rejected
+    api.setState("idle", undefined, { bypassMinDisplay: true }); // bypass must not bypass priority
     mock.timers.tick(5000);
     assert.strictEqual(api.getCurrentState(), "notification");
   });
 
   it("DND → setState is no-op", () => {
     ctx.doNotDisturb = true;
-    api.setState("working");
+    api.setState("working", undefined, { bypassMinDisplay: true });
     assert.strictEqual(api.getCurrentState(), "idle");
   });
 

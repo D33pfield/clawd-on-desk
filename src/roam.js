@@ -50,6 +50,7 @@ module.exports = function initRoam(ctx) {
 
   function isRoamAllowed() {
     if (!enabled) return false;
+    if (ctx.dragLocked) return false;
     if (ctx.getMiniMode && ctx.getMiniMode()) return false;
     const state = ctx.getCurrentState ? ctx.getCurrentState() : "idle";
     // Allow roaming when idle (about to start) or already roaming (mid-animation)
@@ -181,8 +182,9 @@ module.exports = function initRoam(ctx) {
       // Re-check state on every frame: if the pet is no longer idle/roam (e.g. a
       // working/notification event arrived), stop the animation immediately.
       if (!isRoamAllowed()) {
-        // Next idle entry should wait the full delay again
-        firstRoam = true;
+        // A drag only pauses the current roam phase; other gates still mean the
+        // pet left normal idle eligibility and reset the next wait to 8s.
+        if (!ctx.dragLocked) firstRoam = true;
         // cancelRoam also restores "idle" when the state is still "roam" —
         // gates with no incoming state of their own (IME editing #640, mini
         // mode) would otherwise strand the pet frozen in its walk pose.
@@ -265,14 +267,20 @@ module.exports = function initRoam(ctx) {
     cleanupTimers();
     roamActive = false;
     if (wasActive) notifyRoamProtectionReleased();
-    if (shouldRestoreIdle) ctx.setState("idle");
+    // Roam is an interruptible movement state. A user theme may define
+    // timings.minDisplay.roam, but cancelling a walk must restore idle now so
+    // a delayed idle broadcast cannot overwrite a drag reaction mid-hold.
+    if (shouldRestoreIdle) {
+      ctx.setState("idle", undefined, { bypassMinDisplay: true });
+    }
   }
 
   function tick() {
     if (!enabled) return;
     if (!isRoamAllowed()) {
-      // State changed away from idle/roam — next idle entry should wait full delay
-      firstRoam = true;
+      // Preserve the already-consumed 4s/8s phase while drag owns movement.
+      // Existing non-drag gates still reset the next idle entry to 8s.
+      if (!ctx.dragLocked) firstRoam = true;
       cancelRoam();
       return;
     }
