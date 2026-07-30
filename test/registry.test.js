@@ -17,6 +17,7 @@ describe("Agent Registry", () => {
       "kiro-cli",
       "kimi-cli",
       "qwen-code",
+      "zcode",
       "codewhale",
       "opencode",
       "mimocode",
@@ -204,6 +205,17 @@ describe("Agent Registry", () => {
     assert.ok(!startupAgentIds.has("cursor-agent"));
     assert.ok(!startupAgentIds.has("qoderwork"));
     assert.ok(!startupAgentIds.has("workbuddy"));
+
+    // ZCode keeps only the unambiguous legacy `zcode-cli` in pure-name startup
+    // recovery. Current macOS/Windows Electron Node-mode runtimes are matched
+    // separately by the `zcode.cjs` command-line marker, never by the bare GUI
+    // executable name.
+    const zcode = registry.getAgent("zcode");
+    assert.deepStrictEqual(zcode.startupRecoveryProcessNames, {
+      win: [],
+      mac: ["zcode-cli"],
+      linux: ["zcode-cli"],
+    });
   });
 
   it("keeps ambiguous GUI and POSIX process names out of startup recovery", () => {
