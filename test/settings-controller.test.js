@@ -166,6 +166,78 @@ describe("permission automation safe startup persistence", () => {
   });
 });
 
+describe("Codex auto-start gate commit ordering", () => {
+  function createFailingController(snapshot, gateWrites) {
+    const writeCodexAutoStartGate = (enabled) => {
+      gateWrites.push(enabled);
+      return true;
+    };
+    const ctrl = createSettingsController({
+      prefsPath: "unused-in-memory-path",
+      prefs: {
+        load: () => ({ snapshot, locked: false }),
+        save: () => {
+          throw new Error("prefs read only");
+        },
+      },
+      injectedDeps: {
+        syncIntegrationForAgent: async () => ({ status: "ok" }),
+        startMonitorForAgent() {},
+        writeCodexAutoStartGate,
+      },
+    });
+    // Mirrors main.js: an enabled gate is published only from the agents
+    // subscriber, after the controller has persisted and committed the store.
+    ctrl.subscribeKey("agents", (_agents, nextSnapshot) => {
+      writeCodexAutoStartGate(nextSnapshot.agents.codex.enabled === true);
+    });
+    return ctrl;
+  }
+
+  it("does not enable the external gate when enabling Codex cannot persist", async () => {
+    const snapshot = prefs.getDefaults();
+    snapshot.agents.codex = {
+      ...snapshot.agents.codex,
+      integrationInstalled: true,
+      enabled: false,
+    };
+    const gateWrites = [];
+    const ctrl = createFailingController(snapshot, gateWrites);
+
+    const result = await ctrl.applyCommand("setAgentFlag", {
+      agentId: "codex",
+      flag: "enabled",
+      value: true,
+    });
+
+    assert.strictEqual(result.status, "error");
+    assert.match(result.message, /prefs read only/);
+    assert.strictEqual(ctrl.get("agents").codex.enabled, false);
+    assert.deepStrictEqual(gateWrites, []);
+  });
+
+  it("does not enable the external gate when installing Codex cannot persist", async () => {
+    const snapshot = prefs.getDefaults();
+    snapshot.agents.codex = {
+      ...snapshot.agents.codex,
+      integrationInstalled: false,
+      enabled: false,
+    };
+    const gateWrites = [];
+    const ctrl = createFailingController(snapshot, gateWrites);
+
+    const result = await ctrl.applyCommand("installAgentIntegration", {
+      agentId: "codex",
+    });
+
+    assert.strictEqual(result.status, "error");
+    assert.match(result.message, /prefs read only/);
+    assert.strictEqual(ctrl.get("agents").codex.integrationInstalled, false);
+    assert.strictEqual(ctrl.get("agents").codex.enabled, false);
+    assert.deepStrictEqual(gateWrites, []);
+  });
+});
+
 describe("setTextScaleForDisplay end-to-end commit", () => {
   it("commits the per-display map through the controller and persists it", async () => {
     // Regression: the command's commit key must pass the controller's

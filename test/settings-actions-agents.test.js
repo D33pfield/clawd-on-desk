@@ -296,7 +296,11 @@ test("settings agent actions enable an agent and preserve sibling flags", () => 
   assert.strictEqual(result.status, "ok");
   assert.deepStrictEqual(calls.syncIntegrationForAgent, ["codex"]);
   assert.deepStrictEqual(calls.startMonitorForAgent, ["codex"]);
-  assert.deepStrictEqual(calls.writeCodexAutoStartGate, [true]);
+  assert.deepStrictEqual(
+    calls.writeCodexAutoStartGate,
+    [],
+    "the post-commit agents subscriber publishes the enabled gate"
+  );
   assert.strictEqual(result.commit.agents.codex.enabled, true);
   assert.strictEqual(result.commit.agents.codex.permissionsEnabled, false);
   assert.strictEqual(result.commit.agents.codex.notificationHookEnabled, true);
@@ -620,7 +624,7 @@ test("settings agent actions install an integration and enable ingress", async (
   assert.deepStrictEqual(result.commit.dismissedAgentCleanupHints, {});
 });
 
-test("settings agent actions synchronize the Codex gate on install and uninstall", async () => {
+test("settings agent actions defer the enabled Codex gate on install but disable it before uninstall", async () => {
   const installSnapshot = prefs.getDefaults();
   installSnapshot.agents.codex.integrationInstalled = false;
   installSnapshot.agents.codex.enabled = false;
@@ -647,7 +651,7 @@ test("settings agent actions synchronize the Codex gate on install and uninstall
   });
   assert.strictEqual(uninstalled.status, "ok");
   assert.strictEqual(uninstalled.commit.agents.codex.enabled, false);
-  assert.deepStrictEqual(calls, ["install:true", "uninstall:false"]);
+  assert.deepStrictEqual(calls, ["uninstall:false"]);
 });
 
 test("settings agent actions pass CodeBuddy custom hook URL during install", async () => {
