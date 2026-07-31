@@ -268,8 +268,20 @@ const {
   isAllBubblesHidden,
 } = require("./bubble-policy");
 const loginItemHelpers = require("./login-item");
+const { writeCodexAutoStartGate } = require("../hooks/server-config");
 const PREFS_PATH = path.join(app.getPath("userData"), "clawd-prefs.json");
 const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
+
+function _persistCodexAutoStartGate(enabled) {
+  return writeCodexAutoStartGate(enabled === true);
+}
+
+function _syncCodexAutoStartGate(snapshot, source) {
+  const codex = snapshot && snapshot.agents && snapshot.agents.codex;
+  if (_persistCodexAutoStartGate(!!(codex && codex.enabled === true))) return true;
+  console.warn(`Clawd: failed to sync Codex auto-start gate (${source})`);
+  return false;
+}
 
 // Lazy helpers — these run inside the action `effect` callbacks at click time,
 // long after server.js / hooks/install.js are loaded. Wrapping them in closures
@@ -409,6 +421,7 @@ const _settingsController = createSettingsController({
       agentRuntime ? agentRuntime.repairIntegrationForAgent(id, options) : false,
     stopIntegrationForAgent: (id) => agentRuntime ? agentRuntime.stopIntegrationForAgent(id) : false,
     uninstallIntegrationForAgent: (id) => agentRuntime ? agentRuntime.uninstallIntegrationForAgent(id) : false,
+    writeCodexAutoStartGate: _persistCodexAutoStartGate,
     deployHooksToWsl: async (distro, agentId) => {
       const { deployToWsl } = require("./wsl-deploy");
       return deployToWsl(distro, { agentId, isPackaged: app.isPackaged });
@@ -471,6 +484,14 @@ const _settingsController = createSettingsController({
       if (shortcutRuntime) shortcutRuntime.clearFailure(actionId);
     },
   },
+});
+_settingsController.subscribeKey("agents", (_agents, snapshot) => {
+  // A future-version prefs file is intentionally read-only. Settings may still
+  // change in memory for the current process, but publishing those ephemeral
+  // values would let a retained hook cold-launch Clawd against the durable
+  // prefs truth.
+  if (_settingsController.isLocked()) return;
+  _syncCodexAutoStartGate(snapshot, "settings");
 });
 let _remoteSshInstallationIdentity = null;
 
@@ -4256,6 +4277,18 @@ if (!gotTheLock) {
   // Another instance is already running — quit silently
   app.quit();
 } else {
+  // Only the winning instance may publish the startup gate. A losing instance
+  // can have a stale/default prefs snapshot and must never become the final
+  // writer after the active instance has disabled Codex.
+  // A future-version or recovered snapshot is not authoritative enough to
+  // publish an enabled external gate. Fail closed until a valid prefs commit
+  // reaches the post-commit agents subscriber above.
+  const startupGateSnapshot = (
+    _initialPrefsLoad.locked === true
+    || _initialPrefsLoad.recovered === true
+    || _initialPrefsLoad.codexAutoStartAuthoritative === false
+  ) ? null : _initialPrefsLoad.snapshot;
+  _syncCodexAutoStartGate(startupGateSnapshot, "startup");
   app.on("second-instance", (_event, commandLine) => {
     if (petWindowRuntime.isPetHidden()) {
       prepManualPetVisibility();

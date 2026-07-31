@@ -80,6 +80,24 @@ const _validateAgentFlagId = requireString("setAgentFlag.agentId");
 const _validateAgentFlagValue = requireBoolean("setAgentFlag.value");
 const _validateRepairAgentId = requireString("repairAgentIntegration.agentId");
 
+function disableCodexAutoStartGate(agentId, deps, actionName) {
+  if (agentId !== "codex") return null;
+  if (!deps || typeof deps.writeCodexAutoStartGate !== "function") {
+    return { status: "error", message: `${actionName}: writeCodexAutoStartGate is required` };
+  }
+  try {
+    if (deps.writeCodexAutoStartGate(false) !== true) {
+      return { status: "error", message: `${actionName}: failed to persist Codex auto-start gate` };
+    }
+  } catch (err) {
+    return {
+      status: "error",
+      message: `${actionName}: failed to persist Codex auto-start gate: ${err && err.message}`,
+    };
+  }
+  return null;
+}
+
 function setAgentFlag(payload, deps) {
   if (!payload || typeof payload !== "object") {
     return { status: "error", message: "setAgentFlag: payload must be an object" };
@@ -124,6 +142,10 @@ function setAgentFlag(payload, deps) {
   const nextEntry = { ...(currentEntry || {}), [flag]: value };
   const nextAgents = { ...currentAgents, [agentId]: nextEntry };
   const commitResult = { status: "ok", commit: { agents: nextAgents } };
+  if (agentId === "codex" && flag === "enabled" && value === false) {
+    const gateError = disableCodexAutoStartGate(agentId, deps, "setAgentFlag");
+    if (gateError) return gateError;
+  }
 
   // Claude Code enable is the one branch with an awaited external mutation:
   // hooks must actually land (via the server-owned operation queue, #657)
@@ -567,6 +589,8 @@ async function uninstallAgentIntegration(payload, deps = {}) {
   if (!deps || typeof deps.uninstallIntegrationForAgent !== "function") {
     return { status: "error", message: "uninstallAgentIntegration requires uninstallIntegrationForAgent dep" };
   }
+  const gateError = disableCodexAutoStartGate(agentId, deps, "uninstallAgentIntegration");
+  if (gateError) return gateError;
 
   try {
     const result = await deps.uninstallIntegrationForAgent(agentId);

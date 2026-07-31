@@ -1057,6 +1057,7 @@ describe("hook commands", () => {
       stopMonitorForAgent: (agentId) => calls.push(["stopMonitor", agentId]),
       clearSessionsByAgent: (agentId) => calls.push(["clearSessions", agentId]),
       dismissPermissionsByAgent: (agentId) => calls.push(["dismissPermissions", agentId]),
+      writeCodexAutoStartGate: () => true,
       cleanupIntegrations: (options) => {
         calls.push(["cleanup", options.source]);
         return {

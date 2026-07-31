@@ -5,12 +5,16 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { spawn } = require("child_process");
 const { StringDecoder } = require("string_decoder");
 const {
   postPermissionToRunningServer,
   postStateToRunningServer,
+  readCodexAutoStartGate,
   readHostPrefix,
   readRuntimeIdentity,
+  CODEX_WSL_INTEROP_ARG,
+  resolveWslDistro,
   applyWslSourceFields,
 } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
@@ -31,6 +35,7 @@ const TOOL_MATCH_ARRAY_MAX = 16;
 const TOOL_MATCH_OBJECT_KEYS_MAX = 32;
 const TOOL_MATCH_DEPTH_MAX = 6;
 const CODEX_PERMISSION_TIMEOUT_MS = 590000;
+const CODEX_AUTO_START_TIMEOUT_MS = 10000;
 const SESSION_META_READ_CHUNK_BYTES = 8192;
 const SESSION_META_READ_MAX_BYTES = 256 * 1024;
 
@@ -414,51 +419,162 @@ function requestCodexPermission(body, callback, options = {}) {
   );
 }
 
+function startClawdAndWait(options = {}) {
+  const spawnProcess = options.spawn || spawn;
+  const setTimeoutFn = options.setTimeout || setTimeout;
+  const clearTimeoutFn = options.clearTimeout || clearTimeout;
+  const timeoutMs = Number.isFinite(options.timeoutMs)
+    ? Math.max(0, options.timeoutMs)
+    : CODEX_AUTO_START_TIMEOUT_MS;
+  return new Promise((resolveStart) => {
+    let settled = false;
+    let child = null;
+    let timer = null;
+    const cleanup = () => {
+      if (timer !== null) {
+        clearTimeoutFn(timer);
+        timer = null;
+      }
+      if (child && typeof child.removeListener === "function") {
+        child.removeListener("error", done);
+        child.removeListener("exit", done);
+      }
+    };
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolveStart();
+    };
+    const onTimeout = () => {
+      if (child && typeof child.kill === "function") {
+        try { child.kill(); } catch {}
+      }
+      done();
+    };
+    try {
+      child = spawnProcess(
+        process.execPath,
+        [path.join(__dirname, "auto-start.js")],
+        { stdio: "ignore", windowsHide: true }
+      );
+      if (!child || typeof child.once !== "function") {
+        done();
+        return;
+      }
+      child.once("error", done);
+      child.once("exit", done);
+      timer = setTimeoutFn(onTimeout, timeoutMs);
+      if (timer && typeof timer.unref === "function") timer.unref();
+    } catch {
+      done();
+    }
+  });
+}
+
 async function runCodexHook(payload, options = {}) {
   const config = getPlatformConfig();
-  let preferredPort = options.preferredPort || null;
   const readIdentity = options.readRuntimeIdentity || readRuntimeIdentity;
-  const resolverOptions = {
-    agentNames: { win: new Set(["codex.exe"]), mac: new Set(["codex"]), linux: new Set(["codex"]) },
-    platformConfig: config,
-    readRuntimeIdentity() {
-      const identity = readIdentity();
-      if (!preferredPort && identity && identity.port) preferredPort = identity.port;
-      return identity;
-    },
+  const createAttemptResolver = (initialPreferredPort = null) => {
+    let preferredPort = initialPreferredPort;
+    const resolverOptions = {
+      agentNames: { win: new Set(["codex.exe"]), mac: new Set(["codex"]), linux: new Set(["codex"]) },
+      platformConfig: config,
+      readRuntimeIdentity() {
+        const identity = readIdentity();
+        if (!preferredPort && identity && identity.port) preferredPort = identity.port;
+        return identity;
+      },
+    };
+    const resolve = options.resolvePid || (options.createPidResolver
+      ? options.createPidResolver(resolverOptions)
+      : createPidResolver(resolverOptions));
+    return {
+      resolve,
+      getPreferredPort: () => preferredPort,
+    };
   };
-  const resolve = options.resolvePid || (options.createPidResolver
-    ? options.createPidResolver(resolverOptions)
-    : createPidResolver(resolverOptions));
 
-  const permissionBody = buildPermissionBody(payload || {}, resolve);
-  if (permissionBody) {
+  if (payload && payload.hook_event_name === "PermissionRequest") {
+    const permissionAttempt = createAttemptResolver(options.preferredPort || null);
+    const permissionBody = buildPermissionBody(payload, permissionAttempt.resolve);
+    if (!permissionBody) return { body: null, posted: false, stdout: "" };
     return new Promise((resolveRun) => {
       requestCodexPermission(permissionBody, (stdout, posted, port) => {
         resolveRun({ body: permissionBody, posted: !!posted, port: port || null, stdout });
-      }, { ...options, preferredPort });
+      }, { ...options, preferredPort: permissionAttempt.getPreferredPort() });
     });
   }
 
-  const body = buildStateBody(payload || {}, resolve);
-  if (!body) return { body: null, posted: false, stdout: "" };
-  // Byte-fit before POST so a long CJK assistant_last_output can't trip the
-  // server's headerless 413 (read back as posted=false). See
-  // hooks/state-payload-size.js.
-  const fitted = fitStateBodyToByteBudget(body);
   const postState = options.postState || postStateToRunningServer;
-  const postOptions = { timeoutMs: 100 };
-  if (preferredPort) {
-    postOptions.preferredPort = preferredPort;
-    postOptions.runtimePort = preferredPort;
-  }
-  return new Promise((resolveRun) => {
+  const buildStateAttempt = (preferredPort = null) => {
+    const attempt = createAttemptResolver(preferredPort);
+    const body = buildStateBody(payload || {}, attempt.resolve);
+    if (!body) return null;
+    // Byte-fit before POST so a long CJK assistant_last_output can't trip the
+    // server's headerless 413 (read back as posted=false). See
+    // hooks/state-payload-size.js.
+    const fitted = fitStateBodyToByteBudget(body);
+    return { body: fitted.body, preferredPort: attempt.getPreferredPort() };
+  };
+  const postAttempt = (attempt) => new Promise((resolveRun) => {
+    const requestOptions = { timeoutMs: 100 };
+    if (attempt.preferredPort) {
+      requestOptions.preferredPort = attempt.preferredPort;
+      requestOptions.runtimePort = attempt.preferredPort;
+    }
     postState(
-      JSON.stringify(fitted.body),
-      postOptions,
-      (posted, port) => resolveRun({ body: fitted.body, posted: !!posted, port: port || null, stdout: "" })
+      JSON.stringify(attempt.body),
+      requestOptions,
+      (posted, port) => resolveRun({
+        body: attempt.body,
+        posted: !!posted,
+        port: port || null,
+        stdout: "",
+      })
     );
   });
+
+  const firstAttempt = buildStateAttempt(options.preferredPort || null);
+  if (!firstAttempt) return { body: null, posted: false, stdout: "" };
+  const result = await postAttempt(firstAttempt);
+  const env = options.env || process.env;
+  const argv = Array.isArray(options.argv) ? options.argv : process.argv;
+  const wslInterop = argv.includes(CODEX_WSL_INTEROP_ARG);
+  let wslDistro = null;
+  try {
+    const resolveHookWslDistro = options.resolveWslDistro || resolveWslDistro;
+    wslDistro = resolveHookWslDistro();
+  } catch {}
+  if (
+    result.posted
+    || payload.hook_event_name !== "SessionStart"
+    || env.CLAWD_REMOTE
+    || env.CLAWD_WSL_DISTRO
+    || wslInterop
+    || wslDistro
+  ) return result;
+
+  const readAutoStartGate = options.readCodexAutoStartGate || readCodexAutoStartGate;
+  let autoStartEnabled = false;
+  try {
+    autoStartEnabled = readAutoStartGate(options.codexAutoStartGateOptions || {}) === true;
+  } catch {}
+  if (!autoStartEnabled) return result;
+
+  // Codex launches matching hooks concurrently, so a separate SessionStart
+  // auto-start hook would race this state delivery. Wait for the existing
+  // launcher helper to finish its readiness probe, then rebuild this event
+  // with fresh runtime and process identity before retrying it.
+  const runAutoStart = options.runAutoStart || startClawdAndWait;
+  await runAutoStart();
+  let refreshedPort = null;
+  try {
+    const identity = readIdentity();
+    if (identity && identity.port) refreshedPort = identity.port;
+  } catch {}
+  const retryAttempt = buildStateAttempt(refreshedPort);
+  return postAttempt(retryAttempt);
 }
 
 async function main() {
@@ -472,6 +588,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  CODEX_AUTO_START_TIMEOUT_MS,
   EVENT_TO_STATE,
   applyCodexSessionMetaFields,
   applyLocalProcessFields,
@@ -488,4 +605,5 @@ module.exports = {
   runCodexHook,
   sanitizeCodexPermissionDecision,
   sanitizeCodexPermissionOutput,
+  startClawdAndWait,
 };
