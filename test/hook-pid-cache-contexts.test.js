@@ -9,7 +9,7 @@
 //      must NOT count as cacheable, cf. #583).
 //   B. Real-subprocess cache behavior (win32) — the offline-probe pattern from
 //      test/hook-adapter-offline-contract.test.js, plus a seeded live v2 cache
-//      entry in the real tmpdir: a cache hit must attempt ZERO snapshot spawns
+//      entry in an isolated tmpdir: a cache hit must attempt ZERO snapshot spawns
 //      (#634 acceptance), kiro (no stable session id) must keep its per-event
 //      fresh snapshot (graceful degrade), and a prompt-lifecycle event must be
 //      spawn-free even on a cache miss.
@@ -201,8 +201,8 @@ describe("#634 ctx contract — sendHookEvent seams", () => {
 
     const fallbackContexts = [];
     for (const transcriptPath of [
-      "D:/repo/.gemini/jetski/transcript-A.jsonl",
-      "D:/repo/.gemini/jetski/transcript-B.jsonl",
+      "D:/home/.gemini/antigravity-cli/brain/conversation-A/.system_generated/logs/transcript.jsonl",
+      "D:/home/.gemini/antigravity-cli/brain/conversation-B/.system_generated/logs/transcript.jsonl",
     ]) {
       const capFallback = capture();
       await send({ hookEventName: "PostToolUse", transcriptPath, workspacePaths: ["D:/repo"] }, "", deps(capFallback));
@@ -211,10 +211,10 @@ describe("#634 ctx contract — sendHookEvent seams", () => {
     assert.deepStrictEqual(
       fallbackContexts.map(({ sessionId, cacheable }) => ({ sessionId, cacheable })),
       [
-        { sessionId: "antigravity:jetski", cacheable: false },
-        { sessionId: "antigravity:jetski", cacheable: false },
+        { sessionId: "antigravity:logs", cacheable: false },
+        { sessionId: "antigravity:logs", cacheable: false },
       ],
-      "a transcript parent may be shared by multiple conversations, so the fallback must not key a pid cache"
+      "the official transcript shape has a shared `logs` parent, so the fallback must not key a pid cache"
     );
 
     const capNone = capture();
@@ -260,22 +260,30 @@ describe("#634 ctx contract — sendHookEvent seams", () => {
 
 describe("#634 subprocess — cache hits spawn nothing; kiro degrades gracefully", { skip: process.platform !== "win32" }, () => {
   let fakeHome;
+  let isolatedTemp;
   let probeOut;
   const seeded = [];
 
   before(() => {
     fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-634-ctx-home-"));
+    isolatedTemp = path.join(fakeHome, "tmp");
+    fs.mkdirSync(isolatedTemp, { recursive: true });
+    pc.__setCacheDirForTests(isolatedTemp);
     probeOut = path.join(fakeHome, "spawns.json");
   });
-  after(() => { try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {} });
+  after(() => {
+    pc.__setCacheDirForTests(null);
+    try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {}
+  });
   afterEach(() => {
     for (const [ns, sid, cwd] of seeded.splice(0)) pc.dropPidCacheV2(ns, sid, cwd);
   });
 
-  // The parent and the child hook share the real os.tmpdir() (TEMP is not
-  // remapped — only USERPROFILE/HOME are), so a v2 entry seeded here is exactly
-  // what the child's resolver reads. Both pids are this test process — alive
-  // from the child's perspective, so the double-liveness check passes.
+  // The parent uses pid-cache's test-only override and the child receives the
+  // same directory via TEMP/TMP. This keeps every seeded tuple away from the
+  // developer's real cache while still exercising cross-process file I/O.
+  // Both pids are this test process — alive from the child's perspective, so
+  // the double-liveness check passes.
   function seedLiveCache(ns, sid, cwd) {
     const ok = pc.writePidCacheV2(ns, sid, cwd, {
       stablePid: process.pid, agentPid: process.pid, headless: false, detectedEditor: null,
@@ -291,7 +299,14 @@ describe("#634 subprocess — cache hits spawn nothing; kiro degrades gracefully
     fs.mkdirSync(clawdDir, { recursive: true });
     fs.writeFileSync(path.join(clawdDir, "runtime.json"), JSON.stringify(LIVE_RUNTIME()));
     try { fs.unlinkSync(probeOut); } catch {}
-    const env = { ...process.env, USERPROFILE: fakeHome, HOME: fakeHome, CLAWD_PROBE_OUT: probeOut };
+    const env = {
+      ...process.env,
+      USERPROFILE: fakeHome,
+      HOME: fakeHome,
+      TEMP: isolatedTemp,
+      TMP: isolatedTemp,
+      CLAWD_PROBE_OUT: probeOut,
+    };
     delete env.CLAWD_REMOTE;
     const result = spawnSync(process.execPath, ["--require", PROBE, path.join(HOOKS_DIR, name)], {
       input: `${JSON.stringify(payload)}\n`,
@@ -344,16 +359,50 @@ describe("#634 subprocess — cache hits spawn nothing; kiro degrades gracefully
   });
 
   it("antigravity-hook.js: transcript fallback cannot read another conversation's seeded cache", () => {
-    seedLiveCache("antigravity-cli", "antigravity:jetski", "D:/repo");
+    seedLiveCache("antigravity-cli", "antigravity:logs", "D:/repo");
     const r = runHook("antigravity-hook.js", {
       hookEventName: "PostToolUse",
-      transcriptPath: "D:/repo/.gemini/jetski/transcript-B.jsonl",
+      transcriptPath: "D:/home/.gemini/antigravity-cli/brain/conversation-B/.system_generated/logs/transcript.jsonl",
       workspacePaths: ["D:/repo"],
     });
     assert.ok(Array.isArray(r.spawns), `antigravity did not report — stderr=${r.stderr}`);
     assert.strictEqual(r.spawns.length, 1,
       "without an explicit conversationId the shared transcript fallback must be ignored and resolved fresh");
     assert.match(r.spawns[0], /powershell/i);
+    assert.strictEqual(r.status, 0, `antigravity must exit cleanly — stderr=${r.stderr}`);
+    assert.strictEqual(r.stdout, "{}\n", "PostToolUse must keep Antigravity's empty-object stdout contract");
+  });
+
+  it("antigravity-hook.js: explicit conversationId reads its live cache without spawning", () => {
+    const raw = sid("ag-hit");
+    seedLiveCache("antigravity-cli", `antigravity:${raw}`, "D:/repo");
+    const r = runHook("antigravity-hook.js", {
+      hookEventName: "PostToolUse",
+      conversationId: raw,
+      transcriptPath: `D:/home/.gemini/antigravity-cli/brain/${raw}/.system_generated/logs/transcript.jsonl`,
+      workspacePaths: ["D:/repo"],
+    });
+    assert.ok(Array.isArray(r.spawns), `antigravity did not report — stderr=${r.stderr}`);
+    assert.deepStrictEqual(r.spawns, [], "an explicit conversationId must resolve from its live cache");
+    assert.strictEqual(r.status, 0, `antigravity must exit cleanly — stderr=${r.stderr}`);
+    assert.strictEqual(r.stdout, "{}\n", "PostToolUse must keep Antigravity's empty-object stdout contract");
+  });
+
+  it("antigravity-hook.js: Stop cache hit stays spawn-free and preserves gating stdout", () => {
+    const raw = sid("ag-stop");
+    seedLiveCache("antigravity-cli", `antigravity:${raw}`, "D:/repo");
+    const r = runHook("antigravity-hook.js", {
+      hookEventName: "Stop",
+      conversationId: raw,
+      transcriptPath: `D:/home/.gemini/antigravity-cli/brain/${raw}/.system_generated/logs/transcript.jsonl`,
+      workspacePaths: ["D:/repo"],
+      fullyIdle: true,
+    });
+    assert.ok(Array.isArray(r.spawns), `antigravity did not report — stderr=${r.stderr}`);
+    assert.deepStrictEqual(r.spawns, [], "Stop must resolve from the live event cache without spawning");
+    assert.strictEqual(r.status, 0, `antigravity must exit cleanly — stderr=${r.stderr}`);
+    assert.strictEqual(r.stdout, `${JSON.stringify({ decision: "allow" })}\n`,
+      "Stop must preserve Antigravity's gating stdout");
   });
 
   it("qoder-hook.js: SessionEnd drops the live cache entry without spawning", () => {
