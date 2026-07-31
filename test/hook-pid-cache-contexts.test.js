@@ -185,7 +185,7 @@ describe("#634 ctx contract — sendHookEvent seams", () => {
     });
   }
 
-  it("antigravity: every event uses the event lifecycle; transcript-dirname id is cacheable", async () => {
+  it("antigravity: every event uses the event lifecycle; only an explicit conversation id is cacheable", async () => {
     const mod = require("../hooks/antigravity-hook.js");
     const send = mod.sendHookEvent || (mod.__test && mod.__test.sendHookEvent);
     assert.strictEqual(typeof send, "function", "sendHookEvent seam");
@@ -199,15 +199,35 @@ describe("#634 ctx contract — sendHookEvent seams", () => {
       { namespace: "antigravity-cli", sessionId: "antigravity:ag1", cacheCwd: "D:/repo", lifecycle: "event", cacheable: true }
     );
 
-    const capDirname = capture();
-    await send({ hookEventName: "PreToolUse", transcriptPath: "C:/t/conv-77/rollout.json", workspacePaths: ["D:/repo"] }, "", deps(capDirname));
-    assert.strictEqual(capDirname.calls[0].sessionId, "antigravity:conv-77");
-    assert.strictEqual(capDirname.calls[0].cacheable, true, "transcript-dirname fallback is a real per-conversation id");
+    const fallbackContexts = [];
+    for (const transcriptPath of [
+      "D:/repo/.gemini/jetski/transcript-A.jsonl",
+      "D:/repo/.gemini/jetski/transcript-B.jsonl",
+    ]) {
+      const capFallback = capture();
+      await send({ hookEventName: "PostToolUse", transcriptPath, workspacePaths: ["D:/repo"] }, "", deps(capFallback));
+      fallbackContexts.push(capFallback.calls[0]);
+    }
+    assert.deepStrictEqual(
+      fallbackContexts.map(({ sessionId, cacheable }) => ({ sessionId, cacheable })),
+      [
+        { sessionId: "antigravity:jetski", cacheable: false },
+        { sessionId: "antigravity:jetski", cacheable: false },
+      ],
+      "a transcript parent may be shared by multiple conversations, so the fallback must not key a pid cache"
+    );
 
     const capNone = capture();
     await send({ hookEventName: "PreToolUse", workspacePaths: ["D:/repo"] }, "", deps(capNone));
     assert.strictEqual(capNone.calls[0].sessionId, "antigravity:default");
     assert.strictEqual(capNone.calls[0].cacheable, false, "antigravity:default must not key a shared cache entry");
+
+    for (const conversationId of ["default", "antigravity:default", "   "]) {
+      const capPlaceholder = capture();
+      await send({ hookEventName: "PostToolUse", conversationId, workspacePaths: ["D:/repo"] }, "", deps(capPlaceholder));
+      assert.strictEqual(capPlaceholder.calls[0].cacheable, false,
+        `placeholder conversationId ${JSON.stringify(conversationId)} must not key a shared cache entry`);
+    }
   });
 
   it("antigravity: cache key stays stable while toolCall.args.Cwd varies within one conversation", async () => {
@@ -279,7 +299,7 @@ describe("#634 subprocess — cache hits spawn nothing; kiro degrades gracefully
     });
     let spawns = null;
     try { spawns = JSON.parse(fs.readFileSync(probeOut, "utf8")); } catch {}
-    return { spawns, stderr: result.stderr };
+    return { spawns, stderr: result.stderr, stdout: result.stdout, status: result.status };
   }
 
   const sid = (p) => `${p}-634-${process.pid}`;
@@ -318,6 +338,22 @@ describe("#634 subprocess — cache hits spawn nothing; kiro degrades gracefully
     });
     assert.ok(Array.isArray(r.spawns), `cursor did not report — stderr=${r.stderr}`);
     assert.deepStrictEqual(r.spawns, [], "prompt is cache-only: no snapshot spawn, hit or miss");
+    assert.strictEqual(r.status, 0, `cursor must exit cleanly — stderr=${r.stderr}`);
+    assert.strictEqual(r.stdout, `${JSON.stringify({ continue: true })}\n`,
+      "cache-only prompt metadata must not degrade Cursor's gating stdout");
+  });
+
+  it("antigravity-hook.js: transcript fallback cannot read another conversation's seeded cache", () => {
+    seedLiveCache("antigravity-cli", "antigravity:jetski", "D:/repo");
+    const r = runHook("antigravity-hook.js", {
+      hookEventName: "PostToolUse",
+      transcriptPath: "D:/repo/.gemini/jetski/transcript-B.jsonl",
+      workspacePaths: ["D:/repo"],
+    });
+    assert.ok(Array.isArray(r.spawns), `antigravity did not report — stderr=${r.stderr}`);
+    assert.strictEqual(r.spawns.length, 1,
+      "without an explicit conversationId the shared transcript fallback must be ignored and resolved fresh");
+    assert.match(r.spawns[0], /powershell/i);
   });
 
   it("qoder-hook.js: SessionEnd drops the live cache entry without spawning", () => {
