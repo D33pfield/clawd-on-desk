@@ -24,6 +24,7 @@ jobs:
           node --test
           test/assert-no-retired-telegram-sidecar.test.js
           test/package-build-config.test.js
+          test/state-agent-icons.test.js
           test/preload-settings.test.js
           test/repository-asset-audit.test.js
           test/telegram-legacy-retirement.test.js
