@@ -7619,7 +7619,7 @@ describe("settings renderer browser environment", () => {
     );
   });
 
-  it("keeps Animation subtab headers and scroll position stable across consecutive switches", () => {
+  it("keeps the Animation shell mounted and restores scroll per subtab", () => {
     const harness = loadAnimMapTabForTest({
       snapshot: { theme: "clawd", themeOverrides: {} },
     });
@@ -7638,32 +7638,37 @@ describe("settings renderer browser environment", () => {
     harness.core.ops.installRenderHooks({ content: render, modal: () => {} });
     render();
 
-    function headerShape() {
-      return harness.content.children.slice(0, 3).map((child) => ({
-        tag: child.tagName,
-        className: child.className,
-      }));
-    }
-    const expectedHeader = headerShape();
-    assert.deepStrictEqual(expectedHeader, [
-      { tag: "H1", className: "" },
-      { tag: "P", className: "subtitle" },
-      { tag: "DIV", className: "anim-override-subtabs" },
-    ]);
+    const [heading, subtitle, tablist, body] = harness.content.children;
+    assert.equal(heading.tagName, "H1");
+    assert.equal(subtitle.className, "subtitle");
+    assert.equal(tablist.className, "anim-override-subtabs");
+    assert.equal(body.className, "anim-override-subtab-body");
 
-    for (const subtab of ["animations", "sounds", "map"]) {
-      harness.content.scrollTop = 240;
+    function switchTo(subtab) {
       const button = harness.content.querySelectorAll("button")
         .find((candidate) => candidate.dataset.animOverridesSubtab === subtab);
       assert.ok(button, `${subtab} tab should render`);
       button.dispatchEvent({ type: "click" });
-      assert.deepStrictEqual(headerShape(), expectedHeader);
-      assert.equal(harness.content.scrollTop, 240);
+      assert.strictEqual(harness.content.children[0], heading);
+      assert.strictEqual(harness.content.children[1], subtitle);
+      assert.strictEqual(harness.content.children[2], tablist);
+      assert.strictEqual(harness.content.children[3], body);
       const active = harness.content.querySelectorAll("button")
         .find((candidate) => candidate.classList.contains("active"));
       assert.equal(active.dataset.animOverridesSubtab, subtab);
       assert.equal(active.focused, true);
     }
+
+    switchTo("animations");
+    harness.content.scrollTop = 240;
+    switchTo("sounds");
+    assert.equal(harness.content.scrollTop, 0, "the short target subtab starts at its own scroll position");
+
+    // Chromium clamps a short page to zero. Returning to Animations must use
+    // its saved position rather than this clamped value from Sounds.
+    harness.content.scrollTop = 0;
+    switchTo("animations");
+    assert.equal(harness.content.scrollTop, 240);
   });
 
   it("keeps Animation Map theme override broadcasts in place and syncs the mounted switch", () => {

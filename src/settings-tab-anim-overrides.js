@@ -19,6 +19,7 @@
   let ops = null;
   let i18n = null;
   let readers = null;
+  let mountedSubtabBody = null;
 
   function t(key) {
     return helpers.t(key);
@@ -723,7 +724,7 @@
           syncMountedWideHitboxToggles();
           syncMountedOverrideStatusControls();
         } else if (state.activeTab === "animOverrides") {
-          ops.requestRender({ content: true });
+          refreshMountedSubtabBody();
         }
         ops.requestRender({ modal: true });
         return result;
@@ -1106,6 +1107,103 @@
     return frame;
   }
 
+  function getSubtabScrollPositions() {
+    if (!runtime.animOverridesScrollTop || typeof runtime.animOverridesScrollTop !== "object") {
+      runtime.animOverridesScrollTop = { map: 0, animations: 0, sounds: 0 };
+    }
+    return runtime.animOverridesScrollTop;
+  }
+
+  function normalizeSubtab(value = runtime.animOverridesSubtab) {
+    return value === "sounds" ? "sounds" : value === "map" ? "map" : "animations";
+  }
+
+  function restoreSubtabScroll(scroller, subtab) {
+    if (!scroller) return;
+    const saved = Number(getSubtabScrollPositions()[subtab]);
+    requestAnimationFrame(() => {
+      if (state.activeTab !== "animOverrides" || normalizeSubtab() !== subtab) return;
+      scroller.scrollTop = Number.isFinite(saved) && saved > 0 ? saved : 0;
+    });
+  }
+
+  function clearSubtabControls() {
+    if (typeof ops.clearMountedControls === "function") {
+      ops.clearMountedControls();
+      return;
+    }
+    if (state.mountedControls.idleVisualPicker
+      && typeof state.mountedControls.idleVisualPicker.dispose === "function") {
+      state.mountedControls.idleVisualPicker.dispose();
+      state.mountedControls.idleVisualPicker = null;
+    }
+    if (state.mountedControls.animMapSwitches && typeof state.mountedControls.animMapSwitches.clear === "function") {
+      state.mountedControls.animMapSwitches.clear();
+    }
+    state.mountedControls.animMapReset = null;
+    if (state.mountedControls.animOverrideTimingSliders
+      && typeof state.mountedControls.animOverrideTimingSliders.clear === "function") {
+      state.mountedControls.animOverrideTimingSliders.clear();
+    }
+  }
+
+  function renderSubtabBody(body) {
+    if (!body) return;
+    mountedSubtabBody = body;
+    body.innerHTML = "";
+    const subtab = normalizeSubtab();
+
+    // "On / off" reads themeOverrides directly, so it does not wait for the
+    // animation asset payload used by the other two subtabs.
+    if (subtab === "map") {
+      root.ClawdSettingsTabAnimMap.renderMapSubtab(body);
+      return;
+    }
+
+    if (runtime.animationOverridesData === null) {
+      const loading = document.createElement("div");
+      loading.className = "placeholder-desc";
+      loading.textContent = t("animOverridesLoading");
+      body.appendChild(loading);
+      ops.fetchAnimationOverridesData().then(() => {
+        if (state.activeTab !== "animOverrides" || mountedSubtabBody !== body) return;
+        if (normalizeSubtab() !== subtab) return;
+        if (runtime.animationOverridesData === null) return;
+        clearSubtabControls();
+        renderSubtabBody(body);
+        restoreSubtabScroll(document.getElementById("content"), subtab);
+      });
+      return;
+    }
+
+    reconcilePendingAnimationOverrideEdits();
+    reconcilePendingWideHitboxOverrideEdits();
+    const data = runtime.animationOverridesData;
+
+    if (subtab === "sounds") {
+      body.appendChild(buildSoundOverridesSection(data));
+    } else {
+      body.appendChild(buildAnimOverrideThemeMeta(data));
+      const sections = Array.isArray(data.sections) ? data.sections : [];
+      for (const section of sections) {
+        if (!section || !Array.isArray(section.cards) || !section.cards.length) continue;
+        body.appendChild(buildAnimOverrideSection(section));
+      }
+    }
+    if (runtime.assetPicker.state) ops.requestRender({ modal: true });
+  }
+
+  function refreshMountedSubtabBody() {
+    if (state.activeTab !== "animOverrides" || !mountedSubtabBody) return false;
+    const scroller = document.getElementById("content");
+    const subtab = normalizeSubtab();
+    if (scroller) getSubtabScrollPositions()[subtab] = scroller.scrollTop;
+    clearSubtabControls();
+    renderSubtabBody(mountedSubtabBody);
+    restoreSubtabScroll(scroller, subtab);
+    return true;
+  }
+
   function render(parent) {
     const h1 = document.createElement("h1");
     h1.textContent = t("animOverridesTitle");
@@ -1115,41 +1213,13 @@
     subtitle.className = "subtitle";
     subtitle.textContent = t("animOverridesSubtitle");
     parent.appendChild(subtitle);
-    parent.appendChild(buildSubtabSwitcher());
-
-    // "On / off" reads themeOverrides directly, so it does not wait for the
-    // animation asset payload used by the other two subtabs.
-    if (runtime.animOverridesSubtab === "map") {
-      root.ClawdSettingsTabAnimMap.renderMapSubtab(parent);
-      return;
-    }
-
-    if (runtime.animationOverridesData === null) {
-      const loading = document.createElement("div");
-      loading.className = "placeholder-desc";
-      loading.textContent = t("animOverridesLoading");
-      parent.appendChild(loading);
-      ops.fetchAnimationOverridesData().then(() => {
-        if (state.activeTab === "animOverrides") ops.requestRender({ content: true });
-      });
-      return;
-    }
-
-    reconcilePendingAnimationOverrideEdits();
-    reconcilePendingWideHitboxOverrideEdits();
-    const data = runtime.animationOverridesData;
-
-    if (runtime.animOverridesSubtab === "sounds") {
-      parent.appendChild(buildSoundOverridesSection(data));
-    } else {
-      parent.appendChild(buildAnimOverrideThemeMeta(data));
-      const sections = Array.isArray(data.sections) ? data.sections : [];
-      for (const section of sections) {
-        if (!section || !Array.isArray(section.cards) || !section.cards.length) continue;
-        parent.appendChild(buildAnimOverrideSection(section));
-      }
-    }
-    if (runtime.assetPicker.state) ops.requestRender({ modal: true });
+    const switcher = buildSubtabSwitcher();
+    parent.appendChild(switcher);
+    const body = document.createElement("div");
+    body.className = "anim-override-subtab-body";
+    parent.appendChild(body);
+    renderSubtabBody(body);
+    restoreSubtabScroll(document.getElementById("content"), normalizeSubtab());
   }
 
   function buildSubtabSwitcher() {
@@ -1175,18 +1245,20 @@
       btn.addEventListener("click", () => {
         if (runtime.animOverridesSubtab === entry.key) return;
         const scroller = document.getElementById("content");
-        const previousScrollTop = scroller ? scroller.scrollTop : 0;
+        const previousSubtab = normalizeSubtab();
+        if (scroller) getSubtabScrollPositions()[previousSubtab] = scroller.scrollTop;
         runtime.animOverridesSubtab = entry.key;
-        ops.requestRender({ content: true });
-        if (scroller) {
-          scroller.scrollTop = previousScrollTop;
-          requestAnimationFrame(() => {
-            const activeButton = scroller.querySelector(".anim-override-subtabs .active");
-            if (activeButton && typeof activeButton.focus === "function") {
-              try { activeButton.focus({ preventScroll: true }); } catch (_) { activeButton.focus(); }
-            }
-          });
+        for (const candidate of group.querySelectorAll("button")) {
+          candidate.classList.toggle("active", candidate.dataset.animOverridesSubtab === entry.key);
         }
+        clearSubtabControls();
+        renderSubtabBody(mountedSubtabBody);
+        restoreSubtabScroll(scroller, entry.key);
+        requestAnimationFrame(() => {
+          if (typeof btn.focus === "function") {
+            try { btn.focus({ preventScroll: true }); } catch (_) { btn.focus(); }
+          }
+        });
       });
       group.appendChild(btn);
     }
@@ -1203,7 +1275,7 @@
 
   function refreshSoundOverridesUi() {
     return ops.fetchAnimationOverridesData().then(() => {
-      if (state.activeTab === "animOverrides") ops.requestRender({ content: true });
+      refreshMountedSubtabBody();
     });
   }
 
@@ -2265,6 +2337,9 @@
   }
 
   function onExit() {
+    const scroller = document.getElementById("content");
+    if (scroller) getSubtabScrollPositions()[normalizeSubtab()] = scroller.scrollTop;
+    mountedSubtabBody = null;
     ops.closeAssetPicker();
   }
 
