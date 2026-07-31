@@ -21,6 +21,13 @@ const { getAllAgents } = require("../agents/registry");
 
 const ICON_SIZE = 64;
 const ARTWORK_SIZE = 56;
+const CONTRAST_TILE_SIZE = 56;
+const CONTRAST_TILE_RADIUS = 10;
+const CONTRAST_TILE_ARTWORK_SIZE = 40;
+const CONTRAST_TILE_COLORS = Object.freeze({
+  "neutral-light-tile": Object.freeze([244, 244, 244, 255]),
+  "neutral-dark-tile": Object.freeze([63, 63, 70, 255]),
+});
 const BYTES_PER_PIXEL = 4;
 const ALPHA_CHANNEL_OFFSET = 3;
 const SOURCE_DIR = path.join(__dirname, "..", "assets", "source", "agent-icons");
@@ -28,32 +35,54 @@ const SOURCE_MANIFEST_PATH = path.join(SOURCE_DIR, "source-manifest.json");
 const OUTPUT_DIR = path.join(__dirname, "..", "assets", "icons", "agents");
 const SOURCE_EXTENSIONS = [".png", ".svg"];
 const EXPORTER_ENV = "CLAWD_AGENT_ICON_EXPORTER";
+const LOBE_ICONS_UPSTREAM = Object.freeze({
+  upstreamPackage: "@lobehub/icons-static-png",
+  upstreamVersion: "1.95.0",
+  license: "MIT",
+  variant: "light",
+});
+
+function lobeSource(originalFilename, extra = {}) {
+  return { originalFilename, fallback: false, ...LOBE_ICONS_UPSTREAM, ...extra };
+}
+
 const SOURCE_PROVENANCE = Object.freeze({
-  "antigravity-cli": { originalFilename: "antigravity-color.png", fallback: false },
-  "claude-code": { originalFilename: "claudecode-color.png", fallback: false },
-  codebuddy: { originalFilename: "codebuddy-color.png", fallback: false },
+  "antigravity-cli": lobeSource("antigravity-color.png"),
+  "claude-code": lobeSource("claudecode-color.png"),
+  codebuddy: lobeSource("codebuddy-color.png"),
   codewhale: { originalFilename: "codewhale.png", fallback: true },
-  codex: { originalFilename: "openai.png", fallback: false },
-  "copilot-cli": { originalFilename: "githubcopilot.png", fallback: false },
-  "cursor-agent": { originalFilename: "cursor.png", fallback: false },
-  "gemini-cli": { originalFilename: "geminicli-color.png", fallback: false },
-  hermes: { originalFilename: "hermesagent.png", fallback: false },
+  codex: lobeSource("openai.png", { contrastTreatment: "neutral-light-tile" }),
+  "copilot-cli": lobeSource("githubcopilot.png", { contrastTreatment: "neutral-light-tile" }),
+  "cursor-agent": lobeSource("cursor.png", { contrastTreatment: "neutral-light-tile" }),
+  "gemini-cli": lobeSource("geminicli-color.png"),
+  hermes: lobeSource("hermesagent.png", { contrastTreatment: "neutral-light-tile" }),
   "kimi-cli": {
     originalFilename: "kimi-cli.png",
     sourceFilename: "kimi-cli-legacy.png",
     fallback: true,
     exportMode: "passthrough",
     archivedSources: [
-      { originalFilename: "kimi-color.png", sourceFilename: "kimi-cli.png" },
-      { originalFilename: "kimi-color.svg", sourceFilename: "kimi-cli.svg" },
+      {
+        originalFilename: "kimi-color.png",
+        sourceFilename: "kimi-cli.png",
+        ...LOBE_ICONS_UPSTREAM,
+      },
+      {
+        originalFilename: "kimi-color.svg",
+        sourceFilename: "kimi-cli.svg",
+        upstreamPackage: "lobe-icons",
+        upstreamVersion: "1.95.0",
+        license: "MIT",
+        variant: "light",
+      },
     ],
   },
-  "kiro-cli": { originalFilename: "kiro-color.png", fallback: false },
-  mimocode: { originalFilename: "xiaomimimo.png", fallback: false },
-  openclaw: { originalFilename: "openclaw-color.png", fallback: false },
-  opencode: { originalFilename: "opencode.png", fallback: false },
-  pi: { originalFilename: "pi.png", fallback: false },
-  qoder: { originalFilename: "qoder-color.png", fallback: false },
+  "kiro-cli": lobeSource("kiro-color.png"),
+  mimocode: lobeSource("xiaomimimo.png", { contrastTreatment: "neutral-light-tile" }),
+  openclaw: lobeSource("openclaw-color.png"),
+  opencode: lobeSource("opencode.png", { contrastTreatment: "neutral-light-tile" }),
+  pi: lobeSource("pi.png", { contrastTreatment: "neutral-light-tile" }),
+  qoder: lobeSource("qoder-color.png"),
   qoderwork: {
     originalFilename: "qoderwork.png",
     sourceFilename: "qoderwork-legacy.png",
@@ -63,9 +92,13 @@ const SOURCE_PROVENANCE = Object.freeze({
       { originalFilename: "qoderwork.png", sourceFilename: "qoderwork.png" },
     ],
   },
-  "qwen-code": { originalFilename: "qwen-color.png", fallback: false },
+  "qwen-code": lobeSource("qwen-color.png", { contrastTreatment: "neutral-light-tile" }),
   reasonix: { originalFilename: "reasonix.png", fallback: true },
-  workbuddy: { originalFilename: "workbuddy.png", fallback: false },
+  workbuddy: {
+    originalFilename: "workbuddy.png",
+    fallback: false,
+    contrastTreatment: "neutral-dark-tile",
+  },
   zcode: { originalFilename: "zcode.png", fallback: true, exportMode: "passthrough" },
 });
 
@@ -102,6 +135,10 @@ function hashFileSource(filePath) {
   return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
 }
 
+function hashBuffer(buffer) {
+  return crypto.createHash("sha256").update(buffer).digest("hex");
+}
+
 function hashSource(filePath) {
   return path.extname(filePath).toLowerCase() === ".svg"
     ? hashSvgSource(filePath)
@@ -109,14 +146,17 @@ function hashSource(filePath) {
 }
 
 function readSourceManifest() {
-  if (!fs.existsSync(SOURCE_MANIFEST_PATH)) return { sources: {}, svgSources: {} };
+  if (!fs.existsSync(SOURCE_MANIFEST_PATH)) return { sources: {}, svgSources: {}, outputs: {} };
   const manifest = JSON.parse(fs.readFileSync(SOURCE_MANIFEST_PATH, "utf8"));
-  if (!manifest || typeof manifest !== "object") return { sources: {}, svgSources: {} };
+  if (!manifest || typeof manifest !== "object") return { sources: {}, svgSources: {}, outputs: {} };
   if (!manifest.sources || typeof manifest.sources !== "object") {
     manifest.sources = {};
   }
   if (!manifest.svgSources || typeof manifest.svgSources !== "object") {
     manifest.svgSources = {};
+  }
+  if (!manifest.outputs || typeof manifest.outputs !== "object") {
+    manifest.outputs = {};
   }
   return manifest;
 }
@@ -161,18 +201,31 @@ function getSourceManifestRecord(agentId) {
     fallback: provenance.fallback,
   };
   if (provenance.exportMode) record.exportMode = provenance.exportMode;
+  for (const field of [
+    "upstreamPackage",
+    "upstreamVersion",
+    "license",
+    "variant",
+    "contrastTreatment",
+  ]) {
+    if (provenance[field]) record[field] = provenance[field];
+  }
   if (provenance.archivedSources) {
     record.archivedSources = provenance.archivedSources.map((source) => {
       const archivedPath = path.join(SOURCE_DIR, source.sourceFilename);
       if (!fs.existsSync(archivedPath)) {
         throw new Error(`Missing archived source asset for agent icon: ${source.sourceFilename}`);
       }
-      return {
+      const archivedRecord = {
         originalFilename: source.originalFilename,
         sourceFilename: source.sourceFilename,
         sourceType: path.extname(archivedPath).slice(1).toLowerCase(),
         sha256: hashSource(archivedPath),
       };
+      for (const field of ["upstreamPackage", "upstreamVersion", "license", "variant"]) {
+        if (source[field]) archivedRecord[field] = source[field];
+      }
+      return archivedRecord;
     });
   }
   return record;
@@ -189,7 +242,42 @@ function updateSourceRecords(manifest, agents) {
 function updateSourceManifest(manifest, agents) {
   updateSourceRecords(manifest, agents);
   updateSvgSourceHashes(manifest, agents);
+  if (!manifest.outputs || typeof manifest.outputs !== "object") manifest.outputs = {};
   return manifest;
+}
+
+function getOutputManifestRecord(entry, manifest) {
+  const sourceRecord = manifest.sources && manifest.sources[entry.agentId];
+  if (!sourceRecord || typeof sourceRecord.sha256 !== "string") {
+    throw new Error(`Missing source manifest record for generated icon: ${entry.agentId}`);
+  }
+  return {
+    agentId: entry.agentId,
+    outputFilename: `${entry.agentId}.png`,
+    outputSha256: entry.outputSha256,
+    generatedFromSourceSha256: sourceRecord.sha256,
+  };
+}
+
+function updateOutputRecords(manifest, exported) {
+  manifest.outputs = {};
+  for (const entry of exported) {
+    manifest.outputs[entry.agentId] = getOutputManifestRecord(entry, manifest);
+  }
+  return manifest;
+}
+
+function assertOutputManifestCurrent(entry, manifest) {
+  const actual = manifest.outputs && manifest.outputs[entry.agentId];
+  const expected = getOutputManifestRecord(entry, manifest);
+  if (actual && isDeepStrictEqual(actual, expected)) return;
+
+  throw new Error(
+    [
+      `Generated output manifest changed for ${entry.agentId}.`,
+      "Review the exporter change and run: npm run export-agent-icons -- --accept-svg-sources",
+    ].join(" ")
+  );
 }
 
 function assertSourceManifestCurrent(agentId, manifest = readSourceManifest()) {
@@ -279,7 +367,7 @@ function centerOffset(containerSize, contentSize) {
   return Math.floor((containerSize - contentSize) / 2);
 }
 
-function prepareArtwork(image) {
+function prepareArtwork(image, maximumSize = ARTWORK_SIZE) {
   const sourceSize = image.getSize();
   const analysis = getAlphaBounds(image.toBitmap(), sourceSize.width, sourceSize.height);
   if (!analysis.bounds) {
@@ -290,7 +378,7 @@ function prepareArtwork(image) {
     ? analysis.bounds
     : { x: 0, y: 0, width: sourceSize.width, height: sourceSize.height };
   const cropped = analysis.hasTransparency ? image.crop(sourceBounds) : image;
-  const targetSize = calculateContainedSize(sourceBounds.width, sourceBounds.height);
+  const targetSize = calculateContainedSize(sourceBounds.width, sourceBounds.height, maximumSize);
   const resized = targetSize.width === sourceBounds.width && targetSize.height === sourceBounds.height
     ? cropped
     : cropped.resize({ ...targetSize, quality: "best" });
@@ -301,7 +389,53 @@ function prepareArtwork(image) {
   return { resized, sourceSize, sourceBounds, targetSize, hadTransparency: analysis.hasTransparency };
 }
 
-function composeCenteredImage(image, targetSize) {
+function fillRoundedContrastTile(canvas, treatment) {
+  const color = CONTRAST_TILE_COLORS[treatment];
+  if (!color) throw new Error(`Unsupported Agent icon contrast treatment: ${treatment}`);
+  const offset = centerOffset(ICON_SIZE, CONTRAST_TILE_SIZE);
+  const radius = CONTRAST_TILE_RADIUS;
+  const last = CONTRAST_TILE_SIZE - 1;
+
+  for (let y = 0; y < CONTRAST_TILE_SIZE; y += 1) {
+    for (let x = 0; x < CONTRAST_TILE_SIZE; x += 1) {
+      const nearestX = Math.max(radius - 0.5, Math.min(x + 0.5, last - radius + 0.5));
+      const nearestY = Math.max(radius - 0.5, Math.min(y + 0.5, last - radius + 0.5));
+      const distance = Math.hypot(x + 0.5 - nearestX, y + 0.5 - nearestY);
+      const coverage = Math.max(0, Math.min(1, radius + 0.5 - distance));
+      if (coverage === 0) continue;
+
+      const targetOffset = ((offset + y) * ICON_SIZE + offset + x) * BYTES_PER_PIXEL;
+      canvas[targetOffset] = color[0];
+      canvas[targetOffset + 1] = color[1];
+      canvas[targetOffset + 2] = color[2];
+      canvas[targetOffset + ALPHA_CHANNEL_OFFSET] = Math.round(color[3] * coverage);
+    }
+  }
+}
+
+function compositeBitmap(canvas, bitmap, targetSize, x, y) {
+  for (let row = 0; row < targetSize.height; row += 1) {
+    for (let column = 0; column < targetSize.width; column += 1) {
+      const sourceOffset = (row * targetSize.width + column) * BYTES_PER_PIXEL;
+      const targetOffset = ((y + row) * ICON_SIZE + x + column) * BYTES_PER_PIXEL;
+      const sourceAlpha = bitmap[sourceOffset + ALPHA_CHANNEL_OFFSET] / 255;
+      if (sourceAlpha === 0) continue;
+
+      const targetAlpha = canvas[targetOffset + ALPHA_CHANNEL_OFFSET] / 255;
+      const outputAlpha = sourceAlpha + targetAlpha * (1 - sourceAlpha);
+      for (let channel = 0; channel < ALPHA_CHANNEL_OFFSET; channel += 1) {
+        const sourceValue = bitmap[sourceOffset + channel];
+        const targetValue = canvas[targetOffset + channel];
+        canvas[targetOffset + channel] = Math.round(
+          (sourceValue * sourceAlpha + targetValue * targetAlpha * (1 - sourceAlpha)) / outputAlpha
+        );
+      }
+      canvas[targetOffset + ALPHA_CHANNEL_OFFSET] = Math.round(outputAlpha * 255);
+    }
+  }
+}
+
+function composeCenteredImage(image, targetSize, options = {}) {
   const bitmap = image.toBitmap();
   const expectedLength = targetSize.width * targetSize.height * BYTES_PER_PIXEL;
   if (bitmap.length < expectedLength) {
@@ -311,14 +445,8 @@ function composeCenteredImage(image, targetSize) {
   const canvas = Buffer.alloc(ICON_SIZE * ICON_SIZE * BYTES_PER_PIXEL);
   const x = centerOffset(ICON_SIZE, targetSize.width);
   const y = centerOffset(ICON_SIZE, targetSize.height);
-  const sourceRowBytes = targetSize.width * BYTES_PER_PIXEL;
-  const canvasRowBytes = ICON_SIZE * BYTES_PER_PIXEL;
-
-  for (let row = 0; row < targetSize.height; row += 1) {
-    const sourceStart = row * sourceRowBytes;
-    const canvasStart = (y + row) * canvasRowBytes + x * BYTES_PER_PIXEL;
-    bitmap.copy(canvas, canvasStart, sourceStart, sourceStart + sourceRowBytes);
-  }
+  if (options.contrastTreatment) fillRoundedContrastTile(canvas, options.contrastTreatment);
+  compositeBitmap(canvas, bitmap, targetSize, x, y);
 
   const composed = nativeImage.createFromBitmap(canvas, {
     width: ICON_SIZE,
@@ -348,28 +476,41 @@ function exportIcon(agentId, options = {}) {
     throw new Error(`Unable to load agent icon source: ${sourcePath}`);
   }
 
-  const outputPath = path.join(OUTPUT_DIR, `${agentId}.png`);
+  const outputDir = options.outputDir || OUTPUT_DIR;
+  const outputPath = path.join(outputDir, `${agentId}.png`);
   const provenance = SOURCE_PROVENANCE[agentId];
   if (provenance.exportMode === "passthrough") {
+    const outputBuffer = fs.readFileSync(sourcePath);
     if (!options.dryRun) {
-      fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-      fs.copyFileSync(sourcePath, outputPath);
+      fs.mkdirSync(outputDir, { recursive: true });
+      fs.writeFileSync(outputPath, outputBuffer);
     }
-    return { agentId, sourcePath, outputPath, exportMode: "passthrough" };
+    return {
+      agentId,
+      sourcePath,
+      outputPath,
+      outputSha256: hashBuffer(outputBuffer),
+      exportMode: "passthrough",
+    };
   }
 
-  const artwork = prepareArtwork(image);
-  const composed = composeCenteredImage(artwork.resized, artwork.targetSize);
+  const artworkSize = provenance.contrastTreatment
+    ? CONTRAST_TILE_ARTWORK_SIZE
+    : ARTWORK_SIZE;
+  const artwork = prepareArtwork(image, artworkSize);
+  const composed = composeCenteredImage(artwork.resized, artwork.targetSize, provenance);
+  const outputBuffer = composed.image.toPNG();
 
   if (!options.dryRun) {
-    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-    fs.writeFileSync(outputPath, composed.image.toPNG());
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(outputPath, outputBuffer);
   }
 
   return {
     agentId,
     sourcePath,
     outputPath,
+    outputSha256: hashBuffer(outputBuffer),
     sourceSize: artwork.sourceSize,
     sourceBounds: artwork.sourceBounds,
     targetSize: artwork.targetSize,
@@ -384,19 +525,43 @@ function main() {
   const exported = [];
   const agents = getAllAgents();
   const manifest = readSourceManifest();
+  let stagingDir = null;
 
   if (acceptSvgSources) {
     updateSourceManifest(manifest, agents);
-    if (!dryRun) writeSourceManifest(manifest);
   }
 
-  for (const agent of agents) {
-    exported.push(exportIcon(agent.id, { dryRun, manifest }));
+  try {
+    if (!dryRun) stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-agent-icon-outputs-"));
+    for (const agent of agents) {
+      exported.push(exportIcon(agent.id, {
+        dryRun,
+        manifest,
+        outputDir: stagingDir || OUTPUT_DIR,
+      }));
+    }
+
+    if (acceptSvgSources) {
+      updateOutputRecords(manifest, exported);
+    } else {
+      for (const entry of exported) assertOutputManifestCurrent(entry, manifest);
+    }
+
+    if (!dryRun) {
+      fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+      for (const entry of exported) {
+        fs.copyFileSync(entry.outputPath, path.join(OUTPUT_DIR, `${entry.agentId}.png`));
+      }
+      if (acceptSvgSources) writeSourceManifest(manifest);
+    }
+  } finally {
+    if (stagingDir) fs.rmSync(stagingDir, { recursive: true, force: true });
   }
 
   for (const entry of exported) {
     const mode = dryRun ? "checked" : "exported";
-    console.log(`${mode} ${entry.agentId}: ${path.relative(process.cwd(), entry.outputPath)}`);
+    const finalOutputPath = path.join(OUTPUT_DIR, `${entry.agentId}.png`);
+    console.log(`${mode} ${entry.agentId}: ${path.relative(process.cwd(), finalOutputPath)}`);
   }
 }
 
@@ -470,6 +635,8 @@ if (require.main === module) {
 module.exports = {
   ICON_SIZE,
   ARTWORK_SIZE,
+  CONTRAST_TILE_SIZE,
+  CONTRAST_TILE_ARTWORK_SIZE,
   SOURCE_DIR,
   SOURCE_MANIFEST_PATH,
   OUTPUT_DIR,
@@ -480,12 +647,16 @@ module.exports = {
   normalizeTextLineEndings,
   hashSvgSource,
   hashFileSource,
+  hashBuffer,
   hashSource,
   getElectronBinary,
   updateSvgSourceHashes,
   getSourceManifestRecord,
   updateSourceRecords,
   updateSourceManifest,
+  getOutputManifestRecord,
+  updateOutputRecords,
+  assertOutputManifestCurrent,
   assertSourceManifestCurrent,
   assertRasterSourceCurrent,
   getAlphaBounds,

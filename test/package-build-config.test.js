@@ -35,6 +35,7 @@ describe("package build config", () => {
       assert.match(workflow, /pull_request:/);
       assert.match(workflow, /npm run audit:assets/);
       assert.match(workflow, /test\/preload-settings\.test\.js/);
+      assert.match(workflow, /test\/state-agent-icons\.test\.js/);
       assert.match(workflow, /dist\/repository-asset-audit\/\*\.json/);
       assert.match(
         workflow,

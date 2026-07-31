@@ -12,6 +12,7 @@ const { getAllAgents } = require("../agents/registry");
 const { INSTALLABLE_AGENT_IDS } = require("../src/settings-actions-agents");
 const {
   ARTWORK_SIZE,
+  CONTRAST_TILE_SIZE,
   SOURCE_DIR,
   SOURCE_PROVENANCE,
   calculateContainedSize,
@@ -109,6 +110,37 @@ function decodeRgbaPng(filePath) {
 
 function shouldCheckRuntimeIconEntry(entry) {
   return entry.isFile() && !entry.name.startsWith(".");
+}
+
+function relativeLuminance([red, green, blue]) {
+  const channels = [red, green, blue].map((value) => {
+    const normalized = value / 255;
+    return normalized <= 0.04045
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+function contrastRatio(first, second) {
+  const firstLuminance = relativeLuminance(first);
+  const secondLuminance = relativeLuminance(second);
+  const lighter = Math.max(firstLuminance, secondLuminance);
+  const darker = Math.min(firstLuminance, secondLuminance);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function maximumCompositeContrast(png, background) {
+  let maximum = 1;
+  for (let offset = 0; offset < png.pixels.length; offset += 4) {
+    const alpha = png.pixels[offset + 3] / 255;
+    if (alpha === 0) continue;
+    const composite = [0, 1, 2].map((channel) => Math.round(
+      png.pixels[offset + channel] * alpha + background[channel] * (1 - alpha)
+    ));
+    maximum = Math.max(maximum, contrastRatio(composite, background));
+  }
+  return maximum;
 }
 
 describe("state agent icons", () => {
@@ -211,6 +243,43 @@ describe("state agent icons", () => {
     );
   });
 
+  it("records complete LobeHub provenance for selected and archived package assets", () => {
+    const manifest = readSourceManifest();
+    const selectedLobeHubIds = [
+      "antigravity-cli",
+      "claude-code",
+      "codebuddy",
+      "codex",
+      "copilot-cli",
+      "cursor-agent",
+      "gemini-cli",
+      "hermes",
+      "kiro-cli",
+      "mimocode",
+      "openclaw",
+      "opencode",
+      "pi",
+      "qoder",
+      "qwen-code",
+    ];
+
+    for (const agentId of selectedLobeHubIds) {
+      const record = manifest.sources[agentId];
+      assert.strictEqual(record.upstreamPackage, "@lobehub/icons-static-png");
+      assert.strictEqual(record.upstreamVersion, "1.95.0");
+      assert.strictEqual(record.license, "MIT");
+      assert.strictEqual(record.variant, "light");
+    }
+
+    const archivedKimiPng = manifest.sources["kimi-cli"].archivedSources
+      .find((record) => record.sourceFilename === "kimi-cli.png");
+    assert.ok(archivedKimiPng, "Missing archived Kimi CLI LobeHub PNG");
+    assert.strictEqual(archivedKimiPng.upstreamPackage, "@lobehub/icons-static-png");
+    assert.strictEqual(archivedKimiPng.upstreamVersion, "1.95.0");
+    assert.strictEqual(archivedKimiPng.license, "MIT");
+    assert.strictEqual(archivedKimiPng.variant, "light");
+  });
+
   it("resolves an icon URL for every installable tutorial agent", () => {
     for (const agentId of INSTALLABLE_AGENT_IDS) {
       const iconUrl = getAgentIconUrl(agentId);
@@ -256,6 +325,57 @@ describe("state agent icons", () => {
       assert.ok(topPadding >= 4 && bottomPadding >= 4, `${agent.id} lacks vertical padding`);
       assert.ok(Math.abs(leftPadding - rightPadding) <= 1, `${agent.id} is not horizontally centered`);
       assert.ok(Math.abs(topPadding - bottomPadding) <= 1, `${agent.id} is not vertically centered`);
+    }
+  });
+
+  it("keeps every agent identifiable on actual light and dark UI backgrounds", () => {
+    const backgrounds = {
+      "session HUD dark": [0x20, 0x20, 0x24],
+      "dashboard surface-alt dark": [0x18, 0x18, 0x1b],
+      "dashboard surface dark": [0x23, 0x23, 0x27],
+      white: [0xff, 0xff, 0xff],
+    };
+
+    const failures = [];
+    for (const agent of getAllAgents()) {
+      const png = decodeRgbaPng(path.join(AGENT_ICON_DIR, `${agent.id}.png`));
+      for (const [backgroundName, background] of Object.entries(backgrounds)) {
+        const ratio = maximumCompositeContrast(png, background);
+        if (ratio < 3) {
+          failures.push(`${agent.id} reaches only ${ratio.toFixed(2)}:1 on ${backgroundName}`);
+        }
+      }
+    }
+    assert.deepStrictEqual(failures, []);
+  });
+
+  it("uses centered neutral tiles only for low-contrast variants", () => {
+    const expected = {
+      codex: "neutral-light-tile",
+      "copilot-cli": "neutral-light-tile",
+      "cursor-agent": "neutral-light-tile",
+      hermes: "neutral-light-tile",
+      mimocode: "neutral-light-tile",
+      opencode: "neutral-light-tile",
+      pi: "neutral-light-tile",
+      "qwen-code": "neutral-light-tile",
+      workbuddy: "neutral-dark-tile",
+    };
+    const actual = Object.fromEntries(
+      Object.entries(SOURCE_PROVENANCE)
+        .filter(([, provenance]) => provenance.contrastTreatment)
+        .map(([agentId, provenance]) => [agentId, provenance.contrastTreatment])
+    );
+    assert.deepStrictEqual(actual, expected);
+
+    for (const agentId of Object.keys(expected)) {
+      const png = decodeRgbaPng(path.join(AGENT_ICON_DIR, `${agentId}.png`));
+      const bounds = getAlphaBounds(png.pixels, png.width, png.height).bounds;
+      assert.deepStrictEqual(
+        bounds,
+        { x: 4, y: 4, width: CONTRAST_TILE_SIZE, height: CONTRAST_TILE_SIZE },
+        `${agentId} should use the centered contrast tile`
+      );
     }
   });
 
@@ -357,8 +477,30 @@ describe("state agent icons", () => {
   });
 
   it("keeps selected source and SVG hashes aligned with the source manifest", () => {
-    const expectedManifest = updateSourceManifest({ sources: {}, svgSources: {} }, getAllAgents());
+    const manifest = readSourceManifest();
+    const expectedManifest = updateSourceManifest(
+      { sources: {}, svgSources: {}, outputs: manifest.outputs },
+      getAllAgents()
+    );
     assert.deepStrictEqual(readSourceManifest(), expectedManifest);
+  });
+
+  it("binds every runtime output to its generated source hash", () => {
+    const manifest = readSourceManifest();
+    const registeredIds = getAllAgents().map((agent) => agent.id).sort();
+    assert.deepStrictEqual(Object.keys(manifest.outputs).sort(), registeredIds);
+
+    for (const agentId of registeredIds) {
+      const outputRecord = manifest.outputs[agentId];
+      const runtimePath = path.join(AGENT_ICON_DIR, `${agentId}.png`);
+      assert.strictEqual(outputRecord.agentId, agentId);
+      assert.strictEqual(outputRecord.outputFilename, `${agentId}.png`);
+      assert.strictEqual(hashFileSource(runtimePath), outputRecord.outputSha256);
+      assert.strictEqual(
+        outputRecord.generatedFromSourceSha256,
+        manifest.sources[agentId].sha256
+      );
+    }
   });
 
   it("normalizes SVG source line endings before hashing", () => {
