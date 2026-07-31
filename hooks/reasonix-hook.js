@@ -7,7 +7,7 @@
 // Clawd only observes state for the desktop pet animation.
 
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
+const { createPidResolver, readStdinJsonDetailed, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 const EVENT_TO_STATE = {
   SessionStart: "idle",
@@ -34,7 +34,9 @@ const resolve = createPidResolver({
   agentNames: {
     win: new Set(["reasonix.exe", "reasonix-desktop.exe", "reasonix-cli.exe"]),
     mac: new Set(["reasonix", "reasonix-desktop"]),
-    linux: new Set(["reasonix", "reasonix-desktop"]),
+    // reasonix-deskto: Linux comm is truncated to TASK_COMM_LEN(16)-1 = 15
+    // chars, so ps/pgrep never see the full "reasonix-desktop".
+    linux: new Set(["reasonix", "reasonix-desktop", "reasonix-deskto"]),
   },
   platformConfig: config,
 });
@@ -50,12 +52,38 @@ function normalizeReasonixSessionId(value) {
 // A short delay on Stop lets PostToolUse's POST land first.
 const STOP_DELAY_MS = 200;
 
+// Reasonix (Go CLI / Wails desktop) can take longer than the shared 400ms
+// default to flush the hook payload to stdin after a long idle period (Go
+// scheduler warm-up + child-process pipe setup on first event). Use a wider
+// 2000ms read window so the first post-idle event actually arrives.
+const STDIN_READ_TIMEOUT_MS = 2000;
+
 // Safety timeout: guarantee the hook exits even if stdin never arrives.
-// Stop gets extra time to accommodate the delay above.
-const SAFETY_TIMEOUT_MS = 800;
-const SAFETY_TIMEOUT_STOP_MS = SAFETY_TIMEOUT_MS + STOP_DELAY_MS + 200;
+// Phased, deadline-based budgets instead of one blanket 800ms — the single
+// budget fired while a cold machine was still legitimately working (post-idle
+// stdin flush + cold WMI snapshot inside resolve()), and safeExit(0)
+// swallowed the event BEFORE the POST with a clean exit 0: no error anywhere,
+// the pet just looked "disconnected" after every long idle.
+// Blocking hooks (UserPromptSubmit/PreToolUse) get a 5s budget from Reasonix
+// and a timeout becomes a DecisionBlock that ABORTS the user's turn, so the
+// absolute deadline stays below it — including the cmd/PowerShell startup
+// before node that we cannot observe from here. Non-blocking events (upstream
+// budget 30s) use a relaxed deadline instead.
+const startedAt = Date.now();
+const HARD_DEADLINE_MS = 4500;
+const RELAXED_DEADLINE_MS = 15000;
+const STDIN_PHASE_BUDGET_MS = STDIN_READ_TIMEOUT_MS + 500;
+const POST_STDIN_BUDGET_MS = 3500;
+const STOP_EXTRA_MS = STOP_DELAY_MS + 200;
+const BLOCKING_HOOKS = new Set(["UserPromptSubmit", "PreToolUse"]);
 let _exited = false;
 let safetyTimer = null;
+
+function armSafety(ms, deadlineMs = HARD_DEADLINE_MS) {
+  if (safetyTimer) clearTimeout(safetyTimer);
+  const remaining = deadlineMs - (Date.now() - startedAt);
+  safetyTimer = setTimeout(() => safeExit(0), Math.max(1, Math.min(ms, remaining)));
+}
 
 function safeExit(code) {
   if (_exited) return;
@@ -66,11 +94,22 @@ function safeExit(code) {
   process.exit(code);
 }
 
-safetyTimer = setTimeout(() => safeExit(0), SAFETY_TIMEOUT_MS);
+armSafety(STDIN_PHASE_BUDGET_MS);
 
-readStdinJson()
-  .then((payload) => {
+readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
+  .then((result) => {
+    const payload = result.payload;
     const hookName = (payload && typeof payload.event === "string" && payload.event) || "";
+
+    // stdin settled (payload or read timeout) — re-arm for resolve() + POST.
+    // Stop is non-blocking (30s upstream) and gets the relaxed deadline plus
+    // its ordering-delay allowance.
+    const isStop = hookName === "Stop";
+    armSafety(
+      isStop ? POST_STDIN_BUDGET_MS + STOP_EXTRA_MS : POST_STDIN_BUDGET_MS,
+      BLOCKING_HOOKS.has(hookName) ? HARD_DEADLINE_MS : RELAXED_DEADLINE_MS
+    );
+
     const mapped = EVENT_TO_STATE[hookName];
     if (!mapped) {
       safeExit(0);
@@ -81,12 +120,6 @@ readStdinJson()
     const host = remote ? readHostPrefix() : undefined;
 
     if (hookName === "SessionStart" && !remote) resolve();
-
-    // Use longer safety timeout for Stop to accommodate the delay
-    if (hookName === "Stop") {
-      if (safetyTimer) clearTimeout(safetyTimer);
-      safetyTimer = setTimeout(() => safeExit(0), SAFETY_TIMEOUT_STOP_MS);
-    }
 
     const body = {
       state: mapped,
