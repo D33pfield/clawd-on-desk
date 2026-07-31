@@ -253,6 +253,16 @@ function createCodexPetMain(options = {}) {
         sourcePackagePath: marker.sourcePackagePath || "",
         previewAtlasUrl: getPreviewAtlasUrl(theme.id, marker),
         adapterVersion: marker.adapterVersion || 0,
+        atlasColumns: Number.isInteger(marker.sourceAtlasColumns)
+          && marker.sourceAtlasColumns >= 1
+          && marker.sourceAtlasColumns <= 64
+          ? marker.sourceAtlasColumns
+          : 8,
+        atlasRows: Number.isInteger(marker.sourceAtlasRows)
+          && marker.sourceAtlasRows >= 1
+          && marker.sourceAtlasRows <= 64
+          ? marker.sourceAtlasRows
+          : 9,
       },
     };
   }
