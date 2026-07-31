@@ -239,6 +239,10 @@ describe("Agent Registry", () => {
       registry.getAgent("qoder").startupRecoveryProcessNames.win,
       ["qodercli.exe", "qoder-cli.exe"]
     );
+    assert.deepStrictEqual(
+      registry.getAgent("reasonix").startupRecoveryProcessNames,
+      { win: ["reasonix.exe", "reasonix-cli.exe"], mac: ["reasonix"], linux: ["reasonix"] }
+    );
   });
 
   it("should have correct capabilities", () => {
