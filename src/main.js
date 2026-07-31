@@ -1668,6 +1668,7 @@ const _updateBubbleCtx = {
   guardAlwaysOnTop,
   reapplyMacVisibility,
   repositionSessionHud: () => repositionSessionHud(),
+  clipboard,
 };
 const _updateBubble = initUpdateBubble(_updateBubbleCtx);
 const {
@@ -3668,6 +3669,9 @@ const _updaterCtx = {
   resolveDisplayState: () => resolveDisplayState(),
   getSvgOverride: (state) => getSvgOverride(state),
   resetSoundCooldown: () => resetSoundCooldown(),
+  onUpdateCheckStatusChanged: (snapshot) => {
+    broadcastSettingsWindow("settings:update-check-status", snapshot);
+  },
   // #329 scheduler / pending-state prefs IO. Reads go straight to the
   // settingsController snapshot; writes go through applyUpdate so the
   // single-writer architecture (settings-controller.js) is honored.
@@ -3682,6 +3686,8 @@ const _updater = require("./updater")(_updaterCtx);
 const {
   setupAutoUpdater,
   checkForUpdates,
+  getUpdateCheckSnapshot,
+  clearUpdateError,
   getUpdateMenuItem,
   getUpdateMenuLabel,
   reconcilePendingOnStartup,
@@ -3823,6 +3829,12 @@ registerSettingsIpc({
   getHookServerPort: () => getHookServerPort(),
   getRecentHookEvents: (options) => _server.getRecentHookEvents(options),
   checkForUpdates,
+  getUpdateCheckSnapshot,
+  clearUpdateError,
+  copyUpdateError: (copyText) => {
+    clipboard.writeText(copyText);
+    return { status: "ok" };
+  },
   showTutorial: () => {
     _tutorial.open();
     return { status: "ok" };
