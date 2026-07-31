@@ -1137,7 +1137,8 @@ function normalizeIdleVisual(value, defaultsValue) {
 
 // ── Disk I/O ──
 
-// Read prefs from disk. Returns `{ snapshot, locked, fresh? }`:
+// Read prefs from disk. Returns
+// `{ snapshot, locked, fresh?, recovered?, codexAutoStartAuthoritative? }`:
 //   - snapshot: a valid prefs object (always — falls back to defaults on any error)
 //   - locked: true if the file came from a future version; save() should be a no-op
 //             to avoid clobbering it.
@@ -1146,6 +1147,13 @@ function normalizeIdleVisual(value, defaultsValue) {
 //            the device locale) without ever overriding an existing user's choices.
 //            Absent/falsy on every other path — a corrupt or unreadable file is
 //            NOT treated as fresh, so we never clobber a returning user's language.
+//   - recovered: true when an existing file could not supply authoritative prefs
+//                and the snapshot is only a fail-safe defaults fallback. Callers
+//                must not publish permissive external gates from that snapshot.
+//   - codexAutoStartAuthoritative: false when the prefs root is otherwise
+//                recoverable but an explicitly-present Codex gate field has an
+//                invalid type. Missing legacy fields retain their historical
+//                default/migration behavior.
 function load(prefsPath) {
   let raw;
   try {
@@ -1165,11 +1173,31 @@ function load(prefsPath) {
     } catch (bakErr) {
       console.warn("Clawd: prefs file unreadable and backup failed:", err.message, bakErr.message);
     }
-    return { snapshot: getDefaults(), locked: false };
+    return { snapshot: getDefaults(), locked: false, recovered: true };
   }
-  if (!raw || typeof raw !== "object") {
-    return { snapshot: getDefaults(), locked: false };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { snapshot: getDefaults(), locked: false, recovered: true };
   }
+  const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+  const isObjectRecord = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+  let codexAutoStartAuthoritative = true;
+  if (hasOwn(raw, "agents")) {
+    if (!isObjectRecord(raw.agents)) {
+      codexAutoStartAuthoritative = false;
+    } else if (hasOwn(raw.agents, "codex")) {
+      if (!isObjectRecord(raw.agents.codex)) {
+        codexAutoStartAuthoritative = false;
+      } else if (
+        hasOwn(raw.agents.codex, "enabled")
+        && typeof raw.agents.codex.enabled !== "boolean"
+      ) {
+        codexAutoStartAuthoritative = false;
+      }
+    }
+  }
+  const codexAuthorityMeta = codexAutoStartAuthoritative
+    ? {}
+    : { codexAutoStartAuthoritative: false };
   // Future-version guard: refuse to overwrite a prefs file written by a newer version.
   const incomingVersion = typeof raw.version === "number" ? raw.version : 0;
   if (incomingVersion > CURRENT_VERSION) {
@@ -1177,10 +1205,10 @@ function load(prefsPath) {
       `Clawd: prefs file version ${incomingVersion} is newer than supported (${CURRENT_VERSION}). ` +
       `Settings will be readable but not saved to avoid data loss.`
     );
-    return { snapshot: validate(raw), locked: true };
+    return { snapshot: validate(raw), locked: true, ...codexAuthorityMeta };
   }
   const migrated = migrate(raw);
-  return { snapshot: validate(migrated), locked: false };
+  return { snapshot: validate(migrated), locked: false, ...codexAuthorityMeta };
 }
 
 function save(prefsPath, snapshot) {

@@ -236,6 +236,87 @@ describe("Codex auto-start gate commit ordering", () => {
     assert.strictEqual(ctrl.get("agents").codex.enabled, false);
     assert.deepStrictEqual(gateWrites, []);
   });
+
+  it("does not publish an enabled gate from future-version locked prefs", async () => {
+    const snapshot = prefs.getDefaults();
+    snapshot.agents.codex = {
+      ...snapshot.agents.codex,
+      integrationInstalled: true,
+      enabled: false,
+    };
+    const gateWrites = [];
+    const ctrl = createSettingsController({
+      prefsPath: "unused-locked-path",
+      prefs: {
+        load: () => ({ snapshot, locked: true }),
+        save: () => {
+          throw new Error("locked prefs must not be persisted");
+        },
+      },
+      injectedDeps: {
+        syncIntegrationForAgent: async () => ({ status: "ok" }),
+        startMonitorForAgent() {},
+        writeCodexAutoStartGate(enabled) {
+          gateWrites.push(enabled);
+          return true;
+        },
+      },
+    });
+    ctrl.subscribeKey("agents", (_agents, nextSnapshot) => {
+      if (ctrl.isLocked()) return;
+      gateWrites.push(nextSnapshot.agents.codex.enabled === true);
+    });
+
+    const result = await ctrl.applyCommand("setAgentFlag", {
+      agentId: "codex",
+      flag: "enabled",
+      value: true,
+    });
+
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(ctrl.get("agents").codex.enabled, true);
+    assert.deepStrictEqual(gateWrites, []);
+  });
+
+  it("does not publish an enabled gate when installing under future-version locked prefs", async () => {
+    const snapshot = prefs.getDefaults();
+    snapshot.agents.codex = {
+      ...snapshot.agents.codex,
+      integrationInstalled: false,
+      enabled: false,
+    };
+    const gateWrites = [];
+    const ctrl = createSettingsController({
+      prefsPath: "unused-locked-path",
+      prefs: {
+        load: () => ({ snapshot, locked: true }),
+        save: () => {
+          throw new Error("locked prefs must not be persisted");
+        },
+      },
+      injectedDeps: {
+        syncIntegrationForAgent: async () => ({ status: "ok" }),
+        startMonitorForAgent() {},
+        writeCodexAutoStartGate(enabled) {
+          gateWrites.push(enabled);
+          return true;
+        },
+      },
+    });
+    ctrl.subscribeKey("agents", (_agents, nextSnapshot) => {
+      if (ctrl.isLocked()) return;
+      gateWrites.push(nextSnapshot.agents.codex.enabled === true);
+    });
+
+    const result = await ctrl.applyCommand("installAgentIntegration", {
+      agentId: "codex",
+    });
+
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(ctrl.get("agents").codex.integrationInstalled, true);
+    assert.strictEqual(ctrl.get("agents").codex.enabled, true);
+    assert.deepStrictEqual(gateWrites, []);
+  });
 });
 
 describe("setTextScaleForDisplay end-to-end commit", () => {

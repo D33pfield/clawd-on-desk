@@ -68,6 +68,40 @@ describe("Codex auto-start gate", () => {
   });
 });
 
+describe("native WSL detection", () => {
+  it("uses WSL_DISTRO_NAME for a Linux hook process", () => {
+    assert.strictEqual(serverConfig.detectWslDistro({
+      platform: "linux",
+      env: { WSL_DISTRO_NAME: "Ubuntu-24.04" },
+      fs: {
+        readFileSync() {
+          throw new Error("/proc/version should not be needed");
+        },
+      },
+    }), "Ubuntu-24.04");
+  });
+
+  it("falls back to /proc/version without the env signal", () => {
+    assert.strictEqual(serverConfig.detectWslDistro({
+      platform: "linux",
+      env: {},
+      fs: {
+        readFileSync(filePath) {
+          assert.strictEqual(filePath, "/proc/version");
+          return "Linux version 6.6.87.2-microsoft-standard-WSL2";
+        },
+      },
+    }), "wsl");
+  });
+
+  it("does not classify Windows node interop as native WSL", () => {
+    assert.strictEqual(serverConfig.detectWslDistro({
+      platform: "win32",
+      env: { WSL_DISTRO_NAME: "Ubuntu-24.04" },
+    }), null);
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // runtime.json identity (#681)
 // ═══════════════════════════════════════════════════════════════════════════

@@ -283,8 +283,6 @@ function _syncCodexAutoStartGate(snapshot, source) {
   return false;
 }
 
-_syncCodexAutoStartGate(_initialPrefsLoad.snapshot, "startup");
-
 // Lazy helpers — these run inside the action `effect` callbacks at click time,
 // long after server.js / hooks/install.js are loaded. Wrapping them in closures
 // avoids a chicken-and-egg require order at module load.
@@ -488,6 +486,11 @@ const _settingsController = createSettingsController({
   },
 });
 _settingsController.subscribeKey("agents", (_agents, snapshot) => {
+  // A future-version prefs file is intentionally read-only. Settings may still
+  // change in memory for the current process, but publishing those ephemeral
+  // values would let a retained hook cold-launch Clawd against the durable
+  // prefs truth.
+  if (_settingsController.isLocked()) return;
   _syncCodexAutoStartGate(snapshot, "settings");
 });
 let _remoteSshInstallationIdentity = null;
@@ -4274,6 +4277,18 @@ if (!gotTheLock) {
   // Another instance is already running — quit silently
   app.quit();
 } else {
+  // Only the winning instance may publish the startup gate. A losing instance
+  // can have a stale/default prefs snapshot and must never become the final
+  // writer after the active instance has disabled Codex.
+  // A future-version or recovered snapshot is not authoritative enough to
+  // publish an enabled external gate. Fail closed until a valid prefs commit
+  // reaches the post-commit agents subscriber above.
+  const startupGateSnapshot = (
+    _initialPrefsLoad.locked === true
+    || _initialPrefsLoad.recovered === true
+    || _initialPrefsLoad.codexAutoStartAuthoritative === false
+  ) ? null : _initialPrefsLoad.snapshot;
+  _syncCodexAutoStartGate(startupGateSnapshot, "startup");
   app.on("second-instance", (_event, commandLine) => {
     if (petWindowRuntime.isPetHidden()) {
       prepManualPetVisibility();

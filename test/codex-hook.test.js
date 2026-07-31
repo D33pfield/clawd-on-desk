@@ -21,6 +21,7 @@ const {
   startClawdAndWait,
 } = require("../hooks/codex-hook");
 const { readCodexThreadName } = require("../hooks/codex-session-index");
+const { CODEX_WSL_INTEROP_ARG } = require("../hooks/server-config");
 
 const mockResolve = () => ({
   stablePid: 123,
@@ -649,7 +650,31 @@ describe("Codex official hook", () => {
       hook_event_name: "SessionStart",
       session_id: "s1",
     }, {
-      env: { CLAWD_WSL_DISTRO: "Ubuntu" },
+      env: { WSL_DISTRO_NAME: "Ubuntu" },
+      resolveWslDistro: () => "Ubuntu",
+      resolvePid: mockResolve,
+      readCodexAutoStartGate: () => true,
+      postState(_body, _options, callback) {
+        callback(false, null);
+      },
+      async runAutoStart() {
+        autoStarts += 1;
+      },
+    });
+
+    assert.strictEqual(autoStarts, 0);
+    assert.strictEqual(result.posted, false);
+  });
+
+  it("does not start a desktop app for Windows-node WSL interop", async () => {
+    let autoStarts = 0;
+    const result = await runCodexHook({
+      hook_event_name: "SessionStart",
+      session_id: "s1",
+    }, {
+      argv: ["node.exe", "codex-hook.js", CODEX_WSL_INTEROP_ARG],
+      env: {},
+      resolveWslDistro: () => null,
       resolvePid: mockResolve,
       readCodexAutoStartGate: () => true,
       postState(_body, _options, callback) {

@@ -13,6 +13,8 @@ const {
   readCodexAutoStartGate,
   readHostPrefix,
   readRuntimeIdentity,
+  CODEX_WSL_INTEROP_ARG,
+  resolveWslDistro,
   applyWslSourceFields,
 } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
@@ -537,11 +539,20 @@ async function runCodexHook(payload, options = {}) {
   if (!firstAttempt) return { body: null, posted: false, stdout: "" };
   const result = await postAttempt(firstAttempt);
   const env = options.env || process.env;
+  const argv = Array.isArray(options.argv) ? options.argv : process.argv;
+  const wslInterop = argv.includes(CODEX_WSL_INTEROP_ARG);
+  let wslDistro = null;
+  try {
+    const resolveHookWslDistro = options.resolveWslDistro || resolveWslDistro;
+    wslDistro = resolveHookWslDistro();
+  } catch {}
   if (
     result.posted
     || payload.hook_event_name !== "SessionStart"
     || env.CLAWD_REMOTE
     || env.CLAWD_WSL_DISTRO
+    || wslInterop
+    || wslDistro
   ) return result;
 
   const readAutoStartGate = options.readCodexAutoStartGate || readCodexAutoStartGate;

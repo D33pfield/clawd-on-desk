@@ -1327,8 +1327,10 @@ describe("prefs permission automation safe startup persistence", () => {
 describe("prefs.load", () => {
   it("returns defaults for missing file (ENOENT) without backup", () => {
     const p = makeTempPath();
-    const { snapshot, locked } = prefs.load(p);
+    const { snapshot, locked, fresh, recovered } = prefs.load(p);
     assert.strictEqual(locked, false);
+    assert.strictEqual(fresh, true);
+    assert.strictEqual(recovered, undefined);
     assert.deepStrictEqual(snapshot, prefs.getDefaults());
     // Should NOT have created a backup since file never existed
     assert.strictEqual(fs.existsSync(p + ".bak"), false);
@@ -1337,14 +1339,68 @@ describe("prefs.load", () => {
   it("backs up corrupt JSON and returns defaults", () => {
     const p = makeTempPath();
     fs.writeFileSync(p, "{ this is not valid json", "utf8");
-    const { snapshot, locked } = prefs.load(p);
+    const { snapshot, locked, recovered } = prefs.load(p);
     assert.strictEqual(locked, false);
+    assert.strictEqual(recovered, true);
     assert.deepStrictEqual(snapshot, prefs.getDefaults());
     assert.strictEqual(fs.existsSync(p + ".bak"), true);
     assert.strictEqual(
       fs.readFileSync(p + ".bak", "utf8"),
       "{ this is not valid json"
     );
+  });
+
+  it("marks a non-object prefs root as a recovered defaults snapshot", () => {
+    const p = makeTempPath();
+    fs.writeFileSync(p, "null", "utf8");
+    const { snapshot, locked, fresh, recovered } = prefs.load(p);
+    assert.strictEqual(locked, false);
+    assert.strictEqual(fresh, undefined);
+    assert.strictEqual(recovered, true);
+    assert.deepStrictEqual(snapshot, prefs.getDefaults());
+  });
+
+  it("marks an array prefs root as a recovered defaults snapshot", () => {
+    const p = makeTempPath();
+    fs.writeFileSync(p, "[]", "utf8");
+    const { snapshot, locked, fresh, recovered } = prefs.load(p);
+    assert.strictEqual(locked, false);
+    assert.strictEqual(fresh, undefined);
+    assert.strictEqual(recovered, true);
+    assert.deepStrictEqual(snapshot, prefs.getDefaults());
+  });
+
+  it("marks explicitly malformed Codex gate fields as non-authoritative", () => {
+    for (const raw of [
+      { version: prefs.CURRENT_VERSION, agents: [] },
+      { version: prefs.CURRENT_VERSION, agents: "broken" },
+      { version: prefs.CURRENT_VERSION, agents: { codex: null } },
+      { version: prefs.CURRENT_VERSION, agents: { codex: [] } },
+      { version: prefs.CURRENT_VERSION, agents: { codex: { enabled: "yes" } } },
+    ]) {
+      const p = makeTempPath();
+      fs.writeFileSync(p, JSON.stringify(raw), "utf8");
+      const result = prefs.load(p);
+      assert.strictEqual(result.locked, false);
+      assert.strictEqual(result.recovered, undefined);
+      assert.strictEqual(result.codexAutoStartAuthoritative, false);
+      assert.strictEqual(result.snapshot.agents.codex.enabled, true);
+    }
+  });
+
+  it("keeps missing legacy Codex gate fields authoritative", () => {
+    for (const raw of [
+      { lang: "zh" },
+      { version: prefs.CURRENT_VERSION },
+      { version: prefs.CURRENT_VERSION, agents: {} },
+      { version: prefs.CURRENT_VERSION, agents: { codex: {} } },
+    ]) {
+      const p = makeTempPath();
+      fs.writeFileSync(p, JSON.stringify(raw), "utf8");
+      const result = prefs.load(p);
+      assert.strictEqual(result.codexAutoStartAuthoritative, undefined);
+      assert.strictEqual(result.snapshot.agents.codex.enabled, true);
+    }
   });
 
   it("migrates a v0 file (no version field) on load", () => {
