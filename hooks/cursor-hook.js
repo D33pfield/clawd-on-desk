@@ -18,6 +18,15 @@ const HOOK_TO_STATE = {
   afterAgentThought: { state: "thinking", event: "AfterAgentThought" },
 };
 
+// #634: lifecycle for the shared resolver's cross-process pid cache. Raw
+// Cursor hook names (pre-mapping). sessionEnd drops the cache; everything
+// unlisted is "event" (cache hit = zero snapshot spawns).
+const EVENT_TO_LIFECYCLE = {
+  sessionStart: "start",
+  beforeSubmitPrompt: "prompt",
+  sessionEnd: "end",
+};
+
 const config = getPlatformConfig({ extraTerminals: { win: ["cursor.exe"] } });
 const resolve = createPidResolver({
   agentNames: { win: new Set(["cursor.exe"]), mac: new Set(["cursor"]), linux: new Set(["cursor"]) },
@@ -101,7 +110,13 @@ readStdinJson()
       cwd = payload.workspace_roots[0];
     }
 
-    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
+    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve({
+      namespace: "cursor-agent",
+      sessionId,
+      cacheCwd: cwd,
+      lifecycle: EVENT_TO_LIFECYCLE[hookNameResolved] || "event",
+      cacheable: sessionId !== "default" && !!cwd,
+    });
 
     const body = { state, session_id: sessionId, event };
     body.agent_id = "cursor-agent";

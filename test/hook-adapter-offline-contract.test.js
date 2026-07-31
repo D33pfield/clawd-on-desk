@@ -52,7 +52,11 @@ const ADAPTERS = [
   { name: "clawd-hook.js", argv: ["PreToolUse"], payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
   { name: "codex-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
   { name: "copilot-hook.js", argv: ["sessionStart"], payload: { hook_event_name: "sessionStart", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
-  { name: "cursor-hook.js", payload: { hook_event_name: "beforeSubmitPrompt", cwd: "D:/repo" }, stdout: `${JSON.stringify({ continue: true })}\n` },
+  // #634: cursor's beforeSubmitPrompt now maps to the "prompt" lifecycle,
+  // which is cache-only and deliberately spawn-free — it can no longer anchor
+  // the one-spawn vacuity guard. preToolUse ("event" lifecycle: fresh on cache
+  // miss) keeps the guard meaningful, matching the other adapters' rows.
+  { name: "cursor-hook.js", payload: { hook_event_name: "preToolUse", cwd: "D:/repo" }, stdout: "{}\n" },
   { name: "gemini-hook.js", payload: { hook_event_name: "SessionStart", cwd: "D:/repo" }, stdout: null },
   { name: "kimi-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
   { name: "kiro-hook.js", payload: { hook_event_name: "preToolUse", cwd: "D:/repo" }, stdout: "" },
