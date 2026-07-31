@@ -5003,7 +5003,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(summary.children[0].textContent, "HUD: off");
   });
 
-  it("remeasures an expanding quota group when async source options appear", async () => {
+  it("reveals existing quota options immediately and absorbs async sources without a second expansion", async () => {
     const sourceCount = createDeferred();
     const harness = loadGeneralTabForTest({
       snapshot: makeGeneralSnapshot({ quotaMergeSources: false }),
@@ -5014,12 +5014,16 @@ describe("settings renderer browser environment", () => {
     const header = group.querySelector(".collapsible-group-header");
     const body = group.querySelector(".collapsible-group-body");
     header.dispatchEvent({ type: "click" });
-    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "40px");
+    assert.equal(group.classList.contains("expanding"), false);
+    assert.equal(group.classList.contains("collapsed"), false);
+    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "none");
+    assert.equal(body.attributes["aria-hidden"], "false");
 
     body.appendChild(new FakeElement("div"));
     sourceCount.resolve(2);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "80px");
+    assert.equal(group.classList.contains("expanding"), false);
+    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "none");
     assert.equal(harness.getSwitchMeta("quotaMergeSources").row.style.display, "");
   });
 

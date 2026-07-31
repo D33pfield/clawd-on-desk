@@ -411,6 +411,7 @@
     children = [],
     defaultCollapsed = false,
     className = "",
+    animateExpansion = true,
   }) {
     const storedState = readCollapsedGroupState();
     let collapsed = Object.prototype.hasOwnProperty.call(storedState, id)
@@ -549,7 +550,7 @@
       const nextState = readCollapsedGroupState();
       nextState[id] = collapsed;
       writeCollapsedGroupState(nextState);
-      preserveScrollAnchor(() => applyCollapsedState({ animate: true }));
+      preserveScrollAnchor(() => applyCollapsedState({ animate: animateExpansion }));
     }
 
     header.addEventListener("click", toggleCollapsed);

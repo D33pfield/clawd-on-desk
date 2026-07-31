@@ -481,6 +481,7 @@
       desc: t("rowQuotaRingGroupDesc"),
       defaultCollapsed: true,
       className: "quota-ring-collapsible",
+      animateExpansion: false,
       children: [optionList],
     });
     if (window.settingsAPI && typeof window.settingsAPI.getQuotaSourceCount === "function") {
