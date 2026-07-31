@@ -1105,8 +1105,10 @@ function bringPetToPrimaryDisplay() {
 
 function sendToRenderer(channel, ...args) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
-  // Every visual the pet displays flows through this channel (applyState and
-  // the tick.js idle rotation), so it doubles as the presence mirror feed.
+  // State animations flow through this channel (applyState and the tick.js
+  // idle rotation), so it doubles as the presence mirror feed. Reactions,
+  // low-power pauses and tint/accessory changes ride other channels and are
+  // deliberately not mirrored.
   if (channel === "state-change" && discordPresenceBridge) {
     try { discordPresenceBridge.onVisual(args[0], args[1]); } catch {}
   }

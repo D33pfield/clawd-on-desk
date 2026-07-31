@@ -19,8 +19,9 @@ const OP = Object.freeze({ HANDSHAKE: 0, FRAME: 1, CLOSE: 2, PING: 3, PONG: 4 })
 const GIF_BASE_URL = "https://raw.githubusercontent.com/rullerzhou-afk/clawd-on-desk/main/assets/discord-presence";
 
 // Clawd sprite + label per resolved presence state (see resolvePresenceState).
-// Fallback path: used when no on-screen visual is known (bridge just started)
-// or the current theme's svg isn't in SVG_GIF (non-clawd themes).
+// Fallback path: used when the animation-mirror opt-in is off, no on-screen
+// visual is known yet (bridge just started), or the current theme's svg isn't
+// in SVG_GIF (non-clawd themes).
 const STATE_GIF = Object.freeze({
   idle: "clawd-idle.gif",
   sleeping: "clawd-sleeping.gif",
@@ -41,11 +42,13 @@ const PRESENCE_LABEL = Object.freeze({
   error: "Error",
 });
 
-// The pet's on-screen animation, keyed by the svg file main.js pushes on every
-// "state-change" (see bridge.onVisual). Covers the clawd theme: idle variants,
-// session-count working tiers, displayHint overrides, one-shots, sleep chain,
-// roam and mini mode. Animations with no gif counterpart (look/yawn/wake/dizzy,
-// mini-typing, the sleep transitions) map to the nearest sprite.
+// State-animation mirror, keyed by the svg file main.js pushes on "state-change"
+// (see bridge.onVisual). Covers the clawd theme's state animations: idle
+// variants, session-count working tiers, displayHint overrides, one-shots, sleep
+// chain, roam and mini mode. Animations that don't travel through state-change
+// (click/drag reactions, low-power pauses, tint/accessories) are out of scope;
+// svgs with no gif counterpart (look/yawn/wake/dizzy, mini-typing, the sleep
+// transitions) map to the nearest sprite.
 const SVG_GIF = Object.freeze({
   "clawd-idle-follow.svg": "clawd-idle.gif",
   "clawd-idle-look.svg": "clawd-idle.gif",
@@ -62,7 +65,6 @@ const SVG_GIF = Object.freeze({
   "clawd-working-building.svg": "clawd-building.gif",
   "clawd-headphones-groove.svg": "clawd-headphones-groove.gif",
   "clawd-working-juggling.svg": "clawd-juggling.gif",
-  "clawd-working-conducting.svg": "clawd-conducting.gif",
   "clawd-working-debugger.svg": "clawd-debugger.gif",
   "clawd-working-sweeping.svg": "clawd-sweeping.gif",
   "clawd-working-carrying.svg": "clawd-carrying.gif",
@@ -78,36 +80,6 @@ const SVG_GIF = Object.freeze({
   "clawd-mini-crabwalk.svg": "clawd-mini-crabwalk.gif",
   "clawd-mini-sleep.svg": "clawd-sleeping.gif",
   "clawd-mini-enter-sleep.svg": "clawd-sleeping.gif",
-});
-
-// Label per PET state (broader than PRESENCE_LABEL: the pet has transition and
-// mini states the session snapshot never carries).
-const VISUAL_LABEL = Object.freeze({
-  idle: "Idle",
-  roam: "Idle",
-  yawning: "Idle",
-  dozing: "Sleeping",
-  collapsing: "Sleeping",
-  sleeping: "Sleeping",
-  waking: "Idle",
-  dizzy: "Idle",
-  thinking: "Thinking",
-  working: "Working",
-  juggling: "Working",
-  sweeping: "Working",
-  carrying: "Working",
-  error: "Error",
-  attention: "Waiting for input",
-  notification: "Waiting for input",
-  "mini-idle": "Idle",
-  "mini-peek": "Idle",
-  "mini-enter": "Idle",
-  "mini-crabwalk": "Idle",
-  "mini-alert": "Waiting for input",
-  "mini-happy": "Waiting for input",
-  "mini-working": "Working",
-  "mini-sleep": "Sleeping",
-  "mini-enter-sleep": "Sleeping",
 });
 
 const READY_TIMEOUT_MS = 5000;
@@ -141,13 +113,15 @@ function agentLabel(agentId) {
   return (agent && agent.name) || "Clawd";
 }
 
-function buildPresencePayload(session, privacy = {}, visual = null) {
-  // Mirror the pet's on-screen animation when its svg is a known clawd sprite;
-  // otherwise (no visual yet, or a non-clawd theme) derive from the session.
-  const mirrored = visual && SVG_GIF[visual.svg] ? visual : null;
-  const label = mirrored
-    ? VISUAL_LABEL[mirrored.state] || PRESENCE_LABEL.idle
-    : PRESENCE_LABEL[resolvePresenceState(session)] || PRESENCE_LABEL.idle;
+function buildPresencePayload(session, cfg = {}, visual = null) {
+  // The mirror is its own opt-in (richer than `enabled`'s coarse-state
+  // contract: tiered sprites reveal session counts) and only swaps the image
+  // when the svg is a known clawd sprite; otherwise (opt-in off, no visual yet,
+  // or a non-clawd theme) the sprite derives from the session. The text is always session-derived — a
+  // transient pet visual (e.g. mini-enter) must not caption an active working
+  // session as Idle, and the badge fields still recover done/interrupted.
+  const mirrored = cfg.mirrorPetAnimation === true && visual && SVG_GIF[visual.svg] ? visual : null;
+  const label = PRESENCE_LABEL[resolvePresenceState(session)] || PRESENCE_LABEL.idle;
   const imageUrl = mirrored
     ? `${GIF_BASE_URL}/${SVG_GIF[mirrored.svg]}`
     : presenceImageUrl(resolvePresenceState(session));
@@ -159,7 +133,7 @@ function buildPresencePayload(session, privacy = {}, visual = null) {
     state: label,
     assets: { large_image: imageUrl, large_text: "Clawd on Desk" },
   };
-  if (privacy.privacyShowProject && session && session.cwd) {
+  if (cfg.privacyShowProject && session && session.cwd) {
     // win32.basename splits on both \ and /, so a Windows cwd seen on a POSIX
     // host yields just the folder name instead of leaking the whole path.
     const state = `${label} · ${path.win32.basename(session.cwd)}`;
@@ -241,8 +215,9 @@ function createDiscordPresenceBridge({ getConfig, log, createConnection, ipcPath
   let presenceStartEpoch = 0; // minted once, reused across updates + reconnects
   let lastPayloadSig = ""; // publish-on-change gate
   let lastActivity = null; // latest activity, replayed after reconnect
-  let lastVisual = null; // pet's on-screen animation, pushed by main on state-change
+  let lastVisual = null; // pet's state animation, pushed by main on state-change
   let lastSnapshot = null; // latest session snapshot, reused when only the visual changes
+  let visualReconcileQueued = false; // one pending onVisual microtask at a time
   let appId = "";
   let reconnectAttempts = 0;
   let lastSendAt = 0;
@@ -471,22 +446,37 @@ function createDiscordPresenceBridge({ getConfig, log, createConnection, ipcPath
       }
     },
     // Pet visual changed (any "state-change" send to the renderer). Keeps the
-    // presence image in lockstep with what's actually on screen.
+    // presence image in lockstep with the pet's state animation.
+    // The reconcile is deferred to a microtask: a session update fires
+    // state-change before emitSessionSnapshot, so publishing here synchronously
+    // would pair the new visual with the PREVIOUS session (wrong agent/project
+    // on a leading-edge send). Deferring lets the same-tick onSnapshot() land
+    // first and publish the coherent pairing; the microtask then dedupes via
+    // the payload signature. Standalone visual changes (tick.js idle rotation)
+    // have no trailing snapshot and still publish from the microtask.
     onVisual(state, svg) {
       if (stopped) return;
       lastVisual = { state: String(state || ""), svg: String(svg || "") };
-      try {
-        const cfg = readConfig();
-        publish(buildPresencePayload(pickDominantSession(lastSnapshot), cfg, lastVisual));
-      } catch {
-        // Same contract as onSnapshot: never throw into the caller.
-      }
+      if (visualReconcileQueued) return;
+      visualReconcileQueued = true;
+      queueMicrotask(() => {
+        visualReconcileQueued = false;
+        if (stopped) return;
+        try {
+          const cfg = readConfig();
+          publish(buildPresencePayload(pickDominantSession(lastSnapshot), cfg, lastVisual));
+        } catch {
+          // Same contract as onSnapshot: never throw into the caller.
+        }
+      });
     },
   };
 }
 
 module.exports = {
   OP,
+  STATE_GIF,
+  SVG_GIF,
   resolvePresenceState,
   presenceImageUrl,
   buildPresencePayload,

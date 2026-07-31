@@ -31,7 +31,6 @@ FILES = [
     "clawd-bubble.gif",
     "clawd-idle-reading.gif",
     "clawd-building.gif",
-    "clawd-conducting.gif",
     "clawd-debugger.gif",
     "clawd-sweeping.gif",
     "clawd-carrying.gif",
