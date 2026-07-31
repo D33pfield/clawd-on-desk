@@ -5497,6 +5497,56 @@ describe("settings renderer browser environment", () => {
     assert.deepStrictEqual(commands, []);
   });
 
+  it("renders Codex Pet atlas previews with V1, V2, and legacy grid ratios", () => {
+    const { content } = loadThemeTabForTest({
+      themes: [
+        {
+          id: "pet-v1",
+          name: "Pet V1",
+          managedCodexPet: true,
+          active: true,
+          codexPet: {
+            previewAtlasUrl: "file:///pets/v1/spritesheet.webp",
+            atlasColumns: 8,
+            atlasRows: 9,
+          },
+        },
+        {
+          id: "pet-v2",
+          name: "Pet V2",
+          managedCodexPet: true,
+          active: false,
+          codexPet: {
+            previewAtlasUrl: "file:///pets/v2/spritesheet.webp",
+            atlasColumns: 8,
+            atlasRows: 11,
+          },
+        },
+        {
+          id: "pet-legacy",
+          name: "Pet Legacy",
+          managedCodexPet: true,
+          active: false,
+          codexPet: {
+            previewAtlasUrl: "file:///pets/legacy/spritesheet.webp",
+          },
+        },
+      ],
+    });
+
+    const previews = content.querySelectorAll(".theme-thumb-atlas-frame");
+    assert.strictEqual(previews.length, 3);
+    const images = previews.map((preview) => preview.querySelector("img"));
+    assert.deepStrictEqual(
+      images.map((img) => [img.style.width, img.style.height]),
+      [
+        ["800%", "900%"],
+        ["800%", "1100%"],
+        ["800%", "900%"],
+      ]
+    );
+  });
+
   it("keeps customization visible on every capable pet while omitting Calico", () => {
     const supported = loadThemeTabForTest({
       themes: [

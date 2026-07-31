@@ -146,6 +146,18 @@
     img.src = getCodexPetPreviewAtlasUrl(theme);
     img.alt = "";
     img.draggable = false;
+    const columns = Number.isInteger(theme.codexPet.atlasColumns)
+      && theme.codexPet.atlasColumns >= 1
+      && theme.codexPet.atlasColumns <= 64
+      ? theme.codexPet.atlasColumns
+      : 8;
+    const rows = Number.isInteger(theme.codexPet.atlasRows)
+      && theme.codexPet.atlasRows >= 1
+      && theme.codexPet.atlasRows <= 64
+      ? theme.codexPet.atlasRows
+      : 9;
+    img.style.width = `${columns * 100}%`;
+    img.style.height = `${rows * 100}%`;
     frame.appendChild(img);
     return frame;
   }
