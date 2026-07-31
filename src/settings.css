@@ -532,7 +532,8 @@ html, body {
   transform: translateY(-4px);
 }
 .collapsible-group.expanding .collapsible-group-body,
-.collapsible-group.collapsing .collapsible-group-body {
+.collapsible-group.collapsing .collapsible-group-body,
+.collapsible-group.resizing .collapsible-group-body {
   pointer-events: none;
 }
 .collapsible-group:not(.collapsed):has(.language-picker.open) > .collapsible-group-body {

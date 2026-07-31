@@ -488,9 +488,13 @@
       Promise.resolve(window.settingsAPI.getQuotaSourceCount())
         .then((count) => {
           if (Number(count) <= 1) return;
-          mergeRow.style.display = "";
-          if (typeof group.refreshCollapsibleHeight === "function") {
-            group.refreshCollapsibleHeight();
+          const revealMergeRow = () => {
+            mergeRow.style.display = "";
+          };
+          if (typeof group.mutateCollapsibleBody === "function") {
+            group.mutateCollapsibleBody(revealMergeRow);
+          } else {
+            revealMergeRow();
           }
         })
         .catch(() => {});

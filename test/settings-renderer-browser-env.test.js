@@ -69,7 +69,17 @@ function loadSettingsI18nForTest() {
   return loadSettingsI18nBundleForTest().STRINGS;
 }
 
-function loadSettingsCoreForTest(settingsAPI) {
+function loadSettingsCoreForTest(settingsAPI, {
+  document: documentOverride = null,
+  requestAnimationFrame = (cb) => {
+    cb();
+    return 1;
+  },
+} = {}) {
+  const document = documentOverride || {
+    body: { contains: () => false },
+    getElementById: () => null,
+  };
   const context = {
     console,
     navigator: { platform: "Win32" },
@@ -77,14 +87,8 @@ function loadSettingsCoreForTest(settingsAPI) {
       getItem: () => null,
       setItem: () => {},
     },
-    document: {
-      body: { contains: () => false },
-      getElementById: () => null,
-    },
-    requestAnimationFrame: (cb) => {
-      cb();
-      return 1;
-    },
+    document,
+    requestAnimationFrame,
     window: null,
     globalThis: null,
     settingsAPI,
@@ -616,6 +620,10 @@ function loadGeneralLanguageRowForTest({
 function loadGeneralTabForTest({
   snapshot,
   settingsAPI = {},
+  requestAnimationFrame = (cb) => {
+    cb();
+    return 1;
+  },
 } = {}) {
   const body = new FakeElement("body");
   const content = new FakeElement("main");
@@ -639,10 +647,7 @@ function loadGeneralTabForTest({
       setItem: () => {},
     },
     document,
-    requestAnimationFrame: (cb) => {
-      cb();
-      return 1;
-    },
+    requestAnimationFrame,
     getComputedStyle: () => ({
       getPropertyValue: () => "",
     }),
@@ -1771,6 +1776,53 @@ describe("settings renderer browser environment", () => {
       assert.ok(!source.includes("settingsAPI.onShortcutFailuresChanged"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutFailuresChanged`);
       assert.ok(!source.includes("settingsAPI.onRemoteApprovalStatusChanged"), `${path.basename(file)} must not subscribe to remote approval status directly`);
     }
+  });
+
+  it("keeps sidebar page scroll positions isolated when a shorter page clamps scrollTop", () => {
+    let rawScrollTop = 1480;
+    let maxScrollTop = 2000;
+    const raf = createQueuedRaf();
+    const content = {
+      get scrollTop() {
+        return Math.min(rawScrollTop, maxScrollTop);
+      },
+      set scrollTop(value) {
+        rawScrollTop = Math.max(0, Math.min(Number(value) || 0, maxScrollTop));
+      },
+    };
+    const document = {
+      body: { contains: () => false },
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, {
+      document,
+      requestAnimationFrame: raf.requestAnimationFrame,
+    });
+    core.state.activeTab = "remote-ssh";
+    core.tabs["remote-ssh"] = {};
+    core.tabs.theme = {};
+    core.ops.installRenderHooks({
+      sidebar: () => {},
+      modal: () => {},
+      content: () => {
+        maxScrollTop = core.state.activeTab === "theme" ? 398 : 2000;
+        content.scrollTop = content.scrollTop;
+      },
+    });
+
+    core.ops.selectTab("theme");
+    assert.equal(content.scrollTop, 0, "a sidebar page starts at the top on first entry");
+    raf.flush();
+
+    content.scrollTop = 240;
+    core.ops.selectTab("remote-ssh");
+    assert.equal(content.scrollTop, 1480, "the long source page restores its saved position");
+
+    // Switch again before the remote page's deferred restore runs. Its stale
+    // callback must not overwrite the newly active Theme page.
+    core.ops.selectTab("theme");
+    raf.flush();
+    assert.equal(content.scrollTop, 240, "the short target page keeps its own position");
   });
 
   it("waits for remote cleanup before deleting a profile and warns on incomplete uninstall", () => {
@@ -5005,26 +5057,53 @@ describe("settings renderer browser environment", () => {
 
   it("reveals existing quota options immediately and absorbs async sources without a second expansion", async () => {
     const sourceCount = createDeferred();
+    const animationFrames = [];
+    const flushAnimationFrame = () => {
+      const callbacks = animationFrames.splice(0);
+      for (const callback of callbacks) callback();
+    };
     const harness = loadGeneralTabForTest({
       snapshot: makeGeneralSnapshot({ quotaMergeSources: false }),
       settingsAPI: { getQuotaSourceCount: () => sourceCount.promise },
+      requestAnimationFrame: (callback) => {
+        animationFrames.push(callback);
+        return animationFrames.length;
+      },
     });
     harness.renderContent();
+    flushAnimationFrame();
     const group = harness.content.querySelector(".quota-ring-collapsible");
     const header = group.querySelector(".collapsible-group-header");
     const body = group.querySelector(".collapsible-group-body");
+    const mergeRow = harness.getSwitchMeta("quotaMergeSources").row;
+    Object.defineProperty(body, "scrollHeight", {
+      configurable: true,
+      get: () => (mergeRow.style.display === "none" ? 80 : 120),
+    });
     header.dispatchEvent({ type: "click" });
     assert.equal(group.classList.contains("expanding"), false);
     assert.equal(group.classList.contains("collapsed"), false);
     assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "none");
     assert.equal(body.attributes["aria-hidden"], "false");
+    flushAnimationFrame();
 
-    body.appendChild(new FakeElement("div"));
     sourceCount.resolve(2);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(group.classList.contains("expanding"), false);
+    assert.equal(group.classList.contains("resizing"), true);
+    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "80px");
+    assert.equal(mergeRow.style.display, "");
+
+    flushAnimationFrame();
+    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "120px");
+
+    body.dispatchEvent({
+      type: "transitionend",
+      propertyName: "max-height",
+      bubbles: false,
+    });
+    assert.equal(group.classList.contains("resizing"), false);
     assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "none");
-    assert.equal(harness.getSwitchMeta("quotaMergeSources").row.style.display, "");
   });
 
   it("groups sound and volume into one collapsible control with in-place summary updates", () => {
