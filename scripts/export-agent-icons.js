@@ -41,6 +41,11 @@ const LOBE_ICONS_UPSTREAM = Object.freeze({
   license: "MIT",
   variant: "light",
 });
+const LOBE_ICONS_OFFICIAL_WEBSITE = Object.freeze({
+  upstreamName: "Lobe Icons",
+  upstreamUrl: "https://lobehub.com/icons",
+  license: "MIT",
+});
 
 function lobeSource(originalFilename, extra = {}) {
   return { originalFilename, fallback: false, ...LOBE_ICONS_UPSTREAM, ...extra };
@@ -176,7 +181,12 @@ function updateSvgSourceHashes(manifest, agents) {
   for (const agent of agents) {
     if (!hasRasterAndSvgSources(agent.id)) continue;
     const svgPath = getSourceCandidatePath(agent.id, ".svg");
-    manifest.svgSources[agent.id] = { sha256: hashSvgSource(svgPath) };
+    manifest.svgSources[agent.id] = {
+      sourceFilename: path.basename(svgPath),
+      sourceType: "svg",
+      sha256: hashSvgSource(svgPath),
+      ...LOBE_ICONS_OFFICIAL_WEBSITE,
+    };
   }
   return manifest;
 }
@@ -641,6 +651,7 @@ module.exports = {
   SOURCE_MANIFEST_PATH,
   OUTPUT_DIR,
   SOURCE_PROVENANCE,
+  LOBE_ICONS_OFFICIAL_WEBSITE,
   getSourcePath,
   readSourceManifest,
   writeSourceManifest,

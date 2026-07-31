@@ -13,6 +13,7 @@ const { INSTALLABLE_AGENT_IDS } = require("../src/settings-actions-agents");
 const {
   ARTWORK_SIZE,
   CONTRAST_TILE_SIZE,
+  LOBE_ICONS_OFFICIAL_WEBSITE,
   SOURCE_DIR,
   SOURCE_PROVENANCE,
   calculateContainedSize,
@@ -243,7 +244,7 @@ describe("state agent icons", () => {
     );
   });
 
-  it("records complete LobeHub provenance for selected and archived package assets", () => {
+  it("records complete LobeHub provenance for package and official website assets", () => {
     const manifest = readSourceManifest();
     const selectedLobeHubIds = [
       "antigravity-cli",
@@ -278,6 +279,34 @@ describe("state agent icons", () => {
     assert.strictEqual(archivedKimiPng.upstreamVersion, "1.95.0");
     assert.strictEqual(archivedKimiPng.license, "MIT");
     assert.strictEqual(archivedKimiPng.variant, "light");
+
+    const officialWebsiteSvgIds = [...selectedLobeHubIds, "kimi-cli"].sort();
+    assert.deepStrictEqual(Object.keys(manifest.svgSources).sort(), officialWebsiteSvgIds);
+    assert.deepStrictEqual(LOBE_ICONS_OFFICIAL_WEBSITE, {
+      upstreamName: "Lobe Icons",
+      upstreamUrl: "https://lobehub.com/icons",
+      license: "MIT",
+    });
+    for (const agentId of officialWebsiteSvgIds) {
+      const record = manifest.svgSources[agentId];
+      assert.deepStrictEqual(Object.keys(record).sort(), [
+        "license",
+        "sha256",
+        "sourceFilename",
+        "sourceType",
+        "upstreamName",
+        "upstreamUrl",
+      ]);
+      assert.strictEqual(record.sourceFilename, `${agentId}.svg`);
+      assert.strictEqual(record.sourceType, "svg");
+      assert.strictEqual(record.upstreamName, "Lobe Icons");
+      assert.strictEqual(record.upstreamUrl, "https://lobehub.com/icons");
+      assert.strictEqual(record.license, "MIT");
+      assert.strictEqual(
+        hashSvgSource(path.join(SOURCE_DIR, record.sourceFilename)),
+        record.sha256
+      );
+    }
   });
 
   it("resolves an icon URL for every installable tutorial agent", () => {

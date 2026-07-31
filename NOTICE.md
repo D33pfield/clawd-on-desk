@@ -6,8 +6,9 @@ This project includes third-party materials.
 
 Selected Agent icon source assets come from
 `@lobehub/icons-static-png@1.95.0` (`light/` variant), with editable SVG
-companions from the Lobe Icons project. Generated runtime PNGs derived from
-these sources are stored under `assets/icons/agents/`.
+companions obtained from the official Lobe Icons website at
+`https://lobehub.com/icons`. Generated runtime PNGs derived from these sources
+are stored under `assets/icons/agents/`.
 
 The included package assets are:
 

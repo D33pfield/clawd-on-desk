@@ -1,52 +1,132 @@
 {
   "svgSources": {
     "claude-code": {
-      "sha256": "670b3d8d749d0815ad8f7e62a59d51cb5e2053cb19403f3541a8aed7036a877f"
+      "sourceFilename": "claude-code.svg",
+      "sourceType": "svg",
+      "sha256": "670b3d8d749d0815ad8f7e62a59d51cb5e2053cb19403f3541a8aed7036a877f",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "codex": {
-      "sha256": "a595df6b423920c67a7f8f73c063e4bfb72d415948097b6cac063a2366bb5186"
+      "sourceFilename": "codex.svg",
+      "sourceType": "svg",
+      "sha256": "a595df6b423920c67a7f8f73c063e4bfb72d415948097b6cac063a2366bb5186",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "copilot-cli": {
-      "sha256": "bbc7fddc13448236e5edea8c399d2072dc40aa5da5bca07f7a2f412405c500a3"
+      "sourceFilename": "copilot-cli.svg",
+      "sourceType": "svg",
+      "sha256": "bbc7fddc13448236e5edea8c399d2072dc40aa5da5bca07f7a2f412405c500a3",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "gemini-cli": {
-      "sha256": "c2f54ebaa4c3b9191c6a07f7b0c66bc78e4abe486003dc564469cf650672663e"
+      "sourceFilename": "gemini-cli.svg",
+      "sourceType": "svg",
+      "sha256": "c2f54ebaa4c3b9191c6a07f7b0c66bc78e4abe486003dc564469cf650672663e",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "antigravity-cli": {
-      "sha256": "652128cf55a28bb958563ee372d0bd00208d9e6fd446f523f77aafd811eef8ca"
+      "sourceFilename": "antigravity-cli.svg",
+      "sourceType": "svg",
+      "sha256": "652128cf55a28bb958563ee372d0bd00208d9e6fd446f523f77aafd811eef8ca",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "cursor-agent": {
-      "sha256": "0cb51bddf264ae108926fd554c063ef40fc1aac3c5c921ddb39ad184e4e5d0ef"
+      "sourceFilename": "cursor-agent.svg",
+      "sourceType": "svg",
+      "sha256": "0cb51bddf264ae108926fd554c063ef40fc1aac3c5c921ddb39ad184e4e5d0ef",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "codebuddy": {
-      "sha256": "033d5da624460e686046f22b4e242b6b86484ad84ec4877e4efa15a9fb642b97"
+      "sourceFilename": "codebuddy.svg",
+      "sourceType": "svg",
+      "sha256": "033d5da624460e686046f22b4e242b6b86484ad84ec4877e4efa15a9fb642b97",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "kiro-cli": {
-      "sha256": "4eae4d6e818da7342c32c7d443ab7c97b93c544db9af379d5b5bf7f0a3127d66"
+      "sourceFilename": "kiro-cli.svg",
+      "sourceType": "svg",
+      "sha256": "4eae4d6e818da7342c32c7d443ab7c97b93c544db9af379d5b5bf7f0a3127d66",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "kimi-cli": {
-      "sha256": "74a7292aeb0220445d14c5d397d75760e2e8c6ed6a9e5fe4f3023471bf62a9ff"
+      "sourceFilename": "kimi-cli.svg",
+      "sourceType": "svg",
+      "sha256": "74a7292aeb0220445d14c5d397d75760e2e8c6ed6a9e5fe4f3023471bf62a9ff",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "qwen-code": {
-      "sha256": "77f5768c66d08ce1d3d14e73373975c1bc0454be88c81523ddd0ffd7e2974029"
+      "sourceFilename": "qwen-code.svg",
+      "sourceType": "svg",
+      "sha256": "77f5768c66d08ce1d3d14e73373975c1bc0454be88c81523ddd0ffd7e2974029",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "opencode": {
-      "sha256": "7cfa6e9d6726f7c9fa26c7d9aef0dfec52d20a137380454340f30f12ccbfd302"
+      "sourceFilename": "opencode.svg",
+      "sourceType": "svg",
+      "sha256": "7cfa6e9d6726f7c9fa26c7d9aef0dfec52d20a137380454340f30f12ccbfd302",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "mimocode": {
-      "sha256": "b04ad7dad52af2212c4567daf0ee6856f2c4625c92c680a27f9880295d558b71"
+      "sourceFilename": "mimocode.svg",
+      "sourceType": "svg",
+      "sha256": "b04ad7dad52af2212c4567daf0ee6856f2c4625c92c680a27f9880295d558b71",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "pi": {
-      "sha256": "d82978781b824273c55473822c1f243a6ed34fc6e8c2dbfe1a90dfc66ae43ee8"
+      "sourceFilename": "pi.svg",
+      "sourceType": "svg",
+      "sha256": "d82978781b824273c55473822c1f243a6ed34fc6e8c2dbfe1a90dfc66ae43ee8",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "openclaw": {
-      "sha256": "4123c0c75dda5b28e3e0d38075514085bf546178a620776344813c08fa41277c"
+      "sourceFilename": "openclaw.svg",
+      "sourceType": "svg",
+      "sha256": "4123c0c75dda5b28e3e0d38075514085bf546178a620776344813c08fa41277c",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "hermes": {
-      "sha256": "02d43c0a91fc2ee41f2684fc39613ff6687de29a4b079665bace5303671dd63b"
+      "sourceFilename": "hermes.svg",
+      "sourceType": "svg",
+      "sha256": "02d43c0a91fc2ee41f2684fc39613ff6687de29a4b079665bace5303671dd63b",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     },
     "qoder": {
-      "sha256": "396596d247477e2a036c141a16ec266df7b14c0130b777a68fd04bc89af50bc8"
+      "sourceFilename": "qoder.svg",
+      "sourceType": "svg",
+      "sha256": "396596d247477e2a036c141a16ec266df7b14c0130b777a68fd04bc89af50bc8",
+      "upstreamName": "Lobe Icons",
+      "upstreamUrl": "https://lobehub.com/icons",
+      "license": "MIT"
     }
   },
   "sources": {
