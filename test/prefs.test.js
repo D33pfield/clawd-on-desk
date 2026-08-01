@@ -68,6 +68,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.savedPixelWidth, 0);
     assert.strictEqual(d.savedPixelHeight, 0);
     assert.strictEqual(d.savedPixelWorkArea, null);
+    assert.strictEqual(d.settingsWindowBounds, null);
     assert.strictEqual(d.permissionBubblesEnabled, true);
     assert.strictEqual(d.notificationBubbleAutoCloseSeconds, 6);
     assert.strictEqual(d.updateBubbleAutoCloseSeconds, 9);
@@ -1239,6 +1240,23 @@ describe("prefs.migrate v11 → v12 (showDock default off for fresh installs)", 
   });
 });
 
+describe("prefs Settings window bounds schema addition", () => {
+  it("uses the current schema default without a version bump", () => {
+    const upgraded = prefs.validate(prefs.migrate({ version: 12, lang: "zh" }));
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(upgraded.settingsWindowBounds, null);
+  });
+
+  it("preserves valid geometry in a current-version or hand-edited file", () => {
+    const bounds = { x: -1180, y: 90, width: 920, height: 680 };
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 12,
+      settingsWindowBounds: bounds,
+    }));
+    assert.deepStrictEqual(upgraded.settingsWindowBounds, bounds);
+  });
+});
+
 describe("prefs permission automation safe startup persistence", () => {
   it("defaults to off, preserves auto-tools, and downgrades unattended", () => {
     assert.strictEqual(prefs.getDefaults().permissionAutomationMode, "off");
@@ -1472,12 +1490,45 @@ describe("prefs.save", () => {
     snap.lang = "zh";
     snap.bubbleFollowPet = true;
     snap.x = 42;
+    snap.settingsWindowBounds = { x: -1200, y: 80, width: 900, height: 640 };
     prefs.save(p, snap);
     const { snapshot } = prefs.load(p);
     assert.strictEqual(snapshot.lang, "zh");
     assert.strictEqual(snapshot.bubbleFollowPet, true);
     assert.strictEqual(snapshot.x, 42);
+    assert.deepStrictEqual(snapshot.settingsWindowBounds, {
+      x: -1200,
+      y: 80,
+      width: 900,
+      height: 640,
+    });
     assert.strictEqual(snapshot.version, prefs.CURRENT_VERSION);
+  });
+
+  it("normalizes Settings window bounds and drops invalid geometry", () => {
+    assert.deepStrictEqual(
+      prefs.validate({
+        settingsWindowBounds: {
+          x: 10.4,
+          y: -20.6,
+          width: 801.7,
+          height: 559.8,
+          ignored: true,
+        },
+      }).settingsWindowBounds,
+      { x: 10, y: -21, width: 802, height: 560 },
+    );
+
+    for (const value of [
+      { x: 0, y: 0, width: 0, height: 560 },
+      { x: Infinity, y: 0, width: 800, height: 560 },
+      { x: "0", y: 0, width: 800, height: 560 },
+      { x: 0, y: 0, width: 800 },
+      [],
+      "800x560",
+    ]) {
+      assert.strictEqual(prefs.validate({ settingsWindowBounds: value }).settingsWindowBounds, null);
+    }
   });
 
   it("round-trips per-theme pet tints and drops invalid entries before writing", () => {

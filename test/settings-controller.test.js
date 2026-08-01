@@ -565,6 +565,16 @@ describe("applyUpdate", () => {
     assert.strictEqual(prefs.load(p).snapshot.tutorialSeen, true);
   });
 
+  it("persists Settings window bounds through the controller-only write path", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath: p });
+    const bounds = { x: -1180, y: 90, width: 920, height: 680 };
+    const r = await ctrl.applyUpdate("settingsWindowBounds", bounds);
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(ctrl.get("settingsWindowBounds"), bounds);
+    assert.deepStrictEqual(prefs.load(p).snapshot.settingsWindowBounds, bounds);
+  });
+
 
   it("persists Codex hook health notification prefs through applyUpdate", async () => {
     const p = makeTempPath();

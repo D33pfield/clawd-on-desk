@@ -72,7 +72,7 @@ const SCHEMA = {
     type: "number",
     default: CURRENT_VERSION,
   },
-  // Window state
+  // Pet window state
   x: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   y: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   positionSaved: { type: "boolean", default: false },
@@ -101,6 +101,15 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => null,
     normalize: normalizeSavedPixelWorkArea,
+  },
+  // Normal-state geometry for the resizable Settings window. `null` means the
+  // user has not placed it yet, so the runtime centers it on the pet display.
+  // The Settings runtime prefers Electron's normal bounds so maximized,
+  // minimized, and fullscreen rectangles are not stored here.
+  settingsWindowBounds: {
+    type: "object",
+    defaultFactory: () => null,
+    normalize: normalizeSettingsWindowBounds,
   },
   size: {
     type: "string",
@@ -813,6 +822,37 @@ function normalizeSavedPixelWorkArea(value) {
   return { width: w, height: h };
 }
 
+function isValidSettingsWindowBounds(value) {
+  return !!value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Number.isSafeInteger(value.x)
+    && Number.isSafeInteger(value.y)
+    && Number.isSafeInteger(value.width)
+    && Number.isSafeInteger(value.height)
+    && value.width > 0
+    && value.height > 0;
+}
+
+function normalizeSettingsWindowBounds(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (
+    !Number.isFinite(value.x)
+    || !Number.isFinite(value.y)
+    || !Number.isFinite(value.width)
+    || !Number.isFinite(value.height)
+  ) {
+    return null;
+  }
+  const normalized = {
+    x: Math.round(value.x),
+    y: Math.round(value.y),
+    width: Math.round(value.width),
+    height: Math.round(value.height),
+  };
+  return isValidSettingsWindowBounds(normalized) ? normalized : null;
+}
+
 function normalizePositionDisplay(value) {
   if (!isValidDisplaySnapshot(value)) return null;
   const b = value.bounds;
@@ -1284,6 +1324,7 @@ module.exports = {
   normalizeShortcuts,
   normalizeOptionalHttpUrl,
   normalizePathList,
+  isValidSettingsWindowBounds,
   MAX_CUSTOM_DISCOVERY_PATHS,
   MAX_CUSTOM_DISCOVERY_PATH_LENGTH,
 };
