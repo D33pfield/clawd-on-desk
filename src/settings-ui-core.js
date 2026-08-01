@@ -30,6 +30,7 @@
     || ((data) => data);
   const applyAnimationPosterPayloadToRuntime = animMergeApi.applyAnimationPosterPayload
     || (() => ({ valid: false, stored: false, applied: false }));
+  const selectPickerApi = root.ClawdLanguagePicker || {};
 
   const shortcutApi = root.ClawdShortcutActions || {};
   const SHORTCUT_ACTIONS = shortcutApi.SHORTCUT_ACTIONS || {};
@@ -77,6 +78,8 @@
       soundSummary: null,
       soundVolume: null,
       textScale: null,
+      settingsSelects: new Set(),
+      aboutAutoUpdate: null,
     },
     shortcutRecordingActionId: null,
     shortcutRecordingError: "",
@@ -105,6 +108,7 @@
     pendingAnimationOverrideEdits: new Map(),
     nextAnimationOverrideEditSeq: 1,
     animOverridesSubtab: "map",
+    settingsTabScrollPositions: new Map(),
     // null = not chosen yet; the Agents tab resolves it from what is connected.
     agentsSubtab: null,
     agentsUnavailableQuery: "",
@@ -350,6 +354,21 @@
     return section;
   }
 
+  function buildSettingsSelect(config = {}) {
+    const factory = selectPickerApi.createSettingsSelect || selectPickerApi.createLanguagePicker;
+    if (typeof factory !== "function") {
+      throw new Error("language-picker.js failed to load before settings-ui-core.js");
+    }
+    const className = ["settings-select", config.className || ""].filter(Boolean).join(" ");
+    const control = factory({
+      ...config,
+      className,
+      lockWhilePending: config.lockWhilePending !== false,
+    });
+    state.mountedControls.settingsSelects.add(control);
+    return control;
+  }
+
   function readCollapsedGroupState() {
     try {
       const raw = localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY);
@@ -393,6 +412,7 @@
     children = [],
     defaultCollapsed = false,
     className = "",
+    animateExpansion = true,
   }) {
     const storedState = readCollapsedGroupState();
     let collapsed = Object.prototype.hasOwnProperty.call(storedState, id)
@@ -452,6 +472,44 @@
       body.style.setProperty("--collapsible-body-height", measureCollapsibleBodyHeight());
     }
 
+    function refreshCollapsibleHeight() {
+      if (collapsed || !group.classList.contains("expanding")) return;
+      requestAnimationFrame(() => {
+        if (!collapsed && group.classList.contains("expanding")) setExpandedBodyHeight();
+      });
+    }
+
+    function mutateCollapsibleBody(mutate) {
+      if (typeof mutate !== "function") return;
+      if (collapsed || group.classList.contains("collapsing")) {
+        mutate();
+        return;
+      }
+      if (group.classList.contains("expanding")) {
+        mutate();
+        refreshCollapsibleHeight();
+        return;
+      }
+
+      const beforeHeight = body.scrollHeight;
+      mutate();
+      const afterHeight = body.scrollHeight;
+      const prefersReducedMotion = typeof window.matchMedia === "function"
+        && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (beforeHeight === afterHeight || prefersReducedMotion) return;
+
+      // The settled-open body normally uses max-height:none so reflow can grow
+      // freely. Pin its pre-mutation height for one frame, then animate to the
+      // new measured height instead of letting async rows cause a layout jump.
+      body.style.setProperty("--collapsible-body-height", `${beforeHeight}px`);
+      group.classList.add("resizing");
+      void body.offsetHeight;
+      requestAnimationFrame(() => {
+        if (collapsed || !group.classList.contains("resizing")) return;
+        body.style.setProperty("--collapsible-body-height", `${afterHeight}px`);
+      });
+    }
+
     function setBodyInteractivity(isCollapsed) {
       body.setAttribute("aria-hidden", isCollapsed ? "true" : "false");
       if ("inert" in body) {
@@ -483,7 +541,7 @@
     function applyCollapsedState({ animate = false } = {}) {
       header.setAttribute("aria-expanded", collapsed ? "false" : "true");
       header.setAttribute("aria-label", collapsed ? t("collapsibleExpand") : t("collapsibleCollapse"));
-      group.classList.remove("expanding", "collapsing");
+      group.classList.remove("expanding", "collapsing", "resizing");
       if (!animate) {
         group.classList.toggle("collapsed", collapsed);
         setBodyInteractivity(collapsed);
@@ -524,7 +582,7 @@
       const nextState = readCollapsedGroupState();
       nextState[id] = collapsed;
       writeCollapsedGroupState(nextState);
-      preserveScrollAnchor(() => applyCollapsedState({ animate: true }));
+      preserveScrollAnchor(() => applyCollapsedState({ animate: animateExpansion }));
     }
 
     header.addEventListener("click", toggleCollapsed);
@@ -539,7 +597,7 @@
     group.appendChild(body);
     body.addEventListener("transitionend", (ev) => {
       if (ev.target !== body || ev.propertyName !== "max-height") return;
-      group.classList.remove("expanding", "collapsing");
+      group.classList.remove("expanding", "collapsing", "resizing");
       // Release the pinned height once settled so later reflows (text zoom,
       // window resize) can grow the body instead of clipping at the bottom.
       if (!collapsed) body.style.setProperty("--collapsible-body-height", "none");
@@ -548,6 +606,8 @@
     requestAnimationFrame(() => {
       if (!collapsed) body.style.setProperty("--collapsible-body-height", "none");
     });
+    group.refreshCollapsibleHeight = refreshCollapsibleHeight;
+    group.mutateCollapsibleBody = mutateCollapsibleBody;
     return group;
   }
 
@@ -858,6 +918,10 @@
     if (state.mountedControls.textScale && typeof state.mountedControls.textScale.dispose === "function") {
       state.mountedControls.textScale.dispose();
     }
+    for (const control of state.mountedControls.settingsSelects) {
+      if (control && typeof control.dispose === "function") control.dispose();
+    }
+    state.mountedControls.settingsSelects.clear();
     state.mountedControls.generalSwitches.clear();
     state.mountedControls.bubblePolicyControls.clear();
     state.mountedControls.sessionCleanupControls.clear();
@@ -875,6 +939,7 @@
     state.mountedControls.soundSummary = null;
     state.mountedControls.soundVolume = null;
     state.mountedControls.textScale = null;
+    state.mountedControls.aboutAutoUpdate = null;
   }
 
   function syncMountedSizeControl({ fromBroadcast = false } = {}) {
@@ -906,12 +971,25 @@
   function selectTab(nextTab) {
     const prevTabId = state.activeTab;
     if (prevTabId === nextTab) return;
+    const content = document.getElementById("content");
+    if (content) {
+      runtime.settingsTabScrollPositions.set(prevTabId, content.scrollTop);
+    }
     const prevTab = tabs[prevTabId];
     if (prevTab && typeof prevTab.onExit === "function") {
       prevTab.onExit(core);
     }
     state.activeTab = nextTab;
     requestRender({ sidebar: true, content: true, modal: true });
+    if (!content) return;
+
+    const targetScrollTop = runtime.settingsTabScrollPositions.get(nextTab) || 0;
+    content.scrollTop = targetScrollTop;
+    requestAnimationFrame(() => {
+      if (state.activeTab !== nextTab) return;
+      if (document.getElementById("content") !== content) return;
+      content.scrollTop = targetScrollTop;
+    });
   }
 
   function applyBootstrap(snapshotValue) {
@@ -1461,6 +1539,7 @@
     attachAnimatedSwitch,
     buildSwitchRow,
     buildSection,
+    buildSettingsSelect,
     buildCollapsibleGroup,
     createDisclosureChevron,
     attachActivation,

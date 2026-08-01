@@ -470,24 +470,36 @@
     // (WSL / SSH remotes). Hidden by default so single-machine users never see
     // a confusing no-op switch; revealed once multiple sources are confirmed.
     mergeRow.style.display = "none";
-    if (window.settingsAPI && typeof window.settingsAPI.getQuotaSourceCount === "function") {
-      Promise.resolve(window.settingsAPI.getQuotaSourceCount())
-        .then((count) => { if (Number(count) > 1) mergeRow.style.display = ""; })
-        .catch(() => {});
-    }
     const optionList = buildOptionList("quota-ring-option-list", [
       enabledRow,
       claudeCollectionRow,
       mergeRow,
     ]);
-    return helpers.buildCollapsibleGroup({
+    const group = helpers.buildCollapsibleGroup({
       id: "general:quota-ring",
       title: t("rowQuotaRingGroup"),
       desc: t("rowQuotaRingGroupDesc"),
       defaultCollapsed: true,
       className: "quota-ring-collapsible",
+      animateExpansion: false,
       children: [optionList],
     });
+    if (window.settingsAPI && typeof window.settingsAPI.getQuotaSourceCount === "function") {
+      Promise.resolve(window.settingsAPI.getQuotaSourceCount())
+        .then((count) => {
+          if (Number(count) <= 1) return;
+          const revealMergeRow = () => {
+            mergeRow.style.display = "";
+          };
+          if (typeof group.mutateCollapsibleBody === "function") {
+            group.mutateCollapsibleBody(revealMergeRow);
+          } else {
+            revealMergeRow();
+          }
+        })
+        .catch(() => {});
+    }
+    return group;
   }
 
   function buildOptionList(className, rows) {
