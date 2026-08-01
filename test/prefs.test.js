@@ -1528,6 +1528,27 @@ describe("prefs.save", () => {
     assert.deepStrictEqual(prefs.validate({ petAccessory: "wizard-hat" }).petAccessory, {});
   });
 
+  it("round-trips per-theme holiday accessory opt-ins and stores only true entries", () => {
+    const p = makeTempPath();
+    prefs.save(p, {
+      ...prefs.getDefaults(),
+      holidayAccessoryEnabled: {
+        clawd: true,
+        cloudling: false,
+        "../unsafe": true,
+        calico: "true",
+      },
+    });
+    assert.deepStrictEqual(
+      prefs.load(p).snapshot.holidayAccessoryEnabled,
+      { clawd: true }
+    );
+    assert.deepStrictEqual(
+      prefs.validate({ holidayAccessoryEnabled: true }).holidayAccessoryEnabled,
+      {}
+    );
+  });
+
   it("validates before writing — bad fields fall back to defaults on disk", () => {
     const p = makeTempPath();
     const dirty = {

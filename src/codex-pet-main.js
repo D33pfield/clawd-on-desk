@@ -185,6 +185,7 @@ function createCodexPetMain(options = {}) {
       "idleVisual",
       "petTint",
       "petAccessory",
+      "holidayAccessoryEnabled",
     ];
     const patch = {};
     for (const key of keys) {
