@@ -63,7 +63,10 @@ const {
   isValidTextScale,
   normalizeTextScaleByDisplay,
 } = require("./text-scale");
-const { isPetTintId } = require("./pet-customization-catalog");
+const {
+  isPetTintId,
+  isPetAccessoryId,
+} = require("./pet-customization-catalog");
 const { isValidDisplaySnapshot } = require("./work-area");
 const {
   MAX_AUTO_CLOSE_SECONDS,
@@ -188,6 +191,7 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "kiro-cli",
   "kimi-cli",
   "qwen-code",
+  "zcode",
   "codewhale",
   "opencode",
   "mimocode",
@@ -298,6 +302,41 @@ const updateRegistry = {
     }
     return { status: "ok" };
   },
+  petAccessory(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "petAccessory must be a theme-to-accessory object" };
+    }
+    for (const [themeId, accessoryId] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || !isPetAccessoryId(accessoryId)
+        || accessoryId === "none"
+      ) {
+        return {
+          status: "error",
+          message: `petAccessory entry "${themeId}" must map a safe theme id to a non-default catalog accessory id`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
+  holidayAccessoryEnabled(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "holidayAccessoryEnabled must be a theme-to-boolean object" };
+    }
+    for (const [themeId, enabled] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || enabled !== true
+      ) {
+        return {
+          status: "error",
+          message: `holidayAccessoryEnabled entry "${themeId}" must map a safe theme id to true`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
   sessionHudEnabled: requireBoolean("sessionHudEnabled"),
   sessionHudShowStateLabels: requireBoolean("sessionHudShowStateLabels"),
@@ -318,7 +357,32 @@ const updateRegistry = {
   sessionHudPinned: requireBoolean("sessionHudPinned"),
   hideBubbles: requireBoolean("hideBubbles"),
   permissionBubblesEnabled: requireBoolean("permissionBubblesEnabled"),
-  autoApproveAllPermissions: requireBoolean("autoApproveAllPermissions"),
+  // Permission automation is safety-sensitive: the command path owns its
+  // warning/confirmation gate and the coupled mode + dismissal commit. Keep
+  // the validators available for defensive command validation, but reject
+  // generic applyUpdate/applyBulk/hydrate callers at the controller boundary.
+  permissionAutomationMode: {
+    validate: requireEnum("permissionAutomationMode", [
+      "off",
+      "auto-tools",
+      "unattended",
+    ]),
+    commandOnly: true,
+  },
+  permissionAutomationAutoToolsWarningDismissed: {
+    validate: requireBoolean("permissionAutomationAutoToolsWarningDismissed"),
+    commandOnly: true,
+  },
+  permissionAutomationUnattendedWarningDismissed: {
+    validate: requireBoolean("permissionAutomationUnattendedWarningDismissed"),
+    commandOnly: true,
+  },
+  // Legacy tombstone: readable/validatable for old snapshots, never writable
+  // through a generic controller API.
+  autoApproveAllPermissions: {
+    validate: requireBoolean("autoApproveAllPermissions"),
+    commandOnly: true,
+  },
   notificationBubbleAutoCloseSeconds: requireIntegerInRange(
     "notificationBubbleAutoCloseSeconds",
     0,
@@ -652,29 +716,61 @@ function setAllBubblesHidden(payload, deps) {
   return { status: "ok", commit: buildAggregateHideCommit(hidden, deps && deps.snapshot) };
 }
 
-// DANGER "auto-pilot" writer. Enabling auto-approve-everything is a one-way
-// trust decision, so this command — not a raw settings:update — is the only
-// path allowed to flip it ON, and it requires an explicit confirmed:true.
-// The settings:update IPC handler rejects the field directly (see
-// settings-ipc.js), so the confirmation dialog is a real gate, not just UI
-// decoration: anything reaching the data layer must carry proof the user
-// confirmed. Disabling needs no confirmation (turning a danger toggle off is
-// always safe).
-function setAutoApproveAll(payload, _deps) {
+// Permission automation writer. A plain settings:update cannot reach this
+// field; both automatic modes require confirmation at the data layer, including
+// an auto-tools -> unattended escalation. Turning automation off is always
+// allowed immediately.
+function setPermissionAutomationMode(payload, deps) {
   if (!payload || typeof payload !== "object") {
-    return { status: "error", message: "setAutoApproveAll: payload must be an object" };
+    return { status: "error", message: "setPermissionAutomationMode: payload must be an object" };
   }
-  const enabled = payload.enabled;
-  if (typeof enabled !== "boolean") {
-    return { status: "error", message: "setAutoApproveAll.enabled must be a boolean" };
-  }
-  if (enabled && payload.confirmed !== true) {
+  const mode = payload.mode;
+  if (!["off", "auto-tools", "unattended"].includes(mode)) {
     return {
       status: "error",
-      message: "setAutoApproveAll: enabling requires confirmed:true (user must confirm the danger dialog)",
+      message: "setPermissionAutomationMode.mode must be off, auto-tools, or unattended",
     };
   }
-  return { status: "ok", commit: { autoApproveAllPermissions: enabled } };
+  if (
+    Object.prototype.hasOwnProperty.call(payload, "suppressFutureConfirmation")
+    && typeof payload.suppressFutureConfirmation !== "boolean"
+  ) {
+    return {
+      status: "error",
+      message: "setPermissionAutomationMode.suppressFutureConfirmation must be a boolean",
+    };
+  }
+  const warningKey = mode === "auto-tools"
+    ? "permissionAutomationAutoToolsWarningDismissed"
+    : (mode === "unattended"
+      ? "permissionAutomationUnattendedWarningDismissed"
+      : null);
+  const snapshot = (deps && deps.snapshot) || {};
+  const confirmedNow = payload.confirmed === true;
+  const confirmedPreviously = warningKey && snapshot[warningKey] === true;
+  if (mode !== "off" && !confirmedNow && !confirmedPreviously) {
+    return {
+      status: "error",
+      message: "setPermissionAutomationMode: automatic modes require current or remembered confirmation",
+    };
+  }
+  if (mode === "off" && payload.suppressFutureConfirmation === true) {
+    return {
+      status: "error",
+      message: "setPermissionAutomationMode: off mode cannot suppress a warning",
+    };
+  }
+  if (payload.suppressFutureConfirmation === true && !confirmedNow) {
+    return {
+      status: "error",
+      message: "setPermissionAutomationMode: suppressing future warnings requires confirmed:true",
+    };
+  }
+  const commit = { permissionAutomationMode: mode };
+  if (warningKey && payload.suppressFutureConfirmation === true) {
+    commit[warningKey] = true;
+  }
+  return { status: "ok", commit };
 }
 
 function setBubbleCategoryEnabled(payload, deps) {
@@ -870,6 +966,9 @@ async function removeTheme(payload, deps) {
   const currentOverrides = snapshot.themeOverrides || {};
   const currentVariantMap = snapshot.themeVariant || {};
   const currentIdleVisual = snapshot.idleVisual || {};
+  const currentPetTint = snapshot.petTint || {};
+  const currentPetAccessory = snapshot.petAccessory || {};
+  const currentHolidayAccessoryEnabled = snapshot.holidayAccessoryEnabled || {};
   const nextCommit = {};
   if (currentOverrides[themeId]) {
     const nextOverrides = { ...currentOverrides };
@@ -885,6 +984,21 @@ async function removeTheme(payload, deps) {
     const nextIdleVisual = { ...currentIdleVisual };
     delete nextIdleVisual[themeId];
     nextCommit.idleVisual = nextIdleVisual;
+  }
+  if (currentPetTint[themeId] !== undefined) {
+    const nextPetTint = { ...currentPetTint };
+    delete nextPetTint[themeId];
+    nextCommit.petTint = nextPetTint;
+  }
+  if (currentPetAccessory[themeId] !== undefined) {
+    const nextPetAccessory = { ...currentPetAccessory };
+    delete nextPetAccessory[themeId];
+    nextCommit.petAccessory = nextPetAccessory;
+  }
+  if (currentHolidayAccessoryEnabled[themeId] !== undefined) {
+    const nextHolidayAccessoryEnabled = { ...currentHolidayAccessoryEnabled };
+    delete nextHolidayAccessoryEnabled[themeId];
+    nextCommit.holidayAccessoryEnabled = nextHolidayAccessoryEnabled;
   }
   if (Object.keys(nextCommit).length > 0) {
     return { status: "ok", commit: nextCommit };
@@ -932,11 +1046,25 @@ function setThemeSelection(payload, deps) {
   const resolvedVariant = (resolved && typeof resolved === "object" && typeof resolved.variantId === "string")
     ? resolved.variantId
     : targetVariant;
+  const activeTheme = typeof deps.getActiveTheme === "function" ? deps.getActiveTheme() : null;
+  const customizationCapabilities = (
+    activeTheme
+    && activeTheme._id === themeId
+    && activeTheme._capabilities
+    && typeof activeTheme._capabilities === "object"
+    && !Array.isArray(activeTheme._capabilities)
+  )
+    ? {
+        petTint: activeTheme._capabilities.petTint === true,
+        accessories: activeTheme._capabilities.accessories === true,
+      }
+    : null;
 
   const nextVariantMap = { ...currentVariantMap, [themeId]: resolvedVariant };
   return {
     status: "ok",
     commit: { theme: themeId, themeVariant: nextVariantMap },
+    customizationCapabilities,
   };
 }
 
@@ -1621,9 +1749,9 @@ function telegramApprovalTokenInfo(_payload, deps = {}) {
   };
 }
 
-// v0.9.0 migration: native-vs-sidecar transport controller.
+// Telegram approval transport migration controller.
 // All telegramMigration.* commands lock on the same `tgApproval` domain as the
-// legacy approval commands so they can't race against token writes.
+// approval commands so they can't race against token writes.
 function telegramMigrationSnapshot(_payload, deps = {}) {
   if (!deps || !deps.telegramMigration) {
     return { status: "error", message: "telegramMigration.snapshot requires controller dep" };
@@ -1646,7 +1774,7 @@ async function telegramMigrationDispatch(payload, deps = {}) {
       snapshot: deps.telegramMigration.getSnapshot(),
     };
   }
-  const res = await deps.telegramMigration.dispatch(payload);
+  const res = await deps.telegramMigration.dispatch({ type: payload.type });
   return res && res.ok
     ? { status: "ok", state: res.state, snapshot: deps.telegramMigration.getSnapshot() }
     : {
@@ -1893,7 +2021,7 @@ const commandRegistry = {
   setAgentFlag,
   setAgentPermissionMode,
   setAllBubblesHidden,
-  setAutoApproveAll,
+  setPermissionAutomationMode,
   setBubbleCategoryEnabled,
   "sessionCleanup.setTriple": setSessionCleanupTriple,
   setSessionAlias,

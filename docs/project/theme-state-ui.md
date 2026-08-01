@@ -41,6 +41,7 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 - 默认配置集中在 `theme-loader.js` 顶部的 `DEFAULT_*` 常量
 - 变体是白名单 deep-merge；数组和特定字段会整体替换
 - Animation override 是用户 per-slot 覆盖，和作者定义的 variants 正交
+- 支持配饰的主题可按主题保存常驻 `petAccessory`；独立的 `holidayAccessoryEnabled` 开关只在万圣节、圣诞节和跨年的短日期窗口临时覆盖当前显示，结束后恢复常驻选择，不回写配饰偏好
 - SVG 会经过白名单消毒，阻断脚本、事件属性、外部资源、`javascript:` 和路径穿越
 - `trustedRuntime.scriptedSvgFiles` 只对 loader 判定为内置的主题生效；外部主题声明该字段会被忽略
 - 支持 SVG / GIF / APNG / WebP / PNG / JPG；动画周期由 `src/animation-cycle.js` 探测
@@ -172,6 +173,7 @@ Mini 状态映射：
 - Windows 终端聚焦依赖 `koffi`；macOS 依赖 `osascript`
 - Codex CLI 以 official hooks 为主、JSONL 轮询为 fallback；WebSearch / compaction / abort 等 hook 未覆盖事件仍可能有轮询延迟
 - Copilot CLI 自动同步 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`；`disableAllHooks: true` 时 doctor warning 且不挂 Fix 按钮
+- ZCode 自动同步 `~/.zcode/cli/config.json` 的 `hooks.events.*`；显式全局或单项 `enabled:false` 保持不变，doctor warning 且不挂会覆盖用户选择的 Fix 按钮
 - Gemini 无权限气泡，除非未来提供兼容的阻塞式审批协议；Cursor 权限走 stdout；Kiro 没有 global hooks；opencode 与 MiMo Code 权限只能走 event hook + bridge
 - opencode child / subtask session 只有在 `session.created` 明确带 `event.properties.info.parentID` 时才会被标记为 headless；这类后台 child 不进入 HUD / focus / 多会话 fanout；MiMo Code 与 opencode 同源，child session 行为一致
 - 进程存活检测依赖进程名匹配，非标准进程名可能漏检

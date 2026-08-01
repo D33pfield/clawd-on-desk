@@ -59,6 +59,87 @@ describe("buildStateBody", () => {
     assert.strictEqual(body.cwd, "/tmp/p");
   });
 
+  it("attributes Cursor-imported Claude hooks to Cursor Agent (#773)", () => {
+    const body = buildStateBody(
+      "SessionStart",
+      {
+        conversation_id: "cursor-conversation-1",
+        session_id: "cursor-conversation-1",
+        hook_event_name: "SessionStart",
+        cursor_version: "3.13.25",
+        workspace_roots: ["/tmp/p"],
+        cwd: "/tmp/p",
+      },
+      mockResolve
+    );
+    assert.strictEqual(body.agent_id, "cursor-agent");
+  });
+
+  for (const [label, cursorVersion] of [
+    ["blank", " \t "],
+    ["overlong", "v".repeat(129)],
+    ["line break", "3.13.25\nspoofed"],
+    ["non-string", 31325],
+  ]) {
+    it(`rejects ${label} Cursor provenance and keeps Claude Code attribution (#773)`, () => {
+      const body = buildStateBody(
+        "SessionStart",
+        {
+          session_id: `malformed-cursor-version-${label.replace(/\s+/g, "-")}`,
+          cursor_version: cursorVersion,
+          cwd: "/tmp/p",
+        },
+        mockResolve
+      );
+      assert.strictEqual(body.agent_id, "claude-code");
+    });
+  }
+
+  it("keeps Claude Code launched from Cursor's terminal attributed to Claude Code (#773)", () => {
+    const resolveFromCursorTerminal = () => ({
+      stablePid: 12345,
+      agentPid: 67890,
+      detectedEditor: "cursor",
+      pidChain: [67890, 12345],
+    });
+    const body = buildStateBody(
+      "SessionStart",
+      { session_id: "claude-in-cursor-terminal", cwd: "/tmp/p" },
+      resolveFromCursorTerminal
+    );
+    assert.strictEqual(body.agent_id, "claude-code");
+    assert.strictEqual(body.editor, "cursor");
+  });
+
+  it("preserves Claude subagent provenance without replacing the canonical agent id", () => {
+    const body = buildStateBody(
+      "SessionEnd",
+      {
+        session_id: "sid-subagent",
+        agent_id: "agent-7f3a",
+        agent_type: "Explore",
+      },
+      mockResolve
+    );
+    assert.strictEqual(body.agent_id, "claude-code");
+    assert.strictEqual(body.subagent_id, "agent-7f3a");
+    assert.strictEqual(body.subagent_type, "Explore");
+  });
+
+  it("drops malformed subagent metadata", () => {
+    const body = buildStateBody(
+      "SessionEnd",
+      {
+        session_id: "sid-subagent",
+        agent_id: "bad\nagent",
+        agent_type: "Explore",
+      },
+      mockResolve
+    );
+    assert.strictEqual(body.subagent_id, undefined);
+    assert.strictEqual(body.subagent_type, undefined);
+  });
+
   it("maps PreToolUse to working state", () => {
     const body = buildStateBody("PreToolUse", { session_id: "s" }, mockResolve);
     assert.strictEqual(body.state, "working");

@@ -8,6 +8,10 @@
   "version": "1.0.0",
   "description": "A short description of your theme",
   "_comment_license": "Optional: if you add a license field, treat it as descriptive metadata only. It should describe assets you own and does not grant rights by itself.",
+  "_comment_customization": "Set petTint:true only when built-in color filters suit the art. Accessory attachment metadata is documented in docs/guides/guide-theme-creation.md.",
+  "customization": {
+    "petTint": false
+  },
 
   "viewBox": {
     "_comment": "Logical canvas in SVG units. All assets should share this aspect ratio.",

@@ -389,6 +389,25 @@ describe("session HUD layout", () => {
     assert.strictEqual(evaluateBaseEligible({ snapshot, showQuota: true }), true);
   });
 
+  it("does not make the Orbit eligible for Dashboard-only Spark quota", () => {
+    const snapshot = {
+      sessions: [],
+      accountQuota: [{
+        codexSparkQuota: {
+          group: {
+            codexWeekly: {
+              usedPercent: 7,
+              resetAt: Date.now() + 3600000,
+            },
+          },
+          updatedAt: 1,
+        },
+      }],
+    };
+    assert.strictEqual(countQuotaCoins(snapshot, true), 0);
+    assert.strictEqual(evaluateBaseEligible({ snapshot, showQuota: true }), false);
+  });
+
   it("the quota ring is base-eligible independently of the Session HUD master", () => {
     const quotaOnly = {
       sessions: [],

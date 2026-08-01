@@ -9,6 +9,8 @@ const vm = require("node:vm");
 const SRC_DIR = path.join(__dirname, "..", "src");
 const SETTINGS_HTML = path.join(SRC_DIR, "settings.html");
 const SETTINGS_CSS = path.join(SRC_DIR, "settings.css");
+const LANGUAGE_PICKER_JS = path.join(SRC_DIR, "language-picker.js");
+const LANGUAGE_PICKER_CSS = path.join(SRC_DIR, "language-picker.css");
 const SETTINGS_TAB_GENERAL = path.join(SRC_DIR, "settings-tab-general.js");
 const SETTINGS_TAB_DISCORD_PRESENCE = path.join(SRC_DIR, "settings-tab-discord-presence.js");
 const SETTINGS_RENDERER = path.join(SRC_DIR, "settings-renderer.js");
@@ -69,7 +71,17 @@ function loadSettingsI18nForTest() {
   return loadSettingsI18nBundleForTest().STRINGS;
 }
 
-function loadSettingsCoreForTest(settingsAPI) {
+function loadSettingsCoreForTest(settingsAPI, {
+  document: documentOverride = null,
+  requestAnimationFrame = (cb) => {
+    cb();
+    return 1;
+  },
+} = {}) {
+  const document = documentOverride || {
+    body: { contains: () => false },
+    getElementById: () => null,
+  };
   const context = {
     console,
     navigator: { platform: "Win32" },
@@ -77,14 +89,8 @@ function loadSettingsCoreForTest(settingsAPI) {
       getItem: () => null,
       setItem: () => {},
     },
-    document: {
-      body: { contains: () => false },
-      getElementById: () => null,
-    },
-    requestAnimationFrame: (cb) => {
-      cb();
-      return 1;
-    },
+    document,
+    requestAnimationFrame,
     window: null,
     globalThis: null,
     settingsAPI,
@@ -193,6 +199,7 @@ class FakeElement {
     this.title = "";
     this.type = "";
     this.disabled = false;
+    this.focused = false;
     this.open = false;
     this.parentNode = null;
     this.scrollTop = 0;
@@ -254,6 +261,10 @@ class FakeElement {
   addEventListener(type, cb) {
     if (!this.eventListeners[type]) this.eventListeners[type] = [];
     this.eventListeners[type].push(cb);
+  }
+
+  focus() {
+    this.focused = true;
   }
 
   dispatchEvent(event) {
@@ -371,6 +382,98 @@ class FakeElement {
   }
 }
 
+function loadSharedLanguagePickerForTest({
+  value = "en",
+  options = ["en", "zh", "ja"],
+  onChange = () => Promise.resolve(true),
+  innerHeight = 600,
+} = {}) {
+  const body = new FakeElement("body");
+  const boundary = new FakeElement("div");
+  boundary.setAttribute("data-language-picker-boundary", "");
+  body.appendChild(boundary);
+  const documentListeners = new Map();
+  const windowListeners = new Map();
+  const animationFrames = new Map();
+  let nextAnimationFrameId = 1;
+  const document = {
+    body,
+    documentElement: { clientHeight: innerHeight },
+    createElement: (tagName) => new FakeElement(tagName),
+    addEventListener(type, cb) {
+      if (!documentListeners.has(type)) documentListeners.set(type, []);
+      documentListeners.get(type).push(cb);
+    },
+    removeEventListener(type, cb) {
+      const listeners = documentListeners.get(type);
+      if (!listeners) return;
+      const index = listeners.indexOf(cb);
+      if (index !== -1) listeners.splice(index, 1);
+    },
+  };
+  const context = {
+    console,
+    document,
+    innerHeight,
+    addEventListener(type, cb) {
+      if (!windowListeners.has(type)) windowListeners.set(type, []);
+      windowListeners.get(type).push(cb);
+    },
+    removeEventListener(type, cb) {
+      const listeners = windowListeners.get(type);
+      if (!listeners) return;
+      const index = listeners.indexOf(cb);
+      if (index !== -1) listeners.splice(index, 1);
+    },
+    requestAnimationFrame(cb) {
+      const id = nextAnimationFrameId++;
+      animationFrames.set(id, cb);
+      return id;
+    },
+    cancelAnimationFrame(id) {
+      animationFrames.delete(id);
+    },
+    window: null,
+    globalThis: null,
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
+
+  const control = context.ClawdLanguagePicker.createLanguagePicker({
+    value,
+    options: options.map((option) => ({ value: option, label: option.toUpperCase() })),
+    ariaLabel: "Language",
+    onChange,
+  });
+  boundary.appendChild(control.element);
+
+  return {
+    boundary,
+    control,
+    picker: control.element,
+    trigger: control.element.querySelector(".language-picker-trigger"),
+    menu: control.element.querySelector(".language-picker-menu"),
+    optionElements: control.element.querySelectorAll(".language-picker-option"),
+    valueElement: control.element.querySelector(".language-picker-value"),
+    dispatchWindowEvent(type, event = {}) {
+      for (const listener of [...(windowListeners.get(type) || [])]) {
+        listener({ ...event, type });
+      }
+    },
+    flushAnimationFrames() {
+      while (animationFrames.size > 0) {
+        const pending = [...animationFrames.values()];
+        animationFrames.clear();
+        for (const callback of pending) callback();
+      }
+    },
+    getPendingAnimationFrameCount: () => animationFrames.size,
+    getWindowListenerCount: (type) => (windowListeners.get(type) || []).length,
+  };
+}
+
 function loadGeneralLanguageRowForTest({
   snapshot,
   update = () => Promise.resolve({ status: "ok" }),
@@ -464,6 +567,7 @@ function loadGeneralLanguageRowForTest({
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
   const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8")
@@ -503,6 +607,11 @@ function loadGeneralLanguageRowForTest({
       const listeners = documentListeners.get(type);
       return listeners ? listeners.length : 0;
     },
+    dispatchDocumentEvent: (type, event = {}) => {
+      const listeners = documentListeners.get(type) || [];
+      const payload = { ...event, type };
+      for (const listener of [...listeners]) listener(payload);
+    },
     getToastText: () => {
       const toast = toastStack.querySelector(".toast");
       return toast ? toast.textContent : "";
@@ -513,6 +622,10 @@ function loadGeneralLanguageRowForTest({
 function loadGeneralTabForTest({
   snapshot,
   settingsAPI = {},
+  requestAnimationFrame = (cb) => {
+    cb();
+    return 1;
+  },
 } = {}) {
   const body = new FakeElement("body");
   const content = new FakeElement("main");
@@ -536,10 +649,7 @@ function loadGeneralTabForTest({
       setItem: () => {},
     },
     document,
-    requestAnimationFrame: (cb) => {
-      cb();
-      return 1;
-    },
+    requestAnimationFrame,
     getComputedStyle: () => ({
       getPropertyValue: () => "",
     }),
@@ -583,6 +693,7 @@ function loadGeneralTabForTest({
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8"), context);
@@ -619,6 +730,8 @@ function makeGeneralSnapshot(overrides = {}) {
     lang: "en",
     theme: "clawd",
     petTint: {},
+    petAccessory: {},
+    holidayAccessoryEnabled: {},
     size: 50,
     sessionHudEnabled: true,
     sessionHudShowStateLabels: true,
@@ -783,12 +896,28 @@ function findAncestorByClass(el, className) {
   return null;
 }
 
+function choosePickerOption(picker, value) {
+  picker.querySelector(".language-picker-trigger").dispatchEvent({ type: "click" });
+  const option = picker.querySelectorAll(".language-picker-option")
+    .find((candidate) => candidate.dataset.lang === String(value));
+  assert.ok(option, `picker option ${value} should exist`);
+  option.dispatchEvent({ type: "click" });
+}
+
+function getSelectedPickerValue(picker) {
+  const selected = picker.querySelectorAll(".language-picker-option")
+    .find((option) => option.classList.contains("selected"));
+  return selected ? selected.dataset.lang : null;
+}
+
 function loadThemeTabForTest({
   themes,
   snapshot,
   petTintOptions,
+  petAccessoryOptions,
   settingsAPI = {},
 } = {}) {
+  const documentListeners = new Map();
   const body = new FakeElement("body");
   const content = new FakeElement("main");
   content.id = "content";
@@ -804,16 +933,34 @@ function loadThemeTabForTest({
       if (id === "content") return content;
       return null;
     },
+    addEventListener(type, handler) {
+      if (!documentListeners.has(type)) documentListeners.set(type, new Set());
+      documentListeners.get(type).add(handler);
+    },
+    removeEventListener(type, handler) {
+      const listeners = documentListeners.get(type);
+      if (listeners) listeners.delete(handler);
+    },
   };
 
   const api = {
     command: (name, payload) => {
       commands.push({ name, payload });
       if (name === "setThemeSelection" && payload && typeof payload.themeId === "string") {
+        const target = themeListState.find((theme) => theme && theme.id === payload.themeId);
         themeListState = themeListState.map((theme) => ({
           ...theme,
           active: theme.id === payload.themeId,
         }));
+        return Promise.resolve({
+          status: "ok",
+          customizationCapabilities: target
+            ? {
+                petTint: target.capabilities && target.capabilities.petTint === true,
+                accessories: target.capabilities && target.capabilities.accessories === true,
+              }
+            : null,
+        });
       }
       return Promise.resolve({ status: "ok" });
     },
@@ -861,15 +1008,25 @@ function loadThemeTabForTest({
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-theme.js"), "utf8"), context);
 
   const core = context.ClawdSettingsCore;
-  core.state.snapshot = { lang: "en", petTint: {}, ...(snapshot || {}) };
+  core.state.snapshot = {
+    lang: "en",
+    petTint: {},
+    petAccessory: {},
+    holidayAccessoryEnabled: {},
+    ...(snapshot || {}),
+  };
   core.state.activeTab = "theme";
   core.runtime.themeList = themeListState;
   core.runtime.petTintOptions = Array.isArray(petTintOptions) ? petTintOptions : [];
+  core.runtime.petAccessoryOptions = Array.isArray(petAccessoryOptions)
+    ? petAccessoryOptions
+    : [];
   context.ClawdSettingsTabTheme.init(core);
   const renderContent = () => {
     content.innerHTML = "";
@@ -1047,6 +1204,7 @@ function loadAgentsTabForTest({
 
 function loadAnimMapTabForTest({
   snapshot,
+  settingsAPI = {},
 } = {}) {
   const body = new FakeElement("body");
   const content = new FakeElement("main");
@@ -1077,6 +1235,7 @@ function loadAnimMapTabForTest({
     globalThis: null,
     settingsAPI: {
       command: () => Promise.resolve({ status: "ok" }),
+      ...settingsAPI,
     },
     ClawdSettingsSizeSlider: {
       SIZE_UI_MIN: 1,
@@ -1130,6 +1289,7 @@ function loadTelegramApprovalTabForTest({
   settingsAPI = {},
   confirm = () => true,
 } = {}) {
+  const documentListeners = new Map();
   const body = new FakeElement("body");
   const content = new FakeElement("main");
   content.id = "content";
@@ -1145,6 +1305,14 @@ function loadTelegramApprovalTabForTest({
     getElementById(id) {
       if (id === "content") return content;
       return null;
+    },
+    addEventListener(type, handler) {
+      if (!documentListeners.has(type)) documentListeners.set(type, new Set());
+      documentListeners.get(type).add(handler);
+    },
+    removeEventListener(type, handler) {
+      const listeners = documentListeners.get(type);
+      if (listeners) listeners.delete(handler);
     },
   };
   const api = {
@@ -1192,6 +1360,7 @@ function loadTelegramApprovalTabForTest({
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8"), context);
 
   const core = {
@@ -1210,6 +1379,9 @@ function loadTelegramApprovalTabForTest({
         },
       },
       activeTab: "telegram-approval",
+      mountedControls: {
+        settingsSelects: new Set(),
+      },
     },
     runtime: {},
     helpers: {
@@ -1223,6 +1395,11 @@ function loadTelegramApprovalTabForTest({
         el.classList.toggle("on", !!checked);
         el.classList.toggle("pending", !!options.pending);
         el.setAttribute("aria-checked", checked ? "true" : "false");
+      },
+      buildSettingsSelect: (config) => {
+        const control = context.ClawdLanguagePicker.createSettingsSelect(config);
+        core.state.mountedControls.settingsSelects.add(control);
+        return control;
       },
       // Mirror the real buildCollapsibleGroup just enough that header content,
       // title/summary, and children all end up in the DOM tree; collapsed
@@ -1360,6 +1537,69 @@ function loadDiscordPresenceTabForTest({ snapshot, update } = {}) {
   return { content, core, updates, renderRequests, toasts, render };
 }
 
+function loadAboutTabForTest({ snapshot = {}, update } = {}) {
+  const body = new FakeElement("body");
+  const content = new FakeElement("main");
+  content.id = "content";
+  body.appendChild(content);
+  const updateCalls = [];
+  const toasts = [];
+  const document = {
+    body,
+    createElement: (tagName) => new FakeElement(tagName),
+    getElementById: (id) => (id === "content" ? content : null),
+  };
+  const context = {
+    console,
+    document,
+    window: null,
+    globalThis: null,
+    settingsAPI: {
+      getAboutInfo: () => Promise.resolve({
+        version: "1.0.0",
+        autoUpdateCheck: snapshot.autoUpdateCheck !== false,
+      }),
+      update: (key, value) => {
+        updateCalls.push({ key, value });
+        return update ? update(key, value) : Promise.resolve({ status: "ok" });
+      },
+      command: () => Promise.resolve({ status: "ok" }),
+      checkForUpdates: () => Promise.resolve({ status: "ok" }),
+    },
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-about.js"), "utf8"), context);
+
+  const core = {
+    state: {
+      snapshot: { autoUpdateCheck: true, ...snapshot },
+      activeTab: "about",
+      mountedControls: { aboutAutoUpdate: null },
+    },
+    runtime: { about: { infoCache: null, clickCount: 0 } },
+    helpers: {
+      t: (key) => key,
+      setSwitchVisual: (element, checked, options = {}) => {
+        element.classList.toggle("on", !!checked);
+        element.classList.toggle("pending", !!options.pending);
+        element.setAttribute("aria-checked", checked ? "true" : "false");
+      },
+      openExternalSafe: () => {},
+      showSettingsConfirmModal: () => Promise.resolve("cancel"),
+    },
+    ops: {
+      showToast: (message, options) => toasts.push({ message, options }),
+    },
+    i18n: { CONTRIBUTORS: [], MAINTAINERS: [] },
+    tabs: {},
+  };
+  context.ClawdSettingsTabAbout.init(core);
+  core.tabs.about.render(content, core);
+  return { core, content, updateCalls, toasts };
+}
+
 function loadAnimOverridesTabForTest({
   runtime,
   modalRoot,
@@ -1369,10 +1609,12 @@ function loadAnimOverridesTabForTest({
   helpersOverrides = {},
 }) {
   const documentListeners = new Map();
+  const content = new FakeElement("main");
+  content.id = "content";
   const document = {
     body: new FakeElement("body"),
     createElement: (tagName) => new FakeElement(tagName),
-    getElementById: (id) => (id === "modalRoot" ? modalRoot : null),
+    getElementById: (id) => (id === "modalRoot" ? modalRoot : id === "content" ? content : null),
     querySelector: () => null,
     addEventListener(type, handler) {
       if (!documentListeners.has(type)) documentListeners.set(type, new Set());
@@ -1383,6 +1625,7 @@ function loadAnimOverridesTabForTest({
       if (listeners) listeners.delete(handler);
     },
   };
+  document.body.appendChild(content);
   const context = {
     console,
     document,
@@ -1454,6 +1697,7 @@ function loadAnimOverridesTabForTest({
   context.ClawdSettingsTabAnimOverrides.init(core);
   return {
     core,
+    content,
     document,
     documentListenerCount: (type) => (documentListeners.get(type) || new Set()).size,
   };
@@ -1581,11 +1825,15 @@ describe("settings renderer browser environment", () => {
     assert.ok(rendererSource.includes("globalThis.ClawdSettingsCore"));
     assert.ok(rendererSource.includes("settingsAPI.onRemoteApprovalStatusChanged"));
     assert.ok(rendererSource.includes("settingsAPI.getPetTintOptions"));
+    assert.ok(rendererSource.includes("settingsAPI.getPetAccessoryOptions"));
     assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
       'getPetTintOptions: () => ipcRenderer.invoke("settings:get-pet-tint-options")'
     ));
     assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
       'getQuotaSourceCount: () => ipcRenderer.invoke("settings:get-quota-source-count")'
+    ));
+    assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
+      'getPetAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-accessory-options")'
     ));
     assert.ok(rendererSource.includes("tab.refreshRuntimeStatus(payload)"));
     assert.ok(coreSource.includes("ClawdSettingsSizeSlider"));
@@ -1662,6 +1910,53 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(pendingMirror.getAttribute("aria-disabled"), "true");
     deferred.resolve({ status: "ok" });
     await Promise.resolve();
+  });
+
+  it("keeps sidebar page scroll positions isolated when a shorter page clamps scrollTop", () => {
+    let rawScrollTop = 1480;
+    let maxScrollTop = 2000;
+    const raf = createQueuedRaf();
+    const content = {
+      get scrollTop() {
+        return Math.min(rawScrollTop, maxScrollTop);
+      },
+      set scrollTop(value) {
+        rawScrollTop = Math.max(0, Math.min(Number(value) || 0, maxScrollTop));
+      },
+    };
+    const document = {
+      body: { contains: () => false },
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, {
+      document,
+      requestAnimationFrame: raf.requestAnimationFrame,
+    });
+    core.state.activeTab = "remote-ssh";
+    core.tabs["remote-ssh"] = {};
+    core.tabs.theme = {};
+    core.ops.installRenderHooks({
+      sidebar: () => {},
+      modal: () => {},
+      content: () => {
+        maxScrollTop = core.state.activeTab === "theme" ? 398 : 2000;
+        content.scrollTop = content.scrollTop;
+      },
+    });
+
+    core.ops.selectTab("theme");
+    assert.equal(content.scrollTop, 0, "a sidebar page starts at the top on first entry");
+    raf.flush();
+
+    content.scrollTop = 240;
+    core.ops.selectTab("remote-ssh");
+    assert.equal(content.scrollTop, 1480, "the long source page restores its saved position");
+
+    // Switch again before the remote page's deferred restore runs. Its stale
+    // callback must not overwrite the newly active Theme page.
+    core.ops.selectTab("theme");
+    raf.flush();
+    assert.equal(content.scrollTop, 240, "the short target page keeps its own position");
   });
 
   it("waits for remote cleanup before deleting a profile and warns on incomplete uninstall", () => {
@@ -1764,6 +2059,361 @@ describe("settings renderer browser environment", () => {
     }
   });
 
+  it("updates the About auto-update switch in place and blocks rapid duplicate saves", async () => {
+    const save = createDeferred();
+    const harness = loadAboutTabForTest({
+      snapshot: { autoUpdateCheck: true },
+      update: () => save.promise,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const autoUpdateSwitch = harness.content.querySelector(".about-auto-update-switch");
+    assert.ok(autoUpdateSwitch);
+    autoUpdateSwitch.dispatchEvent({ type: "click" });
+    autoUpdateSwitch.dispatchEvent({ type: "click" });
+    assert.deepStrictEqual(harness.updateCalls, [{ key: "autoUpdateCheck", value: false }]);
+    assert.equal(autoUpdateSwitch.classList.contains("pending"), true);
+    assert.equal(autoUpdateSwitch.getAttribute("aria-disabled"), "true");
+
+    save.resolve({ status: "ok" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(autoUpdateSwitch.classList.contains("pending"), false);
+    assert.equal(autoUpdateSwitch.getAttribute("aria-checked"), "false");
+
+    harness.core.state.snapshot.autoUpdateCheck = true;
+    assert.equal(harness.core.tabs.about.patchInPlace({ autoUpdateCheck: true }), true);
+    assert.strictEqual(harness.content.querySelector(".about-auto-update-switch"), autoUpdateSwitch);
+    assert.equal(autoUpdateSwitch.getAttribute("aria-checked"), "true");
+  });
+
+  it("rolls the About auto-update switch back when persistence fails", async () => {
+    const harness = loadAboutTabForTest({
+      snapshot: { autoUpdateCheck: true },
+      update: () => Promise.resolve({ status: "error", message: "disk full" }),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    const autoUpdateSwitch = harness.content.querySelector(".about-auto-update-switch");
+    autoUpdateSwitch.dispatchEvent({ type: "click" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(autoUpdateSwitch.getAttribute("aria-checked"), "true");
+    assert.equal(autoUpdateSwitch.classList.contains("pending"), false);
+    assert.equal(harness.toasts.length, 1);
+    assert.equal(harness.toasts[0].options.error, true);
+  });
+
+  it("keeps every Telegram retirement gate string in all supported languages", () => {
+    const strings = loadSettingsI18nForTest();
+    const keys = [
+      "telegramNativeMigrationEyebrow",
+      "telegramLegacyRetiredTitle",
+      "telegramLegacyRetiredBody",
+      "telegramNativeReverifyTitle",
+      "telegramNativeReverifyBody",
+      "telegramNativeMigrationVerify",
+      "telegramNativeMigrationWaiting",
+      "telegramNativeMigrationDisable",
+      "telegramNativeMigrationGuide",
+      "telegramNativeMigrationFailed",
+      "telegramNativeMigrationTimeout",
+      "telegramNativeMigrationStartFailed",
+    ];
+    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja"]);
+    for (const lang of SUPPORTED_LANGS) {
+      for (const key of keys) {
+        assert.equal(
+          typeof strings[lang][key],
+          "string",
+          `${lang}.${key} must exist`,
+        );
+        assert.notEqual(strings[lang][key].trim(), "", `${lang}.${key} must not be empty`);
+      }
+    }
+  });
+
+  it("renders a blocking retired-legacy gate and dispatches only the verified native action", async () => {
+    const commandCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: true,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "NATIVE_MIGRATION_REQUIRED",
+                transport: "legacy",
+                testOrigin: "legacy",
+                ownerSnapshot: { nativePolling: false },
+                revision: 1,
+              },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: {
+                status: "stopped",
+                transport: "off",
+                configured: true,
+                tokenStored: true,
+                reason: "native-migration-required",
+              },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          if (name === "telegramMigration.dispatch") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "TESTING_NATIVE",
+                testOrigin: "legacy",
+                revision: 2,
+              },
+            });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const gate = harness.content.querySelector(".tg-native-migration-gate");
+    assert.ok(gate, "legacy users must see the blocking retirement gate");
+    assert.equal(
+      gate.querySelector(".tg-native-migration-gate-title").textContent,
+      "telegramLegacyRetiredTitle",
+    );
+    assert.equal(
+      harness.content.querySelector(".switch").getAttribute("aria-disabled"),
+      "true",
+      "the ordinary enable switch must not bypass migration verification",
+    );
+    const ordinaryTest = harness.content.querySelectorAll("button")
+      .find((button) => button.textContent === "telegramApprovalSendTest");
+    assert.equal(ordinaryTest.disabled, true, "ordinary Send test must not become a second migration entry");
+    const buttons = gate.querySelectorAll("button");
+    const verify = buttons.find((button) => button.textContent === "telegramNativeMigrationVerify");
+    assert.ok(verify);
+    assert.equal(
+      buttons.some((button) => /Later|legacy|rollback/i.test(button.textContent)),
+      false,
+      "the retired runtime must not expose Later, rollback, or enable-legacy actions",
+    );
+
+    verify.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    const dispatch = commandCalls.find((call) =>
+      call.name === "telegramMigration.dispatch"
+      && call.payload
+      && call.payload.type === "USER_TEST_NATIVE");
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(dispatch && dispatch.payload)),
+      { type: "USER_TEST_NATIVE" },
+      "renderer must not attach timestamps, tokens, or arbitrary fields",
+    );
+  });
+
+  it("renders distinct native migration failure outcomes and hides the gate elsewhere", async () => {
+    for (const [outcome, expectedKey] of [
+      ["failed", "telegramNativeMigrationFailed"],
+      ["timeout", "telegramNativeMigrationTimeout"],
+      ["native-start-failed", "telegramNativeMigrationStartFailed"],
+    ]) {
+      const harness = loadTelegramApprovalTabForTest({
+        snapshot: {
+          tgApproval: {
+            enabled: true,
+            allowedTgUserId: "123456789",
+            targetSessionKey: "telegram:123456789",
+          },
+        },
+        settingsAPI: {
+          command: (name) => {
+            if (name === "telegramMigration.snapshot") {
+              return Promise.resolve({
+                status: "ok",
+                snapshot: {
+                  state: "NATIVE_MIGRATION_REQUIRED",
+                  transport: "legacy",
+                  testOrigin: "legacy",
+                  lastTestResult: { outcome, at: 1 },
+                  revision: 2,
+                  ownerSnapshot: { nativePolling: false },
+                },
+              });
+            }
+            if (name === "telegramApproval.status") {
+              return Promise.resolve({
+                status: "ok",
+                state: { status: "failed", transport: "off", configured: true, tokenStored: true },
+              });
+            }
+            if (name === "telegramApproval.tokenInfo") {
+              return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+            }
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      assert.equal(
+        harness.content.querySelector(".tg-native-migration-gate-result").textContent,
+        expectedKey,
+      );
+    }
+
+    for (const migrationSnapshot of [
+      { state: "IDLE", transport: "off", revision: 1, ownerSnapshot: {} },
+      { state: "NATIVE_ACTIVE", transport: "native", revision: 1, ownerSnapshot: { nativePolling: true } },
+    ]) {
+      const harness = loadTelegramApprovalTabForTest({
+        settingsAPI: {
+          command: (name) => {
+            if (name === "telegramMigration.snapshot") {
+              return Promise.resolve({ status: "ok", snapshot: migrationSnapshot });
+            }
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      assert.equal(harness.content.querySelector(".tg-native-migration-gate"), null);
+    }
+  });
+
+  it("uses native re-verification copy when a previously verified setup is repaired", async () => {
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: false,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "NATIVE_MIGRATION_REQUIRED",
+                transport: "native",
+                testOrigin: "native-verified-repair",
+                revision: 2,
+                ownerSnapshot: { nativePolling: false },
+              },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "stopped", transport: "native", configured: true, tokenStored: true },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    assert.equal(
+      harness.content.querySelector(".tg-native-migration-gate-title").textContent,
+      "telegramNativeReverifyTitle",
+    );
+    assert.equal(
+      harness.content.querySelector(".tg-native-migration-gate-body").textContent,
+      "telegramNativeReverifyBody",
+    );
+  });
+
+  it("refreshes Telegram migration state from the scoped async revision signal", async () => {
+    const commandCalls = [];
+    let revision = 1;
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: {
+          enabled: true,
+          allowedTgUserId: "123456789",
+          targetSessionKey: "telegram:123456789",
+        },
+      },
+      settingsAPI: {
+        command: (name, payload) => {
+          commandCalls.push({ name, payload });
+          if (name === "telegramMigration.snapshot") {
+            return Promise.resolve({
+              status: "ok",
+              snapshot: {
+                state: "NATIVE_MIGRATION_REQUIRED",
+                transport: "legacy",
+                testOrigin: "legacy",
+                lastTestResult: revision > 1 ? { outcome: "timeout", at: 1 } : null,
+                revision,
+                ownerSnapshot: { nativePolling: false },
+              },
+            });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({
+              status: "ok",
+              state: { status: "stopped", transport: "off", configured: true, tokenStored: true },
+            });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234……wXyZ" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    const beforeSnapshots = commandCalls.filter((call) => call.name === "telegramMigration.snapshot").length;
+    revision = 2;
+
+    assert.equal(
+      harness.core.tabs["telegram-approval"].refreshRuntimeStatus({
+        channel: "telegram",
+        revision: 2,
+      }),
+      true,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.ok(
+      commandCalls.filter((call) => call.name === "telegramMigration.snapshot").length > beforeSnapshots,
+      "the scoped signal must pull a fresh secret-free snapshot",
+    );
+    assert.ok(harness.renderRequests.some((request) => request.content === true));
+    harness.render();
+    assert.equal(
+      harness.content.querySelector(".tg-native-migration-gate-result").textContent,
+      "telegramNativeMigrationTimeout",
+    );
+  });
+
   it("keeps Telegram approval drafts local across toggles and rerenders", async () => {
     const commandCalls = [];
     const harness = loadTelegramApprovalTabForTest({
@@ -1850,7 +2500,7 @@ describe("settings renderer browser environment", () => {
           if (name === "telegramMigration.snapshot") {
             return Promise.resolve({
               status: "ok",
-              snapshot: { state: "LEGACY_ACTIVE", transport: "legacy", ownerSnapshot: { sidecarRunning: true } },
+              snapshot: { state: "NATIVE_ACTIVE", transport: "native", ownerSnapshot: { nativePolling: true } },
             });
           }
           if (name === "telegramApproval.status") {
@@ -1907,7 +2557,7 @@ describe("settings renderer browser environment", () => {
           if (name === "telegramMigration.snapshot") {
             return Promise.resolve({
               status: "ok",
-              snapshot: { state: "LEGACY_ACTIVE", transport: "legacy", ownerSnapshot: { sidecarRunning: true } },
+              snapshot: { state: "NATIVE_ACTIVE", transport: "native", ownerSnapshot: { nativePolling: true } },
             });
           }
           if (name === "telegramApproval.status") {
@@ -1963,7 +2613,7 @@ describe("settings renderer browser environment", () => {
           if (name === "telegramMigration.snapshot") {
             return Promise.resolve({
               status: "ok",
-              snapshot: { state: "LEGACY_ACTIVE", transport: "legacy", ownerSnapshot: { sidecarRunning: true } },
+              snapshot: { state: "NATIVE_ACTIVE", transport: "native", ownerSnapshot: { nativePolling: true } },
             });
           }
           if (name === "telegramApproval.status") {
@@ -1985,7 +2635,7 @@ describe("settings renderer browser environment", () => {
 
     harness.content.querySelector(".switch").dispatchEvent({ type: "click" });
 
-    // The legacy switch still writes tgApproval.enabled = false…
+    // The native switch writes tgApproval.enabled = false…
     assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), [{
       key: "tgApproval",
       value: {
@@ -2028,13 +2678,16 @@ describe("settings renderer browser environment", () => {
     harness.render();
 
     const select = harness.content.querySelector(".tg-approval-output-select");
-    assert.deepStrictEqual(select.children.map((option) => option.value), ["off", "full"]);
-    select.value = "full";
-    select.dispatchEvent({ type: "change" });
+    assert.deepStrictEqual(
+      select.querySelectorAll(".language-picker-option").map((option) => option.dataset.lang),
+      ["off", "full"]
+    );
+    choosePickerOption(select, "full");
+    await Promise.resolve();
 
     assert.deepStrictEqual(confirmCalls, ["telegramApprovalCompletionOutputFullConfirm"]);
     assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), []);
-    assert.equal(select.value, "off");
+    assert.equal(select.querySelector(".language-picker-value").textContent, "telegramApprovalCompletionOutput_off");
 
     const confirmed = loadTelegramApprovalTabForTest({
       snapshot: {
@@ -2053,8 +2706,7 @@ describe("settings renderer browser environment", () => {
     confirmed.render();
 
     const confirmedSelect = confirmed.content.querySelector(".tg-approval-output-select");
-    confirmedSelect.value = "full";
-    confirmedSelect.dispatchEvent({ type: "change" });
+    choosePickerOption(confirmedSelect, "full");
 
     assert.deepStrictEqual(JSON.parse(JSON.stringify(confirmed.updates)), [{
       key: "tgApproval",
@@ -2641,9 +3293,8 @@ describe("settings renderer browser environment", () => {
 
     const select = harness.content.querySelector(".feishu-approval-timeout-select");
     assert.ok(select, "Feishu timeout select should render");
-    assert.equal(select.value, "15");
-    select.value = "30";
-    select.dispatchEvent({ type: "change" });
+    assert.equal(getSelectedPickerValue(select), "15");
+    choosePickerOption(select, "30");
 
     await Promise.resolve();
     assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates.find((call) => call.key === "feishuApproval"))), {
@@ -3707,29 +4358,52 @@ describe("settings renderer browser environment", () => {
   it("renders the Settings language picker as a dropdown over all supported langs", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
-    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    const pickerSource = fs.readFileSync(LANGUAGE_PICKER_JS, "utf8");
+    const pickerCss = fs.readFileSync(LANGUAGE_PICKER_CSS, "utf8");
+    const settingsHtml = fs.readFileSync(SETTINGS_HTML, "utf8");
 
     assert.ok(new RegExp(
       String.raw`const LANGUAGE_OPTIONS = \[` +
       SUPPORTED_LANGS.map((lang) => String.raw`"${lang}"`).join(String.raw`,\s*`) +
       String.raw`\];`
     ).test(generalSource));
-    assert.ok(generalSource.includes(`class="language-picker"`));
-    assert.ok(generalSource.includes(`aria-haspopup="listbox"`));
-    assert.ok(generalSource.includes(`role="listbox"`));
-    assert.ok(generalSource.includes(`aria-hidden="true"`));
-    assert.ok(generalSource.includes(`role", "option"`));
-    assert.ok(!generalSource.includes(`<select class="language-select"`));
+    assert.ok(generalSource.includes("createLanguagePicker"));
+    assert.ok(pickerSource.includes("picker.className = `language-picker"));
+    assert.ok(pickerSource.includes(`role", "combobox"`));
+    assert.ok(pickerSource.includes(`aria-haspopup", "listbox"`));
+    assert.ok(pickerSource.includes(`aria-controls", menu.id`));
+    assert.ok(pickerSource.includes(`role", "listbox"`));
+    assert.ok(pickerSource.includes(`aria-hidden", "true"`));
+    assert.ok(pickerSource.includes(`role", "option"`));
+    assert.ok(settingsHtml.includes(`href="language-picker.css"`));
+    assert.ok(settingsHtml.includes(`src="language-picker.js"`));
     assert.ok(!generalSource.includes("language-segmented"));
     assert.ok(!generalSource.includes("runtime.languageTransition"));
     assert.ok(!generalSource.includes("--language-active-index"));
     assert.ok(!coreSource.includes("languageTransition"));
-    assert.ok(/\.language-picker-menu\s*\{[\s\S]*box-shadow:/.test(css));
-    assert.ok(/\.language-picker-option:hover,[\s\S]*\.language-picker-option:focus-visible\s*\{[\s\S]*background:/.test(css));
-    assert.ok(/\.language-picker-option\.selected\s*\{[\s\S]*color:\s*var\(--accent\);/.test(css));
-    assert.ok(/@media \(prefers-color-scheme:\s*dark\)\s*\{[\s\S]*\.language-picker-menu/.test(css));
-    assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.language-picker-trigger,[\s\S]*\.language-picker-chevron,[\s\S]*\.language-picker-menu[\s\S]*transition:\s*none;/.test(css));
-    assert.ok(!css.includes(".language-segmented"));
+    assert.ok(/\.language-picker-menu\s*\{[\s\S]*box-shadow:/.test(pickerCss));
+    assert.ok(/\.language-picker-option:hover\s*\{[\s\S]*background:/.test(pickerCss));
+    assert.ok(/\.language-picker-option:focus-visible\s*\{[\s\S]*outline:\s*2px solid var\(--text-primary,\s*var\(--text\)\);[\s\S]*outline-offset:\s*-2px;[\s\S]*background:/.test(pickerCss));
+    assert.ok(/\.language-picker-option\.selected\s*\{[\s\S]*color:\s*var\(--accent\);/.test(pickerCss));
+    assert.ok(/@media \(prefers-color-scheme:\s*dark\)\s*\{[\s\S]*\.language-picker-menu/.test(pickerCss));
+    assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.language-picker-trigger,[\s\S]*\.language-picker-chevron,[\s\S]*\.language-picker-menu[\s\S]*transition:\s*none;/.test(pickerCss));
+    assert.ok(/@media \(forced-colors:\s*active\)\s*\{[\s\S]*\.language-picker-trigger:focus-visible,[\s\S]*\.language-picker-option:focus-visible\s*\{[\s\S]*outline-color:\s*Highlight;/.test(pickerCss));
+    assert.ok(!pickerCss.includes(".language-segmented"));
+  });
+
+  it("lets the open language picker escape its section without changing closed-card clipping", () => {
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    const sectionRowsRule = css.match(/\.section-rows\s*\{([^}]*)\}/);
+    const openSectionRule = css.match(/\.section:has\(\.language-picker\.open\)\s*\{([^}]*)\}/);
+    const openRowsRule = css.match(/\.section-rows:has\(\.language-picker\.open\)\s*\{([^}]*)\}/);
+
+    assert.ok(sectionRowsRule, "settings cards should retain their base clipping rule");
+    assert.match(sectionRowsRule[1], /overflow:\s*hidden;/);
+    assert.ok(openSectionRule, "the section containing an open language picker should be raised");
+    assert.match(openSectionRule[1], /position:\s*relative;/);
+    assert.match(openSectionRule[1], /z-index:\s*1;/);
+    assert.ok(openRowsRule, "the open language picker should escape the settings card");
+    assert.match(openRowsRule[1], /overflow:\s*visible;/);
   });
 
   it("populates the language picker with current selection and propagates click changes", () => {
@@ -3744,6 +4418,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(picker, "language picker should be rendered");
     assert.ok(trigger, "language picker trigger should be rendered");
     assert.strictEqual(harness.getLangValue().textContent, "English");
+    assert.strictEqual(trigger.attributes["aria-label"], "Language: English");
     assert.strictEqual(harness.getLangMenu().attributes["aria-hidden"], "true");
     const options = harness.getLangOptions();
     assert.strictEqual(options.length, SUPPORTED_LANGS.length);
@@ -3765,9 +4440,11 @@ describe("settings renderer browser environment", () => {
       "clicking a language option should call settingsAPI.update with the new lang"
     );
     assert.strictEqual(picker.classList.contains("open"), false);
+    assert.strictEqual(trigger.focused, true);
     assert.strictEqual(harness.getLangMenu().attributes["aria-hidden"], "true");
     for (const option of options) assert.strictEqual(option.tabIndex, -1);
     assert.strictEqual(harness.getLangValue().textContent, "Chinese");
+    assert.strictEqual(trigger.attributes["aria-label"], "Language: Chinese");
 
     trigger.dispatchEvent({ type: "click" });
     options[1].dispatchEvent({ type: "click" });
@@ -3785,6 +4462,7 @@ describe("settings renderer browser environment", () => {
       "clicking back to the committed language while pending should not submit a duplicate update"
     );
     assert.strictEqual(harness.getLangValue().textContent, "English");
+    assert.strictEqual(trigger.attributes["aria-label"], "Language: English");
     assert.strictEqual(options[0].attributes["aria-selected"], "true");
 
     harness.core.ops.applyChanges({
@@ -3793,6 +4471,7 @@ describe("settings renderer browser environment", () => {
     });
     assert.strictEqual(harness.getContentRenderCount(), 2);
     assert.strictEqual(harness.getLangValue().textContent, "Chinese");
+    assert.strictEqual(harness.getLangTrigger().attributes["aria-label"], "Language: Chinese");
     assert.strictEqual(harness.getLangOptions()[1].attributes["aria-selected"], "true");
   });
 
@@ -3808,11 +4487,245 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getLangPicker().classList.contains("open"), true);
     const options = harness.getLangOptions();
     options[1].dispatchEvent(createKeyboardEventForTest("Enter"));
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
 
     assert.deepStrictEqual(harness.updateCalls, [{ key: "lang", value: "zh" }]);
     assert.strictEqual(harness.getLangValue().textContent, "English");
+    assert.strictEqual(trigger.focused, true);
     assert.strictEqual(harness.getToastText(), "Failed: synthetic failure");
+  });
+
+  it("supports Home/End navigation and locks disabled or pending Settings pickers", () => {
+    const harness = loadGeneralLanguageRowForTest({ snapshot: { lang: "en" } });
+    harness.core.ops.requestRender({ content: true });
+    const trigger = harness.getLangTrigger();
+    const options = harness.getLangOptions();
+    trigger.dispatchEvent(createKeyboardEventForTest("ArrowDown"));
+    for (const option of options) option.focused = false;
+    trigger.dispatchEvent(createKeyboardEventForTest("End"));
+    assert.equal(options[options.length - 1].focused, true);
+    for (const option of options) option.focused = false;
+    trigger.dispatchEvent(createKeyboardEventForTest("Home"));
+    assert.equal(options[0].focused, true);
+    assert.equal(trigger.getAttribute("role"), "combobox");
+    assert.equal(trigger.getAttribute("aria-controls"), harness.getLangMenu().id);
+
+    const locked = harness.core.helpers.buildSettingsSelect({
+      value: "a",
+      options: [{ value: "a", label: "A" }, { value: "b", label: "B" }],
+      lockWhilePending: true,
+    });
+    harness.content.appendChild(locked.element);
+    const lockedTrigger = locked.element.querySelector(".language-picker-trigger");
+    locked.setDisabled(true);
+    lockedTrigger.dispatchEvent({ type: "click" });
+    assert.equal(locked.element.classList.contains("open"), false);
+    assert.equal(lockedTrigger.disabled, true);
+    locked.setDisabled(false);
+    locked.setPending(true);
+    lockedTrigger.dispatchEvent({ type: "click" });
+    assert.equal(locked.element.classList.contains("open"), false);
+    assert.equal(lockedTrigger.disabled, true);
+  });
+
+  it("rolls concurrent failed language saves back to the last committed value", async () => {
+    const saves = [];
+    const changes = [];
+    const harness = loadSharedLanguagePickerForTest({
+      onChange: (next, previous) => {
+        const deferred = createDeferred();
+        saves.push(deferred);
+        changes.push({ next, previous });
+        return deferred.promise;
+      },
+    });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.optionElements[1].dispatchEvent({ type: "click" });
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.optionElements[2].dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.valueElement.textContent, "JA");
+    assert.deepStrictEqual(changes, [
+      { next: "zh", previous: "en" },
+      { next: "ja", previous: "en" },
+    ]);
+
+    saves[0].resolve(false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(harness.valueElement.textContent, "JA", "stale failure keeps the latest optimistic value");
+
+    saves[1].resolve(false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(harness.valueElement.textContent, "EN", "latest failure restores the committed value");
+  });
+
+  it("advances the rollback baseline after a concurrent language save succeeds", async () => {
+    const saves = [];
+    const harness = loadSharedLanguagePickerForTest({
+      onChange: () => {
+        const deferred = createDeferred();
+        saves.push(deferred);
+        return deferred.promise;
+      },
+    });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.optionElements[1].dispatchEvent({ type: "click" });
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.optionElements[2].dispatchEvent({ type: "click" });
+
+    saves[0].resolve(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(harness.valueElement.textContent, "JA", "newer optimistic choice remains visible");
+
+    saves[1].resolve(false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(harness.valueElement.textContent, "ZH", "failed latest choice restores the successful save");
+  });
+
+  it("flips and bounds the tutorial picker at minimum-size enlarged-text geometry", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      options: ["en", "zh", "zh-TW", "ko", "ja"],
+      innerHeight: 450,
+    });
+    harness.boundary.getBoundingClientRect = () => ({ top: 52, bottom: 400 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 220, bottom: 274 });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 240 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 242 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 240 });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+
+    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), true);
+    assert.strictEqual(harness.menu.style.maxHeight, "162px");
+    assert.ok(parseInt(harness.menu.style.maxHeight, 10) < harness.menu.scrollHeight);
+    const css = fs.readFileSync(LANGUAGE_PICKER_CSS, "utf8");
+    assert.match(css, /\.language-picker\.menu-scrollable \.language-picker-menu\s*\{[\s\S]*overflow-y:\s*auto;/);
+    assert.match(css, /\.language-picker\.open-up \.language-picker-menu\s*\{[\s\S]*bottom:\s*calc\(100% \+ 6px\);/);
+  });
+
+  it("initially reveals and bounds the tutorial picker at 150% and 160% text scale", () => {
+    const layouts = [
+      { scale: "150%", boundaryBottom: 313.7, triggerTop: 317.1, triggerBottom: 353.1 },
+      { scale: "160%", boundaryBottom: 290.3, triggerTop: 316.6, triggerBottom: 352.6 },
+    ];
+
+    for (const layout of layouts) {
+      const harness = loadSharedLanguagePickerForTest({
+        options: ["en", "zh", "zh-TW", "ko", "ja"],
+        innerHeight: 400,
+      });
+      harness.boundary.getBoundingClientRect = () => ({ top: 52, bottom: layout.boundaryBottom });
+      harness.trigger.getBoundingClientRect = () => ({
+        top: layout.triggerTop - harness.boundary.scrollTop,
+        bottom: layout.triggerBottom - harness.boundary.scrollTop,
+      });
+      Object.defineProperty(harness.menu, "scrollHeight", { value: 160 });
+      Object.defineProperty(harness.menu, "offsetHeight", { value: 162 });
+      Object.defineProperty(harness.menu, "clientHeight", { value: 160 });
+
+      assert.ok(
+        harness.trigger.getBoundingClientRect().top > layout.boundaryBottom,
+        `${layout.scale}: regression setup must start with the trigger behind the footer`,
+      );
+
+      harness.control.ensureVisible();
+      const visibleTrigger = harness.trigger.getBoundingClientRect();
+      assert.ok(visibleTrigger.top >= 52, `${layout.scale}: trigger top stays inside the body`);
+      assert.ok(
+        visibleTrigger.bottom <= layout.boundaryBottom,
+        `${layout.scale}: trigger bottom stays inside the body`,
+      );
+
+      harness.trigger.dispatchEvent({ type: "click" });
+      assert.strictEqual(
+        harness.picker.classList.contains("open-up"),
+        true,
+        `${layout.scale}: menu flips upward`,
+      );
+      const menuBottom = visibleTrigger.top - 6;
+      const menuTop = menuBottom - parseInt(harness.menu.style.maxHeight, 10);
+      const firstOption = { top: menuTop + 6, bottom: menuTop + 36 };
+      const lastOption = { top: menuBottom - 36, bottom: menuBottom - 6 };
+      assert.ok(firstOption.top >= 52, `${layout.scale}: first option stays inside the body`);
+      assert.ok(
+        lastOption.bottom <= layout.boundaryBottom,
+        `${layout.scale}: last option stays inside the body`,
+      );
+    }
+  });
+
+  it("reflows an open tutorial picker after the window is resized", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      options: ["en", "zh", "zh-TW", "ko", "ja"],
+      innerHeight: 450,
+    });
+    const layout = {
+      boundaryTop: 52,
+      boundaryBottom: 352.8,
+      triggerTop: 295.7,
+      triggerBottom: 331.7,
+    };
+    harness.boundary.getBoundingClientRect = () => ({
+      top: layout.boundaryTop,
+      bottom: layout.boundaryBottom,
+    });
+    harness.trigger.getBoundingClientRect = () => ({
+      top: layout.triggerTop - harness.boundary.scrollTop,
+      bottom: layout.triggerBottom - harness.boundary.scrollTop,
+    });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 160 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 162 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 160 });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.picker.classList.contains("open"), true);
+    assert.strictEqual(harness.getWindowListenerCount("resize"), 1);
+
+    layout.boundaryBottom = 290.3;
+    layout.triggerTop = 316.6;
+    layout.triggerBottom = 352.6;
+    assert.ok(
+      harness.trigger.getBoundingClientRect().top > layout.boundaryBottom,
+      "regression setup must put the trigger behind the fixed footer",
+    );
+
+    harness.dispatchWindowEvent("resize");
+    harness.dispatchWindowEvent("resize");
+    assert.strictEqual(
+      harness.getPendingAnimationFrameCount(),
+      1,
+      "resize work is coalesced into one animation frame",
+    );
+    harness.flushAnimationFrames();
+
+    const visibleTrigger = harness.trigger.getBoundingClientRect();
+    assert.ok(visibleTrigger.top >= layout.boundaryTop);
+    assert.ok(visibleTrigger.bottom <= layout.boundaryBottom);
+    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.menu.style.maxHeight, "162px");
+
+    harness.control.dispose();
+    assert.strictEqual(harness.getWindowListenerCount("resize"), 0);
+  });
+
+  it("does not show a scrollbar when an upward menu fits all language options", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      options: ["en", "zh", "zh-TW", "ko", "ja"],
+      innerHeight: 600,
+    });
+    harness.boundary.getBoundingClientRect = () => ({ top: 72, bottom: 502 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 445, bottom: 499 });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 160 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 162 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 160 });
+
+    harness.trigger.dispatchEvent({ type: "click" });
+
+    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), false);
+    assert.strictEqual(harness.menu.style.maxHeight, "162px");
   });
 
   it("cleans up language picker document listeners across re-renders", () => {
@@ -3821,12 +4734,36 @@ describe("settings renderer browser environment", () => {
     });
 
     harness.core.ops.requestRender({ content: true });
+    const staleOption = harness.getLangOptions()[1];
     assert.strictEqual(harness.getDocumentListenerCount("click"), 1);
     assert.strictEqual(harness.getDocumentListenerCount("keydown"), 1);
 
     harness.core.ops.requestRender({ content: true });
     assert.strictEqual(harness.getDocumentListenerCount("click"), 1);
     assert.strictEqual(harness.getDocumentListenerCount("keydown"), 1);
+
+    staleOption.dispatchEvent({ type: "click" });
+    assert.deepStrictEqual(harness.updateCalls, []);
+  });
+
+  it("closes the language picker from outside clicks and Escape", () => {
+    const harness = loadGeneralLanguageRowForTest({
+      snapshot: { lang: "en" },
+    });
+
+    harness.core.ops.requestRender({ content: true });
+    harness.getLangTrigger().dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.getLangPicker().classList.contains("open"), true);
+
+    harness.dispatchDocumentEvent("click", { target: new FakeElement("body") });
+    assert.strictEqual(harness.getLangPicker().classList.contains("open"), false);
+
+    harness.getLangTrigger().dispatchEvent({ type: "click" });
+    harness.dispatchDocumentEvent("keydown", {
+      key: "Escape",
+      preventDefault() { this.defaultPrevented = true; },
+    });
+    assert.strictEqual(harness.getLangPicker().classList.contains("open"), false);
   });
 
   it("exposes aggregate and split bubble controls in the General tab", () => {
@@ -4041,24 +4978,40 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("claudeHooksDisconnectConfirmKeep"));
   });
 
-  it("wires the danger auto-pilot toggle with a confirm modal and red label", () => {
+  it("renders three permission automation modes with two confirmation-gated automatic choices", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
-    // Row is registered with danger:true and routes the enable path through a confirm.
-    assert.ok(generalSource.includes('key: "autoApproveAllPermissions"'));
-    assert.ok(generalSource.includes("danger: true"));
-    assert.ok(generalSource.includes("confirmAutoApproveAll"));
-    assert.ok(generalSource.includes("showAutoApproveAllConfirmModal"));
-    assert.ok(generalSource.includes('{ id: "enable", label: t("autoApproveAllConfirmEnable"), tone: "danger" }'));
-    // buildSwitchRow honors danger by painting the label red.
-    assert.ok(coreSource.includes("row-label-danger"));
-    assert.ok(css.includes(".row-label.row-label-danger"));
-    // Simple title + localized confirm strings exist.
-    assert.ok(i18nSource.includes('rowAutoApproveAll: "Auto-approve all requests"'));
-    assert.ok(i18nSource.includes('rowAutoApproveAll: "自动放行所有请求"'));
-    assert.ok(i18nSource.includes("autoApproveAllConfirmTitle"));
+    assert.ok(generalSource.includes("PERMISSION_AUTOMATION_OPTIONS"));
+    assert.ok(generalSource.includes('{ id: "off", labelKey: "permissionAutomationOff" }'));
+    assert.ok(generalSource.includes('{ id: "auto-tools", labelKey: "permissionAutomationAutoTools" }'));
+    assert.ok(generalSource.includes('{ id: "unattended", labelKey: "permissionAutomationUnattended" }'));
+    assert.ok(generalSource.includes('window.settingsAPI.command("setPermissionAutomationMode"'));
+    assert.ok(generalSource.includes("confirmed: true"));
+    assert.ok(generalSource.includes("showPermissionAutomationConfirmModal"));
+    assert.ok(generalSource.includes("permissionAutomationUnattendedConfirmTitle"));
+    assert.ok(generalSource.includes("permissionAutomationAutoToolsWarningDismissed"));
+    assert.ok(generalSource.includes("permissionAutomationUnattendedWarningDismissed"));
+    assert.ok(generalSource.includes("permissionAutomationAutoToolsDontShowAgain"));
+    assert.ok(generalSource.includes("permissionAutomationUnattendedDontShowAgain"));
+    assert.ok(generalSource.includes("suppressFutureConfirmation: result.checkboxChecked === true"));
+    assert.ok(generalSource.includes("isPermissionAutomationWarningDismissed(mode)"));
+    assert.ok(i18nSource.includes("permissionAutomationAutoToolsDontShowAgain"));
+    assert.ok(i18nSource.includes("permissionAutomationUnattendedDontShowAgain"));
+    assert.ok(css.includes(".settings-confirm-checkbox"));
+    assert.ok(coreSource.includes("checkboxLabel = \"\""));
+    assert.ok(coreSource.includes('checkboxInput.type = "checkbox"'));
+    assert.ok(coreSource.includes("checkboxChecked: !!(checkboxInput && checkboxInput.checked)"));
+    assert.ok(css.includes("grid-template-columns: repeat(3, minmax(0, 1fr))"));
+    assert.ok(generalSource.includes('segmented.setAttribute("role", "group")'));
+    assert.ok(generalSource.includes('segmented.setAttribute("aria-label", t("rowPermissionAutomation"))'));
+    assert.ok(generalSource.includes('btn.setAttribute("aria-pressed", selected ? "true" : "false")'));
+    assert.ok(i18nSource.includes('rowPermissionAutomation: "Permission request handling"'));
+    assert.ok(i18nSource.includes('rowPermissionAutomation: "权限请求处理"'));
+    assert.ok(i18nSource.includes("permissionAutomationAutoToolsConfirmTitle"));
+    assert.ok(i18nSource.includes("CodeBuddy"));
+    assert.ok(!generalSource.includes("autoApproveAllPermissions"));
     // Lives in its own Permissions section, not under Bubbles.
     assert.ok(generalSource.includes('t("sectionPermissions")'));
     assert.ok(i18nSource.includes('sectionPermissions: "Permissions"'));
@@ -4234,6 +5187,57 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getSwitchMeta("quotaMergeSources").row.style.display, "");
     assert.strictEqual(summary.children.length, 1);
     assert.strictEqual(summary.children[0].textContent, "HUD: off");
+  });
+
+  it("reveals existing quota options immediately and absorbs async sources without a second expansion", async () => {
+    const sourceCount = createDeferred();
+    const animationFrames = [];
+    const flushAnimationFrame = () => {
+      const callbacks = animationFrames.splice(0);
+      for (const callback of callbacks) callback();
+    };
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ quotaMergeSources: false }),
+      settingsAPI: { getQuotaSourceCount: () => sourceCount.promise },
+      requestAnimationFrame: (callback) => {
+        animationFrames.push(callback);
+        return animationFrames.length;
+      },
+    });
+    harness.renderContent();
+    flushAnimationFrame();
+    const group = harness.content.querySelector(".quota-ring-collapsible");
+    const header = group.querySelector(".collapsible-group-header");
+    const body = group.querySelector(".collapsible-group-body");
+    const mergeRow = harness.getSwitchMeta("quotaMergeSources").row;
+    Object.defineProperty(body, "scrollHeight", {
+      configurable: true,
+      get: () => (mergeRow.style.display === "none" ? 80 : 120),
+    });
+    header.dispatchEvent({ type: "click" });
+    assert.equal(group.classList.contains("expanding"), false);
+    assert.equal(group.classList.contains("collapsed"), false);
+    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "none");
+    assert.equal(body.attributes["aria-hidden"], "false");
+    flushAnimationFrame();
+
+    sourceCount.resolve(2);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(group.classList.contains("expanding"), false);
+    assert.equal(group.classList.contains("resizing"), true);
+    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "80px");
+    assert.equal(mergeRow.style.display, "");
+
+    flushAnimationFrame();
+    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "120px");
+
+    body.dispatchEvent({
+      type: "transitionend",
+      propertyName: "max-height",
+      bubbles: false,
+    });
+    assert.equal(group.classList.contains("resizing"), false);
+    assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "none");
   });
 
   it("groups sound and volume into one collapsible control with in-place summary updates", () => {
@@ -4836,6 +5840,9 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("themeCustomize"));
     assert.ok(i18nSource.includes("themeBackToPets"));
     assert.ok(i18nSource.includes("themeAppearanceTitle"));
+    assert.ok(i18nSource.includes("rowPetAccessory"));
+    assert.ok(i18nSource.includes("rowHolidayAccessory"));
+    assert.ok(i18nSource.includes("accessoryCowboyHat"));
 
     const strings = loadSettingsI18nForTest();
     assert.strictEqual(strings.en.themeActionGroupCodexPets, "Codex Pets");
@@ -4847,7 +5854,13 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(strings.en.themeRefreshThemes, "Refresh themes");
     assert.strictEqual(strings.en.themeCapabilityFineMotion, "Fine motion");
     assert.strictEqual(strings.en.themeCustomize, "Customize");
+    assert.strictEqual(strings.en.rowPetAccessory, "Accessory");
+    assert.strictEqual(strings.en.rowHolidayAccessory, "Holiday auto outfit");
+    assert.strictEqual(strings.en.accessoryWizardHat, "Wizard hat");
     assert.strictEqual(strings.zh.themeCustomize, "装扮");
+    assert.strictEqual(strings.zh.rowPetAccessory, "配饰");
+    assert.strictEqual(strings.zh.rowHolidayAccessory, "节日自动换装");
+    assert.strictEqual(strings.zh.accessoryWizardHat, "巫师帽");
     assert.strictEqual(strings.zh.themeImportPetZip, "导入 Codex Pet 包（.zip）");
     assert.strictEqual(strings.zh.themeCapabilityFineMotion, "精细动效");
     assert.strictEqual(strings.zh.themeActionGroupCodexPets, "Codex Pets");
@@ -4912,6 +5925,56 @@ describe("settings renderer browser environment", () => {
     assert.deepStrictEqual(commands, []);
   });
 
+  it("renders Codex Pet atlas previews with V1, V2, and legacy grid ratios", () => {
+    const { content } = loadThemeTabForTest({
+      themes: [
+        {
+          id: "pet-v1",
+          name: "Pet V1",
+          managedCodexPet: true,
+          active: true,
+          codexPet: {
+            previewAtlasUrl: "file:///pets/v1/spritesheet.webp",
+            atlasColumns: 8,
+            atlasRows: 9,
+          },
+        },
+        {
+          id: "pet-v2",
+          name: "Pet V2",
+          managedCodexPet: true,
+          active: false,
+          codexPet: {
+            previewAtlasUrl: "file:///pets/v2/spritesheet.webp",
+            atlasColumns: 8,
+            atlasRows: 11,
+          },
+        },
+        {
+          id: "pet-legacy",
+          name: "Pet Legacy",
+          managedCodexPet: true,
+          active: false,
+          codexPet: {
+            previewAtlasUrl: "file:///pets/legacy/spritesheet.webp",
+          },
+        },
+      ],
+    });
+
+    const previews = content.querySelectorAll(".theme-thumb-atlas-frame");
+    assert.strictEqual(previews.length, 3);
+    const images = previews.map((preview) => preview.querySelector("img"));
+    assert.deepStrictEqual(
+      images.map((img) => [img.style.width, img.style.height]),
+      [
+        ["800%", "900%"],
+        ["800%", "1100%"],
+        ["800%", "900%"],
+      ]
+    );
+  });
+
   it("keeps customization visible on every capable pet while omitting Calico", () => {
     const supported = loadThemeTabForTest({
       themes: [
@@ -4927,14 +5990,14 @@ describe("settings renderer browser environment", () => {
           name: "Calico",
           builtin: true,
           active: false,
-          capabilities: { petTint: false },
+          capabilities: { petTint: false, accessories: false },
         },
         {
           id: "cloudling",
           name: "Cloudling",
           builtin: true,
           active: false,
-          capabilities: { petTint: true },
+          capabilities: { petTint: false, accessories: true },
         },
       ],
     });
@@ -4954,7 +6017,7 @@ describe("settings renderer browser environment", () => {
           name: "Calico",
           builtin: true,
           active: true,
-          capabilities: { petTint: false },
+          capabilities: { petTint: false, accessories: false },
         },
       ],
     });
@@ -4978,7 +6041,7 @@ describe("settings renderer browser environment", () => {
           name: "Cloudling",
           builtin: true,
           active: false,
-          capabilities: { petTint: true },
+          capabilities: { petTint: false, accessories: true },
         },
       ],
       settingsAPI: {
@@ -5006,8 +6069,113 @@ describe("settings renderer browser environment", () => {
 
     assert.ok(harness.content.querySelector(".theme-detail-hero"));
     assert.ok(collectText(harness.content.querySelector(".theme-detail-heading")).includes("Cloudling"));
+    assert.ok(harness.content.querySelector(".pet-accessory-select"));
+    assert.strictEqual(harness.content.querySelector(".pet-tint-select"), null);
     assert.strictEqual(harness.content.querySelector(".theme-grid"), null);
     assert.strictEqual(listThemesCalls, 0, "opening details should not depend on a second theme fetch");
+  });
+
+  it("does not open stale customization when the activated runtime disables it", async () => {
+    const harness = loadThemeTabForTest({
+      themes: [
+        {
+          id: "clawd",
+          name: "Clawd",
+          builtin: true,
+          active: true,
+          capabilities: { petTint: true, accessories: true },
+        },
+        {
+          id: "custom",
+          name: "Custom",
+          builtin: false,
+          active: false,
+          capabilities: { petTint: false, accessories: true },
+        },
+      ],
+      settingsAPI: {
+        command: () => Promise.resolve({
+          status: "ok",
+          customizationCapabilities: { petTint: false, accessories: false },
+        }),
+      },
+    });
+    const customButton = harness.content.querySelectorAll(".theme-customize-btn")[1];
+    assert.ok(customButton);
+
+    customButton.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(harness.content.querySelector(".theme-detail-hero"), null);
+    assert.strictEqual(harness.content.querySelector(".pet-accessory-select"), null);
+    const runtimeCustom = harness.core.runtime.themeList
+      .find((theme) => theme && theme.id === "custom");
+    assert.strictEqual(runtimeCustom.active, true);
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(runtimeCustom.capabilities)),
+      { petTint: false, accessories: false }
+    );
+    const activeCustomCard = harness.content.querySelectorAll(".theme-card")
+      .find((card) => {
+        const name = card.querySelector(".theme-card-name");
+        return name && collectText(name).includes("Custom");
+      });
+    assert.strictEqual(activeCustomCard.getAttribute("aria-checked"), "true");
+  });
+
+  it("updates customization capability after normal theme-card activation", async () => {
+    const harness = loadThemeTabForTest({
+      themes: [
+        {
+          id: "clawd",
+          name: "Clawd",
+          builtin: true,
+          active: true,
+          capabilities: { petTint: true, accessories: true },
+        },
+        {
+          id: "custom",
+          name: "Custom",
+          builtin: false,
+          active: false,
+          capabilities: { petTint: false, accessories: false },
+        },
+      ],
+      settingsAPI: {
+        command: () => Promise.resolve({
+          status: "ok",
+          customizationCapabilities: { petTint: false, accessories: true },
+        }),
+      },
+    });
+    const customCard = harness.content.querySelectorAll(".theme-card")
+      .find((card) => {
+        const name = card.querySelector(".theme-card-name");
+        return name && collectText(name).includes("Custom");
+      });
+    assert.ok(customCard);
+    assert.strictEqual(customCard.querySelector(".theme-customize-btn"), null);
+
+    customCard.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const activeCustom = harness.core.runtime.themeList
+      .find((theme) => theme && theme.id === "custom");
+    assert.strictEqual(activeCustom.active, true);
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(activeCustom.capabilities)),
+      { petTint: false, accessories: true }
+    );
+    const rerenderedCard = harness.content.querySelectorAll(".theme-card")
+      .find((card) => {
+        const name = card.querySelector(".theme-card-name");
+        return name && collectText(name).includes("Custom");
+      });
+    assert.ok(rerenderedCard.querySelector(".theme-customize-btn"));
   });
 
   it("keeps existing theme cards when a refresh returns an impossible empty list", async () => {
@@ -5046,11 +6214,13 @@ describe("settings renderer browser environment", () => {
           builtin: true,
           active: true,
           previewFileUrl: "file:///clawd.svg",
-          capabilities: { petTint: true },
+          capabilities: { petTint: true, accessories: true },
         },
       ],
       snapshot: {
         petTint: { clawd: "matcha", cloudling: "vaporwave" },
+        petAccessory: { clawd: "wizard-hat", cloudling: "halo" },
+        holidayAccessoryEnabled: {},
       },
       petTintOptions: [
         { id: "none", labelKey: "tintNone" },
@@ -5060,23 +6230,28 @@ describe("settings renderer browser environment", () => {
         { id: "matcha", labelKey: "tintMatcha" },
         { id: "mono", labelKey: "tintMono" },
       ],
+      petAccessoryOptions: [
+        { id: "none", labelKey: "accessoryNone" },
+        { id: "cowboy-hat", labelKey: "accessoryCowboyHat" },
+        { id: "wizard-hat", labelKey: "accessoryWizardHat" },
+        { id: "halo", labelKey: "accessoryHalo" },
+      ],
     });
 
     harness.content.querySelector(".theme-customize-btn").dispatchEvent({ type: "click" });
     assert.ok(harness.content.querySelector(".theme-detail-back"));
     assert.ok(harness.content.querySelector(".theme-detail-hero"));
-    assert.ok(harness.content.querySelector(".theme-customization-row"));
+    assert.strictEqual(harness.content.querySelectorAll(".theme-customization-row").length, 3);
     assert.strictEqual(harness.content.querySelector(".theme-grid"), null);
 
     const select = harness.content.querySelector(".pet-tint-select");
-    assert.strictEqual(select.value, "matcha");
+    assert.strictEqual(getSelectedPickerValue(select), "matcha");
     assert.deepStrictEqual(
-      select.children.map((option) => option.textContent),
+      select.querySelectorAll(".language-picker-option").map((option) => option.textContent),
       ["Default", "🌙 Midnight", "🥇 Gold", "🌸 Vaporwave", "🍵 Matcha", "⬜ Monochrome"]
     );
 
-    select.value = "gold";
-    select.dispatchEvent({ type: "change" });
+    choosePickerOption(select, "gold");
     assert.deepStrictEqual(
       JSON.parse(JSON.stringify(harness.updates)),
       [{
@@ -5084,13 +6259,62 @@ describe("settings renderer browser environment", () => {
         value: { clawd: "gold", cloudling: "vaporwave" },
       }]
     );
-    assert.strictEqual(select.disabled, true);
+    assert.strictEqual(select.querySelector(".language-picker-trigger").disabled, true);
     assert.strictEqual(select.classList.contains("pending"), true);
     await Promise.resolve();
     await Promise.resolve();
     await new Promise((resolve) => setImmediate(resolve));
-    assert.strictEqual(select.disabled, false);
+    assert.strictEqual(select.querySelector(".language-picker-trigger").disabled, false);
     assert.strictEqual(select.classList.contains("pending"), false);
+
+    const accessorySelect = harness.content.querySelector(".pet-accessory-select");
+    assert.strictEqual(getSelectedPickerValue(accessorySelect), "wizard-hat");
+    assert.deepStrictEqual(
+      accessorySelect.querySelectorAll(".language-picker-option").map((option) => option.textContent),
+      ["None", "Cowboy hat", "Wizard hat", "Halo"]
+    );
+    choosePickerOption(accessorySelect, "halo");
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(harness.updates[1])),
+      {
+        key: "petAccessory",
+        value: { clawd: "halo", cloudling: "halo" },
+      }
+    );
+    assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").disabled, true);
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").disabled, false);
+
+    const holidaySwitch = harness.content.querySelector(".holiday-accessory-switch");
+    assert.ok(holidaySwitch);
+    assert.strictEqual(holidaySwitch.getAttribute("role"), "switch");
+    assert.strictEqual(holidaySwitch.getAttribute("aria-checked"), "false");
+    holidaySwitch.dispatchEvent({ type: "click" });
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(harness.updates[2])),
+      {
+        key: "holidayAccessoryEnabled",
+        value: { clawd: true },
+      }
+    );
+    assert.strictEqual(holidaySwitch.getAttribute("aria-checked"), "true");
+    assert.strictEqual(holidaySwitch.classList.contains("pending"), true);
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(holidaySwitch.classList.contains("pending"), false);
+
+    holidaySwitch.dispatchEvent({ type: "keydown", key: "Enter", preventDefault() {} });
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(harness.updates[3])),
+      {
+        key: "holidayAccessoryEnabled",
+        value: {},
+      }
+    );
+    assert.strictEqual(holidaySwitch.getAttribute("aria-checked"), "false");
 
     harness.content.querySelector(".theme-detail-back").dispatchEvent({ type: "click" });
     assert.ok(harness.content.querySelector(".theme-grid"));
@@ -5277,7 +6501,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(agentsSource.includes('control.className = "custom-tool-wsl-scan"'));
     assert.ok(!agentsSource.includes('toolbar.className = "agent-scan-toolbar"'));
     assert.ok(css.includes(".custom-tool-result-status"));
-    assert.match(css, /\.agent-custom-tools-section \.custom-tool-discovery-row\s*\{[^}]*flex-direction:\s*column;/s);
+    assert.match(css, /\.agent-custom-tools-section \.custom-tool-discovery-row\s*\{[^}]*flex-direction:\s*row;/s);
+    assert.match(css, /@media \(max-width:\s*760px\)\s*\{[\s\S]*?\.agent-custom-tools-section \.custom-tool-discovery-row\s*\{[^}]*flex-direction:\s*column;/);
     // The primary picker must keep a higher-specificity selector than the
     // generic `.soft-btn.accent` tinted rule that follows it, or the cascade
     // falls back to source order and drops the solid accent fill.
@@ -6694,6 +7919,58 @@ describe("settings renderer browser environment", () => {
     );
   });
 
+  it("keeps the Animation shell mounted and restores scroll per subtab", () => {
+    const harness = loadAnimMapTabForTest({
+      snapshot: { theme: "clawd", themeOverrides: {} },
+    });
+    harness.core.runtime.animationOverridesData = {
+      theme: { id: "clawd", name: "Clawd" },
+      assets: [],
+      sections: [],
+      cards: [],
+      sounds: [],
+    };
+    harness.core.runtime.animOverridesSubtab = "map";
+    const render = () => {
+      harness.content.innerHTML = "";
+      harness.core.tabs.animOverrides.render(harness.content, harness.core);
+    };
+    harness.core.ops.installRenderHooks({ content: render, modal: () => {} });
+    render();
+
+    const [heading, subtitle, tablist, body] = harness.content.children;
+    assert.equal(heading.tagName, "H1");
+    assert.equal(subtitle.className, "subtitle");
+    assert.equal(tablist.className, "anim-override-subtabs");
+    assert.equal(body.className, "anim-override-subtab-body");
+
+    function switchTo(subtab) {
+      const button = harness.content.querySelectorAll("button")
+        .find((candidate) => candidate.dataset.animOverridesSubtab === subtab);
+      assert.ok(button, `${subtab} tab should render`);
+      button.dispatchEvent({ type: "click" });
+      assert.strictEqual(harness.content.children[0], heading);
+      assert.strictEqual(harness.content.children[1], subtitle);
+      assert.strictEqual(harness.content.children[2], tablist);
+      assert.strictEqual(harness.content.children[3], body);
+      const active = harness.content.querySelectorAll("button")
+        .find((candidate) => candidate.classList.contains("active"));
+      assert.equal(active.dataset.animOverridesSubtab, subtab);
+      assert.equal(active.focused, true);
+    }
+
+    switchTo("animations");
+    harness.content.scrollTop = 240;
+    switchTo("sounds");
+    assert.equal(harness.content.scrollTop, 0, "the short target subtab starts at its own scroll position");
+
+    // Chromium clamps a short page to zero. Returning to Animations must use
+    // its saved position rather than this clamped value from Sounds.
+    harness.content.scrollTop = 0;
+    switchTo("animations");
+    assert.equal(harness.content.scrollTop, 240);
+  });
+
   it("keeps Animation Map theme override broadcasts in place and syncs the mounted switch", () => {
     const harness = loadAnimMapTabForTest({
       snapshot: {
@@ -6791,15 +8068,31 @@ describe("settings renderer browser environment", () => {
     );
   });
 
-  it("drops the cached animation/sound card data when the map subtab patches a theme-override change", () => {
+  it("invalidates animation cards and refreshes theme capabilities after a map override patch", async () => {
+    let listThemesCalls = 0;
     const harness = loadAnimMapTabForTest({
       snapshot: {
         theme: "clawd",
         themeOverrides: { clawd: { states: { error: { disabled: false } } } },
       },
+      settingsAPI: {
+        listThemes: () => {
+          listThemesCalls++;
+          return Promise.resolve([{
+            id: "clawd",
+            active: true,
+            capabilities: { petTint: true, accessories: false },
+          }]);
+        },
+      },
     });
     // Simulate having opened the Animations subtab earlier: its card data is cached.
     harness.core.runtime.animationOverridesData = { theme: { id: "clawd" }, cards: [], sounds: [] };
+    harness.core.runtime.themeList = [{
+      id: "clawd",
+      active: true,
+      capabilities: { petTint: true, accessories: true },
+    }];
     // A mounted map switch so patchMapInPlace takes the in-place themeOverrides branch.
     const sw = new FakeElement("div");
     sw.className = "switch on";
@@ -6819,6 +8112,13 @@ describe("settings renderer browser environment", () => {
       harness.core.runtime.animationOverridesData,
       null,
       "a map-subtab theme-override patch must invalidate the cached cards so Animations/Sounds refetch"
+    );
+    assert.strictEqual(listThemesCalls, 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(
+      harness.core.runtime.themeList[0].capabilities.accessories,
+      false,
+      "the registered map-tab fast path must not leave Theme capability metadata stale"
     );
   });
 
@@ -8582,6 +9882,64 @@ describe("settings renderer browser environment", () => {
       "unrelated themeOverrides broadcasts should fall through to a full content refresh"
     );
     assert.strictEqual(fetchCount, 1);
+  });
+
+  it("refreshes cached theme capabilities after Animation Overrides changes", async () => {
+    let themeFetches = 0;
+    const core = loadSettingsCoreForTest({
+      listThemes: () => {
+        themeFetches++;
+        return Promise.resolve([{
+          id: "custom",
+          name: "Custom",
+          active: true,
+          capabilities: { petTint: false, accessories: false },
+        }]);
+      },
+      getAnimationOverridesData: () => Promise.resolve({
+        theme: { id: "custom", name: "Custom" },
+        assets: [],
+        sections: [],
+        cards: [],
+        sounds: [],
+      }),
+    });
+    core.state.activeTab = "animOverrides";
+    core.state.snapshot = { theme: "custom", themeOverrides: {} };
+    core.runtime.themeList = [{
+      id: "custom",
+      name: "Custom",
+      active: true,
+      capabilities: { petTint: false, accessories: true },
+    }];
+    core.ops.installRenderHooks({
+      sidebar: () => {},
+      content: () => {},
+      modal: () => {},
+    });
+
+    const nextSnapshot = {
+      theme: "custom",
+      themeOverrides: {
+        custom: {
+          states: {
+            idle: { sourceThemeId: "custom", file: "replacement.svg" },
+          },
+        },
+      },
+    };
+    core.ops.applyChanges({
+      changes: { themeOverrides: nextSnapshot.themeOverrides },
+      snapshot: nextSnapshot,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(themeFetches, 1);
+    assert.strictEqual(
+      core.runtime.themeList[0].capabilities.accessories,
+      false,
+      "returning to Theme must not reuse capability metadata from before the override"
+    );
   });
 
   it("routes matching Animation Overrides timing broadcasts through applyChanges in place", () => {

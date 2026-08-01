@@ -42,6 +42,7 @@ const ELICITATION_OTHER_KEY = "__other__";
 
 function setSessionTag(data) {
   const parts = [];
+  if (data.isCodexSubagent) parts.push(data.codexAgentNickname || bubbleText(data.lang, "agent"));
   if (data.sessionFolder) parts.push(data.sessionFolder);
   if (data.sessionShortId) parts.push("#" + data.sessionShortId);
   if (parts.length) {
@@ -62,7 +63,9 @@ const BUBBLE_STRINGS = {
     allowInDir: "Allow {tool} in {dir}/",
     alwaysAllowRule: "Always allow `{rule}`",
     alwaysAllow: "Always allow",
+    sessionTrust: "Don’t ask again in this session",
     permissionRequest: "Permission Request",
+    agent: "Agent",
     allow: "Allow",
     deny: "Deny",
     alwaysAllowBlanket: "Always Allow (blanket)",
@@ -103,7 +106,9 @@ const BUBBLE_STRINGS = {
     allowInDir: "\u5141\u8BB8 {tool} \u5728 {dir}/",
     alwaysAllowRule: "\u59CB\u7EC8\u5141\u8BB8 `{rule}`",
     alwaysAllow: "\u59CB\u7EC8\u5141\u8BB8",
+    sessionTrust: "\u672C\u4F1A\u8BDD\u4E0D\u518D\u8BE2\u95EE",
     permissionRequest: "\u6743\u9650\u8BF7\u6C42",
+    agent: "\u52A9\u624B",
     allow: "\u6279\u51C6",
     deny: "\u62D2\u7EDD",
     alwaysAllowBlanket: "\u59CB\u7EC8\u5141\u8BB8\uFF08\u901A\u914D\uFF09",
@@ -144,7 +149,9 @@ const BUBBLE_STRINGS = {
     allowInDir: "允許 {tool} 在 {dir}/",
     alwaysAllowRule: "一律允許 `{rule}`",
     alwaysAllow: "一律允許",
+    sessionTrust: "本工作階段不再詢問",
     permissionRequest: "權限請求",
+    agent: "助手",
     allow: "允許",
     deny: "拒絕",
     alwaysAllowBlanket: "一律允許（全部）",
@@ -185,7 +192,9 @@ const BUBBLE_STRINGS = {
     allowInDir: "{dir}/\uC5D0\uC11C {tool} \uD5C8\uC6A9",
     alwaysAllowRule: "\uD56D\uC0C1 \uD5C8\uC6A9 `{rule}`",
     alwaysAllow: "\uD56D\uC0C1 \uD5C8\uC6A9",
+    sessionTrust: "\uC774 \uC138\uC158\uC5D0\uC11C\uB294 \uB2E4\uC2DC \uBB3B\uC9C0 \uC54A\uAE30",
     permissionRequest: "\uAD8C\uD55C \uC694\uCCAD",
+    agent: "\uC5D0\uC774\uC804\uD2B8",
     allow: "\uD5C8\uC6A9",
     deny: "\uAC70\uBD80",
     alwaysAllowBlanket: "\uD56D\uC0C1 \uD5C8\uC6A9 (\uC804\uCCB4)",
@@ -226,7 +235,9 @@ const BUBBLE_STRINGS = {
     allowInDir: "{dir}/ で {tool} を許可",
     alwaysAllowRule: "`{rule}` を常に許可",
     alwaysAllow: "常に許可",
+    sessionTrust: "このセッションでは今後確認しない",
     permissionRequest: "権限リクエスト",
+    agent: "エージェント",
     allow: "許可",
     deny: "拒否",
     alwaysAllowBlanket: "常に許可（包括）",
@@ -485,11 +496,11 @@ function collectElicitationAnswers() {
 
   for (let i = 0; i < elicitationQuestions.length; i++) {
     const question = elicitationQuestions[i];
-    if (!question || typeof question.question !== "string" || !question.question) return null;
+    if (!question || String(question.id) !== String(i)) return null;
 
     const answerText = getElicitationAnswerText(i);
     if (!answerText) return null;
-    answers[question.question] = answerText;
+    answers[String(i)] = answerText;
   }
 
   return answers;
@@ -862,8 +873,31 @@ function renderCodexUserInputPreview(data) {
 function show(data) {
   resetBubbleContent();
   currentLang = data.lang || "en";
-  elicitationMode = data.isElicitation || false;
+  const interaction = data.interaction && typeof data.interaction === "object"
+    ? data.interaction
+    : null;
+  const interactionCapabilities = interaction && interaction.capabilities
+    ? interaction.capabilities
+    : {};
+  const interactionIntent = interaction ? interaction.intent : "unknown";
+  elicitationMode = interactionIntent === "human-question"
+    && interactionCapabilities.answerQuestions === true;
   setSessionTag(data);
+
+  if (interactionIntent === "human-question" && !elicitationMode) {
+    // The adapter identified a real user decision but cannot safely encode an
+    // answer. Do not fabricate Claude updatedInput or show allow/deny controls;
+    // hand the request back to the agent's native UI.
+    headerTitle.textContent = bubbleText(data.lang, "needsInput");
+    toolPill.style.display = "none";
+    commandBlock.textContent = formatDetail(data.toolName, data.toolInput);
+    btnAllow.style.display = "none";
+    btnDeny.style.display = "none";
+    suggestionsContainer.innerHTML = "";
+    renderRegularTerminalFallback(data.lang);
+    revealCard();
+    return;
+  }
 
   // opencode-family branch — Phase 2. Payload carries neutral family* fields
   // (familyAgentId presence selects this branch; the renderer has no registry
@@ -1015,7 +1049,8 @@ function show(data) {
     return;
   }
 
-  const isPlanReview = data.toolName === "ExitPlanMode";
+  const isPlanReview = interactionIntent === "plan-review";
+  const canPlanFeedback = isPlanReview && interactionCapabilities.planFeedback === true;
   // Issue #445: an MCP tool call (e.g. Codex + Vercel MCP) is not an OS
   // permission. For Codex MCP approvals, relabel the title and show a friendly
   // "server · tool" pill so "MCP__CODEX_APPS__VERCEL__LIST_PROJECTS" reads as
@@ -1029,7 +1064,7 @@ function show(data) {
   else if (mcp && data.isCodex) titleKey = "codexToolApproval";
   headerTitle.textContent = bubbleText(data.lang, titleKey);
   toolPill.style.display = isPlanReview ? "none" : "";
-  btnDeny.style.display = isPlanReview ? "none" : "";
+  btnDeny.style.display = canPlanFeedback ? "none" : "";
 
   // Tool pill — friendly "server · tool" for MCP, raw tool name otherwise
   toolPillText.textContent = mcp ? mcp.display : (data.toolName || "Unknown");
@@ -1059,21 +1094,18 @@ function show(data) {
   // Dynamic suggestion buttons
   suggestionsContainer.innerHTML = "";
   if (isPlanReview) {
-    // "Tell Claude what to change" button — opens feedback textarea
-    const tellBtn = document.createElement("button");
-    tellBtn.className = "btn-suggestion";
-    tellBtn.textContent = bubbleText(data.lang, "tellClaudeWhatToChange");
-    tellBtn.addEventListener("click", () => enterPlanFeedbackMode(data.lang));
-    suggestionsContainer.appendChild(tellBtn);
-    // "Go to Terminal" button — deny + focus terminal
-    const btn = document.createElement("button");
-    btn.className = "btn-suggestion";
-    btn.textContent = bubbleText(data.lang, "goToTerminal");
-    btn.addEventListener("click", () => {
-      disableAll();
-      window.bubbleAPI.decide("deny-and-focus");
-    });
-    suggestionsContainer.appendChild(btn);
+    if (canPlanFeedback) {
+      // Only adapters that explicitly support feedback get the Claude-style
+      // textarea. A matching tool name alone is never sufficient.
+      const tellBtn = document.createElement("button");
+      tellBtn.className = "btn-suggestion";
+      tellBtn.textContent = bubbleText(data.lang, "tellClaudeWhatToChange");
+      tellBtn.addEventListener("click", () => enterPlanFeedbackMode(data.lang));
+      suggestionsContainer.appendChild(tellBtn);
+    }
+    if (interactionCapabilities.nativeFallback === true) {
+      renderRegularTerminalFallback(data.lang);
+    }
   } else {
     if (Array.isArray(data.suggestions)) {
       const seenLabels = new Set();
@@ -1090,6 +1122,23 @@ function show(data) {
         });
         suggestionsContainer.appendChild(btn);
       });
+    }
+    if (data.canOfferSessionTrust === true) {
+      const trustBtn = document.createElement("button");
+      trustBtn.className = "btn-suggestion";
+      trustBtn.textContent = bubbleText(data.lang, "sessionTrust");
+      trustBtn.addEventListener("click", () => {
+        disableAll();
+        window.bubbleAPI.decide("session-trust");
+      });
+      suggestionsContainer.appendChild(trustBtn);
+    }
+    if (typeof data.sessionTrustError === "string" && data.sessionTrustError) {
+      const error = document.createElement("div");
+      error.className = "session-trust-error";
+      error.textContent = data.sessionTrustError;
+      error.setAttribute("role", "alert");
+      suggestionsContainer.appendChild(error);
     }
     // Hermes permission cards get no terminal fallback: the protocol has no
     // native approval prompt to hand back to, so no-decision becomes a

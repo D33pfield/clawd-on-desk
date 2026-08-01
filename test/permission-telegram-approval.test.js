@@ -4,7 +4,8 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 
 const initPermission = require("../src/permission");
-const { normalizeElicitationToolInput } = require("../src/server-permission-utils");
+const { prepareElicitationToolInput } = require("../src/server-permission-utils");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 
 function flush() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -77,7 +78,7 @@ function makeCtx(overrides = {}) {
 }
 
 function makePermEntry(overrides = {}) {
-  return {
+  const entry = {
     res: createMockResponse(),
     abortHandler: () => {},
     suggestions: [],
@@ -97,6 +98,12 @@ function makePermEntry(overrides = {}) {
     agentId: "claude-code",
     ...overrides,
   };
+  entry.interaction = entry.interaction || classifyPermissionInteraction({
+    agentId: entry.agentId,
+    eventKind: entry.isCodexNotify || entry.isKimiNotify ? "notification" : "permission",
+    toolName: entry.toolName,
+  });
+  return entry;
 }
 
 describe("permission telegram remote approval", () => {
@@ -335,7 +342,7 @@ describe("permission telegram remote approval", () => {
     };
     const perm = initPermission(makeCtx({ getTelegramApprovalClient: () => client }));
     const entries = [
-      makePermEntry({ isElicitation: true }),
+      makePermEntry({ isElicitation: true, toolName: "AskUserQuestion" }),
       makePermEntry({ isCodexNotify: true }),
       makePermEntry({ isKimiNotify: true }),
       makePermEntry({ agentId: "opencode" }),
@@ -427,21 +434,23 @@ describe("permission telegram remote approval", () => {
     // display. Index keys must survive either transformation.
     const rawLongQuestion = `请从以下部署方案中选择一个：${"细".repeat(300)}`;
     const rawCrlfQuestion = "第一行  \r\n第二行  ";
-    const normalizedInput = normalizeElicitationToolInput({
+    const rawInput = {
       questions: [
         { question: rawLongQuestion, options: [{ label: "方案A" }] },
         { question: rawCrlfQuestion, options: [{ label: "继续" }] },
       ],
-    });
-    const longQuestion = normalizedInput.questions[0].question;
-    const crlfQuestion = normalizedInput.questions[1].question;
-    assert.notEqual(longQuestion, rawLongQuestion);
-    assert.equal(longQuestion.length, 240);
-    assert.equal(crlfQuestion, "第一行  \r\n第二行");
+    };
+    const prepared = prepareElicitationToolInput(rawInput);
+    const displayInput = prepared.displayInput;
+    assert.equal(prepared.canAnswer, true);
+    assert.notEqual(displayInput.questions[0].question, rawLongQuestion);
+    assert.equal(displayInput.questions[0].question.length, 240);
+    assert.equal(displayInput.questions[1].question, "第一行  \r\n第二行");
     const entry = makePermEntry({
       isElicitation: true,
       toolName: "AskUserQuestion",
-      toolInput: normalizedInput,
+      toolInput: displayInput,
+      elicitationWireInput: prepared.wireInput,
     });
     perm.pendingPermissions.push(entry);
 
@@ -460,10 +469,10 @@ describe("permission telegram remote approval", () => {
     assert.deepEqual(body.hookSpecificOutput.decision, {
       behavior: "allow",
       updatedInput: {
-        questions: entry.toolInput.questions,
+        questions: rawInput.questions,
         answers: {
-          [longQuestion]: "方案A",
-          [crlfQuestion]: "继续",
+          [rawLongQuestion]: "方案A",
+          [rawCrlfQuestion]: "继续",
         },
       },
     });
@@ -487,6 +496,7 @@ describe("permission telegram remote approval", () => {
       isElicitation: true,
       isHermes: true,
       agentId: "hermes",
+      toolName: "clarify",
       toolInput: { questions: [{ question: "Which environment?" }] },
     });
     perm.pendingPermissions.push(entry);
@@ -683,6 +693,40 @@ describe("permission telegram remote approval", () => {
     assert.deepEqual(requests, []);
   });
 
+  it("keeps remote approval actionable for audited interactive Codex Agent threads", () => {
+    const requests = [];
+    const client = {
+      isEnabled: () => true,
+      requestApproval: (payload) => {
+        requests.push(payload);
+        return new Promise(() => {});
+      },
+    };
+    const ctx = makeCtx({
+      getTelegramApprovalClient: () => client,
+      sessions: new Map([["sid", { cwd: "D:\\work\\project-alpha", headless: true }]]),
+    });
+    const perm = initPermission(ctx);
+    const entry = makePermEntry({
+      agentId: "codex",
+      isCodex: true,
+      codexSessionRole: "subagent",
+      codexInteractiveSubagent: true,
+      subagentId: "sid",
+      headless: false,
+    });
+    perm.pendingPermissions.push(entry);
+
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    assert.equal(requests.length, 1);
+
+    entry.headless = true;
+    const explicitHeadless = makePermEntry({ ...entry, _remoteApprovalStarted: false });
+    perm.pendingPermissions.push(explicitHeadless);
+    assert.equal(perm.maybeStartRemoteApproval(explicitHeadless), false);
+    assert.equal(requests.length, 1);
+  });
+
   it("aborts the remote request when the user picks deny-and-focus (go to terminal)", () => {
     let signal;
     const client = {
@@ -727,5 +771,138 @@ describe("permission telegram remote approval", () => {
 
     assert.equal(perm.pendingPermissions.indexOf(entry), -1);
     assert.equal(entry.res.destroyed, true);
+  });
+
+  it("routes a remote session-trust decision to the main coordinator with an opaque client handle", async () => {
+    const cardHandle = Object.freeze({});
+    const calls = [];
+    const client = {
+      isEnabled: () => true,
+      requestApproval: (payload) => {
+        calls.push(["payload", payload]);
+        return Promise.resolve({ action: "session-trust", cardHandle });
+      },
+    };
+    const perm = initPermission(makeCtx({
+      getRemoteApprovalClients: () => [{ name: "telegram", client }],
+      canOfferRemoteSessionTrust: () => true,
+      requestRemoteSessionTrust: (entry, remote) => {
+        calls.push(["coordinator", entry, remote]);
+        return Promise.resolve({ status: "applied" });
+      },
+    }));
+    const entry = makePermEntry();
+    perm.pendingPermissions.push(entry);
+
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    await flush();
+
+    assert.equal(calls[0][1].canOfferSessionTrust, true);
+    assert.equal(calls[1][0], "coordinator");
+    assert.equal(calls[1][1], entry);
+    assert.equal(calls[1][2].clientName, "telegram");
+    assert.equal(calls[1][2].client, client);
+    assert.equal(calls[1][2].cardHandle, cardHandle);
+    assert.equal(perm.pendingPermissions.includes(entry), true,
+      "only the coordinator may commit and resolve after the preparing edit");
+  });
+
+  it("does not advertise session trust when the aggregate remote capability gate is closed", async () => {
+    const payloads = [];
+    const client = {
+      isEnabled: () => true,
+      requestApproval: (payload) => {
+        payloads.push(payload);
+        return Promise.resolve(null);
+      },
+    };
+    const perm = initPermission(makeCtx({
+      getRemoteApprovalClients: () => [{ name: "feishu", client }],
+      canOfferRemoteSessionTrust: () => false,
+    }));
+    const entry = makePermEntry();
+    perm.pendingPermissions.push(entry);
+
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    await flush();
+
+    assert.equal(payloads.length, 1);
+    assert.equal(payloads[0].canOfferSessionTrust, false);
+  });
+
+  it("falls back instead of hanging when remote-only session trust cannot commit", async () => {
+    const cardHandle = Object.freeze({});
+    const discarded = [];
+    const client = {
+      isEnabled: () => true,
+      requestApproval: () => Promise.resolve({ action: "session-trust", cardHandle }),
+      discardSessionTrustCardHandle: (handle, options) => {
+        discarded.push([handle, options]);
+        return true;
+      },
+    };
+    const perm = initPermission(makeCtx({
+      getRemoteApprovalClients: () => [{ name: "telegram", client }],
+      canOfferRemoteSessionTrust: () => true,
+      requestRemoteSessionTrust: () => Promise.resolve({ status: "full" }),
+    }));
+    const entry = makePermEntry({ bubble: null, remoteOnly: true });
+    perm.pendingPermissions.push(entry);
+
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    await flush();
+    await flush();
+
+    assert.equal(perm.pendingPermissions.includes(entry), false);
+    assert.equal(entry.res.destroyed, true);
+    assert.equal(entry.res.captured.body, "");
+    assert.deepStrictEqual(discarded, [[cardHandle, {
+      reason: "session-trust-unavailable",
+    }]]);
+  });
+
+  it("releases an unconsumed session-trust card handle when another source wins first", async () => {
+    const cardHandle = Object.freeze({});
+    const discarded = [];
+    const client = {
+      isEnabled: () => true,
+      requestApproval: () => Promise.resolve({ action: "session-trust", cardHandle }),
+      discardSessionTrustCardHandle: (handle, options) => {
+        discarded.push([handle, options]);
+        return true;
+      },
+    };
+    const perm = initPermission(makeCtx({
+      getRemoteApprovalClients: () => [{ name: "feishu", client }],
+      canOfferRemoteSessionTrust: () => true,
+      requestRemoteSessionTrust: () => {
+        throw new Error("the coordinator must not run after the entry is resolved");
+      },
+    }));
+    const entry = makePermEntry();
+    perm.pendingPermissions.push(entry);
+
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    perm.resolvePermissionEntry(entry, "deny");
+    await flush();
+
+    assert.deepStrictEqual(discarded, [[cardHandle, {
+      reason: "permission-resolved",
+    }]]);
+  });
+
+  it("cancels an entry-local remote candidate before ordinary resolution aborts siblings", () => {
+    const calls = [];
+    const perm = initPermission(makeCtx({
+      cancelSessionTrustCandidate: (entry, options) => calls.push([entry, options]),
+    }));
+    const entry = makePermEntry({ sessionTrustCandidate: { grantId: "candidate" } });
+    perm.pendingPermissions.push(entry);
+
+    perm.resolvePermissionEntry(entry, "deny");
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], entry);
+    assert.equal(calls[0][1].reason, "permission-resolved");
   });
 });

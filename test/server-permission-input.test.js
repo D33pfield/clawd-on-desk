@@ -5,6 +5,7 @@ const {
   truncateDeep,
   normalizePermissionSuggestions,
   normalizeElicitationToolInput,
+  prepareElicitationToolInput,
   normalizeHookToolUseId,
   normalizeCodexPermissionToolInput,
   normalizeToolMatchValue,
@@ -43,8 +44,8 @@ describe("permission input normalization", () => {
     ]);
   });
 
-  it("caps elicitation questions/options and truncates displayed copy", () => {
-    const normalized = normalizeElicitationToolInput({
+  it("refuses oversized elicitation instead of showing a partial choice set", () => {
+    const prepared = prepareElicitationToolInput({
       mode: "prompt",
       questions: Array.from({ length: 7 }, (_, questionIndex) => ({
         header: `Header ${questionIndex} ${"h".repeat(80)}`,
@@ -56,12 +57,74 @@ describe("permission input normalization", () => {
       })),
     });
 
-    assert.strictEqual(normalized.questions.length, 5);
-    assert.strictEqual(normalized.questions[0].options.length, 5);
-    assert.strictEqual(normalized.questions[0].header.endsWith("…"), true);
-    assert.strictEqual(normalized.questions[0].question.endsWith("…"), true);
-    assert.strictEqual(normalized.questions[0].options[0].label.length, 80);
-    assert.strictEqual(normalized.questions[0].options[0].description.length, 160);
+    assert.strictEqual(prepared.canAnswer, false);
+    assert.strictEqual(prepared.reason, "too-many-questions");
+    assert.deepStrictEqual(prepared.displayInput, { questions: [] });
+  });
+
+  it("keeps exact wire answer keys separate from bounded display copy", () => {
+    const rawQuestion = `  ${"q".repeat(260)}  `;
+    const rawInput = {
+      mode: "prompt",
+      questions: [{
+        header: `Header ${"h".repeat(80)}`,
+        question: rawQuestion,
+        options: [{
+          label: "Option A",
+          description: `Description ${"d".repeat(200)}`,
+        }],
+      }],
+    };
+    const prepared = prepareElicitationToolInput(rawInput);
+
+    assert.strictEqual(prepared.canAnswer, true);
+    assert.strictEqual(prepared.wireInput, rawInput);
+    assert.strictEqual(prepared.displayInput.questions[0].id, "0");
+    assert.strictEqual(prepared.displayInput.questions[0].question.length, 240);
+    assert.strictEqual(prepared.displayInput.questions[0].question.endsWith("…"), true);
+    assert.notStrictEqual(prepared.displayInput.questions[0].question, rawQuestion);
+    assert.strictEqual(prepared.displayInput.questions[0].options[0].label, "Option A");
+    assert.strictEqual(prepared.displayInput.questions[0].options[0].description.length, 160);
+    assert.deepStrictEqual(normalizeElicitationToolInput(rawInput), prepared.displayInput);
+  });
+
+  it("refuses duplicate raw answer keys because indexed answers cannot map unambiguously", () => {
+    const prepared = prepareElicitationToolInput({
+      questions: [
+        { question: "same", options: [] },
+        { question: "same", options: [] },
+      ],
+    });
+
+    assert.strictEqual(prepared.canAnswer, false);
+    assert.strictEqual(prepared.reason, "duplicate-answer-key");
+  });
+
+  it("falls back when option display normalization would corrupt the answer value", () => {
+    for (const [label, reason] of [
+      ["", "missing-option-label"],
+      [" padded ", "unsafe-option-label-preview"],
+      ["x".repeat(81), "unsafe-option-label-preview"],
+    ]) {
+      const prepared = prepareElicitationToolInput({
+        questions: [{ question: "Pick", options: [{ label }] }],
+      });
+      assert.strictEqual(prepared.canAnswer, false, label);
+      assert.strictEqual(prepared.reason, reason, label);
+    }
+  });
+
+  it("falls back when distinct wire questions collapse to the same display text", () => {
+    const common = "q".repeat(240);
+    const prepared = prepareElicitationToolInput({
+      questions: [
+        { question: `${common}a`, options: [] },
+        { question: `${common}b`, options: [] },
+      ],
+    });
+
+    assert.strictEqual(prepared.canAnswer, false);
+    assert.strictEqual(prepared.reason, "duplicate-display-question");
   });
 
   it("normalizes hook tool_use_id values", () => {

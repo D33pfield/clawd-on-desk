@@ -89,6 +89,48 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.petTint(null, deps).status, "error");
   });
 
+  it("petAccessory accepts only safe per-theme catalog selections", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.petAccessory({}, deps).status, "ok");
+    assert.strictEqual(
+      updateRegistry.petAccessory({ clawd: "wizard-hat", cloudling: "halo" }, deps).status,
+      "ok"
+    );
+    assert.strictEqual(updateRegistry.petAccessory({ clawd: "none" }, deps).status, "error");
+    assert.strictEqual(updateRegistry.petAccessory({ clawd: "seasonal" }, deps).status, "error");
+    assert.strictEqual(
+      updateRegistry.petAccessory({ "../unsafe": "halo" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(
+      updateRegistry.petAccessory({ clawd: "file:///secret.svg" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(updateRegistry.petAccessory("wizard-hat", deps).status, "error");
+    assert.strictEqual(updateRegistry.petAccessory([], deps).status, "error");
+    assert.strictEqual(updateRegistry.petAccessory(null, deps).status, "error");
+  });
+
+  it("holidayAccessoryEnabled accepts only canonical per-theme true entries", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled({}, deps).status, "ok");
+    assert.strictEqual(
+      updateRegistry.holidayAccessoryEnabled({ clawd: true, cloudling: true }, deps).status,
+      "ok"
+    );
+    assert.strictEqual(
+      updateRegistry.holidayAccessoryEnabled({ clawd: false }, deps).status,
+      "error"
+    );
+    assert.strictEqual(
+      updateRegistry.holidayAccessoryEnabled({ "../unsafe": true }, deps).status,
+      "error"
+    );
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled(true, deps).status, "error");
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled([], deps).status, "error");
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled(null, deps).status, "error");
+  });
+
   it("x/y/preMiniX/preMiniY require finite numbers", () => {
     const deps = { snapshot: baseSnapshot };
     assert.strictEqual(updateRegistry.x(0, deps).status, "ok");
@@ -720,34 +762,90 @@ describe("bubble policy commands", () => {
   });
 });
 
-describe("setAutoApproveAll danger gate", () => {
-  it("refuses to enable without confirmed:true (dialog is a real boundary)", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: true }, {});
+describe("setPermissionAutomationMode danger gate", () => {
+  it("refuses auto-tools without confirmed:true (dialog is a real boundary)", async () => {
+    const r = await commandRegistry.setPermissionAutomationMode({ mode: "auto-tools" }, {});
     assert.strictEqual(r.status, "error");
-    assert.match(r.message, /confirmed:true/);
+    assert.match(r.message, /current or remembered confirmation/);
   });
 
-  it("refuses to enable when confirmed is falsy", async () => {
+  it("refuses either automatic mode when confirmed is falsy", async () => {
     for (const bad of [false, "true", 1, null, undefined]) {
-      const r = await commandRegistry.setAutoApproveAll({ enabled: true, confirmed: bad }, {});
-      assert.strictEqual(r.status, "error", `confirmed=${JSON.stringify(bad)} must be rejected`);
+      for (const mode of ["auto-tools", "unattended"]) {
+        const r = await commandRegistry.setPermissionAutomationMode({ mode, confirmed: bad }, {});
+        assert.strictEqual(r.status, "error", `${mode} confirmed=${JSON.stringify(bad)} must be rejected`);
+      }
     }
   });
 
-  it("enables only with explicit confirmed:true", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: true, confirmed: true }, {});
-    assert.strictEqual(r.status, "ok");
-    assert.deepStrictEqual(r.commit, { autoApproveAllPermissions: true });
+  it("enables both automatic modes only with explicit confirmed:true", async () => {
+    for (const mode of ["auto-tools", "unattended"]) {
+      const r = await commandRegistry.setPermissionAutomationMode({ mode, confirmed: true }, {});
+      assert.strictEqual(r.status, "ok");
+      assert.deepStrictEqual(r.commit, { permissionAutomationMode: mode });
+    }
   });
 
-  it("disables immediately with no confirmation required", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: false }, {});
-    assert.strictEqual(r.status, "ok");
-    assert.deepStrictEqual(r.commit, { autoApproveAllPermissions: false });
+  it("accepts a remembered confirmation for only its matching mode", async () => {
+    const autoTools = await commandRegistry.setPermissionAutomationMode(
+      { mode: "auto-tools", confirmed: false },
+      { snapshot: { permissionAutomationAutoToolsWarningDismissed: true } }
+    );
+    assert.deepStrictEqual(autoTools.commit, { permissionAutomationMode: "auto-tools" });
+
+    const unattended = await commandRegistry.setPermissionAutomationMode(
+      { mode: "unattended", confirmed: false },
+      { snapshot: { permissionAutomationAutoToolsWarningDismissed: true } }
+    );
+    assert.strictEqual(unattended.status, "error");
   });
 
-  it("rejects a non-boolean enabled", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: "yes", confirmed: true }, {});
+  it("persists don't-show-again atomically only with a current confirmation", async () => {
+    const r = await commandRegistry.setPermissionAutomationMode({
+      mode: "auto-tools",
+      confirmed: true,
+      suppressFutureConfirmation: true,
+    }, {});
+    assert.deepStrictEqual(r.commit, {
+      permissionAutomationMode: "auto-tools",
+      permissionAutomationAutoToolsWarningDismissed: true,
+    });
+
+    const rejected = await commandRegistry.setPermissionAutomationMode({
+      mode: "auto-tools",
+      confirmed: false,
+      suppressFutureConfirmation: true,
+    }, { snapshot: { permissionAutomationAutoToolsWarningDismissed: true } });
+    assert.strictEqual(rejected.status, "error");
+    assert.match(rejected.message, /requires confirmed:true/);
+  });
+
+  it("rejects malformed or off-mode warning suppression", async () => {
+    assert.strictEqual(
+      (await commandRegistry.setPermissionAutomationMode({
+        mode: "auto-tools",
+        confirmed: true,
+        suppressFutureConfirmation: "yes",
+      }, {})).status,
+      "error"
+    );
+    assert.strictEqual(
+      (await commandRegistry.setPermissionAutomationMode({
+        mode: "off",
+        suppressFutureConfirmation: true,
+      }, {})).status,
+      "error"
+    );
+  });
+
+  it("switches off immediately with no confirmation required", async () => {
+    const r = await commandRegistry.setPermissionAutomationMode({ mode: "off" }, {});
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit, { permissionAutomationMode: "off" });
+  });
+
+  it("rejects an unknown mode", async () => {
+    const r = await commandRegistry.setPermissionAutomationMode({ mode: "yolo", confirmed: true }, {});
     assert.strictEqual(r.status, "error");
   });
 });
@@ -979,6 +1077,7 @@ describe("hook commands", () => {
       stopMonitorForAgent: (agentId) => calls.push(["stopMonitor", agentId]),
       clearSessionsByAgent: (agentId) => calls.push(["clearSessions", agentId]),
       dismissPermissionsByAgent: (agentId) => calls.push(["dismissPermissions", agentId]),
+      writeCodexAutoStartGate: () => true,
       cleanupIntegrations: (options) => {
         calls.push(["cleanup", options.source]);
         return {
@@ -1631,6 +1730,22 @@ describe("removeTheme command", () => {
     assert.deepStrictEqual(r.commit.idleVisual, { clawd: "clawd-idle-reading.svg" });
   });
 
+  it("strips pet tint, accessory, and holiday opt-in entries on success when they exist", async () => {
+    const snapshotWithCustomization = {
+      ...baseSnapshot,
+      petTint: { cat: "matcha", clawd: "gold" },
+      petAccessory: { cat: "halo", clawd: "wizard-hat" },
+      holidayAccessoryEnabled: { cat: true, clawd: true },
+    };
+    const { deps } = makeDeps({ snapshot: snapshotWithCustomization });
+    const r = await commandRegistry.removeTheme("cat", deps);
+    assert.strictEqual(r.status, "ok");
+    assert.ok(r.commit, "commit field expected");
+    assert.deepStrictEqual(r.commit.petTint, { clawd: "gold" });
+    assert.deepStrictEqual(r.commit.petAccessory, { clawd: "wizard-hat" });
+    assert.deepStrictEqual(r.commit.holidayAccessoryEnabled, { clawd: true });
+  });
+
   it("surfaces removeThemeDir throws as error status", async () => {
     const { deps } = makeDeps({
       removeThemeDir: async () => { throw new Error("EBUSY"); },
@@ -1661,6 +1776,10 @@ describe("setThemeSelection command", () => {
         const resolved = variantId === "dead" ? "default" : variantId;
         return { themeId, variantId: resolved };
       },
+      getActiveTheme: () => ({
+        _id: calls.activateTheme.at(-1)?.themeId || "clawd",
+        _capabilities: { petTint: true, accessories: true },
+      }),
       ...overrides,
     };
     return { deps, calls };
@@ -1729,6 +1848,24 @@ describe("setThemeSelection command", () => {
     assert.ok(r.commit, "commit field expected");
     assert.strictEqual(r.commit.theme, "clawd");
     assert.deepStrictEqual(r.commit.themeVariant, { clawd: "chill" });
+    assert.deepStrictEqual(r.customizationCapabilities, {
+      petTint: true,
+      accessories: true,
+    });
+  });
+
+  it("returns the activated theme's fail-closed customization capabilities", () => {
+    const { deps } = makeDeps({
+      getActiveTheme: () => ({
+        _id: "clawd",
+        _capabilities: { petTint: true, accessories: false },
+      }),
+    });
+    const r = commandRegistry.setThemeSelection({ themeId: "clawd" }, deps);
+    assert.deepStrictEqual(r.customizationCapabilities, {
+      petTint: true,
+      accessories: false,
+    });
   });
 
   it("preserves other themes' variantIds when committing", () => {

@@ -13,11 +13,27 @@ const {
   sendStateHealthResponse,
   handleStatePost,
 } = require("../src/server-route-state");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
+const { buildStateBody } = require("../hooks/clawd-hook");
 const { makeSessionKey } = require("../src/session-key");
 const localSessionKey = (rawSessionId) => makeSessionKey({
   profileId: "local",
   rawSessionId,
 });
+
+function makePlanPermission(rawSessionId) {
+  return {
+    res: {},
+    sessionId: localSessionKey(rawSessionId),
+    toolName: "ExitPlanMode",
+    agentId: "claude-code",
+    subagentId: null,
+    interaction: classifyPermissionInteraction({
+      agentId: "claude-code",
+      toolName: "ExitPlanMode",
+    }),
+  };
+}
 
 function makeReq(body) {
   const req = new EventEmitter();
@@ -54,6 +70,7 @@ function callStatePost(body, overrides = {}) {
       setState: [],
       recorder: [],
       resolved: [],
+      logs: [],
       userInputShown: [],
       userInputCleared: [],
     };
@@ -63,6 +80,7 @@ function callStatePost(body, overrides = {}) {
         working: "x.svg",
         attention: "x.svg",
         notification: "x.svg",
+        sleeping: "x.svg",
         "mini-idle": "x.svg",
       },
       pendingPermissions: [],
@@ -72,6 +90,7 @@ function callStatePost(body, overrides = {}) {
       updateSession: (...args) => calls.updateSession.push(args),
       updateAccountQuota: (...args) => calls.updateAccountQuota.push(args),
       resolvePermissionEntry: (perm, behavior, message) => calls.resolved.push({ perm, behavior, message }),
+      permLog: (message) => calls.logs.push(message),
       showCodexUserInputBubble: (input) => { calls.userInputShown.push(input); return true; },
       clearCodexUserInputBubbles: (...args) => calls.userInputCleared.push(args),
       ...overrides.ctx,
@@ -113,6 +132,91 @@ describe("server-route-state health", () => {
 });
 
 describe("server-route-state POST", () => {
+  it("settles only the matching Claude subagent decision from the real hook body", async () => {
+    const matching = {
+      ...makePlanPermission("subagent-session"),
+      subagentId: "agent-child-a",
+    };
+    const sibling = {
+      ...makePlanPermission("subagent-session"),
+      subagentId: "agent-child-b",
+    };
+    const body = buildStateBody(
+      "SessionEnd",
+      {
+        session_id: "subagent-session",
+        agent_id: "agent-child-a",
+        agent_type: "Explore",
+      },
+      () => ({
+        stablePid: null,
+        agentPid: null,
+        detectedEditor: null,
+        pidChain: [],
+      })
+    );
+
+    const res = await callStatePost(JSON.stringify(body), {
+      ctx: { pendingPermissions: [matching, sibling] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(
+      res.calls.resolved.map(({ perm, behavior }) => ({ perm, behavior })),
+      [{ perm: matching, behavior: "no-decision" }]
+    );
+    const updateOptions = res.calls.updateSession[0][3];
+    assert.strictEqual(updateOptions.subagentId, "agent-child-a");
+    assert.strictEqual(updateOptions.subagentType, "Explore");
+  });
+
+  it("clears main-thread and all subagent decisions on a main-session SessionEnd", async () => {
+    const main = makePlanPermission("whole-session");
+    const childPlan = {
+      ...makePlanPermission("whole-session"),
+      subagentId: "agent-child-a",
+    };
+    const childQuestion = {
+      ...makePlanPermission("whole-session"),
+      subagentId: "agent-child-b",
+      toolName: "AskUserQuestion",
+      interaction: classifyPermissionInteraction({
+        agentId: "claude-code",
+        toolName: "AskUserQuestion",
+      }),
+    };
+    const otherSession = makePlanPermission("other-session");
+    const otherAgent = {
+      ...makePlanPermission("whole-session"),
+      agentId: "codebuddy",
+      interaction: classifyPermissionInteraction({
+        agentId: "codebuddy",
+        toolName: "ExitPlanMode",
+      }),
+    };
+
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      session_id: "whole-session",
+      event: "SessionEnd",
+      agent_id: "claude-code",
+    }), {
+      ctx: {
+        pendingPermissions: [main, childPlan, childQuestion, otherSession, otherAgent],
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(
+      res.calls.resolved.map(({ perm, behavior }) => ({ perm, behavior })),
+      [
+        { perm: main, behavior: "no-decision" },
+        { perm: childPlan, behavior: "no-decision" },
+        { perm: childQuestion, behavior: "no-decision" },
+      ]
+    );
+  });
+
   it("uses trusted profile scope for identical remote raw ids, host labels, quota, and user-input actions", async () => {
     const rawSessionId = "shared-raw-id";
     const postFor = (profileId) => callStatePost(JSON.stringify({
@@ -227,6 +331,7 @@ describe("server-route-state POST", () => {
       pid_chain: [1, "bad", 3],
       tmux_socket: "/tmp/tmux-1000/work",
       tmux_client: "/dev/pts/7",
+      orca_pane_key: "tab-9:leaf-3",
       agent_pid: 99.8,
       agent_id: "codex",
       host: "remote-host",
@@ -258,6 +363,7 @@ describe("server-route-state POST", () => {
         pidChain: [1, 3],
         tmuxSocket: "/tmp/tmux-1000/work",
         tmuxClient: "/dev/pts/7",
+        orcaPaneKey: "tab-9:leaf-3",
         agentPid: 99,
         agentId: "codex",
         host: "remote-host",
@@ -289,6 +395,10 @@ describe("server-route-state POST", () => {
         sessionCronsCount: 0,
         stopHookActive: false,
         stdinDiag: null,
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "non-authoritative-codex-session-id",
+        },
       },
     ]]);
   });
@@ -688,6 +798,72 @@ describe("server-route-state POST", () => {
     assert.strictEqual(metadataCalls.length, 0);
   });
 
+  it("routes remote metadata_only Spark quota through its independent provider", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      preserve_state: true,
+      metadata_only: true,
+      session_id: "codex:abc",
+      agent_id: "codex",
+      host: "raspberrypi",
+      codex_spark_quota: {
+        codexWeekly: { usedPercent: 7, windowMinutes: 10080, resetAt: 1784256370000 },
+      },
+    }));
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateSession.length, 0);
+    assert.strictEqual(res.calls.updateAccountQuota.length, 1);
+    assert.strictEqual(res.calls.updateAccountQuota[0][0], "raspberrypi");
+    assert.deepStrictEqual(res.calls.updateAccountQuota[0][1].codexSparkQuota, {
+      codexWeekly: { usedPercent: 7, windowMinutes: 10080, resetAt: 1784256370000 },
+    });
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(res.calls.updateAccountQuota[0][1], "codexSparkQuota"),
+      true
+    );
+  });
+
+  it("keeps valid generic quota when a sibling Spark payload is invalid", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "codex:abc",
+      agent_id: "codex",
+      codex_quota: {
+        codexWeekly: { usedPercent: 12, windowMinutes: 10080 },
+      },
+      codex_spark_quota: {
+        codexWeekly: { usedPercent: "not-a-number" },
+      },
+    }));
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateAccountQuota.length, 1);
+    assert.deepStrictEqual(res.calls.updateAccountQuota[0][1].codexQuota, {
+      codexWeekly: { usedPercent: 12, windowMinutes: 10080 },
+    });
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(res.calls.updateAccountQuota[0][1], "codexSparkQuota"),
+      false
+    );
+  });
+
+  it("does not update account quota for an invalid Spark-only payload", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "codex:abc",
+      agent_id: "codex",
+      codex_spark_quota: {
+        codexWeekly: { usedPercent: "not-a-number" },
+      },
+    }));
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateAccountQuota.length, 0);
+  });
+
   it("metadata_only still respects the disabled-agent gate", async () => {
     const metadataCalls = [];
     const res = await callStatePost(JSON.stringify({
@@ -735,6 +911,56 @@ describe("server-route-state POST", () => {
     const opts = res.calls.updateSession[0][3];
     assert.strictEqual(opts.agentId, "claude-code");
     assert.strictEqual(opts.agentIdDefaulted, true);
+  });
+
+  it("assesses the raw state session id before fallback and ignores sender eligibility", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "default",
+      event: "PreToolUse",
+      agent_id: "claude-code",
+      sessionAutomationEligible: true,
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession[0][0], localSessionKey("default"));
+    assert.deepStrictEqual(
+      res.calls.updateSession[0][3].sessionAutomationIdentity,
+      { eligible: false, reason: "placeholder-session-id" }
+    );
+  });
+
+  it("marks only local process-bound Codex TUI state identities eligible", async () => {
+    const sessionId = "codex:019f9c87-23a9-7d03-a7ac-c11e3270c3b8";
+    const body = {
+      state: "working",
+      session_id: sessionId,
+      event: "PreToolUse",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      agent_pid: 777,
+      codex_originator: "codex-tui",
+      codex_source: "cli",
+    };
+
+    const local = await callStatePost(JSON.stringify(body));
+    assert.deepStrictEqual(
+      local.calls.updateSession[0][3].sessionAutomationIdentity,
+      { eligible: true, reason: "eligible" }
+    );
+
+    const remote = await callStatePost(JSON.stringify(body), {
+      options: {
+        remoteProfile: { profileId: "ssh-work", displayHost: "workbox" },
+      },
+    });
+    assert.deepStrictEqual(
+      remote.calls.updateSession[0][3].sessionAutomationIdentity,
+      {
+        eligible: false,
+        reason: "remote-session-lifecycle-not-authoritative",
+      }
+    );
   });
 
   it("routes state events to a currently registered custom AI", async () => {
@@ -1152,7 +1378,7 @@ describe("server-route-state wt_hwnd sampling (#627 residual)", () => {
 
 describe("server-route-state ExitPlanMode stale sweep", () => {
   it("clears stale ExitPlanMode on UserPromptSubmit for same session", async () => {
-    const stalePerm = { res: {}, sessionId: localSessionKey("sid"), toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1169,7 +1395,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("does NOT clear ExitPlanMode for a different session", async () => {
-    const stalePerm = { res: {}, sessionId: localSessionKey("other-sid"), toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("other-sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1183,7 +1409,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("does NOT trigger sweep on PreToolUse(ExitPlanMode)", async () => {
-    const stalePerm = { res: {}, sessionId: localSessionKey("sid"), toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1198,7 +1424,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("triggers sweep on PreToolUse with a different tool", async () => {
-    const stalePerm = { res: {}, sessionId: localSessionKey("sid"), toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1214,7 +1440,14 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("does NOT clear non-ExitPlanMode pending permissions", async () => {
-    const otherPerm = { res: {}, sessionId: localSessionKey("sid"), toolName: "Bash" };
+    const otherPerm = {
+      res: {},
+      sessionId: localSessionKey("sid"),
+      toolName: "Bash",
+      agentId: "claude-code",
+      subagentId: null,
+      interaction: classifyPermissionInteraction({ agentId: "claude-code", toolName: "Bash" }),
+    };
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1228,7 +1461,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("skips entries with no res (already cleaned up)", async () => {
-    const stalePerm = { res: null, sessionId: localSessionKey("sid"), toolName: "ExitPlanMode" };
+    const stalePerm = { ...makePlanPermission("sid"), res: null };
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1242,7 +1475,7 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
   });
 
   it("clears stale ExitPlanMode on PostToolUse(ExitPlanMode) as fallback", async () => {
-    const stalePerm = { res: {}, sessionId: localSessionKey("sid"), toolName: "ExitPlanMode" };
+    const stalePerm = makePlanPermission("sid");
     const res = await callStatePost(JSON.stringify({
       state: "working",
       session_id: "sid",
@@ -1256,5 +1489,50 @@ describe("server-route-state ExitPlanMode stale sweep", () => {
     assert.strictEqual(res.calls.resolved.length, 1);
     assert.strictEqual(res.calls.resolved[0].perm, stalePerm);
     assert.strictEqual(res.calls.resolved[0].message, "User answered in terminal");
+  });
+
+  it("does not sweep a sibling decision after an exact decision match", async () => {
+    const exact = makePlanPermission("sid");
+    exact.toolUseId = "tool-exact";
+    const sibling = {
+      ...makePlanPermission("sid"),
+      toolName: "AskUserQuestion",
+      interaction: classifyPermissionInteraction({
+        agentId: "claude-code",
+        toolName: "AskUserQuestion",
+      }),
+    };
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "PostToolUse",
+      tool_name: "ExitPlanMode",
+      tool_use_id: "tool-exact",
+    }), {
+      ctx: { pendingPermissions: [exact, sibling] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(
+      res.calls.resolved.map(({ perm }) => perm),
+      [exact]
+    );
+  });
+
+  it("logs and preserves ambiguous decision sweeps instead of guessing", async () => {
+    const first = makePlanPermission("sid");
+    const second = makePlanPermission("sid");
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "UserPromptSubmit",
+      agent_id: "claude-code",
+    }), {
+      ctx: { pendingPermissions: [first, second] },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(res.calls.resolved, []);
+    assert.match(res.calls.logs.join("\n"), /decision sweep ambiguous:.*candidates=2/);
   });
 });

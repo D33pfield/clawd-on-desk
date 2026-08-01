@@ -168,6 +168,9 @@ describe("Qwen Code /permission path", () => {
 
     const res = await callPermission(handler, {
       agent_id: "qwen-code",
+      hook_source: "codex-official",
+      codex_session_role: "subagent",
+      codex_originator: "codex-tui",
       session_id: sessionId,
       tool_name: "Bash",
       tool_input: { command: "npm test" },
@@ -222,6 +225,10 @@ describe("Qwen Code /permission path", () => {
         pidChain: [789, 456, 123],
         cwd: "/repo",
         model: "qwen3-coder-plus",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "identity-verification-required",
+        },
       },
     ]);
 

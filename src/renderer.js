@@ -4,6 +4,13 @@
 
 const container = document.getElementById("pet-container");
 const clipLayer = document.getElementById("pet-clip");
+const facingStage = document.getElementById("pet-facing-stage") || container;
+const motionStage = document.getElementById("pet-motion-stage") || container;
+const assetDirectionStage = document.getElementById("pet-asset-direction-stage") || container;
+const mediaLayer = document.getElementById("pet-media-layer") || container;
+const accessoryLayer = document.getElementById("pet-accessory-layer") || container;
+const accessoryEl = document.getElementById("clawd-accessory");
+const accessoryLayout = globalThis.petAccessoryLayout || null;
 let clawdEl = document.getElementById("clawd");
 let pendingNext = null;
 const LOW_POWER_IDLE_PAUSE_MS = 5000;
@@ -27,6 +34,24 @@ let queuedSystemWakeReplayTimer = null;
 let _lowPowerStaticImageOverrides = {};
 let _petTintPayload = { id: "none", filter: "" };
 let _petTintSupported = false;
+let _accessoryPayload = {
+  id: "none",
+  assetFile: null,
+  aspect: 1,
+  widthScale: 1,
+  offsetY: 0,
+};
+let _accessorySupported = false;
+let _accessoryAttachments = null;
+let _accessoryAssetFile = null;
+let _accessoryAssetReady = false;
+let _accessoryAssetSettled = true;
+let _accessoryAssetLoadTimer = null;
+let _accessoryAssetWaiters = [];
+let _accessoryRaf = null;
+let _accessoryLastLayout = null;
+let _accessoryFollowKey = null;
+const _accessoryDiagnostics = new Set();
 const PET_TINT_FILTER_TOKEN_RE =
   /^(?:hue-rotate\(-?\d+(?:\.\d+)?deg\)|(?:saturate|brightness|contrast|sepia|grayscale)\(\d+(?:\.\d+)?\))$/;
 
@@ -50,6 +75,15 @@ function initWithConfig(cfg) {
   _petTintSupported = tc.petTintSupported === true;
   if (Object.prototype.hasOwnProperty.call(tc, "petTintPayload")) {
     _petTintPayload = normalizePetTintPayload(tc.petTintPayload);
+  }
+  _accessorySupported = tc.accessorySupported === true;
+  _accessoryAttachments = (
+    _accessorySupported
+    && tc.accessoryAttachments
+    && typeof tc.accessoryAttachments === "object"
+  ) ? tc.accessoryAttachments : null;
+  if (Object.prototype.hasOwnProperty.call(tc, "accessoryPayload")) {
+    _accessoryPayload = normalizeAccessoryPayload(tc.accessoryPayload);
   }
   _imgCacheBustSeq = 0;
   _miniViewBox = tc.miniModeViewBox || null;
@@ -88,6 +122,9 @@ function initWithConfig(cfg) {
 
   applyObjectScaleStyle(clawdEl, getObjectSvgName(clawdEl), null);
   applyObjectScaleStyle(pendingNext, getObjectSvgName(pendingNext), null);
+  if (_accessorySupported && _accessoryPayload.id !== "none") {
+    ensureAccessoryAsset();
+  }
 }
 
 function applyObjectScaleStyle(el, file, state) {
@@ -149,7 +186,12 @@ function setLowPowerSvgPaused(paused) {
   const next = !!paused;
   if (lowPowerSvgPaused === next) return;
   lowPowerSvgPaused = next;
-  if (next) _cancelLayerAnimLoop();
+  if (next) {
+    _cancelLayerAnimLoop();
+    cancelAccessoryFollow();
+  } else {
+    refreshAccessoryLayout();
+  }
   if (window.electronAPI && typeof window.electronAPI.setLowPowerIdlePaused === "function") {
     window.electronAPI.setLowPowerIdlePaused(next);
   }
@@ -395,6 +437,7 @@ let _roamHeadingLeft = false; // current walk direction; roam visuals are drawn 
 let _inMiniMode = false;
 let _miniPreEntryMode = false;
 let _viewportOffsetY = 0;
+let _viewportOffsetX = 0;
 
 function setViewportOffset(offsetY) {
   const next = Number.isFinite(offsetY) ? Math.max(0, Math.round(offsetY)) : 0;
@@ -404,6 +447,29 @@ function setViewportOffset(offsetY) {
   if (pendingNext) {
     applyObjectScaleStyle(pendingNext, getObjectSvgName(pendingNext), currentState);
   }
+  refreshAccessoryLayout();
+}
+
+// Issue #690: Linux outer-edge X offset. Deliberately the mirror image of
+// setViewportOffset() above in every way that matters — this is
+// composite-only. It must NOT call applyObjectScaleStyle() or
+// refreshAccessoryLayout(), and must NOT touch any element's `left`/`bottom` —
+// those are the Y-offset layout hot path (plan §4.4 point 4), and re-entering
+// it per X-offset update is exactly the per-frame stall #690's plan warns
+// about for mini's future animation entry point. #pet-container (this
+// function's only target) is the real screen-space layer the plan's DOM
+// layering puts the signed X translate on: `#pet-clip` (unmoved, carries the
+// internal-seam clip-path) -> `#pet-container` (this translate) ->
+// `#pet-facing-stage` (carries the separate mini-left mirror `scale: -1 1`,
+// src/styles.css). Because the flip lives on the child, not this element,
+// the translate here is never re-signed by it, and every descendant —
+// current/pending media, accessory, effect/particle, Cloudling pointer bridge
+// — inherits the shift for free by being painted inside the translated box.
+function setViewportOffsetX(offsetX) {
+  const next = Number.isFinite(offsetX) ? Math.round(offsetX) : 0;
+  if (next === _viewportOffsetX) return;
+  _viewportOffsetX = next;
+  if (container) container.style.translate = `${_viewportOffsetX}px 0`;
 }
 
 function shouldApplyMiniAssetFlip(state) {
@@ -419,11 +485,31 @@ function shouldApplyMiniAssetFlip(state) {
 }
 
 function applyMiniFlip(el, state = currentState) {
-  // OBJECT included: scripted roam SVGs (e.g. cloudling's crabwalk) render on
-  // the object channel; scaleX(-1) has el.style.transform to itself — the
-  // scale/layout helpers only write width/left/bottom.
-  if (!el || (el.tagName !== "IMG" && el.tagName !== "OBJECT")) return;
-  el.style.transform = shouldApplyMiniAssetFlip(state) ? "scaleX(-1)" : "";
+  if (!assetDirectionStage || !assetDirectionStage.style) return;
+  const activeFlip = shouldApplyMiniAssetFlip(state);
+  if (el) el.__clawdAssetDirectionFlip = activeFlip;
+  assetDirectionStage.style.scale = activeFlip ? "-1 1" : "none";
+
+  // A media crossfade can leave older children alive after the shared stage
+  // adopts the new file's direction. Counter-flip only those older children
+  // whose stamped direction differs, using the stage's horizontal center so
+  // their fading position and orientation stay visually unchanged.
+  const stageWidth = assetDirectionStage.clientWidth || assetDirectionStage.offsetWidth;
+  for (const child of getPetMediaElements()) {
+    const childFlip = child === el
+      ? activeFlip
+      : child.__clawdAssetDirectionFlip === true;
+    if (childFlip === activeFlip) {
+      child.style.scale = "none";
+      child.style.transformOrigin = "";
+      continue;
+    }
+    const originX = Number.isFinite(stageWidth) && Number.isFinite(child.offsetLeft)
+      ? (stageWidth / 2) - child.offsetLeft
+      : null;
+    child.style.transformOrigin = originX == null ? "50% 50%" : `${originX}px 50%`;
+    child.style.scale = "-1 1";
+  }
 }
 
 // ── Layered tracking state (multi-layer eye/head/body tracking) ──
@@ -444,12 +530,18 @@ initWithConfig(tc);
 window.electronAPI.onThemeConfig((newConfig) => {
   // Clean up layered tracking before reinitializing
   _cleanupLayeredTracking();
+  cancelPendingSwap("theme-config");
+  clearAccessoryRuntime({ clearAsset: true });
   initWithConfig(newConfig);
   applyPetTintToAllMedia();
 });
 
 window.electronAPI.onViewportOffset((offsetY) => {
   setViewportOffset(offsetY);
+});
+
+window.electronAPI.onViewportOffsetX((offsetX) => {
+  setViewportOffsetX(offsetX);
 });
 
 // ── Pet color tint ──
@@ -475,7 +567,14 @@ function normalizePetTintPayload(payload) {
 }
 
 function applyPetTintToElement(element) {
-  if (!element || (element.tagName !== "OBJECT" && element.tagName !== "IMG")) return;
+  if (!element) return;
+  const isPetObject = element.tagName === "OBJECT"
+    && element.classList
+    && element.classList.contains("clawd-object");
+  const isPetImg = element.tagName === "IMG"
+    && element.classList
+    && element.classList.contains("clawd-img");
+  if (!isPetObject && !isPetImg) return;
   element.style.filter = _petTintSupported ? _petTintPayload.filter : "";
 }
 
@@ -490,6 +589,363 @@ function setPetTintPayload(payload) {
 
 if (window.electronAPI && typeof window.electronAPI.onPetTintChange === "function") {
   window.electronAPI.onPetTintChange(setPetTintPayload);
+}
+
+// ── Pet accessory wardrobe ──
+// Accessories are a persistent sibling of pet media. They never enter an SVG
+// document and never share the media filter or swap cleanup selector.
+function normalizeAccessoryPayload(payload) {
+  const none = {
+    id: "none",
+    assetFile: null,
+    aspect: 1,
+    widthScale: 1,
+    offsetY: 0,
+  };
+  if (!payload || typeof payload !== "object") return none;
+  const id = typeof payload.id === "string" ? payload.id : "";
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(id)) return none;
+  if (id === "none") return none;
+  const assetFile = typeof payload.assetFile === "string" ? payload.assetFile : "";
+  if (!/^[a-z][a-z0-9-]{0,63}\.svg$/.test(assetFile)) return none;
+  if (assetFile.includes("/") || assetFile.includes("\\")) return none;
+  const aspect = payload.aspect;
+  const widthScale = payload.widthScale;
+  const offsetY = payload.offsetY;
+  if (!Number.isFinite(aspect) || aspect < 0.1 || aspect > 10) return none;
+  if (!Number.isFinite(widthScale) || widthScale < 0.25 || widthScale > 2.5) return none;
+  if (!Number.isFinite(offsetY) || Math.abs(offsetY) > 64) return none;
+  return { id, assetFile, aspect, widthScale, offsetY };
+}
+
+function cancelAccessoryFollow() {
+  if (_accessoryRaf != null) {
+    cancelAnimationFrame(_accessoryRaf);
+    _accessoryRaf = null;
+  }
+  _accessoryFollowKey = null;
+}
+
+function hideAccessory() {
+  cancelAccessoryFollow();
+  _accessoryLastLayout = null;
+  if (!accessoryEl) return;
+  accessoryEl.style.display = "none";
+  accessoryEl.style.transform = "";
+}
+
+function clearAccessoryAssetLoadTimer() {
+  if (_accessoryAssetLoadTimer == null) return;
+  clearTimeout(_accessoryAssetLoadTimer);
+  _accessoryAssetLoadTimer = null;
+}
+
+function clearAccessoryRuntime(options = {}) {
+  hideAccessory();
+  _accessoryDiagnostics.clear();
+  if (!options.clearAsset) return;
+  // Fully detach the old request before releasing pet-swap waiters. A waiter
+  // may synchronously re-enter ensureAccessoryAsset() for a newly selected
+  // accessory; no old cleanup is allowed to clear that new request afterward.
+  clearAccessoryAssetLoadTimer();
+  if (accessoryEl) {
+    accessoryEl.onload = null;
+    accessoryEl.onerror = null;
+    try { accessoryEl.src = ""; } catch {}
+  }
+  _accessoryAssetFile = null;
+  _accessoryAssetReady = false;
+  _accessoryAssetSettled = true;
+  flushAccessoryAssetWaiters();
+}
+
+function noteAccessoryDiagnostic(file, reason) {
+  const key = `${file || "unknown"}|${reason}`;
+  if (_accessoryDiagnostics.has(key)) return;
+  _accessoryDiagnostics.add(key);
+  try { console.warn(`Clawd: accessory fallback for ${file || "unknown"}: ${reason}`); } catch {}
+}
+
+function getAccessoryDescriptor(file, state) {
+  if (!_accessorySupported || !_accessoryAttachments || !file) return null;
+  const safeFile = String(file).replace(/^.*[\/\\]/, "");
+  const files = _accessoryAttachments.files;
+  if (files && typeof files === "object"
+      && Object.prototype.hasOwnProperty.call(files, safeFile)) {
+    return files[safeFile];
+  }
+  if (state && state.startsWith("mini-") && _accessoryAttachments.mini) {
+    return _accessoryAttachments.mini;
+  }
+  return _accessoryAttachments.default || null;
+}
+
+function getAccessoryStageSize() {
+  const width = assetDirectionStage && (assetDirectionStage.clientWidth || assetDirectionStage.offsetWidth);
+  const height = assetDirectionStage && (assetDirectionStage.clientHeight || assetDirectionStage.offsetHeight);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  return { width, height };
+}
+
+function getMediaLayoutBox(media) {
+  if (!media) return null;
+  const x = media.offsetLeft;
+  const y = media.offsetTop;
+  const width = media.clientWidth || media.offsetWidth;
+  const height = media.clientHeight || media.offsetHeight;
+  if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+  return { x, y, width, height };
+}
+
+function ensureAccessoryAsset() {
+  if (!accessoryEl || !_accessoryPayload.assetFile) return false;
+  const file = _accessoryPayload.assetFile;
+  if (_accessoryAssetFile === file) return _accessoryAssetReady;
+
+  _accessoryAssetFile = file;
+  _accessoryAssetReady = false;
+  _accessoryAssetSettled = false;
+  accessoryEl.style.display = "none";
+  accessoryEl.onload = () => {
+    if (_accessoryAssetFile !== file) return;
+    clearAccessoryAssetLoadTimer();
+    _accessoryAssetReady = true;
+    _accessoryAssetSettled = true;
+    refreshAccessoryLayout();
+    flushAccessoryAssetWaiters();
+  };
+  accessoryEl.onerror = () => {
+    if (_accessoryAssetFile !== file) return;
+    clearAccessoryAssetLoadTimer();
+    _accessoryAssetReady = false;
+    _accessoryAssetSettled = true;
+    hideAccessory();
+    noteAccessoryDiagnostic(file, "asset-load-failed");
+    flushAccessoryAssetWaiters();
+  };
+  const loadTimer = setTimeout(() => {
+    if (_accessoryAssetLoadTimer !== loadTimer || _accessoryAssetFile !== file) return;
+    _accessoryAssetLoadTimer = null;
+    _accessoryAssetReady = false;
+    _accessoryAssetSettled = true;
+    hideAccessory();
+    noteAccessoryDiagnostic(file, "asset-load-timeout");
+    flushAccessoryAssetWaiters();
+  }, SWAP_LOAD_FALLBACK_MS);
+  _accessoryAssetLoadTimer = loadTimer;
+  accessoryEl.src = `../assets/accessories/${file}`;
+  return false;
+}
+
+function flushAccessoryAssetWaiters() {
+  const waiters = _accessoryAssetWaiters;
+  _accessoryAssetWaiters = [];
+  for (const waiter of waiters) {
+    if (waiter.timer) clearTimeout(waiter.timer);
+    waiter.callback();
+  }
+}
+
+function shouldWaitForAccessoryAsset(file, state) {
+  if (!_accessorySupported || _accessoryPayload.id === "none") return false;
+  const descriptor = getAccessoryDescriptor(file, state);
+  if (!descriptor || descriptor.visibility === "hidden") return false;
+  ensureAccessoryAsset();
+  return !_accessoryAssetSettled;
+}
+
+function deferSwapUntilAccessorySettles(file, state, next, callback) {
+  if (!shouldWaitForAccessoryAsset(file, state)) return false;
+  if (next.__clawdWaitingForAccessory) return true;
+  next.__clawdWaitingForAccessory = true;
+  let settled = false;
+  const resume = () => {
+    if (settled) return;
+    settled = true;
+    next.__clawdWaitingForAccessory = false;
+    callback();
+  };
+  const waiter = {
+    callback: resume,
+    timer: setTimeout(() => {
+      const index = _accessoryAssetWaiters.indexOf(waiter);
+      if (index >= 0) _accessoryAssetWaiters.splice(index, 1);
+      resume();
+    }, SWAP_LOAD_FALLBACK_MS),
+  };
+  _accessoryAssetWaiters.push(waiter);
+  return true;
+}
+
+function getCurrentAccessoryContext() {
+  if (!_accessorySupported || !_accessoryAttachments) return null;
+  if (!_accessoryPayload || _accessoryPayload.id === "none" || !_accessoryPayload.assetFile) return null;
+  if (!clawdEl || !clawdEl.isConnected || !currentDisplayedSvg) return null;
+  const descriptor = getAccessoryDescriptor(currentDisplayedSvg, currentDisplayedState);
+  if (!descriptor || typeof descriptor !== "object") return null;
+  return {
+    file: currentDisplayedSvg,
+    state: currentDisplayedState,
+    media: clawdEl,
+    descriptor,
+  };
+}
+
+function computeStaticAccessoryLayout(context) {
+  if (!accessoryLayout || typeof accessoryLayout.computeStaticAccessoryLayout !== "function") return null;
+  const frame = context.descriptor.staticFrame;
+  const mediaBox = getMediaLayoutBox(context.media);
+  const viewBox = resolveViewBox(context.state, context.file);
+  const stageSize = getAccessoryStageSize();
+  if (!frame || !mediaBox || !viewBox || !stageSize) return null;
+  return accessoryLayout.computeStaticAccessoryLayout({
+    mediaBox,
+    viewBox,
+    frame,
+    accessory: _accessoryPayload,
+    stageSize,
+  });
+}
+
+function computeFollowAccessoryLayout(context) {
+  if (!accessoryLayout || typeof accessoryLayout.computeDynamicAccessoryLayout !== "function") return null;
+  const followTarget = context.descriptor.followTarget;
+  if (!followTarget || !followTarget.frame) return null;
+  if (!/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(followTarget.id || "")) return null;
+  if (!context.media || context.media.tagName !== "OBJECT") return null;
+  let target;
+  let matrix;
+  try {
+    const doc = context.media.contentDocument;
+    target = doc && doc.getElementById(followTarget.id);
+    matrix = target && typeof target.getCTM === "function" ? target.getCTM() : null;
+  } catch {
+    return null;
+  }
+  if (!target || !matrix) return null;
+  const mediaBox = getMediaLayoutBox(context.media);
+  const stageSize = getAccessoryStageSize();
+  if (!mediaBox || !stageSize) return null;
+  return accessoryLayout.computeDynamicAccessoryLayout({
+    mediaOffset: { x: mediaBox.x, y: mediaBox.y },
+    matrix,
+    frame: followTarget.frame,
+    accessory: _accessoryPayload,
+    stageSize,
+  });
+}
+
+function applyAccessoryLayout(layout) {
+  if (!accessoryEl || !_accessoryAssetReady || !layout) return false;
+  const unchanged = accessoryLayout
+    && typeof accessoryLayout.layoutsEqual === "function"
+    && accessoryLayout.layoutsEqual(_accessoryLastLayout, layout);
+  if (!unchanged) {
+    const matrix = layout.matrix;
+    accessoryEl.style.width = `${layout.width}px`;
+    accessoryEl.style.height = `${layout.height}px`;
+    accessoryEl.style.transform =
+      `matrix(${matrix.a}, ${matrix.b}, ${matrix.c}, ${matrix.d}, ${matrix.e}, ${matrix.f})`;
+    _accessoryLastLayout = layout;
+  }
+  accessoryEl.style.filter = "none";
+  accessoryEl.style.display = "block";
+  return true;
+}
+
+function accessoryFollowTick(expectedKey) {
+  _accessoryRaf = null;
+  if (document.hidden === true || shouldSuppressPassiveTrackingForLowPower()) return;
+  const context = getCurrentAccessoryContext();
+  if (!context || context.descriptor.visibility === "hidden") {
+    hideAccessory();
+    return;
+  }
+  const follow = context.descriptor.followTarget;
+  const key = follow
+    ? `${context.file}|${_accessoryPayload.id}|${follow.id}`
+    : null;
+  if (!key || key !== expectedKey || key !== _accessoryFollowKey) {
+    refreshAccessoryLayout();
+    return;
+  }
+  const layout = computeFollowAccessoryLayout(context);
+  if (!layout) {
+    noteAccessoryDiagnostic(context.file, `follow-target-unavailable:${follow.id}`);
+    cancelAccessoryFollow();
+    applyAccessoryLayout(computeStaticAccessoryLayout(context));
+    return;
+  }
+  applyAccessoryLayout(layout);
+  _accessoryRaf = requestAnimationFrame(() => accessoryFollowTick(expectedKey));
+}
+
+function startAccessoryFollow(context) {
+  const follow = context.descriptor.followTarget;
+  if (!follow || shouldSuppressPassiveTrackingForLowPower()) return;
+  const key = `${context.file}|${_accessoryPayload.id}|${follow.id}`;
+  cancelAccessoryFollow();
+  _accessoryFollowKey = key;
+  _accessoryRaf = requestAnimationFrame(() => accessoryFollowTick(key));
+}
+
+function refreshAccessoryLayout() {
+  cancelAccessoryFollow();
+  const context = getCurrentAccessoryContext();
+  if (!context || context.descriptor.visibility === "hidden") {
+    hideAccessory();
+    return;
+  }
+  if (!ensureAccessoryAsset()) {
+    hideAccessory();
+    return;
+  }
+
+  const follow = context.descriptor.followTarget;
+  if (follow && context.media.tagName === "OBJECT") {
+    const dynamicLayout = computeFollowAccessoryLayout(context);
+    if (dynamicLayout) {
+      applyAccessoryLayout(dynamicLayout);
+      startAccessoryFollow(context);
+      return;
+    }
+    noteAccessoryDiagnostic(context.file, `follow-target-unavailable:${follow.id}`);
+  }
+  const staticLayout = computeStaticAccessoryLayout(context);
+  if (!applyAccessoryLayout(staticLayout)) {
+    hideAccessory();
+    noteAccessoryDiagnostic(context.file, "static-layout-unavailable");
+  }
+}
+
+function setAccessoryPayload(payload) {
+  const next = normalizeAccessoryPayload(payload);
+  const fileChanged = next.assetFile !== _accessoryAssetFile;
+  _accessoryPayload = next;
+  if (next.id === "none" || !_accessorySupported) {
+    clearAccessoryRuntime({ clearAsset: true });
+    refreshAccessoryMediaChannel();
+    return;
+  }
+  if (fileChanged) clearAccessoryRuntime({ clearAsset: true });
+  refreshAccessoryLayout();
+  refreshAccessoryMediaChannel();
+}
+
+if (window.electronAPI && typeof window.electronAPI.onPetAccessoryChange === "function") {
+  window.electronAPI.onPetAccessoryChange(setAccessoryPayload);
+}
+
+if (document && typeof document.addEventListener === "function") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden === true) cancelAccessoryFollow();
+    else refreshAccessoryLayout();
+  });
+}
+
+if (window && typeof window.addEventListener === "function") {
+  window.addEventListener("resize", refreshAccessoryLayout);
+  window.addEventListener("beforeunload", () => clearAccessoryRuntime({ clearAsset: true }));
 }
 
 // Release an <object> SVG element: navigate away to unload the SVG document
@@ -540,6 +996,7 @@ window.electronAPI.onMiniModeChange((enabled, edge, options) => {
   if (shouldUseCloudlingPointerBridge(currentState, currentDisplayedSvg) && lastCloudlingPointerPayload) {
     applyCloudlingPointerBridge(lastCloudlingPointerPayload);
   }
+  refreshAccessoryLayout();
 });
 
 // Multi-monitor seam clip: in mini mode at an internal seam, main sends the
@@ -547,8 +1004,8 @@ window.electronAPI.onMiniModeChange((enabled, edge, options) => {
 // rest away so the half that physically crosses onto the neighbouring
 // monitor renders nothing there — the local display keeps the half-body peek.
 //
-// The clip is applied to #pet-clip, which (unlike #pet-container) never
-// carries transform: scaleX(-1). A clip-path on the flipped container would
+// The clip is applied to #pet-clip outside #pet-facing-stage, which carries
+// the left-edge mini-mode flip. A clip-path inside that flipped stage would
 // be mirrored too, so a left-edge clip would land on the wrong half; the
 // unflipped wrapper keeps `inset()` in screen space for both edges.
 function applyMiniClip(info) {
@@ -646,7 +1103,43 @@ function tracksEyesForFile(state, file) {
  */
 function needsObjectChannel(state, file) {
   if (!isSvgFile(file)) return false;
-  return _forceSvgObjectChannel || needsEyeTracking(state) || _trustedScriptedSvgFiles.has(file);
+  const accessoryDescriptor = getAccessoryDescriptor(file, state);
+  const needsAccessoryFollow = !!(
+    _accessoryPayload.id !== "none"
+    && accessoryDescriptor
+    && accessoryDescriptor.followTarget
+  );
+  return _forceSvgObjectChannel
+    || needsEyeTracking(state)
+    || _trustedScriptedSvgFiles.has(file)
+    || needsAccessoryFollow;
+}
+
+function refreshAccessoryMediaChannel() {
+  if (pendingNext && pendingSvgFile) {
+    const pendingState = getPendingSwapState(pendingNext, currentState);
+    const wantsObject = needsObjectChannel(pendingState, pendingSvgFile);
+    const pendingIsObject = pendingNext.tagName === "OBJECT";
+    if (wantsObject !== pendingIsObject) {
+      const file = pendingSvgFile;
+      cancelPendingSwap();
+      detachEyeTracking();
+      swapToFile(file, pendingState);
+      return true;
+    }
+  }
+  // A correctly-channelled pending swap already represents the newest state.
+  // Do not let the older displayed file cancel and replace it merely because
+  // that displayed element still needs a channel correction.
+  if (pendingNext) return false;
+  if (!clawdEl || !clawdEl.isConnected || !currentDisplayedSvg) return false;
+  const wantsObject = needsObjectChannel(currentDisplayedState, currentDisplayedSvg);
+  const currentIsObject = clawdEl.tagName === "OBJECT";
+  if (wantsObject === currentIsObject) return false;
+  cancelPendingSwap();
+  detachEyeTracking();
+  swapToFile(currentDisplayedSvg, currentDisplayedState);
+  return true;
 }
 
 function resolveLowPowerStaticImageOverride(state, file) {
@@ -791,6 +1284,7 @@ function endDragReaction() {
 
 // --- Generic swap function: handles both <object> and <img> channels ---
 let currentDisplayedSvg = getObjectSvgName(clawdEl);
+let currentDisplayedState = null;
 let currentDisplayedAssetUrl = null;
 let pendingSvgFile = null; // tracks the SVG currently being loaded (for dedup)
 let pendingAssetUrl = null;
@@ -823,7 +1317,7 @@ function fadeOutAndRemove(el, durationMs) {
 }
 
 function getPetMediaElements() {
-  return [...container.querySelectorAll("object, img.clawd-img")];
+  return [...mediaLayer.querySelectorAll("object.clawd-object, img.clawd-img")];
 }
 
 function isVisiblyOpaque(el) {
@@ -869,7 +1363,7 @@ function scheduleSwapVisibilityRescue(token, file, state) {
     if (hasVisiblePetElement()) return;
 
     if (pendingNext && pendingSvgFile === file) {
-      forceImageChannelReload(file, state);
+      forceImageChannelReload(file, getPendingSwapState(pendingNext, state));
       return;
     }
 
@@ -877,6 +1371,16 @@ function scheduleSwapVisibilityRescue(token, file, state) {
     forceImageChannelReload(file, state);
   }, getSwapVisibilityRescueDelay(file));
   swapVisibilityRescueTimer = timer;
+}
+
+function getPendingSwapState(next, fallbackState) {
+  if (
+    next
+    && Object.prototype.hasOwnProperty.call(next, "__clawdPendingState")
+  ) {
+    return next.__clawdPendingState;
+  }
+  return fallbackState;
 }
 
 function forceImageChannelReload(file, state, allowImageFallback = true) {
@@ -918,10 +1422,11 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     // Object channel: <object type="image/svg+xml">
     const next = document.createElement("object");
     next.type = "image/svg+xml";
+    next.className = "clawd-object";
     next.id = "clawd";
     next.style.opacity = "0";
+    next.__clawdPendingState = state;
     applyObjectScaleStyle(next, file, state);
-    applyMiniFlip(next, state);
     applyPetTintToElement(next);
     let swapCallbackSettled = false;
     const finishSwapReady = () => {
@@ -940,6 +1445,8 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
 
     const swap = () => {
       if (pendingNext !== next) return;
+      const commitState = getPendingSwapState(next, state);
+      if (deferSwapUntilAccessorySettles(file, commitState, next, swap)) return;
       if (swapToken === activeSwapToken) clearSwapVisibilityRescueTimer();
       const fadeInMs = (_transitions[file] && _transitions[file].in) || 0;
       const fadeOutMs = (currentDisplayedSvg && _transitions[currentDisplayedSvg] && _transitions[currentDisplayedSvg].out) || 0;
@@ -952,7 +1459,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       }
       next.style.opacity = "1";
 
-      for (const child of [...container.querySelectorAll("object, img.clawd-img")]) {
+      for (const child of [...mediaLayer.querySelectorAll("object.clawd-object, img.clawd-img")]) {
         if (child !== next) {
           if (fadeOutMs > 0) fadeOutAndRemove(child, fadeOutMs);
           else if (child.tagName === "OBJECT") releaseObject(child);
@@ -964,10 +1471,13 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       pendingAssetUrl = null;
       clawdEl = next;
       currentDisplayedSvg = file;
+      currentDisplayedState = commitState;
       currentDisplayedAssetUrl = url;
+      applyMiniFlip(next, commitState);
+      refreshAccessoryLayout();
       notifyPetVisualReadyOnce();
 
-      if (state && tracksEyesForFile(state, file)) {
+      if (commitState && tracksEyesForFile(commitState, file)) {
         attachEyeTracking(next);
       }
       if (miniLeftFlip) applyGlyphFlipCompensation(next);
@@ -987,13 +1497,14 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     // /pendingAssetUrl) stays keyed on the base `url`, not the busted one.
     const cacheBust = `${Date.now()}-${++_imgCacheBustSeq}`;
     next.data = `${url}${url.includes("?") ? "&" : "?"}_t=${cacheBust}`;
-    container.appendChild(next);
+    mediaLayer.appendChild(next);
     pendingNext = next;
     scheduleSwapVisibilityRescue(swapToken, file, state);
     setTimeout(() => {
       if (pendingNext !== next) return;
       try {
         if (!next.contentDocument) {
+          const retryState = getPendingSwapState(next, state);
           releaseObject(next);
           if (pendingNext === next) {
             pendingNext = null;
@@ -1001,7 +1512,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
             pendingAssetUrl = null;
           }
           finishSwapError("object-document-unavailable");
-          if (!pendingNext) forceImageChannelReload(file, state, allowImageFallback);
+          if (!pendingNext) forceImageChannelReload(file, retryState, allowImageFallback);
           return;
         }
       } catch {}
@@ -1013,12 +1524,14 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     next.className = "clawd-img";
     next.id = "clawd";
     next.style.opacity = "0";
+    next.__clawdPendingState = state;
     applyObjectScaleStyle(next, file, state);
-    applyMiniFlip(next, state);
     applyPetTintToElement(next);
 
     const swap = () => {
       if (pendingNext !== next) return;
+      const commitState = getPendingSwapState(next, state);
+      if (deferSwapUntilAccessorySettles(file, commitState, next, swap)) return;
       if (swapToken === activeSwapToken) clearSwapVisibilityRescueTimer();
       const fadeInMs = (_transitions[file] && _transitions[file].in) || 0;
       const fadeOutMs = (currentDisplayedSvg && _transitions[currentDisplayedSvg] && _transitions[currentDisplayedSvg].out) || 0;
@@ -1031,7 +1544,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       }
       next.style.opacity = "1";
 
-      for (const child of [...container.querySelectorAll("object, img.clawd-img")]) {
+      for (const child of [...mediaLayer.querySelectorAll("object.clawd-object, img.clawd-img")]) {
         if (child !== next) {
           if (fadeOutMs > 0) fadeOutAndRemove(child, fadeOutMs);
           else if (child.tagName === "OBJECT") releaseObject(child);
@@ -1043,7 +1556,10 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       pendingAssetUrl = null;
       clawdEl = next;
       currentDisplayedSvg = file;
+      currentDisplayedState = commitState;
       currentDisplayedAssetUrl = url;
+      applyMiniFlip(next, commitState);
+      refreshAccessoryLayout();
       notifyPetVisualReadyOnce();
       scheduleLowPowerIdlePause();
     };
@@ -1061,7 +1577,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     // HTTP cache; only the in-memory SVG document is rebuilt.
     const cacheBust = `${Date.now()}-${++_imgCacheBustSeq}`;
     next.src = `${url}${url.includes("?") ? "&" : "?"}_t=${cacheBust}`;
-    container.appendChild(next);
+    mediaLayer.appendChild(next);
     pendingNext = next;
     scheduleSwapVisibilityRescue(swapToken, file, state);
     // Timeout fallback for images that fail to load
@@ -1111,13 +1627,28 @@ function renderStateFile(state, svg) {
     && pendingAssetUrl === desiredAssetUrl;
   const pendingChannelMatches = !alreadyPending || ((pendingNext.tagName === "OBJECT") === desiredObjectChannel);
 
+  if (alreadyPending && !pendingChannelMatches) {
+    cancelPendingSwap();
+  }
+
   if ((alreadyDisplayed && displayedChannelMatches) || (alreadyPending && pendingChannelMatches)) {
     // Same file, no swap — but the flip is state-dependent (mini flip vs roam
     // heading), so re-apply it for the incoming state. E.g. a leftward roam
     // entering mini pre-entry reuses the same crabwalk asset; without this the
     // roam mirror would leak into the mini entry (and vice versa).
-    if (alreadyDisplayed) applyMiniFlip(clawdEl, state);
-    if (alreadyPending && pendingNext) applyMiniFlip(pendingNext, state);
+    if (alreadyDisplayed) {
+      currentDisplayedState = state;
+      applyMiniFlip(clawdEl, state);
+      refreshAccessoryLayout();
+    }
+    if (alreadyPending && pendingChannelMatches) {
+      // The file/channel can be reused while its state-dependent presentation
+      // cannot. Retarget the pending commit so its eventual direction,
+      // attachment descriptor, layout, and eye-tracking decision all use the
+      // newest state rather than the state captured when loading began.
+      pendingNext.__clawdPendingState = state;
+      applyObjectScaleStyle(pendingNext, effectiveSvg, state);
+    }
     if (alreadyDisplayed) {
       if (tracksEyesForFile(state, effectiveSvg) && !eyeTarget && !_trackingLayers) {
         if (clawdEl.tagName === "OBJECT") attachEyeTracking(clawdEl);
@@ -1662,7 +2193,6 @@ if (window.electronAPI && typeof window.electronAPI.onRoamHeading === "function"
     // order across channels is not contractual) the flip captured at IMG
     // creation is stale — refresh both the on-screen and the pending element.
     applyMiniFlip(clawdEl, currentState);
-    if (pendingNext) applyMiniFlip(pendingNext, currentState);
   });
 }
 

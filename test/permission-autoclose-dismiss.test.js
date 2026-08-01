@@ -16,6 +16,8 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const initPermission = require("../src/permission");
+const { computePermissionAutoCloseRemainingMs } = initPermission.__test;
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 
 function createMockResponse() {
   const captured = {
@@ -109,6 +111,107 @@ function makePermEntry(overrides = {}) {
 }
 
 describe("permission autoclose: no-decision dismiss semantics", () => {
+  it("subtracts completed and active confirmation pauses from real elapsed time", () => {
+    const entry = {
+      createdAt: 1_000,
+      autoClosePausedTotalMs: 1_500,
+      autoClosePauseStartedAt: 7_000,
+    };
+    assert.equal(
+      computePermissionAutoCloseRemainingMs(entry, 10_000, 9_000),
+      5_500
+    );
+    entry.autoClosePauseStartedAt = null;
+    entry.autoClosePausedTotalMs = 3_500;
+    assert.equal(
+      computePermissionAutoCloseRemainingMs(entry, 10_000, 9_000),
+      5_500
+    );
+    assert.equal(
+      computePermissionAutoCloseRemainingMs(entry, 4_000, 9_000),
+      0,
+      "a shorter live policy expires immediately after the pause"
+    );
+    assert.equal(
+      computePermissionAutoCloseRemainingMs(entry, 20_000, 9_000),
+      15_500,
+      "a longer live policy extends from the same pause-adjusted elapsed time"
+    );
+  });
+
+  it("does not re-arm while session trust confirmation is active", () => {
+    const ctx = makeCtx({
+      getBubblePolicy: () => ({ enabled: true, autoCloseMs: 60_000 }),
+    });
+    const api = initPermission(ctx);
+    const entry = makePermEntry({
+      agentId: "claude-code",
+      createdAt: Date.now(),
+      interaction: classifyPermissionInteraction({
+        agentId: "claude-code",
+        toolName: "Bash",
+      }),
+    });
+    api.pendingPermissions.push(entry);
+    assert.equal(api.beginSessionTrustConfirmation(entry), true);
+    api.refreshPermissionAutoCloseForPolicy();
+    assert.equal(entry.autoCloseTimer, null);
+    assert.equal(entry.trustConfirming, true);
+    api.endSessionTrustConfirmation(entry, { rearm: true });
+    assert.ok(entry.autoCloseTimer);
+    api.cleanup();
+  });
+
+  it("does not re-arm an expired entry after session trust confirmation returns", () => {
+    const ctx = makeCtx({
+      getBubblePolicy: () => ({ enabled: true, autoCloseMs: 60_000 }),
+    });
+    const api = initPermission(ctx);
+    const entry = makePermEntry({
+      agentId: "claude-code",
+      createdAt: Date.now(),
+      interaction: classifyPermissionInteraction({
+        agentId: "claude-code",
+        toolName: "Bash",
+      }),
+    });
+    api.pendingPermissions.push(entry);
+    assert.equal(api.beginSessionTrustConfirmation(entry), true);
+    api.pendingPermissions.splice(0, 1);
+    api.endSessionTrustConfirmation(entry, { rearm: true });
+    assert.equal(entry.autoCloseTimer, null);
+    api.cleanup();
+  });
+
+  it("never arms decision timers and clears any stale timer during policy refresh", () => {
+    const ctx = makeCtx({
+      getBubblePolicy: () => ({ enabled: true, autoCloseMs: 60000 }),
+    });
+    const api = initPermission(ctx);
+    const tool = makePermEntry({
+      agentId: "claude-code",
+      createdAt: Date.now(),
+      interaction: classifyPermissionInteraction({ agentId: "claude-code", toolName: "Bash" }),
+    });
+    const question = makePermEntry({
+      agentId: "claude-code",
+      toolName: "AskUserQuestion",
+      createdAt: Date.now(),
+      interaction: classifyPermissionInteraction({
+        agentId: "claude-code",
+        toolName: "AskUserQuestion",
+      }),
+    });
+    question.autoCloseTimer = setTimeout(() => {}, 60000);
+    api.pendingPermissions.push(tool, question);
+
+    api.refreshPermissionAutoCloseForPolicy();
+
+    assert.ok(tool.autoCloseTimer, "ordinary tool keeps the configured permission timer");
+    assert.strictEqual(question.autoCloseTimer, null, "decision timer is cleared and never re-armed");
+    api.cleanup();
+  });
+
   it("CC default branch destroys the socket without sending a decision", () => {
     const ctx = makeCtx();
     const { resolvePermissionEntry, pendingPermissions } = initPermission(ctx);

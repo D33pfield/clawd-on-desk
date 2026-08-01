@@ -178,6 +178,35 @@ function createCodexPetMain(options = {}) {
     return true;
   }
 
+  async function clearThemeScopedPreferences(themeId) {
+    const keys = [
+      "themeOverrides",
+      "themeVariant",
+      "idleVisual",
+      "petTint",
+      "petAccessory",
+      "holidayAccessoryEnabled",
+    ];
+    const patch = {};
+    for (const key of keys) {
+      const current = settingsController.get(key);
+      if (!current || typeof current !== "object"
+          || !Object.prototype.hasOwnProperty.call(current, themeId)) {
+        continue;
+      }
+      const next = { ...current };
+      delete next[themeId];
+      patch[key] = next;
+    }
+    if (Object.keys(patch).length === 0) {
+      return { status: "ok", noop: true };
+    }
+    if (typeof settingsController.applyBulk !== "function") {
+      return { status: "error", message: "settingsController.applyBulk is unavailable" };
+    }
+    return Promise.resolve(settingsController.applyBulk(patch));
+  }
+
   function getManagedThemeDir(themeId) {
     if (typeof themeId !== "string" || !themeId) return null;
     let userThemesDir;
@@ -225,6 +254,16 @@ function createCodexPetMain(options = {}) {
         sourcePackagePath: marker.sourcePackagePath || "",
         previewAtlasUrl: getPreviewAtlasUrl(theme.id, marker),
         adapterVersion: marker.adapterVersion || 0,
+        atlasColumns: Number.isInteger(marker.sourceAtlasColumns)
+          && marker.sourceAtlasColumns >= 1
+          && marker.sourceAtlasColumns <= 64
+          ? marker.sourceAtlasColumns
+          : 8,
+        atlasRows: Number.isInteger(marker.sourceAtlasRows)
+          && marker.sourceAtlasRows >= 1
+          && marker.sourceAtlasRows <= 64
+          ? marker.sourceAtlasRows
+          : 9,
       },
     };
   }
@@ -654,6 +693,14 @@ function createCodexPetMain(options = {}) {
           status: "error",
           message: (refresh && refresh.message) || "removed package but failed to refresh imported pets",
           summary: refresh && refresh.summary,
+        };
+      }
+      const cleanup = await clearThemeScopedPreferences(themeId);
+      if (!cleanup || cleanup.status !== "ok") {
+        return {
+          status: "error",
+          message: (cleanup && cleanup.message) || "removed package but failed to clean theme settings",
+          summary: refresh.summary,
         };
       }
       return {

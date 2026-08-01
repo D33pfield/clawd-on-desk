@@ -24,6 +24,7 @@ function getTabIcon(tabId) {
 }
 
 function renderSidebar() {
+  document.title = core.helpers.t("settingsWindowTitle");
   const sidebar = document.getElementById("sidebar");
   if (!sidebar) return;
   sidebar.innerHTML = "";
@@ -143,11 +144,22 @@ if (window.settingsAPI && typeof window.settingsAPI.getSnapshot === "function") 
         return [];
       })
       : Promise.resolve([]);
+  const accessoryOptionsPromise =
+    typeof window.settingsAPI.getPetAccessoryOptions === "function"
+      ? window.settingsAPI.getPetAccessoryOptions().catch((err) => {
+        console.warn("settings: getPetAccessoryOptions failed", err);
+        return [];
+      })
+      : Promise.resolve([]);
   Promise.all([
     window.settingsAPI.getSnapshot(),
     tintOptionsPromise,
-  ]).then(([snapshot, petTintOptions]) => {
+    accessoryOptionsPromise,
+  ]).then(([snapshot, petTintOptions, petAccessoryOptions]) => {
     core.runtime.petTintOptions = Array.isArray(petTintOptions) ? petTintOptions : [];
+    core.runtime.petAccessoryOptions = Array.isArray(petAccessoryOptions)
+      ? petAccessoryOptions
+      : [];
     core.ops.applyBootstrap(snapshot);
   });
 }
