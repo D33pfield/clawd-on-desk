@@ -73,11 +73,13 @@ function callStatePost(body, overrides = {}) {
       logs: [],
       userInputShown: [],
       userInputCleared: [],
+      testResults: [],
     };
     const ctx = {
       STATE_SVGS: {
         idle: "x.svg",
         working: "x.svg",
+        error: "x.svg",
         attention: "x.svg",
         notification: "x.svg",
         sleeping: "x.svg",
@@ -93,6 +95,7 @@ function callStatePost(body, overrides = {}) {
       permLog: (message) => calls.logs.push(message),
       showCodexUserInputBubble: (input) => { calls.userInputShown.push(input); return true; },
       clearCodexUserInputBubbles: (...args) => calls.userInputCleared.push(args),
+      handleTestResult: (...args) => calls.testResults.push(args),
       ...overrides.ctx,
     };
     handleStatePost(makeReq(body), res, {
@@ -132,6 +135,71 @@ describe("server-route-state health", () => {
 });
 
 describe("server-route-state POST", () => {
+  it("relays a normalized test result after the lifecycle update", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "test-session",
+      event: "PostToolUse",
+      agent_id: "claude-code",
+      tool_name: "Bash",
+      test_result: "pass",
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession.length, 1);
+    assert.deepStrictEqual(res.calls.testResults, [["pass", {
+      sessionId: localSessionKey("test-session"),
+      agentId: "claude-code",
+      event: "PostToolUse",
+      headless: false,
+    }]]);
+  });
+
+  it("drops malformed or out-of-lifecycle test-result tags", async () => {
+    for (const body of [
+      {
+        state: "working",
+        session_id: "bad-value",
+        event: "PostToolUse",
+        agent_id: "claude-code",
+        test_result: "PASS",
+      },
+      {
+        state: "idle",
+        session_id: "bad-event",
+        event: "Stop",
+        agent_id: "claude-code",
+        test_result: "pass",
+      },
+      {
+        state: "working",
+        session_id: "unsupported-source",
+        event: "PostToolUse",
+        agent_id: "codex",
+        test_result: "pass",
+      },
+    ]) {
+      const res = await callStatePost(JSON.stringify(body));
+      assert.strictEqual(res.statusCode, 200);
+      assert.deepStrictEqual(res.calls.testResults, []);
+    }
+  });
+
+  it("keeps a visual handler failure from failing the state POST", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "error",
+      session_id: "visual-failure",
+      event: "PostToolUseFailure",
+      agent_id: "claude-code",
+      test_result: "fail",
+    }), {
+      ctx: { handleTestResult: () => { throw new Error("renderer gone"); } },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession.length, 1);
+  });
+
   it("settles only the matching Claude subagent decision from the real hook body", async () => {
     const matching = {
       ...makePlanPermission("subagent-session"),

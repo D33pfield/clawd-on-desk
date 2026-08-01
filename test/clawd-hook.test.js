@@ -13,6 +13,8 @@ const path = require("path");
 
 const {
   buildStateBody,
+  classifyTestResult,
+  isRecognizedTestCommand,
   isClaudeHeadlessCommandLine,
   attachStdinDiag,
   STDIN_READ_TIMEOUT_MS: CLAWD_HOOK_STDIN_TIMEOUT_MS,
@@ -521,6 +523,124 @@ describe("buildStateBody", () => {
       tool_input: { command: "npm test" },
     }, mockResolve);
     assert.strictEqual(body.tool_use_id, "toolu_alias");
+  });
+
+  describe("test-result reaction metadata", () => {
+    it("recognizes common runner segments without matching echoed prose", () => {
+      for (const command of [
+        "npm test",
+        "npm run test:unit",
+        "cd app && pnpm run test -- --runInBand",
+        "NODE_ENV=test npx vitest run",
+        "python3 -m pytest tests/unit",
+        "go test ./...",
+        "cargo test --workspace",
+        "bundle exec rspec spec",
+        "./gradlew test",
+      ]) {
+        assert.strictEqual(isRecognizedTestCommand(command), true, command);
+      }
+      for (const command of [
+        "echo npm test",
+        "printf 'pytest passed'",
+        "printf 'setup; npm test'",
+        "node scripts/test-data.js",
+        "git commit -m 'run tests'",
+      ]) {
+        assert.strictEqual(isRecognizedTestCommand(command), false, command);
+      }
+    });
+
+    it("classifies positive and failure summaries with failures taking precedence", () => {
+      const base = { tool_name: "Bash", tool_input: { command: "npm test" } };
+      assert.strictEqual(classifyTestResult("PostToolUse", {
+        ...base,
+        tool_response: { stdout: "Tests: 12 passed, 12 total" },
+      }), "pass");
+      assert.strictEqual(classifyTestResult("PostToolUse", {
+        ...base,
+        tool_response: { stdout: "Tests: 11 passed, 1 failed, 12 total" },
+      }), "fail");
+      assert.strictEqual(classifyTestResult("PostToolUse", {
+        ...base,
+        tool_response: { stdout: "0 errors in setup\nTests: 11 passed, 1 failed, 12 total" },
+      }), "fail");
+      assert.strictEqual(classifyTestResult("PostToolUse", {
+        ...base,
+        tool_response: { content: [{ type: "text", text: "test result: ok. 3 passed; 0 failed" }] },
+      }), "pass");
+      assert.strictEqual(classifyTestResult("PostToolUse", {
+        ...base,
+        tool_response: { stderr: "Traceback (most recent call last):\nAssertionError" },
+      }), "fail");
+    });
+
+    it("treats a recognized PostToolUseFailure as fail even without output", () => {
+      assert.strictEqual(classifyTestResult("PostToolUseFailure", {
+        tool_name: "Bash",
+        tool_input: { command: "pytest" },
+      }), "fail");
+      assert.strictEqual(classifyTestResult("PostToolUseFailure", {
+        tool_name: "Bash",
+        tool_input: { command: "cd app && npm test" },
+      }), "fail");
+    });
+
+    it("does not blame a test for another segment's failure", () => {
+      for (const command of [
+        "npm run build && npm test",
+        "npm test && npm run lint",
+        "npm test && python scripts/package.py",
+        "npm test | tee test.log",
+      ]) {
+        assert.strictEqual(classifyTestResult("PostToolUseFailure", {
+          tool_name: "Bash",
+          tool_input: { command },
+          tool_response: {
+            stderr: command.includes("package.py")
+              ? "Traceback (most recent call last):\nAssertionError"
+              : "BUILD FAILED: 1 error",
+          },
+        }), null, command);
+      }
+    });
+
+    it("accepts a test-specific failure summary from a compound command", () => {
+      assert.strictEqual(classifyTestResult("PostToolUseFailure", {
+        tool_name: "Bash",
+        tool_input: { command: "npm test && npm run lint" },
+        tool_response: { stderr: "Tests: 1 failed, 11 passed, 12 total" },
+      }), "fail");
+    });
+
+    it("requires Bash, a recognized command, and a confident successful summary", () => {
+      assert.strictEqual(classifyTestResult("PostToolUse", {
+        tool_name: "Read",
+        tool_input: { command: "npm test" },
+        tool_response: "12 passed",
+      }), null);
+      assert.strictEqual(classifyTestResult("PostToolUse", {
+        tool_name: "Bash",
+        tool_input: { command: "echo npm test" },
+        tool_response: "12 passed",
+      }), null);
+      assert.strictEqual(classifyTestResult("PostToolUse", {
+        tool_name: "Bash",
+        tool_input: { command: "npm test" },
+        tool_response: "command finished",
+      }), null);
+    });
+
+    it("adds only the pass/fail tag to the state body", () => {
+      const body = buildStateBody("PostToolUse", {
+        session_id: "test-session",
+        tool_name: "Bash",
+        tool_input: { command: "node --test" },
+        tool_response: "# tests 4\n# pass 4\n# fail 0",
+      }, mockResolve);
+      assert.strictEqual(body.test_result, "pass");
+      assert.ok(!JSON.stringify(body).includes("# tests 4"));
+    });
   });
 
   describe("session_title extraction", () => {

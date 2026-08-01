@@ -739,6 +739,7 @@ function makeGeneralSnapshot(overrides = {}) {
     sessionHudCleanupDetached: true,
     soundMuted: false,
     soundVolume: 0.5,
+    testReactionsEnabled: false,
     lowPowerIdleMode: false,
     allowEdgePinning: true,
     disableMiniMode: false,
@@ -4797,6 +4798,24 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("rowBubblePolicy"));
     assert.ok(i18nSource.includes("bubbleUpdateWarning"));
     assert.ok(i18nSource.includes("bubbleSecondsPrefix"));
+  });
+
+  it("renders the opt-in test-result reaction switch with all five translations", () => {
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ testReactionsEnabled: false }),
+    });
+    harness.renderContent();
+
+    const meta = harness.getSwitchMeta("testReactionsEnabled");
+    assert.ok(meta);
+    assert.strictEqual(meta.element.classList.contains("on"), false);
+    assert.strictEqual(meta.row.querySelector(".row-label").textContent, "Test result reactions");
+
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    for (const key of ["rowTestReactions", "rowTestReactionsDesc"]) {
+      const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
+      assert.strictEqual(matches && matches.length, 5, `${key} should appear in all 5 languages`);
+    }
   });
 
   it("registers the Session cleanup group with three number rows, atomic reset, and i18n keys", () => {
