@@ -56,7 +56,7 @@ const {
   PET_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
-const CURRENT_VERSION = 12;
+const CURRENT_VERSION = 13;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -72,7 +72,7 @@ const SCHEMA = {
     type: "number",
     default: CURRENT_VERSION,
   },
-  // Window state
+  // Pet window state
   x: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   y: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   positionSaved: { type: "boolean", default: false },
@@ -101,6 +101,14 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => null,
     normalize: normalizeSavedPixelWorkArea,
+  },
+  // Normal-state geometry for the resizable Settings window. `null` means the
+  // user has not placed it yet, so the runtime centers it on the pet display.
+  // Maximized/minimized/fullscreen bounds are never stored here.
+  settingsWindowBounds: {
+    type: "object",
+    defaultFactory: () => null,
+    normalize: normalizeSettingsWindowBounds,
   },
   size: {
     type: "string",
@@ -733,6 +741,11 @@ function migrate(raw) {
     if (!("showDock" in out)) out.showDock = true;
     out.version = 12;
   }
+  // v12 -> v13: Settings-window geometry persistence. No backfill is needed:
+  // an absent/null value intentionally keeps the existing centered placement.
+  if (out.version < 13) {
+    out.version = 13;
+  }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
   }
@@ -811,6 +824,37 @@ function normalizeSavedPixelWorkArea(value) {
   if (!Number.isFinite(w) || w <= 0) return null;
   if (!Number.isFinite(h) || h <= 0) return null;
   return { width: w, height: h };
+}
+
+function isValidSettingsWindowBounds(value) {
+  return !!value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Number.isSafeInteger(value.x)
+    && Number.isSafeInteger(value.y)
+    && Number.isSafeInteger(value.width)
+    && Number.isSafeInteger(value.height)
+    && value.width > 0
+    && value.height > 0;
+}
+
+function normalizeSettingsWindowBounds(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (
+    !Number.isFinite(value.x)
+    || !Number.isFinite(value.y)
+    || !Number.isFinite(value.width)
+    || !Number.isFinite(value.height)
+  ) {
+    return null;
+  }
+  const normalized = {
+    x: Math.round(value.x),
+    y: Math.round(value.y),
+    width: Math.round(value.width),
+    height: Math.round(value.height),
+  };
+  return isValidSettingsWindowBounds(normalized) ? normalized : null;
 }
 
 function normalizePositionDisplay(value) {
@@ -1284,6 +1328,7 @@ module.exports = {
   normalizeShortcuts,
   normalizeOptionalHttpUrl,
   normalizePathList,
+  isValidSettingsWindowBounds,
   MAX_CUSTOM_DISCOVERY_PATHS,
   MAX_CUSTOM_DISCOVERY_PATH_LENGTH,
 };

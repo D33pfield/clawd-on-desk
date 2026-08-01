@@ -16,6 +16,7 @@ const MIN_WIDTH = 640;
 const MIN_HEIGHT = 480;
 const READY_TO_SHOW_FALLBACK_MS = 2000;
 const SETTINGS_FRONT_LIFT_MS = 200;
+const BOUNDS_SAVE_DEBOUNCE_MS = 500;
 const FALLBACK_WORK_AREA = { x: 0, y: 0, width: 1280, height: 800 };
 
 function requiredDependency(value, name) {
@@ -52,6 +53,26 @@ function clampBoundsToWorkArea(bounds, workArea) {
   };
 }
 
+function roundedBounds(bounds) {
+  if (!isUsableBounds(bounds)) return null;
+  const normalized = {
+    x: Math.round(bounds.x),
+    y: Math.round(bounds.y),
+    width: Math.round(bounds.width),
+    height: Math.round(bounds.height),
+  };
+  return isUsableBounds(normalized) ? normalized : null;
+}
+
+function sameBounds(a, b) {
+  return !!a
+    && !!b
+    && a.x === b.x
+    && a.y === b.y
+    && a.width === b.width
+    && a.height === b.height;
+}
+
 function createSettingsWindowRuntime(options = {}) {
   const app = requiredDependency(options.app, "app");
   const BrowserWindow = requiredDependency(options.BrowserWindow, "BrowserWindow");
@@ -72,6 +93,8 @@ function createSettingsWindowRuntime(options = {}) {
   let settingsWindow = null;
   let readyToShowFallbackTimer = null;
   let liftTimer = null;
+  let saveBoundsTimer = null;
+  let lastSavedBounds = null;
   let showPendingSettingsWindow = null;
 
   function getWindow() {
@@ -100,6 +123,12 @@ function createSettingsWindowRuntime(options = {}) {
     liftTimer = null;
   }
 
+  function clearSaveBoundsTimer() {
+    if (!saveBoundsTimer) return;
+    clearScheduled(saveBoundsTimer);
+    saveBoundsTimer = null;
+  }
+
   function getIconPath() {
     return getSettingsWindowIconPath({
       platform,
@@ -123,9 +152,17 @@ function createSettingsWindowRuntime(options = {}) {
   }
 
   function computeInitialBounds() {
+    let savedBounds = null;
+    if (typeof options.getSavedBounds === "function") {
+      try { savedBounds = roundedBounds(options.getSavedBounds()); } catch {}
+    }
+
     let cx = 0;
     let cy = 0;
-    if (typeof options.getPetWindowBounds === "function") {
+    if (savedBounds) {
+      cx = savedBounds.x + savedBounds.width / 2;
+      cy = savedBounds.y + savedBounds.height / 2;
+    } else if (typeof options.getPetWindowBounds === "function") {
       try {
         const petBounds = options.getPetWindowBounds();
         if (isUsableBounds(petBounds)) {
@@ -144,7 +181,16 @@ function createSettingsWindowRuntime(options = {}) {
       }
     }
 
-    const scale = getTextScale();
+    const scale = getTextScale(savedBounds || workArea);
+    const minWidth = scaleWidth(MIN_WIDTH, scale);
+    const minHeight = scaleHeight(MIN_HEIGHT, scale);
+    if (savedBounds) {
+      return clampBoundsToWorkArea({
+        ...savedBounds,
+        width: Math.max(savedBounds.width, minWidth),
+        height: Math.max(savedBounds.height, minHeight),
+      }, workArea);
+    }
     const width = Math.min(scaleWidth(DEFAULT_WIDTH, scale), Math.max(1, workArea.width));
     const height = Math.min(scaleHeight(DEFAULT_HEIGHT, scale), Math.max(1, workArea.height));
     return clampBoundsToWorkArea({
@@ -155,8 +201,64 @@ function createSettingsWindowRuntime(options = {}) {
     }, workArea);
   }
 
-  function getTextScale() {
-    return clampTextScale(typeof options.getTextScale === "function" ? options.getTextScale() : 1);
+  function getTextScale(bounds = null) {
+    return clampTextScale(typeof options.getTextScale === "function" ? options.getTextScale(bounds) : 1);
+  }
+
+  function getNormalWindowBounds(win) {
+    if (!isLiveWindow(win)) return null;
+    try {
+      if (typeof win.getNormalBounds === "function") {
+        const bounds = roundedBounds(win.getNormalBounds());
+        if (bounds) return bounds;
+      }
+    } catch {}
+    try {
+      return typeof win.getBounds === "function" ? roundedBounds(win.getBounds()) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function persistWindowBoundsNow(win) {
+    clearSaveBoundsTimer();
+    if (typeof options.onSaveBounds !== "function") return false;
+    const bounds = getNormalWindowBounds(win);
+    if (!bounds || sameBounds(bounds, lastSavedBounds)) return false;
+    try {
+      const result = options.onSaveBounds(bounds);
+      if (result && typeof result.then === "function") {
+        const attemptedBounds = bounds;
+        Promise.resolve(result).then(
+          (response) => {
+            if (!response || response.status !== "error") return;
+            if (sameBounds(lastSavedBounds, attemptedBounds)) lastSavedBounds = null;
+            console.warn("Clawd: failed to persist Settings window bounds:", response.message);
+          },
+          (err) => {
+            if (sameBounds(lastSavedBounds, attemptedBounds)) lastSavedBounds = null;
+            console.warn("Clawd: failed to persist Settings window bounds:", err && err.message);
+          },
+        );
+      } else if (result && result.status === "error") {
+        console.warn("Clawd: failed to persist Settings window bounds:", result.message);
+        return false;
+      }
+      lastSavedBounds = bounds;
+      return true;
+    } catch (err) {
+      console.warn("Clawd: failed to persist Settings window bounds:", err && err.message);
+      return false;
+    }
+  }
+
+  function scheduleWindowBoundsSave(win) {
+    if (typeof options.onSaveBounds !== "function") return;
+    clearSaveBoundsTimer();
+    saveBoundsTimer = scheduleTimer(() => {
+      saveBoundsTimer = null;
+      persistWindowBoundsNow(win);
+    }, BOUNDS_SAVE_DEBOUNCE_MS);
   }
 
   function getTitle() {
@@ -193,13 +295,13 @@ function createSettingsWindowRuntime(options = {}) {
   function applyTextScaleToWindow() {
     const win = getWindow();
     if (!isLiveWindow(win)) return;
-    const scale = getTextScale();
+    const bounds = typeof win.getBounds === "function" ? win.getBounds() : null;
+    const scale = getTextScale(bounds);
     applyZoomToWindow(win, scale);
     notifyTextScaleContextChanged(win);
     const minW = scaleWidth(MIN_WIDTH, scale);
     const minH = scaleHeight(MIN_HEIGHT, scale);
     if (typeof win.setMinimumSize === "function") win.setMinimumSize(minW, minH);
-    const bounds = typeof win.getBounds === "function" ? win.getBounds() : null;
     if (bounds && (bounds.width < minW || bounds.height < minH)) {
       win.setBounds({
         ...bounds,
@@ -260,11 +362,11 @@ function createSettingsWindowRuntime(options = {}) {
 
     const iconPath = getIconPath();
     const bounds = computeInitialBounds();
-    const createScale = getTextScale();
+    const createScale = getTextScale(bounds);
     const opts = {
       ...bounds,
-      minWidth: scaleWidth(MIN_WIDTH, createScale),
-      minHeight: scaleHeight(MIN_HEIGHT, createScale),
+      minWidth: Math.min(scaleWidth(MIN_WIDTH, createScale), bounds.width),
+      minHeight: Math.min(scaleHeight(MIN_HEIGHT, createScale), bounds.height),
       show: false,
       frame: true,
       transparent: false,
@@ -309,15 +411,20 @@ function createSettingsWindowRuntime(options = {}) {
     }
     // textScale is per-display: re-resolve after the user drags the window
     // somewhere else (debounced — "move" fires continuously during drags).
+    let moveTextScaleTimer = null;
     if (typeof createdWindow.on === "function") {
-      let moveTextScaleTimer = null;
       createdWindow.on("move", () => {
         if (moveTextScaleTimer) clearScheduled(moveTextScaleTimer);
         moveTextScaleTimer = scheduleTimer(() => {
           moveTextScaleTimer = null;
           applyTextScaleToWindow();
         }, 350);
+        scheduleWindowBoundsSave(createdWindow);
       });
+      createdWindow.on("resize", () => scheduleWindowBoundsSave(createdWindow));
+      // `closed` is too late to query native geometry. Flush while the window
+      // is still live so a pending debounce cannot lose the user's last move.
+      createdWindow.on("close", () => persistWindowBoundsNow(createdWindow));
     }
     let didShowCreatedWindow = false;
     function showCreatedWindow(showOptions = {}) {
@@ -338,6 +445,11 @@ function createSettingsWindowRuntime(options = {}) {
         showPendingSettingsWindow = null;
         clearReadyToShowFallbackTimer();
         clearLiftTimer();
+        clearSaveBoundsTimer();
+        if (moveTextScaleTimer) {
+          clearScheduled(moveTextScaleTimer);
+          moveTextScaleTimer = null;
+        }
       }
       if (typeof options.onBeforeClosed === "function") options.onBeforeClosed();
       if (isCurrentWindow) settingsWindow = null;

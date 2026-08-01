@@ -719,7 +719,11 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
   discordDefaultAppIdPresent: !!discordPresenceSettings.DEFAULT_CLAWD_DISCORD_APP_ID,
   getPetWindowBounds: () => getPetWindowBounds(),
   getNearestWorkArea: (cx, cy) => getNearestWorkArea(cx, cy),
-  getTextScale: () => effectiveTextScaleForKey(getSettingsDisplayKey()),
+  getTextScale: (bounds) => effectiveTextScaleForKey(
+    getDisplayKeyForBounds(bounds) || getSettingsDisplayKey()
+  ),
+  getSavedBounds: () => _settingsController.get("settingsWindowBounds"),
+  onSaveBounds: (bounds) => _settingsController.applyUpdate("settingsWindowBounds", bounds),
   getTitle: () => translate("settingsWindowTitle"),
   onBeforeCreate: () => bumpAnimationOverridePreviewPosterGeneration(),
   onBeforeClosed: () => {
