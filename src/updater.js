@@ -134,14 +134,23 @@ function getErrorMessage(err) {
 
 function sanitizeUpdateErrorDetail(value, maxLength = UPDATE_ERROR_DETAIL_MAX_LENGTH) {
   let text = redactSecrets(value);
-  text = text.replace(/\b(https?:\/\/)(?:[^/\s?#"'<>@]+@)/gi, "$1[REDACTED]@");
-  text = text.replace(/(https?:\/\/[^\s?#"'<>]+)(?:\?[^\s#"'<>]*)?(?:#[^\s"'<>]*)?/gi, "$1");
+  const tokenBoundary = String.raw`(^|[\s"'(<\[{=:,;\x60])`;
+  text = text.replace(
+    new RegExp(`${tokenBoundary}([a-z][a-z0-9+.-]*:\\/\\/)(?:[^/\\s?#"'<>]*@)`, "gim"),
+    "$1$2[REDACTED]@"
+  );
+  text = text.replace(
+    new RegExp(`${tokenBoundary}([a-z][a-z0-9+.-]*:\\/\\/[^\\s?#"'<>]+)(?:\\?[^\\s#"'<>]*)?(?:#[^\\s"'<>]*)?`, "gim"),
+    "$1$2"
+  );
   text = text.replace(/\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*[^\r\n]+/gi, "$1: [REDACTED]");
   // Copied updater diagnostics use a stricter policy than user-facing approval
   // summaries: redact even custom lower-case names such as company_api_token.
   text = text.replace(
-    /\b([a-z0-9_.-]*(?:token|password|passwd|secret|api[_-]?key|cookie|credential)[a-z0-9_.-]*)\s*[:=]\s*([^\s,;]+)/gi,
-    "$1=[REDACTED]"
+    /(^|[\s"'(<\[{=:,;\x60])([a-z0-9_.-]+)["']?\s*[:=]\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,;\r\n}]+)/gim,
+    (match, prefix, key) => /(?:token|password|passwd|secret|api[_-]?key|cookie|credential)/i.test(key)
+      ? `${prefix}${key}=[REDACTED]`
+      : match
   );
   if (text.length <= maxLength) return text.trim();
   const suffix = "\n... [truncated]";
@@ -1246,9 +1255,9 @@ function initUpdater(ctx, deps = {}) {
     autoUpdater.on("update-available", async (info) => {
       const wasManual = isManualCheck();
       const wantsAutoPrimary = isDownloadIntent();
-      clearActiveCheck();
 
       if (!wasManual && isSilentMode()) {
+        clearActiveCheck();
         hideBubble();
         publishUpdateCheckSnapshot("idle");
         dismissToResolvedState();
@@ -1307,10 +1316,11 @@ function initUpdater(ctx, deps = {}) {
     });
 
     autoUpdater.on("update-not-available", async () => {
+      const wasManual = isManualCheck();
+      clearActiveCheck();
       publishUpdateCheckSnapshot("up-to-date", { version: app.getVersion() });
       rebuildMenus();
-      if (isManualCheck()) {
-        clearActiveCheck();
+      if (wasManual) {
         void showUpToDateBubble(app.getVersion());
         return;
       }
@@ -1318,6 +1328,7 @@ function initUpdater(ctx, deps = {}) {
     });
 
     autoUpdater.on("update-downloaded", async (info) => {
+      clearActiveCheck();
       publishUpdateCheckSnapshot("ready", { version: info.version });
       rebuildMenus();
       clearOverlay();
@@ -1330,11 +1341,13 @@ function initUpdater(ctx, deps = {}) {
       log(`ERROR: AutoUpdater error: ${err.message}`);
       const shouldShowErrorBubble = isManualCheck() || updateStatus === "downloading";
       const failedWhileDownloading = updateStatus === "downloading";
+      const releaseConfirmed = !!(activeCheck && activeCheck.releaseConfirmed);
+      clearActiveCheck();
       if (!shouldShowErrorBubble) {
         const report = buildUpdateErrorReport(err, {
           phase: failedWhileDownloading ? "download" : "availability-check",
           mode: "packaged",
-          releaseConfirmed: !!(activeCheck && activeCheck.releaseConfirmed),
+          releaseConfirmed,
         });
         publishUpdateCheckSnapshot("error", { error: report });
         rebuildMenus();
@@ -1342,8 +1355,6 @@ function initUpdater(ctx, deps = {}) {
         return;
       }
 
-      const releaseConfirmed = !!(activeCheck && activeCheck.releaseConfirmed);
-      clearActiveCheck();
       if (isUpdate404Error(err) && !releaseConfirmed) {
         publishUpdateCheckSnapshot("up-to-date", { version: app.getVersion() });
         rebuildMenus();
@@ -1378,7 +1389,8 @@ function initUpdater(ctx, deps = {}) {
   }
 
   async function checkForUpdates(arg = true) {
-    if (updateStatus === "checking" || updateStatus === "downloading") {
+    const hasActiveAvailableFlow = updateStatus === "available" && !!activeCheck;
+    if (["checking", "downloading", "ready"].includes(updateStatus) || hasActiveAvailableFlow) {
       log(`Check skipped: already ${updateStatus}`);
       return getUpdateCheckSnapshot();
     }
@@ -1430,7 +1442,9 @@ function initUpdater(ctx, deps = {}) {
       return getUpdateCheckSnapshot();
     }
 
-    if (isRunningX64OnWindowsArm64() && findWindowsArm64InstallerAsset(latestRelease)) {
+    if (compareVersions(currentVersion, latestVersion) <= 0 &&
+        isRunningX64OnWindowsArm64() &&
+        findWindowsArm64InstallerAsset(latestRelease)) {
       publishUpdateCheckSnapshot("available", { version: latestVersion });
       void maybePromptNativeArm64Installer(latestRelease, { manual, currentVersion });
       return getUpdateCheckSnapshot();
@@ -1479,7 +1493,6 @@ function initUpdater(ctx, deps = {}) {
     try {
       const result = await autoUpdater.checkForUpdates();
       if (updateStatus === "checking") {
-        clearActiveCheck();
         rebuildMenus();
         if (result && result.updateInfo && result.updateInfo.version) {
           publishUpdateCheckSnapshot("available", { version: result.updateInfo.version });
@@ -1525,9 +1538,10 @@ function initUpdater(ctx, deps = {}) {
   }
 
   function getUpdateMenuItem() {
+    const hasActiveAvailableFlow = updateStatus === "available" && !!activeCheck;
     return {
       label: getUpdateMenuLabel(),
-      enabled: updateStatus !== "checking" && updateStatus !== "downloading",
+      enabled: !["checking", "downloading"].includes(updateStatus) && !hasActiveAvailableFlow,
       click: () => updateStatus === "ready"
         ? getAutoUpdater()?.quitAndInstall(false, true)
         : checkForUpdates(true),
