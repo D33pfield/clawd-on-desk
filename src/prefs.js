@@ -224,6 +224,9 @@ const SCHEMA = {
     default: 5000,
     validate: (v) => Number.isInteger(v) && v >= 0 && v <= 60000,
   },
+  // Opt-in decorative feedback for recognized Claude Code Bash test runs.
+  // The hook sends only pass/fail, never the command or full test output.
+  testReactionsEnabled: { type: "boolean", default: false },
   lowPowerIdleMode: { type: "boolean", default: false },
   mobilePreviewEnabled: { type: "boolean", default: false },
   // When true, prevent the OS from sleeping while any agent task is in

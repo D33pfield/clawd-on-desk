@@ -9,6 +9,7 @@
     "flashTaskbarOnComplete",
     "flashIntervalMs",
     "flashDurationMs",
+    "testReactionsEnabled",
     "soundVolume",
     "lowPowerIdleMode",
     "keepAwakeWhileWorking",
@@ -120,6 +121,11 @@
     parent.appendChild(helpers.buildSection(t("sectionAlerts"), [
       buildSoundGroup(),
       buildFlashGroup(),
+      helpers.buildSwitchRow({
+        key: "testReactionsEnabled",
+        labelKey: "rowTestReactions",
+        descKey: "rowTestReactionsDesc",
+      }),
       helpers.buildSwitchRow({
         key: "hideBubbles",
         labelKey: "rowHideBubbles",

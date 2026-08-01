@@ -317,6 +317,11 @@ function handleStatePost(req, res, options) {
         ? data.permission_gate_id.trim().slice(0, 100)
         : null;
       const preserveState = data.preserve_state === true;
+      const testResult = (
+        (agentId === "claude-code" || agentId === "cursor-agent")
+        && (event === "PostToolUse" || event === "PostToolUseFailure")
+        && (data.test_result === "pass" || data.test_result === "fail")
+      ) ? data.test_result : null;
       // Statusline refresh POSTs are metadata, not lifecycle (#590 B2): they
       // may only annotate an existing session with quota/context and must
       // never create one, touch recentEvents, or bump updatedAt. state.js
@@ -647,6 +652,19 @@ function handleStatePost(req, res, options) {
             ...(codexUserInput ? { transientPermissionEvent: true } : {}),
             ...(agentIdentity.defaulted ? { agentIdDefaulted: true } : {}),
           });
+        }
+        // Decorative only: the lifecycle update above remains authoritative.
+        // Main owns the opt-in / DND / visibility / mini / drag gate; a visual
+        // failure must never turn a valid hook state POST into a 400.
+        if (testResult && typeof ctx.handleTestResult === "function") {
+          try {
+            ctx.handleTestResult(testResult, {
+              sessionId: sid,
+              agentId,
+              event,
+              headless: effHeadless,
+            });
+          } catch {}
         }
         res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
         res.end("ok");
