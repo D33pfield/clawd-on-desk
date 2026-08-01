@@ -710,6 +710,7 @@
       desc: t("rowFlashDesc"),
       defaultCollapsed: true,
       className: "flash-collapsible",
+      animateExpansion: false,
       children: [buildOptionList("flash-option-list", [
         helpers.buildSwitchRow({
           key: "flashTaskbarOnComplete",
