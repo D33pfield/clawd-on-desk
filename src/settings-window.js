@@ -412,6 +412,11 @@ function createSettingsWindowRuntime(options = {}) {
         createdWindow.setBounds(bounds);
       }
     } catch {}
+    // Treat the post-correction native rectangle as the initial baseline.
+    // Closing an untouched window must not rewrite prefs, and any platform
+    // that cannot adopt the requested rectangle exactly must not feed its
+    // constructor/frame quantization back into the next launch.
+    lastSavedBounds = getNormalWindowBounds(createdWindow) || bounds;
     if (isWin && typeof createdWindow.setAppDetails === "function") {
       const taskbarDetails = getTaskbarDetails();
       if (taskbarDetails && taskbarDetails.appIconPath) {

@@ -5309,6 +5309,25 @@ describe("settings renderer browser environment", () => {
     assert.ok(clearIndex < renderIndex, "broadcast cleanup must happen before full rerender");
   });
 
+  it("updates runtime-only Settings bounds without rebuilding the active tab", () => {
+    const initialSnapshot = makeGeneralSnapshot({ settingsWindowBounds: null });
+    const harness = loadGeneralTabForTest({ snapshot: initialSnapshot });
+    harness.renderContent();
+    const mountedControl = harness.getSwitch("sessionHudEnabled");
+    harness.content.scrollTop = 317;
+    const bounds = { x: -1200, y: 80, width: 900, height: 640 };
+
+    harness.core.ops.applyChanges({
+      changes: { settingsWindowBounds: bounds },
+      snapshot: { ...initialSnapshot, settingsWindowBounds: bounds },
+    });
+
+    assert.deepStrictEqual(harness.core.state.snapshot.settingsWindowBounds, bounds);
+    assert.strictEqual(harness.getContentRenderCount(), 1);
+    assert.strictEqual(harness.getSwitch("sessionHudEnabled"), mountedControl);
+    assert.strictEqual(harness.content.scrollTop, 317);
+  });
+
   it("patches the Session HUD master switch without rebuilding General content", async () => {
     const updateCalls = [];
     const initialSnapshot = {

@@ -1240,14 +1240,14 @@ describe("prefs.migrate v11 → v12 (showDock default off for fresh installs)", 
   });
 });
 
-describe("prefs.migrate v12 → v13 (Settings window bounds)", () => {
-  it("advances the schema without inventing geometry for existing users", () => {
+describe("prefs Settings window bounds schema addition", () => {
+  it("uses the current schema default without a version bump", () => {
     const upgraded = prefs.validate(prefs.migrate({ version: 12, lang: "zh" }));
     assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
     assert.strictEqual(upgraded.settingsWindowBounds, null);
   });
 
-  it("preserves valid geometry from an early v12 build or hand-edited file", () => {
+  it("preserves valid geometry in a current-version or hand-edited file", () => {
     const bounds = { x: -1180, y: 90, width: 920, height: 680 };
     const upgraded = prefs.validate(prefs.migrate({
       version: 12,
