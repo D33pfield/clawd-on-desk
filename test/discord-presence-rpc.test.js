@@ -6,7 +6,11 @@ const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
+  CLAWD_ICON_URL,
+  GIF_BASE_URL,
+  toCoarseState,
   resolvePresenceState,
+  normalizeGifBaseUrl,
   presenceImageUrl,
   buildPresencePayload,
   pickDominantSession,
@@ -34,6 +38,19 @@ function firstFrame(socket) {
 }
 
 const READY_FRAME = encodeFrame(OP.FRAME, { cmd: "DISPATCH", evt: "READY" });
+const MIRROR_ON = { mirrorPetAnimation: true };
+const clawdVisual = (state, svg) => ({ state, svg, themeId: "clawd" });
+
+test("toCoarseState preserves the original four-state privacy contract", () => {
+  assert.strictEqual(toCoarseState("idle"), "idle");
+  assert.strictEqual(toCoarseState("thinking"), "thinking");
+  assert.strictEqual(toCoarseState("working"), "working");
+  assert.strictEqual(toCoarseState("juggling"), "working");
+  assert.strictEqual(toCoarseState("carrying"), "working");
+  assert.strictEqual(toCoarseState("notification"), "waiting");
+  assert.strictEqual(toCoarseState("error"), "waiting");
+  assert.strictEqual(toCoarseState("mini-working"), "working");
+});
 
 test("resolvePresenceState maps active states and recovers done/error from the badge", () => {
   assert.strictEqual(resolvePresenceState({ state: "thinking" }), "thinking");
@@ -50,7 +67,7 @@ test("resolvePresenceState maps active states and recovers done/error from the b
   assert.strictEqual(resolvePresenceState(null), "idle");
 });
 
-test("buildPresencePayload exposes ONLY agent + coarse state + sprite by default", () => {
+test("buildPresencePayload exposes ONLY agent + coarse state + legacy icon by default", () => {
   const session = {
     agentId: "claude-code",
     state: "working",
@@ -63,12 +80,12 @@ test("buildPresencePayload exposes ONLY agent + coarse state + sprite by default
   assert.strictEqual(blob.includes("fix the thing"), false);  // session title never leaks
   assert.match(out.state, /working/i);            // coarse state present
   assert.ok(out.details);                         // agent label present
-  assert.ok(out.assets && out.assets.large_image); // sprite present
+  assert.strictEqual(out.assets && out.assets.large_image, CLAWD_ICON_URL);
 });
 
-test("large_image + label follow the resolved presence state", () => {
-  const img = (s) => buildPresencePayload(s, {}).assets.large_image;
-  const label = (s) => buildPresencePayload(s, {}).state;
+test("mirror-on fallback image + label follow the resolved presence state", () => {
+  const img = (s) => buildPresencePayload(s, MIRROR_ON).assets.large_image;
+  const label = (s) => buildPresencePayload(s, MIRROR_ON).state;
   assert.match(img({ state: "thinking" }), /clawd-thinking\.gif$/);
   assert.match(img({ state: "working" }), /clawd-typing\.gif$/);
   assert.match(img({ state: "juggling" }), /clawd-juggling\.gif$/);
@@ -78,6 +95,17 @@ test("large_image + label follow the resolved presence state", () => {
   assert.strictEqual(label({ state: "idle", requiresCompletionAck: true }), "Waiting for input");
   assert.strictEqual(label({ state: "idle", badge: "interrupted" }), "Error");
   assert.match(presenceImageUrl("totally-unknown"), /clawd-idle\.gif$/); // unknown falls back to idle
+});
+
+test("GIF base URL accepts an HTTPS dev host and rejects unsafe overrides", () => {
+  const devBase = "https://example.test/pr-738/assets/discord-presence/";
+  assert.strictEqual(normalizeGifBaseUrl(devBase), devBase.slice(0, -1));
+  assert.strictEqual(
+    presenceImageUrl("working", devBase),
+    "https://example.test/pr-738/assets/discord-presence/clawd-typing.gif"
+  );
+  assert.strictEqual(normalizeGifBaseUrl("http://127.0.0.1:9999/assets"), GIF_BASE_URL);
+  assert.strictEqual(normalizeGifBaseUrl("not a URL"), GIF_BASE_URL);
 });
 
 test("buildPresencePayload keeps custom executable names out of public presence", () => {
@@ -255,6 +283,28 @@ test("before-quit stops the Discord presence bridge before tearing down session 
   assert.ok(bridgeStop < stateCleanup, "presence bridge must stop before _state.cleanup()");
 });
 
+test("main caches the renderer-visible visual, carries theme identity, and keeps the GIF override dev-only", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+  const sendStart = source.indexOf("function sendToRenderer(channel, ...args)");
+  const sendEnd = source.indexOf("function sendToHitWin", sendStart);
+  const sendBlock = source.slice(sendStart, sendEnd);
+  const cacheWrite = sendBlock.indexOf("lastDiscordPresenceVisual = {");
+  const bridgeFeed = sendBlock.indexOf("discordPresenceBridge.onVisual(");
+  assert.ok(cacheWrite !== -1 && bridgeFeed !== -1 && cacheWrite < bridgeFeed,
+    "state-change must be cached even before a bridge exists");
+  assert.ok(sendBlock.includes("themeId: activeTheme && activeTheme._id"),
+    "visual cache must carry the active theme identity");
+
+  const start = source.indexOf("function startDiscordPresence()");
+  const end = source.indexOf("function syncDiscordPresence", start);
+  const startBlock = source.slice(start, end);
+  assert.ok(startBlock.includes("const visual = lastDiscordPresenceVisual"),
+    "first enable must prefer the renderer-visible cache over state.currentSvg");
+  assert.ok(startBlock.includes("visual.state, visual.svg, visual.themeId"));
+  assert.ok(startBlock.includes('gifBaseUrl: app.isPackaged ? "" : process.env.CLAWD_DISCORD_GIF_BASE_URL'),
+    "packaged builds must ignore the pre-merge QA override");
+});
+
 test("stop() resets the reconnect backoff so a later start() dials at the base delay", () => {
   // reconnectAttempts is a closure private; the only observable is the delay
   // scheduleReconnect() hands setTimeout, so capture it instead of firing it.
@@ -302,16 +352,37 @@ test("stop() resets the reconnect backoff so a later start() dials at the base d
 
 // ── Animation mirror: presence image follows the pet's state animation ──
 
-const MIRROR_ON = { mirrorPetAnimation: true };
+test("mirror missing/false preserves the complete pre-mirror payload contract", () => {
+  const cases = [
+    [{ agentId: "claude-code", state: "working" }, "Working"],
+    [{ agentId: "claude-code", state: "juggling" }, "Working"],
+    [{ agentId: "claude-code", state: "idle", badge: "done", requiresCompletionAck: true }, "Idle"],
+    [{ agentId: "claude-code", state: "idle", badge: "interrupted" }, "Idle"],
+  ];
+  const visual = clawdVisual("working", "clawd-working-building.svg");
+  for (const [session, expectedState] of cases) {
+    const missing = buildPresencePayload(session, {}, visual);
+    const explicitOff = buildPresencePayload(session, { mirrorPetAnimation: false }, visual);
+    for (const out of [missing, explicitOff]) {
+      assert.strictEqual(out.state, expectedState);
+      assert.strictEqual(out.assets.large_image, CLAWD_ICON_URL);
+    }
+    assert.deepStrictEqual(explicitOff, missing);
+  }
+  const withProject = buildPresencePayload(
+    { agentId: "claude-code", state: "juggling", cwd: "D:\\repos\\demo" },
+    { mirrorPetAnimation: false, privacyShowProject: true },
+    visual
+  );
+  assert.strictEqual(withProject.state, "Working · demo");
+  assert.strictEqual(withProject.assets.large_image, CLAWD_ICON_URL);
+});
 
-test("the animation mirror is a separate opt-in: a known visual never swaps the sprite without it", () => {
+test("the animation mirror swaps a known Clawd visual only after the opt-in", () => {
   const session = { agentId: "claude-code", state: "working" };
-  const visual = { state: "working", svg: "clawd-working-building.svg" };
-  // default off -> the coarse session sprite, exactly what `enabled` alone promised
+  const visual = clawdVisual("working", "clawd-working-building.svg");
   const off = buildPresencePayload(session, {}, visual);
-  assert.match(off.assets.large_image, /clawd-typing\.gif$/);
-  const explicitOff = buildPresencePayload(session, { mirrorPetAnimation: false }, visual);
-  assert.match(explicitOff.assets.large_image, /clawd-typing\.gif$/);
+  assert.strictEqual(off.assets.large_image, CLAWD_ICON_URL);
   const on = buildPresencePayload(session, MIRROR_ON, visual);
   assert.match(on.assets.large_image, /clawd-building\.gif$/);
 });
@@ -319,44 +390,50 @@ test("the animation mirror is a separate opt-in: a known visual never swaps the 
 test("buildPresencePayload mirrors a known visual's sprite when the opt-in is on", () => {
   const img = (visual, session = null) => buildPresencePayload(session, MIRROR_ON, visual).assets.large_image;
   // idle variants keep state "idle" but swap the svg (tick.js idle rotation)
-  assert.match(img({ state: "idle", svg: "clawd-idle-bubble.svg" }), /clawd-bubble\.gif$/);
-  assert.match(img({ state: "idle", svg: "clawd-idle-reading.svg" }), /clawd-idle-reading\.gif$/);
+  assert.match(img(clawdVisual("idle", "clawd-idle-bubble.svg")), /clawd-bubble\.gif$/);
+  assert.match(img(clawdVisual("idle", "clawd-idle-reading.svg")), /clawd-idle-reading\.gif$/);
   // session-count working tiers
-  assert.match(img({ state: "working", svg: "clawd-working-building.svg" }), /clawd-building\.gif$/);
+  assert.match(img(clawdVisual("working", "clawd-working-building.svg")), /clawd-building\.gif$/);
   // sleep chain: dozing shows the sleeping sprite
-  assert.match(img({ state: "dozing", svg: "clawd-idle-doze.svg" }), /clawd-sleeping\.gif$/);
+  assert.match(img(clawdVisual("dozing", "clawd-idle-doze.svg")), /clawd-sleeping\.gif$/);
   // one-shots
-  assert.match(img({ state: "notification", svg: "clawd-notification.svg" }), /clawd-notification\.gif$/);
+  assert.match(img(clawdVisual("notification", "clawd-notification.svg")), /clawd-notification\.gif$/);
   // svgs with no gif of their own fall back to the nearest sprite
-  assert.match(img({ state: "dizzy", svg: "clawd-dizzy.svg" }), /clawd-idle\.gif$/);
-  assert.match(img({ state: "waking", svg: "clawd-wake.svg" }), /clawd-idle\.gif$/);
+  assert.match(img(clawdVisual("dizzy", "clawd-dizzy.svg")), /clawd-idle\.gif$/);
+  assert.match(img(clawdVisual("waking", "clawd-wake.svg")), /clawd-idle\.gif$/);
   // mini mode
-  assert.match(img({ state: "mini-working", svg: "clawd-mini-typing.svg" }), /clawd-typing\.gif$/);
-  assert.match(img({ state: "roam", svg: "clawd-mini-crabwalk.svg" }), /clawd-mini-crabwalk\.gif$/);
+  assert.match(img(clawdVisual("mini-working", "clawd-mini-typing.svg")), /clawd-typing\.gif$/);
+  assert.match(img(clawdVisual("roam", "clawd-mini-crabwalk.svg")), /clawd-mini-crabwalk\.gif$/);
 });
 
 test("activity text stays session-derived while the image mirrors", () => {
   // A transient pet visual must not caption an active working session as Idle.
   const session = { agentId: "claude-code", state: "working" };
-  const out = buildPresencePayload(session, MIRROR_ON, { state: "mini-enter", svg: "clawd-mini-enter.svg" });
+  const out = buildPresencePayload(session, MIRROR_ON, clawdVisual("mini-enter", "clawd-mini-enter.svg"));
   assert.strictEqual(out.state, "Working");
   assert.match(out.assets.large_image, /clawd-mini-enter\.gif$/);
   // done/interrupted still recover from the badge fields alongside a mirrored image
-  const done = buildPresencePayload({ state: "idle", badge: "done" }, MIRROR_ON, { state: "idle", svg: "clawd-idle-bubble.svg" });
+  const done = buildPresencePayload({ state: "idle", badge: "done" }, MIRROR_ON, clawdVisual("idle", "clawd-idle-bubble.svg"));
   assert.strictEqual(done.state, "Waiting for input");
-  const interrupted = buildPresencePayload({ state: "idle", badge: "interrupted" }, MIRROR_ON, { state: "idle", svg: "clawd-idle-bubble.svg" });
+  const interrupted = buildPresencePayload({ state: "idle", badge: "interrupted" }, MIRROR_ON, clawdVisual("idle", "clawd-idle-bubble.svg"));
   assert.strictEqual(interrupted.state, "Error");
 });
 
-test("an unknown visual svg (other themes) falls back to the session-derived sprite", () => {
+test("other themes and unsupported visuals fall back to the session-derived sprite", () => {
   const session = { agentId: "claude-code", state: "working" };
-  const out = buildPresencePayload(session, MIRROR_ON, { state: "working", svg: "calico-typing.svg" });
-  assert.match(out.assets.large_image, /clawd-typing\.gif$/); // no dead links for non-clawd themes
-  assert.strictEqual(out.state, "Working");
+  const otherTheme = buildPresencePayload(session, MIRROR_ON, {
+    state: "working",
+    svg: "clawd-working-building.svg", // deliberate filename collision
+    themeId: "custom-clawd-clone",
+  });
+  assert.match(otherTheme.assets.large_image, /clawd-typing\.gif$/);
+  const unsupported = buildPresencePayload(session, MIRROR_ON, clawdVisual("working", "clawd-working-wizard.svg"));
+  assert.match(unsupported.assets.large_image, /clawd-typing\.gif$/);
+  assert.strictEqual(otherTheme.state, "Working");
 });
 
 test("a mirrored visual renders even with no active session", () => {
-  const out = buildPresencePayload(null, MIRROR_ON, { state: "idle", svg: "clawd-idle-bubble.svg" });
+  const out = buildPresencePayload(null, MIRROR_ON, clawdVisual("idle", "clawd-idle-bubble.svg"));
   assert.match(out.assets.large_image, /clawd-bubble\.gif$/);
   assert.strictEqual(out.state, "Idle");
   assert.ok(out.details); // generic agent label still present
@@ -364,16 +441,18 @@ test("a mirrored visual renders even with no active session", () => {
 
 test("project-name opt-in composes with the mirrored image", () => {
   const session = { agentId: "claude-code", state: "idle", cwd: "D:\\Repos\\Apps\\demo" };
-  const out = buildPresencePayload(session, { privacyShowProject: true, ...MIRROR_ON }, { state: "idle", svg: "clawd-idle-reading.svg" });
+  const out = buildPresencePayload(session, { privacyShowProject: true, ...MIRROR_ON }, clawdVisual("idle", "clawd-idle-reading.svg"));
   assert.strictEqual(out.state, "Idle · demo");
   assert.match(out.assets.large_image, /clawd-idle-reading\.gif$/);
 });
 
 test("onVisual publishes the mirrored sprite over the live IPC socket", async () => {
   const cfg = { enabled: true, applicationId: "111111111111111111", mirrorPetAnimation: true };
+  const devGifBaseUrl = "https://example.test/pr-738/assets/discord-presence";
   const sockets = [];
   const bridge = createDiscordPresenceBridge({
     getConfig: () => cfg,
+    gifBaseUrl: devGifBaseUrl,
     ipcPaths: () => ["fake-pipe"],
     createConnection: () => { const s = new FakeIpcSocket(); sockets.push(s); return s; },
   });
@@ -381,14 +460,14 @@ test("onVisual publishes the mirrored sprite over the live IPC socket", async ()
   sockets[0].emit("connect");
   sockets[0].emit("data", READY_FRAME);
 
-  bridge.onVisual("idle", "clawd-idle-bubble.svg");
+  bridge.onVisual("idle", "clawd-idle-bubble.svg", "clawd");
   await Promise.resolve(); // the reconcile is deferred one microtask
   const activities = sockets[0].writes
     .map((b) => decodeFrames(b).frames[0])
     .filter((f) => f.op === OP.FRAME && f.data.cmd === "SET_ACTIVITY");
   assert.ok(activities.length >= 1, "onVisual should publish an activity");
   const last = activities.at(-1).data.args.activity;
-  assert.match(last.assets.large_image, /clawd-bubble\.gif$/);
+  assert.strictEqual(last.assets.large_image, `${devGifBaseUrl}/clawd-bubble.gif`);
   assert.strictEqual(last.state, "Idle");
 
   bridge.stop();
@@ -421,7 +500,7 @@ test("a same-tick visual+snapshot update never pairs the new visual with the pre
     now += 5000; // past MIN_SEND_INTERVAL_MS: the next publish sends leading-edge
     // The new visual's sprite must differ from the already-published payload,
     // or the wrong pairing dedupes into a no-op and the race is invisible.
-    bridge.onVisual("thinking", "clawd-working-thinking.svg");
+    bridge.onVisual("thinking", "clawd-working-thinking.svg", "clawd");
     bridge.onSnapshot({ sessions: [
       { id: "b", agentId: "claude-code", agentName: "Claude Code", state: "thinking", cwd: "D:\\Repos\\new-project" },
     ] });
@@ -437,6 +516,53 @@ test("a same-tick visual+snapshot update never pairs the new visual with the pre
     }
     const last = activities.at(-1);
     assert.match(last.assets.large_image, /clawd-thinking\.gif$/);
+  } finally {
+    Date.now = realNow;
+    bridge.stop();
+  }
+});
+
+test("a same-tick snapshot+visual completion never sends the new badge with the old sprite", async () => {
+  // promoteCompletion() intentionally broadcasts the done snapshot BEFORE its
+  // attention visual. Snapshot reconciliation must therefore be deferred by
+  // the same microtask barrier as visual reconciliation.
+  const cfg = { enabled: true, applicationId: "111111111111111111", mirrorPetAnimation: true };
+  const sockets = [];
+  const bridge = createDiscordPresenceBridge({
+    getConfig: () => cfg,
+    ipcPaths: () => ["fake-pipe"],
+    createConnection: () => { const s = new FakeIpcSocket(); sockets.push(s); return s; },
+  });
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    bridge.start();
+    sockets[0].emit("connect");
+    sockets[0].emit("data", READY_FRAME);
+    bridge.onVisual("working", "clawd-working-typing.svg", "clawd");
+    bridge.onSnapshot({ sessions: [{ id: "a", agentId: "codex", state: "working" }] });
+    await Promise.resolve();
+
+    now += 5000; // make a stale leading-edge pairing observable
+    bridge.onSnapshot({ sessions: [{
+      id: "a",
+      agentId: "codex",
+      state: "idle",
+      badge: "done",
+      requiresCompletionAck: true,
+    }] });
+    bridge.onVisual("attention", "clawd-happy.svg", "clawd");
+    await Promise.resolve();
+
+    const activities = sockets[0].writes
+      .map((b) => decodeFrames(b).frames[0])
+      .filter((f) => f.op === OP.FRAME && f.data.cmd === "SET_ACTIVITY")
+      .map((f) => f.data.args.activity);
+    for (const activity of activities.slice(1)) {
+      assert.strictEqual(activity.state, "Waiting for input");
+      assert.match(activity.assets.large_image, /clawd-happy\.gif$/);
+    }
   } finally {
     Date.now = realNow;
     bridge.stop();
@@ -462,7 +588,7 @@ test("a standalone visual change (idle rotation, no trailing snapshot) still pub
     await Promise.resolve();
 
     now += 5000;
-    bridge.onVisual("idle", "clawd-idle-reading.svg"); // tick.js rotation: no snapshot follows
+    bridge.onVisual("idle", "clawd-idle-reading.svg", "clawd"); // tick.js rotation: no snapshot follows
     await Promise.resolve();
 
     const activities = sockets[0].writes

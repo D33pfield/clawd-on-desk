@@ -10,6 +10,7 @@ const SRC_DIR = path.join(__dirname, "..", "src");
 const SETTINGS_HTML = path.join(SRC_DIR, "settings.html");
 const SETTINGS_CSS = path.join(SRC_DIR, "settings.css");
 const SETTINGS_TAB_GENERAL = path.join(SRC_DIR, "settings-tab-general.js");
+const SETTINGS_TAB_DISCORD_PRESENCE = path.join(SRC_DIR, "settings-tab-discord-presence.js");
 const SETTINGS_RENDERER = path.join(SRC_DIR, "settings-renderer.js");
 const SETTINGS_UI_CORE = path.join(SRC_DIR, "settings-ui-core.js");
 const SETTINGS_ANIM_OVERRIDES_MERGE = path.join(SRC_DIR, "settings-anim-overrides-merge.js");
@@ -29,6 +30,7 @@ const TAB_MODULES = [
   path.join(SRC_DIR, "settings-tab-anim-overrides.js"),
   path.join(SRC_DIR, "settings-tab-shortcuts.js"),
   path.join(SRC_DIR, "settings-tab-telegram-approval.js"),
+  SETTINGS_TAB_DISCORD_PRESENCE,
   path.join(SRC_DIR, "settings-tab-about.js"),
 ];
 const VERIFIED_GITHUB_CONTRIBUTORS = [
@@ -1281,6 +1283,83 @@ function loadTelegramApprovalTabForTest({
   return { core, content, updates, commands, render, renderRequests, timers };
 }
 
+function loadDiscordPresenceTabForTest({ snapshot, update } = {}) {
+  const body = new FakeElement("body");
+  const content = new FakeElement("main");
+  body.appendChild(content);
+  const updates = [];
+  const renderRequests = [];
+  const toasts = [];
+  const settingsAPI = {
+    discordDefaultAppIdPresent: true,
+    update: (key, value) => {
+      updates.push({ key, value });
+      return update ? update(key, value) : Promise.resolve({ status: "ok" });
+    },
+  };
+  const document = {
+    body,
+    createElement: (tagName) => new FakeElement(tagName),
+    getElementById: () => null,
+  };
+  const context = {
+    console,
+    document,
+    window: null,
+    globalThis: null,
+    settingsAPI,
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(SETTINGS_TAB_DISCORD_PRESENCE, "utf8"), context);
+
+  const core = {
+    state: {
+      snapshot: snapshot || {
+        discordPresence: {
+          enabled: true,
+          applicationId: "123456789012345678",
+          privacyShowProject: true,
+          mirrorPetAnimation: false,
+        },
+      },
+      activeTab: "discord-presence",
+    },
+    helpers: {
+      t: (key) => key,
+      buildSection: (_title, rows) => {
+        const section = document.createElement("section");
+        for (const row of rows) section.appendChild(row);
+        return section;
+      },
+      buildCollapsibleGroup: ({ children = [] } = {}) => {
+        const group = document.createElement("div");
+        for (const child of children) group.appendChild(child);
+        return group;
+      },
+      setSwitchVisual: (el, checked, options = {}) => {
+        el.classList.toggle("on", !!checked);
+        el.classList.toggle("pending", !!options.pending);
+        el.setAttribute("aria-checked", checked ? "true" : "false");
+      },
+      openExternalSafe: () => {},
+    },
+    ops: {
+      requestRender: (payload) => renderRequests.push(payload || {}),
+      showToast: (...args) => toasts.push(args),
+    },
+    tabs: {},
+  };
+  context.ClawdSettingsTabDiscordPresence.init(core);
+  function render() {
+    content.innerHTML = "";
+    core.tabs["discord-presence"].render(content, core);
+  }
+  render();
+  return { content, core, updates, renderRequests, toasts, render };
+}
+
 function loadAnimOverridesTabForTest({
   runtime,
   modalRoot,
@@ -1466,6 +1545,7 @@ describe("settings renderer browser environment", () => {
       "settings-tab-anim-overrides.js",
       "settings-tab-shortcuts.js",
       "settings-tab-telegram-approval.js",
+      "settings-tab-discord-presence.js",
       "settings-tab-about.js",
       "settings-tab-remote-ssh.js",
       "settings-doctor-modal.js",
@@ -1530,6 +1610,58 @@ describe("settings renderer browser environment", () => {
       assert.ok(!source.includes("settingsAPI.onShortcutFailuresChanged"), `${path.basename(file)} must not subscribe to settingsAPI.onShortcutFailuresChanged`);
       assert.ok(!source.includes("settingsAPI.onRemoteApprovalStatusChanged"), `${path.basename(file)} must not subscribe to remote approval status directly`);
     }
+  });
+
+  it("renders and saves the Discord animation mirror without dropping sibling privacy fields", async () => {
+    const harness = loadDiscordPresenceTabForTest();
+    const switches = harness.content.querySelectorAll(".switch");
+    assert.strictEqual(switches.length, 3, "enabled, animation mirror, and project switches should render");
+    const mirror = switches[1];
+    assert.strictEqual(mirror.getAttribute("role"), "switch");
+    assert.strictEqual(mirror.getAttribute("aria-checked"), "false");
+
+    mirror.dispatchEvent({ type: "keydown", key: "Enter", bubbles: false });
+    assert.strictEqual(harness.updates.length, 1);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates[0])), {
+      key: "discordPresence",
+      value: {
+        enabled: true,
+        applicationId: "123456789012345678",
+        privacyShowProject: true,
+        mirrorPetAnimation: true,
+      },
+    });
+    await Promise.resolve();
+    assert.ok(harness.renderRequests.length >= 2, "pending and settled saves should both request a render");
+  });
+
+  it("disables the Discord animation mirror while Presence is off or a save is pending", async () => {
+    const off = loadDiscordPresenceTabForTest({
+      snapshot: {
+        discordPresence: {
+          enabled: false,
+          applicationId: "",
+          privacyShowProject: false,
+          mirrorPetAnimation: true,
+        },
+      },
+    });
+    const offMirror = off.content.querySelectorAll(".switch")[1];
+    assert.ok(offMirror.classList.contains("disabled"));
+    assert.strictEqual(offMirror.getAttribute("aria-disabled"), "true");
+    assert.strictEqual(offMirror.getAttribute("tabindex"), undefined);
+    assert.strictEqual((offMirror.eventListeners.click || []).length, 0);
+
+    const deferred = createDeferred();
+    const pending = loadDiscordPresenceTabForTest({ update: () => deferred.promise });
+    pending.content.querySelectorAll(".switch")[1].dispatchEvent({ type: "click", bubbles: false });
+    pending.render();
+    const pendingMirror = pending.content.querySelectorAll(".switch")[1];
+    assert.ok(pendingMirror.classList.contains("disabled"));
+    assert.ok(pendingMirror.classList.contains("pending"));
+    assert.strictEqual(pendingMirror.getAttribute("aria-disabled"), "true");
+    deferred.resolve({ status: "ok" });
+    await Promise.resolve();
   });
 
   it("waits for remote cleanup before deleting a profile and warns on incomplete uninstall", () => {
