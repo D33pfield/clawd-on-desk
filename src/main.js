@@ -392,6 +392,10 @@ let telegramNativeRunner = null;
 let telegramCompanion = null;
 let telegramDirectSend = null;
 let discordPresenceBridge = null;
+// Renderer-visible state animations can diverge briefly from state.currentSvg
+// (tick.js idle rotation). Cache every state-change even while Presence is off
+// so a first enable mirrors what the pet is actually showing.
+let lastDiscordPresenceVisual = null;
 let suppressTelegramMigrationReconcile = 0;
 let feishuApprovalClient = null;
 let feishuApprovalSyncPromise = Promise.resolve();
@@ -1160,6 +1164,27 @@ function bringPetToPrimaryDisplay() {
 
 function sendToRenderer(channel, ...args) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
+  // State animations flow through this channel (applyState and the tick.js
+  // idle rotation), so it doubles as the presence mirror feed. Reactions,
+  // low-power pauses and tint/accessory changes ride other channels and are
+  // deliberately not mirrored.
+  if (channel === "state-change") {
+    const activeTheme = getActiveTheme();
+    lastDiscordPresenceVisual = {
+      state: args[0],
+      svg: args[1],
+      themeId: activeTheme && activeTheme._id,
+    };
+    if (discordPresenceBridge) {
+      try {
+        discordPresenceBridge.onVisual(
+          lastDiscordPresenceVisual.state,
+          lastDiscordPresenceVisual.svg,
+          lastDiscordPresenceVisual.themeId
+        );
+      } catch {}
+    }
+  }
 }
 function sendToHitWin(channel, ...args) {
   if (hitWin && !hitWin.isDestroyed()) hitWin.webContents.send(channel, ...args);
@@ -3098,6 +3123,10 @@ function startDiscordPresence() {
   if (!discordPresenceBridge) {
     discordPresenceBridge = createDiscordPresenceBridge({
       getConfig: () => _settingsController.getSnapshot().discordPresence,
+      // Development-only seam: committed GIF URLs intentionally point at main,
+      // so pre-merge real-device QA may opt into a public test ref/host. A
+      // packaged build always ignores the environment and uses the stable URL.
+      gifBaseUrl: app.isPackaged ? "" : process.env.CLAWD_DISCORD_GIF_BASE_URL,
       log: (level, msg) => {
         try { sessionLog(`[discord-presence] ${level}: ${msg}`); } catch {}
         // Surface warnings (e.g. wrong App ID) on the house channel; the debug
@@ -3107,6 +3136,20 @@ function startDiscordPresence() {
     });
   }
   discordPresenceBridge.start();
+  // Prime from the last renderer-visible animation (including tick.js idle
+  // rotation), falling back only before the first state-change was observed.
+  const activeTheme = getActiveTheme();
+  const visual = lastDiscordPresenceVisual
+    ? {
+        ...lastDiscordPresenceVisual,
+        themeId: lastDiscordPresenceVisual.themeId || (activeTheme && activeTheme._id),
+      }
+    : {
+        state: _state.getCurrentState(),
+        svg: _state.getCurrentSvg(),
+        themeId: activeTheme && activeTheme._id,
+      };
+  try { discordPresenceBridge.onVisual(visual.state, visual.svg, visual.themeId); } catch {}
   // Force a replay; the broadcast is otherwise change-gated.
   try { _state.emitSessionSnapshot({ force: true }); } catch {}
   return true;
