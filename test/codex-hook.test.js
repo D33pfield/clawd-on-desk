@@ -442,12 +442,21 @@ describe("Codex official hook", () => {
     });
   });
 
-  it("classifies subagent PermissionRequest payloads so the headless gate fires without a state event", () => {
+  it("carries interactive subagent provenance without classifying the permission as headless", () => {
     withTempTranscript([
       JSON.stringify({
         type: "session_meta",
         payload: {
-          source: { subagent: { thread_spawn: { agent_role: "worker" } } },
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: "parent-1",
+                agent_role: "worker",
+                agent_nickname: "Halley",
+              },
+            },
+          },
+          originator: "codex-tui",
           agent_role: "worker",
         },
       }),
@@ -462,7 +471,66 @@ describe("Codex official hook", () => {
 
       assert.strictEqual(body.agent_id, "codex");
       assert.strictEqual(body.codex_session_role, "subagent");
+      assert.strictEqual(body.codex_originator, "codex-tui");
+      assert.strictEqual(body.codex_source, "cli");
+      assert.strictEqual(body.codex_agent_nickname, "Halley");
+      assert.strictEqual(body.codex_agent_role, "worker");
+      assert.strictEqual(body.codex_parent_thread_id, "parent-1");
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "headless"), false);
     });
+  });
+
+  it("preserves an explicit process-level headless signal on PermissionRequest", () => {
+    const body = buildPermissionBody({
+      hook_event_name: "PermissionRequest",
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      headless: true,
+    }, mockResolve);
+
+    assert.strictEqual(body.headless, true);
+  });
+
+  it("forwards a resolver-derived headless signal on PermissionRequest", () => {
+    const body = buildPermissionBody({
+      hook_event_name: "PermissionRequest",
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    }, () => ({
+      stablePid: 123,
+      agentPid: 456,
+      pidChain: [456, 123],
+      headless: true,
+    }));
+
+    assert.strictEqual(body.headless, true);
+  });
+
+  it("does not synthesize CLI provenance for exec, Desktop, or unknown subagents", () => {
+    for (const originator of ["codex_exec", "codex_work_desktop", "unknown-client"]) {
+      withTempTranscript([
+        JSON.stringify({
+          type: "session_meta",
+          payload: {
+            source: { subagent: { thread_spawn: { agent_role: "worker" } } },
+            originator,
+          },
+        }),
+      ], (transcriptPath) => {
+        const body = buildPermissionBody({
+          hook_event_name: "PermissionRequest",
+          session_id: "s1",
+          transcript_path: transcriptPath,
+          tool_name: "Bash",
+          tool_input: { command: "npm test" },
+        }, mockResolve);
+
+        assert.strictEqual(body.codex_originator, originator);
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "codex_source"), false);
+      });
+    }
   });
 
   it("does not build a state payload for PermissionRequest", () => {
