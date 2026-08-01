@@ -86,9 +86,12 @@ const createSettingsEffectRouter = require("./settings-effect-router");
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
-  getPetAccessoryIdForTheme,
   resolvePetAccessoryPayload,
 } = require("./pet-customization-catalog");
+const {
+  getEffectivePetAccessoryIdForTheme,
+  createHolidayAccessoryRuntime,
+} = require("./holiday-accessory");
 const { registerSessionIpc } = require("./session-ipc");
 const { createSessionAutomationStore } = require("./session-automation-store");
 const { createSessionAutomationCoordinator } = require("./session-automation-coordinator");
@@ -1213,7 +1216,11 @@ function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
   const activeTheme = getActiveTheme();
   const tintId = getPetTintIdForTheme(petTint, activeTheme && activeTheme._id);
   sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
-  const accessoryId = getPetAccessoryIdForTheme(petAccessory, activeTheme && activeTheme._id);
+  const accessoryId = getEffectivePetAccessoryIdForTheme({
+    petAccessory,
+    holidayAccessoryEnabled: _settingsController.get("holidayAccessoryEnabled"),
+    themeId: activeTheme && activeTheme._id,
+  });
   sendToRenderer("pet-accessory-change", resolvePetAccessoryPayload(accessoryId, activeTheme));
   sendToRenderer("low-power-idle-mode-change", lowPowerIdleMode);
   if (_mini.getMiniMode()) {
@@ -1701,11 +1708,11 @@ function buildRendererThemeConfig() {
     const activeTheme = getActiveTheme();
     const tintSelections = _settingsController.get("petTint");
     const tintId = getPetTintIdForTheme(tintSelections, activeTheme && activeTheme._id);
-    const accessorySelections = _settingsController.get("petAccessory");
-    const accessoryId = getPetAccessoryIdForTheme(
-      accessorySelections,
-      activeTheme && activeTheme._id
-    );
+    const accessoryId = getEffectivePetAccessoryIdForTheme({
+      petAccessory: _settingsController.get("petAccessory"),
+      holidayAccessoryEnabled: _settingsController.get("holidayAccessoryEnabled"),
+      themeId: activeTheme && activeTheme._id,
+    });
     cfg.idleDefaultVisual = getIdleVisualChoice();
     cfg.petTintPayload = resolvePetTintPayload(tintId, activeTheme);
     cfg.accessoryPayload = resolvePetAccessoryPayload(accessoryId, activeTheme);
@@ -3483,6 +3490,14 @@ function reclampPetAfterEdgePinningChange() {
   syncHitWin(); repositionFloatingBubbles();
 }
 
+const holidayAccessoryRuntime = createHolidayAccessoryRuntime({
+  powerMonitor,
+  getSettingsSnapshot: () => _settingsController.getSnapshot(),
+  getActiveTheme: () => getActiveTheme(),
+  sendToRenderer,
+  logWarn: console.warn,
+});
+
 const settingsEffectRouter = createSettingsEffectRouter({
   settingsController: _settingsController,
   BrowserWindow,
@@ -4413,6 +4428,7 @@ if (!gotTheLock) {
     catch (err) { console.warn("Clawd: discord presence startup failed:", err && err.message); }
     queueFeishuApprovalSync("startup");
     createWindow();
+    holidayAccessoryRuntime.start();
     // WSL agent detection is NOT started here: scanning runs a command inside
     // every installed distro, which boots each stopped VM — too aggressive for
     // app launch. The first Settings→Agents visit triggers the scan instead
@@ -4508,6 +4524,7 @@ if (!gotTheLock) {
 
   app.on("before-quit", () => {
     isQuitting = true;
+    holidayAccessoryRuntime.dispose();
     if (systemWakeRecovery) systemWakeRecovery.dispose();
     // #525: release the IVirtualDesktopManager COM ref and pay back our own
     // CoInitializeEx count (see win-cloak-recovery.js dispose()).

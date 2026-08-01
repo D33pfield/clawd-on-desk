@@ -111,6 +111,26 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.petAccessory(null, deps).status, "error");
   });
 
+  it("holidayAccessoryEnabled accepts only canonical per-theme true entries", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled({}, deps).status, "ok");
+    assert.strictEqual(
+      updateRegistry.holidayAccessoryEnabled({ clawd: true, cloudling: true }, deps).status,
+      "ok"
+    );
+    assert.strictEqual(
+      updateRegistry.holidayAccessoryEnabled({ clawd: false }, deps).status,
+      "error"
+    );
+    assert.strictEqual(
+      updateRegistry.holidayAccessoryEnabled({ "../unsafe": true }, deps).status,
+      "error"
+    );
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled(true, deps).status, "error");
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled([], deps).status, "error");
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled(null, deps).status, "error");
+  });
+
   it("x/y/preMiniX/preMiniY require finite numbers", () => {
     const deps = { snapshot: baseSnapshot };
     assert.strictEqual(updateRegistry.x(0, deps).status, "ok");
@@ -1710,11 +1730,12 @@ describe("removeTheme command", () => {
     assert.deepStrictEqual(r.commit.idleVisual, { clawd: "clawd-idle-reading.svg" });
   });
 
-  it("strips pet tint and accessory entries on success when they exist", async () => {
+  it("strips pet tint, accessory, and holiday opt-in entries on success when they exist", async () => {
     const snapshotWithCustomization = {
       ...baseSnapshot,
       petTint: { cat: "matcha", clawd: "gold" },
       petAccessory: { cat: "halo", clawd: "wizard-hat" },
+      holidayAccessoryEnabled: { cat: true, clawd: true },
     };
     const { deps } = makeDeps({ snapshot: snapshotWithCustomization });
     const r = await commandRegistry.removeTheme("cat", deps);
@@ -1722,6 +1743,7 @@ describe("removeTheme command", () => {
     assert.ok(r.commit, "commit field expected");
     assert.deepStrictEqual(r.commit.petTint, { clawd: "gold" });
     assert.deepStrictEqual(r.commit.petAccessory, { clawd: "wizard-hat" });
+    assert.deepStrictEqual(r.commit.holidayAccessoryEnabled, { clawd: true });
   });
 
   it("surfaces removeThemeDir throws as error status", async () => {

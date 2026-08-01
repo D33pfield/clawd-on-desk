@@ -303,7 +303,10 @@
     section.appendChild(title);
     const caps = theme.capabilities || {};
     if (caps.petTint === true) section.appendChild(buildThemeTintRow(theme));
-    if (caps.accessories === true) section.appendChild(buildThemeAccessoryRow(theme));
+    if (caps.accessories === true) {
+      section.appendChild(buildThemeAccessoryRow(theme));
+      section.appendChild(buildHolidayAccessoryRow(theme));
+    }
     parent.appendChild(section);
   }
 
@@ -472,6 +475,86 @@
     row.appendChild(text);
     row.appendChild(control);
     syncFromSnapshot();
+    return row;
+  }
+
+  function getHolidayAccessoryEnabled(themeId) {
+    const selections = state.snapshot && state.snapshot.holidayAccessoryEnabled;
+    return !!(
+      selections
+      && typeof selections === "object"
+      && !Array.isArray(selections)
+      && selections[themeId] === true
+    );
+  }
+
+  function buildHolidayAccessoryRow(theme) {
+    const row = document.createElement("div");
+    row.className = "row theme-customization-row holiday-accessory-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowHolidayAccessory");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("themeHolidayAccessoryDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+
+    const control = document.createElement("div");
+    control.className = "row-control";
+    const sw = document.createElement("div");
+    sw.className = "switch holiday-accessory-switch";
+    sw.setAttribute("role", "switch");
+    sw.setAttribute("aria-label", t("rowHolidayAccessory"));
+    sw.setAttribute("tabindex", "0");
+    let visualEnabled = getHolidayAccessoryEnabled(theme.id);
+
+    function setVisual(enabled, { pending = false } = {}) {
+      visualEnabled = !!enabled;
+      helpers.setSwitchVisual(sw, visualEnabled, { pending });
+    }
+
+    function run(ev) {
+      if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
+      if (sw.classList.contains("pending")) return;
+      const nextEnabled = !visualEnabled;
+      const current = state.snapshot && state.snapshot.holidayAccessoryEnabled;
+      const nextMap = current && typeof current === "object" && !Array.isArray(current)
+        ? { ...current }
+        : {};
+      if (nextEnabled) nextMap[theme.id] = true;
+      else delete nextMap[theme.id];
+      setVisual(nextEnabled, { pending: true });
+      Promise.resolve(window.settingsAPI.update("holidayAccessoryEnabled", nextMap))
+        .then((result) => {
+          if (result && result.status === "ok") return;
+          const message = (result && result.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + message, { error: true });
+          setVisual(getHolidayAccessoryEnabled(theme.id));
+        })
+        .catch((err) => {
+          const message = (err && err.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + message, { error: true });
+          setVisual(getHolidayAccessoryEnabled(theme.id));
+        })
+        .finally(() => {
+          if (document.body.contains(sw)) sw.classList.remove("pending");
+        });
+    }
+
+    sw.addEventListener("click", run);
+    sw.addEventListener("keydown", (ev) => {
+      if (ev.key !== " " && ev.key !== "Enter") return;
+      run(ev);
+    });
+
+    control.appendChild(sw);
+    row.appendChild(text);
+    row.appendChild(control);
+    setVisual(visualEnabled);
     return row;
   }
 

@@ -729,6 +729,7 @@ function makeGeneralSnapshot(overrides = {}) {
     theme: "clawd",
     petTint: {},
     petAccessory: {},
+    holidayAccessoryEnabled: {},
     size: 50,
     sessionHudEnabled: true,
     sessionHudShowStateLabels: true,
@@ -1015,6 +1016,7 @@ function loadThemeTabForTest({
     lang: "en",
     petTint: {},
     petAccessory: {},
+    holidayAccessoryEnabled: {},
     ...(snapshot || {}),
   };
   core.state.activeTab = "theme";
@@ -5707,6 +5709,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("themeBackToPets"));
     assert.ok(i18nSource.includes("themeAppearanceTitle"));
     assert.ok(i18nSource.includes("rowPetAccessory"));
+    assert.ok(i18nSource.includes("rowHolidayAccessory"));
     assert.ok(i18nSource.includes("accessoryCowboyHat"));
 
     const strings = loadSettingsI18nForTest();
@@ -5720,9 +5723,11 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(strings.en.themeCapabilityFineMotion, "Fine motion");
     assert.strictEqual(strings.en.themeCustomize, "Customize");
     assert.strictEqual(strings.en.rowPetAccessory, "Accessory");
+    assert.strictEqual(strings.en.rowHolidayAccessory, "Holiday auto outfit");
     assert.strictEqual(strings.en.accessoryWizardHat, "Wizard hat");
     assert.strictEqual(strings.zh.themeCustomize, "装扮");
     assert.strictEqual(strings.zh.rowPetAccessory, "配饰");
+    assert.strictEqual(strings.zh.rowHolidayAccessory, "节日自动换装");
     assert.strictEqual(strings.zh.accessoryWizardHat, "巫师帽");
     assert.strictEqual(strings.zh.themeImportPetZip, "导入 Codex Pet 包（.zip）");
     assert.strictEqual(strings.zh.themeCapabilityFineMotion, "精细动效");
@@ -6083,6 +6088,7 @@ describe("settings renderer browser environment", () => {
       snapshot: {
         petTint: { clawd: "matcha", cloudling: "vaporwave" },
         petAccessory: { clawd: "wizard-hat", cloudling: "halo" },
+        holidayAccessoryEnabled: {},
       },
       petTintOptions: [
         { id: "none", labelKey: "tintNone" },
@@ -6103,7 +6109,7 @@ describe("settings renderer browser environment", () => {
     harness.content.querySelector(".theme-customize-btn").dispatchEvent({ type: "click" });
     assert.ok(harness.content.querySelector(".theme-detail-back"));
     assert.ok(harness.content.querySelector(".theme-detail-hero"));
-    assert.strictEqual(harness.content.querySelectorAll(".theme-customization-row").length, 2);
+    assert.strictEqual(harness.content.querySelectorAll(".theme-customization-row").length, 3);
     assert.strictEqual(harness.content.querySelector(".theme-grid"), null);
 
     const select = harness.content.querySelector(".pet-tint-select");
@@ -6148,6 +6154,35 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     await new Promise((resolve) => setImmediate(resolve));
     assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").disabled, false);
+
+    const holidaySwitch = harness.content.querySelector(".holiday-accessory-switch");
+    assert.ok(holidaySwitch);
+    assert.strictEqual(holidaySwitch.getAttribute("role"), "switch");
+    assert.strictEqual(holidaySwitch.getAttribute("aria-checked"), "false");
+    holidaySwitch.dispatchEvent({ type: "click" });
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(harness.updates[2])),
+      {
+        key: "holidayAccessoryEnabled",
+        value: { clawd: true },
+      }
+    );
+    assert.strictEqual(holidaySwitch.getAttribute("aria-checked"), "true");
+    assert.strictEqual(holidaySwitch.classList.contains("pending"), true);
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(holidaySwitch.classList.contains("pending"), false);
+
+    holidaySwitch.dispatchEvent({ type: "keydown", key: "Enter", preventDefault() {} });
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(harness.updates[3])),
+      {
+        key: "holidayAccessoryEnabled",
+        value: {},
+      }
+    );
+    assert.strictEqual(holidaySwitch.getAttribute("aria-checked"), "false");
 
     harness.content.querySelector(".theme-detail-back").dispatchEvent({ type: "click" });
     assert.ok(harness.content.querySelector(".theme-grid"));

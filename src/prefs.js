@@ -289,6 +289,14 @@ const SCHEMA = {
     defaultFactory: () => ({}),
     normalize: normalizePetAccessory,
   },
+  // Per-theme opt-in for temporary date-based holiday accessories. Missing
+  // entries mean disabled; the saved manual petAccessory choice remains the
+  // source restored outside a holiday window.
+  holidayAccessoryEnabled: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeHolidayAccessoryEnabled,
+  },
   // Phase 2/3 placeholders — schema reserves the keys so future migrations don't need v2.
   agents: {
     type: "object",
@@ -1117,6 +1125,16 @@ function normalizePetAccessory(value, defaultsValue) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)) continue;
     if (!PET_ACCESSORY_IDS.includes(accessoryId)) continue;
     if (accessoryId !== "none") out[themeId] = accessoryId;
+  }
+  return out;
+}
+
+function normalizeHolidayAccessoryEnabled(value, defaultsValue) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
+  const out = {};
+  for (const [themeId, enabled] of Object.entries(value)) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)) continue;
+    if (enabled === true) out[themeId] = true;
   }
   return out;
 }

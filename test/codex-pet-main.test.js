@@ -382,6 +382,7 @@ test("Codex Pet removal clears every preference scoped to the removed theme", as
     idleVisual: { [themeId]: "idle.png", clawd: "clawd-idle-follow.svg" },
     petTint: { [themeId]: "matcha", clawd: "gold" },
     petAccessory: { [themeId]: "halo", clawd: "wizard-hat" },
+    holidayAccessoryEnabled: { [themeId]: true, clawd: true },
   };
   const bulkPatches = [];
   const runtime = createCodexPetMain({
@@ -430,6 +431,7 @@ test("Codex Pet removal clears every preference scoped to the removed theme", as
     "idleVisual",
     "petTint",
     "petAccessory",
+    "holidayAccessoryEnabled",
   ]) {
     assert.strictEqual(
       Object.prototype.hasOwnProperty.call(bulkPatches[0][key], themeId),
