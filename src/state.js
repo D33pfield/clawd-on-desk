@@ -35,6 +35,7 @@ const {
   sessionSnapshotSignature,
 } = require("./state-session-snapshot");
 const { getAgentIconUrl } = require("./state-agent-icons");
+const { resolveSessionIdentity } = require("./session-key");
 const { normalizeTranscriptPath } = require("./transcript-path");
 const { createAccountQuotaStore } = require("./state-account-quota");
 const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
@@ -2049,11 +2050,13 @@ function updateSession(sessionId, state, event, opts = {}) {
 
 function restoreSessionFromLease(lease) {
   if (!lease || typeof lease !== "object") return false;
-  const sessionId = typeof lease.sessionId === "string" ? lease.sessionId : "";
+  const rawSessionId = typeof lease.sessionId === "string" ? lease.sessionId : "";
   const agentId = typeof lease.agentId === "string" ? lease.agentId : "";
-  if (!sessionId || sessionId === "default" || agentId !== "claude-code" || lease.active !== true) return false;
+  if (!rawSessionId || rawSessionId === "default" || agentId !== "claude-code" || lease.active !== true) return false;
   if (!Number.isFinite(lease.eventAt) || lease.eventAt <= 0 || lease.validUntil !== null) return false;
   if (lease.state !== "thinking" && lease.state !== "working" && lease.state !== "juggling") return false;
+  const sessionIdentity = resolveSessionIdentity(rawSessionId, "local");
+  const sessionId = sessionIdentity.sessionId;
   if (sessions.has(sessionId)) return false;
   if (sessions.size >= MAX_SESSIONS) return false;
   const pid = Number.isInteger(lease.pid) && lease.pid > 0 ? lease.pid : null;
@@ -2073,8 +2076,8 @@ function restoreSessionFromLease(lease) {
     orcaPaneKey: null,
     agentPid: pid,
     agentId,
-    profileId: "local",
-    rawSessionId: sessionId,
+    profileId: sessionIdentity.profileId,
+    rawSessionId: sessionIdentity.rawSessionId,
     host: null,
     wslDistro: null,
     headless: false,

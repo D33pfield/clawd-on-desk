@@ -164,6 +164,14 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.codexHookHealthLastNotified(42, deps).status, "error");
   });
 
+  it("telegramMigrationLastNotified accepts signatures and empty reset", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.telegramMigrationLastNotified("", deps).status, "ok");
+    assert.strictEqual(updateRegistry.telegramMigrationLastNotified("legacy-migration", deps).status, "ok");
+    assert.strictEqual(updateRegistry.telegramMigrationLastNotified(null, deps).status, "error");
+    assert.strictEqual(updateRegistry.telegramMigrationLastNotified(42, deps).status, "error");
+  });
+
   it("Claude quota collection validates booleans and delegates the opt-in mutation", async () => {
     const entry = updateRegistry.claudeQuotaCollectionEnabled;
     assert.strictEqual(entry.validate(true).status, "ok");

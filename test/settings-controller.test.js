@@ -589,6 +589,15 @@ describe("applyUpdate", () => {
     assert.strictEqual(loaded.codexHookHealthLastNotified, "feature-disabled");
     assert.strictEqual(loaded.codexHookHealthNotifyEnabled, false);
   });
+
+  it("persists the Telegram migration nudge signature through applyUpdate", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath: p });
+    const result = await ctrl.applyUpdate("telegramMigrationLastNotified", "legacy-migration");
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(ctrl.get("telegramMigrationLastNotified"), "legacy-migration");
+    assert.strictEqual(prefs.load(p).snapshot.telegramMigrationLastNotified, "legacy-migration");
+  });
   it("enforces cross-field constraints (showTray/showDock)", async () => {
     const ctrl = createSettingsController({
       prefsPath: makeTempPath(),

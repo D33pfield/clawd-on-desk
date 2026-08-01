@@ -6,7 +6,7 @@ const {
   normalizeCodexMonitorAccountQuotas,
   isCodexMonitorMetadataOnlyEvent,
 } = require("./codex-monitor-callback");
-const { makeSessionKey } = require("./session-key");
+const { resolveSessionIdentity } = require("./session-key");
 
 const CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS = 10 * 60 * 1000;
 const CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS = new Set([
@@ -26,12 +26,35 @@ const CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS = new Set([
 // sync with isWorkingLikeState() in state-stale-cleanup.js.
 const CODEX_WORKING_LIKE_STATES = new Set(["working", "thinking", "juggling"]);
 
+function createProfileScopedClassifier(classifier, profileId) {
+  const canonicalSessionId = (sessionId) =>
+    resolveSessionIdentity(sessionId, profileId).sessionId;
+  return {
+    registerSession(sessionId, input) {
+      return classifier && typeof classifier.registerSession === "function"
+        ? classifier.registerSession(canonicalSessionId(sessionId), input)
+        : "unknown";
+    },
+    classify(sessionId) {
+      return classifier && typeof classifier.classify === "function"
+        ? classifier.classify(canonicalSessionId(sessionId))
+        : "unknown";
+    },
+    clear(sessionId) {
+      if (classifier && typeof classifier.clear === "function") {
+        classifier.clear(canonicalSessionId(sessionId));
+      }
+    },
+  };
+}
+
 function createAgentRuntimeMain(options = {}) {
   const now = typeof options.now === "function" ? options.now : Date.now;
   const logWarn = typeof options.logWarn === "function" ? options.logWarn : console.warn;
   const loadCodexLogMonitor = options.loadCodexLogMonitor || (() => require("../agents/codex-log-monitor"));
   const loadCodexAgent = options.loadCodexAgent || (() => require("../agents/codex"));
   const codexSubagentClassifier = options.codexSubagentClassifier || new DefaultCodexSubagentClassifier();
+  const localCodexSubagentClassifier = createProfileScopedClassifier(codexSubagentClassifier, "local");
   const getServer = options.getServer || (() => null);
   const getStateRuntime = options.getStateRuntime || (() => null);
   const getPermissionRuntime = options.getPermissionRuntime || (() => null);
@@ -175,14 +198,17 @@ function createAgentRuntimeMain(options = {}) {
       const CodexLogMonitor = loadCodexLogMonitor();
       const codexAgent = loadCodexAgent();
       codexMonitor = new CodexLogMonitor(codexAgent, (sid, state, event, extra) => {
-        const sessionId = makeSessionKey({ profileId: "local", rawSessionId: sid });
+        const sessionIdentity = resolveSessionIdentity(sid, "local");
+        const sessionId = sessionIdentity.sessionId;
         // Subscription quota is account state, not session state: it goes
         // to the session-independent per-source store (null host = this
         // machine), never into updateSession opts — see state.js
         // updateAccountQuota and src/state-account-quota.js.
-        const sessionOptions = buildCodexMonitorSessionOptions(extra, {
-          includeHeadless: true,
-        });
+        const sessionOptions = {
+          ...buildCodexMonitorSessionOptions(extra, { includeHeadless: true }),
+          profileId: sessionIdentity.profileId,
+          rawSessionId: sessionIdentity.rawSessionId,
+        };
         const accountQuotas = normalizeCodexMonitorAccountQuotas(extra);
         const annotateCodexAccountQuota = () => {
           if (!accountQuotas) return;
@@ -215,9 +241,10 @@ function createAgentRuntimeMain(options = {}) {
         updateSession(sessionId, state, event, sessionOptions);
         annotateCodexAccountQuota();
       }, {
-        classifier: codexSubagentClassifier,
+        classifier: localCodexSubagentClassifier,
         onUserInputRequest: (sid, request, extra) => {
-          const sessionId = makeSessionKey({ profileId: "local", rawSessionId: sid });
+          const sessionIdentity = resolveSessionIdentity(sid, "local");
+          const sessionId = sessionIdentity.sessionId;
           const shown = showCodexUserInputBubble({
             sessionId,
             callId: request.callId,
@@ -228,11 +255,13 @@ function createAgentRuntimeMain(options = {}) {
           if (!shown) return;
           updateSession(sessionId, "notification", "CodexUserInputRequest", {
             ...buildCodexMonitorSessionOptions(extra, { includeHeadless: true }),
+            profileId: sessionIdentity.profileId,
+            rawSessionId: sessionIdentity.rawSessionId,
             transientPermissionEvent: true,
           });
         },
         onUserInputResolved: (sid, callId) => {
-          const sessionId = makeSessionKey({ profileId: "local", rawSessionId: sid });
+          const sessionId = resolveSessionIdentity(sid, "local").sessionId;
           clearCodexUserInputBubbles(sessionId, callId, "codex-user-input-resolved");
         },
       });

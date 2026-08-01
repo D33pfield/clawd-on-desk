@@ -48,6 +48,12 @@ const VERIFIED_GITHUB_CONTRIBUTORS = [
   "lurui1997",
   "JesmonX",
   "chen86860",
+  "LinYsssss",
+  "He-wei-gui",
+  "liugou27",
+  "YOOGOMJA",
+  "anupamme",
+  "anthonyonazure",
 ];
 
 function createDeferred() {
@@ -2298,6 +2304,9 @@ describe("settings renderer browser environment", () => {
       "telegramNativeMigrationFailed",
       "telegramNativeMigrationTimeout",
       "telegramNativeMigrationStartFailed",
+      "telegramMigrationNudgeTitle",
+      "telegramMigrationNudgeLegacyBody",
+      "telegramMigrationNudgeNativeBody",
     ];
     assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja"]);
     for (const lang of SUPPORTED_LANGS) {
@@ -2372,6 +2381,11 @@ describe("settings renderer browser environment", () => {
 
     const gate = harness.content.querySelector(".tg-native-migration-gate");
     assert.ok(gate, "legacy users must see the blocking retirement gate");
+    assert.strictEqual(
+      harness.content.querySelector(".tg-approval-channel-card").classList.contains("collapsed"),
+      false,
+      "a migration-required Telegram card must start expanded",
+    );
     assert.equal(
       gate.querySelector(".tg-native-migration-gate-title").textContent,
       "telegramLegacyRetiredTitle",
@@ -5470,6 +5484,29 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getSwitchMeta("quotaMergeSources").row.style.display, "");
     assert.strictEqual(summary.children.length, 1);
     assert.strictEqual(summary.children[0].textContent, "HUD: off");
+  });
+
+  it("keeps an enabled merge-sources switch visible with only one source", async () => {
+    const updateCalls = [];
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ quotaMergeSources: true }),
+      settingsAPI: {
+        getQuotaSourceCount: async () => 1,
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const mergeSwitch = harness.getSwitch("quotaMergeSources");
+    assert.strictEqual(harness.getSwitchMeta("quotaMergeSources").row.style.display, "");
+    mergeSwitch.eventListeners.click[0]();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, [{ key: "quotaMergeSources", value: false }]);
   });
 
   it("reveals existing quota options immediately and absorbs async sources without a second expansion", async () => {

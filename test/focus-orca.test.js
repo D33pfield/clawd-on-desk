@@ -287,6 +287,7 @@ describe("Orca pane key validator copies", () => {
     "src/server-route-state.js",
     "src/server-route-permission.js",
     "src/focus.js",
+    "src/session-focus.js",
   ];
 
   it("shares one pattern across every copy", () => {
@@ -296,7 +297,11 @@ describe("Orca pane key validator copies", () => {
       assert.ok(at > 0, `${rel} must use the canonical pane-key pattern`);
       // Scoped to the validator: these files carry unrelated .trim() calls, so a
       // whole-file match would pass no matter what the validator itself did.
-      assert.ok(src.slice(Math.max(0, at - 400), at).includes(".trim()"),
+      const validatorPrefix = src.slice(Math.max(0, at - 500), at);
+      const trimsDirectly = validatorPrefix.includes(".trim()");
+      const trimsViaNormalizer = /normalizeString\([^)]*\)/.test(validatorPrefix)
+        && /function normalizeString\([^)]*\)\s*\{[\s\S]{0,120}\.trim\(\)/.test(src);
+      assert.ok(trimsDirectly || trimsViaNormalizer,
         `${rel} must trim before matching`);
     }
     const py = fs.readFileSync(path.join(repo, "hooks/hermes-plugin/__init__.py"), "utf8");

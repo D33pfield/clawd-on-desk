@@ -3,6 +3,8 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
+const { spawnSync } = require("node:child_process");
+const path = require("node:path");
 
 const {
   HOLIDAY_ACCESSORY_WINDOWS,
@@ -70,6 +72,22 @@ describe("holiday accessory date rules", () => {
     );
     assert.strictEqual(getHolidayAccessoryForDate(new Date(NaN)), null);
     assert.strictEqual(getHolidayAccessoryForDate("2026-12-24"), null);
+  });
+
+  it("uses the user's UTC+14 local date at a holiday boundary", () => {
+    const modulePath = path.join(__dirname, "..", "src", "holiday-accessory.js");
+    const script = [
+      `const { getHolidayAccessoryForDate } = require(${JSON.stringify(modulePath)});`,
+      "const result = getHolidayAccessoryForDate(new Date('2026-12-21T10:30:00.000Z'));",
+      "process.stdout.write(result ? result.accessoryId : 'none');",
+    ].join("\n");
+    const result = spawnSync(process.execPath, ["-e", script], {
+      env: { ...process.env, TZ: "Pacific/Kiritimati" },
+      encoding: "utf8",
+    });
+
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.strictEqual(result.stdout, "santa-hat");
   });
 
   it("keeps the checkbox independent from the saved manual accessory", () => {

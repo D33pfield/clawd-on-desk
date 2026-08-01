@@ -1,9 +1,8 @@
-// Test preloader: replaces the resolver's full-machine WMI process snapshot
-// with a three-process tree — this hook's real parent pid, parented under
-// reasonix.exe (pid 4000), parented under explorer.exe (pid 5000, a system
-// boundary). Lets PID-attribution tests assert stablePid/agentPid without
-// spawning PowerShell or depending on the host's real process list. Any
-// execFileSync call that is NOT the snapshot passes through to the real one.
+// Test preloader: replaces the resolver's platform process queries with a
+// three-process tree — this hook's real parent pid, parented under Reasonix
+// (pid 4000), then a system boundary (pid 5000). Lets PID-attribution tests
+// assert stablePid/agentPid on Windows, macOS, and Linux without depending on
+// the host's real process list. Unrelated execFileSync calls pass through.
 const childProcess = require("child_process");
 const fs = require("fs");
 
@@ -37,6 +36,12 @@ const SNAPSHOT = {
   foreground: { hwnd: null, pid: 0, className: "" },
 };
 
+const POSIX_PROCESSES = new Map([
+  [hookParentPid, { ppid: 4000, comm: "node", command: "node hooks/reasonix-hook.js" }],
+  [4000, { ppid: 5000, comm: "reasonix", command: "reasonix" }],
+  [5000, { ppid: 0, comm: process.platform === "darwin" ? "launchd" : "systemd", command: "system" }],
+]);
+
 childProcess.execFileSync = function (file, args, options) {
   const text = [file, ...(Array.isArray(args) ? args : [])].join(" ");
   if (/powershell(\.exe)?/i.test(String(file)) && text.includes("Win32_Process")) {
@@ -56,6 +61,16 @@ childProcess.execFileSync = function (file, args, options) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
     }
     return JSON.stringify(SNAPSHOT);
+  }
+  if (String(file) === "ps" && Array.isArray(args)) {
+    const field = args[1];
+    const pid = Number(args[3]);
+    const processInfo = POSIX_PROCESSES.get(pid);
+    if (processInfo && args[0] === "-o" && args[2] === "-p") {
+      if (field === "ppid=") return `${processInfo.ppid}\n`;
+      if (field === "comm=") return `${processInfo.comm}\n`;
+      if (field === "command=") return `${processInfo.command}\n`;
+    }
   }
   return realExecFileSync.apply(this, arguments);
 };

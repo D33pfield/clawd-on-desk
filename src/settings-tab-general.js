@@ -475,7 +475,9 @@
     // "Merge across machines" only matters with more than one reporting source
     // (WSL / SSH remotes). Hidden by default so single-machine users never see
     // a confusing no-op switch; revealed once multiple sources are confirmed.
-    mergeRow.style.display = "none";
+    mergeRow.style.display = state.snapshot && state.snapshot.quotaMergeSources === true
+      ? ""
+      : "none";
     const optionList = buildOptionList("quota-ring-option-list", [
       enabledRow,
       claudeCollectionRow,

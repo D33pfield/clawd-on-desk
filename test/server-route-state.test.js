@@ -434,6 +434,8 @@ describe("server-route-state POST", () => {
         orcaPaneKey: "tab-9:leaf-3",
         agentPid: 99,
         agentId: "codex",
+        profileId: "local",
+        rawSessionId: "sid",
         host: "remote-host",
         wslDistro: null,
         headless: true,

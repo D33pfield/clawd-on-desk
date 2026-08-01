@@ -178,8 +178,8 @@ function resolveAgentPaths(descriptor, options) {
     });
     const primary = configTargets[0];
     return finalizeAgentPaths(descriptor, {
-      parentDir: primary.parentDir,
-      configPath: primary.configPath,
+      parentDir: primary ? primary.parentDir : "",
+      configPath: primary ? primary.configPath : "",
       configTargets,
     }, options);
   }

@@ -615,10 +615,8 @@ function handleStatePost(req, res, options) {
             agentId,
             ...(subagentId ? { subagentId } : {}),
             ...(subagentType ? { subagentType } : {}),
-            ...(trustedProfileId === "local" ? {} : {
-              profileId: sessionIdentity.profileId,
-              rawSessionId: sessionIdentity.rawSessionId,
-            }),
+            profileId: sessionIdentity.profileId,
+            rawSessionId: sessionIdentity.rawSessionId,
             host,
             wslDistro,
             headless: headless || codexHookState.headless === true,

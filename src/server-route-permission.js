@@ -406,6 +406,9 @@ function tryRemoteOnlyApproval(ctx, fields) {
   // when Telegram wasn't available and the caller fell back to res.destroy().
   ctx.updateSession(fields.sessionId, "notification", "PermissionRequest", {
     agentId: fields.agentId,
+    profileId: fields.profileId,
+    rawSessionId: fields.rawSessionId,
+    ...(fields.host ? { host: fields.host } : {}),
     sessionAutomationIdentity: fields.sessionAutomationIdentity,
   });
   if (typeof ctx.syncPermissionShortcuts === "function") {
@@ -514,13 +517,14 @@ function handlePermissionPost(req, res, options) {
     });
     const resolvePermissionSession = (value, fallback) =>
       resolveSessionIdentity(value, trustedProfileId, fallback);
-    const remoteSessionFields = (sessionIdentity) => trustedProfileId === "local"
-      ? {}
-      : {
-          profileId: sessionIdentity.profileId,
-          rawSessionId: sessionIdentity.rawSessionId,
-          ...(trustedDisplayHost ? { host: trustedDisplayHost } : {}),
-        };
+    // The route owns this identity: callers cannot choose the profile, and the
+    // raw id must survive canonical Map-key normalization on both local and
+    // remote requests. The display host remains remote-only.
+    const trustedSessionFields = (sessionIdentity) => ({
+      profileId: sessionIdentity.profileId,
+      rawSessionId: sessionIdentity.rawSessionId,
+      ...(trustedProfileId !== "local" && trustedDisplayHost ? { host: trustedDisplayHost } : {}),
+    });
 
     try {
       // ── opencode-family branch (opencode + opencode-derived runtimes) ──
@@ -607,7 +611,7 @@ function handlePermissionPost(req, res, options) {
           abortHandler: null,
           suggestions: [],
           sessionId,
-          ...remoteSessionFields(sessionIdentity),
+          ...trustedSessionFields(sessionIdentity),
           bubble: null,
           hideTimer: null,
           toolName,
@@ -636,7 +640,7 @@ function handlePermissionPost(req, res, options) {
         ctx.updateSession(sessionId, "notification", "PermissionRequest", {
           agentId,
           sessionAutomationIdentity,
-          ...remoteSessionFields(sessionIdentity),
+          ...trustedSessionFields(sessionIdentity),
         });
         ctx.permLog(`${agentId} showing bubble: tool=${toolName} session=${sessionId}`);
         recordRequestHookEvent.accepted();
@@ -706,7 +710,7 @@ function handlePermissionPost(req, res, options) {
         const codexSessionOptions = {
           ...buildCodexPermissionSessionOptions(data),
           sessionAutomationIdentity,
-          ...remoteSessionFields(sessionIdentity),
+          ...trustedSessionFields(sessionIdentity),
         };
         const isCodexSubagent = isInteractiveCodexSubagentPermission(agentId, data);
 
@@ -759,7 +763,7 @@ function handlePermissionPost(req, res, options) {
           abortHandler: null,
           suggestions: [],
           sessionId,
-          ...remoteSessionFields(sessionIdentity),
+          ...trustedSessionFields(sessionIdentity),
           bubble: null,
           hideTimer: null,
           toolName,
@@ -845,7 +849,7 @@ function handlePermissionPost(req, res, options) {
         const qwenSessionOptions = {
           ...buildQwenCodePermissionSessionOptions(data),
           sessionAutomationIdentity,
-          ...remoteSessionFields(sessionIdentity),
+          ...trustedSessionFields(sessionIdentity),
         };
 
         if (ctx.doNotDisturb) {
@@ -884,7 +888,7 @@ function handlePermissionPost(req, res, options) {
           abortHandler: null,
           suggestions: [],
           sessionId,
-          ...remoteSessionFields(sessionIdentity),
+          ...trustedSessionFields(sessionIdentity),
           bubble: null,
           hideTimer: null,
           toolName,
@@ -967,7 +971,7 @@ function handlePermissionPost(req, res, options) {
         const copilotSessionOptions = {
           ...buildCopilotPermissionSessionOptions(data),
           sessionAutomationIdentity,
-          ...remoteSessionFields(sessionIdentity),
+          ...trustedSessionFields(sessionIdentity),
         };
 
         if (ctx.doNotDisturb) {
@@ -1006,7 +1010,7 @@ function handlePermissionPost(req, res, options) {
           abortHandler: null,
           suggestions: [],
           sessionId,
-          ...remoteSessionFields(sessionIdentity),
+          ...trustedSessionFields(sessionIdentity),
           bubble: null,
           hideTimer: null,
           toolName,
@@ -1142,7 +1146,7 @@ function handlePermissionPost(req, res, options) {
           const hermesSessionOptions = {
             ...buildHermesPermissionSessionOptions(data),
             sessionAutomationIdentity,
-            ...remoteSessionFields(sessionIdentity),
+            ...trustedSessionFields(sessionIdentity),
           };
           ctx.permLog(`HERMES ELICITATION: tool=${toolName} session=${sessionId}`);
           ctx.updateSession(sessionId, "notification", "Elicitation", hermesSessionOptions);
@@ -1152,7 +1156,7 @@ function handlePermissionPost(req, res, options) {
             abortHandler: null,
             suggestions: [],
             sessionId,
-            ...remoteSessionFields(sessionIdentity),
+            ...trustedSessionFields(sessionIdentity),
             bubble: null,
             hideTimer: null,
             toolName,
@@ -1210,7 +1214,7 @@ function handlePermissionPost(req, res, options) {
         const hermesSessionOptions = {
           ...buildHermesPermissionSessionOptions(data),
           sessionAutomationIdentity,
-          ...remoteSessionFields(sessionIdentity),
+          ...trustedSessionFields(sessionIdentity),
         };
         ctx.permLog(`HERMES PERMISSION: tool=${toolName} session=${sessionId}`);
         ctx.updateSession(sessionId, "notification", "PermissionRequest", hermesSessionOptions);
@@ -1220,7 +1224,7 @@ function handlePermissionPost(req, res, options) {
           abortHandler: null,
           suggestions: [],
           sessionId,
-          ...remoteSessionFields(sessionIdentity),
+          ...trustedSessionFields(sessionIdentity),
           bubble: null,
           hideTimer: null,
           toolName,
@@ -1358,7 +1362,7 @@ function handlePermissionPost(req, res, options) {
             res, sessionId, toolName, toolInput, toolUseId, toolInputFingerprint,
             agentId: permAgentId, subagentId, subagentType, suggestions, interaction,
             sessionAutomationIdentity,
-            ...remoteSessionFields(sessionIdentity),
+            ...trustedSessionFields(sessionIdentity),
           });
           if (remoteOnlyResult.handled) return;
           ctx.permLog(`permission bubbles disabled, no remote approval available → destroy connection, chat fallback (tool=${toolName})`);
@@ -1397,7 +1401,7 @@ function handlePermissionPost(req, res, options) {
         ctx.updateSession(sessionId, "notification", "Elicitation", {
           agentId: permAgentId,
           sessionAutomationIdentity,
-          ...remoteSessionFields(sessionIdentity),
+          ...trustedSessionFields(sessionIdentity),
         });
 
         const permEntry = {
@@ -1405,7 +1409,7 @@ function handlePermissionPost(req, res, options) {
           abortHandler: null,
           suggestions: [],
           sessionId,
-          ...remoteSessionFields(sessionIdentity),
+          ...trustedSessionFields(sessionIdentity),
           bubble: null,
           hideTimer: null,
           toolName,
@@ -1457,7 +1461,7 @@ function handlePermissionPost(req, res, options) {
         abortHandler: null,
         suggestions,
         sessionId,
-        ...remoteSessionFields(sessionIdentity),
+        ...trustedSessionFields(sessionIdentity),
         bubble: null,
         hideTimer: null,
         toolName,
@@ -1490,7 +1494,7 @@ function handlePermissionPost(req, res, options) {
       ctx.updateSession(sessionId, "notification", "PermissionRequest", {
         agentId: permAgentId,
         sessionAutomationIdentity,
-        ...remoteSessionFields(sessionIdentity),
+        ...trustedSessionFields(sessionIdentity),
       });
 
       ctx.permLog(`showing bubble: tool=${toolName} session=${sessionId} suggestions=${suggestions.length} stack=${ctx.pendingPermissions.length}`);

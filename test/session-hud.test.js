@@ -639,6 +639,11 @@ describe("session HUD v5 three-state runtime contracts (source-level)", () => {
       "module return must expose revealFromPet/handlePinnedChanged/clearReveal");
   });
 
+  it("exposes a ring-only reposition path for post-bubble avoidance", () => {
+    assert.match(src, /function repositionQuotaRing\(\)/);
+    assert.match(src, /repositionSessionHud,\s*\n\s*repositionQuotaRing,/);
+  });
+
   it("snapshot to renderer no longer includes hudAutoHide", () => {
     assert.ok(!/hudAutoHide:/.test(src),
       "session-hud must not send hudAutoHide in snapshot");

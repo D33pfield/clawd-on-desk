@@ -60,6 +60,7 @@ docs/**
 !docs/releases/release-v0.11.0.md
 !docs/releases/release-v0.12.0.md
 !docs/releases/release-v0.13.0.md
+!docs/releases/release-v0.14.0.md
 
 # Temp files from testing
 .tmp_*
@@ -105,6 +106,7 @@ scripts/*
 !scripts/verify-electron-install.js
 !scripts/audit-repository-assets.js
 !scripts/assert-no-retired-telegram-sidecar.js
+!scripts/verify-release-version.js
 
 # oh-my-cursor state
 .omc/

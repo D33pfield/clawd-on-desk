@@ -261,39 +261,62 @@ describe("restoreSessionFromLease()", () => {
     assert.deepStrictEqual(sounds, []);
     assert.deepStrictEqual(broadcasts, []);
     assert.strictEqual(api.sessions.size, 1);
-    const session = api.sessions.get("claude-real-session");
+    const sessionId = makeSessionKey({ profileId: "local", rawSessionId: "claude-real-session" });
+    const session = api.sessions.get(sessionId);
     assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.profileId, "local");
+    assert.strictEqual(session.rawSessionId, "claude-real-session");
     assert.strictEqual(session.startupRecovered, true);
     assert.deepStrictEqual(session.recentEvents, []);
     assert.strictEqual(session.requiresCompletionAck, undefined);
     const entry = api.buildSessionSnapshot().sessions[0];
-    assert.strictEqual(entry.id, "claude-real-session");
+    assert.strictEqual(entry.id, sessionId);
     assert.strictEqual(entry.startupRecovered, true);
     assert.strictEqual(entry.canFocus, false);
   });
 
-  it("lets the next real hook update the same id and clear only its marker", () => {
+  it("lets the next real hook update the same canonical id, then SessionEnd removes it", () => {
     api = require("../src/state")(makeCtx({ processKill: () => true }));
     assert.strictEqual(api.restoreSessionFromLease(lease()), true);
     assert.strictEqual(api.restoreSessionFromLease(lease({ sessionId: "other-session", state: "thinking" })), true);
+    const sessionId = makeSessionKey({ profileId: "local", rawSessionId: "claude-real-session" });
+    const otherSessionId = makeSessionKey({ profileId: "local", rawSessionId: "other-session" });
     update(api, {
-      id: "claude-real-session",
+      id: sessionId,
       state: "working",
       event: "PostToolUse",
       sourcePid: process.pid,
       agentPid: process.pid,
+      profileId: "local",
+      rawSessionId: "claude-real-session",
     });
     assert.strictEqual(api.sessions.size, 2);
-    assert.strictEqual(api.sessions.get("claude-real-session").startupRecovered, undefined);
-    assert.strictEqual(api.sessions.get("other-session").startupRecovered, true);
+    assert.strictEqual(api.sessions.get(sessionId).startupRecovered, undefined);
+    assert.strictEqual(api.sessions.get(otherSessionId).startupRecovered, true);
+    update(api, {
+      id: sessionId,
+      state: "idle",
+      event: "SessionEnd",
+      profileId: "local",
+      rawSessionId: "claude-real-session",
+    });
+    assert.strictEqual(api.sessions.has(sessionId), false);
+    assert.strictEqual(api.sessions.size, 1);
   });
 
   it("never overwrites a session that arrived from a real hook first", () => {
     api = require("../src/state")(makeCtx({ processKill: () => true }));
-    update(api, { id: "claude-real-session", state: "thinking", event: "UserPromptSubmit" });
+    const sessionId = makeSessionKey({ profileId: "local", rawSessionId: "claude-real-session" });
+    update(api, {
+      id: sessionId,
+      state: "thinking",
+      event: "UserPromptSubmit",
+      profileId: "local",
+      rawSessionId: "claude-real-session",
+    });
     assert.strictEqual(api.restoreSessionFromLease(lease()), false);
-    assert.strictEqual(api.sessions.get("claude-real-session").state, "thinking");
-    assert.strictEqual(api.sessions.get("claude-real-session").startupRecovered, undefined);
+    assert.strictEqual(api.sessions.get(sessionId).state, "thinking");
+    assert.strictEqual(api.sessions.get(sessionId).startupRecovered, undefined);
   });
 });
 

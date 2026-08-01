@@ -362,13 +362,16 @@ describe("package build config", () => {
       assert.match(workflow, /Clawd-on-Desk-\*-amd64\.deb/);
     });
 
-    it("publishes GitHub releases only for version tags", () => {
+    it("publishes GitHub releases only for pushed version tags", () => {
       const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
       const releaseIndex = findWorkflowJobIndex(workflow, "release");
       assert.ok(releaseIndex >= 0, "workflow should define a release job");
-      const releaseGateIndex = workflow.indexOf("if: startsWith(github.ref, 'refs/tags/v')", releaseIndex);
+      const releaseGateIndex = workflow.indexOf(
+        "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')",
+        releaseIndex,
+      );
       const bodyPathIndex = workflow.indexOf("body_path: docs/releases/release-${{ github.ref_name }}.md", releaseIndex);
-      assert.ok(releaseGateIndex >= 0, "release job should be gated to v* tags");
+      assert.ok(releaseGateIndex >= 0, "release job should be gated to pushed v* tags");
       assert.ok(bodyPathIndex >= 0, "release job should still use tag-specific release notes");
       assert.ok(releaseGateIndex < bodyPathIndex, "release job gate should run before release publication");
     });

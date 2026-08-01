@@ -56,7 +56,7 @@ const {
   PET_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
-const CURRENT_VERSION = 12;
+const CURRENT_VERSION = 13;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -143,6 +143,10 @@ const SCHEMA = {
   // per distinct breakage, not every launch. See codex-hook-health.js.
   codexHookHealthNotifyEnabled: { type: "boolean", default: true },
   codexHookHealthLastNotified: { type: "string", default: "" },
+  // Edge-triggered startup nudge for users whose retired Telegram sidecar
+  // requires native verification. Cleared after native activation or an
+  // explicit switch-off so a future migration requirement can warn once.
+  telegramMigrationLastNotified: { type: "string", default: "" },
   // System-backed: actual truth lives in OS login items / autostart files.
   // `openAtLoginHydrated` starts false; main.js's startup hydrate helper imports
   // the current system value into prefs on first run, then flips this flag.
@@ -741,6 +745,11 @@ function migrate(raw) {
   if (out.version < 12) {
     if (!("showDock" in out)) out.showDock = true;
     out.version = 12;
+  }
+  // v12 -> v13: Settings-window geometry persistence. No backfill is needed:
+  // an absent/null value intentionally keeps the existing centered placement.
+  if (out.version < 13) {
+    out.version = 13;
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
