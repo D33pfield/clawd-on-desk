@@ -326,22 +326,103 @@ describe("Codex official /permission path", () => {
     res.destroy();
   });
 
-  it("returns no-decision for subagent PermissionRequest before auto-pilot can allow", async () => {
+  it("routes an interactive subagent PermissionRequest through the approval bubble", async () => {
+    const { handler, pendingPermissions, updates, shown } = startServer({
+      isCodexPermissionInterceptEnabled: () => true,
+    });
+    const req = makeReq({
+      hook_source: "codex-official",
+      codex_session_role: "subagent",
+      codex_originator: "codex-tui",
+      codex_agent_nickname: "Halley",
+      codex_parent_thread_id: "parent-1",
+      session_id: "codex:sub",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    const res = makeRes();
+
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.strictEqual(shown.length, 1);
+    assert.strictEqual(pendingPermissions[0].codexSessionRole, "subagent");
+    assert.strictEqual(pendingPermissions[0].codexAgentNickname, "Halley");
+    assert.strictEqual(pendingPermissions[0].codexParentThreadId, "parent-1");
+    assert.strictEqual(pendingPermissions[0].subagentId, localSessionKey("codex:sub"));
+    assert.strictEqual(updates.length, 1);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(updates[0][3], "headless"), false);
+
+    res.destroy();
+  });
+
+  it("does not let the state-only subagent headless marker suppress an interactive approval", async () => {
+    const sessionId = localSessionKey("codex:sub-state");
+    const { handler, pendingPermissions, shown } = startServer({
+      sessions: new Map([[sessionId, { agentId: "codex", headless: true }]]),
+      isCodexPermissionInterceptEnabled: () => true,
+    });
+    const req = makeReq({
+      hook_source: "codex-official",
+      codex_session_role: "subagent",
+      codex_originator: "codex_work_desktop",
+      session_id: "codex:sub-state",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    const res = makeRes();
+
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.strictEqual(shown.length, 1);
+    res.destroy();
+  });
+
+  it("keeps an explicitly headless subagent on the native no-decision fallback", async () => {
     const { handler, pendingPermissions, updates, shown } = startServer({
       isCodexPermissionInterceptEnabled: () => true,
     });
     const res = await callPermission(handler, {
       hook_source: "codex-official",
       codex_session_role: "subagent",
-      session_id: "codex:sub",
+      codex_originator: "codex-tui",
+      headless: true,
+      session_id: "codex:sub-headless",
       tool_name: "Bash",
       tool_input: { command: "npm test" },
     });
 
     assert.strictEqual(res.statusCode, 204);
-    assert.strictEqual(res.body, "");
     assert.strictEqual(pendingPermissions.length, 0);
     assert.strictEqual(shown.length, 0);
     assert.deepStrictEqual(updates, []);
+  });
+
+  it("keeps codex_exec and unknown subagent originators on native fallback", async () => {
+    for (const originator of ["codex_exec", "unknown-client", null]) {
+      const rawSessionId = `codex:sub-${originator || "missing"}`;
+      const { handler, pendingPermissions, updates, shown } = startServer({
+        isCodexPermissionInterceptEnabled: () => true,
+      });
+      const body = {
+        hook_source: "codex-official",
+        codex_session_role: "subagent",
+        session_id: rawSessionId,
+        tool_name: "Bash",
+        tool_input: { command: "npm test" },
+      };
+      if (originator) body.codex_originator = originator;
+      const res = await callPermission(handler, body);
+
+      assert.strictEqual(res.statusCode, 204, String(originator));
+      assert.strictEqual(pendingPermissions.length, 0, String(originator));
+      assert.strictEqual(shown.length, 0, String(originator));
+      assert.deepStrictEqual(updates, [], String(originator));
+    }
   });
 });

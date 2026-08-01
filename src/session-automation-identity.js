@@ -1,5 +1,7 @@
 "use strict";
 
+const { isCodexCliOriginator } = require("../hooks/codex-originator");
+
 // Session automation is a security-sensitive opt-in. This table is deliberately
 // small and static: it records only adapter identity facts that have been
 // audited for this feature. It is not a runtime capability registry.
@@ -55,7 +57,6 @@ const ADAPTER_POLICY = Object.freeze({
 });
 
 const VALID_CHANNELS = new Set(["state", "permission"]);
-const CODEX_LOCAL_CLI_ORIGINATORS = new Set(["codex_cli_rs", "codex-tui"]);
 const CODEX_SESSION_ID_PATTERN =
   /^codex:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -91,7 +92,7 @@ function assessCodexIdentity({
     return result(false, "unsupported-codex-session-source");
   }
   const originator = normalizeString(codexOriginator).toLowerCase();
-  if (!CODEX_LOCAL_CLI_ORIGINATORS.has(originator)) {
+  if (!isCodexCliOriginator(originator)) {
     return result(false, "unsupported-codex-originator");
   }
   if (!Number.isFinite(agentPid) || agentPid <= 0) {

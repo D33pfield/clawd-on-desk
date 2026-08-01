@@ -9,6 +9,10 @@ const {
   CODEX_SESSION_ROLE_SUBAGENT,
 } = require("./server-codex-official-turns");
 const {
+  isCodexCliOriginator,
+  isCodexDesktopOriginator,
+} = require("../hooks/codex-originator");
+const {
   truncateDeep,
   normalizePermissionSuggestions,
   prepareElicitationToolInput,
@@ -103,15 +107,42 @@ function shouldMuteCodexNativeNotificationSound(ctx) {
   return ctx.isCodexNativeNotificationSoundEnabled() === false;
 }
 
-function isHeadlessPermissionRequest(ctx, sessionId, data) {
+function isOfficialCodexSubagentPermission(agentId, data) {
+  return !!(data
+    && agentId === "codex"
+    && data.hook_source === CODEX_OFFICIAL_HOOK_SOURCE
+    && data.codex_session_role === CODEX_SESSION_ROLE_SUBAGENT);
+}
+
+function isInteractiveCodexSubagentPermission(agentId, data) {
+  return !!(isOfficialCodexSubagentPermission(agentId, data)
+    && (
+      isCodexCliOriginator(data.codex_originator)
+      || isCodexDesktopOriginator(data.codex_originator)
+    )
+    && data.headless !== true);
+}
+
+function isHeadlessPermissionRequest(ctx, sessionId, data, agentId) {
+  // An explicit process-level signal always wins. In contrast, Codex state
+  // sessions use headless=true for subagents as a presentation/focus policy
+  // (keep them out of HUD priority and completion noise). A PermissionRequest
+  // from a visible official Agent thread is still interactive, so that state
+  // marker must not suppress the approval bubble.
+  if (data && data.headless === true) return true;
+  if (isOfficialCodexSubagentPermission(agentId, data)) {
+    // PermissionRequest may be the first event for a child, before a session
+    // exists in memory. Only audited interactive clients may cross the
+    // chokepoint; exec/unknown children must fail safe to the native prompt.
+    return !isInteractiveCodexSubagentPermission(agentId, data);
+  }
   if (ctx && ctx.sessions && typeof ctx.sessions.get === "function") {
     const session = ctx.sessions.get(sessionId);
-    if (session && session.headless) return true;
+    if (session && session.headless) {
+      return !isInteractiveCodexSubagentPermission(agentId, data);
+    }
   }
-  if (data && data.headless === true) return true;
-  return !!(data
-    && (data.agent_id === "codex" || data.hook_source === CODEX_OFFICIAL_HOOK_SOURCE)
-    && data.codex_session_role === CODEX_SESSION_ROLE_SUBAGENT);
+  return false;
 }
 
 function arePermissionBubblesEnabled(ctx) {
@@ -185,12 +216,20 @@ function buildCodexPermissionSessionOptions(data) {
   const model = normalizeString(data.model);
   const codexOriginator = normalizeString(data.codex_originator);
   const codexSource = normalizeString(data.codex_source);
+  const codexSessionRole = normalizeString(data.codex_session_role);
+  const codexAgentNickname = normalizeString(data.codex_agent_nickname);
+  const codexAgentRole = normalizeString(data.codex_agent_role);
+  const codexParentThreadId = normalizeString(data.codex_parent_thread_id);
   if (cwd) options.cwd = cwd;
   if (host) options.host = host;
   if (platform) options.platform = platform;
   if (model) options.model = model;
   if (codexOriginator) options.codexOriginator = codexOriginator;
   if (codexSource) options.codexSource = codexSource;
+  if (codexSessionRole) options.codexSessionRole = codexSessionRole;
+  if (codexAgentNickname) options.codexAgentNickname = codexAgentNickname;
+  if (codexAgentRole) options.codexAgentRole = codexAgentRole;
+  if (codexParentThreadId) options.codexParentThreadId = codexParentThreadId;
   return options;
 }
 
@@ -548,7 +587,7 @@ function handlePermissionPost(req, res, options) {
           return;
         }
 
-        if (isHeadlessPermissionRequest(ctx, sessionId, data)) {
+        if (isHeadlessPermissionRequest(ctx, sessionId, data, agentId)) {
           recordRequestHookEvent.accepted();
           ctx.permLog(`${agentId} headless session=${sessionId} → silent drop, TUI fallback — request=${requestId}`);
           return;
@@ -669,6 +708,7 @@ function handlePermissionPost(req, res, options) {
           sessionAutomationIdentity,
           ...remoteSessionFields(sessionIdentity),
         };
+        const isCodexSubagent = isInteractiveCodexSubagentPermission(agentId, data);
 
         if (ctx.doNotDisturb) {
           recordRequestHookEvent.droppedByDnd();
@@ -677,7 +717,7 @@ function handlePermissionPost(req, res, options) {
           return;
         }
 
-        if (isHeadlessPermissionRequest(ctx, sessionId, data)) {
+        if (isHeadlessPermissionRequest(ctx, sessionId, data, agentId)) {
           recordRequestHookEvent.accepted();
           ctx.permLog(`codex headless session=${sessionId} -> no decision, native prompt fallback (tool=${toolName})`);
           sendCodexPermissionNoDecision(res);
@@ -732,6 +772,16 @@ function handlePermissionPost(req, res, options) {
           sessionAutomationIdentity,
           agentId: "codex",
           isCodex: true,
+          codexInteractiveSubagent: isCodexSubagent,
+          headless: data.headless === true,
+          codexSessionRole: codexSessionOptions.codexSessionRole || null,
+          codexAgentNickname: codexSessionOptions.codexAgentNickname || null,
+          codexAgentRole: codexSessionOptions.codexAgentRole || null,
+          codexParentThreadId: codexSessionOptions.codexParentThreadId || null,
+          subagentId: isCodexSubagent ? sessionId : null,
+          subagentType: isCodexSubagent
+            ? (codexSessionOptions.codexAgentNickname || codexSessionOptions.codexAgentRole || "Agent")
+            : null,
           sourcePid: codexSessionOptions.sourcePid || null,
           cwd: codexSessionOptions.cwd || "",
           agentPid: codexSessionOptions.agentPid || null,
@@ -805,7 +855,7 @@ function handlePermissionPost(req, res, options) {
           return;
         }
 
-        if (isHeadlessPermissionRequest(ctx, sessionId, data)) {
+        if (isHeadlessPermissionRequest(ctx, sessionId, data, agentId)) {
           recordRequestHookEvent.accepted();
           ctx.permLog(`qwen headless session=${sessionId} -> no decision, native prompt fallback (tool=${toolName})`);
           sendQwenCodePermissionNoDecision(res);
@@ -927,7 +977,7 @@ function handlePermissionPost(req, res, options) {
           return;
         }
 
-        if (isHeadlessPermissionRequest(ctx, sessionId, data)) {
+        if (isHeadlessPermissionRequest(ctx, sessionId, data, agentId)) {
           recordRequestHookEvent.accepted();
           ctx.permLog(`copilot headless session=${sessionId} -> no decision, native prompt fallback (tool=${toolName})`);
           sendCopilotPermissionNoDecision(res);
@@ -1054,7 +1104,7 @@ function handlePermissionPost(req, res, options) {
           return;
         }
 
-        if (isHeadlessPermissionRequest(ctx, sessionId, data)) {
+        if (isHeadlessPermissionRequest(ctx, sessionId, data, agentId)) {
           recordRequestHookEvent.accepted();
           ctx.permLog(`hermes headless session=${sessionId} -> no decision, native fallback (tool=${toolName})`);
           sendHermesPermissionNoDecision(res);

@@ -726,6 +726,9 @@ describe("server-route-permission POST", () => {
     const sessionId = "opencode:headless";
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "opencode",
+      hook_source: "codex-official",
+      codex_session_role: "subagent",
+      codex_originator: "codex-tui",
       session_id: sessionId,
       tool_name: "Bash",
       tool_input: { command: "npm test" },
@@ -1419,6 +1422,9 @@ describe("server-route-permission POST", () => {
     const sessionId = "copilot:headless";
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "copilot-cli",
+      hook_source: "codex-official",
+      codex_session_role: "subagent",
+      codex_originator: "codex-tui",
       session_id: sessionId,
       tool_name: "edit",
       tool_input: { filePath: "a.txt" },
@@ -1634,6 +1640,9 @@ describe("server-route-permission POST", () => {
     const sessionId = "hermes:headless";
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "hermes",
+      hook_source: "codex-official",
+      codex_session_role: "subagent",
+      codex_originator: "codex-tui",
       session_id: sessionId,
       tool_name: "execute_bash",
       tool_input: { command: "rm -rf /tmp/test" },

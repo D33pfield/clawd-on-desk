@@ -27,7 +27,10 @@ const {
   extractLastAssistantTextFromTranscript,
 } = require("./codex-assistant-output");
 const { readCodexThreadName } = require("./codex-session-index");
-const { isCodexDesktopOriginator } = require("./codex-originator");
+const {
+  isCodexCliOriginator,
+  isCodexDesktopOriginator,
+} = require("./codex-originator");
 const { fitStateBodyToByteBudget } = require("./state-payload-size");
 
 const TOOL_MATCH_STRING_MAX = 240;
@@ -189,9 +192,46 @@ function applyCodexSessionMetaFields(body, payload, sessionMeta) {
   const source = payload && typeof payload === "object" ? payload : {};
   const meta = sessionMeta && typeof sessionMeta === "object" ? sessionMeta : {};
   const originator = firstString(meta.originator, source.originator);
-  const codexSource = firstString(meta.source, source.source);
+  let codexSource = firstString(meta.source, source.source);
+  const metaSubagent = meta.source && typeof meta.source === "object"
+    ? meta.source.subagent
+    : null;
+  const hookSubagent = source.source && typeof source.source === "object"
+    ? source.source.subagent
+    : null;
+  const subagent = metaSubagent && typeof metaSubagent === "object"
+    ? metaSubagent
+    : (hookSubagent && typeof hookSubagent === "object" ? hookSubagent : null);
+  const spawn = subagent && subagent.thread_spawn && typeof subagent.thread_spawn === "object"
+    ? subagent.thread_spawn
+    : {};
+
+  // A subagent session_meta replaces the root's string source ("cli") with
+  // a structured `source.subagent` object. `originator:"codex-tui"` is the
+  // audited local-CLI provenance for that shape, so preserve the inherited
+  // source instead of making every interactive child fail automation identity.
+  if (!codexSource && subagent && isCodexCliOriginator(originator)) codexSource = "cli";
   if (originator) body.codex_originator = originator;
   if (codexSource) body.codex_source = codexSource;
+
+  const agentNickname = firstString(
+    meta.agent_nickname,
+    source.agent_nickname,
+    spawn.agent_nickname,
+  );
+  const agentRole = firstString(
+    meta.agent_role,
+    source.agent_role,
+    spawn.agent_role,
+  );
+  const parentThreadId = firstString(
+    meta.parent_thread_id,
+    source.parent_thread_id,
+    spawn.parent_thread_id,
+  );
+  if (agentNickname) body.codex_agent_nickname = agentNickname.slice(0, 100);
+  if (agentRole) body.codex_agent_role = agentRole.slice(0, 100);
+  if (parentThreadId) body.codex_parent_thread_id = parentThreadId.slice(0, 200);
 }
 
 function isCodexDesktopSession(payload, sessionMeta) {
@@ -214,7 +254,7 @@ function applyLocalProcessFields(body, resolve, options = {}) {
   const lifecycle = options.event === "SessionStart" ? "start"
     : options.event === "UserPromptSubmit" ? "prompt"
     : "event";
-  const { stablePid, agentPid, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolve({
+  const { stablePid, agentPid, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient, headless } = resolve({
     namespace: "codex",
     sessionId: body.session_id,
     cacheCwd: body.cwd || "",
@@ -225,6 +265,7 @@ function applyLocalProcessFields(body, resolve, options = {}) {
   body.source_pid = sourcePid;
   if (detectedEditor) body.editor = detectedEditor;
   if (agentPid) body.agent_pid = agentPid;
+  if (agentPid && headless === true) body.headless = true;
   if (pidChain.length) body.pid_chain = pidChain;
   if (tmuxSocket) body.tmux_socket = tmuxSocket;
   if (tmuxClient) body.tmux_client = tmuxClient;
@@ -318,10 +359,11 @@ function buildPermissionBody(payload, resolve) {
     body.transcript_path = payload.transcript_path;
   }
   if (typeof payload.model === "string" && payload.model) body.model = payload.model;
-  // Carry the session role so the /permission route's headless gate
-  // (isHeadlessPermissionRequest) can identify subagent requests even when
-  // no state event has populated the sessions map yet. Before PR #448
-  // subagent permissions deliberately bubbled, so the role was state-only.
+  if (payload.headless === true) body.headless = true;
+  // Permission routing must distinguish a visible Agent thread from a truly
+  // non-interactive process. Carry the role for provenance/UI. An explicit or
+  // resolver-derived `headless` bit remains a hard bypass; the server also
+  // fail-closes subagents whose originator is not an audited interactive client.
   const codexRole = resolveCodexSessionRole(payload, sessionMeta);
   if (codexRole !== ROLE_UNKNOWN) body.codex_session_role = codexRole;
   applyCodexSessionMetaFields(body, payload, sessionMeta);

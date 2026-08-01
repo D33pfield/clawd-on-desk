@@ -790,6 +790,24 @@ function isPermissionEntryLive(permEntry) {
   return true;
 }
 
+function isInteractiveCodexSubagentEntry(permEntry) {
+  return !!(permEntry
+    && permEntry.isCodex === true
+    && permEntry.codexInteractiveSubagent === true
+    && permEntry.headless !== true);
+}
+
+function isPermissionEntryHeadless(permEntry) {
+  if (!permEntry || typeof permEntry !== "object") return false;
+  if (permEntry.headless === true) return true;
+  const session = ctx.sessions && typeof ctx.sessions.get === "function"
+    ? ctx.sessions.get(permEntry.sessionId)
+    : null;
+  return !!(session
+    && session.headless === true
+    && !isInteractiveCodexSubagentEntry(permEntry));
+}
+
 function canAutoResolvePendingPermission(permEntry, options = {}) {
   if (!isPermissionEntryLive(permEntry)) return false;
   if (ctx.doNotDisturb) return false;
@@ -817,12 +835,7 @@ function canAutoResolvePendingPermission(permEntry, options = {}) {
     return false;
   }
 
-  const session = ctx.sessions && typeof ctx.sessions.get === "function"
-    ? ctx.sessions.get(permEntry.sessionId)
-    : null;
-  if (permEntry.headless === true || (session && session.headless === true)) {
-    return false;
-  }
+  if (isPermissionEntryHeadless(permEntry)) return false;
 
   if (
     permEntry.isCodex
@@ -906,13 +919,15 @@ function maybeAutoApprovePermission(permEntry) {
   // override, however, may be consumed after the route has created the entry,
   // so it must pass the same current liveness/gate/identity chokepoint used by
   // warning returns, remote commit, and sweep.
-  if (
-    action === AUTOMATION_ACTION.AUTO_ALLOW
-    && typeof ctx.hasSessionAutomationOverride === "function"
-    && ctx.hasSessionAutomationOverride(permEntry)
-    && !canAutoResolvePendingPermission(permEntry, { mode })
-  ) {
-    return false;
+  if (action === AUTOMATION_ACTION.AUTO_ALLOW) {
+    const hasSessionOverride = typeof ctx.hasSessionAutomationOverride === "function"
+      && ctx.hasSessionAutomationOverride(permEntry);
+    // Interactive Codex children may inherit global automation only when the
+    // same route-owned identity and live gates used by session automation are
+    // valid. This prevents a Desktop/unknown process identity from turning an
+    // otherwise manual Agent-thread bubble into an automatic allow.
+    const needsLiveGate = hasSessionOverride || isInteractiveCodexSubagentEntry(permEntry);
+    if (needsLiveGate && !canAutoResolvePendingPermission(permEntry, { mode })) return false;
   }
 
   if (action === AUTOMATION_ACTION.AUTO_ANSWER) {
@@ -1222,6 +1237,8 @@ function buildPermissionBubblePayload(permEntry) {
     // Provenance for the renderer: lets the bubble relabel Codex MCP tool calls
     // (issue #445) without touching approval semantics. Mirrors the flags above.
     isCodex: permEntry.isCodex || false,
+    isCodexSubagent: permEntry.isCodex === true && permEntry.codexSessionRole === "subagent",
+    codexAgentNickname: permEntry.codexAgentNickname || null,
     isCodexUserInputNotify: permEntry.isCodexUserInputNotify || false,
     codexUserInputCallId: permEntry.codexUserInputCallId || null,
     isRemote: !!permEntry.host,
@@ -1316,12 +1333,10 @@ function isRemoteApprovalActionable(permEntry) {
   if (isPassiveNotifyEntry(permEntry) || isOpencodeFamilyEntry(permEntry) || permEntry.isAntigravity || permEntry.isCopilotCli) return false;
   if (isDecisionInteraction(interaction)) return false;
   if (PASSTHROUGH_TOOLS.has(permEntry.toolName)) return false;
-  // Headless sessions auto-deny locally; mirror that on the Telegram side so a
-  // non-interactive Codex/CC run never sends an actionable approval card.
-  const session = ctx.sessions && typeof ctx.sessions.get === "function"
-    ? ctx.sessions.get(permEntry.sessionId)
-    : null;
-  if (session && session.headless) return false;
+  // Mirror the local headless gate on remote channels. An audited interactive
+  // Codex Agent thread is the one exception: its state session is headless for
+  // HUD/focus policy, but the approval itself remains human-actionable.
+  if (isPermissionEntryHeadless(permEntry)) return false;
   return true;
 }
 

@@ -693,6 +693,40 @@ describe("permission telegram remote approval", () => {
     assert.deepEqual(requests, []);
   });
 
+  it("keeps remote approval actionable for audited interactive Codex Agent threads", () => {
+    const requests = [];
+    const client = {
+      isEnabled: () => true,
+      requestApproval: (payload) => {
+        requests.push(payload);
+        return new Promise(() => {});
+      },
+    };
+    const ctx = makeCtx({
+      getTelegramApprovalClient: () => client,
+      sessions: new Map([["sid", { cwd: "D:\\work\\project-alpha", headless: true }]]),
+    });
+    const perm = initPermission(ctx);
+    const entry = makePermEntry({
+      agentId: "codex",
+      isCodex: true,
+      codexSessionRole: "subagent",
+      codexInteractiveSubagent: true,
+      subagentId: "sid",
+      headless: false,
+    });
+    perm.pendingPermissions.push(entry);
+
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    assert.equal(requests.length, 1);
+
+    entry.headless = true;
+    const explicitHeadless = makePermEntry({ ...entry, _remoteApprovalStarted: false });
+    perm.pendingPermissions.push(explicitHeadless);
+    assert.equal(perm.maybeStartRemoteApproval(explicitHeadless), false);
+    assert.equal(requests.length, 1);
+  });
+
   it("aborts the remote request when the user picks deny-and-focus (go to terminal)", () => {
     let signal;
     const client = {

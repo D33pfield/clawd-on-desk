@@ -42,6 +42,7 @@ const ELICITATION_OTHER_KEY = "__other__";
 
 function setSessionTag(data) {
   const parts = [];
+  if (data.isCodexSubagent) parts.push(data.codexAgentNickname || bubbleText(data.lang, "agent"));
   if (data.sessionFolder) parts.push(data.sessionFolder);
   if (data.sessionShortId) parts.push("#" + data.sessionShortId);
   if (parts.length) {
@@ -64,6 +65,7 @@ const BUBBLE_STRINGS = {
     alwaysAllow: "Always allow",
     sessionTrust: "Don’t ask again in this session",
     permissionRequest: "Permission Request",
+    agent: "Agent",
     allow: "Allow",
     deny: "Deny",
     alwaysAllowBlanket: "Always Allow (blanket)",
@@ -106,6 +108,7 @@ const BUBBLE_STRINGS = {
     alwaysAllow: "\u59CB\u7EC8\u5141\u8BB8",
     sessionTrust: "\u672C\u4F1A\u8BDD\u4E0D\u518D\u8BE2\u95EE",
     permissionRequest: "\u6743\u9650\u8BF7\u6C42",
+    agent: "\u52A9\u624B",
     allow: "\u6279\u51C6",
     deny: "\u62D2\u7EDD",
     alwaysAllowBlanket: "\u59CB\u7EC8\u5141\u8BB8\uFF08\u901A\u914D\uFF09",
@@ -148,6 +151,7 @@ const BUBBLE_STRINGS = {
     alwaysAllow: "一律允許",
     sessionTrust: "本工作階段不再詢問",
     permissionRequest: "權限請求",
+    agent: "助手",
     allow: "允許",
     deny: "拒絕",
     alwaysAllowBlanket: "一律允許（全部）",
@@ -190,6 +194,7 @@ const BUBBLE_STRINGS = {
     alwaysAllow: "\uD56D\uC0C1 \uD5C8\uC6A9",
     sessionTrust: "\uC774 \uC138\uC158\uC5D0\uC11C\uB294 \uB2E4\uC2DC \uBB3B\uC9C0 \uC54A\uAE30",
     permissionRequest: "\uAD8C\uD55C \uC694\uCCAD",
+    agent: "\uC5D0\uC774\uC804\uD2B8",
     allow: "\uD5C8\uC6A9",
     deny: "\uAC70\uBD80",
     alwaysAllowBlanket: "\uD56D\uC0C1 \uD5C8\uC6A9 (\uC804\uCCB4)",
@@ -232,6 +237,7 @@ const BUBBLE_STRINGS = {
     alwaysAllow: "常に許可",
     sessionTrust: "このセッションでは今後確認しない",
     permissionRequest: "権限リクエスト",
+    agent: "エージェント",
     allow: "許可",
     deny: "拒否",
     alwaysAllowBlanket: "常に許可（包括）",
