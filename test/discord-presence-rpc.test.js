@@ -83,7 +83,7 @@ test("buildPresencePayload exposes ONLY agent + coarse state + legacy icon by de
   assert.strictEqual(out.assets && out.assets.large_image, CLAWD_ICON_URL);
 });
 
-test("mirror-on fallback image + label follow the resolved presence state", () => {
+test("mirror-on fallback image follows detail while text remains on the legacy coarse contract", () => {
   const img = (s) => buildPresencePayload(s, MIRROR_ON).assets.large_image;
   const label = (s) => buildPresencePayload(s, MIRROR_ON).state;
   assert.match(img({ state: "thinking" }), /clawd-thinking\.gif$/);
@@ -92,8 +92,8 @@ test("mirror-on fallback image + label follow the resolved presence state", () =
   assert.match(img({ state: "idle", badge: "interrupted" }), /clawd-error\.gif$/);
   assert.match(img({ state: "idle", requiresCompletionAck: true }), /clawd-happy\.gif$/);
   assert.match(img({ state: "idle" }), /clawd-idle\.gif$/);
-  assert.strictEqual(label({ state: "idle", requiresCompletionAck: true }), "Waiting for input");
-  assert.strictEqual(label({ state: "idle", badge: "interrupted" }), "Error");
+  assert.strictEqual(label({ state: "idle", requiresCompletionAck: true }), "Idle");
+  assert.strictEqual(label({ state: "idle", badge: "interrupted" }), "Idle");
   assert.match(presenceImageUrl("totally-unknown"), /clawd-idle\.gif$/); // unknown falls back to idle
 });
 
@@ -105,6 +105,9 @@ test("GIF base URL accepts an HTTPS dev host and rejects unsafe overrides", () =
     "https://example.test/pr-738/assets/discord-presence/clawd-typing.gif"
   );
   assert.strictEqual(normalizeGifBaseUrl("http://127.0.0.1:9999/assets"), GIF_BASE_URL);
+  assert.strictEqual(normalizeGifBaseUrl("https://user:secret@example.test/assets"), GIF_BASE_URL);
+  assert.strictEqual(normalizeGifBaseUrl("https://example.test/assets?ref=test"), GIF_BASE_URL);
+  assert.strictEqual(normalizeGifBaseUrl("https://example.test/assets#fragment"), GIF_BASE_URL);
   assert.strictEqual(normalizeGifBaseUrl("not a URL"), GIF_BASE_URL);
 });
 
@@ -406,17 +409,18 @@ test("buildPresencePayload mirrors a known visual's sprite when the opt-in is on
   assert.match(img(clawdVisual("roam", "clawd-mini-crabwalk.svg")), /clawd-mini-crabwalk\.gif$/);
 });
 
-test("activity text stays session-derived while the image mirrors", () => {
+test("activity text stays on the legacy coarse contract while the image mirrors", () => {
   // A transient pet visual must not caption an active working session as Idle.
   const session = { agentId: "claude-code", state: "working" };
   const out = buildPresencePayload(session, MIRROR_ON, clawdVisual("mini-enter", "clawd-mini-enter.svg"));
   assert.strictEqual(out.state, "Working");
   assert.match(out.assets.large_image, /clawd-mini-enter\.gif$/);
-  // done/interrupted still recover from the badge fields alongside a mirrored image
+  // Sticky done/interrupted badges may affect the fallback image but must not
+  // turn into long-lived public text after the one-shot visual has returned.
   const done = buildPresencePayload({ state: "idle", badge: "done" }, MIRROR_ON, clawdVisual("idle", "clawd-idle-bubble.svg"));
-  assert.strictEqual(done.state, "Waiting for input");
+  assert.strictEqual(done.state, "Idle");
   const interrupted = buildPresencePayload({ state: "idle", badge: "interrupted" }, MIRROR_ON, clawdVisual("idle", "clawd-idle-bubble.svg"));
-  assert.strictEqual(interrupted.state, "Error");
+  assert.strictEqual(interrupted.state, "Idle");
 });
 
 test("other themes and unsupported visuals fall back to the session-derived sprite", () => {
@@ -429,6 +433,9 @@ test("other themes and unsupported visuals fall back to the session-derived spri
   assert.match(otherTheme.assets.large_image, /clawd-typing\.gif$/);
   const unsupported = buildPresencePayload(session, MIRROR_ON, clawdVisual("working", "clawd-working-wizard.svg"));
   assert.match(unsupported.assets.large_image, /clawd-typing\.gif$/);
+  const prototypeKey = buildPresencePayload(session, MIRROR_ON, clawdVisual("working", "constructor"));
+  assert.match(prototypeKey.assets.large_image, /clawd-typing\.gif$/);
+  assert.strictEqual(prototypeKey.assets.large_image.includes("function"), false);
   assert.strictEqual(otherTheme.state, "Working");
 });
 
@@ -560,7 +567,7 @@ test("a same-tick snapshot+visual completion never sends the new badge with the 
       .filter((f) => f.op === OP.FRAME && f.data.cmd === "SET_ACTIVITY")
       .map((f) => f.data.args.activity);
     for (const activity of activities.slice(1)) {
-      assert.strictEqual(activity.state, "Waiting for input");
+      assert.strictEqual(activity.state, "Idle");
       assert.match(activity.assets.large_image, /clawd-happy\.gif$/);
     }
   } finally {
@@ -596,6 +603,41 @@ test("a standalone visual change (idle rotation, no trailing snapshot) still pub
       .filter((f) => f.op === OP.FRAME && f.data.cmd === "SET_ACTIVITY");
     const last = activities.at(-1).data.args.activity;
     assert.match(last.assets.large_image, /clawd-idle-reading\.gif$/);
+  } finally {
+    Date.now = realNow;
+    bridge.stop();
+  }
+});
+
+test("rapid mirror updates leave headroom instead of sending again at four seconds", async () => {
+  const cfg = { enabled: true, applicationId: "111111111111111111", mirrorPetAnimation: true };
+  const sockets = [];
+  const bridge = createDiscordPresenceBridge({
+    getConfig: () => cfg,
+    ipcPaths: () => ["fake-pipe"],
+    createConnection: () => { const s = new FakeIpcSocket(); sockets.push(s); return s; },
+  });
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    bridge.start();
+    sockets[0].emit("connect");
+    sockets[0].emit("data", READY_FRAME);
+    bridge.onVisual("working", "clawd-working-typing.svg", "clawd");
+    bridge.onSnapshot({ sessions: [{ id: "a", agentId: "codex", state: "working" }] });
+    await Promise.resolve();
+
+    const countActivities = () => sockets[0].writes
+      .map((b) => decodeFrames(b).frames[0])
+      .filter((f) => f.op === OP.FRAME && f.data.cmd === "SET_ACTIVITY").length;
+    assert.strictEqual(countActivities(), 1);
+
+    now += 4000;
+    bridge.onVisual("thinking", "clawd-working-thinking.svg", "clawd");
+    bridge.onSnapshot({ sessions: [{ id: "a", agentId: "codex", state: "thinking" }] });
+    await Promise.resolve();
+    assert.strictEqual(countActivities(), 1, "four seconds must remain inside the coalescing window");
   } finally {
     Date.now = realNow;
     bridge.stop();

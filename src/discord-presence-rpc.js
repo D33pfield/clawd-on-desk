@@ -22,7 +22,7 @@ const CLAWD_ICON_URL = "https://raw.githubusercontent.com/rullerzhou-afk/clawd-o
 // media proxy may cache stale bytes for a while after a sprite is regenerated.
 const GIF_BASE_URL = "https://raw.githubusercontent.com/rullerzhou-afk/clawd-on-desk/main/assets/discord-presence";
 
-// Clawd sprite + label per resolved presence state (see resolvePresenceState).
+// Clawd sprite per resolved image fallback state (see resolvePresenceState).
 // Mirror fallback path: used when no on-screen visual is known yet (bridge just
 // started), or the current theme/svg cannot use the exact Clawd mapping.
 const STATE_GIF = Object.freeze({
@@ -33,16 +33,6 @@ const STATE_GIF = Object.freeze({
   juggling: "clawd-juggling.gif",
   attention: "clawd-happy.gif",
   error: "clawd-error.gif",
-});
-
-const PRESENCE_LABEL = Object.freeze({
-  idle: "Idle",
-  sleeping: "Sleeping",
-  thinking: "Thinking",
-  working: "Working",
-  juggling: "Working",
-  attention: "Waiting for input",
-  error: "Error",
 });
 
 const COARSE_LABEL = Object.freeze({
@@ -96,8 +86,8 @@ const READY_TIMEOUT_MS = 5000;
 const RECONNECT_MAX_MS = 30000;
 // Discord rejects SET_ACTIVITY outright when state/details exceed 128 chars.
 const ACTIVITY_FIELD_MAX = 128;
-// Discord rate-limits SET_ACTIVITY (~5/20s); coalesce rapid flips.
-const MIN_SEND_INTERVAL_MS = 4000;
+// Coalesce rapid flips and keep headroom below Discord's IPC throttling.
+const MIN_SEND_INTERVAL_MS = 5000;
 
 // Original Presence privacy contract. In particular, juggling/carrying/
 // sweeping remain the single coarse "working" bucket, while transient or
@@ -112,7 +102,9 @@ function toCoarseState(state) {
 
 // The snapshot only persists active states (idle/thinking/working/juggling);
 // finished + failed turns collapse to idle, so the badge recovers "done" /
-// "interrupted". mini-* shares its base sprite.
+// "interrupted" for the image fallback. In the normal Clawd bridge path,
+// sleeping and one-shots are represented by the exact visual mapping instead.
+// mini-* shares its base sprite.
 function resolvePresenceState(session) {
   if (!session) return "idle";
   const s = String(session.state || "").replace(/^mini-/, "");
@@ -130,7 +122,14 @@ function normalizeGifBaseUrl(value) {
   if (!raw) return GIF_BASE_URL;
   try {
     const parsed = new URL(raw);
-    return parsed.protocol === "https:" ? raw : GIF_BASE_URL;
+    if (
+      parsed.protocol !== "https:"
+      || parsed.username
+      || parsed.password
+      || parsed.search
+      || parsed.hash
+    ) return GIF_BASE_URL;
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
   } catch {
     return GIF_BASE_URL;
   }
@@ -146,27 +145,24 @@ function agentLabel(agentId) {
 }
 
 function buildPresencePayload(session, cfg = {}, visual = null, runtime = {}) {
-  // `enabled` alone retains the exact pre-mirror static/coarse payload. The
-  // richer session-state fallback and exact visual mapping are both inside the
-  // separate opt-in, so existing users never disclose concurrency or badge
-  // detail merely by upgrading Clawd.
+  // The mirror changes only the image. Text retains the exact pre-mirror coarse
+  // contract even after the separate opt-in, so a sticky completion/error badge
+  // never turns into a long-lived public status string.
   const mirrorEnabled = cfg.mirrorPetAnimation === true;
   const coarseState = toCoarseState(session && session.state);
   const presenceState = resolvePresenceState(session);
-  const label = mirrorEnabled
-    ? (PRESENCE_LABEL[presenceState] || PRESENCE_LABEL.idle)
-    : COARSE_LABEL[coarseState];
+  const label = COARSE_LABEL[coarseState];
   const gifBaseUrl = normalizeGifBaseUrl(runtime.gifBaseUrl);
-  const mirrored = mirrorEnabled
+  const mirroredGif = mirrorEnabled
     && visual
     && visual.themeId === "clawd"
-    && SVG_GIF[visual.svg]
-    ? visual
-    : null;
+    && Object.prototype.hasOwnProperty.call(SVG_GIF, visual.svg)
+    ? SVG_GIF[visual.svg]
+    : "";
   const imageUrl = !mirrorEnabled
     ? CLAWD_ICON_URL
-    : (mirrored
-      ? `${gifBaseUrl}/${SVG_GIF[mirrored.svg]}`
+    : (mirroredGif
+      ? `${gifBaseUrl}/${mirroredGif}`
       : presenceImageUrl(presenceState, gifBaseUrl));
   const agentId = session && session.agentId;
   const activity = {
