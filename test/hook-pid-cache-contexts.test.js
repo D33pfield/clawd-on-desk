@@ -326,7 +326,7 @@ describe("#634 subprocess — cache hits spawn nothing; kiro degrades gracefully
     { name: "codebuddy-hook.js", ns: "codebuddy", raw: sid("cb"), cacheSid: sid("cb"),
       payload: { hook_event_name: "PreToolUse", session_id: sid("cb"), cwd: "D:/repo" } },
     { name: "reasonix-hook.js", ns: "reasonix", raw: sid("rx"), cacheSid: `reasonix:${sid("rx")}`,
-      payload: { event: "PreToolUse", session_id: sid("rx"), cwd: "D:/repo", toolName: "bash" } },
+      payload: { event: "PostToolUse", sessionId: sid("rx"), cwd: "D:/repo", toolName: "bash" } },
   ];
 
   for (const row of HIT_ROWS) {
@@ -423,11 +423,18 @@ describe("#634 subprocess — cache hits spawn nothing; kiro degrades gracefully
     assert.deepStrictEqual(r.spawns, [], "the end contract never takes a fresh snapshot, hit or miss");
   });
 
-  it("reasonix-hook.js: a literal \"default\" session id ignores a seeded entry and stays fresh", () => {
+  it("reasonix-hook.js: a blocking cache miss never spawns, including literal default", () => {
     seedLiveCache("reasonix", "reasonix:default", "D:/repo");
     const r = runHook("reasonix-hook.js", { event: "PreToolUse", session_id: "default", cwd: "D:/repo", toolName: "bash" });
     assert.ok(Array.isArray(r.spawns), `reasonix did not report — stderr=${r.stderr}`);
-    assert.strictEqual(r.spawns.length, 1, "literal default must not be cacheable: per-event fresh snapshot, like kiro");
+    assert.deepStrictEqual(r.spawns, [], "blocking hooks must stay spawn-free even when cacheability is rejected");
+  });
+
+  it("reasonix-hook.js: a non-blocking event repairs a literal-default cache miss fresh", () => {
+    seedLiveCache("reasonix", "reasonix:default", "D:/repo");
+    const r = runHook("reasonix-hook.js", { event: "PostToolUse", session_id: "default", cwd: "D:/repo", toolName: "bash" });
+    assert.ok(Array.isArray(r.spawns), `reasonix did not report — stderr=${r.stderr}`);
+    assert.strictEqual(r.spawns.length, 1, "non-blocking events retain the fresh PID recovery path");
   });
 });
 

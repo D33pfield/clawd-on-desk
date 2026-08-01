@@ -5,6 +5,7 @@
 // spawning PowerShell or depending on the host's real process list. Any
 // execFileSync call that is NOT the snapshot passes through to the real one.
 const childProcess = require("child_process");
+const fs = require("fs");
 
 const realExecFileSync = childProcess.execFileSync;
 const hookParentPid = process.ppid;
@@ -36,9 +37,24 @@ const SNAPSHOT = {
   foreground: { hwnd: null, pid: 0, className: "" },
 };
 
-childProcess.execFileSync = function (file, args) {
+childProcess.execFileSync = function (file, args, options) {
   const text = [file, ...(Array.isArray(args) ? args : [])].join(" ");
   if (/powershell(\.exe)?/i.test(String(file)) && text.includes("Win32_Process")) {
+    const recordPath = process.env.CLAWD_TEST_REASONIX_SNAPSHOT_RECORD;
+    if (recordPath) {
+      try {
+        fs.appendFileSync(recordPath, JSON.stringify({
+          timeout: options && options.timeout,
+          at: Date.now(),
+        }) + "\n");
+      } catch {}
+    }
+    const delayMs = Number(process.env.CLAWD_TEST_REASONIX_SNAPSHOT_DELAY_MS) || 0;
+    if (delayMs > 0) {
+      // Deliberately synchronous: this reproduces the exact property under
+      // review — JS safety timers cannot run while execFileSync/WMI is blocked.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+    }
     return JSON.stringify(SNAPSHOT);
   }
   return realExecFileSync.apply(this, arguments);

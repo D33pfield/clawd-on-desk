@@ -6,6 +6,12 @@
 // Reasonix owns its own permission flow natively (Gate + terminal prompt);
 // Clawd only observes state for the desktop pet animation.
 
+// Start the in-process budget before loading helper modules. Reasonix measures
+// its outer timeout from the PowerShell/cmd wrapper, which starts even earlier;
+// the blocking deadline below deliberately leaves another second for that
+// unobservable launch overhead.
+const HOOK_STARTED_AT = Date.now();
+
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
 const { createPidResolver, readStdinJsonDetailed, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
@@ -46,6 +52,16 @@ function normalizeReasonixSessionId(value) {
   return raw.startsWith("reasonix:") ? raw : `reasonix:${raw}`;
 }
 
+function readRawReasonixSessionId(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  // Keep the legacy snake_case input working, but prefer Reasonix's official
+  // native `sessionId` contract whenever the legacy field is absent/empty.
+  for (const value of [payload.session_id, payload.sessionId]) {
+    if (value != null && value !== "") return String(value);
+  }
+  return "";
+}
+
 // Reasonix fires PostToolUse and Stop in quick succession when a turn ends.
 // Both spawn separate hook processes — if Stop's POST arrives at the server
 // before PostToolUse's, the state ends up as "working" instead of "attention".
@@ -66,11 +82,12 @@ const STDIN_READ_TIMEOUT_MS = 2000;
 // the pet just looked "disconnected" after every long idle.
 // Blocking hooks (UserPromptSubmit/PreToolUse) get a 5s budget from Reasonix
 // and a timeout becomes a DecisionBlock that ABORTS the user's turn, so the
-// absolute deadline stays below it — including the cmd/PowerShell startup
-// before node that we cannot observe from here. Non-blocking events (upstream
-// budget 30s) use a relaxed deadline instead.
-const startedAt = Date.now();
-const HARD_DEADLINE_MS = 4500;
+// internal deadline leaves a full second for the cmd/PowerShell + Node startup
+// that happens before this script can observe time. Blocking events also never
+// perform a fresh synchronous process walk (see the local PID branch below),
+// so a cold WMI/ps call cannot pin the event loop past this guard. Non-blocking
+// events (upstream budget 30s) use a relaxed deadline instead.
+const HARD_DEADLINE_MS = 4000;
 const RELAXED_DEADLINE_MS = 15000;
 const STDIN_PHASE_BUDGET_MS = STDIN_READ_TIMEOUT_MS + 500;
 const POST_STDIN_BUDGET_MS = 3500;
@@ -81,7 +98,7 @@ let safetyTimer = null;
 
 function armSafety(ms, deadlineMs = HARD_DEADLINE_MS) {
   if (safetyTimer) clearTimeout(safetyTimer);
-  const remaining = deadlineMs - (Date.now() - startedAt);
+  const remaining = deadlineMs - (Date.now() - HOOK_STARTED_AT);
   safetyTimer = setTimeout(() => safeExit(0), Math.max(1, Math.min(ms, remaining)));
 }
 
@@ -100,6 +117,7 @@ readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
   .then((result) => {
     const payload = result.payload;
     const hookName = (payload && typeof payload.event === "string" && payload.event) || "";
+    const isBlockingHook = BLOCKING_HOOKS.has(hookName);
 
     // stdin settled (payload or read timeout) — re-arm for resolve() + POST.
     // Stop is non-blocking (30s upstream) and gets the relaxed deadline plus
@@ -107,7 +125,7 @@ readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
     const isStop = hookName === "Stop";
     armSafety(
       isStop ? POST_STDIN_BUDGET_MS + STOP_EXTRA_MS : POST_STDIN_BUDGET_MS,
-      BLOCKING_HOOKS.has(hookName) ? HARD_DEADLINE_MS : RELAXED_DEADLINE_MS
+      isBlockingHook ? HARD_DEADLINE_MS : RELAXED_DEADLINE_MS
     );
 
     const mapped = EVENT_TO_STATE[hookName];
@@ -121,9 +139,10 @@ readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
 
     if (hookName === "SessionStart" && !remote) resolve();
 
+    const rawSessionId = readRawReasonixSessionId(payload);
     const body = {
       state: mapped,
-      session_id: normalizeReasonixSessionId(payload && payload.session_id),
+      session_id: normalizeReasonixSessionId(rawSessionId),
       event: hookName,
       agent_id: "reasonix",
     };
@@ -141,17 +160,29 @@ readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
       applyOrcaPaneKey(body);
     } else {
       applyWslSourceFields(body);
-      // #634: cacheable keys off the RAW session id — the normalized value is
-      // prefixed, so its "reasonix:default" fallback would defeat the #583
-      // guard; a literal raw "default" is rejected for the same reason.
-      const rawSessionId = (payload && payload.session_id) || "";
-      const { stablePid, agentPid, detectedEditor, pidChain } = resolve({
-        namespace: "reasonix",
-        sessionId: body.session_id,
-        cacheCwd: body.cwd || "",
-        lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
-        cacheable: !!rawSessionId && rawSessionId !== "default" && !!body.cwd,
-      });
+      // Reasonix aborts UserPromptSubmit/PreToolUse when a hook exceeds its 5s
+      // outer budget. A JS timer cannot interrupt createPidResolver's sync WMI
+      // or ps walk, so blocking events must never take a fresh snapshot:
+      //   - Windows uses the resolver's cache-only `prompt` lifecycle. A live
+      //     v2 entry still restores PID/editor metadata without spawning.
+      //   - macOS/Linux have no cross-process PID cache; even `prompt` resolves
+      //     fresh there, so skip the resolver entirely.
+      // SessionStart, PostToolUse and Stop are non-blocking and still populate
+      // or repair metadata. src/state.js keeps existing PID fields when a
+      // blocking body omits them, so this safety rule never erases a good PID.
+      let pidMetadata = {};
+      if (!isBlockingHook || process.platform === "win32") {
+        pidMetadata = resolve({
+          namespace: "reasonix",
+          sessionId: body.session_id,
+          cacheCwd: body.cwd || "",
+          lifecycle: isBlockingHook ? "prompt" : (EVENT_TO_LIFECYCLE[hookName] || "event"),
+          // Cacheability keys off the raw ID. The normalized fallback would
+          // otherwise make unrelated missing/default sessions share one file.
+          cacheable: !!rawSessionId && rawSessionId !== "default" && !!body.cwd,
+        });
+      }
+      const { stablePid, agentPid, detectedEditor, pidChain } = pidMetadata;
       if (Number.isFinite(stablePid) && stablePid > 0) body.source_pid = Math.floor(stablePid);
       if (detectedEditor) body.editor = detectedEditor;
       if (Number.isFinite(agentPid) && agentPid > 0) body.agent_pid = Math.floor(agentPid);
