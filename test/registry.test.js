@@ -92,7 +92,7 @@ describe("Agent Registry", () => {
     assert.deepStrictEqual(qoder.processNames.win, ["qoder.exe", "qodercli.exe", "qoder-cli.exe"]);
 
     const reasonix = registry.getAgent("reasonix");
-    assert.deepStrictEqual(reasonix.processNames.win, ["reasonix.exe"]);
+    assert.deepStrictEqual(reasonix.processNames.win, ["reasonix.exe", "reasonix-desktop.exe", "reasonix-cli.exe"]);
 
     const qoderwork = registry.getAgent("qoderwork");
     assert.deepStrictEqual(qoderwork.processNames.win, ["QoderWork.exe"]);
@@ -146,7 +146,7 @@ describe("Agent Registry", () => {
     assert.deepStrictEqual(qoder.processNames.linux, ["qoder", "qodercli", "qoder-cli"]);
 
     const reasonix = registry.getAgent("reasonix");
-    assert.deepStrictEqual(reasonix.processNames.linux, ["reasonix"]);
+    assert.deepStrictEqual(reasonix.processNames.linux, ["reasonix", "reasonix-desktop"]);
 
     const qoderwork = registry.getAgent("qoderwork");
     assert.deepStrictEqual(qoderwork.processNames.linux, ["QoderWork"]);
@@ -238,6 +238,10 @@ describe("Agent Registry", () => {
     assert.deepStrictEqual(
       registry.getAgent("qoder").startupRecoveryProcessNames.win,
       ["qodercli.exe", "qoder-cli.exe"]
+    );
+    assert.deepStrictEqual(
+      registry.getAgent("reasonix").startupRecoveryProcessNames,
+      { win: ["reasonix.exe", "reasonix-cli.exe"], mac: ["reasonix"], linux: ["reasonix"] }
     );
   });
 

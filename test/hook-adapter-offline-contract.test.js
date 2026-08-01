@@ -69,7 +69,9 @@ const ADAPTERS = [
   // (offline, online, error). session_id is required for state POSTing and
   // avoids the early-drop seen on other adapters.
   { name: "zcode-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
-  { name: "reasonix-hook.js", payload: { event: "PreToolUse", cwd: "D:/repo", toolName: "bash" }, stdout: "" },
+  // Reasonix blocking hooks are intentionally cache-only/zero-spawn even when
+  // Clawd is live. PostToolUse keeps this offline gate assertion non-vacuous.
+  { name: "reasonix-hook.js", payload: { event: "PostToolUse", sessionId: "s-681", cwd: "D:/repo", toolName: "bash" }, stdout: "" },
   // WorkBuddy reads pidChain.length bare too, so the tightened resolver's
   // []-not-null offline shape is still load-bearing here. session_id is
   // REQUIRED: workbuddy-hook.js
