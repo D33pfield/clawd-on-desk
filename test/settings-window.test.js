@@ -6,14 +6,16 @@ const createSettingsWindowRuntime = require("../src/settings-window");
 
 class FakeBrowserWindow {
   static instances = [];
+  static constructorBoundsOffset = null;
 
   constructor(options) {
+    const offset = FakeBrowserWindow.constructorBoundsOffset || {};
     this.options = options;
     this.bounds = {
-      x: options.x,
-      y: options.y,
-      width: options.width,
-      height: options.height,
+      x: options.x + (offset.x || 0),
+      y: options.y + (offset.y || 0),
+      width: options.width + (offset.width || 0),
+      height: options.height + (offset.height || 0),
     };
     this.normalBounds = { ...this.bounds };
     this.destroyed = false;
@@ -166,6 +168,7 @@ function findPendingTimer(timers, delay) {
 
 function createRuntime(options = {}) {
   FakeBrowserWindow.instances = [];
+  FakeBrowserWindow.constructorBoundsOffset = options.constructorBoundsOffset || null;
   const { app, listeners } = createFakeApp(options.app);
   const fakeTimers = createFakeTimers();
   const fs = {
@@ -393,6 +396,26 @@ test("settings window runtime restores saved bounds on the saved display", () =>
     saved,
   );
   assert.deepStrictEqual(scaleBounds, [saved, saved]);
+});
+
+test("saved outer bounds override native constructor frame drift", () => {
+  const saved = { x: 120, y: 90, width: 960, height: 720 };
+  const { runtime } = createRuntime({
+    constructorBoundsOffset: { width: 2 },
+    runtime: {
+      getSavedBounds: () => saved,
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1040 }),
+    },
+  });
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+
+  assert.deepStrictEqual(win.getBounds(), saved);
+  assert.deepStrictEqual(
+    win.calls.find((call) => Array.isArray(call) && call[0] === "setBounds"),
+    ["setBounds", saved],
+  );
 });
 
 test("saved Settings bounds are clamped to a live work area and current scaled minimum", () => {

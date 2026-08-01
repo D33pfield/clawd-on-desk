@@ -395,6 +395,23 @@ function createSettingsWindowRuntime(options = {}) {
     if (typeof options.onBeforeCreate === "function") options.onBeforeCreate();
     settingsWindow = new BrowserWindow(opts);
     const createdWindow = settingsWindow;
+    // BrowserWindow's constructor can quantize framed window geometry at
+    // fractional Windows DPI (for example, a persisted outer width of 960
+    // may initially report as 962). Re-apply the requested outer bounds via
+    // setBounds before listeners are attached so repeated reopen cycles do
+    // not persist and accumulate that native-frame drift.
+    try {
+      const createdBounds = typeof createdWindow.getBounds === "function"
+        ? roundedBounds(createdWindow.getBounds())
+        : null;
+      if (
+        createdBounds
+        && !sameBounds(createdBounds, bounds)
+        && typeof createdWindow.setBounds === "function"
+      ) {
+        createdWindow.setBounds(bounds);
+      }
+    } catch {}
     if (isWin && typeof createdWindow.setAppDetails === "function") {
       const taskbarDetails = getTaskbarDetails();
       if (taskbarDetails && taskbarDetails.appIconPath) {
