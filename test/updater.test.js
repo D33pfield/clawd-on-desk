@@ -28,11 +28,23 @@ it("redacts credentials and URL queries and bounds copied update details", () =>
     "Authorization: Bearer abc123",
     "Cookie: session=abc123",
     `token=${secret}`,
+    "GITHUB_TOKEN=ghp_SUPERSECRET",
+    "OPENAI_API_KEY=sk-supersecret",
+    "AWS_SECRET_ACCESS_KEY=aws-supersecret",
+    "raw provider token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "remote=https://alice:password123@example.test/repo.git",
     "https://example.test/releases/latest?token=abc123#private",
     "x".repeat(20_000),
   ].join("\n"));
-  assert.doesNotMatch(output, /Bearer abc123|session=abc123|super-secret-value|\?token=|#private/);
+  assert.doesNotMatch(
+    output,
+    /Bearer abc123|session=abc123|super-secret-value|ghp_SUPERSECRET|sk-supersecret|aws-supersecret|ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ|alice|password123|\?token=|#private/
+  );
   assert.match(output, /\[REDACTED\]/);
+  assert.match(output, /GITHUB_TOKEN=\[REDACTED\]/);
+  assert.match(output, /OPENAI_API_KEY=\[REDACTED\]/);
+  assert.match(output, /AWS_SECRET_ACCESS_KEY=\[REDACTED\]/);
+  assert.match(output, /https:\/\/\[REDACTED\]@example\.test\/repo\.git/);
   assert.match(output, /https:\/\/example\.test\/releases\/latest/);
   assert.ok(output.length <= initUpdater.__test.UPDATE_ERROR_DETAIL_MAX_LENGTH);
   assert.match(output, /truncated/);

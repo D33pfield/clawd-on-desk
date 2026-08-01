@@ -679,7 +679,7 @@
       return wrap;
     }
 
-    function selectField(labelKey, key, options) {
+    function selectField(labelKey, key, options, attrs = {}) {
       const wrap = document.createElement("div");
       wrap.className = "remote-ssh-field";
       const label = document.createElement("label");
@@ -698,6 +698,12 @@
       });
       wrap.appendChild(label);
       wrap.appendChild(picker.element);
+      if (attrs.hint) {
+        const hint = document.createElement("div");
+        hint.className = "remote-ssh-field-hint";
+        hint.textContent = attrs.hint;
+        wrap.appendChild(hint);
+      }
       return wrap;
     }
 
@@ -744,7 +750,12 @@
       placeholder: "/home/me/.ssh/id_rsa",
       hint: t("remoteSshFieldIdentityFileHint"),
     }));
-    section.appendChild(selectField("remoteSshFieldRemoteForwardPort", "remoteForwardPort", REMOTE_FORWARD_PORTS));
+    section.appendChild(selectField(
+      "remoteSshFieldRemoteForwardPort",
+      "remoteForwardPort",
+      REMOTE_FORWARD_PORTS,
+      { hint: t("remoteSshFieldRemoteForwardPortHint") }
+    ));
     section.appendChild(input("remoteSshFieldHostPrefix", "hostPrefix", {
       placeholder: "raspberrypi",
       hint: t("remoteSshFieldHostPrefixHint"),

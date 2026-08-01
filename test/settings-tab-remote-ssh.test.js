@@ -48,6 +48,7 @@ test("settings-i18n.js: all language packs include remote-ssh keys", () => {
     "remoteSshDeploy",
     "remoteSshFieldHost",
     "remoteSshFieldRemoteForwardPort",
+    "remoteSshFieldRemoteForwardPortHint",
     "remoteSshStatus_idle",
     "remoteSshStatus_connecting",
     "remoteSshStatus_connected",

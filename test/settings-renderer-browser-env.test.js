@@ -2147,6 +2147,9 @@ describe("settings renderer browser environment", () => {
 
     const portPicker = harness.content.querySelector(".remote-ssh-port-select");
     assert.ok(portPicker, "remote forward port should use the shared Settings picker");
+    const portHint = portPicker.parentNode.querySelector(".remote-ssh-field-hint");
+    assert.ok(portHint, "remote forward port should explain its availability requirement");
+    assert.equal(portHint.textContent, "Listening port on the remote host. Choose a port that is not already in use.");
     assert.equal(getSelectedPickerValue(portPicker), "23333");
     choosePickerOption(portPicker, "23336");
 
@@ -3475,7 +3478,9 @@ describe("settings renderer browser environment", () => {
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
     assert.match(css, /\.feishu-approval-timeout-row \.row-control\s*\{[^}]*margin-left:\s*auto;/s);
     assert.match(css, /\.feishu-approval-timeout-select\s*\{[^}]*width:\s*168px;/s);
-    assert.match(css, /@media \(max-width:\s*640px\)\s*\{[\s\S]*?\.feishu-approval-timeout-row \.row-control,[\s\S]*?\.feishu-approval-timeout-select\s*\{[^}]*width:\s*100%;/s);
+    assert.match(css, /@media \(max-width:\s*980px\)\s*\{\s*\.feishu-approval-timeout-row\s*\{[^}]*flex-direction:\s*column;[^}]*align-items:\s*stretch;/s);
+    assert.match(css, /@media \(max-width:\s*980px\)\s*\{\s*\.feishu-approval-timeout-row\s*\{[^}]*\}\s*\.feishu-approval-timeout-row \.row-control\s*\{[^}]*width:\s*100%;[^}]*margin-left:\s*0;/s);
+    assert.match(css, /@media \(max-width:\s*980px\)\s*\{\s*\.feishu-approval-timeout-row\s*\{[^}]*\}\s*\.feishu-approval-timeout-row \.row-control\s*\{[^}]*\}\s*\.feishu-approval-timeout-select\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;[^}]*max-width:\s*none;/s);
     assert.equal(getSelectedPickerValue(select), "15");
     choosePickerOption(select, "30");
 
@@ -6764,7 +6769,9 @@ describe("settings renderer browser environment", () => {
     assert.match(css, /\.agent-custom-tools-section \.row-text\s*\{[^}]*flex:\s*1 1 360px;[^}]*min-width:\s*0;/s);
     assert.match(css, /\.agent-custom-tools-section \.custom-tool-discovery-control\s*\{[^}]*justify-content:\s*flex-end;[^}]*margin-left:\s*auto;/s);
     assert.match(css, /\.agent-unavailable-group > \.collapsible-group-header\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*18px minmax\(0,\s*1fr\) minmax\(180px,\s*260px\);/s);
+    assert.match(css, /\.agent-unavailable-group > \.collapsible-group-header > \.collapsible-group-summary\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none;[^}]*min-width:\s*0;/s);
     assert.match(css, /\.agent-section-summary\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto;/s);
+    assert.match(css, /@media \(max-width:\s*980px\)\s*\{\s*\.agent-unavailable-group > \.collapsible-group-header\s*\{[^}]*grid-template-columns:\s*18px minmax\(0,\s*1fr\);[^}]*\}\s*\.agent-unavailable-group > \.collapsible-group-header > \.collapsible-group-summary\s*\{[^}]*grid-column:\s*2;/s);
     assert.match(css, /@media \(max-width:\s*760px\)\s*\{[\s\S]*?\.agent-custom-tools-section \.custom-tool-discovery-row\s*\{[^}]*flex-direction:\s*column;/);
     // The primary picker must keep a higher-specificity selector than the
     // generic `.soft-btn.accent` tinted rule that follows it, or the cascade

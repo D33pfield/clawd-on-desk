@@ -3,6 +3,7 @@ const { execFile } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const electron = require("electron");
+const { redactSecrets } = require("./secret-redact");
 
 const RELEASES_LATEST_URL = "https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest";
 const DEPENDENCY_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
@@ -132,10 +133,16 @@ function getErrorMessage(err) {
 }
 
 function sanitizeUpdateErrorDetail(value, maxLength = UPDATE_ERROR_DETAIL_MAX_LENGTH) {
-  let text = String(value == null ? "" : value);
+  let text = redactSecrets(value);
+  text = text.replace(/\b(https?:\/\/)(?:[^/\s?#"'<>@]+@)/gi, "$1[REDACTED]@");
   text = text.replace(/(https?:\/\/[^\s?#"'<>]+)(?:\?[^\s#"'<>]*)?(?:#[^\s"'<>]*)?/gi, "$1");
   text = text.replace(/\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*[^\r\n]+/gi, "$1: [REDACTED]");
-  text = text.replace(/\b(token|access[_-]?token|refresh[_-]?token|password|passwd|secret|api[_-]?key)\s*[:=]\s*([^\s,;]+)/gi, "$1=[REDACTED]");
+  // Copied updater diagnostics use a stricter policy than user-facing approval
+  // summaries: redact even custom lower-case names such as company_api_token.
+  text = text.replace(
+    /\b([a-z0-9_.-]*(?:token|password|passwd|secret|api[_-]?key|cookie|credential)[a-z0-9_.-]*)\s*[:=]\s*([^\s,;]+)/gi,
+    "$1=[REDACTED]"
+  );
   if (text.length <= maxLength) return text.trim();
   const suffix = "\n... [truncated]";
   return (text.slice(0, Math.max(0, maxLength - suffix.length)) + suffix).trim();
