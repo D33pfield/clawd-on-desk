@@ -1128,7 +1128,7 @@ test("profile-isolated deploy writes root-specific wrappers and activates only a
   );
   const cliProbeCommand = String(recorder.calls[4].args.at(-1));
   assert.ok(cliProbeCommand.includes(
-    'const wrapperBin=\\"/home/shared/.clawd/profiles/rt_profile_a/bin\\"'
+    'const wrapperBin="/home/shared/.clawd/profiles/rt_profile_a/bin"'
   ));
   assert.match(cliProbeCommand, /real\(x\)!==wrapperReal/);
 

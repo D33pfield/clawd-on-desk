@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, powerMonitor, clipboard, safeStorage } = require("electron");
+const { app, BrowserWindow, Notification, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, powerMonitor, clipboard, safeStorage } = require("electron");
 // ── Linux/Wayland: relaunch under XWayland so the pet is draggable (issue #441) ──
 // Native Wayland ignores client-side window positioning and blocks global cursor
 // queries, so the pet spawns centered, can't be dragged, and has no tracking;
@@ -120,6 +120,8 @@ const {
   formatTelegramStatusDiagnostic,
 } = require("./telegram-approval-runtime-status");
 const { createTelegramMigrationController } = require("./telegram-migration-controller");
+const { createTelegramMigrationNudge } = require("./telegram-migration-nudge");
+const { createTrayBalloonOwner } = require("./tray-balloon-owner");
 const initUpdateBubble = require("./update-bubble");
 const { registerUpdateBubbleIpc } = initUpdateBubble;
 const createSettingsAnimationOverridesMain = require("./settings-animation-overrides-main");
@@ -388,6 +390,8 @@ let floatingWindowRuntime = null;
 let codexPetMain = null;
 let telegramApprovalIdentitySignature = "";
 let _telegramMigrationController = null;
+let telegramMigrationNudge = null;
+const trayBalloonOwner = createTrayBalloonOwner();
 let telegramNativeRunner = null;
 let telegramCompanion = null;
 let telegramDirectSend = null;
@@ -1415,6 +1419,7 @@ let forceEyeResend = false;
 let forceEyeResendBoostUntil = 0;
 let requestFastTick = () => {};
 let repositionSessionHud = () => {};
+let repositionQuotaRing = () => {};
 let syncSessionHudVisibility = () => {};
 let broadcastSessionHudSnapshot = () => {};
 let sendSessionHudI18n = () => {};
@@ -1614,7 +1619,9 @@ const _permCtx = {
   reportShortcutFailure: (actionId, reason) => shortcutRuntime.reportFailure(actionId, reason),
   clearShortcutFailure: (actionId) => shortcutRuntime.clearFailure(actionId),
   repositionUpdateBubble: () => repositionUpdateBubble(),
-  repositionSessionHud: () => repositionSessionHud(),
+  // permission.js still calls this legacy-shaped callback after the update
+  // bubble has moved; only Orbit needs the second geometry pass here.
+  repositionSessionHud: () => repositionQuotaRing(),
   getTelegramApprovalClient: () => getTelegramApprovalClient(),
   getRemoteApprovalClients: () => {
     const client = getFeishuApprovalClient();
@@ -1671,7 +1678,7 @@ const _updateBubbleCtx = {
   getTextScale: () => getTextScaleForPetWindows(),
   guardAlwaysOnTop,
   reapplyMacVisibility,
-  repositionSessionHud: () => repositionSessionHud(),
+  repositionQuotaRing: () => repositionQuotaRing(),
   clipboard,
 };
 const _updateBubble = initUpdateBubble(_updateBubbleCtx);
@@ -1687,6 +1694,7 @@ floatingWindowRuntime = createFloatingWindowRuntime({
   repositionPermissionBubbles: () => repositionBubbles(),
   repositionUpdateBubble: () => repositionUpdateBubble(),
   repositionSessionHud: () => repositionSessionHud(),
+  repositionQuotaRing: () => repositionQuotaRing(),
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
   syncUpdateBubbleVisibility: () => syncUpdateBubbleVisibility(),
   hideUpdateBubble: () => hideUpdateBubble(),
@@ -2234,6 +2242,7 @@ const _sessionHud = require("./session-hud")({
   onReservedOffsetChange: () => repositionFloatingBubbles(),
 });
 repositionSessionHud = _sessionHud.repositionSessionHud;
+repositionQuotaRing = _sessionHud.repositionQuotaRing;
 syncSessionHudVisibility = _sessionHud.syncSessionHud;
 broadcastSessionHudSnapshot = _sessionHud.broadcastSessionSnapshot;
 sendSessionHudI18n = _sessionHud.sendI18n;
@@ -3109,8 +3118,49 @@ async function initTelegramMigrationController() {
         channel: "telegram",
         revision,
       });
+      // State changes may clear a previously persisted warning after the user
+      // activates native transport or explicitly turns Telegram approval off.
+      // Only the post-window startup check below is allowed to display a nudge.
+      if (telegramMigrationNudge) {
+        void telegramMigrationNudge.sync({ allowNotify: false });
+      }
     },
     log: telegramApprovalLog,
+  });
+
+  telegramMigrationNudge = createTelegramMigrationNudge({
+    getSnapshot: () => _telegramMigrationController.getSnapshot(),
+    getLastSignature: () => _settingsController.get("telegramMigrationLastNotified") || "",
+    setLastSignature: (value) =>
+      _settingsController.applyUpdate("telegramMigrationLastNotified", value),
+    showNotification: ({ kind, onClick }) => {
+      const title = t("telegramMigrationNudgeTitle");
+      const body = t(kind === "legacy"
+        ? "telegramMigrationNudgeLegacyBody"
+        : "telegramMigrationNudgeNativeBody");
+      try {
+        const tray = _menu && typeof _menu.getTray === "function" ? _menu.getTray() : null;
+        if (process.platform === "win32" && trayBalloonOwner.show(tray, {
+          iconType: "warning",
+          title,
+          content: body,
+          onClick,
+        })) {
+          return true;
+        }
+        if (Notification && typeof Notification.isSupported === "function" && Notification.isSupported()) {
+          const notification = new Notification({ title, body });
+          notification.once("click", onClick);
+          notification.show();
+          return true;
+        }
+      } catch (err) {
+        console.warn("Clawd: Telegram migration nudge failed:", err && err.message);
+      }
+      console.warn(`Clawd: ${body}`);
+      return false;
+    },
+    openSettings: () => settingsWindowRuntime.open(),
   });
 
   await _telegramMigrationController.init();
@@ -4422,8 +4472,8 @@ if (!gotTheLock) {
   function fireCodexHookNudge(verdict) {
     try {
       const tray = _menu && typeof _menu.getTray === "function" ? _menu.getTray() : null;
-      if (tray && process.platform === "win32" && typeof tray.displayBalloon === "function") {
-        tray.displayBalloon({
+      if (process.platform === "win32") {
+        trayBalloonOwner.show(tray, {
           iconType: "warning",
           title: t("codexHookHealthNudgeTitle"),
           content: t("codexHookHealthNudgeBody"),
@@ -4493,13 +4543,20 @@ if (!gotTheLock) {
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     focusDebugLog = path.join(app.getPath("userData"), "focus-debug.log");
-    initTelegramMigrationController().catch((err) => {
+    const telegramMigrationInit = initTelegramMigrationController().catch((err) => {
       console.warn("Clawd: migration controller init failed:", err && err.message);
+      return null;
     });
     try { syncDiscordPresence("startup"); }
     catch (err) { console.warn("Clawd: discord presence startup failed:", err && err.message); }
     queueFeishuApprovalSync("startup");
     createWindow();
+    void telegramMigrationInit.then((controller) => {
+      if (!controller || !telegramMigrationNudge) return;
+      return telegramMigrationNudge.sync({ allowNotify: true });
+    }).catch((err) => {
+      console.warn("Clawd: Telegram migration startup nudge failed:", err && err.message);
+    });
     holidayAccessoryRuntime.start();
     // WSL agent detection is NOT started here: scanning runs a command inside
     // every installed distro, which boots each stopped VM — too aggressive for
@@ -4596,6 +4653,7 @@ if (!gotTheLock) {
 
   app.on("before-quit", () => {
     isQuitting = true;
+    trayBalloonOwner.dispose();
     holidayAccessoryRuntime.dispose();
     if (systemWakeRecovery) systemWakeRecovery.dispose();
     // #525: release the IVirtualDesktopManager COM ref and pay back our own

@@ -291,6 +291,7 @@ const updateRegistry = {
   testReactionsEnabled: requireBoolean("testReactionsEnabled"),
   codexHookHealthNotifyEnabled: requireBoolean("codexHookHealthNotifyEnabled"),
   codexHookHealthLastNotified: requireString("codexHookHealthLastNotified", { allowEmpty: true }),
+  telegramMigrationLastNotified: requireString("telegramMigrationLastNotified", { allowEmpty: true }),
   lowPowerIdleMode: requireBoolean("lowPowerIdleMode"),
   keepAwakeWhileWorking: requireBoolean("keepAwakeWhileWorking"),
   petTint(value) {
@@ -1280,6 +1281,17 @@ function remoteSshUpdateProfile(payload, deps) {
   if (Number.isFinite(prev.createdAt) && !Number.isFinite(payload.createdAt)) {
     profile.createdAt = prev.createdAt;
   }
+  // Runtime identity is server-owned. A normal profile edit must not switch
+  // layouts merely because the renderer omits these hidden fields, and a
+  // forged settings command must not bypass the dedicated, confirmation-gated
+  // runtime-mode transaction.
+  profile.runtimeMode = prev.runtimeMode || REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT;
+  profile.runtimeKey = profile.runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+    ? prev.runtimeKey
+    : ACCOUNT_DEFAULT_RUNTIME_KEY;
+  profile.layoutVersion = Number.isInteger(prev.layoutVersion)
+    ? prev.layoutVersion
+    : REMOTE_LAYOUT_VERSION;
   // Preserve lastDeployedAt across cosmetic edits (label, autoStartCodexMonitor,
   // connectOnLaunch). Only clear it when deploy target fields drifted — those
   // changes mean the previous deploy is no longer valid for the new target,

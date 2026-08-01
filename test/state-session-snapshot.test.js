@@ -499,23 +499,32 @@ describe("state-session-snapshot builder", () => {
   });
 
   it("applies aliases, Codex thread names, and Kiro cwd-scoped alias keys", () => {
+    const claudeId = makeSessionKey({ profileId: "local", rawSessionId: "claude-local" });
+    const codexId = makeSessionKey({ profileId: "local", rawSessionId: "codex:abc" });
+    const kiroId = makeSessionKey({ profileId: "local", rawSessionId: "default" });
     const sessions = new Map([
-      ["claude-local", session("working", {
+      [claudeId, session("working", {
         updatedAt: 3000,
         cwd: "/repo/a",
         agentId: "claude-code",
+        profileId: "local",
+        rawSessionId: "claude-local",
         sessionTitle: "Raw title",
       })],
-      ["codex:abc", session("thinking", {
+      [codexId, session("thinking", {
         updatedAt: 2000,
         cwd: "/repo/b",
         agentId: "codex",
+        profileId: "local",
+        rawSessionId: "codex:abc",
         sessionTitle: "Auto Summary",
       })],
-      ["default", session("working", {
+      [kiroId, session("working", {
         updatedAt: 1000,
         cwd: "/repo/c",
         agentId: "kiro-cli",
+        profileId: "local",
+        rawSessionId: "default",
       })],
     ]);
 
@@ -529,11 +538,11 @@ describe("state-session-snapshot builder", () => {
       readCodexThreadName: (id) => id === "codex:abc" ? "Thread name" : null,
     });
 
-    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "claude-local").displayTitle, "Claude review");
-    const codex = snapshot.sessions.find((entry) => entry.id === "codex:abc");
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === claudeId).displayTitle, "Claude review");
+    const codex = snapshot.sessions.find((entry) => entry.id === codexId);
     assert.strictEqual(codex.sessionTitle, "Thread name");
     assert.strictEqual(codex.displayTitle, "Thread name");
-    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "default").displayTitle, "Kiro repo C");
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === kiroId).displayTitle, "Kiro repo C");
 
     assert.deepStrictEqual(
       [...getActiveSessionAliasKeys(sessions)].sort(),

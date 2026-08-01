@@ -62,6 +62,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.sessionHudShowQuota, true);
     assert.strictEqual(d.claudeQuotaCollectionEnabled, false);
     assert.strictEqual(d.quotaMergeSources, false);
+    assert.strictEqual(d.telegramMigrationLastNotified, "");
     assert.strictEqual(d.sessionHudCleanupDetached, true);
     assert.strictEqual("sessionHudAutoHide" in d, false);
     assert.strictEqual(d.sessionHudPinned, false);
@@ -1240,14 +1241,14 @@ describe("prefs.migrate v11 → v12 (showDock default off for fresh installs)", 
   });
 });
 
-describe("prefs Settings window bounds schema addition", () => {
-  it("uses the current schema default without a version bump", () => {
+describe("prefs.migrate v12 → v13 (Settings window bounds)", () => {
+  it("advances the schema without inventing geometry for existing users", () => {
     const upgraded = prefs.validate(prefs.migrate({ version: 12, lang: "zh" }));
     assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
     assert.strictEqual(upgraded.settingsWindowBounds, null);
   });
 
-  it("preserves valid geometry in a current-version or hand-edited file", () => {
+  it("preserves valid geometry from an early v12 build or hand-edited file", () => {
     const bounds = { x: -1180, y: 90, width: 920, height: 680 };
     const upgraded = prefs.validate(prefs.migrate({
       version: 12,
@@ -1477,6 +1478,28 @@ describe("prefs.load", () => {
       assert.strictEqual(locked, true);
       assert.strictEqual(snapshot.lang, "en");
       assert.strictEqual(warned, true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it("accepts the restored v13 schema and locks an explicit v14 file", () => {
+    const currentPath = makeTempPath("v13.json");
+    fs.writeFileSync(currentPath, JSON.stringify({ version: 13, lang: "zh" }), "utf8");
+    const current = prefs.load(currentPath);
+    assert.strictEqual(current.locked, false);
+    assert.strictEqual(current.snapshot.version, 13);
+    assert.strictEqual(current.snapshot.lang, "zh");
+
+    const futurePath = makeTempPath("v14.json");
+    fs.writeFileSync(futurePath, JSON.stringify({ version: 14, lang: "ja" }), "utf8");
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      const future = prefs.load(futurePath);
+      assert.strictEqual(future.locked, true);
+      assert.strictEqual(future.snapshot.version, 14);
+      assert.strictEqual(future.snapshot.lang, "ja");
     } finally {
       console.warn = originalWarn;
     }

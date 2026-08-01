@@ -24,6 +24,7 @@ const {
   createPidResolver,
   readStdinJsonDetailed,
   getPlatformConfig,
+  applyOrcaPaneKey,
 } = require("./shared-process");
 
 const TOOL_MATCH_STRING_MAX = 240;
@@ -224,8 +225,10 @@ function buildStateBody(hookName, payload, resolve, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
   } else {
     applyWslSourceFields(body);
+    applyOrcaPaneKey(body, options.env);
     const resolved = resolve(getZcodePidResolverContext(hookName, payload || {})) || {};
     applyLocalProcessFields(body, resolved);
     if (typeof options.onProcessMeta === "function") options.onProcessMeta(resolved);
@@ -249,6 +252,7 @@ async function run(payload, argvEvent, deps = {}) {
   const body = buildStateBody(hookName, payload || {}, resolve, {
     remote,
     host,
+    env,
     onProcessMeta(meta) {
       processMeta = meta;
     },

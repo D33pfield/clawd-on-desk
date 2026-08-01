@@ -160,8 +160,11 @@ module.exports = function initUpdateBubble(ctx) {
   let visibleSince = 0;
 
   function notifyOrbitGeometryChanged() {
-    if (typeof ctx.repositionSessionHud !== "function") return;
-    try { ctx.repositionSessionHud(); } catch {}
+    const reposition = typeof ctx.repositionQuotaRing === "function"
+      ? ctx.repositionQuotaRing
+      : ctx.repositionSessionHud;
+    if (typeof reposition !== "function") return;
+    try { reposition(); } catch {}
   }
 
   function getTextScale() {

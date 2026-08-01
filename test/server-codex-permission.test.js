@@ -172,6 +172,8 @@ describe("Codex official /permission path", () => {
       {
         agentId: "codex",
         hookSource: "codex-official",
+        profileId: "local",
+        rawSessionId: "codex:s1",
         sessionAutomationIdentity: {
           eligible: false,
           reason: "non-authoritative-codex-session-id",
@@ -219,6 +221,8 @@ describe("Codex official /permission path", () => {
         model: "gpt-5.4",
         codexOriginator: "Codex Desktop",
         codexSource: "vscode",
+        profileId: "local",
+        rawSessionId: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
         sessionAutomationIdentity: {
           eligible: false,
           reason: "unsupported-codex-session-source",
@@ -273,6 +277,8 @@ describe("Codex official /permission path", () => {
     assert.strictEqual(entry.isCodex, true);
     assert.strictEqual(entry.agentId, "codex");
     assert.strictEqual(entry.sessionId, localSessionKey("codex:s1"));
+    assert.strictEqual(entry.profileId, "local");
+    assert.strictEqual(entry.rawSessionId, "codex:s1");
     assert.strictEqual(entry.toolName, "Bash");
     assert.deepStrictEqual(entry.suggestions, []);
     assert.strictEqual(entry.isElicitation || false, false);
@@ -286,6 +292,8 @@ describe("Codex official /permission path", () => {
       {
         agentId: "codex",
         hookSource: "codex-official",
+        profileId: "local",
+        rawSessionId: "codex:s1",
         sessionAutomationIdentity: {
           eligible: false,
           reason: "non-authoritative-codex-session-id",

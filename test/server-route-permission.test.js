@@ -588,6 +588,8 @@ describe("server-route-permission POST", () => {
         model: "gpt-5.4",
         codexOriginator: "Codex Desktop",
         codexSource: "vscode",
+        profileId: "local",
+        rawSessionId: sessionId,
         sessionAutomationIdentity: {
           eligible: false,
           reason: "unsupported-codex-session-source",
@@ -690,6 +692,8 @@ describe("server-route-permission POST", () => {
       "PermissionRequest",
       {
         agentId: "opencode",
+        profileId: "local",
+        rawSessionId: "opencode:s1",
         sessionAutomationIdentity: {
           eligible: false,
           reason: "permission-session-association-not-authoritative",
@@ -970,6 +974,8 @@ describe("server-route-permission POST", () => {
     const entry = res.ctx.pendingPermissions[0];
     assert.strictEqual(entry.res, res);
     assert.strictEqual(entry.sessionId, localSessionKey("sid"));
+    assert.strictEqual(entry.profileId, "local");
+    assert.strictEqual(entry.rawSessionId, "sid");
     assert.strictEqual(entry.toolName, "Bash");
     assert.strictEqual(entry.toolUseId, "tool-1");
     assert.strictEqual(entry.agentId, "claude-code");
@@ -979,6 +985,8 @@ describe("server-route-permission POST", () => {
       "PermissionRequest",
       {
         agentId: "claude-code",
+        profileId: "local",
+        rawSessionId: "sid",
         sessionAutomationIdentity: {
           eligible: false,
           reason: "identity-verification-required",
@@ -1100,6 +1108,8 @@ describe("server-route-permission POST", () => {
       "PermissionRequest",
       {
         agentId: "claude-code",
+        profileId: "local",
+        rawSessionId: "sid",
         sessionAutomationIdentity: {
           eligible: false,
           reason: "identity-verification-required",
@@ -1171,6 +1181,21 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(entry.profileId, "profile-a");
     assert.strictEqual(entry.rawSessionId, "same-raw");
     assert.strictEqual(entry.host, "trusted-host");
+    assert.deepStrictEqual(res.ctx.calls.updateSession[0].slice(0, 3), [
+      entry.sessionId,
+      "notification",
+      "PermissionRequest",
+    ]);
+    assert.deepStrictEqual(res.ctx.calls.updateSession[0][3], {
+      agentId: "claude-code",
+      profileId: "profile-a",
+      rawSessionId: "same-raw",
+      host: "trusted-host",
+      sessionAutomationIdentity: {
+        eligible: false,
+        reason: "identity-verification-required",
+      },
+    });
   });
 
   it("falls back to destroying the connection when bubbles are disabled and remote approval has nowhere to send it", async () => {
@@ -1483,6 +1508,8 @@ describe("server-route-permission POST", () => {
         pidChain: [9999, 1234],
         cwd: "D:/repo",
         host: "devbox",
+        profileId: "local",
+        rawSessionId: sessionId,
         sessionAutomationIdentity: {
           eligible: false,
           reason: "session-lifecycle-not-authoritative",
@@ -1701,6 +1728,8 @@ describe("server-route-permission POST", () => {
         pidChain: [9999, 1234],
         cwd: "/home/user/repo",
         editor: "cursor",
+        profileId: "local",
+        rawSessionId: sessionId,
         sessionAutomationIdentity: {
           eligible: false,
           reason: "session-lifecycle-not-authoritative",
@@ -1739,6 +1768,8 @@ describe("server-route-permission POST", () => {
         agentId: "hermes",
         cwd: "/home/user/repo",
         agentPid: 5678,
+        profileId: "local",
+        rawSessionId: sessionId,
         sessionAutomationIdentity: {
           eligible: false,
           reason: "session-lifecycle-not-authoritative",
@@ -1828,6 +1859,8 @@ describe("server-route-permission POST — CC subagent requests (#451)", () => {
       "PermissionRequest",
       {
         agentId: "claude-code",
+        profileId: "local",
+        rawSessionId: "sid",
         sessionAutomationIdentity: {
           eligible: false,
           reason: "identity-verification-required",

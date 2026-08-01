@@ -209,6 +209,8 @@ describe("Qwen Code /permission path", () => {
     const entry = pendingPermissions[0];
     assert.strictEqual(entry.isQwenCode, true);
     assert.strictEqual(entry.agentId, "qwen-code");
+    assert.strictEqual(entry.profileId, "local");
+    assert.strictEqual(entry.rawSessionId, "qwen-code:s1");
     assert.deepStrictEqual(entry.suggestions, []);
     assert.strictEqual(Object.prototype.hasOwnProperty.call(entry, "familyAlwaysCandidates"), false);
     assert.strictEqual(entry.toolInputFingerprint, "abc123");
@@ -225,6 +227,8 @@ describe("Qwen Code /permission path", () => {
         pidChain: [789, 456, 123],
         cwd: "/repo",
         model: "qwen3-coder-plus",
+        profileId: "local",
+        rawSessionId: "qwen-code:s1",
         sessionAutomationIdentity: {
           eligible: false,
           reason: "identity-verification-required",
