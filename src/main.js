@@ -144,6 +144,7 @@ const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
 const createFloatingWindowRuntime = require("./floating-window-runtime");
 const createPetWindowRuntime = require("./pet-window-runtime");
+const { createTestReactionHandler } = require("./test-reaction");
 const createMacHideController = require("./mac-hide");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
@@ -2279,6 +2280,7 @@ const _serverCtx = {
   showPermissionBubble,
   showCodexUserInputBubble,
   clearCodexUserInputBubbles,
+  handleTestResult: (result, context) => handleTestResult(result, context),
   maybeStartRemoteApproval,
   replyOpencodeFamilyPermission,
   syncPermissionShortcuts,
@@ -4176,6 +4178,17 @@ const _miniCtx = {
   },
 };
 const _mini = require("./mini")(_miniCtx);
+
+const handleTestResult = createTestReactionHandler({
+  getEnabled: () => _settingsController.get("testReactionsEnabled") === true,
+  getDoNotDisturb: () => doNotDisturb,
+  isPetHidden: () => petWindowRuntime.isPetHidden(),
+  getMiniMode: () => _mini.getMiniMode(),
+  getMiniTransitioning: () => _mini.getMiniTransitioning(),
+  isDragging: () => petWindowRuntime.isDragLocked(),
+  hasPetWindow: () => !!(win && !win.isDestroyed()),
+  sendToRenderer,
+});
 const { enterMiniMode, exitMiniMode, enterMiniViaMenu, miniPeekIn, miniPeekOut,
         checkMiniModeSnap, cancelMiniTransition, animateWindowX, animateWindowParabola } = _mini;
 
