@@ -56,7 +56,7 @@ function resolveMacBundleExecutable(appBundle, options = {}) {
   let executableName = null;
   try {
     const plist = fsApi.readFileSync(
-      path.join(appBundle, "Contents", "Info.plist"),
+      path.posix.join(appBundle, "Contents", "Info.plist"),
       "utf8"
     );
     const match = plist.match(
@@ -76,7 +76,7 @@ function resolveMacBundleExecutable(appBundle, options = {}) {
   // electron-builder's productName is the stable executable name even when a
   // user renames or copies the outer .app bundle in Finder.
   if (!executableName) executableName = "Clawd on Desk";
-  return path.join(appBundle, "Contents", "MacOS", executableName);
+  return path.posix.join(appBundle, "Contents", "MacOS", executableName);
 }
 
 function resolveAppImageExecutable(hooksDir, options = {}) {
@@ -84,7 +84,7 @@ function resolveAppImageExecutable(hooksDir, options = {}) {
   const candidates = [];
   try {
     candidates.push(
-      fsApi.readFileSync(path.join(hooksDir, APPIMAGE_HOOK_MARKER_FILE), "utf8")
+      fsApi.readFileSync(path.posix.join(hooksDir, APPIMAGE_HOOK_MARKER_FILE), "utf8")
     );
   } catch {}
   // APPIMAGE belongs to the running AppImage process, not arbitrary source
@@ -99,7 +99,7 @@ function resolveAppImageExecutable(hooksDir, options = {}) {
   }
   for (const value of candidates) {
     const candidate = String(value || "").trim();
-    if (candidate && path.isAbsolute(candidate)) return candidate;
+    if (candidate && path.posix.isAbsolute(candidate)) return candidate;
   }
   return null;
 }
@@ -168,7 +168,7 @@ function launchApp(options = {}) {
       } else if (isMac) {
         // __dirname: <name>.app/Contents/Resources/app.asar.unpacked/hooks
         // .app bundle: 4 levels up
-        const appBundle = path.resolve(hooksDir, "..", "..", "..", "..");
+        const appBundle = path.posix.resolve(hooksDir, "..", "..", "..", "..");
         const executable = resolveMacBundleExecutable(appBundle, {
           fs: options.fs,
         });
@@ -198,8 +198,8 @@ function launchApp(options = {}) {
             onSpawnError
           );
         } else {
-          const installDir = path.resolve(hooksDir, "..", "..", "..");
-          const exe = path.join(installDir, "clawd-on-desk");
+          const installDir = path.posix.resolve(hooksDir, "..", "..", "..");
+          const exe = path.posix.join(installDir, "clawd-on-desk");
           spawnDetached(
             spawnProcess,
             exe,

@@ -599,6 +599,60 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 runtime)", () => 
       "the physical bounds used to construct the BrowserWindow must already be Mutter-safe, not off-screen"
     );
   });
+
+  it("preserves the v0.13 Windows upgrade baseline through construction and the first definitive bounds write", () => {
+    const display = {
+      id: 772280490,
+      bounds: { x: 0, y: 0, width: 2294, height: 960 },
+      workArea: { x: 0, y: 0, width: 2294, height: 920 },
+      scaleFactor: 1.5,
+    };
+    const harness = createRuntime({
+      displays: [display],
+      theme: { _id: "calico", _variantId: "default" },
+      currentPixelSize: { width: 214, height: 214 },
+      effectivePixelSize: { width: 214, height: 214 },
+    });
+    const prefs = {
+      positionSaved: true,
+      miniMode: false,
+      x: 1693,
+      y: 465,
+      positionThemeId: "calico",
+      positionVariantId: "default",
+      positionDisplay: display,
+    };
+    const size = { width: 214, height: 214 };
+
+    const placement = harness.runtime.resolveStartupPlacement(prefs, size);
+    assert.strictEqual(placement.startupNeedsRegularize, false);
+    assert.deepStrictEqual(placement.initialVirtualBounds, {
+      x: 1693,
+      y: 465,
+      width: 214,
+      height: 214,
+    });
+    assert.deepStrictEqual(placement.initialWindowBounds, placement.initialVirtualBounds);
+
+    const instances = [];
+    harness.runtime.createRenderWindow({
+      BrowserWindow: makeBrowserWindow(instances),
+      size,
+      initialWindowBounds: placement.initialWindowBounds,
+      initialVirtualBounds: placement.initialVirtualBounds,
+      preloadPath: "preload.js",
+      loadFilePath: "index.html",
+      themeConfig: {},
+      setRenderWindow: harness.setRenderWin,
+    });
+
+    assert.strictEqual(instances.length, 1);
+    assert.deepStrictEqual(instances[0].getBounds(), placement.initialVirtualBounds);
+    assert.deepStrictEqual(
+      instances[0].calls.filter(([name]) => name === "setBounds").at(-1),
+      ["setBounds", placement.initialVirtualBounds],
+    );
+  });
 });
 
 // A second Mutter-clamp mock, distinct from makeMutterClampedWindow above:

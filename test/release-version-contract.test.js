@@ -51,7 +51,10 @@ test("branch workflow refs are ignored while tag refs are enforced", () => {
 });
 
 test("build workflow validates the release contract before every platform build", () => {
-  const workflow = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "build.yml"), "utf8");
+  const workflow = fs.readFileSync(
+    path.join(__dirname, "..", ".github", "workflows", "build.yml"),
+    "utf8",
+  ).replace(/\r\n/g, "\n");
   assert.match(workflow, /validate-release:\s*[\s\S]*?npm run verify:release/);
   for (const job of ["build-windows", "build-mac", "build-linux"]) {
     assert.match(

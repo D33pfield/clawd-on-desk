@@ -157,7 +157,9 @@ test("corrupt records and public-id mismatch rotate atomically into clone recove
       );
       const residue = fs.readdirSync(userDataDir).filter((name) => name.includes(".tmp-"));
       assert.deepEqual(residue, [], label);
-      assert.equal(fs.statSync(original.recordPath).mode & 0o777, 0o600, label);
+      if (process.platform !== "win32") {
+        assert.equal(fs.statSync(original.recordPath).mode & 0o777, 0o600, label);
+      }
     });
   }
 });

@@ -79,6 +79,7 @@ function loadSettingsI18nForTest() {
 
 function loadSettingsCoreForTest(settingsAPI, {
   document: documentOverride = null,
+  localStorage: localStorageOverride = null,
   requestAnimationFrame = (cb) => {
     cb();
     return 1;
@@ -91,7 +92,7 @@ function loadSettingsCoreForTest(settingsAPI, {
   const context = {
     console,
     navigator: { platform: "Win32" },
-    localStorage: {
+    localStorage: localStorageOverride || {
       getItem: () => null,
       setItem: () => {},
     },
@@ -2056,6 +2057,51 @@ describe("settings renderer browser environment", () => {
     core.ops.selectTab("theme");
     raf.flush();
     assert.equal(content.scrollTop, 240, "the short target page keeps its own position");
+  });
+
+  it("restores the last Settings page and its scroll position after reopening", () => {
+    const storageData = {};
+    const localStorage = {
+      getItem: (key) => Object.prototype.hasOwnProperty.call(storageData, key)
+        ? storageData[key]
+        : null,
+      setItem: (key, value) => {
+        storageData[key] = String(value);
+      },
+    };
+    const firstContent = { scrollTop: 0 };
+    const first = loadSettingsCoreForTest({}, {
+      document: {
+        body: { contains: () => false },
+        getElementById: (id) => (id === "content" ? firstContent : null),
+      },
+      localStorage,
+    });
+    first.tabs.general = {};
+    first.tabs.theme = {};
+    first.ops.installRenderHooks({ sidebar: () => {}, content: () => {}, modal: () => {} });
+    firstContent.scrollTop = 180;
+    first.ops.selectTab("theme");
+    firstContent.scrollTop = 720;
+    first.ops.persistNavigationState();
+
+    const secondContent = { scrollTop: 0 };
+    const second = loadSettingsCoreForTest({}, {
+      document: {
+        body: { contains: () => false },
+        getElementById: (id) => (id === "content" ? secondContent : null),
+      },
+      localStorage,
+    });
+    second.tabs.general = {};
+    second.tabs.theme = {};
+    second.ops.installRenderHooks({ sidebar: () => {}, content: () => {}, modal: () => {} });
+
+    assert.strictEqual(second.ops.restoreNavigationState(), true);
+    assert.strictEqual(second.state.activeTab, "theme");
+    second.ops.applyBootstrap({ language: "zh" });
+    assert.strictEqual(secondContent.scrollTop, 720);
+    assert.strictEqual(second.runtime.settingsTabScrollPositions.get("general"), 180);
   });
 
   it("waits for remote cleanup before deleting a profile and warns on incomplete uninstall", () => {

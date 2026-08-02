@@ -384,7 +384,9 @@ describe("server-config helpers", () => {
       { remoteLastLogPath: logPath, now: () => firstAt },
     ), true);
     assert.match(fs.readFileSync(logPath, "utf8"), /state-delivery-failed/);
-    assert.strictEqual(fs.statSync(logPath).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.strictEqual(fs.statSync(logPath).mode & 0o777, 0o600);
+    }
     fs.utimesSync(logPath, firstAt / 1000, firstAt / 1000);
 
     assert.strictEqual(serverConfig.recordSecureTransportFailure(

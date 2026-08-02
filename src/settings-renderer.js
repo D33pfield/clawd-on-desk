@@ -96,6 +96,11 @@ globalThis.ClawdSettingsTabAbout.init(core);
 if (globalThis.ClawdSettingsTabRemoteSsh) globalThis.ClawdSettingsTabRemoteSsh.init(core);
 if (globalThis.ClawdSettingsTabMobile) globalThis.ClawdSettingsTabMobile.init(core);
 
+core.ops.restoreNavigationState();
+if (typeof window.addEventListener === "function") {
+  window.addEventListener("beforeunload", () => core.ops.persistNavigationState());
+}
+
 if (window.settingsAPI && typeof window.settingsAPI.onChanged === "function") {
   window.settingsAPI.onChanged((payload) => core.ops.applyChanges(payload));
 }

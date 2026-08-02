@@ -389,7 +389,7 @@ describe("Orca window raise", () => {
 
   it("falls through to the per-user Applications folder", async () => {
     const home = require("os").homedir();
-    const userBundle = path.join(home, "Applications", "Orca.app");
+    const userBundle = path.posix.join(home.replace(/\\/g, "/"), "Applications", "Orca.app");
     await withFocus({ platform: "darwin", macBundles: [userBundle] }, async (t, cli, logs) => {
       t.orcaHandleCache.clear();
       await t.scheduleOrcaPaneFocus(PANE_KEY, CWD);
@@ -498,10 +498,12 @@ describe("Orca CLI discovery", () => {
       assert.ok(candidates.includes("/opt/homebrew/bin/orca"));
       assert.ok(candidates.includes("/usr/local/bin/orca"));
       assert.ok(candidates.includes("/Applications/Orca.app/Contents/Resources/bin/orca"));
-      assert.ok(candidates.includes(path.join(
-        os.homedir(), "Applications", "Orca.app", "Contents", "Resources", "bin", "orca"
+      assert.ok(candidates.includes(path.posix.join(
+        os.homedir().replace(/\\/g, "/"), "Applications", "Orca.app", "Contents", "Resources", "bin", "orca"
       )));
-      assert.ok(candidates.includes(path.join(os.homedir(), ".local", "bin", "orca")));
+      assert.ok(candidates.includes(path.posix.join(
+        os.homedir().replace(/\\/g, "/"), ".local", "bin", "orca"
+      )));
     });
   });
 
@@ -678,8 +680,10 @@ describe("scheduleOrcaPaneFocus", () => {
         "/opt/homebrew/bin/orca",
         "/usr/local/bin/orca",
         "/Applications/Orca.app/Contents/Resources/bin/orca",
-        path.join(os.homedir(), "Applications", "Orca.app", "Contents", "Resources", "bin", "orca"),
-        path.join(os.homedir(), ".local", "bin", "orca"),
+        path.posix.join(
+          os.homedir().replace(/\\/g, "/"), "Applications", "Orca.app", "Contents", "Resources", "bin", "orca"
+        ),
+        path.posix.join(os.homedir().replace(/\\/g, "/"), ".local", "bin", "orca"),
       ];
       await withFocus({ platform: "darwin", missingBinaries: noOrcaAnywhere }, async (t, cli, logs) => {
         t.orcaHandleCache.clear();

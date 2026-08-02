@@ -1015,10 +1015,10 @@ function orcaCliCandidates() {
     // bin symlink is missing or stale.
     candidates.push("/opt/homebrew/bin/orca", "/usr/local/bin/orca");
     for (const appPath of orcaMacAppCandidates()) {
-      candidates.push(path.join(appPath, "Contents", "Resources", "bin", "orca"));
+      candidates.push(path.posix.join(appPath, "Contents", "Resources", "bin", "orca"));
     }
     const home = typeof os.homedir === "function" ? os.homedir() : "";
-    if (home) candidates.push(path.join(home, ".local", "bin", "orca"));
+    if (home) candidates.push(path.posix.join(home.replace(/\\/g, "/"), ".local", "bin", "orca"));
   }
   return candidates;
 }
@@ -1064,7 +1064,7 @@ function normalizeOrcaWorktreePath(value) {
 function orcaMacAppCandidates() {
   const candidates = ["/Applications/Orca.app"];
   const home = typeof os.homedir === "function" ? os.homedir() : "";
-  if (home) candidates.push(path.join(home, "Applications", "Orca.app"));
+  if (home) candidates.push(path.posix.join(home.replace(/\\/g, "/"), "Applications", "Orca.app"));
   return candidates;
 }
 

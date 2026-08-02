@@ -107,7 +107,7 @@ describe("Codex official hook installer", () => {
 
     const command = readJson(path.join(codexDir, "hooks.json"))
       .hooks.SessionStart[0].hooks[0].command;
-    assert.ok(command.includes(materializedRoot));
+    assert.ok(command.includes(materializedRoot.replace(/\\/g, "/")));
     assert.ok(!command.includes("app.asar.unpacked"));
     const markerMatches = [...command.matchAll(/"([^"]*codex-hook\.js)"/g)];
     assert.strictEqual(markerMatches.length, 1);

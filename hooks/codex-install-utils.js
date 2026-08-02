@@ -123,7 +123,7 @@ function collectRelativeHookClosure(entryPath, options = {}) {
 function materializeAppImageHookScript(entryPath, options = {}) {
   const fsApi = options.fs || fs;
   const appImagePath = String(options.appImagePath || "").trim();
-  if (!path.isAbsolute(appImagePath)) {
+  if (!path.posix.isAbsolute(appImagePath)) {
     throw new Error("AppImage hook installation requires an absolute APPIMAGE path");
   }
 

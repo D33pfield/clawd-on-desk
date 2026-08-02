@@ -45,6 +45,8 @@
   // startsWith("Mac") not /\bMac\b/ — "MacIntel" has \w after "c", fails \b (regression #135).
   const IS_MAC = (navigator.platform || "").startsWith("Mac");
   const COLLAPSED_GROUPS_STORAGE_KEY = "clawd.settings.collapsedGroups.v1";
+  const NAVIGATION_STORAGE_KEY = "clawd.settings.navigation.v1";
+  const MAX_PERSISTED_SCROLL_TOP = 10_000_000;
   // Runtime-only geometry belongs in the snapshot for consistency, but has no
   // mounted Settings control. Re-rendering for it would destroy focused inputs
   // and reset the active tab's scroll position after every window move/resize.
@@ -1114,18 +1116,83 @@
     if (modal && typeof renderHooks.modal === "function") renderHooks.modal();
   }
 
+  function normalizePersistedScrollTop(value) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+    return Math.min(value, MAX_PERSISTED_SCROLL_TOP);
+  }
+
+  function captureActiveTabScrollPosition() {
+    const content = document.getElementById("content");
+    if (!content || !tabs[state.activeTab]) return;
+    const scrollTop = normalizePersistedScrollTop(Number(content.scrollTop));
+    if (scrollTop !== null) runtime.settingsTabScrollPositions.set(state.activeTab, scrollTop);
+  }
+
+  function writeNavigationState() {
+    const scrollPositions = {};
+    for (const [tabId, value] of runtime.settingsTabScrollPositions) {
+      const scrollTop = normalizePersistedScrollTop(value);
+      if (tabs[tabId] && scrollTop !== null) scrollPositions[tabId] = scrollTop;
+    }
+    try {
+      localStorage.setItem(NAVIGATION_STORAGE_KEY, JSON.stringify({
+        activeTab: tabs[state.activeTab] ? state.activeTab : "general",
+        scrollPositions,
+      }));
+    } catch (_) {}
+  }
+
+  function persistNavigationState() {
+    captureActiveTabScrollPosition();
+    writeNavigationState();
+  }
+
+  function restoreNavigationState() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(NAVIGATION_STORAGE_KEY) || "null");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+      if (typeof parsed.activeTab === "string" && tabs[parsed.activeTab]) {
+        state.activeTab = parsed.activeTab;
+      }
+      const scrollPositions = parsed.scrollPositions;
+      if (scrollPositions && typeof scrollPositions === "object" && !Array.isArray(scrollPositions)) {
+        for (const [tabId, value] of Object.entries(scrollPositions)) {
+          const scrollTop = normalizePersistedScrollTop(value);
+          if (tabs[tabId] && scrollTop !== null) {
+            runtime.settingsTabScrollPositions.set(tabId, scrollTop);
+          }
+        }
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function restoreActiveTabScrollPosition() {
+    const content = document.getElementById("content");
+    if (!content) return;
+    const tabId = state.activeTab;
+    const targetScrollTop = runtime.settingsTabScrollPositions.get(tabId) || 0;
+    content.scrollTop = targetScrollTop;
+    requestAnimationFrame(() => {
+      if (state.activeTab !== tabId) return;
+      if (document.getElementById("content") !== content) return;
+      content.scrollTop = targetScrollTop;
+    });
+  }
+
   function selectTab(nextTab) {
     const prevTabId = state.activeTab;
     if (prevTabId === nextTab) return;
+    captureActiveTabScrollPosition();
     const content = document.getElementById("content");
-    if (content) {
-      runtime.settingsTabScrollPositions.set(prevTabId, content.scrollTop);
-    }
     const prevTab = tabs[prevTabId];
     if (prevTab && typeof prevTab.onExit === "function") {
       prevTab.onExit(core);
     }
     state.activeTab = nextTab;
+    writeNavigationState();
     requestRender({ sidebar: true, content: true, modal: true });
     if (!content) return;
 
@@ -1141,6 +1208,7 @@
   function applyBootstrap(snapshotValue) {
     state.snapshot = snapshotValue || {};
     requestRender({ sidebar: true, content: true, modal: true });
+    restoreActiveTabScrollPosition();
   }
 
   function applyAgentMetadata(list) {
@@ -1725,6 +1793,8 @@
     installRenderHooks,
     requestRender,
     selectTab,
+    persistNavigationState,
+    restoreNavigationState,
     applyBootstrap,
     applyAgentMetadata,
     applyChanges,
