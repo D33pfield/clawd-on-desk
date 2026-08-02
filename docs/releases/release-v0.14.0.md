@@ -147,11 +147,25 @@ remote, and platform behavior.
 
 ### Validation Status
 
-This is the pre-release draft. Whole-version multi-agent review, independent
+Release validation is complete. Whole-version multi-agent review, independent
 Claude cross-review, post-fix regression review, the full automated test suite,
-and the repository asset audit have completed. Multi-platform package builds
-and packaged-app smoke tests remain release gates. No real-machine validation
-is claimed here yet.
+the repository asset audit, and the final multi-platform package build all
+passed on main commit `1d87aa12086c4952aed70642e3133abc6016be71`.
 
-CI, unit tests, and unpacked-package assertions do not substitute for the
-required real-machine checks recorded in the release process.
+The packaged v0.14.0 x64 installer was installed and smoke-tested on Windows 11
+x64. The final checks covered upgrade preference and position preservation,
+five-language Settings and contributor credits, packaged Codex hooks and a real
+Codex lifecycle, saved-position cold starts, fullscreen click/drag behavior,
+folder drag-and-drop, New Session, Windows Terminal prompt submission without a
+visible PowerShell flash, lock/sleep/resume recovery, and sleep accessory
+tracking. No release-blocking failure remained after the repair candidate was
+installed. The ARM64 Windows installer was checked for identity, architecture,
+contents, and retirement-manifest integrity but was not installed on x64
+hardware.
+
+The final macOS and Linux packages were built and structurally validated in CI;
+this release candidate was not rerun on dedicated macOS or Linux hardware.
+Feature-specific real-machine evidence recorded on the merged implementation
+PRs—including Remote SSH/quota, Reasonix, Orca focus, MiMo Code, permission UI,
+and Discord Rich Presence—was retained rather than redundantly recreating every
+integration environment during the final Windows package smoke.
