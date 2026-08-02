@@ -27,6 +27,7 @@ const ROAM_TARGET_ATTEMPTS = 8;
 
 module.exports = function initRoam(ctx) {
   let enabled = false;
+  let constrainAxis = false;
   let roamActive = false;
   let roamAnimTimer = null;
   let roamPauseTimer = null;
@@ -80,6 +81,27 @@ module.exports = function initRoam(ctx) {
     const yMin = wa.y + marginY;
     const yMax = wa.y + wa.height - bounds.height - marginY;
     if (xMax <= xMin || yMax <= yMin) return null;
+
+    /* #686: axis-constrained roam — pick a target that varies in only one axis.
+     * Randomly choose horizontal (same Y, random X) or vertical (same X, random Y).
+     * The other axis is clamped to the work area so the target is always valid. */
+    if (constrainAxis) {
+      if (Math.random() < 0.5) {
+        // Horizontal move: keep current Y, pick random X
+        const targetX = xMin + Math.floor(Math.random() * (xMax - xMin));
+        const clampedY = Math.max(yMin, Math.min(bounds.y, yMax));
+        const dx = Math.abs(targetX - bounds.x);
+        if (dx >= ROAM_MIN_DIST) return { x: targetX, y: clampedY };
+      } else {
+        // Vertical move: keep current X, pick random Y
+        const targetY = yMin + Math.floor(Math.random() * (yMax - yMin));
+        const clampedX = Math.max(xMin, Math.min(bounds.x, xMax));
+        const dy = Math.abs(targetY - bounds.y);
+        if (dy >= ROAM_MIN_DIST) return { x: clampedX, y: targetY };
+      }
+      // Fall through to regular random pick if the constrained pick was too close
+    }
+
     for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
       const targetX = xMin + Math.floor(Math.random() * (xMax - xMin));
       const targetY = yMin + Math.floor(Math.random() * (yMax - yMin));
@@ -258,6 +280,10 @@ module.exports = function initRoam(ctx) {
     }
   }
 
+  function setConstrainAxis(value) {
+    constrainAxis = !!value;
+  }
+
   function cancelRoam() {
     const shouldRestoreIdle = roamActive
       && typeof ctx.getCurrentState === "function"
@@ -298,7 +324,7 @@ module.exports = function initRoam(ctx) {
   }
 
   return {
-    setEnabled, cancelRoam, tick, isRoamAnimating,
+    setEnabled, setConstrainAxis, cancelRoam, tick, isRoamAnimating,
     get enabled() { return enabled; },
   };
 };
