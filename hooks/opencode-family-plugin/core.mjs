@@ -42,6 +42,7 @@ import { join } from "path";
 import { randomBytes, timingSafeEqual } from "crypto";
 import { execFileSync, execSync } from "child_process";
 import {
+  getEventSessionInfo,
   getEventSessionId,
   getEventParentSessionId,
   shouldDropMappedEventWithoutSessionId,
@@ -179,15 +180,17 @@ export function createOpencodeFamilyPlugin(config) {
     cleanupSessionParentMap,
   } = createSessionIdHelpers(sessionIdPrefix);
 
-  // Per plugin-instance state (scoped to one host process).
+  // Per entry-module factory state (scoped to one host process). OpenCode may
+  // invoke this same plugin function once per directory Instance, so every
+  // handler returned by those invocations shares this closure.
   let _cachedPort = null;
   // Per-session last-state tracking. Keyed by sessionId so that subagent
   // sessions (spawned by the `task` tool) don't clobber the root session's
   // dedup state. Each value is the last Clawd state sent for that session.
   const _lastStatePerSession = new Map();
-  // Fallback session ID for permission.asked events, which lack sessionID
-  // in their properties. Updated on every session.*/message.part.updated
-  // event so it stays fresh. Not used for state dedup.
+  // Fallback session ID for legacy permission.asked events that omit sessionID.
+  // Updated on every session.* / message.part.updated event so it stays fresh.
+  // Not used for state dedup.
   let _lastSeenSessionId = null;
   let _reqCounter = 0;
   // Phase 3: host subtasks are full child sessions (not subtask parts). When
@@ -204,6 +207,13 @@ export function createOpencodeFamilyPlugin(config) {
   // to set headless: true for child sessions and by translateEvent() to
   // map child session.idle → SessionEnd instead of Stop.
   const _sessionParentById = new Map();
+  // Authoritative session directory learned from session lifecycle info.
+  // Shared by every directory handler returned from this factory product.
+  const _sessionDirectoryById = new Map();
+  // Compatibility latch: old hosts that never emit info.directory keep the
+  // latest-init fallback. Once this host proves it emits bindable session info,
+  // a map miss omits cwd rather than forwarding a potentially stale directory.
+  let _hostEmitsSessionInfo = false;
   // Process tree walk results — populated once by getStablePid() at init, then
   // read by every POST to /state and /permission. null until first resolution.
   let _stablePid = null;
@@ -211,10 +221,9 @@ export function createOpencodeFamilyPlugin(config) {
   let _detectedEditor = null;
   let _tmuxSocket = null;
   let _tmuxClient = null;
-  // Project directory — captured from ctx.directory at init, sent with every
-  // POST so state.js can display path.basename(cwd) as the session menu label
-  // (otherwise it falls back to the session_id prefix, e.g. "ses 2a..").
-  let _cwd = "";
+  // Most recently initialized directory across this shared factory closure.
+  // This is only a legacy-host fallback, never authoritative session truth.
+  let _lastInitDirectory = "";
   // Host HTTP server URL, captured at plugin init from ctx.serverUrl. Kept
   // for debug logging only — see Phase 2 Spike: TUI does not actually listen
   // on this URL. Replies go through _bridgeUrl instead.
@@ -368,6 +377,72 @@ export function createOpencodeFamilyPlugin(config) {
     return _stablePid;
   }
 
+  function captureSessionDirectory(event) {
+    if (!event) return null;
+    switch (event.type) {
+      case "session.created":
+      case "session.updated":
+      case "session.deleted":
+        break;
+      default:
+        return null;
+    }
+
+    const metadata = getEventSessionInfo(event);
+    const eventSessionId = normalizeSessionId(metadata.eventSessionId);
+    const infoSessionId = normalizeSessionId(metadata.infoSessionId);
+    if (eventSessionId && infoSessionId && eventSessionId !== infoSessionId) {
+      debugLog(`SESSION_DIR skip session=${eventSessionId} reason=id-mismatch`);
+      return null;
+    }
+
+    const sessionId = infoSessionId || eventSessionId;
+    if (!sessionId) {
+      debugLog("SESSION_DIR skip session=none reason=no-session-id");
+      return null;
+    }
+    if (!metadata.directory) {
+      debugLog(`SESSION_DIR skip session=${sessionId} reason=invalid-directory`);
+      return null;
+    }
+
+    _sessionDirectoryById.set(sessionId, metadata.directory);
+    _hostEmitsSessionInfo = true;
+    debugLog(`SESSION_DIR capture session=${sessionId} source=info`);
+    return sessionId;
+  }
+
+  function resolveSessionDirectory(sessionId) {
+    const normalized = normalizeSessionId(sessionId);
+    if (normalized && _sessionDirectoryById.has(normalized)) {
+      return {
+        directory: _sessionDirectoryById.get(normalized),
+        source: "session-info",
+      };
+    }
+    if (!_hostEmitsSessionInfo && _lastInitDirectory) {
+      return {
+        directory: _lastInitDirectory,
+        source: "legacy-init-fallback",
+      };
+    }
+    return { directory: null, source: "none" };
+  }
+
+  function cleanupSessionDirectory(event, phase) {
+    if (!event || typeof event.type !== "string") return;
+
+    if (event.type === "server.instance.disposed" && phase === "before-send") {
+      _sessionDirectoryById.clear();
+      return;
+    }
+
+    if (event.type === "session.deleted" && phase === "after-send") {
+      const normalized = normalizeSessionId(getEventSessionId(event));
+      if (normalized) _sessionDirectoryById.delete(normalized);
+    }
+  }
+
   // Fire-and-forget POST to any Clawd endpoint. Shared by /state and /permission
   // so both benefit from port caching + self-healing discovery. Tries cached port
   // first; on failure walks runtime.json + fallback range. Caches the winning
@@ -387,12 +462,14 @@ export function createOpencodeFamilyPlugin(config) {
     // walk finds no terminal to report.
     const orcaPaneKey = orcaPaneKeyFromEnv();
     if (orcaPaneKey) body.orca_pane_key = orcaPaneKey;
-    if (_cwd) body.cwd = _cwd;
+    const cwd = resolveSessionDirectory(body.session_id);
+    if (cwd.directory) body.cwd = cwd.directory;
+    else delete body.cwd;
     body.agent_pid = process.pid;
     const payload = JSON.stringify(body);
     const candidates = getPortCandidates();
     const reqId = ++_reqCounter;
-    debugLog(`POST[${reqId}] ${logTag} start candidates=[${candidates.join(",")}]`);
+    debugLog(`POST[${reqId}] ${logTag} cwdSource=${cwd.source} start candidates=[${candidates.join(",")}]`);
 
     (async () => {
       for (const port of candidates) {
@@ -560,9 +637,15 @@ export function createOpencodeFamilyPlugin(config) {
   const __testInternals = {
     buildStateBody,
     translateEvent,
+    captureSessionDirectory,
+    resolveSessionDirectory,
+    cleanupSessionDirectory,
     get _sessionParentById() { return _sessionParentById; },
+    get _sessionDirectoryById() { return _sessionDirectoryById; },
+    get _hostEmitsSessionInfo() { return _hostEmitsSessionInfo; },
     get _rootSessionId() { return _rootSessionId; },
     set _rootSessionId(v) { _rootSessionId = v; },
+    get _lastSeenSessionId() { return _lastSeenSessionId; },
     // Instance-isolation probes (family-core tests). Live views into the
     // closure — a hardcoded log path or accidentally-shared state bag must
     // fail the isolation suite, not pass silently.
@@ -576,9 +659,9 @@ export function createOpencodeFamilyPlugin(config) {
   };
 
   // Handle v2 permission.asked event — see Phase 2 Spike in
-  // docs/plans/plan-opencode-integration.md. The payload has no sessionID in its
-  // properties (only `id` = requestID), so we use _lastSeenSessionId (the most
-  // recently seen session from state events) as a fallback, then _rootSessionId.
+  // docs/plans/plan-opencode-integration.md. Current wire payloads carry a
+  // sessionID; legacy hosts may omit it, in which case we retain the existing
+  // _lastSeenSessionId → _rootSessionId fallback.
   // Phase 1 dedup/state machine logic does not run for permission events — they
   // ride a parallel channel and never translate to a Clawd state transition.
   function handlePermissionAsked(event) {
@@ -595,7 +678,7 @@ export function createOpencodeFamilyPlugin(config) {
       tool_input: p.metadata || {},
       patterns: Array.isArray(p.patterns) ? p.patterns : [],
       always: Array.isArray(p.always) ? p.always : [],
-      session_id: resolveSessionId(null, _lastSeenSessionId || _rootSessionId),
+      session_id: resolveSessionId(getEventSessionId(event), _lastSeenSessionId || _rootSessionId),
       request_id: requestId,
       server_url: _serverUrl,         // debug only, not used for replies
       bridge_url: _bridgeUrl,         // ← Clawd POSTs decisions here
@@ -711,8 +794,10 @@ export function createOpencodeFamilyPlugin(config) {
     resetDebugLog();
     _serverUrl = normalizeServerUrl(ctx && ctx.serverUrl);
     _ctxClient = ctx && ctx.client ? ctx.client : null;
-    _cwd = ctx && typeof ctx.directory === "string" ? ctx.directory : "";
-    debugLog(`INIT directory=${_cwd} serverUrl=${_serverUrl} pid=${process.pid} hasClient=${!!_ctxClient}`);
+    _lastInitDirectory = ctx && typeof ctx.directory === "string" && ctx.directory.trim()
+      ? ctx.directory
+      : "";
+    debugLog(`INIT directory=${_lastInitDirectory} serverUrl=${_serverUrl} pid=${process.pid} hasClient=${!!_ctxClient}`);
     // Sync init blocks the TUI boot path; later POSTs hit the cached result.
     getStablePid();
     startBridge();
@@ -728,6 +813,13 @@ export function createOpencodeFamilyPlugin(config) {
           // The session ID may be in event.properties.sessionID (most events)
           // or event.sessionID (session.created in some runtimes).
           const sid = getEventSessionId(event);
+
+          // #796: lifecycle info is the only authoritative session-directory
+          // source. Capture before translate/drop because session.updated does
+          // not map to a Clawd state and info-only deleted events need its id.
+          cleanupSessionDirectory(event, "before-send");
+          captureSessionDirectory(event);
+
           if (sid && !_rootSessionId) {
             _rootSessionId = sid;
             debugLog(`ROOT session captured id=${sid}`);
@@ -792,6 +884,10 @@ export function createOpencodeFamilyPlugin(config) {
 
           debugLog(`MAP ${event.type} → state=${mapped.state} event=${mapped.event}`);
           sendState(mapped.state, mapped.event, sessionId);
+          // Parent cleanup intentionally stays before translate; directory
+          // cleanup for deleted must wait until postToClawd synchronously
+          // serializes the SessionEnd body.
+          cleanupSessionDirectory(event, "after-send");
         } catch (err) {
           debugLog(`ERROR in event hook: ${err && err.message}`);
         }
