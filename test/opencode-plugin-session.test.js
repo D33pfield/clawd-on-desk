@@ -35,14 +35,49 @@ describe("opencode plugin session ids", () => {
     assert.strictEqual(mod.resolveSessionId(null, null), "opencode:default");
   });
 
-  it("extracts event.properties.sessionID and top-level event.sessionID", async () => {
+  it("extracts hybrid, legacy, top-level, and info-only session ids", async () => {
     const mod = await loadSessionIdModule();
 
     assert.strictEqual(mod.getEventSessionId({ properties: { sessionID: " ses_abc " } }), "ses_abc");
     assert.strictEqual(mod.getEventSessionId({ sessionID: " top_level " }), "top_level");
+    assert.strictEqual(
+      mod.getEventSessionId({ properties: { info: { id: " info_only " } } }),
+      "info_only"
+    );
+    assert.strictEqual(
+      mod.getEventSessionId({
+        sessionID: "top_level",
+        properties: { sessionID: "wire", info: { id: "info" } },
+      }),
+      "wire",
+      "wire properties.sessionID keeps precedence over top-level and info ids"
+    );
     assert.strictEqual(mod.getEventSessionId({ properties: { sessionID: "" } }), null);
     assert.strictEqual(mod.getEventSessionId({ properties: {} }), null);
     assert.strictEqual(mod.getEventSessionId(null), null);
+  });
+
+  it("extracts session metadata without normalizing the upstream directory text", async () => {
+    const mod = await loadSessionIdModule();
+    assert.deepStrictEqual(
+      mod.getEventSessionInfo({
+        type: "session.updated",
+        properties: {
+          sessionID: " ses_wire ",
+          info: { id: " ses_info ", directory: " C:\\Project With Spaces " },
+        },
+      }),
+      {
+        eventSessionId: "ses_wire",
+        infoSessionId: "ses_info",
+        directory: " C:\\Project With Spaces ",
+      }
+    );
+    assert.deepStrictEqual(mod.getEventSessionInfo(null), {
+      eventSessionId: null,
+      infoSessionId: null,
+      directory: null,
+    });
   });
 
   it("drops SessionEnd mappings that have no raw opencode session id", async () => {
@@ -61,6 +96,14 @@ describe("opencode plugin session ids", () => {
         { state: "sleeping", event: "SessionEnd" }
       ),
       false
+    );
+    assert.strictEqual(
+      mod.shouldDropMappedEventWithoutSessionId(
+        { type: "session.deleted", properties: { info: { id: "ses_info_only" } } },
+        { state: "sleeping", event: "SessionEnd" }
+      ),
+      false,
+      "info-only deleted must not be dropped as an anonymous SessionEnd"
     );
     assert.strictEqual(
       mod.shouldDropMappedEventWithoutSessionId(

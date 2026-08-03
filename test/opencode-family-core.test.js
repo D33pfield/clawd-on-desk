@@ -124,6 +124,150 @@ describe("opencode-family plugin factory", () => {
     assert.strictEqual(oc.__test._bridgeTokenHex, "");
     assert.notStrictEqual(oc.__test._pidChain, mc.__test._pidChain);
   });
+
+  it("isolates authoritative session directories and the info latch per factory", async () => {
+    const { createOpencodeFamilyPlugin } = await loadCore();
+    const oc = createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const mc = createOpencodeFamilyPlugin(MIMOCODE_PARAMS);
+
+    assert.notStrictEqual(oc.__test._sessionDirectoryById, mc.__test._sessionDirectoryById);
+    assert.strictEqual(oc.__test._hostEmitsSessionInfo, false);
+    assert.strictEqual(mc.__test._hostEmitsSessionInfo, false);
+
+    oc.__test.captureSessionDirectory({
+      type: "session.created",
+      properties: {
+        sessionID: "ses_shared",
+        info: { id: "opencode:ses_shared", directory: "C:\\active" },
+      },
+    });
+
+    assert.strictEqual(oc.__test._hostEmitsSessionInfo, true);
+    assert.strictEqual(mc.__test._hostEmitsSessionInfo, false);
+    assert.deepStrictEqual(oc.__test.resolveSessionDirectory("ses_shared"), {
+      directory: "C:\\active",
+      source: "session-info",
+    });
+    assert.deepStrictEqual(mc.__test.resolveSessionDirectory("ses_shared"), {
+      directory: null,
+      source: "none",
+    });
+  });
+
+  it("fails directory capture closed on mismatched or invalid session info", async () => {
+    const { createOpencodeFamilyPlugin } = await loadCore();
+    const plugin = createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+
+    assert.strictEqual(
+      plugin.__test.captureSessionDirectory({
+        type: "session.created",
+        properties: {
+          sessionID: "ses_wire",
+          info: { id: "ses_other", directory: "C:\\wrong" },
+        },
+      }),
+      null
+    );
+    assert.strictEqual(plugin.__test._sessionDirectoryById.size, 0);
+    assert.strictEqual(plugin.__test._hostEmitsSessionInfo, false);
+
+    assert.strictEqual(
+      plugin.__test.captureSessionDirectory({
+        type: "session.updated",
+        properties: {
+          sessionID: "ses_wire",
+          info: { id: "ses_wire", directory: "   " },
+        },
+      }),
+      null
+    );
+    assert.strictEqual(plugin.__test._sessionDirectoryById.size, 0);
+    assert.strictEqual(plugin.__test._hostEmitsSessionInfo, false);
+  });
+
+  it("updates one session directory and cleans it only in the after-send phase", async () => {
+    const { createOpencodeFamilyPlugin } = await loadCore();
+    const plugin = createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const created = {
+      type: "session.created",
+      properties: { sessionID: "ses_a", info: { id: "ses_a", directory: "C:\\old" } },
+    };
+    const updated = {
+      type: "session.updated",
+      properties: { sessionID: "ses_a", info: { id: "ses_a", directory: "C:\\new" } },
+    };
+    const deleted = {
+      type: "session.deleted",
+      properties: { sessionID: "ses_a", info: { id: "ses_a", directory: "C:\\new" } },
+    };
+
+    plugin.__test.captureSessionDirectory(created);
+    plugin.__test.captureSessionDirectory(updated);
+    assert.strictEqual(plugin.__test._sessionDirectoryById.get("opencode:ses_a"), "C:\\new");
+    plugin.__test.captureSessionDirectory({
+      type: "session.updated",
+      properties: { sessionID: "ses_a", info: { id: "ses_a", directory: "  " } },
+    });
+    assert.strictEqual(
+      plugin.__test._sessionDirectoryById.get("opencode:ses_a"),
+      "C:\\new",
+      "an invalid update must not clear the last authoritative directory"
+    );
+
+    plugin.__test.cleanupSessionDirectory(deleted, "before-send");
+    assert.strictEqual(
+      plugin.__test._sessionDirectoryById.get("opencode:ses_a"),
+      "C:\\new",
+      "deleted directory must remain available for SessionEnd serialization"
+    );
+    plugin.__test.cleanupSessionDirectory(deleted, "after-send");
+    assert.strictEqual(plugin.__test._sessionDirectoryById.has("opencode:ses_a"), false);
+
+    plugin.__test.captureSessionDirectory(created);
+    plugin.__test.cleanupSessionDirectory(
+      { type: "server.instance.disposed", properties: {} },
+      "before-send"
+    );
+    assert.strictEqual(plugin.__test._sessionDirectoryById.size, 0);
+  });
+});
+
+describe("opencode-family Windows GUI host focus identity", () => {
+  it("stops at the outermost OpenChamber process instead of its launcher editor", async () => {
+    const { resolveWindowsStableProcess } = await loadCore();
+    const snapshot = new Map([
+      [101, { name: "opencode.exe", ppid: 102 }],
+      [102, { name: "cmd.exe", ppid: 103 }],
+      [103, { name: "openchamber.exe", ppid: 104 }],
+      [104, { name: "openchamber.exe", ppid: 105 }],
+      [105, { name: "powershell.exe", ppid: 106 }],
+      [106, { name: "code.exe", ppid: 107 }],
+      [107, { name: "explorer.exe", ppid: 0 }],
+    ]);
+
+    assert.deepStrictEqual(resolveWindowsStableProcess(101, snapshot), {
+      stablePid: 104,
+      pidChain: [101, 102, 103, 104],
+      detectedEditor: null,
+    });
+  });
+
+  it("keeps the outermost-terminal behavior for direct CLI sessions", async () => {
+    const { resolveWindowsStableProcess } = await loadCore();
+    const snapshot = new Map([
+      [201, { name: "opencode.exe", ppid: 202 }],
+      [202, { name: "node.exe", ppid: 203 }],
+      [203, { name: "powershell.exe", ppid: 204 }],
+      [204, { name: "code.exe", ppid: 205 }],
+      [205, { name: "explorer.exe", ppid: 0 }],
+    ]);
+
+    assert.deepStrictEqual(resolveWindowsStableProcess(201, snapshot), {
+      stablePid: 204,
+      pidChain: [201, 202, 203, 204, 205],
+      detectedEditor: "code",
+    });
+  });
 });
 
 describe("opencode-family session-id helpers (prefix matrix)", () => {
