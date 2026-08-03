@@ -232,6 +232,44 @@ describe("opencode-family plugin factory", () => {
   });
 });
 
+describe("opencode-family Windows GUI host focus identity", () => {
+  it("stops at the outermost OpenChamber process instead of its launcher editor", async () => {
+    const { resolveWindowsStableProcess } = await loadCore();
+    const snapshot = new Map([
+      [101, { name: "opencode.exe", ppid: 102 }],
+      [102, { name: "cmd.exe", ppid: 103 }],
+      [103, { name: "openchamber.exe", ppid: 104 }],
+      [104, { name: "openchamber.exe", ppid: 105 }],
+      [105, { name: "powershell.exe", ppid: 106 }],
+      [106, { name: "code.exe", ppid: 107 }],
+      [107, { name: "explorer.exe", ppid: 0 }],
+    ]);
+
+    assert.deepStrictEqual(resolveWindowsStableProcess(101, snapshot), {
+      stablePid: 104,
+      pidChain: [101, 102, 103, 104],
+      detectedEditor: null,
+    });
+  });
+
+  it("keeps the outermost-terminal behavior for direct CLI sessions", async () => {
+    const { resolveWindowsStableProcess } = await loadCore();
+    const snapshot = new Map([
+      [201, { name: "opencode.exe", ppid: 202 }],
+      [202, { name: "node.exe", ppid: 203 }],
+      [203, { name: "powershell.exe", ppid: 204 }],
+      [204, { name: "code.exe", ppid: 205 }],
+      [205, { name: "explorer.exe", ppid: 0 }],
+    ]);
+
+    assert.deepStrictEqual(resolveWindowsStableProcess(201, snapshot), {
+      stablePid: 204,
+      pidChain: [201, 202, 203, 204, 205],
+      detectedEditor: "code",
+    });
+  });
+});
+
 describe("opencode-family session-id helpers (prefix matrix)", () => {
   for (const prefix of ["opencode:", "mimocode:"]) {
     it(`${prefix} raw + prefixed child lookup, deleted removes one, disposed clears all`, async () => {
