@@ -32,13 +32,17 @@ describe("dashboard window", () => {
 
     class FakeBrowserWindow {
       constructor(opts) {
+        // Models native frame quantization: the WM may hand back a slightly
+        // different rectangle than the one requested.
+        const offset = options.constructorBoundsOffset || {};
         this.opts = opts;
         this.bounds = {
-          x: opts.x,
-          y: opts.y,
-          width: opts.width,
-          height: opts.height,
+          x: opts.x + (offset.x || 0),
+          y: opts.y + (offset.y || 0),
+          width: opts.width + (offset.width || 0),
+          height: opts.height + (offset.height || 0),
         };
+        this.destroyed = false;
         this.backgroundColors = [opts.backgroundColor];
         this.parentWindows = [];
         this.setBoundsCalls = [];
@@ -52,7 +56,7 @@ describe("dashboard window", () => {
         };
         createdWindow = this;
       }
-      isDestroyed() { return false; }
+      isDestroyed() { return this.destroyed; }
       isMinimized() { return false; }
       restore() {}
       show() {}
@@ -72,7 +76,13 @@ describe("dashboard window", () => {
       getNormalBounds() { return { ...(this.normalBounds || this.bounds) }; }
       setBackgroundColor(color) { this.backgroundColors.push(color); }
       setBounds(bounds) {
-        this.bounds = { ...bounds };
+        const offset = options.setBoundsOffset || {};
+        this.bounds = {
+          x: bounds.x + (offset.x || 0),
+          y: bounds.y + (offset.y || 0),
+          width: bounds.width + (offset.width || 0),
+          height: bounds.height + (offset.height || 0),
+        };
         this.setBoundsCalls.push({ ...bounds });
       }
       setParentWindow(parentWindow) {
@@ -94,6 +104,7 @@ describe("dashboard window", () => {
       getSettingsWindow: options.getSettingsWindow,
       getSavedBounds: options.getSavedBounds,
       onSaveBounds: options.onSaveBounds,
+      getTextScale: options.getTextScale,
       setTimeout: options.setTimeout || ((callback, delay) => {
         timers.push({ callback, delay, cleared: false });
         return timers.length;
@@ -425,6 +436,170 @@ describe("dashboard window", () => {
     assert.deepStrictEqual(saved, [
       { x: 900, y: 300, width: 520, height: 560 },
     ]);
+  });
+
+  it("does not persist anchor growth to the scaled minimum on a short display", () => {
+    const saved = [];
+    const settingsWindow = {
+      isDestroyed: () => false,
+      isMinimized: () => false,
+      getBounds: () => ({ x: 100, y: 50, width: 800, height: 560 }),
+    };
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      getSettingsWindow: () => settingsWindow,
+      // Work area height (600) sits below the scaled minimum height (640 at
+      // 1.6), so the anchored placement is clamped short and the text-scale
+      // pass grows the window right after placement.
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 1280, height: 600 }),
+      getTextScale: () => 1.6,
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard({ source: "settings" });
+    const win = getCreatedWindow();
+    win.emitReadyToShow();
+    assert.strictEqual(win.bounds.height, 640);
+    win.emit("resize");
+    for (const timer of timers.filter((t) => !t.cleared && t.delay === 500)) {
+      timer.callback();
+    }
+    assert.deepStrictEqual(saved, []);
+
+    // A real user drag afterwards still persists.
+    win.bounds = { x: 200, y: 20, width: 900, height: 640 };
+    win.emit("move");
+    timers.filter((t) => !t.cleared && t.delay === 500).at(-1).callback();
+    assert.deepStrictEqual(saved, [
+      { x: 200, y: 20, width: 900, height: 640 },
+    ]);
+  });
+
+  it("keeps a failed synchronous persistence retryable", () => {
+    const attempts = [];
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      onSaveBounds: (bounds) => {
+        attempts.push(bounds);
+        return attempts.length === 1
+          ? { status: "error", message: "read only" }
+          : { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    win.bounds = { x: 310, y: 220, width: 880, height: 620 };
+    win.emit("resize");
+    timers.filter((t) => t.delay === 500).at(-1).callback();
+    win.emit("resize");
+    timers.filter((t) => t.delay === 500).at(-1).callback();
+
+    assert.strictEqual(attempts.length, 2);
+  });
+
+  it("keeps a failed asynchronous persistence retryable", async () => {
+    const attempts = [];
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      onSaveBounds: (bounds) => {
+        attempts.push(bounds);
+        return Promise.resolve(attempts.length === 1
+          ? { status: "error", message: "disk full" }
+          : { status: "ok" });
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    win.bounds = { x: 310, y: 220, width: 880, height: 620 };
+    win.emit("resize");
+    timers.filter((t) => t.delay === 500).at(-1).callback();
+    await Promise.resolve();
+    await Promise.resolve();
+    win.emit("resize");
+    timers.filter((t) => t.delay === 500).at(-1).callback();
+
+    assert.strictEqual(attempts.length, 2);
+  });
+
+  it("destroyed windows and closed cleanup cannot fire a pending bounds save", () => {
+    const saved = [];
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    win.bounds = { x: 310, y: 220, width: 880, height: 620 };
+    win.emit("resize");
+    const pendingSave = timers.filter((t) => t.delay === 500).at(-1);
+    win.destroyed = true;
+    win.emit("closed");
+
+    assert.strictEqual(pendingSave.cleared, true);
+    pendingSave.callback();
+    assert.deepStrictEqual(saved, []);
+  });
+
+  it("normal-bounds lookup falls back to current bounds when unavailable", () => {
+    const saved = [];
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    win.bounds = { x: 330, y: 240, width: 860, height: 610 };
+    win.getNormalBounds = () => { throw new Error("unsupported"); };
+    win.emit("close");
+
+    assert.deepStrictEqual(saved, [
+      { x: 330, y: 240, width: 860, height: 610 },
+    ]);
+  });
+
+  it("saved bounds override native constructor frame drift", () => {
+    const savedBounds = { x: 40, y: 60, width: 500, height: 520 };
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      constructorBoundsOffset: { width: 2 },
+      getSavedBounds: () => savedBounds,
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+
+    assert.deepStrictEqual(win.bounds, savedBounds);
+    assert.deepStrictEqual(win.setBoundsCalls, [savedBounds]);
+  });
+
+  it("an untouched window does not persist native frame quantization on close", () => {
+    const saved = [];
+    const savedBounds = { x: 40, y: 60, width: 500, height: 520 };
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      constructorBoundsOffset: { width: 2 },
+      // Simulate a WM that cannot adopt the requested outer width exactly
+      // even when the runtime follows up with setBounds().
+      setBoundsOffset: { width: 1 },
+      getSavedBounds: () => savedBounds,
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    assert.deepStrictEqual(win.getBounds(), { ...savedBounds, width: 501 });
+
+    win.emit("close");
+    assert.deepStrictEqual(saved, []);
   });
 
   it("exposes a Clawd-only hide action instead of a terminal close action", () => {

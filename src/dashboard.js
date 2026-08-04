@@ -246,15 +246,16 @@ module.exports = function initDashboard(ctx) {
     const placement = getDashboardPlacement(options);
     if (isUsableBounds(placement.bounds) && typeof dashboardWindow.setBounds === "function") {
       dashboardWindow.setBounds(placement.bounds);
+      // The anchored placement can land the window on a display with a
+      // different textScale; re-zoom right away (memoized — cheap no-op when
+      // nothing changed). This can grow the window to that display's scaled
+      // minimum, so it must run before the baseline capture below.
+      applyTextScaleToWindow();
       // Programmatic anchoring is not user geometry: rebase the persistence
       // baseline (and drop any pending save) so re-anchoring never overwrites
       // the user's saved standalone position.
       clearSaveBoundsTimer();
       lastSavedBounds = getNormalWindowBounds(dashboardWindow) || placement.bounds;
-      // The anchored placement can land the window on a display with a
-      // different textScale; re-zoom right away (memoized — cheap no-op when
-      // nothing changed).
-      applyTextScaleToWindow();
     }
   }
 
