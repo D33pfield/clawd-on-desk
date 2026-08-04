@@ -333,6 +333,7 @@ globalThis.__rendererTest = {
   cancelReaction,
   normalizeDragDirection,
   applyDirectionalDragToObject,
+  applyCodexPetVisualToObject,
   pauseCurrentSvgForLowPower,
   setLowPowerSvgPaused,
   recoverFromSystemWake,
@@ -355,6 +356,7 @@ globalThis.__rendererTest = {
   get activeSwapToken() { return activeSwapToken; },
   get clawdEl() { return clawdEl; },
   get currentDisplayedState() { return currentDisplayedState; },
+  get currentDisplayedSvg() { return currentDisplayedSvg; },
   get currentDisplayedAssetUrl() { return currentDisplayedAssetUrl; },
   get currentDragSvg() { return currentDragSvg; },
   get currentDragDirection() { return currentDragDirection; },
@@ -439,6 +441,20 @@ function attachDirectionalSvgDocument(objectEl, direction = "right") {
   return attached;
 }
 
+function attachUniversalCodexPetDocument(objectEl, visual = "idle-loop") {
+  const attached = attachDirectionalSvgDocument(objectEl);
+  const animation = {
+    currentTime: 250,
+    playCalls: 0,
+    play() { this.playCalls += 1; },
+  };
+  attached.root.setAttribute("data-clawd-codex-pet-visuals", "v1");
+  attached.root.setAttribute("data-clawd-codex-pet-visual", visual);
+  attached.root.getAnimations = () => [animation];
+  attached.root.attributeSetCalls.length = 0;
+  return { ...attached, animation };
+}
+
 describe("renderer directional drag reactions (#620)", () => {
   function makeDirectionalHarness(overrides = {}) {
     return createRendererHarness({
@@ -453,6 +469,149 @@ describe("renderer directional drag reactions (#620)", () => {
       },
     });
   }
+
+  function makeUniversalCodexPetHarness(overrides = {}) {
+    return createRendererHarness({
+      themeConfig: {
+        dragSvg: "codex-pet-running-loop.svg",
+        dragSvgs: {
+          left: "codex-pet-drag-directional-loop.svg",
+          right: "codex-pet-drag-directional-loop.svg",
+        },
+        rendering: { svgChannel: "object" },
+        ...overrides,
+      },
+    });
+  }
+
+  function commitUniversalCodexPet(harness, file, visual, state = "idle") {
+    harness.api.swapToFile(file, state, true);
+    const pending = harness.api.pendingNext;
+    const attached = attachUniversalCodexPetDocument(pending, visual);
+    pending.listeners.get("load")();
+    return { objectEl: pending, ...attached };
+  }
+
+  it("keeps drag, release, and mid-drag state changes in one Codex Pet document", () => {
+    const harness = makeUniversalCodexPetHarness();
+    const attached = commitUniversalCodexPet(
+      harness,
+      "codex-pet-idle-loop.svg",
+      "idle-loop"
+    );
+    const objectEl = attached.objectEl;
+    const token = harness.api.activeSwapToken;
+
+    harness.electronHandlers.onStartDragReaction("left");
+    assert.strictEqual(harness.api.clawdEl, objectEl);
+    assert.strictEqual(harness.api.pendingNext, null);
+    assert.strictEqual(harness.api.activeSwapToken, token);
+    assert.strictEqual(attached.root.getAttribute("data-clawd-codex-pet-visual"), "drag-directional");
+    assert.strictEqual(attached.root.getAttribute("data-clawd-drag-direction"), "left");
+
+    harness.electronHandlers.onStateChange("working", "codex-pet-running-loop.svg");
+    assert.strictEqual(harness.api.clawdEl, objectEl);
+    assert.strictEqual(harness.api.activeSwapToken, token);
+    assert.strictEqual(harness.api.isDragReacting, false);
+    assert.strictEqual(attached.root.getAttribute("data-clawd-codex-pet-visual"), "running-loop");
+
+    harness.electronHandlers.onStartDragReaction("right");
+    assert.strictEqual(harness.api.clawdEl, objectEl);
+    assert.strictEqual(harness.api.activeSwapToken, token);
+    assert.strictEqual(attached.root.getAttribute("data-clawd-codex-pet-visual"), "drag-directional");
+    assert.strictEqual(attached.root.getAttribute("data-clawd-drag-direction"), "right");
+
+    harness.electronHandlers.onEndDragReaction();
+    harness.electronHandlers.onStateChange("idle", "codex-pet-idle-loop.svg");
+    assert.strictEqual(harness.api.clawdEl, objectEl);
+    assert.strictEqual(harness.api.pendingNext, null);
+    assert.strictEqual(harness.api.activeSwapToken, token);
+    assert.strictEqual(harness.api.currentDisplayedSvg, "codex-pet-idle-loop.svg");
+    assert.strictEqual(attached.root.getAttribute("data-clawd-codex-pet-visual"), "idle-loop");
+    assert.strictEqual(harness.mediaLayer.querySelectorAll("object.clawd-object, img.clawd-img").length, 1);
+  });
+
+  it("restarts an already selected universal one-shot without replacing its object", () => {
+    const harness = makeUniversalCodexPetHarness();
+    const attached = commitUniversalCodexPet(
+      harness,
+      "codex-pet-idle-loop.svg",
+      "idle-loop"
+    );
+    const token = harness.api.activeSwapToken;
+
+    harness.api.swapToFile("codex-pet-waving-once.svg", null, true);
+    assert.strictEqual(attached.root.getAttribute("data-clawd-codex-pet-visual"), "waving-once");
+    assert.strictEqual(attached.animation.playCalls, 0);
+    attached.animation.currentTime = 640;
+
+    harness.api.swapToFile("codex-pet-waving-once.svg", null, true);
+    assert.strictEqual(harness.api.clawdEl, attached.objectEl);
+    assert.strictEqual(harness.api.activeSwapToken, token);
+    assert.strictEqual(attached.animation.currentTime, 0);
+    assert.strictEqual(attached.animation.playCalls, 1);
+  });
+
+  it("does not reuse a universal document after the theme asset directory changes", () => {
+    const harness = makeUniversalCodexPetHarness();
+    const attached = commitUniversalCodexPet(
+      harness,
+      "codex-pet-idle-loop.svg",
+      "idle-loop"
+    );
+    const token = harness.api.activeSwapToken;
+
+    harness.api.initWithConfig({
+      assetsPath: "../other-theme-assets",
+      dragSvg: "codex-pet-running-loop.svg",
+      dragSvgs: {
+        left: "codex-pet-drag-directional-loop.svg",
+        right: "codex-pet-drag-directional-loop.svg",
+      },
+      rendering: { svgChannel: "object" },
+      eyeTracking: { states: [] },
+    });
+    harness.api.swapToFile("codex-pet-running-loop.svg", "working", true);
+
+    assert.strictEqual(attached.root.getAttribute("data-clawd-codex-pet-visual"), "idle-loop");
+    assert.notStrictEqual(harness.api.pendingNext, attached.objectEl);
+    assert.strictEqual(harness.api.activeSwapToken, token + 1);
+  });
+
+  it("honors an explicit document reload for a universal Codex Pet wrapper", () => {
+    const harness = makeUniversalCodexPetHarness();
+    const attached = commitUniversalCodexPet(
+      harness,
+      "codex-pet-idle-loop.svg",
+      "idle-loop"
+    );
+    const token = harness.api.activeSwapToken;
+
+    harness.api.swapToFile("codex-pet-idle-loop.svg", "idle", true, {
+      forceDocumentReload: true,
+    });
+
+    assert.strictEqual(attached.root.getAttribute("data-clawd-codex-pet-visual"), "idle-loop");
+    assert.notStrictEqual(harness.api.pendingNext, attached.objectEl);
+    assert.strictEqual(harness.api.activeSwapToken, token + 1);
+  });
+
+  it("warns once and falls back to a media swap when the universal marker is unavailable", () => {
+    const harness = makeUniversalCodexPetHarness();
+    harness.api.swapToFile("codex-pet-idle-loop.svg", "idle", true);
+    const first = harness.api.pendingNext;
+    attachDirectionalSvgDocument(first);
+    first.listeners.get("load")();
+
+    harness.api.swapToFile("codex-pet-running-loop.svg", "working", true);
+    harness.api.cancelReaction();
+    harness.api.swapToFile("codex-pet-review-loop.svg", "thinking", true);
+
+    assert.deepStrictEqual(harness.warnings, [
+      "Clawd: Codex Pet visual bridge unavailable (v1 marker missing); using a normal media swap.",
+    ]);
+    assert.strictEqual(harness.api.pendingSvgFile, "codex-pet-review-loop.svg");
+  });
 
   it("commits the latest pending direction and reuses one object for later reversals", () => {
     const harness = makeDirectionalHarness();

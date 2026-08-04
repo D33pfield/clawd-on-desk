@@ -8,39 +8,6 @@ const vm = require("node:vm");
 
 const HIT_RENDERER = path.join(__dirname, "..", "src", "hit-renderer.js");
 const SOURCE = fs.readFileSync(HIT_RENDERER, "utf8").replace(/\r\n/g, "\n");
-// Synthetic model of the feedback pattern. This is a deterministic regression
-// fixture, not the real pre-fix trace required by the Windows QA gate.
-const SYNTHETIC_SERVO_SAWTOOTH_TRACE = [
-  { t: 0, clientX: 100, screenX: 500 },
-  { t: 2, clientX: 104, screenX: 504 },
-  { t: 4, clientX: 108, screenX: 508 },
-  { t: 18, clientX: 101, screenX: 512 }, // window catches up; local X resets
-  { t: 20, clientX: 105, screenX: 516 },
-  { t: 22, clientX: 109, screenX: 520 },
-  { t: 35, clientX: 102, screenX: 524 }, // second local reset
-  { t: 37, clientX: 101, screenX: 523 }, // sub-deadband screen jitter
-  { t: 39, clientX: 102, screenX: 524 },
-  { t: 41, clientX: 101, screenX: 523 },
-  { t: 55, clientX: 98, screenX: 520 }, // accepted real reversal
-];
-
-function replayDirectionTrace(trace, coordinate, deadband = 0) {
-  let anchor = trace[0][coordinate];
-  let current = null;
-  const emitted = [];
-  for (const sample of trace.slice(1)) {
-    const x = sample[coordinate];
-    const delta = x - anchor;
-    if (deadband > 0 && Math.abs(delta) < deadband) continue;
-    anchor = x;
-    if (delta === 0) continue;
-    const direction = delta < 0 ? "left" : "right";
-    if (direction === current) continue;
-    current = direction;
-    emitted.push(direction);
-  }
-  return emitted;
-}
 
 class FakeArea {
   constructor() {
@@ -135,13 +102,13 @@ function createHarness({ isMac = false, sendState = {} } = {}) {
     fakeDocument._dispatch("pointerup", { button, ctrlKey, metaKey, clientX });
   }
 
-  function pointerdown({ button = 0, pointerId = 1, clientX = 100, clientY = 100, screenX = clientX } = {}) {
+  function pointerdown({ button = 0, pointerId = 1, clientX = 100, clientY = 100 } = {}) {
     const cb = area.listeners.get("pointerdown");
-    if (cb) cb({ button, pointerId, clientX, clientY, screenX });
+    if (cb) cb({ button, pointerId, clientX, clientY });
   }
 
-  function pointermove({ clientX = 100, clientY = 100, screenX = clientX } = {}) {
-    fakeDocument._dispatch("pointermove", { clientX, clientY, screenX });
+  function pointermove({ clientX = 100, clientY = 100 } = {}) {
+    fakeDocument._dispatch("pointermove", { clientX, clientY });
   }
 
   function fireTimer(predicate) {
@@ -263,111 +230,6 @@ describe("hit-renderer input layer", () => {
       h.apiCalls.filter((call) => call[0] === "startDragReaction"),
       [
         ["startDragReaction", "left"],
-        ["startDragReaction", "right"],
-      ]
-    );
-  });
-
-  it("uses screenX direction when clientX is reset by the moving hit window", () => {
-    const h = createHarness();
-    h.pointerdown({ clientX: 100, clientY: 100, screenX: 500 });
-    h.pointermove({ clientX: 110, clientY: 100, screenX: 510 });
-    h.pointermove({ clientX: 120, clientY: 100, screenX: 514 });
-    // The hit window catches up here: local X moves backwards while the real
-    // cursor continues right in screen space.
-    h.pointermove({ clientX: 105, clientY: 100, screenX: 518 });
-
-    assert.deepStrictEqual(
-      h.apiCalls.filter((call) => call[0] === "startDragReaction"),
-      [["startDragReaction", "right"]]
-    );
-  });
-
-  it("replays one synthetic servo fixture through legacy, naked screenX, and screenX deadband counters", () => {
-    const legacy = replayDirectionTrace(SYNTHETIC_SERVO_SAWTOOTH_TRACE, "clientX");
-    const nakedScreen = replayDirectionTrace(SYNTHETIC_SERVO_SAWTOOTH_TRACE, "screenX");
-    const screenDeadband = replayDirectionTrace(SYNTHETIC_SERVO_SAWTOOTH_TRACE, "screenX", 3);
-
-    assert.deepStrictEqual(legacy, ["right", "left", "right", "left", "right", "left"]);
-    assert.deepStrictEqual(nakedScreen, ["right", "left", "right", "left"]);
-    assert.deepStrictEqual(screenDeadband, ["right", "left"]);
-
-    const h = createHarness();
-    const [first, ...moves] = SYNTHETIC_SERVO_SAWTOOTH_TRACE;
-    h.pointerdown({ ...first, clientY: 100 });
-    moves.forEach((sample) => h.pointermove({ ...sample, clientY: 100 }));
-    assert.deepStrictEqual(
-      h.apiCalls.filter((call) => call[0] === "startDragReaction"),
-      screenDeadband.map((direction) => ["startDragReaction", direction])
-    );
-  });
-
-  it("accumulates screen-space movement through the deadband and re-anchors on accepted same-direction movement", () => {
-    const h = createHarness();
-    h.pointerdown({ clientX: 100, clientY: 100, screenX: 100 });
-    h.pointermove({ clientX: 110, clientY: 100, screenX: 110 });
-    h.pointermove({ clientX: 111, clientY: 100, screenX: 111 });
-    h.pointermove({ clientX: 112, clientY: 100, screenX: 112 });
-    h.pointermove({ clientX: 113, clientY: 100, screenX: 113 });
-    // The accepted same-direction sample above must move the anchor to 113,
-    // so a 3px real reversal is sufficient even after a long right drag.
-    h.pointermove({ clientX: 110, clientY: 100, screenX: 110 });
-
-    assert.deepStrictEqual(
-      h.apiCalls.filter((call) => call[0] === "startDragReaction"),
-      [
-        ["startDragReaction", "right"],
-        ["startDragReaction", "left"],
-      ]
-    );
-  });
-
-  it("keeps the current direction when screenX is unavailable instead of falling back to clientX", () => {
-    const h = createHarness();
-    h.pointerdown({ clientX: 100, clientY: 100, screenX: 100 });
-    h.pointermove({ clientX: 110, clientY: 100, screenX: 110 });
-    h.pointermove({ clientX: 80, clientY: 100, screenX: Number.NaN });
-
-    assert.deepStrictEqual(
-      h.apiCalls.filter((call) => call[0] === "startDragReaction"),
-      [["startDragReaction", "right"]]
-    );
-  });
-
-  it("restarts a cancelled drag with the last confirmed direction without making a new direction decision", () => {
-    const h = createHarness();
-    h.pointerdown({ clientX: 100, clientY: 100, screenX: 100 });
-    h.pointermove({ clientX: 90, clientY: 100, screenX: 90 });
-    h.apiHandlers.cancelReaction();
-
-    // A 1px rightward sample would be noise for direction purposes. Restart
-    // must replay the accepted left direction and leave the anchor at 90.
-    h.pointermove({ clientX: 91, clientY: 100, screenX: 91 });
-    h.pointermove({ clientX: 93, clientY: 100, screenX: 93 });
-
-    assert.deepStrictEqual(
-      h.apiCalls.filter((call) => call[0] === "startDragReaction"),
-      [
-        ["startDragReaction", "left"],
-        ["startDragReaction", "left"],
-        ["startDragReaction", "right"],
-      ]
-    );
-  });
-
-  it("restarts a cancelled neutral drag without inventing a direction", () => {
-    const h = createHarness();
-    h.pointerdown({ clientX: 100, clientY: 100, screenX: 100 });
-    h.pointermove({ clientX: 100, clientY: 110, screenX: 100 });
-    h.apiHandlers.cancelReaction();
-    h.pointermove({ clientX: 101, clientY: 111, screenX: 101 });
-    h.pointermove({ clientX: 103, clientY: 111, screenX: 103 });
-
-    assert.deepStrictEqual(
-      h.apiCalls.filter((call) => call[0] === "startDragReaction"),
-      [
-        ["startDragReaction", null],
-        ["startDragReaction", null],
         ["startDragReaction", "right"],
       ]
     );

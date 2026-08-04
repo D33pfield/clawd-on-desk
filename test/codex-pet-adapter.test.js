@@ -599,7 +599,7 @@ describe("codex-pet-adapter wrapper generation and materialization", () => {
     assert.match(idleStatic, /transform: translate\(0px, 0px\)/);
   });
 
-  it("generates a sanitized single-image directional wrapper with continuous shared timing", () => {
+  it("generates sanitized single-image universal wrappers with directional timing parity", () => {
     const leftRow = adapter.ATLAS_ROWS.find((row) => row.key === "running-left");
     const rightRow = adapter.ATLAS_ROWS.find((row) => row.key === "running-right");
     assert.strictEqual(adapter.assertDirectionalTimingParity(leftRow, rightRow), true);
@@ -621,29 +621,49 @@ describe("codex-pet-adapter wrapper generation and materialization", () => {
     const svg = adapter.generateDirectionalDragWrapperSvg({
       spritesheetHref: "sprite&amp;\".png",
     });
-    const beforeRowRules = svg.split(".direction-row {")[0];
     assert.match(svg, /viewBox="0 0 192 208" width="192" height="208"/);
     assert.match(svg, /<image class="atlas"[^>]+width="1536" height="1872"/);
     assert.strictEqual((svg.match(/<image\b/g) || []).length, 1);
+    assert.match(svg, /data-clawd-codex-pet-visuals="v1"/);
+    assert.match(svg, /data-clawd-codex-pet-visual="drag-directional"/);
     assert.match(svg, /data-clawd-drag-directional="v1"/);
     assert.match(svg, /data-clawd-drag-direction="right"/);
-    assert.match(svg, /<g class="direction-row" transform="translate\(0,-208\)">/);
-    assert.match(svg, /\.direction-row \{\s+transform: translate\(0px, -208px\)/);
-    assert.match(svg, /\[data-clawd-drag-direction=left\] \.direction-row \{\s+transform: translate\(0px, -416px\)/);
-    assert.match(beforeRowRules, /translate\(-192px, 0px\)/);
-    assert.ok(!beforeRowRules.includes("-208px"));
-    assert.ok(!beforeRowRules.includes("-416px"));
+    assert.match(svg, /<g class="visual-row" transform="translate\(0,-208\)">/);
+    assert.match(svg, /\[data-clawd-codex-pet-visual=drag-directional\] \.visual-row \{\s+transform: translate\(0px, -208px\)/);
+    assert.match(svg, /\[data-clawd-codex-pet-visual=drag-directional\]\[data-clawd-drag-direction=left\] \.visual-row \{\s+transform: translate\(0px, -416px\)/);
+    const keyframeBlocks = [...svg.matchAll(/@keyframes [^{]+\{([\s\S]*?)\n\s*\}/g)].map((match) => match[1]);
+    assert.ok(keyframeBlocks.length > 0);
+    assert.ok(keyframeBlocks.every((block) => !/translate\([^,]+,\s*-(?:208|416)px\)/.test(block)));
     assert.ok(!/\b(?:display|visibility|opacity)\s*:/.test(svg));
     assert.match(svg, /href="sprite&amp;amp;&quot;\.png"/);
 
     const sanitized = sanitizeSvg(svg);
     const sanitizedStyle = decodeXmlText((sanitized.match(/<style>([\s\S]*?)<\/style>/) || [])[1]);
     assert.strictEqual((sanitized.match(/<image\b/g) || []).length, 1);
+    assert.match(sanitized, /data-clawd-codex-pet-visuals="v1"/);
+    assert.match(sanitized, /data-clawd-codex-pet-visual="drag-directional"/);
     assert.match(sanitized, /data-clawd-drag-directional="v1"/);
     assert.match(sanitized, /data-clawd-drag-direction="right"/);
-    assert.match(sanitizedStyle, /\[data-clawd-drag-direction=(?:left|"left")\] \.direction-row/);
+    assert.match(sanitizedStyle, /\[data-clawd-codex-pet-visual=(?:drag-directional|"drag-directional")\]/);
+    assert.match(sanitizedStyle, /\[data-clawd-drag-direction=(?:left|"left")\] \.visual-row/);
     assert.match(sanitized, /transform="translate\(0,-208\)"/);
-    assert.match(sanitizedStyle, /animation-name: codex-pet-drag-directional-loop/);
+    assert.match(sanitizedStyle, /animation-name: codex-pet-visual-drag-directional/);
+
+    const idleSvg = adapter.generateUniversalWrapperSvg({
+      initialFilename: "codex-pet-idle-loop.svg",
+      spritesheetHref: "spritesheet.png",
+    });
+    assert.match(idleSvg, /data-clawd-codex-pet-visual="idle-loop"/);
+    assert.match(idleSvg, /<g class="visual-row" transform="translate\(0,-0\)">/);
+    assert.match(idleSvg, /animation-name: codex-pet-visual-waving-once/);
+    assert.match(idleSvg, /animation-iteration-count: 1/);
+    assert.throws(
+      () => adapter.generateUniversalWrapperSvg({
+        initialFilename: "not-a-codex-pet-wrapper.svg",
+        spritesheetHref: "spritesheet.png",
+      }),
+      /unknown Codex Pet wrapper file/
+    );
 
     const v2Svg = adapter.generateDirectionalDragWrapperSvg({
       spritesheetHref: "spritesheet.png",
@@ -669,6 +689,20 @@ describe("codex-pet-adapter wrapper generation and materialization", () => {
     assert.strictEqual(fs.existsSync(path.join(materialized.themeDir, "assets", adapter.DIRECTIONAL_DRAG_WRAPPER)), true);
     assert.strictEqual(fs.existsSync(path.join(materialized.themeDir, "assets", "codex-pet-running-left-loop.svg")), false);
     assert.strictEqual(fs.existsSync(path.join(materialized.themeDir, "assets", "codex-pet-running-right-loop.svg")), false);
+
+    for (const spec of adapter.WRAPPER_SPECS) {
+      const wrapper = fs.readFileSync(path.join(materialized.themeDir, "assets", spec.filename), "utf8");
+      assert.match(wrapper, /data-clawd-codex-pet-visuals="v1"/);
+      assert.match(wrapper, new RegExp(`data-clawd-codex-pet-visual="${spec.visual}"`));
+      assert.strictEqual((wrapper.match(/<image\b/g) || []).length, 1);
+      const sanitizedWrapper = sanitizeSvg(wrapper);
+      const sanitizedWrapperStyle = decodeXmlText(
+        (sanitizedWrapper.match(/<style>([\s\S]*?)<\/style>/) || [])[1]
+      );
+      assert.match(sanitizedWrapper, /data-clawd-codex-pet-visuals="v1"/);
+      assert.match(sanitizedWrapperStyle, /data-clawd-codex-pet-visual=/);
+      assert.match(sanitizedWrapperStyle, /data-clawd-drag-direction=/);
+    }
 
     const themeJson = readJson(path.join(materialized.themeDir, "theme.json"));
     assert.strictEqual(themeJson.rendering.svgChannel, "object");
@@ -810,7 +844,7 @@ describe("codex-pet-adapter wrapper generation and materialization", () => {
     assert.strictEqual(fs.existsSync(wrapperPath), true);
   });
 
-  it("upgrades a suffixed v4 managed theme to v5 without reallocating its id", () => {
+  it("upgrades a suffixed v5 managed theme to v6 without reallocating its id", () => {
     const root = makeTempDir();
     const petsDir = path.join(root, "pets");
     copyFixturePackage(petsDir, "tiny-atlas-png");
@@ -827,7 +861,7 @@ describe("codex-pet-adapter wrapper generation and materialization", () => {
     const assetsDir = path.join(themeDir, "assets");
     const markerPath = path.join(themeDir, adapter.MARKER_FILENAME);
     const marker = readJson(markerPath);
-    marker.adapterVersion = 4;
+    marker.adapterVersion = 5;
     writeJson(markerPath, marker);
     fs.writeFileSync(path.join(assetsDir, "codex-pet-running-left-loop.svg"), "<svg/>", "utf8");
     fs.writeFileSync(path.join(assetsDir, "codex-pet-running-right-loop.svg"), "<svg/>", "utf8");
@@ -836,7 +870,7 @@ describe("codex-pet-adapter wrapper generation and materialization", () => {
     assert.strictEqual(upgraded.updated, 1);
     assert.strictEqual(upgraded.themes[0].themeId, themeId);
     assert.strictEqual(fs.readFileSync(path.join(unmanagedDir, "theme.json"), "utf8"), "{\"name\":\"User Theme\"}\n");
-    assert.strictEqual(readJson(markerPath).adapterVersion, 5);
+    assert.strictEqual(readJson(markerPath).adapterVersion, 6);
     assert.strictEqual(fs.existsSync(path.join(assetsDir, adapter.DIRECTIONAL_DRAG_WRAPPER)), true);
     assert.strictEqual(fs.existsSync(path.join(assetsDir, "codex-pet-running-left-loop.svg")), false);
     assert.strictEqual(fs.existsSync(path.join(assetsDir, "codex-pet-running-right-loop.svg")), false);
