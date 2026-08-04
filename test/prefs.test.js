@@ -70,6 +70,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.savedPixelHeight, 0);
     assert.strictEqual(d.savedPixelWorkArea, null);
     assert.strictEqual(d.settingsWindowBounds, null);
+    assert.strictEqual(d.dashboardWindowBounds, null);
     assert.strictEqual(d.permissionBubblesEnabled, true);
     assert.strictEqual(d.notificationBubbleAutoCloseSeconds, 6);
     assert.strictEqual(d.updateBubbleAutoCloseSeconds, 9);
@@ -1241,6 +1242,23 @@ describe("prefs.migrate v11 → v12 (showDock default off for fresh installs)", 
   });
 });
 
+describe("prefs.migrate v13 → v14 (Dashboard window bounds)", () => {
+  it("advances the schema without inventing geometry for existing users", () => {
+    const upgraded = prefs.validate(prefs.migrate({ version: 13, lang: "zh" }));
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(upgraded.dashboardWindowBounds, null);
+  });
+
+  it("preserves valid geometry from an early v13 build or hand-edited file", () => {
+    const bounds = { x: -1180, y: 90, width: 920, height: 680 };
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 13,
+      dashboardWindowBounds: bounds,
+    }));
+    assert.deepStrictEqual(upgraded.dashboardWindowBounds, bounds);
+  });
+});
+
 describe("prefs.migrate v12 → v13 (Settings window bounds)", () => {
   it("advances the schema without inventing geometry for existing users", () => {
     const upgraded = prefs.validate(prefs.migrate({ version: 12, lang: "zh" }));
@@ -1483,22 +1501,22 @@ describe("prefs.load", () => {
     }
   });
 
-  it("accepts the restored v13 schema and locks an explicit v14 file", () => {
-    const currentPath = makeTempPath("v13.json");
-    fs.writeFileSync(currentPath, JSON.stringify({ version: 13, lang: "zh" }), "utf8");
+  it("accepts the restored v14 schema and locks an explicit v15 file", () => {
+    const currentPath = makeTempPath("v14.json");
+    fs.writeFileSync(currentPath, JSON.stringify({ version: 14, lang: "zh" }), "utf8");
     const current = prefs.load(currentPath);
     assert.strictEqual(current.locked, false);
-    assert.strictEqual(current.snapshot.version, 13);
+    assert.strictEqual(current.snapshot.version, 14);
     assert.strictEqual(current.snapshot.lang, "zh");
 
-    const futurePath = makeTempPath("v14.json");
-    fs.writeFileSync(futurePath, JSON.stringify({ version: 14, lang: "ja" }), "utf8");
+    const futurePath = makeTempPath("v15.json");
+    fs.writeFileSync(futurePath, JSON.stringify({ version: 15, lang: "ja" }), "utf8");
     const originalWarn = console.warn;
     console.warn = () => {};
     try {
       const future = prefs.load(futurePath);
       assert.strictEqual(future.locked, true);
-      assert.strictEqual(future.snapshot.version, 14);
+      assert.strictEqual(future.snapshot.version, 15);
       assert.strictEqual(future.snapshot.lang, "ja");
     } finally {
       console.warn = originalWarn;

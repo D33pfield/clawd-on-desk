@@ -576,6 +576,16 @@ describe("applyUpdate", () => {
   });
 
 
+  it("persists Dashboard window bounds through the controller-only write path", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath: p });
+    const bounds = { x: 240, y: 130, width: 640, height: 720 };
+    const r = await ctrl.applyUpdate("dashboardWindowBounds", bounds);
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(ctrl.get("dashboardWindowBounds"), bounds);
+    assert.deepStrictEqual(prefs.load(p).snapshot.dashboardWindowBounds, bounds);
+  });
+
   it("persists Codex hook health notification prefs through applyUpdate", async () => {
     const p = makeTempPath();
     const ctrl = createSettingsController({ prefsPath: p });

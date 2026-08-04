@@ -43,6 +43,8 @@ describe("dashboard window", () => {
         this.parentWindows = [];
         this.setBoundsCalls = [];
         this.onceCallbacks = new Map();
+        this.onCallbacks = new Map();
+        this.normalBounds = null;
         this.webContents = {
           isDestroyed: () => false,
           once: () => {},
@@ -58,7 +60,16 @@ describe("dashboard window", () => {
       setMenuBarVisibility() {}
       loadFile() {}
       once(eventName, callback) { this.onceCallbacks.set(eventName, callback); }
-      on() {}
+      on(eventName, callback) {
+        const list = this.onCallbacks.get(eventName) || [];
+        list.push(callback);
+        this.onCallbacks.set(eventName, list);
+      }
+      emit(eventName) {
+        for (const callback of this.onCallbacks.get(eventName) || []) callback();
+      }
+      getBounds() { return { ...this.bounds }; }
+      getNormalBounds() { return { ...(this.normalBounds || this.bounds) }; }
       setBackgroundColor(color) { this.backgroundColors.push(color); }
       setBounds(bounds) {
         this.bounds = { ...bounds };
@@ -81,9 +92,15 @@ describe("dashboard window", () => {
       getPetWindowBounds: () => ({ x: 100, y: 100, width: 120, height: 120 }),
       getNearestWorkArea: options.getNearestWorkArea || (() => ({ x: 0, y: 0, width: 1280, height: 800 })),
       getSettingsWindow: options.getSettingsWindow,
+      getSavedBounds: options.getSavedBounds,
+      onSaveBounds: options.onSaveBounds,
       setTimeout: options.setTimeout || ((callback, delay) => {
-        timers.push({ callback, delay });
+        timers.push({ callback, delay, cleared: false });
         return timers.length;
+      }),
+      clearTimeout: options.clearTimeout || ((id) => {
+        const timer = timers[id - 1];
+        if (timer) timer.cleared = true;
       }),
       getSessionSnapshot: () => ({ sessions: [], groups: [] }),
       getI18n: () => ({ lang: "en", translations: {} }),
@@ -234,6 +251,180 @@ describe("dashboard window", () => {
       { x: 260, y: 50, width: 480, height: 520 },
     ]);
     assert.deepStrictEqual(timers.map((timer) => timer.delay), [0, 80]);
+  });
+
+  it("restores saved dashboard bounds instead of pet centering", () => {
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      getSavedBounds: () => ({ x: 40, y: 60, width: 500, height: 520 }),
+    });
+
+    dashboard.showDashboard();
+
+    assert.deepStrictEqual(getCreatedWindow().bounds, {
+      x: 40,
+      y: 60,
+      width: 500,
+      height: 520,
+    });
+  });
+
+  it("clamps restored bounds to the work area and scaled minimum", () => {
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      getSavedBounds: () => ({ x: 2000, y: 700, width: 200, height: 300 }),
+    });
+
+    dashboard.showDashboard();
+
+    assert.deepStrictEqual(getCreatedWindow().bounds, {
+      x: 960,
+      y: 400,
+      width: 320,
+      height: 400,
+    });
+  });
+
+  it("ignores invalid saved bounds and falls back to pet centering", () => {
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      getSavedBounds: () => ({ x: NaN, y: 0, width: 480, height: 600 }),
+    });
+
+    dashboard.showDashboard();
+
+    assert.deepStrictEqual(getCreatedWindow().bounds, {
+      x: 400,
+      y: 100,
+      width: 480,
+      height: 600,
+    });
+  });
+
+  it("keeps settings-anchored placement even when saved bounds exist", () => {
+    const settingsWindow = {
+      isDestroyed: () => false,
+      isMinimized: () => false,
+      getBounds: () => ({ x: 100, y: 50, width: 800, height: 560 }),
+    };
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      getSettingsWindow: () => settingsWindow,
+      getSavedBounds: () => ({ x: 10, y: 20, width: 500, height: 500 }),
+    });
+
+    dashboard.showDashboard({ source: "settings" });
+
+    assert.deepStrictEqual(getCreatedWindow().bounds, {
+      x: 260,
+      y: 50,
+      width: 480,
+      height: 560,
+    });
+  });
+
+  it("persists moved and resized normal bounds with a shared debounce", () => {
+    const saved = [];
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    win.bounds = { x: 300, y: 200, width: 640, height: 700 };
+    win.emit("move");
+    win.emit("resize");
+
+    const saveTimers = timers.filter((timer) => timer.delay === 500);
+    assert.strictEqual(saveTimers.length, 2);
+    assert.strictEqual(saveTimers[0].cleared, true);
+    assert.strictEqual(saveTimers[1].cleared, false);
+    assert.deepStrictEqual(saved, []);
+
+    saveTimers[1].callback();
+    assert.deepStrictEqual(saved, [
+      { x: 300, y: 200, width: 640, height: 700 },
+    ]);
+
+    // A duplicate native event after the same geometry must not rewrite prefs.
+    win.emit("resize");
+    timers.filter((timer) => timer.delay === 500).at(-1).callback();
+    assert.strictEqual(saved.length, 1);
+  });
+
+  it("flushes pending geometry on close and skips untouched windows", () => {
+    const saved = [];
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    win.emit("close");
+    assert.deepStrictEqual(saved, []);
+
+    win.bounds = { x: 5, y: 6, width: 700, height: 500 };
+    win.emit("move");
+    win.emit("close");
+    assert.deepStrictEqual(saved, [
+      { x: 5, y: 6, width: 700, height: 500 },
+    ]);
+  });
+
+  it("saves normal bounds, not the maximized rectangle", () => {
+    const saved = [];
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    win.normalBounds = { x: 15, y: 25, width: 600, height: 500 };
+    win.bounds = { x: 0, y: 0, width: 1280, height: 800 };
+    win.emit("close");
+
+    assert.deepStrictEqual(saved, [
+      { x: 15, y: 25, width: 600, height: 500 },
+    ]);
+  });
+
+  it("does not persist the programmatic settings re-anchor", () => {
+    const saved = [];
+    const settingsWindow = {
+      isDestroyed: () => false,
+      isMinimized: () => false,
+      getBounds: () => ({ x: 100, y: 50, width: 800, height: 560 }),
+    };
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      getSettingsWindow: () => settingsWindow,
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard({ source: "settings" });
+    const win = getCreatedWindow();
+    win.emitReadyToShow();
+    // Electron reports programmatic setBounds through the same move event.
+    win.emit("move");
+    for (const timer of timers.filter((t) => !t.cleared && t.delay === 500)) {
+      timer.callback();
+    }
+    assert.deepStrictEqual(saved, []);
+
+    // A real user drag afterwards still persists.
+    win.bounds = { x: 900, y: 300, width: 520, height: 560 };
+    win.emit("move");
+    timers.filter((t) => !t.cleared && t.delay === 500).at(-1).callback();
+    assert.deepStrictEqual(saved, [
+      { x: 900, y: 300, width: 520, height: 560 },
+    ]);
   });
 
   it("exposes a Clawd-only hide action instead of a terminal close action", () => {

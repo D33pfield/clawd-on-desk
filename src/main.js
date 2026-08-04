@@ -2100,6 +2100,8 @@ const _dashboard = require("./dashboard")({
   getTextScale: () => effectiveTextScaleForKey(
     getWindowDisplayKey(_dashboard ? _dashboard.getWindow() : null) || getPetDisplayKey()
   ),
+  getSavedBounds: () => _settingsController.get("dashboardWindowBounds"),
+  onSaveBounds: (bounds) => _settingsController.applyUpdate("dashboardWindowBounds", bounds),
   iconPath: settingsWindowRuntime.getIconPath(),
 });
 showDashboard = _dashboard.showDashboard;

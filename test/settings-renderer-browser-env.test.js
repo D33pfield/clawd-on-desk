@@ -5386,6 +5386,17 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getContentRenderCount(), 1);
     assert.strictEqual(harness.getSwitch("sessionHudEnabled"), mountedControl);
     assert.strictEqual(harness.content.scrollTop, 317);
+
+    const dashboardBounds = { x: 220, y: 140, width: 640, height: 720 };
+    harness.core.ops.applyChanges({
+      changes: { dashboardWindowBounds: dashboardBounds },
+      snapshot: { ...initialSnapshot, settingsWindowBounds: bounds, dashboardWindowBounds: dashboardBounds },
+    });
+
+    assert.deepStrictEqual(harness.core.state.snapshot.dashboardWindowBounds, dashboardBounds);
+    assert.strictEqual(harness.getContentRenderCount(), 1);
+    assert.strictEqual(harness.getSwitch("sessionHudEnabled"), mountedControl);
+    assert.strictEqual(harness.content.scrollTop, 317);
   });
 
   it("patches the Session HUD master switch without rebuilding General content", async () => {

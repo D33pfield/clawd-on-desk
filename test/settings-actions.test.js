@@ -233,6 +233,24 @@ describe("updateRegistry pure-data validators", () => {
     }
   });
 
+  it("Dashboard window bounds accept normal integer geometry or null", () => {
+    const validate = updateRegistry.dashboardWindowBounds;
+    assert.strictEqual(validate(null).status, "ok");
+    assert.strictEqual(
+      validate({ x: -1200, y: 80, width: 900, height: 640 }).status,
+      "ok",
+    );
+    for (const value of [
+      { x: 0.5, y: 0, width: 800, height: 560 },
+      { x: 0, y: 0, width: 0, height: 560 },
+      { x: 0, y: 0, width: 800 },
+      [],
+      "800x560",
+    ]) {
+      assert.strictEqual(validate(value).status, "error");
+    }
+  });
+
   it("object-form boolean fields validate via entry.validate", () => {
     const deps = { snapshot: baseSnapshot };
     for (const key of ["autoStartWithClaude", "manageClaudeHooksAutomatically", "openAtLogin"]) {
