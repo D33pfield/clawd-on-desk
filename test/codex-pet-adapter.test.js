@@ -572,6 +572,24 @@ describe("codex-pet-adapter package validation", () => {
 });
 
 describe("codex-pet-adapter wrapper generation and materialization", () => {
+  it("keeps the renderer Codex Pet visual map aligned with generated wrappers", () => {
+    const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer.js"), "utf8");
+    const mapBlock = rendererSource.match(
+      /const CODEX_PET_VISUAL_BY_FILE = Object\.freeze\(\{([\s\S]*?)\}\);/
+    );
+    assert.ok(mapBlock, "renderer Codex Pet visual map should remain discoverable");
+
+    const rendererEntries = [...mapBlock[1].matchAll(/"([^"]+)"\s*:\s*"([^"]+)"/g)]
+      .map((match) => [match[1], match[2]]);
+    const generatedEntries = [...adapter.WRAPPER_SPECS, adapter.DIRECTIONAL_DRAG_SPEC]
+      .map(({ filename, visual }) => [filename, visual]);
+
+    assert.deepStrictEqual(
+      Object.fromEntries(rendererEntries),
+      Object.fromEntries(generatedEntries)
+    );
+  });
+
   it("generates loop, once, and static wrappers without unused-frame references", () => {
     const jumpOnce = adapter.generateWrapperSvg({
       rowKey: "jumping",

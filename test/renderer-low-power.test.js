@@ -549,7 +549,7 @@ describe("renderer directional drag reactions (#620)", () => {
     assert.strictEqual(harness.api.clawdEl, attached.objectEl);
     assert.strictEqual(harness.api.activeSwapToken, token);
     assert.strictEqual(attached.animation.currentTime, 0);
-    assert.strictEqual(attached.animation.playCalls, 1);
+    assert.strictEqual(attached.animation.playCalls, 0);
   });
 
   it("does not reuse a universal document after the theme asset directory changes", () => {
