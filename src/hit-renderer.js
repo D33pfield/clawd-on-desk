@@ -39,10 +39,13 @@ window.hitAPI.onStateSync((data) => {
 let isDragging = false;
 let didDrag = false;
 let mouseDownX, mouseDownY;
-let lastDragClientX;
+let directionAnchorScreenX = null;
+let lastConfirmedDragDirection = null;
+let dragReactionRestartPending = false;
 let dragReactionDirection = null;
 let dragMoveRAF = null;
 const DRAG_THRESHOLD = 3;
+const DRAG_DIRECTION_DEADBAND = 3;
 
 // --- Reaction state (tracked here to gate input) ---
 let isReacting = false;
@@ -54,7 +57,38 @@ window.hitAPI.onCancelReaction(() => {
   isReacting = false;
   isDragReacting = false;
   dragReactionDirection = null;
+  // A state change may cancel the renderer reaction while the pointer is
+  // still captured. Re-send the last accepted direction on the next move;
+  // do not derive a fresh direction from a single post-cancel event.
+  dragReactionRestartPending = isDragging && didDrag;
 });
+
+function finiteScreenX(event) {
+  return event && Number.isFinite(event.screenX) ? event.screenX : null;
+}
+
+function resetDragDirectionState() {
+  directionAnchorScreenX = null;
+  lastConfirmedDragDirection = null;
+  dragReactionRestartPending = false;
+  dragReactionDirection = null;
+}
+
+function resolveDragDirection(screenX) {
+  if (!Number.isFinite(screenX)) return null;
+  if (!Number.isFinite(directionAnchorScreenX)) {
+    directionAnchorScreenX = screenX;
+    return null;
+  }
+
+  const delta = screenX - directionAnchorScreenX;
+  if (Math.abs(delta) < DRAG_DIRECTION_DEADBAND) return null;
+
+  directionAnchorScreenX = screenX;
+  const direction = delta < 0 ? "left" : "right";
+  lastConfirmedDragDirection = direction;
+  return direction;
+}
 
 function queueDragMove() {
   if (dragMoveRAF !== null) return;
@@ -80,8 +114,8 @@ area.addEventListener("pointerdown", (e) => {
     didDrag = false;
     mouseDownX = e.clientX;
     mouseDownY = e.clientY;
-    lastDragClientX = e.clientX;
-    dragReactionDirection = null;
+    resetDragDirectionState();
+    directionAnchorScreenX = finiteScreenX(e);
     window.hitAPI.dragLock(true);
     area.classList.add("dragging");
   }
@@ -94,13 +128,16 @@ document.addEventListener("pointermove", (e) => {
       const totalDy = e.clientY - mouseDownY;
       if (Math.abs(totalDx) > DRAG_THRESHOLD || Math.abs(totalDy) > DRAG_THRESHOLD) {
         didDrag = true;
-        startDragReaction(totalDx < 0 ? "left" : (totalDx > 0 ? "right" : null));
+        const direction = resolveDragDirection(finiteScreenX(e));
+        startDragReaction(direction);
       }
+    } else if (dragReactionRestartPending) {
+      dragReactionRestartPending = false;
+      startDragReaction(lastConfirmedDragDirection);
     } else {
-      const stepDx = e.clientX - lastDragClientX;
-      if (stepDx !== 0) startDragReaction(stepDx < 0 ? "left" : "right");
+      const direction = resolveDragDirection(finiteScreenX(e));
+      if (direction) startDragReaction(direction);
     }
-    lastDragClientX = e.clientX;
     queueDragMove();
   }
 });
@@ -119,6 +156,7 @@ function stopDrag() {
   // received startDragReaction, so an actual drag must still complete the
   // end handshake on pointerup/cancel/lost capture/blur.
   endDragReaction(didDrag);
+  resetDragDirectionState();
 }
 
 document.addEventListener("pointerup", (e) => {

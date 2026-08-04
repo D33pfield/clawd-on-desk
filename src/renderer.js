@@ -91,6 +91,9 @@ function initWithConfig(cfg) {
   _fileViewBoxes = tc.fileViewBoxes || {};
   _dragSvg = tc.dragSvg || null;
   _dragSvgs = tc.dragSvgs || {};
+  isDragReacting = false;
+  currentDragSvg = null;
+  currentDragDirection = null;
   _idleFollowSvg = tc.idleFollowSvg || "clawd-idle-follow.svg";
   // Pre-IPC first frame rests on the user-selected idle visual when one is set.
   _initialIdleSvg = tc.idleDefaultVisual || _idleFollowSvg;
@@ -423,7 +426,10 @@ let _miniViewBox = null;
 let _fileViewBoxes = {};
 let _dragSvg;
 let _dragSvgs;
+let isDragReacting = false;
 let currentDragSvg = null;
+let currentDragDirection = null;
+const directionalDragBridgeWarnings = new Set();
 let _idleFollowSvg;
 let _initialIdleSvg;
 let _glyphFlipDefs;
@@ -1042,7 +1048,6 @@ function releaseImg(el) {
 
 // --- Reaction state (visual side) ---
 let isReacting = false;
-let isDragReacting = false;
 let reactTimer = null;
 let currentIdleSvg = null;    // tracks which SVG is currently showing
 let currentState = null;      // last state name received from main (for re-pulse)
@@ -1334,14 +1339,72 @@ function cancelReaction() {
   if (isDragReacting) {
     isDragReacting = false;
   }
+  currentDragSvg = null;
+  currentDragDirection = null;
 }
 
 // --- Drag reaction (loops while dragging) ---
+function normalizeDragDirection(direction) {
+  return direction === "left" || direction === "right" ? direction : null;
+}
+
+function usesDirectionalDragBridge(file) {
+  return !!(
+    file
+    && _dragSvgs.left === file
+    && _dragSvgs.right === file
+  );
+}
+
+function warnDirectionalDragBridgeOnce(reason) {
+  if (directionalDragBridgeWarnings.has(reason)) return;
+  directionalDragBridgeWarnings.add(reason);
+  console.warn(`Clawd: directional drag bridge unavailable (${reason}); keeping the fallback direction.`);
+}
+
+function applyDirectionalDragToObject(objectEl, direction, options = {}) {
+  const normalized = normalizeDragDirection(direction);
+  if (!normalized) return false;
+  const warn = options.warn === true;
+  if (!objectEl || objectEl.tagName !== "OBJECT") {
+    if (warn) warnDirectionalDragBridgeOnce("non-object media channel");
+    return false;
+  }
+  try {
+    const root = objectEl.contentDocument && objectEl.contentDocument.documentElement;
+    if (!root) {
+      if (warn) warnDirectionalDragBridgeOnce("contentDocument unavailable");
+      return false;
+    }
+    if (root.getAttribute("data-clawd-drag-directional") !== "v1") {
+      if (warn) warnDirectionalDragBridgeOnce("v1 marker missing");
+      return false;
+    }
+    if (root.getAttribute("data-clawd-drag-direction") !== normalized) {
+      root.setAttribute("data-clawd-drag-direction", normalized);
+    }
+    return true;
+  } catch {
+    if (warn) warnDirectionalDragBridgeOnce("contentDocument access denied");
+    return false;
+  }
+}
+
 function startDragReaction(direction) {
   if (dndEnabled) return;
-  const dragSvg = (direction && _dragSvgs[direction]) || _dragSvg;
+  const normalizedDirection = normalizeDragDirection(direction);
+  const dragSvg = (normalizedDirection && _dragSvgs[normalizedDirection]) || _dragSvg;
   if (!dragSvg) return;
-  if (isDragReacting && currentDragSvg === dragSvg) return;
+  currentDragDirection = normalizedDirection;
+  if (isDragReacting && currentDragSvg === dragSvg) {
+    if (usesDirectionalDragBridge(dragSvg) && currentDisplayedSvg === dragSvg) {
+      applyDirectionalDragToObject(clawdEl, currentDragDirection, { warn: true });
+    }
+    if (usesDirectionalDragBridge(dragSvg) && pendingNext && pendingSvgFile === dragSvg) {
+      applyDirectionalDragToObject(pendingNext, currentDragDirection);
+    }
+    return;
+  }
 
   if (!isDragReacting && isReacting) {
     if (reactTimer) { clearTimeout(reactTimer); reactTimer = null; }
@@ -1357,9 +1420,11 @@ function startDragReaction(direction) {
 }
 
 function endDragReaction() {
-  if (!isDragReacting) return;
+  const wasDragReacting = isDragReacting;
   isDragReacting = false;
   currentDragSvg = null;
+  currentDragDirection = null;
+  if (!wasDragReacting) return;
   window.electronAPI.resumeFromReaction();
 }
 
@@ -1537,6 +1602,9 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
         next.offsetHeight; // force reflow to trigger transition
       } else {
         next.style.transition = "none";
+      }
+      if (isDragReacting && currentDragSvg === file && usesDirectionalDragBridge(file)) {
+        applyDirectionalDragToObject(next, currentDragDirection, { warn: true });
       }
       next.style.opacity = "1";
 
