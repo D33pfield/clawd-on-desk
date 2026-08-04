@@ -1427,7 +1427,6 @@ function restartCodexPetVisualAnimation(root) {
   for (const animation of animations) {
     try {
       animation.currentTime = 0;
-      if (typeof animation.play === "function") animation.play();
     } catch {}
   }
 }
