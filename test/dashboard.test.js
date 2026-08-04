@@ -99,7 +99,8 @@ describe("dashboard window", () => {
       nativeTheme,
     });
     const dashboard = initDashboard({
-      getPetWindowBounds: () => ({ x: 100, y: 100, width: 120, height: 120 }),
+      getPetWindowBounds: options.getPetWindowBounds
+        || (() => ({ x: 100, y: 100, width: 120, height: 120 })),
       getNearestWorkArea: options.getNearestWorkArea || (() => ({ x: 0, y: 0, width: 1280, height: 800 })),
       getSettingsWindow: options.getSettingsWindow,
       getSavedBounds: options.getSavedBounds,
@@ -319,6 +320,66 @@ describe("dashboard window", () => {
     });
     assert.strictEqual(win.opts.minWidth, 512);
     assert.strictEqual(win.opts.minHeight, 640);
+  });
+
+  it("a tiny work area caps both restored bounds and window minimums", () => {
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      getSavedBounds: () => ({ x: 1000, y: 800, width: 900, height: 700 }),
+      getNearestWorkArea: () => ({ x: 50, y: 60, width: 500, height: 400 }),
+      getTextScale: () => 1.6,
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+
+    assert.deepStrictEqual(win.bounds, { x: 50, y: 60, width: 500, height: 400 });
+    assert.strictEqual(win.opts.minWidth, 500);
+    assert.strictEqual(win.opts.minHeight, 400);
+  });
+
+  it("falls back to a sane work area when the display reports a degenerate one", () => {
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      getSavedBounds: () => ({ x: 40, y: 60, width: 500, height: 520 }),
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 0, height: 0 }),
+    });
+
+    dashboard.showDashboard();
+
+    assert.deepStrictEqual(getCreatedWindow().bounds, {
+      x: 40,
+      y: 60,
+      width: 500,
+      height: 520,
+    });
+  });
+
+  it("tolerates a throwing pet-bounds lookup", () => {
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      getPetWindowBounds: () => { throw new Error("display teardown"); },
+    });
+
+    dashboard.showDashboard();
+
+    assert.deepStrictEqual(getCreatedWindow().bounds, {
+      x: 400,
+      y: 100,
+      width: 480,
+      height: 600,
+    });
+  });
+
+  it("clears the pending move text-scale timer on closed", () => {
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness();
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    win.emit("move");
+    const scaleTimer = timers.filter((t) => t.delay === 350).at(-1);
+    assert.strictEqual(scaleTimer.cleared, false);
+
+    win.emit("close");
+    win.emit("closed");
+    assert.strictEqual(scaleTimer.cleared, true);
   });
 
   it("uses persisted bounds when the dashboard window is recreated", () => {

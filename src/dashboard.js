@@ -16,6 +16,8 @@ function getDashboardBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? DARK_BACKGROUND : LIGHT_BACKGROUND;
 }
 
+const FALLBACK_WORK_AREA = { x: 0, y: 0, width: 1280, height: 800 };
+
 function isUsableBounds(bounds) {
   return !!bounds
     && Number.isFinite(bounds.x)
@@ -24,6 +26,12 @@ function isUsableBounds(bounds) {
     && Number.isFinite(bounds.height)
     && bounds.width > 0
     && bounds.height > 0;
+}
+
+// Displays can transiently report zero-size work areas during unplug or
+// session reconnect; a degenerate rect would collapse the window to nothing.
+function normalizeWorkArea(workArea) {
+  return isUsableBounds(workArea) ? workArea : FALLBACK_WORK_AREA;
 }
 
 function clampBoundsToWorkArea(bounds, workArea) {
@@ -83,6 +91,15 @@ module.exports = function initDashboard(ctx) {
   function getSavedDashboardBounds() {
     if (typeof ctx.getSavedBounds !== "function") return null;
     try { return roundedBounds(ctx.getSavedBounds()); } catch { return null; }
+  }
+
+  function getWorkAreaNear(cx, cy) {
+    if (typeof ctx.getNearestWorkArea !== "function") return FALLBACK_WORK_AREA;
+    try {
+      return normalizeWorkArea(ctx.getNearestWorkArea(cx, cy));
+    } catch {
+      return FALLBACK_WORK_AREA;
+    }
   }
 
   function getNormalWindowBounds(win) {
@@ -166,15 +183,14 @@ module.exports = function initDashboard(ctx) {
 
   function computeInitialBounds() {
     const savedBounds = getSavedDashboardBounds();
-    const petBounds = !savedBounds && typeof ctx.getPetWindowBounds === "function"
-      ? ctx.getPetWindowBounds()
-      : null;
+    let petBounds = null;
+    if (!savedBounds && typeof ctx.getPetWindowBounds === "function") {
+      try { petBounds = ctx.getPetWindowBounds(); } catch { petBounds = null; }
+    }
     const anchor = savedBounds || petBounds;
     const cx = anchor ? anchor.x + anchor.width / 2 : 0;
     const cy = anchor ? anchor.y + anchor.height / 2 : 0;
-    const workArea = typeof ctx.getNearestWorkArea === "function"
-      ? ctx.getNearestWorkArea(cx, cy)
-      : { x: 0, y: 0, width: 1280, height: 800 };
+    const workArea = getWorkAreaNear(cx, cy);
     const metrics = getScaledMetrics(savedBounds || workArea);
     if (savedBounds) {
       return clampBoundsToWorkArea({
@@ -211,9 +227,7 @@ module.exports = function initDashboard(ctx) {
   function computeSettingsAnchoredBounds(settingsBounds) {
     const cx = settingsBounds.x + settingsBounds.width / 2;
     const cy = settingsBounds.y + settingsBounds.height / 2;
-    const workArea = typeof ctx.getNearestWorkArea === "function"
-      ? ctx.getNearestWorkArea(cx, cy)
-      : { x: 0, y: 0, width: 1280, height: 800 };
+    const workArea = getWorkAreaNear(cx, cy);
     const metrics = getScaledMetrics(settingsBounds);
     const width = Math.max(metrics.minWidth, Math.min(metrics.defaultWidth, settingsBounds.width, workArea.width));
     const height = Math.max(metrics.minHeight, Math.min(settingsBounds.height, workArea.height));
@@ -288,8 +302,10 @@ module.exports = function initDashboard(ctx) {
     const metrics = getScaledMetrics(placement.bounds);
     const opts = {
       ...placement.bounds,
-      minWidth: metrics.minWidth,
-      minHeight: metrics.minHeight,
+      // Electron enforces the minimum over the requested size, so an uncapped
+      // minimum would undo the work-area clamp and overflow small displays.
+      minWidth: Math.min(metrics.minWidth, placement.bounds.width),
+      minHeight: Math.min(metrics.minHeight, placement.bounds.height),
       show: false,
       frame: true,
       transparent: false,
@@ -334,7 +350,7 @@ module.exports = function initDashboard(ctx) {
     let moveTextScaleTimer = null;
     const createdWindow = dashboardWindow;
     dashboardWindow.on("move", () => {
-      if (moveTextScaleTimer) clearTimeout(moveTextScaleTimer);
+      if (moveTextScaleTimer) clearScheduled(moveTextScaleTimer);
       moveTextScaleTimer = scheduleLater(() => {
         moveTextScaleTimer = null;
         applyTextScaleToWindow();
@@ -359,6 +375,10 @@ module.exports = function initDashboard(ctx) {
     });
     dashboardWindow.on("closed", () => {
       clearSaveBoundsTimer();
+      if (moveTextScaleTimer) {
+        clearScheduled(moveTextScaleTimer);
+        moveTextScaleTimer = null;
+      }
       dashboardWindow = null;
     });
     return dashboardWindow;
