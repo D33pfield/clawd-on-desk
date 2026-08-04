@@ -2097,8 +2097,10 @@ const _dashboard = require("./dashboard")({
   getPetWindowBounds,
   getNearestWorkArea,
   getSettingsWindow: () => settingsWindowRuntime.getWindow(),
-  getTextScale: () => effectiveTextScaleForKey(
-    getWindowDisplayKey(_dashboard ? _dashboard.getWindow() : null) || getPetDisplayKey()
+  getTextScale: (bounds) => effectiveTextScaleForKey(
+    getDisplayKeyForBounds(bounds)
+    || getWindowDisplayKey(_dashboard ? _dashboard.getWindow() : null)
+    || getPetDisplayKey()
   ),
   getSavedBounds: () => _settingsController.get("dashboardWindowBounds"),
   onSaveBounds: (bounds) => _settingsController.applyUpdate("dashboardWindowBounds", bounds),

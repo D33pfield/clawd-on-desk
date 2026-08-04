@@ -147,13 +147,15 @@ module.exports = function initDashboard(ctx) {
       : { sessions: [], groups: [], orderedIds: [], menuOrderedIds: [] };
   }
 
-  function getTextScale() {
-    return clampTextScale(typeof ctx.getTextScale === "function" ? ctx.getTextScale() : 1);
+  // textScale is per-display; `bounds` selects the display the metrics are
+  // for. Without it the host falls back to the current window, then the pet.
+  function getTextScale(bounds = null) {
+    return clampTextScale(typeof ctx.getTextScale === "function" ? ctx.getTextScale(bounds) : 1);
   }
 
   // DEFAULT_*/MIN_* are CSS px; windows are sized in DIP.
-  function getScaledMetrics() {
-    const scale = getTextScale();
+  function getScaledMetrics(bounds = null) {
+    const scale = getTextScale(bounds);
     return {
       defaultWidth: scaleWidth(DEFAULT_WIDTH, scale),
       defaultHeight: scaleHeight(DEFAULT_HEIGHT, scale),
@@ -173,7 +175,7 @@ module.exports = function initDashboard(ctx) {
     const workArea = typeof ctx.getNearestWorkArea === "function"
       ? ctx.getNearestWorkArea(cx, cy)
       : { x: 0, y: 0, width: 1280, height: 800 };
-    const metrics = getScaledMetrics();
+    const metrics = getScaledMetrics(savedBounds || workArea);
     if (savedBounds) {
       return clampBoundsToWorkArea({
         ...savedBounds,
@@ -212,7 +214,7 @@ module.exports = function initDashboard(ctx) {
     const workArea = typeof ctx.getNearestWorkArea === "function"
       ? ctx.getNearestWorkArea(cx, cy)
       : { x: 0, y: 0, width: 1280, height: 800 };
-    const metrics = getScaledMetrics();
+    const metrics = getScaledMetrics(settingsBounds);
     const width = Math.max(metrics.minWidth, Math.min(metrics.defaultWidth, settingsBounds.width, workArea.width));
     const height = Math.max(metrics.minHeight, Math.min(settingsBounds.height, workArea.height));
     return clampBoundsToWorkArea({
@@ -283,7 +285,7 @@ module.exports = function initDashboard(ctx) {
 
   function createDashboardWindow(options = {}) {
     const placement = getDashboardPlacement(options);
-    const metrics = getScaledMetrics();
+    const metrics = getScaledMetrics(placement.bounds);
     const opts = {
       ...placement.bounds,
       minWidth: metrics.minWidth,

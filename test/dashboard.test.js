@@ -294,6 +294,55 @@ describe("dashboard window", () => {
     });
   });
 
+  it("applies the saved display's scaled minimum when restoring bounds", () => {
+    const scaleBounds = [];
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      getSavedBounds: () => ({ x: 2100, y: 80, width: 480, height: 600 }),
+      getNearestWorkArea: () => ({ x: 2000, y: 0, width: 1280, height: 800 }),
+      // The saved rect lives on a 1.6-scale display; the pet (no bounds
+      // argument) does not.
+      getTextScale: (bounds) => {
+        scaleBounds.push(bounds);
+        return bounds && bounds.x >= 2000 ? 1.6 : 1;
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+
+    assert.deepStrictEqual(scaleBounds[0], { x: 2100, y: 80, width: 480, height: 600 });
+    assert.deepStrictEqual(win.bounds, {
+      x: 2100,
+      y: 80,
+      width: 512,
+      height: 640,
+    });
+    assert.strictEqual(win.opts.minWidth, 512);
+    assert.strictEqual(win.opts.minHeight, 640);
+  });
+
+  it("uses persisted bounds when the dashboard window is recreated", () => {
+    let persisted = null;
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      getSavedBounds: () => persisted,
+      onSaveBounds: (bounds) => {
+        persisted = bounds;
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const first = getCreatedWindow();
+    first.normalBounds = { x: 420, y: 230, width: 640, height: 500 };
+    first.emit("close");
+    first.emit("closed");
+
+    dashboard.showDashboard();
+    const reopened = getCreatedWindow();
+    assert.notStrictEqual(reopened, first);
+    assert.deepStrictEqual(reopened.bounds, { x: 420, y: 230, width: 640, height: 500 });
+  });
+
   it("ignores invalid saved bounds and falls back to pet centering", () => {
     const { dashboard, getCreatedWindow } = createWindowHarness({
       getSavedBounds: () => ({ x: NaN, y: 0, width: 480, height: 600 }),
