@@ -60,7 +60,7 @@ HAT_SQUASH = (
 CIG = (
     '<g class="od-cig" style="display:inline">'
     '<rect x="12" y="11" width="3" height="1" fill="#EDEDE3"/>'
-    '<rect x="14.4" y="11" width="0.6" height="1" fill="#FF8C00" class="od-ember"/>'
+    '<rect x="15" y="11" width="1" height="1" fill="#FF5A00" class="od-ember"/>'
     '<rect x="14" y="9.4" width="0.8" height="0.8" fill="#9E9E9E" class="od-smoke od-s1"/>'
     '<rect x="14.2" y="7.4" width="0.7" height="0.7" fill="#B0B0B0" class="od-smoke od-s2"/>'
     '<rect x="13.8" y="5.4" width="0.6" height="0.6" fill="#C4C4C4" class="od-smoke od-s3"/>'
@@ -69,7 +69,7 @@ CIG = (
 CIG_CSS = (
     "<style>"
     ".od-ember{animation:od-ember 1.6s infinite ease-in-out}"
-    "@keyframes od-ember{0%,100%{opacity:.55}50%{opacity:1}}"
+    "@keyframes od-ember{0%,100%{fill:#E03A00;opacity:.85}50%{fill:#FF7A1A;opacity:1}}"
     ".od-smoke{opacity:0}"
     ".od-s1{animation:od-rise 3s infinite linear}"
     ".od-s2{animation:od-rise 3s infinite linear;animation-delay:1s}"
