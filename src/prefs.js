@@ -160,9 +160,11 @@ const SCHEMA = {
   sessionHudShowElapsed: { type: "boolean", default: false },
   sessionHudShowContextUsage: { type: "boolean", default: true },
   sessionHudShowQuota: { type: "boolean", default: true },
-  // Claude Code exposes subscription limits only through its visible,
-  // single-slot statusline. Keep collection opt-in so a fresh Clawd install
-  // never changes the user's terminal UI without an explicit choice.
+  // Claude Code exposes the reported context window and subscription limits
+  // through its visible, single-slot statusline. The historical key name is
+  // retained for compatibility, but it authorizes the whole local Claude
+  // statusline metadata stream. Keep it opt-in so a fresh Clawd install never
+  // changes the user's terminal UI without an explicit choice.
   claudeQuotaCollectionEnabled: { type: "boolean", default: false },
   quotaMergeSources: { type: "boolean", default: false },
   sessionHudCleanupDetached: { type: "boolean", default: true },

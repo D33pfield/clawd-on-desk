@@ -587,7 +587,7 @@ describe("server Claude hook operation queue (default, non-injected implementati
     });
   });
 
-  it("startup keeps Claude quota collection opt-in and removes only a Clawd-owned statusline", async () => {
+  it("startup keeps Claude usage collection opt-in and removes only a Clawd-owned statusline", async () => {
     const calls = [];
     await withPatchedInstallModule({
       registerHooksAsync: async () => ({ added: 0, updated: 0, removed: 0 }),
@@ -600,10 +600,16 @@ describe("server Claude hook operation queue (default, non-injected implementati
       const { api } = makeServer({
         syncClawdHooksImpl: undefined,
         claudeQuotaCollectionEnabled: false,
+        clearClaudeStatuslineAuthority: (profileId) => calls.push(["clear-authority", profileId]),
+        clearLocalClaudeQuota: () => calls.push(["clear-local-claude-quota"]),
       });
       const result = await api.syncClawdHooks({ source: "startup", automatic: true });
       assert.strictEqual(result.status, "ok");
-      assert.deepStrictEqual(calls.map((call) => Array.isArray(call) ? call[0] : call), ["unregister"]);
+      assert.deepStrictEqual(calls.map((call) => Array.isArray(call) ? call[0] : call), [
+        "unregister",
+        "clear-authority",
+        "clear-local-claude-quota",
+      ]);
     });
   });
 
@@ -633,15 +639,64 @@ describe("server Claude hook operation queue (default, non-injected implementati
         return { removed: 1, changed: true };
       },
     }, async () => {
-      const { api } = makeServer({ syncClawdHooksImpl: undefined });
+      const { api } = makeServer({
+        syncClawdHooksImpl: undefined,
+        clearClaudeStatuslineAuthority: (profileId) => calls.push(["clear-authority", profileId]),
+        clearLocalClaudeQuota: () => calls.push(["clear-local-claude-quota"]),
+      });
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), true);
       const result = await api.setClaudeQuotaCollectionEnabled({
         enabled: false,
         source: "settings-quota-collection",
       });
       assert.strictEqual(result.status, "ok");
       assert.strictEqual(result.removed, 1);
-      assert.strictEqual(calls.length, 1);
+      assert.strictEqual(calls.length, 3);
       assert.strictEqual(calls[0].backup, true);
+      assert.deepStrictEqual(calls[1], ["clear-authority", "local"]);
+      assert.deepStrictEqual(calls[2], ["clear-local-claude-quota"]);
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), false);
+    });
+  });
+
+  it("restores local statusline ingress when an explicit opt-out mutation fails", async () => {
+    await withPatchedInstallModule({
+      unregisterClaudeStatusline: () => { throw new Error("statusline remove failed"); },
+    }, async () => {
+      const { api } = makeServer({ syncClawdHooksImpl: undefined });
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), true);
+      const result = await api.setClaudeQuotaCollectionEnabled({
+        enabled: false,
+        source: "settings-quota-collection",
+      });
+      assert.strictEqual(result.status, "error");
+      assert.match(result.message, /statusline remove failed/);
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), true);
+    });
+  });
+
+  it("lifts prior uninstall suppression after a verified agent enable even when a custom statusline is preserved", async () => {
+    const calls = [];
+    await withPatchedInstallModule({
+      unregisterClaudeStatusline: () => ({ removed: 1, changed: true }),
+      registerHooksAsync: async () => ({ added: 0, updated: 0, removed: 0 }),
+      registerClaudeStatusline: () => {
+        calls.push("statusline-preserved");
+        return { installed: true, changed: false, skippedExisting: true };
+      },
+    }, async () => {
+      const { api } = makeServer({ syncClawdHooksImpl: undefined });
+      const disabled = await api.setClaudeQuotaCollectionEnabled({ enabled: false });
+      assert.strictEqual(disabled.status, "ok");
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), false);
+
+      const enabled = await api.syncClawdHooks({
+        source: "settings-agent-enable",
+        automatic: false,
+      });
+      assert.strictEqual(enabled.status, "ok");
+      assert.deepStrictEqual(calls, ["statusline-preserved"]);
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), true);
     });
   });
 
@@ -781,12 +836,35 @@ describe("server Claude hook operation queue (default, non-injected implementati
         unregisterHooksAsync: async () => { calls.push("unregister"); return { removed: 1, changed: true }; },
         unregisterClaudeStatusline: () => { calls.push("statusline-remove"); return { removed: 1, changed: true }; },
       }, async () => {
-        const { api } = makeServer({ syncClawdHooksImpl: undefined });
+        const { api } = makeServer({
+          syncClawdHooksImpl: undefined,
+          clearClaudeStatuslineAuthority: (profileId) => calls.push(["clear-authority", profileId]),
+          clearLocalClaudeQuota: () => calls.push(["clear-local-claude-quota"]),
+        });
         const result = await api.uninstallClaudeHooks({ source, automatic: false });
         assert.strictEqual(result.status, "ok");
-        assert.deepStrictEqual(calls, expectStatusline ? ["unregister", "statusline-remove"] : ["unregister"], source);
+        assert.deepStrictEqual(calls, expectStatusline
+          ? ["unregister", "statusline-remove", ["clear-authority", "local"], ["clear-local-claude-quota"]]
+          : ["unregister"], source);
       });
     }
+  });
+
+  it("rolls back uninstall suppression when owned statusline removal fails", async () => {
+    await withPatchedInstallModule({
+      unregisterHooksAsync: async () => ({ removed: 1, changed: true }),
+      unregisterClaudeStatusline: () => { throw new Error("owned statusline remove failed"); },
+    }, async () => {
+      const { api } = makeServer({ syncClawdHooksImpl: undefined });
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), true);
+      const result = await api.uninstallClaudeHooks({
+        source: "settings-agent-uninstall",
+        automatic: false,
+      });
+      assert.strictEqual(result.status, "error");
+      assert.match(result.message, /owned statusline remove failed/);
+      assert.strictEqual(api.isClaudeStatuslineMetadataAllowed(), true);
+    });
   });
 
   it("a statusline failure does not fail the overall hooks-sync result", async () => {

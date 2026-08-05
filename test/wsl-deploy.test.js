@@ -57,6 +57,10 @@ describe("wsl-deploy", () => {
   });
 
   describe("getAgentInstallArgs", () => {
+    it("keeps the in-app Claude WSL deploy transcript-only (no automatic statusline)", () => {
+      assert.strictEqual(getAgentInstallArgs("claude-code"), "");
+    });
+
     it("explicitly preserves CodeBuddy's existing permission target", () => {
       assert.strictEqual(getAgentInstallArgs("codebuddy"), "--permission-url preserve");
       assert.strictEqual(getAgentInstallArgs("codex"), "");

@@ -572,6 +572,29 @@ describe("state-session-snapshot builder", () => {
       percent: 1,
       source: "claude",
     });
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(snapshot.sessions[0], "contextUsageOrigin"),
+      false,
+      "source authority is internal state, not renderer-facing data",
+    );
+  });
+
+  it("ignores internal context authority when computing the renderer snapshot signature", () => {
+    const opts = { statePriority: STATE_PRIORITY };
+    const transcript = buildSessionSnapshot(new Map([
+      ["s1", session("working", {
+        contextUsage: { used: 1000, limit: 200000, percent: 1, source: "claude" },
+        contextUsageOrigin: "claude-transcript",
+      })],
+    ]), opts);
+    const statusline = buildSessionSnapshot(new Map([
+      ["s1", session("working", {
+        contextUsage: { used: 1000, limit: 200000, percent: 1, source: "claude" },
+        contextUsageOrigin: "claude-statusline",
+      })],
+    ]), opts);
+
+    assert.strictEqual(sessionSnapshotSignature(transcript), sessionSnapshotSignature(statusline));
   });
 
   // Account quota is session-independent (src/state-account-quota.js): it

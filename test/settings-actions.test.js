@@ -172,7 +172,7 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.telegramMigrationLastNotified(42, deps).status, "error");
   });
 
-  it("Claude quota collection validates booleans and delegates the opt-in mutation", async () => {
+  it("Claude usage collection validates booleans and delegates the opt-in mutation", async () => {
     const entry = updateRegistry.claudeQuotaCollectionEnabled;
     assert.strictEqual(entry.validate(true).status, "ok");
     assert.strictEqual(entry.validate("yes").status, "error");
