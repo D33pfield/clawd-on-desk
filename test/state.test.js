@@ -87,6 +87,7 @@ function update(api, o = {}) {
       displayHint: o.displayHint,
       sessionTitle: o.sessionTitle ?? null,
       contextUsage: o.contextUsage ?? null,
+      contextUsageOrigin: o.contextUsageOrigin ?? null,
       antigravityQuota: o.antigravityQuota ?? null,
       claudeQuota: o.claudeQuota ?? null,
       platform: o.platform ?? null,
@@ -269,6 +270,7 @@ describe("restoreSessionFromLease()", () => {
     assert.strictEqual(session.startupRecovered, true);
     assert.deepStrictEqual(session.recentEvents, []);
     assert.strictEqual(session.requiresCompletionAck, undefined);
+    assert.strictEqual(session.contextUsageOrigin, null);
     const entry = api.buildSessionSnapshot().sessions[0];
     assert.strictEqual(entry.id, sessionId);
     assert.strictEqual(entry.startupRecovered, true);
@@ -2272,6 +2274,7 @@ describe("updateSession()", () => {
       percent: 1,
       source: "claude",
     });
+    assert.strictEqual(api.sessions.get("s1").contextUsageOrigin, "claude-transcript");
   });
 
   it("keeps contextUsage sticky when later events omit it", () => {
@@ -2503,6 +2506,7 @@ describe("updateSession()", () => {
 
     const applied = api.updateSessionMetadata("s1", {
       contextUsage: { used: 50000, limit: 200000, percent: 25, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
     });
 
     assert.strictEqual(applied, true);
@@ -2510,7 +2514,116 @@ describe("updateSession()", () => {
     assert.strictEqual(session.updatedAt, 12345);
     assert.strictEqual(JSON.stringify(session.recentEvents), recentEventsBefore);
     assert.deepStrictEqual(session.contextUsage, { used: 50000, limit: 200000, percent: 25, source: "claude" });
+    assert.strictEqual(session.contextUsageOrigin, "claude-statusline");
     assert.ok(Number.isFinite(session.metadataUpdatedAt), "telemetry change must stamp metadataUpdatedAt");
+  });
+
+  it("keeps a statusline window authoritative while transcript events refresh only used tokens", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      contextUsage: { used: 50000, limit: 200000, percent: 25, source: "claude" },
+      contextUsageOrigin: "claude-transcript",
+    });
+    api.updateSessionMetadata("s1", {
+      contextUsage: { used: 60000, limit: 1000000, percent: 6, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
+    });
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "PreToolUse",
+      contextUsage: { used: 70000, limit: 200000, percent: 35, source: "claude" },
+      contextUsageOrigin: "claude-transcript",
+    });
+
+    const session = api.sessions.get("s1");
+    assert.deepStrictEqual(session.contextUsage, {
+      used: 70000,
+      limit: 1000000,
+      percent: 7,
+      source: "claude",
+    });
+    assert.strictEqual(session.contextUsageOrigin, "claude-statusline");
+  });
+
+  it("carries authority through a context-free rebuild before the next transcript update", () => {
+    update(api, { id: "s1", state: "working" });
+    api.updateSessionMetadata("s1", {
+      contextUsage: { used: 60000, limit: 1000000, percent: 6, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
+    });
+
+    update(api, { id: "s1", state: "thinking", event: "PostToolUse" });
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "PreToolUse",
+      contextUsage: { used: 80000, limit: 200000, percent: 40, source: "claude" },
+      contextUsageOrigin: "claude-transcript",
+    });
+
+    const session = api.sessions.get("s1");
+    assert.deepStrictEqual(session.contextUsage, {
+      used: 80000,
+      limit: 1000000,
+      percent: 8,
+      source: "claude",
+    });
+    assert.strictEqual(session.contextUsageOrigin, "claude-statusline");
+  });
+
+  it("carries the internal context origin through the permission-focus explicit rebuild", () => {
+    update(api, { id: "codex:s1", agentId: "codex", state: "working" });
+    const session = api.sessions.get("codex:s1");
+    // White-box structural guard: Claude statusline authority is not normally
+    // attached to a Codex session, but this explicit rebuild is Codex-only.
+    // Seeding the marker here catches a future omission from the rebuilt
+    // object without manufacturing an impossible route-level attribution.
+    session.contextUsage = { used: 60000, limit: 1000000, percent: 6, source: "claude" };
+    session.contextUsageOrigin = "claude-statusline";
+
+    api.updateSession("codex:s1", "notification", "PermissionRequest", {
+      agentId: "codex",
+      sourcePid: 123,
+    });
+
+    const rebuilt = api.sessions.get("codex:s1");
+    assert.notStrictEqual(rebuilt, session);
+    assert.deepStrictEqual(rebuilt.contextUsage, {
+      used: 60000,
+      limit: 1000000,
+      percent: 6,
+      source: "claude",
+    });
+    assert.strictEqual(rebuilt.contextUsageOrigin, "claude-statusline");
+  });
+
+  it("clears statusline authority for every local-profile Claude session, including WSL, but not SSH profiles", () => {
+    update(api, {
+      id: "local",
+      contextUsage: { used: 1, limit: 1000000, percent: 0, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
+    });
+    update(api, {
+      id: "wsl",
+      profileId: "local",
+      host: "wsl:Ubuntu",
+      contextUsage: { used: 2, limit: 1000000, percent: 0, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
+    });
+    update(api, {
+      id: "ssh",
+      profileId: "ssh-work",
+      host: "workbox",
+      contextUsage: { used: 3, limit: 1000000, percent: 0, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
+    });
+
+    assert.strictEqual(api.clearClaudeStatuslineAuthority("local"), 2);
+    assert.strictEqual(api.sessions.get("local").contextUsageOrigin, null);
+    assert.strictEqual(api.sessions.get("wsl").contextUsageOrigin, null);
+    assert.strictEqual(api.sessions.get("ssh").contextUsageOrigin, "claude-statusline");
   });
 
   it("updateSessionMetadata never creates a session for an unknown id", () => {
@@ -2534,6 +2647,30 @@ describe("updateSession()", () => {
     assert.strictEqual(session.contextUsage, null);
   });
 
+  it("updateSessionMetadata rejects invalid context without re-accepting existing metadata", () => {
+    update(api, { id: "s1", state: "working" });
+    const session = api.sessions.get("s1");
+    api.updateSessionMetadata("s1", {
+      contextUsage: { used: 100, limit: 200000, percent: 0, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
+    });
+    session.metadataUpdatedAt = 777;
+
+    const applied = api.updateSessionMetadata("s1", {
+      contextUsage: { used: -5 },
+    });
+
+    assert.strictEqual(applied, false);
+    assert.deepStrictEqual(session.contextUsage, {
+      used: 100,
+      limit: 200000,
+      percent: 0,
+      source: "claude",
+    });
+    assert.strictEqual(session.contextUsageOrigin, "claude-statusline");
+    assert.strictEqual(session.metadataUpdatedAt, 777);
+  });
+
   it("updateSessionMetadata stamps metadataUpdatedAt on change only, never updatedAt", () => {
     update(api, { id: "s1", state: "working" });
     const session = api.sessions.get("s1");
@@ -2541,6 +2678,7 @@ describe("updateSession()", () => {
 
     api.updateSessionMetadata("s1", {
       contextUsage: { used: 100, limit: 200000, percent: 0, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
     });
     assert.ok(Number.isFinite(session.metadataUpdatedAt), "telemetry change must stamp metadataUpdatedAt");
     assert.strictEqual(session.updatedAt, 12345);
@@ -2548,6 +2686,7 @@ describe("updateSession()", () => {
     session.metadataUpdatedAt = 777; // pin so a re-stamp is detectable
     api.updateSessionMetadata("s1", {
       contextUsage: { used: 100, limit: 200000, percent: 0, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
     });
     assert.strictEqual(session.metadataUpdatedAt, 777, "identical refresh must not re-stamp");
   });
@@ -2556,6 +2695,7 @@ describe("updateSession()", () => {
     update(api, { id: "s1", state: "working" });
     api.updateSessionMetadata("s1", {
       contextUsage: { used: 100, limit: 200000, percent: 0, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
     });
     api.sessions.get("s1").metadataUpdatedAt = 777; // pin to make loss detectable
 

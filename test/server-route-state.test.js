@@ -448,6 +448,7 @@ describe("server-route-state POST", () => {
         displayHint: "display.svg",
         sessionTitle: "Work title",
         contextUsage: null,
+        contextUsageOrigin: null,
         assistantLastOutput: null,
         assistantLastOutputTruncated: false,
         toolName: "Read",
@@ -727,6 +728,7 @@ describe("server-route-state POST", () => {
       percent: 1,
       source: "claude",
     });
+    assert.strictEqual(res.calls.updateSession[0][3].contextUsageOrigin, "claude-transcript");
   });
 
   it("drops invalid context_usage without rejecting state", async () => {
@@ -835,7 +837,93 @@ describe("server-route-state POST", () => {
     assert.strictEqual(metadataCalls[0][0], localSessionKey("sid"));
     assert.deepStrictEqual(metadataCalls[0][1], {
       contextUsage: { used: 50000, limit: 200000, percent: 25, source: "claude" },
+      contextUsageOrigin: "claude-statusline",
     });
+  });
+
+  it("drops local Claude statusline context and quota while the telemetry gate is closed", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "sid",
+      agent_id: "claude-code",
+      host: "wsl:Ubuntu",
+      context_usage: { used: 80000, limit: 1000000, percent: 8, source: "claude" },
+      claude_quota: { claudeWeekly: { usedPercent: 12 } },
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      options: { isClaudeStatuslineMetadataAllowed: () => false },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.deepStrictEqual(metadataCalls, []);
+    assert.deepStrictEqual(res.calls.updateAccountQuota, []);
+  });
+
+  it("keeps remote Claude statusline metadata outside the local telemetry gate", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "sid",
+      agent_id: "claude-code",
+      host: "spoofed-host",
+      context_usage: { used: 80000, limit: 1000000, percent: 8, source: "claude" },
+      claude_quota: { claudeWeekly: { usedPercent: 12 } },
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      options: {
+        isClaudeStatuslineMetadataAllowed: () => false,
+        remoteProfile: { profileId: "ssh-work", displayHost: "workbox" },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateAccountQuota[0][0], "remote:ssh-work");
+    assert.strictEqual(res.calls.updateAccountQuota[0][1].displayHost, "workbox");
+    assert.deepStrictEqual(res.calls.updateAccountQuota[0][1].claudeQuota, {
+      claudeWeekly: { usedPercent: 12 },
+    });
+    assert.strictEqual(metadataCalls[0][0], makeSessionKey({
+      profileId: "ssh-work",
+      rawSessionId: "sid",
+    }));
+    assert.strictEqual(metadataCalls[0][1].contextUsageOrigin, "claude-statusline");
+  });
+
+  it("keeps ordinary Claude lifecycle context when only statusline telemetry is gated", async () => {
+    const res = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      agent_id: "claude-code",
+      event: "PreToolUse",
+      context_usage: { used: 90000, limit: 200000, percent: 45, source: "claude" },
+    }), {
+      options: { isClaudeStatuslineMetadataAllowed: () => false },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.calls.updateSession.length, 1);
+    assert.strictEqual(res.calls.updateSession[0][3].contextUsageOrigin, "claude-transcript");
+  });
+
+  it("does not label another agent's metadata-only context as Claude statusline authority", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "agy-session",
+      agent_id: "antigravity-cli",
+      context_usage: { used: 32000, limit: 128000, percent: 25, source: "antigravity" },
+      contextUsageOrigin: "claude-statusline",
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.strictEqual(metadataCalls[0][1].contextUsageOrigin, null);
   });
 
   it("routes remote metadata_only codex_quota to the store keyed by host (remote monitor POSTs)", async () => {

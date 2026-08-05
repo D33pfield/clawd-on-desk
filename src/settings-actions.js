@@ -357,7 +357,7 @@ const updateRegistry = {
     validate: requireBoolean("claudeQuotaCollectionEnabled"),
     effect(value, deps = {}) {
       if (typeof deps.setClaudeQuotaCollectionEnabled !== "function") {
-        return { status: "error", message: "Claude quota collection is unavailable" };
+        return { status: "error", message: "Claude usage collection is unavailable" };
       }
       return deps.setClaudeQuotaCollectionEnabled(value);
     },

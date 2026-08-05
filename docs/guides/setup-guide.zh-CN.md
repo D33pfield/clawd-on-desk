@@ -10,6 +10,26 @@
 
 **Claude Code** — 开箱即用。Clawd 启动时会自动注册 hooks。只有在确认 Claude Code 版本兼容时才会注册 versioned hooks（`PreCompact`、`PostCompact`、`StopFailure`）；如果版本无法确认，会自动回退到核心 hooks，并清理旧的不兼容条目。除了监听 `~/.claude/settings.json` 所在目录的变化外，Clawd 还会每 5 分钟做一次只读健康巡检——即使 hook 脚本是在系统 Temp 等其他目录被清理、且 `settings.json` 本身完全没变化，也能发现并自动修复。同一问题连续自动修复 3 次仍失败会停止自动重试，Doctor 会提示手动 Fix；如果是当前安装包自身的 hook 脚本缺失（例如安装损坏），Clawd 不会盲目重写配置，会提示重新安装或重新解压。
 
+### Claude Code 使用信息：官方状态栏，不抓取网页
+
+本机 Claude 使用信息采集**默认关闭**。可在 **Settings → General → 额度环 → 采集本机 Claude 使用信息** 中显式开启；开启后，Clawd 会把自己的可见 `statusLine.command` 添加到 `~/.claude/settings.json`。
+
+这里使用的是 Claude Code 官方扩展机制，不是私有或逆向接口。Claude Code 的[官方 statusline 文档](https://code.claude.com/docs/en/statusline)会向状态栏命令提供 `context_window.current_usage`、`context_window.context_window_size`，以及可用时的 `rate_limits`；命令在本机执行，不消耗额外 API token。
+
+数据路径如下：
+
+1. 一次正常 Claude Code 交互后，Claude Code 自己把官方 statusline JSON 通过 stdin 交给已配置命令。
+2. Clawd 读取输入 token 用量与上报的上下文窗口大小，并在 Claude Code 提供时读取订阅额度；终端中仍会显示一条简短、可见的状态栏。
+3. Clawd 只把规范化后的上下文快照和可用额度发送到自身的 `127.0.0.1:23333-23337` loopback 服务。显式部署的 SSH profile 则通过用户配置的反向 SSH 隧道回到本机 Clawd。
+
+此功能**不会**额外请求 Anthropic、抓取 `claude.ai`、调用 `/usage`，也不会读取 Claude 的认证 cookie/token。转发内容只有规范化的 token 数、窗口大小，以及可用额度的百分比/重置时间，不包含 prompt 或 transcript 正文。即使 context window 可用，`rate_limits` 仍可能缺失。
+
+Claude Code 只有一个用户级 statusline 槽位，因此 Clawd 绝不会静默覆盖已有的自定义状态栏：槽位被占用时，启用操作会显式失败并保持原命令不变；关闭采集只移除带 Clawd ownership marker 的命令。
+
+没有 Clawd statusline 时，普通 Claude hooks 仍会从 transcript 上报输入 token 用量。Clawd 只对封闭列表里的标准 Claude ID 使用兼容性分母；模型为空、自定义或未知时只显示 used，不再猜成 200K。要让自定义 provider 的真实上限与 Claude Code `/context` 一致，需要开启此开关，让 Claude Code 自己上报的 `context_window_size` 持有分母，同时 transcript hooks 继续刷新 used。
+
+普通本机修复命令 `npm run install:claude-hooks` 不会开启采集。显式调试命令 `npm run install:claude-hooks -- --statusline` 可以安装并显示 Clawd 状态栏，但 Settings 开关关闭时，应用仍会把其本机 context/quota POST 当作成功 no-op；下次本机启动 reconcile 也会移除这个 Clawd 管理的调试槽位。Remote SSH 部署是另一项显式操作；若远端已有自己的 statusline，请在 profile 中开启 **部署时串联远端已有的 statusline**，以便保留并在卸载时恢复原注册。
+
 **Codex CLI** — 开箱即用。Clawd 会在检测到 Codex 时自动注册 official hooks 到 `~/.codex/hooks.json`，并在用户没有显式关闭 hooks 时启用 `[features].hooks = true`。Installer 会把已废弃的 `[features].codex_hooks` 迁移到 `hooks`，同时保留用户显式设置的 false。Official hooks 提供实时状态和真实 Allow/Deny 权限气泡；`~/.codex/sessions/` JSONL 轮询只保留为状态 / metadata fallback，用于 hook 被禁用或 hook 未覆盖事件；审批不再从 JSONL 猜测。Codex 发出 `request_user_input` 时，Clawd 会从 transcript 中识别该调用，播放通知反应并显示问题/选项的只读预览。回答仍在 Codex 原生界面中完成，卡片不会注入选择；匹配的工具输出写入后会自动关闭。
 
 **Copilot CLI** — 需要本机 Copilot CLI 追踪时，先到 **Settings → Agents** 安装。安装且启用后，Clawd 启动时会自动在 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json` 注册 hooks（marker-based 合并，你已有的 hook 条目和其他 `hooks/*.json` 文件原样保留）。SSH 远程部署走应用内 **Settings → 远程 SSH → 部署 / 修复 Hook** 自动配置。`hooks.json` 或 `settings.json` 顶层 `disableAllHooks: true` 时 doctor 会报 warning 并不挂 Fix 按钮。详见 [copilot-setup.zh-CN.md](copilot-setup.zh-CN.md)（含手动备选与 `COPILOT_HOME` 说明）。
@@ -62,6 +82,9 @@ DMG / 安装包用户的入口是 Clawd 应用内的 **Settings → 远程 SSH**
 - **Codex CLI** — official hooks 和 layout 内的 fallback monitor 使用同一条 pin 住的 transport；本机无法聚焦远端窗口，所以 `request_user_input` 卡片会提示回到远端终端。
 - **Copilot CLI** — 部署会在 Copilot 存在时写入解析后的 `<COPILOT_HOME>/hooks/hooks.json`；hook 使用同一条带身份校验的 transport。
 
+**来自远端机器的 Claude 使用信息与订阅额度：**
+- **Claude Code** — 部署还会在远端的 `~/.claude/settings.json` 注册 Clawd statusline，把其上报的上下文窗口和可用 Pro/Max `rate_limits` 通过隧道送回 Clawd。这仍是上面说明的官方本地 statusline 机制，不会额外请求 Anthropic。若远端已有自己的 statusline，可在 profile 中启用 **部署时串联远端已有的 statusline**：原 statusline 继续负责输出，注册会保存在 `~/.claude/hooks/clawd-statusline-chain.json`，卸载时恢复；Clawd 只读取上下文窗口与可用额度。
+
 全新本机安装下，如果只是接收远程 Copilot CLI 事件，请到 **Settings → Agents** 打开 **Copilot CLI**，这样 Clawd 才会接收远程 hook 事件；不需要点 **Install / 安装**，除非你也想在本机安装 Copilot hooks。
 
 Remote SSH hook 同时携带一般 remote 标记和专用 secure marker；身份缺失或损坏会
@@ -102,6 +125,8 @@ node ~/.claude/hooks/copilot-install.js --remote
 ```
 
 配置完成后，在 Windows 上启动 Clawd，在 WSL 里运行 Claude Code —— Clawd 会自动感知你的会话。权限气泡也能正常弹出。
+
+应用内 WSL 部署路径会故意以不带 `--statusline` 的方式运行 Claude installer，因此只提供 transcript fallback，不宣称能拿到自定义 provider 的权威窗口。上面的手动 `--remote` 命令会在 WSL 的独立 home 中安装一条可见 statusline，但 Windows 端应用只有在 **采集本机 Claude 使用信息** 开启时才接受它的 context/quota metadata；开关关闭时这些 POST 会被当作成功 no-op。Windows 本机启动 reconcile 也无法移除 WSL 独立 home 里的 statusline。
 
 如果 Codex 运行在 WSL 里，official hooks 需要安装到 WSL 自己的 `~/.codex` 下。如果你希望 WSL 与 Windows 共用同一份 Codex home，也可以在 WSL 里先设置 `CODEX_HOME=/mnt/c/Users/<windows-user>/.codex` 再运行 Codex。
 

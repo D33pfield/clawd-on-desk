@@ -1192,6 +1192,45 @@ function normalizeContextUsage(value) {
   return out;
 }
 
+function normalizeContextUsageOrigin(value) {
+  return value === "claude-statusline" || value === "claude-transcript" ? value : null;
+}
+
+function resolveContextUsageUpdate(existing, incomingValue, incomingOriginValue) {
+  const existingUsage = normalizeContextUsage(existing && existing.contextUsage);
+  const existingOrigin = normalizeContextUsageOrigin(existing && existing.contextUsageOrigin);
+  const incomingUsage = normalizeContextUsage(incomingValue);
+  const incomingOrigin = normalizeContextUsageOrigin(incomingOriginValue);
+  if (!incomingUsage) {
+    return { contextUsage: existingUsage, contextUsageOrigin: existingOrigin };
+  }
+  if (incomingOrigin === "claude-statusline") {
+    return { contextUsage: incomingUsage, contextUsageOrigin: incomingOrigin };
+  }
+  if (
+    incomingOrigin === "claude-transcript"
+    && existingOrigin === "claude-statusline"
+    && existingUsage
+    && Number.isFinite(existingUsage.limit)
+    && existingUsage.limit > 0
+  ) {
+    const used = incomingUsage.used;
+    return {
+      contextUsage: {
+        used,
+        limit: existingUsage.limit,
+        percent: Math.max(0, Math.min(100, Math.round((used / existingUsage.limit) * 100))),
+        source: "claude",
+      },
+      contextUsageOrigin: "claude-statusline",
+    };
+  }
+  return {
+    contextUsage: incomingUsage,
+    contextUsageOrigin: incomingOrigin,
+  };
+}
+
 function updateSessionFocusMetadata(sessionId, opts = {}) {
   const id = typeof sessionId === "string" ? sessionId : "";
   if (!id) return false;
@@ -1225,10 +1264,18 @@ function updateSessionMetadata(sessionId, opts = {}) {
     debugSession(`metadata-only drop sid=${id} reason=no-session`);
     return false;
   }
-  const contextUsage = normalizeContextUsage(opts.contextUsage);
-  if (!contextUsage) return false;
-  if (JSON.stringify(contextUsage) !== JSON.stringify(session.contextUsage)) {
-    session.contextUsage = contextUsage;
+  const incomingContextUsage = normalizeContextUsage(opts.contextUsage);
+  if (!incomingContextUsage) return false;
+  const resolved = resolveContextUsageUpdate(
+    session,
+    incomingContextUsage,
+    opts.contextUsageOrigin
+  );
+  const usageChanged = JSON.stringify(resolved.contextUsage) !== JSON.stringify(session.contextUsage);
+  const originChanged = resolved.contextUsageOrigin !== normalizeContextUsageOrigin(session.contextUsageOrigin);
+  if (usageChanged || originChanged) {
+    session.contextUsage = resolved.contextUsage;
+    session.contextUsageOrigin = resolved.contextUsageOrigin;
     // Freshness stamp for telemetry arbitration. Deliberately a separate
     // field from updatedAt: staleness sweeps, badge derivation and eviction
     // all key on updatedAt, and a statusline heartbeat must not feed them.
@@ -1238,6 +1285,18 @@ function updateSessionMetadata(sessionId, opts = {}) {
     emitSessionSnapshot();
   }
   return true;
+}
+
+function clearClaudeStatuslineAuthority(profileId = "local") {
+  let cleared = 0;
+  for (const session of sessions.values()) {
+    if (!session || session.agentId !== "claude-code") continue;
+    if ((session.profileId || "local") !== profileId) continue;
+    if (session.contextUsageOrigin !== "claude-statusline") continue;
+    session.contextUsageOrigin = null;
+    cleared++;
+  }
+  return cleared;
 }
 
 // Account-wide rate-limit quota reported by one source (host prefix for
@@ -1427,6 +1486,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     displayHint = undefined,
     sessionTitle = null,
     contextUsage = null,
+    contextUsageOrigin = null,
     assistantLastOutput = null,
     assistantLastOutputTruncated = false,
     toolName = null,
@@ -1527,7 +1587,9 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
       const srcGhosttyTerminalId = normalizeGhosttyTerminalId(ghosttyTerminalId) || (existing && existing.ghosttyTerminalId) || null;
       const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
-      const srcContextUsage = normalizeContextUsage(contextUsage) || (existing && existing.contextUsage) || null;
+      const permissionContext = resolveContextUsageUpdate(existing, contextUsage, contextUsageOrigin);
+      const srcContextUsage = permissionContext.contextUsage;
+      const srcContextUsageOrigin = permissionContext.contextUsageOrigin;
       // PermissionRequest should flash the pet via setState("notification"),
       // but a brand-new Codex permission session must not persist as
       // notification. Otherwise, if the prompt is resolved remotely and no
@@ -1567,6 +1629,7 @@ function updateSession(sessionId, state, event, opts = {}) {
         ghosttyTerminalId: srcGhosttyTerminalId,
         sessionTitle: srcSessionTitle,
         contextUsage: srcContextUsage,
+        contextUsageOrigin: srcContextUsageOrigin,
         recentEvents,
         pidReachable: resolvePidReachable(existing, srcAgentPid, srcPid),
         resumeState: (existing && existing.resumeState) || null,
@@ -1642,7 +1705,18 @@ function updateSession(sessionId, state, event, opts = {}) {
   // Sticky: empty input does not clear an existing title. A session that has
   // ever been named keeps that name until the user explicitly renames it.
   const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
-  const srcContextUsage = normalizeContextUsage(contextUsage) || (existing && existing.contextUsage) || null;
+  const normalizedIncomingContextUsage = normalizeContextUsage(contextUsage);
+  const effectiveContextUsageOrigin = normalizeContextUsageOrigin(contextUsageOrigin)
+    || (srcAgentId === "claude-code" && normalizedIncomingContextUsage && normalizedIncomingContextUsage.source === "claude"
+      ? "claude-transcript"
+      : null);
+  const resolvedContextUsage = resolveContextUsageUpdate(
+    existing,
+    normalizedIncomingContextUsage,
+    effectiveContextUsageOrigin
+  );
+  const srcContextUsage = resolvedContextUsage.contextUsage;
+  const srcContextUsageOrigin = resolvedContextUsage.contextUsageOrigin;
   const srcAssistantLastOutput = normalizeAssistantOutput(assistantLastOutput);
   const srcAssistantLastOutputTruncated = !!(srcAssistantLastOutput && assistantLastOutputTruncated === true);
   const srcToolName = normalizeToolName(toolName) || (existing && existing.lastToolName) || null;
@@ -1771,7 +1845,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   // (contextUsage): a lifecycle event that carries it forward from
   // `existing` must not silently reset the freshness stamp.
   const srcMetadataUpdatedAt = existing && Number.isFinite(existing.metadataUpdatedAt) ? existing.metadataUpdatedAt : null;
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
 
   // Evict oldest session if at capacity and this is a new session.
@@ -2089,6 +2163,7 @@ function restoreSessionFromLease(lease) {
     ghosttyTerminalId: null,
     sessionTitle: typeof lease.title === "string" ? lease.title : null,
     contextUsage: null,
+    contextUsageOrigin: null,
     antigravityQuota: null,
     claudeQuota: null,
     metadataUpdatedAt: null,
@@ -2704,6 +2779,7 @@ return {
   formatStdinDiag,
   updateSessionFocusMetadata,
   updateSessionMetadata,
+  clearClaudeStatuslineAuthority,
   updateAccountQuota,
   getQuotaSourceCount,
   clearPermissionNotification,

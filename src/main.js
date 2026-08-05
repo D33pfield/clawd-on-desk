@@ -2306,6 +2306,7 @@ const _serverCtx = {
   setState,
   updateSession: agentRuntime.updateSessionFromServer,
   updateSessionMetadata: (sessionId, opts) => _state.updateSessionMetadata(sessionId, opts),
+  clearClaudeStatuslineAuthority: (profileId) => _state.clearClaudeStatuslineAuthority(profileId),
   updateAccountQuota: (host, quotas) => _state.updateAccountQuota(host, quotas),
   resolvePermissionEntry,
   sendPermissionResponse,
