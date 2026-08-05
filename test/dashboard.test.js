@@ -548,6 +548,46 @@ describe("dashboard window", () => {
     ]);
   });
 
+  it("saves a still-debounced user move before the settings re-anchor drops it", () => {
+    let persisted = { x: 40, y: 60, width: 520, height: 520 };
+    const settingsWindow = {
+      isDestroyed: () => false,
+      isMinimized: () => false,
+      getBounds: () => ({ x: 100, y: 50, width: 800, height: 560 }),
+    };
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      getSettingsWindow: () => settingsWindow,
+      getSavedBounds: () => persisted,
+      onSaveBounds: (bounds) => {
+        persisted = bounds;
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    const moved = { x: 700, y: 180, width: 520, height: 560 };
+    win.bounds = { ...moved };
+    win.emit("move");
+
+    // Re-opening from Settings before the 500ms debounce fires.
+    dashboard.showDashboard({ source: "settings" });
+    assert.deepStrictEqual(persisted, moved);
+
+    // The anchor itself still must not be persisted.
+    assert.deepStrictEqual(win.bounds, { x: 260, y: 50, width: 480, height: 560 });
+    win.emit("move");
+    for (const timer of timers.filter((t) => !t.cleared && t.delay === 500)) {
+      timer.callback();
+    }
+    assert.deepStrictEqual(persisted, moved);
+
+    win.emit("close");
+    win.emit("closed");
+    dashboard.showDashboard();
+    assert.deepStrictEqual(getCreatedWindow().bounds, moved);
+  });
+
   it("does not persist anchor growth to the scaled minimum on a short display", () => {
     const saved = [];
     const settingsWindow = {

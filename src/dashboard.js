@@ -396,6 +396,13 @@ module.exports = function initDashboard(ctx) {
   function showDashboard(options = {}) {
     if (dashboardWindow && !dashboardWindow.isDestroyed()) {
       if (dashboardWindow.isMinimized()) dashboardWindow.restore();
+      // A debounce still pending on an open window holds the user's own last
+      // move. The re-anchor below drops that timer and rebases the baseline,
+      // so without flushing first the placement is lost for good — the close
+      // flush cannot recover it once the baseline matches the anchor.
+      if (options.source === "settings" && saveBoundsTimer) {
+        persistWindowBoundsNow(dashboardWindow);
+      }
       applySettingsPlacement(options);
       dashboardWindow.show();
       scheduleSettingsPlacementSync(options);
