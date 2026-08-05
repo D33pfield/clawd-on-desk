@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      .body-react {
+        transform-origin: 7.5px 15px;
+        animation: body-look-l 2.5s 1 ease-in-out forwards;
+      }
+      .eyes-react {
+        animation: eyes-look-l 2.5s 1 ease-in-out forwards;
+      }
+      .eyes-blink {
+        transform-origin: 7.5px 9px;
+        animation: blink 3s infinite linear;
+      }
+      .question-pop {
+        transform-origin: center;
+        animation: question-l 2.5s 1 ease-in-out forwards;
+        opacity: 0;
+      }
+      .arm-l-react {
+        animation: arm-l-return 2.5s 1 ease-in-out forwards;
+      }
+
+      /* Left arm: starts at idle-follow position (0,9), raises up then returns */
+      @keyframes arm-l-return {
+        0%, 8%   { transform: none; }
+        16%, 56% { transform: translate(-1px, -2px) rotate(15deg); }
+        84%, 100%{ transform: none; }
+      }
+
+      /* Body turns left then returns */
+      @keyframes body-look-l {
+        0%, 8%   { transform: translate(0px, 0px); }
+        16%, 56% { transform: translate(-2px, 0px) rotate(-2deg); }
+        84%, 100%{ transform: translate(0px, 0px); }
+      }
+
+      /* Eyes lead the body (larger offset) */
+      @keyframes eyes-look-l {
+        0%, 8%   { transform: translate(0px, 0px); }
+        16%, 56% { transform: translate(-3px, 0px); }
+        84%, 100%{ transform: translate(0px, 0px); }
+      }
+
+      /* Blinking (looping, keeps character alive) */
+      @keyframes blink {
+        0%, 13%, 17%, 80%, 84%, 100% { transform: scaleY(1); }
+        15%, 82% { transform: scaleY(0.1); }
+      }
+
+      /* Question mark: pop up, hold, float away */
+      @keyframes question-l {
+        0%, 12%  { opacity: 0; transform: translate(-6px, 6px) scale(0.5); }
+        22%, 48% { opacity: 1; transform: translate(-8px, -2px) scale(1); }
+        64%, 100%{ opacity: 0; transform: translate(-8px, -8px) scale(1.2); }
+      }
+    </style>
+
+    <g id="pixel-question">
+      <rect x="1" y="0" width="2" height="1"/>
+      <rect x="0" y="1" width="1" height="1"/>
+      <rect x="3" y="1" width="1" height="2"/>
+      <rect x="2" y="3" width="1" height="1"/>
+      <rect x="1" y="4" width="1" height="1"/>
+      <rect x="1" y="6" width="1" height="1"/>
+    </g>
+  </defs>
+
+  <!-- Ground Shadow -->
+  <rect x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+
+  <!-- Static Legs -->
+  <g fill="#DE886D">
+    <rect x="3" y="13" width="1" height="2"/>
+    <rect x="5" y="13" width="1" height="2"/>
+    <rect x="9" y="13" width="1" height="2"/>
+    <rect x="11" y="13" width="1" height="2"/>
+  </g>
+
+  <!-- Animated Upper Body -->
+  <g class="body-react">
+    <g fill="#DE886D">
+      <rect x="2" y="6" width="11" height="7"/><g class="od-hat"><rect x="-1" y="4" width="1" height="1" fill="#A5682A"/><rect x="15" y="4" width="1" height="1" fill="#A5682A"/><rect x="0" y="5" width="15" height="1" fill="#A5682A"/><rect x="3" y="2" width="9" height="3" fill="#A5682A"/><rect x="3" y="1" width="3" height="1" fill="#A5682A"/><rect x="9" y="1" width="3" height="1" fill="#A5682A"/><rect x="3" y="4" width="9" height="1" fill="#6B3E1D"/></g><g class="od-cig" style="display:inline"><rect x="12" y="11" width="3" height="1" fill="#EDEDE3"/><rect x="14.4" y="11" width="0.6" height="1" fill="#FF8C00" class="od-ember"/><rect x="14" y="9.4" width="0.8" height="0.8" fill="#9E9E9E" class="od-smoke od-s1"/><rect x="14.2" y="7.4" width="0.7" height="0.7" fill="#B0B0B0" class="od-smoke od-s2"/><rect x="13.8" y="5.4" width="0.6" height="0.6" fill="#C4C4C4" class="od-smoke od-s3"/></g>
+      <!-- Left arm: base position matches idle-follow (0,9), CSS animates raise+return -->
+      <g class="arm-l-react">
+        <rect x="0" y="9" width="2" height="2"/>
+      </g>
+      <rect x="13" y="9" width="2" height="2"/>
+    </g>
+    <g class="eyes-react">
+      <g class="eyes-blink" fill="#000000">
+        <rect x="4" y="8" width="1" height="2"/>
+        <rect x="10" y="8" width="1" height="2"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- Left Question Mark -->
+  <g class="question-pop" fill="#40C4FF">
+    <use href="#pixel-question" />
+  </g>
+<style>.od-ember{animation:od-ember 1.6s infinite ease-in-out}@keyframes od-ember{0%,100%{opacity:.55}50%{opacity:1}}.od-smoke{opacity:0}.od-s1{animation:od-rise 3s infinite linear}.od-s2{animation:od-rise 3s infinite linear;animation-delay:1s}.od-s3{animation:od-rise 3s infinite linear;animation-delay:2s}@keyframes od-rise{0%{transform:translate(0,1.5px);opacity:0}25%{opacity:.8}100%{transform:translate(1px,-4px);opacity:0}}</style></svg>

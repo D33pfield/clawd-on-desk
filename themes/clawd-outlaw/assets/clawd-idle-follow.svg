@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      .breathe-anim {
+        transform-origin: 7.5px 13px;
+        animation: breathe 3.2s infinite ease-in-out;
+      }
+
+      .eyes-blink {
+        transform-origin: 7.5px 9px;
+        animation: eye-blink 4s infinite ease-in-out;
+      }
+
+      #eyes-js, #body-js, #shadow-js {
+        transition: transform 0.2s ease-out;
+      }
+      #shadow-js {
+        transform-origin: 7.5px 15px;
+      }
+
+      @keyframes breathe {
+        0%, 100% { transform: scale(1, 1) translate(0, 0); }
+        50% { transform: scale(1.02, 0.98) translate(0, 0.5px); }
+      }
+
+      @keyframes eye-blink {
+        0%, 10%, 100% { transform: scaleY(1); }
+        5% { transform: scaleY(0.1); }
+      }
+    </style>
+  </defs>
+
+  <!-- Ground Shadow (JS-controlled horizontal shift) -->
+  <g id="shadow-js">
+    <rect x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+  </g>
+
+  <!-- Static Legs (slightly taller for upward body shift) -->
+  <g id="legs" fill="#DE886D">
+    <rect x="3" y="11" width="1" height="4"/>
+    <rect x="5" y="11" width="1" height="4"/>
+    <rect x="9" y="11" width="1" height="4"/>
+    <rect x="11" y="11" width="1" height="4"/>
+  </g>
+
+  <!-- Upper Body (JS body-shift + CSS breathe) -->
+  <g id="body-js">
+    <g class="breathe-anim">
+      <!-- Torso -->
+      <rect id="torso" x="2" y="6" width="11" height="7" fill="#DE886D"/><g class="od-hat"><rect x="-1" y="4" width="1" height="1" fill="#A5682A"/><rect x="15" y="4" width="1" height="1" fill="#A5682A"/><rect x="0" y="5" width="15" height="1" fill="#A5682A"/><rect x="3" y="2" width="9" height="3" fill="#A5682A"/><rect x="3" y="1" width="3" height="1" fill="#A5682A"/><rect x="9" y="1" width="3" height="1" fill="#A5682A"/><rect x="3" y="4" width="9" height="1" fill="#6B3E1D"/></g><g class="od-cig" style="display:inline"><rect x="12" y="11" width="3" height="1" fill="#EDEDE3"/><rect x="14.4" y="11" width="0.6" height="1" fill="#FF8C00" class="od-ember"/><rect x="14" y="9.4" width="0.8" height="0.8" fill="#9E9E9E" class="od-smoke od-s1"/><rect x="14.2" y="7.4" width="0.7" height="0.7" fill="#B0B0B0" class="od-smoke od-s2"/><rect x="13.8" y="5.4" width="0.6" height="0.6" fill="#C4C4C4" class="od-smoke od-s3"/></g>
+      <!-- Left Arm -->
+      <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+      <!-- Right Arm -->
+      <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+      <!-- Eyes: JS translate wrapper + CSS blink -->
+      <g id="eyes-js" fill="#000000">
+        <g class="eyes-blink">
+          <rect x="4" y="8" width="1" height="2"/>
+          <rect x="10" y="8" width="1" height="2"/>
+        </g>
+      </g>
+    </g>
+  </g>
+<style>.od-ember{animation:od-ember 1.6s infinite ease-in-out}@keyframes od-ember{0%,100%{opacity:.55}50%{opacity:1}}.od-smoke{opacity:0}.od-s1{animation:od-rise 3s infinite linear}.od-s2{animation:od-rise 3s infinite linear;animation-delay:1s}.od-s3{animation:od-rise 3s infinite linear;animation-delay:2s}@keyframes od-rise{0%{transform:translate(0,1.5px);opacity:0}25%{opacity:.8}100%{transform:translate(1px,-4px);opacity:0}}</style></svg>
