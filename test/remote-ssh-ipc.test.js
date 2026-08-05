@@ -203,6 +203,16 @@ const baseProfile = {
   connectOnLaunch: false,
 };
 
+const readyProfile = {
+  ...baseProfile,
+  runtimeMode: "account-default",
+  runtimeKey: "account-default",
+  layoutVersion: 1,
+  routingNonce: "b".repeat(32),
+  remoteHome: "/home/user",
+  lastDeployedAt: 1_700_000_000_000,
+};
+
 function ownedTarget(overrides = {}) {
   return {
     host: "user@pi",
@@ -334,7 +344,7 @@ test("remoteSsh:connect calls runtime.connect with the resolved profile", async 
   rt.connect = (p) => { connectArg = p; };
   const ipc = registerRemoteSshIpc({
     ipcMain,
-    settingsController: mockSettingsController([baseProfile]),
+    settingsController: mockSettingsController([readyProfile]),
     remoteSshRuntime: rt,
     BrowserWindow,
     spawn: makeSucceedingSpawn().spawn,
@@ -361,6 +371,95 @@ test("remoteSsh:connect 404 when profile not in snapshot", async () => {
   ipc.dispose();
 });
 
+test("remoteSsh:connect returns a structured deployment_required error before runtime.connect", async () => {
+  const cases = [
+    ["deployment_stamp_missing", { ...baseProfile }],
+    ["secure_layout_missing", { ...readyProfile, remoteHome: undefined }],
+    ["secure_identity_missing", { ...readyProfile, routingNonce: undefined }],
+  ];
+  for (const [expectedDetail, profile] of cases) {
+    const ipcMain = mockIpcMain();
+    const { BrowserWindow } = mockBrowserWindow();
+    const rt = mockRuntime();
+    let connects = 0;
+    let monitors = 0;
+    rt.connect = () => { connects += 1; };
+    const ipc = registerRemoteSshIpc({
+      ipcMain,
+      settingsController: mockSettingsController([{ ...profile, autoStartCodexMonitor: true }]),
+      remoteSshRuntime: rt,
+      BrowserWindow,
+      spawn: makeSucceedingSpawn().spawn,
+      startCodexMonitorFn: async () => { monitors += 1; },
+    });
+
+    const r = await ipcMain.invoke("remoteSsh:connect", "p1");
+    assert.equal(r.status, "error");
+    assert.equal(r.reason, "deployment_required");
+    assert.equal(r.hint, "remoteSshErrDeploymentRequired");
+    assert.equal(r.detail, expectedDetail);
+    assert.equal(connects, 0);
+    assert.equal(monitors, 0);
+    ipc.dispose();
+  }
+});
+
+test("settings remoteSsh updates refresh cached runtime profiles and stop removed states", async () => {
+  const { createSettingsController } = require("../src/settings-controller");
+  const prefs = require("../src/prefs");
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const refreshed = [];
+  const disconnected = [];
+  const rt = mockRuntime();
+  rt.listStatuses = () => [{ profileId: "p1", status: "reconnecting" }];
+  rt.refreshProfile = (profile) => {
+    refreshed.push(profile);
+    return true;
+  };
+  rt.disconnect = (profileId) => {
+    disconnected.push(profileId);
+    return { profileId, status: "idle" };
+  };
+  const controller = createSettingsController({
+    loadResult: {
+      snapshot: {
+        ...prefs.getDefaults(),
+        remoteSsh: {
+          installId: TEST_INSTALL_ID,
+          profiles: [{ ...readyProfile }],
+        },
+      },
+      locked: false,
+    },
+  });
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: controller,
+    remoteSshRuntime: rt,
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+  });
+
+  const updated = await controller.applyCommand("remoteSsh.update", {
+    ...baseProfile,
+    remoteForwardPort: 23334,
+  });
+  assert.equal(updated.status, "ok");
+  assert.equal(refreshed.length, 1);
+  assert.equal(refreshed[0].remoteForwardPort, 23334);
+  assert.equal(refreshed[0].lastDeployedAt, undefined,
+    "the queued runtime must see that the edited target requires deployment");
+  assert.deepEqual(disconnected, []);
+
+  const deleted = await controller.applyCommand("remoteSsh.delete", "p1");
+  assert.equal(deleted.status, "ok");
+  assert.deepEqual(disconnected, ["p1"]);
+
+  ipc.dispose();
+  controller.dispose();
+});
+
 // ── connect-on-launch sweep ──
 
 test("connectOnLaunchProfiles connects only flagged profiles", () => {
@@ -372,9 +471,9 @@ test("connectOnLaunchProfiles connects only flagged profiles", () => {
   const ipc = registerRemoteSshIpc({
     ipcMain,
     settingsController: mockSettingsController([
-      { ...baseProfile, id: "p1", connectOnLaunch: true },
-      { ...baseProfile, id: "p2", connectOnLaunch: false },
-      { ...baseProfile, id: "p3", connectOnLaunch: true },
+      { ...readyProfile, id: "p1", connectOnLaunch: true },
+      { ...readyProfile, id: "p2", connectOnLaunch: false },
+      { ...readyProfile, id: "p3", connectOnLaunch: true },
     ]),
     remoteSshRuntime: rt,
     BrowserWindow,
@@ -398,8 +497,8 @@ test("connectOnLaunchProfiles keeps going when one connect throws", () => {
   const ipc = registerRemoteSshIpc({
     ipcMain,
     settingsController: mockSettingsController([
-      { ...baseProfile, id: "p1", connectOnLaunch: true },
-      { ...baseProfile, id: "p2", connectOnLaunch: true },
+      { ...readyProfile, id: "p1", connectOnLaunch: true },
+      { ...readyProfile, id: "p2", connectOnLaunch: true },
     ]),
     remoteSshRuntime: rt,
     BrowserWindow,
@@ -408,6 +507,31 @@ test("connectOnLaunchProfiles keeps going when one connect throws", () => {
   const started = ipc.connectOnLaunchProfiles();
   assert.deepEqual(started, ["p2"]);
   assert.deepEqual(connected, ["p2"]);
+  ipc.dispose();
+});
+
+test("connectOnLaunchProfiles skips profiles that require deployment", () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const rt = mockRuntime();
+  let connects = 0;
+  let monitors = 0;
+  rt.connect = () => { connects += 1; };
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController([{
+      ...baseProfile,
+      connectOnLaunch: true,
+      autoStartCodexMonitor: true,
+    }]),
+    remoteSshRuntime: rt,
+    BrowserWindow,
+    startCodexMonitorFn: async () => { monitors += 1; },
+  });
+
+  assert.deepEqual(ipc.connectOnLaunchProfiles(), []);
+  assert.equal(connects, 0);
+  assert.equal(monitors, 0);
   ipc.dispose();
 });
 

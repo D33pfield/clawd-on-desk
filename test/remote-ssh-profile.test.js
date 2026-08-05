@@ -1134,6 +1134,35 @@ test("settings-actions: remoteSsh.update clears lastDeployedAt on remoteForwardP
   assert.equal(r.commit.remoteSsh.profiles[0].lastDeployedAt, undefined);
 });
 
+test("settings-actions: A to B to A port edits never revive historical deployment readiness", () => {
+  const cmd = commandRegistry["remoteSsh.update"];
+  const deployedA = basicProfile({
+    remoteForwardPort: 23333,
+    lastDeployedAt: 12345,
+    remoteHome: "/home/user",
+    routingNonce: "a".repeat(32),
+    managedDeployTargets: [{
+      host: "user@pi.local",
+      remoteForwardPort: 23333,
+      deployedAt: 12345,
+    }],
+  });
+  const movedToB = cmd(basicProfile({ remoteForwardPort: 23334 }), {
+    snapshot: { remoteSsh: { profiles: [deployedA] } },
+  }).commit.remoteSsh.profiles[0];
+  assert.equal(movedToB.lastDeployedAt, undefined);
+  assert.equal(movedToB.remoteHome, undefined);
+  assert.equal(movedToB.managedDeployTargets.length, 1);
+
+  const movedBackToA = cmd(basicProfile({ remoteForwardPort: 23333 }), {
+    snapshot: { remoteSsh: { profiles: [movedToB] } },
+  }).commit.remoteSsh.profiles[0];
+  assert.equal(movedBackToA.lastDeployedAt, undefined);
+  assert.equal(movedBackToA.remoteHome, undefined);
+  assert.equal(movedBackToA.managedDeployTargets.length, 1,
+    "historical ownership remains cleanup-only and must not restore active deployment evidence");
+});
+
 test("settings-actions: remoteSsh.update preserves lastDeployedAt when prev had port:22 and edit omits port (UI default-omit case)", () => {
   // Real bug from codex review #9: prev.port = 22, payload omits port (UI
   // saveBtn skips port when value === 22). Naive prev[f] === profile[f] would

@@ -128,14 +128,27 @@ Check the Remote SSH profile first:
 
 ### Remote port conflict
 
-If the connection fails with a "remote port in use" error, change the profile's
-**Remote forward port** from `23333` to one of `23334-23337`, then redeploy.
+After a healthy tunnel drops, the previous remote SSH session may still be
+releasing its listening port. Clawd keeps the same port and retries a bounded
+four times (about three minutes with the current backoff). You do not need to
+change the profile while it says **Reconnecting**.
+
+On a first connection, or if the port is still unavailable after that bounded
+recovery, the conflict may be persistent. Try again later, or choose an unused
+**Remote forward port** from `23333-23337`. If you change the port, run
+**Deploy / Repair Hooks** before **Connect**: the secure identity, hook target,
+permission URL, and health probe are pinned to one exact port. Clawd blocks an
+ordinary Connect until the edited target has been deployed.
+
+An older deployment record is cleanup history, not another active port slot.
+Changing `23333 → 23334 → 23333` still requires deployment for the current
+target; Clawd does not revive historical routing identity automatically.
 
 ### Remote has no Node.js
 
 Deployment fails at the `check-node` step. Install Node.js on the remote first,
-then redeploy. Changing the port avoids a bind conflict; the security boundary
-comes from the pinned identity and dedicated ingress, not from port secrecy.
+then redeploy. The security boundary comes from the pinned identity and
+dedicated ingress, not from port secrecy.
 
 ### Can I open the SSH tunnel manually?
 

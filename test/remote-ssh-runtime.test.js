@@ -15,12 +15,15 @@ const {
   classifyProbeExit,
   buildProbeCommand,
   backoffMsForAttempt,
+  tunnelTargetKey,
+  checkSecureConnectReadiness,
   createRemoteSshRuntime: createRemoteSshRuntimeBase,
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
   PROBE_MIN_GAP_MS,
   PROBE_CHILD_TIMEOUT_MS,
   BACKOFF_SCHEDULE_MS,
+  FORWARD_RECOVERY_FAILURE_LIMIT,
 } = require("../src/remote-ssh-runtime");
 const { clearRemoteNodeCache } = require("../src/remote-ssh-node");
 
@@ -476,6 +479,53 @@ test("backoffMsForAttempt clamps negative / non-integer to first slot", () => {
   assert.equal(backoffMsForAttempt(1.5), BACKOFF_SCHEDULE_MS[0]);
 });
 
+test("forward recovery has a fixed four-conflict budget", () => {
+  assert.equal(FORWARD_RECOVERY_FAILURE_LIMIT, 4);
+});
+
+test("tunnelTargetKey tracks bind identity but not deploy metadata", () => {
+  const profile = makeSecureProfile();
+  const key = tunnelTargetKey(profile);
+  for (const changed of [
+    { host: "user@other" },
+    { port: 2222 },
+    { identityFile: "/keys/other" },
+    { remoteForwardPort: 23334 },
+    { installId: "c".repeat(64) },
+    { runtimeMode: "profile-isolated" },
+    { runtimeKey: "runtime_p1" },
+    { layoutVersion: 2 },
+  ]) {
+    assert.notEqual(tunnelTargetKey({ ...profile, ...changed }), key);
+  }
+  assert.equal(tunnelTargetKey({
+    ...profile,
+    routingNonce: "d".repeat(32),
+    previousNonce: "e".repeat(32),
+    hostPrefix: "lab",
+    chainStatusline: true,
+    remoteHome: "/srv/user",
+    lastDeployedAt: profile.lastDeployedAt + 1,
+  }), key);
+});
+
+test("secure connect readiness requires a stamp, resolved layout, and accepted nonce", () => {
+  const ready = makeSecureProfile();
+  assert.deepEqual(checkSecureConnectReadiness(ready), { ok: true });
+
+  const missingStamp = checkSecureConnectReadiness({ ...ready, lastDeployedAt: undefined });
+  assert.equal(missingStamp.reason, "deployment_required");
+  assert.equal(missingStamp.detail, "deployment_stamp_missing");
+
+  const missingLayout = checkSecureConnectReadiness({ ...ready, remoteHome: undefined });
+  assert.equal(missingLayout.reason, "deployment_required");
+  assert.equal(missingLayout.detail, "secure_layout_missing");
+
+  const missingNonce = checkSecureConnectReadiness({ ...ready, routingNonce: undefined });
+  assert.equal(missingNonce.reason, "deployment_required");
+  assert.equal(missingNonce.detail, "secure_identity_missing");
+});
+
 // ── Factory: state machine with mocked spawn ──
 
 function makeMockChild() {
@@ -526,6 +576,55 @@ function makeFakeTimers() {
   return { setTimeoutFn, clearTimeoutFn, flush, flushWhere, size };
 }
 
+function makeSecureProfile(overrides = {}) {
+  return {
+    id: "p1",
+    host: "user@pi",
+    remoteForwardPort: 23333,
+    installId: "a".repeat(64),
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+    routingNonce: "b".repeat(32),
+    remoteHome: "/home/user",
+    lastDeployedAt: 1_700_000_000_000,
+    ...overrides,
+  };
+}
+
+function makeSecureIngress() {
+  return {
+    start: async () => 31234,
+    close: async () => {},
+    getStatus: () => ({ port: 31234, rejectedCount: 0 }),
+  };
+}
+
+async function flushAsyncEvents() {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+async function connectSecureProfile(rt, timers, children, profile) {
+  rt.connect(profile);
+  await flushAsyncEvents();
+  const mainChild = children[children.length - 1];
+  timers.flushWhere((timer) => timer.ms === 0);
+  const probeChild = children[children.length - 1];
+  assert.notEqual(probeChild, mainChild, "health probe should spawn after the tunnel");
+  probeChild._fakeExit(0);
+  await flushAsyncEvents();
+  assert.equal(rt.getProfileStatus(profile.id).status, "connected");
+  return mainChild;
+}
+
+async function exitSsh(child, stderr, code = 255) {
+  child._fakeStderr(stderr);
+  await flushAsyncEvents();
+  child._fakeExit(code);
+  await flushAsyncEvents();
+}
+
 test("createRemoteSshRuntime requires getHookServerPort dep", () => {
   assert.throws(() => createRemoteSshRuntime({}), /getHookServerPort/);
 });
@@ -557,7 +656,7 @@ test("connect fails fast on legacy Windows OpenSSH before spawning tunnel", () =
   assert.equal(spawned, false);
 });
 
-test("secure runtime refuses inactive isolated profiles and missing resolved layouts before ingress or tunnel", () => {
+test("secure runtime refuses inactive isolated profiles and deployment-incomplete layouts before ingress or tunnel", () => {
   let ingressCalls = 0;
   let spawnCalls = 0;
   const rt = createRemoteSshRuntime({
@@ -580,6 +679,7 @@ test("secure runtime refuses inactive isolated profiles and missing resolved lay
     runtimeKey: "runtime_p1",
     layoutVersion: 1,
     routingNonce: "b".repeat(32),
+    lastDeployedAt: 1_700_000_000_000,
   };
 
   rt.connect({ ...base, remoteHome: "/home/shared", isolatedActive: false });
@@ -591,7 +691,8 @@ test("secure runtime refuses inactive isolated profiles and missing resolved lay
   rt.disconnect("p1");
   rt.connect({ ...base, isolatedActive: true });
   assert.equal(rt.getProfileStatus("p1").status, "failed");
-  assert.equal(rt.getProfileStatus("p1").lastErrorReason, "secure_layout_missing");
+  assert.equal(rt.getProfileStatus("p1").lastErrorReason, "deployment_required");
+  assert.equal(rt.getProfileStatus("p1").hint, "remoteSshErrDeploymentRequired");
   assert.equal(ingressCalls, 0);
   assert.equal(spawnCalls, 0);
   rt.cleanup();
@@ -1124,6 +1225,159 @@ test("connect classifies Connection timed out as transient + schedules reconnect
   assert.equal(reconnectEv.hint, "remoteSshErrNetTimeout");
   // Status is reconnecting, not failed.
   assert.equal(rt.getProfileStatus("p1").status, "reconnecting");
+  rt.cleanup();
+});
+
+test("a fresh secure connection still treats a forward conflict as permanent", async () => {
+  const children = [];
+  const timers = makeFakeTimers();
+  const rt = createRemoteSshRuntime({
+    spawn: () => {
+      const child = makeMockChild();
+      children.push(child);
+      return child;
+    },
+    getHookServerPort: () => 23333,
+    createProfileIngress: () => makeSecureIngress(),
+    setTimeout: timers.setTimeoutFn,
+    clearTimeout: timers.clearTimeoutFn,
+  });
+
+  rt.connect(makeSecureProfile());
+  await flushAsyncEvents();
+  await exitSsh(
+    children[children.length - 1],
+    "Warning: remote port forwarding failed for listen port 23333"
+  );
+  const failed = rt.getProfileStatus("p1");
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.lastErrorReason, "forward_failed");
+  assert.equal(failed.forwardRecoveryFailures, 0);
+  rt.cleanup();
+});
+
+test("a previously healthy secure tunnel retries forward conflicts four times, then fails", async () => {
+  const children = [];
+  const timers = makeFakeTimers();
+  const rt = createRemoteSshRuntime({
+    spawn: () => {
+      const child = makeMockChild();
+      children.push(child);
+      return child;
+    },
+    getHookServerPort: () => 23333,
+    createProfileIngress: () => makeSecureIngress(),
+    setTimeout: timers.setTimeoutFn,
+    clearTimeout: timers.clearTimeoutFn,
+  });
+  const profile = makeSecureProfile();
+  const mainChild = await connectSecureProfile(rt, timers, children, profile);
+
+  await exitSsh(mainChild, "Timeout, server user@pi not responding.");
+  assert.equal(rt.getProfileStatus("p1").status, "reconnecting");
+
+  const retryDelays = BACKOFF_SCHEDULE_MS.slice(0, 4);
+  for (let conflict = 1; conflict <= 4; conflict += 1) {
+    timers.flushWhere((timer) => timer.ms === retryDelays[conflict - 1]);
+    await flushAsyncEvents();
+    const retryChild = children[children.length - 1];
+    await exitSsh(retryChild, "Warning: remote port forwarding failed for listen port 23333");
+    const snapshot = rt.getProfileStatus("p1");
+    if (conflict < 4) {
+      assert.equal(snapshot.status, "reconnecting");
+      assert.equal(snapshot.lastErrorReason, "forward_recovery_conflict");
+      assert.equal(snapshot.hint, "remoteSshErrForwardRetrying");
+      assert.equal(snapshot.forwardRecoveryFailures, conflict);
+    } else {
+      assert.equal(snapshot.status, "failed");
+      assert.equal(snapshot.lastErrorReason, "forward_failed");
+      assert.equal(snapshot.hint, "remoteSshErrForwardFailed");
+      assert.equal(snapshot.forwardRecoveryFailures, 0);
+    }
+  }
+  rt.cleanup();
+});
+
+test("a failed recovery cannot leak forward-conflict retry eligibility into manual Connect", async () => {
+  const children = [];
+  const timers = makeFakeTimers();
+  const rt = createRemoteSshRuntime({
+    spawn: () => {
+      const child = makeMockChild();
+      children.push(child);
+      return child;
+    },
+    getHookServerPort: () => 23333,
+    createProfileIngress: () => makeSecureIngress(),
+    setTimeout: timers.setTimeoutFn,
+    clearTimeout: timers.clearTimeoutFn,
+  });
+  const profile = makeSecureProfile();
+  const mainChild = await connectSecureProfile(rt, timers, children, profile);
+
+  await exitSsh(mainChild, "ssh: connect to host pi port 22: Connection timed out");
+  timers.flushWhere((timer) => timer.ms === BACKOFF_SCHEDULE_MS[0]);
+  await flushAsyncEvents();
+  await exitSsh(
+    children[children.length - 1],
+    "Warning: remote port forwarding failed for listen port 23333"
+  );
+  assert.equal(rt.getProfileStatus("p1").status, "reconnecting");
+
+  timers.flushWhere((timer) => timer.ms === BACKOFF_SCHEDULE_MS[1]);
+  await flushAsyncEvents();
+  await exitSsh(children[children.length - 1], "ssh: Permission denied (publickey).");
+  assert.equal(rt.getProfileStatus("p1").status, "failed");
+
+  rt.connect(profile);
+  await flushAsyncEvents();
+  await exitSsh(
+    children[children.length - 1],
+    "Warning: remote port forwarding failed for listen port 23333"
+  );
+  const manualFailure = rt.getProfileStatus("p1");
+  assert.equal(manualFailure.status, "failed");
+  assert.equal(manualFailure.lastErrorReason, "forward_failed");
+  assert.equal(manualFailure.forwardRecoveryFailures, 0);
+  rt.cleanup();
+});
+
+test("a queued reconnect rechecks deployment readiness after the profile target changes", async () => {
+  const children = [];
+  const timers = makeFakeTimers();
+  const rt = createRemoteSshRuntime({
+    spawn: () => {
+      const child = makeMockChild();
+      children.push(child);
+      return child;
+    },
+    getHookServerPort: () => 23333,
+    createProfileIngress: () => makeSecureIngress(),
+    setTimeout: timers.setTimeoutFn,
+    clearTimeout: timers.clearTimeoutFn,
+  });
+  const profile = makeSecureProfile();
+  const mainChild = await connectSecureProfile(rt, timers, children, profile);
+
+  await exitSsh(mainChild, "ssh: connect to host pi port 22: Connection timed out");
+  assert.equal(rt.getProfileStatus("p1").status, "reconnecting");
+  const spawnCountBeforeRefresh = children.length;
+  rt.refreshProfile({
+    ...profile,
+    remoteForwardPort: 23334,
+    remoteHome: undefined,
+    routingNonce: undefined,
+    lastDeployedAt: undefined,
+  });
+
+  timers.flushWhere((timer) => timer.ms === BACKOFF_SCHEDULE_MS[0]);
+  await flushAsyncEvents();
+  const blocked = rt.getProfileStatus("p1");
+  assert.equal(children.length, spawnCountBeforeRefresh, "stale timer must not spawn a new tunnel");
+  assert.equal(blocked.status, "failed");
+  assert.equal(blocked.lastErrorReason, "deployment_required");
+  assert.equal(blocked.hint, "remoteSshErrDeploymentRequired");
+  assert.equal(blocked.forwardRecoveryFailures, 0);
   rt.cleanup();
 });
 
