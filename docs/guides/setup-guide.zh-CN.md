@@ -24,7 +24,7 @@
 
 此功能**不会**额外请求 Anthropic、抓取 `claude.ai`、调用 `/usage`，也不会读取 Claude 的认证 cookie/token。转发内容只有规范化的 token 数、窗口大小，以及可用额度的百分比/重置时间，不包含 prompt 或 transcript 正文。即使 context window 可用，`rate_limits` 仍可能缺失。
 
-Claude Code 只有一个用户级 statusline 槽位，因此 Clawd 绝不会静默覆盖已有的自定义状态栏：槽位被占用时，启用操作会显式失败并保持原命令不变；关闭采集只移除带 Clawd ownership marker 的命令。
+Claude Code 只有一个用户级 statusline 槽位，因此 Clawd 绝不会静默覆盖已有的自定义状态栏：槽位被占用时，启用操作会显式失败并保持原命令不变；关闭采集只移除带 Clawd ownership marker 的命令，并立即清除缓存的本机 Claude 额度，同时保留 Remote SSH 额度和所有非 Claude provider。
 
 没有 Clawd statusline 时，普通 Claude hooks 仍会从 transcript 上报输入 token 用量。Clawd 只对封闭列表里的标准 Claude ID 使用兼容性分母；模型为空、自定义或未知时只显示 used，不再猜成 200K。要让自定义 provider 的真实上限与 Claude Code `/context` 一致，需要开启此开关，让 Claude Code 自己上报的 `context_window_size` 持有分母，同时 transcript hooks 继续刷新 used。
 

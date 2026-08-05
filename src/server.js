@@ -106,6 +106,11 @@ function clearLocalClaudeStatuslineAuthority() {
   return ctx.clearClaudeStatuslineAuthority("local");
 }
 
+function clearLocalClaudeQuota() {
+  if (typeof ctx.clearLocalClaudeQuota !== "function") return 0;
+  return ctx.clearLocalClaudeQuota();
+}
+
 function shouldDropForDnd() {
   if (typeof ctx.shouldDropForDnd === "function") {
     try {
@@ -322,6 +327,7 @@ function registerClaudeHooksTask(meta) {
           // removes a statusLine command carrying Clawd's marker.
           unregisterClaudeStatusline({ backup: true, silent: true });
           clearLocalClaudeStatuslineAuthority();
+          clearLocalClaudeQuota();
         }
       } catch (statuslineErr) {
         console.warn("Clawd: failed to sync Claude Code statusline:", statuslineErr.message);
@@ -377,6 +383,7 @@ function unregisterClaudeHooksTask(meta) {
       if (removesStatusline) {
         statuslineResult = unregisterClaudeStatusline({ backup: true, silent: true });
         clearLocalClaudeStatuslineAuthority();
+        clearLocalClaudeQuota();
       }
       const removed = (hooksResult.removed || 0) + (statuslineResult ? (statuslineResult.removed || 0) : 0);
       const changed = !!hooksResult.changed || !!(statuslineResult && statuslineResult.changed);
@@ -418,6 +425,7 @@ function setClaudeQuotaCollectionEnabled(callOptions = {}) {
       try {
         const result = unregisterClaudeStatusline({ backup: true, silent: true });
         clearLocalClaudeStatuslineAuthority();
+        clearLocalClaudeQuota();
         return { status: "ok", enabled: false, ...result };
       } catch (err) {
         claudeStatuslineIngressSuppressed = previousSuppression;

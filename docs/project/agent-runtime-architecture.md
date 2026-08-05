@@ -221,7 +221,7 @@ CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL�
 - 当前安装包的 hook 源脚本（`getClaudeHookScriptPath()`）本身不存在时，不会尝试任何 reconcile（写了也没用），状态设为 `source-script-missing`，Doctor 提示重装/重新解压而不是提供配置 Repair。
 - 巡检严格受 `manageClaudeHooksAutomatically`、`claude-code.integrationInstalled`、`claude-code.enabled` 三个 gate 保护，和目录 watcher 共用同一套 gate。
 - 所有 mutation 入口（启动 reconcile、watcher 自动恢复、周期自愈、Settings Agent Install/Enable、Doctor Fix、`autoStartWithClaude` 开关、Settings Agent Uninstall、legacy hooks Install/Uninstall、About 页 `cleanupIntegrations`）都经过 `src/server.js` 持有的同一个 `claude-hook-operations.js` 队列实例，串行执行、互不覆盖；statusline 注册/卸载只在 startup、Settings Agent Install/Enable、Settings Agent Uninstall、About cleanup 这几个来源触发，周期巡检和 Doctor Fix 不碰 statusline。
-- 历史 key `claudeQuotaCollectionEnabled` 现在是本机 Claude statusline metadata（context window + 可用 quota）的唯一用户授权。关闭或卸载时，server 先用进程内 suppression 挡住未结尾包，再 ownership-safe 卸载并清除 `profileId="local"`（含 WSL）会话的 statusline 分母所有权；Remote SSH profile 不受这个本机开关影响。statusline 上报拥有 limit，普通 transcript hook 仍可更新 used，并按保留的权威 limit 重算 percent。
+- 历史 key `claudeQuotaCollectionEnabled` 现在是本机 Claude statusline metadata（context window + 可用 quota）的唯一用户授权。关闭或卸载时，server 先用进程内 suppression 挡住未结尾包，再 ownership-safe 卸载并清除 `profileId="local"`（含 WSL）会话的 statusline 分母所有权，同时从 account-quota store 定向删除所有非 `remote:` 来源的 `claudeQuota` 并立即广播、持久化；同源 Codex / Antigravity provider 与 Remote SSH quota 保留。关闭态启动也会执行同一缓存迁移。statusline 上报拥有 limit，普通 transcript hook 仍可更新 used，并按保留的权威 limit 重算 percent。
 - `server.getClaudeHookHealthStatus()` 暴露供 Doctor 使用的只读状态（`healthy` / `repairing` / `degraded` / `manual-fix-required` / `guarded` / `stopped`），与既有的 `getClaudeHookGuardStatus()`（仅覆盖 suspicious-shrink 一种通知）并存，互不替代。
 
 ## Permission Bubble

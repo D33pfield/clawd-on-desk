@@ -1765,6 +1765,7 @@ const _stateCtx = {
   get hitWin() { return hitWin; },
   // Last-known account quota survives app restarts (state-account-quota.js).
   accountQuotaPersistPath: require("./state-account-quota").DEFAULT_PERSIST_PATH,
+  get claudeQuotaCollectionEnabled() { return claudeQuotaCollectionEnabled; },
   get quotaMergeSources() { return quotaMergeSources; },
   get doNotDisturb() { return doNotDisturb; },
   set doNotDisturb(v) { doNotDisturb = v; },
@@ -2307,6 +2308,7 @@ const _serverCtx = {
   updateSession: agentRuntime.updateSessionFromServer,
   updateSessionMetadata: (sessionId, opts) => _state.updateSessionMetadata(sessionId, opts),
   clearClaudeStatuslineAuthority: (profileId) => _state.clearClaudeStatuslineAuthority(profileId),
+  clearLocalClaudeQuota: () => _state.clearLocalClaudeQuota(),
   updateAccountQuota: (host, quotas) => _state.updateAccountQuota(host, quotas),
   resolvePermissionEntry,
   sendPermissionResponse,

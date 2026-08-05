@@ -59,7 +59,7 @@ For this feature, Clawd does **not** make an additional request to Anthropic, sc
 
 Clawd is only a viewer of values reported by Claude Code. It does not calculate, change, bypass, or enforce Anthropic subscription limits. If a quota window is absent, delayed, or changes semantics upstream, Clawd can only omit or display the data Claude Code supplied; it is not the source of the account limit.
 
-The status line is visible and Claude Code provides a single user-level slot. Clawd therefore never silently replaces an existing custom local status line: enabling collection fails safely and leaves the existing command unchanged. Turning collection off removes only a command carrying Clawd's ownership marker.
+The status line is visible and Claude Code provides a single user-level slot. Clawd therefore never silently replaces an existing custom local status line: enabling collection fails safely and leaves the existing command unchanged. Turning collection off removes only a command carrying Clawd's ownership marker and immediately clears cached local Claude quota, while preserving Remote SSH quota and every non-Claude provider.
 
 Without the Clawd statusline, ordinary Claude hooks still report transcript input-token usage. Clawd uses a closed list of known stock Claude IDs for a compatibility denominator; an empty, custom, or unknown model ID shows used tokens with an unknown limit instead of guessing 200K. For a custom provider's reported window to match Claude Code's `/context`, enable the usage statusline so Claude Code's own `context_window_size` becomes authoritative while transcript hooks continue refreshing the used count.
 

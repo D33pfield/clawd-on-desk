@@ -96,6 +96,12 @@ const accountQuota = createAccountQuotaStore({
   persistPath: ctx.accountQuotaPersistPath || null,
   logWarn: console.warn,
 });
+// Upgrade cleanup: older builds retained the last local Claude quota even
+// after the user opted out. Remove that misleading cache before the first
+// snapshot while preserving Remote SSH and every non-Claude provider.
+if (ctx.claudeQuotaCollectionEnabled === false) {
+  clearLocalClaudeQuota({ broadcast: false });
+}
 const MAX_SESSIONS = 20;
 const ASSISTANT_OUTPUT_MAX = 2400;
 const CODEX_EXIT_PROBE_DELAYS_MS = [1000, 3000, 8000, 15000];
@@ -1308,6 +1314,19 @@ function updateAccountQuota(host, quotas = {}) {
   const changed = accountQuota.update(host, quotas);
   if (changed) emitSessionSnapshot();
   return changed;
+}
+
+function clearLocalClaudeQuota(options = {}) {
+  const cleared = accountQuota.clearProvider(
+    "claudeQuota",
+    (sourceKey) => !sourceKey.startsWith("remote:")
+  );
+  if (!cleared) return 0;
+  // An explicit opt-out is a data-lifecycle boundary, not a routine refresh:
+  // persist it synchronously so a crash/restart cannot resurrect stale quota.
+  accountQuota.flush();
+  if (options.broadcast !== false) emitSessionSnapshot();
+  return cleared;
 }
 
 // Distinct reporting sources that currently carry quota (this machine + WSL /
@@ -2781,6 +2800,7 @@ return {
   updateSessionMetadata,
   clearClaudeStatuslineAuthority,
   updateAccountQuota,
+  clearLocalClaudeQuota,
   getQuotaSourceCount,
   clearPermissionNotification,
   ackSessionCompletion,

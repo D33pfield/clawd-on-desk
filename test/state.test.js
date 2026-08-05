@@ -2398,6 +2398,75 @@ describe("updateSession()", () => {
     assert.strictEqual(snapshot.accountQuota[1].codexQuota.group.codexWeekly.usedPercent, 43);
   });
 
+  it("clearLocalClaudeQuota removes local + WSL Claude only and broadcasts once", () => {
+    const broadcasts = [];
+    const localApi = require("../src/state")(makeCtx({
+      broadcastSessionSnapshot: (snapshot) => broadcasts.push(snapshot),
+    }));
+    const resetAt = Date.now() + 3600000;
+    localApi.updateAccountQuota(null, {
+      claudeQuota: { claudeWeekly: { usedPercent: 41, resetAt } },
+      codexQuota: { codexWeekly: { usedPercent: 7, resetAt } },
+    });
+    localApi.updateAccountQuota("wsl:Ubuntu", {
+      claudeQuota: { claudeWeekly: { usedPercent: 42, resetAt } },
+    });
+    localApi.updateAccountQuota("remote:ssh-work", {
+      displayHost: "workbox",
+      claudeQuota: { claudeWeekly: { usedPercent: 90, resetAt } },
+    });
+    const before = broadcasts.length;
+
+    assert.strictEqual(localApi.clearLocalClaudeQuota(), 2);
+    assert.strictEqual(broadcasts.length, before + 1);
+    const snapshot = broadcasts.at(-1).accountQuota;
+    const local = snapshot.find((entry) => entry.host === null);
+    assert.strictEqual(local.claudeQuota, undefined);
+    assert.strictEqual(local.codexQuota.group.codexWeekly.usedPercent, 7);
+    assert.strictEqual(snapshot.some((entry) => entry.host === "wsl:Ubuntu"), false,
+      "an empty WSL source should disappear");
+    assert.strictEqual(
+      snapshot.find((entry) => entry.host === "workbox").claudeQuota.group.claudeWeekly.usedPercent,
+      90,
+      "Remote SSH Claude quota must survive local opt-out"
+    );
+
+    assert.strictEqual(localApi.clearLocalClaudeQuota(), 0);
+    assert.strictEqual(broadcasts.length, before + 1, "no-op cleanup must not rebroadcast");
+    localApi.cleanup();
+  });
+
+  it("cleans persisted local Claude quota on startup when collection is disabled", () => {
+    const persistPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "clawd-aq-optout-")), "account-quota.json");
+    const { createAccountQuotaStore } = require("../src/state-account-quota");
+    const seed = createAccountQuotaStore({ persistPath });
+    const resetAt = Date.now() + 3600000;
+    seed.update(null, {
+      claudeQuota: { claudeWeekly: { usedPercent: 41, resetAt } },
+      codexQuota: { codexWeekly: { usedPercent: 7, resetAt } },
+    });
+    seed.update("remote:ssh-work", {
+      displayHost: "workbox",
+      claudeQuota: { claudeWeekly: { usedPercent: 90, resetAt } },
+    });
+    seed.flush();
+
+    const localApi = require("../src/state")(makeCtx({
+      accountQuotaPersistPath: persistPath,
+      claudeQuotaCollectionEnabled: false,
+    }));
+    const snapshot = localApi.buildSessionSnapshot().accountQuota;
+    assert.strictEqual(snapshot.find((entry) => entry.host === null).claudeQuota, undefined);
+    assert.strictEqual(snapshot.find((entry) => entry.host === null).codexQuota.group.codexWeekly.usedPercent, 7);
+    assert.strictEqual(snapshot.find((entry) => entry.host === "workbox").claudeQuota.group.claudeWeekly.usedPercent, 90);
+    localApi.cleanup();
+
+    const reloaded = createAccountQuotaStore({ persistPath }).snapshot();
+    assert.strictEqual(reloaded.find((entry) => entry.host === null).claudeQuota, undefined,
+      "startup cleanup must be persisted synchronously");
+    assert.strictEqual(reloaded.find((entry) => entry.host === "workbox").claudeQuota.group.claudeWeekly.usedPercent, 90);
+  });
+
   it("updateAccountQuota change-detects identical refreshes (no re-broadcast, no re-stamp)", () => {
     const broadcasts = [];
     const localApi = require("../src/state")(makeCtx({
