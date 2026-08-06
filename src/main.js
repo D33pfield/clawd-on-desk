@@ -4341,9 +4341,13 @@ const _roam = require("./roam")(_roamCtx);
 
 // Free roam: initialize from prefs and react to toggle changes
 _roam.setEnabled(_settingsController.get("freeRoam") === true);
+_roam.setConstrainAxis(_settingsController.get("roamConstrainAxis") === true);
 try {
   _settingsController.subscribeKey("freeRoam", (value) => {
     _roam.setEnabled(value === true);
+  });
+  _settingsController.subscribeKey("roamConstrainAxis", (value) => {
+    _roam.setConstrainAxis(value === true);
   });
 } catch (err) {
   console.warn("Clawd: freeRoam subscribeKey failed:", err && err.message);

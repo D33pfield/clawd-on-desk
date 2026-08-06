@@ -5120,6 +5120,78 @@ describe("settings renderer browser environment", () => {
     }
   });
 
+  it("wires the roamConstrainAxis General-tab switch end-to-end (update + broadcast)", async () => {
+    // #686 wiring coverage: the pref defaults off, the General-tab switch
+    // reflects the snapshot, clicking it fires settingsAPI.update with the
+    // next raw value (UI → server), and a broadcast change patches the
+    // mounted switch in place without a full re-render (server → UI).
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    // The switch row + its in-place patch key are both registered.
+    assert.ok(generalSource.includes('key: "roamConstrainAxis"'));
+    assert.ok(generalSource.includes('"roamConstrainAxis"'));
+    // All five language tables carry the label and description.
+    for (const key of ["rowRoamConstrainAxis", "rowRoamConstrainAxisDesc"]) {
+      const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
+      assert.strictEqual(matches && matches.length, 5, `${key} should appear in all 5 languages`);
+    }
+
+    const updateCalls = [];
+    const initialSnapshot = makeGeneralSnapshot({ roamConstrainAxis: false, freeRoam: false });
+    const harness = loadGeneralTabForTest({
+      snapshot: initialSnapshot,
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+
+    // Mounted, reflects the off snapshot, with a label and description.
+    const meta = harness.getSwitchMeta("roamConstrainAxis");
+    assert.ok(meta, "roamConstrainAxis switch must be mounted in the General tab");
+    assert.strictEqual(meta.element.classList.contains("on"), false, "switch must be off when snapshot is false");
+    assert.strictEqual(meta.element.classList.contains("pending"), false);
+    assert.ok(meta.row.querySelector(".row-label"));
+    assert.ok(meta.row.querySelector(".row-desc"));
+
+    // Update path (UI → server): clicking dispatches settingsAPI.update with
+    // the next raw value (false → true; not inverted).
+    const beforeRenderCount = harness.getContentRenderCount();
+    meta.element.dispatchEvent({ type: "click", bubbles: false });
+    // The click sets a pending transient visual synchronously.
+    assert.strictEqual(meta.element.classList.contains("pending"), true, "click must mark the switch pending");
+    assert.strictEqual(meta.element.classList.contains("on"), true, "click must flip the visual on optimistically");
+    // Flush the invoke() microtask chain so settingsAPI.update resolves.
+    await new Promise((r) => setTimeout(r, 0));
+    assert.ok(
+      updateCalls.some((c) => c.key === "roamConstrainAxis" && c.value === true),
+      "clicking the switch must call settingsAPI.update(\"roamConstrainAxis\", true)",
+    );
+    assert.strictEqual(meta.element.classList.contains("pending"), false, "pending clears after a successful update");
+
+    // Broadcast path (server → UI): applying a snapshot change patches the
+    // mounted switch in place — no full General re-render.
+    harness.core.ops.applyChanges({
+      changes: { roamConstrainAxis: false },
+      snapshot: { ...initialSnapshot, roamConstrainAxis: false },
+    });
+    assert.strictEqual(
+      meta.element.classList.contains("on"),
+      false,
+      "broadcast back to false must patch the switch visual in place",
+    );
+    assert.strictEqual(
+      harness.getContentRenderCount(),
+      beforeRenderCount,
+      "roamConstrainAxis broadcasts must patch in place instead of rebuilding General",
+    );
+    // The mounted switch identity is stable across the broadcast.
+    assert.strictEqual(harness.getSwitch("roamConstrainAxis"), meta.element);
+  });
+
   it("registers the Session cleanup group with three number rows, atomic reset, and i18n keys", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");

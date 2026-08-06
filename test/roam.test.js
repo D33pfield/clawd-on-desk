@@ -14,16 +14,22 @@ function makeCtx(overrides = {}) {
   let currentState = "idle";
   const ctx = {
     win: {
-      getBounds() { return { ...realBounds }; },
+      getBounds() {
+        return { ...realBounds };
+      },
       setBounds(next) {
         realBounds.x = next.x;
         realBounds.y = next.y;
         realBounds.width = next.width;
         realBounds.height = next.height;
       },
-      isDestroyed() { return false; },
+      isDestroyed() {
+        return false;
+      },
     },
-    getPetWindowBounds() { return { ...bounds }; },
+    getPetWindowBounds() {
+      return { ...bounds };
+    },
     applyPetWindowBounds(next) {
       appliedBounds.push({ ...next });
       bounds.x = next.x;
@@ -41,20 +47,41 @@ function makeCtx(overrides = {}) {
     applyPetWindowPosition(x, y) {
       ctx.applyPetWindowBounds({ ...ctx.getPetWindowBounds(), x, y });
     },
-    syncHitWin() { syncLog.push("syncHitWin"); },
-    repositionSessionHud() { syncLog.push("repositionSessionHud"); },
-    repositionAnchoredSurfaces() { syncLog.push("repositionAnchoredSurfaces"); },
-    repositionBubbles() { syncLog.push("repositionBubbles"); },
+    syncHitWin() {
+      syncLog.push("syncHitWin");
+    },
+    repositionSessionHud() {
+      syncLog.push("repositionSessionHud");
+    },
+    repositionAnchoredSurfaces() {
+      syncLog.push("repositionAnchoredSurfaces");
+    },
+    repositionBubbles() {
+      syncLog.push("repositionBubbles");
+    },
     bubbleFollowPet: false,
     pendingPermissions: [],
-    getNearestWorkArea() { return { x: 0, y: 0, width: 1920, height: 1080 }; },
-    clampToScreenVisual(x, y, w, h) { return { x, y, width: w, height: h }; },
-    getMiniMode() { return false; },
-    getCurrentState() { return currentState; },
-    setCurrentState(s) { currentState = s; },
+    getNearestWorkArea() {
+      return { x: 0, y: 0, width: 1920, height: 1080 };
+    },
+    clampToScreenVisual(x, y, w, h) {
+      return { x, y, width: w, height: h };
+    },
+    getMiniMode() {
+      return false;
+    },
+    getCurrentState() {
+      return currentState;
+    },
+    setCurrentState(s) {
+      currentState = s;
+    },
     dragLocked: false,
     miniTransitioning: false,
-    applyState(state) { stateLog.push({ type: "applyState", state }); currentState = state; },
+    applyState(state) {
+      stateLog.push({ type: "applyState", state });
+      currentState = state;
+    },
     setState(state, svgOverride, options) {
       stateLog.push({ type: "setState", state, svgOverride, options });
       currentState = state;
@@ -73,7 +100,11 @@ describe("roam module", () => {
   beforeEach(() => {
     const randomValues = [0.9, 0.9, 0.9, 0.1];
     let randomIndex = 0;
-    mock.method(Math, "random", () => randomValues[randomIndex++ % randomValues.length]);
+    mock.method(
+      Math,
+      "random",
+      () => randomValues[randomIndex++ % randomValues.length],
+    );
     mock.timers.enable({ apis: ["setTimeout", "Date"] });
   });
 
@@ -97,18 +128,32 @@ describe("roam module", () => {
     roam.tick();
     mock.timers.tick(9000);
 
-    assert.equal(ctx._stateLog.length, 0, "drag lock must block the roam state");
-    assert.equal(ctx._appliedBounds.length, 0, "drag lock must block all roam position writes");
+    assert.equal(
+      ctx._stateLog.length,
+      0,
+      "drag lock must block the roam state",
+    );
+    assert.equal(
+      ctx._appliedBounds.length,
+      0,
+      "drag lock must block all roam position writes",
+    );
 
     ctx.dragLocked = false;
     roam.tick();
     mock.timers.tick(7999);
-    assert.equal(ctx._stateLog.length, 0, "an unconsumed first roam must still wait 8s");
+    assert.equal(
+      ctx._stateLog.length,
+      0,
+      "an unconsumed first roam must still wait 8s",
+    );
 
     mock.timers.tick(1);
     assert.ok(
-      ctx._stateLog.some((event) => event.type === "applyState" && event.state === "roam"),
-      "first roam should start after the full 8s delay once drag unlocks"
+      ctx._stateLog.some(
+        (event) => event.type === "applyState" && event.state === "roam",
+      ),
+      "first roam should start after the full 8s delay once drag unlocks",
     );
   });
 
@@ -129,17 +174,27 @@ describe("roam module", () => {
     }
 
     assert.equal(ctx._stateLog.length, 0, "static drag must not re-enter roam");
-    assert.equal(ctx._appliedBounds.length, 0, "static drag must not write pet bounds");
+    assert.equal(
+      ctx._appliedBounds.length,
+      0,
+      "static drag must not write pet bounds",
+    );
 
     ctx.dragLocked = false;
     roam.tick();
     mock.timers.tick(3999);
-    assert.equal(ctx._stateLog.length, 0, "consumed roam phase should wait 4s after unlock");
+    assert.equal(
+      ctx._stateLog.length,
+      0,
+      "consumed roam phase should wait 4s after unlock",
+    );
 
     mock.timers.tick(1);
     assert.ok(
-      ctx._stateLog.some((event) => event.type === "applyState" && event.state === "roam"),
-      "consumed roam phase should resume after 4s, not reset to 8s"
+      ctx._stateLog.some(
+        (event) => event.type === "applyState" && event.state === "roam",
+      ),
+      "consumed roam phase should resume after 4s, not reset to 8s",
     );
   });
 
@@ -153,19 +208,30 @@ describe("roam module", () => {
     roam.cancelRoam(); // mirrors tick.js when normal cursor movement is observed
     roam.tick(); // tick.js re-enters roam.tick() in the same main-loop pass
 
-    assert.equal(ctx._stateLog.length, 0,
-      "plain mouse movement must not broadcast an idle state");
-    assert.equal(ctx._appliedBounds.length, 0,
-      "plain mouse movement must clear the pending roam timer");
+    assert.equal(
+      ctx._stateLog.length,
+      0,
+      "plain mouse movement must not broadcast an idle state",
+    );
+    assert.equal(
+      ctx._appliedBounds.length,
+      0,
+      "plain mouse movement must clear the pending roam timer",
+    );
 
     mock.timers.tick(3999);
-    assert.equal(ctx._stateLog.length, 0,
-      "the existing between-roam cadence must still wait 4s after movement");
+    assert.equal(
+      ctx._stateLog.length,
+      0,
+      "the existing between-roam cadence must still wait 4s after movement",
+    );
 
     mock.timers.tick(1);
     assert.ok(
-      ctx._stateLog.some((event) => event.type === "applyState" && event.state === "roam"),
-      "plain mouse movement should preserve the established 4s cadence"
+      ctx._stateLog.some(
+        (event) => event.type === "applyState" && event.state === "roam",
+      ),
+      "plain mouse movement should preserve the established 4s cadence",
     );
   });
 
@@ -184,8 +250,10 @@ describe("roam module", () => {
     mock.timers.tick(4000);
     // Tick one frame to see actual movement
     mock.timers.tick(20);
-    assert.ok(ctx._realBounds.x !== 400 || ctx._realBounds.y !== 300,
-      "pet should have started moving after 8s idle delay + 1 frame");
+    assert.ok(
+      ctx._realBounds.x !== 400 || ctx._realBounds.y !== 300,
+      "pet should have started moving after 8s idle delay + 1 frame",
+    );
   });
 
   it("subsequent roams use ROAM_BETWEEN_DELAY_MS (4s)", () => {
@@ -197,22 +265,33 @@ describe("roam module", () => {
     roam.tick();
     mock.timers.tick(8000); // ROAM_IDLE_DELAY_MS
     // Advance time frame-by-frame until animation completes
-    for (let i = 0; i < 2000; i++) { // 2000 frames * 16ms = 32s (covers up to ~2560px at 80px/s)
+    for (let i = 0; i < 2000; i++) {
+      // 2000 frames * 16ms = 32s (covers up to ~2560px at 80px/s)
       mock.timers.tick(16);
-      if (ctx._stateLog.some(e => e.type === "setState" && e.state === "idle")) break;
+      if (
+        ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle")
+      )
+        break;
     }
 
     const posAfterFirst = { x: ctx._realBounds.x, y: ctx._realBounds.y };
 
     // At 3s — should not have started yet
     mock.timers.tick(3000);
-    assert.equal(ctx._realBounds.x, posAfterFirst.x, "should not move at 3s between roams");
+    assert.equal(
+      ctx._realBounds.x,
+      posAfterFirst.x,
+      "should not move at 3s between roams",
+    );
 
     // At 4s — second roam pause timer fires
     mock.timers.tick(1000);
     mock.timers.tick(20); // one frame
-    assert.ok(ctx._realBounds.x !== posAfterFirst.x || ctx._realBounds.y !== posAfterFirst.y,
-      "pet should start second wander at 4s between-delay");
+    assert.ok(
+      ctx._realBounds.x !== posAfterFirst.x ||
+        ctx._realBounds.y !== posAfterFirst.y,
+      "pet should start second wander at 4s between-delay",
+    );
   });
 
   it("cancels roam immediately when state changes from idle to working", () => {
@@ -222,7 +301,7 @@ describe("roam module", () => {
 
     roam.tick();
     mock.timers.tick(8000); // trigger first roam
-    mock.timers.tick(20);   // one frame of animation
+    mock.timers.tick(20); // one frame of animation
 
     // Simulate state change to working mid-animation
     ctx.setCurrentState("working");
@@ -233,10 +312,16 @@ describe("roam module", () => {
 
     // Advance more — position should not change further
     mock.timers.tick(500);
-    assert.equal(ctx._realBounds.x, posWhenCancelled.x,
-      "pet should stop moving after state changes to working");
-    assert.equal(ctx._realBounds.y, posWhenCancelled.y,
-      "pet should stop moving after state changes to working");
+    assert.equal(
+      ctx._realBounds.x,
+      posWhenCancelled.x,
+      "pet should stop moving after state changes to working",
+    );
+    assert.equal(
+      ctx._realBounds.y,
+      posWhenCancelled.y,
+      "pet should stop moving after state changes to working",
+    );
   });
 
   it("stops an active roam via cancelRoam", () => {
@@ -252,15 +337,18 @@ describe("roam module", () => {
     roam.cancelRoam();
 
     mock.timers.tick(500);
-    assert.equal(ctx._realBounds.x, posBeforeCancel.x,
-      "pet should stop after cancelRoam");
+    assert.equal(
+      ctx._realBounds.x,
+      posBeforeCancel.x,
+      "pet should stop after cancelRoam",
+    );
     const idleRestore = ctx._stateLog.find(
-      (event) => event.type === "setState" && event.state === "idle"
+      (event) => event.type === "setState" && event.state === "idle",
     );
     assert.deepStrictEqual(
       idleRestore && idleRestore.options,
       { bypassMinDisplay: true },
-      "cancelling active roam must bypass a user-defined roam min-display hold"
+      "cancelling active roam must bypass a user-defined roam min-display hold",
     );
   });
 
@@ -286,7 +374,11 @@ describe("roam module", () => {
     mock.timers.tick(8000);
     mock.timers.tick(20);
 
-    assert.equal(ctx._realBounds.x, 400, "should not move during mini transition");
+    assert.equal(
+      ctx._realBounds.x,
+      400,
+      "should not move during mini transition",
+    );
   });
 
   it("syncs hitWin and anchored surfaces every frame during animation", () => {
@@ -300,10 +392,18 @@ describe("roam module", () => {
     mock.timers.tick(16);
     mock.timers.tick(16);
 
-    const hitWinCalls = ctx._syncLog.filter(e => e === "syncHitWin").length;
-    const anchoredCalls = ctx._syncLog.filter(e => e === "repositionAnchoredSurfaces").length;
-    assert.ok(hitWinCalls >= 3, `syncHitWin should be called each frame, got ${hitWinCalls}`);
-    assert.ok(anchoredCalls >= 3, `repositionAnchoredSurfaces should be called each frame, got ${anchoredCalls}`);
+    const hitWinCalls = ctx._syncLog.filter((e) => e === "syncHitWin").length;
+    const anchoredCalls = ctx._syncLog.filter(
+      (e) => e === "repositionAnchoredSurfaces",
+    ).length;
+    assert.ok(
+      hitWinCalls >= 3,
+      `syncHitWin should be called each frame, got ${hitWinCalls}`,
+    );
+    assert.ok(
+      anchoredCalls >= 3,
+      `repositionAnchoredSurfaces should be called each frame, got ${anchoredCalls}`,
+    );
   });
 
   it("switches to roam visual state when animation starts", () => {
@@ -315,8 +415,13 @@ describe("roam module", () => {
     mock.timers.tick(8000); // pause timer fires, animateTo starts
 
     // animateTo should have called applyState("roam") before the first step
-    const applyStateCalls = ctx._stateLog.filter(e => e.type === "applyState" && e.state === "roam");
-    assert.ok(applyStateCalls.length >= 1, "should call applyState('roam') when animation starts");
+    const applyStateCalls = ctx._stateLog.filter(
+      (e) => e.type === "applyState" && e.state === "roam",
+    );
+    assert.ok(
+      applyStateCalls.length >= 1,
+      "should call applyState('roam') when animation starts",
+    );
   });
 
   it("returns to idle via setState when animation completes normally", () => {
@@ -329,14 +434,23 @@ describe("roam module", () => {
 
     // Advance time frame-by-frame until animation completes
     // (mock.timers.tick may not update Date.now() correctly for nested setTimeouts)
-    for (let i = 0; i < 2000; i++) { // 2000 frames * 16ms = 32s (covers up to ~2560px at 80px/s) // 700 frames * 16ms = 11.2s
+    for (let i = 0; i < 2000; i++) {
+      // 2000 frames * 16ms = 32s (covers up to ~2560px at 80px/s) // 700 frames * 16ms = 11.2s
       mock.timers.tick(16);
-      if (ctx._stateLog.some(e => e.type === "setState" && e.state === "idle")) break;
+      if (
+        ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle")
+      )
+        break;
     }
 
     // After animation completes, setState("idle") should have been called
-    const setStateIdleCalls = ctx._stateLog.filter(e => e.type === "setState" && e.state === "idle");
-    assert.ok(setStateIdleCalls.length >= 1, "should call setState('idle') when animation completes");
+    const setStateIdleCalls = ctx._stateLog.filter(
+      (e) => e.type === "setState" && e.state === "idle",
+    );
+    assert.ok(
+      setStateIdleCalls.length >= 1,
+      "should call setState('idle') when animation completes",
+    );
   });
 
   it("does not call setState idle when cancelled by state change", () => {
@@ -354,9 +468,14 @@ describe("roam module", () => {
     mock.timers.tick(500);
 
     // setState("idle") should NOT have been called after the cancellation
-    const setStateIdleCalls = ctx._stateLog.filter(e => e.type === "setState" && e.state === "idle");
-    assert.equal(setStateIdleCalls.length, 0,
-      "should not call setState('idle') when cancelled by external state change");
+    const setStateIdleCalls = ctx._stateLog.filter(
+      (e) => e.type === "setState" && e.state === "idle",
+    );
+    assert.equal(
+      setStateIdleCalls.length,
+      0,
+      "should not call setState('idle') when cancelled by external state change",
+    );
   });
 
   it("resets firstRoam when state changes away from idle/roam (via tick)", () => {
@@ -367,9 +486,13 @@ describe("roam module", () => {
     roam.tick();
     mock.timers.tick(8000); // first roam starts
     // Advance time frame-by-frame until animation completes
-    for (let i = 0; i < 2000; i++) { // 2000 frames * 16ms = 32s (covers up to ~2560px at 80px/s)
+    for (let i = 0; i < 2000; i++) {
+      // 2000 frames * 16ms = 32s (covers up to ~2560px at 80px/s)
       mock.timers.tick(16);
-      if (ctx._stateLog.some(e => e.type === "setState" && e.state === "idle")) break;
+      if (
+        ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle")
+      )
+        break;
     }
 
     // State changes to working
@@ -387,8 +510,10 @@ describe("roam module", () => {
     // At 8s — should start
     mock.timers.tick(4000);
     mock.timers.tick(20);
-    assert.ok(ctx._realBounds.x !== posAt4s.x || ctx._realBounds.y !== posAt4s.y,
-      "should start roaming 8s after returning to idle from working");
+    assert.ok(
+      ctx._realBounds.x !== posAt4s.x || ctx._realBounds.y !== posAt4s.y,
+      "should start roaming 8s after returning to idle from working",
+    );
   });
 
   it("resets firstRoam when state changes away from idle/roam (via step)", () => {
@@ -398,7 +523,7 @@ describe("roam module", () => {
 
     roam.tick();
     mock.timers.tick(8000); // first roam starts
-    mock.timers.tick(20);   // one frame
+    mock.timers.tick(20); // one frame
 
     // State changes to working mid-animation — step() detects and resets firstRoam
     ctx.setCurrentState("working");
@@ -411,13 +536,20 @@ describe("roam module", () => {
     // At 4s — should NOT have started (needs 8s)
     const posBeforeWait = { x: ctx._realBounds.x, y: ctx._realBounds.y };
     mock.timers.tick(4000);
-    assert.equal(ctx._realBounds.x, posBeforeWait.x, "should wait 8s after returning from working mid-roam");
+    assert.equal(
+      ctx._realBounds.x,
+      posBeforeWait.x,
+      "should wait 8s after returning from working mid-roam",
+    );
 
     // At 8s — should start
     mock.timers.tick(4000);
     mock.timers.tick(20);
-    assert.ok(ctx._realBounds.x !== posBeforeWait.x || ctx._realBounds.y !== posBeforeWait.y,
-      "should start roaming 8s after returning to idle");
+    assert.ok(
+      ctx._realBounds.x !== posBeforeWait.x ||
+        ctx._realBounds.y !== posBeforeWait.y,
+      "should start roaming 8s after returning to idle",
+    );
   });
 
   it("setEnabled(false) cancels ongoing roam and timers", () => {
@@ -433,12 +565,20 @@ describe("roam module", () => {
     roam.setEnabled(false);
 
     mock.timers.tick(500);
-    assert.equal(ctx._realBounds.x, posBeforeDisable.x,
-      "pet should stop after setEnabled(false)");
-    assert.equal(ctx.getCurrentState(), "idle",
-      "pet should return to idle after disabling free roam mid-animation");
-    assert.ok(ctx._stateLog.some(e => e.type === "setState" && e.state === "idle"),
-      "disable should restore the visual state from roam to idle");
+    assert.equal(
+      ctx._realBounds.x,
+      posBeforeDisable.x,
+      "pet should stop after setEnabled(false)",
+    );
+    assert.equal(
+      ctx.getCurrentState(),
+      "idle",
+      "pet should return to idle after disabling free roam mid-animation",
+    );
+    assert.ok(
+      ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle"),
+      "disable should restore the visual state from roam to idle",
+    );
     assert.equal(roam.enabled, false);
   });
 
@@ -450,9 +590,13 @@ describe("roam module", () => {
     roam.tick();
     mock.timers.tick(8000); // first roam starts
     // Advance frame-by-frame until animation completes
-    for (let i = 0; i < 2000; i++) { // 2000 frames * 16ms = 32s (covers up to ~2560px at 80px/s)
+    for (let i = 0; i < 2000; i++) {
+      // 2000 frames * 16ms = 32s (covers up to ~2560px at 80px/s)
       mock.timers.tick(16);
-      if (ctx._stateLog.some(e => e.type === "setState" && e.state === "idle")) break;
+      if (
+        ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle")
+      )
+        break;
     }
 
     // Disable and re-enable
@@ -464,21 +608,32 @@ describe("roam module", () => {
     // At 4s — should NOT have started (fresh enable uses 8s delay)
     const posBeforeWait = { x: ctx._realBounds.x, y: ctx._realBounds.y };
     mock.timers.tick(4000);
-    assert.equal(ctx._realBounds.x, posBeforeWait.x, "should wait 8s after fresh enable");
+    assert.equal(
+      ctx._realBounds.x,
+      posBeforeWait.x,
+      "should wait 8s after fresh enable",
+    );
 
     // At 8s — should start
     mock.timers.tick(4000);
     mock.timers.tick(20);
-    assert.ok(ctx._realBounds.x !== posBeforeWait.x || ctx._realBounds.y !== posBeforeWait.y,
-      "should start roaming 8s after fresh enable");
+    assert.ok(
+      ctx._realBounds.x !== posBeforeWait.x ||
+        ctx._realBounds.y !== posBeforeWait.y,
+      "should start roaming 8s after fresh enable",
+    );
   });
 
   it("picks targets within work-area margins", () => {
     const smallBounds = { x: 200, y: 200, width: 120, height: 120 };
     const smallRealBounds = { x: 200, y: 200, width: 120, height: 120 };
     const ctx = makeCtx({
-      getPetWindowBounds() { return { ...smallBounds }; },
-      getNearestWorkArea() { return { x: 100, y: 100, width: 400, height: 300 }; },
+      getPetWindowBounds() {
+        return { ...smallBounds };
+      },
+      getNearestWorkArea() {
+        return { x: 100, y: 100, width: 400, height: 300 };
+      },
     });
     ctx.win.getBounds = () => ({ ...smallRealBounds });
     ctx.win.setBounds = (next) => {
@@ -504,9 +659,13 @@ describe("roam module", () => {
     roam.tick();
     mock.timers.tick(8000);
     // Advance frame-by-frame until animation completes
-    for (let i = 0; i < 2000; i++) { // 2000 frames * 16ms = 32s (covers up to ~2560px at 80px/s)
+    for (let i = 0; i < 2000; i++) {
+      // 2000 frames * 16ms = 32s (covers up to ~2560px at 80px/s)
       mock.timers.tick(16);
-      if (ctx._stateLog.some(e => e.type === "setState" && e.state === "idle")) break;
+      if (
+        ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle")
+      )
+        break;
     }
 
     const finalX = smallRealBounds.x;
@@ -559,8 +718,11 @@ describe("roam module", () => {
     const posWhenMini = { x: ctx._realBounds.x, y: ctx._realBounds.y };
 
     mock.timers.tick(500);
-    assert.equal(ctx._realBounds.x, posWhenMini.x,
-      "pet should stop moving when mini mode activates during roam");
+    assert.equal(
+      ctx._realBounds.x,
+      posWhenMini.x,
+      "pet should stop moving when mini mode activates during roam",
+    );
   });
 
   it("isRoamAllowed allows both idle and roam states", () => {
@@ -591,18 +753,27 @@ describe("roam module", () => {
     const bounds = { x: 440, y: 440, width: 120, height: 120 };
     const realBounds = { ...bounds };
     const ctx = makeCtx({
-      getPetWindowBounds() { return { ...bounds }; },
-      getNearestWorkArea() { return { x: 0, y: 0, width: 1000, height: 1000 }; },
+      getPetWindowBounds() {
+        return { ...bounds };
+      },
+      getNearestWorkArea() {
+        return { x: 0, y: 0, width: 1000, height: 1000 };
+      },
     });
     ctx.win.getBounds = () => ({ ...realBounds });
     ctx.win.setBounds = (next) => {
-      realBounds.x = next.x; realBounds.y = next.y;
-      realBounds.width = next.width; realBounds.height = next.height;
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
     };
     ctx.applyPetWindowBounds = (next) => {
-      bounds.x = next.x; bounds.y = next.y;
-      realBounds.x = next.x; realBounds.y = next.y;
-      realBounds.width = next.width; realBounds.height = next.height;
+      bounds.x = next.x;
+      bounds.y = next.y;
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
     };
 
     const roam = roamModule(ctx);
@@ -611,14 +782,19 @@ describe("roam module", () => {
     mock.timers.tick(8000);
     for (let i = 0; i < 2000; i++) {
       mock.timers.tick(16);
-      if (ctx._stateLog.some(e => e.type === "setState" && e.state === "idle")) break;
+      if (
+        ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle")
+      )
+        break;
     }
 
     // Fallback ties between all four equidistant corners; the impl keeps the
     // first, (150,150). The pet must have actually moved there — not stalled at
     // its start (the old null-return bug).
-    assert.ok(Math.abs(realBounds.x - 150) < 5 && Math.abs(realBounds.y - 150) < 5,
-      `expected move to farthest corner (150,150), got (${realBounds.x},${realBounds.y})`);
+    assert.ok(
+      Math.abs(realBounds.x - 150) < 5 && Math.abs(realBounds.y - 150) < 5,
+      `expected move to farthest corner (150,150), got (${realBounds.x},${realBounds.y})`,
+    );
   });
 
   it("anchors the window size for the whole walk even when live bounds read back DPI-polluted (#569)", () => {
@@ -638,17 +814,28 @@ describe("roam module", () => {
     mock.timers.tick(8000);
     for (let i = 0; i < 2000; i++) {
       mock.timers.tick(16);
-      if (ctx._stateLog.some(e => e.type === "setState" && e.state === "idle")) break;
+      if (
+        ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle")
+      )
+        break;
     }
 
-    const widths = new Set(ctx._appliedBounds.map(b => b.width));
-    const heights = new Set(ctx._appliedBounds.map(b => b.height));
-    assert.ok(ctx._appliedBounds.length > 10,
-      `walk should span many frames, got ${ctx._appliedBounds.length}`);
-    assert.equal(widths.size, 1,
-      `width must stay constant across the walk, saw [${[...widths].join(", ")}]`);
-    assert.equal(heights.size, 1,
-      `height must stay constant across the walk, saw [${[...heights].join(", ")}]`);
+    const widths = new Set(ctx._appliedBounds.map((b) => b.width));
+    const heights = new Set(ctx._appliedBounds.map((b) => b.height));
+    assert.ok(
+      ctx._appliedBounds.length > 10,
+      `walk should span many frames, got ${ctx._appliedBounds.length}`,
+    );
+    assert.equal(
+      widths.size,
+      1,
+      `width must stay constant across the walk, saw [${[...widths].join(", ")}]`,
+    );
+    assert.equal(
+      heights.size,
+      1,
+      `height must stay constant across the walk, saw [${[...heights].join(", ")}]`,
+    );
     // Anchored to the single read at walk start (120 + one polluted read = 124),
     // never re-read per frame — no cumulative growth.
     assert.equal([...widths][0], 124, "size is captured once at walk start");
@@ -669,10 +856,21 @@ describe("roam module", () => {
     mock.timers.tick(16);
     mock.timers.tick(16);
 
-    assert.ok(ctx._appliedBounds.length >= 2, "walk should have written frames");
+    assert.ok(
+      ctx._appliedBounds.length >= 2,
+      "walk should have written frames",
+    );
     for (const b of ctx._appliedBounds) {
-      assert.equal(b.width, 100, "frozen keep-size width must win over start bounds");
-      assert.equal(b.height, 100, "frozen keep-size height must win over start bounds");
+      assert.equal(
+        b.width,
+        100,
+        "frozen keep-size width must win over start bounds",
+      );
+      assert.equal(
+        b.height,
+        100,
+        "frozen keep-size height must win over start bounds",
+      );
     }
   });
 
@@ -686,7 +884,10 @@ describe("roam module", () => {
     mock.timers.tick(16);
     mock.timers.tick(16);
 
-    assert.ok(ctx._appliedBounds.length >= 2, "walk should have written frames");
+    assert.ok(
+      ctx._appliedBounds.length >= 2,
+      "walk should have written frames",
+    );
     for (const b of ctx._appliedBounds) {
       assert.equal(b.width, 120, "falls back to the size read at walk start");
       assert.equal(b.height, 120, "falls back to the size read at walk start");
@@ -696,36 +897,56 @@ describe("roam module", () => {
   it("sends heading=false (face right) when the walk moves rightward", () => {
     // Default mocked random (0.9) picks a target right of the start (400,300).
     const headings = [];
-    const ctx = makeCtx({ setRoamHeading(left) { headings.push(left); } });
+    const ctx = makeCtx({
+      setRoamHeading(left) {
+        headings.push(left);
+      },
+    });
     const roam = roamModule(ctx);
     roam.setEnabled(true);
 
     roam.tick();
     mock.timers.tick(8000);
 
-    assert.deepEqual(headings, [false], "rightward walk must face right (no mirror)");
+    assert.deepEqual(
+      headings,
+      [false],
+      "rightward walk must face right (no mirror)",
+    );
   });
 
   it("sends heading=true (mirror) when the walk moves leftward", () => {
     // random=0.05 → target (349,193), left of the start (400,300), dist ≈ 118.
     mock.method(Math, "random", () => 0.05);
     const headings = [];
-    const ctx = makeCtx({ setRoamHeading(left) { headings.push(left); } });
+    const ctx = makeCtx({
+      setRoamHeading(left) {
+        headings.push(left);
+      },
+    });
     const roam = roamModule(ctx);
     roam.setEnabled(true);
 
     roam.tick();
     mock.timers.tick(8000);
 
-    assert.deepEqual(headings, [true], "leftward walk must mirror the roam visual");
+    assert.deepEqual(
+      headings,
+      [true],
+      "leftward walk must mirror the roam visual",
+    );
   });
 
   it("keeps the previous heading on a purely vertical walk", () => {
     // Clamp forces finalX back to the start X → dx === 0 → no heading update.
     const headings = [];
     const ctx = makeCtx({
-      setRoamHeading(left) { headings.push(left); },
-      clampToScreenVisual(x, y, w, h) { return { x: 400, y, width: w, height: h }; },
+      setRoamHeading(left) {
+        headings.push(left);
+      },
+      clampToScreenVisual(x, y, w, h) {
+        return { x: 400, y, width: w, height: h };
+      },
     });
     const roam = roamModule(ctx);
     roam.setEnabled(true);
@@ -741,7 +962,11 @@ describe("roam pauses during IME editing (#640)", () => {
   beforeEach(() => {
     const randomValues = [0.9, 0.9, 0.9, 0.1];
     let randomIndex = 0;
-    mock.method(Math, "random", () => randomValues[randomIndex++ % randomValues.length]);
+    mock.method(
+      Math,
+      "random",
+      () => randomValues[randomIndex++ % randomValues.length],
+    );
     mock.timers.enable({ apis: ["setTimeout", "Date"] });
   });
 
@@ -772,23 +997,615 @@ describe("roam pauses during IME editing (#640)", () => {
 
     roam.tick();
     mock.timers.tick(8000); // pause timer fires, walk starts
-    mock.timers.tick(160);  // a few frames in
+    mock.timers.tick(160); // a few frames in
     const midWalk = { x: ctx._realBounds.x, y: ctx._realBounds.y };
-    assert.ok(midWalk.x !== 400 || midWalk.y !== 300, "walk should be underway");
+    assert.ok(
+      midWalk.x !== 400 || midWalk.y !== 300,
+      "walk should be underway",
+    );
 
     editing = true;
     mock.timers.tick(64); // next frame hits the gate
 
     assert.ok(
       ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle"),
-      "gate with no incoming state must restore idle instead of freezing the walk pose"
+      "gate with no incoming state must restore idle instead of freezing the walk pose",
     );
     const stopped = { x: ctx._realBounds.x, y: ctx._realBounds.y };
     mock.timers.tick(320);
     assert.deepEqual(
       { x: ctx._realBounds.x, y: ctx._realBounds.y },
       stopped,
-      "no further movement after the editing gate cancels the walk"
+      "no further movement after the editing gate cancels the walk",
+    );
+  });
+});
+
+describe("roam axis-constrained mode (#686)", () => {
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    mock.timers.reset();
+    mock.reset();
+  });
+
+  it("constrains a horizontal move to the X axis (Y unchanged)", () => {
+    // Math.random() = 0.5 → firstAxis = "vertical", but 0.5 makes tryAxis
+    // pick horizontal first (Math.random() < 0.5 is false → firstAxis="vertical").
+    // Use 0.0 so firstAxis = "horizontal", and targetX = xMin + floor(0 * range) = xMin = 288.
+    // Wait — 0.0 < 0.5 is true → firstAxis = "horizontal".
+    // targetX = 288 + floor(0 * (1488-288)) = 288, dx = |288-400| = 112 >= 100 → returns (288, 300).
+    mock.method(Math, "random", () => 0.0);
+    const ctx = makeCtx();
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(20);
+
+    // Y must be unchanged, X must have moved
+    assert.equal(
+      ctx._realBounds.y,
+      300,
+      "horizontal constrained move must keep Y unchanged",
+    );
+    assert.notEqual(
+      ctx._realBounds.x,
+      400,
+      "horizontal constrained move must change X",
+    );
+  });
+
+  it("constrains a vertical move to the Y axis (X unchanged)", () => {
+    // Math.random() = 0.99 → firstAxis = "vertical" (0.99 >= 0.5).
+    // tryAxis("vertical"): targetY = 162 + floor(0.99 * (756-162)) = 162 + 588 = 750.
+    // dy = |750-300| = 450 >= 100 → returns (400, 750).
+    mock.method(Math, "random", () => 0.99);
+    const ctx = makeCtx();
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(20);
+
+    assert.equal(
+      ctx._realBounds.x,
+      400,
+      "vertical constrained move must keep X unchanged",
+    );
+    assert.notEqual(
+      ctx._realBounds.y,
+      300,
+      "vertical constrained move must change Y",
+    );
+  });
+
+  it("tries the other axis when the first pick is too close", () => {
+    // Pet starts at (400, 300) on a 1920×1080 work area.
+    // xMin=288, xMax=1488, yMin=162, yMax=756.
+    // Math.random() = 0.0 → firstAxis = "horizontal".
+    // tryAxis("horizontal"): targetX = 288, dx = |288-400| = 112 >= 100 → succeeds.
+    // To force a too-close horizontal pick, place the pet at xMin so any
+    // random X in [xMin, xMax) is at least 0 away and at most xMax-xMin.
+    // Instead: use a tiny work area so horizontal range < ROAM_MIN_DIST.
+    //
+    // Work area 200×200, pet 120×120, margin = round(200*0.15) = 30.
+    // xMin = 30, xMax = 200-120-30 = 50. range = 20 < 100 → horizontal returns null.
+    // yMin = 30, yMax = 50, range = 20 < 100 → vertical also returns null.
+    // That would return null entirely. So use a wider work area:
+    // Work area 600×600, pet 120×120, margin = 90.
+    // xMin = 90, xMax = 600-120-90 = 390. range = 300 >= 100.
+    // Pet at (200, 200). Math.random() = 0.0 → firstAxis = "horizontal".
+    // targetX = 90, dx = |90-200| = 110 >= 100 → succeeds.
+    // To force horizontal fail: pet at x=90 (xMin), random=0 → targetX=90, dx=0.
+    // Then fall through to vertical: random=0 → targetY = yMin, dy = |yMin - 200|.
+    // yMin=90, dy = |90-200| = 110 >= 100 → returns (90, 90). But wait —
+    // tryAxis uses the same Math.random sequence. We need to control
+    // the sequence of random calls.
+    //
+    // Sequence with random=0.0 always:
+    //   1. firstAxis pick: random() = 0.0 → "horizontal"
+    //   2. tryAxis("horizontal"): range=300 >= 100. Loop i=0: targetX = 90 + floor(0*300) = 90. dx = |90-90| = 0 < 100.
+    //      i=1..7: same, all targetX=90, dx=0. Fallback: farX = xMax=390 (|390-90|=300 >= |90-90|=0). Returns (390, 200).
+    // Hmm, the fallback will succeed. Let's make the pet at xMax instead.
+    // Pet at (390, 200). Fallback: farX = xMin=90 (|90-390|=300 vs |390-390|=0). Returns (90, 200). Still succeeds.
+    // To make horizontal truly fail, both xMin and xMax must be within 100px.
+    // Work area 250×1000, pet 120×120, margin_x = round(250*0.15) = 38.
+    // xMin = 38, xMax = 250-120-38 = 92. range = 54 < 100 → horizontal returns null immediately.
+    // yMin = round(1000*0.15) = 150. yMax = 1000-120-150 = 730. range = 580 >= 100.
+    // Pet at (50, 200). random=0.0 → firstAxis="horizontal" → null.
+    // tryAxis("vertical"): targetY = 150 + floor(0*580) = 150. dy = |150-200| = 50 < 100.
+    //   i=1..7: same. Fallback: farY = yMin=150 (|150-200|=50) vs yMax=730 (|730-200|=530). farY=730. dy=530>=100. Returns (50, 730).
+    // So X stays at 50, Y moves to 730. This tests cross-axis fallback.
+    mock.method(Math, "random", () => 0.0);
+    const bounds = { x: 50, y: 200, width: 120, height: 120 };
+    const realBounds = { ...bounds };
+    const ctx = makeCtx({
+      getPetWindowBounds() {
+        return { ...bounds };
+      },
+      getNearestWorkArea() {
+        return { x: 0, y: 0, width: 250, height: 1000 };
+      },
+    });
+    ctx.win.getBounds = () => ({ ...realBounds });
+    ctx.win.setBounds = (next) => {
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+    ctx.applyPetWindowBounds = (next) => {
+      bounds.x = next.x;
+      bounds.y = next.y;
+      bounds.width = next.width;
+      bounds.height = next.height;
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(20);
+
+    // Horizontal axis had range < 100, so it returned null.
+    // Vertical fallback should have been used: X unchanged, Y changed.
+    assert.equal(
+      realBounds.x,
+      50,
+      "cross-axis fallback: X must be unchanged when horizontal axis is too narrow",
+    );
+    assert.notEqual(
+      realBounds.y,
+      200,
+      "cross-axis fallback: Y must change when vertical axis is used as fallback",
+    );
+  });
+
+  it("returns null when neither axis has room for a valid target", () => {
+    // Work area too small in both axes: 200×200, pet 120×120, margin=30.
+    // xMin=30, xMax=50, range=20 < 100. yMin=30, yMax=50, range=20 < 100.
+    // Both axes return null → pickRandomTarget returns null → no roam.
+    mock.method(Math, "random", () => 0.5);
+    const bounds = { x: 35, y: 35, width: 120, height: 120 };
+    const realBounds = { ...bounds };
+    const ctx = makeCtx({
+      getPetWindowBounds() {
+        return { ...bounds };
+      },
+      getNearestWorkArea() {
+        return { x: 0, y: 0, width: 200, height: 200 };
+      },
+    });
+    ctx.win.getBounds = () => ({ ...realBounds });
+    ctx.win.setBounds = (next) => {
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+    ctx.applyPetWindowBounds = (next) => {
+      bounds.x = next.x;
+      bounds.y = next.y;
+      bounds.width = next.width;
+      bounds.height = next.height;
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(500);
+
+    // No movement at all — both axes too narrow
+    assert.equal(realBounds.x, 35, "no movement when neither axis has room");
+    assert.equal(realBounds.y, 35, "no movement when neither axis has room");
+    assert.ok(
+      !ctx._stateLog.some((e) => e.type === "applyState" && e.state === "roam"),
+      "no roam state when neither axis has room",
+    );
+  });
+
+  it("preserves the stationary coordinate when starting outside inner margins", () => {
+    // Pet at Y=0 (above yMin=162 on 1080 work area). Horizontal move must
+    // keep Y=0, not clamp it into the margin band.
+    // Math.random() = 0.0 → firstAxis = "horizontal".
+    // targetX = 288, dx = |288-400| = 112 >= 100 → returns (288, 0).
+    mock.method(Math, "random", () => 0.0);
+    const bounds = { x: 400, y: 0, width: 120, height: 120 };
+    const realBounds = { ...bounds };
+    const ctx = makeCtx({
+      getPetWindowBounds() {
+        return { ...bounds };
+      },
+    });
+    ctx.win.getBounds = () => ({ ...realBounds });
+    ctx.win.setBounds = (next) => {
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+    ctx.applyPetWindowBounds = (next) => {
+      bounds.x = next.x;
+      bounds.y = next.y;
+      bounds.width = next.width;
+      bounds.height = next.height;
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(20);
+
+    assert.equal(
+      realBounds.y,
+      0,
+      "stationary coordinate must be unchanged when starting outside margins",
+    );
+  });
+
+  it("preserves the stationary coordinate with a non-zero work-area origin", () => {
+    // Work area starts at (100, 100). Pet at (500, 50) — Y is above yMin.
+    // xMin = 100 + round(1920*0.15) = 100 + 288 = 388.
+    // xMax = 100 + 1920 - 120 - 288 = 1612.
+    // yMin = 100 + round(1080*0.15) = 100 + 162 = 262.
+    // yMax = 100 + 1080 - 120 - 162 = 898.
+    // Math.random() = 0.0 → firstAxis = "horizontal".
+    // targetX = 388, dx = |388-500| = 112 >= 100 → returns (388, 50).
+    mock.method(Math, "random", () => 0.0);
+    const bounds = { x: 500, y: 50, width: 120, height: 120 };
+    const realBounds = { ...bounds };
+    const ctx = makeCtx({
+      getPetWindowBounds() {
+        return { ...bounds };
+      },
+      getNearestWorkArea() {
+        return { x: 100, y: 100, width: 1920, height: 1080 };
+      },
+    });
+    ctx.win.getBounds = () => ({ ...realBounds });
+    ctx.win.setBounds = (next) => {
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+    ctx.applyPetWindowBounds = (next) => {
+      bounds.x = next.x;
+      bounds.y = next.y;
+      bounds.width = next.width;
+      bounds.height = next.height;
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(20);
+
+    assert.equal(
+      realBounds.y,
+      50,
+      "stationary Y must be unchanged with non-zero work-area origin",
+    );
+  });
+
+  it("preserves the stationary coordinate through the final screen clamp (horizontal)", () => {
+    // Review pass 2 regression: pet starts at (400, -100) — above the
+    // rest-clamp region — and picks a horizontal target. clampToScreenVisual()
+    // corrects the stationary Y up to 0, which would otherwise reintroduce a
+    // diagonal walk. The final clamp must be axis-aware: every applied frame
+    // keeps Y equal to the walk start (-100).
+    // Math.random() = 0.0 → firstAxis = "horizontal".
+    // targetX = 288, dx = |288-400| = 112 >= 100 → returns (288, -100, horizontal).
+    mock.method(Math, "random", () => 0.0);
+    const bounds = { x: 400, y: -100, width: 120, height: 120 };
+    const realBounds = { ...bounds };
+    const appliedBounds = [];
+    const ctx = makeCtx({
+      getPetWindowBounds() {
+        return { ...bounds };
+      },
+      clampToScreenVisual(x, y, w, h) {
+        // Rest-clamp ceiling forces Y to 0 — the stationary-coordinate
+        // correction the axis invariant must not let through.
+        return { x, y: 0, width: w, height: h };
+      },
+    });
+    ctx.win.getBounds = () => ({ ...realBounds });
+    ctx.win.setBounds = (next) => {
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+    ctx.applyPetWindowBounds = (next) => {
+      appliedBounds.push({ ...next });
+      bounds.x = next.x;
+      bounds.y = next.y;
+      bounds.width = next.width;
+      bounds.height = next.height;
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+    ctx._appliedBounds = appliedBounds;
+
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(500); // several animation frames
+
+    assert.ok(
+      appliedBounds.length > 0,
+      "walk should have produced applied frames",
+    );
+    // Every applied frame keeps the stationary Y at the walk start (-100);
+    // the clamp's Y=0 correction must not survive the axis-aware restore.
+    for (const b of appliedBounds) {
+      assert.strictEqual(
+        b.y,
+        -100,
+        "stationary Y must equal the walk start through the final clamp in every frame",
+      );
+      assert.notStrictEqual(
+        b.y,
+        0,
+        "clamp's Y=0 correction must not leak into any applied frame",
+      );
+    }
+    // The moving axis must actually move, and exactly one coordinate matches
+    // the walk start (Y matches, X does not).
+    assert.ok(
+      appliedBounds.some((b) => b.x !== 400),
+      "moving X must differ from the walk start in at least one frame",
+    );
+    for (const b of appliedBounds.filter((b) => b.x !== 400)) {
+      assert.strictEqual(b.y, -100, "moved frame keeps Y at the walk start");
+      assert.notStrictEqual(b.x, 400, "moved frame's X differs from the walk start");
+    }
+  });
+
+  it("preserves the stationary coordinate through the final screen clamp (vertical)", () => {
+    // Symmetric to the horizontal case: pet starts at X=-100 (left of the
+    // rest-clamp region), picks a vertical target. clampToScreenVisual()
+    // corrects the stationary X to 0. The final clamp must keep X at -100.
+    // Math.random() = 0.99 → firstAxis = "vertical".
+    // targetY = 162 + floor(0.99 * 594) = 750, dy = 450 >= 100 → returns (-100, 750, vertical).
+    mock.method(Math, "random", () => 0.99);
+    const bounds = { x: -100, y: 300, width: 120, height: 120 };
+    const realBounds = { ...bounds };
+    const appliedBounds = [];
+    const ctx = makeCtx({
+      getPetWindowBounds() {
+        return { ...bounds };
+      },
+      clampToScreenVisual(x, y, w, h) {
+        return { x: 0, y, width: w, height: h };
+      },
+    });
+    ctx.win.getBounds = () => ({ ...realBounds });
+    ctx.win.setBounds = (next) => {
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+    ctx.applyPetWindowBounds = (next) => {
+      appliedBounds.push({ ...next });
+      bounds.x = next.x;
+      bounds.y = next.y;
+      bounds.width = next.width;
+      bounds.height = next.height;
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+    ctx._appliedBounds = appliedBounds;
+
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(500);
+
+    assert.ok(appliedBounds.length > 0, "walk should have produced applied frames");
+    for (const b of appliedBounds) {
+      assert.strictEqual(
+        b.x,
+        -100,
+        "stationary X must equal the walk start through the final clamp in every frame",
+      );
+      assert.notStrictEqual(
+        b.x,
+        0,
+        "clamp's X=0 correction must not leak into any applied frame",
+      );
+    }
+    assert.ok(
+      appliedBounds.some((b) => b.y !== 300),
+      "moving Y must differ from the walk start in at least one frame",
+    );
+  });
+
+  it("leaves the unconstrained roam untouched when the clamp changes both coordinates", () => {
+    // Guard: the axis-aware restore must only apply to axis-tagged walks.
+    // A free-direction roam (constrainAxis off) must still accept the clamp's
+    // corrections on both axes — no stationary coordinate is forced.
+    // Math.random() = 0.9 → 2D picker: targetX=1368, targetY=696 (both move).
+    mock.method(Math, "random", () => 0.9);
+    const ctx = makeCtx({
+      clampToScreenVisual(x, y, w, h) {
+        return { x: x + 10, y: y + 10, width: w, height: h };
+      },
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    // constrainAxis stays false (default)
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(500);
+
+    // The clamp shifted both coordinates; the unconstrained walk must honor
+    // that shift (no axis restore forced Y back to the start).
+    assert.ok(
+      ctx._appliedBounds.length > 0,
+      "unconstrained walk should have produced applied frames",
+    );
+    assert.ok(
+      ctx._appliedBounds.some((b) => b.y !== 300),
+      "unconstrained walk must let the clamp move Y off the start",
+    );
+    assert.ok(
+      ctx._appliedBounds.some((b) => b.x !== 400),
+      "unconstrained walk must let the clamp move X off the start",
+    );
+  });
+
+  it("enabling constrainAxis during an active roam cancels and replans", () => {
+    // Start an unconstrained roam, then enable constrainAxis mid-walk.
+    // The current diagonal walk should be cancelled immediately.
+    const randomValues = [0.9, 0.9, 0.9, 0.1];
+    let randomIndex = 0;
+    mock.method(
+      Math,
+      "random",
+      () => randomValues[randomIndex++ % randomValues.length],
+    );
+    const ctx = makeCtx();
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000); // roam starts (unconstrained)
+    mock.timers.tick(160); // a few frames in
+    const posMidWalk = { x: ctx._realBounds.x, y: ctx._realBounds.y };
+    assert.ok(
+      posMidWalk.x !== 400 || posMidWalk.y !== 300,
+      "walk should be underway before enabling constrain",
+    );
+
+    // Enable constrain axis — should cancel the current walk
+    roam.setConstrainAxis(true);
+
+    // Pet should stop (walk cancelled)
+    const posAfterCancel = { x: ctx._realBounds.x, y: ctx._realBounds.y };
+    mock.timers.tick(500);
+    assert.equal(
+      ctx._realBounds.x,
+      posAfterCancel.x,
+      "pet should stop after enabling constrainAxis mid-walk",
+    );
+    assert.equal(
+      ctx._realBounds.y,
+      posAfterCancel.y,
+      "pet should stop after enabling constrainAxis mid-walk",
+    );
+
+    // A new roam should be scheduled (firstRoam=true → 8s delay)
+    mock.timers.tick(8000);
+    mock.timers.tick(20);
+
+    // The new walk should be axis-constrained (either X or Y unchanged from
+    // the position where the previous walk was cancelled)
+    assert.ok(
+      ctx._realBounds.x === posAfterCancel.x ||
+        ctx._realBounds.y === posAfterCancel.y,
+      "new walk after enabling constrain should be axis-aligned",
+    );
+  });
+
+  it("roamConstrainAxis: false retains the existing free-direction behavior", () => {
+    // With constrainAxis disabled, the roam should be able to move diagonally
+    // (both X and Y change in the same walk).
+    // Math.random() = 0.9 → targetX = 288 + floor(0.9 * 1200) = 288 + 1080 = 1368.
+    // targetY = 162 + floor(0.9 * 594) = 162 + 534 = 696. Both differ from start (400, 300).
+    mock.method(Math, "random", () => 0.9);
+    const ctx = makeCtx();
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    // constrainAxis defaults to false — don't enable it
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(20);
+
+    assert.notEqual(
+      ctx._realBounds.x,
+      400,
+      "free-direction roam should change X",
+    );
+    assert.notEqual(
+      ctx._realBounds.y,
+      300,
+      "free-direction roam should change Y",
+    );
+    // The key assertion: both changed → diagonal (not axis-constrained)
+    assert.ok(
+      ctx._realBounds.x !== 400 && ctx._realBounds.y !== 300,
+      "free-direction roam should move diagonally (both axes change)",
+    );
+  });
+
+  it("setConstrainAxis is a no-op when value does not change", () => {
+    const ctx = makeCtx();
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(20);
+    const posBefore = { x: ctx._realBounds.x, y: ctx._realBounds.y };
+
+    // Set to true again — should not cancel/replan
+    roam.setConstrainAxis(true);
+    mock.timers.tick(100);
+
+    assert.equal(
+      ctx._realBounds.x,
+      posBefore.x,
+      "setting the same value should not disrupt the current roam",
     );
   });
 });

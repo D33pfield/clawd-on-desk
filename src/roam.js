@@ -17,9 +17,9 @@
 //   • When the state changes away from idle/roam (detected in tick or step),
 //     firstRoam is reset so the next idle entry waits the full 8s delay.
 
-const ROAM_IDLE_DELAY_MS = 8000;     // first roam after entering idle
-const ROAM_BETWEEN_DELAY_MS = 4000;  // delay between consecutive roams
-const ROAM_SPEED_PX_PER_MS = 0.08;   // 80px/s — slower than mini crabwalk (120px/s)
+const ROAM_IDLE_DELAY_MS = 8000; // first roam after entering idle
+const ROAM_BETWEEN_DELAY_MS = 4000; // delay between consecutive roams
+const ROAM_SPEED_PX_PER_MS = 0.08; // 80px/s — slower than mini crabwalk (120px/s)
 const ROAM_MIN_DIST = 100;
 const ROAM_MARGIN_RATIO = 0.15;
 const ROAM_FRAME_MS = 16;
@@ -27,14 +27,21 @@ const ROAM_TARGET_ATTEMPTS = 8;
 
 module.exports = function initRoam(ctx) {
   let enabled = false;
+  let constrainAxis = false;
   let roamActive = false;
   let roamAnimTimer = null;
   let roamPauseTimer = null;
-  let firstRoam = true;  // true until the first roam fires after idle entry
+  let firstRoam = true; // true until the first roam fires after idle entry
 
   function cleanupTimers() {
-    if (roamAnimTimer) { clearTimeout(roamAnimTimer); roamAnimTimer = null; }
-    if (roamPauseTimer) { clearTimeout(roamPauseTimer); roamPauseTimer = null; }
+    if (roamAnimTimer) {
+      clearTimeout(roamAnimTimer);
+      roamAnimTimer = null;
+    }
+    if (roamPauseTimer) {
+      clearTimeout(roamPauseTimer);
+      roamPauseTimer = null;
+    }
   }
 
   // Issue #690 plan §4.3.10's roam protection-period release point. Roam's
@@ -45,7 +52,8 @@ module.exports = function initRoam(ctx) {
   // dirty" during the walk gets its one terminal pass. No-op when the
   // runtime hasn't wired this in (e.g. plain unit tests of roam.js alone).
   function notifyRoamProtectionReleased() {
-    if (typeof ctx.releaseReconcileProtection === "function") ctx.releaseReconcileProtection();
+    if (typeof ctx.releaseReconcileProtection === "function")
+      ctx.releaseReconcileProtection();
   }
 
   function isRoamAllowed() {
@@ -61,7 +69,11 @@ module.exports = function initRoam(ctx) {
     // bubble along (followPet anchoring) or walks over the box being typed
     // into. Checked per-frame like the state gate, so an editing start
     // cancels a walk mid-stride.
-    if (typeof ctx.isImeEditingActive === "function" && ctx.isImeEditingActive()) return false;
+    if (
+      typeof ctx.isImeEditingActive === "function" &&
+      ctx.isImeEditingActive()
+    )
+      return false;
     return true;
   }
 
@@ -70,7 +82,7 @@ module.exports = function initRoam(ctx) {
     if (!bounds) return null;
     const wa = ctx.getNearestWorkArea(
       bounds.x + bounds.width / 2,
-      bounds.y + bounds.height / 2
+      bounds.y + bounds.height / 2,
     );
     if (!wa) return null;
     const marginX = Math.round(wa.width * ROAM_MARGIN_RATIO);
@@ -80,6 +92,65 @@ module.exports = function initRoam(ctx) {
     const yMin = wa.y + marginY;
     const yMax = wa.y + wa.height - bounds.height - marginY;
     if (xMax <= xMin || yMax <= yMin) return null;
+
+    /* #686: axis-constrained roam — pick a target that varies in only one axis.
+     * Randomly choose horizontal (same Y, random X) or vertical (same X, random Y).
+     * The constrained branch owns its complete retry/fallback behavior: it never
+     * falls through to the two-dimensional picker or corner fallback below.
+     *
+     * Invariant: exactly one coordinate equals the walk's starting coordinate.
+     * The stationary coordinate is never clamped or adjusted — if the pet starts
+     * outside the inner margin band, that position is kept as-is so the "axis-only"
+     * promise holds even at screen edges. */
+    if (constrainAxis) {
+      const tryAxis = (axis) => {
+        if (axis === "horizontal") {
+          // Keep Y unchanged, pick random X
+          const range = xMax - xMin;
+          if (range < ROAM_MIN_DIST) return null;
+          for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
+            const targetX = xMin + Math.floor(Math.random() * range);
+            if (Math.abs(targetX - bounds.x) >= ROAM_MIN_DIST) {
+              return { x: targetX, y: bounds.y, axis: "horizontal" };
+            }
+          }
+          // Fallback: farthest edge on X
+          const farX =
+            Math.abs(xMin - bounds.x) >= Math.abs(xMax - bounds.x)
+              ? xMin
+              : xMax;
+          if (Math.abs(farX - bounds.x) >= ROAM_MIN_DIST) {
+            return { x: farX, y: bounds.y, axis: "horizontal" };
+          }
+          return null;
+        } else {
+          // Keep X unchanged, pick random Y
+          const range = yMax - yMin;
+          if (range < ROAM_MIN_DIST) return null;
+          for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
+            const targetY = yMin + Math.floor(Math.random() * range);
+            if (Math.abs(targetY - bounds.y) >= ROAM_MIN_DIST) {
+              return { x: bounds.x, y: targetY, axis: "vertical" };
+            }
+          }
+          // Fallback: farthest edge on Y
+          const farY =
+            Math.abs(yMin - bounds.y) >= Math.abs(yMax - bounds.y)
+              ? yMin
+              : yMax;
+          if (Math.abs(farY - bounds.y) >= ROAM_MIN_DIST) {
+            return { x: bounds.x, y: farY, axis: "vertical" };
+          }
+          return null;
+        }
+      };
+
+      // Randomly prefer one axis; if it fails, try the other
+      const firstAxis = Math.random() < 0.5 ? "horizontal" : "vertical";
+      const secondAxis = firstAxis === "horizontal" ? "vertical" : "horizontal";
+      return tryAxis(firstAxis) || tryAxis(secondAxis);
+    }
+
     for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
       const targetX = xMin + Math.floor(Math.random() * (xMax - xMin));
       const targetY = yMin + Math.floor(Math.random() * (yMax - yMin));
@@ -109,12 +180,21 @@ module.exports = function initRoam(ctx) {
     return bestDist >= ROAM_MIN_DIST ? best : null;
   }
 
-  function animateTo(targetX, targetY) {
-    if (roamAnimTimer) { clearTimeout(roamAnimTimer); roamAnimTimer = null; }
+  function animateTo(targetX, targetY, axis) {
+    if (roamAnimTimer) {
+      clearTimeout(roamAnimTimer);
+      roamAnimTimer = null;
+    }
     const win = ctx.win;
-    if (!win || win.isDestroyed()) { roamActive = false; return; }
+    if (!win || win.isDestroyed()) {
+      roamActive = false;
+      return;
+    }
     const startBounds = ctx.getPetWindowBounds();
-    if (!startBounds) { roamActive = false; return; }
+    if (!startBounds) {
+      roamActive = false;
+      return;
+    }
     const startX = startBounds.x;
     const startY = startBounds.y;
     // #569: freeze the window size for the whole walk (mirrors the drag
@@ -123,21 +203,40 @@ module.exports = function initRoam(ctx) {
     // Windows setups ratchet the pet larger while roaming — same mechanism
     // as #408. When keepSizeAcrossDisplays is ON, the frozen keep-size wins
     // over the live start bounds so both anchors share one source of truth.
-    const effectiveSize = typeof ctx.getEffectiveCurrentPixelSize === "function"
-      ? ctx.getEffectiveCurrentPixelSize()
-      : null;
-    const roamW = effectiveSize && Number.isFinite(effectiveSize.width) && effectiveSize.width > 0
-      ? effectiveSize.width
-      : startBounds.width;
-    const roamH = effectiveSize && Number.isFinite(effectiveSize.height) && effectiveSize.height > 0
-      ? effectiveSize.height
-      : startBounds.height;
+    const effectiveSize =
+      typeof ctx.getEffectiveCurrentPixelSize === "function"
+        ? ctx.getEffectiveCurrentPixelSize()
+        : null;
+    const roamW =
+      effectiveSize &&
+      Number.isFinite(effectiveSize.width) &&
+      effectiveSize.width > 0
+        ? effectiveSize.width
+        : startBounds.width;
+    const roamH =
+      effectiveSize &&
+      Number.isFinite(effectiveSize.height) &&
+      effectiveSize.height > 0
+        ? effectiveSize.height
+        : startBounds.height;
     let finalX = targetX;
     let finalY = targetY;
     if (ctx.clampToScreenVisual) {
       const clamped = ctx.clampToScreenVisual(finalX, finalY, roamW, roamH);
       finalX = clamped.x;
       finalY = clamped.y;
+    }
+    // #686 (review pass 2): the picker returns an axis-aligned target, but
+    // clampToScreenVisual() may correct the stationary coordinate when the pet
+    // starts outside the rest-clamp region (e.g. Y=-100 clamped up to 0). That
+    // would reintroduce a diagonal interpolation. Restore the stationary axis
+    // to the walk's starting coordinate so every applied frame keeps exactly
+    // one coordinate equal to the start — the moving axis still benefits from
+    // the clamp. Non-constrained roams (axis undefined) are unaffected.
+    if (axis === "horizontal") {
+      finalY = startY;
+    } else if (axis === "vertical") {
+      finalX = startX;
     }
     // ── Calculate duration based on distance (speed = 80px/s) ──
     const dx = finalX - startX;
@@ -209,9 +308,15 @@ module.exports = function initRoam(ctx) {
       // Write the anchored size, never a re-read of live bounds (#569).
       ctx.applyPetWindowBounds({ x: vx, y: vy, width: roamW, height: roamH });
       if (typeof ctx.syncHitWin === "function") ctx.syncHitWin();
-      if (typeof ctx.repositionAnchoredSurfaces === "function") ctx.repositionAnchoredSurfaces();
+      if (typeof ctx.repositionAnchoredSurfaces === "function")
+        ctx.repositionAnchoredSurfaces();
       // Throttle bubble reposition to every 3rd frame (~20fps) — same as mini.js
-      if (typeof ctx.repositionBubbles === "function" && ctx.bubbleFollowPet && ctx.pendingPermissions.length && (++frameCount % 3 === 0 || t >= 1)) {
+      if (
+        typeof ctx.repositionBubbles === "function" &&
+        ctx.bubbleFollowPet &&
+        ctx.pendingPermissions.length &&
+        (++frameCount % 3 === 0 || t >= 1)
+      ) {
         ctx.repositionBubbles();
       }
 
@@ -233,7 +338,10 @@ module.exports = function initRoam(ctx) {
   }
 
   function scheduleNextRoam() {
-    if (roamPauseTimer) { clearTimeout(roamPauseTimer); roamPauseTimer = null; }
+    if (roamPauseTimer) {
+      clearTimeout(roamPauseTimer);
+      roamPauseTimer = null;
+    }
     if (!enabled) return;
     const delay = firstRoam ? ROAM_IDLE_DELAY_MS : ROAM_BETWEEN_DELAY_MS;
     firstRoam = false;
@@ -241,8 +349,11 @@ module.exports = function initRoam(ctx) {
       roamPauseTimer = null;
       if (!isRoamAllowed()) return;
       const target = pickRandomTarget();
-      if (!target) { scheduleNextRoam(); return; }
-      animateTo(target.x, target.y);
+      if (!target) {
+        scheduleNextRoam();
+        return;
+      }
+      animateTo(target.x, target.y, target.axis);
     }, delay);
   }
 
@@ -258,11 +369,28 @@ module.exports = function initRoam(ctx) {
     }
   }
 
+  function setConstrainAxis(value) {
+    const next = !!value;
+    if (next === constrainAxis) return;
+    constrainAxis = next;
+    // When enabling the constraint during an active unconstrained roam,
+    // cancel and replan so the new restriction takes effect immediately
+    // instead of finishing the current diagonal walk.
+    if (next && roamActive) {
+      cancelRoam();
+      if (enabled && isRoamAllowed()) {
+        firstRoam = true;
+        scheduleNextRoam();
+      }
+    }
+  }
+
   function cancelRoam() {
-    const shouldRestoreIdle = roamActive
-      && typeof ctx.getCurrentState === "function"
-      && ctx.getCurrentState() === "roam"
-      && typeof ctx.setState === "function";
+    const shouldRestoreIdle =
+      roamActive &&
+      typeof ctx.getCurrentState === "function" &&
+      ctx.getCurrentState() === "roam" &&
+      typeof ctx.setState === "function";
     const wasActive = roamActive;
     cleanupTimers();
     roamActive = false;
@@ -298,7 +426,13 @@ module.exports = function initRoam(ctx) {
   }
 
   return {
-    setEnabled, cancelRoam, tick, isRoamAnimating,
-    get enabled() { return enabled; },
+    setEnabled,
+    setConstrainAxis,
+    cancelRoam,
+    tick,
+    isRoamAnimating,
+    get enabled() {
+      return enabled;
+    },
   };
 };

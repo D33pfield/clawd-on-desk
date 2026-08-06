@@ -55,6 +55,10 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.allowEdgePinning, false);
     assert.strictEqual(d.disableMiniMode, false);
     assert.strictEqual(d.keepSizeAcrossDisplays, false);
+    // #686: axis-constrained roam defaults off — existing free-roam behavior
+    // is preserved until the user opts in via the General tab switch.
+    assert.strictEqual(d.freeRoam, false);
+    assert.strictEqual(d.roamConstrainAxis, false);
     assert.strictEqual(d.sessionHudEnabled, true);
     assert.strictEqual(d.sessionHudShowStateLabels, true);
     assert.strictEqual(d.sessionHudShowElapsed, false);
@@ -212,6 +216,8 @@ describe("prefs.validate", () => {
       updateBubbleAutoCloseSeconds: 3601,
       allowEdgePinning: "yes",
       disableMiniMode: "yes",
+      freeRoam: "yes",        // wrong type → default false
+      roamConstrainAxis: 1,   // wrong type → default false
       savedPixelWidth: -1,
       savedPixelHeight: "286",
       savedPixelWorkArea: "bogus",
@@ -236,6 +242,8 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.updateBubbleAutoCloseSeconds, 9);
     assert.strictEqual(v.allowEdgePinning, false);
     assert.strictEqual(v.disableMiniMode, false);
+    assert.strictEqual(v.freeRoam, false);
+    assert.strictEqual(v.roamConstrainAxis, false);
     assert.strictEqual(v.savedPixelWidth, 0);
     assert.strictEqual(v.savedPixelHeight, 0);
     assert.strictEqual(v.savedPixelWorkArea, null);
@@ -350,6 +358,8 @@ describe("prefs.validate", () => {
       allowEdgePinning: true,
       disableMiniMode: true,
       keepSizeAcrossDisplays: true,
+      freeRoam: true,
+      roamConstrainAxis: true,
       savedPixelWidth: 286,
       savedPixelHeight: 286,
       savedPixelWorkArea: { width: 1920, height: 1080 },
@@ -374,6 +384,8 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.allowEdgePinning, true);
     assert.strictEqual(v.disableMiniMode, true);
     assert.strictEqual(v.keepSizeAcrossDisplays, true);
+    assert.strictEqual(v.freeRoam, true);
+    assert.strictEqual(v.roamConstrainAxis, true);
     assert.strictEqual(v.savedPixelWidth, 286);
     assert.strictEqual(v.savedPixelHeight, 286);
     assert.deepStrictEqual(v.savedPixelWorkArea, { width: 1920, height: 1080 });

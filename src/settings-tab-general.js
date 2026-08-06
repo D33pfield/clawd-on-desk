@@ -24,6 +24,7 @@
     "allowEdgePinning",
     "disableMiniMode",
     "freeRoam",
+    "roamConstrainAxis",
     "keepSizeAcrossDisplays",
     "openAtLogin",
     "hideBubbles",
@@ -147,6 +148,11 @@
         key: "freeRoam",
         labelKey: "rowFreeRoam",
         descKey: "rowFreeRoamDesc",
+      }),
+      helpers.buildSwitchRow({
+        key: "roamConstrainAxis",
+        labelKey: "rowRoamConstrainAxis",
+        descKey: "rowRoamConstrainAxisDesc",
       }),
       helpers.buildSwitchRow({
         key: "allowEdgePinning",
