@@ -5120,24 +5120,24 @@ describe("settings renderer browser environment", () => {
     }
   });
 
-  it("wires the roamConstrainAxis General-tab switch end-to-end (update + broadcast)", async () => {
-    // #686 wiring coverage: the pref defaults off, the General-tab switch
-    // reflects the snapshot, clicking it fires settingsAPI.update with the
-    // next raw value (UI → server), and a broadcast change patches the
-    // mounted switch in place without a full re-render (server → UI).
+  it("renders Free roam movement style as a dependent segmented choice", async () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
-    // The switch row + its in-place patch key are both registered.
-    assert.ok(generalSource.includes('key: "roamConstrainAxis"'));
+    assert.ok(generalSource.includes("function buildRoamMovementStyleRow()"));
+    assert.ok(generalSource.includes('"row row-sub roam-movement-style-row"'));
     assert.ok(generalSource.includes('"roamConstrainAxis"'));
-    // All five language tables carry the label and description.
-    for (const key of ["rowRoamConstrainAxis", "rowRoamConstrainAxisDesc"]) {
+    for (const key of [
+      "rowRoamMovementStyle",
+      "rowRoamMovementStyleDesc",
+      "roamMovementNatural",
+      "roamMovementAxis",
+    ]) {
       const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
       assert.strictEqual(matches && matches.length, 5, `${key} should appear in all 5 languages`);
     }
 
     const updateCalls = [];
-    const initialSnapshot = makeGeneralSnapshot({ roamConstrainAxis: false, freeRoam: false });
+    const initialSnapshot = makeGeneralSnapshot({ roamConstrainAxis: true, freeRoam: false });
     const harness = loadGeneralTabForTest({
       snapshot: initialSnapshot,
       settingsAPI: {
@@ -5149,47 +5149,70 @@ describe("settings renderer browser environment", () => {
     });
     harness.renderContent();
 
-    // Mounted, reflects the off snapshot, with a label and description.
-    const meta = harness.getSwitchMeta("roamConstrainAxis");
-    assert.ok(meta, "roamConstrainAxis switch must be mounted in the General tab");
-    assert.strictEqual(meta.element.classList.contains("on"), false, "switch must be off when snapshot is false");
-    assert.strictEqual(meta.element.classList.contains("pending"), false);
-    assert.ok(meta.row.querySelector(".row-label"));
-    assert.ok(meta.row.querySelector(".row-desc"));
+    const control = harness.core.state.mountedControls.roamMovementStyle;
+    const row = harness.content.querySelector(".roam-movement-style-row");
+    assert.ok(control && row, "the dependent movement-style row must mount");
+    assert.ok(row.classList.contains("row-sub"), "movement style must read visually as a child row");
+    assert.strictEqual(control.element.getAttribute("role"), "radiogroup");
+    const buttons = control.element.querySelectorAll("button");
+    const natural = buttons.find((button) => button.dataset.value === "natural");
+    const axis = buttons.find((button) => button.dataset.value === "axis");
+    assert.ok(natural && axis, "both movement styles must be available");
+    assert.strictEqual(axis.classList.contains("active"), true, "stored axis choice remains visible");
+    assert.strictEqual(natural.classList.contains("active"), false);
+    assert.strictEqual(axis.disabled, true, "style is disabled while Free roam is off");
+    assert.strictEqual(natural.disabled, true);
 
-    // Update path (UI → server): clicking dispatches settingsAPI.update with
-    // the next raw value (false → true; not inverted).
+    // Enabling the parent patches the mounted child in place and preserves its
+    // stored axis selection instead of resetting the preference.
     const beforeRenderCount = harness.getContentRenderCount();
-    meta.element.dispatchEvent({ type: "click", bubbles: false });
-    // The click sets a pending transient visual synchronously.
-    assert.strictEqual(meta.element.classList.contains("pending"), true, "click must mark the switch pending");
-    assert.strictEqual(meta.element.classList.contains("on"), true, "click must flip the visual on optimistically");
-    // Flush the invoke() microtask chain so settingsAPI.update resolves.
+    const enabledSnapshot = { ...initialSnapshot, freeRoam: true };
+    harness.core.ops.applyChanges({
+      changes: { freeRoam: true },
+      snapshot: enabledSnapshot,
+    });
+    assert.strictEqual(harness.core.state.mountedControls.roamMovementStyle, control);
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(axis.disabled, false);
+    assert.strictEqual(natural.disabled, false);
+    assert.strictEqual(axis.classList.contains("active"), true);
+
+    // Natural maps back to the existing boolean false; no prefs migration or
+    // new runtime setting is introduced by the presentation change.
+    natural.dispatchEvent({ type: "click", bubbles: false });
     await new Promise((r) => setTimeout(r, 0));
     assert.ok(
-      updateCalls.some((c) => c.key === "roamConstrainAxis" && c.value === true),
-      "clicking the switch must call settingsAPI.update(\"roamConstrainAxis\", true)",
+      updateCalls.some((call) => call.key === "roamConstrainAxis" && call.value === false),
+      "Natural must persist roamConstrainAxis=false",
     );
-    assert.strictEqual(meta.element.classList.contains("pending"), false, "pending clears after a successful update");
+    assert.strictEqual(natural.classList.contains("active"), true);
+    assert.strictEqual(axis.classList.contains("active"), false);
 
-    // Broadcast path (server → UI): applying a snapshot change patches the
-    // mounted switch in place — no full General re-render.
+    // Authoritative broadcasts keep the same control mounted and can replace
+    // the optimistic value without rebuilding General.
+    const naturalSnapshot = { ...enabledSnapshot, roamConstrainAxis: false };
     harness.core.ops.applyChanges({
       changes: { roamConstrainAxis: false },
-      snapshot: { ...initialSnapshot, roamConstrainAxis: false },
+      snapshot: naturalSnapshot,
     });
-    assert.strictEqual(
-      meta.element.classList.contains("on"),
-      false,
-      "broadcast back to false must patch the switch visual in place",
-    );
-    assert.strictEqual(
-      harness.getContentRenderCount(),
-      beforeRenderCount,
-      "roamConstrainAxis broadcasts must patch in place instead of rebuilding General",
-    );
-    // The mounted switch identity is stable across the broadcast.
-    assert.strictEqual(harness.getSwitch("roamConstrainAxis"), meta.element);
+    const axisSnapshot = { ...naturalSnapshot, roamConstrainAxis: true };
+    harness.core.ops.applyChanges({
+      changes: { roamConstrainAxis: true },
+      snapshot: axisSnapshot,
+    });
+    assert.strictEqual(axis.classList.contains("active"), true);
+    assert.strictEqual(natural.classList.contains("active"), false);
+
+    // Turning the parent off disables the child but preserves the stored style.
+    harness.core.ops.applyChanges({
+      changes: { freeRoam: false },
+      snapshot: { ...axisSnapshot, freeRoam: false },
+    });
+    assert.strictEqual(harness.core.state.mountedControls.roamMovementStyle, control);
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(axis.classList.contains("active"), true);
+    assert.strictEqual(natural.disabled, true);
+    assert.strictEqual(axis.disabled, true);
   });
 
   it("registers the Session cleanup group with three number rows, atomic reset, and i18n keys", () => {

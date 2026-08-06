@@ -83,9 +83,67 @@
   const languagePickerApi = root.ClawdLanguagePicker || {};
 
   const LANGUAGE_OPTIONS = ["en", "zh", "zh-TW", "ko", "ja"];
+  const ROAM_MOVEMENT_NATURAL = "natural";
+  const ROAM_MOVEMENT_AXIS = "axis";
 
   function t(key) {
     return helpers.t(key);
+  }
+
+  function readRoamMovementStyle() {
+    return state.snapshot && state.snapshot.roamConstrainAxis === true
+      ? ROAM_MOVEMENT_AXIS
+      : ROAM_MOVEMENT_NATURAL;
+  }
+
+  async function saveRoamMovementStyle(value) {
+    try {
+      const result = await window.settingsAPI.update(
+        "roamConstrainAxis",
+        value === ROAM_MOVEMENT_AXIS,
+      );
+      if (result && result.status === "ok") return true;
+      const message = (result && result.message) || "unknown error";
+      ops.showToast(t("toastSaveFailed") + message, { error: true });
+    } catch (err) {
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+    }
+    return false;
+  }
+
+  function buildRoamMovementStyleRow() {
+    const row = document.createElement("div");
+    row.className = "row row-sub roam-movement-style-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowRoamMovementStyle");
+    const description = document.createElement("span");
+    description.className = "row-desc";
+    description.textContent = t("rowRoamMovementStyleDesc");
+    text.appendChild(label);
+    text.appendChild(description);
+
+    const controlHost = document.createElement("div");
+    controlHost.className = "row-control";
+    const control = helpers.buildSegmentedRadio({
+      value: readRoamMovementStyle(),
+      disabled: !(state.snapshot && state.snapshot.freeRoam === true),
+      ariaLabel: t("rowRoamMovementStyle"),
+      className: "roam-movement-style-segmented",
+      options: [
+        { value: ROAM_MOVEMENT_NATURAL, label: t("roamMovementNatural") },
+        { value: ROAM_MOVEMENT_AXIS, label: t("roamMovementAxis") },
+      ],
+      onChange: saveRoamMovementStyle,
+    });
+    controlHost.appendChild(control.element);
+    row.appendChild(text);
+    row.appendChild(controlHost);
+    state.mountedControls.roamMovementStyle = control;
+    return row;
   }
 
   function render(parent) {
@@ -149,11 +207,7 @@
         labelKey: "rowFreeRoam",
         descKey: "rowFreeRoamDesc",
       }),
-      helpers.buildSwitchRow({
-        key: "roamConstrainAxis",
-        labelKey: "rowRoamConstrainAxis",
-        descKey: "rowRoamConstrainAxisDesc",
-      }),
+      buildRoamMovementStyleRow(),
       helpers.buildSwitchRow({
         key: "allowEdgePinning",
         labelKey: "rowAllowEdgePinning",
@@ -1737,6 +1791,20 @@
     return true;
   }
 
+  function getMountedRoamMovementStyle() {
+    const control = state.mountedControls.roamMovementStyle;
+    if (!control || !document.body.contains(control.element)) return null;
+    return control;
+  }
+
+  function syncRoamMovementStyleFromSnapshot() {
+    const control = getMountedRoamMovementStyle();
+    if (!control) return false;
+    control.setValue(readRoamMovementStyle());
+    control.setDisabled(!(state.snapshot && state.snapshot.freeRoam === true));
+    return true;
+  }
+
   function hasMountedBubblePolicyControls() {
     const summaryControl = state.mountedControls.bubblePolicySummary;
     if (!summaryControl || !document.body.contains(summaryControl.element)) return false;
@@ -1775,6 +1843,10 @@
       && !SESSION_HUD_CHILD_SWITCH_KEYS.every((key) => getMountedGeneralSwitch(key))) {
       return false;
     }
+    if ((keys.includes("freeRoam") || keys.includes("roamConstrainAxis"))
+      && !getMountedRoamMovementStyle()) {
+      return false;
+    }
     if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_POLICY_KEYS.has(key)))
       && !hasMountedBubblePolicyControls()) {
       return false;
@@ -1802,6 +1874,7 @@
       }
       if (SESSION_CLEANUP_NUMBER_KEYS.has(key)) continue;
       if (FLASH_NUMBER_KEYS.has(key)) continue;
+      if (key === "roamConstrainAxis") continue;
       const meta = state.mountedControls.generalSwitches.get(key);
       if (!meta || !document.body.contains(meta.element)) return false;
     }
@@ -1827,6 +1900,7 @@
         state.mountedControls.sessionCleanupControls.get(key).syncFromSnapshot();
         continue;
       }
+      if (key === "roamConstrainAxis") continue;
       const meta = state.mountedControls.generalSwitches.get(key);
       state.transientUiState.generalSwitches.delete(key);
       helpers.setSwitchVisual(meta.element, readers.readGeneralSwitchVisual(key, meta.invert), { pending: false });
@@ -1834,6 +1908,8 @@
         state.mountedControls.soundVolume.syncDisabled();
       }
     }
+    if ((keys.includes("freeRoam") || keys.includes("roamConstrainAxis"))
+      && !syncRoamMovementStyleFromSnapshot()) return false;
     if (keys.includes("sessionHudEnabled") && !syncSessionHudChildSwitchesDisabled()) return false;
     if (keys.some((key) => SESSION_HUD_SUMMARY_KEYS.has(key))) {
       const summary = state.mountedControls.sessionHudSummary;
