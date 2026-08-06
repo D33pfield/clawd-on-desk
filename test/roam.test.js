@@ -1117,7 +1117,8 @@ describe("roam axis-constrained mode (#686)", () => {
     // Pet at (390, 200). Fallback: farX = xMin=90 (|90-390|=300 vs |390-390|=0). Returns (90, 200). Still succeeds.
     // To make horizontal truly fail, both xMin and xMax must be within 100px.
     // Work area 250×1000, pet 120×120, margin_x = round(250*0.15) = 38.
-    // xMin = 38, xMax = 250-120-38 = 92. range = 54 < 100 → horizontal returns null immediately.
+    // xMin = 38, xMax = 250-120-38 = 92. Pet x=50 keeps every
+    // horizontal candidate and both edges within 100px, so that axis fails.
     // yMin = round(1000*0.15) = 150. yMax = 1000-120-150 = 730. range = 580 >= 100.
     // Pet at (50, 200). random=0.0 → firstAxis="horizontal" → null.
     // tryAxis("vertical"): targetY = 150 + floor(0*580) = 150. dy = |150-200| = 50 < 100.
@@ -1160,7 +1161,7 @@ describe("roam axis-constrained mode (#686)", () => {
     mock.timers.tick(8000);
     mock.timers.tick(20);
 
-    // Horizontal axis had range < 100, so it returned null.
+    // Horizontal candidates and the farthest edge were all too close.
     // Vertical fallback should have been used: X unchanged, Y changed.
     assert.equal(
       realBounds.x,
@@ -1172,6 +1173,103 @@ describe("roam axis-constrained mode (#686)", () => {
       200,
       "cross-axis fallback: Y must change when vertical axis is used as fallback",
     );
+  });
+
+  it("uses a narrow axis when the start lies far outside its target band", () => {
+    // xMin=38, xMax=92 (only 54px wide), but the pet starts at x=200.
+    // A target inside that narrow band is still more than 100px away, so the
+    // horizontal axis is valid and must not be rejected based on band width.
+    mock.method(Math, "random", () => 0.0);
+    const ctx = makeCtx({
+      getNearestWorkArea() {
+        return { x: 0, y: 0, width: 250, height: 1000 };
+      },
+    });
+    Object.assign(ctx._bounds, { x: 200, y: 200, width: 120, height: 120 });
+    Object.assign(ctx._realBounds, ctx._bounds);
+
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(20);
+
+    assert.notEqual(ctx._realBounds.x, 200, "the narrow horizontal band should remain usable");
+    assert.equal(ctx._realBounds.y, 200, "a valid horizontal move must keep Y unchanged");
+  });
+
+  it("uses a narrow vertical axis when the start lies far outside its target band", () => {
+    // yMin=38, yMax=92 (only 54px tall), but the pet starts at y=200.
+    // The narrow-band rule must be symmetric for vertical movement.
+    mock.method(Math, "random", () => 0.99);
+    const ctx = makeCtx({
+      getNearestWorkArea() {
+        return { x: 0, y: 0, width: 1000, height: 250 };
+      },
+    });
+    Object.assign(ctx._bounds, { x: 200, y: 200, width: 120, height: 120 });
+    Object.assign(ctx._realBounds, ctx._bounds);
+
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(20);
+
+    assert.equal(ctx._realBounds.x, 200, "a valid vertical move must keep X unchanged");
+    assert.notEqual(ctx._realBounds.y, 200, "the narrow vertical band should remain usable");
+  });
+
+  it("uses the valid axis when the other axis has no target interval", () => {
+    // The 150px-tall work area cannot fit the pet inside the vertical inner
+    // band (yMin=23, yMax=7), while the horizontal band remains valid.
+    // Constrained mode only needs one moving axis, so invalid vertical geometry
+    // must not make the whole picker return null before trying horizontal.
+    mock.method(Math, "random", () => 0.0);
+    const ctx = makeCtx({
+      getNearestWorkArea() {
+        return { x: 0, y: 0, width: 1000, height: 150 };
+      },
+    });
+    Object.assign(ctx._bounds, { x: 300, y: 0, width: 120, height: 120 });
+    Object.assign(ctx._realBounds, ctx._bounds);
+
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(20);
+
+    assert.notEqual(ctx._realBounds.x, 300, "the valid horizontal axis should still move");
+    assert.equal(ctx._realBounds.y, 0, "the invalid vertical geometry must not alter Y");
+  });
+
+  it("uses the valid vertical axis when horizontal has no target interval", () => {
+    mock.method(Math, "random", () => 0.99);
+    const ctx = makeCtx({
+      getNearestWorkArea() {
+        return { x: 0, y: 0, width: 150, height: 1000 };
+      },
+    });
+    Object.assign(ctx._bounds, { x: 0, y: 300, width: 120, height: 120 });
+    Object.assign(ctx._realBounds, ctx._bounds);
+
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(20);
+
+    assert.equal(ctx._realBounds.x, 0, "the invalid horizontal geometry must not alter X");
+    assert.notEqual(ctx._realBounds.y, 300, "the valid vertical axis should still move");
   });
 
   it("returns null when neither axis has room for a valid target", () => {
