@@ -1322,6 +1322,186 @@ describe("roam axis-constrained mode (#686)", () => {
     );
   });
 
+  it("preserves the stationary coordinate through the final screen clamp (horizontal)", () => {
+    // Review pass 2 regression: pet starts at (400, -100) — above the
+    // rest-clamp region — and picks a horizontal target. clampToScreenVisual()
+    // corrects the stationary Y up to 0, which would otherwise reintroduce a
+    // diagonal walk. The final clamp must be axis-aware: every applied frame
+    // keeps Y equal to the walk start (-100).
+    // Math.random() = 0.0 → firstAxis = "horizontal".
+    // targetX = 288, dx = |288-400| = 112 >= 100 → returns (288, -100, horizontal).
+    mock.method(Math, "random", () => 0.0);
+    const bounds = { x: 400, y: -100, width: 120, height: 120 };
+    const realBounds = { ...bounds };
+    const appliedBounds = [];
+    const ctx = makeCtx({
+      getPetWindowBounds() {
+        return { ...bounds };
+      },
+      clampToScreenVisual(x, y, w, h) {
+        // Rest-clamp ceiling forces Y to 0 — the stationary-coordinate
+        // correction the axis invariant must not let through.
+        return { x, y: 0, width: w, height: h };
+      },
+    });
+    ctx.win.getBounds = () => ({ ...realBounds });
+    ctx.win.setBounds = (next) => {
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+    ctx.applyPetWindowBounds = (next) => {
+      appliedBounds.push({ ...next });
+      bounds.x = next.x;
+      bounds.y = next.y;
+      bounds.width = next.width;
+      bounds.height = next.height;
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+    ctx._appliedBounds = appliedBounds;
+
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(500); // several animation frames
+
+    assert.ok(
+      appliedBounds.length > 0,
+      "walk should have produced applied frames",
+    );
+    // Every applied frame keeps the stationary Y at the walk start (-100);
+    // the clamp's Y=0 correction must not survive the axis-aware restore.
+    for (const b of appliedBounds) {
+      assert.strictEqual(
+        b.y,
+        -100,
+        "stationary Y must equal the walk start through the final clamp in every frame",
+      );
+      assert.notStrictEqual(
+        b.y,
+        0,
+        "clamp's Y=0 correction must not leak into any applied frame",
+      );
+    }
+    // The moving axis must actually move, and exactly one coordinate matches
+    // the walk start (Y matches, X does not).
+    assert.ok(
+      appliedBounds.some((b) => b.x !== 400),
+      "moving X must differ from the walk start in at least one frame",
+    );
+    for (const b of appliedBounds.filter((b) => b.x !== 400)) {
+      assert.strictEqual(b.y, -100, "moved frame keeps Y at the walk start");
+      assert.notStrictEqual(b.x, 400, "moved frame's X differs from the walk start");
+    }
+  });
+
+  it("preserves the stationary coordinate through the final screen clamp (vertical)", () => {
+    // Symmetric to the horizontal case: pet starts at X=-100 (left of the
+    // rest-clamp region), picks a vertical target. clampToScreenVisual()
+    // corrects the stationary X to 0. The final clamp must keep X at -100.
+    // Math.random() = 0.99 → firstAxis = "vertical".
+    // targetY = 162 + floor(0.99 * 594) = 750, dy = 450 >= 100 → returns (-100, 750, vertical).
+    mock.method(Math, "random", () => 0.99);
+    const bounds = { x: -100, y: 300, width: 120, height: 120 };
+    const realBounds = { ...bounds };
+    const appliedBounds = [];
+    const ctx = makeCtx({
+      getPetWindowBounds() {
+        return { ...bounds };
+      },
+      clampToScreenVisual(x, y, w, h) {
+        return { x: 0, y, width: w, height: h };
+      },
+    });
+    ctx.win.getBounds = () => ({ ...realBounds });
+    ctx.win.setBounds = (next) => {
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+    ctx.applyPetWindowBounds = (next) => {
+      appliedBounds.push({ ...next });
+      bounds.x = next.x;
+      bounds.y = next.y;
+      bounds.width = next.width;
+      bounds.height = next.height;
+      realBounds.x = next.x;
+      realBounds.y = next.y;
+      realBounds.width = next.width;
+      realBounds.height = next.height;
+    };
+    ctx._appliedBounds = appliedBounds;
+
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(500);
+
+    assert.ok(appliedBounds.length > 0, "walk should have produced applied frames");
+    for (const b of appliedBounds) {
+      assert.strictEqual(
+        b.x,
+        -100,
+        "stationary X must equal the walk start through the final clamp in every frame",
+      );
+      assert.notStrictEqual(
+        b.x,
+        0,
+        "clamp's X=0 correction must not leak into any applied frame",
+      );
+    }
+    assert.ok(
+      appliedBounds.some((b) => b.y !== 300),
+      "moving Y must differ from the walk start in at least one frame",
+    );
+  });
+
+  it("leaves the unconstrained roam untouched when the clamp changes both coordinates", () => {
+    // Guard: the axis-aware restore must only apply to axis-tagged walks.
+    // A free-direction roam (constrainAxis off) must still accept the clamp's
+    // corrections on both axes — no stationary coordinate is forced.
+    // Math.random() = 0.9 → 2D picker: targetX=1368, targetY=696 (both move).
+    mock.method(Math, "random", () => 0.9);
+    const ctx = makeCtx({
+      clampToScreenVisual(x, y, w, h) {
+        return { x: x + 10, y: y + 10, width: w, height: h };
+      },
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    // constrainAxis stays false (default)
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(500);
+
+    // The clamp shifted both coordinates; the unconstrained walk must honor
+    // that shift (no axis restore forced Y back to the start).
+    assert.ok(
+      ctx._appliedBounds.length > 0,
+      "unconstrained walk should have produced applied frames",
+    );
+    assert.ok(
+      ctx._appliedBounds.some((b) => b.y !== 300),
+      "unconstrained walk must let the clamp move Y off the start",
+    );
+    assert.ok(
+      ctx._appliedBounds.some((b) => b.x !== 400),
+      "unconstrained walk must let the clamp move X off the start",
+    );
+  });
+
   it("enabling constrainAxis during an active roam cancels and replans", () => {
     // Start an unconstrained roam, then enable constrainAxis mid-walk.
     // The current diagonal walk should be cancelled immediately.

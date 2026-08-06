@@ -111,7 +111,7 @@ module.exports = function initRoam(ctx) {
           for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
             const targetX = xMin + Math.floor(Math.random() * range);
             if (Math.abs(targetX - bounds.x) >= ROAM_MIN_DIST) {
-              return { x: targetX, y: bounds.y };
+              return { x: targetX, y: bounds.y, axis: "horizontal" };
             }
           }
           // Fallback: farthest edge on X
@@ -120,7 +120,7 @@ module.exports = function initRoam(ctx) {
               ? xMin
               : xMax;
           if (Math.abs(farX - bounds.x) >= ROAM_MIN_DIST) {
-            return { x: farX, y: bounds.y };
+            return { x: farX, y: bounds.y, axis: "horizontal" };
           }
           return null;
         } else {
@@ -130,7 +130,7 @@ module.exports = function initRoam(ctx) {
           for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
             const targetY = yMin + Math.floor(Math.random() * range);
             if (Math.abs(targetY - bounds.y) >= ROAM_MIN_DIST) {
-              return { x: bounds.x, y: targetY };
+              return { x: bounds.x, y: targetY, axis: "vertical" };
             }
           }
           // Fallback: farthest edge on Y
@@ -139,7 +139,7 @@ module.exports = function initRoam(ctx) {
               ? yMin
               : yMax;
           if (Math.abs(farY - bounds.y) >= ROAM_MIN_DIST) {
-            return { x: bounds.x, y: farY };
+            return { x: bounds.x, y: farY, axis: "vertical" };
           }
           return null;
         }
@@ -180,7 +180,7 @@ module.exports = function initRoam(ctx) {
     return bestDist >= ROAM_MIN_DIST ? best : null;
   }
 
-  function animateTo(targetX, targetY) {
+  function animateTo(targetX, targetY, axis) {
     if (roamAnimTimer) {
       clearTimeout(roamAnimTimer);
       roamAnimTimer = null;
@@ -225,6 +225,18 @@ module.exports = function initRoam(ctx) {
       const clamped = ctx.clampToScreenVisual(finalX, finalY, roamW, roamH);
       finalX = clamped.x;
       finalY = clamped.y;
+    }
+    // #686 (review pass 2): the picker returns an axis-aligned target, but
+    // clampToScreenVisual() may correct the stationary coordinate when the pet
+    // starts outside the rest-clamp region (e.g. Y=-100 clamped up to 0). That
+    // would reintroduce a diagonal interpolation. Restore the stationary axis
+    // to the walk's starting coordinate so every applied frame keeps exactly
+    // one coordinate equal to the start — the moving axis still benefits from
+    // the clamp. Non-constrained roams (axis undefined) are unaffected.
+    if (axis === "horizontal") {
+      finalY = startY;
+    } else if (axis === "vertical") {
+      finalX = startX;
     }
     // ── Calculate duration based on distance (speed = 80px/s) ──
     const dx = finalX - startX;
@@ -341,7 +353,7 @@ module.exports = function initRoam(ctx) {
         scheduleNextRoam();
         return;
       }
-      animateTo(target.x, target.y);
+      animateTo(target.x, target.y, target.axis);
     }, delay);
   }
 
