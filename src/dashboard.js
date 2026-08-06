@@ -73,6 +73,10 @@ module.exports = function initDashboard(ctx) {
   let dashboardWindow = null;
   let saveBoundsTimer = null;
   let lastSavedBounds = null;
+  let programmaticEventBounds = null;
+  let programmaticBoundsMutationDepth = 0;
+  let pendingUserBounds = null;
+  let pendingUserBoundsRevision = 0;
   const scheduleLater = typeof ctx.setTimeout === "function" ? ctx.setTimeout : setTimeout;
   const clearScheduled = typeof ctx.clearTimeout === "function" ? ctx.clearTimeout : clearTimeout;
 
@@ -117,18 +121,114 @@ module.exports = function initDashboard(ctx) {
     }
   }
 
+  function getCurrentWindowBounds(win) {
+    if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) return null;
+    try {
+      return typeof win.getBounds === "function" ? roundedBounds(win.getBounds()) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function hasTransientWindowBounds(win) {
+    if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) return true;
+    try {
+      if (
+        (typeof win.isMaximized === "function" && win.isMaximized())
+        || (typeof win.isFullScreen === "function" && win.isFullScreen())
+      ) {
+        return true;
+      }
+      // macOS's green-button "Zoom" can keep isMaximized() false. During that
+      // transition getBounds() exposes the transient zoom rectangle while
+      // getNormalBounds() retains the restorable user rectangle.
+      const currentBounds = getCurrentWindowBounds(win);
+      const normalBounds = getNormalWindowBounds(win);
+      return !!currentBounds && !!normalBounds && !sameBounds(currentBounds, normalBounds);
+    } catch {
+      return false;
+    }
+  }
+
+  // Programmatic placement and text-scale growth can emit the same native
+  // move/resize events as a user drag. Rebase both persistence and event
+  // baselines after the change: synchronous events are cancelled here, while
+  // matching asynchronous events are ignored by isProgrammaticBoundsEvent().
+  function rebaseProgrammaticBounds(win, fallbackBounds = null) {
+    clearSaveBoundsTimer();
+    const persistenceBaseline = getNormalWindowBounds(win) || roundedBounds(fallbackBounds);
+    if (persistenceBaseline) lastSavedBounds = persistenceBaseline;
+    programmaticEventBounds = getCurrentWindowBounds(win) || persistenceBaseline;
+  }
+
+  function isProgrammaticBoundsEvent(win) {
+    if (programmaticBoundsMutationDepth > 0) return true;
+    if (!programmaticEventBounds) return false;
+    const currentBounds = getCurrentWindowBounds(win);
+    if (sameBounds(currentBounds, programmaticEventBounds)) return true;
+    programmaticEventBounds = null;
+    return false;
+  }
+
+  function runProgrammaticBoundsMutation(callback) {
+    programmaticBoundsMutationDepth += 1;
+    try {
+      return callback();
+    } finally {
+      programmaticBoundsMutationDepth -= 1;
+    }
+  }
+
+  function rememberPendingUserBounds(bounds) {
+    // Keep the latest user rectangle as retry debt until persistence confirms
+    // success. Programmatic rebases may change lastSavedBounds, but must never
+    // consume geometry that has not reached prefs yet.
+    const normalized = roundedBounds(bounds);
+    if (!normalized) return null;
+    if (!sameBounds(normalized, pendingUserBounds)) {
+      pendingUserBounds = normalized;
+      pendingUserBoundsRevision += 1;
+    }
+    return {
+      bounds: pendingUserBounds,
+      revision: pendingUserBoundsRevision,
+    };
+  }
+
+  function clearPersistedUserBounds(attempt) {
+    if (!attempt || attempt.revision === null) return;
+    if (
+      pendingUserBoundsRevision === attempt.revision
+      && sameBounds(pendingUserBounds, attempt.bounds)
+    ) {
+      pendingUserBounds = null;
+    }
+  }
+
   function persistWindowBoundsNow(win) {
     clearSaveBoundsTimer();
+    if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) return false;
     if (typeof ctx.onSaveBounds !== "function") return false;
-    const bounds = getNormalWindowBounds(win);
-    if (!bounds || sameBounds(bounds, lastSavedBounds)) return false;
+    const currentBounds = getNormalWindowBounds(win);
+    const bounds = pendingUserBounds || currentBounds;
+    // A retry debt can equal a later programmatic baseline (for example when a
+    // scale change only updates zoom and minimum size), so only dedupe geometry
+    // that has no outstanding user write behind it.
+    if (!bounds || (!pendingUserBounds && sameBounds(bounds, lastSavedBounds))) return false;
+    const attempt = {
+      bounds,
+      revision: pendingUserBounds ? pendingUserBoundsRevision : null,
+    };
     try {
       const result = ctx.onSaveBounds(bounds);
       if (result && typeof result.then === "function") {
         const attemptedBounds = bounds;
         Promise.resolve(result).then(
           (response) => {
-            if (!response || response.status !== "error") return;
+            if (!response || response.status !== "error") {
+              clearPersistedUserBounds(attempt);
+              return;
+            }
             if (sameBounds(lastSavedBounds, attemptedBounds)) lastSavedBounds = null;
             console.warn("Clawd: failed to persist Dashboard window bounds:", response.message);
           },
@@ -141,6 +241,8 @@ module.exports = function initDashboard(ctx) {
         console.warn("Clawd: failed to persist Dashboard window bounds:", result.message);
         return false;
       }
+      if (!result || typeof result.then !== "function") clearPersistedUserBounds(attempt);
+      programmaticEventBounds = null;
       lastSavedBounds = bounds;
       return true;
     } catch (err) {
@@ -151,6 +253,9 @@ module.exports = function initDashboard(ctx) {
 
   function scheduleWindowBoundsSave(win) {
     if (typeof ctx.onSaveBounds !== "function") return;
+    const bounds = getNormalWindowBounds(win);
+    if (!pendingUserBounds && sameBounds(bounds, lastSavedBounds)) return;
+    rememberPendingUserBounds(bounds);
     clearSaveBoundsTimer();
     saveBoundsTimer = scheduleTimer(() => {
       saveBoundsTimer = null;
@@ -261,17 +366,20 @@ module.exports = function initDashboard(ctx) {
     if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
     const placement = getDashboardPlacement(options);
     if (isUsableBounds(placement.bounds) && typeof dashboardWindow.setBounds === "function") {
-      dashboardWindow.setBounds(placement.bounds);
-      // The anchored placement can land the window on a display with a
-      // different textScale; re-zoom right away (memoized — cheap no-op when
-      // nothing changed). This can grow the window to that display's scaled
-      // minimum, so it must run before the baseline capture below.
-      applyTextScaleToWindow();
-      // Programmatic anchoring is not user geometry: rebase the persistence
-      // baseline (and drop any pending save) so re-anchoring never overwrites
-      // the user's saved standalone position.
-      clearSaveBoundsTimer();
-      lastSavedBounds = getNormalWindowBounds(dashboardWindow) || placement.bounds;
+      runProgrammaticBoundsMutation(() => {
+        dashboardWindow.setBounds(placement.bounds);
+        // The anchored placement can land the window on a display with a
+        // different textScale; re-zoom right away (memoized — cheap no-op when
+        // nothing changed). This can grow the window to that display's scaled
+        // minimum; the helper rebases after that growth has settled.
+        applyTextScaleToWindow({
+          flushPendingUserBounds: false,
+          fallbackBounds: placement.bounds,
+        });
+      });
+      // Programmatic anchoring is not user geometry. The helper's rebase keeps
+      // it from overwriting the user's saved standalone position, even if
+      // move/resize is delivered later.
     }
   }
 
@@ -355,9 +463,18 @@ module.exports = function initDashboard(ctx) {
         moveTextScaleTimer = null;
         applyTextScaleToWindow();
       }, 350);
+      // Every move can cross into a display with a different text scale, even
+      // while maximized/fullscreen or when native delivery follows setBounds().
+      // The guards below only decide whether the rectangle is user geometry.
+      if (hasTransientWindowBounds(createdWindow)) return;
+      if (isProgrammaticBoundsEvent(createdWindow)) return;
       scheduleWindowBoundsSave(createdWindow);
     });
-    dashboardWindow.on("resize", () => scheduleWindowBoundsSave(createdWindow));
+    dashboardWindow.on("resize", () => {
+      if (hasTransientWindowBounds(createdWindow)) return;
+      if (isProgrammaticBoundsEvent(createdWindow)) return;
+      scheduleWindowBoundsSave(createdWindow);
+    });
     // `closed` is too late to query native geometry. Flush while the window
     // is still live so a pending debounce cannot lose the user's last move.
     dashboardWindow.on("close", () => persistWindowBoundsNow(createdWindow));
@@ -379,6 +496,7 @@ module.exports = function initDashboard(ctx) {
         clearScheduled(moveTextScaleTimer);
         moveTextScaleTimer = null;
       }
+      programmaticEventBounds = null;
       dashboardWindow = null;
     });
     return dashboardWindow;
@@ -421,22 +539,30 @@ module.exports = function initDashboard(ctx) {
   // textScale changed while the dashboard is open: re-zoom, raise the minimum
   // size, and only grow the window if it now sits below that minimum — never
   // touch a user-chosen size otherwise.
-  function applyTextScaleToWindow() {
+  function applyTextScaleToWindow(options = {}) {
     if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
-    const metrics = getScaledMetrics();
-    applyZoomToWindow(dashboardWindow, getTextScale());
-    if (typeof dashboardWindow.setMinimumSize === "function") {
-      dashboardWindow.setMinimumSize(metrics.minWidth, metrics.minHeight);
+    // A pending debounce represents the user's pre-scale geometry. Flush it
+    // before minimum-size enforcement can grow the native window; otherwise
+    // the timer would later read and persist the programmatic rectangle.
+    if (options.flushPendingUserBounds !== false && saveBoundsTimer) {
+      persistWindowBoundsNow(dashboardWindow);
     }
-    if (typeof dashboardWindow.getBounds !== "function") return;
-    const bounds = dashboardWindow.getBounds();
-    if (bounds.width < metrics.minWidth || bounds.height < metrics.minHeight) {
-      dashboardWindow.setBounds({
-        ...bounds,
-        width: Math.max(bounds.width, metrics.minWidth),
-        height: Math.max(bounds.height, metrics.minHeight),
-      });
-    }
+    runProgrammaticBoundsMutation(() => {
+      const metrics = getScaledMetrics();
+      applyZoomToWindow(dashboardWindow, getTextScale());
+      if (typeof dashboardWindow.setMinimumSize === "function") {
+        dashboardWindow.setMinimumSize(metrics.minWidth, metrics.minHeight);
+      }
+      const bounds = getCurrentWindowBounds(dashboardWindow);
+      if (bounds && (bounds.width < metrics.minWidth || bounds.height < metrics.minHeight)) {
+        dashboardWindow.setBounds({
+          ...bounds,
+          width: Math.max(bounds.width, metrics.minWidth),
+          height: Math.max(bounds.height, metrics.minHeight),
+        });
+      }
+      rebaseProgrammaticBounds(dashboardWindow, options.fallbackBounds || bounds);
+    });
   }
 
   return {
