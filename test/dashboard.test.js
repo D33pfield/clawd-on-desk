@@ -43,9 +43,12 @@ describe("dashboard window", () => {
           height: opts.height + (offset.height || 0),
         };
         this.destroyed = false;
+        this.maximized = false;
+        this.fullScreen = false;
         this.backgroundColors = [opts.backgroundColor];
         this.parentWindows = [];
         this.setBoundsCalls = [];
+        this.setMinimumSizeCalls = [];
         this.onceCallbacks = new Map();
         this.onCallbacks = new Map();
         this.normalBounds = null;
@@ -58,6 +61,8 @@ describe("dashboard window", () => {
       }
       isDestroyed() { return this.destroyed; }
       isMinimized() { return false; }
+      isMaximized() { return this.maximized; }
+      isFullScreen() { return this.fullScreen; }
       restore() {}
       show() {}
       focus() {}
@@ -75,7 +80,9 @@ describe("dashboard window", () => {
       getBounds() { return { ...this.bounds }; }
       getNormalBounds() { return { ...(this.normalBounds || this.bounds) }; }
       setBackgroundColor(color) { this.backgroundColors.push(color); }
+      setMinimumSize(width, height) { this.setMinimumSizeCalls.push({ width, height }); }
       setBounds(bounds) {
+        const previous = { ...this.bounds };
         const offset = options.setBoundsOffset || {};
         this.bounds = {
           x: bounds.x + (offset.x || 0),
@@ -84,6 +91,10 @@ describe("dashboard window", () => {
           height: bounds.height + (offset.height || 0),
         };
         this.setBoundsCalls.push({ ...bounds });
+        if (options.emitSetBoundsEvents) {
+          if (previous.x !== this.bounds.x || previous.y !== this.bounds.y) this.emit("move");
+          if (previous.width !== this.bounds.width || previous.height !== this.bounds.height) this.emit("resize");
+        }
       }
       setParentWindow(parentWindow) {
         this.parentWindows.push(parentWindow);
@@ -297,9 +308,15 @@ describe("dashboard window", () => {
 
   it("applies the saved display's scaled minimum when restoring bounds", () => {
     const scaleBounds = [];
+    const workAreaQueries = [];
     const { dashboard, getCreatedWindow } = createWindowHarness({
       getSavedBounds: () => ({ x: 2100, y: 80, width: 480, height: 600 }),
-      getNearestWorkArea: () => ({ x: 2000, y: 0, width: 1280, height: 800 }),
+      getNearestWorkArea: (cx, cy) => {
+        workAreaQueries.push({ cx, cy });
+        return cx >= 2000
+          ? { x: 2000, y: 0, width: 1280, height: 800 }
+          : { x: 0, y: 0, width: 1280, height: 800 };
+      },
       // The saved rect lives on a 1.6-scale display; the pet (no bounds
       // argument) does not.
       getTextScale: (bounds) => {
@@ -312,6 +329,7 @@ describe("dashboard window", () => {
     const win = getCreatedWindow();
 
     assert.deepStrictEqual(scaleBounds[0], { x: 2100, y: 80, width: 480, height: 600 });
+    assert.deepStrictEqual(workAreaQueries[0], { cx: 2340, cy: 380 });
     assert.deepStrictEqual(win.bounds, {
       x: 2100,
       y: 80,
@@ -380,6 +398,54 @@ describe("dashboard window", () => {
     win.emit("close");
     win.emit("closed");
     assert.strictEqual(scaleTimer.cleared, true);
+  });
+
+  it("re-resolves text scale after a maximized window moves without persisting transient bounds", () => {
+    let scale = 1;
+    const saved = [];
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      getTextScale: () => scale,
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    win.normalBounds = { ...win.bounds };
+    win.maximized = true;
+    win.bounds = { x: 1280, y: 0, width: 1280, height: 800 };
+    scale = 1.6;
+    win.emit("move");
+
+    const scaleTimer = timers.filter((timer) => !timer.cleared && timer.delay === 350).at(-1);
+    assert.ok(scaleTimer);
+    assert.strictEqual(timers.filter((timer) => !timer.cleared && timer.delay === 500).length, 0);
+    scaleTimer.callback();
+    assert.deepStrictEqual(win.setMinimumSizeCalls.at(-1), { width: 512, height: 640 });
+    assert.deepStrictEqual(saved, []);
+  });
+
+  it("does not persist fullscreen move or resize events when current and normal bounds match", () => {
+    const saved = [];
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    win.fullScreen = true;
+    win.bounds = { x: 0, y: 0, width: 1280, height: 800 };
+    win.normalBounds = { ...win.bounds };
+    win.emit("move");
+    win.emit("resize");
+
+    assert.strictEqual(timers.filter((timer) => !timer.cleared && timer.delay === 500).length, 0);
+    assert.deepStrictEqual(saved, []);
   });
 
   it("uses persisted bounds when the dashboard window is recreated", () => {
@@ -627,6 +693,261 @@ describe("dashboard window", () => {
     ]);
   });
 
+  it("does not persist programmatic text-scale growth as user geometry", () => {
+    let scale = 1;
+    const saved = [];
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      emitSetBoundsEvents: true,
+      getTextScale: () => scale,
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    scale = 1.6;
+    dashboard.applyTextScaleToWindow();
+
+    assert.deepStrictEqual(win.bounds, { x: 400, y: 100, width: 512, height: 640 });
+    // Some WMs deliver the setBounds events after the call returns. Matching
+    // late events are still programmatic geometry: a move may re-resolve the
+    // display's text scale, but neither event may arm bounds persistence.
+    win.emit("resize");
+    win.emit("move");
+    assert.strictEqual(timers.filter((t) => !t.cleared && t.delay === 500).length, 0);
+    const scaleTimer = timers.filter((t) => !t.cleared && t.delay === 350).at(-1);
+    assert.ok(scaleTimer);
+    scaleTimer.callback();
+    for (const timer of timers.filter((t) => !t.cleared && t.delay === 500)) timer.callback();
+    assert.deepStrictEqual(saved, []);
+
+    const userBounds = { x: 240, y: 180, width: 760, height: 680 };
+    win.bounds = { ...userBounds };
+    win.emit("resize");
+    timers.filter((t) => !t.cleared && t.delay === 500).at(-1).callback();
+    assert.deepStrictEqual(saved, [userBounds]);
+  });
+
+  it("flushes pending user geometry before text-scale growth rebases the window", () => {
+    let scale = 1;
+    const saved = [];
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      emitSetBoundsEvents: true,
+      getTextScale: () => scale,
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    const moved = { x: 2100, y: 80, width: 480, height: 600 };
+    win.bounds = { ...moved };
+    win.emit("move");
+    scale = 1.6;
+    timers.filter((t) => !t.cleared && t.delay === 350).at(-1).callback();
+
+    assert.deepStrictEqual(saved, [moved]);
+    assert.deepStrictEqual(win.bounds, { ...moved, width: 512, height: 640 });
+    for (const timer of timers.filter((t) => !t.cleared && t.delay === 500)) timer.callback();
+    assert.deepStrictEqual(saved, [moved]);
+  });
+
+  async function assertFailedPreScaleFlushRetries({ asyncFailure, moved }) {
+    let scale = 1;
+    let persisted = { x: 40, y: 60, width: 480, height: 600 };
+    const attempts = [];
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      emitSetBoundsEvents: true,
+      getSavedBounds: () => persisted,
+      getTextScale: () => scale,
+      onSaveBounds: (bounds) => {
+        attempts.push(bounds);
+        const response = attempts.length === 1
+          ? { status: "error", message: asyncFailure ? "disk full" : "read only" }
+          : { status: "ok" };
+        if (attempts.length > 1) persisted = bounds;
+        if (asyncFailure) return Promise.resolve(response);
+        return response;
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    win.bounds = { ...moved };
+    win.emit("move");
+    scale = 1.6;
+    timers.filter((t) => !t.cleared && t.delay === 350).at(-1).callback();
+    if (asyncFailure) {
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+
+    win.emit("close");
+    if (asyncFailure) {
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    assert.deepStrictEqual(attempts, [moved, moved]);
+    win.emit("closed");
+    dashboard.showDashboard();
+    assert.deepStrictEqual(getCreatedWindow().bounds, {
+      ...moved,
+      width: Math.max(moved.width, 512),
+      height: Math.max(moved.height, 640),
+    });
+  }
+
+  it("retries a synchronously failed pre-scale flush after growth", async () => {
+    await assertFailedPreScaleFlushRetries({
+      asyncFailure: false,
+      moved: { x: 600, y: 100, width: 480, height: 600 },
+    });
+  });
+
+  it("retries an asynchronously failed pre-scale flush after growth", async () => {
+    await assertFailedPreScaleFlushRetries({
+      asyncFailure: true,
+      moved: { x: 600, y: 100, width: 480, height: 600 },
+    });
+  });
+
+  it("retries a synchronously failed pre-scale flush without growth", async () => {
+    await assertFailedPreScaleFlushRetries({
+      asyncFailure: false,
+      moved: { x: 300, y: 100, width: 800, height: 650 },
+    });
+  });
+
+  it("retries an asynchronously failed pre-scale flush without growth", async () => {
+    await assertFailedPreScaleFlushRetries({
+      asyncFailure: true,
+      moved: { x: 300, y: 100, width: 800, height: 650 },
+    });
+  });
+
+  async function assertOlderAsyncCompletionPreservesNewerDebt(firstResponse) {
+    let settleFirstSave;
+    const attempts = [];
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      onSaveBounds: (bounds) => {
+        attempts.push(bounds);
+        if (attempts.length === 1) {
+          return new Promise((resolve) => {
+            settleFirstSave = () => resolve(firstResponse);
+          });
+        }
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    const olderBounds = { x: 560, y: 100, width: 520, height: 620 };
+    const newerBounds = { x: 760, y: 180, width: 620, height: 680 };
+    win.bounds = { ...olderBounds };
+    win.emit("move");
+    timers.filter((timer) => !timer.cleared && timer.delay === 500).at(-1).callback();
+
+    win.bounds = { ...newerBounds };
+    win.emit("move");
+    // Model a later programmatic operation rebasing the native rectangle before
+    // the older asynchronous write completes. The newer user debt must survive.
+    dashboard.applyTextScaleToWindow({ flushPendingUserBounds: false });
+    settleFirstSave();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    win.emit("close");
+    assert.deepStrictEqual(attempts, [olderBounds, newerBounds]);
+  }
+
+  it("does not let an older asynchronous success clear newer user geometry", async () => {
+    await assertOlderAsyncCompletionPreservesNewerDebt({ status: "ok" });
+  });
+
+  it("does not let an older asynchronous failure revive older user geometry", async () => {
+    await assertOlderAsyncCompletionPreservesNewerDebt({ status: "error", message: "disk full" });
+  });
+
+  it("keeps failed user geometry retryable across dashboard window recreation", () => {
+    const persisted = { x: 40, y: 60, width: 480, height: 600 };
+    const moved = { x: 700, y: 220, width: 620, height: 660 };
+    const attempts = [];
+    const { dashboard, getCreatedWindow, timers } = createWindowHarness({
+      getSavedBounds: () => persisted,
+      onSaveBounds: (bounds) => {
+        attempts.push(bounds);
+        return attempts.length < 3
+          ? { status: "error", message: "read only" }
+          : { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const first = getCreatedWindow();
+    first.bounds = { ...moved };
+    first.emit("move");
+    timers.filter((timer) => !timer.cleared && timer.delay === 500).at(-1).callback();
+    first.emit("close");
+    first.emit("closed");
+
+    dashboard.showDashboard();
+    const second = getCreatedWindow();
+    assert.deepStrictEqual(second.bounds, persisted);
+    second.emit("close");
+    assert.deepStrictEqual(attempts, [moved, moved, moved]);
+  });
+
+  it("keeps failed user geometry through settings re-anchor and transient window cycles", () => {
+    for (const exposeMaximizedFlag of [true, false]) {
+      let persisted = { x: 40, y: 60, width: 520, height: 520 };
+      const attempts = [];
+      const settingsWindow = {
+        isDestroyed: () => false,
+        isMinimized: () => false,
+        getBounds: () => ({ x: 100, y: 50, width: 800, height: 560 }),
+      };
+      const { dashboard, getCreatedWindow } = createWindowHarness({
+        getSettingsWindow: () => settingsWindow,
+        getSavedBounds: () => persisted,
+        onSaveBounds: (bounds) => {
+          attempts.push(bounds);
+          if (attempts.length === 1) return { status: "error", message: "read only" };
+          persisted = bounds;
+          return { status: "ok" };
+        },
+      });
+
+      dashboard.showDashboard();
+      const win = getCreatedWindow();
+      const moved = { x: 700, y: 180, width: 520, height: 560 };
+      win.bounds = { ...moved };
+      win.emit("move");
+      dashboard.showDashboard({ source: "settings" });
+      assert.deepStrictEqual(win.bounds, { x: 260, y: 50, width: 480, height: 560 });
+
+      win.normalBounds = { ...win.bounds };
+      win.maximized = exposeMaximizedFlag;
+      win.bounds = { x: 0, y: 0, width: 1280, height: 800 };
+      win.emit("resize");
+      win.emit("move");
+      win.maximized = false;
+      win.bounds = { ...win.normalBounds };
+      win.emit("resize");
+      win.emit("move");
+
+      win.emit("close");
+      assert.deepStrictEqual(attempts, [moved, moved]);
+      win.emit("closed");
+      dashboard.showDashboard();
+      assert.deepStrictEqual(getCreatedWindow().bounds, moved);
+    }
+  });
+
   it("keeps a failed synchronous persistence retryable", () => {
     const attempts = [];
     const { dashboard, getCreatedWindow, timers } = createWindowHarness({
@@ -715,6 +1036,25 @@ describe("dashboard window", () => {
     ]);
   });
 
+  it("rounds fractional native bounds before handing them to persistence", () => {
+    const saved = [];
+    const { dashboard, getCreatedWindow } = createWindowHarness({
+      onSaveBounds: (bounds) => {
+        saved.push(bounds);
+        return { status: "ok" };
+      },
+    });
+
+    dashboard.showDashboard();
+    const win = getCreatedWindow();
+    win.bounds = { x: 10.6, y: -20.6, width: 801.7, height: 559.8 };
+    win.emit("close");
+
+    assert.deepStrictEqual(saved, [
+      { x: 11, y: -21, width: 802, height: 560 },
+    ]);
+  });
+
   it("saved bounds override native constructor frame drift", () => {
     const savedBounds = { x: 40, y: 60, width: 500, height: 520 };
     const { dashboard, getCreatedWindow } = createWindowHarness({
@@ -762,6 +1102,24 @@ describe("dashboard window", () => {
     assert.match(rendererSource, /dashboardOpenCodexSession/);
     assert.doesNotMatch(rendererSource, /session\.platform === "webui"/);
     assert.match(preloadSource, /dashboard:hide-session/);
+  });
+
+  it("wires Dashboard persistence to the Dashboard bounds key in main", () => {
+    const mainSource = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+    const start = mainSource.indexOf('const _dashboard = require("./dashboard")({');
+    const end = mainSource.indexOf("\n});", start);
+    assert.ok(start >= 0 && end > start, "Dashboard runtime wiring block must exist");
+    const wiring = mainSource.slice(start, end);
+
+    assert.match(
+      wiring,
+      /getSavedBounds:\s*\(\)\s*=>\s*_settingsController\.get\("dashboardWindowBounds"\)/,
+    );
+    assert.match(
+      wiring,
+      /onSaveBounds:\s*\(bounds\)\s*=>\s*_settingsController\.applyUpdate\("dashboardWindowBounds", bounds\)/,
+    );
+    assert.doesNotMatch(wiring, /settingsWindowBounds/);
   });
 
   it("wires account quota (including Dashboard-only Spark) into the dashboard header", () => {

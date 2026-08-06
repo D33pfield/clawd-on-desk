@@ -1532,6 +1532,7 @@ describe("prefs.save", () => {
     snap.bubbleFollowPet = true;
     snap.x = 42;
     snap.settingsWindowBounds = { x: -1200, y: 80, width: 900, height: 640 };
+    snap.dashboardWindowBounds = { x: 1440, y: 120, width: 720, height: 620 };
     prefs.save(p, snap);
     const { snapshot } = prefs.load(p);
     assert.strictEqual(snapshot.lang, "zh");
@@ -1542,6 +1543,12 @@ describe("prefs.save", () => {
       y: 80,
       width: 900,
       height: 640,
+    });
+    assert.deepStrictEqual(snapshot.dashboardWindowBounds, {
+      x: 1440,
+      y: 120,
+      width: 720,
+      height: 620,
     });
     assert.strictEqual(snapshot.version, prefs.CURRENT_VERSION);
   });
@@ -1569,6 +1576,32 @@ describe("prefs.save", () => {
       "800x560",
     ]) {
       assert.strictEqual(prefs.validate({ settingsWindowBounds: value }).settingsWindowBounds, null);
+    }
+  });
+
+  it("normalizes Dashboard window bounds and drops invalid geometry", () => {
+    assert.deepStrictEqual(
+      prefs.validate({
+        dashboardWindowBounds: {
+          x: 10.6,
+          y: -20.6,
+          width: 801.7,
+          height: 559.8,
+          ignored: true,
+        },
+      }).dashboardWindowBounds,
+      { x: 11, y: -21, width: 802, height: 560 },
+    );
+
+    for (const value of [
+      { x: 0, y: 0, width: 0, height: 560 },
+      { x: Infinity, y: 0, width: 800, height: 560 },
+      { x: "0", y: 0, width: 800, height: 560 },
+      { x: 0, y: 0, width: 800 },
+      [],
+      "800x560",
+    ]) {
+      assert.strictEqual(prefs.validate({ dashboardWindowBounds: value }).dashboardWindowBounds, null);
     }
   });
 
