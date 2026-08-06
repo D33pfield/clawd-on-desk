@@ -56,7 +56,7 @@ const {
   PET_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
-const CURRENT_VERSION = 13;
+const CURRENT_VERSION = 14;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -107,6 +107,14 @@ const SCHEMA = {
   // The Settings runtime prefers Electron's normal bounds so maximized,
   // minimized, and fullscreen rectangles are not stored here.
   settingsWindowBounds: {
+    type: "object",
+    defaultFactory: () => null,
+    normalize: normalizeSettingsWindowBounds,
+  },
+  // Normal-state geometry for the resizable Sessions/Dashboard window. Same
+  // contract as settingsWindowBounds: `null` means the user has not placed it
+  // yet, so the runtime keeps the computed pet/Settings-anchored placement.
+  dashboardWindowBounds: {
     type: "object",
     defaultFactory: () => null,
     normalize: normalizeSettingsWindowBounds,
@@ -752,6 +760,11 @@ function migrate(raw) {
   // an absent/null value intentionally keeps the existing centered placement.
   if (out.version < 13) {
     out.version = 13;
+  }
+  // v13 -> v14: Dashboard-window geometry persistence, same contract as the
+  // Settings step above.
+  if (out.version < 14) {
+    out.version = 14;
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;

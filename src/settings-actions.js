@@ -247,6 +247,13 @@ const updateRegistry = {
       message: "settingsWindowBounds must be null or integer { x, y, width, height } with positive dimensions",
     };
   },
+  dashboardWindowBounds: (value) => {
+    if (value === null || isValidSettingsWindowBounds(value)) return { status: "ok" };
+    return {
+      status: "error",
+      message: "dashboardWindowBounds must be null or integer { x, y, width, height } with positive dimensions",
+    };
+  },
   // #408: frozen-origin work area for keepSizeAcrossDisplays. null = unknown
   // (legacy prefs / never seeded); otherwise positive width+height.
   savedPixelWorkArea: (value) => {
