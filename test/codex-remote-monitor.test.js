@@ -643,6 +643,55 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
     }]);
   });
 
+  it("continues remote exponential backoff after a validated baseline keeps failing", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-stuck-again-"));
+    tmpDirs.push(dir);
+    const filePath = path.join(dir, ROLLOUT_NAME);
+    const prefix = JSON.stringify(META) + "\n";
+    const fillerLine = "x".repeat(1023) + "\n";
+    const filler = fillerLine.repeat(Math.ceil(
+      (4 * 1024 * 1024 + 4096 - Buffer.byteLength(prefix)) / Buffer.byteLength(fillerLine)
+    ));
+    fs.writeFileSync(filePath, prefix + filler);
+
+    __test.pollFile(filePath, ROLLOUT_NAME, { postState: () => {} });
+    const item = __test.replayWork.get(filePath);
+    item.lastProgressAt = Date.now() - 31_000;
+    const originalReadSync = fs.readSync;
+    fs.readSync = () => 0;
+    try {
+      for (let i = 0; i < 8; i++) __test.pollFile(filePath, ROLLOUT_NAME, { postState: () => {} });
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+
+    const entry = __test.tracked.get(filePath);
+    assert.strictEqual(entry.readBackoffLevel, 1);
+    appendLines(filePath, [COMPLETE]);
+    entry.readBackoffUntil = Date.now() - 1;
+    const secondFailureStartedAt = Date.now();
+    let reads = 0;
+    fs.readSync = () => { reads += 1; return 0; };
+    try {
+      assert.strictEqual(
+        __test.pollFile(filePath, ROLLOUT_NAME, { postState: () => {} }).kind,
+        "no-progress"
+      );
+      assert.strictEqual(entry.readBackoffLevel, 2);
+      assert.ok(
+        entry.readBackoffUntil >= secondFailureStartedAt + 59_000,
+        "the second remote failure epoch must back off for about 60 seconds"
+      );
+      assert.strictEqual(
+        __test.pollFile(filePath, ROLLOUT_NAME, { postState: () => {} }).kind,
+        "backoff"
+      );
+      assert.strictEqual(reads, 1);
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+  });
+
   it("bounds one remote poll to 16 MiB and resumes the remaining backlog", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-poll-budget-"));
     tmpDirs.push(dir);
@@ -799,6 +848,29 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
     );
   });
 
+  it("backs off a remote deferred path whose latest stat fails", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-missing-"));
+    tmpDirs.push(dir);
+    const missingFile = path.join(dir, ROLLOUT_NAME);
+    __test.enqueueRemoteDeferred(missingFile, ROLLOUT_NAME, { mtimeMs: Date.now() }, "recent");
+    const originalStatSync = fs.statSync;
+    let missingStats = 0;
+    fs.statSync = (filePath, ...args) => {
+      if (filePath === missingFile) missingStats += 1;
+      return originalStatSync(filePath, ...args);
+    };
+    try {
+      __test.poll({ getSessionDirs: () => [dir], postState: () => {} });
+      const deferred = __test.deferredRecent.get(missingFile);
+      assert.strictEqual(deferred.retryLevel, 1);
+      assert.ok(deferred.notBefore > Date.now());
+      __test.poll({ getSessionDirs: () => [dir], postState: () => {} });
+      assert.strictEqual(missingStats, 1);
+    } finally {
+      fs.statSync = originalStatSync;
+    }
+  });
+
   it("fails closed when an out-of-window replay reaches EOF with a staged question", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-out-window-"));
     tmpDirs.push(dir);
@@ -883,6 +955,38 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
     const s2 = spy();
     __test.pollFile(filePath, ROLLOUT_NAME, { postState: s2.postState });
     assert.deepStrictEqual(s2.posted, []);
+  });
+
+  it("revalidates a cached remote recovery candidate before replacing a live tracker", () => {
+    const request = {
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "request_user_input",
+        call_id: "call_remote_recovery_race",
+        arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+      },
+    };
+    const filePath = track([META, request]);
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(filePath, old, old);
+    const s = spy();
+    __test.pollFile(filePath, ROLLOUT_NAME, { postState: s.postState });
+    const liveTracker = __test.tracked.get(filePath);
+    assert.strictEqual(s.posted.filter((post) => post.event === "CodexUserInputRequest").length, 1);
+    const stat = fs.statSync(filePath);
+    __test.startupRecoveryCandidates.set(filePath, {
+      filePath,
+      file: ROLLOUT_NAME,
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+    });
+
+    __test.runReadyRemoteRecovery({ remainingAttempts: 64, options: { postState: s.postState } });
+
+    assert.strictEqual(s.posted.filter((post) => post.event === "CodexUserInputRequest").length, 1);
+    assert.strictEqual(__test.tracked.get(filePath), liveTracker);
+    assert.strictEqual(__test.startupRecoveryCandidates.has(filePath), false);
   });
 
   it("recoverStalePendingUserInputEntry returns null once the question is already resolved", () => {
@@ -1392,6 +1496,48 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
       `expected at most ${maxCandidatesUnderBudget} candidates processed within the 20MB budget, got ${recoveredCount}`
     );
     assert.ok(recoveredCount > 0);
+  });
+
+  it("charges overlapping remote recovery reads to the real 20 MiB I/O budget", () => {
+    const fileSize = 1024 * 1024;
+    const headPrefix = '{"type":"session_meta","payload":{"cwd":"';
+    const headSuffix = '"}}\n';
+    const head = headPrefix
+      + "h".repeat(256 * 1024 - Buffer.byteLength(headPrefix) - Buffer.byteLength(headSuffix))
+      + headSuffix;
+    const candidates = [];
+    for (let i = 0; i < 17; i++) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-physical-budget-"));
+      tmpDirs.push(dir);
+      const file = uniqueRolloutName(i + 500);
+      const filePath = path.join(dir, file);
+      const request = JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: `call_remote_physical_budget_${i}`,
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }) + "\n";
+      const fillerBytes = fileSize - Buffer.byteLength(head) - Buffer.byteLength(request);
+      fs.writeFileSync(filePath, head + "x".repeat(fillerBytes - 1) + "\n" + request);
+      const stat = fs.statSync(filePath);
+      candidates.push({ filePath, file, mtimeMs: stat.mtimeMs - i, size: stat.size });
+    }
+    const originalReadSync = fs.readSync;
+    let requestedBytes = 0;
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      requestedBytes += length;
+      return originalReadSync(fd, buffer, offset, length, position);
+    };
+    try {
+      __test.runRecoverySweep(candidates, { postState: () => {} });
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+    assert.strictEqual(__test.tracked.size, 15);
+    assert.ok(requestedBytes <= 20 * 1024 * 1024, `requested ${requestedBytes} bytes`);
   });
 
   it("refreshes staleness bookkeeping on a request_user_input notification, not just the generic path", () => {

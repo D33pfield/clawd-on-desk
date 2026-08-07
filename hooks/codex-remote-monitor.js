@@ -114,6 +114,13 @@ const RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const RECOVERY_SWEEP_MAX_FILES = 20;
 const RECOVERY_SWEEP_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 
+function recoveryReadBudgetCost() {
+  // Head and tail are separate bounded reads and can overlap for small files.
+  // Charge their worst case plus the boundary probe even if the current stat
+  // is smaller, because the writer can append before the reads begin.
+  return RECOVERY_HEAD_LINE_MAX_BYTES + RECOVERY_TAIL_SCAN_BYTES + 1;
+}
+
 // JSONL record type[:subtype] → pet state. This standalone remote monitor keeps
 // a zero-dep subset of agents/codex.js because it posts final states directly
 // and does not carry the full local monitor's turn-end/approval heuristics.
@@ -644,6 +651,15 @@ function recoverStalePendingUserInputEntry(filePath, fileName, options = {}) {
 }
 
 function pollFile(filePath, fileName, options = {}) {
+  const now = typeof options.now === "function" ? options.now() : Date.now();
+  const existingEntry = tracked.get(filePath) || null;
+  if (
+    existingEntry
+    && Number.isFinite(existingEntry.readBackoffUntil)
+    && now < existingEntry.readBackoffUntil
+  ) {
+    return { kind: "backoff", requestedBytes: 0, bytesRead: 0 };
+  }
   let stat;
   try {
     stat = options.preStat || fs.statSync(filePath);
@@ -705,7 +721,6 @@ function pollFile(filePath, fileName, options = {}) {
     }
   }
 
-  const now = typeof options.now === "function" ? options.now() : Date.now();
   if (Number.isFinite(entry.readBackoffUntil) && now < entry.readBackoffUntil) {
     return { kind: "backoff", requestedBytes: 0, bytesRead: 0 };
   }
@@ -831,6 +846,18 @@ function enqueueRemoteDeferred(filePath, fileName, stat, forcedLane = null, retr
   while (queue.size > limit) queue.delete(queue.keys().next().value);
 }
 
+function backoffRemoteDeferredStatFailure(entry, options = {}) {
+  if (!entry) return;
+  const retryLevel = Math.min(5, Math.max(0, Number(entry.retryLevel) || 0) + 1);
+  const backoffMs = Math.min(
+    REPLAY_RETRY_MAX_BACKOFF_MS,
+    REPLAY_RETRY_BASE_BACKOFF_MS * (2 ** (retryLevel - 1))
+  );
+  const now = typeof options.now === "function" ? options.now() : Date.now();
+  entry.retryLevel = retryLevel;
+  entry.notBefore = now + backoffMs;
+}
+
 function recordRemoteValidatedSnapshot(filePath, snapshotSize) {
   const item = replayWork.get(filePath);
   if (!item) return;
@@ -853,7 +880,11 @@ function markRemoteReplayProgress(filePath, entry) {
 
 function markRemoteReplayNoProgress(filePath, entry, options = {}) {
   const item = replayWork.get(filePath);
-  if (!item || !entry) return;
+  if (!entry) return;
+  if (!item) {
+    scheduleRemotePostBaselineReadBackoff(entry, options);
+    return;
+  }
   item.consecutiveNoProgress += 1;
   const now = typeof options.now === "function" ? options.now() : Date.now();
   if (
@@ -884,6 +915,20 @@ function markRemoteReplayNoProgress(filePath, entry, options = {}) {
   entry.readBackoffUntil = now + backoffMs;
   entry.readBackoffLevel = retryLevel;
   replayWork.delete(filePath);
+}
+
+function scheduleRemotePostBaselineReadBackoff(entry, options = {}) {
+  if (!entry || !(Number(entry.readBackoffLevel) > 0)) return false;
+  const now = typeof options.now === "function" ? options.now() : Date.now();
+  if (Number.isFinite(entry.readBackoffUntil) && now < entry.readBackoffUntil) return true;
+  const retryLevel = Math.min(5, Number(entry.readBackoffLevel) + 1);
+  const backoffMs = Math.min(
+    REPLAY_RETRY_MAX_BACKOFF_MS,
+    REPLAY_RETRY_BASE_BACKOFF_MS * (2 ** (retryLevel - 1))
+  );
+  entry.readBackoffUntil = now + backoffMs;
+  entry.readBackoffLevel = retryLevel;
+  return true;
 }
 
 function finalizeRemoteReplay(filePath, entry, options = {}) {
@@ -945,10 +990,7 @@ function runRecoverySweep(candidates, options = {}) {
   let bytesScanned = 0;
   for (const candidate of candidates) {
     if (filesScanned >= RECOVERY_SWEEP_MAX_FILES) break;
-    const candidateCost = Math.min(
-      candidate.size,
-      RECOVERY_HEAD_LINE_MAX_BYTES + RECOVERY_TAIL_SCAN_BYTES + 1
-    );
+    const candidateCost = recoveryReadBudgetCost();
     // Check BEFORE adding — accumulating post-hoc lets exactly one
     // over-budget candidate slip through every time the running total lands
     // just under the cap (#707 follow-up review round 4).
@@ -1073,16 +1115,31 @@ function runReadyRemoteRecovery(context) {
   let pausedForAttempts = false;
   for (const candidate of candidates) {
     if (startupRecoveryFilesScanned >= RECOVERY_SWEEP_MAX_FILES) break;
-    const candidateCost = Math.min(
-      candidate.size,
-      RECOVERY_HEAD_LINE_MAX_BYTES + RECOVERY_TAIL_SCAN_BYTES + 1
-    );
-    if (startupRecoveryBytesScanned + candidateCost > RECOVERY_SWEEP_MAX_TOTAL_BYTES) break;
     if (context.remainingAttempts <= 0) {
       pausedForAttempts = true;
       break;
     }
     context.remainingAttempts -= 1;
+    const deferred = deferredRecent.get(candidate.filePath) || deferredBackground.get(candidate.filePath);
+    let stat = null;
+    try {
+      stat = fs.statSync(candidate.filePath);
+    } catch {}
+    // A cached recovery candidate is advisory only. Normal polling may have
+    // attached or deferred the path while discovery was paused across polls;
+    // never replace that newer state or emit its pending request twice.
+    if (
+      !stat
+      || tracked.has(candidate.filePath)
+      || replayWork.has(candidate.filePath)
+      || deferred
+      || Date.now() - stat.mtimeMs <= 120000
+    ) {
+      startupRecoveryCandidates.delete(candidate.filePath);
+      continue;
+    }
+    const candidateCost = recoveryReadBudgetCost();
+    if (startupRecoveryBytesScanned + candidateCost > RECOVERY_SWEEP_MAX_TOTAL_BYTES) break;
     startupRecoveryFilesScanned += 1;
     startupRecoveryBytesScanned += candidateCost;
     const recovered = recoverStalePendingUserInputEntry(
@@ -1170,7 +1227,11 @@ function poll(options = {}) {
         }
       }
       if (!stat) {
-        markRemoteReplayNoProgress(candidate.filePath, tracked.get(candidate.filePath), options);
+        if (deferred) {
+          backoffRemoteDeferredStatFailure(deferred, options);
+        } else {
+          markRemoteReplayNoProgress(candidate.filePath, tracked.get(candidate.filePath), options);
+        }
         processed += 1;
         continue;
       }
@@ -1253,12 +1314,15 @@ module.exports.__test = {
   readCompleteFirstLine,
   readExactRange,
   runRecoverySweep,
+  runReadyRemoteRecovery,
+  recoveryReadBudgetCost,
   cleanStaleFiles,
   pruneTrackedOutOfWindow,
   tracked,
   replayWork,
   deferredRecent,
   deferredBackground,
+  startupRecoveryCandidates,
   admitRemoteReplay,
   enqueueRemoteDeferred,
   collectRemoteDeferredCandidates,

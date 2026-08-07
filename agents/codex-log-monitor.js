@@ -94,6 +94,15 @@ const RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const RECOVERY_SWEEP_MAX_FILES = 20;
 const RECOVERY_SWEEP_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 
+function recoveryReadBudgetCost() {
+  // Recovery reads the head and tail independently. They overlap for small
+  // files, so min(size, head + tail) under-counts the actual synchronous I/O.
+  // Charge the worst case even for a currently small file: Codex can append
+  // between the admission stat and the bounded reads, but the poll-wide I/O
+  // ledger must remain authoritative across that race.
+  return RECOVERY_HEAD_LINE_MAX_BYTES + RECOVERY_TAIL_SCAN_BYTES + 1;
+}
+
 function finiteNonnegativeNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? n : null;
@@ -302,7 +311,11 @@ class CodexLogMonitor {
           }
         }
         if (!stat) {
-          this._markReplayNoProgress(candidate.filePath, this._tracked.get(candidate.filePath));
+          if (deferred) {
+            this._backoffDeferredStatFailure(deferred);
+          } else {
+            this._markReplayNoProgress(candidate.filePath, this._tracked.get(candidate.filePath));
+          }
           processed += 1;
           continue;
         }
@@ -418,19 +431,36 @@ class CodexLogMonitor {
     let pausedForAttempts = false;
     for (const candidate of candidates) {
       if (this._startupRecoveryFilesScanned >= RECOVERY_SWEEP_MAX_FILES) break;
-      const candidateCost = Math.min(
-        candidate.size,
-        RECOVERY_HEAD_LINE_MAX_BYTES + RECOVERY_TAIL_SCAN_BYTES + 1
-      );
-      if (
-        this._startupRecoveryBytesScanned + candidateCost
-        > RECOVERY_SWEEP_MAX_TOTAL_BYTES
-      ) break;
       if (context.remainingAttempts <= 0) {
         pausedForAttempts = true;
         break;
       }
       context.remainingAttempts -= 1;
+      const deferred = this._deferredRecent.get(candidate.filePath)
+        || this._deferredBackground.get(candidate.filePath);
+      let stat = null;
+      try {
+        stat = fs.statSync(candidate.filePath);
+      } catch {}
+      // Discovery and recovery can span polls. The normal poller may have
+      // attached this path (or deferred it) in between; consuming the cached
+      // candidate would duplicate pending notifications and overwrite the
+      // authoritative live tracker.
+      if (
+        !stat
+        || this._tracked.has(candidate.filePath)
+        || this._replayWork.has(candidate.filePath)
+        || deferred
+        || Date.now() - stat.mtimeMs <= ACTIVE_SESSION_WINDOW_MS
+      ) {
+        this._startupRecoveryCandidates.delete(candidate.filePath);
+        continue;
+      }
+      const candidateCost = recoveryReadBudgetCost();
+      if (
+        this._startupRecoveryBytesScanned + candidateCost
+        > RECOVERY_SWEEP_MAX_TOTAL_BYTES
+      ) break;
       this._startupRecoveryFilesScanned += 1;
       this._startupRecoveryBytesScanned += candidateCost;
       const recovered = this._recoverStalePendingUserInput(candidate.filePath, candidate.file);
@@ -489,10 +519,7 @@ class CodexLogMonitor {
     let bytesScanned = 0;
     for (const candidate of candidates) {
       if (filesScanned >= RECOVERY_SWEEP_MAX_FILES) break;
-      const candidateCost = Math.min(
-        candidate.size,
-        RECOVERY_HEAD_LINE_MAX_BYTES + RECOVERY_TAIL_SCAN_BYTES + 1
-      );
+      const candidateCost = recoveryReadBudgetCost();
       // Check BEFORE adding — accumulating post-hoc lets exactly one
       // over-budget candidate slip through every time the running total
       // lands just under the cap (#707 follow-up review round 4).
@@ -1009,6 +1036,15 @@ class CodexLogMonitor {
 
   _pollFile(filePath, fileName, pollContext = null) {
     let tracked = this._tracked.get(filePath) || null;
+    const now = Date.now();
+    const earlyPosition = this._readPositions.get(filePath) || null;
+    if (
+      earlyPosition
+      && Number.isFinite(earlyPosition.readBackoffUntil)
+      && now < earlyPosition.readBackoffUntil
+    ) {
+      return { kind: "backoff", requestedBytes: 0, bytesRead: 0 };
+    }
     let stat;
     try {
       stat = pollContext && pollContext.preStat ? pollContext.preStat : fs.statSync(filePath);
@@ -1273,6 +1309,17 @@ class CodexLogMonitor {
     while (queue.size > limit) queue.delete(queue.keys().next().value);
   }
 
+  _backoffDeferredStatFailure(entry) {
+    if (!entry) return;
+    const retryLevel = Math.min(5, Math.max(0, Number(entry.retryLevel) || 0) + 1);
+    const backoffMs = Math.min(
+      REPLAY_RETRY_MAX_BACKOFF_MS,
+      REPLAY_RETRY_BASE_BACKOFF_MS * (2 ** (retryLevel - 1))
+    );
+    entry.retryLevel = retryLevel;
+    entry.notBefore = Date.now() + backoffMs;
+  }
+
   _recordValidatedReplaySnapshot(filePath, snapshotSize, identity) {
     const item = this._replayWork.get(filePath);
     if (!item) return;
@@ -1291,7 +1338,11 @@ class CodexLogMonitor {
 
   _markReplayNoProgress(filePath, tracked) {
     const item = this._replayWork.get(filePath);
-    if (!item || !tracked) return;
+    if (!item) {
+      this._schedulePostBaselineReadBackoff(filePath, tracked);
+      return;
+    }
+    if (!tracked) return;
     item.consecutiveNoProgress += 1;
     const now = Date.now();
     if (
@@ -1299,6 +1350,27 @@ class CodexLogMonitor {
       || now - item.lastProgressAt < REPLAY_NO_PROGRESS_TIMEOUT_MS
     ) return;
     this._abandonReplayAtValidatedSnapshot(filePath, tracked, item, now);
+  }
+
+  _schedulePostBaselineReadBackoff(filePath, tracked) {
+    const previous = this._readPositions.get(filePath) || null;
+    if (!previous || !(Number(previous.readBackoffLevel) > 0)) return false;
+    const now = Date.now();
+    if (Number.isFinite(previous.readBackoffUntil) && now < previous.readBackoffUntil) {
+      return true;
+    }
+    const retryLevel = Math.min(5, Number(previous.readBackoffLevel) + 1);
+    const backoffMs = Math.min(
+      REPLAY_RETRY_MAX_BACKOFF_MS,
+      REPLAY_RETRY_BASE_BACKOFF_MS * (2 ** (retryLevel - 1))
+    );
+    this._readPositions.set(filePath, {
+      offset: tracked && Number.isFinite(tracked.offset) ? tracked.offset : previous.offset,
+      identity: tracked ? tracked.fileIdentity : previous.identity,
+      readBackoffUntil: now + backoffMs,
+      readBackoffLevel: retryLevel,
+    });
+    return true;
   }
 
   _abandonReplayAtValidatedSnapshot(filePath, tracked, item, now) {

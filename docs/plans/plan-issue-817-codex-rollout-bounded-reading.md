@@ -6,21 +6,22 @@ Issue：[A JavaScript error occurred in the main process #817](https://github.co
 
 代码基准：`main @ fad1b53d9a252cc8a765c1a7b6294f16a48d842c`
 
-状态：**已按独立复审后的方案完成本地实现与验证；尚未创建提交、推送、发布 PR 或回复 Issue。**
+状态：**实现已进入 Draft PR #820；首轮 exact-head 独立实现审查的 1 个 P1、1 个 P2、1 个 P3 已修复并补回归，等待新 head 的二次独立复审。尚未回复 Issue 或进入合并流程。**
 
 复审注记：初稿先后经过子代理与 Claude 独立只读审查；本版只吸收经源码、定向探针或明确不变量验证成立的意见。复审发现初稿的 EOF 结算判据、绝对 pin 策略和 short-read oversized 判定存在缺陷，均已在本版重写。
 
-版本控制注记：仓库 `.gitignore` 当前忽略 `docs/**`，所以本文存在于工作区但不会出现在普通 `git status` 中。若后续要随提交交付，应在获得对应授权后显式 `git add -f`；不得误以为普通 add/commit 会自动带上本文。
+版本控制注记：仓库 `.gitignore` 当前忽略 `docs/**`；本文已通过显式 `git add -f` 随 Draft PR #820 的初始提交纳入版本控制，后续修改会正常显示在该 tracked 文件的 diff 中。
 
 实施验证（2026-08-07）：
 
 - 远端 `main` 仍为本文基准 `fad1b53d9a252cc8a765c1a7b6294f16a48d842c`；Issue #817 仍为 OPEN、无新增评论。
-- focused：`158 pass / 0 fail`。
+- focused：`166 pass / 0 fail`。
 - Remote SSH deploy manifest / dependency closure：`57 pass / 0 fail`。
-- 全仓：`6925 pass / 0 fail / 21 conditional skip`；用户提供的修改前基线为 `6883 pass / 0 fail`。
+- 全仓：`6933 pass / 0 fail / 21 conditional skip`；用户提供的修改前基线为 `6883 pass / 0 fail`。
 - `verify:electron`：Electron `41.10.2` 完整性通过；两份修改脚本的 `node --check` 与 `git diff --check` 通过。
 - `build:mac:arm64`：成功生成 ad-hoc 签名、未 notarize 的 `dist/Clawd-on-Desk-0.14.0-arm64.dmg`。
-- packaged smoke：打包 App 使用隔离临时 HOME 面对 600 MiB 稀疏 Codex rollout 连续运行约 16 秒，主进程保持存活，未出现 `Cannot create a string longer than 0x1fffffe8 characters`；临时 HOME 与 fixture 已清理。
+- packaged smoke：首轮与首轮独立审查补修后的打包 App 均使用隔离临时 HOME 面对 600 MiB 稀疏 Codex rollout 连续运行约 16 秒，主进程保持存活，未出现 `Cannot create a string longer than 0x1fffffe8 characters`；临时 HOME 与 fixture 已清理。
+- 首轮独立实现审查（初始 head `aff82ec24fd56adcf2fc8a120baa33bfd0f16685`）确认三项缺陷并已补修：startup recovery 缓存候选消费前重验，防止重复 pending/覆盖 live tracker；validated baseline 后的持续失败继续执行 30 秒起、最高 5 分钟的指数退避，并让 deferred stat failure 同样遵守 `notBefore`；20 MiB recovery 账本按 head/tail 最坏物理读取量保守计费，覆盖两段重叠与文件并发增长。
 - 残余验证边界：未取得报告人的真实 rollout；未做 x64、Windows、Linux 或真实 Remote SSH 主机 smoke；arm64 smoke 证明打包生产入口不再立即执行无界解码，不等同于完整追完 600 MiB backlog。
 
 ---
@@ -286,6 +287,8 @@ rebaseline 的测试必须证明旧文件已积累但尚未发布的 sustained s
 这条 fail-closed 很关键：如果 request 已落在 short-read 的前半段，而对应 resolution 仍在尚未读到的后半段，把前半段当完整 tail 会错误复活历史卡片。
 
 这不是扩大 recovery 扫描预算；head 仍最多 256 KiB，tail 仍最多 1 MiB，同时各自最多固定次数的读取尝试。UTF-8 边界测试必须验证 raw Buffer 拼接；当前逐块 `toString()` 再拼接通常仍能 `JSON.parse`，但会把跨块字符污染成多个 U+FFFD，不能只用“是否抛解析错误”作为 oracle。
+
+全局 `RECOVERY_SWEEP_MAX_TOTAL_BYTES = 20 MiB` 必须按**物理请求上界**记账，不能用 `min(fileSize, head + tail + 1)`：小文件的 head 与 tail 会重叠并被分别读取，且文件可在 admission stat 后继续增长。每个准备消费的候选先重验 live tracker、replay/deferred 状态、`notBefore` 与最新 stat；通过后保守预留 `256 KiB + 1 MiB + 1 byte` 的最坏读取量，预算不足则停止本轮 recovery。这个保守值会让 20 MiB 下最多准入 15 个最坏候选，优先保证主线程同步 I/O 上限真实成立。
 
 ### B9 — catch 只是保险，不能替代有界读取
 

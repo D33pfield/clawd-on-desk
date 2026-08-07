@@ -1180,6 +1180,47 @@ describe("CodexLogMonitor", () => {
     assert.ok(monitor._tracked.size > 0, "at least some candidates within budget must still be recovered");
   });
 
+  it("accounts overlapping recovery head and tail reads against the real 20 MiB I/O budget", () => {
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
+    const fileSize = 1024 * 1024;
+    const headPrefix = '{"type":"session_meta","payload":{"cwd":"';
+    const headSuffix = '"}}\n';
+    const head = headPrefix
+      + "h".repeat(256 * 1024 - Buffer.byteLength(headPrefix) - Buffer.byteLength(headSuffix))
+      + headSuffix;
+    const candidates = [];
+    for (let i = 0; i < 17; i++) {
+      const file = uniqueRolloutName(i + 300);
+      const filePath = path.join(dateDir, file);
+      const request = JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: `call_physical_budget_${i}`,
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }) + "\n";
+      const fillerBytes = fileSize - Buffer.byteLength(head) - Buffer.byteLength(request);
+      fs.writeFileSync(filePath, head + "x".repeat(fillerBytes - 1) + "\n" + request);
+      const stat = fs.statSync(filePath);
+      candidates.push({ filePath, file, mtimeMs: stat.mtimeMs - i, size: stat.size });
+    }
+    const originalReadSync = fs.readSync;
+    let requestedBytes = 0;
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      requestedBytes += length;
+      return originalReadSync(fd, buffer, offset, length, position);
+    };
+    try {
+      monitor._runRecoverySweep(candidates);
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+    assert.strictEqual(monitor._tracked.size, 15);
+    assert.ok(requestedBytes <= 20 * 1024 * 1024, `requested ${requestedBytes} bytes`);
+  });
+
   it("keeps the startup recovery byte budget cumulative when attempt exhaustion spans polls", () => {
     monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
     const calls = [];
@@ -1187,25 +1228,75 @@ describe("CodexLogMonitor", () => {
       calls.push(filePath);
       return null;
     };
-    const candidateCost = 1.1 * 1024 * 1024;
+    const candidateSize = 1.1 * 1024 * 1024;
+    const candidateCost = 256 * 1024 + 1024 * 1024 + 1;
+    const fakeStats = new Map();
     for (let i = 0; i < 20; i++) {
+      const filePath = `candidate-${i}`;
+      const mtimeMs = Date.now() - 10 * 60 * 1000 - i;
+      fakeStats.set(filePath, { size: candidateSize, mtimeMs });
       monitor._insertStartupRecoveryCandidate({
-        filePath: `candidate-${i}`,
+        filePath,
         file: uniqueRolloutName(i),
-        mtimeMs: Date.now() - i,
-        size: candidateCost,
+        mtimeMs,
+        size: candidateSize,
       });
     }
-    monitor._startupRecoveryReady = true;
-    monitor._runReadyStartupRecovery({ remainingAttempts: 9 });
-    assert.strictEqual(calls.length, 9);
-    assert.strictEqual(monitor._didInitialRecoveryScan, false);
-    assert.strictEqual(monitor._startupRecoveryCandidates.size, 11);
+    const originalStatSync = fs.statSync;
+    fs.statSync = (filePath, ...args) => fakeStats.get(filePath) || originalStatSync(filePath, ...args);
+    try {
+      monitor._startupRecoveryReady = true;
+      monitor._runReadyStartupRecovery({ remainingAttempts: 9 });
+      assert.strictEqual(calls.length, 9);
+      assert.strictEqual(monitor._didInitialRecoveryScan, false);
+      assert.strictEqual(monitor._startupRecoveryCandidates.size, 11);
 
+      monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+      assert.strictEqual(calls.length, Math.floor((20 * 1024 * 1024) / candidateCost));
+      assert.strictEqual(new Set(calls).size, calls.length, "resuming must not recover a candidate twice");
+      assert.strictEqual(monitor._didInitialRecoveryScan, true);
+    } finally {
+      fs.statSync = originalStatSync;
+    }
+  });
+
+  it("revalidates a cached startup recovery candidate before replacing a live tracker", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/recovery-race" } }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: "call_recovery_race",
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }),
+    ].join("\n") + "\n");
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(testFile, old, old);
+    const requests = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      onUserInputRequest: (...args) => requests.push(args),
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+    const liveTracker = monitor._tracked.get(testFile);
+    assert.strictEqual(requests.length, 1);
+    const stat = fs.statSync(testFile);
+    monitor._insertStartupRecoveryCandidate({
+      filePath: testFile,
+      file: path.basename(testFile),
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+    });
+    monitor._startupRecoveryReady = true;
     monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
-    assert.strictEqual(calls.length, Math.floor((20 * 1024 * 1024) / candidateCost));
-    assert.strictEqual(new Set(calls).size, calls.length, "resuming must not recover a candidate twice");
-    assert.strictEqual(monitor._didInitialRecoveryScan, true);
+
+    assert.strictEqual(requests.length, 1, "ready recovery must not publish the same pending request twice");
+    assert.strictEqual(monitor._tracked.get(testFile), liveTracker, "ready recovery must preserve the newer tracker");
+    assert.strictEqual(monitor._startupRecoveryCandidates.has(testFile), false);
   });
 
   it("clears a pending question's card on task_complete even without a matching function_call_output", () => {
@@ -1766,6 +1857,49 @@ describe("CodexLogMonitor", () => {
     }]);
   });
 
+  it("continues exponential backoff when a validated baseline keeps failing", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const prefix = JSON.stringify({ type: "session_meta", payload: { cwd: "/stuck-again" } }) + "\n";
+    const fillerLine = "x".repeat(1023) + "\n";
+    const filler = fillerLine.repeat(Math.ceil(
+      (4 * 1024 * 1024 + 4096 - Buffer.byteLength(prefix)) / Buffer.byteLength(fillerLine)
+    ));
+    fs.writeFileSync(testFile, prefix + filler);
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+
+    monitor._pollFile(testFile, path.basename(testFile));
+    const item = monitor._replayWork.get(testFile);
+    item.lastProgressAt = Date.now() - 31_000;
+    const originalReadSync = fs.readSync;
+    fs.readSync = () => 0;
+    try {
+      for (let i = 0; i < 8; i++) monitor._pollFile(testFile, path.basename(testFile));
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+
+    const ledger = monitor._readPositions.get(testFile);
+    assert.strictEqual(ledger.readBackoffLevel, 1);
+    fs.appendFileSync(testFile,
+      JSON.stringify({ type: "event_msg", payload: { type: "task_complete" } }) + "\n");
+    ledger.readBackoffUntil = Date.now() - 1;
+    const secondFailureStartedAt = Date.now();
+    let reads = 0;
+    fs.readSync = () => { reads += 1; return 0; };
+    try {
+      assert.strictEqual(monitor._pollFile(testFile, path.basename(testFile)).kind, "no-progress");
+      assert.strictEqual(monitor._readPositions.get(testFile).readBackoffLevel, 2);
+      assert.ok(
+        monitor._readPositions.get(testFile).readBackoffUntil >= secondFailureStartedAt + 59_000,
+        "the second failure epoch must back off for about 60 seconds"
+      );
+      assert.strictEqual(monitor._pollFile(testFile, path.basename(testFile)).kind, "backoff");
+      assert.strictEqual(reads, 1, "the active backoff must prevent per-poll read retries");
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+  });
+
   it("bounds a whole poll to 16 MiB of requests and advances the cyclic cursor", () => {
     const filePaths = [];
     for (let i = 0; i < 10; i++) {
@@ -1986,6 +2120,32 @@ describe("CodexLogMonitor", () => {
     }
   });
 
+  it("backs off a deferred path whose latest stat fails", () => {
+    const missingFile = path.join(dateDir, uniqueRolloutName(777));
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+    monitor._enqueueDeferred(missingFile, path.basename(missingFile), {
+      mtimeMs: Date.now(),
+      dev: 1,
+      ino: 777,
+    }, "recent");
+    const originalStatSync = fs.statSync;
+    let missingStats = 0;
+    fs.statSync = (filePath, ...args) => {
+      if (filePath === missingFile) missingStats += 1;
+      return originalStatSync(filePath, ...args);
+    };
+    try {
+      monitor._poll();
+      const deferred = monitor._deferredRecent.get(missingFile);
+      assert.strictEqual(deferred.retryLevel, 1);
+      assert.ok(deferred.notBefore > Date.now());
+      monitor._poll();
+      assert.strictEqual(missingStats, 1, "notBefore must suppress repeated stat attempts");
+    } finally {
+      fs.statSync = originalStatSync;
+    }
+  });
+
   it("baselines a validated zero-byte replay to opened fstat EOF, not the pre-stat size", () => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, "");
@@ -2085,6 +2245,21 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(monitor._tracked.has(testFile), false);
     assert.strictEqual(monitor._retiredTracked.has(testFile), false);
     assert.strictEqual(monitor._pollFile(testFile, TEST_FILENAME).kind, "backoff");
+    const ledger = monitor._readPositions.get(testFile);
+    ledger.readBackoffUntil = Date.now() - 1;
+    const secondFailureStartedAt = Date.now();
+    const originalStatSync = fs.statSync;
+    fs.statSync = (filePath, ...args) => {
+      if (filePath === testFile) throw new Error("simulated missing rollout");
+      return originalStatSync(filePath, ...args);
+    };
+    try {
+      assert.strictEqual(monitor._pollFile(testFile, TEST_FILENAME).kind, "error");
+    } finally {
+      fs.statSync = originalStatSync;
+    }
+    assert.strictEqual(monitor._readPositions.get(testFile).readBackoffLevel, 2);
+    assert.ok(monitor._readPositions.get(testFile).readBackoffUntil >= secondFailureStartedAt + 59_000);
   });
 
   it("keeps an LF-inclusive 4 MiB record and deterministically discards one byte over", () => {
