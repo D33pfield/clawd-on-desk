@@ -156,7 +156,7 @@ describe("bubble-renderer family contract (static)", () => {
 
   it("blanket-always tooltip is {agent}-templated (twice) in every language, no hardcoded product name", () => {
     const lines = source.split("\n").filter((l) => l.includes("alwaysAllowBlanketTitle:"));
-    assert.strictEqual(lines.length, 5, "expected the tooltip in exactly 5 languages");
+    assert.strictEqual(lines.length, 6, "expected the tooltip in exactly 6 languages");
     for (const line of lines) {
       const occurrences = line.split("{agent}").length - 1;
       assert.strictEqual(occurrences, 2, `tooltip must use {agent} twice: ${line.trim().slice(0, 60)}…`);
