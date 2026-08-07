@@ -6,7 +6,7 @@ Issue：[A JavaScript error occurred in the main process #817](https://github.co
 
 代码基准：`main @ fad1b53d9a252cc8a765c1a7b6294f16a48d842c`
 
-状态：**实现已进入 Draft PR #820；首轮 exact-head 独立实现审查的 1 个 P1、1 个 P2、1 个 P3，以及二轮 exact-head 审查新增的 1 个 P2 均已修复并补回归，等待最终新 head 的第三轮独立复审。尚未回复 Issue 或进入合并流程。**
+状态：**实现已进入 Draft PR #820；首轮 exact-head 独立实现审查的 1 个 P1、1 个 P2、1 个 P3，二轮新增的 1 个 P2，以及三轮新增的 recovery post-read 快照 P2 均已修复并补回归，等待最终新 head 的第四轮独立复审。尚未回复 Issue 或进入合并流程。**
 
 复审注记：初稿先后经过子代理与 Claude 独立只读审查；本版只吸收经源码、定向探针或明确不变量验证成立的意见。复审发现初稿的 EOF 结算判据、绝对 pin 策略和 short-read oversized 判定存在缺陷，均已在本版重写。
 
@@ -15,14 +15,15 @@ Issue：[A JavaScript error occurred in the main process #817](https://github.co
 实施验证（2026-08-07）：
 
 - 远端 `main` 仍为本文基准 `fad1b53d9a252cc8a765c1a7b6294f16a48d842c`；Issue #817 仍为 OPEN、无新增评论。
-- focused：`168 pass / 0 fail`。
+- focused：`172 pass / 0 fail`。
 - Remote SSH deploy manifest / dependency closure：`57 pass / 0 fail`。
-- 全仓：`6935 pass / 0 fail / 21 conditional skip`；用户提供的修改前基线为 `6883 pass / 0 fail`。
+- 全仓：`6939 pass / 0 fail / 21 conditional skip`；用户提供的修改前基线为 `6883 pass / 0 fail`。
 - `verify:electron`：Electron `41.10.2` 完整性通过；两份修改脚本的 `node --check` 与 `git diff --check` 通过。
 - `build:mac:arm64`：成功生成 ad-hoc 签名、未 notarize 的 `dist/Clawd-on-Desk-0.14.0-arm64.dmg`。
-- packaged smoke：首轮、首轮审查补修和二轮审查补修后的精确代码均重新打包；最终 App 使用隔离临时 HOME 面对 600 MiB 稀疏 Codex rollout 连续运行约 16 秒，主进程保持存活，未出现 `Cannot create a string longer than 0x1fffffe8 characters`；临时 HOME、user-data 与 fixture 已清理。
+- packaged smoke：每轮审查补修后的精确代码均重新打包；最终 App 使用隔离临时 HOME 面对 600 MiB 稀疏 Codex rollout 连续运行约 16 秒，主进程保持存活，未出现 `Cannot create a string longer than 0x1fffffe8 characters`；临时 HOME、user-data 与 fixture 已清理。
 - 首轮独立实现审查（初始 head `aff82ec24fd56adcf2fc8a120baa33bfd0f16685`）确认三项缺陷并已补修：startup recovery 缓存候选消费前重验，防止重复 pending/覆盖 live tracker；validated baseline 后的持续失败继续执行 30 秒起、最高 5 分钟的指数退避，并让 deferred stat failure 同样遵守 `notBefore`；20 MiB recovery 账本按 head/tail 最坏物理读取量保守计费，覆盖两段重叠与文件并发增长。
 - 二轮独立实现审查（补修 head `4da6119ea12abe45149044559a3dfad692863c8f`）确认首轮三项均已关闭，但发现 recovery 的固定候选计费无法同时约束反复 short read 的累计请求量，并会让空/极小文件挤掉后续有效候选。实现现已把 admission 的最新 stat 快照原样传入 reader，按该快照的真实 head/tail 范围计费，并让每段至多 8 次补读共享等于该段长度的总请求/分配预算；新增“每次只读 1 byte”与“15 个空文件后仍恢复 tiny pending”回归。
+- 三轮独立实现审查（补修 head `eb411435883c6cb4af0d8500f3ddb6f71401f992`）确认前两轮问题均已关闭，但发现 recovery 读完后未重验 admission 快照：Windows LastWriteTime 冻结时，stat 后新增 pending 会因候选被消费、普通 old-mtime gate 又跳过而永久遗漏；head/tail 多次独立 open 期间的 inode replacement 还可能混合旧 root metadata 与新 subagent tail。实现现已在任何分类、回填、发卡或写 tracker 前完成 post-read stat 验证；identity 变化或 size shrink 整次 fail closed，冻结 mtime 的同 identity growth 保留为下一 bounded slice 的 continuation，不在原快照内扩读。新增 frozen growth、rename replacement、in-place shrink 和远端 frozen growth 回归。
 - 残余验证边界：未取得报告人的真实 rollout；未做 x64、Windows、Linux 或真实 Remote SSH 主机 smoke；arm64 smoke 证明打包生产入口不再立即执行无界解码，不等同于完整追完 600 MiB backlog。
 
 ---
@@ -289,7 +290,9 @@ rebaseline 的测试必须证明旧文件已积累但尚未发布的 sustained s
 
 这不是扩大 recovery 扫描预算；head 仍最多 256 KiB，tail 仍最多 1 MiB，同时各自最多固定次数的读取尝试。UTF-8 边界测试必须验证 raw Buffer 拼接；当前逐块 `toString()` 再拼接通常仍能 `JSON.parse`，但会把跨块字符污染成多个 U+FFFD，不能只用“是否抛解析错误”作为 oracle。
 
-全局 `RECOVERY_SWEEP_MAX_TOTAL_BYTES = 20 MiB` 必须按**同一 admission stat 快照下的物理请求上界**记账。每个准备消费的候选先重验 live tracker、replay/deferred 状态、`notBefore` 与最新 stat；通过后把这份 stat 快照原样传给 recovery reader，按 `min(snapshotSize, 256 KiB) + min(snapshotSize, 1 MiB) + (snapshotSize > 1 MiB ? 1 : 0)` 预留 head、tail 与 boundary byte 的范围预算，预算不足则停止本轮 recovery。head 和 exact-range reader 各自至多尝试 8 次，并让所有 short-read 补读共享一个不超过目标范围长度的总请求/Buffer 分配预算；不能每次重新申请完整剩余范围，令实际请求量成倍超过账本。空文件消费 0 byte，极小文件按真实范围计费，不能被固定最坏值提前挤出本轮。文件在 admission stat 后发生的增长不属于这份 recovery 快照，由后续正常 poll 处理；不得一边按旧 size 计费、一边让 reader 自行 re-stat 后读取更大范围。
+全局 `RECOVERY_SWEEP_MAX_TOTAL_BYTES = 20 MiB` 必须按**同一 admission stat 快照下的物理请求上界**记账。每个准备消费的候选先重验 live tracker、replay/deferred 状态、`notBefore` 与最新 stat；通过后把这份 stat 快照原样传给 recovery reader，按 `min(snapshotSize, 256 KiB) + min(snapshotSize, 1 MiB) + (snapshotSize > 1 MiB ? 1 : 0)` 预留 head、tail 与 boundary byte 的范围预算，预算不足则停止本轮 recovery。head 和 exact-range reader 各自至多尝试 8 次，并让所有 short-read 补读共享一个不超过目标范围长度的总请求/Buffer 分配预算；不能每次重新申请完整剩余范围，令实际请求量成倍超过账本。空文件消费 0 byte，极小文件按真实范围计费，不能被固定最坏值提前挤出本轮。
+
+读取完成后、在任何 classifier/backfill/quota/notification 副作用以及 tracker 写入前，必须再次 stat。本地 identity 变化、size shrink 或无法证明仍是同一文件时，整次 recovery fail closed，不能混合不同快照的 head/tail；远程维持既有 size-only 模型，至少对 size/mtime 变化 fail closed，same-size 原地 replacement 仍是既有边界。文件消失则释放候选。若本地同 identity（远程为 size-only 连续性）文件在 admission 后增长，本轮仍只承认旧 snapshot 范围：已经从旧快照恢复出 tracker 时，由该 tracker 从旧 committed offset 续读；旧快照尚无可恢复状态时，必须保留候选为下一次 bounded slice 的 continuation，使 Windows 冻结 LastWriteTime 的追加不会再被 untracked old-mtime gate 永久跳过。continuation 继续共用累计 20 文件/20 MiB 上限，不能在原 slice 内自行扩读新增长。
 
 ### B9 — catch 只是保险，不能替代有界读取
 

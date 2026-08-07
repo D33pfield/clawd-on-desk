@@ -463,14 +463,41 @@ class CodexLogMonitor {
       ) break;
       this._startupRecoveryFilesScanned += 1;
       this._startupRecoveryBytesScanned += candidateCost;
-      const recovered = this._recoverStalePendingUserInput(candidate.filePath, candidate.file, stat);
+      const recovered = this._recoverStalePendingUserInput(
+        candidate.filePath,
+        candidate.file,
+        stat,
+        { deferSideEffects: true }
+      );
+      let postStat = null;
+      try {
+        postStat = fs.statSync(candidate.filePath);
+      } catch {}
+      const snapshotStatus = this._recoverySnapshotStatus(stat, postStat);
+      if (snapshotStatus === "missing") {
+        this._startupRecoveryCandidates.delete(candidate.filePath);
+        continue;
+      }
+      if (snapshotStatus === "changed") {
+        pausedForAttempts = true;
+        continue;
+      }
       if (recovered) {
+        this._finalizeRecoveredTracker(recovered);
         this._tracked.set(candidate.filePath, recovered);
         this._readPositions.set(candidate.filePath, {
           offset: recovered.offset,
           identity: recovered.fileIdentity,
         });
         this._emitPendingUserInputRequests(recovered);
+      } else if (snapshotStatus === "grew") {
+        // Keep this old-mtime candidate for a later bounded slice. Normal
+        // polling deliberately skips untracked old files, so consuming it
+        // here would lose an append whose LastWriteTime stayed frozen on
+        // Windows. The next slice admits the larger snapshot under the same
+        // cumulative file/byte caps instead of expanding this read in-place.
+        pausedForAttempts = true;
+        continue;
       }
       // Recovery shares the poll-wide attempt budget. Remove completed work so
       // a later poll resumes at the next candidate instead of re-emitting the
@@ -532,8 +559,20 @@ class CodexLogMonitor {
       if (bytesScanned + candidateCost > RECOVERY_SWEEP_MAX_TOTAL_BYTES) break;
       filesScanned += 1;
       bytesScanned += candidateCost;
-      const recovered = this._recoverStalePendingUserInput(candidate.filePath, candidate.file, stat);
+      const recovered = this._recoverStalePendingUserInput(
+        candidate.filePath,
+        candidate.file,
+        stat,
+        { deferSideEffects: true }
+      );
+      let postStat = null;
+      try {
+        postStat = fs.statSync(candidate.filePath);
+      } catch {}
+      const snapshotStatus = this._recoverySnapshotStatus(stat, postStat);
+      if (snapshotStatus === "missing" || snapshotStatus === "changed") continue;
       if (recovered) {
+        this._finalizeRecoveredTracker(recovered);
         this._tracked.set(candidate.filePath, recovered);
         // Bypasses _pollFile's normal new-tracker construction, which is
         // where the ledger is otherwise seeded — without this, evicting this
@@ -653,7 +692,7 @@ class CodexLogMonitor {
   // turn_aborted for this file — those end the turn that asked, so any
   // earlier open request is moot even without a matching function_call_output
   // (Codex killed mid-turn, terminal closed, etc. leave exactly this shape).
-  _recoverStalePendingUserInput(filePath, fileName, recoveryStat = null) {
+  _recoverStalePendingUserInput(filePath, fileName, recoveryStat = null, options = {}) {
     let stat = recoveryStat;
     if (!stat) {
       try {
@@ -692,9 +731,6 @@ class CodexLogMonitor {
     // fail-closed protection above), so it must not be rejected here too —
     // only "subagent" flips isSubagent, exactly like the live _applySessionMeta
     // path treats an unclassifiable role as unchanged-from-default (false).
-    const role = this._classifier.registerSession("codex:" + sessionId, { sessionMeta: sessionMeta.payload });
-    const isSubagent = role === "subagent";
-
     // Tail: an unresolved request_user_input, if any, is near the end —
     // Codex stops writing once it's blocked waiting for an answer.
     const tailLen = Math.min(stat.size, RECOVERY_TAIL_SCAN_BYTES);
@@ -709,6 +745,12 @@ class CodexLogMonitor {
     const tailStartsOnRecordBoundary = tailStart === 0 || preceding.buf[0] === 0x0a;
     const tailRead = this._readExactRange(filePath, tailStart, tailLen);
     if (!tailRead.complete) return null;
+    let readPostStat = null;
+    try {
+      readPostStat = fs.statSync(filePath);
+    } catch {}
+    const readSnapshotStatus = this._recoverySnapshotStatus(stat, readPostStat);
+    if (readSnapshotStatus === "missing" || readSnapshotStatus === "changed") return null;
     const tailBuf = tailRead.buf;
     // Find the last complete (newline-terminated) record in RAW BYTE space —
     // 0x0A can never appear inside a multi-byte UTF-8 sequence, so this index
@@ -783,6 +825,11 @@ class CodexLogMonitor {
     }
     if (!recentlyActive && (pending.size === 0 || tooOldForPendingRecovery)) return null;
 
+    const deferSideEffects = options.deferSideEffects === true;
+    const role = deferSideEffects
+      ? "unknown"
+      : this._classifier.registerSession("codex:" + sessionId, { sessionMeta: sessionMeta.payload });
+    const isSubagent = role === "subagent";
     const recovered = {
       // Stops at the last complete newline, not true EOF — matches
       // _pollFile's own offset convention. A still-growing final line is
@@ -822,6 +869,11 @@ class CodexLogMonitor {
       initializingUserInputs: recentlyActive,
       backfilling: recentlyActive,
     };
+    if (deferSideEffects) {
+      recovered._recoverySessionMeta = sessionMeta.payload;
+      if (recentlyActive) recovered._recoveryRawLines = rawLines;
+      return recovered;
+    }
     if (!recentlyActive) return recovered;
 
     // Reconstruct only the bounded tail in backfill mode. Historical
@@ -837,6 +889,41 @@ class CodexLogMonitor {
     recovered.backfilling = false;
     recovered.initializingUserInputs = false;
     return recovered;
+  }
+
+  _recoverySnapshotStatus(before, after) {
+    if (!after) return "missing";
+    const beforeIdentity = this._getFileIdentity(before);
+    const afterIdentity = this._getFileIdentity(after);
+    if (beforeIdentity !== null || afterIdentity !== null) {
+      if (beforeIdentity !== afterIdentity) return "changed";
+    } else if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
+      // Without an identity we cannot prove that a changed path still names
+      // the file whose head/tail were read.
+      return "changed";
+    }
+    if (after.size < before.size) return "changed";
+    if (after.size > before.size) return "grew";
+    if (after.mtimeMs !== before.mtimeMs) return "changed";
+    return "stable";
+  }
+
+  _finalizeRecoveredTracker(recovered) {
+    const sessionMeta = recovered._recoverySessionMeta;
+    const rawLines = recovered._recoveryRawLines;
+    delete recovered._recoverySessionMeta;
+    delete recovered._recoveryRawLines;
+    const role = this._classifier.registerSession(recovered.sessionId, { sessionMeta });
+    recovered.isSubagent = role === "subagent";
+    if (!Array.isArray(rawLines)) return;
+    this._applySessionMeta(sessionMeta, recovered);
+    for (const line of rawLines) {
+      if (!line.trim()) continue;
+      this._processLine(line, recovered);
+    }
+    this._emitBackfillSnapshot(recovered);
+    recovered.backfilling = false;
+    recovered.initializingUserInputs = false;
   }
 
   _getSessionDirs(pollContext = null) {

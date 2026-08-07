@@ -1316,6 +1316,191 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(monitor._startupRecoveryCandidates.has(testFile), false);
   });
 
+  it("keeps a frozen-mtime candidate when it grows after the pinned recovery stat", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, JSON.stringify({
+      type: "session_meta",
+      payload: { cwd: "/frozen-growth" },
+    }) + "\n");
+    const frozen = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(testFile, frozen, frozen);
+    const admissionStat = fs.statSync(testFile);
+    const requests = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      onUserInputRequest: (...args) => requests.push(args),
+    });
+    monitor._insertStartupRecoveryCandidate({
+      filePath: testFile,
+      file: path.basename(testFile),
+      mtimeMs: admissionStat.mtimeMs,
+      size: admissionStat.size,
+    });
+    monitor._startupRecoveryReady = true;
+
+    const originalReadByteRange = monitor._readByteRange.bind(monitor);
+    let appended = false;
+    monitor._readByteRange = (...args) => {
+      const result = originalReadByteRange(...args);
+      if (!appended) {
+        appended = true;
+        fs.appendFileSync(testFile, JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "request_user_input",
+            call_id: "call_frozen_growth",
+            arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+          },
+        }) + "\n");
+        fs.utimesSync(testFile, frozen, frozen);
+      }
+      return result;
+    };
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+    monitor._readByteRange = originalReadByteRange;
+
+    assert.deepStrictEqual(requests, []);
+    assert.strictEqual(monitor._tracked.has(testFile), false);
+    assert.strictEqual(monitor._startupRecoveryCandidates.has(testFile), true);
+    assert.strictEqual(monitor._didInitialRecoveryScan, false);
+    assert.strictEqual(
+      monitor._startupRecoveryBytesScanned,
+      admissionStat.size * 2,
+      "the first slice must charge only the pinned head/tail snapshot"
+    );
+
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+    assert.strictEqual(requests.length, 1);
+    assert.strictEqual(requests[0][1].callId, "call_frozen_growth");
+    assert.strictEqual(monitor._tracked.has(testFile), true);
+    assert.strictEqual(monitor._startupRecoveryCandidates.has(testFile), false);
+    assert.strictEqual(monitor._didInitialRecoveryScan, true);
+  });
+
+  it("fails closed and retries when the recovery path is replaced between head and tail reads", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const replacement = path.join(dateDir, "replacement.jsonl");
+    const targetSize = 2 * 1024 * 1024;
+    const writeSized = (filePath, meta, tail = "") => {
+      const head = JSON.stringify(meta) + "\n";
+      const tailText = tail ? tail + "\n" : "";
+      const fillerBytes = targetSize - Buffer.byteLength(head) - Buffer.byteLength(tailText);
+      fs.writeFileSync(filePath, head + "x".repeat(fillerBytes - 1) + "\n" + tailText);
+      assert.strictEqual(fs.statSync(filePath).size, targetSize);
+    };
+    writeSized(testFile, {
+      type: "session_meta",
+      payload: {
+        cwd: "/old-subagent",
+        source: { subagent: { thread_spawn: { parent_thread_id: "root", agent_role: "explorer" } } },
+      },
+    });
+    const rootRequest = JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "request_user_input",
+        call_id: "call_replaced_root",
+        arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+      },
+    });
+    writeSized(replacement, {
+      type: "session_meta",
+      payload: { cwd: "/replacement-root" },
+    }, rootRequest);
+    const frozen = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(testFile, frozen, frozen);
+    fs.utimesSync(replacement, frozen, frozen);
+    const admissionStat = fs.statSync(testFile);
+    const requests = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      onUserInputRequest: (...args) => requests.push(args),
+    });
+    monitor._insertStartupRecoveryCandidate({
+      filePath: testFile,
+      file: path.basename(testFile),
+      mtimeMs: admissionStat.mtimeMs,
+      size: admissionStat.size,
+    });
+    monitor._startupRecoveryReady = true;
+
+    const originalReadByteRange = monitor._readByteRange.bind(monitor);
+    let replaced = false;
+    monitor._readByteRange = (...args) => {
+      const result = originalReadByteRange(...args);
+      if (!replaced) {
+        replaced = true;
+        fs.renameSync(replacement, testFile);
+      }
+      return result;
+    };
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+    monitor._readByteRange = originalReadByteRange;
+
+    assert.deepStrictEqual(requests, [], "mixed old head/new tail data must not emit");
+    assert.strictEqual(monitor._tracked.has(testFile), false);
+    assert.strictEqual(monitor._startupRecoveryCandidates.has(testFile), true);
+
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+    assert.strictEqual(requests.length, 1, "the stable replacement must be recovered exactly once");
+    assert.strictEqual(requests[0][1].callId, "call_replaced_root");
+    assert.strictEqual(monitor._tracked.get(testFile).isSubagent, false);
+    assert.strictEqual(
+      monitor._tracked.get(testFile).fileIdentity,
+      monitor._getFileIdentity(fs.statSync(testFile))
+    );
+  });
+
+  it("fails closed and releases a recovery candidate after an in-place shrink stabilizes", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const metaLine = JSON.stringify({ type: "session_meta", payload: { cwd: "/shrink" } }) + "\n";
+    const requestLine = JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "request_user_input",
+        call_id: "call_truncated_away",
+        arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+      },
+    }) + "\n";
+    fs.writeFileSync(testFile, metaLine + "x".repeat(1024 * 1024) + "\n" + requestLine);
+    const frozen = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(testFile, frozen, frozen);
+    const admissionStat = fs.statSync(testFile);
+    const requests = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      onUserInputRequest: (...args) => requests.push(args),
+    });
+    monitor._insertStartupRecoveryCandidate({
+      filePath: testFile,
+      file: path.basename(testFile),
+      mtimeMs: admissionStat.mtimeMs,
+      size: admissionStat.size,
+    });
+    monitor._startupRecoveryReady = true;
+
+    const originalReadByteRange = monitor._readByteRange.bind(monitor);
+    let truncated = false;
+    monitor._readByteRange = (...args) => {
+      const result = originalReadByteRange(...args);
+      if (!truncated) {
+        truncated = true;
+        fs.truncateSync(testFile, Buffer.byteLength(metaLine));
+        fs.utimesSync(testFile, frozen, frozen);
+      }
+      return result;
+    };
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+    monitor._readByteRange = originalReadByteRange;
+
+    assert.deepStrictEqual(requests, []);
+    assert.strictEqual(monitor._startupRecoveryCandidates.has(testFile), true);
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+    assert.deepStrictEqual(requests, []);
+    assert.strictEqual(monitor._startupRecoveryCandidates.has(testFile), false);
+    assert.strictEqual(monitor._didInitialRecoveryScan, true);
+  });
+
   it("does not let newer empty recovery candidates crowd out a tiny valid pending request", () => {
     const requests = [];
     monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {

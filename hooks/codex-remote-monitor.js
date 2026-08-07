@@ -122,6 +122,24 @@ function recoveryReadBudgetCost(size) {
     + (safeSize > RECOVERY_TAIL_SCAN_BYTES ? 1 : 0);
 }
 
+function recoverySnapshotStatus(before, after) {
+  if (!after) return "missing";
+  if (after.size < before.size) return "changed";
+  if (after.size > before.size) return "grew";
+  if (after.mtimeMs !== before.mtimeMs) return "changed";
+  return "stable";
+}
+
+function emitRecoveredPendingUserInputs(entry, options = {}) {
+  if (!entry || entry.isSubagent) return;
+  const postStateFn = typeof options.postState === "function" ? options.postState : postState;
+  for (const request of entry.pendingUserInputs.values()) {
+    postStateFn(entry.sessionId, "notification", "CodexUserInputRequest", entry.cwd, false, {
+      codexUserInput: request,
+    });
+  }
+}
+
 // JSONL record type[:subtype] → pet state. This standalone remote monitor keeps
 // a zero-dep subset of agents/codex.js because it posts final states directly
 // and does not carry the full local monitor's turn-end/approval heuristics.
@@ -575,6 +593,12 @@ function recoverStalePendingUserInputEntry(filePath, fileName, options = {}) {
   const tailStartsOnRecordBoundary = tailStart === 0 || preceding.buf[0] === 0x0a;
   const tailRead = readExactRange(filePath, tailStart, tailLen);
   if (!tailRead.complete) return null;
+  let readPostStat = null;
+  try {
+    readPostStat = fs.statSync(filePath);
+  } catch {}
+  const readSnapshotStatus = recoverySnapshotStatus(stat, readPostStat);
+  if (readSnapshotStatus === "missing" || readSnapshotStatus === "changed") return null;
   const lastNewlineInTail = tailRead.buf.lastIndexOf(0x0a);
   if (lastNewlineInTail < 0) return null;
   const committedTailBytes = lastNewlineInTail + 1;
@@ -644,14 +668,7 @@ function recoverStalePendingUserInputEntry(filePath, fileName, options = {}) {
     stale: false,
   };
 
-  if (!isSubagent) {
-    const postStateFn = typeof options.postState === "function" ? options.postState : postState;
-    for (const request of pending.values()) {
-      postStateFn(entry.sessionId, "notification", "CodexUserInputRequest", entry.cwd, false, {
-        codexUserInput: request,
-      });
-    }
-  }
+  if (options.deferEmit !== true) emitRecoveredPendingUserInputs(entry, options);
   return entry;
 }
 
@@ -1011,8 +1028,18 @@ function runRecoverySweep(candidates, options = {}) {
     const recovered = recoverStalePendingUserInputEntry(candidate.filePath, candidate.file, {
       ...options,
       preStat: stat,
+      deferEmit: true,
     });
-    if (recovered) tracked.set(candidate.filePath, recovered);
+    let postStat = null;
+    try {
+      postStat = fs.statSync(candidate.filePath);
+    } catch {}
+    const snapshotStatus = recoverySnapshotStatus(stat, postStat);
+    if (snapshotStatus === "missing" || snapshotStatus === "changed") continue;
+    if (recovered) {
+      tracked.set(candidate.filePath, recovered);
+      emitRecoveredPendingUserInputs(recovered, options);
+    }
   }
 }
 
@@ -1156,12 +1183,32 @@ function runReadyRemoteRecovery(context) {
     if (startupRecoveryBytesScanned + candidateCost > RECOVERY_SWEEP_MAX_TOTAL_BYTES) break;
     startupRecoveryFilesScanned += 1;
     startupRecoveryBytesScanned += candidateCost;
+    const recoveryOptions = { ...(context.options || {}), preStat: stat, deferEmit: true };
     const recovered = recoverStalePendingUserInputEntry(
       candidate.filePath,
       candidate.file,
-      { ...(context.options || {}), preStat: stat }
+      recoveryOptions
     );
-    if (recovered) tracked.set(candidate.filePath, recovered);
+    let postStat = null;
+    try {
+      postStat = fs.statSync(candidate.filePath);
+    } catch {}
+    const snapshotStatus = recoverySnapshotStatus(stat, postStat);
+    if (snapshotStatus === "missing") {
+      startupRecoveryCandidates.delete(candidate.filePath);
+      continue;
+    }
+    if (snapshotStatus === "changed") {
+      pausedForAttempts = true;
+      continue;
+    }
+    if (recovered) {
+      tracked.set(candidate.filePath, recovered);
+      emitRecoveredPendingUserInputs(recovered, recoveryOptions);
+    } else if (snapshotStatus === "grew") {
+      pausedForAttempts = true;
+      continue;
+    }
     // A recovery pass may span polls when the shared attempt budget is spent.
     // Retire completed candidates so resuming cannot emit them twice.
     startupRecoveryCandidates.delete(candidate.filePath);

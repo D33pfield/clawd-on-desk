@@ -989,6 +989,54 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
     assert.strictEqual(__test.startupRecoveryCandidates.has(filePath), false);
   });
 
+  it("keeps a remote frozen-mtime candidate when it grows after the pinned stat", () => {
+    const { dir, filePath } = tempRollout([META]);
+    tmpDirs.push(dir);
+    const frozen = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(filePath, frozen, frozen);
+    const admissionStat = fs.statSync(filePath);
+    __test.startupRecoveryCandidates.set(filePath, {
+      filePath,
+      file: ROLLOUT_NAME,
+      mtimeMs: admissionStat.mtimeMs,
+      size: admissionStat.size,
+    });
+    const s = spy();
+    const originalReadSync = fs.readSync;
+    let appended = false;
+    fs.readSync = (...args) => {
+      const bytesRead = originalReadSync(...args);
+      if (!appended) {
+        appended = true;
+        appendLines(filePath, [{
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "request_user_input",
+            call_id: "call_remote_frozen_growth",
+            arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+          },
+        }]);
+        fs.utimesSync(filePath, frozen, frozen);
+      }
+      return bytesRead;
+    };
+    try {
+      __test.runReadyRemoteRecovery({ remainingAttempts: 64, options: { postState: s.postState } });
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+
+    assert.deepStrictEqual(s.posted, []);
+    assert.strictEqual(__test.tracked.has(filePath), false);
+    assert.strictEqual(__test.startupRecoveryCandidates.has(filePath), true);
+
+    __test.runReadyRemoteRecovery({ remainingAttempts: 64, options: { postState: s.postState } });
+    assert.strictEqual(s.posted.filter((post) => post.event === "CodexUserInputRequest").length, 1);
+    assert.strictEqual(__test.tracked.has(filePath), true);
+    assert.strictEqual(__test.startupRecoveryCandidates.has(filePath), false);
+  });
+
   it("does not let remote empty recovery candidates crowd out a tiny valid request", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-tiny-crowdout-"));
     tmpDirs.push(dir);
