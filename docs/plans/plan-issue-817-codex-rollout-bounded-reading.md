@@ -6,7 +6,7 @@ Issue：[A JavaScript error occurred in the main process #817](https://github.co
 
 代码基准：`main @ fad1b53d9a252cc8a765c1a7b6294f16a48d842c`
 
-状态：**实现已进入 Draft PR #820；前五轮独立审查与第六轮 Claude 交叉审查中确认的阻断项均已修复并补上 mutation-sensitive 回归，等待新 head 的最终打包真机 smoke。尚未回复 Issue 或进入合并流程。**
+状态：**Draft PR #820 的代码 head `27add1e110a6d96472b9d120b66fca2236ff7267` 已完成七轮独立审查、mutation 验证、全仓测试与 macOS arm64 打包真机 smoke；第七轮结论为 `APPROVE`，未发现未解决的 P0-P3，已具备 Ready/合并条件。Issue 公开回复与发布不在本计划的自动执行范围内。**
 
 复审注记：初稿先后经过子代理与 Claude 独立只读审查；本版只吸收经源码、定向探针或明确不变量验证成立的意见。复审发现初稿的 EOF 结算判据、绝对 pin 策略和 short-read oversized 判定存在缺陷，均已在本版重写。
 
@@ -14,19 +14,20 @@ Issue：[A JavaScript error occurred in the main process #817](https://github.co
 
 实施验证（2026-08-07）：
 
-- 远端 `main` 仍为本文基准 `fad1b53d9a252cc8a765c1a7b6294f16a48d842c`；Issue #817 仍为 OPEN、无新增评论。
+- 收口提交前，远端 `main` 仍为本文基准 `fad1b53d9a252cc8a765c1a7b6294f16a48d842c`；Issue #817 仍为 OPEN、无新增评论。
 - focused：`180 pass / 0 fail`。
 - Remote SSH deploy manifest / dependency closure：`57 pass / 0 fail`。
 - 全仓：`6947 pass / 0 fail / 21 conditional skip`；用户提供的修改前基线为 `6883 pass / 0 fail`。
 - `verify:electron`：Electron `41.10.2` 完整性通过；两份修改脚本的 `node --check` 与 `git diff --check` 通过。
 - `build:mac:arm64`：成功生成 ad-hoc 签名、未 notarize 的 `dist/Clawd-on-Desk-0.14.0-arm64.dmg`。
-- packaged smoke：每轮审查补修后的精确代码均重新打包；最终 App 使用隔离临时 HOME 面对 600 MiB 稀疏 Codex rollout 连续运行约 16 秒，主进程保持存活，未出现 `Cannot create a string longer than 0x1fffffe8 characters`；临时 HOME、user-data 与 fixture 已清理。
+- packaged smoke：每轮审查补修后的精确代码均重新打包；最终代码 head `27add1e110a6d96472b9d120b66fca2236ff7267` 的 macOS arm64 App 使用隔离临时 HOME 面对 600 MiB 稀疏 Codex rollout 连续运行约 80 秒，主进程保持存活，未出现 `Cannot create a string longer than 0x1fffffe8 characters`；测试 App、临时 HOME、user-data 与 fixture 已停止并清理。
 - 首轮独立实现审查（初始 head `aff82ec24fd56adcf2fc8a120baa33bfd0f16685`）确认三项缺陷并已补修：startup recovery 缓存候选消费前重验，防止重复 pending/覆盖 live tracker；validated baseline 后的持续失败继续执行 30 秒起、最高 5 分钟的指数退避，并让 deferred stat failure 同样遵守 `notBefore`；20 MiB recovery 账本按 head/tail 最坏物理读取量保守计费，覆盖两段重叠与文件并发增长。
 - 二轮独立实现审查（补修 head `4da6119ea12abe45149044559a3dfad692863c8f`）确认首轮三项均已关闭，但发现 recovery 的固定候选计费无法同时约束反复 short read 的累计请求量，并会让空/极小文件挤掉后续有效候选。实现现已把 admission 的最新 stat 快照原样传入 reader，按该快照的真实 head/tail 范围计费，并让每段至多 8 次补读共享等于该段长度的总请求/分配预算；新增“每次只读 1 byte”与“15 个空文件后仍恢复 tiny pending”回归。
 - 三轮独立实现审查（补修 head `eb411435883c6cb4af0d8500f3ddb6f71401f992`）确认前两轮问题均已关闭，但发现 recovery 读完后未重验 admission 快照：Windows LastWriteTime 冻结时，stat 后新增 pending 会因候选被消费、普通 old-mtime gate 又跳过而永久遗漏；head/tail 多次独立 open 期间的 inode replacement 还可能混合旧 root metadata 与新 subagent tail。实现现已在任何分类、回填、发卡或写 tracker 前完成 post-read stat 验证；identity 变化或 size shrink 整次 fail closed，冻结 mtime 的同 identity growth 保留为下一 bounded slice 的 continuation，不在原快照内扩读。新增 frozen growth、rename replacement、in-place shrink 和远端 frozen growth 回归。
 - 四轮独立实现审查（补修 head `0eb5dc69db390703f3aaa751a9143d9ff93973b9`）确认三轮两个 P2 已关闭，预算/tiny/backoff 仍成立，但发现稳定 recent-backfill 会先直接注册 classifier，再经 `_applySessionMeta()` 重复注册一次。实现现已让含 head meta 的 raw tail 只由 rawLines 注册，tail 不含 head 时才显式 apply 一次，普通 pending 则直接注册一次；回归锁定快照验证后的 classifier registration 恰好一次。
 - 五轮独立实现审查（补修 head `591092589ad61f45052c383f60f97f800b3a7d10`）确认 production recent-backfill 已只分类一次，但发现 direct recovery 入口仍会重复分类，且普通 stale pending 的 direct/production 路径只分类、不应用 `session_meta`，导致 `originator/source` 丢失。实现现已统一为唯一 `_applySessionMeta()` 路径：small recent tail 由 raw head line 应用，head 在 tail 外时显式应用，普通 stale pending 始终应用单独读取的 head；回归分别锁定 direct small/large recent 与 direct/production stale pending 的 classifier 次数、`cwd/originator/source` 和 pending 回调。
 - 第六轮 Claude 交叉审查（审查 head `40d0426556c4e067638fdb9498477055510d011b`）没有发现新的 production P0/P1/P2，但确认三类回归 oracle 仍不足以锁住已实现不变量：admitted replay 不受 active/retired LRU 汰换、recovery head short-read 按真实 `bytesRead` 续读、剩余轮询预算不足时不把一个完整 quantum 切成 fragment；审查还发现远程 replay 尚在 `initializing` 时 stale cleanup 可能误发 `sleeping`。本轮已同时补本地/远程回归与远程 stale gate；亲跑 mutation 证明分别移除 LRU prune filter、retire guard、真实 short-read cursor、整 quantum budget defer 或 remote initializing gate 后新测试必红。Claude 标记的 legacy recovery sweep 死代码与 #817 安全性修复无关，保留为独立清理 follow-up，不在本 PR 扩大生产改动范围。
+- 第七轮 Claude exact-head delta review（审查 head `27add1e110a6d96472b9d120b66fca2236ff7267`）独立复现 focused `180 pass / 0 fail`、Remote SSH manifest/deploy `57 pass / 0 fail`、全仓 `6947 pass / 0 fail / 21 skip`，并亲跑 prune filter、retire guard、本地/远程 short-read cursor、本地/远程 budget fragment 与 remote initializing gate 七项 mutation，结果 `7/7 CAUGHT`。审查确认 remote stale gate 与 abandonment/rebaseline 生命周期一致，legacy recovery sweep 不可达代码保留为非阻塞 follow-up 合理；最终结论为 `APPROVE`，未发现未解决的 P0-P3。
 - 残余验证边界：未取得报告人的真实 rollout；未做 x64、Windows、Linux 或真实 Remote SSH 主机 smoke；arm64 smoke 证明打包生产入口不再立即执行无界解码，不等同于完整追完 600 MiB backlog。
 
 ---
