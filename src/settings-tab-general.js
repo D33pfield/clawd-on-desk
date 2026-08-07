@@ -113,7 +113,7 @@
 
   function buildRoamMovementStyleRow() {
     const row = document.createElement("div");
-    row.className = "row row-sub roam-movement-style-row";
+    row.className = "row roam-movement-style-row";
 
     const text = document.createElement("div");
     text.className = "row-text";
@@ -144,6 +144,36 @@
     row.appendChild(controlHost);
     state.mountedControls.roamMovementStyle = control;
     return row;
+  }
+
+  function buildFreeRoamGroup() {
+    const headerRow = helpers.buildSwitchRow({
+      key: "freeRoam",
+      labelKey: "rowFreeRoam",
+      descKey: "rowFreeRoamDesc",
+    });
+    headerRow.classList.add("free-roam-header-row");
+
+    // The header itself owns disclosure. Keep the nested master switch from
+    // also collapsing/expanding the group when it is clicked or keyboard-
+    // activated; this mirrors the independent header switch in Sound.
+    const headerSwitch = headerRow.querySelector(".switch");
+    if (headerSwitch) {
+      headerSwitch.addEventListener("click", (ev) => ev.stopPropagation());
+      headerSwitch.addEventListener("keydown", (ev) => {
+        if (ev.key === " " || ev.key === "Enter") ev.stopPropagation();
+      });
+    }
+
+    return helpers.buildCollapsibleGroup({
+      id: "general:free-roam",
+      headerContent: headerRow,
+      defaultCollapsed: true,
+      className: "free-roam-collapsible",
+      children: [buildOptionList("free-roam-option-list", [
+        buildRoamMovementStyleRow(),
+      ])],
+    });
   }
 
   function render(parent) {
@@ -202,12 +232,7 @@
     // Behavior & position: how the pet moves and sits on screen. Rarely changed
     // after first setup, so it sits below the everyday sections.
     parent.appendChild(helpers.buildSection(t("sectionBehavior"), [
-      helpers.buildSwitchRow({
-        key: "freeRoam",
-        labelKey: "rowFreeRoam",
-        descKey: "rowFreeRoamDesc",
-      }),
-      buildRoamMovementStyleRow(),
+      buildFreeRoamGroup(),
       helpers.buildSwitchRow({
         key: "allowEdgePinning",
         labelKey: "rowAllowEdgePinning",

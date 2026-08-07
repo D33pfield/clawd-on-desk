@@ -5123,8 +5123,12 @@ describe("settings renderer browser environment", () => {
   it("renders Free roam movement style as a dependent segmented choice", async () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    assert.ok(generalSource.includes("function buildFreeRoamGroup()"));
+    assert.ok(generalSource.includes('id: "general:free-roam"'));
+    assert.ok(generalSource.includes('className: "free-roam-collapsible"'));
+    assert.ok(generalSource.includes("defaultCollapsed: true"));
     assert.ok(generalSource.includes("function buildRoamMovementStyleRow()"));
-    assert.ok(generalSource.includes('"row row-sub roam-movement-style-row"'));
+    assert.ok(generalSource.includes('"row roam-movement-style-row"'));
     assert.ok(generalSource.includes('"roamConstrainAxis"'));
     for (const key of [
       "rowRoamMovementStyle",
@@ -5151,8 +5155,17 @@ describe("settings renderer browser environment", () => {
 
     const control = harness.core.state.mountedControls.roamMovementStyle;
     const row = harness.content.querySelector(".roam-movement-style-row");
+    const group = harness.content.querySelector(".free-roam-collapsible");
+    const freeRoamSwitch = harness.getSwitch("freeRoam");
     assert.ok(control && row, "the dependent movement-style row must mount");
-    assert.ok(row.classList.contains("row-sub"), "movement style must read visually as a child row");
+    assert.ok(group, "Free roam must render as a collapsible group");
+    assert.strictEqual(group.dataset.groupId, "general:free-roam");
+    assert.strictEqual(group.classList.contains("collapsed"), true, "Free roam details default closed");
+    assert.ok(
+      group.querySelector(".collapsible-group-body").contains(row),
+      "movement style must live inside the collapsible body",
+    );
+    assert.ok(row.classList.contains("settings-option-item"), "movement style must use the nested-card style");
     assert.strictEqual(control.element.getAttribute("role"), "radiogroup");
     const buttons = control.element.querySelectorAll("button");
     const natural = buttons.find((button) => button.dataset.value === "natural");
@@ -5162,6 +5175,21 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(natural.classList.contains("active"), false);
     assert.strictEqual(axis.disabled, true, "style is disabled while Free roam is off");
     assert.strictEqual(natural.disabled, true);
+
+    // The header master switch updates Free roam without also opening the
+    // disclosure. The title/description area remains the expansion target.
+    freeRoamSwitch.dispatchEvent({
+      type: "click",
+      bubbles: true,
+      cancelBubble: false,
+      stopPropagation() { this.cancelBubble = true; },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    assert.ok(
+      updateCalls.some((call) => call.key === "freeRoam" && call.value === true),
+      "the header switch must persist freeRoam=true",
+    );
+    assert.strictEqual(group.classList.contains("collapsed"), true);
 
     // Enabling the parent patches the mounted child in place and preserves its
     // stored axis selection instead of resetting the preference.
@@ -5187,6 +5215,16 @@ describe("settings renderer browser environment", () => {
     );
     assert.strictEqual(natural.classList.contains("active"), true);
     assert.strictEqual(axis.classList.contains("active"), false);
+
+    // Axis maps to the existing boolean true through the same user-click path.
+    axis.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((r) => setTimeout(r, 0));
+    assert.ok(
+      updateCalls.some((call) => call.key === "roamConstrainAxis" && call.value === true),
+      "Axis must persist roamConstrainAxis=true",
+    );
+    assert.strictEqual(axis.classList.contains("active"), true);
+    assert.strictEqual(natural.classList.contains("active"), false);
 
     // Authoritative broadcasts keep the same control mounted and can replace
     // the optimistic value without rebuilding General.

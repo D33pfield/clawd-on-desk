@@ -1229,7 +1229,9 @@ describe("roam axis-constrained mode (#686)", () => {
     // band (yMin=23, yMax=7), while the horizontal band remains valid.
     // Constrained mode only needs one moving axis, so invalid vertical geometry
     // must not make the whole picker return null before trying horizontal.
-    mock.method(Math, "random", () => 0.0);
+    // Pick the invalid vertical axis first; the picker must then fall back to
+    // the valid horizontal axis instead of returning null.
+    mock.method(Math, "random", () => 0.99);
     const ctx = makeCtx({
       getNearestWorkArea() {
         return { x: 0, y: 0, width: 1000, height: 150 };
@@ -1251,7 +1253,9 @@ describe("roam axis-constrained mode (#686)", () => {
   });
 
   it("uses the valid vertical axis when horizontal has no target interval", () => {
-    mock.method(Math, "random", () => 0.99);
+    // Pick the invalid horizontal axis first; the picker must then fall back to
+    // the valid vertical axis instead of returning null.
+    mock.method(Math, "random", () => 0.0);
     const ctx = makeCtx({
       getNearestWorkArea() {
         return { x: 0, y: 0, width: 150, height: 1000 };
