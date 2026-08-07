@@ -388,6 +388,10 @@ describe("package build config", () => {
       assert.match(workflow, /scripts\/assert-no-retired-telegram-sidecar\.js/);
       assert.match(workflow, /scripts\/audit-packaged-native\.js/);
       assert.match(workflow, /scripts\/run-packaged-koffi-smoke\.js/);
+      assert.match(workflow, /name: Configure Linux Chromium sandbox/);
+      assert.match(workflow, /if: matrix\.target == 'linux-x64'/);
+      assert.match(workflow, /sudo chown root:root dist\/linux-unpacked\/chrome-sandbox/);
+      assert.match(workflow, /sudo chmod 4755 dist\/linux-unpacked\/chrome-sandbox/);
       assert.match(workflow, /dist\/koffi-prune-manifests\/\*\.json/);
       assert.match(workflow, /dist\/native-package-manifests\/\*\.json/);
       assert.match(workflow, /runner: windows-11-arm/);
@@ -403,6 +407,9 @@ describe("package build config", () => {
       assert.strictEqual((workflow.match(/scripts\/run-packaged-koffi-smoke\.js/g) || []).length, 3);
       assert.strictEqual((workflow.match(/scripts\/verify-updater-metadata\.js/g) || []).length, 3);
       assert.strictEqual((workflow.match(/if-no-files-found: error/g) || []).length, 3);
+      assert.strictEqual((workflow.match(/name: Configure Linux Chromium sandbox/g) || []).length, 1);
+      assert.match(workflow, /sudo chown root:root dist\/linux-unpacked\/chrome-sandbox/);
+      assert.match(workflow, /sudo chmod 4755 dist\/linux-unpacked\/chrome-sandbox/);
       for (const contract of ["windows", "mac", "linux"]) {
         assert.match(workflow, new RegExp(`--contract ${contract}`));
       }

@@ -138,6 +138,10 @@ jobs:
           node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/linux-unpacked/resources --output dist/telegram-retirement-manifests/linux-x64.json
       - name: Audit packaged native payloads
         run: node scripts/audit-packaged-native.js --app-root dist/linux-unpacked --target linux-x64 --output dist/native-package-manifests/linux-x64.json
+      - name: Configure Linux Chromium sandbox
+        run: |
+          sudo chown root:root dist/linux-unpacked/chrome-sandbox
+          sudo chmod 4755 dist/linux-unpacked/chrome-sandbox
       - name: Run packaged Koffi smoke
         run: node scripts/run-packaged-koffi-smoke.js --executable dist/linux-unpacked/clawd-on-desk --target linux-x64 --output dist/koffi-smoke/linux-x64.json --xvfb
       - name: Verify Linux updater metadata

@@ -153,6 +153,11 @@ jobs:
           --app-root "${{ matrix.app_root }}"
           --target "${{ matrix.target }}"
           --output "dist/native-package-manifests/${{ matrix.target }}.json"
+      - name: Configure Linux Chromium sandbox
+        if: matrix.target == 'linux-x64'
+        run: |
+          sudo chown root:root dist/linux-unpacked/chrome-sandbox
+          sudo chmod 4755 dist/linux-unpacked/chrome-sandbox
       - name: Run packaged Koffi smoke
         run: >-
           node scripts/run-packaged-koffi-smoke.js
