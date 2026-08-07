@@ -57,27 +57,36 @@ HAT_SQUASH = (
     '<rect x="3" y="8" width="9" height="1" fill="#6B3E1D"/>'
     '</g>'
 )
+# Smoke + ember animate via SMIL, not CSS: the app can display sprites through
+# an <img> channel, and Chromium never runs CSS keyframe animations inside an
+# SVG loaded as an image (the original CSS smoke was invisible for exactly this
+# reason). SMIL runs in <img>, <object>, and inline alike. calcMode=discrete
+# keeps the pixel-art stepping; negative begin offsets stagger the puffs so the
+# column is alive on the first frame.
+def _puff(size, fill, begin):
+    return (
+        f'<rect x="15" y="10" width="{size}" height="{size}" fill="{fill}" opacity="0" class="od-smoke">'
+        f'<animate attributeName="opacity" values="0;0.85;0.8;0.5;0" keyTimes="0;0.12;0.55;0.85;1" '
+        f'dur="2.7s" begin="{begin}" repeatCount="indefinite"/>'
+        f'<animateTransform attributeName="transform" type="translate" calcMode="discrete" '
+        f'values="0 0;0.2 -1.2;-0.3 -2.4;0.5 -3.6;0 -4.8;0.7 -6" '
+        f'dur="2.7s" begin="{begin}" repeatCount="indefinite"/>'
+        f'</rect>'
+    )
+
 CIG = (
     '<g class="od-cig" style="display:inline">'
     '<rect x="12" y="11" width="3" height="1" fill="#EDEDE3"/>'
-    '<rect x="15" y="11" width="1" height="1" fill="#FF5A00" class="od-ember"/>'
-    '<rect x="14" y="9.4" width="0.8" height="0.8" fill="#9E9E9E" class="od-smoke od-s1"/>'
-    '<rect x="14.2" y="7.4" width="0.7" height="0.7" fill="#B0B0B0" class="od-smoke od-s2"/>'
-    '<rect x="13.8" y="5.4" width="0.6" height="0.6" fill="#C4C4C4" class="od-smoke od-s3"/>'
-    '</g>'
+    '<rect x="15" y="11" width="1" height="1" fill="#FF5A00" class="od-ember">'
+    '<animate attributeName="fill" values="#E03A00;#FF7A1A;#E03A00" dur="1.6s" repeatCount="indefinite"/>'
+    '<animate attributeName="opacity" values="0.85;1;0.85" dur="1.6s" repeatCount="indefinite"/>'
+    '</rect>'
+    + _puff("0.9", "#9E9E9E", "-0.2s")
+    + _puff("0.8", "#B0B0B0", "-1.1s")
+    + _puff("0.7", "#C4C4C4", "-2.0s")
+    + '</g>'
 )
-CIG_CSS = (
-    "<style>"
-    ".od-ember{animation:od-ember 1.6s infinite ease-in-out}"
-    "@keyframes od-ember{0%,100%{fill:#E03A00;opacity:.85}50%{fill:#FF7A1A;opacity:1}}"
-    ".od-smoke{opacity:0}"
-    ".od-s1{animation:od-rise 3s infinite linear}"
-    ".od-s2{animation:od-rise 3s infinite linear;animation-delay:1s}"
-    ".od-s3{animation:od-rise 3s infinite linear;animation-delay:2s}"
-    "@keyframes od-rise{0%{transform:translate(0,1.5px);opacity:0}25%{opacity:.8}"
-    "100%{transform:translate(1px,-4px);opacity:0}}"
-    "</style>"
-)
+CIG_CSS = ""
 
 os.makedirs(os.path.join(OUT, "assets"), exist_ok=True)
 
