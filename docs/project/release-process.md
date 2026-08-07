@@ -18,7 +18,17 @@ npm run audit:assets
 
 Manual workflow dispatch builds Windows, macOS, and Linux artifacts, checks
 each unpacked resources tree for retired Telegram sidecar binaries/source, and
-uploads build artifacts. It does not publish a GitHub Release.
+gates every package on its target-native Koffi payload, a packaged positive-call
+smoke, and updater metadata matching the generated artifacts. It then uploads
+the installers plus JSON evidence manifests. It does not publish a GitHub
+Release.
+
+Each staged application must contain exactly one physical Koffi native addon at
+`app.asar.unpacked/node_modules/koffi/build/koffi/<target-triplet>/koffi.node`.
+The native inventory audit must reject every foreign-architecture binary except
+the exact electron-builder-managed Windows `resources/elevate.exe` ia32 helper.
+Do not rewrite `app.asar` from `afterPack`: electron-builder records ASAR
+integrity before that hook, so Koffi cleanup is physical-file pruning only.
 
 ## Draft Release
 
@@ -56,6 +66,9 @@ Before launching:
   `sidecars/cc-connect-clawd` nor any `cc-connect-clawd(.exe)` exists.
 - Confirm Windows artifacts are architecture-specific x64 / ARM64 installers,
   not a universal NSIS installer.
+- Download the native-package, Koffi prune/smoke, and updater metadata manifests.
+  Confirm the target has one matching `koffi.node`, no foreign native payload,
+  and no unreviewed exception.
 - For migration smoke, install v0.13.0 first and save a copy of the old
   `clawd-prefs.json` before upgrading.
 - For Reasonix smoke, prepare a machine with Reasonix initialized so
