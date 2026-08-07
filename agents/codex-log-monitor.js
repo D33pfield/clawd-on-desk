@@ -826,10 +826,6 @@ class CodexLogMonitor {
     if (!recentlyActive && (pending.size === 0 || tooOldForPendingRecovery)) return null;
 
     const deferSideEffects = options.deferSideEffects === true;
-    const role = deferSideEffects
-      ? "unknown"
-      : this._classifier.registerSession("codex:" + sessionId, { sessionMeta: sessionMeta.payload });
-    const isSubagent = role === "subagent";
     const recovered = {
       // Stops at the last complete newline, not true EOF — matches
       // _pollFile's own offset convention. A still-growing final line is
@@ -858,7 +854,13 @@ class CodexLogMonitor {
       // MAX_TRACKED_FILES pressure despite genuinely being live.
       hasEmittedState: !recentlyActive,
       hadToolUse: false,
-      isSubagent,
+      // Classification is applied exactly once after reconstruction. The
+      // deferred production caller waits for post-read snapshot validation;
+      // direct callers follow the same one-path rule immediately. For recent
+      // recovery, the tail's session_meta performs it when the tail includes
+      // the head; otherwise the separately-read head does. Stale pending
+      // recovery always uses the separately-read head.
+      isSubagent: false,
       agentPid: null,
       assistantLastOutput: null,
       assistantLastOutputTruncated: false,
@@ -877,7 +879,10 @@ class CodexLogMonitor {
       }
       return recovered;
     }
-    if (!recentlyActive) return recovered;
+    if (!recentlyActive) {
+      this._applySessionMeta(sessionMeta.payload, recovered);
+      return recovered;
+    }
 
     // Reconstruct only the bounded tail in backfill mode. Historical
     // lifecycle events stay silent, while fresh token_count captures seed
@@ -919,8 +924,7 @@ class CodexLogMonitor {
     delete recovered._recoveryRawLines;
     delete recovered._recoveryTailIncludesHead;
     if (!Array.isArray(rawLines)) {
-      const role = this._classifier.registerSession(recovered.sessionId, { sessionMeta });
-      recovered.isSubagent = role === "subagent";
+      this._applySessionMeta(sessionMeta, recovered);
       return;
     }
     if (!tailIncludesHead) this._applySessionMeta(sessionMeta, recovered);

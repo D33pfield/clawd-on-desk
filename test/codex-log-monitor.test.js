@@ -180,7 +180,14 @@ describe("CodexLogMonitor", () => {
   it("recovers a still-open request_user_input from an old (>5min mtime) untracked file on startup", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [
-      JSON.stringify({ type: "session_meta", payload: { cwd: "/projects/foo" } }),
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          cwd: "/projects/foo",
+          originator: "Codex Desktop",
+          source: "vscode",
+        },
+      }),
       JSON.stringify({
         type: "response_item",
         payload: {
@@ -195,8 +202,15 @@ describe("CodexLogMonitor", () => {
     fs.utimesSync(testFile, oldTime, oldTime);
 
     const requests = [];
+    let classifierRegistrations = 0;
     monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
       onUserInputRequest: (...args) => requests.push(args),
+      classifier: {
+        registerSession() {
+          classifierRegistrations += 1;
+          return "root";
+        },
+      },
     });
     monitor.start();
 
@@ -204,8 +218,99 @@ describe("CodexLogMonitor", () => {
       assert.strictEqual(requests.length, 1);
       assert.strictEqual(requests[0][0], EXPECTED_SID);
       assert.strictEqual(requests[0][1].callId, "call_stale_pending");
+      assert.strictEqual(requests[0][2].cwd, "/projects/foo");
+      assert.strictEqual(requests[0][2].codexOriginator, "Codex Desktop");
+      assert.strictEqual(requests[0][2].codexSource, "vscode");
+      assert.strictEqual(classifierRegistrations, 1, "validated stale pending recovery must classify once");
       done();
     }, 300);
+  });
+
+  it("preserves metadata and classifies once in direct stale-pending recovery", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          cwd: "/projects/direct-stale",
+          originator: "Codex Desktop",
+          source: "vscode",
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: "call_direct_stale",
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }),
+    ].join("\n") + "\n");
+    const oldTime = new Date(Date.now() - 600000);
+    fs.utimesSync(testFile, oldTime, oldTime);
+
+    let classifierRegistrations = 0;
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      classifier: {
+        registerSession() {
+          classifierRegistrations += 1;
+          return "root";
+        },
+      },
+    });
+    const recovered = monitor._recoverStalePendingUserInput(testFile, path.basename(testFile));
+
+    assert.ok(recovered);
+    assert.strictEqual(recovered.cwd, "/projects/direct-stale");
+    assert.strictEqual(recovered.codexOriginator, "Codex Desktop");
+    assert.strictEqual(recovered.codexSource, "vscode");
+    assert.ok(recovered.pendingUserInputs.has("call_direct_stale"));
+    assert.strictEqual(classifierRegistrations, 1);
+  });
+
+  it("classifies direct recent recovery once with session_meta inside or outside the tail", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const timestamp = new Date().toISOString();
+    const sessionMetaLine = JSON.stringify({
+      timestamp,
+      type: "session_meta",
+      payload: {
+        cwd: "/projects/direct-recent",
+        originator: "Codex Desktop",
+        source: "vscode",
+      },
+    });
+    const activeLine = JSON.stringify({
+      timestamp,
+      type: "event_msg",
+      payload: { type: "task_started" },
+    });
+    let classifierRegistrations = 0;
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      classifier: {
+        registerSession() {
+          classifierRegistrations += 1;
+          return "root";
+        },
+      },
+    });
+
+    fs.writeFileSync(testFile, sessionMetaLine + "\n" + activeLine + "\n");
+    let recovered = monitor._recoverStalePendingUserInput(testFile, path.basename(testFile));
+    assert.ok(recovered);
+    assert.strictEqual(recovered.codexOriginator, "Codex Desktop");
+    assert.strictEqual(recovered.codexSource, "vscode");
+    assert.strictEqual(classifierRegistrations, 1, "small tail must use its session_meta exactly once");
+
+    classifierRegistrations = 0;
+    const fillerLine = JSON.stringify({ type: "response_item", payload: { type: "message", text: "x".repeat(2 * 1024 * 1024) } });
+    fs.writeFileSync(testFile, sessionMetaLine + "\n" + fillerLine + "\n" + activeLine + "\n");
+    recovered = monitor._recoverStalePendingUserInput(testFile, path.basename(testFile));
+    assert.ok(recovered);
+    assert.strictEqual(recovered.codexOriginator, "Codex Desktop");
+    assert.strictEqual(recovered.codexSource, "vscode");
+    assert.strictEqual(classifierRegistrations, 1, "head outside the tail must use the explicit metadata exactly once");
   });
 
   it("does not recover an old untracked file whose request_user_input was already resolved", (_, done) => {
