@@ -5156,11 +5156,22 @@ describe("settings renderer browser environment", () => {
     const control = harness.core.state.mountedControls.roamMovementStyle;
     const row = harness.content.querySelector(".roam-movement-style-row");
     const group = harness.content.querySelector(".free-roam-collapsible");
+    const header = group.querySelector(".collapsible-group-header");
+    const disclosure = group.querySelector(".collapsible-group-disclosure");
     const freeRoamSwitch = harness.getSwitch("freeRoam");
     assert.ok(control && row, "the dependent movement-style row must mount");
     assert.ok(group, "Free roam must render as a collapsible group");
     assert.strictEqual(group.dataset.groupId, "general:free-roam");
     assert.strictEqual(group.classList.contains("collapsed"), true, "Free roam details default closed");
+    assert.strictEqual(header.getAttribute("role"), undefined, "the shared header must not wrap both interactive controls");
+    assert.strictEqual(disclosure.getAttribute("role"), "button");
+    assert.strictEqual(disclosure.getAttribute("aria-expanded"), "false");
+    assert.strictEqual(disclosure.getAttribute("aria-label"), "Expand section: Free roam");
+    assert.strictEqual(disclosure.contains(freeRoamSwitch), false, "the switch must be a sibling of the disclosure button");
+    assert.strictEqual(header.contains(disclosure), true);
+    assert.strictEqual(header.contains(freeRoamSwitch), true);
+    assert.strictEqual(freeRoamSwitch.getAttribute("role"), "switch");
+    assert.strictEqual(freeRoamSwitch.getAttribute("aria-label"), "Free roam");
     assert.ok(
       group.querySelector(".collapsible-group-body").contains(row),
       "movement style must live inside the collapsible body",
@@ -5177,7 +5188,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(natural.disabled, true);
 
     // The header master switch updates Free roam without also opening the
-    // disclosure. The title/description area remains the expansion target.
+    // sibling disclosure. No propagation workaround is needed.
     freeRoamSwitch.dispatchEvent({
       type: "click",
       bubbles: true,
@@ -5190,6 +5201,11 @@ describe("settings renderer browser environment", () => {
       "the header switch must persist freeRoam=true",
     );
     assert.strictEqual(group.classList.contains("collapsed"), true);
+
+    disclosure.dispatchEvent({ type: "click", bubbles: true });
+    assert.strictEqual(group.classList.contains("collapsed"), false);
+    assert.strictEqual(disclosure.getAttribute("aria-expanded"), "true");
+    assert.strictEqual(disclosure.getAttribute("aria-label"), "Collapse section: Free roam");
 
     // Enabling the parent patches the mounted child in place and preserves its
     // stored axis selection instead of resetting the preference.
@@ -6263,7 +6279,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes("localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY)"));
     assert.ok(coreSource.includes("localStorage.setItem(COLLAPSED_GROUPS_STORAGE_KEY"));
     assert.ok(coreSource.includes("defaultCollapsed = false"));
-    assert.ok(coreSource.includes('header.setAttribute("aria-expanded"'));
+    assert.ok(coreSource.includes('disclosure.setAttribute("aria-expanded"'));
     assert.ok(coreSource.includes("collapsibleSummary"));
     assert.ok(coreSource.includes("function createDisclosureChevron("));
     assert.ok(coreSource.includes('createDisclosureChevron("collapsible-group-chevron")'));

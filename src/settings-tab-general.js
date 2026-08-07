@@ -154,20 +154,16 @@
     });
     headerRow.classList.add("free-roam-header-row");
 
-    // The header itself owns disclosure. Keep the nested master switch from
-    // also collapsing/expanding the group when it is clicked or keyboard-
-    // activated; this mirrors the independent header switch in Sound.
     const headerSwitch = headerRow.querySelector(".switch");
-    if (headerSwitch) {
-      headerSwitch.addEventListener("click", (ev) => ev.stopPropagation());
-      headerSwitch.addEventListener("keydown", (ev) => {
-        if (ev.key === " " || ev.key === "Enter") ev.stopPropagation();
-      });
-    }
+    if (headerSwitch) headerSwitch.setAttribute("aria-label", t("rowFreeRoam"));
+    const headerAction = headerRow.querySelector(".row-control");
+    if (headerAction) headerAction.remove();
 
     return helpers.buildCollapsibleGroup({
       id: "general:free-roam",
       headerContent: headerRow,
+      headerAction,
+      disclosureLabel: t("rowFreeRoam"),
       defaultCollapsed: true,
       className: "free-roam-collapsible",
       children: [buildOptionList("free-roam-option-list", [
