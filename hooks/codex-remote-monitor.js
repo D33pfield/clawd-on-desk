@@ -986,6 +986,12 @@ function cleanStaleFiles(options = {}) {
   const now = typeof options.now === "function" ? options.now() : Date.now();
   const postStateFn = typeof options.postState === "function" ? options.postState : postState;
   for (const [, entry] of tracked) {
+    // Initial replay can legitimately span minutes under the bounded 4 MiB /
+    // file and 16 MiB / poll budgets. Its lastEventTime describes attach or a
+    // staged historical record, not a committed live-idle interval. Publishing
+    // sleeping before replay reaches its snapshot EOF creates a false state
+    // transition that the initialization gate is meant to suppress.
+    if (entry.initializing) continue;
     if (!entry.stale && now - entry.lastEventTime > STALE_MS) {
       postStateFn(entry.sessionId, "sleeping", "stale-cleanup", entry.cwd, entry.isSubagent);
       entry.stale = true;

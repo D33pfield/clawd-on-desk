@@ -1060,6 +1060,42 @@ describe("CodexLogMonitor", () => {
     }
   });
 
+  it("recovery head advances from the true short-read cursor", () => {
+    const testFile = path.join(dateDir, "recovery-head-short-cursor.jsonl");
+    const firstLine = JSON.stringify({
+      type: "session_meta",
+      payload: { cwd: "/projects/短读游标", pad: "中".repeat(14000) },
+    });
+    fs.writeFileSync(testFile, firstLine + "\n" + "tail".repeat(4096));
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
+
+    const originalReadSync = fs.readSync;
+    const requested = [];
+    let calls = 0;
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      calls += 1;
+      requested.push({ length, position });
+      return originalReadSync(
+        fd,
+        buffer,
+        offset,
+        calls === 1 ? Math.min(length, 4097) : length,
+        position
+      );
+    };
+    try {
+      assert.strictEqual(
+        monitor._readCompleteFirstLine(testFile, fs.statSync(testFile).size, 256 * 1024),
+        firstLine
+      );
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+    assert.ok(requested[0].length > 4097, "the first read must actually be short");
+    assert.strictEqual(requested[1].position, 4097, "the next read must resume at bytesRead, not requestLength");
+    assert.ok(calls <= 8);
+  });
+
   it("does not overshoot true EOF when the tail window starts mid-character, and still resolves after completion", () => {
     // #707 follow-up review round 3, finding 2 — full scenario: construct a
     // file where the 1MB tail window's start byte deterministically lands
@@ -2319,6 +2355,40 @@ describe("CodexLogMonitor", () => {
     );
   });
 
+  it("defers an intact 3 MiB quantum when only 1 MiB remains, then reads it whole", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const fileSize = 3 * 1024 * 1024;
+    fs.writeFileSync(testFile, "");
+    fs.truncateSync(testFile, fileSize);
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
+
+    const originalReadSync = fs.readSync;
+    const requested = [];
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      requested.push(length);
+      return originalReadSync(fd, buffer, offset, length, position);
+    };
+    try {
+      const constrained = { remainingRequestBytes: 1024 * 1024 };
+      assert.deepStrictEqual(
+        monitor._pollFile(testFile, path.basename(testFile), constrained),
+        { kind: "budget", requestedBytes: 0, bytesRead: 0 }
+      );
+      assert.deepStrictEqual(requested, [], "an undersized remainder must not issue a fragmentary read");
+      assert.strictEqual(constrained.remainingRequestBytes, 1024 * 1024);
+      assert.strictEqual(monitor._tracked.get(testFile).offset, 0);
+
+      const nextPoll = { remainingRequestBytes: 16 * 1024 * 1024 };
+      const result = monitor._pollFile(testFile, path.basename(testFile), nextPoll);
+      assert.strictEqual(result.kind, "discarded");
+      assert.deepStrictEqual(requested, [fileSize]);
+      assert.strictEqual(monitor._tracked.get(testFile).offset, fileSize);
+      assert.strictEqual(monitor._replayWork.has(testFile), false);
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+  });
+
   it("shares the 64-attempt cap with active-day discovery and visits new paths next poll", () => {
     const filePaths = [];
     for (let i = 0; i < 80; i++) {
@@ -2373,6 +2443,75 @@ describe("CodexLogMonitor", () => {
       fs.readSync = originalReadSync;
     }
     assert.strictEqual(reads, 1, "the replay/normal duplicate path must get only one quantum");
+  });
+
+  it("keeps an unfinished admitted replay out of both active and retired LRU eviction", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    const prefix = [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/projects/lru-replay" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: "call_lru_replay",
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }),
+    ].join("\n") + "\n";
+    fs.writeFileSync(testFile, prefix);
+    fs.truncateSync(testFile, 5 * 1024 * 1024);
+    const oldTime = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(testFile, oldTime, oldTime);
+
+    const emitted = [];
+    const requests = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), (...args) => emitted.push(args), {
+      onUserInputRequest: (...args) => requests.push(args),
+    });
+    assert.strictEqual(monitor._pollFile(testFile, path.basename(testFile)).kind, "progress");
+    const replay = monitor._tracked.get(testFile);
+    assert.ok(replay);
+    assert.strictEqual(monitor._replayWork.has(testFile), true);
+    assert.strictEqual(replay.backfilling, true);
+    assert.strictEqual(replay.lastState, "thinking");
+    assert.ok(replay.pendingUserInputs.has("call_lru_replay"));
+    assert.deepStrictEqual(emitted, []);
+    assert.deepStrictEqual(requests, []);
+    const replayOffset = replay.offset;
+    replay.lastEventTime = 1;
+
+    for (let i = 0; i < 50; i += 1) {
+      monitor._tracked.set(`ordinary-lru-${i}`, {
+        hasEmittedState: true,
+        lastEventTime: 100 + i,
+      });
+    }
+    assert.strictEqual(monitor._tracked.size, 51);
+
+    const originalRetire = monitor._retireTrackedFile;
+    const retirementAttempts = [];
+    monitor._retireTrackedFile = function retireWithProbe(filePath, tracked) {
+      retirementAttempts.push(filePath);
+      return originalRetire.call(this, filePath, tracked);
+    };
+    try {
+      monitor._pruneTrackedFilesIfNeeded();
+    } finally {
+      monitor._retireTrackedFile = originalRetire;
+    }
+
+    assert.strictEqual(retirementAttempts.includes(testFile), false, "pruning must not target admitted replay work");
+    assert.strictEqual(monitor._tracked.get(testFile), replay);
+    assert.strictEqual(monitor._tracked.has("ordinary-lru-0"), false);
+    assert.strictEqual(replay.offset, replayOffset);
+    assert.strictEqual(replay.lastState, "thinking");
+    assert.ok(replay.pendingUserInputs.has("call_lru_replay"));
+
+    originalRetire.call(monitor, testFile, replay);
+    assert.strictEqual(monitor._tracked.get(testFile), replay, "the retire guard must independently preserve admitted replay");
+    assert.strictEqual(monitor._retiredTracked.has(testFile), false);
   });
 
   it("admits at most 40 replay items, reserves background capacity, and weights deferred lanes 3:1", () => {

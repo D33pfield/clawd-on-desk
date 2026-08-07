@@ -750,6 +750,47 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
     )));
   });
 
+  it("defers an intact remote 3 MiB quantum when only 1 MiB remains, then reads it whole", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-intact-budget-"));
+    tmpDirs.push(dir);
+    const filePath = path.join(dir, ROLLOUT_NAME);
+    const fileSize = 3 * 1024 * 1024;
+    fs.writeFileSync(filePath, "");
+    fs.truncateSync(filePath, fileSize);
+
+    const originalReadSync = fs.readSync;
+    const requested = [];
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      requested.push(length);
+      return originalReadSync(fd, buffer, offset, length, position);
+    };
+    try {
+      const constrained = { remainingRequestBytes: 1024 * 1024 };
+      assert.deepStrictEqual(
+        __test.pollFile(filePath, ROLLOUT_NAME, {
+          pollContext: constrained,
+          postState: () => {},
+        }),
+        { kind: "budget", requestedBytes: 0, bytesRead: 0 }
+      );
+      assert.deepStrictEqual(requested, [], "an undersized remote remainder must not issue a fragmentary read");
+      assert.strictEqual(constrained.remainingRequestBytes, 1024 * 1024);
+      assert.strictEqual(__test.tracked.get(filePath).offset, 0);
+
+      const nextPoll = { remainingRequestBytes: 16 * 1024 * 1024 };
+      const result = __test.pollFile(filePath, ROLLOUT_NAME, {
+        pollContext: nextPoll,
+        postState: () => {},
+      });
+      assert.strictEqual(result.kind, "discarded");
+      assert.deepStrictEqual(requested, [fileSize]);
+      assert.strictEqual(__test.tracked.get(filePath).offset, fileSize);
+      assert.strictEqual(__test.replayWork.has(filePath), false);
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+  });
+
   it("caps remote zero-byte candidate attempts at 64 and rotates to new paths", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-attempts-"));
     tmpDirs.push(dir);
@@ -1388,6 +1429,43 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
     }
   });
 
+  it("remote recovery head advances from the true short-read cursor", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-head-cursor-"));
+    tmpDirs.push(dir);
+    const filePath = path.join(dir, ROLLOUT_NAME);
+    const firstLine = JSON.stringify({
+      type: "session_meta",
+      payload: { cwd: "/repo/短读游标", pad: "中".repeat(14000) },
+    });
+    fs.writeFileSync(filePath, firstLine + "\n" + "tail".repeat(4096));
+
+    const originalReadSync = fs.readSync;
+    const requested = [];
+    let calls = 0;
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      calls += 1;
+      requested.push({ length, position });
+      return originalReadSync(
+        fd,
+        buffer,
+        offset,
+        calls === 1 ? Math.min(length, 4097) : length,
+        position
+      );
+    };
+    try {
+      assert.strictEqual(
+        __test.readCompleteFirstLine(filePath, fs.statSync(filePath).size, 256 * 1024),
+        firstLine
+      );
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+    assert.ok(requested[0].length > 4097, "the first remote read must actually be short");
+    assert.strictEqual(requested[1].position, 4097, "the next remote read must resume at bytesRead");
+    assert.ok(calls <= 8);
+  });
+
   it("does not overshoot true EOF when the tail window starts mid-character, and still resolves after completion", () => {
     // #707 follow-up review round 3, finding 2 — full scenario: construct a
     // file where the 1MB tail window's start byte deterministically lands
@@ -1750,6 +1828,34 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
     assert.strictEqual(
       s.posted.filter((p) => p.event === "event_msg:task_complete").length, 2,
       "a real new completion after resume still fires"
+    );
+  });
+
+  it("does not post sleeping while a bounded remote replay is still initializing", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-initializing-stale-"));
+    tmpDirs.push(dir);
+    const filePath = path.join(dir, ROLLOUT_NAME);
+    fs.writeFileSync(filePath, JSON.stringify(META) + "\n");
+    fs.truncateSync(filePath, 5 * 1024 * 1024);
+    const s = spy();
+
+    __test.pollFile(filePath, ROLLOUT_NAME, { postState: s.postState });
+    const entry = __test.tracked.get(filePath);
+    assert.ok(entry);
+    assert.strictEqual(entry.initializing, true);
+    entry.lastEventTime = Date.now() - __test.STALE_MS - 1000;
+    const future = Date.now();
+
+    __test.cleanStaleFiles({ postState: s.postState, now: () => future });
+    assert.deepStrictEqual(s.posted.filter((post) => post.event === "stale-cleanup"), []);
+    assert.strictEqual(entry.stale, false);
+
+    entry.initializing = false;
+    __test.cleanStaleFiles({ postState: s.postState, now: () => future });
+    assert.strictEqual(
+      s.posted.filter((post) => post.event === "stale-cleanup").length,
+      1,
+      "the same entry becomes eligible only after initialization finishes"
     );
   });
 
