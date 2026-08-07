@@ -75,7 +75,7 @@ function runtimeDictRenderers() {
 
 describe("i18n locales", () => {
   it("lists all selectable languages in supported languages", () => {
-    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja"]);
+    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
   });
 
   it("keeps all locale keysets aligned with English", () => {

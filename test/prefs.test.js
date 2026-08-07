@@ -2053,6 +2053,7 @@ describe("prefs.mapLocaleToLang (device locale → UI language)", () => {
     ["zh-TW", "zh-TW"], ["zh-Hant", "zh-TW"], ["zh-HK", "zh-TW"], ["zh-Hant-TW", "zh-TW"],
     ["ko-KR", "ko"], ["ko", "ko"],
     ["ja-JP", "ja"], ["ja", "ja"],
+    ["pt-BR", "pt-BR"], ["pt", "pt-BR"], ["pt-PT", "pt-BR"],
     ["fr-FR", "en"], ["de", "en"],
   ];
   for (const [input, expected] of cases) {
@@ -2069,8 +2070,8 @@ describe("prefs.mapLocaleToLang (device locale → UI language)", () => {
   });
 
   it("only ever returns a value inside the lang enum", () => {
-    const enumVals = new Set(["en", "zh", "zh-TW", "ko", "ja"]);
-    for (const probe of ["xx", "ZH-tw", "JA", "en-GB", "pt-BR", ""]) {
+    const enumVals = new Set(["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
+    for (const probe of ["xx", "ZH-tw", "JA", "en-GB", "pt-BR", "PT-br", ""]) {
       assert.ok(enumVals.has(prefs.mapLocaleToLang(probe)), `${probe} mapped outside enum`);
     }
   });

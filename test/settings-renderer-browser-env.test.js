@@ -2354,7 +2354,7 @@ describe("settings renderer browser environment", () => {
       "telegramMigrationNudgeLegacyBody",
       "telegramMigrationNudgeNativeBody",
     ];
-    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja"]);
+    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
     for (const lang of SUPPORTED_LANGS) {
       for (const key of keys) {
         assert.equal(

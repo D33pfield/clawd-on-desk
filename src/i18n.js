@@ -2786,7 +2786,7 @@ const i18n = {
   },
 };
 
-const SUPPORTED_LANGS = Object.freeze(["en", "zh", "zh-TW", "ko", "ja"]);
+const SUPPORTED_LANGS = Object.freeze(["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
 
 function createTranslator(getLang) {
   if (typeof getLang !== "function") {
