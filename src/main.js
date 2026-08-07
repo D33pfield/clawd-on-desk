@@ -4336,6 +4336,10 @@ const _roamCtx = {
   isImeEditingActive: () => pendingPermissions.some(
     (p) => p && p.bubble && !p.bubble.isDestroyed() && p.bubble.__clawdMacImeEditing
   ),
+  // #810: optional roam fence — validated async loader for
+  // ~/.clawd/roam-area.json; roam reads its in-memory cache at target pick
+  // time and kicks refresh() when scheduling walks (see src/roam-fence.js).
+  roamFence: require("./roam-fence")(),
 };
 const _roam = require("./roam")(_roamCtx);
 

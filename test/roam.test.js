@@ -1711,3 +1711,386 @@ describe("roam axis-constrained mode (#686)", () => {
     );
   });
 });
+
+describe("roam fence (#810)", () => {
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    mock.timers.reset();
+    mock.reset();
+  });
+
+  // Default work area 1920×1080, pet 120×120 → margin band x∈[288,1512],
+  // y∈[162,798]. Fence fractions .4–.6 → fence pixels x∈[768,1152],
+  // y∈[432,648]; window-containment intervals x∈[768,1032], y∈[432,528].
+  const FENCE = { active: true, left: 0.4, top: 0.4, right: 0.6, bottom: 0.6 };
+  const FULL = { active: true, left: 0, top: 0, right: 1, bottom: 1 };
+  const INACTIVE = { active: false, left: 0, top: 0, right: 1, bottom: 1 };
+
+  function fenceCtx(fenceState, overrides = {}) {
+    const ctx = makeCtx(overrides);
+    if (fenceState !== undefined) {
+      ctx.roamFence = {
+        get: () => fenceState,
+        refresh: () => {},
+      };
+    }
+    return ctx;
+  }
+
+  function placePet(ctx, x, y) {
+    ctx._bounds.x = x;
+    ctx._bounds.y = y;
+    ctx._realBounds.x = x;
+    ctx._realBounds.y = y;
+  }
+
+  function runOneWalk(ctx, roam) {
+    roam.tick();
+    mock.timers.tick(8000);
+    for (let i = 0; i < 4000; i += 1) {
+      mock.timers.tick(16);
+      if (
+        ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle")
+      )
+        break;
+    }
+  }
+
+  function assertWithinFencePixels(rect, fencePx, label) {
+    assert.ok(
+      rect.x >= fencePx.left &&
+        rect.x + rect.width <= fencePx.right &&
+        rect.y >= fencePx.top &&
+        rect.y + rect.height <= fencePx.bottom,
+      `${label}: (${rect.x},${rect.y},${rect.width}×${rect.height}) escapes fence [${fencePx.left}..${fencePx.right}]×[${fencePx.top}..${fencePx.bottom}]`,
+    );
+  }
+
+  const FENCE_PX = { left: 768, top: 432, right: 1152, bottom: 648 };
+
+  // ── Parent-behavior pins: no fence, disabled, full-range ──
+
+  it("no fence file: small work areas still produce no target (parent pin)", () => {
+    // Reviewer repro: 400×300 work area, 250×170 pet at (60,45) — farthest
+    // candidate is 50px away, under ROAM_MIN_DIST. The parent returns no
+    // target; the adaptive threshold must NOT engage without a fence.
+    mock.method(Math, "random", () => 0.9);
+    const ctx = makeCtx({
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 400, height: 300 }),
+    });
+    ctx._bounds.width = 250;
+    ctx._bounds.height = 170;
+    ctx._realBounds.width = 250;
+    ctx._realBounds.height = 170;
+    placePet(ctx, 60, 45);
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(8000);
+    assert.equal(ctx._appliedBounds.length, 0, "no walk may start");
+    assert.ok(
+      !ctx._stateLog.some((e) => e.state === "roam"),
+      "pet never enters roam state",
+    );
+  });
+
+  it("disabled fence keeps parent behavior on small work areas", () => {
+    mock.method(Math, "random", () => 0.9);
+    const ctx = fenceCtx(INACTIVE, {
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 400, height: 300 }),
+    });
+    ctx._bounds.width = 250;
+    ctx._bounds.height = 170;
+    ctx._realBounds.width = 250;
+    ctx._realBounds.height = 170;
+    placePet(ctx, 60, 45);
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(8000);
+    assert.equal(ctx._appliedBounds.length, 0, "no walk may start");
+  });
+
+  it("full-range fence keeps parent behavior on small work areas", () => {
+    mock.method(Math, "random", () => 0.9);
+    const ctx = fenceCtx(FULL, {
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 400, height: 300 }),
+    });
+    ctx._bounds.width = 250;
+    ctx._bounds.height = 170;
+    ctx._realBounds.width = 250;
+    ctx._realBounds.height = 170;
+    placePet(ctx, 60, 45);
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(8000);
+    assert.equal(ctx._appliedBounds.length, 0, "no walk may start");
+  });
+
+  it("inactive fence picks the same target as no loader at all", () => {
+    mock.method(Math, "random", () => 0.9);
+    const runs = [];
+    for (const fenceState of [undefined, INACTIVE]) {
+      const ctx = fenceCtx(fenceState);
+      const roam = roamModule(ctx);
+      roam.setEnabled(true);
+      runOneWalk(ctx, roam);
+      assert.ok(ctx._appliedBounds.length > 0, "walk should run");
+      runs.push(ctx._appliedBounds[ctx._appliedBounds.length - 1]);
+      roam.setEnabled(false);
+    }
+    assert.deepEqual(runs[0], runs[1], "fence-inactive must equal no-fence");
+  });
+
+  // ── Fence-active behavior, free-direction mode ──
+
+  it("confines free-direction targets to the fence rectangle", () => {
+    mock.method(Math, "random", () => 0.9);
+    const ctx = fenceCtx(FENCE);
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    runOneWalk(ctx, roam);
+    assert.ok(ctx._appliedBounds.length > 0, "walk should run");
+    const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
+    assert.deepEqual(
+      { x: last.x, y: last.y },
+      { x: 1005, y: 518 },
+      "deterministic fenced target",
+    );
+    assertWithinFencePixels(last, FENCE_PX, "final window");
+  });
+
+  it("scales the minimum hop down only when the fence shrinks the interval", () => {
+    // Fence x∈[.45,.58], y∈[.45,.58] → candidate ranges 130×20px. Every
+    // candidate is <100px from a start inside the fence, so the parent
+    // threshold would reject all of them — the fence-scaled threshold must
+    // accept one instead of freezing the pet.
+    mock.method(Math, "random", () => 0.9);
+    const ctx = fenceCtx({
+      active: true,
+      left: 0.45,
+      top: 0.45,
+      right: 0.58,
+      bottom: 0.58,
+    });
+    placePet(ctx, 930, 496);
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    runOneWalk(ctx, roam);
+    assert.ok(
+      ctx._appliedBounds.length > 0,
+      "small fence must still produce short walks",
+    );
+    const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
+    assertWithinFencePixels(
+      last,
+      { left: 864, top: 486, right: 1114, bottom: 626 },
+      "final window",
+    );
+  });
+
+  it("plans with the effective animation size so the real window stays fenced", () => {
+    // Reviewer repro: 1000×1000 work area, fence .4–.6 (400..600px), picker
+    // bounds 100×100 but effective animation size 200×200. Planning with the
+    // 100px bounds would allow x≈499 → window to ~699, outside the fence.
+    // Planning with the frozen 200px size leaves exactly one target: (400,400).
+    mock.method(Math, "random", () => 0.9);
+    const ctx = fenceCtx(FENCE, {
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 1000, height: 1000 }),
+      getEffectiveCurrentPixelSize: () => ({ width: 200, height: 200 }),
+    });
+    ctx._bounds.width = 100;
+    ctx._bounds.height = 100;
+    ctx._realBounds.width = 100;
+    ctx._realBounds.height = 100;
+    placePet(ctx, 100, 100);
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    runOneWalk(ctx, roam);
+    assert.ok(ctx._appliedBounds.length > 0, "exact-fit walk should run");
+    for (const b of ctx._appliedBounds) {
+      assert.equal(b.width, 200, "every frame uses the frozen effective size");
+      assert.equal(b.height, 200);
+    }
+    const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
+    assert.deepEqual({ x: last.x, y: last.y }, { x: 400, y: 400 });
+    assertWithinFencePixels(
+      last,
+      { left: 400, top: 400, right: 600, bottom: 600 },
+      "final window",
+    );
+  });
+
+  it("handles negative work-area origins", () => {
+    mock.method(Math, "random", () => 0.9);
+    const ctx = fenceCtx(FENCE, {
+      getNearestWorkArea: () => ({
+        x: -1920,
+        y: 0,
+        width: 1920,
+        height: 1080,
+      }),
+    });
+    placePet(ctx, -1000, 300);
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    runOneWalk(ctx, roam);
+    assert.ok(ctx._appliedBounds.length > 0, "walk should run");
+    const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
+    assert.deepEqual({ x: last.x, y: last.y }, { x: -915, y: 518 });
+    assertWithinFencePixels(
+      last,
+      { left: -1152, top: 432, right: -768, bottom: 648 },
+      "final window",
+    );
+  });
+
+  it("skips the round when screen clamping would push the window out of the fence", () => {
+    mock.method(Math, "random", () => 0.9);
+    const ctx = fenceCtx(FENCE, {
+      clampToScreenVisual: (x, y, w, h) => ({ x: 1200, y, width: w, height: h }),
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(1000);
+    assert.equal(
+      ctx._appliedBounds.length,
+      0,
+      "a clamp-escaped target must not start a walk",
+    );
+    assert.ok(
+      !ctx._stateLog.some((e) => e.state === "roam"),
+      "pet never enters roam state on a skipped round",
+    );
+  });
+
+  // ── Fence × axis-constrained roam (#686) ──
+
+  it("axis mode, start inside fence: walks one axis and every frame stays fenced", () => {
+    mock.method(Math, "random", () => 0.3); // → horizontal preferred
+    const ctx = fenceCtx(FENCE);
+    placePet(ctx, 800, 450);
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+    runOneWalk(ctx, roam);
+    assert.ok(ctx._appliedBounds.length > 0, "walk should run");
+    for (const b of ctx._appliedBounds) {
+      assert.equal(b.y, 450, "stationary Y must hold on every applied frame");
+      assertWithinFencePixels(b, FENCE_PX, "every applied frame");
+    }
+    const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
+    assert.equal(last.x, 1032, "deterministic fenced edge target");
+  });
+
+  it("axis mode, X outside fence: X must be the moving axis", () => {
+    mock.method(Math, "random", () => 0.3);
+    const ctx = fenceCtx(FENCE);
+    placePet(ctx, 200, 450); // X outside [768,1032], Y inside [432,528]
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+    runOneWalk(ctx, roam);
+    assert.ok(ctx._appliedBounds.length > 0, "walk should run");
+    for (const b of ctx._appliedBounds) {
+      assert.equal(b.y, 450, "Y is stationary on every applied frame");
+    }
+    const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
+    assert.equal(last.x, 847, "walk pulls X back inside the fence");
+    assertWithinFencePixels(last, FENCE_PX, "final window");
+  });
+
+  it("axis mode, Y outside fence: Y must be the moving axis", () => {
+    mock.method(Math, "random", () => 0.3);
+    const ctx = fenceCtx(FENCE);
+    placePet(ctx, 800, 100); // Y outside, X inside
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+    runOneWalk(ctx, roam);
+    assert.ok(ctx._appliedBounds.length > 0, "walk should run");
+    for (const b of ctx._appliedBounds) {
+      assert.equal(b.x, 800, "X is stationary on every applied frame");
+    }
+    const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
+    assert.equal(last.y, 460, "walk pulls Y back inside the fence");
+    assertWithinFencePixels(last, FENCE_PX, "final window");
+  });
+
+  it("axis mode, both coordinates outside fence: no target this round", () => {
+    mock.method(Math, "random", () => 0.3);
+    const ctx = fenceCtx(FENCE);
+    placePet(ctx, 200, 100); // both outside — no single-axis move can contain
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(8000);
+    assert.equal(ctx._appliedBounds.length, 0, "no diagonal or partial walk");
+    assert.ok(
+      !ctx._stateLog.some((e) => e.state === "roam"),
+      "pet never enters roam state",
+    );
+  });
+
+  it("axis mode: small fences use the scaled per-axis minimum hop", () => {
+    // Exact-fit corridor: fence width exactly the pet (x range collapses to a
+    // point), height leaves y∈[432,506]. Max reachable hop from (768,450) is
+    // 56px — the fixed 100px minimum would never produce an axis target.
+    mock.method(Math, "random", () => 0.3);
+    const ctx = fenceCtx({
+      active: true,
+      left: 0.4,
+      top: 0.4,
+      right: 0.4625,
+      bottom: 0.58,
+    });
+    placePet(ctx, 768, 450);
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+    runOneWalk(ctx, roam);
+    assert.ok(
+      ctx._appliedBounds.length > 0,
+      "corridor fence must still produce axis walks",
+    );
+    for (const b of ctx._appliedBounds) {
+      assert.equal(b.x, 768, "X is stationary in the exact-fit corridor");
+    }
+    const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
+    assert.equal(last.y, 506, "deterministic corridor edge target");
+  });
+
+  // ── Live update wiring ──
+
+  it("kicks an async fence refresh when scheduling, and picks with the refreshed state", () => {
+    mock.method(Math, "random", () => 0.9);
+    let refreshes = 0;
+    let state = { ...INACTIVE };
+    const ctx = makeCtx();
+    ctx.roamFence = {
+      get: () => state,
+      refresh: () => {
+        refreshes += 1;
+        state = FENCE; // simulates the file edit landing before the pause ends
+      },
+    };
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    runOneWalk(ctx, roam);
+    assert.ok(refreshes >= 1, "scheduling must kick a fence refresh");
+    assert.ok(ctx._appliedBounds.length > 0, "walk should run");
+    const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
+    assertWithinFencePixels(last, FENCE_PX, "final window");
+  });
+});

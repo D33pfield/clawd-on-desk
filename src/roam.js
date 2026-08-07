@@ -16,6 +16,10 @@
 //     roams use ROAM_BETWEEN_DELAY_MS (4s).
 //   • When the state changes away from idle/roam (detected in tick or step),
 //     firstRoam is reset so the next idle entry waits the full 8s delay.
+//   • Optional roam fence (#810): when ctx.roamFence (src/roam-fence.js)
+//     reports an active fence, targets are confined to that sub-rectangle of
+//     the work area. Without an active fence every code path below behaves
+//     exactly as it did before the fence existed.
 
 const ROAM_IDLE_DELAY_MS = 8000; // first roam after entering idle
 const ROAM_BETWEEN_DELAY_MS = 4000; // delay between consecutive roams
@@ -85,12 +89,92 @@ module.exports = function initRoam(ctx) {
       bounds.y + bounds.height / 2,
     );
     if (!wa) return null;
+    // #810: one frozen size snapshot drives the whole walk — fence geometry,
+    // random and fallback targets, screen clamping, and every animation frame.
+    // Planning with live bounds while animating with the keep-size effective
+    // size (#569/#408) lets a target that fits on paper place the real window
+    // outside the fence, so the snapshot is resolved here, before target
+    // selection, and handed to animateTo() on the returned target.
+    const effectiveSize =
+      typeof ctx.getEffectiveCurrentPixelSize === "function"
+        ? ctx.getEffectiveCurrentPixelSize()
+        : null;
+    const petW =
+      effectiveSize &&
+      Number.isFinite(effectiveSize.width) &&
+      effectiveSize.width > 0
+        ? effectiveSize.width
+        : bounds.width;
+    const petH =
+      effectiveSize &&
+      Number.isFinite(effectiveSize.height) &&
+      effectiveSize.height > 0
+        ? effectiveSize.height
+        : bounds.height;
+    const size = { width: petW, height: petH };
     const marginX = Math.round(wa.width * ROAM_MARGIN_RATIO);
     const marginY = Math.round(wa.height * ROAM_MARGIN_RATIO);
-    const xMin = wa.x + marginX;
-    const xMax = wa.x + wa.width - bounds.width - marginX;
-    const yMin = wa.y + marginY;
-    const yMax = wa.y + wa.height - bounds.height - marginY;
+    let xMin = wa.x + marginX;
+    let xMax = wa.x + wa.width - petW - marginX;
+    let yMin = wa.y + marginY;
+    let yMax = wa.y + wa.height - petH - marginY;
+    // #810: optional roam fence — a user-editable rectangle (fractions of the
+    // work area) that further restricts where targets may land. State comes
+    // from the injected loader's in-memory cache (main.js wires
+    // src/roam-fence.js; refreshed asynchronously in scheduleNextRoam), never
+    // from disk here. When no fence applies — loader absent, file missing,
+    // disabled, invalid, or a full-range rectangle that shrinks nothing — the
+    // intervals and thresholds below stay exactly the historical values.
+    let fenceRect = null;
+    let fenceShrinks = false;
+    const fenceState =
+      ctx.roamFence && typeof ctx.roamFence.get === "function"
+        ? ctx.roamFence.get()
+        : null;
+    if (fenceState && fenceState.active) {
+      fenceRect = {
+        left: wa.x + Math.round(wa.width * fenceState.left),
+        top: wa.y + Math.round(wa.height * fenceState.top),
+        right: wa.x + Math.round(wa.width * fenceState.right),
+        bottom: wa.y + Math.round(wa.height * fenceState.bottom),
+      };
+      const fxMin = Math.max(xMin, fenceRect.left);
+      const fxMax = Math.min(xMax, fenceRect.right - petW);
+      const fyMin = Math.max(yMin, fenceRect.top);
+      const fyMax = Math.min(yMax, fenceRect.bottom - petH);
+      fenceShrinks =
+        fxMin > xMin || fxMax < xMax || fyMin > yMin || fyMax < yMax;
+      xMin = fxMin;
+      xMax = fxMax;
+      yMin = fyMin;
+      yMax = fyMax;
+      // A fence that doesn't shrink the candidate interval must not change
+      // behavior at all — drop it so no fence-only code paths run.
+      if (!fenceShrinks) fenceRect = null;
+    }
+    // #810: a fence smaller than ROAM_MIN_DIST would reject every candidate,
+    // so the minimum hop scales down with the fenced interval — but only when
+    // an active fence actually shrank it; otherwise the historical 100px
+    // threshold applies unchanged (including the "small work area, no fence"
+    // case, which must keep returning no target).
+    const minDist = fenceShrinks
+      ? Math.min(
+          ROAM_MIN_DIST,
+          Math.max(
+            24,
+            Math.round(
+              (Math.max(0, xMax - xMin) + Math.max(0, yMax - yMin)) / 4,
+            ),
+          ),
+        )
+      : ROAM_MIN_DIST;
+    // Axis-constrained walks move along one axis only, so their reachable
+    // distance is bounded by that axis' range alone (best case ~range from an
+    // edge, ~range/2 from the center) — scale per-axis, same 24px floor.
+    const axisMinDist = (range) =>
+      fenceShrinks
+        ? Math.min(ROAM_MIN_DIST, Math.max(24, Math.round(range / 2)))
+        : ROAM_MIN_DIST;
     /* #686: axis-constrained roam — pick a target that varies in only one axis.
      * Randomly choose horizontal (same Y, random X) or vertical (same X, random Y).
      * The constrained branch owns its complete retry/fallback behavior: it never
@@ -101,16 +185,44 @@ module.exports = function initRoam(ctx) {
      * outside the inner margin band, that position is kept as-is so the "axis-only"
      * promise holds even at screen edges. */
     if (constrainAxis) {
+      /* #810 fence × #686 axis: a single-axis move keeps one coordinate
+       * exactly, so that stationary coordinate must already satisfy the fence
+       * or the final window ends up outside it (PR #810 review). Rule:
+       *   • start fully inside the fence → either axis may be selected;
+       *   • exactly one coordinate outside → that coordinate must be the
+       *     moving axis (the walk pulls it back inside);
+       *   • both coordinates outside → no single-axis move can restore
+       *     containment: return no target this round rather than move
+       *     diagonally.
+       * Without an active fence the historical behavior is untouched: either
+       * axis, stationary coordinate kept as-is even outside the margin band. */
+      let forcedAxis = null;
+      if (fenceRect) {
+        const insideX =
+          bounds.x >= fenceRect.left && bounds.x + petW <= fenceRect.right;
+        const insideY =
+          bounds.y >= fenceRect.top && bounds.y + petH <= fenceRect.bottom;
+        if (!insideX && !insideY) return null;
+        if (!insideX) forcedAxis = "horizontal";
+        else if (!insideY) forcedAxis = "vertical";
+      }
       const tryAxis = (axis) => {
         if (axis === "horizontal") {
           // Keep Y unchanged, pick random X
           const range = xMax - xMin;
           if (range < 0) return null;
+          const min = axisMinDist(range);
           if (range > 0) {
             for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
               const targetX = xMin + Math.floor(Math.random() * range);
-              if (Math.abs(targetX - bounds.x) >= ROAM_MIN_DIST) {
-                return { x: targetX, y: bounds.y, axis: "horizontal" };
+              if (Math.abs(targetX - bounds.x) >= min) {
+                return {
+                  x: targetX,
+                  y: bounds.y,
+                  axis: "horizontal",
+                  size,
+                  fence: fenceRect,
+                };
               }
             }
           }
@@ -119,19 +231,32 @@ module.exports = function initRoam(ctx) {
             Math.abs(xMin - bounds.x) >= Math.abs(xMax - bounds.x)
               ? xMin
               : xMax;
-          if (Math.abs(farX - bounds.x) >= ROAM_MIN_DIST) {
-            return { x: farX, y: bounds.y, axis: "horizontal" };
+          if (Math.abs(farX - bounds.x) >= min) {
+            return {
+              x: farX,
+              y: bounds.y,
+              axis: "horizontal",
+              size,
+              fence: fenceRect,
+            };
           }
           return null;
         } else {
           // Keep X unchanged, pick random Y
           const range = yMax - yMin;
           if (range < 0) return null;
+          const min = axisMinDist(range);
           if (range > 0) {
             for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
               const targetY = yMin + Math.floor(Math.random() * range);
-              if (Math.abs(targetY - bounds.y) >= ROAM_MIN_DIST) {
-                return { x: bounds.x, y: targetY, axis: "vertical" };
+              if (Math.abs(targetY - bounds.y) >= min) {
+                return {
+                  x: bounds.x,
+                  y: targetY,
+                  axis: "vertical",
+                  size,
+                  fence: fenceRect,
+                };
               }
             }
           }
@@ -140,20 +265,34 @@ module.exports = function initRoam(ctx) {
             Math.abs(yMin - bounds.y) >= Math.abs(yMax - bounds.y)
               ? yMin
               : yMax;
-          if (Math.abs(farY - bounds.y) >= ROAM_MIN_DIST) {
-            return { x: bounds.x, y: farY, axis: "vertical" };
+          if (Math.abs(farY - bounds.y) >= min) {
+            return {
+              x: bounds.x,
+              y: farY,
+              axis: "vertical",
+              size,
+              fence: fenceRect,
+            };
           }
           return null;
         }
       };
 
+      if (forcedAxis) return tryAxis(forcedAxis);
       // Randomly prefer one axis; if it fails, try the other
       const firstAxis = Math.random() < 0.5 ? "horizontal" : "vertical";
       const secondAxis = firstAxis === "horizontal" ? "vertical" : "horizontal";
       return tryAxis(firstAxis) || tryAxis(secondAxis);
     }
 
-    if (xMax <= xMin || yMax <= yMin) return null;
+    // #810 review: an exact-fit corridor — fence width or height exactly the
+    // pet size, so one interval collapses to a single point — is still valid
+    // geometry; movement continues on the other axis. Only a negative interval
+    // is impossible. The historical (no-fence) check keeps its `<=` so parent
+    // behavior stays bit-identical without a fence.
+    if (fenceRect) {
+      if (xMax < xMin || yMax < yMin) return null;
+    } else if (xMax <= xMin || yMax <= yMin) return null;
 
     for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
       const targetX = xMin + Math.floor(Math.random() * (xMax - xMin));
@@ -161,7 +300,8 @@ module.exports = function initRoam(ctx) {
       const dx = targetX - bounds.x;
       const dy = targetY - bounds.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist >= ROAM_MIN_DIST) return { x: targetX, y: targetY };
+      if (dist >= minDist)
+        return { x: targetX, y: targetY, size, fence: fenceRect };
     }
 
     const fallbackTargets = [
@@ -181,10 +321,10 @@ module.exports = function initRoam(ctx) {
         bestDist = dist;
       }
     }
-    return bestDist >= ROAM_MIN_DIST ? best : null;
+    return bestDist >= minDist ? { ...best, size, fence: fenceRect } : null;
   }
 
-  function animateTo(targetX, targetY, axis) {
+  function animateTo(target) {
     if (roamAnimTimer) {
       clearTimeout(roamAnimTimer);
       roamAnimTimer = null;
@@ -201,16 +341,22 @@ module.exports = function initRoam(ctx) {
     }
     const startX = startBounds.x;
     const startY = startBounds.y;
+    const axis = target.axis;
     // #569: freeze the window size for the whole walk (mirrors the drag
     // snapshot in drag-position.js). Re-reading live bounds every frame lets
     // the non-idempotent setBounds(getBounds()) round-trip on mixed-DPI
     // Windows setups ratchet the pet larger while roaming — same mechanism
     // as #408. When keepSizeAcrossDisplays is ON, the frozen keep-size wins
     // over the live start bounds so both anchors share one source of truth.
+    // #810: the snapshot is resolved once in pickRandomTarget() and carried on
+    // the target, so planning and animation can never disagree about the
+    // window size; the inline fallback only covers a caller without one.
+    const plannedSize = target.size;
     const effectiveSize =
-      typeof ctx.getEffectiveCurrentPixelSize === "function"
+      plannedSize ||
+      (typeof ctx.getEffectiveCurrentPixelSize === "function"
         ? ctx.getEffectiveCurrentPixelSize()
-        : null;
+        : null);
     const roamW =
       effectiveSize &&
       Number.isFinite(effectiveSize.width) &&
@@ -223,8 +369,8 @@ module.exports = function initRoam(ctx) {
       effectiveSize.height > 0
         ? effectiveSize.height
         : startBounds.height;
-    let finalX = targetX;
-    let finalY = targetY;
+    let finalX = target.x;
+    let finalY = target.y;
     if (ctx.clampToScreenVisual) {
       const clamped = ctx.clampToScreenVisual(finalX, finalY, roamW, roamH);
       finalX = clamped.x;
@@ -241,6 +387,25 @@ module.exports = function initRoam(ctx) {
       finalY = startY;
     } else if (axis === "vertical") {
       finalX = startX;
+    }
+    // #810: the fence promise is about the real window rectangle, not the
+    // picked target — clampToScreenVisual() knows nothing about the fence and
+    // can move the target when the visual clamp region disagrees with it.
+    // Revalidate the final full-window rect (post-clamp, post-axis-restore,
+    // frozen size) and skip the round instead of walking out of bounds. The
+    // axis invariant needs no re-check here: the restore above just pinned the
+    // stationary coordinate.
+    if (target.fence) {
+      const f = target.fence;
+      if (
+        finalX < f.left ||
+        finalX + roamW > f.right ||
+        finalY < f.top ||
+        finalY + roamH > f.bottom
+      ) {
+        scheduleNextRoam();
+        return;
+      }
     }
     // ── Calculate duration based on distance (speed = 80px/s) ──
     const dx = finalX - startX;
@@ -347,6 +512,13 @@ module.exports = function initRoam(ctx) {
       roamPauseTimer = null;
     }
     if (!enabled) return;
+    // #810: kick an async re-read of the fence file now, so the cached state
+    // is fresh by the time this pause elapses and pickRandomTarget() runs.
+    // Target selection itself never touches the disk; an edit to the file
+    // applies within one roam pause, no restart needed.
+    if (ctx.roamFence && typeof ctx.roamFence.refresh === "function") {
+      ctx.roamFence.refresh();
+    }
     const delay = firstRoam ? ROAM_IDLE_DELAY_MS : ROAM_BETWEEN_DELAY_MS;
     firstRoam = false;
     roamPauseTimer = setTimeout(() => {
@@ -357,7 +529,7 @@ module.exports = function initRoam(ctx) {
         scheduleNextRoam();
         return;
       }
-      animateTo(target.x, target.y, target.axis);
+      animateTo(target);
     }, delay);
   }
 
