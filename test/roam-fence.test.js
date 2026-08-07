@@ -1,13 +1,19 @@
 "use strict";
 
 // test/roam-fence.test.js — validation and failure semantics of the roam
-// fence loader (src/roam-fence.js). The contract under test (PR #810 review):
-//   • ENOENT is stable "fence disabled";
+// fence loader (src/roam-fence.js). The contract under test (PR #810 review,
+// rounds 1 and 2):
+//   • get() is null (UNKNOWN) until the loader confirms a first status —
+//     a valid parse, a valid enabled:false, or ENOENT proving absence;
+//   • an isolated ENOENT under an active fence is treated as a replace-style
+//     save in flight: last known good is kept, a second consecutive ENOENT
+//     confirms removal;
 //   • malformed / partially saved / schema-invalid content keeps the last
-//     known good state (never fails open to full-area roaming);
+//     known good state (or stays UNKNOWN before the first valid read);
+//   • a stat guard rejects FIFOs and oversized files before reading;
+//   • invalid content warns once per distinct cause, not once per refresh;
 //   • strict validation: real booleans and finite in-range numbers only,
-//     no Number() coercion of strings;
-//   • a UTF-8 BOM does not break parsing.
+//     no Number() coercion; BOM tolerated.
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
@@ -22,18 +28,22 @@ const VALID = JSON.stringify({
   bottom: 0.9,
 });
 
-function loaderWith(contents) {
+function loaderWith(contents, extraDeps = {}) {
   // contents: string → file body; Error instance → readFile rejects with it
   let current = contents;
+  const warnings = [];
   const loader = createRoamFenceLoader({
     readFile: async () => {
       if (current instanceof Error) throw current;
       return current;
     },
+    warn: (m) => warnings.push(m),
     filePath: "/nonexistent/roam-area.json",
+    ...extraDeps,
   });
   return {
     loader,
+    warnings,
     set: (next) => {
       current = next;
     },
@@ -47,9 +57,9 @@ function enoent() {
 }
 
 describe("roam-fence loader", () => {
-  it("starts inactive before any refresh", () => {
+  it("is UNKNOWN (null) before any refresh", () => {
     const { loader } = loaderWith(VALID);
-    assert.equal(loader.get().active, false);
+    assert.equal(loader.get(), null);
   });
 
   it("parses a valid file into an active fence", async () => {
@@ -65,9 +75,7 @@ describe("roam-fence loader", () => {
   });
 
   it("defaults missing edges to the full range", async () => {
-    const { loader } = loaderWith(
-      JSON.stringify({ enabled: true, left: 0.3 }),
-    );
+    const { loader } = loaderWith(JSON.stringify({ enabled: true, left: 0.3 }));
     await loader.refresh();
     assert.deepEqual(loader.get(), {
       active: true,
@@ -78,21 +86,71 @@ describe("roam-fence loader", () => {
     });
   });
 
-  it("treats a missing file (ENOENT) as fence disabled", async () => {
-    const { loader, set } = loaderWith(VALID);
+  it("confirms ENOENT on first load as 'no fence' immediately", async () => {
+    const { loader } = loaderWith(enoent());
     await loader.refresh();
-    assert.equal(loader.get().active, true);
-    set(enoent());
-    await loader.refresh();
-    assert.equal(loader.get().active, false);
+    assert.equal(loader.get().active, false, "confirmed missing = disabled");
   });
 
-  it("treats enabled:false as fence disabled", async () => {
+  it("treats enabled:false as a confirmed disabled fence", async () => {
     const { loader } = loaderWith(
       JSON.stringify({ enabled: false, left: 0.25, right: 0.75 }),
     );
     await loader.refresh();
     assert.equal(loader.get().active, false);
+  });
+
+  it("keeps an active fence across an isolated ENOENT, drops it on the second", async () => {
+    const { loader, set } = loaderWith(VALID);
+    await loader.refresh();
+    set(enoent());
+    await loader.refresh();
+    assert.equal(
+      loader.get().active,
+      true,
+      "one ENOENT = replace-save in flight, fence must survive",
+    );
+    await loader.refresh();
+    assert.equal(
+      loader.get().active,
+      false,
+      "second consecutive ENOENT confirms removal",
+    );
+  });
+
+  it("recovers cleanly through valid → ENOENT → valid", async () => {
+    const { loader, set } = loaderWith(VALID);
+    await loader.refresh();
+    set(enoent());
+    await loader.refresh();
+    set(VALID);
+    await loader.refresh();
+    assert.equal(loader.get().active, true);
+    set(enoent());
+    await loader.refresh();
+    assert.equal(
+      loader.get().active,
+      true,
+      "the ENOENT streak must reset after a successful read",
+    );
+  });
+
+  it("stays UNKNOWN when the first read is malformed", async () => {
+    const { loader, set, warnings } = loaderWith("garb{age");
+    await loader.refresh();
+    assert.equal(loader.get(), null, "invalid first read must not fail open");
+    assert.equal(warnings.length, 1);
+    set(VALID);
+    await loader.refresh();
+    assert.equal(loader.get().active, true);
+  });
+
+  it("stays UNKNOWN when the first read errors transiently", async () => {
+    const eacces = new Error("EACCES");
+    eacces.code = "EACCES";
+    const { loader } = loaderWith(eacces);
+    await loader.refresh();
+    assert.equal(loader.get(), null);
   });
 
   it("strips a UTF-8 BOM before parsing", async () => {
@@ -155,10 +213,49 @@ describe("roam-fence loader", () => {
     }
   });
 
-  it("invalid content before any valid save leaves the fence inactive", async () => {
-    const { loader } = loaderWith("garbage");
+  it("warns once per distinct invalid cause, again after recovery", async () => {
+    const { loader, set, warnings } = loaderWith(VALID);
     await loader.refresh();
-    assert.equal(loader.get().active, false);
+    set("broken{");
+    await loader.refresh();
+    await loader.refresh();
+    await loader.refresh();
+    assert.equal(warnings.length, 1, "identical breakage warns exactly once");
+    set(VALID);
+    await loader.refresh();
+    set("broken{");
+    await loader.refresh();
+    assert.equal(warnings.length, 2, "a fix followed by a new break warns again");
+  });
+
+  it("rejects non-regular files via the stat guard without reading them", async () => {
+    let reads = 0;
+    const warnings = [];
+    const loader = createRoamFenceLoader({
+      readFile: async () => {
+        reads += 1;
+        return VALID;
+      },
+      stat: async () => ({ isFile: () => false, size: 10 }),
+      warn: (m) => warnings.push(m),
+      filePath: "/nonexistent/roam-area.json",
+    });
+    await loader.refresh();
+    assert.equal(reads, 0, "a FIFO must never be read (it would hang)");
+    assert.equal(loader.get(), null, "guard failure is not a confirmed state");
+    assert.equal(warnings.length, 1);
+  });
+
+  it("rejects oversized files via the stat guard, keeping last known good", async () => {
+    let statResult = { isFile: () => true, size: 10 };
+    const { loader } = loaderWith(VALID, {
+      stat: async () => statResult,
+    });
+    await loader.refresh();
+    assert.equal(loader.get().active, true);
+    statResult = { isFile: () => true, size: 10 * 1024 * 1024 };
+    await loader.refresh();
+    assert.equal(loader.get().active, true, "oversize keeps the fence");
   });
 
   it("coalesces concurrent refreshes into one read", async () => {

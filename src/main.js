@@ -4342,6 +4342,10 @@ const _roamCtx = {
   roamFence: require("./roam-fence")(),
 };
 const _roam = require("./roam")(_roamCtx);
+// #810: resolve the fence's initial status right away so the first roam
+// round doesn't have to hold on an UNKNOWN state (get() === null) when a
+// fence file exists — or confirm quickly that none does.
+_roamCtx.roamFence.refresh();
 
 // Free roam: initialize from prefs and react to toggle changes
 _roam.setEnabled(_settingsController.get("freeRoam") === true);

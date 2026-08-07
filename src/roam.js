@@ -89,12 +89,14 @@ module.exports = function initRoam(ctx) {
       bounds.y + bounds.height / 2,
     );
     if (!wa) return null;
-    // #810: one frozen size snapshot drives the whole walk — fence geometry,
-    // random and fallback targets, screen clamping, and every animation frame.
-    // Planning with live bounds while animating with the keep-size effective
-    // size (#569/#408) lets a target that fits on paper place the real window
-    // outside the fence, so the snapshot is resolved here, before target
-    // selection, and handed to animateTo() on the returned target.
+    // #810: frozen effective-size snapshot (keep-size / mixed-DPI, #569/#408).
+    // Used for FENCE geometry — the fence promise is about the real animated
+    // window, so containment classification, the fence caps on the candidate
+    // intervals, and the final revalidation in animateTo() all use it — and
+    // handed to animateTo() on the returned target so planning and animation
+    // agree. The margin-band interval geometry itself stays bounds-based
+    // exactly like the parent: swapping it to the effective size changed
+    // no-fence picking behavior (round-2 review).
     const effectiveSize =
       typeof ctx.getEffectiveCurrentPixelSize === "function"
         ? ctx.getEffectiveCurrentPixelSize()
@@ -114,23 +116,34 @@ module.exports = function initRoam(ctx) {
     const size = { width: petW, height: petH };
     const marginX = Math.round(wa.width * ROAM_MARGIN_RATIO);
     const marginY = Math.round(wa.height * ROAM_MARGIN_RATIO);
-    let xMin = wa.x + marginX;
-    let xMax = wa.x + wa.width - petW - marginX;
-    let yMin = wa.y + marginY;
-    let yMax = wa.y + wa.height - petH - marginY;
+    // Parent margin-band intervals, bounds-based — bit-identical to the
+    // historical picker when no active fence narrows them below.
+    const bxMin = wa.x + marginX;
+    const bxMax = wa.x + wa.width - bounds.width - marginX;
+    const byMin = wa.y + marginY;
+    const byMax = wa.y + wa.height - bounds.height - marginY;
+    let xMin = bxMin;
+    let xMax = bxMax;
+    let yMin = byMin;
+    let yMax = byMax;
     // #810: optional roam fence — a user-editable rectangle (fractions of the
     // work area) that further restricts where targets may land. State comes
     // from the injected loader's in-memory cache (main.js wires
     // src/roam-fence.js; refreshed asynchronously in scheduleNextRoam), never
-    // from disk here. When no fence applies — loader absent, file missing,
-    // disabled, invalid, or a full-range rectangle that shrinks nothing — the
-    // intervals and thresholds below stay exactly the historical values.
+    // from disk here. When no fence applies — loader absent, confirmed
+    // missing, or disabled — the intervals and thresholds below stay exactly
+    // the historical values.
     let fenceRect = null;
     let fenceShrinks = false;
-    const fenceState =
-      ctx.roamFence && typeof ctx.roamFence.get === "function"
-        ? ctx.roamFence.get()
-        : null;
+    const hasFenceLoader =
+      ctx.roamFence && typeof ctx.roamFence.get === "function";
+    const fenceState = hasFenceLoader ? ctx.roamFence.get() : undefined;
+    // Round-2 review: get() === null means UNKNOWN — the loader has not yet
+    // confirmed any status (first read pending, or the file exists but has
+    // never parsed). Roaming the full area then would fail open — skip the
+    // round instead; scheduleNextRoam retries after the next pause with a
+    // fresh refresh. No loader wired at all still means "no fence".
+    if (hasFenceLoader && fenceState === null) return null;
     if (fenceState && fenceState.active) {
       fenceRect = {
         left: wa.x + Math.round(wa.width * fenceState.left),
@@ -138,19 +151,17 @@ module.exports = function initRoam(ctx) {
         right: wa.x + Math.round(wa.width * fenceState.right),
         bottom: wa.y + Math.round(wa.height * fenceState.bottom),
       };
-      const fxMin = Math.max(xMin, fenceRect.left);
-      const fxMax = Math.min(xMax, fenceRect.right - petW);
-      const fyMin = Math.max(yMin, fenceRect.top);
-      const fyMax = Math.min(yMax, fenceRect.bottom - petH);
+      xMin = Math.max(bxMin, fenceRect.left);
+      xMax = Math.min(bxMax, fenceRect.right - petW);
+      yMin = Math.max(byMin, fenceRect.top);
+      yMax = Math.min(byMax, fenceRect.bottom - petH);
+      // Round-2 review: fenceRect is retained even when it does NOT shrink
+      // the candidate band — the band being inside the fence says nothing
+      // about the pet's STARTING position, and containment classification
+      // plus the final revalidation still need the rectangle. fenceShrinks
+      // only decides whether the adaptive minimum hop may engage.
       fenceShrinks =
-        fxMin > xMin || fxMax < xMax || fyMin > yMin || fyMax < yMax;
-      xMin = fxMin;
-      xMax = fxMax;
-      yMin = fyMin;
-      yMax = fyMax;
-      // A fence that doesn't shrink the candidate interval must not change
-      // behavior at all — drop it so no fence-only code paths run.
-      if (!fenceShrinks) fenceRect = null;
+        xMin > bxMin || xMax < bxMax || yMin > byMin || yMax < byMax;
     }
     // #810: a fence smaller than ROAM_MIN_DIST would reject every candidate,
     // so the minimum hop scales down with the fenced interval — but only when

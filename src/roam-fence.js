@@ -5,6 +5,7 @@
 // The fence lets users limit where free roam wanders without opening the
 // settings UI: a JSON file describing a rectangle as fractions of the work
 // area. External tools can rewrite the file while the app runs.
+// User-facing contract: docs/guides/roam-fence.md (keep both in sync).
 //
 // File: ~/.clawd/roam-area.json
 // Format:
@@ -23,12 +24,24 @@
 // so an edit applies to the walk after the one currently pending — within
 // one roam pause (~4–8s) — without restarting the app.
 //
-// Failure semantics (never fail open mid-save):
-//   • file missing (ENOENT)            → fence disabled (full-area roam)
-//   • malformed JSON / invalid schema  → keep last known good state
-//   • transient read errors (EACCES…)  → keep last known good state
+// Failure semantics (never fail open — PR #810 review, pass 3):
+//   • before the first confirmed read      → status UNKNOWN (get() returns
+//     null); roam skips its round rather than roaming the full area on a
+//     fence that merely hasn't loaded yet
+//   • file missing (ENOENT), no fence yet  → confirmed "no fence" immediately
+//   • file missing (ENOENT), fence active  → an isolated ENOENT is treated as
+//     a replace-style save in flight: the last-known-good fence is retained;
+//     only a second consecutive ENOENT confirms removal and disables the fence
+//   • malformed JSON / invalid schema      → keep last known good state
+//     (or stay UNKNOWN before the first valid read) + one deduplicated warning
+//   • transient read errors (EACCES…)      → keep last known good state
+//   • not a regular file / oversized file  → treated as invalid content; the
+//     stat guard runs before the read so a FIFO can never wedge the single
+//     coalesced refresh slot forever
 // A partially written save therefore cannot momentarily restore full-area
 // roaming; the previous fence keeps applying until a valid save lands.
+
+const MAX_FENCE_FILE_BYTES = 64 * 1024;
 
 const INACTIVE = Object.freeze({
   active: false,
@@ -64,17 +77,42 @@ function parseFence(raw) {
   return { active: true, left, top, right, bottom };
 }
 
-// deps are injectable for tests: { readFile: async (path) => string, filePath }
+// deps are injectable for tests:
+//   { readFile: async (path) => string, stat: async (path) => fs.Stats-like,
+//     warn: (message) => void, filePath }
+// When readFile is injected without stat, the stat guard is skipped — unit
+// tests feed content directly and must not hit the real filesystem.
 module.exports = function createRoamFenceLoader(deps = {}) {
   const readFile =
     deps.readFile ||
     ((p) => require("fs").promises.readFile(p, "utf8"));
+  const statFile =
+    deps.stat || (deps.readFile ? null : (p) => require("fs").promises.stat(p));
+  const warn = deps.warn || ((message) => console.warn(message));
   const filePath =
     deps.filePath ||
     require("path").join(require("os").homedir(), ".clawd", "roam-area.json");
 
-  let state = { ...INACTIVE };
+  // null = UNKNOWN: nothing confirmed yet. Roam treats it as "hold this
+  // round" — see pickRandomTarget() in src/roam.js.
+  let state = null;
+  let enoentSeenWhileActive = false;
+  let lastWarnKey = null;
   let pending = null;
+
+  function warnOnce(key, reason) {
+    // Dedup: the same broken content produces exactly one warning, not one
+    // per 4s roam pause. A different problem (or a fix followed by a new
+    // break) warns again.
+    if (lastWarnKey === key) return;
+    lastWarnKey = key;
+    const consequence = state
+      ? state.active
+        ? "keeping the previous fence"
+        : "fence stays disabled"
+      : "free roam stays paused until the file is fixed or removed";
+    warn(`[roam-fence] ${filePath}: ${reason}; ${consequence}.`);
+  }
 
   // Async and coalesced: roam kicks this fire-and-forget when scheduling a
   // walk, then reads get() at pick time seconds later — no synchronous disk
@@ -83,10 +121,45 @@ module.exports = function createRoamFenceLoader(deps = {}) {
     if (pending) return pending;
     pending = (async () => {
       try {
-        const next = parseFence(await readFile(filePath));
-        if (next) state = next;
+        if (statFile) {
+          const st = await statFile(filePath);
+          if (st && typeof st.isFile === "function" && !st.isFile()) {
+            enoentSeenWhileActive = false;
+            warnOnce("not-file", "not a regular file");
+            return;
+          }
+          if (st && Number.isFinite(st.size) && st.size > MAX_FENCE_FILE_BYTES) {
+            enoentSeenWhileActive = false;
+            warnOnce(
+              `size:${st.size}`,
+              `file is ${st.size} bytes (limit ${MAX_FENCE_FILE_BYTES})`,
+            );
+            return;
+          }
+        }
+        const raw = await readFile(filePath);
+        enoentSeenWhileActive = false;
+        const next = parseFence(raw);
+        if (next) {
+          state = next;
+          lastWarnKey = null;
+        } else {
+          warnOnce(`invalid:${raw}`, "invalid fence JSON");
+        }
       } catch (err) {
-        if (err && err.code === "ENOENT") state = { ...INACTIVE };
+        if (err && err.code === "ENOENT") {
+          // A replace-style save (unlink + rename) can expose one ENOENT
+          // between two valid reads. Never drop an active fence on the first
+          // one — require a second consecutive ENOENT as confirmation.
+          if (state && state.active && !enoentSeenWhileActive) {
+            enoentSeenWhileActive = true;
+          } else {
+            enoentSeenWhileActive = false;
+            state = { ...INACTIVE };
+            lastWarnKey = null;
+          }
+        }
+        // Any other error (EACCES…): keep the current state, UNKNOWN included.
       } finally {
         pending = null;
       }
@@ -95,6 +168,8 @@ module.exports = function createRoamFenceLoader(deps = {}) {
   }
 
   return {
+    // null until the loader has confirmed a real status (valid file,
+    // valid enabled:false, or confirmed-missing).
     get: () => state,
     refresh,
     filePath,
