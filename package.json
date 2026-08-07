@@ -19,6 +19,8 @@
     "postinstall": "node scripts/verify-electron-install.js --context postinstall",
     "test": "node test/run-tests.js",
     "audit:assets": "node scripts/audit-repository-assets.js",
+    "audit:native-package": "node scripts/audit-packaged-native.js",
+    "verify:updater-metadata": "node scripts/verify-updater-metadata.js",
     "verify:release": "node scripts/verify-release-version.js",
     "create-theme": "node scripts/create-theme.js",
     "export-agent-icons": "node scripts/export-agent-icons.js",
@@ -69,6 +71,7 @@
   "build": {
     "appId": "com.clawd.on-desk",
     "productName": "Clawd on Desk",
+    "afterPack": "scripts/after-pack-koffi.js",
     "protocols": [
       {
         "name": "Clawd Import Protocol",
@@ -189,7 +192,7 @@
     "electron-updater": "^6.8.3",
     "htmlparser2": "^12.0.0",
     "jsonc-parser": "^3.3.1",
-    "koffi": "^2.15.2",
+    "koffi": "2.16.3",
     "markdown-it": "15.0.0",
     "ws": "^8.21.0"
   }

@@ -38,6 +38,7 @@ docs/**
 !docs/investigations/codex-subagent-session-meta.md
 !docs/plans/
 !docs/plans/plan-issue-513-remote-ssh-isolation.md
+!docs/plans/plan-issue-763-koffi-target-native-packaging.md
 !docs/project/
 !docs/project/agent-runtime-architecture.md
 !docs/project/release-process.md
@@ -107,6 +108,11 @@ scripts/*
 !scripts/audit-repository-assets.js
 !scripts/assert-no-retired-telegram-sidecar.js
 !scripts/verify-release-version.js
+!scripts/after-pack-koffi.js
+!scripts/audit-packaged-native.js
+!scripts/native-package-policy.json
+!scripts/run-packaged-koffi-smoke.js
+!scripts/verify-updater-metadata.js
 
 # oh-my-cursor state
 .omc/
