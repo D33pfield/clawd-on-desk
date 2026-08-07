@@ -158,6 +158,61 @@ describe("i18n locales", () => {
     }
   });
 
+  // Keyset and placeholder parity both pass on "1 ativas", because the key
+  // exists and the placeholder survived — the grammar is what breaks. Portuguese
+  // inflects adjectives and participles for number, so every count-driven string
+  // needs either a function that branches on the count or wording that reads the
+  // same at 1 and at N. These cases pin both shapes.
+  it("inflects pt-BR count strings whose locale entry is a function", () => {
+    const pt = loadSettingsI18nStrings()["pt-BR"];
+
+    assert.strictEqual(pt.doctorAgentSummaryAttention(1), "1 precisa de atenção");
+    assert.strictEqual(pt.doctorAgentSummaryAttention(4), "4 precisam de atenção");
+    assert.strictEqual(pt.doctorAgentSummarySkipped(1), "1 ignorado");
+    assert.strictEqual(pt.doctorAgentSummarySkipped(4), "4 ignorados");
+
+    const oneOfEach = pt.toastCodexPetsRefreshOk(1, 1, 1, 1, 1, false);
+    assert.match(oneOfEach, /1 novo, 1 atualizado, 1 sem mudança, 1 removido, 1 inválido/);
+    const manyOfEach = pt.toastCodexPetsRefreshOk(2, 2, 2, 2, 2, false);
+    assert.match(manyOfEach, /2 novos, 2 atualizados, 2 sem mudança, 2 removidos, 2 inválidos/);
+
+    assert.match(pt.toastAnimOverridesExportOk(1, "/tmp/o.json"), /\b1 tema\b/);
+    assert.match(pt.toastAnimOverridesExportOk(2, "/tmp/o.json"), /\b2 temas\b/);
+    assert.match(pt.toastAnimOverridesImportOk(1), /\b1 tema\b/);
+    assert.match(pt.toastAnimOverridesImportOk(2), /\b2 temas\b/);
+  });
+
+  it("keeps pt-BR count strings number-invariant where the locale entry is a plain string", () => {
+    const settings = loadSettingsI18nStrings()["pt-BR"];
+    const runtime = i18n["pt-BR"];
+
+    // [template, placeholder, rendered at 1, rendered at 4]
+    const cases = [
+      [runtime.dashboardCount, "{n}", "1 em atividade", "4 em atividade"],
+      [runtime.sessionHudActive, "{n}", "1 em atividade", "4 em atividade"],
+      [runtime.sessionHudOtherActive, "{n}", "mais 1 em atividade", "mais 4 em atividade"],
+      [settings.doctorIssueCount, "{count}", "1 problema(s)", "4 problema(s)"],
+    ];
+    for (const [template, placeholder, one, many] of cases) {
+      assert.strictEqual(template.replace(placeholder, "1"), one);
+      assert.strictEqual(template.replace(placeholder, "4"), many);
+    }
+
+    // Counted toasts: the participle must not commit to a number.
+    for (const [template, tokens] of [
+      [settings.toastAgentInstallHintPartial, ["{success}", "{failed}"]],
+      [settings.toastAgentCleanupHintPartial, ["{success}", "{failed}"]],
+      [settings.toastAgentInstallHintPartialSkipped, ["{success}"]],
+    ]) {
+      let rendered = template;
+      for (const token of tokens) rendered = rendered.replace(token, "1");
+      assert.match(rendered, /\(s\)/, `expected invariant wording at a count of 1: ${rendered}`);
+    }
+
+    // Appended after a name list that can hold a single agent.
+    assert.strictEqual(settings.doctorAgentSummaryNeedsAttention, "precisa(m) de atenção");
+  });
+
   it("keeps Codex Pet main dialog strings available for every supported language", () => {
     const source = fs.readFileSync(path.join(ROOT, "src", "codex-pet-main.js"), "utf8");
     for (const name of ["getImportDialogStrings", "getRemovalDialogStrings"]) {
