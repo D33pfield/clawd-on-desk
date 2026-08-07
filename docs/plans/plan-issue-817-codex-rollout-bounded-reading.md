@@ -6,7 +6,7 @@ Issue：[A JavaScript error occurred in the main process #817](https://github.co
 
 代码基准：`main @ fad1b53d9a252cc8a765c1a7b6294f16a48d842c`
 
-状态：**实现已进入 Draft PR #820；首轮 exact-head 独立实现审查的 1 个 P1、1 个 P2、1 个 P3 已修复并补回归，等待新 head 的二次独立复审。尚未回复 Issue 或进入合并流程。**
+状态：**实现已进入 Draft PR #820；首轮 exact-head 独立实现审查的 1 个 P1、1 个 P2、1 个 P3，以及二轮 exact-head 审查新增的 1 个 P2 均已修复并补回归，等待最终新 head 的第三轮独立复审。尚未回复 Issue 或进入合并流程。**
 
 复审注记：初稿先后经过子代理与 Claude 独立只读审查；本版只吸收经源码、定向探针或明确不变量验证成立的意见。复审发现初稿的 EOF 结算判据、绝对 pin 策略和 short-read oversized 判定存在缺陷，均已在本版重写。
 
@@ -15,13 +15,14 @@ Issue：[A JavaScript error occurred in the main process #817](https://github.co
 实施验证（2026-08-07）：
 
 - 远端 `main` 仍为本文基准 `fad1b53d9a252cc8a765c1a7b6294f16a48d842c`；Issue #817 仍为 OPEN、无新增评论。
-- focused：`166 pass / 0 fail`。
+- focused：`168 pass / 0 fail`。
 - Remote SSH deploy manifest / dependency closure：`57 pass / 0 fail`。
-- 全仓：`6933 pass / 0 fail / 21 conditional skip`；用户提供的修改前基线为 `6883 pass / 0 fail`。
+- 全仓：`6935 pass / 0 fail / 21 conditional skip`；用户提供的修改前基线为 `6883 pass / 0 fail`。
 - `verify:electron`：Electron `41.10.2` 完整性通过；两份修改脚本的 `node --check` 与 `git diff --check` 通过。
 - `build:mac:arm64`：成功生成 ad-hoc 签名、未 notarize 的 `dist/Clawd-on-Desk-0.14.0-arm64.dmg`。
-- packaged smoke：首轮与首轮独立审查补修后的打包 App 均使用隔离临时 HOME 面对 600 MiB 稀疏 Codex rollout 连续运行约 16 秒，主进程保持存活，未出现 `Cannot create a string longer than 0x1fffffe8 characters`；临时 HOME 与 fixture 已清理。
+- packaged smoke：首轮、首轮审查补修和二轮审查补修后的精确代码均重新打包；最终 App 使用隔离临时 HOME 面对 600 MiB 稀疏 Codex rollout 连续运行约 16 秒，主进程保持存活，未出现 `Cannot create a string longer than 0x1fffffe8 characters`；临时 HOME、user-data 与 fixture 已清理。
 - 首轮独立实现审查（初始 head `aff82ec24fd56adcf2fc8a120baa33bfd0f16685`）确认三项缺陷并已补修：startup recovery 缓存候选消费前重验，防止重复 pending/覆盖 live tracker；validated baseline 后的持续失败继续执行 30 秒起、最高 5 分钟的指数退避，并让 deferred stat failure 同样遵守 `notBefore`；20 MiB recovery 账本按 head/tail 最坏物理读取量保守计费，覆盖两段重叠与文件并发增长。
+- 二轮独立实现审查（补修 head `4da6119ea12abe45149044559a3dfad692863c8f`）确认首轮三项均已关闭，但发现 recovery 的固定候选计费无法同时约束反复 short read 的累计请求量，并会让空/极小文件挤掉后续有效候选。实现现已把 admission 的最新 stat 快照原样传入 reader，按该快照的真实 head/tail 范围计费，并让每段至多 8 次补读共享等于该段长度的总请求/分配预算；新增“每次只读 1 byte”与“15 个空文件后仍恢复 tiny pending”回归。
 - 残余验证边界：未取得报告人的真实 rollout；未做 x64、Windows、Linux 或真实 Remote SSH 主机 smoke；arm64 smoke 证明打包生产入口不再立即执行无界解码，不等同于完整追完 600 MiB backlog。
 
 ---
@@ -288,7 +289,7 @@ rebaseline 的测试必须证明旧文件已积累但尚未发布的 sustained s
 
 这不是扩大 recovery 扫描预算；head 仍最多 256 KiB，tail 仍最多 1 MiB，同时各自最多固定次数的读取尝试。UTF-8 边界测试必须验证 raw Buffer 拼接；当前逐块 `toString()` 再拼接通常仍能 `JSON.parse`，但会把跨块字符污染成多个 U+FFFD，不能只用“是否抛解析错误”作为 oracle。
 
-全局 `RECOVERY_SWEEP_MAX_TOTAL_BYTES = 20 MiB` 必须按**物理请求上界**记账，不能用 `min(fileSize, head + tail + 1)`：小文件的 head 与 tail 会重叠并被分别读取，且文件可在 admission stat 后继续增长。每个准备消费的候选先重验 live tracker、replay/deferred 状态、`notBefore` 与最新 stat；通过后保守预留 `256 KiB + 1 MiB + 1 byte` 的最坏读取量，预算不足则停止本轮 recovery。这个保守值会让 20 MiB 下最多准入 15 个最坏候选，优先保证主线程同步 I/O 上限真实成立。
+全局 `RECOVERY_SWEEP_MAX_TOTAL_BYTES = 20 MiB` 必须按**同一 admission stat 快照下的物理请求上界**记账。每个准备消费的候选先重验 live tracker、replay/deferred 状态、`notBefore` 与最新 stat；通过后把这份 stat 快照原样传给 recovery reader，按 `min(snapshotSize, 256 KiB) + min(snapshotSize, 1 MiB) + (snapshotSize > 1 MiB ? 1 : 0)` 预留 head、tail 与 boundary byte 的范围预算，预算不足则停止本轮 recovery。head 和 exact-range reader 各自至多尝试 8 次，并让所有 short-read 补读共享一个不超过目标范围长度的总请求/Buffer 分配预算；不能每次重新申请完整剩余范围，令实际请求量成倍超过账本。空文件消费 0 byte，极小文件按真实范围计费，不能被固定最坏值提前挤出本轮。文件在 admission stat 后发生的增长不属于这份 recovery 快照，由后续正常 poll 处理；不得一边按旧 size 计费、一边让 reader 自行 re-stat 后读取更大范围。
 
 ### B9 — catch 只是保险，不能替代有界读取
 

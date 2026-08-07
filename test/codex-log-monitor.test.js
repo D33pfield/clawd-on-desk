@@ -1139,7 +1139,8 @@ describe("CodexLogMonitor", () => {
     // just under the cap.
     monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
     const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
-    const perCandidateCost = 1.1 * 1024 * 1024; // matches the review's own repro numbers
+    const perCandidateSize = Math.floor(1.1 * 1024 * 1024);
+    const perCandidateCost = 256 * 1024 + 1024 * 1024 + 1;
     const candidateCount = Math.ceil(MAX_TOTAL_BYTES / perCandidateCost) + 3;
     const candidates = [];
     for (let i = 0; i < candidateCount; i++) {
@@ -1147,26 +1148,24 @@ describe("CodexLogMonitor", () => {
         dateDir,
         `rollout-2026-03-25T15-10-51-${String(i).padStart(8, "0")}-f1a9-7633-b9c7-758327137228.jsonl`
       );
-      fs.writeFileSync(testFile, [
-        JSON.stringify({ type: "session_meta", payload: { cwd: `/projects/n${i}` } }),
-        JSON.stringify({
-          type: "response_item",
-          payload: {
-            type: "function_call",
-            name: "request_user_input",
-            call_id: `call_ledger_${i}`,
-            arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
-          },
-        }),
-      ].join("\n") + "\n");
-      // The real file is tiny; the candidate's claimed size simulates a
-      // large rollout so the byte budget (not RECOVERY_SWEEP_MAX_FILES) is
-      // what actually gets exercised.
+      const head = JSON.stringify({ type: "session_meta", payload: { cwd: `/projects/n${i}` } }) + "\n";
+      const request = JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: `call_ledger_${i}`,
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }) + "\n";
+      const fillerBytes = perCandidateSize - Buffer.byteLength(head) - Buffer.byteLength(request);
+      fs.writeFileSync(testFile, head + "x".repeat(fillerBytes - 1) + "\n" + request);
+      const stat = fs.statSync(testFile);
       candidates.push({
         filePath: testFile,
         file: path.basename(testFile),
         mtimeMs: Date.now() - i,
-        size: perCandidateCost,
+        size: stat.size,
       });
     }
 
@@ -1182,7 +1181,7 @@ describe("CodexLogMonitor", () => {
 
   it("accounts overlapping recovery head and tail reads against the real 20 MiB I/O budget", () => {
     monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
-    const fileSize = 1024 * 1024;
+    const fileSize = 2 * 1024 * 1024;
     const headPrefix = '{"type":"session_meta","payload":{"cwd":"';
     const headSuffix = '"}}\n';
     const head = headPrefix
@@ -1219,6 +1218,24 @@ describe("CodexLogMonitor", () => {
     }
     assert.strictEqual(monitor._tracked.size, 15);
     assert.ok(requestedBytes <= 20 * 1024 * 1024, `requested ${requestedBytes} bytes`);
+
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
+    requestedBytes = 0;
+    const tailStart = fileSize - 1024 * 1024;
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      requestedBytes += length;
+      const boundedLength = position >= tailStart ? Math.min(length, 1) : length;
+      return originalReadSync(fd, buffer, offset, boundedLength, position);
+    };
+    try {
+      monitor._runRecoverySweep(candidates);
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+    assert.ok(
+      requestedBytes <= 20 * 1024 * 1024,
+      `short-read retries requested ${requestedBytes} bytes`
+    );
   });
 
   it("keeps the startup recovery byte budget cumulative when attempt exhaustion spans polls", () => {
@@ -1297,6 +1314,53 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(requests.length, 1, "ready recovery must not publish the same pending request twice");
     assert.strictEqual(monitor._tracked.get(testFile), liveTracker, "ready recovery must preserve the newer tracker");
     assert.strictEqual(monitor._startupRecoveryCandidates.has(testFile), false);
+  });
+
+  it("does not let newer empty recovery candidates crowd out a tiny valid pending request", () => {
+    const requests = [];
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {
+      onUserInputRequest: (...args) => requests.push(args),
+    });
+    const oldBase = Date.now() - 10 * 60 * 1000;
+    for (let i = 0; i < 15; i++) {
+      const file = uniqueRolloutName(i + 800);
+      const filePath = path.join(dateDir, file);
+      fs.writeFileSync(filePath, "");
+      const stamp = new Date(oldBase - i);
+      fs.utimesSync(filePath, stamp, stamp);
+      const stat = fs.statSync(filePath);
+      monitor._insertStartupRecoveryCandidate({ filePath, file, mtimeMs: stat.mtimeMs, size: 0 });
+    }
+    const validFile = uniqueRolloutName(899);
+    const validPath = path.join(dateDir, validFile);
+    fs.writeFileSync(validPath, [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/tiny-valid" } }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: "call_tiny_valid",
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }),
+    ].join("\n") + "\n");
+    const validStamp = new Date(oldBase - 60_000);
+    fs.utimesSync(validPath, validStamp, validStamp);
+    const validStat = fs.statSync(validPath);
+    monitor._insertStartupRecoveryCandidate({
+      filePath: validPath,
+      file: validFile,
+      mtimeMs: validStat.mtimeMs,
+      size: validStat.size,
+    });
+
+    monitor._startupRecoveryReady = true;
+    monitor._runReadyStartupRecovery({ remainingAttempts: 64 });
+
+    assert.strictEqual(requests.length, 1);
+    assert.strictEqual(requests[0][1].callId, "call_tiny_valid");
+    assert.strictEqual(monitor._tracked.has(validPath), true);
   });
 
   it("clears a pending question's card on task_complete even without a matching function_call_output", () => {

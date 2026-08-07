@@ -989,6 +989,53 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
     assert.strictEqual(__test.startupRecoveryCandidates.has(filePath), false);
   });
 
+  it("does not let remote empty recovery candidates crowd out a tiny valid request", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-tiny-crowdout-"));
+    tmpDirs.push(dir);
+    const oldBase = Date.now() - 10 * 60 * 1000;
+    for (let i = 0; i < 15; i++) {
+      const file = uniqueRolloutName(i + 900);
+      const filePath = path.join(dir, file);
+      fs.writeFileSync(filePath, "");
+      const stamp = new Date(oldBase - i);
+      fs.utimesSync(filePath, stamp, stamp);
+      const stat = fs.statSync(filePath);
+      __test.startupRecoveryCandidates.set(filePath, {
+        filePath,
+        file,
+        mtimeMs: stat.mtimeMs,
+        size: 0,
+      });
+    }
+    const validFile = uniqueRolloutName(999);
+    const validPath = path.join(dir, validFile);
+    const request = {
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "request_user_input",
+        call_id: "call_remote_tiny_valid",
+        arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+      },
+    };
+    fs.writeFileSync(validPath, [JSON.stringify(META), JSON.stringify(request)].join("\n") + "\n");
+    const validStamp = new Date(oldBase - 60_000);
+    fs.utimesSync(validPath, validStamp, validStamp);
+    const validStat = fs.statSync(validPath);
+    __test.startupRecoveryCandidates.set(validPath, {
+      filePath: validPath,
+      file: validFile,
+      mtimeMs: validStat.mtimeMs,
+      size: validStat.size,
+    });
+    const s = spy();
+
+    __test.runReadyRemoteRecovery({ remainingAttempts: 64, options: { postState: s.postState } });
+
+    assert.strictEqual(s.posted.filter((post) => post.event === "CodexUserInputRequest").length, 1);
+    assert.strictEqual(__test.tracked.has(validPath), true);
+  });
+
   it("recoverStalePendingUserInputEntry returns null once the question is already resolved", () => {
     const request = {
       type: "response_item",
@@ -1461,7 +1508,8 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
     // #707 follow-up review round 4, finding 2: checking bytesScanned BEFORE
     // adding the next candidate's cost, not after.
     const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
-    const perCandidateCost = 1.1 * 1024 * 1024; // matches the review's own repro numbers
+    const perCandidateSize = Math.floor(1.1 * 1024 * 1024);
+    const perCandidateCost = 256 * 1024 + 1024 * 1024 + 1;
     const candidateCount = Math.ceil(MAX_TOTAL_BYTES / perCandidateCost) + 3;
     const candidates = [];
     for (let i = 0; i < candidateCount; i++) {
@@ -1469,21 +1517,20 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-ledger-"));
       tmpDirs.push(dir);
       const filePath = path.join(dir, uniqueName);
-      fs.writeFileSync(filePath, [
-        JSON.stringify({ type: "session_meta", payload: { cwd: `/repo/n${i}` } }),
-        JSON.stringify({
-          type: "response_item",
-          payload: {
-            type: "function_call",
-            name: "request_user_input",
-            call_id: `call_remote_ledger_${i}`,
-            arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
-          },
-        }),
-      ].join("\n") + "\n");
-      // The real file is tiny; the candidate's claimed size simulates a
-      // large rollout so the byte budget is what actually gets exercised.
-      candidates.push({ filePath, file: uniqueName, mtimeMs: Date.now() - i, size: perCandidateCost });
+      const head = JSON.stringify({ type: "session_meta", payload: { cwd: `/repo/n${i}` } }) + "\n";
+      const request = JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: `call_remote_ledger_${i}`,
+          arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+        },
+      }) + "\n";
+      const fillerBytes = perCandidateSize - Buffer.byteLength(head) - Buffer.byteLength(request);
+      fs.writeFileSync(filePath, head + "x".repeat(fillerBytes - 1) + "\n" + request);
+      const stat = fs.statSync(filePath);
+      candidates.push({ filePath, file: uniqueName, mtimeMs: Date.now() - i, size: stat.size });
     }
 
     const s = spy();
@@ -1499,7 +1546,7 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
   });
 
   it("charges overlapping remote recovery reads to the real 20 MiB I/O budget", () => {
-    const fileSize = 1024 * 1024;
+    const fileSize = 2 * 1024 * 1024;
     const headPrefix = '{"type":"session_meta","payload":{"cwd":"';
     const headSuffix = '"}}\n';
     const head = headPrefix
@@ -1538,6 +1585,24 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
     }
     assert.strictEqual(__test.tracked.size, 15);
     assert.ok(requestedBytes <= 20 * 1024 * 1024, `requested ${requestedBytes} bytes`);
+
+    __test.resetMonitorStateForTests();
+    requestedBytes = 0;
+    const tailStart = fileSize - 1024 * 1024;
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      requestedBytes += length;
+      const boundedLength = position >= tailStart ? Math.min(length, 1) : length;
+      return originalReadSync(fd, buffer, offset, boundedLength, position);
+    };
+    try {
+      __test.runRecoverySweep(candidates, { postState: () => {} });
+    } finally {
+      fs.readSync = originalReadSync;
+    }
+    assert.ok(
+      requestedBytes <= 20 * 1024 * 1024,
+      `short-read retries requested ${requestedBytes} bytes`
+    );
   });
 
   it("refreshes staleness bookkeeping on a request_user_input notification, not just the generic path", () => {

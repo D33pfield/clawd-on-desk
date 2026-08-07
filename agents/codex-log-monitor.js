@@ -94,13 +94,13 @@ const RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const RECOVERY_SWEEP_MAX_FILES = 20;
 const RECOVERY_SWEEP_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 
-function recoveryReadBudgetCost() {
+function recoveryReadBudgetCost(size) {
+  const safeSize = Number.isFinite(Number(size)) ? Math.max(0, Number(size)) : 0;
   // Recovery reads the head and tail independently. They overlap for small
   // files, so min(size, head + tail) under-counts the actual synchronous I/O.
-  // Charge the worst case even for a currently small file: Codex can append
-  // between the admission stat and the bounded reads, but the poll-wide I/O
-  // ledger must remain authoritative across that race.
-  return RECOVERY_HEAD_LINE_MAX_BYTES + RECOVERY_TAIL_SCAN_BYTES + 1;
+  return Math.min(safeSize, RECOVERY_HEAD_LINE_MAX_BYTES)
+    + Math.min(safeSize, RECOVERY_TAIL_SCAN_BYTES)
+    + (safeSize > RECOVERY_TAIL_SCAN_BYTES ? 1 : 0);
 }
 
 function finiteNonnegativeNumber(value) {
@@ -456,14 +456,14 @@ class CodexLogMonitor {
         this._startupRecoveryCandidates.delete(candidate.filePath);
         continue;
       }
-      const candidateCost = recoveryReadBudgetCost();
+      const candidateCost = recoveryReadBudgetCost(stat.size);
       if (
         this._startupRecoveryBytesScanned + candidateCost
         > RECOVERY_SWEEP_MAX_TOTAL_BYTES
       ) break;
       this._startupRecoveryFilesScanned += 1;
       this._startupRecoveryBytesScanned += candidateCost;
-      const recovered = this._recoverStalePendingUserInput(candidate.filePath, candidate.file);
+      const recovered = this._recoverStalePendingUserInput(candidate.filePath, candidate.file, stat);
       if (recovered) {
         this._tracked.set(candidate.filePath, recovered);
         this._readPositions.set(candidate.filePath, {
@@ -519,14 +519,20 @@ class CodexLogMonitor {
     let bytesScanned = 0;
     for (const candidate of candidates) {
       if (filesScanned >= RECOVERY_SWEEP_MAX_FILES) break;
-      const candidateCost = recoveryReadBudgetCost();
+      let stat;
+      try {
+        stat = fs.statSync(candidate.filePath);
+      } catch {
+        continue;
+      }
+      const candidateCost = recoveryReadBudgetCost(stat.size);
       // Check BEFORE adding — accumulating post-hoc lets exactly one
       // over-budget candidate slip through every time the running total
       // lands just under the cap (#707 follow-up review round 4).
       if (bytesScanned + candidateCost > RECOVERY_SWEEP_MAX_TOTAL_BYTES) break;
       filesScanned += 1;
       bytesScanned += candidateCost;
-      const recovered = this._recoverStalePendingUserInput(candidate.filePath, candidate.file);
+      const recovered = this._recoverStalePendingUserInput(candidate.filePath, candidate.file, stat);
       if (recovered) {
         this._tracked.set(candidate.filePath, recovered);
         // Bypasses _pollFile's normal new-tracker construction, which is
@@ -583,45 +589,47 @@ class CodexLogMonitor {
   // if no newline is found within budget — the caller must fail closed, not
   // guess a role.
   _readCompleteFirstLine(filePath, statSize, maxBytes) {
-    // Reads only the NEW portion at each step (not a fresh 0..chunkSize read
-    // every retry) so the physical bytes read never exceed maxBytes even in
-    // the worst case — the recovery sweep's total-byte budget assumes this
-    // function never reads more than maxBytes per file (#707 follow-up
-    // review round 4).
     let readSoFar = 0;
+    let requestedTotal = 0;
+    const requestBudget = Math.min(statSize, maxBytes);
     let attempts = 0;
     const chunks = [];
-    let target = Math.min(statSize, 8 * 1024, maxBytes);
-    for (;;) {
-      const additional = target - readSoFar;
-      if (additional > 0) {
-        if (attempts >= RECOVERY_MAX_READ_ATTEMPTS) return null;
-        attempts += 1;
-        const { bytesRead, buf } = this._readByteRange(filePath, readSoFar, additional);
-        if (!Number.isFinite(bytesRead) || bytesRead <= 0) return null;
-        chunks.push(buf);
-        readSoFar += bytesRead;
-      }
+    const requestQuantum = Math.max(1, Math.ceil(requestBudget / RECOVERY_MAX_READ_ATTEMPTS));
+    while (requestedTotal < requestBudget && attempts < RECOVERY_MAX_READ_ATTEMPTS) {
+      const requestLength = Math.min(requestQuantum, requestBudget - requestedTotal);
+      attempts += 1;
+      requestedTotal += requestLength;
+      const { bytesRead, buf } = this._readByteRange(filePath, readSoFar, requestLength);
+      if (!Number.isFinite(bytesRead) || bytesRead <= 0) return null;
+      chunks.push(buf);
+      readSoFar += bytesRead;
       const raw = Buffer.concat(chunks, readSoFar);
       const newlineIdx = raw.indexOf(0x0a);
       if (newlineIdx !== -1) return raw.subarray(0, newlineIdx).toString("utf8");
-      if (readSoFar >= statSize || readSoFar >= maxBytes) return null;
-      if (readSoFar < target) continue;
-      target = Math.min(Math.max(readSoFar + 1, readSoFar * 4), maxBytes, statSize);
     }
+    return null;
   }
 
   _readExactRange(filePath, start, length) {
     if (length <= 0) return { buf: Buffer.alloc(0), complete: true };
     const chunks = [];
     let bytesReadTotal = 0;
+    let requestedTotal = 0;
     let attempts = 0;
+    const requestQuantum = Math.max(1, Math.ceil(length / RECOVERY_MAX_READ_ATTEMPTS));
     while (bytesReadTotal < length && attempts < RECOVERY_MAX_READ_ATTEMPTS) {
+      const requestLength = Math.min(
+        length - bytesReadTotal,
+        length - requestedTotal,
+        requestQuantum
+      );
+      if (requestLength <= 0) break;
       attempts += 1;
+      requestedTotal += requestLength;
       const result = this._readByteRange(
         filePath,
         start + bytesReadTotal,
-        length - bytesReadTotal
+        requestLength
       );
       if (!result || !Number.isFinite(result.bytesRead) || result.bytesRead <= 0) break;
       chunks.push(result.buf);
@@ -645,12 +653,14 @@ class CodexLogMonitor {
   // turn_aborted for this file — those end the turn that asked, so any
   // earlier open request is moot even without a matching function_call_output
   // (Codex killed mid-turn, terminal closed, etc. leave exactly this shape).
-  _recoverStalePendingUserInput(filePath, fileName) {
-    let stat;
-    try {
-      stat = fs.statSync(filePath);
-    } catch {
-      return null;
+  _recoverStalePendingUserInput(filePath, fileName, recoveryStat = null) {
+    let stat = recoveryStat;
+    if (!stat) {
+      try {
+        stat = fs.statSync(filePath);
+      } catch {
+        return null;
+      }
     }
     if (stat.size === 0) return null;
     const nowMs = Date.now();
