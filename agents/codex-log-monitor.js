@@ -871,7 +871,10 @@ class CodexLogMonitor {
     };
     if (deferSideEffects) {
       recovered._recoverySessionMeta = sessionMeta.payload;
-      if (recentlyActive) recovered._recoveryRawLines = rawLines;
+      if (recentlyActive) {
+        recovered._recoveryRawLines = rawLines;
+        recovered._recoveryTailIncludesHead = tailStart === 0;
+      }
       return recovered;
     }
     if (!recentlyActive) return recovered;
@@ -880,7 +883,7 @@ class CodexLogMonitor {
     // lifecycle events stay silent, while fresh token_count captures seed
     // the session-independent quota store. Head metadata was read separately
     // above so subagent/cwd classification does not depend on the tail window.
-    this._applySessionMeta(sessionMeta.payload, recovered);
+    if (tailStart !== 0) this._applySessionMeta(sessionMeta.payload, recovered);
     for (const line of rawLines) {
       if (!line.trim()) continue;
       this._processLine(line, recovered);
@@ -911,12 +914,16 @@ class CodexLogMonitor {
   _finalizeRecoveredTracker(recovered) {
     const sessionMeta = recovered._recoverySessionMeta;
     const rawLines = recovered._recoveryRawLines;
+    const tailIncludesHead = recovered._recoveryTailIncludesHead === true;
     delete recovered._recoverySessionMeta;
     delete recovered._recoveryRawLines;
-    const role = this._classifier.registerSession(recovered.sessionId, { sessionMeta });
-    recovered.isSubagent = role === "subagent";
-    if (!Array.isArray(rawLines)) return;
-    this._applySessionMeta(sessionMeta, recovered);
+    delete recovered._recoveryTailIncludesHead;
+    if (!Array.isArray(rawLines)) {
+      const role = this._classifier.registerSession(recovered.sessionId, { sessionMeta });
+      recovered.isSubagent = role === "subagent";
+      return;
+    }
+    if (!tailIncludesHead) this._applySessionMeta(sessionMeta, recovered);
     for (const line of rawLines) {
       if (!line.trim()) continue;
       this._processLine(line, recovered);

@@ -6,7 +6,7 @@ Issue：[A JavaScript error occurred in the main process #817](https://github.co
 
 代码基准：`main @ fad1b53d9a252cc8a765c1a7b6294f16a48d842c`
 
-状态：**实现已进入 Draft PR #820；首轮 exact-head 独立实现审查的 1 个 P1、1 个 P2、1 个 P3，二轮新增的 1 个 P2，以及三轮新增的 recovery post-read 快照 P2 均已修复并补回归，等待最终新 head 的第四轮独立复审。尚未回复 Issue 或进入合并流程。**
+状态：**实现已进入 Draft PR #820；前三轮发现的 1 个 P1、3 个 P2、1 个 P3，以及第四轮发现的 recent-backfill 重复分类 P3 均已修复并补回归，等待最终新 head 的第五轮独立复审。尚未回复 Issue 或进入合并流程。**
 
 复审注记：初稿先后经过子代理与 Claude 独立只读审查；本版只吸收经源码、定向探针或明确不变量验证成立的意见。复审发现初稿的 EOF 结算判据、绝对 pin 策略和 short-read oversized 判定存在缺陷，均已在本版重写。
 
@@ -24,6 +24,7 @@ Issue：[A JavaScript error occurred in the main process #817](https://github.co
 - 首轮独立实现审查（初始 head `aff82ec24fd56adcf2fc8a120baa33bfd0f16685`）确认三项缺陷并已补修：startup recovery 缓存候选消费前重验，防止重复 pending/覆盖 live tracker；validated baseline 后的持续失败继续执行 30 秒起、最高 5 分钟的指数退避，并让 deferred stat failure 同样遵守 `notBefore`；20 MiB recovery 账本按 head/tail 最坏物理读取量保守计费，覆盖两段重叠与文件并发增长。
 - 二轮独立实现审查（补修 head `4da6119ea12abe45149044559a3dfad692863c8f`）确认首轮三项均已关闭，但发现 recovery 的固定候选计费无法同时约束反复 short read 的累计请求量，并会让空/极小文件挤掉后续有效候选。实现现已把 admission 的最新 stat 快照原样传入 reader，按该快照的真实 head/tail 范围计费，并让每段至多 8 次补读共享等于该段长度的总请求/分配预算；新增“每次只读 1 byte”与“15 个空文件后仍恢复 tiny pending”回归。
 - 三轮独立实现审查（补修 head `eb411435883c6cb4af0d8500f3ddb6f71401f992`）确认前两轮问题均已关闭，但发现 recovery 读完后未重验 admission 快照：Windows LastWriteTime 冻结时，stat 后新增 pending 会因候选被消费、普通 old-mtime gate 又跳过而永久遗漏；head/tail 多次独立 open 期间的 inode replacement 还可能混合旧 root metadata 与新 subagent tail。实现现已在任何分类、回填、发卡或写 tracker 前完成 post-read stat 验证；identity 变化或 size shrink 整次 fail closed，冻结 mtime 的同 identity growth 保留为下一 bounded slice 的 continuation，不在原快照内扩读。新增 frozen growth、rename replacement、in-place shrink 和远端 frozen growth 回归。
+- 四轮独立实现审查（补修 head `0eb5dc69db390703f3aaa751a9143d9ff93973b9`）确认三轮两个 P2 已关闭，预算/tiny/backoff 仍成立，但发现稳定 recent-backfill 会先直接注册 classifier，再经 `_applySessionMeta()` 重复注册一次。实现现已让含 head meta 的 raw tail 只由 rawLines 注册，tail 不含 head 时才显式 apply 一次，普通 pending 则直接注册一次；回归锁定快照验证后的 classifier registration 恰好一次。
 - 残余验证边界：未取得报告人的真实 rollout；未做 x64、Windows、Linux 或真实 Remote SSH 主机 smoke；arm64 smoke 证明打包生产入口不再立即执行无界解码，不等同于完整追完 600 MiB backlog。
 
 ---

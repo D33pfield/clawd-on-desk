@@ -273,9 +273,16 @@ describe("CodexLogMonitor", () => {
     fs.utimesSync(testFile, frozenTime, frozenTime);
 
     const states = [];
+    let classifierRegistrations = 0;
+    const classifier = {
+      registerSession() {
+        classifierRegistrations += 1;
+        return "unknown";
+      },
+    };
     monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event, extra) => {
       states.push({ sid, state, event, extra });
-    });
+    }, { classifier });
     monitor.start();
 
     setTimeout(() => {
@@ -286,6 +293,7 @@ describe("CodexLogMonitor", () => {
       assert.strictEqual(quotaEvent.extra.codexQuota, undefined);
       assert.strictEqual(quotaEvent.extra.codexSparkQuota.codexWeekly.usedPercent, 0);
       assert.ok(monitor._tracked.has(testFile), "the recovered active file must stay tracked");
+      assert.strictEqual(classifierRegistrations, 1, "validated recent recovery must classify once");
       done();
     }, 300);
   });
