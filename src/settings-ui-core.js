@@ -84,6 +84,7 @@
       soundSummary: null,
       soundVolume: null,
       textScale: null,
+      roamMovementStyle: null,
       settingsSelects: new Set(),
       segmentedRadios: new Set(),
       aboutAutoUpdate: null,
@@ -552,6 +553,8 @@
     desc = "",
     summary = null,
     headerContent = null,
+    headerAction = null,
+    disclosureLabel = "",
     children = [],
     defaultCollapsed = false,
     className = "",
@@ -568,17 +571,23 @@
 
     const header = document.createElement("div");
     header.className = "collapsible-group-header";
-    header.setAttribute("role", "button");
-    header.setAttribute("tabindex", "0");
+    const disclosure = headerAction ? document.createElement("div") : header;
+    if (headerAction) {
+      header.classList.add("collapsible-group-header-with-action");
+      disclosure.className = "collapsible-group-disclosure";
+      header.appendChild(disclosure);
+    }
+    disclosure.setAttribute("role", "button");
+    disclosure.setAttribute("tabindex", "0");
 
     const chevron = createDisclosureChevron("collapsible-group-chevron");
-    header.appendChild(chevron);
+    disclosure.appendChild(chevron);
 
     if (headerContent) {
       const headerWrap = document.createElement("div");
       headerWrap.className = "collapsible-group-header-content";
       headerWrap.appendChild(headerContent);
-      header.appendChild(headerWrap);
+      disclosure.appendChild(headerWrap);
     } else {
       const text = document.createElement("div");
       text.className = "collapsible-group-text";
@@ -592,7 +601,7 @@
         description.textContent = desc;
         text.appendChild(description);
       }
-      header.appendChild(text);
+      disclosure.appendChild(text);
     }
 
     if (summary) {
@@ -600,7 +609,14 @@
       summaryWrap.className = "collapsibleSummary collapsible-group-summary";
       if (typeof summary === "string") summaryWrap.textContent = summary;
       else summaryWrap.appendChild(summary);
-      header.appendChild(summaryWrap);
+      disclosure.appendChild(summaryWrap);
+    }
+
+    if (headerAction) {
+      const actionWrap = document.createElement("div");
+      actionWrap.className = "collapsible-group-header-action";
+      actionWrap.appendChild(headerAction);
+      header.appendChild(actionWrap);
     }
 
     const body = document.createElement("div");
@@ -682,8 +698,9 @@
     }
 
     function applyCollapsedState({ animate = false } = {}) {
-      header.setAttribute("aria-expanded", collapsed ? "false" : "true");
-      header.setAttribute("aria-label", collapsed ? t("collapsibleExpand") : t("collapsibleCollapse"));
+      disclosure.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      const actionLabel = collapsed ? t("collapsibleExpand") : t("collapsibleCollapse");
+      disclosure.setAttribute("aria-label", disclosureLabel ? `${actionLabel}: ${disclosureLabel}` : actionLabel);
       group.classList.remove("expanding", "collapsing", "resizing");
       if (!animate) {
         group.classList.toggle("collapsed", collapsed);
@@ -728,8 +745,8 @@
       preserveScrollAnchor(() => applyCollapsedState({ animate: animateExpansion }));
     }
 
-    header.addEventListener("click", toggleCollapsed);
-    header.addEventListener("keydown", (ev) => {
+    disclosure.addEventListener("click", toggleCollapsed);
+    disclosure.addEventListener("keydown", (ev) => {
       if (ev.key === " " || ev.key === "Enter") {
         ev.preventDefault();
         toggleCollapsed();
@@ -1086,6 +1103,7 @@
     state.mountedControls.soundSummary = null;
     state.mountedControls.soundVolume = null;
     state.mountedControls.textScale = null;
+    state.mountedControls.roamMovementStyle = null;
     state.mountedControls.aboutAutoUpdate = null;
     state.mountedControls.aboutUpdateStatus = null;
   }

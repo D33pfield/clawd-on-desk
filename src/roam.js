@@ -91,8 +91,6 @@ module.exports = function initRoam(ctx) {
     const xMax = wa.x + wa.width - bounds.width - marginX;
     const yMin = wa.y + marginY;
     const yMax = wa.y + wa.height - bounds.height - marginY;
-    if (xMax <= xMin || yMax <= yMin) return null;
-
     /* #686: axis-constrained roam — pick a target that varies in only one axis.
      * Randomly choose horizontal (same Y, random X) or vertical (same X, random Y).
      * The constrained branch owns its complete retry/fallback behavior: it never
@@ -107,11 +105,13 @@ module.exports = function initRoam(ctx) {
         if (axis === "horizontal") {
           // Keep Y unchanged, pick random X
           const range = xMax - xMin;
-          if (range < ROAM_MIN_DIST) return null;
-          for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
-            const targetX = xMin + Math.floor(Math.random() * range);
-            if (Math.abs(targetX - bounds.x) >= ROAM_MIN_DIST) {
-              return { x: targetX, y: bounds.y, axis: "horizontal" };
+          if (range < 0) return null;
+          if (range > 0) {
+            for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
+              const targetX = xMin + Math.floor(Math.random() * range);
+              if (Math.abs(targetX - bounds.x) >= ROAM_MIN_DIST) {
+                return { x: targetX, y: bounds.y, axis: "horizontal" };
+              }
             }
           }
           // Fallback: farthest edge on X
@@ -126,11 +126,13 @@ module.exports = function initRoam(ctx) {
         } else {
           // Keep X unchanged, pick random Y
           const range = yMax - yMin;
-          if (range < ROAM_MIN_DIST) return null;
-          for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
-            const targetY = yMin + Math.floor(Math.random() * range);
-            if (Math.abs(targetY - bounds.y) >= ROAM_MIN_DIST) {
-              return { x: bounds.x, y: targetY, axis: "vertical" };
+          if (range < 0) return null;
+          if (range > 0) {
+            for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
+              const targetY = yMin + Math.floor(Math.random() * range);
+              if (Math.abs(targetY - bounds.y) >= ROAM_MIN_DIST) {
+                return { x: bounds.x, y: targetY, axis: "vertical" };
+              }
             }
           }
           // Fallback: farthest edge on Y
@@ -150,6 +152,8 @@ module.exports = function initRoam(ctx) {
       const secondAxis = firstAxis === "horizontal" ? "vertical" : "horizontal";
       return tryAxis(firstAxis) || tryAxis(secondAxis);
     }
+
+    if (xMax <= xMin || yMax <= yMin) return null;
 
     for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
       const targetX = xMin + Math.floor(Math.random() * (xMax - xMin));

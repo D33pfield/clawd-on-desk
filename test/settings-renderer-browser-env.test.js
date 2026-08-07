@@ -5120,24 +5120,28 @@ describe("settings renderer browser environment", () => {
     }
   });
 
-  it("wires the roamConstrainAxis General-tab switch end-to-end (update + broadcast)", async () => {
-    // #686 wiring coverage: the pref defaults off, the General-tab switch
-    // reflects the snapshot, clicking it fires settingsAPI.update with the
-    // next raw value (UI → server), and a broadcast change patches the
-    // mounted switch in place without a full re-render (server → UI).
+  it("renders Free roam movement style as a dependent segmented choice", async () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
-    // The switch row + its in-place patch key are both registered.
-    assert.ok(generalSource.includes('key: "roamConstrainAxis"'));
+    assert.ok(generalSource.includes("function buildFreeRoamGroup()"));
+    assert.ok(generalSource.includes('id: "general:free-roam"'));
+    assert.ok(generalSource.includes('className: "free-roam-collapsible"'));
+    assert.ok(generalSource.includes("defaultCollapsed: true"));
+    assert.ok(generalSource.includes("function buildRoamMovementStyleRow()"));
+    assert.ok(generalSource.includes('"row roam-movement-style-row"'));
     assert.ok(generalSource.includes('"roamConstrainAxis"'));
-    // All five language tables carry the label and description.
-    for (const key of ["rowRoamConstrainAxis", "rowRoamConstrainAxisDesc"]) {
+    for (const key of [
+      "rowRoamMovementStyle",
+      "rowRoamMovementStyleDesc",
+      "roamMovementNatural",
+      "roamMovementAxis",
+    ]) {
       const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
       assert.strictEqual(matches && matches.length, 5, `${key} should appear in all 5 languages`);
     }
 
     const updateCalls = [];
-    const initialSnapshot = makeGeneralSnapshot({ roamConstrainAxis: false, freeRoam: false });
+    const initialSnapshot = makeGeneralSnapshot({ roamConstrainAxis: true, freeRoam: false });
     const harness = loadGeneralTabForTest({
       snapshot: initialSnapshot,
       settingsAPI: {
@@ -5149,47 +5153,120 @@ describe("settings renderer browser environment", () => {
     });
     harness.renderContent();
 
-    // Mounted, reflects the off snapshot, with a label and description.
-    const meta = harness.getSwitchMeta("roamConstrainAxis");
-    assert.ok(meta, "roamConstrainAxis switch must be mounted in the General tab");
-    assert.strictEqual(meta.element.classList.contains("on"), false, "switch must be off when snapshot is false");
-    assert.strictEqual(meta.element.classList.contains("pending"), false);
-    assert.ok(meta.row.querySelector(".row-label"));
-    assert.ok(meta.row.querySelector(".row-desc"));
+    const control = harness.core.state.mountedControls.roamMovementStyle;
+    const row = harness.content.querySelector(".roam-movement-style-row");
+    const group = harness.content.querySelector(".free-roam-collapsible");
+    const header = group.querySelector(".collapsible-group-header");
+    const disclosure = group.querySelector(".collapsible-group-disclosure");
+    const freeRoamSwitch = harness.getSwitch("freeRoam");
+    assert.ok(control && row, "the dependent movement-style row must mount");
+    assert.ok(group, "Free roam must render as a collapsible group");
+    assert.strictEqual(group.dataset.groupId, "general:free-roam");
+    assert.strictEqual(group.classList.contains("collapsed"), true, "Free roam details default closed");
+    assert.strictEqual(header.getAttribute("role"), undefined, "the shared header must not wrap both interactive controls");
+    assert.strictEqual(disclosure.getAttribute("role"), "button");
+    assert.strictEqual(disclosure.getAttribute("aria-expanded"), "false");
+    assert.strictEqual(disclosure.getAttribute("aria-label"), "Expand section: Free roam");
+    assert.strictEqual(disclosure.contains(freeRoamSwitch), false, "the switch must be a sibling of the disclosure button");
+    assert.strictEqual(header.contains(disclosure), true);
+    assert.strictEqual(header.contains(freeRoamSwitch), true);
+    assert.strictEqual(freeRoamSwitch.getAttribute("role"), "switch");
+    assert.strictEqual(freeRoamSwitch.getAttribute("aria-label"), "Free roam");
+    assert.ok(
+      group.querySelector(".collapsible-group-body").contains(row),
+      "movement style must live inside the collapsible body",
+    );
+    assert.ok(row.classList.contains("settings-option-item"), "movement style must use the nested-card style");
+    assert.strictEqual(control.element.getAttribute("role"), "radiogroup");
+    const buttons = control.element.querySelectorAll("button");
+    const natural = buttons.find((button) => button.dataset.value === "natural");
+    const axis = buttons.find((button) => button.dataset.value === "axis");
+    assert.ok(natural && axis, "both movement styles must be available");
+    assert.strictEqual(axis.classList.contains("active"), true, "stored axis choice remains visible");
+    assert.strictEqual(natural.classList.contains("active"), false);
+    assert.strictEqual(axis.disabled, true, "style is disabled while Free roam is off");
+    assert.strictEqual(natural.disabled, true);
 
-    // Update path (UI → server): clicking dispatches settingsAPI.update with
-    // the next raw value (false → true; not inverted).
-    const beforeRenderCount = harness.getContentRenderCount();
-    meta.element.dispatchEvent({ type: "click", bubbles: false });
-    // The click sets a pending transient visual synchronously.
-    assert.strictEqual(meta.element.classList.contains("pending"), true, "click must mark the switch pending");
-    assert.strictEqual(meta.element.classList.contains("on"), true, "click must flip the visual on optimistically");
-    // Flush the invoke() microtask chain so settingsAPI.update resolves.
+    // The header master switch updates Free roam without also opening the
+    // sibling disclosure. No propagation workaround is needed.
+    freeRoamSwitch.dispatchEvent({
+      type: "click",
+      bubbles: true,
+      cancelBubble: false,
+      stopPropagation() { this.cancelBubble = true; },
+    });
     await new Promise((r) => setTimeout(r, 0));
     assert.ok(
-      updateCalls.some((c) => c.key === "roamConstrainAxis" && c.value === true),
-      "clicking the switch must call settingsAPI.update(\"roamConstrainAxis\", true)",
+      updateCalls.some((call) => call.key === "freeRoam" && call.value === true),
+      "the header switch must persist freeRoam=true",
     );
-    assert.strictEqual(meta.element.classList.contains("pending"), false, "pending clears after a successful update");
+    assert.strictEqual(group.classList.contains("collapsed"), true);
 
-    // Broadcast path (server → UI): applying a snapshot change patches the
-    // mounted switch in place — no full General re-render.
+    disclosure.dispatchEvent({ type: "click", bubbles: true });
+    assert.strictEqual(group.classList.contains("collapsed"), false);
+    assert.strictEqual(disclosure.getAttribute("aria-expanded"), "true");
+    assert.strictEqual(disclosure.getAttribute("aria-label"), "Collapse section: Free roam");
+
+    // Enabling the parent patches the mounted child in place and preserves its
+    // stored axis selection instead of resetting the preference.
+    const beforeRenderCount = harness.getContentRenderCount();
+    const enabledSnapshot = { ...initialSnapshot, freeRoam: true };
+    harness.core.ops.applyChanges({
+      changes: { freeRoam: true },
+      snapshot: enabledSnapshot,
+    });
+    assert.strictEqual(harness.core.state.mountedControls.roamMovementStyle, control);
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(axis.disabled, false);
+    assert.strictEqual(natural.disabled, false);
+    assert.strictEqual(axis.classList.contains("active"), true);
+
+    // Natural maps back to the existing boolean false; no prefs migration or
+    // new runtime setting is introduced by the presentation change.
+    natural.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((r) => setTimeout(r, 0));
+    assert.ok(
+      updateCalls.some((call) => call.key === "roamConstrainAxis" && call.value === false),
+      "Natural must persist roamConstrainAxis=false",
+    );
+    assert.strictEqual(natural.classList.contains("active"), true);
+    assert.strictEqual(axis.classList.contains("active"), false);
+
+    // Axis maps to the existing boolean true through the same user-click path.
+    axis.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((r) => setTimeout(r, 0));
+    assert.ok(
+      updateCalls.some((call) => call.key === "roamConstrainAxis" && call.value === true),
+      "Axis must persist roamConstrainAxis=true",
+    );
+    assert.strictEqual(axis.classList.contains("active"), true);
+    assert.strictEqual(natural.classList.contains("active"), false);
+
+    // Authoritative broadcasts keep the same control mounted and can replace
+    // the optimistic value without rebuilding General.
+    const naturalSnapshot = { ...enabledSnapshot, roamConstrainAxis: false };
     harness.core.ops.applyChanges({
       changes: { roamConstrainAxis: false },
-      snapshot: { ...initialSnapshot, roamConstrainAxis: false },
+      snapshot: naturalSnapshot,
     });
-    assert.strictEqual(
-      meta.element.classList.contains("on"),
-      false,
-      "broadcast back to false must patch the switch visual in place",
-    );
-    assert.strictEqual(
-      harness.getContentRenderCount(),
-      beforeRenderCount,
-      "roamConstrainAxis broadcasts must patch in place instead of rebuilding General",
-    );
-    // The mounted switch identity is stable across the broadcast.
-    assert.strictEqual(harness.getSwitch("roamConstrainAxis"), meta.element);
+    const axisSnapshot = { ...naturalSnapshot, roamConstrainAxis: true };
+    harness.core.ops.applyChanges({
+      changes: { roamConstrainAxis: true },
+      snapshot: axisSnapshot,
+    });
+    assert.strictEqual(axis.classList.contains("active"), true);
+    assert.strictEqual(natural.classList.contains("active"), false);
+
+    // Turning the parent off disables the child but preserves the stored style.
+    harness.core.ops.applyChanges({
+      changes: { freeRoam: false },
+      snapshot: { ...axisSnapshot, freeRoam: false },
+    });
+    assert.strictEqual(harness.core.state.mountedControls.roamMovementStyle, control);
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(axis.classList.contains("active"), true);
+    assert.strictEqual(natural.disabled, true);
+    assert.strictEqual(axis.disabled, true);
   });
 
   it("registers the Session cleanup group with three number rows, atomic reset, and i18n keys", () => {
@@ -6202,7 +6279,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes("localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY)"));
     assert.ok(coreSource.includes("localStorage.setItem(COLLAPSED_GROUPS_STORAGE_KEY"));
     assert.ok(coreSource.includes("defaultCollapsed = false"));
-    assert.ok(coreSource.includes('header.setAttribute("aria-expanded"'));
+    assert.ok(coreSource.includes('disclosure.setAttribute("aria-expanded"'));
     assert.ok(coreSource.includes("collapsibleSummary"));
     assert.ok(coreSource.includes("function createDisclosureChevron("));
     assert.ok(coreSource.includes('createDisclosureChevron("collapsible-group-chevron")'));
