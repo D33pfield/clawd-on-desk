@@ -2136,8 +2136,11 @@ describe("roam fence round-2 review (#810)", () => {
     // Reviewer repro: .1–.9 fence on 1920×1080 encloses the whole margin band
     // (fenceShrinks=false), but the pet starts at x=0 — outside the fence's
     // 192px left edge. Axis mode must therefore force horizontal and pull the
-    // pet back inside instead of walking vertically along x=0.
-    mock.method(Math, "random", () => 0.3);
+    // pet back inside instead of walking vertically along x=0. random=0.9
+    // PREFERS the vertical axis, so a horizontal walk here proves the fence
+    // forced the recovery (with the old fenceRect=null bug this test walks
+    // vertically and fails).
+    mock.method(Math, "random", () => 0.9);
     const ctx = fenceCtx2({
       active: true,
       left: 0.1,
@@ -2155,7 +2158,7 @@ describe("roam fence round-2 review (#810)", () => {
       assert.equal(b.y, 300, "the outside coordinate (X) must be the mover");
     }
     const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
-    assert.equal(last.x, 655, "deterministic in-band target");
+    assert.equal(last.x, 1389, "deterministic in-band target");
     assert.ok(
       last.x >= 192 && last.x + last.width <= 1728,
       "final window inside the fence",
@@ -2254,5 +2257,60 @@ describe("roam fence round-2 review (#810)", () => {
       ctx._appliedBounds.length > 0,
       "confirmed no-fence state roams like the parent",
     );
+  });
+});
+
+describe("roam fence round-3 review (#810)", () => {
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    mock.timers.reset();
+    mock.reset();
+  });
+
+  it("recovers from 1px outside an exact-fit corridor (forced move ignores min hop)", () => {
+    // Reviewer repro: exact-fit X fence [768,888] (corridor exactly the pet's
+    // width, X range collapses to the single point 768), start (767,450) —
+    // 1px outside. The only legal recovery is X+1; the ordinary 24/100px
+    // minimum would reject it forever and strand the pet outside.
+    mock.method(Math, "random", () => 0.9);
+    const ctx = makeCtx();
+    ctx.roamFence = {
+      get: () => ({
+        active: true,
+        left: 0.4,
+        top: 0.4,
+        right: 0.4625,
+        bottom: 0.58,
+      }),
+      refresh: () => {},
+    };
+    ctx._bounds.x = 767;
+    ctx._bounds.y = 450;
+    ctx._realBounds.x = 767;
+    ctx._realBounds.y = 450;
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    for (let i = 0; i < 400; i += 1) {
+      mock.timers.tick(16);
+      if (
+        ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle")
+      )
+        break;
+    }
+    assert.ok(
+      ctx._appliedBounds.length > 0,
+      "the 1px recovery walk must actually run",
+    );
+    for (const b of ctx._appliedBounds) {
+      assert.equal(b.y, 450, "recovery is horizontal only");
+    }
+    const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
+    assert.equal(last.x, 768, "pet ends exactly inside the corridor");
   });
 });

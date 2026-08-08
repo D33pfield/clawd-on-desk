@@ -258,7 +258,10 @@ describe("roam-fence loader", () => {
     assert.equal(loader.get().active, true, "oversize keeps the fence");
   });
 
-  it("coalesces concurrent refreshes into one read", async () => {
+  it("coalesces concurrent refreshes: N requests cost at most one trailing read", async () => {
+    // Round-3 semantics: requests that arrive while a read is in flight are
+    // satisfied by ONE trailing read (so the newest file content wins), never
+    // one read per request.
     let reads = 0;
     const loader = createRoamFenceLoader({
       readFile: async () => {
@@ -268,7 +271,112 @@ describe("roam-fence loader", () => {
       filePath: "/nonexistent/roam-area.json",
     });
     await Promise.all([loader.refresh(), loader.refresh(), loader.refresh()]);
-    assert.equal(reads, 1);
+    assert.equal(reads, 2, "initial read + one trailing read, not one each");
     assert.equal(loader.get().active, true);
+  });
+});
+
+describe("roam-fence loader round-3 (#810)", () => {
+  const OLD = JSON.stringify({ enabled: true, left: 0.1, right: 0.9 });
+  const NEW = JSON.stringify({ enabled: true, left: 0.4, right: 0.6 });
+
+  it("runs one trailing read when a refresh arrives mid-read (last writer wins)", async () => {
+    // Reviewer repro: a slow read captures pre-edit content; while it is
+    // pending the file changes and roam requests another refresh. Coalescing
+    // that request away would leave the cache stale for the next walk.
+    let current = OLD;
+    let release;
+    let reads = 0;
+    const loader = createRoamFenceLoader({
+      readFile: () =>
+        new Promise((resolve) => {
+          reads += 1;
+          if (reads === 1) {
+            // First (slow) read: resolves later with the OLD content it
+            // captured at open time.
+            release = () => resolve(OLD);
+          } else {
+            resolve(current);
+          }
+        }),
+      warn: () => {},
+      filePath: "/nonexistent/roam-area.json",
+    });
+    const p1 = loader.refresh(); // slow read in flight
+    current = NEW; // file replaced on disk
+    const p2 = loader.refresh(); // request while pending — must not be lost
+    release();
+    await p1;
+    await p2;
+    assert.equal(reads, 2, "a trailing read must follow the in-flight one");
+    assert.equal(
+      loader.get().left,
+      0.4,
+      "the state after refresh settles must reflect the newest file",
+    );
+  });
+
+  it("non-ENOENT errors break the consecutive-ENOENT streak", async () => {
+    // valid → ENOENT → EACCES → ENOENT: the two ENOENTs are NOT consecutive,
+    // so the active fence must survive; only ENOENT → ENOENT disables it.
+    let current = OLD;
+    const loader = createRoamFenceLoader({
+      readFile: async () => {
+        if (current instanceof Error) throw current;
+        return current;
+      },
+      warn: () => {},
+      filePath: "/nonexistent/roam-area.json",
+    });
+    const enoentErr = () => {
+      const e = new Error("ENOENT");
+      e.code = "ENOENT";
+      return e;
+    };
+    const eaccesErr = () => {
+      const e = new Error("EACCES");
+      e.code = "EACCES";
+      return e;
+    };
+    await loader.refresh();
+    current = enoentErr();
+    await loader.refresh();
+    current = eaccesErr();
+    await loader.refresh();
+    current = enoentErr();
+    await loader.refresh();
+    assert.equal(
+      loader.get().active,
+      true,
+      "ENOENT, EACCES, ENOENT is not two consecutive misses",
+    );
+    await loader.refresh();
+    assert.equal(
+      loader.get().active,
+      false,
+      "a genuine consecutive ENOENT pair still confirms removal",
+    );
+  });
+
+  it("warns once (deduplicated) for persistent read errors", async () => {
+    const warnings = [];
+    const eacces = new Error("EACCES");
+    eacces.code = "EACCES";
+    let current = OLD;
+    const loader = createRoamFenceLoader({
+      readFile: async () => {
+        if (current instanceof Error) throw current;
+        return current;
+      },
+      warn: (m) => warnings.push(m),
+      filePath: "/nonexistent/roam-area.json",
+    });
+    await loader.refresh();
+    current = eacces;
+    await loader.refresh();
+    await loader.refresh();
+    await loader.refresh();
+    assert.equal(warnings.length, 1, "persistent read errors warn exactly once");
+    assert.ok(/read failed/.test(warnings[0]));
   });
 });

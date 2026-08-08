@@ -168,17 +168,30 @@ module.exports = function initRoam(ctx) {
     // an active fence actually shrank it; otherwise the historical 100px
     // threshold applies unchanged (including the "small work area, no fence"
     // case, which must keep returning no target).
-    const minDist = fenceShrinks
-      ? Math.min(
-          ROAM_MIN_DIST,
-          Math.max(
-            24,
-            Math.round(
-              (Math.max(0, xMax - xMin) + Math.max(0, yMax - yMin)) / 4,
+    // #810 round-3: a containment-recovery round — the start rect lies outside
+    // an active fence — must accept any non-zero legal displacement. The pet
+    // may sit only 1px outside, and the ordinary 24/100px threshold would
+    // reject every in-fence candidate forever. Normal wandering keeps the
+    // usual minimums once the start is contained.
+    const startInsideFence =
+      !fenceRect ||
+      (bounds.x >= fenceRect.left &&
+        bounds.x + petW <= fenceRect.right &&
+        bounds.y >= fenceRect.top &&
+        bounds.y + petH <= fenceRect.bottom);
+    const minDist = !startInsideFence
+      ? 1
+      : fenceShrinks
+        ? Math.min(
+            ROAM_MIN_DIST,
+            Math.max(
+              24,
+              Math.round(
+                (Math.max(0, xMax - xMin) + Math.max(0, yMax - yMin)) / 4,
+              ),
             ),
-          ),
-        )
-      : ROAM_MIN_DIST;
+          )
+        : ROAM_MIN_DIST;
     // Axis-constrained walks move along one axis only, so their reachable
     // distance is bounded by that axis' range alone (best case ~range from an
     // edge, ~range/2 from the center) — scale per-axis, same 24px floor.
@@ -217,12 +230,14 @@ module.exports = function initRoam(ctx) {
         if (!insideX) forcedAxis = "horizontal";
         else if (!insideY) forcedAxis = "vertical";
       }
-      const tryAxis = (axis) => {
+      const tryAxis = (axis, recovery) => {
+        // recovery: this move exists to pull an out-of-fence coordinate back
+        // inside (#810 round-3) — any non-zero legal displacement is enough.
         if (axis === "horizontal") {
           // Keep Y unchanged, pick random X
           const range = xMax - xMin;
           if (range < 0) return null;
-          const min = axisMinDist(range);
+          const min = recovery ? 1 : axisMinDist(range);
           if (range > 0) {
             for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
               const targetX = xMin + Math.floor(Math.random() * range);
@@ -256,7 +271,7 @@ module.exports = function initRoam(ctx) {
           // Keep X unchanged, pick random Y
           const range = yMax - yMin;
           if (range < 0) return null;
-          const min = axisMinDist(range);
+          const min = recovery ? 1 : axisMinDist(range);
           if (range > 0) {
             for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
               const targetY = yMin + Math.floor(Math.random() * range);
@@ -289,7 +304,7 @@ module.exports = function initRoam(ctx) {
         }
       };
 
-      if (forcedAxis) return tryAxis(forcedAxis);
+      if (forcedAxis) return tryAxis(forcedAxis, true);
       // Randomly prefer one axis; if it fails, try the other
       const firstAxis = Math.random() < 0.5 ? "horizontal" : "vertical";
       const secondAxis = firstAxis === "horizontal" ? "vertical" : "horizontal";

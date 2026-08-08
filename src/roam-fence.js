@@ -99,6 +99,7 @@ module.exports = function createRoamFenceLoader(deps = {}) {
   let enoentSeenWhileActive = false;
   let lastWarnKey = null;
   let pending = null;
+  let trailingRequested = false;
 
   function warnOnce(key, reason) {
     // Dedup: the same broken content produces exactly one warning, not one
@@ -114,52 +115,79 @@ module.exports = function createRoamFenceLoader(deps = {}) {
     warn(`[roam-fence] ${filePath}: ${reason}; ${consequence}.`);
   }
 
+  // One read: stat guard → read → classify. Extracted so refresh() can run a
+  // trailing read when a request arrived while another read was in flight.
+  async function readOnce() {
+    try {
+      if (statFile) {
+        const st = await statFile(filePath);
+        if (st && typeof st.isFile === "function" && !st.isFile()) {
+          enoentSeenWhileActive = false;
+          warnOnce("not-file", "not a regular file");
+          return;
+        }
+        if (st && Number.isFinite(st.size) && st.size > MAX_FENCE_FILE_BYTES) {
+          enoentSeenWhileActive = false;
+          warnOnce(
+            `size:${st.size}`,
+            `file is ${st.size} bytes (limit ${MAX_FENCE_FILE_BYTES})`,
+          );
+          return;
+        }
+      }
+      const raw = await readFile(filePath);
+      enoentSeenWhileActive = false;
+      const next = parseFence(raw);
+      if (next) {
+        state = next;
+        lastWarnKey = null;
+      } else {
+        warnOnce(`invalid:${raw}`, "invalid fence JSON");
+      }
+    } catch (err) {
+      if (err && err.code === "ENOENT") {
+        // A replace-style save (unlink + rename) can expose one ENOENT
+        // between two valid reads. Never drop an active fence on the first
+        // one — require a second consecutive ENOENT as confirmation.
+        if (state && state.active && !enoentSeenWhileActive) {
+          enoentSeenWhileActive = true;
+        } else {
+          enoentSeenWhileActive = false;
+          state = { ...INACTIVE };
+          lastWarnKey = null;
+        }
+      } else {
+        // #810 round-3: any non-ENOENT outcome breaks the consecutive-ENOENT
+        // streak — valid → ENOENT → EACCES → ENOENT is NOT two consecutive
+        // misses and must not disable the fence. Warn (deduplicated) so a
+        // persistently unreadable file is diagnosable rather than silent.
+        enoentSeenWhileActive = false;
+        warnOnce(
+          `read-error:${(err && err.code) || "unknown"}`,
+          `read failed (${(err && err.code) || err})`,
+        );
+      }
+    }
+  }
+
   // Async and coalesced: roam kicks this fire-and-forget when scheduling a
   // walk, then reads get() at pick time seconds later — no synchronous disk
   // I/O ever happens inside target selection.
+  // #810 round-3: a request that arrives while a read is in flight marks a
+  // trailing read instead of being dropped — the in-flight read may have
+  // captured pre-edit content, so the LAST requester's view must win. The
+  // returned promise settles only after the trailing read completes.
   function refresh() {
-    if (pending) return pending;
+    if (pending) {
+      trailingRequested = true;
+      return pending;
+    }
     pending = (async () => {
       try {
-        if (statFile) {
-          const st = await statFile(filePath);
-          if (st && typeof st.isFile === "function" && !st.isFile()) {
-            enoentSeenWhileActive = false;
-            warnOnce("not-file", "not a regular file");
-            return;
-          }
-          if (st && Number.isFinite(st.size) && st.size > MAX_FENCE_FILE_BYTES) {
-            enoentSeenWhileActive = false;
-            warnOnce(
-              `size:${st.size}`,
-              `file is ${st.size} bytes (limit ${MAX_FENCE_FILE_BYTES})`,
-            );
-            return;
-          }
-        }
-        const raw = await readFile(filePath);
-        enoentSeenWhileActive = false;
-        const next = parseFence(raw);
-        if (next) {
-          state = next;
-          lastWarnKey = null;
-        } else {
-          warnOnce(`invalid:${raw}`, "invalid fence JSON");
-        }
-      } catch (err) {
-        if (err && err.code === "ENOENT") {
-          // A replace-style save (unlink + rename) can expose one ENOENT
-          // between two valid reads. Never drop an active fence on the first
-          // one — require a second consecutive ENOENT as confirmation.
-          if (state && state.active && !enoentSeenWhileActive) {
-            enoentSeenWhileActive = true;
-          } else {
-            enoentSeenWhileActive = false;
-            state = { ...INACTIVE };
-            lastWarnKey = null;
-          }
-        }
-        // Any other error (EACCES…): keep the current state, UNKNOWN included.
+        do {
+          trailingRequested = false;
+          await readOnce();
+        } while (trailingRequested);
       } finally {
         pending = null;
       }
