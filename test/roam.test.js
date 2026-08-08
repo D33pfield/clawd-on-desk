@@ -2313,4 +2313,45 @@ describe("roam fence round-3 review (#810)", () => {
     const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
     assert.equal(last.x, 768, "pet ends exactly inside the corridor");
   });
+
+  it("free-direction mode also recovers from 1px outside a fully collapsed fence", () => {
+    // Same stranding class without axis constraint: both candidate intervals
+    // collapse to the single point (768,432) and the pet starts 1px outside.
+    // The adaptive minimum (24px floor) would reject the only legal target
+    // forever; a containment-recovery round accepts any non-zero step.
+    mock.method(Math, "random", () => 0.9);
+    const ctx = makeCtx();
+    ctx.roamFence = {
+      get: () => ({
+        active: true,
+        left: 0.4,
+        top: 0.4,
+        right: 0.4625,
+        bottom: 0.5111,
+      }),
+      refresh: () => {},
+    };
+    ctx._bounds.x = 767;
+    ctx._bounds.y = 432;
+    ctx._realBounds.x = 767;
+    ctx._realBounds.y = 432;
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    for (let i = 0; i < 400; i += 1) {
+      mock.timers.tick(16);
+      if (
+        ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle")
+      )
+        break;
+    }
+    assert.ok(ctx._appliedBounds.length > 0, "recovery walk must run");
+    const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
+    assert.deepEqual(
+      { x: last.x, y: last.y },
+      { x: 768, y: 432 },
+      "pet ends exactly inside the collapsed fence",
+    );
+  });
 });

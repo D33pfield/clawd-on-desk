@@ -543,7 +543,11 @@ module.exports = function initRoam(ctx) {
     // Target selection itself never touches the disk; an edit to the file
     // applies within one roam pause, no restart needed.
     if (ctx.roamFence && typeof ctx.roamFence.refresh === "function") {
-      ctx.roamFence.refresh();
+      // Defensive: a loader that throws synchronously must not kill the roam
+      // scheduling chain — the walk would simply use the cached fence state.
+      try {
+        ctx.roamFence.refresh();
+      } catch {}
     }
     const delay = firstRoam ? ROAM_IDLE_DELAY_MS : ROAM_BETWEEN_DELAY_MS;
     firstRoam = false;
