@@ -54,6 +54,8 @@ const VERIFIED_GITHUB_CONTRIBUTORS = [
   "YOOGOMJA",
   "anupamme",
   "anthonyonazure",
+  "weed33834",
+  "arismarioneves",
 ];
 
 function createDeferred() {
