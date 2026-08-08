@@ -88,10 +88,11 @@ describe("agent-runtime-main", () => {
     );
   });
 
-  it("lets JSONL token_count update official-hook Codex session metadata during suppression", () => {
+  it("routes suppressed JSONL context through no-lifecycle session metadata", () => {
     let currentTime = 1000;
     const instances = [];
     const calls = [];
+    const metadataCalls = [];
     const FakeMonitor = makeFakeMonitorClass(instances);
     const runtime = createAgentRuntimeMain({
       now: () => currentTime,
@@ -99,6 +100,9 @@ describe("agent-runtime-main", () => {
       loadCodexAgent: () => ({ id: "codex" }),
       isAgentEnabled: (agentId) => agentId === "codex",
       updateSession: (...args) => calls.push(["update", ...args]),
+      getStateRuntime: () => ({
+        updateSessionMetadata: (...args) => metadataCalls.push(args),
+      }),
       clearCodexNotifyBubbles: (...args) => calls.push(["clear", ...args]),
       codexSubagentClassifier: {},
     });
@@ -124,22 +128,18 @@ describe("agent-runtime-main", () => {
         agentId: "codex",
         hookSource: "codex-official",
       }],
-      ["update", localSessionKey("codex:abc"), "idle", "event_msg:task_complete", {
-        cwd: "D:\\repo",
-        agentId: "codex",
-        sessionTitle: undefined,
+    ]);
+    assert.deepStrictEqual(metadataCalls, [[
+      localSessionKey("codex:abc"),
+      {
         contextUsage: {
           used: 49961,
           limit: 258400,
           percent: 19,
           source: "codex",
         },
-        headless: false,
-        profileId: "local",
-        rawSessionId: "codex:abc",
-        preserveState: true,
-      }],
-    ]);
+      },
+    ]]);
   });
 
   it("routes Codex user-input monitor callbacks to a passive card and transient state", () => {
@@ -161,7 +161,13 @@ describe("agent-runtime-main", () => {
       questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }],
       autoResolutionMs: null,
     };
-    const extra = { cwd: "/repo", sourcePid: 42, agentPid: 42, headless: false };
+    const extra = {
+      cwd: "/repo",
+      sourcePid: 42,
+      agentPid: 42,
+      headless: false,
+      contextUsage: { used: 10, limit: 100, percent: 10, source: "codex" },
+    };
 
     monitor.options.onUserInputRequest("codex:s1", request, extra);
     monitor.options.onUserInputResolved("codex:s1", "call_1");
@@ -191,12 +197,16 @@ describe("agent-runtime-main", () => {
     const instances = [];
     const calls = [];
     const FakeMonitor = makeFakeMonitorClass(instances);
+    const metadataCalls = [];
     const runtime = createAgentRuntimeMain({
       loadCodexLogMonitor: () => FakeMonitor,
       loadCodexAgent: () => ({ id: "codex" }),
       isAgentEnabled: (agentId) => agentId === "codex",
       updateSession: (...args) => calls.push(["update", ...args]),
       clearCodexNotifyBubbles: (...args) => calls.push(["clear", ...args]),
+      getStateRuntime: () => ({
+        updateSessionMetadata: (...args) => metadataCalls.push(args),
+      }),
       codexSubagentClassifier: {},
     });
     const monitor = runtime.startCodexLogMonitor();
@@ -211,29 +221,25 @@ describe("agent-runtime-main", () => {
       },
     });
 
-    assert.deepStrictEqual(calls, [
-      ["update", localSessionKey("codex:abc"), "working", "event_msg:token_count", {
-        cwd: "D:\\repo",
-        agentId: "codex",
-        sessionTitle: undefined,
+    assert.deepStrictEqual(calls, []);
+    assert.deepStrictEqual(metadataCalls, [[
+      localSessionKey("codex:abc"),
+      {
         contextUsage: {
           used: 23959,
           limit: 258400,
           percent: 9,
           source: "codex",
         },
-        headless: false,
-        profileId: "local",
-        rawSessionId: "codex:abc",
-        preserveState: true,
-      }],
-    ]);
+      },
+    ]]);
   });
 
   it("routes JSONL generic and Spark quota to the account store, never updateSession opts", () => {
     const instances = [];
     const calls = [];
     const quotaCalls = [];
+    const metadataCalls = [];
     const FakeMonitor = makeFakeMonitorClass(instances);
     const runtime = createAgentRuntimeMain({
       loadCodexLogMonitor: () => FakeMonitor,
@@ -243,6 +249,7 @@ describe("agent-runtime-main", () => {
       clearCodexNotifyBubbles: (...args) => calls.push(["clear", ...args]),
       getStateRuntime: () => ({
         updateAccountQuota: (...args) => quotaCalls.push(args),
+        updateSessionMetadata: (...args) => metadataCalls.push(args),
       }),
       codexSubagentClassifier: {},
     });
@@ -271,7 +278,11 @@ describe("agent-runtime-main", () => {
       assert.strictEqual(Object.prototype.hasOwnProperty.call(call[4], "codexQuota"), false);
       assert.strictEqual(Object.prototype.hasOwnProperty.call(call[4], "codexSparkQuota"), false);
     }
-    assert.strictEqual(calls.filter((c) => c[0] === "update").length, 1);
+    assert.strictEqual(calls.filter((c) => c[0] === "update").length, 0);
+    assert.deepStrictEqual(metadataCalls, [[
+      localSessionKey("codex:abc"),
+      { contextUsage: { used: 23959, limit: 258400, percent: 9, source: "codex" } },
+    ]]);
     // Local monitor reports as the local source (null host).
     assert.deepStrictEqual(quotaCalls, [
       [null, { codexQuota, codexSparkQuota }],

@@ -107,6 +107,16 @@ describe("CodexLogMonitor", () => {
     fs.writeFileSync(testFile, [
       JSON.stringify({ type: "session_meta", payload: { cwd: "/projects/foo", source: "cli" } }),
       JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: { total_tokens: 24846 },
+            model_context_window: 258400,
+          },
+        },
+      }),
+      JSON.stringify({
         type: "response_item",
         payload: {
           type: "function_call",
@@ -132,6 +142,12 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(requests.length, 1);
     assert.strictEqual(requests[0][0], EXPECTED_SID);
     assert.strictEqual(requests[0][1].callId, "call_question");
+    assert.deepStrictEqual(requests[0][2].contextUsage, {
+      used: 24846,
+      limit: 258400,
+      percent: 10,
+      source: "codex",
+    });
     assert.strictEqual(requests[0][2].cwd, "/projects/foo");
 
     fs.appendFileSync(testFile, JSON.stringify({

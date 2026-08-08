@@ -217,23 +217,21 @@ function createAgentRuntimeMain(options = {}) {
             stateRuntime.updateAccountQuota(null, accountQuotas);
           }
         };
+        const annotateCodexContextUsage = () => {
+          if (!sessionOptions.contextUsage) return false;
+          const stateRuntime = getStateRuntime();
+          if (!stateRuntime || typeof stateRuntime.updateSessionMetadata !== "function") return false;
+          return stateRuntime.updateSessionMetadata(sessionId, {
+            contextUsage: sessionOptions.contextUsage,
+          });
+        };
         if (isCodexMonitorMetadataOnlyEvent(event, extra)) {
-          if (sessionOptions.contextUsage) {
-            updateSession(sessionId, state, event, {
-              ...sessionOptions,
-              preserveState: true,
-            });
-          }
+          annotateCodexContextUsage();
           annotateCodexAccountQuota();
           return;
         }
         if (shouldSuppressCodexLogEvent(sessionId, state, event)) {
-          if (sessionOptions.contextUsage) {
-            updateSession(sessionId, state, event, {
-              ...sessionOptions,
-              preserveState: true,
-            });
-          }
+          annotateCodexContextUsage();
           annotateCodexAccountQuota();
           return;
         }

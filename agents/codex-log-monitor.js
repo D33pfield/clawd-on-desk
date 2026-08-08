@@ -1975,6 +1975,7 @@ class CodexLogMonitor {
       sessionTitle: tracked.sessionTitle,
       codexOriginator: tracked.codexOriginator || null,
       codexSource: tracked.codexSource || null,
+      ...(tracked.contextUsage ? { contextUsage: tracked.contextUsage } : {}),
       headless: false,
     });
   }
