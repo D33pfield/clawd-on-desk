@@ -5302,7 +5302,7 @@ describe("settings renderer browser environment", () => {
     // The command is registered in settings-actions.
     assert.ok(actionsSource.includes('"sessionCleanup.setTriple": setSessionCleanupTriple'));
 
-    // i18n keys present in all five languages.
+    // i18n keys present in all supported languages.
     for (const key of [
       "rowSessionCleanupGroup",
       "rowSessionCleanupGroupDesc",
@@ -5318,7 +5318,9 @@ describe("settings renderer browser environment", () => {
       "actionResetSessionCleanup",
     ]) {
       const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
-      assert.ok(matches && matches.length >= 5, `${key} should appear in all 5 language tables (saw ${matches ? matches.length : 0})`);
+      const matchCount = matches ? matches.length : 0;
+      assert.strictEqual(matchCount, SUPPORTED_LANGS.length,
+        `${key} should appear in all ${SUPPORTED_LANGS.length} supported language tables (saw ${matchCount})`);
     }
   });
 

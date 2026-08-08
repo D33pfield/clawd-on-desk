@@ -96,7 +96,7 @@ Clawd はデスクトップに住むペットで、AI コーディングエー�
 - **Do Not Disturb** — 右クリックまたは tray メニューから sleep mode に入り、起こすまで hook event をすべて抑制します。DND 中は権限バブルも抑制されます。Codex、opencode、MiMo Code はネイティブプロンプトに戻り、Claude Code と CodeBuddy は組み込みの権限フローに戻ります。Antigravity と Pi は state-only です
 - **効果音** — タスク完了や権限リクエスト時に短い音を鳴らします（右クリックメニューで切り替え、10 秒クールダウン、DND 中は自動ミュート）
 - **システムトレイ** — サイズ変更（S/M/L）、DND mode、言語切り替え、自動起動、更新確認
-- **i18n** — English、簡体中文、繁体中文、Korean、Japanese UI。右クリックメニューまたは tray から切り替えできます
+- **i18n** — English、簡体中文、繁体中文、Korean、Japanese、Português (Brasil) UI。右クリックメニューまたは tray から切り替えできます
 - **自動更新** — GitHub Releases を確認します。Windows では終了時に NSIS 更新を適用し、macOS/Linux では clone したリポジトリから実行している場合に `git pull` + restart を行います
 
 ## アニメーション

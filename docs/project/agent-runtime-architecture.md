@@ -313,6 +313,6 @@ opencode、MiMo Code、OpenClaw 和 Hermes 是 plugin 形式集成的 agent；Op
 
 ## i18n
 
-- 支持 en / zh / ko
+- 支持 en / zh / zh-TW / ko / ja / pt-BR
 - 文案集中在 `src/i18n.js`
 - 语言偏好持久化到 `clawd-prefs.json`，启动时通过 `hydrate()` 灌入 controller
