@@ -2053,7 +2053,9 @@ describe("prefs.mapLocaleToLang (device locale → UI language)", () => {
     ["zh-TW", "zh-TW"], ["zh-Hant", "zh-TW"], ["zh-HK", "zh-TW"], ["zh-Hant-TW", "zh-TW"],
     ["ko-KR", "ko"], ["ko", "ko"],
     ["ja-JP", "ja"], ["ja", "ja"],
-    ["pt-BR", "pt-BR"], ["pt", "pt-BR"], ["pt-PT", "pt-BR"],
+    ["pt-BR", "pt-BR"], ["pt_BR", "pt-BR"],
+    // Only the shipped regional variant is auto-selected.
+    ["pt", "en"], ["pt-PT", "en"], ["pt-AO", "en"],
     ["fr-FR", "en"], ["de", "en"],
   ];
   for (const [input, expected] of cases) {

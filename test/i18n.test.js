@@ -158,11 +158,9 @@ describe("i18n locales", () => {
     }
   });
 
-  // Keyset and placeholder parity both pass on "1 ativas", because the key
-  // exists and the placeholder survived — the grammar is what breaks. Portuguese
-  // inflects adjectives and participles for number, so every count-driven string
-  // needs either a function that branches on the count or wording that reads the
-  // same at 1 and at N. These cases pin both shapes.
+  // Parity passes on "1 ativas" — the key and the placeholder are both there,
+  // only the grammar is wrong. Portuguese inflects for number, so these pin the
+  // rendered text at 1 and at N.
   it("inflects pt-BR count strings whose locale entry is a function", () => {
     const pt = loadSettingsI18nStrings()["pt-BR"];
 

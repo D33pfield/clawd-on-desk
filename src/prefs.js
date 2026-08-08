@@ -1330,9 +1330,8 @@ function mapLocaleToLang(locale) {
   }
   if (l === "ko" || l.startsWith("ko-")) return "ko";
   if (l === "ja" || l.startsWith("ja-")) return "ja";
-  // pt-BR is the only Portuguese locale shipped, so European and African
-  // Portuguese tags map to it rather than falling back to English.
-  if (l === "pt" || l.startsWith("pt-")) return "pt-BR";
+  // Regional locale: only pt-BR itself auto-selects it.
+  if (l === "pt-br") return "pt-BR";
   return "en";
 }
 
