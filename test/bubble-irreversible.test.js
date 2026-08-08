@@ -73,9 +73,9 @@ describe("detectIrreversible — ordinary commands stay quiet (precision over re
 });
 
 describe("bubble wiring — badge is display-only", () => {
-  it("renderer defines localized hint for all 5 bubble locales", () => {
+  it("renderer defines localized hint for all 6 bubble locales", () => {
     const count = (bubbleRenderer.match(/irreversibleHint:/g) || []).length;
-    assert.strictEqual(count, 5);
+    assert.strictEqual(count, 6);
   });
   it("badge element exists and starts hidden", () => {
     assert.match(bubbleHtml, /id="irreversibleBadge" style="display:none"/);

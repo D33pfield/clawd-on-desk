@@ -2354,7 +2354,7 @@ describe("settings renderer browser environment", () => {
       "telegramMigrationNudgeLegacyBody",
       "telegramMigrationNudgeNativeBody",
     ];
-    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja"]);
+    assert.deepStrictEqual(SUPPORTED_LANGS, ["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
     for (const lang of SUPPORTED_LANGS) {
       for (const key of keys) {
         assert.equal(
@@ -5102,7 +5102,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("bubbleSecondsPrefix"));
   });
 
-  it("renders the opt-in test-result reaction switch with all five translations", () => {
+  it("renders the opt-in test-result reaction switch with all six translations", () => {
     const harness = loadGeneralTabForTest({
       snapshot: makeGeneralSnapshot({ testReactionsEnabled: false }),
     });
@@ -5116,7 +5116,7 @@ describe("settings renderer browser environment", () => {
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
     for (const key of ["rowTestReactions", "rowTestReactionsDesc"]) {
       const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
-      assert.strictEqual(matches && matches.length, 5, `${key} should appear in all 5 languages`);
+      assert.strictEqual(matches && matches.length, 6, `${key} should appear in all 6 languages`);
     }
   });
 
@@ -5137,7 +5137,7 @@ describe("settings renderer browser environment", () => {
       "roamMovementAxis",
     ]) {
       const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
-      assert.strictEqual(matches && matches.length, 5, `${key} should appear in all 5 languages`);
+      assert.strictEqual(matches && matches.length, 6, `${key} should appear in all 6 languages`);
     }
 
     const updateCalls = [];
