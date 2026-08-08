@@ -327,7 +327,7 @@ describe("tutorial window shell", () => {
 
   it("syncLocalization pushes fresh state, dictionary, and native title for external language changes", () => {
     // Reproduces the review-reported gap: when the language changes through
-    // Settings/tray (not the tutorial's own picker), the centralized language
+    // Settings (not the tutorial's own picker), the centralized language
     // effect must push fresh renderer state — not just the native title — so
     // the tutorial body, buttons, and document.title follow the new language.
     let lang = "en";
