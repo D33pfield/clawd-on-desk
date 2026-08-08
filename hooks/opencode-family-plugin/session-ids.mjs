@@ -26,6 +26,7 @@ export function getEventSessionInfo(event) {
     eventSessionId: null,
     infoSessionId: null,
     directory: null,
+    title: null,
   };
   if (!event || typeof event !== "object") return empty;
   const props = event.properties && typeof event.properties === "object"
@@ -37,10 +38,14 @@ export function getEventSessionInfo(event) {
   const directory = typeof info.directory === "string" && info.directory.trim()
     ? info.directory
     : null;
+  const title = typeof info.title === "string" && info.title.trim()
+    ? info.title.trim()
+    : null;
   return {
     eventSessionId: normalizeSessionText(props.sessionID) || normalizeSessionText(event.sessionID),
     infoSessionId: normalizeSessionText(info.id),
     directory,
+    title,
   };
 }
 

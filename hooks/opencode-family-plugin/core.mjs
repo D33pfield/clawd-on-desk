@@ -250,6 +250,9 @@ export function createOpencodeFamilyPlugin(config) {
   // Authoritative session directory learned from session lifecycle info.
   // Shared by every directory handler returned from this factory product.
   const _sessionDirectoryById = new Map();
+  // Authoritative session title learned from session lifecycle info.
+  // Shared by every handler returned from this factory product.
+  const _sessionTitleById = new Map();
   // Compatibility latch: old hosts that never emit info.directory keep the
   // latest-init fallback. Once this host proves it emits bindable session info,
   // a map miss omits cwd rather than forwarding a potentially stale directory.
@@ -466,17 +469,47 @@ export function createOpencodeFamilyPlugin(config) {
     return { directory: null, source: "none" };
   }
 
+  function captureSessionTitle(event) {
+    if (!event) return null;
+    switch (event.type) {
+      case "session.created":
+      case "session.updated":
+        break;
+      default:
+        return null;
+    }
+
+    const metadata = getEventSessionInfo(event);
+    const eventSessionId = normalizeSessionId(metadata.eventSessionId);
+    const infoSessionId = normalizeSessionId(metadata.infoSessionId);
+    if (eventSessionId && infoSessionId && eventSessionId !== infoSessionId) {
+      return null;
+    }
+
+    const sessionId = infoSessionId || eventSessionId;
+    if (!sessionId) return null;
+    if (!metadata.title) return null;
+
+    _sessionTitleById.set(sessionId, metadata.title);
+    debugLog(`SESSION_TITLE capture session=${sessionId} title="${metadata.title}"`);
+    return sessionId;
+  }
+
   function cleanupSessionDirectory(event, phase) {
     if (!event || typeof event.type !== "string") return;
 
     if (event.type === "server.instance.disposed" && phase === "before-send") {
       _sessionDirectoryById.clear();
+      _sessionTitleById.clear();
       return;
     }
 
     if (event.type === "session.deleted" && phase === "after-send") {
       const normalized = normalizeSessionId(getEventSessionId(event));
-      if (normalized) _sessionDirectoryById.delete(normalized);
+      if (normalized) {
+        _sessionDirectoryById.delete(normalized);
+        _sessionTitleById.delete(normalized);
+      }
     }
   }
 
@@ -573,6 +606,13 @@ export function createOpencodeFamilyPlugin(config) {
     if (isChildSessionId(clawdSessionId, _sessionParentById)) {
       body.headless = true;
     }
+    // Session title from OpenCode's own session-info title field. Mirrors the
+    // pattern used by other agents (clawd-hook, workbuddy-hook) that
+    // include session_title in their state POST body. The server reads
+    // this and stores it as sessionTitle, which sessionDisplayTitle()
+    // then uses before falling back to path.basename(cwd).
+    const sessionTitle = _sessionTitleById.get(clawdSessionId);
+    if (sessionTitle) body.session_title = sessionTitle;
     return body;
   }
 
@@ -675,10 +715,12 @@ export function createOpencodeFamilyPlugin(config) {
     buildStateBody,
     translateEvent,
     captureSessionDirectory,
+    captureSessionTitle,
     resolveSessionDirectory,
     cleanupSessionDirectory,
     get _sessionParentById() { return _sessionParentById; },
     get _sessionDirectoryById() { return _sessionDirectoryById; },
+    get _sessionTitleById() { return _sessionTitleById; },
     get _hostEmitsSessionInfo() { return _hostEmitsSessionInfo; },
     get _rootSessionId() { return _rootSessionId; },
     set _rootSessionId(v) { _rootSessionId = v; },
@@ -879,6 +921,7 @@ export function createOpencodeFamilyPlugin(config) {
           // not map to a Clawd state and info-only deleted events need its id.
           cleanupSessionDirectory(event, "before-send");
           captureSessionDirectory(event);
+          captureSessionTitle(event);
 
           if (sid && !_rootSessionId) {
             _rootSessionId = sid;
