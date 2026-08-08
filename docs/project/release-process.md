@@ -90,7 +90,7 @@ Required all-platform checks:
   profile does not reopen it.
 - Existing macOS users keep their previous Dock setting after upgrade; fresh
   macOS installs default to pet + menu-bar accessory with no Dock tile.
-- Settings -> General / Agents / Animation & Sound render correctly in all five
+- Settings -> General / Agents / Animation & Sound render correctly in all supported
   languages, including sidebar SVG icons and the folded Animation Map subtab.
 - Settings -> About contributors include the six v0.14.0 first-time
   contributors: `LinYsssss`, `He-wei-gui`, `liugou27`, `YOOGOMJA`,

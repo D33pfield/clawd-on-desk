@@ -5102,7 +5102,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("bubbleSecondsPrefix"));
   });
 
-  it("renders the opt-in test-result reaction switch with all six translations", () => {
+  it("renders the opt-in test-result reaction switch with all supported translations", () => {
     const harness = loadGeneralTabForTest({
       snapshot: makeGeneralSnapshot({ testReactionsEnabled: false }),
     });
@@ -5116,7 +5116,9 @@ describe("settings renderer browser environment", () => {
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
     for (const key of ["rowTestReactions", "rowTestReactionsDesc"]) {
       const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
-      assert.strictEqual(matches && matches.length, 6, `${key} should appear in all 6 languages`);
+      const matchCount = matches ? matches.length : 0;
+      assert.strictEqual(matchCount, SUPPORTED_LANGS.length,
+        `${key} should appear in all ${SUPPORTED_LANGS.length} supported languages`);
     }
   });
 
@@ -5137,7 +5139,9 @@ describe("settings renderer browser environment", () => {
       "roamMovementAxis",
     ]) {
       const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
-      assert.strictEqual(matches && matches.length, 6, `${key} should appear in all 6 languages`);
+      const matchCount = matches ? matches.length : 0;
+      assert.strictEqual(matchCount, SUPPORTED_LANGS.length,
+        `${key} should appear in all ${SUPPORTED_LANGS.length} supported languages`);
     }
 
     const updateCalls = [];
@@ -5302,7 +5306,7 @@ describe("settings renderer browser environment", () => {
     // The command is registered in settings-actions.
     assert.ok(actionsSource.includes('"sessionCleanup.setTriple": setSessionCleanupTriple'));
 
-    // i18n keys present in all five languages.
+    // i18n keys present in all supported languages.
     for (const key of [
       "rowSessionCleanupGroup",
       "rowSessionCleanupGroupDesc",
@@ -5318,7 +5322,9 @@ describe("settings renderer browser environment", () => {
       "actionResetSessionCleanup",
     ]) {
       const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
-      assert.ok(matches && matches.length >= 5, `${key} should appear in all 5 language tables (saw ${matches ? matches.length : 0})`);
+      const matchCount = matches ? matches.length : 0;
+      assert.strictEqual(matchCount, SUPPORTED_LANGS.length,
+        `${key} should appear in all ${SUPPORTED_LANGS.length} supported language tables (saw ${matchCount})`);
     }
   });
 
