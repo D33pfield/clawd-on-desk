@@ -9,6 +9,7 @@ const createAgentRuntimeMain = require("../src/agent-runtime-main");
 const CodexSubagentClassifier = require("../agents/codex-subagent-classifier");
 const { resolveCodexOfficialHookState } = require("../src/server-codex-official-turns");
 const { makeSessionKey } = require("../src/session-key");
+const { digestCodexTurnId } = require("../src/codex-turn-id");
 
 const SRC_DIR = path.join(__dirname, "..", "src");
 const localSessionKey = (rawSessionId) => makeSessionKey({
@@ -86,6 +87,44 @@ describe("agent-runtime-main", () => {
       runtime.shouldSuppressCodexLogEvent("codex-1", "working", "event_msg:guardian_assessment"),
       false
     );
+  });
+
+  it("records privacy-safe local cross-channel turn identity diagnostics", () => {
+    const instances = [];
+    const debugLines = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      isAgentEnabled: () => true,
+      updateSession: () => {},
+      debugLog: (line) => debugLines.push(line),
+      codexSubagentClassifier: {},
+    });
+    const monitor = runtime.startCodexLogMonitor();
+    const sessionId = localSessionKey("codex:abc");
+    const turnId = "019fffff-1111-7777-8888-123456789abc";
+
+    runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", {
+      agentId: "codex",
+      hookSource: "codex-official",
+      profileId: "local",
+      turnId,
+    });
+    monitor.emit("codex:abc", "thinking", "event_msg:task_started", { turnId });
+    runtime.updateSessionFromServer(sessionId, "idle", "Stop", {
+      agentId: "codex",
+      hookSource: "codex-official",
+      profileId: "remote-box",
+      turnId: "must-not-log",
+    });
+
+    const digest = digestCodexTurnId(turnId);
+    assert.deepStrictEqual(debugLines, [
+      `codex-turn-id sid=${sessionId} source=official event=UserPromptSubmit turn=${digest}`,
+      `codex-turn-id sid=${sessionId} source=jsonl event=event_msg:task_started turn=${digest}`,
+    ]);
+    assert.strictEqual(debugLines.some((line) => line.includes(turnId)), false);
   });
 
   it("routes suppressed JSONL context through no-lifecycle session metadata", () => {
@@ -196,17 +235,17 @@ describe("agent-runtime-main", () => {
   it("handles JSONL token_count as metadata without clearing bubbles or changing state", () => {
     const instances = [];
     const calls = [];
-    const FakeMonitor = makeFakeMonitorClass(instances);
     const metadataCalls = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
     const runtime = createAgentRuntimeMain({
       loadCodexLogMonitor: () => FakeMonitor,
       loadCodexAgent: () => ({ id: "codex" }),
       isAgentEnabled: (agentId) => agentId === "codex",
       updateSession: (...args) => calls.push(["update", ...args]),
-      clearCodexNotifyBubbles: (...args) => calls.push(["clear", ...args]),
       getStateRuntime: () => ({
         updateSessionMetadata: (...args) => metadataCalls.push(args),
       }),
+      clearCodexNotifyBubbles: (...args) => calls.push(["clear", ...args]),
       codexSubagentClassifier: {},
     });
     const monitor = runtime.startCodexLogMonitor();
@@ -683,5 +722,171 @@ describe("agent-runtime-main", () => {
       sessionTitle: "Codex turn",
     });
     assert.deepStrictEqual(calls, []);
+  });
+
+  it("fences a late official tail after a JSONL terminal and immediately admits turn B", () => {
+    const instances = [];
+    const updates = [];
+    const clears = [];
+    const sessions = new Map();
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      getStateRuntime: () => ({ sessions }),
+      updateSession: (...args) => updates.push(args),
+      clearCodexNotifyBubbles: (...args) => clears.push(args),
+    });
+    const monitor = runtime.startCodexLogMonitor();
+    const sessionId = localSessionKey("codex:s1");
+    const official = (state, event, turnId) => runtime.updateSessionFromServer(sessionId, state, event, {
+      agentId: "codex",
+      hookSource: "codex-official",
+      profileId: "local",
+      rawSessionId: "codex:s1",
+      turnId,
+    });
+
+    official("thinking", "UserPromptSubmit", "A");
+    monitor.emit("codex:s1", "idle", "event_msg:turn_aborted", { turnId: "A" });
+    assert.strictEqual(official("working", "PostToolUse", "A"), false);
+    assert.deepStrictEqual(updates.map((call) => [call[1], call[2]]), [
+      ["thinking", "UserPromptSubmit"],
+      ["idle", "event_msg:turn_aborted"],
+    ]);
+
+    assert.notStrictEqual(official("thinking", "UserPromptSubmit", "B"), false);
+    assert.notStrictEqual(official("working", "PreToolUse", "B"), false);
+    assert.deepStrictEqual(updates.slice(-2).map((call) => [call[1], call[2]]), [
+      ["thinking", "UserPromptSubmit"],
+      ["working", "PreToolUse"],
+    ]);
+
+    // A fenced JSONL tail is rejected before notification bubbles are cleared.
+    const clearCount = clears.length;
+    monitor.emit("codex:s1", "working", "response_item:function_call", { turnId: "A" });
+    assert.strictEqual(clears.length, clearCount);
+  });
+
+  it("applies one completion for official Stop plus duplicate JSONL terminal", () => {
+    const instances = [];
+    const updates = [];
+    const sessions = new Map();
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      getStateRuntime: () => ({ sessions }),
+      updateSession: (...args) => updates.push(args),
+    });
+    const monitor = runtime.startCodexLogMonitor();
+    const sessionId = localSessionKey("codex:s1");
+    const opts = {
+      agentId: "codex",
+      hookSource: "codex-official",
+      profileId: "local",
+      turnId: "A",
+    };
+    runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", opts);
+    runtime.updateSessionFromServer(sessionId, "attention", "Stop", opts);
+    sessions.set(sessionId, { agentId: "codex", state: "attention" });
+    monitor.emit("codex:s1", "attention", "event_msg:task_complete", { turnId: "A" });
+
+    assert.deepStrictEqual(updates.map((call) => call[2]), ["UserPromptSubmit", "Stop"]);
+  });
+
+  it("keeps official suppression turn-aware while retaining ID-less compatibility", () => {
+    const runtime = createAgentRuntimeMain({ codexSubagentClassifier: {} });
+    runtime.markCodexOfficialHookSession("codex:s1", "A");
+    assert.strictEqual(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "working", "response_item:function_call", "A"),
+      true
+    );
+    assert.strictEqual(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "working", "response_item:function_call", "B"),
+      false
+    );
+    assert.strictEqual(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "working", "response_item:function_call", null),
+      true
+    );
+    runtime.markCodexOfficialHookSession("codex:s1", null);
+    assert.strictEqual(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "working", "response_item:function_call", "B"),
+      true
+    );
+  });
+
+  it("keeps exact JSONL completion rescue and distinct-turn fallback working", () => {
+    const instances = [];
+    const updates = [];
+    const sessions = new Map();
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      getStateRuntime: () => ({ sessions }),
+      updateSession: (...args) => updates.push(args),
+    });
+    const monitor = runtime.startCodexLogMonitor();
+    const sessionId = localSessionKey("codex:s1");
+    const official = (state, event, turnId) => runtime.updateSessionFromServer(sessionId, state, event, {
+      agentId: "codex",
+      hookSource: "codex-official",
+      profileId: "local",
+      turnId,
+    });
+
+    official("thinking", "UserPromptSubmit", "A");
+    sessions.set(sessionId, { agentId: "codex", state: "working", host: null, headless: false });
+    monitor.emit("codex:s1", "attention", "event_msg:task_complete", { turnId: "A" });
+    assert.deepStrictEqual(updates.map((call) => call[2]), ["UserPromptSubmit", "event_msg:task_complete"]);
+
+    // A late official tail refreshes only A's exact suppression mark. B's
+    // fallback start and work remain visible if its official hooks are absent.
+    official("working", "PostToolUse", "A");
+    monitor.emit("codex:s1", "thinking", "event_msg:task_started", { turnId: "B" });
+    monitor.emit("codex:s1", "working", "response_item:function_call", { turnId: "B" });
+    assert.deepStrictEqual(updates.slice(-2).map((call) => call[2]), [
+      "event_msg:task_started",
+      "response_item:function_call",
+    ]);
+  });
+
+  it("bypasses the local fence for remote official hooks and resets tracking on Codex clear", () => {
+    const updates = [];
+    const clearCalls = [];
+    const runtime = createAgentRuntimeMain({
+      codexSubagentClassifier: {},
+      updateSession: (...args) => updates.push(args),
+      getStateRuntime: () => ({
+        clearSessionsByAgent: (...args) => { clearCalls.push(args); return 1; },
+      }),
+    });
+
+    const remoteOpts = {
+      agentId: "codex",
+      hookSource: "codex-official",
+      profileId: "remote-box",
+      turnId: "A",
+    };
+    runtime.updateSessionFromServer("remote-session", "idle", "Stop", remoteOpts);
+    runtime.updateSessionFromServer("remote-session", "working", "PostToolUse", remoteOpts);
+    assert.deepStrictEqual(updates.map((call) => call[2]), ["Stop", "PostToolUse"]);
+
+    const localOpts = { ...remoteOpts, profileId: "local" };
+    runtime.updateSessionFromServer("local-session", "idle", "Stop", localOpts);
+    assert.ok(runtime.getCodexTurnFenceSnapshot("local-session"));
+    assert.ok(runtime.getCodexOfficialActivitySnapshot("local-session"));
+    assert.strictEqual(runtime.clearSessionsByAgent("codex"), 1);
+    assert.strictEqual(runtime.getCodexTurnFenceSnapshot("local-session"), null);
+    assert.strictEqual(runtime.getCodexOfficialActivitySnapshot("local-session"), null);
+    assert.deepStrictEqual(clearCalls, [["codex"]]);
   });
 });
