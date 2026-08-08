@@ -1574,7 +1574,7 @@ function createPetWindowRuntime(options = {}) {
       && hasCompletePhysicalDisplayTopology(displays, physicalPrimaryBounds);
     const margins = getVisibleContentMargins({ x, y, width: w, height: h });
     const bottomInset = usePhysicalBounds
-      ? null
+      ? 0
       : getNearestDisplayBottomInset(x + w / 2, y + h / 2);
     return computeLooseClamp(
       usePhysicalBounds ? projectDisplaysToPhysicalBounds(displays) : displays,
@@ -1632,7 +1632,7 @@ function createPetWindowRuntime(options = {}) {
       : null;
     const clampArea = physicalBounds || nearestWorkArea;
     const bottomInset = physicalBounds
-      ? null
+      ? 0
       : getNearestDisplayBottomInset(insetProbeX, insetProbeY);
     const mLeft = Math.round(w * 0.25);
     const mRight = Math.round(w * 0.25);

@@ -232,10 +232,10 @@ describe("macOS physical edge pinning (#241)", () => {
     const rest = runtime.clampToScreenVisual(200, 10_000, 205, 205);
     const drag = runtime.looseClampPetToDisplays(200, 10_000, 205, 205);
 
-    // Physical bottom 1107, window 205, 25% edge overflow 51.
-    assert.equal(rest.y, 953);
-    assert.equal(drag.y, 953);
-    assert.equal(rest.y + 205, 1158);
+    // Cross the 90px Dock inset, but keep the window on the physical display.
+    assert.equal(rest.y, 902);
+    assert.equal(drag.y, 902);
+    assert.equal(rest.y + 205, 1107);
   });
 
   it("keeps the work-area-safe rest clamp when macOS edge pinning is disabled", () => {
@@ -250,7 +250,7 @@ describe("macOS physical edge pinning (#241)", () => {
     assert.equal(rest.y, 812, "workArea bottom 1017 minus the 205px window");
   });
 
-  it("keeps the full bottom edge overflow when the Dock is hidden", () => {
+  it("aligns with the physical bottom when the Dock is hidden", () => {
     const display = {
       id: 1,
       bounds: { x: 0, y: 0, width: 1000, height: 800 },
@@ -263,8 +263,8 @@ describe("macOS physical edge pinning (#241)", () => {
       displays: [display],
     });
 
-    assert.equal(runtime.clampToScreenVisual(0, 10_000, 200, 200).y, 650);
-    assert.equal(runtime.looseClampPetToDisplays(0, 10_000, 200, 200).y, 650);
+    assert.equal(runtime.clampToScreenVisual(0, 10_000, 200, 200).y, 600);
+    assert.equal(runtime.looseClampPetToDisplays(0, 10_000, 200, 200).y, 600);
   });
 
   it("honors a call-site edge-pinning override instead of the global macOS setting", () => {
@@ -300,7 +300,7 @@ describe("macOS physical edge pinning (#241)", () => {
     );
     assert.deepStrictEqual(
       runtime.clampToScreenVisual(10_000, 10_000, 200, 200),
-      { x: 950, y: 700 },
+      { x: 950, y: 650 },
     );
   });
 
@@ -403,7 +403,7 @@ describe("macOS physical edge pinning (#241)", () => {
       runtime.clampToScreenVisual(10_000, 10_000, 200, 200, {
         workArea: displays[1].workArea,
       }),
-      { x: 2050, y: 750 },
+      { x: 2050, y: 700 },
     );
   });
 
@@ -578,7 +578,7 @@ describe("macOS physical edge pinning (#241)", () => {
       getNearestWorkArea: () => primary.workArea,
     });
 
-    assert.equal(runtime.looseClampPetToDisplays(0, 10_000, 200, 200).y, 650);
+    assert.equal(runtime.looseClampPetToDisplays(0, 10_000, 200, 200).y, 600);
   });
 });
 
