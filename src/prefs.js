@@ -39,6 +39,10 @@ const {
   normalizeFeishuApproval,
 } = require("./feishu-approval-settings");
 const {
+  cloneDefaultSlackNotify,
+  normalizeSlackNotify,
+} = require("./slack-notify-settings");
+const {
   NOTIFICATION_DEFAULT_SECONDS,
   UPDATE_DEFAULT_SECONDS,
   PERMISSION_DEFAULT_SECONDS,
@@ -443,6 +447,11 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => cloneDefaultFeishuApproval(),
     normalize: normalizeFeishuApproval,
+  },
+  slackNotify: {
+    type: "object",
+    defaultFactory: () => cloneDefaultSlackNotify(),
+    normalize: normalizeSlackNotify,
   },
   // v0.9.0 migration state. transport defaults to null (undecided) so v0.8.x
   // users upgrading without this key fall onto the "detect legacy artefacts"

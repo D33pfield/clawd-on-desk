@@ -1186,6 +1186,7 @@ function notifyPermissionResolved(permEntry, reason) {
 
 function addPendingPermission(permEntry, reason = "added") {
   pendingPermissions.push(permEntry);
+  announceSlackPermission(permEntry);
   notifyPermissionsChanged(reason);
   return permEntry;
 }
@@ -1519,6 +1520,36 @@ function buildRemoteApprovalPayload(permEntry) {
   };
   if (suggestionButtons.length > 0) payload.suggestions = suggestionButtons;
   return payload;
+}
+
+// One-way Slack heads-up when a new, human-actionable permission request appears.
+// Fires once per entry (guarded) and independently of whether an interactive
+// remote channel (Telegram/Feishu) is connected — Slack cannot resolve the
+// approval itself in this build, so it only announces "something needs you in the
+// desktop app". Best-effort: never throws into the caller's sync path.
+function announceSlackPermission(permEntry) {
+  if (typeof ctx.notifySlackPermission !== "function") return;
+  if (!permEntry || permEntry._slackPermissionAnnounced) return;
+  if (!isRemoteApprovalActionable(permEntry)) return;
+  permEntry._slackPermissionAnnounced = true;
+  try {
+    const agentId = compactRemoteApprovalText(permEntry.agentId || "claude-code", 80) || "claude-code";
+    const toolName = compactRemoteApprovalText(permEntry.toolName || t("approvalUnknownTool"), 80) || t("approvalUnknownTool");
+    const session = ctx.sessions.get(permEntry.sessionId);
+    const folder = compactRemoteApprovalText(
+      basenameForDisplay((session && session.cwd) || permEntry.cwd || ""),
+      80
+    );
+    ctx.notifySlackPermission({
+      title: interpolate(interpolate(t("approvalRequestsTitle"), "{agent}", agentId), "{tool}", toolName),
+      toolName,
+      agentId,
+      folder,
+      summary: buildRemoteApprovalSummary(permEntry),
+    });
+  } catch (err) {
+    permLog(`slack permission announce failed: ${err && err.message ? err.message : err}`);
+  }
 }
 
 function normalizeRemoteApprovalDecision(decision) {

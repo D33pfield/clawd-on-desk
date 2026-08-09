@@ -117,6 +117,8 @@ const { createDiscordPresenceBridge } = require("./discord-presence-rpc");
 const { resolveAgentDisplayName } = require("./agent-display-name");
 const { FeishuApprovalClient } = require("./feishu-approval-client");
 const feishuApprovalSettings = require("./feishu-approval-settings");
+const { createSlackNotifyClient } = require("./slack-notify-client");
+const slackNotifySettings = require("./slack-notify-settings");
 const {
   buildTelegramApprovalStatus,
   isNativeTelegramApprovalSelected,
@@ -410,6 +412,10 @@ let feishuApprovalSyncPromise = Promise.resolve();
 let feishuApprovalConfigSignature = "";
 let feishuSessionAutomationRouteSignature = "";
 let feishuApprovalSecretsRevision = 0;
+// One-way Slack notifier. Stateless (webhook / chat.postMessage), so unlike the
+// Feishu client there is no connection to restart — it is created once and reads
+// current prefs/secrets on each send.
+let slackNotifyClient = null;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
 };
@@ -478,6 +484,10 @@ const _settingsController = createSettingsController({
     getFeishuApprovalStatus: () => getFeishuApprovalStatus(),
     getFeishuApprovalSecretInfo: () => getFeishuApprovalSecretInfo(),
     sendFeishuApprovalTest: () => sendFeishuApprovalTest(),
+    writeSlackNotifySecrets: (secrets) => writeSlackNotifySecrets(secrets),
+    getSlackNotifyStatus: () => getSlackNotifyStatus(),
+    getSlackNotifySecretInfo: () => getSlackNotifySecretInfo(),
+    sendSlackNotifyTest: () => sendSlackNotifyTest(),
     // Lazy getter so settings-actions can use the controller even though it's
     // instantiated below (forward-reference).
     get telegramMigration() {
@@ -1637,6 +1647,15 @@ const _permCtx = {
     if (!_state || typeof _state.clearPermissionNotification !== "function") return;
     _state.clearPermissionNotification(permEntry && permEntry.sessionId, options);
   },
+  // Best-effort, read-only "permission needed" heads-up to Slack. Slack cannot
+  // resolve the approval in this build (webhook is one-way), so this only
+  // announces — the desktop bubble / other channels still own the decision.
+  notifySlackPermission: (payload) => {
+    const client = getSlackNotifyClient();
+    if (client && typeof client.notifyPermissionRequest === "function") {
+      try { client.notifyPermissionRequest(payload); } catch {}
+    }
+  },
 };
 const _perm = initPermission(_permCtx);
 const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, isPermissionEntryLive, canAutoResolvePendingPermission, beginSessionTrustConfirmation, endSessionTrustConfirmation, syncPermissionBubbleContent, maybeStartRemoteApproval, clearCodexNotifyBubbles, showCodexUserInputBubble, clearCodexUserInputBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodeFamilyPermission } = _perm;
@@ -1825,6 +1844,9 @@ const _stateCtx = {
     if (telegramCompanion) {
       try { telegramCompanion.onSnapshot(snapshot); } catch {}
     }
+    // Slack completion pings ride the same fanout; the client dedupes internally
+    // and fires sends async, so this never throws or blocks the broadcast.
+    try { getSlackNotifyClient().onSnapshot(snapshot); } catch {}
     if (discordPresenceBridge) {
       try { discordPresenceBridge.onSnapshot(snapshot); } catch {}
     }
@@ -2854,6 +2876,117 @@ async function sendFeishuApprovalTest() {
     return { status: "error", code: "card-send-failed", message: err && err.message ? err.message : String(err) };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+// --- Slack notifications (one-way) -----------------------------------------
+// Webhook / chat.postMessage are stateless HTTP, so there is no client to
+// restart on config change: the singleton reads current prefs+secrets lazily on
+// each send, and writing secrets just changes what the next read sees.
+function slackNotifyLog(level, message, meta = {}) {
+  const parts = [`slack notify ${level}: ${message}`];
+  if (meta && meta.errorClass) parts.push(`errorClass=${String(meta.errorClass).trim()}`);
+  if (meta && meta.error) parts.push(String(meta.error).trim());
+  if (meta && meta.id) parts.push(`id=${String(meta.id).trim()}`);
+  const config = getSlackNotifyPrefs();
+  const secrets = getSlackNotifySecrets();
+  const redactionSecrets = slackNotifySettings.redactionSecretsForSlackNotify(config, secrets);
+  for (const secret of redactionSecrets) {
+    if (!secret) continue;
+    for (let i = 0; i < parts.length; i += 1) {
+      parts[i] = String(parts[i]).split(String(secret)).join("<redacted>");
+    }
+  }
+  permLog(parts.filter(Boolean).join(" | "));
+}
+
+function getSlackNotifyPrefs() {
+  return slackNotifySettings.normalizeSlackNotify(_settingsController.get("slackNotify"));
+}
+
+// Canonical path only — no env-var override, mirroring the Feishu/Telegram
+// secret writers so a stray env var cannot redirect where the webhook lands.
+function getSlackNotifyPaths() {
+  const userDataDir = app.getPath("userData");
+  return {
+    userDataDir,
+    secretsEnvFilePath: slackNotifySettings.defaultSecretsEnvFilePath(userDataDir),
+  };
+}
+
+function getSlackNotifySecrets() {
+  const paths = getSlackNotifyPaths();
+  return slackNotifySettings.readSecretsEnvFile({ fs, filePath: paths.secretsEnvFilePath });
+}
+
+function getSlackNotifySecretInfo() {
+  const paths = getSlackNotifyPaths();
+  return slackNotifySettings.readMaskedSecrets({ fs, filePath: paths.secretsEnvFilePath });
+}
+
+function getSlackNotifyStatus() {
+  const config = getSlackNotifyPrefs();
+  const secrets = getSlackNotifySecrets();
+  const ready = slackNotifySettings.readiness(config, secrets);
+  return {
+    enabled: config.enabled === true,
+    configured: ready.ready === true,
+    reason: ready.ready ? "ready" : (ready.reason || ""),
+    message: ready.message || "",
+    transport: ready.transport || null,
+    notifyOnDone: config.notifyOnDone === true,
+    notifyOnError: config.notifyOnError === true,
+    notifyOnPermission: config.notifyOnPermission === true,
+    outputMode: config.outputMode,
+    secretsStored: !!(secrets.webhookUrl || secrets.botToken),
+    webhookConfigured: !!secrets.webhookUrl,
+    botTokenConfigured: !!secrets.botToken,
+  };
+}
+
+function broadcastSlackNotifyStatus() {
+  broadcastSettingsWindow("remoteApproval:status-changed", {
+    channel: "slack",
+    status: getSlackNotifyStatus(),
+  });
+}
+
+function writeSlackNotifySecrets(secrets) {
+  const paths = getSlackNotifyPaths();
+  const result = slackNotifySettings.writeSecretsEnvFile({
+    fs,
+    path,
+    filePath: paths.secretsEnvFilePath,
+    secrets,
+    platform: process.platform,
+  });
+  if (result && result.status === "ok") {
+    broadcastSlackNotifyStatus();
+  }
+  return result;
+}
+
+function getSlackNotifyClient() {
+  if (!slackNotifyClient) {
+    slackNotifyClient = createSlackNotifyClient({
+      getConfig: () => getSlackNotifyPrefs(),
+      getSecrets: () => getSlackNotifySecrets(),
+      getLang: () => _settingsController.get("lang") || lang || "en",
+      log: slackNotifyLog,
+    });
+  }
+  return slackNotifyClient;
+}
+
+async function sendSlackNotifyTest() {
+  const client = getSlackNotifyClient();
+  if (!client || typeof client.sendTest !== "function") {
+    return { status: "error", code: "not-running", message: "Slack notifier is not available" };
+  }
+  try {
+    return await client.sendTest();
+  } catch (err) {
+    return { status: "error", code: "threw", message: err && err.message ? err.message : String(err) };
   }
 }
 

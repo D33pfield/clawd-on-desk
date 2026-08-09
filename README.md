@@ -78,6 +78,10 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 - **Auto-dismiss** — if you answer in the terminal first, the bubble disappears automatically
 - **Per-agent toggle** — open `Settings…` → `Agents`, pick an agent, and turn off `Show pop-up bubbles` to keep prompts in that agent's own terminal/TUI
 
+### Remote Notifications
+- **Telegram / Feishu (Lark)** — interactive remote approval: route permission requests to your phone and Allow/Deny them without touching the desktop
+- **Slack** — one-way notifications for task **done**, **errors**, and **permission requests** via a Slack Incoming Webhook (or an optional bot token + channel id). Messages are rich Block Kit cards with emoji; because a webhook is one-way, permission requests are *announced* (approve in the desktop app). Configure it next to Telegram/Feishu in the remote approval channels; secrets are stored locally in a `0600` env file, never in plain prefs, and everything degrades gracefully when unconfigured or offline
+
 ### Session Intelligence
 - **Multi-session tracking** — sessions across all agents resolve to the highest-priority state
 - **Subagent awareness** — headphones groove for 1 subagent, three-ball juggling for 2+
