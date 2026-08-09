@@ -1834,6 +1834,91 @@ describe("roam fence (#810)", () => {
     assert.equal(ctx._appliedBounds.length, 0, "no walk may start");
   });
 
+  it("full-range fence does not revive an impossible parent margin band", () => {
+    // 200x200 work area, 150x150 pet: the historical 15% band is [30,20]
+    // on both axes and therefore has no target. Round-4 edge fallback must
+    // not mistake that parent condition for a conflict with a full-range
+    // fence and enable the adaptive fenced hop.
+    mock.method(Math, "random", () => 0.9);
+    const pixelEquivalentFull = {
+      active: true,
+      left: 0.001,
+      top: 0.001,
+      right: 0.999,
+      bottom: 0.999,
+    };
+    for (const fenceState of [undefined, FULL, pixelEquivalentFull]) {
+      const ctx = fenceCtx(fenceState, {
+        getNearestWorkArea: () => ({ x: 0, y: 0, width: 200, height: 200 }),
+      });
+      ctx._bounds.width = 150;
+      ctx._bounds.height = 150;
+      ctx._realBounds.width = 150;
+      ctx._realBounds.height = 150;
+      placePet(ctx, 25, 25);
+      const roam = roamModule(ctx);
+      roam.setEnabled(true);
+      roam.tick();
+      mock.timers.tick(8000);
+      mock.timers.tick(8000);
+      assert.equal(
+        ctx._appliedBounds.length,
+        0,
+        fenceState
+          ? "pixel-full fence must preserve parent hold"
+          : "parent holds",
+      );
+    }
+  });
+
+  it("full-range fence recovers an outside large cross-display pet", () => {
+    // A keep-size pet carried from a larger display can occupy >70% of a
+    // smaller work area, making both historical 15% margin intervals
+    // impossible. Contained pets must keep the parent hold above, but an
+    // outside pet still needs the documented one-walk fence recovery. The
+    // near-full fractions round to the exact same realized pixel rectangle.
+    mock.method(Math, "random", () => 0.9);
+    const pixelEquivalentFull = {
+      active: true,
+      left: 0.0001,
+      top: 0.0001,
+      right: 0.9999,
+      bottom: 0.9999,
+    };
+    for (const fenceState of [FULL, pixelEquivalentFull]) {
+      for (const constrainAxis of [false, true]) {
+        const ctx = fenceCtx(fenceState, {
+          getNearestWorkArea: () => ({ x: 0, y: 0, width: 1000, height: 800 }),
+        });
+        ctx._bounds.width = 750;
+        ctx._bounds.height = 750;
+        ctx._realBounds.width = 750;
+        ctx._realBounds.height = 750;
+        placePet(ctx, -20, 25); // X outside; Y already contained in [0,50]
+        const roam = roamModule(ctx);
+        roam.setEnabled(true);
+        roam.setConstrainAxis(constrainAxis);
+        runOneWalk(ctx, roam);
+        assert.ok(
+          ctx._appliedBounds.length > 0,
+          `outside pixel-full fence must recover (axis=${constrainAxis})`,
+        );
+        const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
+        assertWithinFencePixels(
+          last,
+          { left: 0, top: 0, right: 1000, bottom: 800 },
+          `recovered window (axis=${constrainAxis})`,
+        );
+        if (constrainAxis) {
+          for (const b of ctx._appliedBounds) {
+            assert.equal(b.y, 25, "axis recovery keeps Y fixed on every frame");
+          }
+        }
+        roam.setEnabled(false);
+      }
+    }
+  });
+
   it("inactive fence picks the same target as no loader at all", () => {
     mock.method(Math, "random", () => 0.9);
     const runs = [];

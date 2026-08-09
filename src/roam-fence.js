@@ -20,11 +20,11 @@
 // edge a finite number with 0 <= left < right <= 1 and 0 <= top < bottom <= 1.
 // Strings that would coerce through Number() are rejected.
 //
-// Live-update timing: roam calls refresh() when it ARMS the pause before a
-// walk, so an edit lands in the cache for the next walk planned after it. A
-// walk whose pause was already armed when the edit happened still uses the
-// previous fence; the change applies from the following walk (one pause
-// later, ~4–8s). No restart needed.
+// Live-update timing: roam starts refresh() when it ARMS the pause before a
+// walk. Because that read is asynchronous, a save around or after arming may
+// affect the pending walk if the in-flight refresh observes it; otherwise the
+// cached fence remains and a later scheduled refresh retries. Wall-clock delay
+// therefore has no fixed guarantee. No restart needed.
 //
 // Failure semantics (never fail open — PR #810 review, pass 3):
 //   • before the first confirmed read      → status UNKNOWN (get() returns
@@ -82,20 +82,24 @@ function parseFence(raw) {
 
 // deps are injectable for tests:
 //   { readFile: async (path) => string, stat: async (path) => fs.Stats-like,
+//     openFile: async (path, flags) => fs.promises.FileHandle-like,
 //     warn: (message) => void, filePath }
 // When readFile is injected without stat, the stat guard is skipped — unit
 // tests feed content directly and must not hit the real filesystem.
 module.exports = function createRoamFenceLoader(deps = {}) {
   const readFile = deps.readFile || null;
   const statFile = deps.stat || null;
+  const fs = require("fs");
+  const openFile = deps.openFile || ((...args) => fs.promises.open(...args));
   // Production reader: ONE file handle — open (non-blocking, so opening a
   // FIFO cannot hang), fstat the handle (no stat/read TOCTOU), bounded read
-  // of at most MAX+1 bytes, close in finally. Injected readFile/stat deps
-  // (tests) replace this path entirely.
+  // of at most MAX+1 bytes, close in finally. Injected readFile/stat or
+  // openFile deps let tests exercise either path without touching real files.
   const readFenceBounded = async (p) => {
-    const fs = require("fs");
-    const fh = await fs.promises.open(
-      p, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    const fh = await openFile(
+      p,
+      fs.constants.O_RDONLY | fs.constants.O_NONBLOCK,
+    );
     try {
       const st = await fh.stat();
       if (!st.isFile()) {
@@ -104,15 +108,43 @@ module.exports = function createRoamFenceLoader(deps = {}) {
         e.guardReason = "not a regular file";
         throw e;
       }
-      const buf = Buffer.alloc(MAX_FENCE_FILE_BYTES + 1);
-      const { bytesRead } = await fh.read(buf, 0, MAX_FENCE_FILE_BYTES + 1, 0);
-      if (bytesRead > MAX_FENCE_FILE_BYTES || st.size > MAX_FENCE_FILE_BYTES) {
+      if (st.size > MAX_FENCE_FILE_BYTES) {
         const e = new Error("file too large");
         e.code = "EFENCEGUARD";
         e.guardReason = `file larger than ${MAX_FENCE_FILE_BYTES} bytes`;
         throw e;
       }
-      return buf.toString("utf8", 0, bytesRead);
+      const buf = Buffer.alloc(MAX_FENCE_FILE_BYTES + 1);
+      let total = 0;
+      while (total < buf.length) {
+        const { bytesRead } = await fh.read(
+          buf,
+          total,
+          buf.length - total,
+          total,
+        );
+        // FileHandle.read() may legally return fewer bytes than requested.
+        // Only a zero-byte read confirms EOF for an unmodified regular file.
+        if (bytesRead === 0) break;
+        total += bytesRead;
+      }
+      // Re-stat the same handle after reaching EOF. The bounded read catches
+      // growth observed while reading; the second stat also catches growth
+      // that landed after the EOF read but before classification.
+      const finalSt = await fh.stat();
+      if (total > MAX_FENCE_FILE_BYTES || finalSt.size > MAX_FENCE_FILE_BYTES) {
+        const e = new Error("file too large");
+        e.code = "EFENCEGUARD";
+        e.guardReason = `file larger than ${MAX_FENCE_FILE_BYTES} bytes`;
+        throw e;
+      }
+      if (finalSt.size !== st.size || finalSt.size !== total) {
+        const e = new Error("file changed while being read");
+        e.code = "EFENCEGUARD";
+        e.guardReason = "file changed while being read";
+        throw e;
+      }
+      return buf.toString("utf8", 0, total);
     } finally {
       await fh.close().catch(() => {});
     }

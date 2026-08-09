@@ -276,6 +276,150 @@ describe("roam-fence loader", () => {
   });
 });
 
+describe("roam-fence production file-handle reader (#810 maintainer follow-up)", () => {
+  it("continues short reads until EOF before parsing", async () => {
+    const raw = Buffer.from(VALID);
+    let readCalls = 0;
+    let statCalls = 0;
+    let closed = false;
+    const loader = createRoamFenceLoader({
+      openFile: async () => ({
+        stat: async () => {
+          statCalls += 1;
+          return { isFile: () => true, size: raw.length };
+        },
+        read: async (buffer, offset, length, position) => {
+          readCalls += 1;
+          const bytesRead = Math.min(5, length, raw.length - position);
+          if (bytesRead <= 0) return { bytesRead: 0, buffer };
+          raw.copy(buffer, offset, position, position + bytesRead);
+          return { bytesRead, buffer };
+        },
+        close: async () => {
+          closed = true;
+        },
+      }),
+      warn: () => {},
+      filePath: "/nonexistent/roam-area.json",
+    });
+
+    await loader.refresh();
+
+    assert.deepEqual(loader.get(), {
+      active: true,
+      left: 0.25,
+      top: 0.1,
+      right: 0.75,
+      bottom: 0.9,
+    });
+    assert.ok(readCalls > 1, "a short read must not be treated as EOF");
+    assert.equal(
+      statCalls,
+      2,
+      "the same handle is checked before and after reading",
+    );
+    assert.equal(closed, true, "the handle closes after a successful read");
+  });
+
+  it("rejects a file that grows beyond 64 KiB after the first stat", async () => {
+    const prefix = Buffer.from(JSON.stringify({ enabled: true }));
+    const grown = Buffer.concat([
+      prefix,
+      Buffer.alloc(64 * 1024 + 1 - prefix.length, 0x20),
+    ]);
+    const warnings = [];
+    let readCalls = 0;
+    let statCalls = 0;
+    let closed = false;
+    const loader = createRoamFenceLoader({
+      openFile: async () => ({
+        stat: async () => {
+          statCalls += 1;
+          return {
+            isFile: () => true,
+            size: statCalls === 1 ? prefix.length : grown.length,
+          };
+        },
+        read: async (buffer, offset, length, position) => {
+          readCalls += 1;
+          const chunkLimit = position === 0 ? prefix.length : 4096;
+          const bytesRead = Math.min(
+            chunkLimit,
+            length,
+            grown.length - position,
+          );
+          if (bytesRead <= 0) return { bytesRead: 0, buffer };
+          grown.copy(buffer, offset, position, position + bytesRead);
+          return { bytesRead, buffer };
+        },
+        close: async () => {
+          closed = true;
+        },
+      }),
+      warn: (message) => warnings.push(message),
+      filePath: "/nonexistent/roam-area.json",
+    });
+
+    await loader.refresh();
+
+    assert.equal(
+      loader.get(),
+      null,
+      "an oversized growth must not become active",
+    );
+    assert.ok(readCalls > 1, "the reader must continue after a short JSON prefix");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /larger than 65536 bytes/);
+    assert.equal(closed, true, "the handle closes after a guard failure");
+  });
+
+  it("keeps the last good fence when the file grows after EOF within the cap", async () => {
+    const stable = Buffer.from(VALID);
+    const disabledPrefix = Buffer.from(JSON.stringify({ enabled: false }));
+    const warnings = [];
+    let opens = 0;
+    const loader = createRoamFenceLoader({
+      openFile: async () => {
+        opens += 1;
+        const firstRefresh = opens === 1;
+        const raw = firstRefresh ? stable : disabledPrefix;
+        let statCalls = 0;
+        return {
+          stat: async () => {
+            statCalls += 1;
+            return {
+              isFile: () => true,
+              size: firstRefresh || statCalls === 1
+                ? raw.length
+                : raw.length + 7,
+            };
+          },
+          read: async (buffer, offset, length, position) => {
+            const bytesRead = Math.min(length, raw.length - position);
+            if (bytesRead <= 0) return { bytesRead: 0, buffer };
+            raw.copy(buffer, offset, position, position + bytesRead);
+            return { bytesRead, buffer };
+          },
+          close: async () => {},
+        };
+      },
+      warn: (message) => warnings.push(message),
+      filePath: "/nonexistent/roam-area.json",
+    });
+
+    await loader.refresh();
+    await loader.refresh();
+
+    assert.equal(
+      loader.get().active,
+      true,
+      "a stale valid prefix must not disable the last-known-good fence",
+    );
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /file changed while being read/);
+  });
+});
+
 describe("roam-fence loader round-3 (#810)", () => {
   const OLD = JSON.stringify({ enabled: true, left: 0.1, right: 0.9 });
   const NEW = JSON.stringify({ enabled: true, left: 0.4, right: 0.6 });

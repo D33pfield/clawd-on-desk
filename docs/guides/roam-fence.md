@@ -35,19 +35,24 @@ Containment is whole-window: the entire pet must fit inside the rectangle.
 A corridor exactly the pet's size is fine (the pet then only moves along the
 other axis), but a fence narrower or shorter than the pet in either dimension
 has no valid position at all — roaming stops entirely until the fence is
-enlarged, disabled, or removed. Fences placed against a screen edge work: an
-explicit fence takes precedence over the default keep-away-from-the-edges
-margin whenever the two conflict.
+enlarged, disabled, or removed. A fence that only barely exceeds the pet can
+also remain still because roam ignores tiny, jitter-like hops. Fences placed
+against a screen edge work: on an axis it actually narrows, an explicit fence
+takes precedence over the default keep-away-from-the-edges margin when they
+conflict. A full-range axis does not override an already-impossible normal
+margin band during ordinary roaming; if the pet is currently outside an active
+fence, recovery temporarily uses the fence's own containment range instead.
 
 Delete the file (or set `"enabled": false`) to return to normal full-area
 roaming.
 
 ## When changes apply
 
-The file is re-read in the background when each walk's pause is armed, so an
-edit applies to the next walk planned after it. A walk that was already
-pending when you saved keeps the previous fence; your change takes effect one
-walk later (roughly 4–8 seconds). No restart needed.
+The file is re-read in the background when each walk's pause is armed. Because
+that read is asynchronous, a save around or after arming may affect the pending
+walk if the in-flight read observes it; otherwise the cached fence remains and
+a later scheduled refresh retries. There is no fixed wall-clock guarantee. No
+restart needed.
 
 ## Failure behavior (by design, the fence never "falls open")
 
@@ -57,7 +62,7 @@ walk later (roughly 4–8 seconds). No restart needed.
   checks, so atomic replace-style saves can't flash the fence off.
 - Until the loader has confirmed a first status (valid file, or confirmed
   missing), roam holds its rounds instead of wandering the full area.
-- If the pet starts outside the fence, its next walk brings it back inside;
-  in axis-constrained mode the walk moves along whichever axis is out of
-  bounds, and if both are, it recovers in two stages — one axis per walk —
-  so every step still moves along a single axis.
+- If the pet starts outside the fence on one axis, its next walk brings that
+  axis back inside. In axis-constrained mode, if both axes are outside, it
+  recovers over two walks — one axis per walk — so every step still moves
+  along a single axis.

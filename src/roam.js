@@ -135,6 +135,7 @@ module.exports = function initRoam(ctx) {
     // the historical values.
     let fenceRect = null;
     let fenceShrinks = false;
+    let startInsideFence = true;
     const hasFenceLoader =
       ctx.roamFence && typeof ctx.roamFence.get === "function";
     const fenceState = hasFenceLoader ? ctx.roamFence.get() : undefined;
@@ -152,26 +153,45 @@ module.exports = function initRoam(ctx) {
         bottom: wa.y + Math.round(wa.height * fenceState.bottom),
       };
       // Round-4 review: the fence takes precedence over the historical 15%
-      // margin band when the two do not overlap on an axis — a valid fence
-      // deliberately placed in the outer band (a right-edge strip, a strip
-      // above the dock) must not become a permanent no-roam zone. Per axis:
-      // intersect with the margins when possible, else use the fence's own
-      // containment interval. A fence the pet cannot fit into at all leaves
-      // a negative interval and roam holds (whole-window containment; see
-      // docs/guides/roam-fence.md).
+      // margin band when the two do not overlap on an axis that the fence
+      // actually narrows — a valid fence deliberately placed in the outer
+      // band (a right-edge strip, a strip above the dock) must not become a
+      // permanent no-roam zone. Per axis: intersect with the margins when
+      // possible, else use the narrowed fence containment interval. A fence
+      // the pet cannot fit into at all leaves a negative interval and roam
+      // holds (whole-window containment; see docs/guides/roam-fence.md).
       const fxMin = fenceRect.left;
       const fxMax = fenceRect.right - petW;
       const fyMin = fenceRect.top;
       const fyMax = fenceRect.bottom - petH;
+      startInsideFence =
+        bounds.x >= fenceRect.left &&
+        bounds.x + petW <= fenceRect.right &&
+        bounds.y >= fenceRect.top &&
+        bounds.y + petH <= fenceRect.bottom;
+      // Determine narrowing from the realized pixel rectangle, not the raw
+      // fractions: a tiny non-zero edge may round back to the full work area.
+      const fenceNarrowsX =
+        fenceRect.left > wa.x ||
+        fenceRect.right < wa.x + Math.round(wa.width);
+      const fenceNarrowsY =
+        fenceRect.top > wa.y ||
+        fenceRect.bottom < wa.y + Math.round(wa.height);
       xMin = Math.max(bxMin, fxMin);
       xMax = Math.min(bxMax, fxMax);
-      if (xMax < xMin) {
+      // During ordinary contained roaming, only an axis the explicit fence
+      // actually narrows may override the historical margin band. Recovery is
+      // the exception: once any coordinate starts outside an active fence, all
+      // impossible margin intervals must yield to the fence's containment
+      // intervals so a large cross-display pet can get back inside. After that
+      // one recovery, a full-range fence resumes the parent hold behavior.
+      if (xMax < xMin && (fenceNarrowsX || !startInsideFence)) {
         xMin = fxMin;
         xMax = fxMax;
       }
       yMin = Math.max(byMin, fyMin);
       yMax = Math.min(byMax, fyMax);
-      if (yMax < yMin) {
+      if (yMax < yMin && (fenceNarrowsY || !startInsideFence)) {
         yMin = fyMin;
         yMax = fyMax;
       }
@@ -194,12 +214,6 @@ module.exports = function initRoam(ctx) {
     // may sit only 1px outside, and the ordinary 24/100px threshold would
     // reject every in-fence candidate forever. Normal wandering keeps the
     // usual minimums once the start is contained.
-    const startInsideFence =
-      !fenceRect ||
-      (bounds.x >= fenceRect.left &&
-        bounds.x + petW <= fenceRect.right &&
-        bounds.y >= fenceRect.top &&
-        bounds.y + petH <= fenceRect.bottom);
     const minDist = !startInsideFence
       ? 1
       : fenceShrinks
@@ -236,9 +250,8 @@ module.exports = function initRoam(ctx) {
        *   • start fully inside the fence → either axis may be selected;
        *   • exactly one coordinate outside → that coordinate must be the
        *     moving axis (the walk pulls it back inside);
-       *   • both coordinates outside → no single-axis move can restore
-       *     containment: return no target this round rather than move
-       *     diagonally.
+       *   • both coordinates outside → recover in two stages: X this round,
+       *     then Y on the next, without moving diagonally.
        * Without an active fence the historical behavior is untouched: either
        * axis, stationary coordinate kept as-is even outside the margin band. */
       let forcedAxis = null;
@@ -577,8 +590,10 @@ module.exports = function initRoam(ctx) {
     if (!enabled) return;
     // #810: kick an async re-read of the fence file now, so the cached state
     // is fresh by the time this pause elapses and pickRandomTarget() runs.
-    // Target selection itself never touches the disk; an edit to the file
-    // applies within one roam pause, no restart needed.
+    // Target selection itself never touches the disk. Because refresh is
+    // asynchronous, a save around or after arming may affect this pending walk
+    // if the in-flight read observes it; otherwise a later scheduled refresh
+    // retries. There is no fixed wall-clock guarantee. No restart needed.
     if (ctx.roamFence && typeof ctx.roamFence.refresh === "function") {
       // Defensive: a loader that throws synchronously must not kill the roam
       // scheduling chain — the walk would simply use the cached fence state.
