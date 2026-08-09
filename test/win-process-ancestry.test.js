@@ -128,6 +128,24 @@ describe("win-process-ancestry", () => {
     });
   });
 
+  it("reuses the default Koffi bindings across consecutive process-query factories", {
+    skip: process.platform !== "win32",
+  }, () => {
+    const first = createWindowsProcessQuery();
+    const second = createWindowsProcessQuery();
+
+    assert.strictEqual(first.available, true);
+    assert.strictEqual(second.available, true);
+    for (const query of [first, second]) {
+      const result = query(process.pid);
+      assert.strictEqual(result.status, "ok");
+      assert.strictEqual(result.pid, process.pid);
+      assert.ok(result.parentPid > 0);
+      assert.ok(result.name.endsWith(".exe"));
+      assert.ok(result.creationTime);
+    }
+  });
+
   it("fails initialization closed on a PBI ABI mismatch", () => {
     let opens = 0;
     const ffi = {

@@ -12,6 +12,7 @@ const MAX_PATH = 260;
 const ERROR_BAD_LENGTH = 24;
 const ERROR_NO_MORE_FILES = 18;
 const DEFAULT_TOOLHELP_RETRIES = 3;
+let defaultProcessQueryFfi = null;
 let defaultToolhelpFfi = null;
 
 function normalizePid(value) {
@@ -111,7 +112,7 @@ function buildKoffiFfi(koffi) {
     GetProcessTimes: kernel32.func("bool __stdcall GetProcessTimes(void *hProcess, _Out_ ClawdProcessFILETIME *lpCreationTime, _Out_ ClawdProcessFILETIME *lpExitTime, _Out_ ClawdProcessFILETIME *lpKernelTime, _Out_ ClawdProcessFILETIME *lpUserTime)"),
     CloseHandle: kernel32.func("bool __stdcall CloseHandle(void *hObject)"),
     GetLastError: kernel32.func("uint32 __stdcall GetLastError()"),
-    NtQueryInformationProcess: ntdll.func("int32 NtQueryInformationProcess(void *ProcessHandle, uint32 ProcessInformationClass, _Out_ ClawdPROCESS_BASIC_INFORMATION *ProcessInformation, uint32 ProcessInformationLength, _Out_ uint32 *ReturnLength)"),
+    NtQueryInformationProcess: ntdll.func("int32 __stdcall NtQueryInformationProcess(void *ProcessHandle, uint32 ProcessInformationClass, _Out_ ClawdPROCESS_BASIC_INFORMATION *ProcessInformation, uint32 ProcessInformationLength, _Out_ uint32 *ReturnLength)"),
     processBasicInformationSize: koffi.sizeof(ProcessBasicInformation),
     fileTimeSize: koffi.sizeof(FileTime),
     pointerSize: koffi.sizeof("void *"),
@@ -447,7 +448,19 @@ function createWindowsProcessQuery(options = {}) {
 
   let ffi;
   try {
-    ffi = options.ffi || buildKoffiFfi(options.koffi || require("koffi"));
+    if (options.ffi) {
+      ffi = options.ffi;
+    } else if (options.koffi) {
+      // Explicit injection remains isolated: callers using a test/dedicated
+      // Koffi instance must not inherit the production module cache.
+      ffi = buildKoffiFfi(options.koffi);
+    } else {
+      // Koffi named structs are process-global. Re-registering them on a
+      // second server/resolver construction throws a duplicate-type error,
+      // so the production bindings are built once and reused.
+      if (!defaultProcessQueryFfi) defaultProcessQueryFfi = buildKoffiFfi(require("koffi"));
+      ffi = defaultProcessQueryFfi;
+    }
   } catch (err) {
     if (typeof options.onInitError === "function") options.onInitError(err);
     const query = () => unavailable("init", "ffi-unavailable");
