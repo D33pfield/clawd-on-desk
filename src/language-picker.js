@@ -71,9 +71,13 @@
     const pendingChanges = new Map();
     let reflowScheduled = false;
     let reflowFrame = null;
+    let menuUnmountTimer = null;
+    let menuUnmountTransitionHandler = null;
+    let menuLifecycleSeq = 0;
 
     const MENU_GAP_PX = 6;
     const DEFAULT_MENU_MAX_HEIGHT_PX = 240;
+    const MENU_CLOSE_FALLBACK_MS = 180;
 
     function findOption(value) {
       const wanted = value == null ? "" : String(value);
@@ -200,6 +204,68 @@
       menu.style.maxHeight = maxHeight + "px";
     }
 
+    function cancelMenuUnmount() {
+      menuLifecycleSeq += 1;
+      if (menuUnmountTransitionHandler) {
+        menu.removeEventListener("transitionend", menuUnmountTransitionHandler);
+        menuUnmountTransitionHandler = null;
+      }
+      if (menuUnmountTimer != null && root && typeof root.clearTimeout === "function") {
+        root.clearTimeout(menuUnmountTimer);
+      }
+      menuUnmountTimer = null;
+    }
+
+    function resetMenuLayout() {
+      picker.classList.remove("open-up");
+      picker.classList.remove("menu-scrollable");
+      menu.style.maxHeight = "";
+      menu.scrollTop = 0;
+    }
+
+    function finalizeMenuUnmount(expectedSeq = menuLifecycleSeq) {
+      if (disposed || isOpen || expectedSeq !== menuLifecycleSeq) return;
+      if (menuUnmountTimer != null && root && typeof root.clearTimeout === "function") {
+        root.clearTimeout(menuUnmountTimer);
+      }
+      menuUnmountTimer = null;
+      if (menuUnmountTransitionHandler) {
+        menu.removeEventListener("transitionend", menuUnmountTransitionHandler);
+        menuUnmountTransitionHandler = null;
+      }
+      picker.classList.remove("menu-mounted");
+      resetMenuLayout();
+    }
+
+    function shouldAnimateMenuClose() {
+      if (!root || typeof root.getComputedStyle !== "function") return false;
+      if (typeof root.matchMedia === "function"
+          && root.matchMedia("(prefers-reduced-motion: reduce)").matches) return false;
+      return true;
+    }
+
+    function mountMenu() {
+      cancelMenuUnmount();
+      picker.classList.add("menu-mounted");
+    }
+
+    function scheduleMenuUnmount() {
+      cancelMenuUnmount();
+      const expectedSeq = menuLifecycleSeq;
+      if (!shouldAnimateMenuClose() || !root || typeof root.setTimeout !== "function") {
+        finalizeMenuUnmount(expectedSeq);
+        return;
+      }
+      menuUnmountTransitionHandler = (event) => {
+        if (!event || event.target !== menu || event.propertyName !== "opacity") return;
+        finalizeMenuUnmount(expectedSeq);
+      };
+      menu.addEventListener("transitionend", menuUnmountTransitionHandler);
+      menuUnmountTimer = root.setTimeout(() => {
+        finalizeMenuUnmount(expectedSeq);
+      }, MENU_CLOSE_FALLBACK_MS);
+    }
+
     function reflow() {
       if (disposed) return;
       ensureVisible();
@@ -223,13 +289,23 @@
 
     function setOpen(next, { focusTrigger = false } = {}) {
       if (disposed) return;
-      isOpen = !!next && optionElements.length > 0 && !trigger.disabled;
-      picker.classList.toggle("open", isOpen);
+      const nextOpen = !!next && optionElements.length > 0 && !trigger.disabled;
+      if (nextOpen) {
+        isOpen = true;
+        mountMenu();
+        positionMenu();
+        // positionMenu reads layout after the menu is mounted, so the browser
+        // has a hidden starting frame before the visible transition begins.
+        picker.classList.add("open");
+      } else {
+        isOpen = false;
+        picker.classList.remove("open");
+        scheduleMenuUnmount();
+      }
       trigger.setAttribute("aria-expanded", isOpen ? "true" : "false");
       menu.setAttribute("aria-hidden", isOpen ? "false" : "true");
       paintValue(activeValue);
       if (isOpen) {
-        positionMenu();
         const selected = findOption(activeValue);
         focusElement(selected && selected.element);
       } else if (focusTrigger) {
@@ -390,6 +466,11 @@
       },
       dispose() {
         if (disposed) return;
+        cancelMenuUnmount();
+        isOpen = false;
+        picker.classList.remove("open");
+        picker.classList.remove("menu-mounted");
+        resetMenuLayout();
         disposed = true;
         changeSeq++;
         pendingChanges.clear();

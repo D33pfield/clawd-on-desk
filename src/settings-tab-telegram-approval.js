@@ -1210,8 +1210,29 @@
         const nextMode = ["off", "full"].includes(value) ? value : "off";
         if (nextMode === mode) return true;
         if (nextMode === "full") {
-          const ok = window.confirm(t("telegramApprovalCompletionOutputFullConfirm"));
-          if (!ok) return false;
+          return helpers.showSettingsConfirmModal({
+            title: t("telegramApprovalCompletionOutputFullConfirmTitle"),
+            detail: t("telegramApprovalCompletionOutputFullConfirm"),
+            actions: [
+              {
+                id: "cancel",
+                label: t("telegramApprovalCancel"),
+                tone: "neutral",
+                defaultFocus: true,
+              },
+              {
+                id: "confirm",
+                label: t("telegramApprovalCompletionOutputFullConfirmAction"),
+                tone: "danger",
+              },
+            ],
+          }).then((actionId) => {
+            if (actionId !== "confirm") return false;
+            return saveConfig(
+              { ...cfg, completionOutputMode: nextMode },
+              { resetDraft: false }
+            );
+          });
         }
         return saveConfig({ ...cfg, completionOutputMode: nextMode }, { resetDraft: false });
       },

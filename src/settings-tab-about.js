@@ -241,8 +241,8 @@
           title: t("aboutCleanupConfirmTitle"),
           detail: t("aboutCleanupConfirmDetail"),
           actions: [
+            { id: "cancel", label: t("aboutCleanupConfirmCancel"), tone: "neutral", defaultFocus: true },
             { id: "confirm", label: t("aboutCleanupConfirmAction"), tone: "danger" },
-            { id: "cancel", label: t("aboutCleanupConfirmCancel"), tone: "accent", defaultFocus: true },
           ],
         }))
         .then((actionId) => {

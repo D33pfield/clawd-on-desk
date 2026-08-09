@@ -1734,7 +1734,22 @@
         icon = document.createElement("div");
         icon.className = "settings-confirm-icon";
         icon.setAttribute("aria-hidden", "true");
-        icon.textContent = String(iconText);
+        if (String(iconText) === "!") {
+          const createSvgElement = (tagName) => (
+            typeof document.createElementNS === "function"
+              ? document.createElementNS("http://www.w3.org/2000/svg", tagName)
+              : document.createElement(tagName)
+          );
+          const svg = createSvgElement("svg");
+          svg.setAttribute("viewBox", "0 0 20 20");
+          svg.setAttribute("focusable", "false");
+          const path = createSvgElement("path");
+          path.setAttribute("d", "M10 4.2v7.4m0 3.1v.1");
+          svg.appendChild(path);
+          icon.appendChild(svg);
+        } else {
+          icon.textContent = String(iconText);
+        }
       }
 
       const titleNode = document.createElement("h2");

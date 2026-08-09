@@ -388,7 +388,6 @@ describe("state agent icons", () => {
       opencode: "neutral-light-tile",
       pi: "neutral-light-tile",
       "qwen-code": "neutral-light-tile",
-      workbuddy: "neutral-dark-tile",
     };
     const actual = Object.fromEntries(
       Object.entries(SOURCE_PROVENANCE)

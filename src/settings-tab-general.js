@@ -346,6 +346,7 @@
       checkboxChecked: false,
       returnDetails: true,
       actions: [
+        { id: "cancel", label: t("permissionAutomationCancel"), tone: "neutral", defaultFocus: true },
         {
           id: "enable",
           label: t(unattended
@@ -353,7 +354,6 @@
             : "permissionAutomationEnableAutoTools"),
           tone: "danger",
         },
-        { id: "cancel", label: t("permissionAutomationCancel"), tone: "accent", defaultFocus: true },
       ],
     });
   }
@@ -824,6 +824,7 @@
       summary: summaryControl.element,
       defaultCollapsed: true,
       className: "sound-collapsible",
+      animateExpansion: false,
       children: [buildOptionList("sound-option-list", [
         buildSoundEnabledRow(summaryControl),
         buildVolumeSliderRow(),
@@ -1326,8 +1327,8 @@
       title: t("updateBubbleDisableConfirmTitle"),
       detail: t("updateBubbleDisableConfirmDetail"),
       actions: [
+        { id: "cancel", label: t("updateBubbleDisableConfirmCancel"), tone: "neutral", defaultFocus: true },
         { id: "confirm", label: t("updateBubbleDisableConfirmAction"), tone: "danger" },
-        { id: "cancel", label: t("updateBubbleDisableConfirmCancel"), tone: "accent", defaultFocus: true },
       ],
     });
   }

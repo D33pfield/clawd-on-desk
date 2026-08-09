@@ -102,7 +102,6 @@ const SOURCE_PROVENANCE = Object.freeze({
   workbuddy: {
     originalFilename: "workbuddy.png",
     fallback: false,
-    contrastTreatment: "neutral-dark-tile",
   },
   zcode: { originalFilename: "zcode.png", fallback: true, exportMode: "passthrough" },
 });
