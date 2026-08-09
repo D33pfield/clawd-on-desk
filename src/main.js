@@ -405,6 +405,7 @@ let discordPresenceBridge = null;
 // so a first enable mirrors what the pet is actually showing.
 let lastDiscordPresenceVisual = null;
 let suppressTelegramMigrationReconcile = 0;
+let _remoteSshTransportCoordinator = null;
 let feishuApprovalClient = null;
 let feishuApprovalSyncPromise = Promise.resolve();
 let feishuApprovalConfigSignature = "";
@@ -498,6 +499,11 @@ const _settingsController = createSettingsController({
     getShortcutFailure: (actionId) => shortcutRuntime ? shortcutRuntime.getFailure(actionId) : null,
     clearShortcutFailure: (actionId) => {
       if (shortcutRuntime) shortcutRuntime.clearFailure(actionId);
+    },
+    isRemoteSshTransportBusy: (profileId) => {
+      if (!_remoteSshTransportCoordinator) return false;
+      const snapshot = _remoteSshTransportCoordinator.snapshotForProfile(profileId);
+      return snapshot.transportPhase !== "idle";
     },
   },
 });
@@ -1014,6 +1020,9 @@ function getEffectiveCurrentPixelSize(overrideWa) {
 let contextMenu;
 let doNotDisturb = false;
 let isQuitting = false;
+let quitCleanupStarted = false;
+let remoteSshQuitDrainStarted = false;
+let remoteSshQuitDrainReady = false;
 // Mirror caches: kept in sync with the settings store via settings-effect-router
 // further down. Read freely; never assign
 // directly (writes go through ctx setters → controller.applyUpdate).
@@ -3807,15 +3816,22 @@ registerDoctorIpc({
 // any spawned ssh / scp children.
 const { createRemoteSshRuntime } = require("./remote-ssh-runtime");
 const { registerRemoteSshIpc } = require("./remote-ssh-ipc");
+const { inspectEffectiveTransport } = require("./remote-ssh-transport");
+const { createRemoteSshTransportCoordinator } = require("./remote-ssh-transport-coordinator");
+_remoteSshTransportCoordinator = createRemoteSshTransportCoordinator({
+  inspectEffectiveTransport: (profile) => inspectEffectiveTransport(profile),
+});
 _remoteSshRuntime = createRemoteSshRuntime({
   getHookServerPort: () => getHookServerPort(),
   createProfileIngress: (options) => _server.openRemoteSshIngress(options),
+  transportCoordinator: _remoteSshTransportCoordinator,
   log: (...args) => console.warn("Clawd remote-ssh:", ...args),
 });
 const _remoteSshIpc = registerRemoteSshIpc({
   ipcMain,
   settingsController: _settingsController,
   remoteSshRuntime: _remoteSshRuntime,
+  transportCoordinator: _remoteSshTransportCoordinator,
   BrowserWindow,
   isPackaged: app.isPackaged,
   getInstallationIdentity: () => _remoteSshInstallationIdentity,
@@ -4143,7 +4159,9 @@ function createWindow() {
       }
       sessionLog(`startup recovery restored sessions=${restoredSessionIds.join(",")}`);
     }
-    try { _remoteSshIpc.connectOnLaunchProfiles(); } catch {}
+    void _remoteSshIpc.connectOnLaunchProfiles().catch((err) => {
+      console.warn("Clawd remote-ssh: connect-on-launch failed:", err && err.message);
+    });
   }).catch(() => {});
   if (_settingsController.get("mobilePreviewEnabled") === true) _lanWss.start();
   startStaleCleanup();
@@ -4673,8 +4691,24 @@ if (!gotTheLock) {
     if (codexHookNudgeTimer && typeof codexHookNudgeTimer.unref === "function") codexHookNudgeTimer.unref();
   });
 
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
     isQuitting = true;
+    if (!remoteSshQuitDrainReady
+      && _remoteSshRuntime
+      && typeof _remoteSshRuntime.shutdown === "function") {
+      event.preventDefault();
+      if (!remoteSshQuitDrainStarted) {
+        remoteSshQuitDrainStarted = true;
+        void _remoteSshRuntime.shutdown({ timeoutMs: 5000 })
+          .catch((err) => console.error("remote-ssh shutdown drain failed:", err && err.message))
+          .finally(() => {
+            remoteSshQuitDrainReady = true;
+            app.quit();
+          });
+      }
+    }
+    if (quitCleanupStarted) return;
+    quitCleanupStarted = true;
     trayBalloonOwner.dispose();
     holidayAccessoryRuntime.dispose();
     if (systemWakeRecovery) systemWakeRecovery.dispose();
@@ -4708,7 +4742,9 @@ if (!gotTheLock) {
     _focus.cleanup();
     if (animationOverridesMain) animationOverridesMain.cleanup();
     try { _remoteSshIpc.dispose(); } catch {}
-    try { _remoteSshRuntime.cleanup(); } catch {}
+    if (!_remoteSshRuntime || typeof _remoteSshRuntime.shutdown !== "function") {
+      try { _remoteSshRuntime.cleanup(); } catch {}
+    }
     if (hitWin && !hitWin.isDestroyed()) hitWin.destroy();
   });
 

@@ -2199,6 +2199,9 @@ describe("settings renderer browser environment", () => {
     assert.ok(addButton);
     addButton.dispatchEvent({ type: "click" });
 
+    const transportPicker = harness.content.querySelectorAll(".settings-select")[0];
+    assert.equal(getSelectedPickerValue(transportPicker), "auto");
+    choosePickerOption(transportPicker, "serialized");
     const portPicker = harness.content.querySelector(".remote-ssh-port-select");
     assert.ok(portPicker, "remote forward port should use the shared Settings picker");
     const portHint = portPicker.parentNode.querySelector(".remote-ssh-field-hint");
@@ -2231,6 +2234,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(addCall);
     assert.equal(addCall.payload.remoteForwardPort, 23336);
     assert.equal(addCall.payload.autoStartCodexMonitor, true);
+    assert.equal(addCall.payload.sshTransportMode, "serialized");
     assert.equal(addCall.payload.chainStatusline, false);
     assert.equal(addCall.payload.connectOnLaunch, true);
   });

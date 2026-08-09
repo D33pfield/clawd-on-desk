@@ -109,7 +109,9 @@ function secureHappySpawn(options = {}) {
     queueMicrotask(() => {
       if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
       if (response.stderr) child.stderr.emit("data", Buffer.from(response.stderr));
-      child.emit("exit", response.code == null ? 0 : response.code, null);
+      const code = response.code == null ? 0 : response.code;
+      child.emit("exit", code, null);
+      child.emit("close", code, null);
     });
   });
 }
@@ -155,7 +157,9 @@ function secureIsolatedHappySpawn(options = {}) {
     queueMicrotask(() => {
       if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
       if (response.stderr) child.stderr.emit("data", Buffer.from(response.stderr));
-      child.emit("exit", response.code == null ? 0 : response.code, null);
+      const code = response.code == null ? 0 : response.code;
+      child.emit("exit", code, null);
+      child.emit("close", code, null);
     });
   });
 }
@@ -514,6 +518,7 @@ test("cleanup/start/stop all fail closed for missing or mismatched ownership ide
         queueMicrotask(() => {
           if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
           child.emit("exit", response.code, null);
+          child.emit("close", response.code, null);
         });
       });
       const result = await operation({
@@ -565,6 +570,7 @@ test("isolated monitor and cleanup commands stay inside their layout and retain 
       queueMicrotask(() => {
         if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
         child.emit("exit", response.code, null);
+        child.emit("close", response.code, null);
       });
     });
   };
@@ -1282,10 +1288,16 @@ function makeRecordingSpawn(handlers) {
       queueMicrotask(() => {
         if (handler.stdout) child.stdout.emit("data", Buffer.from(handler.stdout));
         if (handler.stderr) child.stderr.emit("data", Buffer.from(handler.stderr));
-        child.emit("exit", handler.code != null ? handler.code : 0, handler.signal || null);
+        const code = handler.code != null ? handler.code : 0;
+        const signal = handler.signal || null;
+        child.emit("exit", code, signal);
+        child.emit("close", code, signal);
       });
     } else {
-      queueMicrotask(() => child.emit("exit", 0, null));
+      queueMicrotask(() => {
+        child.emit("exit", 0, null);
+        child.emit("close", 0, null);
+      });
     }
     return child;
   };
@@ -1432,6 +1444,7 @@ test("deploy: with hostPrefix triggers host-prefix step via ssh stdin", async ()
       queueMicrotask(() => {
         capturedStdin = child._stdin;
         child.emit("exit", 0, null);
+        child.emit("close", 0, null);
       });
     },
     { code: 0 }, // install-claude

@@ -1309,6 +1309,17 @@ function remoteSshUpdateProfile(payload, deps) {
   // false-flag "port drift" when prev had port:22 and the UI saveBtn omitted
   // the default 22 from the payload.
   const drift = deployTargetDrift(deployTargetFingerprint(prev), deployTargetFingerprint(profile));
+  const transportModeChanged = (prev.sshTransportMode || "auto")
+    !== (profile.sshTransportMode || "auto");
+  if ((drift || transportModeChanged)
+    && typeof deps.isRemoteSshTransportBusy === "function"
+    && deps.isRemoteSshTransportBusy(profile.id)) {
+    return {
+      status: "error",
+      reason: "serialized_transport_busy",
+      message: "Disconnect this Remote SSH profile before editing its transport target or mode",
+    };
+  }
   // Deployment stamps and cleanup ownership are server-issued metadata.
   // Ignore anything supplied by the renderer, then restore only the trusted
   // values already present in the current settings snapshot.
@@ -1591,6 +1602,7 @@ function remoteSshMarkDeployed(payload, deps) {
     : current;
   const ownedTarget = sanitizeManagedDeployTarget({
     ...deployTargetFingerprint(targetAtDeployStart),
+    ...(payload.sshTransportHint ? { sshTransportHint: payload.sshTransportHint } : {}),
     ...(remoteNode || {}),
     ...(isValidInstallId(payload.installId) && typeof payload.remoteHome === "string"
       ? {

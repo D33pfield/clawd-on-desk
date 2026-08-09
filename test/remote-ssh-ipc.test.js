@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const { EventEmitter } = require("events");
 
 const { registerRemoteSshIpc: registerRemoteSshIpcReal } = require("../src/remote-ssh-ipc");
+const { createRemoteSshTransportCoordinator } = require("../src/remote-ssh-transport-coordinator");
 const { commandRegistry } = require("../src/settings-actions");
 const { REMOTE_IDENTITY_STEP_NAMES } = require("../src/remote-ssh-profile");
 
@@ -194,6 +195,37 @@ function mockRuntime() {
   return rt;
 }
 
+function serializedCoordinator() {
+  return createRemoteSshTransportCoordinator({
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "codespaces-stdio",
+      key: "codespace:test-space",
+      fingerprint: "test-fingerprint",
+    }),
+  });
+}
+
+function managedMockRuntime(events = []) {
+  const rt = mockRuntime();
+  rt.connect = (profile, options) => {
+    events.push({ type: "connect", profile, options });
+    return { profileId: profile.id, status: "connecting" };
+  };
+  rt.suspendForOperation = async (profileId, context) => {
+    events.push({ type: "suspend", profileId });
+    context.assertActive();
+    return { ok: true, drainVerified: true };
+  };
+  rt.finalizeSerializedDisconnect = (profileId, context) => {
+    events.push({ type: "finalize", profileId });
+    const coordinator = rt._coordinator;
+    if (coordinator) coordinator.release(context);
+    return { profileId, status: "idle" };
+  };
+  return rt;
+}
+
 const baseProfile = {
   id: "p1",
   label: "My Pi",
@@ -371,6 +403,127 @@ test("remoteSsh:connect 404 when profile not in snapshot", async () => {
   ipc.dispose();
 });
 
+test("serialized Deploy suspends the owned tunnel before mutation and resumes only the latest desired connection", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const settingsController = mockSettingsController([{ ...readyProfile, sshTransportMode: "auto" }]);
+  const coordinator = serializedCoordinator();
+  const events = [];
+  const rt = managedMockRuntime(events);
+  rt._coordinator = coordinator;
+  registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: rt,
+    transportCoordinator: coordinator,
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+    deployFn: async () => {
+      events.push({ type: "deploy" });
+      return {
+        ok: true,
+        remoteNode: { nodeBin: "/usr/bin/node", version: "20.1.0", source: "path" },
+        layout: { remoteHome: "/home/user" },
+      };
+    },
+  });
+
+  assert.equal((await ipcMain.invoke("remoteSsh:connect", { profileId: "p1" })).status, "ok");
+  const result = await ipcMain.invoke("remoteSsh:deploy", { profileId: "p1" });
+  assert.equal(result.status, "ok");
+  assert.deepEqual(events.map((event) => event.type), ["connect", "suspend", "deploy", "connect"]);
+  assert.equal(coordinator.getIntent("p1").desiredConnected, true);
+});
+
+test("Disconnect during serialized Deploy records intent without invalidating the active mutation", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const settingsController = mockSettingsController([readyProfile]);
+  const coordinator = serializedCoordinator();
+  const events = [];
+  const rt = managedMockRuntime(events);
+  rt._coordinator = coordinator;
+  let finishDeploy;
+  const deployResult = new Promise((resolve) => { finishDeploy = resolve; });
+  registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: rt,
+    transportCoordinator: coordinator,
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+    deployFn: async () => {
+      events.push({ type: "deploy" });
+      return deployResult;
+    },
+  });
+
+  await ipcMain.invoke("remoteSsh:connect", { profileId: "p1" });
+  const deploying = ipcMain.invoke("remoteSsh:deploy", { profileId: "p1" });
+  for (let i = 0; i < 8 && !events.some((event) => event.type === "deploy"); i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const disconnect = await ipcMain.invoke("remoteSsh:disconnect", { profileId: "p1" });
+  assert.equal(disconnect.status, "ok");
+  assert.equal(disconnect.disconnectPending, true);
+  assert.equal(coordinator.getIntent("p1").desiredConnected, false);
+  finishDeploy({
+    ok: true,
+    remoteNode: { nodeBin: "/usr/bin/node", version: "20.1.0", source: "path" },
+    layout: { remoteHome: "/home/user" },
+  });
+  assert.equal((await deploying).status, "ok");
+  assert.deepEqual(events.map((event) => event.type), ["connect", "suspend", "deploy", "finalize"]);
+});
+
+test("same Codespaces transport rejects a second profile Connect without storing connection intent", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const second = { ...readyProfile, id: "p2", label: "Other", host: "alias-two" };
+  const settingsController = mockSettingsController([readyProfile, second]);
+  const coordinator = serializedCoordinator();
+  const rt = managedMockRuntime();
+  rt._coordinator = coordinator;
+  registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: rt,
+    transportCoordinator: coordinator,
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+  });
+
+  assert.equal((await ipcMain.invoke("remoteSsh:connect", { profileId: "p1" })).status, "ok");
+  const busy = await ipcMain.invoke("remoteSsh:connect", { profileId: "p2" });
+  assert.equal(busy.status, "error");
+  assert.equal(busy.reason, "serialized_transport_busy");
+  assert.deepEqual(coordinator.getIntent("p2"), { desiredConnected: false, intentGeneration: 0 });
+});
+
+test("interactive terminal is blocked while a serialized Codespaces transport is owned", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const settingsController = mockSettingsController([readyProfile]);
+  const coordinator = serializedCoordinator();
+  const rt = managedMockRuntime();
+  rt._coordinator = coordinator;
+  const terminal = makeSucceedingSpawn();
+  registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: rt,
+    transportCoordinator: coordinator,
+    BrowserWindow,
+    spawn: terminal.spawn,
+  });
+
+  await ipcMain.invoke("remoteSsh:connect", { profileId: "p1" });
+  const result = await ipcMain.invoke("remoteSsh:open-terminal", { profileId: "p1" });
+  assert.equal(result.status, "error");
+  assert.equal(result.reason, "serialized_transport_busy");
+  assert.equal(terminal.calls.length, 0);
+});
+
 test("remoteSsh:connect returns a structured deployment_required error before runtime.connect", async () => {
   const cases = [
     ["deployment_stamp_missing", { ...baseProfile }],
@@ -462,7 +615,7 @@ test("settings remoteSsh updates refresh cached runtime profiles and stop remove
 
 // ── connect-on-launch sweep ──
 
-test("connectOnLaunchProfiles connects only flagged profiles", () => {
+test("connectOnLaunchProfiles connects only flagged profiles", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();
   const rt = mockRuntime();
@@ -479,13 +632,13 @@ test("connectOnLaunchProfiles connects only flagged profiles", () => {
     BrowserWindow,
     spawn: makeSucceedingSpawn().spawn,
   });
-  const started = ipc.connectOnLaunchProfiles();
+  const started = await ipc.connectOnLaunchProfiles();
   assert.deepEqual(started, ["p1", "p3"]);
   assert.deepEqual(connected, ["p1", "p3"]);
   ipc.dispose();
 });
 
-test("connectOnLaunchProfiles keeps going when one connect throws", () => {
+test("connectOnLaunchProfiles keeps going when one connect throws", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();
   const rt = mockRuntime();
@@ -504,13 +657,13 @@ test("connectOnLaunchProfiles keeps going when one connect throws", () => {
     BrowserWindow,
     spawn: makeSucceedingSpawn().spawn,
   });
-  const started = ipc.connectOnLaunchProfiles();
+  const started = await ipc.connectOnLaunchProfiles();
   assert.deepEqual(started, ["p2"]);
   assert.deepEqual(connected, ["p2"]);
   ipc.dispose();
 });
 
-test("connectOnLaunchProfiles skips profiles that require deployment", () => {
+test("connectOnLaunchProfiles skips profiles that require deployment", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();
   const rt = mockRuntime();
@@ -529,7 +682,7 @@ test("connectOnLaunchProfiles skips profiles that require deployment", () => {
     startCodexMonitorFn: async () => { monitors += 1; },
   });
 
-  assert.deepEqual(ipc.connectOnLaunchProfiles(), []);
+  assert.deepEqual(await ipc.connectOnLaunchProfiles(), []);
   assert.equal(connects, 0);
   assert.equal(monitors, 0);
   ipc.dispose();

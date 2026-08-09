@@ -25,7 +25,10 @@ function makeRecordingSpawn(responses) {
     queueMicrotask(() => {
       if (resp.stdout) child.stdout.emit("data", Buffer.from(resp.stdout));
       if (resp.stderr) child.stderr.emit("data", Buffer.from(resp.stderr));
-      child.emit("exit", resp.code != null ? resp.code : 0, resp.signal || null);
+      const code = resp.code != null ? resp.code : 0;
+      const signal = resp.signal || null;
+      child.emit("exit", code, signal);
+      child.emit("close", code, signal);
     });
     return child;
   };

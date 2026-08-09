@@ -14,6 +14,7 @@ const {
   looksLikeWindowsCmdStderr,
   classifyProbeExit,
   buildProbeCommand,
+  buildPersistentReadinessCommand,
   backoffMsForAttempt,
   tunnelTargetKey,
   checkSecureConnectReadiness,
@@ -26,6 +27,7 @@ const {
   FORWARD_RECOVERY_FAILURE_LIMIT,
 } = require("../src/remote-ssh-runtime");
 const { clearRemoteNodeCache } = require("../src/remote-ssh-node");
+const { createRemoteSshTransportCoordinator } = require("../src/remote-ssh-transport-coordinator");
 
 const DETECT_SSH_OK = () => ({
   available: true,
@@ -413,6 +415,19 @@ test("secure probe reads the exact resolved identity path and never carries the 
   assert.doesNotMatch(missingLayoutJs, /process\.env\.HOME/);
 });
 
+test("persistent readiness command carries a random marker, secure identity checks, retries, and stdin EOF stop", () => {
+  const profile = makeSecureProfile();
+  const command = buildPersistentReadinessCommand(23333, "/usr/bin/node", {
+    profile,
+    challenge: "c".repeat(32),
+  });
+  assert.match(command, /__CLAWD_REMOTE_READY__/);
+  assert.match(command, /process\.stdin\.once/);
+  assert.match(command, /setTimeout\(attempt,250\)/);
+  assert.match(command, /x-clawd-server/);
+  assert.doesNotMatch(command, new RegExp(profile.routingNonce));
+});
+
 test("bare node secure probe keeps remoteHome shell metacharacters opaque", {
   skip: process.platform === "win32",
 }, () => {
@@ -532,6 +547,10 @@ function makeMockChild() {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
+  child.stdin = {
+    endCalls: 0,
+    end() { this.endCalls += 1; },
+  };
   child.kill = (sig) => {
     if (child._killed) return;
     child._killed = true;
@@ -542,6 +561,12 @@ function makeMockChild() {
   };
   child._fakeStderr = (text) => {
     queueMicrotask(() => child.stderr.emit("data", Buffer.from(text)));
+  };
+  child._fakeStdout = (text) => {
+    queueMicrotask(() => child.stdout.emit("data", Buffer.from(text)));
+  };
+  child._fakeClose = (code, signal) => {
+    queueMicrotask(() => child.emit("close", code != null ? code : null, signal || null));
   };
   return child;
 }
@@ -627,6 +652,191 @@ async function exitSsh(child, stderr, code = 255) {
 
 test("createRemoteSshRuntime requires getHookServerPort dep", () => {
   assert.throws(() => createRemoteSshRuntime({}), /getHookServerPort/);
+});
+
+test("serialized Connect uses one persistent SSH for readiness and drains on close", async () => {
+  const children = [];
+  const spawn = (_command, args, opts) => {
+    const child = makeMockChild();
+    child._args = args;
+    child._opts = opts;
+    children.push(child);
+    return child;
+  };
+  const coordinator = createRemoteSshTransportCoordinator({
+    spawn,
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "codespaces-stdio",
+      key: "codespace:fuzzy-space",
+      fingerprint: "fp",
+    }),
+    drainTimeoutMs: 1000,
+  });
+  const profile = makeSecureProfile({ sshTransportMode: "auto" });
+  const admitted = await coordinator.acquireConnection(profile);
+  const rt = createRemoteSshRuntime({
+    spawn,
+    transportCoordinator: coordinator,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+  });
+  rt.connect(profile, {
+    serialized: true,
+    transportContext: admitted.context,
+  });
+  await flushAsyncEvents();
+  assert.equal(children.length, 1, "serialized runtime must not spawn a second health SSH");
+  const tunnel = children[0];
+  assert.equal(tunnel._args.includes("-N"), false);
+  assert.ok(tunnel._args.includes("-R"));
+  const command = String(tunnel._args.at(-1));
+  const marker = /__CLAWD_REMOTE_READY__:[a-f0-9]{32}/.exec(command);
+  assert.ok(marker, "persistent command carries the per-connect ready marker");
+  tunnel._fakeStdout(`startup banner\r\n${marker[0]}\r\n`);
+  await flushAsyncEvents();
+  assert.equal(rt.getProfileStatus(profile.id).status, "connected");
+
+  const operation = await coordinator.acquireOperation(profile, "deploy");
+  const drain = rt.suspendForOperation(profile.id, operation.context);
+  let drained = false;
+  drain.then(() => { drained = true; });
+  assert.equal(tunnel.stdin.endCalls, 1, "suspend must send stdin EOF");
+  tunnel._fakeExit(0);
+  await flushAsyncEvents();
+  assert.equal(drained, false, "exit alone must not satisfy the drain barrier");
+  tunnel._fakeClose(0);
+  await drain;
+  assert.equal(drained, true);
+  assert.equal(children.length, 1);
+  const finalized = rt.finalizeSerializedDisconnect(profile.id, operation.context);
+  assert.equal(finalized.transportPhase, "idle");
+  assert.equal(finalized.transportOwnerProfileId, null);
+});
+
+test("serialized direct Disconnect publishes the released transport phase after child close", async () => {
+  const children = [];
+  const spawn = () => {
+    const child = makeMockChild();
+    children.push(child);
+    return child;
+  };
+  const coordinator = createRemoteSshTransportCoordinator({
+    spawn,
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "codespaces-stdio",
+      key: "codespace:direct-disconnect",
+      fingerprint: "fp-direct-disconnect",
+    }),
+  });
+  const profile = makeSecureProfile({ host: "direct-disconnect@unique-host" });
+  const admitted = await coordinator.acquireConnection(profile);
+  const rt = createRemoteSshRuntime({
+    spawn,
+    transportCoordinator: coordinator,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+  });
+  const events = [];
+  rt.on("status-changed", (status) => events.push(status));
+  rt.connect(profile, {
+    serialized: true,
+    transportContext: admitted.context,
+  });
+  await flushAsyncEvents();
+  assert.equal(children.length, 1);
+
+  rt.disconnect(profile.id);
+  assert.equal(children[0].stdin.endCalls, 1);
+  children[0]._fakeExit(0);
+  children[0]._fakeClose(0);
+  await flushAsyncEvents();
+
+  const current = rt.getProfileStatus(profile.id);
+  assert.equal(current.status, "idle");
+  assert.equal(current.transportPhase, "idle");
+  assert.equal(current.transportOwnerProfileId, null);
+  assert.equal(events.at(-1).transportPhase, "idle");
+});
+
+test("serialized Connect closes Node and monitor one-shots before starting the persistent tunnel", async () => {
+  const children = [];
+  const spawn = (_command, args, opts) => {
+    const child = makeMockChild();
+    child._args = args;
+    child._opts = opts;
+    children.push(child);
+    return child;
+  };
+  const coordinator = createRemoteSshTransportCoordinator({
+    spawn,
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "codespaces-stdio",
+      key: "codespace:ordered-space",
+      fingerprint: "fp-ordered",
+    }),
+  });
+  const profile = makeSecureProfile({ host: "ordered@unique-host" });
+  const admitted = await coordinator.acquireConnection(profile);
+  let preparationCalls = 0;
+  const rt = createRemoteSshRuntime({
+    spawn,
+    transportCoordinator: coordinator,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+    resolveRemoteNodeBin: async ({ runtime }) => {
+      const child = runtime.spawnManagedTransportChild({
+        role: "node-resolve",
+        tool: "ssh",
+        args: [profile.host, "resolve-node"],
+        options: { stdio: ["ignore", "pipe", "pipe"] },
+      });
+      const closed = new Promise((resolve) => child.once("close", resolve));
+      child._fakeExit(0);
+      child._fakeClose(0);
+      await closed;
+      return { ok: true, nodeBin: "/usr/bin/node", version: "v20.1.0", source: "path" };
+    },
+  });
+  rt.connect(profile, {
+    serialized: true,
+    transportContext: admitted.context,
+    prepareSerializedAttempt: async ({ runtime }) => {
+      preparationCalls += 1;
+      const child = runtime.spawnManagedTransportChild({
+        role: "monitor-start",
+        tool: "ssh",
+        args: [profile.host, "monitor"],
+        options: { stdio: ["ignore", "pipe", "pipe"] },
+      });
+      const closed = new Promise((resolve) => child.once("close", resolve));
+      child._fakeExit(0);
+      child._fakeClose(0);
+      await closed;
+      return { ok: true };
+    },
+  });
+  for (let i = 0; i < 8 && children.length < 3; i += 1) {
+    await flushAsyncEvents();
+  }
+
+  assert.equal(preparationCalls, 1);
+  assert.equal(children.length, 3, JSON.stringify({
+    args: children.map((child) => child._args),
+    status: rt.getProfileStatus(profile.id),
+  }));
+  assert.equal(children[0]._args.at(-1), "resolve-node");
+  assert.equal(children[1]._args.at(-1), "monitor");
+  assert.ok(children[2]._args.includes("-R"));
+  assert.equal(coordinator._slots.get("codespace:ordered-space").trackedChildren.size, 1);
+  const operation = await coordinator.acquireOperation(profile, "disconnect");
+  const drain = rt.suspendForOperation(profile.id, operation.context);
+  children[2]._fakeExit(0);
+  children[2]._fakeClose(0);
+  await drain;
+  rt.finalizeSerializedDisconnect(profile.id, operation.context);
 });
 
 test("connect fails fast on legacy Windows OpenSSH before spawning tunnel", () => {

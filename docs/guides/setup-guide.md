@@ -143,6 +143,11 @@ in the dedicated guide:
 
 **→ [docs/guides/guide-remote-ssh.md](guide-remote-ssh.md)**
 
+GitHub Codespaces aliases whose effective SSH `ProxyCommand` uses
+`gh cs ssh --stdio` are detected automatically. Clawd serializes its managed
+SSH/SCP work for that Codespace and carries readiness inside the persistent
+reverse-tunnel session; no manual transport override is normally needed.
+
 **How it works:**
 - **Claude Code** — command hooks and the static PermissionRequest URL use the profile's exact forward port. The dedicated local ingress validates a routing nonce before forwarding state or a decision.
 - **Codex CLI** — official hooks and the layout-scoped fallback monitor use the same pinned transport. Because Clawd cannot focus a window on the remote host, `request_user_input` cards tell you to return to the remote Codex terminal.

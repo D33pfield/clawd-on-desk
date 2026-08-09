@@ -23,8 +23,18 @@ const {
   finalizeRetiredRemoteLayout,
   bootstrapIsolatedRuntime,
 } = require("./remote-ssh-deploy");
-const { buildSshArgs, checkSecureConnectReadiness } = require("./remote-ssh-runtime");
 const {
+  buildSshArgs,
+  checkSecureConnectReadiness,
+  tunnelTargetKey,
+} = require("./remote-ssh-runtime");
+const {
+  localTargetFingerprint,
+  redactTransportDiagnostic,
+} = require("./remote-ssh-transport");
+const {
+  deployTargetDrift,
+  deployTargetFingerprint,
   remoteOwnershipDomainKey,
 } = require("./remote-ssh-profile");
 const {
@@ -67,6 +77,7 @@ function registerRemoteSshIpc(options = {}) {
   const ipcMain = requireDep(options.ipcMain, "ipcMain");
   const settingsController = requireDep(options.settingsController, "settingsController");
   const remoteSshRuntime = requireDep(options.remoteSshRuntime, "remoteSshRuntime");
+  const transportCoordinator = options.transportCoordinator || null;
   const BrowserWindow = requireDep(options.BrowserWindow, "BrowserWindow");
   const platform = options.platform || process.platform;
   const spawn = options.spawn || childProcess.spawn;
@@ -87,6 +98,208 @@ function registerRemoteSshIpc(options = {}) {
 
   const disposers = [];
   const runtimeModeSwitches = new Set();
+  const destructiveProfileOperations = new Map();
+
+  function managedRuntimeForContext(context) {
+    return {
+      emit: (event, payload) => remoteSshRuntime.emit(event, payload),
+      spawnManagedTransportChild: (spec) => context.spawn({
+        ...spec,
+        attemptToken: context.attemptToken,
+      }),
+      assertTransportActive: () => context.assertActive(),
+      invalidateManagedOperation: (err) => {
+        if (!transportCoordinator) return;
+        try {
+          const recoveryCode = context.getRecoveryCode();
+          if (recoveryCode && err && typeof err === "object") err.recoveryCode = recoveryCode;
+        } catch {}
+        try {
+          transportCoordinator.invalidate(context, (err && err.code) || "transport_drain_timeout");
+        } catch {}
+      },
+      settleManagedTimeoutAfterClose: (err) => {
+        if (!transportCoordinator) return;
+        try {
+          const outcome = transportCoordinator.abortAfterVerifiedClose(
+            context,
+            (err && err.code) || "operation_timeout",
+          );
+          if (outcome && outcome.recoveryCode && err && typeof err === "object") {
+            err.recoveryCode = outcome.recoveryCode;
+          }
+        } catch {}
+      },
+      setManagedLockStage: (stage) => context.setLockStage(stage),
+    };
+  }
+
+  function coordinatorFailure(result) {
+    return {
+      status: "error",
+      reason: result && result.code || "transport_operation_failed",
+      ...(result && result.ownerProfileId ? { ownerProfileId: result.ownerProfileId } : {}),
+      ...(result && result.operation ? { operation: result.operation } : {}),
+      message: result && result.message || "Remote SSH transport operation failed",
+    };
+  }
+
+  function transportHintFromInspection(inspection) {
+    if (!inspection || inspection.mode !== "serialized") return null;
+    if (inspection.kind !== "codespaces-stdio" && inspection.kind !== "explicit-serialized") return null;
+    if (typeof inspection.key !== "string" || inspection.key.length > 160) return null;
+    return {
+      version: 1,
+      mode: "serialized",
+      kind: inspection.kind,
+      keyId: inspection.key,
+    };
+  }
+
+  async function withManagedTransport(requestedProfile, operation, policy, callback) {
+    const binding = requireVerifiedInstallationBinding();
+    const initialProfile = { ...requestedProfile, installId: binding.installId };
+    if (!transportCoordinator) {
+      if (policy && policy.disconnectOrdinary === true) {
+        remoteSshRuntime.disconnect(requestedProfile.id);
+      }
+      return callback({
+        profile: initialProfile,
+        runtime: remoteSshRuntime,
+        inspection: { mode: "parallel", kind: "standard" },
+        transportContext: null,
+      });
+    }
+    const admitted = policy && policy.useOwnedTransport === true
+      ? await transportCoordinator.acquireOwnedOperation(initialProfile, operation)
+      : await transportCoordinator.acquireOperation(initialProfile, operation);
+    if (!admitted.ok) {
+      const err = new Error(admitted.message);
+      err.reason = admitted.code;
+      err.ownerProfileId = admitted.ownerProfileId;
+      err.operation = admitted.operation;
+      throw err;
+    }
+    if (!admitted.serialized) {
+      if (policy && policy.disconnectOrdinary === true) {
+        remoteSshRuntime.disconnect(requestedProfile.id);
+      }
+      return callback({
+        profile: initialProfile,
+        runtime: remoteSshRuntime,
+        inspection: admitted.inspection,
+        transportContext: null,
+      });
+    }
+
+    const context = admitted.context;
+    let result;
+    let primaryError = null;
+    let resumeWarning = null;
+    try {
+      if (policy && policy.skipRuntimeSuspend === true) {
+        await transportCoordinator.waitForDrain(context, (child, metadata) => {
+          if (metadata && metadata.role === "persistent-tunnel-readiness" && child.stdin) {
+            try { child.stdin.end(); } catch {}
+            return;
+          }
+          // Historical targets must be idle before admission. An unexpected
+          // one-shot child is left tracked: the deadline quarantines the slot
+          // instead of treating a force-killed outer ssh as a verified drain.
+        });
+      } else {
+        await remoteSshRuntime.suspendForOperation(requestedProfile.id, context, {
+          closeIngress: policy && policy.closeIngressBefore === true,
+          message: policy && policy.suspendMessage,
+        });
+      }
+      context.assertActive();
+      const latest = policy && policy.historicalTarget === true
+        ? requestedProfile
+        : findProfile(settingsController, requestedProfile.id);
+      const targetDrift = latest && deployTargetDrift(
+        deployTargetFingerprint(requestedProfile),
+        deployTargetFingerprint(latest),
+      );
+      if (!latest
+        || localTargetFingerprint(latest) !== localTargetFingerprint(requestedProfile)
+        || targetDrift) {
+        const err = new Error("Remote SSH profile changed before the operation started");
+        err.reason = "profile_changed";
+        err.driftedField = targetDrift || undefined;
+        throw err;
+      }
+      const runtimeProfile = { ...latest, installId: binding.installId };
+      result = await callback({
+        profile: runtimeProfile,
+        runtime: managedRuntimeForContext(context),
+        inspection: admitted.inspection,
+        transportContext: context,
+      });
+      context.assertActive();
+    } catch (err) {
+      primaryError = err;
+    }
+
+    let active = true;
+    try { context.assertActive(); } catch { active = false; }
+    if (active) {
+      const intent = transportCoordinator.getIntent(requestedProfile.id);
+      const latest = findProfile(settingsController, requestedProfile.id);
+      const targetDrift = latest && deployTargetDrift(
+        deployTargetFingerprint(requestedProfile),
+        deployTargetFingerprint(latest),
+      );
+      const shouldResume = policy && policy.resume === "if-desired"
+        && intent.desiredConnected === true
+        && latest
+        && localTargetFingerprint(latest) === localTargetFingerprint(requestedProfile)
+        && !targetDrift;
+      if (shouldResume) {
+        try {
+          const runtimeProfile = { ...latest, installId: binding.installId };
+          remoteSshRuntime.connect(runtimeProfile, {
+            serialized: true,
+            transportContext: context,
+          });
+        } catch (err) {
+          resumeWarning = {
+            reason: (err && err.reason) || "resume_failed",
+            message: (err && err.message) || "Remote SSH reconnect failed",
+          };
+          try { remoteSshRuntime.finalizeSerializedDisconnect(requestedProfile.id, context); } catch {}
+        }
+      } else if (policy && policy.skipRuntimeSuspend === true) {
+        try { transportCoordinator.release(context); } catch {}
+      } else {
+        try { remoteSshRuntime.finalizeSerializedDisconnect(requestedProfile.id, context); } catch {}
+      }
+    }
+
+    if (primaryError) {
+      if (resumeWarning) primaryError.resumeWarning = resumeWarning;
+      throw primaryError;
+    }
+    if (resumeWarning && result && typeof result === "object") {
+      return { ...result, resumeWarning };
+    }
+    return result;
+  }
+
+  async function drainForDestructiveOperation(profile, operation) {
+    if (transportCoordinator) transportCoordinator.recordDisconnectIntent(profile.id);
+    return withManagedTransport(
+      profile,
+      operation,
+      {
+        resume: "never",
+        closeIngressBefore: true,
+        disconnectOrdinary: true,
+        useOwnedTransport: true,
+      },
+      async () => ({ status: "ok" }),
+    );
+  }
 
   function requireVerifiedInstallationBinding() {
     const identity = getInstallationIdentity();
@@ -166,6 +379,9 @@ function registerRemoteSshIpc(options = {}) {
             remoteSshRuntime.refreshProfile(profile);
           } else if (!profile) {
             remoteSshRuntime.disconnect(status.profileId);
+            if (transportCoordinator && typeof transportCoordinator.forgetProfile === "function") {
+              transportCoordinator.forgetProfile(status.profileId);
+            }
           }
         } catch (err) {
           log("remote-ssh: could not sync runtime profile", status.profileId, err && err.message);
@@ -211,7 +427,13 @@ function registerRemoteSshIpc(options = {}) {
   // Used by both the manual `remoteSsh:connect` IPC handler and the
   // connect-on-launch sweep so they behave identically. Throws if
   // runtime.connect throws; the codex monitor is best-effort and never blocks.
-  function connectProfile(profile) {
+  async function connectProfile(profile) {
+    if (destructiveProfileOperations.has(profile.id)) {
+      const err = new Error("A destructive Remote SSH operation is already active for this profile");
+      err.reason = "transport_operation_busy";
+      err.operation = destructiveProfileOperations.get(profile.id);
+      throw err;
+    }
     const binding = requireVerifiedInstallationBinding();
     if (profile.runtimeMode === "profile-isolated" && !enableProfileIsolation) {
       throw new Error(
@@ -232,10 +454,58 @@ function registerRemoteSshIpc(options = {}) {
       err.detail = readiness.detail;
       throw err;
     }
-    remoteSshRuntime.connect(runtimeProfile);
-    if (profile.autoStartCodexMonitor === true) {
-      startCodexMonitorFn({ profile: runtimeProfile, runtime: remoteSshRuntime, deps: { spawn } })
-        .catch((err) => log("codex monitor start failed:", err && err.message));
+    if (!transportCoordinator) {
+      remoteSshRuntime.connect(runtimeProfile);
+      if (profile.autoStartCodexMonitor === true) {
+        startCodexMonitorFn({ profile: runtimeProfile, runtime: remoteSshRuntime, deps: { spawn } })
+          .catch((err) => log("codex monitor start failed:", err && err.message));
+      }
+      return remoteSshRuntime.getProfileStatus(profile.id);
+    }
+
+    const admitted = await transportCoordinator.acquireConnection(runtimeProfile);
+    if (!admitted.ok) {
+      const err = new Error(admitted.message);
+      err.reason = admitted.code;
+      err.ownerProfileId = admitted.ownerProfileId;
+      throw err;
+    }
+    if (!admitted.serialized) {
+      remoteSshRuntime.connect(runtimeProfile);
+      if (profile.autoStartCodexMonitor === true) {
+        startCodexMonitorFn({ profile: runtimeProfile, runtime: remoteSshRuntime, deps: { spawn } })
+          .catch((err) => log("codex monitor start failed:", err && err.message));
+      }
+      return remoteSshRuntime.getProfileStatus(profile.id);
+    }
+
+    const latest = findProfile(settingsController, profile.id);
+    const latestRuntimeProfile = latest && { ...latest, installId: binding.installId };
+    if (!latestRuntimeProfile
+      || localTargetFingerprint(latest) !== localTargetFingerprint(profile)
+      || tunnelTargetKey(latestRuntimeProfile) !== tunnelTargetKey(runtimeProfile)) {
+      transportCoordinator.release(admitted.context);
+      const err = new Error("Remote SSH profile changed before connection preparation");
+      err.reason = "profile_changed";
+      throw err;
+    }
+    const prepareSerializedAttempt = profile.autoStartCodexMonitor === true
+      ? async ({ profile: preparedProfile, remoteNode, runtime }) => startCodexMonitorFn({
+          profile: preparedProfile,
+          runtime,
+          deps: { spawn, nodeBin: remoteNode.nodeBin },
+        })
+      : null;
+    try {
+      remoteSshRuntime.connect(runtimeProfile, {
+        serialized: true,
+        transportContext: admitted.context,
+        prepareSerializedAttempt,
+      });
+      return remoteSshRuntime.getProfileStatus(profile.id);
+    } catch (err) {
+      try { transportCoordinator.release(admitted.context); } catch {}
+      throw err;
     }
   }
 
@@ -244,7 +514,7 @@ function registerRemoteSshIpc(options = {}) {
     const profile = id ? findProfile(settingsController, id) : null;
     if (!profile) return { status: "error", message: "profile not found" };
     try {
-      connectProfile(profile);
+      await connectProfile(profile);
       return { status: "ok", state: remoteSshRuntime.getProfileStatus(id) };
     } catch (err) {
       return {
@@ -264,7 +534,59 @@ function registerRemoteSshIpc(options = {}) {
     }
     try {
       const profile = findProfile(settingsController, id);
-      remoteSshRuntime.disconnect(id);
+      if (!transportCoordinator || !profile) {
+        remoteSshRuntime.disconnect(id);
+      } else {
+        transportCoordinator.recordDisconnectIntent(id);
+        const activeOwnerOperation = typeof transportCoordinator.getActiveOwnerOperation === "function"
+          ? transportCoordinator.getActiveOwnerOperation(id)
+          : null;
+        if (activeOwnerOperation
+          && activeOwnerOperation.operation
+          && activeOwnerOperation.operation !== "connect"
+          && activeOwnerOperation.operation !== "disconnect") {
+          if (activeOwnerOperation.quarantined) {
+            return coordinatorFailure({
+              code: "manual_lock_inspection_required",
+              operation: activeOwnerOperation.operation,
+              message: "The serialized SSH transport is quarantined and requires explicit recovery",
+            });
+          }
+          return {
+            status: "ok",
+            disconnectPending: true,
+            state: remoteSshRuntime.getProfileStatus(id),
+          };
+        }
+        const binding = requireVerifiedInstallationBinding();
+        const runtimeProfile = { ...profile, installId: binding.installId };
+        const admitted = await transportCoordinator.acquireOwnedOperation(runtimeProfile, "disconnect");
+        if (!admitted.ok) return coordinatorFailure(admitted);
+        if (admitted.serialized) {
+          await remoteSshRuntime.suspendForOperation(id, admitted.context, { closeIngress: true });
+          const managedRuntime = managedRuntimeForContext(admitted.context);
+          if (profile.autoStartCodexMonitor === true && profile.remoteHome) {
+            const stopped = await stopCodexMonitorFn({
+              profile: runtimeProfile,
+              runtime: managedRuntime,
+              deps: { spawn },
+            }).catch((err) => {
+              log("codex monitor stop failed:", err && err.message);
+              return null;
+            });
+            admitted.context.assertActive();
+            if (stopped && stopped.ok === false) {
+              log("codex monitor stop incomplete:", redactTransportDiagnostic(
+                stopped.stderr || stopped.reason,
+                profile,
+              ));
+            }
+          }
+          const state = remoteSshRuntime.finalizeSerializedDisconnect(id, admitted.context);
+          return { status: "ok", state };
+        }
+        remoteSshRuntime.disconnect(id);
+      }
       // Best-effort cleanup of remote codex monitor if profile had it on.
       if (profile && profile.autoStartCodexMonitor === true && profile.remoteHome) {
         const binding = requireVerifiedInstallationBinding();
@@ -277,7 +599,12 @@ function registerRemoteSshIpc(options = {}) {
       }
       return { status: "ok", state: remoteSshRuntime.getProfileStatus(id) };
     } catch (err) {
-      return { status: "error", message: (err && err.message) || "disconnect threw" };
+      return {
+        status: "error",
+        ...(err && (err.reason || err.code) ? { reason: err.reason || err.code } : {}),
+        ...(err && err.recoveryCode ? { recoveryCode: err.recoveryCode } : {}),
+        message: (err && err.message) || "disconnect threw",
+      };
     }
   });
 
@@ -293,6 +620,14 @@ function registerRemoteSshIpc(options = {}) {
     }
     const profile = findProfile(settingsController, id);
     if (!profile) return { status: "error", message: "profile not found" };
+    if (destructiveProfileOperations.has(id)) {
+      return coordinatorFailure({
+        code: "transport_operation_busy",
+        operation: destructiveProfileOperations.get(id),
+        message: "Another destructive Remote SSH operation is already active for this profile",
+      });
+    }
+    destructiveProfileOperations.set(id, "cleanup");
     try {
       const binding = requireVerifiedInstallationBinding();
       if (profile.identityTxn && profile.identityTxn.phase !== "committed") {
@@ -302,7 +637,7 @@ function registerRemoteSshIpc(options = {}) {
           message: "Finish or force-revoke the current identity transaction before cleanup",
         };
       }
-      remoteSshRuntime.disconnect(id);
+      await drainForDestructiveOperation(profile, "cleanup-disconnect");
       const ownedTargets = Array.isArray(profile.managedDeployTargets)
         ? profile.managedDeployTargets
         : [];
@@ -320,7 +655,10 @@ function registerRemoteSshIpc(options = {}) {
       let uninstalled = true;
       let attempted = 0;
       let shared = 0;
-      for (const target of ownedTargets) {
+      const orderedTargets = ownedTargets.slice().sort((a, b) =>
+        remoteOwnershipDomainKey(a).localeCompare(remoteOwnershipDomainKey(b))
+      );
+      for (const target of orderedTargets) {
         if (siblingOwnershipDomains.has(remoteOwnershipDomainKey(target))) {
           shared += 1;
           continue;
@@ -338,17 +676,35 @@ function registerRemoteSshIpc(options = {}) {
           log("remote uninstall skipped: deployment ownership does not match this installation");
           continue;
         }
-        const result = await uninstallRemoteIntegrationsFn({
-          profile: cleanupProfile,
-          runtime: remoteSshRuntime,
-          deps: { spawn },
-        }).catch((err) => {
+        const result = await withManagedTransport(
+          cleanupProfile,
+          "cleanup",
+          { resume: "never", historicalTarget: true, skipRuntimeSuspend: true },
+          async ({ profile: admittedProfile, runtime }) => uninstallRemoteIntegrationsFn({
+            profile: admittedProfile,
+            runtime,
+            deps: { spawn },
+          }),
+        ).catch((err) => {
           log("remote uninstall failed:", err && err.message);
-          return { ok: false };
+          return {
+            ok: false,
+            reason: (err && (err.reason || err.code)) || "cleanup_transport_failed",
+            message: (err && err.message) || "Remote cleanup transport failed",
+          };
         });
         if (!result || result.ok === false) {
           uninstalled = false;
-          const stderr = (result && result.stderr || "").toString().trim();
+          if (result && (result.reason === "serialized_transport_busy"
+            || result.reason === "transport_inspection_failed"
+            || result.reason === "transport_drain_timeout")) {
+            return {
+              status: "error",
+              reason: result.reason,
+              message: result.message || "Remote cleanup transport is unavailable",
+            };
+          }
+          const stderr = redactTransportDiagnostic(result && result.stderr, cleanupProfile);
           log("remote uninstall incomplete for", target.host, stderr.slice(0, 200));
         }
       }
@@ -360,7 +716,14 @@ function registerRemoteSshIpc(options = {}) {
         skipped: attempted === 0 ? "shared-owner" : undefined,
       };
     } catch (err) {
-      return { status: "error", message: (err && err.message) || "cleanup threw" };
+      return {
+        status: "error",
+        ...(err && (err.reason || err.code) ? { reason: err.reason || err.code } : {}),
+        ...(err && err.recoveryCode ? { recoveryCode: err.recoveryCode } : {}),
+        message: (err && err.message) || "cleanup threw",
+      };
+    } finally {
+      destructiveProfileOperations.delete(id);
     }
   });
 
@@ -377,28 +740,51 @@ function registerRemoteSshIpc(options = {}) {
     }
     const profile = findProfile(settingsController, id);
     if (!profile) return { status: "error", message: "profile not found" };
+    if (destructiveProfileOperations.has(id)) {
+      return coordinatorFailure({
+        code: "transport_operation_busy",
+        operation: destructiveProfileOperations.get(id),
+        message: "Another destructive Remote SSH operation is already active for this profile",
+      });
+    }
+    destructiveProfileOperations.set(id, "force-revoke");
     try {
       requireVerifiedInstallationBinding();
-      remoteSshRuntime.disconnect(id);
-      const revoked = await settingsController.applyCommand("remoteSsh.forceRevoke", {
-        id,
-        mode,
-        confirmed: true,
-      });
-      if (!revoked || revoked.status !== "ok") {
-        return revoked || { status: "error", message: "Identity revocation failed" };
-      }
-      const refreshed = refreshRuntimeProfile(id);
-      if (!refreshed) {
-        return { status: "error", message: "Profile disappeared while revoking its identity" };
-      }
-      return {
-        status: "ok",
-        mode,
-        identityTxn: refreshed.identityTxn || null,
-      };
+      await drainForDestructiveOperation(profile, "force-revoke-disconnect");
+      return await withManagedTransport(
+        profile,
+        "force-revoke",
+        { resume: "never", skipRuntimeSuspend: true },
+        async ({ transportContext }) => {
+          if (transportContext) transportContext.assertActive();
+          const revoked = await settingsController.applyCommand("remoteSsh.forceRevoke", {
+            id,
+            mode,
+            confirmed: true,
+          });
+          if (transportContext) transportContext.assertActive();
+          if (!revoked || revoked.status !== "ok") {
+            return revoked || { status: "error", message: "Identity revocation failed" };
+          }
+          const refreshed = refreshRuntimeProfile(id);
+          if (!refreshed) {
+            return { status: "error", message: "Profile disappeared while revoking its identity" };
+          }
+          return {
+            status: "ok",
+            mode,
+            identityTxn: refreshed.identityTxn || null,
+          };
+        },
+      );
     } catch (err) {
-      return { status: "error", message: (err && err.message) || "identity revocation failed" };
+      return {
+        status: "error",
+        ...(err && (err.reason || err.code) ? { reason: err.reason || err.code } : {}),
+        message: (err && err.message) || "identity revocation failed",
+      };
+    } finally {
+      destructiveProfileOperations.delete(id);
     }
   });
 
@@ -433,6 +819,13 @@ function registerRemoteSshIpc(options = {}) {
         message: "A runtime mode switch is already in progress for this profile",
       };
     }
+    if (destructiveProfileOperations.has(id)) {
+      return coordinatorFailure({
+        code: "transport_operation_busy",
+        operation: destructiveProfileOperations.get(id),
+        message: "Another destructive Remote SSH operation is already active for this profile",
+      });
+    }
     if (profile.identityTxn && profile.identityTxn.phase !== "committed") {
       return {
         status: "error",
@@ -440,9 +833,10 @@ function registerRemoteSshIpc(options = {}) {
       };
     }
     runtimeModeSwitches.add(id);
+    destructiveProfileOperations.set(id, "runtime-mode-switch");
     try {
       const binding = requireVerifiedInstallationBinding();
-      remoteSshRuntime.disconnect(id);
+      await drainForDestructiveOperation(profile, "runtime-mode-disconnect");
       let workingProfile = profile;
       if (!workingProfile.runtimeModeTxn) {
         const proposedRuntimeKey = runtimeMode === "profile-isolated"
@@ -473,6 +867,7 @@ function registerRemoteSshIpc(options = {}) {
         ? workingProfile.managedDeployTargets.filter((target) =>
           (target.runtimeMode || "account-default") === txn.fromMode
           && (target.runtimeKey || "account-default") === txn.fromKey)
+          .sort((a, b) => remoteOwnershipDomainKey(a).localeCompare(remoteOwnershipDomainKey(b)))
         : [];
       if (workingProfile.runtimeModeTxn.phase === "prepared" && ownedTargets.length === 0) {
         return {
@@ -483,15 +878,24 @@ function registerRemoteSshIpc(options = {}) {
       }
       if (txn.phase === "prepared") {
         for (const target of ownedTargets) {
-          const cleanup = await uninstallRemoteIntegrationsFn({
-            profile: { ...target, id: workingProfile.id, installId: binding.installId },
-            runtime: remoteSshRuntime,
-            deps: { spawn },
-            // Keep the ownership record until the local cleanup-done phase is
-            // durable. This makes a crash between remote cleanup and prefs
-            // persistence safely retryable.
-            preserveIdentity: true,
-          });
+          const historicalProfile = {
+            ...target,
+            id: workingProfile.id,
+            installId: binding.installId,
+          };
+          const cleanup = await withManagedTransport(
+            historicalProfile,
+            "runtime-mode-cleanup",
+            { resume: "never", historicalTarget: true, skipRuntimeSuspend: true },
+            async ({ profile: admittedProfile, runtime }) => uninstallRemoteIntegrationsFn({
+              profile: admittedProfile,
+              runtime,
+              deps: { spawn },
+              // Keep the ownership record until the local cleanup-done phase
+              // is durable. A crash remains safely retryable.
+              preserveIdentity: true,
+            }),
+          );
           if (!cleanup || cleanup.ok !== true) {
             return {
               status: "error",
@@ -515,11 +919,21 @@ function registerRemoteSshIpc(options = {}) {
 
       if (workingProfile.runtimeModeTxn.phase === "cleanup-done") {
         for (const target of ownedTargets) {
-          const finalized = await finalizeRetiredRemoteLayoutFn({
-            profile: { ...target, id: workingProfile.id, installId: binding.installId },
-            runtime: remoteSshRuntime,
-            deps: { spawn },
-          });
+          const historicalProfile = {
+            ...target,
+            id: workingProfile.id,
+            installId: binding.installId,
+          };
+          const finalized = await withManagedTransport(
+            historicalProfile,
+            "runtime-mode-finalize",
+            { resume: "never", historicalTarget: true, skipRuntimeSuspend: true },
+            async ({ profile: admittedProfile, runtime }) => finalizeRetiredRemoteLayoutFn({
+              profile: admittedProfile,
+              runtime,
+              deps: { spawn },
+            }),
+          );
           if (!finalized || finalized.ok !== true) {
             return {
               status: "error",
@@ -534,13 +948,18 @@ function registerRemoteSshIpc(options = {}) {
       let bootstrap = null;
       if (runtimeMode === "profile-isolated"
         && workingProfile.runtimeModeTxn.phase === "cleanup-done") {
-        bootstrap = await bootstrapIsolatedRuntimeFn({
-          profile: workingProfile,
-          installId: binding.installId,
-          runtimeKey,
-          runtime: remoteSshRuntime,
-          deps: { spawn },
-        });
+        bootstrap = await withManagedTransport(
+          workingProfile,
+          "runtime-mode-bootstrap",
+          { resume: "never", skipRuntimeSuspend: true },
+          async ({ profile: admittedProfile, runtime }) => bootstrapIsolatedRuntimeFn({
+            profile: admittedProfile,
+            installId: binding.installId,
+            runtimeKey,
+            runtime,
+            deps: { spawn },
+          }),
+        );
         if (!bootstrap || bootstrap.ok !== true) {
           return {
             status: "error",
@@ -580,9 +999,15 @@ function registerRemoteSshIpc(options = {}) {
         runtimeRoot: bootstrap && bootstrap.layout && bootstrap.layout.runtimeRoot,
       };
     } catch (err) {
-      return { status: "error", message: (err && err.message) || "runtime mode switch failed" };
+      return {
+        status: "error",
+        ...(err && (err.reason || err.code) ? { reason: err.reason || err.code } : {}),
+        ...(err && err.recoveryCode ? { recoveryCode: err.recoveryCode } : {}),
+        message: (err && err.message) || "runtime mode switch failed",
+      };
     } finally {
       runtimeModeSwitches.delete(id);
+      destructiveProfileOperations.delete(id);
     }
   });
 
@@ -597,6 +1022,13 @@ function registerRemoteSshIpc(options = {}) {
     );
     const profile = id ? findProfile(settingsController, id) : null;
     if (!profile) return { status: "error", message: "profile not found" };
+    if (destructiveProfileOperations.has(id)) {
+      return coordinatorFailure({
+        code: "transport_operation_busy",
+        operation: destructiveProfileOperations.get(id),
+        message: "Another destructive Remote SSH operation is already active for this profile",
+      });
+    }
     if (profile.runtimeMode === "profile-isolated" && !enableProfileIsolation) {
       return {
         status: "error",
@@ -605,10 +1037,21 @@ function registerRemoteSshIpc(options = {}) {
       };
     }
     try {
+      return await withManagedTransport(
+        profile,
+        "deploy",
+        {
+          resume: "if-desired",
+          closeIngressBefore: true,
+          suspendMessage: "Remote SSH is paused while hooks are deployed.",
+        },
+        async ({ profile, runtime, inspection, transportContext }) => {
       const installationIdentity = requireVerifiedInstallationBinding();
+      if (transportContext) transportContext.assertActive();
       const begin = await settingsController.applyCommand("remoteSsh.beginIdentityRotation", {
         id: profile.id,
       });
+      if (transportContext) transportContext.assertActive();
       if (!begin || begin.status !== "ok") {
         return {
           status: "error",
@@ -624,7 +1067,7 @@ function registerRemoteSshIpc(options = {}) {
         installId: installationIdentity.installId,
         identityTxn: deployProfile.identityTxn,
         legacyMigrationConfirmed,
-        runtime: remoteSshRuntime,
+        runtime,
         deps: {
           spawn,
           hooksDir,
@@ -635,6 +1078,7 @@ function registerRemoteSshIpc(options = {}) {
               step,
               value,
             });
+            if (transportContext) transportContext.assertActive();
             if (!updated || updated.status !== "ok") {
               throw new Error((updated && updated.message) || `failed to persist ${step}`);
             }
@@ -642,6 +1086,7 @@ function registerRemoteSshIpc(options = {}) {
           },
         },
       });
+      if (transportContext) transportContext.assertActive();
       if (result.ok) {
         // Persist the verified target and cleanup ownership BEFORE committing
         // A → B. If this durable write fails, the transaction must remain in
@@ -683,7 +1128,9 @@ function registerRemoteSshIpc(options = {}) {
             installId: installationIdentity.installId,
             remoteHome: result.layout && result.layout.remoteHome,
             isolation: result.isolation,
+            sshTransportHint: transportHintFromInspection(inspection),
           });
+          if (transportContext) transportContext.assertActive();
           if (stamp && stamp.noop && stamp.reason === "target_drift") {
             log("remote-ssh: deploy stamp skipped due to target drift on", stamp.targetDrift);
             stampWarning = { warning: "target_drift", driftedField: stamp.targetDrift };
@@ -702,6 +1149,7 @@ function registerRemoteSshIpc(options = {}) {
         const committed = await settingsController.applyCommand("remoteSsh.commitIdentityRotation", {
           id: profile.id,
         });
+        if (transportContext) transportContext.assertActive();
         if (!committed || committed.status !== "ok") {
           return {
             status: "error",
@@ -719,8 +1167,16 @@ function registerRemoteSshIpc(options = {}) {
         reason: result.reason || null,
         hint: result.hint || null,
       };
+        },
+      );
     } catch (err) {
-      return { status: "error", message: (err && err.message) || "deploy threw" };
+      return {
+        status: "error",
+        ...(err && (err.reason || err.code) ? { reason: err.reason || err.code } : {}),
+        ...(err && err.recoveryCode ? { recoveryCode: err.recoveryCode } : {}),
+        ...(err && err.resumeWarning ? { resumeWarning: err.resumeWarning } : {}),
+        message: (err && err.message) || "deploy threw",
+      };
     }
   });
 
@@ -805,6 +1261,13 @@ function registerRemoteSshIpc(options = {}) {
     return spawnLinuxTerminal(args);
   }
 
+  async function checkInteractiveTransport(profile) {
+    if (!transportCoordinator || typeof transportCoordinator.checkInteractive !== "function") {
+      return { ok: true };
+    }
+    return transportCoordinator.checkInteractive(profile);
+  }
+
   async function spawnWindowsTerminal(sshArgs) {
     // wt.exe is preferred but not on every box (Win10 LTSC, stripped images,
     // pre-1903 builds). cmd.exe is always present. We try wt first, fall back
@@ -858,6 +1321,8 @@ function registerRemoteSshIpc(options = {}) {
     const id = typeof payload === "string" ? payload : (payload && payload.profileId);
     const profile = id ? findProfile(settingsController, id) : null;
     if (!profile) return { status: "error", message: "profile not found" };
+    const availability = await checkInteractiveTransport(profile);
+    if (!availability.ok) return coordinatorFailure(availability);
     const r = await spawnSystemTerminalWithSsh(profile);
     return r.ok ? { status: "ok", terminal: r.terminal } : { status: "error", message: r.message };
   });
@@ -866,6 +1331,8 @@ function registerRemoteSshIpc(options = {}) {
     const id = typeof payload === "string" ? payload : (payload && payload.profileId);
     const profile = id ? findProfile(settingsController, id) : null;
     if (!profile) return { status: "error", message: "profile not found" };
+    const availability = await checkInteractiveTransport(profile);
+    if (!availability.ok) return coordinatorFailure(availability);
     const r = await spawnSystemTerminalWithSsh(profile);
     return r.ok ? { status: "ok", terminal: r.terminal } : { status: "error", message: r.message };
   });
@@ -874,14 +1341,14 @@ function registerRemoteSshIpc(options = {}) {
   // after the hook server is up. Best-effort and silent: a failed connect is
   // logged but never blocks startup, and the runtime's own retry/backoff takes
   // over from there. Returns the ids it kicked off (for tests / diagnostics).
-  function connectOnLaunchProfiles() {
+  async function connectOnLaunchProfiles() {
     const snap = settingsController.getSnapshot();
     const list = (snap.remoteSsh && Array.isArray(snap.remoteSsh.profiles)) ? snap.remoteSsh.profiles : [];
     const started = [];
     for (const profile of list) {
       if (!profile || profile.connectOnLaunch !== true) continue;
       try {
-        connectProfile(profile);
+        await connectProfile(profile);
         started.push(profile.id);
       } catch (err) {
         log("connect-on-launch failed for", profile.id, err && err.message);

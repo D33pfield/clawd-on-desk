@@ -247,6 +247,7 @@
         host: "",
         port: 22,
         identityFile: "",
+        sshTransportMode: "auto",
         remoteForwardPort: 23333,
         hostPrefix: "",
         autoStartCodexMonitor: false,
@@ -722,9 +723,12 @@
       label.textContent = t(labelKey);
       const picker = helpers.buildSettingsSelect({
         value: String(formData[key]),
-        options: options.map((option) => ({ value: String(option), label: String(option) })),
+        options: options.map((option) => (option && typeof option === "object"
+          ? { value: String(option.value), label: String(option.label) }
+          : { value: String(option), label: String(option) })),
         ariaLabel: t(labelKey),
-        className: "remote-ssh-port-select",
+        className: attrs.className !== undefined ? attrs.className : "remote-ssh-port-select",
+        disabled: attrs.disabled === true,
         onChange(value) {
           const parsed = parseInt(value, 10);
           formData[key] = Number.isFinite(parsed) ? parsed : value;
@@ -785,6 +789,27 @@
       placeholder: "/home/me/.ssh/id_rsa",
       hint: t("remoteSshFieldIdentityFileHint"),
     }));
+    const editedStatus = statusForProfile(formData.id);
+    const transportModeBusy = editedStatus.status === "connecting"
+      || editedStatus.status === "connected"
+      || editedStatus.status === "reconnecting"
+      || (editedStatus.transportPhase && editedStatus.transportPhase !== "idle");
+    if (!formData.sshTransportMode) formData.sshTransportMode = "auto";
+    section.appendChild(selectField(
+      "remoteSshFieldTransportMode",
+      "sshTransportMode",
+      [
+        { value: "auto", label: t("remoteSshTransportModeAuto") },
+        { value: "serialized", label: t("remoteSshTransportModeSerialized") },
+      ],
+      {
+        hint: t(transportModeBusy
+          ? "remoteSshTransportModeDisconnectHint"
+          : "remoteSshTransportModeHint"),
+        disabled: transportModeBusy,
+        className: "",
+      }
+    ));
     section.appendChild(selectField(
       "remoteSshFieldRemoteForwardPort",
       "remoteForwardPort",
@@ -837,6 +862,7 @@
         label: (formData.label || "").trim(),
         host: (formData.host || "").trim(),
         remoteForwardPort: formData.remoteForwardPort,
+        sshTransportMode: formData.sshTransportMode === "serialized" ? "serialized" : "auto",
         autoStartCodexMonitor: !!formData.autoStartCodexMonitor,
         chainStatusline: !!formData.chainStatusline,
         connectOnLaunch: !!formData.connectOnLaunch,

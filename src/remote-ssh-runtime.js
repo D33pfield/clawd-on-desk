@@ -32,6 +32,7 @@
 // `settings-controller`; this file only consumes the validated profile.
 
 const childProcess = require("child_process");
+const crypto = require("crypto");
 const { EventEmitter } = require("events");
 const {
   resolveRemoteNodeBin,
@@ -42,6 +43,7 @@ const {
 const { decodeShellBytes } = require("./remote-ssh-decode");
 const { acceptedRoutingNonces } = require("./remote-ssh-identity");
 const { resolveRemoteRuntimeLayout } = require("./remote-ssh-layout");
+const { redactTransportDiagnostic } = require("./remote-ssh-transport");
 
 const SSH_BASE_OPTS = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
 const SCP_BASE_OPTS = ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
@@ -332,6 +334,52 @@ function buildProbeCommand(remoteForwardPort, nodeBin = "node", options = {}) {
   return buildRemoteNodeEvalCommand(nodeBin, js);
 }
 
+function buildPersistentReadinessCommand(remoteForwardPort, nodeBin, options = {}) {
+  if (!Number.isInteger(remoteForwardPort)) {
+    throw new TypeError("buildPersistentReadinessCommand: remoteForwardPort must be an integer");
+  }
+  if (typeof options.challenge !== "string" || !/^[a-f0-9]{32}$/.test(options.challenge)) {
+    throw new TypeError("buildPersistentReadinessCommand: 128-bit lowercase hex challenge required");
+  }
+  const profile = options.profile;
+  let layout;
+  try {
+    layout = resolveRemoteRuntimeLayout({
+      runtimeMode: profile && profile.runtimeMode,
+      runtimeKey: profile && profile.runtimeKey,
+      remoteHome: profile && profile.remoteHome,
+    });
+  } catch {
+    layout = null;
+  }
+  const marker = `__CLAWD_REMOTE_READY__:${options.challenge}`;
+  const windowMs = Number.isFinite(options.probeWindowMs)
+    ? Math.max(1000, Math.min(60000, Math.trunc(options.probeWindowMs)))
+    : PROBE_WINDOW_MS;
+  const identityGuard = layout
+    ? [
+        `const p=${JSON.stringify(layout.identityFile)};`,
+        "let i;try{i=JSON.parse(fs.readFileSync(p,'utf8'))}catch{process.exit(5)};",
+        `if(i.version!==2||i.installId!==${JSON.stringify(profile.installId)}||i.profileId!==${JSON.stringify(profile.id)}||i.runtimeKey!==${JSON.stringify(profile.runtimeKey)}||i.layoutVersion!==${JSON.stringify(profile.layoutVersion || 1)}||i.remotePort!==${JSON.stringify(remoteForwardPort)}||!Number.isFinite(i.deployedAt)||i.deployedAt<=0||!/^[a-f0-9]{32}$/.test(i.routingNonce||''))process.exit(5);`,
+      ].join("")
+    : "process.exit(5);";
+  const requestOptions = `{hostname:'127.0.0.1',port:${remoteForwardPort},path:'/state',headers:{${JSON.stringify(ROUTING_NONCE_HEADER)}:i.routingNonce}}`;
+  const js = [
+    "const fs=require('fs'),http=require('http');",
+    identityGuard,
+    `const marker=${JSON.stringify(marker)},deadline=Date.now()+${windowMs};`,
+    "let stopped=false,ready=false,request=null,retryTimer=null,holdTimer=null,lastExit=2,attemptDone=false;",
+    "function stop(){if(stopped)return;stopped=true;if(retryTimer)clearTimeout(retryTimer);if(holdTimer)clearInterval(holdTimer);if(request)request.destroy();process.exit(0)}",
+    "process.stdin.resume();process.stdin.once('end',stop);process.stdin.once('error',stop);",
+    "function retry(code){if(attemptDone)return;attemptDone=true;lastExit=code;if(stopped)return;if(Date.now()>=deadline)process.exit(lastExit);retryTimer=setTimeout(attempt,250)}",
+    "function attempt(){if(stopped||ready)return;attemptDone=false;",
+    `request=http.get(${requestOptions},res=>{res.resume();const good=res.headers[${JSON.stringify(CLAWD_SERVER_HEADER)}]===${JSON.stringify(CLAWD_SERVER_ID)};if(!good)process.exit(3);if(res.statusCode!==200)process.exit(1);ready=true;process.stdout.write(marker+'\\n');holdTimer=setInterval(()=>{},60000)});`,
+    "request.once('error',()=>retry(2));request.setTimeout(2000,()=>{request.destroy();retry(4)})}",
+    "attempt();",
+  ].join("");
+  return buildRemoteNodeEvalCommand(nodeBin, js);
+}
+
 // ── Backoff helper ──
 function backoffMsForAttempt(attempt) {
   if (!Number.isInteger(attempt) || attempt < 0) return BACKOFF_SCHEDULE_MS[0];
@@ -388,6 +436,7 @@ function checkSecureConnectReadiness(profile) {
 
 function createRemoteSshRuntime(deps = {}) {
   const spawn = deps.spawn || childProcess.spawn;
+  const transportCoordinator = deps.transportCoordinator || null;
   const getHookServerPort = deps.getHookServerPort;
   const createProfileIngress = deps.createProfileIngress;
   const log = deps.log || (() => {});
@@ -445,6 +494,17 @@ function createRemoteSshRuntime(deps = {}) {
       recoveryTargetKey: null,
       forwardRecoveryFailures: 0,
       stopped: false,
+      serializedTransport: false,
+      transportContext: null,
+      prepareSerializedAttempt: null,
+      serializedPreparationPending: false,
+      serializedConnectInFlight: false,
+      readinessChallenge: null,
+      readinessLineBuffer: "",
+      sshExitCode: null,
+      sshExitSignal: null,
+      intentionalClose: false,
+      releaseTransportOnClose: false,
     };
   }
 
@@ -465,6 +525,10 @@ function createRemoteSshRuntime(deps = {}) {
     const ingressStatus = state.ingress && typeof state.ingress.getStatus === "function"
       ? state.ingress.getStatus()
       : null;
+    const transport = transportCoordinator
+      && typeof transportCoordinator.snapshotForProfile === "function"
+      ? transportCoordinator.snapshotForProfile(state.profile.id)
+      : null;
     return {
       profileId: state.profile.id,
       status: state.status,
@@ -474,6 +538,7 @@ function createRemoteSshRuntime(deps = {}) {
       lastErrorReason: state.lastErrorReason,
       retryAttempt: state.retryAttempt,
       forwardRecoveryFailures: state.forwardRecoveryFailures,
+      ...(transport ? transport : {}),
       ...(ingressStatus ? {
         ingressPort: ingressStatus.port,
         ingressRejectedCount: ingressStatus.rejectedCount,
@@ -504,6 +569,17 @@ function createRemoteSshRuntime(deps = {}) {
         : {}),
     };
     const targetChanged = tunnelTargetKey(state.profile) !== tunnelTargetKey(nextProfile);
+    if (targetChanged && state.serializedTransport
+      && (state.sshChild || state.status === "connecting" || state.status === "connected"
+        || state.status === "reconnecting")) {
+      // A managed child is permanently bound to the immutable target used at
+      // admission. Settings prevents this edit in the normal UI; keep this
+      // runtime guard for stale IPC/settings races.
+      state.message = "Disconnect before changing SSH transport fields.";
+      state.hint = "remoteSshErrProfileChanged";
+      emitStatus(state);
+      return false;
+    }
     state.profile = nextProfile;
     if (targetChanged) {
       resetRecoveryContext(state);
@@ -515,7 +591,7 @@ function createRemoteSshRuntime(deps = {}) {
 
   // ── Connect ──
 
-  function connect(profile) {
+  function connect(profile, options = {}) {
     if (!profile || !profile.id) throw new Error("connect: profile.id required");
     let state = states.get(profile.id);
     if (state) {
@@ -540,6 +616,26 @@ function createRemoteSshRuntime(deps = {}) {
     } else {
       state = newState(profile);
       states.set(profile.id, state);
+    }
+    if (options.serialized === true) {
+      if (!options.transportContext || typeof options.transportContext.spawn !== "function") {
+        throw new Error("connect: serialized transport context required");
+      }
+      state.serializedTransport = true;
+      state.transportContext = options.transportContext;
+      state.prepareSerializedAttempt = typeof options.prepareSerializedAttempt === "function"
+        ? options.prepareSerializedAttempt
+        : null;
+      state.serializedPreparationPending = !!state.prepareSerializedAttempt;
+      if (options.remoteNode && options.remoteNode.nodeBin) {
+        state.remoteNodeBin = options.remoteNode.nodeBin;
+        state.remoteNodeSource = options.remoteNode.source || null;
+      }
+    } else {
+      state.serializedTransport = false;
+      state.transportContext = null;
+      state.prepareSerializedAttempt = null;
+      state.serializedPreparationPending = false;
     }
     // A manual Connect is the user's chance to recover after installing or
     // upgrading ssh.exe. Keep detection cached only within automatic retries.
@@ -582,6 +678,11 @@ function createRemoteSshRuntime(deps = {}) {
       return;
     }
 
+    if (state.serializedTransport) {
+      startSerializedConnect(state);
+      return;
+    }
+
     if (typeof createProfileIngress === "function") {
       ensureProfileIngress(state);
       return;
@@ -611,6 +712,121 @@ function createRemoteSshRuntime(deps = {}) {
     }
 
     spawnTunnel(state, localPort);
+  }
+
+  function managedRuntimeForState(state) {
+    return {
+      emit: (event, payload) => emitter.emit(event, payload),
+      spawnManagedTransportChild: (spec) => state.transportContext.spawn({
+        ...spec,
+        attemptToken: state.transportContext.attemptToken,
+      }),
+      assertTransportActive: () => state.transportContext.assertActive(),
+      invalidateManagedOperation: (err) => {
+        try {
+          const recoveryCode = state.transportContext.getRecoveryCode();
+          if (recoveryCode && err && typeof err === "object") err.recoveryCode = recoveryCode;
+        } catch {}
+        if (transportCoordinator && typeof transportCoordinator.invalidate === "function") {
+          transportCoordinator.invalidate(state.transportContext, (err && err.code) || "transport_drain_timeout");
+        }
+      },
+      settleManagedTimeoutAfterClose: (err) => {
+        if (!transportCoordinator || typeof transportCoordinator.abortAfterVerifiedClose !== "function") return;
+        try {
+          const outcome = transportCoordinator.abortAfterVerifiedClose(
+            state.transportContext,
+            (err && err.code) || "operation_timeout",
+          );
+          if (outcome && outcome.recoveryCode && err && typeof err === "object") {
+            err.recoveryCode = outcome.recoveryCode;
+          }
+        } catch {}
+      },
+      setManagedLockStage: (stage) => state.transportContext.setLockStage(stage),
+    };
+  }
+
+  async function startSerializedConnect(state) {
+    if (state.serializedConnectInFlight || state.stopped) return;
+    const context = state.transportContext;
+    if (!context) return;
+    state.serializedConnectInFlight = true;
+    try {
+      context.assertActive();
+      if (transportCoordinator && typeof transportCoordinator.inspect === "function") {
+        const inspected = await transportCoordinator.inspect(state.profile);
+        context.assertActive();
+        if (!inspected || inspected.mode !== "serialized" || inspected.key !== context.transportKey) {
+          finishFailure(state, {
+            reason: "profile_changed",
+            hint: "remoteSshErrProfileChanged",
+            message: "The effective SSH transport changed; Disconnect and Connect again.",
+          });
+          return;
+        }
+      }
+      context.nextAttempt();
+      const managedRuntime = managedRuntimeForState(state);
+      const resolved = await resolveRemoteNode({
+        profile: state.profile,
+        spawn,
+        buildSshArgs,
+        runtime: managedRuntime,
+        useCache: true,
+        verifyCache: true,
+      });
+      context.assertActive();
+      if (!resolved || resolved.ok !== true || !resolved.nodeBin) {
+        const cls = classifyStderr((resolved && resolved.stderr) || "");
+        finishFailure(state, {
+          reason: cls.reason || "probe_node_missing",
+          hint: cls.hint || "remoteSshProbeNodeMissing",
+          message: (resolved && resolved.message) || "Remote Node.js not found.",
+        });
+        return;
+      }
+      state.remoteNodeBin = resolved.nodeBin;
+      state.remoteNodeSource = resolved.source || null;
+      state.allowBareNodeProbe = false;
+      emitRemoteNodeDetected(state, resolved);
+
+      if (state.serializedPreparationPending && state.prepareSerializedAttempt) {
+        const prepare = state.prepareSerializedAttempt;
+        state.serializedPreparationPending = false;
+        state.prepareSerializedAttempt = null;
+        const prepared = await prepare({
+          profile: state.profile,
+          remoteNode: resolved,
+          runtime: managedRuntime,
+          transportContext: context,
+        });
+        context.assertActive();
+        if (prepared && prepared.ok === false) {
+          log("remote-ssh: serialized monitor preparation warning:", redactTransportDiagnostic(
+            prepared.stderr || prepared.message || prepared.reason,
+            state.profile,
+          ));
+        }
+      }
+
+      if (typeof createProfileIngress === "function") {
+        ensureProfileIngress(state);
+        return;
+      }
+      const localPort = getHookServerPort();
+      if (!Number.isInteger(localPort)) throw new Error("Local server port unavailable");
+      spawnTunnel(state, localPort);
+    } catch (err) {
+      if (state.stopped) return;
+      finishFailure(state, {
+        reason: (err && err.code) || "serialized_prepare_failed",
+        hint: err && err.hint || null,
+        message: (err && err.message) || "Serialized SSH preparation failed",
+      });
+    } finally {
+      state.serializedConnectInFlight = false;
+    }
   }
 
   function ensureProfileIngress(state) {
@@ -656,21 +872,39 @@ function createRemoteSshRuntime(deps = {}) {
     const profile = state.profile;
     const forwardOpt = `127.0.0.1:${profile.remoteForwardPort}:127.0.0.1:${localPort}`;
     const extraOpts = [
-      "-N",
       "-R", forwardOpt,
       "-o", "ExitOnForwardFailure=yes",
       "-o", "ServerAliveInterval=30",
       "-o", "ServerAliveCountMax=3",
     ];
-    const args = buildSshArgs(profile, { extraOpts });
+    if (!state.serializedTransport) extraOpts.unshift("-N");
+    let args = buildSshArgs(profile, { extraOpts });
+    if (state.serializedTransport) {
+      state.readinessChallenge = crypto.randomBytes(16).toString("hex");
+      state.readinessLineBuffer = "";
+      args = args.concat([buildPersistentReadinessCommand(
+        profile.remoteForwardPort,
+        state.remoteNodeBin,
+        { profile, challenge: state.readinessChallenge },
+      )]);
+    }
 
     let child;
+    const childOptions = {
+      env: { ...process.env, LANG: "C", LC_ALL: "C" },
+      stdio: [state.serializedTransport ? "pipe" : "ignore", "pipe", "pipe"],
+      windowsHide: true,
+    };
     try {
-      child = spawn("ssh", args, {
-        env: { ...process.env, LANG: "C", LC_ALL: "C" },
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
+      child = state.serializedTransport
+        ? state.transportContext.spawn({
+            attemptToken: state.transportContext.attemptToken,
+            role: "persistent-tunnel-readiness",
+            tool: "ssh",
+            args,
+            options: childOptions,
+          })
+        : spawn("ssh", args, childOptions);
     } catch (err) {
       finishFailure(state, {
         kind: "permanent",
@@ -683,6 +917,9 @@ function createRemoteSshRuntime(deps = {}) {
 
     state.sshChild = child;
     state.stderrBuf = Buffer.alloc(0);
+    state.sshExitCode = null;
+    state.sshExitSignal = null;
+    state.intentionalClose = false;
 
     // All handlers below identity-gate against `child` (closure-captured) so
     // a stale exit/error from a previous Disconnect→Connect cycle can't
@@ -693,6 +930,11 @@ function createRemoteSshRuntime(deps = {}) {
     // sshChild → orphan B and trigger a reconnect using A's stderr.
     child.on("error", (err) => {
       if (state.sshChild !== child) return;
+      if (state.serializedTransport) {
+        state.lastError = (err && err.message) || "ssh process error";
+        state.lastErrorReason = err && err.code === "ENOENT" ? "ssh_missing" : "spawn_failed";
+        return;
+      }
       // ENOENT, EACCES, etc. before spawn completes.
       const reason = err && err.code === "ENOENT" ? "ssh_missing" : "spawn_failed";
       const hint = reason === "ssh_missing" ? "remoteSshErrSshMissing" : "remoteSshErrSpawnFailed";
@@ -718,11 +960,60 @@ function createRemoteSshRuntime(deps = {}) {
       });
     }
 
+    if (state.serializedTransport && child.stdout) {
+      child.stdout.on("data", (chunk) => onSerializedTunnelStdout(state, child, chunk));
+    }
+
     child.on("exit", (code, signal) => {
+      if (state.serializedTransport) {
+        if (state.sshChild !== child) return;
+        state.sshExitCode = code;
+        state.sshExitSignal = signal;
+        return;
+      }
       onSshExit(state, child, code, signal);
     });
 
+    if (state.serializedTransport) {
+      child.on("close", (code, signal) => {
+        if (state.sshChild !== child) return;
+        onSshExit(
+          state,
+          child,
+          state.sshExitCode === null ? code : state.sshExitCode,
+          state.sshExitSignal === null ? signal : state.sshExitSignal,
+        );
+      });
+      return;
+    }
+
     startProbeLoopWithRemoteNode(state, child);
+  }
+
+  function onSerializedTunnelStdout(state, child, chunk) {
+    if (state.sshChild !== child || state.status === "connected") return;
+    state.readinessLineBuffer += decodeShellBytes(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+    if (state.readinessLineBuffer.length > 8192) {
+      state.readinessLineBuffer = state.readinessLineBuffer.slice(-8192);
+    }
+    const lines = state.readinessLineBuffer.split(/\r?\n/);
+    state.readinessLineBuffer = lines.pop() || "";
+    const expected = `__CLAWD_REMOTE_READY__:${state.readinessChallenge}`;
+    if (!lines.some((line) => line === expected)) return;
+    if (state.sshChild !== child || state.stopped) return;
+    state.retryAttempt = 0;
+    state.unknownStrikes = 0;
+    state.healthyTunnelTargetKey = tunnelTargetKey(state.profile);
+    resetRecoveryContext(state, { clearHealthy: false });
+    if (transportCoordinator && typeof transportCoordinator.setPhase === "function") {
+      try { transportCoordinator.setPhase(state.transportContext, "tunnel"); } catch {}
+    }
+    setStatus(state, "connected", {
+      message: null,
+      hint: null,
+      lastError: null,
+      lastErrorReason: null,
+    });
   }
 
   function remoteNodeExpectedTarget(profile) {
@@ -844,7 +1135,7 @@ function createRemoteSshRuntime(deps = {}) {
             kind: "permanent",
             reason: cls.reason,
             hint: cls.hint,
-            message: stderrSummary(resolved.stderr) || (resolved && resolved.message) || "Remote SSH failed.",
+            message: stderrSummary(resolved.stderr, state.profile) || (resolved && resolved.message) || "Remote SSH failed.",
           });
           return;
         }
@@ -889,7 +1180,7 @@ function createRemoteSshRuntime(deps = {}) {
           kind: "permanent",
           reason: cls.reason,
           hint: cls.hint,
-          message: stderrSummary(err.stderr) || (err && err.message) || "Remote SSH failed.",
+          message: stderrSummary(err.stderr, state.profile) || (err && err.message) || "Remote SSH failed.",
         });
         return;
       }
@@ -941,6 +1232,9 @@ function createRemoteSshRuntime(deps = {}) {
 
     if (state.stopped) {
       // User-initiated disconnect already flipped state to idle.
+      if (state.serializedTransport && state.releaseTransportOnClose) {
+        releaseSerializedContextIfIdle(state);
+      }
       return;
     }
 
@@ -951,6 +1245,29 @@ function createRemoteSshRuntime(deps = {}) {
     const stderr = decodeShellBytes(state.stderrBuf);
     const cls = classifyStderr(stderr);
     const wasConnected = state.status === "connected";
+    const serializedExitCode = state.serializedTransport && !wasConnected
+      ? signalToExitCode(code, signal)
+      : null;
+    let readinessCls = serializedExitCode == null ? null : classifyProbeExit(serializedExitCode);
+    if (readinessCls && readinessCls.kind === "ok") {
+      readinessCls = {
+        kind: "permanent",
+        reason: "readiness_marker_missing",
+        hint: "remoteSshProbeUnresponsive",
+      };
+    }
+    if (serializedExitCode === 126 || serializedExitCode === 127) {
+      clearCachedRemoteNodeBin(state.profile);
+      state.remoteNodeBin = null;
+      state.remoteNodeSource = null;
+      readinessCls = {
+        kind: "transient",
+        reason: "probe_node_stale",
+        hint: serializedExitCode === 126
+          ? "remoteSshProbeNodeNotExec"
+          : "remoteSshProbeNodeMissing",
+      };
+    }
 
     const currentTargetKey = tunnelTargetKey(state.profile);
     const canRecoverForwardConflict = cls.reason === "forward_failed"
@@ -960,7 +1277,7 @@ function createRemoteSshRuntime(deps = {}) {
       state.unknownStrikes = 0;
       if (state.forwardRecoveryFailures < FORWARD_RECOVERY_FAILURE_LIMIT) {
         scheduleReconnect(state, {
-          message: stderrSummary(stderr) || `ssh exited ${formatExit(code, signal)}`,
+          message: stderrSummary(stderr, state.profile) || `ssh exited ${formatExit(code, signal)}`,
           hint: "remoteSshErrForwardRetrying",
           lastErrorReason: "forward_recovery_conflict",
           wasConnected: false,
@@ -974,19 +1291,32 @@ function createRemoteSshRuntime(deps = {}) {
         kind: "permanent",
         reason: cls.reason,
         hint: cls.hint,
-        message: stderrSummary(stderr) || `ssh exited ${formatExit(code, signal)}`,
+        message: stderrSummary(stderr, state.profile) || `ssh exited ${formatExit(code, signal)}`,
       });
       return;
     }
 
-    if (cls.kind === "unknown") {
+    if (readinessCls && readinessCls.kind === "permanent") {
+      finishFailure(state, {
+        kind: "permanent",
+        reason: readinessCls.reason,
+        hint: readinessCls.hint,
+        message: stderrSummary(stderr, state.profile) || `readiness command exited ${formatExit(code, signal)}`,
+      });
+      return;
+    }
+
+    const effectiveCls = readinessCls && readinessCls.kind === "transient"
+      ? readinessCls
+      : cls;
+    if (effectiveCls.kind === "unknown") {
       state.unknownStrikes += 1;
       if (state.unknownStrikes >= UNKNOWN_STRIKES_LIMIT) {
         finishFailure(state, {
           kind: "permanent",
           reason: "unknown_strikes",
           hint: "remoteSshErrUnknownStrikes",
-          message: stderrSummary(stderr) || `ssh exited ${formatExit(code, signal)}`,
+          message: stderrSummary(stderr, state.profile) || `ssh exited ${formatExit(code, signal)}`,
         });
         return;
       }
@@ -997,9 +1327,9 @@ function createRemoteSshRuntime(deps = {}) {
 
     // Transient (or unknown under strike-limit): backoff + reconnect.
     scheduleReconnect(state, {
-      message: stderrSummary(stderr) || `ssh exited ${formatExit(code, signal)}`,
-      hint: cls.hint || null,
-      lastErrorReason: cls.reason || (cls.kind === "unknown" ? "unknown" : null),
+      message: stderrSummary(stderr, state.profile) || `ssh exited ${formatExit(code, signal)}`,
+      hint: effectiveCls.hint || null,
+      lastErrorReason: effectiveCls.reason || (effectiveCls.kind === "unknown" ? "unknown" : null),
       wasConnected,
     });
   }
@@ -1287,8 +1617,13 @@ function createRemoteSshRuntime(deps = {}) {
   function finishFailure(state, { reason, hint, message }) {
     cleanupProbeLoop(state);
     if (state.sshChild) {
-      killChild(state.sshChild);
-      state.sshChild = null;
+      if (state.serializedTransport && state.sshChild.stdin) {
+        state.releaseTransportOnClose = true;
+        try { state.sshChild.stdin.end(); } catch {}
+      } else {
+        killChild(state.sshChild);
+        state.sshChild = null;
+      }
     }
     if (state.backoffTimer) {
       clearTimeoutFn(state.backoffTimer);
@@ -1304,13 +1639,130 @@ function createRemoteSshRuntime(deps = {}) {
       lastError: message || hint || reason,
       lastErrorReason: reason,
     });
+    if (state.serializedTransport && !state.sshChild) {
+      releaseSerializedContextIfIdle(state);
+    }
+  }
+
+  function releaseSerializedContextIfIdle(state) {
+    if (!state || !state.transportContext || !transportCoordinator) return false;
+    try {
+      transportCoordinator.release(state.transportContext);
+      state.transportContext = null;
+      state.releaseTransportOnClose = false;
+      // The status may already be idle/failed, but its previous snapshot was
+      // emitted while the coordinator still reported a live transport phase.
+      // Publish the post-release snapshot so Settings cannot retain stale
+      // owner/phase metadata after the child's close event.
+      emitStatus(state);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // ── Disconnect ──
 
+  async function suspendForOperation(profileId, transportContext, options = {}) {
+    const state = states.get(profileId);
+    if (!state) {
+      if (transportCoordinator && transportContext) {
+        return transportCoordinator.waitForDrain(transportContext, (child, metadata) => {
+          if (metadata && metadata.role === "persistent-tunnel-readiness" && child.stdin) {
+            try { child.stdin.end(); } catch {}
+          }
+        });
+      }
+      return { ok: true, drainVerified: true };
+    }
+    state.stopped = true;
+    state.intentionalClose = true;
+    state.releaseTransportOnClose = false;
+    state.transportContext = transportContext || state.transportContext;
+    cleanupProbeLoop(state);
+    if (state.backoffTimer) {
+      clearTimeoutFn(state.backoffTimer);
+      state.backoffTimer = null;
+    }
+    state.retryAttempt = 0;
+    state.unknownStrikes = 0;
+    state.remoteNodeResolveInFlight = false;
+    if (options.closeIngress === true) await closeProfileIngressAndWait(state);
+
+    if (transportCoordinator && transportContext) {
+      const drained = await transportCoordinator.waitForDrain(transportContext, (child, metadata) => {
+        if (metadata && metadata.role === "persistent-tunnel-readiness" && child.stdin) {
+          try { child.stdin.end(); } catch {}
+          return;
+        }
+        try { child.kill(); } catch {}
+      });
+      if (state.sshChild && state.sshChild.stdin) {
+        // The coordinator owns close accounting; this is only a defensive
+        // repeat for fake/injected children whose metadata is incomplete.
+        try { state.sshChild.stdin.end(); } catch {}
+      }
+      setStatus(state, "idle", {
+        message: options.message || null,
+        hint: null,
+        lastError: null,
+        lastErrorReason: null,
+      });
+      return drained;
+    }
+    return { ok: true, drainVerified: !state.sshChild };
+  }
+
+  function finalizeSerializedDisconnect(profileId, transportContext) {
+    const state = states.get(profileId);
+    if (transportCoordinator && transportContext) {
+      transportCoordinator.release(transportContext);
+    }
+    if (state) {
+      state.transportContext = null;
+      state.stopped = true;
+      state.intentionalClose = true;
+      state.releaseTransportOnClose = false;
+      closeProfileIngress(state);
+      resetRecoveryContext(state);
+      clearRemoteShellCache(state);
+      setStatus(state, "idle", {
+        message: null,
+        hint: null,
+        lastError: null,
+        lastErrorReason: null,
+      });
+    }
+    return state ? snapshotState(state) : { profileId, status: "idle" };
+  }
+
   function disconnect(profileId) {
     const state = states.get(profileId);
     if (!state) return { profileId, status: "idle" };
+    if (state.serializedTransport) {
+      if (transportCoordinator && typeof transportCoordinator.recordDisconnectIntent === "function") {
+        transportCoordinator.recordDisconnectIntent(profileId);
+      }
+      state.stopped = true;
+      state.intentionalClose = true;
+      state.releaseTransportOnClose = true;
+      cleanupProbeLoop(state);
+      if (state.backoffTimer) clearTimeoutFn(state.backoffTimer);
+      state.backoffTimer = null;
+      closeProfileIngress(state);
+      if (state.sshChild && state.sshChild.stdin) {
+        try { state.sshChild.stdin.end(); } catch {}
+      } else if (!state.sshChild) {
+        releaseSerializedContextIfIdle(state);
+      }
+      setStatus(state, "idle", {
+        message: null,
+        hint: null,
+        lastError: null,
+        lastErrorReason: null,
+      });
+      return snapshotState(state);
+    }
     state.stopped = true;
     cleanupProbeLoop(state);
     if (state.backoffTimer) {
@@ -1372,6 +1824,32 @@ function createRemoteSshRuntime(deps = {}) {
     auxChildren.clear();
   }
 
+  async function shutdown(options = {}) {
+    const ingressCloses = [];
+    for (const state of states.values()) {
+      state.stopped = true;
+      cleanupProbeLoop(state);
+      if (state.backoffTimer) clearTimeoutFn(state.backoffTimer);
+      state.backoffTimer = null;
+      state.remoteNodeResolveInFlight = false;
+      resetRecoveryContext(state);
+      ingressCloses.push(closeProfileIngressAndWait(state));
+      if (!state.serializedTransport && state.sshChild) {
+        killChild(state.sshChild);
+        state.sshChild = null;
+      }
+    }
+    await Promise.allSettled(ingressCloses);
+    let drain = { ok: true, drainVerified: true, remaining: 0 };
+    if (transportCoordinator && typeof transportCoordinator.shutdown === "function") {
+      drain = await transportCoordinator.shutdown(options.timeoutMs);
+    }
+    for (const child of auxChildren) killChild(child);
+    auxChildren.clear();
+    states.clear();
+    return drain;
+  }
+
   function closeProfileIngress(state) {
     if (!state) return;
     state.ingressStartGeneration += 1;
@@ -1381,13 +1859,27 @@ function createRemoteSshRuntime(deps = {}) {
     state.ingress = null;
   }
 
+  async function closeProfileIngressAndWait(state) {
+    if (!state) return;
+    state.ingressStartGeneration += 1;
+    const ingress = state.ingress;
+    state.ingress = null;
+    if (!ingress || typeof ingress.close !== "function") return;
+    try {
+      await ingress.close();
+    } catch {}
+  }
+
   return {
     connect,
     disconnect,
     cleanup,
+    shutdown,
     getProfileStatus,
     listStatuses,
     refreshProfile,
+    suspendForOperation,
+    finalizeSerializedDisconnect,
     registerChild,
     unregisterChild,
     on: (event, cb) => emitter.on(event, cb),
@@ -1407,13 +1899,14 @@ function killChild(child) {
   } catch {}
 }
 
-function stderrSummary(stderr) {
+function stderrSummary(stderr, profile) {
   let text;
   if (Buffer.isBuffer(stderr)) {
     text = decodeShellBytes(stderr).trim();
   } else {
     text = (stderr || "").toString().trim();
   }
+  text = redactTransportDiagnostic(text, profile);
   if (!text) return null;
   return text.length > 200 ? text.slice(0, 200) + "..." : text;
 }
@@ -1442,6 +1935,7 @@ module.exports = {
   classifyStderr,
   classifyProbeExit,
   buildProbeCommand,
+  buildPersistentReadinessCommand,
   backoffMsForAttempt,
   tunnelTargetKey,
   checkSecureConnectReadiness,
