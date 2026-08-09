@@ -1,6 +1,6 @@
 # Plan: #694 Windows B0 + B1a — 将 name-only agent 的进程链解析移入 Clawd 主进程
 
-> 状态：**Implementation v2（核心代码、自动化、x64 observer 与 Codex hook 真机证据已完成；默认保持 legacy，等待 ARM64、其余真实 agent、GUI focus 与 CodeBuddy 外部 gate）**
+> 状态：**Implementation v2（核心代码、自动化、x64 observer、Codex hook 与 VS Code 双会话 GUI focus 真机证据已完成；默认保持 legacy，等待 ARM64、其余真实 agent、Windows Terminal 与 CodeBuddy 外部 gate）**
 > 日期：2026-08-09
 > 实施基线：`main@7ffa090a1f0cdda72461ee026165247108f07a56`
 > PR rebase 基线：`origin/main@89829323`
@@ -26,13 +26,14 @@
 - 子代理实现 review 修正：Codex permission legacy editor 只接受 `code|cursor` 并进入 shadow 对照；strict partial 记录 agent-before-failure 有限分类；NtQuery PBI/FILETIME 与 Toolhelp PROCESSENTRY32W 的 size/关键 offset 不匹配时 resolver fail closed，NtQuery success 还校验 `ReturnLength`；Toolhelp 只把 `ERROR_NO_MORE_FILES` 当正常枚举结束。Kiro default/cwd 交错和 Codex auto-start 首次 legacy、重试 authoritative 均有回归测试。
 - 提权 observer 真机正反对照已完成：同一轮 ready + canary 后，legacy 受控链捕获 `node -> powershell.exe`；authoritative 六条 adapter contract 全通过且观察窗口内 inner PowerShell=0。证据：`C:\Users\Ruller\AppData\Local\Temp\clawd-694-observer-10adf420fe9644fc997384f85cf6cb41.jsonl`。
 - 真实仓库 Codex hook 在临时 HOME/runtime 与本地临时 server 下完成 shadow `/state`、authoritative `/state`、authoritative `/permission`：shadow old/new 四字段完全一致；authoritative body 不含 server-owned PID 字段，server 从各请求独立 hook PID 成功解析。未改 Codex/Clawd 安装配置，未调用模型。
+- PR #837 开发版真实 Electron runtime 完成 shadow/authoritative 切换、真实权限请求、当前会话与第二个并发 Codex 会话验证；两个 Codex 共享同一 `Code.exe` source，但各自 agent PID/pidChain 独立，用户从 HUD 先后点击两行均精确回到对应 VS Code integrated-terminal tab。详见 §13.7。
 
 以下外部 gate 仍未完成，因此 runtime 在所有平台默认公告 `legacy`。`shadow` / `b1a-authoritative` 只允许通过逐 agent 注入或显式开发环境变量开启；若 server resolver 初始化不可用，即使显式请求也在写 runtime 前降级为 `legacy`：
 
 - ARM64 packaged ABI/resolver smoke。
 - CodeBuddy 本机未安装，无法验证 direct HTTP permission 与 command state 的 session identity equality；CodeBuddy state 代码已具备 B1a，permission-first 仍按 §6 明确 blocked。
-- Cursor/Kiro/Reasonix 的真实 CLI/桌面事件矩阵，以及 Codex 多事件/并发 session parity。
-- Codex SessionStart 到首 prompt 前的真实 GUI 点击聚焦、完整 Electron event-loop gate；当前 x64 同步 resolver benchmark 已通过设计预算，但不替代 GUI 证据。
+- Cursor/Kiro/Reasonix 的真实 CLI/桌面事件矩阵。
+- Windows Terminal 专属 HWND 直达聚焦矩阵；本机已完成 VS Code 双并发 session 的真实 GUI/event-loop focus。当前 Codex 版本启动第二进程时不立即发 hook，首个 prompt 开始才产生 `SessionStart`/`UserPromptSubmit`，因此“事件到达前显示 session”不是可执行 gate；事件一到达后的首次聚焦已通过。
 
 ---
 
@@ -1142,4 +1143,16 @@ Claude 对 v3 的结论为 **Needs revision（1 个 P1）**，并明确撤回 v2
 - Codex authoritative `/state`：真实 hook PID 34088；body 自有 process 字段为空，candidate `status=ok`、`sourcePid=34836`、`agentPid=32980`、editor=`code`。
 - Codex authoritative `/permission`：真实 hook PID 32004；body 自有 process 字段为空，candidate `status=ok`、`sourcePid=34836`、`agentPid=32980`、editor=`code`；hook stdout 为 `{}`、exit 0，未改变权限决定协议。
 
-上述 Codex smoke 使用临时 HOME、临时 runtime 和只接收本轮请求的本地 server；结束后只清理已校验位于系统临时目录下的测试 HOME。没有修改用户的 hook/config、没有启动模型请求、没有重启 Clawd，也没有启动或终止 Windows Terminal。它证明当前 x64 进程链和 transport 合同可工作，但不替代 ARM64、其他真实 agent、并发 session 和 GUI focus gate。
+上述 Codex smoke 使用临时 HOME、临时 runtime 和只接收本轮请求的本地 server；结束后只清理已校验位于系统临时目录下的测试 HOME。没有修改用户的 hook/config、没有启动模型请求、没有重启 Clawd，也没有启动或终止 Windows Terminal。它证明当前 x64 进程链和 transport 合同可工作；当时尚缺的 Codex 并发 session 与 GUI focus 后续已由 §13.7 补齐，ARM64 和其他真实 agent 仍是外部 gate。
+
+### 13.7 PR #837 真实 Electron / 双 Codex GUI 验证
+
+在 PR 分支开发版上先以 `CLAWD_WINDOWS_PROCESS_CHAIN_CODEX=shadow` 启动真实 Electron app，再正常从托盘退出并以 `b1a-authoritative` 重启；全程保留用户的 VS Code/Codex 进程，不使用进程级终止：
+
+- shadow runtime 正确公告 generation 与 Codex-only `shadow`，其余四 agent 保持 `legacy`。沙箱外 fresh `SessionStart` old/new 完全一致：`sourcePid=34836`、`agentPid=32980`、`editor=code`、pidChain=`25592>32980>28264>26456>2420>34836>12124`，resolver duration 1 ms。cache-only `PreToolUse/PostToolUse` 的 legacy body 本来不带 pidChain，按 non-comparable cache 样本分层，其他三字段一致。
+- authoritative runtime 正确公告独立 generation 与 Codex-only `b1a-authoritative`。真实 state 持续落为 `agentPid=32980`、`sourcePid=34836`、`pidReachable=1`；真实 `/permission` 命中、创建审批并成功返回 allow，未改变权限协议。app stderr 为空。
+- 提升 observer 文件 `C:\Users\Ruller\AppData\Local\Temp\clawd-694-authoritative-observer-019ba76cbf7e4c98a3e2d2eb9856b94e.jsonl` 在 ready/canary 后覆盖多次真实 hook 事件；只看见 Codex 工具执行的 outer `pwsh.exe`（父进程为 `codex` 或已退出的 harness），没有任何父进程为 Node 的 inner snapshot PowerShell。
+- 现有会话 HUD 点击由 Windows focus helper 返回 `editor-parent-title-match / confirmed`，用户确认回到正确 VS Code terminal。
+- 第二个 Codex PID 28700 与旧会话 PID 32980 同时存活并共享 `Code.exe` PID 34836。新进程在首个输入前没有 producer hook，故不会预先出现 session；发送首个最小 prompt 后创建独立 session，权威链为 `3452>28700>35928>23420>2420>34836>12124`。HUD 在约 2 秒内先聚焦旧 session、再聚焦新 session，第二次同样返回 confirmed；用户确认精确切换到新 integrated-terminal tab，并特别确认该场景在旧实现中长期失败。
+
+该轮把 Codex x64 多事件、两个并发 session、真实 Electron event loop 与 VS Code GUI focus 从待办改为已完成。仍不外推到 Windows Terminal HWND、ARM64、Cursor/Kiro/Reasonix 或 CodeBuddy permission-first；默认 mode 继续是 `legacy`。
