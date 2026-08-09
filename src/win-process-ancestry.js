@@ -12,8 +12,8 @@ const MAX_PATH = 260;
 const ERROR_BAD_LENGTH = 24;
 const ERROR_NO_MORE_FILES = 18;
 const DEFAULT_TOOLHELP_RETRIES = 3;
-let defaultProcessQueryFfi = null;
-let defaultToolhelpFfi = null;
+const processQueryFfiByKoffi = new WeakMap();
+const toolhelpFfiByKoffi = new WeakMap();
 
 function normalizePid(value) {
   let numeric = value;
@@ -177,6 +177,14 @@ function buildToolhelpKoffiFfi(koffi) {
   };
 }
 
+function getOrCreateKoffiBindings(cache, koffi, build) {
+  const cached = cache.get(koffi);
+  if (cached) return cached;
+  const ffi = build(koffi);
+  cache.set(koffi, ffi);
+  return ffi;
+}
+
 function expectedProcessQueryAbi(pointerSize) {
   if (pointerSize === 8) {
     return {
@@ -304,11 +312,11 @@ function createWindowsToolhelpSnapshot(options = {}) {
   let ffi;
   try {
     if (options.ffi) ffi = options.ffi;
-    else if (options.koffi) ffi = buildToolhelpKoffiFfi(options.koffi);
-    else {
-      if (!defaultToolhelpFfi) defaultToolhelpFfi = buildToolhelpKoffiFfi(require("koffi"));
-      ffi = defaultToolhelpFfi;
-    }
+    else ffi = getOrCreateKoffiBindings(
+      toolhelpFfiByKoffi,
+      options.koffi || require("koffi"),
+      buildToolhelpKoffiFfi,
+    );
   } catch (err) {
     if (typeof options.onInitError === "function") options.onInitError(err);
     return { status: "unavailable", reason: "ffi-unavailable", query: null, close() {}, abi: null };
@@ -450,16 +458,15 @@ function createWindowsProcessQuery(options = {}) {
   try {
     if (options.ffi) {
       ffi = options.ffi;
-    } else if (options.koffi) {
-      // Explicit injection remains isolated: callers using a test/dedicated
-      // Koffi instance must not inherit the production module cache.
-      ffi = buildKoffiFfi(options.koffi);
     } else {
-      // Koffi named structs are process-global. Re-registering them on a
-      // second server/resolver construction throws a duplicate-type error,
-      // so the production bindings are built once and reused.
-      if (!defaultProcessQueryFfi) defaultProcessQueryFfi = buildKoffiFfi(require("koffi"));
-      ffi = defaultProcessQueryFfi;
+      // Koffi named structs are scoped to the Koffi registry object. Reuse
+      // bindings for the same default or explicitly injected registry while
+      // keeping different test/dedicated registries isolated.
+      ffi = getOrCreateKoffiBindings(
+        processQueryFfiByKoffi,
+        options.koffi || require("koffi"),
+        buildKoffiFfi,
+      );
     }
   } catch (err) {
     if (typeof options.onInitError === "function") options.onInitError(err);

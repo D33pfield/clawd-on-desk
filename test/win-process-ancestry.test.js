@@ -128,21 +128,49 @@ describe("win-process-ancestry", () => {
     });
   });
 
-  it("reuses the default Koffi bindings across consecutive process-query factories", {
+  it("reuses per-instance Koffi bindings across explicit and default process-query factories", {
     skip: process.platform !== "win32",
   }, () => {
-    const first = createWindowsProcessQuery();
-    const second = createWindowsProcessQuery();
+    const koffi = require("koffi");
+    const explicitFirst = createWindowsProcessQuery({ koffi });
+    const explicitSecond = createWindowsProcessQuery({ koffi });
+    const defaultFirst = createWindowsProcessQuery();
+    const defaultSecond = createWindowsProcessQuery();
 
-    assert.strictEqual(first.available, true);
-    assert.strictEqual(second.available, true);
-    for (const query of [first, second]) {
+    for (const query of [explicitFirst, explicitSecond, defaultFirst, defaultSecond]) {
+      assert.strictEqual(query.available, true);
       const result = query(process.pid);
       assert.strictEqual(result.status, "ok");
       assert.strictEqual(result.pid, process.pid);
       assert.ok(result.parentPid > 0);
       assert.ok(result.name.endsWith(".exe"));
       assert.ok(result.creationTime);
+    }
+  });
+
+  it("reuses per-instance Koffi bindings across explicit and default Toolhelp factories", {
+    skip: process.platform !== "win32",
+  }, () => {
+    const koffi = require("koffi");
+    const snapshots = [
+      createWindowsToolhelpSnapshot({ koffi }),
+      createWindowsToolhelpSnapshot({ koffi }),
+      createWindowsToolhelpSnapshot(),
+      createWindowsToolhelpSnapshot(),
+    ];
+
+    try {
+      for (const snapshot of snapshots) {
+        assert.strictEqual(snapshot.status, "ok");
+        const result = snapshot.query(process.pid);
+        assert.strictEqual(result.status, "ok");
+        assert.strictEqual(result.pid, process.pid);
+        assert.ok(result.parentPid > 0);
+        assert.ok(result.name.endsWith(".exe"));
+        assert.ok(result.creationTime);
+      }
+    } finally {
+      for (const snapshot of snapshots) snapshot.close();
     }
   });
 
