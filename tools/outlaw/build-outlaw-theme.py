@@ -1,20 +1,33 @@
 #!/usr/bin/env python3
 """Build the 'clawd-outlaw' user theme: Clawd + pixel cowboy hat + toggleable
-cigarette, in his own blocky 15x16 rect style.
+cigarette (SMIL-animated smoke/ember), in his own blocky 15x16 rect style.
 
-Reads the built-in clawd theme + SVGs from the app bundle, injects accessories,
-writes to {userData}/themes/clawd-outlaw/. Rerun any time (idempotent).
+Reads the built-in clawd SVG sources from the repo (assets/svg + the clawd
+theme manifest), injects the accessories, and writes the result into the
+repo's themes/clawd-outlaw/ so the committed sprites are reproducible:
+running this script must be byte-idempotent over the committed output.
+
+    python3 tools/outlaw/build-outlaw-theme.py            # rebuild in-repo
+    python3 tools/outlaw/build-outlaw-theme.py --deploy   # also copy to the
+                                                          # live user theme dir
+
+Animations are SMIL (<animate>/<animateTransform>), never CSS keyframes:
+sprites can be rendered through an <img> channel, where Chromium does not run
+CSS animations inside the SVG document; SMIL runs in <img>, <object>, and
+inline alike.
 """
 import json
 import os
 import re
 import shutil
+import sys
 
-APP = "/Applications/Clawd on Desk.app/Contents/Resources"
-SVG_SRC = os.path.join(APP, "app.asar.unpacked")  # not where svgs live; see below
-ASAR_SVG = "/private/tmp/claude-501/-Users-anthony/368ed308-5713-49f1-87d6-2886eb11e8f9/scratchpad/clawd-asar/assets/svg"
-THEME_SRC = os.path.join(APP, "app.asar.unpacked/themes/clawd/theme.json")
-OUT = os.path.expanduser("~/Library/Application Support/clawd-on-desk/themes/clawd-outlaw")
+REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+SVG_SRC = os.path.join(REPO, "assets", "svg")
+THEME_SRC = os.path.join(REPO, "themes", "clawd", "theme.json")
+OUT = os.path.join(REPO, "themes", "clawd-outlaw")
+DEPLOY = os.path.expanduser(
+    "~/Library/Application Support/clawd-on-desk/themes/clawd-outlaw")
 
 # Sprites where the hat comes OFF (asleep = hat rests for the night;
 # anything already on his head wins — one thing on the head at a time:
@@ -86,7 +99,6 @@ CIG = (
     + _puff("0.7", "#C4C4C4", "-2.0s")
     + '</g>'
 )
-CIG_CSS = ""
 
 os.makedirs(os.path.join(OUT, "assets"), exist_ok=True)
 
@@ -107,28 +119,52 @@ def walk(o):
 
 walk(theme)
 
+# Accessories must only be injected into RENDERED geometry. Some sprites
+# repeat the torso rect inside <clipPath>/<defs> (e.g. clawd-idle-reading's
+# inside-torso clip); clipPath children contribute clip GEOMETRY regardless of
+# paint, so injecting there distorts the clip region. Mask those spans out,
+# transform the rest, restore.
+MASKED = re.compile(r"<(clipPath|defs)\b.*?</\1>", re.S)
+
+
+def inject_outside_masks(svg, transform):
+    spans = [m.span() for m in MASKED.finditer(svg)]
+    if not spans:
+        return transform(svg)
+    out, pos, parts = [], 0, []
+    for a, b in spans:
+        parts.append(("open", svg[pos:a]))
+        parts.append(("masked", svg[a:b]))
+        pos = b
+    parts.append(("open", svg[pos:]))
+    return "".join(transform(t) if kind == "open" else t for kind, t in parts)
+
+
 report = {"hat": [], "cig": [], "plain": []}
 for f in sorted(files):
-    src = os.path.join(ASAR_SVG, f)
+    src = os.path.join(SVG_SRC, f)
     svg = open(src).read()
     touched = False
     if f not in NO_HAT:
         if TORSO_STD.search(svg):
-            svg = TORSO_STD.sub(r"\1" + HAT_STD, svg)
+            svg = inject_outside_masks(
+                svg, lambda t: TORSO_STD.sub(r"\1" + HAT_STD, t, count=1))
             touched = True
         elif TORSO_SQUASH.search(svg):
-            svg = TORSO_SQUASH.sub(r"\1" + HAT_SQUASH, svg)
+            svg = inject_outside_masks(
+                svg, lambda t: TORSO_SQUASH.sub(r"\1" + HAT_SQUASH, t, count=1))
             touched = True
         if touched:
             report["hat"].append(f)
     if f not in NO_CIG and TORSO_STD.search(svg.replace(HAT_STD, "")):
-        # cig only on standard pose; append inside same parent right after hat/torso
+        # cig only on standard pose; append right after the hat (or torso)
         if HAT_STD in svg:
-            svg = svg.replace(HAT_STD, HAT_STD + CIG)
+            svg = svg.replace(HAT_STD, HAT_STD + CIG, 1)
         else:
-            svg = TORSO_STD.sub(r"\1" + CIG, svg, count=1)
-        svg = svg.replace("</svg>", CIG_CSS + "</svg>", 1)
+            svg = inject_outside_masks(
+                svg, lambda t: TORSO_STD.sub(r"\1" + CIG, t, count=1))
         report["cig"].append(f)
+        touched = True
     if not touched:
         report["plain"].append(f)
     open(os.path.join(OUT, "assets", f), "w").write(svg)
@@ -148,3 +184,7 @@ json.dump(theme, open(os.path.join(OUT, "theme.json"), "w"), indent=2)
 print("hat on :", len(report["hat"]), "files")
 print("cig on :", len(report["cig"]), "files")
 print("plain  :", report["plain"])
+
+if "--deploy" in sys.argv:
+    shutil.copytree(OUT, DEPLOY, dirs_exist_ok=True)
+    print("deployed to", DEPLOY)
