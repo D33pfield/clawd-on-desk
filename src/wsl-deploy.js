@@ -120,6 +120,7 @@ const AGENT_INSTALL_SCRIPT = {
   qoder: "qoder-install.js",
   reasonix: "reasonix-install.js",
   qoderwork: "qoderwork-install.js",
+  qwenwork: "qwenwork-install.js",
 };
 
 function getAgentWslOptions(agentId) {

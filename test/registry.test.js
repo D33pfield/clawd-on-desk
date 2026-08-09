@@ -27,6 +27,7 @@ describe("Agent Registry", () => {
       "qoder",
       "reasonix",
       "qoderwork",
+      "qwenwork",
       "workbuddy",
     ]);
   });
@@ -48,6 +49,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(registry.getAgent("qoder").name, "Qoder");
     assert.strictEqual(registry.getAgent("reasonix").name, "Reasonix");
     assert.strictEqual(registry.getAgent("qoderwork").name, "QoderWork");
+    assert.strictEqual(registry.getAgent("qwenwork").name, "QwenWork");
     assert.strictEqual(registry.getAgent("workbuddy").name, "WorkBuddy");
     assert.strictEqual(registry.getAgent("nonexistent"), undefined);
   });
@@ -96,6 +98,9 @@ describe("Agent Registry", () => {
 
     const qoderwork = registry.getAgent("qoderwork");
     assert.deepStrictEqual(qoderwork.processNames.win, ["QoderWork.exe"]);
+
+    const qwenwork = registry.getAgent("qwenwork");
+    assert.deepStrictEqual(qwenwork.processNames.win, ["QwenWorkCN.exe"]);
 
     const workbuddy = registry.getAgent("workbuddy");
     assert.deepStrictEqual(workbuddy.processNames.win, ["WorkBuddy.exe", "workbuddy.exe"]);
@@ -151,6 +156,9 @@ describe("Agent Registry", () => {
     const qoderwork = registry.getAgent("qoderwork");
     assert.deepStrictEqual(qoderwork.processNames.linux, ["QoderWork"]);
 
+    const qwenwork = registry.getAgent("qwenwork");
+    assert.deepStrictEqual(qwenwork.processNames.linux, ["QwenWorkCN"]);
+
     const workbuddy = registry.getAgent("workbuddy");
     assert.deepStrictEqual(workbuddy.processNames.linux, ["workbuddy", "WorkBuddy"]);
   });
@@ -204,6 +212,7 @@ describe("Agent Registry", () => {
     assert.ok(startupAgentIds.has("reasonix"));
     assert.ok(!startupAgentIds.has("cursor-agent"));
     assert.ok(!startupAgentIds.has("qoderwork"));
+    assert.ok(!startupAgentIds.has("qwenwork"));
     assert.ok(!startupAgentIds.has("workbuddy"));
 
     // ZCode keeps only the unambiguous legacy `zcode-cli` in pure-name startup
@@ -225,6 +234,10 @@ describe("Agent Registry", () => {
     );
     assert.deepStrictEqual(
       registry.getAgent("qoderwork").startupRecoveryProcessNames,
+      { win: [], mac: [], linux: [] }
+    );
+    assert.deepStrictEqual(
+      registry.getAgent("qwenwork").startupRecoveryProcessNames,
       { win: [], mac: [], linux: [] }
     );
     assert.deepStrictEqual(
