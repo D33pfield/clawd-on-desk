@@ -1503,6 +1503,47 @@ function normalizeSessionAutomationIdentity(value) {
   });
 }
 
+function mergeSessionProcessMetadata(existing, incoming = {}, options = {}) {
+  const replace = options.replace === true;
+  const incomingPidChain = Array.isArray(incoming.pidChain) && incoming.pidChain.length
+    ? incoming.pidChain.slice()
+    : null;
+
+  if (!replace) {
+    return {
+      sourcePid: incoming.sourcePid || (existing && existing.sourcePid) || null,
+      wtHwnd: incoming.wtHwnd || (existing && existing.wtHwnd) || null,
+      editor: incoming.editor || (existing && existing.editor) || null,
+      pidChain: incomingPidChain || (existing && existing.pidChain) || null,
+      agentPid: incoming.agentPid || (existing && existing.agentPid) || null,
+      identityChanged: terminalIdentityChanged(existing, incoming),
+    };
+  }
+
+  const sourcePid = incoming.sourcePid || null;
+  const agentPid = incoming.agentPid || null;
+  const editor = incoming.editor || null;
+  const previousSourcePid = (existing && existing.sourcePid) || null;
+  const previousAgentPid = (existing && existing.agentPid) || null;
+  const identityChanged = !!existing && (
+    previousSourcePid !== sourcePid
+    || previousAgentPid !== agentPid
+  );
+
+  return {
+    sourcePid,
+    agentPid,
+    editor,
+    pidChain: incomingPidChain,
+    // A foreground HWND is still useful across ordinary lifecycle events for
+    // the same terminal identity. Once authoritative metadata replaces or
+    // clears that identity, retaining the old HWND could focus another
+    // terminal, so it must be cleared unless this event supplied a fresh one.
+    wtHwnd: incoming.wtHwnd || (identityChanged ? null : (existing && existing.wtHwnd) || null),
+    identityChanged,
+  };
+}
+
 function updateSession(sessionId, state, event, opts = {}) {
   try {
   const {
@@ -1554,6 +1595,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     sessionAutomationIdentity = null,
     subagentId = null,
     subagentType = null,
+    replaceProcessMetadata = false,
   } = opts;
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
@@ -1603,23 +1645,36 @@ function updateSession(sessionId, state, event, opts = {}) {
       && typeof ctx.isAgentPermissionsEnabled === "function"
       && !ctx.isAgentPermissionsEnabled("kimi-cli")
     ) return;
-    const shouldPersistCodexPermissionFocus = permAgentId === "codex" && (
+    const hasCodexPermissionMetadata = !!(
       sourcePid || wtHwnd || agentPid || (pidChain && pidChain.length) || cwd || host || wslDistro ||
       model || provider || codexOriginator || codexSource || platform || ghosttyTerminalId ||
       tmuxSocket || tmuxClient || orcaPaneKey
     );
+    const shouldPersistCodexPermissionFocus = permAgentId === "codex" && (
+      hasCodexPermissionMetadata
+      // An authoritative all-null result still has to clear stale process
+      // metadata on an existing session. It must not create a new ghost row.
+      || (replaceProcessMetadata === true && !!sessionForPerm)
+    );
     if (shouldPersistCodexPermissionFocus) {
       const existing = sessions.get(sessionId);
       evictOldestSessionIfNeeded(sessionId);
-      const srcPid = sourcePid || (existing && existing.sourcePid) || null;
-      const srcWtHwnd = wtHwnd || (existing && existing.wtHwnd) || null;
+      const processMetadata = mergeSessionProcessMetadata(
+        existing,
+        { sourcePid, wtHwnd, editor, pidChain, agentPid },
+        { replace: replaceProcessMetadata === true }
+      );
+      const srcPid = processMetadata.sourcePid;
+      const srcWtHwnd = processMetadata.wtHwnd;
       const srcCwd = cwd || (existing && existing.cwd) || "";
-      const srcEditor = editor || (existing && existing.editor) || null;
-      const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
+      const srcEditor = processMetadata.editor;
+      const srcPidChain = processMetadata.pidChain;
       const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
       const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
-      const srcOrcaPaneKey = mergeOrcaPaneKey(orcaPaneKey, existing, event, { sourcePid, wtHwnd });
-      const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
+      const srcOrcaPaneKey = processMetadata.identityChanged && !orcaPaneKey
+        ? null
+        : mergeOrcaPaneKey(orcaPaneKey, existing, event, { sourcePid, wtHwnd });
+      const srcAgentPid = processMetadata.agentPid;
       const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
       const srcHost = host || (existing && existing.host) || null;
       const srcWslDistro = wslDistro || (existing && existing.wslDistro) || null;
@@ -1675,7 +1730,11 @@ function updateSession(sessionId, state, event, opts = {}) {
         contextUsage: srcContextUsage,
         contextUsageOrigin: srcContextUsageOrigin,
         recentEvents,
-        pidReachable: resolvePidReachable(existing, srcAgentPid, srcPid),
+        pidReachable: resolvePidReachable(
+          replaceProcessMetadata === true ? null : existing,
+          srcAgentPid,
+          srcPid
+        ),
         resumeState: (existing && existing.resumeState) || null,
         muteNotificationSound: muteNotificationSound === true,
       });
@@ -1724,15 +1783,22 @@ function updateSession(sessionId, state, event, opts = {}) {
     delete existing.recoveryEventAt;
     delete existing.recoveryValidUntil;
   }
-  const srcPid = sourcePid || (existing && existing.sourcePid) || null;
-  const srcWtHwnd = wtHwnd || (existing && existing.wtHwnd) || null;
+  const processMetadata = mergeSessionProcessMetadata(
+    existing,
+    { sourcePid, wtHwnd, editor, pidChain, agentPid },
+    { replace: replaceProcessMetadata === true }
+  );
+  const srcPid = processMetadata.sourcePid;
+  const srcWtHwnd = processMetadata.wtHwnd;
   const srcCwd = cwd || (existing && existing.cwd) || "";
-  const srcEditor = editor || (existing && existing.editor) || null;
-  const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
+  const srcEditor = processMetadata.editor;
+  const srcPidChain = processMetadata.pidChain;
   const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
   const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
-  const srcOrcaPaneKey = mergeOrcaPaneKey(orcaPaneKey, existing, event, { sourcePid, wtHwnd });
-  const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
+  const srcOrcaPaneKey = processMetadata.identityChanged && !orcaPaneKey
+    ? null
+    : mergeOrcaPaneKey(orcaPaneKey, existing, event, { sourcePid, wtHwnd });
+  const srcAgentPid = processMetadata.agentPid;
   const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
   const srcSessionAutomationIdentity = normalizedSessionAutomationIdentity
     || (existing && existing.sessionAutomationIdentity)
@@ -1858,7 +1924,11 @@ function updateSession(sessionId, state, event, opts = {}) {
 
   debugSession(`event ${describeSession(sessionId, existing)} -> incoming=${state}/${event || "-"} hint=${displayHint || "-"} source=${hookSource || "-"}${formatStdinDiag(stdinDiag)}`);
 
-  const pidReachable = resolvePidReachable(existing, srcAgentPid, srcPid);
+  const pidReachable = resolvePidReachable(
+    replaceProcessMetadata === true ? null : existing,
+    srcAgentPid,
+    srcPid
+  );
 
   const keepExistingCompletionEventTail = shouldKeepExistingCompletionEventTail(existing, state, event);
   const recentEvents = keepExistingCompletionEventTail && Array.isArray(existing.recentEvents)

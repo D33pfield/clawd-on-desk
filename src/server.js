@@ -3,6 +3,7 @@
 
 const fs = require("fs");
 const http = require("http");
+const crypto = require("crypto");
 const {
   DEFAULT_SERVER_PORT,
   defaultRuntimeConfigPath,
@@ -15,6 +16,12 @@ const {
   writeRuntimeConfig,
 } = require("../hooks/server-config");
 const { processAlive } = require("../hooks/shared-process");
+const {
+  B1A_AGENT_IDS,
+  createServerWindowsProcessMetadataResolver,
+  normalizeWindowsProcessChainMode,
+  WINDOWS_PROCESS_CHAIN_VERSION,
+} = require("./server-windows-process-metadata");
 const {
   getClaudeHookScriptPath,
   getClaudeAutoStartScriptPath,
@@ -74,6 +81,56 @@ const writeRuntimeConfigFn = ctx.writeRuntimeConfig || writeRuntimeConfig;
 const readRuntimeIdentityFn = ctx.readRuntimeIdentity
   || (() => readRuntimeIdentity({ runtimeConfigPath: ctx.runtimeConfigPath }));
 const isProcessAliveFn = ctx.isProcessAlive || processAlive;
+const isWindowsHost = ctx.isWinHost != null ? ctx.isWinHost === true : process.platform === "win32";
+const windowsProcessChainInstanceGeneration = typeof ctx.windowsProcessChainInstanceGeneration === "string"
+  && ctx.windowsProcessChainInstanceGeneration
+  ? ctx.windowsProcessChainInstanceGeneration
+  : crypto.randomUUID();
+const requestedWindowsProcessChainModes = Object.fromEntries(B1A_AGENT_IDS.map((agentId) => {
+  const injectedMode = ctx.windowsProcessChainModes && ctx.windowsProcessChainModes[agentId];
+  const envName = `CLAWD_WINDOWS_PROCESS_CHAIN_${agentId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+  const envMode = process.env[envName];
+  // Shadow performs both the legacy PowerShell snapshot and the synchronous
+  // server FFI walk. It is therefore an explicit diagnostics mode, never a
+  // shipped default before its observer/performance/ARM64 gates are recorded.
+  return [agentId, normalizeWindowsProcessChainMode(injectedMode || envMode || "legacy")];
+}));
+let windowsProcessMetadataResolver = ctx.windowsProcessMetadataResolver || null;
+const requestedServerResolver = isWindowsHost
+  && Object.values(requestedWindowsProcessChainModes).some((mode) => mode !== "legacy");
+if (requestedServerResolver && !windowsProcessMetadataResolver) {
+  try {
+    windowsProcessMetadataResolver = createServerWindowsProcessMetadataResolver({ isWin: true });
+  } catch {
+    windowsProcessMetadataResolver = null;
+  }
+}
+// A permanent initialization failure is different from a per-request walk
+// failure. Do not advertise a mode that makes hooks omit legacy metadata when
+// the server has no resolver capable of replacing it.
+const windowsProcessResolverAvailable = !requestedServerResolver
+  || (typeof windowsProcessMetadataResolver === "function"
+    && windowsProcessMetadataResolver.available !== false);
+const windowsProcessChainModes = Object.freeze(Object.fromEntries(
+  Object.entries(requestedWindowsProcessChainModes).map(([agentId, mode]) => [
+    agentId,
+    mode !== "legacy" && !windowsProcessResolverAvailable ? "legacy" : mode,
+  ])
+));
+const windowsProcessChainRuntime = Object.freeze({
+  version: WINDOWS_PROCESS_CHAIN_VERSION,
+  instanceGeneration: windowsProcessChainInstanceGeneration,
+  agents: windowsProcessChainModes,
+});
+function resolveWindowsProcessMetadata(request) {
+  if (!windowsProcessMetadataResolver) {
+    windowsProcessMetadataResolver = createServerWindowsProcessMetadataResolver({ isWin: isWindowsHost });
+  }
+  return windowsProcessMetadataResolver(request);
+}
+function writeCurrentRuntimeConfig(port) {
+  return writeRuntimeConfigFn(port, { windowsProcessChain: windowsProcessChainRuntime });
+}
 // #681: where the runtime file lives is a pure expression — answering it must
 // not read the file, probe a PID, or touch any of the seams above. Callers that
 // only want the path used to reach it through getRuntimeStatus(), which costs
@@ -605,7 +662,7 @@ function repairIntegrationForAgent(agentId, options = {}) {
 function repairRuntimeStatus() {
   const status = getRuntimeStatus();
   if (status && status.listening && Number.isInteger(status.port)) {
-    const written = writeRuntimeConfigFn(status.port);
+    const written = writeCurrentRuntimeConfig(status.port);
     return written
       ? { status: "ok" }
       : { status: "error", message: "Failed to write runtime config" };
@@ -678,6 +735,10 @@ function routeHttpRequest(req, res, remoteProfile = null) {
         shouldDropForDnd,
         codexOfficialTurns,
         captureForegroundWindowsTerminal: ctx.captureForegroundWindowsTerminal,
+        isWinHost: isWindowsHost,
+        windowsProcessChainRuntime,
+        resolveWindowsProcessMetadata,
+        recordWindowsProcessChainShadow: ctx.recordWindowsProcessChainShadow,
         remoteProfile,
         isClaudeStatuslineMetadataAllowed,
       });
@@ -685,6 +746,10 @@ function routeHttpRequest(req, res, remoteProfile = null) {
       handlePermissionPost(req, res, {
         ctx,
         createRequestHookRecorder,
+        isWinHost: isWindowsHost,
+        windowsProcessChainRuntime,
+        resolveWindowsProcessMetadata,
+        recordWindowsProcessChainShadow: ctx.recordWindowsProcessChainShadow,
         remoteProfile,
       });
     } else {
@@ -757,7 +822,7 @@ function startHttpServer() {
       // propagate.
       let runtimeWritten = false;
       try {
-        runtimeWritten = writeRuntimeConfigFn(activeServerPort) === true;
+        runtimeWritten = writeCurrentRuntimeConfig(activeServerPort) === true;
       } catch (err) {
         runtimeWritten = false;
         console.warn("Failed to write the Clawd runtime file:", (err && err.message) || err);

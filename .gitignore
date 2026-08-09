@@ -101,6 +101,8 @@ scripts/*
 !scripts/run-clawdbot-stress.sh
 !scripts/monitor-clawd-resources.sh
 !scripts/monitor-clawd-power.ps1
+!scripts/windows-process-chain-benchmark.js
+!scripts/windows-process-chain-observer.ps1
 !scripts/validate-theme.js
 !scripts/create-theme.js
 !scripts/export-agent-icons.js

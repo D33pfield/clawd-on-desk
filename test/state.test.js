@@ -107,6 +107,7 @@ function update(api, o = {}) {
       sessionAutomationIdentity: o.sessionAutomationIdentity ?? null,
       subagentId: o.subagentId ?? null,
       subagentType: o.subagentType ?? null,
+      replaceProcessMetadata: o.replaceProcessMetadata === true,
     },
   );
 }
@@ -1191,6 +1192,100 @@ describe("updateSession()", () => {
       [321, 456],
       "PermissionRequest path must merge, not overwrite with null",
     );
+  });
+
+  it("authoritative state metadata replaces and clears every derived process field", () => {
+    update(api, {
+      id: "authoritative-state",
+      event: "SessionStart",
+      sourcePid: 100,
+      agentPid: 200,
+      pidChain: [100, 200],
+      editor: "code",
+      wtHwnd: "1234",
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+
+    update(api, {
+      id: "authoritative-state",
+      event: "PreToolUse",
+      replaceProcessMetadata: true,
+      sourcePid: null,
+      agentPid: null,
+      pidChain: null,
+      editor: null,
+    });
+
+    const session = api.sessions.get("authoritative-state");
+    assert.strictEqual(session.sourcePid, null);
+    assert.strictEqual(session.agentPid, null);
+    assert.strictEqual(session.pidChain, null);
+    assert.strictEqual(session.editor, null);
+    assert.strictEqual(session.wtHwnd, null);
+    assert.strictEqual(session.orcaPaneKey, null);
+    assert.strictEqual(session.pidReachable, false);
+  });
+
+  it("authoritative Cursor clear preserves its adapter-owned editor fallback", () => {
+    update(api, {
+      id: "authoritative-cursor",
+      event: "SessionStart",
+      agentId: "cursor-agent",
+      sourcePid: 100,
+      agentPid: 200,
+      pidChain: [100, 200],
+      editor: "cursor",
+    });
+    update(api, {
+      id: "authoritative-cursor",
+      event: "PreToolUse",
+      agentId: "cursor-agent",
+      replaceProcessMetadata: true,
+      editor: "cursor",
+    });
+
+    const session = api.sessions.get("authoritative-cursor");
+    assert.strictEqual(session.sourcePid, null);
+    assert.strictEqual(session.agentPid, null);
+    assert.strictEqual(session.pidChain, null);
+    assert.strictEqual(session.editor, "cursor");
+  });
+
+  it("authoritative Codex PermissionRequest clears stale focus without creating an all-null ghost", () => {
+    const sid = "codex:authoritative-permission";
+    update(api, {
+      id: sid,
+      event: "PermissionRequest",
+      state: "notification",
+      agentId: "codex",
+      sourcePid: 456,
+      agentPid: 456,
+      pidChain: [321, 456],
+      wtHwnd: "9876",
+      orcaPaneKey: "tab-2:leaf-2",
+      replaceProcessMetadata: true,
+    });
+    update(api, {
+      id: sid,
+      event: "PermissionRequest",
+      state: "notification",
+      agentId: "codex",
+      replaceProcessMetadata: true,
+    });
+
+    const session = api.sessions.get(sid);
+    assert.strictEqual(session.sourcePid, null);
+    assert.strictEqual(session.agentPid, null);
+    assert.strictEqual(session.pidChain, null);
+    assert.strictEqual(session.wtHwnd, null);
+    assert.strictEqual(session.orcaPaneKey, null);
+    assert.strictEqual(session.pidReachable, false);
+
+    api.updateSession("codex:all-null-new", "notification", "PermissionRequest", {
+      agentId: "codex",
+      replaceProcessMetadata: true,
+    });
+    assert.strictEqual(api.sessions.has("codex:all-null-new"), false);
   });
 
   it("existing session_id → updates state and timestamp", () => {

@@ -1645,6 +1645,7 @@ let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
 let sessionDebugLog = null; // set after app.whenReady()
 let focusDebugLog = null; // set after app.whenReady()
+let recordWindowsProcessChainShadow = () => false;
 
 function getPendingPermissionFocusEntry(sessionId) {
   const id = String(sessionId || "");
@@ -2304,6 +2305,7 @@ const _serverCtx = {
   // request.
   captureForegroundWindowsTerminal: _captureForegroundWindowsTerminal,
   debugLog: (msg) => sessionLog(msg),
+  recordWindowsProcessChainShadow: (record) => recordWindowsProcessChainShadow(record),
   isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
   shouldSyncAgentIntegration: (agentId) =>
     _shouldSyncAgentIntegration({ agents: _settingsController.get("agents") }, agentId),
@@ -4559,6 +4561,10 @@ if (!gotTheLock) {
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     focusDebugLog = path.join(app.getPath("userData"), "focus-debug.log");
+    const { createWindowsProcessChainShadowLogger } = require("./windows-process-chain-shadow-log");
+    recordWindowsProcessChainShadow = createWindowsProcessChainShadowLogger({
+      filePath: path.join(app.getPath("userData"), "windows-process-chain-shadow.log"),
+    });
     const telegramMigrationInit = initTelegramMigrationController().catch((err) => {
       console.warn("Clawd: migration controller init failed:", err && err.message);
       return null;
