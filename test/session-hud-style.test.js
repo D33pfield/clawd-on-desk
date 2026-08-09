@@ -22,7 +22,7 @@ describe("pet-attached quota ring", () => {
     assert.match(quotaRingRenderer, /buildCoinSvg/);
     assert.match(quotaRingRenderer, /OUTER_R/);
     assert.match(quotaRingRenderer, /INNER_R/);
-    // Fill sweeps with USED percent, clockwise from 12 o'clock.
+    // Fill sweeps with the selected display percentage, clockwise from 12 o'clock.
     assert.match(quotaRingRenderer, /rotate\(-90/);
     assert.match(quotaRingRenderer, /stroke-dasharray/);
   });
@@ -33,9 +33,12 @@ describe("pet-attached quota ring", () => {
     assert.match(quotaRingHtml, /\.fill\.sev-warn/);
     assert.match(quotaRingHtml, /\.fill\.sev-hot/);
     assert.match(quotaRingHtml, /\.fill\.sev-reset/);
+    assert.match(quotaRingHtml, /\.fill\.sev-reset\s*\{[^}]*opacity:\s*0\.56/);
     assert.match(quotaRingHtml, /is-stale/);
-    // Expired window reads as a dim 0-ring, never the pre-reset high.
+    // Expired data is normalized to zero used; remaining mode renders that as
+    // a weak full ring without inheriting the pre-reset severity or pulse.
     assert.match(quotaRingRenderer, /usedPercent: 0, expired: true/);
+    assert.match(quotaRingRenderer, /outer\.reset \? "sev-reset"/);
   });
 
   it("labels windows from reporter metadata, never hard-coding 5h/7d", () => {
@@ -44,11 +47,11 @@ describe("pet-attached quota ring", () => {
     assert.match(quotaRingRenderer, /minutes \/ \(24 \* 60\)/);
   });
 
-  it("states used explicitly in the tooltip (no color-only cue) and reuses provider agent icons", () => {
-    // The ring fills with USED percent and an empty ring is the reset state, so
-    // the tooltip spells out "used" rather than a persistent on-cluster label.
-    assert.match(quotaRingRenderer, /quotaRingUsedWord/);
-    assert.match(quotaRingRenderer, /coinTooltip/);
+  it("keeps the ring compact without hover cards and reuses provider agent icons", () => {
+    assert.doesNotMatch(quotaRingRenderer, /coinTooltip/);
+    assert.doesNotMatch(quotaRingRenderer, /mouseenter|mouseleave/);
+    assert.doesNotMatch(quotaRingRenderer, /\.title\s*=/);
+    assert.match(quotaRingRenderer, /quotaDisplayPercent/);
     assert.match(quotaRingRenderer, /quotaAgentIcons/);
   });
 

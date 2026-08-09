@@ -73,6 +73,7 @@ function loadRenderer() {
     payload = {
       accountQuota: [],
       quotaAgentIcons: {},
+      displayMode: "used",
       side: "left",
       translations: {
         dashboardQuotaGroupGemini: "Gemini",
@@ -252,6 +253,102 @@ describe("quota ring renderer model", () => {
     assert.strictEqual(model.displayWindow.reset, true);
     assert.strictEqual(readout.children[0].textContent, "0%");
     assert.strictEqual(readout.children[1].textContent, "reset");
+  });
+
+  it("renders remaining percentage and arc length without changing exhaustion severity", () => {
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const model = modelFor(context, {
+      claudeQuota: {
+        group: {
+          claudeFiveHour: { usedPercent: 80, resetAt: now + 3_600_000, windowMinutes: 300 },
+        },
+        lastSeenAt: now,
+      },
+    }, 1, now);
+    context.__model = model;
+    vm.runInContext('payload.displayMode = "remaining"', context);
+
+    const row = vm.runInContext("buildCoinRow(__model)", context);
+    assert.strictEqual(row.children[0].children[0].textContent, "20%");
+
+    const svg = vm.runInContext("buildCoinSvg(__model)", context);
+    const fill = svg.children.find((child) =>
+      typeof child.attributes.class === "string" && child.attributes.class.includes("fill"));
+    assert.match(fill.attributes.class, /sev-warn/);
+    assert.match(fill.attributes["stroke-dasharray"], /^13\.82 /);
+  });
+
+  it("shows a reset outer ring as a weak full remaining arc", () => {
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const model = modelFor(context, {
+      codexQuota: {
+        group: {
+          codexFiveHour: { usedPercent: 90, resetAt: now - 1, windowMinutes: 300 },
+        },
+        lastSeenAt: now,
+      },
+    }, 2, now);
+    context.__model = model;
+    vm.runInContext('payload.displayMode = "remaining"', context);
+
+    const row = vm.runInContext("buildCoinRow(__model)", context);
+    assert.strictEqual(row.children[0].children[0].textContent, "100%");
+    assert.strictEqual(row.children[0].children[1].textContent, "reset");
+
+    const svg = vm.runInContext("buildCoinSvg(__model)", context);
+    const fills = svg.children.filter((child) =>
+      typeof child.attributes.class === "string" && child.attributes.class.includes("fill"));
+    assert.strictEqual(fills.length, 1);
+    assert.match(fills[0].attributes.class, /sev-reset/);
+    assert.match(fills[0].attributes["stroke-dasharray"], /^69\.12 69\.12$/);
+    assert.doesNotMatch(fills[0].attributes.class, /is-near/);
+  });
+
+  it("renders an inner reset window as a weak full arc in a dual-ring coin", () => {
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const model = modelFor(context, {
+      claudeQuota: {
+        group: {
+          claudeFiveHour: { usedPercent: 80, resetAt: now + 3_600_000, windowMinutes: 300 },
+          claudeWeekly: { usedPercent: 95, resetAt: now - 1, windowMinutes: 10080 },
+        },
+        lastSeenAt: now,
+      },
+    }, 1, now);
+    context.__model = model;
+    vm.runInContext('payload.displayMode = "remaining"', context);
+
+    const svg = vm.runInContext("buildCoinSvg(__model)", context);
+    const fills = svg.children.filter((child) =>
+      typeof child.attributes.class === "string" && child.attributes.class.includes("fill"));
+    assert.strictEqual(fills.length, 2);
+    assert.match(fills[0].attributes.class, /sev-warn/);
+    assert.match(fills[0].attributes["stroke-dasharray"], /^13\.82 /);
+    assert.match(fills[1].attributes.class, /sev-reset/);
+    assert.match(fills[1].attributes["stroke-dasharray"], /^42\.73 42\.73$/);
+    assert.doesNotMatch(fills[1].attributes.class, /is-near/);
+  });
+
+  it("keeps quota rows and overflow free of hover tooltips", () => {
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const model = modelFor(context, {
+      codexQuota: {
+        group: {
+          codexWeekly: { usedPercent: 46, resetAt: now + 3_600_000, windowMinutes: 10080 },
+        },
+        lastSeenAt: now,
+      },
+    }, 2, now);
+    context.__model = model;
+
+    const row = vm.runInContext("buildCoinRow(__model)", context);
+    const overflow = vm.runInContext("buildOverflow(2)", context);
+    assert.strictEqual(row.title, "");
+    assert.strictEqual(overflow.title, "");
   });
 
   it("shows a compact source marker when more than one machine contributes quota", () => {

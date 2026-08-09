@@ -156,6 +156,13 @@ describe("updateRegistry pure-data validators", () => {
     }
   });
 
+  it("accepts only supported quota ring display modes", () => {
+    assert.strictEqual(updateRegistry.quotaRingDisplayMode("used").status, "ok");
+    assert.strictEqual(updateRegistry.quotaRingDisplayMode("remaining").status, "ok");
+    assert.strictEqual(updateRegistry.quotaRingDisplayMode("available").status, "error");
+    assert.strictEqual(updateRegistry.quotaRingDisplayMode(true).status, "error");
+  });
+
   it("codexHookHealthLastNotified accepts strings and empty reset", () => {
     const deps = { snapshot: baseSnapshot };
     assert.strictEqual(updateRegistry.codexHookHealthLastNotified("", deps).status, "ok");

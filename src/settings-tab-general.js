@@ -18,6 +18,7 @@
     "sessionHudShowElapsed",
     "sessionHudShowContextUsage",
     "sessionHudShowQuota",
+    "quotaRingDisplayMode",
     "claudeQuotaCollectionEnabled",
     "quotaMergeSources",
     "sessionHudCleanupDetached",
@@ -554,6 +555,7 @@
       labelKey: "rowClaudeQuotaCollection",
       descKey: "rowClaudeQuotaCollectionDesc",
     });
+    const displayModeRow = buildQuotaRingDisplayModeRow();
     // "Merge across machines" only matters with more than one reporting source
     // (WSL / SSH remotes). Hidden by default so single-machine users never see
     // a confusing no-op switch; revealed once multiple sources are confirmed.
@@ -562,6 +564,7 @@
       : "none";
     const optionList = buildOptionList("quota-ring-option-list", [
       enabledRow,
+      displayModeRow,
       claudeCollectionRow,
       mergeRow,
     ]);
@@ -590,6 +593,47 @@
         .catch(() => {});
     }
     return group;
+  }
+
+  function buildQuotaRingDisplayModeRow() {
+    const row = document.createElement("div");
+    row.className = "row quota-ring-display-mode-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowQuotaRingDisplayMode");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("rowQuotaRingDisplayModeDesc");
+    text.append(label, desc);
+
+    const controlWrap = document.createElement("div");
+    controlWrap.className = "row-control";
+    const control = helpers.buildSegmentedRadio({
+      value: state.snapshot && state.snapshot.quotaRingDisplayMode,
+      ariaLabel: t("rowQuotaRingDisplayMode"),
+      className: "quota-ring-display-mode-choice",
+      options: [
+        { value: "used", label: t("quotaRingDisplayUsed") },
+        { value: "remaining", label: t("quotaRingDisplayRemaining") },
+      ],
+      onChange: (next) => Promise.resolve(window.settingsAPI.update("quotaRingDisplayMode", next))
+        .then((result) => {
+          if (result && result.status === "ok") return true;
+          ops.showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+          return false;
+        })
+        .catch((err) => {
+          ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+          return false;
+        }),
+    });
+    controlWrap.appendChild(control.element);
+    row.append(text, controlWrap);
+    state.mountedControls.quotaRingDisplayMode = control;
+    return row;
   }
 
   function buildOptionList(className, rows) {
@@ -1869,6 +1913,10 @@
       && !getMountedRoamMovementStyle()) {
       return false;
     }
+    if (keys.includes("quotaRingDisplayMode")) {
+      const control = state.mountedControls.quotaRingDisplayMode;
+      if (!control || !document.body.contains(control.element)) return false;
+    }
     if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_POLICY_KEYS.has(key)))
       && !hasMountedBubblePolicyControls()) {
       return false;
@@ -1889,6 +1937,7 @@
     }
     for (const key of keys) {
       if (key === "size" || key === "soundVolume" || key === "textScale" || key === "textScaleByDisplay") continue;
+      if (key === "quotaRingDisplayMode") continue;
       if (BUBBLE_POLICY_KEYS.has(key)) {
         const meta = state.mountedControls.bubblePolicyControls.get(key);
         if (!meta || !document.body.contains(meta.row)) return false;
@@ -1902,6 +1951,12 @@
     }
     for (const key of keys) {
       if (key === "size") continue;
+      if (key === "quotaRingDisplayMode") {
+        state.mountedControls.quotaRingDisplayMode.setValue(
+          state.snapshot && state.snapshot.quotaRingDisplayMode
+        );
+        continue;
+      }
       if (key === "textScale" || key === "textScaleByDisplay") {
         state.mountedControls.textScale.syncValueFromSnapshot();
         continue;
