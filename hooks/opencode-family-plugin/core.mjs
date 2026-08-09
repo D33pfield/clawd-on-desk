@@ -490,8 +490,30 @@ export function createOpencodeFamilyPlugin(config) {
     if (!sessionId) return null;
     if (!metadata.title) return null;
 
-    _sessionTitleById.set(sessionId, metadata.title);
-    debugLog(`SESSION_TITLE capture session=${sessionId} title="${metadata.title}"`);
+    const prevTitle = _sessionTitleById.get(sessionId);
+    // OpenCode assigns a placeholder title ("New session") at creation and
+    // later replaces it with the real summary-based title via session.updated.
+    // That event maps to no Clawd state, so without an explicit push the HUD
+    // keeps showing the placeholder forever. Forward a title change as a
+    // metadata-only POST — the server updates sessionTitle without disturbing
+    // the lifecycle state (mirrors how clawd-hook statusline refreshes work).
+    // If no session exists yet the server drops the metadata POST safely
+    // (metadata-only never creates a session), so the first redundant push is
+    // harmless — and it covers the "created with no title, titled later" case.
+    if (prevTitle !== metadata.title) {
+      _sessionTitleById.set(sessionId, metadata.title);
+      debugLog(`SESSION_TITLE capture session=${sessionId} title="${metadata.title}"` + (prevTitle ? ` (was "${prevTitle}")` : ""));
+      const body = {
+        state: "idle",
+        session_id: sessionId,
+        event: "SessionUpdate",
+        agent_id: AGENT_ID,
+        hook_source: HOOK_SOURCE,
+        metadata_only: true,
+        session_title: metadata.title,
+      };
+      postStateToClawd(body);
+    }
     return sessionId;
   }
 

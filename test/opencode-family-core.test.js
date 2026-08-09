@@ -93,6 +93,30 @@ describe("opencode-family plugin factory", () => {
     oc.__test._sessionParentById.clear();
   });
 
+  it("captures session titles per instance and includes them in buildStateBody", async () => {
+    const { createOpencodeFamilyPlugin } = await loadCore();
+    const oc = createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+    const mc = createOpencodeFamilyPlugin(MIMOCODE_PARAMS);
+
+    oc.__test.captureSessionTitle({
+      type: "session.created",
+      properties: { sessionID: "ses_t", info: { id: "ses_t", directory: "C:\\p", title: "My Title" } },
+    });
+    assert.strictEqual(oc.__test._sessionTitleById.get("opencode:ses_t"), "My Title");
+    assert.strictEqual(mc.__test._sessionTitleById.get("opencode:ses_t"), undefined, "title must not leak across instances");
+
+    // buildStateBody attaches the captured title as session_title.
+    const body = oc.__test.buildStateBody("idle", "SessionStart", "ses_t");
+    assert.strictEqual(body.session_title, "My Title");
+
+    // Missing / blank title is ignored and not captured.
+    oc.__test.captureSessionTitle({
+      type: "session.created",
+      properties: { sessionID: "ses_blank", info: { id: "ses_blank", directory: "C:\\p", title: "   " } },
+    });
+    assert.strictEqual(oc.__test._sessionTitleById.has("opencode:ses_blank"), false);
+  });
+
   it("isolates the FULL per-instance state bag (log path, dedup, port cache, bridge)", async () => {
     const { createOpencodeFamilyPlugin } = await loadCore();
     const oc = createOpencodeFamilyPlugin(OPENCODE_PARAMS);

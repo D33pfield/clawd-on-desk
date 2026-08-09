@@ -1293,25 +1293,41 @@ function updateSessionMetadata(sessionId, opts = {}) {
     return false;
   }
   const incomingContextUsage = normalizeContextUsage(opts.contextUsage);
-  if (!incomingContextUsage) return false;
-  const resolved = resolveContextUsageUpdate(
-    session,
-    incomingContextUsage,
-    opts.contextUsageOrigin
-  );
-  const usageChanged = JSON.stringify(resolved.contextUsage) !== JSON.stringify(session.contextUsage);
-  const originChanged = resolved.contextUsageOrigin !== normalizeContextUsageOrigin(session.contextUsageOrigin);
-  if (usageChanged || originChanged) {
-    session.contextUsage = resolved.contextUsage;
-    session.contextUsageOrigin = resolved.contextUsageOrigin;
-    // Freshness stamp for telemetry arbitration. Deliberately a separate
-    // field from updatedAt: staleness sweeps, badge derivation and eviction
-    // all key on updatedAt, and a statusline heartbeat must not feed them.
-    // Stamped only on real changes, so it cannot re-introduce a per-tick
-    // broadcast (and it is excluded from the snapshot signature anyway).
-    session.metadataUpdatedAt = Date.now();
-    emitSessionSnapshot();
+  const incomingTitle = typeof opts.sessionTitle === "string"
+    ? normalizeTitle(opts.sessionTitle)
+    : null;
+  if (!incomingContextUsage && !incomingTitle) return false;
+  let applied = false;
+  if (incomingContextUsage) {
+    const resolved = resolveContextUsageUpdate(
+      session,
+      incomingContextUsage,
+      opts.contextUsageOrigin
+    );
+    const usageChanged = JSON.stringify(resolved.contextUsage) !== JSON.stringify(session.contextUsage);
+    const originChanged = resolved.contextUsageOrigin !== normalizeContextUsageOrigin(session.contextUsageOrigin);
+    if (usageChanged || originChanged) {
+      session.contextUsage = resolved.contextUsage;
+      session.contextUsageOrigin = resolved.contextUsageOrigin;
+      // Freshness stamp for telemetry arbitration. Deliberately a separate
+      // field from updatedAt: staleness sweeps, badge derivation and eviction
+      // all key on updatedAt, and a statusline heartbeat must not feed them.
+      // Stamped only on real changes, so it cannot re-introduce a per-tick
+      // broadcast (and it is excluded from the snapshot signature anyway).
+      session.metadataUpdatedAt = Date.now();
+      applied = true;
+    }
   }
+  // OpenCode swaps its placeholder title for a real one after session
+  // creation; that arrives on session.updated which maps to no state change,
+  // so the plugin forwards the title change as a metadata-only POST. Update
+  // the stored title here without touching the lifecycle state.
+  if (incomingTitle && incomingTitle !== session.sessionTitle) {
+    session.sessionTitle = incomingTitle;
+    session.metadataUpdatedAt = Date.now();
+    applied = true;
+  }
+  if (applied) emitSessionSnapshot();
   return true;
 }
 
