@@ -127,11 +127,33 @@ function safeText(value) {
 }
 
 // Slack mrkdwn only requires &, <, > to be escaped; everything else is literal.
+// Escaping < is what stops an agent-derived string containing `<!channel>` or
+// `<@U123>` from turning a notification into a real broadcast/mention — Slack
+// renders the entities back as literal text.
 function escapeMrkdwn(value) {
   return safeText(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+// Two sanitizers, because Slack treats the two text types differently:
+//
+//   - `plain_text` fields (header blocks) are NOT mrkdwn. Escaping there would
+//     surface a literal "&amp;", and no mention syntax is interpreted — so they
+//     need redaction only.
+//   - `mrkdwn` fields AND the top-level fallback `text` ARE parsed (`mrkdwn`
+//     defaults to true), so they need redaction *and* escaping.
+//
+// Every user/agent-derived string — session title, folder, host, agent id, tool
+// name, detail, assistant output, and the fallback text built from them — goes
+// through one of these before it leaves the desktop.
+function redactPlain(value) {
+  return redactSecrets(safeText(value));
+}
+
+function redactMrkdwn(value) {
+  return escapeMrkdwn(redactSecrets(safeText(value)));
 }
 
 function clip(value, maxLength) {
@@ -180,16 +202,25 @@ function shortId(id) {
   return s.length > 6 ? s.slice(0, 6) : s;
 }
 
+// Clipping escaped text can land inside an entity ("...&am"), which Slack would
+// render as literal garbage instead of the character it stands for. Escaping is
+// what makes <!channel> inert, so dropping the half-entity is the safe end:
+// worst case one character of content is lost. A complete "&amp;" ends in ";"
+// and is left alone.
+function clipMrkdwn(value, maxLength) {
+  return clip(value, maxLength).replace(/&[A-Za-z]{0,4}$/, "");
+}
+
 function headerBlock(text) {
   return { type: "header", text: { type: "plain_text", text: clip(text, HEADER_MAX) || " ", emoji: true } };
 }
 
 function sectionBlock(mrkdwnText) {
-  return { type: "section", text: { type: "mrkdwn", text: clip(mrkdwnText, SECTION_MAX) } };
+  return { type: "section", text: { type: "mrkdwn", text: clipMrkdwn(mrkdwnText, SECTION_MAX) } };
 }
 
 function contextBlock(mrkdwnText) {
-  return { type: "context", elements: [{ type: "mrkdwn", text: clip(mrkdwnText, SECTION_MAX) }] };
+  return { type: "context", elements: [{ type: "mrkdwn", text: clipMrkdwn(mrkdwnText, SECTION_MAX) }] };
 }
 
 // Break any embedded ``` so it can't close our fenced code block early.
@@ -211,11 +242,11 @@ function prepareAssistantOutput(entry) {
 
 function metaLine(entry) {
   const meta = [];
-  if (entry.agentId) meta.push(escapeMrkdwn(entry.agentId));
+  if (entry.agentId) meta.push(redactMrkdwn(entry.agentId));
   const folder = folderName(entry.cwd);
-  if (folder) meta.push(escapeMrkdwn(folder));
-  if (entry.host) meta.push(escapeMrkdwn(entry.host));
-  if (entry.id) meta.push(`#${escapeMrkdwn(shortId(entry.id))}`);
+  if (folder) meta.push(redactMrkdwn(folder));
+  if (entry.host) meta.push(redactMrkdwn(entry.host));
+  if (entry.id) meta.push(`#${redactMrkdwn(shortId(entry.id))}`);
   return meta.join(" · ");
 }
 
@@ -227,10 +258,13 @@ function buildCompletionMessage(entry, options = {}) {
   const interrupted = entry.badge === "interrupted";
   const icon = interrupted ? "⚠️" : "✅";
   const status = interrupted ? locale.interrupted : locale.done;
-  const title = entry.displayTitle || (entry.id ? `${shortId(entry.id)}..` : locale.session);
+  // The session title is derived from the user's own prompt, so it gets the
+  // same treatment as assistant output — redacted everywhere, and escaped in
+  // the two mrkdwn-parsed places (there are none in a header block).
+  const rawTitle = entry.displayTitle || (entry.id ? `${shortId(entry.id)}..` : locale.session);
   const wrapStatus = typeof locale.wrapStatus === "function" ? locale.wrapStatus(status) : `(${status})`;
 
-  const blocks = [headerBlock(`${icon} ${title}`)];
+  const blocks = [headerBlock(`${icon} ${redactPlain(rawTitle)}`)];
   const meta = metaLine(entry);
   const statusLine = `*${escapeMrkdwn(status)}*${meta ? `  ·  ${meta}` : ""}`;
   blocks.push(sectionBlock(statusLine));
@@ -239,11 +273,17 @@ function buildCompletionMessage(entry, options = {}) {
   if (prepared) {
     const label = prepared.truncated ? `${locale.assistantOutput} (${locale.truncated})` : locale.assistantOutput;
     blocks.push(sectionBlock(`*${escapeMrkdwn(label)}:*`));
-    const body = neutralizeFences(prepared.text);
-    blocks.push(sectionBlock("```\n" + clip(body, SECTION_MAX - 8) + "\n```"));
+    // Slack still parses &, < and > inside a fenced block, so escape there too —
+    // a code fence is not a mention-proof container.
+    const body = escapeMrkdwn(neutralizeFences(prepared.text));
+    blocks.push(sectionBlock("```\n" + clipMrkdwn(body, SECTION_MAX - 8) + "\n```"));
   }
 
-  const fallback = clip(`${icon} ${title} ${wrapStatus}${meta ? ` — ${folderName(entry.cwd) || ""}` : ""}`, FALLBACK_MAX);
+  const fallbackFolder = redactMrkdwn(folderName(entry.cwd));
+  const fallback = clipMrkdwn(
+    `${icon} ${redactMrkdwn(rawTitle)} ${wrapStatus}${fallbackFolder ? ` — ${fallbackFolder}` : ""}`,
+    FALLBACK_MAX
+  );
   return { text: fallback, blocks };
 }
 
@@ -252,22 +292,23 @@ function buildCompletionMessage(entry, options = {}) {
 function buildPermissionMessage(payload, options = {}) {
   const locale = getLocale(options.lang);
   const p = payload && typeof payload === "object" ? payload : {};
-  const title = safeText(p.title).trim() || locale.permissionTitle;
+  // `title` is built from the agent id + tool name, both agent-controlled.
+  const rawTitle = safeText(p.title).trim() || locale.permissionTitle;
   const blocks = [headerBlock(`⏳ ${locale.permissionTitle}`)];
 
-  const lines = [`*${escapeMrkdwn(title)}*`];
+  const lines = [`*${redactMrkdwn(rawTitle)}*`];
   const fields = [];
-  if (p.toolName) fields.push(`*${escapeMrkdwn(locale.tool)}:* ${escapeMrkdwn(redactSecrets(p.toolName))}`);
-  if (p.agentId) fields.push(`*${escapeMrkdwn(locale.agent)}:* ${escapeMrkdwn(p.agentId)}`);
+  if (p.toolName) fields.push(`*${escapeMrkdwn(locale.tool)}:* ${redactMrkdwn(p.toolName)}`);
+  if (p.agentId) fields.push(`*${escapeMrkdwn(locale.agent)}:* ${redactMrkdwn(p.agentId)}`);
   const folder = folderName(p.folder || p.cwd);
-  if (folder) fields.push(`*${escapeMrkdwn(locale.folder)}:* ${escapeMrkdwn(folder)}`);
+  if (folder) fields.push(`*${escapeMrkdwn(locale.folder)}:* ${redactMrkdwn(folder)}`);
   if (fields.length) lines.push(fields.join("\n"));
   const detail = safeText(p.detail || p.summary).trim();
-  if (detail) lines.push(escapeMrkdwn(redactSecrets(detail)));
-  blocks.push(sectionBlock(clip(lines.join("\n\n"), SECTION_MAX)));
+  if (detail) lines.push(redactMrkdwn(detail));
+  blocks.push(sectionBlock(lines.join("\n\n")));
   blocks.push(contextBlock(`ℹ️ ${escapeMrkdwn(locale.permissionHint)}`));
 
-  return { text: clip(`⏳ ${locale.permissionTitle}: ${title}`, FALLBACK_MAX), blocks };
+  return { text: clipMrkdwn(`⏳ ${locale.permissionTitle}: ${redactMrkdwn(rawTitle)}`, FALLBACK_MAX), blocks };
 }
 
 function buildTestMessage(options = {}) {
@@ -285,6 +326,8 @@ module.exports = {
   prepareAssistantOutput,
   neutralizeFences,
   escapeMrkdwn,
+  redactPlain,
+  redactMrkdwn,
   truncateMiddle,
   getLocale,
   SLACK_LOCALES,

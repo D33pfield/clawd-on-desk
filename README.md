@@ -80,7 +80,7 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 
 ### Remote Notifications
 - **Telegram / Feishu (Lark)** — interactive remote approval: route permission requests to your phone and Allow/Deny them without touching the desktop
-- **Slack** — one-way notifications for task **done**, **errors**, and **permission requests** via a Slack Incoming Webhook (or an optional bot token + channel id). Messages are rich Block Kit cards with emoji; because a webhook is one-way, permission requests are *announced* (approve in the desktop app). Configure it next to Telegram/Feishu in the remote approval channels; secrets are stored locally in a `0600` env file, never in plain prefs, and everything degrades gracefully when unconfigured or offline
+- **Slack** — **notification-only**: task **done**, **errors**, and **permission requests** are pushed via a Slack Incoming Webhook (or an optional `xoxb-` bot token + channel id) as rich Block Kit cards. Slack cannot Allow or Deny in this version — a permission message is an announcement, and you decide in the desktop app. Configure it next to Telegram/Feishu in the remote approval channels; secrets are stored locally in a `0600` env file, never in plain prefs, and everything degrades gracefully when unconfigured or offline. Messages can carry the session title, folder, and host name, so a **private channel is recommended** — see [slack-notifications.md](docs/guides/slack-notifications.md)
 
 ### Session Intelligence
 - **Multi-session tracking** — sessions across all agents resolve to the highest-priority state

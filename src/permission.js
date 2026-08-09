@@ -947,6 +947,12 @@ function showPermissionBubble(permEntry) {
   // Auto-pilot: if enabled, approve immediately and never render a bubble.
   if (maybeAutoApprovePermission(permEntry)) return;
 
+  // Past this line the request is known to need a human: DND / per-agent /
+  // headless gates ran earlier in the route, and global + session automation
+  // just declined to consume the entry. This is the announce point for the
+  // one-way Slack heads-up.
+  announceSlackPermission(permEntry);
+
   const canOfferSessionTrust = typeof ctx.canOfferSessionTrust === "function"
     && ctx.canOfferSessionTrust(permEntry) === true;
   const sugCount = (permEntry.suggestions || []).length + (canOfferSessionTrust ? 1 : 0);
@@ -1184,9 +1190,14 @@ function notifyPermissionResolved(permEntry, reason) {
   }
 }
 
+// NOTE: deliberately does NOT announce to Slack. Queueing an entry only means
+// the route accepted it — permission automation may still auto-allow it on the
+// very next statement, which used to produce a "needs your approval" Slack ping
+// for a request nobody ever saw. The announce happens later, at the two points
+// where a real user decision is known to be pending (showPermissionBubble and
+// maybeStartRemoteApproval).
 function addPendingPermission(permEntry, reason = "added") {
   pendingPermissions.push(permEntry);
-  announceSlackPermission(permEntry);
   notifyPermissionsChanged(reason);
   return permEntry;
 }
@@ -1522,15 +1533,27 @@ function buildRemoteApprovalPayload(permEntry) {
   return payload;
 }
 
-// One-way Slack heads-up when a new, human-actionable permission request appears.
-// Fires once per entry (guarded) and independently of whether an interactive
-// remote channel (Telegram/Feishu) is connected — Slack cannot resolve the
-// approval itself in this build, so it only announces "something needs you in the
-// desktop app". Best-effort: never throws into the caller's sync path.
+// One-way Slack heads-up when a permission request is actually waiting on the
+// user. Fires once per entry (guarded) and independently of whether an
+// interactive remote channel (Telegram/Feishu) is connected — Slack cannot
+// resolve the approval itself in this build, so it only announces "something
+// needs you in the desktop app". Best-effort: never throws into the caller's
+// sync path.
+//
+// Callers must invoke this only after automation has had its chance (see
+// showPermissionBubble / maybeStartRemoteApproval). The gates below are a
+// belt-and-braces re-check of the conditions that make a request human-visible,
+// so a future call site cannot reintroduce a ping for a request that was
+// silently dropped (DND) or already resolved.
 function announceSlackPermission(permEntry) {
   if (typeof ctx.notifySlackPermission !== "function") return;
   if (!permEntry || permEntry._slackPermissionAnnounced) return;
   if (!isRemoteApprovalActionable(permEntry)) return;
+  // DND drops permission requests before they ever surface locally; a Slack
+  // ping would be the one thing that still reached the user.
+  if (ctx.doNotDisturb) return;
+  // Auto-approved / already-answered entries are out of the pending list.
+  if (pendingPermissions.indexOf(permEntry) === -1) return;
   permEntry._slackPermissionAnnounced = true;
   try {
     const agentId = compactRemoteApprovalText(permEntry.agentId || "claude-code", 80) || "claude-code";
@@ -1856,6 +1879,11 @@ function maybeStartRemoteApproval(permEntry) {
       });
   }
   if (!started) return false;
+  // Remote-only entries (bubbles disabled) never reach showPermissionBubble, so
+  // this is their announce point — reached only after session automation
+  // declined and a remote client actually took the request. Idempotent: entries
+  // that already announced from showPermissionBubble are skipped by the guard.
+  announceSlackPermission(permEntry);
   permEntry.remoteApprovalRequests = remoteRequests;
   if (controllers.length) {
     permEntry.remoteApprovalAbortControllers = controllers;

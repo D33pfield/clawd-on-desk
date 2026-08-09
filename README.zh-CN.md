@@ -77,7 +77,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 
 ### 远程通知
 - **Telegram / 飞书（Lark）** — 交互式远程审批：把权限请求转发到手机，直接远程「允许 / 拒绝」，无需回到桌面
-- **Slack** — 通过 Slack Incoming Webhook（或可选的 Bot Token + 频道 ID）发送**任务完成**、**错误**和**权限请求**的单向通知。消息为带 Emoji 的 Block Kit 富文本卡片；由于 Webhook 是单向的，权限请求只做「播报」（请回桌面 App 批准）。与 Telegram / 飞书并列在远程审批渠道中配置；密钥以 `0600` 权限的本地 env 文件保存，不写入明文配置，未配置或离线时均优雅降级
+- **Slack** — **仅通知**：通过 Slack Incoming Webhook（或可选的 `xoxb-` Bot Token + 频道 ID）以带 Emoji 的 Block Kit 富文本卡片推送**任务完成**、**错误**和**权限请求**。本版本中 Slack 无法批准或拒绝——权限消息只是播报，仍需回到桌面 App 决定。与 Telegram / 飞书并列在远程审批渠道中配置；密钥以 `0600` 权限的本地 env 文件保存，不写入明文配置，未配置或离线时均优雅降级。消息可能包含会话标题、目录名与主机名，**建议使用私有频道**——参见 [slack-notifications.md](docs/guides/slack-notifications.md)
 
 ### 会话智能
 - **多会话追踪** — 所有已支持 Agent 的会话统一解析到最高优先级状态

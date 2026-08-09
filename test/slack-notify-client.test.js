@@ -11,7 +11,7 @@ function makeFetch(responder) {
   const calls = [];
   const fetchImpl = async (url, opts) => {
     const body = opts && opts.body ? JSON.parse(opts.body) : null;
-    calls.push({ url, headers: (opts && opts.headers) || {}, body });
+    calls.push({ url, headers: (opts && opts.headers) || {}, body, opts: opts || {} });
     return responder(url, opts);
   };
   fetchImpl.calls = calls;
@@ -114,6 +114,33 @@ test("unconfigured client degrades without throwing", async () => {
   assert.equal(fetchImpl.calls.length, 0); // never hit the network
   const test = await client.sendTest();
   assert.equal(test.status, "error");
+});
+
+// A 3xx from either endpoint would otherwise move the request — and, on the bot
+// transport, the Authorization header — to a host the webhook pin never vetted.
+test("outbound requests refuse to follow redirects", async () => {
+  const fetchImpl = makeFetch(okWebhook);
+  const client = baseClient({ fetchImpl });
+  await client.sendMessage({ text: "x", blocks: [] });
+  assert.equal(fetchImpl.calls[0].opts.redirect, "error");
+
+  const botFetch = makeFetch(() => ({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true, ts: "1.2" }) }));
+  const bot = baseClient({
+    config: { channelId: "C99" },
+    secrets: { webhookUrl: "", botToken: "xoxb-123456789-abcdefghij" },
+    fetchImpl: botFetch,
+  });
+  await bot.sendMessage({ text: "x", blocks: [] });
+  assert.equal(botFetch.calls[0].opts.redirect, "error");
+});
+
+test("a redirect rejection is caught like any other transport failure", async () => {
+  // What fetch actually does with redirect: "error" — reject, not resolve.
+  const fetchImpl = makeFetch(() => { throw new TypeError("unexpected redirect"); });
+  const client = baseClient({ fetchImpl });
+  const res = await client.sendMessage({ text: "x", blocks: [] });
+  assert.equal(res.ok, false);
+  assert.equal(res.errorClass, "network");
 });
 
 test("network failure is caught and classified", async () => {

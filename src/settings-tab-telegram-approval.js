@@ -2007,12 +2007,42 @@
       className: "remote-approval-channel-card slack-notify-channel-card",
       children: [
         buildChannelStatusRow(kind, deriveSlackCardMessage(kind)),
+        buildSlackOneWayNoticeRow(),
         helpers.buildSection(t("slackNotifyStep1Title"), [buildSlackSecretsRow()]),
         helpers.buildSection(t("slackNotifyStep2Title"), [buildSlackChannelIdRow()]),
         buildSlackStep3Section(),
         helpers.buildSection(t("slackNotifyStep4Title"), [buildSlackTestRow()]),
       ],
     });
+  }
+
+  // The Slack card sits next to Telegram/Feishu, which DO resolve approvals
+  // remotely — so the one difference that matters has to be stated up front,
+  // above the setup steps, not buried in a per-toggle description. The second
+  // line is the privacy warning: a channel post is readable by everyone in the
+  // channel and can carry the session title, folder, and host.
+  function buildSlackOneWayNoticeRow() {
+    const row = document.createElement("div");
+    // Not tg-approval-prereq-row: that one paints its text in the error color,
+    // and "Slack is notification-only" is a permanent property of the channel,
+    // not a misconfiguration the user can fix.
+    row.className = "row slack-notify-oneway-row";
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("slackNotifyOneWayLabel");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("slackNotifyOneWayDesc");
+    const privacy = document.createElement("span");
+    privacy.className = "row-desc";
+    privacy.textContent = t("slackNotifyPrivacyDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+    text.appendChild(privacy);
+    row.appendChild(text);
+    return row;
   }
 
   function buildSlackSecretInput(placeholderKey, secret) {
@@ -2061,8 +2091,10 @@
     saveBtn.disabled = slackView.secretPending;
     saveBtn.addEventListener("click", () => {
       // Only send fields the user typed; blank means "keep the stored value"
-      // (the writer preserves untouched keys). Send explicit "" only via the
-      // Clear buttons below.
+      // (the writer preserves untouched keys), so saving a new webhook does not
+      // wipe a stored bot token. Removing a credential is done on Slack's side
+      // (delete the webhook / uninstall the app), which is the only thing that
+      // actually revokes it — see docs/guides/slack-notifications.md.
       const payload = {};
       const webhook = webhookInput.value.trim();
       const botToken = botTokenInput.value.trim();

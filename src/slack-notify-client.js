@@ -126,6 +126,11 @@ function createSlackNotifyClient({
         method: "POST",
         headers: { "content-type": "application/json; charset=utf-8", ...headers },
         body: JSON.stringify(bodyObject),
+        // The webhook host is pinned to hooks.slack.com, but a redirect would
+        // let the response move the request (and, for the bot transport, the
+        // Authorization header) to an arbitrary host. Slack never redirects
+        // these endpoints, so treat one as a hard failure instead of following.
+        redirect: "error",
         signal: controller ? controller.signal : undefined,
       });
       const status = res && typeof res.status === "number" ? res.status : 0;

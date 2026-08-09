@@ -36,10 +36,23 @@ test("includeOutput appends a fenced, redacted, fence-safe code block", () => {
   );
   const joined = msg.blocks.map((b) => (b.text ? b.text.text : "")).join("\n");
   assert.ok(joined.includes("```")); // a code block was added
-  assert.ok(joined.includes("<redacted:token>")); // secret scrubbed
+  // Secret scrubbed. The marker itself is mrkdwn-escaped: Slack parses <…:…>
+  // as link syntax even inside a fence, and renders &lt;…&gt; back as literal.
+  assert.ok(joined.includes("&lt;redacted:token&gt;"));
   assert.ok(!joined.includes("xoxb-123456789-abcdefghij"));
   // The embedded fence must be broken so it can't terminate our block early.
   assert.ok(!joined.includes("```danger```"));
+});
+
+test("assistant output cannot smuggle a broadcast out of the code fence", () => {
+  const msg = fmt.buildCompletionMessage(
+    { id: "s1", badge: "done", displayTitle: "T", assistantLastOutput: "ping <!channel> and <@U123>" },
+    { lang: "en", includeOutput: true },
+  );
+  const joined = msg.blocks.map((b) => (b.text ? b.text.text : "")).join("\n");
+  assert.ok(!joined.includes("<!channel>"));
+  assert.ok(!joined.includes("<@U123>"));
+  assert.ok(joined.includes("&lt;!channel&gt;"));
 });
 
 test("output is omitted when includeOutput is false", () => {
@@ -71,6 +84,103 @@ test("mrkdwn special characters are escaped", () => {
   const header = msg.blocks[0].text.text; // plain_text header is not escaped
   assert.ok(header.includes("a<b>&c"));
   assert.equal(fmt.escapeMrkdwn("a<b>&c"), "a&lt;b&gt;&amp;c");
+});
+
+// The session title is derived from the user's own prompt, so it is as
+// untrusted as assistant output — in the header (plain_text: redact only) and
+// in the top-level fallback `text`, which Slack parses as mrkdwn.
+test("the session title is redacted in the header and escaped in the fallback text", () => {
+  const msg = fmt.buildCompletionMessage(
+    {
+      id: "s1",
+      badge: "done",
+      displayTitle: "deploy with xoxb-123456789-abcdefghij <!channel>",
+      cwd: "/x/proj",
+    },
+    { lang: "en" },
+  );
+  // Header: plain_text, so the secret is gone but nothing is HTML-escaped.
+  const header = msg.blocks[0].text.text;
+  assert.ok(!header.includes("xoxb-123456789-abcdefghij"));
+  assert.ok(header.includes("<redacted:token>"));
+  // Fallback text: mrkdwn-parsed, so the secret is gone AND <!channel> is inert.
+  assert.ok(!msg.text.includes("xoxb-123456789-abcdefghij"));
+  assert.ok(!msg.text.includes("<!channel>"));
+  assert.ok(msg.text.includes("&lt;!channel&gt;"));
+});
+
+test("session metadata (folder, host, agent) is redacted and escaped", () => {
+  const msg = fmt.buildCompletionMessage(
+    {
+      id: "s1",
+      badge: "done",
+      displayTitle: "T",
+      agentId: "<!here>",
+      cwd: "/srv/xoxb-123456789-abcdefghij",
+      host: "box<&>1",
+    },
+    { lang: "en" },
+  );
+  const section = msg.blocks[1].text.text;
+  assert.ok(!section.includes("xoxb-123456789-abcdefghij"));
+  assert.ok(!section.includes("<!here>"));
+  assert.ok(section.includes("&lt;!here&gt;"));
+  assert.ok(section.includes("box&lt;&amp;&gt;1"));
+});
+
+test("the completion fallback text carries no raw folder either", () => {
+  const msg = fmt.buildCompletionMessage(
+    { id: "s1", badge: "done", displayTitle: "T", cwd: "/srv/<!channel>" },
+    { lang: "en" },
+  );
+  assert.ok(!msg.text.includes("<!channel>"));
+  assert.ok(msg.text.includes("&lt;!channel&gt;"));
+});
+
+test("permission announcements redact and escape every agent-derived field", () => {
+  const msg = fmt.buildPermissionMessage(
+    {
+      title: "claude <!channel> needs approval for xoxb-123456789-abcdefghij",
+      toolName: "Bash <@U123>",
+      agentId: "claude<&>code",
+      folder: "/x/<!here>",
+      detail: "curl -H 'authorization: Bearer sk-ant-abcdefghijkl'",
+    },
+    { lang: "en" },
+  );
+  const joined = [msg.text, ...msg.blocks.map((b) => {
+    if (b.text) return b.text.text;
+    if (b.elements) return b.elements.map((e) => e.text).join(" ");
+    return "";
+  })].join("\n");
+  assert.ok(!joined.includes("xoxb-123456789-abcdefghij"));
+  assert.ok(!joined.includes("sk-ant-abcdefghijkl"));
+  assert.ok(!joined.includes("<!channel>"));
+  assert.ok(!joined.includes("<!here>"));
+  assert.ok(!joined.includes("<@U123>"));
+  // ...including the top-level fallback, which Slack renders as mrkdwn.
+  assert.ok(!msg.text.includes("<!channel>"));
+  assert.ok(msg.text.includes("&lt;!channel&gt;"));
+});
+
+// A cut that lands inside "&lt;" would render as literal "&l" rubbish, and the
+// escape is what makes mention syntax inert — so the half-entity is dropped.
+test("truncation never leaves a half-written escape entity", () => {
+  const msg = fmt.buildCompletionMessage(
+    {
+      id: "s1",
+      badge: "done",
+      displayTitle: "T",
+      // Nothing but '<' — every escaped character is a 4-char entity, so the
+      // section limit is guaranteed to fall inside one.
+      assistantLastOutput: "<".repeat(2000),
+    },
+    { lang: "en", includeOutput: true },
+  );
+  for (const block of msg.blocks) {
+    const text = block.text ? block.text.text : "";
+    assert.ok(!/&[A-Za-z]{0,4}$/.test(text), `dangling entity in: ${text.slice(-12)}`);
+  }
 });
 
 test("truncateMiddle keeps both ends and marks truncation", () => {

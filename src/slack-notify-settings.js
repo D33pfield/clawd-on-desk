@@ -102,7 +102,10 @@ function validateSlackNotify(value) {
 
 // Incoming webhooks are always https://hooks.slack.com/... — pinning the host
 // keeps a mistyped/hostile URL from turning a completion ping into an
-// outbound request to an arbitrary server.
+// outbound request to an arbitrary server. The comparison is a full hostname
+// equality check, never a suffix/substring match, so lookalikes that merely end
+// in or contain the real host ("hooks.slack.com.evil.example", "evil-slack.com",
+// "hooks.slack.com@evil.example") are rejected.
 function isValidWebhookUrl(value) {
   const raw = trimString(value, 2048);
   if (!raw) return false;
@@ -115,12 +118,17 @@ function isValidWebhookUrl(value) {
   return parsed.protocol === "https:" && parsed.hostname === "hooks.slack.com";
 }
 
-// Bot tokens are xoxb- (bot) / xoxp- (user). Accept the documented prefixes only
-// so an obviously-wrong value (e.g. a webhook pasted into the token box) is
-// rejected before it is sent to the Slack Web API.
+// The UI asks for a *bot* token, so only `xoxb-` is accepted. User tokens
+// (`xoxp-`) and app-configuration tokens (`xoxe-`) carry a different, usually
+// much broader, authority than the single `chat:write` scope this feature
+// needs, and silently accepting them would mean the field does not do what it
+// says. Required scope: `chat:write` (plus `chat:write.public` to post to a
+// public channel the bot has not joined) — see docs/guides/slack-notifications.md.
+const BOT_TOKEN_PREFIX = "xoxb-";
+
 function isValidBotToken(value) {
   const raw = trimString(value, 256);
-  return /^xox[bpe]-[A-Za-z0-9-]{8,}$/.test(raw);
+  return /^xoxb-[A-Za-z0-9-]{8,}$/.test(raw);
 }
 
 // Which transport a config+secrets pair can actually use. Webhook wins when both
@@ -275,7 +283,7 @@ function readiness(config, secrets) {
     }
     // Only a bot token was supplied — it is either malformed or has no channel.
     if (!isValidBotToken(source.botToken)) {
-      return { ready: false, reason: "invalid-secret", message: "Bot token format is invalid", config: normalized };
+      return { ready: false, reason: "invalid-secret", message: `Bot token must start with ${BOT_TOKEN_PREFIX}`, config: normalized };
     }
     return { ready: false, reason: "invalid-config", message: "Channel id is required when using a bot token", config: normalized };
   }
@@ -291,6 +299,7 @@ module.exports = {
   DEFAULT_SLACK_NOTIFY,
   OUTPUT_MODES,
   SECRET_KEYS,
+  BOT_TOKEN_PREFIX,
   cloneDefaultSlackNotify,
   normalizeSlackNotify,
   normalizeOutputMode,

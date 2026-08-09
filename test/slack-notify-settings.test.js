@@ -56,17 +56,50 @@ test("isValidWebhookUrl pins the Slack host over https", () => {
   assert.ok(settings.isValidWebhookUrl("https://hooks.slack.com/services/T/B/xxx"));
   assert.ok(!settings.isValidWebhookUrl("http://hooks.slack.com/services/T/B/xxx"));
   assert.ok(!settings.isValidWebhookUrl("https://evil.example.com/services/T/B/xxx"));
-  assert.ok(!settings.isValidWebhookUrl("https://hooks.slack.com.evil.com/x"));
   assert.ok(!settings.isValidWebhookUrl("not a url"));
   assert.ok(!settings.isValidWebhookUrl(""));
 });
 
-test("isValidBotToken accepts documented prefixes only", () => {
+// The host check must be equality, never "contains"/"endsWith" — each of these
+// would slip past a sloppier match and send the webhook body to someone else.
+test("isValidWebhookUrl rejects hosts that merely look like the Slack host", () => {
+  for (const url of [
+    "https://hooks.slack.com.evil.com/x",       // real host as a prefix label
+    "https://evil-slack.com/x",                 // suffix confusion: ...-slack.com
+    "https://hooks-slack.com/x",                // dash instead of the dot
+    "https://evil.com/hooks.slack.com/x",       // real host in the path
+    "https://notthehooks.slack.com/x",          // different subdomain
+    "https://hooks.slack.com.co/x",             // different TLD
+    "https://hooks.slack.com@evil.com/x",       // userinfo trick: host is evil.com
+    "https://evil.com#hooks.slack.com",         // real host in the fragment
+    "https://evil.com?x=hooks.slack.com",       // real host in the query
+  ]) {
+    assert.ok(!settings.isValidWebhookUrl(url), `must reject ${url}`);
+  }
+});
+
+// The settings field is labelled "Bot token", so only xoxb- is honored. User
+// (xoxp-) and app-config (xoxe-) tokens carry broader authority than the
+// chat:write scope this feature needs and are rejected outright.
+test("isValidBotToken accepts xoxb- bot tokens only", () => {
+  assert.equal(settings.BOT_TOKEN_PREFIX, "xoxb-");
   assert.ok(settings.isValidBotToken("xoxb-123456789-abcdefghij"));
-  assert.ok(settings.isValidBotToken("xoxp-123456789-abcdefghij"));
+  assert.ok(settings.isValidBotToken("  xoxb-123456789-abcdefghij  ")); // trimmed
+  assert.ok(!settings.isValidBotToken("xoxp-123456789-abcdefghij"));
+  assert.ok(!settings.isValidBotToken("xoxe-123456789-abcdefghij"));
   assert.ok(!settings.isValidBotToken("xoxr-123"));
+  assert.ok(!settings.isValidBotToken("xoxb-short"));
   assert.ok(!settings.isValidBotToken("https://hooks.slack.com/services/T/B/x"));
   assert.ok(!settings.isValidBotToken(""));
+});
+
+test("a user token in the bot-token field never resolves a transport", () => {
+  const userToken = "xoxp-123456789-abcdefghij";
+  assert.equal(settings.resolveSlackTransport({ channelId: "C1" }, { botToken: userToken }), null);
+  const ready = settings.readiness({ enabled: true, channelId: "C1" }, { botToken: userToken });
+  assert.equal(ready.ready, false);
+  assert.equal(ready.reason, "invalid-secret");
+  assert.match(ready.message, /xoxb-/);
 });
 
 test("resolveSlackTransport prefers webhook, falls back to bot+channel", () => {
