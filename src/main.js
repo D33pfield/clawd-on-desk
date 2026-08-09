@@ -440,11 +440,11 @@ const _settingsController = createSettingsController({
     writeCodexAutoStartGate: _persistCodexAutoStartGate,
     deployHooksToWsl: async (distro, agentId) => {
       const { deployToWsl } = require("./wsl-deploy");
-      return deployToWsl(distro, { agentId, isPackaged: app.isPackaged });
+      return deployToWsl(distro, { agentId, isPackaged: app.isPackaged, resourcesPath: process.resourcesPath });
     },
     removeHooksFromWsl: async (distro, agentId) => {
       const { removeFromWsl } = require("./wsl-deploy");
-      return removeFromWsl(distro, { agentId });
+      return removeFromWsl(distro, { agentId, isPackaged: app.isPackaged, resourcesPath: process.resourcesPath });
     },
     cleanupIntegrations: async (options = {}) => {
       // Claude hooks + statusline unregister as one queue task, awaited here so

@@ -10920,6 +10920,61 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelectorAll(".agent-instance-action").length, 1,
       "only Pair when nothing is deployed");
   });
+
+  it("Hermes WSL rows use per-agent evidence instead of Claude staging markers", () => {
+    function renderHermes(integrationFilesPresent) {
+      const detectionResult = {
+        checkedAt: 3,
+        agents: [{ agentId: "hermes", detectedInstalled: false, confidence: "low" }],
+        skippedAgentIds: [],
+        wslAgents: [{
+          agentId: "hermes",
+          agentName: "Hermes Agent",
+          distro: "Ubuntu",
+          detectedInstalled: true,
+          confidence: "high",
+          reason: "parent-dir",
+          detail: "",
+          wslHome: "/home/u",
+          wslParentDir: "/home/u/.hermes",
+          hooksDeployed: true,
+          hooksFilesPresent: true,
+          integrationFilesPresent,
+        }],
+        wslDistros: [{ name: "Ubuntu", default: true }],
+        wslPending: false,
+        wslSupported: true,
+      };
+      const harness = loadAgentsTabForTest({
+        snapshot: {
+          agents: { hermes: { integrationInstalled: false, enabled: false } },
+          dismissedAgentInstallHints: {},
+        },
+        agentMetadata: [
+          { id: "hermes", name: "Hermes Agent", eventSource: "plugin", capabilities: {} },
+        ],
+        settingsAPI: { detectAgentInstallations: () => Promise.resolve(detectionResult) },
+      });
+      harness.core.runtime.agentInstallationHints = detectionResult;
+      harness.core.runtime.agentInstallationHintsFetched = true;
+      harness.core.ops.requestRender({ content: true });
+      return harness;
+    }
+
+    let harness = renderHermes(true);
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-deployed").length, 0,
+      "Claude registration must never render a Hermes deployed badge");
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-action").length, 2,
+      "Hermes managed files expose Pair and Unpair without shared staging");
+
+    harness = renderHermes(false);
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-action").length, 1,
+      "explicit false must not inherit Claude hooksFilesPresent");
+
+    harness = renderHermes(null);
+    assert.strictEqual(harness.content.querySelectorAll(".agent-instance-action").length, 1,
+      "unknown evidence conservatively keeps Pair but hides Unpair");
+  });
 });
 
 describe("macOS platform detection (Settings shortcut labels)", () => {

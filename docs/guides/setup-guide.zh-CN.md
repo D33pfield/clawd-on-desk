@@ -103,7 +103,11 @@ Keychain 登录。准确边界见专门指南。
 
 > 本节的主线是 Claude Code / 其他 hook 型 agent 的 WSL 配置。关于 `Codex CLI + WSL` 的官方支持现状、Codex hooks feature flag 行为、以及 Clawd 当前为什么默认扫不到 WSL Linux home 下的 Codex 日志，见：[codex-wsl-clarification.zh-CN.md](codex-wsl-clarification.zh-CN.md)
 
-如果你在 WSL 里跑 Claude Code，而 Clawd 跑在 Windows 宿主上，hook 可以直接 POST 到 `127.0.0.1:23333` —— 不需要 SSH 隧道，因为 WSL2 默认与 Windows 共享 localhost。
+如果 agent 跑在 WSL 里、Clawd 跑在 Windows 宿主上，集成会向 `127.0.0.1:23333-23337` 上报。WSL1 天然共享这条 loopback；WSL2 通常需要镜像网络，默认 NAT 并不能让 Linux 访问 Windows 的 loopback 服务。应用内 Pair 会探测这条链路，并在安装成功但网络不可达时给出警告。
+
+对于已支持的 agent，请在 **Settings → Agents** 的 Connected 区执行 **WSL Scan**，再找到对应发行版并点击 **Pair**。仅存在于 WSL 的 agent 仍可能位于 **Unavailable** 折叠区，因为本机安装状态与 WSL 配对是两套状态。Pair 会打开 Clawd 的事件入口，但不会把它标记为 Windows 本机集成，也不会在 Windows 安装文件。
+
+**WSL 中的 Hermes Agent：** 请先在目标发行版里安装 Hermes。Pair 会把一份私有临时安装 payload 传入 WSL，在 Hermes 主 home 和已发现 profiles 中安装并启用 `clawd-on-desk`，随后删除临时 payload。**Unpair** 只禁用/移除该发行版里的 Clawd Hermes plugin，保留其他 plugin；如果本机或其他 WSL 来源仍可能使用 Hermes，也不会关闭全局 Hermes 事件入口。自定义 WSL `HERMES_HOME` 会从该发行版的 login shell 中解析。
 
 **配置步骤：**
 
@@ -129,8 +133,6 @@ node ~/.claude/hooks/copilot-install.js --remote
 应用内 WSL 部署路径会故意以不带 `--statusline` 的方式运行 Claude installer，因此只提供 transcript fallback，不宣称能拿到自定义 provider 的权威窗口。上面的手动 `--remote` 命令会在 WSL 的独立 home 中安装一条可见 statusline，但 Windows 端应用只有在 **采集本机 Claude 使用信息** 开启时才接受它的 context/quota metadata；开关关闭时这些 POST 会被当作成功 no-op。Windows 本机启动 reconcile 也无法移除 WSL 独立 home 里的 statusline。
 
 如果 Codex 运行在 WSL 里，official hooks 需要安装到 WSL 自己的 `~/.codex` 下。如果你希望 WSL 与 Windows 共用同一份 Codex home，也可以在 WSL 里先设置 `CODEX_HOME=/mnt/c/Users/<windows-user>/.codex` 再运行 Codex。
-
-> **注意：** WSL2 的 localhost 转发需要 Windows 10 build 18945+（默认开启）。如果不生效，检查 `%USERPROFILE%\.wslconfig` 中 `localhostForwarding=true` 是否被禁用。
 
 ### WSL 网络与 Hook 注册（替代方案）
 
