@@ -29,18 +29,25 @@ That example confines roaming to the bottom-right quarter of the work area.
 
 Rules: every present edge must be a finite number with
 `0 <= left < right <= 1` and `0 <= top < bottom <= 1`. Strings (`"0.5"`),
-reversed intervals, and out-of-range values make the file invalid. The whole
-pet must fit inside the rectangle, so a fence narrower or shorter than the pet
-produces no movement on that axis (a corridor exactly the pet's size is fine —
-the pet then only moves along the other axis).
+reversed intervals, and out-of-range values make the file invalid.
+
+Containment is whole-window: the entire pet must fit inside the rectangle.
+A corridor exactly the pet's size is fine (the pet then only moves along the
+other axis), but a fence narrower or shorter than the pet in either dimension
+has no valid position at all — roaming stops entirely until the fence is
+enlarged, disabled, or removed. Fences placed against a screen edge work: an
+explicit fence takes precedence over the default keep-away-from-the-edges
+margin whenever the two conflict.
 
 Delete the file (or set `"enabled": false`) to return to normal full-area
 roaming.
 
 ## When changes apply
 
-The file is re-read in the background each time the next walk is scheduled, so
-an edit applies within one roam pause (about 4–8 seconds). No restart needed.
+The file is re-read in the background when each walk's pause is armed, so an
+edit applies to the next walk planned after it. A walk that was already
+pending when you saved keeps the previous fence; your change takes effect one
+walk later (roughly 4–8 seconds). No restart needed.
 
 ## Failure behavior (by design, the fence never "falls open")
 
@@ -52,4 +59,5 @@ an edit applies within one roam pause (about 4–8 seconds). No restart needed.
   missing), roam holds its rounds instead of wandering the full area.
 - If the pet starts outside the fence, its next walk brings it back inside;
   in axis-constrained mode the walk moves along whichever axis is out of
-  bounds, and if both are, the pet stays put for that round.
+  bounds, and if both are, it recovers in two stages — one axis per walk —
+  so every step still moves along a single axis.

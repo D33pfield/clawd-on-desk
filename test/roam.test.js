@@ -2026,21 +2026,53 @@ describe("roam fence (#810)", () => {
     assertWithinFencePixels(last, FENCE_PX, "final window");
   });
 
-  it("axis mode, both coordinates outside fence: no target this round", () => {
+  it("axis mode, both coordinates outside: staged two-round recovery (#810 r4)", () => {
+    // Round-4 review: both-outside used to return no target forever — a
+    // permanent freeze. Staged recovery fixes X first (partial containment:
+    // moving axis only), then the next round sees only Y outside and
+    // finishes. Every frame of both stages changes exactly one coordinate.
     mock.method(Math, "random", () => 0.3);
     const ctx = fenceCtx(FENCE);
-    placePet(ctx, 200, 100); // both outside — no single-axis move can contain
+    placePet(ctx, 200, 100); // both outside [768,1032]×[432,528]
     const roam = roamModule(ctx);
     roam.setEnabled(true);
     roam.setConstrainAxis(true);
     roam.tick();
     mock.timers.tick(8000);
-    mock.timers.tick(8000);
-    assert.equal(ctx._appliedBounds.length, 0, "no diagonal or partial walk");
-    assert.ok(
-      !ctx._stateLog.some((e) => e.state === "roam"),
-      "pet never enters roam state",
-    );
+    // ── stage 1: X recovers, Y frozen ──
+    for (let i = 0; i < 2000; i += 1) {
+      mock.timers.tick(16);
+      if (
+        ctx._stateLog.filter((e) => e.type === "setState" && e.state === "idle")
+          .length >= 1
+      )
+        break;
+    }
+    const stage1 = ctx._appliedBounds.slice();
+    assert.ok(stage1.length > 0, "stage 1 walk must run");
+    for (const b of stage1) {
+      assert.equal(b.y, 100, "stage 1 holds Y on every frame");
+    }
+    const s1last = stage1[stage1.length - 1];
+    assert.equal(s1last.x, 847, "stage 1 pulls X inside the fence");
+    // ── stage 2: Y recovers, X frozen ──
+    roam.tick();
+    mock.timers.tick(4000);
+    for (let i = 0; i < 2000; i += 1) {
+      mock.timers.tick(16);
+      if (
+        ctx._stateLog.filter((e) => e.type === "setState" && e.state === "idle")
+          .length >= 2
+      )
+        break;
+    }
+    const stage2 = ctx._appliedBounds.slice(stage1.length);
+    assert.ok(stage2.length > 0, "stage 2 walk must run");
+    for (const b of stage2) {
+      assert.equal(b.x, 847, "stage 2 holds X on every frame");
+    }
+    const last = stage2[stage2.length - 1];
+    assertWithinFencePixels(last, FENCE_PX, "final window after both stages");
   });
 
   it("axis mode: small fences use the scaled per-axis minimum hop", () => {
@@ -2352,6 +2384,115 @@ describe("roam fence round-3 review (#810)", () => {
       { x: last.x, y: last.y },
       { x: 768, y: 432 },
       "pet ends exactly inside the collapsed fence",
+    );
+  });
+});
+
+describe("roam fence round-4 review (#810): edge fences", () => {
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    mock.timers.reset();
+    mock.reset();
+  });
+
+  function edgeCtx(fenceState) {
+    const ctx = makeCtx();
+    ctx.roamFence = { get: () => fenceState, refresh: () => {} };
+    return ctx;
+  }
+
+  function run(ctx, roam) {
+    roam.tick();
+    mock.timers.tick(8000);
+    for (let i = 0; i < 4000; i += 1) {
+      mock.timers.tick(16);
+      if (
+        ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle")
+      )
+        break;
+    }
+  }
+
+  function within(rect, f, label) {
+    assert.ok(
+      rect.x >= f.left &&
+        rect.x + rect.width <= f.right &&
+        rect.y >= f.top &&
+        rect.y + rect.height <= f.bottom,
+      `${label}: (${rect.x},${rect.y}) escapes [${f.left}..${f.right}]×[${f.top}..${f.bottom}]`,
+    );
+  }
+
+  // Right-edge strip: x∈[.9,1] → pixels [1728,1920], containment [1728,1800].
+  // Entirely outside the historical margin band (x ≤ 1512) — reviewer repro
+  // for the permanent no-roam zone. Fence must take precedence.
+  const RIGHT_STRIP = { active: true, left: 0.9, top: 0.4, right: 1, bottom: 0.6 };
+  const RIGHT_PX = { left: 1728, top: 432, right: 1920, bottom: 648 };
+
+  it("right-edge strip, start inside: roams within the strip", () => {
+    mock.method(Math, "random", () => 0.9);
+    const ctx = edgeCtx(RIGHT_STRIP);
+    ctx._bounds.x = 1750;
+    ctx._bounds.y = 450;
+    ctx._realBounds.x = 1750;
+    ctx._realBounds.y = 450;
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    run(ctx, roam);
+    assert.ok(ctx._appliedBounds.length > 0, "edge strip must not be a dead zone");
+    for (const b of ctx._appliedBounds) {
+      within(b, RIGHT_PX, "every applied frame");
+    }
+    const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
+    assert.deepEqual({ x: last.x, y: last.y }, { x: 1792, y: 518 });
+  });
+
+  it("right-edge strip, start outside: walks in and stays contained at the end", () => {
+    mock.method(Math, "random", () => 0.9);
+    const ctx = edgeCtx(RIGHT_STRIP); // default start (400,300), far outside
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    run(ctx, roam);
+    assert.ok(ctx._appliedBounds.length > 0, "recovery into the strip must run");
+    const last = ctx._appliedBounds[ctx._appliedBounds.length - 1];
+    within(last, RIGHT_PX, "final window");
+  });
+
+  it("dock-adjacent bottom strip works despite the margin band", () => {
+    // y∈[.87,1] → pixels [940,1080], containment [940,960] — tall enough for
+    // the pet but wholly below the margin band (y ≤ 798).
+    mock.method(Math, "random", () => 0.9);
+    const strip = { active: true, left: 0.3, top: 0.87, right: 0.7, bottom: 1 };
+    const ctx = edgeCtx(strip);
+    ctx._bounds.x = 600;
+    ctx._bounds.y = 945;
+    ctx._realBounds.x = 600;
+    ctx._realBounds.y = 945;
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    run(ctx, roam);
+    assert.ok(ctx._appliedBounds.length > 0, "dock strip must not be a dead zone");
+    const f = { left: 576, top: 940, right: 1344, bottom: 1080 };
+    for (const b of ctx._appliedBounds) {
+      within(b, f, "every applied frame");
+    }
+  });
+
+  it("a fence smaller than the pet holds roam entirely (documented behavior)", () => {
+    mock.method(Math, "random", () => 0.9);
+    const ctx = edgeCtx({ active: true, left: 0.9, top: 0.4, right: 0.94, bottom: 0.6 });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(8000);
+    assert.equal(
+      ctx._appliedBounds.length,
+      0,
+      "no valid position exists — roam holds until the fence is fixed",
     );
   });
 });

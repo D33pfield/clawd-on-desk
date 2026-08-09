@@ -20,9 +20,11 @@
 // edge a finite number with 0 <= left < right <= 1 and 0 <= top < bottom <= 1.
 // Strings that would coerce through Number() are rejected.
 //
-// Live-update timing: roam calls refresh() when it schedules the next walk,
-// so an edit applies to the walk after the one currently pending — within
-// one roam pause (~4–8s) — without restarting the app.
+// Live-update timing: roam calls refresh() when it ARMS the pause before a
+// walk, so an edit lands in the cache for the next walk planned after it. A
+// walk whose pause was already armed when the edit happened still uses the
+// previous fence; the change applies from the following walk (one pause
+// later, ~4–8s). No restart needed.
 //
 // Failure semantics (never fail open — PR #810 review, pass 3):
 //   • before the first confirmed read      → status UNKNOWN (get() returns
@@ -35,9 +37,10 @@
 //   • malformed JSON / invalid schema      → keep last known good state
 //     (or stay UNKNOWN before the first valid read) + one deduplicated warning
 //   • transient read errors (EACCES…)      → keep last known good state
-//   • not a regular file / oversized file  → treated as invalid content; the
-//     stat guard runs before the read so a FIFO can never wedge the single
-//     coalesced refresh slot forever
+//   • not a regular file / oversized file  → treated as invalid content. The
+//     production reader uses ONE non-blocking file handle (open → fstat →
+//     bounded read → close), so a FIFO swapped in at any point cannot hang
+//     the refresh and an oversized file cannot bypass the cap
 // A partially written save therefore cannot momentarily restore full-area
 // roaming; the previous fence keeps applying until a valid save lands.
 
@@ -83,11 +86,37 @@ function parseFence(raw) {
 // When readFile is injected without stat, the stat guard is skipped — unit
 // tests feed content directly and must not hit the real filesystem.
 module.exports = function createRoamFenceLoader(deps = {}) {
-  const readFile =
-    deps.readFile ||
-    ((p) => require("fs").promises.readFile(p, "utf8"));
-  const statFile =
-    deps.stat || (deps.readFile ? null : (p) => require("fs").promises.stat(p));
+  const readFile = deps.readFile || null;
+  const statFile = deps.stat || null;
+  // Production reader: ONE file handle — open (non-blocking, so opening a
+  // FIFO cannot hang), fstat the handle (no stat/read TOCTOU), bounded read
+  // of at most MAX+1 bytes, close in finally. Injected readFile/stat deps
+  // (tests) replace this path entirely.
+  const readFenceBounded = async (p) => {
+    const fs = require("fs");
+    const fh = await fs.promises.open(
+      p, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    try {
+      const st = await fh.stat();
+      if (!st.isFile()) {
+        const e = new Error("not a regular file");
+        e.code = "EFENCEGUARD";
+        e.guardReason = "not a regular file";
+        throw e;
+      }
+      const buf = Buffer.alloc(MAX_FENCE_FILE_BYTES + 1);
+      const { bytesRead } = await fh.read(buf, 0, MAX_FENCE_FILE_BYTES + 1, 0);
+      if (bytesRead > MAX_FENCE_FILE_BYTES || st.size > MAX_FENCE_FILE_BYTES) {
+        const e = new Error("file too large");
+        e.code = "EFENCEGUARD";
+        e.guardReason = `file larger than ${MAX_FENCE_FILE_BYTES} bytes`;
+        throw e;
+      }
+      return buf.toString("utf8", 0, bytesRead);
+    } finally {
+      await fh.close().catch(() => {});
+    }
+  };
   const warn = deps.warn || ((message) => console.warn(message));
   const filePath =
     deps.filePath ||
@@ -119,23 +148,30 @@ module.exports = function createRoamFenceLoader(deps = {}) {
   // trailing read when a request arrived while another read was in flight.
   async function readOnce() {
     try {
-      if (statFile) {
-        const st = await statFile(filePath);
-        if (st && typeof st.isFile === "function" && !st.isFile()) {
-          enoentSeenWhileActive = false;
-          warnOnce("not-file", "not a regular file");
-          return;
+      let raw;
+      if (readFile) {
+        // Test seam: injected content reader with an optional separate
+        // stat guard (the production path guards on the open handle).
+        if (statFile) {
+          const st = await statFile(filePath);
+          if (st && typeof st.isFile === "function" && !st.isFile()) {
+            enoentSeenWhileActive = false;
+            warnOnce("not-file", "not a regular file");
+            return;
+          }
+          if (st && Number.isFinite(st.size) && st.size > MAX_FENCE_FILE_BYTES) {
+            enoentSeenWhileActive = false;
+            warnOnce(
+              `size:${st.size}`,
+              `file is ${st.size} bytes (limit ${MAX_FENCE_FILE_BYTES})`,
+            );
+            return;
+          }
         }
-        if (st && Number.isFinite(st.size) && st.size > MAX_FENCE_FILE_BYTES) {
-          enoentSeenWhileActive = false;
-          warnOnce(
-            `size:${st.size}`,
-            `file is ${st.size} bytes (limit ${MAX_FENCE_FILE_BYTES})`,
-          );
-          return;
-        }
+        raw = await readFile(filePath);
+      } else {
+        raw = await readFenceBounded(filePath);
       }
-      const raw = await readFile(filePath);
       enoentSeenWhileActive = false;
       const next = parseFence(raw);
       if (next) {
@@ -156,6 +192,11 @@ module.exports = function createRoamFenceLoader(deps = {}) {
           state = { ...INACTIVE };
           lastWarnKey = null;
         }
+      } else if (err && err.code === "EFENCEGUARD") {
+        // Guard violation from the single-handle reader: treated exactly
+        // like invalid content — keep last known good, warn once per cause.
+        enoentSeenWhileActive = false;
+        warnOnce(`guard:${err.guardReason}`, err.guardReason);
       } else {
         // #810 round-3: any non-ENOENT outcome breaks the consecutive-ENOENT
         // streak — valid → ENOENT → EACCES → ENOENT is NOT two consecutive

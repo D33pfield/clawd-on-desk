@@ -151,17 +151,38 @@ module.exports = function initRoam(ctx) {
         right: wa.x + Math.round(wa.width * fenceState.right),
         bottom: wa.y + Math.round(wa.height * fenceState.bottom),
       };
-      xMin = Math.max(bxMin, fenceRect.left);
-      xMax = Math.min(bxMax, fenceRect.right - petW);
-      yMin = Math.max(byMin, fenceRect.top);
-      yMax = Math.min(byMax, fenceRect.bottom - petH);
-      // Round-2 review: fenceRect is retained even when it does NOT shrink
+      // Round-4 review: the fence takes precedence over the historical 15%
+      // margin band when the two do not overlap on an axis — a valid fence
+      // deliberately placed in the outer band (a right-edge strip, a strip
+      // above the dock) must not become a permanent no-roam zone. Per axis:
+      // intersect with the margins when possible, else use the fence's own
+      // containment interval. A fence the pet cannot fit into at all leaves
+      // a negative interval and roam holds (whole-window containment; see
+      // docs/guides/roam-fence.md).
+      const fxMin = fenceRect.left;
+      const fxMax = fenceRect.right - petW;
+      const fyMin = fenceRect.top;
+      const fyMax = fenceRect.bottom - petH;
+      xMin = Math.max(bxMin, fxMin);
+      xMax = Math.min(bxMax, fxMax);
+      if (xMax < xMin) {
+        xMin = fxMin;
+        xMax = fxMax;
+      }
+      yMin = Math.max(byMin, fyMin);
+      yMax = Math.min(byMax, fyMax);
+      if (yMax < yMin) {
+        yMin = fyMin;
+        yMax = fyMax;
+      }
+      // Round-2 review: fenceRect is retained even when it does NOT alter
       // the candidate band — the band being inside the fence says nothing
       // about the pet's STARTING position, and containment classification
       // plus the final revalidation still need the rectangle. fenceShrinks
-      // only decides whether the adaptive minimum hop may engage.
+      // only decides whether the adaptive minimum hop may engage (any
+      // fence-altered band scales the hop to its actual size).
       fenceShrinks =
-        xMin > bxMin || xMax < bxMax || yMin > byMin || yMax < byMax;
+        xMin !== bxMin || xMax !== bxMax || yMin !== byMin || yMax !== byMax;
     }
     // #810: a fence smaller than ROAM_MIN_DIST would reject every candidate,
     // so the minimum hop scales down with the fenced interval — but only when
@@ -221,13 +242,22 @@ module.exports = function initRoam(ctx) {
        * Without an active fence the historical behavior is untouched: either
        * axis, stationary coordinate kept as-is even outside the margin band. */
       let forcedAxis = null;
+      let partialRecovery = false;
       if (fenceRect) {
         const insideX =
           bounds.x >= fenceRect.left && bounds.x + petW <= fenceRect.right;
         const insideY =
           bounds.y >= fenceRect.top && bounds.y + petH <= fenceRect.bottom;
-        if (!insideX && !insideY) return null;
-        if (!insideX) forcedAxis = "horizontal";
+        if (!insideX && !insideY) {
+          // Round-4 review: both coordinates outside cannot be fixed by one
+          // single-axis move, but returning no target forever froze the pet
+          // permanently. Staged recovery: fix X this round (partial — the
+          // final revalidation only checks the moving axis), then the next
+          // round sees only Y outside and finishes the job. The axis-only
+          // invariant holds on every frame of both stages.
+          forcedAxis = "horizontal";
+          partialRecovery = true;
+        } else if (!insideX) forcedAxis = "horizontal";
         else if (!insideY) forcedAxis = "vertical";
       }
       const tryAxis = (axis, recovery) => {
@@ -304,7 +334,11 @@ module.exports = function initRoam(ctx) {
         }
       };
 
-      if (forcedAxis) return tryAxis(forcedAxis, true);
+      if (forcedAxis) {
+        const target = tryAxis(forcedAxis, true);
+        if (target && partialRecovery) target.partial = true;
+        return target;
+      }
       // Randomly prefer one axis; if it fails, try the other
       const firstAxis = Math.random() < 0.5 ? "horizontal" : "vertical";
       const secondAxis = firstAxis === "horizontal" ? "vertical" : "horizontal";
@@ -423,12 +457,15 @@ module.exports = function initRoam(ctx) {
     // stationary coordinate.
     if (target.fence) {
       const f = target.fence;
-      if (
-        finalX < f.left ||
-        finalX + roamW > f.right ||
-        finalY < f.top ||
-        finalY + roamH > f.bottom
-      ) {
+      const okX = finalX >= f.left && finalX + roamW <= f.right;
+      const okY = finalY >= f.top && finalY + roamH <= f.bottom;
+      // Round-4: a staged (partial) recovery only promises containment on
+      // its moving axis — the stationary axis is still outside by design
+      // and recovers next round. Everything else requires the full window.
+      const contained = target.partial
+        ? (axis === "horizontal" ? okX : okY)
+        : okX && okY;
+      if (!contained) {
         scheduleNextRoam();
         return;
       }
