@@ -71,8 +71,23 @@ describe("codex turn fence", () => {
     fence.observe(event({ source: "jsonl", event: "event_msg:turn_aborted", state: "idle", turnId: null }));
     assert.strictEqual(fence.observe(event({ turnId: null })).reason, "terminal-latch");
     assert.strictEqual(fence.observe(event({ turnId: "B" })).reason, "terminal-latch");
+    assert.strictEqual(fence.observe(event({
+      source: "jsonl",
+      event: "event_msg:user_message",
+      state: "thinking",
+      turnId: "B",
+    })).reason, "terminal-latch");
     assert.strictEqual(fence.observe(event({ event: "UserPromptSubmit", state: "thinking", turnId: "B" })).accept, true);
     assert.strictEqual(fence.observe(event({ turnId: "B" })).accept, true);
+  });
+
+  it("fails open when no canonical session id is available", () => {
+    const fence = createCodexTurnFence();
+    assert.deepStrictEqual(fence.observe(event({ sessionId: null })), {
+      accept: true,
+      reason: "no-session",
+    });
+    assert.strictEqual(fence.size, 0);
   });
 
   it("does not tombstone an inferred B on a delayed ID-less terminal", () => {
@@ -159,6 +174,45 @@ describe("codex turn fence", () => {
     assert.ok(fence.closedSize <= 2);
     assert.strictEqual(fence.getSnapshot("s1"), null);
     assert.ok(logs.some((line) => line.includes("session-capacity")));
+  });
+
+  it("keeps fallback protection after tombstone eviction until identity becomes ambiguous", () => {
+    const logs = [];
+    const fence = createCodexTurnFence({
+      maxClosedTurns: 1,
+      debugLog: (line) => logs.push(line),
+    });
+    fence.observe(event({ event: "UserPromptSubmit", state: "thinking", turnId: "A" }));
+    fence.observe(event({ event: "Stop", state: "attention", turnId: "A" }));
+    fence.observe(event({ event: "UserPromptSubmit", state: "thinking", turnId: "B" }));
+    fence.observe(event({ event: "Stop", state: "attention", turnId: "B" }));
+
+    assert.deepStrictEqual(fence.getSnapshot("codex:s1").closedTurnIds, ["B"]);
+    assert.ok(logs.some((line) => line.includes("reason=tombstone-capacity")));
+    assert.strictEqual(
+      fence.observe(event({ event: "PostToolUse", state: "working", turnId: "A" })).reason,
+      "terminal-latch"
+    );
+
+    // A real but ID-less start is the bounded-memory ambiguity boundary: it
+    // explicitly reopens lifecycle state without naming a current turn. Once
+    // A's tombstone has been evicted, later work can only fail open.
+    fence.observe(event({ event: "UserPromptSubmit", state: "thinking", turnId: null }));
+    assert.deepStrictEqual(
+      fence.observe(event({ event: "PostToolUse", state: "working", turnId: "A" })),
+      { accept: true, reason: "work" }
+    );
+  });
+
+  it("fails open for a tail whose entire session record was capacity-evicted", () => {
+    const fence = createCodexTurnFence({ maxSessions: 1 });
+    fence.observe(event({ sessionId: "s1", event: "Stop", state: "attention", turnId: "A" }));
+    fence.observe(event({ sessionId: "s2", event: "UserPromptSubmit", state: "thinking", turnId: "B" }));
+    assert.strictEqual(fence.getSnapshot("s1"), null);
+    assert.deepStrictEqual(
+      fence.observe(event({ sessionId: "s1", event: "PostToolUse", state: "working", turnId: "A" })),
+      { accept: true, reason: "work" }
+    );
   });
 });
 
