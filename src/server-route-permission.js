@@ -3,7 +3,15 @@
 const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
+  CLAWD_HOOK_PID_HEADER,
+  CLAWD_LEGACY_PROCESS_CACHE_HEADER,
+  CLAWD_PROCESS_INSTANCE_HEADER,
 } = require("../hooks/server-config");
+const {
+  assessWindowsProcessChainRequest,
+  buildShadowComparison,
+  processMetadataForState,
+} = require("./server-windows-process-metadata");
 const {
   CODEX_OFFICIAL_HOOK_SOURCE,
   CODEX_SESSION_ROLE_SUBAGENT,
@@ -31,6 +39,7 @@ const {
   classifyPermissionInteraction,
   isDecisionInteraction,
 } = require("./permission-automation-policy");
+const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
 
 const MAX_PERMISSION_BODY_BYTES = 524288;
 
@@ -214,6 +223,7 @@ function buildCodexPermissionSessionOptions(data) {
   const host = normalizeString(data.host);
   const platform = normalizeString(data.platform);
   const model = normalizeString(data.model);
+  const editor = data.editor === "code" || data.editor === "cursor" ? data.editor : null;
   const codexOriginator = normalizeString(data.codex_originator);
   const codexSource = normalizeString(data.codex_source);
   const codexSessionRole = normalizeString(data.codex_session_role);
@@ -224,6 +234,7 @@ function buildCodexPermissionSessionOptions(data) {
   if (host) options.host = host;
   if (platform) options.platform = platform;
   if (model) options.model = model;
+  if (editor) options.editor = editor;
   if (codexOriginator) options.codexOriginator = codexOriginator;
   if (codexSource) options.codexSource = codexSource;
   if (codexSessionRole) options.codexSessionRole = codexSessionRole;
@@ -455,6 +466,10 @@ function handlePermissionPost(req, res, options) {
     ctx,
     createRequestHookRecorder,
     remoteProfile = null,
+    isWinHost = process.platform === "win32",
+    windowsProcessChainRuntime = null,
+    resolveWindowsProcessMetadata = null,
+    recordWindowsProcessChainShadow = null,
   } = options;
   ctx.permLog(`/permission hit | DND=${ctx.doNotDisturb} pending=${ctx.pendingPermissions.length}`);
   let body = "";
@@ -481,6 +496,9 @@ function handlePermissionPost(req, res, options) {
       res.end("bad json");
       return;
     }
+    const requestHeaders = req && req.headers && typeof req.headers === "object"
+      ? req.headers
+      : {};
     const hookIdentity = resolveHookAgentId(data, {
       customAgentIds: typeof ctx.getCustomAgentIds === "function" ? ctx.getCustomAgentIds() : [],
     });
@@ -707,12 +725,113 @@ function handlePermissionPost(req, res, options) {
         const toolInputFingerprint = typeof data.tool_input_fingerprint === "string" && data.tool_input_fingerprint
           ? data.tool_input_fingerprint
           : buildToolInputFingerprint(rawInput);
-        const codexSessionOptions = {
+        const legacyCodexSessionOptions = {
           ...buildCodexPermissionSessionOptions(data),
           sessionAutomationIdentity,
           ...trustedSessionFields(sessionIdentity),
         };
         const isCodexSubagent = isInteractiveCodexSubagentPermission(agentId, data);
+        let codexSessionOptions = legacyCodexSessionOptions;
+        let codexProcessMetadataResolved = false;
+        const resolveCodexSessionProcessMetadata = () => {
+          if (codexProcessMetadataResolved) return codexSessionOptions;
+          codexProcessMetadataResolved = true;
+          const existingSession = ctx.sessions && typeof ctx.sessions.get === "function"
+            ? ctx.sessions.get(sessionId)
+            : null;
+          const effectiveHost = legacyCodexSessionOptions.host
+            || (existingSession && existingSession.host)
+            || null;
+          const effectiveWslDistro = normalizeString(data.wsl_distro)
+            || (existingSession && existingSession.wslDistro)
+            || null;
+          const effectivePlatform = legacyCodexSessionOptions.platform
+            || (existingSession && existingSession.platform)
+            || null;
+          const assessment = assessWindowsProcessChainRequest({
+            agentId: "codex",
+            runtime: windowsProcessChainRuntime,
+            isWinHost,
+            remoteProfile,
+            effectiveHost,
+            effectiveWslDistro,
+            effectivePlatform,
+            // All headless paths returned before this resolver is invoked.
+            effectiveHeadless: false,
+            hookPidHeader: requestHeaders[CLAWD_HOOK_PID_HEADER.toLowerCase()],
+            instanceGeneration: requestHeaders[CLAWD_PROCESS_INSTANCE_HEADER.toLowerCase()],
+          });
+          if (!assessment.eligible || typeof resolveWindowsProcessMetadata !== "function") {
+            return codexSessionOptions;
+          }
+
+          let result;
+          try {
+            result = resolveWindowsProcessMetadata({
+              agentId: "codex",
+              hookPid: assessment.hookPid,
+              preferAgentPid: isCodexDesktopOriginator(legacyCodexSessionOptions.codexOriginator),
+            });
+          } catch {
+            result = {
+              status: "unavailable",
+              reason: "resolver-threw",
+              sourcePid: null,
+              agentPid: null,
+              pidChain: null,
+              editor: null,
+            };
+          }
+
+          if (assessment.mode === "shadow") {
+            const candidateMetadata = processMetadataForState(result);
+            const legacyMetadata = {
+              sourcePid: legacyCodexSessionOptions.sourcePid || null,
+              agentPid: legacyCodexSessionOptions.agentPid || null,
+              pidChain: legacyCodexSessionOptions.pidChain || null,
+              editor: legacyCodexSessionOptions.editor || null,
+            };
+            const record = {
+              channel: "permission",
+              agentId: "codex",
+              event: "PermissionRequest",
+              status: result && result.status || "unavailable",
+              reason: result && result.reason || "resolver-unavailable",
+              comparisonClass: result && result.comparisonClass || null,
+              agentSeenBeforeFailure: result && result.agentSeenBeforeFailure === true,
+              failureStage: result && result.failureStage || null,
+              errorKind: result && result.errorKind || null,
+              depth: result && result.depth || 0,
+              durationMs: result && result.durationMs || 0,
+              cacheSource: requestHeaders[CLAWD_LEGACY_PROCESS_CACHE_HEADER.toLowerCase()] || null,
+              rawEditor: result && result.rawEditor || null,
+              effectiveEditor: candidateMetadata.editor,
+              legacyMetadata,
+              candidateMetadata,
+              comparison: buildShadowComparison(legacyMetadata, result),
+            };
+            if (typeof recordWindowsProcessChainShadow === "function") {
+              try { recordWindowsProcessChainShadow(record); } catch {}
+            } else if (typeof ctx.debugLog === "function") {
+              const safeShadowRecord = sanitizeShadowRecord(record);
+              if (safeShadowRecord) ctx.debugLog(`win-chain-shadow ${JSON.stringify(safeShadowRecord)}`);
+            }
+            return codexSessionOptions;
+          }
+
+          if (assessment.mode === "b1a-authoritative") {
+            const metadata = processMetadataForState(result);
+            codexSessionOptions = {
+              ...legacyCodexSessionOptions,
+              sourcePid: metadata.sourcePid,
+              agentPid: metadata.agentPid,
+              pidChain: metadata.pidChain,
+              editor: metadata.editor,
+              replaceProcessMetadata: true,
+            };
+          }
+          return codexSessionOptions;
+        };
 
         if (ctx.doNotDisturb) {
           recordRequestHookEvent.droppedByDnd();
@@ -736,6 +855,7 @@ function handlePermissionPost(req, res, options) {
         }
 
         if (!shouldInterceptCodexPermission(ctx)) {
+          codexSessionOptions = resolveCodexSessionProcessMetadata();
           const nativeSessionOptions = { ...codexSessionOptions };
           if (shouldMuteCodexNativeNotificationSound(ctx)) {
             nativeSessionOptions.muteNotificationSound = true;
@@ -757,6 +877,8 @@ function handlePermissionPost(req, res, options) {
           sendCodexPermissionNoDecision(res);
           return;
         }
+
+        codexSessionOptions = resolveCodexSessionProcessMetadata();
 
         const permEntry = {
           res,
