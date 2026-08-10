@@ -638,6 +638,7 @@ function loadGeneralLanguageRowForTest({
 function loadGeneralTabForTest({
   snapshot,
   settingsAPI = {},
+  platform = "Win32",
   requestAnimationFrame = (cb) => {
     cb();
     return 1;
@@ -659,7 +660,7 @@ function loadGeneralTabForTest({
 
   const context = {
     console,
-    navigator: { platform: "Win32" },
+    navigator: { platform },
     localStorage: {
       getItem: () => null,
       setItem: () => {},
@@ -5734,6 +5735,216 @@ describe("settings renderer browser environment", () => {
     assert.notStrictEqual(renderIndex, -1);
     assert.ok(clearIndex < patchIndex, "broadcast cleanup must happen before in-place patching");
     assert.ok(clearIndex < renderIndex, "broadcast cleanup must happen before full rerender");
+  });
+
+  it("renders the macOS menu bar and Dock recovery switches with the four-state safety matrix", () => {
+    const cases = [
+      { showTray: true, showDock: false, trayDisabled: true, dockDisabled: false },
+      { showTray: true, showDock: true, trayDisabled: false, dockDisabled: false },
+      { showTray: false, showDock: true, trayDisabled: false, dockDisabled: true },
+      { showTray: false, showDock: false, trayDisabled: false, dockDisabled: false },
+    ];
+
+    for (const entry of cases) {
+      const harness = loadGeneralTabForTest({
+        platform: "MacIntel",
+        snapshot: makeGeneralSnapshot({
+          showTray: entry.showTray,
+          showDock: entry.showDock,
+        }),
+      });
+      harness.renderContent();
+
+      const tray = harness.getSwitch("showTray");
+      const dock = harness.getSwitch("showDock");
+      assert.ok(tray, `showTray should render for ${JSON.stringify(entry)}`);
+      assert.ok(dock, `showDock should render for ${JSON.stringify(entry)}`);
+      assert.strictEqual(tray.getAttribute("role"), "switch");
+      assert.strictEqual(dock.getAttribute("role"), "switch");
+      assert.strictEqual(tray.getAttribute("aria-label"), "Show in menu bar");
+      assert.strictEqual(dock.getAttribute("aria-label"), "Show in Dock");
+      assert.strictEqual(tray.getAttribute("aria-checked"), String(entry.showTray));
+      assert.strictEqual(dock.getAttribute("aria-checked"), String(entry.showDock));
+      assert.strictEqual(tray.getAttribute("aria-disabled"), entry.trayDisabled ? "true" : undefined);
+      assert.strictEqual(dock.getAttribute("aria-disabled"), entry.dockDisabled ? "true" : undefined);
+      assert.strictEqual(tray.tabIndex, entry.trayDisabled ? -1 : 0);
+      assert.strictEqual(dock.tabIndex, entry.dockDisabled ? -1 : 0);
+    }
+
+    const nonMac = loadGeneralTabForTest({
+      platform: "Win32",
+      snapshot: makeGeneralSnapshot({ showTray: true, showDock: false }),
+    });
+    nonMac.renderContent();
+    assert.strictEqual(nonMac.getSwitch("showTray"), null);
+    assert.strictEqual(nonMac.getSwitch("showDock"), null);
+    const beforeNonMacRenderCount = nonMac.getContentRenderCount();
+    nonMac.core.ops.applyChanges({
+      changes: { showDock: true },
+      snapshot: makeGeneralSnapshot({ showTray: true, showDock: true }),
+    });
+    assert.strictEqual(nonMac.getContentRenderCount(), beforeNonMacRenderCount + 1);
+    assert.strictEqual(nonMac.getSwitch("showTray"), null);
+    assert.strictEqual(nonMac.getSwitch("showDock"), null);
+  });
+
+  it("falls back to a full General render when a macOS recovery control is missing", () => {
+    const initialSnapshot = makeGeneralSnapshot({ showTray: true, showDock: false });
+    const harness = loadGeneralTabForTest({
+      platform: "MacIntel",
+      snapshot: initialSnapshot,
+    });
+    harness.renderContent();
+    const originalTray = harness.getSwitch("showTray");
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.core.state.mountedControls.generalSwitches.delete("showDock");
+
+    harness.core.ops.applyChanges({
+      changes: { showDock: true },
+      snapshot: { ...initialSnapshot, showDock: true },
+    });
+
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount + 1);
+    assert.notStrictEqual(harness.getSwitch("showTray"), originalTray);
+    assert.ok(harness.getSwitch("showDock"));
+  });
+
+  it("writes each macOS recovery switch through the exact Settings update key", async () => {
+    for (const entry of [
+      { snapshot: { showTray: false, showDock: true }, clickKey: "showTray" },
+      { snapshot: { showTray: true, showDock: false }, clickKey: "showDock" },
+    ]) {
+      const updateCalls = [];
+      const commandCalls = [];
+      const harness = loadGeneralTabForTest({
+        platform: "MacIntel",
+        snapshot: makeGeneralSnapshot(entry.snapshot),
+        settingsAPI: {
+          update: (key, value) => {
+            updateCalls.push({ key, value });
+            return Promise.resolve({ status: "ok" });
+          },
+          command: (...args) => {
+            commandCalls.push(args);
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      harness.renderContent();
+      harness.getSwitch(entry.clickKey).dispatchEvent({ type: "click" });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      assert.deepStrictEqual(updateCalls, [{ key: entry.clickKey, value: true }]);
+      assert.deepStrictEqual(commandCalls, []);
+    }
+  });
+
+  it("patches committed macOS entry-point changes in place and re-gates both switches", async () => {
+    const updateCalls = [];
+    const initialSnapshot = makeGeneralSnapshot({ showTray: true, showDock: false });
+    const harness = loadGeneralTabForTest({
+      platform: "MacIntel",
+      snapshot: initialSnapshot,
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+
+    const tray = harness.getSwitch("showTray");
+    const dock = harness.getSwitch("showDock");
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.content.scrollTop = 247;
+    dock.focus();
+    dock.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, [{ key: "showDock", value: true }]);
+
+    harness.core.ops.applyChanges({
+      changes: { showDock: true },
+      snapshot: { ...initialSnapshot, showDock: true },
+    });
+
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(harness.getSwitch("showTray"), tray);
+    assert.strictEqual(harness.getSwitch("showDock"), dock);
+    assert.strictEqual(dock.focused, true);
+    assert.strictEqual(harness.content.scrollTop, 247);
+    assert.strictEqual(tray.getAttribute("aria-disabled"), undefined);
+    assert.strictEqual(tray.tabIndex, 0);
+    assert.strictEqual(dock.getAttribute("aria-disabled"), undefined);
+
+    harness.core.ops.applyChanges({
+      changes: { showTray: false },
+      snapshot: { ...initialSnapshot, showTray: false, showDock: true },
+    });
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(tray.getAttribute("aria-checked"), "false");
+    assert.strictEqual(dock.getAttribute("aria-disabled"), "true");
+    assert.strictEqual(dock.tabIndex, -1);
+  });
+
+  it("blocks mouse and keyboard activation for the last macOS entry point", async () => {
+    const updateCalls = [];
+    const harness = loadGeneralTabForTest({
+      platform: "MacIntel",
+      snapshot: makeGeneralSnapshot({ showTray: false, showDock: true }),
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+    const dock = harness.getSwitch("showDock");
+
+    dock.dispatchEvent({ type: "click" });
+    dock.dispatchEvent(createKeyboardEventForTest(" "));
+    dock.dispatchEvent(createKeyboardEventForTest("Enter"));
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, []);
+  });
+
+  it("restores a macOS recovery switch after a rejected Settings update", async () => {
+    const harness = loadGeneralTabForTest({
+      platform: "MacIntel",
+      snapshot: makeGeneralSnapshot({ showTray: false, showDock: true }),
+      settingsAPI: {
+        update: () => Promise.reject(new Error("rejected")),
+      },
+    });
+    harness.renderContent();
+    const tray = harness.getSwitch("showTray");
+    tray.dispatchEvent({ type: "click" });
+    assert.strictEqual(tray.getAttribute("aria-checked"), "true");
+    assert.strictEqual(tray.classList.contains("pending"), true);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(tray.getAttribute("aria-checked"), "false");
+    assert.strictEqual(tray.classList.contains("pending"), false);
+  });
+
+  it("keeps macOS entry-point switches behind the Settings controller boundary", () => {
+    const generalSource = fs.readFileSync(SETTINGS_TAB_GENERAL, "utf8");
+    for (const forbidden of [
+      /require\(["']electron["']\)/,
+      /\bapp\.dock\b/,
+      /\bcreateTray\s*\(/,
+      /\bdestroyTray\s*\(/,
+      /clawd-prefs\.json/,
+      /\bfs\.(?:writeFile|writeFileSync|promises\.writeFile)\b/,
+    ]) {
+      assert.doesNotMatch(generalSource, forbidden);
+    }
   });
 
   it("updates runtime-only Settings bounds without rebuilding the active tab", () => {

@@ -113,6 +113,18 @@ describe("settings-effect-router", () => {
     ]);
   });
 
+  it("destroys the tray when showTray is committed false", () => {
+    const { calls, emit } = createHarness();
+
+    emit({ showTray: false });
+
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { showTray: false }],
+      ["destroyTray"],
+      ["rebuildAllMenus"],
+    ]);
+  });
+
   it("routes bubble policy changes to permission and update bubble effects", () => {
     const { calls, emit } = createHarness();
 

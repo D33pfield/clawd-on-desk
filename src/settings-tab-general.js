@@ -13,6 +13,8 @@
     "soundVolume",
     "lowPowerIdleMode",
     "keepAwakeWhileWorking",
+    "showTray",
+    "showDock",
     "sessionHudEnabled",
     "sessionHudShowStateLabels",
     "sessionHudShowElapsed",
@@ -80,6 +82,7 @@
   let readers = null;
   let helpers = null;
   let ops = null;
+  let i18n = null;
   const languagePickerApi = root.ClawdLanguagePicker || {};
 
   const LANGUAGE_OPTIONS = ["en", "zh", "zh-TW", "ko", "ja", "pt-BR"];
@@ -88,6 +91,32 @@
 
   function t(key) {
     return helpers.t(key);
+  }
+
+  function buildMacAppPresenceRows() {
+    if (!i18n || !i18n.IS_MAC) return [];
+    const showTray = !!(state.snapshot && state.snapshot.showTray);
+    const showDock = !!(state.snapshot && state.snapshot.showDock);
+    const definitions = [
+      {
+        key: "showTray",
+        labelKey: "rowShowInMenuBar",
+        descKey: "rowShowInMenuBarDesc",
+        disabled: showTray && !showDock,
+      },
+      {
+        key: "showDock",
+        labelKey: "rowShowInDock",
+        descKey: "rowShowInDockDesc",
+        disabled: showDock && !showTray,
+      },
+    ];
+    return definitions.map((definition) => {
+      const row = helpers.buildSwitchRow(definition);
+      const sw = row.querySelector(".switch");
+      if (sw) sw.setAttribute("aria-label", t(definition.labelKey));
+      return row;
+    });
   }
 
   function readRoamMovementStyle() {
@@ -374,6 +403,7 @@
     // System & startup: machine-level toggles (low-power idle throttling and
     // blocking OS sleep while working) plus launch-at-login. Set-once, near bottom.
     parent.appendChild(helpers.buildSection(t("sectionSystemStartup"), [
+      ...buildMacAppPresenceRows(),
       helpers.buildSwitchRow({
         key: "lowPowerIdleMode",
         labelKey: "rowLowPowerIdleMode",
@@ -1929,6 +1959,17 @@
     return true;
   }
 
+  function syncMacAppPresenceSwitchesDisabled() {
+    if (!i18n || !i18n.IS_MAC) return false;
+    const tray = getMountedGeneralSwitch("showTray");
+    const dock = getMountedGeneralSwitch("showDock");
+    if (!tray || !dock) return false;
+    const showTray = !!(state.snapshot && state.snapshot.showTray);
+    const showDock = !!(state.snapshot && state.snapshot.showDock);
+    return setGeneralSwitchDisabled("showTray", showTray && !showDock)
+      && setGeneralSwitchDisabled("showDock", showDock && !showTray);
+  }
+
   function getMountedRoamMovementStyle() {
     const control = state.mountedControls.roamMovementStyle;
     if (!control || !document.body.contains(control.element)) return null;
@@ -1979,6 +2020,12 @@
     }
     if (keys.includes("sessionHudEnabled")
       && !SESSION_HUD_CHILD_SWITCH_KEYS.every((key) => getMountedGeneralSwitch(key))) {
+      return false;
+    }
+    if (keys.some((key) => key === "showTray" || key === "showDock")
+      && (!i18n || !i18n.IS_MAC
+        || !getMountedGeneralSwitch("showTray")
+        || !getMountedGeneralSwitch("showDock"))) {
       return false;
     }
     if ((keys.includes("freeRoam") || keys.includes("roamConstrainAxis"))
@@ -2049,6 +2096,8 @@
     if ((keys.includes("freeRoam") || keys.includes("roamConstrainAxis"))
       && !syncRoamMovementStyleFromSnapshot()) return false;
     if (keys.includes("sessionHudEnabled") && !syncSessionHudChildSwitchesDisabled()) return false;
+    if (keys.some((key) => key === "showTray" || key === "showDock")
+      && !syncMacAppPresenceSwitchesDisabled()) return false;
     if (keys.some((key) => SESSION_HUD_SUMMARY_KEYS.has(key))) {
       const summary = state.mountedControls.sessionHudSummary;
       if (summary && document.body.contains(summary.element)) summary.syncFromSnapshot();
@@ -2068,6 +2117,7 @@
     readers = core.readers;
     helpers = core.helpers;
     ops = core.ops;
+    i18n = core.i18n;
     core.tabs.general = {
       render,
       patchInPlace,

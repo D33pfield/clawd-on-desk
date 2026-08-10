@@ -3593,6 +3593,7 @@ const _menuCtx = {
   clampToScreenVisual,
   getNearestWorkArea,
   reapplyMacVisibility,
+  getSettingsWindow,
   discoverThemes: () => themeLoader.discoverThemes(),
   getActiveThemeId: () => themeRuntime.getActiveThemeId("clawd"),
   getActiveThemeCapabilities: () => themeRuntime.getActiveThemeCapabilities(),
