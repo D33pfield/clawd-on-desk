@@ -2,9 +2,9 @@
 
 // src/roam-fence.js — validated loader for the optional roam fence file.
 //
-// The fence lets users limit where free roam wanders without opening the
-// settings UI: a JSON file describing a rectangle as fractions of the work
-// area. External tools can rewrite the file while the app runs.
+// The fence lets users limit where free roam wanders. Settings writes a JSON
+// rectangle as fractions of the work area; external tools may rewrite that
+// same file while the app runs.
 // User-facing contract: docs/guides/roam-fence.md (keep both in sync).
 //
 // File: ~/.clawd/roam-area.json

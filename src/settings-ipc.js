@@ -167,6 +167,8 @@ function registerSettingsIpc(options = {}) {
   const getSettingsWindow = options.getSettingsWindow || (() => null);
   const getActiveTheme = options.getActiveTheme || (() => null);
   const getLang = options.getLang || (() => "en");
+  const roamFenceSettings = requiredDependency(options.roamFenceSettings, "roamFenceSettings");
+  const roamFencePicker = requiredDependency(options.roamFencePicker, "roamFencePicker");
   const settingsSizePreviewSession = requiredDependency(
     options.settingsSizePreviewSession,
     "settingsSizePreviewSession"
@@ -224,6 +226,15 @@ function registerSettingsIpc(options = {}) {
   });
   handle("settings:get-pet-tint-options", () => listPetTintOptions());
   handle("settings:get-pet-accessory-options", () => listPetAccessoryOptions());
+  handle("settings:get-roam-fence", () => roamFenceSettings.getStatus());
+  handle("settings:select-roam-fence", async () => {
+    const picked = await roamFencePicker.selectArea({
+      lang: getLang(),
+    });
+    if (!picked || picked.status !== "ok") return picked || { status: "cancel" };
+    return roamFenceSettings.saveFence(picked.fence);
+  });
+  handle("settings:clear-roam-fence", () => roamFenceSettings.clearFence());
   handle("settings:update", (_event, payload) => {
     if (!payload || typeof payload !== "object") {
       return { status: "error", message: "settings:update payload must be { key, value }" };

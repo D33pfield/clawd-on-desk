@@ -1,10 +1,25 @@
 # Roam Fence — limit where free roam wanders
 
 When Free Roam is on, the pet periodically walks to a random spot on the
-screen. The roam fence is an optional, file-based way to keep those walks
-inside a rectangle you choose — for example the bottom-right quarter of the
-screen, or a strip above the dock. No settings UI is involved, which also
-means external tools and scripts can move the fence live while the app runs.
+screen. The roam fence keeps those walks inside a rectangle you choose — for
+example the bottom-right quarter of the screen, or a strip above the dock.
+
+## Choose an area in Settings
+
+Open **Settings → General → Behavior & position → Free roam**, expand the
+section, then choose **Activity area → Choose area…**. Clawd opens an overlay
+on the display where the pet currently sits. Drag a rectangle and confirm it;
+the change applies without restarting Clawd.
+
+The picker verifies that the entire pet window fits inside the selected
+rectangle on the current display. On a multi-display setup, Clawd stores the
+rectangle as proportions and applies the same proportions to each display's
+work area. Display shapes and proportional pet scaling can differ, so a very
+narrow area that works on one display may pause roaming on another until the
+pet or area is resized. Choose **Use entire work area** to remove the limit.
+
+Settings and external tools share the file below. The Settings UI is the
+normal user workflow; direct file editing remains available for automation.
 
 ## The file
 
@@ -44,7 +59,8 @@ margin band during ordinary roaming; if the pet is currently outside an active
 fence, recovery temporarily uses the fence's own containment range instead.
 
 Delete the file (or set `"enabled": false`) to return to normal full-area
-roaming.
+roaming. Settings uses the explicit `enabled: false` form so the change can be
+confirmed in one refresh.
 
 ## When changes apply
 

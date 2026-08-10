@@ -146,6 +146,121 @@
     return row;
   }
 
+  function buildRoamAreaRow() {
+    const row = document.createElement("div");
+    row.className = "row roam-area-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowRoamArea");
+    const description = document.createElement("span");
+    description.className = "row-desc roam-area-status";
+    description.textContent = t("roamAreaLoading");
+    text.appendChild(label);
+    text.appendChild(description);
+
+    const controls = document.createElement("div");
+    controls.className = "row-control roam-area-controls";
+    const resetButton = document.createElement("button");
+    resetButton.type = "button";
+    resetButton.className = "soft-btn roam-area-reset";
+    resetButton.textContent = t("roamAreaReset");
+    resetButton.style.display = "none";
+    const chooseButton = document.createElement("button");
+    chooseButton.type = "button";
+    chooseButton.className = "soft-btn accent roam-area-choose";
+    chooseButton.textContent = t("roamAreaChoose");
+    controls.appendChild(resetButton);
+    controls.appendChild(chooseButton);
+    row.appendChild(text);
+    row.appendChild(controls);
+
+    let busy = false;
+    function isMounted() {
+      return document.body.contains(row);
+    }
+    function setBusy(next) {
+      busy = !!next;
+      chooseButton.disabled = busy;
+      resetButton.disabled = busy;
+      chooseButton.classList.toggle("pending", busy);
+    }
+    function applyStatus(result) {
+      if (!isMounted()) return;
+      if (!result || result.status === "unknown" || result.active === null) {
+        description.textContent = t("roamAreaUnavailable");
+        resetButton.style.display = "none";
+        return;
+      }
+      if (result.active && result.fence) {
+        const width = Math.round((result.fence.right - result.fence.left) * 100);
+        const height = Math.round((result.fence.bottom - result.fence.top) * 100);
+        description.textContent = t("roamAreaCustom")
+          .replace("{width}", String(width))
+          .replace("{height}", String(height));
+        resetButton.style.display = "";
+        return;
+      }
+      description.textContent = t("roamAreaEntire");
+      resetButton.style.display = "none";
+    }
+    async function refresh() {
+      if (!window.settingsAPI || typeof window.settingsAPI.getRoamFence !== "function") {
+        applyStatus({ status: "unknown", active: null });
+        return;
+      }
+      try { applyStatus(await window.settingsAPI.getRoamFence()); }
+      catch { applyStatus({ status: "unknown", active: null }); }
+    }
+    chooseButton.addEventListener("click", async () => {
+      if (busy || !window.settingsAPI || typeof window.settingsAPI.selectRoamFence !== "function") return;
+      setBusy(true);
+      try {
+        const result = await window.settingsAPI.selectRoamFence();
+        if (result && result.status === "ok") {
+          applyStatus(result);
+          ops.showToast(t("roamAreaSaved"));
+        } else if (result && result.code === "pet-too-large") {
+          ops.showToast(t("roamAreaPetTooLarge"), { error: true });
+        } else if (result && result.status !== "cancel") {
+          ops.showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+        }
+      } catch (err) {
+        ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      } finally {
+        if (isMounted()) setBusy(false);
+      }
+    });
+    resetButton.addEventListener("click", async () => {
+      if (busy || !window.settingsAPI || typeof window.settingsAPI.clearRoamFence !== "function") return;
+      setBusy(true);
+      try {
+        const result = await window.settingsAPI.clearRoamFence();
+        if (result && result.status === "ok") {
+          applyStatus(result);
+          ops.showToast(t("roamAreaResetDone"));
+        } else {
+          ops.showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+        }
+      } catch (err) {
+        ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      } finally {
+        if (isMounted()) setBusy(false);
+      }
+    });
+    state.mountedControls.roamArea = {
+      row,
+      description,
+      chooseButton,
+      resetButton,
+      refresh,
+    };
+    Promise.resolve().then(refresh);
+    return row;
+  }
+
   function buildFreeRoamGroup() {
     const headerRow = helpers.buildSwitchRow({
       key: "freeRoam",
@@ -168,6 +283,7 @@
       className: "free-roam-collapsible",
       children: [buildOptionList("free-roam-option-list", [
         buildRoamMovementStyleRow(),
+        buildRoamAreaRow(),
       ])],
     });
   }

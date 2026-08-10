@@ -11,8 +11,12 @@ const PRELOAD_SETTINGS = path.join(__dirname, "..", "src", "preload-settings.js"
 function loadPreload() {
   const ipcHandlers = new Map();
   const exposed = new Map();
+  const invokes = [];
   const ipcRenderer = {
-    invoke: () => Promise.resolve(),
+    invoke: (channel, ...args) => {
+      invokes.push([channel, ...args]);
+      return Promise.resolve();
+    },
     send: () => {},
     on(channel, handler) {
       ipcHandlers.set(channel, handler);
@@ -36,8 +40,21 @@ function loadPreload() {
   vm.runInContext(fs.readFileSync(PRELOAD_SETTINGS, "utf8"), context, {
     filename: PRELOAD_SETTINGS,
   });
-  return { exposed, ipcHandlers };
+  return { exposed, ipcHandlers, invokes };
 }
+
+test("settings preload exposes the three roam area operations", async () => {
+  const { exposed, invokes } = loadPreload();
+  const settingsAPI = exposed.get("settingsAPI");
+  await settingsAPI.getRoamFence();
+  await settingsAPI.selectRoamFence();
+  await settingsAPI.clearRoamFence();
+  assert.deepStrictEqual(invokes, [
+    ["settings:get-roam-fence"],
+    ["settings:select-roam-fence"],
+    ["settings:clear-roam-fence"],
+  ]);
+});
 
 test("settings preload forwards Telegram status revisions and unsubscribe is exact", () => {
   const { exposed, ipcHandlers } = loadPreload();

@@ -169,6 +169,14 @@ function createHarness(overrides = {}) {
       return { status: "ok", phase: "end", value };
     },
   };
+  const roamFenceSettings = overrides.roamFenceSettings || {
+    getStatus: async () => ({ status: "ok", active: false, fence: null }),
+    saveFence: async (fence) => ({ status: "ok", active: true, fence }),
+    clearFence: async () => ({ status: "ok", active: false, fence: null }),
+  };
+  const roamFencePicker = overrides.roamFencePicker || {
+    selectArea: async () => ({ status: "cancel" }),
+  };
   const runtime = registerSettingsIpc({
     ipcMain,
     app: { getVersion: () => "1.2.3" },
@@ -185,6 +193,8 @@ function createHarness(overrides = {}) {
     getSettingsWindow: () => ({ id: "settings-window" }),
     getActiveTheme: () => activeTheme,
     getLang: overrides.getLang || (() => "en"),
+    roamFenceSettings,
+    roamFencePicker,
     settingsSizePreviewSession,
     isValidSizePreviewKey: (value) => /^P:\d+$/.test(value),
     sendToRenderer: (...args) => calls.push(["sendToRenderer", ...args]),
@@ -224,6 +234,9 @@ test("settings IPC registers owned channels and leaves animation override channe
   assert.ok(ipcMain.handlers.has("settings:get-quota-source-count"));
   assert.ok(ipcMain.handlers.has("settings:get-pet-tint-options"));
   assert.ok(ipcMain.handlers.has("settings:get-pet-accessory-options"));
+  assert.ok(ipcMain.handlers.has("settings:get-roam-fence"));
+  assert.ok(ipcMain.handlers.has("settings:select-roam-fence"));
+  assert.ok(ipcMain.handlers.has("settings:clear-roam-fence"));
   assert.ok(ipcMain.handlers.has("settings:pick-sound-file"));
   assert.ok(ipcMain.handlers.has("settings:list-themes"));
   assert.ok(ipcMain.handlers.has("settings:detect-agent-installations"));
@@ -247,6 +260,74 @@ test("settings IPC registers owned channels and leaves animation override channe
 
   assert.strictEqual(ipcMain.handlers.size, 0);
   assert.strictEqual(ipcMain.listeners.size, 0);
+});
+
+test("settings IPC reads, selects, and clears the shared roam fence", async () => {
+  const calls = [];
+  const initial = {
+    status: "ok",
+    active: true,
+    fence: { left: 0.1, top: 0.2, right: 0.8, bottom: 0.9 },
+  };
+  const selected = { left: 0.25, top: 0.3, right: 0.75, bottom: 0.85 };
+  const harness = createHarness({
+    getLang: () => "zh",
+    roamFenceSettings: {
+      getStatus: async () => { calls.push(["get"]); return initial; },
+      saveFence: async (fence) => { calls.push(["save", fence]); return { status: "ok", active: true, fence }; },
+      clearFence: async () => { calls.push(["clear"]); return { status: "ok", active: false, fence: null }; },
+    },
+    roamFencePicker: {
+      selectArea: async (payload) => { calls.push(["pick", payload]); return { status: "ok", fence: selected }; },
+    },
+  });
+
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:get-roam-fence"), initial);
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:select-roam-fence"), {
+    status: "ok", active: true, fence: selected,
+  });
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:clear-roam-fence"), {
+    status: "ok", active: false, fence: null,
+  });
+  assert.deepStrictEqual(calls, [
+    ["get"],
+    ["pick", { lang: "zh" }],
+    ["save", selected],
+    ["clear"],
+  ]);
+});
+
+test("settings IPC does not write when roam area selection is canceled", async () => {
+  let saveCalls = 0;
+  const harness = createHarness({
+    roamFenceSettings: {
+      getStatus: async () => ({ status: "ok", active: false, fence: null }),
+      saveFence: async () => { saveCalls += 1; return { status: "ok" }; },
+      clearFence: async () => ({ status: "ok", active: false, fence: null }),
+    },
+    roamFencePicker: { selectArea: async () => ({ status: "cancel" }) },
+  });
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:select-roam-fence"), { status: "cancel" });
+  assert.strictEqual(saveCalls, 0);
+});
+
+test("settings IPC preserves picker error codes and does not write an impossible area", async () => {
+  let saveCalls = 0;
+  const tooLarge = {
+    status: "error",
+    code: "pet-too-large",
+    message: "the pet is larger than this display's work area",
+  };
+  const harness = createHarness({
+    roamFenceSettings: {
+      getStatus: async () => ({ status: "ok", active: false, fence: null }),
+      saveFence: async () => { saveCalls += 1; return { status: "ok" }; },
+      clearFence: async () => ({ status: "ok", active: false, fence: null }),
+    },
+    roamFencePicker: { selectArea: async () => tooLarge },
+  });
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:select-roam-fence"), tooLarge);
+  assert.strictEqual(saveCalls, 0);
 });
 
 test("settings IPC reports quota source count and fails closed when the provider throws", async () => {

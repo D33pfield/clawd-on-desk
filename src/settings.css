@@ -1845,6 +1845,25 @@ html, body {
   outline-offset: 2px;
 }
 
+.roam-area-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+.roam-area-status {
+  max-width: 440px;
+}
+@media (max-width: 720px) {
+  .roam-area-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .roam-area-controls {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
 /* ── Shortcuts ── */
 .shortcuts-head {
   display: flex;
