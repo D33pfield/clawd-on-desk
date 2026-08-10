@@ -29,6 +29,7 @@ const {
   buildToolInputFingerprint,
 } = require("./server-permission-utils");
 const { resolveHookAgentId } = require("./server-agent-id");
+const { getAgent } = require("../agents/registry");
 const { isOpencodeFamily } = require("../agents/opencode-family");
 const { resolveSessionIdentity } = require("./session-key");
 const {
@@ -1391,6 +1392,22 @@ function handlePermissionPost(req, res, options) {
           permEntry.bubble = null;
           sendHermesPermissionNoDecision(res);
         }
+        return;
+      }
+
+      // The remaining branch is the shared Claude Code / CodeBuddy-style
+      // blocking permission transport. Registry capabilities are the routing
+      // authority: a known state-only agent must never inherit this path just
+      // because it has a valid agent_id. Pi and Antigravity are intentionally
+      // handled above because their stale-client compatibility responses are
+      // agent-specific; every other non-approving agent gets a neutral 204.
+      const registeredAgent = getAgent(agentId);
+      if (!registeredAgent
+        || !registeredAgent.capabilities
+        || registeredAgent.capabilities.permissionApproval !== true) {
+        recordRequestHookEvent.droppedUnsupported();
+        ctx.permLog(`${agentId} has no permission-approval capability -> no decision`);
+        sendGenericPermissionNoDecision(res);
         return;
       }
 

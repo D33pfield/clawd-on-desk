@@ -24,6 +24,7 @@ const { resolveHermesHome, unregisterHermesPlugin } = require("./hermes-install"
 const { unregisterQoderHooks } = require("./qoder-install");
 const { resolveReasonixConfigTargets, unregisterReasonixHooks } = require("./reasonix-install");
 const { unregisterQoderWorkHooks } = require("./qoderwork-install");
+const { unregisterQwenWorkHooks } = require("./qwenwork-install");
 const { unregisterWorkBuddyHooks } = require("./workbuddy-install");
 
 const CODEX_MARKERS = ["codex-hook.js", "codex-debug-hook.js"];
@@ -49,6 +50,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "qoder",
   "reasonix",
   "qoderwork",
+  "qwenwork",
   "workbuddy",
 ]);
 
@@ -74,6 +76,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   qoder: "Qoder",
   reasonix: "Reasonix",
   qoderwork: "QoderWork",
+  qwenwork: "QwenWork",
 });
 
 function normalizeHomeDir(value) {
@@ -237,6 +240,12 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         ...common,
         settingsPath: path.join(homeDir, ".qoderwork", "settings.json"),
       },
+      // QwenWork's user-data home is ~/.QwenWorkCN (case-preserving on disk),
+      // NOT the ~/.qwenwork path its hooks docs mention.
+      qwenwork: {
+        ...common,
+        settingsPath: path.join(homeDir, ".QwenWorkCN", "settings.json"),
+      },
       workbuddy: {
         ...common,
         settingsPaths: [
@@ -293,6 +302,7 @@ const AGENT_CLEANERS = Object.freeze({
   qoder: unregisterQoderHooks,
   reasonix: unregisterReasonixHooks,
   qoderwork: unregisterQoderWorkHooks,
+  qwenwork: unregisterQwenWorkHooks,
   workbuddy: unregisterWorkBuddyHooks,
 });
 
