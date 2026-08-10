@@ -61,7 +61,7 @@ describe("QwenWork hook installer", () => {
       silent: true,
       settingsPath,
       nodeBin: "/usr/local/bin/node",
-      platform: "linux",
+      platform: "darwin",
     });
 
     assert.strictEqual(result.added, QWENWORK_HOOK_EVENTS.length);
@@ -109,10 +109,10 @@ describe("QwenWork hook installer", () => {
 
   it("is idempotent on second run", () => {
     const settingsPath = makeTempSettingsFile({});
-    registerQwenWorkHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", platform: "linux" });
+    registerQwenWorkHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", platform: "darwin" });
     const before = fs.readFileSync(settingsPath, "utf8");
 
-    const result = registerQwenWorkHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", platform: "linux" });
+    const result = registerQwenWorkHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", platform: "darwin" });
 
     assert.strictEqual(result.added, 0);
     assert.strictEqual(result.updated, 0);
@@ -124,7 +124,7 @@ describe("QwenWork hook installer", () => {
     const thirdParty = { matcher: "*", hooks: [{ type: "command", command: "other-tool --flag", name: "other" }] };
     const settingsPath = makeTempSettingsFile({ hooks: { SessionStart: [thirdParty] } });
 
-    registerQwenWorkHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", platform: "linux" });
+    registerQwenWorkHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", platform: "darwin" });
 
     const settings = readJson(settingsPath);
     assert.strictEqual(settings.hooks.SessionStart.length, 2);
@@ -137,7 +137,7 @@ describe("QwenWork hook installer", () => {
       hooks: { Stop: [{ matcher: "*", command: 'node "/old/path/qwenwork-hook.js" "Stop"' }] },
     });
 
-    const result = registerQwenWorkHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", platform: "linux" });
+    const result = registerQwenWorkHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", platform: "darwin" });
     assert.ok(result.updated >= 1);
 
     const stop = readJson(settingsPath).hooks.Stop;
@@ -152,7 +152,7 @@ describe("QwenWork hook installer", () => {
       hooksConfig: { disabled: ['node "/x/qwenwork-hook.js" "Stop"', "user-hook"] },
     });
 
-    registerQwenWorkHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", platform: "linux" });
+    registerQwenWorkHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", platform: "darwin" });
 
     const disabled = readJson(settingsPath).hooksConfig.disabled;
     assert.ok(disabled.includes("clawd"));

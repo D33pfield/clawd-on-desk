@@ -75,6 +75,19 @@ WorkBuddy 状态与通知同步（Claude Code 兼容 hook，command）：
   Hook 注册到当前 WorkBuddy AI 的 ~/.workbuddy-ai/settings.json（旧版兼容 ~/.workbuddy/settings.json）。集成为 state + Notification only：不注册 PermissionRequest HTTP hook，
   审批始终由 WorkBuddy 原生沙箱与 GUI 处理；无 session_id 的事件在返回合法 stdout 后直接丢弃，不进入 /state。
 
+QwenWork（千问办公）状态同步（hook-only / state-only，settings.json）：
+  QwenWork 触发 SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop /
+  Notification / PermissionRequest / PermissionDenied / SessionEnd
+    → hooks/qwenwork-hook.js（hook 事件 → agents/qwenwork.js 映射 → HTTP POST）
+    → 同上状态机（agent_id: qwenwork，session_id 规范化为 qwenwork:<raw>）
+  Hook 注册到 ~/.QwenWorkCN/settings.json（marker `qwenwork-hook.js`，增量合并；混合 entry 里第三方 hook 原样保留）。
+  Windows command 用 portable 形态（`windowsWrapper:"portable"`），PowerShell `-EncodedCommand` 只用于识别并原地迁移旧条目。
+  PermissionRequest / PermissionDenied 仅作观察映射成 working（每任务 40+ 次），stdout 恒为 `{}`：不注册 /permission、
+  不进 permission automation eligibility，Allow / Deny 全部留在 QwenWork 原生权限流程。
+  只发送 tool_input 的 sha1 fingerprint，不把原始 tool_input POST 给 Clawd。
+  平台边界：官方只提供 macOS 14+ / Windows 10+ / HarmonyOS 6.1+（https://qwenwork.cn/download），没有 Linux 客户端，
+  因此 processNames.linux 与 resolver linux agent name 均为空，也不进 WSL Pair；桌面主进程长驻，无 startup recovery。
+
 Kimi Code CLI（Kimi-CLI）状态同步（hook-only，config.toml）：
   Kimi Code CLI（Kimi-CLI）触发事件
     → hooks/kimi-hook.js（hook 事件 → agents/kimi-cli.js 映射 → HTTP POST）
@@ -193,6 +206,7 @@ CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此�
 - `agents/kiro-cli.js` — Kiro CLI 事件映射（camelCase），无 HTTP hook / 无权限 / 无 subagent
 - `agents/codebuddy.js` — CodeBuddy 事件映射（PascalCase，Claude Code 兼容），支持权限
 - `agents/workbuddy.js` — WorkBuddy 事件映射（PascalCase，Claude Code 兼容），state + Notification only，无 Clawd 权限审批
+- `agents/qwenwork.js` — QwenWork（千问办公）hook 事件映射（state-only，无权限气泡，无 startup recovery；`processNames.linux` 为空）
 - `agents/opencode.js` — opencode 事件映射 + 能力（plugin、permission、terminal focus）
 - `agents/mimocode.js` — MiMo Code 事件映射 + 能力（plugin、permission、terminal focus），与 opencode 同源
 - `agents/pi.js` — Pi extension 事件映射 + 能力（extension，state-only，不接管 permission）
@@ -212,7 +226,7 @@ CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此�
 
 启动链路只会自动补齐 `integrationInstalled=true` 且 `enabled=true` 的缺失集成：
 
-- `server.js` 启动后异步同步已安装且已启用的 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Kiro / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / Reasonix hooks、opencode / MiMo Code / OpenClaw / Hermes plugins 和 Pi extension；Hermes 同步会先做无副作用安装探测，未安装时不创建 `~/.hermes`
+- `server.js` 启动后异步同步已安装且已启用的 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Kiro / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / QwenWork / Reasonix hooks、opencode / MiMo Code / OpenClaw / Hermes plugins 和 Pi extension；Hermes 同步会先做无副作用安装探测，未安装时不创建 `~/.hermes`
 - Claude hook 同步时还会扫 `DEPRECATED_CORE_HOOKS`（当前含 `WorktreeCreate`）清掉旧版本留下的过时 clawd hook 条目，仅删 command 指向 `clawd-hook.js` 的那条，用户自己写的同事件 hook 不动
 
 Settings Agent 页的 Install 会执行对应 sync 并把 `integrationInstalled=true, enabled=true` 一起提交；Uninstall 会调用 marker-scoped 卸载器，并把 `integrationInstalled=false, enabled=false` 一起提交。单独重新启用一个未安装 agent 只打开事件入口，不会写本机配置；手动安装命令主要用于调试、重装或远程机部署。
@@ -239,6 +253,7 @@ CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL�
 - Claude Code / CodeBuddy 的 PermissionRequest 用 HTTP hook（阻塞式），其他事件用 command hook（非阻塞式）
 - 动态 custom HTTP Agent v1 是 state-only：`/permission` 恒不返回 Allow/Deny，也不创建权限 bubble
 - WorkBuddy 不进入 `/permission`：权限请求只以 Notification 驱动提醒，Allow / Deny 决策留在 WorkBuddy 原生 GUI
+- QwenWork 不进入 `/permission`：`PermissionRequest` / `PermissionDenied` 只被观察并映射成 `working`，hook stdout 恒为 `{}`，Clawd 不产生 allow/deny，也不在 permission automation eligibility 名单内
 - Codex 的 PermissionRequest 是 official command hook；hook 脚本挂起等待 `/permission`，再把 sanitized allow/deny JSON 写到 stdout
 - `POST /permission` 接收 `{ tool_name, tool_input, session_id, permission_suggestions }`；Codex 额外带 `turn_id`、`tool_input_description`、`tool_input_fingerprint`
 - 每个权限请求都会创建独立 `BrowserWindow`，多个 bubble 从右下向上堆叠

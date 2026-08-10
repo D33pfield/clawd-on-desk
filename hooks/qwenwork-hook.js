@@ -16,10 +16,32 @@ const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = requi
 const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 const DEFAULT_HOOK_DEBUG_MAX_BYTES = 256 * 1024;
+const HOOK_DEBUG_FIELDS_MAX = 64;
+const HOOK_DEBUG_FIELD_NAME_MAX = 64;
+const HOOK_DEBUG_DIR_MODE = 0o700;
+const HOOK_DEBUG_FILE_MODE = 0o600;
 
-// Debug logging for troubleshooting the QwenWork integration. QwenWork's stdin
-// payload shape is not fully documented, so capture the raw payload + resolved
-// event to ~/.clawd/qwenwork-hook-debug.jsonl when CLAWD_QWENWORK_HOOK_DEBUG=1.
+// ── Debug logging ────────────────────────────────────────────────────────────
+// QwenWork's stdin payload shape is not fully documented, so troubleshooting
+// needs to see what actually arrived. But that payload carries the user's
+// prompt, tool input, local paths and business metadata, so there are TWO
+// levels:
+//
+//   CLAWD_QWENWORK_HOOK_DEBUG=1      → summary only. Event names, whether the
+//                                      POST landed, the mapped state/event and
+//                                      a field-SHAPE summary (key names plus
+//                                      type/length). No values, ever.
+//   ...and CLAWD_QWENWORK_HOOK_DEBUG_RAW=1
+//                                    → adds `rawPayload`: the COMPLETE, VERBATIM
+//                                      hook payload. THIS FILE THEN CONTAINS
+//                                      SENSITIVE DATA — prompts, tool inputs,
+//                                      file paths, business names. Only turn it
+//                                      on deliberately, and delete the file
+//                                      afterwards.
+//
+// The file is written 0600 under a 0700 directory on POSIX (Windows keeps the
+// inherited ACL; chmod there only maps to the read-only bit). Every failure is
+// swallowed: debug logging must never change the hook's stdout or exit code.
 function readHookDebugMaxBytes(env = process.env) {
   const raw = env.CLAWD_QWENWORK_HOOK_DEBUG_MAX_BYTES;
   if (typeof raw !== "string" || !raw.trim()) return DEFAULT_HOOK_DEBUG_MAX_BYTES;
@@ -28,22 +50,127 @@ function readHookDebugMaxBytes(env = process.env) {
   return parsed;
 }
 
+function hookDebugMode(env = process.env) {
+  if (!env || env.CLAWD_QWENWORK_HOOK_DEBUG !== "1") return "off";
+  return env.CLAWD_QWENWORK_HOOK_DEBUG_RAW === "1" ? "raw" : "summary";
+}
+
+// Type + size of a field, never its contents.
+function describeDebugValue(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `array(len=${value.length})`;
+  const type = typeof value;
+  if (type === "string") return `string(len=${value.length})`;
+  if (type === "object") return `object(keys=${Object.keys(value).length})`;
+  return type;
+}
+
+// Top-level key names are QwenWork's schema, not user content, so listing them
+// is the whole point: it answers "which fields does this event actually carry".
+// Values are never read, and nested objects are described by key count only.
+function summarizeHookPayload(payload) {
+  if (payload === undefined || payload === null) return { present: false };
+  if (typeof payload !== "object" || Array.isArray(payload)) {
+    return { present: true, shape: describeDebugValue(payload) };
+  }
+  const keys = Object.keys(payload).sort();
+  const fields = {};
+  for (const key of keys.slice(0, HOOK_DEBUG_FIELDS_MAX)) {
+    const name = key.length > HOOK_DEBUG_FIELD_NAME_MAX
+      ? `${key.slice(0, HOOK_DEBUG_FIELD_NAME_MAX)}...`
+      : key;
+    fields[name] = describeDebugValue(payload[key]);
+  }
+  const summary = { present: true, shape: "object", keyCount: keys.length, fields };
+  if (keys.length > HOOK_DEBUG_FIELDS_MAX) summary.fieldsTruncated = true;
+  return summary;
+}
+
+// Node quotes the offending input inside JSON.parse SyntaxErrors, so the
+// message itself can echo payload bytes — name/code only unless raw is on.
+function describeDebugError(err, mode) {
+  const out = { name: (err && err.name) || "Error" };
+  if (err && typeof err.code === "string" && err.code) out.code = err.code;
+  if (mode === "raw") out.message = err && err.message ? String(err.message) : String(err);
+  return out;
+}
+
+function ensureDebugDir(dir) {
+  const created = fs.mkdirSync(dir, { recursive: true, mode: HOOK_DEBUG_DIR_MODE });
+  // mkdir's mode is masked by umask; tighten only what this call created so an
+  // existing shared ~/.clawd is never re-permissioned behind the user's back.
+  if (created) {
+    try { fs.chmodSync(created, HOOK_DEBUG_DIR_MODE); } catch {}
+  }
+}
+
+function inspectDebugTarget(debugPath) {
+  try {
+    const stat = fs.lstatSync(debugPath);
+    // A custom debug path must already be a regular file. In particular, do
+    // not chmod a directory/FIFO/socket, and do not follow a symlink into an
+    // unrelated target just because debug logging was enabled.
+    if (stat.isSymbolicLink() || !stat.isFile()) return { writable: false };
+    return { writable: true, exists: true, size: stat.size || 0, mode: stat.mode };
+  } catch (err) {
+    if (err && err.code === "ENOENT") {
+      return { writable: true, exists: false, size: 0, mode: null };
+    }
+    return { writable: false };
+  }
+}
+
 function appendHookDebug(entry, env = process.env) {
-  if (env.CLAWD_QWENWORK_HOOK_DEBUG !== "1") return;
+  const mode = hookDebugMode(env);
+  if (mode === "off") return;
   const debugPath = env.CLAWD_QWENWORK_HOOK_DEBUG_PATH
     || path.join(os.homedir(), ".clawd", "qwenwork-hook-debug.jsonl");
   try {
-    const line = `${JSON.stringify(entry)}\n`;
-    const maxBytes = readHookDebugMaxBytes(env);
-    if (maxBytes > 0) {
-      let currentSize = 0;
-      try {
-        currentSize = fs.statSync(debugPath).size || 0;
-      } catch {}
-      if (currentSize + Buffer.byteLength(line) > maxBytes) return;
+    const record = { ...(entry && typeof entry === "object" ? entry : {}) };
+    if (Object.prototype.hasOwnProperty.call(record, "payload")) {
+      const payload = record.payload;
+      delete record.payload;
+      record.payloadSummary = summarizeHookPayload(payload);
+      // Second opt-in only. See the banner above: this is the sensitive part.
+      if (mode === "raw") record.rawPayload = payload === undefined ? null : payload;
     }
-    fs.mkdirSync(path.dirname(debugPath), { recursive: true });
-    fs.appendFileSync(debugPath, line);
+    if (Object.prototype.hasOwnProperty.call(record, "error")) {
+      record.error = describeDebugError(record.error, mode);
+    }
+
+    const line = `${JSON.stringify(record)}\n`;
+    const lineBytes = Buffer.byteLength(line);
+    const maxBytes = readHookDebugMaxBytes(env);
+    const target = inspectDebugTarget(debugPath);
+    if (!target.writable) return;
+    if (maxBytes > 0 && target.size + lineBytes > maxBytes) return;
+
+    ensureDebugDir(path.dirname(debugPath));
+    // O_NOFOLLOW closes the lstat/open race on POSIX. Windows has no matching
+    // fs flag, but still rejects a symlink observed by inspectDebugTarget().
+    const noFollow = process.platform !== "win32" && Number.isInteger(fs.constants.O_NOFOLLOW)
+      ? fs.constants.O_NOFOLLOW
+      : 0;
+    const flags = fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_WRONLY | noFollow;
+    let fd;
+    try {
+      // `mode` applies at creation and umask can only clear bits, so a file
+      // this call creates is 0600 on POSIX regardless of the ambient umask.
+      fd = fs.openSync(debugPath, flags, HOOK_DEBUG_FILE_MODE);
+      const liveStat = fs.fstatSync(fd);
+      if (!liveStat.isFile()) return;
+      if (maxBytes > 0 && (liveStat.size || 0) + lineBytes > maxBytes) return;
+
+      // A regular file an older build created under a loose umask stays
+      // group/world readable otherwise. Tighten the opened file itself rather
+      // than resolving the path a second time.
+      if (process.platform !== "win32" && (liveStat.mode & 0o077) !== 0) {
+        fs.fchmodSync(fd, HOOK_DEBUG_FILE_MODE);
+      }
+      fs.writeSync(fd, line, null, "utf8");
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
   } catch {}
 }
 
@@ -131,11 +258,15 @@ function isQwenWorkAgentCommandLine(cmd) {
 const config = getPlatformConfig();
 const defaultResolve = createPidResolver({
   agentNames: {
-    // Match QwenWorkCN executable on all platforms (macOS process name is
-    // "千问办公" but the executable path contains "QwenWorkCN").
+    // macOS process name is "千问办公" but the executable path contains
+    // "QwenWorkCN", which is what `ps -o comm=` reports.
+    //
+    // Linux is an explicit EMPTY set, not an omission: createPidResolver falls
+    // back to the mac set when `linux` is absent, and QwenWork has no Linux
+    // client (macOS / Windows / HarmonyOS only), so there is nothing to match.
     win: new Set(["qwenworkcn.exe"]),
     mac: new Set(["qwenworkcn"]),
-    linux: new Set(["qwenworkcn"]),
+    linux: new Set(),
   },
   agentCmdlineCheck: isQwenWorkAgentCommandLine,
   platformConfig: config,
@@ -319,18 +450,18 @@ async function main(argvEvent = process.argv[2], deps = {}) {
     });
     appendHookDebug({
       argvEvent,
-      rawPayload: payload || null,
+      // Summarized (or, with the second opt-in, captured raw) inside
+      // appendHookDebug — never stringified verbatim from here.
+      payload: payload === undefined ? null : payload,
       resolvedHookName: result.hookName,
       posted: result.posted,
+      port: result.port,
       bodyState: result.body && result.body.state,
       bodyEvent: result.body && result.body.event,
     }, deps.env || process.env);
     process.stdout.write(`${result.stdout}\n`);
   } catch (err) {
-    appendHookDebug({
-      argvEvent,
-      error: err && err.message ? err.message : String(err),
-    }, deps.env || process.env);
+    appendHookDebug({ argvEvent, error: err }, deps.env || process.env);
     process.stdout.write(`${NO_DECISION_OUTPUT}\n`);
   }
 }
@@ -343,9 +474,12 @@ if (require.main === module) {
 }
 
 module.exports = {
+  DEFAULT_HOOK_DEBUG_MAX_BYTES,
   HOOK_MAP,
   NO_DECISION_OUTPUT,
   appendHookDebug,
+  hookDebugMode,
+  summarizeHookPayload,
   buildStateBody,
   sendHookEvent,
   normalizeSessionId,

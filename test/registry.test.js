@@ -156,8 +156,12 @@ describe("Agent Registry", () => {
     const qoderwork = registry.getAgent("qoderwork");
     assert.deepStrictEqual(qoderwork.processNames.linux, ["QoderWork"]);
 
+    // #843: QwenWork ships macOS 14+ / Windows 10+ / HarmonyOS 6.1+ only
+    // (https://qwenwork.cn/download). There is no Linux client, so the list is
+    // deliberately empty rather than a speculative executable name.
     const qwenwork = registry.getAgent("qwenwork");
-    assert.deepStrictEqual(qwenwork.processNames.linux, ["QwenWorkCN"]);
+    assert.deepStrictEqual(qwenwork.processNames.linux, []);
+    assert.deepStrictEqual(qwenwork.processNames.mac, ["QwenWorkCN", "千问办公"]);
 
     const workbuddy = registry.getAgent("workbuddy");
     assert.deepStrictEqual(workbuddy.processNames.linux, ["workbuddy", "WorkBuddy"]);

@@ -4,7 +4,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 
 ## Project Overview
 
-Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、WorkBuddy、Kiro CLI、Kimi Code CLI (Kimi-CLI)、Qwen Code、ZCode、CodeWhale、opencode、MiMo Code、Pi、OpenClaw、Hermes Agent、Qoder、QoderWork、Reasonix；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / zh-TW / ko / ja / pt-BR。
+Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、WorkBuddy、Kiro CLI、Kimi Code CLI (Kimi-CLI)、Qwen Code、ZCode、CodeWhale、opencode、MiMo Code、Pi、OpenClaw、Hermes Agent、Qoder、QoderWork、QwenWork (千问办公)、Reasonix；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / zh-TW / ko / ja / pt-BR。
 
 ## Common Commands
 
@@ -44,6 +44,8 @@ npm run install:qoder-hooks
 npm run uninstall:qoder-hooks
 npm run install:qoderwork-hooks
 npm run uninstall:qoderwork-hooks
+npm run install:qwenwork-hooks
+npm run uninstall:qwenwork-hooks
 npm run install:reasonix-hooks
 npm run uninstall:reasonix-hooks
 npm run install:workbuddy-hooks
@@ -63,7 +65,7 @@ bash test-macos.sh
 bash test-oneshot-gate.sh [state] [seconds]
 ```
 
-新安装默认只把 Claude Code 和 Codex 标记为已安装并启用；其他 agent 默认未安装、未启用。正常启动时，Clawd 只会为 `integrationInstalled=true` 且 `enabled=true` 的 agent 自动同步 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Kiro / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / Reasonix hooks、opencode / MiMo Code / OpenClaw / Hermes plugins 和 Pi extension。Settings Agent 页的 Install 会安装并启用该集成；Uninstall 会卸载 Clawd 管理的 hook/plugin/extension，并同时把该 agent 设为未安装、未启用。单独关闭 enabled 只会跳过启动同步并屏蔽事件/权限入口，不卸载用户已有 hooks / plugins / extensions；重新启用未安装 agent 只打开事件入口，不会写本机集成文件。手动安装命令主要用于调试、重装或远程部署。
+新安装默认只把 Claude Code 和 Codex 标记为已安装并启用；其他 agent 默认未安装、未启用。正常启动时，Clawd 只会为 `integrationInstalled=true` 且 `enabled=true` 的 agent 自动同步 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Kiro / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / QwenWork / Reasonix hooks、opencode / MiMo Code / OpenClaw / Hermes plugins 和 Pi extension。Settings Agent 页的 Install 会安装并启用该集成；Uninstall 会卸载 Clawd 管理的 hook/plugin/extension，并同时把该 agent 设为未安装、未启用。单独关闭 enabled 只会跳过启动同步并屏蔽事件/权限入口，不卸载用户已有 hooks / plugins / extensions；重新启用未安装 agent 只打开事件入口，不会写本机集成文件。手动安装命令主要用于调试、重装或远程部署。
 Settings 注册的自定义 HTTP Agent 是独立模型：`customApplications` 是注册真相，对应 `agents[customId]` 必须显式保持 `integrationInstalled=false`。注册只分配 ID 和状态入口，不安装 hook、不观察进程；v1 仅允许已注册且启用的 ID 向 `/state` 上报，`/permission` 永远不提供决定。删除或伪造的 `custom-` ID 必须直接拒绝，不能降级成 Claude Code subagent。
 Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-based 增量合并只接管含 `copilot-hook.js` 标记的条目，用户其他 entry / 其他 `hooks/*.json` 文件原样保留；hooks.json 或 `settings.json` 顶层 `disableAllHooks: true` 时 doctor 报 warning（不挂 Fix 按钮）。详见 `docs/guides/copilot-setup.md`。
 
@@ -156,6 +158,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - OpenClaw 通过 `~/.openclaw/openclaw.json` plugin 路径做 state-only 集成；Phase 1 不做 permission bubble / terminal focus，主要支持本地 `openclaw tui --local`
 - Antigravity CLI (agy) 通过 `~/.gemini/config/hooks.json` 做 **state-only** hook 集成（PreInvocation / PostToolUse / PostInvocation / Stop），**不注册 PreToolUse**。agy LLM 会主动调内置 `ask_permission` 工具，触发 agy 自己的 5 选项 native menu（含 "Persist to settings.json" 持久白名单），Clawd 不插手权限决策也不双层确认。`agents/antigravity-cli.js` `capabilities.permissionApproval` / `interactiveBubble` 均为 false。
 - Qwen Code 通过 `~/.qwen/settings.json` 做 hook-only 集成（SessionStart / SessionEnd / UserPromptSubmit / PreToolUse / PostToolUse / Stop / Notification / PermissionRequest），支持状态与阻塞式 `PermissionRequest` 权限气泡；`disableAllHooks: true` 时注册条目不会触发。
+- QwenWork (千问办公) 通过 `~/.QwenWorkCN/settings.json` 做 **hook-only / state-only** 集成（agent id `qwenwork`；SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop / Notification / PermissionRequest / PermissionDenied / SessionEnd）。`PermissionRequest` / `PermissionDenied` 只作为观察映射成 `working`（每任务 40+ 次，映射成 notification 会刷屏），hook stdout 恒为 `{}`：Clawd 不产生 allow/deny，不注册 `/permission`，也不进入 permission automation eligibility，唯一决策者是 QwenWork 原生权限流程；`agents/qwenwork.js` 的 `capabilities.permissionApproval` / `interactiveBubble` 均为 false。Windows command 必须保持 `windowsWrapper:"portable"`（QwenWork 经 POSIX shell 执行 command hook），PowerShell `-EncodedCommand` **只**用于识别并原地迁移旧条目，不是当前写入形态。marker 只认 `qwenwork-hook.js`，不得仅凭 `name:"clawd"` 删除用户 hook；混合 entry 中第三方 hook 原样保留。session id 命名空间是 `qwenwork:<raw>`；`~/.QwenWorkCN/workspace/<id>` 这类内部工作区 cwd 不做 basename 回退，避免 HUD/Dashboard 显示内部 ID。当前真实支持平台只有 macOS / Windows 桌面端（官方下载页 https://qwenwork.cn/download 只提供 macOS 14+ / Windows 10+ / HarmonyOS 6.1+，没有 Linux 客户端），因此 `processNames.linux`、resolver linux agent name 均为空，也不进 `src/wsl-deploy.js` 的 WSL Pair 映射。桌面主进程长驻、不代表 active turn，`startupRecoveryProcessNames` 全空、无 startup recovery。安装/卸载走 Settings → Agents，或 `npm run install:qwenwork-hooks` / `npm run uninstall:qwenwork-hooks`；卸载必须同时在 `hooks/cleanup-integrations.js` 的 `MANAGED_AGENT_IDS` / `AGENT_CLEANERS` / `byAgent` 里有条目，否则 About cleanup 只会改 prefs、hook 留在磁盘上
 - ZCode 通过 `~/.zcode/cli/config.json` 的 `hooks.events.*` 做 **state-only** 集成（SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop），不注册 PermissionRequest，stdout 恒为 `{}`。配置必须有 `hooks.enabled=true` 才会执行；安装器只在该字段缺失时补 true，显式 `hooks.enabled=false` 或 Clawd 单项 hook 的 `enabled=false` 必须保留，Doctor warning 且不提供会覆盖用户选择的 Fix。ZCode 导入 Claude 配置后，只清理 `.zcode` 中明确引用 `clawd-hook.js` 的 Clawd-owned 条目，绝不改 `~/.claude/settings.json`
 - Qoder 通过 `~/.qoder/settings.json` 做 **state-only** hook 集成（Phase 1：SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop / Notification / PermissionRequest / PermissionDenied / SessionEnd）。Clawd 只把 `PermissionRequest` / `PermissionDenied` 当 notification 观察，**不替 Qoder 做权限决策**，hook stdout 恒为 `{}`，由 Qoder 原生权限流程接管；`agents/qoder.js` 的 `capabilities.permissionApproval` / `interactiveBubble` 均为 false。Windows 命令走 bash/cmd 通用的 portable 形态（`windowsWrapper:"portable"`，不带引号的正斜杠 node token + 双引号参数）：Qoder CLI 在 Windows 通过 Git Bash 执行 command hook，旧 PowerShell `-EncodedCommand` 形态会被 bash 吃掉反斜杠、exit 127 全灭（#597）；旧 encoded 条目在重装/升级时原地迁移。session id 命名空间是 `qoder:<raw>`；启动恢复只认 CLI 进程 `qodercli` / `qoder-cli`，不认 IDE 进程 `qoder.exe`。真实 Qoder CLI smoke 已完成（1.0.38，#597 遥测 127→0）；IDE（QoderWork）smoke 尚未完成。
 - HTTP 服务端口范围固定为 `127.0.0.1:23333-23337`；运行时端口写入 `~/.clawd/runtime.json`

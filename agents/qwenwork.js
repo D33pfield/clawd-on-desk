@@ -2,8 +2,8 @@
 // Hook-only integration via ~/.QwenWorkCN/settings.json (Phase 1: state-only).
 //
 // QwenWork is a standalone desktop AI agent with its own hooks system.
-// The process name on macOS is "千问办公" (Chinese); on other platforms
-// it is "QwenWorkCN".
+// The process name on macOS is "千问办公" (Chinese); on Windows it is
+// "QwenWorkCN.exe".
 //
 // Clawd observes QwenWork's lifecycle events as passive state changes only —
 // the hook always returns `{}` so QwenWork's native permission flow stays in
@@ -18,10 +18,18 @@ module.exports = {
   // (process name "QwenWorkCN"). On macOS the executable basename is "QwenWorkCN"
   // (from QwenWorkCN.app/Contents/MacOS/QwenWorkCN, what `ps -o comm=` returns);
   // "千问办公" is the app display name, listed as a fallback.
+  //
+  // Linux is intentionally EMPTY: https://qwenwork.cn/download ships macOS 14+,
+  // Windows 10+ and HarmonyOS 6.1+ only — there is no Linux client, and this
+  // PR's own verification covered macOS and Windows. A speculative Linux
+  // process name would also make `src/wsl-deploy.js` look like a supported
+  // pairing target (see the negative contract in test/wsl-deploy.test.js).
+  // Restore it only alongside a real install package + process name + config
+  // dir + hook runner + Pair/Unpair + stdout + /state matrix.
   processNames: {
     win: ["QwenWorkCN.exe"],
     mac: ["QwenWorkCN", "千问办公"],
-    linux: ["QwenWorkCN"],
+    linux: [],
   },
   // The long-lived IDE process is not an active-turn signal.
   startupRecoveryProcessNames: { win: [], mac: [], linux: [] },

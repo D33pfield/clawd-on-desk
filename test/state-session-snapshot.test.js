@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const {
+  INTERNAL_WORKSPACE_AGENTS,
   deriveSessionBadge,
   deriveSourceInfo,
   isSessionInProgress,
@@ -181,6 +182,124 @@ describe("sessionDisplayTitle cwd fallback", () => {
       sessionDisplayTitle("claude:xyz789", session("working", { agentId: "claude-code", cwd: "/Users/me/.qoderwork/workspace/mqgw60jiigjsjcid" })),
       "mqgw60jiigjsjcid"
     );
+  });
+
+  // ── #843: QwenWork's internal workspace ──────────────────────────────────
+  // qwenwork-hook.js correctly refuses to send cwd as session_title, but the
+  // server-side basename fallback below is what actually reaches the HUD /
+  // Dashboard / session menu — and it only knew about ~/.qoderwork/workspace,
+  // so ~/.QwenWorkCN/workspace/<id> still surfaced as "mqgw60jiigjsjcid".
+  describe("QwenWork internal workspace (#843)", () => {
+    const qwen = (overrides) => session("working", { agentId: "qwenwork", ...overrides });
+
+    it("skips the basename for macOS/POSIX workspace cwds", () => {
+      assert.strictEqual(
+        sessionDisplayTitle("qwenwork:abc123", qwen({ cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid" })),
+        "qwenwo.."
+      );
+    });
+
+    it("skips the basename for Windows backslash workspace cwds", () => {
+      assert.strictEqual(
+        sessionDisplayTitle("qwenwork:abc123", qwen({ cwd: "C:\\Users\\me\\.QwenWorkCN\\workspace\\mqgw60jiigjsjcid" })),
+        "qwenwo.."
+      );
+    });
+
+    it("matches .QwenWorkCN case-insensitively", () => {
+      // macOS and Windows are both case-insensitive, so the reported cwd can
+      // arrive in any spelling of the case-preserving on-disk directory.
+      for (const dir of [".QwenWorkCN", ".qwenworkcn", ".QWENWORKCN", ".QwenWorkCn"]) {
+        assert.strictEqual(
+          sessionDisplayTitle("qwenwork:abc123", qwen({ cwd: `/Users/me/${dir}/workspace/mqgw60jiigjsjcid` })),
+          "qwenwo..",
+          dir
+        );
+      }
+    });
+
+    it("skips the basename when only the session id is namespaced (agentId missing)", () => {
+      // Older persisted sessions and menu callers can reach here with the
+      // namespaced id but no agentId, so the prefix is the fallback signal.
+      const withoutAgentId = {
+        state: "working",
+        updatedAt: 1000,
+        recentEvents: [],
+        cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid",
+      };
+      assert.strictEqual(sessionDisplayTitle("qwenwork:abc123", withoutAgentId), "qwenwo..");
+    });
+
+    it("lets an explicit agentId beat a contradictory session-id prefix", () => {
+      // Tightening vs the previous QoderWork-only check, which OR'd the two
+      // signals: a session that says it belongs to another agent is not
+      // silently reclassified by its id string.
+      assert.strictEqual(
+        sessionDisplayTitle(
+          "qwenwork:abc123",
+          session("working", { agentId: "claude-code", cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid" })
+        ),
+        "mqgw60jiigjsjcid"
+      );
+    });
+
+    it("keeps the basename for other agents inside the same directory", () => {
+      // The suppression is an agent↔path pairing: for any other agent that
+      // directory is just a cwd the user chose, so its name is real information.
+      assert.strictEqual(
+        sessionDisplayTitle(
+          "claude:xyz789",
+          session("working", { agentId: "claude-code", cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid" })
+        ),
+        "mqgw60jiigjsjcid"
+      );
+      assert.strictEqual(
+        sessionDisplayTitle(
+          "qoderwork:xyz789",
+          session("working", { agentId: "qoderwork", cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid" })
+        ),
+        "mqgw60jiigjsjcid",
+        "QoderWork must not inherit QwenWork's path rule"
+      );
+    });
+
+    it("still shows the basename for ordinary QwenWork project cwds", () => {
+      assert.strictEqual(
+        sessionDisplayTitle("qwenwork:abc123", qwen({ cwd: "/Users/me/projects/myapp" })),
+        "myapp"
+      );
+      // A path that merely lives under .QwenWorkCN but is not a workspace leaf.
+      assert.strictEqual(
+        sessionDisplayTitle("qwenwork:abc123", qwen({ cwd: "/Users/me/.QwenWorkCN/workspace/abc/src" })),
+        "src"
+      );
+      assert.strictEqual(
+        sessionDisplayTitle("qwenwork:abc123", qwen({ cwd: "C:\\Users\\me\\qwenwork-notes" })),
+        "qwenwork-notes"
+      );
+    });
+
+    it("still prefers a real session title over the id shortening", () => {
+      assert.strictEqual(
+        sessionDisplayTitle("qwenwork:abc123", qwen({
+          cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid",
+          sessionTitle: "Refactor auth module",
+        })),
+        "Refactor auth module"
+      );
+    });
+  });
+
+  it("declares the internal-workspace suppression as an explicit agent/path pairing", () => {
+    assert.deepStrictEqual(
+      INTERNAL_WORKSPACE_AGENTS.map((entry) => entry.agentId).sort(),
+      ["qoderwork", "qwenwork"]
+    );
+    for (const entry of INTERNAL_WORKSPACE_AGENTS) {
+      assert.strictEqual(entry.sessionPrefix, `${entry.agentId}:`);
+      assert.ok(entry.cwdPattern instanceof RegExp);
+      assert.strictEqual(entry.cwdPattern.global, false, "a global regex would carry lastIndex between calls");
+    }
   });
 });
 
