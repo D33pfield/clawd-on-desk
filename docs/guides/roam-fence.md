@@ -16,7 +16,7 @@ rectangle on the current display. On a multi-display setup, Clawd stores the
 rectangle as proportions and applies the same proportions to each display's
 work area. Display shapes and proportional pet scaling can differ, so a very
 narrow area that works on one display may pause roaming on another until the
-pet or area is resized. Choose **Use entire work area** to remove the limit.
+pet or area is resized. Choose **Remove custom area** to remove the limit.
 
 Settings and external tools share the file below. The Settings UI is the
 normal user workflow; direct file editing remains available for automation.
@@ -58,9 +58,10 @@ conflict. A full-range axis does not override an already-impossible normal
 margin band during ordinary roaming; if the pet is currently outside an active
 fence, recovery temporarily uses the fence's own containment range instead.
 
-Delete the file (or set `"enabled": false`) to return to normal full-area
-roaming. Settings uses the explicit `enabled: false` form so the change can be
-confirmed in one refresh.
+Delete the file (or set `"enabled": false`) to return to the normal default
+roam behavior, including its keep-away-from-the-edges margin. Settings uses
+the explicit `enabled: false` form so the change can be confirmed in one
+refresh.
 
 ## When changes apply
 

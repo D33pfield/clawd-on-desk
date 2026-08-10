@@ -169,3 +169,20 @@ test("save reports an error when the live loader does not accept the written fen
     message: "saved roam fence was not accepted",
   });
 });
+
+test("save reports an error when the loader keeps a different last-known-good fence", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-roam-fence-settings-stale-"));
+  const filePath = path.join(dir, ".clawd", "roam-area.json");
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const loader = {
+    filePath,
+    refresh: async () => {},
+    get: () => ({ active: true, left: 0, top: 0, right: 0.5, bottom: 0.5 }),
+  };
+  const runtime = createRoamFenceSettings({ filePath, loader });
+
+  assert.deepStrictEqual(await runtime.saveFence({ left: 0.1, top: 0.2, right: 0.8, bottom: 0.9 }), {
+    status: "error",
+    message: "saved roam fence was not accepted",
+  });
+});

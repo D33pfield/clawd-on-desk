@@ -178,7 +178,7 @@ module.exports = function createRoamFenceLoader(deps = {}) {
 
   // One read: stat guard → read → classify. Extracted so refresh() can run a
   // trailing read when a request arrived while another read was in flight.
-  async function readOnce() {
+  async function readOnce(batch) {
     try {
       let raw;
       if (readFile) {
@@ -217,6 +217,14 @@ module.exports = function createRoamFenceLoader(deps = {}) {
         // A replace-style save (unlink + rename) can expose one ENOENT
         // between two valid reads. Never drop an active fence on the first
         // one — require a second consecutive ENOENT as confirmation.
+        if (state && state.active && batch && batch.enoentVoteCast) {
+          // Concurrent refresh callers share one read batch. Its trailing read
+          // exists to observe a replacement that landed after the first read;
+          // it must not turn the same short missing-file window into both of
+          // the independent ENOENT confirmations required to disable a fence.
+          return;
+        }
+        if (batch) batch.enoentVoteCast = true;
         if (state && state.active && !enoentSeenWhileActive) {
           enoentSeenWhileActive = true;
         } else {
@@ -256,10 +264,11 @@ module.exports = function createRoamFenceLoader(deps = {}) {
       return pending;
     }
     pending = (async () => {
+      const batch = { enoentVoteCast: false };
       try {
         do {
           trailingRequested = false;
-          await readOnce();
+          await readOnce(batch);
         } while (trailingRequested);
       } finally {
         pending = null;

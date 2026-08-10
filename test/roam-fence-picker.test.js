@@ -5,10 +5,12 @@ const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const { pathToFileURL } = require("node:url");
 
 const createRoamFencePicker = require("../src/roam-fence-picker");
 const {
   READY_CHANNEL,
+  APPLIED_CHANNEL,
   RESULT_CHANNEL,
   STATE_CHANNEL,
   selectionToFence,
@@ -20,8 +22,11 @@ class FakeWebContents extends EventEmitter {
   constructor() {
     super();
     this.sent = [];
+    this.mainFrame = { url: "" };
+    this.windowOpenHandler = null;
   }
   send(channel, payload) { this.sent.push([channel, payload]); }
+  setWindowOpenHandler(handler) { this.windowOpenHandler = handler; }
   isDestroyed() { return false; }
 }
 
@@ -39,7 +44,11 @@ class FakeBrowserWindow extends EventEmitter {
     FakeBrowserWindow.instances.push(this);
   }
   isDestroyed() { return this.destroyed; }
-  loadFile(filePath) { this.loadPath = filePath; return Promise.resolve(); }
+  loadFile(filePath) {
+    this.loadPath = filePath;
+    this.webContents.mainFrame.url = pathToFileURL(filePath).href;
+    return Promise.resolve();
+  }
   setMenuBarVisibility() {}
   setAlwaysOnTop() {}
   setVisibleOnAllWorkspaces() {}
@@ -67,7 +76,8 @@ function makeRuntime(overrides = {}) {
     moveTop() {},
     focus() { this.focused = true; },
   };
-  const screen = {
+  const screen = new EventEmitter();
+  Object.assign(screen, {
     getDisplayMatching: () => ({
       id: 7,
       scaleFactor: 2,
@@ -78,7 +88,7 @@ function makeRuntime(overrides = {}) {
       scaleFactor: 1,
       workArea: { x: 0, y: 0, width: 1280, height: 800 },
     }),
-  };
+  });
   const runtime = createRoamFencePicker({
     BrowserWindow: FakeBrowserWindow,
     ipcMain,
@@ -89,14 +99,23 @@ function makeRuntime(overrides = {}) {
     getEffectivePetSize: () => ({ width: 120, height: 100 }),
     ...overrides,
   });
-  return { runtime, ipcMain, settingsWindow };
+  return { runtime, ipcMain, settingsWindow, screen };
 }
 
-function finishStartup(harness) {
+function pickerEvent(win, overrides = {}) {
+  return {
+    sender: win.webContents,
+    senderFrame: win.webContents.mainFrame,
+    ...overrides,
+  };
+}
+
+function finishStartup(harness, applyState = true) {
   const win = FakeBrowserWindow.instances[0];
   win.webContents.emit("did-finish-load");
-  harness.ipcMain.emit(READY_CHANNEL, { sender: win.webContents });
+  harness.ipcMain.emit(READY_CHANNEL, pickerEvent(win));
   win.emit("ready-to-show");
+  if (applyState) harness.ipcMain.emit(APPLIED_CHANNEL, pickerEvent(win));
   return win;
 }
 
@@ -147,9 +166,9 @@ test("picker starts blank, covers the pet display, waits for renderer readiness,
   assert.strictEqual(win.shown, false);
   assert.strictEqual(harness.settingsWindow.hidden, false);
 
-  finishStartup(harness);
-  assert.strictEqual(win.shown, true);
-  assert.strictEqual(harness.settingsWindow.hidden, true);
+  finishStartup(harness, false);
+  assert.strictEqual(win.shown, false, "the overlay stays hidden until the renderer applies state");
+  assert.strictEqual(harness.settingsWindow.hidden, false);
   assert.strictEqual(win.webContents.sent.length, 1);
   assert.strictEqual(win.webContents.sent[0][0], STATE_CHANNEL);
   assert.deepStrictEqual(win.webContents.sent[0][1], {
@@ -159,8 +178,13 @@ test("picker starts blank, covers the pet display, waits for renderer readiness,
     scaleFactor: 2,
     minimumSize: { width: 120, height: 100 },
   });
+  assert.deepStrictEqual(win.webContents.windowOpenHandler(), { action: "deny" });
 
-  harness.ipcMain.emit(RESULT_CHANNEL, { sender: win.webContents }, {
+  harness.ipcMain.emit(APPLIED_CHANNEL, pickerEvent(win));
+  assert.strictEqual(win.shown, true);
+  assert.strictEqual(harness.settingsWindow.hidden, true);
+
+  harness.ipcMain.emit(RESULT_CHANNEL, pickerEvent(win), {
     action: "confirm",
     selection: { x: 320, y: 180, width: 960, height: 540 },
   });
@@ -188,6 +212,17 @@ test("picker refuses to claim success when the effective pet cannot fit on the d
   harness.runtime.dispose();
 });
 
+test("picker preserves Brazilian Portuguese instead of falling back to English", async () => {
+  const harness = makeRuntime();
+  const resultPromise = harness.runtime.selectArea({ lang: "pt-BR" });
+  const win = finishStartup(harness, false);
+  assert.strictEqual(win.webContents.sent[0][1].lang, "pt-BR");
+  harness.ipcMain.emit(APPLIED_CHANNEL, pickerEvent(win));
+  harness.ipcMain.emit(RESULT_CHANNEL, pickerEvent(win), { action: "cancel" });
+  assert.deepStrictEqual(await resultPromise, { status: "cancel" });
+  harness.runtime.dispose();
+});
+
 test("picker ignores spoofed IPC senders and coalesces duplicate requests", async () => {
   const harness = makeRuntime();
   const first = harness.runtime.selectArea({ lang: "en" });
@@ -196,13 +231,94 @@ test("picker ignores spoofed IPC senders and coalesces duplicate requests", asyn
   assert.strictEqual(FakeBrowserWindow.instances.length, 1);
   assert.strictEqual(FakeBrowserWindow.instances[0].shown, false, "duplicate startup must not expose a blank overlay");
   const win = finishStartup(harness);
-  harness.ipcMain.emit(RESULT_CHANNEL, { sender: {} }, {
+  harness.ipcMain.emit(RESULT_CHANNEL, { sender: {}, senderFrame: null }, {
     action: "confirm",
     selection: { x: 0, y: 0, width: 1600, height: 900 },
   });
   assert.strictEqual(harness.runtime.getWindow(), win);
-  harness.ipcMain.emit(RESULT_CHANNEL, { sender: win.webContents }, { action: "cancel" });
+  harness.ipcMain.emit(RESULT_CHANNEL, {
+    sender: win.webContents,
+    senderFrame: { url: win.webContents.mainFrame.url },
+  }, { action: "cancel" });
+  assert.strictEqual(harness.runtime.getWindow(), win, "a same-WebContents subframe is not trusted");
+  const pickerUrl = win.webContents.mainFrame.url;
+  win.webContents.mainFrame.url = "https://example.invalid/";
+  harness.ipcMain.emit(RESULT_CHANNEL, pickerEvent(win), { action: "cancel" });
+  assert.strictEqual(harness.runtime.getWindow(), win, "the main frame must still be the exact local picker URL");
+  win.webContents.mainFrame.url = pickerUrl;
+  harness.ipcMain.emit(RESULT_CHANNEL, pickerEvent(win), { action: "cancel" });
   assert.deepStrictEqual(await first, { status: "cancel" });
+  harness.runtime.dispose();
+});
+
+test("picker blocks navigation away from its local page", async () => {
+  const harness = makeRuntime();
+  const resultPromise = harness.runtime.selectArea();
+  const win = finishStartup(harness);
+  const event = {
+    defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; },
+  };
+  win.webContents.emit("will-navigate", event, "https://example.invalid/");
+  assert.strictEqual(event.defaultPrevented, true);
+  assert.deepStrictEqual(await resultPromise, {
+    status: "error",
+    message: "area picker navigation was blocked",
+  });
+  assert.strictEqual(harness.settingsWindow.shown, true);
+  harness.runtime.dispose();
+});
+
+test("picker blocks reload-style navigation to the same local page", async () => {
+  const harness = makeRuntime();
+  const resultPromise = harness.runtime.selectArea();
+  const win = finishStartup(harness);
+  const event = {
+    defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; },
+  };
+  win.webContents.emit("will-navigate", event, win.webContents.mainFrame.url);
+  assert.strictEqual(event.defaultPrevented, true);
+  assert.deepStrictEqual(await resultPromise, {
+    status: "error",
+    message: "area picker navigation was blocked",
+  });
+  harness.runtime.dispose();
+});
+
+test("picker closes instead of losing state on a programmatic main-frame reload", async () => {
+  const harness = makeRuntime();
+  const resultPromise = harness.runtime.selectArea();
+  const win = finishStartup(harness);
+  win.webContents.emit(
+    "did-start-navigation",
+    {},
+    win.webContents.mainFrame.url,
+    false,
+    true,
+  );
+  assert.deepStrictEqual(await resultPromise, {
+    status: "error",
+    message: "area picker navigation was blocked",
+  });
+  harness.runtime.dispose();
+});
+
+test("picker cancels safely if its display changes while selection is open", async () => {
+  const harness = makeRuntime();
+  const resultPromise = harness.runtime.selectArea();
+  const win = finishStartup(harness);
+  harness.screen.emit("display-metrics-changed", {}, { id: 8 });
+  assert.strictEqual(harness.runtime.getWindow(), win, "an unrelated display change is ignored");
+  harness.screen.emit("display-metrics-changed", {}, { id: 7 });
+  assert.deepStrictEqual(await resultPromise, {
+    status: "error",
+    code: "display-changed",
+    message: "the display changed while choosing an area; try again",
+  });
+  assert.strictEqual(harness.settingsWindow.shown, true);
+  assert.strictEqual(harness.screen.listenerCount("display-removed"), 0);
+  assert.strictEqual(harness.screen.listenerCount("display-metrics-changed"), 0);
   harness.runtime.dispose();
 });
 

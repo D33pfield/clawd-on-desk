@@ -1,13 +1,15 @@
 "use strict";
 
 const defaultPath = require("path");
+const { pathToFileURL } = require("url");
 
 const READY_CHANNEL = "roam-fence-picker:ready";
+const APPLIED_CHANNEL = "roam-fence-picker:state-applied";
 const STATE_CHANNEL = "roam-fence-picker:state";
 const RESULT_CHANNEL = "roam-fence-picker:result";
 const STARTUP_TIMEOUT_MS = 5000;
 const FALLBACK_WORK_AREA = { x: 0, y: 0, width: 1280, height: 800 };
-const SUPPORTED_LANGS = new Set(["en", "zh", "zh-TW", "ko", "ja"]);
+const SUPPORTED_LANGS = new Set(["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
 
 function isUsableRect(value) {
   return !!value
@@ -60,6 +62,7 @@ function createRoamFencePicker(options = {}) {
     throw new Error("roam fence picker requires BrowserWindow, ipcMain, and screen");
   }
   const htmlPath = options.htmlPath || path.join(__dirname, "roam-fence-picker.html");
+  const pickerUrl = pathToFileURL(htmlPath).href;
   const preloadPath = options.preloadPath || path.join(__dirname, "preload-roam-fence-picker.js");
   const scheduleLater = typeof options.setTimeout === "function" ? options.setTimeout : setTimeout;
   const clearScheduled = typeof options.clearTimeout === "function" ? options.clearTimeout : clearTimeout;
@@ -70,10 +73,13 @@ function createRoamFencePicker(options = {}) {
   let activeContext = null;
   let pageLoaded = false;
   let rendererReady = false;
+  let rendererApplied = false;
+  let stateSent = false;
   let windowReady = false;
   let shown = false;
   let startupTimer = null;
   let hiddenSettingsWindow = null;
+  let displayListenersAttached = false;
 
   function isLiveWindow(win) {
     return !!win && (typeof win.isDestroyed !== "function" || !win.isDestroyed());
@@ -96,6 +102,20 @@ function createRoamFencePicker(options = {}) {
     } catch {}
   }
 
+  function detachDisplayListeners() {
+    if (!displayListenersAttached || typeof screen.removeListener !== "function") return;
+    screen.removeListener("display-removed", handleDisplayInvalidated);
+    screen.removeListener("display-metrics-changed", handleDisplayInvalidated);
+    displayListenersAttached = false;
+  }
+
+  function attachDisplayListeners() {
+    if (displayListenersAttached || typeof screen.on !== "function") return;
+    screen.on("display-removed", handleDisplayInvalidated);
+    screen.on("display-metrics-changed", handleDisplayInvalidated);
+    displayListenersAttached = true;
+  }
+
   function settle(result, closeWindow = true, restoreSettings = true) {
     const win = activeWindow;
     const resolve = activeResolve;
@@ -105,9 +125,12 @@ function createRoamFencePicker(options = {}) {
     activeContext = null;
     pageLoaded = false;
     rendererReady = false;
+    rendererApplied = false;
+    stateSent = false;
     windowReady = false;
     shown = false;
     clearStartupTimer();
+    detachDisplayListeners();
     if (typeof resolve === "function") resolve(result || { status: "cancel" });
     if (closeWindow && isLiveWindow(win)) {
       try { win.close(); } catch {
@@ -120,12 +143,12 @@ function createRoamFencePicker(options = {}) {
 
   function maybeFinishStartup() {
     if (!isLiveWindow(activeWindow)) return;
-    if (pageLoaded && rendererReady && activeContext) {
+    if (pageLoaded && rendererReady && activeContext && !stateSent) {
       try { activeWindow.webContents.send(STATE_CHANNEL, activeContext); }
       catch { settle({ status: "error", message: "area picker failed to initialize" }); return; }
-      activeContext = null;
+      stateSent = true;
     }
-    if (!pageLoaded || !rendererReady || activeContext || !windowReady || shown) return;
+    if (!pageLoaded || !rendererReady || !stateSent || !rendererApplied || !windowReady || shown) return;
     try {
       const settingsWindow = typeof options.getSettingsWindow === "function"
         ? options.getSettingsWindow()
@@ -141,6 +164,16 @@ function createRoamFencePicker(options = {}) {
     } catch {
       settle({ status: "error", message: "area picker could not be shown" });
     }
+  }
+
+  function isTrustedPickerEvent(event) {
+    if (!isLiveWindow(activeWindow) || !event) return false;
+    const contents = activeWindow.webContents;
+    const frame = event.senderFrame;
+    return event.sender === contents
+      && !!frame
+      && frame === contents.mainFrame
+      && frame.url === pickerUrl;
   }
 
   function resolveDisplay() {
@@ -173,13 +206,19 @@ function createRoamFencePicker(options = {}) {
   }
 
   function handleReady(event) {
-    if (!isLiveWindow(activeWindow) || event.sender !== activeWindow.webContents) return;
+    if (!isTrustedPickerEvent(event)) return;
     rendererReady = true;
     maybeFinishStartup();
   }
 
+  function handleApplied(event) {
+    if (!isTrustedPickerEvent(event) || !stateSent) return;
+    rendererApplied = true;
+    maybeFinishStartup();
+  }
+
   function handleResult(event, payload) {
-    if (!isLiveWindow(activeWindow) || event.sender !== activeWindow.webContents) return;
+    if (!isTrustedPickerEvent(event)) return;
     if (!payload || payload.action !== "confirm") {
       settle({ status: "cancel" });
       return;
@@ -194,7 +233,20 @@ function createRoamFencePicker(options = {}) {
   }
 
   ipcMain.on(READY_CHANNEL, handleReady);
+  ipcMain.on(APPLIED_CHANNEL, handleApplied);
   ipcMain.on(RESULT_CHANNEL, handleResult);
+
+  function handleDisplayInvalidated(_event, display) {
+    if (!isLiveWindow(activeWindow) || !activeContext) return;
+    const activeId = activeContext.displayId;
+    const changedId = display && display.id;
+    if (activeId !== null && changedId !== activeId) return;
+    settle({
+      status: "error",
+      code: "display-changed",
+      message: "the display changed while choosing an area; try again",
+    });
+  }
 
   function selectArea(payload = {}) {
     if (isLiveWindow(activeWindow) && activePromise) {
@@ -269,9 +321,12 @@ function createRoamFencePicker(options = {}) {
     }
     activeWindow = win;
     activeContext = context;
+    attachDisplayListeners();
     win.__clawdRoamFenceContext = context;
     pageLoaded = false;
     rendererReady = false;
+    rendererApplied = false;
+    stateSent = false;
     windowReady = false;
     shown = false;
     activePromise = new Promise((resolve) => { activeResolve = resolve; });
@@ -285,6 +340,23 @@ function createRoamFencePicker(options = {}) {
       if (typeof win.setVisibleOnAllWorkspaces === "function") {
         try { win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch {}
       }
+      if (typeof win.webContents.setWindowOpenHandler === "function") {
+        win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      }
+      const rejectNavigation = (event, url) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        if (activeWindow === win) {
+          settle({ status: "error", message: "area picker navigation was blocked" });
+        }
+      };
+      win.webContents.on("will-navigate", rejectNavigation);
+      win.webContents.on("will-redirect", rejectNavigation);
+      win.webContents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
+        if (isInPlace || isMainFrame === false || !pageLoaded) return;
+        if (activeWindow === win) {
+          settle({ status: "error", message: "area picker navigation was blocked" });
+        }
+      });
       win.webContents.once("did-finish-load", () => {
         if (activeWindow !== win || !isLiveWindow(win)) return;
         pageLoaded = true;
@@ -329,7 +401,9 @@ function createRoamFencePicker(options = {}) {
 
   function dispose() {
     if (typeof ipcMain.removeListener === "function") ipcMain.removeListener(READY_CHANNEL, handleReady);
+    if (typeof ipcMain.removeListener === "function") ipcMain.removeListener(APPLIED_CHANNEL, handleApplied);
     if (typeof ipcMain.removeListener === "function") ipcMain.removeListener(RESULT_CHANNEL, handleResult);
+    detachDisplayListeners();
     if (isLiveWindow(activeWindow)) settle({ status: "cancel" }, true, false);
     else hiddenSettingsWindow = null;
   }
@@ -340,5 +414,6 @@ function createRoamFencePicker(options = {}) {
 module.exports = createRoamFencePicker;
 module.exports.selectionToFence = selectionToFence;
 module.exports.READY_CHANNEL = READY_CHANNEL;
+module.exports.APPLIED_CHANNEL = APPLIED_CHANNEL;
 module.exports.STATE_CHANNEL = STATE_CHANNEL;
 module.exports.RESULT_CHANNEL = RESULT_CHANNEL;

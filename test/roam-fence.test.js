@@ -274,6 +274,42 @@ describe("roam-fence loader", () => {
     assert.equal(reads, 2, "initial read + one trailing read, not one each");
     assert.equal(loader.get().active, true);
   });
+
+  it("counts at most one ENOENT confirmation per coalesced refresh batch", async () => {
+    let missing = false;
+    let signalReadStarted;
+    let releaseRead;
+    const readStarted = new Promise((resolve) => { signalReadStarted = resolve; });
+    const readGate = new Promise((resolve) => { releaseRead = resolve; });
+    let missingReads = 0;
+    const loader = createRoamFenceLoader({
+      readFile: async () => {
+        if (!missing) return VALID;
+        missingReads += 1;
+        if (missingReads === 1) {
+          signalReadStarted();
+          await readGate;
+        }
+        throw enoent();
+      },
+      warn: () => {},
+      filePath: "/nonexistent/roam-area.json",
+    });
+    await loader.refresh();
+    missing = true;
+
+    const first = loader.refresh();
+    await readStarted;
+    const second = loader.refresh();
+    const third = loader.refresh();
+    releaseRead();
+    await Promise.all([first, second, third]);
+
+    assert.equal(missingReads, 2, "the batch still performs its one trailing read");
+    assert.equal(loader.get().active, true, "one missing-file window casts only one vote");
+    await loader.refresh();
+    assert.equal(loader.get().active, false, "a later independent refresh confirms removal");
+  });
 });
 
 describe("roam-fence production file-handle reader (#810 maintainer follow-up)", () => {

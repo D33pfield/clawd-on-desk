@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const zlib = require("node:zlib");
+const { pathToFileURL } = require("node:url");
 
 const { registerSettingsIpc } = require("../src/settings-ipc");
 const {
@@ -17,6 +18,7 @@ class FakeIpcMain {
   constructor() {
     this.handlers = new Map();
     this.listeners = new Map();
+    this.invokeEvent = { sender: "sender-web-contents", senderFrame: null };
   }
 
   handle(channel, listener) {
@@ -38,7 +40,7 @@ class FakeIpcMain {
   invoke(channel, ...args) {
     const listener = this.handlers.get(channel);
     assert.strictEqual(typeof listener, "function", `missing IPC handler ${channel}`);
-    return listener({ sender: "sender-web-contents" }, ...args);
+    return listener(this.invokeEvent, ...args);
   }
 
   send(channel, ...args) {
@@ -117,6 +119,19 @@ function makeZip(entries) {
 function createHarness(overrides = {}) {
   const calls = [];
   const ipcMain = new FakeIpcMain();
+  const settingsMainFrame = {
+    url: pathToFileURL(path.join(__dirname, "..", "src", "settings.html")).href,
+  };
+  const settingsWebContents = { mainFrame: settingsMainFrame };
+  const settingsWindow = {
+    id: "settings-window",
+    webContents: settingsWebContents,
+    isDestroyed: () => false,
+  };
+  ipcMain.invokeEvent = {
+    sender: settingsWebContents,
+    senderFrame: settingsMainFrame,
+  };
   const activeTheme = overrides.activeTheme || {
     _id: "clawd",
     sounds: { complete: "complete.mp3" },
@@ -190,7 +205,7 @@ function createHarness(overrides = {}) {
     settingsController,
     themeLoader,
     codexPetMain,
-    getSettingsWindow: () => ({ id: "settings-window" }),
+    getSettingsWindow: () => settingsWindow,
     getActiveTheme: () => activeTheme,
     getLang: overrides.getLang || (() => "en"),
     roamFenceSettings,
@@ -224,7 +239,7 @@ function createHarness(overrides = {}) {
     getLanWsServer: overrides.getLanWsServer || (() => null),
     now: overrides.now || (() => 12345),
   });
-  return { ipcMain, runtime, calls, activeTheme };
+  return { ipcMain, runtime, calls, activeTheme, settingsWindow };
 }
 
 test("settings IPC registers owned channels and leaves animation override channels to their module", () => {
@@ -295,6 +310,53 @@ test("settings IPC reads, selects, and clears the shared roam fence", async () =
     ["save", selected],
     ["clear"],
   ]);
+});
+
+test("roam fence IPC rejects external senders, subframes, and a navigated Settings frame", async () => {
+  const calls = [];
+  const harness = createHarness({
+    roamFenceSettings: {
+      getStatus: async () => { calls.push("get"); return { status: "ok" }; },
+      saveFence: async () => { calls.push("save"); return { status: "ok" }; },
+      clearFence: async () => { calls.push("clear"); return { status: "ok" }; },
+    },
+    roamFencePicker: {
+      selectArea: async () => { calls.push("pick"); return { status: "cancel" }; },
+    },
+  });
+  const contents = harness.settingsWindow.webContents;
+  const frame = contents.mainFrame;
+  const channels = [
+    "settings:get-roam-fence",
+    "settings:select-roam-fence",
+    "settings:clear-roam-fence",
+  ];
+
+  for (const event of [
+    { sender: {}, senderFrame: null },
+    { sender: contents, senderFrame: { url: frame.url } },
+  ]) {
+    harness.ipcMain.invokeEvent = event;
+    for (const channel of channels) {
+      assert.deepStrictEqual(await harness.ipcMain.invoke(channel), {
+        status: "error",
+        message: "untrusted settings sender",
+      });
+    }
+  }
+
+  const localUrl = frame.url;
+  frame.url = "https://example.invalid/";
+  harness.ipcMain.invokeEvent = { sender: contents, senderFrame: frame };
+  for (const channel of channels) {
+    assert.deepStrictEqual(await harness.ipcMain.invoke(channel), {
+      status: "error",
+      message: "untrusted settings sender",
+    });
+  }
+  frame.url = localUrl;
+  assert.deepStrictEqual(calls, [], "untrusted callers must have no picker or file side effects");
+  harness.runtime.dispose();
 });
 
 test("settings IPC does not write when roam area selection is canceled", async () => {
@@ -504,7 +566,7 @@ test("settings IPC delegates controller and size preview handlers", async () => 
 
 test("settings IPC delegates Codex Pet theme channels and decorates metadata", async () => {
   const codexCalls = [];
-  const { ipcMain } = createHarness({
+  const { ipcMain, settingsWindow } = createHarness({
     activeTheme: { _id: "imported-pet", sounds: {} },
     themeLoader: {
       getPreviewSoundUrl: () => null,
@@ -563,7 +625,7 @@ test("settings IPC delegates Codex Pet theme channels and decorates metadata", a
   assert.deepStrictEqual(codexCalls, [
     "refresh",
     "open-dir",
-    ["import", "sender-web-contents"],
+    ["import", settingsWindow.webContents],
     ["remove", "imported-pet"],
   ]);
 });
@@ -622,7 +684,7 @@ test("settings IPC imports Clawd user theme zip packages", async () => {
 
     let dialogParent = null;
     let dialogOptions = null;
-    const { ipcMain } = createHarness({
+    const { ipcMain, settingsWindow } = createHarness({
       dialog: {
         showOpenDialog: async (parent, options) => {
           dialogParent = parent;
@@ -647,7 +709,7 @@ test("settings IPC imports Clawd user theme zip packages", async () => {
       name: "Pixel Cat",
       path: path.join(userThemesDir, "pixel-cat"),
     });
-    assert.deepStrictEqual(dialogParent, { id: "parent", sender: "sender-web-contents" });
+    assert.deepStrictEqual(dialogParent, { id: "parent", sender: settingsWindow.webContents });
     assert.deepStrictEqual(dialogOptions.properties, ["openFile"]);
     assert.deepStrictEqual(dialogOptions.filters, [{ name: "Clawd theme zip", extensions: ["zip"] }]);
     assert.strictEqual(
@@ -764,7 +826,7 @@ test("settings IPC serves agent/about/update/external and remove-theme dialog he
     fs.writeFileSync(heroSvgPath, "<svg id=\"hero\"></svg>", "utf8");
     let messageBoxParent = null;
     let messageBoxOptions = null;
-    const { ipcMain, calls } = createHarness({
+    const { ipcMain, calls, settingsWindow } = createHarness({
       aboutHeroSvgPath: heroSvgPath,
       getLang: () => "en",
       dialog: {
@@ -850,7 +912,7 @@ test("settings IPC serves agent/about/update/external and remove-theme dialog he
     assert.deepStrictEqual(await ipcMain.invoke("settings:confirm-remove-theme", "user-theme"), {
       confirmed: true,
     });
-    assert.deepStrictEqual(messageBoxParent, { id: "parent", sender: "sender-web-contents" });
+    assert.deepStrictEqual(messageBoxParent, { id: "parent", sender: settingsWindow.webContents });
     assert.strictEqual(messageBoxOptions.message, 'Delete theme "Theme user-theme"?');
     assert.deepStrictEqual(await ipcMain.invoke("settings:check-for-updates"), {
       state: "up-to-date",

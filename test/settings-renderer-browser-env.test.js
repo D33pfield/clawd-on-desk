@@ -5327,7 +5327,30 @@ describe("settings renderer browser environment", () => {
     control.resetButton.dispatchEvent({ type: "click", bubbles: false });
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.deepStrictEqual(calls, ["select", "clear"]);
-    assert.strictEqual(control.description.textContent, "Entire work area");
+    assert.strictEqual(control.description.textContent, "Default roam area");
+    assert.strictEqual(control.resetButton.style.display, "none");
+  });
+
+  it("shows the Free roam activity area as unavailable for a non-ok status", async () => {
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ freeRoam: true }),
+      settingsAPI: {
+        getRoamFence: async () => ({
+          status: "error",
+          active: false,
+          fence: null,
+          message: "failed to read the activity-area file",
+        }),
+      },
+    });
+    harness.renderContent();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const control = harness.core.state.mountedControls.roamArea;
+    assert.strictEqual(
+      control.description.textContent,
+      "The area file is invalid or still loading; roaming stays paused.",
+    );
     assert.strictEqual(control.resetButton.style.display, "none");
   });
 

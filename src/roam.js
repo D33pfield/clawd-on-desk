@@ -89,31 +89,39 @@ module.exports = function initRoam(ctx) {
       bounds.y + bounds.height / 2,
     );
     if (!wa) return null;
-    // #810: frozen effective-size snapshot (keep-size / mixed-DPI, #569/#408).
-    // Used for FENCE geometry — the fence promise is about the real animated
-    // window, so containment classification, the fence caps on the candidate
-    // intervals, and the final revalidation in animateTo() all use it — and
-    // handed to animateTo() on the returned target so planning and animation
-    // agree. The margin-band interval geometry itself stays bounds-based
-    // exactly like the parent: swapping it to the effective size changed
-    // no-fence picking behavior (round-2 review).
-    const effectiveSize =
-      typeof ctx.getEffectiveCurrentPixelSize === "function"
-        ? ctx.getEffectiveCurrentPixelSize()
-        : null;
-    const petW =
-      effectiveSize &&
-      Number.isFinite(effectiveSize.width) &&
-      effectiveSize.width > 0
-        ? effectiveSize.width
-        : bounds.width;
-    const petH =
-      effectiveSize &&
-      Number.isFinite(effectiveSize.height) &&
-      effectiveSize.height > 0
-        ? effectiveSize.height
-        : bounds.height;
-    const size = { width: petW, height: petH };
+    const hasFenceLoader =
+      ctx.roamFence && typeof ctx.roamFence.get === "function";
+    const fenceState = hasFenceLoader ? ctx.roamFence.get() : undefined;
+    // UNKNOWN means a configured loader has not confirmed any status yet.
+    // Hold before resolving the keep-size snapshot: a skipped round must not
+    // lazy-seed cross-display size state that the historical picker never
+    // touched when it could not produce a target.
+    if (hasFenceLoader && fenceState === null) return null;
+    let petW = bounds.width;
+    let petH = bounds.height;
+    let size;
+    if (fenceState && fenceState.active) {
+      // #810: freeze the effective-size snapshot only when active-fence
+      // geometry needs it. No-fence picking remains parent-identical; if it
+      // finds a target, animateTo() resolves the normal walk snapshot there.
+      const effectiveSize =
+        typeof ctx.getEffectiveCurrentPixelSize === "function"
+          ? ctx.getEffectiveCurrentPixelSize()
+          : null;
+      petW =
+        effectiveSize &&
+        Number.isFinite(effectiveSize.width) &&
+        effectiveSize.width > 0
+          ? effectiveSize.width
+          : bounds.width;
+      petH =
+        effectiveSize &&
+        Number.isFinite(effectiveSize.height) &&
+        effectiveSize.height > 0
+          ? effectiveSize.height
+          : bounds.height;
+      size = { width: petW, height: petH };
+    }
     const marginX = Math.round(wa.width * ROAM_MARGIN_RATIO);
     const marginY = Math.round(wa.height * ROAM_MARGIN_RATIO);
     // Parent margin-band intervals, bounds-based — bit-identical to the
@@ -135,16 +143,14 @@ module.exports = function initRoam(ctx) {
     // the historical values.
     let fenceRect = null;
     let fenceShrinks = false;
+    let fenceAltersX = false;
+    let fenceAltersY = false;
     let startInsideFence = true;
-    const hasFenceLoader =
-      ctx.roamFence && typeof ctx.roamFence.get === "function";
-    const fenceState = hasFenceLoader ? ctx.roamFence.get() : undefined;
     // Round-2 review: get() === null means UNKNOWN — the loader has not yet
     // confirmed any status (first read pending, or the file exists but has
     // never parsed). Roaming the full area then would fail open — skip the
     // round instead; scheduleNextRoam retries after the next pause with a
     // fresh refresh. No loader wired at all still means "no fence".
-    if (hasFenceLoader && fenceState === null) return null;
     if (fenceState && fenceState.active) {
       fenceRect = {
         left: wa.x + Math.round(wa.width * fenceState.left),
@@ -201,8 +207,9 @@ module.exports = function initRoam(ctx) {
       // plus the final revalidation still need the rectangle. fenceShrinks
       // only decides whether the adaptive minimum hop may engage (any
       // fence-altered band scales the hop to its actual size).
-      fenceShrinks =
-        xMin !== bxMin || xMax !== bxMax || yMin !== byMin || yMax !== byMax;
+      fenceAltersX = xMin !== bxMin || xMax !== bxMax;
+      fenceAltersY = yMin !== byMin || yMax !== byMax;
+      fenceShrinks = fenceAltersX || fenceAltersY;
     }
     // #810: a fence smaller than ROAM_MIN_DIST would reject every candidate,
     // so the minimum hop scales down with the fenced interval — but only when
@@ -230,8 +237,8 @@ module.exports = function initRoam(ctx) {
     // Axis-constrained walks move along one axis only, so their reachable
     // distance is bounded by that axis' range alone (best case ~range from an
     // edge, ~range/2 from the center) — scale per-axis, same 24px floor.
-    const axisMinDist = (range) =>
-      fenceShrinks
+    const axisMinDist = (range, fenceAltersAxis) =>
+      fenceAltersAxis
         ? Math.min(ROAM_MIN_DIST, Math.max(24, Math.round(range / 2)))
         : ROAM_MIN_DIST;
     /* #686: axis-constrained roam — pick a target that varies in only one axis.
@@ -280,7 +287,7 @@ module.exports = function initRoam(ctx) {
           // Keep Y unchanged, pick random X
           const range = xMax - xMin;
           if (range < 0) return null;
-          const min = recovery ? 1 : axisMinDist(range);
+          const min = recovery ? 1 : axisMinDist(range, fenceAltersX);
           if (range > 0) {
             for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
               const targetX = xMin + Math.floor(Math.random() * range);
@@ -314,7 +321,7 @@ module.exports = function initRoam(ctx) {
           // Keep X unchanged, pick random Y
           const range = yMax - yMin;
           if (range < 0) return null;
-          const min = recovery ? 1 : axisMinDist(range);
+          const min = recovery ? 1 : axisMinDist(range, fenceAltersY);
           if (range > 0) {
             for (let i = 0; i < ROAM_TARGET_ATTEMPTS; i += 1) {
               const targetY = yMin + Math.floor(Math.random() * range);
@@ -421,9 +428,11 @@ module.exports = function initRoam(ctx) {
     // Windows setups ratchet the pet larger while roaming — same mechanism
     // as #408. When keepSizeAcrossDisplays is ON, the frozen keep-size wins
     // over the live start bounds so both anchors share one source of truth.
-    // #810: the snapshot is resolved once in pickRandomTarget() and carried on
-    // the target, so planning and animation can never disagree about the
-    // window size; the inline fallback only covers a caller without one.
+    // #810: active-fence planning resolves the snapshot in pickRandomTarget()
+    // and carries it on the target, so containment planning and animation
+    // cannot disagree. No-fence targets deliberately use this inline path to
+    // preserve the historical picker and only seed keep-size after a target
+    // has actually been found.
     const plannedSize = target.size;
     const effectiveSize =
       plannedSize ||

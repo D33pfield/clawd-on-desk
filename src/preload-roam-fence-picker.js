@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("roamFencePickerAPI", {
   ready: () => ipcRenderer.send("roam-fence-picker:ready"),
+  applied: () => ipcRenderer.send("roam-fence-picker:state-applied"),
   onState: (callback) => {
     if (typeof callback !== "function") return () => {};
     const listener = (_event, payload) => callback(payload);

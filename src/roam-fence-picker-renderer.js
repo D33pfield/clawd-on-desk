@@ -2,11 +2,12 @@
 
 (function initRoamFencePicker() {
   const STRINGS = {
-    en: { title: "Choose Clawd's activity area", hint: "First drag to draw a new area. After you release, drag inside to move it or drag an edge or corner to resize. The whole pet must fit inside it on this display.", confirm: "Use this area", cancel: "Cancel", tooSmall: "Too small" },
-    zh: { title: "框选 Clawd 的活动范围", hint: "先拖出一个新范围；松开后，可拖动框内移动选区，也可拖动边缘或角点调整大小。范围必须能在当前屏幕放下整个桌宠。", confirm: "使用此范围", cancel: "取消", tooSmall: "范围太小" },
-    "zh-TW": { title: "框選 Clawd 的活動範圍", hint: "先拖出一個新範圍；放開後，可拖曳框內移動選區，也可拖曳邊緣或角點調整大小。範圍必須能在目前螢幕容納完整桌寵。", confirm: "使用此範圍", cancel: "取消", tooSmall: "範圍太小" },
-    ko: { title: "Clawd 활동 영역 선택", hint: "먼저 드래그해 새 영역을 그리세요. 놓은 뒤에는 영역 안을 드래그해 이동하거나 가장자리와 모서리를 드래그해 크기를 조절할 수 있습니다. 이 디스플레이에서 펫 전체가 들어가야 합니다.", confirm: "이 영역 사용", cancel: "취소", tooSmall: "영역이 너무 작음" },
-    ja: { title: "Clawd の活動範囲を選択", hint: "まずドラッグして新しい範囲を描きます。離した後は、範囲内をドラッグして移動したり、辺や角をドラッグしてサイズを変更できます。このディスプレイでペット全体が収まる必要があります。", confirm: "この範囲を使う", cancel: "キャンセル", tooSmall: "範囲が小さすぎます" },
+    en: { title: "Choose Clawd's activity area", hint: "Drag to draw an area, then drag inside to move it or an edge to resize. Keyboard: an arrow creates a centered area; arrows move it and Shift+arrows resize it. The whole pet must fit inside.", confirm: "Use this area", cancel: "Cancel", tooSmall: "Too small" },
+    zh: { title: "框选 Clawd 的活动范围", hint: "拖动鼠标框选；松开后可拖动框内移动，也可拖动边缘或角点缩放。键盘：方向键先建立居中选区，再用方向键移动、Shift+方向键缩放。范围必须放得下整个桌宠。", confirm: "使用此范围", cancel: "取消", tooSmall: "范围太小" },
+    "zh-TW": { title: "框選 Clawd 的活動範圍", hint: "拖曳滑鼠框選；放開後可拖曳框內移動，也可拖曳邊緣或角點縮放。鍵盤：方向鍵先建立置中選區，再用方向鍵移動、Shift+方向鍵縮放。範圍必須容納完整桌寵。", confirm: "使用此範圍", cancel: "取消", tooSmall: "範圍太小" },
+    ko: { title: "Clawd 활동 영역 선택", hint: "드래그해 영역을 그린 뒤 안쪽을 드래그해 이동하거나 가장자리를 드래그해 크기를 조절하세요. 키보드에서는 화살표로 가운데 영역을 만들고, 화살표로 이동하며 Shift+화살표로 크기를 조절합니다. 펫 전체가 들어가야 합니다.", confirm: "이 영역 사용", cancel: "취소", tooSmall: "영역이 너무 작음" },
+    ja: { title: "Clawd の活動範囲を選択", hint: "ドラッグで範囲を描き、内側をドラッグして移動、辺や角をドラッグしてサイズ変更できます。キーボードでは矢印キーで中央に範囲を作成し、矢印で移動、Shift+矢印でサイズ変更します。ペット全体が収まる必要があります。", confirm: "この範囲を使う", cancel: "キャンセル", tooSmall: "範囲が小さすぎます" },
+    "pt-BR": { title: "Escolher a área de atividade do Clawd", hint: "Arraste para desenhar uma área; depois arraste por dentro para mover ou pelas bordas para redimensionar. Teclado: uma seta cria uma área central; as setas movem e Shift+setas redimensionam. O pet inteiro precisa caber.", confirm: "Usar esta área", cancel: "Cancelar", tooSmall: "Área pequena demais" },
   };
   const api = window.roamFencePickerAPI;
   const geometry = window.roamFencePickerGeometry;
@@ -24,6 +25,7 @@
   let dragMode = "draw";
   let dragging = false;
   let activePointerId = null;
+  const KEYBOARD_STEP = 10;
 
   function isSelectionValid() {
     return !!selection && !!context
@@ -88,6 +90,69 @@
     if (point) updateHoverCursor(point);
   }
 
+  function createCenteredSelection() {
+    const areaWidth = Math.max(1, Math.round(context.workArea.width));
+    const areaHeight = Math.max(1, Math.round(context.workArea.height));
+    const width = Math.min(areaWidth, Math.max(
+      Math.ceil(context.minimumSize.width),
+      Math.round(areaWidth / 2),
+    ));
+    const height = Math.min(areaHeight, Math.max(
+      Math.ceil(context.minimumSize.height),
+      Math.round(areaHeight / 2),
+    ));
+    selection = {
+      x: Math.round((areaWidth - width) / 2),
+      y: Math.round((areaHeight - height) / 2),
+      width,
+      height,
+    };
+    renderSelection();
+    document.body.style.cursor = "move";
+  }
+
+  function handleArrowKey(event) {
+    const delta = {
+      ArrowLeft: { x: -KEYBOARD_STEP, y: 0 },
+      ArrowRight: { x: KEYBOARD_STEP, y: 0 },
+      ArrowUp: { x: 0, y: -KEYBOARD_STEP },
+      ArrowDown: { x: 0, y: KEYBOARD_STEP },
+    }[event.key];
+    if (!delta || !context || dragging) return false;
+    if (!selection) {
+      createCenteredSelection();
+      return true;
+    }
+    const initial = { ...selection };
+    if (event.shiftKey) {
+      const mode = delta.x ? "e" : "s";
+      const startPoint = {
+        x: initial.x + initial.width,
+        y: initial.y + initial.height,
+      };
+      selection = geometry.updateSelection(
+        mode,
+        startPoint,
+        { x: startPoint.x + delta.x, y: startPoint.y + delta.y },
+        initial,
+        context.workArea,
+      );
+      document.body.style.cursor = geometry.cursorForMode(mode);
+    } else {
+      const startPoint = { x: initial.x, y: initial.y };
+      selection = geometry.updateSelection(
+        "move",
+        startPoint,
+        { x: startPoint.x + delta.x, y: startPoint.y + delta.y },
+        initial,
+        context.workArea,
+      );
+      document.body.style.cursor = "move";
+    }
+    renderSelection();
+    return true;
+  }
+
   document.body.addEventListener("pointerdown", (event) => {
     const target = event.target;
     if (!context || event.button !== 0
@@ -134,6 +199,10 @@
     }
     const target = event.target;
     const nativeButtonAction = target && typeof target.closest === "function" && target.closest("button");
+    if (!nativeButtonAction && handleArrowKey(event)) {
+      event.preventDefault();
+      return;
+    }
     if (event.key === "Enter" && !dragging && !nativeButtonAction && isSelectionValid()) {
       event.preventDefault();
       api.confirm(selection);
@@ -155,6 +224,7 @@
     selection = null;
     renderSelection();
     document.body.style.cursor = "crosshair";
+    api.applied();
   });
   api.ready();
 })();

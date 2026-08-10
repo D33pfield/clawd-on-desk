@@ -2338,6 +2338,53 @@ describe("roam fence round-2 review (#810)", () => {
     assert.equal(last.x, 240, "deterministic parent-band edge target");
   });
 
+  it("no fence: a failed target search does not resolve the effective-size getter", () => {
+    mock.method(Math, "random", () => 0.5);
+    let effectiveSizeReads = 0;
+    const ctx = makeCtx({
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 200, height: 200 }),
+      getEffectiveCurrentPixelSize: () => {
+        effectiveSizeReads += 1;
+        return { width: 120, height: 120 };
+      },
+    });
+    place(ctx, 35, 35);
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+    roam.tick();
+    mock.timers.tick(8000);
+
+    assert.equal(ctx._appliedBounds.length, 0, "historical picker finds no target");
+    assert.equal(effectiveSizeReads, 0, "a skipped round must not lazy-seed keep-size state");
+  });
+
+  it("a fence that alters only X does not relax the minimum hop on Y", () => {
+    mock.method(Math, "random", () => 0.9); // prefer vertical
+    const ctx = fenceCtx2({
+      active: true,
+      left: 0.15,
+      top: 0,
+      right: 0.8,
+      bottom: 1,
+    }, {
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 400, height: 300 }),
+    });
+    Object.assign(ctx._bounds, { x: 60, y: 45, width: 250, height: 170 });
+    Object.assign(ctx._realBounds, ctx._bounds);
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.setConstrainAxis(true);
+    roam.tick();
+    mock.timers.tick(8000);
+
+    assert.equal(
+      ctx._appliedBounds.length,
+      0,
+      "the full-range Y axis keeps the parent's 100px minimum instead of accepting a 40px hop",
+    );
+  });
+
   it("holds the round while the fence status is UNKNOWN (loader returns null)", () => {
     mock.method(Math, "random", () => 0.9);
     const ctx = fenceCtx2(null);

@@ -73,7 +73,7 @@ function pointer(type, x, y, pointerId = 1, target = null) {
   };
 }
 
-function createHarness() {
+function createHarness(lang = "en") {
   const body = new FakeTarget("body", "body");
   const selection = new FakeTarget("div", "selection");
   const size = new FakeTarget("span", "selection-size");
@@ -107,10 +107,11 @@ function createHarness() {
       for (const listener of documentListeners.get(event.type) || []) listener(event);
     },
   };
-  const calls = { confirm: [], cancel: 0, ready: 0 };
+  const calls = { confirm: [], cancel: 0, ready: 0, applied: 0 };
   let stateListener = null;
   const api = {
     ready: () => { calls.ready += 1; },
+    applied: () => { calls.applied += 1; },
     onState: (listener) => { stateListener = listener; },
     confirm: (value) => { calls.confirm.push({ ...value }); },
     cancel: () => { calls.cancel += 1; },
@@ -128,11 +129,11 @@ function createHarness() {
   vm.createContext(context);
   vm.runInContext(rendererSource, context);
   stateListener({
-    lang: "en",
+    lang,
     workArea: { width: 1000, height: 800 },
     minimumSize: { width: 100, height: 80 },
   });
-  return { body, selection, actions, confirm, cancel, document, calls };
+  return { body, selection, actions, confirm, cancel, title, hint, document, calls };
 }
 
 function drawValidSelection(harness) {
@@ -147,6 +148,7 @@ function drawValidSelection(harness) {
 test("renderer enters crop editing only after the initial draw, then moves and resizes", () => {
   const harness = createHarness();
   assert.strictEqual(harness.calls.ready, 1);
+  assert.strictEqual(harness.calls.applied, 1);
   assert.strictEqual(harness.selection.style.display, "none");
   drawValidSelection(harness);
   assert.deepStrictEqual(
@@ -166,6 +168,54 @@ test("renderer enters crop editing only after the initial draw, then moves and r
   harness.body.dispatchEvent(pointer("pointermove", 650, 220, 3, harness.body));
   harness.body.dispatchEvent(pointer("pointerup", 650, 220, 3, harness.body));
   assert.strictEqual(harness.selection.style.width, "450px");
+});
+
+test("keyboard can create, move, resize, and confirm a selection", () => {
+  const harness = createHarness();
+  const dispatchKey = (key, shiftKey = false) => {
+    const event = {
+      type: "keydown",
+      key,
+      shiftKey,
+      target: harness.body,
+      defaultPrevented: false,
+      preventDefault() { this.defaultPrevented = true; },
+    };
+    harness.document.dispatchEvent(event);
+    assert.strictEqual(event.defaultPrevented, true);
+  };
+
+  dispatchKey("ArrowRight");
+  assert.deepStrictEqual(
+    { left: harness.selection.style.left, top: harness.selection.style.top, width: harness.selection.style.width, height: harness.selection.style.height },
+    { left: "250px", top: "200px", width: "500px", height: "400px" },
+  );
+  dispatchKey("ArrowRight");
+  assert.strictEqual(harness.selection.style.left, "260px");
+  dispatchKey("ArrowDown", true);
+  assert.strictEqual(harness.selection.style.height, "410px");
+
+  const enter = {
+    type: "keydown",
+    key: "Enter",
+    target: harness.body,
+    defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; },
+  };
+  harness.document.dispatchEvent(enter);
+  assert.strictEqual(enter.defaultPrevented, true);
+  assert.deepStrictEqual(harness.calls.confirm, [
+    { x: 260, y: 200, width: 500, height: 410 },
+  ]);
+});
+
+test("renderer provides Brazilian Portuguese picker copy", () => {
+  const harness = createHarness("pt-BR");
+  assert.strictEqual(harness.document.documentElement.lang, "pt-BR");
+  assert.strictEqual(harness.title.textContent, "Escolher a área de atividade do Clawd");
+  assert.match(harness.hint.textContent, /Shift\+setas/);
+  assert.strictEqual(harness.confirm.textContent, "Usar esta área");
+  assert.strictEqual(harness.cancel.textContent, "Cancelar");
 });
 
 test("Enter on Cancel uses the button action instead of the global confirm shortcut", () => {
@@ -194,6 +244,24 @@ test("Enter on Cancel uses the button action instead of the global confirm short
   harness.document.dispatchEvent(bodyEnter);
   assert.strictEqual(bodyEnter.defaultPrevented, true);
   assert.strictEqual(harness.calls.confirm.length, 1);
+});
+
+test("Escape cancels a valid selection without confirming it", () => {
+  const harness = createHarness();
+  drawValidSelection(harness);
+  const escape = {
+    type: "keydown",
+    key: "Escape",
+    target: harness.body,
+    defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; },
+  };
+
+  harness.document.dispatchEvent(escape);
+
+  assert.strictEqual(escape.defaultPrevented, true);
+  assert.strictEqual(harness.calls.cancel, 1);
+  assert.deepStrictEqual(harness.calls.confirm, []);
 });
 
 test("action-bar padding cannot replace the selection", () => {

@@ -37,6 +37,16 @@ function publicStatus(state) {
   };
 }
 
+function statusMatchesFence(status, fence) {
+  return !!status
+    && status.active === true
+    && !!status.fence
+    && status.fence.left === fence.left
+    && status.fence.top === fence.top
+    && status.fence.right === fence.right
+    && status.fence.bottom === fence.bottom;
+}
+
 function createRoamFenceSettings(options = {}) {
   const fs = options.fs || defaultFs;
   const path = options.path || defaultPath;
@@ -97,7 +107,7 @@ function createRoamFenceSettings(options = {}) {
       try {
         await writeAtomic(`${JSON.stringify(fence, null, 2)}\n`);
         const status = await refreshStatus();
-        if (!status.active) {
+        if (!statusMatchesFence(status, fence)) {
           return { status: "error", message: "saved roam fence was not accepted" };
         }
         return status;

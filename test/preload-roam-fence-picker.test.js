@@ -33,7 +33,7 @@ test("roam fence picker preload exposes only scoped ready/result/state operation
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(PRELOAD, "utf8"), context, { filename: PRELOAD });
 
-  assert.deepStrictEqual(Object.keys(exposed).sort(), ["cancel", "confirm", "onState", "ready"]);
+  assert.deepStrictEqual(Object.keys(exposed).sort(), ["applied", "cancel", "confirm", "onState", "ready"]);
   const received = [];
   const unsubscribe = exposed.onState((payload) => received.push(payload));
   const stateListener = listeners.get("roam-fence-picker:state");
@@ -43,11 +43,13 @@ test("roam fence picker preload exposes only scoped ready/result/state operation
   assert.strictEqual(listeners.has("roam-fence-picker:state"), false);
 
   exposed.ready();
+  exposed.applied();
   exposed.confirm({ x: 1, y: 2, width: 3, height: 4 });
   exposed.cancel();
   assert.strictEqual(calls[0][0], "roam-fence-picker:ready");
   assert.strictEqual(calls[0][1], undefined);
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(calls.slice(1))), [
+  assert.strictEqual(calls[1][0], "roam-fence-picker:state-applied");
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(calls.slice(2))), [
     ["roam-fence-picker:result", {
       action: "confirm",
       selection: { x: 1, y: 2, width: 3, height: 4 },

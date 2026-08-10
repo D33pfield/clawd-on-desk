@@ -189,7 +189,7 @@
     }
     function applyStatus(result) {
       if (!isMounted()) return;
-      if (!result || result.status === "unknown" || result.active === null) {
+      if (!result || result.status !== "ok" || result.active === null) {
         description.textContent = t("roamAreaUnavailable");
         resetButton.style.display = "none";
         return;
