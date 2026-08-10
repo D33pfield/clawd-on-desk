@@ -10,6 +10,18 @@ pwsh -NoProfile -File scripts/manual/remote-ssh-codespaces-546.ps1 `
   -Branch main
 ```
 
+For a bounded, redacted process-concurrency trace while the app checklist is
+running, start the companion observer in another elevated PowerShell. It stores
+only PID/parent PID, image/role, timestamps, command hashes, and peak counts;
+raw command lines are never written.
+
+```powershell
+pwsh -NoProfile -File scripts/manual/remote-ssh-codespaces-546-observe.ps1 `
+  -Codespace <exact-codespace-name> `
+  -OutputPath <evidence-dir>\transport-observation.json `
+  -DurationSeconds 600
+```
+
 Use `-ExistingCodespace <exact-name>` to reuse a dedicated test Codespace. The script deletes only a Codespace it created itself; `-KeepCodespace` disables that deletion. It never uses `taskkill`, `Stop-Process`, or process-name cleanup. If exact test residue remains, it records safe PID/role/command hashes, preserves the processes, and asks for manual inspection.
 
 ## App checklist (V3-V14)
@@ -30,6 +42,74 @@ Create one Remote SSH profile using the alias printed by the script. Do not copy
 - V14 — Disconnect and quit Clawd normally. The harness checks for exact Codespace-related `ssh.exe`/`gh.exe` residue after app exit.
 
 Record each observed result in the issue/PR alongside `evidence.json`. The evidence deliberately excludes raw SSH config, ProxyCommand, argv, identity data, paths, tokens, and routing nonces.
+
+V9 has a tracked interactive port-holder entry point. It starts the exact
+test-owned listener, waits for the setup SSH child to reach `close`, and then
+holds locally without an SSH transport while you run the app Connect attempt.
+Press Enter only after that attempt has fully ended; only then does it open one
+sequential cleanup SSH and remove its exact `/tmp/clawd-546-v9-*` root.
+If the prompt is interrupted, the helper deliberately opens no cleanup SSH and
+prints a safe holder ID. After the app attempt ends, recover with the same
+config/host plus `--cleanup-id <holder-id>`.
+
+```powershell
+node scripts/manual/remote-ssh-codespaces-546-port-holder.js `
+  --ssh-config <absolute-temp-config> `
+  --host <exact-temp-alias> `
+  --remote-port 23333
+```
+
+V10 has a tracked standalone entry point. Run it only after all app-managed
+transport for the exact Codespace has stopped:
+
+```powershell
+node scripts/manual/remote-ssh-codespaces-546-readiness.js `
+  --ssh-config <absolute-temp-config> `
+  --host <exact-temp-alias>
+```
+
+The helper resolves remote Node through one completed sequential SSH, writes a
+test-only identity beneath `/tmp/clawd-546-v10-*` without putting its nonce in
+argv, runs the production readiness-command builder against a deliberately
+different local nonce, waits for `close`, and removes only its exact test root.
+Pass output reports `exitCode:3`, `markerSeen:false`, and
+`wrongNonceRejected:true` without printing either nonce or the identity path.
+
+## PR #845 verification record (2026-08-10)
+
+- V1/V2 passed twice on temporary Codespaces: Node v24.14.0 and automatic
+  `codespaces-stdio` classification.
+- V3/V4/V5 passed through the isolated Settings UI. Deploy, default monitor
+  preparation, persistent readiness, Connected Repair, and resume never
+  exceeded one `ssh.exe` plus its one `gh.exe --stdio` child.
+- V6 remains a module-composition/automated negative-path gate; packaged code
+  exposes no failure-injection switch.
+- V7 passed: Disconnect during Deploy left the profile disconnected.
+- V8 passed from a seeded nonexistent absolute Node cache. Connect finished
+  green, and the isolated prefs replaced the stale value with a valid resolved
+  absolute Node path/version before the persistent tunnel.
+- V9 never produced a false marker or Connected state. A real Win32
+  OpenSSH/Codespaces control proved the default log level can return exit 255
+  with zero stdout/stderr; the Codespaces serialized `-v` command exposed the real remote
+  forward failure, and the production classifier returned permanent
+  `forward_failed`.
+- V10 passed with `exitCode:3`, no marker, one rejected wrong-nonce request,
+  and exact `/tmp` cleanup.
+- V11 passed with two profiles resolving to the same Codespace key: the live
+  owner was green Connected, the sibling Connect was disabled, and clicking it
+  left the single SSH PID unchanged.
+- V12 passed: interactive terminal launch was blocked while the managed
+  serialized session was live and worked after explicit Disconnect.
+- V13 passed beyond two ServerAlive intervals. A real `UserPromptSubmit` hook
+  exited 0 over the live tunnel, and the 10-minute observer recorded peak
+  `ssh=1`, `gh=1`.
+- V14 passed after normal final-instance quit: local test `ssh`/`gh`/Electron
+  counts were zero; remote monitor, test `/tmp` roots, and port 23333 listeners
+  were zero. Both exact temporary Codespaces were then deleted and verified
+  absent.
+- V15 passed on a separate Raspberry Pi ordinary Linux SSH target: classification, Deploy,
+  Connect, Connected Repair, Disconnect, cleanup/redeploy, and normal quit all
+  succeeded with no remote monitor residue.
 
 ## V15 ordinary-host release blocker
 

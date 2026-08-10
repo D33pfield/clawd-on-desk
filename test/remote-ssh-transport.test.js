@@ -157,3 +157,15 @@ test("transport diagnostics redact identity paths, tokens, and ProxyCommand frag
   assert.doesNotMatch(redacted, /secret|ghp_abcdefghijklmnopqrstuvwxyz|gh cs ssh/);
   assert.match(redacted, /\[identity-file\]|\[token\]|\[redacted\]/);
 });
+
+test("transport diagnostics remove OpenSSH verbose command and path lines", () => {
+  const redacted = redactTransportDiagnostic([
+    "debug1: Reading configuration data C:\\\\private\\\\included.conf",
+    "debug1: identity file C:\\\\private\\\\id_test type 0",
+    "debug1: Executing proxy command: exec gh cs ssh --stdio --password sentinel-proxy-secret",
+    "debug1: Sending command: node -e sentinel-remote-command",
+    "Error: remote port forwarding failed for listen port 23333",
+  ].join("\n"));
+  assert.doesNotMatch(redacted, /private|sentinel|Executing proxy|Sending command/i);
+  assert.match(redacted, /remote port forwarding failed/i);
+});

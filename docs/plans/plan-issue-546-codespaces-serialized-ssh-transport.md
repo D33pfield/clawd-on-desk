@@ -1,6 +1,6 @@
 # Plan: Codespaces serialized SSH transport compatibility (#546)
 
-> Status: **Implemented locally; automated suite and real Codespaces V1-V2 pass; app V3-V14 and ordinary-host V15 remain pending**
+> Status: **Implemented and verified; real Codespaces V1-V5/V7-V14, automated V6, and ordinary-host V15 pass**
 > Date: 2026-08-09
 > Issue: [#546 — Codespaces + `gh cs ssh --stdio` breaks Remote SSH deploy/probe on Windows when background tunnel is active](https://github.com/rullerzhou-afk/clawd-on-desk/issues/546)
 > Baseline: `main@82a47f69c0447670c7752828524bcc55f82cf77a`
@@ -864,7 +864,7 @@ Rejected. Clawd reads the effective config with `ssh -G`; it does not write `~/.
 - [ ] Renderer/log results are bounded and redacted; raw `ssh -G`, ProxyCommand, argv, identity contents, and nonces are never retained.
 - [ ] Ordinary SSH behavior and all existing security gates remain unchanged.
 - [ ] Focused tests, explicit `node --check <changed-js>` commands, full `npm test`, and `git diff --check` pass at every commit.
-- [ ] Real Codespaces V1-V14 and normal-host V15 pass without orphan processes.
+- [x] Real Codespaces V1-V5 and V7-V14 plus normal-host V15 pass without orphan processes; V6 is a module-composition/automated negative-path gate and packaged code exposes no injection switch.
 - [ ] The manual harness has no packaged-code failure-injection switch or hidden IPC.
 - [ ] English, Simplified Chinese, Traditional Chinese, Korean, Japanese, and Brazilian Portuguese UI strings are complete.
 - [ ] User/project documentation describes the compatibility mode and remaining interactive-terminal boundary.
@@ -877,21 +877,51 @@ This contract was reviewed after drafting and again after all blocking findings 
 - Security/transaction review: **PASS** — operation-result/close lifecycle split, invalid-token continuation guards, quarantine, target drift, nonce/ingress boundaries, redaction, and lock recovery semantics are explicit.
 - IPC/runtime handoff review: **HANDOFF PASS** — phase activation, intent reducer, sticky classification, historical hint schema, real harness boundary, file map, and test commands are sufficiently specified for implementation.
 
-### 11.1 Local implementation record
+### 11.1 Local implementation and verification record
 
-The reviewed contract was implemented in this worktree on 2026-08-09. The
+The reviewed contract was implemented and final-smoked on 2026-08-09/10. The
 implementation adds effective-transport inspection, an opaque pre-spawn
 coordinator, persistent in-band readiness, graceful EOF drain, operation
 intent/quarantine handling, Settings UI and locale coverage, historical
-transport hints, and the tracked Windows manual harness. Focused tests and the
-full suite pass (`7270` tests: `7239` passed, `31` skipped, `0` failed).
+transport hints, and tracked Windows manual helpers. The final full suite is
+green (`7340` tests: `7309` passed, `31` skipped, `0` failed).
 
-This record does **not** mark #546 solved on real infrastructure. The isolated
-Windows/Codespaces harness passed V1 (sequential Node control), V2 (effective
-`gh cs ssh --stdio` classification), and its no-residue check on 2026-08-09;
-it naturally deleted the exact temporary Codespace afterward. The app-driven
-Codespaces V3-V14 run and a separate ordinary Linux host V15 run are still
-release evidence requirements.
+PR #845 used two exact temporary Codespaces and isolated `USERPROFILE`, SSH
+config, and Electron userData roots. V1-V5 and V7-V14 passed the real
+Windows OpenSSH + `gh cs ssh --stdio` boundary. Highlights:
+
+- a 10-minute redacted observer reported peak `ssh=1`, `gh=1` through default
+  monitor preparation, Deploy/Repair, the persistent tunnel, reconnect, and
+  disconnect transitions;
+- V8 replaced a seeded nonexistent absolute Node cache with a valid resolved
+  path/version before reaching Connected;
+- V9 exposed a Win32/Codespaces peculiarity: the default SSH log level can
+  return exit 255 with zero stdout/stderr on remote-forward rejection. The
+  Codespaces serialized tunnel now enables DEBUG1 (`-v`); the same real command then
+  exposed `remote forward failure`, and the production classifier returned
+  permanent `forward_failed` with no false marker/Connected state;
+- V10's tracked standalone helper used the production readiness builder and a
+  test-only identity under `/tmp/clawd-546-v10-*`; the wrong nonce produced
+  exit 3, no ready marker, one rejected request, and exact cleanup;
+- V11 kept the live owner Connected while the same-Codespace sibling action was
+  disabled; a forced click left the one SSH PID unchanged;
+- V13 carried a real supported hook event after more than two ServerAlive
+  intervals; the hook exited 0;
+- V14 ended with zero local test SSH/GitHub CLI/Electron processes and zero
+  remote monitor, test `/tmp` roots, or port-23333 listeners. Both exact
+  Codespaces were deleted and verified absent.
+
+V15 separately passed on a Raspberry Pi ordinary Linux SSH target: standard
+classification, Deploy, Connect, Connected
+Repair, Disconnect, ownership-safe cleanup/redeploy, normal quit, and remote
+monitor residue checks all succeeded.
+
+V6 is intentionally recorded as a module-composition/automated gate rather
+than a packaged-app infrastructure scenario. A production failure-injection
+switch or hidden IPC would create the security/maintenance surface this plan
+forbids. Real drain/order behavior is exercised by V4/V5/V7; focused tests
+inject the safe pre-mutation failure and prove the structured result, current
+intent resume policy, and zero mutation replay/orphan child.
 
 ## 12. Primary references
 

@@ -481,6 +481,7 @@ function createRemoteSshRuntime(deps = {}) {
       // Accumulated raw stderr bytes — decoded once on read so a GBK/CP936
       // remote (Windows cmd, zh-locale Linux) doesn't show up as mojibake.
       stderrBuf: Buffer.alloc(0),
+      stderrTruncated: false,
       probeChild: null,
       probeInFlight: false,
       probeStartedAt: 0,
@@ -663,7 +664,11 @@ function createRemoteSshRuntime(deps = {}) {
   function connect(profile, options = {}) {
     if (!profile || !profile.id) throw new Error("connect: profile.id required");
     let state = states.get(profile.id);
+    let retainedSerializedInspection = null;
     if (state) {
+      retainedSerializedInspection = state.serializedTransport
+        ? state.transportInspection
+        : null;
       const targetChanged = tunnelTargetKey(state.profile) !== tunnelTargetKey(profile);
       // Replace profile snapshot — caller may have just edited fields.
       state.profile = profile;
@@ -692,7 +697,7 @@ function createRemoteSshRuntime(deps = {}) {
         throw new Error("connect: serialized transport context required");
       }
       state.serializedTransport = true;
-      state.transportInspection = options.transportInspection || null;
+      state.transportInspection = options.transportInspection || retainedSerializedInspection || null;
       state.transportContext = options.transportContext;
       state.prepareSerializedAttempt = typeof options.prepareSerializedAttempt === "function"
         ? options.prepareSerializedAttempt
@@ -1065,7 +1070,19 @@ function createRemoteSshRuntime(deps = {}) {
       "-o", "ServerAliveInterval=30",
       "-o", "ServerAliveCountMax=3",
     ];
-    if (!state.serializedTransport) extraOpts.unshift("-N");
+    if (state.serializedTransport
+      && state.transportInspection
+      && state.transportInspection.kind === "codespaces-stdio") {
+      // Win32 OpenSSH can exit 255 with empty stderr when a Codespaces
+      // ProxyCommand rejects the remote forward. DEBUG1 is the first level
+      // that reliably carries the forward-failure record through
+      // `gh cs ssh --stdio`, which lets classifyStderr surface the permanent
+      // conflict instead of entering a blind reconnect loop. The captured
+      // buffer remains bounded/redacted by the existing stderr path.
+      extraOpts.unshift("-v");
+    } else if (!state.serializedTransport) {
+      extraOpts.unshift("-N");
+    }
     let args = buildSshArgs(profile, { extraOpts });
     if (state.serializedTransport) {
       state.readinessChallenge = crypto.randomBytes(16).toString("hex");
@@ -1105,6 +1122,7 @@ function createRemoteSshRuntime(deps = {}) {
 
     state.sshChild = child;
     state.stderrBuf = Buffer.alloc(0);
+    state.stderrTruncated = false;
     state.sshExitCode = null;
     state.sshExitSignal = null;
     state.intentionalClose = false;
@@ -1144,6 +1162,7 @@ function createRemoteSshRuntime(deps = {}) {
           : Buffer.concat([state.stderrBuf, buf]);
         // Cap buffer at 8KB to avoid unbounded growth on noisy hosts.
         if (state.stderrBuf.length > 8192) {
+          state.stderrTruncated = true;
           state.stderrBuf = state.stderrBuf.slice(-8192);
         }
       });
@@ -1503,6 +1522,9 @@ function createRemoteSshRuntime(deps = {}) {
     //   (c) immediate failure (ENOENT-by-other-means caught here)
     const stderr = decodeShellBytes(state.stderrBuf);
     const cls = classifyStderr(stderr);
+    const safeStderr = stderrSummary(stderr, state.profile, {
+      dropPartialFirstLine: state.stderrTruncated,
+    });
     const wasConnected = state.status === "connected";
     const serializedExitCode = state.serializedTransport && !wasConnected
       ? signalToExitCode(code, signal)
@@ -1536,7 +1558,7 @@ function createRemoteSshRuntime(deps = {}) {
       state.unknownStrikes = 0;
       if (state.forwardRecoveryFailures < FORWARD_RECOVERY_FAILURE_LIMIT) {
         scheduleReconnect(state, {
-          message: stderrSummary(stderr, state.profile) || `ssh exited ${formatExit(code, signal)}`,
+          message: safeStderr || `ssh exited ${formatExit(code, signal)}`,
           hint: "remoteSshErrForwardRetrying",
           lastErrorReason: "forward_recovery_conflict",
           wasConnected: false,
@@ -1550,7 +1572,7 @@ function createRemoteSshRuntime(deps = {}) {
         kind: "permanent",
         reason: cls.reason,
         hint: cls.hint,
-        message: stderrSummary(stderr, state.profile) || `ssh exited ${formatExit(code, signal)}`,
+        message: safeStderr || `ssh exited ${formatExit(code, signal)}`,
       });
       return;
     }
@@ -1560,7 +1582,7 @@ function createRemoteSshRuntime(deps = {}) {
         kind: "permanent",
         reason: readinessCls.reason,
         hint: readinessCls.hint,
-        message: stderrSummary(stderr, state.profile) || `readiness command exited ${formatExit(code, signal)}`,
+        message: safeStderr || `readiness command exited ${formatExit(code, signal)}`,
       });
       return;
     }
@@ -1575,7 +1597,7 @@ function createRemoteSshRuntime(deps = {}) {
           kind: "permanent",
           reason: "unknown_strikes",
           hint: "remoteSshErrUnknownStrikes",
-          message: stderrSummary(stderr, state.profile) || `ssh exited ${formatExit(code, signal)}`,
+          message: safeStderr || `ssh exited ${formatExit(code, signal)}`,
         });
         return;
       }
@@ -1586,7 +1608,7 @@ function createRemoteSshRuntime(deps = {}) {
 
     // Transient (or unknown under strike-limit): backoff + reconnect.
     scheduleReconnect(state, {
-      message: stderrSummary(stderr, state.profile) || `ssh exited ${formatExit(code, signal)}`,
+      message: safeStderr || `ssh exited ${formatExit(code, signal)}`,
       hint: effectiveCls.hint || null,
       lastErrorReason: effectiveCls.reason || (effectiveCls.kind === "unknown" ? "unknown" : null),
       wasConnected,
@@ -2210,12 +2232,16 @@ function killChild(child) {
   } catch {}
 }
 
-function stderrSummary(stderr, profile) {
+function stderrSummary(stderr, profile, { dropPartialFirstLine = false } = {}) {
   let text;
   if (Buffer.isBuffer(stderr)) {
     text = decodeShellBytes(stderr).trim();
   } else {
     text = (stderr || "").toString().trim();
+  }
+  if (dropPartialFirstLine) {
+    const newline = text.indexOf("\n");
+    text = newline >= 0 ? text.slice(newline + 1) : "";
   }
   text = redactTransportDiagnostic(text, profile);
   if (!text) return null;

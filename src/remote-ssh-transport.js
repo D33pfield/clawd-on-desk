@@ -149,6 +149,11 @@ function sha256(value) {
 
 function redactTransportDiagnostic(value, profile) {
   let text = String(value || "");
+  // `ssh -v` is required for Win32 Codespaces forward-failure diagnostics,
+  // but DEBUG lines can echo the effective ProxyCommand, remote command,
+  // config/include paths, and identity paths. Classification consumes the
+  // bounded raw buffer before this boundary; no DEBUG line may leave it.
+  text = text.replace(/^[ \t]*debug\d+:[^\r\n]*(?:\r?\n|$)/gim, "");
   const identityFile = profile && typeof profile.identityFile === "string"
     ? profile.identityFile.trim()
     : "";

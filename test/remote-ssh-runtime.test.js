@@ -683,12 +683,15 @@ test("serialized Connect uses one persistent SSH for readiness and drains on clo
   });
   rt.connect(profile, {
     serialized: true,
+    transportInspection: admitted.inspection,
     transportContext: admitted.context,
   });
   await flushAsyncEvents();
   assert.equal(children.length, 1, "serialized runtime must not spawn a second health SSH");
   const tunnel = children[0];
   assert.equal(tunnel._args.includes("-N"), false);
+  assert.equal(tunnel._args.includes("-v"), true,
+    "serialized tunnels need DEBUG1 so Win32 Codespaces forward failures are classifiable");
   assert.ok(tunnel._args.includes("-R"));
   const command = String(tunnel._args.at(-1));
   const marker = /__CLAWD_REMOTE_READY__:[a-f0-9]{32}/.exec(command);
@@ -712,6 +715,63 @@ test("serialized Connect uses one persistent SSH for readiness and drains on clo
   const finalized = rt.finalizeSerializedDisconnect(profile.id, operation.context);
   assert.equal(finalized.transportPhase, "idle");
   assert.equal(finalized.transportOwnerProfileId, null);
+
+  const resumed = await coordinator.acquireConnection(profile);
+  rt.connect(profile, {
+    serialized: true,
+    transportContext: resumed.context,
+  });
+  await flushAsyncEvents();
+  assert.equal(children.length, 2);
+  assert.equal(children[1]._args.includes("-v"), true,
+    "operation resume retains the immutable Codespaces inspection");
+  children[1]._fakeExit(3);
+  children[1]._fakeClose(3);
+  await flushAsyncEvents();
+  rt.cleanup();
+});
+
+test("an explicit serialized non-Codespaces tunnel does not enable verbose SSH logging", async () => {
+  const children = [];
+  const spawn = (_command, args) => {
+    const child = makeMockChild();
+    child._args = args;
+    children.push(child);
+    return child;
+  };
+  const coordinator = createRemoteSshTransportCoordinator({
+    spawn,
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "explicit-serialized",
+      key: "destination-sha256:explicit-test",
+      fingerprint: "fp-explicit-test",
+    }),
+  });
+  const profile = makeSecureProfile({
+    host: "explicit-proxy@unique-host",
+    sshTransportMode: "serialized",
+  });
+  const admitted = await coordinator.acquireConnection(profile);
+  const rt = createRemoteSshRuntime({
+    spawn,
+    transportCoordinator: coordinator,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+  });
+  rt.connect(profile, {
+    serialized: true,
+    transportInspection: admitted.inspection,
+    transportContext: admitted.context,
+  });
+  await flushAsyncEvents();
+  assert.equal(children.length, 1);
+  assert.equal(children[0]._args.includes("-v"), false);
+  assert.equal(children[0]._args.includes("-N"), false);
+  children[0]._fakeExit(3);
+  children[0]._fakeClose(3);
+  await flushAsyncEvents();
+  rt.cleanup();
 });
 
 test("serialized direct Disconnect publishes the released transport phase after child close", async () => {
@@ -1354,6 +1414,7 @@ test("connect spawns ssh with main forward args + LANG=C env", async () => {
   assert.equal(spawnCalls[0].cmd, "ssh");
   const args = spawnCalls[0].args;
   assert.ok(args.includes("-N"));
+  assert.equal(args.includes("-v"), false);
   assert.ok(args.includes("-R"));
   const rIdx = args.indexOf("-R");
   assert.equal(args[rIdx + 1], "127.0.0.1:23333:127.0.0.1:23335");
@@ -2391,6 +2452,59 @@ test("listStatuses returns array of all known profile snapshots", () => {
   assert.equal(list.length, 2);
   const ids = list.map((x) => x.profileId).sort();
   assert.deepEqual(ids, ["p1", "p2"]);
+  rt.cleanup();
+});
+
+test("a real Codespaces verbose forward failure is classified without exposing DEBUG commands", async () => {
+  const children = [];
+  const timers = makeFakeTimers();
+  const spawn = () => {
+    const child = makeMockChild();
+    children.push(child);
+    return child;
+  };
+  const coordinator = createRemoteSshTransportCoordinator({
+    spawn,
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "codespaces-stdio",
+      key: "codespace:v9-fixture",
+      fingerprint: "fp-v9-fixture",
+    }),
+  });
+  const profile = makeSecureProfile({ sshTransportMode: "serialized" });
+  const admitted = await coordinator.acquireConnection(profile);
+  const rt = createRemoteSshRuntime({
+    spawn,
+    transportCoordinator: coordinator,
+    getHookServerPort: () => 23333,
+    createProfileIngress: () => makeSecureIngress(),
+    setTimeout: timers.setTimeoutFn,
+    clearTimeout: timers.clearTimeoutFn,
+  });
+
+  rt.connect(profile, {
+    serialized: true,
+    transportContext: admitted.context,
+  });
+  await flushAsyncEvents();
+  const oversizedDebugCommand = `debug1: Sending command: ${"x".repeat(9000)}sentinel-truncated-command`;
+  await exitSsh(children[0], [
+    "debug1: Reading configuration data C:\\\\private\\\\included.conf",
+    "debug1: Executing proxy command: exec gh cs ssh --stdio --password sentinel-proxy-secret",
+    "debug1: Sending command: node -e sentinel-remote-command",
+    oversizedDebugCommand,
+    "debug1: remote forward failure for: listen 127.0.0.1:23333, connect 127.0.0.1:9",
+    "Error: remote port forwarding failed for listen port 23333",
+  ].join("\n"));
+  children[0]._fakeClose(255);
+  await flushAsyncEvents();
+
+  const failed = rt.getProfileStatus("p1");
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.lastErrorReason, "forward_failed");
+  assert.doesNotMatch(String(failed.lastError), /private|sentinel|Executing proxy|Sending command|x{20}/i);
+  assert.match(String(failed.lastError), /remote port forwarding failed/i);
   rt.cleanup();
 });
 
