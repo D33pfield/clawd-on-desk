@@ -1,6 +1,7 @@
 "use strict";
 
 const childProcess = require("child_process");
+const { EventEmitter } = require("events");
 const { localTargetFingerprint } = require("./remote-ssh-transport");
 
 const DEFAULT_DRAIN_TIMEOUT_MS = 10000;
@@ -36,11 +37,79 @@ function createRemoteSshTransportCoordinator(deps = {}) {
   const leases = new WeakMap();
   const sticky = new Map();
   const inspectionInFlight = new Map();
+  const inspectionEpochByFingerprint = new Map();
   const lastFingerprintByProfile = new Map();
+  const profileRegistrationEpochs = new Map();
+  const profileInspections = new Map();
   const intents = new Map();
+  const emitter = new EventEmitter();
   let leaseGeneration = 0;
   let attemptGeneration = 0;
   let closing = false;
+
+  function profileIdsForSlot(slot) {
+    const ids = new Set();
+    if (slot && slot.ownerProfileId) ids.add(slot.ownerProfileId);
+    if (slot) {
+      for (const [profileId, inspection] of profileInspections.entries()) {
+        if (inspection && (
+          (inspection.mode === "serialized" && inspection.key === slot.transportKey)
+          || (inspection.retainedOccupancyToken
+            && inspection.retainedOccupancyToken === slot.occupancyToken)
+        )) {
+          ids.add(profileId);
+        }
+      }
+    }
+    return Array.from(ids).sort();
+  }
+
+  function slotForProfileInspection(inspection) {
+    if (!inspection) return null;
+    if (inspection.mode === "serialized" && inspection.key) {
+      return slots.get(inspection.key) || null;
+    }
+    if (inspection.retainedOccupancyToken) {
+      return Array.from(slots.values()).find((candidate) =>
+        candidate.phase !== "idle"
+        && candidate.occupancyToken === inspection.retainedOccupancyToken
+      ) || null;
+    }
+    return null;
+  }
+
+  function slotSnapshot(slot, profileId = slot && slot.ownerProfileId) {
+    const quarantine = slot && slot.quarantine;
+    const relatedProfileIds = slot && slot.phase !== "idle" ? profileIdsForSlot(slot) : [];
+    return {
+      profileId: profileId || null,
+      transportPhase: slot ? slot.phase : "idle",
+      transportOwnerProfileId: slot ? slot.ownerProfileId : null,
+      transportOperation: slot ? slot.operationName : null,
+      transportErrorReason: quarantine && quarantine.reason || null,
+      transportRecoveryCode: quarantine && quarantine.lockStage !== "before-acquire"
+        ? "manual_lock_inspection_required"
+        : null,
+      conflictingProfileIds: relatedProfileIds.filter((id) => id !== profileId),
+    };
+  }
+
+  function emitSlot(slot, profileId) {
+    const profileIds = new Set(profileIdsForSlot(slot));
+    if (profileId) profileIds.add(profileId);
+    if (profileIds.size === 0) {
+      emitter.emit("status-changed", slotSnapshot(slot, profileId));
+      return;
+    }
+    for (const id of profileIds) {
+      emitter.emit("status-changed", slotSnapshot(slot, id));
+    }
+  }
+
+  function onStatusChanged(listener) {
+    emitter.on("status-changed", listener);
+    return () => emitter.off("status-changed", listener);
+  }
 
   function getIntent(profileId) {
     return intents.get(profileId) || { desiredConnected: false, intentGeneration: 0 };
@@ -61,13 +130,21 @@ function createRemoteSshTransportCoordinator(deps = {}) {
   }
 
   function forgetProfile(profileId) {
+    profileRegistrationEpochs.set(profileId, (profileRegistrationEpochs.get(profileId) || 0) + 1);
     const fingerprint = lastFingerprintByProfile.get(profileId);
+    const inspection = profileInspections.get(profileId);
     if (fingerprint) sticky.delete(fingerprint);
     lastFingerprintByProfile.delete(profileId);
+    profileInspections.delete(profileId);
     intents.delete(profileId);
+    const slot = slotForProfileInspection(inspection);
+    if (slot) {
+      emitter.emit("status-changed", slotSnapshot(null, profileId));
+      emitSlot(slot);
+    }
   }
 
-  function rememberProfileFingerprint(profile) {
+  function registerProfileFingerprint(profile) {
     const fingerprint = localTargetFingerprint(profile);
     const previous = lastFingerprintByProfile.get(profile.id);
     if (previous && previous !== fingerprint) sticky.delete(previous);
@@ -75,16 +152,78 @@ function createRemoteSshTransportCoordinator(deps = {}) {
     return fingerprint;
   }
 
-  async function inspect(profile) {
-    const fingerprint = rememberProfileFingerprint(profile);
+  function rememberProfileInspection(profile, inspection, expectedFingerprint, expectedEpoch) {
+    if (!profile || typeof profile.id !== "string") return;
+    if (Number.isFinite(expectedEpoch)
+      && profileRegistrationEpochs.get(profile.id) !== expectedEpoch) return;
+    if (expectedFingerprint
+      && lastFingerprintByProfile.get(profile.id) !== expectedFingerprint) return;
+    const previous = profileInspections.get(profile.id);
+    const next = inspection && (inspection.mode === "serialized" || inspection.mode === "parallel")
+      ? {
+          mode: inspection.mode,
+          key: typeof inspection.key === "string" ? inspection.key : null,
+          fingerprint: expectedFingerprint || null,
+        }
+      : { mode: "unknown", key: null, fingerprint: expectedFingerprint || null };
+    if (next.mode === "parallel" && previous) {
+      const previousSlot = previous.mode === "serialized" && previous.key
+        ? slots.get(previous.key)
+        : null;
+      if (previousSlot && previousSlot.phase !== "idle" && previousSlot.occupancyToken) {
+        next.retainedOccupancyToken = previousSlot.occupancyToken;
+      } else if (previous.retainedOccupancyToken) {
+        const retainedSlot = Array.from(slots.values()).find((slot) =>
+          slot.phase !== "idle"
+          && slot.occupancyToken === previous.retainedOccupancyToken
+        );
+        if (retainedSlot) next.retainedOccupancyToken = previous.retainedOccupancyToken;
+      }
+    }
+    profileInspections.set(profile.id, next);
+    const changed = !previous
+      || previous.mode !== next.mode
+      || previous.key !== next.key
+      || previous.retainedOccupancyToken !== next.retainedOccupancyToken;
+    if (!changed) return;
+    if (previous) {
+      const oldSlot = slotForProfileInspection(previous);
+      emitter.emit("status-changed", slotSnapshot(null, profile.id));
+      if (oldSlot) emitSlot(oldSlot);
+    }
+    const nextSlot = slotForProfileInspection(next);
+    if (nextSlot && nextSlot.phase !== "idle") emitSlot(nextSlot, profile.id);
+  }
+
+  async function inspect(profile, options = {}) {
+    // Safety inspections may target an immutable historical deploy target.
+    // They must not change the Settings-facing registration for the current
+    // profile id; only refreshProfileInspections owns that registry.
+    const fingerprint = localTargetFingerprint(profile);
     let pending = inspectionInFlight.get(fingerprint);
-    if (!pending) {
-      pending = Promise.resolve(inspectTransport(profile)).finally(() => {
+    // Safety-critical callers get an inspection that started after their
+    // barrier by default. UI priming may explicitly pass forceFresh:false to
+    // coalesce duplicate profiles within the same refresh only.
+    if (!pending || options.forceFresh !== false) {
+      const epoch = (inspectionEpochByFingerprint.get(fingerprint) || 0) + 1;
+      inspectionEpochByFingerprint.set(fingerprint, epoch);
+      let promise = null;
+      promise = Promise.resolve(inspectTransport(profile)).finally(() => {
         if (inspectionInFlight.get(fingerprint) === pending) inspectionInFlight.delete(fingerprint);
       });
+      pending = { promise, epoch };
       inspectionInFlight.set(fingerprint, pending);
     }
-    const result = await pending;
+    const result = await pending.promise;
+    if (inspectionEpochByFingerprint.get(fingerprint) !== pending.epoch) {
+      return {
+        mode: "unknown",
+        kind: "inspection-superseded",
+        fingerprint,
+        message: "Effective SSH inspection was superseded by a newer safety check; retry the operation.",
+      };
+    }
+    const trackProfile = options.trackProfile === true;
     if (result && result.mode === "serialized" && result.key) {
       sticky.set(fingerprint, {
         lastKnownMode: "serialized",
@@ -92,15 +231,27 @@ function createRemoteSshTransportCoordinator(deps = {}) {
         evidenceKind: result.kind,
         fingerprintVersion: 1,
       });
+      if (trackProfile) rememberProfileInspection(
+        profile,
+        result,
+        options.expectedFingerprint || fingerprint,
+        options.profileRegistrationEpoch,
+      );
       return result;
     }
     if (result && result.mode === "parallel") {
       sticky.delete(fingerprint);
+      if (trackProfile) rememberProfileInspection(
+        profile,
+        result,
+        options.expectedFingerprint || fingerprint,
+        options.profileRegistrationEpoch,
+      );
       return result;
     }
     const previous = sticky.get(fingerprint);
     if (previous && previous.lastKnownMode === "serialized") {
-      return {
+      const resolved = {
         ...result,
         mode: "serialized",
         kind: previous.evidenceKind,
@@ -109,10 +260,17 @@ function createRemoteSshTransportCoordinator(deps = {}) {
         warning: "Effective SSH inspection failed; retaining the last known serialized safety mode.",
         stickyFallback: true,
       };
+      if (trackProfile) rememberProfileInspection(
+        profile,
+        resolved,
+        options.expectedFingerprint || fingerprint,
+        options.profileRegistrationEpoch,
+      );
+      return resolved;
     }
     const hint = profile && profile.sshTransportHint;
     if (hint && hint.version === 1 && hint.mode === "serialized" && typeof hint.keyId === "string") {
-      return {
+      const resolved = {
         ...result,
         mode: "serialized",
         kind: hint.kind,
@@ -121,8 +279,64 @@ function createRemoteSshTransportCoordinator(deps = {}) {
         warning: "Effective SSH inspection failed; using the trusted historical serialized hint.",
         historicalHintFallback: true,
       };
+      if (trackProfile) rememberProfileInspection(
+        profile,
+        resolved,
+        options.expectedFingerprint || fingerprint,
+        options.profileRegistrationEpoch,
+      );
+      return resolved;
     }
+    if (trackProfile) rememberProfileInspection(
+      profile,
+      result,
+      options.expectedFingerprint || fingerprint,
+      options.profileRegistrationEpoch,
+    );
     return result;
+  }
+
+  async function refreshProfileInspections(profiles) {
+    const currentProfiles = (Array.isArray(profiles) ? profiles : [])
+      .filter((profile) => profile && typeof profile.id === "string");
+    const currentIds = new Set(currentProfiles.map((profile) => profile.id));
+    const registeredIds = new Set([
+      ...profileInspections.keys(),
+      ...lastFingerprintByProfile.keys(),
+      ...profileRegistrationEpochs.keys(),
+    ]);
+    for (const profileId of registeredIds) {
+      if (!currentIds.has(profileId)) forgetProfile(profileId);
+    }
+    const registrations = currentProfiles.map((profile) => {
+      const epoch = (profileRegistrationEpochs.get(profile.id) || 0) + 1;
+      profileRegistrationEpochs.set(profile.id, epoch);
+      const fingerprint = registerProfileFingerprint(profile);
+      return { profile, epoch, fingerprint };
+    });
+    await Promise.allSettled(registrations.map(async ({ profile, epoch, fingerprint }) => {
+      try {
+        // A safety inspection may supersede a display-only priming read. In
+        // that case follow the newest in-flight result without superseding it
+        // in return. Keep the loop bounded; retaining the previous mapping is
+        // safer than blocking list/status forever under continuous edits.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const result = await inspect(profile, {
+            forceFresh: false,
+            trackProfile: true,
+            expectedFingerprint: fingerprint,
+            profileRegistrationEpoch: epoch,
+          });
+          if (!result || result.kind !== "inspection-superseded") return result;
+          if (profileRegistrationEpochs.get(profile.id) !== epoch
+            || lastFingerprintByProfile.get(profile.id) !== fingerprint) return result;
+        }
+        return null;
+      } catch (err) {
+        throw err;
+      }
+    }));
+    return listSnapshots();
   }
 
   function createLease(slot, profileId, operation) {
@@ -137,10 +351,12 @@ function createRemoteSshTransportCoordinator(deps = {}) {
       active: true,
       invalidReason: null,
       lockStage: "before-acquire",
+      lastCloseProvenance: null,
     };
     leases.set(lease, internal);
     slot.activeLease = lease;
     slot.operationName = operation;
+    emitSlot(slot, profileId);
     return lease;
   }
 
@@ -200,11 +416,21 @@ function createRemoteSshTransportCoordinator(deps = {}) {
         internal.lockStage = "before-acquire";
         internal.slot.operationName = "connect";
         internal.slot.phase = "preparing";
+        emitSlot(internal.slot, internal.profileId);
       },
       spawn(spec) {
         return spawnManagedTransportChild({ ...spec, reservationToken: lease });
       },
     });
+  }
+
+  function retainedSerializedSlotFor(profileId, inspection) {
+    return Array.from(slots.values()).find((slot) =>
+      slot.phase !== "idle"
+      && ((slot.inspection && slot.inspection.fingerprint === inspection.fingerprint)
+        || (profileInspections.get(profileId)
+          && profileInspections.get(profileId).retainedOccupancyToken === slot.occupancyToken))
+    ) || null;
   }
 
   async function acquire(profile, operation, options = {}) {
@@ -223,6 +449,25 @@ function createRemoteSshTransportCoordinator(deps = {}) {
       );
     }
     if (inspection.mode !== "serialized") {
+      // A live serialized slot remains authoritative for the local target
+      // fingerprint captured at admission. If ssh_config drifts to ordinary
+      // while that child is live, treating the next operation as parallel
+      // would bypass the slot and overlap the existing ProxyCommand chain.
+      const retained = retainedSerializedSlotFor(profile.id, inspection);
+      if (retained) {
+        const sameOwner = retained.ownerProfileId === profile.id;
+        return errorResult(
+          sameOwner ? "profile_changed" : "serialized_transport_busy",
+          sameOwner
+            ? "The effective SSH transport changed; Disconnect the existing serialized session first"
+            : "Another profile still owns the serialized transport for this SSH target",
+          {
+            profileId: profile.id,
+            ownerProfileId: retained.ownerProfileId || undefined,
+            operation: retained.operationName || undefined,
+          },
+        );
+      }
       return { ok: true, serialized: false, inspection, context: null };
     }
 
@@ -252,22 +497,25 @@ function createRemoteSshTransportCoordinator(deps = {}) {
         activeLease: null,
         trackedChildren: new Map(),
         quarantine: null,
+        occupancyToken: null,
       };
       slots.set(inspection.key, slot);
-    } else {
+    } else if (slot.phase === "idle") {
       slot.inspection = inspection;
     }
     if (slot.phase !== "idle") {
       if (slot.phase === "failed" || slot.phase === "quarantined") {
+        const recoveryCode = slot.quarantine && slot.quarantine.lockStage !== "before-acquire"
+          ? "manual_lock_inspection_required"
+          : undefined;
         return errorResult(
-          slot.quarantine && slot.quarantine.lockStage !== "before-acquire"
-            ? "manual_lock_inspection_required"
-            : "transport_drain_timeout",
+          (slot.quarantine && slot.quarantine.reason) || "transport_drain_timeout",
           "The serialized SSH transport is quarantined and requires explicit recovery",
           {
             profileId: profile.id,
             ownerProfileId: slot.ownerProfileId || undefined,
             operation: slot.operationName || (slot.quarantine && slot.quarantine.operation) || undefined,
+            ...(recoveryCode ? { recoveryCode } : {}),
           },
         );
       }
@@ -297,12 +545,24 @@ function createRemoteSshTransportCoordinator(deps = {}) {
         );
       }
       const previous = leases.get(slot.activeLease);
+      if (previous && previous.lockStage !== "before-acquire") {
+        return errorResult(
+          "transport_operation_busy",
+          "The active Remote SSH connection preparation is completing a protected remote mutation",
+          {
+            profileId: profile.id,
+            ownerProfileId: slot.ownerProfileId || undefined,
+            operation: slot.operationName || undefined,
+          },
+        );
+      }
       if (previous) {
         previous.active = false;
         previous.invalidReason = "owner_takeover";
       }
       slot.phase = "suspending";
     } else {
+      slot.occupancyToken = Object.freeze({});
       slot.ownerProfileId = profile.id;
       slot.phase = options.phase || "preparing";
     }
@@ -346,15 +606,17 @@ function createRemoteSshTransportCoordinator(deps = {}) {
     }
     const slot = owned[0];
     if (slot.phase === "failed" || slot.phase === "quarantined") {
+      const recoveryCode = slot.quarantine && slot.quarantine.lockStage !== "before-acquire"
+        ? "manual_lock_inspection_required"
+        : undefined;
       return errorResult(
-        slot.quarantine && slot.quarantine.lockStage !== "before-acquire"
-          ? "manual_lock_inspection_required"
-          : "transport_drain_timeout",
+        (slot.quarantine && slot.quarantine.reason) || "transport_drain_timeout",
         "The serialized SSH transport is quarantined and requires explicit recovery",
         {
           profileId: profile.id,
           ownerProfileId: slot.ownerProfileId || undefined,
           operation: (slot.quarantine && slot.quarantine.operation) || undefined,
+          ...(recoveryCode ? { recoveryCode } : {}),
         },
       );
     }
@@ -370,6 +632,17 @@ function createRemoteSshTransportCoordinator(deps = {}) {
       );
     }
     const previous = leases.get(slot.activeLease);
+    if (previous && previous.lockStage !== "before-acquire") {
+      return errorResult(
+        "transport_operation_busy",
+        "The active Remote SSH connection preparation is completing a protected remote mutation",
+        {
+          profileId: profile.id,
+          ownerProfileId: slot.ownerProfileId || undefined,
+          operation: slot.operationName || undefined,
+        },
+      );
+    }
     if (previous) {
       previous.active = false;
       previous.invalidReason = "owner_takeover";
@@ -405,11 +678,51 @@ function createRemoteSshTransportCoordinator(deps = {}) {
     child.once("close", (code, signal) => {
       if (record.closed) return;
       record.closed = true;
+      internal.lastCloseProvenance = { code, signal };
       internal.slot.trackedChildren.delete(child);
       closeResolve({ code, signal });
-      if (internal.slot.phase === "quarantined" && internal.slot.trackedChildren.size === 0) {
-        internal.slot.phase = "failed";
+      if (signal != null && !closing) {
+        // A signal only proves that the outer ssh.exe closed. It does not prove
+        // its nested ProxyCommand process (notably gh cs ssh --stdio) drained.
+        // Quarantine immediately in every runtime phase, not only after an
+        // explicit drain timeout, and invalidate whichever lease currently
+        // owns the shared slot.
+        const current = leases.get(internal.slot.activeLease) || internal;
+        current.active = false;
+        current.invalidReason = "transport_drain_unverified";
+        internal.active = false;
+        internal.invalidReason = "transport_drain_unverified";
         internal.slot.activeLease = null;
+        internal.slot.operationName = null;
+        internal.slot.phase = "failed";
+        internal.slot.quarantine = {
+          reason: "transport_drain_unverified",
+          lockStage: current.lockStage || internal.lockStage,
+          operation: current.operation || internal.operation,
+          childCount: internal.slot.trackedChildren.size,
+        };
+        emitSlot(internal.slot, current.profileId || internal.profileId);
+        return;
+      }
+      if (internal.slot.phase === "quarantined" && internal.slot.trackedChildren.size === 0) {
+        const previousOwner = internal.slot.ownerProfileId || internal.profileId;
+        internal.slot.activeLease = null;
+        internal.slot.operationName = null;
+        if (internal.slot.quarantine
+          && internal.slot.quarantine.lockStage === "before-acquire"
+          && signal == null) {
+          // No remote deploy lock could have been touched. A later natural or
+          // cooperatively requested close proves the top-level transport has
+          // drained, so a new explicit operation may be admitted. Operation
+          // takeovers never force-kill managed one-shots; app shutdown is the
+          // only forced-close path and admits no subsequent work.
+          internal.slot.phase = "idle";
+          internal.slot.ownerProfileId = null;
+          internal.slot.quarantine = null;
+        } else {
+          internal.slot.phase = "failed";
+        }
+        emitSlot(internal.slot, previousOwner);
       }
     });
     return record;
@@ -433,11 +746,13 @@ function createRemoteSshTransportCoordinator(deps = {}) {
   function setPhase(context, phase) {
     const internal = validateLease(context && context.reservationToken);
     internal.slot.phase = phase;
+    emitSlot(internal.slot, internal.profileId);
   }
 
   function waitForDrain(context, requestStop, timeoutOverride) {
     const internal = validateLease(context && context.reservationToken);
     internal.slot.phase = "suspending";
+    emitSlot(internal.slot, internal.profileId);
     const records = Array.from(internal.slot.trackedChildren.entries());
     for (const [child, record] of records) {
       try { requestStop(child, record); } catch {}
@@ -453,7 +768,28 @@ function createRemoteSshTransportCoordinator(deps = {}) {
         if (timer) clearTimeoutFn(timer);
         fn(value);
       };
-      Promise.all(records.map(([, record]) => record.closePromise)).then(() => {
+      Promise.all(records.map(([, record]) => record.closePromise)).then((outcomes) => {
+        if (outcomes.some((outcome) => outcome && outcome.signal != null)) {
+          internal.active = false;
+          internal.invalidReason = "transport_drain_unverified";
+          internal.slot.phase = "failed";
+          internal.slot.activeLease = null;
+          internal.slot.operationName = null;
+          internal.slot.quarantine = {
+            reason: "transport_drain_unverified",
+            lockStage: internal.lockStage,
+            operation: internal.operation,
+            childCount: 0,
+          };
+          emitSlot(internal.slot, internal.profileId);
+          const err = new TransportUndrainedError(
+            "The outer SSH process was force-terminated; nested transport drain is unverified",
+            { profileId: internal.profileId, operation: internal.operation },
+          );
+          err.code = "transport_drain_unverified";
+          finish(reject, err);
+          return;
+        }
         finish(resolve, { ok: true, drainVerified: true });
       });
       timer = setTimeoutFn(() => {
@@ -461,10 +797,12 @@ function createRemoteSshTransportCoordinator(deps = {}) {
         internal.invalidReason = "transport_drain_timeout";
         internal.slot.phase = "quarantined";
         internal.slot.quarantine = {
+          reason: "transport_drain_timeout",
           lockStage: internal.lockStage,
           operation: internal.operation,
           childCount: internal.slot.trackedChildren.size,
         };
+        emitSlot(internal.slot, internal.profileId);
         finish(reject, new TransportUndrainedError(undefined, {
           profileId: internal.profileId,
           operation: internal.operation,
@@ -482,10 +820,12 @@ function createRemoteSshTransportCoordinator(deps = {}) {
     internal.invalidReason = reason;
     internal.slot.phase = "quarantined";
     internal.slot.quarantine = {
+      reason,
       lockStage: internal.lockStage,
       operation: internal.operation,
       childCount: internal.slot.trackedChildren.size,
     };
+    emitSlot(internal.slot, internal.profileId);
   }
 
   function abortAfterVerifiedClose(context, reason = "operation_timeout") {
@@ -496,6 +836,26 @@ function createRemoteSshTransportCoordinator(deps = {}) {
         operation: internal.operation,
       });
     }
+    if (internal.lastCloseProvenance && internal.lastCloseProvenance.signal != null) {
+      internal.active = false;
+      internal.invalidReason = "transport_drain_unverified";
+      internal.slot.activeLease = null;
+      internal.slot.operationName = null;
+      internal.slot.phase = "failed";
+      internal.slot.quarantine = {
+        reason: "transport_drain_unverified",
+        lockStage: internal.lockStage,
+        operation: internal.operation,
+        childCount: 0,
+      };
+      emitSlot(internal.slot, internal.profileId);
+      const err = new TransportUndrainedError(
+        "The outer SSH process was force-terminated; nested transport drain is unverified",
+        { profileId: internal.profileId, operation: internal.operation },
+      );
+      err.code = "transport_drain_unverified";
+      throw err;
+    }
     const recoveryCode = internal.lockStage === "before-acquire"
       ? null
       : "manual_lock_inspection_required";
@@ -504,6 +864,7 @@ function createRemoteSshTransportCoordinator(deps = {}) {
     internal.slot.activeLease = null;
     internal.slot.operationName = null;
     internal.slot.quarantine = recoveryCode ? {
+      reason,
       lockStage: internal.lockStage,
       operation: internal.operation,
       childCount: 0,
@@ -514,6 +875,7 @@ function createRemoteSshTransportCoordinator(deps = {}) {
       internal.slot.phase = "idle";
       internal.slot.ownerProfileId = null;
     }
+    emitSlot(internal.slot, internal.profileId);
     return { recoveryCode };
   }
 
@@ -535,42 +897,59 @@ function createRemoteSshTransportCoordinator(deps = {}) {
       internal.slot.phase = options.phase || "idle";
       internal.slot.ownerProfileId = null;
     }
+    emitSlot(internal.slot, internal.profileId);
   }
 
   function snapshotForProfile(profileId) {
     const intent = getIntent(profileId);
     for (const slot of slots.values()) {
       if (slot.ownerProfileId !== profileId) continue;
-      return {
-        transportPhase: slot.phase,
-        transportOwnerProfileId: slot.ownerProfileId,
-        transportDesiredConnected: intent.desiredConnected,
-      };
+      return { ...slotSnapshot(slot, profileId), transportDesiredConnected: intent.desiredConnected };
     }
-    return {
-      transportPhase: "idle",
-      transportOwnerProfileId: null,
-      transportDesiredConnected: intent.desiredConnected,
-    };
+    const inspection = profileInspections.get(profileId);
+    if (inspection && inspection.retainedOccupancyToken) {
+      const retainedSlot = Array.from(slots.values()).find((slot) =>
+        slot.phase !== "idle"
+        && slot.occupancyToken === inspection.retainedOccupancyToken
+      );
+      if (retainedSlot) {
+        return { ...slotSnapshot(retainedSlot, profileId), transportDesiredConnected: intent.desiredConnected };
+      }
+    }
+    if (inspection && inspection.mode === "serialized" && inspection.key) {
+      const slot = slots.get(inspection.key);
+      if (slot && slot.phase !== "idle") {
+        return { ...slotSnapshot(slot, profileId), transportDesiredConnected: intent.desiredConnected };
+      }
+    }
+    return { ...slotSnapshot(null, profileId), transportDesiredConnected: intent.desiredConnected };
   }
 
   function getActiveOwnerOperation(profileId) {
     for (const slot of slots.values()) {
       if (slot.ownerProfileId !== profileId || slot.phase === "idle") continue;
+      const active = leases.get(slot.activeLease);
       return {
         phase: slot.phase,
         operation: slot.operationName,
         quarantined: slot.phase === "failed" || slot.phase === "quarantined",
+        lockStage: active
+          ? active.lockStage
+          : (slot.quarantine && slot.quarantine.lockStage),
+        quarantineLockStage: slot.quarantine && slot.quarantine.lockStage,
+        quarantineReason: slot.quarantine && slot.quarantine.reason,
       };
     }
     return null;
   }
 
   function listSnapshots() {
-    return Array.from(slots.values()).map((slot) => ({
-      transportPhase: slot.phase,
-      transportOwnerProfileId: slot.ownerProfileId,
-    }));
+    const profileIds = new Set(profileInspections.keys());
+    for (const slot of slots.values()) {
+      if (slot.ownerProfileId) profileIds.add(slot.ownerProfileId);
+      for (const profileId of profileIdsForSlot(slot)) profileIds.add(profileId);
+    }
+    return Array.from(profileIds, (profileId) => snapshotForProfile(profileId));
   }
 
   async function checkInteractive(profile) {
@@ -584,6 +963,21 @@ function createRemoteSshTransportCoordinator(deps = {}) {
       );
     }
     if (inspection.mode !== "serialized") {
+      const retained = retainedSerializedSlotFor(profile.id, inspection);
+      if (retained) {
+        const sameOwner = retained.ownerProfileId === profile.id;
+        return errorResult(
+          sameOwner ? "profile_changed" : "serialized_transport_busy",
+          sameOwner
+            ? "The effective SSH transport changed; Disconnect the existing serialized session first"
+            : "Another profile still owns the serialized transport for this SSH target",
+          {
+            profileId: profile.id,
+            ownerProfileId: retained.ownerProfileId || undefined,
+            operation: retained.operationName || undefined,
+          },
+        );
+      }
       return { ok: true, serialized: false, inspection };
     }
     const slot = slots.get(inspection.key);
@@ -659,6 +1053,7 @@ function createRemoteSshTransportCoordinator(deps = {}) {
     recordDisconnectIntent,
     getIntent,
     forgetProfile,
+    refreshProfileInspections,
     spawnManagedTransportChild,
     waitForDrain,
     setPhase,
@@ -668,11 +1063,13 @@ function createRemoteSshTransportCoordinator(deps = {}) {
     snapshotForProfile,
     getActiveOwnerOperation,
     listSnapshots,
+    onStatusChanged,
     checkInteractive,
     shutdown,
     isClosing: () => closing,
     _slots: slots,
     _sticky: sticky,
+    _profileInspections: profileInspections,
   };
 }
 

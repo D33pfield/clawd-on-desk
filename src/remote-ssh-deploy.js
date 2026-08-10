@@ -103,7 +103,14 @@ function resolveHooksDir({ app, isPackaged } = {}) {
 }
 
 function spawnAndWait(spawn, command, args, opts = {}) {
-  const { stdin, env, timeoutMs = 60000, runtime, role = command } = opts;
+  const {
+    stdin,
+    env,
+    timeoutMs = 60000,
+    runtime,
+    role = command,
+    mutation = false,
+  } = opts;
   return new Promise((resolve, reject) => {
     let child;
     const managed = runtime && typeof runtime.spawnManagedTransportChild === "function";
@@ -246,14 +253,40 @@ function spawnAndWait(spawn, command, args, opts = {}) {
         reject(err);
         return;
       }
-      finish({
+      const payload = {
         code: exitCode === null ? code : exitCode,
         signal: exitSignal === null ? signal : exitSignal,
         stdout,
         stderr: stderr || (processError && processError.message) || "",
         ...(processError ? { spawnError: true } : {}),
         ...(timedOut ? { timedOut: true, drainVerified: true } : {}),
-      });
+      };
+      const ambiguousMutation = managed && mutation && payload.code !== 0 && (
+        payload.code === 255
+        || payload.signal != null
+        || /(?:^|\s)EOF(?:\s|$)|connection (?:closed|reset)|broken pipe/i.test(payload.stderr)
+      );
+      if (ambiguousMutation) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (drainTimer) clearTimeout(drainTimer);
+        const err = Object.assign(new Error("Remote SSH mutation completed with an unknown transport result"), {
+          name: "TransportUnknownResultError",
+          code: "transport_unknown_result",
+          role,
+          tool: command,
+          exitCode: payload.code,
+          signal: payload.signal,
+          drainVerified: true,
+        });
+        if (runtime && typeof runtime.invalidateManagedOperation === "function") {
+          try { runtime.invalidateManagedOperation(err); } catch {}
+        }
+        reject(err);
+        return;
+      }
+      finish(payload);
     });
   });
 }
@@ -536,13 +569,32 @@ async function acquireDeployLock({
     spawn,
     "ssh",
     buildSshArgs(profile).concat([command]),
-    { stdin: compactJson(owner), runtime },
+    { stdin: compactJson(owner), runtime, role: "deploy-lock-acquire", mutation: true },
   );
   if (result.code === 0) {
     if (runtime && typeof runtime.setManagedLockStage === "function") {
       runtime.setManagedLockStage("lock-owned");
     }
     return { ok: true, owner };
+  }
+  if ((result.code === 73 || result.code === 74)
+    && runtime && typeof runtime.setManagedLockStage === "function") {
+    // The remote command proved that this lease never acquired the lock.
+    // Keep the transport usable even though the remote lock itself may need
+    // another owner (73) or manual inspection (74).
+    runtime.setManagedLockStage("before-acquire");
+  } else if (runtime && typeof runtime.invalidateManagedOperation === "function") {
+    // Code 75 means mkdir may have succeeded but owner persistence/cleanup did
+    // not. Any other unexpected result is likewise unsafe to treat as a
+    // cleanly unowned lock.
+    const err = Object.assign(new Error("Remote deployment lock acquisition requires manual inspection"), {
+      name: "TransportRecoveryError",
+      code: "lock_acquire_unknown",
+      recoveryCode: "manual_lock_inspection_required",
+      drainVerified: true,
+    });
+    try { runtime.invalidateManagedOperation(err); } catch {}
+    throw err;
   }
   const reason = result.code === 73
     ? "lock_busy"
@@ -560,7 +612,26 @@ async function acquireDeployLock({
 async function releaseDeployLock({ profile, layout, leaseId, remoteNode, spawn, runtime }) {
   const lock = quoteForPosixShellArg(layout.deployLockDir);
   const command = `${assertLeaseCommand(layout, leaseId, remoteNode)} && rm -rf ${lock}`;
-  return spawnAndWait(spawn, "ssh", buildSshArgs(profile).concat([command]), { runtime });
+  const result = await spawnAndWait(
+    spawn,
+    "ssh",
+    buildSshArgs(profile).concat([command]),
+    { runtime, role: "deploy-lock-release", mutation: true },
+  );
+  if (result.code !== 0 && runtime && typeof runtime.invalidateManagedOperation === "function") {
+    const err = Object.assign(new Error("Remote deployment lock release requires manual inspection"), {
+      name: "TransportRecoveryError",
+      code: "manual_lock_inspection_required",
+      recoveryCode: "manual_lock_inspection_required",
+      drainVerified: true,
+    });
+    try { runtime.invalidateManagedOperation(err); } catch {}
+    throw err;
+  }
+  if (result.code === 0 && runtime && typeof runtime.setManagedLockStage === "function") {
+    runtime.setManagedLockStage("before-acquire");
+  }
+  return result;
 }
 
 function buildOwnershipPreflightScript({ profile, layout, installId }) {
@@ -697,7 +768,7 @@ async function cleanupLegacyMonitor({
         buildRemoteNodeEvalCommand(remoteNode, buildLegacyMonitorCleanupScript(layout)),
       ),
     ]),
-    { runtime },
+    { runtime, role: "legacy-monitor-cleanup", mutation: true },
   );
   let detail = null;
   try {
@@ -967,7 +1038,7 @@ async function writeIsolatedWrappers({
     spawn,
     "ssh",
     buildSshArgs(profile).concat([command]),
-    { stdin: compactJson(files), runtime },
+    { stdin: compactJson(files), runtime, role: "isolated-wrapper-write", mutation: true },
   );
   return { ok: result.code === 0, stderr: result.stderr, files };
 }
@@ -1163,7 +1234,10 @@ async function secureDeploy({
   lockHeld = true;
   progress("lock", "ok");
 
+  let operationResult = null;
+  let primaryError = null;
   try {
+    operationResult = await (async () => {
     progress("preflight", "start");
     const preflight = await runOwnershipPreflight({
       profile,
@@ -1243,7 +1317,7 @@ async function secureDeploy({
       spawn,
       "ssh",
       buildSshArgs(profile).concat([mkdirCommand]),
-      { runtime },
+      { runtime, role: "layout-create", mutation: true },
     );
     if (mkdirResult.code !== 0) return fail("mkdir", mkdirResult.stderr || "Remote layout creation failed");
 
@@ -1265,7 +1339,7 @@ async function secureDeploy({
       spawn,
       "ssh",
       buildSshArgs(profile).concat([identityCommand]),
-      { stdin: compactJson(identityDocument), runtime },
+      { stdin: compactJson(identityDocument), runtime, role: "identity-write", mutation: true },
     );
     if (identityWrite.code !== 0) {
       return fail("identity", identityWrite.stderr || "Identity write failed", null, "identity");
@@ -1300,7 +1374,7 @@ async function secureDeploy({
       spawn,
       "ssh",
       buildSshArgs(profile).concat([markerCommand]),
-      { stdin: "clawd-ssh-secure-v1", runtime },
+      { stdin: "clawd-ssh-secure-v1", runtime, role: "secure-marker-write", mutation: true },
     );
     if (markerWrite.code !== 0) return fail("secure-marker", markerWrite.stderr || "Secure marker write failed", null, "secureMarker");
     await recordStep("secureMarker", "done", "marker atomically written and read back");
@@ -1314,7 +1388,7 @@ async function secureDeploy({
       spawn,
       "scp",
       buildScpArgs(profile).concat([...localFiles, remoteTarget]),
-      { timeoutMs: 120000, runtime },
+      { timeoutMs: 120000, runtime, role: "hook-files-upload", mutation: true },
     );
     if (scp.code !== 0) return fail("hook-files", scp.stderr || "Hook staging upload failed", null, "hookFiles");
     const promotion = HOOK_FILES
@@ -1326,7 +1400,7 @@ async function secureDeploy({
       buildSshArgs(profile).concat([
         fencedCommand(layout, leaseId, remoteNode, `${promotion} && rmdir ${quoteForPosixShellArg(stagingDir)}`),
       ]),
-      { runtime },
+      { runtime, role: "hook-files-promote", mutation: true },
     );
     if (promote.code !== 0) return fail("hook-files", promote.stderr || "Hook promotion lost its deployment lease", null, "hookFiles");
     const expectedHashes = Object.fromEntries(HOOK_FILES.map((name) => [
@@ -1377,7 +1451,7 @@ async function secureDeploy({
         spawn,
         "ssh",
         buildSshArgs(profile).concat([hpCommand]),
-        { stdin: profile.hostPrefix, runtime },
+        { stdin: profile.hostPrefix, runtime, role: "host-prefix-write", mutation: true },
       );
       if (hp.code !== 0) return fail("host-prefix", hp.stderr || "Host prefix write failed");
     }
@@ -1410,7 +1484,7 @@ async function secureDeploy({
             `${envPrefix} ${nodeCommand} && ${verifyCommand}`,
           ),
         ]),
-        { timeoutMs: 60000, runtime },
+        { timeoutMs: 60000, runtime, role: `installer-${txnStep}`, mutation: true },
       );
       if (result.code !== 0) {
         return fail(progressStep, summarizeStderr(result.stderr) || "Remote installer failed", null, txnStep);
@@ -1479,7 +1553,7 @@ async function secureDeploy({
         buildSshArgs(profile).concat([
           fencedCommand(layout, leaseId, remoteNode, monitorCommand),
         ]),
-        { runtime },
+        { runtime, role: "codex-monitor-restart", mutation: true },
       );
       if (monitor.code !== 0) return fail("codex-monitor", monitor.stderr || "Codex monitor verification failed", null, "codexMonitor");
       await recordStep(
@@ -1525,8 +1599,14 @@ async function secureDeploy({
       transactionReady: true,
       isolation,
     };
-  } finally {
-    if (lockHeld && layout && remoteNode && managedTransportIsActive(runtime)) {
+    })();
+  } catch (err) {
+    primaryError = err;
+  }
+
+  let releaseError = null;
+  if (lockHeld && layout && remoteNode && managedTransportIsActive(runtime)) {
+    try {
       const released = await releaseDeployLock({
         profile,
         layout,
@@ -1536,12 +1616,39 @@ async function secureDeploy({
         runtime,
       });
       if (released.code !== 0) {
+        releaseError = Object.assign(new Error("Remote deployment lock release requires manual inspection"), {
+          code: "manual_lock_inspection_required",
+          recoveryCode: "manual_lock_inspection_required",
+        });
         progress("lock-release", "fail", `Lock release requires manual inspection at ${layout.deployLockDir}`);
       } else {
         progress("lock-release", "ok");
       }
+    } catch (err) {
+      releaseError = err;
+      progress("lock-release", "fail", `Lock release requires manual inspection at ${layout.deployLockDir}`);
     }
   }
+
+  if (releaseError) {
+    const recoveryCode = releaseError.recoveryCode || "manual_lock_inspection_required";
+    if (primaryError) {
+      primaryError.recoveryCode = recoveryCode;
+      primaryError.recoveryError = "Remote deployment lock release requires manual inspection";
+      throw primaryError;
+    }
+    if (operationResult && operationResult.ok === false) {
+      return {
+        ...operationResult,
+        recoveryCode,
+        recoveryError: "Remote deployment lock release requires manual inspection",
+      };
+    }
+    releaseError.recoveryCode = recoveryCode;
+    throw releaseError;
+  }
+  if (primaryError) throw primaryError;
+  return operationResult;
 }
 
 async function deploy(options) {
@@ -1653,7 +1760,7 @@ async function bootstrapIsolatedRuntime({
       buildSshArgs(accountProfile).concat([
         fencedCommand(accountLayout, leaseId, remoteNode, command),
       ]),
-      { runtime },
+      { runtime, role: "isolated-runtime-bootstrap", mutation: true },
     );
     if (created.code !== 0) {
       return {
@@ -1844,6 +1951,8 @@ async function withOwnedRemoteLease({ profile, runtime, deps = {}, operation }) 
   if (!lock.ok) {
     return { ok: false, skipped: true, reason: lock.reason, stderr: lock.message };
   }
+  let operationResult = null;
+  let primaryError = null;
   try {
     const ownership = await runOwnershipPreflight({
       profile,
@@ -1854,7 +1963,7 @@ async function withOwnedRemoteLease({ profile, runtime, deps = {}, operation }) 
       runtime,
     });
     if (!ownership.ok || !ownership.detail || ownership.detail.identity !== true) {
-      return {
+      operationResult = {
         ok: false,
         skipped: true,
         reason: ownership.ok
@@ -1864,11 +1973,17 @@ async function withOwnedRemoteLease({ profile, runtime, deps = {}, operation }) 
           ? "Remote identity is missing; no cleanup or monitor mutation was attempted."
           : ownership.message,
       };
+    } else {
+      operationResult = await operation({ spawn, layout, remoteNode, leaseId });
     }
-    return await operation({ spawn, layout, remoteNode, leaseId });
-  } finally {
-    if (managedTransportIsActive(runtime)) {
-      await releaseDeployLock({
+  } catch (err) {
+    primaryError = err;
+  }
+
+  let releaseError = null;
+  if (managedTransportIsActive(runtime)) {
+    try {
+      const released = await releaseDeployLock({
         profile,
         layout,
         leaseId,
@@ -1876,8 +1991,36 @@ async function withOwnedRemoteLease({ profile, runtime, deps = {}, operation }) 
         spawn,
         runtime,
       });
+      if (released.code !== 0) {
+        releaseError = Object.assign(new Error("Remote deployment lock release requires manual inspection"), {
+          code: "manual_lock_inspection_required",
+          recoveryCode: "manual_lock_inspection_required",
+        });
+      }
+    } catch (err) {
+      releaseError = err;
     }
   }
+
+  if (releaseError) {
+    const recoveryCode = releaseError.recoveryCode || "manual_lock_inspection_required";
+    if (primaryError) {
+      primaryError.recoveryCode = recoveryCode;
+      primaryError.recoveryError = "Remote deployment lock release requires manual inspection";
+      throw primaryError;
+    }
+    if (operationResult && operationResult.ok === false) {
+      return {
+        ...operationResult,
+        recoveryCode,
+        recoveryError: "Remote deployment lock release requires manual inspection",
+      };
+    }
+    releaseError.recoveryCode = recoveryCode;
+    throw releaseError;
+  }
+  if (primaryError) throw primaryError;
+  return operationResult;
 }
 
 function secureMonitorStopCommand(layout) {
@@ -1915,7 +2058,7 @@ async function secureStartCodexMonitor({ profile, runtime = null, deps = {} }) {
         buildSshArgs(profile).concat([
           fencedCommand(layout, leaseId, remoteNode, start),
         ]),
-        { runtime },
+        { runtime, role: "codex-monitor-start", mutation: true },
       );
       return { ok: result.code === 0, stderr: result.stderr, layout };
     },
@@ -1934,7 +2077,7 @@ async function secureStopCodexMonitor({ profile, runtime = null, deps = {} }) {
         buildSshArgs(profile).concat([
           fencedCommand(layout, leaseId, remoteNode, secureMonitorStopCommand(layout)),
         ]),
-        { runtime },
+        { runtime, role: "codex-monitor-stop", mutation: true },
       );
       return { ok: result.code === 0, stderr: result.stderr, layout };
     },
@@ -1982,7 +2125,7 @@ async function secureUninstallRemoteIntegrations({
           buildSshArgs(profile).concat([
             fencedCommand(layout, leaseId, remoteNode, command),
           ]),
-          { timeoutMs: 30000, runtime },
+          { timeoutMs: 30000, runtime, role: "remote-cleanup", mutation: true },
         );
         if (result.code !== 0) {
           return { ok: false, stderr: result.stderr, reason: "cleanup_step_failed", layout };
@@ -2064,7 +2207,7 @@ async function finalizeRetiredRemoteLayout({
       buildSshArgs(profile).concat([
         fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, script)),
       ]),
-      { runtime },
+      { runtime, role: "runtime-layout-retire", mutation: true },
     );
     if (result.code !== 0) {
       const reason = result.code === 83
@@ -2127,6 +2270,7 @@ module.exports = {
   finalizeRetiredRemoteLayout,
   bootstrapIsolatedRuntime,
   __test: {
+    spawnAndWait,
     legacyDeploy,
     legacyStartCodexMonitor,
     legacyStopCodexMonitor,

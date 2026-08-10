@@ -760,6 +760,112 @@ test("serialized direct Disconnect publishes the released transport phase after 
   assert.equal(events.at(-1).transportPhase, "idle");
 });
 
+test("an old serialized Connect continuation cannot fail a newer Disconnect-Connect generation", async () => {
+  let inspectionCalls = 0;
+  let resolveOldInspection;
+  const oldInspection = new Promise((resolve) => { resolveOldInspection = resolve; });
+  const inspection = {
+    mode: "serialized",
+    kind: "codespaces-stdio",
+    key: "codespace:generation-race",
+    fingerprint: "fp-generation-race",
+  };
+  const children = [];
+  const spawn = (_tool, args) => {
+    const child = makeMockChild();
+    child._args = args;
+    children.push(child);
+    return child;
+  };
+  const coordinator = createRemoteSshTransportCoordinator({
+    spawn,
+    inspectEffectiveTransport: async () => {
+      inspectionCalls += 1;
+      return inspectionCalls === 2 ? oldInspection : inspection;
+    },
+  });
+  const profile = makeSecureProfile({ host: "generation-race@unique-host" });
+  const first = await coordinator.acquireConnection(profile);
+  const rt = createRemoteSshRuntime({
+    spawn,
+    transportCoordinator: coordinator,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+  });
+  rt.connect(profile, { serialized: true, transportContext: first.context });
+  await flushAsyncEvents();
+  assert.equal(inspectionCalls, 2);
+  assert.equal(children.length, 0);
+
+  const disconnect = await coordinator.acquireOwnedOperation(profile, "disconnect");
+  assert.equal(disconnect.ok, true);
+  await rt.suspendForOperation(profile.id, disconnect.context, { closeIngress: true });
+  rt.finalizeSerializedDisconnect(profile.id, disconnect.context);
+
+  const second = await coordinator.acquireConnection(profile);
+  assert.equal(second.ok, true);
+  rt.connect(profile, { serialized: true, transportContext: second.context });
+  for (let i = 0; i < 8 && children.length === 0; i += 1) await flushAsyncEvents();
+  assert.equal(children.length, 1, "the new generation must not wait behind the stale task");
+
+  resolveOldInspection(inspection);
+  await flushAsyncEvents();
+  assert.notEqual(rt.getProfileStatus(profile.id).status, "failed");
+  second.context.assertActive();
+
+  const marker = /__CLAWD_REMOTE_READY__:[a-f0-9]{32}/.exec(String(children[0]._args.at(-1)));
+  assert.ok(marker);
+  children[0]._fakeStdout(`${marker[0]}\n`);
+  await flushAsyncEvents();
+  assert.equal(rt.getProfileStatus(profile.id).status, "connected");
+});
+
+test("a signaled serialized tunnel close cannot schedule a replacement transport", async () => {
+  const timers = makeFakeTimers();
+  const children = [];
+  const spawn = (_tool, args) => {
+    const child = makeMockChild();
+    child._args = args;
+    children.push(child);
+    return child;
+  };
+  const coordinator = createRemoteSshTransportCoordinator({
+    spawn,
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "codespaces-stdio",
+      key: "codespace:signaled-tunnel",
+      fingerprint: "fp-signaled-tunnel",
+    }),
+  });
+  const profile = makeSecureProfile({ host: "signaled-tunnel@unique-host" });
+  const admitted = await coordinator.acquireConnection(profile);
+  const rt = createRemoteSshRuntime({
+    spawn,
+    transportCoordinator: coordinator,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+    setTimeout: timers.setTimeoutFn,
+    clearTimeout: timers.clearTimeoutFn,
+  });
+  rt.connect(profile, { serialized: true, transportContext: admitted.context });
+  await flushAsyncEvents();
+  assert.equal(children.length, 1);
+
+  children[0]._fakeExit(null, "SIGTERM");
+  children[0]._fakeClose(null, "SIGTERM");
+  await flushAsyncEvents();
+  timers.flush();
+  await flushAsyncEvents();
+
+  assert.equal(children.length, 1);
+  assert.equal(rt.getProfileStatus(profile.id).status, "failed");
+  assert.equal(
+    coordinator.snapshotForProfile(profile.id).transportErrorReason,
+    "transport_drain_unverified",
+  );
+});
+
 test("serialized Connect closes Node and monitor one-shots before starting the persistent tunnel", async () => {
   const children = [];
   const spawn = (_command, args, opts) => {
@@ -837,6 +943,282 @@ test("serialized Connect closes Node and monitor one-shots before starting the p
   children[2]._fakeClose(0);
   await drain;
   rt.finalizeSerializedDisconnect(profile.id, operation.context);
+});
+
+test("serialized Connect aborts before the tunnel when effective transport changes during preparation", async () => {
+  const children = [];
+  let inspectionCount = 0;
+  const coordinator = createRemoteSshTransportCoordinator({
+    spawn: (_tool, args) => {
+      const child = makeMockChild();
+      child._args = args;
+      children.push(child);
+      return child;
+    },
+    inspectEffectiveTransport: async () => {
+      inspectionCount += 1;
+      const changed = inspectionCount >= 3;
+      return {
+        mode: "serialized",
+        kind: "codespaces-stdio",
+        key: changed ? "codespace:changed-space" : "codespace:original-space",
+        fingerprint: changed ? "fp-changed" : "fp-original",
+      };
+    },
+  });
+  const profile = makeSecureProfile({ host: "drifting-alias" });
+  const admitted = await coordinator.acquireConnection(profile);
+  const rt = createRemoteSshRuntime({
+    transportCoordinator: coordinator,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+  });
+
+  rt.connect(profile, {
+    serialized: true,
+    transportContext: admitted.context,
+    prepareSerializedAttempt: async () => ({ ok: true }),
+  });
+  await flushAsyncEvents();
+
+  assert.equal(inspectionCount, 3, "admission and both connection boundaries must inspect freshly");
+  assert.equal(children.length, 0, "a reservation for the old transport must never spawn against the new target");
+  const status = rt.getProfileStatus(profile.id);
+  assert.equal(status.status, "failed");
+  assert.equal(status.lastErrorReason, "profile_changed");
+  assert.equal(coordinator._slots.get("codespace:original-space").phase, "idle");
+});
+
+test("Disconnect intent during protected monitor preparation is applied after the same lease releases", async () => {
+  const children = [];
+  const coordinator = createRemoteSshTransportCoordinator({
+    spawn: (_tool, args) => {
+      const child = makeMockChild();
+      child._args = args;
+      children.push(child);
+      return child;
+    },
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "codespaces-stdio",
+      key: "codespace:protected-prepare",
+      fingerprint: "fp-protected-prepare",
+    }),
+  });
+  const profile = makeSecureProfile({ host: "protected-prepare" });
+  const admitted = await coordinator.acquireConnection(profile);
+  let cancelCalls = 0;
+  const rt = createRemoteSshRuntime({
+    transportCoordinator: coordinator,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+  });
+  rt.connect(profile, {
+    serialized: true,
+    transportContext: admitted.context,
+    prepareSerializedAttempt: async ({ runtime }) => {
+      runtime.setManagedLockStage("acquire-attempted");
+      const child = runtime.spawnManagedTransportChild({
+        role: "monitor-start",
+        tool: "ssh",
+        args: [profile.host, "monitor-start"],
+        options: { stdio: ["ignore", "pipe", "pipe"] },
+      });
+      await new Promise((resolve) => child.once("close", resolve));
+      runtime.setManagedLockStage("before-acquire");
+      return { ok: true };
+    },
+    cancelSerializedAttempt: async ({ runtime }) => {
+      cancelCalls += 1;
+      runtime.setManagedLockStage("acquire-attempted");
+      const child = runtime.spawnManagedTransportChild({
+        role: "monitor-stop",
+        tool: "ssh",
+        args: [profile.host, "monitor-stop"],
+        options: { stdio: ["ignore", "pipe", "pipe"] },
+      });
+      const closed = new Promise((resolve) => child.once("close", resolve));
+      child._fakeExit(0);
+      child._fakeClose(0);
+      await closed;
+      runtime.setManagedLockStage("before-acquire");
+      return { ok: true };
+    },
+  });
+  await flushAsyncEvents();
+  assert.equal(children.length, 1);
+
+  coordinator.recordDisconnectIntent(profile.id);
+  const takeover = await coordinator.acquireOwnedOperation(profile, "disconnect");
+  assert.equal(takeover.ok, false);
+  assert.equal(takeover.code, "transport_operation_busy");
+  children[0]._fakeExit(0);
+  children[0]._fakeClose(0);
+  for (let i = 0; i < 8 && rt.getProfileStatus(profile.id).status !== "idle"; i += 1) {
+    await flushAsyncEvents();
+  }
+
+  assert.equal(cancelCalls, 1);
+  assert.equal(children.length, 2);
+  assert.equal(children.some((child) => child._args && child._args.includes("-R")), false);
+  assert.equal(rt.getProfileStatus(profile.id).status, "idle");
+  assert.equal(coordinator.snapshotForProfile(profile.id).transportPhase, "idle");
+});
+
+test("serialized operation takeover never force-kills an in-flight one-shot", async () => {
+  const children = [];
+  let finishResolve;
+  const coordinator = createRemoteSshTransportCoordinator({
+    spawn: () => {
+      const child = makeMockChild();
+      children.push(child);
+      return child;
+    },
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "codespaces-stdio",
+      key: "codespace:takeover-one-shot",
+      fingerprint: "fp-takeover",
+    }),
+    drainTimeoutMs: 5,
+  });
+  const profile = makeSecureProfile({ host: "takeover@unique-host" });
+  const admitted = await coordinator.acquireConnection(profile);
+  const rt = createRemoteSshRuntime({
+    transportCoordinator: coordinator,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+    resolveRemoteNodeBin: async ({ runtime }) => {
+      const child = runtime.spawnManagedTransportChild({
+        role: "node-resolve",
+        tool: "ssh",
+        args: [profile.host, "resolve-node"],
+        options: { stdio: ["ignore", "pipe", "pipe"] },
+      });
+      return new Promise((resolve) => {
+        finishResolve = () => resolve({
+          ok: true,
+          nodeBin: "/usr/bin/node",
+          version: "v20.1.0",
+          source: "path",
+        });
+        child.once("close", finishResolve);
+      });
+    },
+  });
+  rt.connect(profile, { serialized: true, transportContext: admitted.context });
+  await flushAsyncEvents();
+  assert.equal(children.length, 1);
+
+  const operation = await coordinator.acquireOperation(profile, "deploy");
+  await assert.rejects(
+    rt.suspendForOperation(profile.id, operation.context),
+    (err) => err && err.code === "transport_drain_timeout",
+  );
+  assert.equal(children[0]._killed, undefined, "one-shot outer ssh must not be killed");
+  assert.equal(coordinator._slots.get("codespace:takeover-one-shot").phase, "quarantined");
+
+  children[0]._fakeExit(0);
+  children[0]._fakeClose(0);
+  await flushAsyncEvents();
+  if (finishResolve) finishResolve();
+  await flushAsyncEvents();
+  assert.equal(coordinator._slots.get("codespace:takeover-one-shot").phase, "idle");
+});
+
+test("serialized readiness has a local watchdog and quarantines a child that never closes", async () => {
+  const children = [];
+  let ingressCloses = 0;
+  const coordinator = createRemoteSshTransportCoordinator({
+    spawn: () => {
+      const child = makeMockChild();
+      children.push(child);
+      return child;
+    },
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "codespaces-stdio",
+      key: "codespace:hung-readiness",
+      fingerprint: "fp-hung-readiness",
+    }),
+    drainTimeoutMs: 5,
+  });
+  const profile = makeSecureProfile({ host: "hung-readiness@unique-host" });
+  const admitted = await coordinator.acquireConnection(profile);
+  const rt = createRemoteSshRuntime({
+    transportCoordinator: coordinator,
+    createProfileIngress: () => ({
+      start: async () => 31234,
+      close: async () => { ingressCloses += 1; },
+      getStatus: () => ({ port: 31234, rejectedCount: 0 }),
+    }),
+    getHookServerPort: () => 23333,
+    serializedReadinessTimeoutMs: 5,
+    serializedReadinessDrainTimeoutMs: 5,
+  });
+  rt.connect(profile, { serialized: true, transportContext: admitted.context });
+  await flushAsyncEvents();
+  assert.equal(children.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  await flushAsyncEvents();
+  const status = rt.getProfileStatus(profile.id);
+  assert.equal(status.status, "failed");
+  assert.equal(status.transportPhase, "quarantined");
+  assert.equal(children[0].stdin.endCalls, 1);
+  assert.equal(ingressCloses, 1, "failed readiness must release the profile ingress");
+  assert.equal(children.length, 1, "watchdog must not start a replacement transport");
+
+  children[0]._fakeStdout("__CLAWD_REMOTE_READY__:too-late\n");
+  await flushAsyncEvents();
+  assert.notEqual(rt.getProfileStatus(profile.id).status, "connected");
+  children[0]._fakeExit(0);
+  children[0]._fakeClose(0);
+  await flushAsyncEvents();
+});
+
+test("a fired readiness watchdog cannot overwrite a newer explicit Disconnect", async () => {
+  const children = [];
+  const coordinator = createRemoteSshTransportCoordinator({
+    spawn: () => {
+      const child = makeMockChild();
+      children.push(child);
+      return child;
+    },
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "codespaces-stdio",
+      key: "codespace:watchdog-disconnect-race",
+      fingerprint: "fp-watchdog-disconnect-race",
+    }),
+    drainTimeoutMs: 100,
+  });
+  const profile = makeSecureProfile({ host: "watchdog-disconnect@unique-host" });
+  const admitted = await coordinator.acquireConnection(profile);
+  const rt = createRemoteSshRuntime({
+    transportCoordinator: coordinator,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+    serializedReadinessTimeoutMs: 5,
+    serializedReadinessDrainTimeoutMs: 100,
+  });
+  rt.connect(profile, { serialized: true, transportContext: admitted.context });
+  await flushAsyncEvents();
+  assert.equal(children.length, 1);
+  for (let i = 0; i < 10 && children[0].stdin.endCalls === 0; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  assert.equal(children[0].stdin.endCalls, 1, "the watchdog must have entered its drain await");
+
+  rt.disconnect(profile.id);
+  assert.equal(rt.getProfileStatus(profile.id).status, "idle");
+  children[0]._fakeExit(0);
+  children[0]._fakeClose(0);
+  await flushAsyncEvents();
+
+  const status = rt.getProfileStatus(profile.id);
+  assert.equal(status.status, "idle");
+  assert.equal(status.transportPhase, "idle");
+  assert.notEqual(status.lastErrorReason, "readiness_timeout");
 });
 
 test("connect fails fast on legacy Windows OpenSSH before spawning tunnel", () => {
@@ -1438,6 +1820,102 @@ test("connect classifies Connection timed out as transient + schedules reconnect
   rt.cleanup();
 });
 
+test("ordinary automatic reconnect fails closed when effective transport becomes serialized", async () => {
+  const children = [];
+  const timers = makeFakeTimers();
+  const coordinator = createRemoteSshTransportCoordinator({
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "codespaces-stdio",
+      key: "codespace:drifted-reconnect",
+      effectiveHost: "codespace.internal",
+      effectiveUser: "codespace",
+      effectivePort: 22,
+      fingerprint: "fp-drifted-reconnect",
+    }),
+  });
+  const profile = { id: "p1", host: "alias", remoteForwardPort: 23333 };
+  const rt = createRemoteSshRuntime({
+    spawn: () => {
+      const child = makeMockChild();
+      children.push(child);
+      return child;
+    },
+    transportCoordinator: coordinator,
+    getHookServerPort: () => 23333,
+    setTimeout: timers.setTimeoutFn,
+    clearTimeout: timers.clearTimeoutFn,
+  });
+  rt.connect(profile, {
+    transportInspection: {
+      mode: "parallel",
+      kind: "standard",
+      key: "parallel:original",
+      effectiveHost: "ordinary.internal",
+      effectiveUser: "user",
+      effectivePort: 22,
+      fingerprint: "fp-original",
+    },
+  });
+  assert.equal(children.length, 1);
+  await exitSsh(children[0], "ssh: connect to host alias port 22: Connection timed out");
+  assert.equal(rt.getProfileStatus(profile.id).status, "reconnecting");
+
+  timers.flushWhere((timer) => timer.ms === BACKOFF_SCHEDULE_MS[0]);
+  await flushAsyncEvents();
+  assert.equal(children.length, 1, "transport drift must not spawn an unmanaged reconnect");
+  assert.equal(rt.getProfileStatus(profile.id).status, "failed");
+  assert.equal(rt.getProfileStatus(profile.id).lastErrorReason, "profile_changed");
+});
+
+test("a stale reconnect inspection cannot overwrite an explicit Disconnect", async () => {
+  const children = [];
+  const timers = makeFakeTimers();
+  let resolveInspection;
+  const inspectionPromise = new Promise((resolve) => { resolveInspection = resolve; });
+  const coordinator = createRemoteSshTransportCoordinator({
+    inspectEffectiveTransport: () => inspectionPromise,
+  });
+  const profile = { id: "p1", host: "alias", remoteForwardPort: 23333 };
+  const rt = createRemoteSshRuntime({
+    spawn: () => {
+      const child = makeMockChild();
+      children.push(child);
+      return child;
+    },
+    transportCoordinator: coordinator,
+    getHookServerPort: () => 23333,
+    setTimeout: timers.setTimeoutFn,
+    clearTimeout: timers.clearTimeoutFn,
+  });
+  rt.connect(profile, {
+    transportInspection: {
+      mode: "parallel",
+      kind: "standard",
+      key: "parallel:original",
+      effectiveHost: "ordinary.internal",
+      effectiveUser: "user",
+      effectivePort: 22,
+    },
+  });
+  await exitSsh(children[0], "ssh: connect to host alias port 22: Connection timed out");
+  timers.flushWhere((timer) => timer.ms === BACKOFF_SCHEDULE_MS[0]);
+  rt.disconnect(profile.id);
+  resolveInspection({
+    mode: "serialized",
+    kind: "codespaces-stdio",
+    key: "codespace:late-result",
+    effectiveHost: "codespace.internal",
+    effectiveUser: "codespace",
+    effectivePort: 22,
+  });
+  await flushAsyncEvents();
+  assert.equal(rt.getProfileStatus(profile.id).status, "idle");
+  assert.equal(rt.getProfileStatus(profile.id).lastErrorReason, null);
+  assert.equal(children.length, 1, "the stale reconnect continuation must not spawn");
+  rt.cleanup();
+});
+
 test("a fresh secure connection still treats a forward conflict as permanent", async () => {
   const children = [];
   const timers = makeFakeTimers();
@@ -1913,5 +2391,95 @@ test("listStatuses returns array of all known profile snapshots", () => {
   assert.equal(list.length, 2);
   const ids = list.map((x) => x.profileId).sort();
   assert.deepEqual(ids, ["p1", "p2"]);
+  rt.cleanup();
+});
+
+test("status APIs expose a quarantined coordinator slot even before runtime state exists", async () => {
+  const coordinator = createRemoteSshTransportCoordinator({
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "codespaces-stdio",
+      key: "codespace:no-runtime-state",
+      fingerprint: "fp-no-runtime-state",
+    }),
+  });
+  const profile = makeSecureProfile({ id: "no-runtime-state" });
+  const operation = await coordinator.acquireOperation(profile, "cleanup");
+  operation.context.setLockStage("lock-owned");
+  coordinator.invalidate(operation.context, "transport_unknown_result");
+  const rt = createRemoteSshRuntime({
+    transportCoordinator: coordinator,
+    getHookServerPort: () => 23333,
+  });
+
+  const status = rt.getProfileStatus(profile.id);
+  assert.equal(status.status, "failed");
+  assert.equal(status.lastErrorReason, "manual_lock_inspection_required");
+  assert.equal(status.transportPhase, "quarantined");
+  assert.equal(status.transportOwnerProfileId, profile.id);
+  const listed = rt.listStatuses().find((entry) => entry.profileId === profile.id);
+  assert.equal(listed.status, "failed");
+  assert.equal(listed.transportPhase, "quarantined");
+});
+
+test("coordinator-only operation and quarantine phases publish runtime status events", async () => {
+  const coordinator = createRemoteSshTransportCoordinator({
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "codespaces-stdio",
+      key: "codespace:status-events",
+      fingerprint: "fp-status-events",
+    }),
+  });
+  const rt = createRemoteSshRuntime({
+    transportCoordinator: coordinator,
+    getHookServerPort: () => 23333,
+  });
+  const events = [];
+  rt.on("status-changed", (status) => events.push(status));
+  const profile = makeSecureProfile({ id: "status-events" });
+
+  const operation = await coordinator.acquireOperation(profile, "cleanup");
+  operation.context.setLockStage("lock-owned");
+  coordinator.invalidate(operation.context, "transport_unknown_result");
+
+  assert.ok(events.some((status) => status.profileId === profile.id
+    && status.transportPhase === "operation"));
+  const failed = events.at(-1);
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.transportPhase, "quarantined");
+  assert.equal(failed.lastErrorReason, "manual_lock_inspection_required");
+  rt.cleanup();
+});
+
+test("an existing idle runtime state presents coordinator quarantine as failed", async () => {
+  const coordinator = createRemoteSshTransportCoordinator({
+    inspectEffectiveTransport: async () => ({
+      mode: "serialized",
+      kind: "codespaces-stdio",
+      key: "codespace:existing-state",
+      fingerprint: "fp-existing-state",
+    }),
+  });
+  const profile = makeSecureProfile({ id: "existing-state" });
+  const rt = createRemoteSshRuntime({
+    spawn: () => makeMockChild(),
+    transportCoordinator: coordinator,
+    getHookServerPort: () => 23333,
+  });
+  rt.connect(profile);
+  rt.disconnect(profile.id);
+  const events = [];
+  rt.on("status-changed", (status) => events.push(status));
+
+  const operation = await coordinator.acquireOperation(profile, "cleanup");
+  operation.context.setLockStage("lock-owned");
+  coordinator.invalidate(operation.context, "transport_unknown_result");
+
+  const status = rt.getProfileStatus(profile.id);
+  assert.equal(status.status, "failed");
+  assert.equal(status.transportPhase, "quarantined");
+  assert.equal(status.lastErrorReason, "manual_lock_inspection_required");
+  assert.equal(events.at(-1).status, "failed");
   rt.cleanup();
 });

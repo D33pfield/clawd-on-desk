@@ -501,9 +501,17 @@ const _settingsController = createSettingsController({
       if (shortcutRuntime) shortcutRuntime.clearFailure(actionId);
     },
     isRemoteSshTransportBusy: (profileId) => {
-      if (!_remoteSshTransportCoordinator) return false;
-      const snapshot = _remoteSshTransportCoordinator.snapshotForProfile(profileId);
-      return snapshot.transportPhase !== "idle";
+      if (_remoteSshTransportCoordinator) {
+        const snapshot = _remoteSshTransportCoordinator.snapshotForProfile(profileId);
+        if (snapshot.transportPhase !== "idle") return true;
+      }
+      if (_remoteSshRuntime) {
+        const status = _remoteSshRuntime.getProfileStatus(profileId);
+        return status.status === "connecting"
+          || status.status === "connected"
+          || status.status === "reconnecting";
+      }
+      return false;
     },
   },
 });

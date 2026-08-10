@@ -793,6 +793,7 @@ function loadRemoteSshTabForTest({
   cleanup = () => Promise.resolve({ status: "ok", uninstalled: true }),
   command = () => Promise.resolve({ status: "ok" }),
   confirm = () => true,
+  listStatuses = null,
 } = {}) {
   const body = new FakeElement("body");
   const content = new FakeElement("main");
@@ -830,6 +831,7 @@ function loadRemoteSshTabForTest({
     openTerminal: () => Promise.resolve({ status: "ok" }),
     deploy: () => Promise.resolve({ status: "ok" }),
   };
+  if (typeof listStatuses === "function") remoteSsh.listStatuses = listStatuses;
   const context = {
     console,
     navigator: { platform: "Win32" },
@@ -2188,6 +2190,104 @@ describe("settings renderer browser environment", () => {
     assert.deepStrictEqual(harness.commandCalls, [], "cancelled force-delete keeps the profile");
     assert.ok(harness.content.querySelector(".remote-ssh-detail"));
     assert.strictEqual(harness.content.querySelector(".remote-ssh-btn-danger").disabled, false);
+  });
+
+  it("disables a profile card and remote actions while another profile owns its serialized transport", () => {
+    const profiles = [
+      {
+        id: "codespace-owner",
+        label: "Codespace owner",
+        host: "owner-alias",
+        remoteForwardPort: 23333,
+        lastDeployedAt: Date.now(),
+      },
+      {
+        id: "codespace-conflict",
+        label: "Codespace conflict",
+        host: "conflict-alias",
+        remoteForwardPort: 23334,
+        lastDeployedAt: Date.now(),
+      },
+    ];
+    const harness = loadRemoteSshTabForTest({
+      snapshot: { lang: "en", remoteSsh: { profiles } },
+    });
+    harness.content.querySelectorAll(".remote-ssh-card")[1].dispatchEvent({ type: "click" });
+    harness.emitStatus({
+      profileId: profiles[1].id,
+      status: "idle",
+      transportPhase: "tunnel",
+      transportOwnerProfileId: profiles[0].id,
+      transportOperation: "connect",
+      conflictingProfileIds: [profiles[0].id],
+    });
+
+    const cards = harness.content.querySelectorAll(".remote-ssh-card");
+    const conflictConnect = cards[1].querySelectorAll("button")
+      .find((button) => button.textContent === "Connect");
+    assert.ok(conflictConnect);
+    assert.strictEqual(conflictConnect.disabled, true);
+    const detailButtons = harness.content.querySelector(".remote-ssh-detail").querySelectorAll("button");
+    for (const text of ["Edit", "Delete", "Authenticate", "Open Terminal", "Deploy / Repair Hooks"]) {
+      const button = detailButtons.find((candidate) => candidate.textContent === text);
+      assert.ok(button, `${text} button should exist`);
+      assert.strictEqual(button.disabled, true, `${text} must be disabled for a conflicting profile`);
+    }
+
+    harness.emitStatus({
+      profileId: profiles[1].id,
+      status: "idle",
+      transportPhase: "idle",
+      transportOwnerProfileId: null,
+      conflictingProfileIds: [],
+    });
+    const releasedConnect = harness.content.querySelectorAll(".remote-ssh-card")[1]
+      .querySelectorAll("button").find((button) => button.textContent === "Connect");
+    assert.strictEqual(releasedConnect.disabled, false);
+    const releasedDetailButtons = harness.content.querySelector(".remote-ssh-detail").querySelectorAll("button");
+    for (const text of ["Edit", "Delete", "Authenticate", "Open Terminal", "Deploy / Repair Hooks"]) {
+      const button = releasedDetailButtons.find((candidate) => candidate.textContent === text);
+      assert.strictEqual(button.disabled, false, `${text} must recover after release`);
+    }
+  });
+
+  it("does not let a stale initial Remote SSH list overwrite a newer busy event", async () => {
+    const listed = createDeferred();
+    const profile = {
+      id: "codespace-list-race",
+      label: "Codespace list race",
+      host: "list-race-alias",
+      remoteForwardPort: 23333,
+      lastDeployedAt: Date.now(),
+    };
+    const harness = loadRemoteSshTabForTest({
+      snapshot: { lang: "en", remoteSsh: { profiles: [profile] } },
+      listStatuses: () => listed.promise,
+    });
+    harness.emitStatus({
+      profileId: profile.id,
+      status: "idle",
+      transportPhase: "operation",
+      transportOwnerProfileId: "other-profile",
+      transportOperation: "deploy",
+      conflictingProfileIds: ["other-profile"],
+    });
+    listed.resolve({
+      status: "ok",
+      statuses: [{
+        profileId: profile.id,
+        status: "idle",
+        transportPhase: "idle",
+        transportOwnerProfileId: null,
+        conflictingProfileIds: [],
+      }],
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const connect = harness.content.querySelector(".remote-ssh-card").querySelectorAll("button")
+      .find((button) => button.textContent === "Connect");
+    assert.ok(connect);
+    assert.strictEqual(connect.disabled, true);
   });
 
   it("keeps the Remote SSH port and option cards in the local draft until save", async () => {
