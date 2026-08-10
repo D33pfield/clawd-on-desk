@@ -52,10 +52,10 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 - **CodeWhale** — optional state-only lifecycle hooks via `~/.codewhale/config.toml` (`[[hooks.hooks]]` entries) (install from Settings → Agents or run `npm run install:codewhale-hooks`); Phase 1 drives idle, thinking, working, sleeping, error, attention, and sweeping animations only, without permission bubbles or subagent tracking
 - **Reasonix CLI** — optional state-only command hooks via `<Reasonix home>/settings.json` (`~/.reasonix/settings.json` on macOS/Linux, `%APPDATA%\reasonix\settings.json` on Windows; install from Settings → Agents or run `npm run install:reasonix-hooks`); Phase 1 drives lifecycle, tool, notification, compaction, and subagent-stop animations while leaving permission decisions in Reasonix's own terminal flow
 - **opencode** — optional [plugin integration](https://opencode.ai/docs/plugins) via `~/.config/opencode/opencode.json` (install from Settings → Agents or run `node hooks/opencode-install.js`); zero-latency event streaming and permission bubbles with Allow/Always/Deny. Child sessions spawned by the `task` tool are headless and do not participate in the visible multi-session animation fanout
-- **MiMo Code** — optional [plugin integration](https://opencode.ai/docs/plugins) via `~/.config/mimocode/mimocode.jsonc` (install from Settings → Agents or run `node hooks/mimocode-install.js`); shares the same `@mimo-ai/plugin` SDK and permission behavior as opencode. Its `task` child sessions are likewise headless
+- **MiMo Code** — optional [plugin integration](https://opencode.ai/docs/plugins) via the effective file under `~/.config/mimocode/` (`config.json` → `mimocode.json` → default `mimocode.jsonc`, later wins; install from Settings → Agents or run `npm run install:mimocode-plugin`); shares the same `@mimo-ai/plugin` SDK and permission behavior as opencode. Its `task` child sessions are likewise headless
 - **Pi** — optional global extension via `~/.pi/agent/extensions/clawd-on-desk` (install from Settings → Agents or run `npm run install:pi-extension`); state-only interactive lifecycle and tool activity updates while preserving Pi's default YOLO behavior
 - **OpenClaw** — optional state-only plugin integration via `~/.openclaw/openclaw.json` (install from Settings → Agents or run `npm run install:openclaw-plugin`; OpenClaw also needs an initialized config); local `openclaw tui --local` sessions drive Clawd animations, without permission bubbles or terminal focus in Phase 1
-- **Hermes Agent** — optional [plugin integration](https://hermes-agent.org/) via Hermes' managed plugin directory (install from Settings → Agents or run `npm run install:hermes-plugin`); state, sessions, SessionEnd, and terminal focus are supported
+- **Hermes Agent** — optional [plugin integration](https://hermes-agent.org/) via Hermes' managed plugin directory (install from Settings → Agents or run `npm run install:hermes-plugin`); state, sessions, SessionEnd, terminal focus, and supported permission bubbles are available
 - **Qoder** — optional state-only command hooks via `~/.qoder/settings.json` (install from Settings → Agents or run `npm run install:qoder-hooks`); Phase 1 drives Clawd animations only — Qoder permission prompts are observed as notifications, and every Allow / Deny choice stays in Qoder's own flow
 - **QoderWork** — optional state-only command hooks via `~/.qoderwork/settings.json` (install from Settings → Agents or run `npm run install:qoderwork-hooks`); Phase 1 drives Clawd animations and the Session HUD — QoderWork permission events are observed silently as part of the working flow, and every Allow / Deny choice stays in QoderWork's own flow
 - **Multi-agent coexistence** — run all agents simultaneously; Clawd tracks each session independently
@@ -71,8 +71,10 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 - **Mini mode** — drag to right edge or right-click "Mini Mode"; Clawd hides at screen edge with peek-on-hover, mini alerts/celebrations, and parabolic jump transitions
 
 ### Permission Bubble
-- **In-app permission review** — when Claude Code, Codex CLI, CodeBuddy, opencode, or MiMo Code request supported tool permissions, Clawd pops a floating bubble card instead of waiting in the terminal
+- **In-app permission review** — when a permission-capable integration sends a supported request, Clawd can pop a floating bubble card instead of waiting in the terminal; state-only agents keep their native permission flow
 - **Allow / deny / agent-native extras** — one-click approve or reject, plus permission rules / `Always` actions when the source agent supports them
+- **Permission handling modes** — choose **Ask every time**, confirmation-gated **Question prompts only** (tool-shaped requests from explicitly supported agents), or **Auto-approve**. Auto-approve handles every request the adapter marks automation-eligible—including unrecognized non-empty Claude/Qwen request names—but missing names, unsupported decision shapes, and CodeBuddy questions/plans still defer to the native flow. It downgrades after restart, and each eligible live session can independently choose Ask every time or tools-only. See the [setup guide](docs/guides/setup-guide.md#permission-handling-automation)
+- **Optional remote approval** — Telegram and Feishu/Lark can mirror eligible pending requests while the local bubble remains available. A channel failure produces no remote decision and never a denial: the desktop request stays pending, while remote-only requests fall back to the agent only after every available client returns no decision
 - **Global hotkeys** — `Ctrl+Shift+Y` to Allow, `Ctrl+Shift+N` to Deny the latest permission bubble (only registered while bubbles are visible)
 - **Stacking layout** — multiple permission requests stack upward from the bottom-right corner
 - **Auto-dismiss** — if you answer in the terminal first, the bubble disappears automatically
@@ -89,7 +91,7 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 
 ### Mobile Companion (PWA)
 - **Live mirror on your phone** — enable `Settings…` → `Mobile / PWA` and open the pairing URL on your phone; the Clawd Mobile web app shows your agent sessions and their live states in real time
-- **Read-only by design** — the LAN bridge only broadcasts state; nothing on the phone can touch your machine (remote approval is on the roadmap)
+- **Read-only by design** — the LAN bridge only broadcasts state; nothing in the PWA can touch your machine (LAN PWA approval is on the roadmap; Telegram and Feishu/Lark are separate supported channels)
 - **LAN-only + token-gated** — pairing requires a token, tokens rotate automatically with a grace window, and access can be regenerated or reset in one click
 - **Installable** — it's a PWA: add it to your home screen for an app-like experience
 > The mobile companion line — from the first prototype to token rotation — is built and led by core contributor [@Bynlk](https://github.com/Bynlk), who also maintains [clawd-on-mobile](https://github.com/Bynlk/clawd-on-mobile), a sister fork with a native Android app.
@@ -211,7 +213,7 @@ Some things we'd like to explore in the future:
 - Codex terminal focus via process tree lookup from `codex.exe` PID
 - Theme registry and in-app download
 - Hook uninstall script for clean app removal
-- Mobile companion: remote permission approval from your phone (in progress, led by [@Bynlk](https://github.com/Bynlk))
+- LAN PWA mobile companion: in-browser permission approval (in progress, led by [@Bynlk](https://github.com/Bynlk)); Telegram and Feishu/Lark approval are separate supported channels
 
 ## Contributing
 

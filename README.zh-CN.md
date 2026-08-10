@@ -49,10 +49,10 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **CodeWhale** — 可选 state-only lifecycle hooks，写入 `~/.codewhale/config.toml`（`[[hooks.hooks]]` 条目）（从 Settings → Agents 安装，或执行 `npm run install:codewhale-hooks`）；Phase 1 只驱动 idle、thinking、working、sleeping、error、attention、sweeping 等状态动画，不接权限气泡和子代理追踪
 - **Reasonix CLI** — 可选 state-only command hooks，写入 `<Reasonix home>/settings.json`（macOS/Linux 为 `~/.reasonix/settings.json`，Windows 为 `%APPDATA%\reasonix\settings.json`；从 Settings → Agents 安装，或执行 `npm run install:reasonix-hooks`）；Phase 1 只驱动生命周期、工具调用、通知、压缩和子代理结束动效，权限决策仍留在 Reasonix 自己的终端流程
 - **opencode** — 可选 [plugin 集成](https://opencode.ai/docs/plugins)，写入 `~/.config/opencode/opencode.json`（从 Settings → Agents 安装，或执行 `node hooks/opencode-install.js`）；支持零延迟事件流和 Allow/Always/Deny 权限气泡。`task` 工具产生的子会话是 headless，不参与可见的多会话动画聚合
-- **MiMo Code** — 可选 [plugin 集成](https://opencode.ai/docs/plugins)，写入 `~/.config/mimocode/mimocode.jsonc`（从 Settings → Agents 安装，或执行 `node hooks/mimocode-install.js`）；与 opencode 共享 `@mimo-ai/plugin` SDK 和权限行为，`task` 子会话同样是 headless
+- **MiMo Code** — 可选 [plugin 集成](https://opencode.ai/docs/plugins)，写入 `~/.config/mimocode/` 下当前生效的文件（`config.json` → `mimocode.json` → 默认 `mimocode.jsonc`，后者优先；从 Settings → Agents 安装，或执行 `npm run install:mimocode-plugin`）；与 opencode 共享 `@mimo-ai/plugin` SDK 和权限行为，`task` 子会话同样是 headless
 - **Pi** — 可选全局 extension，写入 `~/.pi/agent/extensions/clawd-on-desk`（从 Settings → Agents 安装，或执行 `npm run install:pi-extension`）；仅同步交互式 Pi 会话生命周期和工具活动状态，并保留 Pi 默认 YOLO 行为
 - **OpenClaw** — 可选 state-only plugin，写入 `~/.openclaw/openclaw.json`（从 Settings → Agents 安装，或执行 `npm run install:openclaw-plugin`；OpenClaw 还需要已有配置）；Phase 1 面向本地 `openclaw tui --local` 会话，只驱动动画，不接权限气泡和终端聚焦
-- **Hermes Agent** — 可选 [plugin 集成](https://hermes-agent.org/)，写入 Hermes 的托管 plugin 目录（从 Settings → Agents 安装，或执行 `npm run install:hermes-plugin`）；支持状态、会话、SessionEnd 和终端聚焦
+- **Hermes Agent** — 可选 [plugin 集成](https://hermes-agent.org/)，写入 Hermes 的托管 plugin 目录（从 Settings → Agents 安装，或执行 `npm run install:hermes-plugin`）；支持状态、会话、SessionEnd、终端聚焦和受支持的权限气泡
 - **Qoder** — 可选 state-only command hooks，写入 `~/.qoder/settings.json`（从 Settings → Agents 安装，或执行 `npm run install:qoder-hooks`）；Phase 1 只驱动动画，权限请求仅作为通知观察，Clawd 不弹权限气泡也不代答，所有 Allow / Deny 都在 Qoder 自己的权限流程里完成
 - **QoderWork** — 可选 state-only command hooks，写入 `~/.qoderwork/settings.json`（从 Settings → Agents 安装，或执行 `npm run install:qoderwork-hooks`）；Phase 1 驱动动画与 Session HUD，权限事件作为正常工作流静默观察（不闪通知），Clawd 不弹权限气泡也不代答，所有 Allow / Deny 都在 QoderWork 自己的权限流程里完成
 - **多 Agent 共存** — 多个 Agent 可同时运行，Clawd 独立追踪每个会话
@@ -68,8 +68,10 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **极简模式** — 拖到右边缘或右键"极简模式"；Clawd 藏在屏幕边缘，悬停探头招手，通知/完成有迷你动画，抛物线跳跃过渡
 
 ### 权限审批气泡
-- **桌面端权限审批** — 当 Claude Code、Codex CLI、CodeBuddy、opencode 或 MiMo Code 请求受支持的工具权限时，Clawd 会弹出浮动卡片，无需切回终端
+- **桌面端权限审批** — 当具备权限能力的集成发出受支持请求时，Clawd 会弹出浮动卡片；仅状态集成仍保留自己的原生权限流程
 - **允许 / 拒绝 / Agent 原生扩展项** — 一键批准或拒绝；如果该 Agent 支持，还会显示权限规则 / `Always` 一类的额外操作
+- **权限处理模式** — 可选 **每次询问**、经过确认的 **仅提问弹窗**（显式支持 agent 的工具型请求）或 **自动放行**。自动放行会处理 adapter 判定为 automation-eligible 的请求——包括 Claude/Qwen 中名称非空但尚未识别的请求；缺失名称、不受支持的 decision shape，以及 CodeBuddy 的问题/计划仍回到原生流程。它会在重启后降级，每个符合条件的 live session 也可独立选择每次询问或仅工具模式。见[配置指南](docs/guides/setup-guide.zh-CN.md#权限处理自动化)
+- **可选远程审批** — Telegram 和飞书 / Lark 可以镜像仍待处理的合格请求，同时保留本地气泡。通道失败不会产生远程决定，更不会自动拒绝：桌面请求继续等待；remote-only 请求只有在所有可用 client 都无决定后才回到 agent 原生流程
 - **全局快捷键** — `Ctrl+Shift+Y` 允许、`Ctrl+Shift+N` 拒绝最新的权限气泡（仅在气泡可见时注册）
 - **堆叠布局** — 多个权限请求从屏幕右下角向上堆叠
 - **自动关闭** — 如果你先在终端回答了，气泡自动消失
@@ -85,7 +87,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 
 ### 手机伴侣（PWA）
 - **手机实时镜像** — 在 `设置…` → `Mobile / PWA` 开启后，用手机打开配对链接，「Clawd Mobile」网页应用就会实时显示各 Agent 会话和它们的状态
-- **只读设计** — 局域网桥只向外广播状态，手机端无法操作你的电脑（远程审批已在路线图上）
+- **只读设计** — 局域网桥只向外广播状态，PWA 无法操作你的电脑（LAN PWA 审批仍在路线图上；Telegram 与飞书 / Lark 是另外两条已支持通道）
 - **仅限局域网 + 令牌防护** — 配对需要令牌，令牌自动轮换并带宽限期，可一键重新生成或重置访问
 - **可安装** — 标准 PWA，添加到主屏幕即可获得类原生体验
 > 手机伴侣这条线——从最初原型到令牌轮换——由核心贡献者 [@Bynlk](https://github.com/Bynlk) 一手打造并持续主导，他还维护着自带原生安卓 App 的姊妹项目 [clawd-on-mobile](https://github.com/Bynlk/clawd-on-mobile)。
@@ -207,7 +209,7 @@ node scripts/validate-theme.js path/to/your-theme
 - Codex 终端聚焦（通过 `codex.exe` PID 反查进程树）
 - 主题注册表 + 应用内下载
 - Hook 卸载脚本（干净移除应用）
-- 手机伴侣：在手机上远程审批权限（推进中，由 [@Bynlk](https://github.com/Bynlk) 主导）
+- LAN PWA 手机伴侣：在浏览器中远程审批权限（推进中，由 [@Bynlk](https://github.com/Bynlk) 主导）；Telegram 与飞书 / Lark 是另外两条已支持的远程审批通道
 
 ## 参与贡献
 
