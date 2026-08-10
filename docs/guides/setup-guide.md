@@ -93,7 +93,7 @@ Running `npm run install:claude-hooks` for a local hook repair does not opt in. 
 
 **opencode** — uses a plugin entry in `~/.config/opencode/opencode.json`. Install it from **Settings → Agents** when you want local opencode tracking; after that Clawd keeps the plugin synced on launch while opencode remains enabled. You can also run `node hooks/opencode-install.js` manually.
 
-**MiMo Code** — uses a plugin entry in `~/.config/mimocode/mimocode.jsonc`. Install it from **Settings → Agents** when you want local MiMo Code tracking; after that Clawd keeps the plugin synced on launch while MiMo Code remains enabled. You can also run `node hooks/mimocode-install.js` manually. MiMo Code shares the same `@mimo-ai/plugin` SDK, zero-latency event streaming, and Allow/Always/Deny permission behavior as opencode. In both integrations, child sessions spawned by the `task` tool are headless and do not participate in the visible multi-session animation fanout.
+**MiMo Code** — uses a plugin entry in `~/.config/mimocode/mimocode.jsonc`. Install it from **Settings → Agents** when you want local MiMo Code tracking; after that Clawd keeps the plugin synced on launch while MiMo Code remains enabled. You can also run `npm run install:mimocode-plugin` manually. MiMo Code shares the same `@mimo-ai/plugin` SDK, zero-latency event streaming, and Allow/Always/Deny permission behavior as opencode. In both integrations, child sessions spawned by the `task` tool are headless and do not participate in the visible multi-session animation fanout.
 
 **Pi** — uses a global extension directory at `~/.pi/agent/extensions/clawd-on-desk`. Install it from **Settings → Agents** when you want local Pi tracking; after that Clawd keeps the extension synced on launch while Pi remains enabled. You can also run `npm run install:pi-extension` manually. Interactive Pi sessions report lifecycle and tool activity to Clawd, but Pi is state-only: Clawd does not show permission bubbles, does not call Pi terminal confirmation, and preserves Pi's default YOLO execution behavior.
 
@@ -102,6 +102,17 @@ Running `npm run install:claude-hooks` for a local hook repair does not opt in. 
 **Hermes Agent** — install Hermes from [hermes-agent.org](https://hermes-agent.org/) or [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent), then install the Clawd integration from **Settings → Agents** when you want local Hermes tracking. Once the integration is installed and Hermes exists (`%LOCALAPPDATA%\hermes` on Windows or `~/.hermes` on macOS/Linux), Clawd copies its plugin into Hermes' managed plugin directory and enables it through `hermes plugins enable clawd-on-desk`. You can force a manual sync with `npm run install:hermes-plugin`, or remove Clawd's Hermes plugin with `npm run uninstall:hermes-plugin`.
 
 **Qoder** — hooks live in `~/.qoder/settings.json`. Install it from **Settings → Agents** when you want local Qoder tracking; after that Clawd keeps the hooks synced on launch while Qoder remains enabled. You can also run `npm run install:qoder-hooks` manually. Qoder is **state-only** in Phase 1: the hook always returns `{}`, and `PermissionRequest` / `PermissionDenied` are observed as passive notifications — Clawd never shows permission bubbles or answers permission decisions, so Qoder's native permission flow stays in control. Startup recovery watches only the Qoder CLI processes (`qodercli` / `qoder-cli`), so an already-open idle Qoder IDE is not treated as active agent work.
+
+## Permission handling automation
+
+Use the pet or tray **Permission handling** submenu to choose how Clawd handles supported permission requests:
+
+- **Ask every time** makes no automatic decisions.
+- **Question prompts only** automatically approves reviewed tool requests, while questions and plan reviews still wait for you.
+- **Auto-approve** handles supported tools, questions, and plans. After an app restart, this mode downgrades to **Question prompts only**.
+
+Both automation modes are confirmation-gated. The Dashboard can independently set one live session to **Ask every time** or the tools-only mode. New agents and new tool types are not automatically eligible just because they expose permission support; Clawd keeps an intentionally reviewed allowlist. State-only integrations and agents that own a native permission flow continue to use that native flow.
+
 ## Telegram Approval
 
 Clawd can optionally mirror supported permission bubbles to a dedicated Telegram
@@ -268,7 +279,7 @@ node hooks/workbuddy-install.js
 node hooks/opencode-install.js
 
 # MiMo Code
-node hooks/mimocode-install.js
+npm run install:mimocode-plugin
 
 # Pi
 node hooks/pi-install.js
