@@ -23,6 +23,7 @@ function isLocalOpencodeWorkingLikeSession(session) {
   return !!session
     && session.agentId === "opencode"
     && !session.host
+    && !session.headless
     && isWorkingLikeState(session.state);
 }
 

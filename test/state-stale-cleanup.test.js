@@ -404,6 +404,14 @@ describe("state stale cleanup decisions", () => {
       }), { now });
       assert.deepStrictEqual(result, { action: "idle", reason: "working-timeout", updateTimestamp: true });
     }
+
+    const { result: headlessResult } = decision(session({
+      state: "working",
+      agentId: "opencode",
+      headless: true,
+      updatedAt: now - WORKING_STALE_MS - 1,
+    }), { now });
+    assert.deepStrictEqual(headlessResult, { action: "idle", reason: "working-timeout", updateTimestamp: true });
   });
 
   it("still downgrades local Codex working after the Codex floor expires", () => {
