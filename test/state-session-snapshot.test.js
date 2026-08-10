@@ -147,6 +147,12 @@ describe("isSessionInProgress state mapping", () => {
     assert.strictEqual(isSessionInProgress(session("sleeping")), false);
   });
 
+  it("keeps a local OpenCode working session in the blocker-facing in-progress set", () => {
+    const active = session("working", { agentId: "opencode" });
+    assert.strictEqual(isSessionInProgress(active), true);
+    assert.strictEqual(isSessionInProgress({ ...active, state: "idle" }), false);
+  });
+
   it("never counts headless sessions, even when active", () => {
     assert.strictEqual(isSessionInProgress(session("working", { headless: true })), false);
     assert.strictEqual(isSessionInProgress(session("thinking", { headless: true })), false);

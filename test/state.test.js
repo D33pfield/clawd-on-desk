@@ -962,6 +962,29 @@ describe("cleanStaleSessions()", () => {
     assert.strictEqual(api.sessions.get("s1").state, "idle");
   });
 
+  it("genuine OpenCode session.idle completion still records normal Stop semantics", () => {
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+    }));
+    api.updateSession("opencode:s1", "working", "PreToolUse", {
+      agentId: "opencode",
+      agentPid: 1000,
+      sourcePid: 2000,
+      cwd: "/tmp",
+    });
+    api.updateSession("opencode:s1", "attention", "Stop", {
+      agentId: "opencode",
+      agentPid: 1000,
+      sourcePid: 2000,
+      cwd: "/tmp",
+    });
+
+    const completed = api.sessions.get("opencode:s1");
+    assert.strictEqual(completed.state, "idle");
+    assert.strictEqual(completed.recentEvents.at(-1).event, "Stop");
+    assert.strictEqual(api.deriveSessionBadge(completed), "done");
+  });
+
   it("pidReachable false + stale → delete", () => {
     api = require("../src/state")(makeCtx());
     api.sessions.set("s1", rawSession("working", {

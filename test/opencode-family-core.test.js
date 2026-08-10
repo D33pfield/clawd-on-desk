@@ -93,6 +93,26 @@ describe("opencode-family plugin factory", () => {
     oc.__test._sessionParentById.clear();
   });
 
+  it("keeps genuine root completion and deletion lifecycle events authoritative", async () => {
+    const { createOpencodeFamilyPlugin } = await loadCore();
+    const plugin = createOpencodeFamilyPlugin(OPENCODE_PARAMS);
+
+    assert.deepStrictEqual(
+      plugin.__test.translateEvent({
+        type: "session.idle",
+        properties: { sessionID: "ses_root" },
+      }),
+      { state: "attention", event: "Stop" },
+    );
+    assert.deepStrictEqual(
+      plugin.__test.translateEvent({
+        type: "session.deleted",
+        properties: { sessionID: "ses_root" },
+      }),
+      { state: "sleeping", event: "SessionEnd" },
+    );
+  });
+
   it("isolates the FULL per-instance state bag (log path, dedup, port cache, bridge)", async () => {
     const { createOpencodeFamilyPlugin } = await loadCore();
     const oc = createOpencodeFamilyPlugin(OPENCODE_PARAMS);
