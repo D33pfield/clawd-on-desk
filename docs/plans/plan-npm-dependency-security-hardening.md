@@ -372,6 +372,7 @@ macOS 两个架构都必须执行并保存：
 - `package-lock.json`
 - `test/dependency-security-floor.test.js`
 - AppImage verifier 及其 fixture/test
+- `scripts/after-pack-koffi.js` / `test/after-pack-koffi.test.js`（真实 CI 暴露 `/var` alias 与 Windows 短路径误报时，仅统一使用已校验的 canonical root，不放宽目录逃逸检查）
 - `.github/workflows/build.yml`
 - `.github/workflows/wayland-smoke.yml`
 - 有真实 Windows 证据时才更新 `scripts/native-package-policy.json`
@@ -379,4 +380,4 @@ macOS 两个架构都必须执行并保存：
 
 如果实际修复需要超出该范围，应先说明原因和回归面，再决定是否继续。
 
-本仓库当前通过 `.gitignore` 忽略 `docs/**`，因此本计划即使存在于本地，也不会出现在普通 `git status` 中。当前修改仅是本地、被忽略的计划文档；在未获得 staging/commit 授权前不纳入版本历史。若修复 PR 决定包含本计划，需要单独审阅后显式 `git add -f docs/plans/plan-npm-dependency-security-hardening.md`；否则必须在 PR 描述中保留经审阅的实施/验收摘要，不能让关键安全门只存在于维护者本机。
+本计划已通过精确 `.gitignore` 例外纳入本修复分支，普通 `git status` 可见；关键安全门和实施边界不会只存在于维护者本机。

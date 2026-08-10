@@ -83,5 +83,5 @@ test("release and Wayland workflows run the final-artifact AppRun gate", () => {
 
   assert.match(release, command);
   assert.match(wayland, command);
-  assert.match(release, /uses: actions\/upload-artifact@v4\n\s+if: always\(\)/);
+  assert.match(release, /uses: actions\/upload-artifact@v4\r?\n\s+if: always\(\)/);
 });
