@@ -82,6 +82,7 @@
     ],
     "mac": {
       "icon": "assets/icon.png",
+      "identity": "-",
       "artifactName": "Clawd-on-Desk-${version}-${arch}.${ext}",
       "target": [
         {
@@ -184,8 +185,8 @@
   },
   "devDependencies": {
     "@electron/asar": "^3.4.1",
-    "electron": "^41.10.2",
-    "electron-builder": "^26.8.1"
+    "electron": "^41.10.4",
+    "electron-builder": "^26.15.7"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.71.1",
