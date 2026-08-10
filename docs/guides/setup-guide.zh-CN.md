@@ -58,7 +58,7 @@ Claude Code 只有一个用户级 statusline 槽位，因此 Clawd 绝不会静�
 
 **opencode** — 使用 `~/.config/opencode/opencode.json` 里的 plugin 配置。需要本机 opencode 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 plugin。也可以手动执行 `node hooks/opencode-install.js`。
 
-**MiMo Code** — 使用 `~/.config/mimocode/mimocode.jsonc` 里的 plugin 配置。需要本机 MiMo Code 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 plugin。也可以手动执行 `npm run install:mimocode-plugin`。MiMo Code 与 opencode 使用同一套 plugin SDK 和 Allow / Always / Deny 权限行为；`task` 创建的子会话不参与可见的多会话动画聚合。
+**MiMo Code** — 使用 `~/.config/mimocode/` 下当前生效的 plugin 配置：`config.json` → `mimocode.json` → 默认 `mimocode.jsonc`，后者优先。需要本机 MiMo Code 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步生效的 plugin entry。也可以手动执行 `npm run install:mimocode-plugin`。MiMo Code 与 opencode 使用同一套 plugin SDK 和 Allow / Always / Deny 权限行为；`task` 创建的子会话不参与可见的多会话动画聚合。
 
 **Pi** — 使用全局 extension 目录 `~/.pi/agent/extensions/clawd-on-desk`。需要本机 Pi 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 extension。也可以手动执行 `npm run install:pi-extension`。交互式 Pi 会话会向 Clawd 上报生命周期和工具活动，但 Pi 是 state-only：Clawd 不显示权限气泡、不调用 Pi 终端确认，并保留 Pi 默认 YOLO 执行行为。
 
@@ -73,14 +73,14 @@ Claude Code 只有一个用户级 statusline 槽位，因此 Clawd 绝不会静�
 可从桌宠或托盘的 **权限处理** 子菜单选择 Clawd 如何处理受支持的权限请求：
 
 - **每次询问**：不自动作出任何决定。
-- **仅提问弹窗**：自动批准已审阅的工具请求，但问题与计划审阅仍等待你处理。
-- **自动放行**：自动处理受支持的工具、问题和计划；应用重启后会降级到 **仅提问弹窗**。
+- **仅提问弹窗**：自动批准显式支持 agent 的工具型请求，但问题与计划审阅仍等待你处理。Claude/Qwen 使用已审阅的 built-in 列表，但并非每个受支持 adapter 都有逐工具 allowlist。
+- **自动放行**：会有意处理受支持 agent 的每个可执行决定，包括尚未识别但名称非空的请求；只有愿意交出全部决定时才应开启。应用重启后会降级到 **仅提问弹窗**。
 
-两种自动化模式都会先要求确认。Dashboard 还可以为单个 live session 独立选择 **每次询问** 或仅工具模式。新 agent 或新工具不会因为声明了权限能力就自动获得自动化资格；Clawd 使用单独审阅的允许列表。仅状态集成和由 agent 原生接管权限的流程不会被改变。
+两种自动化模式都会先要求确认。Dashboard 还可以为每个符合条件的 live session 独立选择 **每次询问** 或仅工具模式。新 agent 不会因为声明了权限能力就自动获得自动化资格，但工具名的处理取决于 adapter 和模式。仅状态集成和由 agent 原生接管权限的流程不会被改变。
 
 ## Telegram 远程审批
 
-Clawd 可以把受支持、仍待处理的权限请求镜像到专用 Telegram bot；本地气泡仍然可用。传输失败或超时只会回到 agent 自己的界面继续询问，不会自动拒绝。设置、支持范围和迁移说明见 [telegram-approval.md](telegram-approval.md)。
+Clawd 可以把受支持、仍待处理的权限请求镜像到专用 Telegram bot；本地气泡仍然可用。通道失败或超时不会产生远程决定，也不会自动拒绝：有本地气泡时请求继续等待；只有 remote-only 且所有可用 client 都无决定时，才回到 agent 原生界面。设置、支持范围和迁移说明见 [telegram-approval.md](telegram-approval.md)。
 
 ## 飞书 / Lark 远程审批
 

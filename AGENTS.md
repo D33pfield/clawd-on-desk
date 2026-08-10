@@ -22,7 +22,7 @@ npm test
 npm run verify:electron
 npm run verify:release
 npm run audit:assets
-npm run audit:native-package
+npm run audit:native-package -- --app-root <extracted-app-root> --target <target-id>
 npm run create-theme
 
 npm run install:claude-hooks
@@ -157,8 +157,8 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 
 - `agents/registry.js` 的 capabilities 是权限、subagent、session-end 等路由/gate 的权威来源；不得另写名单代替 capability 判定。但 permission automation eligibility 是独立、更窄的已审阅 allowlist（`src/permission-automation-policy.js` 的 `KNOWN_PERMISSION_AGENTS`），不得从 `permissionApproval` 自动派生或合并回 registry capabilities
 - Claude Code / CodeBuddy 的阻塞式权限审批走 `POST /permission` HTTP hook；普通状态事件走 command hook
-- permission automation（off / auto-tools / unattended）和 per-session grant 会在 bubble 渲染前产生真实 allow/answer；新增 permission-capable agent、工具或交互类型必须默认 fail closed，并审查 `AskUserQuestion` / `ExitPlanMode` 等非普通工具语义
-- Telegram / 飞书 Lark 远程审批与本地 bubble 是并行决策通道；超时、断连、未配置或通道失败必须回到 **no-decision**，不得用 deny 替没有发生过的用户决定
+- permission automation（off / auto-tools / unattended）和 per-session grant 会在 bubble 渲染前产生真实 allow/answer。agent/family eligibility 是显式白名单；工具分类则因 mode/adapter 而异：auto-tools 对 Claude/Qwen 的未知 built-in fail closed，但其他已知 adapter 不都使用逐工具白名单，unattended 还会有意自动放行可作 Allow/Deny 的未知请求。新增 agent、工具或交互类型必须审查 policy + tests，不能从 `permissionApproval` 推导资格或笼统假设“未知请求都会 defer”
+- Telegram / 飞书 Lark 与本地 bubble 是并行决策通道。远程通道超时、断连、未配置或发送失败不得产生远程决定，更不得转成 deny；有本地 bubble 时请求继续 pending，只有 remote-only 且所有可用 client 都无决定时，整体请求才 no-decision 并回到 agent 原生流程
 - WorkBuddy 通过 `~/.workbuddy/settings.json` 的 Claude Code 兼容 command hooks 做 **state + Notification only** 集成：不注册 `/permission`，审批始终留在 WorkBuddy 原生沙箱与 GUI；无 `session_id` 的事件返回合法 stdout 后直接丢弃。当前只支持 macOS/Windows 桌面应用，没有已验证的 Linux/WSL CLI；不要把裸 `Electron` 当 WorkBuddy 进程。
 - Codex 的阻塞式权限审批走 official `PermissionRequest` command hook：hook 脚本长连接 `POST /permission`，只允许 stdout 返回 sanitized `behavior/message`，`updatedInput` / `updatedPermissions` / `interrupt` 必须 omit
 - hook 脚本只允许依赖 Node 内置模块，以及同目录 `hooks/` 下、且登记在 `src/remote-ssh-deploy.js` 的 `HOOK_FILES` 部署清单中的纯 Node helper（如 `server-config.js` / `shared-process.js` / `json-utils.js` / `codex-originator.js` / `codex-subagent-fields.js` / `context-usage.js` / `state-payload-size.js` / `quota-bucket.js` / `claude-rate-limits.js` / `codex-rate-limits.js` / `antigravity-context-usage.js`）；manifest-consistency 测试强制检查依赖闭包，新增 helper 必须登记
@@ -177,7 +177,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - 注册 Claude Code hook 必须 marker-scoped merge：只可更新/删除含 `clawd-hook.js` / `auto-start.js` marker 的 Clawd-owned entry，不得整体覆盖数组或改动无 marker 的用户 entry
 - 注册 Claude Code statusLine 时只接管空槽或自己的槽（marker `claude-statusline.js`）；远程部署可用 profile 的 `chainStatusline` opt-in 串联既有第三方 statusline（`--chain-existing`），显式关闭时必须从 sidecar 恢复原 statusLine。订阅配额通过 `metadata_only` POST 进入 session-independent `updateAccountQuota` per-source store；不要把 quota 塞进 `updateSession` opts，也不要以 session 存活作为摄入前提
 - Copilot CLI hooks 走按需自动同步：`hooks/copilot-install.js` 在本地启动仅当 Copilot CLI 已安装且已启用时调用；远端由 Settings Remote SSH deploy controller 调用。路径解析尊重 `COPILOT_HOME` env（trimmed 非空才生效，否则 fallback 到 `~/.copilot`）；`hooks/copilot-hook.js` 的 session-state resolver 同样走 env
-- Remote SSH 的 effective transport 由 `ssh -G` 只读检查决定：ordinary SSH 保持 parallel 路径；serialized transport 以有效 target key（不是 profile id）互斥。所有自动化 managed SSH/SCP child 必须持 coordinator 发出的有效 connection/operation context，并通过其 pre-spawn gateway 启动；用户交互终端只能在 coordinator 判定该 target 完全 idle 后放行
+- Remote SSH 的 effective transport 由 `ssh -G` 只读检查决定：ordinary SSH 在没有 retained serialized occupancy 时保持 `context:null` 的 parallel 路径；serialized transport 以有效 target key（不是 profile id）互斥。所有 serialized managed SSH/SCP child 必须持 coordinator 发出的有效 connection/operation context，并通过其 pre-spawn gateway 启动；用户交互终端只有命中 serialized/retained occupancy 时才要求 coordinator 判定 target 完全 idle
 - serialized persistent tunnel 使用同一条 SSH 内嵌 readiness；暂停通过 stdin EOF 请求自然退出并等待 `close`。强杀或带 signal 的 outer `ssh.exe` close 不能证明 nested ProxyCommand 已 drain；timeout/未验证 drain 必须 quarantine，期间禁止新 child、mutation、resume 或 interactive terminal
 - mutation 在 deploy-lock acquire-attempted / lock-owned 后遇到 exit 255、EOF/reset、signal 或其他 unknown result 时不得自动 replay、retry、release lock 或恢复连接；必须保留 primary error 并传播 recovery state，必要时要求 `manual_lock_inspection_required`
 - Remote SSH secure hook 必须同时携带 `CLAWD_REMOTE=1` 与 `CLAWD_SSH_REMOTE=1`，只读 layout identity 并 pin 精确端口；identity 缺失/损坏/不可读必须 fail closed，禁止回退端口扫描

@@ -49,7 +49,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **CodeWhale** — 可选 state-only lifecycle hooks，写入 `~/.codewhale/config.toml`（`[[hooks.hooks]]` 条目）（从 Settings → Agents 安装，或执行 `npm run install:codewhale-hooks`）；Phase 1 只驱动 idle、thinking、working、sleeping、error、attention、sweeping 等状态动画，不接权限气泡和子代理追踪
 - **Reasonix CLI** — 可选 state-only command hooks，写入 `<Reasonix home>/settings.json`（macOS/Linux 为 `~/.reasonix/settings.json`，Windows 为 `%APPDATA%\reasonix\settings.json`；从 Settings → Agents 安装，或执行 `npm run install:reasonix-hooks`）；Phase 1 只驱动生命周期、工具调用、通知、压缩和子代理结束动效，权限决策仍留在 Reasonix 自己的终端流程
 - **opencode** — 可选 [plugin 集成](https://opencode.ai/docs/plugins)，写入 `~/.config/opencode/opencode.json`（从 Settings → Agents 安装，或执行 `node hooks/opencode-install.js`）；支持零延迟事件流和 Allow/Always/Deny 权限气泡。`task` 工具产生的子会话是 headless，不参与可见的多会话动画聚合
-- **MiMo Code** — 可选 [plugin 集成](https://opencode.ai/docs/plugins)，写入 `~/.config/mimocode/mimocode.jsonc`（从 Settings → Agents 安装，或执行 `npm run install:mimocode-plugin`）；与 opencode 共享 `@mimo-ai/plugin` SDK 和权限行为，`task` 子会话同样是 headless
+- **MiMo Code** — 可选 [plugin 集成](https://opencode.ai/docs/plugins)，写入 `~/.config/mimocode/` 下当前生效的文件（`config.json` → `mimocode.json` → 默认 `mimocode.jsonc`，后者优先；从 Settings → Agents 安装，或执行 `npm run install:mimocode-plugin`）；与 opencode 共享 `@mimo-ai/plugin` SDK 和权限行为，`task` 子会话同样是 headless
 - **Pi** — 可选全局 extension，写入 `~/.pi/agent/extensions/clawd-on-desk`（从 Settings → Agents 安装，或执行 `npm run install:pi-extension`）；仅同步交互式 Pi 会话生命周期和工具活动状态，并保留 Pi 默认 YOLO 行为
 - **OpenClaw** — 可选 state-only plugin，写入 `~/.openclaw/openclaw.json`（从 Settings → Agents 安装，或执行 `npm run install:openclaw-plugin`；OpenClaw 还需要已有配置）；Phase 1 面向本地 `openclaw tui --local` 会话，只驱动动画，不接权限气泡和终端聚焦
 - **Hermes Agent** — 可选 [plugin 集成](https://hermes-agent.org/)，写入 Hermes 的托管 plugin 目录（从 Settings → Agents 安装，或执行 `npm run install:hermes-plugin`）；支持状态、会话、SessionEnd、终端聚焦和受支持的权限气泡
@@ -70,8 +70,8 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 ### 权限审批气泡
 - **桌面端权限审批** — 当具备权限能力的集成发出受支持请求时，Clawd 会弹出浮动卡片；仅状态集成仍保留自己的原生权限流程
 - **允许 / 拒绝 / Agent 原生扩展项** — 一键批准或拒绝；如果该 Agent 支持，还会显示权限规则 / `Always` 一类的额外操作
-- **权限处理模式** — 可选 **每次询问**、经过确认的 **仅提问弹窗**（自动批准已审阅的工具请求）或 **自动放行**（工具及受支持的问题 / 计划）。最宽松模式会在重启后降级；live session 可以独立选择每次询问或仅工具模式。见[配置指南](docs/guides/setup-guide.zh-CN.md#权限处理自动化)
-- **可选远程审批** — Telegram 和飞书 / Lark 可以镜像仍待处理的合格请求，同时保留本地气泡；传输失败是 no-decision，绝不会自动拒绝
+- **权限处理模式** — 可选 **每次询问**、经过确认的 **仅提问弹窗**（显式支持 agent 的工具型请求）或 **自动放行**。自动放行会有意处理受支持 agent 的每个可执行决定，包括尚未识别但名称非空的请求；只有愿意交出全部决定时才应开启。它会在重启后降级，每个符合条件的 live session 也可独立选择每次询问或仅工具模式。见[配置指南](docs/guides/setup-guide.zh-CN.md#权限处理自动化)
+- **可选远程审批** — Telegram 和飞书 / Lark 可以镜像仍待处理的合格请求，同时保留本地气泡。通道失败不会产生远程决定，更不会自动拒绝：桌面请求继续等待；remote-only 请求只有在所有可用 client 都无决定后才回到 agent 原生流程
 - **全局快捷键** — `Ctrl+Shift+Y` 允许、`Ctrl+Shift+N` 拒绝最新的权限气泡（仅在气泡可见时注册）
 - **堆叠布局** — 多个权限请求从屏幕右下角向上堆叠
 - **自动关闭** — 如果你先在终端回答了，气泡自动消失

@@ -252,7 +252,7 @@ CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL�
 ## Permission Bubble
 
 - Claude Code / CodeBuddy 的 PermissionRequest 用 HTTP hook（阻塞式），其他事件用 command hook（非阻塞式）
-- `agents/registry.js` 的 capability 声明是 agent 是否进入权限、interactive bubble、subagent 等路径的权威来源；文档里的 agent 名单只是说明，不可替代 capability gate。automation eligibility 另有更窄的 `permission-automation-policy.js` / `KNOWN_PERMISSION_AGENTS` 已审阅 allowlist，故意不能从 `permissionApproval` 自动推导
+- `agents/registry.js` 的 capability 声明是 agent 是否进入权限、interactive bubble、subagent 等路径的权威来源；文档里的 agent 名单只是说明，不可替代 capability gate。automation 的 agent/family eligibility 另有显式白名单，故意不能从 `permissionApproval` 自动推导；工具 eligibility 是 mode/adapter-specific，不是单一逐工具 allowlist
 - 动态 custom HTTP Agent v1 是 state-only：`/permission` 恒不返回 Allow/Deny，也不创建权限 bubble
 - WorkBuddy 不进入 `/permission`：权限请求只以 Notification 驱动提醒，Allow / Deny 决策留在 WorkBuddy 原生 GUI
 - Codex 的 PermissionRequest 是 official command hook；hook 脚本挂起等待 `/permission`，再把 sanitized allow/deny JSON 写到 stdout
@@ -260,8 +260,8 @@ CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL�
 - 每个权限请求都会创建独立 `BrowserWindow`，多个 bubble 从右下向上堆叠
 - bubble 会通过 IPC `bubble-height` 回报真实高度，主进程据此重排
 - 支持 Allow / Deny / suggestion 决策，以及 `addRules` / `setMode` suggestion 类型
-- `permission-automation-policy.js` 的 off / auto-tools / unattended 与 `session-automation-coordinator.js` 的 per-session grant 会在 bubble 渲染前产生真实决定。auto-tools 对未知 built-in、`AskUserQuestion`、`ExitPlanMode` 等交互默认 fail closed；新增 permission-capable agent 或工具类型必须先审查 automation eligibility
-- Telegram 与飞书 / Lark 是和本地 bubble 并行的远程决策通道；关闭本地 bubble 不等于关闭远程审批。远程通道超时、断连、未配置或启动失败时必须 no-decision，让 agent 回原生 UI 重问，不能把传输失败转换成 deny
+- `permission-automation-policy.js` 的 off / auto-tools / unattended 与 `session-automation-coordinator.js` 的 per-session grant 会在 bubble 渲染前产生真实决定。auto-tools 对 Claude/Qwen 的未知 built-in（除有效 namespaced MCP）fail closed，但其他已知 adapter 对非空工具名不都使用逐工具 allowlist；unattended 在识别已知 decision tools 后仍有意对可作 Allow/Deny 的未知请求保留“handle every request”行为。新增 agent/tool/interaction 必须同时审查 policy 与 tests，不能笼统假设 unknown 一律 defer
+- Telegram 与飞书 / Lark 是和本地 bubble 并行的远程决策通道；关闭本地 bubble 不等于关闭远程审批。远程 client 超时、断连、未配置或启动失败不得产生决定或 deny：本地 bubble 存在时请求继续 pending；仅在 remote-only 且所有可用 client 都无决定时，整体请求才 no-decision 并让 agent 回原生 UI 重问
 - DND 只负责“不弹 bubble”，不替用户决定权限：opencode 与 MiMo Code 分支 silent drop，让 TUI 内置权限提示接管；Claude Code 分支 `res.destroy()`，让 CC 回到内置聊天/终端确认；Codex 分支返回 no-decision `{}`，让 Codex 原生审批接管
 - Codex 审批只认 official `PermissionRequest` hook；JSONL fallback 不再根据 shell function_call 猜测审批，也不再创建 Codex passive approval notify bubble
 - 涉及 Claude Code 权限 payload 的改动（`permission_suggestions`、`updatedPermissions`、elicitation 输入等）必须至少用一次真实 Claude Code 验证；`curl` 自编请求历史上掩盖过字段结构 bug
@@ -334,7 +334,7 @@ Remote SSH 有两条明确分开的 transport 路径：
 
 - `remote-ssh-transport.js` 通过 `ssh -G` 展开本机 SSH 配置并分类 effective transport。ordinary SSH 保持原 parallel tunnel + health-probe 行为；Codespaces `gh cs ssh --stdio` 和显式 serialized override 进入 single-session 路径。ProxyCommand 输出只作为 bounded data 解析，不得求值或重放；首次 unknown inspection 必须 fail closed
 - serialized ownership 以有效 transport key 为作用域，不是 profile id。同一 target 的 sibling profiles 共享一个 coordinator slot；非 owner 的 Connect、mutation 和 interactive terminal 必须返回 busy，不能另起 child
-- connection 与 operation 都先取得 coordinator context。所有自动化 managed SSH/SCP child 必须经 context 的 pre-spawn gateway；spawn 后再登记不构成 admission，ordinary raw child 也不能在配置漂移后被偷偷重键为 serialized。用户发起的 detached interactive terminal 不纳入 managed child，但必须先通过 fresh inspection / `checkInteractive()`，且只在 target 无 owner、无 child、无 operation、非 quarantine 时放行
+- serialized connection 与 operation 先取得 coordinator context，其 managed SSH/SCP child 必须经 context 的 pre-spawn gateway；spawn 后再登记不构成 admission。ordinary transport 在没有 retained serialized occupancy 时保留 `context:null` 的 parallel raw-child 路径，但不能在配置漂移后被偷偷重键为 serialized。用户发起的 detached interactive terminal 不纳入 managed child；fresh inspection 命中 serialized 或 retained occupancy 时必须通过 `checkInteractive()`，且只在 target 无 owner、无 child、无 operation、非 quarantine 时放行
 - serialized persistent tunnel 把 readiness command/marker 放在同一 SSH session，不再开第二条 probe SSH。准备期的 Node resolve 与可选 monitor mutation 必须在 tunnel 前完成；automatic reconnect 只重复只读准备，不盲目 replay mutation
 - 正常暂停通过 tunnel stdin EOF 请求远端 readiness process 退出，并等待 child `close`。`exit`、强杀或带 signal 的 outer `ssh.exe` close 都不足以证明 nested ProxyCommand 已 drain；未验证 drain、watchdog timeout 或仍有 live child 时 slot 进入 quarantine，禁止新 child、mutation、resume 和 interactive terminal
 - Deploy/Repair/cleanup 保留既有 identity transaction、layout-scoped lease、fencing 与 ownership checks。mutation 在 lock acquire-attempted / lock-owned 后出现 255、EOF/reset、signal 等 unknown result 时不得 replay、retry、自动 release lock 或恢复连接；返回 primary error，并按 lock stage 暴露 recovery state / `manual_lock_inspection_required`
