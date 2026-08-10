@@ -5139,6 +5139,16 @@ describe("settings renderer browser environment", () => {
       "rowRoamMovementStyleDesc",
       "roamMovementNatural",
       "roamMovementAxis",
+      "rowRoamArea",
+      "roamAreaLoading",
+      "roamAreaEntire",
+      "roamAreaCustom",
+      "roamAreaUnavailable",
+      "roamAreaPetTooLarge",
+      "roamAreaChoose",
+      "roamAreaReset",
+      "roamAreaSaved",
+      "roamAreaResetDone",
     ]) {
       const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
       const matchCount = matches ? matches.length : 0;
@@ -5273,6 +5283,102 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(axis.classList.contains("active"), true);
     assert.strictEqual(natural.disabled, true);
     assert.strictEqual(axis.disabled, true);
+  });
+
+  it("shows, selects, and resets the Free roam activity area", async () => {
+    const calls = [];
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ freeRoam: true }),
+      settingsAPI: {
+        getRoamFence: async () => ({
+          status: "ok",
+          active: true,
+          fence: { left: 0.1, top: 0.2, right: 0.7, bottom: 0.8 },
+        }),
+        selectRoamFence: async () => {
+          calls.push("select");
+          return {
+            status: "ok",
+            active: true,
+            fence: { left: 0.25, top: 0.25, right: 0.75, bottom: 0.75 },
+          };
+        },
+        clearRoamFence: async () => {
+          calls.push("clear");
+          return { status: "ok", active: false, fence: null };
+        },
+      },
+    });
+    harness.renderContent();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const control = harness.core.state.mountedControls.roamArea;
+    assert.ok(control && harness.content.querySelector(".roam-area-row"));
+    assert.strictEqual(control.description.textContent, "Custom area · 60% × 60% of each display");
+    assert.strictEqual(control.resetButton.style.display, "");
+    assert.ok(harness.content.querySelector(".free-roam-option-list").contains(control.row));
+
+    control.chooseButton.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepStrictEqual(calls, ["select"]);
+    assert.strictEqual(control.description.textContent, "Custom area · 50% × 50% of each display");
+    assert.strictEqual(control.chooseButton.disabled, false);
+
+    control.resetButton.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepStrictEqual(calls, ["select", "clear"]);
+    assert.strictEqual(control.description.textContent, "Default roam area");
+    assert.strictEqual(control.resetButton.style.display, "none");
+  });
+
+  it("shows the Free roam activity area as unavailable for a non-ok status", async () => {
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ freeRoam: true }),
+      settingsAPI: {
+        getRoamFence: async () => ({
+          status: "error",
+          active: false,
+          fence: null,
+          message: "failed to read the activity-area file",
+        }),
+      },
+    });
+    harness.renderContent();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const control = harness.core.state.mountedControls.roamArea;
+    assert.strictEqual(
+      control.description.textContent,
+      "The area file is invalid or still loading; roaming stays paused.",
+    );
+    assert.strictEqual(control.resetButton.style.display, "none");
+  });
+
+  it("explains when the pet is too large to choose an activity area", async () => {
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ freeRoam: true }),
+      settingsAPI: {
+        getRoamFence: async () => ({ status: "ok", active: false, fence: null }),
+        selectRoamFence: async () => ({
+          status: "error",
+          code: "pet-too-large",
+          message: "the pet is larger than this display's work area",
+        }),
+      },
+    });
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    harness.renderContent();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    harness.core.state.mountedControls.roamArea.chooseButton.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.strictEqual(toasts.length, 1);
+    assert.strictEqual(
+      toasts[0].message,
+      "Clawd is larger than this display's work area. Reduce the pet size before choosing an activity area.",
+    );
+    assert.strictEqual(toasts[0].options.error, true);
   });
 
   it("registers the Session cleanup group with three number rows, atomic reset, and i18n keys", () => {

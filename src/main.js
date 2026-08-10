@@ -81,6 +81,9 @@ const {
   shouldOpenSettingsWindowFromArgv,
 } = require("./settings-window-icon");
 const createSettingsWindowRuntime = require("./settings-window");
+const createRoamFenceLoader = require("./roam-fence");
+const createRoamFenceSettings = require("./roam-fence-settings");
+const createRoamFencePicker = require("./roam-fence-picker");
 const createPermissionAutomationConfirmationRuntime = require("./permission-automation-confirmation");
 const {
   createSettingsSizePreviewSession,
@@ -717,6 +720,7 @@ function maybeDestroyIdleAnimationPreviewPosterWindow() {
   if (animationOverridesMain) animationOverridesMain.maybeDestroyIdlePreviewPosterWindow();
 }
 
+let roamFencePickerRuntime = null;
 const settingsWindowRuntime = createSettingsWindowRuntime({
   app,
   BrowserWindow,
@@ -735,6 +739,7 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
   getTitle: () => translate("settingsWindowTitle"),
   onBeforeCreate: () => bumpAnimationOverridePreviewPosterGeneration(),
   onBeforeClosed: () => {
+    if (roamFencePickerRuntime) roamFencePickerRuntime.cancel();
     bumpAnimationOverridePreviewPosterGeneration();
     if (shortcutRuntime) shortcutRuntime.stopRecording();
     void settingsSizePreviewSession.cleanup();
@@ -759,6 +764,23 @@ const permissionAutomationConfirmationRuntime = createPermissionAutomationConfir
 function getSettingsWindow() {
   return settingsWindowRuntime.getWindow();
 }
+
+// The file loader is shared by roam and Settings. A selection saved from the
+// visual picker therefore updates the exact same last-known-good cache that a
+// later walk reads; external tools keep using the same JSON contract.
+const roamFenceLoader = createRoamFenceLoader();
+const roamFenceSettings = createRoamFenceSettings({ loader: roamFenceLoader });
+roamFencePickerRuntime = createRoamFencePicker({
+  BrowserWindow,
+  ipcMain,
+  nativeTheme,
+  screen,
+  path,
+  iconPath: settingsWindowRuntime.getIconPath(),
+  getSettingsWindow,
+  getPetWindowBounds: () => getPetWindowBounds(),
+  getEffectivePetSize: (workArea) => getEffectiveCurrentPixelSize(workArea),
+});
 
 shortcutRuntime = createShortcutRuntime({
   ipcMain,
@@ -3880,6 +3902,8 @@ registerSettingsIpc({
   getSettingsWindow,
   getActiveTheme: () => getActiveTheme(),
   getLang: () => lang,
+  roamFenceSettings,
+  roamFencePicker: roamFencePickerRuntime,
   settingsSizePreviewSession,
   isValidSizePreviewKey,
   previewTextScale,
@@ -4343,8 +4367,16 @@ const _roamCtx = {
   isImeEditingActive: () => pendingPermissions.some(
     (p) => p && p.bubble && !p.bubble.isDestroyed() && p.bubble.__clawdMacImeEditing
   ),
+  // #810: optional roam fence — validated async loader for
+  // ~/.clawd/roam-area.json; roam reads its in-memory cache at target pick
+  // time and kicks refresh() when scheduling walks (see src/roam-fence.js).
+  roamFence: roamFenceLoader,
 };
 const _roam = require("./roam")(_roamCtx);
+// #810: resolve the fence's initial status right away so the first roam
+// round doesn't have to hold on an UNKNOWN state (get() === null) when a
+// fence file exists — or confirm quickly that none does.
+_roamCtx.roamFence.refresh();
 
 // Free roam: initialize from prefs and react to toggle changes
 _roam.setEnabled(_settingsController.get("freeRoam") === true);
@@ -4687,6 +4719,7 @@ if (!gotTheLock) {
     globalShortcut.unregisterAll();
     void settingsSizePreviewSession.cleanup();
     permissionAutomationConfirmationRuntime.dispose();
+    roamFencePickerRuntime.dispose();
     if (_telegramMigrationController
       && typeof _telegramMigrationController.dispose === "function") {
       void _telegramMigrationController.dispose();

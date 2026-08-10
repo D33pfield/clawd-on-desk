@@ -25,6 +25,7 @@ docs/**
 !docs/guides/setup-guide.md
 !docs/guides/setup-guide.zh-CN.md
 !docs/guides/guide-remote-ssh.md
+!docs/guides/roam-fence.md
 !docs/guides/guide-remote-ssh.zh-CN.md
 !docs/guides/state-mapping.md
 !docs/guides/state-mapping.zh-CN.md
