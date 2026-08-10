@@ -31,8 +31,12 @@ function parseTopLevelExports(content) {
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    if (!line.startsWith("export ")) {
+    if (!/^[ \t]*export(?:[ \t]|$)/.test(line)) {
       continue;
+    }
+
+    if (!line.startsWith("export ")) {
+      throw new Error(`unsupported export syntax at AppRun line ${index + 1}`);
     }
 
     const match = /^export ([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
@@ -120,14 +124,11 @@ function validateAppRunContent(content) {
     };
   }
 
-  const actualPathListExports = exports
-    .filter((entry) => entry.rhs.includes(":"))
-    .map((entry) => entry.name)
-    .sort();
-  const expectedPathListExports = [...REVIEWED_PATH_EXPORTS].sort();
-  if (JSON.stringify(actualPathListExports) !== JSON.stringify(expectedPathListExports)) {
+  const actualExports = exports.map((entry) => entry.name).sort();
+  const expectedExports = [...REVIEWED_PATH_EXPORTS].sort();
+  if (JSON.stringify(actualExports) !== JSON.stringify(expectedExports)) {
     throw new Error(
-      `top-level path-list exports changed; expected ${expectedPathListExports.join(", ")}, got ${actualPathListExports.join(", ") || "none"}`
+      `top-level exports changed; expected ${expectedExports.join(", ")}, got ${actualExports.join(", ") || "none"}`
     );
   }
 

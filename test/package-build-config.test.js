@@ -201,11 +201,11 @@ describe("package build config", () => {
       );
     });
 
-    it("uses explicit ad-hoc signing without disabling hardened runtime", () => {
+    it("requests explicit ad-hoc signing without disabling hardened runtime", () => {
       assert.strictEqual(
         pkg.build.mac && pkg.build.mac.identity,
         "-",
-        "macOS x64 and ARM64 packages must opt into deterministic ad-hoc signing"
+        "macOS x64 and ARM64 packages must express ad-hoc signing intent; CI gates the final signatures"
       );
       assert.notStrictEqual(
         pkg.build.mac && pkg.build.mac.hardenedRuntime,

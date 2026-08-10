@@ -68,7 +68,7 @@ PR #810 未修改 `package.json` 或 `package-lock.json`，也未引入新依赖
 2. 对所有相关间接包做命名包定向刷新，清除每个脆弱物理副本，而不是依赖 npm 的偶然重解析。
 3. 当前完整依赖树和 production-only 依赖树中的原 14 个 advisory 全部关闭；实施当天新增 advisory 另行分级。
 4. 证明最终 AppImage 中的 `AppRun` 已消除空/相对搜索路径元素，而不是只证明 `node_modules` 里的生成器源码已更新。
-5. 明确保持无 Developer ID 的 macOS 发布策略，并让 x64/ARM64 产物都得到确定性的 ad-hoc hardened-runtime 签名。
+5. 明确保持无 Developer ID 的 macOS 发布策略，并以最终产物 gate 确保 x64/ARM64 都得到 ad-hoc hardened-runtime 签名。
 6. 证明 electron-builder 升级没有破坏五个常设 release targets：Windows x64、Windows ARM64、macOS x64、macOS ARM64、Linux x64。
 7. 保持 Koffi 2.16.3、native pruning、ASAR integrity、updater metadata 和现有发布命名契约不变。
 8. 增加离线、确定性的安全地板回归测试，防止未来 lockfile 回退到已知脆弱版本。
@@ -113,7 +113,7 @@ caret 表示允许未来在同 major 内正常解析；本次 PR 的候选 `pack
 
 [electron-builder PR #9822](https://github.com/electron-userland/electron-builder/pull/9822) 移除了“无证书时仅 ARM64/universal 自动 ad-hoc 签名”的回退；在 26.15.x 中，不提供证书时默认跳过所有架构签名。无签名 ARM 应用仍可能由用户在 Privacy & Security 中手动批准后本地运行，因此不能绝对描述为“完全无法启动”，但失去 code seal、hardened-runtime 标志和既有 ARM64 行为仍是发布回归。
 
-本 PR 的最小确定性方案是在现有 `build.mac` 配置中显式加入：
+本 PR 的最小方案是在现有 `build.mac` 配置中显式加入：
 
 ```json
 {
@@ -123,10 +123,11 @@ caret 表示允许未来在同 major 内正常解析；本次 PR 的候选 `pack
 
 契约如下：
 
-- `identity: "-"` 明确要求 ad-hoc 签名，不寻找 Developer ID；x64 会从当前的 unsigned 变为 ad-hoc，ARM64 则保持既有的 ad-hoc 意图。
+- `identity: "-"` 表达 ad-hoc 签名意图；x64 会从当前的 unsigned 变为 ad-hoc，ARM64 则保持既有的 ad-hoc 意图。electron-builder 26.15.7 会先把该值作为证书名称 qualifier 做子串匹配，匹配不到时才构造 `"-"` ad-hoc identity，因此配置本身不能证明没有选中名称含连字符的证书。
+- `.github/workflows/build.yml` 必须对两个最终 `.app` 检查 `Signature=adhoc`、`adhoc,runtime`、严格签名和 entitlement；这道产物 gate 才是本发布流程的确定性保证，任何意外证书签名都会阻止 build job 和后续 release job。
 - 保留 electron-builder 默认 hardened runtime 和生成的 entitlement；不新增证书、keychain、notarization secret 或网络发布步骤。
 - electron-builder 26.15.x 在 `identity: "-"` 与默认 hardened runtime 同时启用时会输出建议性告警，提示检查 `com.apple.security.cs.disable-library-validation`。本项目必须以最终 entitlement 和实际启动验证为准；该告警属于预期，**不得通过增加 `hardenedRuntime: false` 来消除**。
-- 未来若引入 Developer ID，必须在单独变更中删除/覆盖此设置，并重新验证签名与 notarization，不能让 `"-"` 静默压过正式证书策略。
+- 未来若引入 Developer ID，必须在单独变更中删除/覆盖此设置，并重新验证签名与 notarization，不能依赖当前 qualifier 的隐式匹配行为。
 - 本次必须同时检查 x64 和 ARM64 的签名结构；只有 ARM64 可在当前硬件上提供真实启动/Koffi smoke，Intel 真机证据仍按可用性单独声明。
 
 ### 3.3 间接依赖
@@ -206,13 +207,13 @@ caret 表示允许未来在同 major 内正常解析；本次 PR 的候选 `pack
 - 只在 Linux CI 的最终 `.AppImage` 生成后运行；检查最终 artifact，不检查 `node_modules/app-builder-lib` 生成器源码。
 - 在临时目录中只提取 `AppRun`。首选 `<artifact> --appimage-extract AppRun`；该操作只执行 AppImage 的 ELF runtime stub 来完成临时提取，不得继续启动被提取的 `AppRun`。若 CI 环境不支持 AppImage 自提取，可用 `unsquashfs` 配合不执行 `AppRun` 的只读 offset 提取作为 fallback。
 - **绝不 `source`、`eval`、执行 `AppRun` 或执行从中提取的赋值语句。** 产物内容一律作为不可信数据处理。
-- 解析作用域严格限定为顶层 `export NAME="…"` 语句。函数、`trap` / `case` / `if`、普通参数展开，以及 `LD_LIBRARY_PATH="" zenity …` 这类命令前缀赋值不在解析范围内，不计入赋值数量，也不触发四条 export 右值的语法拒绝。
+- 验证器不构建 shell AST，也不猜测函数、`trap` / `case` / `if` 的控制流；它保守扫描每一行，只允许从行首开始的精确 `export NAME="…"` 语句。shell 缩进不表示嵌套，因此任何以空格或 Tab 开头、但仍会执行的 `export` 都 fail closed；普通参数展开和 `LD_LIBRARY_PATH="" zenity …` 这类命令前缀赋值不计入 export 数量，也不触发四条 export 右值的语法拒绝。
 - 对 `PATH`、`XDG_DATA_DIRS`、`LD_LIBRARY_PATH`、`GSETTINGS_SCHEMA_DIR` 各要求恰好一个顶层 export 赋值；缺失或重复都 fail closed。
-- 额外断言：所有顶层 export 中，右值含 `:` 分隔符的变量集合必须恰好等于上述四项。出现第五个未审阅 path-list export 时 fail closed，人工评估后才能扩充名单，不能因其不在既有名单中就默认安全。
+- 额外断言：所有从行首开始的 export 变量集合必须恰好等于上述四项。出现第五个未审阅 export 时，无论右值是否含 `:` 都 fail closed，人工评估后才能扩充名单，不能因其不在既有名单中就默认安全。
 - 有限静态语法白名单只适用于上述四条 export 的右值，只允许已审阅的 literal、`${APPDIR}` 和 `${VAR:+:${VAR}}` 形式；在这些右值中拒绝命令替换、反引号、控制运算符、重定向和任何未识别 shell 语法。
 - 用验证器自己的字符串解释逻辑分别模拟继承变量未设置和设置为无害哨兵值的结果，不调用 shell。拒绝空的开头/结尾/连续 `:` 元素、相对 literal（如 `./share`），以及无条件继承变量展开造成的空路径元素。
 - 允许并记录 26.15.7 已审阅模板的条件展开。以后上游更改语法时应主动失败，要求显式复审，而不是宽松放过。
-- fixture 至少包含：真实 26.8.1 模板失败、真实 26.15.7 模板通过、`./share` 失败、双冒号失败、命令替换失败、重复顶层 export 失败、命令前缀 `LD_LIBRARY_PATH=""` 不计数、第五个 path-list export 失败。
+- fixture 至少包含：真实 26.8.1 模板失败、真实 26.15.7 模板通过、`./share` 失败、双冒号失败、命令替换失败、重复顶层 export 失败、空格/Tab 缩进 export 失败、命令前缀 `LD_LIBRARY_PATH=""` 不计数、第五个 path-list export 和第五个无冒号 export 都失败。
 - 输出 artifact SHA-256、AppRun SHA-256、四条规范化赋值及模拟结果，便于 CI 审阅。
 
 将 AppRun gate 放在 `.github/workflows/build.yml` 的 Linux AppImage 构建后。现有失败产物上传使用 `if: always()`，应保留用于故障取证：gate 失败可以仍上传 CI artifact，但会让 Linux build job 失败，并通过 `release` job 的依赖关系阻止发布。在 `.github/workflows/wayland-smoke.yml` 中，将 gate 放在正常 artifact 上传和 smoke 之前，失败时不继续后续步骤。准确称呼它为 **release gate**，不是所有工作流中的绝对 upload gate。
@@ -312,7 +313,7 @@ macOS 两个架构都必须执行并保存：
 3. `koffi` manifest、lockfile、打包产物都保持 2.16.3 和单目标架构契约。
 4. 原 14 个 advisory 全部关闭；实施日新增 advisory 已独立分级并有明确处置。
 5. 最终 AppImage 的 `AppRun` 通过 fail-closed 静态检查；验证器没有执行任何产物 shell；gate 能阻止 release job。
-6. macOS 明确使用 ad-hoc hardened-runtime 签名，x64/ARM64 均通过签名、entitlement 和严格验证；没有引入 Developer ID/notarization。
+6. macOS 最终 x64/ARM64 产物均通过 ad-hoc hardened-runtime 签名、entitlement 和严格验证 gate；没有引入 Developer ID/notarization。
 7. Windows x64/ARM64、macOS x64/ARM64、Linux x64 五个 release targets 均完成最低证据矩阵。
 8. Windows module collection、Koffi pruning、`elevate.exe` provenance、macOS ASAR integrity、Linux AppImage/deb、updater metadata 均无回归。
 9. `scripts/native-package-policy.json` 如有更新，必须由真实 Windows manifest 证据支持；helper 消失时必须删除死例外。
@@ -363,8 +364,11 @@ macOS 两个架构都必须执行并保存：
 7. js-yaml updater 路径的利用需要外部信任边界被突破；除非构造隔离测试，否则静态审查不能量化真实卡顿时长。
 8. Electron 41.10.2 advisory 当前不可达的结论依赖现有窗口/iframe 模型；未来新增不可信嵌入内容时仍需重新威胁建模。
 9. electron-builder 26.15.7 的 Windows 模块收集、签名和安装行为必须靠实际产物验证，不能只引用 changelog。
-10. ad-hoc 签名不提供 Developer ID 身份、notarization 或 Gatekeeper 信任；本轮只保持现有无证书发布策略的确定性。
-11. `.deb` disposable-environment smoke、XWayland smoke 和 AppImage 静态 gate 仍不能覆盖所有发行版、桌面环境、挂载选项和用户启动目录。
+10. ad-hoc 签名不提供 Developer ID 身份、notarization 或 Gatekeeper 信任；`identity: "-"` 只表达配置意图，真正的发布保证来自最终 `.app` 的签名 gate。
+11. electron-builder 26.15.7 的 7zip 工具在 npm 安装树之外按平台下载，因此不受 lockfile 或 `npm audit` 覆盖；当前 app-builder-lib 将其固定为 `7zip@1.0.0` 并校验平台对应 SHA-256，但这仍是上游构建工具供应链边界。
+12. AppImage runtime 自提取失败时，`unsquashfs` fallback 会按 SquashFS magic offset 尝试提取；当前真实产物只有一个 offset 能成功提取 `AppRun`，但静态审查没有证明恶意双 SquashFS/诱饵布局不可构造。
+13. electron-builder 26.15.7 新增的 `desktopName is not set` 建议性告警没有在本安全 PR 中通过盲设配置消除；现有 Wayland CI 通过也不能替代真实 Linux 桌面集成验证。
+14. `.deb` disposable-environment smoke、XWayland smoke 和 AppImage 静态 gate 仍不能覆盖所有发行版、桌面环境、挂载选项和用户启动目录。
 
 ## 10. 预计文件范围与计划文档状态
 
