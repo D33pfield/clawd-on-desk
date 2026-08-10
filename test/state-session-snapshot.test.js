@@ -169,11 +169,22 @@ describe("sessionDisplayTitle cwd fallback", () => {
   it("skips QoderWork internal workspace cwds so the HUD never shows a raw workspace id", () => {
     assert.strictEqual(
       sessionDisplayTitle("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "/Users/me/.qoderwork/workspace/mqgw60jiigjsjcid" })),
-      "qoderw.."
+      "abc123"
     );
     assert.strictEqual(
       sessionDisplayTitle("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "C:\\Users\\me\\.qoderwork\\workspace\\abc123" })),
-      "qoderw.."
+      "abc123"
+    );
+  });
+
+  it("skips QoderWork internal workspace cwds with trailing separators", () => {
+    assert.strictEqual(
+      sessionDisplayTitle("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "/Users/me/.qoderwork/workspace/opaque-id///" })),
+      "abc123"
+    );
+    assert.strictEqual(
+      sessionDisplayTitle("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "C:\\Users\\me\\.qoderwork\\workspace\\opaque-id\\" })),
+      "abc123"
     );
   });
 
@@ -195,14 +206,14 @@ describe("sessionDisplayTitle cwd fallback", () => {
     it("skips the basename for macOS/POSIX workspace cwds", () => {
       assert.strictEqual(
         sessionDisplayTitle("qwenwork:abc123", qwen({ cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid" })),
-        "qwenwo.."
+        "abc123"
       );
     });
 
     it("skips the basename for Windows backslash workspace cwds", () => {
       assert.strictEqual(
         sessionDisplayTitle("qwenwork:abc123", qwen({ cwd: "C:\\Users\\me\\.QwenWorkCN\\workspace\\mqgw60jiigjsjcid" })),
-        "qwenwo.."
+        "abc123"
       );
     });
 
@@ -212,7 +223,7 @@ describe("sessionDisplayTitle cwd fallback", () => {
       for (const dir of [".QwenWorkCN", ".qwenworkcn", ".QWENWORKCN", ".QwenWorkCn"]) {
         assert.strictEqual(
           sessionDisplayTitle("qwenwork:abc123", qwen({ cwd: `/Users/me/${dir}/workspace/mqgw60jiigjsjcid` })),
-          "qwenwo..",
+          "abc123",
           dir
         );
       }
@@ -227,7 +238,40 @@ describe("sessionDisplayTitle cwd fallback", () => {
         recentEvents: [],
         cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid",
       };
-      assert.strictEqual(sessionDisplayTitle("qwenwork:abc123", withoutAgentId), "qwenwo..");
+      assert.strictEqual(sessionDisplayTitle("qwenwork:abc123", withoutAgentId), "abc123");
+    });
+
+    it("strips the namespace before shortening so concurrent fallback titles remain distinct", () => {
+      const cwd = "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid";
+      const first = sessionDisplayTitle("canonical-a", qwen({ rawSessionId: "qwenwork:abc123456789", cwd }));
+      const second = sessionDisplayTitle("canonical-b", qwen({ rawSessionId: "qwenwork:xyz999456789", cwd }));
+
+      assert.strictEqual(first, "abc123..");
+      assert.strictEqual(second, "xyz999..");
+      assert.notStrictEqual(first, second);
+    });
+
+    it("keeps a readable namespace fallback when the raw session id is only the prefix", () => {
+      const cwd = "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid";
+      assert.strictEqual(
+        sessionDisplayTitle("canonical", qwen({ rawSessionId: "qwenwork:", cwd })),
+        "qwenwo.."
+      );
+      assert.strictEqual(
+        sessionDisplayTitle("canonical", qwen({ rawSessionId: "qwenwork:   ", cwd })),
+        "qwenwo.."
+      );
+    });
+
+    it("suppresses workspace ids when cwd has trailing POSIX or Windows separators", () => {
+      assert.strictEqual(
+        sessionDisplayTitle("qwenwork:abc123", qwen({ cwd: "/Users/me/.QwenWorkCN/workspace/opaque-id///" })),
+        "abc123"
+      );
+      assert.strictEqual(
+        sessionDisplayTitle("qwenwork:abc123", qwen({ cwd: "C:\\Users\\me\\.QwenWorkCN\\workspace\\opaque-id\\" })),
+        "abc123"
+      );
     });
 
     it("lets an explicit agentId beat a contradictory session-id prefix", () => {
@@ -240,6 +284,14 @@ describe("sessionDisplayTitle cwd fallback", () => {
           session("working", { agentId: "claude-code", cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid" })
         ),
         "mqgw60jiigjsjcid"
+      );
+      assert.strictEqual(
+        sessionDisplayTitle(
+          "qwenwork:abc123",
+          session("working", { agentId: "claude-code", cwd: "" })
+        ),
+        "qwenwo..",
+        "the namespace is only stripped when it agrees with the explicit agent"
       );
     });
 

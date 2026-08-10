@@ -11,6 +11,7 @@ const { resolveNodeBin } = require("./server-config");
 const {
   readJsonFile,
   writeJsonAtomic,
+  writeJsonAtomicWithBackup,
   asarUnpackedPath,
   extractExistingNodeBin,
   formatNodeHookCommand,
@@ -230,6 +231,9 @@ function registerQwenWorkHooks(options = {}) {
   }
 
   const settings = readSettings(settingsPath);
+  if (typeof settings !== "object" || settings === null || Array.isArray(settings)) {
+    throw new Error("Invalid QwenWork settings.json: top level must be an object");
+  }
   const hookScript = asarUnpackedPath(path.resolve(__dirname, MARKER).replace(/\\/g, "/"));
 
   // Resolve node path; if detection fails, preserve any existing absolute path.
@@ -243,7 +247,11 @@ function registerQwenWorkHooks(options = {}) {
   let updated = 0;
   let changed = false;
 
-  if (!settings.hooks || typeof settings.hooks !== "object") settings.hooks = {};
+  if (settings.hooks == null) {
+    settings.hooks = {};
+  } else if (typeof settings.hooks !== "object" || Array.isArray(settings.hooks)) {
+    throw new Error("Invalid QwenWork settings.json: hooks must be an object keyed by event name");
+  }
   if (normalizeQwenWorkDisabledHooks(settings)) changed = true;
 
   for (const event of QWENWORK_HOOK_EVENTS) {
@@ -285,7 +293,7 @@ function registerQwenWorkHooks(options = {}) {
  * @param {boolean} [options.silent]
  * @param {string} [options.settingsPath]
  * @param {string} [options.homeDir] internal override for tests
- * @returns {{ removed: number }}
+ * @returns {{ removed: number, changed: boolean, settingsPath: string, backupPath?: string|null }}
  */
 function unregisterQwenWorkHooks(options = {}) {
   const homeDir = options.homeDir || os.homedir();
@@ -295,11 +303,19 @@ function unregisterQwenWorkHooks(options = {}) {
   try {
     settings = readJsonFile(settingsPath);
   } catch (err) {
-    if (err.code === "ENOENT") return { removed: 0 };
+    if (err.code === "ENOENT") {
+      const result = { removed: 0, changed: false, settingsPath };
+      if (options.backup === true) result.backupPath = null;
+      return result;
+    }
     throw new Error(`Failed to read settings.json: ${err.message}`);
   }
 
-  if (!settings.hooks || typeof settings.hooks !== "object") return { removed: 0 };
+  if (!settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks)) {
+    const result = { removed: 0, changed: false, settingsPath };
+    if (options.backup === true) result.backupPath = null;
+    return result;
+  }
 
   let removed = 0;
   let changed = false;
@@ -341,9 +357,12 @@ function unregisterQwenWorkHooks(options = {}) {
     }
   }
 
-  if (changed) writeJsonAtomic(settingsPath, settings);
+  let backupPath = null;
+  if (changed) backupPath = writeJsonAtomicWithBackup(settingsPath, settings, options);
   if (!options.silent) console.log(`Clawd QwenWork hooks removed: ${removed}`);
-  return { removed };
+  const result = { removed, changed, settingsPath };
+  if (options.backup === true) result.backupPath = backupPath;
+  return result;
 }
 
 module.exports = {

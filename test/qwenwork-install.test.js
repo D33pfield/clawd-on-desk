@@ -85,6 +85,53 @@ describe("QwenWork hook installer", () => {
     }
   });
 
+  it("rejects an array-valued hooks root without reporting a false-success install", () => {
+    const settingsPath = makeTempSettingsFile({ hooks: [] });
+    const before = fs.readFileSync(settingsPath, "utf8");
+
+    assert.throws(
+      () => registerQwenWorkHooks({
+        silent: true,
+        settingsPath,
+        nodeBin: "/usr/local/bin/node",
+        platform: "darwin",
+      }),
+      /hooks must be an object keyed by event name/
+    );
+    assert.strictEqual(
+      fs.readFileSync(settingsPath, "utf8"),
+      before,
+      "invalid but parseable user config must be preserved byte-for-byte"
+    );
+  });
+
+  it("rejects non-object top-level JSON without mutating it or reporting added hooks", () => {
+    const cases = [
+      { label: "empty array", initial: [] },
+      { label: "non-empty array", initial: [{ user: "data" }] },
+      { label: "string", initial: "hello" },
+      { label: "number", initial: 42 },
+      { label: "boolean", initial: false },
+      { label: "null", initial: null },
+    ];
+
+    for (const testCase of cases) {
+      const settingsPath = makeTempSettingsFile(testCase.initial);
+      const before = fs.readFileSync(settingsPath, "utf8");
+      assert.throws(
+        () => registerQwenWorkHooks({
+          silent: true,
+          settingsPath,
+          nodeBin: "/usr/local/bin/node",
+          platform: "darwin",
+        }),
+        /top level must be an object/,
+        testCase.label
+      );
+      assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), before, testCase.label);
+    }
+  });
+
   // QwenWork uses its own hooks system which executes hooks through a POSIX
   // shell (Git Bash) on Windows, so the command must be the bash/cmd-portable
   // form, never -EncodedCommand (bash eats the unquoted backslash powershell.exe
@@ -198,6 +245,65 @@ describe("QwenWork hook installer", () => {
         }
       }
     }
+  });
+
+  it("backs up the complete pre-uninstall config once and exposes the backup path", () => {
+    const settingsPath = makeTempSettingsFile({});
+    registerQwenWorkHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", platform: "darwin" });
+
+    const settings = readJson(settingsPath);
+    settings.theme = "dark";
+    settings.hooks.SessionStart.unshift({
+      matcher: "*",
+      hooks: [{ type: "command", command: "other-tool --flag", name: "other" }],
+    });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf8");
+    const before = readJson(settingsPath);
+
+    const first = unregisterQwenWorkHooks({
+      silent: true,
+      settingsPath,
+      backup: true,
+      now: () => new Date("2026-08-10T01:02:03.004Z"),
+    });
+    assert.strictEqual(first.changed, true);
+    assert.ok(first.backupPath, JSON.stringify(first));
+    assert.strictEqual(first.settingsPath, settingsPath);
+    assert.deepStrictEqual(readJson(first.backupPath), before);
+    assert.strictEqual(readJson(settingsPath).theme, "dark");
+
+    const backupNamesAfterFirst = fs.readdirSync(path.dirname(settingsPath))
+      .filter((name) => name.includes(".clawd-cleanup-") && name.endsWith(".bak"));
+    assert.strictEqual(backupNamesAfterFirst.length, 1);
+
+    const second = unregisterQwenWorkHooks({
+      silent: true,
+      settingsPath,
+      backup: true,
+      now: () => new Date("2026-08-10T01:02:04.005Z"),
+    });
+    assert.deepStrictEqual(second, {
+      removed: 0,
+      changed: false,
+      settingsPath,
+      backupPath: null,
+    });
+    const backupNamesAfterSecond = fs.readdirSync(path.dirname(settingsPath))
+      .filter((name) => name.includes(".clawd-cleanup-") && name.endsWith(".bak"));
+    assert.deepStrictEqual(backupNamesAfterSecond, backupNamesAfterFirst);
+  });
+
+  it("does not create a backup when backup is not requested", () => {
+    const settingsPath = makeTempSettingsFile({});
+    registerQwenWorkHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", platform: "darwin" });
+
+    const result = unregisterQwenWorkHooks({ silent: true, settingsPath, backup: false });
+    assert.strictEqual(result.changed, true);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(result, "backupPath"), false);
+    assert.deepStrictEqual(
+      fs.readdirSync(path.dirname(settingsPath)).filter((name) => name.endsWith(".bak")),
+      []
+    );
   });
 
   // Back-compat: a user upgrading from a build that wrote the -EncodedCommand

@@ -203,7 +203,10 @@ const INTERNAL_WORKSPACE_AGENTS = Object.freeze([
 
 function isInternalWorkspaceCwd(id, sessionLike, cwd) {
   const agentId = sessionLike && sessionLike.agentId;
-  const posixCwd = cwd.replace(/\\/g, "/");
+  // Hook payloads are not required to normalize cwd. Strip one or more
+  // trailing separators before matching so an opaque workspace leaf is not
+  // exposed merely because QwenWork/QoderWork reported a directory form.
+  const posixCwd = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
   for (const entry of INTERNAL_WORKSPACE_AGENTS) {
     const belongsToAgent = agentId === entry.agentId
       || (!agentId && typeof id === "string" && id.startsWith(entry.sessionPrefix));
@@ -211,6 +214,24 @@ function isInternalWorkspaceCwd(id, sessionLike, cwd) {
     if (entry.cwdPattern.test(posixCwd)) return true;
   }
   return false;
+}
+
+function shortenSessionIdForDisplay(value, sessionLike) {
+  if (value === null || value === undefined) return value;
+  let displayId = String(value);
+  const agentId = sessionLike && sessionLike.agentId;
+  for (const entry of INTERNAL_WORKSPACE_AGENTS) {
+    if (!displayId.startsWith(entry.sessionPrefix)) continue;
+    if (agentId && agentId !== entry.agentId) continue;
+    const stripped = displayId.slice(entry.sessionPrefix.length);
+    // Placeholder ids can arrive as the bare namespace (for example when an
+    // adapter reports only whitespace and the server trims it). Keep the
+    // namespace fallback instead of turning the display title into an empty
+    // string that leaks the long canonical session key into UI consumers.
+    if (stripped.trim()) displayId = stripped;
+    break;
+  }
+  return displayId.length > 6 ? `${displayId.slice(0, 6)}..` : displayId;
 }
 
 function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {}) {
@@ -223,9 +244,7 @@ function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {})
     return path.basename(cwd);
   }
   const rawSessionId = (sessionLike && sessionLike.rawSessionId) || id;
-  return rawSessionId && rawSessionId.length > 6
-    ? `${rawSessionId.slice(0, 6)}..`
-    : rawSessionId;
+  return shortenSessionIdForDisplay(rawSessionId, sessionLike);
 }
 
 function sessionMenuComparator(a, b, statePriority = {}) {

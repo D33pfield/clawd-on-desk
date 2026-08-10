@@ -39,9 +39,11 @@ const HOOK_DEBUG_FILE_MODE = 0o600;
 //                                      on deliberately, and delete the file
 //                                      afterwards.
 //
-// The file is written 0600 under a 0700 directory on POSIX (Windows keeps the
-// inherited ACL; chmod there only maps to the read-only bit). Every failure is
-// swallowed: debug logging must never change the hook's stdout or exit code.
+// The file is written 0600 on POSIX. A debug directory created by this hook is
+// tightened to 0700; an existing shared ~/.clawd keeps its current permissions
+// (Windows keeps the inherited ACL; chmod there only maps to the read-only
+// bit). Every failure is swallowed: debug logging must never change the hook's
+// stdout or exit code.
 function readHookDebugMaxBytes(env = process.env) {
   const raw = env.CLAWD_QWENWORK_HOOK_DEBUG_MAX_BYTES;
   if (typeof raw !== "string" || !raw.trim()) return DEFAULT_HOOK_DEBUG_MAX_BYTES;

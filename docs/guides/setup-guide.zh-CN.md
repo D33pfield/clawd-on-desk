@@ -72,7 +72,7 @@ Claude Code 只有一个用户级 statusline 槽位，因此 Clawd 绝不会静�
 - **无 startup recovery**：QwenWork 桌面主进程是长驻进程，它在跑不代表有正在进行的任务，Clawd 只按 hook 事件反应。
 - **Windows 命令形态**：条目使用 portable 的 `node "<script>" "<Event>"` 形式，因为 QwenWork 通过 POSIX shell 执行 command hook。PowerShell `-EncodedCommand` 只用于*识别*，让旧版本写下的 Clawd 条目原地迁移，不是 Clawd 当前写入的形态。
 - **所有权**：合并与卸载只处理 command 中带 `qwenwork-hook.js` marker 的条目。仅仅名为 `clawd` 的 hook 不会被动；Clawd hook 与第三方 hook 混在同一 entry 时，第三方 hook 原样保留。
-- **可选调试日志**：`CLAWD_QWENWORK_HOOK_DEBUG=1` 会往 `~/.clawd/qwenwork-hook-debug.jsonl` 追加事件与字段结构摘要（不含 prompt、tool input、路径）。再加 `CLAWD_QWENWORK_HOOK_DEBUG_RAW=1` 才会记录完整原始 payload——**此时该文件含敏感数据**，用完请删除。macOS/Linux 上文件按 `0600` 创建，目录按 `0700`。
+- **可选调试日志**：`CLAWD_QWENWORK_HOOK_DEBUG=1` 会往 `~/.clawd/qwenwork-hook-debug.jsonl` 追加事件与字段结构摘要（不含 prompt、tool input、路径）。再加 `CLAWD_QWENWORK_HOOK_DEBUG_RAW=1` 才会记录完整原始 payload——**此时该文件含敏感数据**，用完请删除。macOS/Linux 上文件按 `0600` 创建；若 hook 新建调试目录则使用 `0700`，已有的共享 `~/.clawd` 目录保持原权限不变。
 
 **Qoder** — hooks 写入 `~/.qoder/settings.json`。需要本机 Qoder 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。也可以手动执行 `npm run install:qoder-hooks`。Phase 1 是 state-only：hook 恒返回 `{}`，`PermissionRequest` / `PermissionDenied` 只作为通知观察——Clawd 不弹权限气泡、不代答权限决策，权限流程由 Qoder 原生接管。启动恢复只识别 Qoder CLI 进程（`qodercli` / `qoder-cli`），闲置打开的 Qoder IDE 不会被当成进行中的 agent 工作。
 ## 远程 SSH 模式（Claude Code, Codex CLI & Copilot CLI）

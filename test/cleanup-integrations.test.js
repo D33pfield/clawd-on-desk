@@ -12,6 +12,7 @@ const {
   cleanupIntegrations,
 } = require("../hooks/cleanup-integrations");
 const { resolvePluginDir } = require("../hooks/opencode-install");
+const { registerQwenWorkHooks } = require("../hooks/qwenwork-install");
 const agentCommands = require("../src/settings-actions-agents");
 const { MANAGED_CLEANUP_AGENT_IDS, commandRegistry } = require("../src/settings-actions");
 const { createIntegrationSyncRuntime } = require("../src/integration-sync");
@@ -441,6 +442,7 @@ describe("QwenWork integration cleanup (#843)", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-qwenwork-"));
     const homeDir = path.join(root, "home");
     const settingsPath = seedQwenWorkSettings(homeDir);
+    const before = readJson(settingsPath);
 
     try {
       const result = cleanupIntegrations({ homeDir, backup: true, silent: true, hermesCommand: false });
@@ -451,6 +453,9 @@ describe("QwenWork integration cleanup (#843)", () => {
       assert.strictEqual(qwenwork.status, "applied");
       assert.strictEqual(qwenwork.removed, 3, "PreToolUse + Stop + legacy encoded SessionEnd");
       assert.strictEqual(qwenwork.error, null);
+      assert.strictEqual(qwenwork.backupPaths.length, 1);
+      assert.deepStrictEqual(readJson(qwenwork.backupPaths[0]), before);
+      assert.deepStrictEqual(listCleanupBackups(path.dirname(settingsPath)), [path.basename(qwenwork.backupPaths[0])]);
 
       assertOnlyClawdHooksRemoved(settingsPath);
 
@@ -460,6 +465,8 @@ describe("QwenWork integration cleanup (#843)", () => {
 
       assert.strictEqual(qwenworkSecond.status, "skipped");
       assert.strictEqual(qwenworkSecond.removed, 0);
+      assert.deepStrictEqual(qwenworkSecond.backupPaths, []);
+      assert.deepStrictEqual(listCleanupBackups(path.dirname(settingsPath)), [path.basename(qwenwork.backupPaths[0])]);
       assert.strictEqual(
         fs.readFileSync(settingsPath, "utf8"),
         afterFirst,
@@ -474,6 +481,7 @@ describe("QwenWork integration cleanup (#843)", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-uninstall-qwenwork-"));
     const homeDir = path.join(root, "home");
     const settingsPath = seedQwenWorkSettings(homeDir);
+    const before = readJson(settingsPath);
 
     try {
       // No uninstallIntegrationImpls: this exercises the AGENT_CLEANERS +
@@ -489,6 +497,9 @@ describe("QwenWork integration cleanup (#843)", () => {
         "false makes Settings report: No automatic integration uninstall is available for qwenwork"
       );
       assert.strictEqual(result.removed, 3);
+      assert.strictEqual(result.changed, true);
+      assert.ok(result.backupPath);
+      assert.deepStrictEqual(readJson(result.backupPath), before);
       assertOnlyClawdHooksRemoved(settingsPath);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -499,6 +510,7 @@ describe("QwenWork integration cleanup (#843)", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-settings-uninstall-qwenwork-"));
     const homeDir = path.join(root, "home");
     const settingsPath = seedQwenWorkSettings(homeDir);
+    const before = readJson(settingsPath);
 
     try {
       const runtime = createIntegrationSyncRuntime({
@@ -519,6 +531,9 @@ describe("QwenWork integration cleanup (#843)", () => {
       assert.strictEqual(result.commit.agents.qwenwork.integrationInstalled, false);
       assert.strictEqual(result.commit.agents.qwenwork.enabled, false);
       assert.strictEqual(readJson(settingsPath).hooks.PreToolUse.length, 1);
+      const backups = listCleanupBackups(path.dirname(settingsPath));
+      assert.strictEqual(backups.length, 1);
+      assert.deepStrictEqual(readJson(path.join(path.dirname(settingsPath), backups[0])), before);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -528,6 +543,7 @@ describe("QwenWork integration cleanup (#843)", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-about-cleanup-qwenwork-"));
     const homeDir = path.join(root, "home");
     const settingsPath = seedQwenWorkSettings(homeDir);
+    const before = readJson(settingsPath);
 
     try {
       const snapshot = prefs.getDefaults();
@@ -556,6 +572,8 @@ describe("QwenWork integration cleanup (#843)", () => {
       const qwenwork = result.cleanup.agents.find((entry) => entry.agentId === "qwenwork");
       assert.strictEqual(qwenwork.status, "applied");
       assert.strictEqual(qwenwork.removed, 3);
+      assert.strictEqual(qwenwork.backupPaths.length, 1);
+      assert.deepStrictEqual(readJson(qwenwork.backupPaths[0]), before);
 
       const after = assertOnlyClawdHooksRemoved(settingsPath);
       assert.ok(
@@ -564,6 +582,50 @@ describe("QwenWork integration cleanup (#843)", () => {
       );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("Settings Install refuses invalid top-level and hooks roots, leaving prefs and disk unchanged", async () => {
+    const cases = [
+      { label: "top-level array", initial: [], error: /top level must be an object/ },
+      { label: "hooks array", initial: { hooks: [], theme: "dark" }, error: /hooks must be an object keyed by event name/ },
+    ];
+
+    for (const testCase of cases) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-settings-install-qwenwork-invalid-"));
+      const settingsPath = path.join(root, "home", ".QwenWorkCN", "settings.json");
+      writeJson(settingsPath, testCase.initial);
+      const before = fs.readFileSync(settingsPath, "utf8");
+
+      try {
+        const runtime = createIntegrationSyncRuntime({
+          ctx: {
+            syncQwenWorkHooksImpl: () => registerQwenWorkHooks({
+              silent: true,
+              settingsPath,
+              nodeBin: process.execPath,
+              platform: process.platform,
+            }),
+          },
+        });
+        const snapshot = prefs.getDefaults();
+        snapshot.agents = {
+          ...snapshot.agents,
+          qwenwork: { ...snapshot.agents.qwenwork, integrationInstalled: false, enabled: false },
+        };
+
+        const result = await agentCommands.installAgentIntegration({ agentId: "qwenwork" }, {
+          snapshot,
+          syncIntegrationForAgent: runtime.syncIntegrationForAgent,
+        });
+
+        assert.strictEqual(result.status, "error", testCase.label);
+        assert.match(result.message, testCase.error, testCase.label);
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(result, "commit"), false, testCase.label);
+        assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), before, testCase.label);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
     }
   });
 
