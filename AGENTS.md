@@ -155,7 +155,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 
 ## Constraints
 
-- `agents/registry.js` 的 capabilities 是权限、subagent、session-end 等路由/gate 的权威来源；不得另写名单代替 capability 判定。但 permission automation eligibility 是独立、更窄的已审阅 allowlist（`src/permission-automation-policy.js` 的 `KNOWN_PERMISSION_AGENTS`），不得从 `permissionApproval` 自动派生或合并回 registry capabilities
+- `agents/registry.js` 的 capabilities 是权限、subagent、session-end 等路由/gate 的权威来源；不得另写名单代替 capability 判定。但 permission automation eligibility 由更窄的 `isKnownPermissionAgent()` 显式判定（`KNOWN_PERMISSION_AGENTS` + explicit opencode-family membership），不得从 `permissionApproval` 自动派生或合并回 registry capabilities
 - Claude Code / CodeBuddy 的阻塞式权限审批走 `POST /permission` HTTP hook；普通状态事件走 command hook
 - permission automation（off / auto-tools / unattended）和 per-session grant 会在 bubble 渲染前产生真实 allow/answer。agent/family eligibility 是显式白名单；工具分类则因 mode/adapter 而异：auto-tools 对 Claude/Qwen 的未知 built-in fail closed，但其他已知 adapter 不都使用逐工具白名单，unattended 还会有意自动放行可作 Allow/Deny 的未知请求。新增 agent、工具或交互类型必须审查 policy + tests，不能从 `permissionApproval` 推导资格或笼统假设“未知请求都会 defer”
 - Telegram / 飞书 Lark 与本地 bubble 是并行决策通道。远程通道超时、断连、未配置或发送失败不得产生远程决定，更不得转成 deny；有本地 bubble 时请求继续 pending，只有 remote-only 且所有可用 client 都无决定时，整体请求才 no-decision 并回到 agent 原生流程

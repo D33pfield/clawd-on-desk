@@ -109,7 +109,7 @@ Use the pet or tray **Permission handling** submenu to choose how Clawd handles 
 
 - **Ask every time** makes no automatic decisions.
 - **Question prompts only** automatically approves tool-shaped requests from explicitly supported agents, while questions and plan reviews still wait for you. Claude/Qwen use a reviewed built-in list, but not every supported adapter applies a per-tool allowlist.
-- **Auto-approve** intentionally handles every actionable request from supported agents, including unrecognized non-empty request names. Use it only if you are willing to delegate every decision. After an app restart, this mode downgrades to **Question prompts only**.
+- **Auto-approve** handles every request the adapter marks automation-eligible. For Claude/Qwen this includes unrecognized non-empty request names; missing names, unsupported decision shapes, and CodeBuddy questions/plans still defer to the native flow. Use it only if you are comfortable delegating this broader set of decisions. After an app restart, this mode downgrades to **Question prompts only**.
 
 Both automation modes are confirmation-gated. The Dashboard can independently set each eligible live session to **Ask every time** or the tools-only mode. New agents do not become eligible merely because they expose permission support, but tool-name handling remains adapter- and mode-specific as described above. State-only integrations and agents that own a native permission flow continue to use that native flow.
 
