@@ -9,7 +9,7 @@
 //
 //   prefix-DEPENDENT — produced by createSessionIdHelpers(prefix):
 //     DEFAULT_SESSION_ID, normalizeSessionId, resolveSessionId,
-//     isChildSessionId, cleanupSessionParentMap
+//     isChildSessionId
 //
 // The last two LOOK neutral but must normalize through the SAME prefix that
 // wrote the parent-map keys: a mimocode child key "mimocode:ses_child" looked
@@ -141,35 +141,10 @@ export function createSessionIdHelpers(prefix) {
     return sessionParentById.has(normalized);
   }
 
-  // Clean up _sessionParentById on session end events so the Map doesn't grow
-  // unboundedly across sessions. Must be called BEFORE shouldDropMappedEventWithoutSessionId()
-  // because server.instance.disposed may lack a sessionID (causing early return) but
-  // still needs to clear the entire map — all sessions are gone.
-  //   - session.deleted: removes the single entry for that session (if present).
-  //   - server.instance.disposed: clears the entire map.
-  function cleanupSessionParentMap(event, map) {
-    if (!event || typeof event.type !== "string") return;
-    if (!map || typeof map.clear !== "function") return;
-
-    if (event.type === "server.instance.disposed") {
-      map.clear();
-      return;
-    }
-
-    if (event.type === "session.deleted") {
-      const rawSid = getEventSessionId(event);
-      const normSid = normalizeSessionId(rawSid);
-      if (normSid && map.has(normSid)) {
-        map.delete(normSid);
-      }
-    }
-  }
-
   return {
     DEFAULT_SESSION_ID,
     normalizeSessionId,
     resolveSessionId,
     isChildSessionId,
-    cleanupSessionParentMap,
   };
 }
