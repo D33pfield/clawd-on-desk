@@ -4,7 +4,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 
 ## Project Overview
 
-Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、WorkBuddy、Kiro CLI、Kimi Code CLI (Kimi-CLI)、Qwen Code、ZCode、CodeWhale、opencode、MiMo Code、Pi、OpenClaw、Hermes Agent、Qoder、QoderWork、Reasonix；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / ko / ja。
+Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、WorkBuddy、Kiro CLI、Kimi Code CLI (Kimi-CLI)、Qwen Code、ZCode、CodeWhale、opencode、MiMo Code、Pi、OpenClaw、Hermes Agent、Qoder、QoderWork、Reasonix；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / zh-TW / ko / ja / pt-BR。
 
 ## Common Commands
 
@@ -69,9 +69,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 
 ## Read These Docs
 
-- `docs/project/project-introduction.md`：5 分钟了解项目定位、状态映射和目录结构
-- `docs/project/agent-runtime-architecture.md`：集成方式、数据流、多 agent、permission bubble、opencode、终端聚焦、自动同步
-- `docs/project/project-architecture.md`：更完整的模块边界和启动/运行时分层
+- `docs/project/agent-runtime-architecture.md`：运行时架构、模块边界、启动与数据流、多 agent、permission bubble、终端聚焦和自动同步
 - `docs/project/theme-state-ui.md`：状态机、主题系统、settings、mini mode、素材规则、平台限制、待落地 UI 决策
 - `docs/project/release-process.md`：发版 checklist、release note 核对、tag 触发 GitHub 打包和资产确认
 - `docs/guides/copilot-setup.md`：Copilot CLI 自动同步说明、`COPILOT_HOME` 兼容性、手动配置备选模板
@@ -115,7 +113,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `src/settings-controller.js` | 设置系统唯一写入者 |
 | `src/settings-store.js` | 不可变 snapshot store |
 | `src/settings-renderer.js` | Settings UI 主逻辑 |
-| `src/menu.js` | 托盘 / 右键菜单，串起设置、Dashboard、语言、mini mode、更新入口 |
+| `src/menu.js` | 托盘 / 右键菜单，串起设置、Dashboard、mini mode、更新入口 |
 | `src/mini.js` | 极简模式入场、滑动、peek、状态映射 |
 | `src/tick.js` | 主循环、鼠标轮询、眼球和 idle/sleep 逻辑 |
 | `src/drag-position.js` | 拖拽落点规范化与跨显示器钳制 |
@@ -173,6 +171,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - 禁用 agent 不应卸载 hooks / plugins / extensions：只停止对应 monitor、清理 session / bubble、让 HTTP hook 入口快速 fallback；重新启用未安装 agent 不触发本机 integration sync。卸载集成必须走 Settings Agent 页的 Uninstall / 对应 uninstall 命令，并同时清掉 `integrationInstalled`
 - Kiro 的 `sessionId="default"` 会复用；session alias key 必须按 cwd scope 区分，同时保留旧 `local|kiro-cli|default` 只读 fallback
 - Windows NSIS release 必须产出明确架构的 x64 / ARM64 安装包：`win.artifactName` 保留 `${arch}`，`nsis.buildUniversalInstaller` 保持 `false`
+- 每个 release target 只能保留一个匹配目标架构的 Koffi `koffi.node`；`afterPack` 只允许剪裁 `app.asar.unpacked` 的物理文件，禁止重写 `app.asar`，并必须通过完整 native inventory audit（唯一常设例外是 electron-builder 管理的 Windows ia32 `resources/elevate.exe`）
 - 资源路径统一用 `path.join(__dirname, ...)`
 - 需要编辑发布素材时，先复制到 `assets/source/` 再改，不要直接改工作素材来源不明的文件
 - `assets/source/cloudling-pointer-bridge/` 是 Cloudling 指针桥素材的保留源文件目录；运行时逻辑已内联进主题 SVG，不要把这个 source 目录当临时文件清理

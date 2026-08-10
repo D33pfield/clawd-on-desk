@@ -39,6 +39,7 @@ docs/**
 !docs/investigations/codex-subagent-session-meta.md
 !docs/plans/
 !docs/plans/plan-issue-513-remote-ssh-isolation.md
+!docs/plans/plan-issue-763-koffi-target-native-packaging.md
 !docs/project/
 !docs/project/agent-runtime-architecture.md
 !docs/project/release-process.md
@@ -101,6 +102,8 @@ scripts/*
 !scripts/run-clawdbot-stress.sh
 !scripts/monitor-clawd-resources.sh
 !scripts/monitor-clawd-power.ps1
+!scripts/windows-process-chain-benchmark.js
+!scripts/windows-process-chain-observer.ps1
 !scripts/validate-theme.js
 !scripts/create-theme.js
 !scripts/export-agent-icons.js
@@ -108,6 +111,11 @@ scripts/*
 !scripts/audit-repository-assets.js
 !scripts/assert-no-retired-telegram-sidecar.js
 !scripts/verify-release-version.js
+!scripts/after-pack-koffi.js
+!scripts/audit-packaged-native.js
+!scripts/native-package-policy.json
+!scripts/run-packaged-koffi-smoke.js
+!scripts/verify-updater-metadata.js
 
 # oh-my-cursor state
 .omc/

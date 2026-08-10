@@ -1,4 +1,8 @@
 const { app, BrowserWindow, Notification, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, powerSaveBlocker, powerMonitor, clipboard, safeStorage } = require("electron");
+const { maybeRunPackageKoffiSmoke } = require("./package-koffi-smoke");
+if (maybeRunPackageKoffiSmoke({ app, BrowserWindow })) {
+  return;
+}
 // ── Linux/Wayland: relaunch under XWayland so the pet is draggable (issue #441) ──
 // Native Wayland ignores client-side window positioning and blocks global cursor
 // queries, so the pet spawns centered, can't be dragged, and has no tracking;
@@ -439,11 +443,11 @@ const _settingsController = createSettingsController({
     writeCodexAutoStartGate: _persistCodexAutoStartGate,
     deployHooksToWsl: async (distro, agentId) => {
       const { deployToWsl } = require("./wsl-deploy");
-      return deployToWsl(distro, { agentId, isPackaged: app.isPackaged });
+      return deployToWsl(distro, { agentId, isPackaged: app.isPackaged, resourcesPath: process.resourcesPath });
     },
     removeHooksFromWsl: async (distro, agentId) => {
       const { removeFromWsl } = require("./wsl-deploy");
-      return removeFromWsl(distro, { agentId });
+      return removeFromWsl(distro, { agentId, isPackaged: app.isPackaged, resourcesPath: process.resourcesPath });
     },
     cleanupIntegrations: async (options = {}) => {
       // Claude hooks + statusline unregister as one queue task, awaited here so
@@ -1663,6 +1667,7 @@ let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
 let sessionDebugLog = null; // set after app.whenReady()
 let focusDebugLog = null; // set after app.whenReady()
+let recordWindowsProcessChainShadow = () => false;
 
 function getPendingPermissionFocusEntry(sessionId) {
   const id = String(sessionId || "");
@@ -2283,6 +2288,7 @@ agentRuntime = createAgentRuntimeMain({
   getPermissionRuntime: () => _perm,
   isAgentEnabled: (agentId) => _isAgentEnabled(_settingsController.getSnapshot(), agentId),
   updateSession: (sessionId, state, event, opts) => updateSession(sessionId, state, event, opts),
+  debugLog: (msg) => sessionLog(msg),
   captureGhosttyTerminalId,
   clearCodexNotifyBubbles: (...args) => clearCodexNotifyBubbles(...args),
   showCodexUserInputBubble: (...args) => showCodexUserInputBubble(...args),
@@ -2321,6 +2327,7 @@ const _serverCtx = {
   // request.
   captureForegroundWindowsTerminal: _captureForegroundWindowsTerminal,
   debugLog: (msg) => sessionLog(msg),
+  recordWindowsProcessChainShadow: (record) => recordWindowsProcessChainShadow(record),
   isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
   shouldSyncAgentIntegration: (agentId) =>
     _shouldSyncAgentIntegration({ agents: _settingsController.get("agents") }, agentId),
@@ -3640,7 +3647,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
   syncWindowTitles: () => {
     settingsWindowRuntime.applyTitleToWindow();
     // syncLocalization pushes BOTH the native title AND fresh renderer state
-    // (dictionary/lang), so an external language change (Settings/tray) keeps
+    // (dictionary/lang), so an external language change from Settings keeps
     // the tutorial body, buttons, and document.title in sync with the new
     // language — not just the native title bar.
     _tutorial.syncLocalization();
@@ -4586,6 +4593,10 @@ if (!gotTheLock) {
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     focusDebugLog = path.join(app.getPath("userData"), "focus-debug.log");
+    const { createWindowsProcessChainShadowLogger } = require("./windows-process-chain-shadow-log");
+    recordWindowsProcessChainShadow = createWindowsProcessChainShadowLogger({
+      filePath: path.join(app.getPath("userData"), "windows-process-chain-shadow.log"),
+    });
     const telegramMigrationInit = initTelegramMigrationController().catch((err) => {
       console.warn("Clawd: migration controller init failed:", err && err.message);
       return null;

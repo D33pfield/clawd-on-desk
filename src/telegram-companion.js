@@ -80,6 +80,14 @@ const NOTIFICATION_LOCALES = Object.freeze({
     truncated: "省略",
     wrapStatus: (status) => `（${status}）`,
   },
+  "pt-BR": {
+    session: "sessão",
+    done: "concluída",
+    interrupted: "interrompida",
+    assistantOutput: "Saída do assistente",
+    truncated: "truncado",
+    wrapStatus: (status) => `(${status})`,
+  },
 });
 
 function dedupeKey(entry) {

@@ -173,7 +173,11 @@ macOS Claude Keychain auth. See the dedicated guide for the exact boundary.
 
 > This section mainly covers Claude Code and other hook-based agents inside WSL. For the official `Codex CLI + WSL` status, Codex hook feature-flag behavior, and why Clawd does not auto-detect Codex logs under WSL's Linux home by default, see: [codex-wsl-clarification.md](codex-wsl-clarification.md)
 
-If you run Claude Code inside WSL while Clawd runs on the Windows host, hooks can POST directly to `127.0.0.1:23333` — no SSH tunnel needed, because WSL2 shares localhost with Windows by default.
+If an agent runs inside WSL while Clawd runs on the Windows host, its integration posts to `127.0.0.1:23333-23337`. WSL1 shares that loopback. WSL2 normally needs mirrored networking; default NAT does not make the Windows loopback server reachable from Linux. The in-app Pair flow probes this path and warns when installation succeeded but connectivity did not.
+
+For supported agents, open **Settings → Agents**, use **WSL Scan** from the Connected section, then find the matching distro row and choose **Pair**. A WSL-only agent can remain under the **Unavailable** collapsible section because local installation status and WSL pairing are separate. Pairing enables Clawd's event ingress but does not mark or install a Windows-local integration.
+
+**Hermes Agent in WSL:** Hermes must already be installed in the selected distro. Pair copies a private, temporary installer payload into WSL, installs and enables `clawd-on-desk` in the primary Hermes home and its discovered profiles, then removes the temporary payload. **Unpair** disables/removes only Clawd's Hermes plugin from that distro; it preserves unrelated plugins and does not disable Hermes events globally when another local or WSL source may still be active. Custom WSL `HERMES_HOME` is resolved from the distro's login shell.
 
 **Setup:**
 
@@ -199,8 +203,6 @@ After setup, start Clawd on Windows and run Claude Code in WSL — Clawd reacts 
 The in-app WSL deploy path intentionally runs the Claude installer without `--statusline`, so it provides transcript fallback only and does not claim an authoritative custom-provider window. The manual `--remote` command above does install a visible statusline in WSL's separate home, but the Windows app accepts its context/quota metadata only while **Collect local Claude usage** is enabled. With the switch off, those POSTs are successful no-ops. Windows startup reconciliation cannot remove a statusline from WSL's separate home.
 
 For Codex in WSL, official hooks work when Codex runs inside the WSL environment and `~/.codex` exists there. If you prefer sharing the Windows Codex home, set `CODEX_HOME=/mnt/c/Users/<windows-user>/.codex` inside WSL before running Codex.
-
-> **Note:** WSL2 localhost forwarding requires Windows 10 build 18945+ (enabled by default). If it doesn't work, check that `localhostForwarding=true` is not disabled in `%USERPROFILE%\.wslconfig`.
 
 ### WSL Networking & Hook Registration (Alternative Approach)
 
