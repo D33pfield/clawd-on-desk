@@ -2948,6 +2948,13 @@ describe("updateSession()", () => {
     assert.strictEqual(appliedSame, true);
     assert.strictEqual(session.sessionTitle, "Stable Title");
     assert.strictEqual(session.metadataUpdatedAt, 777);
+
+    // Normalized-equivalent title (extra whitespace/control chars) collapses
+    // to the stored title via normalizeTitle -> still a no-op, no re-stamp.
+    const appliedNormalized = api.updateSessionMetadata("s1", { sessionTitle: "  Stable\t Title  " });
+    assert.strictEqual(appliedNormalized, true);
+    assert.strictEqual(session.sessionTitle, "Stable Title");
+    assert.strictEqual(session.metadataUpdatedAt, 777);
   });
 
   it("updateSessionMetadata returns false for an unknown session on a title-only payload", () => {

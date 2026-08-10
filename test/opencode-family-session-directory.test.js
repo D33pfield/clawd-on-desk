@@ -390,8 +390,12 @@ describe("opencode-family session title (#829)", () => {
     const plugin = createOpencodeFamilyPlugin(OPENCODE_CONFIG);
     const hooks = await plugin(createContext("C:\\proj"));
 
-    // session.created with a placeholder title -> captured, but no prior title
-    // so no metadata push yet (the first state POST carries it instead).
+    // session.created with a placeholder title -> captured. The first capture
+    // also fires a metadata-only push (prevTitle undefined !== title), which
+    // the server safely drops because the session does not exist yet; the
+    // SessionStart lifecycle POST below carries the title instead. The push
+    // is deliberate — it covers "created untitled, titled later" (see the
+    // captureSessionTitle comment in core.mjs).
     await hooks.event({
       event: {
         type: "session.created",
@@ -425,15 +429,32 @@ describe("opencode-family session title (#829)", () => {
     assert.strictEqual(plugin.__test._sessionTitleById.get("opencode:ses_t"), "轻松问候");
     const metaPost = fetchCalls.find((c) => c.url.endsWith("/state") && c.body && c.body.metadata_only === true);
     assert.ok(metaPost, "expected a metadata-only POST for the title change");
-    // postToClawd enriches the body with process-tree fields (agent_pid, cwd,
-    // pid_chain, ...) - assert only the title-push contract, not the full body.
-    assert.strictEqual(metaPost.body.state, "idle");
-    assert.strictEqual(metaPost.body.session_id, "opencode:ses_t");
-    assert.strictEqual(metaPost.body.event, "SessionUpdate");
-    assert.strictEqual(metaPost.body.agent_id, "opencode");
-    assert.strictEqual(metaPost.body.hook_source, "opencode-plugin");
-    assert.strictEqual(metaPost.body.metadata_only, true);
-    assert.strictEqual(metaPost.body.session_title, "轻松问候");
+    // postToClawd enriches every POST with process-tree fields. Split those
+    // off and deepStrictEqual the rest against the EXACT title-push contract
+    // so the complete metadata-only body is covered: a missing field or an
+    // unexpected extra one both fail (#841 review).
+    const ENRICH_KEYS = ["agent_pid", "cwd", "source_pid", "pid_chain", "editor", "tmux_socket", "tmux_client", "orca_pane_key"];
+    const enrichments = {};
+    const contract = { ...metaPost.body };
+    for (const key of ENRICH_KEYS) {
+      if (key in contract) {
+        enrichments[key] = contract[key];
+        delete contract[key];
+      }
+    }
+    assert.deepStrictEqual(contract, {
+      state: "idle",
+      session_id: "opencode:ses_t",
+      event: "SessionUpdate",
+      agent_id: "opencode",
+      hook_source: "opencode-plugin",
+      metadata_only: true,
+      session_title: "轻松问候",
+    });
+    // Enrichment sanity: the session-directory truth and the plugin pid are
+    // always stamped onto the outbound body.
+    assert.strictEqual(enrichments.cwd, "C:\\proj");
+    assert.strictEqual(typeof enrichments.agent_pid, "number");
   });
 
   it("does not POST when the title is unchanged and a blank title is ignored", async () => {
