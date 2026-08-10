@@ -292,6 +292,8 @@ macOS 两个架构都必须执行并保存：
 4. 如果 helper 已消失，删除这条已失效例外，不能保留死规则。
 5. 如果 helper 的格式、架构或来源改变，保持 fail-closed；重新论证例外，不能只改 JSON 让 audit 通过。
 
+执行证据（GitHub Actions `31364225508`）：electron-builder 26.15.7 的真实 Windows x64 / ARM64 打包均仍产出唯一的 `resources/elevate.exe` 例外；两份 manifest 都记录为 PE ia32、107,520 bytes、SHA-256 `9b1fbf0c11c520ae714af8aa9af12cfd48503eedecd7398d8992ee94d1b4dc37`，且无其他未声明例外。已据此把 policy 的 provenance 版本说明更新为 26.15.7，target/path/format/architecture 匹配条件保持不变。
+
 ### Phase 7 — 最终复核与交付边界
 
 - 重新核对 exact HEAD/diff，确保只有计划内文件。
