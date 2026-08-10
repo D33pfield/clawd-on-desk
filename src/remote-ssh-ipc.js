@@ -258,6 +258,7 @@ function registerRemoteSshIpc(options = {}) {
       if (shouldResume) {
         try {
           const runtimeProfile = { ...latest, installId: binding.installId };
+          context.transitionToConnection();
           remoteSshRuntime.connect(runtimeProfile, {
             serialized: true,
             transportContext: context,
@@ -552,10 +553,21 @@ function registerRemoteSshIpc(options = {}) {
               message: "The serialized SSH transport is quarantined and requires explicit recovery",
             });
           }
+          const state = {
+            ...remoteSshRuntime.getProfileStatus(id),
+            ...(typeof transportCoordinator.snapshotForProfile === "function"
+              ? transportCoordinator.snapshotForProfile(id)
+              : {}),
+          };
+          // No runtime transition occurs here: the active mutation keeps its
+          // lease and only its post-operation reconnect intent changes. Push
+          // the updated intent explicitly so every Settings window can replace
+          // Disconnect with a disabled Connect immediately.
+          broadcast(BrowserWindow, "remoteSsh:status-changed", state);
           return {
             status: "ok",
             disconnectPending: true,
-            state: remoteSshRuntime.getProfileStatus(id),
+            state,
           };
         }
         const binding = requireVerifiedInstallationBinding();

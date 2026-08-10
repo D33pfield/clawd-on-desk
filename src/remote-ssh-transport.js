@@ -10,6 +10,10 @@ const childProcess = require("child_process");
 const crypto = require("crypto");
 const path = require("path");
 const { decodeShellBytes } = require("./remote-ssh-decode");
+const {
+  appendRemoteSshConfigArgs,
+  getRemoteSshConfigFile,
+} = require("./remote-ssh-local-config");
 
 const INSPECT_TIMEOUT_MS = 5000;
 const INSPECT_DRAIN_TIMEOUT_MS = 1000;
@@ -28,6 +32,7 @@ function buildSshConfigArgs(profile) {
     throw new Error("inspectEffectiveTransport: profile.host required");
   }
   const args = ["-G"];
+  appendRemoteSshConfigArgs(args);
   if (profile.identityFile) args.push("-i", profile.identityFile);
   if (Number.isInteger(profile.port) && profile.port !== 22) {
     args.push("-p", String(profile.port));
@@ -99,10 +104,20 @@ function executableBasename(value) {
 }
 
 function parseCodespacesProxyCommand(proxyCommand) {
-  const tokens = tokenizeProxyCommand(proxyCommand);
-  if (tokens.length < 5 || !["gh", "gh.exe"].includes(executableBasename(tokens[0]))) {
+  // `gh codespace ssh --config` currently emits an unquoted Windows path:
+  //   ProxyCommand C:\Program Files\GitHub CLI\gh.exe cs ssh ...
+  // Preserve the entire executable prefix through the exact `gh(.exe)`
+  // basename before tokenizing the remaining arguments. Quoted paths and
+  // ordinary `gh`/`/usr/bin/gh` forms follow the same path.
+  const source = String(proxyCommand || "").trim();
+  const launch = /^(?:"([^"\r\n]*(?:[\\/])?gh(?:\.exe)?)"|((?:.*?[\\/])?gh(?:\.exe)?))\s+((?:cs|codespace)\s+ssh(?:\s|$)[\s\S]*)$/i.exec(source);
+  if (!launch) return null;
+  const executable = launch[1] || launch[2];
+  if (!["gh", "gh.exe"].includes(executableBasename(executable))) {
     return null;
   }
+  const tokens = [executable, ...tokenizeProxyCommand(launch[3])];
+  if (tokens.length < 5) return null;
   let subcommandIndex = -1;
   for (let i = 1; i < tokens.length - 1; i += 1) {
     if ((tokens[i] === "cs" || tokens[i] === "codespace") && tokens[i + 1] === "ssh") {
@@ -138,6 +153,9 @@ function redactTransportDiagnostic(value, profile) {
     ? profile.identityFile.trim()
     : "";
   if (identityFile) text = text.split(identityFile).join("[identity-file]");
+  let configFile = null;
+  try { configFile = getRemoteSshConfigFile(); } catch {}
+  if (configFile) text = text.split(configFile).join("[ssh-config-file]");
   text = text
     .replace(/\b(?:gh[opusr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,})\b/g, "[token]")
     .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, "$1[token]")
@@ -151,6 +169,7 @@ function localTargetFingerprint(profile) {
     host: profile && profile.host || "",
     port: Number.isInteger(profile && profile.port) ? profile.port : 22,
     identityFile: profile && profile.identityFile || "",
+    sshConfigFile: getRemoteSshConfigFile() || "",
     sshTransportMode: profile && profile.sshTransportMode === "serialized"
       ? "serialized"
       : "auto",

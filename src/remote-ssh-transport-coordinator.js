@@ -188,6 +188,19 @@ function createRemoteSshTransportCoordinator(deps = {}) {
           ? null
           : "manual_lock_inspection_required";
       },
+      transitionToConnection() {
+        const internal = validateLease(lease);
+        if (internal.slot.trackedChildren.size > 0) {
+          throw new TransportUndrainedError("Cannot resume a connection while an operation child is still live", {
+            profileId: internal.profileId,
+            operation: internal.operation,
+          });
+        }
+        internal.operation = "connect";
+        internal.lockStage = "before-acquire";
+        internal.slot.operationName = "connect";
+        internal.slot.phase = "preparing";
+      },
       spawn(spec) {
         return spawnManagedTransportChild({ ...spec, reservationToken: lease });
       },
@@ -525,14 +538,20 @@ function createRemoteSshTransportCoordinator(deps = {}) {
   }
 
   function snapshotForProfile(profileId) {
+    const intent = getIntent(profileId);
     for (const slot of slots.values()) {
       if (slot.ownerProfileId !== profileId) continue;
       return {
         transportPhase: slot.phase,
         transportOwnerProfileId: slot.ownerProfileId,
+        transportDesiredConnected: intent.desiredConnected,
       };
     }
-    return { transportPhase: "idle", transportOwnerProfileId: null };
+    return {
+      transportPhase: "idle",
+      transportOwnerProfileId: null,
+      transportDesiredConnected: intent.desiredConnected,
+    };
   }
 
   function getActiveOwnerOperation(profileId) {

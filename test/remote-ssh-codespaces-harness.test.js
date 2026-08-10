@@ -22,6 +22,11 @@ test("#546 manual harness is tracked, isolated, and never uses broad process cle
   assert.match(source, /Expected one exact display-name match/);
   assert.match(source, /codespace delete --codespace \$deleteName/);
   assert.match(source, /\$env:USERPROFILE = \$harnessHome/);
+  assert.match(source, /\$env:CLAWD_REMOTE_SSH_CONFIG_FILE = \$sshConfig/);
+  assert.match(source, /inspectEffectiveTransport/);
+  assert.doesNotMatch(source, /effective ProxyCommand is not a Codespaces stdio transport/);
+  assert.match(source, /--user-data-dir=\$electronUserData/);
+  assert.match(source, /New-Item -ItemType Directory -Path \$electronUserData/);
   assert.match(source, /Get-CimInstance Win32_Process/);
   assert.doesNotMatch(source, /\b(?:taskkill|Stop-Process)\b/i);
 });

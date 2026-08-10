@@ -192,6 +192,21 @@
     });
   }
 
+  function requestProfileDisconnect(profileId) {
+    if (!window.remoteSsh || typeof window.remoteSsh.disconnect !== "function") return;
+    Promise.resolve(window.remoteSsh.disconnect(profileId)).then((result) => {
+      if (result && result.state && typeof result.state.profileId === "string") {
+        view.runtimeStatuses.set(result.state.profileId, result.state);
+      }
+      if (result && result.status !== "ok") {
+        ops.showToast(result.message || t("remoteSshStatus_failed"), { error: true });
+      }
+      ops.requestRender({ content: true });
+    }).catch((err) => {
+      ops.showToast((err && err.message) || t("remoteSshStatus_failed"), { error: true });
+    });
+  }
+
   // ── Render ──
 
   function render(parent) {
@@ -313,16 +328,28 @@
 
     const connectBtn = document.createElement("button");
     connectBtn.className = "soft-btn";
-    if (status.status === "connected" || status.status === "connecting" || status.status === "reconnecting") {
+    const transportOperationActive = !!(
+      status.transportPhase && status.transportPhase !== "idle"
+    );
+    const disconnectAvailable = status.status === "connected"
+      || status.status === "connecting"
+      || status.status === "reconnecting"
+      || (transportOperationActive && status.transportDesiredConnected === true);
+    if (disconnectAvailable) {
       connectBtn.textContent = t("remoteSshDisconnect");
       connectBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (window.remoteSsh) window.remoteSsh.disconnect(profile.id);
+        requestProfileDisconnect(profile.id);
       });
     } else {
       connectBtn.textContent = t("remoteSshConnect");
-      connectBtn.disabled = !hasDeploymentStamp(profile);
-      if (connectBtn.disabled) connectBtn.title = t("remoteSshErrDeploymentRequired");
+      const deploymentReady = hasDeploymentStamp(profile);
+      connectBtn.disabled = !deploymentReady || transportOperationActive;
+      if (!deploymentReady) {
+        connectBtn.title = t("remoteSshErrDeploymentRequired");
+      } else if (transportOperationActive) {
+        connectBtn.title = statusMessageText(status);
+      }
       connectBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         requestProfileConnect(profile);

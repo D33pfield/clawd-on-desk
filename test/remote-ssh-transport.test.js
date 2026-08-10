@@ -67,7 +67,9 @@ test("ProxyCommand tokenizer preserves quoted Windows executable paths", () => {
 test("Codespaces parser accepts official selector and subcommand forms", () => {
   for (const command of [
     '"C:\\Program Files\\GitHub CLI\\gh.exe" cs ssh -c Fuzzy-Space --stdio',
+    "C:\\Program Files\\GitHub CLI\\gh.exe cs ssh -c Fuzzy-Space --stdio -- -i C:\\Users\\me\\.ssh\\codespaces.auto",
     "gh codespace ssh --codespace Fuzzy-Space --stdio",
+    "/usr/local/bin/gh cs ssh --codespace Fuzzy-Space --stdio",
     "gh.exe cs ssh --stdio --codespace=Fuzzy-Space",
   ]) {
     assert.deepEqual(parseCodespacesProxyCommand(command), { codespace: "fuzzy-space" });
@@ -76,6 +78,7 @@ test("Codespaces parser accepts official selector and subcommand forms", () => {
 
 test("Codespaces parser rejects lookalikes and missing --stdio", () => {
   assert.equal(parseCodespacesProxyCommand("helper codespace gh cs ssh -c fuzzy-space --stdio"), null);
+  assert.equal(parseCodespacesProxyCommand("C:\\tools\\evilgh.exe cs ssh -c fuzzy-space --stdio"), null);
   assert.equal(parseCodespacesProxyCommand("gh cs ssh -c fuzzy-space"), null);
   assert.equal(parseCodespacesProxyCommand("gh cs ssh -c bad/name --stdio"), null);
 });
@@ -86,7 +89,7 @@ test("inspectEffectiveTransport detects Codespaces from real-shaped ssh -G outpu
     "user codespace",
     "hostname vscode.codespaces.githubusercontent.com",
     "port 22",
-    'proxycommand "C:\\Program Files\\GitHub CLI\\gh.exe" cs ssh -c Fuzzy-Space --stdio',
+    "proxycommand C:\\Program Files\\GitHub CLI\\gh.exe cs ssh -c Fuzzy-Space --stdio -- -i C:\\Users\\me\\.ssh\\codespaces.auto",
     "",
   ].join("\n"));
   const result = await inspectEffectiveTransport({ host: "space", sshTransportMode: "auto" }, { spawn });

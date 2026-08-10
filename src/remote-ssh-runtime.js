@@ -44,6 +44,7 @@ const { decodeShellBytes } = require("./remote-ssh-decode");
 const { acceptedRoutingNonces } = require("./remote-ssh-identity");
 const { resolveRemoteRuntimeLayout } = require("./remote-ssh-layout");
 const { redactTransportDiagnostic } = require("./remote-ssh-transport");
+const { appendRemoteSshConfigArgs } = require("./remote-ssh-local-config");
 
 const SSH_BASE_OPTS = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
 const SCP_BASE_OPTS = ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
@@ -177,6 +178,7 @@ function buildSshArgs(profile, { extraOpts = [], interactive = false } = {}) {
   const args = interactive
     ? SSH_INTERACTIVE_BASE_OPTS.slice()
     : SSH_BASE_OPTS.slice();
+  appendRemoteSshConfigArgs(args);
   if (profile.identityFile) args.push("-i", profile.identityFile);
   if (profile.port && profile.port !== 22) args.push("-p", String(profile.port));
   args.push(...extraOpts);
@@ -190,6 +192,7 @@ function buildScpArgs(profile, { extraOpts = [] } = {}) {
     throw new TypeError("buildScpArgs: extraOpts must be an array");
   }
   const args = SCP_BASE_OPTS.slice();
+  appendRemoteSshConfigArgs(args);
   if (profile.identityFile) args.push("-i", profile.identityFile);
   if (profile.port && profile.port !== 22) args.push("-P", String(profile.port));
   args.push(...extraOpts);

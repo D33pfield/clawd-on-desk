@@ -433,11 +433,18 @@ test("serialized Deploy suspends the owned tunnel before mutation and resumes on
   assert.equal(result.status, "ok");
   assert.deepEqual(events.map((event) => event.type), ["connect", "suspend", "deploy", "connect"]);
   assert.equal(coordinator.getIntent("p1").desiredConnected, true);
+
+  const repairedAgain = await ipcMain.invoke("remoteSsh:deploy", { profileId: "p1" });
+  assert.equal(repairedAgain.status, "ok", JSON.stringify(repairedAgain));
+  assert.deepEqual(events.map((event) => event.type), [
+    "connect", "suspend", "deploy", "connect",
+    "suspend", "deploy", "connect",
+  ]);
 });
 
 test("Disconnect during serialized Deploy records intent without invalidating the active mutation", async () => {
   const ipcMain = mockIpcMain();
-  const { BrowserWindow } = mockBrowserWindow();
+  const { BrowserWindow, sentMessages } = mockBrowserWindow();
   const settingsController = mockSettingsController([readyProfile]);
   const coordinator = serializedCoordinator();
   const events = [];
@@ -466,7 +473,13 @@ test("Disconnect during serialized Deploy records intent without invalidating th
   const disconnect = await ipcMain.invoke("remoteSsh:disconnect", { profileId: "p1" });
   assert.equal(disconnect.status, "ok");
   assert.equal(disconnect.disconnectPending, true);
+  assert.equal(disconnect.state.transportDesiredConnected, false);
   assert.equal(coordinator.getIntent("p1").desiredConnected, false);
+  assert.ok(sentMessages.some(({ channel, payload }) => (
+    channel === "remoteSsh:status-changed"
+      && payload.profileId === "p1"
+      && payload.transportDesiredConnected === false
+  )));
   finishDeploy({
     ok: true,
     remoteNode: { nodeBin: "/usr/bin/node", version: "20.1.0", source: "path" },

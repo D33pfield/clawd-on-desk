@@ -105,10 +105,12 @@ $EvidenceRoot = [IO.Path]::GetFullPath($EvidenceRoot)
 New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
 $evidencePath = Join-Path $EvidenceRoot "evidence.json"
 $harnessHome = Join-Path $EvidenceRoot "home"
+$electronUserData = Join-Path $harnessHome "electron-user-data"
 $sshDir = Join-Path $harnessHome ".ssh"
 $sshConfig = Join-Path $sshDir "config"
 $knownHosts = Join-Path $sshDir "known_hosts"
 New-Item -ItemType Directory -Path $sshDir -Force | Out-Null
+New-Item -ItemType Directory -Path $electronUserData -Force | Out-Null
 
 try {
   $auth = Invoke-Gh auth status 2>&1
@@ -158,11 +160,23 @@ try {
   }
   Add-Step "V1" "pass" (($nodeVersion -join "`n").Trim())
 
-  $effective = & ssh -F $sshConfig -G $alias
-  if ($LASTEXITCODE -ne 0 -or ($effective -join "`n") -notmatch '(?im)^proxycommand\s+.*\bgh(?:\.exe)?\b.*\b(?:cs|codespace)\s+ssh\b.*--stdio(?:\s|$)') {
-    throw "V2 effective ProxyCommand is not a Codespaces stdio transport"
+  $previousInspectionConfig = $env:CLAWD_REMOTE_SSH_CONFIG_FILE
+  try {
+    $env:CLAWD_REMOTE_SSH_CONFIG_FILE = $sshConfig
+    $classificationJson = & node -e "const {inspectEffectiveTransport}=require('./src/remote-ssh-transport'); inspectEffectiveTransport({host:process.argv[1]}).then(r=>process.stdout.write(JSON.stringify({mode:r.mode,kind:r.kind,key:r.key})),e=>{console.error(e&&e.message||e);process.exit(1)})" $alias
+    if ($LASTEXITCODE -ne 0) { throw "production effective-transport inspection failed" }
+    $classification = $classificationJson | ConvertFrom-Json
+  } finally {
+    if ($null -eq $previousInspectionConfig) {
+      Remove-Item Env:CLAWD_REMOTE_SSH_CONFIG_FILE -ErrorAction SilentlyContinue
+    } else {
+      $env:CLAWD_REMOTE_SSH_CONFIG_FILE = $previousInspectionConfig
+    }
   }
-  Add-Step "V2" "pass" "effective ProxyCommand classified without recording its raw value"
+  if ($classification.mode -ne "serialized" -or $classification.kind -ne "codespaces-stdio") {
+    throw "V2 production classifier did not identify the Codespaces stdio transport"
+  }
+  Add-Step "V2" "pass" "production classifier identified Codespaces stdio without recording raw config"
 
   $script:Evidence.processSamples += Get-TestTransportProcesses $script:CodespaceName "before-app"
   if (-not $SkipApp) {
@@ -171,18 +185,25 @@ try {
     Write-Host "Temporary SSH alias: $alias"
     Write-Host "Evidence directory: $EvidenceRoot"
     Write-Host ""
-    Write-Host "Clawd will start with a temporary USERPROFILE so OpenSSH sees only the generated config."
+    Write-Host "Clawd will start with a temporary USERPROFILE and Electron userData directory."
     Write-Host "In Settings > Remote SSH, create a profile whose Host is '$alias', then run V3-V14 from README.md."
     Write-Host "Exit Clawd normally when the checklist is complete; do not kill Terminal, ssh.exe, gh.exe, cmd.exe, OpenConsole, or conhost."
     $previousUserProfile = $env:USERPROFILE
+    $previousSshConfigFile = $env:CLAWD_REMOTE_SSH_CONFIG_FILE
     try {
       $env:USERPROFILE = $harnessHome
-      & npm start
+      $env:CLAWD_REMOTE_SSH_CONFIG_FILE = $sshConfig
+      & npm start -- "--user-data-dir=$electronUserData"
       if ($LASTEXITCODE -ne 0) { throw "npm start exited with code $LASTEXITCODE" }
     } finally {
       $env:USERPROFILE = $previousUserProfile
+      if ($null -eq $previousSshConfigFile) {
+        Remove-Item Env:CLAWD_REMOTE_SSH_CONFIG_FILE -ErrorAction SilentlyContinue
+      } else {
+        $env:CLAWD_REMOTE_SSH_CONFIG_FILE = $previousSshConfigFile
+      }
     }
-    Add-Step "V3-V14" "manual" "operator completed the tracked checklist before normal app exit"
+    Add-Step "V3-V14" "manual-unverified" "app exited; record each checklist result separately before marking complete"
   } else {
     Add-Step "V3-V14" "skip" "-SkipApp was specified"
   }

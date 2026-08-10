@@ -2,7 +2,7 @@
 
 This harness validates the Windows OpenSSH + `gh cs ssh --stdio` boundary that unit tests cannot prove. It creates (or accepts) one exact Codespace, generates an isolated SSH config under a timestamped evidence directory, runs the sequential control and effective-transport checks, then starts the development app with a temporary `USERPROFILE` so the user's real `~/.ssh/config` is not edited.
 
-Run it from an elevated/out-of-sandbox PowerShell whose `gh auth status` includes the `codespace` scope:
+Run it from an elevated/out-of-sandbox PowerShell whose `gh auth status` includes the `codespace` scope. The development app receives an explicit temporary OpenSSH `-F` config through `CLAWD_REMOTE_SSH_CONFIG_FILE` and a temporary Electron `--user-data-dir`, so neither SSH config nor Clawd prefs are read from or written to the user's normal profile. (`USERPROFILE` alone does not redirect Windows OpenSSH.)
 
 ```powershell
 pwsh -NoProfile -File scripts/manual/remote-ssh-codespaces-546.ps1 `

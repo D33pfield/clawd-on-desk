@@ -24,6 +24,11 @@ const childProcess = require("child_process");
 const { decodeShellBytes } = require("./remote-ssh-decode");
 
 const PROBE_TIMEOUT_MS = 15000;
+// Serialized proxy transports such as `gh cs ssh --stdio` have a noticeably
+// slower cold round-trip on real Windows/Codespaces hosts. The ordinary probe
+// keeps its established 15s bound, while a coordinator-owned probe gets enough
+// time to finish naturally instead of being misclassified at the boundary.
+const MANAGED_PROBE_TIMEOUT_MS = 30000;
 
 const POSIX_OS_RX = /^(Linux|Darwin|FreeBSD|OpenBSD|NetBSD|SunOS|AIX|CYGWIN|MINGW|MSYS)/i;
 
@@ -142,13 +147,17 @@ async function detectRemoteShell({ profile, spawn, buildSshArgs, runtime, deps =
     throw new Error("detectRemoteShell: buildSshArgs required");
   }
   const spawnFn = spawn || (deps.spawn || childProcess.spawn);
+  const managed = runtime && typeof runtime.spawnManagedTransportChild === "function";
+  const timeoutMs = Number.isFinite(deps.timeoutMs)
+    ? deps.timeoutMs
+    : (managed ? MANAGED_PROBE_TIMEOUT_MS : PROBE_TIMEOUT_MS);
 
   // POSIX probe — `uname -s` is the canonical "what kernel are you" check
   // and exists on every POSIX system Clawd targets. cmd.exe responds with
   // "'uname' is not recognized…" and non-zero exit, so a 0/Linux response
   // is a strong POSIX signal.
   const posixArgs = buildSshArgs(profile).concat(["uname -s"]);
-  const posix = await spawnAndWait(spawnFn, "ssh", posixArgs, { runtime });
+  const posix = await spawnAndWait(spawnFn, "ssh", posixArgs, { runtime, timeoutMs });
   if (posix.code === 0) {
     const firstLine = String(posix.stdout || "").trim().split(/\r?\n/)[0] || "";
     if (POSIX_OS_RX.test(firstLine)) {
@@ -161,7 +170,7 @@ async function detectRemoteShell({ profile, spawn, buildSshArgs, runtime, deps =
   // ("ver: command not found"), so a 0/"Microsoft Windows" response
   // confirms cmd.exe.
   const winArgs = buildSshArgs(profile).concat(["ver"]);
-  const win = await spawnAndWait(spawnFn, "ssh", winArgs, { runtime });
+  const win = await spawnAndWait(spawnFn, "ssh", winArgs, { runtime, timeoutMs });
   if (win.code === 0 && /Microsoft Windows/i.test(win.stdout || "")) {
     return { ok: true, shell: "windows-cmd", os: "windows" };
   }
@@ -180,5 +189,6 @@ async function detectRemoteShell({ profile, spawn, buildSshArgs, runtime, deps =
 module.exports = {
   detectRemoteShell,
   PROBE_TIMEOUT_MS,
+  MANAGED_PROBE_TIMEOUT_MS,
   POSIX_OS_RX,
 };

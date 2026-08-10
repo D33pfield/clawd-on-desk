@@ -109,6 +109,28 @@ test("same-key non-owner is busy and does not change its intent", async () => {
   assert.deepEqual(coordinator.getIntent("p2"), { desiredConnected: false, intentGeneration: 0 });
 });
 
+test("profile snapshot exposes desired connection intent during an owned operation", async () => {
+  const coordinator = createRemoteSshTransportCoordinator({
+    inspectEffectiveTransport: serializedInspection,
+  });
+  const testProfile = profile("intent-snapshot");
+  await coordinator.acquireConnection(testProfile);
+  const operation = await coordinator.acquireOwnedOperation(testProfile, "deploy");
+  assert.equal(operation.ok, true);
+  assert.deepEqual(coordinator.snapshotForProfile(testProfile.id), {
+    transportPhase: "suspending",
+    transportOwnerProfileId: testProfile.id,
+    transportDesiredConnected: true,
+  });
+
+  coordinator.recordDisconnectIntent(testProfile.id);
+  assert.equal(
+    coordinator.snapshotForProfile(testProfile.id).transportDesiredConnected,
+    false,
+  );
+  coordinator.release(operation.context);
+});
+
 test("ordinary inspection does not create a serialized slot", async () => {
   const coordinator = createRemoteSshTransportCoordinator({
     inspectEffectiveTransport: parallelInspection,
@@ -148,6 +170,27 @@ test("a second owner operation is busy instead of invalidating the active mutati
   assert.equal(second.code, "transport_operation_busy");
   first.context.assertActive();
   assert.throws(() => connection.context.assertActive(), /no longer active/);
+});
+
+test("a completed owner operation can transition its lease back to connection ownership", async () => {
+  const coordinator = createRemoteSshTransportCoordinator({
+    spawn: () => fakeChild(),
+    inspectEffectiveTransport: serializedInspection,
+  });
+  const testProfile = profile("resume-transition-profile");
+  const connection = await coordinator.acquireConnection(testProfile);
+  const operation = await coordinator.acquireOwnedOperation(testProfile, "deploy");
+  assert.equal(operation.ok, true);
+
+  operation.context.transitionToConnection();
+  const snapshot = coordinator.getActiveOwnerOperation(testProfile.id);
+  assert.equal(snapshot.phase, "preparing");
+  assert.equal(snapshot.operation, "connect");
+
+  const nextOperation = await coordinator.acquireOwnedOperation(testProfile, "deploy");
+  assert.equal(nextOperation.ok, true);
+  assert.equal(nextOperation.context.profileId, testProfile.id);
+  coordinator.release(nextOperation.context);
 });
 
 test("drain waits for close, not exit", async () => {
