@@ -1321,10 +1321,13 @@ function updateSessionMetadata(sessionId, opts = {}) {
   // OpenCode swaps its placeholder title for a real one after session
   // creation; that arrives on session.updated which maps to no state change,
   // so the plugin forwards the title change as a metadata-only POST. Update
-  // the stored title here without touching the lifecycle state.
+  // the stored title here without touching the lifecycle state. Deliberately
+  // NOT stamping metadataUpdatedAt: that field is context/quota telemetry
+  // freshness, and a rename must not make stale telemetry look fresh. The
+  // title broadcasts anyway - sessionTitle/displayTitle are in the snapshot
+  // signature, so emitSessionSnapshot below fans it out.
   if (incomingTitle && incomingTitle !== session.sessionTitle) {
     session.sessionTitle = incomingTitle;
-    session.metadataUpdatedAt = Date.now();
     applied = true;
   }
   if (applied) emitSessionSnapshot();

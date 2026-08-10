@@ -502,7 +502,9 @@ export function createOpencodeFamilyPlugin(config) {
     // harmless — and it covers the "created with no title, titled later" case.
     if (prevTitle !== metadata.title) {
       _sessionTitleById.set(sessionId, metadata.title);
-      debugLog(`SESSION_TITLE capture session=${sessionId} title="${metadata.title}"` + (prevTitle ? ` (was "${prevTitle}")` : ""));
+      // Log only non-content metadata: the title is user/LLM-derived and
+      // embedded control chars/newlines could forge diagnostic log lines.
+      debugLog(`SESSION_TITLE session=${sessionId} changed=true len=${metadata.title.length}`);
       const body = {
         state: "idle",
         session_id: sessionId,

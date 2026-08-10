@@ -21,6 +21,26 @@ function normalizeSessionText(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+// Bound + sanitize a session title before storage or transport. Mirrors the
+// normalizeTitle in hooks/clawd-hook.js and src/state-session-snapshot.js:
+// collapse control chars and whitespace, cap at 80 chars (with a trailing
+// ellipsis). A 17k-char title would otherwise blow the 16 KiB /state body
+// cap, trigger a headerless 413, and make the plugin distrust the response
+// and rescan all five ports on every event (#841 review).
+const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
+const SESSION_TITLE_MAX = 80;
+function normalizeTitle(value) {
+  if (typeof value !== "string") return null;
+  const collapsed = value
+    .replace(SESSION_TITLE_CONTROL_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!collapsed) return null;
+  return collapsed.length > SESSION_TITLE_MAX
+    ? `${collapsed.slice(0, SESSION_TITLE_MAX - 1)}…`
+    : collapsed;
+}
+
 export function getEventSessionInfo(event) {
   const empty = {
     eventSessionId: null,
@@ -35,12 +55,12 @@ export function getEventSessionInfo(event) {
   const info = props.info && typeof props.info === "object" && !Array.isArray(props.info)
     ? props.info
     : {};
+  // directory is intentionally left un-normalized: the upstream text is
+  // authoritative and tests assert byte-identical passthrough.
   const directory = typeof info.directory === "string" && info.directory.trim()
     ? info.directory
     : null;
-  const title = typeof info.title === "string" && info.title.trim()
-    ? info.title.trim()
-    : null;
+  const title = normalizeTitle(info.title);
   return {
     eventSessionId: normalizeSessionText(props.sessionID) || normalizeSessionText(event.sessionID),
     infoSessionId: normalizeSessionText(info.id),
