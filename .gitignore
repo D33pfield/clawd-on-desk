@@ -99,6 +99,13 @@ logs/
 
 # GIF recording tools (not part of main project)
 scripts/*
+!scripts/manual/
+scripts/manual/*
+!scripts/manual/README.md
+!scripts/manual/remote-ssh-codespaces-546.ps1
+!scripts/manual/remote-ssh-codespaces-546-observe.ps1
+!scripts/manual/remote-ssh-codespaces-546-port-holder.js
+!scripts/manual/remote-ssh-codespaces-546-readiness.js
 !scripts/remote-deploy.sh
 !scripts/run-clawdbot-stress.sh
 !scripts/monitor-clawd-resources.sh
