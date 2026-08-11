@@ -8,7 +8,6 @@ const {
   WORKING_STALE_MS,
   DETACHED_IDLE_STALE_MS,
   CODEX_LOCAL_WORKING_STALE_FLOOR_MS,
-  OPENCODE_LOCAL_WORKING_STALE_FLOOR_MS,
   isWorkingLikeState,
   isLocalCodexWorkingLikeSession,
   isLocalZcodeDesktopIdleSession,
@@ -370,7 +369,7 @@ describe("state stale cleanup decisions", () => {
       agentPid: 10,
       sourcePid: 20,
       pidReachable: true,
-      updatedAt: now - OPENCODE_LOCAL_WORKING_STALE_FLOOR_MS - 1,
+      updatedAt: now - 20 * 60 * 1000 - 1,
     }), {
       now,
       alivePids: new Set([10, 20]),
@@ -378,6 +377,23 @@ describe("state stale cleanup decisions", () => {
         sessionStaleMs: configuredStaleMs,
         workingStaleMs: configuredStaleMs,
       },
+    });
+
+    assert.deepStrictEqual(result, { action: null });
+  });
+
+  it("keeps local OpenCode work active immediately before the fixed 20-minute stale floor", () => {
+    const now = 2_000_000;
+    const { result } = decision(session({
+      state: "working",
+      agentId: "opencode",
+      agentPid: 10,
+      sourcePid: 20,
+      pidReachable: true,
+      updatedAt: now - (20 * 60 * 1000 - 1),
+    }), {
+      now,
+      alivePids: new Set([10, 20]),
     });
 
     assert.deepStrictEqual(result, { action: null });
@@ -391,7 +407,7 @@ describe("state stale cleanup decisions", () => {
       agentPid: 10,
       sourcePid: 20,
       pidReachable: true,
-      updatedAt: now - OPENCODE_LOCAL_WORKING_STALE_FLOOR_MS - 1,
+      updatedAt: now - 20 * 60 * 1000 - 1,
     }), {
       now,
       alivePids: new Set([10, 20]),
@@ -427,7 +443,7 @@ describe("state stale cleanup decisions", () => {
         agentPid: 10,
         sourcePid: 20,
         pidReachable: true,
-        updatedAt: now - OPENCODE_LOCAL_WORKING_STALE_FLOOR_MS - 1,
+        updatedAt: now - 20 * 60 * 1000 - 1,
       }), {
         now,
         alivePids: new Set([10]),
@@ -455,6 +471,17 @@ describe("state stale cleanup decisions", () => {
       updatedAt: now - WORKING_STALE_MS - 1,
     }), { now });
     assert.deepStrictEqual(headlessResult, { action: "idle", reason: "working-timeout", updateTimestamp: true });
+  });
+
+  it("does not extend local MiMo Code working sessions", () => {
+    const now = 2_000_000;
+    const { result } = decision(session({
+      state: "working",
+      agentId: "mimocode",
+      updatedAt: now - WORKING_STALE_MS - 1,
+    }), { now });
+
+    assert.deepStrictEqual(result, { action: "idle", reason: "working-timeout", updateTimestamp: true });
   });
 
   it("still downgrades local Codex working after the Codex floor expires", () => {
