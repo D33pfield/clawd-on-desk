@@ -21,6 +21,9 @@
     "sessionHudShowContextUsage",
     "sessionHudShowQuota",
     "quotaRingDisplayMode",
+    "permissionAutomationMode",
+    "permissionAutomationAutoToolsWarningDismissed",
+    "permissionAutomationUnattendedWarningDismissed",
     "claudeQuotaCollectionEnabled",
     "quotaMergeSources",
     "sessionHudCleanupDetached",
@@ -552,36 +555,42 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
-    const segmented = document.createElement("div");
-    segmented.className = "segmented permission-automation-segmented";
-    segmented.setAttribute("role", "group");
-    segmented.setAttribute("aria-label", t("rowPermissionAutomation"));
-    for (const option of PERMISSION_AUTOMATION_OPTIONS) {
-      const btn = document.createElement("button");
-      const selected = current === option.id;
-      btn.type = "button";
-      btn.dataset.mode = option.id;
-      btn.textContent = t(option.labelKey);
-      btn.classList.toggle("active", selected);
-      btn.setAttribute("aria-pressed", selected ? "true" : "false");
-      btn.addEventListener("click", () => {
-        if (btn.classList.contains("active") || btn.disabled) return;
-        for (const candidate of segmented.querySelectorAll("button")) candidate.disabled = true;
-        setPermissionAutomationMode(option.id).then((result) => {
-          if (!result || result.status !== "ok") {
-            const msg = (result && result.message) || "unknown error";
-            ops.showToast(t("toastSaveFailed") + msg, { error: true });
-          }
+    const segmented = helpers.buildSegmentedRadio({
+      value: current,
+      ariaLabel: t("rowPermissionAutomation"),
+      className: "permission-automation-segmented",
+      options: PERMISSION_AUTOMATION_OPTIONS.map((option) => ({
+        value: option.id,
+        label: t(option.labelKey),
+      })),
+      onChange(nextMode) {
+        return setPermissionAutomationMode(nextMode).then((result) => {
+          if (result && result.status === "ok" && result.noop !== true) return true;
+          if (result && result.status === "ok") return false;
+          const msg = (result && result.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + msg, { error: true });
+          return false;
         }).catch((err) => {
           ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-        }).finally(() => {
-          for (const candidate of segmented.querySelectorAll("button")) candidate.disabled = false;
+          return false;
         });
-      });
-      segmented.appendChild(btn);
-    }
-    ctrl.appendChild(segmented);
+      },
+    });
+    ctrl.appendChild(segmented.element);
     row.appendChild(ctrl);
+    state.mountedControls.permissionAutomationMode = {
+      element: segmented.element,
+      syncFromSnapshot() {
+        const mode = readPermissionAutomationMode();
+        segmented.setValue(mode);
+        const nextDescKey = mode === "auto-tools"
+          ? "permissionAutomationAutoToolsDesc"
+          : (mode === "unattended"
+            ? "permissionAutomationUnattendedDesc"
+            : "permissionAutomationOffDesc");
+        desc.textContent = t(nextDescKey);
+      },
+    };
     return row;
   }
 
@@ -1523,7 +1532,7 @@
 
   function buildVolumeSliderRow() {
     const row = document.createElement("div");
-    row.className = "row";
+    row.className = "row volume-slider-row";
     row.innerHTML =
       `<div class="row-text">` +
         `<span class="row-label"></span>` +
@@ -2088,6 +2097,10 @@
       const control = state.mountedControls.quotaRingDisplayMode;
       if (!control || !document.body.contains(control.element)) return false;
     }
+    if (keys.includes("permissionAutomationMode")) {
+      const control = state.mountedControls.permissionAutomationMode;
+      if (!control || !document.body.contains(control.element)) return false;
+    }
     if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_POLICY_KEYS.has(key)))
       && !hasMountedBubblePolicyControls()) {
       return false;
@@ -2109,6 +2122,9 @@
     for (const key of keys) {
       if (key === "size" || key === "soundVolume" || key === "textScale" || key === "textScaleByDisplay") continue;
       if (key === "quotaRingDisplayMode") continue;
+      if (key === "permissionAutomationMode"
+        || key === "permissionAutomationAutoToolsWarningDismissed"
+        || key === "permissionAutomationUnattendedWarningDismissed") continue;
       if (BUBBLE_POLICY_KEYS.has(key)) {
         const meta = state.mountedControls.bubblePolicyControls.get(key);
         if (!meta || !document.body.contains(meta.row)) return false;
@@ -2128,6 +2144,12 @@
         );
         continue;
       }
+      if (key === "permissionAutomationMode") {
+        state.mountedControls.permissionAutomationMode.syncFromSnapshot();
+        continue;
+      }
+      if (key === "permissionAutomationAutoToolsWarningDismissed"
+        || key === "permissionAutomationUnattendedWarningDismissed") continue;
       if (key === "textScale" || key === "textScaleByDisplay") {
         state.mountedControls.textScale.syncValueFromSnapshot();
         continue;

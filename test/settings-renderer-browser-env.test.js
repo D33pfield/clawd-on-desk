@@ -409,6 +409,7 @@ function loadSharedLanguagePickerForTest({
   innerHeight = 600,
   transitionDuration = "0.14s",
   transitionDelay = "0s",
+  lockWhilePending = false,
 } = {}) {
   const body = new FakeElement("body");
   const boundary = new FakeElement("div");
@@ -423,8 +424,16 @@ function loadSharedLanguagePickerForTest({
   let nextTimerId = 1;
   const document = {
     body,
+    activeElement: body,
     documentElement: { clientHeight: innerHeight },
-    createElement: (tagName) => new FakeElement(tagName),
+    createElement(tagName) {
+      const element = new FakeElement(tagName);
+      element.focus = () => {
+        element.focused = true;
+        document.activeElement = element;
+      };
+      return element;
+    },
     addEventListener(type, cb) {
       if (!documentListeners.has(type)) documentListeners.set(type, []);
       documentListeners.get(type).push(cb);
@@ -487,6 +496,7 @@ function loadSharedLanguagePickerForTest({
     options: options.map((option) => ({ value: option, label: option.toUpperCase() })),
     ariaLabel: "Language",
     onChange,
+    lockWhilePending,
   });
   boundary.appendChild(control.element);
 
@@ -521,6 +531,9 @@ function loadSharedLanguagePickerForTest({
     getPendingAnimationFrameCount: () => animationFrames.size,
     getPendingTimerCount: () => timers.size,
     getPendingTimerDelays: () => [...timerDelays.values()],
+    getActiveElement: () => document.activeElement,
+    setActiveElement: (element) => { document.activeElement = element; },
+    body,
     getDocumentListenerCount: (type) => (documentListeners.get(type) || []).length,
     getWindowListenerCount: (type) => (windowListeners.get(type) || []).length,
   };
@@ -3720,6 +3733,8 @@ describe("settings renderer browser environment", () => {
     assert.match(css, /@media \(max-width:\s*980px\)\s*\{\s*\.feishu-approval-timeout-row\s*\{[^}]*\}\s*\.feishu-approval-timeout-row \.row-control\s*\{[^}]*width:\s*100%;[^}]*margin-left:\s*0;/s);
     assert.match(css, /@media \(max-width:\s*980px\)\s*\{\s*\.feishu-approval-timeout-row\s*\{[^}]*\}\s*\.feishu-approval-timeout-row \.row-control\s*\{[^}]*\}\s*\.feishu-approval-timeout-select\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;[^}]*max-width:\s*none;/s);
     assert.equal(getSelectedPickerValue(select), "15");
+    const renderRequestCount = harness.renderRequests.length;
+    const previousSnapshot = JSON.parse(JSON.stringify(harness.core.state.snapshot));
     choosePickerOption(select, "30");
 
     await Promise.resolve();
@@ -3733,6 +3748,37 @@ describe("settings renderer browser environment", () => {
         connectionTimeoutSeconds: 30,
       },
     });
+    assert.equal(
+      harness.renderRequests.length,
+      renderRequestCount,
+      "the timeout picker owns its pending state without rebuilding the page"
+    );
+
+    const nextSnapshot = {
+      ...previousSnapshot,
+      feishuApproval: {
+        ...previousSnapshot.feishuApproval,
+        connectionTimeoutSeconds: 30,
+      },
+    };
+    harness.core.state.snapshot = nextSnapshot;
+    assert.equal(harness.core.tabs["telegram-approval"].patchInPlace(
+      { feishuApproval: nextSnapshot.feishuApproval },
+      { previousSnapshot, snapshot: nextSnapshot }
+    ), true);
+    assert.strictEqual(harness.content.querySelector(".feishu-approval-timeout-select"), select);
+    assert.equal(getSelectedPickerValue(select), "30");
+
+    assert.equal(harness.core.tabs["telegram-approval"].patchInPlace(
+      { feishuApproval: { ...nextSnapshot.feishuApproval, enabled: false } },
+      {
+        previousSnapshot: nextSnapshot,
+        snapshot: {
+          ...nextSnapshot,
+          feishuApproval: { ...nextSnapshot.feishuApproval, enabled: false },
+        },
+      }
+    ), false, "other Feishu configuration changes still require a full render");
   });
 
   it("renders the Feishu event subscription guide and maps test failure codes to localized toasts", async () => {
@@ -4965,7 +5011,33 @@ describe("settings renderer browser environment", () => {
     locked.setPending(true);
     lockedTrigger.dispatchEvent({ type: "click" });
     assert.equal(locked.element.classList.contains("open"), false);
-    assert.equal(lockedTrigger.disabled, true);
+    assert.equal(lockedTrigger.disabled, false);
+    assert.equal(lockedTrigger.getAttribute("aria-disabled"), "true");
+    assert.equal(lockedTrigger.getAttribute("aria-busy"), "true");
+  });
+
+  it("restores a Settings picker trigger only when async saving leaves focus on the page", async () => {
+    const save = createDeferred();
+    const harness = loadSharedLanguagePickerForTest({
+      onChange: () => save.promise,
+      lockWhilePending: true,
+    });
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.optionElements[1].dispatchEvent({ type: "click" });
+    assert.equal(harness.trigger.disabled, false);
+    assert.equal(harness.trigger.getAttribute("aria-disabled"), "true");
+    assert.equal(harness.picker.classList.contains("pending"), true);
+
+    // Native Chromium moves focus to BODY when a focused button becomes
+    // disabled. The fake DOM has no native focus manager, so model that step.
+    harness.trigger.focused = false;
+    harness.setActiveElement(harness.body);
+    save.resolve(true);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(harness.getActiveElement(), harness.trigger);
+    assert.equal(harness.trigger.focused, true);
+    assert.equal(harness.picker.classList.contains("pending"), false);
   });
 
   it("builds accessible segmented radios with keyboard navigation and rollback", async () => {
@@ -5021,6 +5093,100 @@ describe("settings renderer browser environment", () => {
     core.ops.clearMountedControls();
     assert.equal(buttons[0].eventListeners.click.length, 0);
     assert.equal(buttons[0].eventListeners.keydown.length, 0);
+  });
+
+  it("restores segmented-control focus after a warning dialog closes", async () => {
+    const body = new FakeElement("body");
+    const modalRoot = new FakeElement("div");
+    modalRoot.id = "modalRoot";
+    body.appendChild(modalRoot);
+    const listeners = new Map();
+    const document = {
+      body,
+      activeElement: body,
+      createElement(tagName) {
+        const element = new FakeElement(tagName);
+        element.focus = () => {
+          if (element.disabled) return;
+          element.focused = true;
+          document.activeElement = element;
+        };
+        return element;
+      },
+      createElementNS(_namespace, tagName) {
+        return this.createElement(tagName);
+      },
+      getElementById: (id) => (id === "modalRoot" ? modalRoot : null),
+      addEventListener(type, listener) { listeners.set(type, listener); },
+      removeEventListener(type) { listeners.delete(type); },
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const control = core.helpers.buildSegmentedRadio({
+      value: "off",
+      options: [{ value: "off", label: "Off" }, { value: "auto", label: "Auto" }],
+      onChange: () => core.helpers.showSettingsConfirmModal({
+        title: "Enable automation?",
+        detail: "Review the risk first.",
+        actions: [
+          { id: "cancel", label: "Cancel", defaultFocus: true },
+          { id: "confirm", label: "Enable", tone: "danger" },
+        ],
+      }).then((actionId) => actionId === "confirm"),
+    });
+    body.appendChild(control.element);
+    const source = control.element.querySelectorAll("button")[1];
+    source.focus();
+    source.dispatchEvent({ type: "click" });
+
+    assert.equal(source.disabled, true);
+    assert.notStrictEqual(document.activeElement, source);
+    listeners.get("keydown")({ key: "Escape", preventDefault() {} });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(source.disabled, false);
+    assert.strictEqual(document.activeElement, source);
+    assert.equal(source.getAttribute("aria-checked"), "false");
+  });
+
+  it("restores a stable Settings focus key across a full content render", () => {
+    const body = new FakeElement("body");
+    const content = new FakeElement("main");
+    content.id = "content";
+    body.appendChild(content);
+    const document = {
+      body,
+      activeElement: body,
+      createElement(tagName) {
+        const element = new FakeElement(tagName);
+        element.focus = () => {
+          element.focused = true;
+          document.activeElement = element;
+        };
+        return element;
+      },
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const first = document.createElement("button");
+    first.setAttribute("data-settings-focus-key", "feishu-timeout");
+    content.appendChild(first);
+    first.focus();
+
+    let replacement = null;
+    core.ops.installRenderHooks({
+      content() {
+        content.innerHTML = "";
+        replacement = document.createElement("button");
+        replacement.setAttribute("data-settings-focus-key", "feishu-timeout");
+        content.appendChild(replacement);
+      },
+    });
+    core.ops.requestRender({ content: true });
+
+    assert.equal(first.isConnected, false);
+    assert.strictEqual(document.activeElement, replacement);
+    assert.equal(replacement.focused, true);
   });
 
   it("builds Settings buttons from one tone, size, and pending-state contract", () => {
@@ -6018,6 +6184,15 @@ describe("settings renderer browser environment", () => {
     assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.volume-slider:hover::-webkit-slider-thumb,[\s\S]*\.size-control\.dragging \.volume-slider::-webkit-slider-thumb\s*\{[\s\S]*transform:\s*none;/.test(css));
   });
 
+  it("stacks wide General controls from their zoom-corrected card width", () => {
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.ok(generalSource.includes('row.className = "row volume-slider-row"'));
+    assert.match(css, /\.quota-ring-collapsible \.settings-option-list,\s*\.sound-collapsible \.settings-option-list\s*\{\s*container-type:\s*inline-size;/s);
+    assert.match(css, /@container \(max-width:\s*400px\)\s*\{[\s\S]*\.quota-ring-display-mode-row,[\s\S]*\.volume-slider-row\s*\{[\s\S]*flex-direction:\s*column;/);
+    assert.match(css, /@container \(max-width:\s*400px\)\s*\{[\s\S]*\.volume-slider-row \.volume-control\s*\{[\s\S]*width:\s*100%;[\s\S]*min-width:\s*0;/);
+  });
+
   it("describes notification bubble seconds as an auto-close upper bound instead of a guaranteed visible duration", () => {
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
 
@@ -6121,9 +6296,10 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes('checkboxInput.type = "checkbox"'));
     assert.ok(coreSource.includes("checkboxChecked: !!(checkboxInput && checkboxInput.checked)"));
     assert.ok(css.includes("grid-template-columns: repeat(3, minmax(0, 1fr))"));
-    assert.ok(generalSource.includes('segmented.setAttribute("role", "group")'));
-    assert.ok(generalSource.includes('segmented.setAttribute("aria-label", t("rowPermissionAutomation"))'));
-    assert.ok(generalSource.includes('btn.setAttribute("aria-pressed", selected ? "true" : "false")'));
+    assert.ok(generalSource.includes("helpers.buildSegmentedRadio({"));
+    assert.ok(generalSource.includes('ariaLabel: t("rowPermissionAutomation")'));
+    assert.ok(generalSource.includes('className: "permission-automation-segmented"'));
+    assert.ok(generalSource.includes("state.mountedControls.permissionAutomationMode"));
     assert.ok(i18nSource.includes('rowPermissionAutomation: "Permission request handling"'));
     assert.ok(i18nSource.includes('rowPermissionAutomation: "权限请求处理"'));
     assert.ok(i18nSource.includes("permissionAutomationAutoToolsConfirmTitle"));
@@ -6132,6 +6308,41 @@ describe("settings renderer browser environment", () => {
     // Lives in its own Permissions section, not under Bubbles.
     assert.ok(generalSource.includes('t("sectionPermissions")'));
     assert.ok(i18nSource.includes('sectionPermissions: "Permissions"'));
+  });
+
+  it("patches confirmed permission automation changes without replacing the focused control", () => {
+    const initialSnapshot = makeGeneralSnapshot({
+      permissionAutomationMode: "off",
+      permissionAutomationAutoToolsWarningDismissed: false,
+    });
+    const harness = loadGeneralTabForTest({ snapshot: initialSnapshot });
+    harness.renderContent();
+    const control = harness.content.querySelector(".permission-automation-segmented");
+    const beforeRenderCount = harness.getContentRenderCount();
+    const nextSnapshot = {
+      ...initialSnapshot,
+      permissionAutomationMode: "auto-tools",
+      permissionAutomationAutoToolsWarningDismissed: true,
+    };
+
+    harness.core.ops.applyChanges({
+      changes: {
+        permissionAutomationMode: "auto-tools",
+        permissionAutomationAutoToolsWarningDismissed: true,
+      },
+      snapshot: nextSnapshot,
+    });
+
+    assert.equal(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(harness.content.querySelector(".permission-automation-segmented"), control);
+    const selected = control.querySelectorAll("button")
+      .find((button) => button.dataset.value === "auto-tools");
+    assert.equal(selected.getAttribute("role"), "radio");
+    assert.equal(selected.getAttribute("aria-checked"), "true");
+    assert.equal(
+      findAncestorByClass(control, "permission-automation-row").querySelector(".row-desc").textContent,
+      harness.core.helpers.t("permissionAutomationAutoToolsDesc")
+    );
   });
 
   it("clears successful switch transient state so rerenders do not keep wait cursors", () => {
@@ -7738,12 +7949,14 @@ describe("settings renderer browser environment", () => {
         value: { clawd: "gold", cloudling: "vaporwave" },
       }]
     );
-    assert.strictEqual(select.querySelector(".language-picker-trigger").disabled, true);
+    assert.strictEqual(select.querySelector(".language-picker-trigger").disabled, false);
+    assert.strictEqual(select.querySelector(".language-picker-trigger").getAttribute("aria-disabled"), "true");
     assert.strictEqual(select.classList.contains("pending"), true);
     await Promise.resolve();
     await Promise.resolve();
     await new Promise((resolve) => setImmediate(resolve));
     assert.strictEqual(select.querySelector(".language-picker-trigger").disabled, false);
+    assert.strictEqual(select.querySelector(".language-picker-trigger").getAttribute("aria-disabled"), "false");
     assert.strictEqual(select.classList.contains("pending"), false);
 
     const accessorySelect = harness.content.querySelector(".pet-accessory-select");
@@ -7760,11 +7973,13 @@ describe("settings renderer browser environment", () => {
         value: { clawd: "halo", cloudling: "halo" },
       }
     );
-    assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").disabled, true);
+    assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").disabled, false);
+    assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").getAttribute("aria-disabled"), "true");
     await Promise.resolve();
     await Promise.resolve();
     await new Promise((resolve) => setImmediate(resolve));
     assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").disabled, false);
+    assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").getAttribute("aria-disabled"), "false");
 
     const holidaySwitch = harness.content.querySelector(".holiday-accessory-switch");
     assert.ok(holidaySwitch);

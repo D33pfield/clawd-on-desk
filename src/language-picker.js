@@ -28,6 +28,9 @@
     trigger.setAttribute("role", "combobox");
     trigger.setAttribute("aria-haspopup", "listbox");
     trigger.setAttribute("aria-expanded", "false");
+    if (config.focusKey != null && String(config.focusKey).trim()) {
+      trigger.setAttribute("data-settings-focus-key", String(config.focusKey).trim());
+    }
 
     const valueEl = document.createElement("span");
     valueEl.className = "language-picker-value";
@@ -69,6 +72,7 @@
     let changeSeq = 0;
     let latestRequestSeq = 0;
     const pendingChanges = new Map();
+    let pendingFocusTarget = null;
     let reflowScheduled = false;
     let reflowFrame = null;
     let menuUnmountTimer = null;
@@ -103,16 +107,31 @@
       }
     }
 
+    function isInteractionLocked() {
+      return disabled || (config.lockWhilePending === true && pending);
+    }
+
     function paintInteractivity() {
       picker.classList.toggle("disabled", disabled);
       picker.classList.toggle("pending", pending);
-      trigger.disabled = disabled || (config.lockWhilePending === true && pending);
-      trigger.setAttribute("aria-disabled", trigger.disabled ? "true" : "false");
+      // A transient save must not disable the focused trigger: Chromium moves
+      // focus to BODY when a button becomes disabled. aria-disabled plus the
+      // event guards below keep it locked without losing keyboard position.
+      trigger.disabled = disabled;
+      trigger.setAttribute("aria-disabled", isInteractionLocked() ? "true" : "false");
+      trigger.setAttribute("aria-busy", pending ? "true" : "false");
     }
 
     function focusElement(element) {
       if (!element || typeof element.focus !== "function") return;
       try { element.focus({ preventScroll: true }); } catch (_) { element.focus(); }
+    }
+
+    function restoreFocusIfLost(element) {
+      if (!element || element.isConnected === false || typeof element.focus !== "function") return;
+      const active = document.activeElement;
+      if (active && active !== document.body && active !== element && active.isConnected !== false) return;
+      focusElement(element);
     }
 
     function finiteNumber(value) {
@@ -343,7 +362,7 @@
 
     function setOpen(next, { focusTrigger = false } = {}) {
       if (disposed) return;
-      const nextOpen = !!next && optionElements.length > 0 && !trigger.disabled;
+      const nextOpen = !!next && optionElements.length > 0 && !isInteractionLocked();
       if (nextOpen) {
         isOpen = true;
         mountMenu();
@@ -376,10 +395,15 @@
       paintValue(latestPending || committedValue);
       pending = pendingChanges.size > 0;
       paintInteractivity();
+      if (!pending) {
+        const focusTarget = pendingFocusTarget;
+        pendingFocusTarget = null;
+        restoreFocusIfLost(focusTarget);
+      }
     }
 
     function choose(value) {
-      if (disposed || trigger.disabled) return;
+      if (disposed || isInteractionLocked()) return;
       const entry = findOption(value);
       if (!entry) return;
       if (entry.data.value === activeValue) {
@@ -390,6 +414,7 @@
       const previous = committedValue;
       paintValue(entry.data.value);
       setOpen(false, { focusTrigger: true });
+      pendingFocusTarget = trigger;
       const seq = ++changeSeq;
       latestRequestSeq = seq;
       pendingChanges.set(seq, entry.data.value);
@@ -420,6 +445,7 @@
 
     trigger.addEventListener("click", () => setOpen(!isOpen));
     trigger.addEventListener("keydown", (event) => {
+      if (isInteractionLocked()) return;
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         setOpen(true);
@@ -502,6 +528,11 @@
         pendingChanges.clear();
         paintValue(value);
         committedValue = activeValue;
+        pending = false;
+        paintInteractivity();
+        const focusTarget = pendingFocusTarget;
+        pendingFocusTarget = null;
+        restoreFocusIfLost(focusTarget);
       },
       setDisabled(value) {
         if (disposed) return;
@@ -526,6 +557,7 @@
         picker.classList.remove("menu-mounted");
         resetMenuLayout();
         disposed = true;
+        pendingFocusTarget = null;
         changeSeq++;
         pendingChanges.clear();
         if (reflowScheduled && reflowFrame != null

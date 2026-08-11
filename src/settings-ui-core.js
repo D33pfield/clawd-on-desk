@@ -89,6 +89,7 @@
       settingsSelects: new Set(),
       segmentedRadios: new Set(),
       quotaRingDisplayMode: null,
+      permissionAutomationMode: null,
       aboutAutoUpdate: null,
       aboutUpdateStatus: null,
     },
@@ -470,13 +471,18 @@
       if (disposed || disabled || pending || !values.includes(next)) return false;
       if (next === currentValue) return true;
       const previous = currentValue;
+      const focusTarget = buttons.includes(document.activeElement) ? document.activeElement : null;
       currentValue = next;
-      pending = true;
-      syncVisualState();
       let accepted = true;
       try {
         if (typeof config.onChange === "function") {
-          accepted = (await Promise.resolve(config.onChange(next))) !== false;
+          const result = config.onChange(next);
+          pending = true;
+          syncVisualState();
+          accepted = (await Promise.resolve(result)) !== false;
+        } else {
+          pending = true;
+          syncVisualState();
         }
       } catch (_) {
         accepted = false;
@@ -484,6 +490,12 @@
       if (!accepted) currentValue = previous;
       pending = false;
       syncVisualState();
+      if (focusTarget && focusTarget.isConnected !== false && typeof focusTarget.focus === "function") {
+        const active = document.activeElement;
+        if (!active || active === document.body || active === focusTarget || active.isConnected === false) {
+          try { focusTarget.focus({ preventScroll: true }); } catch (_) { focusTarget.focus(); }
+        }
+      }
       return accepted;
     }
 
@@ -1131,6 +1143,7 @@
     state.mountedControls.textScale = null;
     state.mountedControls.roamMovementStyle = null;
     state.mountedControls.quotaRingDisplayMode = null;
+    state.mountedControls.permissionAutomationMode = null;
     state.mountedControls.roamArea = null;
     state.mountedControls.aboutAutoUpdate = null;
     state.mountedControls.aboutUpdateStatus = null;
@@ -1156,9 +1169,39 @@
     }
   }
 
+  function getActiveSettingsFocusKey() {
+    const active = document.activeElement;
+    if (!active || active === document.body || typeof active.getAttribute !== "function") return "";
+    return String(active.getAttribute("data-settings-focus-key") || "").trim();
+  }
+
+  function findSettingsFocusTarget(rootNode, focusKey) {
+    if (!rootNode || !focusKey) return null;
+    const stack = Array.isArray(rootNode.children) ? [...rootNode.children] : Array.from(rootNode.children || []);
+    while (stack.length > 0) {
+      const element = stack.shift();
+      if (element && typeof element.getAttribute === "function"
+        && element.getAttribute("data-settings-focus-key") === focusKey) return element;
+      if (element && element.children) stack.push(...Array.from(element.children));
+    }
+    return null;
+  }
+
+  function restoreSettingsFocus(rootNode, focusKey) {
+    const target = findSettingsFocusTarget(rootNode, focusKey);
+    if (!target || target.disabled === true || typeof target.focus !== "function") return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected !== false) return;
+    try { target.focus({ preventScroll: true }); } catch (_) { target.focus(); }
+  }
+
   function requestRender({ sidebar = false, content = false, modal = false } = {}) {
     if (sidebar && typeof renderHooks.sidebar === "function") renderHooks.sidebar();
-    if (content && typeof renderHooks.content === "function") renderHooks.content();
+    if (content && typeof renderHooks.content === "function") {
+      const focusKey = getActiveSettingsFocusKey();
+      renderHooks.content();
+      if (focusKey) restoreSettingsFocus(document.getElementById("content"), focusKey);
+    }
     if (modal && typeof renderHooks.modal === "function") renderHooks.modal();
   }
 

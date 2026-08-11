@@ -625,6 +625,10 @@ html, body {
   display: grid;
   gap: 8px;
 }
+.quota-ring-collapsible .settings-option-list,
+.sound-collapsible .settings-option-list {
+  container-type: inline-size;
+}
 .settings-option-list .settings-option-item {
   padding: 10px 12px;
   border: 1px solid var(--row-border);
@@ -1460,6 +1464,20 @@ html, body {
   .quota-ring-display-mode-row .row-control,
   .quota-ring-display-mode-choice {
     width: 100%;
+    margin-left: 0;
+  }
+}
+@container (max-width: 400px) {
+  .quota-ring-display-mode-row,
+  .volume-slider-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .quota-ring-display-mode-row .row-control,
+  .quota-ring-display-mode-choice,
+  .volume-slider-row .volume-control {
+    width: 100%;
+    min-width: 0;
     margin-left: 0;
   }
 }
