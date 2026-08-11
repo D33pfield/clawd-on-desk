@@ -765,16 +765,23 @@
         { value: "used", label: t("quotaRingDisplayUsed") },
         { value: "remaining", label: t("quotaRingDisplayRemaining") },
       ],
-      onChange: (next) => Promise.resolve(window.settingsAPI.update("quotaRingDisplayMode", next))
-        .then((result) => {
-          if (result && result.status === "ok") return true;
-          ops.showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+      onChange: (next) => {
+        if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") {
+          ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
           return false;
-        })
-        .catch((err) => {
-          ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-          return false;
-        }),
+        }
+        return Promise.resolve()
+          .then(() => window.settingsAPI.update("quotaRingDisplayMode", next))
+          .then((result) => {
+            if (result && result.status === "ok") return true;
+            ops.showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+            return false;
+          })
+          .catch((err) => {
+            ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+            return false;
+          });
+      },
     });
     controlWrap.appendChild(control.element);
     row.append(text, controlWrap);

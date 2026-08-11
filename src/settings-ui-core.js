@@ -1848,7 +1848,7 @@
   }
 
   function showSettingsConfirmModal(options = {}) {
-    return showSettingsDialog({ iconText: "!", ...options });
+    return showSettingsDialog({ ...options, iconText: "!" });
   }
 
   core.helpers = {

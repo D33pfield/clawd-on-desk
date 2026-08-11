@@ -5057,10 +5057,10 @@ describe("settings renderer browser environment", () => {
       removeEventListener(type) { listeners.delete(type); },
     };
     const core = loadSettingsCoreForTest({}, { document });
-    const resultPromise = core.helpers.showSettingsDialog({
+    const resultPromise = core.helpers.showSettingsConfirmModal({
       title: "Remove profile?",
       detail: "This cannot be undone.",
-      iconText: "!",
+      iconText: "this override must be ignored",
       actions: [
         { id: "cancel", label: "Cancel", tone: "neutral", defaultFocus: true },
         { id: "remove", label: "Remove", tone: "danger" },
@@ -6504,6 +6504,33 @@ describe("settings renderer browser environment", () => {
     assert.equal(harness.getContentRenderCount(), beforeRenderCount);
     assert.strictEqual(harness.content.querySelector(".quota-ring-display-mode-choice"), control);
     assert.equal(buttons[1].getAttribute("aria-checked"), "true");
+  });
+
+  it("reverts quota display selection and reports when the Settings API is unavailable", async () => {
+    const toasts = [];
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ quotaRingDisplayMode: "used" }),
+      settingsAPI: {
+        getQuotaSourceCount: async () => 1,
+        update: undefined,
+      },
+    });
+    harness.core.ops.showToast = (message, options = {}) => {
+      toasts.push({ message, options });
+    };
+    harness.renderContent();
+
+    const control = harness.content.querySelector(".quota-ring-display-mode-choice");
+    const buttons = control.querySelectorAll("button");
+    buttons[1].dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(buttons[0].getAttribute("aria-checked"), "true");
+    assert.equal(buttons[1].getAttribute("aria-checked"), "false");
+    assert.equal(toasts.length, 1);
+    assert.match(toasts[0].message, /settings API unavailable/);
+    assert.equal(toasts[0].options.error, true);
   });
 
   it("reveals existing quota options immediately and absorbs async sources without a second expansion", async () => {
