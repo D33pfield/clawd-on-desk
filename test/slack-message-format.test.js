@@ -208,3 +208,26 @@ test("buildTestMessage produces a simple two-block card", () => {
 test("null entry yields null (caller skips)", () => {
   assert.equal(fmt.buildCompletionMessage(null, { lang: "en" }), null);
 });
+
+// The truncation flag was computed on the raw text, but escaping happens after
+// it: 2500 "<" characters are under the raw limit and 10000 characters once
+// escaped, so the final clip dropped most of the output while the label still
+// said it was complete. A reader cannot tell a short answer from a cut one.
+test("truncation is reported after escaping and the final clip, not before", () => {
+  const msg = fmt.buildCompletionMessage(
+    { id: "s1", badge: "done", displayTitle: "T", assistantLastOutput: "<".repeat(2500) },
+    { lang: "en", includeOutput: true },
+  );
+  const texts = msg.blocks.map((b) => (b.text ? b.text.text : ""));
+  const label = texts.find((t) => /Assistant output/.test(t));
+  assert.match(label, /truncated/i, "content was clipped, so say so");
+});
+
+test("output that survives escaping intact is not labelled truncated", () => {
+  const msg = fmt.buildCompletionMessage(
+    { id: "s1", badge: "done", displayTitle: "T", assistantLastOutput: "all fine" },
+    { lang: "en", includeOutput: true },
+  );
+  const label = msg.blocks.map((b) => (b.text ? b.text.text : "")).find((t) => /Assistant output/.test(t));
+  assert.doesNotMatch(label, /truncated/i);
+});

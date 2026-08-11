@@ -271,12 +271,19 @@ function buildCompletionMessage(entry, options = {}) {
 
   const prepared = options.includeOutput ? prepareAssistantOutput(entry) : null;
   if (prepared) {
-    const label = prepared.truncated ? `${locale.assistantOutput} (${locale.truncated})` : locale.assistantOutput;
-    blocks.push(sectionBlock(`*${escapeMrkdwn(label)}:*`));
     // Slack still parses &, < and > inside a fenced block, so escape there too —
     // a code fence is not a mention-proof container.
     const body = escapeMrkdwn(neutralizeFences(prepared.text));
-    blocks.push(sectionBlock("```\n" + clipMrkdwn(body, SECTION_MAX - 8) + "\n```"));
+    const clipped = clipMrkdwn(body, SECTION_MAX - 8);
+    // Escaping expands: one "<" becomes four characters. Text that fit the raw
+    // budget can therefore overflow the block limit and lose its tail here,
+    // long after prepareAssistantOutput decided whether it was truncated. Ask
+    // the final string, not the intermediate one, or the label tells the reader
+    // an answer is complete when most of it was dropped.
+    const truncated = prepared.truncated || clipped.length < body.length;
+    const label = truncated ? `${locale.assistantOutput} (${locale.truncated})` : locale.assistantOutput;
+    blocks.push(sectionBlock(`*${escapeMrkdwn(label)}:*`));
+    blocks.push(sectionBlock("```\n" + clipped + "\n```"));
   }
 
   const fallbackFolder = redactMrkdwn(folderName(entry.cwd));
