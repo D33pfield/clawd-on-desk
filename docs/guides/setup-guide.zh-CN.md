@@ -58,13 +58,44 @@ Claude Code 只有一个用户级 statusline 槽位，因此 Clawd 绝不会静�
 
 **opencode** — 使用 `~/.config/opencode/opencode.json` 里的 plugin 配置。需要本机 opencode 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 plugin。也可以手动执行 `node hooks/opencode-install.js`。
 
+**MiMo Code** — 使用 `~/.config/mimocode/` 下当前生效的 plugin 配置：`config.json` → `mimocode.json` → 默认 `mimocode.jsonc`，后者优先。需要本机 MiMo Code 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步生效的 plugin entry。也可以手动执行 `npm run install:mimocode-plugin`。MiMo Code 与 opencode 使用同一套 plugin SDK 和 Allow / Always / Deny 权限行为；`task` 创建的子会话不参与可见的多会话动画聚合。
+
 **Pi** — 使用全局 extension 目录 `~/.pi/agent/extensions/clawd-on-desk`。需要本机 Pi 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 extension。也可以手动执行 `npm run install:pi-extension`。交互式 Pi 会话会向 Clawd 上报生命周期和工具活动，但 Pi 是 state-only：Clawd 不显示权限气泡、不调用 Pi 终端确认，并保留 Pi 默认 YOLO 执行行为。
 
 **OpenClaw** — 使用 `~/.openclaw/openclaw.json` 里的 plugin 路径。需要本机 OpenClaw 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 plugin。也可以手动执行 `npm run install:openclaw-plugin`，由 OpenClaw CLI 处理首次安装。Phase 1 只做状态动画，面向本地 `openclaw tui --local` 会话；暂不接 OpenClaw 权限气泡，也不支持 OpenClaw 终端聚焦。
 
-**Hermes Agent** — 从 [hermes-agent.org](https://hermes-agent.org/) 或 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 安装 Hermes。需要本机 Hermes 追踪时，先到 **Settings → Agents** 安装 Clawd 集成；安装且 Hermes 存在后，Clawd 会把 plugin 复制到 Hermes 的托管 plugin 目录，并通过 `hermes plugins enable clawd-on-desk` 启用它。也可以手动执行 `npm run install:hermes-plugin` 强制同步，或执行 `npm run uninstall:hermes-plugin` 移除 Clawd 的 Hermes plugin。
+**Hermes Agent** — 从 [hermes-agent.org](https://hermes-agent.org/) 或 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 安装 Hermes。需要本机 Hermes 追踪时，先到 **Settings → Agents** 安装 Clawd 集成；安装且 Hermes 存在后，Clawd 会把 plugin 复制到 Hermes 的托管 plugin 目录，并通过 `hermes plugins enable clawd-on-desk` 启用它。也可以手动执行 `npm run install:hermes-plugin` 强制同步，或执行 `npm run uninstall:hermes-plugin` 移除 Clawd 的 Hermes plugin。Hermes 支持状态、会话、终端聚焦和受支持的权限气泡；具体边界见 [known-limitations.zh-CN.md](known-limitations.zh-CN.md)。
+
+**QwenWork（千问办公）** — agent id `qwenwork`；hooks 写入 `~/.QwenWorkCN/settings.json`（这是 QwenWork 真实的用户数据目录，不是它 hooks 文档里写的 `~/.qwenwork`）。需要本机 QwenWork 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。也可以手动执行 `npm run install:qwenwork-hooks`，卸载用 `npm run uninstall:qwenwork-hooks`。
+
+- **平台**：只支持 macOS / Windows 桌面端。[qwenwork.cn/download](https://qwenwork.cn/download) 提供 macOS 14+、Windows 10+ 与 HarmonyOS 6.1+，没有 Linux 客户端，因此 QwenWork 不出现在 WSL Pair 列表里，也没有 Linux 进程名。
+- **hook-only / state-only**：Clawd 用 QwenWork 的生命周期事件驱动动画、Session HUD 和 Dashboard。`PermissionRequest` / `PermissionDenied` 仅作观察并映射成 `working`（它们是正常工具流的一部分，每个任务会触发 40+ 次，映射成 `notification` 会一直闪）。
+- **Clawd 不做决定**：hook stdout 在所有路径（成功、未知事件、异常）恒为 `{}`。Clawd 不注册 `/permission`，不产生 allow/deny，QwenWork 也不在 permission automation eligibility 名单里——所有审批都留在 QwenWork 自己的权限流程。
+- **无 startup recovery**：QwenWork 桌面主进程是长驻进程，它在跑不代表有正在进行的任务，Clawd 只按 hook 事件反应。
+- **Windows 命令形态**：条目使用 portable 的 `node "<script>" "<Event>"` 形式，因为 QwenWork 通过 POSIX shell 执行 command hook。PowerShell `-EncodedCommand` 只用于*识别*，让旧版本写下的 Clawd 条目原地迁移，不是 Clawd 当前写入的形态。
+- **所有权**：合并与卸载只处理 command 中带 `qwenwork-hook.js` marker 的条目。仅仅名为 `clawd` 的 hook 不会被动；Clawd hook 与第三方 hook 混在同一 entry 时，第三方 hook 原样保留。
+- **可选调试日志**：`CLAWD_QWENWORK_HOOK_DEBUG=1` 会往 `~/.clawd/qwenwork-hook-debug.jsonl` 追加事件与字段结构摘要（不含 prompt、tool input、路径）。再加 `CLAWD_QWENWORK_HOOK_DEBUG_RAW=1` 才会记录完整原始 payload——**此时该文件含敏感数据**，用完请删除。macOS/Linux 上文件按 `0600` 创建；若 hook 新建调试目录则使用 `0700`，已有的共享 `~/.clawd` 目录保持原权限不变。
 
 **Qoder** — hooks 写入 `~/.qoder/settings.json`。需要本机 Qoder 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。也可以手动执行 `npm run install:qoder-hooks`。Phase 1 是 state-only：hook 恒返回 `{}`，`PermissionRequest` / `PermissionDenied` 只作为通知观察——Clawd 不弹权限气泡、不代答权限决策，权限流程由 Qoder 原生接管。启动恢复只识别 Qoder CLI 进程（`qodercli` / `qoder-cli`），闲置打开的 Qoder IDE 不会被当成进行中的 agent 工作。
+
+## 权限处理自动化
+
+可从桌宠或托盘的 **权限处理** 子菜单选择 Clawd 如何处理受支持的权限请求：
+
+- **每次询问**：不自动作出任何决定。
+- **仅提问弹窗**：自动批准显式支持 agent 的工具型请求，但问题与计划审阅仍等待你处理。Claude/Qwen 使用已审阅的 built-in 列表，但并非每个受支持 adapter 都有逐工具 allowlist。
+- **自动放行**：处理 adapter 判定为 automation-eligible 的请求。对 Claude/Qwen，这包括名称非空但尚未识别的请求；缺失名称、不受支持的 decision shape，以及 CodeBuddy 的问题/计划仍回到原生流程。只有愿意交出这组更广的决定时才应开启。应用重启后会降级到 **仅提问弹窗**。
+
+两种自动化模式都会先要求确认。Dashboard 还可以为每个符合条件的 live session 独立选择 **每次询问** 或仅工具模式。新 agent 不会因为声明了权限能力就自动获得自动化资格，但工具名的处理取决于 adapter 和模式。仅状态集成和由 agent 原生接管权限的流程不会被改变。
+
+## Telegram 远程审批
+
+Clawd 可以把受支持、仍待处理的权限请求镜像到专用 Telegram bot；本地气泡仍然可用。通道失败或超时不会产生远程决定，也不会自动拒绝：有本地气泡时请求继续等待；只有 remote-only 且所有可用 client 都无决定时，才回到 agent 原生界面。设置、支持范围和迁移说明见 [telegram-approval.md](telegram-approval.md)。
+
+## 飞书 / Lark 远程审批
+
+Clawd 也可以通过飞书（中国）或 Lark（国际）的自建应用发送交互卡片。两者属于同一个远程审批通道，可在 **Settings → 远程审批 → 飞书 / Lark** 中选择平台。权限范围、用户 ID 差异和卡片语言见 [feishu-lark-remote-approval.md](feishu-lark-remote-approval.md)。
+
 ## 远程 SSH 模式（Claude Code, Codex CLI & Copilot CLI）
 
 <img src="../../assets/screenshot-remote-ssh.png" width="560" alt="远程 SSH — 来自树莓派的权限气泡">
@@ -76,6 +107,8 @@ Clawd 支持通过 SSH 反向端口转发感知远程服务器上的 AI Agent �
 DMG / 安装包用户的入口是 Clawd 应用内的 **Settings → 远程 SSH**：新增 profile（填 `user@host`、可选私钥、转发端口），点 **部署 / 修复 Hook** 后再连接。Clawd 会创建 profile 专属本地入口、建立指向它的 `ssh -R` 反向隧道，并部署带身份 pin 的 hooks。完整步骤、多用户升级边界、Doctor 边界和故障排查见专门指南：
 
 **→ [docs/guides/guide-remote-ssh.zh-CN.md](guide-remote-ssh.zh-CN.md)**
+
+当 SSH alias 的有效 `ProxyCommand` 使用 `gh cs ssh --stdio` 时，Clawd 会自动识别 GitHub Codespaces：同一 Codespace 的 Clawd 托管 SSH/SCP 会串行执行，连接就绪检查也放进持久反向隧道本身，通常不需要手动选择 transport 模式。
 
 **工作原理：**
 - **Claude Code** — command hook 和静态 PermissionRequest URL 都使用 profile 的精确远端端口；专属本地入口校验 routing nonce 后才转发状态或权限决定。
@@ -103,7 +136,11 @@ Keychain 登录。准确边界见专门指南。
 
 > 本节的主线是 Claude Code / 其他 hook 型 agent 的 WSL 配置。关于 `Codex CLI + WSL` 的官方支持现状、Codex hooks feature flag 行为、以及 Clawd 当前为什么默认扫不到 WSL Linux home 下的 Codex 日志，见：[codex-wsl-clarification.zh-CN.md](codex-wsl-clarification.zh-CN.md)
 
-如果你在 WSL 里跑 Claude Code，而 Clawd 跑在 Windows 宿主上，hook 可以直接 POST 到 `127.0.0.1:23333` —— 不需要 SSH 隧道，因为 WSL2 默认与 Windows 共享 localhost。
+如果 agent 跑在 WSL 里、Clawd 跑在 Windows 宿主上，集成会向 `127.0.0.1:23333-23337` 上报。WSL1 天然共享这条 loopback；WSL2 通常需要镜像网络，默认 NAT 并不能让 Linux 访问 Windows 的 loopback 服务。应用内 Pair 会探测这条链路，并在安装成功但网络不可达时给出警告。
+
+对于已支持的 agent，请在 **Settings → Agents** 的 Connected 区执行 **WSL Scan**，再找到对应发行版并点击 **Pair**。仅存在于 WSL 的 agent 仍可能位于 **Unavailable** 折叠区，因为本机安装状态与 WSL 配对是两套状态。Pair 会打开 Clawd 的事件入口，但不会把它标记为 Windows 本机集成，也不会在 Windows 安装文件。
+
+**WSL 中的 Hermes Agent：** 请先在目标发行版里安装 Hermes。Pair 会把一份私有临时安装 payload 传入 WSL，在 Hermes 主 home 和已发现 profiles 中安装并启用 `clawd-on-desk`，随后删除临时 payload。**Unpair** 只禁用/移除该发行版里的 Clawd Hermes plugin，保留其他 plugin；如果本机或其他 WSL 来源仍可能使用 Hermes，也不会关闭全局 Hermes 事件入口。自定义 WSL `HERMES_HOME` 会从该发行版的 login shell 中解析。
 
 **配置步骤：**
 
@@ -129,8 +166,6 @@ node ~/.claude/hooks/copilot-install.js --remote
 应用内 WSL 部署路径会故意以不带 `--statusline` 的方式运行 Claude installer，因此只提供 transcript fallback，不宣称能拿到自定义 provider 的权威窗口。上面的手动 `--remote` 命令会在 WSL 的独立 home 中安装一条可见 statusline，但 Windows 端应用只有在 **采集本机 Claude 使用信息** 开启时才接受它的 context/quota metadata；开关关闭时这些 POST 会被当作成功 no-op。Windows 本机启动 reconcile 也无法移除 WSL 独立 home 里的 statusline。
 
 如果 Codex 运行在 WSL 里，official hooks 需要安装到 WSL 自己的 `~/.codex` 下。如果你希望 WSL 与 Windows 共用同一份 Codex home，也可以在 WSL 里先设置 `CODEX_HOME=/mnt/c/Users/<windows-user>/.codex` 再运行 Codex。
-
-> **注意：** WSL2 的 localhost 转发需要 Windows 10 build 18945+（默认开启）。如果不生效，检查 `%USERPROFILE%\.wslconfig` 中 `localhostForwarding=true` 是否被禁用。
 
 ### WSL 网络与 Hook 注册（替代方案）
 

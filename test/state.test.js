@@ -12,6 +12,7 @@ const _defaultTheme = themeLoader.loadTheme("clawd");
 const _calicoTheme = themeLoader.loadTheme("calico");
 const { createTranslator } = require("../src/i18n");
 const { makeSessionKey } = require("../src/session-key");
+const { isSessionInProgress } = require("../src/state-session-snapshot");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -107,6 +108,7 @@ function update(api, o = {}) {
       sessionAutomationIdentity: o.sessionAutomationIdentity ?? null,
       subagentId: o.subagentId ?? null,
       subagentType: o.subagentType ?? null,
+      replaceProcessMetadata: o.replaceProcessMetadata === true,
     },
   );
 }
@@ -961,6 +963,52 @@ describe("cleanStaleSessions()", () => {
     assert.strictEqual(api.sessions.get("s1").state, "idle");
   });
 
+  it("keeps local OpenCode blocker-facing work active past the generic session cutoff", () => {
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+      getStaleConfig: () => ({
+        sessionStaleMs: 600_000,
+        workingStaleMs: 300_000,
+      }),
+    }));
+    api.sessions.set("opencode:s1", rawSession("working", {
+      agentId: "opencode",
+      agentPid: 1000,
+      sourcePid: 2000,
+      pidReachable: true,
+      updatedAt: Date.now() - 600_001,
+    }));
+
+    api.cleanStaleSessions();
+
+    const active = api.sessions.get("opencode:s1");
+    assert.strictEqual(active.state, "working");
+    assert.strictEqual(isSessionInProgress(active), true);
+  });
+
+  it("genuine OpenCode session.idle completion still records normal Stop semantics", () => {
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+    }));
+    api.updateSession("opencode:s1", "working", "PreToolUse", {
+      agentId: "opencode",
+      agentPid: 1000,
+      sourcePid: 2000,
+      cwd: "/tmp",
+    });
+    api.updateSession("opencode:s1", "attention", "Stop", {
+      agentId: "opencode",
+      agentPid: 1000,
+      sourcePid: 2000,
+      cwd: "/tmp",
+    });
+
+    const completed = api.sessions.get("opencode:s1");
+    assert.strictEqual(completed.state, "idle");
+    assert.strictEqual(completed.recentEvents.at(-1).event, "Stop");
+    assert.strictEqual(api.deriveSessionBadge(completed), "done");
+  });
+
   it("pidReachable false + stale → delete", () => {
     api = require("../src/state")(makeCtx());
     api.sessions.set("s1", rawSession("working", {
@@ -1191,6 +1239,100 @@ describe("updateSession()", () => {
       [321, 456],
       "PermissionRequest path must merge, not overwrite with null",
     );
+  });
+
+  it("authoritative state metadata replaces and clears every derived process field", () => {
+    update(api, {
+      id: "authoritative-state",
+      event: "SessionStart",
+      sourcePid: 100,
+      agentPid: 200,
+      pidChain: [100, 200],
+      editor: "code",
+      wtHwnd: "1234",
+      orcaPaneKey: "tab-1:leaf-1",
+    });
+
+    update(api, {
+      id: "authoritative-state",
+      event: "PreToolUse",
+      replaceProcessMetadata: true,
+      sourcePid: null,
+      agentPid: null,
+      pidChain: null,
+      editor: null,
+    });
+
+    const session = api.sessions.get("authoritative-state");
+    assert.strictEqual(session.sourcePid, null);
+    assert.strictEqual(session.agentPid, null);
+    assert.strictEqual(session.pidChain, null);
+    assert.strictEqual(session.editor, null);
+    assert.strictEqual(session.wtHwnd, null);
+    assert.strictEqual(session.orcaPaneKey, null);
+    assert.strictEqual(session.pidReachable, false);
+  });
+
+  it("authoritative Cursor clear preserves its adapter-owned editor fallback", () => {
+    update(api, {
+      id: "authoritative-cursor",
+      event: "SessionStart",
+      agentId: "cursor-agent",
+      sourcePid: 100,
+      agentPid: 200,
+      pidChain: [100, 200],
+      editor: "cursor",
+    });
+    update(api, {
+      id: "authoritative-cursor",
+      event: "PreToolUse",
+      agentId: "cursor-agent",
+      replaceProcessMetadata: true,
+      editor: "cursor",
+    });
+
+    const session = api.sessions.get("authoritative-cursor");
+    assert.strictEqual(session.sourcePid, null);
+    assert.strictEqual(session.agentPid, null);
+    assert.strictEqual(session.pidChain, null);
+    assert.strictEqual(session.editor, "cursor");
+  });
+
+  it("authoritative Codex PermissionRequest clears stale focus without creating an all-null ghost", () => {
+    const sid = "codex:authoritative-permission";
+    update(api, {
+      id: sid,
+      event: "PermissionRequest",
+      state: "notification",
+      agentId: "codex",
+      sourcePid: 456,
+      agentPid: 456,
+      pidChain: [321, 456],
+      wtHwnd: "9876",
+      orcaPaneKey: "tab-2:leaf-2",
+      replaceProcessMetadata: true,
+    });
+    update(api, {
+      id: sid,
+      event: "PermissionRequest",
+      state: "notification",
+      agentId: "codex",
+      replaceProcessMetadata: true,
+    });
+
+    const session = api.sessions.get(sid);
+    assert.strictEqual(session.sourcePid, null);
+    assert.strictEqual(session.agentPid, null);
+    assert.strictEqual(session.pidChain, null);
+    assert.strictEqual(session.wtHwnd, null);
+    assert.strictEqual(session.orcaPaneKey, null);
+    assert.strictEqual(session.pidReachable, false);
+
+    api.updateSession("codex:all-null-new", "notification", "PermissionRequest", {
+      agentId: "codex",
+      replaceProcessMetadata: true,
+    });
+    assert.strictEqual(api.sessions.has("codex:all-null-new"), false);
   });
 
   it("existing session_id → updates state and timestamp", () => {
@@ -2045,6 +2187,67 @@ describe("updateSession()", () => {
     assert.strictEqual(api.getCurrentState(), "idle");
   });
 
+  it("presents a later attention Stop when an earlier ID-less Stop only idled the session", () => {
+    const soundsPlayed = [];
+    const stateChanges = [];
+    api.cleanup();
+    ctx = makeCtx({
+      processKill: () => true,
+      playSound: (name) => soundsPlayed.push(name),
+      sendToRenderer: (channel, state) => {
+        if (channel === "state-change") stateChanges.push(state);
+      },
+    });
+    api = require("../src/state")(ctx);
+
+    update(api, {
+      id: "codex:s1",
+      state: "thinking",
+      event: "UserPromptSubmit",
+      agentId: "codex",
+    });
+    mock.timers.tick(1000);
+    stateChanges.length = 0;
+
+    // A terminal without identity may resolve idle because the server cannot
+    // associate it with the turn's tool ledger. It closes lifecycle state but
+    // has not presented completion UX yet.
+    update(api, {
+      id: "codex:s1",
+      state: "idle",
+      event: "Stop",
+      agentId: "codex",
+    });
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 0);
+    stateChanges.length = 0;
+
+    // The later ID-bearing Stop is authoritative and resolves attention. It
+    // must upgrade the existing completion tail and celebrate exactly once.
+    update(api, {
+      id: "codex:s1",
+      state: "attention",
+      event: "Stop",
+      agentId: "codex",
+    });
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 1);
+    assert.deepStrictEqual(stateChanges, ["attention"]);
+    const completionEvents = api.sessions.get("codex:s1").recentEvents.filter((entry) => entry.event === "Stop");
+    assert.strictEqual(completionEvents.length, 1);
+    assert.strictEqual(completionEvents[0].state, "attention");
+
+    mock.timers.tick(4000);
+    soundsPlayed.length = 0;
+    stateChanges.length = 0;
+    update(api, {
+      id: "codex:s1",
+      state: "attention",
+      event: "Stop",
+      agentId: "codex",
+    });
+    assert.strictEqual(soundsPlayed.filter((name) => name === "complete").length, 0);
+    assert.ok(!stateChanges.includes("attention"));
+  });
+
   it("Codex Stop followed by token_count and task_complete still auto-returns from attention", () => {
     const soundsPlayed = [];
     const stateChanges = [];
@@ -2758,6 +2961,53 @@ describe("updateSession()", () => {
       contextUsageOrigin: "claude-statusline",
     });
     assert.strictEqual(session.metadataUpdatedAt, 777, "identical refresh must not re-stamp");
+  });
+
+  it("updateSessionMetadata stores a title without touching lifecycle state or telemetry stamp", () => {
+    update(api, { id: "s1", state: "working" });
+    const session = api.sessions.get("s1");
+    session.updatedAt = 12345; // pin so a bump is detectable
+    session.metadataUpdatedAt = 777; // pin so a re-stamp is detectable
+    const recentEventsBefore = JSON.stringify(session.recentEvents);
+
+    const applied = api.updateSessionMetadata("s1", { sessionTitle: "New Title" });
+
+    assert.strictEqual(applied, true);
+    assert.strictEqual(session.sessionTitle, "New Title");
+    // Lifecycle untouched: state, updatedAt, recent events all unchanged.
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.updatedAt, 12345);
+    assert.strictEqual(JSON.stringify(session.recentEvents), recentEventsBefore);
+    // Telemetry freshness must NOT be stamped by a rename (#841 review).
+    assert.strictEqual(session.metadataUpdatedAt, 777);
+    assert.strictEqual(session.contextUsage, null);
+    assert.strictEqual(session.contextUsageOrigin, null);
+  });
+
+  it("updateSessionMetadata treats a same/normalized-equivalent title as a no-op", () => {
+    update(api, { id: "s1", state: "working" });
+    api.updateSessionMetadata("s1", { sessionTitle: "Stable Title" });
+    const session = api.sessions.get("s1");
+    session.metadataUpdatedAt = 777;
+
+    // Same title -> no change, no re-stamp.
+    const appliedSame = api.updateSessionMetadata("s1", { sessionTitle: "Stable Title" });
+    assert.strictEqual(appliedSame, true);
+    assert.strictEqual(session.sessionTitle, "Stable Title");
+    assert.strictEqual(session.metadataUpdatedAt, 777);
+
+    // Normalized-equivalent title (extra whitespace/control chars) collapses
+    // to the stored title via normalizeTitle -> still a no-op, no re-stamp.
+    const appliedNormalized = api.updateSessionMetadata("s1", { sessionTitle: "  Stable\t Title  " });
+    assert.strictEqual(appliedNormalized, true);
+    assert.strictEqual(session.sessionTitle, "Stable Title");
+    assert.strictEqual(session.metadataUpdatedAt, 777);
+  });
+
+  it("updateSessionMetadata returns false for an unknown session on a title-only payload", () => {
+    const applied = api.updateSessionMetadata("ghost", { sessionTitle: "Ghost Title" });
+    assert.strictEqual(applied, false);
+    assert.strictEqual(api.sessions.has("ghost"), false);
   });
 
   it("lifecycle events carry metadataUpdatedAt forward with the telemetry they preserve", () => {

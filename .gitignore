@@ -26,6 +26,7 @@ docs/**
 !docs/guides/slack-notifications.md
 !docs/guides/setup-guide.zh-CN.md
 !docs/guides/guide-remote-ssh.md
+!docs/guides/roam-fence.md
 !docs/guides/guide-remote-ssh.zh-CN.md
 !docs/guides/state-mapping.md
 !docs/guides/state-mapping.zh-CN.md
@@ -40,6 +41,7 @@ docs/**
 !docs/plans/
 !docs/plans/plan-issue-513-remote-ssh-isolation.md
 !docs/plans/plan-issue-763-koffi-target-native-packaging.md
+!docs/plans/plan-npm-dependency-security-hardening.md
 !docs/project/
 !docs/project/agent-runtime-architecture.md
 !docs/project/release-process.md
@@ -98,10 +100,19 @@ logs/
 
 # GIF recording tools (not part of main project)
 scripts/*
+!scripts/manual/
+scripts/manual/*
+!scripts/manual/README.md
+!scripts/manual/remote-ssh-codespaces-546.ps1
+!scripts/manual/remote-ssh-codespaces-546-observe.ps1
+!scripts/manual/remote-ssh-codespaces-546-port-holder.js
+!scripts/manual/remote-ssh-codespaces-546-readiness.js
 !scripts/remote-deploy.sh
 !scripts/run-clawdbot-stress.sh
 !scripts/monitor-clawd-resources.sh
 !scripts/monitor-clawd-power.ps1
+!scripts/windows-process-chain-benchmark.js
+!scripts/windows-process-chain-observer.ps1
 !scripts/validate-theme.js
 !scripts/create-theme.js
 !scripts/export-agent-icons.js
@@ -114,6 +125,7 @@ scripts/*
 !scripts/native-package-policy.json
 !scripts/run-packaged-koffi-smoke.js
 !scripts/verify-updater-metadata.js
+!scripts/verify-appimage-apprun.js
 
 # oh-my-cursor state
 .omc/

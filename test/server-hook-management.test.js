@@ -195,6 +195,7 @@ function makeServer(overrides = {}) {
     syncQoderHooksImpl: () => syncCalls.push("qoder"),
     syncReasonixHooksImpl: () => syncCalls.push("reasonix"),
     syncQoderWorkHooksImpl: () => syncCalls.push("qoderwork"),
+    syncQwenWorkHooksImpl: () => syncCalls.push("qwenwork"),
     ...overrides,
   }, syncCalls);
 
@@ -243,7 +244,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["claude", "gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork"]);
+    assert.deepStrictEqual(syncCalls, ["claude", "gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "qwenwork"]);
     assert.ok(getWatcher(), "watcher should start when management is enabled");
   });
 
@@ -260,7 +261,7 @@ describe("server Claude hook management", () => {
 
       api.startHttpServer();
 
-      assert.deepStrictEqual(syncCalls, ["claude", "gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "qoder", "reasonix", "qoderwork"]);
+      assert.deepStrictEqual(syncCalls, ["claude", "gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "qoder", "reasonix", "qoderwork", "qwenwork"]);
       assert.ok(getWatcher(), "watcher should start when management is enabled");
       assert.strictEqual(warnings.some((line) => /Hermes/i.test(line)), false);
     } finally {
@@ -275,7 +276,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork"]);
+    assert.deepStrictEqual(syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "qwenwork"]);
     assert.strictEqual(getWatcher(), null);
   });
 
@@ -287,7 +288,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["claude", "copilot", "codebuddy", "workbuddy", "kimi", "qwen", "codewhale", "codex", "mimocode", "hermes", "qoder", "reasonix", "qoderwork"]);
+    assert.deepStrictEqual(syncCalls, ["claude", "copilot", "codebuddy", "workbuddy", "kimi", "qwen", "codewhale", "codex", "mimocode", "hermes", "qoder", "reasonix", "qoderwork", "qwenwork"]);
     assert.ok(getWatcher(), "Claude watcher should still start when Claude is enabled");
   });
 
@@ -298,7 +299,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork"]);
+    assert.deepStrictEqual(syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "qwenwork"]);
     assert.strictEqual(getWatcher(), null);
   });
 
@@ -497,8 +498,8 @@ describe("server Claude hook management", () => {
     const second = makeServer({ manageClaudeHooksAutomatically: false });
     second.api.startHttpServer();
 
-    assert.deepStrictEqual(first.syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork"]);
-    assert.deepStrictEqual(second.syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork"]);
+    assert.deepStrictEqual(first.syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "qwenwork"]);
+    assert.deepStrictEqual(second.syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "kiro", "kimi", "qwen", "codewhale", "codex", "opencode", "mimocode", "pi", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "qwenwork"]);
   });
 
   it("repairIntegrationForAgent uses the Codex official hook repair path", () => {
@@ -1150,7 +1151,7 @@ describe("Codex official hook turn tracking", () => {
       turn_id: "turn-1",
     }, "idle", turns);
 
-    assert.deepStrictEqual(result, { state: "attention", drop: false });
+    assert.deepStrictEqual(result, { state: "attention", drop: false, turnId: "turn-1" });
     assert.strictEqual(turns.size, 0);
   });
 
@@ -1172,7 +1173,7 @@ describe("Codex official hook turn tracking", () => {
       turn_id: "turn-1",
     }, "idle", turns);
 
-    assert.deepStrictEqual(result, { state: "idle", drop: false });
+    assert.deepStrictEqual(result, { state: "idle", drop: false, turnId: "turn-1" });
   });
 
   it("resolves Stop to attention when a no-tool turn has assistant output", () => {
@@ -1194,7 +1195,7 @@ describe("Codex official hook turn tracking", () => {
       assistant_last_output: "Short answer.",
     }, "idle", turns);
 
-    assert.deepStrictEqual(result, { state: "attention", drop: false });
+    assert.deepStrictEqual(result, { state: "attention", drop: false, turnId: "turn-1" });
     assert.strictEqual(turns.size, 0);
   });
 
@@ -1222,7 +1223,7 @@ describe("Codex official hook turn tracking", () => {
       stop_hook_active: true,
     }, "idle", turns);
 
-    assert.deepStrictEqual(result, { state: "idle", drop: true });
+    assert.deepStrictEqual(result, { state: "idle", drop: true, turnId: "turn-1" });
     assert.strictEqual(turns.size, 0);
   });
 
@@ -1258,7 +1259,7 @@ describe("Codex official hook turn tracking", () => {
       codex_session_role: "subagent",
     }, "idle", turns, classifier);
 
-    assert.deepStrictEqual(result, { state: "idle", drop: false, headless: true });
+    assert.deepStrictEqual(result, { state: "idle", drop: false, turnId: "turn-1", headless: true });
     assert.strictEqual(turns.size, 0);
   });
 
@@ -1302,8 +1303,8 @@ describe("Codex official hook turn tracking", () => {
       turn_id: "same-turn",
     }, "idle", turns);
 
-    assert.deepStrictEqual(subStop, { state: "idle", drop: false });
-    assert.deepStrictEqual(rootStop, { state: "attention", drop: false });
+    assert.deepStrictEqual(subStop, { state: "idle", drop: false, turnId: "same-turn" });
+    assert.deepStrictEqual(rootStop, { state: "attention", drop: false, turnId: "same-turn" });
     assert.strictEqual(turns.size, 0);
   });
 
@@ -1355,10 +1356,33 @@ describe("Codex official hook turn tracking", () => {
       codex_session_role: "subagent",
     }, "idle", turns, classifier, a);
 
-    assert.deepStrictEqual(bStop, { state: "idle", drop: false });
-    assert.deepStrictEqual(aStop, { state: "idle", drop: false, headless: true });
+    assert.deepStrictEqual(bStop, { state: "idle", drop: false, turnId: "same-turn" });
+    assert.deepStrictEqual(aStop, { state: "idle", drop: false, turnId: "same-turn", headless: true });
     assert.deepStrictEqual([...roles.keys()].sort(), [a, b].sort());
     assert.strictEqual(turns.size, 0);
+  });
+
+  it("normalizes official turn ids before ledger and runtime propagation", () => {
+    const turns = new Map();
+    const result = resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "UserPromptSubmit",
+      session_id: "codex:s1",
+      turn_id: "  turn-normalized  ",
+    }, "thinking", turns);
+
+    assert.strictEqual(result.turnId, "turn-normalized");
+    assert.strictEqual(turns.has("codex:s1|turn-normalized"), true);
+
+    const rejected = resolveCodexOfficialHookState({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      event: "UserPromptSubmit",
+      session_id: "codex:s2",
+      turn_id: "x".repeat(257),
+    }, "thinking", turns);
+    assert.strictEqual(rejected.turnId, undefined);
   });
 
   it("prunes the oldest tracked turns when the cap is exceeded", () => {

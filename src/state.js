@@ -361,21 +361,43 @@ function resolveAwaitingInputSinceStop(existing, event) {
   return false;
 }
 
-function hasCompletionTailWithoutProgress(session) {
+function getCompletionTailWithoutProgress(session) {
   const events = Array.isArray(session && session.recentEvents) ? session.recentEvents : [];
   for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i] && events[i].event;
-    if (POST_COMPLETION_EVENTS.has(event)) return true;
+    const entry = events[i];
+    const event = entry && entry.event;
+    if (POST_COMPLETION_EVENTS.has(event)) return entry;
     if (event == null || COMPLETION_HOUSEKEEPING_EVENTS.has(event)) continue;
-    return false;
+    return null;
   }
-  return false;
+  return null;
+}
+
+function hasCompletionTailWithoutProgress(session) {
+  return !!getCompletionTailWithoutProgress(session);
+}
+
+function markCompletionTailPresented(recentEvents) {
+  const copy = recentEvents.slice();
+  for (let i = copy.length - 1; i >= 0; i--) {
+    const entry = copy[i];
+    const event = entry && entry.event;
+    if (POST_COMPLETION_EVENTS.has(event)) {
+      copy[i] = { ...entry, state: "attention" };
+      break;
+    }
+    if (event == null || COMPLETION_HOUSEKEEPING_EVENTS.has(event)) continue;
+    break;
+  }
+  return copy;
 }
 
 function shouldSuppressDuplicateCompletionVisual(existing, state, event) {
   if (state !== "attention" || !POST_COMPLETION_EVENTS.has(event)) return false;
   if (!existing || (existing.state !== "idle" && existing.state !== "sleeping")) return false;
-  return existing.awaitingInputSinceStop === true || hasCompletionTailWithoutProgress(existing);
+  const completionTail = getCompletionTailWithoutProgress(existing);
+  if (completionTail) return completionTail.state === "attention";
+  return existing.awaitingInputSinceStop === true;
 }
 
 function shouldKeepExistingCompletionEventTail(existing, state, event) {
@@ -1271,25 +1293,44 @@ function updateSessionMetadata(sessionId, opts = {}) {
     return false;
   }
   const incomingContextUsage = normalizeContextUsage(opts.contextUsage);
-  if (!incomingContextUsage) return false;
-  const resolved = resolveContextUsageUpdate(
-    session,
-    incomingContextUsage,
-    opts.contextUsageOrigin
-  );
-  const usageChanged = JSON.stringify(resolved.contextUsage) !== JSON.stringify(session.contextUsage);
-  const originChanged = resolved.contextUsageOrigin !== normalizeContextUsageOrigin(session.contextUsageOrigin);
-  if (usageChanged || originChanged) {
-    session.contextUsage = resolved.contextUsage;
-    session.contextUsageOrigin = resolved.contextUsageOrigin;
-    // Freshness stamp for telemetry arbitration. Deliberately a separate
-    // field from updatedAt: staleness sweeps, badge derivation and eviction
-    // all key on updatedAt, and a statusline heartbeat must not feed them.
-    // Stamped only on real changes, so it cannot re-introduce a per-tick
-    // broadcast (and it is excluded from the snapshot signature anyway).
-    session.metadataUpdatedAt = Date.now();
-    emitSessionSnapshot();
+  const incomingTitle = typeof opts.sessionTitle === "string"
+    ? normalizeTitle(opts.sessionTitle)
+    : null;
+  if (!incomingContextUsage && !incomingTitle) return false;
+  let applied = false;
+  if (incomingContextUsage) {
+    const resolved = resolveContextUsageUpdate(
+      session,
+      incomingContextUsage,
+      opts.contextUsageOrigin
+    );
+    const usageChanged = JSON.stringify(resolved.contextUsage) !== JSON.stringify(session.contextUsage);
+    const originChanged = resolved.contextUsageOrigin !== normalizeContextUsageOrigin(session.contextUsageOrigin);
+    if (usageChanged || originChanged) {
+      session.contextUsage = resolved.contextUsage;
+      session.contextUsageOrigin = resolved.contextUsageOrigin;
+      // Freshness stamp for telemetry arbitration. Deliberately a separate
+      // field from updatedAt: staleness sweeps, badge derivation and eviction
+      // all key on updatedAt, and a statusline heartbeat must not feed them.
+      // Stamped only on real changes, so it cannot re-introduce a per-tick
+      // broadcast (and it is excluded from the snapshot signature anyway).
+      session.metadataUpdatedAt = Date.now();
+      applied = true;
+    }
   }
+  // OpenCode swaps its placeholder title for a real one after session
+  // creation; that arrives on session.updated which maps to no state change,
+  // so the plugin forwards the title change as a metadata-only POST. Update
+  // the stored title here without touching the lifecycle state. Deliberately
+  // NOT stamping metadataUpdatedAt: that field is context/quota telemetry
+  // freshness, and a rename must not make stale telemetry look fresh. The
+  // title broadcasts anyway - sessionTitle/displayTitle are in the snapshot
+  // signature, so emitSessionSnapshot below fans it out.
+  if (incomingTitle && incomingTitle !== session.sessionTitle) {
+    session.sessionTitle = incomingTitle;
+    applied = true;
+  }
+  if (applied) emitSessionSnapshot();
   return true;
 }
 
@@ -1436,7 +1477,10 @@ function scheduleClaudeTranscriptCompletionProbe(sessionId, transcriptPath) {
 function promoteCompletion(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return;
-  session.recentEvents = pushRecentEvent(session, "idle", "Stop");
+  // The stored session settles idle, but this Stop consumed the completion
+  // attention cue. Record that distinction so a later duplicate Stop is
+  // suppressed while an earlier idle-only terminal can still be upgraded.
+  session.recentEvents = pushRecentEvent(session, "attention", "Stop");
   session.state = "idle";
   session.updatedAt = Date.now();
   session.displayHint = null;
@@ -1476,6 +1520,47 @@ function normalizeSessionAutomationIdentity(value) {
     eligible: value.eligible === true,
     reason: value.reason.trim().slice(0, 120),
   });
+}
+
+function mergeSessionProcessMetadata(existing, incoming = {}, options = {}) {
+  const replace = options.replace === true;
+  const incomingPidChain = Array.isArray(incoming.pidChain) && incoming.pidChain.length
+    ? incoming.pidChain.slice()
+    : null;
+
+  if (!replace) {
+    return {
+      sourcePid: incoming.sourcePid || (existing && existing.sourcePid) || null,
+      wtHwnd: incoming.wtHwnd || (existing && existing.wtHwnd) || null,
+      editor: incoming.editor || (existing && existing.editor) || null,
+      pidChain: incomingPidChain || (existing && existing.pidChain) || null,
+      agentPid: incoming.agentPid || (existing && existing.agentPid) || null,
+      identityChanged: terminalIdentityChanged(existing, incoming),
+    };
+  }
+
+  const sourcePid = incoming.sourcePid || null;
+  const agentPid = incoming.agentPid || null;
+  const editor = incoming.editor || null;
+  const previousSourcePid = (existing && existing.sourcePid) || null;
+  const previousAgentPid = (existing && existing.agentPid) || null;
+  const identityChanged = !!existing && (
+    previousSourcePid !== sourcePid
+    || previousAgentPid !== agentPid
+  );
+
+  return {
+    sourcePid,
+    agentPid,
+    editor,
+    pidChain: incomingPidChain,
+    // A foreground HWND is still useful across ordinary lifecycle events for
+    // the same terminal identity. Once authoritative metadata replaces or
+    // clears that identity, retaining the old HWND could focus another
+    // terminal, so it must be cleared unless this event supplied a fresh one.
+    wtHwnd: incoming.wtHwnd || (identityChanged ? null : (existing && existing.wtHwnd) || null),
+    identityChanged,
+  };
 }
 
 function updateSession(sessionId, state, event, opts = {}) {
@@ -1529,6 +1614,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     sessionAutomationIdentity = null,
     subagentId = null,
     subagentType = null,
+    replaceProcessMetadata = false,
   } = opts;
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
@@ -1578,23 +1664,36 @@ function updateSession(sessionId, state, event, opts = {}) {
       && typeof ctx.isAgentPermissionsEnabled === "function"
       && !ctx.isAgentPermissionsEnabled("kimi-cli")
     ) return;
-    const shouldPersistCodexPermissionFocus = permAgentId === "codex" && (
+    const hasCodexPermissionMetadata = !!(
       sourcePid || wtHwnd || agentPid || (pidChain && pidChain.length) || cwd || host || wslDistro ||
       model || provider || codexOriginator || codexSource || platform || ghosttyTerminalId ||
       tmuxSocket || tmuxClient || orcaPaneKey
     );
+    const shouldPersistCodexPermissionFocus = permAgentId === "codex" && (
+      hasCodexPermissionMetadata
+      // An authoritative all-null result still has to clear stale process
+      // metadata on an existing session. It must not create a new ghost row.
+      || (replaceProcessMetadata === true && !!sessionForPerm)
+    );
     if (shouldPersistCodexPermissionFocus) {
       const existing = sessions.get(sessionId);
       evictOldestSessionIfNeeded(sessionId);
-      const srcPid = sourcePid || (existing && existing.sourcePid) || null;
-      const srcWtHwnd = wtHwnd || (existing && existing.wtHwnd) || null;
+      const processMetadata = mergeSessionProcessMetadata(
+        existing,
+        { sourcePid, wtHwnd, editor, pidChain, agentPid },
+        { replace: replaceProcessMetadata === true }
+      );
+      const srcPid = processMetadata.sourcePid;
+      const srcWtHwnd = processMetadata.wtHwnd;
       const srcCwd = cwd || (existing && existing.cwd) || "";
-      const srcEditor = editor || (existing && existing.editor) || null;
-      const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
+      const srcEditor = processMetadata.editor;
+      const srcPidChain = processMetadata.pidChain;
       const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
       const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
-      const srcOrcaPaneKey = mergeOrcaPaneKey(orcaPaneKey, existing, event, { sourcePid, wtHwnd });
-      const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
+      const srcOrcaPaneKey = processMetadata.identityChanged && !orcaPaneKey
+        ? null
+        : mergeOrcaPaneKey(orcaPaneKey, existing, event, { sourcePid, wtHwnd });
+      const srcAgentPid = processMetadata.agentPid;
       const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
       const srcHost = host || (existing && existing.host) || null;
       const srcWslDistro = wslDistro || (existing && existing.wslDistro) || null;
@@ -1650,7 +1749,11 @@ function updateSession(sessionId, state, event, opts = {}) {
         contextUsage: srcContextUsage,
         contextUsageOrigin: srcContextUsageOrigin,
         recentEvents,
-        pidReachable: resolvePidReachable(existing, srcAgentPid, srcPid),
+        pidReachable: resolvePidReachable(
+          replaceProcessMetadata === true ? null : existing,
+          srcAgentPid,
+          srcPid
+        ),
         resumeState: (existing && existing.resumeState) || null,
         muteNotificationSound: muteNotificationSound === true,
       });
@@ -1699,15 +1802,22 @@ function updateSession(sessionId, state, event, opts = {}) {
     delete existing.recoveryEventAt;
     delete existing.recoveryValidUntil;
   }
-  const srcPid = sourcePid || (existing && existing.sourcePid) || null;
-  const srcWtHwnd = wtHwnd || (existing && existing.wtHwnd) || null;
+  const processMetadata = mergeSessionProcessMetadata(
+    existing,
+    { sourcePid, wtHwnd, editor, pidChain, agentPid },
+    { replace: replaceProcessMetadata === true }
+  );
+  const srcPid = processMetadata.sourcePid;
+  const srcWtHwnd = processMetadata.wtHwnd;
   const srcCwd = cwd || (existing && existing.cwd) || "";
-  const srcEditor = editor || (existing && existing.editor) || null;
-  const srcPidChain = (pidChain && pidChain.length) ? pidChain : (existing && existing.pidChain) || null;
+  const srcEditor = processMetadata.editor;
+  const srcPidChain = processMetadata.pidChain;
   const srcTmuxSocket = tmuxSocket || (existing && existing.tmuxSocket) || null;
   const srcTmuxClient = tmuxClient || (existing && existing.tmuxClient) || null;
-  const srcOrcaPaneKey = mergeOrcaPaneKey(orcaPaneKey, existing, event, { sourcePid, wtHwnd });
-  const srcAgentPid = agentPid || (existing && existing.agentPid) || null;
+  const srcOrcaPaneKey = processMetadata.identityChanged && !orcaPaneKey
+    ? null
+    : mergeOrcaPaneKey(orcaPaneKey, existing, event, { sourcePid, wtHwnd });
+  const srcAgentPid = processMetadata.agentPid;
   const srcAgentId = resolveIncomingAgentId(existing, agentId, agentIdDefaulted);
   const srcSessionAutomationIdentity = normalizedSessionAutomationIdentity
     || (existing && existing.sessionAutomationIdentity)
@@ -1833,11 +1943,17 @@ function updateSession(sessionId, state, event, opts = {}) {
 
   debugSession(`event ${describeSession(sessionId, existing)} -> incoming=${state}/${event || "-"} hint=${displayHint || "-"} source=${hookSource || "-"}${formatStdinDiag(stdinDiag)}`);
 
-  const pidReachable = resolvePidReachable(existing, srcAgentPid, srcPid);
+  const pidReachable = resolvePidReachable(
+    replaceProcessMetadata === true ? null : existing,
+    srcAgentPid,
+    srcPid
+  );
 
   const keepExistingCompletionEventTail = shouldKeepExistingCompletionEventTail(existing, state, event);
   const recentEvents = keepExistingCompletionEventTail && Array.isArray(existing.recentEvents)
-    ? existing.recentEvents.slice()
+    ? (duplicateCompletionVisualAtEntry
+      ? existing.recentEvents.slice()
+      : markCompletionTailPresented(existing.recentEvents))
     : pushRecentEvent(existing, preservedState || state, event);
   const preserveCompletionAck =
     existing

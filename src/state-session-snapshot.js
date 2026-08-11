@@ -170,28 +170,81 @@ function getEffectiveSessionTitle(id, sessionLike, options = {}) {
   return normalizeTitle(sessionLike && sessionLike.sessionTitle);
 }
 
+// Agents whose sessions can run inside an app-managed workspace directory whose
+// leaf is an opaque internal ID (e.g. "mqgw60jiigjsjcid"). For those, the
+// `path.basename(cwd)` fallback below would put that ID in the HUD, Dashboard
+// and session menu, so it is skipped and the shortened session id wins instead.
+//
+// Deliberately an agent↔path PAIRING, not two independent checks: the pattern
+// only suppresses the basename when the session actually belongs to that agent.
+// Another agent working inside the same directory keeps its basename, because
+// for it that directory is just an ordinary cwd the user chose.
+//
+// `agentId` is the reliable signal; `sessionPrefix` covers snapshot shapes that
+// carry only the namespaced session id (older persisted sessions, and menu
+// callers that pass an id without the full session object).
+const INTERNAL_WORKSPACE_AGENTS = Object.freeze([
+  Object.freeze({
+    agentId: "qoderwork",
+    sessionPrefix: "qoderwork:",
+    // ~/.qoderwork/workspace/<id>
+    cwdPattern: /\/\.qoderwork\/workspace\/[^/]+$/,
+  }),
+  Object.freeze({
+    agentId: "qwenwork",
+    sessionPrefix: "qwenwork:",
+    // ~/.QwenWorkCN/workspace/<id> — the directory is created case-preserving
+    // as ".QwenWorkCN". Windows and default macOS volumes are commonly
+    // case-insensitive, while macOS can also use case-sensitive APFS; accept
+    // spelling variants without making filesystem sensitivity an assumption.
+    cwdPattern: /\/\.qwenworkcn\/workspace\/[^/]+$/i,
+  }),
+]);
+
+function isInternalWorkspaceCwd(id, sessionLike, cwd) {
+  const agentId = sessionLike && sessionLike.agentId;
+  // Hook payloads are not required to normalize cwd. Strip one or more
+  // trailing separators before matching so an opaque workspace leaf is not
+  // exposed merely because QwenWork/QoderWork reported a directory form.
+  const posixCwd = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
+  for (const entry of INTERNAL_WORKSPACE_AGENTS) {
+    const belongsToAgent = agentId === entry.agentId
+      || (!agentId && typeof id === "string" && id.startsWith(entry.sessionPrefix));
+    if (!belongsToAgent) continue;
+    if (entry.cwdPattern.test(posixCwd)) return true;
+  }
+  return false;
+}
+
+function shortenSessionIdForDisplay(value, sessionLike) {
+  if (value === null || value === undefined) return value;
+  let displayId = String(value);
+  const agentId = sessionLike && sessionLike.agentId;
+  for (const entry of INTERNAL_WORKSPACE_AGENTS) {
+    if (!displayId.startsWith(entry.sessionPrefix)) continue;
+    if (agentId && agentId !== entry.agentId) continue;
+    const stripped = displayId.slice(entry.sessionPrefix.length);
+    // Placeholder ids can arrive as the bare namespace (for example when an
+    // adapter reports only whitespace and the server trims it). Keep the
+    // namespace fallback instead of turning the display title into an empty
+    // string that leaks the long canonical session key into UI consumers.
+    if (stripped.trim()) displayId = stripped;
+    break;
+  }
+  return displayId.length > 6 ? `${displayId.slice(0, 6)}..` : displayId;
+}
+
 function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {}) {
   const alias = getSessionAliasEntry(id, sessionLike, sessionAliases);
   if (alias && typeof alias.title === "string" && alias.title) return alias.title;
   const title = getEffectiveSessionTitle(id, sessionLike, options);
   if (title) return title;
   const cwd = sessionLike && sessionLike.cwd;
-  if (cwd && typeof cwd === "string") {
-    // Skip the cwd fallback only for QoderWork sessions running inside a
-    // QoderWork internal workspace (~/.qoderwork/workspace/<id>) — the raw
-    // workspace ID like "mqgw60jiigjsjcid" is meaningless to the user. Other
-    // agents keep the basename fallback even under that path.
-    const isQoderWorkSession = (sessionLike && sessionLike.agentId === "qoderwork")
-      || (typeof id === "string" && id.startsWith("qoderwork:"));
-    const isQoderWorkWorkspaceCwd = /\/\.qoderwork\/workspace\/[^/]+$/.test(cwd.replace(/\\/g, "/"));
-    if (!(isQoderWorkSession && isQoderWorkWorkspaceCwd)) {
-      return path.basename(cwd);
-    }
+  if (cwd && typeof cwd === "string" && !isInternalWorkspaceCwd(id, sessionLike, cwd)) {
+    return path.basename(cwd);
   }
   const rawSessionId = (sessionLike && sessionLike.rawSessionId) || id;
-  return rawSessionId && rawSessionId.length > 6
-    ? `${rawSessionId.slice(0, 6)}..`
-    : rawSessionId;
+  return shortenSessionIdForDisplay(rawSessionId, sessionLike);
 }
 
 function sessionMenuComparator(a, b, statePriority = {}) {
@@ -523,6 +576,7 @@ function sessionSnapshotSignature(snapshot) {
 
 module.exports = {
   EVENT_LABEL_KEYS,
+  INTERNAL_WORKSPACE_AGENTS,
   SESSION_TITLE_MAX,
   deriveSourceInfo,
   normalizeTitle,

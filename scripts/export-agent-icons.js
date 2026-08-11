@@ -97,12 +97,17 @@ const SOURCE_PROVENANCE = Object.freeze({
       { originalFilename: "qoderwork.png", sourceFilename: "qoderwork.png" },
     ],
   },
+  qwenwork: {
+    originalFilename: "qwenwork.png",
+    sourceFilename: "qwenwork.png",
+    fallback: true,
+    exportMode: "passthrough",
+  },
   "qwen-code": lobeSource("qwen-color.png", { contrastTreatment: "neutral-light-tile" }),
   reasonix: { originalFilename: "reasonix.png", fallback: true },
   workbuddy: {
     originalFilename: "workbuddy.png",
     fallback: false,
-    contrastTreatment: "neutral-dark-tile",
   },
   zcode: { originalFilename: "zcode.png", fallback: true, exportMode: "passthrough" },
 });

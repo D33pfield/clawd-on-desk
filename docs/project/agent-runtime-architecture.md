@@ -9,7 +9,7 @@ Claude Code 状态同步（command hook，非阻塞）：
   Claude Code 触发事件
     → hooks/clawd-hook.js（零依赖 Node 脚本，stdin 读 JSON 取 session_id + source_pid）
     → HTTP POST 127.0.0.1:23333/state { state, session_id, event, source_pid, cwd }
-    → src/server.js 路由 → src/state.js 状态机（多会话追踪 + 优先级 + 最小显示时长 + 睡眠序列）
+    → src/server.js HTTP 壳 → src/server-route-state.js → src/agent-runtime-main.js → src/state.js 状态机（多会话追踪 + 优先级 + 最小显示时长 + 睡眠序列）
     → IPC state-change 事件
     → src/renderer.js（<object> SVG 预加载 + 淡入切换 + 眼球追踪）
 
@@ -30,7 +30,7 @@ Codex CLI 状态同步（official hooks primary + JSONL fallback）：
     → 同上状态机（agent_id: codex）
   Codex 写入 ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
     → agents/codex-log-monitor.js（fallback：hook 未覆盖事件、hook 禁用/不可用、历史兼容）
-    → main.js wrapper 对 hook-active session 做事件级 suppression，避免重复状态/重复气泡
+    → src/agent-runtime-main.js 对 hook-active session 做事件级 suppression，避免重复状态/重复气泡；本地 JSONL 路径不经过 HTTP server
 
 Gemini CLI 状态同步（hook-only，stdin JSON + stdout JSON）：
   Gemini CLI 触发 SessionStart / BeforeAgent / BeforeTool / AfterTool / AfterAgent / SessionEnd 等事件
@@ -74,6 +74,19 @@ WorkBuddy 状态与通知同步（Claude Code 兼容 hook，command）：
     → 同上状态机（agent_id: workbuddy）
   Hook 注册到当前 WorkBuddy AI 的 ~/.workbuddy-ai/settings.json（旧版兼容 ~/.workbuddy/settings.json）。集成为 state + Notification only：不注册 PermissionRequest HTTP hook，
   审批始终由 WorkBuddy 原生沙箱与 GUI 处理；无 session_id 的事件在返回合法 stdout 后直接丢弃，不进入 /state。
+
+QwenWork（千问办公）状态同步（hook-only / state-only，settings.json）：
+  QwenWork 触发 SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop /
+  Notification / PermissionRequest / PermissionDenied / SessionEnd
+    → hooks/qwenwork-hook.js（hook 事件 → agents/qwenwork.js 映射 → HTTP POST）
+    → 同上状态机（agent_id: qwenwork，session_id 规范化为 qwenwork:<raw>）
+  Hook 注册到 ~/.QwenWorkCN/settings.json（marker `qwenwork-hook.js`，增量合并；混合 entry 里第三方 hook 原样保留）。
+  Windows command 用 portable 形态（`windowsWrapper:"portable"`），PowerShell `-EncodedCommand` 只用于识别并原地迁移旧条目。
+  PermissionRequest / PermissionDenied 仅作观察映射成 working（每任务 40+ 次），stdout 恒为 `{}`：不注册 /permission、
+  不进 permission automation eligibility，Allow / Deny 全部留在 QwenWork 原生权限流程。
+  只发送 tool_input 的 sha1 fingerprint，不把原始 tool_input POST 给 Clawd。
+  平台边界：官方只提供 macOS 14+ / Windows 10+ / HarmonyOS 6.1+（https://qwenwork.cn/download），没有 Linux 客户端，
+  因此 processNames.linux 与 resolver linux agent name 均为空，也不进 WSL Pair；桌面主进程长驻，无 startup recovery。
 
 Kimi Code CLI（Kimi-CLI）状态同步（hook-only，config.toml）：
   Kimi Code CLI（Kimi-CLI）触发事件
@@ -168,6 +181,31 @@ MiMo Code 权限气泡（event hook + 反向 bridge，非阻塞，与 opencode �
     → DND / disabled / bubble hidden / Clawd unavailable 时 stdout "{}"，Codex 回到原生审批提示
 ```
 
+## Runtime Ownership Boundaries
+
+`src/main.js` 是 composition root，不再是各子系统的实现 owner。新增或修改行为时先进入对应 owner，避免把逻辑重新堆回 `main.js`：
+
+| Boundary | Owner |
+|---|---|
+| HTTP `/state` / `/permission` | `src/server-route-state.js` / `src/server-route-permission.js`；`src/server.js` 负责监听、端口与组合 |
+| official hook / local monitor 仲裁 | `src/agent-runtime-main.js`，配合 `src/codex-turn-fence.js` / `src/codex-official-activity.js` |
+| 双窗口与浮层 | `src/pet-window-runtime.js` 创建/定位 render + hit window；`src/floating-window-runtime.js` / `src/topmost-runtime.js` 管浮层重排与 z-order |
+| Settings 写入与副作用 | `settings-controller` 是唯一写入者；`settings-actions*` 是 pre-commit gates；`settings-effect-router` 是 post-commit runtime effects |
+| Settings UI | `settings-ui-core` 持有 shared UI state，`settings-renderer` 是侧栏/tab shell，业务页在 `settings-tab-*` |
+| Theme | `theme-loader` 是 stateless loader；`theme-runtime` 是唯一 active-theme owner |
+
+`state.js` 的 session snapshot 是共享 schema：Dashboard、Session HUD（含 Orbit quota ring）以及可选 Telegram completion、Discord presence、LAN PWA 等 consumer 都会读取它。新增、重命名或删除字段时必须检查全部 consumer，不能只看 Dashboard/HUD。
+
+## Windows B1a Process Metadata Capability (#694)
+
+Codex、Cursor Agent、Kiro CLI、CodeBuddy 和 Reasonix 的本地 Windows hook 支持一套版本化的 server-side process-chain capability。Clawd runtime owner 把以下数据写入 `~/.clawd/runtime.json`：随机 `instanceGeneration`，以及每个 agent 的 `legacy | shadow | b1a-authoritative` mode。默认始终是 `legacy`；`shadow` 和 `b1a-authoritative` 仅用于显式开发/验证，resolver 初始化或 ABI 校验失败时在写 runtime 前降级回 `legacy`。
+
+本地 Windows、非 remote/WSL 的 hook 可以把当前 hook Node PID 和 runtime generation 放入 `X-Clawd-Hook-Pid` / `X-Clawd-Process-Instance`；headless/official/subagent 分类在 server 收到请求后完成，只有通过 effective eligibility 的请求才消费这些 header。header 只发往同一次 immutable runtime observation 指定的端口；扫描到其他 fallback server 时自动剥离。PID/generation 是 capability routing metadata，不是认证凭据。B1b adapter、自定义 HTTP Agent 和 Remote SSH 不进入该协议。
+
+`shadow` 下 hook 仍提供 legacy metadata，server 用新 Windows resolver 做逐请求 fresh walk 并只记录 bounded parity；`b1a-authoritative` 下五个 hook 的 eligible 路径不再启动 legacy snapshot PowerShell，`/state` 和 Codex `/permission` 以 server 结果 replace/clear `sourcePid`、`agentPid`、`pidChain` 与 walk-derived editor。replace 失败必须清 stale process identity、重新计算 `pidReachable`，身份变化时清关联的 Windows Terminal HWND / Orca pane；Cursor 的 `editor="cursor"` 属于 adapter 常量而非 walk-derived 字段。Codex Desktop 保持 `sourcePid=agentPid`，普通 CLI 保持最外层 terminal 优先。Kiro 的 `sessionId="default"` 不得用于 process-chain reuse，每个请求都使用自己的 hook PID。
+
+CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此没有可信 hook PID。B1a 当前只覆盖其 command state；permission-first 仍需真实协议/session identity 证据，不得伪造或从别的 session 猜测 PID。
+
 ## Multi-Agent Registry
 
 每个 agent 定义为一个配置模块，导出事件映射、进程名、能力声明（`capabilities` 含 `httpHook` / `permissionApproval` / `sessionEnd` / `subagent`）：
@@ -183,11 +221,12 @@ MiMo Code 权限气泡（event hook + 反向 bridge，非阻塞，与 opencode �
 - `agents/kiro-cli.js` — Kiro CLI 事件映射（camelCase），无 HTTP hook / 无权限 / 无 subagent
 - `agents/codebuddy.js` — CodeBuddy 事件映射（PascalCase，Claude Code 兼容），支持权限
 - `agents/workbuddy.js` — WorkBuddy 事件映射（PascalCase，Claude Code 兼容），state + Notification only，无 Clawd 权限审批
+- `agents/qwenwork.js` — QwenWork（千问办公）hook 事件映射（state-only，无权限气泡，无 startup recovery；`processNames.linux` 为空）
 - `agents/opencode.js` — opencode 事件映射 + 能力（plugin、permission、terminal focus）
 - `agents/mimocode.js` — MiMo Code 事件映射 + 能力（plugin、permission、terminal focus），与 opencode 同源
 - `agents/pi.js` — Pi extension 事件映射 + 能力（extension，state-only，不接管 permission）
 - `agents/openclaw.js` — OpenClaw plugin 事件映射 + 能力（state-only，本地终端聚焦暂不支持）
-- `agents/hermes.js` — Hermes Agent plugin 事件映射 + 能力（session、SessionEnd、terminal focus；无 permission/subagent）
+- `agents/hermes.js` — Hermes Agent plugin 事件映射 + 能力（session、SessionEnd、terminal focus、permission；无 subagent）
 - `agents/registry.js` — agent 注册表：按 ID 或进程名查找 agent 配置
 - `agents/codex-log-monitor.js` — Codex JSONL fallback 增量轮询器（文件监视 + 增量读取 + 状态 / metadata fallback，不再做审批猜测）
 - `agents/gemini-log-monitor.js` — legacy Gemini session JSON 轮询器；当前 hook-only 路径不启动
@@ -202,7 +241,7 @@ MiMo Code 权限气泡（event hook + 反向 bridge，非阻塞，与 opencode �
 
 启动链路只会自动补齐 `integrationInstalled=true` 且 `enabled=true` 的缺失集成：
 
-- `server.js` 启动后异步同步已安装且已启用的 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Kiro / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / Reasonix hooks、opencode / MiMo Code / OpenClaw / Hermes plugins 和 Pi extension；Hermes 同步会先做无副作用安装探测，未安装时不创建 `~/.hermes`
+- `server.js` 启动后异步同步已安装且已启用的 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Kiro / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / QwenWork / Reasonix hooks、opencode / MiMo Code / OpenClaw / Hermes plugins 和 Pi extension；Hermes 同步会先做无副作用安装探测，未安装时不创建 `~/.hermes`
 - Claude hook 同步时还会扫 `DEPRECATED_CORE_HOOKS`（当前含 `WorktreeCreate`）清掉旧版本留下的过时 clawd hook 条目，仅删 command 指向 `clawd-hook.js` 的那条，用户自己写的同事件 hook 不动
 
 Settings Agent 页的 Install 会执行对应 sync 并把 `integrationInstalled=true, enabled=true` 一起提交；Uninstall 会调用 marker-scoped 卸载器，并把 `integrationInstalled=false, enabled=false` 一起提交。单独重新启用一个未安装 agent 只打开事件入口，不会写本机配置；手动安装命令主要用于调试、重装或远程机部署。
@@ -227,13 +266,17 @@ CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL�
 ## Permission Bubble
 
 - Claude Code / CodeBuddy 的 PermissionRequest 用 HTTP hook（阻塞式），其他事件用 command hook（非阻塞式）
+- `agents/registry.js` 的 capability 声明是 agent 是否进入权限、interactive bubble、subagent 等路径的权威来源；文档里的 agent 名单只是说明，不可替代 capability gate。automation 的 agent/family eligibility 另有显式白名单，故意不能从 `permissionApproval` 自动推导；工具 eligibility 是 mode/adapter-specific，不是单一逐工具 allowlist
 - 动态 custom HTTP Agent v1 是 state-only：`/permission` 恒不返回 Allow/Deny，也不创建权限 bubble
 - WorkBuddy 不进入 `/permission`：权限请求只以 Notification 驱动提醒，Allow / Deny 决策留在 WorkBuddy 原生 GUI
+- QwenWork 不进入 `/permission`：`PermissionRequest` / `PermissionDenied` 只被观察并映射成 `working`，hook stdout 恒为 `{}`，Clawd 不产生 allow/deny，也不在 permission automation eligibility 名单内
 - Codex 的 PermissionRequest 是 official command hook；hook 脚本挂起等待 `/permission`，再把 sanitized allow/deny JSON 写到 stdout
 - `POST /permission` 接收 `{ tool_name, tool_input, session_id, permission_suggestions }`；Codex 额外带 `turn_id`、`tool_input_description`、`tool_input_fingerprint`
 - 每个权限请求都会创建独立 `BrowserWindow`，多个 bubble 从右下向上堆叠
 - bubble 会通过 IPC `bubble-height` 回报真实高度，主进程据此重排
 - 支持 Allow / Deny / suggestion 决策，以及 `addRules` / `setMode` suggestion 类型
+- `permission-automation-policy.js` 的 off / auto-tools / unattended 与 `session-automation-coordinator.js` 的 per-session grant 会在 bubble 渲染前产生真实决定。auto-tools 对 Claude/Qwen 的未知 built-in（除有效 namespaced MCP）fail closed，但其他已知 adapter 对非空工具名不都使用逐工具 allowlist；unattended 在识别已知 decision tools 后仍有意对可作 Allow/Deny 的未知请求保留“handle every request”行为。新增 agent/tool/interaction 必须同时审查 policy 与 tests，不能笼统假设 unknown 一律 defer
+- Telegram 与飞书 / Lark 是和本地 bubble 并行的远程决策通道；关闭本地 bubble 不等于关闭远程审批。远程 client 超时、断连、未配置或启动失败不得产生决定或 deny：本地 bubble 存在时请求继续 pending；仅在 remote-only 且所有可用 client 都无决定时，整体请求才 no-decision 并让 agent 回原生 UI 重问
 - DND 只负责“不弹 bubble”，不替用户决定权限：opencode 与 MiMo Code 分支 silent drop，让 TUI 内置权限提示接管；Claude Code 分支 `res.destroy()`，让 CC 回到内置聊天/终端确认；Codex 分支返回 no-decision `{}`，让 Codex 原生审批接管
 - Codex 审批只认 official `PermissionRequest` hook；JSONL fallback 不再根据 shell function_call 猜测审批，也不再创建 Codex passive approval notify bubble
 - 涉及 Claude Code 权限 payload 的改动（`permission_suggestions`、`updatedPermissions`、elicitation 输入等）必须至少用一次真实 Claude Code 验证；`curl` 自编请求历史上掩盖过字段结构 bug
@@ -289,7 +332,7 @@ opencode、MiMo Code、OpenClaw 和 Hermes 是 plugin 形式集成的 agent；Op
 
 ## Terminal Focus And Remote
 
-- hook 脚本通过 `getStablePid()` 遍历进程树定位终端应用 PID（Windows Terminal、VS Code、iTerm2 等）
+- CJS hook 脚本通过 `hooks/shared-process.js` 的 `createPidResolver()` 与 lifecycle context 遍历进程树定位终端应用 PID（Windows Terminal、VS Code、iTerm2 等）；opencode-family plugin 保留自己的内部 resolver
 - 不要用 `process.ppid` 做轻量替代：Claude Code / hook 进程链里它通常只是临时 shell PID，不稳定也不可持久化
 - `source_pid` 跟随状态更新送到 `main.js`，用于 Sessions 菜单聚焦
 - 右键 Sessions 子菜单点击后，`focusTerminalWindow()` 会用 PowerShell（Windows）或 `osascript`（macOS）聚焦终端
@@ -299,6 +342,20 @@ opencode、MiMo Code、OpenClaw 和 Hermes 是 plugin 形式集成的 agent；Op
 - `account-default` 用于不同 Unix 账号；同 Unix 账号默认冲突阻止。实验
   `profile-isolated` 仅在显式验证开关下出现，分开 Claude/Codex/Copilot 用户级
   config/session/runtime roots 与 wrapper，不虚拟化整个 HOME，也不是同 UID 安全边界
+
+### Remote SSH transport coordination
+
+Remote SSH 有两条明确分开的 transport 路径：
+
+- `remote-ssh-transport.js` 通过 `ssh -G` 展开本机 SSH 配置并分类 effective transport。ordinary SSH 保持原 parallel tunnel + health-probe 行为；Codespaces `gh cs ssh --stdio` 和显式 serialized override 进入 single-session 路径。ProxyCommand 输出只作为 bounded data 解析，不得求值或重放；首次 unknown inspection 必须 fail closed
+- serialized ownership 以有效 transport key 为作用域，不是 profile id。同一 target 的 sibling profiles 共享一个 coordinator slot；非 owner 的 Connect、mutation 和 interactive terminal 必须返回 busy，不能另起 child
+- serialized connection 与 operation 先取得 coordinator context，其 managed SSH/SCP child 必须经 context 的 pre-spawn gateway；spawn 后再登记不构成 admission。ordinary transport 在没有 retained serialized occupancy 时保留 `context:null` 的 parallel raw-child 路径，但不能在配置漂移后被偷偷重键为 serialized。用户发起的 detached interactive terminal 不纳入 managed child；fresh inspection 命中 serialized 或 retained occupancy 时必须通过 `checkInteractive()`，且只在 target 无 owner、无 child、无 operation、非 quarantine 时放行
+- serialized persistent tunnel 把 readiness command/marker 放在同一 SSH session，不再开第二条 probe SSH。准备期的 Node resolve 与可选 monitor mutation 必须在 tunnel 前完成；automatic reconnect 只重复只读准备，不盲目 replay mutation
+- 正常暂停通过 tunnel stdin EOF 请求远端 readiness process 退出，并等待 child `close`。`exit`、强杀或带 signal 的 outer `ssh.exe` close 都不足以证明 nested ProxyCommand 已 drain；未验证 drain、watchdog timeout 或仍有 live child 时 slot 进入 quarantine，禁止新 child、mutation、resume 和 interactive terminal
+- Deploy/Repair/cleanup 保留既有 identity transaction、layout-scoped lease、fencing 与 ownership checks。mutation 在 lock acquire-attempted / lock-owned 后出现 255、EOF/reset、signal 等 unknown result 时不得 replay、retry、自动 release lock 或恢复连接；返回 primary error，并按 lock stage 暴露 recovery state / `manual_lock_inspection_required`
+- operation 后是否恢复 tunnel 只看最新 `desiredConnected` / generation、最新 profile 与 fresh inspection；用户在 operation 中 Disconnect 必须赢，target/config 漂移必须 fail closed
+
+用户流程见 `docs/guides/guide-remote-ssh.md`，真机矩阵与精确清理流程见 `scripts/manual/README.md`。Unit tests 不能证明 Windows OpenSSH 的 nested `gh.exe` 生命周期，也不能用 Codespaces 结果推断 ordinary-host V15。
 
 ## Context Menu Owner Window
 

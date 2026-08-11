@@ -90,6 +90,22 @@ describe("i18n locales", () => {
     assertLocaleObjectParity(loadSettingsI18nStrings(), "settings");
   });
 
+  it("provides non-empty macOS menu bar and Dock recovery strings in every Settings locale", () => {
+    const settings = loadSettingsI18nStrings();
+    const keys = [
+      "rowShowInMenuBar",
+      "rowShowInMenuBarDesc",
+      "rowShowInDock",
+      "rowShowInDockDesc",
+    ];
+    for (const lang of SUPPORTED_LANGS) {
+      for (const key of keys) {
+        assert.strictEqual(typeof settings[lang][key], "string", `settings.${lang}.${key} should be a string`);
+        assert.ok(settings[lang][key].trim(), `settings.${lang}.${key} should not be empty`);
+      }
+    }
+  });
+
   it("keeps permission bubble locale keysets aligned with English", () => {
     assertLocaleObjectParity(loadBubbleStrings(), "bubble");
   });

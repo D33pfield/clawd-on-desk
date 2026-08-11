@@ -81,6 +81,9 @@ const {
   shouldOpenSettingsWindowFromArgv,
 } = require("./settings-window-icon");
 const createSettingsWindowRuntime = require("./settings-window");
+const createRoamFenceLoader = require("./roam-fence");
+const createRoamFenceSettings = require("./roam-fence-settings");
+const createRoamFencePicker = require("./roam-fence-picker");
 const createPermissionAutomationConfirmationRuntime = require("./permission-automation-confirmation");
 const {
   createSettingsSizePreviewSession,
@@ -407,6 +410,7 @@ let discordPresenceBridge = null;
 // so a first enable mirrors what the pet is actually showing.
 let lastDiscordPresenceVisual = null;
 let suppressTelegramMigrationReconcile = 0;
+let _remoteSshTransportCoordinator = null;
 let feishuApprovalClient = null;
 let feishuApprovalSyncPromise = Promise.resolve();
 let feishuApprovalConfigSignature = "";
@@ -446,11 +450,11 @@ const _settingsController = createSettingsController({
     writeCodexAutoStartGate: _persistCodexAutoStartGate,
     deployHooksToWsl: async (distro, agentId) => {
       const { deployToWsl } = require("./wsl-deploy");
-      return deployToWsl(distro, { agentId, isPackaged: app.isPackaged });
+      return deployToWsl(distro, { agentId, isPackaged: app.isPackaged, resourcesPath: process.resourcesPath });
     },
     removeHooksFromWsl: async (distro, agentId) => {
       const { removeFromWsl } = require("./wsl-deploy");
-      return removeFromWsl(distro, { agentId });
+      return removeFromWsl(distro, { agentId, isPackaged: app.isPackaged, resourcesPath: process.resourcesPath });
     },
     cleanupIntegrations: async (options = {}) => {
       // Claude hooks + statusline unregister as one queue task, awaited here so
@@ -508,6 +512,19 @@ const _settingsController = createSettingsController({
     getShortcutFailure: (actionId) => shortcutRuntime ? shortcutRuntime.getFailure(actionId) : null,
     clearShortcutFailure: (actionId) => {
       if (shortcutRuntime) shortcutRuntime.clearFailure(actionId);
+    },
+    isRemoteSshTransportBusy: (profileId) => {
+      if (_remoteSshTransportCoordinator) {
+        const snapshot = _remoteSshTransportCoordinator.snapshotForProfile(profileId);
+        if (snapshot.transportPhase !== "idle") return true;
+      }
+      if (_remoteSshRuntime) {
+        const status = _remoteSshRuntime.getProfileStatus(profileId);
+        return status.status === "connecting"
+          || status.status === "connected"
+          || status.status === "reconnecting";
+      }
+      return false;
     },
   },
 });
@@ -727,6 +744,7 @@ function maybeDestroyIdleAnimationPreviewPosterWindow() {
   if (animationOverridesMain) animationOverridesMain.maybeDestroyIdlePreviewPosterWindow();
 }
 
+let roamFencePickerRuntime = null;
 const settingsWindowRuntime = createSettingsWindowRuntime({
   app,
   BrowserWindow,
@@ -745,6 +763,7 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
   getTitle: () => translate("settingsWindowTitle"),
   onBeforeCreate: () => bumpAnimationOverridePreviewPosterGeneration(),
   onBeforeClosed: () => {
+    if (roamFencePickerRuntime) roamFencePickerRuntime.cancel();
     bumpAnimationOverridePreviewPosterGeneration();
     if (shortcutRuntime) shortcutRuntime.stopRecording();
     void settingsSizePreviewSession.cleanup();
@@ -769,6 +788,23 @@ const permissionAutomationConfirmationRuntime = createPermissionAutomationConfir
 function getSettingsWindow() {
   return settingsWindowRuntime.getWindow();
 }
+
+// The file loader is shared by roam and Settings. A selection saved from the
+// visual picker therefore updates the exact same last-known-good cache that a
+// later walk reads; external tools keep using the same JSON contract.
+const roamFenceLoader = createRoamFenceLoader();
+const roamFenceSettings = createRoamFenceSettings({ loader: roamFenceLoader });
+roamFencePickerRuntime = createRoamFencePicker({
+  BrowserWindow,
+  ipcMain,
+  nativeTheme,
+  screen,
+  path,
+  iconPath: settingsWindowRuntime.getIconPath(),
+  getSettingsWindow,
+  getPetWindowBounds: () => getPetWindowBounds(),
+  getEffectivePetSize: (workArea) => getEffectiveCurrentPixelSize(workArea),
+});
 
 shortcutRuntime = createShortcutRuntime({
   ipcMain,
@@ -1024,6 +1060,9 @@ function getEffectiveCurrentPixelSize(overrideWa) {
 let contextMenu;
 let doNotDisturb = false;
 let isQuitting = false;
+let quitCleanupStarted = false;
+let remoteSshQuitDrainStarted = false;
+let remoteSshQuitDrainReady = false;
 // Mirror caches: kept in sync with the settings store via settings-effect-router
 // further down. Read freely; never assign
 // directly (writes go through ctx setters → controller.applyUpdate).
@@ -1038,6 +1077,7 @@ let sessionHudShowStateLabels = _settingsController.get("sessionHudShowStateLabe
 let sessionHudShowElapsed = _settingsController.get("sessionHudShowElapsed");
 let sessionHudShowContextUsage = _settingsController.get("sessionHudShowContextUsage");
 let sessionHudShowQuota = _settingsController.get("sessionHudShowQuota");
+let quotaRingDisplayMode = _settingsController.get("quotaRingDisplayMode");
 let claudeQuotaCollectionEnabled = _settingsController.get("claudeQuotaCollectionEnabled");
 let quotaMergeSources = _settingsController.get("quotaMergeSources");
 let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetached");
@@ -1664,6 +1704,7 @@ let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
 let sessionDebugLog = null; // set after app.whenReady()
 let focusDebugLog = null; // set after app.whenReady()
+let recordWindowsProcessChainShadow = () => false;
 
 function getPendingPermissionFocusEntry(sessionId) {
   const id = String(sessionId || "");
@@ -2255,6 +2296,7 @@ const _sessionHud = require("./session-hud")({
   get sessionHudShowElapsed() { return sessionHudShowElapsed; },
   get sessionHudShowContextUsage() { return sessionHudShowContextUsage; },
   get sessionHudShowQuota() { return sessionHudShowQuota; },
+  get quotaRingDisplayMode() { return quotaRingDisplayMode; },
   get sessionHudPinned() { return sessionHudPinned; },
   get lowPowerIdleMode() { return lowPowerIdleMode; },
   getMiniMode: () => _mini.getMiniMode(),
@@ -2287,6 +2329,7 @@ agentRuntime = createAgentRuntimeMain({
   getPermissionRuntime: () => _perm,
   isAgentEnabled: (agentId) => _isAgentEnabled(_settingsController.getSnapshot(), agentId),
   updateSession: (sessionId, state, event, opts) => updateSession(sessionId, state, event, opts),
+  debugLog: (msg) => sessionLog(msg),
   captureGhosttyTerminalId,
   clearCodexNotifyBubbles: (...args) => clearCodexNotifyBubbles(...args),
   showCodexUserInputBubble: (...args) => showCodexUserInputBubble(...args),
@@ -2325,6 +2368,7 @@ const _serverCtx = {
   // request.
   captureForegroundWindowsTerminal: _captureForegroundWindowsTerminal,
   debugLog: (msg) => sessionLog(msg),
+  recordWindowsProcessChainShadow: (record) => recordWindowsProcessChainShadow(record),
   isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
   shouldSyncAgentIntegration: (agentId) =>
     _shouldSyncAgentIntegration({ agents: _settingsController.get("agents") }, agentId),
@@ -3696,6 +3740,7 @@ const _menuCtx = {
   clampToScreenVisual,
   getNearestWorkArea,
   reapplyMacVisibility,
+  getSettingsWindow,
   discoverThemes: () => themeLoader.discoverThemes(),
   getActiveThemeId: () => themeRuntime.getActiveThemeId("clawd"),
   getActiveThemeCapabilities: () => themeRuntime.getActiveThemeCapabilities(),
@@ -3718,6 +3763,7 @@ const SETTINGS_MIRROR_SETTERS = {
   sessionHudShowElapsed: (v) => { sessionHudShowElapsed = v; },
   sessionHudShowContextUsage: (v) => { sessionHudShowContextUsage = v; },
   sessionHudShowQuota: (v) => { sessionHudShowQuota = v; },
+  quotaRingDisplayMode: (v) => { quotaRingDisplayMode = v; },
   claudeQuotaCollectionEnabled: (v) => { claudeQuotaCollectionEnabled = v; },
   quotaMergeSources: (v) => { quotaMergeSources = v; },
   sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
@@ -3949,15 +3995,22 @@ registerDoctorIpc({
 // any spawned ssh / scp children.
 const { createRemoteSshRuntime } = require("./remote-ssh-runtime");
 const { registerRemoteSshIpc } = require("./remote-ssh-ipc");
+const { inspectEffectiveTransport } = require("./remote-ssh-transport");
+const { createRemoteSshTransportCoordinator } = require("./remote-ssh-transport-coordinator");
+_remoteSshTransportCoordinator = createRemoteSshTransportCoordinator({
+  inspectEffectiveTransport: (profile) => inspectEffectiveTransport(profile),
+});
 _remoteSshRuntime = createRemoteSshRuntime({
   getHookServerPort: () => getHookServerPort(),
   createProfileIngress: (options) => _server.openRemoteSshIngress(options),
+  transportCoordinator: _remoteSshTransportCoordinator,
   log: (...args) => console.warn("Clawd remote-ssh:", ...args),
 });
 const _remoteSshIpc = registerRemoteSshIpc({
   ipcMain,
   settingsController: _settingsController,
   remoteSshRuntime: _remoteSshRuntime,
+  transportCoordinator: _remoteSshTransportCoordinator,
   BrowserWindow,
   isPackaged: app.isPackaged,
   getInstallationIdentity: () => _remoteSshInstallationIdentity,
@@ -4022,6 +4075,8 @@ registerSettingsIpc({
   getSettingsWindow,
   getActiveTheme: () => getActiveTheme(),
   getLang: () => lang,
+  roamFenceSettings,
+  roamFencePicker: roamFencePickerRuntime,
   settingsSizePreviewSession,
   isValidSizePreviewKey,
   previewTextScale,
@@ -4290,7 +4345,9 @@ function createWindow() {
       }
       sessionLog(`startup recovery restored sessions=${restoredSessionIds.join(",")}`);
     }
-    try { _remoteSshIpc.connectOnLaunchProfiles(); } catch {}
+    void _remoteSshIpc.connectOnLaunchProfiles().catch((err) => {
+      console.warn("Clawd remote-ssh: connect-on-launch failed:", err && err.message);
+    });
   }).catch(() => {});
   if (_settingsController.get("mobilePreviewEnabled") === true) _lanWss.start();
   startStaleCleanup();
@@ -4490,8 +4547,16 @@ const _roamCtx = {
   isImeEditingActive: () => pendingPermissions.some(
     (p) => p && p.bubble && !p.bubble.isDestroyed() && p.bubble.__clawdMacImeEditing
   ),
+  // #810: optional roam fence — validated async loader for
+  // ~/.clawd/roam-area.json; roam reads its in-memory cache at target pick
+  // time and kicks refresh() when scheduling walks (see src/roam-fence.js).
+  roamFence: roamFenceLoader,
 };
 const _roam = require("./roam")(_roamCtx);
+// #810: resolve the fence's initial status right away so the first roam
+// round doesn't have to hold on an UNKNOWN state (get() === null) when a
+// fence file exists — or confirm quickly that none does.
+_roamCtx.roamFence.refresh();
 
 // Free roam: initialize from prefs and react to toggle changes
 _roam.setEnabled(_settingsController.get("freeRoam") === true);
@@ -4708,6 +4773,10 @@ if (!gotTheLock) {
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     focusDebugLog = path.join(app.getPath("userData"), "focus-debug.log");
+    const { createWindowsProcessChainShadowLogger } = require("./windows-process-chain-shadow-log");
+    recordWindowsProcessChainShadow = createWindowsProcessChainShadowLogger({
+      filePath: path.join(app.getPath("userData"), "windows-process-chain-shadow.log"),
+    });
     const telegramMigrationInit = initTelegramMigrationController().catch((err) => {
       console.warn("Clawd: migration controller init failed:", err && err.message);
       return null;
@@ -4816,8 +4885,24 @@ if (!gotTheLock) {
     if (codexHookNudgeTimer && typeof codexHookNudgeTimer.unref === "function") codexHookNudgeTimer.unref();
   });
 
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
     isQuitting = true;
+    if (!remoteSshQuitDrainReady
+      && _remoteSshRuntime
+      && typeof _remoteSshRuntime.shutdown === "function") {
+      event.preventDefault();
+      if (!remoteSshQuitDrainStarted) {
+        remoteSshQuitDrainStarted = true;
+        void _remoteSshRuntime.shutdown({ timeoutMs: 5000 })
+          .catch((err) => console.error("remote-ssh shutdown drain failed:", err && err.message))
+          .finally(() => {
+            remoteSshQuitDrainReady = true;
+            app.quit();
+          });
+      }
+    }
+    if (quitCleanupStarted) return;
+    quitCleanupStarted = true;
     trayBalloonOwner.dispose();
     holidayAccessoryRuntime.dispose();
     if (systemWakeRecovery) systemWakeRecovery.dispose();
@@ -4830,6 +4915,7 @@ if (!gotTheLock) {
     globalShortcut.unregisterAll();
     void settingsSizePreviewSession.cleanup();
     permissionAutomationConfirmationRuntime.dispose();
+    roamFencePickerRuntime.dispose();
     if (_telegramMigrationController
       && typeof _telegramMigrationController.dispose === "function") {
       void _telegramMigrationController.dispose();
@@ -4851,7 +4937,9 @@ if (!gotTheLock) {
     _focus.cleanup();
     if (animationOverridesMain) animationOverridesMain.cleanup();
     try { _remoteSshIpc.dispose(); } catch {}
-    try { _remoteSshRuntime.cleanup(); } catch {}
+    if (!_remoteSshRuntime || typeof _remoteSshRuntime.shutdown !== "function") {
+      try { _remoteSshRuntime.cleanup(); } catch {}
+    }
     if (hitWin && !hitWin.isDestroyed()) hitWin.destroy();
   });
 
