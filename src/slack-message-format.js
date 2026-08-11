@@ -26,6 +26,14 @@ const SLACK_LOCALES = Object.freeze({
     truncated: "truncated",
     permissionTitle: "Permission needed",
     permissionHint: "Approve or deny in the desktop app.",
+    permissionHintRemote: "Approve or deny in your remote approval channel (Telegram or Feishu).",
+    questionTitle: "Answer needed",
+    questionHint: "Answer in the desktop app.",
+    questionHintRemote: "Answer in your remote approval channel (Telegram or Feishu).",
+    questionNumber: "Question {n}",
+    andMore: "+{n} more",
+    bubbleFailedTitle: "That request went back to the terminal",
+    bubbleFailedBody: "The desktop bubble could not open, so {agent} is asking in its own prompt instead. Nothing is waiting in the app.",
     tool: "Tool",
     folder: "Folder",
     agent: "Agent",
@@ -42,6 +50,14 @@ const SLACK_LOCALES = Object.freeze({
     truncated: "已截断",
     permissionTitle: "需要审批",
     permissionHint: "请在桌面 App 中批准或拒绝。",
+    permissionHintRemote: "请在远程审批渠道（Telegram 或飞书）中批准或拒绝。",
+    questionTitle: "需要回答",
+    questionHint: "请在桌面 App 中回答。",
+    questionHintRemote: "请在远程审批渠道（Telegram 或飞书）中回答。",
+    questionNumber: "问题 {n}",
+    andMore: "还有 {n} 项",
+    bubbleFailedTitle: "该请求已退回终端",
+    bubbleFailedBody: "桌面气泡未能弹出，因此 {agent} 改为在自己的终端里询问。App 中没有待处理的内容。",
     tool: "工具",
     folder: "目录",
     agent: "Agent",
@@ -58,6 +74,14 @@ const SLACK_LOCALES = Object.freeze({
     truncated: "已截斷",
     permissionTitle: "需要審批",
     permissionHint: "請在桌面 App 中核准或拒絕。",
+    permissionHintRemote: "請在遠端審批管道（Telegram 或飛書）中核准或拒絕。",
+    questionTitle: "需要回答",
+    questionHint: "請在桌面 App 中回答。",
+    questionHintRemote: "請在遠端審批管道（Telegram 或飛書）中回答。",
+    questionNumber: "問題 {n}",
+    andMore: "還有 {n} 項",
+    bubbleFailedTitle: "該請求已退回終端機",
+    bubbleFailedBody: "桌面泡泡未能跳出，因此 {agent} 改為在自己的終端機裡詢問。App 中沒有待處理的內容。",
     tool: "工具",
     folder: "目錄",
     agent: "Agent",
@@ -74,6 +98,14 @@ const SLACK_LOCALES = Object.freeze({
     truncated: "잘림",
     permissionTitle: "승인 필요",
     permissionHint: "데스크톱 앱에서 승인하거나 거부하세요.",
+    permissionHintRemote: "원격 승인 채널(Telegram 또는 Feishu)에서 승인하거나 거부하세요.",
+    questionTitle: "답변 필요",
+    questionHint: "데스크톱 앱에서 답변하세요.",
+    questionHintRemote: "원격 승인 채널(Telegram 또는 Feishu)에서 답변하세요.",
+    questionNumber: "질문 {n}",
+    andMore: "외 {n}개",
+    bubbleFailedTitle: "해당 요청이 터미널로 돌아갔습니다",
+    bubbleFailedBody: "데스크톱 말풍선을 열 수 없어 {agent}이(가) 자체 프롬프트에서 대신 묻고 있습니다. 앱에는 대기 중인 항목이 없습니다.",
     tool: "도구",
     folder: "폴더",
     agent: "Agent",
@@ -90,6 +122,14 @@ const SLACK_LOCALES = Object.freeze({
     truncated: "省略",
     permissionTitle: "承認が必要",
     permissionHint: "デスクトップアプリで承認または拒否してください。",
+    permissionHintRemote: "リモート承認チャンネル（Telegram または Feishu）で承認または拒否してください。",
+    questionTitle: "回答が必要",
+    questionHint: "デスクトップアプリで回答してください。",
+    questionHintRemote: "リモート承認チャンネル（Telegram または Feishu）で回答してください。",
+    questionNumber: "質問 {n}",
+    andMore: "ほか {n} 件",
+    bubbleFailedTitle: "このリクエストはターミナルに戻りました",
+    bubbleFailedBody: "デスクトップのバブルを開けなかったため、{agent} は自分のプロンプトで代わりに確認しています。アプリで待機しているものはありません。",
     tool: "ツール",
     folder: "フォルダ",
     agent: "Agent",
@@ -106,6 +146,14 @@ const SLACK_LOCALES = Object.freeze({
     truncated: "truncado",
     permissionTitle: "Aprovação necessária",
     permissionHint: "Aprove ou recuse no aplicativo de desktop.",
+    permissionHintRemote: "Aprove ou recuse no seu canal remoto de aprovação (Telegram ou Feishu).",
+    questionTitle: "Resposta necessária",
+    questionHint: "Responda no aplicativo de desktop.",
+    questionHintRemote: "Responda no seu canal remoto de aprovação (Telegram ou Feishu).",
+    questionNumber: "Pergunta {n}",
+    andMore: "+{n} restantes",
+    bubbleFailedTitle: "Essa solicitação voltou para o terminal",
+    bubbleFailedBody: "O balão da área de trabalho não pôde ser aberto, então {agent} está perguntando no próprio prompt. Nada está aguardando no aplicativo.",
     tool: "Ferramenta",
     folder: "Pasta",
     agent: "Agente",
@@ -211,6 +259,49 @@ function clipMrkdwn(value, maxLength) {
   return clip(value, maxLength).replace(/&[A-Za-z]{0,4}$/, "");
 }
 
+
+// Questions arrive raw from the agent — buildRemoteElicitationPayload passes
+// toolInput.questions straight through, and Telegram and Feishu each sanitise
+// on their own side. Slack has to do the same: redact, escape, and clamp.
+// The counts match the other channels so one agent cannot flood a card.
+const MAX_QUESTIONS = 5;
+const MAX_OPTIONS = 5;
+const QUESTION_MAX = 240;
+const QUESTION_HEADER_MAX = 80;
+const OPTION_LABEL_MAX = 80;
+
+function renderQuestions(rawQuestions, locale) {
+  const questions = Array.isArray(rawQuestions) ? rawQuestions : [];
+  const shown = questions.slice(0, MAX_QUESTIONS);
+  const lines = [];
+  shown.forEach((question, index) => {
+    if (!question || typeof question !== "object") return;
+    const header = redactMrkdwn(question.header || "").trim().slice(0, QUESTION_HEADER_MAX)
+      || interpolate(locale.questionNumber, "{n}", String(index + 1));
+    const body = clipMrkdwn(redactMrkdwn(question.question || ""), QUESTION_MAX);
+    const options = Array.isArray(question.options) ? question.options : [];
+    const optionLines = options.slice(0, MAX_OPTIONS)
+      .map((option) => {
+        const label = option && typeof option === "object" ? option.label : option;
+        return clipMrkdwn(redactMrkdwn(label || ""), OPTION_LABEL_MAX);
+      })
+      .filter(Boolean)
+      .map((label) => `  • ${label}`);
+    if (options.length > MAX_OPTIONS) {
+      optionLines.push(`  • ${interpolate(locale.andMore, "{n}", String(options.length - MAX_OPTIONS))}`);
+    }
+    lines.push([`*${header}*`, body, ...optionLines].filter(Boolean).join("\n"));
+  });
+  if (questions.length > MAX_QUESTIONS) {
+    lines.push(interpolate(locale.andMore, "{n}", String(questions.length - MAX_QUESTIONS)));
+  }
+  return lines;
+}
+
+function interpolate(template, token, value) {
+  return String(template == null ? "" : template).split(token).join(value);
+}
+
 function headerBlock(text) {
   return { type: "header", text: { type: "plain_text", text: clip(text, HEADER_MAX) || " ", emoji: true } };
 }
@@ -299,23 +390,71 @@ function buildCompletionMessage(entry, options = {}) {
 function buildPermissionMessage(payload, options = {}) {
   const locale = getLocale(options.lang);
   const p = payload && typeof payload === "object" ? payload : {};
-  // `title` is built from the agent id + tool name, both agent-controlled.
-  const rawTitle = safeText(p.title).trim() || locale.permissionTitle;
-  const blocks = [headerBlock(`⏳ ${locale.permissionTitle}`)];
 
-  const lines = [`*${redactMrkdwn(rawTitle)}*`];
+  // Two axes, carried from the route rather than guessed here:
+  //   kind          — is this a decision, or a question the agent asked?
+  //   actionTarget  — where the human actually acts.
+  // An AskUserQuestion has capabilities.allowDeny === false, so Allow/Deny
+  // wording is not merely wrong for it, it describes an action that does not
+  // exist. And a remote-only entry has no desktop bubble by construction, so
+  // pointing at the app sends the reader somewhere empty.
+  const isQuestion = p.kind === "question";
+  const remote = p.actionTarget === "remote";
+  const title = isQuestion ? locale.questionTitle : locale.permissionTitle;
+  const icon = isQuestion ? "❓" : "⏳";
+  const hint = isQuestion
+    ? (remote ? locale.questionHintRemote : locale.questionHint)
+    : (remote ? locale.permissionHintRemote : locale.permissionHint);
+
+  const rawTitle = safeText(p.title).trim() || title;
+  const blocks = [headerBlock(`${icon} ${title}`)];
+
+  // The elicitation payload's title is a hardcoded English `${agent} needs
+  // input`, and it repeats what the header and the Agent field already say — so
+  // a question card drops it rather than dropping an English sentence into a
+  // translated card.
+  const lines = isQuestion ? [] : [`*${redactMrkdwn(rawTitle)}*`];
   const fields = [];
-  if (p.toolName) fields.push(`*${escapeMrkdwn(locale.tool)}:* ${redactMrkdwn(p.toolName)}`);
+  // A question has no tool to approve; naming one invites the reader to think
+  // there is something to allow.
+  if (!isQuestion && p.toolName) fields.push(`*${escapeMrkdwn(locale.tool)}:* ${redactMrkdwn(p.toolName)}`);
   if (p.agentId) fields.push(`*${escapeMrkdwn(locale.agent)}:* ${redactMrkdwn(p.agentId)}`);
   const folder = folderName(p.folder || p.cwd);
   if (folder) fields.push(`*${escapeMrkdwn(locale.folder)}:* ${redactMrkdwn(folder)}`);
   if (fields.length) lines.push(fields.join("\n"));
-  const detail = safeText(p.detail || p.summary).trim();
-  if (detail) lines.push(redactMrkdwn(detail));
-  blocks.push(sectionBlock(lines.join("\n\n")));
-  blocks.push(contextBlock(`ℹ️ ${escapeMrkdwn(locale.permissionHint)}`));
 
-  return { text: clipMrkdwn(`⏳ ${locale.permissionTitle}: ${redactMrkdwn(rawTitle)}`, FALLBACK_MAX), blocks };
+  if (isQuestion) {
+    // The whole point: show what was actually asked. The approval summary
+    // builder can never find a description for an AskUserQuestion, so it
+    // always produced "No description available" here.
+    lines.push(...renderQuestions(p.questions, locale));
+  } else {
+    const detail = safeText(p.detail || p.summary).trim();
+    if (detail) lines.push(redactMrkdwn(detail));
+  }
+
+  blocks.push(sectionBlock(lines.join("\n\n")));
+  blocks.push(contextBlock(`ℹ️ ${escapeMrkdwn(hint)}`));
+
+  const subject = isQuestion ? redactMrkdwn(p.agentId || "") : redactMrkdwn(rawTitle);
+  const fallback = subject ? `${icon} ${title}: ${subject}` : `${icon} ${title}`;
+  return { text: clipMrkdwn(fallback, FALLBACK_MAX), blocks };
+}
+
+// A webhook message cannot be edited or deleted, so when the desktop bubble
+// fails after the heads-up has already gone out, the only honest move is to
+// correct it rather than leave the reader waiting at an app with nothing in it.
+function buildBubbleFailedMessage(payload, options = {}) {
+  const locale = getLocale(options.lang);
+  const p = payload && typeof payload === "object" ? payload : {};
+  const agentId = redactPlain(p.agentId || "the agent").trim() || "the agent";
+  return {
+    text: clipMrkdwn(`⚠️ ${escapeMrkdwn(locale.bubbleFailedTitle)}`, FALLBACK_MAX),
+    blocks: [
+      headerBlock(`⚠️ ${locale.bubbleFailedTitle}`),
+      sectionBlock(redactMrkdwn(interpolate(locale.bubbleFailedBody, "{agent}", agentId))),
+    ],
+  };
 }
 
 function buildTestMessage(options = {}) {
@@ -329,6 +468,7 @@ function buildTestMessage(options = {}) {
 module.exports = {
   buildCompletionMessage,
   buildPermissionMessage,
+  buildBubbleFailedMessage,
   buildTestMessage,
   prepareAssistantOutput,
   neutralizeFences,

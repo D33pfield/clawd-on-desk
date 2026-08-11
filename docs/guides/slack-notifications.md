@@ -56,6 +56,28 @@ permission automation (*auto-tools* or *unattended*) or a session-scoped "always
 allow" resolves it, Clawd stays silent — an auto-approved tool call must never
 produce an "approval needed" ping for something you never had to act on.
 
+### The three shapes a permission message takes
+
+| Card | When | What it says |
+|---|---|---|
+| ⏳ Permission needed | a tool wants to run | approve or deny — in the desktop app, or in your remote approval channel if bubbles are disabled for that agent |
+| ❓ Answer needed | the agent asked *you* something (`AskUserQuestion`) | the questions and their options, and *answer* rather than approve — there is nothing to allow or deny |
+| ⚠️ Went back to the terminal | the desktop bubble failed to open after a heads-up was already sent | the request fell back to the agent's own prompt, so nothing is waiting in the app |
+
+The question card exists because an `AskUserQuestion` is not a permission
+request: it carries no allow/deny decision, and the approval summary builder can
+never find a description for one, so it used to arrive as "No description
+available" with the questions missing entirely.
+
+The correction card exists because a webhook message cannot be edited or
+deleted. If Clawd has already said "approve in the desktop app" and the bubble
+then fails, the only honest option left is to say so rather than leave you
+waiting at an app with nothing in it.
+
+Question and option text is capped at five questions and five options each, with
+a "+N more" marker — the same limits the Telegram and Feishu cards use, so one
+agent cannot flood a channel.
+
 ### What Do Not Disturb does, precisely
 
 DND **suppresses permission messages but not completion messages**, and that is

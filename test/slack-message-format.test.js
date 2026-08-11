@@ -231,3 +231,124 @@ test("output that survives escaping intact is not labelled truncated", () => {
   const label = msg.blocks.map((b) => (b.text ? b.text.text : "")).find((t) => /Assistant output/.test(t));
   assert.doesNotMatch(label, /truncated/i);
 });
+
+// ── Interaction- and route-aware permission cards (review item 4) ───────────
+// An AskUserQuestion ran through the ordinary approval builder, which can never
+// find a description for it — so the card said "No description available" and
+// told the reader to approve or deny something that is actually a question.
+
+const QUESTION_PAYLOAD = {
+  kind: "question",
+  title: "claude-code needs input",
+  agentId: "claude-code",
+  folder: "clawd-on-desk",
+  questions: [
+    { header: "Rollout", question: "Which environment should I deploy to?",
+      options: [{ label: "staging" }, { label: "production" }] },
+    { question: "Run the migration first?", options: [{ label: "yes" }, { label: "no" }] },
+  ],
+};
+
+test("a question card shows the questions, not an approval summary", () => {
+  const msg = fmt.buildPermissionMessage(QUESTION_PAYLOAD, { lang: "en" });
+  const all = JSON.stringify(msg);
+  assert.match(all, /Which environment should I deploy to\?/);
+  assert.match(all, /Run the migration first\?/);
+  assert.match(all, /staging/);
+  assert.match(all, /production/);
+  // The header supplied by the agent is used; the one without a header falls
+  // back to a numbered label rather than showing nothing.
+  assert.match(all, /Rollout/);
+  assert.match(all, /Question 2/);
+});
+
+test("a question card never talks about approving or denying", () => {
+  // capabilities.allowDeny is false for AskUserQuestion — there is nothing to
+  // approve, so Allow/Deny wording would be actively misleading.
+  const msg = fmt.buildPermissionMessage(QUESTION_PAYLOAD, { lang: "en" });
+  const all = JSON.stringify(msg);
+  assert.doesNotMatch(all, /approve/i);
+  assert.doesNotMatch(all, /deny/i);
+  assert.match(all, /answer/i);
+});
+
+test("the hint names where the answer or decision actually happens", () => {
+  const hintOf = (msg) => msg.blocks
+    .map((b) => (b.elements ? b.elements.map((e) => e.text).join(" ") : ""))
+    .join(" ");
+
+  const localApproval = fmt.buildPermissionMessage(
+    { toolName: "Bash", agentId: "claude-code", actionTarget: "desktop" }, { lang: "en" });
+  assert.match(hintOf(localApproval), /desktop app/i);
+
+  // Bubbles disabled: there is no desktop bubble to act in, by construction.
+  const remoteApproval = fmt.buildPermissionMessage(
+    { toolName: "Bash", agentId: "claude-code", actionTarget: "remote" }, { lang: "en" });
+  assert.doesNotMatch(hintOf(remoteApproval), /desktop app/i);
+  assert.match(hintOf(remoteApproval), /Telegram|Feishu/i);
+
+  const remoteQuestion = fmt.buildPermissionMessage(
+    { ...QUESTION_PAYLOAD, actionTarget: "remote" }, { lang: "en" });
+  assert.match(hintOf(remoteQuestion), /Telegram|Feishu/i);
+  assert.match(hintOf(remoteQuestion), /answer/i);
+});
+
+test("question text is redacted and escaped like every other agent-derived field", () => {
+  // buildRemoteElicitationPayload hands the questions array through raw —
+  // Telegram and Feishu each sanitise on their own side, so Slack must too.
+  const msg = fmt.buildPermissionMessage({
+    kind: "question",
+    agentId: "claude-code",
+    questions: [{
+      header: "<!channel>",
+      question: "deploy with xoxb-123456789-abcdefghij?",
+      options: [{ label: "<!here> yes" }],
+    }],
+  }, { lang: "en" });
+
+  const all = JSON.stringify(msg);
+  assert.ok(!all.includes("xoxb-123456789-abcdefghij"), "a secret in a question must not reach Slack");
+  assert.ok(!all.includes("<!channel>"), "mention syntax in a header must be inert");
+  assert.ok(!all.includes("<!here>"), "mention syntax in an option must be inert");
+});
+
+test("question and option counts are capped like the other channels", () => {
+  const msg = fmt.buildPermissionMessage({
+    kind: "question",
+    agentId: "claude-code",
+    questions: Array.from({ length: 9 }, (_, i) => ({
+      question: `Q${i}`,
+      options: Array.from({ length: 9 }, (_, j) => ({ label: `opt${i}-${j}` })),
+    })),
+  }, { lang: "en" });
+
+  const all = JSON.stringify(msg);
+  assert.match(all, /Q0/);
+  assert.ok(!all.includes("Q8"), "questions beyond the cap are dropped, not rendered");
+  assert.ok(!all.includes("opt0-8"), "options beyond the cap are dropped too");
+  assert.match(all, /more/i, "and the reader is told something was omitted");
+});
+
+test("an approval card is unchanged by the new fields", () => {
+  const msg = fmt.buildPermissionMessage(
+    { title: "claude-code requests Bash", toolName: "Bash", agentId: "claude-code",
+      folder: "proj", detail: "run the tests" }, { lang: "en" });
+  const all = JSON.stringify(msg);
+  assert.match(all, /Bash/);
+  assert.match(all, /run the tests/);
+  assert.match(all, /Permission needed/);
+});
+
+test("a question card does not leak the untranslated elicitation title", () => {
+  // buildRemoteElicitationPayload builds `${agentId} needs input` as a hardcoded
+  // English literal. The header already says "Answer needed" and the fields
+  // already name the agent, so repeating it added nothing except an English
+  // sentence in the middle of a translated card.
+  const zh = fmt.buildPermissionMessage(
+    { ...QUESTION_PAYLOAD, title: "claude-code needs input" }, { lang: "zh" });
+  const body = zh.blocks.map((b) => (b.text ? b.text.text : "")).join("\n");
+  assert.ok(!body.includes("needs input"), "the English template must not appear in a zh card");
+  assert.ok(!zh.text.includes("needs input"), "nor in the push preview");
+  // The agent is still identifiable.
+  assert.match(JSON.stringify(zh), /claude-code/);
+});

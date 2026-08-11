@@ -20,6 +20,7 @@ const settings = require("./slack-notify-settings");
 const {
   buildCompletionMessage,
   buildPermissionMessage,
+  buildBubbleFailedMessage,
   buildTestMessage,
 } = require("./slack-message-format");
 
@@ -428,6 +429,23 @@ function createSlackNotifyClient({
     }
   }
 
+  // Correction for a heads-up that has already been sent and cannot be
+  // retracted: the bubble failed, so the request went back to the agent's own
+  // prompt. Gated on the same switch as the heads-up itself — if permission
+  // notifications are off, there is nothing to correct.
+  function notifyBubbleFailed(payload) {
+    const config = readConfig();
+    if (!config.enabled || !config.notifyOnPermission) return Promise.resolve({ ok: false, errorClass: "disabled" });
+    let message = null;
+    try {
+      message = buildBubbleFailedMessage(payload, { lang: readLang() });
+    } catch (err) {
+      safeLog("warn", "slack bubble-failed format threw", { error: err && err.message });
+      return Promise.resolve({ ok: false, errorClass: "format-failed" });
+    }
+    return sendMessage(message).catch((err) => ({ ok: false, errorClass: "threw", error: err && err.message }));
+  }
+
   // Read-only "permission needed" heads-up. Best-effort; returns a promise for
   // callers that want it but is safe to ignore.
   function notifyPermissionRequest(payload) {
@@ -491,6 +509,7 @@ function createSlackNotifyClient({
     drained,
     onSnapshot,
     notifyPermissionRequest,
+    notifyBubbleFailed,
     sendMessage,
     sendTest,
     supportsApproval,
