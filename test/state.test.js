@@ -12,6 +12,7 @@ const _defaultTheme = themeLoader.loadTheme("clawd");
 const _calicoTheme = themeLoader.loadTheme("calico");
 const { createTranslator } = require("../src/i18n");
 const { makeSessionKey } = require("../src/session-key");
+const { isSessionInProgress } = require("../src/state-session-snapshot");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -960,6 +961,29 @@ describe("cleanStaleSessions()", () => {
     }));
     api.cleanStaleSessions();
     assert.strictEqual(api.sessions.get("s1").state, "idle");
+  });
+
+  it("keeps local OpenCode blocker-facing work active past the generic session cutoff", () => {
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+      getStaleConfig: () => ({
+        sessionStaleMs: 600_000,
+        workingStaleMs: 300_000,
+      }),
+    }));
+    api.sessions.set("opencode:s1", rawSession("working", {
+      agentId: "opencode",
+      agentPid: 1000,
+      sourcePid: 2000,
+      pidReachable: true,
+      updatedAt: Date.now() - 600_001,
+    }));
+
+    api.cleanStaleSessions();
+
+    const active = api.sessions.get("opencode:s1");
+    assert.strictEqual(active.state, "working");
+    assert.strictEqual(isSessionInProgress(active), true);
   });
 
   it("genuine OpenCode session.idle completion still records normal Stop semantics", () => {
