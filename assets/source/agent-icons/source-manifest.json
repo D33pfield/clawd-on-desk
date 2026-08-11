@@ -391,6 +391,15 @@
         }
       ]
     },
+    "qwenwork": {
+      "agentId": "qwenwork",
+      "originalFilename": "qwenwork.png",
+      "sourceFilename": "qwenwork.png",
+      "sourceType": "png",
+      "sha256": "7467ee2af15a62536fc5ab3fa840de60af06fa04fe69679d14886ad590288b24",
+      "fallback": true,
+      "exportMode": "passthrough"
+    },
     "workbuddy": {
       "agentId": "workbuddy",
       "originalFilename": "workbuddy.png",
@@ -520,6 +529,12 @@
       "outputFilename": "qoderwork.png",
       "outputSha256": "e354f670f8b7310a7bbcb9ca7d313221fb87131aa5d3fef05747718af44b81cf",
       "generatedFromSourceSha256": "e354f670f8b7310a7bbcb9ca7d313221fb87131aa5d3fef05747718af44b81cf"
+    },
+    "qwenwork": {
+      "agentId": "qwenwork",
+      "outputFilename": "qwenwork.png",
+      "outputSha256": "7467ee2af15a62536fc5ab3fa840de60af06fa04fe69679d14886ad590288b24",
+      "generatedFromSourceSha256": "7467ee2af15a62536fc5ab3fa840de60af06fa04fe69679d14886ad590288b24"
     },
     "workbuddy": {
       "agentId": "workbuddy",

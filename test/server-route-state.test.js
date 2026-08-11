@@ -1154,6 +1154,84 @@ describe("server-route-state POST", () => {
     assert.deepStrictEqual(outcomes, []);
   });
 
+  it("metadata_only session_title routes to updateSessionMetadata, not updateSession", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "opencode:ses_x",
+      agent_id: "opencode",
+      session_title: "My Real Title",
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.calls.updateSession.length, 0, "title-only metadata must not call updateSession");
+    assert.strictEqual(res.calls.setState.length, 0);
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.strictEqual(metadataCalls[0][0], localSessionKey("opencode:ses_x"));
+    assert.deepStrictEqual(metadataCalls[0][1], { sessionTitle: "My Real Title" });
+  });
+
+  it("metadata_only session_title is allowed even when the Claude telemetry gate blocks context", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "sid",
+      agent_id: "claude-code",
+      session_title: "Title Despite Gate",
+      context_usage: { used: 50000, limit: 200000, percent: 25, source: "claude" },
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+      options: { isClaudeStatuslineMetadataAllowed: () => false },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    // The gate drops the context data, but the title is not Claude statusline
+    // data and must still flow through.
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.deepStrictEqual(metadataCalls[0][1], { sessionTitle: "Title Despite Gate" });
+  });
+
+  it("metadata_only title+context in one POST becomes one metadata update", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "opencode:ses_z",
+      agent_id: "opencode",
+      session_title: "Titled + quota",
+      context_usage: { used: 300, limit: 1000, percent: 30, source: "codex" },
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(metadataCalls.length, 1, "title+context should coalesce into a single metadata update");
+    assert.deepStrictEqual(metadataCalls[0][1], {
+      contextUsage: { used: 300, limit: 1000, percent: 30, source: "codex" },
+      contextUsageOrigin: null,
+      sessionTitle: "Titled + quota",
+    });
+  });
+
+  it("metadata_only with neither title nor context performs no metadata update", async () => {
+    const metadataCalls = [];
+    const res = await callStatePost(JSON.stringify({
+      state: "idle",
+      metadata_only: true,
+      session_id: "opencode:ses_w",
+      agent_id: "opencode",
+    }), {
+      ctx: { updateSessionMetadata: (...args) => metadataCalls.push(args) },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(metadataCalls.length, 0, "empty metadata payload must not call updateSessionMetadata");
+  });
+
   it("marks missing agent_id as a defaulted Claude Code attribution", async () => {
     const res = await callStatePost(JSON.stringify({
       state: "working",

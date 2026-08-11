@@ -667,6 +667,7 @@ function loadGeneralLanguageRowForTest({
 function loadGeneralTabForTest({
   snapshot,
   settingsAPI = {},
+  platform = "Win32",
   requestAnimationFrame = (cb) => {
     cb();
     return 1;
@@ -688,7 +689,7 @@ function loadGeneralTabForTest({
 
   const context = {
     console,
-    navigator: { platform: "Win32" },
+    navigator: { platform },
     localStorage: {
       getItem: () => null,
       setItem: () => {},
@@ -825,6 +826,7 @@ function loadRemoteSshTabForTest({
   cleanup = () => Promise.resolve({ status: "ok", uninstalled: true }),
   command = () => Promise.resolve({ status: "ok" }),
   confirm = () => true,
+  listStatuses = null,
 } = {}) {
   const body = new FakeElement("body");
   const content = new FakeElement("main");
@@ -862,6 +864,7 @@ function loadRemoteSshTabForTest({
     openTerminal: () => Promise.resolve({ status: "ok" }),
     deploy: () => Promise.resolve({ status: "ok" }),
   };
+  if (typeof listStatuses === "function") remoteSsh.listStatuses = listStatuses;
   const context = {
     console,
     navigator: { platform: "Win32" },
@@ -2222,6 +2225,104 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelector(".remote-ssh-btn-danger").disabled, false);
   });
 
+  it("disables a profile card and remote actions while another profile owns its serialized transport", () => {
+    const profiles = [
+      {
+        id: "codespace-owner",
+        label: "Codespace owner",
+        host: "owner-alias",
+        remoteForwardPort: 23333,
+        lastDeployedAt: Date.now(),
+      },
+      {
+        id: "codespace-conflict",
+        label: "Codespace conflict",
+        host: "conflict-alias",
+        remoteForwardPort: 23334,
+        lastDeployedAt: Date.now(),
+      },
+    ];
+    const harness = loadRemoteSshTabForTest({
+      snapshot: { lang: "en", remoteSsh: { profiles } },
+    });
+    harness.content.querySelectorAll(".remote-ssh-card")[1].dispatchEvent({ type: "click" });
+    harness.emitStatus({
+      profileId: profiles[1].id,
+      status: "idle",
+      transportPhase: "tunnel",
+      transportOwnerProfileId: profiles[0].id,
+      transportOperation: "connect",
+      conflictingProfileIds: [profiles[0].id],
+    });
+
+    const cards = harness.content.querySelectorAll(".remote-ssh-card");
+    const conflictConnect = cards[1].querySelectorAll("button")
+      .find((button) => button.textContent === "Connect");
+    assert.ok(conflictConnect);
+    assert.strictEqual(conflictConnect.disabled, true);
+    const detailButtons = harness.content.querySelector(".remote-ssh-detail").querySelectorAll("button");
+    for (const text of ["Edit", "Delete", "Authenticate", "Open Terminal", "Deploy / Repair Hooks"]) {
+      const button = detailButtons.find((candidate) => candidate.textContent === text);
+      assert.ok(button, `${text} button should exist`);
+      assert.strictEqual(button.disabled, true, `${text} must be disabled for a conflicting profile`);
+    }
+
+    harness.emitStatus({
+      profileId: profiles[1].id,
+      status: "idle",
+      transportPhase: "idle",
+      transportOwnerProfileId: null,
+      conflictingProfileIds: [],
+    });
+    const releasedConnect = harness.content.querySelectorAll(".remote-ssh-card")[1]
+      .querySelectorAll("button").find((button) => button.textContent === "Connect");
+    assert.strictEqual(releasedConnect.disabled, false);
+    const releasedDetailButtons = harness.content.querySelector(".remote-ssh-detail").querySelectorAll("button");
+    for (const text of ["Edit", "Delete", "Authenticate", "Open Terminal", "Deploy / Repair Hooks"]) {
+      const button = releasedDetailButtons.find((candidate) => candidate.textContent === text);
+      assert.strictEqual(button.disabled, false, `${text} must recover after release`);
+    }
+  });
+
+  it("does not let a stale initial Remote SSH list overwrite a newer busy event", async () => {
+    const listed = createDeferred();
+    const profile = {
+      id: "codespace-list-race",
+      label: "Codespace list race",
+      host: "list-race-alias",
+      remoteForwardPort: 23333,
+      lastDeployedAt: Date.now(),
+    };
+    const harness = loadRemoteSshTabForTest({
+      snapshot: { lang: "en", remoteSsh: { profiles: [profile] } },
+      listStatuses: () => listed.promise,
+    });
+    harness.emitStatus({
+      profileId: profile.id,
+      status: "idle",
+      transportPhase: "operation",
+      transportOwnerProfileId: "other-profile",
+      transportOperation: "deploy",
+      conflictingProfileIds: ["other-profile"],
+    });
+    listed.resolve({
+      status: "ok",
+      statuses: [{
+        profileId: profile.id,
+        status: "idle",
+        transportPhase: "idle",
+        transportOwnerProfileId: null,
+        conflictingProfileIds: [],
+      }],
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const connect = harness.content.querySelector(".remote-ssh-card").querySelectorAll("button")
+      .find((button) => button.textContent === "Connect");
+    assert.ok(connect);
+    assert.strictEqual(connect.disabled, true);
+  });
+
   it("keeps the Remote SSH port and option cards in the local draft until save", async () => {
     const harness = loadRemoteSshTabForTest({
       snapshot: { lang: "en", remoteSsh: { profiles: [] } },
@@ -2231,6 +2332,9 @@ describe("settings renderer browser environment", () => {
     assert.ok(addButton);
     addButton.dispatchEvent({ type: "click" });
 
+    const transportPicker = harness.content.querySelectorAll(".settings-select")[0];
+    assert.equal(getSelectedPickerValue(transportPicker), "auto");
+    choosePickerOption(transportPicker, "serialized");
     const portPicker = harness.content.querySelector(".remote-ssh-port-select");
     assert.ok(portPicker, "remote forward port should use the shared Settings picker");
     const portHint = portPicker.parentNode.querySelector(".remote-ssh-field-hint");
@@ -2263,6 +2367,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(addCall);
     assert.equal(addCall.payload.remoteForwardPort, 23336);
     assert.equal(addCall.payload.autoStartCodexMonitor, true);
+    assert.equal(addCall.payload.sshTransportMode, "serialized");
     assert.equal(addCall.payload.chainStatusline, false);
     assert.equal(addCall.payload.connectOnLaunch, true);
   });
@@ -5464,6 +5569,16 @@ describe("settings renderer browser environment", () => {
       "rowRoamMovementStyleDesc",
       "roamMovementNatural",
       "roamMovementAxis",
+      "rowRoamArea",
+      "roamAreaLoading",
+      "roamAreaEntire",
+      "roamAreaCustom",
+      "roamAreaUnavailable",
+      "roamAreaPetTooLarge",
+      "roamAreaChoose",
+      "roamAreaReset",
+      "roamAreaSaved",
+      "roamAreaResetDone",
     ]) {
       const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
       const matchCount = matches ? matches.length : 0;
@@ -5598,6 +5713,102 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(axis.classList.contains("active"), true);
     assert.strictEqual(natural.disabled, true);
     assert.strictEqual(axis.disabled, true);
+  });
+
+  it("shows, selects, and resets the Free roam activity area", async () => {
+    const calls = [];
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ freeRoam: true }),
+      settingsAPI: {
+        getRoamFence: async () => ({
+          status: "ok",
+          active: true,
+          fence: { left: 0.1, top: 0.2, right: 0.7, bottom: 0.8 },
+        }),
+        selectRoamFence: async () => {
+          calls.push("select");
+          return {
+            status: "ok",
+            active: true,
+            fence: { left: 0.25, top: 0.25, right: 0.75, bottom: 0.75 },
+          };
+        },
+        clearRoamFence: async () => {
+          calls.push("clear");
+          return { status: "ok", active: false, fence: null };
+        },
+      },
+    });
+    harness.renderContent();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const control = harness.core.state.mountedControls.roamArea;
+    assert.ok(control && harness.content.querySelector(".roam-area-row"));
+    assert.strictEqual(control.description.textContent, "Custom area · 60% × 60% of each display");
+    assert.strictEqual(control.resetButton.style.display, "");
+    assert.ok(harness.content.querySelector(".free-roam-option-list").contains(control.row));
+
+    control.chooseButton.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepStrictEqual(calls, ["select"]);
+    assert.strictEqual(control.description.textContent, "Custom area · 50% × 50% of each display");
+    assert.strictEqual(control.chooseButton.disabled, false);
+
+    control.resetButton.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepStrictEqual(calls, ["select", "clear"]);
+    assert.strictEqual(control.description.textContent, "Default roam area");
+    assert.strictEqual(control.resetButton.style.display, "none");
+  });
+
+  it("shows the Free roam activity area as unavailable for a non-ok status", async () => {
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ freeRoam: true }),
+      settingsAPI: {
+        getRoamFence: async () => ({
+          status: "error",
+          active: false,
+          fence: null,
+          message: "failed to read the activity-area file",
+        }),
+      },
+    });
+    harness.renderContent();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const control = harness.core.state.mountedControls.roamArea;
+    assert.strictEqual(
+      control.description.textContent,
+      "The area file is invalid or still loading; roaming stays paused.",
+    );
+    assert.strictEqual(control.resetButton.style.display, "none");
+  });
+
+  it("explains when the pet is too large to choose an activity area", async () => {
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ freeRoam: true }),
+      settingsAPI: {
+        getRoamFence: async () => ({ status: "ok", active: false, fence: null }),
+        selectRoamFence: async () => ({
+          status: "error",
+          code: "pet-too-large",
+          message: "the pet is larger than this display's work area",
+        }),
+      },
+    });
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    harness.renderContent();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    harness.core.state.mountedControls.roamArea.chooseButton.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.strictEqual(toasts.length, 1);
+    assert.strictEqual(
+      toasts[0].message,
+      "Clawd is larger than this display's work area. Reduce the pet size before choosing an activity area.",
+    );
+    assert.strictEqual(toasts[0].options.error, true);
   });
 
   it("registers the Session cleanup group with three number rows, atomic reset, and i18n keys", () => {
@@ -5849,6 +6060,216 @@ describe("settings renderer browser environment", () => {
     assert.notStrictEqual(renderIndex, -1);
     assert.ok(clearIndex < patchIndex, "broadcast cleanup must happen before in-place patching");
     assert.ok(clearIndex < renderIndex, "broadcast cleanup must happen before full rerender");
+  });
+
+  it("renders the macOS menu bar and Dock recovery switches with the four-state safety matrix", () => {
+    const cases = [
+      { showTray: true, showDock: false, trayDisabled: true, dockDisabled: false },
+      { showTray: true, showDock: true, trayDisabled: false, dockDisabled: false },
+      { showTray: false, showDock: true, trayDisabled: false, dockDisabled: true },
+      { showTray: false, showDock: false, trayDisabled: false, dockDisabled: false },
+    ];
+
+    for (const entry of cases) {
+      const harness = loadGeneralTabForTest({
+        platform: "MacIntel",
+        snapshot: makeGeneralSnapshot({
+          showTray: entry.showTray,
+          showDock: entry.showDock,
+        }),
+      });
+      harness.renderContent();
+
+      const tray = harness.getSwitch("showTray");
+      const dock = harness.getSwitch("showDock");
+      assert.ok(tray, `showTray should render for ${JSON.stringify(entry)}`);
+      assert.ok(dock, `showDock should render for ${JSON.stringify(entry)}`);
+      assert.strictEqual(tray.getAttribute("role"), "switch");
+      assert.strictEqual(dock.getAttribute("role"), "switch");
+      assert.strictEqual(tray.getAttribute("aria-label"), "Show in menu bar");
+      assert.strictEqual(dock.getAttribute("aria-label"), "Show in Dock");
+      assert.strictEqual(tray.getAttribute("aria-checked"), String(entry.showTray));
+      assert.strictEqual(dock.getAttribute("aria-checked"), String(entry.showDock));
+      assert.strictEqual(tray.getAttribute("aria-disabled"), entry.trayDisabled ? "true" : undefined);
+      assert.strictEqual(dock.getAttribute("aria-disabled"), entry.dockDisabled ? "true" : undefined);
+      assert.strictEqual(tray.tabIndex, entry.trayDisabled ? -1 : 0);
+      assert.strictEqual(dock.tabIndex, entry.dockDisabled ? -1 : 0);
+    }
+
+    const nonMac = loadGeneralTabForTest({
+      platform: "Win32",
+      snapshot: makeGeneralSnapshot({ showTray: true, showDock: false }),
+    });
+    nonMac.renderContent();
+    assert.strictEqual(nonMac.getSwitch("showTray"), null);
+    assert.strictEqual(nonMac.getSwitch("showDock"), null);
+    const beforeNonMacRenderCount = nonMac.getContentRenderCount();
+    nonMac.core.ops.applyChanges({
+      changes: { showDock: true },
+      snapshot: makeGeneralSnapshot({ showTray: true, showDock: true }),
+    });
+    assert.strictEqual(nonMac.getContentRenderCount(), beforeNonMacRenderCount + 1);
+    assert.strictEqual(nonMac.getSwitch("showTray"), null);
+    assert.strictEqual(nonMac.getSwitch("showDock"), null);
+  });
+
+  it("falls back to a full General render when a macOS recovery control is missing", () => {
+    const initialSnapshot = makeGeneralSnapshot({ showTray: true, showDock: false });
+    const harness = loadGeneralTabForTest({
+      platform: "MacIntel",
+      snapshot: initialSnapshot,
+    });
+    harness.renderContent();
+    const originalTray = harness.getSwitch("showTray");
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.core.state.mountedControls.generalSwitches.delete("showDock");
+
+    harness.core.ops.applyChanges({
+      changes: { showDock: true },
+      snapshot: { ...initialSnapshot, showDock: true },
+    });
+
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount + 1);
+    assert.notStrictEqual(harness.getSwitch("showTray"), originalTray);
+    assert.ok(harness.getSwitch("showDock"));
+  });
+
+  it("writes each macOS recovery switch through the exact Settings update key", async () => {
+    for (const entry of [
+      { snapshot: { showTray: false, showDock: true }, clickKey: "showTray" },
+      { snapshot: { showTray: true, showDock: false }, clickKey: "showDock" },
+    ]) {
+      const updateCalls = [];
+      const commandCalls = [];
+      const harness = loadGeneralTabForTest({
+        platform: "MacIntel",
+        snapshot: makeGeneralSnapshot(entry.snapshot),
+        settingsAPI: {
+          update: (key, value) => {
+            updateCalls.push({ key, value });
+            return Promise.resolve({ status: "ok" });
+          },
+          command: (...args) => {
+            commandCalls.push(args);
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      harness.renderContent();
+      harness.getSwitch(entry.clickKey).dispatchEvent({ type: "click" });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      assert.deepStrictEqual(updateCalls, [{ key: entry.clickKey, value: true }]);
+      assert.deepStrictEqual(commandCalls, []);
+    }
+  });
+
+  it("patches committed macOS entry-point changes in place and re-gates both switches", async () => {
+    const updateCalls = [];
+    const initialSnapshot = makeGeneralSnapshot({ showTray: true, showDock: false });
+    const harness = loadGeneralTabForTest({
+      platform: "MacIntel",
+      snapshot: initialSnapshot,
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+
+    const tray = harness.getSwitch("showTray");
+    const dock = harness.getSwitch("showDock");
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.content.scrollTop = 247;
+    dock.focus();
+    dock.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, [{ key: "showDock", value: true }]);
+
+    harness.core.ops.applyChanges({
+      changes: { showDock: true },
+      snapshot: { ...initialSnapshot, showDock: true },
+    });
+
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(harness.getSwitch("showTray"), tray);
+    assert.strictEqual(harness.getSwitch("showDock"), dock);
+    assert.strictEqual(dock.focused, true);
+    assert.strictEqual(harness.content.scrollTop, 247);
+    assert.strictEqual(tray.getAttribute("aria-disabled"), undefined);
+    assert.strictEqual(tray.tabIndex, 0);
+    assert.strictEqual(dock.getAttribute("aria-disabled"), undefined);
+
+    harness.core.ops.applyChanges({
+      changes: { showTray: false },
+      snapshot: { ...initialSnapshot, showTray: false, showDock: true },
+    });
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(tray.getAttribute("aria-checked"), "false");
+    assert.strictEqual(dock.getAttribute("aria-disabled"), "true");
+    assert.strictEqual(dock.tabIndex, -1);
+  });
+
+  it("blocks mouse and keyboard activation for the last macOS entry point", async () => {
+    const updateCalls = [];
+    const harness = loadGeneralTabForTest({
+      platform: "MacIntel",
+      snapshot: makeGeneralSnapshot({ showTray: false, showDock: true }),
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+    const dock = harness.getSwitch("showDock");
+
+    dock.dispatchEvent({ type: "click" });
+    dock.dispatchEvent(createKeyboardEventForTest(" "));
+    dock.dispatchEvent(createKeyboardEventForTest("Enter"));
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, []);
+  });
+
+  it("restores a macOS recovery switch after a rejected Settings update", async () => {
+    const harness = loadGeneralTabForTest({
+      platform: "MacIntel",
+      snapshot: makeGeneralSnapshot({ showTray: false, showDock: true }),
+      settingsAPI: {
+        update: () => Promise.reject(new Error("rejected")),
+      },
+    });
+    harness.renderContent();
+    const tray = harness.getSwitch("showTray");
+    tray.dispatchEvent({ type: "click" });
+    assert.strictEqual(tray.getAttribute("aria-checked"), "true");
+    assert.strictEqual(tray.classList.contains("pending"), true);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(tray.getAttribute("aria-checked"), "false");
+    assert.strictEqual(tray.classList.contains("pending"), false);
+  });
+
+  it("keeps macOS entry-point switches behind the Settings controller boundary", () => {
+    const generalSource = fs.readFileSync(SETTINGS_TAB_GENERAL, "utf8");
+    for (const forbidden of [
+      /require\(["']electron["']\)/,
+      /\bapp\.dock\b/,
+      /\bcreateTray\s*\(/,
+      /\bdestroyTray\s*\(/,
+      /clawd-prefs\.json/,
+      /\bfs\.(?:writeFile|writeFileSync|promises\.writeFile)\b/,
+    ]) {
+      assert.doesNotMatch(generalSource, forbidden);
+    }
   });
 
   it("updates runtime-only Settings bounds without rebuilding the active tab", () => {

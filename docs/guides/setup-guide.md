@@ -93,15 +93,36 @@ Running `npm run install:claude-hooks` for a local hook repair does not opt in. 
 
 **opencode** — uses a plugin entry in `~/.config/opencode/opencode.json`. Install it from **Settings → Agents** when you want local opencode tracking; after that Clawd keeps the plugin synced on launch while opencode remains enabled. You can also run `node hooks/opencode-install.js` manually.
 
-**MiMo Code** — uses a plugin entry in `~/.config/mimocode/mimocode.jsonc`. Install it from **Settings → Agents** when you want local MiMo Code tracking; after that Clawd keeps the plugin synced on launch while MiMo Code remains enabled. You can also run `node hooks/mimocode-install.js` manually. MiMo Code shares the same `@mimo-ai/plugin` SDK, zero-latency event streaming, and Allow/Always/Deny permission behavior as opencode. In both integrations, child sessions spawned by the `task` tool are headless and do not participate in the visible multi-session animation fanout.
+**MiMo Code** — uses the effective plugin config under `~/.config/mimocode/`: `config.json` → `mimocode.json` → default `mimocode.jsonc`, with the later file winning. Install it from **Settings → Agents** when you want local MiMo Code tracking; after that Clawd keeps the winning plugin entry synced on launch while MiMo Code remains enabled. You can also run `npm run install:mimocode-plugin` manually. MiMo Code shares the same `@mimo-ai/plugin` SDK, zero-latency event streaming, and Allow/Always/Deny permission behavior as opencode. In both integrations, child sessions spawned by the `task` tool are headless and do not participate in the visible multi-session animation fanout.
 
 **Pi** — uses a global extension directory at `~/.pi/agent/extensions/clawd-on-desk`. Install it from **Settings → Agents** when you want local Pi tracking; after that Clawd keeps the extension synced on launch while Pi remains enabled. You can also run `npm run install:pi-extension` manually. Interactive Pi sessions report lifecycle and tool activity to Clawd, but Pi is state-only: Clawd does not show permission bubbles, does not call Pi terminal confirmation, and preserves Pi's default YOLO execution behavior.
 
 **OpenClaw** — uses a plugin path under `~/.openclaw/openclaw.json`. Install it from **Settings → Agents** when you want local OpenClaw tracking; after that Clawd keeps the plugin synced on launch while OpenClaw remains enabled. You can also run `npm run install:openclaw-plugin` manually to let OpenClaw's CLI handle first-time setup. Phase 1 is state-only and targets local `openclaw tui --local` sessions.
 
-**Hermes Agent** — install Hermes from [hermes-agent.org](https://hermes-agent.org/) or [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent), then install the Clawd integration from **Settings → Agents** when you want local Hermes tracking. Once the integration is installed and Hermes exists (`%LOCALAPPDATA%\hermes` on Windows or `~/.hermes` on macOS/Linux), Clawd copies its plugin into Hermes' managed plugin directory and enables it through `hermes plugins enable clawd-on-desk`. You can force a manual sync with `npm run install:hermes-plugin`, or remove Clawd's Hermes plugin with `npm run uninstall:hermes-plugin`.
+**Hermes Agent** — install Hermes from [hermes-agent.org](https://hermes-agent.org/) or [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent), then install the Clawd integration from **Settings → Agents** when you want local Hermes tracking. Once the integration is installed and Hermes exists (`%LOCALAPPDATA%\hermes` on Windows or `~/.hermes` on macOS/Linux), Clawd copies its plugin into Hermes' managed plugin directory and enables it through `hermes plugins enable clawd-on-desk`. You can force a manual sync with `npm run install:hermes-plugin`, or remove Clawd's Hermes plugin with `npm run uninstall:hermes-plugin`. Hermes supports state, sessions, terminal focus, and supported permission bubbles; see [known-limitations.md](known-limitations.md) for the current boundary.
+
+**QwenWork (千问办公)** — agent id `qwenwork`; hooks live in `~/.QwenWorkCN/settings.json` (that is QwenWork's real user-data home, not the `~/.qwenwork` path its hooks docs mention). Install it from **Settings → Agents** when you want local QwenWork tracking; after that Clawd keeps the hooks synced on launch while QwenWork remains enabled. You can also run `npm run install:qwenwork-hooks` manually, and `npm run uninstall:qwenwork-hooks` to remove them.
+
+- **Platforms:** macOS and Windows desktop only. [qwenwork.cn/download](https://qwenwork.cn/download) ships macOS 14+, Windows 10+ and HarmonyOS 6.1+; there is no Linux client, so QwenWork does not appear as a WSL pairing target and has no Linux process name.
+- **Hook-only, state-only:** Clawd drives animations, the Session HUD and the Dashboard from QwenWork's lifecycle events. `PermissionRequest` / `PermissionDenied` are observed only and mapped to `working` (they fire 40+ times per task as part of normal tool use, so mapping them to `notification` would flash constantly).
+- **Clawd never decides:** the hook's stdout is always `{}` on every path — success, unknown event, or error. Clawd registers no `/permission` endpoint, produces no Allow / Deny, and QwenWork is not part of permission automation eligibility. Every approval stays in QwenWork's own permission flow.
+- **No startup recovery:** the QwenWork desktop process is long-lived, so its presence is not evidence that a turn is running. Clawd only reacts to hook events.
+- **Windows command form:** entries use the portable `node "<script>" "<Event>"` form because QwenWork executes command hooks through a POSIX shell. PowerShell `-EncodedCommand` is only *recognized*, so a Clawd-owned entry written by an older build is migrated in place — it is not the form Clawd writes.
+- **Ownership:** merges and uninstall only touch entries whose command contains the `qwenwork-hook.js` marker. A hook merely named `clawd` is left alone, and an entry that mixes a Clawd hook with third-party hooks keeps the third-party ones.
+- **Optional debug log:** `CLAWD_QWENWORK_HOOK_DEBUG=1` appends an event/shape summary to `~/.clawd/qwenwork-hook-debug.jsonl` (no prompts, tool inputs or paths). Adding `CLAWD_QWENWORK_HOOK_DEBUG_RAW=1` also stores the complete verbatim payload — **that file then contains sensitive data**; delete it when you are done. On macOS/Linux the file is created `0600`; if the hook creates the debug directory it uses `0700`, while an existing shared `~/.clawd` keeps its current permissions.
 
 **Qoder** — hooks live in `~/.qoder/settings.json`. Install it from **Settings → Agents** when you want local Qoder tracking; after that Clawd keeps the hooks synced on launch while Qoder remains enabled. You can also run `npm run install:qoder-hooks` manually. Qoder is **state-only** in Phase 1: the hook always returns `{}`, and `PermissionRequest` / `PermissionDenied` are observed as passive notifications — Clawd never shows permission bubbles or answers permission decisions, so Qoder's native permission flow stays in control. Startup recovery watches only the Qoder CLI processes (`qodercli` / `qoder-cli`), so an already-open idle Qoder IDE is not treated as active agent work.
+
+## Permission handling automation
+
+Use the pet or tray **Permission handling** submenu to choose how Clawd handles supported permission requests:
+
+- **Ask every time** makes no automatic decisions.
+- **Question prompts only** automatically approves tool-shaped requests from explicitly supported agents, while questions and plan reviews still wait for you. Claude/Qwen use a reviewed built-in list, but not every supported adapter applies a per-tool allowlist.
+- **Auto-approve** handles every request the adapter marks automation-eligible. For Claude/Qwen this includes unrecognized non-empty request names; missing names, unsupported decision shapes, and CodeBuddy questions/plans still defer to the native flow. Use it only if you are comfortable delegating this broader set of decisions. After an app restart, this mode downgrades to **Question prompts only**.
+
+Both automation modes are confirmation-gated. The Dashboard can independently set each eligible live session to **Ask every time** or the tools-only mode. New agents do not become eligible merely because they expose permission support, but tool-name handling remains adapter- and mode-specific as described above. State-only integrations and agents that own a native permission flow continue to use that native flow.
+
 ## Telegram Approval
 
 Clawd can optionally mirror supported permission bubbles to a dedicated Telegram
@@ -142,6 +163,11 @@ troubleshooting (port conflicts, no Node.js, missing remote sessions, etc.)
 in the dedicated guide:
 
 **→ [docs/guides/guide-remote-ssh.md](guide-remote-ssh.md)**
+
+GitHub Codespaces aliases whose effective SSH `ProxyCommand` uses
+`gh cs ssh --stdio` are detected automatically. Clawd serializes its managed
+SSH/SCP work for that Codespace and carries readiness inside the persistent
+reverse-tunnel session; no manual transport override is normally needed.
 
 **How it works:**
 - **Claude Code** — command hooks and the static PermissionRequest URL use the profile's exact forward port. The dedicated local ingress validates a routing nonce before forwarding state or a decision.
@@ -263,7 +289,7 @@ node hooks/workbuddy-install.js
 node hooks/opencode-install.js
 
 # MiMo Code
-node hooks/mimocode-install.js
+npm run install:mimocode-plugin
 
 # Pi
 node hooks/pi-install.js

@@ -924,6 +924,73 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["accepted"]);
   });
 
+  it("fails closed for every QwenWork /permission shape before bubbles, passthrough, or remote approval", async () => {
+    const cases = [
+      {
+        label: "tool approval",
+        toolName: "Bash",
+        toolInput: { command: "npm test" },
+      },
+      {
+        label: "elicitation",
+        toolName: "AskUserQuestion",
+        toolInput: {
+          questions: [{
+            question: "Continue?",
+            header: "Review",
+            options: [{ label: "Yes", description: "Continue" }],
+            multiSelect: false,
+          }],
+        },
+        ctx: { isAgentPermissionsEnabled: () => false },
+      },
+      {
+        label: "passthrough tool",
+        toolName: "TaskList",
+        toolInput: {},
+        ctx: { PASSTHROUGH_TOOLS: new Set(["TaskList"]) },
+      },
+      {
+        label: "DND",
+        toolName: "Bash",
+        toolInput: { command: "npm test" },
+        ctx: { doNotDisturb: true },
+      },
+      {
+        label: "agent disabled",
+        toolName: "Bash",
+        toolInput: { command: "npm test" },
+        ctx: { isAgentEnabled: () => false },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: "qwenwork",
+        session_id: "qwenwork:sid",
+        tool_name: testCase.toolName,
+        tool_input: testCase.toolInput,
+        tool_use_id: "tool-qwenwork-1",
+      }), { ctx: testCase.ctx });
+
+      assert.strictEqual(res.statusCode, 204, testCase.label);
+      assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID, testCase.label);
+      assert.strictEqual(res.body, "", testCase.label);
+      assert.strictEqual(res.destroyed, false, testCase.label);
+      assert.deepStrictEqual(res.ctx.pendingPermissions, [], testCase.label);
+      assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [], testCase.label);
+      assert.deepStrictEqual(res.ctx.calls.addPendingPermission, [], testCase.label);
+      assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [], testCase.label);
+      assert.deepStrictEqual(res.ctx.calls.updateSession, [], testCase.label);
+      assert.deepStrictEqual(res.ctx.calls.sendPermissionResponse, [], testCase.label);
+      assert.deepStrictEqual(
+        res.recorder.map((item) => item.outcome).filter(Boolean),
+        ["unsupported"],
+        testCase.label
+      );
+    }
+  });
+
   it("allows legacy Pi permission requests without creating a bubble", async () => {
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "pi",

@@ -85,6 +85,7 @@
       soundVolume: null,
       textScale: null,
       roamMovementStyle: null,
+      roamArea: null,
       settingsSelects: new Set(),
       segmentedRadios: new Set(),
       quotaRingDisplayMode: null,
@@ -1130,6 +1131,7 @@
     state.mountedControls.textScale = null;
     state.mountedControls.roamMovementStyle = null;
     state.mountedControls.quotaRingDisplayMode = null;
+    state.mountedControls.roamArea = null;
     state.mountedControls.aboutAutoUpdate = null;
     state.mountedControls.aboutUpdateStatus = null;
   }
