@@ -282,3 +282,174 @@ test("no field can carry the webhook out — title, output, metadata, permission
     assert.ok(!raw.includes("/services/T/B/xxx"), "the secret path segment leaked");
   }
 });
+
+// ── Delivery is a queue, not a fan-out ──────────────────────────────────────
+// Review item 2. Previously every completion in a snapshot was dispatched in
+// parallel with the dedupe key committed *before* the send, so a 429 or a blip
+// lost the message permanently and replaying the snapshot skipped it.
+
+function queueClient(overrides = {}) {
+  return createSlackNotifyClient({
+    getConfig: () => ({ enabled: true, notifyOnDone: true, notifyOnError: true,
+      notifyOnPermission: true, outputMode: "off", ...overrides.config }),
+    getSecrets: () => ({ webhookUrl: WEBHOOK, botToken: "" }),
+    getLang: () => "en",
+    retryBaseMs: 0, // deterministic: no real waiting in tests
+    ...overrides,
+  });
+}
+
+const doneSnap = (ids, at = 1) => ({
+  sessions: ids.map((id) => ({ id, badge: "done", displayTitle: id, lastEvent: { rawEvent: "Stop", at } })),
+});
+
+test("completions are delivered one at a time, not fired in parallel", async () => {
+  let inFlight = 0;
+  let maxConcurrent = 0;
+  const fetchImpl = makeFetch(async () => {
+    inFlight += 1;
+    maxConcurrent = Math.max(maxConcurrent, inFlight);
+    await new Promise((r) => setTimeout(r, 5));
+    inFlight -= 1;
+    return okWebhook();
+  });
+  const client = queueClient({ fetchImpl });
+  client.onSnapshot({ sessions: [] });
+  client.onSnapshot(doneSnap(["a", "b", "c"], 2));
+  await client.drained();
+
+  assert.equal(fetchImpl.calls.length, 3);
+  assert.equal(maxConcurrent, 1, "a burst must not open three sockets at once");
+});
+
+test("a transient failure is retried instead of being lost", async () => {
+  let n = 0;
+  const fetchImpl = makeFetch(() => {
+    n += 1;
+    if (n === 1) return { ok: false, status: 503, text: async () => "busy" };
+    return okWebhook();
+  });
+  const client = queueClient({ fetchImpl });
+  client.onSnapshot({ sessions: [] });
+  client.onSnapshot(doneSnap(["s1"], 2));
+  await client.drained();
+
+  assert.equal(fetchImpl.calls.length, 2, "the 503 should be retried once and then succeed");
+});
+
+test("429 waits for Retry-After before retrying", async () => {
+  const waits = [];
+  let n = 0;
+  const fetchImpl = makeFetch(() => {
+    n += 1;
+    if (n === 1) {
+      return { ok: false, status: 429, headers: { get: (h) => (h.toLowerCase() === "retry-after" ? "2" : null) }, text: async () => "" };
+    }
+    return okWebhook();
+  });
+  const client = queueClient({ fetchImpl, sleepImpl: (ms) => { waits.push(ms); return Promise.resolve(); } });
+  client.onSnapshot({ sessions: [] });
+  client.onSnapshot(doneSnap(["s1"], 2));
+  await client.drained();
+
+  assert.equal(fetchImpl.calls.length, 2);
+  assert.equal(waits[0], 2000, "Retry-After is seconds; honour it rather than the default backoff");
+});
+
+test("a permanent 4xx is not retried", async () => {
+  const fetchImpl = makeFetch(() => ({ ok: false, status: 404, text: async () => "no_service" }));
+  const client = queueClient({ fetchImpl });
+  client.onSnapshot({ sessions: [] });
+  client.onSnapshot(doneSnap(["s1"], 2));
+  await client.drained();
+
+  assert.equal(fetchImpl.calls.length, 1, "a revoked webhook must not loop");
+});
+
+test("retries are capped, and a give-up does not re-enqueue forever", async () => {
+  const fetchImpl = makeFetch(() => ({ ok: false, status: 500, text: async () => "boom" }));
+  const client = queueClient({ fetchImpl, maxAttempts: 3 });
+  client.onSnapshot({ sessions: [] });
+  client.onSnapshot(doneSnap(["s1"], 2));
+  await client.drained();
+  assert.equal(fetchImpl.calls.length, 3, "attempts are bounded");
+
+  // Replaying the same snapshot must not restart the cycle.
+  client.onSnapshot(doneSnap(["s1"], 2));
+  await client.drained();
+  assert.equal(fetchImpl.calls.length, 3, "the exhausted event is not retried on replay");
+});
+
+test("the queue is bounded and drops the oldest rather than growing without limit", async () => {
+  const warnings = [];
+  const fetchImpl = makeFetch(async () => { await new Promise((r) => setTimeout(r, 3)); return okWebhook(); });
+  const client = queueClient({
+    fetchImpl,
+    maxQueue: 3,
+    log: (level, message) => { if (level === "warn") warnings.push(message); },
+  });
+  client.onSnapshot({ sessions: [] });
+  client.onSnapshot(doneSnap(["a", "b", "c", "d", "e", "f", "g", "h"], 2));
+  await client.drained();
+
+  assert.ok(fetchImpl.calls.length <= 4, `bounded, got ${fetchImpl.calls.length}`);
+  assert.ok(warnings.some((w) => /queue/i.test(w)), "dropping must be visible, not silent");
+});
+
+test("a repeat snapshot does not enqueue an event that is still in flight", async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const fetchImpl = makeFetch(async () => { await gate; return okWebhook(); });
+  const client = queueClient({ fetchImpl });
+  client.onSnapshot({ sessions: [] });
+  client.onSnapshot(doneSnap(["s1"], 2));
+  client.onSnapshot(doneSnap(["s1"], 2)); // same event, still sending
+  release();
+  await client.drained();
+
+  assert.equal(fetchImpl.calls.length, 1);
+});
+
+// ── Startup recovery ────────────────────────────────────────────────────────
+// Clawd rebuilds a snapshot for sessions that survived a restart, but it only
+// reached Dashboard/HUD. Slack's first snapshot was therefore a later Stop,
+// which the unconditional priming branch swallowed.
+
+test("prime records history without sending, so old completions are not backfilled", async () => {
+  const fetchImpl = makeFetch(okWebhook);
+  const client = queueClient({ fetchImpl });
+  client.prime(doneSnap(["old"], 1));
+  await client.drained();
+  assert.equal(fetchImpl.calls.length, 0, "a completion that happened before startup is history");
+
+  client.onSnapshot(doneSnap(["old"], 1));
+  await client.drained();
+  assert.equal(fetchImpl.calls.length, 0, "and it stays history when the same snapshot arrives");
+});
+
+test("a session recovered as working still notifies when it later stops", async () => {
+  const fetchImpl = makeFetch(okWebhook);
+  const client = queueClient({ fetchImpl });
+  // What startup recovery actually produces: live sessions, not completions.
+  client.prime({ sessions: [{ id: "s1", badge: "working", displayTitle: "T", lastEvent: { rawEvent: "PreToolUse", at: 1 } }] });
+  client.onSnapshot(doneSnap(["s1"], 5));
+  await client.drained();
+
+  assert.equal(fetchImpl.calls.length, 1, "the first real completion after startup must be delivered");
+});
+
+test("startup recovery actually primes the notifier in main.js", () => {
+  // The recovery path lives in main.js, which cannot be required here (Electron).
+  // Without this, prime() could be perfectly correct and still never called —
+  // exactly the failure mode the queue tests above cannot see.
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+  const recoveryBlock = source.slice(source.indexOf("const recoveredSnapshot ="));
+  assert.ok(recoveryBlock, "startup recovery block not found — did it move?");
+  assert.match(
+    recoveryBlock.slice(0, 900),
+    /getSlackNotifyClient\(\)\.prime\(recoveredSnapshot\)/,
+    "the recovered snapshot must be handed to the Slack notifier"
+  );
+});

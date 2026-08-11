@@ -27,6 +27,34 @@ const DONE_BADGES = new Set(["done", "interrupted"]);
 const COMPLETION_EVENTS = new Set(["Stop", "StopFailure", "ApiError", "event_msg:task_complete"]);
 const CHAT_POST_URL = "https://slack.com/api/chat.postMessage";
 const DEFAULT_TIMEOUT_MS = 10000;
+const DEFAULT_MAX_QUEUE = 50;
+const DEFAULT_MAX_ATTEMPTS = 4;
+const DEFAULT_RETRY_BASE_MS = 1000;
+const DEFAULT_MAX_RETRY_DELAY_MS = 30000;
+
+// Retry only what can plausibly succeed later. A revoked webhook (404) or a
+// rejected token (401/403) will fail identically forever, so retrying it just
+// burns requests and delays the queue behind it.
+const RETRYABLE_ERROR_CLASSES = new Set(["rate-limited", "network", "timeout", "no-transport"]);
+
+function isRetryableErrorClass(errorClass) {
+  if (!errorClass) return false;
+  if (RETRYABLE_ERROR_CLASSES.has(errorClass)) return true;
+  // http-5xx: the server is having a bad time, not the request.
+  const m = /^http-(\d{3})$/.exec(errorClass);
+  return !!m && Number(m[1]) >= 500;
+}
+
+// Slack sends Retry-After in seconds on 429. Honour it instead of guessing, and
+// clamp so a hostile or bogus value cannot park the queue for hours.
+function retryAfterMsFrom(headers, maxDelayMs) {
+  if (!headers || typeof headers.get !== "function") return 0;
+  let raw = null;
+  try { raw = headers.get("retry-after"); } catch { return 0; }
+  const seconds = Number(String(raw || "").trim());
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0;
+  return Math.min(seconds * 1000, maxDelayMs);
+}
 
 function dedupeKey(entry) {
   const le = entry && entry.lastEvent;
@@ -82,8 +110,23 @@ function createSlackNotifyClient({
   log = () => {},
   fetchImpl = null,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  // Delivery limits are explicit rather than implied, so the failure mode of a
+  // wedged or rate-limited Slack is "bounded and logged", not "unbounded memory
+  // and a request storm".
+  maxQueue = DEFAULT_MAX_QUEUE,
+  maxAttempts = DEFAULT_MAX_ATTEMPTS,
+  retryBaseMs = DEFAULT_RETRY_BASE_MS,
+  maxRetryDelayMs = DEFAULT_MAX_RETRY_DELAY_MS,
+  sleepImpl = null,
 } = {}) {
-  const lastNotified = new Map(); // session id -> last dedupe key
+  // `lastNotified` means "settled" — delivered, or given up on after bounded
+  // retries. `inFlightKeys` is the separate in-flight/pending state: an event
+  // that is queued but not yet settled must not be enqueued twice by a repeat
+  // snapshot, and must not be recorded as sent if delivery then fails.
+  const lastNotified = new Map(); // session id -> last settled dedupe key
+  const inFlightKeys = new Set();
+  const queue = [];
+  let draining = null;
   let primed = false;
 
   function safeLog(level, message, meta) {
@@ -165,7 +208,12 @@ function createSlackNotifyClient({
       const status = res && typeof res.status === "number" ? res.status : 0;
       let bodyText = "";
       try { bodyText = typeof res.text === "function" ? await res.text() : ""; } catch { bodyText = ""; }
-      return { ok: !!(res && res.ok), status, bodyText };
+      return {
+        ok: !!(res && res.ok),
+        status,
+        bodyText,
+        retryAfterMs: retryAfterMsFrom(res && res.headers, maxRetryDelayMs),
+      };
     } catch (err) {
       const aborted = err && (err.name === "AbortError" || err.code === "ABORT_ERR");
       return { ok: false, errorClass: aborted ? "timeout" : "network", error: err && err.message };
@@ -200,7 +248,12 @@ function createSlackNotifyClient({
       // Incoming webhooks answer 200 with the literal body "ok" on success.
       if (res.ok && (!res.bodyText || res.bodyText.trim() === "ok")) return { ok: true };
       if (res.ok) return { ok: true };
-      return { ok: false, errorClass: classifyHttpStatus(res.status), detail: (res.bodyText || "").slice(0, 200) };
+      return {
+        ok: false,
+        errorClass: classifyHttpStatus(res.status),
+        retryAfterMs: res.retryAfterMs,
+        detail: (res.bodyText || "").slice(0, 200),
+      };
     }
 
     // Bot transport: chat.postMessage. Errors surface in the JSON body, not the
@@ -215,8 +268,107 @@ function createSlackNotifyClient({
     try { parsed = res.bodyText ? JSON.parse(res.bodyText) : null; } catch { parsed = null; }
     if (parsed && parsed.ok === true) return { ok: true, messageId: parsed.ts };
     if (parsed && parsed.ok === false) return { ok: false, errorClass: `slack-${parsed.error || "error"}` };
-    if (!res.ok) return { ok: false, errorClass: classifyHttpStatus(res.status) };
+    if (!res.ok) return { ok: false, errorClass: classifyHttpStatus(res.status), retryAfterMs: res.retryAfterMs };
     return { ok: false, errorClass: "bad-response" };
+  }
+
+
+  function sleep(ms) {
+    if (typeof sleepImpl === "function") return sleepImpl(ms);
+    if (!(ms > 0)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      if (timer && typeof timer.unref === "function") timer.unref();
+    });
+  }
+
+  // An event is settled once it has been delivered, or once we have given up on
+  // it after bounded retries. Recording it either way is what stops a
+  // permanently failing send from being re-enqueued by every later snapshot.
+  function settle(item, outcome, meta) {
+    inFlightKeys.delete(item.key);
+    lastNotified.set(item.id, item.key);
+    if (outcome !== "sent") safeLog("warn", `slack completion ${outcome}`, { id: item.id, ...meta });
+  }
+
+  function enqueueCompletion(id, key, message) {
+    if (inFlightKeys.has(key)) return; // already queued or in flight
+    if (queue.length >= maxQueue) {
+      // Drop the oldest: a backlog means Slack is unavailable, and the newest
+      // completion is the one the user still cares about. Never silently.
+      const dropped = queue.shift();
+      inFlightKeys.delete(dropped.key);
+      lastNotified.set(dropped.id, dropped.key);
+      safeLog("warn", "slack queue full, dropped oldest notification", { id: dropped.id, maxQueue });
+    }
+    queue.push({ id, key, message, attempts: 0 });
+    inFlightKeys.add(key);
+    startDrain();
+  }
+
+  // One drain loop at a time, so a burst of completions becomes a sequence of
+  // requests rather than a simultaneous fan-out that invites rate limiting.
+  function startDrain() {
+    if (draining) return draining;
+    draining = drainQueue().finally(() => { draining = null; });
+    return draining;
+  }
+
+  async function drainQueue() {
+    while (queue.length) {
+      const item = queue[0];
+      let res = null;
+      try {
+        res = await sendMessage(item.message);
+      } catch (err) {
+        res = { ok: false, errorClass: "network", error: err && err.message };
+      }
+
+      if (res && res.ok) {
+        queue.shift();
+        settle(item, "sent");
+        continue;
+      }
+
+      const errorClass = (res && res.errorClass) || "unknown";
+      if (!isRetryableErrorClass(errorClass)) {
+        queue.shift();
+        settle(item, "not delivered (permanent)", { errorClass });
+        continue;
+      }
+
+      item.attempts += 1;
+      if (item.attempts >= maxAttempts) {
+        queue.shift();
+        settle(item, "not delivered (retries exhausted)", { errorClass, attempts: item.attempts });
+        continue;
+      }
+
+      // Retry-After wins over our own backoff — Slack is telling us the answer.
+      const backoff = Math.min(retryBaseMs * Math.pow(2, item.attempts - 1), maxRetryDelayMs);
+      await sleep((res && res.retryAfterMs) || backoff);
+    }
+  }
+
+  // Test/inspection seam: resolves once the queue has settled.
+  function drained() {
+    return Promise.resolve(draining).then(() => (queue.length ? startDrain() : undefined));
+  }
+
+
+  // Startup recovery rebuilds a snapshot for sessions that outlived the last
+  // run, but that snapshot only reached Dashboard/HUD. Slack's first snapshot
+  // was therefore some later event, which the priming branch swallowed — so the
+  // first completion after a restart went missing. Priming explicitly records
+  // what is already history without sending it, and marks the notifier live, so
+  // the next genuine completion is delivered.
+  function prime(snapshot) {
+    const sessions = snapshot && Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
+    for (const entry of sessions) {
+      if (!entry || !entry.id || !isCompletion(entry)) continue;
+      lastNotified.set(entry.id, dedupeKey(entry));
+    }
+    primed = true;
   }
 
   // Completion pings off the snapshot fanout. Sync + fire-and-forget + never
@@ -236,17 +388,20 @@ function createSlackNotifyClient({
       if (!isCompletion(entry)) continue;
       const key = dedupeKey(entry);
       if (lastNotified.get(entry.id) === key) continue;
-      lastNotified.set(entry.id, key);
-      if (priming || !enabled) continue;
+      if (inFlightKeys.has(key)) continue; // queued already; do not duplicate
+      // Priming and disabled-notifications both mean "never send this", so the
+      // event is settled immediately. A send-worthy event is NOT recorded here —
+      // it is recorded once delivery settles, so a failure can still be retried.
+      if (priming || !enabled) { lastNotified.set(entry.id, key); continue; }
       // Per-event gating: "interrupted" is the error/aborted family.
       const interrupted = entry.badge === "interrupted";
-      if (interrupted && !config.notifyOnError) continue;
-      if (!interrupted && !config.notifyOnDone) continue;
+      if (interrupted && !config.notifyOnError) { lastNotified.set(entry.id, key); continue; }
+      if (!interrupted && !config.notifyOnDone) { lastNotified.set(entry.id, key); continue; }
       toSend.push(entry);
     }
 
     for (const id of Array.from(lastNotified.keys())) {
-      if (!seenIds.has(id)) lastNotified.delete(id);
+      if (!seenIds.has(id) && !queue.some((item) => item.id === id)) lastNotified.delete(id);
     }
 
     primed = true;
@@ -264,16 +419,7 @@ function createSlackNotifyClient({
         continue;
       }
       if (!message) continue;
-      Promise.resolve()
-        .then(() => sendMessage(message))
-        .then((res) => {
-          if (res && res.ok === false) {
-            safeLog("warn", "slack completion notification not delivered", { id: entry.id, errorClass: res.errorClass });
-          }
-        })
-        .catch((err) => {
-          safeLog("warn", "slack completion notification threw", { id: entry.id, error: err && err.message });
-        });
+      enqueueCompletion(entry.id, dedupeKey(entry), message);
     }
   }
 
@@ -326,6 +472,8 @@ function createSlackNotifyClient({
     isEnabled,
     isReady,
     getStatus,
+    prime,
+    drained,
     onSnapshot,
     notifyPermissionRequest,
     sendMessage,

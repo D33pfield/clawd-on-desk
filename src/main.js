@@ -4267,6 +4267,11 @@ function createWindow() {
       reconcilePowerSaveBlocker();
       broadcastDashboardSessionSnapshot(recoveredSnapshot);
       broadcastSessionHudSnapshot(recoveredSnapshot);
+      // The Slack notifier is not on the broadcast above, so without this its
+      // first snapshot would be some later event — which its priming branch
+      // swallows, losing the first completion after a restart. Prime it with
+      // what is already history instead.
+      try { getSlackNotifyClient().prime(recoveredSnapshot); } catch {}
       if (!doNotDisturb && !_mini.getMiniMode()) {
         const recoveredState = resolveDisplayState();
         applyState(recoveredState, getSvgOverride(recoveredState));
