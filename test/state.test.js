@@ -2916,6 +2916,53 @@ describe("updateSession()", () => {
     assert.strictEqual(session.metadataUpdatedAt, 777, "identical refresh must not re-stamp");
   });
 
+  it("updateSessionMetadata stores a title without touching lifecycle state or telemetry stamp", () => {
+    update(api, { id: "s1", state: "working" });
+    const session = api.sessions.get("s1");
+    session.updatedAt = 12345; // pin so a bump is detectable
+    session.metadataUpdatedAt = 777; // pin so a re-stamp is detectable
+    const recentEventsBefore = JSON.stringify(session.recentEvents);
+
+    const applied = api.updateSessionMetadata("s1", { sessionTitle: "New Title" });
+
+    assert.strictEqual(applied, true);
+    assert.strictEqual(session.sessionTitle, "New Title");
+    // Lifecycle untouched: state, updatedAt, recent events all unchanged.
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.updatedAt, 12345);
+    assert.strictEqual(JSON.stringify(session.recentEvents), recentEventsBefore);
+    // Telemetry freshness must NOT be stamped by a rename (#841 review).
+    assert.strictEqual(session.metadataUpdatedAt, 777);
+    assert.strictEqual(session.contextUsage, null);
+    assert.strictEqual(session.contextUsageOrigin, null);
+  });
+
+  it("updateSessionMetadata treats a same/normalized-equivalent title as a no-op", () => {
+    update(api, { id: "s1", state: "working" });
+    api.updateSessionMetadata("s1", { sessionTitle: "Stable Title" });
+    const session = api.sessions.get("s1");
+    session.metadataUpdatedAt = 777;
+
+    // Same title -> no change, no re-stamp.
+    const appliedSame = api.updateSessionMetadata("s1", { sessionTitle: "Stable Title" });
+    assert.strictEqual(appliedSame, true);
+    assert.strictEqual(session.sessionTitle, "Stable Title");
+    assert.strictEqual(session.metadataUpdatedAt, 777);
+
+    // Normalized-equivalent title (extra whitespace/control chars) collapses
+    // to the stored title via normalizeTitle -> still a no-op, no re-stamp.
+    const appliedNormalized = api.updateSessionMetadata("s1", { sessionTitle: "  Stable\t Title  " });
+    assert.strictEqual(appliedNormalized, true);
+    assert.strictEqual(session.sessionTitle, "Stable Title");
+    assert.strictEqual(session.metadataUpdatedAt, 777);
+  });
+
+  it("updateSessionMetadata returns false for an unknown session on a title-only payload", () => {
+    const applied = api.updateSessionMetadata("ghost", { sessionTitle: "Ghost Title" });
+    assert.strictEqual(applied, false);
+    assert.strictEqual(api.sessions.has("ghost"), false);
+  });
+
   it("lifecycle events carry metadataUpdatedAt forward with the telemetry they preserve", () => {
     update(api, { id: "s1", state: "working" });
     api.updateSessionMetadata("s1", {

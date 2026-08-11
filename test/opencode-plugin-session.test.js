@@ -71,13 +71,44 @@ describe("opencode plugin session ids", () => {
         eventSessionId: "ses_wire",
         infoSessionId: "ses_info",
         directory: " C:\\Project With Spaces ",
+        title: null,
       }
     );
     assert.deepStrictEqual(mod.getEventSessionInfo(null), {
       eventSessionId: null,
       infoSessionId: null,
       directory: null,
+      title: null,
     });
+  });
+
+  it("extracts the session title from info.title on lifecycle events", async () => {
+    const mod = await loadSessionIdModule();
+    assert.deepStrictEqual(
+      mod.getEventSessionInfo({
+        type: "session.updated",
+        properties: {
+          sessionID: "ses_live",
+          info: { id: "ses_live", directory: "C:\\proj", title: "  My Session Title  " },
+        },
+      }),
+      {
+        eventSessionId: "ses_live",
+        infoSessionId: "ses_live",
+        directory: "C:\\proj",
+        title: "My Session Title",
+      }
+    );
+    assert.deepStrictEqual(
+      mod.getEventSessionInfo({
+        type: "session.created",
+        properties: {
+          sessionID: "ses_blank",
+          info: { id: "ses_blank", directory: "C:\\proj", title: "   " },
+        },
+      }).title,
+      null
+    );
   });
 
   it("drops SessionEnd mappings that have no raw opencode session id", async () => {

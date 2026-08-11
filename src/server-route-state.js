@@ -436,17 +436,25 @@ function handleStatePost(req, res, options) {
         // hook events the diagnostics exist to show. 204 either way — the
         // statusline script never reads the response, and "session unknown"
         // is the designed drop, not an error.
-        if (
-          contextUsage
-          && localClaudeStatuslineMetadataAllowed
-          && typeof ctx.updateSessionMetadata === "function"
-        ) {
-          ctx.updateSessionMetadata(session_id || "default", {
-            contextUsage,
-            contextUsageOrigin: agentId === "claude-code" && contextUsage.source === "claude"
+        if (typeof ctx.updateSessionMetadata === "function") {
+          const metaUpdate = {};
+          if (
+            contextUsage
+            && localClaudeStatuslineMetadataAllowed
+          ) {
+            metaUpdate.contextUsage = contextUsage;
+            metaUpdate.contextUsageOrigin = agentId === "claude-code" && contextUsage.source === "claude"
               ? "claude-statusline"
-              : null,
-          });
+              : null;
+          }
+          // OpenCode title changes ride the same metadata-only channel (the
+          // placeholder → real title swap arrives on session.updated, which
+          // maps to no Clawd state). Not gated on the Claude telemetry flag —
+          // it's not Claude statusline data.
+          if (sessionTitle) metaUpdate.sessionTitle = sessionTitle;
+          if (Object.keys(metaUpdate).length > 0) {
+            ctx.updateSessionMetadata(session_id || "default", metaUpdate);
+          }
         }
         res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
         res.end();
