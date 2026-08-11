@@ -77,7 +77,8 @@
 
     const MENU_GAP_PX = 6;
     const DEFAULT_MENU_MAX_HEIGHT_PX = 240;
-    const MENU_CLOSE_FALLBACK_MS = 180;
+    const MENU_CLOSE_FALLBACK_MIN_MS = 180;
+    const MENU_CLOSE_SAFETY_MS = 40;
 
     function findOption(value) {
       const wanted = value == null ? "" : String(value);
@@ -244,8 +245,39 @@
       return true;
     }
 
+    function parseCssTimeList(value) {
+      return String(value || "").split(",").map((part) => {
+        const token = part.trim();
+        const amount = Number.parseFloat(token);
+        if (!Number.isFinite(amount) || amount < 0) return 0;
+        return token.endsWith("ms") ? amount : amount * 1000;
+      });
+    }
+
+    function getMenuCloseFallbackMs() {
+      try {
+        const style = root.getComputedStyle(menu);
+        const durations = parseCssTimeList(style && style.transitionDuration);
+        const delays = parseCssTimeList(style && style.transitionDelay);
+        const itemCount = Math.max(durations.length, delays.length);
+        let longestTransitionMs = 0;
+        for (let index = 0; index < itemCount; index += 1) {
+          const duration = durations.length > 0 ? durations[index % durations.length] : 0;
+          const delay = delays.length > 0 ? delays[index % delays.length] : 0;
+          longestTransitionMs = Math.max(longestTransitionMs, duration + delay);
+        }
+        return Math.max(
+          MENU_CLOSE_FALLBACK_MIN_MS,
+          Math.ceil(longestTransitionMs + MENU_CLOSE_SAFETY_MS),
+        );
+      } catch (_) {
+        return MENU_CLOSE_FALLBACK_MIN_MS;
+      }
+    }
+
     function mountMenu() {
       cancelMenuUnmount();
+      resetMenuLayout();
       picker.classList.add("menu-mounted");
     }
 
@@ -263,7 +295,7 @@
       menu.addEventListener("transitionend", menuUnmountTransitionHandler);
       menuUnmountTimer = root.setTimeout(() => {
         finalizeMenuUnmount(expectedSeq);
-      }, MENU_CLOSE_FALLBACK_MS);
+      }, getMenuCloseFallbackMs());
     }
 
     function reflow() {

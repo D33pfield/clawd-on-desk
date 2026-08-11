@@ -1787,7 +1787,9 @@
         if (dismissActiveSettingsDialog === close) dismissActiveSettingsDialog = null;
         document.removeEventListener("keydown", onKeyDown, true);
         rootNode.innerHTML = "";
-        if (previousFocus && typeof previousFocus.focus === "function") previousFocus.focus();
+        if (previousFocus
+            && previousFocus.isConnected !== false
+            && typeof previousFocus.focus === "function") previousFocus.focus();
         resolve(returnDetails
           ? {
             actionId,

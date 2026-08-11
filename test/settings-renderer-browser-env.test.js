@@ -407,6 +407,8 @@ function loadSharedLanguagePickerForTest({
   options = ["en", "zh", "ja"],
   onChange = () => Promise.resolve(true),
   innerHeight = 600,
+  transitionDuration = "0.14s",
+  transitionDelay = "0s",
 } = {}) {
   const body = new FakeElement("body");
   const boundary = new FakeElement("div");
@@ -416,6 +418,7 @@ function loadSharedLanguagePickerForTest({
   const windowListeners = new Map();
   const animationFrames = new Map();
   const timers = new Map();
+  const timerDelays = new Map();
   let nextAnimationFrameId = 1;
   let nextTimerId = 1;
   const document = {
@@ -455,16 +458,18 @@ function loadSharedLanguagePickerForTest({
     cancelAnimationFrame(id) {
       animationFrames.delete(id);
     },
-    setTimeout(cb) {
+    setTimeout(cb, delay) {
       const id = nextTimerId++;
       timers.set(id, cb);
+      timerDelays.set(id, delay);
       return id;
     },
     clearTimeout(id) {
       timers.delete(id);
+      timerDelays.delete(id);
     },
     getComputedStyle() {
-      return { transitionDuration: "0.14s" };
+      return { transitionDuration, transitionDelay };
     },
     matchMedia() {
       return { matches: false };
@@ -509,11 +514,13 @@ function loadSharedLanguagePickerForTest({
       while (timers.size > 0) {
         const pending = [...timers.values()];
         timers.clear();
+        timerDelays.clear();
         for (const callback of pending) callback();
       }
     },
     getPendingAnimationFrameCount: () => animationFrames.size,
     getPendingTimerCount: () => timers.size,
+    getPendingTimerDelays: () => [...timerDelays.values()],
     getDocumentListenerCount: (type) => (documentListeners.get(type) || []).length,
     getWindowListenerCount: (type) => (windowListeners.get(type) || []).length,
   };
@@ -5088,6 +5095,34 @@ describe("settings renderer browser environment", () => {
     assert.equal(listeners.has("keydown"), false);
   });
 
+  it("does not restore dialog focus to a launch element removed during a Settings rerender", async () => {
+    const body = new FakeElement("body");
+    const modalRoot = new FakeElement("div");
+    const launchButton = new FakeElement("button");
+    body.append(launchButton, modalRoot);
+    const document = {
+      body,
+      activeElement: launchButton,
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: (id) => (id === "modalRoot" ? modalRoot : null),
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const resultPromise = core.helpers.showSettingsConfirmModal({
+      title: "Remove profile?",
+      detail: "This cannot be undone.",
+      actions: [{ id: "cancel", label: "Cancel", tone: "neutral" }],
+    });
+
+    launchButton.remove();
+    modalRoot.querySelector("button").dispatchEvent({ type: "click" });
+
+    assert.equal(await resultPromise, "cancel");
+    assert.equal(launchButton.isConnected, false);
+    assert.equal(launchButton.focused, false);
+  });
+
   it("keeps LAN mobile reset visually dangerous while token regeneration stays neutral", () => {
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
     assert.match(
@@ -5410,11 +5445,13 @@ describe("settings renderer browser environment", () => {
 
     harness.trigger.dispatchEvent({ type: "click" });
     harness.trigger.dispatchEvent({ type: "click" });
+    harness.menu.scrollTop = 78;
     assert.strictEqual(harness.getPendingTimerCount(), 1);
     assert.strictEqual(harness.menu.eventListeners.transitionend.length, 1);
     harness.trigger.dispatchEvent({ type: "click" });
     assert.strictEqual(harness.getPendingTimerCount(), 0);
     assert.strictEqual(harness.menu.eventListeners.transitionend.length, 0);
+    assert.strictEqual(harness.menu.scrollTop, 0);
 
     harness.flushTimers();
     harness.menu.dispatchEvent({ type: "transitionend", propertyName: "opacity" });
@@ -5426,6 +5463,17 @@ describe("settings renderer browser environment", () => {
     harness.menu.dispatchEvent({ type: "transitionend", propertyName: "opacity" });
     assert.strictEqual(harness.menu.eventListeners.transitionend.length, 0);
     assert.strictEqual(harness.picker.classList.contains("menu-mounted"), false);
+  });
+
+  it("derives the close fallback from the longest CSS transition", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      transitionDuration: "0.14s, 320ms",
+      transitionDelay: "0s, 30ms",
+    });
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.trigger.dispatchEvent({ type: "click" });
+
+    assert.deepStrictEqual(harness.getPendingTimerDelays(), [390]);
   });
 
   it("disposes an animating picker without leaving menu or listener state behind", () => {
