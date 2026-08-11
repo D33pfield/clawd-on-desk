@@ -66,3 +66,25 @@ test("redactSecrets coerces non-strings safely", () => {
   assert.equal(redactSecrets(undefined), "");
   assert.equal(redactSecrets(42), "42");
 });
+
+// A Slack Incoming Webhook URL is a bearer credential: anyone holding it can
+// post to that channel. Clawd's own Slack notifier posts *into* that channel,
+// so an agent quoting the URL would publish the key to its own lock.
+test("redactSecrets masks Slack webhook URLs", () => {
+  const url = "https://hooks.slack.com/services/T00000000/B00000000/EXAMPLEexampleEXAMPLEexam";
+  const out = redactSecrets(`deploy with ${url} now`);
+  assert.doesNotMatch(out, /EXAMPLEexampleEXAMPLEexam/);
+  assert.doesNotMatch(out, /T00000000/);
+  assert.match(out, /<redacted:slack-webhook>/);
+
+  // Also the workflow variant Slack issues for Workflow Builder.
+  assert.match(
+    redactSecrets("https://hooks.slack.com/workflows/T00000000/A00000000/1234567890/abcdefghijklmnop"),
+    /<redacted:slack-webhook>/,
+  );
+
+  // The bare host in prose is not a credential and must survive, or setup
+  // instructions ("paste the https://hooks.slack.com/... URL") become unreadable.
+  const prose = redactSecrets("open hooks.slack.com and create a webhook");
+  assert.match(prose, /hooks\.slack\.com/);
+});

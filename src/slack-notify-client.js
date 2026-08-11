@@ -46,6 +46,35 @@ function classifyHttpStatus(status) {
   return `http-${status}`;
 }
 
+// Last line of defence before the payload leaves the process.
+//
+// The formatter redacts what it renders, but only sendMessage knows the
+// *currently configured* credentials, and only here is the complete body
+// visible. A webhook URL is a bearer credential for the very channel Clawd is
+// posting to, so a value that slipped through an unsanitised field — or a
+// future caller that builds its own message — would publish the key to the
+// people it protects against. Substring replacement over the serialised body
+// catches it wherever it sits, including nested blocks and attachments.
+//
+// The credential is still used to address/authenticate the request; only the
+// body is scrubbed.
+function scrubCredentials(body, secrets) {
+  const source = secrets && typeof secrets === "object" ? secrets : {};
+  // Short values would risk mangling ordinary text; real credentials are long.
+  const values = [source.webhookUrl, source.botToken].filter((v) => typeof v === "string" && v.length >= 12);
+  if (!values.length) return body;
+  let json = JSON.stringify(body);
+  if (!json) return body;
+  let touched = false;
+  for (const value of values) {
+    if (!json.includes(value)) continue;
+    json = json.split(value).join("<redacted:slack-credential>");
+    touched = true;
+  }
+  if (!touched) return body;
+  try { return JSON.parse(json); } catch { return body; }
+}
+
 function createSlackNotifyClient({
   getConfig = () => settings.cloneDefaultSlackNotify(),
   getSecrets = () => ({ webhookUrl: "", botToken: "" }),
@@ -156,8 +185,17 @@ function createSlackNotifyClient({
     const ready = settings.readiness(config, secrets);
     if (!ready.ready) return { ok: false, errorClass: ready.reason || "not-configured" };
 
+    // Slack unfurls links by default: its servers fetch every URL a message
+    // contains and pull the title/preview back into the channel. Agent output is
+    // exactly the LLM-derived URL case Slack's security guidance warns about, so
+    // both transports opt out.
+    const payload = scrubCredentials(
+      { text: message.text, blocks: message.blocks, unfurl_links: false, unfurl_media: false },
+      secrets,
+    );
+
     if (ready.transport === "webhook") {
-      const res = await postJson(secrets.webhookUrl, {}, { text: message.text, blocks: message.blocks });
+      const res = await postJson(secrets.webhookUrl, {}, payload);
       if (res.errorClass) return { ok: false, errorClass: res.errorClass, error: res.error };
       // Incoming webhooks answer 200 with the literal body "ok" on success.
       if (res.ok && (!res.bodyText || res.bodyText.trim() === "ok")) return { ok: true };
@@ -170,7 +208,7 @@ function createSlackNotifyClient({
     const res = await postJson(
       CHAT_POST_URL,
       { authorization: `Bearer ${secrets.botToken}` },
-      { channel: config.channelId, text: message.text, blocks: message.blocks },
+      { channel: config.channelId, ...payload },
     );
     if (res.errorClass) return { ok: false, errorClass: res.errorClass, error: res.error };
     let parsed = null;

@@ -185,3 +185,100 @@ test("notifyPermissionRequest respects the toggle and readiness", async () => {
   assert.equal(res2.ok, false);
   assert.equal(fetchImpl2.calls.length, 0);
 });
+
+// Defence in depth. The formatter redacts what it renders, but sendMessage is
+// the last place the payload can be inspected before it leaves the process, and
+// the one place that knows the *currently configured* credentials. A value that
+// reached a field the formatter never sanitised — or a future caller that builds
+// its own message — must still not carry the webhook out to the channel that
+// webhook unlocks.
+test("the configured webhook never survives into the outbound body", async () => {
+  const fetchImpl = makeFetch(okWebhook);
+  const client = baseClient({ fetchImpl });
+  // Straight into sendMessage, so the formatter's redaction is bypassed
+  // entirely and only the last-mile scrub can catch it.
+  await client.sendMessage({ text: `deploy ${WEBHOOK} now`, blocks: [
+    { type: "section", text: { type: "mrkdwn", text: `see ${WEBHOOK}` } },
+  ] });
+
+  const raw = JSON.stringify(fetchImpl.calls[0].body);
+  assert.ok(!raw.includes(WEBHOOK), "the webhook URL must not appear in the body");
+  assert.ok(raw.includes("redacted"), "it should be visibly redacted, not silently dropped");
+  // The POST target is still the real webhook — only the payload is scrubbed.
+  assert.equal(fetchImpl.calls[0].url, WEBHOOK);
+});
+
+test("the configured bot token never survives into the outbound body", async () => {
+  const token = "xoxb-123456789-abcdefghij";
+  const fetchImpl = makeFetch(() => ({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true, ts: "1.2" }) }));
+  const client = baseClient({
+    config: { channelId: "C99" },
+    secrets: { webhookUrl: "", botToken: token },
+    fetchImpl,
+  });
+  await client.sendMessage({ text: `token is ${token}`, blocks: [] });
+
+  const raw = JSON.stringify(fetchImpl.calls[0].body);
+  assert.ok(!raw.includes(token), "the bot token must not appear in the body");
+  // It still authenticates the request.
+  assert.match(fetchImpl.calls[0].headers.authorization, /^Bearer xoxb-/);
+});
+
+// Slack unfurls links by default and fetches whatever URL a message contains,
+// pulling title/preview/thumbnail into the channel. Slack's own security guidance
+// calls out LLM-derived URLs as an exfiltration risk, and agent output is exactly
+// that, so both transports opt out.
+test("link and media unfurling are disabled on both transports", async () => {
+  const fetchImpl = makeFetch(okWebhook);
+  const client = baseClient({ fetchImpl });
+  await client.sendMessage({ text: "x", blocks: [] });
+  assert.equal(fetchImpl.calls[0].body.unfurl_links, false);
+  assert.equal(fetchImpl.calls[0].body.unfurl_media, false);
+
+  const botFetch = makeFetch(() => ({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true, ts: "1.2" }) }));
+  const bot = baseClient({
+    config: { channelId: "C99" },
+    secrets: { webhookUrl: "", botToken: "xoxb-123456789-abcdefghij" },
+    fetchImpl: botFetch,
+  });
+  await bot.sendMessage({ text: "x", blocks: [] });
+  assert.equal(botFetch.calls[0].body.unfurl_links, false);
+  assert.equal(botFetch.calls[0].body.unfurl_media, false);
+});
+
+// The review asked for this specific shape: put the credential in every field an
+// agent or user can influence, then assert on the *final serialized fetch body*
+// rather than on any intermediate string.
+test("no field can carry the webhook out — title, output, metadata, permission detail", async () => {
+  const fetchImpl = makeFetch(okWebhook);
+  const client = baseClient({ config: { outputMode: "full" }, fetchImpl });
+
+  client.onSnapshot({ sessions: [] }); // prime
+  client.onSnapshot({ sessions: [{
+    id: "s1",
+    badge: "done",
+    displayTitle: `ship ${WEBHOOK}`,
+    cwd: `/srv/${WEBHOOK}`,
+    host: WEBHOOK,
+    agentId: "claude-code",
+    assistantLastOutput: `curl -X POST ${WEBHOOK}`,
+    lastEvent: { rawEvent: "Stop", at: 2 },
+  }] });
+  await new Promise((r) => setTimeout(r, 30));
+
+  await client.notifyPermissionRequest({
+    title: `approve ${WEBHOOK}`,
+    toolName: "Bash",
+    agentId: "claude-code",
+    folder: `/w/${WEBHOOK}`,
+    summary: `post to ${WEBHOOK}`,
+  });
+
+  assert.ok(fetchImpl.calls.length >= 2, "both a completion and a permission message were sent");
+  for (const call of fetchImpl.calls) {
+    const raw = JSON.stringify(call.body);
+    assert.ok(!raw.includes(WEBHOOK), `webhook leaked into: ${raw.slice(0, 200)}`);
+    // The distinctive path segment must not survive in pieces either.
+    assert.ok(!raw.includes("/services/T/B/xxx"), "the secret path segment leaked");
+  }
+});

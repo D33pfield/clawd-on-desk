@@ -25,6 +25,16 @@ function redactSecrets(value) {
   // is the ONLY place Bearer/Basic is redacted, so a bare "the bearer" / "basic
   // auth" in ordinary prose is never touched.
   text = text.replace(/\b(?:proxy-)?authorization\b\s*[:=]\s*[^\r\n]*/gi, "authorization=<redacted>");
+  // A Slack Incoming Webhook URL is itself the credential — anyone holding it
+  // can post to that channel. This matters more than usual for the Slack
+  // notifier, which posts *into* the very channel the URL unlocks, so an agent
+  // quoting it in a summary would publish the key to the people it protects
+  // against. Only the full /services/ or /workflows/ path is matched; the bare
+  // host stays readable so setup instructions survive.
+  text = text.replace(
+    /\bhttps:\/\/hooks\.slack\.com\/(?:services|workflows)\/[A-Za-z0-9/_-]+/gi,
+    "<redacted:slack-webhook>",
+  );
   // High-confidence provider token shapes (explicit prefixes only).
   text = text.replace(/\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{12,}\b/g, "<redacted:token>");
   text = text.replace(/\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g, "<redacted:token>");
