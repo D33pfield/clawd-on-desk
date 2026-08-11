@@ -78,6 +78,8 @@
     "wrong-platform": "feishuApprovalErrorWrongPlatform",
   });
 
+  let mountedFeishuTimeoutControl = null;
+
   // readiness() rejects a saved-but-unusable config with a stable reason while
   // every field looks filled in. Without this the card cheerfully reports
   // "credentials saved, flip the switch" next to a disabled test button, and the
@@ -1210,8 +1212,29 @@
         const nextMode = ["off", "full"].includes(value) ? value : "off";
         if (nextMode === mode) return true;
         if (nextMode === "full") {
-          const ok = window.confirm(t("telegramApprovalCompletionOutputFullConfirm"));
-          if (!ok) return false;
+          return helpers.showSettingsConfirmModal({
+            title: t("telegramApprovalCompletionOutputFullConfirmTitle"),
+            detail: t("telegramApprovalCompletionOutputFullConfirm"),
+            actions: [
+              {
+                id: "cancel",
+                label: t("telegramApprovalCancel"),
+                tone: "neutral",
+                defaultFocus: true,
+              },
+              {
+                id: "confirm",
+                label: t("telegramApprovalCompletionOutputFullConfirmAction"),
+                tone: "danger",
+              },
+            ],
+          }).then((actionId) => {
+            if (actionId !== "confirm") return false;
+            return saveConfig(
+              { ...cfg, completionOutputMode: nextMode },
+              { resetDraft: false }
+            );
+          });
         }
         return saveConfig({ ...cfg, completionOutputMode: nextMode }, { resetDraft: false });
       },
@@ -1725,14 +1748,19 @@
       })),
       ariaLabel: t("feishuApprovalConnectionTimeout"),
       className: "feishu-approval-timeout-select",
+      focusKey: "feishu-approval-connection-timeout",
       disabled: feishuView.configPending,
       onChange(value) {
         const nextTimeout = Number(value);
         if (![5, 10, 15, 30, 60].includes(nextTimeout)) return false;
         if (nextTimeout === cfg.connectionTimeoutSeconds) return true;
-        return saveFeishuConfig({ ...cfg, connectionTimeoutSeconds: nextTimeout }, { resetDraft: false });
+        return saveFeishuConfig(
+          { ...cfg, connectionTimeoutSeconds: nextTimeout },
+          { resetDraft: false, preserveMountedControl: true }
+        );
       },
     });
+    mountedFeishuTimeoutControl = { row, picker };
     ctrl.appendChild(picker.element);
     row.appendChild(ctrl);
     return row;
@@ -1833,26 +1861,52 @@
       ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
       return Promise.resolve(false);
     }
+    const preserveMountedControl = options.preserveMountedControl === true;
     feishuView.configPending = true;
-    ops.requestRender({ content: true });
+    if (!preserveMountedControl) ops.requestRender({ content: true });
     return window.settingsAPI.update("feishuApproval", next).then((result) => {
       feishuView.configPending = false;
       if (!result || result.status !== "ok") {
         ops.showToast((result && result.message) || t("toastSaveFailed"), { error: true });
-        ops.requestRender({ content: true });
+        if (!preserveMountedControl) ops.requestRender({ content: true });
         return false;
       }
       ops.showToast(tBrand("feishuApprovalConfigSaved"));
       if (options.resetDraft !== false) resetFeishuFormDraft();
-      feishuView.status = null;
-      refreshFeishuStatus({ forceRender: true });
+      if (!preserveMountedControl) feishuView.status = null;
+      refreshFeishuStatus({ forceRender: !preserveMountedControl });
       return true;
     }).catch((err) => {
       feishuView.configPending = false;
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-      ops.requestRender({ content: true });
+      if (!preserveMountedControl) ops.requestRender({ content: true });
       return false;
     });
+  }
+
+  function configsMatchExceptTimeout(previous, next) {
+    const left = previous && typeof previous === "object" ? previous : {};
+    const right = next && typeof next === "object" ? next : {};
+    const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+    keys.delete("connectionTimeoutSeconds");
+    for (const key of keys) {
+      if (JSON.stringify(left[key]) !== JSON.stringify(right[key])) return false;
+    }
+    return true;
+  }
+
+  function patchInPlace(changes, context = {}) {
+    if (!changes || Object.keys(changes).length !== 1
+      || !Object.prototype.hasOwnProperty.call(changes, "feishuApproval")) return false;
+    const previous = context.previousSnapshot && context.previousSnapshot.feishuApproval;
+    const next = context.snapshot && context.snapshot.feishuApproval;
+    if (!configsMatchExceptTimeout(previous, next)) return false;
+    if (!mountedFeishuTimeoutControl
+      || !document.body.contains(mountedFeishuTimeoutControl.row)) return false;
+    mountedFeishuTimeoutControl.picker.setValue(
+      String(currentFeishuConfig().connectionTimeoutSeconds)
+    );
+    return true;
   }
 
   // ── Helpers ──
@@ -1910,7 +1964,7 @@
     state = core.state;
     helpers = core.helpers;
     ops = core.ops;
-    core.tabs["telegram-approval"] = { render, refreshRuntimeStatus };
+    core.tabs["telegram-approval"] = { render, refreshRuntimeStatus, patchInPlace };
   }
 
   root.ClawdSettingsTabTelegramApproval = { init };

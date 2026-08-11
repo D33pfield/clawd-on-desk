@@ -20,6 +20,10 @@
     "sessionHudShowElapsed",
     "sessionHudShowContextUsage",
     "sessionHudShowQuota",
+    "quotaRingDisplayMode",
+    "permissionAutomationMode",
+    "permissionAutomationAutoToolsWarningDismissed",
+    "permissionAutomationUnattendedWarningDismissed",
     "claudeQuotaCollectionEnabled",
     "quotaMergeSources",
     "sessionHudCleanupDetached",
@@ -491,6 +495,7 @@
       checkboxChecked: false,
       returnDetails: true,
       actions: [
+        { id: "cancel", label: t("permissionAutomationCancel"), tone: "neutral", defaultFocus: true },
         {
           id: "enable",
           label: t(unattended
@@ -498,7 +503,6 @@
             : "permissionAutomationEnableAutoTools"),
           tone: "danger",
         },
-        { id: "cancel", label: t("permissionAutomationCancel"), tone: "accent", defaultFocus: true },
       ],
     });
   }
@@ -551,36 +555,42 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
-    const segmented = document.createElement("div");
-    segmented.className = "segmented permission-automation-segmented";
-    segmented.setAttribute("role", "group");
-    segmented.setAttribute("aria-label", t("rowPermissionAutomation"));
-    for (const option of PERMISSION_AUTOMATION_OPTIONS) {
-      const btn = document.createElement("button");
-      const selected = current === option.id;
-      btn.type = "button";
-      btn.dataset.mode = option.id;
-      btn.textContent = t(option.labelKey);
-      btn.classList.toggle("active", selected);
-      btn.setAttribute("aria-pressed", selected ? "true" : "false");
-      btn.addEventListener("click", () => {
-        if (btn.classList.contains("active") || btn.disabled) return;
-        for (const candidate of segmented.querySelectorAll("button")) candidate.disabled = true;
-        setPermissionAutomationMode(option.id).then((result) => {
-          if (!result || result.status !== "ok") {
-            const msg = (result && result.message) || "unknown error";
-            ops.showToast(t("toastSaveFailed") + msg, { error: true });
-          }
+    const segmented = helpers.buildSegmentedRadio({
+      value: current,
+      ariaLabel: t("rowPermissionAutomation"),
+      className: "permission-automation-segmented",
+      options: PERMISSION_AUTOMATION_OPTIONS.map((option) => ({
+        value: option.id,
+        label: t(option.labelKey),
+      })),
+      onChange(nextMode) {
+        return setPermissionAutomationMode(nextMode).then((result) => {
+          if (result && result.status === "ok" && result.noop !== true) return true;
+          if (result && result.status === "ok") return false;
+          const msg = (result && result.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + msg, { error: true });
+          return false;
         }).catch((err) => {
           ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-        }).finally(() => {
-          for (const candidate of segmented.querySelectorAll("button")) candidate.disabled = false;
+          return false;
         });
-      });
-      segmented.appendChild(btn);
-    }
-    ctrl.appendChild(segmented);
+      },
+    });
+    ctrl.appendChild(segmented.element);
     row.appendChild(ctrl);
+    state.mountedControls.permissionAutomationMode = {
+      element: segmented.element,
+      syncFromSnapshot() {
+        const mode = readPermissionAutomationMode();
+        segmented.setValue(mode);
+        const nextDescKey = mode === "auto-tools"
+          ? "permissionAutomationAutoToolsDesc"
+          : (mode === "unattended"
+            ? "permissionAutomationUnattendedDesc"
+            : "permissionAutomationOffDesc");
+        desc.textContent = t(nextDescKey);
+      },
+    };
     return row;
   }
 
@@ -700,6 +710,7 @@
       labelKey: "rowClaudeQuotaCollection",
       descKey: "rowClaudeQuotaCollectionDesc",
     });
+    const displayModeRow = buildQuotaRingDisplayModeRow();
     // "Merge across machines" only matters with more than one reporting source
     // (WSL / SSH remotes). Hidden by default so single-machine users never see
     // a confusing no-op switch; revealed once multiple sources are confirmed.
@@ -708,6 +719,7 @@
       : "none";
     const optionList = buildOptionList("quota-ring-option-list", [
       enabledRow,
+      displayModeRow,
       claudeCollectionRow,
       mergeRow,
     ]);
@@ -736,6 +748,54 @@
         .catch(() => {});
     }
     return group;
+  }
+
+  function buildQuotaRingDisplayModeRow() {
+    const row = document.createElement("div");
+    row.className = "row quota-ring-display-mode-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowQuotaRingDisplayMode");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("rowQuotaRingDisplayModeDesc");
+    text.append(label, desc);
+
+    const controlWrap = document.createElement("div");
+    controlWrap.className = "row-control";
+    const control = helpers.buildSegmentedRadio({
+      value: state.snapshot && state.snapshot.quotaRingDisplayMode,
+      ariaLabel: t("rowQuotaRingDisplayMode"),
+      className: "quota-ring-display-mode-choice",
+      options: [
+        { value: "used", label: t("quotaRingDisplayUsed") },
+        { value: "remaining", label: t("quotaRingDisplayRemaining") },
+      ],
+      onChange: (next) => {
+        if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") {
+          ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
+          return false;
+        }
+        return Promise.resolve()
+          .then(() => window.settingsAPI.update("quotaRingDisplayMode", next))
+          .then((result) => {
+            if (result && result.status === "ok") return true;
+            ops.showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+            return false;
+          })
+          .catch((err) => {
+            ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+            return false;
+          });
+      },
+    });
+    controlWrap.appendChild(control.element);
+    row.append(text, controlWrap);
+    state.mountedControls.quotaRingDisplayMode = control;
+    return row;
   }
 
   function buildOptionList(className, rows) {
@@ -926,6 +986,7 @@
       summary: summaryControl.element,
       defaultCollapsed: true,
       className: "sound-collapsible",
+      animateExpansion: false,
       children: [buildOptionList("sound-option-list", [
         buildSoundEnabledRow(summaryControl),
         buildVolumeSliderRow(),
@@ -1428,8 +1489,8 @@
       title: t("updateBubbleDisableConfirmTitle"),
       detail: t("updateBubbleDisableConfirmDetail"),
       actions: [
+        { id: "cancel", label: t("updateBubbleDisableConfirmCancel"), tone: "neutral", defaultFocus: true },
         { id: "confirm", label: t("updateBubbleDisableConfirmAction"), tone: "danger" },
-        { id: "cancel", label: t("updateBubbleDisableConfirmCancel"), tone: "accent", defaultFocus: true },
       ],
     });
   }
@@ -1471,7 +1532,7 @@
 
   function buildVolumeSliderRow() {
     const row = document.createElement("div");
-    row.className = "row";
+    row.className = "row volume-slider-row";
     row.innerHTML =
       `<div class="row-text">` +
         `<span class="row-label"></span>` +
@@ -2032,6 +2093,14 @@
       && !getMountedRoamMovementStyle()) {
       return false;
     }
+    if (keys.includes("quotaRingDisplayMode")) {
+      const control = state.mountedControls.quotaRingDisplayMode;
+      if (!control || !document.body.contains(control.element)) return false;
+    }
+    if (keys.includes("permissionAutomationMode")) {
+      const control = state.mountedControls.permissionAutomationMode;
+      if (!control || !document.body.contains(control.element)) return false;
+    }
     if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_POLICY_KEYS.has(key)))
       && !hasMountedBubblePolicyControls()) {
       return false;
@@ -2052,6 +2121,10 @@
     }
     for (const key of keys) {
       if (key === "size" || key === "soundVolume" || key === "textScale" || key === "textScaleByDisplay") continue;
+      if (key === "quotaRingDisplayMode") continue;
+      if (key === "permissionAutomationMode"
+        || key === "permissionAutomationAutoToolsWarningDismissed"
+        || key === "permissionAutomationUnattendedWarningDismissed") continue;
       if (BUBBLE_POLICY_KEYS.has(key)) {
         const meta = state.mountedControls.bubblePolicyControls.get(key);
         if (!meta || !document.body.contains(meta.row)) return false;
@@ -2065,6 +2138,18 @@
     }
     for (const key of keys) {
       if (key === "size") continue;
+      if (key === "quotaRingDisplayMode") {
+        state.mountedControls.quotaRingDisplayMode.setValue(
+          state.snapshot && state.snapshot.quotaRingDisplayMode
+        );
+        continue;
+      }
+      if (key === "permissionAutomationMode") {
+        state.mountedControls.permissionAutomationMode.syncFromSnapshot();
+        continue;
+      }
+      if (key === "permissionAutomationAutoToolsWarningDismissed"
+        || key === "permissionAutomationUnattendedWarningDismissed") continue;
       if (key === "textScale" || key === "textScaleByDisplay") {
         state.mountedControls.textScale.syncValueFromSnapshot();
         continue;

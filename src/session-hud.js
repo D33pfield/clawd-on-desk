@@ -643,6 +643,7 @@ module.exports = function initSessionHud(ctx) {
     ringWindow.webContents.send("quota-ring:snapshot", {
       accountQuota: Array.isArray(snapshot.accountQuota) ? snapshot.accountQuota : [],
       quotaAgentIcons: snapshot.quotaAgentIcons || {},
+      displayMode: ctx.quotaRingDisplayMode === "remaining" ? "remaining" : "used",
       side,
     });
   }

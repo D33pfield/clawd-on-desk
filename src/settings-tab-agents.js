@@ -924,9 +924,9 @@
       title: t("claudeHooksDisableConfirmTitle"),
       detail: t("claudeHooksDisableConfirmDetail"),
       actions: [
-        { id: "disconnect", label: t("claudeHooksDisableConfirmDisconnect"), tone: "danger" },
+        { id: "keep", label: t("claudeHooksDisableConfirmKeep"), tone: "neutral", defaultFocus: true },
         { id: "disable", label: t("claudeHooksDisableConfirmDisableOnly"), tone: "neutral" },
-        { id: "keep", label: t("claudeHooksDisableConfirmKeep"), tone: "accent", defaultFocus: true },
+        { id: "disconnect", label: t("claudeHooksDisableConfirmDisconnect"), tone: "danger" },
       ],
     });
   }
@@ -936,8 +936,8 @@
       title: t("claudeHooksDisconnectConfirmTitle"),
       detail: t("claudeHooksDisconnectConfirmDetail"),
       actions: [
+        { id: "keep", label: t("claudeHooksDisconnectConfirmKeep"), tone: "neutral", defaultFocus: true },
         { id: "disconnect", label: t("claudeHooksDisconnectConfirmAction"), tone: "danger" },
-        { id: "keep", label: t("claudeHooksDisconnectConfirmKeep"), tone: "accent", defaultFocus: true },
       ],
     });
   }
