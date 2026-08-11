@@ -224,6 +224,28 @@
       menu.scrollTop = 0;
     }
 
+    function revealOptionInMenu(option) {
+      if (!option) return;
+      const optionTop = finiteNumber(option.offsetTop);
+      const optionHeight = finiteNumber(option.offsetHeight);
+      const viewportHeight = finiteNumber(menu.clientHeight);
+      if (optionTop == null || optionHeight == null || !viewportHeight || viewportHeight <= 0) return;
+
+      const viewportTop = finiteNumber(menu.scrollTop) || 0;
+      const optionBottom = optionTop + optionHeight;
+      const viewportBottom = viewportTop + viewportHeight;
+      if (optionTop < viewportTop) {
+        menu.scrollTop = optionTop;
+      } else if (optionBottom > viewportBottom) {
+        menu.scrollTop = optionBottom - viewportHeight;
+      }
+    }
+
+    function focusOption(option) {
+      revealOptionInMenu(option);
+      focusElement(option);
+    }
+
     function finalizeMenuUnmount(expectedSeq = menuLifecycleSeq) {
       if (disposed || isOpen || expectedSeq !== menuLifecycleSeq) return;
       if (menuUnmountTimer != null && root && typeof root.clearTimeout === "function") {
@@ -339,7 +361,7 @@
       paintValue(activeValue);
       if (isOpen) {
         const selected = findOption(activeValue);
-        focusElement(selected && selected.element);
+        focusOption(selected && selected.element);
       } else if (focusTrigger) {
         focusElement(trigger);
       }
@@ -393,7 +415,7 @@
     function moveFocus(index, delta) {
       if (!optionElements.length) return;
       const nextIndex = (index + delta + optionElements.length) % optionElements.length;
-      focusElement(optionElements[nextIndex].element);
+      focusOption(optionElements[nextIndex].element);
     }
 
     trigger.addEventListener("click", () => setOpen(!isOpen));
@@ -417,7 +439,7 @@
         event.preventDefault();
         setOpen(true);
         const target = event.key === "Home" ? optionElements[0] : optionElements[optionElements.length - 1];
-        focusElement(target && target.element);
+        focusOption(target && target.element);
       }
     });
 
@@ -443,7 +465,7 @@
         if (event.key === "Home" || event.key === "End") {
           event.preventDefault();
           const target = event.key === "Home" ? optionElements[0] : optionElements[optionElements.length - 1];
-          focusElement(target && target.element);
+          focusOption(target && target.element);
         }
       });
     }

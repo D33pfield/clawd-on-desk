@@ -5435,6 +5435,58 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.menu.scrollTop, 0);
   });
 
+  it("reveals selected and keyboard-focused options in a scrollable picker", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      value: "halo",
+      options: ["none", "cowboy", "party", "wizard", "top", "santa", "pumpkin", "halo"],
+      innerHeight: 260,
+    });
+    harness.boundary.getBoundingClientRect = () => ({ top: 0, bottom: 260 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 126, bottom: 162 });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 250 });
+    Object.defineProperty(harness.menu, "offsetHeight", {
+      get() {
+        const maxHeight = parseInt(harness.menu.style.maxHeight, 10);
+        return Number.isFinite(maxHeight) ? Math.min(252, maxHeight + 2) : 252;
+      },
+    });
+    Object.defineProperty(harness.menu, "clientHeight", {
+      get() {
+        const maxHeight = parseInt(harness.menu.style.maxHeight, 10);
+        return Number.isFinite(maxHeight) ? Math.min(250, maxHeight) : 250;
+      },
+    });
+    for (const [index, option] of harness.optionElements.entries()) {
+      Object.defineProperty(option, "offsetTop", { value: 5 + index * 30 });
+      Object.defineProperty(option, "offsetHeight", { value: 30 });
+    }
+    const first = harness.optionElements[0];
+    const selected = harness.optionElements.at(-1);
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), true);
+    assert.strictEqual(harness.menu.style.maxHeight, "120px");
+    assert.strictEqual(harness.menu.scrollTop, 125);
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    harness.menu.dispatchEvent({ type: "transitionend", propertyName: "opacity" });
+    assert.strictEqual(harness.menu.scrollTop, 0, "closed menu clears stale overflow geometry");
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(harness.menu.scrollTop, 125, "reopening scrolls the current choice back into view");
+    assert.strictEqual(selected.focused, true);
+
+    harness.trigger.dispatchEvent({ type: "keydown", key: "Home" });
+    assert.strictEqual(harness.menu.scrollTop, 5, "trigger Home reveals the first option");
+    harness.trigger.dispatchEvent({ type: "keydown", key: "End" });
+    assert.strictEqual(harness.menu.scrollTop, 125, "trigger End reveals the last option");
+
+    selected.dispatchEvent({ type: "keydown", key: "ArrowDown" });
+    assert.strictEqual(harness.menu.scrollTop, 5, "wrapped ArrowDown reveals the first option");
+    first.dispatchEvent({ type: "keydown", key: "End" });
+    assert.strictEqual(harness.menu.scrollTop, 125, "option End reveals the last option");
+  });
+
   it("cancels a stale menu unmount when the picker is reopened quickly", () => {
     const harness = loadSharedLanguagePickerForTest();
     harness.boundary.getBoundingClientRect = () => ({ top: 0, bottom: 600 });
