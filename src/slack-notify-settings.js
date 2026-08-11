@@ -190,8 +190,27 @@ function writeSecretsEnvFile({ fs, path: pathModule = path, filePath, secrets, p
   if (!filePath || typeof filePath !== "string") {
     return { status: "error", code: "write-failed", message: "Secrets env file path is required" };
   }
-  const current = readSecretsEnvFile({ fs, filePath });
   const incoming = isPlainObject(secrets) ? secrets : {};
+  // Validate before touching the disk. Writing first and discovering the value
+  // is unusable afterwards leaves a credential stored that nothing can use and
+  // the UI cannot explain — and, because a stored webhook wins transport
+  // resolution, a malformed one would also mask a perfectly good bot token.
+  // An empty string is not a value; it is the explicit "clear this" signal.
+  if (typeof incoming.webhookUrl === "string" && incoming.webhookUrl.trim() && !isValidWebhookUrl(incoming.webhookUrl)) {
+    return {
+      status: "error",
+      code: "invalid-webhook",
+      message: "Webhook URL must be an https://hooks.slack.com/ address",
+    };
+  }
+  if (typeof incoming.botToken === "string" && incoming.botToken.trim() && !isValidBotToken(incoming.botToken)) {
+    return {
+      status: "error",
+      code: "invalid-bot-token",
+      message: `Bot token must start with ${BOT_TOKEN_PREFIX}`,
+    };
+  }
+  const current = readSecretsEnvFile({ fs, filePath });
   const next = { ...current };
   for (const key of Object.keys(SECRET_KEYS)) {
     // An explicit empty string clears the field; only `undefined`/non-string
@@ -264,10 +283,46 @@ function secretStatus({ fs, filePath } = {}) {
   };
 }
 
+
+// The four questions the UI needs answered separately, because collapsing them
+// into one "ready" flag is what made a perfectly good webhook report itself as
+// unusable while the enable switch was off — and blocked Send Test during
+// setup, exactly when you most want it.
+//
+//   credentialsPresent — is anything stored at all?
+//   transport          — is a stored credential actually usable right now?
+//   enabled            — has the user switched sending on?
+//   ready              — both of the last two.
+//
+// `stored` reports each credential separately so the UI can show a mask for one
+// that is saved but not currently winning transport resolution.
+function describeTransport(config, secrets) {
+  const normalized = normalizeSlackNotify(config);
+  const source = isPlainObject(secrets) ? secrets : {};
+  const rawWebhook = typeof source.webhookUrl === "string" ? source.webhookUrl.trim() : "";
+  const rawToken = typeof source.botToken === "string" ? source.botToken.trim() : "";
+  const stored = { webhookUrl: !!rawWebhook, botToken: !!rawToken };
+  const credentialsPresent = stored.webhookUrl || stored.botToken;
+  const transport = resolveSlackTransport(normalized, source);
+  const enabled = normalized.enabled === true;
+
+  let reason = null;
+  if (!transport) {
+    if (!credentialsPresent) reason = "missing-secret";
+    else if (stored.webhookUrl && !isValidWebhookUrl(rawWebhook)) reason = "invalid-secret";
+    else if (stored.botToken && !isValidBotToken(rawToken)) reason = "invalid-secret";
+    else reason = "invalid-config"; // well-formed token, but no channel id
+  }
+
+  return { credentialsPresent, stored, transport, enabled, ready: !!transport && enabled, reason };
+}
+
 // `reason` is a stable code the UI localizes; `message` stays English for logs.
 function readiness(config, secrets) {
   const normalized = normalizeSlackNotify(config);
   if (!normalized.enabled) return { ready: false, reason: "disabled", config: normalized };
+  // Transport validity is the same question describeTransport answers; keep the
+  // richer error messages below for logs while the codes stay stable.
   const valid = validateSlackNotify(normalized);
   if (valid.status !== "ok") return { ready: false, reason: "invalid-config", message: valid.message, config: normalized };
   const source = isPlainObject(secrets) ? secrets : {};
@@ -306,6 +361,7 @@ module.exports = {
   validateSlackNotify,
   isValidWebhookUrl,
   isValidBotToken,
+  describeTransport,
   resolveSlackTransport,
   defaultSecretsEnvFilePath,
   readSecretsEnvFile,

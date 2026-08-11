@@ -453,3 +453,57 @@ test("startup recovery actually primes the notifier in main.js", () => {
     "the recovered snapshot must be handed to the Slack notifier"
   );
 });
+
+// ── Send Test during setup, and stable error codes (review item 3) ──────────
+
+test("Send Test works while continuous notifications are still switched off", async () => {
+  // Testing the connection is exactly what you do *before* turning sending on.
+  const fetchImpl = makeFetch(okWebhook);
+  const client = createSlackNotifyClient({
+    getConfig: () => ({ enabled: false, notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" }),
+    getSecrets: () => ({ webhookUrl: WEBHOOK, botToken: "" }),
+    getLang: () => "en",
+    fetchImpl,
+  });
+
+  const res = await client.sendTest();
+  assert.equal(res.status, "ok");
+  assert.equal(fetchImpl.calls.length, 1);
+});
+
+test("a disabled notifier still sends nothing on its own", async () => {
+  // The switch must keep meaning something: Send Test is an explicit action,
+  // completions and permissions are not.
+  const fetchImpl = makeFetch(okWebhook);
+  const client = createSlackNotifyClient({
+    getConfig: () => ({ enabled: false, notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" }),
+    getSecrets: () => ({ webhookUrl: WEBHOOK, botToken: "" }),
+    fetchImpl,
+    retryBaseMs: 0,
+  });
+  client.prime({ sessions: [] });
+  client.onSnapshot({ sessions: [{ id: "s1", badge: "done", displayTitle: "T", lastEvent: { rawEvent: "Stop", at: 2 } }] });
+  await client.drained();
+  await client.notifyPermissionRequest({ title: "x", toolName: "Bash" });
+
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
+test("Send Test reports a stable code the UI can localize", async () => {
+  // "Slack rejected the message" for every failure tells the user nothing about
+  // what to change. The code names the cause; the message stays English for logs.
+  const cases = [
+    [{ ok: false, status: 404, text: async () => "no_service" }, "not-found"],
+    [{ ok: false, status: 403, text: async () => "invalid_token" }, "unauthorized"],
+    [{ ok: false, status: 429, text: async () => "" }, "rate-limited"],
+  ];
+  for (const [response, expected] of cases) {
+    const client = baseClient({ fetchImpl: makeFetch(() => response) });
+    const res = await client.sendTest();
+    assert.equal(res.status, "error");
+    assert.equal(res.code, expected, `HTTP ${response.status} should surface as ${expected}`);
+  }
+
+  const unconfigured = createSlackNotifyClient({ getConfig: () => ({ enabled: true }), getSecrets: () => ({}) });
+  assert.equal((await unconfigured.sendTest()).code, "missing-secret");
+});

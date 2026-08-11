@@ -230,8 +230,13 @@ function createSlackNotifyClient({
     }
     const config = readConfig();
     const secrets = readSecrets();
-    const ready = settings.readiness(config, secrets);
-    if (!ready.ready) return { ok: false, errorClass: ready.reason || "not-configured" };
+    // Deliberately the transport check, not readiness: readiness also requires
+    // the enable switch, and Send Test has to work while you are still setting
+    // things up. The automatic senders (onSnapshot, notifyPermissionRequest)
+    // each check `enabled` themselves, so the switch still means something.
+    const state = settings.describeTransport(config, secrets);
+    if (!state.transport) return { ok: false, errorClass: state.reason || "not-configured" };
+    const ready = { transport: state.transport };
 
     // Slack unfurls links by default: its servers fetch every URL a message
     // contains and pull the title/preview back into the channel. Agent output is
@@ -452,9 +457,13 @@ function createSlackNotifyClient({
 
   // Settings "send test" button. Surfaces a structured result the UI localizes.
   async function sendTest() {
-    const ready = describeReadiness();
-    if (!ready.ready) {
-      return { status: "error", code: ready.reason || "not-configured", message: ready.message || "Slack notifications are not configured" };
+    const state = settings.describeTransport(readConfig(), readSecrets());
+    if (!state.transport) {
+      return {
+        status: "error",
+        code: state.reason || "not-configured",
+        message: "Slack transport is not configured",
+      };
     }
     let res;
     try {
@@ -462,8 +471,14 @@ function createSlackNotifyClient({
     } catch (err) {
       return { status: "error", code: "threw", message: err && err.message };
     }
-    if (res && res.ok) return { status: "ok", transport: ready.transport };
-    return { status: "error", code: (res && res.errorClass) || "send-failed", message: (res && res.detail) || "Slack rejected the message" };
+    if (res && res.ok) return { status: "ok", transport: state.transport };
+    // `code` is a stable identifier the Settings page localizes ("the webhook
+    // was deleted", "the token was rejected"); `message` stays English for logs.
+    return {
+      status: "error",
+      code: (res && res.errorClass) || "send-failed",
+      message: (res && res.detail) || (res && res.error) || "Slack rejected the message",
+    };
   }
 
   const supportsApproval = false;

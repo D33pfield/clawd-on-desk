@@ -171,3 +171,131 @@ test("redactionSecretsForSlackNotify lists non-empty secrets", () => {
     ["w"],
   );
 });
+
+// ── Credential lifecycle and state separation (review item 3) ───────────────
+// "Configured", "usable", and "switched on" were one flag, so a valid webhook
+// reported itself as unusable purely because notifications were off — which is
+// also why Send Test refused to run while you were still setting things up.
+
+const WEBHOOK = "https://hooks.slack.com/services/T/B/xxx";
+const BOT = "xoxb-123456789-abcdefghij";
+
+test("transport state is reported independently of the enable switch", () => {
+  const off = settings.describeTransport({ enabled: false }, { webhookUrl: WEBHOOK });
+  assert.equal(off.credentialsPresent, true);
+  assert.equal(off.transport, "webhook", "a stored webhook is usable whether or not sending is on");
+  assert.equal(off.enabled, false);
+  assert.equal(off.ready, false, "ready still means configured AND enabled");
+
+  const on = settings.describeTransport({ enabled: true }, { webhookUrl: WEBHOOK });
+  assert.equal(on.ready, true);
+});
+
+test("transport state distinguishes absent, malformed, and incomplete credentials", () => {
+  const none = settings.describeTransport({ enabled: true }, {});
+  assert.equal(none.credentialsPresent, false);
+  assert.equal(none.transport, null);
+  assert.equal(none.reason, "missing-secret");
+
+  const bad = settings.describeTransport({ enabled: true }, { webhookUrl: "https://evil.example/x" });
+  assert.equal(bad.credentialsPresent, true, "something is stored, it is just not valid");
+  assert.equal(bad.transport, null);
+  assert.equal(bad.reason, "invalid-secret");
+
+  // A bot token with no channel id is stored and well-formed but unusable.
+  const noChannel = settings.describeTransport({ enabled: true, channelId: "" }, { botToken: BOT });
+  assert.equal(noChannel.credentialsPresent, true);
+  assert.equal(noChannel.transport, null);
+  assert.equal(noChannel.reason, "invalid-config");
+});
+
+test("both credentials are reported, not just the winning one", () => {
+  const both = settings.describeTransport({ enabled: true, channelId: "C1" }, { webhookUrl: WEBHOOK, botToken: BOT });
+  assert.equal(both.transport, "webhook", "webhook still wins");
+  assert.deepEqual(both.stored, { webhookUrl: true, botToken: true },
+    "the UI must be able to show a mask for a credential that is not currently in use");
+});
+
+test("secrets are validated before they are written, not after", () => {
+  const dir = tempDir();
+  const filePath = settings.defaultSecretsEnvFilePath(dir);
+
+  const bad = settings.writeSecretsEnvFile({ fs, path, filePath, secrets: { webhookUrl: "https://evil.example/x" } });
+  assert.equal(bad.status, "error");
+  assert.equal(bad.code, "invalid-webhook");
+  assert.equal(fs.existsSync(filePath), false, "an invalid value must not reach disk at all");
+
+  const badToken = settings.writeSecretsEnvFile({ fs, path, filePath, secrets: { botToken: "xoxp-123456789-abcdefghij" } });
+  assert.equal(badToken.status, "error");
+  assert.equal(badToken.code, "invalid-bot-token");
+
+  assert.equal(settings.writeSecretsEnvFile({ fs, path, filePath, secrets: { webhookUrl: WEBHOOK } }).status, "ok");
+});
+
+test("an explicit empty string clears one credential and leaves the other", () => {
+  const dir = tempDir();
+  const filePath = settings.defaultSecretsEnvFilePath(dir);
+  settings.writeSecretsEnvFile({ fs, path, filePath, secrets: { webhookUrl: WEBHOOK } });
+  settings.writeSecretsEnvFile({ fs, path, filePath, secrets: { botToken: BOT } });
+  assert.deepEqual(settings.readSecretsEnvFile({ fs, filePath }), { webhookUrl: WEBHOOK, botToken: BOT });
+
+  // Clearing the webhook must hand the transport over to the bot token, which
+  // is the switch that was previously impossible without editing the file.
+  settings.writeSecretsEnvFile({ fs, path, filePath, secrets: { webhookUrl: "" } });
+  const afterClear = settings.readSecretsEnvFile({ fs, filePath });
+  assert.equal(afterClear.webhookUrl, "");
+  assert.equal(afterClear.botToken, BOT);
+  assert.equal(settings.describeTransport({ enabled: true, channelId: "C1" }, afterClear).transport, "bot");
+
+  // Clearing everything is allowed too — that is how you disconnect.
+  settings.writeSecretsEnvFile({ fs, path, filePath, secrets: { webhookUrl: "", botToken: "" } });
+  const cleared = settings.readSecretsEnvFile({ fs, filePath });
+  assert.deepEqual(cleared, { webhookUrl: "", botToken: "" });
+  assert.equal(settings.describeTransport({ enabled: true }, cleared).credentialsPresent, false);
+});
+
+test("switching transports works in both directions", () => {
+  const dir = tempDir();
+  const filePath = settings.defaultSecretsEnvFilePath(dir);
+  const cfg = { enabled: true, channelId: "C1" };
+
+  // bot -> webhook: adding a webhook takes over, because it outranks the token.
+  settings.writeSecretsEnvFile({ fs, path, filePath, secrets: { botToken: BOT } });
+  assert.equal(settings.describeTransport(cfg, settings.readSecretsEnvFile({ fs, filePath })).transport, "bot");
+  settings.writeSecretsEnvFile({ fs, path, filePath, secrets: { webhookUrl: WEBHOOK } });
+  assert.equal(settings.describeTransport(cfg, settings.readSecretsEnvFile({ fs, filePath })).transport, "webhook");
+
+  // webhook -> bot: only reachable by clearing the webhook, which is the case
+  // that was impossible from the UI before.
+  settings.writeSecretsEnvFile({ fs, path, filePath, secrets: { webhookUrl: "" } });
+  assert.equal(settings.describeTransport(cfg, settings.readSecretsEnvFile({ fs, filePath })).transport, "bot");
+});
+
+test("credentials survive a restart, and a cleared one stays cleared", () => {
+  const dir = tempDir();
+  const filePath = settings.defaultSecretsEnvFilePath(dir);
+  settings.writeSecretsEnvFile({ fs, path, filePath, secrets: { webhookUrl: WEBHOOK, botToken: BOT } });
+
+  // A "restart" is simply reading the file again with no in-memory state.
+  const afterRestart = settings.readSecretsEnvFile({ fs, filePath });
+  assert.equal(afterRestart.webhookUrl, WEBHOOK);
+  assert.equal(afterRestart.botToken, BOT);
+
+  settings.writeSecretsEnvFile({ fs, path, filePath, secrets: { botToken: "" } });
+  const afterClearRestart = settings.readSecretsEnvFile({ fs, filePath });
+  assert.equal(afterClearRestart.botToken, "", "a removal must not come back on next launch");
+  assert.equal(afterClearRestart.webhookUrl, WEBHOOK);
+});
+
+test("transport and transportConfigured never disagree", () => {
+  // They came from two different functions once — readiness (which requires the
+  // enable switch) and describeTransport (which does not) — so a disabled but
+  // perfectly configured channel reported transportConfigured: true alongside
+  // transport: null, and the card could not name what it would send through.
+  for (const enabled of [true, false]) {
+    const state = settings.describeTransport({ enabled, channelId: "C1" }, { botToken: BOT });
+    assert.equal(!!state.transport, true, `transport should resolve when enabled=${enabled}`);
+    assert.equal(state.enabled, enabled);
+    assert.equal(state.ready, enabled, "only ready follows the switch");
+  }
+});

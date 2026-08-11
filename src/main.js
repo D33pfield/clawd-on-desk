@@ -2928,12 +2928,24 @@ function getSlackNotifyStatus() {
   const config = getSlackNotifyPrefs();
   const secrets = getSlackNotifySecrets();
   const ready = slackNotifySettings.readiness(config, secrets);
+  // The UI needs these four apart, not collapsed: a stored-but-unusable
+  // credential, a usable one with sending switched off, and a fully live
+  // channel are three different things to say to the user.
+  const state = slackNotifySettings.describeTransport(config, secrets);
   return {
+    credentialsPresent: state.credentialsPresent,
+    transportConfigured: !!state.transport,
+    transportReason: state.reason || "",
+    stored: state.stored,
     enabled: config.enabled === true,
     configured: ready.ready === true,
     reason: ready.ready ? "ready" : (ready.reason || ""),
     message: ready.message || "",
-    transport: ready.transport || null,
+    // From describeTransport, not readiness: readiness reports no transport
+    // whenever sending is switched off, which would contradict
+    // transportConfigured above and leave the card unable to name the
+    // credential it is about to use.
+    transport: state.transport,
     notifyOnDone: config.notifyOnDone === true,
     notifyOnError: config.notifyOnError === true,
     notifyOnPermission: config.notifyOnPermission === true,

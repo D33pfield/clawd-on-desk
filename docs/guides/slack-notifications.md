@@ -133,18 +133,18 @@ standard users but is readable by administrators.
 After saving, the field collapses to a masked preview. The raw value never
 crosses the IPC boundary back to the UI.
 
-### Removing a credential
+### Removing a credential, and switching transports
 
-Clearing a stored credential from the Settings UI is **not yet supported** — the
-form only sends fields you have filled in, so saving an empty box leaves the
-previous value in place. Because a valid webhook always wins transport
-resolution, this also means you cannot switch from webhook to bot token from the
-UI once a webhook is saved.
+Each saved credential shows a masked preview with a **Remove** button beside it.
+Removing one leaves the other in place, so this is also how you switch: a valid
+webhook always outranks a bot token, so removing the webhook hands sending over
+to the token. The card names the transport currently in use, so you can see
+which one is live rather than inferring it.
 
-Until that is addressed, edit `slack-notify.env` directly (quit Clawd first) and
-delete the line for the credential you want gone.
+Invalid values are rejected before they are written, so a malformed webhook can
+never be stored — which also means it can never mask a working bot token.
 
-**Removing it locally is not revocation.** The credential still works for anyone
+**Removing a credential here is not revocation.** The credential still works for anyone
 else who has it. To actually revoke:
 
 - **Webhook** — api.slack.com/apps → your app → **Incoming Webhooks** → remove
@@ -179,7 +179,7 @@ channel even after you answer in the app.
 |---|---|
 | `invalid-secret` in Settings | the URL is not on `hooks.slack.com`, or the token is not `xoxb-` |
 | `missing-secret` | nothing saved yet, or the env file was cleared |
-| Test works, notifications never arrive | the master switch or the per-event switch is off |
+| Test works, notifications never arrive | the master switch or the per-event switch is off (Send Test only needs a valid credential, so it works during setup) |
 | Permission cards never arrive | permission automation is resolving them, or DND is on (both are intended — see above) |
 | Nothing arrives after a restart | previously a bug where the first completion after startup recovery was swallowed; fixed by priming the notifier with the recovered snapshot |
 | `not-found` (404) | the webhook was deleted, or the bot is not in the channel |
@@ -196,4 +196,3 @@ paste into an issue.
   request URL. Until then Slack announces and Clawd decides.
 - **One channel per webhook.** Bound at creation. To post elsewhere, create a new
   webhook and replace the saved URL.
-- **No clearing or transport switching from the UI** — see above.
