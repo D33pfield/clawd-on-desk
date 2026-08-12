@@ -5,7 +5,11 @@
 // the outer for the shorter/rolling window, the inner for the weekly window.
 // The arc can present USED percent (full = nearly exhausted) or REMAINING
 // percent (full = plenty left). Severity still follows usedPercent, so changing
-// the presentation never changes warning semantics. Window labels come from
+// the presentation never changes warning semantics. A healthy ring is colored
+// by identity (provider + physical ring slot, see identityClass) rather than by
+// headroom, because severity has only three steps and would paint two healthy
+// windows the same color; crossing a threshold hands the ring over to
+// amber/red. Window labels come from
 // each bucket's windowMinutes, never a hard-coded 5h/7d. The main process
 // (session-hud.js) sizes/positions the window and passes the side.
 
@@ -58,6 +62,14 @@ const INNER_C = 2 * Math.PI * INNER_R;
 // (avatar mask) and oversize past the clip so the mark fills the circle instead
 // of floating small inside the PNG's whitespace.
 const GLYPH_ZOOM = 1.35;
+// Per-provider override. The exporter already fits every glyph inside a 56x56
+// safe area on a 64x64 canvas, so 1.35 crops a second time on top of that —
+// tolerable for marks that carry their own slack, fatal for a radial one whose
+// arms end at the safe-area edge. Claude's starburst loses 17.9% of its ink at
+// 1.35 and 1.5% at 64/56, which is exactly the "circular clip lops the corners"
+// problem the icon swap set out to fix. Left at 1.35 elsewhere: those glyphs
+// have uneven padding and 1.35 is what makes them fill the hole.
+const GLYPH_ZOOM_BY_PROVIDER = { claudeQuota: 64 / 56 };
 let coinClipSeq = 0;
 
 let payload = {
@@ -97,6 +109,17 @@ function severityClass(usedPercent) {
   if (p > 85) return "sev-hot";
   if (p >= 60) return "sev-warn";
   return "sev-ok";
+}
+
+// Identity hint for the stylesheet: a healthy ring is colored by (provider,
+// physical ring position) so the rolling and weekly windows stay tellable apart
+// — severity alone paints both the same color whenever both are healthy. The
+// argument is the ring's PHYSICAL slot, not the window's logical name: a
+// provider reporting only one window (Codex, since the 5h window was retired)
+// draws it in the outer slot and should read as the outer ring.
+// Appended last so the "sev-x is-near" pair stays contiguous.
+function identityClass(providerKey, ringSlot) {
+  return `pv-${providerKey} rg-${ringSlot}`;
 }
 
 // Window reset on wall clock: the pre-reset number would read high, so an
@@ -260,11 +283,21 @@ function buildCoinSvg(model) {
   const outer = model.windows.find((w) => w.ring === "outer") || model.windows[0];
   const inner = model.windows.find((w) => w.ring === "inner");
 
-  svg.appendChild(ringCircle("track", OUTER_R, OUTER_SW, null));
+  // The track carries the identity classes too: it is the same hue as the fill,
+  // just laid down faintly as a bed (see quota-ring.html). A reset ring draws no
+  // fill at all, so its bed is the only thing left — it must not fall back to
+  // grey there, and it gets its own class so the bed can be strengthened for
+  // exactly that state. Per RING, not per row: .coin-row.is-reset only exists
+  // when EVERY window reset, so "one window reset while the other is live" —
+  // the common case right after a 5h rollover — falls straight through it.
+  const bedOnly = (w) => !!w && w.reset === true && quotaDisplayMode() === "used";
+  svg.appendChild(ringCircle(
+    `track ${identityClass(model.providerKey, "outer")}${bedOnly(outer) ? " is-reset-bed" : ""}`,
+    OUTER_R, OUTER_SW, null));
   if (outer && (!outer.reset || quotaDisplayMode() === "remaining")) {
     const outerNear = !outer.reset && model.near && model.binding === outer;
     const f = ringCircle(
-      `fill ${outer.reset ? "sev-reset" : severityClass(outer.pct)}${outerNear ? " is-near" : ""}`,
+      `fill ${outer.reset ? "sev-reset" : severityClass(outer.pct)}${outerNear ? " is-near" : ""} ${identityClass(model.providerKey, "outer")}`,
       OUTER_R,
       OUTER_SW,
       { pct: outer.reset ? 100 : quotaDisplayPercent(outer.pct) }
@@ -272,11 +305,13 @@ function buildCoinSvg(model) {
     svg.appendChild(f);
   }
   if (dual) {
-    svg.appendChild(ringCircle("track", INNER_R, INNER_SW, null));
+    svg.appendChild(ringCircle(
+      `track ${identityClass(model.providerKey, "inner")}${bedOnly(inner) ? " is-reset-bed" : ""}`,
+      INNER_R, INNER_SW, null));
     if (inner && (!inner.reset || quotaDisplayMode() === "remaining")) {
       const innerNear = !inner.reset && model.near && model.binding === inner;
       svg.appendChild(ringCircle(
-        `fill ${inner.reset ? "sev-reset" : severityClass(inner.pct)}${innerNear ? " is-near" : ""}`,
+        `fill ${inner.reset ? "sev-reset" : severityClass(inner.pct)}${innerNear ? " is-near" : ""} ${identityClass(model.providerKey, "inner")}`,
         INNER_R,
         INNER_SW,
         { pct: inner.reset ? 100 : quotaDisplayPercent(inner.pct) }
@@ -308,7 +343,8 @@ function buildCoinSvg(model) {
     defs.appendChild(clip);
     svg.appendChild(defs);
 
-    const box = plateR * 2 * GLYPH_ZOOM; // oversize past the clip → crops PNG padding
+    const zoom = GLYPH_ZOOM_BY_PROVIDER[model.providerKey] || GLYPH_ZOOM;
+    const box = plateR * 2 * zoom; // oversize past the clip → crops PNG padding
     const img = document.createElementNS(SVG_NS, "image");
     img.setAttribute("class", "glyph");
     img.setAttribute("x", String(CX - box / 2));
