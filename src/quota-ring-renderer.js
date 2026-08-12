@@ -249,6 +249,10 @@ function buildCoinModel(source, def, now, multiSource) {
     windows,
     binding,
     displayWindow,
+    // Kept so the row can show the rolling number as a subline when the alert
+    // borrowed the headline — the reason to yield was that the two disagreed,
+    // and dropping the quiet one entirely trades one blind spot for another.
+    restingWindow,
     state,
     near: !!near,
   };
@@ -389,12 +393,16 @@ function buildCoinRow(model) {
   pct.className = "pct";
   const win = document.createElement("span");
   win.className = "win";
-  if (model.displayWindow && model.displayWindow.reset) {
+  // During a flashback the rolling window borrows the readout back. The rings
+  // never change — only which window the digits are reporting — so the alert
+  // stays on screen the whole time.
+  const shown = model.flashingResting ? model.restingWindow : model.displayWindow;
+  if (shown && shown.reset) {
     pct.textContent = quotaDisplayMode() === "remaining" ? "100%" : "0%";
     win.textContent = t("quotaRingReset");
-  } else if (model.displayWindow) {
-    pct.textContent = `${Math.round(quotaDisplayPercent(model.displayWindow.pct))}%`;
-    win.textContent = model.displayWindow.label;
+  } else if (shown) {
+    pct.textContent = `${Math.round(quotaDisplayPercent(shown.pct))}%`;
+    win.textContent = shown.label;
   } else {
     pct.textContent = "—";
     win.textContent = model.windows[0] ? model.windows[0].label : "";
@@ -419,6 +427,105 @@ function buildOverflow(count) {
   return el;
 }
 
+// ── Rolling-window flashback ──
+//
+// When an alert borrows the headline, the rolling number vanishes — but "what
+// did that last run cost me?" is still the question the ring gets opened for.
+// Rather than cycling the two forever (permanent motion in the corner of the
+// eye, and a glance can land on the wrong half), the rolling number is shown
+// only at the moments it is actually being asked about:
+//
+//   - the cluster becomes visible and the rolling number moved since it was
+//     last on screen — i.e. you summoned it right after using some quota;
+//   - it is pinned, and the rolling number moves under you.
+//
+// Both are events, not a timer: an idle desktop never animates. Movement
+// includes a window reset (70% -> 1%), which is exactly the kind of change
+// worth surfacing.
+const FLASH_MS = 1600;
+const flashState = new Map(); // coin key -> { lastPct, pending, until }
+let ringVisible = true; // main process tells us; assume visible until told
+let flashTimer = null;
+
+function coinKey(model) {
+  return `${model.providerKey} ${model.host || ""}`;
+}
+
+// A coin only has something to flash back TO when the alert took the headline
+// from a different window.
+function flashCandidate(model) {
+  return model.restingWindow
+    && model.displayWindow
+    && model.restingWindow !== model.displayWindow
+    ? model.restingWindow
+    : null;
+}
+
+function armFlash(entry, now) {
+  entry.pending = false;
+  // Do not restart a flash already running: with several runs back to back the
+  // readout would otherwise sit on the rolling number indefinitely.
+  if (!(entry.until > now)) entry.until = now + FLASH_MS;
+}
+
+// Fold the current snapshot into the flash state. Called only where the
+// snapshot is actually consumed — never from fingerprint(), which runs every
+// tick and must stay free of side effects.
+function noteRestingWindows(coins, now) {
+  const seen = new Set();
+  for (const model of coins) {
+    const key = coinKey(model);
+    seen.add(key);
+    const resting = model.restingWindow;
+    const pct = resting && !resting.reset ? resting.pct : null;
+    let entry = flashState.get(key);
+    if (!entry) {
+      // First sighting establishes the baseline; a fresh window (or a rebuilt
+      // one after the panel was destroyed) should not flash on arrival.
+      flashState.set(key, { lastPct: pct, pending: false, until: 0 });
+      continue;
+    }
+    if (pct !== entry.lastPct) {
+      entry.lastPct = pct;
+      if (flashCandidate(model)) {
+        // Hidden clusters bank the change instead of burning it: the flash is
+        // for whoever summons the ring next, and playing it to an empty screen
+        // would spend it on nobody.
+        if (ringVisible) armFlash(entry, now);
+        else entry.pending = true;
+      }
+    }
+  }
+  for (const key of [...flashState.keys()]) if (!seen.has(key)) flashState.delete(key);
+}
+
+function isFlashing(model, now) {
+  const entry = flashState.get(coinKey(model));
+  return !!(entry && entry.until > now && flashCandidate(model));
+}
+
+// Release whatever was banked while the cluster was hidden. Returns whether
+// anything actually fired, so the caller can skip a repaint.
+function armPendingFlashes(coins, now) {
+  let armed = false;
+  for (const model of coins) {
+    const entry = flashState.get(coinKey(model));
+    if (entry && entry.pending && flashCandidate(model)) {
+      armFlash(entry, now);
+      armed = true;
+    }
+  }
+  return armed;
+}
+
+function scheduleFlashEnd() {
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => {
+    flashTimer = null;
+    render();
+  }, FLASH_MS + 30);
+}
+
 // Digest of everything time flips WITHOUT a new snapshot (bucket expiry, source
 // staleness), so the 1s tick can re-render on change even for a pinned cluster
 // receiving no snapshots.
@@ -435,7 +542,9 @@ function fingerprint(now) {
         : 0;
       return `${w.ring}:${w.field}:${w.pct}:${w.reset ? 1 : 0}:${resetIn}:${w.stale ? 1 : 0}:${staleAge}`;
     }).join(",");
-    return `${m.providerKey}:${m.host || ""}:${m.state}:${windows}`;
+    // Include the flash so the 1s tick repaints when one expires, even if the
+    // precise timer was lost (panel destroyed and rebuilt mid-flash).
+    return `${m.providerKey}:${m.host || ""}:${m.state}:${isFlashing(m, now) ? 1 : 0}:${windows}`;
   }).join("|");
   return `${quotaDisplayMode()}|${digest}`;
 }
@@ -452,7 +561,10 @@ function render() {
   const visible = coins.slice(0, MAX_COINS);
   const overflow = coins.length - visible.length;
 
-  for (const model of visible) clusterEl.appendChild(buildCoinRow(model));
+  for (const model of visible) {
+    model.flashingResting = isFlashing(model, now);
+    clusterEl.appendChild(buildCoinRow(model));
+  }
   if (overflow > 0) clusterEl.appendChild(buildOverflow(overflow));
 }
 
@@ -475,11 +587,33 @@ async function init() {
       translations: payload.translations,
       lang: payload.lang,
     };
+    const now = Date.now();
+    const coins = collectCoins(now);
+    noteRestingWindows(coins, now);
+    if (coins.some((model) => isFlashing(model, now))) scheduleFlashEnd();
     render();
   });
 
+  // Visibility comes from the main process rather than the Page Visibility API:
+  // an Electron window that is merely hidden does not reliably flip
+  // document.visibilityState, and a pinned cluster never hides at all.
+  if (typeof window.quotaRingAPI.onVisibility === "function") {
+    window.quotaRingAPI.onVisibility((visible) => {
+      const wasVisible = ringVisible;
+      ringVisible = visible !== false;
+      if (!ringVisible || wasVisible) return;
+      const now = Date.now();
+      if (!armPendingFlashes(collectCoins(now), now)) return;
+      scheduleFlashEnd();
+      render();
+    });
+  }
+
   const i18n = await window.quotaRingAPI.getI18n();
   if (i18n) payload = { ...payload, translations: i18n.translations || {}, lang: i18n.lang };
+  // Establish the baseline before the first paint so a cold start never opens
+  // on a flashback.
+  noteRestingWindows(collectCoins(Date.now()), Date.now());
   render();
   setInterval(tick, 1000);
 }

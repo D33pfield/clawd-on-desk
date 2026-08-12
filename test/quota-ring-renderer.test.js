@@ -91,6 +91,55 @@ function loadRenderer() {
   return context;
 }
 
+// Drives the flashback state machine the way the real callbacks do: push a
+// snapshot, fold it in, then ask what the readout would print.
+function flashHarness(context) {
+  const run = (expr, vars = {}) => {
+    Object.assign(context, vars);
+    return vm.runInContext(expr, context);
+  };
+  return {
+    push(accountQuota, now) {
+      run("payload = { ...payload, accountQuota: __q };"
+        + " __coins = collectCoins(__now); noteRestingWindows(__coins, __now);",
+      { __q: accountQuota, __now: now });
+    },
+    setVisible(visible) {
+      run("ringVisible = __v", { __v: visible });
+    },
+    reveal(now) {
+      return run("armPendingFlashes(collectCoins(__now), __now)", { __now: now });
+    },
+    // What the coin's digits say at this instant. Rebuilt in this realm: an
+    // object returned straight out of the vm has a different Object prototype
+    // and deepStrictEqual compares prototypes.
+    readout(now) {
+      const out = run(`(() => {
+        const model = collectCoins(__now)[0];
+        model.flashingResting = isFlashing(model, __now);
+        const row = buildCoinRow(model);
+        return {
+          pct: row.children[0].children[0].textContent,
+          win: row.children[0].children[1].textContent,
+          flashing: model.flashingResting,
+        };
+      })()`, { __now: now });
+      return { pct: out.pct, win: out.win, flashing: out.flashing };
+    },
+  };
+}
+
+const claudeSource = (five, week, now) => [{
+  host: null,
+  claudeQuota: {
+    lastSeenAt: now,
+    group: {
+      claudeFiveHour: { usedPercent: five, resetAt: now + 3_600_000, windowMinutes: 300, lastSeenAt: now },
+      claudeWeekly: { usedPercent: week, resetAt: now + 3_600_000, windowMinutes: 10080, lastSeenAt: now },
+    },
+  },
+}];
+
 function modelFor(context, source, providerIndex, now, multiSource = false) {
   context.__source = source;
   context.__now = now;
@@ -466,5 +515,99 @@ describe("quota ring renderer model", () => {
     vm.runInContext("payload.accountQuota = __accountQuota", context);
     const coins = vm.runInContext("collectCoins(1000000)", context);
     assert.strictEqual(coins.length, 0);
+  });
+});
+
+// The readout hands its headline to whichever window is in trouble, which
+// leaves the rolling number invisible exactly when someone is most likely to
+// ask "what did that last run cost me?". Rather than cycling the two forever,
+// the rolling number is replayed at the moments it is actually being asked
+// about: the cluster appearing after it moved, or moving while pinned.
+describe("quota ring rolling-window flashback", () => {
+  const NOW = 1_000_000;
+  const FLASH_MS = 1600;
+
+  it("does not flash on the very first snapshot", () => {
+    const context = loadRenderer();
+    const flash = flashHarness(context);
+    flash.setVisible(true);
+    // 1% rolling under a 61% weekly: the alert already owns the headline, so a
+    // naive "value differs from nothing" check would fire on arrival.
+    flash.push(claudeSource(1, 61, NOW), NOW);
+    assert.deepStrictEqual(flash.readout(NOW), { pct: "61%", win: "7d", flashing: false });
+  });
+
+  it("replays the rolling number when it moves while the cluster is visible", () => {
+    const context = loadRenderer();
+    const flash = flashHarness(context);
+    flash.setVisible(true);
+    flash.push(claudeSource(1, 61, NOW), NOW);
+    flash.push(claudeSource(4, 61, NOW), NOW + 10);
+
+    assert.deepStrictEqual(flash.readout(NOW + 10), { pct: "4%", win: "5h", flashing: true });
+    // ...and hands the headline back on its own.
+    assert.deepStrictEqual(
+      flash.readout(NOW + 10 + FLASH_MS + 1),
+      { pct: "61%", win: "7d", flashing: false }
+    );
+  });
+
+  it("banks the change while hidden and spends it when the cluster appears", () => {
+    const context = loadRenderer();
+    const flash = flashHarness(context);
+    flash.setVisible(false);
+    flash.push(claudeSource(1, 61, NOW), NOW);
+    flash.push(claudeSource(4, 61, NOW), NOW + 10);
+    // Nothing plays to an empty screen.
+    assert.strictEqual(flash.readout(NOW + 10).flashing, false);
+
+    flash.setVisible(true);
+    assert.strictEqual(flash.reveal(NOW + 5000), true);
+    assert.deepStrictEqual(flash.readout(NOW + 5000), { pct: "4%", win: "5h", flashing: true });
+  });
+
+  it("spends a banked change only once", () => {
+    const context = loadRenderer();
+    const flash = flashHarness(context);
+    flash.setVisible(false);
+    flash.push(claudeSource(1, 61, NOW), NOW);
+    flash.push(claudeSource(4, 61, NOW), NOW + 10);
+    flash.setVisible(true);
+    flash.reveal(NOW + 5000);
+    // A second appearance with nothing new since should be quiet.
+    assert.strictEqual(flash.reveal(NOW + 5000 + FLASH_MS + 1), false);
+  });
+
+  it("stays quiet when the alert never took the headline", () => {
+    const context = loadRenderer();
+    const flash = flashHarness(context);
+    flash.setVisible(true);
+    // Weekly below the warning threshold: the readout is already the rolling
+    // window, so there is nothing to flash back to.
+    flash.push(claudeSource(1, 30, NOW), NOW);
+    flash.push(claudeSource(4, 30, NOW), NOW + 10);
+    assert.deepStrictEqual(flash.readout(NOW + 10), { pct: "4%", win: "5h", flashing: false });
+  });
+
+  it("treats a window reset as a change worth replaying", () => {
+    const context = loadRenderer();
+    const flash = flashHarness(context);
+    flash.setVisible(true);
+    flash.push(claudeSource(70, 61, NOW), NOW);
+    // 70% -> 1% is the rollover, and "the 5h window just came back" is exactly
+    // the kind of thing worth surfacing.
+    flash.push(claudeSource(1, 61, NOW), NOW + 10);
+    assert.deepStrictEqual(flash.readout(NOW + 10), { pct: "1%", win: "5h", flashing: true });
+  });
+
+  it("does not restart a flash already running", () => {
+    const context = loadRenderer();
+    const flash = flashHarness(context);
+    flash.setVisible(true);
+    flash.push(claudeSource(1, 61, NOW), NOW);
+    flash.push(claudeSource(4, 61, NOW), NOW + 10);
+    // Back-to-back runs must not pin the readout on the rolling number forever.
+    flash.push(claudeSource(7, 61, NOW), NOW + 900);
+    assert.strictEqual(flash.readout(NOW + 10 + FLASH_MS + 1).flashing, false);
   });
 });
