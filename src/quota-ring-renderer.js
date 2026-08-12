@@ -62,6 +62,14 @@ const INNER_C = 2 * Math.PI * INNER_R;
 // (avatar mask) and oversize past the clip so the mark fills the circle instead
 // of floating small inside the PNG's whitespace.
 const GLYPH_ZOOM = 1.35;
+// Per-provider override. The exporter already fits every glyph inside a 56x56
+// safe area on a 64x64 canvas, so 1.35 crops a second time on top of that —
+// tolerable for marks that carry their own slack, fatal for a radial one whose
+// arms end at the safe-area edge. Claude's starburst loses 17.9% of its ink at
+// 1.35 and 1.5% at 64/56, which is exactly the "circular clip lops the corners"
+// problem the icon swap set out to fix. Left at 1.35 elsewhere: those glyphs
+// have uneven padding and 1.35 is what makes them fill the hole.
+const GLYPH_ZOOM_BY_PROVIDER = { claudeQuota: 64 / 56 };
 let coinClipSeq = 0;
 
 let payload = {
@@ -278,8 +286,14 @@ function buildCoinSvg(model) {
   // The track carries the identity classes too: it is the same hue as the fill,
   // just laid down faintly as a bed (see quota-ring.html). A reset ring draws no
   // fill at all, so its bed is the only thing left — it must not fall back to
-  // grey there.
-  svg.appendChild(ringCircle(`track ${identityClass(model.providerKey, "outer")}`, OUTER_R, OUTER_SW, null));
+  // grey there, and it gets its own class so the bed can be strengthened for
+  // exactly that state. Per RING, not per row: .coin-row.is-reset only exists
+  // when EVERY window reset, so "one window reset while the other is live" —
+  // the common case right after a 5h rollover — falls straight through it.
+  const bedOnly = (w) => !!w && w.reset === true && quotaDisplayMode() === "used";
+  svg.appendChild(ringCircle(
+    `track ${identityClass(model.providerKey, "outer")}${bedOnly(outer) ? " is-reset-bed" : ""}`,
+    OUTER_R, OUTER_SW, null));
   if (outer && (!outer.reset || quotaDisplayMode() === "remaining")) {
     const outerNear = !outer.reset && model.near && model.binding === outer;
     const f = ringCircle(
@@ -291,7 +305,9 @@ function buildCoinSvg(model) {
     svg.appendChild(f);
   }
   if (dual) {
-    svg.appendChild(ringCircle(`track ${identityClass(model.providerKey, "inner")}`, INNER_R, INNER_SW, null));
+    svg.appendChild(ringCircle(
+      `track ${identityClass(model.providerKey, "inner")}${bedOnly(inner) ? " is-reset-bed" : ""}`,
+      INNER_R, INNER_SW, null));
     if (inner && (!inner.reset || quotaDisplayMode() === "remaining")) {
       const innerNear = !inner.reset && model.near && model.binding === inner;
       svg.appendChild(ringCircle(
@@ -327,7 +343,8 @@ function buildCoinSvg(model) {
     defs.appendChild(clip);
     svg.appendChild(defs);
 
-    const box = plateR * 2 * GLYPH_ZOOM; // oversize past the clip → crops PNG padding
+    const zoom = GLYPH_ZOOM_BY_PROVIDER[model.providerKey] || GLYPH_ZOOM;
+    const box = plateR * 2 * zoom; // oversize past the clip → crops PNG padding
     const img = document.createElementNS(SVG_NS, "image");
     img.setAttribute("class", "glyph");
     img.setAttribute("x", String(CX - box / 2));

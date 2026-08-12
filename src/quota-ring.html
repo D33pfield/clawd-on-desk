@@ -27,9 +27,17 @@
    on both.
 
    What hue does NOT carry: which quota family an Antigravity ring picked
-   (Gemini vs third-party — the readout prefix says that), and it cannot be the
-   sole carrier of an alert, since color-vision deficiency flattens these six
-   hues toward one axis. The pulse and the readout are the redundant channels. */
+   (Gemini vs third-party — the readout prefix says that).
+
+   Where color IS currently the sole carrier, stated plainly rather than wished
+   away, because CVD flattens these six hues toward one axis:
+   - An INNER ring in warning. The readout follows displayWindow (outer first)
+     while the alert follows binding (the most-constrained window), so inner 90%
+     / outer 30% prints "30% 5h" and the red inner ring is the only signal.
+   - Anything in the 60-85% band, which does not pulse at all.
+   - Any alert under prefers-reduced-motion, which drops the pulse too.
+   The fix for the first one is to print binding's number once it crosses a
+   threshold, not to add more motion; tracked separately from this palette. */
 :root {
   --sev-warn: #fbbf24;
   --sev-hot: #f87171;
@@ -41,14 +49,17 @@
      Two honest caveats, measured rather than assumed:
      (1) 14% is deliberately fainter than the 38% grey it replaces — the weight
          of that grey ring was the complaint. It buys lightness, not visibility.
-     (2) At EQUAL alpha a neutral grey actually beats these hues on luminance
-         contrast against a light wallpaper (1.11 vs 1.05-1.09 at 14% over
-         #dcdcd6), because #8c8e98 is darker than any of them. The hue wins on
-         CHROMATIC contrast instead: grey shares the wallpaper's hue and reads as
-         a smudge, a saturated bed reads as an object. That trade is real for
-         normal vision and worthless for color-vision deficiency, which is why
-         the bed is a nicety and never the only carrier of a state. */
-  --track-alpha: 14%;
+     (2) At EQUAL alpha a neutral grey beats MOST of these hues on luminance
+         contrast against a light wallpaper (1.11 over #dcdcd6, vs 1.06-1.09 for
+         five of the six — indigo is the exception at 1.16), because #8c8e98 is
+         darker than they are. Those five win on CHROMATIC contrast instead:
+         grey shares the wallpaper's hue and reads as a smudge, a saturated bed
+         reads as an object. That trade is real for normal vision and worthless
+         under color-vision deficiency, which is why the bed is a nicety and
+         never the sole carrier of a state — see .track.is-reset-bed for the one
+         state where it IS alone, and what that state gets instead. */
+  --track-alpha: 0.14;
+  --track-alpha-reset: 0.2;
   /* Bed for a ring that somehow carries no identity class. Not reachable today
      (buildCoinSvg always tags both tracks) and NOT a fallback for an invalid
      color-mix — an invalid value resolves to `unset`, not to a lower-specificity
@@ -57,7 +68,8 @@
   /* Healthy identity pairs: outer (rolling) → inner (weekly).
      Adding a provider to RING_PROVIDERS means adding a pair HERE too; the
      generic pair below is Claude's, so a provider without its own colors would
-     silently wear Claude's. test/quota-ring-renderer.test.js pins that. */
+     silently wear Claude's. test/session-hud-style.test.js pins that, and also
+     pins that each pair's two colors actually differ. */
   --id-outer: #2dd4bf;
   --id-inner: #60a5fa;
   --id-claude-outer: #2dd4bf;
@@ -169,10 +181,26 @@ body { padding: 6px 6px 8px; }
 .coin .track { stroke: var(--ring-track); }
 .coin .track.rg-outer,
 .coin .track.rg-inner {
-  /* var() fallback, not the rule above: an invalid color-mix resolves to
-     `unset` → inherit → stroke's initial `none`, which would erase the ring
-     rather than drop it to the neutral bed. */
-  stroke: color-mix(in srgb, var(--ring-id, var(--id-outer)) var(--track-alpha), transparent);
+  /* Plain stroke + stroke-opacity, deliberately NOT color-mix(). A color-mix()
+     that goes invalid for any reason (unsupported, a bad --track-alpha, a typo)
+     resolves to `unset` at computed-value time — the cascade does NOT fall back
+     to the lower-specificity `.coin .track` rule above, and `stroke` inherits
+     down to its initial `none`, erasing the ring. Splitting hue from alpha keeps
+     every failure mode graceful: a bad hue falls back via var(), and a bad alpha
+     leaves stroke-opacity at its initial 1 — loud, but never invisible. */
+  stroke: var(--ring-id, var(--id-outer));
+  stroke-opacity: var(--track-alpha);
+}
+/* A reset ring draws no fill in "used" mode, so this bed is the only thing left
+   on screen. Two problems at 14%: it is the faintest thing on the coin, and a
+   stale row multiplies it by another 0.72. 20% is not a guess — 0.14 / 0.72 =
+   0.194, i.e. a stale reset track lands back at a normal track's effective
+   alpha. The dash adds a non-color channel for the same state, which matters
+   because color alone cannot carry it under CVD. Deliberately NOT a solid full
+   arc: in "used" mode a complete ring reads as 100% consumed. */
+.coin .track.is-reset-bed {
+  stroke-opacity: var(--track-alpha-reset);
+  stroke-dasharray: 1.5 2;
 }
 /* Healthy fill: the identity hue at full strength. */
 .coin .fill.sev-ok { stroke: var(--ring-id, var(--id-outer)); }
