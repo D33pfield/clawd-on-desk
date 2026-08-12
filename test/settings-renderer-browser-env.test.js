@@ -4317,6 +4317,53 @@ describe("settings renderer browser environment", () => {
     );
   });
 
+  it("localizes common bot channel and scope failures from Send Test", async () => {
+    const strings = loadSettingsI18nForTest().en;
+    let testCode = "slack-missing_scope";
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+        slackNotify: { enabled: false, channelId: "C123", notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "slackNotify.status") {
+            return Promise.resolve({ status: "ok", state: {
+              enabled: false, ready: false, configured: false, transportConfigured: true,
+              transport: "bot", credentialsPresent: true, secretsStored: true,
+            } });
+          }
+          if (name === "slackNotify.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, webhookUrl: "", botToken: "xoxb-…" });
+          }
+          if (name === "slackNotify.test") return Promise.resolve({ status: "error", code: testCode });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    for (const [code, expected] of [
+      ["slack-missing_scope", strings.slackNotifyErrMissingScope],
+      ["slack-channel_not_found", strings.slackNotifyErrChannelNotFound],
+      ["slack-not_in_channel", strings.slackNotifyErrNotInChannel],
+    ]) {
+      testCode = code;
+      harness.render();
+      const sendTest = harness.content.querySelector(".slack-notify-channel-card")
+        .querySelectorAll("button")
+        .find((button) => button.textContent === strings.slackNotifySendTest);
+      sendTest.dispatchEvent({ type: "click" });
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+      assert.equal(toasts[toasts.length - 1].message, expected);
+    }
+  });
+
   it("preserves Slack form drafts across rerenders and only clears completed writes", async () => {
     const strings = loadSettingsI18nForTest().en;
     let secretWriteResult = { status: "error", code: "write-failed", message: "raw fs detail" };
@@ -4377,6 +4424,13 @@ describe("settings renderer browser environment", () => {
     };
 
     let current = controls();
+    harness.core.state.snapshot.slackNotify.channelId = "C-refreshed";
+    harness.render();
+    assert.equal(controls().channelInput.value, "C-refreshed",
+      "a pristine channel field follows the settings store");
+    harness.core.state.snapshot.slackNotify.channelId = "C-saved";
+    harness.render();
+    current = controls();
     current.secretInputs[0].value = "https://hooks.slack.com/services/new";
     current.secretInputs[0].dispatchEvent({ type: "input" });
     current.secretInputs[1].value = "xoxb-new-token";
@@ -4389,6 +4443,20 @@ describe("settings renderer browser environment", () => {
     assert.equal(current.secretInputs[0].value, "https://hooks.slack.com/services/new");
     assert.equal(current.secretInputs[1].value, "xoxb-new-token");
     assert.equal(current.channelInput.value, " C-draft ");
+
+    updateMode = "ok";
+    const doneRow = current.card.querySelectorAll(".row")
+      .find((row) => collectText(row).includes(strings.slackNotifyEventDone));
+    doneRow.querySelector(".switch").dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    current = controls();
+    assert.equal(updateCalls[updateCalls.length - 1].value.channelId, "C-saved",
+      "an event toggle never silently commits an unsaved channel draft");
+    assert.equal(current.channelInput.value, " C-draft ",
+      "the unsaved channel draft remains visible after an unrelated save");
+    updateMode = "fail";
 
     current.secretSave.dispatchEvent({ type: "click" });
     for (let i = 0; i < 4; i += 1) await Promise.resolve();

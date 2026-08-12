@@ -1937,6 +1937,7 @@
     configPending: false,
     testPending: false,
     formDraft: null,
+    formDirty: { webhookUrl: false, botToken: false, channelId: false },
   };
 
   function currentSlackConfig() {
@@ -1959,18 +1960,33 @@
         channelId: currentSlackConfig().channelId,
       };
     }
+    const savedChannelId = currentSlackConfig().channelId;
+    if (slackView.formDirty.channelId && slackView.formDraft.channelId.trim() === savedChannelId) {
+      // The settings broadcast has caught up with a successful write (or the
+      // user typed the already-saved value). The draft is pristine again.
+      slackView.formDraft.channelId = savedChannelId;
+      slackView.formDirty.channelId = false;
+    } else if (!slackView.formDirty.channelId) {
+      // Keep an untouched field in sync with store updates. Secret inputs are
+      // replacement-only and intentionally stay blank until the user types.
+      slackView.formDraft.channelId = savedChannelId;
+    }
     return slackView.formDraft;
   }
 
   function setSlackFormDraftValue(field, value) {
     getSlackFormDraft()[field] = String(value == null ? "" : value);
+    slackView.formDirty[field] = true;
   }
 
   function clearSubmittedSlackSecretDraft(payload) {
     const draft = getSlackFormDraft();
     for (const field of ["webhookUrl", "botToken"]) {
       if (!Object.prototype.hasOwnProperty.call(payload, field)) continue;
-      if (draft[field].trim() === payload[field]) draft[field] = "";
+      if (draft[field].trim() === payload[field]) {
+        draft[field] = "";
+        slackView.formDirty[field] = false;
+      }
     }
   }
 
@@ -2309,6 +2325,9 @@
       timeout: "slackNotifyErrNetwork",
       "invalid-webhook": "slackNotifyErrInvalidWebhook",
       "invalid-bot-token": "slackNotifyErrInvalidToken",
+      "slack-missing_scope": "slackNotifyErrMissingScope",
+      "slack-channel_not_found": "slackNotifyErrChannelNotFound",
+      "slack-not_in_channel": "slackNotifyErrNotInChannel",
       "write-failed": "slackNotifySecretsSaveFailed",
     };
     if (byCode[code]) return t(byCode[code]);
@@ -2355,7 +2374,8 @@
         // The field remains editable while the async write is pending. Do not
         // replace a newer draft when the earlier request eventually succeeds.
         if (saved && getSlackFormDraft().channelId.trim() === channelId) {
-          setSlackFormDraftValue("channelId", channelId);
+          slackView.formDraft.channelId = channelId;
+          slackView.formDirty.channelId = currentSlackConfig().channelId !== channelId;
         }
       });
     });

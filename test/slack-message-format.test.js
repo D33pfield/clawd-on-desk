@@ -404,7 +404,7 @@ test("large question cards use one bounded section per complete question", () =>
   assert.ok(!JSON.stringify(msg).includes("question-5-"));
 });
 
-test("an option that cannot fit is omitted whole and counted", () => {
+test("an overlong option is bounded before section admission", () => {
   const enormous = `start-${"x".repeat(fmt.SECTION_MAX)}-end`;
   const msg = fmt.buildPermissionMessage({
     kind: "question",
@@ -412,9 +412,10 @@ test("an option that cannot fit is omitted whole and counted", () => {
   }, { lang: "en" });
   const section = msg.blocks.find((block) =>
     block.type === "section" && block.text.text.includes("Choose one")).text.text;
-  assert.ok(!section.includes("start-"), "the formatter never slices through an option line");
-  assert.ok(!section.includes("small"), "ordering is preserved after the length budget is reached");
-  assert.match(section, /\+2 more/, "length-budget omissions are explicit");
+  assert.ok(section.includes("start-"), "the bounded preview keeps useful leading context");
+  assert.ok(!section.includes("-end"), "the exported formatter clamps labels defensively");
+  assert.ok(section.includes("small"), "one oversized label cannot hide later choices");
+  assert.ok(section.length <= fmt.SECTION_MAX);
 });
 
 test("an approval card is unchanged by the new fields", () => {

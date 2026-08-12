@@ -464,6 +464,49 @@ describe("slack permission announce: remote-only entries", () => {
     assert.equal(ctx.announceOptions[0].isStillRelevant(), false);
   });
 
+  it("never sends a Grep search pattern as remote fallback detail", () => {
+    const requested = [];
+    const callbacks = [];
+    const client = {
+      requestApproval: (payload, options) => {
+        requested.push(payload);
+        callbacks.push(options.onDelivered);
+        return new Promise(() => {});
+      },
+    };
+    const ctx = makeRemoteCtx({ getRemoteApprovalClients: () => [{ name: "telegram", client }] });
+    const perm = initPermission(ctx);
+    const sensitivePattern = "(?i)john.doe@acme-holdings.example";
+    const grep = makePermEntry({
+      bubble: null,
+      remoteOnly: true,
+      toolName: "Grep",
+      toolInput: { pattern: sensitivePattern },
+    });
+    const glob = makePermEntry({
+      bubble: null,
+      remoteOnly: true,
+      sessionId: "session-glob",
+      toolName: "Glob",
+      toolInput: { pattern: "src/**/*.js" },
+    });
+    perm.addPendingPermission(grep, "added");
+    perm.addPendingPermission(glob, "added");
+
+    assert.equal(perm.maybeStartRemoteApproval(grep), true);
+    assert.equal(perm.maybeStartRemoteApproval(glob), true);
+    assert.equal(requested.length, 2);
+    assert.ok(!JSON.stringify(requested[0]).includes(sensitivePattern),
+      "Grep's raw search expression must stay on the desktop");
+    assert.match(JSON.stringify(requested[0]), /No description available/i);
+    assert.match(JSON.stringify(requested[1]), /src\/\*\*\/\*\.js/,
+      "Glob file-selection patterns remain useful low-risk fallback context");
+
+    callbacks[0]({ messageId: 1 });
+    assert.ok(!JSON.stringify(ctx.announced[0]).includes(sensitivePattern),
+      "the Slack announcement payload must remain free of the Grep expression");
+  });
+
   it("does not announce when a remote attempt immediately resolves null or rejects", async () => {
     for (const requestApproval of [
       () => Promise.resolve(null),
@@ -662,7 +705,13 @@ describe("slack announce: interaction kind and action target", () => {
     // maybeStartRemoteApproval runs for ordinary bubbled entries too (codex,
     // qwen, CC elicitation all call it). Only remote-only entries should be
     // labelled "decide remotely" from there.
-    const client = { requestApproval: () => new Promise(() => {}) };
+    let onDelivered;
+    const client = {
+      requestApproval: (_payload, options) => {
+        onDelivered = options.onDelivered;
+        return new Promise(() => {});
+      },
+    };
     const ctx = makeCtx({
       getTelegramApprovalClient: () => null,
       getRemoteApprovalClients: () => [{ name: "telegram", client }],
@@ -672,8 +721,14 @@ describe("slack announce: interaction kind and action target", () => {
     perm.addPendingPermission(entry, "added");
 
     perm.maybeStartRemoteApproval(entry);
+    onDelivered({ messageId: 42 });
     assert.deepEqual(ctx.announced, [],
-      "a bubbled entry announces only after its renderer acknowledgement");
+      "a remote delivery ACK cannot announce an entry that has a bubble");
+
+    renderAndAcknowledge(perm, entry);
+    assert.equal(ctx.announced.length, 1);
+    assert.equal(ctx.announced[0].actionTarget, "desktop",
+      "the renderer acknowledgement remains the sole announce path");
   });
 });
 

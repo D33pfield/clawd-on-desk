@@ -1409,7 +1409,8 @@ function buildRemoteElicitationPayload(permEntry) {
 // Tool-specific fields that hint at what the action targets, tried in order
 // when the tool gave no description/summary/reason (e.g. Write, Edit, Read —
 // unlike Bash, which always carries `description`). Only cheap, low-risk
-// identifiers (a path, a pattern) — never full file contents/diffs/commands.
+// identifiers (a path, a Glob file-selection pattern) — never full file
+// contents/diffs/commands/search queries.
 // Field names reuse bubble-format.js's firstStringValue so this list doesn't
 // drift out of sync with the naming variants (TargetFile/AbsolutePath/...)
 // other agents use.
@@ -1429,16 +1430,22 @@ function stripUrlQueryAndCredentials(value) {
   }
 }
 
-function buildRemoteApprovalFallbackDetail(input) {
+function buildRemoteApprovalFallbackDetail(input, toolName) {
   const pathValue = firstStringValue(input, FALLBACK_PATH_FIELDS);
   if (pathValue) {
     const text = compactRemoteApprovalText(basenameForDisplay(pathValue), 200);
     if (text) return text;
   }
-  const patternValue = firstStringValue(input, FALLBACK_PATTERN_FIELDS);
-  if (patternValue) {
-    const text = compactRemoteApprovalText(patternValue, 200);
-    if (text) return text;
+  // `pattern` is overloaded: Glob uses it to identify files, while Grep uses
+  // it for the user's raw search expression. The latter can contain customer
+  // names, email addresses, or secret identifiers and is no safer to send to
+  // a remote channel than the deliberately excluded `query` field.
+  if (toolName === "Glob") {
+    const patternValue = firstStringValue(input, FALLBACK_PATTERN_FIELDS);
+    if (patternValue) {
+      const text = compactRemoteApprovalText(patternValue, 200);
+      if (text) return text;
+    }
   }
   const urlValue = firstStringValue(input, FALLBACK_URL_FIELDS);
   if (urlValue) {
@@ -1453,7 +1460,7 @@ function buildRemoteApprovalFallbackDetail(input) {
 
 // String.prototype.replace's replacement-string argument treats $$/$&/$`/$'
 // as special sequences. Dynamic values (tool input, agent/tool names, etc.)
-// must never be interpolated with the string form — a Grep pattern
+// must never be interpolated with the string form — a Glob pattern
 // containing "$$", for example, would corrupt the rendered card. The
 // function form of the replacement argument is never parsed for $-sequences.
 function interpolate(template, token, value) {
@@ -1466,7 +1473,8 @@ function interpolate(template, token, value) {
 // a blank "Tool input hidden by Clawd" card would let the user approve a black
 // box. In practice that meant those requests never reached Telegram at all —
 // worse than a labelled blank card, since the user had no idea anything was
-// pending. Now we fall back to a cheap identifier (file path / pattern / URL)
+// pending. Now we fall back to a cheap identifier (file path / Glob pattern /
+// URL)
 // and, failing that, an explicit "no description, go check the desktop bubble"
 // notice — so every remote-approval-eligible request produces a card.
 function buildRemoteApprovalSummary(permEntry) {
@@ -1482,7 +1490,7 @@ function buildRemoteApprovalSummary(permEntry) {
     const text = compactRemoteApprovalText(candidate, 200);
     if (text) return text;
   }
-  const fallbackDetail = buildRemoteApprovalFallbackDetail(input);
+  const fallbackDetail = buildRemoteApprovalFallbackDetail(input, permEntry && permEntry.toolName);
   if (fallbackDetail) return interpolate(t("approvalSummaryFallbackDetail"), "{detail}", fallbackDetail);
   return t("approvalSummaryUnavailable");
 }

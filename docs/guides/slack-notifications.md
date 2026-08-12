@@ -26,7 +26,7 @@ message in Slack does not necessarily remove it from an export.
 | Host name | completions | card only | the session's remote host label, when present |
 | Agent name | completions, permissions | card only (a question fallback may use it as the subject) | e.g. `claude-code` |
 | Tool name | permissions | card only | e.g. `Bash` |
-| Permission summary / detail | permissions | card only | the agent's description, or a safe fallback: file basename, glob pattern, or URL origin + pathname (credentials and query stripped); raw commands and search queries are not fallback content |
+| Permission summary / detail | permissions | card only | the agent's description, or a safe fallback: file basename, a `Glob` file-selection pattern, or URL origin + pathname (credentials and query stripped); raw commands and search expressions such as `Grep.pattern` are not fallback content |
 | Question and option text | questions | card only | the agent's `AskUserQuestion` payload |
 | Assistant's last output | **only if** *Include assistant output* is on | card only | the model's final message, redacted and truncated |
 | Short session id | completions | card only | Clawd's internal id, first 6 characters |
@@ -82,12 +82,13 @@ misleading "answer in the desktop app" notification is sent. Remote-only entries
 are announced only after a remote approval client has delivered the actionable
 approval card.
 
-Question cards render each of at most five questions in its own bounded Slack
-section. Up to five complete option lines are included per question; Clawd never
-hard-cuts a card through the middle of an option. Whenever questions or options
-are left out because of these count/length budgets, a "+N more" marker says how
-many were omitted. These are the same count limits the Telegram and Feishu cards
-use, so one agent cannot flood a channel.
+The permission route accepts at most five questions and five options per
+question. Ambiguous or over-count payloads are handed back to the agent's native
+UI instead of being partially answerable in Clawd. For accepted payloads, Slack
+renders each question in its own bounded section and clamps each text field and
+complete option line. The formatter also keeps the same count caps for defensive
+legacy/direct calls and adds a "+N more" marker if such a caller supplies extra
+complete items. Telegram and Feishu use the same limits.
 
 ### What Do Not Disturb does, precisely
 
@@ -195,8 +196,10 @@ Automatic notifications are queued and delivered one at a time, so a burst of
 finished sessions and permission requests does not open several sockets at once.
 The explicit **Send test** action is immediate and does not enter this queue.
 
-- A rate-limited (429) send honours Slack's `Retry-After`; network, timeout and
-  5xx failures retry with capped exponential backoff.
+- A rate-limited (429) send honours Slack's `Retry-After`; network, timeout,
+  5xx, and Slack API transient failures (`internal_error`,
+  `service_unavailable`, `fatal_error`, `request_timeout`) retry with capped
+  exponential backoff.
 - Permanent failures — a revoked webhook (404) or a rejected token (401/403) —
   are not retried.
 - Both the queue length and the retry count are bounded. If Slack is unreachable
@@ -206,7 +209,8 @@ The explicit **Send test** action is immediate and does not enter this queue.
   notification option cancels already queued automatic work from the previous
   configuration. This prevents an old destination, event policy, or formatted
   payload (including assistant output) from crossing into the new policy. The
-  explicit **Send test** action is unaffected.
+  explicit **Send test** action is unaffected. Cancelled queue items are
+  settled and are not replayed under the new configuration.
 - Nothing here blocks the desktop pet; a failed notification never propagates
   into the event path.
 
@@ -228,9 +232,11 @@ already recorded that completion event.
 | Test works, notifications never arrive | the master switch or the per-event switch is off (Send Test only needs a valid credential, so it works during setup) |
 | Permission cards never arrive | permission automation is resolving them, or DND is on (both are intended — see above) |
 | Nothing arrives after a restart | previously a bug where the first completion after startup recovery was swallowed; fixed by priming the notifier with the recovered snapshot |
-| `not-found` (404) | the webhook was deleted, or the bot is not in the channel |
-| `unauthorized` (401/403) | the token was revoked, or is missing `chat:write` |
-| `channel_not_found` | wrong channel id, or the bot has not joined a private channel |
+| `not-found` (404) | the webhook was deleted |
+| `unauthorized` (401/403 or an authentication error) | the bot token is invalid or was revoked |
+| `slack-missing_scope` | the bot token is missing `chat:write` |
+| `slack-channel_not_found` | the channel id is wrong or the bot cannot see that channel |
+| `slack-not_in_channel` | the bot has not joined the channel |
 | Messages stop during a busy burst | rate limited; they are retried, and drops are logged |
 
 Failures are logged with the webhook and token redacted, so the log is safe to

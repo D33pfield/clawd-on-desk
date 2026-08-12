@@ -268,6 +268,7 @@ const MAX_QUESTIONS = 5;
 const MAX_OPTIONS = 5;
 const QUESTION_MAX = 240;
 const QUESTION_HEADER_MAX = 80;
+const OPTION_LABEL_MAX = 80;
 
 function renderQuestions(rawQuestions, locale) {
   const questions = Array.isArray(rawQuestions)
@@ -283,7 +284,7 @@ function renderQuestions(rawQuestions, locale) {
     const options = Array.isArray(question.options) ? question.options : [];
     const optionLabels = options.map((option) => {
       const label = option && typeof option === "object" ? option.label : option;
-      return redactMrkdwn(label || "").trim();
+      return clipMrkdwn(redactMrkdwn(label || "").trim(), OPTION_LABEL_MAX);
     }).filter(Boolean);
     const optionLines = [];
     const baseLines = [`*${header}*`, body].filter(Boolean);
