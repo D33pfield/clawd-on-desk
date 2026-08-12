@@ -249,3 +249,64 @@ describe("session HUD visual shell", () => {
     assert.match(sessionHudHtml, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*\.unread-bell svg\s*\{[\s\S]*animation:\s*none;/);
   });
 });
+
+// The exporter gives a plain mark 56 of its 64px canvas but a contrast-tile
+// mark only 40 (the rest is the light plate that keeps a black-on-transparent
+// logo alive on dark HUD/Dashboard surfaces). A coin crops its glyph to a
+// circle, so one shared zoom makes tiled marks render visibly smaller and
+// framed. This pins the per-provider zoom against the exporter's own manifest,
+// so adding a ring provider cannot silently inherit the wrong one.
+describe("quota ring glyph zoom follows the exporter's artwork ratio", () => {
+  const manifest = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "..", "assets", "source", "agent-icons", "source-manifest.json"), "utf8"
+  ));
+  const snapshotSource = fs.readFileSync(
+    path.join(__dirname, "..", "src", "state-session-snapshot.js"), "utf8"
+  );
+
+  it("zooms tiled marks to their artwork, not to the plate", () => {
+    // providerKey -> agent id, straight from the snapshot that feeds the ring.
+    const block = snapshotSource.match(/quotaAgentIcons: \(\(\) => \{[\s\S]*?\n    \}\)\(\)/);
+    assert.ok(block, "could not locate the quotaAgentIcons block");
+    const mapping = [...block[0].matchAll(/(\w+Quota):\s*iconFor\("([\w-]+)"\)/g)]
+      .map((m) => ({ providerKey: m[1], agentId: m[2] }));
+    assert.ok(mapping.length >= 3, `expected the ring providers, got ${JSON.stringify(mapping)}`);
+
+    const zoomBlock = quotaRingRenderer.match(/GLYPH_ZOOM_BY_PROVIDER = \{[\s\S]*?\}/);
+    assert.ok(zoomBlock, "no GLYPH_ZOOM_BY_PROVIDER");
+    const zooms = Object.fromEntries(
+      [...zoomBlock[0].matchAll(/(\w+Quota):\s*64\s*\/\s*([\d.]+)/g)].map((m) => [m[1], Number(m[2])])
+    );
+
+    // Only providers the ring actually draws; RING_PROVIDERS is the authority.
+    const drawn = new Set(
+      [...quotaRingRenderer.matchAll(/key:\s*"(\w+Quota)"/g)].map((m) => m[1])
+    );
+
+    for (const { providerKey, agentId } of mapping) {
+      if (!drawn.has(providerKey)) continue;
+      const tiled = !!(manifest.sources[agentId] || {}).contrastTreatment;
+      const divisor = zooms[providerKey];
+      assert.ok(
+        divisor !== undefined,
+        `${providerKey} (${agentId}) has no entry in GLYPH_ZOOM_BY_PROVIDER; it would fall back to `
+        + "the shared zoom, which fits neither artwork size"
+      );
+      if (tiled) {
+        // Artwork is 40 of 64, inside a 56px plate. The divisor may exceed 40 to
+        // leave breathing room, but must stay well under the 56 that would put
+        // the plate's edge back inside the clip as a visible frame.
+        assert.ok(
+          divisor >= 40 && divisor <= 46,
+          `${providerKey} (${agentId}) is contrast-tiled — its artwork fills 40 of 64, so the divisor `
+          + `should sit between 40 (flush) and ~46 (before the plate shows), got ${divisor}`
+        );
+      } else {
+        assert.strictEqual(
+          divisor, 56,
+          `${providerKey} (${agentId}) is not contrast-tiled, so its glyph fills 56 of 64`
+        );
+      }
+    }
+  });
+});

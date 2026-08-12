@@ -423,8 +423,13 @@ function createAccountQuotaStore(options = {}) {
     // Merge arbitration uses exact receive time, while snapshots expose only
     // minute-quantized stamps to avoid a broadcast on every statusline tick.
     const rawSeenByBucket = new WeakMap();
-    for (const record of sources.values()) {
-      const entry = { host: record.host };
+    for (const [sourceKey, record] of sources) {
+      // sourceKey, not host: `host` is a DISPLAY label and two trusted remote
+      // profiles are explicitly allowed to share one (see the "keeps trusted
+      // remote profile sources separate when display hosts match" test). Any
+      // renderer that keys per-source state off the label would collapse those
+      // two sources into one.
+      const entry = { sourceKey, host: record.host };
       let hasAny = false;
       for (const providerKey of QUOTA_PROVIDER_KEYS) {
         const stored = record[providerKey];
@@ -450,7 +455,8 @@ function createAccountQuotaStore(options = {}) {
     });
     if (options.mergeSources !== true || out.length <= 1) return out;
 
-    const merged = { host: null };
+    // The merged view is a single synthetic source; nothing can collide with it.
+    const merged = { sourceKey: null, host: null };
     let hasAny = false;
     for (const providerKey of QUOTA_PROVIDER_KEYS) {
       const providerCandidates = out

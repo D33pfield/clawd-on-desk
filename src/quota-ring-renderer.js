@@ -62,14 +62,36 @@ const INNER_C = 2 * Math.PI * INNER_R;
 // (avatar mask) and oversize past the clip so the mark fills the circle instead
 // of floating small inside the PNG's whitespace.
 const GLYPH_ZOOM = 1.35;
-// Per-provider override. The exporter already fits every glyph inside a 56x56
-// safe area on a 64x64 canvas, so 1.35 crops a second time on top of that —
-// tolerable for marks that carry their own slack, fatal for a radial one whose
-// arms end at the safe-area edge. Claude's starburst loses 17.9% of its ink at
-// 1.35 and 1.5% at 64/56, which is exactly the "circular clip lops the corners"
-// problem the icon swap set out to fix. Left at 1.35 elsewhere: those glyphs
-// have uneven padding and 1.35 is what makes them fill the hole.
-const GLYPH_ZOOM_BY_PROVIDER = { claudeQuota: 64 / 56 };
+// Per-provider override, because the exporter does not give every glyph the
+// same share of its canvas (see scripts/export-agent-icons.js):
+//
+//   plain marks           artwork fills 56 of 64  -> zoom 64/56
+//   contrast-tile marks   artwork fills 40 of 64, inside a 56px light plate
+//                         -> zoom 64/40
+//
+// A single 1.35 for both is what made the Codex mark look 29% smaller than
+// Claude's and wear a visible frame: 1.35 shows the middle 47 units, so a
+// 40-unit mark floats with 7 units of its plate still in frame. Zooming to
+// 64/40 fills the hole with the mark itself and pushes the plate past the clip,
+// which is also why the frame disappears — and the plate (#f4f4f4) is within a
+// couple of levels of the coin's own plate (#f6f6f8), so nothing shows at the
+// seam. The tile exists so these black-on-transparent marks survive the dark
+// HUD and Dashboard surfaces; a coin already puts them on a light plate, so
+// here it is pure cost. test/session-hud-style.test.js pins this mapping
+// against the exporter's own manifest so a new provider cannot miss it.
+// Tiled marks get a little breathing room rather than a flush fit. Filling the
+// hole exactly (64/40) is geometrically "equal" to the plain marks but not
+// visually: OpenAI's six-blade spiral has thin interlocking strokes, and at the
+// coin's ~10.6px glyph circle its stroke gaps fall under a pixel and antialias
+// into a grey smudge. Claude's starburst survives flush because it is radial,
+// thick, and mostly empty. So 40 units of artwork are laid out at 90% of the
+// hole — 40 / 0.9 = 44.4 — which still pushes the plate past the clip (the
+// frame stays gone) without crowding the strokes.
+const GLYPH_ZOOM_BY_PROVIDER = {
+  antigravityQuota: 64 / 56,
+  claudeQuota: 64 / 56,
+  codexQuota: 64 / 44.4,
+};
 let coinClipSeq = 0;
 
 let payload = {
@@ -103,11 +125,16 @@ function formatWindowLabel(windowMinutes, fallbackLabel) {
   return `${Math.round(minutes)}m`;
 }
 
+// One definition of the thresholds: the ring's color, the pulse, and whether
+// the readout yields to the binding window all key off the same two numbers.
+const WARN_AT = 60; // >= this is amber
+const HOT_AT = 85; // > this is red (and pulses)
+
 function severityClass(usedPercent) {
   const p = Number(usedPercent);
   if (!Number.isFinite(p)) return "sev-ok";
-  if (p > 85) return "sev-hot";
-  if (p >= 60) return "sev-warn";
+  if (p > HOT_AT) return "sev-hot";
+  if (p >= WARN_AT) return "sev-warn";
   return "sev-ok";
 }
 
@@ -210,17 +237,27 @@ function buildCoinModel(source, def, now, multiSource) {
   for (const w of bindingCandidates) {
     if (!binding || w.pct > binding.pct) binding = w;
   }
-  // The compact readout answers the common "what is my rolling-window
-  // usage?" question. Keep it independent from binding: the weekly window
-  // can still own warning/pulse when it is more constrained. Prefer the
-  // rolling window while it is fresh, but never present an old rolling
-  // number as live when the weekly window has a newer confirmation.
-  const displayWindow = (outer && !outer.stale)
+  // The compact readout answers the common "what is my rolling-window usage?"
+  // question, so it prefers the rolling window while that is fresh — never
+  // presenting an old rolling number as live when the weekly window has a
+  // newer confirmation.
+  //
+  // But it yields to the binding window once that crosses a warning threshold.
+  // Otherwise the number and the alert describe different windows: 30% rolling
+  // over 90% weekly printed "30% 5h" — the most reassuring reading available —
+  // while the only thing reporting trouble was the inner ring's color. That
+  // left color as the sole carrier of the alert, which fails anyone with a
+  // color-vision deficiency, fails a glance that reads the digits, and (in the
+  // 60-85 band, where nothing pulses) has no other channel at all.
+  const restingWindow = (outer && !outer.stale)
     ? outer
     : ((inner && !inner.stale) ? inner : (outer || inner));
+  const displayWindow = (binding && binding.pct >= WARN_AT && binding !== restingWindow)
+    ? binding
+    : restingWindow;
   const stale = windows.every((w) => w.stale);
   const state = allReset ? "reset" : (stale ? "stale" : "live");
-  const near = state === "live" && binding && binding.pct > 85;
+  const near = state === "live" && binding && binding.pct > HOT_AT;
 
   const visibleHost = multiSource
     ? (source.host || t("dashboardQuotaSourceLocal"))
@@ -229,11 +266,19 @@ function buildCoinModel(source, def, now, multiSource) {
     providerKey: def.key,
     label: def.label,
     host: visibleHost || source.host || null,
+    // Stable identity from the store, distinct from the display label: two
+    // trusted remote profiles may share one host string, so anything keyed per
+    // source has to use this instead.
+    sourceKey: source.sourceKey === undefined ? null : source.sourceKey,
     sourceMarker: visibleHost,
     glyphUrl: payload.quotaAgentIcons && payload.quotaAgentIcons[def.key],
     windows,
     binding,
     displayWindow,
+    // Kept so the flashback can hand the readout back to the rolling number at
+    // the moments it is asked about — yielding the headline was right, but
+    // dropping the quiet number entirely trades one blind spot for another.
+    restingWindow,
     state,
     near: !!near,
   };
@@ -374,12 +419,16 @@ function buildCoinRow(model) {
   pct.className = "pct";
   const win = document.createElement("span");
   win.className = "win";
-  if (model.displayWindow && model.displayWindow.reset) {
+  // During a flashback the rolling window borrows the readout back. The rings
+  // never change — only which window the digits are reporting — so the alert
+  // stays on screen the whole time.
+  const shown = model.flashingResting ? model.restingWindow : model.displayWindow;
+  if (shown && shown.reset) {
     pct.textContent = quotaDisplayMode() === "remaining" ? "100%" : "0%";
     win.textContent = t("quotaRingReset");
-  } else if (model.displayWindow) {
-    pct.textContent = `${Math.round(quotaDisplayPercent(model.displayWindow.pct))}%`;
-    win.textContent = model.displayWindow.label;
+  } else if (shown) {
+    pct.textContent = `${Math.round(quotaDisplayPercent(shown.pct))}%`;
+    win.textContent = shown.label;
   } else {
     pct.textContent = "—";
     win.textContent = model.windows[0] ? model.windows[0].label : "";
@@ -404,6 +453,134 @@ function buildOverflow(count) {
   return el;
 }
 
+// ── Rolling-window flashback ──
+//
+// When an alert borrows the headline, the rolling number vanishes — but "what
+// did that last run cost me?" is still the question the ring gets opened for.
+// Rather than cycling the two forever (permanent motion in the corner of the
+// eye, and a glance can land on the wrong half), the rolling number is shown
+// only at the moments it is actually being asked about:
+//
+//   - the cluster becomes visible and the rolling number moved since it was
+//     last on screen — i.e. you summoned it right after using some quota;
+//   - it is pinned, and the rolling number moves under you.
+//
+// Both are events, not a timer: an idle desktop never animates. Movement
+// includes a window reset (70% -> 1%), which is exactly the kind of change
+// worth surfacing.
+const FLASH_MS = 1600;
+const flashState = new Map(); // coin key -> { lastPct, dirty, until }
+let ringVisible = true; // main process tells us; assume visible until told
+let flashTimer = null;
+
+// Keyed on the store's sourceKey, never on `host`: host is a display label and
+// two trusted remote profiles are explicitly allowed to share one, which would
+// otherwise fuse their coins into a single state entry — each overwriting the
+// other's lastPct and manufacturing a change on every snapshot. JSON so no
+// separator can appear inside a component.
+function coinKey(model) {
+  return JSON.stringify([model.providerKey, model.sourceKey ?? null]);
+}
+
+// A coin only has something to flash back TO when the alert took the headline
+// from a different window.
+function flashCandidate(model) {
+  return model.restingWindow
+    && model.displayWindow
+    && model.restingWindow !== model.displayWindow
+    ? model.restingWindow
+    : null;
+}
+
+function armFlash(entry, now) {
+  entry.dirty = false;
+  // Do not restart a flash already running: with several runs back to back the
+  // readout would otherwise sit on the rolling number indefinitely and the
+  // alert would never get its headline back. (A newer value still paints
+  // immediately — the snapshot repaints — it just does not extend the window.)
+  if (!(entry.until > now)) entry.until = now + FLASH_MS;
+}
+
+// Fold the current snapshot into the flash state. Called only where the
+// snapshot is actually consumed — never from fingerprint(), which runs every
+// tick and must stay free of side effects.
+function noteRestingWindows(coins, now) {
+  const seen = new Set();
+  for (const model of coins) {
+    const key = coinKey(model);
+    seen.add(key);
+    const resting = model.restingWindow;
+    const pct = resting && !resting.reset ? resting.pct : null;
+    const entry = flashState.get(key);
+    if (!entry) {
+      // First sighting establishes the baseline; a fresh window (or a rebuilt
+      // one after the panel was destroyed) should not flash on arrival.
+      flashState.set(key, { lastPct: pct, dirty: false, until: 0 });
+      continue;
+    }
+    if (pct === entry.lastPct) continue;
+    entry.lastPct = pct;
+    // Record the movement itself, independently of whether an alert happens to
+    // hold the headline right now. Gating this on flashCandidate() lost the
+    // ordinary case: rolling moves while hidden and healthy, THEN the weekly
+    // window crosses the threshold — by the time anyone looks, the rolling
+    // number has changed unseen and nothing remembers it.
+    entry.dirty = true;
+    if (!ringVisible) continue;
+    // Visible: either play it now, or note that it is already on screen — the
+    // readout IS the rolling window when no alert took it, so there is nothing
+    // left to replay later.
+    if (flashCandidate(model)) armFlash(entry, now);
+    else entry.dirty = false;
+  }
+  for (const key of [...flashState.keys()]) if (!seen.has(key)) flashState.delete(key);
+}
+
+function isFlashing(model, now) {
+  const entry = flashState.get(coinKey(model));
+  return !!(entry && entry.until > now && flashCandidate(model));
+}
+
+// Release whatever was banked while the cluster was hidden. Returns whether
+// anything actually fired, so the caller can skip a repaint.
+function armPendingFlashes(coins, now) {
+  let armed = false;
+  for (const model of coins) {
+    const entry = flashState.get(coinKey(model));
+    if (!entry || !entry.dirty) continue;
+    if (flashCandidate(model)) {
+      armFlash(entry, now);
+      armed = true;
+    } else {
+      // No alert holds the headline any more, so the rolling number is already
+      // what the reader sees. Clear the debt rather than keeping it — otherwise
+      // the next alert would open with a replay of a change the reader has
+      // been looking at the whole time.
+      entry.dirty = false;
+    }
+  }
+  return armed;
+}
+
+// Fire at the EARLIEST pending expiry, not a fixed FLASH_MS from now: a second
+// coin flashing later would otherwise push the timer out and leave the first
+// one's handback to the 1s tick, stretching a 1.6s flash toward 2.6s.
+function scheduleFlashEnd(now) {
+  let earliest = Infinity;
+  for (const entry of flashState.values()) {
+    if (entry.until > now && entry.until < earliest) earliest = entry.until;
+  }
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = null;
+  if (!Number.isFinite(earliest)) return;
+  flashTimer = setTimeout(() => {
+    flashTimer = null;
+    render();
+    // Another coin may still be mid-flash with a later expiry.
+    scheduleFlashEnd(Date.now());
+  }, Math.max(0, earliest - now) + 30);
+}
+
 // Digest of everything time flips WITHOUT a new snapshot (bucket expiry, source
 // staleness), so the 1s tick can re-render on change even for a pinned cluster
 // receiving no snapshots.
@@ -420,7 +597,10 @@ function fingerprint(now) {
         : 0;
       return `${w.ring}:${w.field}:${w.pct}:${w.reset ? 1 : 0}:${resetIn}:${w.stale ? 1 : 0}:${staleAge}`;
     }).join(",");
-    return `${m.providerKey}:${m.host || ""}:${m.state}:${windows}`;
+    // Include the flash so the 1s tick can repaint when one expires, as a
+    // backstop for the precise timer. (It cannot recover a panel that was
+    // destroyed and rebuilt mid-flash — that takes the whole Map with it.)
+    return `${m.providerKey}:${m.host || ""}:${m.state}:${isFlashing(m, now) ? 1 : 0}:${windows}`;
   }).join("|");
   return `${quotaDisplayMode()}|${digest}`;
 }
@@ -437,7 +617,10 @@ function render() {
   const visible = coins.slice(0, MAX_COINS);
   const overflow = coins.length - visible.length;
 
-  for (const model of visible) clusterEl.appendChild(buildCoinRow(model));
+  for (const model of visible) {
+    model.flashingResting = isFlashing(model, now);
+    clusterEl.appendChild(buildCoinRow(model));
+  }
   if (overflow > 0) clusterEl.appendChild(buildOverflow(overflow));
 }
 
@@ -460,11 +643,33 @@ async function init() {
       translations: payload.translations,
       lang: payload.lang,
     };
+    const now = Date.now();
+    const coins = collectCoins(now);
+    noteRestingWindows(coins, now);
+    if (coins.some((model) => isFlashing(model, now))) scheduleFlashEnd(now);
     render();
   });
 
+  // Visibility comes from the main process rather than the Page Visibility API:
+  // an Electron window that is merely hidden does not reliably flip
+  // document.visibilityState, and a pinned cluster never hides at all.
+  if (typeof window.quotaRingAPI.onVisibility === "function") {
+    window.quotaRingAPI.onVisibility((visible) => {
+      const wasVisible = ringVisible;
+      ringVisible = visible !== false;
+      if (!ringVisible || wasVisible) return;
+      const now = Date.now();
+      if (!armPendingFlashes(collectCoins(now), now)) return;
+      scheduleFlashEnd(now);
+      render();
+    });
+  }
+
   const i18n = await window.quotaRingAPI.getI18n();
   if (i18n) payload = { ...payload, translations: i18n.translations || {}, lang: i18n.lang };
+  // Establish the baseline before the first paint so a cold start never opens
+  // on a flashback.
+  noteRestingWindows(collectCoins(Date.now()), Date.now());
   render();
   setInterval(tick, 1000);
 }
