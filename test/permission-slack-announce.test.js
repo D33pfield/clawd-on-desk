@@ -9,7 +9,8 @@
 // The announce therefore happens where a human decision is known to be pending:
 //   - handleBubbleHeight, after the renderer has loaded the exact interaction,
 //     revealed the card, and acknowledged it through height IPC; and
-//   - maybeStartRemoteApproval, for bubble-less remote-only entries.
+//   - a remote client's explicit delivery acknowledgement, for bubble-less
+//     remote-only entries.
 // Never from addPendingPermission, which only means "the route queued it".
 
 const { describe, it } = require("node:test");
@@ -97,6 +98,7 @@ function makeCapturingRes() {
 
 function makeCtx(overrides = {}) {
   const announced = [];
+  const announceOptions = [];
   const ctx = {
     lang: "en",
     focusTerminalForSession() {},
@@ -128,11 +130,19 @@ function makeCtx(overrides = {}) {
     STATE_SVGS: {},
     setState: () => {},
     updateSession: () => {},
-    notifySlackPermission: (payload) => { announced.push(payload); },
+    notifySlackPermission: (payload, options) => {
+      announced.push(payload);
+      announceOptions.push(options);
+    },
     ...overrides,
   };
   ctx.announced = announced;
+  ctx.announceOptions = announceOptions;
   return ctx;
+}
+
+function flushPromises() {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 function makePermEntry(overrides = {}) {
@@ -183,6 +193,8 @@ describe("slack permission announce: only for requests a human must answer", () 
 
     perm.handleBubbleHeight({ sender: { __window: entry.bubble } }, 180);
     assert.equal(ctx.announced.length, 1);
+    assert.equal(typeof ctx.announceOptions[0].isStillRelevant, "function");
+    assert.equal(ctx.announceOptions[0].isStillRelevant(), true);
     assert.match(ctx.announced[0].title, /Bash/);
     assert.equal(ctx.announced[0].toolName, "Bash");
     assert.equal(ctx.announced[0].agentId, "claude-code");
@@ -190,6 +202,24 @@ describe("slack permission announce: only for requests a human must answer", () 
     // Renderer reflows (stepper/feedback/text-size) must not ping Slack twice.
     perm.handleBubbleHeight({ sender: { __window: entry.bubble } }, 220);
     assert.equal(ctx.announced.length, 1);
+  });
+
+  it("announces a rendered card even if the following bubble reflow throws", () => {
+    const ctx = makeCtx({
+      win: { isDestroyed: () => false },
+    });
+    const perm = initPermission(ctx);
+    const entry = makePermEntry();
+    perm.addPendingPermission(entry, "added");
+    perm.showPermissionBubble(entry);
+    ctx.getNearestWorkArea = () => { throw new Error("display disappeared"); };
+
+    assert.throws(
+      () => perm.handleBubbleHeight({ sender: { __window: entry.bubble } }, 180),
+      /display disappeared/
+    );
+    assert.equal(ctx.announced.length, 1,
+      "renderer delivery ACK must precede fallible geometry work");
   });
 
   it("stays silent when global automation auto-approves the request", () => {
@@ -404,10 +434,15 @@ describe("slack permission announce: remote-only entries", () => {
     });
   }
 
-  it("announces a bubble-less entry once a remote client takes it", () => {
+  it("waits for explicit card delivery before announcing a bubble-less entry", () => {
     const requested = [];
+    let onDelivered;
     const client = {
-      requestApproval: (payload) => { requested.push(payload); return new Promise(() => {}); },
+      requestApproval: (payload, options) => {
+        requested.push(payload);
+        onDelivered = options.onDelivered;
+        return new Promise(() => {});
+      },
     };
     const ctx = makeRemoteCtx({ getRemoteApprovalClients: () => [{ name: "telegram", client }] });
     const perm = initPermission(ctx);
@@ -416,6 +451,81 @@ describe("slack permission announce: remote-only entries", () => {
 
     assert.equal(perm.maybeStartRemoteApproval(entry), true);
     assert.equal(requested.length, 1);
+    assert.deepEqual(ctx.announced, [], "starting the async send is not a delivery ACK");
+
+    onDelivered({ messageId: 42 });
+    assert.equal(ctx.announced.length, 1);
+    assert.equal(ctx.announced[0].actionTarget, "remote");
+    assert.equal(ctx.announceOptions[0].isStillRelevant(), true);
+
+    onDelivered({ messageId: 42 });
+    assert.equal(ctx.announced.length, 1, "duplicate client ACKs are once-guarded");
+    perm.removePendingPermission(entry, "resolved-after-announcement");
+    assert.equal(ctx.announceOptions[0].isStillRelevant(), false);
+  });
+
+  it("does not announce when a remote attempt immediately resolves null or rejects", async () => {
+    for (const requestApproval of [
+      () => Promise.resolve(null),
+      () => Promise.reject(new Error("send failed")),
+    ]) {
+      const client = { requestApproval };
+      const ctx = makeRemoteCtx({ getRemoteApprovalClients: () => [{ name: "telegram", client }] });
+      const perm = initPermission(ctx);
+      const entry = makePermEntry({ bubble: null, remoteOnly: true });
+      perm.addPendingPermission(entry, "added");
+
+      assert.equal(perm.maybeStartRemoteApproval(entry), true);
+      await flushPromises();
+      assert.deepEqual(ctx.announced, []);
+    }
+  });
+
+  it("re-checks pending and DND state when a remote delivery ACK arrives", () => {
+    const callbacks = [];
+    const client = {
+      requestApproval: (_payload, options) => {
+        callbacks.push(options.onDelivered);
+        return new Promise(() => {});
+      },
+    };
+    const ctx = makeRemoteCtx({ getRemoteApprovalClients: () => [{ name: "telegram", client }] });
+    const perm = initPermission(ctx);
+
+    const resolvedEntry = makePermEntry({ bubble: null, remoteOnly: true });
+    perm.addPendingPermission(resolvedEntry, "added");
+    perm.maybeStartRemoteApproval(resolvedEntry);
+    perm.removePendingPermission(resolvedEntry, "resolved-before-delivery");
+    callbacks[0]({ messageId: 1 });
+
+    const dndEntry = makePermEntry({ bubble: null, remoteOnly: true, sessionId: "session-dnd" });
+    perm.addPendingPermission(dndEntry, "added");
+    perm.maybeStartRemoteApproval(dndEntry);
+    ctx.doNotDisturb = true;
+    callbacks[1]({ messageId: 2 });
+
+    assert.deepEqual(ctx.announced, []);
+  });
+
+  it("announces only once when two remote clients both confirm delivery", () => {
+    const callbacks = [];
+    const clients = ["telegram", "feishu"].map((name) => ({
+      name,
+      client: {
+        requestApproval: (_payload, options) => {
+          callbacks.push(options.onDelivered);
+          return new Promise(() => {});
+        },
+      },
+    }));
+    const ctx = makeRemoteCtx({ getRemoteApprovalClients: () => clients });
+    const perm = initPermission(ctx);
+    const entry = makePermEntry({ bubble: null, remoteOnly: true });
+    perm.addPendingPermission(entry, "added");
+
+    perm.maybeStartRemoteApproval(entry);
+    callbacks[0]({ messageId: 1 });
+    callbacks[1]({ messageId: "om_2" });
     assert.equal(ctx.announced.length, 1);
   });
 
@@ -430,7 +540,9 @@ describe("slack permission announce: remote-only entries", () => {
   });
 
   it("does not announce an entry that automation already resolved out of the queue", () => {
-    const client = { requestApproval: () => new Promise(() => {}) };
+    const client = {
+      requestApproval: () => new Promise(() => {}),
+    };
     const ctx = makeRemoteCtx({ getRemoteApprovalClients: () => [{ name: "telegram", client }] });
     const perm = initPermission(ctx);
     const entry = makePermEntry({ bubble: null, remoteOnly: true });
@@ -496,7 +608,13 @@ describe("slack announce: interaction kind and action target", () => {
   it("marks a remote-only entry as decided in the remote channel", () => {
     // Bubbles are disabled for this agent, so there is no desktop bubble to
     // point at — the usable action is in Telegram/Feishu.
-    const client = { requestApproval: () => new Promise(() => {}) };
+    let onDelivered;
+    const client = {
+      requestApproval: (_payload, options) => {
+        onDelivered = options.onDelivered;
+        return new Promise(() => {});
+      },
+    };
     const ctx = makeCtx({
       getTelegramApprovalClient: () => null,
       getRemoteApprovalClients: () => [{ name: "telegram", client }],
@@ -506,7 +624,37 @@ describe("slack announce: interaction kind and action target", () => {
     perm.addPendingPermission(entry, "added");
 
     assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    assert.equal(ctx.announced.length, 0);
+    onDelivered({ messageId: 42 });
     assert.equal(ctx.announced.length, 1);
+    assert.equal(ctx.announced[0].actionTarget, "remote");
+  });
+
+  it("waits for the remote elicitation card delivery before announcing a question", () => {
+    let onDelivered;
+    const client = {
+      requestElicitation: (_payload, options) => {
+        onDelivered = options.onDelivered;
+        return new Promise(() => {});
+      },
+      requestApproval: () => { throw new Error("question incorrectly routed as approval"); },
+    };
+    const ctx = makeCtx({
+      getTelegramApprovalClient: () => null,
+      getRemoteApprovalClients: () => [{ name: "telegram", client }],
+    });
+    const perm = initPermission(ctx);
+    const entry = makeQuestionEntry({ remoteOnly: true, bubble: null });
+    perm.addPendingPermission(entry, "added");
+
+    assert.equal(entry.interaction.capabilities.answerQuestions, true);
+    assert.equal(entry.interaction.intent, "human-question");
+    assert.equal(entry.toolInput.questions.length, 1);
+    assert.equal(perm.maybeStartRemoteApproval(entry), true);
+    assert.deepEqual(ctx.announced, []);
+    onDelivered({ messageId: 43 });
+    assert.equal(ctx.announced.length, 1);
+    assert.equal(ctx.announced[0].kind, "question");
     assert.equal(ctx.announced[0].actionTarget, "remote");
   });
 
@@ -534,7 +682,7 @@ describe("slack announce: main.js wiring", () => {
     const fs = require("node:fs");
     const path = require("node:path");
     const source = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
-    assert.match(source, /notifySlackPermission:\s*\(payload\)\s*=>/,
+    assert.match(source, /notifySlackPermission:\s*\(payload,\s*options\s*=\s*\{\}\)\s*=>/,
       "main.js must provide notifySlackPermission");
   });
 });

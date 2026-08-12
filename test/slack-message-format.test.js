@@ -356,7 +356,7 @@ test("question header clipping never leaves a partial mrkdwn entity", () => {
     }],
   }, { lang: "en" });
 
-  const section = msg.blocks.find((block) => block.type === "section").text.text;
+  const section = msg.blocks.find((block) => block.type === "section" && block.text.text.includes("Proceed?")).text.text;
   assert.ok(!/&[A-Za-z]{0,4}\*/.test(section),
     `partial entity before emphasis marker: ${section}`);
 });
@@ -376,6 +376,45 @@ test("question and option counts are capped like the other channels", () => {
   assert.ok(!all.includes("Q8"), "questions beyond the cap are dropped, not rendered");
   assert.ok(!all.includes("opt0-8"), "options beyond the cap are dropped too");
   assert.match(all, /more/i, "and the reader is told something was omitted");
+});
+
+test("large question cards use one bounded section per complete question", () => {
+  const msg = fmt.buildPermissionMessage({
+    kind: "question",
+    agentId: "claude-code",
+    questions: Array.from({ length: 7 }, (_, i) => ({
+      header: `header-${i}-${"h".repeat(90)}`,
+      question: `question-${i}-${"q".repeat(300)}`,
+      options: Array.from({ length: 6 }, (_, j) => ({ label: `option-${i}-${j}-${"o".repeat(90)}` })),
+    })),
+  }, { lang: "en" });
+
+  const questionSections = msg.blocks.filter((block) =>
+    block.type === "section" && /question-\d-/.test(block.text.text));
+  assert.equal(questionSections.length, 5, "the card renders at most five complete questions");
+  for (let i = 0; i < questionSections.length; i += 1) {
+    const text = questionSections[i].text.text;
+    assert.ok(text.length <= fmt.SECTION_MAX);
+    assert.match(text, new RegExp(`question-${i}-`));
+    for (let j = 0; j < 5; j += 1) assert.match(text, new RegExp(`option-${i}-${j}-`));
+    assert.match(text, /\+1 more/, "each question reports its omitted options");
+  }
+  assert.match(questionSections[4].text.text, /\+1 more/, "the final question reports its omitted option");
+  assert.match(questionSections[4].text.text, /\+2 more/, "the final section separately reports omitted questions");
+  assert.ok(!JSON.stringify(msg).includes("question-5-"));
+});
+
+test("an option that cannot fit is omitted whole and counted", () => {
+  const enormous = `start-${"x".repeat(fmt.SECTION_MAX)}-end`;
+  const msg = fmt.buildPermissionMessage({
+    kind: "question",
+    questions: [{ question: "Choose one", options: [{ label: enormous }, { label: "small" }] }],
+  }, { lang: "en" });
+  const section = msg.blocks.find((block) =>
+    block.type === "section" && block.text.text.includes("Choose one")).text.text;
+  assert.ok(!section.includes("start-"), "the formatter never slices through an option line");
+  assert.ok(!section.includes("small"), "ordering is preserved after the length budget is reached");
+  assert.match(section, /\+2 more/, "length-budget omissions are explicit");
 });
 
 test("an approval card is unchanged by the new fields", () => {

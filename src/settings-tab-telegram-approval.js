@@ -1936,6 +1936,7 @@
     secretEditing: false,
     configPending: false,
     testPending: false,
+    formDraft: null,
   };
 
   function currentSlackConfig() {
@@ -1948,6 +1949,29 @@
       notifyOnPermission: !cfg || cfg.notifyOnPermission !== false,
       outputMode: cfg && cfg.outputMode === "full" ? "full" : "off",
     };
+  }
+
+  function getSlackFormDraft() {
+    if (!slackView.formDraft) {
+      slackView.formDraft = {
+        webhookUrl: "",
+        botToken: "",
+        channelId: currentSlackConfig().channelId,
+      };
+    }
+    return slackView.formDraft;
+  }
+
+  function setSlackFormDraftValue(field, value) {
+    getSlackFormDraft()[field] = String(value == null ? "" : value);
+  }
+
+  function clearSubmittedSlackSecretDraft(payload) {
+    const draft = getSlackFormDraft();
+    for (const field of ["webhookUrl", "botToken"]) {
+      if (!Object.prototype.hasOwnProperty.call(payload, field)) continue;
+      if (draft[field].trim() === payload[field]) draft[field] = "";
+    }
   }
 
   function slackStatusRenderKey(status) {
@@ -2194,6 +2218,11 @@
     ctrl.className = "row-control tg-approval-input-row slack-notify-secrets-grid";
     const webhookInput = buildSlackSecretInput("slackNotifyWebhookPlaceholder", true);
     const botTokenInput = buildSlackSecretInput("slackNotifyBotTokenPlaceholder", true);
+    const draft = getSlackFormDraft();
+    webhookInput.value = draft.webhookUrl;
+    botTokenInput.value = draft.botToken;
+    webhookInput.addEventListener("input", () => setSlackFormDraftValue("webhookUrl", webhookInput.value));
+    botTokenInput.addEventListener("input", () => setSlackFormDraftValue("botToken", botTokenInput.value));
 
     const saveBtn = document.createElement("button");
     saveBtn.type = "button";
@@ -2203,9 +2232,9 @@
     saveBtn.addEventListener("click", () => {
       // Only send fields the user typed; blank means "keep the stored value"
       // (the writer preserves untouched keys), so saving a new webhook does not
-      // wipe a stored bot token. Removing a credential is done on Slack's side
-      // (delete the webhook / uninstall the app), which is the only thing that
-      // actually revokes it — see docs/guides/slack-notifications.md.
+      // wipe a stored bot token. The per-credential Remove buttons clear the
+      // local copy; only deleting/revoking it in Slack makes it unusable to
+      // anyone else — see docs/guides/slack-notifications.md.
       const payload = {};
       const webhook = webhookInput.value.trim();
       const botToken = botTokenInput.value.trim();
@@ -2229,6 +2258,7 @@
           return;
         }
         ops.showToast(t("slackNotifySecretsSaved"));
+        clearSubmittedSlackSecretDraft(payload);
         slackView.secretInfo = null;
         slackView.status = null;
         refreshSlackSecretInfo({ forceRender: true });
@@ -2257,6 +2287,9 @@
         return;
       }
       ops.showToast(t(toastKey));
+      // This removes the stored credential shown by the masked status line; it
+      // does not submit the replacement input beside it. Keep that unsaved
+      // draft intact across the status refresh.
       slackView.secretInfo = null;
       slackView.status = null;
       refreshSlackSecretInfo({ forceRender: true });
@@ -2276,6 +2309,7 @@
       timeout: "slackNotifyErrNetwork",
       "invalid-webhook": "slackNotifyErrInvalidWebhook",
       "invalid-bot-token": "slackNotifyErrInvalidToken",
+      "write-failed": "slackNotifySecretsSaveFailed",
     };
     if (byCode[code]) return t(byCode[code]);
     const detail = result && result.message ? ` (${result.message})` : "";
@@ -2307,7 +2341,8 @@
     input.spellcheck = false;
     input.placeholder = t("slackNotifyChannelIdPlaceholder");
     input.className = "tg-approval-input";
-    input.value = cfg.channelId || "";
+    input.value = getSlackFormDraft().channelId;
+    input.addEventListener("input", () => setSlackFormDraftValue("channelId", input.value));
 
     const saveBtn = document.createElement("button");
     saveBtn.type = "button";
@@ -2315,7 +2350,14 @@
     saveBtn.textContent = slackView.configPending ? t("slackNotifySaving") : t("slackNotifySaveChannel");
     saveBtn.disabled = slackView.configPending;
     saveBtn.addEventListener("click", () => {
-      saveSlackConfig({ ...currentSlackConfig(), channelId: input.value.trim() });
+      const channelId = input.value.trim();
+      saveSlackConfig({ ...currentSlackConfig(), channelId }).then((saved) => {
+        // The field remains editable while the async write is pending. Do not
+        // replace a newer draft when the earlier request eventually succeeds.
+        if (saved && getSlackFormDraft().channelId.trim() === channelId) {
+          setSlackFormDraftValue("channelId", channelId);
+        }
+      });
     });
 
     ctrl.appendChild(input);

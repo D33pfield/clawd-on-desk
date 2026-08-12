@@ -4317,6 +4317,150 @@ describe("settings renderer browser environment", () => {
     );
   });
 
+  it("preserves Slack form drafts across rerenders and only clears completed writes", async () => {
+    const strings = loadSettingsI18nForTest().en;
+    let secretWriteResult = { status: "error", code: "write-failed", message: "raw fs detail" };
+    let updateMode = "fail";
+    let resolveUpdate = null;
+    let deferClear = false;
+    let resolveClear = null;
+    const updateCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+        slackNotify: { enabled: false, channelId: "C-saved", notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" },
+      },
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          if (updateMode === "defer") return new Promise((resolve) => { resolveUpdate = resolve; });
+          return Promise.resolve(updateMode === "ok" ? { status: "ok" } : { status: "error", message: "save failed" });
+        },
+        command: (name, payload) => {
+          if (name === "slackNotify.status") {
+            return Promise.resolve({ status: "ok", state: {
+              enabled: false, ready: false, configured: false, transportConfigured: true,
+              transport: "webhook", credentialsPresent: true, secretsStored: true,
+            } });
+          }
+          if (name === "slackNotify.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, webhookUrl: "https://hooks.slack.com/…", botToken: "" });
+          }
+          if (name === "slackNotify.setSecrets") {
+            if (deferClear && payload && payload.webhookUrl === "") {
+              return new Promise((resolve) => { resolveClear = resolve; });
+            }
+            return Promise.resolve(secretWriteResult);
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const controls = () => {
+      const card = harness.content.querySelector(".slack-notify-channel-card");
+      const secretGrid = card.querySelector(".slack-notify-secrets-grid");
+      return {
+        card,
+        secretInputs: secretGrid.querySelectorAll("input"),
+        secretSave: secretGrid.querySelectorAll("button").find((button) => button.textContent === strings.slackNotifySaveSecrets),
+        channelInput: card.querySelector(".slack-notify-channel-row").querySelector("input"),
+        channelSave: card.querySelector(".slack-notify-channel-row").querySelector("button"),
+      };
+    };
+
+    let current = controls();
+    current.secretInputs[0].value = "https://hooks.slack.com/services/new";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    current.secretInputs[1].value = "xoxb-new-token";
+    current.secretInputs[1].dispatchEvent({ type: "input" });
+    current.channelInput.value = " C-draft ";
+    current.channelInput.dispatchEvent({ type: "input" });
+    harness.render();
+
+    current = controls();
+    assert.equal(current.secretInputs[0].value, "https://hooks.slack.com/services/new");
+    assert.equal(current.secretInputs[1].value, "xoxb-new-token");
+    assert.equal(current.channelInput.value, " C-draft ");
+
+    current.secretSave.dispatchEvent({ type: "click" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    current = controls();
+    assert.equal(current.secretInputs[0].value, "https://hooks.slack.com/services/new", "failed secret writes retain the webhook draft");
+    assert.equal(current.secretInputs[1].value, "xoxb-new-token", "failed secret writes retain the token draft");
+    assert.equal(toasts[toasts.length - 1].message, strings.slackNotifySecretsSaveFailed,
+      "write-failed uses the localized credential-save copy, not a test-send error");
+    assert.ok(!toasts[toasts.length - 1].message.includes("raw fs detail"));
+
+    secretWriteResult = { status: "ok" };
+    current.secretSave.dispatchEvent({ type: "click" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    current = controls();
+    assert.equal(current.secretInputs[0].value, "");
+    assert.equal(current.secretInputs[1].value, "");
+
+    current.secretInputs[0].value = "typed-before-clear";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    harness.render();
+    const clearWebhook = controls().card.querySelectorAll("button")
+      .find((button) => button.textContent === strings.slackNotifyClear);
+    assert.ok(clearWebhook, "the refreshed masked webhook offers Remove");
+    clearWebhook.dispatchEvent({ type: "click" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    assert.equal(controls().secretInputs[0].value, "typed-before-clear",
+      "clearing the stored webhook does not discard its unsaved replacement draft");
+
+    current = controls();
+    current.secretInputs[0].value = "typed-before-slow-clear";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    harness.render();
+    deferClear = true;
+    const slowClear = controls().card.querySelectorAll("button")
+      .find((button) => button.textContent === strings.slackNotifyClear);
+    slowClear.dispatchEvent({ type: "click" });
+    harness.render();
+    current = controls();
+    current.secretInputs[0].value = "typed-after-slow-clear";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    resolveClear({ status: "ok" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    assert.equal(controls().secretInputs[0].value, "typed-after-slow-clear",
+      "an older clear callback cannot erase a newer replacement draft");
+    deferClear = false;
+
+    current = controls();
+    current.channelSave.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    assert.equal(controls().channelInput.value, " C-draft ", "failed config writes retain the exact channel draft");
+
+    current = controls();
+    current.channelInput.value = "C-earlier";
+    current.channelInput.dispatchEvent({ type: "input" });
+    updateMode = "defer";
+    current.channelSave.dispatchEvent({ type: "click" });
+    current.channelInput.value = "C-newer";
+    current.channelInput.dispatchEvent({ type: "input" });
+    resolveUpdate({ status: "ok" });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    assert.equal(controls().channelInput.value, "C-newer", "an older async save cannot overwrite newer typing");
+    assert.equal(updateCalls[updateCalls.length - 1].value.channelId, "C-earlier");
+  });
+
   it("translates a connection timeout and falls back to the raw SDK error otherwise", async () => {
     const strings = loadSettingsI18nForTest().en;
     // The brand comes from the saved config (what the user picked), so the

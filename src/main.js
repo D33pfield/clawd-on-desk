@@ -1691,10 +1691,10 @@ const _permCtx = {
   // Best-effort, read-only "permission needed" heads-up to Slack. Slack cannot
   // resolve the approval in this build (webhook is one-way), so this only
   // announces — the desktop bubble / other channels still own the decision.
-  notifySlackPermission: (payload) => {
+  notifySlackPermission: (payload, options = {}) => {
     const client = getSlackNotifyClient();
     if (client && typeof client.notifyPermissionRequest === "function") {
-      try { client.notifyPermissionRequest(payload); } catch {}
+      try { client.notifyPermissionRequest(payload, options); } catch {}
     }
   },
 };

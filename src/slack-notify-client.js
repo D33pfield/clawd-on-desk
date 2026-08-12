@@ -38,10 +38,17 @@ const DEFAULT_MAX_RETRY_DELAY_MS = 30000;
 // rejected token (401/403) will fail identically forever, so retrying it just
 // burns requests and delays the queue behind it.
 const RETRYABLE_ERROR_CLASSES = new Set(["rate-limited", "network", "timeout", "no-transport"]);
+const RETRYABLE_SLACK_API_ERROR_CLASSES = new Set([
+  "slack-internal_error",
+  "slack-service_unavailable",
+  "slack-fatal_error",
+  "slack-request_timeout",
+]);
 
 function isRetryableErrorClass(errorClass) {
   if (!errorClass) return false;
   if (RETRYABLE_ERROR_CLASSES.has(errorClass)) return true;
+  if (RETRYABLE_SLACK_API_ERROR_CLASSES.has(errorClass)) return true;
   // http-5xx: the server is having a bad time, not the request.
   const m = /^http-(\d{3})$/.exec(errorClass);
   return !!m && Number(m[1]) >= 500;
@@ -74,6 +81,10 @@ function classifyHttpStatus(status) {
   if (status === 401 || status === 403) return "unauthorized";
   if (status === 404) return "not-found";
   return `http-${status}`;
+}
+
+function classifyTransportError(err) {
+  return err && (err.name === "AbortError" || err.code === "ABORT_ERR") ? "timeout" : "network";
 }
 
 function classifySlackApiError(error) {
@@ -264,16 +275,22 @@ function createSlackNotifyClient({
       });
       const status = res && typeof res.status === "number" ? res.status : 0;
       let bodyText = "";
-      try { bodyText = typeof res.text === "function" ? await res.text() : ""; } catch { bodyText = ""; }
+      let bodyReadError = null;
+      try {
+        if (!res || typeof res.text !== "function") throw new Error("response body reader is unavailable");
+        bodyText = await res.text();
+      } catch (err) {
+        bodyReadError = err || new Error("response body could not be read");
+      }
       return {
         ok: !!(res && res.ok),
         status,
         bodyText,
+        bodyReadError,
         retryAfterMs: retryAfterMsFrom(res && res.headers, maxRetryDelayMs),
       };
     } catch (err) {
-      const aborted = err && (err.name === "AbortError" || err.code === "ABORT_ERR");
-      return { ok: false, errorClass: aborted ? "timeout" : "network", error: err && err.message };
+      return { ok: false, errorClass: classifyTransportError(err), error: err && err.message };
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -308,15 +325,29 @@ function createSlackNotifyClient({
     if (ready.transport === "webhook") {
       const res = await postJson(secrets.webhookUrl, {}, payload);
       if (res.errorClass) return { ok: false, errorClass: res.errorClass, error: res.error };
+      // A non-2xx status is authoritative without a body. For 2xx, however,
+      // silently swallowing a body-stream failure would call an unknown
+      // delivery successful. Treat that transient transport failure exactly
+      // the same for webhook and bot responses, accepting the bounded duplicate
+      // risk instead of losing the notification without a trace.
+      if (!res.ok) {
+        return {
+          ok: false,
+          errorClass: classifyHttpStatus(res.status),
+          retryAfterMs: res.retryAfterMs,
+          detail: (res.bodyText || "").slice(0, 200),
+        };
+      }
+      if (res.bodyReadError) {
+        return {
+          ok: false,
+          errorClass: classifyTransportError(res.bodyReadError),
+          error: res.bodyReadError.message,
+        };
+      }
       // Incoming webhooks answer 200 with the literal body "ok" on success.
       if (res.ok && (!res.bodyText || res.bodyText.trim() === "ok")) return { ok: true };
       if (res.ok) return { ok: true };
-      return {
-        ok: false,
-        errorClass: classifyHttpStatus(res.status),
-        retryAfterMs: res.retryAfterMs,
-        detail: (res.bodyText || "").slice(0, 200),
-      };
     }
 
     // Bot transport: chat.postMessage. Errors surface in the JSON body, not the
@@ -331,6 +362,13 @@ function createSlackNotifyClient({
     // commonly { ok:false, error:"ratelimited" }; parsing that first used to
     // turn a retryable response into the permanent class "slack-ratelimited".
     if (!res.ok) return { ok: false, errorClass: classifyHttpStatus(res.status), retryAfterMs: res.retryAfterMs };
+    if (res.bodyReadError) {
+      return {
+        ok: false,
+        errorClass: classifyTransportError(res.bodyReadError),
+        error: res.bodyReadError.message,
+      };
+    }
     let parsed = null;
     try { parsed = res.bodyText ? JSON.parse(res.bodyText) : null; } catch { parsed = null; }
     if (parsed && parsed.ok === true) return { ok: true, messageId: parsed.ts };
@@ -385,7 +423,7 @@ function createSlackNotifyClient({
     try { item.resolve(result); } catch {}
   }
 
-  function enqueueAutomatic({ kind, id = "", key = "", message, context }) {
+  function enqueueAutomatic({ kind, id = "", key = "", message, context, isStillRelevant = null }) {
     if (key && inFlightKeys.has(key)) {
       return Promise.resolve({ ok: false, errorClass: "duplicate" });
     }
@@ -401,6 +439,7 @@ function createSlackNotifyClient({
       attempts: 0,
       configRevision: delivery.configRevision,
       destinationKey: delivery.destinationKey,
+      isStillRelevant: typeof isStillRelevant === "function" ? isStillRelevant : null,
       resolve: resolveItem,
       settled: false,
     };
@@ -470,6 +509,14 @@ function createSlackNotifyClient({
       activeItem = queue.shift();
       const item = activeItem;
       while (item && !item.settled) {
+        if (item.isStillRelevant) {
+          let relevant = false;
+          try { relevant = item.isStillRelevant() === true; } catch { relevant = false; }
+          if (!relevant) {
+            settle(item, "cancelled (no longer relevant)", { ok: false, errorClass: "cancelled" });
+            break;
+          }
+        }
         const delivery = readDeliveryContext();
         if (
           delivery.configRevision !== item.configRevision
@@ -574,7 +621,10 @@ function createSlackNotifyClient({
       // Priming and disabled-notifications both mean "never send this", so the
       // event is settled immediately. A send-worthy event is NOT recorded here —
       // it is recorded once delivery settles, so a failure can still be retried.
-      if (priming || !enabled) { lastNotified.set(entry.id, key); continue; }
+      if (priming || !enabled || !delivery.state.transport) {
+        lastNotified.set(entry.id, key);
+        continue;
+      }
       // Per-event gating: "interrupted" is the error/aborted family.
       const interrupted = entry.badge === "interrupted";
       if (interrupted && !config.notifyOnError) { lastNotified.set(entry.id, key); continue; }
@@ -607,7 +657,7 @@ function createSlackNotifyClient({
 
   // Read-only "permission needed" heads-up. Best-effort; returns a promise for
   // callers that want it but is safe to ignore.
-  function notifyPermissionRequest(payload) {
+  function notifyPermissionRequest(payload, options = {}) {
     const delivery = readDeliveryContext();
     const config = delivery.config;
     if (!config.enabled || !config.notifyOnPermission) return Promise.resolve({ ok: false, errorClass: "disabled" });
@@ -619,7 +669,12 @@ function createSlackNotifyClient({
       safeLog("warn", "slack permission format threw", { error: err && err.message });
       return Promise.resolve({ ok: false, errorClass: "format-error" });
     }
-    return enqueueAutomatic({ kind: "permission", message, context: delivery });
+    return enqueueAutomatic({
+      kind: "permission",
+      message,
+      context: delivery,
+      isStillRelevant: options && options.isStillRelevant,
+    });
   }
 
   // Settings "send test" button. Surfaces a structured result the UI localizes.

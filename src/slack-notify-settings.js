@@ -35,6 +35,14 @@ function trimString(value, maxLen = 512) {
   return value.trim().slice(0, maxLen);
 }
 
+// Secrets are persisted in a line-oriented env file and channel ids are later
+// embedded in JSON. Reject C0/DEL outright instead of trimming only the ends:
+// URL parsers may otherwise ignore CR/LF/TAB while the writer preserves them,
+// turning a value that passed validation into a different value on restart.
+function hasControlChars(value) {
+  return typeof value === "string" && /[\u0000-\u001f\u007f]/.test(value);
+}
+
 function cloneDefaultSlackNotify() {
   return { ...DEFAULT_SLACK_NOTIFY };
 }
@@ -50,7 +58,7 @@ function normalizeSlackNotify(value, defaultsValue = DEFAULT_SLACK_NOTIFY) {
   const defaults = isPlainObject(defaultsValue) ? defaultsValue : DEFAULT_SLACK_NOTIFY;
   const out = {
     enabled: defaults.enabled === true,
-    channelId: trimString(defaults.channelId, 128),
+    channelId: hasControlChars(defaults.channelId) ? "" : trimString(defaults.channelId, 128),
     notifyOnDone: defaults.notifyOnDone !== false,
     notifyOnError: defaults.notifyOnError !== false,
     notifyOnPermission: defaults.notifyOnPermission !== false,
@@ -58,7 +66,9 @@ function normalizeSlackNotify(value, defaultsValue = DEFAULT_SLACK_NOTIFY) {
   };
   if (!isPlainObject(value)) return out;
   if (typeof value.enabled === "boolean") out.enabled = value.enabled;
-  if (typeof value.channelId === "string") out.channelId = trimString(value.channelId, 128);
+  if (typeof value.channelId === "string") {
+    out.channelId = hasControlChars(value.channelId) ? "" : trimString(value.channelId, 128);
+  }
   if (typeof value.notifyOnDone === "boolean") out.notifyOnDone = value.notifyOnDone;
   if (typeof value.notifyOnError === "boolean") out.notifyOnError = value.notifyOnError;
   if (typeof value.notifyOnPermission === "boolean") out.notifyOnPermission = value.notifyOnPermission;
@@ -89,6 +99,9 @@ function validateSlackNotify(value) {
   if (typeof value.channelId === "string" && value.channelId.length > 128) {
     return { status: "error", message: "slackNotify.channelId is too long" };
   }
+  if (typeof value.channelId === "string" && hasControlChars(value.channelId)) {
+    return { status: "error", message: "slackNotify.channelId must not contain control characters" };
+  }
   for (const key of ["notifyOnDone", "notifyOnError", "notifyOnPermission"]) {
     if (value[key] !== undefined && typeof value[key] !== "boolean") {
       return { status: "error", message: `slackNotify.${key} must be a boolean` };
@@ -107,6 +120,7 @@ function validateSlackNotify(value) {
 // in or contain the real host ("hooks.slack.com.evil.example", "evil-slack.com",
 // "hooks.slack.com@evil.example") are rejected.
 function isValidWebhookUrl(value) {
+  if (typeof value !== "string" || hasControlChars(value)) return false;
   const raw = trimString(value, 2048);
   if (!raw) return false;
   let parsed;
@@ -127,6 +141,7 @@ function isValidWebhookUrl(value) {
 const BOT_TOKEN_PREFIX = "xoxb-";
 
 function isValidBotToken(value) {
+  if (typeof value !== "string" || hasControlChars(value)) return false;
   const raw = trimString(value, 256);
   return /^xoxb-[A-Za-z0-9-]{8,}$/.test(raw);
 }
@@ -134,10 +149,12 @@ function isValidBotToken(value) {
 // Which transport a config+secrets pair can actually use. Webhook wins when both
 // are present because it needs no channel id and no extra scopes.
 function resolveSlackTransport(config, secrets) {
+  const rawConfig = isPlainObject(config) ? config : {};
   const normalized = normalizeSlackNotify(config);
   const source = isPlainObject(secrets) ? secrets : {};
   if (isValidWebhookUrl(source.webhookUrl)) return "webhook";
-  if (isValidBotToken(source.botToken) && normalized.channelId) return "bot";
+  if (hasControlChars(rawConfig.channelId)) return null;
+  if (isValidBotToken(source.botToken) && normalized.channelId && !hasControlChars(normalized.channelId)) return "bot";
   return null;
 }
 
@@ -196,14 +213,20 @@ function writeSecretsEnvFile({ fs, path: pathModule = path, filePath, secrets, p
   // the UI cannot explain — and, because a stored webhook wins transport
   // resolution, a malformed one would also mask a perfectly good bot token.
   // An empty string is not a value; it is the explicit "clear this" signal.
-  if (typeof incoming.webhookUrl === "string" && incoming.webhookUrl.trim() && !isValidWebhookUrl(incoming.webhookUrl)) {
+  if (
+    typeof incoming.webhookUrl === "string"
+    && (hasControlChars(incoming.webhookUrl) || (incoming.webhookUrl.trim() && !isValidWebhookUrl(incoming.webhookUrl)))
+  ) {
     return {
       status: "error",
       code: "invalid-webhook",
       message: "Webhook URL must be an https://hooks.slack.com/ address",
     };
   }
-  if (typeof incoming.botToken === "string" && incoming.botToken.trim() && !isValidBotToken(incoming.botToken)) {
+  if (
+    typeof incoming.botToken === "string"
+    && (hasControlChars(incoming.botToken) || (incoming.botToken.trim() && !isValidBotToken(incoming.botToken)))
+  ) {
     return {
       status: "error",
       code: "invalid-bot-token",
@@ -219,10 +242,28 @@ function writeSecretsEnvFile({ fs, path: pathModule = path, filePath, secrets, p
       next[key] = trimString(incoming[key], key === "webhookUrl" ? 2048 : 256);
     }
   }
+  // Validate the exact normalized bytes that will be written. This also keeps
+  // a corrupt pre-existing value from being copied through while updating the
+  // other credential; explicitly clearing the corrupt field remains possible.
+  if (next.webhookUrl && !isValidWebhookUrl(next.webhookUrl)) {
+    return {
+      status: "error",
+      code: "invalid-webhook",
+      message: "Webhook URL must be an https://hooks.slack.com/ address",
+    };
+  }
+  if (next.botToken && !isValidBotToken(next.botToken)) {
+    return {
+      status: "error",
+      code: "invalid-bot-token",
+      message: `Bot token must start with ${BOT_TOKEN_PREFIX}`,
+    };
+  }
+  let tmpPath = "";
   try {
     fs.mkdirSync(pathModule.dirname(filePath), { recursive: true });
     const base = pathModule.basename(filePath);
-    const tmpPath = pathModule.join(
+    tmpPath = pathModule.join(
       pathModule.dirname(filePath),
       `.${base}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
     );
@@ -236,6 +277,12 @@ function writeSecretsEnvFile({ fs, path: pathModule = path, filePath, secrets, p
     }
     return { status: "ok", secretsStored: true, filePath };
   } catch (err) {
+    // writeFileSync may leave a partial plaintext file and renameSync leaves the
+    // complete temp file behind on failure. Never delete the destination here;
+    // only clean the uniquely named temp file we own, best-effort.
+    if (tmpPath && typeof fs.unlinkSync === "function") {
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
     return {
       status: "error",
       code: "write-failed",
@@ -303,7 +350,7 @@ function describeTransport(config, secrets) {
   const rawToken = typeof source.botToken === "string" ? source.botToken.trim() : "";
   const stored = { webhookUrl: !!rawWebhook, botToken: !!rawToken };
   const credentialsPresent = stored.webhookUrl || stored.botToken;
-  const transport = resolveSlackTransport(normalized, source);
+  const transport = resolveSlackTransport(config, source);
   const enabled = normalized.enabled === true;
 
   let reason = null;
@@ -319,6 +366,14 @@ function describeTransport(config, secrets) {
 
 // `reason` is a stable code the UI localizes; `message` stays English for logs.
 function readiness(config, secrets) {
+  if (isPlainObject(config) && hasControlChars(config.channelId)) {
+    return {
+      ready: false,
+      reason: "invalid-config",
+      message: "Channel id must not contain control characters",
+      config: normalizeSlackNotify(config),
+    };
+  }
   const normalized = normalizeSlackNotify(config);
   if (!normalized.enabled) return { ready: false, reason: "disabled", config: normalized };
   // Transport validity is the same question describeTransport answers; keep the

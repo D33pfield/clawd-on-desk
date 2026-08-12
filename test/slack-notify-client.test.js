@@ -654,6 +654,311 @@ test("destination digest catches an out-of-band secret change without a revision
   assert.equal(fetchImpl.calls[0].url, WEBHOOK);
 });
 
+test("an enabled notifier settles completions while transport is missing instead of backfilling them later", async () => {
+  let secrets = { webhookUrl: "", botToken: "" };
+  const fetchImpl = makeFetch(okWebhook);
+  const client = queueClient({ getSecrets: () => secrets, fetchImpl });
+  client.prime({ sessions: [] });
+
+  client.onSnapshot(doneSnap(["while-unconfigured"], 2));
+  await client.drained();
+  assert.equal(fetchImpl.calls.length, 0);
+  assert.equal(client._lastNotified.get("while-unconfigured"), "while-unconfigured:Stop:2");
+
+  secrets = { webhookUrl: WEBHOOK, botToken: "" };
+  client.onSnapshot(doneSnap(["while-unconfigured"], 2));
+  await client.drained();
+  assert.equal(fetchImpl.calls.length, 0, "restoring credentials must not replay historical completion events");
+
+  client.onSnapshot(doneSnap(["while-unconfigured"], 3));
+  await client.drained();
+  assert.equal(fetchImpl.calls.length, 1, "a genuinely new completion still sends");
+});
+
+test("permission relevance is checked before its first send and a throwing predicate fails closed", async () => {
+  const fetchImpl = makeFetch(okWebhook);
+  const client = queueClient({ fetchImpl });
+
+  const irrelevant = await client.notifyPermissionRequest(
+    { title: "already resolved", toolName: "Bash" },
+    { isStillRelevant: () => false },
+  );
+  const throwing = await client.notifyPermissionRequest(
+    { title: "predicate failed", toolName: "Bash" },
+    { isStillRelevant: () => { throw new Error("stale entry lookup failed"); } },
+  );
+
+  assert.equal(irrelevant.errorClass, "cancelled");
+  assert.equal(throwing.errorClass, "cancelled");
+  assert.equal(fetchImpl.calls.length, 0);
+});
+
+test("permission relevance is checked again before retry", async () => {
+  let relevant = true;
+  const fetchImpl = makeFetch(() => ({ ok: false, status: 503, text: async () => "busy" }));
+  const client = queueClient({
+    fetchImpl,
+    sleepImpl: () => { relevant = false; return Promise.resolve(); },
+  });
+
+  const result = await client.notifyPermissionRequest(
+    { title: "resolved during backoff", toolName: "Bash" },
+    { isStillRelevant: () => relevant },
+  );
+  assert.equal(result.errorClass, "cancelled");
+  assert.equal(fetchImpl.calls.length, 1, "the stale request must not make its retry attempt");
+});
+
+test("Slack transient JSON errors retry on HTTP 200", async () => {
+  for (const slackError of ["internal_error", "service_unavailable", "fatal_error", "request_timeout"]) {
+    let call = 0;
+    const fetchImpl = makeFetch(() => {
+      call += 1;
+      if (call === 1) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ ok: false, error: slackError }) };
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, ts: "1.2" }) };
+    });
+    const client = queueClient({
+      config: { channelId: "C99" },
+      getSecrets: () => ({ webhookUrl: "", botToken: "xoxb-123456789-abcdefghij" }),
+      fetchImpl,
+    });
+
+    const result = await client.notifyPermissionRequest({ title: slackError, toolName: "Bash" });
+    assert.equal(result.ok, true, slackError);
+    assert.equal(fetchImpl.calls.length, 2, `${slackError} should retry once`);
+  }
+});
+
+test("a 2xx response body read failure retries consistently for webhook and bot", async () => {
+  for (const transport of ["webhook", "bot"]) {
+    let call = 0;
+    const fetchImpl = makeFetch(() => {
+      call += 1;
+      if (call === 1) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => { throw new Error("body stream reset"); },
+        };
+      }
+      return transport === "webhook"
+        ? okWebhook()
+        : { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, ts: "1.2" }) };
+    });
+    const client = queueClient({
+      config: transport === "bot" ? { channelId: "C99" } : {},
+      getSecrets: () => transport === "bot"
+        ? { webhookUrl: "", botToken: "xoxb-123456789-abcdefghij" }
+        : { webhookUrl: WEBHOOK, botToken: "" },
+      fetchImpl,
+    });
+
+    assert.equal((await client.notifyPermissionRequest({ title: transport, toolName: "Bash" })).ok, true);
+    assert.equal(fetchImpl.calls.length, 2, `${transport} should retry an unreadable successful response`);
+  }
+});
+
+test("HTTP failure status remains authoritative when its body cannot be read", async () => {
+  for (const transport of ["webhook", "bot"]) {
+    const fetchImpl = makeFetch(() => ({
+      ok: false,
+      status: 404,
+      text: async () => { throw new Error("body stream reset"); },
+    }));
+    const client = queueClient({
+      config: transport === "bot" ? { channelId: "C99" } : {},
+      getSecrets: () => transport === "bot"
+        ? { webhookUrl: "", botToken: "xoxb-123456789-abcdefghij" }
+        : { webhookUrl: WEBHOOK, botToken: "" },
+      fetchImpl,
+    });
+
+    const result = await client.notifyPermissionRequest({ title: `deleted ${transport}`, toolName: "Bash" });
+    assert.equal(result.errorClass, "not-found");
+    assert.equal(fetchImpl.calls.length, 1, `${transport} permanent HTTP status must not become a body-read retry`);
+  }
+});
+
+test("mixed automatic notifications preserve exact enqueue FIFO", async () => {
+  const fetchImpl = makeFetch(okWebhook);
+  const client = queueClient({ fetchImpl, maxQueue: 5 });
+  client.prime({ sessions: [] });
+
+  const first = client.notifyPermissionRequest({ title: "fifo-one", toolName: "Bash" });
+  const second = client.notifyPermissionRequest({ title: "fifo-two", toolName: "Bash" });
+  client.onSnapshot(doneSnap(["fifo-three"], 2));
+  await Promise.all([first, second]);
+  await client.drained();
+
+  assert.equal(fetchImpl.calls.length, 3);
+  assert.match(fetchImpl.calls[0].body.text, /fifo-one/);
+  assert.match(fetchImpl.calls[1].body.text, /fifo-two/);
+  assert.match(fetchImpl.calls[2].body.text, /fifo-three/);
+});
+
+test("capacity three keeps the active item and exact newest pending survivor ids", async () => {
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  let call = 0;
+  const fetchImpl = makeFetch(async () => {
+    call += 1;
+    if (call === 1) await firstGate;
+    return okWebhook();
+  });
+  const dropped = [];
+  const client = queueClient({
+    fetchImpl,
+    maxQueue: 3,
+    log: (level, message, meta) => {
+      if (level === "warn" && /queue full/i.test(message)) dropped.push(meta.id);
+    },
+  });
+  client.prime({ sessions: [] });
+  client.onSnapshot(doneSnap(["cap-a", "cap-b", "cap-c", "cap-d", "cap-e"], 2));
+  releaseFirst();
+  await client.drained();
+
+  assert.deepEqual(dropped, ["cap-b", "cap-c"]);
+  assert.equal(fetchImpl.calls.length, 3);
+  assert.match(fetchImpl.calls[0].body.text, /cap-a/);
+  assert.match(fetchImpl.calls[1].body.text, /cap-d/);
+  assert.match(fetchImpl.calls[2].body.text, /cap-e/);
+});
+
+test("permanent completion failure settles, advances FIFO, and clears in-flight ownership", async () => {
+  let call = 0;
+  const fetchImpl = makeFetch(() => {
+    call += 1;
+    if (call === 1) return { ok: false, status: 404, text: async () => "no_service" };
+    return okWebhook();
+  });
+  const client = queueClient({ fetchImpl });
+  client.prime({ sessions: [] });
+  client.onSnapshot(doneSnap(["permanent-a", "after-permanent"], 2));
+  await client.drained();
+
+  assert.equal(fetchImpl.calls.length, 2, "the permanent item is attempted once and does not block its successor");
+  assert.equal(client._lastNotified.get("permanent-a"), "permanent-a:Stop:2");
+  assert.equal(client._lastNotified.get("after-permanent"), "after-permanent:Stop:2");
+
+  client.onSnapshot({ sessions: [] });
+  client.onSnapshot(doneSnap(["permanent-a"], 2));
+  await client.drained();
+  assert.equal(fetchImpl.calls.length, 3, "after history pruning, the key can enqueue again only if in-flight was cleared");
+});
+
+test("timeout aborts each fetch and bounded retry settles with timeout", async () => {
+  const signals = [];
+  const fetchImpl = makeFetch((_url, opts) => new Promise((_resolve, reject) => {
+    signals.push(opts.signal);
+    opts.signal.addEventListener("abort", () => {
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      reject(err);
+    }, { once: true });
+  }));
+  const client = queueClient({ fetchImpl, timeoutMs: 5, maxAttempts: 2 });
+
+  const result = await client.notifyPermissionRequest({ title: "timeout", toolName: "Bash" });
+  assert.equal(result.errorClass, "timeout");
+  assert.equal(fetchImpl.calls.length, 2);
+  assert.ok(signals.every((signal) => signal && signal.aborted), "each attempt owns an aborted signal");
+});
+
+test("an abort while reading a successful response body is still classified as timeout", async () => {
+  const fetchImpl = makeFetch((_url, opts) => ({
+    ok: true,
+    status: 200,
+    text: () => new Promise((_resolve, reject) => {
+      opts.signal.addEventListener("abort", () => {
+        const err = new Error("body aborted");
+        err.name = "AbortError";
+        reject(err);
+      }, { once: true });
+    }),
+  }));
+  const client = queueClient({ fetchImpl, timeoutMs: 5, maxAttempts: 1 });
+
+  const result = await client.notifyPermissionRequest({ title: "body timeout", toolName: "Bash" });
+  assert.equal(result.errorClass, "timeout");
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.equal(fetchImpl.calls[0].opts.signal.aborted, true);
+});
+
+test("Retry-After is clamped to the configured maximum delay", async () => {
+  const waits = [];
+  let call = 0;
+  const fetchImpl = makeFetch(() => {
+    call += 1;
+    if (call === 1) {
+      return {
+        ok: false,
+        status: 429,
+        headers: { get: () => "999999" },
+        text: async () => "rate_limited",
+      };
+    }
+    return okWebhook();
+  });
+  const client = queueClient({
+    fetchImpl,
+    maxRetryDelayMs: 75,
+    sleepImpl: (ms) => { waits.push(ms); return Promise.resolve(); },
+  });
+
+  assert.equal((await client.notifyPermissionRequest({ title: "clamp", toolName: "Bash" })).ok, true);
+  assert.deepEqual(waits, [75]);
+});
+
+test("drained follows work enqueued by a settle continuation into the restarted drain", async () => {
+  const fetchImpl = makeFetch(okWebhook);
+  const client = queueClient({ fetchImpl, maxQueue: 3 });
+  const chained = client.notifyPermissionRequest({ title: "restart-one", toolName: "Bash" })
+    .then(() => client.notifyPermissionRequest({ title: "restart-two", toolName: "Bash" }));
+
+  await client.drained();
+  await chained;
+  assert.equal(fetchImpl.calls.length, 2);
+  assert.match(fetchImpl.calls[0].body.text, /restart-one/);
+  assert.match(fetchImpl.calls[1].body.text, /restart-two/);
+});
+
+test("bot destination digest includes the channel id", async () => {
+  let channelId = "C-OLD";
+  let call = 0;
+  const fetchImpl = makeFetch(() => {
+    call += 1;
+    if (call === 1) return { ok: false, status: 503, text: async () => "busy" };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, ts: "1.2" }) };
+  });
+  const client = createSlackNotifyClient({
+    getConfig: () => ({
+      enabled: true,
+      channelId,
+      notifyOnDone: true,
+      notifyOnError: true,
+      notifyOnPermission: true,
+      outputMode: "off",
+    }),
+    getSecrets: () => ({ webhookUrl: "", botToken: "xoxb-123456789-abcdefghij" }),
+    fetchImpl,
+    retryBaseMs: 0,
+    sleepImpl: () => { channelId = "C-NEW"; return Promise.resolve(); },
+  });
+
+  const old = await client.notifyPermissionRequest({ title: "old channel", toolName: "Bash" });
+  assert.equal(old.errorClass, "stale-config");
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.equal(fetchImpl.calls[0].body.channel, "C-OLD");
+
+  const fresh = await client.notifyPermissionRequest({ title: "new channel", toolName: "Bash" });
+  assert.equal(fresh.ok, true);
+  assert.equal(fetchImpl.calls.length, 2);
+  assert.equal(fetchImpl.calls[1].body.channel, "C-NEW");
+});
+
 // ── Startup recovery ────────────────────────────────────────────────────────
 // Clawd rebuilds a snapshot for sessions that survived a restart, but it only
 // reached Dashboard/HUD. Slack's first snapshot was therefore a later Stop,

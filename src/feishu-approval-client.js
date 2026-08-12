@@ -1293,6 +1293,7 @@ class FeishuApprovalClient {
     if (!this.isEnabled()) return Promise.resolve(null);
     const requestId = `fs_${crypto.randomBytes(12).toString("hex")}`;
     const signal = options.signal;
+    const onDelivered = typeof options.onDelivered === "function" ? options.onDelivered : null;
     if (signal && signal.aborted) return Promise.resolve(null);
 
     return new Promise((resolve, reject) => {
@@ -1324,7 +1325,18 @@ class FeishuApprovalClient {
         .then((messageId) => {
           entry.messageId = messageId || "";
           const current = this.pending.get(requestId);
-          if (current) current.messageId = messageId || "";
+          if (current) {
+            current.messageId = messageId || "";
+            if (messageId && !(signal && signal.aborted) && onDelivered) {
+              try { onDelivered({ messageId }); } catch (err) {
+                try {
+                  this.log("warn", "delivery callback failed", {
+                    error: err && err.message ? err.message : String(err),
+                  });
+                } catch {}
+              }
+            }
+          }
           return current || entry;
         })
         .catch((err) => {
@@ -1345,6 +1357,7 @@ class FeishuApprovalClient {
     if (!this.isEnabled()) return Promise.resolve(null);
     const requestId = `fsq_${crypto.randomBytes(12).toString("hex")}`;
     const signal = options.signal;
+    const onDelivered = typeof options.onDelivered === "function" ? options.onDelivered : null;
     if (signal && signal.aborted) return Promise.resolve(null);
 
     return new Promise((resolve) => {
@@ -1373,7 +1386,18 @@ class FeishuApprovalClient {
         .then((messageId) => {
           entry.messageId = messageId || "";
           const current = this.pending.get(requestId);
-          if (current) current.messageId = messageId || "";
+          if (current) {
+            current.messageId = messageId || "";
+            if (messageId && !(signal && signal.aborted) && onDelivered) {
+              try { onDelivered({ messageId }); } catch (err) {
+                try {
+                  this.log("warn", "elicitation delivery callback failed", {
+                    error: err && err.message ? err.message : String(err),
+                  });
+                } catch {}
+              }
+            }
+          }
           return current || entry;
         })
         .catch((err) => {

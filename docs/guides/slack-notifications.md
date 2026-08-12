@@ -19,15 +19,23 @@ readable by everyone in that channel, and retained in your workspace's history
 and exports under your workspace's own retention and admin policy. Deleting a
 message in Slack does not necessarily remove it from an export.
 
-| Field | Sent when | Where it comes from |
-|---|---|---|
-| Session title | every completion | often the first line of **your own prompt** |
-| Project folder name | completions, permissions | the session's working directory (basename only; opaque agent-internal workspace ids are omitted) |
-| Host name | completions | local machine name, or the Remote SSH host |
-| Agent and tool name | permissions | e.g. `claude-code`, `Bash` |
-| Permission summary / detail | permissions | the agent's own `description` for the call |
-| Assistant's last output | **only if** *Include assistant output* is on | the model's final message, redacted and truncated |
-| Short session id | completions | Clawd's internal id, first 6 characters |
+| Field | Sent when | Where it appears | Where it comes from |
+|---|---|---|---|
+| Session title | every completion | card and Slack fallback `text` | often the first line of **your own prompt** |
+| Project folder name | completions, permissions | completion card and fallback `text`; permission card only | the shared session snapshot's display folder (basename only; opaque agent-internal workspace ids are explicitly omitted) |
+| Host name | completions | card only | the session's remote host label, when present |
+| Agent name | completions, permissions | card only (a question fallback may use it as the subject) | e.g. `claude-code` |
+| Tool name | permissions | card only | e.g. `Bash` |
+| Permission summary / detail | permissions | card only | the agent's description, or a safe fallback: file basename, glob pattern, or URL origin + pathname (credentials and query stripped); raw commands and search queries are not fallback content |
+| Question and option text | questions | card only | the agent's `AskUserQuestion` payload |
+| Assistant's last output | **only if** *Include assistant output* is on | card only | the model's final message, redacted and truncated |
+| Short session id | completions | card only | Clawd's internal id, first 6 characters |
+
+Slack's top-level fallback `text` is used for push/accessibility previews. For a
+completion it contains the icon, session title, status and (when available)
+project folder. For a permission/question it contains only the icon, card type
+and subject. It does **not** contain assistant output, permission detail,
+question options, host, or the short session id.
 
 Clawd redacts recognisable secrets before sending — provider token prefixes,
 `Authorization` headers, secret-named `key=value` pairs, and Slack webhook URLs.
@@ -71,11 +79,15 @@ available" with the questions missing entirely.
 For a desktop request Clawd waits until the permission card has actually rendered
 before posting to Slack. If the bubble cannot be created, loaded, or shown, no
 misleading "answer in the desktop app" notification is sent. Remote-only entries
-are announced only after a remote approval client has accepted the request.
+are announced only after a remote approval client has delivered the actionable
+approval card.
 
-Question and option text is capped at five questions and five options each, with
-a "+N more" marker — the same limits the Telegram and Feishu cards use, so one
-agent cannot flood a channel.
+Question cards render each of at most five questions in its own bounded Slack
+section. Up to five complete option lines are included per question; Clawd never
+hard-cuts a card through the middle of an option. Whenever questions or options
+are left out because of these count/length budgets, a "+N more" marker says how
+many were omitted. These are the same count limits the Telegram and Feishu cards
+use, so one agent cannot flood a channel.
 
 ### What Do Not Disturb does, precisely
 
@@ -87,8 +99,9 @@ permission request is dropped at the HTTP route, before Clawd ever announces it,
 so no Slack card is posted and the agent falls back to its own terminal prompt.
 A completion notification demands nothing — it is the "walk away and come back
 when it's done" signal, which is the reason to leave notifications on while you
-are away from the desk. Completions therefore continue to arrive during DND, on
-Slack and on the other channels that share the same snapshot fanout.
+are away from the desk. Completions therefore continue to arrive during DND on
+Slack and Telegram, the two completion-notification channels that share the
+session snapshot fanout.
 
 ## Choosing a transport
 
@@ -189,14 +202,22 @@ The explicit **Send test** action is immediate and does not enter this queue.
 - Both the queue length and the retry count are bounded. If Slack is unreachable
   long enough for the queue to fill, the oldest notification is dropped and the
   drop is logged.
-- Disabling Slack or changing its credential, channel, or transport cancels
-  queued work from the previous configuration. An old notification is never
-  retried to a newly selected destination.
+- Disabling Slack, changing its credential/channel/transport, or changing any
+  notification option cancels already queued automatic work from the previous
+  configuration. This prevents an old destination, event policy, or formatted
+  payload (including assistant output) from crossing into the new policy. The
+  explicit **Send test** action is unaffected.
 - Nothing here blocks the desktop pet; a failed notification never propagates
   into the event path.
 
 Messages are not retractable. Once posted, a permission card stays in the
 channel even after you answer in the app.
+
+Posting a completion does not acknowledge it in Clawd. A session that requires
+completion acknowledgement remains Done until you use **Mark read** (or the
+session is otherwise cleaned up). That acknowledgement may rebroadcast the
+snapshot, but it does not post the same Slack completion again: the notifier has
+already recorded that completion event.
 
 ## Troubleshooting
 

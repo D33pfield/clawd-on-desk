@@ -29,10 +29,12 @@ function redactSecrets(value) {
   // can post to that channel. This matters more than usual for the Slack
   // notifier, which posts *into* the very channel the URL unlocks, so an agent
   // quoting it in a summary would publish the key to the people it protects
-  // against. Only the full /services/ or /workflows/ path is matched; the bare
-  // host stays readable so setup instructions survive.
+  // against. Slack may issue paths beyond the currently documented services/
+  // workflows forms, and local captures can preserve an explicit port, so any
+  // non-empty path on the exact host is credential-shaped. The bare host stays
+  // readable so setup instructions survive.
   text = text.replace(
-    /\bhttps:\/\/hooks\.slack\.com\/(?:services|workflows)\/[A-Za-z0-9/_-]+/gi,
+    /\bhttps?:\/\/hooks\.slack\.com(?::\d{1,5})?\/[^\s<>"']+/gi,
     "<redacted:slack-webhook>",
   );
   // High-confidence provider token shapes (explicit prefixes only).

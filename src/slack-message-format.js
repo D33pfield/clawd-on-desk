@@ -268,34 +268,54 @@ const MAX_QUESTIONS = 5;
 const MAX_OPTIONS = 5;
 const QUESTION_MAX = 240;
 const QUESTION_HEADER_MAX = 80;
-const OPTION_LABEL_MAX = 80;
 
 function renderQuestions(rawQuestions, locale) {
-  const questions = Array.isArray(rawQuestions) ? rawQuestions : [];
+  const questions = Array.isArray(rawQuestions)
+    ? rawQuestions.filter((question) => question && typeof question === "object")
+    : [];
   const shown = questions.slice(0, MAX_QUESTIONS);
-  const lines = [];
+  const omittedQuestions = questions.length - shown.length;
+  const sections = [];
   shown.forEach((question, index) => {
-    if (!question || typeof question !== "object") return;
     const header = clipMrkdwn(redactMrkdwn(question.header || "").trim(), QUESTION_HEADER_MAX)
       || interpolate(locale.questionNumber, "{n}", String(index + 1));
     const body = clipMrkdwn(redactMrkdwn(question.question || ""), QUESTION_MAX);
     const options = Array.isArray(question.options) ? question.options : [];
-    const optionLines = options.slice(0, MAX_OPTIONS)
-      .map((option) => {
-        const label = option && typeof option === "object" ? option.label : option;
-        return clipMrkdwn(redactMrkdwn(label || ""), OPTION_LABEL_MAX);
-      })
-      .filter(Boolean)
-      .map((label) => `  • ${label}`);
-    if (options.length > MAX_OPTIONS) {
-      optionLines.push(`  • ${interpolate(locale.andMore, "{n}", String(options.length - MAX_OPTIONS))}`);
+    const optionLabels = options.map((option) => {
+      const label = option && typeof option === "object" ? option.label : option;
+      return redactMrkdwn(label || "").trim();
+    }).filter(Boolean);
+    const optionLines = [];
+    const baseLines = [`*${header}*`, body].filter(Boolean);
+    const questionOmission = index === shown.length - 1 && omittedQuestions > 0
+      ? interpolate(locale.andMore, "{n}", String(omittedQuestions))
+      : "";
+    for (const label of optionLabels.slice(0, MAX_OPTIONS)) {
+      const candidate = `  • ${label}`;
+      const omittedAfterCandidate = optionLabels.length - optionLines.length - 1;
+      const optionOmission = omittedAfterCandidate > 0
+        ? `  • ${interpolate(locale.andMore, "{n}", String(omittedAfterCandidate))}`
+        : "";
+      const candidateLines = [...baseLines, ...optionLines, candidate];
+      if (optionOmission) candidateLines.push(optionOmission);
+      if (questionOmission) candidateLines.push("", questionOmission);
+      if (candidateLines.join("\n").length > SECTION_MAX) {
+        break;
+      }
+      optionLines.push(candidate);
     }
-    lines.push([`*${header}*`, body, ...optionLines].filter(Boolean).join("\n"));
+    const omittedOptions = optionLabels.length - optionLines.length;
+    if (omittedOptions > 0) {
+      optionLines.push(`  • ${interpolate(locale.andMore, "{n}", String(omittedOptions))}`);
+    }
+    // A question owns its section block. The admission check above reserves
+    // room for every omission marker, so sectionBlock never has to cut through
+    // an option line just because earlier questions consumed a shared budget.
+    const sectionLines = [...baseLines, ...optionLines];
+    if (questionOmission) sectionLines.push("", questionOmission);
+    sections.push(sectionLines.join("\n"));
   });
-  if (questions.length > MAX_QUESTIONS) {
-    lines.push(interpolate(locale.andMore, "{n}", String(questions.length - MAX_QUESTIONS)));
-  }
-  return lines;
+  return sections;
 }
 
 function interpolate(template, token, value) {
@@ -427,13 +447,16 @@ function buildPermissionMessage(payload, options = {}) {
     // The whole point: show what was actually asked. The approval summary
     // builder can never find a description for an AskUserQuestion, so it
     // always produced "No description available" here.
-    lines.push(...renderQuestions(p.questions, locale));
+    const questionSections = renderQuestions(p.questions, locale);
+    if (lines.length) blocks.push(sectionBlock(lines.join("\n\n")));
+    for (const questionSection of questionSections) {
+      blocks.push(sectionBlock(questionSection));
+    }
   } else {
     const detail = safeText(p.detail || p.summary).trim();
     if (detail) lines.push(redactMrkdwn(detail));
+    blocks.push(sectionBlock(lines.join("\n\n")));
   }
-
-  blocks.push(sectionBlock(lines.join("\n\n")));
   blocks.push(contextBlock(`ℹ️ ${escapeMrkdwn(hint)}`));
 
   const subject = isQuestion ? redactMrkdwn(p.agentId || "") : redactMrkdwn(rawTitle);

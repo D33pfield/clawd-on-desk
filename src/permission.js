@@ -1197,7 +1197,7 @@ function notifyPermissionResolved(permEntry, reason) {
 // very next statement, which used to produce a "needs your approval" Slack ping
 // for a request nobody ever saw. The announce happens later, at the two points
 // where a real user decision is known to be pending (the renderer's bubble
-// height acknowledgement and maybeStartRemoteApproval).
+// height acknowledgement or a remote client's card-delivery acknowledgement).
 function addPendingPermission(permEntry, reason = "added") {
   pendingPermissions.push(permEntry);
   notifyPermissionsChanged(reason);
@@ -1571,8 +1571,8 @@ function buildRemoteApprovalPayload(permEntry) {
 //
 // Callers invoke this only after automation has had its chance: desktop entries
 // arrive from the renderer's post-reveal height acknowledgement, while
-// remote-only entries arrive after maybeStartRemoteApproval confirms a client
-// accepted the request. The gates below are a belt-and-braces re-check of the
+// remote-only entries arrive from a remote client's explicit delivery
+// acknowledgement. The gates below are a belt-and-braces re-check of the
 // conditions that make a request human-visible, so a future call site cannot
 // reintroduce a ping for a request silently dropped by DND or already resolved.
 
@@ -1610,6 +1610,8 @@ function announceSlackPermission(permEntry) {
         agentId: elicitation.agentId,
         folder: elicitation.folder,
         questions: elicitation.questions,
+      }, {
+        isStillRelevant: () => pendingPermissions.includes(permEntry),
       });
       return;
     }
@@ -1621,6 +1623,8 @@ function announceSlackPermission(permEntry) {
       agentId,
       folder,
       summary: buildRemoteApprovalSummary(permEntry),
+    }, {
+      isStillRelevant: () => pendingPermissions.includes(permEntry),
     });
   } catch (err) {
     permLog(`slack permission announce failed: ${err && err.message ? err.message : err}`);
@@ -1848,6 +1852,18 @@ function maybeStartRemoteApproval(permEntry) {
   // decide on the user's behalf over a transient Telegram/Feishu failure.
   let settledWithoutDecision = 0;
 
+  function onRemoteCardDelivered() {
+    // Starting requestApproval/requestElicitation only means the client began
+    // an async send. Slack may announce a remote-only request only after the
+    // client confirms that its actionable card obtained a message id. Re-check
+    // relevance here because the request may have resolved or DND may have
+    // been enabled while the send was in flight.
+    if (permEntry.remoteOnly !== true) return;
+    if (ctx.doNotDisturb) return;
+    if (!pendingPermissions.includes(permEntry)) return;
+    announceSlackPermission(permEntry);
+  }
+
   function maybeFallBackRemoteOnlyEntry() {
     if (!permEntry.remoteOnly) return;
     if (settledWithoutDecision < remoteRequests.length) return;
@@ -1867,20 +1883,20 @@ function maybeStartRemoteApproval(permEntry) {
         && permEntry.interaction.capabilities.answerQuestions
       ) {
         if (typeof client.requestElicitation !== "function") continue;
-        request = client.requestElicitation(
-          payload,
-          controller ? { signal: controller.signal } : {}
-        );
+        request = client.requestElicitation(payload, {
+          ...(controller ? { signal: controller.signal } : {}),
+          onDelivered: onRemoteCardDelivered,
+        });
       } else {
         const clientPayload = {
           ...payload,
           canOfferSessionTrust: typeof ctx.canOfferRemoteSessionTrust === "function"
             && ctx.canOfferRemoteSessionTrust(permEntry, { name, client }) === true,
         };
-        request = client.requestApproval(
-          clientPayload,
-          controller ? { signal: controller.signal } : {}
-        );
+        request = client.requestApproval(clientPayload, {
+          ...(controller ? { signal: controller.signal } : {}),
+          onDelivered: onRemoteCardDelivered,
+        });
       }
       remoteRequests.push({
         name,
@@ -1931,18 +1947,6 @@ function maybeStartRemoteApproval(permEntry) {
       });
   }
   if (!started) return false;
-  // Remote-only entries (bubbles disabled) never reach showPermissionBubble, so
-  // this is their announce point — reached only after session automation
-  // declined and a remote client actually took the request.
-  //
-  // Explicitly gated on remoteOnly rather than relying on the once-flag:
-  // ordinary bubbled entries (codex, qwen, CC elicitation) also reach here, and
-  // for them the action target is the desktop, not the remote channel. The flag
-  // alone would give the right answer only because site A happened to run
-  // first — a guard states the intent instead of depending on ordering.
-  if (permEntry.remoteOnly === true) {
-    announceSlackPermission(permEntry);
-  }
   permEntry.remoteApprovalRequests = remoteRequests;
   if (controllers.length) {
     permEntry.remoteApprovalAbortControllers = controllers;
@@ -2541,8 +2545,6 @@ function handleBubbleHeight(event, height) {
   const perm = pendingPermissions.find(p => p.bubble === senderWin);
   if (perm && typeof height === "number" && height > 0) {
     perm.measuredHeight = Math.ceil(height);
-    repositionBubbles();
-    repositionDependentBubbles();
     // revealCard() reports height on the next animation frame, so this is the
     // first main-process acknowledgement that the exact interaction was loaded,
     // received through permission-show, rendered, and made visible. Announcing
@@ -2550,6 +2552,10 @@ function handleBubbleHeight(event, height) {
     // when content sync or the renderer fails. Later resize reports are safe:
     // announceSlackPermission is once-guarded per entry.
     announceSlackPermission(perm);
+    // Geometry updates happen after the delivery acknowledgement. If either
+    // reflow throws, the already-rendered card must still be announced.
+    repositionBubbles();
+    repositionDependentBubbles();
   }
 }
 

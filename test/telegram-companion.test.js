@@ -212,6 +212,21 @@ test("notifies each completing session with identity fields", async () => {
   assert.match(joined, /laptop/); // host
 });
 
+test("completion respects an explicitly hidden snapshot displayFolder", async () => {
+  const opaque = "mqgw60jiigjsjcid";
+  const { comp, sent } = makeCompanion({ getNotifyOnComplete: () => true });
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({
+    id: "qwenwork:hidden",
+    agentId: "qwenwork",
+    cwd: `/Users/me/.QwenWorkCN/workspace/${opaque}`,
+    displayFolder: "",
+  })] });
+  await tick();
+  assert.equal(sent.length, 1);
+  assert.ok(!JSON.stringify(sent[0]).includes(opaque));
+});
+
 test("ignores non-completion badges and events", async () => {
   const { comp, sent } = makeCompanion();
   comp.onSnapshot({ sessions: [] });

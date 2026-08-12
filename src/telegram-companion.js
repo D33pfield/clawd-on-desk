@@ -108,6 +108,17 @@ function folderName(cwd) {
   return parts[parts.length - 1] || "";
 }
 
+function entryFolderName(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  // Snapshot producers use an explicit empty displayFolder to suppress opaque
+  // internal workspace ids. Only legacy payloads without the field may fall
+  // back to cwd.
+  if (Object.prototype.hasOwnProperty.call(entry, "displayFolder")) {
+    return folderName(entry.displayFolder);
+  }
+  return folderName(entry.cwd);
+}
+
 function shortId(id) {
   const s = String(id || "");
   return s.length > 6 ? s.slice(0, 6) : s;
@@ -216,7 +227,7 @@ function formatNotification(entry, options = {}) {
   const title = entry.displayTitle || (entry.id ? `${shortId(entry.id)}..` : locale.session);
   const meta = [];
   if (entry.agentId) meta.push(entry.agentId);
-  const folder = folderName(entry.cwd);
+  const folder = entryFolderName(entry);
   if (folder) meta.push(folder);
   if (entry.host) meta.push(entry.host);
   if (entry.id) meta.push(`#${shortId(entry.id)}`);
@@ -242,7 +253,7 @@ function formatTelegramNotificationMessage(entry, options = {}) {
   const title = entry.displayTitle || (entry.id ? `${shortId(entry.id)}..` : locale.session);
   const meta = [];
   if (entry.agentId) meta.push(entry.agentId);
-  const folder = folderName(entry.cwd);
+  const folder = entryFolderName(entry);
   if (folder) meta.push(folder);
   if (entry.host) meta.push(entry.host);
   if (entry.id) meta.push(`#${shortId(entry.id)}`);

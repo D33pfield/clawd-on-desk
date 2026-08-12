@@ -83,6 +83,20 @@ test("redactSecrets masks Slack webhook URLs", () => {
     /<redacted:slack-webhook>/,
   );
 
+  // Do not encode today's two documented path families into the safety net:
+  // Slack can add a new opaque credential path without coordinating a Clawd
+  // release, and diagnostics may preserve an explicit port.
+  for (const variant of [
+    "https://hooks.slack.com/custom/opaque/credential/value",
+    "https://hooks.slack.com:8443/edge/T00000000/super-secret?token=also-secret",
+    "http://hooks.slack.com/services/T00000000/B00000000/plaintext-bearer",
+    "HTTPS://HOOKS.SLACK.COM/future/path/credential",
+  ]) {
+    const redacted = redactSecrets(`use ${variant} now`);
+    assert.match(redacted, /<redacted:slack-webhook>/);
+    assert.doesNotMatch(redacted, /opaque|super-secret|plaintext-bearer|credential/i);
+  }
+
   // The bare host in prose is not a credential and must survive, or setup
   // instructions ("paste the https://hooks.slack.com/... URL") become unreadable.
   const prose = redactSecrets("open hooks.slack.com and create a webhook");
