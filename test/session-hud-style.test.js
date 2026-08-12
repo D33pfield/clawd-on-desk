@@ -27,6 +27,55 @@ describe("pet-attached quota ring", () => {
     assert.match(quotaRingRenderer, /stroke-dasharray/);
   });
 
+  // A healthy ring is colored by identity, not by headroom: severity has only
+  // three steps, so two healthy windows used to come out the same color and read
+  // as one thick ring. Severity still owns the alert states.
+  it("gives every ring provider its own identity pair, so none silently wears another's colors", () => {
+    // The generic --id-outer/--id-inner pair is Claude's, by design (it is the
+    // most common coin). That makes a missing pair invisible rather than loud:
+    // a new provider would just look like Claude. Pin the mapping instead.
+    const declared = new Set(
+      [...quotaRingHtml.matchAll(/--id-([a-z]+)-(outer|inner)\s*:/g)].map((m) => `${m[1]}-${m[2]}`)
+    );
+    // RING_PROVIDERS keys are "<name>Quota"; the CSS classes are pv-<key>.
+    const providerKeys = [...quotaRingRenderer.matchAll(/key:\s*"(\w+Quota)"/g)].map((m) => m[1]);
+    assert.ok(providerKeys.length >= 3, `expected the ring providers, got ${providerKeys}`);
+    for (const key of providerKeys) {
+      const name = key.replace(/Quota$/, "").toLowerCase();
+      for (const slot of ["outer", "inner"]) {
+        assert.ok(
+          declared.has(`${name}-${slot}`),
+          `${key} has no --id-${name}-${slot} in quota-ring.html; it would inherit the generic (Claude) pair`
+        );
+        assert.match(
+          quotaRingHtml,
+          new RegExp(`\\.pv-${key}\\.rg-${slot}\\s*\\{[^}]*--ring-id`),
+          `${key}/${slot} resolves no --ring-id, so fill and track would not share a hue`
+        );
+      }
+    }
+  });
+
+  // The track is the same hue as the fill, laid down faintly. A reset ring draws
+  // no fill at all, so the track is the only thing left on screen — it must not
+  // fall back to grey there, which is why it carries the identity classes too.
+  it("beds every track in its own ring's hue, fill and track from one source", () => {
+    assert.match(quotaRingRenderer, /ringCircle\(`track \$\{identityClass\(/);
+    // Scope the assertions to the track rule itself. Matching the whole file
+    // would let the identical fallback on .fill.sev-ok satisfy them while the
+    // track quietly lost its own (a mutation run caught exactly that).
+    const trackRule = quotaRingHtml.match(/\.coin \.track\.rg-outer,[\s\S]*?\n\}/);
+    assert.ok(trackRule, "no .coin .track.rg-outer rule found");
+    assert.match(trackRule[0], /color-mix\(in srgb, var\(--ring-id/);
+    assert.match(trackRule[0], /var\(--track-alpha\), transparent\)/);
+    // An invalid color-mix resolves to `unset` -> stroke's initial `none`, which
+    // would erase the ring; the var() fallback is what prevents that.
+    assert.match(trackRule[0], /var\(--ring-id,\s*var\(--id-outer\)\)/);
+    // Exactly one --ring-track declaration: a duplicate silently shadows the
+    // other and the comment stops describing what ships.
+    assert.strictEqual((quotaRingHtml.match(/^\s*--ring-track\s*:/gm) || []).length, 1);
+  });
+
   it("colors coins by severity and dims reset/stale states", () => {
     assert.match(quotaRingRenderer, /severityClass/);
     assert.match(quotaRingHtml, /\.fill\.sev-ok/);
