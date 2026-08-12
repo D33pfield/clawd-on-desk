@@ -41,6 +41,7 @@ docs/**
 !docs/plans/plan-issue-513-remote-ssh-isolation.md
 !docs/plans/plan-issue-763-koffi-target-native-packaging.md
 !docs/plans/plan-npm-dependency-security-hardening.md
+!docs/plans/plan-opencode-family-state-ordering-and-instance-disposal-hardening.md
 !docs/project/
 !docs/project/agent-runtime-architecture.md
 !docs/project/release-process.md
@@ -64,6 +65,7 @@ docs/**
 !docs/releases/release-v0.12.0.md
 !docs/releases/release-v0.13.0.md
 !docs/releases/release-v0.14.0.md
+!docs/releases/release-v0.15.0.md
 
 # Temp files from testing
 .tmp_*
@@ -131,3 +133,26 @@ scripts/manual/*
 
 # Cursor local config (MCP, rules from omc setup)
 .cursor/
+
+# VS Code local config
+.vscode/
+
+# Local agent/skill definitions (machine-specific)
+.agents/
+
+# Local git worktrees used for PR review
+.worktrees/
+
+# Playwright MCP session artifacts (screenshots, downloaded installers — hundreds of MB)
+.playwright-mcp/
+
+# Retired Telegram sidecar binaries. The sidecar was removed in v0.14.0 and every
+# release build asserts it is absent (scripts/assert-no-retired-telegram-sidecar.js);
+# stale local copies must never re-enter the repository.
+bin/
+
+# PowerShell module analysis cache that Windows sometimes drops at the repo root
+Microsoft/
+
+# Emoji export scratch
+clawd-emoji-final/

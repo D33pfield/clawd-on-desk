@@ -19,7 +19,8 @@ npm run audit:assets
 Manual workflow dispatch builds Windows, macOS, and Linux artifacts, checks
 each unpacked resources tree for retired Telegram sidecar binaries/source, and
 gates every package on its target-native Koffi payload, a packaged positive-call
-smoke, and updater metadata matching the generated artifacts. It then uploads
+smoke, and updater metadata matching both the generated artifacts and the exact
+`package.json` release version. It then uploads
 the installers plus JSON evidence manifests. It does not publish a GitHub
 Release.
 
@@ -48,7 +49,7 @@ Download and smoke-test the draft release assets before publishing the draft.
 If the draft is wrong, fix the issue before publishing; do not publish a known
 bad draft release.
 
-### v0.14.0 Draft Smoke Checklist
+### v0.15.0 Draft Smoke Checklist
 
 Use the draft release installer or package artifact, not `npm start`. Windows
 required items are the primary publish gate. If macOS or Linux hardware is not
@@ -58,7 +59,7 @@ notes.
 Before launching:
 
 - Download the draft release asset for the platform being tested.
-- Confirm the packaged app shows `0.14.0` metadata.
+- Confirm the packaged app shows `0.15.0` metadata.
 - Confirm packaged resources include `app.asar.unpacked/hooks`,
   `app.asar.unpacked/agents`, `app.asar.unpacked/extensions`,
   and `app.asar.unpacked/themes`.
@@ -68,8 +69,9 @@ Before launching:
   not a universal NSIS installer.
 - Download the native-package, Koffi prune/smoke, and updater metadata manifests.
   Confirm the target has one matching `koffi.node`, no foreign native payload,
-  and no unreviewed exception.
-- For migration smoke, install v0.13.0 first and save a copy of the old
+  and no unreviewed exception. Confirm each updater metadata `version` and every
+  listed artifact filename identify `0.15.0`.
+- For migration smoke, install v0.14.0 first and save a copy of the old
   `clawd-prefs.json` before upgrading.
 - For Reasonix smoke, prepare a machine with Reasonix initialized so
   `<Reasonix home>/` exists (`%APPDATA%\reasonix` on Windows,
@@ -81,9 +83,9 @@ Before launching:
 Required all-platform checks:
 
 - Fresh install, launch, pet appears, no error dialog.
-- Upgrade install over v0.13.0, launch, pet appears, no error dialog. Existing
+- Upgrade install over v0.14.0, launch, pet appears, no error dialog. Existing
   agent installation/enabled flags and user theme/animation choices remain intact.
-- Settings -> About shows `v0.14.0`, sourced from `app.getVersion()`.
+- Settings -> About shows `v0.15.0`, sourced from `app.getVersion()`.
 - First-run tutorial opens once for a fresh profile; Finish, Skip, and OS close
   each persist `tutorialSeen=true` and do not reopen on restart.
 - Upgrade profile with no `tutorialSeen` sees the tutorial once; an already-seen
@@ -92,13 +94,17 @@ Required all-platform checks:
   macOS installs default to pet + menu-bar accessory with no Dock tile.
 - Settings -> General / Agents / Animation & Sound render correctly in all supported
   languages, including sidebar SVG icons and the folded Animation Map subtab.
-- Settings -> About contributors include the six v0.14.0 first-time
-  contributors: `LinYsssss`, `He-wei-gui`, `liugou27`, `YOOGOMJA`,
-  `anupamme`, and `anthonyonazure`.
+- Settings -> About contributors include the two v0.15.0 first-time
+  contributors: `weed33834` and `arismarioneves`.
 - Reinstall one existing hook-based agent, such as Codex, and confirm the
   packaged hook script can `require()` its dependencies.
 - Run one real Claude Code or Codex session and confirm the pet reacts to state
   changes and still plays completion happy on Stop.
+- Confirm a completed turn uses the distinct default completion sound rather
+  than the ordinary confirmation cue.
+- Run one real OpenCode session through a title rename, tool activity, and
+  SessionEnd. HUD/Dashboard must show the bounded title, retain causal ordering,
+  and remove the session without replaying a stale state after a slow endpoint.
 - Restart Clawd during an active Claude session, then let the real hook resume
   and end it. Dashboard/HUD must keep one canonical session throughout and
   remove it cleanly on SessionEnd, with no duplicate or ghost recovery row.
@@ -137,6 +143,9 @@ Required all-platform checks:
   ZCode's native permission flow. From an Orca pane, jump back to the session
   and confirm the validated pane key focuses the correct pane locally and over
   managed Remote SSH.
+- Install QwenWork on Windows or macOS and confirm lifecycle state reaches Clawd,
+  `PermissionRequest` / `PermissionDenied` remain observation-only, and uninstall
+  removes only Clawd-managed hook entries.
 - Remote SSH profile with connect-on-launch connects after startup; repeat with
   local port 23333 occupied so the server binds a later port and the tunnel still
   targets the real bound port.
@@ -158,6 +167,10 @@ Recommended all-platform checks:
 
 - Free roam: enable it, wait idle, confirm the pet moves, keeps hitbox/HUD/bubble
   alignment, and cancels on mouse move, state change, drag, mini mode, and DND.
+- Free roam constraints: exercise axis off/horizontal/vertical both with and
+  without a valid fence, then use a small fence and invalid/missing fence input.
+  Targets must remain reachable and on-screen, with invalid input falling back
+  safely.
 - Dizzy spin: on the Clawd theme, circle the cursor rapidly and confirm dizzy
   triggers; repeat on Calico/Cloudling and confirm no unsupported-state glitch.
 - Low-power idle mode: verify sleeping/Cloudling static sleep behavior and that
@@ -165,7 +178,7 @@ Recommended all-platform checks:
 - Right-click Hide pet / Show pet still works; while hidden, a newly arriving
   permission request still shows a bubble, by design.
 - Settings -> About -> Check for updates completes without an error.
-- Update labels never show a duplicated prefix such as `vv0.14.0`.
+- Update labels never show a duplicated prefix such as `vv0.15.0`.
 - Telegram approval cards show the final outcome for decisions made on Telegram
   and for approvals resolved elsewhere.
 - Scan the mobile PWA pairing URL on a phone and confirm session cards appear.
@@ -194,6 +207,10 @@ Windows checks:
 
 macOS checks:
 
+- Required when macOS hardware is available: toggle menu-bar and Dock visibility,
+  restart, and confirm both preferences persist and Settings can still regain focus.
+- Required when macOS hardware is available: test Dock left/right/bottom plus
+  auto-hide and confirm physical-edge pinning stays on-screen across displays.
 - Required when macOS hardware is available: Ghostty cross-Space focus switches
   to the target Space without yanking the Ghostty window to the current desktop.
 - Required when macOS hardware is available: answer a permission with

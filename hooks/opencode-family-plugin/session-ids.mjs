@@ -27,17 +27,43 @@ function normalizeSessionText(value) {
 // ellipsis). A 17k-char title would otherwise blow the 16 KiB /state body
 // cap, trigger a headerless 413, and make the plugin distrust the response
 // and rescan all five ports on every event (#841 review).
-const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
+// Unicode bidi formatting marks can visually reorder otherwise-safe text even
+// when the UI assigns it through textContent. Strip them at the plugin boundary
+// together with ordinary controls so the stored/wire title is never ambiguous.
+const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F\u061C\u200E-\u200F\u202A-\u202E\u2066-\u2069]+/g;
 const SESSION_TITLE_MAX = 80;
+
+function replaceUnpairedSurrogates(value) {
+  let result = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) {
+        result += value[index] + value[index + 1];
+        index += 1;
+      } else {
+        result += "\uFFFD";
+      }
+    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+      result += "\uFFFD";
+    } else {
+      result += value[index];
+    }
+  }
+  return result;
+}
+
 function normalizeTitle(value) {
   if (typeof value !== "string") return null;
-  const collapsed = value
+  const collapsed = replaceUnpairedSurrogates(value)
     .replace(SESSION_TITLE_CONTROL_RE, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!collapsed) return null;
-  return collapsed.length > SESSION_TITLE_MAX
-    ? `${collapsed.slice(0, SESSION_TITLE_MAX - 1)}…`
+  const characters = Array.from(collapsed);
+  return characters.length > SESSION_TITLE_MAX
+    ? `${characters.slice(0, SESSION_TITLE_MAX - 1).join("")}…`
     : collapsed;
 }
 

@@ -12,6 +12,7 @@ const {
   getActiveSessionAliasKeys,
   sessionSnapshotSignature,
   sessionDisplayTitle,
+  normalizeTitle,
 } = require("../src/state-session-snapshot");
 const { makeSessionKey } = require("../src/session-key");
 const { sessionAliasKey } = require("../src/session-alias");
@@ -49,6 +50,23 @@ describe("deriveSourceInfo", () => {
         displayLabel: "",
       });
     }
+  });
+});
+
+describe("normalizeTitle", () => {
+  it("strips Unicode bidi formatting marks before UI snapshots", () => {
+    assert.strictEqual(
+      normalizeTitle("safe\u061c\u200efile\u202etxt.exe\u2066done\u2069"),
+      "safe file txt.exe done"
+    );
+  });
+
+  it("does not split astral characters or preserve unpaired surrogates", () => {
+    const truncated = normalizeTitle(`${"A".repeat(78)}😀BC`);
+    assert.strictEqual(truncated, `${"A".repeat(78)}😀…`);
+    assert.strictEqual(truncated.isWellFormed(), true);
+    assert.strictEqual(Array.from(truncated).length, 80);
+    assert.strictEqual(normalizeTitle("before\uD83Dmiddle\uDC00after"), "before�middle�after");
   });
 });
 

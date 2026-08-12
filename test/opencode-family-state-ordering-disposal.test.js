@@ -270,6 +270,208 @@ describe("opencode-family per-session /state FIFO", () => {
     assert.strictEqual(plugin.__test._statePostTailBySession.size, 0);
   });
 
+  it("coalesces sustained states behind a slow in-flight delivery", async () => {
+    const plugin = createOpencodeFamilyPlugin(CONFIG);
+    await plugin(createContext(path.join(TMP_HOME, "coalesce")));
+    const calls = [];
+    const firstGate = deferred();
+
+    fetchImpl = async (url, opts) => {
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      if (call.body.event === "UserPromptSubmit" && call.body.sequence === 0) {
+        await firstGate.promise;
+      }
+      return clawdResponse();
+    };
+
+    plugin.__test.postStateToClawd({
+      state: "thinking",
+      session_id: "opencode:ses_coalesce",
+      event: "UserPromptSubmit",
+      sequence: 0,
+      agent_id: "opencode",
+      hook_source: "opencode-plugin",
+    });
+    await waitFor(() => calls.length === 1, "first state never began");
+
+    for (let sequence = 1; sequence <= 100; sequence += 1) {
+      plugin.__test.postStateToClawd({
+        state: sequence % 2 ? "working" : "thinking",
+        session_id: "opencode:ses_coalesce",
+        event: sequence % 2 ? "PreToolUse" : "UserPromptSubmit",
+        sequence,
+        agent_id: "opencode",
+        hook_source: "opencode-plugin",
+      });
+    }
+
+    const queued = plugin.__test._statePostQueueBySession.get("opencode:ses_coalesce");
+    assert.ok(queued);
+    assert.strictEqual(queued.pending.length, 1);
+    assert.strictEqual(calls.length, 1, "a queued state overtook the in-flight delivery");
+    firstGate.resolve();
+    await waitForQueueEmpty(plugin);
+
+    assert.deepStrictEqual(calls.map((call) => call.body.sequence), [0, 100]);
+    assert.strictEqual(plugin.__test._statePostQueueBySession.size, 0);
+  });
+
+  it("lets SessionEnd replace a stale sustained state pending behind a slow delivery", async () => {
+    const plugin = createOpencodeFamilyPlugin(CONFIG);
+    await plugin(createContext(path.join(TMP_HOME, "terminal-coalesce")));
+    const calls = [];
+    const firstGate = deferred();
+
+    fetchImpl = async (url, opts) => {
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      if (call.body.sequence === 0) await firstGate.promise;
+      return clawdResponse();
+    };
+
+    plugin.__test.postStateToClawd({
+      state: "thinking",
+      session_id: "opencode:ses_terminal",
+      event: "UserPromptSubmit",
+      sequence: 0,
+      agent_id: "opencode",
+      hook_source: "opencode-plugin",
+    });
+    await waitFor(() => calls.length === 1, "first state never began");
+    plugin.__test.postStateToClawd({
+      state: "working",
+      session_id: "opencode:ses_terminal",
+      event: "PreToolUse",
+      sequence: 1,
+      agent_id: "opencode",
+      hook_source: "opencode-plugin",
+    });
+    plugin.__test.postStateToClawd({
+      state: "sleeping",
+      session_id: "opencode:ses_terminal",
+      event: "SessionEnd",
+      sequence: 2,
+      agent_id: "opencode",
+      hook_source: "opencode-plugin",
+    });
+
+    firstGate.resolve();
+    await waitForQueueEmpty(plugin);
+    assert.deepStrictEqual(calls.map((call) => [call.body.sequence, call.body.event]), [
+      [0, "UserPromptSubmit"],
+      [2, "SessionEnd"],
+    ]);
+  });
+
+  it("hard-bounds a real event backlog across repeated error barriers", async () => {
+    const directory = path.join(TMP_HOME, "bounded-barriers");
+    const plugin = createOpencodeFamilyPlugin(CONFIG);
+    const hooks = await plugin(createContext(directory));
+    const calls = [];
+    const firstGate = deferred();
+
+    fetchImpl = async (url, opts) => {
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      if (calls.length === 1) await firstGate.promise;
+      return clawdResponse();
+    };
+
+    await emit(hooks, lifecycle("session.created", "ses_bounded", directory, "Bounded"));
+    await waitFor(() => calls.length === 1, "first lifecycle request never began");
+
+    for (let index = 0; index < 100; index += 1) {
+      await emit(hooks, {
+        type: "message.part.updated",
+        properties: {
+          sessionID: "ses_bounded",
+          part: { type: "tool", state: { status: "running" } },
+        },
+      });
+      await emit(hooks, {
+        type: "message.part.updated",
+        properties: {
+          sessionID: "ses_bounded",
+          part: { type: "tool", state: { status: "error" } },
+        },
+      });
+      await emit(hooks, {
+        type: "session.status",
+        properties: { sessionID: "ses_bounded", status: { type: "busy" } },
+      });
+    }
+
+    const queue = plugin.__test._statePostQueueBySession.get("opencode:ses_bounded");
+    assert.ok(queue);
+    assert.ok(queue.pending.length <= plugin.__test._statePostMaxPending);
+    assert.strictEqual(calls.length, 1, "queued events overtook the in-flight delivery");
+
+    firstGate.resolve();
+    await waitForQueueEmpty(plugin);
+    assert.ok(calls.length <= plugin.__test._statePostMaxPending + 1);
+    assert.deepStrictEqual(
+      [calls.at(-1).body.state, calls.at(-1).body.event],
+      ["thinking", "UserPromptSubmit"],
+      "the bounded queue did not retain the freshest state",
+    );
+    assert.strictEqual(plugin.__test._statePostQueueBySession.size, 0);
+  });
+
+  it("does not let overflow title metadata evict the freshest lifecycle state", async () => {
+    const directory = path.join(TMP_HOME, "bounded-metadata");
+    const plugin = createOpencodeFamilyPlugin(CONFIG);
+    const hooks = await plugin(createContext(directory));
+    const calls = [];
+    const firstGate = deferred();
+
+    fetchImpl = async (url, opts) => {
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      if (calls.length === 1) await firstGate.promise;
+      return clawdResponse();
+    };
+
+    await emit(hooks, lifecycle("session.created", "ses_metadata_bound", directory, "Old title"));
+    await waitFor(() => calls.length === 1, "first lifecycle request never began");
+
+    for (let index = 0; index < 40; index += 1) {
+      await emit(hooks, {
+        type: "message.part.updated",
+        properties: {
+          sessionID: "ses_metadata_bound",
+          part: { type: "tool", state: { status: "error" } },
+        },
+      });
+      await emit(hooks, {
+        type: "session.status",
+        properties: { sessionID: "ses_metadata_bound", status: { type: "busy" } },
+      });
+    }
+    await emit(hooks, lifecycle(
+      "session.updated",
+      "ses_metadata_bound",
+      directory,
+      "Fresh title",
+    ));
+
+    const queue = plugin.__test._statePostQueueBySession.get("opencode:ses_metadata_bound");
+    assert.ok(queue);
+    assert.ok(queue.pending.length <= plugin.__test._statePostMaxPending);
+
+    firstGate.resolve();
+    await waitForQueueEmpty(plugin);
+    const lifecycleCalls = calls.filter((call) => !call.body.metadata_only);
+    assert.deepStrictEqual(
+      [lifecycleCalls.at(-1).body.state, lifecycleCalls.at(-1).body.event],
+      ["thinking", "UserPromptSubmit"],
+    );
+    assert.strictEqual(
+      calls.some((call) => call.body.metadata_only && call.body.session_title === "Fresh title"),
+      true,
+    );
+  });
+
   it("keeps different sessions concurrent and /permission outside the state queue", async () => {
     const directory = path.join(TMP_HOME, "parallel");
     const plugin = createOpencodeFamilyPlugin(CONFIG);
