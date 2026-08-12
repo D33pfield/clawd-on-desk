@@ -183,11 +183,51 @@ describe("isSessionInProgress state mapping", () => {
 });
 
 describe("sessionDisplayTitle cwd fallback", () => {
-  it("falls back to path.basename(cwd) for normal project paths", () => {
+  it("derives normal project basenames independent of the host platform", () => {
     assert.strictEqual(
       sessionDisplayTitle("qoderwork:abc123", session("working", { cwd: "/home/me/projects/myapp" })),
       "myapp"
     );
+    assert.strictEqual(
+      sessionDisplayTitle("claude:abc123", session("working", { cwd: "C:\\Users\\me\\projects\\myapp" })),
+      "myapp"
+    );
+    assert.strictEqual(
+      sessionDisplayTitle("claude:abc123", session("working", { cwd: "\\\\server\\share\\projects\\myapp" })),
+      "myapp"
+    );
+    assert.strictEqual(
+      sessionDisplayTitle("claude:abc123", session("working", { cwd: "C:/Users/me/projects\\myapp" })),
+      "myapp"
+    );
+    assert.strictEqual(
+      sessionDisplayTitle("claude:abc123", session("working", { cwd: "//server/share/projects\\myapp" })),
+      "myapp"
+    );
+    assert.strictEqual(
+      sessionDisplayTitle("claude:abc123", session("working", { cwd: "//?/C:/Users/me/projects\\myapp" })),
+      "myapp"
+    );
+  });
+
+  it("preserves backslashes that are part of a POSIX path component", () => {
+    assert.strictEqual(
+      sessionDisplayTitle("claude:abc123", session("working", { cwd: "/tmp/project\\name" })),
+      "project\\name"
+    );
+    assert.strictEqual(
+      sessionDisplayTitle("claude:abc123", session("working", { cwd: "/\\mount/project\\name" })),
+      "project\\name"
+    );
+  });
+
+  it("falls back to the session id for filesystem roots", () => {
+    for (const cwd of ["/", "C:\\"]) {
+      assert.strictEqual(
+        sessionDisplayTitle("claude:canonical", session("working", { cwd, rawSessionId: "root42" })),
+        "root42"
+      );
+    }
   });
 
   it("skips QoderWork internal workspace cwds so the HUD never shows a raw workspace id", () => {

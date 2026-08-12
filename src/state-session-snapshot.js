@@ -197,7 +197,7 @@ function getEffectiveSessionTitle(id, sessionLike, options = {}) {
 
 // Agents whose sessions can run inside an app-managed workspace directory whose
 // leaf is an opaque internal ID (e.g. "mqgw60jiigjsjcid"). For those, the
-// `path.basename(cwd)` fallback below would put that ID in the HUD, Dashboard
+// cwd basename fallback below would put that ID in the HUD, Dashboard
 // and session menu, so it is skipped and the shortened session id wins instead.
 //
 // Deliberately an agent↔path PAIRING, not two independent checks: the pattern
@@ -266,7 +266,15 @@ function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {})
   if (title) return title;
   const cwd = sessionLike && sessionLike.cwd;
   if (cwd && typeof cwd === "string" && !isInternalWorkspaceCwd(id, sessionLike, cwd)) {
-    return path.basename(cwd);
+    // Session metadata can cross operating-system boundaries (for example a
+    // Windows agent reported to a macOS/Linux Clawd). Select the path dialect
+    // from the value instead of the host, while preserving backslashes that
+    // are legal characters in a POSIX path component.
+    const windowsPath = /^[A-Za-z]:[\\/]/.test(cwd) || /^([\\/])\1/.test(cwd);
+    const cwdBasename = windowsPath
+      ? path.win32.basename(cwd)
+      : path.posix.basename(cwd);
+    if (cwdBasename) return cwdBasename;
   }
   const rawSessionId = (sessionLike && sessionLike.rawSessionId) || id;
   return shortenSessionIdForDisplay(rawSessionId, sessionLike);
