@@ -62,14 +62,28 @@ const INNER_C = 2 * Math.PI * INNER_R;
 // (avatar mask) and oversize past the clip so the mark fills the circle instead
 // of floating small inside the PNG's whitespace.
 const GLYPH_ZOOM = 1.35;
-// Per-provider override. The exporter already fits every glyph inside a 56x56
-// safe area on a 64x64 canvas, so 1.35 crops a second time on top of that —
-// tolerable for marks that carry their own slack, fatal for a radial one whose
-// arms end at the safe-area edge. Claude's starburst loses 17.9% of its ink at
-// 1.35 and 1.5% at 64/56, which is exactly the "circular clip lops the corners"
-// problem the icon swap set out to fix. Left at 1.35 elsewhere: those glyphs
-// have uneven padding and 1.35 is what makes them fill the hole.
-const GLYPH_ZOOM_BY_PROVIDER = { claudeQuota: 64 / 56 };
+// Per-provider override, because the exporter does not give every glyph the
+// same share of its canvas (see scripts/export-agent-icons.js):
+//
+//   plain marks           artwork fills 56 of 64  -> zoom 64/56
+//   contrast-tile marks   artwork fills 40 of 64, inside a 56px light plate
+//                         -> zoom 64/40
+//
+// A single 1.35 for both is what made the Codex mark look 29% smaller than
+// Claude's and wear a visible frame: 1.35 shows the middle 47 units, so a
+// 40-unit mark floats with 7 units of its plate still in frame. Zooming to
+// 64/40 fills the hole with the mark itself and pushes the plate past the clip,
+// which is also why the frame disappears — and the plate (#f4f4f4) is within a
+// couple of levels of the coin's own plate (#f6f6f8), so nothing shows at the
+// seam. The tile exists so these black-on-transparent marks survive the dark
+// HUD and Dashboard surfaces; a coin already puts them on a light plate, so
+// here it is pure cost. test/session-hud-style.test.js pins this mapping
+// against the exporter's own manifest so a new provider cannot miss it.
+const GLYPH_ZOOM_BY_PROVIDER = {
+  antigravityQuota: 64 / 56,
+  claudeQuota: 64 / 56,
+  codexQuota: 64 / 40,
+};
 let coinClipSeq = 0;
 
 let payload = {

@@ -249,3 +249,49 @@ describe("session HUD visual shell", () => {
     assert.match(sessionHudHtml, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*\.unread-bell svg\s*\{[\s\S]*animation:\s*none;/);
   });
 });
+
+// The exporter gives a plain mark 56 of its 64px canvas but a contrast-tile
+// mark only 40 (the rest is the light plate that keeps a black-on-transparent
+// logo alive on dark HUD/Dashboard surfaces). A coin crops its glyph to a
+// circle, so one shared zoom makes tiled marks render visibly smaller and
+// framed. This pins the per-provider zoom against the exporter's own manifest,
+// so adding a ring provider cannot silently inherit the wrong one.
+describe("quota ring glyph zoom follows the exporter's artwork ratio", () => {
+  const manifest = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "..", "assets", "source", "agent-icons", "source-manifest.json"), "utf8"
+  ));
+  const snapshotSource = fs.readFileSync(
+    path.join(__dirname, "..", "src", "state-session-snapshot.js"), "utf8"
+  );
+
+  it("zooms tiled marks to their artwork, not to the plate", () => {
+    // providerKey -> agent id, straight from the snapshot that feeds the ring.
+    const block = snapshotSource.match(/quotaAgentIcons: \(\(\) => \{[\s\S]*?\n    \}\)\(\)/);
+    assert.ok(block, "could not locate the quotaAgentIcons block");
+    const mapping = [...block[0].matchAll(/(\w+Quota):\s*iconFor\("([\w-]+)"\)/g)]
+      .map((m) => ({ providerKey: m[1], agentId: m[2] }));
+    assert.ok(mapping.length >= 3, `expected the ring providers, got ${JSON.stringify(mapping)}`);
+
+    const zoomBlock = quotaRingRenderer.match(/GLYPH_ZOOM_BY_PROVIDER = \{[\s\S]*?\}/);
+    assert.ok(zoomBlock, "no GLYPH_ZOOM_BY_PROVIDER");
+    const zooms = Object.fromEntries(
+      [...zoomBlock[0].matchAll(/(\w+Quota):\s*64\s*\/\s*(\d+)/g)].map((m) => [m[1], Number(m[2])])
+    );
+
+    // Only providers the ring actually draws; RING_PROVIDERS is the authority.
+    const drawn = new Set(
+      [...quotaRingRenderer.matchAll(/key:\s*"(\w+Quota)"/g)].map((m) => m[1])
+    );
+
+    for (const { providerKey, agentId } of mapping) {
+      if (!drawn.has(providerKey)) continue;
+      const tiled = !!(manifest.sources[agentId] || {}).contrastTreatment;
+      const expected = tiled ? 40 : 56;
+      assert.strictEqual(
+        zooms[providerKey], expected,
+        `${providerKey} (${agentId}) is ${tiled ? "" : "not "}contrast-tiled, so its glyph fills `
+        + `${expected} of 64 and the coin should zoom 64/${expected}`
+      );
+    }
+  });
+});
