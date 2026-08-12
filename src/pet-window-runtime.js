@@ -124,6 +124,7 @@ function createPetWindowRuntime(options = {}) {
   const getCurrentState = options.getCurrentState || (() => null);
   const getCurrentSvg = options.getCurrentSvg || (() => null);
   const getCurrentHitBox = options.getCurrentHitBox || (() => null);
+  const getCurrentAccessoryPayload = options.getCurrentAccessoryPayload || (() => null);
   const getMiniMode = options.getMiniMode || (() => false);
   const getMiniTransitioning = options.getMiniTransitioning || (() => false);
   const getMiniContainedSeam = options.getMiniContainedSeam || (() => null);
@@ -208,6 +209,7 @@ function createPetWindowRuntime(options = {}) {
     getCurrentState,
     getCurrentSvg,
     getCurrentHitBox,
+    getCurrentAccessoryPayload,
     getMiniMode,
     getMiniPeekOffset,
   });

@@ -125,6 +125,7 @@ function createHolidayAccessoryRuntime(options = {}) {
   const setTimeoutFn = options.setTimeout || setTimeout;
   const clearTimeoutFn = options.clearTimeout || clearTimeout;
   const logWarn = options.logWarn || console.warn;
+  const onAccessoryChange = options.onAccessoryChange || (() => {});
 
   let started = false;
   let refreshTimer = null;
@@ -157,12 +158,17 @@ function createHolidayAccessoryRuntime(options = {}) {
     if (!force && resolved.key === lastDisplayKey) return false;
     try {
       sendToRenderer("pet-accessory-change", resolved.payload);
-      lastDisplayKey = resolved.key;
-      return true;
     } catch (err) {
       try { logWarn("Clawd: holiday accessory delivery failed:", err && err.message); } catch {}
       return false;
     }
+    lastDisplayKey = resolved.key;
+    try {
+      onAccessoryChange(resolved.payload);
+    } catch (err) {
+      try { logWarn("Clawd: holiday accessory hitbox sync failed:", err && err.message); } catch {}
+    }
+    return true;
   }
 
   function clearScheduledRefresh() {

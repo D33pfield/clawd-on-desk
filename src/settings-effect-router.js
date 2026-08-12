@@ -84,6 +84,7 @@ function createSettingsEffectRouter(options = {}) {
   const exitMiniMode = options.exitMiniMode || noop;
   const getMiniMode = options.getMiniMode || (() => false);
   const getActiveTheme = options.getActiveTheme || (() => null);
+  const syncHitWin = options.syncHitWin || noop;
   const refreshIdleVisual = options.refreshIdleVisual || noop;
   const rebuildAllMenus = options.rebuildAllMenus || noop;
   const reconcilePowerSaveBlocker = options.reconcilePowerSaveBlocker || noop;
@@ -140,6 +141,7 @@ function createSettingsEffectRouter(options = {}) {
         "pet-accessory-change",
         resolvePetAccessoryPayload(accessoryId, activeTheme)
       );
+      safeCall(logWarn, "Clawd: accessory hitbox sync failed:", syncHitWin);
     }
     if ("keepAwakeWhileWorking" in changes) {
       safeCall(logWarn, "Clawd: reconcilePowerSaveBlocker failed:", reconcilePowerSaveBlocker);

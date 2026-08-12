@@ -546,6 +546,27 @@ describe("settings-effect-router", () => {
     assert.strictEqual(calls.some((call) => call[0] === "rebuildAllMenus"), false);
   });
 
+  it("resizes the input window after the effective accessory changes", () => {
+    const clawd = {
+      _id: "clawd",
+      _builtin: true,
+      _capabilities: { accessories: true },
+    };
+    const { calls, emit } = createHarness({
+      routerOptions: {
+        getActiveTheme: () => clawd,
+        syncHitWin: () => calls.push(["syncHitWin"]),
+      },
+    });
+
+    emit({ petAccessory: { clawd: "top-hat" } });
+    assert.deepStrictEqual(calls.map((call) => call[0]), [
+      "updateMirrors",
+      "sendToRenderer",
+      "syncHitWin",
+    ]);
+  });
+
   it("broadcasts settings changes only to live renderer windows", () => {
     const calls = [];
     const windows = [

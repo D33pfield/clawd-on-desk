@@ -883,6 +883,17 @@ if (_loadedStartupTheme._id !== _requestedThemeId || _loadedStartupTheme._varian
 }
 
 // ── Pet window geometry / bounds runtime ──
+function getEffectivePetAccessoryPayload() {
+  const activeTheme = getActiveTheme();
+  const snapshot = _settingsController.getSnapshot();
+  const accessoryId = getEffectivePetAccessoryIdForTheme({
+    petAccessory: snapshot.petAccessory,
+    holidayAccessoryEnabled: snapshot.holidayAccessoryEnabled,
+    themeId: activeTheme && activeTheme._id,
+  });
+  return resolvePetAccessoryPayload(accessoryId, activeTheme);
+}
+
 const petWindowRuntime = createPetWindowRuntime({
   screen,
   isWin,
@@ -897,6 +908,7 @@ const petWindowRuntime = createPetWindowRuntime({
   getCurrentState: () => _state.getCurrentState(),
   getCurrentSvg: () => _state.getCurrentSvg(),
   getCurrentHitBox: () => _state.getCurrentHitBox(),
+  getCurrentAccessoryPayload: getEffectivePetAccessoryPayload,
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
   getMiniContainedSeam: () => _mini.getContainedSeam(),
@@ -3649,6 +3661,7 @@ const holidayAccessoryRuntime = createHolidayAccessoryRuntime({
   getSettingsSnapshot: () => _settingsController.getSnapshot(),
   getActiveTheme: () => getActiveTheme(),
   sendToRenderer,
+  onAccessoryChange: syncHitWin,
   logWarn: console.warn,
 });
 
@@ -3693,6 +3706,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
   exitMiniMode: () => exitMiniMode(),
   getMiniMode: () => _mini.getMiniMode(),
   getActiveTheme: () => getActiveTheme(),
+  syncHitWin,
   // #509: re-rest the pet on the newly selected idle visual right away, but
   // only while actually idle — task/sleep/mini states pick it up on their
   // next natural revert instead.

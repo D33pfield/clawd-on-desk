@@ -5,6 +5,9 @@ const {
   getThemeMarginBox: defaultGetThemeMarginBox,
   computeThemeAnchorRect: defaultComputeThemeAnchorRect,
 } = require("./visible-margins");
+const {
+  resolveAccessoryAwareHitBox,
+} = require("./pet-accessory-hitbox");
 
 function createPetGeometryMain(options = {}) {
   const hitGeometry = options.hitGeometry || defaultHitGeometry;
@@ -14,6 +17,7 @@ function createPetGeometryMain(options = {}) {
   const getCurrentState = options.getCurrentState || (() => null);
   const getCurrentSvg = options.getCurrentSvg || (() => null);
   const getCurrentHitBox = options.getCurrentHitBox || (() => null);
+  const getCurrentAccessoryPayload = options.getCurrentAccessoryPayload || (() => null);
   const getMiniMode = options.getMiniMode || (() => false);
   const getMiniPeekOffset = options.getMiniPeekOffset || (() => 0);
 
@@ -60,12 +64,19 @@ function createPetGeometryMain(options = {}) {
     const state = getCurrentState();
     const file = getCurrentFile(theme);
     const miniMode = !!getMiniMode();
+    const hitBox = resolveAccessoryAwareHitBox(
+      theme,
+      state,
+      file,
+      getCurrentHitBox(),
+      getCurrentAccessoryPayload()
+    );
     const hit = hitGeometry.getHitRectScreen(
       theme,
       bounds,
       state,
       file,
-      getCurrentHitBox(),
+      hitBox,
       {
         padX: miniMode ? getMiniPeekOffset() : 0,
         padY: miniMode ? 8 : 0,
