@@ -57,6 +57,11 @@ const STATE_PATH = "/state";
 // generous timeout is safe. 200ms was too tight when Clawd's IPC roundtrip
 // (main → renderer → main) ran under load and silently timed out.
 const POST_TIMEOUT_MS = 1000;
+// Keep one in-flight request plus a bounded pending suffix for each session.
+// A localhost process can accept fetches without answering, and OpenCode keeps
+// emitting events while that request waits. Without a hard cap, even an
+// explicitly serialized queue retains an unbounded chain of payloads/promises.
+const STATE_POST_MAX_PENDING = 32;
 
 // Orca hosts its terminals in a detached daemon that the process walk below can
 // never reach, so the pane key from the environment is the only handle on the tab
@@ -232,6 +237,10 @@ export function createOpencodeFamilyPlugin(config) {
   // Different sessions remain concurrent and /permission never enters this
   // queue.
   const _statePostTailBySession = new Map();
+  // Explicit queue state keeps retained work inspectable and bounded. Promise
+  // chaining alone looks bounded in the Map while every old closure/payload is
+  // still retained by the tail.
+  const _statePostQueueBySession = new Map();
   // Fallback session ID for legacy permission.asked events that omit sessionID.
   // Updated on every session.* / message.part.updated event so it stays fresh.
   // Not used for state dedup.
@@ -730,6 +739,7 @@ export function createOpencodeFamilyPlugin(config) {
     outbound.agent_pid = process.pid;
     const payload = JSON.stringify(outbound);
     return {
+      body: outbound,
       payload,
       logTag,
       cwdSource: cwd.source,
@@ -790,24 +800,109 @@ export function createOpencodeFamilyPlugin(config) {
     });
   }
 
+  function isReplaceableStateSnapshot(snapshot) {
+    const body = snapshot && snapshot.body;
+    return !!body
+      && body.metadata_only !== true
+      && ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact"].includes(body.event);
+  }
+
+  function isMetadataStateSnapshot(snapshot) {
+    return !!(snapshot && snapshot.body && snapshot.body.metadata_only === true);
+  }
+
+  async function drainStatePostQueue(sessionId, queue) {
+    let allSucceeded = true;
+    while (queue.pending.length > 0) {
+      const snapshot = queue.pending.shift();
+      queue.active = snapshot;
+      try {
+        const delivered = await deliverPost(STATE_PATH, snapshot);
+        if (!delivered) allSucceeded = false;
+      } catch (err) {
+        allSucceeded = false;
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} UNCAUGHT ${err && err.message}`);
+      } finally {
+        queue.active = null;
+      }
+    }
+
+    if (_statePostQueueBySession.get(sessionId) === queue) {
+      _statePostQueueBySession.delete(sessionId);
+    }
+    if (_statePostTailBySession.get(sessionId) === queue.settled) {
+      _statePostTailBySession.delete(sessionId);
+    }
+    queue.resolve(allSucceeded);
+  }
+
+  function createStatePostQueue(sessionId) {
+    let resolve;
+    const settled = new Promise((done) => { resolve = done; });
+    const queue = { active: null, pending: [], settled, resolve, draining: false };
+    _statePostQueueBySession.set(sessionId, queue);
+    _statePostTailBySession.set(sessionId, settled);
+    return queue;
+  }
+
+  function makeStatePostRoom(queue, incoming) {
+    if (queue.pending.length < STATE_POST_MAX_PENDING) return;
+    // A title-only update must never evict the latest lifecycle snapshot and
+    // leave the server stuck in an older error/idle state. Coalesce old metadata
+    // first; otherwise evict the oldest queued item. New lifecycle snapshots can
+    // preferentially replace old state/metadata because the incoming lifecycle
+    // itself preserves a fresh state at the tail.
+    const incomingMetadata = isMetadataStateSnapshot(incoming);
+    let index = incomingMetadata
+      ? queue.pending.findIndex((snapshot) => isMetadataStateSnapshot(snapshot))
+      : queue.pending.findIndex((snapshot) => (
+        isReplaceableStateSnapshot(snapshot) || isMetadataStateSnapshot(snapshot)
+      ));
+    if (index < 0) index = 0;
+    const [dropped] = queue.pending.splice(index, 1);
+    debugLog(`POST[${incoming.reqId}] ${incoming.logTag} overflow=dropped-old req=${dropped.reqId}`);
+  }
+
   function postStateToClawd(body) {
     const sessionId = normalizeSessionId(body && body.session_id) || DEFAULT_SESSION_ID;
     const snapshot = snapshotPost(body, `STATE state=${body && body.state}`);
-    const prior = _statePostTailBySession.get(sessionId) || Promise.resolve();
-    const delivery = prior
-      .catch(() => {})
-      .then(() => deliverPost(STATE_PATH, snapshot));
-    const settled = delivery.catch((err) => {
-      debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} UNCAUGHT ${err && err.message}`);
-      return false;
-    });
-    _statePostTailBySession.set(sessionId, settled);
-    void settled.then(() => {
-      if (_statePostTailBySession.get(sessionId) === settled) {
-        _statePostTailBySession.delete(sessionId);
+    const replaceable = isReplaceableStateSnapshot(snapshot);
+    const metadata = isMetadataStateSnapshot(snapshot);
+    const terminal = !!body && body.event === "SessionEnd";
+    let queue = _statePostQueueBySession.get(sessionId);
+
+    if (!queue) queue = createStatePostQueue(sessionId);
+
+    const activeTerminal = !!(queue.active && queue.active.body && queue.active.body.event === "SessionEnd");
+    const queuedTerminal = queue.pending.some((entry) => entry.body && entry.body.event === "SessionEnd");
+    if (!terminal && (activeTerminal || queuedTerminal)) {
+      debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} dropped=after-terminal`);
+      return queue.settled;
+    }
+
+    if (terminal) {
+      // SessionEnd is the final state. Keep the active request immutable, but
+      // replace every stale not-yet-started snapshot so recovery cannot replay
+      // obsolete work or leave a ghost session behind.
+      queue.pending.splice(0, queue.pending.length, snapshot);
+      debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=terminal`);
+    } else {
+      const last = queue.pending.at(-1);
+      if ((replaceable && isReplaceableStateSnapshot(last)) ||
+          (metadata && isMetadataStateSnapshot(last))) {
+        queue.pending[queue.pending.length - 1] = snapshot;
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=${metadata ? "latest-metadata" : "latest-state"}`);
+      } else {
+        makeStatePostRoom(queue, snapshot);
+        queue.pending.push(snapshot);
       }
-    });
-    return settled;
+    }
+
+    if (!queue.draining) {
+      queue.draining = true;
+      void drainStatePostQueue(sessionId, queue);
+    }
+    return queue.settled;
   }
 
   // Fire-and-forget permission forward. Clawd decides allow/deny/always in its
@@ -964,6 +1059,8 @@ export function createOpencodeFamilyPlugin(config) {
     get _debugLogPath() { return DEBUG_LOG_PATH; },
     get _lastStatePerSession() { return _lastStatePerSession; },
     get _statePostTailBySession() { return _statePostTailBySession; },
+    get _statePostQueueBySession() { return _statePostQueueBySession; },
+    get _statePostMaxPending() { return STATE_POST_MAX_PENDING; },
     get _permissionTargetByRequestId() { return _permissionTargetByRequestId; },
     get _cachedPort() { return _cachedPort; },
     set _cachedPort(v) { _cachedPort = v; },
