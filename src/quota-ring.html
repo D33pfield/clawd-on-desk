@@ -10,12 +10,42 @@
 /* The cluster floats directly on the desktop wallpaper (no card). Legibility on
    any wallpaper comes from per-coin drop shadows and a subtitle-style text halo;
    severity colors are fixed physical-scene values (dark-desktop baseline) rather
-   than theme tokens, because there is no page surface behind them. */
+   than theme tokens, because there is no page surface behind them.
+
+   Hue carries IDENTITY, not headroom. A healthy coin colors each ring by
+   (provider, physical ring) so the outer rolling window and the inner weekly
+   window stay tellable apart — severity only has three steps, so when both
+   windows are healthy a severity-only palette paints them the same color and
+   they read as one thick ring. Crossing 60 / 85 hands that ring over to amber /
+   red, which is why every identity color sits in the cool range: warm on screen
+   then means exactly one thing, and the alert is not diluted by a wallpaper full
+   of green. Rings separate by HUE rather than lightness on purpose — darkening
+   the inner ring sinks it into a dark wallpaper and lightening it washes out on
+   a light one, while a hue step holds on both. */
 :root {
-  --sev-ok: #34d399;
   --sev-warn: #fbbf24;
   --sev-hot: #f87171;
   --sev-reset: #9096a1;
+  /* The track is the same identity hue laid down as a bed, not a grey ring
+     behind the arc — so the arc reads as "the lit part of this ring" instead of
+     a bar stacked on a separate object. It has to stay translucent (there is no
+     fixed surface behind it to pre-blend against, only wallpaper), which is
+     fine: the bed is meant to let the desktop through. A NEUTRAL grey could not
+     do this job at low alpha — grey differs from a light wallpaper only in
+     lightness, and going faint spends exactly that, so it vanishes on light
+     desktops. A hue at low saturation survives on both. */
+  --track-alpha: 14%;
+  /* Neutral last-resort bed for a ring carrying no identity class. */
+  --ring-track: rgba(140, 142, 152, 0.16);
+  /* Healthy identity pairs: outer (rolling) → inner (weekly). */
+  --id-outer: #2dd4bf;
+  --id-inner: #60a5fa;
+  --id-claude-outer: #2dd4bf;
+  --id-claude-inner: #60a5fa;
+  --id-codex-outer: #a78bfa;
+  --id-codex-inner: #22d3ee;
+  --id-antigravity-outer: #38bdf8;
+  --id-antigravity-inner: #4ade80;
   --ring-track: rgba(140, 142, 152, 0.38);
   --ink: #ffffff;
   --ink-soft: rgba(255, 255, 255, 0.74);
@@ -89,8 +119,29 @@ body { padding: 6px 6px 8px; }
 .coin-row.is-stale { opacity: 0.72; }
 
 .coin { width: 26px; height: 26px; flex: 0 0 auto; filter: var(--coin-shadow); }
+/* Each ring resolves its identity hue ONCE into --ring-id; the fill paints it
+   solid and the track lays the same hue down at --track-alpha. Declaring the
+   hue in one place is what keeps the pair from drifting apart when the palette
+   is retuned. Most specific (provider + slot) wins; a provider without its own
+   pair falls back to the generic outer/inner pair. */
+.coin .rg-outer { --ring-id: var(--id-outer); }
+.coin .rg-inner { --ring-id: var(--id-inner); }
+.coin .pv-claudeQuota.rg-outer { --ring-id: var(--id-claude-outer); }
+.coin .pv-claudeQuota.rg-inner { --ring-id: var(--id-claude-inner); }
+.coin .pv-codexQuota.rg-outer { --ring-id: var(--id-codex-outer); }
+.coin .pv-codexQuota.rg-inner { --ring-id: var(--id-codex-inner); }
+.coin .pv-antigravityQuota.rg-outer { --ring-id: var(--id-antigravity-outer); }
+.coin .pv-antigravityQuota.rg-inner { --ring-id: var(--id-antigravity-inner); }
+
 .coin .track { stroke: var(--ring-track); }
-.coin .fill.sev-ok { stroke: var(--sev-ok); }
+.coin .track.rg-outer,
+.coin .track.rg-inner {
+  stroke: color-mix(in srgb, var(--ring-id) var(--track-alpha), transparent);
+}
+/* Healthy fill: the identity hue at full strength. */
+.coin .fill.sev-ok { stroke: var(--ring-id, var(--id-outer)); }
+/* Alert takes the FILL over regardless of identity — the track keeps its hue,
+   so a red arc sits on a calm bed instead of on grey, which reads sharper. */
 .coin .fill.sev-warn { stroke: var(--sev-warn); }
 .coin .fill.sev-hot { stroke: var(--sev-hot); }
 .coin .fill.sev-reset { stroke: var(--sev-reset); opacity: 0.56; }
