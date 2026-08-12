@@ -167,13 +167,62 @@ describe("quota ring renderer model", () => {
     assert.strictEqual(fills.length, 2);
     assert.doesNotMatch(fills[0].attributes.class, /is-near/);
     assert.match(fills[1].attributes.class, /sev-hot is-near/);
-    assert.strictEqual(model.displayWindow.field, "claudeFiveHour");
+    // The readout follows the alert instead of the rolling window here. Printing
+    // "20% 5h" over a 90% weekly ring was the most reassuring reading available
+    // while the only thing reporting trouble was the inner ring's color.
+    assert.strictEqual(model.displayWindow.field, "claudeWeekly");
     context.__model = model;
     context.__now = now;
     const row = vm.runInContext("buildCoinRow(__model, __now)", context);
     const readout = row.children[0];
-    assert.strictEqual(readout.children[0].textContent, "20%");
-    assert.strictEqual(readout.children[1].textContent, "5h");
+    assert.strictEqual(readout.children[0].textContent, "90%");
+    assert.strictEqual(readout.children[1].textContent, "7d");
+  });
+
+  it("keeps the rolling readout while the weekly window is merely busy", () => {
+    // The handover is scoped to alerts. Below the warning threshold the readout
+    // still answers "what am I using right now?", which is the common question;
+    // yielding on every higher number would bury the rolling window for good.
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const model = modelFor(context, {
+      claudeQuota: {
+        group: {
+          claudeFiveHour: { usedPercent: 20, resetAt: now + 3_600_000, windowMinutes: 300 },
+          claudeWeekly: { usedPercent: 59, resetAt: now + 3_600_000, windowMinutes: 10080 },
+        },
+        lastSeenAt: now,
+      },
+    }, 1, now);
+    assert.strictEqual(model.binding.field, "claudeWeekly");
+    assert.strictEqual(model.displayWindow.field, "claudeFiveHour");
+    context.__model = model;
+    context.__now = now;
+    const row = vm.runInContext("buildCoinRow(__model, __now)", context);
+    assert.strictEqual(row.children[0].children[0].textContent, "20%");
+    assert.strictEqual(row.children[0].children[1].textContent, "5h");
+  });
+
+  it("hands the readout to an inner window that is merely in warning, not just critical", () => {
+    // The 60-85 band has no pulse at all, so without this the amber inner ring
+    // is the only signal — and the digits actively contradict it.
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const model = modelFor(context, {
+      claudeQuota: {
+        group: {
+          claudeFiveHour: { usedPercent: 1, resetAt: now + 3_600_000, windowMinutes: 300 },
+          claudeWeekly: { usedPercent: 61, resetAt: now + 3_600_000, windowMinutes: 10080 },
+        },
+        lastSeenAt: now,
+      },
+    }, 1, now);
+    assert.strictEqual(model.displayWindow.field, "claudeWeekly");
+    context.__model = model;
+    context.__now = now;
+    const row = vm.runInContext("buildCoinRow(__model, __now)", context);
+    assert.strictEqual(row.children[0].children[0].textContent, "61%");
+    assert.strictEqual(row.children[0].children[1].textContent, "7d");
   });
 
   it("falls back to the weekly readout when the short window is absent", () => {

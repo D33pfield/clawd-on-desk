@@ -103,11 +103,16 @@ function formatWindowLabel(windowMinutes, fallbackLabel) {
   return `${Math.round(minutes)}m`;
 }
 
+// One definition of the thresholds: the ring's color, the pulse, and whether
+// the readout yields to the binding window all key off the same two numbers.
+const WARN_AT = 60; // >= this is amber
+const HOT_AT = 85; // > this is red (and pulses)
+
 function severityClass(usedPercent) {
   const p = Number(usedPercent);
   if (!Number.isFinite(p)) return "sev-ok";
-  if (p > 85) return "sev-hot";
-  if (p >= 60) return "sev-warn";
+  if (p > HOT_AT) return "sev-hot";
+  if (p >= WARN_AT) return "sev-warn";
   return "sev-ok";
 }
 
@@ -210,17 +215,27 @@ function buildCoinModel(source, def, now, multiSource) {
   for (const w of bindingCandidates) {
     if (!binding || w.pct > binding.pct) binding = w;
   }
-  // The compact readout answers the common "what is my rolling-window
-  // usage?" question. Keep it independent from binding: the weekly window
-  // can still own warning/pulse when it is more constrained. Prefer the
-  // rolling window while it is fresh, but never present an old rolling
-  // number as live when the weekly window has a newer confirmation.
-  const displayWindow = (outer && !outer.stale)
+  // The compact readout answers the common "what is my rolling-window usage?"
+  // question, so it prefers the rolling window while that is fresh — never
+  // presenting an old rolling number as live when the weekly window has a
+  // newer confirmation.
+  //
+  // But it yields to the binding window once that crosses a warning threshold.
+  // Otherwise the number and the alert describe different windows: 30% rolling
+  // over 90% weekly printed "30% 5h" — the most reassuring reading available —
+  // while the only thing reporting trouble was the inner ring's color. That
+  // left color as the sole carrier of the alert, which fails anyone with a
+  // color-vision deficiency, fails a glance that reads the digits, and (in the
+  // 60-85 band, where nothing pulses) has no other channel at all.
+  const restingWindow = (outer && !outer.stale)
     ? outer
     : ((inner && !inner.stale) ? inner : (outer || inner));
+  const displayWindow = (binding && binding.pct >= WARN_AT && binding !== restingWindow)
+    ? binding
+    : restingWindow;
   const stale = windows.every((w) => w.stale);
   const state = allReset ? "reset" : (stale ? "stale" : "live");
-  const near = state === "live" && binding && binding.pct > 85;
+  const near = state === "live" && binding && binding.pct > HOT_AT;
 
   const visibleHost = multiSource
     ? (source.host || t("dashboardQuotaSourceLocal"))
