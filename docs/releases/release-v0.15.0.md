@@ -7,34 +7,41 @@ Free roam gains two independent ways to bound where the pet wanders. The OpenCod
 family, Codex, macOS, and Windows runtime paths each closed a set of real-world
 defects reported against v0.14.0.
 
-This release also takes over WinGet manifest publishing after discovering that x64
-users had been receiving the ARM64 installer since v0.6.2, and welcomes **three
-first-time contributors**.
+This release also prepares the project to take over WinGet manifest publishing, after
+discovering that x64 users had been receiving the ARM64 installer since v0.6.2, and
+welcomes **two first-time contributors**.
 
 ### Subscription Quota And Usage
 
 - **Identity-based ring colors and vendor glyphs** (#863) — healthy rings are colored
   by source identity rather than headroom, so the rolling and weekly windows stay
   distinguishable instead of collapsing into one thick green band. The Claude coin now
-  carries the vendor mark from the same MIT icon upstream as the other 21 runtime
-  icons; the remaining icons are byte-for-byte unchanged, with provenance and hashes
-  updated in `source-manifest.json` and the MIT attribution list in `NOTICE.md`.
+  carries the vendor mark, taken from the same MIT icon upstream that supplies the
+  other Lobe Icons agent glyphs; every other runtime icon is byte-for-byte unchanged,
+  with provenance and hashes updated in `source-manifest.json` and the MIT attribution
+  list in `NOTICE.md`.
 - **The readout follows the alert** (#864) — the coin used to always print the rolling
   window while the ring colored itself from the tightest window, so a coin could read
   "1% 5h" while the inner ring sat at 61% amber. The title now hands over to the
-  tightest window once it crosses the warning threshold, which keeps color from being
-  the only carrier of an alert. A flashback briefly replays the rolling number at the
-  moments it is most likely to be asked about, and each coin's glyph is scaled to its
-  own artwork rather than one shared zoom.
+  tightest window once it crosses the warning threshold, so in the common case the
+  digits report the alert instead of leaving color to carry it alone. A flashback
+  briefly replays the rolling number at the moments it is most likely to be asked
+  about; color remains the only alert channel during that ~1.6s window, in the 60-85%
+  band that does not pulse, and under `prefers-reduced-motion`. Each coin's glyph is
+  scaled to its own artwork rather than one shared zoom.
 - **Used / Remaining display modes** (#789) — a persisted preference selects whether
   the ring reports consumption or headroom, without changing quota ingestion or the
   warning thresholds. The same change consolidates reusable Settings buttons, warning
   dialogs, segmented choices, and dropdown behavior, and stabilizes Settings scrolling
   and dropdown lifecycles — including the theme-accessory case that previously lost its
   real scroll range after a selection. Thanks to @YOIMIYA66.
-- **Correct context windows for custom Claude models** (#809, issue #797) — context
-  usage is read from the Claude statusline rather than inferred, so a custom model no
-  longer displays a context length that does not match the model actually in use.
+- **Correct context windows for custom Claude models** (#809, issue #797) — when local
+  Claude quota collection is enabled, context usage is read from the Claude statusline
+  rather than inferred, so a custom model no longer displays a context length that does
+  not match the model actually in use. Collection stays opt-in (`Settings → General`)
+  because it installs Clawd's own statusline; an occupied third-party statusline is
+  preserved rather than taken over, and Clawd falls back to transcript-derived context
+  when registration does not succeed.
 
 ### Free Roam
 
@@ -54,8 +61,9 @@ first-time contributors**.
 
 - **Real session titles in the HUD** (#841, issue #829) — OpenCode sessions show their
   actual title instead of the project folder, and the title updates after OpenCode
-  renames a session. Titles are bounded, kept out of logs, and carry no telemetry
-  stamp. Thanks to first-time contributor @xiaoshidefeng.
+  renames a session. Titles are bounded, kept out of logs, stripped of Unicode
+  bidirectional formatting marks before display, and carry no telemetry stamp. Thanks
+  to @xiaoshidefeng.
 - **No premature idle during long active work** (#853, issue #850) — an active agent
   could fall back to idle mid-task and release the session; the stale floor is now
   scoped to interactive sessions and no longer fires while tools are still running.
@@ -64,8 +72,11 @@ first-time contributors**.
   requests for one session are serialized so an older lifecycle request can no longer
   arrive after a newer rename and restore the stale title, and
   `server.instance.disposed` clears only the disposing directory's sessions instead of
-  every cached session process-wide. Regression coverage locks the stale-floor
-  boundaries.
+  every cached session process-wide. Sustained state updates queued behind an
+  unresponsive local endpoint are coalesced to the latest snapshot and the retained
+  backlog is hard-capped. Lifecycle and metadata barriers retain their order within
+  that bound; `SessionEnd` replaces stale queued snapshots without overtaking the
+  active request. Regression coverage locks these ordering and stale-floor boundaries.
 - **Session cwd bound to its owning session** (#798, issue #796) — a session's working
   directory can no longer be attributed to a different session.
 
@@ -114,7 +125,7 @@ first-time contributors**.
   entirely in QwenWork's native flow: `PermissionRequest` / `PermissionDenied` are
   observation-only and the hook always returns `{}`. Detection, install, and uninstall
   go through `~/.QwenWorkCN/settings.json`. Windows and macOS only — QwenWork currently
-  ships no official Linux client. Thanks to first-time contributor @xiaoshidefeng.
+  ships no official Linux client. Thanks to @xiaoshidefeng.
 - **Hermes WSL Pair and Unpair** (#842, issue #540) — pairing and unpairing work against
   WSL targets.
 - **Unreviewed Codex hooks explained in Doctor** (#854) — Doctor distinguishes "hooks
@@ -132,6 +143,8 @@ first-time contributors**.
   connection recovers instead of failing permanently.
 - **Safe HTML in Telegram messages** (#802, issue #766) — message rendering escapes
   agent-controlled content instead of emitting it into Telegram's HTML parse mode.
+- **Distinct default completion sound** (#833) — built-in themes now use a dedicated,
+  softened completion cue instead of sharing the ordinary confirmation sound.
 
 ### Packaging, Security, And Localization
 
@@ -153,15 +166,15 @@ first-time contributors**.
 
 ### Contributors
 
-Three first-time contributors landed changes in this release:
+Two first-time contributors landed changes in this release:
 
 - @weed33834 — axis-constrained roam mode (#795)
 - @arismarioneves — Brazilian Portuguese locale (#822)
-- @xiaoshidefeng — OpenCode session titles (#841) and the QwenWork integration (#843)
 
-Returning contributors: @YOIMIYA66 (#789), @PeterShanxin (#853), @KaiC5504 (#807), and
-@anthonyonazure (#810), whose accessory and tint work shipped in v0.14.0 through
-co-author credit and who now lands a directly authored change.
+Returning contributors: @xiaoshidefeng (#841, #843), @YOIMIYA66 (#789),
+@PeterShanxin (#853), @KaiC5504 (#807), and @anthonyonazure (#810), whose accessory and
+tint work shipped in v0.14.0 through co-author credit and who now lands a directly
+authored change.
 
 ### Upgrade Notes
 
@@ -171,12 +184,25 @@ co-author credit and who now lands a directly authored change.
   the QwenWork desktop application on Windows or macOS.
 - Quota ring display mode (Used / Remaining) defaults to the existing behavior; no
   action is required to keep the previous readout.
+- Correct custom-model context windows require explicitly enabling local Claude quota
+  collection in Settings → General. Clawd preserves an occupied third-party statusline
+  and keeps transcript-derived context as the fallback when its own statusline cannot
+  be registered.
 - Free roam fence and axis constraint are both opt-in. With no fence file and the axis
   setting off, roaming behaves exactly as in v0.14.0.
 - Windows installs that used a WinGet-provided package before this release may be on the
   ARM64 build regardless of their architecture. Reinstalling from the GitHub release
   asset for the correct architecture is the reliable path until the corrected WinGet
   manifest is live.
+
+### Known Limitations
+
+- v0.15.0 Linux packaged artifacts have not been validated on real Linux hardware.
+  Wayland/XWayland transparency, positioning, cursor tracking and tray behavior, plus
+  MiMo JSONC permission and comment-preserving writes on POSIX, remain unverified for
+  this release.
+- Packaged macOS and Linux builds do not auto-update. Download future versions manually
+  from GitHub Releases.
 
 ### Validation Status
 
