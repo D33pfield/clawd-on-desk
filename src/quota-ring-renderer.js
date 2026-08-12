@@ -79,10 +79,18 @@ const GLYPH_ZOOM = 1.35;
 // HUD and Dashboard surfaces; a coin already puts them on a light plate, so
 // here it is pure cost. test/session-hud-style.test.js pins this mapping
 // against the exporter's own manifest so a new provider cannot miss it.
+// Tiled marks get a little breathing room rather than a flush fit. Filling the
+// hole exactly (64/40) is geometrically "equal" to the plain marks but not
+// visually: OpenAI's six-blade spiral has thin interlocking strokes, and at the
+// coin's ~10.6px glyph circle its stroke gaps fall under a pixel and antialias
+// into a grey smudge. Claude's starburst survives flush because it is radial,
+// thick, and mostly empty. So 40 units of artwork are laid out at 90% of the
+// hole — 40 / 0.9 = 44.4 — which still pushes the plate past the clip (the
+// frame stays gone) without crowding the strokes.
 const GLYPH_ZOOM_BY_PROVIDER = {
   antigravityQuota: 64 / 56,
   claudeQuota: 64 / 56,
-  codexQuota: 64 / 40,
+  codexQuota: 64 / 44.4,
 };
 let coinClipSeq = 0;
 

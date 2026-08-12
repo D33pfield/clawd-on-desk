@@ -211,7 +211,11 @@ body { padding: 6px 6px 8px; }
 .coin .fill.sev-hot { stroke: var(--sev-hot); }
 .coin .fill.sev-reset { stroke: var(--sev-reset); opacity: 0.56; }
 .coin .plate { fill: rgba(246, 246, 248, 0.92); }
-.coin-row.is-stale .glyph { filter: grayscale(1); opacity: 0.8; }
+/* Staleness is carried by the row's own opacity above, not by desaturating the
+   glyph on top of it. Greyscale was doing uneven work anyway: it gutted the
+   colored marks (Claude, Antigravity) while doing nothing at all to a mark that
+   is already black and white (Codex), so the same state read as a much louder
+   warning on some coins than on others. */
 .coin-row.is-reset .glyph { opacity: 0.55; }
 
 /* Near-exhausted (hot) coin pulses gently to pull the eye; motion-safe only. */

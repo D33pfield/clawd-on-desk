@@ -275,7 +275,7 @@ describe("quota ring glyph zoom follows the exporter's artwork ratio", () => {
     const zoomBlock = quotaRingRenderer.match(/GLYPH_ZOOM_BY_PROVIDER = \{[\s\S]*?\}/);
     assert.ok(zoomBlock, "no GLYPH_ZOOM_BY_PROVIDER");
     const zooms = Object.fromEntries(
-      [...zoomBlock[0].matchAll(/(\w+Quota):\s*64\s*\/\s*(\d+)/g)].map((m) => [m[1], Number(m[2])])
+      [...zoomBlock[0].matchAll(/(\w+Quota):\s*64\s*\/\s*([\d.]+)/g)].map((m) => [m[1], Number(m[2])])
     );
 
     // Only providers the ring actually draws; RING_PROVIDERS is the authority.
@@ -286,12 +286,27 @@ describe("quota ring glyph zoom follows the exporter's artwork ratio", () => {
     for (const { providerKey, agentId } of mapping) {
       if (!drawn.has(providerKey)) continue;
       const tiled = !!(manifest.sources[agentId] || {}).contrastTreatment;
-      const expected = tiled ? 40 : 56;
-      assert.strictEqual(
-        zooms[providerKey], expected,
-        `${providerKey} (${agentId}) is ${tiled ? "" : "not "}contrast-tiled, so its glyph fills `
-        + `${expected} of 64 and the coin should zoom 64/${expected}`
+      const divisor = zooms[providerKey];
+      assert.ok(
+        divisor !== undefined,
+        `${providerKey} (${agentId}) has no entry in GLYPH_ZOOM_BY_PROVIDER; it would fall back to `
+        + "the shared zoom, which fits neither artwork size"
       );
+      if (tiled) {
+        // Artwork is 40 of 64, inside a 56px plate. The divisor may exceed 40 to
+        // leave breathing room, but must stay well under the 56 that would put
+        // the plate's edge back inside the clip as a visible frame.
+        assert.ok(
+          divisor >= 40 && divisor <= 46,
+          `${providerKey} (${agentId}) is contrast-tiled — its artwork fills 40 of 64, so the divisor `
+          + `should sit between 40 (flush) and ~46 (before the plate shows), got ${divisor}`
+        );
+      } else {
+        assert.strictEqual(
+          divisor, 56,
+          `${providerKey} (${agentId}) is not contrast-tiled, so its glyph fills 56 of 64`
+        );
+      }
     }
   });
 });
