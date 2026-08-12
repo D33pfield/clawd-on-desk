@@ -206,8 +206,37 @@ authored change.
 
 ### Validation Status
 
-> **Draft — not yet filled in.** This section is completed after the draft release is
-> built and smoke-tested, following `docs/project/release-process.md`. It must record:
-> the review passes that ran, the automated suite result, the asset audit, the final
-> multi-platform package build, which platforms received real-machine validation, and
-> any platform recorded as not real-machine validated.
+Release validation is complete. The whole-version release review, three independent
+post-fix review passes, and the final cross-review found no remaining code-level
+release blocker. The final local suite reported 7,751 tests: 7,716 passed, 35
+platform/tool-conditioned tests skipped, and none failed. The `v0.15.0` release
+contract passed. The repository asset audit reported no errors and one non-blocking
+tracked-tree size-budget warning.
+
+The manual multi-platform Build & Release run for main commit
+`5cbe7d7f66383ce05da8a11e51f4f9b6a4e0666f` completed successfully after retrying one
+transient Linux dependency download failure. Windows, macOS, and Linux each reran the
+full test suite and completed packaging, target-native payload audit, packaged Koffi
+smoke, retired Telegram sidecar assertion, and exact-version updater metadata checks.
+Windows produced separate x64 and ARM64 NSIS installers; their downloaded sizes and
+digests matched `latest.yml`.
+
+The online-built Windows x64 installer was installed over the system-level v0.14.0
+installation on Windows 11 x64. The installer returned exit code 0; the installed
+executable and uninstall registration both reported v0.15.0; the pre-upgrade prefs
+hash was unchanged immediately after installation; and the installed resources kept
+the expected unpacked hooks, agents, extensions, themes, single x64 Koffi addon, and
+no retired Telegram sidecar. A normal packaged launch with an isolated fresh profile
+returned a healthy local `/state` response, rendered an uncloaked pet, hit window,
+Settings window, and first-run tutorial without an error dialog, and showed v0.15.0
+in Settings -> About. Closing the tutorial through the OS persisted
+`tutorialSeen=true`; a second cold start kept the pet and Settings visible and did not
+reopen the tutorial. The candidate also bound the next available server port while a
+development instance occupied the default port.
+
+Windows ARM64 was validated structurally in CI but was not installed on this x64
+machine. The final macOS and Linux packages were built and structurally validated in
+CI but were not rerun on dedicated macOS or Linux hardware. Feature-specific
+real-machine evidence recorded on the merged implementation PRs was retained rather
+than recreating every external agent, remote host, approval service, and desktop
+environment during the final package smoke.
