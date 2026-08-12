@@ -611,3 +611,117 @@ describe("quota ring rolling-window flashback", () => {
     assert.strictEqual(flash.readout(NOW + 10 + FLASH_MS + 1).flashing, false);
   });
 });
+
+// Regressions found by review, each of which the suite above sailed past.
+describe("quota ring flashback — identity and bookkeeping", () => {
+  const NOW = 1_000_000;
+  const FLASH_MS = 1600;
+
+  const twoProfiles = (fiveA, fiveB, now) => [
+    {
+      // Two trusted remote profiles are explicitly allowed to share one display
+      // host (state-account-quota keeps them separate by sourceKey), so keying
+      // per-coin state on `host` fuses them into a single entry.
+      sourceKey: "remote:profile-a",
+      host: "shared.example",
+      claudeQuota: {
+        lastSeenAt: now,
+        group: {
+          claudeFiveHour: { usedPercent: fiveA, resetAt: now + 3_600_000, windowMinutes: 300, lastSeenAt: now },
+          claudeWeekly: { usedPercent: 61, resetAt: now + 3_600_000, windowMinutes: 10080, lastSeenAt: now },
+        },
+      },
+    },
+    {
+      sourceKey: "remote:profile-b",
+      host: "shared.example",
+      claudeQuota: {
+        lastSeenAt: now,
+        group: {
+          claudeFiveHour: { usedPercent: fiveB, resetAt: now + 3_600_000, windowMinutes: 300, lastSeenAt: now },
+          claudeWeekly: { usedPercent: 61, resetAt: now + 3_600_000, windowMinutes: 10080, lastSeenAt: now },
+        },
+      },
+    },
+  ];
+
+  it("keeps per-source state apart when two sources share a display host", () => {
+    const context = loadRenderer();
+    const flash = flashHarness(context);
+    flash.setVisible(true);
+    flash.push(twoProfiles(1, 10, NOW), NOW);
+    // Identical follow-up: nothing moved, so nothing may flash. Sharing one
+    // entry would make the two coins overwrite each other's lastPct and
+    // manufacture a change on every single snapshot.
+    flash.push(twoProfiles(1, 10, NOW), NOW + 10);
+    const flags = vm.runInContext(
+      "collectCoins(__now).map((m) => isFlashing(m, __now))",
+      Object.assign(context, { __now: NOW + 10 })
+    );
+    assert.deepStrictEqual([...flags], [false, false]);
+  });
+
+  it("replays a change that happened while hidden and healthy, before any alert existed", () => {
+    const context = loadRenderer();
+    const flash = flashHarness(context);
+    flash.setVisible(false);
+    // Hidden, weekly still healthy: no alert holds the headline yet.
+    flash.push(claudeSource(1, 30, NOW), NOW);
+    flash.push(claudeSource(4, 30, NOW), NOW + 10);
+    // Only now does the weekly window cross the threshold. The rolling number
+    // moved unseen; recording it must not have depended on an alert being up
+    // at that instant.
+    flash.push(claudeSource(4, 61, NOW), NOW + 20);
+    flash.setVisible(true);
+    assert.strictEqual(flash.reveal(NOW + 5000), true);
+    assert.deepStrictEqual(flash.readout(NOW + 5000), { pct: "4%", win: "5h", flashing: true });
+  });
+
+  it("drops the debt when the rolling number is already on screen at reveal", () => {
+    const context = loadRenderer();
+    const flash = flashHarness(context);
+    flash.setVisible(false);
+    flash.push(claudeSource(1, 61, NOW), NOW);
+    flash.push(claudeSource(4, 61, NOW), NOW + 10);
+    // The alert clears before anyone looks, so the readout is the rolling
+    // number again and the reader sees the new value directly.
+    flash.push(claudeSource(4, 30, NOW), NOW + 20);
+    flash.setVisible(true);
+    assert.strictEqual(flash.reveal(NOW + 5000), false);
+    // The debt has to be settled at that reveal, not merely left unplayed:
+    // hide again, let a new alert take the headline without the rolling number
+    // moving, and a stale debt would surface as a replay of something the
+    // reader already spent time looking at.
+    flash.setVisible(false);
+    flash.push(claudeSource(4, 61, NOW), NOW + 6000);
+    flash.setVisible(true);
+    assert.strictEqual(flash.reveal(NOW + 7000), false);
+    assert.deepStrictEqual(flash.readout(NOW + 7000), { pct: "61%", win: "7d", flashing: false });
+  });
+
+  it("hands over at exactly the warning threshold", () => {
+    // 59 and 61 both pass whether the comparison is >= or >; 60 is the value
+    // that pins it.
+    const context = loadRenderer();
+    const flash = flashHarness(context);
+    flash.setVisible(true);
+    flash.push(claudeSource(1, 60, NOW), NOW);
+    assert.deepStrictEqual(flash.readout(NOW), { pct: "60%", win: "7d", flashing: false });
+  });
+
+  it("ends each coin's flash on time when another starts later", () => {
+    const context = loadRenderer();
+    const flash = flashHarness(context);
+    flash.setVisible(true);
+    flash.push(twoProfiles(1, 1, NOW), NOW);
+    flash.push(twoProfiles(4, 1, NOW), NOW + 10);      // coin A flashes
+    flash.push(twoProfiles(4, 7, NOW), NOW + 900);     // coin B flashes later
+    const at = NOW + 10 + FLASH_MS + 1;
+    const flags = vm.runInContext(
+      "collectCoins(__now).map((m) => isFlashing(m, __now))",
+      Object.assign(context, { __now: at })
+    );
+    // A is done on its own schedule; B is still mid-flash.
+    assert.deepStrictEqual([...flags], [false, true]);
+  });
+});

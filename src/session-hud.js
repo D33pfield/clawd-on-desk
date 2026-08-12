@@ -719,8 +719,12 @@ module.exports = function initSessionHud(ctx) {
   }
 
   function hideQuotaRing() {
-    if (ringWindow && !ringWindow.isDestroyed() && ringWindow.isVisible()) {
-      sendRingVisibility(false);
+    if (ringWindow && !ringWindow.isDestroyed()) {
+      // Only the notification is conditional. hide() stays unconditional and
+      // idempotent: isVisible() can report false while the window is merely
+      // occluded (app hidden on macOS, another Space, parent state), and
+      // skipping the real hide there would let the system surface it again.
+      if (ringWindow.isVisible()) sendRingVisibility(false);
       ringWindow.hide();
     }
     scheduleHiddenDestroy("ring");

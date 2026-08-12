@@ -244,14 +244,18 @@ function buildCoinModel(source, def, now, multiSource) {
     providerKey: def.key,
     label: def.label,
     host: visibleHost || source.host || null,
+    // Stable identity from the store, distinct from the display label: two
+    // trusted remote profiles may share one host string, so anything keyed per
+    // source has to use this instead.
+    sourceKey: source.sourceKey === undefined ? null : source.sourceKey,
     sourceMarker: visibleHost,
     glyphUrl: payload.quotaAgentIcons && payload.quotaAgentIcons[def.key],
     windows,
     binding,
     displayWindow,
-    // Kept so the row can show the rolling number as a subline when the alert
-    // borrowed the headline — the reason to yield was that the two disagreed,
-    // and dropping the quiet one entirely trades one blind spot for another.
+    // Kept so the flashback can hand the readout back to the rolling number at
+    // the moments it is asked about — yielding the headline was right, but
+    // dropping the quiet number entirely trades one blind spot for another.
     restingWindow,
     state,
     near: !!near,
@@ -443,12 +447,17 @@ function buildOverflow(count) {
 // includes a window reset (70% -> 1%), which is exactly the kind of change
 // worth surfacing.
 const FLASH_MS = 1600;
-const flashState = new Map(); // coin key -> { lastPct, pending, until }
+const flashState = new Map(); // coin key -> { lastPct, dirty, until }
 let ringVisible = true; // main process tells us; assume visible until told
 let flashTimer = null;
 
+// Keyed on the store's sourceKey, never on `host`: host is a display label and
+// two trusted remote profiles are explicitly allowed to share one, which would
+// otherwise fuse their coins into a single state entry — each overwriting the
+// other's lastPct and manufacturing a change on every snapshot. JSON so no
+// separator can appear inside a component.
 function coinKey(model) {
-  return `${model.providerKey} ${model.host || ""}`;
+  return JSON.stringify([model.providerKey, model.sourceKey ?? null]);
 }
 
 // A coin only has something to flash back TO when the alert took the headline
@@ -462,9 +471,11 @@ function flashCandidate(model) {
 }
 
 function armFlash(entry, now) {
-  entry.pending = false;
+  entry.dirty = false;
   // Do not restart a flash already running: with several runs back to back the
-  // readout would otherwise sit on the rolling number indefinitely.
+  // readout would otherwise sit on the rolling number indefinitely and the
+  // alert would never get its headline back. (A newer value still paints
+  // immediately — the snapshot repaints — it just does not extend the window.)
   if (!(entry.until > now)) entry.until = now + FLASH_MS;
 }
 
@@ -478,23 +489,27 @@ function noteRestingWindows(coins, now) {
     seen.add(key);
     const resting = model.restingWindow;
     const pct = resting && !resting.reset ? resting.pct : null;
-    let entry = flashState.get(key);
+    const entry = flashState.get(key);
     if (!entry) {
       // First sighting establishes the baseline; a fresh window (or a rebuilt
       // one after the panel was destroyed) should not flash on arrival.
-      flashState.set(key, { lastPct: pct, pending: false, until: 0 });
+      flashState.set(key, { lastPct: pct, dirty: false, until: 0 });
       continue;
     }
-    if (pct !== entry.lastPct) {
-      entry.lastPct = pct;
-      if (flashCandidate(model)) {
-        // Hidden clusters bank the change instead of burning it: the flash is
-        // for whoever summons the ring next, and playing it to an empty screen
-        // would spend it on nobody.
-        if (ringVisible) armFlash(entry, now);
-        else entry.pending = true;
-      }
-    }
+    if (pct === entry.lastPct) continue;
+    entry.lastPct = pct;
+    // Record the movement itself, independently of whether an alert happens to
+    // hold the headline right now. Gating this on flashCandidate() lost the
+    // ordinary case: rolling moves while hidden and healthy, THEN the weekly
+    // window crosses the threshold — by the time anyone looks, the rolling
+    // number has changed unseen and nothing remembers it.
+    entry.dirty = true;
+    if (!ringVisible) continue;
+    // Visible: either play it now, or note that it is already on screen — the
+    // readout IS the rolling window when no alert took it, so there is nothing
+    // left to replay later.
+    if (flashCandidate(model)) armFlash(entry, now);
+    else entry.dirty = false;
   }
   for (const key of [...flashState.keys()]) if (!seen.has(key)) flashState.delete(key);
 }
@@ -510,20 +525,38 @@ function armPendingFlashes(coins, now) {
   let armed = false;
   for (const model of coins) {
     const entry = flashState.get(coinKey(model));
-    if (entry && entry.pending && flashCandidate(model)) {
+    if (!entry || !entry.dirty) continue;
+    if (flashCandidate(model)) {
       armFlash(entry, now);
       armed = true;
+    } else {
+      // No alert holds the headline any more, so the rolling number is already
+      // what the reader sees. Clear the debt rather than keeping it — otherwise
+      // the next alert would open with a replay of a change the reader has
+      // been looking at the whole time.
+      entry.dirty = false;
     }
   }
   return armed;
 }
 
-function scheduleFlashEnd() {
+// Fire at the EARLIEST pending expiry, not a fixed FLASH_MS from now: a second
+// coin flashing later would otherwise push the timer out and leave the first
+// one's handback to the 1s tick, stretching a 1.6s flash toward 2.6s.
+function scheduleFlashEnd(now) {
+  let earliest = Infinity;
+  for (const entry of flashState.values()) {
+    if (entry.until > now && entry.until < earliest) earliest = entry.until;
+  }
   if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = null;
+  if (!Number.isFinite(earliest)) return;
   flashTimer = setTimeout(() => {
     flashTimer = null;
     render();
-  }, FLASH_MS + 30);
+    // Another coin may still be mid-flash with a later expiry.
+    scheduleFlashEnd(Date.now());
+  }, Math.max(0, earliest - now) + 30);
 }
 
 // Digest of everything time flips WITHOUT a new snapshot (bucket expiry, source
@@ -542,8 +575,9 @@ function fingerprint(now) {
         : 0;
       return `${w.ring}:${w.field}:${w.pct}:${w.reset ? 1 : 0}:${resetIn}:${w.stale ? 1 : 0}:${staleAge}`;
     }).join(",");
-    // Include the flash so the 1s tick repaints when one expires, even if the
-    // precise timer was lost (panel destroyed and rebuilt mid-flash).
+    // Include the flash so the 1s tick can repaint when one expires, as a
+    // backstop for the precise timer. (It cannot recover a panel that was
+    // destroyed and rebuilt mid-flash — that takes the whole Map with it.)
     return `${m.providerKey}:${m.host || ""}:${m.state}:${isFlashing(m, now) ? 1 : 0}:${windows}`;
   }).join("|");
   return `${quotaDisplayMode()}|${digest}`;
@@ -590,7 +624,7 @@ async function init() {
     const now = Date.now();
     const coins = collectCoins(now);
     noteRestingWindows(coins, now);
-    if (coins.some((model) => isFlashing(model, now))) scheduleFlashEnd();
+    if (coins.some((model) => isFlashing(model, now))) scheduleFlashEnd(now);
     render();
   });
 
@@ -604,7 +638,7 @@ async function init() {
       if (!ringVisible || wasVisible) return;
       const now = Date.now();
       if (!armPendingFlashes(collectCoins(now), now)) return;
-      scheduleFlashEnd();
+      scheduleFlashEnd(now);
       render();
     });
   }

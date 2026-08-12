@@ -29,15 +29,15 @@
    What hue does NOT carry: which quota family an Antigravity ring picked
    (Gemini vs third-party — the readout prefix says that).
 
-   Where color IS currently the sole carrier, stated plainly rather than wished
+   Where color IS still the sole carrier, stated plainly rather than wished
    away, because CVD flattens these six hues toward one axis:
-   - An INNER ring in warning. The readout follows displayWindow (outer first)
-     while the alert follows binding (the most-constrained window), so inner 90%
-     / outer 30% prints "30% 5h" and the red inner ring is the only signal.
    - Anything in the 60-85% band, which does not pulse at all.
    - Any alert under prefers-reduced-motion, which drops the pulse too.
-   The fix for the first one is to print binding's number once it crosses a
-   threshold, not to add more motion; tracked separately from this palette. */
+   - The ~1.6s of a flashback, while the digits are reporting the rolling
+     window instead of the alerting one.
+   The readout itself is no longer in that list: it hands its headline to the
+   most-constrained window once that crosses a threshold, so the digits and the
+   rings now name the same window. */
 :root {
   --sev-warn: #fbbf24;
   --sev-hot: #f87171;
@@ -61,9 +61,10 @@
   --track-alpha: 0.14;
   --track-alpha-reset: 0.2;
   /* Bed for a ring that somehow carries no identity class. Not reachable today
-     (buildCoinSvg always tags both tracks) and NOT a fallback for an invalid
-     color-mix — an invalid value resolves to `unset`, not to a lower-specificity
-     rule. The color-mix below carries its own var() fallback for that. */
+     (buildCoinSvg always tags both tracks). It is NOT a safety net for a bad
+     value further down either — an invalid declaration resolves to `unset`, not
+     to a lower-specificity rule — which is why the track rule splits hue and
+     alpha across two properties instead of relying on this. */
   --ring-track: rgba(140, 142, 152, 0.16);
   /* Healthy identity pairs: outer (rolling) → inner (weekly).
      Adding a provider to RING_PROVIDERS means adding a pair HERE too; the
