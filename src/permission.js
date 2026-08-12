@@ -949,10 +949,6 @@ function maybeAutoApprovePermission(permEntry) {
 // what happens once a failure is real.
 function handlePermissionBubbleFailure(permEntry, reason) {
   permEntry._bubbleFatalHandled = true;
-  // Correct the Slack heads-up before resolving: from here the request goes
-  // back to the agent's own prompt, so "approve in the desktop app" is no
-  // longer true and cannot be unsent.
-  announceSlackBubbleFailed(permEntry);
   if (isPassiveNotifyEntry(permEntry)) {
     permLog(`passive notification bubble failed; dismissing: ${reason} tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
     dismissPassiveNotify(permEntry, `bubble-failed:${reason}`);
@@ -966,12 +962,6 @@ function handlePermissionBubbleFailure(permEntry, reason) {
 function showPermissionBubble(permEntry) {
   // Auto-pilot: if enabled, approve immediately and never render a bubble.
   if (maybeAutoApprovePermission(permEntry)) return;
-
-  // Past this line the request is known to need a human: DND / per-agent /
-  // headless gates ran earlier in the route, and global + session automation
-  // just declined to consume the entry. This is the announce point for the
-  // one-way Slack heads-up.
-  announceSlackPermission(permEntry, { actionTarget: "desktop" });
 
   const canOfferSessionTrust = typeof ctx.canOfferSessionTrust === "function"
     && ctx.canOfferSessionTrust(permEntry) === true;
@@ -1206,8 +1196,8 @@ function notifyPermissionResolved(permEntry, reason) {
 // the route accepted it — permission automation may still auto-allow it on the
 // very next statement, which used to produce a "needs your approval" Slack ping
 // for a request nobody ever saw. The announce happens later, at the two points
-// where a real user decision is known to be pending (showPermissionBubble and
-// maybeStartRemoteApproval).
+// where a real user decision is known to be pending (the renderer's bubble
+// height acknowledgement and maybeStartRemoteApproval).
 function addPendingPermission(permEntry, reason = "added") {
   pendingPermissions.push(permEntry);
   notifyPermissionsChanged(reason);
@@ -1362,6 +1352,33 @@ function isRemoteApprovalActionable(permEntry) {
   // HUD/focus policy, but the approval itself remains human-actionable.
   if (isPermissionEntryHeadless(permEntry)) return false;
   return true;
+}
+
+// Slack is a one-way attention channel, not an approval transport. Do not
+// reuse isRemoteApprovalActionable here: that predicate intentionally excludes
+// adapters such as the opencode family and Copilot because Telegram/Feishu
+// cannot safely return a decision for them. A successfully rendered desktop
+// bubble is still something Slack should announce.
+//
+// Route-owned interaction capabilities remain the authority. In particular,
+// an opencode-family AskUserQuestion cannot be answered in Clawd
+// (answerQuestions=false), so announcing "answer in the desktop app" would be
+// just as misleading as excluding its ordinary Allow/Deny bubbles.
+function isSlackPermissionAnnounceable(permEntry) {
+  if (!permEntry || typeof permEntry !== "object") return false;
+  if (!isValidInteraction(permEntry.interaction)) return false;
+  if (isPassiveNotifyEntry(permEntry)) return false;
+  if (PASSTHROUGH_TOOLS.has(permEntry.toolName)) return false;
+  if (isPermissionEntryHeadless(permEntry)) return false;
+
+  const { intent, capabilities } = permEntry.interaction;
+  if (intent === INTERACTION_INTENT.HUMAN_QUESTION) {
+    return capabilities.answerQuestions === true;
+  }
+  // ExitPlanMode has its own plan-review/feedback contract and is deliberately
+  // not a Slack permission notification in this phase.
+  if (isDecisionInteraction(permEntry.interaction)) return false;
+  return capabilities.allowDeny === true;
 }
 
 function buildRemoteElicitationPayload(permEntry) {
@@ -1548,40 +1565,21 @@ function buildRemoteApprovalPayload(permEntry) {
 // One-way Slack heads-up when a permission request is actually waiting on the
 // user. Fires once per entry (guarded) and independently of whether an
 // interactive remote channel (Telegram/Feishu) is connected — Slack cannot
-// resolve the approval itself in this build, so it only announces "something
-// needs you in the desktop app". Best-effort: never throws into the caller's
-// sync path.
+// resolve the approval itself in this build, so it only announces where the
+// user can act (the desktop app, or an active remote-only channel).
+// Best-effort: never throws into the caller's sync path.
 //
-// Callers must invoke this only after automation has had its chance (see
-// showPermissionBubble / maybeStartRemoteApproval). The gates below are a
-// belt-and-braces re-check of the conditions that make a request human-visible,
-// so a future call site cannot reintroduce a ping for a request that was
-// silently dropped (DND) or already resolved.
+// Callers invoke this only after automation has had its chance: desktop entries
+// arrive from the renderer's post-reveal height acknowledgement, while
+// remote-only entries arrive after maybeStartRemoteApproval confirms a client
+// accepted the request. The gates below are a belt-and-braces re-check of the
+// conditions that make a request human-visible, so a future call site cannot
+// reintroduce a ping for a request silently dropped by DND or already resolved.
 
-// A one-way webhook message cannot be edited or deleted. When the bubble fails
-// after the heads-up has already gone out, the reader is otherwise left waiting
-// at an app with nothing in it while the agent quietly falls back to its own
-// prompt. We cannot retract the first message, so we correct it.
-//
-// Only for entries that actually announced — no announce, nothing to correct.
-function announceSlackBubbleFailed(permEntry) {
-  if (typeof ctx.notifySlackBubbleFailed !== "function") return;
-  if (!permEntry || permEntry._slackPermissionAnnounced !== true) return;
-  if (permEntry._slackBubbleFailedAnnounced) return;
-  permEntry._slackBubbleFailedAnnounced = true;
-  try {
-    ctx.notifySlackBubbleFailed({
-      agentId: compactRemoteApprovalText(permEntry.agentId || "claude-code", 80) || "claude-code",
-    });
-  } catch (err) {
-    permLog(`slack bubble-failed announce failed: ${err && err.message ? err.message : err}`);
-  }
-}
-
-function announceSlackPermission(permEntry, options = {}) {
+function announceSlackPermission(permEntry) {
   if (typeof ctx.notifySlackPermission !== "function") return;
   if (!permEntry || permEntry._slackPermissionAnnounced) return;
-  if (!isRemoteApprovalActionable(permEntry)) return;
+  if (!isSlackPermissionAnnounceable(permEntry)) return;
   // DND drops permission requests before they ever surface locally; a Slack
   // ping would be the one thing that still reached the user.
   if (ctx.doNotDisturb) return;
@@ -1602,7 +1600,7 @@ function announceSlackPermission(permEntry, options = {}) {
     // description available". Reuse the elicitation payload the interactive
     // channels already build, so Slack shows what was actually asked.
     const elicitation = buildRemoteElicitationPayload(permEntry);
-    const actionTarget = options && options.actionTarget === "remote" ? "remote" : "desktop";
+    const actionTarget = permEntry.remoteOnly === true ? "remote" : "desktop";
     if (elicitation) {
       ctx.notifySlackPermission({
         kind: "question",
@@ -1943,7 +1941,7 @@ function maybeStartRemoteApproval(permEntry) {
   // alone would give the right answer only because site A happened to run
   // first — a guard states the intent instead of depending on ordering.
   if (permEntry.remoteOnly === true) {
-    announceSlackPermission(permEntry, { actionTarget: "remote" });
+    announceSlackPermission(permEntry);
   }
   permEntry.remoteApprovalRequests = remoteRequests;
   if (controllers.length) {
@@ -2545,6 +2543,13 @@ function handleBubbleHeight(event, height) {
     perm.measuredHeight = Math.ceil(height);
     repositionBubbles();
     repositionDependentBubbles();
+    // revealCard() reports height on the next animation frame, so this is the
+    // first main-process acknowledgement that the exact interaction was loaded,
+    // received through permission-show, rendered, and made visible. Announcing
+    // earlier (even at did-finish-load) can strand an unretractable Slack card
+    // when content sync or the renderer fails. Later resize reports are safe:
+    // announceSlackPermission is once-guarded per entry.
+    announceSlackPermission(perm);
   }
 }
 
@@ -3171,10 +3176,6 @@ return {
   beginSessionTrustConfirmation, endSessionTrustConfirmation,
   syncPermissionBubbleContent,
   maybeStartRemoteApproval,
-  // Test seam: failPermissionBubble is a closure created after the
-  // BrowserWindow constructor, which throws without Electron — so the renderer
-  // failure path is otherwise unreachable from tests.
-  failPermissionBubbleForTest: (permEntry, reason) => handlePermissionBubbleFailure(permEntry, reason),
   dismissPermissionForTerminal,
   // Test seam: lets wire-level tests pin which provenance flags reach the
   // renderer (isHermes suppresses the go-to-terminal action — issue #689).

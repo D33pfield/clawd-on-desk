@@ -7,18 +7,78 @@
 // microsecond later sends the user to an app with nothing to approve.
 //
 // The announce therefore happens where a human decision is known to be pending:
-//   - showPermissionBubble, AFTER the automation chokepoint declined the entry
-//     (DND / per-agent / headless gates already ran earlier in the route), and
+//   - handleBubbleHeight, after the renderer has loaded the exact interaction,
+//     revealed the card, and acknowledged it through height IPC; and
 //   - maybeStartRemoteApproval, for bubble-less remote-only entries.
 // Never from addPendingPermission, which only means "the route queued it".
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const Module = require("node:module");
 
-const initPermission = require("../src/permission");
 const {
   classifyPermissionInteraction,
 } = require("../src/permission-automation-policy");
+
+const PERMISSION_MODULE_PATH = require.resolve("../src/permission");
+
+class FakeBrowserWindow {
+  constructor() {
+    this.destroyed = false;
+    this.bounds = null;
+    this.sentEvents = [];
+    this.listeners = new Map();
+    this.webContents = {
+      once: (event, callback) => this.listeners.set(event, callback),
+      on: (event, callback) => this.listeners.set(event, callback),
+      send: (...args) => this.sentEvents.push(args),
+    };
+  }
+
+  setAlwaysOnTop() {}
+  setBounds(bounds) { this.bounds = bounds; }
+  setSkipTaskbar() {}
+  showInactive() {}
+  focus() {}
+  on(event, callback) { this.listeners.set(event, callback); }
+  isDestroyed() { return this.destroyed; }
+  destroy() {
+    this.destroyed = true;
+    const closed = this.listeners.get("closed");
+    if (closed) closed();
+  }
+  loadFile() {
+    const finished = this.listeners.get("did-finish-load");
+    if (finished) finished();
+  }
+}
+
+FakeBrowserWindow.fromWebContents = (sender) => sender && sender.__window || null;
+
+function loadPermissionWithFakeElectron() {
+  delete require.cache[PERMISSION_MODULE_PATH];
+  const originalLoad = Module._load;
+  Module._load = function patchedLoad(request, parent, isMain) {
+    if (request === "electron") {
+      return {
+        BrowserWindow: FakeBrowserWindow,
+        globalShortcut: {
+          register: () => true,
+          unregister() {},
+          isRegistered: () => false,
+        },
+      };
+    }
+    return originalLoad.apply(this, arguments);
+  };
+  try {
+    return require("../src/permission");
+  } finally {
+    Module._load = originalLoad;
+  }
+}
+
+const initPermission = loadPermissionWithFakeElectron();
 
 function makeCapturingRes() {
   const captured = { statusCode: null, body: "", destroyCalls: 0 };
@@ -46,7 +106,7 @@ function makeCtx(overrides = {}) {
     isAgentSubagentPermissionsEnabled: () => true,
     getPermissionAutomationMode: () => "off",
     getBubblePolicy: () => ({ enabled: true, autoCloseMs: 0 }),
-    getPetWindowBounds: () => null,
+    getPetWindowBounds: () => ({ x: 200, y: 200, width: 128, height: 128 }),
     getNearestWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
     getHitRectScreen: () => null,
     getHudReservedOffset: () => 0,
@@ -98,6 +158,12 @@ function makePermEntry(overrides = {}) {
   return entry;
 }
 
+function renderAndAcknowledge(perm, entry, height = 180) {
+  perm.showPermissionBubble(entry);
+  assert.ok(entry.bubble, "precondition: a desktop bubble was constructed");
+  perm.handleBubbleHeight({ sender: { __window: entry.bubble } }, height);
+}
+
 describe("slack permission announce: only for requests a human must answer", () => {
   it("does not announce when the entry is merely queued", () => {
     const ctx = makeCtx();
@@ -112,15 +178,17 @@ describe("slack permission announce: only for requests a human must answer", () 
     const entry = makePermEntry();
     perm.addPendingPermission(entry, "added");
 
-    // No Electron in tests: the bubble build throws right after the announce.
-    assert.throws(() => perm.showPermissionBubble(entry));
+    perm.showPermissionBubble(entry);
+    assert.deepEqual(ctx.announced, [], "loading a BrowserWindow is not yet a rendered card");
+
+    perm.handleBubbleHeight({ sender: { __window: entry.bubble } }, 180);
     assert.equal(ctx.announced.length, 1);
     assert.match(ctx.announced[0].title, /Bash/);
     assert.equal(ctx.announced[0].toolName, "Bash");
     assert.equal(ctx.announced[0].agentId, "claude-code");
 
-    // A retry (repositioning, re-show) must not ping Slack twice.
-    assert.throws(() => perm.showPermissionBubble(entry));
+    // Renderer reflows (stepper/feedback/text-size) must not ping Slack twice.
+    perm.handleBubbleHeight({ sender: { __window: entry.bubble } }, 220);
     assert.equal(ctx.announced.length, 1);
   });
 
@@ -162,20 +230,89 @@ describe("slack permission announce: only for requests a human must answer", () 
     });
     perm.addPendingPermission(entry, "added");
 
-    assert.throws(() => perm.showPermissionBubble(entry));
+    renderAndAcknowledge(perm, entry);
     assert.equal(perm.pendingPermissions.includes(entry), true);
     assert.equal(ctx.announced.length, 1);
   });
 
-  it("does not announce plan reviews, which are not remote-actionable", () => {
+  it("does not expand plan reviews into Slack permission notifications", () => {
     const ctx = makeCtx();
     const perm = initPermission(ctx);
     const entry = makePermEntry({ toolName: "ExitPlanMode", toolInput: { plan: "ship it" } });
     perm.addPendingPermission(entry, "added");
 
-    assert.throws(() => perm.showPermissionBubble(entry));
+    renderAndAcknowledge(perm, entry);
     assert.equal(perm.pendingPermissions.includes(entry), true);
     assert.deepEqual(ctx.announced, []);
+  });
+
+  it("announces rendered opencode, MiMo, and Copilot Allow/Deny bubbles", () => {
+    for (const agentId of ["opencode", "mimocode", "copilot-cli"]) {
+      const ctx = makeCtx();
+      const perm = initPermission(ctx);
+      const entry = makePermEntry({
+        agentId,
+        res: agentId === "copilot-cli" ? makeCapturingRes() : null,
+        toolInput: { description: `review ${agentId}` },
+      });
+      perm.addPendingPermission(entry, "added");
+
+      renderAndAcknowledge(perm, entry);
+
+      assert.equal(ctx.announced.length, 1, agentId);
+      assert.equal(ctx.announced[0].kind, "approval", agentId);
+      assert.equal(ctx.announced[0].actionTarget, "desktop", agentId);
+    }
+  });
+
+  it("does not tell opencode-family questions to answer in an incapable desktop bubble", () => {
+    const ctx = makeCtx();
+    const perm = initPermission(ctx);
+    const entry = makePermEntry({
+      agentId: "opencode",
+      res: null,
+      toolName: "AskUserQuestion",
+      toolInput: { questions: [{ question: "Which environment?" }] },
+    });
+    perm.addPendingPermission(entry, "added");
+
+    renderAndAcknowledge(perm, entry);
+
+    assert.equal(entry.interaction.capabilities.answerQuestions, false);
+    assert.deepEqual(ctx.announced, []);
+  });
+
+  it("does not announce passthrough or invalid interactions", () => {
+    for (const entry of [
+      makePermEntry({ toolName: "TaskList" }),
+      makePermEntry({ interaction: { intent: "tool-approval" } }),
+    ]) {
+      const ctx = makeCtx();
+      const perm = initPermission(ctx);
+      perm.addPendingPermission(entry, "added");
+      renderAndAcknowledge(perm, entry);
+      assert.deepEqual(ctx.announced, []);
+    }
+  });
+
+  it("does not announce if the request resolves or DND starts before render acknowledgement", () => {
+    const resolvedCtx = makeCtx();
+    const resolvedPerm = initPermission(resolvedCtx);
+    const resolvedEntry = makePermEntry();
+    resolvedPerm.addPendingPermission(resolvedEntry, "added");
+    resolvedPerm.showPermissionBubble(resolvedEntry);
+    resolvedPerm.removePendingPermission(resolvedEntry, "resolved-before-render");
+    resolvedPerm.handleBubbleHeight({ sender: { __window: resolvedEntry.bubble } }, 180);
+    assert.deepEqual(resolvedCtx.announced, []);
+
+    const dndCtx = makeCtx();
+    const dndPerm = initPermission(dndCtx);
+    const dndEntry = makePermEntry();
+    dndPerm.addPendingPermission(dndEntry, "added");
+    dndPerm.showPermissionBubble(dndEntry);
+    dndCtx.doNotDisturb = true;
+    dndPerm.handleBubbleHeight({ sender: { __window: dndEntry.bubble } }, 180);
+    assert.deepEqual(dndCtx.announced, []);
   });
 
   it("stays silent when a session automation override auto-approves", () => {
@@ -207,7 +344,7 @@ describe("slack permission announce: only for requests a human must answer", () 
     });
     perm.addPendingPermission(entry, "added");
 
-    assert.throws(() => perm.showPermissionBubble(entry));
+    renderAndAcknowledge(perm, entry);
     assert.equal(perm.pendingPermissions.includes(entry), true);
     assert.equal(ctx.announced.length, 1);
   });
@@ -220,7 +357,7 @@ describe("slack permission announce: only for requests a human must answer", () 
     const entry = makePermEntry();
     perm.addPendingPermission(entry, "added");
 
-    assert.throws(() => perm.showPermissionBubble(entry));
+    renderAndAcknowledge(perm, entry);
     assert.deepEqual(ctx.announced, []);
   });
 
@@ -230,7 +367,7 @@ describe("slack permission announce: only for requests a human must answer", () 
     const entry = makePermEntry({ isCodexNotify: true, agentId: "codex", res: null });
     perm.addPendingPermission(entry, "added");
 
-    assert.throws(() => perm.showPermissionBubble(entry));
+    renderAndAcknowledge(perm, entry);
     assert.deepEqual(ctx.announced, []);
   });
 
@@ -242,7 +379,7 @@ describe("slack permission announce: only for requests a human must answer", () 
     const entry = makePermEntry({ headless: true });
     perm.addPendingPermission(entry, "added");
 
-    assert.throws(() => perm.showPermissionBubble(entry));
+    renderAndAcknowledge(perm, entry);
     assert.deepEqual(ctx.announced, []);
   });
 
@@ -254,11 +391,7 @@ describe("slack permission announce: only for requests a human must answer", () 
     const entry = makePermEntry();
     perm.addPendingPermission(entry, "added");
 
-    // The only throw that escapes is the (Electron-less) bubble build, not Slack.
-    assert.throws(
-      () => perm.showPermissionBubble(entry),
-      (err) => !/slack exploded/.test(String(err && err.message)),
-    );
+    assert.doesNotThrow(() => renderAndAcknowledge(perm, entry));
     assert.equal(perm.pendingPermissions.includes(entry), true);
   });
 });
@@ -337,7 +470,7 @@ describe("slack announce: interaction kind and action target", () => {
     const perm = initPermission(ctx);
     const entry = makeQuestionEntry();
     perm.addPendingPermission(entry, "added");
-    assert.throws(() => perm.showPermissionBubble(entry));
+    renderAndAcknowledge(perm, entry);
 
     assert.equal(ctx.announced.length, 1);
     const payload = ctx.announced[0];
@@ -354,7 +487,7 @@ describe("slack announce: interaction kind and action target", () => {
     const perm = initPermission(ctx);
     const entry = makePermEntry();
     perm.addPendingPermission(entry, "added");
-    assert.throws(() => perm.showPermissionBubble(entry));
+    renderAndAcknowledge(perm, entry);
 
     assert.equal(ctx.announced[0].kind, "approval");
     assert.equal(ctx.announced[0].actionTarget, "desktop");
@@ -392,82 +525,16 @@ describe("slack announce: interaction kind and action target", () => {
 
     perm.maybeStartRemoteApproval(entry);
     assert.deepEqual(ctx.announced, [],
-      "a bubbled entry announces from showPermissionBubble, with the desktop target");
-  });
-});
-
-// ── When the bubble fails after the heads-up has gone out (review item 4) ───
-// A webhook message cannot be edited or deleted. If the bubble then fails, the
-// request falls back to the agent's own terminal prompt, so the already-sent
-// "approve in the desktop app" becomes untrue with no way to unsend it. We
-// cannot retract, so we correct.
-
-describe("slack announce: the desktop bubble fails after announcing", () => {
-  function makeFailCtx(overrides = {}) {
-    const corrections = [];
-    const ctx = makeCtx({
-      notifySlackBubbleFailed: (payload) => corrections.push(payload),
-      ...overrides,
-    });
-    ctx.corrections = corrections;
-    return ctx;
-  }
-
-  it("corrects a heads-up that has already been sent", () => {
-    const ctx = makeFailCtx();
-    const perm = initPermission(ctx);
-    const entry = makePermEntry();
-    perm.addPendingPermission(entry, "added");
-    assert.throws(() => perm.showPermissionBubble(entry));
-    assert.equal(ctx.announced.length, 1, "precondition: the heads-up went out");
-
-    // What failPermissionBubble does when the renderer never comes up.
-    perm.failPermissionBubbleForTest(entry, "did-fail-load");
-
-    assert.equal(ctx.corrections.length, 1, "the reader must be told it moved");
-    assert.equal(ctx.corrections[0].agentId, "claude-code");
-  });
-
-  it("sends no correction when nothing was announced", () => {
-    // Auto-approved: no heads-up was sent, so there is nothing to correct and a
-    // bare "it went back to the terminal" message would be baffling.
-    const ctx = makeFailCtx({ getPermissionAutomationMode: () => "unattended" });
-    const perm = initPermission(ctx);
-    const entry = makePermEntry();
-    perm.addPendingPermission(entry, "added");
-    perm.showPermissionBubble(entry);
-    assert.deepEqual(ctx.announced, []);
-
-    perm.failPermissionBubbleForTest(entry, "did-fail-load");
-    assert.deepEqual(ctx.corrections, []);
-  });
-
-  it("corrects at most once even if several failures fire", () => {
-    const ctx = makeFailCtx();
-    const perm = initPermission(ctx);
-    const entry = makePermEntry();
-    perm.addPendingPermission(entry, "added");
-    assert.throws(() => perm.showPermissionBubble(entry));
-
-    perm.failPermissionBubbleForTest(entry, "did-fail-load");
-    perm.failPermissionBubbleForTest(entry, "render-process-gone");
-    assert.equal(ctx.corrections.length, 1);
+      "a bubbled entry announces only after its renderer acknowledgement");
   });
 });
 
 describe("slack announce: main.js wiring", () => {
-  // These two ctx hooks are supplied by main.js. Either could be perfectly
-  // implemented here and simply never wired, and no behavioural test in this
-  // file could tell — they all inject their own ctx.
-  it("both Slack ctx hooks are actually provided by the main process", () => {
+  it("the Slack permission ctx hook is actually provided by the main process", () => {
     const fs = require("node:fs");
     const path = require("node:path");
     const source = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
     assert.match(source, /notifySlackPermission:\s*\(payload\)\s*=>/,
       "main.js must provide notifySlackPermission");
-    assert.match(source, /notifySlackBubbleFailed:\s*\(payload\)\s*=>/,
-      "main.js must provide notifySlackBubbleFailed");
-    assert.match(source, /client\.notifyBubbleFailed\(payload\)/,
-      "and route it to the Slack client");
   });
 });

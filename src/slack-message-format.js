@@ -32,8 +32,6 @@ const SLACK_LOCALES = Object.freeze({
     questionHintRemote: "Answer in your remote approval channel (Telegram or Feishu).",
     questionNumber: "Question {n}",
     andMore: "+{n} more",
-    bubbleFailedTitle: "That request went back to the terminal",
-    bubbleFailedBody: "The desktop bubble could not open, so {agent} is asking in its own prompt instead. Nothing is waiting in the app.",
     tool: "Tool",
     folder: "Folder",
     agent: "Agent",
@@ -56,8 +54,6 @@ const SLACK_LOCALES = Object.freeze({
     questionHintRemote: "请在远程审批渠道（Telegram 或飞书）中回答。",
     questionNumber: "问题 {n}",
     andMore: "还有 {n} 项",
-    bubbleFailedTitle: "该请求已退回终端",
-    bubbleFailedBody: "桌面气泡未能弹出，因此 {agent} 改为在自己的终端里询问。App 中没有待处理的内容。",
     tool: "工具",
     folder: "目录",
     agent: "Agent",
@@ -80,8 +76,6 @@ const SLACK_LOCALES = Object.freeze({
     questionHintRemote: "請在遠端審批管道（Telegram 或飛書）中回答。",
     questionNumber: "問題 {n}",
     andMore: "還有 {n} 項",
-    bubbleFailedTitle: "該請求已退回終端機",
-    bubbleFailedBody: "桌面泡泡未能跳出，因此 {agent} 改為在自己的終端機裡詢問。App 中沒有待處理的內容。",
     tool: "工具",
     folder: "目錄",
     agent: "Agent",
@@ -104,8 +98,6 @@ const SLACK_LOCALES = Object.freeze({
     questionHintRemote: "원격 승인 채널(Telegram 또는 Feishu)에서 답변하세요.",
     questionNumber: "질문 {n}",
     andMore: "외 {n}개",
-    bubbleFailedTitle: "해당 요청이 터미널로 돌아갔습니다",
-    bubbleFailedBody: "데스크톱 말풍선을 열 수 없어 {agent}이(가) 자체 프롬프트에서 대신 묻고 있습니다. 앱에는 대기 중인 항목이 없습니다.",
     tool: "도구",
     folder: "폴더",
     agent: "Agent",
@@ -128,8 +120,6 @@ const SLACK_LOCALES = Object.freeze({
     questionHintRemote: "リモート承認チャンネル（Telegram または Feishu）で回答してください。",
     questionNumber: "質問 {n}",
     andMore: "ほか {n} 件",
-    bubbleFailedTitle: "このリクエストはターミナルに戻りました",
-    bubbleFailedBody: "デスクトップのバブルを開けなかったため、{agent} は自分のプロンプトで代わりに確認しています。アプリで待機しているものはありません。",
     tool: "ツール",
     folder: "フォルダ",
     agent: "Agent",
@@ -152,8 +142,6 @@ const SLACK_LOCALES = Object.freeze({
     questionHintRemote: "Responda no seu canal remoto de aprovação (Telegram ou Feishu).",
     questionNumber: "Pergunta {n}",
     andMore: "+{n} restantes",
-    bubbleFailedTitle: "Essa solicitação voltou para o terminal",
-    bubbleFailedBody: "O balão da área de trabalho não pôde ser aberto, então {agent} está perguntando no próprio prompt. Nada está aguardando no aplicativo.",
     tool: "Ferramenta",
     folder: "Pasta",
     agent: "Agente",
@@ -245,6 +233,18 @@ function folderName(cwd) {
   return parts[parts.length - 1] || "";
 }
 
+function entryFolderName(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  // An explicit empty displayFolder is meaningful: snapshot construction uses
+  // it to suppress opaque QwenWork/QoderWork workspace ids. Falling back with
+  // `entry.displayFolder || folderName(entry.cwd)` would reintroduce the leak.
+  if (Object.prototype.hasOwnProperty.call(entry, "displayFolder")) {
+    return folderName(entry.displayFolder);
+  }
+  // Compatibility for direct formatter callers and older cached snapshots.
+  return folderName(entry.cwd);
+}
+
 function shortId(id) {
   const s = String(id || "");
   return s.length > 6 ? s.slice(0, 6) : s;
@@ -276,7 +276,7 @@ function renderQuestions(rawQuestions, locale) {
   const lines = [];
   shown.forEach((question, index) => {
     if (!question || typeof question !== "object") return;
-    const header = redactMrkdwn(question.header || "").trim().slice(0, QUESTION_HEADER_MAX)
+    const header = clipMrkdwn(redactMrkdwn(question.header || "").trim(), QUESTION_HEADER_MAX)
       || interpolate(locale.questionNumber, "{n}", String(index + 1));
     const body = clipMrkdwn(redactMrkdwn(question.question || ""), QUESTION_MAX);
     const options = Array.isArray(question.options) ? question.options : [];
@@ -334,7 +334,7 @@ function prepareAssistantOutput(entry) {
 function metaLine(entry) {
   const meta = [];
   if (entry.agentId) meta.push(redactMrkdwn(entry.agentId));
-  const folder = folderName(entry.cwd);
+  const folder = entryFolderName(entry);
   if (folder) meta.push(redactMrkdwn(folder));
   if (entry.host) meta.push(redactMrkdwn(entry.host));
   if (entry.id) meta.push(`#${redactMrkdwn(shortId(entry.id))}`);
@@ -377,7 +377,7 @@ function buildCompletionMessage(entry, options = {}) {
     blocks.push(sectionBlock("```\n" + clipped + "\n```"));
   }
 
-  const fallbackFolder = redactMrkdwn(folderName(entry.cwd));
+  const fallbackFolder = redactMrkdwn(entryFolderName(entry));
   const fallback = clipMrkdwn(
     `${icon} ${redactMrkdwn(rawTitle)} ${wrapStatus}${fallbackFolder ? ` — ${fallbackFolder}` : ""}`,
     FALLBACK_MAX
@@ -441,22 +441,6 @@ function buildPermissionMessage(payload, options = {}) {
   return { text: clipMrkdwn(fallback, FALLBACK_MAX), blocks };
 }
 
-// A webhook message cannot be edited or deleted, so when the desktop bubble
-// fails after the heads-up has already gone out, the only honest move is to
-// correct it rather than leave the reader waiting at an app with nothing in it.
-function buildBubbleFailedMessage(payload, options = {}) {
-  const locale = getLocale(options.lang);
-  const p = payload && typeof payload === "object" ? payload : {};
-  const agentId = redactPlain(p.agentId || "the agent").trim() || "the agent";
-  return {
-    text: clipMrkdwn(`⚠️ ${escapeMrkdwn(locale.bubbleFailedTitle)}`, FALLBACK_MAX),
-    blocks: [
-      headerBlock(`⚠️ ${locale.bubbleFailedTitle}`),
-      sectionBlock(redactMrkdwn(interpolate(locale.bubbleFailedBody, "{agent}", agentId))),
-    ],
-  };
-}
-
 function buildTestMessage(options = {}) {
   const locale = getLocale(options.lang);
   return {
@@ -468,7 +452,6 @@ function buildTestMessage(options = {}) {
 module.exports = {
   buildCompletionMessage,
   buildPermissionMessage,
-  buildBubbleFailedMessage,
   buildTestMessage,
   prepareAssistantOutput,
   neutralizeFences,

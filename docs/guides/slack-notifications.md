@@ -22,7 +22,7 @@ message in Slack does not necessarily remove it from an export.
 | Field | Sent when | Where it comes from |
 |---|---|---|
 | Session title | every completion | often the first line of **your own prompt** |
-| Project folder name | completions, permissions | the session's working directory (basename only) |
+| Project folder name | completions, permissions | the session's working directory (basename only; opaque agent-internal workspace ids are omitted) |
 | Host name | completions | local machine name, or the Remote SSH host |
 | Agent and tool name | permissions | e.g. `claude-code`, `Bash` |
 | Permission summary / detail | permissions | the agent's own `description` for the call |
@@ -56,23 +56,22 @@ permission automation (*auto-tools* or *unattended*) or a session-scoped "always
 allow" resolves it, Clawd stays silent — an auto-approved tool call must never
 produce an "approval needed" ping for something you never had to act on.
 
-### The three shapes a permission message takes
+### The two shapes a permission message takes
 
 | Card | When | What it says |
 |---|---|---|
 | ⏳ Permission needed | a tool wants to run | approve or deny — in the desktop app, or in your remote approval channel if bubbles are disabled for that agent |
 | ❓ Answer needed | the agent asked *you* something (`AskUserQuestion`) | the questions and their options, and *answer* rather than approve — there is nothing to allow or deny |
-| ⚠️ Went back to the terminal | the desktop bubble failed to open after a heads-up was already sent | the request fell back to the agent's own prompt, so nothing is waiting in the app |
 
 The question card exists because an `AskUserQuestion` is not a permission
 request: it carries no allow/deny decision, and the approval summary builder can
 never find a description for one, so it used to arrive as "No description
 available" with the questions missing entirely.
 
-The correction card exists because a webhook message cannot be edited or
-deleted. If Clawd has already said "approve in the desktop app" and the bubble
-then fails, the only honest option left is to say so rather than leave you
-waiting at an app with nothing in it.
+For a desktop request Clawd waits until the permission card has actually rendered
+before posting to Slack. If the bubble cannot be created, loaded, or shown, no
+misleading "answer in the desktop app" notification is sent. Remote-only entries
+are announced only after a remote approval client has accepted the request.
 
 Question and option text is capped at five questions and five options each, with
 a "+N more" marker — the same limits the Telegram and Feishu cards use, so one
@@ -179,8 +178,9 @@ failure, which Clawd logs and does not retry.
 
 ## Delivery behaviour
 
-Sends are queued and delivered one at a time, so a burst of finished sessions
-does not open several sockets at once.
+Automatic notifications are queued and delivered one at a time, so a burst of
+finished sessions and permission requests does not open several sockets at once.
+The explicit **Send test** action is immediate and does not enter this queue.
 
 - A rate-limited (429) send honours Slack's `Retry-After`; network, timeout and
   5xx failures retry with capped exponential backoff.
@@ -189,6 +189,9 @@ does not open several sockets at once.
 - Both the queue length and the retry count are bounded. If Slack is unreachable
   long enough for the queue to fill, the oldest notification is dropped and the
   drop is logged.
+- Disabling Slack or changing its credential, channel, or transport cancels
+  queued work from the previous configuration. An old notification is never
+  retried to a newly selected destination.
 - Nothing here blocks the desktop pet; a failed notification never propagates
   into the event path.
 

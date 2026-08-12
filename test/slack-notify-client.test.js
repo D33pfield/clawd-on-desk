@@ -3,7 +3,13 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { createSlackNotifyClient, isCompletion, dedupeKey, classifyHttpStatus } = require("../src/slack-notify-client");
+const {
+  createSlackNotifyClient,
+  isCompletion,
+  dedupeKey,
+  classifyHttpStatus,
+  classifySlackApiError,
+} = require("../src/slack-notify-client");
 
 const WEBHOOK = "https://hooks.slack.com/services/T/B/xxx";
 
@@ -53,14 +59,38 @@ test("classifyHttpStatus maps common failures", () => {
   assert.equal(classifyHttpStatus(500), "http-500");
 });
 
+test("classifySlackApiError normalizes retry/auth classes and bounds unknown codes", () => {
+  assert.equal(classifySlackApiError("ratelimited"), "rate-limited");
+  assert.equal(classifySlackApiError("rate_limited"), "rate-limited");
+  assert.equal(classifySlackApiError("invalid_auth"), "unauthorized");
+  assert.equal(classifySlackApiError("token_revoked"), "unauthorized");
+  assert.equal(classifySlackApiError("channel_not_found"), "slack-channel_not_found");
+  assert.equal(classifySlackApiError("BAD VALUE!"), "slack-bad-value");
+  assert.ok(classifySlackApiError("x".repeat(200)).length <= "slack-".length + 64);
+});
+
 test("getStatus reflects readiness and transport", () => {
   const client = baseClient();
   const s = client.getStatus();
   assert.equal(s.enabled, true);
   assert.equal(s.configured, true);
+  assert.equal(s.transportConfigured, true);
   assert.equal(s.ready, true);
   assert.equal(s.transport, "webhook");
   assert.equal(s.supportsApproval, false);
+});
+
+test("getStatus does not call a stored bot token configured without a channel", () => {
+  const client = createSlackNotifyClient({
+    getConfig: () => ({ enabled: false, channelId: "" }),
+    getSecrets: () => ({ webhookUrl: "", botToken: "xoxb-123456789-abcdefghij" }),
+  });
+  const status = client.getStatus();
+  assert.equal(status.credentialsPresent, true);
+  assert.equal(status.transportConfigured, false);
+  assert.equal(status.configured, false);
+  assert.equal(status.ready, false);
+  assert.equal(status.transport, null);
 });
 
 test("sendTest posts a webhook payload and reports ok", async () => {
@@ -410,6 +440,220 @@ test("a repeat snapshot does not enqueue an event that is still in flight", asyn
   assert.equal(fetchImpl.calls.length, 1);
 });
 
+test("queue overflow never removes the active item or silently leaks the next dedupe key", async () => {
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  let calls = 0;
+  const fetchImpl = makeFetch(async () => {
+    calls += 1;
+    if (calls === 1) await firstGate;
+    return okWebhook();
+  });
+  const warnings = [];
+  const client = queueClient({
+    fetchImpl,
+    maxQueue: 2,
+    log: (level, message, meta) => {
+      if (level === "warn") warnings.push({ message, meta });
+    },
+  });
+  client.prime({ sessions: [] });
+  client.onSnapshot(doneSnap(["a", "b", "c", "d"], 2));
+
+  assert.equal(fetchImpl.calls.length, 1, "a is active before the burst overflows pending work");
+  releaseFirst();
+  await client.drained();
+
+  assert.equal(fetchImpl.calls.length, 2, "strict capacity=2 retains the active item plus the newest pending item");
+  assert.match(fetchImpl.calls[0].body.text, /a/);
+  assert.match(fetchImpl.calls[1].body.text, /d/);
+  assert.deepEqual(
+    warnings.filter((entry) => /queue full/i.test(entry.message)).map((entry) => entry.meta.id),
+    ["b", "c"],
+    "every overflow drop is explicit and attributed to the item that was dropped"
+  );
+  assert.equal(client._lastNotified.get("c"), "c:Stop:2", "the formerly leaked item is settled");
+
+  client.onSnapshot(doneSnap(["a", "b", "c", "d"], 2));
+  await client.drained();
+  assert.equal(fetchImpl.calls.length, 2, "settled overflow drops are not replayed forever");
+});
+
+test("capacity one drops and settles an incoming permission while another item is active", async () => {
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const fetchImpl = makeFetch(async () => {
+    await firstGate;
+    return okWebhook();
+  });
+  const warnings = [];
+  const client = queueClient({
+    fetchImpl,
+    maxQueue: 1,
+    log: (level, message, meta) => {
+      if (level === "warn") warnings.push({ message, meta });
+    },
+  });
+  client.prime({ sessions: [] });
+  client.onSnapshot(doneSnap(["active"], 2));
+  const permission = await client.notifyPermissionRequest({ title: "blocked permission", toolName: "Bash" });
+  assert.equal(permission.errorClass, "queue-full");
+  assert.ok(warnings.some((entry) => /permission.*queue full/i.test(entry.message)));
+  releaseFirst();
+  await client.drained();
+  assert.equal(fetchImpl.calls.length, 1);
+});
+
+test("permission notifications share completion FIFO and bounded retry", async () => {
+  let call = 0;
+  const fetchImpl = makeFetch(() => {
+    call += 1;
+    if (call === 1) return { ok: false, status: 503, text: async () => "busy" };
+    return okWebhook();
+  });
+  const client = queueClient({ fetchImpl, maxAttempts: 3 });
+  client.prime({ sessions: [] });
+
+  const permission = client.notifyPermissionRequest({ title: "needs approval", toolName: "Bash" });
+  client.onSnapshot(doneSnap(["after-permission"], 2));
+  assert.equal((await permission).ok, true);
+  await client.drained();
+
+  assert.equal(fetchImpl.calls.length, 3);
+  assert.equal(fetchImpl.calls[0].body.text, fetchImpl.calls[1].body.text, "permission is retried in place");
+  assert.match(fetchImpl.calls[2].body.text, /after-permission/, "later completion waits behind the retry");
+});
+
+test("bot HTTP 429 is classified before its JSON body and honours Retry-After", async () => {
+  const waits = [];
+  let call = 0;
+  const fetchImpl = makeFetch(() => {
+    call += 1;
+    if (call === 1) {
+      return {
+        ok: false,
+        status: 429,
+        headers: { get: (name) => (String(name).toLowerCase() === "retry-after" ? "2" : null) },
+        text: async () => JSON.stringify({ ok: false, error: "ratelimited" }),
+      };
+    }
+    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, ts: "1.2" }) };
+  });
+  const client = queueClient({
+    config: { channelId: "C99" },
+    getSecrets: () => ({ webhookUrl: "", botToken: "xoxb-123456789-abcdefghij" }),
+    fetchImpl,
+    sleepImpl: (ms) => { waits.push(ms); return Promise.resolve(); },
+  });
+
+  const result = await client.notifyPermissionRequest({ title: "needs approval", toolName: "Bash" });
+  assert.equal(result.ok, true);
+  assert.equal(fetchImpl.calls.length, 2);
+  assert.deepEqual(waits, [2000]);
+});
+
+test("bot JSON ratelimited on HTTP 200 is normalized into the retry class", async () => {
+  let call = 0;
+  const fetchImpl = makeFetch(() => {
+    call += 1;
+    if (call === 1) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: false, error: "ratelimited" }) };
+    }
+    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, ts: "1.2" }) };
+  });
+  const client = queueClient({
+    config: { channelId: "C99" },
+    getSecrets: () => ({ webhookUrl: "", botToken: "xoxb-123456789-abcdefghij" }),
+    fetchImpl,
+  });
+
+  assert.equal((await client.notifyPermissionRequest({ title: "x", toolName: "Bash" })).ok, true);
+  assert.equal(fetchImpl.calls.length, 2);
+});
+
+test("bot HTTP 5xx remains retryable even when Slack also returns an error body", async () => {
+  let call = 0;
+  const fetchImpl = makeFetch(() => {
+    call += 1;
+    if (call === 1) {
+      return { ok: false, status: 500, text: async () => JSON.stringify({ ok: false, error: "fatal_error" }) };
+    }
+    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, ts: "1.2" }) };
+  });
+  const client = queueClient({
+    config: { channelId: "C99" },
+    getSecrets: () => ({ webhookUrl: "", botToken: "xoxb-123456789-abcdefghij" }),
+    fetchImpl,
+  });
+
+  assert.equal((await client.notifyPermissionRequest({ title: "x", toolName: "Bash" })).ok, true);
+  assert.equal(fetchImpl.calls.length, 2);
+});
+
+test("an automatic retry is cancelled instead of crossing to a changed webhook", async () => {
+  let secrets = { webhookUrl: WEBHOOK, botToken: "" };
+  let revision = 1;
+  const replacement = "https://hooks.slack.com/services/T/B/replacement";
+  const fetchImpl = makeFetch(() => ({ ok: false, status: 503, text: async () => "busy" }));
+  const client = queueClient({
+    getSecrets: () => secrets,
+    getConfigRevision: () => revision,
+    fetchImpl,
+    sleepImpl: () => {
+      secrets = { webhookUrl: replacement, botToken: "" };
+      revision += 1;
+      return Promise.resolve();
+    },
+  });
+  client.prime({ sessions: [] });
+  client.onSnapshot(doneSnap(["old-route"], 2));
+  await client.drained();
+
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.equal(fetchImpl.calls[0].url, WEBHOOK);
+  assert.equal(client._lastNotified.get("old-route"), "old-route:Stop:2");
+});
+
+test("config revision cancels disable-and-reenable even when the destination returns to the same value", async () => {
+  let revision = 7;
+  const fetchImpl = makeFetch(() => ({ ok: false, status: 503, text: async () => "busy" }));
+  const client = queueClient({
+    getConfigRevision: () => revision,
+    fetchImpl,
+    sleepImpl: () => {
+      // The final config/destination is byte-for-byte identical; only the
+      // monotonic main-process revision can prove that it changed in between.
+      revision += 2;
+      return Promise.resolve();
+    },
+  });
+  client.prime({ sessions: [] });
+  client.onSnapshot(doneSnap(["old-generation"], 2));
+  await client.drained();
+
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.equal(client._lastNotified.get("old-generation"), "old-generation:Stop:2");
+});
+
+test("destination digest catches an out-of-band secret change without a revision bump", async () => {
+  let secrets = { webhookUrl: WEBHOOK, botToken: "" };
+  const fetchImpl = makeFetch(() => ({ ok: false, status: 503, text: async () => "busy" }));
+  const client = queueClient({
+    getSecrets: () => secrets,
+    fetchImpl,
+    sleepImpl: () => {
+      secrets = { webhookUrl: "https://hooks.slack.com/services/T/B/out-of-band", botToken: "" };
+      return Promise.resolve();
+    },
+  });
+  client.prime({ sessions: [] });
+  client.onSnapshot(doneSnap(["external-edit"], 2));
+  await client.drained();
+
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.equal(fetchImpl.calls[0].url, WEBHOOK);
+});
+
 // ── Startup recovery ────────────────────────────────────────────────────────
 // Clawd rebuilds a snapshot for sessions that survived a restart, but it only
 // reached Dashboard/HUD. Slack's first snapshot was therefore a later Stop,
@@ -454,6 +698,28 @@ test("startup recovery actually primes the notifier in main.js", () => {
   );
 });
 
+test("main.js advances and injects the Slack configuration revision", () => {
+  // The client can detect out-of-band destination changes by digest, but only
+  // the composition root can prove that disable -> enable or a credential
+  // change returned to the same bytes in between retries.
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+
+  assert.match(source, /let slackNotifyConfigRevision = 0;/);
+  assert.match(source, /getConfigRevision:\s*\(\) => slackNotifyConfigRevision/);
+  assert.match(
+    source,
+    /if \(result && result\.status === "ok"\) \{\s*slackNotifyConfigRevision \+= 1;/,
+    "a successful secret write must invalidate old automatic work"
+  );
+  assert.match(
+    source,
+    /subscribeKey\("slackNotify", \(\) => \{\s*slackNotifyConfigRevision \+= 1;/,
+    "every committed Slack preference change must advance the generation"
+  );
+});
+
 // ── Send Test during setup, and stable error codes (review item 3) ──────────
 
 test("Send Test works while continuous notifications are still switched off", async () => {
@@ -468,6 +734,22 @@ test("Send Test works while continuous notifications are still switched off", as
 
   const res = await client.sendTest();
   assert.equal(res.status, "ok");
+  assert.equal(fetchImpl.calls.length, 1);
+});
+
+test("Send Test is a direct diagnostic and does not enter automatic retry", async () => {
+  const fetchImpl = makeFetch(() => ({ ok: false, status: 503, text: async () => "busy" }));
+  const client = createSlackNotifyClient({
+    getConfig: () => ({ enabled: false }),
+    getSecrets: () => ({ webhookUrl: WEBHOOK, botToken: "" }),
+    fetchImpl,
+    maxAttempts: 4,
+    retryBaseMs: 0,
+  });
+
+  const result = await client.sendTest();
+  assert.equal(result.status, "error");
+  assert.equal(result.code, "http-503");
   assert.equal(fetchImpl.calls.length, 1);
 });
 

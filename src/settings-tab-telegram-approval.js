@@ -1954,7 +1954,10 @@
     const s = status && typeof status === "object" ? status : {};
     return [
       s.enabled === true ? "1" : "0",
+      s.ready === true ? "1" : "0",
+      s.transportConfigured === true ? "1" : "0",
       s.configured === true ? "1" : "0",
+      s.credentialsPresent === true ? "1" : "0",
       s.reason || "",
       s.transport || "",
       s.secretsStored === true ? "1" : "0",
@@ -1973,7 +1976,14 @@
   // churns one extra frame before anything is configured.
   function slackStatusNeedsRender(status) {
     const s = status && typeof status === "object" ? status : {};
-    return !!(s.configured === true || s.secretsStored === true || s.enabled === true);
+    return !!(
+      s.ready === true
+      || s.transportConfigured === true
+      || s.configured === true
+      || s.credentialsPresent === true
+      || s.secretsStored === true
+      || s.enabled === true
+    );
   }
 
   function slackSecretInfoNeedsRender(info) {
@@ -2033,10 +2043,25 @@
     });
   }
 
-  function deriveSlackCardKind() {
+  // A configured transport and an active notifier are different states. Keep
+  // the transport/configured fallbacks for older main-process payloads while
+  // preferring the explicit transportConfigured + ready axes.
+  function slackTransportConfigured() {
     const s = slackView.status || {};
-    if (s.configured === true && s.enabled === true) return "running";
-    if (s.configured === true) return "ready";
+    if (typeof s.transportConfigured === "boolean") return s.transportConfigured;
+    if (s.transport === "webhook" || s.transport === "bot") return true;
+    return s.configured === true;
+  }
+
+  function slackReady() {
+    const s = slackView.status || {};
+    if (typeof s.ready === "boolean") return s.ready;
+    return slackTransportConfigured() && s.enabled === true;
+  }
+
+  function deriveSlackCardKind() {
+    if (slackReady()) return "running";
+    if (slackTransportConfigured()) return "ready";
     return "incomplete";
   }
 
@@ -2300,7 +2325,7 @@
   }
 
   function buildSlackStep3Section() {
-    const ready = (slackView.status && slackView.status.configured === true) || slackSecretsConfigured();
+    const ready = slackTransportConfigured();
     const rows = [];
     if (!ready) rows.push(buildSlackPrerequisitesRow());
     rows.push(buildSlackEnabledRow({ ready }));
@@ -2336,7 +2361,8 @@
     const cfg = currentSlackConfig();
     const row = document.createElement("div");
     row.className = "row";
-    if (!ready) row.classList.add("tg-approval-row-disabled");
+    const canToggle = ready || cfg.enabled;
+    if (!canToggle) row.classList.add("tg-approval-row-disabled");
     const text = document.createElement("div");
     text.className = "row-text";
     const label = document.createElement("span");
@@ -2356,7 +2382,7 @@
     sw.setAttribute("role", "switch");
     sw.setAttribute("tabindex", "0");
     helpers.setSwitchVisual(sw, cfg.enabled, { pending: slackView.configPending });
-    if (!ready) {
+    if (!canToggle) {
       sw.classList.add("disabled");
       sw.setAttribute("aria-disabled", "true");
       sw.removeAttribute("tabindex");
@@ -2408,8 +2434,7 @@
     // A usable transport is enough to test — not the enable switch, and not
     // merely "some credential is stored". Testing the connection is the step
     // that comes before switching sending on.
-    const s = slackView.status || {};
-    const ready = s.transportConfigured === true || s.configured === true;
+    const ready = slackTransportConfigured();
     const testDisabled = slackView.testPending || !ready;
     const row = document.createElement("div");
     row.className = "row";

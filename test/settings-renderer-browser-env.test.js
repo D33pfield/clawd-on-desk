@@ -1384,6 +1384,11 @@ function loadTelegramApprovalTabForTest({
   const document = {
     body,
     createElement: (tagName) => new FakeElement(tagName),
+    createTextNode: (value) => {
+      const node = new FakeElement("#text");
+      node.textContent = String(value || "");
+      return node;
+    },
     getElementById(id) {
       if (id === "content") return content;
       return null;
@@ -4149,6 +4154,167 @@ describe("settings renderer browser environment", () => {
     const statusText = harness.content.querySelector(".feishu-approval-channel-card")
       .querySelector(".tg-approval-channel-status-text").textContent;
     assert.equal(statusText, strings.feishuApprovalCardReadyToEnable);
+  });
+
+  it("keeps Slack transport setup separate from the enabled and ready states", async () => {
+    const strings = loadSettingsI18nForTest().en;
+
+    async function renderSlack({ config, status, secretInfo }) {
+      const harness = loadTelegramApprovalTabForTest({
+        snapshot: {
+          tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+          feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+          slackNotify: {
+            enabled: false,
+            channelId: "",
+            notifyOnDone: true,
+            notifyOnError: true,
+            notifyOnPermission: true,
+            outputMode: "off",
+            ...config,
+          },
+        },
+        settingsAPI: {
+          command: (name) => {
+            if (name === "slackNotify.status") return Promise.resolve({ status: "ok", state: status });
+            if (name === "slackNotify.secretInfo") return Promise.resolve({ status: "ok", ...secretInfo });
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      return {
+        harness,
+        card: harness.content.querySelector(".slack-notify-channel-card"),
+      };
+    }
+
+    const configuredOff = await renderSlack({
+      config: { enabled: false },
+      status: {
+        enabled: false,
+        ready: false,
+        configured: false,
+        transportConfigured: true,
+        transport: "webhook",
+        credentialsPresent: true,
+        secretsStored: true,
+      },
+      secretInfo: { configured: true, webhookUrl: "https://hooks.slack.com/…", botToken: "" },
+    });
+    assert.equal(
+      configuredOff.card.querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardReadyToEnable,
+      "a usable disabled transport is ready to enable, not incomplete"
+    );
+    const configuredSwitch = configuredOff.card.querySelectorAll(".switch")[0];
+    assert.equal(configuredSwitch.classList.contains("disabled"), false);
+    configuredSwitch.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.equal(
+      configuredOff.harness.updates[configuredOff.harness.updates.length - 1].value.enabled,
+      true
+    );
+
+    const tokenWithoutChannel = await renderSlack({
+      config: { enabled: false, channelId: "" },
+      status: {
+        enabled: false,
+        ready: false,
+        configured: false,
+        transportConfigured: false,
+        transport: null,
+        credentialsPresent: true,
+        secretsStored: true,
+        botTokenConfigured: true,
+        reason: "invalid-config",
+      },
+      // A stored token is a credential, but without a channel it is not a
+      // transport. This used to pass through slackSecretsConfigured().
+      secretInfo: { configured: true, webhookUrl: "", botToken: "xoxb-…" },
+    });
+    assert.equal(
+      tokenWithoutChannel.card.querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardMissingSecret
+    );
+    const blockedSwitch = tokenWithoutChannel.card.querySelectorAll(".switch")[0];
+    assert.equal(blockedSwitch.classList.contains("disabled"), true);
+    assert.equal(blockedSwitch.getAttribute("aria-disabled"), "true");
+    const testButton = tokenWithoutChannel.card.querySelectorAll("button")
+      .find((button) => button.textContent === strings.slackNotifySendTest);
+    assert.equal(testButton.disabled, true, "bot-without-channel cannot send a test either");
+
+    const invalidButEnabled = await renderSlack({
+      config: { enabled: true, channelId: "" },
+      status: {
+        enabled: true,
+        ready: false,
+        configured: false,
+        transportConfigured: false,
+        transport: null,
+        credentialsPresent: true,
+        reason: "invalid-config",
+      },
+      secretInfo: { configured: true, webhookUrl: "", botToken: "xoxb-…" },
+    });
+    const recoverySwitch = invalidButEnabled.card.querySelectorAll(".switch")[0];
+    assert.equal(recoverySwitch.classList.contains("disabled"), false,
+      "a stale invalid enabled setting must remain switchable off");
+    recoverySwitch.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.equal(
+      invalidButEnabled.harness.updates[invalidButEnabled.harness.updates.length - 1].value.enabled,
+      false
+    );
+
+    const running = await renderSlack({
+      config: { enabled: true },
+      status: {
+        enabled: true,
+        ready: true,
+        configured: true,
+        transportConfigured: true,
+        transport: "webhook",
+        credentialsPresent: true,
+      },
+      secretInfo: { configured: true, webhookUrl: "https://hooks.slack.com/…", botToken: "" },
+    });
+    assert.equal(
+      running.card.querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardRunning
+    );
+  });
+
+  it("accepts a legacy Slack status payload without explicit readiness axes", async () => {
+    const strings = loadSettingsI18nForTest().en;
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+        slackNotify: { enabled: false, channelId: "", notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "slackNotify.status") {
+            return Promise.resolve({ status: "ok", state: { enabled: false, configured: false, transport: "webhook" } });
+          }
+          return Promise.resolve({ status: "ok", configured: false });
+        },
+      },
+    });
+    harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    assert.equal(
+      harness.content.querySelector(".slack-notify-channel-card")
+        .querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardReadyToEnable
+    );
   });
 
   it("translates a connection timeout and falls back to the raw SDK error otherwise", async () => {

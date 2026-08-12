@@ -416,10 +416,11 @@ let feishuApprovalSyncPromise = Promise.resolve();
 let feishuApprovalConfigSignature = "";
 let feishuSessionAutomationRouteSignature = "";
 let feishuApprovalSecretsRevision = 0;
-// One-way Slack notifier. Stateless (webhook / chat.postMessage), so unlike the
-// Feishu client there is no connection to restart — it is created once and reads
-// current prefs/secrets on each send.
+// One-way Slack notifier. Unlike Feishu there is no connection to restart, but
+// queued automatic sends must never cross a configuration boundary. The
+// revision invalidates work captured before a preference or secret change.
 let slackNotifyClient = null;
+let slackNotifyConfigRevision = 0;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
 };
@@ -1690,13 +1691,6 @@ const _permCtx = {
   // Best-effort, read-only "permission needed" heads-up to Slack. Slack cannot
   // resolve the approval in this build (webhook is one-way), so this only
   // announces — the desktop bubble / other channels still own the decision.
-  // The correction that follows a failed bubble; see announceSlackBubbleFailed.
-  notifySlackBubbleFailed: (payload) => {
-    const client = getSlackNotifyClient();
-    if (client && typeof client.notifyBubbleFailed === "function") {
-      try { client.notifyBubbleFailed(payload); } catch {}
-    }
-  },
   notifySlackPermission: (payload) => {
     const client = getSlackNotifyClient();
     if (client && typeof client.notifyPermissionRequest === "function") {
@@ -2989,7 +2983,10 @@ function getSlackNotifyStatus() {
     transportReason: state.reason || "",
     stored: state.stored,
     enabled: config.enabled === true,
-    configured: ready.ready === true,
+    // `configured` remains as a compatibility alias, but means transport
+    // readiness rather than the master switch. `ready` is the live state.
+    configured: !!state.transport,
+    ready: ready.ready === true,
     reason: ready.ready ? "ready" : (ready.reason || ""),
     message: ready.message || "",
     // From describeTransport, not readiness: readiness reports no transport
@@ -3024,6 +3021,7 @@ function writeSlackNotifySecrets(secrets) {
     platform: process.platform,
   });
   if (result && result.status === "ok") {
+    slackNotifyConfigRevision += 1;
     broadcastSlackNotifyStatus();
   }
   return result;
@@ -3034,6 +3032,7 @@ function getSlackNotifyClient() {
     slackNotifyClient = createSlackNotifyClient({
       getConfig: () => getSlackNotifyPrefs(),
       getSecrets: () => getSlackNotifySecrets(),
+      getConfigRevision: () => slackNotifyConfigRevision,
       getLang: () => _settingsController.get("lang") || lang || "en",
       log: slackNotifyLog,
     });
@@ -3882,6 +3881,10 @@ _settingsController.subscribeKey("feishuApproval", () => {
     getFeishuApprovalSecrets()
   ));
   queueFeishuApprovalSync("settings");
+});
+_settingsController.subscribeKey("slackNotify", () => {
+  slackNotifyConfigRevision += 1;
+  broadcastSlackNotifyStatus();
 });
 _settingsController.subscribeKey("mobilePreviewEnabled", async (enabled) => {
   if (enabled) {

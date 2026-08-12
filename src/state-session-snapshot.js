@@ -216,6 +216,20 @@ function isInternalWorkspaceCwd(id, sessionLike, cwd) {
   return false;
 }
 
+// Display-only folder label shared by every snapshot consumer. Keep the raw
+// cwd on the snapshot for focus/open-folder actions, but do not make each UI or
+// outbound integration rediscover which agent-owned workspace leaves are
+// opaque implementation ids.
+function sessionDisplayFolder(id, sessionLike) {
+  const cwd = sessionLike && sessionLike.cwd;
+  if (!cwd || typeof cwd !== "string" || isInternalWorkspaceCwd(id, sessionLike, cwd)) {
+    return "";
+  }
+  // A remote session can report a path using separators from a platform other
+  // than the one running Clawd, so normalize both forms before taking the leaf.
+  return path.basename(cwd.replace(/\\/g, "/").replace(/\/+$/, ""));
+}
+
 function shortenSessionIdForDisplay(value, sessionLike) {
   if (value === null || value === undefined) return value;
   let displayId = String(value);
@@ -239,10 +253,8 @@ function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {})
   if (alias && typeof alias.title === "string" && alias.title) return alias.title;
   const title = getEffectiveSessionTitle(id, sessionLike, options);
   if (title) return title;
-  const cwd = sessionLike && sessionLike.cwd;
-  if (cwd && typeof cwd === "string" && !isInternalWorkspaceCwd(id, sessionLike, cwd)) {
-    return path.basename(cwd);
-  }
+  const folder = sessionDisplayFolder(id, sessionLike);
+  if (folder) return folder;
   const rawSessionId = (sessionLike && sessionLike.rawSessionId) || id;
   return shortenSessionIdForDisplay(rawSessionId, sessionLike);
 }
@@ -311,6 +323,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     hasAlias: !!(alias && typeof alias.title === "string" && alias.title),
     sessionTitle: getEffectiveSessionTitle(id, session, options),
     displayTitle: sessionDisplayTitle(id, session, sessionAliases, options),
+    displayFolder: sessionDisplayFolder(id, session),
     cwd: (session && session.cwd) || "",
     updatedAt: sessionUpdatedAt(session),
     // Quota/context freshness (statusline metadata POSTs, which do not bump
@@ -541,6 +554,7 @@ function sessionSnapshotSignature(snapshot) {
       hasAlias: entry.hasAlias,
       sessionTitle: entry.sessionTitle,
       displayTitle: entry.displayTitle,
+      displayFolder: entry.displayFolder,
       cwd: entry.cwd,
       agentId: entry.agentId,
       agentName: entry.agentName,
@@ -586,6 +600,7 @@ module.exports = {
   shouldAutoClearDetachedSession,
   getSessionAliasEntry,
   getEffectiveSessionTitle,
+  sessionDisplayFolder,
   sessionDisplayTitle,
   sessionMenuComparator,
   sessionUpdatedAtComparator,

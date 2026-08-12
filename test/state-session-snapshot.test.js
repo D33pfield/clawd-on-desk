@@ -11,6 +11,7 @@ const {
   buildSessionSnapshot,
   getActiveSessionAliasKeys,
   sessionSnapshotSignature,
+  sessionDisplayFolder,
   sessionDisplayTitle,
 } = require("../src/state-session-snapshot");
 const { makeSessionKey } = require("../src/session-key");
@@ -165,6 +166,24 @@ describe("isSessionInProgress state mapping", () => {
 });
 
 describe("sessionDisplayTitle cwd fallback", () => {
+  it("publishes a cross-platform display folder without changing the raw cwd", () => {
+    assert.strictEqual(
+      sessionDisplayFolder("claude:abc123", session("working", { cwd: "C:\\work\\project\\" })),
+      "project"
+    );
+    assert.strictEqual(
+      sessionDisplayFolder("claude:abc123", session("working", { cwd: "/work/project/" })),
+      "project"
+    );
+
+    const cwd = "/work/project";
+    const snapshot = buildSessionSnapshot(new Map([
+      ["claude:abc123", session("working", { cwd })],
+    ]), { statePriority: STATE_PRIORITY });
+    assert.strictEqual(snapshot.sessions[0].displayFolder, "project");
+    assert.strictEqual(snapshot.sessions[0].cwd, cwd, "focus/open-folder keeps the full cwd");
+  });
+
   it("falls back to path.basename(cwd) for normal project paths", () => {
     assert.strictEqual(
       sessionDisplayTitle("qoderwork:abc123", session("working", { cwd: "/home/me/projects/myapp" })),
@@ -180,6 +199,10 @@ describe("sessionDisplayTitle cwd fallback", () => {
     assert.strictEqual(
       sessionDisplayTitle("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "C:\\Users\\me\\.qoderwork\\workspace\\abc123" })),
       "abc123"
+    );
+    assert.strictEqual(
+      sessionDisplayFolder("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "/Users/me/.qoderwork/workspace/mqgw60jiigjsjcid" })),
+      ""
     );
   });
 
@@ -213,6 +236,10 @@ describe("sessionDisplayTitle cwd fallback", () => {
       assert.strictEqual(
         sessionDisplayTitle("qwenwork:abc123", qwen({ cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid" })),
         "abc123"
+      );
+      assert.strictEqual(
+        sessionDisplayFolder("qwenwork:abc123", qwen({ cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid" })),
+        ""
       );
     });
 

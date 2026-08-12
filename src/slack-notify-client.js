@@ -1,5 +1,7 @@
 "use strict";
 
+const crypto = require("node:crypto");
+
 // One-way Slack notifier. Unlike the Feishu approval client this holds NO
 // persistent connection: Incoming Webhooks (and chat.postMessage) are stateless
 // HTTP, so the "client" just reads the current config/secrets on each send.
@@ -20,7 +22,6 @@ const settings = require("./slack-notify-settings");
 const {
   buildCompletionMessage,
   buildPermissionMessage,
-  buildBubbleFailedMessage,
   buildTestMessage,
 } = require("./slack-message-format");
 
@@ -75,6 +76,37 @@ function classifyHttpStatus(status) {
   return `http-${status}`;
 }
 
+function classifySlackApiError(error) {
+  const raw = typeof error === "string" ? error.trim().toLowerCase() : "";
+  if (raw === "ratelimited" || raw === "rate_limited") return "rate-limited";
+  if (["invalid_auth", "not_authed", "token_revoked", "account_inactive"].includes(raw)) {
+    return "unauthorized";
+  }
+  const normalized = raw
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return `slack-${normalized || "error"}`;
+}
+
+// Queue entries retain only an opaque digest, never the bearer credential.
+// The selected credential is still part of the identity, so an out-of-band
+// env-file edit cannot make a retry cross into another webhook/channel even if
+// the main-process config revision did not change.
+function destinationSignature(transport, config, secrets) {
+  if (transport === "webhook") {
+    return crypto.createHash("sha256")
+      .update(JSON.stringify(["webhook", secrets.webhookUrl]))
+      .digest("hex");
+  }
+  if (transport === "bot") {
+    return crypto.createHash("sha256")
+      .update(JSON.stringify(["bot", secrets.botToken, config.channelId]))
+      .digest("hex");
+  }
+  return "";
+}
+
 // Last line of defence before the payload leaves the process.
 //
 // The formatter redacts what it renders, but only sendMessage knows the
@@ -107,6 +139,7 @@ function scrubCredentials(body, secrets) {
 function createSlackNotifyClient({
   getConfig = () => settings.cloneDefaultSlackNotify(),
   getSecrets = () => ({ webhookUrl: "", botToken: "" }),
+  getConfigRevision = () => 0,
   getLang = () => "en",
   log = () => {},
   fetchImpl = null,
@@ -127,6 +160,9 @@ function createSlackNotifyClient({
   const lastNotified = new Map(); // session id -> last settled dedupe key
   const inFlightKeys = new Set();
   const queue = [];
+  const queueCapacity = Number.isFinite(maxQueue) ? Math.max(1, Math.floor(maxQueue)) : DEFAULT_MAX_QUEUE;
+  const attemptLimit = Number.isFinite(maxAttempts) ? Math.max(1, Math.floor(maxAttempts)) : DEFAULT_MAX_ATTEMPTS;
+  let activeItem = null;
   let draining = null;
   let primed = false;
 
@@ -152,6 +188,23 @@ function createSlackNotifyClient({
     } catch { return "en"; }
   }
 
+  function readConfigRevision() {
+    try { return getConfigRevision(); } catch { return 0; }
+  }
+
+  function readDeliveryContext() {
+    const config = readConfig();
+    const secrets = readSecrets();
+    const state = settings.describeTransport(config, secrets);
+    return {
+      config,
+      secrets,
+      state,
+      configRevision: readConfigRevision(),
+      destinationKey: destinationSignature(state.transport, config, secrets),
+    };
+  }
+
   function isEnabled() {
     return readConfig().enabled === true;
   }
@@ -168,12 +221,15 @@ function createSlackNotifyClient({
     const config = readConfig();
     const secrets = readSecrets();
     const ready = settings.readiness(config, secrets);
+    const state = settings.describeTransport(config, secrets);
     return {
       enabled: config.enabled === true,
-      configured: !!(secrets.webhookUrl || secrets.botToken),
+      credentialsPresent: state.credentialsPresent,
+      transportConfigured: !!state.transport,
+      configured: !!state.transport,
       ready: ready.ready === true,
       reason: ready.ready ? "ready" : ready.reason,
-      transport: ready.transport || null,
+      transport: state.transport,
       supportsApproval,
     };
   }
@@ -225,17 +281,18 @@ function createSlackNotifyClient({
 
   // Send a { text, blocks } message via whichever transport the config resolves
   // to. Returns { ok, errorClass?, messageId? } and never throws.
-  async function sendMessage(message) {
+  async function sendMessageWithContext(message, context) {
     if (!message || (!message.text && !Array.isArray(message.blocks))) {
       return { ok: false, errorClass: "empty-message" };
     }
-    const config = readConfig();
-    const secrets = readSecrets();
+    const delivery = context || readDeliveryContext();
+    const config = delivery.config;
+    const secrets = delivery.secrets;
     // Deliberately the transport check, not readiness: readiness also requires
     // the enable switch, and Send Test has to work while you are still setting
     // things up. The automatic senders (onSnapshot, notifyPermissionRequest)
     // each check `enabled` themselves, so the switch still means something.
-    const state = settings.describeTransport(config, secrets);
+    const state = delivery.state;
     if (!state.transport) return { ok: false, errorClass: state.reason || "not-configured" };
     const ready = { transport: state.transport };
 
@@ -270,12 +327,25 @@ function createSlackNotifyClient({
       { channel: config.channelId, ...payload },
     );
     if (res.errorClass) return { ok: false, errorClass: res.errorClass, error: res.error };
+    // The HTTP status is authoritative. In particular, Slack's 429 body is
+    // commonly { ok:false, error:"ratelimited" }; parsing that first used to
+    // turn a retryable response into the permanent class "slack-ratelimited".
+    if (!res.ok) return { ok: false, errorClass: classifyHttpStatus(res.status), retryAfterMs: res.retryAfterMs };
     let parsed = null;
     try { parsed = res.bodyText ? JSON.parse(res.bodyText) : null; } catch { parsed = null; }
     if (parsed && parsed.ok === true) return { ok: true, messageId: parsed.ts };
-    if (parsed && parsed.ok === false) return { ok: false, errorClass: `slack-${parsed.error || "error"}` };
-    if (!res.ok) return { ok: false, errorClass: classifyHttpStatus(res.status), retryAfterMs: res.retryAfterMs };
+    if (parsed && parsed.ok === false) {
+      return {
+        ok: false,
+        errorClass: classifySlackApiError(parsed.error),
+        retryAfterMs: res.retryAfterMs,
+      };
+    }
     return { ok: false, errorClass: "bad-response" };
+  }
+
+  async function sendMessage(message) {
+    return sendMessageWithContext(message, readDeliveryContext());
   }
 
 
@@ -288,77 +358,182 @@ function createSlackNotifyClient({
     });
   }
 
-  // An event is settled once it has been delivered, or once we have given up on
-  // it after bounded retries. Recording it either way is what stops a
-  // permanently failing send from being re-enqueued by every later snapshot.
-  function settle(item, outcome, meta) {
-    inFlightKeys.delete(item.key);
-    lastNotified.set(item.id, item.key);
-    if (outcome !== "sent") safeLog("warn", `slack completion ${outcome}`, { id: item.id, ...meta });
+  function isCompletionItem(item) {
+    return !!(item && (item.kind === "completion-done" || item.kind === "completion-error"));
   }
 
-  function enqueueCompletion(id, key, message) {
-    if (inFlightKeys.has(key)) return; // already queued or in flight
-    if (queue.length >= maxQueue) {
-      // Drop the oldest: a backlog means Slack is unavailable, and the newest
-      // completion is the one the user still cares about. Never silently.
-      const dropped = queue.shift();
-      inFlightKeys.delete(dropped.key);
-      lastNotified.set(dropped.id, dropped.key);
-      safeLog("warn", "slack queue full, dropped oldest notification", { id: dropped.id, maxQueue });
+  function automaticGateAllows(item, config) {
+    if (!config || config.enabled !== true) return false;
+    if (item.kind === "completion-done") return config.notifyOnDone === true;
+    if (item.kind === "completion-error") return config.notifyOnError === true;
+    return config.notifyOnPermission === true;
+  }
+
+  // Every exit path (success, permanent failure, retry exhaustion, overflow,
+  // or config cancellation) comes through here. That keeps completion dedupe
+  // and permission Promise settlement in lock-step with queue ownership.
+  function settle(item, outcome, result, meta = {}) {
+    if (!item || item.settled) return;
+    item.settled = true;
+    if (isCompletionItem(item)) {
+      inFlightKeys.delete(item.key);
+      lastNotified.set(item.id, item.key);
     }
-    queue.push({ id, key, message, attempts: 0 });
-    inFlightKeys.add(key);
+    if (outcome !== "sent") {
+      safeLog("warn", `slack ${item.kind} ${outcome}`, { id: item.id, kind: item.kind, ...meta });
+    }
+    try { item.resolve(result); } catch {}
+  }
+
+  function enqueueAutomatic({ kind, id = "", key = "", message, context }) {
+    if (key && inFlightKeys.has(key)) {
+      return Promise.resolve({ ok: false, errorClass: "duplicate" });
+    }
+
+    const delivery = context || readDeliveryContext();
+    let resolveItem;
+    const promise = new Promise((resolve) => { resolveItem = resolve; });
+    const item = {
+      kind,
+      id,
+      key,
+      message,
+      attempts: 0,
+      configRevision: delivery.configRevision,
+      destinationKey: delivery.destinationKey,
+      resolve: resolveItem,
+      settled: false,
+    };
+    if (key) inFlightKeys.add(key);
+
+    // `maxQueue` is a strict total capacity: active + pending. The active item
+    // can no longer be removed, so overflow drops only the oldest pending item.
+    // With capacity=1 there is no pending slot and the incoming item is the
+    // only safe drop candidate.
+    if (queue.length + (activeItem ? 1 : 0) >= queueCapacity) {
+      const dropped = queue.shift();
+      if (dropped) {
+        settle(dropped, "dropped (queue full)", { ok: false, errorClass: "queue-full" }, {
+          maxQueue: queueCapacity,
+        });
+      } else {
+        settle(item, "dropped (queue full)", { ok: false, errorClass: "queue-full" }, {
+          maxQueue: queueCapacity,
+        });
+        return promise;
+      }
+    }
+
+    queue.push(item);
     startDrain();
+    return promise;
+  }
+
+  function enqueueCompletion(id, key, message, interrupted, context) {
+    return enqueueAutomatic({
+      kind: interrupted ? "completion-error" : "completion-done",
+      id,
+      key,
+      message,
+      context,
+    });
   }
 
   // One drain loop at a time, so a burst of completions becomes a sequence of
   // requests rather than a simultaneous fan-out that invites rate limiting.
   function startDrain() {
     if (draining) return draining;
-    draining = drainQueue().finally(() => { draining = null; });
+    draining = drainQueue()
+      .catch((err) => {
+        // drainQueue owns all expected failures. This is only a final guard so
+        // a future formatter/queue change cannot create an unhandled rejection
+        // on the fire-and-forget snapshot path.
+        if (activeItem && !activeItem.settled) {
+          settle(activeItem, "not delivered (queue failure)", {
+            ok: false,
+            errorClass: "queue-failed",
+          }, { error: err && err.message });
+        }
+      })
+      .finally(() => {
+        activeItem = null;
+        draining = null;
+        // A Promise resolved by settle() can enqueue from its continuation while
+        // this drain is completing. Pick that work up instead of stranding it.
+        if (queue.length) startDrain();
+      });
     return draining;
   }
 
   async function drainQueue() {
     while (queue.length) {
-      const item = queue[0];
-      let res = null;
-      try {
-        res = await sendMessage(item.message);
-      } catch (err) {
-        res = { ok: false, errorClass: "network", error: err && err.message };
-      }
+      activeItem = queue.shift();
+      const item = activeItem;
+      while (item && !item.settled) {
+        const delivery = readDeliveryContext();
+        if (
+          delivery.configRevision !== item.configRevision
+          || delivery.destinationKey !== item.destinationKey
+        ) {
+          settle(item, "cancelled (configuration changed)", { ok: false, errorClass: "stale-config" });
+          break;
+        }
+        if (!automaticGateAllows(item, delivery.config)) {
+          settle(item, "cancelled (disabled)", { ok: false, errorClass: "disabled" });
+          break;
+        }
 
-      if (res && res.ok) {
-        queue.shift();
-        settle(item, "sent");
-        continue;
-      }
+        let res = null;
+        try {
+          // Use the exact context that was just checked. Re-reading inside the
+          // send would create a check/use gap where a retry could cross channel.
+          res = await sendMessageWithContext(item.message, delivery);
+        } catch (err) {
+          res = { ok: false, errorClass: "network", error: err && err.message };
+        }
 
-      const errorClass = (res && res.errorClass) || "unknown";
-      if (!isRetryableErrorClass(errorClass)) {
-        queue.shift();
-        settle(item, "not delivered (permanent)", { errorClass });
-        continue;
-      }
+        if (res && res.ok) {
+          settle(item, "sent", res);
+          break;
+        }
 
-      item.attempts += 1;
-      if (item.attempts >= maxAttempts) {
-        queue.shift();
-        settle(item, "not delivered (retries exhausted)", { errorClass, attempts: item.attempts });
-        continue;
-      }
+        const errorClass = (res && res.errorClass) || "unknown";
+        if (!isRetryableErrorClass(errorClass)) {
+          settle(item, "not delivered (permanent)", res || { ok: false, errorClass }, { errorClass });
+          break;
+        }
 
-      // Retry-After wins over our own backoff — Slack is telling us the answer.
-      const backoff = Math.min(retryBaseMs * Math.pow(2, item.attempts - 1), maxRetryDelayMs);
-      await sleep((res && res.retryAfterMs) || backoff);
+        item.attempts += 1;
+        if (item.attempts >= attemptLimit) {
+          settle(item, "not delivered (retries exhausted)", res || { ok: false, errorClass }, {
+            errorClass,
+            attempts: item.attempts,
+          });
+          break;
+        }
+
+        // Retry-After wins over our own backoff — Slack is telling us the answer.
+        const backoff = Math.min(retryBaseMs * Math.pow(2, item.attempts - 1), maxRetryDelayMs);
+        try {
+          await sleep((res && res.retryAfterMs) || backoff);
+        } catch (err) {
+          settle(item, "not delivered (retry wait failed)", {
+            ok: false,
+            errorClass: "retry-wait-failed",
+          }, { error: err && err.message });
+        }
+      }
+      activeItem = null;
     }
   }
 
   // Test/inspection seam: resolves once the queue has settled.
-  function drained() {
-    return Promise.resolve(draining).then(() => (queue.length ? startDrain() : undefined));
+  async function drained() {
+    while (draining || activeItem || queue.length) {
+      if (!draining && queue.length) startDrain();
+      const current = draining;
+      if (current) await current;
+    }
   }
 
 
@@ -382,7 +557,8 @@ function createSlackNotifyClient({
   // map so enabling later does not backfill old completions.
   function onSnapshot(snapshot) {
     const sessions = snapshot && Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
-    const config = readConfig();
+    const delivery = readDeliveryContext();
+    const config = delivery.config;
     const enabled = config.enabled === true;
     const priming = !primed;
     const seenIds = new Set();
@@ -412,7 +588,7 @@ function createSlackNotifyClient({
 
     primed = true;
     if (!toSend.length) return;
-    if (!isReady()) return;
+    if (!delivery.state.transport) return;
 
     const lang = readLang();
     const includeOutput = config.outputMode === "full";
@@ -425,33 +601,17 @@ function createSlackNotifyClient({
         continue;
       }
       if (!message) continue;
-      enqueueCompletion(entry.id, dedupeKey(entry), message);
+      enqueueCompletion(entry.id, dedupeKey(entry), message, entry.badge === "interrupted", delivery);
     }
-  }
-
-  // Correction for a heads-up that has already been sent and cannot be
-  // retracted: the bubble failed, so the request went back to the agent's own
-  // prompt. Gated on the same switch as the heads-up itself — if permission
-  // notifications are off, there is nothing to correct.
-  function notifyBubbleFailed(payload) {
-    const config = readConfig();
-    if (!config.enabled || !config.notifyOnPermission) return Promise.resolve({ ok: false, errorClass: "disabled" });
-    let message = null;
-    try {
-      message = buildBubbleFailedMessage(payload, { lang: readLang() });
-    } catch (err) {
-      safeLog("warn", "slack bubble-failed format threw", { error: err && err.message });
-      return Promise.resolve({ ok: false, errorClass: "format-failed" });
-    }
-    return sendMessage(message).catch((err) => ({ ok: false, errorClass: "threw", error: err && err.message }));
   }
 
   // Read-only "permission needed" heads-up. Best-effort; returns a promise for
   // callers that want it but is safe to ignore.
   function notifyPermissionRequest(payload) {
-    const config = readConfig();
+    const delivery = readDeliveryContext();
+    const config = delivery.config;
     if (!config.enabled || !config.notifyOnPermission) return Promise.resolve({ ok: false, errorClass: "disabled" });
-    if (!isReady()) return Promise.resolve({ ok: false, errorClass: "not-configured" });
+    if (!delivery.state.transport) return Promise.resolve({ ok: false, errorClass: "not-configured" });
     let message = null;
     try {
       message = buildPermissionMessage(payload, { lang: readLang() });
@@ -459,23 +619,13 @@ function createSlackNotifyClient({
       safeLog("warn", "slack permission format threw", { error: err && err.message });
       return Promise.resolve({ ok: false, errorClass: "format-error" });
     }
-    return Promise.resolve()
-      .then(() => sendMessage(message))
-      .then((res) => {
-        if (res && res.ok === false) {
-          safeLog("warn", "slack permission notification not delivered", { errorClass: res.errorClass });
-        }
-        return res;
-      })
-      .catch((err) => {
-        safeLog("warn", "slack permission notification threw", { error: err && err.message });
-        return { ok: false, errorClass: "threw" };
-      });
+    return enqueueAutomatic({ kind: "permission", message, context: delivery });
   }
 
   // Settings "send test" button. Surfaces a structured result the UI localizes.
   async function sendTest() {
-    const state = settings.describeTransport(readConfig(), readSecrets());
+    const delivery = readDeliveryContext();
+    const state = delivery.state;
     if (!state.transport) {
       return {
         status: "error",
@@ -485,7 +635,9 @@ function createSlackNotifyClient({
     }
     let res;
     try {
-      res = await sendMessage(buildTestMessage({ lang: readLang() }));
+      // Explicit diagnostics stay transport-only: they work while automatic
+      // notifications are disabled and return the first failure immediately.
+      res = await sendMessageWithContext(buildTestMessage({ lang: readLang() }), delivery);
     } catch (err) {
       return { status: "error", code: "threw", message: err && err.message };
     }
@@ -509,7 +661,6 @@ function createSlackNotifyClient({
     drained,
     onSnapshot,
     notifyPermissionRequest,
-    notifyBubbleFailed,
     sendMessage,
     sendTest,
     supportsApproval,
@@ -522,5 +673,6 @@ module.exports = {
   isCompletion,
   dedupeKey,
   classifyHttpStatus,
+  classifySlackApiError,
   COMPLETION_EVENTS,
 };

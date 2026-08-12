@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const fmt = require("../src/slack-message-format");
+const { buildSessionSnapshot } = require("../src/state-session-snapshot");
 
 test("buildCompletionMessage renders a done card with fallback text", () => {
   const msg = fmt.buildCompletionMessage(
@@ -135,6 +136,37 @@ test("the completion fallback text carries no raw folder either", () => {
   );
   assert.ok(!msg.text.includes("<!channel>"));
   assert.ok(msg.text.includes("&lt;!channel&gt;"));
+});
+
+test("a real snapshot entry suppresses an internal workspace id end to end", () => {
+  const opaqueId = "mqgw60jiigjsjcid";
+  const snapshot = buildSessionSnapshot(new Map([["qwenwork:abc123", {
+    state: "idle",
+    updatedAt: 1,
+    recentEvents: [],
+    cwd: `/Users/me/.QwenWorkCN/workspace/${opaqueId}`,
+    agentId: "qwenwork",
+  }]]));
+  const entry = {
+    ...snapshot.sessions[0],
+    badge: "done",
+  };
+  assert.equal(entry.displayFolder, "", "snapshot owns the suppression rule");
+
+  const msg = fmt.buildCompletionMessage(entry, { lang: "en" });
+
+  assert.ok(!JSON.stringify(msg).includes(opaqueId),
+    "empty displayFolder must not fall back to raw cwd");
+});
+
+test("older formatter callers without displayFolder keep the cwd basename fallback", () => {
+  const msg = fmt.buildCompletionMessage({
+    id: "s1",
+    badge: "done",
+    displayTitle: "T",
+    cwd: "/srv/project",
+  }, { lang: "en" });
+  assert.match(JSON.stringify(msg), /project/);
 });
 
 test("permission announcements redact and escape every agent-derived field", () => {
@@ -310,6 +342,23 @@ test("question text is redacted and escaped like every other agent-derived field
   assert.ok(!all.includes("xoxb-123456789-abcdefghij"), "a secret in a question must not reach Slack");
   assert.ok(!all.includes("<!channel>"), "mention syntax in a header must be inert");
   assert.ok(!all.includes("<!here>"), "mention syntax in an option must be inert");
+});
+
+test("question header clipping never leaves a partial mrkdwn entity", () => {
+  const msg = fmt.buildPermissionMessage({
+    kind: "question",
+    agentId: "claude-code",
+    questions: [{
+      // The prefix makes the 80-character clip land inside a later &lt; entity
+      // unless the entity-aware clipping path removes the incomplete suffix.
+      header: `x${"<".repeat(100)}`,
+      question: "Proceed?",
+    }],
+  }, { lang: "en" });
+
+  const section = msg.blocks.find((block) => block.type === "section").text.text;
+  assert.ok(!/&[A-Za-z]{0,4}\*/.test(section),
+    `partial entity before emphasis marker: ${section}`);
 });
 
 test("question and option counts are capped like the other channels", () => {
