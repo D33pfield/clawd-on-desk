@@ -1,0 +1,9 @@
+# dsh-clawd-bridge bundle patch: inserts the bridge plugin row into any
+# profile that lists @dsh-external/dsh-clawd-bridge in its bundles or
+# references it from the profile's own cordis.patch.yml.
+
+- insert:
+    - id: clawd-bridge
+      name: '@dsh-external/dsh-clawd-bridge'
+      config:
+        clawdBaseUrl: 'http://127.0.0.1:23333'

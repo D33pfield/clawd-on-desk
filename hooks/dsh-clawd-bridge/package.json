@@ -1,0 +1,17 @@
+{
+  "name": "@dsh-external/dsh-clawd-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Bridge DSH ask_user_question / approval requests to the Clawd desktop pet permission bubbles",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

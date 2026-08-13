@@ -359,13 +359,23 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
-  function syncDeepSeekHarnessMonitor() {
+  function syncDeepSeekHarnessMonitor(options = {}) {
     try {
       if (typeof ctx.syncDeepSeekHarnessMonitorImpl === "function") {
         return ctx.syncDeepSeekHarnessMonitorImpl();
       }
-      const { registerDeepSeekHarness } = require("../hooks/dsh-install.js");
+      const {
+        installDeepSeekHarnessBridge,
+        registerDeepSeekHarness,
+      } = require("../hooks/dsh-install.js");
       const result = registerDeepSeekHarness({ silent: true });
+      // Startup sync stays read-only (detection only). An explicit Settings
+      // Install or doctor repair passes automatic: false and additionally
+      // registers the Clawd-managed bridge plugin into the DSH web profile
+      // so ask_user_question / approval requests reach Clawd's bubbles.
+      if (options.automatic === false && result.installed) {
+        installDeepSeekHarnessBridge({ silent: true });
+      }
       return normalizeInstalledFlagResult(result, "DeepSeek Harness", "dsh-not-found");
     } catch (err) {
       console.warn("Clawd: failed to sync DeepSeek Harness monitor:", err.message);
