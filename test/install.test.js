@@ -1665,7 +1665,7 @@ describe("Hook installer deprecated hook cleanup", () => {
     assert.strictEqual(getManagedStateHookEntries(readSettings(settingsPath), "Stop").length, 1);
   });
 
-  it("preserves a literal hook when env migration cannot use the resolved Node path (#852)", () => {
+  it("preserves a literal hook when the resolved Node path falls outside external env grammar (#852)", () => {
     const envCommand = '"${CLAWD_NODE_BIN}" "${CLAWD_HOOK_PATH}" SessionStart';
     const hookScript = getClaudeHookScriptPath();
     const cases = [
