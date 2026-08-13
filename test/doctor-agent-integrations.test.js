@@ -17,6 +17,15 @@ const { HOOK_ENTRIES: CODEWHALE_HOOK_ENTRIES } = require("../hooks/codewhale-ins
 const { QODER_HOOK_EVENTS, buildQoderHookCommand } = require("../hooks/qoder-install");
 const { KIMI_HOOK_EVENTS } = require("../hooks/kimi-install");
 const {
+  buildStableCodexHookCommand,
+  materializeStableCodexHookLauncher,
+} = require("../hooks/codex-install-utils");
+const {
+  computeCodexHookTrustedHash,
+  findCodexHookTrustPositions,
+} = require("../src/doctor-detectors/codex-features-check");
+const { validateHookTarget } = require("../src/doctor-detectors/agent-node-bin-parser");
+const {
   ZCODE_HOOK_EVENTS,
   buildZcodeHookCommand,
   buildZcodeProcessHook,
@@ -320,19 +329,29 @@ function codexDescriptor() {
 function codexHooksConfig(events) {
   const hooks = {};
   for (const event of events) {
-    hooks[event] = [{ hooks: [{ command: `"/node" "/app/hooks/codex-hook.js" ${event}` }] }];
+    hooks[event] = [{ hooks: [{
+      type: "command",
+      command: `"/node" "/app/hooks/codex-hook.js" ${event}`,
+      timeout: event === "PermissionRequest" ? 600 : 30,
+    }] }];
   }
   return { hooks };
 }
 
-function codexTrustState(descriptor, events) {
+function codexTrustState(descriptor, settings, platform = process.platform) {
+  const positions = findCodexHookTrustPositions(settings);
   return [
     "[features]",
     "hooks = true",
     "",
-    ...events.flatMap((event) => [
-      `[hooks.state.'${descriptor.configPath}:${event.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()}:0:0']`,
-      `trusted_hash = "sha256:${"a".repeat(64)}"`,
+    ...positions.flatMap((position) => [
+      `[hooks.state.'${descriptor.configPath}:${position.eventKey}:${position.entryIndex}:${position.hookIndex}']`,
+      `trusted_hash = "${computeCodexHookTrustedHash(
+        position.eventName,
+        position.group,
+        position.hook,
+        platform
+      )}"`,
       "",
     ]),
   ].join("\n");
@@ -1714,12 +1733,13 @@ describe("checkAgentIntegrations", () => {
     const descriptor = codexDescriptor();
     const psForm = '& "C:\\Program Files\\nodejs\\node.exe" "D:/app/hooks/codex-hook.js"';
     const interopForm = '"/mnt/c/Program Files/nodejs/node.exe" "D:/app/hooks/codex-hook.js"';
-    writeJson(descriptor.configPath, {
+    const settings = {
       hooks: {
         Stop: [{ hooks: [{ type: "command", command: interopForm, commandWindows: psForm, timeout: 30 }] }],
       },
-    });
-    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, ["Stop"]), "utf8");
+    };
+    writeJson(descriptor.configPath, settings);
+    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, settings, "win32"), "utf8");
 
     const seen = [];
     const result = checkAgentIntegrations({
@@ -1746,12 +1766,13 @@ describe("checkAgentIntegrations", () => {
     const descriptor = codexDescriptor();
     const psForm = '& "C:\\Program Files\\nodejs\\node.exe" "D:/app/hooks/codex-hook.js"';
     const interopForm = '"/mnt/c/Program Files/nodejs/node.exe" "D:/app/hooks/codex-hook.js"';
-    writeJson(descriptor.configPath, {
+    const settings = {
       hooks: {
         Stop: [{ hooks: [{ type: "command", command: interopForm, commandWindows: psForm, timeout: 30 }] }],
       },
-    });
-    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, ["Stop"]), "utf8");
+    };
+    writeJson(descriptor.configPath, settings);
+    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, settings, "linux"), "utf8");
 
     const seen = [];
     const result = checkAgentIntegrations({
@@ -1768,6 +1789,69 @@ describe("checkAgentIntegrations", () => {
 
     assert.deepStrictEqual(seen, [interopForm]);
     assert.strictEqual(result.details[0].status, "ok");
+  });
+
+  it("reports a corrupt Codex stable-launcher manifest as repairable", () => {
+    const descriptor = codexDescriptor();
+    const target = path.join(descriptor.parentDir, "source", "codex-hook.js");
+    writeText(target, "process.stdout.write('{}');\n");
+    const stable = materializeStableCodexHookLauncher(target, {
+      codexDir: descriptor.parentDir,
+      nodeBin: process.execPath,
+      platform: process.platform,
+    });
+    const command = buildStableCodexHookCommand(stable.launcherPath, process.platform);
+    const settings = {
+      hooks: { Stop: [{ hooks: [{ type: "command", command, timeout: 30 }] }] },
+    };
+    writeJson(descriptor.configPath, settings);
+    fs.writeFileSync(
+      descriptor.supplementary.configPath,
+      codexTrustState(descriptor, settings, process.platform),
+      "utf8"
+    );
+    fs.writeFileSync(stable.manifestPath, "{ corrupt", "utf8");
+
+    const detail = runOne(descriptor, {
+      platform: process.platform,
+      validateTarget: validateHookTarget,
+    });
+
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.hookCommandIssue, "stable-manifest-invalid");
+    assert.strictEqual(detail.scriptPath, stable.launcherPath);
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "codex" });
+  });
+
+  it("reports a missing Codex stable-launcher target as repairable", () => {
+    const descriptor = codexDescriptor();
+    const target = path.join(descriptor.parentDir, "source", "codex-hook.js");
+    writeText(target, "process.stdout.write('{}');\n");
+    const stable = materializeStableCodexHookLauncher(target, {
+      codexDir: descriptor.parentDir,
+      nodeBin: process.execPath,
+      platform: process.platform,
+    });
+    const command = buildStableCodexHookCommand(stable.launcherPath, process.platform);
+    const settings = {
+      hooks: { Stop: [{ hooks: [{ type: "command", command, timeout: 30 }] }] },
+    };
+    writeJson(descriptor.configPath, settings);
+    fs.writeFileSync(
+      descriptor.supplementary.configPath,
+      codexTrustState(descriptor, settings, process.platform),
+      "utf8"
+    );
+    fs.unlinkSync(target);
+
+    const detail = runOne(descriptor, {
+      platform: process.platform,
+      validateTarget: validateHookTarget,
+    });
+
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.hookCommandIssue, "scriptPath-missing");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "codex" });
   });
 
   it("reports Codex hooks=false even when hook registration is missing", () => {
@@ -1812,8 +1896,9 @@ describe("checkAgentIntegrations", () => {
   it("keeps Codex ok when Codex hook trust state exists", () => {
     const descriptor = codexDescriptor();
     const events = ["PermissionRequest", "Stop"];
-    writeJson(descriptor.configPath, codexHooksConfig(events));
-    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, events), "utf8");
+    const settings = codexHooksConfig(events);
+    writeJson(descriptor.configPath, settings);
+    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, settings), "utf8");
 
     const detail = runOne(descriptor);
     assert.strictEqual(detail.status, "ok");
