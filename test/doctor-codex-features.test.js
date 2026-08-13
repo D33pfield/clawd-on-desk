@@ -109,6 +109,34 @@ describe("Codex hooks feature check", () => {
     assert.strictEqual(trust.totalCount, 2);
   });
 
+  it("only matches commandWindows markers on Windows", () => {
+    const settings = {
+      hooks: {
+        PreToolUse: [{ hooks: [{
+          command: '"/node" "/third-party/hook.js"',
+          commandWindows: '& "C:\\node.exe" "C:\\app\\codex-hook.js"',
+        }] }],
+      },
+    };
+
+    const posixTrust = checkCodexHookTrustText(
+      "",
+      settings,
+      "/home/alice/.codex/hooks.json",
+      { platform: "linux" }
+    );
+    const windowsTrust = checkCodexHookTrustText(
+      "",
+      settings,
+      "C:\\Users\\Alice\\.codex\\hooks.json",
+      { platform: "win32" }
+    );
+
+    assert.strictEqual(posixTrust.value, "uncertain");
+    assert.strictEqual(windowsTrust.value, "needs-review");
+    assert.strictEqual(windowsTrust.totalCount, 1);
+  });
+
   it("reports a changed command at the same trusted position", () => {
     const hooksPath = "/home/alice/.codex/hooks.json";
     const settings = {

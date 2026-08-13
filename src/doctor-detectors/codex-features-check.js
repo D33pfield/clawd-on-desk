@@ -138,7 +138,7 @@ function normalizeTrustId(value, platform = process.platform) {
   return platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
-function hookCommandMatchesMarker(hook, marker) {
+function hookCommandMatchesMarker(hook, marker, platform = process.platform) {
   return !!(
     hook
     && typeof hook === "object"
@@ -146,7 +146,11 @@ function hookCommandMatchesMarker(hook, marker) {
     && marker
     && (
       (typeof hook.command === "string" && hook.command.includes(marker))
-      || (typeof hook.commandWindows === "string" && hook.commandWindows.includes(marker))
+      || (
+        platform === "win32"
+        && typeof hook.commandWindows === "string"
+        && hook.commandWindows.includes(marker)
+      )
     )
   );
 }
@@ -220,7 +224,11 @@ function computeCodexHookTrustedHash(eventName, group, hook, platform = process.
   return `sha256:${crypto.createHash("sha256").update(canonical).digest("hex")}`;
 }
 
-function findCodexHookTrustPositions(settings, marker = "codex-hook.js") {
+function findCodexHookTrustPositions(
+  settings,
+  marker = "codex-hook.js",
+  platform = process.platform
+) {
   const hooks = settings && typeof settings === "object" && settings.hooks && typeof settings.hooks === "object"
     ? settings.hooks
     : null;
@@ -237,7 +245,7 @@ function findCodexHookTrustPositions(settings, marker = "codex-hook.js") {
 
       if (Array.isArray(entry.hooks)) {
         for (let hookIndex = 0; hookIndex < entry.hooks.length; hookIndex++) {
-          if (hookCommandMatchesMarker(entry.hooks[hookIndex], marker)) {
+          if (hookCommandMatchesMarker(entry.hooks[hookIndex], marker, platform)) {
             positions.push({
               eventName,
               eventKey,
@@ -250,7 +258,7 @@ function findCodexHookTrustPositions(settings, marker = "codex-hook.js") {
         }
       }
 
-      if (hookCommandMatchesMarker(entry, marker)) {
+      if (hookCommandMatchesMarker(entry, marker, platform)) {
         positions.push({
           eventName,
           eventKey,
@@ -271,7 +279,8 @@ function makeTrustId(hooksPath, position) {
 
 function checkCodexHookTrustText(configText, settings, hooksPath, options = {}) {
   const marker = options.marker || "codex-hook.js";
-  const positions = findCodexHookTrustPositions(settings, marker);
+  const platform = options.platform || process.platform;
+  const positions = findCodexHookTrustPositions(settings, marker, platform);
   if (!positions.length) {
     return {
       key: "codex_hook_trust",
@@ -280,7 +289,6 @@ function checkCodexHookTrustText(configText, settings, hooksPath, options = {}) 
     };
   }
 
-  const platform = options.platform || process.platform;
   const trusted = new Map(
     [...collectTrustedCodexHookHashes(configText)].map(([trustId, hash]) => [
       normalizeTrustId(trustId, platform),

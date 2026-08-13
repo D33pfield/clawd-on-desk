@@ -424,8 +424,8 @@ function materializeStableCodexHookLauncher(entryPath, options = {}) {
       // Windows startup sync must never point it back at a Windows-only target.
       posixPreserved = true;
     } else if (!existingPosix.ok && !legacyPosix.ok && fs.existsSync(paths.posixLauncherPath)) {
-      // Unknown/corrupt POSIX state may be user-repaired. Preserve it; Doctor
-      // will report the broken manifest and the POSIX installer can repair it.
+      // Unknown/corrupt POSIX state may belong to WSL or a newer Clawd.
+      // Preserve it so a POSIX installer can inspect or repair its own artifact.
       posixPreserved = true;
     } else {
       const posixNodeBin = windowsPathToWslPath(nodeBin)
@@ -517,7 +517,7 @@ function inspectStableCodexHookCommand(command, options = {}) {
     }
     const manifest = readStableCodexHookManifest(manifestPath, { fs: fsApi });
     if (!manifest.ok) {
-      return { matched: true, ok: false, issue: manifest.issue, launcherPath: null, manifestPath };
+      return { matched: true, ok: false, issue: manifest.issue, launcherPath, manifestPath };
     }
     if (manifest.record.platform !== "win32" || manifest.record.mode !== "native") {
       return {

@@ -1819,6 +1819,7 @@ describe("checkAgentIntegrations", () => {
 
     assert.strictEqual(detail.status, "broken-path");
     assert.strictEqual(detail.hookCommandIssue, "stable-manifest-invalid");
+    assert.strictEqual(detail.scriptPath, stable.launcherPath);
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "codex" });
   });
 
