@@ -35,7 +35,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const DEFAULT_POLL_INTERVAL_MS = 4000;
+const DEFAULT_POLL_INTERVAL_MS = 1500;
 const MAX_TRACKED_SESSIONS = 32;
 const WORKSPACE_FILE = "workspace.json";
 const PROJCACHE_FILE = "session_projcache.json";
