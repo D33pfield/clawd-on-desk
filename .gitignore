@@ -28,6 +28,7 @@ docs/**
 !docs/guides/roam-fence.md
 !docs/guides/guide-remote-ssh.zh-CN.md
 !docs/guides/state-mapping.md
+!docs/guides/dsh-setup.md
 !docs/guides/state-mapping.zh-CN.md
 !docs/guides/telegram-approval.md
 !docs/guides/feishu-lark-remote-approval.md
