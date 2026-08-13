@@ -313,6 +313,21 @@ describe("inspectClaudeHookHealth", () => {
     assert.strictEqual(report.status, "healthy");
   });
 
+  it("does not schedule duplicate repair for an encoded read-only command beside a mutable literal hook (#852)", () => {
+    const encoded = buildWindowsEncodedNodeHookCommand("node", EXPECTED_HOOK_SCRIPT_PATH, ["Stop"]);
+    const settings = buildHealthySettings({ events: ["Stop"] });
+    settings.hooks.Stop.push({ matcher: "", hooks: [{ type: "command", command: encoded }] });
+
+    const report = inspectClaudeHookHealth(
+      JSON.stringify(settings),
+      baseOptions({ coreEvents: ["Stop"] })
+    );
+
+    assert.strictEqual(report.status, "healthy");
+    assert.ok(!report.issues.some((issue) => issue.code === "duplicate-managed-state-hook"));
+    assert.strictEqual(buildClaudeRepairSignature(report.issues), null);
+  });
+
   it("flags an invalid Node binary as repairable", () => {
     const raw = JSON.stringify(buildHealthySettings({ nodeBin: "/usr/bin/node", events: ["Stop"] }));
     const options = baseOptions({

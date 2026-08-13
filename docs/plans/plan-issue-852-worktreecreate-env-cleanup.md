@@ -1,6 +1,6 @@
 # Plan: #852 ownership-safe cleanup for env-indirected `WorktreeCreate` hooks
 
-> Status: **Implemented locally; automated verification and the macOS Claude Code release gate passed.**
+> Status: **Implemented; Windows verification passed, macOS follow-up gate pending for the post-review correction.**
 > Date: 2026-08-13
 > Issue: https://github.com/rullerzhou-afk/clawd-on-desk/issues/852
 > Scope: Claude Code hook ownership, registration/reconciliation/uninstall,
@@ -273,7 +273,7 @@ the Clawd state-hook marker as ownership evidence:
 |---|---|
 | `registerHooks()` deprecated hook cleanup | Remove the proven env-indirected `WorktreeCreate` hook. |
 | `registerHooksAsync()` deprecated hook cleanup | Same result as sync. |
-| Active core-hook synchronization | Collect all literal/env-owned state hooks for the event, choose one survivor, canonicalize it only with a safe Node path, and remove all other owned hooks while preserving mixed third-party siblings. |
+| Active core-hook synchronization | Collect all literal/env-owned state hooks for the event, choose one survivor, canonicalize it only with a trusted absolute Node resolution or an access-checked strict env candidate, and remove all other owned hooks while preserving mixed third-party siblings. |
 | Versioned-hook reconciliation | Remove an unsupported env-owned Clawd state hook under the same version rules as a literal hook. |
 | HTTP-only command cleanup | Remove an env-owned stale command hook such as an obsolete `PermissionRequest` command entry. |
 | `unregisterHooks()` | Remove env-owned Clawd state hooks while preserving top-level env and third-party hooks. |
@@ -290,8 +290,10 @@ work for flat entries and nested `entry.hooks[]` children:
    otherwise reuse the first owned child and rewrite it;
 3. remove every other owned child, pruning only wrappers that become empty under the
    existing structure rules; and
-4. when no safe canonical target exists, prefer one strict env child unchanged and
-   remove additional literal/env-owned duplicates instead of writing bare `node`.
+4. when no safe canonical target exists, preserve a literal child if one exists;
+   only an env-only event prefers one strict env child unchanged. Remove the other
+   owned duplicates instead of writing bare `node` or deleting a working literal
+   command in favor of an unverifiable env command.
 
 Auto-start matching continues to use `auto-start.js` / `auto-start.sh` and can keep
 its existing sync helper. `CLAWD_HOOK_PATH` identifies only the state hook and must
@@ -311,9 +313,11 @@ duplicate detection. Apply these issue rules before calling `validateHookCommand
   `env-hook-node-unresolved` with `automaticRepairable: false`;
 - a syntactically recognizable but ownership-unverified env command emits
   `env-indirection-unverified` with `automaticRepairable: false`; and
-- more than one owned state command for an event emits
+- more than one **installer-owned** state command for an event emits
   `duplicate-managed-state-hook` with `automaticRepairable: true`, because the fold
-  can remove extras even if an env survivor cannot yet be canonicalized.
+  can remove extras even if an env survivor cannot yet be canonicalized. A legacy
+  PowerShell `EncodedCommand` that health can decode for read-only validation but the
+  installer cannot claim does not participate in this automatic duplicate count.
 
 Every new automatic issue code (`env-hook-migratable` and
 `duplicate-managed-state-hook`) must be registered in
@@ -341,6 +345,15 @@ candidate before falling back to `"node"`. For the env candidate:
 - never mutate or delete `settings.env.CLAWD_NODE_BIN`; and
 - require sync and async paths to make the same decision for the **new env Node
   candidate** under equivalent injected resolver/access results.
+
+Do not reuse that strict env-data predicate for an already resolved Node path. The
+installer's explicit caller choice, resolver output, and preserved literal path are
+the same trusted values already serialized into every normal core hook; an absolute
+path such as `C:\Program Files (x86)\nodejs\node.exe` or `/usr/bin/nodejs` must not
+be rejected merely because it falls outside the deliberately narrower grammar for
+untrusted `settings.env` input. Mixing these two trust classes can make health report
+`env-hook-migratable` while registration refuses to migrate, exhausting the watcher
+repair budget.
 
 Do not otherwise normalize the pre-existing literal-path behavior while implementing
 this issue. The sync path intentionally preserves an extracted literal Node path
@@ -522,6 +535,14 @@ permission routing, or Settings persistence architecture.
     direct absolute Node path). Registration removes both and deletes the empty event
     key. Apply equivalent multi-match assertions where practical to versioned,
     HTTP-only, and uninstall coverage.
+17. An env command beside an existing literal command with a trusted absolute Node
+    path outside the strict env-data grammar (including a Windows `(x86)` path and a
+    POSIX `nodejs` basename) preserves/canonicalizes the literal survivor and removes
+    the env duplicate.
+18. A health `env-hook-migratable` signature followed by real installer repair and
+    health reinspection must converge to a null signature. An encoded command that
+    is read-only-visible to health but not mutation-owned must not create an automatic
+    duplicate-repair signature the installer cannot clear.
 
 ### 5.2 Fail-closed cases
 
@@ -619,9 +640,10 @@ cleanup; they do not prove POSIX shell expansion or Claude's native worktree lif
 
 ### 6.1 Verification record (2026-08-13)
 
-- Windows development host: the focused installer/health/watcher/Doctor/remote-deploy
-  suite passed 286/286; the full `npm test` run passed 7,760 tests with 35 expected
-  skips and zero failures (7,795 total).
+- Windows development host after adversarial PR review corrections: the focused
+  installer/health/watcher/Doctor/remote-deploy suite passed 290/290; the full
+  `npm test` run passed 7,764 tests with 35 expected skips and zero failures
+  (7,799 total).
 - macOS arm64 host, Claude Code 2.1.211: the final `test/install.test.js` passed
   102/102 using
   an isolated copy of the current hooks and a test-owned Node-compatible runtime.
@@ -642,10 +664,13 @@ cleanup; they do not prove POSIX shell expansion or Claude's native worktree lif
 - Both Claude-created worktrees were removed through `git worktree`; the validated
   test-owned `/tmp` directories were then deleted. The real Claude settings and
   real Clawd runtime file were never read or modified.
-- Two independent implementation reviews ended in `APPROVE`. Their findings drove
-  follow-up fixes for degraded watcher snapshot seeding, Doctor visibility, Node
-  candidate fallback/search, shell-safe candidate serialization, POSIX case-sensitive
-  de-duplication, and read-only EncodedCommand health recognition before final tests.
+- Two independent pre-PR implementation reviews ended in `APPROVE`; a later
+  adversarial PR review found that the strict external-env candidate predicate was
+  incorrectly reused for trusted resolver output. That review drove regression tests
+  for Windows `(x86)` / POSIX `nodejs` paths, end-to-end health-to-installer
+  convergence, flat env entries, async env uninstall, and the EncodedCommand
+  read-only/mutation ownership boundary. The macOS gate recorded above predates this
+  correction and must be rerun before merge/issue closure.
 
 Acceptance criteria:
 

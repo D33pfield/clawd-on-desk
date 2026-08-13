@@ -33,7 +33,6 @@ const {
   classifyManagedClaudeStateHookCommand,
   extractExistingNodeBin,
   findManagedClaudeEnvNodeBinCandidates,
-  isSafeNodeExecutableCandidate,
 } = require("./json-utils");
 
 function resolveClaudeHome(options = {}) {
@@ -736,9 +735,18 @@ function foldManagedStateHooks(entries, settings, event, expectedHook, options =
   }
 
   const envRecords = records.filter((record) => record.kind === "env");
+  const literalRecords = records.filter((record) => record.kind === "literal");
   const canCanonicalizeEnv = options.canCanonicalizeEnv === true;
   let survivor;
-  if (envRecords.length > 0 && !canCanonicalizeEnv) {
+  if (!canCanonicalizeEnv && literalRecords.length > 0) {
+    // A working literal command is strictly better than an env command we
+    // cannot safely migrate. Never delete the literal merely because an env
+    // record happened to appear earlier in the event array.
+    survivor = literalRecords.find((record) => commandHookMatchesExpected(record.hook, expectedHook))
+      || literalRecords[0];
+  } else if (envRecords.length > 0 && !canCanonicalizeEnv) {
+    // With no literal fallback, preserve one env command unchanged instead of
+    // degrading it to bare `node` under Claude Code's minimal macOS PATH.
     survivor = envRecords[0];
   } else {
     survivor = records.find((record) => commandHookMatchesExpected(record.hook, expectedHook)) || records[0];
@@ -1063,7 +1071,16 @@ function configuredNodeResolution(nodeBin) {
   const value = typeof nodeBin === "string" && nodeBin ? nodeBin : "node";
   return {
     nodeBin: value,
-    canCanonicalizeEnv: isSafeNodeExecutableCandidate(value),
+    // isSafeNodeExecutableCandidate() intentionally applies a much stricter
+    // anti-injection grammar to untrusted settings.env values before they are
+    // considered. Candidates from that source have already passed that gate
+    // before reaching here. Resolver output, explicit caller choices, and
+    // existing literal commands are the same trusted values the installer
+    // already serializes for every core event; requiring basename `node` or
+    // rejecting quoted path characters such as parentheses would make env
+    // migration disagree with normal registration. The only unsafe fallback
+    // for migration is a non-absolute command such as bare `node`.
+    canCanonicalizeEnv: path.posix.isAbsolute(value) || path.win32.isAbsolute(value),
   };
 }
 

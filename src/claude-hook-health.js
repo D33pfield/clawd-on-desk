@@ -107,10 +107,15 @@ function findManagedStateCommandRecords(settings, eventName) {
     // Health historically recognizes Clawd commands inside PowerShell
     // EncodedCommand wrappers. Keep that read-only visibility without
     // broadening the installer's raw-marker mutation ownership boundary.
-    const kind = commandMatchesMarker(hook.command, HOOK_MARKER)
-      ? "literal"
-      : classifyManagedClaudeStateHookCommand(hook.command, settings, eventName);
-    const record = { command: hook.command, entryIndex, hookIndex, kind };
+    const mutationKind = classifyManagedClaudeStateHookCommand(hook.command, settings, eventName);
+    const kind = mutationKind || (commandMatchesMarker(hook.command, HOOK_MARKER) ? "literal" : null);
+    const record = {
+      command: hook.command,
+      entryIndex,
+      hookIndex,
+      kind,
+      mutationOwned: !!mutationKind,
+    };
     if (kind) {
       if (kind === "env") {
         record.parsedEnv = parseClaudeEnvStateHookCommand(hook.command, eventName);
@@ -334,12 +339,13 @@ function inspectClaudeHookHealth(rawSettings, options = {}) {
       continue;
     }
     managedCoreEventCount++;
-    if (records.managed.length > 1) {
+    const mutationOwnedCount = records.managed.filter((record) => record.mutationOwned).length;
+    if (mutationOwnedCount > 1) {
       pushIssue(issues, {
         code: "duplicate-managed-state-hook",
         event,
         marker: HOOK_MARKER,
-        count: records.managed.length,
+        count: mutationOwnedCount,
         automaticRepairable: true,
       });
     }
