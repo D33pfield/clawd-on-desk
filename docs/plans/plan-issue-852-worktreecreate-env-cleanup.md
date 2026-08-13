@@ -1,6 +1,6 @@
 # Plan: #852 ownership-safe cleanup for env-indirected `WorktreeCreate` hooks
 
-> Status: **Implemented; Windows verification passed, macOS follow-up gate pending for the post-review correction.**
+> Status: **Implemented; automated verification and the macOS Claude Code release gate passed after post-review corrections.**
 > Date: 2026-08-13
 > Issue: https://github.com/rullerzhou-afk/clawd-on-desk/issues/852
 > Scope: Claude Code hook ownership, registration/reconciliation/uninstall,
@@ -647,6 +647,12 @@ cleanup; they do not prove POSIX shell expansion or Claude's native worktree lif
 - macOS arm64 host, Claude Code 2.1.211: the final `test/install.test.js` passed
   102/102 using
   an isolated copy of the current hooks and a test-owned Node-compatible runtime.
+- Post-review commit `45e6ec2d` reran the expanded installer + health suite on the
+  same macOS arm64 host: 144/144 passed. The exact env-indirected
+  `WorktreeCreate` fixture again produced Claude's native “hook succeeded but
+  returned no worktree path” failure; repair reported `removed=1`, a second
+  registration was a zero-change no-op, and Claude then created the native
+  worktree before the isolated config stopped at the expected login boundary.
 - The combined env + canonical fixture removed both obsolete `WorktreeCreate`
   entries, retained one active state hook plus one auto-start hook, preserved the
   third-party sibling/wrapper/env data, and produced zero changes on the second
@@ -669,8 +675,8 @@ cleanup; they do not prove POSIX shell expansion or Claude's native worktree lif
   incorrectly reused for trusted resolver output. That review drove regression tests
   for Windows `(x86)` / POSIX `nodejs` paths, end-to-end health-to-installer
   convergence, flat env entries, async env uninstall, and the EncodedCommand
-  read-only/mutation ownership boundary. The macOS gate recorded above predates this
-  correction and must be rerun before merge/issue closure.
+  read-only/mutation ownership boundary. The expanded macOS gate recorded above was
+  then rerun on the corrected commit before merge/issue closure.
 
 Acceptance criteria:
 
