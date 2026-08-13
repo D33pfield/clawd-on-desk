@@ -31,6 +31,7 @@ const {
   validateHookTarget,
 } = require("./agent-node-bin-parser");
 const { checkCodexHookTrust, checkCodexHooksFeature } = require("./codex-features-check");
+const { inspectStableCodexHookCommand } = require("../../hooks/codex-install-utils");
 const { validateOpencodeEntry } = require("./opencode-entry-validator");
 const { validateOpenClawEntry } = require("./openclaw-entry-validator");
 const { hasIncludeDirective } = require("../../hooks/openclaw-install");
@@ -331,6 +332,52 @@ function findCodexPlatformHookCommands(settings, marker, platform) {
     }
   }
   return commands;
+}
+
+function validateCodexCommandList(descriptor, commands, options) {
+  if (!commands.length) return validateCommandList(descriptor, commands, options);
+  const results = commands.map((command) => {
+    const stable = inspectStableCodexHookCommand(command, {
+      platform: options.platform,
+      fs: options.fs,
+    });
+    if (!stable.matched) {
+      return options.validateCommand(command, { platform: options.platform, fs: options.fs });
+    }
+    if (!stable.ok) {
+      return {
+        ok: false,
+        issue: stable.issue,
+        scriptPath: stable.launcherPath || null,
+      };
+    }
+    return options.validateTarget({
+      nodeBin: stable.nodeBin,
+      scriptPath: stable.scriptPath,
+    }, {
+      platform: options.platform,
+      fs: options.fs,
+      requireNodeExecutable: true,
+    });
+  });
+  const ok = results.find((result) => result.ok);
+  if (ok) {
+    return makeDetail(descriptor, "ok", {
+      level: null,
+      detail: `${descriptor.configPath} hook registered, stable launcher target verified`,
+      commandCount: commands.length,
+      scriptPath: ok.scriptPath,
+    });
+  }
+  const first = results[0] || { issue: "parse-failed" };
+  return makeDetail(descriptor, "broken-path", {
+    level: "warning",
+    detail: `hook command failed validation: ${first.issue}`,
+    hookCommandIssue: first.issue || "parse-failed",
+    nodeBin: first.nodeBin || null,
+    scriptPath: first.scriptPath || null,
+    commandFragment: String(commands[0] || "").slice(0, 128),
+  });
 }
 
 function validateCommandList(descriptor, commands, options) {
@@ -1365,7 +1412,7 @@ function checkFileMode(descriptor, options) {
   } else if (Array.isArray(descriptor.hookEvents) && descriptor.hookEvents.length) {
     detail = validateFileHookEvents(descriptor, settings, options);
   } else if (descriptor.agentId === "codex") {
-    detail = validateCommandList(
+    detail = validateCodexCommandList(
       descriptor,
       findCodexPlatformHookCommands(settings, descriptor.marker, options.platform || process.platform),
       options

@@ -15,7 +15,10 @@ const { unregisterKimiHooks } = require("./kimi-install");
 const { unregisterQwenCodeHooks } = require("./qwen-code-install");
 const { unregisterZcodeHooks } = require("./zcode-install");
 const { unregisterCodewhaleHooks } = require("./codewhale-install");
-const { unregisterCodexCommandHooks } = require("./codex-install-utils");
+const {
+  removeStableCodexHookLauncher,
+  unregisterCodexCommandHooks,
+} = require("./codex-install-utils");
 const { unregisterOpencodePlugin } = require("./opencode-install");
 const { unregisterMimocodePlugin } = require("./mimocode-install");
 const { unregisterPiExtension } = require("./pi-install");
@@ -126,6 +129,19 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
   const backup = options.backup !== false;
   const silent = options.silent !== false;
   const common = { backup, silent };
+  const explicitCodexHome = typeof options.codexDir === "string" && options.codexDir.trim()
+    ? options.codexDir.trim()
+    : (typeof options.codexHome === "string" && options.codexHome.trim()
+      ? options.codexHome.trim()
+      : (options.env && typeof options.env.CODEX_HOME === "string" && options.env.CODEX_HOME.trim()
+        ? options.env.CODEX_HOME.trim()
+        : null));
+  const inheritedCodexHome = !explicitHomeDir
+    && typeof env.CODEX_HOME === "string"
+    && env.CODEX_HOME.trim()
+    ? env.CODEX_HOME.trim()
+    : null;
+  const codexDir = explicitCodexHome || inheritedCodexHome || path.join(homeDir, ".codex");
   const copilotHome = resolveCopilotHomeForCleanup(homeDir, env, options);
   const openClawStateDir = options.openClawStateDir
     || env.OPENCLAW_STATE_DIR
@@ -195,7 +211,8 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       codex: {
         ...common,
         homeDir,
-        hooksPath: path.join(homeDir, ".codex", "hooks.json"),
+        codexDir,
+        hooksPath: path.join(codexDir, "hooks.json"),
         markers: CODEX_MARKERS,
       },
       opencode: {
@@ -281,6 +298,16 @@ function unregisterClaudeIntegration(options = {}) {
   };
 }
 
+function unregisterCodexIntegration(options = {}) {
+  const hooks = unregisterCodexCommandHooks(options);
+  const stableLauncher = removeStableCodexHookLauncher(options);
+  return {
+    ...hooks,
+    changed: changedFromResult(hooks) || stableLauncher.changed,
+    stableLauncher,
+  };
+}
+
 const AGENT_CLEANERS = Object.freeze({
   "claude-code": unregisterClaudeIntegration,
   "gemini-cli": unregisterGeminiHooks,
@@ -293,7 +320,7 @@ const AGENT_CLEANERS = Object.freeze({
   "qwen-code": unregisterQwenCodeHooks,
   zcode: unregisterZcodeHooks,
   codewhale: unregisterCodewhaleHooks,
-  codex: unregisterCodexCommandHooks,
+  codex: unregisterCodexIntegration,
   opencode: unregisterOpencodePlugin,
   mimocode: unregisterMimocodePlugin,
   pi: unregisterPiExtension,

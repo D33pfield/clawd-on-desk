@@ -13,6 +13,8 @@ const {
 } = require("../hooks/cleanup-integrations");
 const { resolvePluginDir } = require("../hooks/opencode-install");
 const { registerQwenWorkHooks } = require("../hooks/qwenwork-install");
+const { registerCodexHooks, CODEX_OFFICIAL_HOOK_EVENTS } = require("../hooks/codex-install");
+const { stableCodexHookPaths } = require("../hooks/codex-install-utils");
 const agentCommands = require("../src/settings-actions-agents");
 const { MANAGED_CLEANUP_AGENT_IDS, commandRegistry } = require("../src/settings-actions");
 const { createIntegrationSyncRuntime } = require("../src/integration-sync");
@@ -69,6 +71,40 @@ describe("cleanupIntegrations", () => {
     assert.strictEqual(plan.env.REASONIX_HOME, undefined);
     assert.strictEqual(plan.byAgent.hermes.env.LOCALAPPDATA, targetLocalAppData);
     assert.notStrictEqual(plan.byAgent.hermes.hermesHome, path.join(inheritedLocalAppData, "hermes"));
+  });
+
+  it("cleans hooks and stable launchers from an explicit custom CODEX_HOME", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cleanup-custom-codex-"));
+    const homeDir = path.join(root, "home");
+    const codexDir = path.join(root, "custom-codex");
+    fs.mkdirSync(codexDir, { recursive: true });
+
+    try {
+      registerCodexHooks({
+        silent: true,
+        codexDir,
+        nodeBin: process.execPath,
+        platform: process.platform,
+      });
+      const stableDir = stableCodexHookPaths(codexDir).stableDir;
+      assert.strictEqual(fs.existsSync(stableDir), true);
+
+      const result = cleanupIntegrations({
+        homeDir,
+        env: { CODEX_HOME: codexDir },
+        backup: true,
+        silent: true,
+        hermesCommand: false,
+      });
+      const codex = result.agents.find((entry) => entry.agentId === "codex");
+
+      assert.strictEqual(codex.status, "applied");
+      assert.strictEqual(codex.removed, CODEX_OFFICIAL_HOOK_EVENTS.length);
+      assert.strictEqual(fs.existsSync(stableDir), false);
+      assert.deepStrictEqual(readJson(path.join(codexDir, "hooks.json")).hooks, {});
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("cleans Reasonix hooks from both current and legacy Windows homes", () => {
