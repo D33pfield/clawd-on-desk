@@ -36,24 +36,32 @@ const CODEX_HOOK_EVENTS = [
 const CODEX_HOOKS_FEATURE_KEY = "hooks";
 const LEGACY_CODEX_HOOKS_FEATURE_KEY = "codex_hooks";
 const CODEX_STABLE_HOOK_DIRNAME = "clawd-hooks";
-const CODEX_STABLE_LAUNCHER_VERSION = 2;
-const CODEX_STABLE_LAUNCHER_SIGNATURE = "clawd-codex-stable-launcher-v2";
+const CODEX_STABLE_LAUNCHER_VERSION = 3;
+const CODEX_STABLE_LAUNCHER_SIGNATURE = "clawd-codex-stable-launcher-v3";
+const CODEX_STABLE_WINDOWS_RUN_SIGNATURE = "clawd-codex-stable-windows-run-v1";
+const LEGACY_CODEX_STABLE_LAUNCHER_SIGNATURES = new Set([
+  "clawd-codex-stable-launcher-v2",
+]);
 const CODEX_STABLE_GENERATION_PREFIX = "clawd-generation:";
 
 function stableCodexHookPaths(codexDir, options = {}) {
   const stableDir = options.stableHookDir || path.join(codexDir, CODEX_STABLE_HOOK_DIRNAME);
   const platform = options.platform || process.platform;
-  const windowsLauncherPath = path.join(stableDir, "codex-hook.js.ps1");
+  const legacyWindowsLauncherPath = path.join(stableDir, "codex-hook.js.ps1");
+  const windowsRunPath = path.join(stableDir, "codex-hook.js.windows.run");
   const posixLauncherPath = path.join(stableDir, "codex-hook.js.sh");
   const windowsManifestPath = path.join(stableDir, "codex-hook.windows.json");
   const posixManifestPath = path.join(stableDir, "codex-hook.posix.json");
   return {
     stableDir,
-    windowsLauncherPath,
+    legacyWindowsLauncherPath,
+    windowsRunPath,
     posixLauncherPath,
     windowsManifestPath,
     posixManifestPath,
-    launcherPath: platform === "win32" ? windowsLauncherPath : posixLauncherPath,
+    // Windows executes a fixed inline PowerShell dispatcher that reads a data
+    // sidecar. POSIX still needs a tiny /bin/sh launcher.
+    launcherPath: platform === "win32" ? windowsRunPath : posixLauncherPath,
     manifestPath: platform === "win32" ? windowsManifestPath : posixManifestPath,
   };
 }
@@ -113,21 +121,7 @@ function buildStableCodexHookLauncherSource(options = {}) {
   const envEntries = filterCommandEnvEntries(options.env);
 
   if (platform === "win32") {
-    const body = [
-      ...envEntries.map(([key, value]) => `$env:${key}=${quotePowerShellLiteral(value)}`),
-      `& ${[nodeBin, target, ...args].map(quotePowerShellLiteral).join(" ")}`,
-      "exit $LASTEXITCODE",
-      "",
-    ].join("\n");
-    const generation = stableLauncherGeneration(body);
-    return {
-      generation,
-      source: [
-        `# ${CODEX_STABLE_LAUNCHER_SIGNATURE}`,
-        `# ${CODEX_STABLE_GENERATION_PREFIX}${generation}`,
-        body,
-      ].join("\n"),
-    };
+    throw new Error("Windows stable Codex hooks use a data-sidecar dispatcher, not a .ps1 launcher");
   }
 
   const body = [
@@ -149,7 +143,13 @@ function buildStableCodexHookLauncherSource(options = {}) {
 
 function writeTextIfChanged(filePath, content, mode = 0o600) {
   try {
-    if (fs.readFileSync(filePath, "utf8") === content) return false;
+    if (fs.readFileSync(filePath, "utf8") === content) {
+      if (process.platform !== "win32") {
+        const currentMode = fs.statSync(filePath).mode & 0o777;
+        if (currentMode !== mode) fs.chmodSync(filePath, mode);
+      }
+      return false;
+    }
   } catch (err) {
     if (!err || err.code !== "ENOENT") throw err;
   }
@@ -165,8 +165,33 @@ function stableManifestBinding(record) {
     mode: record.mode,
     nodeBin: record.nodeBin,
     target: record.target,
+    args: record.args,
+    env: record.env,
     generation: record.generation,
   })).digest("hex");
+}
+
+function legacyStableManifestBinding(record) {
+  return crypto.createHash("sha256").update(JSON.stringify({
+    managedBy: record.managedBy,
+    version: record.version,
+    platform: record.platform,
+    mode: record.mode,
+    nodeBin: record.nodeBin,
+    target: record.target,
+    generation: record.generation,
+  })).digest("hex");
+}
+
+function isStableManifestEnv(value) {
+  return !!(
+    value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.entries(value).every(([key, entry]) => (
+      /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && typeof entry === "string"
+    ))
+  );
 }
 
 function readStableCodexHookManifest(manifestPath, options = {}) {
@@ -184,6 +209,9 @@ function readStableCodexHookManifest(manifestPath, options = {}) {
       || !record.nodeBin.trim()
       || typeof record.target !== "string"
       || !record.target.trim()
+      || !Array.isArray(record.args)
+      || !record.args.every((entry) => typeof entry === "string")
+      || !isStableManifestEnv(record.env)
       || !/^[a-f0-9]{64}$/.test(String(record.generation || ""))
       || !/^[a-f0-9]{64}$/.test(String(record.binding || ""))
       || record.binding !== stableManifestBinding(record)
@@ -198,9 +226,35 @@ function readStableCodexHookManifest(manifestPath, options = {}) {
   }
 }
 
-function readExistingStableCodexNodeBin(codexDir, platform) {
-  const paths = stableCodexHookPaths(codexDir, { platform });
-  const manifest = readStableCodexHookManifest(paths.manifestPath);
+function readLegacyStableCodexHookManifest(manifestPath, options = {}) {
+  const fsApi = options.fs || fs;
+  try {
+    const record = JSON.parse(fsApi.readFileSync(manifestPath, "utf8"));
+    if (
+      !record
+      || record.managedBy !== "clawd-on-desk"
+      || record.version !== 2
+      || !["win32", "posix"].includes(record.platform)
+      || !["native", "windows-interop"].includes(record.mode)
+      || (record.platform === "win32" && record.mode !== "native")
+      || typeof record.nodeBin !== "string"
+      || !record.nodeBin.trim()
+      || typeof record.target !== "string"
+      || !record.target.trim()
+      || !/^[a-f0-9]{64}$/.test(String(record.generation || ""))
+      || !/^[a-f0-9]{64}$/.test(String(record.binding || ""))
+      || record.binding !== legacyStableManifestBinding(record)
+    ) return { ok: false, record: null };
+    return { ok: true, record };
+  } catch {
+    return { ok: false, record: null };
+  }
+}
+
+function readExistingStableCodexNodeBin(codexDir, platform, options = {}) {
+  const paths = stableCodexHookPaths(codexDir, { ...options, platform });
+  const current = readStableCodexHookManifest(paths.manifestPath);
+  const manifest = current.ok ? current : readLegacyStableCodexHookManifest(paths.manifestPath);
   const expectedPlatform = platform === "win32" ? "win32" : "posix";
   if (
     !manifest.ok
@@ -213,6 +267,8 @@ function readExistingStableCodexNodeBin(codexDir, platform) {
 
 function writeStableCodexHookLauncher(launcherPath, manifestPath, spec) {
   const built = buildStableCodexHookLauncherSource(spec);
+  const args = Array.isArray(spec.args) ? spec.args.map(String) : [];
+  const env = Object.fromEntries(filterCommandEnvEntries(spec.env));
   const manifestBase = {
     managedBy: "clawd-on-desk",
     version: CODEX_STABLE_LAUNCHER_VERSION,
@@ -220,6 +276,8 @@ function writeStableCodexHookLauncher(launcherPath, manifestPath, spec) {
     mode: spec.mode,
     nodeBin: spec.healthNodeBin || spec.nodeBin,
     target: spec.healthTarget || spec.target,
+    args,
+    env,
     generation: built.generation,
   };
   const manifest = { ...manifestBase, binding: stableManifestBinding(manifestBase) };
@@ -232,6 +290,104 @@ function writeStableCodexHookLauncher(launcherPath, manifestPath, spec) {
   return { launcherPath, manifestPath, launcherUpdated, manifestUpdated, manifest };
 }
 
+function encodeStableWindowsRunValue(value) {
+  return Buffer.from(String(value), "utf8").toString("base64");
+}
+
+function buildStableWindowsRunSource(spec) {
+  return [
+    CODEX_STABLE_WINDOWS_RUN_SIGNATURE,
+    encodeStableWindowsRunValue(spec.nodeBin),
+    encodeStableWindowsRunValue(spec.target),
+    ...filterCommandEnvEntries(spec.env).map(([key, value]) => (
+      `E${encodeStableWindowsRunValue(key)}.${encodeStableWindowsRunValue(value)}`
+    )),
+    "",
+  ].join("\n");
+}
+
+function inspectStableWindowsRunSource(source) {
+  const normalized = String(source || "").replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  if (lines[0] !== CODEX_STABLE_WINDOWS_RUN_SIGNATURE || !lines[1] || !lines[2]) {
+    return { ok: false, issue: "stable-launcher-invalid" };
+  }
+  try {
+    const decode = (value) => Buffer.from(value, "base64").toString("utf8");
+    const nodeBin = decode(lines[1]);
+    const target = decode(lines[2]);
+    if (!nodeBin || !target) return { ok: false, issue: "stable-launcher-invalid" };
+    const env = {};
+    for (const line of lines.slice(3).filter(Boolean)) {
+      const separator = line.indexOf(".");
+      if (!line.startsWith("E") || separator < 2) {
+        return { ok: false, issue: "stable-launcher-invalid" };
+      }
+      const key = decode(line.slice(1, separator));
+      const value = decode(line.slice(separator + 1));
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        return { ok: false, issue: "stable-launcher-invalid" };
+      }
+      env[key] = value;
+    }
+    return {
+      ok: true,
+      generation: stableLauncherGeneration(normalized),
+      nodeBin,
+      target,
+      env,
+    };
+  } catch {
+    return { ok: false, issue: "stable-launcher-invalid" };
+  }
+}
+
+function writeStableCodexHookWindowsArtifacts(runPath, manifestPath, spec) {
+  const runSource = buildStableWindowsRunSource(spec);
+  const manifestBase = {
+    managedBy: "clawd-on-desk",
+    version: CODEX_STABLE_LAUNCHER_VERSION,
+    platform: "win32",
+    mode: "native",
+    nodeBin: String(spec.nodeBin),
+    target: String(spec.target),
+    args: Array.isArray(spec.args) ? spec.args.map(String) : [],
+    env: Object.fromEntries(filterCommandEnvEntries(spec.env)),
+    generation: stableLauncherGeneration(runSource),
+  };
+  const manifest = { ...manifestBase, binding: stableManifestBinding(manifestBase) };
+  const launcherUpdated = writeTextIfChanged(runPath, runSource, 0o600);
+  const manifestUpdated = writeTextIfChanged(
+    manifestPath,
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    0o600
+  );
+  return {
+    launcherPath: runPath,
+    manifestPath,
+    launcherUpdated,
+    manifestUpdated,
+    manifest,
+  };
+}
+
+function removeOwnedLegacyWindowsLauncher(launcherPath) {
+  try {
+    const source = fs.readFileSync(launcherPath, "utf8").replace(/^\uFEFF/, "");
+    const firstLine = source.replace(/\r\n/g, "\n").split("\n")[0];
+    const signature = firstLine.startsWith("# ") ? firstLine.slice(2) : "";
+    if (
+      signature !== CODEX_STABLE_LAUNCHER_SIGNATURE
+      && !LEGACY_CODEX_STABLE_LAUNCHER_SIGNATURES.has(signature)
+    ) return false;
+    fs.unlinkSync(launcherPath);
+    return true;
+  } catch (err) {
+    if (err && err.code === "ENOENT") return false;
+    throw err;
+  }
+}
+
 function materializeStableCodexHookLauncher(entryPath, options = {}) {
   const codexDir = resolveStableCodexDir(options);
   const platform = options.platform || process.platform;
@@ -240,21 +396,34 @@ function materializeStableCodexHookLauncher(entryPath, options = {}) {
   const nodeBin = String(options.nodeBin || "").trim();
   if (!fs.existsSync(target)) throw new Error(`Codex hook target does not exist: ${target}`);
   if (!nodeBin) throw new Error("Stable Codex hook launcher requires a Node executable");
+  fs.mkdirSync(paths.stableDir, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") fs.chmodSync(paths.stableDir, 0o700);
 
   if (platform === "win32") {
-    const windows = writeStableCodexHookLauncher(
-      paths.windowsLauncherPath,
+    const windows = writeStableCodexHookWindowsArtifacts(
+      paths.windowsRunPath,
       paths.windowsManifestPath,
-      { platform: "win32", mode: "native", nodeBin, target, env: options.env }
+      {
+      nodeBin,
+      target,
+      env: options.env,
+      }
     );
+    removeOwnedLegacyWindowsLauncher(paths.legacyWindowsLauncherPath);
     const existingPosix = readStableCodexHookManifest(paths.posixManifestPath);
+    const legacyPosix = existingPosix.ok
+      ? { ok: false, record: null }
+      : readLegacyStableCodexHookManifest(paths.posixManifestPath);
     let posix = null;
     let posixPreserved = false;
-    if (existingPosix.ok && existingPosix.record.mode === "native") {
+    if (
+      (existingPosix.ok && existingPosix.record.mode === "native")
+      || (legacyPosix.ok && legacyPosix.record.mode === "native")
+    ) {
       // A WSL/Linux installer owns the POSIX launcher in a shared CODEX_HOME.
       // Windows startup sync must never point it back at a Windows-only target.
       posixPreserved = true;
-    } else if (!existingPosix.ok && fs.existsSync(paths.posixLauncherPath)) {
+    } else if (!existingPosix.ok && !legacyPosix.ok && fs.existsSync(paths.posixLauncherPath)) {
       // Unknown/corrupt POSIX state may be user-repaired. Preserve it; Doctor
       // will report the broken manifest and the POSIX installer can repair it.
       posixPreserved = true;
@@ -289,14 +458,38 @@ function materializeStableCodexHookLauncher(entryPath, options = {}) {
 
 function buildStableCodexHookCommand(launcherPath, platform = process.platform) {
   if (platform === "win32") {
-    return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${String(launcherPath).replace(/"/g, '\\"')}"`;
+    const runFile = quotePowerShellLiteral(launcherPath);
+    const signature = quotePowerShellLiteral(CODEX_STABLE_WINDOWS_RUN_SIGNATURE);
+    // Codex already evaluates commandWindows in PowerShell. Read the mutable
+    // UTF-8/Base64 data sidecar with .NET APIs, so non-ASCII user/profile
+    // paths stay data and never depend on Windows PowerShell 5.1's legacy
+    // no-BOM .ps1 decoding. No script file or second powershell.exe is used.
+    return [
+      "$ErrorActionPreference='Stop'",
+      "$u=[Text.Encoding]::UTF8",
+      `$l=[IO.File]::ReadAllLines(${runFile},$u)`,
+      `if($l[0]-ne ${signature}){exit 1}`,
+      "$n=$u.GetString([Convert]::FromBase64String($l[1]))",
+      "$t=$u.GetString([Convert]::FromBase64String($l[2]))",
+      "for($i=3;$i-lt$l.Length;$i++){if(!$l[$i]){continue};$p=$l[$i].Substring(1).Split('.',2);if(!$l[$i].StartsWith('E')-or$p.Length-ne 2){exit 1};$k=$u.GetString([Convert]::FromBase64String($p[0]));$v=$u.GetString([Convert]::FromBase64String($p[1]));[Environment]::SetEnvironmentVariable($k,$v,'Process')}",
+      "& $n $t",
+      "exit $LASTEXITCODE # codex-hook.js",
+    ].join(";");
   }
   return `"/bin/sh" "${String(launcherPath).replace(/"/g, '\\"')}"`;
 }
 
 function extractStableCodexHookLauncherPath(command, platform = process.platform) {
   const text = String(command || "");
-  const suffix = platform === "win32" ? "codex-hook.js.ps1" : "codex-hook.js.sh";
+  if (platform === "win32") {
+    const match = text.match(/ReadAllLines\(\s*'((?:''|[^'])+)'/i);
+    if (!match) return null;
+    const manifestPath = match[1].replace(/''/g, "'");
+    return manifestPath.replace(/\\/g, "/").endsWith("codex-hook.js.windows.run")
+      ? manifestPath
+      : null;
+  }
+  const suffix = "codex-hook.js.sh";
   const quoted = [...text.matchAll(/["']([^"']+)["']/g)]
     .map((match) => match[1])
     .find((value) => value.replace(/\\/g, "/").endsWith(suffix));
@@ -308,10 +501,58 @@ function inspectStableCodexHookCommand(command, options = {}) {
   const fsApi = options.fs || fs;
   const launcherPath = extractStableCodexHookLauncherPath(command, platform);
   if (!launcherPath) return { matched: false };
-  const manifestPath = path.join(
-    path.dirname(launcherPath),
-    platform === "win32" ? "codex-hook.windows.json" : "codex-hook.posix.json"
-  );
+  const manifestPath = platform === "win32"
+    ? path.join(path.dirname(launcherPath), "codex-hook.windows.json")
+    : path.join(path.dirname(launcherPath), "codex-hook.posix.json");
+  if (platform === "win32") {
+    let source;
+    try {
+      source = fsApi.readFileSync(launcherPath, "utf8");
+    } catch {
+      return { matched: true, ok: false, issue: "stable-launcher-missing", launcherPath, manifestPath };
+    }
+    const launcher = inspectStableWindowsRunSource(source);
+    if (!launcher.ok) {
+      return { matched: true, ok: false, issue: launcher.issue, launcherPath, manifestPath };
+    }
+    const manifest = readStableCodexHookManifest(manifestPath, { fs: fsApi });
+    if (!manifest.ok) {
+      return { matched: true, ok: false, issue: manifest.issue, launcherPath: null, manifestPath };
+    }
+    if (manifest.record.platform !== "win32" || manifest.record.mode !== "native") {
+      return {
+        matched: true,
+        ok: false,
+        issue: "stable-manifest-platform",
+        launcherPath,
+        manifestPath,
+      };
+    }
+    if (
+      launcher.generation !== manifest.record.generation
+      || launcher.nodeBin !== manifest.record.nodeBin
+      || launcher.target !== manifest.record.target
+      || JSON.stringify(launcher.env) !== JSON.stringify(manifest.record.env)
+      || manifest.record.args.length !== 0
+    ) {
+      return {
+        matched: true,
+        ok: false,
+        issue: "stable-launcher-stale",
+        launcherPath,
+        manifestPath,
+      };
+    }
+    return {
+      matched: true,
+      ok: true,
+      launcherPath,
+      manifestPath,
+      nodeBin: manifest.record.nodeBin,
+      scriptPath: manifest.record.target,
+      mode: manifest.record.mode,
+    };
+  }
   let source;
   try {
     source = fsApi.readFileSync(launcherPath, "utf8");
@@ -347,26 +588,50 @@ function removeStableCodexHookLauncher(options = {}) {
   let launcherRemoved = 0;
   let manifestRemoved = 0;
 
+  const legacyWindowsRemoved = removeOwnedLegacyWindowsLauncher(paths.legacyWindowsLauncherPath);
+  if (legacyWindowsRemoved) launcherRemoved++;
   const pairs = [
-    { launcherPath: paths.windowsLauncherPath, manifestPath: paths.windowsManifestPath, platform: "win32" },
-    { launcherPath: paths.posixLauncherPath, manifestPath: paths.posixManifestPath, platform: "linux" },
+    {
+      launcherPath: paths.windowsRunPath,
+      manifestPath: paths.windowsManifestPath,
+      platform: "win32",
+      ownedHint: legacyWindowsRemoved,
+      windowsRun: true,
+    },
+    {
+      launcherPath: paths.posixLauncherPath,
+      manifestPath: paths.posixManifestPath,
+      platform: "linux",
+      ownedHint: false,
+      windowsRun: false,
+    },
   ];
-  for (const { launcherPath, manifestPath, platform } of pairs) {
+  for (const { launcherPath, manifestPath, platform, ownedHint, windowsRun } of pairs) {
     let launcherOwned = false;
-    try {
-      const source = fs.readFileSync(launcherPath, "utf8");
-      const lines = source.replace(/\r\n/g, "\n").split("\n");
-      const signatureIndex = platform === "win32" ? 0 : 1;
-      launcherOwned = lines[signatureIndex] === `# ${CODEX_STABLE_LAUNCHER_SIGNATURE}`;
-      if (launcherOwned) {
-        fs.unlinkSync(launcherPath);
-        launcherRemoved++;
+    if (launcherPath) {
+      try {
+        const source = fs.readFileSync(launcherPath, "utf8").replace(/^\uFEFF/, "");
+        const lines = source.replace(/\r\n/g, "\n").split("\n");
+        if (windowsRun) {
+          launcherOwned = lines[0] === CODEX_STABLE_WINDOWS_RUN_SIGNATURE;
+        } else {
+          const signature = lines[1] && lines[1].startsWith("# ") ? lines[1].slice(2) : "";
+          launcherOwned = signature === CODEX_STABLE_LAUNCHER_SIGNATURE
+            || LEGACY_CODEX_STABLE_LAUNCHER_SIGNATURES.has(signature);
+        }
+        if (launcherOwned) {
+          fs.unlinkSync(launcherPath);
+          launcherRemoved++;
+        }
+      } catch (err) {
+        if (!err || err.code !== "ENOENT") throw err;
       }
-    } catch (err) {
-      if (!err || err.code !== "ENOENT") throw err;
     }
     const manifest = readStableCodexHookManifest(manifestPath);
-    if (manifest.ok || launcherOwned) {
+    const legacyManifest = manifest.ok
+      ? { ok: false }
+      : readLegacyStableCodexHookManifest(manifestPath);
+    if (manifest.ok || legacyManifest.ok || launcherOwned || ownedHint) {
       try {
         fs.unlinkSync(manifestPath);
         manifestRemoved++;
@@ -949,7 +1214,7 @@ function registerCodexCommandHooks(options = {}) {
   }
   const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
   const stableNodeBin = options.stableLauncher === true
-    ? readExistingStableCodexNodeBin(codexDir, hostPlatform)
+    ? readExistingStableCodexNodeBin(codexDir, hostPlatform, options)
     : null;
   const commandNodeBin = isWindowsHost
     ? extractExistingWindowsNodeBin(settings, marker)
@@ -1003,14 +1268,15 @@ function registerCodexCommandHooks(options = {}) {
   }
   // On a Windows host, a WSL session may consume this hooks.json through a
   // shared CODEX_HOME (#544). Codex resolves `commandWindows` on Windows and
-  // `command` on POSIX, so write a stable platform-wrapper command in each
-  // field. Node and active hook paths live inside the wrappers and can change
-  // without invalidating either platform's trusted_hash. Note codex builds
+  // `command` on POSIX, so write a stable data-sidecar dispatcher / platform
+  // wrapper command in the two fields. Node and active hook paths live in
+  // mutable managed artifacts and can change without invalidating either
+  // platform's trusted_hash. Note codex builds
   // before openai/codex#22159 (2026-05) ignore commandWindows and would run
   // the POSIX form on Windows.
   const desiredCommandWindows = isWindowsHost
     ? (stableLauncher
-      ? buildStableCodexHookCommand(stableLauncher.windowsLauncherPath, "win32")
+      ? buildStableCodexHookCommand(stableLauncher.windowsRunPath, "win32")
       : withCommandEnv(buildCodexHookCommand(nodeBin, hookScript, "win32"), commandEnv, "win32"))
     : null;
   const desiredCommand = stableLauncher

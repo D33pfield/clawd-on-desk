@@ -32,13 +32,18 @@ Codex CLI 状态同步（official hooks primary + JSONL fallback）：
     → agents/codex-log-monitor.js（fallback：hook 未覆盖事件、hook 禁用/不可用、历史兼容）
     → src/agent-runtime-main.js 对 hook-active session 做事件级 suppression，避免重复状态/重复气泡；本地 JSONL 路径不经过 HTTP server
 
-本机 Codex 注册使用每个 `CODEX_HOME` 下固定的分平台 wrapper
-（`clawd-hooks/codex-hook.js.ps1` / `codex-hook.js.sh`）；正式包、开发目录、
-不同 worktree、Node 安装路径切换时只原子更新 wrapper 与健康检查 manifest，
-不再改 `hooks.json` 的命令字符串，因此首次迁移 review 后不会反复触发
-`/hooks` review。Windows 与 WSL 的 wrapper/manifest 分开保存，共用
-`CODEX_HOME` 时不会互相覆盖目标。Remote SSH 部署继续直接引用已部署的远端
-hook 文件，不经过本机固定入口。
+本机 Codex 注册使用每个 `CODEX_HOME` 下固定的分平台入口。Windows 的固定
+`commandWindows` 在 Codex 已启动的 PowerShell 进程内读取 UTF-8/Base64
+`clawd-hooks/codex-hook.js.windows.run` 数据 sidecar，再直接调用其中的 Node /
+hook target；不落地或二次启动 `.ps1`。旁路 JSON manifest 只供 Doctor 做完整性
+与目标健康校验。POSIX 使用 `clawd-hooks/codex-hook.js.sh` 与对应 manifest。
+正式包、开发目录、不同 worktree、Node 安装路径切换时只原子更新
+这些受管 artifact，不再改 `hooks.json` 的命令字符串，因此首次迁移 review 后
+不会反复触发 `/hooks` review。Windows 与 WSL 的 manifest/wrapper 分开保存，
+共用 `CODEX_HOME` 时不会互相覆盖目标。Remote SSH 部署继续直接引用已部署的
+远端 hook 文件，不经过本机固定入口。Doctor 按 Codex 官方的归一化 handler
+SHA-256 精确核对 `trusted_hash`，命令变更后不会因原位置仍有旧 hash 而误报
+trusted。
 
 Gemini CLI 状态同步（hook-only，stdin JSON + stdout JSON）：
   Gemini CLI 触发 SessionStart / BeforeAgent / BeforeTool / AfterTool / AfterAgent / SessionEnd 等事件

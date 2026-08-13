@@ -31,8 +31,9 @@ function registerCodexHooks(options = {}) {
     events: CODEX_OFFICIAL_HOOK_EVENTS,
     label: "Codex official hooks",
     // Codex trusts the resolved command shape. Keep that command on a stable
-    // per-CODEX_HOME platform wrapper; Node and the active packaged/dev hook
-    // path can then change without rewriting hooks.json.
+    // per-CODEX_HOME platform entry (Windows data-sidecar dispatcher, POSIX
+    // wrapper); Node and the active packaged/dev hook path can then change
+    // without rewriting hooks.json.
     stableLauncher: options.remote !== true && options.stableLauncher !== false,
   });
 }

@@ -351,7 +351,7 @@ function validateCodexCommandList(descriptor, commands, options) {
         scriptPath: stable.launcherPath || null,
       };
     }
-    return options.validateTarget({
+    const result = options.validateTarget({
       nodeBin: stable.nodeBin,
       scriptPath: stable.scriptPath,
     }, {
@@ -359,12 +359,15 @@ function validateCodexCommandList(descriptor, commands, options) {
       fs: options.fs,
       requireNodeExecutable: true,
     });
+    return { ...result, stableExecution: result.ok === true };
   });
   const ok = results.find((result) => result.ok);
   if (ok) {
     return makeDetail(descriptor, "ok", {
       level: null,
-      detail: `${descriptor.configPath} hook registered, stable launcher target verified`,
+      detail: ok.stableExecution
+        ? `${descriptor.configPath} hook registered, stable execution target verified`
+        : `${descriptor.configPath} hook registered, scriptPath verified`,
       commandCount: commands.length,
       scriptPath: ok.scriptPath,
     });
