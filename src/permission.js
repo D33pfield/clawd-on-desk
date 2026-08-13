@@ -2190,6 +2190,32 @@ function applyPermissionSuggestion(perm, index, options = {}) {
     return;
   }
 
+  // DeepSeek Harness bridge (dsh-clawd-bridge plugin POSTs /permission and
+  // waits on this HTTP response). Decisions travel as a JSON body:
+  //   { decision: "allow" | "deny" } for permission requests,
+  //   { decision: "allow", answers: [{ id, selected[], custom? }] } for
+  //   ask_user_question elicitation (DSH's answer vocabulary is per-question
+  //   id, unlike Claude's per-question-text shape).
+  if (permEntry.isDsh) {
+    if (behavior === "no-decision") {
+      // Autoclose: drop the socket; the bridge maps the failed fetch to
+      // "cancelled"/"unavailable" and DSH fails closed.
+      try { res.destroy(); } catch {}
+      return;
+    }
+    if (permEntry.isElicitation && behavior === "allow" && permEntry.resolvedUpdatedInput) {
+      sendDshPermissionResponse(res, {
+        decision: "allow",
+        answers: buildDshElicitationAnswers(permEntry),
+      });
+    } else {
+      sendDshPermissionResponse(res, {
+        decision: behavior === "deny" ? "deny" : "allow",
+      });
+    }
+    return;
+  }
+
   if (permEntry.isElicitation) {
     if (behavior === "no-decision") {
       // Autoclose: drop the socket so CC stops waiting, then refocus the
@@ -2404,6 +2430,43 @@ function sendAntigravityPermissionResponse(res, decisionOrBehavior, message) {
 
 function sendHermesNoDecisionResponse(res, reason = "") {
   return sendNoDecisionResponse(res, reason, "hermes");
+}
+
+/**
+ * DSH ask_user_question answers travel back in Clawd's Claude-shaped shape
+ * ({questionText: answerText}); DSH needs per-question-id vocabulary
+ * ({id, selected[], custom?}). Rebuild it from the wire input so the bridge
+ * can echo it verbatim into ctx.userQuestions.ask().
+ */
+function buildDshElicitationAnswers(permEntry) {
+  const wireInput = permEntry.elicitationWireInput || permEntry.toolInput || {};
+  const questions = Array.isArray(wireInput.questions) ? wireInput.questions : [];
+  const answers = (permEntry.resolvedUpdatedInput && permEntry.resolvedUpdatedInput.answers) || {};
+  const result = [];
+  for (const question of questions) {
+    if (!question || typeof question.id !== "string" || !question.id) continue;
+    const answer = answers[question.question];
+    if (typeof answer !== "string" || !answer.trim()) continue;
+    const matched = Array.isArray(question.options)
+      ? question.options.find((option) => option && option.label === answer)
+      : undefined;
+    result.push(matched
+      ? { id: question.id, selected: [matched.label] }
+      : { id: question.id, selected: [], custom: answer.trim() });
+  }
+  return result;
+}
+
+function sendDshPermissionResponse(res, responseObj) {
+  if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
+  const responseBody = JSON.stringify(responseObj);
+  permLog(`dsh response: ${responseBody}`);
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
+  });
+  res.end(responseBody);
+  return true;
 }
 
 function sendHermesPermissionResponse(res, responseObj) {

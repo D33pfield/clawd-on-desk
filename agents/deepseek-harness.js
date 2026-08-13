@@ -30,10 +30,10 @@ module.exports = {
     SessionEnd: "idle",
   },
   capabilities: {
-    httpHook: false,
-    permissionApproval: false,
+    httpHook: true,
+    permissionApproval: true,
     notificationHook: false,
-    interactiveBubble: false,
+    interactiveBubble: true,
     sessionEnd: true,
     subagent: false,
   },

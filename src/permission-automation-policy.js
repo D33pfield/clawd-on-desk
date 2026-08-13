@@ -28,6 +28,13 @@ const DECISION_TOOL_KIND = Object.freeze({
   CLARIFY: "clarify",
 });
 
+// DSH's model-facing tool is snake_case (`ask_user_question`); the other
+// adapters use the camelCase/Tool-suffixed names. Normalize both spellings
+// before the basename suffix logic runs.
+const DECISION_TOOL_ALIASES = new Map([
+  ["ask_user_question", DECISION_TOOL_KIND.ASK_USER_QUESTION],
+]);
+
 const DECISION_TOOL_BASENAMES = new Set(Object.values(DECISION_TOOL_KIND));
 
 const KNOWN_PERMISSION_AGENTS = new Set([
@@ -37,6 +44,7 @@ const KNOWN_PERMISSION_AGENTS = new Set([
   "qwen-code",
   "copilot-cli",
   "hermes",
+  "deepseek-harness",
 ]);
 
 // Claude-compatible PermissionRequest is not a trustworthy "ordinary tool"
@@ -167,6 +175,7 @@ function isMissingToolName(toolName) {
 function getDecisionToolKind(toolName) {
   if (!toolName) return null;
   const normalized = toolName.toLowerCase();
+  if (DECISION_TOOL_ALIASES.has(normalized)) return DECISION_TOOL_ALIASES.get(normalized);
   if (DECISION_TOOL_BASENAMES.has(normalized)) return normalized;
   if (normalized.endsWith("tool")) {
     const withoutToolSuffix = normalized.slice(0, -4);
@@ -233,7 +242,7 @@ function classifyPermissionInteraction({
   if (isQuestion) {
     const canAnswerQuestions = (
       decisionToolKind === DECISION_TOOL_KIND.ASK_USER_QUESTION
-      && (trustedAgentId === "claude-code" || trustedAgentId === "hermes")
+      && (trustedAgentId === "claude-code" || trustedAgentId === "hermes" || trustedAgentId === "deepseek-harness")
     ) || (
       decisionToolKind === DECISION_TOOL_KIND.CLARIFY
       && trustedAgentId === "hermes"
