@@ -4,7 +4,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 
 ## Project Overview
 
-Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、WorkBuddy、Kiro CLI、Kimi Code CLI (Kimi-CLI)、Qwen Code、ZCode、CodeWhale、opencode、MiMo Code、Pi、OpenClaw、Hermes Agent、Qoder、QoderWork、QwenWork (千问办公)、Reasonix；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / zh-TW / ko / ja / pt-BR。
+Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、WorkBuddy、Kiro CLI、Kimi Code CLI (Kimi-CLI)、Qwen Code、ZCode、CodeWhale、opencode、MiMo Code、Pi、OpenClaw、Hermes Agent、Qoder、QoderWork、QwenWork (千问办公)、Reasonix、DeepSeek Harness；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / zh-TW / ko / ja / pt-BR。
 
 ## Common Commands
 
@@ -53,6 +53,8 @@ npm run install:reasonix-hooks
 npm run uninstall:reasonix-hooks
 npm run install:workbuddy-hooks
 npm run uninstall:workbuddy-hooks
+npm run install:dsh
+npm run uninstall:dsh
 npm run install:codex-hooks
 npm run uninstall:codex-hooks
 npm run install:codex-debug-hooks
@@ -78,6 +80,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - `docs/project/theme-state-ui.md`：状态机、主题系统、settings、mini mode、素材规则、平台限制、待落地 UI 决策
 - `docs/project/release-process.md`：发版 checklist、release note 核对、tag 触发 GitHub 打包和资产确认
 - `docs/guides/copilot-setup.md`：Copilot CLI 自动同步说明、`COPILOT_HOME` 兼容性、手动配置备选模板
+- `docs/guides/dsh-setup.md`：DeepSeek Harness 零侵入集成、数据文件语义、延迟与保真度边界
 - `docs/guides/state-mapping.md`：状态 → 动画权威表
 - `docs/guides/guide-theme-creation.md`：主题作者指南
 - `docs/guides/setup-guide.md`：安装、远程 SSH、各 agent 接入
@@ -142,7 +145,9 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `src/remote-ssh-quote.js` | Remote SSH 终端命令与跨平台 shell quoting helper |
 | `agents/registry.js` | agent 注册表 |
 | `agents/codex-log-monitor.js` | Codex JSONL fallback 轮询 |
+| `agents/deepseek-harness-monitor.js` | DeepSeek Harness 状态文件轮询（`$DSH_HOME/storages/`，零侵入） |
 | `agents/gemini-log-monitor.js` | legacy Gemini session JSON 轮询器；当前 Gemini hook-only 路径不启动 |
+| `hooks/dsh-install.js` | DeepSeek Harness 检测 / 零侵入 install / uninstall |
 | `hooks/clawd-hook.js` + `hooks/copilot-hook.js` | Claude Code / Copilot CLI 状态上报脚本 |
 | `hooks/install.js` | Claude hook 注册 / 卸载 |
 | `hooks/auto-start.js` | Claude `SessionStart` 自动拉起 Clawd 的 hook |
@@ -167,6 +172,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - CJS hook 脚本需要稳定终端 PID 时，必须复用 `hooks/shared-process.js` 的 `createPidResolver()` 及其 lifecycle context；不要复制进程树 walk 或用 `process.ppid` 简化。`getStablePid()` 只是 opencode-family plugin 的内部 resolver
 - opencode 权限不走 `permission.ask` hook，而是 event hook + reverse bridge
 - Pi 通过 `~/.pi/agent/extensions/clawd-on-desk` 的 global extension 推送状态；Clawd 对 Pi 是 **state-only**，不接管权限、不弹权限气泡，也不把 Pi 的默认 YOLO 流程改成手动确认
+- DeepSeek Harness 通过 `agents/deepseek-harness-monitor.js` 轮询 `$DSH_HOME/storages/`（`workspace.json` + `session_projcache.json`）做**零侵入 state-only** 集成：Clawd **绝不**向 DSH 写任何 hook / plugin / 配置（安装/卸载只是检测 + prefs 标记，`hooks/dsh-install.js` 不得引入任何写入 DSH 目录的行为）。状态推导是采样（projcache 节流 5s + 轮询间隔），不是事件级精确；projcache 超过 30s 未重写的 openStep/pendingCalls 视为 stale 不算 working。workspace.json 读失败必须整轮跳过（不误发 SessionEnd），只有成功解析且 session 确实消失才发 SessionEnd。启动时已存在的 session 只发 SessionStart，历史 lastPromptAt 必须 seed（不回放旧提示）。DSH 的权限由它自己的 approval preset / 沙箱策略决定，`capabilities.permissionApproval` / `interactiveBubble` 恒为 false，不得进入权限链路
 - OpenClaw 通过 `~/.openclaw/openclaw.json` plugin 路径做 state-only 集成；Phase 1 不做 permission bubble / terminal focus，主要支持本地 `openclaw tui --local`
 - Antigravity CLI (agy) 通过 `~/.gemini/config/hooks.json` 做 **state-only** hook 集成（PreInvocation / PostToolUse / PostInvocation / Stop），**不注册 PreToolUse**。agy LLM 会主动调内置 `ask_permission` 工具，触发 agy 自己的 5 选项 native menu（含 "Persist to settings.json" 持久白名单），Clawd 不插手权限决策也不双层确认。`agents/antigravity-cli.js` `capabilities.permissionApproval` / `interactiveBubble` 均为 false。
 - Qwen Code 通过 `~/.qwen/settings.json` 做 hook-only 集成（SessionStart / SessionEnd / UserPromptSubmit / PreToolUse / PostToolUse / Stop / Notification / PermissionRequest），支持状态与阻塞式 `PermissionRequest` 权限气泡；`disableAllHooks: true` 时注册条目不会触发。

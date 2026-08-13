@@ -35,6 +35,7 @@ describe("doctor agent descriptors", () => {
         "reasonix",
         "qoderwork",
         "qwenwork",
+        "deepseek-harness",
       ]
     );
   });

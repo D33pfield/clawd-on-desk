@@ -29,11 +29,13 @@ const { resolveReasonixConfigTargets, unregisterReasonixHooks } = require("./rea
 const { unregisterQoderWorkHooks } = require("./qoderwork-install");
 const { unregisterQwenWorkHooks } = require("./qwenwork-install");
 const { unregisterWorkBuddyHooks } = require("./workbuddy-install");
+const { unregisterDeepSeekHarness } = require("./dsh-install");
 
 const CODEX_MARKERS = ["codex-hook.js", "codex-debug-hook.js"];
 
 const MANAGED_AGENT_IDS = Object.freeze([
   "claude-code",
+  "deepseek-harness",
   "gemini-cli",
   "antigravity-cli",
   "cursor-agent",
@@ -59,6 +61,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
 
 const AGENT_DISPLAY_NAMES = Object.freeze({
   "claude-code": "Claude Code",
+  "deepseek-harness": "DeepSeek Harness",
   "gemini-cli": "Gemini CLI",
   "antigravity-cli": "Antigravity CLI",
   "cursor-agent": "Cursor Agent",
@@ -160,6 +163,13 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       "claude-code": {
         ...common,
         settingsPath: path.join(homeDir, ".claude", "settings.json"),
+      },
+      "deepseek-harness": {
+        ...common,
+        // Zero-touch integration: Clawd writes nothing into DSH, so cleanup
+        // only flips the prefs flags. The entry exists so About → Cleanup and
+        // Settings → Uninstall route here instead of reporting "no cleaner".
+        dshHome: env.DSH_HOME || path.join(homeDir, ".dsh"),
       },
       "gemini-cli": {
         ...common,
@@ -310,6 +320,7 @@ function unregisterCodexIntegration(options = {}) {
 
 const AGENT_CLEANERS = Object.freeze({
   "claude-code": unregisterClaudeIntegration,
+  "deepseek-harness": unregisterDeepSeekHarness,
   "gemini-cli": unregisterGeminiHooks,
   "antigravity-cli": unregisterAntigravityIntegration,
   "cursor-agent": unregisterCursorHooks,

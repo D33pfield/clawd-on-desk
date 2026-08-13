@@ -359,6 +359,20 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncDeepSeekHarnessMonitor() {
+    try {
+      if (typeof ctx.syncDeepSeekHarnessMonitorImpl === "function") {
+        return ctx.syncDeepSeekHarnessMonitorImpl();
+      }
+      const { registerDeepSeekHarness } = require("../hooks/dsh-install.js");
+      const result = registerDeepSeekHarness({ silent: true });
+      return normalizeInstalledFlagResult(result, "DeepSeek Harness", "dsh-not-found");
+    } catch (err) {
+      console.warn("Clawd: failed to sync DeepSeek Harness monitor:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync DeepSeek Harness monitor" };
+    }
+  }
+
   function syncOpencodePlugin() {
     try {
       if (typeof ctx.syncOpencodePluginImpl === "function") return ctx.syncOpencodePluginImpl();
@@ -560,6 +574,7 @@ function createIntegrationSyncRuntime(options = {}) {
     zcode: syncZcodeHooks,
     codewhale: syncCodewhaleHooks,
     codex: syncCodexHooks,
+    "deepseek-harness": syncDeepSeekHarnessMonitor,
     opencode: syncOpencodePlugin,
     mimocode: syncMimocodePlugin,
     pi: syncPiExtension,
@@ -706,6 +721,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncZcodeHooks,
     syncCodewhaleHooks,
     syncCodexHooks,
+    syncDeepSeekHarnessMonitor,
     syncOpencodePlugin,
     syncMimocodePlugin,
     syncPiExtension,

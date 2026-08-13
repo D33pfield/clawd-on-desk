@@ -29,6 +29,7 @@ const {
 const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "claude-code",
   "codex",
+  "deepseek-harness",
   "copilot-cli",
   "cursor-agent",
   "gemini-cli",
@@ -52,6 +53,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
 const INSTALLABLE_AGENT_IDS = new Set([
   "claude-code",
   "codex",
+  "deepseek-harness",
   "copilot-cli",
   "cursor-agent",
   "gemini-cli",

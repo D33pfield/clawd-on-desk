@@ -64,6 +64,7 @@ function makeRuntime(overrides = {}) {
     syncZcodeHooksImpl: () => calls.push({ name: "zcode" }),
     syncCodewhaleHooksImpl: () => calls.push({ name: "codewhale" }),
     syncCodexHooksImpl: () => calls.push({ name: "codex" }),
+    syncDeepSeekHarnessMonitorImpl: () => calls.push({ name: "deepseek-harness" }),
     repairCodexHooksImpl: (options) => {
       calls.push({ name: "codex-repair" });
       repairOptions.push(options);
@@ -280,6 +281,7 @@ describe("integration sync runtime", () => {
       "zcode",
       "codewhale",
       "codex",
+      "deepseek-harness",
       "mimocode",
       "pi",
       "openclaw",
@@ -312,6 +314,7 @@ describe("integration sync runtime", () => {
       "zcode",
       "codewhale",
       "codex",
+      "deepseek-harness",
       "opencode",
       "mimocode",
       "openclaw",

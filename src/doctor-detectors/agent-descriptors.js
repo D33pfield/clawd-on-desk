@@ -26,6 +26,7 @@ const reasonix = require("../../hooks/reasonix-install");
 const qoderwork = require("../../hooks/qoderwork-install");
 const qwenwork = require("../../hooks/qwenwork-install");
 const workbuddy = require("../../hooks/workbuddy-install");
+const dsh = require("../../hooks/dsh-install");
 
 function agentName(agentId) {
   const agent = getAgent(agentId);
@@ -354,6 +355,19 @@ const AGENT_DESCRIPTORS = Object.freeze([
     nested: true,
     hookEvents: qwenwork.QWENWORK_HOOK_EVENTS,
     hookGroupId: "clawd",
+  }),
+  Object.freeze({
+    agentId: "deepseek-harness",
+    agentName: agentName("deepseek-harness"),
+    eventSource: agentEventSource("deepseek-harness"),
+    parentDir: dsh.resolveDshHome(),
+    configPath: "",
+    // Zero-touch: the monitor reads DSH's data files directly and Clawd
+    // manages no config inside DSH. Detection only proves the harness home
+    // exists; integration health is "present or not", never marker-based.
+    configMode: "none-global",
+    autoInstall: true,
+    detection: "dsh",
   }),
 ]);
 

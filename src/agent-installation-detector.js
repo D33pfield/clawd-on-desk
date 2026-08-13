@@ -9,6 +9,7 @@ const { DEFAULT_INTEGRATION_INSTALLED_IDS, normalizePathList } = require("./pref
 const copilot = require("../hooks/copilot-install");
 const hermes = require("../hooks/hermes-install");
 const reasonix = require("../hooks/reasonix-install");
+const dsh = require("../hooks/dsh-install");
 const { commandMatchesMarker } = require("../hooks/json-utils");
 const { identifyCustomApplication } = require("./custom-applications");
 
@@ -167,6 +168,13 @@ function resolveAgentPaths(descriptor, options) {
       configPath: path.join(hermesHome, "plugins", hermes.PLUGIN_ID),
       configFilePath: path.join(hermesHome, "config.yaml"),
       commandPaths: hermesCommandPaths(hermesHome, platform, env),
+    }, options);
+  }
+
+  if (descriptor.agentId === "deepseek-harness") {
+    return finalizeAgentPaths(descriptor, {
+      parentDir: dsh.resolveDshHome(env),
+      configPath: "",
     }, options);
   }
 
@@ -402,6 +410,15 @@ function detectInstallation(descriptor, paths, options) {
       return notFound();
     case "hermes":
       return detectHermesInstallation(paths, options);
+    case "deepseek-harness":
+      if (dirExists(fsImpl, paths.parentDir)) {
+        const home = paths.parentDir;
+        const isDshHome = ["profiles", "sessions", "storages"].some((name) => (
+          dirExists(fsImpl, path.join(home, name))
+        ));
+        if (isDshHome) return installationResult(true, "high", "parent-dir", `${home} exists`);
+      }
+      return notFound();
     default:
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "medium", "parent-dir", `${paths.parentDir} exists`);
       return notFound();
@@ -482,6 +499,13 @@ function markerInDirectoryFiles(fsImpl, dirPath, marker, options = {}) {
 
 function detectClawdIntegration(descriptor, paths, options) {
   const fsImpl = options.fs;
+  if (descriptor.agentId === "deepseek-harness") {
+    // Zero-touch integration: the monitor reads DSH's data files directly, so
+    // "installed" IS "connected" — there is no marker file to look for.
+    return dirExists(fsImpl, paths.parentDir)
+      ? { detected: true, reason: "dsh-home", detail: `${paths.parentDir} exists`, paths: { parentDir: paths.parentDir } }
+      : { detected: false, reason: "not-found", detail: "DeepSeek Harness home not found" };
+  }
   if (descriptor.agentId === "pi") {
     const markerPath = path.join(paths.configPath, descriptor.markerFile || ".clawd-managed.json");
     return fileExists(fsImpl, markerPath)
