@@ -534,6 +534,88 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.fixAction, undefined, "source-script-missing must not offer a configuration Repair");
   });
 
+  it("explains when an env-indirected Claude hook is preserved because Node is unresolved (#852)", () => {
+    const descriptor = baseDescriptor({
+      agentId: "claude-code",
+      agentName: "Claude Code",
+      marker: "clawd-hook.js",
+      nested: true,
+    });
+    writeJson(descriptor.configPath, { hooks: {} });
+
+    const detail = runOne(descriptor, {
+      server: {
+        getClaudeHookHealthStatus: () => ({
+          status: "degraded",
+          degradedReason: "env-hook-node-unresolved",
+          at: 7000,
+        }),
+      },
+    });
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.match(detail.detail, /CLAWD_NODE_BIN/);
+    assert.strictEqual(detail.claudeHookRuntimeStatus.degradedReason, "env-hook-node-unresolved");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "claude-code" });
+  });
+
+  it("keeps an unverified env-indirected hook visible beside an otherwise valid Claude hook (#852)", () => {
+    const descriptor = baseDescriptor({
+      agentId: "claude-code",
+      agentName: "Claude Code",
+      marker: "clawd-hook.js",
+      nested: true,
+    });
+    writeJson(descriptor.configPath, {
+      hooks: {
+        Stop: [
+          { matcher: "", hooks: [{ type: "command", command: '"node" "/app/hooks/clawd-hook.js" Stop' }] },
+          { matcher: "", hooks: [{ type: "command", command: '"${CLAWD_NODE_BIN}" "${CLAWD_HOOK_PATH}" Stop' }] },
+        ],
+      },
+    });
+
+    const detail = runOne(descriptor, {
+      server: {
+        getClaudeHookHealthStatus: () => ({
+          status: "degraded",
+          degradedReason: "env-indirection-unverified",
+          at: 8000,
+        }),
+      },
+    });
+
+    assert.strictEqual(detail.status, "needs-review", "generic marker success must not hide the degraded env diagnostic");
+    assert.strictEqual(detail.level, "warning");
+    assert.match(detail.detail, /CLAWD_HOOK_PATH/);
+    assert.strictEqual(detail.claudeHookRuntimeStatus.degradedReason, "env-indirection-unverified");
+    assert.strictEqual(detail.fixAction, undefined, "unverified ownership must not offer a destructive automatic Fix");
+  });
+
+  it("does not let a stale env runtime diagnostic hide a corrupt Claude settings file (#852)", () => {
+    const descriptor = baseDescriptor({
+      agentId: "claude-code",
+      agentName: "Claude Code",
+      marker: "clawd-hook.js",
+      nested: true,
+    });
+    writeText(descriptor.configPath, "{not-json");
+
+    const detail = runOne(descriptor, {
+      server: {
+        getClaudeHookHealthStatus: () => ({
+          status: "degraded",
+          degradedReason: "env-indirection-unverified",
+          at: 8100,
+        }),
+      },
+    });
+
+    assert.strictEqual(detail.status, "config-corrupt");
+    assert.match(detail.detail, /parse|JSON|corrupt/i);
+    assert.strictEqual(detail.claudeHookRuntimeStatus, undefined);
+  });
+
   it("explains manual-fix-required while still offering an explicit Fix that can bypass the automatic cap", () => {
     const descriptor = baseDescriptor({
       agentId: "claude-code",

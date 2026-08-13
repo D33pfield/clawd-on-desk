@@ -135,14 +135,19 @@ function getClaudeHookHealthStatus(options) {
 // source-script-missing, and manual-fix-required per the #657 plan §6.9.
 function withClaudeHookGuardNotice(detail, descriptor, options) {
   if (descriptor.agentId !== "claude-code" || !detail) return detail;
-  if (!REPAIRABLE_AGENT_STATUSES.has(detail.status)) return detail;
 
   const runtimeHealth = getClaudeHookHealthStatus(options);
+  const repairableDisk = REPAIRABLE_AGENT_STATUSES.has(detail.status);
 
   // Reconcile can never fix a missing source script, so this must never
   // offer a configuration Repair — overriding the status keeps it out of
   // REPAIRABLE_AGENT_STATUSES for the withAgentFixAction() check below.
-  if (runtimeHealth && runtimeHealth.status === "degraded" && runtimeHealth.degradedReason === "source-script-missing") {
+  if (
+    repairableDisk
+    && runtimeHealth
+    && runtimeHealth.status === "degraded"
+    && runtimeHealth.degradedReason === "source-script-missing"
+  ) {
     return {
       ...detail,
       status: "source-script-missing",
@@ -155,6 +160,34 @@ function withClaudeHookGuardNotice(detail, descriptor, options) {
       },
     };
   }
+
+  if (
+    (repairableDisk || detail.status === "ok")
+    &&
+    runtimeHealth
+    && runtimeHealth.status === "degraded"
+    && (
+      runtimeHealth.degradedReason === "env-hook-node-unresolved"
+      || runtimeHealth.degradedReason === "env-indirection-unverified"
+    )
+  ) {
+    const unresolvedNode = runtimeHealth.degradedReason === "env-hook-node-unresolved";
+    return {
+      ...detail,
+      status: detail.status === "ok" ? "needs-review" : detail.status,
+      level: "warning",
+      detail: unresolvedNode
+        ? "Clawd preserved an env-indirected Claude hook because settings.env does not provide a usable absolute Node path. Check CLAWD_NODE_BIN, then use Fix."
+        : "Clawd found an env-indirected Claude hook but settings.env does not prove that it belongs to Clawd. Review CLAWD_HOOK_PATH before changing it.",
+      claudeHookRuntimeStatus: {
+        status: runtimeHealth.status,
+        degradedReason: runtimeHealth.degradedReason,
+        at: runtimeHealth.at || null,
+      },
+    };
+  }
+
+  if (!repairableDisk) return detail;
 
   const guard = getClaudeHookGuardStatus(options);
   if (guard && guard.type === "suspicious-shrink") {
