@@ -361,11 +361,8 @@ const AGENT_DESCRIPTORS = Object.freeze([
     agentName: agentName("deepseek-harness"),
     eventSource: agentEventSource("deepseek-harness"),
     parentDir: dsh.resolveDshHome(),
-    configPath: "",
-    // Zero-touch: the monitor reads DSH's data files directly and Clawd
-    // manages no config inside DSH. Detection only proves the harness home
-    // exists; integration health is "present or not", never marker-based.
-    configMode: "none-global",
+    configPath: dsh.resolveDshProfileDir(dsh.resolveDshHome()),
+    configMode: "dsh-plugin",
     autoInstall: true,
     detection: "dsh",
   }),

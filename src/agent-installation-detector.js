@@ -172,9 +172,13 @@ function resolveAgentPaths(descriptor, options) {
   }
 
   if (descriptor.agentId === "deepseek-harness") {
+    const dshHome = typeof env.DSH_HOME === "string" && env.DSH_HOME.trim()
+      ? path.resolve(env.DSH_HOME.trim())
+      : path.join(homeDir, ".dsh");
     return finalizeAgentPaths(descriptor, {
-      parentDir: dsh.resolveDshHome(env),
-      configPath: "",
+      parentDir: dshHome,
+      configPath: dsh.resolveDshProfileDir(dshHome),
+      commandPaths: dsh.dshCommandPathsSync({ fs: options.fs, env, platform }),
     }, options);
   }
 
@@ -411,6 +415,11 @@ function detectInstallation(descriptor, paths, options) {
     case "hermes":
       return detectHermesInstallation(paths, options);
     case "deepseek-harness":
+      for (const commandPath of paths.commandPaths || []) {
+        if (fileExists(fsImpl, commandPath)) {
+          return installationResult(true, "high", "command-path", `${commandPath} exists`);
+        }
+      }
       if (dirExists(fsImpl, paths.parentDir)) {
         const home = paths.parentDir;
         const isDshHome = ["profiles", "sessions", "storages"].some((name) => (
@@ -500,11 +509,28 @@ function markerInDirectoryFiles(fsImpl, dirPath, marker, options = {}) {
 function detectClawdIntegration(descriptor, paths, options) {
   const fsImpl = options.fs;
   if (descriptor.agentId === "deepseek-harness") {
-    // Zero-touch integration: the monitor reads DSH's data files directly, so
-    // "installed" IS "connected" — there is no marker file to look for.
-    return dirExists(fsImpl, paths.parentDir)
-      ? { detected: true, reason: "dsh-home", detail: `${paths.parentDir} exists`, paths: { parentDir: paths.parentDir } }
-      : { detected: false, reason: "not-found", detail: "DeepSeek Harness home not found" };
+    const health = dsh.inspectDeepSeekHarnessDiskSync({
+      fs: fsImpl,
+      dshHome: paths.parentDir,
+      dshInstallRoot: options.dshInstallRoot,
+      managedRoot: options.dshManagedRoot,
+      homeDir: options.homeDir,
+      env: options.env,
+      platform: options.platform,
+    });
+    return health.status === "healthy"
+      ? {
+        detected: true,
+        reason: "managed-plugin",
+        detail: `${health.profileDir} contains the verified Clawd bridge`,
+        paths: { profileDir: health.profileDir, pluginDir: health.resolved.packageDir },
+      }
+      : {
+        detected: false,
+        reason: health.status,
+        detail: `DeepSeek Harness bridge is ${health.status}`,
+        paths: { profileDir: health.profileDir },
+      };
   }
   if (descriptor.agentId === "pi") {
     const markerPath = path.join(paths.configPath, descriptor.markerFile || ".clawd-managed.json");

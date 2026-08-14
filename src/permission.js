@@ -1025,11 +1025,16 @@ function showPermissionBubble(permEntry) {
     permissionBubbleWindows.delete(bub);
     const idx = pendingPermissions.indexOf(permEntry);
     if (idx !== -1) {
-      // Qwen + Copilot can hand no-decision back to their native flow. Hermes
+      // Qwen + Copilot + DSH can hand no-decision back to their native flow. Hermes
       // has no native permission UI, so its opt-in plugin gate treats this as
       // a retryable block. In every case we avoid fabricating a user denial.
       // CC/CodeBuddy still get an explicit deny for this user-close action.
-      const behavior = (permEntry.isQwenCode || permEntry.isCopilotCli || permEntry.isHermes) ? "no-decision" : "deny";
+      const behavior = (
+        permEntry.isQwenCode
+        || permEntry.isCopilotCli
+        || permEntry.isHermes
+        || permEntry.isDsh
+      ) ? "no-decision" : "deny";
       resolvePermissionEntry(permEntry, behavior, "Bubble window closed by user");
     }
     repositionDependentBubbles();
@@ -1247,6 +1252,9 @@ function buildPermissionBubblePayload(permEntry) {
     // converted into a retryable block by the plugin. Clarify elicitation is
     // different and can hand control to Hermes' native clarification UI.
     isHermes: permEntry.isHermes || false,
+    // DSH has a downstream native web answerer. Its first-release bubble must
+    // not render Go to Terminal because that action has no decision meaning.
+    isDsh: permEntry.isDsh || false,
     // Display-only detail for the passive Kimi notify card: the real tool
     // name plus the whitelisted tool_input subset let the renderer reuse the
     // standard cue path (formatDetail) while the card stays dismiss-only.
@@ -1950,7 +1958,7 @@ function handleRemoteApprovalDecision(
       isValidInteraction(permEntry.interaction)
       && permEntry.interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION
     ) {
-      if (permEntry.isHermes) {
+      if (permEntry.isHermes || permEntry.isDsh) {
         // Hermes treats an explicit deny as "clarification cancelled"; only a
         // no-decision (204) falls back to its native terminal prompt, which is
         // what "go to terminal" means here.
@@ -1961,7 +1969,7 @@ function handleRemoteApprovalDecision(
       resolvePermissionEntry(permEntry, "deny", "User answered in terminal");
       return true;
     }
-    if (permEntry.isCodex || permEntry.isQwenCode || permEntry.isAntigravity) {
+    if (permEntry.isCodex || permEntry.isQwenCode || permEntry.isAntigravity || permEntry.isDsh) {
       resolvePermissionEntry(permEntry, "no-decision", "Go to terminal from remote approval");
       ctx.focusTerminalForSession(permEntry.sessionId, { fallbackEntry: buildPermissionFocusEntry(permEntry) });
     } else {
@@ -2190,29 +2198,17 @@ function applyPermissionSuggestion(perm, index, options = {}) {
     return;
   }
 
-  // DeepSeek Harness bridge (dsh-clawd-bridge plugin POSTs /permission and
-  // waits on this HTTP response). Decisions travel as a JSON body:
-  //   { decision: "allow" | "deny" } for permission requests,
-  //   { decision: "allow", answers: [{ id, selected[], custom? }] } for
-  //   ask_user_question elicitation (DSH's answer vocabulary is per-question
-  //   id, unlike Claude's per-question-text shape).
+  // DeepSeek Harness bridge waits on this HTTP response inside its public
+  // approval/request waterfall. Only ordinary approval decisions travel here;
+  // ask_user_question remains owned by DSH's native provider.
   if (permEntry.isDsh) {
     if (behavior === "no-decision") {
-      // Autoclose: drop the socket; the bridge maps the failed fetch to
-      // "cancelled"/"unavailable" and DSH fails closed.
-      try { res.destroy(); } catch {}
+      sendDshNoDecisionResponse(res, message || "fallback");
       return;
     }
-    if (permEntry.isElicitation && behavior === "allow" && permEntry.resolvedUpdatedInput) {
-      sendDshPermissionResponse(res, {
-        decision: "allow",
-        answers: buildDshElicitationAnswers(permEntry),
-      });
-    } else {
-      sendDshPermissionResponse(res, {
-        decision: behavior === "deny" ? "deny" : "allow",
-      });
-    }
+    sendDshPermissionResponse(res, {
+      decision: behavior === "deny" ? "deny" : "allow",
+    });
     return;
   }
 
@@ -2432,29 +2428,8 @@ function sendHermesNoDecisionResponse(res, reason = "") {
   return sendNoDecisionResponse(res, reason, "hermes");
 }
 
-/**
- * DSH ask_user_question answers travel back in Clawd's Claude-shaped shape
- * ({questionText: answerText}); DSH needs per-question-id vocabulary
- * ({id, selected[], custom?}). Rebuild it from the wire input so the bridge
- * can echo it verbatim into ctx.userQuestions.ask().
- */
-function buildDshElicitationAnswers(permEntry) {
-  const wireInput = permEntry.elicitationWireInput || permEntry.toolInput || {};
-  const questions = Array.isArray(wireInput.questions) ? wireInput.questions : [];
-  const answers = (permEntry.resolvedUpdatedInput && permEntry.resolvedUpdatedInput.answers) || {};
-  const result = [];
-  for (const question of questions) {
-    if (!question || typeof question.id !== "string" || !question.id) continue;
-    const answer = answers[question.question];
-    if (typeof answer !== "string" || !answer.trim()) continue;
-    const matched = Array.isArray(question.options)
-      ? question.options.find((option) => option && option.label === answer)
-      : undefined;
-    result.push(matched
-      ? { id: question.id, selected: [matched.label] }
-      : { id: question.id, selected: [], custom: answer.trim() });
-  }
-  return result;
+function sendDshNoDecisionResponse(res, reason = "") {
+  return sendNoDecisionResponse(res, reason, "dsh");
 }
 
 function sendDshPermissionResponse(res, responseObj) {
@@ -2603,6 +2578,14 @@ function handleDecide(event, behavior) {
     if (behavior === "deny-and-focus") {
       ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
     }
+    return;
+  }
+  if (perm.isDsh) {
+    if (behavior === "allow" || behavior === "deny") {
+      resolvePermissionEntry(perm, behavior);
+      return;
+    }
+    resolvePermissionEntry(perm, "no-decision", `Unsupported DSH bubble action: ${String(behavior)}`);
     return;
   }
   if (perm.isHermes) {
@@ -2987,6 +2970,8 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
     sendAntigravityNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isHermes) {
     sendHermesNoDecisionResponse(perm.res, reason || "permission-dismissed");
+  } else if (perm.isDsh) {
+    sendDshNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (!isOpencodeFamilyEntry(perm) && perm.res && !perm.res.destroyed) {
     try { perm.res.destroy(); } catch {}
   }

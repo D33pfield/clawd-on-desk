@@ -44,7 +44,6 @@ const KNOWN_PERMISSION_AGENTS = new Set([
   "qwen-code",
   "copilot-cli",
   "hermes",
-  "deepseek-harness",
 ]);
 
 // Claude-compatible PermissionRequest is not a trustworthy "ordinary tool"
@@ -242,7 +241,7 @@ function classifyPermissionInteraction({
   if (isQuestion) {
     const canAnswerQuestions = (
       decisionToolKind === DECISION_TOOL_KIND.ASK_USER_QUESTION
-      && (trustedAgentId === "claude-code" || trustedAgentId === "hermes" || trustedAgentId === "deepseek-harness")
+      && (trustedAgentId === "claude-code" || trustedAgentId === "hermes")
     ) || (
       decisionToolKind === DECISION_TOOL_KIND.CLARIFY
       && trustedAgentId === "hermes"
@@ -280,6 +279,17 @@ function classifyPermissionInteraction({
     // collision must defer instead of inheriting Claude's UI/capabilities.
     return makeInteraction(INTERACTION_INTENT.UNKNOWN, {
       allowDeny: isOpencodeFamily(trustedAgentId),
+      nativeFallback: true,
+    });
+  }
+
+  // DeepSeek Harness exposes a real blocking approval waterfall, so an
+  // explicit human Allow/Deny is actionable. Its tool taxonomy and native
+  // fallback semantics are not automation-audited: keep both global modes
+  // false. Session grants reuse this eligibility and therefore defer too.
+  if (trustedAgentId === "deepseek-harness") {
+    return makeInteraction(INTERACTION_INTENT.TOOL_APPROVAL, {
+      allowDeny: true,
       nativeFallback: true,
     });
   }

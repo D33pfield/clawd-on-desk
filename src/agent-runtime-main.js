@@ -64,10 +64,6 @@ function createAgentRuntimeMain(options = {}) {
   const debugLog = typeof options.debugLog === "function" ? options.debugLog : () => {};
   const loadCodexLogMonitor = options.loadCodexLogMonitor || (() => require("../agents/codex-log-monitor"));
   const loadCodexAgent = options.loadCodexAgent || (() => require("../agents/codex"));
-  const loadDeepSeekHarnessMonitor = options.loadDeepSeekHarnessMonitor
-    || (() => require("../agents/deepseek-harness-monitor"));
-  const loadDeepSeekHarnessAgent = options.loadDeepSeekHarnessAgent
-    || (() => require("../agents/deepseek-harness"));
   const codexSubagentClassifier = options.codexSubagentClassifier || new DefaultCodexSubagentClassifier();
   const localCodexSubagentClassifier = createProfileScopedClassifier(codexSubagentClassifier, "local");
   const getServer = options.getServer || (() => null);
@@ -81,7 +77,6 @@ function createAgentRuntimeMain(options = {}) {
   const clearCodexUserInputBubbles = options.clearCodexUserInputBubbles || (() => {});
 
   let codexMonitor = null;
-  let deepSeekHarnessMonitor = null;
   const codexTurnFence = createCodexTurnFence({ now, debugLog });
   const codexOfficialActivity = createCodexOfficialActivity({
     now,
@@ -171,12 +166,10 @@ function createAgentRuntimeMain(options = {}) {
 
   function startMonitorForAgent(agentId) {
     if (agentId === "codex" && codexMonitor) codexMonitor.start();
-    if (agentId === "deepseek-harness" && deepSeekHarnessMonitor) deepSeekHarnessMonitor.start();
   }
 
   function stopMonitorForAgent(agentId) {
     if (agentId === "codex" && codexMonitor) codexMonitor.stop();
-    if (agentId === "deepseek-harness" && deepSeekHarnessMonitor) deepSeekHarnessMonitor.stop();
   }
 
   function callServer(method, ...args) {
@@ -324,39 +317,8 @@ function createAgentRuntimeMain(options = {}) {
     return codexMonitor;
   }
 
-  function startDeepSeekHarnessMonitor() {
-    if (deepSeekHarnessMonitor) {
-      if (isAgentEnabled("deepseek-harness")) deepSeekHarnessMonitor.start();
-      return deepSeekHarnessMonitor;
-    }
-    try {
-      const { DeepSeekHarnessMonitor } = loadDeepSeekHarnessMonitor();
-      const dshAgent = loadDeepSeekHarnessAgent();
-      deepSeekHarnessMonitor = new DeepSeekHarnessMonitor(dshAgent, (sid, state, event, extra) => {
-        const sessionIdentity = resolveSessionIdentity(sid, "local");
-        updateSession(sessionIdentity.sessionId, state, event, {
-          ...(extra || {}),
-          agentId: "deepseek-harness",
-          profileId: sessionIdentity.profileId,
-          rawSessionId: sessionIdentity.rawSessionId,
-          headless: false,
-          platform: "webui",
-        });
-      });
-      if (isAgentEnabled("deepseek-harness")) {
-        deepSeekHarnessMonitor.start();
-      }
-    } catch (err) {
-      logWarn("Clawd: DeepSeek Harness monitor not started:", err && err.message);
-    }
-    return deepSeekHarnessMonitor;
-  }
-
   function cleanup() {
     if (codexMonitor && typeof codexMonitor.stop === "function") codexMonitor.stop();
-    if (deepSeekHarnessMonitor && typeof deepSeekHarnessMonitor.stop === "function") {
-      deepSeekHarnessMonitor.stop();
-    }
     resetLocalCodexLifecycleTracking();
   }
 
@@ -368,7 +330,6 @@ function createAgentRuntimeMain(options = {}) {
   return {
     getCodexSubagentClassifier: () => codexSubagentClassifier,
     startCodexLogMonitor,
-    startDeepSeekHarnessMonitor,
     startMonitorForAgent,
     stopMonitorForAgent,
     syncIntegrationForAgent,

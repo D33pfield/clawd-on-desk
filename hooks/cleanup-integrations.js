@@ -104,6 +104,11 @@ function buildTargetEnv(homeDir, options = {}) {
   } else if (options.ignoreInheritedReasonixHome) {
     delete env.REASONIX_HOME;
   }
+  if (typeof options.dshHome === "string" && options.dshHome.trim()) {
+    env.DSH_HOME = path.resolve(options.dshHome);
+  } else if (options.ignoreInheritedDshHome) {
+    delete env.DSH_HOME;
+  }
   if ((options.platform || process.platform) === "win32") {
     env.LOCALAPPDATA = options.localAppData || path.join(homeDir, "AppData", "Local");
     env.APPDATA = options.appData || path.join(homeDir, "AppData", "Roaming");
@@ -124,10 +129,17 @@ function resolveCopilotHomeForCleanup(homeDir, env, options = {}) {
 function buildCleanupOptionsForHome(homeDirInput, options = {}) {
   const explicitHomeDir = Boolean(homeDirInput || options.homeDir || options.userHome);
   const homeDir = normalizeHomeDir(homeDirInput || options.homeDir || options.userHome);
+  const explicitDshHome = typeof options.dshHome === "string" && options.dshHome.trim()
+    ? options.dshHome.trim()
+    : (options.env && typeof options.env.DSH_HOME === "string" && options.env.DSH_HOME.trim()
+      ? options.env.DSH_HOME.trim()
+      : null);
   const env = buildTargetEnv(homeDir, {
     ...options,
+    dshHome: explicitDshHome,
     ignoreInheritedHermesHome: explicitHomeDir && !options.hermesHome,
     ignoreInheritedReasonixHome: explicitHomeDir && !options.reasonixHome,
+    ignoreInheritedDshHome: explicitHomeDir && !explicitDshHome,
   });
   const backup = options.backup !== false;
   const silent = options.silent !== false;
@@ -166,9 +178,8 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       },
       "deepseek-harness": {
         ...common,
-        // Zero-touch integration: Clawd writes nothing into DSH, so cleanup
-        // only flips the prefs flags. The entry exists so About → Cleanup and
-        // Settings → Uninstall route here instead of reporting "no cleaner".
+        homeDir,
+        env,
         dshHome: env.DSH_HOME || path.join(homeDir, ".dsh"),
       },
       "gemini-cli": {
@@ -383,7 +394,7 @@ function notesFromResult(agentId, result) {
   return notes;
 }
 
-function cleanupIntegrations(options = {}) {
+async function cleanupIntegrations(options = {}) {
   const plan = buildCleanupOptionsForHome(options.homeDir || options.userHome, options);
   const agents = [];
   let entriesRemoved = 0;
@@ -444,7 +455,7 @@ function cleanupIntegrations(options = {}) {
         agent.error = "No cleaner registered";
         skipped++;
       } else {
-        const result = clean(cleanOptions);
+        const result = await clean(cleanOptions);
         const removed = removedCountFromResult(result);
         const changed = changedFromResult(result);
         agent.removed = removed;
@@ -536,15 +547,17 @@ function printResult(result) {
 
 if (require.main === module) {
   let options;
-  try {
-    options = parseArgs(process.argv.slice(2));
-    const result = cleanupIntegrations(options);
-    if (!options.silent) printResult(result);
-    if (result.summary.failed > 0 && !options.failOpen) process.exitCode = 1;
-  } catch (err) {
-    console.error(err && err.message ? err.message : err);
-    if (!options || !options.failOpen) process.exitCode = 1;
-  }
+  Promise.resolve()
+    .then(async () => {
+      options = parseArgs(process.argv.slice(2));
+      const result = await cleanupIntegrations(options);
+      if (!options.silent) printResult(result);
+      if (result.summary.failed > 0 && !options.failOpen) process.exitCode = 1;
+    })
+    .catch((err) => {
+      console.error(err && err.message ? err.message : err);
+      if (!options || !options.failOpen) process.exitCode = 1;
+    });
 }
 
 module.exports = {

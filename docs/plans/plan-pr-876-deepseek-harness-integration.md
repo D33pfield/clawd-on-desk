@@ -1,6 +1,6 @@
 # Plan: 修复 PR #876 — DeepSeek Harness 集成
 
-Status: planning, implementation not started
+Status: implementation and non-API Windows smoke complete; API-backed session/approval smoke pending
 
 Created: 2026-08-14
 
@@ -48,8 +48,14 @@ Harness（下文简称 DSH）的公开集成 seam 已经足以支持第一版。
 
 ## 2. 已核对的上游事实
 
-本计划在 2026-08-14 对照了 DSH 官方仓库
-[`master@47f943859bef60e4160492346772ded9b24f765a`](https://github.com/deepseek-ai/deepseek-harness/tree/47f943859bef60e4160492346772ded9b24f765a)：
+本计划在 2026-08-14 先对照 DSH 官方仓库
+[`master@47f943859bef60e4160492346772ded9b24f765a`](https://github.com/deepseek-ai/deepseek-harness/tree/47f943859bef60e4160492346772ded9b24f765a)
+冻结公开 seam，再逐文件复核实际 npm 发布物
+`@deepseek-ai/dsh@0.1.0-rc.6`（integrity
+`sha512-brpZfED7ieRa2PQ5tUxMhHrM1pb2CmKFVM/f6yMULBDMicahk+Z2OsHgTwTDnoiZm23Ftu9rQz0NN4pflaoJcg==`）
+及其内嵌 rc.6 packages。npm registry 没有 `0.1.0-rc.5`，且 rc.6 发布物未携带
+`gitHead`；因此 `47f9438` 只作为源码调查基线，本文不声称它是 rc.6 的 tag/commit
+映射。rc.6 编译产物确认下列 contract 仍成立：
 
 - DSH 仍标为 developer preview，上游明确保留 breaking changes 的可能。
 - 官方安装入口为 `dsh plugin --profile <name> add <package-or-path>`。
@@ -83,6 +89,9 @@ Harness（下文简称 DSH）的公开集成 seam 已经足以支持第一版。
   接管、修复或删除该 fallback。
 - DSH projection checkpoint 当前包含 `openStep`、`pendingCalls`、session list
   metadata 等字段，但它不是稳定的实时事件 API，首发不依赖它。
+- rc.6 的 home-level `$DSH_HOME/cordis.patch.yml` user layer 优先于 profile layer；
+  因而 profile rows 和 package resolution 只能证明 disk health，不能证明运行时最终
+  activation。Install、Repair 与 Doctor 必须保留 restart 提示和 disk-only 边界。
 
 这些只是本计划的调查快照，不构成永久兼容承诺。实现必须记录并测试一个明确的
 DSH 支持版本区间；不能把“当前 master 可用”当成无版本上限的 contract。
@@ -372,13 +381,19 @@ Node 文件；无论哪种方式，都要用 shared contract test 防止协议�
 
 ```text
 ~/.clawd/integrations/deepseek-harness/
-  generations/
-    <bundle-hash>/
-      package.json
-      cordis.patch.yml
-      lib/index.js
-      clawd-manifest.json
+  homes/
+    <canonical-dsh-home-hash>/
+      generations/
+        <bundle-hash>/
+          package.json
+          cordis.patch.yml
+          lib/index.js
+          clawd-manifest.json
 ```
+
+namespace 必须由 real-or-resolved canonical `DSH_HOME` 稳定派生；多个 DSH_HOME
+不得共享可删除 generation、mutation lock 或 inspection latch。显式 alternate-home
+cleanup 只进入目标 home 的 namespace。
 
 `clawd-manifest.json` 至少记录：
 
@@ -564,7 +579,9 @@ runtime activation health 再作为与 disk health 分离的状态接入。
 
 ### Phase 0 — 冻结上游 contract（合并阻断）
 
-- 安装计划支持的具体 DSH 版本，记录 `dsh --version`、包版本和 commit。
+- 安装计划支持的具体 DSH 版本，记录 `dsh --version`、registry artifact、integrity；
+  若发布物没有可验证的 `gitHead`，必须把 source-audit baseline 与发布物身份分开记录，
+  不得虚构 tag/commit 映射。
 - 写最小 probe plugin，只使用公开 API。
 - 捕获并脱敏 session event、approval request、abort、web native fallback fixture。
 - 验证 `approval/request` prepend + `next()` 的真实 ordering 和返回值。
@@ -585,7 +602,12 @@ runtime activation health 再作为与 disk health 分离的状态接入。
   Clawd 测试只能观察它未被触碰，不能把它纳入 managed cleanup。
 - 验证 profile 缺失时官方 CLI 的初始化副作用，以及 pnpm missing / incompatible
   的真实 exit code 和 stderr。
-- 明确 supported DSH version range；不兼容版本不加载 Clawd bridge，DSH 保持原生 UI。
+- 明确 supported DSH version range；安装器、startup sync 与 Doctor 对不兼容版本
+  fail closed，不执行 profile mutation。DSH 当前没有供 external plugin 可靠读取 host
+  version 的公开 runtime seam：已安装 bridge 若遇到宿主原地升级，无法在 plugin 内兑现
+  “未知版本绝不加载”的强保证；这必须作为 experimental residual 明示，直到上游提供
+  version/activation handshake。adapter 仍须 non-throwing，approval 失败必须 `next()`
+  回 DSH 原生 UI。
 - 单独向 DSH 上游确认 user question 是否有公开 middleware roadmap；不阻塞普通
   approval 首发。
 
@@ -709,6 +731,8 @@ adapter 重写，projection monitor 不进入首发。
   实例竞争时一个 fail closed。
 - 两个 Clawd 版本顺序获得 lock：旧版本不降级新 generation，新版本按规则升级旧
   generation，同版本异 hash fail closed；不能只测同时竞争。
+- 两个 canonical `DSH_HOME` 安装相同 bundle 时落入不同 namespace；卸载或 About
+  cleanup 其中一个 home 后，另一个 home 的 generation 与 disk health 保持完整。
 
 ### Plugin transport
 
@@ -803,8 +827,11 @@ home resolution 不写死 Windows；在 README 宣称某个 POSIX 平台已支�
   规则一致。
 - 首版 UI 标注 `DeepSeek Harness (web, experimental)`；DSH developer preview
   阶段不承诺无限向后/向前兼容。
-- bridge manifest 声明 protocol version；未知 DSH version 或未知 public API shape
-  不注册 Clawd listener，DSH 保持原生 UI；Clawd 不从 projection 猜状态。
+- bridge manifest 声明 protocol version；Clawd 的 disk mutation 与 Doctor 只接受冻结的
+  DSH version。由于上游尚无公开 runtime host-version seam，已安装 bridge 遇到宿主原地
+  升级时不能可靠地在注册 listener 前自我禁用；首发将此列为 experimental residual，
+  依靠 non-throwing observer、approval `next()` 与明确 restart/compatibility warning
+  保持 DSH 原生流程可恢复。Clawd 不从 projection 猜状态。
 - 不自动下载 DSH，不修改用户 approval preset，不接管 userQuestions provider。
 - 一旦发现上游 public event shape 漂移，状态 adapter fail silent，Doctor 给出明确
   compatibility warning；不能让 plugin exception阻断 DSH。
@@ -827,24 +854,88 @@ home resolution 不写死 Windows；在 README 宣称某个 POSIX 平台已支�
 
 ## 15. Definition of Done
 
-- [ ] Phase 0 的真实 DSH contract fixture 和版本范围已记录。
-- [ ] 没有任何 DSH 私有字段访问或递归未托管 timer。
-- [ ] bridge 从动态 Clawd 端口工作，并验证 server identity。
-- [ ] packaged app 使用稳定 managed bundle，不依赖易变安装路径。
-- [ ] multi-instance mutation 有 queue/lock 和锁内版本仲裁；旧 Clawd 不自动降级
+- [ ] Phase 0 的真实 DSH contract fixture 和版本范围已记录（rc.6 artifact/版本范围已
+      冻结；API-backed session/approval fixture 待补）。
+- [x] 没有任何 DSH 私有字段访问或递归未托管 timer。
+- [x] bridge 从动态 Clawd 端口工作，并验证 server identity。
+- [x] packaged app 使用稳定 managed bundle，不依赖易变安装路径。
+- [x] multi-instance mutation 有 queue/lock 和锁内版本仲裁；旧 Clawd 不自动降级
       健康的新 generation。
-- [ ] Settings Install 只有在 bridge 完整验证后才提交 installed。
-- [ ] startup sync、Doctor、Uninstall、About cleanup 共用 ownership verifier，并保留
+- [x] Settings Install 只有在 bridge 完整验证后才提交 installed。
+- [x] startup sync、Doctor、Uninstall、About cleanup 共用 ownership verifier，并保留
       各自既有 transaction / best-effort policy。
-- [ ] plugin-only state 有 FIFO、event_seq 和 unload/dispose fence。
+- [x] plugin-only state 有 FIFO、event_seq 和 unload/dispose fence。
 - [ ] lifecycle observer non-throwing，created listener 不能 veto DSH session；exclusive
       session watermark 与 compaction 后 seq 已由真实 fixture 验证。
-- [ ] projection monitor 已从首发 diff 移除并记录为 evidence-gated follow-up。
-- [ ] DSH 使用独立 blocking permission adapter，不经过 shared branch 的隐式决定。
+- [x] projection monitor 已从首发 diff 移除并记录为 evidence-gated follow-up。
+- [x] DSH 使用独立 blocking permission adapter，不经过 shared branch 的隐式决定。
 - [ ] 普通 approval 的 allow / deny / no-decision / abort / native fallback 已真机验证。
 - [ ] DSH 人工 Allow/Deny 可用，但 auto-tools、unattended 和 per-session grant 首发均
       fail-closed DEFER。
-- [ ] `ask_user_question` 明确保留原生 UI。
-- [ ] full test suite、packaged Windows smoke 和文档完成。
+- [x] `ask_user_question` 明确保留原生 UI。
+- [x] full test suite、packaged Windows smoke 和文档完成。
 - [ ] PR 描述准确标注 web-only、Windows-verified experimental、plugin-only 和
       deferred scope。
+
+## 16. 实施与验证记录（2026-08-14）
+
+冻结与 artifact 证据：
+
+- npm registry 没有计划最初引用的 `0.1.0-rc.5`；实际安装并冻结
+  `@deepseek-ai/dsh@0.1.0-rc.6`，integrity 为
+  `sha512-brpZfED7ieRa2PQ5tUxMhHrM1pb2CmKFVM/f6yMULBDMicahk+Z2OsHgTwTDnoiZm23Ftu9rQz0NN4pflaoJcg==`。
+- 已逐项复核 rc.6 编译发布物中的 approval request/outcome/waterfall、session header/
+  seq/lifecycle、installation-first/profile-second resolution、pnpm plugin add/remove 和
+  scope dispatch；`47f9438` 仅保留为源码调查基线，不冒充 rc.6 commit 映射。
+
+自动化与 review：
+
+- `npm test`：7,907 tests，7,872 pass，0 fail，35 conditional skip。
+- `npm run verify:electron`、`npm run verify:release`、`npm run audit:assets` 通过；asset
+  audit 只有仓库既有的 tracked-tree 51.40 MiB warning。
+- 独立子代理多轮增量 review 找到并关闭 double-next、lifetime abort、equal-watermark
+  restart、Windows packaged Node runner、automation eligibility、ownership/latch/version
+  仲裁、多 DSH_HOME generation、approval reason display 等高严重度问题。
+- Claude 最终只读复审提出的唯一代码 Major（崩溃遗留 mutation lock 永久锁死）已按
+  fail-closed 语义关闭：仅 managed owner/schema/token/PID/timestamp 全部有效、年龄超过
+  两倍实际 operation timeout、且 OS PID probe 明确返回 `ESRCH` 时，才通过 sibling
+  atomic rename 接管；live PID、`EPERM`、unknown、corrupt/foreign owner 继续拒绝，并
+  向用户返回精确 lock path。并发接管测试证明最多一个 contender 获锁。
+- 同轮 Minor 已收口：无全局 CLI 的 npx-only generation 在锁内写 owned reference，
+  cleanup 不会删除尚待用户执行的命令目标；marker 显式记录版本属于 staging assumption；
+  Feishu/Lark 的 DSH 审批卡不再显示无意义的 terminal action；flat fallback ownership
+  与人工恢复边界已写入 guide。增量 review 又把 owner-recorded timeout、canonical lock
+  exact cleanup、malformed/foreign/concurrent manual-reference preservation，以及 alternate
+  home 手动命令显式 pin `DSH_HOME` 纳入 contract。DSH focused 回归 118/118 通过。当前代码 review 无已知
+  Blocker/Major；API-backed smoke 仍是 ship gate，而不是用 unit test 代替的已验证事实。
+
+Windows x64 non-API 真机：
+
+- 全局安装 `dsh 0.1.0-rc.6`；所有 profile mutation 使用 workspace 内隔离
+  `DSH_HOME`，默认 `~/.dsh` 在验证后仍不存在。
+- 真实 `dsh plugin --profile web add` 生成 `link:` dependency 和 bundle row；marker、
+  supported range、artifact integrity、bundle hash 与 official profile winner 全部一致。
+- `dsh --profile web --dump-config` 出现 `@dsh-external/dsh-clawd-bridge`，实际
+  `dsh web --host 127.0.0.1 --port 0` 成功监听随机端口，证明 rc.6 能加载 plugin layer。
+- 真机发现 rc.6/pnpm remove 会删 manifest rows、但留下 profile-local managed junction。
+  Uninstall 因此新增极窄的 ownership cleanup：只在 lock 内、rows 均消失、link 的
+  realpath 精确命中当前 DSH_HOME namespace 中 marker/hash 完整的 generation 时执行
+  `unlink`；普通目录、foreign target、flat fallback、installation anchor 都 fail closed。
+  fresh add/remove 与 unknown-result recovery 最终均为 `absent`、无 latch。
+- `npm run build:win:x64` 成功；真实 bridge 来源解析到
+  `dist/win-unpacked/resources/app.asar.unpacked/hooks/dsh-clawd-bridge`。用该 packaged
+  source 重跑 add/config composition/web boot/remove 全部通过。
+- `npm run audit:native-package -- --app-root dist\\win-unpacked --target windows-x64`
+  通过，只有 policy 允许的 electron-builder ia32 `elevate.exe` 例外。
+
+仍需用户回来提供 API 配置后完成：真实 session lifecycle/state、普通 approval 的
+Allow Once / Deny / 204 no-decision / disconnect / abort / native web fallback，以及
+auto-tools 与 unattended 开启时仍 DEFER 的 UI 矩阵。在这些证据完成前，不把 approval
+路径写成 Windows-verified。
+
+已知低风险 residual：若 agent 在禁用期间恰好漏收 `SessionEnd`，随后同一 DSH
+session 以完全相同 watermark 重载，server fence 会把重复 `SessionStart` 当作 active
+lifecycle restart 丢弃；下一条单调递增的 live event 仍会被接受，因此这是短暂可见性
+gap，不会产生权限决定或把旧事件倒序复活。直接在 enable 时清 fence 会扩大旧 in-flight
+event 被重新接受的窗口，首发保留当前更保守的 stale-event 边界，后续可结合 runtime
+generation handshake 再消除该 gap。
