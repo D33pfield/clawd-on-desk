@@ -1,9 +1,9 @@
 # Plan: Identity-first subagent lifecycle tracking (#862)
 
-> Status: **Implemented locally; core D0 complete.** Windows confirmation and
-> exact-head re-review remain open merge gates.
-> Supersedes the implementation currently on PR #877 (head `f38414ca`), which
-> must not be merged — it replaces the reported defect with a worse one (§2.1).
+> Status: **Implemented; core D0 and Windows confirmation complete.** Final
+> exact-head re-review remains an open merge gate.
+> Supersedes PR #877's original implementation at head `f38414ca`, which must
+> not be restored — it replaces the reported defect with a worse one (§2.1).
 > Date: 2026-08-14 (design revised after second external review)
 > Origin: Issue #862; PR #877; four independent adversarial reviews (one external
 > Codex review, three internal agents) that converged on the same root problem,
@@ -258,10 +258,10 @@ does rather than what a doc implies.
 ### 4.3 Platform
 
 macOS is adequate for pinning the wire protocol — hook payloads are platform
-independent. Windows still needs separate confirmation that the hooks are
+independent. Windows therefore needed separate confirmation that the hooks are
 *invoked* the same way: `hooks/install.js` has had Windows-specific registration
 differences before (the EncodedCommand work in PR #805), and the original report
-came from Windows 11.
+came from Windows 11. §4.5 records that completed gate.
 
 ### 4.4 Authenticated Desktop capture (2026-08-14)
 
@@ -300,9 +300,22 @@ reopening the Desktop session did not emit `source=resume`. The maintainer also
 manually verified a Desktop run where a new `UserPromptSubmit` arrived before
 the existing child's `SubagentStop`; no raw sampler artifact was retained for
 that observation. Nested delivery, subagent-scoped `SessionEnd`, resume, and
-interruption remain non-blocking compatibility follow-ups. Windows hook
-invocation remains a platform gate because the original report came from
-Windows 11.
+interruption remain non-blocking compatibility follow-ups.
+
+### 4.5 Windows confirmation (2026-08-14)
+
+On real Windows 11 hardware, Claude Code `2.1.232` loaded the isolated sampler
+from PR head `0bb7df97` and completed a read-only two-child concurrent run. The
+capture contained two distinct synthetic Agent tool-use IDs, two distinct
+native child IDs, matched native stops, and matched Agent tool results. No
+field outside the sampler whitelist was recorded.
+
+The focused lifecycle/hook/route/renderer suite initially passed 757/759: the
+only failures assumed a POSIX `0600` mode on NTFS. Commit `d3c5851b` scoped that
+assertion to POSIX and documented the inherited Windows ACL boundary. The exact
+Windows rerun then passed 759/759 with zero failures or skips. The reporter's
+existing dirty repositories, normal hooks, and running Clawd process were not
+modified.
 
 ---
 
@@ -542,7 +555,7 @@ not).
    branch, and blocked-stop/background/compact/clear now have real Desktop Local
    evidence. The maintainer separately confirmed the live-child prompt ordering;
    nesting, scoped end, resume, and interruption are follow-ups. Windows
-   invocation remains the platform gate.
+   invocation is confirmed by §4.5.
 2. **Provenance** — whichever of §5.1's two options D0 justifies: the inference
    rule as a floor, or an explicit `raw_hook_event` /
    `subagent_lifecycle_source` stamp.

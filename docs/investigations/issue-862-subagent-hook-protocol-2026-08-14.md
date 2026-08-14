@@ -3,16 +3,19 @@
 ## Status
 
 The key native-identity, blocked-stop, background-after-parent-stop, compact,
-and clear cells are now confirmed on authenticated Claude Desktop Code
-**Local** sessions. The standalone CLI remains unauthenticated, and the
-remaining compatibility matrix is still partial.
+and clear cells are confirmed on authenticated Claude Desktop Code **Local**
+sessions. Windows hook invocation and the two-child identity/order path are
+also confirmed on real Windows 11 hardware. The remaining compatibility matrix
+is intentionally partial.
 
-- Claude Code: `2.1.211`
+- macOS Claude Code: `2.1.211`
 - `claude auth status`: `loggedIn=false`, `authMethod=none`
 - A real isolated `claude -p` capture attempt stopped at `Not logged in · Please run /login`. It emitted only `UserPromptSubmit` followed by `SessionEnd(reason=other)`; no subagent lifecycle was reached.
 - Claude Desktop Local loaded a temporary project-level privacy-limited sampler
   and completed real concurrent, blocked-stop, background, compact, and clear
   runs.
+- Windows 11 Claude Code `2.1.232` loaded an isolated `--settings` sampler from
+  PR head `d3c5851b` and completed a real two-child concurrent run.
 - The temporary project hook was removed immediately after capture. `~/.claude/settings.json` was neither read nor modified; the existing `.claude/settings.local.json` was left unchanged.
 
 This selects the trusted native-ID implementation branch and satisfies the core
@@ -20,8 +23,7 @@ macOS D0 gate for #862. The maintainer separately confirmed a real Desktop run
 where a new `UserPromptSubmit` arrived before the existing child's
 `SubagentStop`; that observation did not retain a raw sampler artifact. Nested
 launch, subagent-scoped `SessionEnd`, resume, and interruption remain
-non-blocking compatibility follow-ups. Windows invocation is still a platform
-gate because the original report came from Windows 11.
+non-blocking compatibility follow-ups. The Windows platform gate is complete.
 
 ## Authenticated Desktop Local capture
 
@@ -107,6 +109,30 @@ boundary for this installed version. Merely leaving and reopening the session
 in the Desktop UI emitted no resume hook; restarting the app was intentionally
 not attempted because another unrelated Claude session was running.
 
+## Windows 11 SSH capture
+
+The reporter's Windows machine (`RULLER-PC`, Windows 11 `10.0.26200`) ran Claude
+Code `2.1.232` and Node `24.12.0`. A separate temporary checkout was pinned to
+PR head `0bb7df97`, then fast-forwarded to `d3c5851b` after the Windows-only
+permission-mode assertion below was repaired. Neither of the reporter's dirty
+working trees nor the running `D:\animation` Electron process was changed.
+
+One read-only `claude --print --settings <isolated-file>` run launched exactly
+two concurrent Explore children and produced 16 privacy-limited records:
+
+- two distinct `PreToolUse(Agent)` tool-use IDs;
+- two distinct native `SubagentStart` child IDs;
+- two matching native `SubagentStop` child IDs;
+- two matching `PostToolUse(Agent)` tool-use IDs;
+- no fields outside the sampler whitelist.
+
+The command returned `WINDOWS_862_DONE` with exit code zero. The first focused
+test run exposed two sampler-only failures because NTFS reports inherited ACLs
+as mode `0666` even after Node requests `0600`. Commit `d3c5851b` limits the
+POSIX mode assertion to platforms that implement it and documents the Windows
+ACL boundary. The exact `d3c5851b` rerun then passed the focused
+lifecycle/hook/route/renderer suite: 759 passed, zero failed, zero skipped.
+
 ## Primary contract evidence
 
 Anthropic's current hook reference specifies:
@@ -154,7 +180,7 @@ permissions, cap, and one-shot blocker. The temporary settings and raw log used
 for this Desktop run were reviewed and deleted after the evidence above was
 recorded. Optional sampler follow-ups remain for nesting, a raw capture of the
 maintainer-verified live-child `UserPromptSubmit`, subagent-scoped `SessionEnd`,
-resume, and interruption. Windows invocation remains the platform gate.
+resume, and interruption. Windows invocation is now confirmed.
 
 ## Remaining evidence
 
@@ -170,4 +196,5 @@ The core identity/order cells are complete. Current evidence and follow-ups are:
    (real Desktop behaviour, without a retained raw sampler log);
 7. nested Agent/Task delivery, subagent-scoped end, resume, and interruption are
    non-blocking compatibility follow-ups;
-8. Windows hook invocation remains the platform gate.
+8. ✅ Windows 11 hook invocation produced two distinct native child IDs and
+   passed the focused 759-test lifecycle/renderer suite.
