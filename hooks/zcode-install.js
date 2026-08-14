@@ -13,7 +13,7 @@
 //      omit the matcher because they do not need tool filtering.
 // ZCode supports exactly 7 events: SessionStart, UserPromptSubmit, PreToolUse,
 // PermissionRequest, PostToolUse, PostToolUseFailure, Stop (no SessionEnd /
-// Notification). Phase 1 registers the 6 state-only events (no PermissionRequest).
+// Notification). All 7 are registered — see ZCODE_HOOK_EVENTS below.
 
 const fs = require("fs");
 const path = require("path");
@@ -73,9 +73,10 @@ const CLAUDE_MARKER = "clawd-hook.js";
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".zcode");
 const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "cli", "config.json");
 
-// The 6 state-only events ZCode supports (PermissionRequest, the 7th, is
-// reserved for a future Phase 2 permission bubble). SessionEnd / Notification
-// are NOT supported by ZCode — including them makes config.json fail to load.
+// ZCode supports exactly 7 events: SessionStart, UserPromptSubmit, PreToolUse,
+// PermissionRequest, PostToolUse, PostToolUseFailure, Stop (no SessionEnd /
+// Notification). Phase 2 registers all 7: the six state events plus the
+// blocking PermissionRequest permission-bubble hook.
 const ZCODE_HOOK_EVENTS = [
   "SessionStart",
   "UserPromptSubmit",
@@ -83,6 +84,7 @@ const ZCODE_HOOK_EVENTS = [
   "PostToolUse",
   "PostToolUseFailure",
   "Stop",
+  "PermissionRequest",
 ];
 
 function isAbsoluteNodeBin(value) {
@@ -95,11 +97,14 @@ function isAbsoluteNodeBin(value) {
   );
 }
 
-function timeoutMsForZcodeEvent() {
+function timeoutMsForZcodeEvent(event) {
   // State-only process hooks are synchronous, but their own bounded work is
   // much shorter: stdin 400ms + a Windows process snapshot capped at 3s + a
   // 100ms local POST. Keep enough cold-start headroom without allowing six
   // events to freeze ZCode for 30s each if a hook wedges.
+  //
+  // PermissionRequest blocks on the local bubble / remote approval and needs
+  // the same budget qwen uses (600s hook vs 590s HTTP wait).
   //
   // IMPORTANT: ZCode's hook schema differs from Claude Code / Qwen in timeout
   // units. The `timeout` field is in SECONDS (internally ×1000), so writing
@@ -107,13 +112,14 @@ function timeoutMsForZcodeEvent() {
   // Use `timeoutMs` (milliseconds) explicitly — it also takes precedence over
   // `timeout`. (Qwen's `timeout: 30000` is millisecond-semantic because Qwen
   // uses the Claude Code schema; do NOT copy that field across.)
+  if (event === "PermissionRequest") return 600000;
   return 8000;
 }
 
-// ZCode treats a missing / empty / "*" matcher as match-all. State-only hooks
-// do not need tool filtering, so use the smallest canonical form and omit it.
-// Kept as a helper for symmetry with other installers and for a future Phase 2
-// PermissionRequest matcher.
+// ZCode treats a missing / empty / "*" matcher as match-all. Clawd's hooks do
+// not filter by tool name — including PermissionRequest, where the match value
+// is the tool name and we intentionally answer for every tool — so omit the
+// matcher everywhere.
 function matcherForZcodeEvent() {
   return null;
 }
@@ -247,7 +253,7 @@ function buildZcodeProcessHook(nodeBin, hookScript, event, options = {}) {
     type: "process",
     command: nodeBin,
     args: [hookScript, event],
-    timeoutMs: timeoutMsForZcodeEvent(),
+    timeoutMs: timeoutMsForZcodeEvent(event),
   };
   if (options.enabled === false) hook.enabled = false;
   return hook;
@@ -309,10 +315,11 @@ function isDesiredHookEntry(entry, desiredHook, event, options = {}) {
     && hook.args.length === desiredHook.args.length
     && hook.args.every((arg, index) => arg === desiredHook.args[index])
     && (hook.enabled === false) === (options.enabled === false)
-    // Must use timeoutMs (ms). A pre-fix entry carrying `timeout: 30000`
-    // (8.3h under ZCode's seconds-semantics) is treated as not-desired so a
-    // re-run rewrites it into the correct timeoutMs form.
-    && hook.timeoutMs === timeoutMsForZcodeEvent()
+    // Must use the per-event timeoutMs (ms). A pre-fix entry carrying
+    // `timeout: 30000` (8.3h under ZCode's seconds-semantics) — or a state
+    // timeout on PermissionRequest — is treated as not-desired so a re-run
+    // rewrites it into the correct timeoutMs form.
+    && hook.timeoutMs === timeoutMsForZcodeEvent(event)
   );
 }
 

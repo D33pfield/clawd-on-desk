@@ -4,8 +4,14 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const {
+  ZCODE_PERMISSION_HTTP_TIMEOUT_MS,
+  buildPermissionBody,
   buildStateBody,
+  buildZcodePermissionOutput,
+  normalizeToolMatchValue,
   run,
+  sanitizeZcodePermissionDecision,
+  sanitizeZcodePermissionOutput,
   stdinParseErrorCategory,
 } = require("../hooks/zcode-hook");
 
@@ -112,3 +118,168 @@ describe("ZCode hook PID lifecycle", () => {
     assert.strictEqual(stdinParseErrorCategory(null), null);
   });
 });
+
+describe("ZCode hook PermissionRequest path", () => {
+  it("builds a bounded permission body with the zcode session namespace", () => {
+    let context = null;
+    const body = buildPermissionBody("PermissionRequest", {
+      session_id: "s1",
+      cwd: "/repo",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_use_id: "tool-1",
+      permission_mode: "default",
+      permission_suggestions: [{ type: "addRules" }],
+    }, (received) => {
+      context = received;
+      return { stablePid: 101, agentPid: 202 };
+    });
+
+    assert.deepStrictEqual(context, {
+      namespace: "zcode",
+      sessionId: "s1",
+      cacheCwd: "/repo",
+      lifecycle: "event",
+      cacheable: true,
+    });
+    assert.strictEqual(body.agent_id, "zcode");
+    assert.strictEqual(body.session_id, "zcode:s1");
+    assert.strictEqual(body.tool_name, "Bash");
+    assert.deepStrictEqual(body.tool_input, { command: "npm test" });
+    assert.strictEqual(body.tool_use_id, "tool-1");
+    assert.strictEqual(body.permission_mode, "default");
+    assert.strictEqual(body.source_pid, 101);
+    assert.strictEqual(body.agent_pid, 202);
+    // Suggestions are not forwarded to the bubble (qwen parity, later phase).
+    assert.deepStrictEqual(body.permission_suggestions, []);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "state"), false);
+  });
+
+  it("fails closed to the state path when the tool name is missing or unknown", async () => {
+    for (const payload of [
+      { session_id: "s1", tool_input: {} },
+      { session_id: "s1", tool_name: "   ", tool_input: {} },
+      { session_id: "s1", tool_name: "unknown", tool_input: {} },
+      { session_id: "s1", tool_name: "Unknown", tool_input: {} },
+    ]) {
+      assert.strictEqual(buildPermissionBody("PermissionRequest", payload, () => ({})), null);
+    }
+
+    let postedState = null;
+    const result = await run({
+      hook_event_name: "PermissionRequest",
+      session_id: "s1",
+      tool_name: "unknown",
+    }, null, {
+      resolvePid: () => ({}),
+      postState(bodyStr, _options, callback) {
+        postedState = JSON.parse(bodyStr);
+        callback(true, 23333);
+      },
+    });
+
+    assert.strictEqual(result.permission, undefined);
+    assert.strictEqual(postedState.state, "notification");
+    assert.strictEqual(postedState.event, "PermissionRequest");
+    assert.strictEqual(result.stdout, "{}");
+  });
+
+  it("returns null for non-permission events", () => {
+    assert.strictEqual(buildPermissionBody("PreToolUse", {
+      session_id: "s1",
+      tool_name: "Bash",
+    }, () => ({})), null);
+  });
+
+  it("emits only the minimal ZCode-legal decision forms", () => {
+    assert.strictEqual(buildZcodePermissionOutput({ behavior: "allow" }),
+      '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}');
+    assert.strictEqual(buildZcodePermissionOutput({ behavior: "deny", message: "not allowed" }),
+      '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"not allowed"}}}');
+    // allow never carries a message; unknown behaviors are no-decisions.
+    assert.strictEqual(buildZcodePermissionOutput({ behavior: "allow", message: "x" }),
+      '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}');
+    assert.strictEqual(buildZcodePermissionOutput({ behavior: "ask" }), "{}");
+    assert.strictEqual(buildZcodePermissionOutput(null), "{}");
+  });
+
+  it("sanitizes server responses against ZCode's strict union schema", () => {
+    // Legal-but-unwanted fields (interrupt / updatedInput / permissionUpdates)
+    // must be stripped, not forwarded.
+    assert.strictEqual(
+      sanitizeZcodePermissionOutput(
+        '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"no","interrupt":true}}}'
+      ),
+      '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"no"}}}'
+    );
+    assert.strictEqual(
+      sanitizeZcodePermissionOutput(
+        '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedInput":{"command":"evil"}}}}'
+      ),
+      '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
+    );
+    // Malformed bodies never leak through.
+    for (const raw of ["", "   ", "not json", "{}", "[]",
+      '{"hookSpecificOutput":{"hookEventName":"PreToolUse","decision":{"behavior":"allow"}}}']) {
+      assert.strictEqual(sanitizeZcodePermissionOutput(raw), "{}");
+    }
+    assert.deepStrictEqual(sanitizeZcodePermissionDecision({ behavior: "allow", updatedPermissions: [] }),
+      { behavior: "allow" });
+  });
+
+  it("blocks on /permission with the long budget and skips the state post", async () => {
+    let permissionCall = null;
+    const result = await run({
+      hook_event_name: "PermissionRequest",
+      session_id: "s1",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    }, null, {
+      resolvePid: () => ({}),
+      postState(_body, _options, callback) {
+        callback(true, 23333);
+        throw new Error("state must not post on the permission path");
+      },
+      postPermission(body, options, callback) {
+        permissionCall = { body: JSON.parse(body), options };
+        callback(true, 23333,
+          '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}');
+      },
+    });
+
+    assert.strictEqual(result.permission, true);
+    assert.strictEqual(result.permissionBehavior, "allow");
+    assert.strictEqual(result.posted, true);
+    assert.strictEqual(result.stdout,
+      '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}');
+    assert.strictEqual(permissionCall.body.agent_id, "zcode");
+    assert.strictEqual(permissionCall.options.timeoutMs, ZCODE_PERMISSION_HTTP_TIMEOUT_MS);
+    assert.strictEqual(permissionCall.options.probeTimeoutMs, 100);
+    assert.strictEqual(ZCODE_PERMISSION_HTTP_TIMEOUT_MS, 590000);
+  });
+
+  it("returns the exact no-decision stdout for failed permission posts", async () => {
+    for (const responseBody of [null, "", "garbage"]) {
+      const result = await run({
+        hook_event_name: "PermissionRequest",
+        session_id: "s1",
+        tool_name: "Bash",
+      }, null, {
+        resolvePid: () => ({}),
+        postPermission(_body, _options, callback) {
+          callback(false, null, responseBody);
+        },
+      });
+      assert.strictEqual(result.stdout, "{}");
+      assert.strictEqual(result.permissionBehavior, null);
+    }
+  });
+
+  it("normalizes oversized tool input the same way as the state path", () => {
+    const huge = "x".repeat(500);
+    const normalized = normalizeToolMatchValue({ command: huge });
+    assert.strictEqual(normalized.command.length, 240);
+    assert.ok(normalized.command.endsWith("..."));
+  });
+});
+

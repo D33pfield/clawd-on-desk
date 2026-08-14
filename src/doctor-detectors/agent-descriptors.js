@@ -209,7 +209,7 @@ const AGENT_DESCRIPTORS = Object.freeze([
     nested: true,
     hookEvents: zcode.ZCODE_HOOK_EVENTS,
     hookExecutorShape: "zcode-process",
-    processHookTimeoutMs: zcode.timeoutMsForZcodeEvent(),
+    processHookTimeoutMsForEvent: zcode.timeoutMsForZcodeEvent,
     // ZCode config-file hooks nest under hooks.events.* (NOT hooks.* like the
     // Claude/Qwen settings.json schema). Generic findHookCommandsForEvent reads
     // this to locate the per-event arrays; without it the doctor would scan the

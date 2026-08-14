@@ -195,6 +195,13 @@ function buildQwenCodePermissionResponseBody(decisionOrBehavior, message) {
   return buildCodexPermissionResponseBody(decisionOrBehavior, message);
 }
 
+// ZCode's PermissionRequest output schema accepts the same minimal union the
+// codex builder emits ({ behavior } allow / { behavior, message } deny) —
+// verified against ZCode 3.5.x's strict hook-output validation.
+function buildZcodePermissionResponseBody(decisionOrBehavior, message) {
+  return buildCodexPermissionResponseBody(decisionOrBehavior, message);
+}
+
 function sanitizeAntigravityPermissionDecision(decisionOrBehavior, message) {
   const source = typeof decisionOrBehavior === "string"
     ? { decision: decisionOrBehavior, reason: message }
@@ -1025,11 +1032,12 @@ function showPermissionBubble(permEntry) {
     permissionBubbleWindows.delete(bub);
     const idx = pendingPermissions.indexOf(permEntry);
     if (idx !== -1) {
-      // Qwen + Copilot can hand no-decision back to their native flow. Hermes
-      // has no native permission UI, so its opt-in plugin gate treats this as
-      // a retryable block. In every case we avoid fabricating a user denial.
-      // CC/CodeBuddy still get an explicit deny for this user-close action.
-      const behavior = (permEntry.isQwenCode || permEntry.isCopilotCli || permEntry.isHermes) ? "no-decision" : "deny";
+      // Qwen + Copilot + ZCode can hand no-decision back to their native flow.
+      // Hermes has no native permission UI, so its opt-in plugin gate treats
+      // this as a retryable block. In every case we avoid fabricating a user
+      // denial. CC/CodeBuddy still get an explicit deny for this user-close
+      // action.
+      const behavior = (permEntry.isQwenCode || permEntry.isCopilotCli || permEntry.isHermes || permEntry.isZcode) ? "no-decision" : "deny";
       resolvePermissionEntry(permEntry, behavior, "Bubble window closed by user");
     }
     repositionDependentBubbles();
@@ -1961,7 +1969,7 @@ function handleRemoteApprovalDecision(
       resolvePermissionEntry(permEntry, "deny", "User answered in terminal");
       return true;
     }
-    if (permEntry.isCodex || permEntry.isQwenCode || permEntry.isAntigravity) {
+    if (permEntry.isCodex || permEntry.isQwenCode || permEntry.isAntigravity || permEntry.isZcode) {
       resolvePermissionEntry(permEntry, "no-decision", "Go to terminal from remote approval");
       ctx.focusTerminalForSession(permEntry.sessionId, { fallbackEntry: buildPermissionFocusEntry(permEntry) });
     } else {
@@ -2142,6 +2150,18 @@ function applyPermissionSuggestion(perm, index, options = {}) {
       sendQwenCodeNoDecisionResponse(res, message || "fallback");
     } else {
       sendQwenCodePermissionResponse(res, {
+        behavior: behavior === "deny" ? "deny" : "allow",
+        message,
+      });
+    }
+    return;
+  }
+
+  if (permEntry.isZcode) {
+    if (behavior === "no-decision") {
+      sendZcodeNoDecisionResponse(res, message || "fallback");
+    } else {
+      sendZcodePermissionResponse(res, {
         behavior: behavior === "deny" ? "deny" : "allow",
         message,
       });
@@ -2364,6 +2384,25 @@ function sendQwenCodePermissionResponse(res, decisionOrBehavior, message) {
   return true;
 }
 
+function sendZcodeNoDecisionResponse(res, reason = "") {
+  return sendNoDecisionResponse(res, reason, "zcode");
+}
+
+function sendZcodePermissionResponse(res, decisionOrBehavior, message) {
+  if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
+  const responseBody = buildZcodePermissionResponseBody(decisionOrBehavior, message);
+  if (responseBody === "{}") {
+    return sendZcodeNoDecisionResponse(res, "invalid decision");
+  }
+  permLog(`zcode response: ${responseBody}`);
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
+  });
+  res.end(responseBody);
+  return true;
+}
+
 function sendCopilotNoDecisionResponse(res, reason = "") {
   return sendNoDecisionResponse(res, reason, "copilot-cli");
 }
@@ -2514,6 +2553,17 @@ function handleDecide(event, behavior) {
       return;
     }
     resolvePermissionEntry(perm, "no-decision", `Unsupported Qwen bubble action: ${String(behavior)}`);
+    if (behavior === "deny-and-focus") {
+      ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+    }
+    return;
+  }
+  if (perm.isZcode) {
+    if (behavior === "allow" || behavior === "deny") {
+      resolvePermissionEntry(perm, behavior);
+      return;
+    }
+    resolvePermissionEntry(perm, "no-decision", `Unsupported ZCode bubble action: ${String(behavior)}`);
     if (behavior === "deny-and-focus") {
       ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
     }
@@ -2918,6 +2968,8 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
     sendCodexNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isQwenCode) {
     sendQwenCodeNoDecisionResponse(perm.res, reason || "permission-dismissed");
+  } else if (perm.isZcode) {
+    sendZcodeNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isCopilotCli) {
     sendCopilotNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isAntigravity) {
@@ -3085,6 +3137,7 @@ module.exports.__test = {
   sanitizeCodexPermissionDecision,
   buildCodexPermissionResponseBody,
   buildQwenCodePermissionResponseBody,
+  buildZcodePermissionResponseBody,
   sanitizeAntigravityPermissionDecision,
   buildAntigravityPermissionResponseBody,
   buildElicitationUpdatedInput,

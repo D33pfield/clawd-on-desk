@@ -56,7 +56,7 @@ afterEach(() => {
 });
 
 describe("ZCode hook installer", () => {
-  it("registers the Phase 1 state-only events under hooks.events with enabled:true and no matcher", () => {
+  it("registers all supported events under hooks.events with enabled:true and no matcher", () => {
     const settingsPath = makeTempConfigFile({
       model: "GLM-5.2",
       env: { KEEP: "me" },
@@ -113,6 +113,71 @@ describe("ZCode hook installer", () => {
     assert.strictEqual(result.updated, 0);
     assert.strictEqual(result.skipped, ZCODE_HOOK_EVENTS.length);
     assert.strictEqual(fs.readFileSync(settingsPath, "utf8"), before);
+  });
+
+  it("gives PermissionRequest the long blocking budget while state events stay short", () => {
+    const settingsPath = makeTempConfigFile({});
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.hooks.events.PermissionRequest[0].hooks[0].timeoutMs, 600000);
+    for (const event of ZCODE_HOOK_EVENTS.filter((e) => e !== "PermissionRequest")) {
+      assert.strictEqual(
+        settings.hooks.events[event][0].hooks[0].timeoutMs,
+        8000,
+        `${event}: state hooks keep the 8s budget`
+      );
+    }
+  });
+
+  it("upgrades a Phase 1 install by adding only PermissionRequest, leaving state events untouched", () => {
+    // Build the Phase 1 state with the REAL script paths: register once, then
+    // delete the PermissionRequest entry the way a Phase 1 install never had it.
+    const settingsPath = makeTempConfigFile({});
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    const phase1 = readJson(settingsPath);
+    delete phase1.hooks.events.PermissionRequest;
+    fs.writeFileSync(settingsPath, JSON.stringify(phase1, null, 2), "utf8");
+    const before = fs.readFileSync(settingsPath, "utf8");
+
+    const result = registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.added, 1);
+    assert.strictEqual(result.updated, 0);
+    assert.strictEqual(result.skipped, 6);
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.hooks.events.PermissionRequest[0].hooks[0].timeoutMs, 600000);
+    // The six pre-existing state events are byte-identical apart from the new
+    // key; re-serialize without PermissionRequest to compare.
+    const withoutPermission = readJson(settingsPath);
+    delete withoutPermission.hooks.events.PermissionRequest;
+    assert.strictEqual(JSON.stringify(withoutPermission, null, 2), before);
+  });
+
+  it("rewrites a PermissionRequest entry carrying the stale state timeout to the blocking budget", () => {
+    const settingsPath = makeTempConfigFile({
+      hooks: {
+        enabled: true,
+        events: {
+          PermissionRequest: [{
+            // Simulates a hand-edited or pre-Phase-2 entry: correct shape but
+            // the 8s state budget, which would kill the bubble wait early.
+            hooks: [buildZcodeProcessHook("/usr/local/bin/node", "/app/hooks/zcode-hook.js", "PermissionRequest")],
+          }],
+        },
+      },
+    });
+    // Force the stale 8000 explicitly (buildZcodeProcessHook already writes
+    // the per-event 600000, so overwrite it the way an old install would).
+    const raw = readJson(settingsPath);
+    raw.hooks.events.PermissionRequest[0].hooks[0].timeoutMs = 8000;
+    fs.writeFileSync(settingsPath, JSON.stringify(raw, null, 2), "utf8");
+
+    const result = registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.updated, 1);
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.hooks.events.PermissionRequest[0].hooks[0].timeoutMs, 600000);
   });
 
   it("preserves an explicit hooks.enabled:false and warns instead of enabling all user hooks", () => {

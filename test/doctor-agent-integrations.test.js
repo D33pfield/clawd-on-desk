@@ -293,7 +293,7 @@ function zcodeDescriptor() {
     nested: true,
     hookEvents: ZCODE_HOOK_EVENTS,
     hookExecutorShape: "zcode-process",
-    processHookTimeoutMs: timeoutMsForZcodeEvent(),
+    processHookTimeoutMsForEvent: timeoutMsForZcodeEvent,
     hookEventsContainer: ["hooks", "events"],
   });
 }

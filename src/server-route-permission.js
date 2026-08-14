@@ -107,6 +107,12 @@ function shouldBypassHermesBubble(ctx) {
   return !ctx.isAgentPermissionsEnabled("hermes");
 }
 
+function shouldBypassZcodeBubble(ctx) {
+  if (!arePermissionBubblesEnabled(ctx)) return true;
+  if (typeof ctx.isAgentPermissionsEnabled !== "function") return false;
+  return !ctx.isAgentPermissionsEnabled("zcode");
+}
+
 function shouldInterceptCodexPermission(ctx) {
   if (typeof ctx.isCodexPermissionInterceptEnabled !== "function") return true;
   return ctx.isCodexPermissionInterceptEnabled();
@@ -307,6 +313,27 @@ function buildHermesPermissionSessionOptions(data) {
   return options;
 }
 
+function buildZcodePermissionSessionOptions(data) {
+  const sourcePid = normalizePositiveInteger(data.source_pid);
+  const agentPid = normalizePositiveInteger(data.agent_pid);
+  const pidChain = Array.isArray(data.pid_chain)
+    ? data.pid_chain.filter((n) => Number.isFinite(n) && n > 0).map((n) => Math.floor(n))
+    : null;
+  const options = { agentId: "zcode" };
+
+  if (sourcePid) options.sourcePid = sourcePid;
+  if (agentPid) options.agentPid = agentPid;
+  if (pidChain && pidChain.length) options.pidChain = pidChain;
+  applyTerminalSessionOptions(options, data);
+  const cwd = normalizeString(data.cwd);
+  const host = normalizeString(data.host);
+  const model = normalizeString(data.model);
+  if (cwd) options.cwd = cwd;
+  if (host) options.host = host;
+  if (model) options.model = model;
+  return options;
+}
+
 function sendCodexPermissionNoDecision(res) {
   res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
   res.end();
@@ -318,6 +345,11 @@ function sendQwenCodePermissionNoDecision(res) {
 }
 
 function sendCopilotPermissionNoDecision(res) {
+  res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+  res.end();
+}
+
+function sendZcodePermissionNoDecision(res) {
   res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
   res.end();
 }
@@ -1055,6 +1087,121 @@ function handlePermissionPost(req, res, options) {
           removePendingPermission(ctx, permEntry, "qwen-bubble-failed");
           if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
           sendQwenCodePermissionNoDecision(res);
+          return;
+        }
+        startRemoteApproval(ctx, permEntry);
+        return;
+      }
+
+      // ── ZCode PermissionRequest branch ──
+      // ZCode's hook runner treats "{}"/no-decision (HTTP 204 here) as "show
+      // the native permission flow" and honors hookSpecificOutput decisions
+      // (verified against ZCode 3.5.x's strict output schema). Keep every
+      // fallback 204/no-decision so Clawd never denies tools on cleanup or
+      // disabled bubble paths (same contract as qwen).
+      if (agentId === "zcode") {
+        const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : "Unknown";
+        const interaction = classifyPermissionInteraction({
+          agentId: "zcode",
+          eventKind: "permission",
+          toolName,
+        });
+        const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
+        const toolInput = truncateDeep(rawInput);
+        const sessionIdentity = resolvePermissionSession(data.session_id, "zcode:default");
+        const sessionId = sessionIdentity.sessionId;
+        const toolUseId = normalizeHookToolUseId(
+          data.tool_use_id ?? data.toolUseId ?? data.toolUseID
+        );
+        const toolInputFingerprint = typeof data.tool_input_fingerprint === "string" && data.tool_input_fingerprint
+          ? data.tool_input_fingerprint
+          : buildToolInputFingerprint(rawInput);
+        const zcodeSessionOptions = {
+          ...buildZcodePermissionSessionOptions(data),
+          sessionAutomationIdentity,
+          ...trustedSessionFields(sessionIdentity),
+        };
+
+        if (ctx.doNotDisturb) {
+          recordRequestHookEvent.droppedByDnd();
+          ctx.permLog(`zcode DND -> no decision, native prompt fallback (tool=${toolName})`);
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+
+        if (isHeadlessPermissionRequest(ctx, sessionId, data, agentId)) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`zcode headless session=${sessionId} -> no decision, native prompt fallback (tool=${toolName})`);
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+
+        if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled("zcode")) {
+          recordRequestHookEvent.droppedByDisabled();
+          ctx.permLog(`zcode disabled -> no decision, native prompt fallback (tool=${toolName})`);
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+
+        if (shouldBypassZcodeBubble(ctx)) {
+          recordRequestHookEvent.accepted();
+          const reason = !arePermissionBubblesEnabled(ctx)
+            ? "permission bubbles disabled"
+            : "zcode bubbles disabled";
+          ctx.permLog(`${reason} -> no decision, native prompt fallback (tool=${toolName})`);
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+
+        const permEntry = {
+          res,
+          abortHandler: null,
+          suggestions: [],
+          sessionId,
+          ...trustedSessionFields(sessionIdentity),
+          bubble: null,
+          hideTimer: null,
+          toolName,
+          toolInput,
+          toolUseId,
+          toolInputFingerprint,
+          resolvedSuggestion: null,
+          createdAt: Date.now(),
+          interaction,
+          sessionAutomationIdentity,
+          agentId: "zcode",
+          isZcode: true,
+          sourcePid: zcodeSessionOptions.sourcePid || null,
+          cwd: zcodeSessionOptions.cwd || "",
+          agentPid: zcodeSessionOptions.agentPid || null,
+          pidChain: zcodeSessionOptions.pidChain || null,
+          tmuxSocket: zcodeSessionOptions.tmuxSocket || null,
+          tmuxClient: zcodeSessionOptions.tmuxClient || null,
+          orcaPaneKey: zcodeSessionOptions.orcaPaneKey || null,
+          host: zcodeSessionOptions.host || null,
+          platform: zcodeSessionOptions.platform || null,
+          model: zcodeSessionOptions.model || null,
+        };
+        const abortHandler = () => {
+          if (res.writableFinished) return;
+          ctx.permLog("abortHandler fired (zcode)");
+          ctx.resolvePermissionEntry(permEntry, "no-decision", "Client disconnected");
+        };
+        permEntry.abortHandler = abortHandler;
+        res.on("close", abortHandler);
+
+        addPendingPermission(ctx, permEntry);
+        ctx.updateSession(sessionId, "notification", "PermissionRequest", zcodeSessionOptions);
+
+        ctx.permLog(`zcode showing bubble: tool=${toolName} session=${sessionId} stack=${ctx.pendingPermissions.length}`);
+        recordRequestHookEvent.accepted();
+        try {
+          ctx.showPermissionBubble(permEntry);
+        } catch (bubbleErr) {
+          ctx.permLog(`zcode bubble failed: ${bubbleErr && bubbleErr.message} -> no decision`);
+          removePendingPermission(ctx, permEntry, "zcode-bubble-failed");
+          if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
+          sendZcodePermissionNoDecision(res);
           return;
         }
         startRemoteApproval(ctx, permEntry);

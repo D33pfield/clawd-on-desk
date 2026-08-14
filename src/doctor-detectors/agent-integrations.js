@@ -560,13 +560,19 @@ function findZcodeHooksForEvent(settings, eventName, marker, options) {
 
 function validateZcodeProcessHook(hook, eventName, descriptor, options) {
   const args = hook.args;
+  // Timeouts are per-event (PermissionRequest blocks on the bubble at 600s,
+  // state events stay at 8s), so the descriptor carries a resolver rather
+  // than a single value.
+  const expectedTimeoutMs = typeof descriptor.processHookTimeoutMsForEvent === "function"
+    ? descriptor.processHookTimeoutMsForEvent(eventName)
+    : descriptor.processHookTimeoutMs;
   if (
     !Array.isArray(args)
     || args.length !== 2
     || typeof args[0] !== "string"
     || !args[0].includes(descriptor.marker)
     || args[1] !== eventName
-    || hook.timeoutMs !== descriptor.processHookTimeoutMs
+    || hook.timeoutMs !== expectedTimeoutMs
   ) {
     return {
       ok: false,
