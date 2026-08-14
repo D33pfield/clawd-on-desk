@@ -1,6 +1,7 @@
 "use strict";
 
 const { VISUAL_FALLBACK_STATES } = require("./theme-loader");
+const { getSubagentVisualCount } = require("./subagent-lifecycle");
 
 function buildStateBindings(nextTheme) {
   const bindings = {};
@@ -103,14 +104,17 @@ function countActiveSessionsByStates(sessions, states) {
 // #862: the juggling tier keys off how many subagents are live, not how many
 // sessions sit in `juggling` — one session can host several at once, and
 // counting sessions left that case stuck on the 1-subagent asset forever.
-// Sessions with no counter (restored leases, a start we never saw) floor at 1,
-// which is exactly the pre-#862 behaviour, so nothing regresses.
+// A tracker distinguishes trusted child ids from bounded anonymous/recovery
+// floors. Sessions created by older callers without a tracker retain the old
+// one-session floor for backward compatibility.
 function countLiveSubagents(sessions) {
   let count = 0;
   for (const [, session] of normalizeSessionsIterable(sessions)) {
     if (session.headless || session.state !== "juggling") continue;
-    const live = Number.isFinite(session.liveSubagents) ? session.liveSubagents : 0;
-    count += Math.max(1, live);
+    const live = session.subagentTracker
+      ? getSubagentVisualCount(session)
+      : 1;
+    count += live;
   }
   return count;
 }
