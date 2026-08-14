@@ -622,6 +622,62 @@ describe("working sub-animations", () => {
   });
 });
 
+// #862 — the tier above counts juggling SESSIONS, but the docs promise tiering
+// by live SUBAGENT count, and one session can host several. That gap had zero
+// coverage, so these drive the real event entry point rather than seeding
+// api.sessions directly.
+describe("#862 juggling tier counts subagents, not sessions", () => {
+  let api;
+  beforeEach(() => { api = require("../src/state")(makeCtx()); });
+  afterEach(() => { api.cleanup(); });
+
+  const GROOVE = "clawd-headphones-groove.svg";
+  const JUGGLE = "clawd-working-juggling.svg";
+  const TYPING = "clawd-working-typing.svg";
+
+  function start(id = "s1") { update(api, { id, state: "juggling", event: "SubagentStart" }); }
+  function stop(id = "s1") { update(api, { id, state: "working", event: "SubagentStop" }); }
+  function work(id = "s1") { update(api, { id, state: "working", event: "PreToolUse" }); }
+  function shown() { return api.getSvgOverride(api.resolveDisplayState()); }
+
+  it("one session with 1 subagent → headphones groove", () => {
+    work(); start();
+    assert.strictEqual(shown(), GROOVE);
+  });
+
+  it("one session with 2 subagents → three-ball juggling", () => {
+    work(); start(); start();
+    assert.strictEqual(api.resolveDisplayState(), "juggling");
+    assert.strictEqual(shown(), JUGGLE);
+  });
+
+  it("holds juggling when one of two subagents stops", () => {
+    work(); start(); start(); stop();
+    assert.strictEqual(api.resolveDisplayState(), "juggling");
+    assert.strictEqual(shown(), GROOVE);
+  });
+
+  it("restores working only after the last subagent stops", () => {
+    work(); start(); start(); stop(); stop();
+    assert.strictEqual(api.resolveDisplayState(), "working");
+    assert.strictEqual(shown(), TYPING);
+  });
+
+  it("a new run resets the count when stops were lost", () => {
+    work(); start(); start();
+    // agent crashed — both stops never arrive; session leaves juggling normally
+    update(api, { id: "s1", state: "attention", event: "Stop" });
+    work();
+    start();
+    assert.strictEqual(shown(), GROOVE, "stale count must not carry into the new run");
+  });
+
+  it("still escalates across two sessions with one subagent each", () => {
+    work("s1"); work("s2"); start("s1"); start("s2");
+    assert.strictEqual(shown(), JUGGLE);
+  });
+});
+
 describe("hitbox selection", () => {
   let api;
 

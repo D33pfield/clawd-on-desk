@@ -100,6 +100,21 @@ function countActiveSessionsByStates(sessions, states) {
   return count;
 }
 
+// #862: the juggling tier keys off how many subagents are live, not how many
+// sessions sit in `juggling` — one session can host several at once, and
+// counting sessions left that case stuck on the 1-subagent asset forever.
+// Sessions with no counter (restored leases, a start we never saw) floor at 1,
+// which is exactly the pre-#862 behaviour, so nothing regresses.
+function countLiveSubagents(sessions) {
+  let count = 0;
+  for (const [, session] of normalizeSessionsIterable(sessions)) {
+    if (session.headless || session.state !== "juggling") continue;
+    const live = Number.isFinite(session.liveSubagents) ? session.liveSubagents : 0;
+    count += Math.max(1, live);
+  }
+  return count;
+}
+
 function selectTieredStateFile(tiers, count, fallbackFile) {
   if (tiers) {
     for (const tier of tiers) {
@@ -123,10 +138,7 @@ function getWorkingSvg(options = {}) {
 }
 
 function getJugglingSvg(options = {}) {
-  const count = countActiveSessionsByStates(
-    options.sessions,
-    new Set(["juggling"])
-  );
+  const count = countLiveSubagents(options.sessions);
   const stateSvgs = options.stateSvgs;
   return selectTieredStateFile(
     options.theme && options.theme.jugglingTiers,
@@ -181,6 +193,7 @@ module.exports = {
   hasOwnVisualFiles,
   resolveVisualBinding,
   countActiveSessionsByStates,
+  countLiveSubagents,
   selectTieredStateFile,
   getWorkingSvg,
   getJugglingSvg,

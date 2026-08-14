@@ -876,7 +876,10 @@ function pickDisplayHint(state, existing, incoming) {
 
 function debugSession(msg) {
   if (typeof ctx.debugLog !== "function") return;
-  try { ctx.debugLog(msg); } catch {}
+  // Accepts a thunk so callers can attach fields that cost something to
+  // resolve (e.g. #862's tier lookup) without paying for them when debug
+  // logging is off.
+  try { ctx.debugLog(typeof msg === "function" ? msg() : msg); } catch {}
 }
 
 function formatPidChain(pidChain) {
@@ -1070,12 +1073,26 @@ function getLastSessionSnapshot() {
   return lastSessionSnapshot;
 }
 
+// #862: how many subagents this session currently has in flight. A start that
+// arrives while the session is not already juggling begins a fresh run at 1 —
+// that also self-heals a session whose SubagentStop never arrived (agent
+// crashed), since the next run resets instead of stacking on a stale count.
+function resolveLiveSubagents(existing, isStart, isStop) {
+  const current = existing && Number.isFinite(existing.liveSubagents)
+    ? existing.liveSubagents
+    : 0;
+  if (isStart) return existing && existing.state === "juggling" ? current + 1 : 1;
+  if (isStop) return Math.max(0, current - 1);
+  return current;
+}
+
 function describeSession(sessionId, session) {
   if (!session) return `sid=${sessionId} <deleted>`;
   return [
     `sid=${sessionId}`,
     `state=${session.state || "-"}`,
     `resume=${session.resumeState || "-"}`,
+    `live=${Number.isFinite(session.liveSubagents) ? session.liveSubagents : "-"}`,
     `agent=${session.agentId || "-"}`,
     `agentPid=${session.agentPid || "-"}`,
     `sourcePid=${session.sourcePid || "-"}`,
@@ -1982,6 +1999,10 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcMetadataUpdatedAt = existing && Number.isFinite(existing.metadataUpdatedAt) ? existing.metadataUpdatedAt : null;
   const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
+  // #862: every branch below rebuilds the session object from `base`, so the
+  // live-subagent counter has to ride along in it or it would be dropped on
+  // the very next event.
+  base.liveSubagents = resolveLiveSubagents(existing, isSubagentStart, isSubagentStop);
 
   // Evict oldest session if at capacity and this is a new session.
   evictOldestSessionIfNeeded(sessionId);
@@ -1997,6 +2018,24 @@ function updateSession(sessionId, state, event, opts = {}) {
     }
 
     if (existing.state === "juggling") {
+      // #862: one stop does not mean the work is over. Restoring on the first
+      // stop dropped the pet back to typing while other subagents were still
+      // running; hold juggling until the last one reports in.
+      if (base.liveSubagents > 0) {
+        const dh = pickDisplayHint("juggling", existing, displayHint);
+        sessions.set(sessionId, {
+          state: "juggling",
+          updatedAt: Date.now(),
+          displayHint: dh,
+          ...base,
+          resumeState: existing.resumeState || null,
+        });
+        debugSession(() => `subagent-stop hold ${describeSession(sessionId, sessions.get(sessionId))} asset=${getSvgOverride("juggling") || "-"}`);
+        cleanStaleSessions();
+        const heldState = resolveDisplayState();
+        setState(heldState, getSvgOverride(heldState));
+        return;
+      }
       const resumeState = existing.resumeState || null;
       if (resumeState) {
         const dh = pickDisplayHint(resumeState, existing, displayHint);
@@ -2073,7 +2112,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       const dh = pickDisplayHint(state, existing, displayHint);
       const resumeState = existing && existing.state !== "juggling" ? existing.state : srcResumeState;
       sessions.set(sessionId, { state, updatedAt: Date.now(), displayHint: dh, ...base, resumeState });
-      debugSession(`subagent-start store ${describeSession(sessionId, sessions.get(sessionId))}`);
+      debugSession(() => `subagent-start store ${describeSession(sessionId, sessions.get(sessionId))} asset=${getSvgOverride("juggling") || "-"}`);
     } else if (existing && existing.state === "juggling" && state === "working") {
       existing.updatedAt = Date.now();
       existing.displayHint = pickDisplayHint("juggling", existing, displayHint);
