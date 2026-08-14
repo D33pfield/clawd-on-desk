@@ -15,6 +15,13 @@ const {
   claimBlockStopOnce,
 } = require("../scripts/manual/claude-subagent-event-sampler");
 
+function assertPrivatePosixMode(filePath) {
+  // NTFS does not implement POSIX permission bits; Node reports the inherited
+  // Windows ACL as 0666 even after open/fchmod requested 0600.
+  if (process.platform === "win32") return;
+  assert.strictEqual(fs.statSync(filePath).mode & 0o777, 0o600);
+}
+
 describe("Claude subagent D0 event sampler", () => {
   it("records only the approved field whitelist and redacts the session id", () => {
     const record = buildRecord("PreToolUse", {
@@ -89,19 +96,19 @@ describe("Claude subagent D0 event sampler", () => {
     const markerPath = path.join(dir, "block-once.marker");
     try {
       assert.strictEqual(claimBlockStopOnce(markerPath), true);
-      assert.strictEqual(fs.statSync(markerPath).mode & 0o777, 0o600);
+      assertPrivatePosixMode(markerPath);
       assert.strictEqual(claimBlockStopOnce(markerPath), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("writes mode 0600 and refuses records beyond the cap", () => {
+  it("uses private POSIX mode where supported and refuses records beyond the cap", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-d0-sampler-test-"));
     const logPath = path.join(dir, "events.jsonl");
     try {
       assert.strictEqual(appendRecord(logPath, { ok: true }, 1024), true);
-      assert.strictEqual(fs.statSync(logPath).mode & 0o777, 0o600);
+      assertPrivatePosixMode(logPath);
       assert.strictEqual(appendRecord(logPath, { payload: "x".repeat(1024) }, 32), false);
       assert.deepStrictEqual(
         fs.readFileSync(logPath, "utf8").trim().split("\n").map(JSON.parse),

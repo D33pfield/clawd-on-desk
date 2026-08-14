@@ -144,7 +144,10 @@ The visual count is the maximum of those observations, not their sum. This preve
 - `stop_hook_active`;
 - monotonic sequence and timestamp.
 
-It excludes prompts, tool input/output, cwd, transcript paths, model content, and environment data. The log is capped at 1 MiB and written mode `0600`.
+It excludes prompts, tool input/output, cwd, transcript paths, model content,
+and environment data. The log is capped at 1 MiB and opened mode `0600` on
+POSIX. On Windows the capture lives under the current user's ACL-protected temp
+directory because NTFS does not implement POSIX permission bits.
 
 Automated sampler tests cover the whitelist, redaction, event registration,
 permissions, cap, and one-shot blocker. The temporary settings and raw log used

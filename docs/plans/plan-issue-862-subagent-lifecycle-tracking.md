@@ -202,7 +202,9 @@ D0 needs a deliverable, not just a matrix. Build a standalone raw-event sampler:
 - creates an isolated settings file for Claude's `--settings` flag, independent
   of the normal hook install path; it never reads or mutates the user's existing
   hook configuration, so there is nothing to merge or restore;
-- writes to a mode `0600` file with a hard size cap;
+- writes with mode `0600` on POSIX and a hard size cap; Windows captures must
+  live under the current user's ACL-protected temp/profile directory because
+  NTFS does not implement POSIX permission bits;
 - is deleted, with hooks restored, as soon as the matrix is captured.
 
 **Record only:** event name, redacted session id, agent id / type, tool name,
