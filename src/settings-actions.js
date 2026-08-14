@@ -182,6 +182,7 @@ const TELEGRAM_MIGRATION_RENDERER_EVENTS = new Set([
 
 const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "claude-code",
+  "deepseek-harness",
   "codex",
   "copilot-cli",
   "cursor-agent",
