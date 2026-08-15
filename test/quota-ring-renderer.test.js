@@ -10,6 +10,10 @@ const rendererSource = fs.readFileSync(
   path.join(__dirname, "..", "src", "quota-ring-renderer.js"),
   "utf8"
 );
+const rendererHtmlSource = fs.readFileSync(
+  path.join(__dirname, "..", "src", "quota-ring.html"),
+  "utf8"
+);
 
 class FakeElement {
   constructor(tag) {
@@ -80,7 +84,7 @@ function loadRenderer() {
         dashboardQuotaGroupThirdParty: "Claude/GPT",
         dashboardQuotaSourceLocal: "Local",
         quotaRingReset: "reset",
-        quotaRingUsedWord: "used",
+        quotaRingRemainingWord: "remaining",
         dashboardQuotaResetIn: "resets in {time}",
         dashboardQuotaResetHoursMinutes: "{h}h {m}m",
         dashboardQuotaResetMinutes: "{m}m",
@@ -515,6 +519,134 @@ describe("quota ring renderer model", () => {
     vm.runInContext("payload.accountQuota = __accountQuota", context);
     const coins = vm.runInContext("collectCoins(1000000)", context);
     assert.strictEqual(coins.length, 0);
+  });
+
+  it("paints a single-window provider's ring in its logical window hue", () => {
+    // Codex reports only its weekly window. The ring is drawn at the outer
+    // radius but must wear the inner/weekly hue — the same hue the Dashboard
+    // gives its Weekly bar — so a color names one window on both surfaces.
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const model = modelFor(context, {
+      codexQuota: {
+        group: {
+          codexWeekly: { usedPercent: 12, resetAt: now + 3_600_000, windowMinutes: 10080 },
+        },
+        lastSeenAt: now,
+      },
+    }, 2, now);
+    context.__model = model;
+    const svg = vm.runInContext("buildCoinSvg(__model)", context);
+    const tracks = svg.children.filter((child) =>
+      typeof child.attributes.class === "string" && child.attributes.class.includes("track"));
+    const fills = svg.children.filter((child) =>
+      typeof child.attributes.class === "string" && child.attributes.class.includes("fill"));
+    assert.strictEqual(tracks.length, 1);
+    assert.match(tracks[0].attributes.class, /pv-codexQuota rg-inner/);
+    assert.strictEqual(fills.length, 1);
+    assert.match(fills[0].attributes.class, /pv-codexQuota rg-inner/);
+  });
+
+  it("neutralizes only the stale ring when a provider is partially refreshed", () => {
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const model = modelFor(context, {
+      claudeQuota: {
+        group: {
+          claudeFiveHour: {
+            usedPercent: 72,
+            resetAt: now + 3_600_000,
+            windowMinutes: 300,
+            lastSeenAt: now - 6 * 60_000,
+          },
+          claudeWeekly: {
+            usedPercent: 18,
+            resetAt: now + 86_400_000,
+            windowMinutes: 10080,
+            lastSeenAt: now,
+          },
+        },
+        lastSeenAt: now,
+      },
+    }, 1, now);
+    assert.strictEqual(model.state, "live", "one fresh window keeps the provider live");
+    context.__model = model;
+    const svg = vm.runInContext("buildCoinSvg(__model)", context);
+    const ring = (kind, slot) => svg.children.find((child) => {
+      const cls = child.attributes.class || "";
+      return cls.includes(kind) && cls.includes(`rg-${slot}`);
+    });
+    assert.match(ring("track", "outer").attributes.class, /\bis-stale\b/);
+    assert.match(ring("fill", "outer").attributes.class, /\bis-stale\b/);
+    assert.doesNotMatch(ring("track", "inner").attributes.class, /\bis-stale\b/);
+    assert.doesNotMatch(ring("fill", "inner").attributes.class, /\bis-stale\b/);
+    assert.match(rendererHtmlSource, /\.coin \.track\.is-stale\s*\{/);
+    assert.match(rendererHtmlSource, /\.coin \.fill\.is-stale\s*\{/);
+  });
+
+  it("adds no footnote line for a stale coin, however old the reading is", () => {
+    // A draft spelled the age out ("1h26m ago") so staleness would not ride on
+    // row opacity alone. On a desktop that misfired: Codex goes stale 5 minutes
+    // after its last reading, so the note stood on screen through every
+    // ordinary gap between runs — permanent furniture, not a warning, costing a
+    // third text line on a 26px row. Pin its absence so it cannot creep back
+    // without someone re-deciding it. The affected ring is neutralized, and a
+    // provider whose every window is stale also keeps the quiet row dim.
+    const context = loadRenderer();
+    const now = 1_000_000;
+    for (const ageMinutes of [6, 86]) {
+      const seenAt = now - ageMinutes * 60_000;
+      const model = modelFor(context, {
+        codexQuota: {
+          group: {
+            codexWeekly: {
+              usedPercent: 12,
+              resetAt: now + 3_600_000,
+              windowMinutes: 10080,
+              lastSeenAt: seenAt,
+            },
+          },
+          lastSeenAt: seenAt,
+        },
+      }, 2, now);
+      assert.strictEqual(model.state, "stale", `${ageMinutes}m should read as stale`);
+      context.__model = model;
+      context.__now = now;
+      const row = vm.runInContext("buildCoinRow(__model, __now)", context);
+      // Readout holds the percent and the window label, and nothing else: no
+      // source marker is set on a local coin, so there is no third line at all.
+      assert.strictEqual(
+        row.children[0].children.length, 2,
+        `a stale coin (${ageMinutes}m) grew a third readout line`
+      );
+      assert.match(row.className, /is-stale/, "the row dim is still the stale channel");
+    }
+  });
+
+  it("labels the readout while remaining mode flips the percent's meaning", () => {
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const model = modelFor(context, {
+      codexQuota: {
+        group: {
+          codexWeekly: {
+            usedPercent: 12,
+            resetAt: now + 3_600_000,
+            windowMinutes: 10080,
+            lastSeenAt: now,
+          },
+        },
+        lastSeenAt: now,
+      },
+    }, 2, now);
+    context.__model = model;
+    context.__now = now;
+    vm.runInContext('payload.displayMode = "remaining"', context);
+    const row = vm.runInContext("buildCoinRow(__model, __now)", context);
+    const foot = row.children[0].children[2];
+    assert.ok(foot, "remaining mode shows the mode word on the footnote line");
+    assert.strictEqual(foot.className, "source");
+    assert.strictEqual(foot.textContent, "remaining");
   });
 });
 

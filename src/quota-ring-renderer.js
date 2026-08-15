@@ -6,7 +6,7 @@
 // The arc can present USED percent (full = nearly exhausted) or REMAINING
 // percent (full = plenty left). Severity still follows usedPercent, so changing
 // the presentation never changes warning semantics. A healthy ring is colored
-// by identity (provider + physical ring slot, see identityClass) rather than by
+// by identity (provider + logical window, see identityClass) rather than by
 // headroom, because severity has only three steps and would paint two healthy
 // windows the same color; crossing a threshold hands the ring over to
 // amber/red. Window labels come from
@@ -15,7 +15,10 @@
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const XLINK_NS = "http://www.w3.org/1999/xlink";
-const STALE_AFTER_MS = 5 * 60 * 1000;
+const DEFAULT_QUOTA_STALE_AFTER_MS = 5 * 60 * 1000;
+const PROVIDER_STALE_AFTER_MS = Object.freeze({
+  kimiQuota: 7 * 60 * 1000,
+});
 const MAX_COINS = 4; // must match quota-ring-geometry RING_MAX_COINS
 
 // Mirrors RING_PROVIDERS in quota-ring-geometry.js (that file is CommonJS; this
@@ -46,6 +49,12 @@ const RING_PROVIDERS = [
     label: "Codex",
     outer: [{ field: "codexFiveHour", fallback: "5h" }],
     inner: [{ field: "codexWeekly", fallback: "7d" }],
+  },
+  {
+    key: "kimiQuota",
+    label: "Kimi",
+    outer: [{ field: "kimiFiveHour", fallback: "5h" }],
+    inner: [{ field: "kimiWeekly", fallback: "7d" }],
   },
 ];
 
@@ -91,6 +100,7 @@ const GLYPH_ZOOM_BY_PROVIDER = {
   antigravityQuota: 64 / 56,
   claudeQuota: 64 / 56,
   codexQuota: 64 / 44.4,
+  kimiQuota: 64 / 56,
 };
 let coinClipSeq = 0;
 
@@ -98,6 +108,7 @@ let payload = {
   accountQuota: [],
   quotaAgentIcons: {},
   displayMode: "used",
+  hiddenQuotaProviders: [],
   side: "left",
   translations: {},
 };
@@ -139,14 +150,20 @@ function severityClass(usedPercent) {
 }
 
 // Identity hint for the stylesheet: a healthy ring is colored by (provider,
-// physical ring position) so the rolling and weekly windows stay tellable apart
-// — severity alone paints both the same color whenever both are healthy. The
-// argument is the ring's PHYSICAL slot, not the window's logical name: a
-// provider reporting only one window (Codex, since the 5h window was retired)
-// draws it in the outer slot and should read as the outer ring.
+// logical window) so the rolling and weekly windows stay tellable apart —
+// severity alone paints both the same color whenever both are healthy. The
+// slot argument is the window's LOGICAL timescale, not the physical ring it
+// is drawn on: a provider reporting only its weekly window (Codex, since the
+// 5h window was retired) draws that ring at the outer radius yet still wears
+// the weekly/inner hue — the same hue the Dashboard paints its Weekly bar,
+// so a color names one window across both surfaces.
 // Appended last so the "sev-x is-near" pair stays contiguous.
 function identityClass(providerKey, ringSlot) {
   return `pv-${providerKey} rg-${ringSlot}`;
+}
+
+function staleAfterMs(providerKey) {
+  return PROVIDER_STALE_AFTER_MS[providerKey] || DEFAULT_QUOTA_STALE_AFTER_MS;
 }
 
 // Window reset on wall clock: the pre-reset number would read high, so an
@@ -179,7 +196,7 @@ function providerHasDrawableQuota(source, def) {
 // bucket; among equally live candidates the highest used percentage is the
 // most constrained. This keeps Antigravity to one coin while never silently
 // dropping its Claude/GPT quota family.
-function selectRingWindow(group, candidates, now, ring, providerSeenAtValue) {
+function selectRingWindow(group, candidates, now, ring, providerSeenAtValue, providerKey) {
   let selected = null;
   for (const candidate of candidates) {
     const bucket = liveBucket(group, candidate.field, now);
@@ -188,7 +205,7 @@ function selectRingWindow(group, candidates, now, ring, providerSeenAtValue) {
     const pct = Math.max(0, Math.min(100, Number(bucket.usedPercent) || 0));
     const bucketSeenAt = Number(bucket.lastSeenAt);
     const seenAt = Number.isFinite(bucketSeenAt) ? bucketSeenAt : providerSeenAtValue;
-    const stale = Number.isFinite(seenAt) && now - seenAt > STALE_AFTER_MS;
+    const stale = Number.isFinite(seenAt) && now - seenAt > staleAfterMs(providerKey);
     if (!selected
         || (selected.reset && !reset)
         || (selected.reset === reset && selected.stale && !stale)
@@ -220,8 +237,8 @@ function buildCoinModel(source, def, now, multiSource) {
   const group = provider && provider.group;
   if (!group) return null;
   const providerSeen = providerSeenAt(provider);
-  const outer = selectRingWindow(group, def.outer, now, "outer", providerSeen);
-  const inner = selectRingWindow(group, def.inner, now, "inner", providerSeen);
+  const outer = selectRingWindow(group, def.outer, now, "outer", providerSeen, def.key);
+  const inner = selectRingWindow(group, def.inner, now, "inner", providerSeen, def.key);
   if (!outer && !inner) return null;
 
   const windows = [];
@@ -284,15 +301,32 @@ function buildCoinModel(source, def, now, multiSource) {
   };
 }
 
+// Providers the user hid from this cluster. Display-only — collection and the
+// Dashboard are untouched. quota-ring-geometry.js applies the identical filter
+// when it sizes this window; the two must agree or the window reserves space
+// for coins that never render. test/quota-ring-geometry.test.js pins the pair.
+function hiddenProviderSet() {
+  const hidden = Array.isArray(payload.hiddenQuotaProviders) ? payload.hiddenQuotaProviders : [];
+  const keys = hidden.filter((key) => typeof key === "string" && key);
+  return keys.length ? new Set(keys) : null;
+}
+
 function collectCoins(now) {
   const sources = Array.isArray(payload.accountQuota) ? payload.accountQuota : [];
+  const hidden = hiddenProviderSet();
+  const isDrawn = (source, def) =>
+    !(hidden && hidden.has(def.key)) && providerHasDrawableQuota(source, def);
+  // "Multi-source" drives the per-coin host marker, so it counts sources that
+  // still draw something AFTER hiding — hiding every provider a second machine
+  // reports should retire the marker, not leave it labelling a single cluster.
   const drawableSources = sources.filter((source) =>
     source && typeof source === "object"
-      && RING_PROVIDERS.some((def) => providerHasDrawableQuota(source, def)));
+      && RING_PROVIDERS.some((def) => isDrawn(source, def)));
   const multiSource = drawableSources.length > 1;
   const coins = [];
   for (const source of drawableSources) {
     for (const def of RING_PROVIDERS) {
+      if (hidden && hidden.has(def.key)) continue;
       const model = buildCoinModel(source, def, now, multiSource);
       if (model) coins.push(model);
     }
@@ -336,13 +370,21 @@ function buildCoinSvg(model) {
   // when EVERY window reset, so "one window reset while the other is live" —
   // the common case right after a 5h rollover — falls straight through it.
   const bedOnly = (w) => !!w && w.reset === true && quotaDisplayMode() === "used";
+  // Staleness belongs to a bucket, not necessarily the whole provider. A
+  // presence-aware partial update can refresh weekly while leaving 5h old (or
+  // vice versa), so each physical ring carries its own class. The row-level
+  // state remains useful when every reported window is stale.
+  const staleClass = (w) => (w && w.stale ? " is-stale" : "");
+  // Identity classes come from each window's LOGICAL slot (outer.ring), so a
+  // single-window provider drawn at the outer radius still wears the hue of
+  // the window it is actually reporting (see identityClass).
   svg.appendChild(ringCircle(
-    `track ${identityClass(model.providerKey, "outer")}${bedOnly(outer) ? " is-reset-bed" : ""}`,
+    `track ${identityClass(model.providerKey, outer.ring)}${bedOnly(outer) ? " is-reset-bed" : ""}${staleClass(outer)}`,
     OUTER_R, OUTER_SW, null));
   if (outer && (!outer.reset || quotaDisplayMode() === "remaining")) {
     const outerNear = !outer.reset && model.near && model.binding === outer;
     const f = ringCircle(
-      `fill ${outer.reset ? "sev-reset" : severityClass(outer.pct)}${outerNear ? " is-near" : ""} ${identityClass(model.providerKey, "outer")}`,
+      `fill ${outer.reset ? "sev-reset" : severityClass(outer.pct)}${outerNear ? " is-near" : ""} ${identityClass(model.providerKey, outer.ring)}${staleClass(outer)}`,
       OUTER_R,
       OUTER_SW,
       { pct: outer.reset ? 100 : quotaDisplayPercent(outer.pct) }
@@ -351,12 +393,12 @@ function buildCoinSvg(model) {
   }
   if (dual) {
     svg.appendChild(ringCircle(
-      `track ${identityClass(model.providerKey, "inner")}${bedOnly(inner) ? " is-reset-bed" : ""}`,
+      `track ${identityClass(model.providerKey, inner.ring)}${bedOnly(inner) ? " is-reset-bed" : ""}${staleClass(inner)}`,
       INNER_R, INNER_SW, null));
     if (inner && (!inner.reset || quotaDisplayMode() === "remaining")) {
       const innerNear = !inner.reset && model.near && model.binding === inner;
       svg.appendChild(ringCircle(
-        `fill ${inner.reset ? "sev-reset" : severityClass(inner.pct)}${innerNear ? " is-near" : ""} ${identityClass(model.providerKey, "inner")}`,
+        `fill ${inner.reset ? "sev-reset" : severityClass(inner.pct)}${innerNear ? " is-near" : ""} ${identityClass(model.providerKey, inner.ring)}${staleClass(inner)}`,
         INNER_R,
         INNER_SW,
         { pct: inner.reset ? 100 : quotaDisplayPercent(inner.pct) }
@@ -405,7 +447,7 @@ function buildCoinSvg(model) {
   return svg;
 }
 
-function buildCoinRow(model) {
+function buildCoinRow(model, now = Date.now()) {
   const row = document.createElement("div");
   row.className = `coin-row is-${model.state}`;
   // The hosting Electron panel is intentionally non-focusable so checking
@@ -434,15 +476,40 @@ function buildCoinRow(model) {
     win.textContent = model.windows[0] ? model.windows[0].label : "";
   }
   readout.append(pct, win);
-  if (model.sourceMarker) {
-    const source = document.createElement("span");
-    source.className = "source";
-    source.textContent = model.sourceMarker;
-    readout.appendChild(source);
-  }
+  const foot = buildReadoutFoot(model);
+  if (foot) readout.appendChild(foot);
 
   row.append(readout, buildCoinSvg(model));
   return row;
+}
+
+// The readout's optional third line answers, in priority order:
+//   1. "what do the digits mean?" — remaining mode flips the percent's
+//      meaning, so whenever it is active the mode word stays on screen.
+//   2. "which machine reported this?" — the static source marker, shown only
+//      when the mode word above does not need the line.
+//
+// Deliberately NOT here: the stale age. A draft spelled it out ("1h26m ago")
+// so staleness would not ride on row opacity alone, which is an intensity
+// channel a glance or any CVD can miss. On a real desktop it was wrong for a
+// blunter reason — Codex goes stale 5 minutes after its last reading, so the
+// note is on screen during every ordinary gap between runs, i.e. nearly
+// always. A permanent footnote is not a warning, it is furniture, and it cost
+// a third text line on a 26px coin row to say nothing new. If staleness needs
+// a second channel later, it should be one that is silent while normal —
+// desaturating the arc, or a dot — not standing text.
+function buildReadoutFoot(model) {
+  let text = null;
+  if (quotaDisplayMode() === "remaining") {
+    text = t("quotaRingRemainingWord");
+  } else if (model.sourceMarker) {
+    text = model.sourceMarker;
+  }
+  if (!text) return null;
+  const foot = document.createElement("span");
+  foot.className = "source";
+  foot.textContent = text;
+  return foot;
 }
 
 function buildOverflow(count) {
@@ -619,7 +686,7 @@ function render() {
 
   for (const model of visible) {
     model.flashingResting = isFlashing(model, now);
-    clusterEl.appendChild(buildCoinRow(model));
+    clusterEl.appendChild(buildCoinRow(model, now));
   }
   if (overflow > 0) clusterEl.appendChild(buildOverflow(overflow));
 }
@@ -639,6 +706,9 @@ async function init() {
       accountQuota: Array.isArray(next && next.accountQuota) ? next.accountQuota : [],
       quotaAgentIcons: (next && next.quotaAgentIcons) || {},
       displayMode: next && next.displayMode === "remaining" ? "remaining" : "used",
+      hiddenQuotaProviders: Array.isArray(next && next.hiddenQuotaProviders)
+        ? next.hiddenQuotaProviders
+        : [],
       side: next && next.side === "right" ? "right" : "left",
       translations: payload.translations,
       lang: payload.lang,

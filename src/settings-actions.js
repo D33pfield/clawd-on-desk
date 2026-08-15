@@ -51,6 +51,7 @@
 const {
   CURRENT_VERSION,
   MAX_CUSTOM_DISCOVERY_PATHS,
+  MAX_HIDDEN_QUOTA_PROVIDERS,
   isValidSettingsWindowBounds,
   normalizePathList,
 } = require("./prefs");
@@ -363,6 +364,24 @@ const updateRegistry = {
   sessionHudShowContextUsage: requireBoolean("sessionHudShowContextUsage"),
   sessionHudShowQuota: requireBoolean("sessionHudShowQuota"),
   quotaRingDisplayMode: requireEnum("quotaRingDisplayMode", ["used", "remaining"]),
+  // Shape only — the entries are provider keys, and deliberately not checked
+  // against the ring's provider list here (see prefs.js: rejecting an
+  // unfamiliar key would un-hide a provider behind the user's back).
+  quotaRingHiddenProviders(value) {
+    if (!Array.isArray(value)) {
+      return { status: "error", message: "quotaRingHiddenProviders must be an array" };
+    }
+    if (value.length > MAX_HIDDEN_QUOTA_PROVIDERS) {
+      return {
+        status: "error",
+        message: `quotaRingHiddenProviders must contain at most ${MAX_HIDDEN_QUOTA_PROVIDERS} entries`,
+      };
+    }
+    if (value.some((entry) => typeof entry !== "string" || !entry.trim())) {
+      return { status: "error", message: "quotaRingHiddenProviders must contain non-empty strings" };
+    }
+    return { status: "ok" };
+  },
   claudeQuotaCollectionEnabled: {
     validate: requireBoolean("claudeQuotaCollectionEnabled"),
     effect(value, deps = {}) {
@@ -371,6 +390,13 @@ const updateRegistry = {
       }
       return deps.setClaudeQuotaCollectionEnabled(value);
     },
+  },
+  // Only the dedicated, trusted Kimi quota IPC path may change this opt-in.
+  // Generic settings:update/applyBulk/hydrate are intentionally rejected by
+  // the controller's commandOnly boundary.
+  kimiQuotaCollectionEnabled: {
+    validate: requireBoolean("kimiQuotaCollectionEnabled"),
+    commandOnly: true,
   },
   quotaMergeSources: requireBoolean("quotaMergeSources"),
   sessionHudCleanupDetached: requireBoolean("sessionHudCleanupDetached"),
@@ -736,6 +762,18 @@ function setAllBubblesHidden(payload, deps) {
   }
   return { status: "ok", commit: buildAggregateHideCommit(hidden, deps && deps.snapshot) };
 }
+
+function setKimiQuotaCollectionEnabled(payload) {
+  const enabled = typeof payload === "boolean" ? payload : payload && payload.enabled;
+  if (typeof enabled !== "boolean") {
+    return {
+      status: "error",
+      message: "setKimiQuotaCollectionEnabled.enabled must be a boolean",
+    };
+  }
+  return { status: "ok", commit: { kimiQuotaCollectionEnabled: enabled } };
+}
+setKimiQuotaCollectionEnabled.lockKey = "kimiQuota";
 
 // Permission automation writer. A plain settings:update cannot reach this
 // field; both automatic modes require confirmation at the data layer, including
@@ -2065,6 +2103,7 @@ const commandRegistry = {
   setAgentFlag,
   setAgentPermissionMode,
   setAllBubblesHidden,
+  setKimiQuotaCollectionEnabled,
   setPermissionAutomationMode,
   setBubbleCategoryEnabled,
   "sessionCleanup.setTriple": setSessionCleanupTriple,

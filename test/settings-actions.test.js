@@ -179,6 +179,25 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.telegramMigrationLastNotified(42, deps).status, "error");
   });
 
+  it("hidden quota providers validate as a bounded list of non-empty strings", () => {
+    const entry = updateRegistry.quotaRingHiddenProviders;
+    const check = (value) => (typeof entry === "function" ? entry(value) : entry.validate(value));
+    assert.strictEqual(check([]).status, "ok");
+    assert.strictEqual(check(["codexQuota", "kimiQuota"]).status, "ok");
+    // Shape only — an unrecognized key is accepted on purpose, because
+    // rejecting it would un-hide the provider behind the user's back.
+    assert.strictEqual(check(["notAProviderYet"]).status, "ok");
+    assert.strictEqual(check("codexQuota").status, "error", "a bare string is not a list");
+    assert.strictEqual(check(null).status, "error");
+    assert.strictEqual(check([""]).status, "error");
+    assert.strictEqual(check(["  "]).status, "error");
+    assert.strictEqual(check([1]).status, "error");
+    assert.strictEqual(
+      check(Array.from({ length: 200 }, (_v, i) => `p${i}`)).status, "error",
+      "an unbounded list must be refused at the command boundary, not silently truncated"
+    );
+  });
+
   it("Claude usage collection validates booleans and delegates the opt-in mutation", async () => {
     const entry = updateRegistry.claudeQuotaCollectionEnabled;
     assert.strictEqual(entry.validate(true).status, "ok");
@@ -193,6 +212,21 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(enabled.status, "ok");
     assert.deepStrictEqual(calls, [true]);
     assert.strictEqual(entry.effect(false, {}).status, "error");
+  });
+
+  it("Kimi usage collection is command-only", () => {
+    const entry = updateRegistry.kimiQuotaCollectionEnabled;
+    assert.strictEqual(entry.validate(true).status, "ok");
+    assert.strictEqual(entry.validate("yes").status, "error");
+    assert.strictEqual(entry.commandOnly, true);
+    assert.deepStrictEqual(
+      commandRegistry.setKimiQuotaCollectionEnabled({ enabled: true }),
+      { status: "ok", commit: { kimiQuotaCollectionEnabled: true } }
+    );
+    assert.strictEqual(
+      commandRegistry.setKimiQuotaCollectionEnabled({ enabled: "yes" }).status,
+      "error"
+    );
   });
 
   it("bubble auto-close seconds require integers in range", () => {

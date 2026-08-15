@@ -6789,15 +6789,22 @@ describe("settings renderer browser environment", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     const ringEnabled = harness.getSwitch("sessionHudShowQuota");
-    const claudeCollection = harness.getSwitch("claudeQuotaCollectionEnabled");
     const mergeSources = harness.getSwitch("quotaMergeSources");
     const ringOptions = harness.content.querySelector(".quota-ring-option-list");
     const hudOptions = harness.content.querySelector(".session-hud-option-list");
     const summary = harness.core.state.mountedControls.sessionHudSummary.element;
 
     assert.ok(ringEnabled);
-    assert.ok(claudeCollection);
     assert.ok(mergeSources);
+    // Per-provider collection is NOT here. It lives on each provider's own card
+    // under Agents (Claude alongside Kimi), so this group stays about what the
+    // ring looks like and "which providers am I reading" has one place to look.
+    // Pin the absence: re-adding it here would silently re-split the setting
+    // across two tabs, which is the state this move existed to end.
+    assert.ok(
+      !harness.getSwitch("claudeQuotaCollectionEnabled"),
+      "Claude quota collection must not be back in General's quota-ring group"
+    );
     assert.ok(ringOptions);
     assert.ok(hudOptions);
     assert.notStrictEqual(ringOptions, hudOptions);
@@ -6806,6 +6813,96 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getSwitchMeta("quotaMergeSources").row.style.display, "");
     assert.strictEqual(summary.children.length, 1);
     assert.strictEqual(summary.children[0].textContent, "HUD: off");
+  });
+
+  it("lets the user pick which providers draw beside the pet, hiding by exception", async () => {
+    // The cluster caps at four coins and the renderer takes the first four in
+    // provider order, so without this the user has no say over which survive.
+    const updateCalls = [];
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ quotaRingHiddenProviders: ["codexQuota"] }),
+      settingsAPI: {
+        getQuotaSourceCount: async () => 1,
+        getQuotaRingProviders: async () => ([
+          { key: "claudeQuota", label: "Claude", hidden: false },
+          { key: "codexQuota", label: "Codex", hidden: true },
+          { key: "kimiQuota", label: "Kimi", hidden: false },
+        ]),
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const block = harness.content.querySelector(".quota-ring-providers");
+    assert.ok(block, "connected providers should be listed");
+    assert.strictEqual(block.style.display, "", "the list reveals once providers are known");
+    const rows = block.querySelectorAll(".quota-ring-provider-row");
+    assert.strictEqual(rows.length, 3);
+    assert.deepStrictEqual(
+      rows.map((row) => row.dataset.providerKey),
+      ["claudeQuota", "codexQuota", "kimiQuota"]
+    );
+    // The switch reads as "shown", the stored preference records what is hidden.
+    const switches = rows.map((row) => row.querySelector(".switch"));
+    assert.strictEqual(switches[0].classList.contains("on"), true, "Claude draws");
+    assert.strictEqual(switches[1].classList.contains("on"), false, "Codex is hidden");
+    assert.strictEqual(switches[2].classList.contains("on"), true, "Kimi draws");
+
+    // Hiding one appends to the list rather than replacing it, or turning off a
+    // second provider would quietly bring the first one back.
+    switches[2].eventListeners.click[0]();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, [
+      { key: "quotaRingHiddenProviders", value: ["codexQuota", "kimiQuota"] },
+    ]);
+
+    // Re-showing removes only that key.
+    updateCalls.length = 0;
+    switches[1].eventListeners.click[0]();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, [
+      { key: "quotaRingHiddenProviders", value: [] },
+    ]);
+  });
+
+  it("offers no provider list when only one provider reports", async () => {
+    // One connected provider cannot crowd anything out, so the control would be
+    // a no-op switch — the same reason merge-sources stays hidden on one machine.
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({}),
+      settingsAPI: {
+        getQuotaSourceCount: async () => 1,
+        getQuotaRingProviders: async () => ([{ key: "kimiQuota", label: "Kimi", hidden: false }]),
+      },
+    });
+    harness.renderContent();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const block = harness.content.querySelector(".quota-ring-providers");
+    assert.ok(block, "the block still exists so a later reveal has somewhere to go");
+    assert.strictEqual(block.style.display, "none");
+    assert.strictEqual(block.querySelectorAll(".quota-ring-provider-row").length, 0);
+  });
+
+  it("survives a settings build with no provider API at all", async () => {
+    // Older preload / a failed IPC must leave the rest of the group usable
+    // rather than throwing partway through building General.
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({}),
+      settingsAPI: { getQuotaSourceCount: async () => 1 },
+    });
+    harness.renderContent();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.ok(harness.getSwitch("sessionHudShowQuota"), "the ring group still renders");
+    const block = harness.content.querySelector(".quota-ring-providers");
+    assert.strictEqual(block.style.display, "none");
   });
 
   it("keeps an enabled merge-sources switch visible with only one source", async () => {
@@ -7354,6 +7451,29 @@ describe("settings renderer browser environment", () => {
     // Confirm/disconnect flows moved with the switches.
     assert.ok(agentsSource.includes("confirmDisableClaudeHookManagement"));
     assert.ok(agentsSource.includes("runDisconnectClaudeHooks"));
+  });
+
+  it("keeps every provider's quota collection opt-in on its own Agents card", () => {
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const agentsSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-agents.js"), "utf8");
+    // Claude's collection switch used to live in General's quota-ring group
+    // while Kimi's equivalent lived on its agent card, so turning collection
+    // off meant a different tab depending on the provider and no page could
+    // answer "which providers am I reading from". Pin the single rule: the
+    // ring group is about what the ring looks like, collection is per-card.
+    assert.ok(!generalSource.includes('key: "claudeQuotaCollectionEnabled"'));
+    assert.ok(agentsSource.includes('key: "claudeQuotaCollectionEnabled"'));
+    assert.ok(agentsSource.includes("rowClaudeQuotaCollection"));
+    // Kimi's card is the pattern being matched, not something that moved.
+    assert.ok(agentsSource.includes("buildKimiQuotaCard"));
+    assert.ok(agentsSource.includes('agent.id === "kimi-cli"'));
+    // General keeps the display-only decisions, and nothing else.
+    assert.ok(generalSource.includes('key: "sessionHudShowQuota"'));
+    assert.ok(generalSource.includes("buildQuotaRingDisplayModeRow"));
+    // A stale entry here would make General try to patch a control it no
+    // longer renders instead of falling through to a full re-render.
+    const inPlaceKeys = generalSource.slice(0, generalSource.indexOf("]);"));
+    assert.ok(!inPlaceKeys.includes('"claudeQuotaCollectionEnabled"'));
   });
 
   it("patches hide-bubbles aggregate off without rebuilding General content", () => {
@@ -8178,6 +8298,148 @@ describe("settings renderer browser environment", () => {
     assert.ok(agentsSource.includes("agent-subgroup"));
     assert.ok(agentsSource.includes("function syncAgentSwitchDisabledState("));
     assert.ok(!agentsSource.includes("full re-render"));
+  });
+
+  it("renders Kimi quota as an explicit manual-only encrypted-key workflow", async () => {
+    let configured = false;
+    let collectionEnabled = false;
+    let connectedKey = null;
+    let reconnects = 0;
+    const genericCommands = [];
+    const flush = async (n = 8) => { for (let i = 0; i < n; i += 1) await Promise.resolve(); };
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        kimiQuotaCollectionEnabled: false,
+        agents: { "kimi-cli": { integrationInstalled: true, enabled: true } },
+        customApplications: [],
+        customToolDiscoveryPaths: [],
+      },
+      agentMetadata: [{
+        id: "kimi-cli",
+        name: "Kimi Code",
+        eventSource: "hook",
+        capabilities: {},
+      }],
+      settingsAPI: {
+        command: (name, payload) => {
+          genericCommands.push([name, payload]);
+          return Promise.resolve({ status: "ok" });
+        },
+        getKimiQuotaStatus: () => Promise.resolve({
+          status: "ok",
+          configured,
+          decryptable: configured,
+          collectionEnabled,
+          agentEnabled: true,
+          state: !configured ? "unconfigured" : (collectionEnabled ? "fresh" : "configured-disabled"),
+          lastQuotaCapturedAt: configured ? 1_786_708_953_953 : null,
+        }),
+        connectKimiQuota: (apiKey) => {
+          connectedKey = apiKey;
+          configured = true;
+          collectionEnabled = true;
+          return Promise.resolve({ status: "ok" });
+        },
+        refreshKimiQuota: () => Promise.resolve({ status: "ok" }),
+        reconnectKimiQuota: () => {
+          reconnects += 1;
+          collectionEnabled = true;
+          return Promise.resolve({ status: "ok" });
+        },
+        disconnectKimiQuota: () => {
+          collectionEnabled = false;
+          return Promise.resolve({ status: "ok" });
+        },
+        forgetKimiQuotaCredential: () => Promise.resolve({ status: "ok" }),
+        openExternal: () => Promise.resolve({ status: "ok" }),
+      },
+    });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 1,
+      agents: [],
+      customAgents: [],
+      customTools: [],
+      skippedAgentIds: [],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.ops.requestRender({ content: true });
+    await flush();
+
+    const card = harness.content.querySelector(".kimi-quota-card");
+    assert.ok(card);
+    const connectSection = card.querySelector(".kimi-quota-connect");
+    const manageSection = card.querySelector(".kimi-quota-manage");
+    assert.ok(connectSection);
+    assert.ok(manageSection);
+
+    // ── Unconnected: one clean connect card, one primary action ──
+    assert.strictEqual(connectSection.hidden, false);
+    assert.strictEqual(manageSection.hidden, true);
+    const input = connectSection.querySelector(".kimi-quota-key-input");
+    assert.strictEqual(input.type, "password");
+    assert.strictEqual(input.autocomplete, "new-password");
+    const connectPrimary = connectSection.querySelectorAll(".kimi-quota-primary");
+    assert.strictEqual(connectPrimary.length, 1, "the connect card has exactly one primary action");
+    assert.ok(connectPrimary[0].classList.contains("accent"));
+    // The Console link is present but quiet — it never competes with Connect.
+    assert.ok(connectSection.querySelector(".kimi-quota-console-link").classList.contains("quiet"));
+
+    input.value = "sk-renderer-secret";
+    connectPrimary[0].dispatchEvent({ type: "click", stopPropagation() {} });
+    assert.strictEqual(input.value, "", "the DOM must drop the key immediately after submission");
+    await flush();
+    assert.strictEqual(connectedKey, "sk-renderer-secret");
+    assert.strictEqual(
+      genericCommands.some((call) => JSON.stringify(call).includes("sk-renderer-secret")),
+      false,
+      "the secret must use dedicated IPC instead of settings:command"
+    );
+
+    // ── Connected: status first, Refresh as the single primary, no key field ──
+    assert.strictEqual(connectSection.hidden, true);
+    assert.strictEqual(manageSection.hidden, false);
+    const primaryRow = manageSection.querySelector(".kimi-quota-primary-row");
+    const primaryButtons = primaryRow.querySelectorAll(".kimi-quota-primary");
+    assert.strictEqual(primaryButtons.length, 1, "exactly one primary action when connected");
+    assert.strictEqual(primaryButtons[0].textContent, "kimiQuotaRefresh");
+    const replacePanel = manageSection.querySelector(".kimi-quota-replace");
+    assert.strictEqual(replacePanel.hidden, true, "no empty key field once connected");
+    // The password field only appears after opting into the replace flow.
+    const replaceToggle = primaryRow.querySelectorAll("button")
+      .find((button) => button.classList.contains("quiet"));
+    replaceToggle.dispatchEvent({ type: "click", stopPropagation() {} });
+    assert.strictEqual(replacePanel.hidden, false);
+    assert.ok(replacePanel.querySelector(".kimi-quota-key-input"));
+
+    // Destructive / low-frequency actions live in the separated danger zone,
+    // each with its own consequence note — never beside Refresh.
+    const dangerZone = manageSection.querySelector(".kimi-quota-danger");
+    assert.ok(dangerZone);
+    const dangerButtons = dangerZone.querySelectorAll(".kimi-quota-danger-row button");
+    assert.ok(dangerButtons.some((button) => button.classList.contains("danger")));
+    assert.ok(
+      !primaryRow.querySelectorAll("button").some((button) => button.classList.contains("danger")),
+      "danger actions must not sit beside the primary action"
+    );
+    const dangerNotes = dangerZone.querySelectorAll(".kimi-quota-danger-desc")
+      .map((el) => el.textContent);
+    assert.ok(dangerNotes.includes("kimiQuotaDisconnectDesc"));
+    assert.ok(dangerNotes.includes("kimiQuotaForgetDesc"));
+
+    // ── Disconnected but still configured: primary becomes Reconnect, which
+    // revives the stored key through the dedicated channel ──
+    const dangerRows = dangerZone.querySelectorAll(".kimi-quota-danger-row");
+    dangerRows[0].querySelector("button").dispatchEvent({ type: "click", stopPropagation() {} });
+    await flush();
+    assert.strictEqual(primaryButtons[0].textContent, "kimiQuotaReconnect");
+    assert.strictEqual(dangerRows[0].hidden, true, "Disconnect hides while disconnected");
+    primaryButtons[0].dispatchEvent({ type: "click", stopPropagation() {} });
+    await flush();
+    assert.strictEqual(reconnects, 1, "Reconnect revives the stored key via dedicated IPC");
+
+    const source = fs.readFileSync(path.join(SRC_DIR, "settings-tab-agents.js"), "utf8");
+    assert.ok(source.includes("Manual-only") || source.includes("kimiQuotaManualOnly"));
+    assert.ok(!source.includes("setInterval("));
   });
 
   it("uses a dedicated Settings agent ordering helper before rendering Agent management groups", () => {

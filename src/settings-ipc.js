@@ -254,6 +254,75 @@ function registerSettingsIpc(options = {}) {
       return 0;
     }
   });
+  // Which providers the "show beside the pet" list should offer. Driven by the
+  // live snapshot, not by the static provider table, so the list never shows a
+  // checkbox for a provider the user has not connected — the same reasoning
+  // that keeps "merge across machines" hidden on a single-machine setup. An
+  // empty array is the honest failure mode: the settings row hides itself
+  // rather than rendering a list that claims nothing is connected.
+  handle("settings:get-quota-ring-providers", () => {
+    try {
+      return typeof options.getQuotaRingProviders === "function"
+        ? options.getQuotaRingProviders()
+        : [];
+    } catch (_err) {
+      return [];
+    }
+  });
+  // Kimi API keys are accepted only by these trusted Settings-window handlers.
+  // They never transit settings:command, prefs, or a renderer-broadcast
+  // snapshot. Results are deliberately sanitized by kimi-quota-runtime.
+  handle("settings:kimi-quota-status", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.getStatus === "function"
+      ? runtime.getStatus()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:kimi-quota-connect", async (event, payload) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    if (!payload || typeof payload !== "object" || typeof payload.apiKey !== "string") {
+      return { status: "error", reason: "invalid-credential-input" };
+    }
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.connect === "function"
+      ? runtime.connect(payload.apiKey)
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:kimi-quota-refresh", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.refresh === "function"
+      ? runtime.refresh()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:kimi-quota-reconnect", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.reconnect === "function"
+      ? runtime.reconnect()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:kimi-quota-disconnect", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.disconnect === "function"
+      ? runtime.disconnect()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:kimi-quota-forget", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.forget === "function"
+      ? runtime.forget()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
   handle("settings:get-pet-tint-options", () => listPetTintOptions());
   handle("settings:get-pet-accessory-options", () => listPetAccessoryOptions());
   handle("settings:get-roam-fence", (event) => {

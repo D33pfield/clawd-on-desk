@@ -88,8 +88,11 @@ describe("pet-attached quota ring", () => {
   it("beds every track in its own ring's hue, fill and track from one source", () => {
     // Match the template itself, not its position in the call — the assertion
     // should survive the argument list being wrapped across lines.
-    assert.match(quotaRingRenderer, /`track \$\{identityClass\(model\.providerKey, "outer"\)/);
-    assert.match(quotaRingRenderer, /`track \$\{identityClass\(model\.providerKey, "inner"\)/);
+    // The class argument is the window's LOGICAL slot (outer.ring), not the
+    // physical ring it is drawn on: a weekly-only provider draws at the outer
+    // radius yet still wears the weekly hue, matching the Dashboard's bar.
+    assert.match(quotaRingRenderer, /`track \$\{identityClass\(model\.providerKey, outer\.ring\)/);
+    assert.match(quotaRingRenderer, /`track \$\{identityClass\(model\.providerKey, inner\.ring\)/);
     // Scope the assertions to the track rule itself. Matching the whole file
     // would let the identical fallback on .fill.sev-ok satisfy them while the
     // track quietly lost its own (a mutation run caught exactly that).
@@ -307,6 +310,19 @@ describe("quota ring glyph zoom follows the exporter's artwork ratio", () => {
           `${providerKey} (${agentId}) is not contrast-tiled, so its glyph fills 56 of 64`
         );
       }
+    }
+  });
+});
+
+describe("Kimi quota freshness policy mirrors across browser renderers", () => {
+  const dashboardRenderer = fs.readFileSync(
+    path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8"
+  );
+
+  it("keeps Kimi at seven minutes and every other provider at five", () => {
+    for (const source of [quotaRingRenderer, dashboardRenderer]) {
+      assert.match(source, /DEFAULT_QUOTA_STALE_AFTER_MS\s*=\s*5\s*\*\s*60\s*\*\s*1000/);
+      assert.match(source, /PROVIDER_STALE_AFTER_MS\s*=\s*Object\.freeze\(\{[\s\S]*?kimiQuota:\s*7\s*\*\s*60\s*\*\s*1000/);
     }
   });
 });
