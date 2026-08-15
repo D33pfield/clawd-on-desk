@@ -13,9 +13,9 @@ function loadPreload() {
   const exposed = new Map();
   const invokes = [];
   const ipcRenderer = {
-    invoke: (channel, ...args) => {
-      invokes.push([channel, ...args]);
-      return Promise.resolve();
+    invoke: (...args) => {
+      invokes.push(args);
+      return Promise.resolve({ status: "ok" });
     },
     send: () => {},
     on(channel, handler) {
@@ -42,6 +42,24 @@ function loadPreload() {
   });
   return { exposed, ipcHandlers, invokes };
 }
+
+test("settings preload keeps every Feishu approver operation on the generic command IPC", async () => {
+  const { exposed, invokes } = loadPreload();
+  const settingsAPI = exposed.get("settingsAPI");
+  for (const [action, payload] of [
+    ["feishuApproval.saveApproverByEmail", { email: "person@example.com" }],
+    ["feishuApproval.cancelApproverLookup", undefined],
+    ["feishuApproval.saveManualApprover", { idType: "open_id", approverId: "ou_manual" }],
+  ]) {
+    assert.deepEqual(await settingsAPI.command(action, payload), { status: "ok" });
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(invokes)), [
+    ["settings:command", { action: "feishuApproval.saveApproverByEmail", payload: { email: "person@example.com" } }],
+    ["settings:command", { action: "feishuApproval.cancelApproverLookup" }],
+    ["settings:command", { action: "feishuApproval.saveManualApprover", payload: { idType: "open_id", approverId: "ou_manual" } }],
+  ]);
+  assert.equal(typeof settingsAPI.feishuApprovalSaveApproverByEmail, "undefined");
+});
 
 test("settings preload exposes the three roam area operations", async () => {
   const { exposed, invokes } = loadPreload();

@@ -121,8 +121,13 @@ const telegramApprovalSettings = require("./telegram-approval-settings");
 const discordPresenceSettings = require("./discord-presence-settings");
 const { createDiscordPresenceBridge } = require("./discord-presence-rpc");
 const { resolveAgentDisplayName } = require("./agent-display-name");
-const { FeishuApprovalClient } = require("./feishu-approval-client");
+const {
+  FeishuApprovalClient,
+  classifyFeishuSdkError,
+  lookupOpenIdByEmail,
+} = require("./feishu-approval-client");
 const feishuApprovalSettings = require("./feishu-approval-settings");
+const { saveFeishuApproverByEmail } = require("./settings-actions");
 const {
   buildTelegramApprovalStatus,
   isNativeTelegramApprovalSelected,
@@ -413,6 +418,7 @@ let lastDiscordPresenceVisual = null;
 let suppressTelegramMigrationReconcile = 0;
 let _remoteSshTransportCoordinator = null;
 let feishuApprovalClient = null;
+const feishuApprovalCloseDrains = new Set();
 let feishuApprovalSyncPromise = Promise.resolve();
 let feishuApprovalConfigSignature = "";
 let feishuSessionAutomationRouteSignature = "";
@@ -482,9 +488,12 @@ const _settingsController = createSettingsController({
     getTelegramApprovalTokenInfo: () => getTelegramApprovalTokenInfo(),
     sendTelegramApprovalTest: () => sendTelegramApprovalTest(),
     writeFeishuApprovalSecrets: (secrets) => writeFeishuApprovalSecrets(secrets),
+    getFeishuApprovalPrefs: () => getFeishuApprovalPrefs(),
+    getFeishuApprovalSecrets: () => getFeishuApprovalSecrets(),
+    getFeishuApprovalSecretsRevision: () => feishuApprovalSecretsRevision,
     getFeishuApprovalStatus: () => getFeishuApprovalStatus(),
     getFeishuApprovalSecretInfo: () => getFeishuApprovalSecretInfo(),
-    sendFeishuApprovalTest: () => sendFeishuApprovalTest(),
+    sendFeishuApprovalTest: (persisted) => sendFeishuApprovalTest(persisted),
     // Lazy getter so settings-actions can use the controller even though it's
     // instantiated below (forward-reference).
     get telegramMigration() {
@@ -1054,8 +1063,8 @@ let contextMenu;
 let doNotDisturb = false;
 let isQuitting = false;
 let quitCleanupStarted = false;
-let remoteSshQuitDrainStarted = false;
-let remoteSshQuitDrainReady = false;
+let appQuitDrainStarted = false;
+let appQuitDrainReady = false;
 // Mirror caches: kept in sync with the settings store via settings-effect-router
 // further down. Read freely; never assign
 // directly (writes go through ctx setters → controller.applyUpdate).
@@ -2517,7 +2526,7 @@ function feishuApprovalLog(level, message, meta = {}) {
   const parts = [`feishu approval ${level}: ${message}`];
   if (meta && meta.text) parts.push(String(meta.text).trim());
   if (meta && meta.error) parts.push(String(meta.error).trim());
-  for (const key of ["requestId", "messageId", "decision", "matched"]) {
+  for (const key of ["requestId", "messageId", "decision", "matched", "code", "stage", "httpStatus", "businessCode", "networkCode"]) {
     const value = meta && meta[key];
     if (value !== undefined && value !== null && value !== "") {
       parts.push(`${key}=${String(value).trim()}`);
@@ -2669,34 +2678,35 @@ function getFeishuApprovalSecretInfo() {
 // which is per-domain) is dropped with it. `lang` is deliberately absent — the
 // translator reads it dynamically, so a language switch must not bounce the
 // long connection.
-function buildFeishuApprovalSignature(config, paths, secrets) {
-  return JSON.stringify({
+function buildFeishuApprovalBindingSignatureFields(
+  config,
+  secrets,
+  revision = feishuApprovalSecretsRevision,
+) {
+  return {
     enabled: config.enabled === true,
     platform: config.platform,
+    credentialPlatform: secrets.credentialPlatform,
     idType: config.idType,
     approverId: config.approverId,
-    secretsEnvFilePath: paths.secretsEnvFilePath,
+    approverSource: config.approverSource,
+    approverBoundPlatform: config.approverBoundPlatform,
+    approverBoundAppId: config.approverBoundAppId,
     appId: secrets.appId,
-    appSecret: secrets.appSecret ? "set" : "",
-    verificationToken: secrets.verificationToken ? "set" : "",
-    encryptKey: secrets.encryptKey ? "set" : "",
+    secretsRevision: revision,
+  };
+}
+
+function buildFeishuApprovalSignature(config, paths, secrets) {
+  return JSON.stringify({
+    ...buildFeishuApprovalBindingSignatureFields(config, secrets),
+    secretsEnvFilePath: paths.secretsEnvFilePath,
     connectionTimeoutSeconds: config.connectionTimeoutSeconds,
-    secretsRevision: feishuApprovalSecretsRevision,
   });
 }
 
 function buildFeishuSessionAutomationRouteSignature(config, secrets, revision = feishuApprovalSecretsRevision) {
-  return JSON.stringify({
-    enabled: config.enabled === true,
-    platform: config.platform,
-    idType: config.idType,
-    approverId: config.approverId,
-    appId: secrets.appId,
-    appSecret: secrets.appSecret ? "set" : "",
-    verificationToken: secrets.verificationToken ? "set" : "",
-    encryptKey: secrets.encryptKey ? "set" : "",
-    secretsRevision: revision,
-  });
+  return JSON.stringify(buildFeishuApprovalBindingSignatureFields(config, secrets, revision));
 }
 
 function prepareFeishuSessionAutomationRouteChange(nextRouteSignature) {
@@ -2721,6 +2731,22 @@ function getFeishuApprovalStatus() {
   const config = getFeishuApprovalPrefs();
   const secrets = getFeishuApprovalSecrets();
   const ready = feishuApprovalSettings.readiness(config, secrets);
+  const credentialEvaluation = feishuApprovalSettings.evaluateFeishuApprovalConfiguration(
+    config,
+    secrets,
+    {
+      requireEnabled: false,
+      requireApprover: false,
+    },
+  );
+  const setupEvaluation = feishuApprovalSettings.evaluateFeishuApprovalConfiguration(
+    config,
+    secrets,
+    {
+      requireEnabled: false,
+      requireApprover: true,
+    },
+  );
   const clientStatus = feishuApprovalClient && typeof feishuApprovalClient.getStatus === "function"
     ? feishuApprovalClient.getStatus()
     : { status: "stopped" };
@@ -2733,6 +2759,10 @@ function getFeishuApprovalStatus() {
     configured: ready.ready === true,
     reason: ready.reason || "",
     message: clientStatus.message || ready.message || "",
+    credentialReady: credentialEvaluation.ok === true,
+    credentialReason: credentialEvaluation.ok ? "" : credentialEvaluation.code || "invalid-config",
+    configurationReady: setupEvaluation.ok === true,
+    setupReason: setupEvaluation.ok ? "" : setupEvaluation.code || "invalid-config",
     connectionTimeoutSeconds: config.connectionTimeoutSeconds,
     // Two different questions, deliberately two fields:
     //   secretsStored     — is ANY secret on disk? (drives render gating only)
@@ -2753,11 +2783,11 @@ function broadcastFeishuApprovalStatus() {
 
 function writeFeishuApprovalSecrets(secrets) {
   const paths = getFeishuApprovalPaths();
-  prepareFeishuSessionAutomationRouteChange(buildFeishuSessionAutomationRouteSignature(
+  const nextRouteSignature = buildFeishuSessionAutomationRouteSignature(
     getFeishuApprovalPrefs(),
     secrets && typeof secrets === "object" ? secrets : {},
     feishuApprovalSecretsRevision + 1
-  ));
+  );
   const result = feishuApprovalSettings.writeSecretsEnvFile({
     fs,
     path,
@@ -2766,21 +2796,21 @@ function writeFeishuApprovalSecrets(secrets) {
     platform: process.platform,
   });
   if (result && result.status === "ok") {
+    prepareFeishuSessionAutomationRouteChange(nextRouteSignature);
     feishuApprovalSecretsRevision += 1;
     queueFeishuApprovalSync("secrets");
-  } else if (
-    feishuApprovalClient
-    && typeof feishuApprovalClient.markSessionAutomationRouteCurrent === "function"
-  ) {
-    feishuApprovalClient.markSessionAutomationRouteCurrent();
   }
   return result;
 }
 
-async function startFeishuApprovalClient() {
-  const config = getFeishuApprovalPrefs();
+async function startFeishuApprovalClient(persisted = null) {
+  const config = persisted && persisted.config
+    ? persisted.config
+    : getFeishuApprovalPrefs();
   const paths = getFeishuApprovalPaths();
-  const secrets = getFeishuApprovalSecrets();
+  const secrets = persisted && persisted.secrets
+    ? persisted.secrets
+    : getFeishuApprovalSecrets();
   const ready = feishuApprovalSettings.readiness(config, secrets);
   if (!ready.ready) {
     if (feishuApprovalClient) stopFeishuApprovalClient();
@@ -2798,7 +2828,7 @@ async function startFeishuApprovalClient() {
       await feishuApprovalClient.start();
       return true;
     } catch (err) {
-      feishuApprovalLog("warn", "start failed", { error: err && err.message ? err.message : String(err) });
+      feishuApprovalLog("warn", "start failed", classifyFeishuSdkError(err, "runtime-start"));
       return false;
     }
   }
@@ -2833,7 +2863,7 @@ async function startFeishuApprovalClient() {
     feishuApprovalLog("info", "starting");
     return true;
   } catch (err) {
-    feishuApprovalLog("warn", "start failed", { error: err && err.message ? err.message : String(err) });
+    feishuApprovalLog("warn", "start failed", classifyFeishuSdkError(err, "runtime-start"));
     return false;
   }
 }
@@ -2849,29 +2879,84 @@ function stopFeishuApprovalClient(options = {}) {
     feishuSessionAutomationRouteSignature = "";
   }
   if (client && typeof client.close === "function") {
-    try { client.close(); } catch (err) {
-      feishuApprovalLog("warn", "stop failed", { error: err && err.message ? err.message : String(err) });
+    try {
+      const closeResult = client.close();
+      if (closeResult && typeof closeResult.then === "function") {
+        const drain = Promise.resolve(closeResult);
+        feishuApprovalCloseDrains.add(drain);
+        void drain.then(
+          () => feishuApprovalCloseDrains.delete(drain),
+          () => feishuApprovalCloseDrains.delete(drain)
+        );
+      }
+      return closeResult;
+    } catch (err) {
+      feishuApprovalLog("warn", "stop failed", classifyFeishuSdkError(err, "runtime-stop"));
     }
   }
 }
 
-async function syncFeishuApproval(reason = "settings") {
-  const config = getFeishuApprovalPrefs();
-  const secrets = getFeishuApprovalSecrets();
+function settleDrainWithin(drain, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      resolve();
+    };
+    timer = setTimeout(finish, timeoutMs);
+    Promise.resolve(drain).then(finish, finish);
+  });
+}
+
+function drainRemoteSshAndFeishuBeforeQuit() {
+  const drains = [];
+  try {
+    settingsIpcRuntime.dispose();
+  } catch (err) {
+    console.error("settings IPC shutdown failed:", err && err.message);
+  }
+  if (_remoteSshRuntime && typeof _remoteSshRuntime.shutdown === "function") {
+    drains.push(
+      Promise.resolve(_remoteSshRuntime.shutdown({ timeoutMs: 5000 }))
+        .catch((err) => console.error("remote-ssh shutdown drain failed:", err && err.message))
+    );
+  }
+  stopFeishuApprovalClient();
+  drains.push(...Array.from(
+    feishuApprovalCloseDrains,
+    (drain) => settleDrainWithin(drain, 5000),
+  ));
+  return Promise.allSettled(drains);
+}
+
+async function syncFeishuApproval(reason = "settings", persisted = null) {
+  if (isQuitting) {
+    stopFeishuApprovalClient();
+    return false;
+  }
+  const config = persisted && persisted.config
+    ? persisted.config
+    : getFeishuApprovalPrefs();
+  const secrets = persisted && persisted.secrets
+    ? persisted.secrets
+    : getFeishuApprovalSecrets();
   const ready = feishuApprovalSettings.readiness(config, secrets);
   if (!ready.ready) {
     stopFeishuApprovalClient();
     return false;
   }
-  const started = await startFeishuApprovalClient();
+  const started = await startFeishuApprovalClient(persisted);
   if (started) feishuApprovalLog("debug", `sync ${reason}`);
   return started;
 }
 
-function queueFeishuApprovalSync(reason) {
+function queueFeishuApprovalSync(reason, persisted = null) {
   feishuApprovalSyncPromise = feishuApprovalSyncPromise
     .catch(() => {})
-    .then(() => syncFeishuApproval(reason));
+    .then(() => syncFeishuApproval(reason, persisted));
   return feishuApprovalSyncPromise;
 }
 
@@ -2896,22 +2981,36 @@ function feishuApprovalUnavailableResult(status) {
   };
 }
 
-async function sendFeishuApprovalTest() {
-  const beforeStatus = getFeishuApprovalStatus();
+async function sendFeishuApprovalTest(persisted = null) {
+  const persistedReady = persisted && persisted.config && persisted.secrets
+    ? feishuApprovalSettings.readiness(persisted.config, persisted.secrets)
+    : null;
+  const beforeStatus = persistedReady
+    ? {
+      configured: persistedReady.ready === true,
+      reason: persistedReady.reason || "",
+      message: persistedReady.message || "",
+    }
+    : getFeishuApprovalStatus();
   if (beforeStatus.configured !== true) {
     return feishuApprovalUnavailableResult(beforeStatus);
   }
-  await queueFeishuApprovalSync("test");
+  await queueFeishuApprovalSync("test", persisted);
   const client = getConfiguredFeishuApprovalClient();
   if (!client || typeof client.requestApproval !== "function") {
-    return feishuApprovalUnavailableResult(getFeishuApprovalStatus());
+    return feishuApprovalUnavailableResult(persistedReady ? beforeStatus : getFeishuApprovalStatus());
   }
   if (typeof client.waitUntilConnected === "function") {
-    const config = getFeishuApprovalPrefs();
+    const config = persisted && persisted.config
+      ? persisted.config
+      : getFeishuApprovalPrefs();
     const timeoutMs = Math.max(1, Number(config.connectionTimeoutSeconds) || 15) * 1000;
     const connected = await client.waitUntilConnected(timeoutMs);
     if (!connected) {
-      return { ...feishuApprovalUnavailableResult(getFeishuApprovalStatus()), code: "not-connected" };
+      return {
+        ...feishuApprovalUnavailableResult(persistedReady ? beforeStatus : getFeishuApprovalStatus()),
+        code: "not-connected",
+      };
     }
   }
   const controller = new AbortController();
@@ -2923,13 +3022,18 @@ async function sendFeishuApprovalTest() {
     const decision = await client.requestApproval({
       title: translate("feishuCardTestTitle"),
       detail: translate("feishuCardTestDetail"),
-    }, { signal: controller.signal, rejectOnSendError: true });
+    }, {
+      signal: controller.signal,
+      rejectOnSendError: true,
+      abortOutcome: { decision: "no-decision" },
+    });
     if (decision === "allow" || decision === "deny") {
       return { status: "ok", decision };
     }
     return { status: "error", code: "no-button-response", message: "Test card did not receive a button response" };
   } catch (err) {
-    return { status: "error", code: "card-send-failed", message: err && err.message ? err.message : String(err) };
+    feishuApprovalLog("warn", "test card send failed", classifyFeishuSdkError(err, "send-card"));
+    return { status: "error", code: "card-send-failed" };
   } finally {
     clearTimeout(timer);
   }
@@ -3953,7 +4057,7 @@ const settingsSizePreviewSession = createSettingsSizePreviewSession({
   },
 });
 
-registerSettingsIpc({
+const settingsIpcRuntime = registerSettingsIpc({
   ipcMain,
   app,
   BrowserWindow,
@@ -3987,6 +4091,19 @@ registerSettingsIpc({
   getDoNotDisturb: () => doNotDisturb,
   getSoundMuted: () => soundMuted,
   getSoundVolume: () => soundVolume,
+  saveFeishuApproverByEmail: ({ email, signal }) => saveFeishuApproverByEmail({ email, signal }, {
+    getFeishuApprovalPrefs,
+    getFeishuApprovalSecrets,
+    getFeishuApprovalSecretsRevision: () => feishuApprovalSecretsRevision,
+    lookupFeishuApproverByEmail: (params) => lookupOpenIdByEmail({
+      ...params,
+      log: feishuApprovalLog,
+    }),
+    commitResolvedApprover: (payload) => _settingsController.applyCommand(
+      "feishuApproval.commitResolvedApprover",
+      payload,
+    ),
+  }),
   getAllAgents,
   getHookServerPort: () => getHookServerPort(),
   getRecentHookEvents: (options) => _server.getRecentHookEvents(options),
@@ -4790,16 +4907,13 @@ if (!gotTheLock) {
 
   app.on("before-quit", (event) => {
     isQuitting = true;
-    if (!remoteSshQuitDrainReady
-      && _remoteSshRuntime
-      && typeof _remoteSshRuntime.shutdown === "function") {
+    if (!appQuitDrainReady) {
       event.preventDefault();
-      if (!remoteSshQuitDrainStarted) {
-        remoteSshQuitDrainStarted = true;
-        void _remoteSshRuntime.shutdown({ timeoutMs: 5000 })
-          .catch((err) => console.error("remote-ssh shutdown drain failed:", err && err.message))
+      if (!appQuitDrainStarted) {
+        appQuitDrainStarted = true;
+        void drainRemoteSshAndFeishuBeforeQuit()
           .finally(() => {
-            remoteSshQuitDrainReady = true;
+            appQuitDrainReady = true;
             app.quit();
           });
       }
