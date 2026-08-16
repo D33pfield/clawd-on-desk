@@ -1,7 +1,7 @@
 // Session-id helpers for the opencode-family plugin core.
 //
 // Prefix classification (get this wrong and family child sessions break
-// silently — see plan-opencode-family-shared-integration.md §3.2):
+// silently — see docs/project/agent-runtime-architecture.md):
 //
 //   prefix-INDEPENDENT — plain module exports below:
 //     getEventSessionInfo, getEventSessionId, getEventParentSessionId,
