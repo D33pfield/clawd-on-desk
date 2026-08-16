@@ -107,14 +107,23 @@ Kimi Code CLI（Kimi-CLI）状态同步（hook-only，config.toml）：
     → 同上状态机（agent_id: kimi-cli）
   Hook 注册到 ~/.kimi/config.toml 的 [[hooks]] 条目；Clawd 启动时会自动同步这些条目。
 
-ZCode 状态同步（hook-only，config.json）：
-  ZCode 触发 SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop
-    → hooks/zcode-hook.js（hook 事件 → agents/zcode.js 映射 → HTTP POST）
+ZCode 状态同步与权限审批（hook-only，config.json）：
+  状态事件 SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop
+    → hooks/zcode-hook.js（hook 事件 → agents/zcode.js 映射 → HTTP POST /state）
     → 同上状态机（agent_id: zcode，session_id 规范化为 zcode:<raw>）
-  Hook 注册到 ~/.zcode/cli/config.json 的 hooks.events.*。Phase 1 仅同步状态，不注册 PermissionRequest；
-  ZCode 原生流程继续处理权限。显式 hooks.enabled=false 或 Clawd 单项 hook enabled=false 是用户选择，
-  启动同步 / Settings Repair 均保留，Doctor 只提示。旧版 zcode-cli 与当前 Electron Node-mode
-  Resources/glm/zcode.cjs 进程均受支持；GUI shell 只有在命令行同时含 zcode.cjs 时才会被认作 runtime。
+  权限事件 PermissionRequest（Phase 2 起）
+    → hooks/zcode-hook.js 构造权限 body（tool_name 缺失 / unknown 时 fail-closed 落回 state 路径）
+    → 长阻塞 HTTP POST /permission（等待 590s；installer 注册 per-hook timeoutMs 600000）
+    → 本地 bubble / permission automation / Telegram / 飞书远程审批产生决定
+    → 有决定时 stdout 返回最小 hookSpecificOutput（allow 裸 behavior；deny 可带 message），
+      无决定 / 超时 / 断连输出 "{}" 并 exit 0，ZCode 回退原生权限流程
+  Hook 注册到 ~/.zcode/cli/config.json 的 hooks.events.*（7 个支持事件全部注册）。显式 hooks.enabled=false
+  或 Clawd 单项 hook enabled=false 是用户选择，启动同步 / Settings Repair 均保留，Doctor 只提示。
+  旧版 zcode-cli 与当前 Electron Node-mode Resources/glm/zcode.cjs 进程均受支持；GUI shell 只有在
+  命令行同时含 zcode.cjs 时才会被认作 runtime。permission automation 档位同 codex / copilot-cli /
+  hermes（KNOWN_PERMISSION_AGENTS 白名单、无逐工具清单）；per-session automation grant 保持
+  identity-verification-required 不可用。prefs v14→v15 迁移翻转 Phase 1 的
+  zcode.permissionsEnabled=false 为 true。
 
 opencode 状态同步（in-process plugin，~0ms 延迟）：
   opencode 触发事件（session.created / session.status / message.part.updated 等）
@@ -245,7 +254,7 @@ CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此�
 - `agents/gemini-cli.js` — Gemini CLI hook 事件映射
 - `agents/antigravity-cli.js` — Antigravity CLI (agy) hook 事件映射（state-only，无权限气泡）
 - `agents/kimi-cli.js` — Kimi Code CLI（Kimi-CLI）hook 事件映射 + permission 分类策略
-- `agents/zcode.js` — ZCode config-file hook 事件映射（state-only，无权限气泡）
+- `agents/zcode.js` — ZCode config-file hook 事件映射与阻塞式 PermissionRequest 权限审批（automation 档位同 codex / copilot-cli / hermes）
 - `agents/kiro-cli.js` — Kiro CLI 事件映射（camelCase），无 HTTP hook / 无权限 / 无 subagent
 - `agents/codebuddy.js` — CodeBuddy 事件映射（PascalCase，Claude Code 兼容），支持权限
 - `agents/workbuddy.js` — WorkBuddy 事件映射（PascalCase，Claude Code 兼容），state + Notification only，无 Clawd 权限审批

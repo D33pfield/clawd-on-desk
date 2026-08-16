@@ -305,7 +305,7 @@ function zcodeDescriptor() {
     nested: true,
     hookEvents: ZCODE_HOOK_EVENTS,
     hookExecutorShape: "zcode-process",
-    processHookTimeoutMs: timeoutMsForZcodeEvent(),
+    processHookTimeoutMsForEvent: timeoutMsForZcodeEvent,
     hookEventsContainer: ["hooks", "events"],
   });
 }
@@ -1318,6 +1318,41 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.level, "warning");
     assert.ok(detail.missingHookEvents.includes("Stop"));
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "zcode" });
+  });
+
+  it("reports a foreign PermissionRequest hook as a conflict without offering a Fix", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    // Replace Clawd's entry with a user's own security hook.
+    config.hooks.events.PermissionRequest = [{
+      hooks: [{ type: "process", command: "/node", args: ["/Users/dev/security-hook.js", "PermissionRequest"], timeoutMs: 30000 }],
+    }];
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.level, "warning");
+    assert.strictEqual(detail.supplementary.value, "permission-conflict");
+    assert.ok(detail.detail.includes("foreign PermissionRequest hook"));
+    // A Fix would re-register Clawd's hook next to the foreign one and create
+    // the exact last-wins override this report exists to prevent.
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("reports coexistence of Clawd and foreign PermissionRequest hooks as a conflict", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    config.hooks.events.PermissionRequest.push({
+      hooks: [{ type: "process", command: "/node", args: ["/Users/dev/security-hook.js", "PermissionRequest"], timeoutMs: 30000 }],
+    });
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.supplementary.value, "permission-conflict");
+    assert.ok(detail.detail.includes("coexists"));
+    assert.strictEqual(detail.fixAction, undefined);
   });
 
   it("validates Windows ZCode process hooks with a spaced absolute node path", () => {

@@ -44,6 +44,12 @@ const KNOWN_PERMISSION_AGENTS = new Set([
   "qwen-code",
   "copilot-cli",
   "hermes",
+  // Same tier as codex/copilot/hermes: automation-eligible WITHOUT the
+  // per-tool reviewed list that claude-code/qwen-code carry below — a
+  // deliberate scope decision from the ZCode Phase 2 plan, not an oversight.
+  // Do not "fix" this into the trusted-tool branch without a reviewed audit
+  // of ZCode's built-in tool surface.
+  "zcode",
 ]);
 
 // Claude-compatible PermissionRequest is not a trustworthy "ordinary tool"

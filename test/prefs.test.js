@@ -1382,6 +1382,50 @@ describe("prefs.migrate v13 → v14 (Dashboard window bounds)", () => {
   });
 });
 
+describe("prefs.migrate v14 → v15 (ZCode permission bubbles default on)", () => {
+  it("flips a Phase 1 persisted zcode permissionsEnabled:false to true", () => {
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 14,
+      agents: {
+        zcode: { integrationInstalled: true, enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
+      },
+    }));
+    assert.strictEqual(upgraded.version, 15);
+    assert.strictEqual(upgraded.agents.zcode.permissionsEnabled, true);
+    // Other agent flags pass through untouched.
+    assert.strictEqual(upgraded.agents.zcode.enabled, true);
+    assert.strictEqual(upgraded.agents.zcode.integrationInstalled, true);
+  });
+
+  it("keeps other agents' explicit permissionsEnabled:false (real user choices)", () => {
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 14,
+      agents: {
+        qoder: { integrationInstalled: true, enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
+      },
+    }));
+    assert.strictEqual(upgraded.version, 15);
+    assert.strictEqual(upgraded.agents.qoder.permissionsEnabled, false);
+  });
+
+  it("never touches a v15 file where the user disabled zcode bubbles after upgrade", () => {
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 15,
+      agents: {
+        zcode: { integrationInstalled: true, enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
+      },
+    }));
+    assert.strictEqual(upgraded.version, 15);
+    assert.strictEqual(upgraded.agents.zcode.permissionsEnabled, false);
+  });
+
+  it("leaves a v14 file without a zcode entry to the schema default (on)", () => {
+    const upgraded = prefs.validate(prefs.migrate({ version: 14, lang: "zh" }));
+    assert.strictEqual(upgraded.version, 15);
+    assert.strictEqual(upgraded.agents.zcode.permissionsEnabled, true);
+  });
+});
+
 describe("prefs.migrate v12 → v13 (Settings window bounds)", () => {
   it("advances the schema without inventing geometry for existing users", () => {
     const upgraded = prefs.validate(prefs.migrate({ version: 12, lang: "zh" }));
@@ -1624,22 +1668,22 @@ describe("prefs.load", () => {
     }
   });
 
-  it("accepts the restored v14 schema and locks an explicit v15 file", () => {
-    const currentPath = makeTempPath("v14.json");
-    fs.writeFileSync(currentPath, JSON.stringify({ version: 14, lang: "zh" }), "utf8");
+  it("accepts the restored v15 schema and locks an explicit v16 file", () => {
+    const currentPath = makeTempPath("v15.json");
+    fs.writeFileSync(currentPath, JSON.stringify({ version: 15, lang: "zh" }), "utf8");
     const current = prefs.load(currentPath);
     assert.strictEqual(current.locked, false);
-    assert.strictEqual(current.snapshot.version, 14);
+    assert.strictEqual(current.snapshot.version, 15);
     assert.strictEqual(current.snapshot.lang, "zh");
 
-    const futurePath = makeTempPath("v15.json");
-    fs.writeFileSync(futurePath, JSON.stringify({ version: 15, lang: "ja" }), "utf8");
+    const futurePath = makeTempPath("v16.json");
+    fs.writeFileSync(futurePath, JSON.stringify({ version: 16, lang: "ja" }), "utf8");
     const originalWarn = console.warn;
     console.warn = () => {};
     try {
       const future = prefs.load(futurePath);
       assert.strictEqual(future.locked, true);
-      assert.strictEqual(future.snapshot.version, 15);
+      assert.strictEqual(future.snapshot.version, 16);
       assert.strictEqual(future.snapshot.lang, "ja");
     } finally {
       console.warn = originalWarn;
