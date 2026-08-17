@@ -1207,7 +1207,7 @@ function loadAgentsTabForTest({
           agentsEmpty: "empty",
           agentSectionConnected: "Connected",
           agentSectionRecommended: "Detected locally",
-          agentSectionUnavailable: "Not detected locally",
+          agentSectionUnavailable: "More supported tools",
           agentSearchPlaceholder: "Search",
           agentsSubtabConnected: "Connected",
           agentsSubtabDiscover: "Discover and add",
@@ -11347,7 +11347,7 @@ describe("settings renderer browser environment", () => {
         dismissedAgentInstallHints: {},
       },
       agentMetadata: [
-        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
         { id: "gemini-cli", name: "Gemini CLI", eventSource: "hook", capabilities: {} },
       ],
     });
@@ -11750,7 +11750,10 @@ describe("settings renderer browser environment", () => {
     // the manual-add block sits above it.
     const group = unavailable.querySelector(".agent-unavailable-group");
     assert.ok(group);
-    assert.strictEqual(group.querySelector(".collapsible-group-text .row-label").textContent, "Not detected locally");
+    // #895: the catalog holds agents Clawd never checked (claude-code, codex are
+    // skipped by the detector) alongside genuinely undetected ones, so its title
+    // must not assert a detection result.
+    assert.strictEqual(group.querySelector(".collapsible-group-text .row-label").textContent, "More supported tools");
     assert.strictEqual(group.querySelector(".agent-section-count").textContent, "1");
     assert.ok(group.classList.contains("collapsed"));
     assert.deepStrictEqual(labelsFor(unavailable), ["Pi"]);
@@ -11758,6 +11761,128 @@ describe("settings renderer browser environment", () => {
       harness.content.children.indexOf(harness.content.querySelector(".agent-custom-tools-section"))
       < harness.content.children.indexOf(unavailable)
     );
+  });
+
+  // #895 T10: medium is half of INSTALL_HINT_CONFIDENCES but every existing
+  // test used "high", so dropping medium from the set was invisible. Antigravity
+  // squatting in ~/.gemini produces exactly a medium parent-dir hit, so this is
+  // the confidence the Gemini half of #895 travels on.
+  it("offers medium-confidence detections in the install hint banner", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: { "gemini-cli": { integrationInstalled: false, enabled: false } },
+        dismissedAgentInstallHints: {},
+      },
+      agentMetadata: [
+        { id: "gemini-cli", name: "Gemini CLI", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
+      ],
+    });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 1,
+      agents: [{ agentId: "gemini-cli", detectedInstalled: true, confidence: "medium", reason: "parent-dir" }],
+      skippedAgentIds: [],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.runtime.agentsSubtab = "discover";
+
+    harness.core.ops.requestRender({ content: true });
+
+    assert.ok(harness.content.querySelector(".agent-install-hint-banner"));
+    assert.match(harness.content.querySelector(".agent-install-hint-desc").textContent, /Gemini CLI/);
+    const recommended = harness.content.querySelector(".agent-section-recommended");
+    assert.ok(recommended);
+    assert.deepStrictEqual(
+      recommended.querySelectorAll(".agent-summary-row .row-label").map((el) => el.textContent),
+      ["Gemini CLI"]
+    );
+  });
+
+  // #895 T9: before the first detection resolves there is no evidence at all, so
+  // the catalog must not be phrased as a detection result. It carries agents
+  // Clawd never examines even after the scan lands.
+  it("keeps the catalog title free of detection claims before hints arrive", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: { agents: { codex: { integrationInstalled: false, enabled: false } } },
+      agentMetadata: [
+        { id: "codex", name: "Codex", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: true },
+      ],
+    });
+    harness.core.runtime.agentInstallationHintsFetched = false;
+    harness.core.runtime.agentsSubtab = "discover";
+
+    harness.core.ops.requestRender({ content: true });
+
+    const group = harness.content.querySelector(".agent-unavailable-group");
+    assert.ok(group);
+    assert.strictEqual(
+      group.querySelector(".collapsible-group-text .row-label").textContent,
+      "More supported tools"
+    );
+  });
+
+  // #895 T12/T12b/T12c/T12d: cleanup suggestions are gated on metadata that must
+  // say, explicitly, that the agent is eligible. Default integrations are not,
+  // and a fixture or an IPC failure that omits the field must not be read as
+  // permission to propose tearing an integration out.
+  it("gates cleanup hints on explicit metadata eligibility", () => {
+    const cases = [
+      { label: "default agent is exempt", id: "codex", name: "Codex", exempt: true, expectBanner: false },
+      { label: "Claude shares the exemption", id: "claude-code", name: "Claude Code", exempt: true, expectBanner: false },
+      { label: "non-default agent is eligible", id: "qwen-code", name: "Qwen Code", exempt: false, expectBanner: true },
+      { label: "missing field fails closed", id: "qwen-code", name: "Qwen Code", exempt: undefined, expectBanner: false },
+    ];
+    for (const { label, id, name, exempt, expectBanner } of cases) {
+      const metadata = { id, name, eventSource: "hook", capabilities: {} };
+      if (exempt !== undefined) metadata.cleanupSuggestionExempt = exempt;
+      const harness = loadAgentsTabForTest({
+        snapshot: {
+          agents: { [id]: { integrationInstalled: true, enabled: true } },
+          dismissedAgentCleanupHints: {},
+        },
+        agentMetadata: [metadata],
+      });
+      harness.core.runtime.agentInstallationHints = {
+        checkedAt: 1,
+        agents: [{ agentId: id, detectedInstalled: false, confidence: "low" }],
+        skippedAgentIds: [],
+      };
+      harness.core.runtime.agentInstallationHintsFetched = true;
+
+      harness.core.ops.requestRender({ content: true });
+
+      const banner = harness.content.querySelector(".agent-cleanup-hint-banner");
+      assert.strictEqual(!!banner, expectBanner, label);
+    }
+  });
+
+  // #895: an entry with no verdict is "not checked", and must not propose a
+  // deletion any more than a missing entry does.
+  it("requires a strict false verdict before offering a cleanup hint", () => {
+    for (const detectedInstalled of [undefined, null]) {
+      const harness = loadAgentsTabForTest({
+        snapshot: {
+          agents: { "qwen-code": { integrationInstalled: true, enabled: true } },
+          dismissedAgentCleanupHints: {},
+        },
+        agentMetadata: [
+          { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
+        ],
+      });
+      harness.core.runtime.agentInstallationHints = {
+        checkedAt: 1,
+        agents: [{ agentId: "qwen-code", detectedInstalled, confidence: "low" }],
+        skippedAgentIds: [],
+      };
+      harness.core.runtime.agentInstallationHintsFetched = true;
+
+      harness.core.ops.requestRender({ content: true });
+
+      assert.strictEqual(
+        harness.content.querySelector(".agent-cleanup-hint-banner"),
+        null,
+        `detectedInstalled=${detectedInstalled} must not propose cleanup`
+      );
+    }
   });
 
   it("renders an install hint banner for detected local agents that are not integrated", () => {
@@ -11988,9 +12113,9 @@ describe("settings renderer browser environment", () => {
         dismissedAgentCleanupHints: {},
       },
       agentMetadata: [
-        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} },
-        { id: "codex", name: "Codex", eventSource: "hook", capabilities: {} },
-        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: true },
+        { id: "codex", name: "Codex", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: true },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
       ],
     });
     harness.core.runtime.agentInstallationHints = {
@@ -12021,7 +12146,7 @@ describe("settings renderer browser environment", () => {
         dismissedAgentCleanupHints: { "qwen-code": true },
       },
       agentMetadata: [
-        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
       ],
     });
     harness.core.runtime.agentInstallationHints = {
@@ -12046,7 +12171,7 @@ describe("settings renderer browser environment", () => {
         dismissedAgentCleanupHints: { "qwen-code": true },
       },
       agentMetadata: [
-        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
       ],
       settingsAPI: {
         command: (action, payload) => {
@@ -12086,7 +12211,7 @@ describe("settings renderer browser environment", () => {
         dismissedAgentCleanupHints: {},
       },
       agentMetadata: [
-        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
       ],
       settingsAPI: {
         command: (action, payload) => {
