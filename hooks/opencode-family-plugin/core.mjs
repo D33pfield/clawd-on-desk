@@ -53,6 +53,17 @@ const CLAWD_DIR = join(homedir(), ".clawd");
 const RUNTIME_CONFIG_PATH = join(CLAWD_DIR, "runtime.json");
 const SERVER_PORTS = [23333, 23334, 23335, 23336, 23337];
 const STATE_PATH = "/state";
+const CLAWD_SERVER_HEADER = "x-clawd-server";
+const CLAWD_SERVER_ID = "clawd-on-desk";
+const CLAWD_METADATA_ACCEPTED_HEADER = "x-clawd-metadata-accepted";
+// Provider limit lookups are in-process HTTP roundtrips to the host's own
+// server; cache positive model limits so the per-message.updated resolution
+// never spams the host router (60s TTL matches antigravity-context-usage.js).
+const CONTEXT_LIMIT_CACHE_MS = 60 * 1000;
+// Purge context-usage dedup entries for dead sessions once this many are
+// tracked, so long-lived hosts (days of sessions) stay bounded even though
+// _lastStatePerSession itself is intentionally unbounded.
+const MAX_CONTEXT_USAGE_ENTRIES = 1024;
 // Fire-and-forget: the IIFE never blocks the event hook's return value, so a
 // generous timeout is safe. 200ms was too tight when Clawd's IPC roundtrip
 // (main → renderer → main) ran under load and silently timed out.
@@ -191,6 +202,34 @@ function normalizeServerUrl(raw) {
   return s.endsWith("/") ? s : s + "/";
 }
 
+// #830 context usage: opencode's message.updated events carry the session
+// message on event.properties.info (a Message object). Only assistant
+// messages carry tokens, and only once the step finishes: { input, output,
+// reasoning, cache: { read, write } }. The host's own "Context view" shows
+// the component sum INCLUDING reasoning (cache read + write, no `total` —
+// `total` is an internal SessionV1 aggregate, never a message-token field),
+// and Clawd mirrors that exact figure. Values are coerced like
+// hooks/antigravity-context-usage.js (hosts may deliver JSON numbers as
+// strings). Returns null when the payload has no usable numbers.
+export function extractContextUsageUsed(tokens) {
+  if (!tokens || typeof tokens !== "object") return null;
+  const parts = [tokens.input, tokens.output, tokens.reasoning]
+    .filter((v) => v != null && Number.isFinite(Number(v)))
+    .map(Number);
+  const cache = tokens.cache;
+  let cacheNum = 0;
+  if (cache != null) {
+    if (Number.isFinite(Number(cache))) {
+      cacheNum = Number(cache);
+    } else if (typeof cache === "object") {
+      if (cache.read != null && Number.isFinite(Number(cache.read))) cacheNum += Number(cache.read);
+      if (cache.write != null && Number.isFinite(Number(cache.write))) cacheNum += Number(cache.write);
+    }
+  }
+  if (parts.length === 0 && cache == null) return null;
+  return parts.reduce((a, b) => a + b, 0) + cacheNum;
+}
+
 /**
  * Create one family-plugin instance for a specific agent.
  *
@@ -287,6 +326,12 @@ export function createOpencodeFamilyPlugin(config) {
   let _lastInitDirectory = "";
   let _instanceTokenCounter = 0;
   const _activeInstanceDirectoryByToken = new Map();
+  // #830 context state is scoped to the initialized SDK client/directory
+  // instance. A factory product can serve multiple OpenCode Instances whose
+  // provider/model IDs overlap but whose configured limits differ.
+  const _contextStateByInstance = new Map();
+  const _contextLimitCacheByClient = new WeakMap();
+  let _contextGenerationCounter = 0;
   // Permission requests outlive the event callback: Clawd replies later over
   // the reverse bridge. OpenCode invokes this factory once per directory, so
   // bind each request to the exact SDK client + directory that emitted it.
@@ -330,6 +375,22 @@ export function createOpencodeFamilyPlugin(config) {
       mkdirSync(CLAWD_DIR, { recursive: true });
       writeFileSync(DEBUG_LOG_PATH, "", "utf8");
     } catch {}
+  }
+
+  // Test-only observability for the already-asynchronous debug writer. The
+  // flag is cleared after appendFile settles, so these two closure conditions
+  // are sufficient; no second active-promise state is needed.
+  function flushDebugLog() {
+    return new Promise((resolve) => {
+      const check = () => {
+        if (!_debugFlushing && _debugBuffer.length === 0) {
+          resolve();
+          return;
+        }
+        setImmediate(check);
+      };
+      check();
+    });
   }
 
   function readRuntimePort() {
@@ -596,6 +657,81 @@ export function createOpencodeFamilyPlugin(config) {
     return sessionId;
   }
 
+  function contextInstanceToken(instanceToken) {
+    return Number.isInteger(instanceToken) && instanceToken > 0 ? instanceToken : 0;
+  }
+
+  function getContextSessionMap(instanceToken, create = false) {
+    const token = contextInstanceToken(instanceToken);
+    let sessions = _contextStateByInstance.get(token);
+    if (!sessions && create) {
+      sessions = new Map();
+      _contextStateByInstance.set(token, sessions);
+    }
+    return sessions || null;
+  }
+
+  function getContextState(instanceToken, sessionId, create = false) {
+    const normalized = normalizeSessionId(sessionId);
+    if (!normalized) return null;
+    const sessions = getContextSessionMap(instanceToken, create);
+    if (!sessions) return null;
+    let state = sessions.get(normalized);
+    if (!state && create) {
+      state = {
+        generation: ++_contextGenerationCounter,
+        sequence: 0,
+        latestSequence: 0,
+        inFlight: new Map(),
+        delivered: null,
+      };
+      sessions.set(normalized, state);
+    }
+    return state || null;
+  }
+
+  function resetContextSession(sessionId, instanceToken) {
+    const normalized = normalizeSessionId(sessionId);
+    if (!normalized) return;
+    const sessions = getContextSessionMap(instanceToken);
+    if (!sessions) return;
+    sessions.delete(normalized);
+    if (sessions.size === 0) _contextStateByInstance.delete(contextInstanceToken(instanceToken));
+  }
+
+  function collectContextSessionIds(instanceToken = null) {
+    const ids = new Set();
+    const maps = instanceToken == null
+      ? _contextStateByInstance.values()
+      : [getContextSessionMap(instanceToken)].filter(Boolean);
+    for (const sessions of maps) {
+      for (const sessionId of sessions.keys()) ids.add(sessionId);
+    }
+    return ids;
+  }
+
+  function cleanupContextState(sessionIds, options = {}) {
+    if (options.clearAll === true) {
+      _contextStateByInstance.clear();
+      return;
+    }
+    if (options.clearInstance === true && options.instanceToken != null) {
+      _contextStateByInstance.delete(contextInstanceToken(options.instanceToken));
+      return;
+    }
+
+    const ids = sessionIds instanceof Set ? sessionIds : new Set(sessionIds || []);
+    const maps = options.instanceToken == null
+      ? _contextStateByInstance.values()
+      : [getContextSessionMap(options.instanceToken)].filter(Boolean);
+    for (const sessions of maps) {
+      for (const sessionId of ids) sessions.delete(sessionId);
+    }
+    for (const [token, sessions] of _contextStateByInstance) {
+      if (sessions.size === 0) _contextStateByInstance.delete(token);
+    }
+  }
+
   function collectKnownSessionIds() {
     const ids = new Set([
       ..._sessionDirectoryById.keys(),
@@ -606,6 +742,7 @@ export function createOpencodeFamilyPlugin(config) {
       ..._sessionParentById.values(),
       ..._statePostTailBySession.keys(),
     ]);
+    for (const sessionId of collectContextSessionIds()) ids.add(sessionId);
     const root = normalizeSessionId(_rootSessionId);
     const latest = normalizeSessionId(_lastSeenSessionId);
     if (root) ids.add(root);
@@ -650,6 +787,12 @@ export function createOpencodeFamilyPlugin(config) {
       }
     }
 
+    cleanupContextState(ids, {
+      clearAll,
+      clearInstance: options.clearInstanceContext === true,
+      instanceToken: options.instanceToken,
+    });
+
     // Never delete an active delivery tail here: Map.delete cannot cancel its
     // promise and would let a later body with the same id overtake it. Every
     // tail removes itself with an identity guard after it settles.
@@ -673,7 +816,7 @@ export function createOpencodeFamilyPlugin(config) {
     return null;
   }
 
-  function cleanupSessionDirectory(event, phase, instanceDirectory = "") {
+  function cleanupSessionDirectory(event, phase, instanceDirectory = "", instanceToken = null) {
     if (!event || typeof event.type !== "string") return;
 
     if (event.type === "server.instance.disposed" && phase === "before-send") {
@@ -697,20 +840,30 @@ export function createOpencodeFamilyPlugin(config) {
           disposedIds.add(sessionId);
         }
       }
+      // A message.updated event can arrive before lifecycle directory metadata
+      // is observed. The handler token is still authoritative for that
+      // instance, so include its context sessions in the final cleanup set.
+      if (instanceToken != null) {
+        for (const sessionId of collectContextSessionIds(instanceToken)) disposedIds.add(sessionId);
+      }
 
       // A state request may already be in flight when the Instance disappears.
       // Queue a targeted final body behind that session's exact FIFO tail so a
       // late state cannot recreate a ghost session after local ownership is
       // cleared. This is never an anonymous or cross-directory SessionEnd.
       enqueueDisposedSessionEnds(disposedIds);
-      cleanupSessionState(disposedIds, { directoryKey: scope.key });
+      cleanupSessionState(disposedIds, {
+        directoryKey: scope.key,
+        instanceToken,
+        clearInstanceContext: instanceToken != null,
+      });
       debugLog(`SESSION_DISPOSE scope=${scope.source} sessions=${disposedIds.size}`);
       return;
     }
 
     if (event.type === "session.deleted" && phase === "after-send") {
       const normalized = normalizeSessionId(getEventSessionId(event));
-      if (normalized) cleanupSessionState(new Set([normalized]));
+      if (normalized) cleanupSessionState(new Set([normalized]), { instanceToken });
     }
   }
 
@@ -766,15 +919,17 @@ export function createOpencodeFamilyPlugin(config) {
           signal: controller.signal,
         });
         const elapsed = Date.now() - t0;
-        const header = res.headers.get("x-clawd-server");
-        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} port=${port} status=${res.status} header=${header} elapsed=${elapsed}ms`);
+        const header = res.headers.get(CLAWD_SERVER_HEADER);
+        const metadataAccepted = header === CLAWD_SERVER_ID
+          && res.headers.get(CLAWD_METADATA_ACCEPTED_HEADER) === "1";
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} port=${port} status=${res.status} header=${header} metadataAccepted=${metadataAccepted} elapsed=${elapsed}ms`);
         // Port range is unprivileged so another app could answer — require the
         // Clawd identity header before trusting the response.
-        if (header === "clawd-on-desk") {
+        if (header === CLAWD_SERVER_ID) {
           _cachedPort = port;
           try { await res.text(); } catch {}
-          debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} OK port=${port}`);
-          return true;
+          debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} OK port=${port} metadataAccepted=${metadataAccepted}`);
+          return { recognized: true, metadataAccepted };
         }
       } catch (err) {
         const elapsed = Date.now() - t0;
@@ -786,7 +941,7 @@ export function createOpencodeFamilyPlugin(config) {
     // All candidates failed — drop the cache so next call re-reads runtime.json.
     debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} EXHAUSTED all candidates failed`);
     _cachedPort = null;
-    return false;
+    return { recognized: false, metadataAccepted: false };
   }
 
   // Fire-and-forget direct channel used by /permission. Returning the settled
@@ -794,10 +949,12 @@ export function createOpencodeFamilyPlugin(config) {
   // it.
   function postToClawd(urlPath, body, logTag) {
     const snapshot = snapshotPost(body, logTag);
-    return deliverPost(urlPath, snapshot).catch((err) => {
-      debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} UNCAUGHT ${err && err.message}`);
-      return false;
-    });
+    return deliverPost(urlPath, snapshot)
+      .then((result) => result.recognized)
+      .catch((err) => {
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} UNCAUGHT ${err && err.message}`);
+        return false;
+      });
   }
 
   function isReplaceableStateSnapshot(snapshot) {
@@ -811,19 +968,74 @@ export function createOpencodeFamilyPlugin(config) {
     return !!(snapshot && snapshot.body && snapshot.body.metadata_only === true);
   }
 
+  function metadataFieldKinds(snapshot) {
+    const body = snapshot && snapshot.body;
+    if (!body || body.metadata_only !== true) return new Set();
+    const kinds = new Set();
+    if (Object.hasOwn(body, "session_title")) kinds.add("title");
+    if (Object.hasOwn(body, "context_usage")) kinds.add("context");
+    return kinds;
+  }
+
+  function refreshSnapshotPayload(snapshot) {
+    snapshot.payload = JSON.stringify(snapshot.body);
+    return snapshot;
+  }
+
+  function createStatePostSnapshot(body) {
+    const snapshot = snapshotPost(body, `STATE state=${body && body.state}`);
+    let resolve;
+    snapshot.completion = new Promise((done) => { resolve = done; });
+    snapshot.waiters = [{ resolve, kinds: metadataFieldKinds(snapshot) }];
+    return snapshot;
+  }
+
+  function settleStatePostSnapshot(snapshot, delivered) {
+    if (!snapshot || snapshot.settled) return;
+    snapshot.settled = true;
+    for (const waiter of snapshot.waiters || []) waiter.resolve(delivered);
+    snapshot.waiters = [];
+  }
+
+  function mergeQueuedMetadataSnapshot(existing, incoming) {
+    const incomingKinds = metadataFieldKinds(incoming);
+    const mergedBody = { ...existing.body, ...incoming.body };
+    incoming.body = mergedBody;
+    refreshSnapshotPayload(incoming);
+
+    // Title and context are independently replaceable fields. Preserve
+    // waiters for an unchanged kind, supersede only waiters for an incoming
+    // same-kind update, and let both compatible fields share one delivery.
+    const retained = [];
+    for (const waiter of existing.waiters || []) {
+      const superseded = [...incomingKinds].some((kind) => waiter.kinds.has(kind));
+      if (superseded) waiter.resolve(false);
+      else retained.push(waiter);
+    }
+    incoming.waiters = [...retained, ...(incoming.waiters || [])];
+    existing.waiters = [];
+    return incoming;
+  }
+
   async function drainStatePostQueue(sessionId, queue) {
-    let allSucceeded = true;
+    let allRecognized = true;
     while (queue.pending.length > 0) {
       const snapshot = queue.pending.shift();
       queue.active = snapshot;
+      let snapshotSucceeded = false;
       try {
-        const delivered = await deliverPost(STATE_PATH, snapshot);
-        if (!delivered) allSucceeded = false;
+        const result = await deliverPost(STATE_PATH, snapshot);
+        const transportSucceeded = result.recognized;
+        snapshotSucceeded = isMetadataStateSnapshot(snapshot)
+          ? result.recognized && result.metadataAccepted
+          : result.recognized;
+        if (!transportSucceeded) allRecognized = false;
       } catch (err) {
-        allSucceeded = false;
+        allRecognized = false;
         debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} UNCAUGHT ${err && err.message}`);
       } finally {
         queue.active = null;
+        settleStatePostSnapshot(snapshot, snapshotSucceeded);
       }
     }
 
@@ -833,13 +1045,19 @@ export function createOpencodeFamilyPlugin(config) {
     if (_statePostTailBySession.get(sessionId) === queue.settled) {
       _statePostTailBySession.delete(sessionId);
     }
-    queue.resolve(allSucceeded);
+    queue.resolve(allRecognized);
   }
 
   function createStatePostQueue(sessionId) {
     let resolve;
     const settled = new Promise((done) => { resolve = done; });
-    const queue = { active: null, pending: [], settled, resolve, draining: false };
+    const queue = {
+      active: null,
+      pending: [],
+      settled,
+      resolve,
+      draining: false,
+    };
     _statePostQueueBySession.set(sessionId, queue);
     _statePostTailBySession.set(sessionId, settled);
     return queue;
@@ -860,12 +1078,13 @@ export function createOpencodeFamilyPlugin(config) {
       ));
     if (index < 0) index = 0;
     const [dropped] = queue.pending.splice(index, 1);
+    settleStatePostSnapshot(dropped, false);
     debugLog(`POST[${incoming.reqId}] ${incoming.logTag} overflow=dropped-old req=${dropped.reqId}`);
   }
 
   function postStateToClawd(body) {
     const sessionId = normalizeSessionId(body && body.session_id) || DEFAULT_SESSION_ID;
-    const snapshot = snapshotPost(body, `STATE state=${body && body.state}`);
+    const snapshot = createStatePostSnapshot(body);
     const replaceable = isReplaceableStateSnapshot(snapshot);
     const metadata = isMetadataStateSnapshot(snapshot);
     const terminal = !!body && body.event === "SessionEnd";
@@ -876,22 +1095,24 @@ export function createOpencodeFamilyPlugin(config) {
     const activeTerminal = !!(queue.active && queue.active.body && queue.active.body.event === "SessionEnd");
     const queuedTerminal = queue.pending.some((entry) => entry.body && entry.body.event === "SessionEnd");
     if (!terminal && (activeTerminal || queuedTerminal)) {
+      settleStatePostSnapshot(snapshot, false);
       debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} dropped=after-terminal`);
-      return queue.settled;
+      return snapshot.completion;
     }
 
     if (terminal) {
-      // SessionEnd is the final state. Keep the active request immutable, but
-      // replace every stale not-yet-started snapshot so recovery cannot replay
-      // obsolete work or leave a ghost session behind.
-      queue.pending.splice(0, queue.pending.length, snapshot);
+      for (const pending of queue.pending.splice(0)) settleStatePostSnapshot(pending, false);
+      queue.pending.push(snapshot);
       debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=terminal`);
     } else {
       const last = queue.pending.at(-1);
-      if ((replaceable && isReplaceableStateSnapshot(last)) ||
-          (metadata && isMetadataStateSnapshot(last))) {
+      if (replaceable && isReplaceableStateSnapshot(last)) {
+        settleStatePostSnapshot(last, false);
         queue.pending[queue.pending.length - 1] = snapshot;
-        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=${metadata ? "latest-metadata" : "latest-state"}`);
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=latest-state`);
+      } else if (metadata && isMetadataStateSnapshot(last)) {
+        queue.pending[queue.pending.length - 1] = mergeQueuedMetadataSnapshot(last, snapshot);
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=metadata-fields`);
       } else {
         makeStatePostRoom(queue, snapshot);
         queue.pending.push(snapshot);
@@ -902,7 +1123,7 @@ export function createOpencodeFamilyPlugin(config) {
       queue.draining = true;
       void drainStatePostQueue(sessionId, queue);
     }
-    return queue.settled;
+    return snapshot.completion;
   }
 
   // Fire-and-forget permission forward. Clawd decides allow/deny/always in its
@@ -1044,6 +1265,11 @@ export function createOpencodeFamilyPlugin(config) {
     normalizeDirectoryOwnershipKey,
     postStateToClawd,
     postPermissionToClawd,
+    handleContextUsageEvent,
+    buildContextUsageBody,
+    resolveContextLimit,
+    resetContextSession,
+    cleanupContextState,
     get _sessionParentById() { return _sessionParentById; },
     get _sessionDirectoryById() { return _sessionDirectoryById; },
     get _sessionInstanceDirectoryById() { return _sessionInstanceDirectoryById; },
@@ -1053,6 +1279,10 @@ export function createOpencodeFamilyPlugin(config) {
     set _rootSessionId(v) { _rootSessionId = v; },
     get _lastSeenSessionId() { return _lastSeenSessionId; },
     get _lastInitDirectory() { return _lastInitDirectory; },
+    get _lastContextUsageBySession() { return getContextUsageDebugView(); },
+    get _contextStateByInstance() { return _contextStateByInstance; },
+    get _contextLimitCacheByClient() { return _contextLimitCacheByClient; },
+    flushDebugLog,
     // Instance-isolation probes (family-core tests). Live views into the
     // closure — a hardcoded log path or accidentally-shared state bag must
     // fail the isolation suite, not pass silently.
@@ -1068,6 +1298,245 @@ export function createOpencodeFamilyPlugin(config) {
     get _bridgeTokenHex() { return _bridgeTokenHex; },
     get _pidChain() { return _pidChain; },
   };
+
+  // #830 context usage — session-level token totals from message.updated
+  // summary events. The state is scoped by initialized Instance and fenced by
+  // session generation/event sequence so stale SDK lookups cannot publish.
+
+  // Fire-and-forget metadata POST of { used, limit } — mirrors
+  // antigravity-context-usage.js / claude-statusline.js quota reporting
+  // (source stamped here so the route can attribute the telemetry stream).
+  function buildContextUsageBody(sessionId, used, limit) {
+    return {
+      agent_id: AGENT_ID,
+      hook_source: HOOK_SOURCE,
+      session_id: sessionId,
+      metadata_only: true,
+      context_usage: {
+        used,
+        limit: Number.isFinite(limit) ? limit : null,
+        source: "opencode",
+      },
+    };
+  }
+
+  function unwrapProviderListResult(result) {
+    // The default SDK client returns { data, request, response }. A caller
+    // using responseStyle:"data" receives the payload directly, so unwrap
+    // only an object-valued data field before inspecting provider fields.
+    if (result
+      && typeof result === "object"
+      && !Array.isArray(result)
+      && result.data
+      && typeof result.data === "object"
+      && !Array.isArray(result.data)) {
+      return result.data;
+    }
+    return result;
+  }
+
+  function normalizeProviderListResult(result) {
+    const payload = unwrapProviderListResult(result);
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    if (Array.isArray(payload.all)) return payload.all;
+    if (Array.isArray(payload.providers)) return payload.providers;
+    return null;
+  }
+
+  function getContextLimitCache(client) {
+    if (!client || (typeof client !== "object" && typeof client !== "function")) return null;
+    let cache = _contextLimitCacheByClient.get(client);
+    if (!cache) {
+      cache = new Map();
+      _contextLimitCacheByClient.set(client, cache);
+    }
+    return cache;
+  }
+
+  // Resolve the host model's context limit via the in-process SDK client —
+  // mirrors exactly what the host's "Context view" shows: provider.list()
+  // returns Provider[] where each Provider has { id, models: { [modelID]:
+  // { limit: { context } } } }. `models` is a MAP keyed by model id (not an
+  // array), so the provider is matched by providerID and the model by modelID.
+  // The upstream contract does not define provider.options.limit as a context
+  // window, so unknown model limits fail closed to null.
+  // Returns null (never throws) when the provider/model/limit is unknown.
+  async function resolveContextLimit(providerID, modelID, client) {
+    if (!modelID || !client || typeof client.provider !== "object" || typeof client.provider.list !== "function") {
+      return null;
+    }
+    const cache = getContextLimitCache(client);
+    if (!cache) return null;
+    const cacheKey = `${providerID || ""}::${modelID}`;
+    const cached = cache.get(cacheKey);
+    if (
+      cached
+      && Number.isFinite(cached.limit)
+      && cached.limit > 0
+      && Date.now() - cached.at < CONTEXT_LIMIT_CACHE_MS
+    ) {
+      return cached.limit;
+    }
+    const lookupGeneration = Number.isSafeInteger(cached && cached.lookupGeneration)
+      ? cached.lookupGeneration + 1
+      : 1;
+    // Record latest-started ownership before awaiting provider.list(). Keep an
+    // expired positive value only as inert history; the `at` check above
+    // prevents this pending entry from becoming a fresh cache hit.
+    cache.set(cacheKey, {
+      limit: Number.isFinite(cached && cached.limit) && cached.limit > 0 ? cached.limit : null,
+      at: Number.isFinite(cached && cached.at) ? cached.at : 0,
+      lookupGeneration,
+    });
+    let limit = null;
+    try {
+      const providers = normalizeProviderListResult(await client.provider.list());
+      if (Array.isArray(providers)) {
+        const provider = (providerID && providers.find((p) => p && p.id === providerID)) || null;
+        const models = provider && provider.models;
+        let model = null;
+        if (Array.isArray(models)) {
+          model = models.find((m) => m && m.id === modelID) || null;
+        } else if (models && typeof models.get === "function") {
+          model = models.get(modelID) || null;
+        } else if (models) {
+          model = models[modelID] || null;
+        }
+        if (model && model.limit && Number.isFinite(model.limit.context) && model.limit.context > 0) {
+          limit = model.limit.context;
+        }
+      }
+    } catch (err) {
+      debugLog(`CTX limit THROW provider=${providerID} model=${modelID} msg=${err && err.message}`);
+    }
+    // Only successful positive limits are normal TTL cache entries. A null or
+    // thrown lookup must be allowed to recover on the next sample.
+    if (Number.isFinite(limit) && limit > 0) {
+      const current = cache.get(cacheKey);
+      if (current && current.lookupGeneration === lookupGeneration) {
+        cache.set(cacheKey, { limit, at: Date.now(), lookupGeneration });
+      }
+    }
+    return limit;
+  }
+
+  function isCurrentContextSample(instanceToken, sessionId, state, generation, sequence) {
+    const current = getContextState(instanceToken, sessionId);
+    return current === state
+      && current && current.generation === generation
+      && current.latestSequence === sequence;
+  }
+
+  function isSameDeliveredContextSample(previous, next) {
+    // A null/unavailable limit is not a stable baseline. Repeated null samples
+    // must retry lookup so a later provider refresh can recover the percentage.
+    return !!previous
+      && Number.isFinite(previous.limit)
+      && previous.limit > 0
+      && previous.used === next.used
+      && previous.providerID === next.providerID
+      && previous.modelID === next.modelID
+      && previous.limit === next.limit;
+  }
+
+  function getContextUsageDebugView() {
+    const view = new Map();
+    for (const sessions of _contextStateByInstance.values()) {
+      for (const [sessionId, state] of sessions) {
+        if (state.delivered) view.set(sessionId, state.delivered.used);
+      }
+    }
+    return view;
+  }
+
+  // message.updated handler: the session message rides on properties.info
+  // (assistant role, tokens populated after the step finishes). The event hook
+  // never awaits this path; its returned promise is intentionally detached.
+  function handleContextUsageEvent(event, instance) {
+    try {
+      // MiMo uses this shared core but its SDK/event contract is not proven to
+      // match OpenCode's message.updated/provider.list contract. Keep #830
+      // explicitly scoped until a real MiMo compatibility fixture exists.
+      if (AGENT_ID !== "opencode") return;
+
+      const props = event && event.properties && typeof event.properties === "object"
+        ? event.properties
+        : {};
+      const info = props.info;
+      if (!info || typeof info !== "object" || Array.isArray(info)) {
+        debugLog("CTX skip reason=invalid-info");
+        return;
+      }
+      if (info.role !== "assistant") {
+        debugLog("CTX skip reason=non-assistant-message");
+        return;
+      }
+
+      const instanceToken = contextInstanceToken(instance && instance.instanceToken);
+      const clawdSessionId = normalizeSessionId(getEventSessionId(event));
+      if (!clawdSessionId) {
+        debugLog("CTX skip reason=no-session-id");
+        return;
+      }
+      const used = extractContextUsageUsed(info.tokens);
+      if (!Number.isFinite(used) || used <= 0) {
+        debugLog(`CTX skip reason=${Number.isFinite(used) ? "zero-tokens" : "no-tokens"}`);
+        return;
+      }
+      const state = getContextState(instanceToken, clawdSessionId, true);
+      const sessions = getContextSessionMap(instanceToken);
+      if (sessions && sessions.size > MAX_CONTEXT_USAGE_ENTRIES) {
+        const oldest = sessions.keys().next().value;
+        if (oldest !== undefined && oldest !== clawdSessionId) sessions.delete(oldest);
+      }
+
+      const sequence = ++state.sequence;
+      state.latestSequence = sequence;
+      const generation = state.generation;
+      state.inFlight.set(sequence, { used });
+      const providerID = info.providerID || null;
+      const modelID = info.modelID || null;
+      return resolveContextLimit(providerID, modelID, instance && instance.client)
+        .then((limit) => {
+          if (!isCurrentContextSample(instanceToken, clawdSessionId, state, generation, sequence)) {
+            debugLog(`CTX discard session=${clawdSessionId} seq=${sequence} reason=stale`);
+            return null;
+          }
+
+          const sample = {
+            used,
+            providerID,
+            modelID,
+            limit: Number.isFinite(limit) && limit > 0 ? limit : null,
+          };
+          debugLog(`CTX resolved used=${used} limit=${sample.limit ?? "unknown"} session=${clawdSessionId} provider=${providerID || "?"} model=${modelID || "unknown"} seq=${sequence} gen=${generation}`);
+          if (isSameDeliveredContextSample(state.delivered, sample)) {
+            debugLog(`CTX skip session=${clawdSessionId} seq=${sequence} reason=delivered`);
+            return null;
+          }
+
+          // Same serialized metadata delivery as the session-title push
+          // (#841): state/event scaffolding is inert on the route side because
+          // metadata_only short-circuits lifecycle handling.
+          const body = buildContextUsageBody(clawdSessionId, used, sample.limit);
+          body.state = "idle";
+          body.event = "SessionUpdate";
+          return postStateToClawd(body).then((delivered) => {
+            if (delivered && isCurrentContextSample(instanceToken, clawdSessionId, state, generation, sequence)) {
+              state.delivered = sample;
+            }
+          });
+        })
+        .catch((err) => {
+          debugLog(`CTX handler ASYNC THROW msg=${err && err.message}`);
+        })
+        .finally(() => {
+          state.inFlight.delete(sequence);
+        });
+    } catch (err) {
+      debugLog(`CTX handler THROW msg=${err && err.message}`);
+    }
+  }
 
   // Handle v2 permission.asked event — see Phase 2 Spike in
   // docs/plans/plan-opencode-integration.md. Current wire payloads carry a
@@ -1253,7 +1722,7 @@ export function createOpencodeFamilyPlugin(config) {
           // source. Capture before translate/drop because session.updated does
           // not map to a Clawd state and info-only deleted events need its id.
           if (event.type === "server.instance.disposed") {
-            cleanupSessionDirectory(event, "before-send", instanceDirectory);
+            cleanupSessionDirectory(event, "before-send", instanceDirectory, instanceToken);
             if (!instanceDisposed) {
               instanceDisposed = true;
               unregisterInstanceDirectory(instanceToken);
@@ -1278,6 +1747,9 @@ export function createOpencodeFamilyPlugin(config) {
           // in _sessionParentById. Child sessions get headless: true in
           // buildStateBody().
           if (event.type === "session.created" && sid) {
+            // A reused session ID is a new context generation. Invalidate any
+            // old provider lookup still completing for the prior incarnation.
+            resetContextSession(sid, instanceToken);
             const parentID = getEventParentSessionId(event);
             if (parentID) {
               // Store with normalized keys so lookups from buildStateBody()
@@ -1301,6 +1773,17 @@ export function createOpencodeFamilyPlugin(config) {
               directory: instanceDirectory,
               serverUrl: instanceServerUrl,
             });
+            return;
+          }
+
+          // #830: message.updated (turn-finished summary update) carries the
+          // session message on event.properties.info, whose assistant tokens
+          // hold the session-level totals. Forward as a metadata-only
+          // contextUsage POST (same dedup/no-decision semantics as the
+          // agents/antigravity plugin path). The event itself never maps to a
+          // Clawd state transition.
+          if (event.type === "message.updated") {
+            handleContextUsageEvent(event, { client: instanceClient, instanceToken });
             return;
           }
 
@@ -1331,7 +1814,7 @@ export function createOpencodeFamilyPlugin(config) {
           // Unified cleanup happens only after postStateToClawd synchronously
           // snapshots the final SessionEnd body. This preserves cwd, title and
           // child/headless ownership while the queued network delivery waits.
-          cleanupSessionDirectory(event, "after-send", instanceDirectory);
+          cleanupSessionDirectory(event, "after-send", instanceDirectory, instanceToken);
         } catch (err) {
           debugLog(`ERROR in event hook: ${err && err.message}`);
         }
