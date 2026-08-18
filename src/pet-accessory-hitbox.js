@@ -50,7 +50,7 @@ const BUILTIN_ACCESSORY_MOTION_PADDING = Object.freeze({
     "cloudling-idle.svg": Object.freeze({ left: 5, top: 5, right: 5, bottom: 5 }),
     "cloudling-typing.svg": Object.freeze({ left: 0.5, top: 1.2, right: 0.5, bottom: 0.6 }),
     "cloudling-mini-idle.svg": Object.freeze({ bottom: 0.4 }),
-    "cloudling-mini-crabwalk.svg": Object.freeze({ left: 4.5, top: 0.9, bottom: 0.9 }),
+    "cloudling-mini-crabwalk.svg": Object.freeze({ left: 4.5, top: 0.9, right: 0.3, bottom: 1.1 }),
   }),
 });
 
