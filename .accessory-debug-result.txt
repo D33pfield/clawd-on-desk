@@ -1,0 +1,1311 @@
+install_status=0
+test_status=1
+head=91802fc944d3b610493dd191e8b84d0a5f6e3623
+npm warn deprecated rimraf@2.6.3: Rimraf versions prior to v4 are no longer supported
+npm warn deprecated lodash.isequal@4.5.0: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
+npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported
+npm warn deprecated boolean@3.2.0: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
+
+> clawd-on-desk@0.14.0 postinstall
+> node scripts/verify-electron-install.js --context postinstall
+
+Verified Electron 41.10.4 installation.
+
+added 330 packages, and audited 331 packages in 9s
+
+66 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+TAP version 13
+# Subtest: real SVG getCTM motion stays inside the declared accessory envelope
+not ok 1 - real SVG getCTM motion stays inside the declared accessory envelope
+  ---
+  duration_ms: 364.930971
+  type: 'test'
+  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/accessory-motion-electron.test.js:17:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    [2326:0818/042045.056459:FATAL:sandbox/linux/suid/client/setuid_sandbox_host.cc:166] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /home/runner/work/clawd-on-desk/clawd-on-desk/node_modules/electron/dist/chrome-sandbox is owned by root and has mode 4755.
+    
+    
+    null !== 0
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  actual: ~
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/accessory-motion-electron.test.js:33:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.start (node:internal/test_runner/test:944:17)
+    startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17)
+  ...
+# Subtest: maximum-valid external accessory metadata cannot expand native input past rendered bounds
+ok 2 - maximum-valid external accessory metadata cannot expand native input past rendered bounds
+  ---
+  duration_ms: 5.03287
+  type: 'test'
+  ...
+# Subtest: containment preserves an existing base hitbox outside the viewBox
+ok 3 - containment preserves an existing base hitbox outside the viewBox
+  ---
+  duration_ms: 0.499215
+  type: 'test'
+  ...
+# Subtest: mini accessory mirroring follows edgeLeft XOR miniFlipAssets
+ok 4 - mini accessory mirroring follows edgeLeft XOR miniFlipAssets
+  ---
+  duration_ms: 1.37163
+  type: 'test'
+  ...
+# Subtest: screen hit rectangles use outward integer rounding
+ok 5 - screen hit rectangles use outward integer rounding
+  ---
+  duration_ms: 0.438401
+  type: 'test'
+  ...
+# Subtest: geometry consumes the delivered canonical payload instead of re-resolving it
+ok 6 - geometry consumes the delivered canonical payload instead of re-resolving it
+  ---
+  duration_ms: 0.908132
+  type: 'test'
+  ...
+# Subtest: holiday geometry rejection retries without resending an unchanged renderer payload
+ok 7 - holiday geometry rejection retries without resending an unchanged renderer payload
+  ---
+  duration_ms: 1.282663
+  type: 'test'
+  ...
+# Subtest: holiday accessory date rules
+    # Subtest: keeps the accepted holiday windows immutable and catalog-backed
+    ok 1 - keeps the accepted holiday windows immutable and catalog-backed
+      ---
+      duration_ms: 1.41388
+      type: 'test'
+      ...
+    # Subtest: uses short inclusive local-date windows and restores outside them
+    ok 2 - uses short inclusive local-date windows and restores outside them
+      ---
+      duration_ms: 1.400184
+      type: 'test'
+      ...
+    # Subtest: is year-independent and fails closed for invalid dates
+    ok 3 - is year-independent and fails closed for invalid dates
+      ---
+      duration_ms: 0.17641
+      type: 'test'
+      ...
+    # Subtest: uses the user's UTC+14 local date at a holiday boundary
+    ok 4 - uses the user's UTC+14 local date at a holiday boundary
+      ---
+      duration_ms: 40.580329
+      type: 'test'
+      ...
+    # Subtest: keeps the checkbox independent from the saved manual accessory
+    ok 5 - keeps the checkbox independent from the saved manual accessory
+      ---
+      duration_ms: 0.366266
+      type: 'test'
+      ...
+    # Subtest: refreshes no later than the next local midnight or one hour
+    ok 6 - refreshes no later than the next local midnight or one hour
+      ---
+      duration_ms: 0.247073
+      type: 'test'
+      ...
+    1..6
+ok 8 - holiday accessory date rules
+  ---
+  duration_ms: 45.524374
+  type: 'suite'
+  ...
+# Subtest: holiday accessory runtime
+    # Subtest: starts, deduplicates, crosses date windows, and supports forced sync
+    ok 1 - starts, deduplicates, crosses date windows, and supports forced sync
+      ---
+      duration_ms: 1.118015
+      type: 'test'
+      ...
+    # Subtest: refreshes and reschedules on wake, then removes listeners and timers
+    ok 2 - refreshes and reschedules on wake, then removes listeners and timers
+      ---
+      duration_ms: 0.540493
+      type: 'test'
+      ...
+    # Subtest: honors settings changes without mutating the saved manual choice
+    ok 3 - honors settings changes without mutating the saved manual choice
+      ---
+      duration_ms: 0.352821
+      type: 'test'
+      ...
+    1..3
+ok 9 - holiday accessory runtime
+  ---
+  duration_ms: 2.400628
+  type: 'suite'
+  ...
+# Subtest: accessory-aware hit boxes
+    # Subtest: does not add a transparent hat region when no accessory is worn
+    ok 1 - does not add a transparent hat region when no accessory is worn
+      ---
+      duration_ms: 19.286599
+      type: 'test'
+      ...
+    # Subtest: keeps selected-accessory geometry size-aware without a one-size-fits-all envelope
+    not ok 2 - keeps selected-accessory geometry size-aware without a one-size-fits-all envelope
+      ---
+      duration_ms: 16.838752
+      type: 'test'
+      location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/pet-accessory-hitbox.test.js:47:3'
+      failureType: 'testCodeFailure'
+      error: 'clawd-working-building.svg/wizard-hat must preserve the base bottom edge'
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: '=='
+      stack: |-
+        TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/pet-accessory-hitbox.test.js:64:16)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+        Test.postRun (node:internal/test_runner/test:1173:19)
+        Test.run (node:internal/test_runner/test:1101:12)
+        async Promise.all (index 0)
+        async Suite.run (node:internal/test_runner/test:1442:7)
+        async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+      ...
+    # Subtest: keeps measured animated motion envelopes separate from authored theme padding
+    ok 3 - keeps measured animated motion envelopes separate from authored theme padding
+      ---
+      duration_ms: 5.972251
+      type: 'test'
+      ...
+    # Subtest: keeps hidden accessories from changing the animation hitbox
+    ok 4 - keeps hidden accessories from changing the animation hitbox
+      ---
+      duration_ms: 4.350054
+      type: 'test'
+      ...
+    1..4
+not ok 10 - accessory-aware hit boxes
+  ---
+  duration_ms: 52.131247
+  type: 'suite'
+  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/pet-accessory-hitbox.test.js:24:1'
+  failureType: 'subtestsFailed'
+  error: '1 subtest failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: getObjRect delegates asset rect calculation and falls back to the full window
+ok 11 - getObjRect delegates asset rect calculation and falls back to the full window
+  ---
+  duration_ms: 2.454138
+  type: 'test'
+  ...
+# Subtest: getObjRect falls back from missing current SVG to idle and tolerates malformed idle state
+ok 12 - getObjRect falls back from missing current SVG to idle and tolerates malformed idle state
+  ---
+  duration_ms: 0.465462
+  type: 'test'
+  ...
+# Subtest: getAssetPointerPayload delegates with current file and returns null without a theme
+ok 13 - getAssetPointerPayload delegates with current file and returns null without a theme
+  ---
+  duration_ms: 2.129882
+  type: 'test'
+  ...
+# Subtest: getHitRectScreen passes hitbox and mini padding, with a full-window fallback
+ok 14 - getHitRectScreen passes hitbox and mini padding, with a full-window fallback
+  ---
+  duration_ms: 2.178482
+  type: 'test'
+  ...
+# Subtest: getHitRectScreen expands only for the currently selected accessory
+ok 15 - getHitRectScreen expands only for the currently selected accessory
+  ---
+  duration_ms: 0.619281
+  type: 'test'
+  ...
+# Subtest: getUpdateBubbleAnchorRect prefers stable anchors, then current-file anchors, then hit rect
+ok 16 - getUpdateBubbleAnchorRect prefers stable anchors, then current-file anchors, then hit rect
+  ---
+  duration_ms: 0.511108
+  type: 'test'
+  ...
+# Subtest: getSessionHudAnchorRect uses the theme margin box and returns null when unavailable
+ok 17 - getSessionHudAnchorRect uses the theme margin box and returns null when unavailable
+  ---
+  duration_ms: 0.46447
+  type: 'test'
+  ...
+# Subtest: macOS physical edge pinning (\#241)
+    # Subtest: uses physical bounds for both drag and rest clamps when edge pinning is enabled
+    ok 1 - uses physical bounds for both drag and rest clamps when edge pinning is enabled
+      ---
+      duration_ms: 3.572585
+      type: 'test'
+      ...
+    # Subtest: keeps the work-area-safe rest clamp when macOS edge pinning is disabled
+    ok 2 - keeps the work-area-safe rest clamp when macOS edge pinning is disabled
+      ---
+      duration_ms: 0.473883
+      type: 'test'
+      ...
+    # Subtest: aligns with the physical bottom when the Dock is hidden
+    ok 3 - aligns with the physical bottom when the Dock is hidden
+      ---
+      duration_ms: 0.503194
+      type: 'test'
+      ...
+    # Subtest: honors a call-site edge-pinning override instead of the global macOS setting
+    ok 4 - honors a call-site edge-pinning override instead of the global macOS setting
+      ---
+      duration_ms: 0.343486
+      type: 'test'
+      ...
+    # Subtest: uses the physical rectangle consistently for top, bottom, left, and right edges
+    ok 5 - uses the physical rectangle consistently for top, bottom, left, and right edges
+      ---
+      duration_ms: 1.243219
+      type: 'test'
+      ...
+    # Subtest: materializes a normal-mode top pin at the physical display top
+    ok 6 - materializes a normal-mode top pin at the physical display top
+      ---
+      duration_ms: 1.186591
+      type: 'test'
+      ...
+    # Subtest: materializes a saved normal-mode top pin against physical bounds at startup
+    ok 7 - materializes a saved normal-mode top pin against physical bounds at startup
+      ---
+      duration_ms: 0.770669
+      type: 'test'
+      ...
+    # Subtest: keeps mini-mode Y materialization inside the work area
+    ok 8 - keeps mini-mode Y materialization inside the work area
+      ---
+      duration_ms: 0.48923
+      type: 'test'
+      ...
+    # Subtest: maps a forced mini work area back to the same display's physical bounds
+    ok 9 - maps a forced mini work area back to the same display's physical bounds
+      ---
+      duration_ms: 0.954027
+      type: 'test'
+      ...
+    # Subtest: does not jump a forced secondary work area to primary when nearest lookup fails
+    ok 10 - does not jump a forced secondary work area to primary when nearest lookup fails
+      ---
+      duration_ms: 0.883745
+      type: 'test'
+      ...
+    # Subtest: uses a forced work area as the display hint during vertical multi-display materialization
+    ok 11 - uses a forced work area as the display hint during vertical multi-display materialization
+      ---
+      duration_ms: 0.467652
+      type: 'test'
+      ...
+    # Subtest: does not change Windows work-area edge behavior
+    ok 12 - does not change Windows work-area edge behavior
+      ---
+      duration_ms: 0.282541
+      type: 'test'
+      ...
+    # Subtest: does not change Linux work-area edge behavior
+    ok 13 - does not change Linux work-area edge behavior
+      ---
+      duration_ms: 0.281409
+      type: 'test'
+      ...
+    # Subtest: falls back to the existing work-area clamp when physical bounds are unavailable
+    ok 14 - falls back to the existing work-area clamp when physical bounds are unavailable
+      ---
+      duration_ms: 0.281168
+      type: 'test'
+      ...
+    # Subtest: falls back safely when Electron display lookup throws
+    ok 15 - falls back safely when Electron display lookup throws
+      ---
+      duration_ms: 0.37447
+      type: 'test'
+      ...
+    # Subtest: keeps drag clamping finite when display enumeration throws
+    ok 16 - keeps drag clamping finite when display enumeration throws
+      ---
+      duration_ms: 0.328771
+      type: 'test'
+      ...
+    # Subtest: filters malformed display entries before the drag fallback
+    ok 17 - filters malformed display entries before the drag fallback
+      ---
+      duration_ms: 0.396679
+      type: 'test'
+      ...
+    # Subtest: uses primary physical bounds when the display list is temporarily empty
+    ok 18 - uses primary physical bounds when the display list is temporarily empty
+      ---
+      duration_ms: 0.270139
+      type: 'test'
+      ...
+    1..18
+ok 18 - macOS physical edge pinning (\#241)
+  ---
+  duration_ms: 15.373033
+  type: 'suite'
+  ...
+# Subtest: pet-window-runtime edge virtualization (\#690 Phase 2 batch 2 red fixtures)
+    # Subtest: rebases logical bounds after a WM externally moves the render window while offset is non-zero
+    ok 1 - rebases logical bounds after a WM externally moves the render window while offset is non-zero
+      ---
+      duration_ms: 2.881235
+      type: 'test'
+      ...
+    # Subtest: distinguishes a mid-drag pause from a confirmed grab end on the hit window (two-level judgment)
+    ok 2 - distinguishes a mid-drag pause from a confirmed grab end on the hit window (two-level judgment)
+      ---
+      duration_ms: 1.032944
+      type: 'test'
+      ...
+    1..2
+ok 19 - pet-window-runtime edge virtualization (\#690 Phase 2 batch 2 red fixtures)
+  ---
+  duration_ms: 4.140302
+  type: 'suite'
+  ...
+# Subtest: pet-window-runtime edge virtualization (\#690 Phase 0 fixture)
+    # Subtest: keeps the logical X at the requested value when the physical window is clamped back into the work area
+    ok 1 - keeps the logical X at the requested value when the physical window is clamped back into the work area
+      ---
+      duration_ms: 0.366286
+      type: 'test'
+      ...
+    1..1
+ok 20 - pet-window-runtime edge virtualization (\#690 Phase 0 fixture)
+  ---
+  duration_ms: 0.492365
+  type: 'suite'
+  ...
+# Subtest: pet-window-runtime edge virtualization (\#690 Phase 2 runtime)
+    # Subtest: computes zero X offset and preserves full physical overflow on non-Linux platforms (I3)
+    ok 1 - computes zero X offset and preserves full physical overflow on non-Linux platforms (I3)
+      ---
+      duration_ms: 0.540439
+      type: 'test'
+      ...
+    # Subtest: does not materialize X across an internal multi-monitor seam (I3)
+    ok 2 - does not materialize X across an internal multi-monitor seam (I3)
+      ---
+      duration_ms: 0.432591
+      type: 'test'
+      ...
+    # Subtest: sends viewport-offset-x once per change and dedupes repeated values
+    ok 3 - sends viewport-offset-x once per change and dedupes repeated values
+      ---
+      duration_ms: 0.294061
+      type: 'test'
+      ...
+    # Subtest: skips the native setBounds call when the materialized physical rect already matches live bounds, unless force:true
+    ok 4 - skips the native setBounds call when the materialized physical rect already matches live bounds, unless force:true
+      ---
+      duration_ms: 0.38586
+      type: 'test'
+      ...
+    # Subtest: updates lastLogicalBounds before the native write, so a read triggered synchronously from inside setBounds sees the new logical position
+    ok 5 - updates lastLogicalBounds before the native write, so a read triggered synchronously from inside setBounds sees the new logical position
+      ---
+      duration_ms: 0.367048
+      type: 'test'
+      ...
+    # Subtest: assertNoYOffset refuses to forward a non-zero Y offset and logs once without spamming repeated frames
+    ok 6 - assertNoYOffset refuses to forward a non-zero Y offset and logs once without spamming repeated frames
+      ---
+      duration_ms: 0.551899
+      type: 'test'
+      ...
+    # Subtest: I2 backstop: an out-of-range materialized X offset hard-resyncs logical bounds to actual and zeroes both offsets
+    ok 7 - I2 backstop: an out-of-range materialized X offset hard-resyncs logical bounds to actual and zeroes both offsets
+      ---
+      duration_ms: 0.655939
+      type: 'test'
+      ...
+    # Subtest: resolveStartupPlacement() computes a Linux outer-edge-aware initialWindowBounds using the same materializer applyPetWindowBounds uses
+    ok 8 - resolveStartupPlacement() computes a Linux outer-edge-aware initialWindowBounds using the same materializer applyPetWindowBounds uses
+      ---
+      duration_ms: 0.294592
+      type: 'test'
+      ...
+    # Subtest: preserves the v0.13 Windows upgrade baseline through construction and the first definitive bounds write
+    ok 9 - preserves the v0.13 Windows upgrade baseline through construction and the first definitive bounds write
+      ---
+      duration_ms: 0.787237
+      type: 'test'
+      ...
+    1..9
+ok 21 - pet-window-runtime edge virtualization (\#690 Phase 2 runtime)
+  ---
+  duration_ms: 4.746194
+  type: 'suite'
+  ...
+# Subtest: pet-window-runtime edge virtualization (\#690 Phase 2 batch 2 reconcile matrix)
+    # Subtest: inset self-bootstrap: needs a SECOND consistent observation to actually learn (PR \#751 rework batch A-3), not the first alone
+    ok 1 - inset self-bootstrap: needs a SECOND consistent observation to actually learn (PR \#751 rework batch A-3), not the first alone
+      ---
+      duration_ms: 1.166626
+      type: 'test'
+      ...
+    # Subtest: uses the learned inset to predict correctly next time, without a second predicted-then-measured jump
+    ok 2 - uses the learned inset to predict correctly next time, without a second predicted-then-measured jump
+      ---
+      duration_ms: 2.828132
+      type: 'test'
+      ...
+    # Subtest: does not pollute the learned inset from size changes, two-axis moves, or non-edge single-axis moves
+    ok 3 - does not pollute the learned inset from size changes, two-axis moves, or non-edge single-axis moves
+      ---
+      duration_ms: 0.645862
+      type: 'test'
+      ...
+    # Subtest: relearns the inset when the WM's real clamp boundary drifts, and logs inset-drift
+    ok 4 - relearns the inset when the WM's real clamp boundary drifts, and logs inset-drift
+      ---
+      duration_ms: 1.963471
+      type: 'test'
+      ...
+    # Subtest: classifies a clamp that lands after SETTLE_MS as adopt-clamp, not rebase (no ratcheting)
+    ok 5 - classifies a clamp that lands after SETTLE_MS as adopt-clamp, not rebase (no ratcheting)
+      ---
+      duration_ms: 0.416874
+      type: 'test'
+      ...
+    # Subtest: does not let a late sweep from an earlier write consume a newer write's settle window
+    ok 6 - does not let a late sweep from an earlier write consume a newer write's settle window
+      ---
+      duration_ms: 0.394565
+      type: 'test'
+      ...
+    # Subtest: the settle-sweep generation guard rejects a stale generation, verified via a direct runReconcile() call with an explicit frozen gen
+    ok 7 - the settle-sweep generation guard rejects a stale generation, verified via a direct runReconcile() call with an explicit frozen gen
+      ---
+      duration_ms: 0.292228
+      type: 'test'
+      ...
+    # Subtest: does not orphan the quiet timer when a settle sweep fires first
+    ok 8 - does not orphan the quiet timer when a settle sweep fires first
+      ---
+      duration_ms: 0.373499
+      type: 'test'
+      ...
+    # Subtest: marks reconcile dirty during a drag and compensates with one terminal reconcile on release
+    ok 9 - marks reconcile dirty during a drag and compensates with one terminal reconcile on release
+      ---
+      duration_ms: 0.392432
+      type: 'test'
+      ...
+    # Subtest: marks reconcile dirty during roam animation and compensates once released
+    ok 10 - marks reconcile dirty during roam animation and compensates once released
+      ---
+      duration_ms: 0.465498
+      type: 'test'
+      ...
+    # Subtest: a deferred settle-sweep debt surviving untouched into roam's release now correctly rebases a later external move (fixed as a side effect of C-1's event-evidence bit)
+    ok 11 - a deferred settle-sweep debt surviving untouched into roam's release now correctly rebases a later external move (fixed as a side effect of C-1's event-evidence bit)
+      ---
+      duration_ms: 0.384058
+      type: 'test'
+      ...
+    # Subtest: bounds hitWin.setBounds calls to at most 2 when the hit window is constantly clamped at a genuine edge, then adopts and records hitGeometryDrift
+    ok 12 - bounds hitWin.setBounds calls to at most 2 when the hit window is constantly clamped at a genuine edge, then adopts and records hitGeometryDrift
+      ---
+      duration_ms: 0.551738
+      type: 'test'
+      ...
+    # Subtest: re-syncing with the same derived target after an adopted clamp does not re-initiate a write (no flip-flop)
+    ok 13 - re-syncing with the same derived target after an adopted clamp does not re-initiate a write (no flip-flop)
+      ---
+      duration_ms: 0.526635
+      type: 'test'
+      ...
+    # Subtest: escape hatch keeps X offset at 0 and skips X IPC, but keeps expected-write/reconcile accounting active
+    ok 14 - escape hatch keeps X offset at 0 and skips X IPC, but keeps expected-write/reconcile accounting active
+      ---
+      duration_ms: 0.464016
+      type: 'test'
+      ...
+    # Subtest: I2's offset legal-domain backstop also fires from runReconcile()'s adopt-clamp branch (§12.18)
+    ok 15 - I2's offset legal-domain backstop also fires from runReconcile()'s adopt-clamp branch (§12.18)
+      ---
+      duration_ms: 0.435646
+      type: 'test'
+      ...
+    # Subtest: recomputeOffsetsFrom's out-of-range branch also zeros Y offset (hard resync means BOTH offsets, not just X)
+    ok 16 - recomputeOffsetsFrom's out-of-range branch also zeros Y offset (hard resync means BOTH offsets, not just X)
+      ---
+      duration_ms: 0.338007
+      type: 'test'
+      ...
+    # Subtest: resendViewportOffsets() always resends Y but never sends viewport-offset-x when X is 0 (Windows/macOS reload)
+    ok 17 - resendViewportOffsets() always resends Y but never sends viewport-offset-x when X is 0 (Windows/macOS reload)
+      ---
+      duration_ms: 0.317021
+      type: 'test'
+      ...
+    # Subtest: resendViewportOffsets() resends both Y and a genuine non-zero X (Linux edge-virtualization context)
+    ok 18 - resendViewportOffsets() resends both Y and a genuine non-zero X (Linux edge-virtualization context)
+      ---
+      duration_ms: 0.306002
+      type: 'test'
+      ...
+    # Subtest: PR \#751 rework batch A: reconcile classification, write-time snapshots, inset confirmation, eligibility gating
+        # Subtest: Codex \#1: an unexplainable mismatch inside settle DEFERS instead of adopting, then rebases once settle expires
+        ok 1 - Codex \#1: an unexplainable mismatch inside settle DEFERS instead of adopting, then rebases once settle expires
+          ---
+          duration_ms: 0.487156
+          type: 'test'
+          ...
+        # Subtest: Codex \#2: a write-time clamp-eligibility snapshot survives clearObservedClampInsets() landing before the late actual arrives
+        ok 2 - Codex \#2: a write-time clamp-eligibility snapshot survives clearObservedClampInsets() landing before the late actual arrives
+          ---
+          duration_ms: 0.612614
+          type: 'test'
+          ...
+        # Subtest: Codex \#3: a single external one-off mismatch never overwrites the learned inset — needs a second CONSISTENT observation, exactly like initial learning
+        ok 3 - Codex \#3: a single external one-off mismatch never overwrites the learned inset — needs a second CONSISTENT observation, exactly like initial learning
+          ---
+          duration_ms: 0.403241
+          type: 'test'
+          ...
+        # Subtest: A-4 Windows context: a genuine position mismatch rebases — adopt-clamp never applies off Linux
+        ok 4 - A-4 Windows context: a genuine position mismatch rebases — adopt-clamp never applies off Linux
+          ---
+          duration_ms: 0.329472
+          type: 'test'
+          ...
+        # Subtest: treats a Windows-only 1px size readback as native rounding without feeding it back through setBounds
+        ok 5 - treats a Windows-only 1px size readback as native rounding without feeding it back through setBounds
+          ---
+          duration_ms: 0.415752
+          type: 'test'
+          ...
+        # Subtest: does not classify a Windows hit-window 1px size readback as an external grab
+        ok 6 - does not classify a Windows hit-window 1px size readback as an external grab
+          ---
+          duration_ms: 0.392241
+          type: 'test'
+          ...
+        # Subtest: keeps edge reconciliation diagnostics silent unless CLAWD_WINDOW_DEBUG=1
+        ok 7 - keeps edge reconciliation diagnostics silent unless CLAWD_WINDOW_DEBUG=1
+          ---
+          duration_ms: 0.481486
+          type: 'test'
+          ...
+        1..7
+    ok 19 - PR \#751 rework batch A: reconcile classification, write-time snapshots, inset confirmation, eligibility gating
+      ---
+      duration_ms: 3.534038
+      type: 'suite'
+      ...
+    1..19
+ok 22 - pet-window-runtime edge virtualization (\#690 Phase 2 batch 2 reconcile matrix)
+  ---
+  duration_ms: 16.725361
+  type: 'suite'
+  ...
+# Subtest: PR \#751 second-review batch C: event-evidence bit, per-side clamp eligibility, hit snapshot atomicity, inset candidate lifecycle
+    # Subtest: C-1: a burst of external-move events landing faster than the quiet debounce still gets rebased by the settle sweep, not blind-adopted as if nothing happened
+    ok 1 - C-1: a burst of external-move events landing faster than the quiet debounce still gets rebased by the settle sweep, not blind-adopted as if nothing happened
+      ---
+      duration_ms: 0.539167
+      type: 'test'
+      ...
+    # Subtest: D-1: a stale native-move echo consumed at a quiet-point (a) must not authorize a LATER, genuinely event-less silent reposition to rebase
+    ok 2 - D-1: a stale native-move echo consumed at a quiet-point (a) must not authorize a LATER, genuinely event-less silent reposition to rebase
+      ---
+      duration_ms: 0.382364
+      type: 'test'
+      ...
+    # Subtest: D-1 companion: a native event consumed by adopt-clamp must not authorize a later silent mismatch to rebase
+    ok 3 - D-1 companion: a native event consumed by adopt-clamp must not authorize a later silent mismatch to rebase
+      ---
+      duration_ms: 0.315838
+      type: 'test'
+      ...
+    # Subtest: D-1 (verification item 4): a genuine external move arriving AFTER a quiet-point (a) consumption still correctly re-arms the bit and rebases
+    ok 4 - D-1 (verification item 4): a genuine external move arriving AFTER a quiet-point (a) consumption still correctly re-arms the bit and rebases
+      ---
+      duration_ms: 2.774328
+      type: 'test'
+      ...
+    # Subtest: C-2: a seam-side mismatch is no longer explained away via the OTHER side's boundary — per-side eligibility, not the old raw-workArea fallback
+    ok 5 - C-2: a seam-side mismatch is no longer explained away via the OTHER side's boundary — per-side eligibility, not the old raw-workArea fallback
+      ---
+      duration_ms: 0.379119
+      type: 'test'
+      ...
+    # Subtest: D-3 (matrix gap 1): a genuine LEFT-edge clamp on the ELIGIBLE side is still correctly adopted — per-side eligibility does not over-reject the eligible side itself
+    ok 6 - D-3 (matrix gap 1): a genuine LEFT-edge clamp on the ELIGIBLE side is still correctly adopted — per-side eligibility does not over-reject the eligible side itself
+      ---
+      duration_ms: 0.375773
+      type: 'test'
+      ...
+    # Subtest: C-3: a same-target no-op syncHitWin() call must not refresh the hit write basis (lastHitWorkArea/lastHitClampBounds)
+    ok 7 - C-3: a same-target no-op syncHitWin() call must not refresh the hit write basis (lastHitWorkArea/lastHitClampBounds)
+      ---
+      duration_ms: 0.403731
+      type: 'test'
+      ...
+    # Subtest: C-4: a pending inset candidate observed before a display-added event is not confirmed by the same value reappearing after it
+    ok 8 - C-4: a pending inset candidate observed before a display-added event is not confirmed by the same value reappearing after it
+      ---
+      duration_ms: 0.532135
+      type: 'test'
+      ...
+    # Subtest: D-3 (matrix gap 2a): a pending inset candidate observed before a display-removed event is not confirmed by the same value reappearing after it
+    ok 9 - D-3 (matrix gap 2a): a pending inset candidate observed before a display-removed event is not confirmed by the same value reappearing after it
+      ---
+      duration_ms: 0.373027
+      type: 'test'
+      ...
+    # Subtest: D-3 (matrix gap 2b): a pending inset candidate observed before a display-metrics-changed event is not confirmed by the same value reappearing after it
+    ok 10 - D-3 (matrix gap 2b): a pending inset candidate observed before a display-metrics-changed event is not confirmed by the same value reappearing after it
+      ---
+      duration_ms: 0.414379
+      type: 'test'
+      ...
+    # Subtest: D-3 (matrix gap 3): main.js's display-metrics-changed wiring shape clears the inset table immediately, decoupled from the still-debounced geometry reflow
+    ok 11 - D-3 (matrix gap 3): main.js's display-metrics-changed wiring shape clears the inset table immediately, decoupled from the still-debounced geometry reflow
+      ---
+      duration_ms: 0.514924
+      type: 'test'
+      ...
+    # Subtest: D-3 (matrix gap 3, structural cross-check): main.js's actual display-metrics-changed wiring still matches the shape the assembly test above mirrors
+    ok 12 - D-3 (matrix gap 3, structural cross-check): main.js's actual display-metrics-changed wiring still matches the shape the assembly test above mirrors
+      ---
+      duration_ms: 1.682793
+      type: 'test'
+      ...
+    1..12
+ok 23 - PR \#751 second-review batch C: event-evidence bit, per-side clamp eligibility, hit snapshot atomicity, inset candidate lifecycle
+  ---
+  duration_ms: 9.203777
+  type: 'suite'
+  ...
+# Subtest: pet-window-runtime
+    # Subtest: keeps context menu owner creation outside the pet runtime and preserves parent ownership
+    ok 1 - keeps context menu owner creation outside the pet runtime and preserves parent ownership
+      ---
+      duration_ms: 1.67548
+      type: 'test'
+      ...
+    # Subtest: lazy-binds topmost edge helpers so main can initialize the pet runtime first
+    ok 2 - lazy-binds topmost edge helpers so main can initialize the pet runtime first
+      ---
+      duration_ms: 2.054559
+      type: 'test'
+      ...
+    # Subtest: creates the hit window with the Windows drag focusability contract
+    ok 3 - creates the hit window with the Windows drag focusability contract
+      ---
+      duration_ms: 0.850537
+      type: 'test'
+      ...
+    # Subtest: reloadWindowWebContents ignores destroyed windows and webContents
+    ok 4 - reloadWindowWebContents ignores destroyed windows and webContents
+      ---
+      duration_ms: 0.28757
+      type: 'test'
+      ...
+    # Subtest: does not reload renderer windows for terminal render-process-gone reasons
+    ok 5 - does not reload renderer windows for terminal render-process-gone reasons
+      ---
+      duration_ms: 0.325736
+      type: 'test'
+      ...
+    # Subtest: stops reloading renderer windows after repeated crashes in the guard window
+    ok 6 - stops reloading renderer windows after repeated crashes in the guard window
+      ---
+      duration_ms: 0.3912
+      type: 'test'
+      ...
+    # Subtest: uses safe reload helpers for pet render-process-gone handlers
+    ok 7 - uses safe reload helpers for pet render-process-gone handlers
+      ---
+      duration_ms: 2.163508
+      type: 'test'
+      ...
+    # Subtest: wires the first-rendered-visual signal to the non-relocating visibility recovery
+    ok 8 - wires the first-rendered-visual signal to the non-relocating visibility recovery
+      ---
+      duration_ms: 8.18127
+      type: 'test'
+      ...
+    # Subtest: creates the render window as non-focusable and materializes the initial virtual bounds
+    ok 9 - creates the render window as non-focusable and materializes the initial virtual bounds
+      ---
+      duration_ms: 0.473712
+      type: 'test'
+      ...
+    # Subtest: flushes runtime prefs once during Windows session end
+    ok 10 - flushes runtime prefs once during Windows session end
+      ---
+      duration_ms: 0.32229
+      type: 'test'
+      ...
+    # Subtest: does not flush runtime prefs for session-end events on non-Windows platforms
+    ok 11 - does not flush runtime prefs for session-end events on non-Windows platforms
+      ---
+      duration_ms: 1.512529
+      type: 'test'
+      ...
+    # Subtest: keeps Linux hit windows non-focusable
+    ok 12 - keeps Linux hit windows non-focusable
+      ---
+      duration_ms: 0.29385
+      type: 'test'
+      ...
+    # Subtest: materializes virtual bounds into viewport offset and syncs the hit shape once per size
+    ok 13 - materializes virtual bounds into viewport offset and syncs the hit shape once per size
+      ---
+      duration_ms: 0.320567
+      type: 'test'
+      ...
+    # Subtest: does not move the hit window while drag owns pointer capture
+    ok 14 - does not move the hit window while drag owns pointer capture
+      ---
+      duration_ms: 0.20708
+      type: 'test'
+      ...
+    # Subtest: I5: recovering from suppressed hit geometry must not re-enable input while petHidden is separately true
+    ok 15 - I5: recovering from suppressed hit geometry must not re-enable input while petHidden is separately true
+      ---
+      duration_ms: 0.479453
+      type: 'test'
+      ...
+    # Subtest: re-answers the editing overlap after each hit geometry sync (\#640)
+    ok 16 - re-answers the editing overlap after each hit geometry sync (\#640)
+      ---
+      duration_ms: 0.288831
+      type: 'test'
+      ...
+    # Subtest: clips the hit window to a right-side internal monitor seam
+    ok 17 - clips the hit window to a right-side internal monitor seam
+      ---
+      duration_ms: 1.094121
+      type: 'test'
+      ...
+    # Subtest: clips the hit window from the left at a left-side internal seam
+    ok 18 - clips the hit window from the left at a left-side internal seam
+      ---
+      duration_ms: 0.26503
+      type: 'test'
+      ...
+    # Subtest: leaves the hit window unclipped when no internal seam is active
+    ok 19 - leaves the hit window unclipped when no internal seam is active
+      ---
+      duration_ms: 0.269478
+      type: 'test'
+      ...
+    # Subtest: returns the seam-clipped hit rect to hover and bubble callers
+    ok 20 - returns the seam-clipped hit rect to hover and bubble callers
+      ---
+      duration_ms: 0.220353
+      type: 'test'
+      ...
+    # Subtest: does not clip a hit rect that legitimately spans an internal monitor seam (only the genuine outer edge, if any, gets clipped)
+    ok 21 - does not clip a hit rect that legitimately spans an internal monitor seam (only the genuine outer edge, if any, gets clipped)
+      ---
+      duration_ms: 0.36307
+      type: 'test'
+      ...
+    # Subtest: does not suppress a narrow hit rect off Linux (no workArea intersection to have narrowed it in the first place)
+    ok 22 - does not suppress a narrow hit rect off Linux (no workArea intersection to have narrowed it in the first place)
+      ---
+      duration_ms: 0.277872
+      type: 'test'
+      ...
+    # Subtest: does not suppress a narrow hit rect when the escape hatch is engaged, even on Linux
+    ok 23 - does not suppress a narrow hit rect when the escape hatch is engaged, even on Linux
+      ---
+      duration_ms: 0.295002
+      type: 'test'
+      ...
+    # Subtest: reasserts Windows topmost when drag movement lands near a work-area edge
+    ok 24 - reasserts Windows topmost when drag movement lands near a work-area edge
+      ---
+      duration_ms: 0.729527
+      type: 'test'
+      ...
+    # Subtest: preserves mini transition guards for drag and display changes
+    ok 25 - preserves mini transition guards for drag and display changes
+      ---
+      duration_ms: 0.226804
+      type: 'test'
+      ...
+    # Subtest: routes mini-mode display changes to mini handlers without writing pet bounds
+    ok 26 - routes mini-mode display changes to mini handlers without writing pet bounds
+      ---
+      duration_ms: 0.23011
+      type: 'test'
+      ...
+    # Subtest: refreshes mini seam state when a display is added
+    ok 27 - refreshes mini seam state when a display is added
+      ---
+      duration_ms: 0.179892
+      type: 'test'
+      ...
+    # Subtest: handleDisplayAdded re-materializes a Linux outer-edge position when that edge becomes an internal seam
+    ok 28 - handleDisplayAdded re-materializes a Linux outer-edge position when that edge becomes an internal seam
+      ---
+      duration_ms: 0.444271
+      type: 'test'
+      ...
+    # Subtest: handleDisplayMetricsChanged re-materializes a Linux outer-edge position when that edge becomes an internal seam
+    ok 29 - handleDisplayMetricsChanged re-materializes a Linux outer-edge position when that edge becomes an internal seam
+      ---
+      duration_ms: 0.274757
+      type: 'test'
+      ...
+    # Subtest: handleDisplayRemoved re-materializes a Linux internal-seam position when that seam becomes an outer edge
+    ok 30 - handleDisplayRemoved re-materializes a Linux internal-seam position when that seam becomes an outer edge
+      ---
+      duration_ms: 0.411264
+      type: 'test'
+      ...
+    # Subtest: snaps the pet back to the frozen size when live bounds drift on display-metrics-changed (\#408)
+    ok 31 - snaps the pet back to the frozen size when live bounds drift on display-metrics-changed (\#408)
+      ---
+      duration_ms: 0.323602
+      type: 'test'
+      ...
+    # Subtest: leaves the pet alone when live bounds already match the frozen size and no clamp is needed (\#408)
+    ok 32 - leaves the pet alone when live bounds already match the frozen size and no clamp is needed (\#408)
+      ---
+      duration_ms: 0.221375
+      type: 'test'
+      ...
+    # Subtest: brings the pet to primary display and flushes runtime prefs
+    ok 33 - brings the pet to primary display and flushes runtime prefs
+      ---
+      duration_ms: 0.490322
+      type: 'test'
+      ...
+    # Subtest: recovers a nominally visible pet after renderer load without relocating it
+    ok 34 - recovers a nominally visible pet after renderer load without relocating it
+      ---
+      duration_ms: 0.424307
+      type: 'test'
+      ...
+    # Subtest: does not resurrect a pet intentionally hidden when the renderer reloads
+    ok 35 - does not resurrect a pet intentionally hidden when the renderer reloads
+      ---
+      duration_ms: 0.185171
+      type: 'test'
+      ...
+    # Subtest: keeps the renderer-load recovery Windows-only
+    ok 36 - keeps the renderer-load recovery Windows-only
+      ---
+      duration_ms: 0.179762
+      type: 'test'
+      ...
+    1..36
+ok 24 - pet-window-runtime
+  ---
+  duration_ms: 28.405531
+  type: 'suite'
+  ...
+# Subtest: pet-window-runtime setPetHidden contract (\#416)
+    # Subtest: hides the pet and reports a real change
+    ok 1 - hides the pet and reports a real change
+      ---
+      duration_ms: 0.315068
+      type: 'test'
+      ...
+    # Subtest: is idempotent when already in the target state
+    ok 2 - is idempotent when already in the target state
+      ---
+      duration_ms: 0.161681
+      type: 'test'
+      ...
+    # Subtest: shows the pet again
+    ok 3 - shows the pet again
+      ---
+      duration_ms: 0.275078
+      type: 'test'
+      ...
+    # Subtest: defers without changing state during a mini transition
+    ok 4 - defers without changing state during a mini transition
+      ---
+      duration_ms: 0.175576
+      type: 'test'
+      ...
+    # Subtest: reports not-applied when the render window is gone
+    ok 5 - reports not-applied when the render window is gone
+      ---
+      duration_ms: 0.167702
+      type: 'test'
+      ...
+    # Subtest: togglePetVisibility flips state through setPetHidden
+    ok 6 - togglePetVisibility flips state through setPetHidden
+      ---
+      duration_ms: 0.206579
+      type: 'test'
+      ...
+    1..6
+ok 25 - pet-window-runtime setPetHidden contract (\#416)
+  ---
+  duration_ms: 1.697749
+  type: 'suite'
+  ...
+# Subtest: pet-window-runtime cloak self-heal (\#525)
+    # Subtest: toggle hides on the FIRST press even when the cloak flag reads permanently non-zero
+    ok 1 - toggle hides on the FIRST press even when the cloak flag reads permanently non-zero
+      ---
+      duration_ms: 0.614127
+      type: 'test'
+      ...
+    # Subtest: recoverIfCloaked un-cloaks a cloaked window on the current desktop and reports recovered
+    ok 2 - recoverIfCloaked un-cloaks a cloaked window on the current desktop and reports recovered
+      ---
+      duration_ms: 0.39758
+      type: 'test'
+      ...
+    # Subtest: recoverIfCloaked leaves a window parked on another virtual desktop alone
+    ok 3 - recoverIfCloaked leaves a window parked on another virtual desktop alone
+      ---
+      duration_ms: 3.385831
+      type: 'test'
+      ...
+    # Subtest: recoverIfCloaked degrades to APP-only when the virtual-desktop probe is down
+    ok 4 - recoverIfCloaked degrades to APP-only when the virtual-desktop probe is down
+      ---
+      duration_ms: 0.265592
+      type: 'test'
+      ...
+    # Subtest: recoverIfCloaked guard matrix: hidden/mini/drag/preview each stand down before probing
+    ok 5 - recoverIfCloaked guard matrix: hidden/mini/drag/preview each stand down before probing
+      ---
+      duration_ms: 3.782931
+      type: 'test'
+      ...
+    # Subtest: recoverIfCloaked backs off exponentially after a failed recovery and resets on success
+    ok 6 - recoverIfCloaked backs off exponentially after a failed recovery and resets on success
+      ---
+      duration_ms: 0.553712
+      type: 'test'
+      ...
+    # Subtest: recoverIfCloaked reports unavailable without an inspector (non-Windows / FFI down)
+    ok 7 - recoverIfCloaked reports unavailable without an inspector (non-Windows / FFI down)
+      ---
+      duration_ms: 0.243002
+      type: 'test'
+      ...
+    # Subtest: showPetWindows un-cloaks an abnormally cloaked window BEFORE showInactive (order-sensitive)
+    ok 8 - showPetWindows un-cloaks an abnormally cloaked window BEFORE showInactive (order-sensitive)
+      ---
+      duration_ms: 0.32789
+      type: 'test'
+      ...
+    # Subtest: recoverIfCloaked fails the round when one window recovers and the other stays cloaked
+    ok 9 - recoverIfCloaked fails the round when one window recovers and the other stays cloaked
+      ---
+      duration_ms: 3.377467
+      type: 'test'
+      ...
+    # Subtest: recoverIfCloaked does not touch the window when the un-cloak call itself fails (fail-open)
+    ok 10 - recoverIfCloaked does not touch the window when the un-cloak call itself fails (fail-open)
+      ---
+      duration_ms: 0.276821
+      type: 'test'
+      ...
+    # Subtest: recoverIfCloaked still re-asserts topmost in a mixed round where one window did recover
+    ok 11 - recoverIfCloaked still re-asserts topmost in a mixed round where one window did recover
+      ---
+      duration_ms: 0.356519
+      type: 'test'
+      ...
+    # Subtest: a clean round resets the backoff so the next independent fault starts fresh
+    ok 12 - a clean round resets the backoff so the next independent fault starts fresh
+      ---
+      duration_ms: 0.297126
+      type: 'test'
+      ...
+    1..12
+ok 26 - pet-window-runtime cloak self-heal (\#525)
+  ---
+  duration_ms: 14.516915
+  type: 'suite'
+  ...
+# Subtest: settings-effect-router
+    # Subtest: updates mirrors before tray and dock side effects
+    ok 1 - updates mirrors before tray and dock side effects
+      ---
+      duration_ms: 2.236084
+      type: 'test'
+      ...
+    # Subtest: destroys the tray when showTray is committed false
+    ok 2 - destroys the tray when showTray is committed false
+      ---
+      duration_ms: 0.441747
+      type: 'test'
+      ...
+    # Subtest: routes bubble policy changes to permission and update bubble effects
+    ok 3 - routes bubble policy changes to permission and update bubble effects
+      ---
+      duration_ms: 0.423325
+      type: 'test'
+      ...
+    # Subtest: clears the Codex user-input card on the notification-policy axis, not the permission-policy axis
+    ok 4 - clears the Codex user-input card on the notification-policy axis, not the permission-policy axis
+      ---
+      duration_ms: 0.461111
+      type: 'test'
+      ...
+    # Subtest: routes textScale and textScaleByDisplay changes to applyTextScale without a menu rebuild
+    ok 5 - routes textScale and textScaleByDisplay changes to applyTextScale without a menu rebuild
+      ---
+      duration_ms: 0.451284
+      type: 'test'
+      ...
+    # Subtest: reconciles the power save blocker when keepAwakeWhileWorking changes
+    ok 6 - reconciles the power save blocker when keepAwakeWhileWorking changes
+      ---
+      duration_ms: 0.32286
+      type: 'test'
+      ...
+    # Subtest: re-syncs hidden HUD windows when low-power mode changes
+    ok 7 - re-syncs hidden HUD windows when low-power mode changes
+      ---
+      duration_ms: 0.279626
+      type: 'test'
+      ...
+    # Subtest: routes language, session alias, and session HUD effects
+    ok 8 - routes language, session alias, and session HUD effects
+      ---
+      duration_ms: 1.50815
+      type: 'test'
+      ...
+    # Subtest: refreshes session effective modes immediately when global automation changes
+    ok 9 - refreshes session effective modes immediately when global automation changes
+      ---
+      duration_ms: 0.417646
+      type: 'test'
+      ...
+    # Subtest: orders combined HUD changes as handlePinnedChanged before generic sync
+    ok 10 - orders combined HUD changes as handlePinnedChanged before generic sync
+      ---
+      duration_ms: 0.487106
+      type: 'test'
+      ...
+    # Subtest: delegates edge pinning changes to one injected reclamp helper
+    ok 11 - delegates edge pinning changes to one injected reclamp helper
+      ---
+      duration_ms: 0.194367
+      type: 'test'
+      ...
+    # Subtest: exits current mini mode when mini mode is disabled
+    ok 12 - exits current mini mode when mini mode is disabled
+      ---
+      duration_ms: 0.205477
+      type: 'test'
+      ...
+    # Subtest: does not enter mini mode when mini mode is re-enabled
+    ok 13 - does not enter mini mode when mini mode is re-enabled
+      ---
+      duration_ms: 0.17805
+      type: 'test'
+      ...
+    # Subtest: refreshes the idle visual on idleVisual changes, without a menu rebuild
+    ok 14 - refreshes the idle visual on idleVisual changes, without a menu rebuild
+      ---
+      duration_ms: 0.174162
+      type: 'test'
+      ...
+    # Subtest: rebuilds menus only once for menu-affecting keys
+    ok 15 - rebuilds menus only once for menu-affecting keys
+      ---
+      duration_ms: 0.19585
+      type: 'test'
+      ...
+    # Subtest: resolves the active theme's tint without rebuilding quick menus
+    ok 16 - resolves the active theme's tint without rebuilding quick menus
+      ---
+      duration_ms: 0.29935
+      type: 'test'
+      ...
+    # Subtest: uses the active theme's pet tint policy
+    ok 17 - uses the active theme's pet tint policy
+      ---
+      duration_ms: 0.232584
+      type: 'test'
+      ...
+    # Subtest: resolves the active theme's accessory without rebuilding quick menus
+    ok 18 - resolves the active theme's accessory without rebuilding quick menus
+      ---
+      duration_ms: 0.51278
+      type: 'test'
+      ...
+    # Subtest: temporarily resolves the holiday accessory from an independent opt-in
+    ok 19 - temporarily resolves the holiday accessory from an independent opt-in
+      ---
+      duration_ms: 0.585067
+      type: 'test'
+      ...
+    # Subtest: resizes the input window after the effective accessory changes
+    ok 20 - resizes the input window after the effective accessory changes
+      ---
+      duration_ms: 0.197082
+      type: 'test'
+      ...
+    # Subtest: broadcasts settings changes only to live renderer windows
+    ok 21 - broadcasts settings changes only to live renderer windows
+      ---
+      duration_ms: 0.262596
+      type: 'test'
+      ...
+    # Subtest: rebuilds shortcut menus only when the toggle-pet shortcut changes
+    ok 22 - rebuilds shortcut menus only when the toggle-pet shortcut changes
+      ---
+      duration_ms: 0.268856
+      type: 'test'
+      ...
+    # Subtest: logs side-effect failures and keeps later routes running
+    ok 23 - logs side-effect failures and keeps later routes running
+      ---
+      duration_ms: 0.209334
+      type: 'test'
+      ...
+    # Subtest: triggers a cleanup sweep + forced snapshot when any stale-cleanup config key changes
+    ok 24 - triggers a cleanup sweep + forced snapshot when any stale-cleanup config key changes
+      ---
+      duration_ms: 0.269658
+      type: 'test'
+      ...
+    # Subtest: dispose unsubscribes both settings routes
+    ok 25 - dispose unsubscribes both settings routes
+      ---
+      duration_ms: 0.154518
+      type: 'test'
+      ...
+    1..25
+ok 27 - settings-effect-router
+  ---
+  duration_ms: 12.701072
+  type: 'suite'
+  ...
+# Subtest: theme schema validation
+    # Subtest: validates schema, rendering, and update bubble anchor shape
+    ok 1 - validates schema, rendering, and update bubble anchor shape
+      ---
+      duration_ms: 2.794985
+      type: 'test'
+      ...
+    # Subtest: treats sleepSequence.mode=direct as not requiring full sleep art
+    ok 2 - treats sleepSequence.mode=direct as not requiring full sleep art
+      ---
+      duration_ms: 1.285532
+      type: 'test'
+      ...
+    # Subtest: rejects invalid fallback chains and mini themes missing required mini states
+    ok 3 - rejects invalid fallback chains and mini themes missing required mini states
+      ---
+      duration_ms: 0.680321
+      type: 'test'
+      ...
+    # Subtest: rejects non-boolean roamFlipAssets (truthy strings would silently invert the roam mirror)
+    ok 4 - rejects non-boolean roamFlipAssets (truthy strings would silently invert the roam mirror)
+      ---
+      duration_ms: 1.118122
+      type: 'test'
+      ...
+    # Subtest: validates and derives the explicit pet tint capability
+    ok 5 - validates and derives the explicit pet tint capability
+      ---
+      duration_ms: 3.029552
+      type: 'test'
+      ...
+    # Subtest: derives accessory capability from complete raw and normalized coverage
+    ok 6 - derives accessory capability from complete raw and normalized coverage
+      ---
+      duration_ms: 5.450076
+      type: 'test'
+      ...
+    # Subtest: projects mini low-power overrides through the mini viewBox
+    ok 7 - projects mini low-power overrides through the mini viewBox
+      ---
+      duration_ms: 1.016135
+      type: 'test'
+      ...
+    # Subtest: fails accessory capability closed on incomplete viewBox coverage or stale file descriptors
+    ok 8 - fails accessory capability closed on incomplete viewBox coverage or stale file descriptors
+      ---
+      duration_ms: 0.836103
+      type: 'test'
+      ...
+    # Subtest: does not require unreachable mini attachments when mini mode is disabled
+    ok 9 - does not require unreachable mini attachments when mini mode is disabled
+      ---
+      duration_ms: 0.893893
+      type: 'test'
+      ...
+    # Subtest: rejects malformed accessory metadata instead of guessing targets or coordinates
+    ok 10 - rejects malformed accessory metadata instead of guessing targets or coordinates
+      ---
+      duration_ms: 0.969875
+      type: 'test'
+      ...
+    # Subtest: rejects one basename resolving through multiple effective viewBoxes
+    ok 11 - rejects one basename resolving through multiple effective viewBoxes
+      ---
+      duration_ms: 0.393614
+      type: 'test'
+      ...
+    # Subtest: mergeDefaults carries roamFlipAssets and defaults it to false
+    ok 12 - mergeDefaults carries roamFlipAssets and defaults it to false
+      ---
+      duration_ms: 0.710694
+      type: 'test'
+      ...
+    1..12
+ok 28 - theme schema validation
+  ---
+  duration_ms: 23.573286
+  type: 'suite'
+  ...
+# Subtest: theme schema defaults and normalization
+    # Subtest: mergeDefaults applies defaults and sanitizes runtime file references
+    ok 1 - mergeDefaults applies defaults and sanitizes runtime file references
+      ---
+      duration_ms: 0.58125
+      type: 'test'
+      ...
+    # Subtest: normalizes file hitboxes, rendering, and trusted runtime without file system state
+    ok 2 - normalizes file hitboxes, rendering, and trusted runtime without file system state
+      ---
+      duration_ms: 1.262813
+      type: 'test'
+      ...
+    # Subtest: collectRequiredAssetFiles returns unique basename-only references
+    ok 3 - collectRequiredAssetFiles returns unique basename-only references
+      ---
+      duration_ms: 0.507662
+      type: 'test'
+      ...
+    1..3
+ok 29 - theme schema defaults and normalization
+  ---
+  duration_ms: 2.576295
+  type: 'suite'
+  ...
+1..29
+# tests 188
+# suites 16
+# pass 186
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 770.95046
