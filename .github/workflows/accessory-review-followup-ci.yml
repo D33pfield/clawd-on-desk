@@ -76,7 +76,6 @@ jobs:
               if require_anchor not in text:
                   raise SystemExit("validate-theme require anchor missing")
               text = text.replace(require_anchor, require_anchor + schema_require, 1)
-
           marker = "accessorySchemaErrors"
           if marker not in text:
               anchor = 'const normalizedStates = normalizeStateBindings(raw.states);\n'
@@ -107,11 +106,40 @@ jobs:
                   raise SystemExit("sync/reposition expectation anchor missing")
               text = text.replace(old, new, 1)
           test_path.write_text(text)
+
+          runtime = Path("src/pet-window-runtime.js")
+          text = runtime.read_text()
+          start = text.index("  function syncHitWin() {")
+          end = text.index("\n  // §4.3.11's hit-side reconcile", start)
+          block = text[start:end]
+          block = block.replace("if (!isLiveWindow(hitWin) || !isLiveWindow(win)) return;", "if (!isLiveWindow(hitWin) || !isLiveWindow(win)) return false;", 1)
+          block = block.replace("if (dragLocked) return;", "if (dragLocked) return false;", 1)
+          block = block.replace("if (!hit) return;", "if (!hit) return false;", 2)
+          suppress_tail = """      repositionSessionHud();\n      syncImeEditingPetDodge();\n      return;\n"""
+          if suppress_tail in block:
+              block = block.replace(suppress_tail, """      repositionSessionHud();\n      syncImeEditingPetDodge();\n      return true;\n""", 1)
+          final_tail = """    repositionSessionHud();\n    // #640: the hit rect just (re)resolved — state switches and theme reloads\n    // change hitboxes without moving the window, so the overlap answer can\n    // flip right here. Cheap + edge-triggered inside.\n    syncImeEditingPetDodge();\n  }\n"""
+          if final_tail in block:
+              block = block.replace(final_tail, """    repositionSessionHud();\n    // #640: the hit rect just (re)resolved — state switches and theme reloads\n    // change hitboxes without moving the window, so the overlap answer can\n    // flip right here. Cheap + edge-triggered inside.\n    syncImeEditingPetDodge();\n    return true;\n  }\n""", 1)
+          elif "syncImeEditingPetDodge();\n    return true;" not in block:
+              raise SystemExit("syncHitWin success-return anchor missing")
+          text = text[:start] + block + text[end:]
+          runtime.write_text(text)
+
+          router = Path("src/settings-effect-router.js")
+          text = router.read_text()
+          old = '''    try {\n      syncHitWin();\n      repositionPetAccessoryFloatingSurfaces();\n      return true;\n'''
+          new = '''    try {\n      if (syncHitWin() === false) {\n        throw new Error("native hit geometry was not applied");\n      }\n      repositionPetAccessoryFloatingSurfaces();\n      return true;\n'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif "native hit geometry was not applied" not in text:
+              raise SystemExit("settings accessory sync acknowledgement anchor missing")
+          router.write_text(text)
           PY
 
-          git add src/theme-schema.js docs/guides/guide-theme-creation.md scripts/validate-theme.js test/settings-effect-router.test.js
+          git add src/theme-schema.js docs/guides/guide-theme-creation.md scripts/validate-theme.js test/settings-effect-router.test.js src/pet-window-runtime.js src/settings-effect-router.js
           if ! git diff --cached --quiet; then
-            git commit -m "test: expect accessory floating-surface repositioning"
+            git commit -m "fix: acknowledge accessory hit-window sync"
             git push origin HEAD:agent/accessory-aware-hitboxes
           fi
 
