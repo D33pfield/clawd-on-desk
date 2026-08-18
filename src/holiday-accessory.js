@@ -84,7 +84,7 @@ function createHolidayAccessoryRuntime(options = {}) {
   const setTimeoutFn = options.setTimeout || setTimeout;
   const clearTimeoutFn = options.clearTimeout || clearTimeout;
   const logWarn = options.logWarn || console.warn;
-  const onAccessoryChange = options.onAccessoryChange || (() => {});
+  const onAccessoryChange = options.onAccessoryChange || (() => true);
 
   let started = false;
   let refreshTimer = null;
@@ -133,7 +133,10 @@ function createHolidayAccessoryRuntime(options = {}) {
     // retries the native geometry without resending an unchanged renderer payload.
     if (force || resolved.key !== lastAppliedKey) {
       try {
-        onAccessoryChange(resolved.payload);
+        const geometryApplied = onAccessoryChange(resolved.payload);
+        if (geometryApplied === false) {
+          throw new Error("native hit geometry was not applied");
+        }
         repositionPetAccessoryFloatingSurfaces();
         lastAppliedKey = resolved.key;
         changed = true;
