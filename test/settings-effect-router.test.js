@@ -484,6 +484,7 @@ describe("settings-effect-router", () => {
         widthScale: 0.95,
         offsetY: 0.3,
       }],
+      ["repositionFloatingBubbles"],
     ]);
 
     calls.length = 0;
@@ -502,6 +503,7 @@ describe("settings-effect-router", () => {
         widthScale: 1,
         offsetY: 0,
       }],
+      ["repositionFloatingBubbles"],
     ]);
     assert.strictEqual(calls.some((call) => call[0] === "rebuildAllMenus"), false);
   });
@@ -564,6 +566,7 @@ describe("settings-effect-router", () => {
       "updateMirrors",
       "sendToRenderer",
       "syncHitWin",
+      "repositionFloatingBubbles",
     ]);
   });
 
