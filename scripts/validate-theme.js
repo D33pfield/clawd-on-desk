@@ -19,6 +19,7 @@
 const fs = require("fs");
 const path = require("path");
 const themeLoader = require("../src/theme-loader");
+const themeSchema = require("../src/theme-schema");
 const { VARIANT_ALLOWED_KEYS } = require("../src/theme-variants");
 
 // ── Colors (ANSI) ──
@@ -130,6 +131,18 @@ if (check(vb && vb.x != null && vb.y != null && vb.width != null && vb.height !=
 }
 const sleepMode = deriveSleepMode(raw);
 const normalizedStates = normalizeStateBindings(raw.states);
+const accessorySchemaErrors = themeSchema.validateTheme(raw)
+  .filter((message) => message.includes("customization.accessories"));
+if (raw.customization && raw.customization.accessories !== undefined) {
+  if (accessorySchemaErrors.length === 0) {
+    console.log(`  ${PASS} customization.accessories attachment geometry is schema-valid`);
+  } else {
+    for (const message of accessorySchemaErrors) {
+      console.log(`  ${FAIL} ${message}`);
+      errors++;
+    }
+  }
+}
 
 if (check(!!raw.states, "states object exists")) {
   for (const s of REQUIRED_STATES) {

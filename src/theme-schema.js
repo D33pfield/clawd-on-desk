@@ -583,10 +583,10 @@ function normalizeAccessoryHitBoxPadding(value, viewBox, pathName, errors) {
 
   const normalized = {};
   for (const [key, limit] of [
-    ["left", 4 * viewBox.width],
-    ["top", 4 * viewBox.height],
-    ["right", 4 * viewBox.width],
-    ["bottom", 4 * viewBox.height],
+    ["left", viewBox.width],
+    ["top", viewBox.height],
+    ["right", viewBox.width],
+    ["bottom", viewBox.height],
   ]) {
     if (value[key] === undefined) continue;
     if (!Number.isFinite(value[key]) || value[key] < 0 || value[key] > limit) {
