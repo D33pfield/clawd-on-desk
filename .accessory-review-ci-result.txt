@@ -1,294 +1,527 @@
 status=1
+fetch_status=0
+merge_status=0
 install_status=0
 verify_status=0
 test_status=1
-head=a5e6dfc6c8a0101f8d33b82c5ea393cc088e5a89
+head=9f65b65c71b2d2a07579c4f1fa50b0bd02be26e2
+tested_tree=b903ec99829d6d5a8d7c1991b61b81cf1532b3ae
 --- failure contexts ---
-41998-        # Subtest: lets an explicit agentId beat a contradictory session-id prefix
-41999-        ok 8 - lets an explicit agentId beat a contradictory session-id prefix
-42000-          ---
-42001-          duration_ms: 0.086886
-42002-          type: 'test'
-42003-          ...
-42004-        # Subtest: keeps the basename for other agents inside the same directory
-42005-        ok 9 - keeps the basename for other agents inside the same directory
-42006-          ---
-42007-          duration_ms: 0.085683
-42008-          type: 'test'
-42009-          ...
-42010-        # Subtest: still shows the basename for ordinary QwenWork project cwds
-42011-        not ok 10 - still shows the basename for ordinary QwenWork project cwds
-42012-          ---
-42013-          duration_ms: 0.962195
-42014-          type: 'test'
-42015-          location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/state-session-snapshot.test.js:324:5'
-42016:          failureType: 'testCodeFailure'
-42017-          error: |-
-42018-            Expected values to be strictly equal:
-42019-            + actual - expected
-42020-            
-42021-            + 'C:\\Users\\me\\qwenwork-notes'
-42022-            - 'qwenwork-notes'
-42023-            
-42024:          code: 'ERR_ASSERTION'
-42025-          name: 'AssertionError'
-42026-          expected: 'qwenwork-notes'
-42027-          actual: 'C:\\Users\\me\\qwenwork-notes'
-42028-          operator: 'strictEqual'
-42029-          stack: |-
-42030-            TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/state-session-snapshot.test.js:334:14)
-42031-            Test.runInAsyncScope (node:async_hooks:214:14)
-42032-            Test.run (node:internal/test_runner/test:1047:25)
-42033-            Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
-42034-            Test.postRun (node:internal/test_runner/test:1173:19)
-42035-            Test.run (node:internal/test_runner/test:1101:12)
-42036-            async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
-42037-          ...
-42038-        # Subtest: still prefers a real session title over the id shortening
-42039-        ok 11 - still prefers a real session title over the id shortening
-42040-          ---
-42041-          duration_ms: 0.160299
-42042-          type: 'test'
-42043-          ...
-42044-        1..11
-42045-    not ok 5 - QwenWork internal workspace (\#843)
-42046-      ---
-42047-      duration_ms: 2.572391
-42048-      type: 'suite'
-42049-      location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/state-session-snapshot.test.js:209:3'
-42050:      failureType: 'subtestsFailed'
-42051-      error: '1 subtest failed'
-42052:      code: 'ERR_TEST_FAILURE'
-42053-      ...
-42054-    # Subtest: declares the internal-workspace suppression as an explicit agent/path pairing
-42055-    ok 6 - declares the internal-workspace suppression as an explicit agent/path pairing
-42056-      ---
-42057-      duration_ms: 0.177047
-42058-      type: 'test'
-42059-      ...
-42060-    1..6
-42061:not ok 1637 - sessionDisplayTitle cwd fallback
-42062-  ---
-42063-  duration_ms: 3.740084
-42064-  type: 'suite'
-42065-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/state-session-snapshot.test.js:167:1'
-42066:  failureType: 'subtestsFailed'
-42067-  error: '1 subtest failed'
-42068:  code: 'ERR_TEST_FAILURE'
-42069-  ...
-42070-# Subtest: state-session-snapshot badges
-42071-    # Subtest: derives running, done, interrupted, and idle badges
-42072-    ok 1 - derives running, done, interrupted, and idle badges
-42073-      ---
-42074-      duration_ms: 0.868166
-42075-      type: 'test'
-42076-      ...
-42077-    1..1
-42078-ok 1638 - state-session-snapshot badges
-42079-  ---
-42080-  duration_ms: 0.935551
-42081-  type: 'suite'
-42082-  ...
-42083-# Subtest: state-session-snapshot builder
-42084-    # Subtest: derives session automation fields and keeps hidden-session grants revocable as orphans
-42085-    ok 1 - derives session automation fields and keeps hidden-session grants revocable as orphans
-42086-      ---
-42087-      duration_ms: 0.720775
-42088-      type: 'test'
-42089-      ...
-42090-    # Subtest: builds ordered dashboard/menu groups and HUD summary with injected deps
-42091-    ok 2 - builds ordered dashboard/menu groups and HUD summary with injected deps
-42092-      ---
-42093-      duration_ms: 1.191686
-42094-      type: 'test'
-42095-      ...
-42096-    # Subtest: exposes focus target metadata for terminal and Codex Desktop sessions
-42097-    ok 3 - exposes focus target metadata for terminal and Codex Desktop sessions
-42098-      ---
-42099-      duration_ms: 0.698016
-42100-      type: 'test'
-42101-      ...
-42102-    # Subtest: downgrades Codex Desktop focus targets on Windows snapshots
-42103-    ok 4 - downgrades Codex Desktop focus targets on Windows snapshots
-42104-      ---
+717-    # Subtest: detects generic parent-directory agents and reports Clawd marker presence separately
+718-    ok 4 - detects generic parent-directory agents and reports Clawd marker presence separately
+719-      ---
+720-      duration_ms: 5.862164
+721-      type: 'test'
+722-      ...
+723-    # Subtest: detects DSH host installation separately from a verified managed plugin
+724-    ok 5 - detects DSH host installation separately from a verified managed plugin
+725-      ---
+726-      duration_ms: 13.963448
+727-      type: 'test'
+728-      ...
+729-    # Subtest: detects a DSH CLI on PATH before the profile home is initialized
+730-    not ok 6 - detects a DSH CLI on PATH before the profile home is initialized
+731-      ---
+732-      duration_ms: 5.493164
+733-      type: 'test'
+734-      location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/agent-installation-detector.test.js:194:3'
+735:      failureType: 'testCodeFailure'
+736-      error: |-
+737-        Expected values to be strictly equal:
+738-        
+739-        false !== true
+740-        
+741:      code: 'ERR_ASSERTION'
+742-      name: 'AssertionError'
+743-      expected: true
+744-      actual: false
+745-      operator: 'strictEqual'
+746-      stack: |-
+747-        TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/agent-installation-detector.test.js:207:12)
+748-        Test.runInAsyncScope (node:async_hooks:214:14)
+749-        Test.run (node:internal/test_runner/test:1047:25)
+750-        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+751-        Test.postRun (node:internal/test_runner/test:1173:19)
+752-        Test.run (node:internal/test_runner/test:1101:12)
+753-        async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+754-      ...
+755-    # Subtest: detects a Windows Reasonix installation from the legacy fallback home
+756-    ok 7 - detects a Windows Reasonix installation from the legacy fallback home
+757-      ---
+758-      duration_ms: 8.209546
+759-      type: 'test'
+760-      ...
+761-    # Subtest: recognizes installer-produced Windows EncodedCommand Reasonix hooks
+762-    ok 8 - recognizes installer-produced Windows EncodedCommand Reasonix hooks
+763-      ---
+764-      duration_ms: 10.660568
+765-      type: 'test'
+766-      ...
+767-    # Subtest: does not confuse Antigravity's ~/.gemini/config with Gemini CLI
+768-    ok 9 - does not confuse Antigravity's ~/.gemini/config with Gemini CLI
+769-      ---
+770-      duration_ms: 3.971918
+771-      type: 'test'
+772-      ...
+773-    # Subtest: does not treat Antigravity's ~/.gemini/antigravity as a Gemini CLI install
+774-    ok 10 - does not treat Antigravity's ~/.gemini/antigravity as a Gemini CLI install
+775-      ---
+776-      duration_ms: 2.964095
+777-      type: 'test'
+--
+908-        ok 2 - falls back to legacy ~/.workbuddy and finds its Clawd marker
+909-          ---
+910-          duration_ms: 3.455185
+911-          type: 'test'
+912-          ...
+913-        # Subtest: ignores a bare legacy toolchain directory without settings.json
+914-        ok 3 - ignores a bare legacy toolchain directory without settings.json
+915-          ---
+916-          duration_ms: 2.294232
+917-          type: 'test'
+918-          ...
+919-        1..3
+920-    ok 27 - WorkBuddy dual-generation detection
+921-      ---
+922-      duration_ms: 8.35694
+923-      type: 'suite'
+924-      ...
+925-    1..27
+926:not ok 38 - agent installation detector
+927-  ---
+928-  duration_ms: 170.335878
+929-  type: 'suite'
+930-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/agent-installation-detector.test.js:63:1'
+931:  failureType: 'subtestsFailed'
+932-  error: '1 subtest failed'
+933:  code: 'ERR_TEST_FAILURE'
+934-  ...
+935-# Subtest: agent-runtime-main
+936-    # Subtest: keeps Codex monitor ownership and agent deferred wrappers out of main
+937-    ok 1 - keeps Codex monitor ownership and agent deferred wrappers out of main
+938-      ---
+939-      duration_ms: 2.957512
+940-      type: 'test'
+941-      ...
+942-    # Subtest: marks official Codex sessions and suppresses covered JSONL events until the TTL expires
+943-    ok 2 - marks official Codex sessions and suppresses covered JSONL events until the TTL expires
+944-      ---
+945-      duration_ms: 1.658915
+946-      type: 'test'
+947-      ...
+948-    # Subtest: records privacy-safe local cross-channel turn identity diagnostics
+949-    ok 3 - records privacy-safe local cross-channel turn identity diagnostics
+950-      ---
+951-      duration_ms: 4.395075
+952-      type: 'test'
+953-      ...
+954-    # Subtest: routes suppressed JSONL context through no-lifecycle session metadata
+955-    ok 4 - routes suppressed JSONL context through no-lifecycle session metadata
+956-      ---
+957-      duration_ms: 1.000252
+958-      type: 'test'
+959-      ...
+960-    # Subtest: routes Codex user-input monitor callbacks to a passive card and transient state
+961-    ok 5 - routes Codex user-input monitor callbacks to a passive card and transient state
+962-      ---
+963-      duration_ms: 0.661126
+964-      type: 'test'
+965-      ...
+966-    # Subtest: handles JSONL token_count as metadata without clearing bubbles or changing state
+967-    ok 6 - handles JSONL token_count as metadata without clearing bubbles or changing state
+968-      ---
+969-      duration_ms: 0.424232
+--
+12958-ok 311 - DSH detection is async and distinguishes the host from the managed plugin
+12959-  ---
+12960-  duration_ms: 18.238694
+12961-  type: 'test'
+12962-  ...
+12963-# Subtest: an empty home without a CLI is not a DSH installation
+12964-ok 312 - an empty home without a CLI is not a DSH installation
+12965-  ---
+12966-  duration_ms: 1.169653
+12967-  type: 'test'
+12968-  ...
+12969-# Subtest: packaged bridge source resolves outside app.asar on Windows paths
+12970-ok 313 - packaged bridge source resolves outside app.asar on Windows paths
+12971-  ---
+12972-  duration_ms: 0.342025
+12973-  type: 'test'
+12974-  ...
+12975-# Subtest: Windows CLI discovery follows a pnpm-style shim instead of assuming one global npm layout
+12976:not ok 314 - Windows CLI discovery follows a pnpm-style shim instead of assuming one global npm layout
+12977-  ---
+12978-  duration_ms: 4.668784
+12979-  type: 'test'
+12980-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:148:1'
+12981:  failureType: 'testCodeFailure'
+12982-  error: "Cannot read properties of null (reading 'command')"
+12983:  code: 'ERR_TEST_FAILURE'
+12984-  name: 'TypeError'
+12985-  stack: |-
+12986-    TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:165:30)
+12987-    async Test.run (node:internal/test_runner/test:1054:7)
+12988-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+12989-  ...
+12990-# Subtest: the cross-process DSH mutation lock rejects a concurrent owner and releases by token
+12991-ok 315 - the cross-process DSH mutation lock rejects a concurrent owner and releases by token
+12992-  ---
+12993-  duration_ms: 11.216358
+12994-  type: 'test'
+12995-  ...
+12996-# Subtest: a stale DSH mutation lock is recovered only after ESRCH proves its owner is dead
+12997-ok 316 - a stale DSH mutation lock is recovered only after ESRCH proves its owner is dead
+12998-  ---
+12999-  duration_ms: 5.543322
+13000-  type: 'test'
+13001-  ...
+13002-# Subtest: a live, fresh, unknown, or corrupt DSH mutation lock remains fail-closed with its path
+13003-ok 317 - a live, fresh, unknown, or corrupt DSH mutation lock remains fail-closed with its path
+13004-  ---
+13005-  duration_ms: 15.209494
+13006-  type: 'test'
+13007-  ...
+13008-# Subtest: two stale-lock contenders cannot both acquire the canonical DSH mutation lock
+13009-ok 318 - two stale-lock contenders cannot both acquire the canonical DSH mutation lock
+13010-  ---
+13011-  duration_ms: 8.732191
+13012-  type: 'test'
+13013-  ...
+13014-# Subtest: stale-lock recovery uses the owner's recorded operation timeout, not the contender's
+13015-ok 319 - stale-lock recovery uses the owner's recorded operation timeout, not the contender's
+13016-  ---
+13017-  duration_ms: 13.894017
+13018-  type: 'test'
+13019-  ...
+--
+13117-ok 336 - a successful CLI exit without a resolvable owned package fails verification
+13118-  ---
+13119-  duration_ms: 9.493823
+13120-  type: 'test'
+13121-  ...
+13122-# Subtest: a foreign same-name package is never overwritten or removed
+13123-ok 337 - a foreign same-name package is never overwritten or removed
+13124-  ---
+13125-  duration_ms: 5.574238
+13126-  type: 'test'
+13127-  ...
+13128-# Subtest: installation-anchor shadowing wins over a healthy profile package and fails closed
+13129-ok 338 - installation-anchor shadowing wins over a healthy profile package and fails closed
+13130-  ---
+13131-  duration_ms: 14.557031
+13132-  type: 'test'
+13133-  ...
+13134-# Subtest: sync disk inspection discovers installation-first shadowing from the real PATH shim
+13135:not ok 339 - sync disk inspection discovers installation-first shadowing from the real PATH shim
+13136-  ---
+13137-  duration_ms: 12.787325
+13138-  type: 'test'
+13139-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:810:1'
+13140:  failureType: 'testCodeFailure'
+13141-  error: |-
+13142-    Expected values to be strictly equal:
+13143-    + actual - expected
+13144-    
+13145-    + 'profile'
+13146-    - 'installation'
+13147-    
+13148:  code: 'ERR_ASSERTION'
+13149-  name: 'AssertionError'
+13150-  expected: 'installation'
+13151-  actual: 'profile'
+13152-  operator: 'strictEqual'
+13153-  stack: |-
+13154-    TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:837:10)
+13155-    async Test.run (node:internal/test_runner/test:1054:7)
+13156-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+13157-  ...
+13158-# Subtest: sync disk inspection compares the installed DSH package version
+13159:not ok 340 - sync disk inspection compares the installed DSH package version
+13160-  ---
+13161-  duration_ms: 12.351619
+13162-  type: 'test'
+13163-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:840:1'
+13164:  failureType: 'testCodeFailure'
+13165-  error: |-
+13166-    Expected values to be strictly equal:
+13167-    + actual - expected
+13168-    
+13169-    + 'managed-bundle-missing'
+13170-    - 'host-version-unsupported'
+13171-    
+13172:  code: 'ERR_ASSERTION'
+13173-  name: 'AssertionError'
+13174-  expected: 'host-version-unsupported'
+13175-  actual: 'managed-bundle-missing'
+13176-  operator: 'strictEqual'
+13177-  stack: |-
+13178-    TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:867:10)
+13179-    async Test.run (node:internal/test_runner/test:1054:7)
+13180-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+13181-  ...
+13182-# Subtest: the official profiles/node_modules fallback participates in health resolution
+13183-ok 341 - the official profiles/node_modules fallback participates in health resolution
+13184-  ---
+13185-  duration_ms: 11.890054
+13186-  type: 'test'
+13187-  ...
+13188-# Subtest: a healthy profile-local winner ignores a foreign lower-priority profiles fallback
+13189-ok 342 - a healthy profile-local winner ignores a foreign lower-priority profiles fallback
+13190-  ---
+13191-  duration_ms: 12.805573
+13192-  type: 'test'
+13193-  ...
+13194-# Subtest: a managed-looking flat fallback cannot claim ownership or trigger Repair
+13195-ok 343 - a managed-looking flat fallback cannot claim ownership or trigger Repair
+13196-  ---
+13197-  duration_ms: 13.439577
+13198-  type: 'test'
+13199-  ...
+13200-# Subtest: generation cleanup ignores flat fallback copies and links
+13201-ok 344 - generation cleanup ignores flat fallback copies and links
+13202-  ---
+13203-  duration_ms: 10.920743
+13204-  type: 'test'
+13205-  ...
+13206-# Subtest: uninstall uses the official remove command and verifies the resolved package is gone
+13207-ok 345 - uninstall uses the official remove command and verifies the resolved package is gone
+13208-  ---
+--
+49852-# Subtest: Error classes: Chromium net::ERR_* connection failures are NETWORK (issue \#359)
+49853-ok 2082 - Error classes: Chromium net::ERR_* connection failures are NETWORK (issue \#359)
+49854-  ---
+49855-  duration_ms: 0.497791
+49856-  type: 'test'
+49857-  ...
+49858-# Subtest: Error classes: net::ERR_ABORTED is NETWORK, not TIMEOUT (must not exit poll loop)
+49859-ok 2083 - Error classes: net::ERR_ABORTED is NETWORK, not TIMEOUT (must not exit poll loop)
+49860-  ---
+49861-  duration_ms: 0.111779
+49862-  type: 'test'
+49863-  ...
+49864-# Subtest: Error classes: non-retryable net::ERR_* (cert / blocked) fall through to UNKNOWN
+49865-ok 2084 - Error classes: non-retryable net::ERR_* (cert / blocked) fall through to UNKNOWN
+49866-  ---
+49867-  duration_ms: 0.270068
+49868-  type: 'test'
+49869-  ...
+49870:# Subtest: Error classes: status=null but error_code=409 still classified as CONFLICT
+49871:ok 2085 - Error classes: status=null but error_code=409 still classified as CONFLICT
+49872-  ---
+49873-  duration_ms: 0.203226
+49874-  type: 'test'
+49875-  ...
+49876-# Subtest: Error classes: AbortError → TIMEOUT
+49877-ok 2086 - Error classes: AbortError → TIMEOUT
+49878-  ---
+49879-  duration_ms: 0.11283
+49880-  type: 'test'
+49881-  ...
+49882-# Subtest: AbortController cancels in-flight getUpdates with AbortError
+49883-ok 2087 - AbortController cancels in-flight getUpdates with AbortError
+49884-  ---
+49885-  duration_ms: 15.727628
+49886-  type: 'test'
+49887-  ...
+49888-# Subtest: Pre-aborted signal: transport refuses immediately, no call recorded
+49889-ok 2088 - Pre-aborted signal: transport refuses immediately, no call recorded
+49890-  ---
+49891-  duration_ms: 0.31144
+49892-  type: 'test'
+49893-  ...
+49894-# Subtest: Wrong-user callback flow: client surfaces both updates; handler filters
+49895-ok 2089 - Wrong-user callback flow: client surfaces both updates; handler filters
+49896-  ---
+49897-  duration_ms: 0.219681
+49898-  type: 'test'
+49899-  ...
+49900-# Subtest: pollWithConflictRetry: succeeds first try without sleeping
+49901-ok 2090 - pollWithConflictRetry: succeeds first try without sleeping
+49902-  ---
+49903-  duration_ms: 0.382757
+49904-  type: 'test'
+49905-  ...
+49906-# Subtest: pollWithConflictRetry: retries through 409 conflicts, then succeeds
+49907-ok 2091 - pollWithConflictRetry: retries through 409 conflicts, then succeeds
 --- last 180 lines ---
-      ...
     # Subtest: rejects inherited or malformed Orca pane keys
     ok 5 - rejects inherited or malformed Orca pane keys
       ---
-      duration_ms: 0.324837
+      duration_ms: 0.4373
       type: 'test'
       ...
     # Subtest: reduces stdin parse failures to a fixed debug category
     ok 6 - reduces stdin parse failures to a fixed debug category
       ---
-      duration_ms: 0.170065
+      duration_ms: 0.225731
       type: 'test'
       ...
     1..6
-ok 2111 - ZCode hook PID lifecycle
+ok 2334 - ZCode hook PID lifecycle
   ---
-  duration_ms: 5.8713
+  duration_ms: 6.421797
   type: 'suite'
   ...
 # Subtest: ZCode hook installer
     # Subtest: registers the Phase 1 state-only events under hooks.events with enabled:true and no matcher
     ok 1 - registers the Phase 1 state-only events under hooks.events with enabled:true and no matcher
       ---
-      duration_ms: 4.198549
+      duration_ms: 4.794813
       type: 'test'
       ...
     # Subtest: is idempotent on second run
     ok 2 - is idempotent on second run
       ---
-      duration_ms: 1.727069
+      duration_ms: 1.938944
       type: 'test'
       ...
     # Subtest: preserves an explicit hooks.enabled:false and warns instead of enabling all user hooks
     ok 3 - preserves an explicit hooks.enabled:false and warns instead of enabling all user hooks
       ---
-      duration_ms: 0.888123
+      duration_ms: 1.058116
       type: 'test'
       ...
     # Subtest: preserves nested enabled:false while repairing a stale managed hook
     ok 4 - preserves nested enabled:false while repairing a stale managed hook
       ---
-      duration_ms: 0.976603
+      duration_ms: 1.223556
       type: 'test'
       ...
     # Subtest: removes invalid entry-level enabled:false instead of treating it as a supported opt-out
     ok 5 - removes invalid entry-level enabled:false instead of treating it as a supported opt-out
       ---
-      duration_ms: 1.319991
+      duration_ms: 1.585993
       type: 'test'
       ...
     # Subtest: keeps a managed event enabled when any duplicate was still enabled
     ok 6 - keeps a managed event enabled when any duplicate was still enabled
       ---
-      duration_ms: 0.814513
+      duration_ms: 0.971055
       type: 'test'
       ...
     # Subtest: splits Clawd out of shared matcher entries under hooks.events
     ok 7 - splits Clawd out of shared matcher entries under hooks.events
       ---
-      duration_ms: 1.144744
+      duration_ms: 1.31941
       type: 'test'
       ...
     # Subtest: preserves existing absolute node path when detection fails
     ok 8 - preserves existing absolute node path when detection fails
       ---
-      duration_ms: 1.177819
+      duration_ms: 1.291859
       type: 'test'
       ...
     # Subtest: refuses a fresh install when no absolute Node executable can be resolved
     ok 9 - refuses a fresh install when no absolute Node executable can be resolved
       ---
-      duration_ms: 1.400136
+      duration_ms: 1.47174
       type: 'test'
       ...
     # Subtest: skips startup auto-sync when ~/.zcode does not exist
     ok 10 - skips startup auto-sync when ~/.zcode does not exist
       ---
-      duration_ms: 0.721916
+      duration_ms: 0.700246
       type: 'test'
       ...
     # Subtest: builds Windows process hooks with direct argv and no shell quoting
     ok 11 - builds Windows process hooks with direct argv and no shell quoting
       ---
-      duration_ms: 0.868756
+      duration_ms: 1.002492
       type: 'test'
       ...
     # Subtest: rewrites legacy bare-quoted Windows commands into process form on re-run
     ok 12 - rewrites legacy bare-quoted Windows commands into process form on re-run
       ---
-      duration_ms: 0.672575
+      duration_ms: 0.810473
       type: 'test'
       ...
     # Subtest: rewrites a legacy EncodedCommand in place without leaving a duplicate
     ok 13 - rewrites a legacy EncodedCommand in place without leaving a duplicate
       ---
-      duration_ms: 0.953174
+      duration_ms: 1.39258
       type: 'test'
       ...
     # Subtest: preserves an existing Windows absolute node path through process migration
     ok 14 - preserves an existing Windows absolute node path through process migration
       ---
-      duration_ms: 0.66115
+      duration_ms: 0.80263
       type: 'test'
       ...
     # Subtest: unregister removes encoded Clawd commands while preserving user hooks
     ok 15 - unregister removes encoded Clawd commands while preserving user hooks
       ---
-      duration_ms: 1.494353
+      duration_ms: 1.742949
       type: 'test'
       ...
     # Subtest: unregister removes a process hook from a shared wrapper and preserves the user hook
     ok 16 - unregister removes a process hook from a shared wrapper and preserves the user hook
       ---
-      duration_ms: 0.516177
+      duration_ms: 0.679224
       type: 'test'
       ...
     # Subtest: unregister drops the empty hooks wrapper when Clawd was the only source
     ok 17 - unregister drops the empty hooks wrapper when Clawd was the only source
       ---
-      duration_ms: 0.734121
+      duration_ms: 0.952166
       type: 'test'
       ...
     # Subtest: unregister preserves the user's explicit global disabled setting
     ok 18 - unregister preserves the user's explicit global disabled setting
       ---
-      duration_ms: 0.672625
+      duration_ms: 0.886557
       type: 'test'
       ...
     1..18
-ok 2112 - ZCode hook installer
+ok 2335 - ZCode hook installer
   ---
-  duration_ms: 22.483812
+  duration_ms: 26.241302
   type: 'suite'
   ...
 # Subtest: ZCode \#734 — strip Claude-config hooks migrated into zcode config
     # Subtest: removes a dedicated clawd-hook.js entry and reports it, leaving zcode-hook.js as the only Clawd hook
     ok 1 - removes a dedicated clawd-hook.js entry and reports it, leaving zcode-hook.js as the only Clawd hook
       ---
-      duration_ms: 0.586116
+      duration_ms: 0.764643
       type: 'test'
       ...
     # Subtest: splits a shared entry: drops clawd-hook.js, keeps a third-party hook, then adds the zcode hook
     ok 2 - splits a shared entry: drops clawd-hook.js, keeps a third-party hook, then adds the zcode hook
       ---
-      duration_ms: 0.558864
+      duration_ms: 0.705143
       type: 'test'
       ...
     # Subtest: strips a Windows EncodedCommand clawd-hook.js entry migrated from Claude
     ok 3 - strips a Windows EncodedCommand clawd-hook.js entry migrated from Claude
       ---
-      duration_ms: 0.599087
+      duration_ms: 0.758454
       type: 'test'
       ...
     # Subtest: does not touch ~/.claude/settings.json (only the zcode config is modified)
     ok 4 - does not touch ~/.claude/settings.json (only the zcode config is modified)
       ---
-      duration_ms: 0.467397
+      duration_ms: 0.62334
       type: 'test'
       ...
     # Subtest: unregister also removes migrated clawd-hook.js entries
     ok 5 - unregister also removes migrated clawd-hook.js entries
       ---
-      duration_ms: 0.528543
+      duration_ms: 0.673536
       type: 'test'
       ...
     1..5
-ok 2113 - ZCode \#734 — strip Claude-config hooks migrated into zcode config
+ok 2336 - ZCode \#734 — strip Claude-config hooks migrated into zcode config
   ---
-  duration_ms: 2.919872
+  duration_ms: 3.711188
   type: 'suite'
   ...
-1..2113
-# tests 7545
-# suites 794
-# pass 7516
-# fail 1
+1..2336
+# tests 8270
+# suites 834
+# pass 8236
+# fail 4
 # cancelled 0
-# skipped 28
+# skipped 30
 # todo 0
-# duration_ms 68682.740719
+# duration_ms 80104.567686
+HEAD is now at 9f65b65c ci: validate prospective upstream merge tree
