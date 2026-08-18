@@ -7,11 +7,12 @@
 // eventSource but use entirely different plugin shapes and must stay
 // independent. Joining the family requires satisfying the full opencode wire
 // contract (session.* / message.part.updated event shapes, permission.asked
-// payload, once/always/reject reply vocabulary, Bun runtime with Bun.serve,
+// payload, once/always/reject reply vocabulary, Bun CLI/TUI or Node Desktop
+// runtime with a loopback reverse bridge,
 // ctx.{client,serverUrl,directory} init, in-process plugin execution).
 //
 // NOTE for the plugin side: hooks/opencode-family-plugin/core.mjs runs inside
-// the host's Bun process and cannot require this CJS module. Plugin entries
+// the host process and cannot require this CJS module. Plugin entries
 // pass their four identity params as literals; test/registry cross-checks
 // assert the literals match this registry so they cannot drift.
 

@@ -2108,12 +2108,12 @@ function applyPermissionSuggestion(perm, index, options = {}) {
   syncPermissionShortcuts();
 
   // opencode-family: decisions go back via the plugin's reverse bridge
-  // (Bun.serve on a random localhost port). The plugin then calls the host's
-  // in-process Hono route. Plugin sent us a fire-and-forget POST — no HTTP
+  // (Bun.serve or node:http on a random localhost port). The plugin then calls
+  // the host's in-process Hono route. Plugin sent us a fire-and-forget POST — no HTTP
   // response to complete on this connection.
   if (isOpencodeFamilyEntry(permEntry)) {
-    // Autoclose: silent drop — same DND semantics. The host TUI falls back
-    // to its built-in prompt so the user can answer in the terminal.
+    // Autoclose: silent drop — same DND semantics. The host falls back to its
+    // built-in terminal or Desktop prompt so the user can answer natively.
     if (behavior === "no-decision") return;
     let reply;
     if (behavior === "deny") reply = "reject";
@@ -2256,12 +2256,12 @@ function permLog(msg) {
   rotatedAppend(ctx.permDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
-// Fire-and-forget POST to the family plugin's reverse bridge. The plugin
-// runs inside the host's Bun process and does NOT expose the host's own
-// permission route externally — TUI mode has no TCP listener at all (see
-// Phase 2 Spike in docs/plans/plan-opencode-integration.md). Instead the plugin
-// starts its own Bun.serve on a random localhost port and forwards our
-// decision to the host's in-process Hono router via ctx.client._client.post().
+// Fire-and-forget POST to the family plugin's reverse bridge. The plugin runs
+// inside the host and does NOT expose the host's own permission route
+// externally — TUI mode has no TCP listener at all (see Phase 2 Spike in
+// docs/plans/plan-opencode-integration.md). Instead the plugin starts a tiny
+// Bun.serve (CLI/TUI) or node:http (Desktop) listener on a random port and
+// forwards our decision to the host's in-process Hono router via ctx.client._client.post().
 //
 // Shape: POST http://127.0.0.1:<plugin-port>/reply
 //   Authorization: Bearer <hex token>
@@ -2269,8 +2269,8 @@ function permLog(msg) {
 //
 // Uses raw http.request (not fetch) to avoid Electron main-process fetch
 // polyfill concerns. Bridge is always 127.0.0.1 bound by the plugin so no
-// IPv4/IPv6 gotcha. 5s timeout — on failure the host TUI still falls
-// back to terminal-based approval.
+// IPv4/IPv6 gotcha. 5s timeout — on failure the host still falls back to its
+// native terminal or Desktop approval.
 function replyOpencodeFamilyPermission({ agentId, bridgeUrl, bridgeToken, requestId, reply, toolName }) {
   const tag = agentId || "opencode-family";
   if (!bridgeUrl || !bridgeToken || !requestId) {

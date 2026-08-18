@@ -118,11 +118,13 @@ ZCode 状态同步（hook-only，config.json）：
 
 opencode 状态同步（in-process plugin，~0ms 延迟）：
   opencode 触发事件（session.created / session.status / message.part.updated 等）
-    → hooks/opencode-plugin/index.mjs（Bun 运行时，插件跑在 opencode.exe 进程内）
+    → hooks/opencode-plugin/index.mjs（CLI/TUI 运行于 Bun；Desktop sidecar 运行于 Electron utilityProcess / Node）
     → translateEvent 映射（opencode v2 事件名 → PascalCase Clawd event 名）
     → session.created 的 event.properties.info.parentID 会被记录为 child → parent 映射，child 状态上报带 headless: true
     → fire-and-forget HTTP POST 127.0.0.1:23333/state
     → 同上状态机（agent_id: opencode）
+  permission.asked 通过 plugin POST /permission 进入 Clawd；决定经随机 localhost 端口上的反向 bridge 返回，
+  CLI/TUI bridge 使用 Bun.serve，Desktop bridge 使用 node:http，再由 plugin 调用宿主 SDK 的 permission reply route。
 
 MiMo Code 状态同步（in-process plugin，~0ms 延迟）：
   MiMo Code 触发事件（session.created / session.status / message.part.updated 等）
