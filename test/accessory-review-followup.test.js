@@ -175,7 +175,7 @@ test("geometry consumes the delivered canonical payload instead of re-resolving 
   assert.strictEqual(getPetAccessoryPayloadSnapshot(theme).payload.id, "party-hat");
 });
 
-test("holiday geometry failure retries without resending an unchanged renderer payload", () => {
+test("holiday geometry rejection retries without resending an unchanged renderer payload", () => {
   const theme = { _id: "clawd", _builtin: true, _capabilities: { accessories: true } };
   let sends = 0;
   let applies = 0;
@@ -188,7 +188,7 @@ test("holiday geometry failure retries without resending an unchanged renderer p
     sendToRenderer: () => { sends += 1; },
     onAccessoryChange: () => {
       applies += 1;
-      if (applies === 1) throw new Error("synthetic hitbox failure");
+      return applies > 1;
     },
     now: () => new Date(2026, 11, 24, 12, 0, 0),
     logWarn: () => {},
