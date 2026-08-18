@@ -143,32 +143,42 @@ jobs:
             git push origin HEAD:agent/accessory-aware-hitboxes
           fi
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run verification and publish temporary result
+      - name: Install, verify, test, and publish temporary result
         shell: bash
         run: |
           set +e
-          {
-            echo "=== npm run verify:electron ==="
-            npm run verify:electron
+          : > /tmp/accessory-review-ci.log
+
+          echo "=== npm ci ===" >> /tmp/accessory-review-ci.log
+          npm ci >> /tmp/accessory-review-ci.log 2>&1
+          install_status=$?
+
+          verify_status=99
+          test_status=99
+          if [ "$install_status" -eq 0 ]; then
+            echo "=== npm run verify:electron ===" >> /tmp/accessory-review-ci.log
+            npm run verify:electron >> /tmp/accessory-review-ci.log 2>&1
             verify_status=$?
-            echo "=== xvfb-run -a npm test ==="
-            xvfb-run -a npm test
+
+            echo "=== xvfb-run -a npm test ===" >> /tmp/accessory-review-ci.log
+            xvfb-run -a npm test >> /tmp/accessory-review-ci.log 2>&1
             test_status=$?
-            if [ "$verify_status" -ne 0 ] || [ "$test_status" -ne 0 ]; then
-              exit 1
-            fi
-          } > /tmp/accessory-review-ci.log 2>&1
-          status=$?
+          fi
+
+          status=0
+          if [ "$install_status" -ne 0 ] || [ "$verify_status" -ne 0 ] || [ "$test_status" -ne 0 ]; then
+            status=1
+          fi
           set -e
 
           {
             echo "status=$status"
+            echo "install_status=$install_status"
+            echo "verify_status=$verify_status"
+            echo "test_status=$test_status"
             echo "head=$(git rev-parse HEAD)"
-            echo "--- last 260 lines ---"
-            tail -n 260 /tmp/accessory-review-ci.log
+            echo "--- last 320 lines ---"
+            tail -n 320 /tmp/accessory-review-ci.log
           } > .accessory-review-ci-result.txt
 
           git add .accessory-review-ci-result.txt
