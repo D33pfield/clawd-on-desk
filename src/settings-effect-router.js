@@ -15,12 +15,24 @@ const {
 } = require("./pet-accessory-state");
 
 const MENU_AFFECTING_KEYS = new Set([
-  "lang", "soundMuted", "bubbleFollowPet", "hideBubbles",
-  "permissionBubblesEnabled", "permissionAutomationMode",
-  "notificationBubbleAutoCloseSeconds", "permissionBubbleAutoCloseSeconds",
-  "updateBubbleAutoCloseSeconds", "manageClaudeHooksAutomatically",
-  "autoStartWithClaude", "openAtLogin", "showTray", "showDock", "theme",
-  "size", "sessionAliases", "disableMiniMode",
+  "lang",
+  "soundMuted",
+  "bubbleFollowPet",
+  "hideBubbles",
+  "permissionBubblesEnabled",
+  "permissionAutomationMode",
+  "notificationBubbleAutoCloseSeconds",
+  "permissionBubbleAutoCloseSeconds",
+  "updateBubbleAutoCloseSeconds",
+  "manageClaudeHooksAutomatically",
+  "autoStartWithClaude",
+  "openAtLogin",
+  "showTray",
+  "showDock",
+  "theme",
+  "size",
+  "sessionAliases",
+  "disableMiniMode",
 ]);
 
 function requiredDependency(value, name) {
@@ -31,12 +43,19 @@ function requiredDependency(value, name) {
 function noop() {}
 
 function warn(logWarn, message, err) {
-  try { logWarn(message, err && err.message); } catch {}
+  try {
+    logWarn(message, err && err.message);
+  } catch {}
 }
 
 function safeCall(logWarn, message, fn, ...args) {
   if (typeof fn !== "function") return undefined;
-  try { return fn(...args); } catch (err) { warn(logWarn, message, err); return undefined; }
+  try {
+    return fn(...args);
+  } catch (err) {
+    warn(logWarn, message, err);
+    return undefined;
+  }
 }
 
 function createSettingsEffectRouter(options = {}) {
@@ -76,9 +95,6 @@ function createSettingsEffectRouter(options = {}) {
   const reconcilePowerSaveBlocker = options.reconcilePowerSaveBlocker || noop;
   const now = options.now || (() => new Date());
 
-  // The main wiring already gives this router the floating-surface reposition
-  // callback. Register it once so holiday changes can use the exact same
-  // post-geometry side effect without duplicating main.js wiring.
   setPetAccessoryFloatingSurfaceRepositioner(repositionFloatingBubbles);
 
   let started = false;
@@ -95,8 +111,6 @@ function createSettingsEffectRouter(options = {}) {
       return false;
     }
 
-    // Commit only after renderer delivery succeeds. Geometry now reads this
-    // exact snapshot, so a date/time-zone change cannot make it race ahead.
     commitPetAccessoryPayload(payload, activeTheme);
     try {
       syncHitWin();
@@ -111,13 +125,30 @@ function createSettingsEffectRouter(options = {}) {
   function handleSettingsChange({ changes } = {}) {
     if (!changes || typeof changes !== "object") return;
 
+    // 1. Update mirror caches first so any side-effect handler reads fresh values.
     updateMirrors(changes);
 
-    if ("showTray" in changes) safeCall(logWarn, "Clawd: tray toggle failed:", changes.showTray ? createTray : destroyTray);
-    if ("showDock" in changes) safeCall(logWarn, "Clawd: applyDockVisibility failed:", applyDockVisibility);
+    if ("showTray" in changes) {
+      safeCall(
+        logWarn,
+        "Clawd: tray toggle failed:",
+        changes.showTray ? createTray : destroyTray
+      );
+    }
+    if ("showDock" in changes) {
+      safeCall(logWarn, "Clawd: applyDockVisibility failed:", applyDockVisibility);
+    }
     if ("lowPowerIdleMode" in changes) {
       sendToRenderer("low-power-idle-mode-change", changes.lowPowerIdleMode);
-      safeCall(logWarn, "Clawd: low-power Session HUD sync failed:", syncSessionHudVisibility);
+      // If the HUD/ring were already hidden when low-power mode was enabled,
+      // no visibility transition would otherwise schedule their delayed
+      // destruction. Re-sync after mirrors update so hidden windows are
+      // reclaimed under the new policy.
+      safeCall(
+        logWarn,
+        "Clawd: low-power Session HUD sync failed:",
+        syncSessionHudVisibility
+      );
     }
     if ("petTint" in changes) {
       const activeTheme = getActiveTheme();
@@ -135,57 +166,182 @@ function createSettingsEffectRouter(options = {}) {
       });
       applyAccessoryCandidate(activeTheme, accessoryId);
     }
-    if ("keepAwakeWhileWorking" in changes) safeCall(logWarn, "Clawd: reconcilePowerSaveBlocker failed:", reconcilePowerSaveBlocker);
+    if ("keepAwakeWhileWorking" in changes) {
+      safeCall(logWarn, "Clawd: reconcilePowerSaveBlocker failed:", reconcilePowerSaveBlocker);
+    }
     if ("lang" in changes) {
       safeCall(logWarn, "Clawd: dashboard lang broadcast failed:", sendDashboardI18n);
       safeCall(logWarn, "Clawd: session HUD lang broadcast failed:", sendSessionHudI18n);
       safeCall(logWarn, "Clawd: window title sync failed:", syncWindowTitles);
     }
-    if ("sessionAliases" in changes) safeCall(logWarn, "Clawd: session alias snapshot broadcast failed:", emitSessionSnapshot, { force: true });
-    if ("permissionAutomationMode" in changes) safeCall(logWarn, "Clawd: session automation effective-mode snapshot refresh failed:", emitSessionSnapshot, { force: true });
-
-    if ("hideBubbles" in changes || "permissionBubblesEnabled" in changes) safeCall(logWarn, "Clawd: syncPermissionShortcuts failed:", syncPermissionShortcuts);
-    if (("permissionBubblesEnabled" in changes && changes.permissionBubblesEnabled === false) || ("hideBubbles" in changes && changes.hideBubbles === true)) {
-      safeCall(logWarn, "Clawd: dismiss interactive bubbles failed:", dismissInteractivePermissionBubbles);
+    if ("sessionAliases" in changes) {
+      safeCall(
+        logWarn,
+        "Clawd: session alias snapshot broadcast failed:",
+        emitSessionSnapshot,
+        { force: true }
+      );
     }
-    if (("notificationBubbleAutoCloseSeconds" in changes && changes.notificationBubbleAutoCloseSeconds === 0) || ("hideBubbles" in changes && changes.hideBubbles === true)) {
+    if ("permissionAutomationMode" in changes) {
+      safeCall(
+        logWarn,
+        "Clawd: session automation effective-mode snapshot refresh failed:",
+        emitSessionSnapshot,
+        { force: true }
+      );
+    }
+
+    // 2. Reactive side effects.
+    if ("hideBubbles" in changes || "permissionBubblesEnabled" in changes) {
+      safeCall(logWarn, "Clawd: syncPermissionShortcuts failed:", syncPermissionShortcuts);
+    }
+    if (
+      ("permissionBubblesEnabled" in changes && changes.permissionBubblesEnabled === false) ||
+      ("hideBubbles" in changes && changes.hideBubbles === true)
+    ) {
+      safeCall(
+        logWarn,
+        "Clawd: dismiss interactive bubbles failed:",
+        dismissInteractivePermissionBubbles
+      );
+    }
+    if (
+      ("notificationBubbleAutoCloseSeconds" in changes && changes.notificationBubbleAutoCloseSeconds === 0) ||
+      ("hideBubbles" in changes && changes.hideBubbles === true)
+    ) {
       try {
         clearCodexNotifyBubbles(undefined, "settings-policy-disabled");
         clearCodexUserInputBubbles(undefined, undefined, "settings-policy-disabled");
         clearKimiNotifyBubbles(undefined, "settings-policy-disabled");
-      } catch (err) { warn(logWarn, "Clawd: clear notification bubbles failed:", err); }
-    } else if ("notificationBubbleAutoCloseSeconds" in changes && changes.notificationBubbleAutoCloseSeconds > 0) {
-      safeCall(logWarn, "Clawd: refresh notification bubble timers failed:", refreshPassiveNotifyAutoClose);
+      } catch (err) {
+        warn(logWarn, "Clawd: clear notification bubbles failed:", err);
+      }
+    } else if (
+      "notificationBubbleAutoCloseSeconds" in changes &&
+      changes.notificationBubbleAutoCloseSeconds > 0
+    ) {
+      safeCall(
+        logWarn,
+        "Clawd: refresh notification bubble timers failed:",
+        refreshPassiveNotifyAutoClose
+      );
     }
-    if (("updateBubbleAutoCloseSeconds" in changes && changes.updateBubbleAutoCloseSeconds === 0) || ("hideBubbles" in changes && changes.hideBubbles === true)) {
+    if (
+      ("updateBubbleAutoCloseSeconds" in changes && changes.updateBubbleAutoCloseSeconds === 0) ||
+      ("hideBubbles" in changes && changes.hideBubbles === true)
+    ) {
       safeCall(logWarn, "Clawd: hide update bubble failed:", hideUpdateBubbleForPolicy);
-    } else if ("updateBubbleAutoCloseSeconds" in changes && changes.updateBubbleAutoCloseSeconds > 0) {
-      safeCall(logWarn, "Clawd: refresh update bubble timer failed:", refreshUpdateBubbleAutoClose);
+    } else if (
+      "updateBubbleAutoCloseSeconds" in changes &&
+      changes.updateBubbleAutoCloseSeconds > 0
+    ) {
+      safeCall(
+        logWarn,
+        "Clawd: refresh update bubble timer failed:",
+        refreshUpdateBubbleAutoClose
+      );
     }
-    if ("permissionBubbleAutoCloseSeconds" in changes) safeCall(logWarn, "Clawd: refresh permission bubble timer failed:", refreshPermissionAutoCloseForPolicy);
-    if ("bubbleFollowPet" in changes) safeCall(logWarn, "Clawd: repositionFloatingBubbles failed:", repositionFloatingBubbles);
-    if ("textScale" in changes || "textScaleByDisplay" in changes) safeCall(logWarn, "Clawd: applyTextScale failed:", applyTextScale);
+    // Permission autoclose: any change (including 0 = disable) needs to be
+    // pushed into pending entries so they re-arm or clear timers.
+    if ("permissionBubbleAutoCloseSeconds" in changes) {
+      safeCall(
+        logWarn,
+        "Clawd: refresh permission bubble timer failed:",
+        refreshPermissionAutoCloseForPolicy
+      );
+    }
+    if ("bubbleFollowPet" in changes) {
+      safeCall(logWarn, "Clawd: repositionFloatingBubbles failed:", repositionFloatingBubbles);
+    }
+    if ("textScale" in changes || "textScaleByDisplay" in changes) {
+      // applyTextScale owns the whole cascade: per-display zoom on live text
+      // windows, fixed-width window resize, and bubble/HUD repositioning.
+      safeCall(logWarn, "Clawd: applyTextScale failed:", applyTextScale);
+    }
     if ("sessionHudPinned" in changes) {
-      try { handleSessionHudPinnedChanged(changes.sessionHudPinned); } catch (err) { warn(logWarn, "Clawd: session HUD pinned change failed:", err); }
+      // Pinned transitions are handled inside session-hud.js so the visible
+      // state can be inspected BEFORE the new mirror takes effect during a
+      // generic sync. handlePinnedChanged internally calls syncSessionHud,
+      // which triggers reposition via the reserved-offset callback — no
+      // need to call repositionFloatingBubbles here as well.
+      try {
+        handleSessionHudPinnedChanged(changes.sessionHudPinned);
+      } catch (err) {
+        warn(logWarn, "Clawd: session HUD pinned change failed:", err);
+      }
     }
-    if ("sessionHudEnabled" in changes || "sessionHudShowStateLabels" in changes || "sessionHudShowElapsed" in changes || "sessionHudShowContextUsage" in changes || "sessionHudShowQuota" in changes) {
-      try { syncSessionHudVisibility(); repositionFloatingBubbles(); } catch (err) { warn(logWarn, "Clawd: session HUD setting sync failed:", err); }
+    if (
+      "sessionHudEnabled" in changes
+      || "sessionHudShowStateLabels" in changes
+      || "sessionHudShowElapsed" in changes
+      || "sessionHudShowContextUsage" in changes
+      || "sessionHudShowQuota" in changes
+      || "quotaRingDisplayMode" in changes
+      // Hiding a provider changes the COIN COUNT, so this has to re-measure and
+      // re-place the cluster window, not just repaint it — a repaint alone
+      // would leave the transparent window (and its auto-hide hot zone) sized
+      // for coins that no longer draw.
+      || "quotaRingHiddenProviders" in changes
+    ) {
+      try {
+        syncSessionHudVisibility();
+        repositionFloatingBubbles();
+      } catch (err) {
+        warn(logWarn, "Clawd: session HUD setting sync failed:", err);
+      }
     }
     if ("quotaMergeSources" in changes) {
-      try { emitSessionSnapshot({ force: true }); } catch (err) { warn(logWarn, "Clawd: quota merge mode re-emit failed:", err); }
+      try {
+        // Snapshot CONTENT changes (merged vs per-source accountQuota), so a
+        // forced re-emit is needed for the Dashboard/HUD to pick it up.
+        emitSessionSnapshot({ force: true });
+      } catch (err) {
+        warn(logWarn, "Clawd: quota merge mode re-emit failed:", err);
+      }
     }
     if ("sessionHudCleanupDetached" in changes && changes.sessionHudCleanupDetached === true) {
-      try { cleanStaleSessions(); emitSessionSnapshot({ force: true }); } catch (err) { warn(logWarn, "Clawd: detached session cleanup sweep failed:", err); }
+      try {
+        cleanStaleSessions();
+        emitSessionSnapshot({ force: true });
+      } catch (err) {
+        warn(logWarn, "Clawd: detached session cleanup sweep failed:", err);
+      }
     } else if ("sessionHudCleanupDetached" in changes) {
-      safeCall(logWarn, "Clawd: detached session cleanup snapshot refresh failed:", emitSessionSnapshot, { force: true });
+      safeCall(
+        logWarn,
+        "Clawd: detached session cleanup snapshot refresh failed:",
+        emitSessionSnapshot,
+        { force: true }
+      );
     }
-    if ("sessionStaleMs" in changes || "workingStaleMs" in changes || "detachedIdleStaleMs" in changes) {
-      try { cleanStaleSessions(); emitSessionSnapshot({ force: true }); } catch (err) { warn(logWarn, "Clawd: stale cleanup config refresh failed:", err); }
+    if (
+      "sessionStaleMs" in changes
+      || "workingStaleMs" in changes
+      || "detachedIdleStaleMs" in changes
+    ) {
+      try {
+        cleanStaleSessions();
+        emitSessionSnapshot({ force: true });
+      } catch (err) {
+        warn(logWarn, "Clawd: stale cleanup config refresh failed:", err);
+      }
     }
-    if ("allowEdgePinning" in changes) safeCall(logWarn, "Clawd: allowEdgePinning re-clamp failed:", reclampPetAfterEdgePinningChange);
-    if ("disableMiniMode" in changes && changes.disableMiniMode && getMiniMode()) safeCall(logWarn, "Clawd: disableMiniMode exit failed:", exitMiniMode);
-    if ("idleVisual" in changes) safeCall(logWarn, "Clawd: idle visual refresh failed:", refreshIdleVisual);
+    if ("allowEdgePinning" in changes) {
+      safeCall(
+        logWarn,
+        "Clawd: allowEdgePinning re-clamp failed:",
+        reclampPetAfterEdgePinningChange
+      );
+    }
+    if ("disableMiniMode" in changes && changes.disableMiniMode && getMiniMode()) {
+      safeCall(logWarn, "Clawd: disableMiniMode exit failed:", exitMiniMode);
+    }
+    if ("idleVisual" in changes) {
+      safeCall(logWarn, "Clawd: idle visual refresh failed:", refreshIdleVisual);
+    }
 
+    // 3. Menu rebuild: only for menu-affecting keys to avoid thrashing on
+    // window position / mini state changes.
     for (const key of Object.keys(changes)) {
       if (MENU_AFFECTING_KEYS.has(key)) {
         safeCall(logWarn, "Clawd: rebuildAllMenus failed:", rebuildAllMenus);
@@ -193,13 +349,19 @@ function createSettingsEffectRouter(options = {}) {
       }
     }
 
+    // 4. Broadcast to all renderer windows for the future settings panel.
     try {
       for (const bw of BrowserWindow.getAllWindows()) {
         if (!bw.isDestroyed() && bw.webContents && !bw.webContents.isDestroyed()) {
-          bw.webContents.send("settings-changed", { changes, snapshot: settingsController.getSnapshot() });
+          bw.webContents.send("settings-changed", {
+            changes,
+            snapshot: settingsController.getSnapshot(),
+          });
         }
       }
-    } catch (err) { warn(logWarn, "Clawd: settings-changed broadcast failed:", err); }
+    } catch (err) {
+      warn(logWarn, "Clawd: settings-changed broadcast failed:", err);
+    }
   }
 
   function handleShortcutsChange(_value, snapshot) {
@@ -224,7 +386,10 @@ function createSettingsEffectRouter(options = {}) {
     started = false;
   }
 
-  return { start, dispose };
+  return {
+    start,
+    dispose,
+  };
 }
 
 module.exports = createSettingsEffectRouter;
