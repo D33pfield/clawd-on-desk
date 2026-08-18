@@ -79,14 +79,15 @@ async function emitPermission(instance, requestId, sessionID = "ses_node") {
   });
 }
 
-function requestBridge(url, { token, body, rawBody } = {}) {
+function requestBridge(url, { token, body, rawBody, chunked = false } = {}) {
   return new Promise((resolve, reject) => {
     const payload = rawBody === undefined ? JSON.stringify(body) : rawBody;
     const target = new URL("/reply", url);
     const headers = {
       "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(payload),
     };
+    if (chunked) headers["Transfer-Encoding"] = "chunked";
+    else headers["Content-Length"] = Buffer.byteLength(payload);
     if (token !== undefined) headers.Authorization = `Bearer ${token}`;
     const req = http.request(target, { method: "POST", headers }, (res) => {
       const chunks = [];
@@ -97,7 +98,13 @@ function requestBridge(url, { token, body, rawBody } = {}) {
       }));
     });
     req.on("error", reject);
-    req.end(payload);
+    if (!chunked) {
+      req.end(payload);
+      return;
+    }
+    const midpoint = Math.floor(payload.length / 2);
+    req.write(payload.slice(0, midpoint));
+    req.end(payload.slice(midpoint));
   });
 }
 
@@ -109,6 +116,12 @@ describe("opencode-family Node reverse bridge", () => {
     assert.strictEqual(instance.plugin.__test._bridgeRuntime, "node");
     assert.match(instance.plugin.__test._bridgeUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
     assert.match(instance.plugin.__test._bridgeTokenHex, /^[a-f0-9]{64}$/);
+    const address = instance.plugin.__test._bridgeAddress;
+    assert.ok(address && typeof address === "object", "node bridge must expose its bound address");
+    assert.strictEqual(address.address, "127.0.0.1");
+    assert.strictEqual(address.port, Number(new URL(instance.plugin.__test._bridgeUrl).port));
+    assert.ok(instance.plugin.__test._bridgeErrorListenerCount > 0,
+      "node bridge must retain an error listener after binding");
 
     fetchCalls.length = 0;
     await emitPermission(instance, "per_node_once");
@@ -155,6 +168,13 @@ describe("opencode-family Node reverse bridge", () => {
       rawBody: "x".repeat(64 * 1024 + 1),
     });
     assert.strictEqual(oversized.status, 413);
+
+    const streamedOversized = await requestBridge(instance.plugin.__test._bridgeUrl, {
+      token,
+      rawBody: "x".repeat(64 * 1024 + 1),
+      chunked: true,
+    });
+    assert.strictEqual(streamedOversized.status, 413);
 
     await emitPermission(instance, "per_after_bad_body");
     const accepted = await requestBridge(instance.plugin.__test._bridgeUrl, {

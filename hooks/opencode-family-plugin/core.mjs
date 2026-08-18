@@ -1303,6 +1303,16 @@ export function createOpencodeFamilyPlugin(config) {
     get _bridgeUrl() { return _bridgeUrl; },
     get _bridgeTokenHex() { return _bridgeTokenHex; },
     get _bridgeRuntime() { return _bridgeRuntime; },
+    get _bridgeAddress() {
+      return _bridgeRuntime === "node" && _bridgeServer && typeof _bridgeServer.address === "function"
+        ? _bridgeServer.address()
+        : null;
+    },
+    get _bridgeErrorListenerCount() {
+      return _bridgeRuntime === "node" && _bridgeServer && typeof _bridgeServer.listenerCount === "function"
+        ? _bridgeServer.listenerCount("error")
+        : 0;
+    },
     closeBridgeForTest,
     get _pidChain() { return _pidChain; },
   };
@@ -1764,6 +1774,9 @@ export function createOpencodeFamilyPlugin(config) {
       };
       const onListening = () => {
         server.removeListener("error", onError);
+        server.on("error", (err) => {
+          debugLog(`BRIDGE node server ERROR: ${err && err.message}`);
+        });
         resolve(server);
       };
       server.once("error", onError);
