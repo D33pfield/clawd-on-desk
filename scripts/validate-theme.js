@@ -133,7 +133,8 @@ const sleepMode = deriveSleepMode(raw);
 const normalizedStates = normalizeStateBindings(raw.states);
 const accessorySchemaErrors = themeSchema.validateTheme(raw)
   .filter((message) => message.includes("customization.accessories"));
-if (raw.customization && raw.customization.accessories !== undefined) {
+// `false`/`null` is the documented opt-out, not a misconfiguration.
+if (raw.customization && raw.customization.accessories) {
   if (accessorySchemaErrors.length === 0) {
     // Schema-valid is not the same as usable: a coverage gap (a visual with no
     // descriptor to fall back on) raises no schema error but still turns the

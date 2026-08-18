@@ -7,6 +7,7 @@ const { app, BrowserWindow } = require("electron");
 const ROOT = path.resolve(__dirname, "..", "..");
 const { PET_ACCESSORY_CATALOG } = require(path.join(ROOT, "src", "pet-customization-catalog"));
 const { computeDynamicAccessoryLayout } = require(path.join(ROOT, "src", "pet-accessory-layout"));
+const { isAccessoryMirrored } = require(path.join(ROOT, "src", "pet-accessory-mirror"));
 const {
   BUILTIN_ACCESSORY_MOTION_PADDING,
   resolveAccessoryAwareHitBox,
@@ -285,7 +286,17 @@ async function auditTheme(win, builtin) {
         required.bottom = Math.max(required.bottom, b.y + b.height - staticRect.bottom);
 
         for (const edge of edges) {
-          const mirrorX = mini && ((edge === "left") !== !!(theme.miniMode && theme.miniMode.flipAssets));
+          // Same rule the renderer applies and reports; do not re-derive it
+          // here, or the audit certifies a facing production never produces.
+          const mirrorX = isAccessoryMirrored(state, {
+            miniLeftFlip: edge === "left",
+            miniFlipAssets: !!(theme.miniMode && theme.miniMode.flipAssets),
+            inMiniMode: mini,
+            miniPreEntryMode: false,
+            hasRoamVisual: false,
+            roamHeadingLeft: false,
+            roamFlipAssets: false,
+          });
           const hitBox = resolveAccessoryAwareHitBox(
             theme,
             state,

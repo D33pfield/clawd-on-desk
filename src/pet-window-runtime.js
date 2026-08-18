@@ -1788,8 +1788,10 @@ function createPetWindowRuntime(options = {}) {
   // What syncHitWin() reports back. "deferred" is a normal outcome — a drag is
   // holding the pointer, the windows are not up yet, or the rect is a
   // transient sliver — and callers that care about the new geometry should
-  // retry rather than warn. Only "failed" means the geometry could not be
-  // resolved at all.
+  // retry rather than warn. "failed" means the rect could not be resolved at
+  // all; with today's guards that is unreachable (every clip step returns a
+  // rect, and bounds are non-null once the windows are live), so it is defence
+  // in depth for callers that inject their own sync, not a live path.
   const APPLIED_HIT_SYNC = Object.freeze({ applied: true, deferred: false });
   const DEFERRED_HIT_SYNC = Object.freeze({ applied: false, deferred: true });
   const FAILED_HIT_SYNC = Object.freeze({ applied: false, deferred: false });

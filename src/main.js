@@ -4399,6 +4399,11 @@ function createWindow() {
   // Also handles crash recovery (render-process-gone → reload)
   win.webContents.on("did-start-loading", () => {
     setLowPowerIdlePaused(false);
+    // A fresh document draws upright: no .mini-left class, no inline scale on
+    // the direction stage. Keeping the old facing here would leave the hit
+    // window mirrored against an unmirrored pet until something happens to
+    // make the renderer report again.
+    setAccessoryMirrored(false);
   });
   win.webContents.on("did-finish-load", () => {
     sendToRenderer("theme-config", buildRendererThemeConfig());

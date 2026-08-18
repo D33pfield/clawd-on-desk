@@ -521,10 +521,14 @@ let _reportedAccessoryMirror = null;
 function reportAccessoryMirror(mirrored) {
   const next = !!mirrored;
   if (_reportedAccessoryMirror === next) return;
-  _reportedAccessoryMirror = next;
   try {
     window.electronAPI.reportAccessoryMirror(next);
-  } catch {}
+  } catch {
+    // Memo only a delivered value: remembering a send that never landed would
+    // dedupe every later attempt and strand main on the stale facing.
+    return;
+  }
+  _reportedAccessoryMirror = next;
 }
 
 function applyMiniFlip(el, state = currentState) {

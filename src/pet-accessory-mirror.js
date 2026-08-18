@@ -1,8 +1,9 @@
 "use strict";
 
 // Which way the accessory ends up facing. The renderer composes two nested
-// mirrors and the main process needs the same answer for the native hit
-// window, so the rule lives here instead of being written twice:
+// mirrors; the main process needs the same answer for the native hit window
+// but receives it over IPC rather than recomputing it, so this rule has
+// exactly one implementation and one place to test:
 //
 //   #pet-facing-stage          .mini-left            -> mirrors everything
 //     #pet-asset-direction-stage  per-state flip     -> mirrors everything below

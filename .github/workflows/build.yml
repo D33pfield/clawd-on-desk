@@ -24,6 +24,7 @@ jobs:
 
   build-windows:
     needs: validate-release
+    timeout-minutes: 60
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -76,6 +77,7 @@ jobs:
 
   build-mac:
     needs: validate-release
+    timeout-minutes: 60
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -144,6 +146,7 @@ jobs:
 
   build-linux:
     needs: validate-release
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
