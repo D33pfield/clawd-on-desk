@@ -45,7 +45,9 @@ function maxPadding(a, b) {
   };
 }
 
-async function sampleMatrices(win, targetId, scriptedCloudling) {
+async function sampleMatrices(win, targetId, options = {}) {
+  const scriptedCycleMs = Number.isFinite(options.scriptedCycleMs) ? options.scriptedCycleMs : 0;
+  const cloudlingPointer = options.cloudlingPointer === true;
   return win.webContents.executeJavaScript(`(async () => {
     const root = document.documentElement;
     const target = document.getElementById(${JSON.stringify(targetId)});
@@ -60,7 +62,7 @@ async function sampleMatrices(win, targetId, scriptedCloudling) {
     };
     const out = [];
 
-    if (${scriptedCloudling ? "true" : "false"}) {
+    if (${cloudlingPointer ? "true" : "false"}) {
       if (typeof window.__cloudlingSetPointer !== "function") {
         throw new Error("cloudling scripted pointer hook is unavailable");
       }
@@ -89,14 +91,27 @@ async function sampleMatrices(win, targetId, scriptedCloudling) {
       const duration = timing && Number(timing.duration);
       if (Number.isFinite(duration) && duration > 0) durations.push({ animation, duration });
     }
-    if (durations.length === 0) return [snapshot()];
-
-    const horizon = Math.min(12000, Math.max(4000, ...durations.map(({ duration }) => duration * 4)));
-    for (let t = 0; t <= horizon; t += 25) {
-      for (const { animation, duration } of durations) animation.currentTime = t % duration;
-      out.push(snapshot());
+    if (durations.length > 0) {
+      const horizon = Math.min(12000, Math.max(4000, ...durations.map(({ duration }) => duration * 4)));
+      for (let t = 0; t <= horizon; t += 25) {
+        for (const { animation, duration } of durations) animation.currentTime = t % duration;
+        out.push(snapshot());
+      }
+      return out;
     }
-    return out;
+
+    const scriptedCycleMs = ${scriptedCycleMs};
+    if (scriptedCycleMs > 0) {
+      const horizon = Math.min(12000, Math.max(1200, scriptedCycleMs + 250));
+      const started = performance.now();
+      while (performance.now() - started <= horizon) {
+        out.push(snapshot());
+        await wait(25);
+      }
+      return out;
+    }
+
+    return [snapshot()];
   })()`);
 }
 
@@ -104,6 +119,7 @@ async function auditTheme(win, builtin) {
   const raw = JSON.parse(fs.readFileSync(builtin.theme, "utf8"));
   const files = raw.customization && raw.customization.accessories && raw.customization.accessories.files;
   if (!files) return [];
+  const scriptedCycles = raw.trustedRuntime && raw.trustedRuntime.scriptedSvgCycleMs || {};
   const failures = [];
 
   for (const [file, descriptor] of Object.entries(files)) {
@@ -111,11 +127,10 @@ async function auditTheme(win, builtin) {
     const svgPath = path.join(builtin.assets, file);
     if (!fs.existsSync(svgPath)) throw new Error(`missing SVG for motion audit: ${svgPath}`);
     await win.loadFile(svgPath);
-    const matrices = await sampleMatrices(
-      win,
-      descriptor.followTarget.id,
-      builtin.id === "cloudling" && file === "cloudling-idle.svg"
-    );
+    const matrices = await sampleMatrices(win, descriptor.followTarget.id, {
+      cloudlingPointer: builtin.id === "cloudling" && file === "cloudling-idle.svg",
+      scriptedCycleMs: Number(scriptedCycles[file]) || 0,
+    });
     const authored = descriptor.hitBoxPadding || emptyPadding();
     const measured = (BUILTIN_ACCESSORY_MOTION_PADDING[builtin.id] || {})[file] || emptyPadding();
     const configured = maxPadding(authored, measured);
@@ -123,7 +138,6 @@ async function auditTheme(win, builtin) {
 
     for (const accessory of ACCESSORIES) {
       const staticRect = rectFor(descriptor.staticFrame, accessory, builtin.id);
-      const followRect = rectFor(descriptor.followTarget.frame, accessory, builtin.id);
       const normalizedAccessory = {
         aspect: accessory.viewBox.width / accessory.viewBox.height,
         widthScale: staticRect.widthScale,
@@ -152,7 +166,7 @@ async function auditTheme(win, builtin) {
         failures.push(`${builtin.id}/${file} ${side}: need ${need.toFixed(3)}, configured ${configured[side].toFixed(3)}`);
       }
     }
-    process.stdout.write(`${builtin.id}/${file}: required=${JSON.stringify(required)} configured=${JSON.stringify(configured)}\n`);
+    process.stdout.write(`${builtin.id}/${file}: samples=${matrices.length} required=${JSON.stringify(required)} configured=${JSON.stringify(configured)}\n`);
   }
   return failures;
 }
