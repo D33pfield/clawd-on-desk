@@ -1792,13 +1792,13 @@ function createPetWindowRuntime(options = {}) {
   function syncHitWin() {
     const hitWin = getHitWindow();
     const win = getRenderWindow();
-    if (!isLiveWindow(hitWin) || !isLiveWindow(win)) return;
+    if (!isLiveWindow(hitWin) || !isLiveWindow(win)) return false;
     // Keep the captured pointer stable while dragging. Repositioning the input
     // window mid-drag can break pointer capture on Windows.
-    if (dragLocked) return;
+    if (dragLocked) return false;
     const bounds = getPetWindowBounds();
     let hit = petGeometryMain.getHitRectScreen(bounds);
-    if (!hit) return;
+    if (!hit) return false;
 
     const physical = getPhysicalRenderBounds();
     hit = applyOutwardClip(hit, physical);
@@ -1814,7 +1814,7 @@ function createPetWindowRuntime(options = {}) {
       hit = intersectHitWithWorkArea(hit, hitWa, clampBounds);
     }
     hit = clipHitRectToMiniSeam(hit);
-    if (!hit) return;
+    if (!hit) return false;
 
     const x = Math.round(hit.left);
     const y = Math.round(hit.top);
@@ -1838,7 +1838,7 @@ function createPetWindowRuntime(options = {}) {
       applyHitInputState();
       repositionSessionHud();
       syncImeEditingPetDodge();
-      return;
+      return true;
     }
 
     const target = { x, y, width: w, height: h };
@@ -1889,6 +1889,7 @@ function createPetWindowRuntime(options = {}) {
     // change hitboxes without moving the window, so the overlap answer can
     // flip right here. Cheap + edge-triggered inside.
     syncImeEditingPetDodge();
+    return true;
   }
 
   // §4.3.11's hit-side reconcile. Debounced on its own (longer) quiet period

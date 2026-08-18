@@ -113,7 +113,9 @@ function createSettingsEffectRouter(options = {}) {
 
     commitPetAccessoryPayload(payload, activeTheme);
     try {
-      syncHitWin();
+      if (syncHitWin() === false) {
+        throw new Error("native hit geometry was not applied");
+      }
       repositionPetAccessoryFloatingSurfaces();
       return true;
     } catch (err) {
