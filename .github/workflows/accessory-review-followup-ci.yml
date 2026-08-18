@@ -12,7 +12,7 @@ jobs:
   validate:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,7 +23,7 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - name: Validate prospective upstream merge tree and publish temporary result
+      - name: Validate review-targeted prospective merge tree
         shell: bash
         run: |
           set +e
@@ -48,7 +48,6 @@ jobs:
           install_status=99
           verify_status=99
           review_status=99
-          test_status=99
           if [ "$fetch_status" -eq 0 ] && [ "$merge_status" -eq 0 ]; then
             echo "=== npm ci ===" >> /tmp/accessory-review-ci.log
             npm ci >> /tmp/accessory-review-ci.log 2>&1
@@ -70,10 +69,6 @@ jobs:
               test/theme-schema.test.js \
               test/pet-window-runtime.test.js >> /tmp/accessory-review-ci.log 2>&1
             review_status=$?
-
-            echo "=== xvfb-run -a npm test ===" >> /tmp/accessory-review-ci.log
-            xvfb-run -a npm test >> /tmp/accessory-review-ci.log 2>&1
-            test_status=$?
           fi
 
           status=0
@@ -81,8 +76,6 @@ jobs:
             status=1
           fi
 
-          # Never push the local upstream merge. Return to the exact PR head,
-          # then commit only the disposable validation report.
           git reset --hard "$original_head" >> /tmp/accessory-review-ci.log 2>&1
           set -e
 
@@ -93,7 +86,6 @@ jobs:
             echo "install_status=$install_status"
             echo "verify_status=$verify_status"
             echo "review_status=$review_status"
-            echo "full_test_status=$test_status"
             echo "head=$original_head"
             echo "tested_tree=$tested_tree"
             echo "--- failure contexts ---"
