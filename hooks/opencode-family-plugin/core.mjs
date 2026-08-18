@@ -1,7 +1,7 @@
 // Clawd on Desk — opencode-family plugin core
 //
 // Shared runtime for opencode-derived hosts (opencode, mimocode, …). Runs
-// inside the host process (Bun runtime) and forwards session/tool events to
+// inside the host process (Bun CLI/TUI or Node-based Desktop sidecar) and forwards session/tool events to
 // the Clawd HTTP server (127.0.0.1:23333-23337).
 //
 // This module is IMPORTED by the thin per-agent entries
@@ -13,12 +13,12 @@
 // Each entry calls createOpencodeFamilyPlugin() exactly ONCE at module
 // evaluation ("one state instance per entry-module evaluation"). Re-creating
 // per plugin invocation would wipe the dedup/parent maps, leak the previous
-// Bun.serve bridge (it has no shutdown path by design — the server dies with
+// reverse bridge (it has no production shutdown path — the server dies with
 // the host process), and strand in-flight permission requests that hold the
 // old bridge URL/token.
 //
 // Design invariants (unchanged from the original opencode plugin):
-//   - Zero dependencies (Bun's built-in fetch + fs/os/path + Bun.serve + node:crypto)
+//   - Zero dependencies (runtime fetch + Node built-ins + Bun.serve when present)
 //   - fire-and-forget: event hook never awaits the fetch, so slow/broken Clawd
 //     cannot stall the host
 //   - same-state dedup — consecutive identical states skip POST
@@ -30,9 +30,11 @@
 //   Phase 2 Spike — ctx.serverUrl is a phantom URL, ctx.client.fetch is
 //   bound to Server.Default().fetch() in-process). So Clawd cannot call
 //   the host's REST API directly from outside the Bun process. Instead we
-//   start a tiny Bun.serve() bridge here: Clawd POSTs decisions to the
+//   start a tiny loopback bridge here: Clawd POSTs decisions to the
 //   bridge, and the bridge calls ctx.client._client.post() — the same
 //   in-process Hono router that `opencode serve` would expose externally.
+//   CLI/TUI uses Bun.serve(); Desktop's Electron utilityProcess runs the
+//   sidecar under Node, so it uses node:http with the same Web Request handler.
 //   A random 32-byte hex token gates the bridge endpoint since localhost
 //   TCP is visible to any process on the machine.
 
@@ -41,6 +43,7 @@ import { homedir, platform } from "os";
 import { join, posix, win32 } from "path";
 import { randomBytes, timingSafeEqual } from "crypto";
 import { execFileSync, execSync } from "child_process";
+import { createServer as createHttpServer } from "http";
 import {
   getEventSessionInfo,
   getEventSessionId,
@@ -73,6 +76,7 @@ const POST_TIMEOUT_MS = 1000;
 // emitting events while that request waits. Without a hard cap, even an
 // explicitly serialized queue retains an unbounded chain of payloads/promises.
 const STATE_POST_MAX_PENDING = 32;
+const BRIDGE_MAX_BODY_BYTES = 64 * 1024;
 
 // Orca hosts its terminals in a detached daemon that the process walk below can
 // never reach, so the pane key from the environment is the only handle on the tab
@@ -344,6 +348,8 @@ export function createOpencodeFamilyPlugin(config) {
   let _bridgeTokenHex = "";
   let _bridgeTokenBuf = null;
   let _bridgeServer = null;
+  let _bridgeRuntime = "";
+  let _bridgeStartPromise = null;
 
   // Debug log is reset on plugin init so each host startup gets a clean
   // file. message.part.updated ignores are filtered out at the event-handler
@@ -1296,6 +1302,8 @@ export function createOpencodeFamilyPlugin(config) {
     set _cachedPort(v) { _cachedPort = v; },
     get _bridgeUrl() { return _bridgeUrl; },
     get _bridgeTokenHex() { return _bridgeTokenHex; },
+    get _bridgeRuntime() { return _bridgeRuntime; },
+    closeBridgeForTest,
     get _pidChain() { return _pidChain; },
   };
 
@@ -1661,33 +1669,164 @@ export function createOpencodeFamilyPlugin(config) {
     }
   }
 
-  // Start the Bun.serve reverse bridge on a random localhost port. Called once
-  // at plugin init. Survives the plugin's lifetime; the host owns the process
-  // so there's no explicit shutdown path — the server dies with the process.
-  function startBridge() {
+  function resetBridgeState() {
+    _bridgeServer = null;
+    _bridgeRuntime = "";
+    _bridgeUrl = "";
+    _bridgeTokenHex = "";
+    _bridgeTokenBuf = null;
+  }
+
+  async function writeNodeBridgeResponse(res, response) {
+    if (res.headersSent || res.destroyed) return;
+    res.statusCode = response.status;
+    for (const [name, value] of response.headers.entries()) {
+      res.setHeader(name, value);
+    }
+    const bytes = Buffer.from(await response.arrayBuffer());
+    res.end(bytes);
+  }
+
+  async function handleNodeBridgeRequest(req, res) {
+    try {
+      const requestUrl = new URL(req.url || "/", "http://127.0.0.1");
+      const authorization = Array.isArray(req.headers.authorization)
+        ? req.headers.authorization[0]
+        : req.headers.authorization;
+
+      // Reject unauthenticated POSTs before consuming a body. The shared Web
+      // handler repeats this check so the Bun and Node paths have one security
+      // boundary even if this fast path changes later.
+      if (req.method === "POST" && requestUrl.pathname === "/reply"
+          && !verifyBridgeToken(authorization)) {
+        await writeNodeBridgeResponse(res, new Response("unauthorized", { status: 401 }));
+        req.resume();
+        return;
+      }
+
+      const contentLength = Number(req.headers["content-length"] || 0);
+      if (Number.isFinite(contentLength) && contentLength > BRIDGE_MAX_BODY_BYTES) {
+        await writeNodeBridgeResponse(res, new Response("payload too large", { status: 413 }));
+        req.resume();
+        return;
+      }
+
+      const chunks = [];
+      let size = 0;
+      let tooLarge = false;
+      for await (const chunk of req) {
+        if (tooLarge) continue;
+        size += chunk.length;
+        if (size > BRIDGE_MAX_BODY_BYTES) {
+          tooLarge = true;
+          chunks.length = 0;
+          continue;
+        }
+        chunks.push(chunk);
+      }
+      if (tooLarge) {
+        await writeNodeBridgeResponse(res, new Response("payload too large", { status: 413 }));
+        return;
+      }
+
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(req.headers)) {
+        if (Array.isArray(value)) {
+          for (const item of value) headers.append(name, item);
+        } else if (value !== undefined) {
+          headers.set(name, value);
+        }
+      }
+      const method = req.method || "GET";
+      const init = { method, headers };
+      if (method !== "GET" && method !== "HEAD" && size > 0) {
+        init.body = Buffer.concat(chunks, size);
+      }
+      const response = await handleBridgeRequest(new Request(requestUrl, init));
+      await writeNodeBridgeResponse(res, response);
+    } catch (err) {
+      debugLog(`BRIDGE node request THROW: ${err && err.message}`);
+      if (!res.headersSent && !res.destroyed) {
+        res.statusCode = 500;
+        res.end("internal error");
+      }
+    }
+  }
+
+  function listenNodeBridge() {
+    return new Promise((resolve, reject) => {
+      const server = createHttpServer((req, res) => {
+        void handleNodeBridgeRequest(req, res);
+      });
+      const onError = (err) => {
+        server.removeListener("listening", onListening);
+        reject(err);
+      };
+      const onListening = () => {
+        server.removeListener("error", onError);
+        resolve(server);
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen({ host: "127.0.0.1", port: 0 });
+    });
+  }
+
+  // Start one reverse bridge on a random loopback port. OpenCode may initialize
+  // the same factory concurrently for several directories, so every caller
+  // awaits the same in-flight start before it publishes bridge coordinates.
+  async function startBridge() {
     if (_bridgeServer && _bridgeUrl && _bridgeTokenBuf) return;
-    if (typeof Bun === "undefined" || !Bun.serve) {
-      debugLog(`BRIDGE start FAILED: Bun.serve not available (not running under Bun?)`);
+    if (_bridgeStartPromise) return _bridgeStartPromise;
+
+    _bridgeStartPromise = (async () => {
+      try {
+        _bridgeTokenBuf = randomBytes(32);
+        _bridgeTokenHex = _bridgeTokenBuf.toString("hex");
+        if (typeof Bun !== "undefined" && Bun.serve) {
+          _bridgeRuntime = "bun";
+          _bridgeServer = Bun.serve({
+            port: 0,
+            hostname: "127.0.0.1",
+            fetch: handleBridgeRequest,
+          });
+        } else {
+          _bridgeRuntime = "node";
+          _bridgeServer = await listenNodeBridge();
+        }
+        const address = _bridgeRuntime === "bun" ? { port: _bridgeServer.port } : _bridgeServer.address();
+        const port = address && typeof address === "object" ? address.port : null;
+        if (!Number.isInteger(port) || port <= 0) throw new Error("bridge did not receive a port");
+        _bridgeUrl = `http://127.0.0.1:${port}`;
+        debugLog(`BRIDGE listening runtime=${_bridgeRuntime} on ${_bridgeUrl} (token ${_bridgeTokenHex.slice(0, 8)}…)`);
+      } catch (err) {
+        debugLog(`BRIDGE start THROW: ${err && err.message}`);
+        if (_bridgeRuntime === "node" && _bridgeServer && typeof _bridgeServer.close === "function") {
+          try { _bridgeServer.close(); } catch {}
+        }
+        resetBridgeState();
+      }
+    })();
+
+    try {
+      await _bridgeStartPromise;
+    } finally {
+      _bridgeStartPromise = null;
+    }
+  }
+
+  async function closeBridgeForTest() {
+    if (_bridgeStartPromise) await _bridgeStartPromise;
+    const server = _bridgeServer;
+    const runtime = _bridgeRuntime;
+    resetBridgeState();
+    if (!server) return;
+    if (runtime === "bun") {
+      if (typeof server.stop === "function") server.stop(true);
       return;
     }
-    try {
-      _bridgeTokenBuf = randomBytes(32);
-      _bridgeTokenHex = _bridgeTokenBuf.toString("hex");
-      _bridgeServer = Bun.serve({
-        port: 0,              // ask the OS for an unused port
-        hostname: "127.0.0.1",
-        fetch: handleBridgeRequest,
-      });
-      const port = _bridgeServer.port;
-      _bridgeUrl = `http://127.0.0.1:${port}`;
-      debugLog(`BRIDGE listening on ${_bridgeUrl} (token ${_bridgeTokenHex.slice(0, 8)}…)`);
-    } catch (err) {
-      debugLog(`BRIDGE start THROW: ${err && err.message}`);
-      _bridgeServer = null;
-      _bridgeUrl = "";
-      _bridgeTokenHex = "";
-      _bridgeTokenBuf = null;
-    }
+    if (typeof server.close !== "function") return;
+    await new Promise((resolve) => server.close(() => resolve()));
   }
 
   // Plugin entrypoint (the host loads this via the entry's default export).
@@ -1703,7 +1842,7 @@ export function createOpencodeFamilyPlugin(config) {
     debugLog(`INIT directory=${instanceDirectory} serverUrl=${instanceServerUrl} pid=${process.pid} hasClient=${!!instanceClient}`);
     // Sync init blocks the TUI boot path; later POSTs hit the cached result.
     getStablePid();
-    startBridge();
+    await startBridge();
 
     return {
       event: async ({ event }) => {
