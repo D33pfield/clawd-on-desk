@@ -24,7 +24,7 @@ test("real SVG getCTM motion stays inside the declared accessory envelope", { ti
   const fixture = path.join(__dirname, "fixtures", "accessory-motion-electron.js");
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const result = spawnSync(executable, [fixture, "--disable-gpu"], {
+  const result = spawnSync(executable, ["--disable-gpu", fixture], {
     env,
     encoding: "utf8",
     timeout: 85_000,
