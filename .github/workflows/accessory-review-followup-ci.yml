@@ -1,0 +1,102 @@
+name: Accessory review follow-up CI
+
+on:
+  push:
+    branches:
+      - agent/accessory-aware-hitboxes
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Patch long review-target files against latest upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "CheeseAgent CI"
+          git config user.email "18224661+CheeseAgent@users.noreply.github.com"
+          git fetch https://github.com/rullerzhou-afk/clawd-on-desk.git main:refs/remotes/upstream/main
+          git checkout upstream/main -- docs/guides/guide-theme-creation.md scripts/validate-theme.js
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          schema = Path("src/theme-schema.js")
+          text = schema.read_text()
+          replacements = {
+              '["left", 4 * viewBox.width]': '["left", viewBox.width]',
+              '["top", 4 * viewBox.height]': '["top", viewBox.height]',
+              '["right", 4 * viewBox.width]': '["right", viewBox.width]',
+              '["bottom", 4 * viewBox.height]': '["bottom", viewBox.height]',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f"schema anchor missing: {old}")
+              text = text.replace(old, new, 1)
+          schema.write_text(text)
+
+          guide = Path("docs/guides/guide-theme-creation.md")
+          text = guide.read_text()
+          if "hitBoxPadding" not in text:
+              pattern = re.compile(r'(\s+"staticFrame": \{ "cx": 7\.5, "baseY": 6\.5, "width": 16 \},\n)(\s+"followTarget": \{)', re.M)
+              text, count = pattern.subn(
+                  r'\1        "hitBoxPadding": { "left": 1, "top": 2, "right": 1, "bottom": 0 },\n\2',
+                  text,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit("guide JSON accessory anchor missing")
+              bullet = '- `staticFrame` uses the effective viewBox of that visual. `cx` is the head center, `baseY` is the accessory resting line, and `width` is the reference head width.\n'
+              addition = bullet + '- `hitBoxPadding` is optional per-side non-negative motion padding (`left` / `top` / `right` / `bottom`) in the visual\'s effective viewBox units. Each side is capped to one effective viewBox dimension by schema validation, and runtime hit geometry still clamps the accessory-only contribution to the render-visible viewBox. Use it only for animated `followTarget` motion that extends past `staticFrame`.\n'
+              if bullet not in text:
+                  raise SystemExit("guide accessory bullet anchor missing")
+              text = text.replace(bullet, addition, 1)
+          guide.write_text(text)
+
+          cli = Path("scripts/validate-theme.js")
+          text = cli.read_text()
+          require_anchor = 'const themeLoader = require("../src/theme-loader");\n'
+          schema_require = 'const themeSchema = require("../src/theme-schema");\n'
+          if schema_require not in text:
+              if require_anchor not in text:
+                  raise SystemExit("validate-theme require anchor missing")
+              text = text.replace(require_anchor, require_anchor + schema_require, 1)
+
+          marker = "accessorySchemaErrors"
+          if marker not in text:
+              anchor = 'const normalizedStates = normalizeStateBindings(raw.states);\n'
+              block = '''const accessorySchemaErrors = themeSchema.validateTheme(raw)\n  .filter((message) => message.includes("customization.accessories"));\nif (raw.customization && raw.customization.accessories !== undefined) {\n  if (accessorySchemaErrors.length === 0) {\n    console.log(`  ${PASS} customization.accessories attachment geometry is schema-valid`);\n  } else {\n    for (const message of accessorySchemaErrors) {\n      console.log(`  ${FAIL} ${message}`);\n      errors++;\n    }\n  }\n}\n'''
+              if anchor not in text:
+                  raise SystemExit("validate-theme schema anchor missing")
+              text = text.replace(anchor, anchor + block, 1)
+          cli.write_text(text)
+          PY
+
+          git add src/theme-schema.js docs/guides/guide-theme-creation.md scripts/validate-theme.js
+          if ! git diff --cached --quiet; then
+            git commit -m "fix: tighten accessory theme validation and docs"
+            git push origin HEAD:agent/accessory-aware-hitboxes
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify Electron install
+        run: npm run verify:electron
+
+      - name: Run full test suite with real Electron SVG audit
+        run: xvfb-run -a npm test
