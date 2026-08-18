@@ -24,7 +24,14 @@ test("real SVG getCTM motion stays inside the declared accessory envelope", { ti
   const fixture = path.join(__dirname, "fixtures", "accessory-motion-electron.js");
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const result = spawnSync(executable, ["--disable-gpu", fixture], {
+  const args = ["--disable-gpu"];
+  // GitHub's Ubuntu runner cannot satisfy Chromium's setuid helper ownership
+  // contract inside the workspace. The audit loads only repository-local SVGs
+  // in a disposable hidden window, so disabling the sandbox for this child
+  // test process is both scoped and deterministic.
+  if (process.platform === "linux") args.push("--no-sandbox");
+  args.push(fixture);
+  const result = spawnSync(executable, args, {
     env,
     encoding: "utf8",
     timeout: 85_000,
