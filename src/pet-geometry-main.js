@@ -6,10 +6,7 @@ const {
   computeThemeAnchorRect: defaultComputeThemeAnchorRect,
 } = require("./visible-margins");
 const { resolveAccessoryAwareHitBox } = require("./pet-accessory-hitbox");
-const {
-  commitPetAccessoryPayload,
-  getPetAccessoryPayloadSnapshot,
-} = require("./pet-accessory-state");
+const { getPetAccessoryPayloadSnapshot } = require("./pet-accessory-state");
 
 function createPetGeometryMain(options = {}) {
   const hitGeometry = options.hitGeometry || defaultHitGeometry;
@@ -85,11 +82,11 @@ function createPetGeometryMain(options = {}) {
 
   function getCanonicalAccessoryPayload(theme) {
     const current = getPetAccessoryPayloadSnapshot(theme);
-    if (current) return current.payload;
-    // First geometry pass after startup/theme switch seeds from the same main
-    // resolver used to construct renderer config. Same-theme clock changes do
-    // not reach this fallback; Settings/holiday delivery commits explicitly.
-    return commitPetAccessoryPayload(getCurrentAccessoryPayload(), theme).payload;
+    // Renderer config/theme reload normally commits before geometry runs. The
+    // fallback is intentionally read-only for startup/test resilience; making
+    // it authoritative would let geometry recreate the date-race we are
+    // eliminating and would leak state across independent harnesses.
+    return current ? current.payload : getCurrentAccessoryPayload();
   }
 
   function getObjRect(bounds) {
