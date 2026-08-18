@@ -3,516 +3,629 @@ fetch_status=0
 merge_status=0
 install_status=0
 verify_status=0
-test_status=1
-head=9f65b65c71b2d2a07579c4f1fa50b0bd02be26e2
-tested_tree=b903ec99829d6d5a8d7c1991b61b81cf1532b3ae
+review_status=1
+full_test_status=1
+head=2c1a68538e36f2da7b855e1e514d39a868defa62
+tested_tree=44c322eba49213d2bbc4b2c03ed6eee693b5b1e1
 --- failure contexts ---
-717-    # Subtest: detects generic parent-directory agents and reports Clawd marker presence separately
-718-    ok 4 - detects generic parent-directory agents and reports Clawd marker presence separately
-719-      ---
-720-      duration_ms: 5.862164
-721-      type: 'test'
-722-      ...
-723-    # Subtest: detects DSH host installation separately from a verified managed plugin
-724-    ok 5 - detects DSH host installation separately from a verified managed plugin
-725-      ---
-726-      duration_ms: 13.963448
-727-      type: 'test'
-728-      ...
-729-    # Subtest: detects a DSH CLI on PATH before the profile home is initialized
-730-    not ok 6 - detects a DSH CLI on PATH before the profile home is initialized
-731-      ---
-732-      duration_ms: 5.493164
-733-      type: 'test'
-734-      location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/agent-installation-detector.test.js:194:3'
-735:      failureType: 'testCodeFailure'
-736-      error: |-
-737-        Expected values to be strictly equal:
-738-        
-739-        false !== true
-740-        
-741:      code: 'ERR_ASSERTION'
-742-      name: 'AssertionError'
-743-      expected: true
-744-      actual: false
-745-      operator: 'strictEqual'
-746-      stack: |-
-747-        TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/agent-installation-detector.test.js:207:12)
-748-        Test.runInAsyncScope (node:async_hooks:214:14)
-749-        Test.run (node:internal/test_runner/test:1047:25)
-750-        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
-751-        Test.postRun (node:internal/test_runner/test:1173:19)
-752-        Test.run (node:internal/test_runner/test:1101:12)
-753-        async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
-754-      ...
-755-    # Subtest: detects a Windows Reasonix installation from the legacy fallback home
-756-    ok 7 - detects a Windows Reasonix installation from the legacy fallback home
-757-      ---
-758-      duration_ms: 8.209546
-759-      type: 'test'
-760-      ...
-761-    # Subtest: recognizes installer-produced Windows EncodedCommand Reasonix hooks
-762-    ok 8 - recognizes installer-produced Windows EncodedCommand Reasonix hooks
-763-      ---
-764-      duration_ms: 10.660568
-765-      type: 'test'
-766-      ...
-767-    # Subtest: does not confuse Antigravity's ~/.gemini/config with Gemini CLI
-768-    ok 9 - does not confuse Antigravity's ~/.gemini/config with Gemini CLI
-769-      ---
-770-      duration_ms: 3.971918
-771-      type: 'test'
-772-      ...
-773-    # Subtest: does not treat Antigravity's ~/.gemini/antigravity as a Gemini CLI install
-774-    ok 10 - does not treat Antigravity's ~/.gemini/antigravity as a Gemini CLI install
-775-      ---
-776-      duration_ms: 2.964095
-777-      type: 'test'
+50-
+51-Verified Electron 41.10.4 installation.
+52-
+53-added 330 packages, and audited 331 packages in 5s
+54-
+55-66 packages are looking for funding
+56-  run `npm fund` for details
+57-
+58-found 0 vulnerabilities
+59-=== npm run verify:electron ===
+60-
+61-> clawd-on-desk@0.15.0 verify:electron
+62-> node scripts/verify-electron-install.js
+63-
+64-Verified Electron 41.10.4 installation.
+65-=== review-targeted accessory tests ===
+66-TAP version 13
+67-# Subtest: real SVG getCTM motion stays inside the declared accessory envelope
+68:not ok 1 - real SVG getCTM motion stays inside the declared accessory envelope
+69-  ---
+70-  duration_ms: 28701.850587
+71-  type: 'test'
+72-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/accessory-motion-electron.test.js:17:1'
+73:  failureType: 'testCodeFailure'
+74-  error: |-
+75-    clawd/clawd-idle-follow.svg: samples=481 required={"left":0.15999960899353016,"top":0,"right":0.16000008583068492,"bottom":0.6480000972747773} configured={"left":0.2,"top":0,"right":0.2,"bottom":0.7}
+76-    clawd/clawd-dizzy.svg: samples=481 required={"left":1.954125638746682,"top":0.46320809497405646,"right":1.9541261155838416,"bottom":0.5005121265367221} configured={"left":2,"top":0.5,"right":2,"bottom":0.6}
+77-    clawd/clawd-happy.svg: samples=321 required={"left":1.9984014443252818e-15,"top":12,"right":0,"bottom":1.4850001215934752} configured={"left":0,"top":12,"right":0,"bottom":1.5}
+78-    clawd/clawd-idle-look.svg: samples=481 required={"left":1.1599996089935303,"top":0,"right":1.160000085830685,"bottom":0.6480000972747773} configured={"left":1.2,"top":0,"right":1.2,"bottom":0.7}
+79-    clawd/clawd-idle-yawn.svg: samples=481 required={"left":0.5679990811348148,"top":4.433419695046878,"right":0.5679998202323873,"bottom":1.9606004053592674} configured={"left":0.8,"top":4.5,"right":0.8,"bottom":2}
+80-    clawd/clawd-mini-idle.svg: samples=481 required={"left":3.1427391774078224,"top":1.5105813379160675,"right":0.19458915155203726,"bottom":2.3027563432641607} configured={"left":3.2,"top":1.6,"right":0.2,"bottom":2.4}
+81-    clawd/clawd-mini-alert.svg: samples=481 required={"left":3.1427391774078224,"top":1.5105813379160675,"right":0.19458915155203726,"bottom":2.3027563432641607} configured={"left":3.2,"top":1.6,"right":0.2,"bottom":2.4}
+82-    clawd/clawd-mini-happy.svg: samples=481 required={"left":3.1427391774078224,"top":1.5105813379160675,"right":0.19458915155203726,"bottom":2.3027563432641607} configured={"left":3.2,"top":1.6,"right":0.2,"bottom":2.4}
+83-    clawd/clawd-mini-peek.svg: samples=481 required={"left":3.1427391774078224,"top":1.5105813379160675,"right":0.19458915155203726,"bottom":2.3027563432641607} configured={"left":3.2,"top":1.6,"right":0.2,"bottom":2.4}
+84-    clawd/clawd-mini-typing.svg: samples=481 required={"left":3.1427391774078224,"top":1.5105813379160675,"right":0.19458915155203726,"bottom":2.3027563432641607} configured={"left":3.2,"top":1.6,"right":0.2,"bottom":2.4}
+85-    clawd/clawd-mini-crabwalk.svg: samples=481 required={"left":1.7131717004395952,"top":0,"right":3.845898460598205,"bottom":1.2843739439576893} configured={"left":1.8,"top":0,"right":3.9,"bottom":1.3}
+86-    clawd/clawd-mini-enter.svg: samples=481 required={"left":6.14273917740782,"top":2.310581349836993,"right":24.93975069940368,"bottom":2.0628815998053014} configured={"left":6.2,"top":2.4,"right":25,"bottom":2.1}
+87-    clawd/clawd-working-thinking.svg: samples=481 required={"left":1.569739714670559,"top":0.15181125631790193,"right":1.5559568144395133,"bottom":0.7381484393983833} configured={"left":1.6,"top":0.2,"right":1.6,"bottom":0.8}
+88-    clawd/clawd-working-typing.svg: samples=481 required={"left":0.15999960899353016,"top":0,"right":0.16000008583068492,"bottom":1.4477032542228692} configured={"left":1,"top":1,"right":1,"bottom":1.5}
+89-    clawd/clawd-notification.svg: samples=481 required={"left":1.6820539281168188,"top":0.4622094395815588,"right":0,"bottom":0.5619915200762069} configured={"left":1.7,"top":0.5,"right":0,"bottom":0.6}
+90-    clawd/clawd-working-building.svg: samples=481 required={"left":1.3782749054506116,"top":3.492167751443482,"right":1.3782745408927255,"bottom":4.9999544717729325} configured={"left":2,"top":4,"right":2,"bottom":5}
+91-    clawd/clawd-headphones-groove.svg: samples=257 required={"left":2.269839154611512,"top":0.4639167131468148,"right":2.2698391546115086,"bottom":1.1701919667135545} configured={"left":2.3,"top":1.5,"right":2.3,"bottom":1.5}
+92-    clawd/clawd-working-juggling.svg: samples=481 required={"left":1.353482287141962,"top":0.09358075548441991,"right":1.353481930004202,"bottom":1.3527642013224064} configured={"left":1.4,"top":0.1,"right":1.4,"bottom":1.4}
+93-    clawd/clawd-idle-bubble.svg: samples=481 required={"left":1.9984014443252818e-15,"top":1.1867610295613602,"right":0,"bottom":0.6709998726844741} configured={"left":0,"top":1.2,"right":0,"bottom":0.7}
+94-    clawd/clawd-idle-reading.svg: samples=481 required={"left":0.15999960899353016,"top":0,"right":0.16000008583068492,"bottom":1.0421798884868583} configured={"left":0.2,"top":0,"right":0.2,"bottom":1.1}
+95-    clawd/clawd-idle-doze.svg: samples=481 required={"left":0.6400004029273987,"top":0,"right":0.6400002837181091,"bottom":2.2880001842975606} configured={"left":0.7,"top":0,"right":0.7,"bottom":2.3}
+96-    clawd/clawd-react-drag.svg: samples=193 required={"left":1.794885537780578,"top":0.35744366960534024,"right":1.7919366099239422,"bottom":0.4703383735637763} configured={"left":1.8,"top":0.4,"right":1.8,"bottom":0.5}
+97-    clawd/clawd-react-left.svg: samples=481 required={"left":2.847383331508854,"top":0.26975379241599307,"right":0,"bottom":0.284373943957692} configured={"left":2.9,"top":0.3,"right":0,"bottom":0.3}
+98-    clawd/clawd-react-right.svg: samples=481 required={"left":1.9984014443252818e-15,"top":0.2697537924159925,"right":2.8473833315088495,"bottom":0.2843739439576929} configured={"left":0,"top":0.3,"right":2.9,"bottom":0.3}
+99-    clawd/clawd-react-annoyed.svg: samples=481 required={"left":1.9984014443252818e-15,"top":0.7141331291198725,"right":2,"bottom":1.4931974411010698} configured={"left":0,"top":0.8,"right":2,"bottom":1.5}
+100-    clawd/clawd-react-double.svg: samples=481 required={"left":1.000000000000002,"top":1,"right":0.9999999999999964,"bottom":0} configured={"left":1,"top":1,"right":1,"bottom":0}
+101-    clawd/clawd-react-double-jump.svg: samples=481 required={"left":0.7990285158157349,"top":3.4348567230360847,"right":0.7990282773971522,"bottom":1.7866592288017245} configured={"left":0.8,"top":3.5,"right":0.8,"bottom":1.8}
+102-    clawd/clawd-working-sweeping.svg: samples=481 required={"left":3.563346488382905,"top":0.7513170843494621,"right":0.032566845417022705,"bottom":1.5161198570323062} configured={"left":3.6,"top":0.8,"right":0.1,"bottom":1.6}
+103-    clawd/clawd-working-carrying.svg: samples=401 required={"left":0.8473833315088539,"top":0.26975379241599307,"right":0,"bottom":1.2837647709767905} configured={"left":0.9,"top":0.3,"right":0,"bottom":1.3}
+104-    clawd/clawd-working-debugger.svg: samples=481 required={"left":1.7265760062521438,"top":0,"right":3.9656385321229184,"bottom":1.9099380729459838} configured={"left":1.8,"top":0,"right":4,"bottom":2}
+105-    clawd/clawd-sleeping.svg: samples=481 required={"left":0.15999960899353016,"top":5.228333333333332,"right":0.16000008583068492,"bottom":0} configured={"left":0.2,"top":5.3,"right":0.2,"bottom":0}
+106-    cloudling/cloudling-idle.svg: samples=48 required={"left":3.9821950964182866,"top":4.024836940670776,"right":2.659276343629994,"bottom":0.3438753088714077} configured={"left":5,"top":5,"right":5,"bottom":5}
+107-    cloudling/cloudling-typing.svg: samples=187 required={"left":0.4590805053710936,"top":1.1932766469319667,"right":0.45908050537109446,"bottom":0.5085395455360411} configured={"left":0.5,"top":1.2,"right":0.5,"bottom":0.6}
+108-    cloudling/cloudling-mini-idle.svg: samples=209 required={"left":0,"top":0,"right":0,"bottom":0.31331944465637207} configured={"left":0,"top":0,"right":0,"bottom":0.4}
+109-    cloudling/cloudling-mini-crabwalk.svg: samples=56 required={"left":4.191987057257448,"top":0.7326812037573736,"right":0.2818554674957312,"bottom":1.0748097441084767} configured={"left":4.5,"top":0.9,"right":0,"bottom":0.9}
+110-    
+111-    [2520:0818/043636.872865:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")
+112-    [2520:0818/043636.900749:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")
+113-    [2520:0818/043636.954799:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: 
+114-    [2520:0818/043636.956549:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")
+115-    [2520:0818/043636.962997:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: 
+116:    Error: Accessory motion audit failed:
+117-    cloudling/cloudling-mini-crabwalk.svg right: need 0.282, configured 0.000
+118-    cloudling/cloudling-mini-crabwalk.svg bottom: need 1.075, configured 0.900
+119-        at main (/home/runner/work/clawd-on-desk/clawd-on-desk/test/fixtures/accessory-motion-electron.js:341:34)
+120-    
+121-    
+122-    1 !== 0
+123-    
+124:  code: 'ERR_ASSERTION'
+125-  name: 'AssertionError'
+126-  expected: 0
+127-  actual: 1
+128-  operator: 'strictEqual'
+129-  stack: |-
+130-    main (/home/runner/work/clawd-on-desk/clawd-on-desk/test/fixtures/accessory-motion-electron.js:341:34)
+131-    TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/accessory-motion-electron.test.js:40:10)
+132-    Test.runInAsyncScope (node:async_hooks:214:14)
+133-    Test.run (node:internal/test_runner/test:1047:25)
+134-    Test.start (node:internal/test_runner/test:944:17)
+135-    startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17)
+136-  ...
+137-# Subtest: maximum-valid external accessory metadata cannot expand native input past rendered bounds
+138-ok 2 - maximum-valid external accessory metadata cannot expand native input past rendered bounds
+139-  ---
+140-  duration_ms: 3.985393
+141-  type: 'test'
+142-  ...
+143-# Subtest: containment preserves an existing base hitbox outside the viewBox
+144-ok 3 - containment preserves an existing base hitbox outside the viewBox
+145-  ---
+146-  duration_ms: 0.434381
+147-  type: 'test'
+148-  ...
+149-# Subtest: mini accessory mirroring follows edgeLeft XOR miniFlipAssets
+150-ok 4 - mini accessory mirroring follows edgeLeft XOR miniFlipAssets
+151-  ---
+152-  duration_ms: 0.901662
+153-  type: 'test'
+154-  ...
+155-# Subtest: screen hit rectangles use outward integer rounding
+156-ok 5 - screen hit rectangles use outward integer rounding
+157-  ---
+158-  duration_ms: 0.304667
+159-  type: 'test'
+160-  ...
 --
-908-        ok 2 - falls back to legacy ~/.workbuddy and finds its Clawd marker
-909-          ---
-910-          duration_ms: 3.455185
-911-          type: 'test'
-912-          ...
-913-        # Subtest: ignores a bare legacy toolchain directory without settings.json
-914-        ok 3 - ignores a bare legacy toolchain directory without settings.json
-915-          ---
-916-          duration_ms: 2.294232
-917-          type: 'test'
-918-          ...
-919-        1..3
-920-    ok 27 - WorkBuddy dual-generation detection
-921-      ---
-922-      duration_ms: 8.35694
-923-      type: 'suite'
-924-      ...
-925-    1..27
-926:not ok 38 - agent installation detector
-927-  ---
-928-  duration_ms: 170.335878
-929-  type: 'suite'
-930-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/agent-installation-detector.test.js:63:1'
-931:  failureType: 'subtestsFailed'
-932-  error: '1 subtest failed'
-933:  code: 'ERR_TEST_FAILURE'
-934-  ...
-935-# Subtest: agent-runtime-main
-936-    # Subtest: keeps Codex monitor ownership and agent deferred wrappers out of main
-937-    ok 1 - keeps Codex monitor ownership and agent deferred wrappers out of main
-938-      ---
-939-      duration_ms: 2.957512
-940-      type: 'test'
-941-      ...
-942-    # Subtest: marks official Codex sessions and suppresses covered JSONL events until the TTL expires
-943-    ok 2 - marks official Codex sessions and suppresses covered JSONL events until the TTL expires
-944-      ---
-945-      duration_ms: 1.658915
-946-      type: 'test'
-947-      ...
-948-    # Subtest: records privacy-safe local cross-channel turn identity diagnostics
-949-    ok 3 - records privacy-safe local cross-channel turn identity diagnostics
-950-      ---
-951-      duration_ms: 4.395075
-952-      type: 'test'
-953-      ...
-954-    # Subtest: routes suppressed JSONL context through no-lifecycle session metadata
-955-    ok 4 - routes suppressed JSONL context through no-lifecycle session metadata
-956-      ---
-957-      duration_ms: 1.000252
-958-      type: 'test'
-959-      ...
-960-    # Subtest: routes Codex user-input monitor callbacks to a passive card and transient state
-961-    ok 5 - routes Codex user-input monitor callbacks to a passive card and transient state
-962-      ---
-963-      duration_ms: 0.661126
-964-      type: 'test'
-965-      ...
-966-    # Subtest: handles JSONL token_count as metadata without clearing bubbles or changing state
-967-    ok 6 - handles JSONL token_count as metadata without clearing bubbles or changing state
-968-      ---
-969-      duration_ms: 0.424232
+2032-    # Subtest: detects generic parent-directory agents and reports Clawd marker presence separately
+2033-    ok 4 - detects generic parent-directory agents and reports Clawd marker presence separately
+2034-      ---
+2035-      duration_ms: 3.955182
+2036-      type: 'test'
+2037-      ...
+2038-    # Subtest: detects DSH host installation separately from a verified managed plugin
+2039-    ok 5 - detects DSH host installation separately from a verified managed plugin
+2040-      ---
+2041-      duration_ms: 14.77682
+2042-      type: 'test'
+2043-      ...
+2044-    # Subtest: detects a DSH CLI on PATH before the profile home is initialized
+2045-    not ok 6 - detects a DSH CLI on PATH before the profile home is initialized
+2046-      ---
+2047-      duration_ms: 5.471139
+2048-      type: 'test'
+2049-      location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/agent-installation-detector.test.js:194:3'
+2050:      failureType: 'testCodeFailure'
+2051-      error: |-
+2052-        Expected values to be strictly equal:
+2053-        
+2054-        false !== true
+2055-        
+2056:      code: 'ERR_ASSERTION'
+2057-      name: 'AssertionError'
+2058-      expected: true
+2059-      actual: false
+2060-      operator: 'strictEqual'
+2061-      stack: |-
+2062-        TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/agent-installation-detector.test.js:207:12)
+2063-        Test.runInAsyncScope (node:async_hooks:214:14)
+2064-        Test.run (node:internal/test_runner/test:1047:25)
+2065-        Suite.processPendingSubtests (node:internal/test_runner/test:744:18)
+2066-        Test.postRun (node:internal/test_runner/test:1173:19)
+2067-        Test.run (node:internal/test_runner/test:1101:12)
+2068-        async Suite.processPendingSubtests (node:internal/test_runner/test:744:7)
+2069-      ...
+2070-    # Subtest: detects a Windows Reasonix installation from the legacy fallback home
+2071-    ok 7 - detects a Windows Reasonix installation from the legacy fallback home
+2072-      ---
+2073-      duration_ms: 4.000701
+2074-      type: 'test'
+2075-      ...
+2076-    # Subtest: recognizes installer-produced Windows EncodedCommand Reasonix hooks
+2077-    ok 8 - recognizes installer-produced Windows EncodedCommand Reasonix hooks
+2078-      ---
+2079-      duration_ms: 6.92289
+2080-      type: 'test'
+2081-      ...
+2082-    # Subtest: does not confuse Antigravity's ~/.gemini/config with Gemini CLI
+2083-    ok 9 - does not confuse Antigravity's ~/.gemini/config with Gemini CLI
+2084-      ---
+2085-      duration_ms: 2.646686
+2086-      type: 'test'
+2087-      ...
+2088-    # Subtest: does not treat Antigravity's ~/.gemini/antigravity as a Gemini CLI install
+2089-    ok 10 - does not treat Antigravity's ~/.gemini/antigravity as a Gemini CLI install
+2090-      ---
+2091-      duration_ms: 2.013651
+2092-      type: 'test'
 --
-12958-ok 311 - DSH detection is async and distinguishes the host from the managed plugin
-12959-  ---
-12960-  duration_ms: 18.238694
-12961-  type: 'test'
-12962-  ...
-12963-# Subtest: an empty home without a CLI is not a DSH installation
-12964-ok 312 - an empty home without a CLI is not a DSH installation
-12965-  ---
-12966-  duration_ms: 1.169653
-12967-  type: 'test'
-12968-  ...
-12969-# Subtest: packaged bridge source resolves outside app.asar on Windows paths
-12970-ok 313 - packaged bridge source resolves outside app.asar on Windows paths
-12971-  ---
-12972-  duration_ms: 0.342025
-12973-  type: 'test'
-12974-  ...
-12975-# Subtest: Windows CLI discovery follows a pnpm-style shim instead of assuming one global npm layout
-12976:not ok 314 - Windows CLI discovery follows a pnpm-style shim instead of assuming one global npm layout
-12977-  ---
-12978-  duration_ms: 4.668784
-12979-  type: 'test'
-12980-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:148:1'
-12981:  failureType: 'testCodeFailure'
-12982-  error: "Cannot read properties of null (reading 'command')"
-12983:  code: 'ERR_TEST_FAILURE'
-12984-  name: 'TypeError'
-12985-  stack: |-
-12986-    TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:165:30)
-12987-    async Test.run (node:internal/test_runner/test:1054:7)
-12988-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
-12989-  ...
-12990-# Subtest: the cross-process DSH mutation lock rejects a concurrent owner and releases by token
-12991-ok 315 - the cross-process DSH mutation lock rejects a concurrent owner and releases by token
-12992-  ---
-12993-  duration_ms: 11.216358
-12994-  type: 'test'
-12995-  ...
-12996-# Subtest: a stale DSH mutation lock is recovered only after ESRCH proves its owner is dead
-12997-ok 316 - a stale DSH mutation lock is recovered only after ESRCH proves its owner is dead
-12998-  ---
-12999-  duration_ms: 5.543322
-13000-  type: 'test'
-13001-  ...
-13002-# Subtest: a live, fresh, unknown, or corrupt DSH mutation lock remains fail-closed with its path
-13003-ok 317 - a live, fresh, unknown, or corrupt DSH mutation lock remains fail-closed with its path
-13004-  ---
-13005-  duration_ms: 15.209494
-13006-  type: 'test'
-13007-  ...
-13008-# Subtest: two stale-lock contenders cannot both acquire the canonical DSH mutation lock
-13009-ok 318 - two stale-lock contenders cannot both acquire the canonical DSH mutation lock
-13010-  ---
-13011-  duration_ms: 8.732191
-13012-  type: 'test'
-13013-  ...
-13014-# Subtest: stale-lock recovery uses the owner's recorded operation timeout, not the contender's
-13015-ok 319 - stale-lock recovery uses the owner's recorded operation timeout, not the contender's
-13016-  ---
-13017-  duration_ms: 13.894017
-13018-  type: 'test'
-13019-  ...
+2223-        ok 2 - falls back to legacy ~/.workbuddy and finds its Clawd marker
+2224-          ---
+2225-          duration_ms: 3.633602
+2226-          type: 'test'
+2227-          ...
+2228-        # Subtest: ignores a bare legacy toolchain directory without settings.json
+2229-        ok 3 - ignores a bare legacy toolchain directory without settings.json
+2230-          ---
+2231-          duration_ms: 2.7096
+2232-          type: 'test'
+2233-          ...
+2234-        1..3
+2235-    ok 27 - WorkBuddy dual-generation detection
+2236-      ---
+2237-      duration_ms: 9.656586
+2238-      type: 'suite'
+2239-      ...
+2240-    1..27
+2241:not ok 38 - agent installation detector
+2242-  ---
+2243-  duration_ms: 146.915683
+2244-  type: 'suite'
+2245-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/agent-installation-detector.test.js:63:1'
+2246:  failureType: 'subtestsFailed'
+2247-  error: '1 subtest failed'
+2248:  code: 'ERR_TEST_FAILURE'
+2249-  ...
+2250-# Subtest: agent-runtime-main
+2251-    # Subtest: keeps Codex monitor ownership and agent deferred wrappers out of main
+2252-    ok 1 - keeps Codex monitor ownership and agent deferred wrappers out of main
+2253-      ---
+2254-      duration_ms: 2.118417
+2255-      type: 'test'
+2256-      ...
+2257-    # Subtest: marks official Codex sessions and suppresses covered JSONL events until the TTL expires
+2258-    ok 2 - marks official Codex sessions and suppresses covered JSONL events until the TTL expires
+2259-      ---
+2260-      duration_ms: 1.260865
+2261-      type: 'test'
+2262-      ...
+2263-    # Subtest: records privacy-safe local cross-channel turn identity diagnostics
+2264-    ok 3 - records privacy-safe local cross-channel turn identity diagnostics
+2265-      ---
+2266-      duration_ms: 1.565881
+2267-      type: 'test'
+2268-      ...
+2269-    # Subtest: routes suppressed JSONL context through no-lifecycle session metadata
+2270-    ok 4 - routes suppressed JSONL context through no-lifecycle session metadata
+2271-      ---
+2272-      duration_ms: 0.72259
+2273-      type: 'test'
+2274-      ...
+2275-    # Subtest: routes Codex user-input monitor callbacks to a passive card and transient state
+2276-    ok 5 - routes Codex user-input monitor callbacks to a passive card and transient state
+2277-      ---
+2278-      duration_ms: 0.576311
+2279-      type: 'test'
+2280-      ...
+2281-    # Subtest: handles JSONL token_count as metadata without clearing bubbles or changing state
+2282-    ok 6 - handles JSONL token_count as metadata without clearing bubbles or changing state
+2283-      ---
+2284-      duration_ms: 0.386047
 --
-13117-ok 336 - a successful CLI exit without a resolvable owned package fails verification
-13118-  ---
-13119-  duration_ms: 9.493823
-13120-  type: 'test'
-13121-  ...
-13122-# Subtest: a foreign same-name package is never overwritten or removed
-13123-ok 337 - a foreign same-name package is never overwritten or removed
-13124-  ---
-13125-  duration_ms: 5.574238
-13126-  type: 'test'
-13127-  ...
-13128-# Subtest: installation-anchor shadowing wins over a healthy profile package and fails closed
-13129-ok 338 - installation-anchor shadowing wins over a healthy profile package and fails closed
-13130-  ---
-13131-  duration_ms: 14.557031
-13132-  type: 'test'
-13133-  ...
-13134-# Subtest: sync disk inspection discovers installation-first shadowing from the real PATH shim
-13135:not ok 339 - sync disk inspection discovers installation-first shadowing from the real PATH shim
-13136-  ---
-13137-  duration_ms: 12.787325
-13138-  type: 'test'
-13139-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:810:1'
-13140:  failureType: 'testCodeFailure'
-13141-  error: |-
-13142-    Expected values to be strictly equal:
-13143-    + actual - expected
-13144-    
-13145-    + 'profile'
-13146-    - 'installation'
-13147-    
-13148:  code: 'ERR_ASSERTION'
-13149-  name: 'AssertionError'
-13150-  expected: 'installation'
-13151-  actual: 'profile'
-13152-  operator: 'strictEqual'
-13153-  stack: |-
-13154-    TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:837:10)
-13155-    async Test.run (node:internal/test_runner/test:1054:7)
-13156-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
-13157-  ...
-13158-# Subtest: sync disk inspection compares the installed DSH package version
-13159:not ok 340 - sync disk inspection compares the installed DSH package version
-13160-  ---
-13161-  duration_ms: 12.351619
-13162-  type: 'test'
-13163-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:840:1'
-13164:  failureType: 'testCodeFailure'
-13165-  error: |-
-13166-    Expected values to be strictly equal:
-13167-    + actual - expected
-13168-    
-13169-    + 'managed-bundle-missing'
-13170-    - 'host-version-unsupported'
-13171-    
-13172:  code: 'ERR_ASSERTION'
-13173-  name: 'AssertionError'
-13174-  expected: 'host-version-unsupported'
-13175-  actual: 'managed-bundle-missing'
-13176-  operator: 'strictEqual'
-13177-  stack: |-
-13178-    TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:867:10)
-13179-    async Test.run (node:internal/test_runner/test:1054:7)
-13180-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
-13181-  ...
-13182-# Subtest: the official profiles/node_modules fallback participates in health resolution
-13183-ok 341 - the official profiles/node_modules fallback participates in health resolution
-13184-  ---
-13185-  duration_ms: 11.890054
-13186-  type: 'test'
-13187-  ...
-13188-# Subtest: a healthy profile-local winner ignores a foreign lower-priority profiles fallback
-13189-ok 342 - a healthy profile-local winner ignores a foreign lower-priority profiles fallback
-13190-  ---
-13191-  duration_ms: 12.805573
-13192-  type: 'test'
-13193-  ...
-13194-# Subtest: a managed-looking flat fallback cannot claim ownership or trigger Repair
-13195-ok 343 - a managed-looking flat fallback cannot claim ownership or trigger Repair
-13196-  ---
-13197-  duration_ms: 13.439577
-13198-  type: 'test'
-13199-  ...
-13200-# Subtest: generation cleanup ignores flat fallback copies and links
-13201-ok 344 - generation cleanup ignores flat fallback copies and links
-13202-  ---
-13203-  duration_ms: 10.920743
-13204-  type: 'test'
-13205-  ...
-13206-# Subtest: uninstall uses the official remove command and verifies the resolved package is gone
-13207-ok 345 - uninstall uses the official remove command and verifies the resolved package is gone
-13208-  ---
+14273-ok 311 - DSH detection is async and distinguishes the host from the managed plugin
+14274-  ---
+14275-  duration_ms: 16.743431
+14276-  type: 'test'
+14277-  ...
+14278-# Subtest: an empty home without a CLI is not a DSH installation
+14279-ok 312 - an empty home without a CLI is not a DSH installation
+14280-  ---
+14281-  duration_ms: 1.340639
+14282-  type: 'test'
+14283-  ...
+14284-# Subtest: packaged bridge source resolves outside app.asar on Windows paths
+14285-ok 313 - packaged bridge source resolves outside app.asar on Windows paths
+14286-  ---
+14287-  duration_ms: 0.393469
+14288-  type: 'test'
+14289-  ...
+14290-# Subtest: Windows CLI discovery follows a pnpm-style shim instead of assuming one global npm layout
+14291:not ok 314 - Windows CLI discovery follows a pnpm-style shim instead of assuming one global npm layout
+14292-  ---
+14293-  duration_ms: 4.647233
+14294-  type: 'test'
+14295-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:148:1'
+14296:  failureType: 'testCodeFailure'
+14297-  error: "Cannot read properties of null (reading 'command')"
+14298:  code: 'ERR_TEST_FAILURE'
+14299-  name: 'TypeError'
+14300-  stack: |-
+14301-    TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:165:30)
+14302-    async Test.run (node:internal/test_runner/test:1054:7)
+14303-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+14304-  ...
+14305-# Subtest: the cross-process DSH mutation lock rejects a concurrent owner and releases by token
+14306-ok 315 - the cross-process DSH mutation lock rejects a concurrent owner and releases by token
+14307-  ---
+14308-  duration_ms: 10.885362
+14309-  type: 'test'
+14310-  ...
+14311-# Subtest: a stale DSH mutation lock is recovered only after ESRCH proves its owner is dead
+14312-ok 316 - a stale DSH mutation lock is recovered only after ESRCH proves its owner is dead
+14313-  ---
+14314-  duration_ms: 5.370728
+14315-  type: 'test'
+14316-  ...
+14317-# Subtest: a live, fresh, unknown, or corrupt DSH mutation lock remains fail-closed with its path
+14318-ok 317 - a live, fresh, unknown, or corrupt DSH mutation lock remains fail-closed with its path
+14319-  ---
+14320-  duration_ms: 12.279451
+14321-  type: 'test'
+14322-  ...
+14323-# Subtest: two stale-lock contenders cannot both acquire the canonical DSH mutation lock
+14324-ok 318 - two stale-lock contenders cannot both acquire the canonical DSH mutation lock
+14325-  ---
+14326-  duration_ms: 8.661479
+14327-  type: 'test'
+14328-  ...
+14329-# Subtest: stale-lock recovery uses the owner's recorded operation timeout, not the contender's
+14330-ok 319 - stale-lock recovery uses the owner's recorded operation timeout, not the contender's
+14331-  ---
+14332-  duration_ms: 10.841316
+14333-  type: 'test'
+14334-  ...
 --
-49852-# Subtest: Error classes: Chromium net::ERR_* connection failures are NETWORK (issue \#359)
-49853-ok 2082 - Error classes: Chromium net::ERR_* connection failures are NETWORK (issue \#359)
-49854-  ---
-49855-  duration_ms: 0.497791
-49856-  type: 'test'
-49857-  ...
-49858-# Subtest: Error classes: net::ERR_ABORTED is NETWORK, not TIMEOUT (must not exit poll loop)
-49859-ok 2083 - Error classes: net::ERR_ABORTED is NETWORK, not TIMEOUT (must not exit poll loop)
-49860-  ---
-49861-  duration_ms: 0.111779
-49862-  type: 'test'
-49863-  ...
-49864-# Subtest: Error classes: non-retryable net::ERR_* (cert / blocked) fall through to UNKNOWN
-49865-ok 2084 - Error classes: non-retryable net::ERR_* (cert / blocked) fall through to UNKNOWN
-49866-  ---
-49867-  duration_ms: 0.270068
-49868-  type: 'test'
-49869-  ...
-49870:# Subtest: Error classes: status=null but error_code=409 still classified as CONFLICT
-49871:ok 2085 - Error classes: status=null but error_code=409 still classified as CONFLICT
-49872-  ---
-49873-  duration_ms: 0.203226
-49874-  type: 'test'
-49875-  ...
-49876-# Subtest: Error classes: AbortError → TIMEOUT
-49877-ok 2086 - Error classes: AbortError → TIMEOUT
-49878-  ---
-49879-  duration_ms: 0.11283
-49880-  type: 'test'
-49881-  ...
-49882-# Subtest: AbortController cancels in-flight getUpdates with AbortError
-49883-ok 2087 - AbortController cancels in-flight getUpdates with AbortError
-49884-  ---
-49885-  duration_ms: 15.727628
-49886-  type: 'test'
-49887-  ...
-49888-# Subtest: Pre-aborted signal: transport refuses immediately, no call recorded
-49889-ok 2088 - Pre-aborted signal: transport refuses immediately, no call recorded
-49890-  ---
-49891-  duration_ms: 0.31144
-49892-  type: 'test'
-49893-  ...
-49894-# Subtest: Wrong-user callback flow: client surfaces both updates; handler filters
-49895-ok 2089 - Wrong-user callback flow: client surfaces both updates; handler filters
-49896-  ---
-49897-  duration_ms: 0.219681
-49898-  type: 'test'
-49899-  ...
-49900-# Subtest: pollWithConflictRetry: succeeds first try without sleeping
-49901-ok 2090 - pollWithConflictRetry: succeeds first try without sleeping
-49902-  ---
-49903-  duration_ms: 0.382757
-49904-  type: 'test'
-49905-  ...
-49906-# Subtest: pollWithConflictRetry: retries through 409 conflicts, then succeeds
-49907-ok 2091 - pollWithConflictRetry: retries through 409 conflicts, then succeeds
+14432-ok 336 - a successful CLI exit without a resolvable owned package fails verification
+14433-  ---
+14434-  duration_ms: 8.637904
+14435-  type: 'test'
+14436-  ...
+14437-# Subtest: a foreign same-name package is never overwritten or removed
+14438-ok 337 - a foreign same-name package is never overwritten or removed
+14439-  ---
+14440-  duration_ms: 5.554704
+14441-  type: 'test'
+14442-  ...
+14443-# Subtest: installation-anchor shadowing wins over a healthy profile package and fails closed
+14444-ok 338 - installation-anchor shadowing wins over a healthy profile package and fails closed
+14445-  ---
+14446-  duration_ms: 17.340455
+14447-  type: 'test'
+14448-  ...
+14449-# Subtest: sync disk inspection discovers installation-first shadowing from the real PATH shim
+14450:not ok 339 - sync disk inspection discovers installation-first shadowing from the real PATH shim
+14451-  ---
+14452-  duration_ms: 15.378175
+14453-  type: 'test'
+14454-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:810:1'
+14455:  failureType: 'testCodeFailure'
+14456-  error: |-
+14457-    Expected values to be strictly equal:
+14458-    + actual - expected
+14459-    
+14460-    + 'profile'
+14461-    - 'installation'
+14462-    
+14463:  code: 'ERR_ASSERTION'
+14464-  name: 'AssertionError'
+14465-  expected: 'installation'
+14466-  actual: 'profile'
+14467-  operator: 'strictEqual'
+14468-  stack: |-
+14469-    TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:837:10)
+14470-    async Test.run (node:internal/test_runner/test:1054:7)
+14471-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+14472-  ...
+14473-# Subtest: sync disk inspection compares the installed DSH package version
+14474:not ok 340 - sync disk inspection compares the installed DSH package version
+14475-  ---
+14476-  duration_ms: 14.183514
+14477-  type: 'test'
+14478-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:840:1'
+14479:  failureType: 'testCodeFailure'
+14480-  error: |-
+14481-    Expected values to be strictly equal:
+14482-    + actual - expected
+14483-    
+14484-    + 'managed-bundle-missing'
+14485-    - 'host-version-unsupported'
+14486-    
+14487:  code: 'ERR_ASSERTION'
+14488-  name: 'AssertionError'
+14489-  expected: 'host-version-unsupported'
+14490-  actual: 'managed-bundle-missing'
+14491-  operator: 'strictEqual'
+14492-  stack: |-
+14493-    TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/dsh-install-bridge.test.js:867:10)
+14494-    async Test.run (node:internal/test_runner/test:1054:7)
+14495-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+14496-  ...
+14497-# Subtest: the official profiles/node_modules fallback participates in health resolution
+14498-ok 341 - the official profiles/node_modules fallback participates in health resolution
+14499-  ---
+14500-  duration_ms: 15.05461
+14501-  type: 'test'
+14502-  ...
+14503-# Subtest: a healthy profile-local winner ignores a foreign lower-priority profiles fallback
+14504-ok 342 - a healthy profile-local winner ignores a foreign lower-priority profiles fallback
+14505-  ---
+14506-  duration_ms: 16.429089
+14507-  type: 'test'
+14508-  ...
+14509-# Subtest: a managed-looking flat fallback cannot claim ownership or trigger Repair
+14510-ok 343 - a managed-looking flat fallback cannot claim ownership or trigger Repair
+14511-  ---
+14512-  duration_ms: 15.269922
+14513-  type: 'test'
+14514-  ...
+14515-# Subtest: generation cleanup ignores flat fallback copies and links
+14516-ok 344 - generation cleanup ignores flat fallback copies and links
+14517-  ---
+14518-  duration_ms: 11.541124
+14519-  type: 'test'
+14520-  ...
+14521-# Subtest: uninstall uses the official remove command and verifies the resolved package is gone
+14522-ok 345 - uninstall uses the official remove command and verifies the resolved package is gone
+14523-  ---
+--
+51167-# Subtest: Error classes: Chromium net::ERR_* connection failures are NETWORK (issue \#359)
+51168-ok 2082 - Error classes: Chromium net::ERR_* connection failures are NETWORK (issue \#359)
+51169-  ---
+51170-  duration_ms: 0.515743
+51171-  type: 'test'
+51172-  ...
+51173-# Subtest: Error classes: net::ERR_ABORTED is NETWORK, not TIMEOUT (must not exit poll loop)
+51174-ok 2083 - Error classes: net::ERR_ABORTED is NETWORK, not TIMEOUT (must not exit poll loop)
+51175-  ---
+51176-  duration_ms: 0.114502
+51177-  type: 'test'
+51178-  ...
+51179-# Subtest: Error classes: non-retryable net::ERR_* (cert / blocked) fall through to UNKNOWN
+51180-ok 2084 - Error classes: non-retryable net::ERR_* (cert / blocked) fall through to UNKNOWN
+51181-  ---
+51182-  duration_ms: 0.257657
+51183-  type: 'test'
+51184-  ...
+51185:# Subtest: Error classes: status=null but error_code=409 still classified as CONFLICT
+51186:ok 2085 - Error classes: status=null but error_code=409 still classified as CONFLICT
+51187-  ---
+51188-  duration_ms: 0.229954
+51189-  type: 'test'
+51190-  ...
+51191-# Subtest: Error classes: AbortError → TIMEOUT
+51192-ok 2086 - Error classes: AbortError → TIMEOUT
+51193-  ---
+51194-  duration_ms: 0.165288
+51195-  type: 'test'
+51196-  ...
+51197-# Subtest: AbortController cancels in-flight getUpdates with AbortError
+51198-ok 2087 - AbortController cancels in-flight getUpdates with AbortError
+51199-  ---
+51200-  duration_ms: 13.824733
+51201-  type: 'test'
+51202-  ...
+51203-# Subtest: Pre-aborted signal: transport refuses immediately, no call recorded
+51204-ok 2088 - Pre-aborted signal: transport refuses immediately, no call recorded
+51205-  ---
+51206-  duration_ms: 0.392368
+51207-  type: 'test'
+51208-  ...
+51209-# Subtest: Wrong-user callback flow: client surfaces both updates; handler filters
+51210-ok 2089 - Wrong-user callback flow: client surfaces both updates; handler filters
+51211-  ---
+51212-  duration_ms: 0.371186
+51213-  type: 'test'
+51214-  ...
+51215-# Subtest: pollWithConflictRetry: succeeds first try without sleeping
+51216-ok 2090 - pollWithConflictRetry: succeeds first try without sleeping
+51217-  ---
+51218-  duration_ms: 0.278618
+51219-  type: 'test'
+51220-  ...
+51221-# Subtest: pollWithConflictRetry: retries through 409 conflicts, then succeeds
+51222-ok 2091 - pollWithConflictRetry: retries through 409 conflicts, then succeeds
 --- last 180 lines ---
     # Subtest: rejects inherited or malformed Orca pane keys
     ok 5 - rejects inherited or malformed Orca pane keys
       ---
-      duration_ms: 0.4373
+      duration_ms: 0.391127
       type: 'test'
       ...
     # Subtest: reduces stdin parse failures to a fixed debug category
     ok 6 - reduces stdin parse failures to a fixed debug category
       ---
-      duration_ms: 0.225731
+      duration_ms: 1.132818
       type: 'test'
       ...
     1..6
 ok 2334 - ZCode hook PID lifecycle
   ---
-  duration_ms: 6.421797
+  duration_ms: 6.313103
   type: 'suite'
   ...
 # Subtest: ZCode hook installer
     # Subtest: registers the Phase 1 state-only events under hooks.events with enabled:true and no matcher
     ok 1 - registers the Phase 1 state-only events under hooks.events with enabled:true and no matcher
       ---
-      duration_ms: 4.794813
+      duration_ms: 6.214045
       type: 'test'
       ...
     # Subtest: is idempotent on second run
     ok 2 - is idempotent on second run
       ---
-      duration_ms: 1.938944
+      duration_ms: 2.510744
       type: 'test'
       ...
     # Subtest: preserves an explicit hooks.enabled:false and warns instead of enabling all user hooks
     ok 3 - preserves an explicit hooks.enabled:false and warns instead of enabling all user hooks
       ---
-      duration_ms: 1.058116
+      duration_ms: 1.460379
       type: 'test'
       ...
     # Subtest: preserves nested enabled:false while repairing a stale managed hook
     ok 4 - preserves nested enabled:false while repairing a stale managed hook
       ---
-      duration_ms: 1.223556
+      duration_ms: 1.575732
       type: 'test'
       ...
     # Subtest: removes invalid entry-level enabled:false instead of treating it as a supported opt-out
     ok 5 - removes invalid entry-level enabled:false instead of treating it as a supported opt-out
       ---
-      duration_ms: 1.585993
+      duration_ms: 2.096923
       type: 'test'
       ...
     # Subtest: keeps a managed event enabled when any duplicate was still enabled
     ok 6 - keeps a managed event enabled when any duplicate was still enabled
       ---
-      duration_ms: 0.971055
+      duration_ms: 1.216773
       type: 'test'
       ...
     # Subtest: splits Clawd out of shared matcher entries under hooks.events
     ok 7 - splits Clawd out of shared matcher entries under hooks.events
       ---
-      duration_ms: 1.31941
+      duration_ms: 2.229763
       type: 'test'
       ...
     # Subtest: preserves existing absolute node path when detection fails
     ok 8 - preserves existing absolute node path when detection fails
       ---
-      duration_ms: 1.291859
+      duration_ms: 1.710324
       type: 'test'
       ...
     # Subtest: refuses a fresh install when no absolute Node executable can be resolved
     ok 9 - refuses a fresh install when no absolute Node executable can be resolved
       ---
-      duration_ms: 1.47174
+      duration_ms: 1.422302
       type: 'test'
       ...
     # Subtest: skips startup auto-sync when ~/.zcode does not exist
     ok 10 - skips startup auto-sync when ~/.zcode does not exist
       ---
-      duration_ms: 0.700246
+      duration_ms: 0.688492
       type: 'test'
       ...
     # Subtest: builds Windows process hooks with direct argv and no shell quoting
     ok 11 - builds Windows process hooks with direct argv and no shell quoting
       ---
-      duration_ms: 1.002492
+      duration_ms: 0.212659
       type: 'test'
       ...
     # Subtest: rewrites legacy bare-quoted Windows commands into process form on re-run
     ok 12 - rewrites legacy bare-quoted Windows commands into process form on re-run
       ---
-      duration_ms: 0.810473
+      duration_ms: 1.960258
       type: 'test'
       ...
     # Subtest: rewrites a legacy EncodedCommand in place without leaving a duplicate
     ok 13 - rewrites a legacy EncodedCommand in place without leaving a duplicate
       ---
-      duration_ms: 1.39258
+      duration_ms: 1.410374
       type: 'test'
       ...
     # Subtest: preserves an existing Windows absolute node path through process migration
     ok 14 - preserves an existing Windows absolute node path through process migration
       ---
-      duration_ms: 0.80263
+      duration_ms: 0.993619
       type: 'test'
       ...
     # Subtest: unregister removes encoded Clawd commands while preserving user hooks
     ok 15 - unregister removes encoded Clawd commands while preserving user hooks
       ---
-      duration_ms: 1.742949
+      duration_ms: 2.162982
       type: 'test'
       ...
     # Subtest: unregister removes a process hook from a shared wrapper and preserves the user hook
     ok 16 - unregister removes a process hook from a shared wrapper and preserves the user hook
       ---
-      duration_ms: 0.679224
+      duration_ms: 0.813069
       type: 'test'
       ...
     # Subtest: unregister drops the empty hooks wrapper when Clawd was the only source
     ok 17 - unregister drops the empty hooks wrapper when Clawd was the only source
       ---
-      duration_ms: 0.952166
+      duration_ms: 1.206979
       type: 'test'
       ...
     # Subtest: unregister preserves the user's explicit global disabled setting
     ok 18 - unregister preserves the user's explicit global disabled setting
       ---
-      duration_ms: 0.886557
+      duration_ms: 1.13425
       type: 'test'
       ...
     1..18
 ok 2335 - ZCode hook installer
   ---
-  duration_ms: 26.241302
+  duration_ms: 32.948229
   type: 'suite'
   ...
 # Subtest: ZCode \#734 — strip Claude-config hooks migrated into zcode config
     # Subtest: removes a dedicated clawd-hook.js entry and reports it, leaving zcode-hook.js as the only Clawd hook
     ok 1 - removes a dedicated clawd-hook.js entry and reports it, leaving zcode-hook.js as the only Clawd hook
       ---
-      duration_ms: 0.764643
+      duration_ms: 0.919318
       type: 'test'
       ...
     # Subtest: splits a shared entry: drops clawd-hook.js, keeps a third-party hook, then adds the zcode hook
     ok 2 - splits a shared entry: drops clawd-hook.js, keeps a third-party hook, then adds the zcode hook
       ---
-      duration_ms: 0.705143
+      duration_ms: 0.897205
       type: 'test'
       ...
     # Subtest: strips a Windows EncodedCommand clawd-hook.js entry migrated from Claude
     ok 3 - strips a Windows EncodedCommand clawd-hook.js entry migrated from Claude
       ---
-      duration_ms: 0.758454
+      duration_ms: 0.944135
       type: 'test'
       ...
     # Subtest: does not touch ~/.claude/settings.json (only the zcode config is modified)
     ok 4 - does not touch ~/.claude/settings.json (only the zcode config is modified)
       ---
-      duration_ms: 0.62334
+      duration_ms: 0.745438
       type: 'test'
       ...
     # Subtest: unregister also removes migrated clawd-hook.js entries
     ok 5 - unregister also removes migrated clawd-hook.js entries
       ---
-      duration_ms: 0.673536
+      duration_ms: 0.837725
       type: 'test'
       ...
     1..5
 ok 2336 - ZCode \#734 — strip Claude-config hooks migrated into zcode config
   ---
-  duration_ms: 3.711188
+  duration_ms: 4.593325
   type: 'suite'
   ...
 1..2336
@@ -523,5 +636,5 @@ ok 2336 - ZCode \#734 — strip Claude-config hooks migrated into zcode config
 # cancelled 0
 # skipped 30
 # todo 0
-# duration_ms 80104.567686
-HEAD is now at 9f65b65c ci: validate prospective upstream merge tree
+# duration_ms 78879.178889
+HEAD is now at 2c1a6853 ci: report review-targeted validation separately
