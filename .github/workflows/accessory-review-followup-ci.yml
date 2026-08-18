@@ -85,11 +85,33 @@ jobs:
                   raise SystemExit("validate-theme schema anchor missing")
               text = text.replace(anchor, anchor + block, 1)
           cli.write_text(text)
+
+          test_path = Path("test/settings-effect-router.test.js")
+          text = test_path.read_text()
+          if '["repositionFloatingBubbles"],\n    ]);\n\n    calls.length = 0;\n    activeTheme = {' not in text:
+              old = '''        offsetY: 0.3,\n      }],\n    ]);\n\n    calls.length = 0;\n    activeTheme = {'''
+              new = '''        offsetY: 0.3,\n      }],\n      ["repositionFloatingBubbles"],\n    ]);\n\n    calls.length = 0;\n    activeTheme = {'''
+              if old not in text:
+                  raise SystemExit("wizard accessory expectation anchor missing")
+              text = text.replace(old, new, 1)
+          if '''        offsetY: 0,\n      }],\n      ["repositionFloatingBubbles"],\n    ]);\n    assert.strictEqual(calls.some((call) => call[0] === "rebuildAllMenus"), false);''' not in text:
+              old = '''        offsetY: 0,\n      }],\n    ]);\n    assert.strictEqual(calls.some((call) => call[0] === "rebuildAllMenus"), false);'''
+              new = '''        offsetY: 0,\n      }],\n      ["repositionFloatingBubbles"],\n    ]);\n    assert.strictEqual(calls.some((call) => call[0] === "rebuildAllMenus"), false);'''
+              if old not in text:
+                  raise SystemExit("none accessory expectation anchor missing")
+              text = text.replace(old, new, 1)
+          if '''      "syncHitWin",\n      "repositionFloatingBubbles",\n    ]);\n  });\n\n  it("broadcasts settings changes''' not in text:
+              old = '''      "syncHitWin",\n    ]);\n  });\n\n  it("broadcasts settings changes'''
+              new = '''      "syncHitWin",\n      "repositionFloatingBubbles",\n    ]);\n  });\n\n  it("broadcasts settings changes'''
+              if old not in text:
+                  raise SystemExit("sync/reposition expectation anchor missing")
+              text = text.replace(old, new, 1)
+          test_path.write_text(text)
           PY
 
-          git add src/theme-schema.js docs/guides/guide-theme-creation.md scripts/validate-theme.js
+          git add src/theme-schema.js docs/guides/guide-theme-creation.md scripts/validate-theme.js test/settings-effect-router.test.js
           if ! git diff --cached --quiet; then
-            git commit -m "fix: tighten accessory theme validation and docs"
+            git commit -m "test: expect accessory floating-surface repositioning"
             git push origin HEAD:agent/accessory-aware-hitboxes
           fi
 
