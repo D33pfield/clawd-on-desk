@@ -126,6 +126,36 @@ describe("i18n locales", () => {
     }
   });
 
+  // #895: the Agents-tab catalog also holds agents the detector never examined —
+  // claude-code and codex are skipped outright — so a title that asserts "not
+  // detected" is a claim Clawd cannot make. A user with Codex genuinely
+  // installed saw it filed under 未检测到 and concluded detection was broken.
+  // Asserted against the real bundle: the renderer suite stubs its own inline
+  // ClawdSettingsI18n, so a regression here would otherwise stay invisible.
+  it("keeps the Agents catalog title free of detection claims in every locale", () => {
+    const strings = loadSettingsI18nStrings();
+    assert.deepStrictEqual(
+      Object.fromEntries(SUPPORTED_LANGS.map((lang) => [lang, strings[lang].agentSectionUnavailable])),
+      {
+        en: "More supported tools",
+        zh: "其他支持的工具",
+        "zh-TW": "其他支援的工具",
+        ko: "지원되는 기타 도구",
+        ja: "その他の対応ツール",
+        "pt-BR": "Outras ferramentas compatíveis",
+        es: "Otras herramientas compatibles",
+      }
+    );
+    // The sibling section IS a detection claim and must keep saying so.
+    for (const lang of SUPPORTED_LANGS) {
+      assert.notStrictEqual(
+        strings[lang].agentSectionUnavailable,
+        strings[lang].agentSectionRecommended,
+        `${lang}: catalog and detected-locally titles must stay distinct`
+      );
+    }
+  });
+
   it("distinguishes missing approver configuration in every Settings locale", () => {
     const strings = loadSettingsI18nStrings();
     assert.deepStrictEqual(

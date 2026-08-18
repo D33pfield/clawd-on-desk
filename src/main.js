@@ -2181,10 +2181,10 @@ sendDashboardI18n = _dashboard.sendI18n;
 
 // ── First-run onboarding tutorial ──
 // Buckets the installable agents for the tutorial's step 2. We call the
-// detector with skipDefaultIntegrations:false so the default integrations
-// (claude-code, codex) are checked too — that's the only way to flag the
-// marquee "default Codex hook but Codex isn't installed → recommend removing"
-// case, which the Settings UI doesn't surface.
+// detector with skipDefaultIntegrations:false so the default integrations are
+// present in the report; the bucketer still exempts them from cleanup (#895 —
+// a missing ~/.codex is not evidence that a Codex hook is stale), so this flag
+// only affects the active/install buckets.
 function buildTutorialAgentOnboardingState() {
   const { detectAgentInstallations } = require("./agent-installation-detector");
   const { INSTALLABLE_AGENT_IDS } = require("./settings-actions-agents");
