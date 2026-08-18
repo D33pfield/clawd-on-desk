@@ -57,8 +57,10 @@ jobs:
             echo "verify_status=$verify_status"
             echo "test_status=$test_status"
             echo "head=$(git rev-parse HEAD)"
-            echo "--- last 320 lines ---"
-            tail -n 320 /tmp/accessory-review-ci.log
+            echo "--- failure contexts ---"
+            grep -n -B 18 -A 36 -E '^not ok|failureType:|ERR_ASSERTION|ERR_TEST_FAILURE|Accessory motion audit failed' /tmp/accessory-review-ci.log || true
+            echo "--- last 180 lines ---"
+            tail -n 180 /tmp/accessory-review-ci.log
           } > .accessory-review-ci-result.txt
 
           git config user.name "CheeseAgent CI"
