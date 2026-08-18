@@ -6,23 +6,51 @@ function basenameOnly(value) {
   return typeof value === "string" ? value.replace(/^.*[\/\\]/, "") : value;
 }
 
-// Measured against the real built-in SVG transforms. These are minimum motion
-// envelopes in theme units; authored hitBoxPadding can only widen them.
-// Unknown/external themes never inherit these values.
+// Measured from the real built-in SVG transforms by
+// test/fixtures/accessory-motion-electron.js. Values are rounded outward to a
+// practical tenth of a theme unit; authored hitBoxPadding can only widen them.
+// Unknown/external themes never inherit these built-in measurements.
 const BUILTIN_ACCESSORY_MOTION_PADDING = Object.freeze({
   clawd: Object.freeze({
-    "clawd-happy.svg": Object.freeze({ top: 12 }),
-    "clawd-idle-yawn.svg": Object.freeze({ left: 0.75, top: 4.5, right: 0.75, bottom: 1.5 }),
-    "clawd-sleeping.svg": Object.freeze({ left: 0.25, top: 5.5, right: 0.25 }),
-    "clawd-working-debugger.svg": Object.freeze({ left: 3.5, top: 1.5, right: 3.5, bottom: 2 }),
-    "clawd-working-sweeping.svg": Object.freeze({ left: 3.5, top: 2, right: 3.5, bottom: 2 }),
+    "clawd-idle-follow.svg": Object.freeze({ left: 0.2, right: 0.2, bottom: 0.7 }),
+    "clawd-dizzy.svg": Object.freeze({ left: 2, top: 0.5, right: 2, bottom: 0.6 }),
+    "clawd-happy.svg": Object.freeze({ top: 12, bottom: 1.5 }),
+    "clawd-idle-look.svg": Object.freeze({ left: 1.2, right: 1.2, bottom: 0.7 }),
+    "clawd-idle-yawn.svg": Object.freeze({ left: 0.8, top: 4.5, right: 0.8, bottom: 2 }),
+    "clawd-mini-idle.svg": Object.freeze({ left: 3.2, top: 1.6, right: 0.2, bottom: 2.4 }),
+    "clawd-mini-alert.svg": Object.freeze({ left: 3.2, top: 1.6, right: 0.2, bottom: 2.4 }),
+    "clawd-mini-happy.svg": Object.freeze({ left: 3.2, top: 1.6, right: 0.2, bottom: 2.4 }),
+    "clawd-mini-peek.svg": Object.freeze({ left: 3.2, top: 1.6, right: 0.2, bottom: 2.4 }),
+    "clawd-mini-typing.svg": Object.freeze({ left: 3.2, top: 1.6, right: 0.2, bottom: 2.4 }),
+    "clawd-mini-crabwalk.svg": Object.freeze({ left: 1.8, right: 3.9, bottom: 1.3 }),
+    "clawd-mini-enter.svg": Object.freeze({ left: 6.2, top: 2.4, right: 25, bottom: 2.1 }),
+    "clawd-working-thinking.svg": Object.freeze({ left: 1.6, top: 0.2, right: 1.6, bottom: 0.8 }),
+    "clawd-working-typing.svg": Object.freeze({ bottom: 1.5 }),
+    "clawd-notification.svg": Object.freeze({ left: 1.7, top: 0.5, bottom: 0.6 }),
+    "clawd-working-building.svg": Object.freeze({ bottom: 5 }),
     "clawd-headphones-groove.svg": Object.freeze({ left: 2.3, top: 1.5, right: 2.3, bottom: 1.5 }),
+    "clawd-working-juggling.svg": Object.freeze({ left: 1.4, top: 0.1, right: 1.4, bottom: 1.4 }),
+    "clawd-idle-bubble.svg": Object.freeze({ top: 1.2, bottom: 0.7 }),
+    "clawd-idle-reading.svg": Object.freeze({ left: 0.2, right: 0.2, bottom: 1.1 }),
+    "clawd-idle-doze.svg": Object.freeze({ left: 0.7, right: 0.7, bottom: 2.3 }),
+    "clawd-react-drag.svg": Object.freeze({ left: 1.8, top: 0.4, right: 1.8, bottom: 0.5 }),
+    "clawd-react-left.svg": Object.freeze({ left: 2.9, top: 0.3, bottom: 0.3 }),
+    "clawd-react-right.svg": Object.freeze({ top: 0.3, right: 2.9, bottom: 0.3 }),
+    "clawd-react-annoyed.svg": Object.freeze({ top: 0.8, right: 2, bottom: 1.5 }),
+    "clawd-react-double.svg": Object.freeze({ left: 1, top: 1, right: 1 }),
+    "clawd-react-double-jump.svg": Object.freeze({ left: 0.8, top: 3.5, right: 0.8, bottom: 1.8 }),
+    "clawd-working-sweeping.svg": Object.freeze({ left: 3.6, top: 0.8, right: 0.1, bottom: 1.6 }),
+    "clawd-working-carrying.svg": Object.freeze({ left: 0.9, top: 0.3, bottom: 1.3 }),
+    "clawd-working-debugger.svg": Object.freeze({ left: 1.8, right: 4, bottom: 2 }),
+    "clawd-sleeping.svg": Object.freeze({ left: 0.2, top: 5.3, right: 0.2 }),
   }),
   cloudling: Object.freeze({
-    // Scripted idle reaches 1.15x distance scale around the 12,12 face center.
-    // Chromium sampling puts the accessory about 4.8-4.9 units past the
-    // static projection, so retain a 5-unit measured envelope.
+    // Idle also has pointer-distance scaling. Keep the reviewer/Chromium 5-unit
+    // worst-case envelope rather than shrinking it to a single CI sample run.
     "cloudling-idle.svg": Object.freeze({ left: 5, top: 5, right: 5, bottom: 5 }),
+    "cloudling-typing.svg": Object.freeze({ left: 0.5, top: 1.2, right: 0.5, bottom: 0.6 }),
+    "cloudling-mini-idle.svg": Object.freeze({ bottom: 0.4 }),
+    "cloudling-mini-crabwalk.svg": Object.freeze({ left: 4.5, top: 0.9, bottom: 0.9 }),
   }),
 });
 
