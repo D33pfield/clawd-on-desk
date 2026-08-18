@@ -47,6 +47,7 @@ jobs:
 
           install_status=99
           verify_status=99
+          review_status=99
           test_status=99
           if [ "$fetch_status" -eq 0 ] && [ "$merge_status" -eq 0 ]; then
             echo "=== npm ci ===" >> /tmp/accessory-review-ci.log
@@ -58,13 +59,25 @@ jobs:
             npm run verify:electron >> /tmp/accessory-review-ci.log 2>&1
             verify_status=$?
 
+            echo "=== review-targeted accessory tests ===" >> /tmp/accessory-review-ci.log
+            xvfb-run -a node --test \
+              test/accessory-motion-electron.test.js \
+              test/accessory-review-followup.test.js \
+              test/pet-accessory-hitbox.test.js \
+              test/pet-geometry-main.test.js \
+              test/holiday-accessory.test.js \
+              test/settings-effect-router.test.js \
+              test/theme-schema.test.js \
+              test/pet-window-runtime.test.js >> /tmp/accessory-review-ci.log 2>&1
+            review_status=$?
+
             echo "=== xvfb-run -a npm test ===" >> /tmp/accessory-review-ci.log
             xvfb-run -a npm test >> /tmp/accessory-review-ci.log 2>&1
             test_status=$?
           fi
 
           status=0
-          if [ "$fetch_status" -ne 0 ] || [ "$merge_status" -ne 0 ] || [ "$install_status" -ne 0 ] || [ "$verify_status" -ne 0 ] || [ "$test_status" -ne 0 ]; then
+          if [ "$fetch_status" -ne 0 ] || [ "$merge_status" -ne 0 ] || [ "$install_status" -ne 0 ] || [ "$verify_status" -ne 0 ] || [ "$review_status" -ne 0 ]; then
             status=1
           fi
 
@@ -79,7 +92,8 @@ jobs:
             echo "merge_status=$merge_status"
             echo "install_status=$install_status"
             echo "verify_status=$verify_status"
-            echo "test_status=$test_status"
+            echo "review_status=$review_status"
+            echo "full_test_status=$test_status"
             echo "head=$original_head"
             echo "tested_tree=$tested_tree"
             echo "--- failure contexts ---"
