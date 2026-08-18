@@ -7,14 +7,25 @@ const { app, BrowserWindow } = require("electron");
 const ROOT = path.resolve(__dirname, "..", "..");
 const { PET_ACCESSORY_CATALOG } = require(path.join(ROOT, "src", "pet-customization-catalog"));
 const { computeDynamicAccessoryLayout } = require(path.join(ROOT, "src", "pet-accessory-layout"));
-const { BUILTIN_ACCESSORY_MOTION_PADDING } = require(path.join(ROOT, "src", "pet-accessory-hitbox"));
+const {
+  BUILTIN_ACCESSORY_MOTION_PADDING,
+  resolveAccessoryAwareHitBox,
+} = require(path.join(ROOT, "src", "pet-accessory-hitbox"));
+const hitGeometry = require(path.join(ROOT, "src", "hit-geometry"));
+const themeLoader = require(path.join(ROOT, "src", "theme-loader"));
+
+themeLoader.init(path.join(ROOT, "src"));
 
 const BUILTINS = [
   { id: "clawd", theme: path.join(ROOT, "themes", "clawd", "theme.json"), assets: path.join(ROOT, "assets", "svg") },
   { id: "cloudling", theme: path.join(ROOT, "themes", "cloudling", "theme.json"), assets: path.join(ROOT, "themes", "cloudling", "assets") },
 ];
 const ACCESSORIES = PET_ACCESSORY_CATALOG.filter((entry) => entry.id !== "none");
-const EPSILON = 0.15;
+const MOTION_EPSILON = 0.15;
+const SCREEN_EPSILON = 0.51;
+const LARGE_SCREEN_BOUNDS = Object.freeze({ x: 0, y: 0, width: 6000, height: 6000 });
+const MINI_PAD_X = 25;
+const MINI_PAD_Y = 8;
 
 function rectFor(frame, accessory, themeId) {
   const themeWidthScale = accessory.themeWidthScales && accessory.themeWidthScales[themeId];
@@ -43,6 +54,87 @@ function maxPadding(a, b) {
     right: Math.max(a.right || 0, b.right || 0),
     bottom: Math.max(a.bottom || 0, b.bottom || 0),
   };
+}
+
+function stateForFile(file) {
+  return file.includes("mini-") ? "mini-idle" : "idle";
+}
+
+function baseHitBoxFor(theme, file) {
+  return (theme.fileHitBoxes && theme.fileHitBoxes[file])
+    || (theme.hitBoxes && theme.hitBoxes.default)
+    || null;
+}
+
+function mirrorRectX(rect, viewBox) {
+  const axis2 = 2 * viewBox.x + viewBox.width;
+  return {
+    x: axis2 - (rect.x + rect.width),
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function intersectThemeRect(rect, viewBox) {
+  const left = Math.max(rect.x, viewBox.x);
+  const top = Math.max(rect.y, viewBox.y);
+  const right = Math.min(rect.x + rect.width, viewBox.x + viewBox.width);
+  const bottom = Math.min(rect.y + rect.height, viewBox.y + viewBox.height);
+  if (right <= left || bottom <= top) return null;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function projectThemeRectToScreen(theme, state, file, rect) {
+  const art = hitGeometry.getAssetRectScreen(theme, LARGE_SCREEN_BOUNDS, state, file);
+  const viewBox = hitGeometry.resolveViewBox(theme, state, file);
+  if (!art || !viewBox) return null;
+  const scaleX = art.w / viewBox.width;
+  const scaleY = art.h / viewBox.height;
+  return {
+    left: art.x + (rect.x - viewBox.x) * scaleX,
+    top: art.y + (rect.y - viewBox.y) * scaleY,
+    right: art.x + (rect.x + rect.width - viewBox.x) * scaleX,
+    bottom: art.y + (rect.y + rect.height - viewBox.y) * scaleY,
+  };
+}
+
+function outwardRound(rect) {
+  return {
+    left: Math.floor(rect.left),
+    top: Math.floor(rect.top),
+    right: Math.ceil(rect.right),
+    bottom: Math.ceil(rect.bottom),
+  };
+}
+
+// Exercise the same ordering requested in the review: mini padding is already
+// present on the screen hit rect, then a contained internal seam clips the
+// native input surface. Clip the sampled rendered pixels by the same synthetic
+// seam because pixels beyond it are physically outside the contained viewport.
+function clipMiniAtSyntheticSeam(hit, actual, edge) {
+  const visibleWidth = actual.right - actual.left;
+  if (!(visibleWidth > 0)) return { hit, actual };
+  const cut = Math.max(1, visibleWidth * 0.2);
+  if (edge === "right") {
+    const boundary = actual.right - cut;
+    return {
+      hit: { ...hit, right: Math.max(hit.left, Math.min(hit.right, boundary)) },
+      actual: { ...actual, right: Math.max(actual.left, boundary) },
+    };
+  }
+  const boundary = actual.left + cut;
+  return {
+    hit: { ...hit, left: Math.min(hit.right, Math.max(hit.left, boundary)) },
+    actual: { ...actual, left: Math.min(actual.right, boundary) },
+  };
+}
+
+function containsScreenRect(hit, actual) {
+  return hit.left <= actual.left + SCREEN_EPSILON
+    && hit.top <= actual.top + SCREEN_EPSILON
+    && hit.right + SCREEN_EPSILON >= actual.right
+    && hit.bottom + SCREEN_EPSILON >= actual.bottom;
 }
 
 async function sampleMatrices(win, targetId, options = {}) {
@@ -117,6 +209,7 @@ async function sampleMatrices(win, targetId, options = {}) {
 
 async function auditTheme(win, builtin) {
   const raw = JSON.parse(fs.readFileSync(builtin.theme, "utf8"));
+  const theme = themeLoader.loadTheme(builtin.id, { strict: true });
   const files = raw.customization && raw.customization.accessories && raw.customization.accessories.files;
   if (!files) return [];
   const scriptedCycles = raw.trustedRuntime && raw.trustedRuntime.scriptedSvgCycleMs || {};
@@ -135,6 +228,12 @@ async function auditTheme(win, builtin) {
     const measured = (BUILTIN_ACCESSORY_MOTION_PADDING[builtin.id] || {})[file] || emptyPadding();
     const configured = maxPadding(authored, measured);
     const required = emptyPadding();
+    const state = stateForFile(file);
+    const viewBox = hitGeometry.resolveViewBox(theme, state, file);
+    const baseHitBox = baseHitBoxFor(theme, file);
+    if (!viewBox || !baseHitBox) throw new Error(`${builtin.id}/${file}: missing viewBox/base hitbox`);
+    const mini = state.startsWith("mini-");
+    const edges = mini ? ["right", "left"] : [null];
 
     for (const accessory of ACCESSORIES) {
       const staticRect = rectFor(descriptor.staticFrame, accessory, builtin.id);
@@ -143,6 +242,12 @@ async function auditTheme(win, builtin) {
         widthScale: staticRect.widthScale,
         offsetY: accessory.offsetY,
       };
+      const payload = {
+        id: accessory.id,
+        assetFile: accessory.file,
+        ...normalizedAccessory,
+      };
+
       for (const matrix of matrices) {
         const layout = computeDynamicAccessoryLayout({
           matrix,
@@ -157,12 +262,60 @@ async function auditTheme(win, builtin) {
         required.top = Math.max(required.top, staticRect.top - b.y);
         required.right = Math.max(required.right, b.x + b.width - staticRect.right);
         required.bottom = Math.max(required.bottom, b.y + b.height - staticRect.bottom);
+
+        for (const edge of edges) {
+          const mirrorX = mini && ((edge === "left") !== !!(theme.miniMode && theme.miniMode.flipAssets));
+          const hitBox = resolveAccessoryAwareHitBox(
+            theme,
+            state,
+            file,
+            baseHitBox,
+            payload,
+            { viewBox, mirrorX }
+          );
+          let finalHit = hitGeometry.getHitRectScreen(
+            theme,
+            LARGE_SCREEN_BOUNDS,
+            state,
+            file,
+            hitBox,
+            { padX: mini ? MINI_PAD_X : 0, padY: mini ? MINI_PAD_Y : 0 }
+          );
+          if (!finalHit) throw new Error(`${builtin.id}/${file}/${accessory.id}: screen hit projection failed`);
+          finalHit = outwardRound(finalHit);
+
+          let visibleThemeRect = {
+            x: b.x,
+            y: b.y,
+            width: b.width,
+            height: b.height,
+          };
+          if (mirrorX) visibleThemeRect = mirrorRectX(visibleThemeRect, viewBox);
+          visibleThemeRect = intersectThemeRect(visibleThemeRect, viewBox);
+          if (!visibleThemeRect) continue;
+          let visibleScreenRect = projectThemeRectToScreen(theme, state, file, visibleThemeRect);
+          if (!visibleScreenRect) throw new Error(`${builtin.id}/${file}/${accessory.id}: sampled screen projection failed`);
+
+          if (mini) {
+            const clipped = clipMiniAtSyntheticSeam(finalHit, visibleScreenRect, edge);
+            finalHit = clipped.hit;
+            visibleScreenRect = clipped.actual;
+          }
+
+          if (!containsScreenRect(finalHit, visibleScreenRect)) {
+            failures.push(
+              `${builtin.id}/${file}/${accessory.id}${edge ? `/${edge}` : ""} final-screen miss: `
+              + `hit=${JSON.stringify(finalHit)} actual=${JSON.stringify(visibleScreenRect)}`
+            );
+            break;
+          }
+        }
       }
     }
 
     for (const side of ["left", "top", "right", "bottom"]) {
       const need = Math.max(0, required[side]);
-      if (need > configured[side] + EPSILON) {
+      if (need > configured[side] + MOTION_EPSILON) {
         failures.push(`${builtin.id}/${file} ${side}: need ${need.toFixed(3)}, configured ${configured[side].toFixed(3)}`);
       }
     }
