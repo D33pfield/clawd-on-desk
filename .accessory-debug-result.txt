@@ -1,9 +1,9 @@
 install_status=0
-test_status=1
-head=fa9be6fb46804380079a07a85df326086fb8f6b2
+test_status=0
+head=296485a007b661e1b39545ba2efd3b050e416742
 npm warn deprecated rimraf@2.6.3: Rimraf versions prior to v4 are no longer supported
-npm warn deprecated lodash.isequal@4.5.0: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
 npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+npm warn deprecated lodash.isequal@4.5.0: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
 npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported
 npm warn deprecated boolean@3.2.0: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
 
@@ -12,7 +12,7 @@ npm warn deprecated boolean@3.2.0: Package no longer supported. Contact Support 
 
 Verified Electron 41.10.4 installation.
 
-added 330 packages, and audited 331 packages in 10s
+added 330 packages, and audited 331 packages in 12s
 
 66 packages are looking for funding
   run `npm fund` for details
@@ -20,1404 +20,1251 @@ added 330 packages, and audited 331 packages in 10s
 found 0 vulnerabilities
 TAP version 13
 # Subtest: real SVG getCTM motion stays inside the declared accessory envelope
-not ok 1 - real SVG getCTM motion stays inside the declared accessory envelope
+ok 1 - real SVG getCTM motion stays inside the declared accessory envelope
   ---
-  duration_ms: 31110.928545
+  duration_ms: 30393.995983
   type: 'test'
-  location: '/home/runner/work/clawd-on-desk/clawd-on-desk/test/accessory-motion-electron.test.js:17:1'
-  failureType: 'testCodeFailure'
-  error: |-
-    clawd/clawd-idle-follow.svg: samples=481 required={"left":0.15999960899353016,"top":0,"right":0.16000008583068492,"bottom":0.6480000972747773} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-dizzy.svg: samples=481 required={"left":1.954125638746682,"top":0.46320809497405646,"right":1.9541261155838416,"bottom":0.5005121265367221} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-happy.svg: samples=321 required={"left":1.9984014443252818e-15,"top":12,"right":0,"bottom":1.4850001215934752} configured={"left":0,"top":12,"right":0,"bottom":0}
-    clawd/clawd-idle-look.svg: samples=481 required={"left":1.1599996089935303,"top":0,"right":1.160000085830685,"bottom":0.6480000972747773} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-idle-yawn.svg: samples=481 required={"left":0.5679990811348148,"top":4.433419695046878,"right":0.5679998202323873,"bottom":1.9606004053592674} configured={"left":0.75,"top":4.5,"right":0.75,"bottom":1.5}
-    clawd/clawd-mini-idle.svg: samples=481 required={"left":3.1427391774078224,"top":1.5105813379160675,"right":0.19458915155203726,"bottom":2.3027563432641607} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-mini-alert.svg: samples=481 required={"left":3.1427391774078224,"top":1.5105813379160675,"right":0.19458915155203726,"bottom":2.3027563432641607} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-mini-happy.svg: samples=481 required={"left":3.1427391774078224,"top":1.5105813379160675,"right":0.19458915155203726,"bottom":2.3027563432641607} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-mini-peek.svg: samples=481 required={"left":3.1427391774078224,"top":1.5105813379160675,"right":0.19458915155203726,"bottom":2.3027563432641607} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-mini-typing.svg: samples=481 required={"left":3.1427391774078224,"top":1.5105813379160675,"right":0.19458915155203726,"bottom":2.3027563432641607} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-mini-crabwalk.svg: samples=481 required={"left":1.7131717004395952,"top":0,"right":3.845898460598205,"bottom":1.2843739439576893} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-mini-enter.svg: samples=481 required={"left":6.14273917740782,"top":2.310581349836993,"right":24.93975069940368,"bottom":2.0628815998053014} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-working-thinking.svg: samples=481 required={"left":1.569739714670559,"top":0.15181125631790193,"right":1.5559568144395133,"bottom":0.7381484393983833} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-working-typing.svg: samples=481 required={"left":0.15999960899353016,"top":0,"right":0.16000008583068492,"bottom":1.4477032542228692} configured={"left":1,"top":1,"right":1,"bottom":1}
-    clawd/clawd-notification.svg: samples=481 required={"left":1.6820539281168188,"top":0.4622094395815588,"right":0,"bottom":0.5619915200762069} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-working-building.svg: samples=481 required={"left":1.3782749054506116,"top":3.492167751443482,"right":1.3782745408927255,"bottom":4.9999544717729325} configured={"left":2,"top":4,"right":2,"bottom":4}
-    clawd/clawd-headphones-groove.svg: samples=257 required={"left":2.269839154611512,"top":0.4639167131468148,"right":2.2698391546115086,"bottom":1.1701919667135545} configured={"left":2.3,"top":1.5,"right":2.3,"bottom":1.5}
-    clawd/clawd-working-juggling.svg: samples=481 required={"left":1.353482287141962,"top":0.09358075548441991,"right":1.353481930004202,"bottom":1.3527642013224064} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-idle-bubble.svg: samples=481 required={"left":1.9984014443252818e-15,"top":1.1867610295613602,"right":0,"bottom":0.6709998726844741} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-idle-reading.svg: samples=481 required={"left":0.15999960899353016,"top":0,"right":0.16000008583068492,"bottom":1.0421798884868583} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-idle-doze.svg: samples=481 required={"left":0.6400004029273987,"top":0,"right":0.6400002837181091,"bottom":2.2880001842975606} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-react-drag.svg: samples=193 required={"left":1.794885537780578,"top":0.35744366960534024,"right":1.7919366099239422,"bottom":0.4703383735637763} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-react-left.svg: samples=481 required={"left":2.847383331508854,"top":0.26975379241599307,"right":0,"bottom":0.284373943957692} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-react-right.svg: samples=481 required={"left":1.9984014443252818e-15,"top":0.2697537924159925,"right":2.8473833315088495,"bottom":0.2843739439576929} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-react-annoyed.svg: samples=481 required={"left":1.9984014443252818e-15,"top":0.7141331291198725,"right":2,"bottom":1.4931974411010698} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-react-double.svg: samples=481 required={"left":1.000000000000002,"top":1,"right":0.9999999999999964,"bottom":0} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-react-double-jump.svg: samples=481 required={"left":0.7990285158157349,"top":3.4348567230360847,"right":0.7990282773971522,"bottom":1.7866592288017245} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-working-sweeping.svg: samples=481 required={"left":3.563346488382905,"top":0.7513170843494621,"right":0.032566845417022705,"bottom":1.5161198570323062} configured={"left":3.5,"top":2,"right":3.5,"bottom":2}
-    clawd/clawd-working-carrying.svg: samples=401 required={"left":0.8473833315088539,"top":0.26975379241599307,"right":0,"bottom":1.2837647709767905} configured={"left":0,"top":0,"right":0,"bottom":0}
-    clawd/clawd-working-debugger.svg: samples=481 required={"left":1.7265760062521438,"top":0,"right":3.9656385321229184,"bottom":1.9099380729459838} configured={"left":3.5,"top":1.5,"right":3.5,"bottom":2}
-    clawd/clawd-sleeping.svg: samples=481 required={"left":0.15999960899353016,"top":5.228333333333332,"right":0.16000008583068492,"bottom":0} configured={"left":0.25,"top":5.5,"right":0.25,"bottom":0}
-    cloudling/cloudling-idle.svg: samples=48 required={"left":4.168945257710551,"top":3.9947269544358015,"right":2.5552606345545925,"bottom":0.4298307940429136} configured={"left":5,"top":5,"right":5,"bottom":5}
-    cloudling/cloudling-typing.svg: samples=187 required={"left":0.45999956130981445,"top":1.1956655263900764,"right":0.45999956130981445,"bottom":0.5122995257377623} configured={"left":0,"top":0,"right":0,"bottom":0}
-    cloudling/cloudling-mini-idle.svg: samples=209 required={"left":0,"top":0,"right":0,"bottom":0.31416006088256854} configured={"left":0,"top":0,"right":0,"bottom":0}
-    cloudling/cloudling-mini-crabwalk.svg: samples=57 required={"left":4.492108047060616,"top":0.8584238044069994,"right":0,"bottom":0.8413531214597936} configured={"left":0,"top":0,"right":0,"bottom":0}
-    
-    [2259:0818/042204.310027:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")
-    [2259:0818/042204.339923:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")
-    [2259:0818/042204.393911:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: 
-    [2259:0818/042204.394557:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")
-    [2259:0818/042204.401100:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: 
-    Error: Accessory motion audit failed:
-    clawd/clawd-idle-follow.svg left: need 0.160, configured 0.000
-    clawd/clawd-idle-follow.svg right: need 0.160, configured 0.000
-    clawd/clawd-idle-follow.svg bottom: need 0.648, configured 0.000
-    clawd/clawd-dizzy.svg left: need 1.954, configured 0.000
-    clawd/clawd-dizzy.svg top: need 0.463, configured 0.000
-    clawd/clawd-dizzy.svg right: need 1.954, configured 0.000
-    clawd/clawd-dizzy.svg bottom: need 0.501, configured 0.000
-    clawd/clawd-happy.svg bottom: need 1.485, configured 0.000
-    clawd/clawd-idle-look.svg left: need 1.160, configured 0.000
-    clawd/clawd-idle-look.svg right: need 1.160, configured 0.000
-    clawd/clawd-idle-look.svg bottom: need 0.648, configured 0.000
-    clawd/clawd-idle-yawn.svg bottom: need 1.961, configured 1.500
-    clawd/clawd-mini-idle.svg left: need 3.143, configured 0.000
-    clawd/clawd-mini-idle.svg top: need 1.511, configured 0.000
-    clawd/clawd-mini-idle.svg right: need 0.195, configured 0.000
-    clawd/clawd-mini-idle.svg bottom: need 2.303, configured 0.000
-    clawd/clawd-mini-alert.svg left: need 3.143, configured 0.000
-    clawd/clawd-mini-alert.svg top: need 1.511, configured 0.000
-    clawd/clawd-mini-alert.svg right: need 0.195, configured 0.000
-    clawd/clawd-mini-alert.svg bottom: need 2.303, configured 0.000
-    clawd/clawd-mini-happy.svg left: need 3.143, configured 0.000
-    clawd/clawd-mini-happy.svg top: need 1.511, configured 0.000
-    clawd/clawd-mini-happy.svg right: need 0.195, configured 0.000
-    clawd/clawd-mini-happy.svg bottom: need 2.303, configured 0.000
-    clawd/clawd-mini-peek.svg left: need 3.143, configured 0.000
-    clawd/clawd-mini-peek.svg top: need 1.511, configured 0.000
-    clawd/clawd-mini-peek.svg right: need 0.195, configured 0.000
-    clawd/clawd-mini-peek.svg bottom: need 2.303, configured 0.000
-    clawd/clawd-mini-typing.svg left: need 3.143, configured 0.000
-    clawd/clawd-mini-typing.svg top: need 1.511, configured 0.000
-    clawd/clawd-mini-typing.svg right: need 0.195, configured 0.000
-    clawd/clawd-mini-typing.svg bottom: need 2.303, configured 0.000
-    clawd/clawd-mini-crabwalk.svg left: need 1.713, configured 0.000
-    clawd/clawd-mini-crabwalk.svg right: need 3.846, configured 0.000
-    clawd/clawd-mini-crabwalk.svg bottom: need 1.284, configured 0.000
-    clawd/clawd-mini-enter.svg left: need 6.143, configured 0.000
-    clawd/clawd-mini-enter.svg top: need 2.311, configured 0.000
-    clawd/clawd-mini-enter.svg right: need 24.940, configured 0.000
-    clawd/clawd-mini-enter.svg bottom: need 2.063, configured 0.000
-    clawd/clawd-working-thinking.svg left: need 1.570, configured 0.000
-    clawd/clawd-working-thinking.svg top: need 0.152, configured 0.000
-    clawd/clawd-working-thinking.svg right: need 1.556, configured 0.000
-    clawd/clawd-working-thinking.svg bottom: need 0.738, configured 0.000
-    clawd/clawd-working-typing.svg bottom: need 1.448, configured 1.000
-    clawd/clawd-notification.svg left: need 1.682, configured 0.000
-    clawd/clawd-notification.svg top: need 0.462, configured 0.000
-    clawd/clawd-notification.svg bottom: need 0.562, configured 0.000
-    clawd/clawd-working-building.svg bottom: need 5.000, configured 4.000
-    clawd/clawd-working-juggling.svg left: need 1.353, configured 0.000
-    clawd/clawd-working-juggling.svg right: need 1.353, configured 0.000
-    clawd/clawd-working-juggling.svg bottom: need 1.353, configured 0.000
-    clawd/clawd-idle-bubble.svg top: need 1.187, configured 0.000
-    clawd/clawd-idle-bubble.svg bottom: need 0.671, configured 0.000
-    clawd/clawd-idle-reading.svg left: need 0.160, configured 0.000
-    clawd/clawd-idle-reading.svg right: need 0.160, configured 0.000
-    clawd/clawd-idle-reading.svg bottom: need 1.042, configured 0.000
-    clawd/clawd-idle-doze.svg left: need 0.640, configured 0.000
-    clawd/clawd-idle-doze.svg right: need 0.640, configured 0.000
-    clawd/clawd-idle-doze.svg bottom: need 2.288, configured 0.000
-    clawd/clawd-react-drag.svg left: need 1.795, configured 0.000
-    clawd/clawd-react-drag.svg top: need 0.357, configured 0.000
-    clawd/clawd-react-drag.svg right: need 1.792, configured 0.000
-    clawd/clawd-react-drag.svg bottom: need 0.470, configured 0.000
-    clawd/clawd-react-left.svg left: need 2.847, configured 0.000
-    clawd/clawd-react-left.svg top: need 0.270, configured 0.000
-    clawd/clawd-react-left.svg bottom: need 0.284, configured 0.000
-    clawd/clawd-react-right.svg top: need 0.270, configured 0.000
-    clawd/clawd-react-right.svg right: need 2.847, configured 0.000
-    clawd/clawd-react-right.svg bottom: need 0.284, configured 0.000
-    clawd/clawd-react-annoyed.svg top: need 0.714, configured 0.000
-    clawd/clawd-react-annoyed.svg right: need 2.000, configured 0.000
-    clawd/clawd-react-annoyed.svg bottom: need 1.493, configured 0.000
-    clawd/clawd-react-double.svg left: need 1.000, configured 0.000
-    clawd/clawd-react-double.svg top: need 1.000, configured 0.000
-    clawd/clawd-react-double.svg right: need 1.000, configured 0.000
-    clawd/clawd-react-double-jump.svg left: need 0.799, configured 0.000
-    clawd/clawd-react-double-jump.svg top: need 3.435, configured 0.000
-    clawd/clawd-react-double-jump.svg right: need 0.799, configured 0.000
-    clawd/clawd-react-double-jump.svg bottom: need 1.787, configured 0.000
-    clawd/clawd-working-carrying.svg left: need 0.847, configured 0.000
-    clawd/clawd-working-carrying.svg top: need 0.270, configured 0.000
-    clawd/clawd-working-carrying.svg bottom: need 1.284, configured 0.000
-    clawd/clawd-working-debugger.svg right: need 3.966, configured 3.500
-    cloudling/cloudling-typing.svg left: need 0.460, configured 0.000
-    cloudling/cloudling-typing.svg top: need 1.196, configured 0.000
-    cloudling/cloudling-typing.svg right: need 0.460, configured 0.000
-    cloudling/cloudling-typing.svg bottom: need 0.512, configured 0.000
-    cloudling/cloudling-mini-idle.svg bottom: need 0.314, configured 0.000
-    cloudling/cloudling-mini-crabwalk.svg left: need 4.492, configured 0.000
-    cloudling/cloudling-mini-crabwalk.svg top: need 0.858, configured 0.000
-    cloudling/cloudling-mini-crabwalk.svg bottom: need 0.841, configured 0.000
-        at main (/home/runner/work/clawd-on-desk/clawd-on-desk/test/fixtures/accessory-motion-electron.js:188:34)
-    
-    
-    1 !== 0
-    
-  code: 'ERR_ASSERTION'
-  name: 'AssertionError'
-  expected: 0
-  actual: 1
-  operator: 'strictEqual'
-  stack: |-
-    main (/home/runner/work/clawd-on-desk/clawd-on-desk/test/fixtures/accessory-motion-electron.js:188:34)
-    TestContext.<anonymous> (/home/runner/work/clawd-on-desk/clawd-on-desk/test/accessory-motion-electron.test.js:40:10)
-    Test.runInAsyncScope (node:async_hooks:214:14)
-    Test.run (node:internal/test_runner/test:1047:25)
-    Test.start (node:internal/test_runner/test:944:17)
-    startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17)
   ...
 # Subtest: maximum-valid external accessory metadata cannot expand native input past rendered bounds
 ok 2 - maximum-valid external accessory metadata cannot expand native input past rendered bounds
   ---
-  duration_ms: 5.83679
+  duration_ms: 4.113292
   type: 'test'
   ...
 # Subtest: containment preserves an existing base hitbox outside the viewBox
 ok 3 - containment preserves an existing base hitbox outside the viewBox
   ---
-  duration_ms: 0.487141
+  duration_ms: 0.449709
   type: 'test'
   ...
 # Subtest: mini accessory mirroring follows edgeLeft XOR miniFlipAssets
 ok 4 - mini accessory mirroring follows edgeLeft XOR miniFlipAssets
   ---
-  duration_ms: 1.004838
+  duration_ms: 1.488409
   type: 'test'
   ...
 # Subtest: screen hit rectangles use outward integer rounding
 ok 5 - screen hit rectangles use outward integer rounding
   ---
-  duration_ms: 0.376023
+  duration_ms: 0.510362
   type: 'test'
   ...
 # Subtest: geometry consumes the delivered canonical payload instead of re-resolving it
 ok 6 - geometry consumes the delivered canonical payload instead of re-resolving it
   ---
-  duration_ms: 0.692134
+  duration_ms: 0.935477
   type: 'test'
   ...
 # Subtest: holiday geometry rejection retries without resending an unchanged renderer payload
 ok 7 - holiday geometry rejection retries without resending an unchanged renderer payload
   ---
-  duration_ms: 0.942671
+  duration_ms: 1.849302
   type: 'test'
   ...
 # Subtest: holiday accessory date rules
     # Subtest: keeps the accepted holiday windows immutable and catalog-backed
     ok 1 - keeps the accepted holiday windows immutable and catalog-backed
       ---
-      duration_ms: 1.994498
+      duration_ms: 1.478229
       type: 'test'
       ...
     # Subtest: uses short inclusive local-date windows and restores outside them
     ok 2 - uses short inclusive local-date windows and restores outside them
       ---
-      duration_ms: 1.620719
+      duration_ms: 1.47846
       type: 'test'
       ...
     # Subtest: is year-independent and fails closed for invalid dates
     ok 3 - is year-independent and fails closed for invalid dates
       ---
-      duration_ms: 0.250719
+      duration_ms: 0.26252
       type: 'test'
       ...
     # Subtest: uses the user's UTC+14 local date at a holiday boundary
     ok 4 - uses the user's UTC+14 local date at a holiday boundary
       ---
-      duration_ms: 39.403107
+      duration_ms: 40.912287
       type: 'test'
       ...
     # Subtest: keeps the checkbox independent from the saved manual accessory
     ok 5 - keeps the checkbox independent from the saved manual accessory
       ---
-      duration_ms: 0.362558
+      duration_ms: 0.464607
       type: 'test'
       ...
     # Subtest: refreshes no later than the next local midnight or one hour
     ok 6 - refreshes no later than the next local midnight or one hour
       ---
-      duration_ms: 0.199532
+      duration_ms: 0.277208
       type: 'test'
       ...
     1..6
 ok 8 - holiday accessory date rules
   ---
-  duration_ms: 45.438449
+  duration_ms: 46.442421
   type: 'suite'
   ...
 # Subtest: holiday accessory runtime
     # Subtest: starts, deduplicates, crosses date windows, and supports forced sync
     ok 1 - starts, deduplicates, crosses date windows, and supports forced sync
       ---
-      duration_ms: 1.11806
+      duration_ms: 1.669507
       type: 'test'
       ...
     # Subtest: refreshes and reschedules on wake, then removes listeners and timers
     ok 2 - refreshes and reschedules on wake, then removes listeners and timers
       ---
-      duration_ms: 0.489716
+      duration_ms: 0.726296
       type: 'test'
       ...
     # Subtest: honors settings changes without mutating the saved manual choice
     ok 3 - honors settings changes without mutating the saved manual choice
       ---
-      duration_ms: 0.383246
+      duration_ms: 0.506686
       type: 'test'
       ...
     1..3
 ok 9 - holiday accessory runtime
   ---
-  duration_ms: 2.456622
+  duration_ms: 3.543455
   type: 'suite'
   ...
 # Subtest: accessory-aware hit boxes
     # Subtest: does not add a transparent hat region when no accessory is worn
     ok 1 - does not add a transparent hat region when no accessory is worn
       ---
-      duration_ms: 9.703569
+      duration_ms: 9.916343
       type: 'test'
       ...
     # Subtest: keeps selected-accessory geometry size-aware without a one-size-fits-all envelope
     ok 2 - keeps selected-accessory geometry size-aware without a one-size-fits-all envelope
       ---
-      duration_ms: 5.214306
+      duration_ms: 5.637194
       type: 'test'
       ...
     # Subtest: keeps measured animated motion envelopes separate from authored theme padding
     ok 3 - keeps measured animated motion envelopes separate from authored theme padding
       ---
-      duration_ms: 3.119181
+      duration_ms: 3.174256
       type: 'test'
       ...
     # Subtest: keeps hidden accessories from changing the animation hitbox
     ok 4 - keeps hidden accessories from changing the animation hitbox
       ---
-      duration_ms: 2.750581
+      duration_ms: 2.707174
       type: 'test'
       ...
     1..4
 ok 10 - accessory-aware hit boxes
   ---
-  duration_ms: 22.049275
+  duration_ms: 23.004366
   type: 'suite'
   ...
 # Subtest: getObjRect delegates asset rect calculation and falls back to the full window
 ok 11 - getObjRect delegates asset rect calculation and falls back to the full window
   ---
-  duration_ms: 1.978138
+  duration_ms: 1.698561
   type: 'test'
   ...
 # Subtest: getObjRect falls back from missing current SVG to idle and tolerates malformed idle state
 ok 12 - getObjRect falls back from missing current SVG to idle and tolerates malformed idle state
   ---
-  duration_ms: 0.468696
+  duration_ms: 0.331839
   type: 'test'
   ...
 # Subtest: getAssetPointerPayload delegates with current file and returns null without a theme
 ok 13 - getAssetPointerPayload delegates with current file and returns null without a theme
   ---
-  duration_ms: 1.41767
+  duration_ms: 1.191054
   type: 'test'
   ...
 # Subtest: getHitRectScreen passes hitbox and mini padding, with a full-window fallback
 ok 14 - getHitRectScreen passes hitbox and mini padding, with a full-window fallback
   ---
-  duration_ms: 1.808641
+  duration_ms: 1.513806
   type: 'test'
   ...
 # Subtest: getHitRectScreen expands only for the currently selected accessory
 ok 15 - getHitRectScreen expands only for the currently selected accessory
   ---
-  duration_ms: 0.463847
+  duration_ms: 0.414204
   type: 'test'
   ...
 # Subtest: getUpdateBubbleAnchorRect prefers stable anchors, then current-file anchors, then hit rect
 ok 16 - getUpdateBubbleAnchorRect prefers stable anchors, then current-file anchors, then hit rect
   ---
-  duration_ms: 0.36371
+  duration_ms: 0.410376
   type: 'test'
   ...
 # Subtest: getSessionHudAnchorRect uses the theme margin box and returns null when unavailable
 ok 17 - getSessionHudAnchorRect uses the theme margin box and returns null when unavailable
   ---
-  duration_ms: 0.291485
+  duration_ms: 0.313315
   type: 'test'
   ...
 # Subtest: macOS physical edge pinning (\#241)
     # Subtest: uses physical bounds for both drag and rest clamps when edge pinning is enabled
     ok 1 - uses physical bounds for both drag and rest clamps when edge pinning is enabled
       ---
-      duration_ms: 2.308204
+      duration_ms: 2.347513
       type: 'test'
       ...
     # Subtest: keeps the work-area-safe rest clamp when macOS edge pinning is disabled
     ok 2 - keeps the work-area-safe rest clamp when macOS edge pinning is disabled
       ---
-      duration_ms: 0.350285
+      duration_ms: 0.351616
       type: 'test'
       ...
     # Subtest: aligns with the physical bottom when the Dock is hidden
     ok 3 - aligns with the physical bottom when the Dock is hidden
       ---
-      duration_ms: 0.321631
+      duration_ms: 0.327021
       type: 'test'
       ...
     # Subtest: honors a call-site edge-pinning override instead of the global macOS setting
     ok 4 - honors a call-site edge-pinning override instead of the global macOS setting
       ---
-      duration_ms: 0.238216
+      duration_ms: 0.238746
       type: 'test'
       ...
     # Subtest: uses the physical rectangle consistently for top, bottom, left, and right edges
     ok 5 - uses the physical rectangle consistently for top, bottom, left, and right edges
       ---
-      duration_ms: 0.98401
+      duration_ms: 0.857681
       type: 'test'
       ...
     # Subtest: materializes a normal-mode top pin at the physical display top
     ok 6 - materializes a normal-mode top pin at the physical display top
       ---
-      duration_ms: 0.850881
+      duration_ms: 0.85702
       type: 'test'
       ...
     # Subtest: materializes a saved normal-mode top pin against physical bounds at startup
     ok 7 - materializes a saved normal-mode top pin against physical bounds at startup
       ---
-      duration_ms: 0.603989
+      duration_ms: 0.611341
       type: 'test'
       ...
     # Subtest: keeps mini-mode Y materialization inside the work area
     ok 8 - keeps mini-mode Y materialization inside the work area
       ---
-      duration_ms: 0.381944
+      duration_ms: 0.357989
       type: 'test'
       ...
     # Subtest: maps a forced mini work area back to the same display's physical bounds
     ok 9 - maps a forced mini work area back to the same display's physical bounds
       ---
-      duration_ms: 0.681504
+      duration_ms: 0.699787
       type: 'test'
       ...
     # Subtest: does not jump a forced secondary work area to primary when nearest lookup fails
     ok 10 - does not jump a forced secondary work area to primary when nearest lookup fails
       ---
-      duration_ms: 0.650065
+      duration_ms: 0.661385
       type: 'test'
       ...
     # Subtest: uses a forced work area as the display hint during vertical multi-display materialization
     ok 11 - uses a forced work area as the display hint during vertical multi-display materialization
       ---
-      duration_ms: 0.310741
+      duration_ms: 0.320098
       type: 'test'
       ...
     # Subtest: does not change Windows work-area edge behavior
     ok 12 - does not change Windows work-area edge behavior
       ---
-      duration_ms: 0.210874
+      duration_ms: 0.229548
       type: 'test'
       ...
     # Subtest: does not change Linux work-area edge behavior
     ok 13 - does not change Linux work-area edge behavior
       ---
-      duration_ms: 0.210173
+      duration_ms: 0.265727
       type: 'test'
       ...
     # Subtest: falls back to the existing work-area clamp when physical bounds are unavailable
     ok 14 - falls back to the existing work-area clamp when physical bounds are unavailable
       ---
-      duration_ms: 0.188923
+      duration_ms: 0.214941
       type: 'test'
       ...
     # Subtest: falls back safely when Electron display lookup throws
     ok 15 - falls back safely when Electron display lookup throws
       ---
-      duration_ms: 0.277639
+      duration_ms: 0.291084
       type: 'test'
       ...
     # Subtest: keeps drag clamping finite when display enumeration throws
     ok 16 - keeps drag clamping finite when display enumeration throws
       ---
-      duration_ms: 0.264935
+      duration_ms: 0.234458
       type: 'test'
       ...
     # Subtest: filters malformed display entries before the drag fallback
     ok 17 - filters malformed display entries before the drag fallback
       ---
-      duration_ms: 0.28345
+      duration_ms: 0.282698
       type: 'test'
       ...
     # Subtest: uses primary physical bounds when the display list is temporarily empty
     ok 18 - uses primary physical bounds when the display list is temporarily empty
       ---
-      duration_ms: 0.197389
+      duration_ms: 0.197479
       type: 'test'
       ...
     1..18
 ok 18 - macOS physical edge pinning (\#241)
   ---
-  duration_ms: 10.996896
+  duration_ms: 11.023419
   type: 'suite'
   ...
 # Subtest: pet-window-runtime edge virtualization (\#690 Phase 2 batch 2 red fixtures)
     # Subtest: rebases logical bounds after a WM externally moves the render window while offset is non-zero
     ok 1 - rebases logical bounds after a WM externally moves the render window while offset is non-zero
       ---
-      duration_ms: 2.076912
+      duration_ms: 1.992279
       type: 'test'
       ...
     # Subtest: distinguishes a mid-drag pause from a confirmed grab end on the hit window (two-level judgment)
     ok 2 - distinguishes a mid-drag pause from a confirmed grab end on the hit window (two-level judgment)
       ---
-      duration_ms: 0.761363
+      duration_ms: 0.741043
       type: 'test'
       ...
     1..2
 ok 19 - pet-window-runtime edge virtualization (\#690 Phase 2 batch 2 red fixtures)
   ---
-  duration_ms: 2.972847
+  duration_ms: 2.867242
   type: 'suite'
   ...
 # Subtest: pet-window-runtime edge virtualization (\#690 Phase 0 fixture)
     # Subtest: keeps the logical X at the requested value when the physical window is clamped back into the work area
     ok 1 - keeps the logical X at the requested value when the physical window is clamped back into the work area
       ---
-      duration_ms: 0.307385
+      duration_ms: 0.261839
       type: 'test'
       ...
     1..1
 ok 20 - pet-window-runtime edge virtualization (\#690 Phase 0 fixture)
   ---
-  duration_ms: 0.394267
+  duration_ms: 0.376282
   type: 'suite'
   ...
 # Subtest: pet-window-runtime edge virtualization (\#690 Phase 2 runtime)
     # Subtest: computes zero X offset and preserves full physical overflow on non-Linux platforms (I3)
     ok 1 - computes zero X offset and preserves full physical overflow on non-Linux platforms (I3)
       ---
-      duration_ms: 0.351877
+      duration_ms: 0.356015
       type: 'test'
       ...
     # Subtest: does not materialize X across an internal multi-monitor seam (I3)
     ok 2 - does not materialize X across an internal multi-monitor seam (I3)
       ---
-      duration_ms: 0.316902
+      duration_ms: 0.317392
       type: 'test'
       ...
     # Subtest: sends viewport-offset-x once per change and dedupes repeated values
     ok 3 - sends viewport-offset-x once per change and dedupes repeated values
       ---
-      duration_ms: 0.210314
+      duration_ms: 0.226403
       type: 'test'
       ...
     # Subtest: skips the native setBounds call when the materialized physical rect already matches live bounds, unless force:true
     ok 4 - skips the native setBounds call when the materialized physical rect already matches live bounds, unless force:true
       ---
-      duration_ms: 0.291365
+      duration_ms: 0.290462
       type: 'test'
       ...
     # Subtest: updates lastLogicalBounds before the native write, so a read triggered synchronously from inside setBounds sees the new logical position
     ok 5 - updates lastLogicalBounds before the native write, so a read triggered synchronously from inside setBounds sees the new logical position
       ---
-      duration_ms: 0.263252
+      duration_ms: 0.276236
       type: 'test'
       ...
     # Subtest: assertNoYOffset refuses to forward a non-zero Y offset and logs once without spamming repeated frames
     ok 6 - assertNoYOffset refuses to forward a non-zero Y offset and logs once without spamming repeated frames
       ---
-      duration_ms: 0.442667
+      duration_ms: 0.430684
       type: 'test'
       ...
     # Subtest: I2 backstop: an out-of-range materialized X offset hard-resyncs logical bounds to actual and zeroes both offsets
     ok 7 - I2 backstop: an out-of-range materialized X offset hard-resyncs logical bounds to actual and zeroes both offsets
       ---
-      duration_ms: 0.467694
+      duration_ms: 0.440072
       type: 'test'
       ...
     # Subtest: resolveStartupPlacement() computes a Linux outer-edge-aware initialWindowBounds using the same materializer applyPetWindowBounds uses
     ok 8 - resolveStartupPlacement() computes a Linux outer-edge-aware initialWindowBounds using the same materializer applyPetWindowBounds uses
       ---
-      duration_ms: 0.279783
+      duration_ms: 0.238205
       type: 'test'
       ...
     # Subtest: preserves the v0.13 Windows upgrade baseline through construction and the first definitive bounds write
     ok 9 - preserves the v0.13 Windows upgrade baseline through construction and the first definitive bounds write
       ---
-      duration_ms: 0.590364
+      duration_ms: 0.632642
       type: 'test'
       ...
     1..9
 ok 21 - pet-window-runtime edge virtualization (\#690 Phase 2 runtime)
   ---
-  duration_ms: 3.56306
+  duration_ms: 3.522045
   type: 'suite'
   ...
 # Subtest: pet-window-runtime edge virtualization (\#690 Phase 2 batch 2 reconcile matrix)
     # Subtest: inset self-bootstrap: needs a SECOND consistent observation to actually learn (PR \#751 rework batch A-3), not the first alone
     ok 1 - inset self-bootstrap: needs a SECOND consistent observation to actually learn (PR \#751 rework batch A-3), not the first alone
       ---
-      duration_ms: 0.965064
+      duration_ms: 0.780287
       type: 'test'
       ...
     # Subtest: uses the learned inset to predict correctly next time, without a second predicted-then-measured jump
     ok 2 - uses the learned inset to predict correctly next time, without a second predicted-then-measured jump
       ---
-      duration_ms: 0.707332
+      duration_ms: 0.704225
       type: 'test'
       ...
     # Subtest: does not pollute the learned inset from size changes, two-axis moves, or non-edge single-axis moves
     ok 3 - does not pollute the learned inset from size changes, two-axis moves, or non-edge single-axis moves
       ---
-      duration_ms: 0.499534
+      duration_ms: 0.475147
       type: 'test'
       ...
     # Subtest: relearns the inset when the WM's real clamp boundary drifts, and logs inset-drift
     ok 4 - relearns the inset when the WM's real clamp boundary drifts, and logs inset-drift
       ---
-      duration_ms: 1.037189
+      duration_ms: 1.020616
       type: 'test'
       ...
     # Subtest: classifies a clamp that lands after SETTLE_MS as adopt-clamp, not rebase (no ratcheting)
     ok 5 - classifies a clamp that lands after SETTLE_MS as adopt-clamp, not rebase (no ratcheting)
       ---
-      duration_ms: 0.339946
+      duration_ms: 0.36388
       type: 'test'
       ...
     # Subtest: does not let a late sweep from an earlier write consume a newer write's settle window
     ok 6 - does not let a late sweep from an earlier write consume a newer write's settle window
       ---
-      duration_ms: 0.268352
+      duration_ms: 0.267239
       type: 'test'
       ...
     # Subtest: the settle-sweep generation guard rejects a stale generation, verified via a direct runReconcile() call with an explicit frozen gen
     ok 7 - the settle-sweep generation guard rejects a stale generation, verified via a direct runReconcile() call with an explicit frozen gen
       ---
-      duration_ms: 0.287708
+      duration_ms: 0.218779
       type: 'test'
       ...
     # Subtest: does not orphan the quiet timer when a settle sweep fires first
     ok 8 - does not orphan the quiet timer when a settle sweep fires first
       ---
-      duration_ms: 0.325408
+      duration_ms: 0.292186
       type: 'test'
       ...
     # Subtest: marks reconcile dirty during a drag and compensates with one terminal reconcile on release
     ok 9 - marks reconcile dirty during a drag and compensates with one terminal reconcile on release
       ---
-      duration_ms: 0.303377
+      duration_ms: 0.319516
       type: 'test'
       ...
     # Subtest: marks reconcile dirty during roam animation and compensates once released
     ok 10 - marks reconcile dirty during roam animation and compensates once released
       ---
-      duration_ms: 0.373148
+      duration_ms: 0.342509
       type: 'test'
       ...
     # Subtest: a deferred settle-sweep debt surviving untouched into roam's release now correctly rebases a later external move (fixed as a side effect of C-1's event-evidence bit)
     ok 11 - a deferred settle-sweep debt surviving untouched into roam's release now correctly rebases a later external move (fixed as a side effect of C-1's event-evidence bit)
       ---
-      duration_ms: 0.276327
+      duration_ms: 0.269403
       type: 'test'
       ...
     # Subtest: bounds hitWin.setBounds calls to at most 2 when the hit window is constantly clamped at a genuine edge, then adopts and records hitGeometryDrift
     ok 12 - bounds hitWin.setBounds calls to at most 2 when the hit window is constantly clamped at a genuine edge, then adopts and records hitGeometryDrift
       ---
-      duration_ms: 0.39068
+      duration_ms: 0.43937
       type: 'test'
       ...
     # Subtest: re-syncing with the same derived target after an adopted clamp does not re-initiate a write (no flip-flop)
     ok 13 - re-syncing with the same derived target after an adopted clamp does not re-initiate a write (no flip-flop)
       ---
-      duration_ms: 0.404877
+      duration_ms: 0.4014
       type: 'test'
       ...
     # Subtest: escape hatch keeps X offset at 0 and skips X IPC, but keeps expected-write/reconcile accounting active
     ok 14 - escape hatch keeps X offset at 0 and skips X IPC, but keeps expected-write/reconcile accounting active
       ---
-      duration_ms: 0.316161
+      duration_ms: 0.35335
       type: 'test'
       ...
     # Subtest: I2's offset legal-domain backstop also fires from runReconcile()'s adopt-clamp branch (§12.18)
     ok 15 - I2's offset legal-domain backstop also fires from runReconcile()'s adopt-clamp branch (§12.18)
       ---
-      duration_ms: 0.45432
+      duration_ms: 0.298167
       type: 'test'
       ...
     # Subtest: recomputeOffsetsFrom's out-of-range branch also zeros Y offset (hard resync means BOTH offsets, not just X)
     ok 16 - recomputeOffsetsFrom's out-of-range branch also zeros Y offset (hard resync means BOTH offsets, not just X)
       ---
-      duration_ms: 0.289251
+      duration_ms: 0.231292
       type: 'test'
       ...
     # Subtest: resendViewportOffsets() always resends Y but never sends viewport-offset-x when X is 0 (Windows/macOS reload)
     ok 17 - resendViewportOffsets() always resends Y but never sends viewport-offset-x when X is 0 (Windows/macOS reload)
       ---
-      duration_ms: 0.238906
+      duration_ms: 0.226844
       type: 'test'
       ...
     # Subtest: resendViewportOffsets() resends both Y and a genuine non-zero X (Linux edge-virtualization context)
     ok 18 - resendViewportOffsets() resends both Y and a genuine non-zero X (Linux edge-virtualization context)
       ---
-      duration_ms: 0.312544
+      duration_ms: 0.223677
       type: 'test'
       ...
     # Subtest: PR \#751 rework batch A: reconcile classification, write-time snapshots, inset confirmation, eligibility gating
         # Subtest: Codex \#1: an unexplainable mismatch inside settle DEFERS instead of adopting, then rebases once settle expires
         ok 1 - Codex \#1: an unexplainable mismatch inside settle DEFERS instead of adopting, then rebases once settle expires
           ---
-          duration_ms: 0.536091
+          duration_ms: 0.454599
           type: 'test'
           ...
         # Subtest: Codex \#2: a write-time clamp-eligibility snapshot survives clearObservedClampInsets() landing before the late actual arrives
         ok 2 - Codex \#2: a write-time clamp-eligibility snapshot survives clearObservedClampInsets() landing before the late actual arrives
           ---
-          duration_ms: 0.684309
+          duration_ms: 0.53582
           type: 'test'
           ...
         # Subtest: Codex \#3: a single external one-off mismatch never overwrites the learned inset — needs a second CONSISTENT observation, exactly like initial learning
         ok 3 - Codex \#3: a single external one-off mismatch never overwrites the learned inset — needs a second CONSISTENT observation, exactly like initial learning
           ---
-          duration_ms: 0.364522
+          duration_ms: 0.273411
           type: 'test'
           ...
         # Subtest: A-4 Windows context: a genuine position mismatch rebases — adopt-clamp never applies off Linux
         ok 4 - A-4 Windows context: a genuine position mismatch rebases — adopt-clamp never applies off Linux
           ---
-          duration_ms: 0.373709
+          duration_ms: 0.27852
           type: 'test'
           ...
         # Subtest: treats a Windows-only 1px size readback as native rounding without feeding it back through setBounds
         ok 5 - treats a Windows-only 1px size readback as native rounding without feeding it back through setBounds
           ---
-          duration_ms: 0.447968
+          duration_ms: 0.296834
           type: 'test'
           ...
         # Subtest: does not classify a Windows hit-window 1px size readback as an external grab
         ok 6 - does not classify a Windows hit-window 1px size readback as an external grab
           ---
-          duration_ms: 0.478024
+          duration_ms: 0.299449
           type: 'test'
           ...
         # Subtest: keeps edge reconciliation diagnostics silent unless CLAWD_WINDOW_DEBUG=1
         ok 7 - keeps edge reconciliation diagnostics silent unless CLAWD_WINDOW_DEBUG=1
           ---
-          duration_ms: 0.562772
+          duration_ms: 0.400598
           type: 'test'
           ...
         1..7
     ok 19 - PR \#751 rework batch A: reconcile classification, write-time snapshots, inset confirmation, eligibility gating
       ---
-      duration_ms: 3.906583
+      duration_ms: 2.819454
       type: 'suite'
       ...
     1..19
 ok 22 - pet-window-runtime edge virtualization (\#690 Phase 2 batch 2 reconcile matrix)
   ---
-  duration_ms: 13.298108
+  duration_ms: 11.564901
   type: 'suite'
   ...
 # Subtest: PR \#751 second-review batch C: event-evidence bit, per-side clamp eligibility, hit snapshot atomicity, inset candidate lifecycle
     # Subtest: C-1: a burst of external-move events landing faster than the quiet debounce still gets rebased by the settle sweep, not blind-adopted as if nothing happened
     ok 1 - C-1: a burst of external-move events landing faster than the quiet debounce still gets rebased by the settle sweep, not blind-adopted as if nothing happened
       ---
-      duration_ms: 0.607064
+      duration_ms: 0.370943
       type: 'test'
       ...
     # Subtest: D-1: a stale native-move echo consumed at a quiet-point (a) must not authorize a LATER, genuinely event-less silent reposition to rebase
     ok 2 - D-1: a stale native-move echo consumed at a quiet-point (a) must not authorize a LATER, genuinely event-less silent reposition to rebase
       ---
-      duration_ms: 0.416469
+      duration_ms: 0.255177
       type: 'test'
       ...
     # Subtest: D-1 companion: a native event consumed by adopt-clamp must not authorize a later silent mismatch to rebase
     ok 3 - D-1 companion: a native event consumed by adopt-clamp must not authorize a later silent mismatch to rebase
       ---
-      duration_ms: 1.929507
+      duration_ms: 1.488719
       type: 'test'
       ...
     # Subtest: D-1 (verification item 4): a genuine external move arriving AFTER a quiet-point (a) consumption still correctly re-arms the bit and rebases
     ok 4 - D-1 (verification item 4): a genuine external move arriving AFTER a quiet-point (a) consumption still correctly re-arms the bit and rebases
       ---
-      duration_ms: 0.423381
+      duration_ms: 0.271346
       type: 'test'
       ...
     # Subtest: C-2: a seam-side mismatch is no longer explained away via the OTHER side's boundary — per-side eligibility, not the old raw-workArea fallback
     ok 5 - C-2: a seam-side mismatch is no longer explained away via the OTHER side's boundary — per-side eligibility, not the old raw-workArea fallback
       ---
-      duration_ms: 0.417189
+      duration_ms: 0.303426
       type: 'test'
       ...
     # Subtest: D-3 (matrix gap 1): a genuine LEFT-edge clamp on the ELIGIBLE side is still correctly adopted — per-side eligibility does not over-reject the eligible side itself
     ok 6 - D-3 (matrix gap 1): a genuine LEFT-edge clamp on the ELIGIBLE side is still correctly adopted — per-side eligibility does not over-reject the eligible side itself
       ---
-      duration_ms: 0.381643
+      duration_ms: 0.259265
       type: 'test'
       ...
     # Subtest: C-3: a same-target no-op syncHitWin() call must not refresh the hit write basis (lastHitWorkArea/lastHitClampBounds)
     ok 7 - C-3: a same-target no-op syncHitWin() call must not refresh the hit write basis (lastHitWorkArea/lastHitClampBounds)
       ---
-      duration_ms: 0.372606
+      duration_ms: 0.293548
       type: 'test'
       ...
     # Subtest: C-4: a pending inset candidate observed before a display-added event is not confirmed by the same value reappearing after it
     ok 8 - C-4: a pending inset candidate observed before a display-added event is not confirmed by the same value reappearing after it
       ---
-      duration_ms: 0.370523
+      duration_ms: 0.393545
       type: 'test'
       ...
     # Subtest: D-3 (matrix gap 2a): a pending inset candidate observed before a display-removed event is not confirmed by the same value reappearing after it
     ok 9 - D-3 (matrix gap 2a): a pending inset candidate observed before a display-removed event is not confirmed by the same value reappearing after it
       ---
-      duration_ms: 0.281917
+      duration_ms: 0.288298
       type: 'test'
       ...
     # Subtest: D-3 (matrix gap 2b): a pending inset candidate observed before a display-metrics-changed event is not confirmed by the same value reappearing after it
     ok 10 - D-3 (matrix gap 2b): a pending inset candidate observed before a display-metrics-changed event is not confirmed by the same value reappearing after it
       ---
-      duration_ms: 0.458808
+      duration_ms: 0.29483
       type: 'test'
       ...
     # Subtest: D-3 (matrix gap 3): main.js's display-metrics-changed wiring shape clears the inset table immediately, decoupled from the still-debounced geometry reflow
     ok 11 - D-3 (matrix gap 3): main.js's display-metrics-changed wiring shape clears the inset table immediately, decoupled from the still-debounced geometry reflow
       ---
-      duration_ms: 0.611534
+      duration_ms: 0.453797
       type: 'test'
       ...
     # Subtest: D-3 (matrix gap 3, structural cross-check): main.js's actual display-metrics-changed wiring still matches the shape the assembly test above mirrors
     ok 12 - D-3 (matrix gap 3, structural cross-check): main.js's actual display-metrics-changed wiring still matches the shape the assembly test above mirrors
       ---
-      duration_ms: 1.263993
+      duration_ms: 1.155889
       type: 'test'
       ...
     1..12
 ok 23 - PR \#751 second-review batch C: event-evidence bit, per-side clamp eligibility, hit snapshot atomicity, inset candidate lifecycle
   ---
-  duration_ms: 8.048966
+  duration_ms: 6.222096
   type: 'suite'
   ...
 # Subtest: pet-window-runtime
     # Subtest: keeps context menu owner creation outside the pet runtime and preserves parent ownership
     ok 1 - keeps context menu owner creation outside the pet runtime and preserves parent ownership
       ---
-      duration_ms: 1.731927
+      duration_ms: 1.745959
       type: 'test'
       ...
     # Subtest: lazy-binds topmost edge helpers so main can initialize the pet runtime first
     ok 2 - lazy-binds topmost edge helpers so main can initialize the pet runtime first
       ---
-      duration_ms: 1.804373
+      duration_ms: 1.903895
       type: 'test'
       ...
     # Subtest: creates the hit window with the Windows drag focusability contract
     ok 3 - creates the hit window with the Windows drag focusability contract
       ---
-      duration_ms: 0.85051
+      duration_ms: 0.618976
       type: 'test'
       ...
     # Subtest: reloadWindowWebContents ignores destroyed windows and webContents
     ok 4 - reloadWindowWebContents ignores destroyed windows and webContents
       ---
-      duration_ms: 0.346989
+      duration_ms: 0.313426
       type: 'test'
       ...
     # Subtest: does not reload renderer windows for terminal render-process-gone reasons
     ok 5 - does not reload renderer windows for terminal render-process-gone reasons
       ---
-      duration_ms: 0.31555
+      duration_ms: 0.40711
       type: 'test'
       ...
     # Subtest: stops reloading renderer windows after repeated crashes in the guard window
     ok 6 - stops reloading renderer windows after repeated crashes in the guard window
       ---
-      duration_ms: 0.339053
+      duration_ms: 0.453447
       type: 'test'
       ...
     # Subtest: uses safe reload helpers for pet render-process-gone handlers
     ok 7 - uses safe reload helpers for pet render-process-gone handlers
       ---
-      duration_ms: 1.660084
+      duration_ms: 2.347332
       type: 'test'
       ...
     # Subtest: wires the first-rendered-visual signal to the non-relocating visibility recovery
     ok 8 - wires the first-rendered-visual signal to the non-relocating visibility recovery
       ---
-      duration_ms: 4.217213
+      duration_ms: 4.337107
       type: 'test'
       ...
     # Subtest: creates the render window as non-focusable and materializes the initial virtual bounds
     ok 9 - creates the render window as non-focusable and materializes the initial virtual bounds
       ---
-      duration_ms: 0.431667
+      duration_ms: 0.414203
       type: 'test'
       ...
     # Subtest: flushes runtime prefs once during Windows session end
     ok 10 - flushes runtime prefs once during Windows session end
       ---
-      duration_ms: 0.326981
+      duration_ms: 0.342509
       type: 'test'
       ...
     # Subtest: does not flush runtime prefs for session-end events on non-Windows platforms
     ok 11 - does not flush runtime prefs for session-end events on non-Windows platforms
       ---
-      duration_ms: 0.353771
+      duration_ms: 0.350665
       type: 'test'
       ...
     # Subtest: keeps Linux hit windows non-focusable
     ok 12 - keeps Linux hit windows non-focusable
       ---
-      duration_ms: 0.275184
+      duration_ms: 0.255587
       type: 'test'
       ...
     # Subtest: materializes virtual bounds into viewport offset and syncs the hit shape once per size
     ok 13 - materializes virtual bounds into viewport offset and syncs the hit shape once per size
       ---
-      duration_ms: 0.297296
+      duration_ms: 0.297175
       type: 'test'
       ...
     # Subtest: does not move the hit window while drag owns pointer capture
     ok 14 - does not move the hit window while drag owns pointer capture
       ---
-      duration_ms: 0.167322
+      duration_ms: 0.207487
       type: 'test'
       ...
     # Subtest: I5: recovering from suppressed hit geometry must not re-enable input while petHidden is separately true
     ok 15 - I5: recovering from suppressed hit geometry must not re-enable input while petHidden is separately true
       ---
-      duration_ms: 0.475058
+      duration_ms: 0.437426
       type: 'test'
       ...
     # Subtest: re-answers the editing overlap after each hit geometry sync (\#640)
     ok 16 - re-answers the editing overlap after each hit geometry sync (\#640)
       ---
-      duration_ms: 0.300862
+      duration_ms: 0.269684
       type: 'test'
       ...
     # Subtest: clips the hit window to a right-side internal monitor seam
     ok 17 - clips the hit window to a right-side internal monitor seam
       ---
-      duration_ms: 1.314116
+      duration_ms: 1.05542
       type: 'test'
       ...
     # Subtest: clips the hit window from the left at a left-side internal seam
     ok 18 - clips the hit window from the left at a left-side internal seam
       ---
-      duration_ms: 0.287948
+      duration_ms: 0.248313
       type: 'test'
       ...
     # Subtest: leaves the hit window unclipped when no internal seam is active
     ok 19 - leaves the hit window unclipped when no internal seam is active
       ---
-      duration_ms: 0.195957
+      duration_ms: 0.234788
       type: 'test'
       ...
     # Subtest: returns the seam-clipped hit rect to hover and bubble callers
     ok 20 - returns the seam-clipped hit rect to hover and bubble callers
       ---
-      duration_ms: 0.147786
+      duration_ms: 0.149599
       type: 'test'
       ...
     # Subtest: does not clip a hit rect that legitimately spans an internal monitor seam (only the genuine outer edge, if any, gets clipped)
     ok 21 - does not clip a hit rect that legitimately spans an internal monitor seam (only the genuine outer edge, if any, gets clipped)
       ---
-      duration_ms: 0.283099
+      duration_ms: 0.266908
       type: 'test'
       ...
     # Subtest: does not suppress a narrow hit rect off Linux (no workArea intersection to have narrowed it in the first place)
     ok 22 - does not suppress a narrow hit rect off Linux (no workArea intersection to have narrowed it in the first place)
       ---
-      duration_ms: 0.189965
+      duration_ms: 0.190635
       type: 'test'
       ...
     # Subtest: does not suppress a narrow hit rect when the escape hatch is engaged, even on Linux
     ok 23 - does not suppress a narrow hit rect when the escape hatch is engaged, even on Linux
       ---
-      duration_ms: 0.216685
+      duration_ms: 0.212186
       type: 'test'
       ...
     # Subtest: reasserts Windows topmost when drag movement lands near a work-area edge
     ok 24 - reasserts Windows topmost when drag movement lands near a work-area edge
       ---
-      duration_ms: 0.547864
+      duration_ms: 0.543094
       type: 'test'
       ...
     # Subtest: preserves mini transition guards for drag and display changes
     ok 25 - preserves mini transition guards for drag and display changes
       ---
-      duration_ms: 0.163977
+      duration_ms: 0.152655
       type: 'test'
       ...
     # Subtest: routes mini-mode display changes to mini handlers without writing pet bounds
     ok 26 - routes mini-mode display changes to mini handlers without writing pet bounds
       ---
-      duration_ms: 0.162103
+      duration_ms: 0.157143
       type: 'test'
       ...
     # Subtest: refreshes mini seam state when a display is added
     ok 27 - refreshes mini seam state when a display is added
       ---
-      duration_ms: 0.118471
+      duration_ms: 0.122819
       type: 'test'
       ...
     # Subtest: handleDisplayAdded re-materializes a Linux outer-edge position when that edge becomes an internal seam
     ok 28 - handleDisplayAdded re-materializes a Linux outer-edge position when that edge becomes an internal seam
       ---
-      duration_ms: 0.345937
+      duration_ms: 0.302495
       type: 'test'
       ...
     # Subtest: handleDisplayMetricsChanged re-materializes a Linux outer-edge position when that edge becomes an internal seam
     ok 29 - handleDisplayMetricsChanged re-materializes a Linux outer-edge position when that edge becomes an internal seam
       ---
-      duration_ms: 0.178383
+      duration_ms: 0.20864
       type: 'test'
       ...
     # Subtest: handleDisplayRemoved re-materializes a Linux internal-seam position when that seam becomes an outer edge
     ok 30 - handleDisplayRemoved re-materializes a Linux internal-seam position when that seam becomes an outer edge
       ---
-      duration_ms: 0.264975
+      duration_ms: 0.270565
       type: 'test'
       ...
     # Subtest: snaps the pet back to the frozen size when live bounds drift on display-metrics-changed (\#408)
     ok 31 - snaps the pet back to the frozen size when live bounds drift on display-metrics-changed (\#408)
       ---
-      duration_ms: 0.200345
+      duration_ms: 0.204702
       type: 'test'
       ...
     # Subtest: leaves the pet alone when live bounds already match the frozen size and no clamp is needed (\#408)
     ok 32 - leaves the pet alone when live bounds already match the frozen size and no clamp is needed (\#408)
       ---
-      duration_ms: 0.150902
+      duration_ms: 0.158386
       type: 'test'
       ...
     # Subtest: brings the pet to primary display and flushes runtime prefs
     ok 33 - brings the pet to primary display and flushes runtime prefs
       ---
-      duration_ms: 0.372196
+      duration_ms: 0.386521
       type: 'test'
       ...
     # Subtest: recovers a nominally visible pet after renderer load without relocating it
     ok 34 - recovers a nominally visible pet after renderer load without relocating it
       ---
-      duration_ms: 0.278861
+      duration_ms: 0.278289
       type: 'test'
       ...
     # Subtest: does not resurrect a pet intentionally hidden when the renderer reloads
     ok 35 - does not resurrect a pet intentionally hidden when the renderer reloads
       ---
-      duration_ms: 0.140603
+      duration_ms: 0.134642
       type: 'test'
       ...
     # Subtest: keeps the renderer-load recovery Windows-only
     ok 36 - keeps the renderer-load recovery Windows-only
       ---
-      duration_ms: 0.125866
+      duration_ms: 0.14478
       type: 'test'
       ...
     1..36
 ok 24 - pet-window-runtime
   ---
-  duration_ms: 20.751991
+  duration_ms: 21.468669
   type: 'suite'
   ...
 # Subtest: pet-window-runtime setPetHidden contract (\#416)
     # Subtest: hides the pet and reports a real change
     ok 1 - hides the pet and reports a real change
       ---
-      duration_ms: 0.274282
+      duration_ms: 0.212667
       type: 'test'
       ...
     # Subtest: is idempotent when already in the target state
     ok 2 - is idempotent when already in the target state
       ---
-      duration_ms: 0.127999
+      duration_ms: 0.129551
       type: 'test'
       ...
     # Subtest: shows the pet again
     ok 3 - shows the pet again
       ---
-      duration_ms: 0.203871
+      duration_ms: 0.200765
       type: 'test'
       ...
     # Subtest: defers without changing state during a mini transition
     ok 4 - defers without changing state during a mini transition
       ---
-      duration_ms: 0.173444
+      duration_ms: 0.180026
       type: 'test'
       ...
     # Subtest: reports not-applied when the render window is gone
     ok 5 - reports not-applied when the render window is gone
       ---
-      duration_ms: 0.168745
+      duration_ms: 0.201075
       type: 'test'
       ...
     # Subtest: togglePetVisibility flips state through setPetHidden
     ok 6 - togglePetVisibility flips state through setPetHidden
       ---
-      duration_ms: 0.211726
+      duration_ms: 0.209301
       type: 'test'
       ...
     1..6
 ok 25 - pet-window-runtime setPetHidden contract (\#416)
   ---
-  duration_ms: 1.534609
+  duration_ms: 1.445218
   type: 'suite'
   ...
 # Subtest: pet-window-runtime cloak self-heal (\#525)
     # Subtest: toggle hides on the FIRST press even when the cloak flag reads permanently non-zero
     ok 1 - toggle hides on the FIRST press even when the cloak flag reads permanently non-zero
       ---
-      duration_ms: 0.591595
+      duration_ms: 0.592456
       type: 'test'
       ...
     # Subtest: recoverIfCloaked un-cloaks a cloaked window on the current desktop and reports recovered
     ok 2 - recoverIfCloaked un-cloaks a cloaked window on the current desktop and reports recovered
       ---
-      duration_ms: 0.362608
+      duration_ms: 0.368638
       type: 'test'
       ...
     # Subtest: recoverIfCloaked leaves a window parked on another virtual desktop alone
     ok 3 - recoverIfCloaked leaves a window parked on another virtual desktop alone
       ---
-      duration_ms: 0.297917
+      duration_ms: 0.371383
       type: 'test'
       ...
     # Subtest: recoverIfCloaked degrades to APP-only when the virtual-desktop probe is down
     ok 4 - recoverIfCloaked degrades to APP-only when the virtual-desktop probe is down
       ---
-      duration_ms: 0.295412
+      duration_ms: 0.307284
       type: 'test'
       ...
     # Subtest: recoverIfCloaked guard matrix: hidden/mini/drag/preview each stand down before probing
     ok 5 - recoverIfCloaked guard matrix: hidden/mini/drag/preview each stand down before probing
       ---
-      duration_ms: 0.700309
+      duration_ms: 0.735373
       type: 'test'
       ...
     # Subtest: recoverIfCloaked backs off exponentially after a failed recovery and resets on success
     ok 6 - recoverIfCloaked backs off exponentially after a failed recovery and resets on success
       ---
-      duration_ms: 0.450442
+      duration_ms: 0.469566
       type: 'test'
       ...
     # Subtest: recoverIfCloaked reports unavailable without an inspector (non-Windows / FFI down)
     ok 7 - recoverIfCloaked reports unavailable without an inspector (non-Windows / FFI down)
       ---
-      duration_ms: 0.235431
+      duration_ms: 0.267971
       type: 'test'
       ...
     # Subtest: showPetWindows un-cloaks an abnormally cloaked window BEFORE showInactive (order-sensitive)
     ok 8 - showPetWindows un-cloaks an abnormally cloaked window BEFORE showInactive (order-sensitive)
       ---
-      duration_ms: 0.345035
+      duration_ms: 0.356465
       type: 'test'
       ...
     # Subtest: recoverIfCloaked fails the round when one window recovers and the other stays cloaked
     ok 9 - recoverIfCloaked fails the round when one window recovers and the other stays cloaked
       ---
-      duration_ms: 0.322502
+      duration_ms: 0.330838
       type: 'test'
       ...
     # Subtest: recoverIfCloaked does not touch the window when the un-cloak call itself fails (fail-open)
     ok 10 - recoverIfCloaked does not touch the window when the un-cloak call itself fails (fail-open)
       ---
-      duration_ms: 0.266058
+      duration_ms: 0.269754
       type: 'test'
       ...
     # Subtest: recoverIfCloaked still re-asserts topmost in a mixed round where one window did recover
     ok 11 - recoverIfCloaked still re-asserts topmost in a mixed round where one window did recover
       ---
-      duration_ms: 0.371915
+      duration_ms: 0.36458
       type: 'test'
       ...
     # Subtest: a clean round resets the backoff so the next independent fault starts fresh
     ok 12 - a clean round resets the backoff so the next independent fault starts fresh
       ---
-      duration_ms: 0.255858
+      duration_ms: 0.234938
       type: 'test'
       ...
     1..12
 ok 26 - pet-window-runtime cloak self-heal (\#525)
   ---
-  duration_ms: 5.083502
+  duration_ms: 5.254059
   type: 'suite'
   ...
 # Subtest: settings-effect-router
     # Subtest: updates mirrors before tray and dock side effects
     ok 1 - updates mirrors before tray and dock side effects
       ---
-      duration_ms: 2.185876
+      duration_ms: 2.240743
       type: 'test'
       ...
     # Subtest: destroys the tray when showTray is committed false
     ok 2 - destroys the tray when showTray is committed false
       ---
-      duration_ms: 0.441195
+      duration_ms: 0.446593
       type: 'test'
       ...
     # Subtest: routes bubble policy changes to permission and update bubble effects
     ok 3 - routes bubble policy changes to permission and update bubble effects
       ---
-      duration_ms: 0.395219
+      duration_ms: 0.436184
       type: 'test'
       ...
     # Subtest: clears the Codex user-input card on the notification-policy axis, not the permission-policy axis
     ok 4 - clears the Codex user-input card on the notification-policy axis, not the permission-policy axis
       ---
-      duration_ms: 0.46031
+      duration_ms: 0.479805
       type: 'test'
       ...
     # Subtest: routes textScale and textScaleByDisplay changes to applyTextScale without a menu rebuild
     ok 5 - routes textScale and textScaleByDisplay changes to applyTextScale without a menu rebuild
       ---
-      duration_ms: 0.423502
+      duration_ms: 0.469677
       type: 'test'
       ...
     # Subtest: reconciles the power save blocker when keepAwakeWhileWorking changes
     ok 6 - reconciles the power save blocker when keepAwakeWhileWorking changes
       ---
-      duration_ms: 0.322884
+      duration_ms: 0.355083
       type: 'test'
       ...
     # Subtest: re-syncs hidden HUD windows when low-power mode changes
     ok 7 - re-syncs hidden HUD windows when low-power mode changes
       ---
-      duration_ms: 0.292176
+      duration_ms: 0.336258
       type: 'test'
       ...
     # Subtest: routes language, session alias, and session HUD effects
     ok 8 - routes language, session alias, and session HUD effects
       ---
-      duration_ms: 1.4658
+      duration_ms: 0.635156
       type: 'test'
       ...
     # Subtest: refreshes session effective modes immediately when global automation changes
     ok 9 - refreshes session effective modes immediately when global automation changes
       ---
-      duration_ms: 0.430104
+      duration_ms: 0.450601
       type: 'test'
       ...
     # Subtest: orders combined HUD changes as handlePinnedChanged before generic sync
     ok 10 - orders combined HUD changes as handlePinnedChanged before generic sync
       ---
-      duration_ms: 0.459418
+      duration_ms: 0.458005
       type: 'test'
       ...
     # Subtest: delegates edge pinning changes to one injected reclamp helper
     ok 11 - delegates edge pinning changes to one injected reclamp helper
       ---
-      duration_ms: 0.197159
+      duration_ms: 0.198371
       type: 'test'
       ...
     # Subtest: exits current mini mode when mini mode is disabled
     ok 12 - exits current mini mode when mini mode is disabled
       ---
-      duration_ms: 0.230671
+      duration_ms: 0.253132
       type: 'test'
       ...
     # Subtest: does not enter mini mode when mini mode is re-enabled
     ok 13 - does not enter mini mode when mini mode is re-enabled
       ---
-      duration_ms: 0.148568
+      duration_ms: 0.137767
       type: 'test'
       ...
     # Subtest: refreshes the idle visual on idleVisual changes, without a menu rebuild
     ok 14 - refreshes the idle visual on idleVisual changes, without a menu rebuild
       ---
-      duration_ms: 0.186969
+      duration_ms: 0.174266
       type: 'test'
       ...
     # Subtest: rebuilds menus only once for menu-affecting keys
     ok 15 - rebuilds menus only once for menu-affecting keys
       ---
-      duration_ms: 0.192389
+      duration_ms: 0.196476
       type: 'test'
       ...
     # Subtest: resolves the active theme's tint without rebuilding quick menus
     ok 16 - resolves the active theme's tint without rebuilding quick menus
       ---
-      duration_ms: 0.299359
+      duration_ms: 0.32652
       type: 'test'
       ...
     # Subtest: uses the active theme's pet tint policy
     ok 17 - uses the active theme's pet tint policy
       ---
-      duration_ms: 0.22965
+      duration_ms: 0.191638
       type: 'test'
       ...
     # Subtest: resolves the active theme's accessory without rebuilding quick menus
     ok 18 - resolves the active theme's accessory without rebuilding quick menus
       ---
-      duration_ms: 0.515904
+      duration_ms: 0.521073
       type: 'test'
       ...
     # Subtest: temporarily resolves the holiday accessory from an independent opt-in
     ok 19 - temporarily resolves the holiday accessory from an independent opt-in
       ---
-      duration_ms: 0.578461
+      duration_ms: 0.598708
       type: 'test'
       ...
     # Subtest: resizes the input window after the effective accessory changes
     ok 20 - resizes the input window after the effective accessory changes
       ---
-      duration_ms: 0.209151
+      duration_ms: 0.198701
       type: 'test'
       ...
     # Subtest: broadcasts settings changes only to live renderer windows
     ok 21 - broadcasts settings changes only to live renderer windows
       ---
-      duration_ms: 0.26754
+      duration_ms: 0.350336
       type: 'test'
       ...
     # Subtest: rebuilds shortcut menus only when the toggle-pet shortcut changes
     ok 22 - rebuilds shortcut menus only when the toggle-pet shortcut changes
       ---
-      duration_ms: 0.265716
+      duration_ms: 0.246641
       type: 'test'
       ...
     # Subtest: logs side-effect failures and keeps later routes running
     ok 23 - logs side-effect failures and keeps later routes running
       ---
-      duration_ms: 0.225822
+      duration_ms: 0.22532
       type: 'test'
       ...
     # Subtest: triggers a cleanup sweep + forced snapshot when any stale-cleanup config key changes
     ok 24 - triggers a cleanup sweep + forced snapshot when any stale-cleanup config key changes
       ---
-      duration_ms: 0.272419
+      duration_ms: 0.291114
       type: 'test'
       ...
     # Subtest: dispose unsubscribes both settings routes
     ok 25 - dispose unsubscribes both settings routes
       ---
-      duration_ms: 0.14985
+      duration_ms: 0.214922
       type: 'test'
       ...
     1..25
 ok 27 - settings-effect-router
   ---
-  duration_ms: 12.69507
+  duration_ms: 12.916445
   type: 'suite'
   ...
 # Subtest: theme schema validation
     # Subtest: validates schema, rendering, and update bubble anchor shape
     ok 1 - validates schema, rendering, and update bubble anchor shape
       ---
-      duration_ms: 1.737628
+      duration_ms: 2.273364
       type: 'test'
       ...
     # Subtest: treats sleepSequence.mode=direct as not requiring full sleep art
     ok 2 - treats sleepSequence.mode=direct as not requiring full sleep art
       ---
-      duration_ms: 0.894422
+      duration_ms: 1.265522
       type: 'test'
       ...
     # Subtest: rejects invalid fallback chains and mini themes missing required mini states
     ok 3 - rejects invalid fallback chains and mini themes missing required mini states
       ---
-      duration_ms: 0.418823
+      duration_ms: 0.545499
       type: 'test'
       ...
     # Subtest: rejects non-boolean roamFlipAssets (truthy strings would silently invert the roam mirror)
     ok 4 - rejects non-boolean roamFlipAssets (truthy strings would silently invert the roam mirror)
       ---
-      duration_ms: 0.741256
+      duration_ms: 0.737567
       type: 'test'
       ...
     # Subtest: validates and derives the explicit pet tint capability
     ok 5 - validates and derives the explicit pet tint capability
       ---
-      duration_ms: 2.372444
+      duration_ms: 1.980447
       type: 'test'
       ...
     # Subtest: derives accessory capability from complete raw and normalized coverage
     ok 6 - derives accessory capability from complete raw and normalized coverage
       ---
-      duration_ms: 3.915709
+      duration_ms: 3.702411
       type: 'test'
       ...
     # Subtest: projects mini low-power overrides through the mini viewBox
     ok 7 - projects mini low-power overrides through the mini viewBox
       ---
-      duration_ms: 0.893009
+      duration_ms: 0.821133
       type: 'test'
       ...
     # Subtest: fails accessory capability closed on incomplete viewBox coverage or stale file descriptors
     ok 8 - fails accessory capability closed on incomplete viewBox coverage or stale file descriptors
       ---
-      duration_ms: 0.86103
+      duration_ms: 0.535821
       type: 'test'
       ...
     # Subtest: does not require unreachable mini attachments when mini mode is disabled
     ok 9 - does not require unreachable mini attachments when mini mode is disabled
       ---
-      duration_ms: 0.969242
+      duration_ms: 0.591805
       type: 'test'
       ...
     # Subtest: rejects malformed accessory metadata instead of guessing targets or coordinates
     ok 10 - rejects malformed accessory metadata instead of guessing targets or coordinates
       ---
-      duration_ms: 1.133649
+      duration_ms: 0.816865
       type: 'test'
       ...
     # Subtest: rejects one basename resolving through multiple effective viewBoxes
     ok 11 - rejects one basename resolving through multiple effective viewBoxes
       ---
-      duration_ms: 1.138448
+      duration_ms: 0.713161
       type: 'test'
       ...
     # Subtest: mergeDefaults carries roamFlipAssets and defaults it to false
     ok 12 - mergeDefaults carries roamFlipAssets and defaults it to false
       ---
-      duration_ms: 0.529349
+      duration_ms: 0.505203
       type: 'test'
       ...
     1..12
 ok 28 - theme schema validation
   ---
-  duration_ms: 18.416035
+  duration_ms: 17.02295
   type: 'suite'
   ...
 # Subtest: theme schema defaults and normalization
     # Subtest: mergeDefaults applies defaults and sanitizes runtime file references
     ok 1 - mergeDefaults applies defaults and sanitizes runtime file references
       ---
-      duration_ms: 0.442217
+      duration_ms: 0.486489
       type: 'test'
       ...
     # Subtest: normalizes file hitboxes, rendering, and trusted runtime without file system state
     ok 2 - normalizes file hitboxes, rendering, and trusted runtime without file system state
       ---
-      duration_ms: 1.475508
+      duration_ms: 0.917533
       type: 'test'
       ...
     # Subtest: collectRequiredAssetFiles returns unique basename-only references
     ok 3 - collectRequiredAssetFiles returns unique basename-only references
       ---
-      duration_ms: 0.533487
+      duration_ms: 0.336519
       type: 'test'
       ...
     1..3
 ok 29 - theme schema defaults and normalization
   ---
-  duration_ms: 2.643972
+  duration_ms: 1.900999
   type: 'suite'
   ...
 1..29
 # tests 188
 # suites 16
-# pass 187
-# fail 1
+# pass 188
+# fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 31173.135156
+# duration_ms 30470.202137
