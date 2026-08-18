@@ -210,9 +210,19 @@ async function sampleMatrices(win, targetId, options = {}) {
       // measures the machine, not the animation.
       if (typeof window.__clawdSeekTo === "function") {
         const seekSeconds = ${JSON.stringify(seekSeconds)};
-        for (let ms = 0; ms <= seekSeconds * 1000; ms += 20) {
+        // 19 ms because it is coprime with both periods (1160 ms walk cycle,
+        // 4400 ms breath). A 20 ms step divides the walk cycle exactly 58
+        // times, so it revisits the same 58 phases forever and steps clean over
+        // the contact pulse's peak at q=0.72 however long it runs; a coprime
+        // step walks every 1 ms phase of both cycles for the same sample count.
+        for (let ms = 0; ms <= seekSeconds * 1000; ms += 19) {
           window.__clawdSeekTo(ms / 1000);
           out.push(snapshot());
+        }
+        if (new Set(out.map((m) => JSON.stringify(m))).size < 2) {
+          // A seek that does not move is indistinguishable from an animation
+          // that does not move, and the latter passes every envelope check.
+          throw new Error("seek hook produced no motion");
         }
         return out;
       }
