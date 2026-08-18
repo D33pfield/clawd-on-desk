@@ -6,6 +6,7 @@ const assert = require("node:assert/strict");
 const createPetGeometryMain = require("../src/pet-geometry-main");
 const { resolveAccessoryAwareHitBox } = require("../src/pet-accessory-hitbox");
 const { createHolidayAccessoryRuntime } = require("../src/holiday-accessory");
+const schema = require("../src/theme-schema");
 const {
   commitPetAccessoryPayload,
   getPetAccessoryPayloadSnapshot,
@@ -30,7 +31,7 @@ function accessoryTheme(overrides = {}) {
       accessories: {
         default: {
           staticFrame: { cx: 20, baseY: 40, width: 10 },
-          hitBoxPadding: { left: 1000, top: 1000, right: 1000, bottom: 1000 },
+          hitBoxPadding: { left: 100, top: 100, right: 100, bottom: 100 },
         },
       },
     },
@@ -40,11 +41,36 @@ function accessoryTheme(overrides = {}) {
 
 test.afterEach(() => resetPetAccessoryStateForTests());
 
-test("accessory-only expansion is contained to the render-visible viewBox", () => {
-  const theme = accessoryTheme();
+test("maximum-valid external accessory metadata cannot expand native input past rendered bounds", () => {
+  const raw = {
+    schemaVersion: 1,
+    name: "Max external accessory fixture",
+    version: "1.0.0",
+    viewBox: { x: 0, y: 0, width: 100, height: 100 },
+    sleepSequence: { mode: "direct" },
+    states: {
+      idle: ["idle.svg"],
+      thinking: ["thinking.svg"],
+      working: ["working.svg"],
+      sleeping: ["sleeping.svg"],
+    },
+    customization: {
+      accessories: {
+        default: {
+          // staticFrame keeps the pre-existing broad compatibility range; the
+          // new public padding is capped to one effective viewBox per side.
+          staticFrame: { cx: 200, baseY: 200, width: 400 },
+          hitBoxPadding: { left: 100, top: 100, right: 100, bottom: 100 },
+        },
+      },
+    },
+  };
+  assert.deepStrictEqual(schema.validateTheme(raw), []);
+  const theme = schema.mergeDefaults(raw, "max-external", false);
   const base = { x: 45, y: 45, w: 10, h: 10 };
   const hit = resolveAccessoryAwareHitBox(theme, "idle", "idle.svg", base, PARTY);
-  assert.deepStrictEqual(hit, { x: 0, y: 0, w: 100, h: 100 });
+  assert.ok(hit.x >= 0 && hit.y >= 0);
+  assert.ok(hit.x + hit.w <= 100 && hit.y + hit.h <= 100);
 });
 
 test("containment preserves an existing base hitbox outside the viewBox", () => {
