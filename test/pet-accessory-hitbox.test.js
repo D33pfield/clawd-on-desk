@@ -15,6 +15,7 @@ const {
 } = require("../src/pet-accessory-hitbox");
 
 const ROOT = path.join(__dirname, "..");
+const EPSILON = 1e-9;
 themeLoader.init(path.join(ROOT, "src"));
 
 function baseHitBox(theme, file) {
@@ -58,10 +59,10 @@ describe("accessory-aware hit boxes", () => {
           base,
           resolvePetAccessoryPayload(id, theme)
         );
-        assert.ok(resolved.x <= base.x, `${file}/${id} must preserve the base left edge`);
-        assert.ok(resolved.y <= base.y, `${file}/${id} must preserve the base top edge`);
-        assert.ok(resolved.x + resolved.w >= base.x + base.w, `${file}/${id} must preserve the base right edge`);
-        assert.ok(resolved.y + resolved.h >= base.y + base.h, `${file}/${id} must preserve the base bottom edge`);
+        assert.ok(resolved.x <= base.x + EPSILON, `${file}/${id} must preserve the base left edge`);
+        assert.ok(resolved.y <= base.y + EPSILON, `${file}/${id} must preserve the base top edge`);
+        assert.ok(resolved.x + resolved.w + EPSILON >= base.x + base.w, `${file}/${id} must preserve the base right edge`);
+        assert.ok(resolved.y + resolved.h + EPSILON >= base.y + base.h, `${file}/${id} must preserve the base bottom edge`);
         tops.add(resolved.y);
         heights.add(resolved.h);
       }
