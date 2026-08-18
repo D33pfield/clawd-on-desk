@@ -45,12 +45,21 @@ const BUILTIN_ACCESSORY_MOTION_PADDING = Object.freeze({
     "clawd-sleeping.svg": Object.freeze({ left: 0.2, top: 5.3, right: 0.2 }),
   }),
   cloudling: Object.freeze({
-    // Idle also has pointer-distance scaling. Keep the reviewer/Chromium 5-unit
-    // worst-case envelope rather than shrinking it to a single CI sample run.
-    "cloudling-idle.svg": Object.freeze({ left: 5, top: 5, right: 5, bottom: 5 }),
+    // Idle is script-driven, so this one is derived rather than sampled: the
+    // cloud group is transformed about (12,12) by rotate(θ)·scale(s) with
+    // |θ| <= MAX_ROT_DEG (20°, since targetRot = eyeOffset.x/EYE_MAX * maxRot
+    // and |eyeOffset.x| <= EYE_MAX) and s <= 1.0 * DIST_MAX_SCALE (1.15).
+    // Sweeping that closed range over all seven accessories peaks at
+    // 10.019/4.942/10.019/3.941 (wizard-hat horizontally, halo at the bottom).
+    // An upper bound cannot be undershot by a slow or fast machine, which a
+    // sampled figure demonstrably was.
+    "cloudling-idle.svg": Object.freeze({ left: 10.1, top: 5, right: 10.1, bottom: 4 }),
     "cloudling-typing.svg": Object.freeze({ left: 0.5, top: 1.2, right: 0.5, bottom: 0.6 }),
     "cloudling-mini-idle.svg": Object.freeze({ bottom: 0.4 }),
-    "cloudling-mini-crabwalk.svg": Object.freeze({ left: 4.5, top: 0.9, right: 0.3, bottom: 1.1 }),
+    // Swept deterministically through the walk's own frameFor() via its seek
+    // hook (6381 samples over the 127.6s where the 1.16s step cycle and the
+    // 4.4s breath return to phase together), not sampled against the clock.
+    "cloudling-mini-crabwalk.svg": Object.freeze({ left: 6.4, top: 3, right: 8, bottom: 3.6 }),
   }),
 });
 

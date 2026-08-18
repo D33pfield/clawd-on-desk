@@ -9,6 +9,7 @@ const { createHolidayAccessoryRuntime } = require("../src/holiday-accessory");
 const schema = require("../src/theme-schema");
 const {
   commitPetAccessoryPayload,
+  describeGeometrySync,
   getPetAccessoryPayloadSnapshot,
   resetPetAccessoryStateForTests,
 } = require("../src/pet-accessory-state");
@@ -80,10 +81,10 @@ test("containment preserves an existing base hitbox outside the viewBox", () => 
   assert.deepStrictEqual(hit, base);
 });
 
-test("mini accessory mirroring follows edgeLeft XOR miniFlipAssets", () => {
-  function resolve(flipAssets, edge) {
+test("accessory mirroring follows the facing the renderer reported", () => {
+  function resolve(mirrored) {
     const theme = accessoryTheme({
-      miniMode: { viewBox: { x: 0, y: 0, width: 100, height: 100 }, flipAssets },
+      miniMode: { viewBox: { x: 0, y: 0, width: 100, height: 100 }, flipAssets: false },
       customization: {
         accessories: {
           mini: { staticFrame: { cx: 20, baseY: 40, width: 10 } },
@@ -111,21 +112,21 @@ test("mini accessory mirroring follows edgeLeft XOR miniFlipAssets", () => {
       getCurrentHitBox: () => ({ x: 45, y: 45, w: 10, h: 10 }),
       getCurrentAccessoryPayload: () => PARTY,
       getMiniMode: () => true,
-      getMiniEdge: () => edge,
+      getAccessoryMirrored: () => mirrored,
       getMiniPeekOffset: () => 0,
     });
     return geometry.getHitRectScreen({ x: 0, y: 0, width: 6000, height: 6000 });
   }
 
-  const rightNormal = resolve(false, "right");
-  const leftNormal = resolve(false, "left");
-  const rightFlipped = resolve(true, "right");
-  const leftFlipped = resolve(true, "left");
+  // Geometry no longer predicts the facing from mini edge + theme flags; it
+  // consumes what the renderer actually applied. The composition rule itself
+  // is covered behaviourally in test/pet-accessory-mirror.test.js.
+  const upright = resolve(false);
+  const mirrored = resolve(true);
 
-  assert.ok(rightNormal.left < 45 && rightNormal.right === 55);
-  assert.ok(leftNormal.left === 45 && leftNormal.right > 55);
-  assert.deepStrictEqual(rightFlipped, leftNormal);
-  assert.deepStrictEqual(leftFlipped, rightNormal);
+  assert.ok(upright.left < 45 && upright.right === 55);
+  assert.ok(mirrored.left === 45 && mirrored.right > 55);
+  assert.notDeepStrictEqual(upright, mirrored);
 });
 
 test("screen hit rectangles use outward integer rounding", () => {
@@ -200,4 +201,51 @@ test("holiday geometry rejection retries without resending an unchanged renderer
   assert.strictEqual(runtime.refresh(), true);
   assert.strictEqual(sends, 1);
   assert.strictEqual(applies, 2);
+});
+
+test("a deferred hit-window sync retries silently instead of reporting failure", () => {
+  const theme = { _id: "clawd", _builtin: true, _capabilities: { accessories: true } };
+  let sends = 0;
+  let applies = 0;
+  const warnings = [];
+  const runtime = createHolidayAccessoryRuntime({
+    getSettingsSnapshot: () => ({
+      petAccessory: { clawd: "wizard-hat" },
+      holidayAccessoryEnabled: { clawd: true },
+    }),
+    getActiveTheme: () => theme,
+    sendToRenderer: () => { sends += 1; },
+    // A drag is holding the pointer on the first pass, so the hit window is
+    // deliberately left alone; the second pass lands normally.
+    onAccessoryChange: () => {
+      applies += 1;
+      return applies > 1 ? { applied: true, deferred: false } : { applied: false, deferred: true };
+    },
+    now: () => new Date(2026, 11, 24, 12, 0, 0),
+    logWarn: (...args) => warnings.push(args),
+  });
+
+  assert.strictEqual(runtime.refresh(), true, "the renderer payload was still delivered");
+  assert.strictEqual(sends, 1);
+  assert.strictEqual(applies, 1);
+  assert.deepStrictEqual(warnings, [], "a deferral is not a failure");
+
+  // lastAppliedKey stayed put, so geometry is retried without resending.
+  runtime.refresh();
+  assert.strictEqual(sends, 1);
+  assert.strictEqual(applies, 2);
+  assert.deepStrictEqual(warnings, []);
+
+  // Now settled: no further geometry work for an unchanged accessory.
+  runtime.refresh();
+  assert.strictEqual(applies, 2);
+});
+
+test("describeGeometrySync only calls it a failure when something says so", () => {
+  assert.deepStrictEqual(describeGeometrySync({ applied: true, deferred: false }), { applied: true, deferred: false });
+  assert.deepStrictEqual(describeGeometrySync({ applied: false, deferred: true }), { applied: false, deferred: true });
+  assert.deepStrictEqual(describeGeometrySync(false), { applied: false, deferred: false });
+  // Callers and test doubles predating the contract return undefined.
+  assert.deepStrictEqual(describeGeometrySync(undefined), { applied: true, deferred: false });
+  assert.deepStrictEqual(describeGeometrySync(true), { applied: true, deferred: false });
 });

@@ -135,7 +135,20 @@ const accessorySchemaErrors = themeSchema.validateTheme(raw)
   .filter((message) => message.includes("customization.accessories"));
 if (raw.customization && raw.customization.accessories !== undefined) {
   if (accessorySchemaErrors.length === 0) {
-    console.log(`  ${PASS} customization.accessories attachment geometry is schema-valid`);
+    // Schema-valid is not the same as usable: a coverage gap (a visual with no
+    // descriptor to fall back on) raises no schema error but still turns the
+    // capability off, and Settings then hides the wardrobe with no explanation.
+    // Saying "valid" and stopping there is how an author ships a theme whose
+    // accessories silently never appear.
+    if (themeSchema.deriveAccessoryCapability(raw)) {
+      console.log(`  ${PASS} customization.accessories attachment geometry is schema-valid`);
+    } else {
+      console.log(
+        `  ${WARN} customization.accessories is schema-valid but does not cover every visual, `
+        + "so accessories stay disabled for this theme and the wardrobe is hidden"
+      );
+      warnings++;
+    }
   } else {
     for (const message of accessorySchemaErrors) {
       console.log(`  ${FAIL} ${message}`);

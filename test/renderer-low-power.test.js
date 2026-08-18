@@ -8,6 +8,7 @@ const vm = require("node:vm");
 
 const RENDERER = path.join(__dirname, "..", "src", "renderer.js");
 const ACCESSORY_LAYOUT = path.join(__dirname, "..", "src", "pet-accessory-layout.js");
+const ACCESSORY_MIRROR = path.join(__dirname, "..", "src", "pet-accessory-mirror.js");
 const PRELOAD = path.join(__dirname, "..", "src", "preload.js");
 const MAIN = path.join(__dirname, "..", "src", "main.js");
 
@@ -324,6 +325,7 @@ function createRendererHarness(options = {}) {
   context.globalThis = context;
 
   const source = `${readNormalized(ACCESSORY_LAYOUT)}
+${readNormalized(ACCESSORY_MIRROR)}
 ${readNormalized(RENDERER)}
 globalThis.__rendererTest = {
   initWithConfig,
@@ -2304,13 +2306,25 @@ describe("renderer glyph flip compensation", () => {
   });
 
   it("flips reverse-drawn mini crabwalk assets during pre-entry without entering mini layout", () => {
-    const source = fs.readFileSync(RENDERER, "utf8");
+    const harness = createRendererHarness({ themeConfig: { miniFlipAssets: true } });
 
-    assert.ok(source.includes("let _miniPreEntryMode = false;"));
-    assert.ok(source.includes("_miniPreEntryMode = !!enabled && preEntry;"));
-    assert.ok(source.includes("_miniPreEntryMode && state === \"mini-crabwalk\""));
-    assert.ok(source.includes("_inMiniMode = !!enabled && !preEntry;"));
-    assert.ok(source.includes("applyMiniFlip(next, commitState);"));
+    // Pre-entry: the walk-in starts before mini mode is really on, and the
+    // walk-in visual has to face the right way for the whole walk.
+    harness.electronHandlers.onMiniModeChange(true, "right", { preEntry: true });
+    harness.api.swapToFile("crabwalk.svg", "mini-crabwalk", false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "-1 1");
+
+    // Other mini visuals keep their orientation until the mini swap happens.
+    harness.api.swapToFile("mini-idle.svg", "mini-idle", false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "none");
+
+    // Once mini mode is actually active they all flip.
+    harness.electronHandlers.onMiniModeChange(true, "right", {});
+    harness.api.swapToFile("mini-peek.svg", "mini-peek", false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "-1 1");
   });
 
   it("notifies object-channel SVGs when mini-left glyph compensation changes", () => {

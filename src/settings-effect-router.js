@@ -10,6 +10,7 @@ const {
 } = require("./holiday-accessory");
 const {
   commitPetAccessoryPayload,
+  describeGeometrySync,
   setPetAccessoryFloatingSurfaceRepositioner,
   repositionPetAccessoryFloatingSurfaces,
 } = require("./pet-accessory-state");
@@ -113,7 +114,13 @@ function createSettingsEffectRouter(options = {}) {
 
     commitPetAccessoryPayload(payload, activeTheme);
     try {
-      if (syncHitWin() === false) {
+      const geometry = describeGeometrySync(syncHitWin());
+      if (!geometry.applied) {
+        // Deferred is not a failure: the payload is already canonical, so the
+        // next sync (drag release, window show, next move) picks up the new
+        // envelope on its own. Warning here would fire every time the user
+        // changes a hat while holding the pet.
+        if (geometry.deferred) return true;
         throw new Error("native hit geometry was not applied");
       }
       repositionPetAccessoryFloatingSurfaces();

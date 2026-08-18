@@ -140,6 +140,9 @@ function containsScreenRect(hit, actual) {
 async function sampleMatrices(win, targetId, options = {}) {
   const scriptedCycleMs = Number.isFinite(options.scriptedCycleMs) ? options.scriptedCycleMs : 0;
   const cloudlingPointer = options.cloudlingPointer === true;
+  // Long enough to cover both periods a scripted walk composes: the step cycle
+  // (~1.16s) and the slower breath (4.4s) land back in phase together at 127.6s.
+  const seekSeconds = Number.isFinite(options.seekSeconds) ? options.seekSeconds : 127.6;
   return win.webContents.executeJavaScript(`(async () => {
     const root = document.documentElement;
     const target = document.getElementById(${JSON.stringify(targetId)});
@@ -158,7 +161,14 @@ async function sampleMatrices(win, targetId, options = {}) {
       if (typeof window.__cloudlingSetPointer !== "function") {
         throw new Error("cloudling scripted pointer hook is unavailable");
       }
+      // The diagonals alone cap the eye offset's x component at 1/sqrt(2), so
+      // they can never reach the full MAX_ROT_DEG the horizontal probes do —
+      // which is how the sampled envelope came out short of the real one.
       const probes = [
+        { x: -1000, y: 0, inside: true },
+        { x: 1000, y: 0, inside: true },
+        { x: 0, y: -1000, inside: true },
+        { x: 0, y: 1000, inside: true },
         { x: -1000, y: -1000, inside: true },
         { x: 1000, y: -1000, inside: true },
         { x: -1000, y: 1000, inside: true },
@@ -194,6 +204,17 @@ async function sampleMatrices(win, targetId, options = {}) {
 
     const scriptedCycleMs = ${scriptedCycleMs};
     if (scriptedCycleMs > 0) {
+      // Preferred: the visual exposes a pure seek, so sweep its whole cycle
+      // deterministically. Sampling a script-driven SVG against the wall clock
+      // measures the machine, not the animation.
+      if (typeof window.__clawdSeekTo === "function") {
+        const seekSeconds = ${JSON.stringify(seekSeconds)};
+        for (let ms = 0; ms <= seekSeconds * 1000; ms += 20) {
+          window.__clawdSeekTo(ms / 1000);
+          out.push(snapshot());
+        }
+        return out;
+      }
       const horizon = Math.min(12000, Math.max(1200, scriptedCycleMs + 250));
       const started = performance.now();
       while (performance.now() - started <= horizon) {

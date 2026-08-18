@@ -17,10 +17,9 @@ function createPetGeometryMain(options = {}) {
   const getCurrentSvg = options.getCurrentSvg || (() => null);
   const getCurrentHitBox = options.getCurrentHitBox || (() => null);
   const getCurrentAccessoryPayload = options.getCurrentAccessoryPayload || (() => null);
+  const getAccessoryMirrored = options.getAccessoryMirrored || (() => false);
   const getMiniMode = options.getMiniMode || (() => false);
   const getMiniPeekOffset = options.getMiniPeekOffset || (() => 0);
-  const getMiniEdge = typeof options.getMiniEdge === "function" ? options.getMiniEdge : null;
-  const injectedScreen = options.screen || null;
 
   function getCurrentFile(theme) {
     return getCurrentSvg()
@@ -51,41 +50,12 @@ function createPetGeometryMain(options = {}) {
     };
   }
 
-  function resolveScreenApi() {
-    if (injectedScreen) return injectedScreen;
-    try {
-      const electron = require("electron");
-      return electron && typeof electron === "object" ? electron.screen : null;
-    } catch {
-      return null;
-    }
-  }
-
-  function resolveMiniEdge(bounds) {
-    if (getMiniEdge) {
-      const explicit = getMiniEdge(bounds);
-      if (explicit === "left" || explicit === "right") return explicit;
-    }
-    const screen = resolveScreenApi();
-    if (!screen || typeof screen.getDisplayMatching !== "function") return "right";
-    try {
-      const display = screen.getDisplayMatching(bounds);
-      const wa = display && display.workArea;
-      if (!wa || ![wa.x, wa.width].every(Number.isFinite)) return "right";
-      const leftDistance = Math.abs(bounds.x - wa.x);
-      const rightDistance = Math.abs((bounds.x + bounds.width) - (wa.x + wa.width));
-      return leftDistance <= rightDistance ? "left" : "right";
-    } catch {
-      return "right";
-    }
-  }
-
   function getCanonicalAccessoryPayload(theme) {
     const current = getPetAccessoryPayloadSnapshot(theme);
     // Renderer config/theme reload normally commits before geometry runs. The
-    // fallback is intentionally read-only for startup/test resilience; making
-    // it authoritative would let geometry recreate the date-race we are
-    // eliminating and would leak state across independent harnesses.
+    // fallback is read-only for startup/theme-swap resilience — see main.js's
+    // getEffectivePetAccessoryPayload, which must stay on the non-committing
+    // builder so a hit-window sync can never install a payload of its own.
     return current ? current.payload : getCurrentAccessoryPayload();
   }
 
@@ -112,9 +82,10 @@ function createPetGeometryMain(options = {}) {
     const state = getCurrentState();
     const file = getCurrentFile(theme);
     const miniMode = !!getMiniMode();
-    const edge = miniMode ? resolveMiniEdge(bounds) : "right";
-    const miniFlipAssets = !!(theme && theme.miniMode && theme.miniMode.flipAssets);
-    const mirrorX = miniMode && ((edge === "left") !== miniFlipAssets);
+    // Reported by the renderer (see applyMiniFlip). Deriving it here from mini
+    // edge + theme flags missed free roam and the mini walk-in, neither of
+    // which is gated on miniMode.
+    const mirrorX = !!getAccessoryMirrored();
     const resolveViewBox = typeof hitGeometry.resolveViewBox === "function"
       ? hitGeometry.resolveViewBox
       : defaultHitGeometry.resolveViewBox;

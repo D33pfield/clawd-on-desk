@@ -7,6 +7,7 @@ const {
 } = require("./pet-customization-catalog");
 const {
   commitPetAccessoryPayload,
+  describeGeometrySync,
   repositionPetAccessoryFloatingSurfaces,
 } = require("./pet-accessory-state");
 
@@ -133,13 +134,17 @@ function createHolidayAccessoryRuntime(options = {}) {
     // retries the native geometry without resending an unchanged renderer payload.
     if (force || resolved.key !== lastAppliedKey) {
       try {
-        const geometryApplied = onAccessoryChange(resolved.payload);
-        if (geometryApplied === false) {
+        const geometry = describeGeometrySync(onAccessoryChange(resolved.payload));
+        if (geometry.applied) {
+          repositionPetAccessoryFloatingSurfaces();
+          lastAppliedKey = resolved.key;
+          changed = true;
+        } else if (!geometry.deferred) {
           throw new Error("native hit geometry was not applied");
         }
-        repositionPetAccessoryFloatingSurfaces();
-        lastAppliedKey = resolved.key;
-        changed = true;
+        // Deferred (drag in flight, windows not up yet, sliver rect): leave
+        // lastAppliedKey alone so the next scheduled refresh retries the
+        // geometry, and stay quiet — nothing went wrong.
       } catch (err) {
         try { logWarn("Clawd: holiday accessory geometry apply failed:", err && err.message); } catch {}
         return false;

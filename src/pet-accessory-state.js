@@ -82,6 +82,19 @@ function repositionPetAccessoryFloatingSurfaces() {
   return repositionFloatingSurfaces();
 }
 
+// Reads the outcome of a native hit-window sync. syncHitWin() reports
+// {applied, deferred}; "deferred" (mid-drag, windows not up yet, transient
+// sliver rect) is normal and must be retried rather than logged as a failure.
+// Callers and test doubles that predate the contract return undefined — those
+// are taken at face value as applied, so only an explicit signal means failure.
+function describeGeometrySync(result) {
+  if (result === false) return { applied: false, deferred: false };
+  if (result && typeof result === "object") {
+    return { applied: !!result.applied, deferred: !!result.deferred };
+  }
+  return { applied: true, deferred: false };
+}
+
 function resetPetAccessoryStateForTests() {
   current = Object.freeze({
     themeId: null,
@@ -93,6 +106,7 @@ function resetPetAccessoryStateForTests() {
 
 module.exports = {
   NONE_PAYLOAD,
+  describeGeometrySync,
   commitPetAccessoryPayload,
   getPetAccessoryPayloadSnapshot,
   setPetAccessoryFloatingSurfaceRepositioner,

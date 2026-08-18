@@ -5,6 +5,7 @@ const assert = require("node:assert");
 const path = require("node:path");
 
 const themeLoader = require("../src/theme-loader");
+const hitGeometry = require("../src/hit-geometry");
 const {
   PET_ACCESSORY_IDS,
   resolvePetAccessoryPayload,
@@ -68,6 +69,71 @@ describe("accessory-aware hit boxes", () => {
       }
       assert.ok(tops.size >= 3, `${file} should react to the selected accessory's dimensions`);
       assert.ok(heights.size >= 3, `${file} should not use a single tall transparent envelope`);
+    }
+  });
+
+  it("reaches the built-in safety helmet in the 3+ session building pose", () => {
+    const theme = themeLoader.loadTheme("clawd", { strict: true });
+    const box = theme.fileHitBoxes["clawd-working-building.svg"];
+    const shared = theme.hitBoxes.default;
+
+    // assets/svg/clawd-working-building.svg puts the helmet at
+    // translate(0.5 1) scale(0.7) over local y 0..10, so it rests at y 1..8;
+    // body-bounce's translateY(-2px) at 30% plus body-squash's scale(0.95,1.05)
+    // lift its top to about -1.8. This override exists for that, and it applies
+    // whether or not an accessory is worn — the helmet is the pet's own art.
+    const helmetTop = -1.8;
+    assert.ok(
+      shared.y > helmetTop,
+      "guard: the shared default box is expected to miss the helmet, which is why this entry exists"
+    );
+    assert.ok(box.y <= helmetTop, `building hit box top ${box.y} must reach the helmet at ${helmetTop}`);
+
+    // And it buys only that: same sides, same floor, taller by the helmet alone.
+    assert.strictEqual(box.x, shared.x, "building hit box must not widen the shared default");
+    assert.strictEqual(box.w, shared.w, "building hit box must not widen the shared default");
+    assert.strictEqual(box.y + box.h, shared.y + shared.h, "building hit box must not lower the floor");
+  });
+
+  it("keeps a motion envelope for every animated built-in descriptor, and none spare", () => {
+    // The envelope table's individual numbers are the Electron CTM audit's job.
+    // This is the structural half: a followTarget accessory rides the animation
+    // and needs an envelope, a static one does not, and an envelope for a file
+    // that no longer animates is dead weight nobody would notice.
+    for (const themeId of ["clawd", "cloudling"]) {
+      const theme = themeLoader.loadTheme(themeId, { strict: true });
+      const files = (theme.customization.accessories || {}).files || {};
+      const animated = Object.keys(files).filter((file) => files[file] && files[file].followTarget);
+      const measured = BUILTIN_ACCESSORY_MOTION_PADDING[themeId] || {};
+
+      assert.deepStrictEqual(
+        animated.filter((file) => !measured[file]),
+        [],
+        `${themeId}: animated accessory descriptors with no motion envelope`
+      );
+      assert.deepStrictEqual(
+        Object.keys(measured).filter((file) => !animated.includes(file)),
+        [],
+        `${themeId}: motion envelopes with no animated descriptor`
+      );
+
+      for (const [file, padding] of Object.entries(measured)) {
+        const viewBox = hitGeometry.resolveViewBox(theme, "idle", file);
+        assert.ok(viewBox, `${themeId}/${file}: no effective viewBox`);
+        for (const [side, value] of Object.entries(padding)) {
+          assert.ok(
+            Number.isFinite(value) && value >= 0,
+            `${themeId}/${file}.${side} must be a non-negative number`
+          );
+          // Runtime clamps the accessory contribution to the viewBox, so a
+          // value past it does not widen anything — it just hides a typo.
+          const limit = side === "left" || side === "right" ? viewBox.width : viewBox.height;
+          assert.ok(
+            value <= limit,
+            `${themeId}/${file}.${side}=${value} exceeds its ${limit}-unit viewBox`
+          );
+        }
+      }
     }
   });
 

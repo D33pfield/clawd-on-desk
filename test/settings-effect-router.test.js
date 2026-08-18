@@ -578,6 +578,45 @@ describe("settings-effect-router", () => {
     ]);
   });
 
+  it("stays quiet when the hit window defers, e.g. changing hats mid-drag", () => {
+    const clawd = { _id: "clawd", _builtin: true, _capabilities: { accessories: true } };
+    const { calls, logs, emit } = createHarness({
+      routerOptions: {
+        getActiveTheme: () => clawd,
+        syncHitWin: () => {
+          calls.push(["syncHitWin"]);
+          return { applied: false, deferred: true };
+        },
+      },
+    });
+
+    emit({ petAccessory: { clawd: "top-hat" } });
+
+    // The renderer still gets the new hat and the canonical payload is already
+    // committed, so the next sync applies the envelope. Nothing failed.
+    assert.deepStrictEqual(calls.map((call) => call[0]), [
+      "updateMirrors",
+      "sendToRenderer",
+      "syncHitWin",
+    ]);
+    assert.deepStrictEqual(logs, []);
+  });
+
+  it("warns only when the hit window genuinely could not be resolved", () => {
+    const clawd = { _id: "clawd", _builtin: true, _capabilities: { accessories: true } };
+    const { logs, emit } = createHarness({
+      routerOptions: {
+        getActiveTheme: () => clawd,
+        syncHitWin: () => ({ applied: false, deferred: false }),
+      },
+    });
+
+    emit({ petAccessory: { clawd: "top-hat" } });
+
+    assert.strictEqual(logs.length, 1);
+    assert.match(String(logs[0][0]), /accessory geometry apply failed/);
+  });
+
   it("broadcasts settings changes only to live renderer windows", () => {
     const calls = [];
     const windows = [
