@@ -90,6 +90,9 @@ const {
 } = require("./settings-size-preview-session");
 const { registerSettingsIpc } = require("./settings-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
+const { createKimiQuotaClient } = require("./kimi-quota-client");
+const { createKimiQuotaCredentialStore } = require("./kimi-quota-credential-store");
+const { createKimiQuotaRuntime } = require("./kimi-quota-runtime");
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
@@ -115,11 +118,17 @@ const initPermission = require("./permission");
 const { isPassiveNotifyEntry } = require("./passive-notify-entry");
 const { registerPermissionIpc } = initPermission;
 const telegramApprovalSettings = require("./telegram-approval-settings");
+const { sanitizeTelegramApprovalLogMeta } = require("./telegram-approval-log-meta");
 const discordPresenceSettings = require("./discord-presence-settings");
 const { createDiscordPresenceBridge } = require("./discord-presence-rpc");
 const { resolveAgentDisplayName } = require("./agent-display-name");
-const { FeishuApprovalClient } = require("./feishu-approval-client");
+const {
+  FeishuApprovalClient,
+  classifyFeishuSdkError,
+  lookupOpenIdByEmail,
+} = require("./feishu-approval-client");
 const feishuApprovalSettings = require("./feishu-approval-settings");
+const { saveFeishuApproverByEmail } = require("./settings-actions");
 const {
   buildTelegramApprovalStatus,
   isNativeTelegramApprovalSelected,
@@ -410,6 +419,7 @@ let lastDiscordPresenceVisual = null;
 let suppressTelegramMigrationReconcile = 0;
 let _remoteSshTransportCoordinator = null;
 let feishuApprovalClient = null;
+const feishuApprovalCloseDrains = new Set();
 let feishuApprovalSyncPromise = Promise.resolve();
 let feishuApprovalConfigSignature = "";
 let feishuSessionAutomationRouteSignature = "";
@@ -479,9 +489,12 @@ const _settingsController = createSettingsController({
     getTelegramApprovalTokenInfo: () => getTelegramApprovalTokenInfo(),
     sendTelegramApprovalTest: () => sendTelegramApprovalTest(),
     writeFeishuApprovalSecrets: (secrets) => writeFeishuApprovalSecrets(secrets),
+    getFeishuApprovalPrefs: () => getFeishuApprovalPrefs(),
+    getFeishuApprovalSecrets: () => getFeishuApprovalSecrets(),
+    getFeishuApprovalSecretsRevision: () => feishuApprovalSecretsRevision,
     getFeishuApprovalStatus: () => getFeishuApprovalStatus(),
     getFeishuApprovalSecretInfo: () => getFeishuApprovalSecretInfo(),
-    sendFeishuApprovalTest: () => sendFeishuApprovalTest(),
+    sendFeishuApprovalTest: (persisted) => sendFeishuApprovalTest(persisted),
     // Lazy getter so settings-actions can use the controller even though it's
     // instantiated below (forward-reference).
     get telegramMigration() {
@@ -519,10 +532,10 @@ const _settingsController = createSettingsController({
   },
 });
 _settingsController.subscribeKey("agents", (_agents, snapshot) => {
-  // A future-version prefs file is intentionally read-only. Settings may still
-  // change in memory for the current process, but publishing those ephemeral
-  // values would let a retained hook cold-launch Clawd against the durable
-  // prefs truth.
+  // A readable future-version prefs file may still change in memory for the
+  // current process. An unreadable prefs file rejects mutations earlier in the
+  // controller. In both locked cases, publishing ephemeral values would let a
+  // retained hook cold-launch Clawd against a different durable prefs truth.
   if (_settingsController.isLocked()) return;
   _syncCodexAutoStartGate(snapshot, "settings");
 });
@@ -1063,8 +1076,8 @@ let contextMenu;
 let doNotDisturb = false;
 let isQuitting = false;
 let quitCleanupStarted = false;
-let remoteSshQuitDrainStarted = false;
-let remoteSshQuitDrainReady = false;
+let appQuitDrainStarted = false;
+let appQuitDrainReady = false;
 // Mirror caches: kept in sync with the settings store via settings-effect-router
 // further down. Read freely; never assign
 // directly (writes go through ctx setters → controller.applyUpdate).
@@ -1079,7 +1092,10 @@ let sessionHudShowStateLabels = _settingsController.get("sessionHudShowStateLabe
 let sessionHudShowElapsed = _settingsController.get("sessionHudShowElapsed");
 let sessionHudShowContextUsage = _settingsController.get("sessionHudShowContextUsage");
 let sessionHudShowQuota = _settingsController.get("sessionHudShowQuota");
+let quotaRingDisplayMode = _settingsController.get("quotaRingDisplayMode");
+let quotaRingHiddenProviders = _settingsController.get("quotaRingHiddenProviders");
 let claudeQuotaCollectionEnabled = _settingsController.get("claudeQuotaCollectionEnabled");
+let kimiQuotaCollectionEnabled = _settingsController.get("kimiQuotaCollectionEnabled");
 let quotaMergeSources = _settingsController.get("quotaMergeSources");
 let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetached");
 let sessionHudPinned = _settingsController.get("sessionHudPinned");
@@ -1586,15 +1602,15 @@ const {
 
 // ── Permission bubble — delegated to src/permission.js ──
 const {
-  isAgentIntegrationInstalled: _isAgentIntegrationInstalled,
-  isAgentEnabled: _isAgentEnabled,
-  isAgentPermissionsEnabled: _isAgentPermissionsEnabled,
-  isAgentSubagentPermissionsEnabled: _isAgentSubagentPermissionsEnabled,
-  isAgentNotificationHookEnabled: _isAgentNotificationHookEnabled,
-  isCodexNativeNotificationSoundEnabled: _isCodexNativeNotificationSoundEnabled,
-  isCodexPermissionInterceptEnabled: _isCodexPermissionInterceptEnabled,
-  shouldSyncAgentIntegration: _shouldSyncAgentIntegration,
+  createRuntimeAgentGate,
 } = require("./agent-gate");
+const _runtimeAgentGate = createRuntimeAgentGate({
+  getSnapshot: () => _settingsController.getSnapshot(),
+  // locked && recovered means prefs bytes were never read and the snapshot is
+  // only defaults. Keep every prefs-backed agent path closed for this process;
+  // fixing file access and restarting is the only authority transition.
+  isAuthoritative: () => !_settingsController.hasReadFailure(),
+});
 const _permCtx = {
   get win() { return win; },
   get lang() { return lang; },
@@ -1616,14 +1632,13 @@ const _permCtx = {
   // pendingPermissions list changes (notifyPermissionsChanged), so a bubble
   // that leaves the list mid-edit can't strand the pet faded + click-through.
   syncImeEditingPetDodge: () => topmostRuntime.syncImeEditingPetDodge(),
-  isAgentEnabled: (agentId) =>
-    _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
+  isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
   isAgentPermissionsEnabled: (agentId) =>
-    _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.isAgentPermissionsEnabled(agentId),
   isAgentSubagentPermissionsEnabled: (agentId) =>
-    _isAgentSubagentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.isAgentSubagentPermissionsEnabled(agentId),
   isCodexPermissionInterceptEnabled: () =>
-    _isCodexPermissionInterceptEnabled({ agents: _settingsController.get("agents") }),
+    _runtimeAgentGate.isCodexPermissionInterceptEnabled(),
   // The permission layer consumes one normalized runtime mode. DND,
   // headless, per-agent and bubble gates run before this chokepoint.
   getPermissionAutomationMode: () =>
@@ -1822,6 +1837,7 @@ const _stateCtx = {
   // Last-known account quota survives app restarts (state-account-quota.js).
   accountQuotaPersistPath: require("./state-account-quota").DEFAULT_PERSIST_PATH,
   get claudeQuotaCollectionEnabled() { return claudeQuotaCollectionEnabled; },
+  get kimiQuotaCollectionEnabled() { return kimiQuotaCollectionEnabled; },
   get quotaMergeSources() { return quotaMergeSources; },
   get doNotDisturb() { return doNotDisturb; },
   set doNotDisturb(v) { doNotDisturb = v; },
@@ -1855,12 +1871,12 @@ const _stateCtx = {
   // permissionsEnabled=false toggle would silently rebuild holds on every
   // incoming Kimi PermissionRequest.
   isAgentPermissionsEnabled: (agentId) =>
-    _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.isAgentPermissionsEnabled(agentId),
   // state.js gates self-issued Notification events (idle / wait-for-input
   // pings) via this reader. Living in updateSession (not at the HTTP
   // boundary) keeps the gate consistent for hook / log-poll / plugin paths.
   isAgentNotificationHookEnabled: (agentId) =>
-    _isAgentNotificationHookEnabled({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.isAgentNotificationHookEnabled(agentId),
   resolveAgentDisplayName: _resolveAgentDisplayName,
   miniPeekIn: () => miniPeekIn(),
   miniPeekOut: () => miniPeekOut(),
@@ -1910,24 +1926,32 @@ const _stateCtx = {
     if (sessionAutomationCoordinator) sessionAutomationCoordinator.onSessionLifecycleEnd(payload);
   },
   getIdleVisualChoice,
-  isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
-  hasAnyEnabledAgent: () => {
-    // `get("agents")` returns the live reference (no clone) — we're only
-    // reading. Missing agents field falls back to "assume enabled" (the
-    // legacy default-true contract for unconfigured installs); but an
-    // explicit empty object means every agent was cleared, so return
-    // false. Without that distinction, a user who wiped the field would
-    // still trigger startup-recovery process scans.
-    const agents = _settingsController.get("agents");
-    if (!agents || typeof agents !== "object") return true;
-    const probe = { agents };
-    for (const id of Object.keys(agents)) {
-      if (_isAgentEnabled(probe, id)) return true;
-    }
-    return false;
-  },
+  isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
+  hasAnyEnabledAgent: () => _runtimeAgentGate.hasAnyEnabledAgent(),
 };
 const _state = require("./state")(_stateCtx);
+const _kimiQuotaCredentialStore = createKimiQuotaCredentialStore({ safeStorage });
+const _kimiQuotaRuntime = createKimiQuotaRuntime({
+  credentialStore: _kimiQuotaCredentialStore,
+  client: createKimiQuotaClient({ appVersion: app.getVersion() }),
+  getSettingsSnapshot: () => _settingsController.getSnapshot(),
+  setCollectionEnabled: (enabled) => _settingsController.applyCommand(
+    "setKimiQuotaCollectionEnabled",
+    { enabled }
+  ),
+  commitLocalKimiQuota: (quota) => _state.commitLocalKimiQuota(quota),
+  clearLocalKimiQuota: () => _state.clearLocalKimiQuota(),
+});
+_settingsController.subscribeKey("kimiQuotaCollectionEnabled", (enabled) => {
+  void _kimiQuotaRuntime.onCollectionPreferenceChanged(enabled).catch((error) => {
+    console.warn("Clawd: Kimi quota preference reconciliation failed:", error && error.message);
+  });
+});
+_settingsController.subscribeKey("agents", (_agents, snapshot) => {
+  if (!_runtimeAgentGate.isAgentEnabled("kimi-cli")) {
+    _kimiQuotaRuntime.invalidateRequests();
+  }
+});
 const { setState, applyState, updateSession, resolveDisplayState, getSvgOverride,
         enableDoNotDisturb, disableDoNotDisturb, startStaleCleanup, stopStaleCleanup,
         startWakePoll, stopWakePoll, detectRunningAgentProcesses,
@@ -2169,10 +2193,10 @@ sendDashboardI18n = _dashboard.sendI18n;
 
 // ── First-run onboarding tutorial ──
 // Buckets the installable agents for the tutorial's step 2. We call the
-// detector with skipDefaultIntegrations:false so the default integrations
-// (claude-code, codex) are checked too — that's the only way to flag the
-// marquee "default Codex hook but Codex isn't installed → recommend removing"
-// case, which the Settings UI doesn't surface.
+// detector with skipDefaultIntegrations:false so the default integrations are
+// present in the report; the bucketer still exempts them from cleanup (#895 —
+// a missing ~/.codex is not evidence that a Codex hook is stale), so this flag
+// only affects the active/install buckets.
 function buildTutorialAgentOnboardingState() {
   const { detectAgentInstallations } = require("./agent-installation-detector");
   const { INSTALLABLE_AGENT_IDS } = require("./settings-actions-agents");
@@ -2277,6 +2301,11 @@ const _tutorial = require("./tutorial")({
   ),
 });
 
+// Shared with session-hud.js on purpose: the Settings "show beside the pet"
+// list has to be built from the SAME provider table and draw rule that sizes
+// the cluster window, or the list can offer a provider that never draws.
+const _ringGeom = require("./quota-ring-geometry");
+
 const _sessionHud = require("./session-hud")({
   get win() { return win; },
   get petHidden() { return petWindowRuntime.isPetHidden(); },
@@ -2285,6 +2314,8 @@ const _sessionHud = require("./session-hud")({
   get sessionHudShowElapsed() { return sessionHudShowElapsed; },
   get sessionHudShowContextUsage() { return sessionHudShowContextUsage; },
   get sessionHudShowQuota() { return sessionHudShowQuota; },
+  get quotaRingDisplayMode() { return quotaRingDisplayMode; },
+  get quotaRingHiddenProviders() { return quotaRingHiddenProviders; },
   get sessionHudPinned() { return sessionHudPinned; },
   get lowPowerIdleMode() { return lowPowerIdleMode; },
   getMiniMode: () => _mini.getMiniMode(),
@@ -2315,7 +2346,7 @@ agentRuntime = createAgentRuntimeMain({
   getServer: () => _server,
   getStateRuntime: () => _state,
   getPermissionRuntime: () => _perm,
-  isAgentEnabled: (agentId) => _isAgentEnabled(_settingsController.getSnapshot(), agentId),
+  isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
   updateSession: (sessionId, state, event, opts) => updateSession(sessionId, state, event, opts),
   debugLog: (msg) => sessionLog(msg),
   captureGhosttyTerminalId,
@@ -2357,14 +2388,14 @@ const _serverCtx = {
   captureForegroundWindowsTerminal: _captureForegroundWindowsTerminal,
   debugLog: (msg) => sessionLog(msg),
   recordWindowsProcessChainShadow: (record) => recordWindowsProcessChainShadow(record),
-  isAgentEnabled: (agentId) => _isAgentEnabled({ agents: _settingsController.get("agents") }, agentId),
+  isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
   shouldSyncAgentIntegration: (agentId) =>
-    _shouldSyncAgentIntegration({ agents: _settingsController.get("agents") }, agentId),
+    _runtimeAgentGate.shouldSyncAgentIntegration(agentId),
   getAgentIntegrationOptions: _getAgentIntegrationOptions,
-  isAgentPermissionsEnabled: (agentId) => _isAgentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
-  isAgentSubagentPermissionsEnabled: (agentId) => _isAgentSubagentPermissionsEnabled({ agents: _settingsController.get("agents") }, agentId),
-  isCodexNativeNotificationSoundEnabled: () => _isCodexNativeNotificationSoundEnabled({ agents: _settingsController.get("agents") }),
-  isCodexPermissionInterceptEnabled: () => _isCodexPermissionInterceptEnabled({ agents: _settingsController.get("agents") }),
+  isAgentPermissionsEnabled: (agentId) => _runtimeAgentGate.isAgentPermissionsEnabled(agentId),
+  isAgentSubagentPermissionsEnabled: (agentId) => _runtimeAgentGate.isAgentSubagentPermissionsEnabled(agentId),
+  isCodexNativeNotificationSoundEnabled: () => _runtimeAgentGate.isCodexNativeNotificationSoundEnabled(),
+  isCodexPermissionInterceptEnabled: () => _runtimeAgentGate.isCodexPermissionInterceptEnabled(),
   codexSubagentClassifier: agentRuntime.getCodexSubagentClassifier(),
   setState,
   updateSession: agentRuntime.updateSessionFromServer,
@@ -2477,6 +2508,7 @@ function getConfiguredFeishuApprovalClient() {
 }
 
 function telegramApprovalLog(level, message, meta = {}) {
+  const diagnosticMeta = sanitizeTelegramApprovalLogMeta(meta);
   const parts = [`telegram approval ${level}: ${message}`];
   if (meta && meta.text) parts.push(String(meta.text).trim());
   if (meta && meta.error) parts.push(String(meta.error).trim());
@@ -2486,6 +2518,10 @@ function telegramApprovalLog(level, message, meta = {}) {
       parts.push(`${key}=${String(value).trim()}`);
     }
   }
+  for (const key of ["outcome", "mode", "proxy"]) {
+    const value = diagnosticMeta[key];
+    if (value) parts.push(`${key}=${value}`);
+  }
   permLog(parts.filter(Boolean).join(" | "));
 }
 
@@ -2493,7 +2529,7 @@ function feishuApprovalLog(level, message, meta = {}) {
   const parts = [`feishu approval ${level}: ${message}`];
   if (meta && meta.text) parts.push(String(meta.text).trim());
   if (meta && meta.error) parts.push(String(meta.error).trim());
-  for (const key of ["requestId", "messageId", "decision", "matched"]) {
+  for (const key of ["requestId", "messageId", "decision", "matched", "code", "stage", "httpStatus", "businessCode", "networkCode"]) {
     const value = meta && meta[key];
     if (value !== undefined && value !== null && value !== "") {
       parts.push(`${key}=${String(value).trim()}`);
@@ -2645,34 +2681,35 @@ function getFeishuApprovalSecretInfo() {
 // which is per-domain) is dropped with it. `lang` is deliberately absent — the
 // translator reads it dynamically, so a language switch must not bounce the
 // long connection.
-function buildFeishuApprovalSignature(config, paths, secrets) {
-  return JSON.stringify({
+function buildFeishuApprovalBindingSignatureFields(
+  config,
+  secrets,
+  revision = feishuApprovalSecretsRevision,
+) {
+  return {
     enabled: config.enabled === true,
     platform: config.platform,
+    credentialPlatform: secrets.credentialPlatform,
     idType: config.idType,
     approverId: config.approverId,
-    secretsEnvFilePath: paths.secretsEnvFilePath,
+    approverSource: config.approverSource,
+    approverBoundPlatform: config.approverBoundPlatform,
+    approverBoundAppId: config.approverBoundAppId,
     appId: secrets.appId,
-    appSecret: secrets.appSecret ? "set" : "",
-    verificationToken: secrets.verificationToken ? "set" : "",
-    encryptKey: secrets.encryptKey ? "set" : "",
+    secretsRevision: revision,
+  };
+}
+
+function buildFeishuApprovalSignature(config, paths, secrets) {
+  return JSON.stringify({
+    ...buildFeishuApprovalBindingSignatureFields(config, secrets),
+    secretsEnvFilePath: paths.secretsEnvFilePath,
     connectionTimeoutSeconds: config.connectionTimeoutSeconds,
-    secretsRevision: feishuApprovalSecretsRevision,
   });
 }
 
 function buildFeishuSessionAutomationRouteSignature(config, secrets, revision = feishuApprovalSecretsRevision) {
-  return JSON.stringify({
-    enabled: config.enabled === true,
-    platform: config.platform,
-    idType: config.idType,
-    approverId: config.approverId,
-    appId: secrets.appId,
-    appSecret: secrets.appSecret ? "set" : "",
-    verificationToken: secrets.verificationToken ? "set" : "",
-    encryptKey: secrets.encryptKey ? "set" : "",
-    secretsRevision: revision,
-  });
+  return JSON.stringify(buildFeishuApprovalBindingSignatureFields(config, secrets, revision));
 }
 
 function prepareFeishuSessionAutomationRouteChange(nextRouteSignature) {
@@ -2697,6 +2734,22 @@ function getFeishuApprovalStatus() {
   const config = getFeishuApprovalPrefs();
   const secrets = getFeishuApprovalSecrets();
   const ready = feishuApprovalSettings.readiness(config, secrets);
+  const credentialEvaluation = feishuApprovalSettings.evaluateFeishuApprovalConfiguration(
+    config,
+    secrets,
+    {
+      requireEnabled: false,
+      requireApprover: false,
+    },
+  );
+  const setupEvaluation = feishuApprovalSettings.evaluateFeishuApprovalConfiguration(
+    config,
+    secrets,
+    {
+      requireEnabled: false,
+      requireApprover: true,
+    },
+  );
   const clientStatus = feishuApprovalClient && typeof feishuApprovalClient.getStatus === "function"
     ? feishuApprovalClient.getStatus()
     : { status: "stopped" };
@@ -2709,6 +2762,10 @@ function getFeishuApprovalStatus() {
     configured: ready.ready === true,
     reason: ready.reason || "",
     message: clientStatus.message || ready.message || "",
+    credentialReady: credentialEvaluation.ok === true,
+    credentialReason: credentialEvaluation.ok ? "" : credentialEvaluation.code || "invalid-config",
+    configurationReady: setupEvaluation.ok === true,
+    setupReason: setupEvaluation.ok ? "" : setupEvaluation.code || "invalid-config",
     connectionTimeoutSeconds: config.connectionTimeoutSeconds,
     // Two different questions, deliberately two fields:
     //   secretsStored     — is ANY secret on disk? (drives render gating only)
@@ -2729,11 +2786,11 @@ function broadcastFeishuApprovalStatus() {
 
 function writeFeishuApprovalSecrets(secrets) {
   const paths = getFeishuApprovalPaths();
-  prepareFeishuSessionAutomationRouteChange(buildFeishuSessionAutomationRouteSignature(
+  const nextRouteSignature = buildFeishuSessionAutomationRouteSignature(
     getFeishuApprovalPrefs(),
     secrets && typeof secrets === "object" ? secrets : {},
     feishuApprovalSecretsRevision + 1
-  ));
+  );
   const result = feishuApprovalSettings.writeSecretsEnvFile({
     fs,
     path,
@@ -2742,21 +2799,21 @@ function writeFeishuApprovalSecrets(secrets) {
     platform: process.platform,
   });
   if (result && result.status === "ok") {
+    prepareFeishuSessionAutomationRouteChange(nextRouteSignature);
     feishuApprovalSecretsRevision += 1;
     queueFeishuApprovalSync("secrets");
-  } else if (
-    feishuApprovalClient
-    && typeof feishuApprovalClient.markSessionAutomationRouteCurrent === "function"
-  ) {
-    feishuApprovalClient.markSessionAutomationRouteCurrent();
   }
   return result;
 }
 
-async function startFeishuApprovalClient() {
-  const config = getFeishuApprovalPrefs();
+async function startFeishuApprovalClient(persisted = null) {
+  const config = persisted && persisted.config
+    ? persisted.config
+    : getFeishuApprovalPrefs();
   const paths = getFeishuApprovalPaths();
-  const secrets = getFeishuApprovalSecrets();
+  const secrets = persisted && persisted.secrets
+    ? persisted.secrets
+    : getFeishuApprovalSecrets();
   const ready = feishuApprovalSettings.readiness(config, secrets);
   if (!ready.ready) {
     if (feishuApprovalClient) stopFeishuApprovalClient();
@@ -2774,7 +2831,7 @@ async function startFeishuApprovalClient() {
       await feishuApprovalClient.start();
       return true;
     } catch (err) {
-      feishuApprovalLog("warn", "start failed", { error: err && err.message ? err.message : String(err) });
+      feishuApprovalLog("warn", "start failed", classifyFeishuSdkError(err, "runtime-start"));
       return false;
     }
   }
@@ -2809,7 +2866,7 @@ async function startFeishuApprovalClient() {
     feishuApprovalLog("info", "starting");
     return true;
   } catch (err) {
-    feishuApprovalLog("warn", "start failed", { error: err && err.message ? err.message : String(err) });
+    feishuApprovalLog("warn", "start failed", classifyFeishuSdkError(err, "runtime-start"));
     return false;
   }
 }
@@ -2825,29 +2882,84 @@ function stopFeishuApprovalClient(options = {}) {
     feishuSessionAutomationRouteSignature = "";
   }
   if (client && typeof client.close === "function") {
-    try { client.close(); } catch (err) {
-      feishuApprovalLog("warn", "stop failed", { error: err && err.message ? err.message : String(err) });
+    try {
+      const closeResult = client.close();
+      if (closeResult && typeof closeResult.then === "function") {
+        const drain = Promise.resolve(closeResult);
+        feishuApprovalCloseDrains.add(drain);
+        void drain.then(
+          () => feishuApprovalCloseDrains.delete(drain),
+          () => feishuApprovalCloseDrains.delete(drain)
+        );
+      }
+      return closeResult;
+    } catch (err) {
+      feishuApprovalLog("warn", "stop failed", classifyFeishuSdkError(err, "runtime-stop"));
     }
   }
 }
 
-async function syncFeishuApproval(reason = "settings") {
-  const config = getFeishuApprovalPrefs();
-  const secrets = getFeishuApprovalSecrets();
+function settleDrainWithin(drain, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      resolve();
+    };
+    timer = setTimeout(finish, timeoutMs);
+    Promise.resolve(drain).then(finish, finish);
+  });
+}
+
+function drainRemoteSshAndFeishuBeforeQuit() {
+  const drains = [];
+  try {
+    settingsIpcRuntime.dispose();
+  } catch (err) {
+    console.error("settings IPC shutdown failed:", err && err.message);
+  }
+  if (_remoteSshRuntime && typeof _remoteSshRuntime.shutdown === "function") {
+    drains.push(
+      Promise.resolve(_remoteSshRuntime.shutdown({ timeoutMs: 5000 }))
+        .catch((err) => console.error("remote-ssh shutdown drain failed:", err && err.message))
+    );
+  }
+  stopFeishuApprovalClient();
+  drains.push(...Array.from(
+    feishuApprovalCloseDrains,
+    (drain) => settleDrainWithin(drain, 5000),
+  ));
+  return Promise.allSettled(drains);
+}
+
+async function syncFeishuApproval(reason = "settings", persisted = null) {
+  if (isQuitting) {
+    stopFeishuApprovalClient();
+    return false;
+  }
+  const config = persisted && persisted.config
+    ? persisted.config
+    : getFeishuApprovalPrefs();
+  const secrets = persisted && persisted.secrets
+    ? persisted.secrets
+    : getFeishuApprovalSecrets();
   const ready = feishuApprovalSettings.readiness(config, secrets);
   if (!ready.ready) {
     stopFeishuApprovalClient();
     return false;
   }
-  const started = await startFeishuApprovalClient();
+  const started = await startFeishuApprovalClient(persisted);
   if (started) feishuApprovalLog("debug", `sync ${reason}`);
   return started;
 }
 
-function queueFeishuApprovalSync(reason) {
+function queueFeishuApprovalSync(reason, persisted = null) {
   feishuApprovalSyncPromise = feishuApprovalSyncPromise
     .catch(() => {})
-    .then(() => syncFeishuApproval(reason));
+    .then(() => syncFeishuApproval(reason, persisted));
   return feishuApprovalSyncPromise;
 }
 
@@ -2872,22 +2984,36 @@ function feishuApprovalUnavailableResult(status) {
   };
 }
 
-async function sendFeishuApprovalTest() {
-  const beforeStatus = getFeishuApprovalStatus();
+async function sendFeishuApprovalTest(persisted = null) {
+  const persistedReady = persisted && persisted.config && persisted.secrets
+    ? feishuApprovalSettings.readiness(persisted.config, persisted.secrets)
+    : null;
+  const beforeStatus = persistedReady
+    ? {
+      configured: persistedReady.ready === true,
+      reason: persistedReady.reason || "",
+      message: persistedReady.message || "",
+    }
+    : getFeishuApprovalStatus();
   if (beforeStatus.configured !== true) {
     return feishuApprovalUnavailableResult(beforeStatus);
   }
-  await queueFeishuApprovalSync("test");
+  await queueFeishuApprovalSync("test", persisted);
   const client = getConfiguredFeishuApprovalClient();
   if (!client || typeof client.requestApproval !== "function") {
-    return feishuApprovalUnavailableResult(getFeishuApprovalStatus());
+    return feishuApprovalUnavailableResult(persistedReady ? beforeStatus : getFeishuApprovalStatus());
   }
   if (typeof client.waitUntilConnected === "function") {
-    const config = getFeishuApprovalPrefs();
+    const config = persisted && persisted.config
+      ? persisted.config
+      : getFeishuApprovalPrefs();
     const timeoutMs = Math.max(1, Number(config.connectionTimeoutSeconds) || 15) * 1000;
     const connected = await client.waitUntilConnected(timeoutMs);
     if (!connected) {
-      return { ...feishuApprovalUnavailableResult(getFeishuApprovalStatus()), code: "not-connected" };
+      return {
+        ...feishuApprovalUnavailableResult(persistedReady ? beforeStatus : getFeishuApprovalStatus()),
+        code: "not-connected",
+      };
     }
   }
   const controller = new AbortController();
@@ -2899,13 +3025,18 @@ async function sendFeishuApprovalTest() {
     const decision = await client.requestApproval({
       title: translate("feishuCardTestTitle"),
       detail: translate("feishuCardTestDetail"),
-    }, { signal: controller.signal, rejectOnSendError: true });
+    }, {
+      signal: controller.signal,
+      rejectOnSendError: true,
+      abortOutcome: { decision: "no-decision" },
+    });
     if (decision === "allow" || decision === "deny") {
       return { status: "ok", decision };
     }
     return { status: "error", code: "no-button-response", message: "Test card did not receive a button response" };
   } catch (err) {
-    return { status: "error", code: "card-send-failed", message: err && err.message ? err.message : String(err) };
+    feishuApprovalLog("warn", "test card send failed", classifyFeishuSdkError(err, "send-card"));
+    return { status: "error", code: "card-send-failed" };
   } finally {
     clearTimeout(timer);
   }
@@ -3165,6 +3296,12 @@ async function initTelegramMigrationController() {
     log: telegramApprovalLog,
   });
 
+  // Seed before publishing the controller. If Settings changes the recipient
+  // while init awaits native startup, the subscription below must recognize
+  // that first edit as an identity change and queue reconciliation behind init.
+  telegramApprovalIdentitySignature = buildTelegramApprovalIdentitySignature(
+    getTelegramApprovalPrefs()
+  );
   _telegramMigrationController = createTelegramMigrationController({
     native: nativeRunner,
     readPrefs: () => readTelegramMigrationPrefsForController(),
@@ -3229,6 +3366,8 @@ async function initTelegramMigrationController() {
   });
 
   await _telegramMigrationController.init();
+  // Re-read after init so the baseline always matches the committed Settings
+  // snapshot, including an edit that raced with native startup.
   telegramApprovalIdentitySignature = buildTelegramApprovalIdentitySignature(
     getTelegramApprovalPrefs()
   );
@@ -3628,7 +3767,12 @@ const SETTINGS_MIRROR_SETTERS = {
   sessionHudShowElapsed: (v) => { sessionHudShowElapsed = v; },
   sessionHudShowContextUsage: (v) => { sessionHudShowContextUsage = v; },
   sessionHudShowQuota: (v) => { sessionHudShowQuota = v; },
+  quotaRingDisplayMode: (v) => { quotaRingDisplayMode = v; },
+  // Normalized to an array here as well as in prefs: this mirror also takes the
+  // value straight from a settings broadcast, and every consumer indexes it.
+  quotaRingHiddenProviders: (v) => { quotaRingHiddenProviders = Array.isArray(v) ? v : []; },
   claudeQuotaCollectionEnabled: (v) => { claudeQuotaCollectionEnabled = v; },
+  kimiQuotaCollectionEnabled: (v) => { kimiQuotaCollectionEnabled = v; },
   quotaMergeSources: (v) => { quotaMergeSources = v; },
   sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
   sessionHudPinned: (v) => { sessionHudPinned = v; },
@@ -3926,7 +4070,7 @@ const settingsSizePreviewSession = createSettingsSizePreviewSession({
   },
 });
 
-registerSettingsIpc({
+const settingsIpcRuntime = registerSettingsIpc({
   ipcMain,
   app,
   BrowserWindow,
@@ -3936,6 +4080,10 @@ registerSettingsIpc({
   path,
   settingsController: _settingsController,
   getQuotaSourceCount: () => _state.getQuotaSourceCount(),
+  getQuotaRingProviders: () => _ringGeom.listQuotaRingProviders(
+    _state.buildSessionSnapshot(),
+    quotaRingHiddenProviders
+  ),
   themeLoader,
   codexPetMain,
   getSettingsWindow,
@@ -3956,9 +4104,23 @@ registerSettingsIpc({
   getDoNotDisturb: () => doNotDisturb,
   getSoundMuted: () => soundMuted,
   getSoundVolume: () => soundVolume,
+  saveFeishuApproverByEmail: ({ email, signal }) => saveFeishuApproverByEmail({ email, signal }, {
+    getFeishuApprovalPrefs,
+    getFeishuApprovalSecrets,
+    getFeishuApprovalSecretsRevision: () => feishuApprovalSecretsRevision,
+    lookupFeishuApproverByEmail: (params) => lookupOpenIdByEmail({
+      ...params,
+      log: feishuApprovalLog,
+    }),
+    commitResolvedApprover: (payload) => _settingsController.applyCommand(
+      "feishuApproval.commitResolvedApprover",
+      payload,
+    ),
+  }),
   getAllAgents,
   getHookServerPort: () => getHookServerPort(),
   getRecentHookEvents: (options) => _server.getRecentHookEvents(options),
+  kimiQuotaRuntime: _kimiQuotaRuntime,
   checkForUpdates,
   getUpdateCheckSnapshot,
   clearUpdateError,
@@ -3978,6 +4140,9 @@ registerSessionIpc({
   ipcMain,
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
   getI18n: () => getDashboardI18nPayload(),
+  getDashboardWindow: () => _dashboard.getWindow(),
+  getKimiQuotaStatus: () => _kimiQuotaRuntime.getStatus(),
+  refreshKimiQuota: () => _kimiQuotaRuntime.refresh(),
   focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
   hideSession: (sessionId) => hideDashboardSession(sessionId),
   openSessionFolder: (sessionId) => openDashboardSessionFolder(sessionId),
@@ -4189,11 +4354,10 @@ function createWindow() {
   startHttpServer().then((port) => {
     if (port == null) return;
     const restoredSessionIds = restoreSessionsFromRecoveryLeases(_state, {
-      isAgentEnabled: (agentId) => {
-        const snapshot = { agents: _settingsController.get("agents") };
-        return _isAgentEnabled(snapshot, agentId)
-          && _isAgentIntegrationInstalled(snapshot, agentId);
-      },
+      isAgentEnabled: (agentId) => (
+        _runtimeAgentGate.isAgentEnabled(agentId)
+        && _runtimeAgentGate.isAgentIntegrationInstalled(agentId)
+      ),
     });
     if (restoredSessionIds.length > 0) {
       const recoveredSnapshot = _state.buildSessionSnapshot();
@@ -4583,7 +4747,7 @@ if (!gotTheLock) {
       const verdict = getCodexHookHealth({ prefs: snapshot });
       const prevSignature = _settingsController.get("codexHookHealthLastNotified") || "";
       const decision = decideCodexHookNotification(verdict, prevSignature, {
-        codexEnabled: _isAgentEnabled(snapshot, "codex"),
+        codexEnabled: _runtimeAgentGate.isAgentEnabled("codex"),
         notifyEnabled: _settingsController.get("codexHookHealthNotifyEnabled") !== false,
       });
       if (decision.nextSignature !== prevSignature) {
@@ -4628,6 +4792,13 @@ if (!gotTheLock) {
     } catch (err) {
       _remoteSshInstallationIdentity = null;
       console.error("Clawd remote-ssh: installation identity initialization failed:", err && err.message);
+    }
+    // safeStorage is only guaranteed after Electron is ready. This reconciles
+    // the local key/quota binding and never performs a Kimi network request.
+    try {
+      await _kimiQuotaRuntime.initialize();
+    } catch (err) {
+      console.warn("Clawd: Kimi quota startup reconciliation failed:", err && err.message);
     }
 
     permDebugLog = path.join(app.getPath("userData"), "permission-debug.log");
@@ -4748,16 +4919,13 @@ if (!gotTheLock) {
 
   app.on("before-quit", (event) => {
     isQuitting = true;
-    if (!remoteSshQuitDrainReady
-      && _remoteSshRuntime
-      && typeof _remoteSshRuntime.shutdown === "function") {
+    if (!appQuitDrainReady) {
       event.preventDefault();
-      if (!remoteSshQuitDrainStarted) {
-        remoteSshQuitDrainStarted = true;
-        void _remoteSshRuntime.shutdown({ timeoutMs: 5000 })
-          .catch((err) => console.error("remote-ssh shutdown drain failed:", err && err.message))
+      if (!appQuitDrainStarted) {
+        appQuitDrainStarted = true;
+        void drainRemoteSshAndFeishuBeforeQuit()
           .finally(() => {
-            remoteSshQuitDrainReady = true;
+            appQuitDrainReady = true;
             app.quit();
           });
       }

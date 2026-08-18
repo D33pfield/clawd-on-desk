@@ -1025,11 +1025,16 @@ function showPermissionBubble(permEntry) {
     permissionBubbleWindows.delete(bub);
     const idx = pendingPermissions.indexOf(permEntry);
     if (idx !== -1) {
-      // Qwen + Copilot can hand no-decision back to their native flow. Hermes
+      // Qwen + Copilot + DSH can hand no-decision back to their native flow. Hermes
       // has no native permission UI, so its opt-in plugin gate treats this as
       // a retryable block. In every case we avoid fabricating a user denial.
       // CC/CodeBuddy still get an explicit deny for this user-close action.
-      const behavior = (permEntry.isQwenCode || permEntry.isCopilotCli || permEntry.isHermes) ? "no-decision" : "deny";
+      const behavior = (
+        permEntry.isQwenCode
+        || permEntry.isCopilotCli
+        || permEntry.isHermes
+        || permEntry.isDsh
+      ) ? "no-decision" : "deny";
       resolvePermissionEntry(permEntry, behavior, "Bubble window closed by user");
     }
     repositionDependentBubbles();
@@ -1247,6 +1252,9 @@ function buildPermissionBubblePayload(permEntry) {
     // converted into a retryable block by the plugin. Clarify elicitation is
     // different and can hand control to Hermes' native clarification UI.
     isHermes: permEntry.isHermes || false,
+    // DSH has a downstream native web answerer. Its first-release bubble must
+    // not render Go to Terminal because that action has no decision meaning.
+    isDsh: permEntry.isDsh || false,
     // Display-only detail for the passive Kimi notify card: the real tool
     // name plus the whitelisted tool_input subset let the renderer reuse the
     // standard cue path (formatDetail) while the card stays dismiss-only.
@@ -1950,7 +1958,7 @@ function handleRemoteApprovalDecision(
       isValidInteraction(permEntry.interaction)
       && permEntry.interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION
     ) {
-      if (permEntry.isHermes) {
+      if (permEntry.isHermes || permEntry.isDsh) {
         // Hermes treats an explicit deny as "clarification cancelled"; only a
         // no-decision (204) falls back to its native terminal prompt, which is
         // what "go to terminal" means here.
@@ -1961,7 +1969,7 @@ function handleRemoteApprovalDecision(
       resolvePermissionEntry(permEntry, "deny", "User answered in terminal");
       return true;
     }
-    if (permEntry.isCodex || permEntry.isQwenCode || permEntry.isAntigravity) {
+    if (permEntry.isCodex || permEntry.isQwenCode || permEntry.isAntigravity || permEntry.isDsh) {
       resolvePermissionEntry(permEntry, "no-decision", "Go to terminal from remote approval");
       ctx.focusTerminalForSession(permEntry.sessionId, { fallbackEntry: buildPermissionFocusEntry(permEntry) });
     } else {
@@ -2100,12 +2108,12 @@ function applyPermissionSuggestion(perm, index, options = {}) {
   syncPermissionShortcuts();
 
   // opencode-family: decisions go back via the plugin's reverse bridge
-  // (Bun.serve on a random localhost port). The plugin then calls the host's
-  // in-process Hono route. Plugin sent us a fire-and-forget POST — no HTTP
+  // (Bun.serve or node:http on a random localhost port). The plugin then calls
+  // the host's in-process Hono route. Plugin sent us a fire-and-forget POST — no HTTP
   // response to complete on this connection.
   if (isOpencodeFamilyEntry(permEntry)) {
-    // Autoclose: silent drop — same DND semantics. The host TUI falls back
-    // to its built-in prompt so the user can answer in the terminal.
+    // Autoclose: silent drop — same DND semantics. The host falls back to its
+    // built-in terminal or Desktop prompt so the user can answer natively.
     if (behavior === "no-decision") return;
     let reply;
     if (behavior === "deny") reply = "reject";
@@ -2190,6 +2198,20 @@ function applyPermissionSuggestion(perm, index, options = {}) {
     return;
   }
 
+  // DeepSeek Harness bridge waits on this HTTP response inside its public
+  // approval/request waterfall. Only ordinary approval decisions travel here;
+  // ask_user_question remains owned by DSH's native provider.
+  if (permEntry.isDsh) {
+    if (behavior === "no-decision") {
+      sendDshNoDecisionResponse(res, message || "fallback");
+      return;
+    }
+    sendDshPermissionResponse(res, {
+      decision: behavior === "deny" ? "deny" : "allow",
+    });
+    return;
+  }
+
   if (permEntry.isElicitation) {
     if (behavior === "no-decision") {
       // Autoclose: drop the socket so CC stops waiting, then refocus the
@@ -2234,12 +2256,12 @@ function permLog(msg) {
   rotatedAppend(ctx.permDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
-// Fire-and-forget POST to the family plugin's reverse bridge. The plugin
-// runs inside the host's Bun process and does NOT expose the host's own
-// permission route externally — TUI mode has no TCP listener at all (see
-// Phase 2 Spike in docs/plans/plan-opencode-integration.md). Instead the plugin
-// starts its own Bun.serve on a random localhost port and forwards our
-// decision to the host's in-process Hono router via ctx.client._client.post().
+// Fire-and-forget POST to the family plugin's reverse bridge. The plugin runs
+// inside the host and does NOT expose the host's own permission route
+// externally — TUI mode has no TCP listener at all (see Phase 2 Spike in
+// docs/plans/plan-opencode-integration.md). Instead the plugin starts a tiny
+// Bun.serve (CLI/TUI) or node:http (Desktop) listener on a random port and
+// forwards our decision to the host's in-process Hono router via ctx.client._client.post().
 //
 // Shape: POST http://127.0.0.1:<plugin-port>/reply
 //   Authorization: Bearer <hex token>
@@ -2247,8 +2269,8 @@ function permLog(msg) {
 //
 // Uses raw http.request (not fetch) to avoid Electron main-process fetch
 // polyfill concerns. Bridge is always 127.0.0.1 bound by the plugin so no
-// IPv4/IPv6 gotcha. 5s timeout — on failure the host TUI still falls
-// back to terminal-based approval.
+// IPv4/IPv6 gotcha. 5s timeout — on failure the host still falls back to its
+// native terminal or Desktop approval.
 function replyOpencodeFamilyPermission({ agentId, bridgeUrl, bridgeToken, requestId, reply, toolName }) {
   const tag = agentId || "opencode-family";
   if (!bridgeUrl || !bridgeToken || !requestId) {
@@ -2406,6 +2428,22 @@ function sendHermesNoDecisionResponse(res, reason = "") {
   return sendNoDecisionResponse(res, reason, "hermes");
 }
 
+function sendDshNoDecisionResponse(res, reason = "") {
+  return sendNoDecisionResponse(res, reason, "dsh");
+}
+
+function sendDshPermissionResponse(res, responseObj) {
+  if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
+  const responseBody = JSON.stringify(responseObj);
+  permLog(`dsh response: ${responseBody}`);
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
+  });
+  res.end(responseBody);
+  return true;
+}
+
 function sendHermesPermissionResponse(res, responseObj) {
   if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
   const responseBody = JSON.stringify(responseObj);
@@ -2540,6 +2578,14 @@ function handleDecide(event, behavior) {
     if (behavior === "deny-and-focus") {
       ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
     }
+    return;
+  }
+  if (perm.isDsh) {
+    if (behavior === "allow" || behavior === "deny") {
+      resolvePermissionEntry(perm, behavior);
+      return;
+    }
+    resolvePermissionEntry(perm, "no-decision", `Unsupported DSH bubble action: ${String(behavior)}`);
     return;
   }
   if (perm.isHermes) {
@@ -2924,6 +2970,8 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
     sendAntigravityNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isHermes) {
     sendHermesNoDecisionResponse(perm.res, reason || "permission-dismissed");
+  } else if (perm.isDsh) {
+    sendDshNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (!isOpencodeFamilyEntry(perm) && perm.res && !perm.res.destroyed) {
     try { perm.res.destroy(); } catch {}
   }

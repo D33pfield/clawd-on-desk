@@ -4,7 +4,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 
 ## Project Overview
 
-Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、WorkBuddy、Kiro CLI、Kimi Code CLI (Kimi-CLI)、Qwen Code、ZCode、CodeWhale、opencode、MiMo Code、Pi、OpenClaw、Hermes Agent、Qoder、QoderWork、QwenWork (千问办公)、Reasonix；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / zh-TW / ko / ja / pt-BR。
+Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、WorkBuddy、Kiro CLI、Kimi Code CLI (Kimi-CLI)、Qwen Code、ZCode、CodeWhale、opencode、MiMo Code、Pi、OpenClaw、Hermes Agent、Qoder、QoderWork、QwenWork (千问办公)、Reasonix、DeepSeek Harness；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / zh-TW / ko / ja / pt-BR / es。
 
 ## Common Commands
 
@@ -53,6 +53,8 @@ npm run install:reasonix-hooks
 npm run uninstall:reasonix-hooks
 npm run install:workbuddy-hooks
 npm run uninstall:workbuddy-hooks
+npm run install:dsh
+npm run uninstall:dsh
 npm run install:codex-hooks
 npm run uninstall:codex-hooks
 npm run install:codex-debug-hooks
@@ -78,6 +80,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - `docs/project/theme-state-ui.md`：状态机、主题系统、settings、mini mode、素材规则、平台限制、待落地 UI 决策
 - `docs/project/release-process.md`：发版 checklist、release note 核对、tag 触发 GitHub 打包和资产确认
 - `docs/guides/copilot-setup.md`：Copilot CLI 自动同步说明、`COPILOT_HOME` 兼容性、手动配置备选模板
+- `docs/guides/dsh-setup.md`：DeepSeek Harness web profile 实验性 plugin-only 状态与普通审批集成
 - `docs/guides/state-mapping.md`：状态 → 动画权威表
 - `docs/guides/guide-theme-creation.md`：主题作者指南
 - `docs/guides/setup-guide.md`：安装、远程 SSH、各 agent 接入
@@ -143,6 +146,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `agents/registry.js` | agent 注册表 |
 | `agents/codex-log-monitor.js` | Codex JSONL fallback 轮询 |
 | `agents/gemini-log-monitor.js` | legacy Gemini session JSON 轮询器；当前 Gemini hook-only 路径不启动 |
+| `hooks/dsh-install.js` | DeepSeek Harness immutable managed bridge generation、ownership verify、安装 / 修复 / 卸载事务 |
 | `hooks/clawd-hook.js` + `hooks/copilot-hook.js` | Claude Code / Copilot CLI 状态上报脚本 |
 | `hooks/install.js` | Claude hook 注册 / 卸载 |
 | `hooks/auto-start.js` | Claude `SessionStart` 自动拉起 Clawd 的 hook |
@@ -167,6 +171,8 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - CJS hook 脚本需要稳定终端 PID 时，必须复用 `hooks/shared-process.js` 的 `createPidResolver()` 及其 lifecycle context；不要复制进程树 walk 或用 `process.ppid` 简化。`getStablePid()` 只是 opencode-family plugin 的内部 resolver
 - opencode 权限不走 `permission.ask` hook，而是 event hook + reverse bridge
 - Pi 通过 `~/.pi/agent/extensions/clawd-on-desk` 的 global extension 推送状态；Clawd 对 Pi 是 **state-only**，不接管权限、不弹权限气泡，也不把 Pi 的默认 YOLO 流程改成手动确认
+- DeepSeek Harness 首发是 **web profile / Windows-first experimental / plugin-only**；packaged-app source loading smoke 已完成，API-backed session/approval smoke 未完成前不得写成 Windows-verified。Clawd-managed in-process plugin 只监听公开 `session/created`、`session/event`、`session/disposed` 与 blocking `approval/request`。状态按 session FIFO 上报并携带上游 seq；Clawd 不读取 `$DSH_HOME/storages` projection。普通审批进入独立 DSH `/permission` adapter，只支持人工 Allow Once / Deny；204 / 断连 / DND / disabled 都由 plugin `next()` 交还 DSH 原生 web answerer。`ask_user_question` 始终留在 DSH 原生 provider；DSH 不进入 `KNOWN_PERMISSION_AGENTS`，auto-tools / unattended / per-session grant 全部 DEFER。安装器通过官方 `dsh plugin --profile web add/remove` 管理 immutable marker-owned generation，foreign 同名包 fail closed；当前冻结支持 npm 发布物 `@deepseek-ai/dsh@0.1.0-rc.6`（integrity `sha512-brpZfED7ieRa2PQ5tUxMhHrM1pb2CmKFVM/f6yMULBDMicahk+Z2OsHgTwTDnoiZm23Ftu9rQz0NN4pflaoJcg==`），`47f9438` 仅是源码调查基线，不代表 rc.6 的 tag/commit 映射。
+- DSH 每个 canonical `DSH_HOME` 的 mutation lock 只有在 owner/schema/token/PID/timestamp/owner-recorded operation timeout 合法、超过该 owner timeout 两倍、且 OS PID probe 明确为 `ESRCH` 时才允许 atomic-rename takeover；live、`EPERM`、unknown、corrupt/foreign owner 一律拒绝并返回精确 lock path。canonical lock 的 owner write/release 禁止 recursive cleanup。无全局 CLI 时生成的手动 npx generation 必须先在同一锁内写 owned reference，手动 add/remove 命令必须显式 pin shell-quoted canonical `DSH_HOME`；malformed/foreign/concurrently replaced reference 一律 fail closed 并保留 generation
 - OpenClaw 通过 `~/.openclaw/openclaw.json` plugin 路径做 state-only 集成；Phase 1 不做 permission bubble / terminal focus，主要支持本地 `openclaw tui --local`
 - Antigravity CLI (agy) 通过 `~/.gemini/config/hooks.json` 做 **state-only** hook 集成（PreInvocation / PostToolUse / PostInvocation / Stop），**不注册 PreToolUse**。agy LLM 会主动调内置 `ask_permission` 工具，触发 agy 自己的 5 选项 native menu（含 "Persist to settings.json" 持久白名单），Clawd 不插手权限决策也不双层确认。`agents/antigravity-cli.js` `capabilities.permissionApproval` / `interactiveBubble` 均为 false。
 - Qwen Code 通过 `~/.qwen/settings.json` 做 hook-only 集成（SessionStart / SessionEnd / UserPromptSubmit / PreToolUse / PostToolUse / Stop / Notification / PermissionRequest），支持状态与阻塞式 `PermissionRequest` 权限气泡；`disableAllHooks: true` 时注册条目不会触发。
@@ -222,7 +228,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - 所有进程内对 `~/.claude/settings.json` 的 mutation（启动 reconcile、watcher 自动恢复、周期健康自愈、Settings Install/Enable、Doctor Fix、auto-start 开关、卸载、About 清理）必须经过 `src/claude-hook-operations.js` 的 server-owned 队列；不要绕开队列直接 `require("../hooks/install.js")` 写文件，否则会与其他来源的写入竞态
 - 周期健康巡检（`src/claude-settings-watcher.js`）只读判断用 `src/claude-hook-health.js`；同一 repair signature 连续 3 次修复+复验失败后必须停在 `manual-fix-required`，不再自动 mutation，只保留 5 分钟只读复查；suspicious-shrink 通知同一持续问题只弹一次，不要每轮重复
 - opencode 的 `permission.ask` hook 目前不可用，权限只能走 event hook + bridge
-- Codex CLI official hooks 已接入；JSONL 轮询仍是 fallback，用于 hook 不可用、hook 未覆盖事件（如 WebSearch / compaction / abort）和历史兼容。Windows command 必须用 PowerShell `& "node" ...` 格式，裸 `"node" "hook.js"` 会 exit 1
+- Codex CLI official hooks 已接入；JSONL 轮询仍是 fallback，用于 hook 不可用、hook 未覆盖事件（如 WebSearch / compaction / abort）和历史兼容。Windows `commandWindows` 由 PowerShell 解析：legacy 直接命令必须用 `& "node" ...` call operator；本机 stable 入口必须保持“固定内联 PowerShell dispatcher → UTF-8/Base64 `codex-hook.js.windows.run` 数据 sidecar → `& $node $target`”形态（JSON manifest 只供 Doctor），不得改回裸 `"node" "hook.js"`（会 exit 1）、二次 `powershell.exe -File` 或无 BOM `.ps1`
 - Kiro 没有 global hooks，只能注入到 `~/.kiro/agents/*.json`
 - `src/renderer.js` 里给 `<img>` SVG 追加的 `?_t=` cache-bust query 不能删；Chromium 会复用同 URL SVG 的动画时间线，一次性动画会停在末帧
 
