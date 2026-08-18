@@ -1,0 +1,56 @@
+name: Accessory review targeted debug
+
+on:
+  push:
+    branches:
+      - agent/accessory-aware-hitboxes
+
+permissions:
+  contents: write
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Run targeted accessory tests and publish log
+        shell: bash
+        run: |
+          set +e
+          npm ci > /tmp/accessory-debug.log 2>&1
+          install_status=$?
+          test_status=99
+          if [ "$install_status" -eq 0 ]; then
+            xvfb-run -a node --test \
+              test/accessory-motion-electron.test.js \
+              test/accessory-review-followup.test.js \
+              test/pet-accessory-hitbox.test.js \
+              test/pet-geometry-main.test.js \
+              test/holiday-accessory.test.js \
+              test/settings-effect-router.test.js \
+              test/theme-schema.test.js \
+              test/pet-window-runtime.test.js >> /tmp/accessory-debug.log 2>&1
+            test_status=$?
+          fi
+          set -e
+
+          {
+            echo "install_status=$install_status"
+            echo "test_status=$test_status"
+            echo "head=$(git rev-parse HEAD)"
+            cat /tmp/accessory-debug.log
+          } > .accessory-debug-result.txt
+
+          git config user.name "CheeseAgent CI"
+          git config user.email "18224661+CheeseAgent@users.noreply.github.com"
+          git add .accessory-debug-result.txt
+          git commit -m "ci: record targeted accessory test log"
+          git push origin HEAD:agent/accessory-aware-hitboxes
+          exit "$test_status"
