@@ -16,6 +16,22 @@
 // assert the literals match this registry so they cannot drift.
 
 const OPENCODE_FAMILY = Object.freeze({
+  // #825: opencode's GLOBAL config is a merge of three files —
+  // config.json → opencode.json → opencode.jsonc, later wins — and array
+  // fields like "plugin" are REPLACED by the later file, not concatenated.
+  // Upstream config.ts loadGlobal() collapses the three with a bare remeda
+  // mergeDeep (arrays are not plain objects, so they are overwritten) and,
+  // unlike project-level configs, never routes them through the
+  // plugin_origins union. Verified against opencode 1.18.3 with an isolated
+  // XDG_CONFIG_HOME + `opencode debug config`; config.ts is byte-identical
+  // on 1.18.3 / 1.18.15 / dev. So a plugin entry written into opencode.json
+  // is silently DEAD whenever an opencode.jsonc declares its own "plugin".
+  //
+  // configCandidates lists them highest-priority first (the same order
+  // upstream's own globalConfigFile() picks a write target from): the
+  // installer must edit the file whose "plugin" actually wins and sweep ALL
+  // of them on uninstall. configFileName stays opencode.json — the
+  // create-default when no candidate exists, and what the docs point at.
   opencode: Object.freeze({
     displayName: "OpenCode",
     sessionIdPrefix: "opencode:",
@@ -24,7 +40,8 @@ const OPENCODE_FAMILY = Object.freeze({
     logFileName: "opencode-plugin.log",
     configDirSegments: Object.freeze([".config", "opencode"]),
     configFileName: "opencode.json",
-    jsonc: false,
+    configCandidates: Object.freeze(["opencode.jsonc", "opencode.json", "config.json"]),
+    jsonc: true,
     schema: "https://opencode.ai/config.json",
   }),
   // MiMo Code — opencode-derived runtime with the identical plugin loader +
