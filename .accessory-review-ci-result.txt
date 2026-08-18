@@ -2,325 +2,325 @@ status=1
 install_status=0
 verify_status=0
 test_status=1
-head=e53bda8119215b4719d8067f41f07978e2b3c31e
+head=3e937248fb994621b3e4f3a4f2f198d5def8386c
 --- last 320 lines ---
         ok 5 - returns empty array for empty input
           ---
-          duration_ms: 0.157745
+          duration_ms: 0.185931
           type: 'test'
           ...
         # Subtest: filters only-whitespace lines
         ok 6 - filters only-whitespace lines
           ---
-          duration_ms: 0.186188
+          duration_ms: 0.154354
           type: 'test'
           ...
         1..6
     ok 1 - parseDistroList
       ---
-      duration_ms: 4.320388
+      duration_ms: 4.322025
       type: 'suite'
       ...
     # Subtest: EXCLUDED_DISTROS
         # Subtest: excludes docker-desktop
         ok 1 - excludes docker-desktop
           ---
-          duration_ms: 0.26254
+          duration_ms: 0.285282
           type: 'test'
           ...
         # Subtest: excludes docker-desktop-data
         ok 2 - excludes docker-desktop-data
           ---
-          duration_ms: 0.361686
+          duration_ms: 0.325132
           type: 'test'
           ...
         # Subtest: excludes DevHOME
         ok 3 - excludes DevHOME
           ---
-          duration_ms: 0.224269
+          duration_ms: 0.227464
           type: 'test'
           ...
         1..3
     ok 2 - EXCLUDED_DISTROS
       ---
-      duration_ms: 1.298828
+      duration_ms: 1.291072
       type: 'suite'
       ...
     1..2
 ok 2108 - wsl-utils
   ---
-  duration_ms: 6.224769
+  duration_ms: 6.192823
   type: 'suite'
   ...
 # Subtest: isZcodeAgentCommandLine
     # Subtest: matches the macOS/Linux zcode-cli binary
     ok 1 - matches the macOS/Linux zcode-cli binary
       ---
-      duration_ms: 1.450973
+      duration_ms: 0.885399
       type: 'test'
       ...
     # Subtest: matches the Windows ZCode.exe + zcode.cjs working process
     ok 2 - matches the Windows ZCode.exe + zcode.cjs working process
       ---
-      duration_ms: 0.174667
+      duration_ms: 0.135896
       type: 'test'
       ...
     # Subtest: matches the current macOS Electron Node-mode runtime and gates the ambiguous name
     ok 3 - matches the current macOS Electron Node-mode runtime and gates the ambiguous name
       ---
-      duration_ms: 0.326961
+      duration_ms: 0.241065
       type: 'test'
       ...
     # Subtest: does NOT match the bare ZCode desktop shell without zcode.cjs
     ok 4 - does NOT match the bare ZCode desktop shell without zcode.cjs
       ---
-      duration_ms: 0.161973
+      duration_ms: 0.842664
       type: 'test'
       ...
     # Subtest: matches a node launcher referencing the zcode hook script
     ok 5 - matches a node launcher referencing the zcode hook script
       ---
-      duration_ms: 1.049342
+      duration_ms: 0.190968
       type: 'test'
       ...
     # Subtest: rejects unrelated commands
     ok 6 - rejects unrelated commands
       ---
-      duration_ms: 0.139771
+      duration_ms: 0.110798
       type: 'test'
       ...
     1..6
 ok 2109 - isZcodeAgentCommandLine
   ---
-  duration_ms: 4.592697
+  duration_ms: 3.348012
   type: 'suite'
   ...
 # Subtest: ZCode PID resolver integration
     # Subtest: adds zcode.exe as a Windows stable source boundary
     ok 1 - adds zcode.exe as a Windows stable source boundary
       ---
-      duration_ms: 0.910092
+      duration_ms: 0.842834
       type: 'test'
       ...
     # Subtest: maps lifecycle events without ever treating Stop as end
     ok 2 - maps lifecycle events without ever treating Stop as end
       ---
-      duration_ms: 0.403685
+      duration_ms: 0.333614
       type: 'test'
       ...
     # Subtest: only caches a real raw session_id plus cwd
     ok 3 - only caches a real raw session_id plus cwd
       ---
-      duration_ms: 0.341469
+      duration_ms: 0.296659
       type: 'test'
       ...
     1..3
 ok 2110 - ZCode PID resolver integration
   ---
-  duration_ms: 2.055032
+  duration_ms: 1.85166
   type: 'suite'
   ...
 # Subtest: ZCode hook PID lifecycle
     # Subtest: passes the raw session context to the resolver and reports cached fields
     ok 1 - passes the raw session context to the resolver and reports cached fields
       ---
-      duration_ms: 2.695981
+      duration_ms: 1.844219
       type: 'test'
       ...
     # Subtest: keeps Stop on the event lifecycle so its cache is not dropped
     ok 2 - keeps Stop on the event lifecycle so its cache is not dropped
       ---
-      duration_ms: 0.743871
+      duration_ms: 0.455649
       type: 'test'
       ...
     # Subtest: does not resolve local process metadata for a remote event
     ok 3 - does not resolve local process metadata for a remote event
       ---
-      duration_ms: 0.302386
+      duration_ms: 0.175876
       type: 'test'
       ...
     # Subtest: carries a verified Orca pane key for local and secure remote focus
     ok 4 - carries a verified Orca pane key for local and secure remote focus
       ---
-      duration_ms: 0.597587
+      duration_ms: 0.401106
       type: 'test'
       ...
     # Subtest: rejects inherited or malformed Orca pane keys
     ok 5 - rejects inherited or malformed Orca pane keys
       ---
-      duration_ms: 1.515855
+      duration_ms: 1.030718
       type: 'test'
       ...
     # Subtest: reduces stdin parse failures to a fixed debug category
     ok 6 - reduces stdin parse failures to a fixed debug category
       ---
-      duration_ms: 0.28381
+      duration_ms: 0.199121
       type: 'test'
       ...
     1..6
 ok 2111 - ZCode hook PID lifecycle
   ---
-  duration_ms: 7.962978
+  duration_ms: 5.336048
   type: 'suite'
   ...
 # Subtest: ZCode hook installer
     # Subtest: registers the Phase 1 state-only events under hooks.events with enabled:true and no matcher
     ok 1 - registers the Phase 1 state-only events under hooks.events with enabled:true and no matcher
       ---
-      duration_ms: 5.202456
+      duration_ms: 4.353793
       type: 'test'
       ...
     # Subtest: is idempotent on second run
     ok 2 - is idempotent on second run
       ---
-      duration_ms: 2.314547
+      duration_ms: 1.726631
       type: 'test'
       ...
     # Subtest: preserves an explicit hooks.enabled:false and warns instead of enabling all user hooks
     ok 3 - preserves an explicit hooks.enabled:false and warns instead of enabling all user hooks
       ---
-      duration_ms: 1.23021
+      duration_ms: 0.959321
       type: 'test'
       ...
     # Subtest: preserves nested enabled:false while repairing a stale managed hook
     ok 4 - preserves nested enabled:false while repairing a stale managed hook
       ---
-      duration_ms: 1.358631
+      duration_ms: 1.037949
       type: 'test'
       ...
     # Subtest: removes invalid entry-level enabled:false instead of treating it as a supported opt-out
     ok 5 - removes invalid entry-level enabled:false instead of treating it as a supported opt-out
       ---
-      duration_ms: 1.907978
+      duration_ms: 1.490874
       type: 'test'
       ...
     # Subtest: keeps a managed event enabled when any duplicate was still enabled
     ok 6 - keeps a managed event enabled when any duplicate was still enabled
       ---
-      duration_ms: 1.123461
+      duration_ms: 0.878718
       type: 'test'
       ...
     # Subtest: splits Clawd out of shared matcher entries under hooks.events
     ok 7 - splits Clawd out of shared matcher entries under hooks.events
       ---
-      duration_ms: 1.378848
+      duration_ms: 1.24356
       type: 'test'
       ...
     # Subtest: preserves existing absolute node path when detection fails
     ok 8 - preserves existing absolute node path when detection fails
       ---
-      duration_ms: 1.333634
+      duration_ms: 0.954232
       type: 'test'
       ...
     # Subtest: refuses a fresh install when no absolute Node executable can be resolved
     ok 9 - refuses a fresh install when no absolute Node executable can be resolved
       ---
-      duration_ms: 1.501748
+      duration_ms: 1.043338
       type: 'test'
       ...
     # Subtest: skips startup auto-sync when ~/.zcode does not exist
     ok 10 - skips startup auto-sync when ~/.zcode does not exist
       ---
-      duration_ms: 0.688648
+      duration_ms: 0.497642
       type: 'test'
       ...
     # Subtest: builds Windows process hooks with direct argv and no shell quoting
     ok 11 - builds Windows process hooks with direct argv and no shell quoting
       ---
-      duration_ms: 0.307735
+      duration_ms: 0.160192
       type: 'test'
       ...
     # Subtest: rewrites legacy bare-quoted Windows commands into process form on re-run
     ok 12 - rewrites legacy bare-quoted Windows commands into process form on re-run
       ---
-      duration_ms: 1.184685
+      duration_ms: 1.30936
       type: 'test'
       ...
     # Subtest: rewrites a legacy EncodedCommand in place without leaving a duplicate
     ok 13 - rewrites a legacy EncodedCommand in place without leaving a duplicate
       ---
-      duration_ms: 1.311182
+      duration_ms: 1.003407
       type: 'test'
       ...
     # Subtest: preserves an existing Windows absolute node path through process migration
     ok 14 - preserves an existing Windows absolute node path through process migration
       ---
-      duration_ms: 0.838989
+      duration_ms: 0.696523
       type: 'test'
       ...
     # Subtest: unregister removes encoded Clawd commands while preserving user hooks
     ok 15 - unregister removes encoded Clawd commands while preserving user hooks
       ---
-      duration_ms: 1.784787
+      duration_ms: 1.537564
       type: 'test'
       ...
     # Subtest: unregister removes a process hook from a shared wrapper and preserves the user hook
     ok 16 - unregister removes a process hook from a shared wrapper and preserves the user hook
       ---
-      duration_ms: 0.670293
+      duration_ms: 0.602951
       type: 'test'
       ...
     # Subtest: unregister drops the empty hooks wrapper when Clawd was the only source
     ok 17 - unregister drops the empty hooks wrapper when Clawd was the only source
       ---
-      duration_ms: 1.013135
+      duration_ms: 1.477965
       type: 'test'
       ...
     # Subtest: unregister preserves the user's explicit global disabled setting
     ok 18 - unregister preserves the user's explicit global disabled setting
       ---
-      duration_ms: 0.955326
+      duration_ms: 0.815393
       type: 'test'
       ...
     1..18
 ok 2112 - ZCode hook installer
   ---
-  duration_ms: 28.774909
+  duration_ms: 23.216683
   type: 'suite'
   ...
 # Subtest: ZCode \#734 — strip Claude-config hooks migrated into zcode config
     # Subtest: removes a dedicated clawd-hook.js entry and reports it, leaving zcode-hook.js as the only Clawd hook
     ok 1 - removes a dedicated clawd-hook.js entry and reports it, leaving zcode-hook.js as the only Clawd hook
       ---
-      duration_ms: 0.75416
+      duration_ms: 0.680108
       type: 'test'
       ...
     # Subtest: splits a shared entry: drops clawd-hook.js, keeps a third-party hook, then adds the zcode hook
     ok 2 - splits a shared entry: drops clawd-hook.js, keeps a third-party hook, then adds the zcode hook
       ---
-      duration_ms: 0.738281
+      duration_ms: 0.648481
       type: 'test'
       ...
     # Subtest: strips a Windows EncodedCommand clawd-hook.js entry migrated from Claude
     ok 3 - strips a Windows EncodedCommand clawd-hook.js entry migrated from Claude
       ---
-      duration_ms: 0.804044
+      duration_ms: 0.594068
       type: 'test'
       ...
     # Subtest: does not touch ~/.claude/settings.json (only the zcode config is modified)
     ok 4 - does not touch ~/.claude/settings.json (only the zcode config is modified)
       ---
-      duration_ms: 0.653272
+      duration_ms: 0.49591
       type: 'test'
       ...
     # Subtest: unregister also removes migrated clawd-hook.js entries
     ok 5 - unregister also removes migrated clawd-hook.js entries
       ---
-      duration_ms: 0.702975
+      duration_ms: 0.538354
       type: 'test'
       ...
     1..5
 ok 2113 - ZCode \#734 — strip Claude-config hooks migrated into zcode config
   ---
-  duration_ms: 3.859876
+  duration_ms: 3.118965
   type: 'suite'
   ...
 1..2113
 # tests 7545
 # suites 794
-# pass 7514
-# fail 3
+# pass 7516
+# fail 1
 # cancelled 0
 # skipped 28
 # todo 0
-# duration_ms 63806.277258
+# duration_ms 67758.857211
