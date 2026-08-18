@@ -5,9 +5,11 @@ const {
   getThemeMarginBox: defaultGetThemeMarginBox,
   computeThemeAnchorRect: defaultComputeThemeAnchorRect,
 } = require("./visible-margins");
+const { resolveAccessoryAwareHitBox } = require("./pet-accessory-hitbox");
 const {
-  resolveAccessoryAwareHitBox,
-} = require("./pet-accessory-hitbox");
+  commitPetAccessoryPayload,
+  getPetAccessoryPayloadSnapshot,
+} = require("./pet-accessory-state");
 
 function createPetGeometryMain(options = {}) {
   const hitGeometry = options.hitGeometry || defaultHitGeometry;
@@ -20,6 +22,8 @@ function createPetGeometryMain(options = {}) {
   const getCurrentAccessoryPayload = options.getCurrentAccessoryPayload || (() => null);
   const getMiniMode = options.getMiniMode || (() => false);
   const getMiniPeekOffset = options.getMiniPeekOffset || (() => 0);
+  const getMiniEdge = typeof options.getMiniEdge === "function" ? options.getMiniEdge : null;
+  const injectedScreen = options.screen || null;
 
   function getCurrentFile(theme) {
     return getCurrentSvg()
@@ -40,13 +44,60 @@ function createPetGeometryMain(options = {}) {
     };
   }
 
+  function outwardRound(rect) {
+    if (!rect || ![rect.left, rect.top, rect.right, rect.bottom].every(Number.isFinite)) return rect;
+    return {
+      left: Math.floor(rect.left),
+      top: Math.floor(rect.top),
+      right: Math.ceil(rect.right),
+      bottom: Math.ceil(rect.bottom),
+    };
+  }
+
+  function resolveScreenApi() {
+    if (injectedScreen) return injectedScreen;
+    try {
+      const electron = require("electron");
+      return electron && typeof electron === "object" ? electron.screen : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function resolveMiniEdge(bounds) {
+    if (getMiniEdge) {
+      const explicit = getMiniEdge(bounds);
+      if (explicit === "left" || explicit === "right") return explicit;
+    }
+    const screen = resolveScreenApi();
+    if (!screen || typeof screen.getDisplayMatching !== "function") return "right";
+    try {
+      const display = screen.getDisplayMatching(bounds);
+      const wa = display && display.workArea;
+      if (!wa || ![wa.x, wa.width].every(Number.isFinite)) return "right";
+      const leftDistance = Math.abs(bounds.x - wa.x);
+      const rightDistance = Math.abs((bounds.x + bounds.width) - (wa.x + wa.width));
+      return leftDistance <= rightDistance ? "left" : "right";
+    } catch {
+      return "right";
+    }
+  }
+
+  function getCanonicalAccessoryPayload(theme) {
+    const current = getPetAccessoryPayloadSnapshot(theme);
+    if (current) return current.payload;
+    // First geometry pass after startup/theme switch seeds from the same main
+    // resolver used to construct renderer config. Same-theme clock changes do
+    // not reach this fallback; Settings/holiday delivery commits explicitly.
+    return commitPetAccessoryPayload(getCurrentAccessoryPayload(), theme).payload;
+  }
+
   function getObjRect(bounds) {
     if (!bounds) return null;
     const theme = getActiveTheme();
     const state = getCurrentState();
     const file = getCurrentFile(theme);
-    return hitGeometry.getAssetRectScreen(theme, bounds, state, file)
-      || getFullAssetRect(bounds);
+    return hitGeometry.getAssetRectScreen(theme, bounds, state, file) || getFullAssetRect(bounds);
   }
 
   function getAssetPointerPayload(bounds, point) {
@@ -64,12 +115,20 @@ function createPetGeometryMain(options = {}) {
     const state = getCurrentState();
     const file = getCurrentFile(theme);
     const miniMode = !!getMiniMode();
+    const edge = miniMode ? resolveMiniEdge(bounds) : "right";
+    const miniFlipAssets = !!(theme && theme.miniMode && theme.miniMode.flipAssets);
+    const mirrorX = miniMode && ((edge === "left") !== miniFlipAssets);
+    const resolveViewBox = typeof hitGeometry.resolveViewBox === "function"
+      ? hitGeometry.resolveViewBox
+      : defaultHitGeometry.resolveViewBox;
+    const viewBox = resolveViewBox(theme, state, file);
     const hitBox = resolveAccessoryAwareHitBox(
       theme,
       state,
       file,
       getCurrentHitBox(),
-      getCurrentAccessoryPayload()
+      getCanonicalAccessoryPayload(theme),
+      { viewBox, mirrorX }
     );
     const hit = hitGeometry.getHitRectScreen(
       theme,
@@ -82,7 +141,7 @@ function createPetGeometryMain(options = {}) {
         padY: miniMode ? 8 : 0,
       }
     );
-    return hit || getFullHitRect(bounds);
+    return outwardRound(hit) || getFullHitRect(bounds);
   }
 
   function getUpdateBubbleAnchorRect(bounds) {
