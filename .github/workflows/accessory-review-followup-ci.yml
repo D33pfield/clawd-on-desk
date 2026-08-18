@@ -23,18 +23,36 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - name: Install, verify, test, and publish temporary result
+      - name: Validate prospective upstream merge tree and publish temporary result
         shell: bash
         run: |
           set +e
+          original_head=$(git rev-parse HEAD)
           : > /tmp/accessory-review-ci.log
 
-          echo "=== npm ci ===" >> /tmp/accessory-review-ci.log
-          npm ci >> /tmp/accessory-review-ci.log 2>&1
-          install_status=$?
+          echo "=== merge latest upstream/main ===" >> /tmp/accessory-review-ci.log
+          git config user.name "CheeseAgent CI"
+          git config user.email "18224661+CheeseAgent@users.noreply.github.com"
+          git fetch https://github.com/rullerzhou-afk/clawd-on-desk.git main:refs/remotes/upstream/main >> /tmp/accessory-review-ci.log 2>&1
+          fetch_status=$?
+          merge_status=99
+          tested_tree="unavailable"
+          if [ "$fetch_status" -eq 0 ]; then
+            git merge --no-commit --no-ff refs/remotes/upstream/main >> /tmp/accessory-review-ci.log 2>&1
+            merge_status=$?
+            if [ "$merge_status" -eq 0 ]; then
+              tested_tree=$(git write-tree)
+            fi
+          fi
 
+          install_status=99
           verify_status=99
           test_status=99
+          if [ "$fetch_status" -eq 0 ] && [ "$merge_status" -eq 0 ]; then
+            echo "=== npm ci ===" >> /tmp/accessory-review-ci.log
+            npm ci >> /tmp/accessory-review-ci.log 2>&1
+            install_status=$?
+          fi
           if [ "$install_status" -eq 0 ]; then
             echo "=== npm run verify:electron ===" >> /tmp/accessory-review-ci.log
             npm run verify:electron >> /tmp/accessory-review-ci.log 2>&1
@@ -46,25 +64,30 @@ jobs:
           fi
 
           status=0
-          if [ "$install_status" -ne 0 ] || [ "$verify_status" -ne 0 ] || [ "$test_status" -ne 0 ]; then
+          if [ "$fetch_status" -ne 0 ] || [ "$merge_status" -ne 0 ] || [ "$install_status" -ne 0 ] || [ "$verify_status" -ne 0 ] || [ "$test_status" -ne 0 ]; then
             status=1
           fi
+
+          # Never push the local upstream merge. Return to the exact PR head,
+          # then commit only the disposable validation report.
+          git reset --hard "$original_head" >> /tmp/accessory-review-ci.log 2>&1
           set -e
 
           {
             echo "status=$status"
+            echo "fetch_status=$fetch_status"
+            echo "merge_status=$merge_status"
             echo "install_status=$install_status"
             echo "verify_status=$verify_status"
             echo "test_status=$test_status"
-            echo "head=$(git rev-parse HEAD)"
+            echo "head=$original_head"
+            echo "tested_tree=$tested_tree"
             echo "--- failure contexts ---"
-            grep -n -B 18 -A 36 -E '^not ok|failureType:|ERR_ASSERTION|ERR_TEST_FAILURE|Accessory motion audit failed' /tmp/accessory-review-ci.log || true
+            grep -n -B 18 -A 36 -E '^not ok|failureType:|ERR_ASSERTION|ERR_TEST_FAILURE|Accessory motion audit failed|CONFLICT' /tmp/accessory-review-ci.log || true
             echo "--- last 180 lines ---"
             tail -n 180 /tmp/accessory-review-ci.log
           } > .accessory-review-ci-result.txt
 
-          git config user.name "CheeseAgent CI"
-          git config user.email "18224661+CheeseAgent@users.noreply.github.com"
           git add .accessory-review-ci-result.txt
           git commit -m "ci: record temporary accessory test result"
           git push origin HEAD:agent/accessory-aware-hitboxes
