@@ -1131,6 +1131,8 @@ test("settings IPC serves agent/about/update/external and remove-theme dialog he
       },
       getAllAgents: () => [
         { id: "codex", name: "Codex", eventSource: "hook", capabilities: { permission: true } },
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
       ],
       getHookServerPort: () => 23335,
       getRecentHookEvents: ({ agentId }) => [{
@@ -1159,15 +1161,31 @@ test("settings IPC serves agent/about/update/external and remove-theme dialog he
 
     assert.strictEqual(await ipcMain.invoke("settings:get-preview-sound-url"), "file:///preview.mp3");
     assert.deepStrictEqual(await ipcMain.invoke("settings:list-agents"), [
-      // #895: cleanupSuggestionExempt is derived from prefs' default-integration
-      // list, so codex ships true. The renderer requires an explicit false
-      // before it will propose removing an agent's hooks.
+      // #895: cleanupSuggestionExempt is derived from prefs' complete default-
+      // integration list. Both defaults must ship true, while a non-default
+      // agent must ship an explicit false before the renderer may propose
+      // removing its hooks. This three-way contract kills all-true, all-false,
+      // and Codex-only producer mutations.
       {
         id: "codex",
         name: "Codex",
         eventSource: "hook",
         capabilities: { permission: true },
         cleanupSuggestionExempt: true,
+      },
+      {
+        id: "claude-code",
+        name: "Claude Code",
+        eventSource: "hook",
+        capabilities: {},
+        cleanupSuggestionExempt: true,
+      },
+      {
+        id: "qwen-code",
+        name: "Qwen Code",
+        eventSource: "hook",
+        capabilities: {},
+        cleanupSuggestionExempt: false,
       },
       {
         id: "custom-nova-ai-0123456789ab",
@@ -1270,7 +1288,7 @@ test("settings IPC exposes read-only agent installation detection", async () => 
       return {
         checkedAt: options.now(),
         agents: [{ agentId: "qwen-code", detectedInstalled: true }],
-        skippedAgentIds: ["claude-code", "codex"],
+        skippedAgentIds: ["claude-code"],
       };
     },
   });
@@ -1278,7 +1296,7 @@ test("settings IPC exposes read-only agent installation detection", async () => 
   assert.deepStrictEqual(await ipcMain.invoke("settings:detect-agent-installations"), {
     checkedAt: 777,
     agents: [{ agentId: "qwen-code", detectedInstalled: true }],
-    skippedAgentIds: ["claude-code", "codex"],
+    skippedAgentIds: ["claude-code"],
   });
   assert.strictEqual(sawFs, true);
   assert.strictEqual(sawPath, true);

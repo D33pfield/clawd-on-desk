@@ -64,8 +64,8 @@ describe("agent installation detector", () => {
   // #895 T11a/T11b: only Claude is skipped. Its parent dir is created by Clawd's
   // own default sync, so ~/.claude proves nothing; ~/.codex is never created by
   // Clawd, so it stays real evidence and Codex must be reported like any other
-  // agent — reporting it as "not detected locally" while it was never examined
-  // is what sent #895's reporter looking for a Codex the UI had hidden.
+  // agent. This is one code-level route consistent with #895; the reporter's
+  // exact on-disk layout remains unconfirmed.
   it("skips only the agent whose parent dir Clawd creates itself", () => {
     const homeDir = makeHome();
 
@@ -98,7 +98,7 @@ describe("agent installation detector", () => {
   // #895 T11c: the whole reason Codex may be detected from its directory is that
   // Clawd never creates it. Claude's installer does, which is why Claude stays
   // skipped. If either half of that asymmetry ever changes, this fails.
-  it("keeps the create-vs-skip asymmetry the skip list is derived from", () => {
+  it("keeps the create-vs-skip asymmetry the skip list is derived from", async () => {
     const codexHome = makeHome();
     const codexDir = path.join(codexHome, ".codex");
     require("../hooks/codex-install.js").registerCodexHooks({ silent: true, env: { CODEX_HOME: codexDir } });
@@ -106,8 +106,13 @@ describe("agent installation detector", () => {
 
     const claudeHome = makeHome();
     const claudeSettings = path.join(claudeHome, ".claude", "settings.json");
-    require("../hooks/install.js").registerHooks({ silent: true, settingsPath: claudeSettings });
-    assert.strictEqual(fs.existsSync(claudeSettings), true, "Claude sync does create ~/.claude");
+    await require("../hooks/install.js").registerHooksAsync({
+      silent: true,
+      homeDir: claudeHome,
+      nodeBin: process.execPath,
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+    assert.strictEqual(fs.existsSync(claudeSettings), true, "Claude's production async sync creates ~/.claude");
   });
 
   it("detects generic parent-directory agents and reports Clawd marker presence separately", () => {

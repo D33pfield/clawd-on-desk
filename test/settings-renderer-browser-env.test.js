@@ -11651,7 +11651,7 @@ describe("settings renderer browser environment", () => {
     const detectionResult = {
       checkedAt: 123,
       agents: [{ agentId: "qwen-code", detectedInstalled: true }],
-      skippedAgentIds: ["claude-code", "codex"],
+      skippedAgentIds: ["claude-code"],
     };
     const harness = loadAgentsTabForTest({
       agentMetadata: [{
@@ -11750,9 +11750,8 @@ describe("settings renderer browser environment", () => {
     // the manual-add block sits above it.
     const group = unavailable.querySelector(".agent-unavailable-group");
     assert.ok(group);
-    // #895: the catalog holds agents Clawd never checked (claude-code, codex are
-    // skipped by the detector) alongside genuinely undetected ones, so its title
-    // must not assert a detection result.
+    // #895: the catalog can hold agents with no explicit verdict alongside
+    // genuinely undetected ones, so its title must not assert a detection result.
     assert.strictEqual(group.querySelector(".collapsible-group-text .row-label").textContent, "More supported tools");
     assert.strictEqual(group.querySelector(".agent-section-count").textContent, "1");
     assert.ok(group.classList.contains("collapsed"));
@@ -11824,7 +11823,7 @@ describe("settings renderer browser environment", () => {
   // say, explicitly, that the agent is eligible. Default integrations are not,
   // and a fixture or an IPC failure that omits the field must not be read as
   // permission to propose tearing an integration out.
-  it("gates cleanup hints on explicit metadata eligibility", () => {
+  it("gates fetched cleanup hints on explicit metadata eligibility", async () => {
     const cases = [
       { label: "default agent is exempt", id: "codex", name: "Codex", exempt: true, expectBanner: false },
       { label: "Claude shares the exemption", id: "claude-code", name: "Claude Code", exempt: true, expectBanner: false },
@@ -11840,15 +11839,17 @@ describe("settings renderer browser environment", () => {
           dismissedAgentCleanupHints: {},
         },
         agentMetadata: [metadata],
+        settingsAPI: {
+          detectAgentInstallations: () => Promise.resolve({
+            checkedAt: 1,
+            agents: [{ agentId: id, detectedInstalled: false, confidence: "low" }],
+            skippedAgentIds: ["claude-code"],
+          }),
+        },
       });
-      harness.core.runtime.agentInstallationHints = {
-        checkedAt: 1,
-        agents: [{ agentId: id, detectedInstalled: false, confidence: "low" }],
-        skippedAgentIds: [],
-      };
-      harness.core.runtime.agentInstallationHintsFetched = true;
+      await harness.core.ops.fetchAgentInstallationHints();
 
-      harness.core.ops.requestRender({ content: true });
+      assert.strictEqual(harness.core.runtime.agentInstallationHints.agents[0].agentId, id, label);
 
       const banner = harness.content.querySelector(".agent-cleanup-hint-banner");
       assert.strictEqual(!!banner, expectBanner, label);
@@ -11906,7 +11907,7 @@ describe("settings renderer browser environment", () => {
         { agentId: "hermes", detectedInstalled: true, confidence: "high" },
         { agentId: "pi", detectedInstalled: true, confidence: "low" },
       ],
-      skippedAgentIds: ["claude-code", "codex"],
+      skippedAgentIds: ["claude-code"],
     };
     harness.core.runtime.agentInstallationHintsFetched = true;
     harness.core.runtime.agentsSubtab = "discover";
@@ -11951,16 +11952,16 @@ describe("settings renderer browser environment", () => {
     const harness = loadAgentsTabForTest({
       snapshot: {
         agents: {
-          codex: { integrationInstalled: false, enabled: false },
+          "claude-code": { integrationInstalled: false, enabled: false },
           "qwen-code": { integrationInstalled: false, enabled: false },
         },
         dismissedAgentInstallHints: {
-          codex: true,
+          "claude-code": true,
           "qwen-code": true,
         },
       },
       agentMetadata: [
-        { id: "codex", name: "Codex", eventSource: "hook", capabilities: {} },
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} },
         { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
       ],
       settingsAPI: {
@@ -11973,7 +11974,7 @@ describe("settings renderer browser environment", () => {
     harness.core.runtime.agentInstallationHints = {
       checkedAt: 1,
       agents: [{ agentId: "qwen-code", detectedInstalled: false, confidence: "low" }],
-      skippedAgentIds: ["codex"],
+      skippedAgentIds: ["claude-code"],
     };
     harness.core.runtime.agentInstallationHintsFetched = true;
 
@@ -12102,7 +12103,7 @@ describe("settings renderer browser environment", () => {
     assert.notStrictEqual(toasts[0].options.error, true);
   });
 
-  it("renders cleanup hint banners only from detector entries, not skipped default agents", () => {
+  it("renders cleanup hint banners only from explicit negative entries, not absent default agents", () => {
     const harness = loadAgentsTabForTest({
       snapshot: {
         agents: {
@@ -12121,7 +12122,7 @@ describe("settings renderer browser environment", () => {
     harness.core.runtime.agentInstallationHints = {
       checkedAt: 1,
       agents: [{ agentId: "qwen-code", detectedInstalled: false, confidence: "low" }],
-      skippedAgentIds: ["claude-code", "codex"],
+      skippedAgentIds: ["claude-code"],
     };
     harness.core.runtime.agentInstallationHintsFetched = true;
 
