@@ -57,7 +57,14 @@ const BUILTIN_ACCESSORY_MOTION_PADDING = Object.freeze({
     // a slow or fast machine, which a sampled figure demonstrably was.
     "cloudling-idle.svg": Object.freeze({ left: 10.1, top: 5, right: 10.1, bottom: 4 }),
     "cloudling-typing.svg": Object.freeze({ left: 0.5, top: 1.2, right: 0.5, bottom: 0.6 }),
-    "cloudling-mini-idle.svg": Object.freeze({ bottom: 0.4 }),
+    // Same pointer-driven transform as idle (maxRotDeg 13, scale in
+    // [0.96, 1.15] about (12,12)), so this is derived, not sampled: a headless
+    // window never engages the pointer, and the sampled figure was the
+    // breath-only subspace. tick.js's POINTER_BRIDGE_STATES includes mini-idle
+    // and pins inside:true, so the full rotation is ordinary runtime, not an
+    // edge case. Seven-accessory peak is 6.205/4.238/6.205/2.281 (wizard-hat
+    // horizontally, halo at the bottom).
+    "cloudling-mini-idle.svg": Object.freeze({ left: 6.3, top: 4.3, right: 6.3, bottom: 2.4 }),
     // Swept deterministically through the walk's own frameFor() via its seek
     // hook, over the 127.6s where the 1.16s step cycle and the 4.4s breath
     // return to phase together, at a step coprime with both so every 1ms phase

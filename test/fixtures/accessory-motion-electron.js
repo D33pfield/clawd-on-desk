@@ -25,6 +25,9 @@ const ACCESSORIES = PET_ACCESSORY_CATALOG.filter((entry) => entry.id !== "none")
 const MOTION_EPSILON = 0.15;
 const SCREEN_EPSILON = 0.51;
 const LARGE_SCREEN_BOUNDS = Object.freeze({ x: 0, y: 0, width: 6000, height: 6000 });
+// Mirrors src/tick.js POINTER_BRIDGE_STATES, intersected with the visuals that
+// actually carry an accessory followTarget.
+const POINTER_DRIVEN = new Set(["cloudling-idle.svg", "cloudling-mini-idle.svg"]);
 const MINI_PAD_X = 25;
 const MINI_PAD_Y = 8;
 
@@ -177,7 +180,7 @@ async function sampleMatrices(win, targetId, options = {}) {
       ];
       for (const probe of probes) {
         window.__cloudlingSetPointer(probe);
-        await wait(2600);
+        await wait(1200);
         for (let i = 0; i < 12; i++) {
           out.push(snapshot());
           await wait(16);
@@ -253,7 +256,11 @@ async function auditTheme(win, builtin) {
     if (!fs.existsSync(svgPath)) throw new Error(`missing SVG for motion audit: ${svgPath}`);
     await win.loadFile(svgPath);
     const matrices = await sampleMatrices(win, descriptor.followTarget.id, {
-      cloudlingPointer: builtin.id === "cloudling" && file === "cloudling-idle.svg",
+      // Every visual the pointer bridge drives, not just idle:
+      // src/tick.js's POINTER_BRIDGE_STATES covers mini-idle too, and probing
+      // only idle measured mini-idle's breath-only subspace and called it the
+      // envelope.
+      cloudlingPointer: builtin.id === "cloudling" && POINTER_DRIVEN.has(file),
       scriptedCycleMs: Number(scriptedCycles[file]) || 0,
     });
     const authored = descriptor.hitBoxPadding || emptyPadding();
@@ -353,6 +360,16 @@ async function auditTheme(win, builtin) {
           }
         }
       }
+    }
+
+    // A pointer-driven visual that measured no horizontal travel means the
+    // probes never engaged — which reads identically to "this animation barely
+    // moves" and silently certifies a far-too-small envelope.
+    if (POINTER_DRIVEN.has(file) && required.left < 1 && required.right < 1) {
+      failures.push(
+        `${builtin.id}/${file}: pointer probes produced no rotation `
+        + `(required=${JSON.stringify(required)}) — the sweep measured the idle subspace only`
+      );
     }
 
     for (const side of ["left", "top", "right", "bottom"]) {
