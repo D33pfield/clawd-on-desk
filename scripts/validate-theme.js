@@ -19,6 +19,7 @@
 const fs = require("fs");
 const path = require("path");
 const themeLoader = require("../src/theme-loader");
+const themeSchema = require("../src/theme-schema");
 const { VARIANT_ALLOWED_KEYS } = require("../src/theme-variants");
 
 // ── Colors (ANSI) ──
@@ -130,6 +131,32 @@ if (check(vb && vb.x != null && vb.y != null && vb.width != null && vb.height !=
 }
 const sleepMode = deriveSleepMode(raw);
 const normalizedStates = normalizeStateBindings(raw.states);
+const accessorySchemaErrors = themeSchema.validateTheme(raw)
+  .filter((message) => message.includes("customization.accessories"));
+// `false`/`null` is the documented opt-out, not a misconfiguration.
+if (raw.customization && raw.customization.accessories) {
+  if (accessorySchemaErrors.length === 0) {
+    // Schema-valid is not the same as usable: a coverage gap (a visual with no
+    // descriptor to fall back on) raises no schema error but still turns the
+    // capability off, and Settings then hides the wardrobe with no explanation.
+    // Saying "valid" and stopping there is how an author ships a theme whose
+    // accessories silently never appear.
+    if (themeSchema.deriveAccessoryCapability(raw)) {
+      console.log(`  ${PASS} customization.accessories attachment geometry is schema-valid`);
+    } else {
+      console.log(
+        `  ${WARN} customization.accessories is schema-valid but does not cover every visual, `
+        + "so accessories stay disabled for this theme and the wardrobe is hidden"
+      );
+      warnings++;
+    }
+  } else {
+    for (const message of accessorySchemaErrors) {
+      console.log(`  ${FAIL} ${message}`);
+      errors++;
+    }
+  }
+}
 
 if (check(!!raw.states, "states object exists")) {
   for (const s of REQUIRED_STATES) {
