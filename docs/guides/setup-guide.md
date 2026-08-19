@@ -224,7 +224,10 @@ For supported agents, open **Settings → Agents**, use **WSL Scan** from the Co
 mkdir -p ~/.claude/hooks
 
 # Copy hook files from the Windows-side repo (adjust the /mnt/ path to your Clawd location)
-cp /mnt/d/animation/hooks/{server-config,json-utils,shared-process,clawd-hook,install,codex-hook,codex-install,codex-install-utils,codex-remote-monitor,codex-session-index,codex-subagent-fields,copilot-hook,copilot-install}.js ~/.claude/hooks/
+# Copy every hook file — hooks/ has internal require() dependencies, so a
+# hand-picked subset leaves each installed hook dead at MODULE_NOT_FOUND.
+# This matches what the in-app WSL Pair flow copies.
+cp /mnt/c/path/to/clawd-on-desk/hooks/*.js ~/.claude/hooks/
 
 # Register Claude hooks in remote mode
 node ~/.claude/hooks/install.js --remote

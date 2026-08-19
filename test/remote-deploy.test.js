@@ -88,3 +88,36 @@ describe("Remote SSH secure hook manifest", () => {
     assert.doesNotMatch(script, /\bssh\b|\bscp\b|FILES=\(|RemoteForward|23333/);
   });
 });
+
+// The manual WSL instructions once pinned an explicit 13-file list that fell
+// four months behind HOOK_FILES, so following the guide produced an install
+// where every hook died at MODULE_NOT_FOUND while the installer reported
+// success. A hand-maintained list in prose cannot be kept in sync by the
+// closure test above — the only stable form is a directory-wide copy.
+describe("WSL setup guide hook copy instructions", () => {
+  const GUIDES = ["docs/guides/setup-guide.md", "docs/guides/setup-guide.zh-CN.md"];
+
+  it("never hand-enumerates hook files", () => {
+    for (const relative of GUIDES) {
+      const content = fs.readFileSync(path.join(__dirname, "..", relative), "utf8");
+      const enumerated = content.match(/hooks\/\{[^}\n]*\}\.js/g) || [];
+      assert.deepStrictEqual(
+        enumerated,
+        [],
+        `${relative} brace-enumerates hook files; it will drift out of sync with `
+          + `remote-ssh-deploy HOOK_FILES. Use a directory-wide copy instead.`
+      );
+    }
+  });
+
+  it("copies the whole hooks directory", () => {
+    for (const relative of GUIDES) {
+      const content = fs.readFileSync(path.join(__dirname, "..", relative), "utf8");
+      assert.match(
+        content,
+        /cp \S*hooks\/\*\.js ~\/\.claude\/hooks\//,
+        `${relative} must tell WSL users to copy every hook file`
+      );
+    }
+  });
+});

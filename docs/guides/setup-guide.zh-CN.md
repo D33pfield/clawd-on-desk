@@ -159,7 +159,10 @@ Keychain 登录。准确边界见专门指南。
 mkdir -p ~/.claude/hooks
 
 # 从 Windows 侧的 Clawd 仓库复制 hook 文件（按实际路径调整 /mnt/ 前缀）
-cp /mnt/d/animation/hooks/{server-config,json-utils,shared-process,clawd-hook,install,codex-hook,codex-install,codex-install-utils,codex-remote-monitor,codex-session-index,codex-subagent-fields,copilot-hook,copilot-install}.js ~/.claude/hooks/
+# 复制全部 hook 文件 —— hooks/ 内部存在 require() 依赖，只挑其中几个会让
+# 装好的每个 hook 在触发时直接 MODULE_NOT_FOUND 崩掉。
+# 这与应用内 WSL Pair 实际复制的内容一致。
+cp /mnt/c/path/to/clawd-on-desk/hooks/*.js ~/.claude/hooks/
 
 # 以远程模式注册 Claude hooks
 node ~/.claude/hooks/install.js --remote
