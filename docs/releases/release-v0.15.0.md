@@ -9,7 +9,7 @@ defects reported against v0.14.0.
 
 This release also prepares the project to take over WinGet manifest publishing, after
 discovering that x64 users had been receiving the ARM64 installer since v0.6.2, and
-welcomes **three first-time contributors**.
+welcomes **four first-time contributors**.
 
 ### Subscription Quota And Usage
 
@@ -141,7 +141,8 @@ welcomes **three first-time contributors**.
   Deny, and the real decision stays in the desktop app, Telegram, or Feishu/Lark.
   Secrets live in a local env file outside prefs, sends are bounded/retried, link
   unfurling is disabled, and completion cards use snapshot-owned display tags
-  instead of raw session ids. Thanks to first-time contributor @wang4433.
+  instead of raw session ids. Thanks to first-time contributors @wang4433 and
+  @shengmai-justin.
 - **Persisted Sessions/Dashboard window bounds** (#807, #814, issue #801) — the window
   remembers its position and size, with hardened persistence against invalid or
   off-screen bounds. Thanks to @KaiC5504.
@@ -179,11 +180,12 @@ welcomes **three first-time contributors**.
 
 ### Contributors
 
-Three first-time contributors landed changes in this release:
+Four first-time contributors landed changes in this release:
 
 - @weed33834 — axis-constrained roam mode (#795)
 - @arismarioneves — Brazilian Portuguese locale (#822)
 - @wang4433 — Slack notification-only channel (#836, recovered in #909)
+- @shengmai-justin — Slack notification hardening, delivery reliability, and guide updates (#836, recovered in #909)
 
 Returning contributors: @xiaoshidefeng (#841, #843), @YOIMIYA66 (#789),
 @PeterShanxin (#853), @KaiC5504 (#807), and @anthonyonazure (#810), whose accessory and
