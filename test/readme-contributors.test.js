@@ -66,6 +66,7 @@ const VERIFIED_GITHUB_CONTRIBUTORS = [
   "anthonyonazure",
   "weed33834",
   "arismarioneves",
+  "wang4433",
   "Zamaniego",
 ];
 

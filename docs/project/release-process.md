@@ -94,8 +94,8 @@ Required all-platform checks:
   macOS installs default to pet + menu-bar accessory with no Dock tile.
 - Settings -> General / Agents / Animation & Sound render correctly in all supported
   languages, including sidebar SVG icons and the folded Animation Map subtab.
-- Settings -> About contributors include the two v0.15.0 first-time
-  contributors: `weed33834` and `arismarioneves`.
+- Settings -> About contributors include the three v0.15.0 first-time
+  contributors: `weed33834`, `arismarioneves`, and `wang4433`.
 - Reinstall one existing hook-based agent, such as Codex, and confirm the
   packaged hook script can `require()` its dependencies.
 - Run one real Claude Code or Codex session and confirm the pet reacts to state

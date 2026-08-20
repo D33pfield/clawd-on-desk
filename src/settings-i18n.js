@@ -7239,7 +7239,7 @@
     "Yike-Ye", "xiaoshidefeng", "yanguibao1997", "JasonZH6600", "V1staz", "royhuang91", "Schlaflied", "KaiC5504",
     "jiaxuan1101", "kkirito16", "200780381", "Dxy2326", "lurui1997", "JesmonX", "chen86860",
     "LinYsssss", "He-wei-gui", "liugou27", "YOOGOMJA", "anupamme", "anthonyonazure", "weed33834",
-    "arismarioneves", "aaronWool", "Zamaniego",
+    "arismarioneves", "wang4433", "aaronWool", "Zamaniego",
   ];
 
   root.ClawdSettingsI18n = {
