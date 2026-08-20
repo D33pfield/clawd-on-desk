@@ -29,13 +29,13 @@ message in Slack does not necessarily remove it from an export.
 | Permission summary / detail | permissions | card only | the agent's description, or a safe fallback: file basename, a `Glob` file-selection pattern, or URL origin + pathname (credentials and query stripped); raw commands and search expressions such as `Grep.pattern` are not fallback content |
 | Question and option text | questions | card only | the agent's `AskUserQuestion` payload |
 | Assistant's last output | **only if** *Include assistant output* is on | card only | the model's final message, redacted and truncated |
-| Short session id | completions | card only | Clawd's internal id, first 6 characters |
+| Session display tag | completions | card and Slack fallback `text` | a 10-character, snapshot-owned display tag derived from the session identity; raw/canonical session ids are not sent |
 
 Slack's top-level fallback `text` is used for push/accessibility previews. For a
 completion it contains the icon, session title, status and (when available)
-project folder. For a permission/question it contains only the icon, card type
-and subject. It does **not** contain assistant output, permission detail,
-question options, host, or the short session id.
+project folder and session display tag. For a permission/question it contains
+only the icon, card type and subject. It does **not** contain assistant output,
+permission detail, question options, host, or raw/canonical session ids.
 
 Clawd redacts recognisable secrets before sending — provider token prefixes,
 `Authorization` headers, secret-named `key=value` pairs, and Slack webhook URLs.
