@@ -816,15 +816,22 @@ test("capacity three keeps the active item and exact newest pending survivor ids
     },
   });
   client.prime({ sessions: [] });
-  client.onSnapshot(doneSnap(["cap-a", "cap-b", "cap-c", "cap-d", "cap-e"], 2));
+  client.onSnapshot({
+    sessions: ["cap-a", "cap-b", "cap-c", "cap-d", "cap-e"].map((id) => ({
+      id,
+      badge: "done",
+      displayTitle: `title-${id}`,
+      lastEvent: { rawEvent: "Stop", at: 2 },
+    })),
+  });
   releaseFirst();
   await client.drained();
 
   assert.deepEqual(dropped, ["cap-b", "cap-c"]);
   assert.equal(fetchImpl.calls.length, 3);
-  assert.match(fetchImpl.calls[0].body.text, /cap-a/);
-  assert.match(fetchImpl.calls[1].body.text, /cap-d/);
-  assert.match(fetchImpl.calls[2].body.text, /cap-e/);
+  assert.match(fetchImpl.calls[0].body.text, /title-cap-a/);
+  assert.match(fetchImpl.calls[1].body.text, /title-cap-d/);
+  assert.match(fetchImpl.calls[2].body.text, /title-cap-e/);
 });
 
 test("permanent completion failure settles, advances FIFO, and clears in-flight ownership", async () => {

@@ -8,11 +8,14 @@ const {
   deriveSessionBadge,
   deriveSourceInfo,
   isSessionInProgress,
+  buildDisplaySessionTag,
+  buildSessionSnapshotEntry,
   buildSessionSnapshot,
   getActiveSessionAliasKeys,
   sessionSnapshotSignature,
   sessionDisplayFolder,
   sessionDisplayTitle,
+  normalizeTitle,
 } = require("../src/state-session-snapshot");
 const { makeSessionKey } = require("../src/session-key");
 const { sessionAliasKey } = require("../src/session-alias");
@@ -50,6 +53,23 @@ describe("deriveSourceInfo", () => {
         displayLabel: "",
       });
     }
+  });
+});
+
+describe("normalizeTitle", () => {
+  it("strips Unicode bidi formatting marks before UI snapshots", () => {
+    assert.strictEqual(
+      normalizeTitle("safe\u061c\u200efile\u202etxt.exe\u2066done\u2069"),
+      "safe file txt.exe done"
+    );
+  });
+
+  it("does not split astral characters or preserve unpaired surrogates", () => {
+    const truncated = normalizeTitle(`${"A".repeat(78)}😀BC`);
+    assert.strictEqual(truncated, `${"A".repeat(78)}😀…`);
+    assert.strictEqual(truncated.isWellFormed(), true);
+    assert.strictEqual(Array.from(truncated).length, 80);
+    assert.strictEqual(normalizeTitle("before\uD83Dmiddle\uDC00after"), "before�middle�after");
   });
 });
 
@@ -139,6 +159,72 @@ describe("remote profile action ids", () => {
   });
 });
 
+describe("display session tags", () => {
+  it("hashes legal canonical ids into stable 10-hex display tags", () => {
+    const canonical = makeSessionKey({
+      profileId: "local",
+      rawSessionId: "token-1234567890-abcdef",
+    });
+
+    assert.strictEqual(canonical, "s1.bG9jYWw.dG9rZW4tMTIzNDU2Nzg5MC1hYmNkZWY");
+    assert.strictEqual(buildDisplaySessionTag(canonical), "83aacb6af9");
+    assert.match(buildDisplaySessionTag(canonical), /^[0-9a-f]{10}$/);
+  });
+
+  it("returns an empty tag for missing, non-string, or blank ids", () => {
+    for (const value of [null, undefined, "", "   ", 42, true, {}, []]) {
+      assert.strictEqual(buildDisplaySessionTag(value), "", String(value));
+    }
+  });
+
+  it("distinguishes real Codex UUIDv7-shaped raw ids after canonicalization", () => {
+    const first = makeSessionKey({
+      profileId: "local",
+      rawSessionId: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+    });
+    const second = makeSessionKey({
+      profileId: "local",
+      rawSessionId: "codex:019e115b-4df2-7ed0-b90e-8e6345aca777",
+    });
+
+    assert.strictEqual(buildDisplaySessionTag(first), "732d7659d7");
+    assert.strictEqual(buildDisplaySessionTag(second), "b8a6f6f6ac");
+    assert.notStrictEqual(buildDisplaySessionTag(first), buildDisplaySessionTag(second));
+  });
+
+  it("distinguishes the same raw id in different remote profiles", () => {
+    const rawSessionId = "same-visible-id";
+    const a = makeSessionKey({ profileId: "profile-a", rawSessionId });
+    const b = makeSessionKey({ profileId: "profile-b", rawSessionId });
+
+    assert.notStrictEqual(buildDisplaySessionTag(a), buildDisplaySessionTag(b));
+  });
+
+  it("snapshot entries expose a tag derived only from the canonical id", () => {
+    const id = makeSessionKey({ profileId: "local", rawSessionId: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777" });
+    const withRaw = buildSessionSnapshotEntry(id, session("working", {
+      rawSessionId: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+    }));
+    const withoutRaw = buildSessionSnapshotEntry(id, session("working"));
+
+    assert.strictEqual(withRaw.displaySessionTag, "732d7659d7");
+    assert.strictEqual(withoutRaw.displaySessionTag, withRaw.displaySessionTag);
+    for (const forbidden of ["s1.", "bG9", "codex:", "019e11"]) {
+      assert.strictEqual(withRaw.displaySessionTag.includes(forbidden), false, forbidden);
+    }
+  });
+
+  it("snapshot signature tracks the visible display session tag field", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["tagged", session("working")],
+    ]), { statePriority: STATE_PRIORITY });
+    const changed = JSON.parse(JSON.stringify(snapshot));
+    changed.sessions[0].displaySessionTag = "deadbeef00";
+
+    assert.notStrictEqual(sessionSnapshotSignature(snapshot), sessionSnapshotSignature(changed));
+  });
+});
+
 describe("isSessionInProgress state mapping", () => {
   it("treats persisted running states as in-progress and idle/sleeping/headless as not", () => {
     assert.strictEqual(isSessionInProgress(session("working")), true);
@@ -184,11 +270,51 @@ describe("sessionDisplayTitle cwd fallback", () => {
     assert.strictEqual(snapshot.sessions[0].cwd, cwd, "focus/open-folder keeps the full cwd");
   });
 
-  it("falls back to path.basename(cwd) for normal project paths", () => {
+  it("derives normal project basenames independent of the host platform", () => {
     assert.strictEqual(
       sessionDisplayTitle("qoderwork:abc123", session("working", { cwd: "/home/me/projects/myapp" })),
       "myapp"
     );
+    assert.strictEqual(
+      sessionDisplayTitle("claude:abc123", session("working", { cwd: "C:\\Users\\me\\projects\\myapp" })),
+      "myapp"
+    );
+    assert.strictEqual(
+      sessionDisplayTitle("claude:abc123", session("working", { cwd: "\\\\server\\share\\projects\\myapp" })),
+      "myapp"
+    );
+    assert.strictEqual(
+      sessionDisplayTitle("claude:abc123", session("working", { cwd: "C:/Users/me/projects\\myapp" })),
+      "myapp"
+    );
+    assert.strictEqual(
+      sessionDisplayTitle("claude:abc123", session("working", { cwd: "//server/share/projects\\myapp" })),
+      "myapp"
+    );
+    assert.strictEqual(
+      sessionDisplayTitle("claude:abc123", session("working", { cwd: "//?/C:/Users/me/projects\\myapp" })),
+      "myapp"
+    );
+  });
+
+  it("preserves backslashes that are part of a POSIX path component", () => {
+    assert.strictEqual(
+      sessionDisplayTitle("claude:abc123", session("working", { cwd: "/tmp/project\\name" })),
+      "project\\name"
+    );
+    assert.strictEqual(
+      sessionDisplayTitle("claude:abc123", session("working", { cwd: "/\\mount/project\\name" })),
+      "project\\name"
+    );
+  });
+
+  it("falls back to the session id for filesystem roots", () => {
+    for (const cwd of ["/", "C:\\"]) {
+      assert.strictEqual(
+        sessionDisplayTitle("claude:canonical", session("working", { cwd, rawSessionId: "root42" })),
+        "root42"
+      );
+    }
   });
 
   it("skips QoderWork internal workspace cwds so the HUD never shows a raw workspace id", () => {
@@ -783,6 +909,26 @@ describe("state-session-snapshot builder", () => {
     );
   });
 
+  it("carries the opencode source through snapshot entries (#830)", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["opencode:s1", session("working", {
+        contextUsage: {
+          used: 32000,
+          limit: 128000,
+          percent: 25,
+          source: "opencode",
+        },
+      })],
+    ]), { statePriority: STATE_PRIORITY });
+
+    assert.deepStrictEqual(snapshot.sessions[0].contextUsage, {
+      used: 32000,
+      limit: 128000,
+      percent: 25,
+      source: "opencode",
+    });
+  });
+
   it("ignores internal context authority when computing the renderer snapshot signature", () => {
     const opts = { statePriority: STATE_PRIORITY };
     const transcript = buildSessionSnapshot(new Map([
@@ -875,6 +1021,25 @@ describe("state-session-snapshot builder", () => {
     assert.strictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(stampOnly));
     assert.notStrictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(changedValue));
     assert.notStrictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(changedSeen));
+  });
+
+  it("snapshot signature tracks Kimi group and lastSeenAt changes", () => {
+    const base = { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null };
+    const build = (usedPercent, updatedAt, lastSeenAt) => buildSessionSnapshot(new Map(), {
+      ...base,
+      accountQuota: [{
+        host: null,
+        kimiQuota: {
+          group: { kimiWeekly: { usedPercent, windowMinutes: 10080 } },
+          updatedAt,
+          lastSeenAt,
+        },
+      }],
+    });
+    const original = build(0, 1, 60000);
+    assert.strictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(build(0, 2, 60000)));
+    assert.notStrictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(build(1, 2, 60000)));
+    assert.notStrictEqual(sessionSnapshotSignature(original), sessionSnapshotSignature(build(0, 1, 120000)));
   });
 
   it("marks detached ended idle sessions hidden from HUD only when cleanup is enabled and pid is dead", () => {

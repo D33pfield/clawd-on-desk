@@ -4,20 +4,23 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const fmt = require("../src/slack-message-format");
-const { buildSessionSnapshot } = require("../src/state-session-snapshot");
+const { resolveSessionIdentity } = require("../src/session-key");
+const { buildSessionSnapshot, buildSessionSnapshotEntry } = require("../src/state-session-snapshot");
 
 test("buildCompletionMessage renders a done card with fallback text", () => {
   const msg = fmt.buildCompletionMessage(
-    { id: "abc123def", displayTitle: "Build", badge: "done", cwd: "/x/proj", agentId: "claude" },
+    { id: "abc123def", displaySessionTag: "deadbeef00", displayTitle: "Build", badge: "done", cwd: "/x/proj", agentId: "claude" },
     { lang: "en" },
   );
   assert.ok(msg.text.startsWith("✅"));
   assert.equal(msg.blocks[0].type, "header");
   assert.ok(msg.blocks[0].text.text.includes("Build"));
-  // metadata line includes the folder + short id
+  // metadata line and fallback text include the folder + snapshot-owned session tag
   const section = msg.blocks[1].text.text;
   assert.ok(section.includes("proj"));
-  assert.ok(section.includes("#abc123"));
+  assert.ok(section.includes("#deadbeef00"));
+  assert.ok(msg.text.includes("#deadbeef00"));
+  assert.ok(!section.includes("#abc123"));
 });
 
 test("interrupted sessions use the warning icon", () => {
@@ -159,6 +162,94 @@ test("a real snapshot entry suppresses an internal workspace id end to end", () 
     "empty displayFolder must not fall back to raw cwd");
 });
 
+test("completion uses the snapshot display tag instead of raw or canonical id prefixes", () => {
+  const msg = fmt.buildCompletionMessage(
+    {
+      id: "s1.bG9jYWw.c2Vzcy16enp6eno5",
+      rawSessionId: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+      displaySessionTag: "deadbeef00",
+      badge: "done",
+    },
+    { lang: "en" },
+  );
+  const all = JSON.stringify(msg);
+  assert.match(msg.blocks[0].text.text, /session/);
+  assert.match(all, /#deadbeef00/);
+  assert.ok(msg.text.includes("#deadbeef00"), "fallback preview carries the safe tag");
+  for (const forbidden of ["s1.bG9", "c2Vzcy", "codex:", "019e11"]) {
+    assert.ok(!all.includes(forbidden), forbidden);
+  }
+});
+
+test("completion does not expose qoder or qwenwork raw prefixes as Slack tags", () => {
+  for (const rawId of ["qoder:abc123456", "qwenwork:xyz987654"]) {
+    const msg = fmt.buildCompletionMessage(
+      { id: rawId, displaySessionTag: "1122334455", badge: "done" },
+      { lang: "en" },
+    );
+    const all = JSON.stringify(msg);
+    assert.match(all, /#1122334455/);
+    assert.ok(!all.includes(rawId), rawId);
+    assert.ok(!all.includes(rawId.slice(0, 6)), rawId);
+  }
+});
+
+test("completion drops malformed snapshot display tags instead of publishing them", () => {
+  for (const displaySessionTag of [
+    "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+    "not-a-tag",
+    "123456789",
+    "12345678901",
+    "<!channel>",
+  ]) {
+    const msg = fmt.buildCompletionMessage(
+      {
+        id: "s-malformed-tag",
+        displayTitle: "Build",
+        displaySessionTag,
+        badge: "done",
+      },
+      { lang: "en" },
+    );
+    const all = JSON.stringify(msg);
+    assert.equal(msg.text, "✅ Build (done)", displaySessionTag);
+    assert.equal(msg.blocks[1].text.text, "*done*", displaySessionTag);
+    assert.ok(!all.includes(displaySessionTag), displaySessionTag);
+    assert.ok(!all.includes("#codex:"), displaySessionTag);
+    assert.ok(!all.includes("#not-a-tag"), displaySessionTag);
+    assert.ok(!all.includes("<!channel>"), displaySessionTag);
+  }
+});
+
+test("real Codex ids render distinct snapshot-owned Slack tags", () => {
+  function entryFor(rawSessionId) {
+    const identity = resolveSessionIdentity(rawSessionId);
+    const entry = buildSessionSnapshotEntry(identity.sessionId, {
+      rawSessionId: identity.rawSessionId,
+      agentId: "codex",
+      state: "idle",
+      recentEvents: [{ event: "Stop", state: "idle", at: 1 }],
+    });
+    return { ...entry, badge: "done" };
+  }
+
+  const first = entryFor("codex:019e115a-4df2-7ed0-b90e-8e6345aca777");
+  const second = entryFor("codex:019e115b-4df2-7ed0-b90e-8e6345aca777");
+  const firstText = JSON.stringify(fmt.buildCompletionMessage(first, { lang: "en" }));
+  const secondText = JSON.stringify(fmt.buildCompletionMessage(second, { lang: "en" }));
+  const firstTag = firstText.match(/#([0-9a-f]{10})/);
+  const secondTag = secondText.match(/#([0-9a-f]{10})/);
+
+  assert.ok(firstTag && secondTag, "both messages carry a safe tag");
+  assert.equal(firstTag[1], first.displaySessionTag);
+  assert.equal(secondTag[1], second.displaySessionTag);
+  assert.notEqual(firstTag[1], secondTag[1]);
+  for (const forbidden of ["codex:", "019e115", "s1.bG9"]) {
+    assert.ok(!firstText.includes(forbidden), forbidden);
+    assert.ok(!secondText.includes(forbidden), forbidden);
+  }
+});
+
 test("older formatter callers without displayFolder keep the cwd basename fallback", () => {
   const msg = fmt.buildCompletionMessage({
     id: "s1",
@@ -227,8 +318,12 @@ test("truncateMiddle keeps both ends and marks truncation", () => {
 
 test("locales fall back to English and translate the status word", () => {
   assert.equal(fmt.getLocale("zz").done, "done");
+  assert.deepEqual(Object.keys(fmt.getLocale("es")), Object.keys(fmt.getLocale("en")));
+  assert.equal(typeof fmt.getLocale("es").wrapStatus, "function");
   const zh = fmt.buildCompletionMessage({ id: "s1", badge: "done", displayTitle: "T" }, { lang: "zh" });
   assert.ok(zh.blocks[1].text.text.includes("已完成"));
+  const es = fmt.buildCompletionMessage({ id: "s1", badge: "done", displayTitle: "T" }, { lang: "es" });
+  assert.ok(es.blocks[1].text.text.includes("completada"));
 });
 
 test("buildTestMessage produces a simple two-block card", () => {

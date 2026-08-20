@@ -782,12 +782,22 @@
       });
     }
 
+    function setCollapsed(
+      nextCollapsed,
+      { persist = true, animate = animateExpansion } = {},
+    ) {
+      if (collapsed === nextCollapsed) return;
+      collapsed = nextCollapsed;
+      if (persist) {
+        const nextState = readCollapsedGroupState();
+        nextState[id] = collapsed;
+        writeCollapsedGroupState(nextState);
+      }
+      preserveScrollAnchor(() => applyCollapsedState({ animate }));
+    }
+
     function toggleCollapsed() {
-      collapsed = !collapsed;
-      const nextState = readCollapsedGroupState();
-      nextState[id] = collapsed;
-      writeCollapsedGroupState(nextState);
-      preserveScrollAnchor(() => applyCollapsedState({ animate: animateExpansion }));
+      setCollapsed(!collapsed);
     }
 
     disclosure.addEventListener("click", toggleCollapsed);
@@ -811,6 +821,12 @@
     requestAnimationFrame(() => {
       if (!collapsed) body.style.setProperty("--collapsible-body-height", "none");
     });
+    group.expand = ({
+      persist = true,
+      animate = animateExpansion,
+    } = {}) => {
+      setCollapsed(false, { persist, animate });
+    };
     group.refreshCollapsibleHeight = refreshCollapsibleHeight;
     group.mutateCollapsibleBody = mutateCollapsibleBody;
     return group;

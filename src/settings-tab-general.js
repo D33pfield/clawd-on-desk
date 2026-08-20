@@ -24,7 +24,9 @@
     "permissionAutomationMode",
     "permissionAutomationAutoToolsWarningDismissed",
     "permissionAutomationUnattendedWarningDismissed",
-    "claudeQuotaCollectionEnabled",
+    // claudeQuotaCollectionEnabled is deliberately absent: the switch moved to
+    // the Claude card on the Agents tab, so General has nothing mounted to
+    // patch and must fall through to a full re-render.
     "quotaMergeSources",
     "sessionHudCleanupDetached",
     "allowEdgePinning",
@@ -89,7 +91,7 @@
   let i18n = null;
   const languagePickerApi = root.ClawdLanguagePicker || {};
 
-  const LANGUAGE_OPTIONS = ["en", "zh", "zh-TW", "ko", "ja", "pt-BR"];
+  const LANGUAGE_OPTIONS = ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"];
   const ROAM_MOVEMENT_NATURAL = "natural";
   const ROAM_MOVEMENT_AXIS = "axis";
 
@@ -624,6 +626,7 @@
     "ko": "langKorean",
     "ja": "langJapanese",
     "pt-BR": "langPortugueseBrazil",
+    "es": "langSpanish",
   };
 
   function buildLanguageRow() {
@@ -694,6 +697,14 @@
   // The quota ring is a sibling of the Session HUD under "Session management",
   // not a child of it: its switches are never gated by the HUD master, so the
   // ring can be used with the Session HUD turned off (and vice versa).
+  //
+  // This group answers ONE question: what does the ring look like. It used to
+  // also carry "collect local Claude usage", which is a different question —
+  // whether to read a provider at all — and having the two side by side is why
+  // per-provider collection ended up split across two tabs, Claude here and
+  // Kimi on its agent card. Collection now lives on each provider's own card
+  // under Agents, so "which providers am I reading" has one place to look.
+  // Keep it that way: a new provider's collection switch goes on its card.
   function buildQuotaRingGroup() {
     const enabledRow = helpers.buildSwitchRow({
       key: "sessionHudShowQuota",
@@ -705,12 +716,8 @@
       labelKey: "rowQuotaMergeSources",
       descKey: "rowQuotaMergeSourcesDesc",
     });
-    const claudeCollectionRow = helpers.buildSwitchRow({
-      key: "claudeQuotaCollectionEnabled",
-      labelKey: "rowClaudeQuotaCollection",
-      descKey: "rowClaudeQuotaCollectionDesc",
-    });
     const displayModeRow = buildQuotaRingDisplayModeRow();
+    const providersBlock = buildQuotaRingProvidersBlock();
     // "Merge across machines" only matters with more than one reporting source
     // (WSL / SSH remotes). Hidden by default so single-machine users never see
     // a confusing no-op switch; revealed once multiple sources are confirmed.
@@ -720,7 +727,7 @@
     const optionList = buildOptionList("quota-ring-option-list", [
       enabledRow,
       displayModeRow,
-      claudeCollectionRow,
+      providersBlock.element,
       mergeRow,
     ]);
     const group = helpers.buildCollapsibleGroup({
@@ -747,7 +754,113 @@
         })
         .catch(() => {});
     }
+    providersBlock.load(group);
     return group;
+  }
+
+  // Per-provider visibility for the pet-side cluster. This is display-only —
+  // collection stays on each provider's Agents card and the Dashboard keeps
+  // showing everything — because the cluster caps at four coins and the
+  // renderer simply takes the first four in provider order, so without this the
+  // user has no say over WHICH four survive. With remotes the count is sources
+  // × providers, which is where it stops being theoretical.
+  //
+  // The list is built from providers that actually report, so a fresh install
+  // sees nothing here rather than four checkboxes for things it never
+  // connected — the same rule that hides "merge across machines" on one machine.
+  function buildQuotaRingProvidersBlock() {
+    const element = document.createElement("div");
+    element.className = "quota-ring-providers";
+    element.style.display = "none";
+
+    const head = document.createElement("div");
+    head.className = "row quota-ring-providers-head";
+    const headText = document.createElement("div");
+    headText.className = "row-text";
+    const headLabel = document.createElement("span");
+    headLabel.className = "row-label";
+    headLabel.textContent = t("rowQuotaRingProviders");
+    const headDesc = document.createElement("span");
+    headDesc.className = "row-desc";
+    headDesc.textContent = t("rowQuotaRingProvidersDesc");
+    headText.append(headLabel, headDesc);
+    head.appendChild(headText);
+    element.appendChild(head);
+
+    function hiddenList() {
+      const raw = state.snapshot && state.snapshot.quotaRingHiddenProviders;
+      return Array.isArray(raw) ? raw.filter((key) => typeof key === "string" && key) : [];
+    }
+
+    function buildProviderRow(provider) {
+      const row = document.createElement("div");
+      row.className = "row row-sub quota-ring-provider-row";
+      row.dataset.providerKey = provider.key;
+      const text = document.createElement("div");
+      text.className = "row-text";
+      const label = document.createElement("span");
+      label.className = "row-label";
+      // Brand name, deliberately not translated — it identifies the provider.
+      label.textContent = provider.label || provider.key;
+      text.appendChild(label);
+      const control = document.createElement("div");
+      control.className = "row-control";
+      const sw = document.createElement("div");
+      sw.className = "switch";
+      sw.setAttribute("role", "switch");
+      sw.tabIndex = 0;
+      // ON means "shown", so the switch reads the way the label does. The pref
+      // stores the inverse (what is HIDDEN) — see prefs.js for why.
+      let shown = !hiddenList().includes(provider.key);
+      helpers.setSwitchVisual(sw, shown);
+      sw.setAttribute("aria-label", provider.label || provider.key);
+      control.appendChild(sw);
+      row.append(text, control);
+
+      helpers.attachActivation(sw, () => {
+        const next = !shown;
+        // Optimistic: the broadcast that confirms this rebuilds the tab, and
+        // leaving the switch stale until then reads as an ignored click.
+        shown = next;
+        helpers.setSwitchVisual(sw, shown, { pending: true });
+        const hidden = hiddenList().filter((key) => key !== provider.key);
+        if (!next) hidden.push(provider.key);
+        return Promise.resolve(
+          window.settingsAPI.update("quotaRingHiddenProviders", hidden)
+        ).catch(() => {
+          shown = !next;
+          helpers.setSwitchVisual(sw, shown);
+        });
+      });
+      return row;
+    }
+
+    function load(group) {
+      const api = window.settingsAPI;
+      if (!api || typeof api.getQuotaRingProviders !== "function") return;
+      Promise.resolve(api.getQuotaRingProviders())
+        .then((providers) => {
+          const list = Array.isArray(providers) ? providers : [];
+          // One connected provider cannot crowd anything out, so the control
+          // would be a no-op switch — the same reason merge stays hidden.
+          if (list.length <= 1) return;
+          const reveal = () => {
+            for (const provider of list) {
+              if (!provider || typeof provider.key !== "string") continue;
+              element.appendChild(buildProviderRow(provider));
+            }
+            element.style.display = "";
+          };
+          if (group && typeof group.mutateCollapsibleBody === "function") {
+            group.mutateCollapsibleBody(reveal);
+          } else {
+            reveal();
+          }
+        })
+        .catch(() => {});
+    }
+
+    return { element, load };
   }
 
   function buildQuotaRingDisplayModeRow() {

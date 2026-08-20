@@ -65,7 +65,12 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.sessionHudShowContextUsage, true);
     assert.strictEqual(d.sessionHudShowQuota, true);
     assert.strictEqual(d.quotaRingDisplayMode, "used");
+    // Empty means every connected provider draws, matching the behaviour before
+    // the preference existed. Storing what is HIDDEN (not what is shown) is why
+    // a newly connected provider appears on its own instead of silently missing.
+    assert.deepStrictEqual(d.quotaRingHiddenProviders, []);
     assert.strictEqual(d.claudeQuotaCollectionEnabled, false);
+    assert.strictEqual(d.kimiQuotaCollectionEnabled, false);
     assert.strictEqual(d.quotaMergeSources, false);
     assert.strictEqual(d.telegramMigrationLastNotified, "");
     assert.strictEqual(d.sessionHudCleanupDetached, true);
@@ -95,6 +100,9 @@ describe("prefs.getDefaults", () => {
       platform: "feishu",
       idType: "open_id",
       approverId: "",
+      approverSource: "none",
+      approverBoundPlatform: "",
+      approverBoundAppId: "",
       connectionTimeoutSeconds: 15,
     });
   });
@@ -193,6 +201,68 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.agents.codex.nativeNotificationSoundEnabled, false);
   });
 
+});
+
+describe("prefs Feishu approval provenance migration", () => {
+  it("normalizes legacy approver provenance lazily without rewriting the file", () => {
+    const p = makeTempPath();
+    const raw = {
+      version: prefs.CURRENT_VERSION,
+      feishuApproval: {
+        enabled: true,
+        platform: "feishu",
+        idType: "union_id",
+        approverId: "legacy-union-id",
+        connectionTimeoutSeconds: 30,
+      },
+    };
+    const original = JSON.stringify(raw, null, 2);
+    fs.writeFileSync(p, original);
+
+    const loaded = prefs.load(p);
+
+    assert.equal(fs.readFileSync(p, "utf8"), original);
+    assert.deepStrictEqual(loaded.snapshot.feishuApproval, {
+      enabled: true,
+      platform: "feishu",
+      idType: "union_id",
+      approverId: "legacy-union-id",
+      approverSource: "unknown",
+      approverBoundPlatform: "",
+      approverBoundAppId: "",
+      connectionTimeoutSeconds: 30,
+    });
+  });
+
+  it("serializes canonical unknown provenance on the next normal save without any App Secret", () => {
+    const p = makeTempPath();
+    fs.writeFileSync(p, JSON.stringify({
+      version: prefs.CURRENT_VERSION,
+      feishuApproval: {
+        enabled: true,
+        platform: "lark",
+        idType: "user_id",
+        approverId: "legacy-user-id",
+      },
+    }));
+
+    const loaded = prefs.load(p);
+    prefs.save(p, loaded.snapshot);
+    const serialized = JSON.parse(fs.readFileSync(p, "utf8"));
+
+    assert.deepStrictEqual(serialized.feishuApproval, {
+      enabled: true,
+      platform: "lark",
+      idType: "user_id",
+      approverId: "legacy-user-id",
+      approverSource: "unknown",
+      approverBoundPlatform: "",
+      approverBoundAppId: "",
+      connectionTimeoutSeconds: 15,
+    });
+    assert.equal("appSecret" in serialized.feishuApproval, false);
+    assert.equal(JSON.stringify(serialized.feishuApproval).includes("FEISHU_APP_SECRET"), false);
+  });
 });
 
 describe("prefs.validate", () => {
@@ -419,6 +489,39 @@ describe("prefs.validate", () => {
     assert.strictEqual(prefs.validate({ textScale: 2 }).textScale, 1);
     assert.strictEqual(prefs.validate({ textScale: "1.2" }).textScale, 1);
     assert.strictEqual(prefs.getDefaults().textScale, 1);
+  });
+
+  it("normalizes hidden quota providers without inventing or dropping choices", () => {
+    // Deliberately NOT validated against the ring's provider table. Rejecting an
+    // unfamiliar key here would silently un-hide a provider whenever a rename,
+    // load order, or a not-yet-registered provider made the key look wrong —
+    // the user's coin would come back on its own. Shape only; consumers match
+    // by key, so a stale entry is inert.
+    assert.deepStrictEqual(
+      prefs.validate({ quotaRingHiddenProviders: ["codexQuota", "somethingNew"] })
+        .quotaRingHiddenProviders,
+      ["codexQuota", "somethingNew"]
+    );
+    // Junk shapes collapse to "hide nothing" rather than throwing away the ring.
+    for (const raw of [undefined, null, "codexQuota", 7, {}]) {
+      assert.deepStrictEqual(
+        prefs.validate({ quotaRingHiddenProviders: raw }).quotaRingHiddenProviders, [],
+        `${JSON.stringify(raw)} should normalize to an empty list`
+      );
+    }
+    // Blank/duplicate/non-string entries are dropped; order is preserved.
+    assert.deepStrictEqual(
+      prefs.validate({
+        quotaRingHiddenProviders: ["kimiQuota", "", "  ", null, 3, "kimiQuota", "codexQuota"],
+      }).quotaRingHiddenProviders,
+      ["kimiQuota", "codexQuota"]
+    );
+    // Bounded, so a corrupt file cannot grow the preference without limit.
+    const flood = Array.from({ length: 200 }, (_v, i) => `p${i}`);
+    assert.strictEqual(
+      prefs.validate({ quotaRingHiddenProviders: flood }).quotaRingHiddenProviders.length,
+      prefs.MAX_HIDDEN_QUOTA_PROVIDERS
+    );
   });
 
   it("normalizes agents (drops malformed entries)", () => {
@@ -1408,6 +1511,64 @@ describe("prefs.load", () => {
     );
   });
 
+  // POSIX-only: on Windows `chmod` only toggles the read-only bit and does not deny
+  // reads, so the EACCES branch is unreachable there and these assertions would fail
+  // for a reason that has nothing to do with prefs. `npm test` does run on
+  // windows-latest (.github/workflows/build.yml), so the skip is load-bearing.
+  // Same shape as `posixOnly` in test/antigravity-install.test.js.
+  const unreadableOnly = {
+    skip: process.platform === "win32" ? "chmod cannot deny reads on Windows" : false,
+  };
+
+  it("locks an unreadable prefs file so save() cannot clobber it", unreadableOnly, function () {
+    // Root can read anything, so the EACCES path is unreachable there too.
+    if (typeof process.getuid === "function" && process.getuid() === 0) return this.skip?.();
+    // 0o200 (write-only), NOT 0o000. With 0o000 the file is also unwritable, so the
+    // clobber this test exists to prevent could never happen there — the lane would
+    // assert a flag while the invariant was safe for an unrelated reason. Write-only
+    // is the state that actually loses data: unreadable, yet perfectly writable.
+    const p = makeTempPath();
+    const original = JSON.stringify({ agents: { "claude-code": { enabled: false } } });
+    fs.writeFileSync(p, original, "utf8");
+    fs.chmodSync(p, 0o200);
+    try {
+      const loaded = prefs.load(p);
+      assert.strictEqual(loaded.locked, true);
+      assert.strictEqual(loaded.recovered, true);
+      assert.deepStrictEqual(loaded.snapshot, prefs.getDefaults());
+      // No backup: copyFileSync would read the same unreadable file.
+      assert.strictEqual(fs.existsSync(p + ".bak"), false);
+
+    } finally {
+      fs.chmodSync(p, 0o600);
+    }
+  });
+
+  // Separate from the lane above **on purpose**: that one asserts the flag, and an
+  // assertion on the flag short-circuits before the outcome is ever exercised. This
+  // one never looks at `locked` directly — it only does what the single real caller
+  // does (settings-controller.js:111, `if (locked) return { noop: true }`) and then
+  // asks the question that actually matters: is the user's file still there?
+  it("does not clobber prefs it could not read", unreadableOnly, function () {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return this.skip?.();
+    const p = makeTempPath();
+    const original = JSON.stringify({ agents: { "claude-code": { enabled: false } } });
+    fs.writeFileSync(p, original, "utf8");
+    fs.chmodSync(p, 0o200); // write-only: unreadable, yet perfectly writable
+    try {
+      const loaded = prefs.load(p);
+      if (!loaded.locked) prefs.save(p, loaded.snapshot);
+      fs.chmodSync(p, 0o600);
+      assert.strictEqual(
+        fs.readFileSync(p, "utf8"),
+        original,
+        "prefs we could not read must survive a persist attempt byte for byte"
+      );
+    } finally {
+      fs.chmodSync(p, 0o600);
+    }
+  });
+
   it("marks a non-object prefs root as a recovered defaults snapshot", () => {
     const p = makeTempPath();
     fs.writeFileSync(p, "null", "utf8");
@@ -2064,6 +2225,7 @@ describe("prefs.mapLocaleToLang (device locale → UI language)", () => {
     ["pt-BR", "pt-BR"], ["pt_BR", "pt-BR"],
     // Only the shipped regional variant is auto-selected.
     ["pt", "en"], ["pt-PT", "en"], ["pt-AO", "en"],
+    ["es-MX", "es"], ["es-ES", "es"], ["es", "es"],
     ["fr-FR", "en"], ["de", "en"],
   ];
   for (const [input, expected] of cases) {
@@ -2080,8 +2242,8 @@ describe("prefs.mapLocaleToLang (device locale → UI language)", () => {
   });
 
   it("only ever returns a value inside the lang enum", () => {
-    const enumVals = new Set(["en", "zh", "zh-TW", "ko", "ja", "pt-BR"]);
-    for (const probe of ["xx", "ZH-tw", "JA", "en-GB", "pt-BR", "PT-br", ""]) {
+    const enumVals = new Set(["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"]);
+    for (const probe of ["xx", "ZH-tw", "JA", "en-GB", "pt-BR", "PT-br", "es-MX", ""]) {
       assert.ok(enumVals.has(prefs.mapLocaleToLang(probe)), `${probe} mapped outside enum`);
     }
   });

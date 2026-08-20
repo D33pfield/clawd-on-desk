@@ -314,6 +314,49 @@ const BUBBLE_STRINGS = {
     submitFeedback: "Enviar",
     back: "Voltar",
   },
+  es: {
+    irreversibleHint: "Acción destructiva — puede ser irreversible",
+    autoAcceptEdits: "Aceptar ediciones automáticamente",
+    switchToPlanMode: "Cambiar al modo plan",
+    allowInDir: "Permitir {tool} en {dir}/",
+    alwaysAllowRule: "Permitir siempre `{rule}`",
+    alwaysAllow: "Permitir siempre",
+    sessionTrust: "No volver a preguntar en esta sesión",
+    permissionRequest: "Solicitud de permiso",
+    agent: "Agente",
+    allow: "Permitir",
+    deny: "Denegar",
+    alwaysAllowBlanket: "Permitir siempre (sin restricciones)",
+    alwaysAllowBlanketTitle: "Advertencia: la regla 'siempre' de {agent} aprueba automáticamente todas las llamadas posteriores a herramientas de la misma categoría durante esta sesión (incluidos rm y otros comandos destructivos). La regla solo se guarda en memoria; reinicia {agent} para revocarla.",
+    needsInput: "Necesita una respuesta",
+    goToTerminal: "Ir a la terminal",
+    submitAnswer: "Enviar respuesta",
+    nextQuestion: "Siguiente",
+    previousQuestion: "Atrás",
+    questionProgress: "{current} / {total}",
+    chooseOneOption: "Elige una opción",
+    chooseAtLeastOneOption: "Selección múltiple; elige al menos una opción",
+    questionLabel: "Pregunta {index}",
+    other: "Otra",
+    otherPlaceholder: "Escribe tu respuesta…",
+    codexPermission: "Permiso de Codex",
+    codexToolApproval: "Aprobación de herramienta de Codex",
+    kimiPermission: "Permiso de Kimi",
+    checkKimiTerminal: "Aprueba o rechaza esta solicitud en la terminal de Kimi.",
+    gotIt: "Entendido",
+    codexNeedsInput: "Codex necesita una respuesta",
+    goToCodex: "Ir a Codex",
+    answerInCodex: "Elige o escribe tu respuesta en Codex.",
+    returnToRemoteCodex: "Vuelve a la terminal remota de Codex para responder.",
+    otherInCodex: "Otra (escríbela en Codex)",
+    planReview: "Revisión del plan",
+    approve: "Aprobar",
+    reject: "Rechazar",
+    tellClaudeWhatToChange: "Sugerir cambios",
+    planFeedbackPlaceholder: "¿Qué habría que cambiar?",
+    submitFeedback: "Enviar",
+    back: "Atrás",
+  },
 };
 
 function bubbleText(lang, key, vars) {
@@ -1183,10 +1226,10 @@ function show(data) {
       error.setAttribute("role", "alert");
       suggestionsContainer.appendChild(error);
     }
-    // Hermes permission cards get no terminal fallback: the protocol has no
-    // native approval prompt to hand back to, so no-decision becomes a
-    // retryable block. Hermes clarify uses the elicitation path above.
-    if (!data.isHermes) renderRegularTerminalFallback(data.lang);
+    // Hermes and DSH permission cards get no generic terminal action. Hermes
+    // has no native approval prompt; DSH's native web answerer is reached by
+    // an explicit no-decision fallback, not a user allow/deny action.
+    if (!data.isHermes && !data.isDsh) renderRegularTerminalFallback(data.lang);
   }
   // Re-enable buttons
   btnAllow.disabled = false;

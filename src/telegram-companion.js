@@ -1,5 +1,7 @@
 "use strict";
 
+const { getEntryDisplaySessionTag } = require("./state-session-snapshot");
+
 const {
   clipUtf16Safe,
   concatTelegramParts,
@@ -88,6 +90,14 @@ const NOTIFICATION_LOCALES = Object.freeze({
     truncated: "truncado",
     wrapStatus: (status) => `(${status})`,
   },
+  es: {
+    session: "sesión",
+    done: "completada",
+    interrupted: "interrumpida",
+    assistantOutput: "Salida del asistente",
+    truncated: "truncada",
+    wrapStatus: (status) => `(${status})`,
+  },
 });
 
 function dedupeKey(entry) {
@@ -117,11 +127,6 @@ function entryFolderName(entry) {
     return folderName(entry.displayFolder);
   }
   return folderName(entry.cwd);
-}
-
-function shortId(id) {
-  const s = String(id || "");
-  return s.length > 6 ? s.slice(0, 6) : s;
 }
 
 function getNotificationLocale(lang) {
@@ -224,13 +229,14 @@ function formatNotification(entry, options = {}) {
   const interrupted = entry.badge === "interrupted";
   const icon = interrupted ? "⚠️" : "✅"; // ⚠️ / ✅
   const status = interrupted ? locale.interrupted : locale.done;
-  const title = entry.displayTitle || (entry.id ? `${shortId(entry.id)}..` : locale.session);
+  const title = entry.displayTitle || locale.session;
+  const displaySessionTag = getEntryDisplaySessionTag(entry);
   const meta = [];
   if (entry.agentId) meta.push(entry.agentId);
   const folder = entryFolderName(entry);
   if (folder) meta.push(folder);
   if (entry.host) meta.push(entry.host);
-  if (entry.id) meta.push(`#${shortId(entry.id)}`);
+  if (displaySessionTag) meta.push(`#${displaySessionTag}`);
   const wrapStatus = typeof locale.wrapStatus === "function"
     ? locale.wrapStatus(status)
     : `(${status})`;
@@ -250,13 +256,14 @@ function formatTelegramNotificationMessage(entry, options = {}) {
   const interrupted = entry.badge === "interrupted";
   const icon = interrupted ? "⚠️" : "✅";
   const status = interrupted ? locale.interrupted : locale.done;
-  const title = entry.displayTitle || (entry.id ? `${shortId(entry.id)}..` : locale.session);
+  const title = entry.displayTitle || locale.session;
+  const displaySessionTag = getEntryDisplaySessionTag(entry);
   const meta = [];
   if (entry.agentId) meta.push(entry.agentId);
   const folder = entryFolderName(entry);
   if (folder) meta.push(folder);
   if (entry.host) meta.push(entry.host);
-  if (entry.id) meta.push(`#${shortId(entry.id)}`);
+  if (displaySessionTag) meta.push(`#${displaySessionTag}`);
   const wrapStatus = typeof locale.wrapStatus === "function"
     ? locale.wrapStatus(status)
     : `(${status})`;

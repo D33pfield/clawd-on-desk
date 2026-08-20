@@ -42,13 +42,20 @@ async function settlePosts() {
 
 before(async () => {
   globalThis.fetch = async (url, opts) => {
-    fetchCalls.push({
+    const call = {
       url: String(url),
       body: opts && opts.body ? JSON.parse(opts.body) : null,
-    });
+    };
+    fetchCalls.push(call);
+    const headers = {
+      "x-clawd-server": "clawd-on-desk",
+      ...(call.body && call.body.metadata_only === true
+        ? { "x-clawd-metadata-accepted": "1" }
+        : {}),
+    };
     return {
-      status: 200,
-      headers: { get: (name) => name === "x-clawd-server" ? "clawd-on-desk" : null },
+      status: call.body && call.body.metadata_only === true ? 204 : 200,
+      headers: { get: (name) => headers[String(name).toLowerCase()] || null },
       text: async () => "ok",
     };
   };
@@ -541,6 +548,74 @@ describe("opencode-family session title (#829)", () => {
     assert.ok(metaPost);
     assert.ok(metaPost.body.session_title.length <= 80);
     assert.ok(metaPost.body.session_title.endsWith("…"));
+  });
+
+  it("strips bidi formatting marks before storing or sending the title", async () => {
+    const plugin = createOpencodeFamilyPlugin(OPENCODE_CONFIG);
+    const hooks = await plugin(createContext("C:\\proj"));
+    const bidi = "safe\u061c\u200efile\u202etxt.exe\u2066done\u2069";
+
+    await hooks.event({
+      event: {
+        type: "session.created",
+        properties: {
+          sessionID: "ses_bidi",
+          info: { id: "ses_bidi", directory: "C:\\proj", title: bidi },
+        },
+      },
+    });
+    await settlePosts();
+
+    const stored = plugin.__test._sessionTitleById.get("opencode:ses_bidi");
+    assert.strictEqual(stored, "safe file txt.exe done");
+    assert.doesNotMatch(stored, /[\u061C\u200E-\u200F\u202A-\u202E\u2066-\u2069]/u);
+    assert.ok(fetchCalls.length > 0);
+    for (const call of fetchCalls) {
+      if (call.body && call.body.session_title) {
+        assert.doesNotMatch(call.body.session_title, /[\u061C\u200E-\u200F\u202A-\u202E\u2066-\u2069]/u);
+      }
+    }
+  });
+
+  it("keeps truncated titles well-formed at astral and surrogate boundaries", async () => {
+    const plugin = createOpencodeFamilyPlugin(OPENCODE_CONFIG);
+    const hooks = await plugin(createContext("C:\\proj"));
+    const title = `${"A".repeat(78)}😀BC\uD83Dtail\uDC00`;
+
+    await hooks.event({
+      event: {
+        type: "session.created",
+        properties: {
+          sessionID: "ses_unicode_boundary",
+          info: { id: "ses_unicode_boundary", directory: "C:\\proj", title },
+        },
+      },
+    });
+    await settlePosts();
+
+    const stored = plugin.__test._sessionTitleById.get("opencode:ses_unicode_boundary");
+    assert.strictEqual(stored, `${"A".repeat(78)}😀…`);
+    assert.strictEqual(stored.isWellFormed(), true);
+    assert.strictEqual(Array.from(stored).length, 80);
+
+    await hooks.event({
+      event: {
+        type: "session.updated",
+        properties: {
+          sessionID: "ses_unicode_boundary",
+          info: {
+            id: "ses_unicode_boundary",
+            directory: "C:\\proj",
+            title: "before\uD83Dmiddle\uDC00after",
+          },
+        },
+      },
+    });
+    await settlePosts();
+    assert.strictEqual(
+      plugin.__test._sessionTitleById.get("opencode:ses_unicode_boundary"),
+      "before�middle�after",
+    );
   });
 
   it("does not log the title text into the debug log", async () => {

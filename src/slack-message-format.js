@@ -9,6 +9,7 @@
 // the desktop, matching the Telegram/Feishu renderers.
 
 const { redactSecrets } = require("./secret-redact");
+const { getEntryDisplaySessionTag } = require("./state-session-snapshot");
 
 // Slack hard limits: header plain_text <= 150, section mrkdwn <= 3000. Stay a
 // little under. Assistant output is middle-truncated so both ends survive.
@@ -16,6 +17,7 @@ const HEADER_MAX = 150;
 const SECTION_MAX = 2900;
 const OUTPUT_MAX = 2600;
 const FALLBACK_MAX = 3000;
+const DISPLAY_SESSION_TAG_RE = /^[0-9a-f]{10}$/i;
 
 const SLACK_LOCALES = Object.freeze({
   en: {
@@ -150,6 +152,28 @@ const SLACK_LOCALES = Object.freeze({
     testBody: "Esta é uma mensagem de teste do Clawd on Desk. Se você consegue ler isto, as notificações estão funcionando.",
     wrapStatus: (status) => `(${status})`,
   },
+  es: {
+    session: "sesión",
+    done: "completada",
+    interrupted: "interrumpida",
+    assistantOutput: "Salida del asistente",
+    truncated: "truncado",
+    permissionTitle: "Se necesita aprobación",
+    permissionHint: "Aprueba o rechaza en la aplicación de escritorio.",
+    permissionHintRemote: "Aprueba o rechaza en tu canal remoto de aprobación (Telegram o Feishu).",
+    questionTitle: "Se necesita respuesta",
+    questionHint: "Responde en la aplicación de escritorio.",
+    questionHintRemote: "Responde en tu canal remoto de aprobación (Telegram o Feishu).",
+    questionNumber: "Pregunta {n}",
+    andMore: "+{n} más",
+    tool: "Herramienta",
+    folder: "Carpeta",
+    agent: "Agente",
+    host: "Host",
+    testTitle: "Notificaciones de Slack conectadas",
+    testBody: "Este es un mensaje de prueba de Clawd on Desk. Si puedes leerlo, las notificaciones funcionan.",
+    wrapStatus: (status) => `(${status})`,
+  },
 });
 
 function getLocale(lang) {
@@ -190,6 +214,43 @@ function redactPlain(value) {
 
 function redactMrkdwn(value) {
   return escapeMrkdwn(redactSecrets(safeText(value)));
+}
+
+function formatDisplaySessionTag(entry) {
+  const tag = getEntryDisplaySessionTag(entry);
+  if (!DISPLAY_SESSION_TAG_RE.test(tag)) return "";
+  return `#${escapeMrkdwn(tag.toLowerCase())}`;
+}
+
+function shortenedIdentifierCandidate(value) {
+  const text = safeText(value);
+  if (!text) return "";
+  return text.length > 6 ? `${text.slice(0, 6)}..` : text;
+}
+
+function identifierFallbackTitleCandidates(entry) {
+  const candidates = new Set();
+  if (!entry || typeof entry !== "object") return candidates;
+  const ids = [entry.rawSessionId, entry.id];
+  for (const value of ids) {
+    const raw = safeText(value);
+    if (!raw) continue;
+    candidates.add(shortenedIdentifierCandidate(raw));
+    for (const prefix of ["qoderwork:", "qwenwork:"]) {
+      if (raw.startsWith(prefix)) {
+        candidates.add(shortenedIdentifierCandidate(raw.slice(prefix.length) || raw));
+      }
+    }
+  }
+  return candidates;
+}
+
+function completionDisplayTitle(entry, locale) {
+  const fallback = locale.session;
+  const title = entry && typeof entry.displayTitle === "string" ? entry.displayTitle : "";
+  if (!title.trim()) return fallback;
+  if (identifierFallbackTitleCandidates(entry).has(title)) return fallback;
+  return title;
 }
 
 function clip(value, maxLength) {
@@ -243,11 +304,6 @@ function entryFolderName(entry) {
   }
   // Compatibility for direct formatter callers and older cached snapshots.
   return folderName(entry.cwd);
-}
-
-function shortId(id) {
-  const s = String(id || "");
-  return s.length > 6 ? s.slice(0, 6) : s;
 }
 
 // Clipping escaped text can land inside an entity ("...&am"), which Slack would
@@ -358,7 +414,8 @@ function metaLine(entry) {
   const folder = entryFolderName(entry);
   if (folder) meta.push(redactMrkdwn(folder));
   if (entry.host) meta.push(redactMrkdwn(entry.host));
-  if (entry.id) meta.push(`#${redactMrkdwn(shortId(entry.id))}`);
+  const displaySessionTag = formatDisplaySessionTag(entry);
+  if (displaySessionTag) meta.push(displaySessionTag);
   return meta.join(" · ");
 }
 
@@ -373,7 +430,7 @@ function buildCompletionMessage(entry, options = {}) {
   // The session title is derived from the user's own prompt, so it gets the
   // same treatment as assistant output — redacted everywhere, and escaped in
   // the two mrkdwn-parsed places (there are none in a header block).
-  const rawTitle = entry.displayTitle || (entry.id ? `${shortId(entry.id)}..` : locale.session);
+  const rawTitle = completionDisplayTitle(entry, locale);
   const wrapStatus = typeof locale.wrapStatus === "function" ? locale.wrapStatus(status) : `(${status})`;
 
   const blocks = [headerBlock(`${icon} ${redactPlain(rawTitle)}`)];
@@ -399,8 +456,12 @@ function buildCompletionMessage(entry, options = {}) {
   }
 
   const fallbackFolder = redactMrkdwn(entryFolderName(entry));
+  const fallbackTag = formatDisplaySessionTag(entry);
+  const fallbackMeta = [];
+  if (fallbackFolder) fallbackMeta.push(fallbackFolder);
+  if (fallbackTag) fallbackMeta.push(fallbackTag);
   const fallback = clipMrkdwn(
-    `${icon} ${redactMrkdwn(rawTitle)} ${wrapStatus}${fallbackFolder ? ` — ${fallbackFolder}` : ""}`,
+    `${icon} ${redactMrkdwn(rawTitle)} ${wrapStatus}${fallbackMeta.length ? ` — ${fallbackMeta.join(" · ")}` : ""}`,
     FALLBACK_MAX
   );
   return { text: fallback, blocks };

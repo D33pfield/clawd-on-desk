@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("crypto");
 const path = require("path");
 const { sessionAliasKey } = require("./session-alias");
 const { getSessionFocusTarget } = require("./session-focus");
@@ -67,18 +68,43 @@ function isDoneEvent(event) {
   return DONE_EVENTS.has(event);
 }
 
-const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
+// Defense in depth for every agent title that reaches shared UI snapshots.
+// Bidi formatting marks are not HTML injection, but can visually reorder and
+// disguise filenames or commands even when renderers use textContent.
+const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F\u061C\u200E-\u200F\u202A-\u202E\u2066-\u2069]+/g;
 const SESSION_TITLE_MAX = 80;
+
+function replaceUnpairedSurrogates(value) {
+  let result = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) {
+        result += value[index] + value[index + 1];
+        index += 1;
+      } else {
+        result += "\uFFFD";
+      }
+    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+      result += "\uFFFD";
+    } else {
+      result += value[index];
+    }
+  }
+  return result;
+}
 
 function normalizeTitle(value) {
   if (typeof value !== "string") return null;
-  const collapsed = value
+  const collapsed = replaceUnpairedSurrogates(value)
     .replace(SESSION_TITLE_CONTROL_RE, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!collapsed) return null;
-  return collapsed.length > SESSION_TITLE_MAX
-    ? `${collapsed.slice(0, SESSION_TITLE_MAX - 1)}\u2026`
+  const characters = Array.from(collapsed);
+  return characters.length > SESSION_TITLE_MAX
+    ? `${characters.slice(0, SESSION_TITLE_MAX - 1).join("")}\u2026`
     : collapsed;
 }
 
@@ -172,7 +198,7 @@ function getEffectiveSessionTitle(id, sessionLike, options = {}) {
 
 // Agents whose sessions can run inside an app-managed workspace directory whose
 // leaf is an opaque internal ID (e.g. "mqgw60jiigjsjcid"). For those, the
-// `path.basename(cwd)` fallback below would put that ID in the HUD, Dashboard
+// cwd basename fallback below would put that ID in the HUD, Dashboard
 // and session menu, so it is skipped and the shortened session id wins instead.
 //
 // Deliberately an agent↔path PAIRING, not two independent checks: the pattern
@@ -225,9 +251,15 @@ function sessionDisplayFolder(id, sessionLike) {
   if (!cwd || typeof cwd !== "string" || isInternalWorkspaceCwd(id, sessionLike, cwd)) {
     return "";
   }
-  // A remote session can report a path using separators from a platform other
-  // than the one running Clawd, so normalize both forms before taking the leaf.
-  return path.basename(cwd.replace(/\\/g, "/").replace(/\/+$/, ""));
+  // Session metadata can cross operating-system boundaries (for example a
+  // Windows agent reported to a macOS/Linux Clawd). Select the path dialect
+  // from the value instead of the host, while preserving backslashes that
+  // are legal characters in a POSIX path component.
+  const windowsPath = /^[A-Za-z]:[\\/]/.test(cwd) || /^([\\/])\1/.test(cwd);
+  const cwdBasename = windowsPath
+    ? path.win32.basename(cwd)
+    : path.posix.basename(cwd);
+  return cwdBasename || "";
 }
 
 function shortenSessionIdForDisplay(value, sessionLike) {
@@ -246,6 +278,20 @@ function shortenSessionIdForDisplay(value, sessionLike) {
     break;
   }
   return displayId.length > 6 ? `${displayId.slice(0, 6)}..` : displayId;
+}
+
+function buildDisplaySessionTag(canonicalSessionId) {
+  if (typeof canonicalSessionId !== "string") return "";
+  const trimmed = canonicalSessionId.trim();
+  if (!trimmed) return "";
+  return crypto.createHash("sha256").update(trimmed).digest("hex").slice(0, 10);
+}
+
+function getEntryDisplaySessionTag(entry) {
+  if (entry && typeof entry.displaySessionTag === "string" && entry.displaySessionTag) {
+    return entry.displaySessionTag;
+  }
+  return buildDisplaySessionTag(entry && entry.id);
 }
 
 function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {}) {
@@ -313,6 +359,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     id,
     profileId: (session && session.profileId) || "local",
     rawSessionId: (session && session.rawSessionId) || id,
+    displaySessionTag: buildDisplaySessionTag(id),
     agentId,
     agentName: resolveAgentDisplayName(agentId),
     iconUrl: getAgentIconUrl(agentId),
@@ -388,7 +435,7 @@ function snapshotContextUsage(session) {
   if (Number.isFinite(limit) && limit > 0) out.limit = limit;
   const percent = Number(usage.percent);
   if (Number.isFinite(percent)) out.percent = Math.max(0, Math.min(100, Math.round(percent)));
-  if (usage.source === "claude" || usage.source === "codex" || usage.source === "antigravity") out.source = usage.source;
+  if (usage.source === "claude" || usage.source === "codex" || usage.source === "antigravity" || usage.source === "opencode") out.source = usage.source;
   return out;
 }
 
@@ -482,6 +529,7 @@ function buildSessionSnapshot(sessions, options = {}) {
         antigravityQuota: iconFor("antigravity-cli"),
         claudeQuota: iconFor("claude-code"),
         codexQuota: iconFor("codex"),
+        kimiQuota: iconFor("kimi-cli"),
       };
     })(),
     sessionAutomationOrphans: automationRecords
@@ -543,11 +591,15 @@ function sessionSnapshotSignature(snapshot) {
       codexSparkQuota: entry.codexSparkQuota
         ? { group: entry.codexSparkQuota.group, lastSeenAt: entry.codexSparkQuota.lastSeenAt }
         : null,
+      kimiQuota: entry.kimiQuota
+        ? { group: entry.kimiQuota.group, lastSeenAt: entry.kimiQuota.lastSeenAt }
+        : null,
     })),
     sessions: snapshot.sessions.map((entry) => ({
       id: entry.id,
       profileId: entry.profileId,
       rawSessionId: entry.rawSessionId,
+      displaySessionTag: entry.displaySessionTag,
       state: entry.state,
       startupRecovered: !!entry.startupRecovered,
       badge: entry.badge,
@@ -602,6 +654,8 @@ module.exports = {
   getEffectiveSessionTitle,
   sessionDisplayFolder,
   sessionDisplayTitle,
+  buildDisplaySessionTag,
+  getEntryDisplaySessionTag,
   sessionMenuComparator,
   sessionUpdatedAtComparator,
   buildSessionSnapshotEntry,

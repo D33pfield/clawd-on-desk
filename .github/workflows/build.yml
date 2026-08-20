@@ -24,6 +24,7 @@ jobs:
 
   build-windows:
     needs: validate-release
+    timeout-minutes: 60
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,7 +49,7 @@ jobs:
       - name: Run native-host packaged Koffi smoke
         run: node scripts/run-packaged-koffi-smoke.js --executable "dist/win-unpacked/Clawd on Desk.exe" --target windows-x64 --output dist/koffi-smoke/windows-x64.json
       - name: Verify Windows updater metadata
-        run: node scripts/verify-updater-metadata.js --metadata dist/latest.yml --artifact-root dist --contract windows --output dist/updater-metadata-manifests/windows.json
+        run: node scripts/verify-updater-metadata.js --metadata dist/latest.yml --artifact-root dist --contract windows --package-json package.json --output dist/updater-metadata-manifests/windows.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -76,6 +77,7 @@ jobs:
 
   build-mac:
     needs: validate-release
+    timeout-minutes: 60
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -116,7 +118,7 @@ jobs:
       - name: Run native-host packaged Koffi smoke
         run: node scripts/run-packaged-koffi-smoke.js --executable "dist/mac-arm64/Clawd on Desk.app/Contents/MacOS/Clawd on Desk" --target darwin-arm64 --output dist/koffi-smoke/darwin-arm64.json
       - name: Verify macOS updater metadata
-        run: node scripts/verify-updater-metadata.js --metadata dist/latest-mac.yml --artifact-root dist --contract mac --output dist/updater-metadata-manifests/mac.json
+        run: node scripts/verify-updater-metadata.js --metadata dist/latest-mac.yml --artifact-root dist --contract mac --package-json package.json --output dist/updater-metadata-manifests/mac.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -144,6 +146,7 @@ jobs:
 
   build-linux:
     needs: validate-release
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -151,7 +154,10 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: npm ci
-      - run: npm test
+      # Under xvfb so the Electron-backed suites actually run here instead of
+      # skipping themselves for want of a display — a silent skip on the one
+      # Linux job reads exactly like a pass.
+      - run: xvfb-run -a npm test
       - run: npx electron-builder --linux --publish never
       - name: Verify final AppImage AppRun search paths
         run: node scripts/verify-appimage-apprun.js --artifact dist/*.AppImage --output dist/appimage-apprun-manifests/linux-x64.json
@@ -167,7 +173,7 @@ jobs:
       - name: Run packaged Koffi smoke
         run: node scripts/run-packaged-koffi-smoke.js --executable dist/linux-unpacked/clawd-on-desk --target linux-x64 --output dist/koffi-smoke/linux-x64.json --xvfb
       - name: Verify Linux updater metadata
-        run: node scripts/verify-updater-metadata.js --metadata dist/latest-linux.yml --artifact-root dist --contract linux --output dist/updater-metadata-manifests/linux.json
+        run: node scripts/verify-updater-metadata.js --metadata dist/latest-linux.yml --artifact-root dist --contract linux --package-json package.json --output dist/updater-metadata-manifests/linux.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

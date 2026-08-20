@@ -24,6 +24,16 @@
 
 此功能**不会**额外请求 Anthropic、抓取 `claude.ai`、调用 `/usage`，也不会读取 Claude 的认证 cookie/token。转发内容只有规范化的 token 数、窗口大小，以及可用额度的百分比/重置时间，不包含 prompt 或 transcript 正文。即使 context window 可用，`rate_limits` 仍可能缺失。
 
+#### 模型范围的 Claude 额度（例如 Fable）
+
+除通用的 5 小时和每周额度外，Claude 还可能设置模型范围的独立周额度。例如，Anthropic 说明符合条件的 Max 与 premium seat 订阅可在账号每周额度的一定比例内使用 Fable，并可在 Claude 自己的 Usage 设置中同时查看总体与 Fable 用量。它在产品语义上类似一个单独识别的模型额度，但目前并不通过 Clawd 现用的同一集成面提供。
+
+截至 2026 年 8 月 15 日，Claude Code 官方 statusline 合约只公开 `rate_limits.five_hour` 与 `rate_limits.seven_day`。本次调查观察到 Claude Code 的内部本地缓存会在 `cachedUsageUtilization.utilization.limits` 下以 `weekly_scoped` 条目表示 Fable，官方客户端自身也会通过内部 `/api/oauth/usage` 请求取得更完整的用量数据；但该缓存 schema 与接口都没有被文档化为稳定的第三方集成合约。
+
+因此 Clawd 有意**不**读取 Claude Code 的内部用量缓存、不读取或刷新 Claude OAuth 凭据，也不调用未公开的 usage endpoint。结果是：Fable / 模型范围额度可能出现在 Claude 自己的 Usage 设置中，却不出现在 Clawd。这是上游可见性边界，不是 Clawd 漏解析了官方 `rate_limits` 对象；在没有受支持的数据源提供额外 bucket 时，单独增加一个展示 provider 也无法解决。
+
+技术上可行不等同于平台支持。只有当 Anthropic 通过官方 statusline payload 暴露模型范围额度、公开只读的第三方 usage 接口，或以其他方式明确支持该集成时，Clawd 才会重新评估接入。在此之前，Clawd 不显示 Fable 额度属于预期行为。参见 Anthropic 的 [Fable 套餐说明](https://support.claude.com/en/articles/15424964-claude-fable-5-on-your-plan)与 Claude Code [官方 statusline schema](https://code.claude.com/docs/en/statusline)。
+
 Claude Code 只有一个用户级 statusline 槽位，因此 Clawd 绝不会静默覆盖已有的自定义状态栏：槽位被占用时，启用操作会显式失败并保持原命令不变；关闭采集只移除带 Clawd ownership marker 的命令，并立即清除缓存的本机 Claude 额度，同时保留 Remote SSH 额度和所有非 Claude provider。
 
 没有 Clawd statusline 时，普通 Claude hooks 仍会从 transcript 上报输入 token 用量。Clawd 只对封闭列表里的标准 Claude ID 使用兼容性分母；模型为空、自定义或未知时只显示 used，不再猜成 200K。要让自定义 provider 的真实上限与 Claude Code `/context` 一致，需要开启此开关，让 Claude Code 自己上报的 `context_window_size` 持有分母，同时 transcript hooks 继续刷新 used。
@@ -56,7 +66,7 @@ Claude Code 只有一个用户级 statusline 槽位，因此 Clawd 绝不会静�
 
 **Reasonix CLI** — hooks 配置在 `<Reasonix home>/settings.json`（macOS/Linux 为 `~/.reasonix/settings.json`，当前 Windows 版本为 `%APPDATA%\reasonix\settings.json`）。在 Windows 上，Clawd 也会跟随 Reasonix 的兼容回退读取旧的 `~/.reasonix/settings.json`；卸载时会从两处配置中分别删除 Clawd 管理的条目。需要本机 Reasonix 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步当前生效的 hooks。也可以手动执行 `npm run install:reasonix-hooks`。Phase 1 是 state-only：Clawd 只驱动生命周期、工具调用、通知、压缩和子代理结束动效，权限决策仍留在 Reasonix 自己的终端流程。
 
-**opencode** — 使用 `~/.config/opencode/opencode.json` 里的 plugin 配置。需要本机 opencode 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 plugin。也可以手动执行 `node hooks/opencode-install.js`。
+**opencode** — 使用 `~/.config/opencode/` 下当前生效的 plugin 配置：`config.json` → `opencode.json` → `opencode.jsonc`，后者优先。需要本机 opencode 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步 plugin。也可以手动执行 `node hooks/opencode-install.js`。
 
 **MiMo Code** — 使用 `~/.config/mimocode/` 下当前生效的 plugin 配置：`config.json` → `mimocode.json` → 默认 `mimocode.jsonc`，后者优先。需要本机 MiMo Code 追踪时，先到 **Settings → Agents** 安装；安装且启用后，Clawd 才会在启动时继续同步生效的 plugin entry。也可以手动执行 `npm run install:mimocode-plugin`。MiMo Code 与 opencode 使用同一套 plugin SDK 和 Allow / Always / Deny 权限行为；`task` 创建的子会话不参与可见的多会话动画聚合。
 

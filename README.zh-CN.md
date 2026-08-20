@@ -10,6 +10,8 @@
   <a href="README.ko-KR.md">한국어</a>
   ·
   <a href="README.ja-JP.md">日本語</a>
+  ·
+  <a href="README.es.md">Español</a>
 </p>
 <p align="center">
   <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>
@@ -28,7 +30,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 
 你提问时它思考，工具运行时它打字，子代理工作时它会戴耳机律动或三球杂耍，审批权限时它弹卡片，任务完成时它庆祝，你离开时它睡觉。内置三套主题：**Clawd**（像素螃蟹）、**Calico**（三花猫）和 **Cloudling**（云宝），支持自定义主题，也支持导入 Codex Pet 动画包。
 
-> 支持 Windows 11、macOS 和 Ubuntu/Linux。Windows 发布包提供独立的 x64 和 ARM64 安装包。源码运行需要 Node.js。支持 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Antigravity CLI (agy)**、**Cursor Agent**、**CodeBuddy**、**WorkBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**Qwen Code**、**ZCode**、**CodeWhale**、**opencode**、**MiMo Code**、**Pi**、**OpenClaw**、**Hermes Agent**、**Qoder**、**QoderWork**、**QwenWork（千问办公）** 与 **Reasonix CLI**。
+> 支持 Windows 11、macOS 和 Ubuntu/Linux。Windows 发布包提供独立的 x64 和 ARM64 安装包。源码运行需要 Node.js。支持 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Antigravity CLI (agy)**、**Cursor Agent**、**CodeBuddy**、**WorkBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**Qwen Code**、**ZCode**、**CodeWhale**、**opencode**、**MiMo Code**、**Pi**、**OpenClaw**、**Hermes Agent**、**Qoder**、**QoderWork**、**QwenWork（千问办公）**、**Reasonix CLI** 与 **DeepSeek Harness**。
 
 ## 功能特性
 
@@ -48,7 +50,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **ZCode** — 可选 state-only hooks，写入 `~/.zcode/cli/config.json` 的 `hooks.events.*`（从 Settings → Agents 安装，或执行 `npm run install:zcode-hooks`）；Phase 1 驱动会话、提示、工具、失败和完成动效，不接管 ZCode 权限。Clawd 会保留用户显式设置的全局或单项 `enabled:false`
 - **CodeWhale** — 可选 state-only lifecycle hooks，写入 `~/.codewhale/config.toml`（`[[hooks.hooks]]` 条目）（从 Settings → Agents 安装，或执行 `npm run install:codewhale-hooks`）；Phase 1 只驱动 idle、thinking、working、sleeping、error、attention、sweeping 等状态动画，不接权限气泡和子代理追踪
 - **Reasonix CLI** — 可选 state-only command hooks，写入 `<Reasonix home>/settings.json`（macOS/Linux 为 `~/.reasonix/settings.json`，Windows 为 `%APPDATA%\reasonix\settings.json`；从 Settings → Agents 安装，或执行 `npm run install:reasonix-hooks`）；Phase 1 只驱动生命周期、工具调用、通知、压缩和子代理结束动效，权限决策仍留在 Reasonix 自己的终端流程
-- **opencode** — 可选 [plugin 集成](https://opencode.ai/docs/plugins)，写入 `~/.config/opencode/opencode.json`（从 Settings → Agents 安装，或执行 `node hooks/opencode-install.js`）；支持零延迟事件流和 Allow/Always/Deny 权限气泡。`task` 工具产生的子会话是 headless，不参与可见的多会话动画聚合
+- **opencode** — 可选 [plugin 集成](https://opencode.ai/docs/plugins)，写入 `~/.config/opencode/` 下当前生效的文件（`config.json` → `opencode.json` → `opencode.jsonc`，后者优先）（从 Settings → Agents 安装，或执行 `node hooks/opencode-install.js`）；支持零延迟事件流和 Allow/Always/Deny 权限气泡。`task` 工具产生的子会话是 headless，不参与可见的多会话动画聚合
 - **MiMo Code** — 可选 [plugin 集成](https://opencode.ai/docs/plugins)，写入 `~/.config/mimocode/` 下当前生效的文件（`config.json` → `mimocode.json` → 默认 `mimocode.jsonc`，后者优先；从 Settings → Agents 安装，或执行 `npm run install:mimocode-plugin`）；与 opencode 共享 `@mimo-ai/plugin` SDK 和权限行为，`task` 子会话同样是 headless
 - **Pi** — 可选全局 extension，写入 `~/.pi/agent/extensions/clawd-on-desk`（从 Settings → Agents 安装，或执行 `npm run install:pi-extension`）；仅同步交互式 Pi 会话生命周期和工具活动状态，并保留 Pi 默认 YOLO 行为
 - **OpenClaw** — 可选 state-only plugin，写入 `~/.openclaw/openclaw.json`（从 Settings → Agents 安装，或执行 `npm run install:openclaw-plugin`；OpenClaw 还需要已有配置）；Phase 1 面向本地 `openclaw tui --local` 会话，只驱动动画，不接权限气泡和终端聚焦
@@ -56,6 +58,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **Qoder** — 可选 state-only command hooks，写入 `~/.qoder/settings.json`（从 Settings → Agents 安装，或执行 `npm run install:qoder-hooks`）；Phase 1 只驱动动画，权限请求仅作为通知观察，Clawd 不弹权限气泡也不代答，所有 Allow / Deny 都在 Qoder 自己的权限流程里完成
 - **QoderWork** — 可选 state-only command hooks，写入 `~/.qoderwork/settings.json`（从 Settings → Agents 安装，或执行 `npm run install:qoderwork-hooks`）；Phase 1 驱动动画与 Session HUD，权限事件作为正常工作流静默观察（不闪通知），Clawd 不弹权限气泡也不代答，所有 Allow / Deny 都在 QoderWork 自己的权限流程里完成
 - **QwenWork（千问办公）** — 可选 hook-only / state-only command hooks，写入 `~/.QwenWorkCN/settings.json`（从 Settings → Agents 安装，或执行 `npm run install:qwenwork-hooks`，卸载用 `npm run uninstall:qwenwork-hooks`）；当前只支持 macOS / Windows 桌面端——[qwenwork.cn/download](https://qwenwork.cn/download) 没有 Linux 客户端，因此也不提供 WSL Pair。Phase 1 驱动动画与 Session HUD；`PermissionRequest` / `PermissionDenied` 仅作观察并映射为 `working`，hook stdout 恒为 `{}`，Clawd 不产生 allow/deny，权限唯一决策者是 QwenWork 原生流程。无 startup recovery：桌面主进程是长驻进程，不代表正在跑任务
+- **DeepSeek Harness** — 零侵入感知 + 可选 Clawd-managed 交互桥：Clawd 内置的 monitor 直接轮询 `$DSH_HOME/storages/`（`workspace.json` + `session_projcache.json`），本身不向 DSH 写任何东西；在 Settings → Agents 点击 **Install** 时，额外通过官方 `dsh plugin` 命令把 Clawd 的 `@dsh-external/dsh-clawd-bridge` 插件注册进 DSH web profile（幂等），桥插件把 DSH 的 `ask_user_question` 与沙箱升级审批转发到 Clawd 权限气泡，决定回传 DSH（启动同步保持只读；卸载时移除桥）。秒级延迟（采样，非事件级精确）。详见 [DeepSeek Harness 指南](docs/guides/dsh-setup.md)
 - **多 Agent 共存** — 多个 Agent 可同时运行，Clawd 独立追踪每个会话
 
 ### 动画与交互
@@ -105,7 +108,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **免打扰模式** — 右键或托盘菜单进入休眠，桌宠停止反应，直到手动唤醒。免打扰屏蔽的是「需要你处理」的事，不是状态播报：远程**完成通知**（Telegram / Slack）仍会送达，因为那正是你离开桌面的意义。免打扰期间不弹权限气泡——Codex、opencode 和 MiMo Code 会回退到原生命令行确认，Claude Code 和 CodeBuddy 会回退到各自内置的权限确认流程。WorkBuddy 仅同步状态与通知；Antigravity 和 Pi 都是仅状态同步集成
 - **提示音效** — 任务完成和权限请求时播放短音效（可从系统托盘或设置中开关；10 秒冷却，免打扰模式自动静音）
 - **系统托盘** — 免打扰、开机自启、检查更新
-- **国际化** — 支持英文、简体中文、繁体中文、韩文、日文和 Português (Brasil) 界面，可在设置 → 通用中切换
+- **国际化** — 支持英文、简体中文、繁体中文、韩文、日文、Português (Brasil) 和 Español 界面，可在设置 → 通用中切换
 - **自动更新** — 检查 GitHub release；Windows 退出时安装 NSIS 更新包，macOS/Linux 源码运行时通过 `git pull` + 重启自动更新
 
 ## 动画一览
@@ -169,7 +172,7 @@ npm install
 npm start
 ```
 
-**Claude Code**、**Codex CLI** 会自动注册 hooks，开箱即用。**Copilot CLI**、**Gemini CLI**、**Antigravity CLI (agy)**、**Cursor Agent**、**CodeBuddy**、**WorkBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**Qwen Code**、**ZCode**、**CodeWhale**、**opencode**、**MiMo Code**、**Pi**、**OpenClaw**、**Hermes Agent**、**Qoder**、**QoderWork**、**QwenWork（千问办公）**、**Reasonix CLI** 需要先在 **Settings → Agents** 安装对应集成；安装且启用后，Clawd 才会在启动时继续同步。也涵盖远程 SSH、WSL 及平台说明（macOS / Linux）：**[docs/guides/setup-guide.zh-CN.md](docs/guides/setup-guide.zh-CN.md)**
+**Claude Code**、**Codex CLI** 会自动注册 hooks，开箱即用。**Copilot CLI**、**Gemini CLI**、**Antigravity CLI (agy)**、**Cursor Agent**、**CodeBuddy**、**WorkBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**Qwen Code**、**ZCode**、**CodeWhale**、**opencode**、**MiMo Code**、**Pi**、**OpenClaw**、**Hermes Agent**、**Qoder**、**QoderWork**、**QwenWork（千问办公）**、**Reasonix CLI**、**DeepSeek Harness** 需要先在 **Settings → Agents** 安装对应集成；安装且启用后，Clawd 才会在启动时继续同步。也涵盖远程 SSH、WSL 及平台说明（macOS / Linux）：**[docs/guides/setup-guide.zh-CN.md](docs/guides/setup-guide.zh-CN.md)**
 
 想在远程服务器上跑 Claude Code / Codex CLI 并把状态和权限气泡转发到本地 Clawd？请使用应用内 **Settings → 远程 SSH → 部署 / 修复 Hook**。完整步骤、共享服务器隔离边界、Doctor 边界和 FAQ 见：**[docs/guides/guide-remote-ssh.zh-CN.md](docs/guides/guide-remote-ssh.zh-CN.md)**
 
@@ -265,7 +268,7 @@ Clawd on Desk 是一个社区驱动的项目。欢迎提 Bug、提需求、提 P
 <a href="https://github.com/TVpoet"><img src="https://github.com/TVpoet.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/zeus6768"><img src="https://github.com/zeus6768.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/anhtrinh919"><img src="https://github.com/anhtrinh919.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/tomaioo"><img src="https://github.com/tomaioo.png" width="50" style="border-radius:50%" /></a>
+<sub>tomaioo</sub>
 <a href="https://github.com/v-avuso"><img src="https://github.com/v-avuso.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/livlign"><img src="https://github.com/livlign.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/tongguang2"><img src="https://github.com/tongguang2.png" width="50" style="border-radius:50%" /></a>
@@ -328,6 +331,8 @@ Clawd on Desk 是一个社区驱动的项目。欢迎提 Bug、提需求、提 P
 <a href="https://github.com/anthonyonazure"><img src="https://github.com/anthonyonazure.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/weed33834"><img src="https://github.com/weed33834.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/arismarioneves"><img src="https://github.com/arismarioneves.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/aaronWool"><img src="https://github.com/aaronWool.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/Zamaniego"><img src="https://github.com/Zamaniego.png" width="50" style="border-radius:50%" /></a>
 
 ## 致谢
 
