@@ -120,6 +120,12 @@ welcomes **four first-time contributors**.
 
 ### Agents And Diagnostics
 
+- **Manual ZCode permission approval** (#880) — installed and enabled ZCode
+  integrations now add the seventh supported hook, a 600-second blocking
+  `PermissionRequest`, and show manual Allow/Deny bubbles while all global and
+  per-session permission automation remains deferred. Explicitly disabled
+  Phase 1 installs stay disabled, and a foreign permission hook remains the
+  sole owner instead of entering ZCode's last-wins chain. Thanks to @liugou27.
 - **QwenWork (千问办公)** (#843) — a hook-only, state-only integration modeled on
   QoderWork. The pet reflects QwenWork lifecycle state while permission decisions stay
   entirely in QwenWork's native flow: `PermissionRequest` / `PermissionDenied` are

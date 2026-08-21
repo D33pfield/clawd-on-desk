@@ -195,6 +195,13 @@ function buildQwenCodePermissionResponseBody(decisionOrBehavior, message) {
   return buildCodexPermissionResponseBody(decisionOrBehavior, message);
 }
 
+// ZCode's 3.5.x PermissionRequest schema accepts the same minimal union the
+// codex builder emits ({ behavior } allow / { behavior, message } deny).
+// End-to-end Allow/Deny is verified on macOS ZCode 3.8.1.
+function buildZcodePermissionResponseBody(decisionOrBehavior, message) {
+  return buildCodexPermissionResponseBody(decisionOrBehavior, message);
+}
+
 function sanitizeAntigravityPermissionDecision(decisionOrBehavior, message) {
   const source = typeof decisionOrBehavior === "string"
     ? { decision: decisionOrBehavior, reason: message }
@@ -1009,116 +1016,132 @@ function showPermissionBubble(permEntry) {
     },
   });
 
-  permEntry.bubble = bub;
-  permissionBubbleWindows.add(bub);
-  permEntry.bubbleReady = false;
-  // macOS: text-input bubbles skip the native stationary treatment (SkyLight
-  // private space) that occludes the OS IME candidate window. They stay
-  // cross-space visible via Electron and drop out of always-on-top while a text
-  // field is focused (handleImeEditing) so CJK input popups can surface.
-  if (isMac && needsTextInput) bub.__clawdMacTextInputBubble = true;
-
-  if (isWin) {
-    bub.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-  }
-
-  bub.webContents.once("did-finish-load", () => {
-    if (pendingPermissions.indexOf(permEntry) === -1 || permEntry.bubble !== bub) return;
-    permEntry.bubbleReady = true;
-    // Explicit even though same-origin propagation usually covers it — a
-    // stale partition-persisted factor must never win over prefs.
-    applyZoomToWindow(bub, getTextScale());
-    syncPermissionBubbleContent(permEntry);
-    // Elicitation bubbles need keyboard focus so arrow keys and Enter work.
-    // Regular permission bubbles must NOT steal focus from the terminal —
-    // doing so triggers false "User answered in terminal" denials in Claude Code.
-    if (interactionCapabilities.answerQuestions === true) {
-      bub.focus();
-    }
-  });
-
-  bub.on("closed", () => {
-    permissionBubbleWindows.delete(bub);
-    const idx = pendingPermissions.indexOf(permEntry);
-    if (idx !== -1) {
-      // Qwen + Copilot + DSH can hand no-decision back to their native flow. Hermes
-      // has no native permission UI, so its opt-in plugin gate treats this as
-      // a retryable block. In every case we avoid fabricating a user denial.
-      // CC/CodeBuddy still get an explicit deny for this user-close action.
-      const behavior = (
-        permEntry.isQwenCode
-        || permEntry.isCopilotCli
-        || permEntry.isHermes
-        || permEntry.isDsh
-      ) ? "no-decision" : "deny";
-      resolvePermissionEntry(permEntry, behavior, "Bubble window closed by user");
-    }
-    repositionDependentBubbles();
-  });
-
-  function failPermissionBubble(reason) {
-    if (
-      permEntry._bubbleFatalHandled
-      || pendingPermissions.indexOf(permEntry) === -1
-      || permEntry.bubble !== bub
-    ) {
-      return false;
-    }
-    handleBubbleRendererGone(bub);
-    return handlePermissionBubbleFailure(permEntry, reason);
-  }
-
-  // Loading or renderer failure must release the blocking hook. Returning
-  // no-decision lets agents with a native approval flow take over and avoids
-  // fabricating either an allow or a deny.
-  bub.webContents.once("did-fail-load", (_event, errorCode, errorDescription) => {
-    failPermissionBubble(
-      `Permission bubble failed to load (${errorCode || "unknown"}: ${errorDescription || "unknown error"})`
-    );
-  });
-  bub.webContents.on("render-process-gone", (_event, details) => {
-    const reason = details && details.reason ? details.reason : "unknown";
-    failPermissionBubble(`Permission bubble renderer exited (${reason})`);
-  });
-
-  let loadFailedSynchronously = false;
+  // Partial-create rollback: a synchronous throw after the BrowserWindow
+  // exists (setAlwaysOnTop/showInactive/repositioning on exotic platforms,
+  // shortcut sync, autoclose arming) must not orphan a live window with
+  // registered close handlers while the route-level catch drops the pending
+  // entry — nothing would ever close that window. Strip listeners, destroy
+  // the window, and rethrow so the caller finishes the rollback.
   try {
-    const loadResult = bub.loadFile(path.join(__dirname, "bubble.html"));
-    if (loadResult && typeof loadResult.catch === "function") {
-      loadResult.catch((err) => {
-        failPermissionBubble(
-          `Permission bubble failed to load: ${err && err.message ? err.message : String(err)}`
-        );
-      });
+    permEntry.bubble = bub;
+    permissionBubbleWindows.add(bub);
+    permEntry.bubbleReady = false;
+    // macOS: text-input bubbles skip the native stationary treatment (SkyLight
+    // private space) that occludes the OS IME candidate window. They stay
+    // cross-space visible via Electron and drop out of always-on-top while a text
+    // field is focused (handleImeEditing) so CJK input popups can surface.
+    if (isMac && needsTextInput) bub.__clawdMacTextInputBubble = true;
+
+    if (isWin) {
+      bub.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
     }
-  } catch (err) {
-    loadFailedSynchronously = failPermissionBubble(
-      `Permission bubble failed to load: ${err && err.message ? err.message : String(err)}`
-    );
+
+    bub.webContents.once("did-finish-load", () => {
+      if (pendingPermissions.indexOf(permEntry) === -1 || permEntry.bubble !== bub) return;
+      permEntry.bubbleReady = true;
+      // Explicit even though same-origin propagation usually covers it — a
+      // stale partition-persisted factor must never win over prefs.
+      applyZoomToWindow(bub, getTextScale());
+      syncPermissionBubbleContent(permEntry);
+      // Elicitation bubbles need keyboard focus so arrow keys and Enter work.
+      // Regular permission bubbles must NOT steal focus from the terminal —
+      // doing so triggers false "User answered in terminal" denials in Claude Code.
+      if (interactionCapabilities.answerQuestions === true) {
+        bub.focus();
+      }
+    });
+
+    bub.on("closed", () => {
+      permissionBubbleWindows.delete(bub);
+      const idx = pendingPermissions.indexOf(permEntry);
+      if (idx !== -1) {
+        // Qwen + Copilot + ZCode + DSH can hand no-decision back to their native
+        // flow. Hermes has no native permission UI, so its opt-in plugin gate
+        // treats this as a retryable block. In every case we avoid fabricating a
+        // user denial. CC/CodeBuddy still get an explicit deny for this
+        // user-close action.
+        const behavior = (
+          permEntry.isQwenCode
+          || permEntry.isCopilotCli
+          || permEntry.isHermes
+          || permEntry.isZcode
+          || permEntry.isDsh
+        ) ? "no-decision" : "deny";
+        resolvePermissionEntry(permEntry, behavior, "Bubble window closed by user");
+      }
+      repositionDependentBubbles();
+    });
+
+    function failPermissionBubble(reason) {
+      if (
+        permEntry._bubbleFatalHandled
+        || pendingPermissions.indexOf(permEntry) === -1
+        || permEntry.bubble !== bub
+      ) {
+        return false;
+      }
+      handleBubbleRendererGone(bub);
+      return handlePermissionBubbleFailure(permEntry, reason);
+    }
+
+    // Loading or renderer failure must release the blocking hook. Returning
+    // no-decision lets agents with a native approval flow take over and avoids
+    // fabricating either an allow or a deny.
+    bub.webContents.once("did-fail-load", (_event, errorCode, errorDescription) => {
+      failPermissionBubble(
+        `Permission bubble failed to load (${errorCode || "unknown"}: ${errorDescription || "unknown error"})`
+      );
+    });
+    bub.webContents.on("render-process-gone", (_event, details) => {
+      const reason = details && details.reason ? details.reason : "unknown";
+      failPermissionBubble(`Permission bubble renderer exited (${reason})`);
+    });
+
+    let loadFailedSynchronously = false;
+    try {
+      const loadResult = bub.loadFile(path.join(__dirname, "bubble.html"));
+      if (loadResult && typeof loadResult.catch === "function") {
+        loadResult.catch((err) => {
+          failPermissionBubble(
+            `Permission bubble failed to load: ${err && err.message ? err.message : String(err)}`
+          );
+        });
+      }
+    } catch (err) {
+      loadFailedSynchronously = failPermissionBubble(
+        `Permission bubble failed to load: ${err && err.message ? err.message : String(err)}`
+      );
+    }
+    if (loadFailedSynchronously) return;
+
+    // macOS: set alwaysOnTop BEFORE showInactive to prevent bubble from sinking.
+    // (Text-input bubbles later drop out of always-on-top per-edit — and skip the
+    // native SkyLight path — so their IME candidate window can surface; that's
+    // handled by handleImeEditing + reapplyMacVisibility, not a lower level here.)
+    if (isMac) {
+      bub.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
+    }
+
+    repositionBubbles();
+    bub.showInactive();
+    repositionDependentBubbles();
+    keepOutOfTaskbar(bub);
+    // macOS: defer full visibility restoration to avoid activating Clawd
+    if (isMac) deferMacFloatingVisibility(ctx, bub);
+    else ctx.reapplyMacVisibility();
+
+    ctx.guardAlwaysOnTop(bub);
+    syncPermissionShortcuts();
+
+    armPermissionAutoCloseTimer(permEntry);
+  } catch (createErr) {
+    try { bub.removeAllListeners("closed"); } catch {}
+    try { bub.destroy(); } catch {}
+    permissionBubbleWindows.delete(bub);
+    permEntry.bubble = null;
+    throw createErr;
   }
-  if (loadFailedSynchronously) return;
-
-  // macOS: set alwaysOnTop BEFORE showInactive to prevent bubble from sinking.
-  // (Text-input bubbles later drop out of always-on-top per-edit — and skip the
-  // native SkyLight path — so their IME candidate window can surface; that's
-  // handled by handleImeEditing + reapplyMacVisibility, not a lower level here.)
-  if (isMac) {
-    bub.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
-  }
-
-  repositionBubbles();
-  bub.showInactive();
-  repositionDependentBubbles();
-  keepOutOfTaskbar(bub);
-  // macOS: defer full visibility restoration to avoid activating Clawd
-  if (isMac) deferMacFloatingVisibility(ctx, bub);
-  else ctx.reapplyMacVisibility();
-
-  ctx.guardAlwaysOnTop(bub);
-  syncPermissionShortcuts();
-  armPermissionAutoCloseTimer(permEntry);
 }
-
 // Autoclose: set up the dismiss-without-decision timer for a single pending
 // permission. Passive notification entries (codex/kimi) own their own
 // dismissal via dismissPassiveNotify and must not be auto-closed through this
@@ -2099,7 +2122,7 @@ function handleRemoteApprovalDecision(
       resolvePermissionEntry(permEntry, "deny", "User answered in terminal");
       return true;
     }
-    if (permEntry.isCodex || permEntry.isQwenCode || permEntry.isAntigravity || permEntry.isDsh) {
+    if (permEntry.isCodex || permEntry.isQwenCode || permEntry.isAntigravity || permEntry.isZcode || permEntry.isDsh) {
       resolvePermissionEntry(permEntry, "no-decision", "Go to terminal from remote approval");
       ctx.focusTerminalForSession(permEntry.sessionId, { fallbackEntry: buildPermissionFocusEntry(permEntry) });
     } else {
@@ -2280,6 +2303,18 @@ function applyPermissionSuggestion(perm, index, options = {}) {
       sendQwenCodeNoDecisionResponse(res, message || "fallback");
     } else {
       sendQwenCodePermissionResponse(res, {
+        behavior: behavior === "deny" ? "deny" : "allow",
+        message,
+      });
+    }
+    return;
+  }
+
+  if (permEntry.isZcode) {
+    if (behavior === "no-decision") {
+      sendZcodeNoDecisionResponse(res, message || "fallback");
+    } else {
+      sendZcodePermissionResponse(res, {
         behavior: behavior === "deny" ? "deny" : "allow",
         message,
       });
@@ -2516,6 +2551,25 @@ function sendQwenCodePermissionResponse(res, decisionOrBehavior, message) {
   return true;
 }
 
+function sendZcodeNoDecisionResponse(res, reason = "") {
+  return sendNoDecisionResponse(res, reason, "zcode");
+}
+
+function sendZcodePermissionResponse(res, decisionOrBehavior, message) {
+  if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
+  const responseBody = buildZcodePermissionResponseBody(decisionOrBehavior, message);
+  if (responseBody === "{}") {
+    return sendZcodeNoDecisionResponse(res, "invalid decision");
+  }
+  permLog(`zcode response: ${responseBody}`);
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
+  });
+  res.end(responseBody);
+  return true;
+}
+
 function sendCopilotNoDecisionResponse(res, reason = "") {
   return sendNoDecisionResponse(res, reason, "copilot-cli");
 }
@@ -2691,6 +2745,17 @@ function handleDecide(event, behavior) {
       return;
     }
     resolvePermissionEntry(perm, "no-decision", `Unsupported Qwen bubble action: ${String(behavior)}`);
+    if (behavior === "deny-and-focus") {
+      ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+    }
+    return;
+  }
+  if (perm.isZcode) {
+    if (behavior === "allow" || behavior === "deny") {
+      resolvePermissionEntry(perm, behavior);
+      return;
+    }
+    resolvePermissionEntry(perm, "no-decision", `Unsupported ZCode bubble action: ${String(behavior)}`);
     if (behavior === "deny-and-focus") {
       ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
     }
@@ -3103,6 +3168,8 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
     sendCodexNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isQwenCode) {
     sendQwenCodeNoDecisionResponse(perm.res, reason || "permission-dismissed");
+  } else if (perm.isZcode) {
+    sendZcodeNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isCopilotCli) {
     sendCopilotNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isAntigravity) {
@@ -3272,6 +3339,7 @@ module.exports.__test = {
   sanitizeCodexPermissionDecision,
   buildCodexPermissionResponseBody,
   buildQwenCodePermissionResponseBody,
+  buildZcodePermissionResponseBody,
   sanitizeAntigravityPermissionDecision,
   buildAntigravityPermissionResponseBody,
   buildElicitationUpdatedInput,

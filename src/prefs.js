@@ -62,7 +62,7 @@ const {
   PET_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
-const CURRENT_VERSION = 14;
+const CURRENT_VERSION = 15;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -379,10 +379,11 @@ const SCHEMA = {
       "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
-      // ZCode (智谱/Z.ai desktop ADE) is state-only (Phase 1), so permission
-      // bubbles default off. Its ~/.zcode/cli/config.json schema is distinct:
-      // config-file hooks live under hooks.events.* and use timeoutMs.
-      "zcode": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      // ZCode (智谱/Z.ai desktop ADE) supports blocking PermissionRequest
+      // hooks since Phase 2, so permission bubbles default on like qwen. Its
+      // ~/.zcode/cli/config.json schema is distinct: config-file hooks live
+      // under hooks.events.* and use timeoutMs.
+      "zcode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "codewhale": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "opencode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "mimocode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
@@ -799,6 +800,23 @@ function migrate(raw) {
   // Settings step above.
   if (out.version < 14) {
     out.version = 14;
+  }
+  // v14 -> v15: ZCode Phase 2 permission bubbles. Phase 1 persisted
+  // permissionsEnabled:false while the Settings switch was never rendered
+  // (capabilities.permissionApproval was false), so no user intent exists
+  // behind that stored false — flip it to the new on-default. A false set on
+  // v15 or later is a real user choice and never migrates again.
+  if (out.version < 15) {
+    if (
+      out.agents
+      && typeof out.agents === "object"
+      && out.agents.zcode
+      && typeof out.agents.zcode === "object"
+      && out.agents.zcode.permissionsEnabled === false
+    ) {
+      out.agents.zcode.permissionsEnabled = true;
+    }
+    out.version = 15;
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;

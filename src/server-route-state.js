@@ -745,7 +745,17 @@ function handleStatePost(req, res, options) {
         const pendingForSource = () => pendingForSessionAgent().filter(
           (perm) => (perm.subagentId || null) === subagentId
         );
-        const resolveOnlyUnambiguous = (candidates, behavior, message) => {
+        // Native-fallback adapters (qwen-code, zcode, deepseek-harness) answer
+        // their hook with "{}"/no-decision when Clawd has no real user
+        // decision, and the agent falls back to its own permission UI. For
+        // them, a /state lifecycle sweep must NEVER fabricate a deny — the
+        // user merely answered in the agent's native terminal. CC/CodeBuddy
+        // keep the explicit deny: their hook transport treats the missing
+        // answer as a denial of that tool call.
+        const stateSweepBehaviorFor = (perm) => (
+          perm.isQwenCode || perm.isZcode || perm.isDsh ? "no-decision" : "deny"
+        );
+        const resolveOnlyUnambiguous = (candidates, behaviorFor, message) => {
           if (candidates.length !== 1) {
             if (candidates.length > 1 && typeof ctx.permLog === "function") {
               ctx.permLog(
@@ -755,6 +765,9 @@ function handleStatePost(req, res, options) {
             }
             return;
           }
+          const behavior = typeof behaviorFor === "function"
+            ? behaviorFor(candidates[0])
+            : behaviorFor;
           ctx.resolvePermissionEntry(candidates[0], behavior, message);
         };
         if (event === "PostToolUse" || event === "PostToolUseFailure" || event === "Stop") {
@@ -768,8 +781,7 @@ function handleStatePost(req, res, options) {
             allowSingletonFallback: event === "Stop",
           });
           if (perm) {
-            const behavior = perm.isQwenCode ? "no-decision" : "deny";
-            ctx.resolvePermissionEntry(perm, behavior, "User answered in terminal");
+            ctx.resolvePermissionEntry(perm, stateSweepBehaviorFor(perm), "User answered in terminal");
           }
           // A later hook event may be the only evidence that the user answered
           // a decision in the agent's native terminal UI. Never sweep across
@@ -784,7 +796,7 @@ function handleStatePost(req, res, options) {
             ));
             resolveOnlyUnambiguous(
               staleDecisions,
-              "deny",
+              stateSweepBehaviorFor,
               "User answered in terminal"
             );
           }
@@ -820,7 +832,7 @@ function handleStatePost(req, res, options) {
           ));
           resolveOnlyUnambiguous(
             stalePlans,
-            "deny",
+            stateSweepBehaviorFor,
             "Plan dialog dismissed in terminal"
           );
         }
