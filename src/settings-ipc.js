@@ -4,6 +4,7 @@ const defaultFs = require("fs");
 const defaultPath = require("path");
 const { pathToFileURL } = require("url");
 const { detectAgentInstallations: defaultDetectAgentInstallations } = require("./agent-installation-detector");
+const { DEFAULT_INTEGRATION_INSTALLED_IDS } = require("./prefs");
 const settingsThemeImporter = require("./settings-theme-importer");
 const {
   listPetTintOptions,
@@ -11,6 +12,9 @@ const {
 } = require("./pet-customization-catalog");
 
 const SOUND_OVERRIDE_ASSET_EXTS = new Set([".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"]);
+// #895: cleanup prompts must skip the default integrations, referencing the
+// prefs list rather than a second hardcoded copy of the ids.
+const CLEANUP_EXEMPT_AGENT_IDS = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 // These commands mutate trust material or persist facts learned from an SSH
 // transaction. They are main-process capabilities, not renderer commands.
 // Keeping the check at the IPC boundary means an injected/compromised Settings
@@ -140,6 +144,12 @@ function mapAgentMetadata(agent) {
     name: agent.name,
     eventSource: agent.eventSource,
     capabilities: agent.capabilities || {},
+    // #895: default integrations never earn a "remove this stale hook" prompt —
+    // their parent dirs are not trustworthy evidence (Clawd's own Claude sync
+    // creates ~/.claude). Shipped as an explicit boolean rather than a list the
+    // renderer has to hold, so a missing field reads as "unknown" and the
+    // renderer fails closed instead of proposing a deletion.
+    cleanupSuggestionExempt: CLEANUP_EXEMPT_AGENT_IDS.has(agent.id),
   };
   if (typeof agent.category === "string" && agent.category) {
     metadata.category = agent.category;

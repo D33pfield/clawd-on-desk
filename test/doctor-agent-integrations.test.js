@@ -1340,6 +1340,23 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.fixAction, undefined);
   });
 
+  it("reports a nested non-command PermissionRequest hook as a conflict without offering a Fix", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    config.hooks.events.PermissionRequest = [{
+      hooks: [{ type: "http", url: "http://127.0.0.1:23333/permission", timeout: 600 }],
+    }];
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.level, "warning");
+    assert.strictEqual(detail.supplementary.value, "permission-conflict");
+    assert.ok(detail.detail.includes("foreign PermissionRequest hook"));
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
   it("reports coexistence of Clawd and foreign PermissionRequest hooks as a conflict", () => {
     const descriptor = zcodeDescriptor();
     const config = zcodeHooksConfig();
@@ -2405,6 +2422,99 @@ describe("checkAgentIntegrations", () => {
     const detail = runOne(descriptor);
     assert.strictEqual(detail.status, "config-corrupt");
     assert.ok(detail.detail.includes("mimocode.json"), `detail must name the corrupt file: ${detail.detail}`);
+  });
+
+  // #825: opencode's global config is a MERGE of config.json → opencode.json →
+  // opencode.jsonc (later wins, "plugin" arrays REPLACED). The doctor must
+  // validate the MERGED effective view — reading opencode.json alone reported
+  // "plugin entry verified" while opencode was actually running the .jsonc
+  // array with no Clawd plugin in it.
+  function opencodeDescriptor(root, overrides = {}) {
+    const parentDir = path.join(root, ".config", "opencode");
+    fs.mkdirSync(parentDir, { recursive: true });
+    return baseDescriptor({
+      agentId: "opencode",
+      marker: "opencode-plugin",
+      parentDir,
+      configPath: path.join(parentDir, "opencode.json"),
+      detection: "opencode-plugin",
+      configJsonc: true,
+      configCandidates: ["opencode.jsonc", "opencode.json", "config.json"].map((n) => path.join(parentDir, n)),
+      ...overrides,
+    });
+  }
+
+  it("#825: reports NOT connected when opencode.jsonc masks a plugin entry in opencode.json", () => {
+    const root = makeTempDir();
+    const pluginPath = makeValidFamilyPlugin(root, "opencode-plugin");
+    const descriptor = opencodeDescriptor(root);
+    const dir = descriptor.parentDir;
+    writeJson(path.join(dir, "opencode.json"), { plugin: [pluginPath] });
+    writeText(path.join(dir, "opencode.jsonc"), '{\n  // the file opencode runs\n  "plugin": ["@vendor/other"],\n}\n');
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "not-connected", `expected not-connected, got ${detail.status}: ${detail.detail}`);
+    assert.ok(
+      detail.detail.includes("opencode.jsonc"),
+      `detail must name the file opencode actually reads, got: ${detail.detail}`
+    );
+  });
+
+  it("#825: reports ok when the plugin entry lives in the winning opencode.jsonc", () => {
+    const root = makeTempDir();
+    const pluginPath = makeValidFamilyPlugin(root, "opencode-plugin");
+    const descriptor = opencodeDescriptor(root);
+    const dir = descriptor.parentDir;
+    writeJson(path.join(dir, "opencode.json"), { plugin: ["@vendor/other"] });
+    writeText(path.join(dir, "opencode.jsonc"), `{\n  // live\n  "plugin": [${JSON.stringify(pluginPath)}],\n}\n`);
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "ok", `expected ok, got ${detail.status}: ${detail.detail}`);
+    assert.ok(detail.detail.includes("opencode.jsonc"));
+  });
+
+  it("#825: honors opencode.json when a higher-priority opencode.jsonc declares NO plugin key", () => {
+    // The discriminating case: .jsonc is the highest-priority EXISTING file but
+    // does not declare "plugin", so opencode still runs .json's array. Picking
+    // "first existing" instead of "first that declares plugin" would report a
+    // healthy install as not-connected.
+    const root = makeTempDir();
+    const pluginPath = makeValidFamilyPlugin(root, "opencode-plugin");
+    const descriptor = opencodeDescriptor(root);
+    const dir = descriptor.parentDir;
+    writeJson(path.join(dir, "opencode.json"), { plugin: [pluginPath] });
+    writeText(path.join(dir, "opencode.jsonc"), '{\n  // model prefs only — no plugin key\n  "model": "anthropic/claude-sonnet-4-6",\n}\n');
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "ok", `expected ok, got ${detail.status}: ${detail.detail}`);
+    assert.ok(
+      detail.detail.includes("opencode.json") && !detail.detail.includes("opencode.jsonc"),
+      `detail must name the live owner opencode.json, got: ${detail.detail}`
+    );
+  });
+
+  it("#825: single opencode.json installs keep reporting ok (no regression)", () => {
+    const root = makeTempDir();
+    const pluginPath = makeValidFamilyPlugin(root, "opencode-plugin");
+    const descriptor = opencodeDescriptor(root);
+    writeJson(path.join(descriptor.parentDir, "opencode.json"), { plugin: [pluginPath] });
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "ok", `expected ok, got ${detail.status}: ${detail.detail}`);
+    assert.ok(detail.detail.includes("opencode.json"));
+  });
+
+  it("#825: a commented opencode.json is healthy, not config-corrupt", () => {
+    const root = makeTempDir();
+    const pluginPath = makeValidFamilyPlugin(root, "opencode-plugin");
+    const descriptor = opencodeDescriptor(root);
+    writeText(
+      path.join(descriptor.parentDir, "opencode.json"),
+      `{\n  // opencode parses .json with a JSONC reader too\n  "plugin": [${JSON.stringify(pluginPath)}],\n}\n`
+    );
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "ok", `expected ok, got ${detail.status}: ${detail.detail}`);
   });
 
   it("descriptor configJsonc matches the family registry's jsonc flag (drift lock)", () => {

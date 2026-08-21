@@ -485,13 +485,34 @@ function tryRemoteOnlyApproval(ctx, fields) {
   // way, so the pet's PermissionRequest notification animation has something
   // to announce. Playing it before the `started` check meant a no-op flash
   // when Telegram wasn't available and the caller fell back to res.destroy().
-  ctx.updateSession(fields.sessionId, "notification", "PermissionRequest", {
-    agentId: fields.agentId,
-    profileId: fields.profileId,
-    rawSessionId: fields.rawSessionId,
-    ...(fields.host ? { host: fields.host } : {}),
-    sessionAutomationIdentity: fields.sessionAutomationIdentity,
-  });
+  try {
+    ctx.updateSession(fields.sessionId, "notification", "PermissionRequest", {
+      agentId: fields.agentId,
+      profileId: fields.profileId,
+      rawSessionId: fields.rawSessionId,
+      ...(fields.host ? { host: fields.host } : {}),
+      sessionAutomationIdentity: fields.sessionAutomationIdentity,
+    });
+  } catch (err) {
+    // The remote client has already accepted the request, so an uncaught
+    // session-update error would leave a pending entry and a stale remote card
+    // while the outer route emits 500. Resolve through the normal no-decision
+    // path so the remote channel is cancelled and the agent regains control.
+    ctx.permLog(`remote-only session update failed: ${err && err.message ? err.message : err}`);
+    try {
+      ctx.resolvePermissionEntry(
+        permEntry,
+        "no-decision",
+        "Remote-only permission session update failed"
+      );
+    } catch (resolveErr) {
+      ctx.permLog(`remote-only rollback failed: ${resolveErr && resolveErr.message ? resolveErr.message : resolveErr}`);
+      removePendingPermission(ctx, permEntry, "remote-only-session-update-failed");
+      res.removeListener("close", abortHandler);
+      try { res.destroy(); } catch {}
+    }
+    return { handled: true, resolution: "session-update-failed" };
+  }
   if (typeof ctx.syncPermissionShortcuts === "function") {
     try { ctx.syncPermissionShortcuts(); } catch {}
   }
@@ -1138,7 +1159,8 @@ function handlePermissionPost(req, res, options) {
       // ── ZCode PermissionRequest branch ──
       // ZCode's hook runner treats "{}"/no-decision (HTTP 204 here) as "show
       // the native permission flow" and honors hookSpecificOutput decisions
-      // (verified against ZCode 3.5.x's strict output schema). Keep every
+      // (minimal union derived from ZCode 3.5.x's strict output schema;
+      // end-to-end Allow/Deny verified on macOS ZCode 3.8.1). Keep every
       // fallback 204/no-decision so Clawd never denies tools on cleanup or
       // disabled bubble paths (same contract as qwen).
       if (agentId === "zcode") {
@@ -1185,6 +1207,28 @@ function handlePermissionPost(req, res, options) {
           return;
         }
 
+        // No-capability interactions must not offer decisions anywhere. ZCode
+        // exposes a real ExitPlanMode (needsApproval:true); without a reviewed
+        // decision-tool contract it classifies as UNKNOWN with no
+        // allow/answer/plan capability, so neither the local bubble nor a
+        // remote card may show Allow/Deny — hand it back to ZCode's native UI.
+        // Keep this guard before the global bubble-off remote-only path: that
+        // path intentionally has no desktop window and otherwise relies on the
+        // remote transport's broader legacy actionability predicate.
+        if (
+          !isValidInteraction(interaction)
+          || (
+            interaction.capabilities.allowDeny !== true
+            && interaction.capabilities.answerQuestions !== true
+            && interaction.capabilities.planFeedback !== true
+          )
+        ) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`zcode no-capability interaction (${interaction.intent}) -> no decision, native prompt fallback (tool=${toolName})`);
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+
         // Split the two off-switches: "permission bubbles disabled" only means
         // no desktop window — Telegram/Feishu remote approval must stay alive
         // (same contract as the CC and DSH branches). "zcode bubbles disabled"
@@ -1210,25 +1254,6 @@ function handlePermissionPost(req, res, options) {
         if (agentGateOff) {
           recordRequestHookEvent.accepted();
           ctx.permLog(`zcode bubbles disabled -> no decision, native prompt fallback (tool=${toolName})`);
-          sendZcodePermissionNoDecision(res);
-          return;
-        }
-
-        // No-capability interactions must not offer decisions anywhere. ZCode
-        // 3.5.3 ships a real ExitPlanMode (needsApproval:true); without a
-        // reviewed decision-tool contract it classifies as UNKNOWN with no
-        // allow/answer/plan capability, so neither the local bubble nor a
-        // remote card may show Allow/Deny — hand it back to ZCode's native UI.
-        if (
-          !isValidInteraction(interaction)
-          || (
-            interaction.capabilities.allowDeny !== true
-            && interaction.capabilities.answerQuestions !== true
-            && interaction.capabilities.planFeedback !== true
-          )
-        ) {
-          recordRequestHookEvent.accepted();
-          ctx.permLog(`zcode no-capability interaction (${interaction.intent}) -> no decision, native prompt fallback (tool=${toolName})`);
           sendZcodePermissionNoDecision(res);
           return;
         }

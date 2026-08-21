@@ -118,7 +118,6 @@ describe("ZCode hook PID lifecycle", () => {
     assert.strictEqual(stdinParseErrorCategory(null), null);
   });
 });
-
 describe("ZCode hook PermissionRequest path", () => {
   it("builds a bounded permission body with the zcode session namespace", () => {
     let context = null;
@@ -383,4 +382,3 @@ describe("ZCode hook PermissionRequest path", () => {
     assert.strictEqual(result.posted, false);
   });
 });
-

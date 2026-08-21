@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Clawd - ZCode lifecycle hook (state-only).
+// Clawd - ZCode lifecycle and permission hook.
 // Registered in ~/.zcode/cli/config.json by hooks/zcode-install.js.
 //
 // ZCode (智谱/Z.ai) is an Electron desktop ADE. Legacy 3.4.x builds spawned a
@@ -7,9 +7,10 @@
 // through Electron's Node mode. That per-session runtime fires these command
 // hooks. The six state events map to a pet state and POST /state; since Phase 2,
 // PermissionRequest long-blocks on POST /permission and may answer with a real
-// allow/deny decision via hookSpecificOutput (verified against ZCode 3.5.x's
-// strict output schema — extra keys fail validation). Every other path — no
-// decision, timeout, server down, any error — still prints "{}" and exits 0 so
+// allow/deny decision via hookSpecificOutput. The minimal union follows ZCode
+// 3.5.x's strict output schema (extra keys fail validation); end-to-end
+// Allow/Deny is verified on macOS ZCode 3.8.1. Every other path — no decision,
+// timeout, server down, any error — still prints "{}" and exits 0 so
 // ZCode falls back to its native permission flow instead of blocking.
 // ZCode supports exactly 7 events (SessionStart, UserPromptSubmit, PreToolUse,
 // PermissionRequest, PostToolUse, PostToolUseFailure, Stop). It does NOT
@@ -288,8 +289,8 @@ function buildNoDecisionOutput() {
   return "{}";
 }
 
-// ZCode 3.5.x validates hook stdout against a strict schema where the
-// PermissionRequest decision is a union: allow accepts optional
+// ZCode 3.5.x's hook stdout schema defines PermissionRequest as a strict union:
+// allow accepts optional
 // permissionUpdates/updatedPermissions/updatedInput, deny accepts optional
 // interrupt/message. We deliberately emit only the minimal legal forms —
 // Clawd never rewrites tool input or permission rules, and never interrupts.

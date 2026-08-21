@@ -44,12 +44,6 @@ const KNOWN_PERMISSION_AGENTS = new Set([
   "qwen-code",
   "copilot-cli",
   "hermes",
-  // Same tier as codex/copilot/hermes: automation-eligible WITHOUT the
-  // per-tool reviewed list that claude-code/qwen-code carry below — a
-  // deliberate scope decision from the ZCode Phase 2 plan, not an oversight.
-  // Do not "fix" this into the trusted-tool branch without a reviewed audit
-  // of ZCode's built-in tool surface.
-  "zcode",
 ]);
 
 // Claude-compatible PermissionRequest is not a trustworthy "ordinary tool"
@@ -289,11 +283,11 @@ function classifyPermissionInteraction({
     });
   }
 
-  // DeepSeek Harness exposes a real blocking approval waterfall, so an
-  // explicit human Allow/Deny is actionable. Its tool taxonomy and native
-  // fallback semantics are not automation-audited: keep both global modes
-  // false. Session grants reuse this eligibility and therefore defer too.
-  if (trustedAgentId === "deepseek-harness") {
+  // DeepSeek Harness and ZCode expose real blocking approval waterfalls, so
+  // an explicit human Allow/Deny is actionable. Their tool taxonomies and
+  // native-fallback semantics are not automation-audited: keep both global
+  // modes false. Session grants reuse this eligibility and therefore defer too.
+  if (trustedAgentId === "deepseek-harness" || trustedAgentId === "zcode") {
     return makeInteraction(INTERACTION_INTENT.TOOL_APPROVAL, {
       allowDeny: true,
       nativeFallback: true,

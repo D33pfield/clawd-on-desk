@@ -10,8 +10,8 @@
 // Phase 2: all 7 events are registered. PermissionRequest long-blocks on
 // Clawd's /permission and answers allow/deny via hookSpecificOutput (strict
 // ZCode output schema); "{}" (no decision) falls back to ZCode's native
-// permission flow. No per-tool reviewed list — the same automation tier as
-// codex/codebuddy/copilot/hermes (see src/permission-automation-policy.js).
+// permission flow. Phase 2 is manual-only: global and per-session permission
+// automation defer until ZCode's tool surface and identity are audited.
 
 module.exports = {
   id: "zcode",

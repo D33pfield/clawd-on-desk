@@ -229,6 +229,33 @@ describe("ZCode hook installer", () => {
     assert.notStrictEqual(settings.hooks.events.PermissionRequest[0].hooks[0].enabled, false);
   });
 
+  it("does NOT infer a six-event opt-out from a partial Phase 1 install", () => {
+    const settingsPath = makeTempConfigFile({});
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    const phase1 = readJson(settingsPath);
+    delete phase1.hooks.events.PermissionRequest;
+    for (const event of Object.keys(phase1.hooks.events)) {
+      phase1.hooks.events[event][0].hooks[0].enabled = false;
+    }
+    // A missing managed event means this is not the complete Phase 1 opt-out
+    // signature. Sync repairs that state event as enabled, so the new blocking
+    // hook must also stay enabled.
+    delete phase1.hooks.events.PostToolUseFailure;
+    fs.writeFileSync(settingsPath, JSON.stringify(phase1, null, 2), "utf8");
+
+    registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    assert.notStrictEqual(
+      settings.hooks.events.PermissionRequest[0].hooks[0].enabled,
+      false
+    );
+    assert.notStrictEqual(
+      settings.hooks.events.PostToolUseFailure[0].hooks[0].enabled,
+      false
+    );
+  });
+
   it("disables an already-installed PermissionRequest when the user later opts out of all state hooks", () => {
     // The opt-out must hold in both directions: state hooks disabled AFTER the
     // blocking hook was installed must also disable that installed hook.
@@ -282,7 +309,25 @@ describe("ZCode hook installer", () => {
     );
   });
 
-  it("warns (but keeps both) when Clawd's managed hook already coexists with a foreign one", () => {
+  it("treats a nested non-command PermissionRequest hook as a foreign owner", () => {
+    const foreignEntry = {
+      hooks: [{ type: "http", url: "http://127.0.0.1:23333/permission", timeout: 600 }],
+    };
+    const settingsPath = makeTempConfigFile({
+      hooks: { enabled: true, events: { PermissionRequest: [foreignEntry] } },
+    });
+
+    const result = registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    assert.deepStrictEqual(settings.hooks.events.PermissionRequest, [foreignEntry]);
+    assert.ok(
+      result.warnings.some((w) => w.includes("foreign PermissionRequest hook") && w.includes("NOT registered")),
+      `expected the conflict warning, got: ${JSON.stringify(result.warnings)}`
+    );
+  });
+
+  it("removes Clawd's managed hook when a foreign PermissionRequest hook appears later", () => {
     const settingsPath = makeTempConfigFile({});
     registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
     const config = readJson(settingsPath);
@@ -294,10 +339,14 @@ describe("ZCode hook installer", () => {
     const result = registerZcodeHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
 
     const settings = readJson(settingsPath);
-    assert.strictEqual(settings.hooks.events.PermissionRequest.length, 2);
+    assert.strictEqual(settings.hooks.events.PermissionRequest.length, 1);
+    assert.strictEqual(
+      settings.hooks.events.PermissionRequest[0].hooks[0].args[0],
+      "/Users/dev/security-hook.js"
+    );
     assert.ok(
-      result.warnings.some((w) => w.includes("coexists")),
-      `expected the coexistence warning, got: ${JSON.stringify(result.warnings)}`
+      result.warnings.some((w) => w.includes("removed Clawd's blocking permission hook")),
+      `expected the fail-closed removal warning, got: ${JSON.stringify(result.warnings)}`
     );
   });
 

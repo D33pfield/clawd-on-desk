@@ -173,6 +173,9 @@ const {
   evaluateFeishuApprovalConfiguration,
   planFeishuCredentialWrite,
 } = require("./feishu-approval-settings");
+const {
+  validateSlackNotify,
+} = require("./slack-notify-settings");
 const { classifyFeishuApprovalRecipient } = require("./feishu-approval-recipient");
 const { EVENTS: TELEGRAM_MIGRATION_EVENTS } = require("./telegram-migration-state");
 
@@ -715,6 +718,9 @@ const updateRegistry = {
   feishuApproval: {
     validate: validateFeishuApprovalUpdate,
     commandOnly: true,
+  },
+  slackNotify(value) {
+    return validateSlackNotify(value);
   },
 
   // v0.9.0 spike: persisted migration state across restarts. Shape:
@@ -2200,6 +2206,44 @@ async function feishuApprovalSendTest(_payload, deps = {}) {
   return result || { status: "error", message: "Remote approval test returned no result" };
 }
 
+async function slackNotifySetSecrets(payload, deps = {}) {
+  const secrets = payload && typeof payload === "object" ? payload : {};
+  if (!deps || typeof deps.writeSlackNotifySecrets !== "function") {
+    return { status: "error", message: "slackNotify.setSecrets requires writeSlackNotifySecrets dep" };
+  }
+  // Pass the writer's result through untouched: it carries the `code` the
+  // settings page localizes and the English detail naming the real cause.
+  const result = await deps.writeSlackNotifySecrets(secrets);
+  if (!result || result.status !== "ok") {
+    return result || { status: "error", code: "write-failed", message: "Secrets write returned no result" };
+  }
+  return { status: "ok", secretsStored: true };
+}
+
+function slackNotifyStatus(_payload, deps = {}) {
+  if (!deps || typeof deps.getSlackNotifyStatus !== "function") {
+    return { status: "error", message: "slackNotify.status requires getSlackNotifyStatus dep" };
+  }
+  const status = deps.getSlackNotifyStatus();
+  return { status: "ok", state: status || { enabled: false, configured: false } };
+}
+
+function slackNotifySecretInfo(_payload, deps = {}) {
+  if (!deps || typeof deps.getSlackNotifySecretInfo !== "function") {
+    return { status: "error", message: "slackNotify.secretInfo requires getSlackNotifySecretInfo dep" };
+  }
+  const info = deps.getSlackNotifySecretInfo() || { configured: false };
+  return { status: "ok", ...info };
+}
+
+async function slackNotifySendTest(_payload, deps = {}) {
+  if (!deps || typeof deps.sendSlackNotifyTest !== "function") {
+    return { status: "error", message: "slackNotify.test requires sendSlackNotifyTest dep" };
+  }
+  const result = await deps.sendSlackNotifyTest();
+  return result || { status: "error", message: "Slack notification test returned no result" };
+}
+
 function cleanupMessage(result) {
   const summary = result && result.summary;
   if (!summary) return "Integration cleanup finished";
@@ -2327,6 +2371,8 @@ feishuApprovalSaveManualApprover.lockKey = "feishuApproval";
 feishuApprovalCommitResolvedApprover.lockKey = "feishuApproval";
 feishuApprovalUpdateConfig.lockKey = "feishuApproval";
 feishuApprovalSendTest.lockKey = "feishuApproval";
+slackNotifySetSecrets.lockKey = "slackNotify";
+slackNotifySendTest.lockKey = "slackNotify";
 cleanupIntegrationsCommand.lockKey = "agentIntegration";
 
 const repairDoctorIssue = createRepairDoctorIssue({
@@ -2428,6 +2474,10 @@ const commandRegistry = {
   "feishuApproval.status": feishuApprovalStatus,
   "feishuApproval.secretInfo": feishuApprovalSecretInfo,
   "feishuApproval.test": feishuApprovalSendTest,
+  "slackNotify.setSecrets": slackNotifySetSecrets,
+  "slackNotify.status": slackNotifyStatus,
+  "slackNotify.secretInfo": slackNotifySecretInfo,
+  "slackNotify.test": slackNotifySendTest,
   "telegramMigration.snapshot": telegramMigrationSnapshot,
   "telegramMigration.dispatch": telegramMigrationDispatch,
 };

@@ -235,7 +235,7 @@ describe("permission automation interaction classifier", () => {
     assert.strictEqual(interaction.capabilities.allowDeny, true);
   });
 
-  it("automates ordinary ZCode permissions in both automatic modes (codex/copilot tier, no per-tool list)", () => {
+  it("keeps ordinary ZCode permissions manual until its tool surface is audited", () => {
     const interaction = classifyPermissionInteraction({
       agentId: "zcode",
       toolName: "Bash",
@@ -243,22 +243,19 @@ describe("permission automation interaction classifier", () => {
     assert.strictEqual(interaction.intent, INTERACTION_INTENT.TOOL_APPROVAL);
     assert.deepStrictEqual(
       { ...interaction.automationEligibility },
-      { autoTools: true, unattended: true }
+      { autoTools: false, unattended: false }
     );
     assert.strictEqual(interaction.capabilities.allowDeny, true);
     assert.strictEqual(interaction.capabilities.nativeFallback, true);
     for (const mode of [PERMISSION_AUTOMATION_MODE.AUTO_TOOLS, PERMISSION_AUTOMATION_MODE.UNATTENDED]) {
       assert.strictEqual(
         evaluatePermissionAutomation({ mode, interaction }),
-        AUTOMATION_ACTION.AUTO_ALLOW
+        AUTOMATION_ACTION.DEFER
       );
     }
   });
 
-  it("keeps ZCode auto-tools open for unreviewed built-in names, unlike claude/qwen", () => {
-    // Same contrast tier as codex/copilot/hermes: an unreviewed non-empty tool
-    // name stays an ordinary tool approval instead of failing closed in
-    // auto-tools. claude-code/qwen-code carry a reviewed list and defer.
+  it("never auto-allows an unreviewed ZCode built-in name", () => {
     const interaction = classifyPermissionInteraction({
       agentId: "zcode",
       toolName: "RequestUserChoiceV2",
@@ -266,12 +263,12 @@ describe("permission automation interaction classifier", () => {
     assert.strictEqual(interaction.intent, INTERACTION_INTENT.TOOL_APPROVAL);
     assert.deepStrictEqual(
       { ...interaction.automationEligibility },
-      { autoTools: true, unattended: true }
+      { autoTools: false, unattended: false }
     );
     for (const mode of [PERMISSION_AUTOMATION_MODE.AUTO_TOOLS, PERMISSION_AUTOMATION_MODE.UNATTENDED]) {
       assert.strictEqual(
         evaluatePermissionAutomation({ mode, interaction }),
-        AUTOMATION_ACTION.AUTO_ALLOW
+        AUTOMATION_ACTION.DEFER
       );
     }
   });
@@ -321,7 +318,6 @@ describe("permission automation interaction classifier", () => {
       "copilot-cli",
       "hermes",
       "opencode",
-      "zcode",
     ]) {
       for (const toolName of [undefined, null, "", "  ", "Unknown", "unknown"]) {
         const interaction = classifyPermissionInteraction({ agentId, toolName });

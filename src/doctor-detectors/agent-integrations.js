@@ -1307,7 +1307,10 @@ function getZcodeHooksSupplementary(settings, descriptor) {
     for (const hook of entry.hooks) {
       if (!hook || typeof hook !== "object") continue;
       if (zcodeHookContainsMarker(hook, descriptor.marker)) managedPermissionHook = true;
-      else if (typeof hook.command === "string") foreignPermissionHook = true;
+      // Mirror hooks/zcode-install.js exactly: any nested non-Clawd object is
+      // a foreign owner. Limiting this to command hooks makes Doctor offer a
+      // Fix that the installer can never complete for imported HTTP entries.
+      else foreignPermissionHook = true;
     }
   }
   if (foreignPermissionHook) {

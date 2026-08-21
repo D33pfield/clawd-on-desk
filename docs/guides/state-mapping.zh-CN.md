@@ -61,7 +61,7 @@ ZCode 使用 `~/.zcode/cli/config.json` 下的 config-file hooks：
 | Stop | attention |
 | PermissionRequest | notification（仅 fail-closed 路径） |
 
-`PermissionRequest` 自 Phase 2 起是阻塞式权限审批：hook 等待 Clawd 的权限气泡 / 自动化 / 远程审批产生决定，并通过 stdout 的 `hookSpecificOutput` 回答 allow/deny。上表的 `notification` 映射只在 fail-closed 路径（tool name 缺失 / unknown）或 Clawd 未运行时触发；真正的决定不会 POST `/state`。当前集成没有 ZCode `SessionEnd` 事件，会话完成依赖 `Stop` 和 Clawd 原有的进程存活 / stale session 清理。当 Clawd 无决定时（超时、断连、DND、气泡关闭），hook 输出 `{}`，由 ZCode 原生权限流程接管。
+`PermissionRequest` 自 Phase 2 起是阻塞式权限审批：hook 等待 Clawd 本地气泡或远程审批产生人工决定，并通过 stdout 的 `hookSpecificOutput` 回答 allow/deny。在完成 ZCode 工具面与会话身份审计前，权限自动化会 defer。上表的 `notification` 映射只在 fail-closed 路径（tool name 缺失 / unknown）或 Clawd 未运行时触发；真正的决定不会 POST `/state`。当前集成没有 ZCode `SessionEnd` 事件，会话完成依赖 `Stop` 和 Clawd 原有的进程存活 / stale session 清理。当 Clawd 无决定时（超时、断连、DND、气泡关闭），hook 输出 `{}`，由 ZCode 原生权限流程接管。
 
 ## Pi Extension 事件
 

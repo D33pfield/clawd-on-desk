@@ -530,23 +530,15 @@ function registerZcodeHooks(options = {}) {
   // canonical managed entries. Flat managed command entries cannot express
   // the explicit opt-out and are treated as enabled, failing this check.)
   const allPhase1StateHooksExplicitlyDisabled = () => {
-    let anyManaged = false;
     for (const event of ZCODE_HOOK_EVENTS) {
       if (event === "PermissionRequest") continue;
-      const entries = events[event];
-      if (!Array.isArray(entries)) return false;
-      for (const entry of entries) {
-        if (!entry || typeof entry !== "object") continue;
-        if (isClawdZcodeHook(entry)) return false;
-        if (!Array.isArray(entry.hooks)) continue;
-        for (const hook of entry.hooks) {
-          if (!isClawdZcodeHook(hook)) continue;
-          anyManaged = true;
-          if (hook.enabled !== false) return false;
-        }
-      }
+      const intent = managedHookIntent(events[event]);
+      // Every Phase 1 event must have at least one managed hook, and every
+      // managed hook for that event must be explicitly disabled. A partial or
+      // foreign-only config is not evidence of a six-event Clawd opt-out.
+      if (intent.found === 0 || intent.enabled) return false;
     }
-    return anyManaged;
+    return true;
   };
 
   // Foreign PermissionRequest conflict: ZCode runs same-event hooks serially
@@ -577,16 +569,32 @@ function registerZcodeHooks(options = {}) {
 
     if (event === "PermissionRequest") {
       const foreign = foreignPermissionRequestHooks();
-      if (foreign.length > 0 && managedHookIntent(events.PermissionRequest).found === 0) {
-        warnings.push(
-          "foreign PermissionRequest hook detected; Clawd's blocking permission hook NOT registered — ZCode runs same-event hooks serially with last-wins decisions, so a Clawd allow could override the existing hook's deny. Remove the other hook (or Clawd's) and re-sync to resolve."
-        );
-        continue;
-      }
       if (foreign.length > 0) {
-        warnings.push(
-          "foreign PermissionRequest hook coexists with Clawd's; last-wins decision order applies. Review ~/.zcode/cli/config.json and keep exactly one owner for PermissionRequest."
-        );
+        const managedIntent = managedHookIntent(events.PermissionRequest);
+        if (managedIntent.found > 0) {
+          // A foreign hook may be added after Clawd was already installed. A
+          // warning alone still leaves the unsafe last-wins chain active, so
+          // remove only Clawd-owned hooks and preserve every foreign entry.
+          // When the foreign owner is later removed, a normal sync installs
+          // Clawd again; no ambiguous auto-disabled state is persisted.
+          const removedManaged = removeMatchingZcodeHooks(
+            events.PermissionRequest,
+            isClawdZcodeHook
+          );
+          events.PermissionRequest = removedManaged.entries;
+          if (removedManaged.changed) {
+            changed = true;
+            updated++;
+          }
+          warnings.push(
+            "foreign PermissionRequest hook detected; removed Clawd's blocking permission hook to prevent last-wins decisions from overriding the existing hook's deny. Remove the foreign hook and re-sync if Clawd should own PermissionRequest."
+          );
+        } else {
+          warnings.push(
+            "foreign PermissionRequest hook detected; Clawd's blocking permission hook NOT registered — ZCode runs same-event hooks serially with last-wins decisions, so a Clawd allow could override the existing hook's deny. Remove the other hook (or Clawd's) and re-sync to resolve."
+          );
+        }
+        continue;
       }
     }
 

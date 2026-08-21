@@ -212,6 +212,59 @@ describe("ZCode /permission path", () => {
     assert.strictEqual(pendingPermissions.length, 0);
   });
 
+  it("returns no-decision before remote-only approval for a no-capability interaction", async () => {
+    let remoteStarts = 0;
+    const { handler, pendingPermissions, shown } = startServer({
+      getBubblePolicy: () => ({ enabled: false, autoCloseMs: null }),
+      maybeStartRemoteApproval() {
+        remoteStarts++;
+        return true;
+      },
+    });
+    const req = makeReq({
+      agent_id: "zcode",
+      session_id: "zcode:s1",
+      tool_name: "ExitPlanMode",
+      tool_input: { plan: "do the thing" },
+    });
+    const res = makeRes();
+
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.writableEnded, true);
+    assert.strictEqual(pendingPermissions.length, 0);
+    assert.strictEqual(shown.length, 0);
+    assert.strictEqual(remoteStarts, 0);
+  });
+
+  it("rolls back a remote-only approval when the session update fails", async () => {
+    const remoteEntries = [];
+    const { handler, pendingPermissions, shown } = startServer({
+      getBubblePolicy: () => ({ enabled: false, autoCloseMs: null }),
+      maybeStartRemoteApproval(entry) {
+        remoteEntries.push(entry);
+        return true;
+      },
+      updateSession() {
+        throw new Error("session store unavailable");
+      },
+    });
+
+    const res = await callPermission(handler, {
+      agent_id: "zcode",
+      session_id: "zcode:remote-update-failure",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(pendingPermissions.length, 0);
+    assert.strictEqual(shown.length, 0);
+    assert.strictEqual(remoteEntries.length, 1);
+  });
+
   it("returns no-decision when local bubbles are hidden and no remote channel is available", async () => {
     const { handler, pendingPermissions } = startServer({
       getBubblePolicy: () => ({ enabled: false, autoCloseMs: null }),
@@ -329,7 +382,7 @@ describe("ZCode /permission path", () => {
         rawSessionId: "zcode:s1",
         sessionAutomationIdentity: {
           eligible: false,
-          reason: "identity-verification-required",
+          reason: "automation-not-audited",
         },
       },
     ]);
