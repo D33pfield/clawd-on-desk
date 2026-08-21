@@ -1423,6 +1423,11 @@ function loadTelegramApprovalTabForTest({
       };
       return element;
     },
+    createTextNode(value) {
+      const node = new FakeElement("#text");
+      node.textContent = String(value || "");
+      return node;
+    },
     getElementById(id) {
       if (id === "content") return content;
       return null;
@@ -4848,7 +4853,8 @@ describe("settings renderer browser environment", () => {
         [{ message: expectedMessage, options: { error: true } }],
         code,
       );
-      assert.equal(harness.content.querySelectorAll("input").at(-1).value, "person@example.com");
+      const updatedCard = harness.content.querySelector(".feishu-approval-channel-card");
+      assert.equal(updatedCard.querySelectorAll("input").at(-1).value, "person@example.com");
       assert.equal(commandCalls.filter((call) => call.name === "feishuApproval.saveApproverByEmail").length, 1);
       assert.equal(collectText(harness.content).includes(rawMessage), false);
       assert.equal(collectText(harness.content).includes("ou_must_not_render"), false);
@@ -6746,6 +6752,379 @@ describe("settings renderer browser environment", () => {
     const statusText = harness.content.querySelector(".feishu-approval-channel-card")
       .querySelector(".tg-approval-channel-status-text").textContent;
     assert.equal(statusText, strings.feishuApprovalCardReadyToEnable);
+  });
+
+  it("keeps Slack transport setup separate from the enabled and ready states", async () => {
+    const strings = loadSettingsI18nForTest().en;
+
+    async function renderSlack({ config, status, secretInfo }) {
+      const harness = loadTelegramApprovalTabForTest({
+        snapshot: {
+          tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+          feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+          slackNotify: {
+            enabled: false,
+            channelId: "",
+            notifyOnDone: true,
+            notifyOnError: true,
+            notifyOnPermission: true,
+            outputMode: "off",
+            ...config,
+          },
+        },
+        settingsAPI: {
+          command: (name) => {
+            if (name === "slackNotify.status") return Promise.resolve({ status: "ok", state: status });
+            if (name === "slackNotify.secretInfo") return Promise.resolve({ status: "ok", ...secretInfo });
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      return {
+        harness,
+        card: harness.content.querySelector(".slack-notify-channel-card"),
+      };
+    }
+
+    const configuredOff = await renderSlack({
+      config: { enabled: false },
+      status: {
+        enabled: false,
+        ready: false,
+        configured: false,
+        transportConfigured: true,
+        transport: "webhook",
+        credentialsPresent: true,
+        secretsStored: true,
+      },
+      secretInfo: { configured: true, webhookUrl: "https://hooks.slack.com/…", botToken: "" },
+    });
+    assert.equal(
+      configuredOff.card.querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardReadyToEnable,
+      "a usable disabled transport is ready to enable, not incomplete"
+    );
+    const configuredSwitch = configuredOff.card.querySelectorAll(".switch")[0];
+    assert.equal(configuredSwitch.classList.contains("disabled"), false);
+    configuredSwitch.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.equal(
+      configuredOff.harness.updates[configuredOff.harness.updates.length - 1].value.enabled,
+      true
+    );
+
+    const tokenWithoutChannel = await renderSlack({
+      config: { enabled: false, channelId: "" },
+      status: {
+        enabled: false,
+        ready: false,
+        configured: false,
+        transportConfigured: false,
+        transport: null,
+        credentialsPresent: true,
+        secretsStored: true,
+        botTokenConfigured: true,
+        reason: "invalid-config",
+      },
+      // A stored token is a credential, but without a channel it is not a
+      // transport. This used to pass through slackSecretsConfigured().
+      secretInfo: { configured: true, webhookUrl: "", botToken: "xoxb-…" },
+    });
+    assert.equal(
+      tokenWithoutChannel.card.querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardMissingSecret
+    );
+    const blockedSwitch = tokenWithoutChannel.card.querySelectorAll(".switch")[0];
+    assert.equal(blockedSwitch.classList.contains("disabled"), true);
+    assert.equal(blockedSwitch.getAttribute("aria-disabled"), "true");
+    const testButton = tokenWithoutChannel.card.querySelectorAll("button")
+      .find((button) => button.textContent === strings.slackNotifySendTest);
+    assert.equal(testButton.disabled, true, "bot-without-channel cannot send a test either");
+
+    const invalidButEnabled = await renderSlack({
+      config: { enabled: true, channelId: "" },
+      status: {
+        enabled: true,
+        ready: false,
+        configured: false,
+        transportConfigured: false,
+        transport: null,
+        credentialsPresent: true,
+        reason: "invalid-config",
+      },
+      secretInfo: { configured: true, webhookUrl: "", botToken: "xoxb-…" },
+    });
+    const recoverySwitch = invalidButEnabled.card.querySelectorAll(".switch")[0];
+    assert.equal(recoverySwitch.classList.contains("disabled"), false,
+      "a stale invalid enabled setting must remain switchable off");
+    recoverySwitch.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.equal(
+      invalidButEnabled.harness.updates[invalidButEnabled.harness.updates.length - 1].value.enabled,
+      false
+    );
+
+    const running = await renderSlack({
+      config: { enabled: true },
+      status: {
+        enabled: true,
+        ready: true,
+        configured: true,
+        transportConfigured: true,
+        transport: "webhook",
+        credentialsPresent: true,
+      },
+      secretInfo: { configured: true, webhookUrl: "https://hooks.slack.com/…", botToken: "" },
+    });
+    assert.equal(
+      running.card.querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardRunning
+    );
+  });
+
+  it("accepts a legacy Slack status payload without explicit readiness axes", async () => {
+    const strings = loadSettingsI18nForTest().en;
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+        slackNotify: { enabled: false, channelId: "", notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "slackNotify.status") {
+            return Promise.resolve({ status: "ok", state: { enabled: false, configured: false, transport: "webhook" } });
+          }
+          return Promise.resolve({ status: "ok", configured: false });
+        },
+      },
+    });
+    harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    assert.equal(
+      harness.content.querySelector(".slack-notify-channel-card")
+        .querySelector(".tg-approval-channel-status-text").textContent,
+      strings.slackNotifyCardReadyToEnable
+    );
+  });
+
+  it("localizes common bot channel and scope failures from Send Test", async () => {
+    const strings = loadSettingsI18nForTest().en;
+    let testCode = "slack-missing_scope";
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+        slackNotify: { enabled: false, channelId: "C123", notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "slackNotify.status") {
+            return Promise.resolve({ status: "ok", state: {
+              enabled: false, ready: false, configured: false, transportConfigured: true,
+              transport: "bot", credentialsPresent: true, secretsStored: true,
+            } });
+          }
+          if (name === "slackNotify.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, webhookUrl: "", botToken: "xoxb-…" });
+          }
+          if (name === "slackNotify.test") return Promise.resolve({ status: "error", code: testCode });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    for (const [code, expected] of [
+      ["slack-missing_scope", strings.slackNotifyErrMissingScope],
+      ["slack-channel_not_found", strings.slackNotifyErrChannelNotFound],
+      ["slack-not_in_channel", strings.slackNotifyErrNotInChannel],
+    ]) {
+      testCode = code;
+      harness.render();
+      const sendTest = harness.content.querySelector(".slack-notify-channel-card")
+        .querySelectorAll("button")
+        .find((button) => button.textContent === strings.slackNotifySendTest);
+      sendTest.dispatchEvent({ type: "click" });
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+      assert.equal(toasts[toasts.length - 1].message, expected);
+    }
+  });
+
+  it("preserves Slack form drafts across rerenders and only clears completed writes", async () => {
+    const strings = loadSettingsI18nForTest().en;
+    let secretWriteResult = { status: "error", code: "write-failed", message: "raw fs detail" };
+    let updateMode = "fail";
+    let resolveUpdate = null;
+    let deferClear = false;
+    let resolveClear = null;
+    const updateCalls = [];
+    const harness = loadTelegramApprovalTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+        slackNotify: { enabled: false, channelId: "C-saved", notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" },
+      },
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          if (updateMode === "defer") return new Promise((resolve) => { resolveUpdate = resolve; });
+          return Promise.resolve(updateMode === "ok" ? { status: "ok" } : { status: "error", message: "save failed" });
+        },
+        command: (name, payload) => {
+          if (name === "slackNotify.status") {
+            return Promise.resolve({ status: "ok", state: {
+              enabled: false, ready: false, configured: false, transportConfigured: true,
+              transport: "webhook", credentialsPresent: true, secretsStored: true,
+            } });
+          }
+          if (name === "slackNotify.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, webhookUrl: "https://hooks.slack.com/…", botToken: "" });
+          }
+          if (name === "slackNotify.setSecrets") {
+            if (deferClear && payload && payload.webhookUrl === "") {
+              return new Promise((resolve) => { resolveClear = resolve; });
+            }
+            return Promise.resolve(secretWriteResult);
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const controls = () => {
+      const card = harness.content.querySelector(".slack-notify-channel-card");
+      const secretGrid = card.querySelector(".slack-notify-secrets-grid");
+      return {
+        card,
+        secretInputs: secretGrid.querySelectorAll("input"),
+        secretSave: secretGrid.querySelectorAll("button").find((button) => button.textContent === strings.slackNotifySaveSecrets),
+        channelInput: card.querySelector(".slack-notify-channel-row").querySelector("input"),
+        channelSave: card.querySelector(".slack-notify-channel-row").querySelector("button"),
+      };
+    };
+
+    let current = controls();
+    harness.core.state.snapshot.slackNotify.channelId = "C-refreshed";
+    harness.render();
+    assert.equal(controls().channelInput.value, "C-refreshed",
+      "a pristine channel field follows the settings store");
+    harness.core.state.snapshot.slackNotify.channelId = "C-saved";
+    harness.render();
+    current = controls();
+    current.secretInputs[0].value = "https://hooks.slack.com/services/new";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    current.secretInputs[1].value = "xoxb-new-token";
+    current.secretInputs[1].dispatchEvent({ type: "input" });
+    current.channelInput.value = " C-draft ";
+    current.channelInput.dispatchEvent({ type: "input" });
+    harness.render();
+
+    current = controls();
+    assert.equal(current.secretInputs[0].value, "https://hooks.slack.com/services/new");
+    assert.equal(current.secretInputs[1].value, "xoxb-new-token");
+    assert.equal(current.channelInput.value, " C-draft ");
+
+    updateMode = "ok";
+    const doneRow = current.card.querySelectorAll(".row")
+      .find((row) => collectText(row).includes(strings.slackNotifyEventDone));
+    doneRow.querySelector(".switch").dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    current = controls();
+    assert.equal(updateCalls[updateCalls.length - 1].value.channelId, "C-saved",
+      "an event toggle never silently commits an unsaved channel draft");
+    assert.equal(current.channelInput.value, " C-draft ",
+      "the unsaved channel draft remains visible after an unrelated save");
+    updateMode = "fail";
+
+    current.secretSave.dispatchEvent({ type: "click" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    current = controls();
+    assert.equal(current.secretInputs[0].value, "https://hooks.slack.com/services/new", "failed secret writes retain the webhook draft");
+    assert.equal(current.secretInputs[1].value, "xoxb-new-token", "failed secret writes retain the token draft");
+    assert.equal(toasts[toasts.length - 1].message, strings.slackNotifySecretsSaveFailed,
+      "write-failed uses the localized credential-save copy, not a test-send error");
+    assert.ok(!toasts[toasts.length - 1].message.includes("raw fs detail"));
+
+    secretWriteResult = { status: "ok" };
+    current.secretSave.dispatchEvent({ type: "click" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    current = controls();
+    assert.equal(current.secretInputs[0].value, "");
+    assert.equal(current.secretInputs[1].value, "");
+
+    current.secretInputs[0].value = "typed-before-clear";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    harness.render();
+    const clearWebhook = controls().card.querySelectorAll("button")
+      .find((button) => button.textContent === strings.slackNotifyClear);
+    assert.ok(clearWebhook, "the refreshed masked webhook offers Remove");
+    clearWebhook.dispatchEvent({ type: "click" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    assert.equal(controls().secretInputs[0].value, "typed-before-clear",
+      "clearing the stored webhook does not discard its unsaved replacement draft");
+
+    current = controls();
+    current.secretInputs[0].value = "typed-before-slow-clear";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    harness.render();
+    deferClear = true;
+    const slowClear = controls().card.querySelectorAll("button")
+      .find((button) => button.textContent === strings.slackNotifyClear);
+    slowClear.dispatchEvent({ type: "click" });
+    harness.render();
+    current = controls();
+    current.secretInputs[0].value = "typed-after-slow-clear";
+    current.secretInputs[0].dispatchEvent({ type: "input" });
+    resolveClear({ status: "ok" });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    harness.render();
+    assert.equal(controls().secretInputs[0].value, "typed-after-slow-clear",
+      "an older clear callback cannot erase a newer replacement draft");
+    deferClear = false;
+
+    current = controls();
+    current.channelSave.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    assert.equal(controls().channelInput.value, " C-draft ", "failed config writes retain the exact channel draft");
+
+    current = controls();
+    current.channelInput.value = "C-earlier";
+    current.channelInput.dispatchEvent({ type: "input" });
+    updateMode = "defer";
+    current.channelSave.dispatchEvent({ type: "click" });
+    current.channelInput.value = "C-newer";
+    current.channelInput.dispatchEvent({ type: "input" });
+    resolveUpdate({ status: "ok" });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    assert.equal(controls().channelInput.value, "C-newer", "an older async save cannot overwrite newer typing");
+    assert.equal(updateCalls[updateCalls.length - 1].value.channelId, "C-earlier");
   });
 
   it("translates a connection timeout and falls back to the raw SDK error otherwise", async () => {

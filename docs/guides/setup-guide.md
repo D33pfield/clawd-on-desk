@@ -158,6 +158,19 @@ existing Feishu users keep their credentials and stay on Feishu by default. See
 platform choice, permission scope, `open_id` / `union_id` / `user_id`
 differences, and card language.
 
+## Slack Notifications
+
+Unlike the two channels above, Slack is **notification-only**: Clawd posts when
+a session finishes, errors out, or is waiting for permission, but the decision
+is always made in the desktop app — Slack cannot Allow or Deny in this version.
+Set it up with an Incoming Webhook (recommended) or an `xoxb-` bot token with
+the `chat:write` scope under **Settings → Remote Approval → Slack**.
+
+Messages go to a Slack channel and can include the session title (derived from
+your prompt), folder name, and host name, so a **private channel is
+recommended**. See [slack-notifications.md](slack-notifications.md) for setup,
+the full list of fields that are sent, secret storage, and troubleshooting.
+
 ## Remote SSH (Claude Code, Codex CLI & Copilot CLI)
 
 <img src="../../assets/screenshot-remote-ssh.png" width="560" alt="Remote SSH — permission bubble from Raspberry Pi">

@@ -943,6 +943,22 @@ function maybeAutoApprovePermission(permEntry) {
   return true;
 }
 
+
+// Shared by the per-bubble closure below and by the exported test seam. The
+// closure owns the ownership checks (is this still *my* window?); this owns
+// what happens once a failure is real.
+function handlePermissionBubbleFailure(permEntry, reason) {
+  permEntry._bubbleFatalHandled = true;
+  if (isPassiveNotifyEntry(permEntry)) {
+    permLog(`passive notification bubble failed; dismissing: ${reason} tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
+    dismissPassiveNotify(permEntry, `bubble-failed:${reason}`);
+    return true;
+  }
+  permLog(`permission bubble failed; returning no-decision: ${reason} tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
+  resolvePermissionEntry(permEntry, "no-decision", reason);
+  return true;
+}
+
 function showPermissionBubble(permEntry) {
   // Auto-pilot: if enabled, approve immediately and never render a bubble.
   if (maybeAutoApprovePermission(permEntry)) return;
@@ -1048,16 +1064,8 @@ function showPermissionBubble(permEntry) {
     ) {
       return false;
     }
-    permEntry._bubbleFatalHandled = true;
     handleBubbleRendererGone(bub);
-    if (isPassiveNotifyEntry(permEntry)) {
-      permLog(`passive notification bubble failed; dismissing: ${reason} tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
-      dismissPassiveNotify(permEntry, `bubble-failed:${reason}`);
-      return true;
-    }
-    permLog(`permission bubble failed; returning no-decision: ${reason} tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
-    resolvePermissionEntry(permEntry, "no-decision", reason);
-    return true;
+    return handlePermissionBubbleFailure(permEntry, reason);
   }
 
   // Loading or renderer failure must release the blocking hook. Returning
@@ -1189,6 +1197,12 @@ function notifyPermissionResolved(permEntry, reason) {
   }
 }
 
+// NOTE: deliberately does NOT announce to Slack. Queueing an entry only means
+// the route accepted it — permission automation may still auto-allow it on the
+// very next statement, which used to produce a "needs your approval" Slack ping
+// for a request nobody ever saw. The announce happens later, at the two points
+// where a real user decision is known to be pending (the renderer's bubble
+// height acknowledgement or a remote client's card-delivery acknowledgement).
 function addPendingPermission(permEntry, reason = "added") {
   pendingPermissions.push(permEntry);
   notifyPermissionsChanged(reason);
@@ -1348,6 +1362,33 @@ function isRemoteApprovalActionable(permEntry) {
   return true;
 }
 
+// Slack is a one-way attention channel, not an approval transport. Do not
+// reuse isRemoteApprovalActionable here: that predicate intentionally excludes
+// adapters such as the opencode family and Copilot because Telegram/Feishu
+// cannot safely return a decision for them. A successfully rendered desktop
+// bubble is still something Slack should announce.
+//
+// Route-owned interaction capabilities remain the authority. In particular,
+// an opencode-family AskUserQuestion cannot be answered in Clawd
+// (answerQuestions=false), so announcing "answer in the desktop app" would be
+// just as misleading as excluding its ordinary Allow/Deny bubbles.
+function isSlackPermissionAnnounceable(permEntry) {
+  if (!permEntry || typeof permEntry !== "object") return false;
+  if (!isValidInteraction(permEntry.interaction)) return false;
+  if (isPassiveNotifyEntry(permEntry)) return false;
+  if (PASSTHROUGH_TOOLS.has(permEntry.toolName)) return false;
+  if (isPermissionEntryHeadless(permEntry)) return false;
+
+  const { intent, capabilities } = permEntry.interaction;
+  if (intent === INTERACTION_INTENT.HUMAN_QUESTION) {
+    return capabilities.answerQuestions === true;
+  }
+  // ExitPlanMode has its own plan-review/feedback contract and is deliberately
+  // not a Slack permission notification in this phase.
+  if (isDecisionInteraction(permEntry.interaction)) return false;
+  return capabilities.allowDeny === true;
+}
+
 function buildRemoteElicitationPayload(permEntry) {
   if (
     !permEntry
@@ -1376,7 +1417,8 @@ function buildRemoteElicitationPayload(permEntry) {
 // Tool-specific fields that hint at what the action targets, tried in order
 // when the tool gave no description/summary/reason (e.g. Write, Edit, Read —
 // unlike Bash, which always carries `description`). Only cheap, low-risk
-// identifiers (a path, a pattern) — never full file contents/diffs/commands.
+// identifiers (a path, a Glob file-selection pattern) — never full file
+// contents/diffs/commands/search queries.
 // Field names reuse bubble-format.js's firstStringValue so this list doesn't
 // drift out of sync with the naming variants (TargetFile/AbsolutePath/...)
 // other agents use.
@@ -1396,16 +1438,22 @@ function stripUrlQueryAndCredentials(value) {
   }
 }
 
-function buildRemoteApprovalFallbackDetail(input) {
+function buildRemoteApprovalFallbackDetail(input, toolName) {
   const pathValue = firstStringValue(input, FALLBACK_PATH_FIELDS);
   if (pathValue) {
     const text = compactRemoteApprovalText(basenameForDisplay(pathValue), 200);
     if (text) return text;
   }
-  const patternValue = firstStringValue(input, FALLBACK_PATTERN_FIELDS);
-  if (patternValue) {
-    const text = compactRemoteApprovalText(patternValue, 200);
-    if (text) return text;
+  // `pattern` is overloaded: Glob uses it to identify files, while Grep uses
+  // it for the user's raw search expression. The latter can contain customer
+  // names, email addresses, or secret identifiers and is no safer to send to
+  // a remote channel than the deliberately excluded `query` field.
+  if (toolName === "Glob") {
+    const patternValue = firstStringValue(input, FALLBACK_PATTERN_FIELDS);
+    if (patternValue) {
+      const text = compactRemoteApprovalText(patternValue, 200);
+      if (text) return text;
+    }
   }
   const urlValue = firstStringValue(input, FALLBACK_URL_FIELDS);
   if (urlValue) {
@@ -1420,7 +1468,7 @@ function buildRemoteApprovalFallbackDetail(input) {
 
 // String.prototype.replace's replacement-string argument treats $$/$&/$`/$'
 // as special sequences. Dynamic values (tool input, agent/tool names, etc.)
-// must never be interpolated with the string form — a Grep pattern
+// must never be interpolated with the string form — a Glob pattern
 // containing "$$", for example, would corrupt the rendered card. The
 // function form of the replacement argument is never parsed for $-sequences.
 function interpolate(template, token, value) {
@@ -1433,7 +1481,8 @@ function interpolate(template, token, value) {
 // a blank "Tool input hidden by Clawd" card would let the user approve a black
 // box. In practice that meant those requests never reached Telegram at all —
 // worse than a labelled blank card, since the user had no idea anything was
-// pending. Now we fall back to a cheap identifier (file path / pattern / URL)
+// pending. Now we fall back to a cheap identifier (file path / Glob pattern /
+// URL)
 // and, failing that, an explicit "no description, go check the desktop bubble"
 // notice — so every remote-approval-eligible request produces a card.
 function buildRemoteApprovalSummary(permEntry) {
@@ -1449,7 +1498,7 @@ function buildRemoteApprovalSummary(permEntry) {
     const text = compactRemoteApprovalText(candidate, 200);
     if (text) return text;
   }
-  const fallbackDetail = buildRemoteApprovalFallbackDetail(input);
+  const fallbackDetail = buildRemoteApprovalFallbackDetail(input, permEntry && permEntry.toolName);
   if (fallbackDetail) return interpolate(t("approvalSummaryFallbackDetail"), "{detail}", fallbackDetail);
   return t("approvalSummaryUnavailable");
 }
@@ -1527,6 +1576,75 @@ function buildRemoteApprovalPayload(permEntry) {
   };
   if (suggestionButtons.length > 0) payload.suggestions = suggestionButtons;
   return payload;
+}
+
+// One-way Slack heads-up when a permission request is actually waiting on the
+// user. Fires once per entry (guarded) and independently of whether an
+// interactive remote channel (Telegram/Feishu) is connected — Slack cannot
+// resolve the approval itself in this build, so it only announces where the
+// user can act (the desktop app, or an active remote-only channel).
+// Best-effort: never throws into the caller's sync path.
+//
+// Callers invoke this only after automation has had its chance: desktop entries
+// arrive from the renderer's post-reveal height acknowledgement, while
+// remote-only entries arrive from a remote client's explicit delivery
+// acknowledgement. The gates below are a belt-and-braces re-check of the
+// conditions that make a request human-visible, so a future call site cannot
+// reintroduce a ping for a request silently dropped by DND or already resolved.
+
+function announceSlackPermission(permEntry) {
+  if (typeof ctx.notifySlackPermission !== "function") return;
+  if (!permEntry || permEntry._slackPermissionAnnounced) return;
+  if (!isSlackPermissionAnnounceable(permEntry)) return;
+  // DND drops permission requests before they ever surface locally; a Slack
+  // ping would be the one thing that still reached the user.
+  if (ctx.doNotDisturb) return;
+  // Auto-approved / already-answered entries are out of the pending list.
+  if (pendingPermissions.indexOf(permEntry) === -1) return;
+  permEntry._slackPermissionAnnounced = true;
+  try {
+    const agentId = compactRemoteApprovalText(permEntry.agentId || "claude-code", 80) || "claude-code";
+    const toolName = compactRemoteApprovalText(permEntry.toolName || t("approvalUnknownTool"), 80) || t("approvalUnknownTool");
+    const session = ctx.sessions.get(permEntry.sessionId);
+    const folder = compactRemoteApprovalText(
+      basenameForDisplay((session && session.cwd) || permEntry.cwd || ""),
+      80
+    );
+    // An answerable elicitation is a question, not a decision: its
+    // capabilities.allowDeny is false, and buildRemoteApprovalSummary can never
+    // find a description for one, so it would always have reported "No
+    // description available". Reuse the elicitation payload the interactive
+    // channels already build, so Slack shows what was actually asked.
+    const elicitation = buildRemoteElicitationPayload(permEntry);
+    const actionTarget = permEntry.remoteOnly === true ? "remote" : "desktop";
+    if (elicitation) {
+      ctx.notifySlackPermission({
+        kind: "question",
+        actionTarget,
+        title: elicitation.title,
+        detail: elicitation.detail,
+        agentId: elicitation.agentId,
+        folder: elicitation.folder,
+        questions: elicitation.questions,
+      }, {
+        isStillRelevant: () => pendingPermissions.includes(permEntry),
+      });
+      return;
+    }
+    ctx.notifySlackPermission({
+      kind: "approval",
+      actionTarget,
+      title: interpolate(interpolate(t("approvalRequestsTitle"), "{agent}", agentId), "{tool}", toolName),
+      toolName,
+      agentId,
+      folder,
+      summary: buildRemoteApprovalSummary(permEntry),
+    }, {
+      isStillRelevant: () => pendingPermissions.includes(permEntry),
+    });
+  } catch (err) {
+    permLog(`slack permission announce failed: ${err && err.message ? err.message : err}`);
+  }
 }
 
 function normalizeRemoteApprovalDecision(decision) {
@@ -1750,6 +1868,18 @@ function maybeStartRemoteApproval(permEntry) {
   // decide on the user's behalf over a transient Telegram/Feishu failure.
   let settledWithoutDecision = 0;
 
+  function onRemoteCardDelivered() {
+    // Starting requestApproval/requestElicitation only means the client began
+    // an async send. Slack may announce a remote-only request only after the
+    // client confirms that its actionable card obtained a message id. Re-check
+    // relevance here because the request may have resolved or DND may have
+    // been enabled while the send was in flight.
+    if (permEntry.remoteOnly !== true) return;
+    if (ctx.doNotDisturb) return;
+    if (!pendingPermissions.includes(permEntry)) return;
+    announceSlackPermission(permEntry);
+  }
+
   function maybeFallBackRemoteOnlyEntry() {
     if (!permEntry.remoteOnly) return;
     if (settledWithoutDecision < remoteRequests.length) return;
@@ -1769,20 +1899,20 @@ function maybeStartRemoteApproval(permEntry) {
         && permEntry.interaction.capabilities.answerQuestions
       ) {
         if (typeof client.requestElicitation !== "function") continue;
-        request = client.requestElicitation(
-          payload,
-          controller ? { signal: controller.signal } : {}
-        );
+        request = client.requestElicitation(payload, {
+          ...(controller ? { signal: controller.signal } : {}),
+          onDelivered: onRemoteCardDelivered,
+        });
       } else {
         const clientPayload = {
           ...payload,
           canOfferSessionTrust: typeof ctx.canOfferRemoteSessionTrust === "function"
             && ctx.canOfferRemoteSessionTrust(permEntry, { name, client }) === true,
         };
-        request = client.requestApproval(
-          clientPayload,
-          controller ? { signal: controller.signal } : {}
-        );
+        request = client.requestApproval(clientPayload, {
+          ...(controller ? { signal: controller.signal } : {}),
+          onDelivered: onRemoteCardDelivered,
+        });
       }
       remoteRequests.push({
         name,
@@ -2461,6 +2591,15 @@ function handleBubbleHeight(event, height) {
   const perm = pendingPermissions.find(p => p.bubble === senderWin);
   if (perm && typeof height === "number" && height > 0) {
     perm.measuredHeight = Math.ceil(height);
+    // revealCard() reports height on the next animation frame, so this is the
+    // first main-process acknowledgement that the exact interaction was loaded,
+    // received through permission-show, rendered, and made visible. Announcing
+    // earlier (even at did-finish-load) can strand an unretractable Slack card
+    // when content sync or the renderer fails. Later resize reports are safe:
+    // announceSlackPermission is once-guarded per entry.
+    announceSlackPermission(perm);
+    // Geometry updates happen after the delivery acknowledgement. If either
+    // reflow throws, the already-rendered card must still be announced.
     repositionBubbles();
     repositionDependentBubbles();
   }

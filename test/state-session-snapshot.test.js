@@ -13,6 +13,7 @@ const {
   buildSessionSnapshot,
   getActiveSessionAliasKeys,
   sessionSnapshotSignature,
+  sessionDisplayFolder,
   sessionDisplayTitle,
   normalizeTitle,
 } = require("../src/state-session-snapshot");
@@ -251,6 +252,24 @@ describe("isSessionInProgress state mapping", () => {
 });
 
 describe("sessionDisplayTitle cwd fallback", () => {
+  it("publishes a cross-platform display folder without changing the raw cwd", () => {
+    assert.strictEqual(
+      sessionDisplayFolder("claude:abc123", session("working", { cwd: "C:\\work\\project\\" })),
+      "project"
+    );
+    assert.strictEqual(
+      sessionDisplayFolder("claude:abc123", session("working", { cwd: "/work/project/" })),
+      "project"
+    );
+
+    const cwd = "/work/project";
+    const snapshot = buildSessionSnapshot(new Map([
+      ["claude:abc123", session("working", { cwd })],
+    ]), { statePriority: STATE_PRIORITY });
+    assert.strictEqual(snapshot.sessions[0].displayFolder, "project");
+    assert.strictEqual(snapshot.sessions[0].cwd, cwd, "focus/open-folder keeps the full cwd");
+  });
+
   it("derives normal project basenames independent of the host platform", () => {
     assert.strictEqual(
       sessionDisplayTitle("qoderwork:abc123", session("working", { cwd: "/home/me/projects/myapp" })),
@@ -307,6 +326,10 @@ describe("sessionDisplayTitle cwd fallback", () => {
       sessionDisplayTitle("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "C:\\Users\\me\\.qoderwork\\workspace\\abc123" })),
       "abc123"
     );
+    assert.strictEqual(
+      sessionDisplayFolder("qoderwork:abc123", session("working", { agentId: "qoderwork", cwd: "/Users/me/.qoderwork/workspace/mqgw60jiigjsjcid" })),
+      ""
+    );
   });
 
   it("skips QoderWork internal workspace cwds with trailing separators", () => {
@@ -339,6 +362,10 @@ describe("sessionDisplayTitle cwd fallback", () => {
       assert.strictEqual(
         sessionDisplayTitle("qwenwork:abc123", qwen({ cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid" })),
         "abc123"
+      );
+      assert.strictEqual(
+        sessionDisplayFolder("qwenwork:abc123", qwen({ cwd: "/Users/me/.QwenWorkCN/workspace/mqgw60jiigjsjcid" })),
+        ""
       );
     });
 
