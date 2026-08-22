@@ -552,6 +552,7 @@ _settingsController.subscribeKey("agents", (_agents, snapshot) => {
   _syncCodexAutoStartGate(snapshot, "settings");
 });
 let _remoteSshInstallationIdentity = null;
+let _remoteSshInstallationIdentityPromise = null;
 
 async function initializeRemoteSshInstallationIdentity() {
   const remoteSsh = _settingsController.get("remoteSsh") || {};
@@ -586,6 +587,20 @@ async function initializeRemoteSshInstallationIdentity() {
     console.warn(`Clawd remote-ssh: installation binding uses weak storage backend (${identity.storageBackend})`);
   }
   return identity;
+}
+
+function ensureRemoteSshInstallationIdentity() {
+  if (_remoteSshInstallationIdentity) {
+    return Promise.resolve(_remoteSshInstallationIdentity);
+  }
+  if (_remoteSshInstallationIdentityPromise) {
+    return _remoteSshInstallationIdentityPromise;
+  }
+  _remoteSshInstallationIdentityPromise = initializeRemoteSshInstallationIdentity()
+    .finally(() => {
+      _remoteSshInstallationIdentityPromise = null;
+    });
+  return _remoteSshInstallationIdentityPromise;
 }
 
 // Mirror of `_settingsController.get("lang")` so existing sync read sites in
@@ -4195,7 +4210,7 @@ const _remoteSshIpc = registerRemoteSshIpc({
   transportCoordinator: _remoteSshTransportCoordinator,
   BrowserWindow,
   isPackaged: app.isPackaged,
-  getInstallationIdentity: () => _remoteSshInstallationIdentity,
+  getInstallationIdentity: ensureRemoteSshInstallationIdentity,
   enableProfileIsolation: process.env.CLAWD_ENABLE_EXPERIMENTAL_REMOTE_ISOLATION === "1",
 });
 
@@ -4970,14 +4985,14 @@ if (!gotTheLock) {
     // First-run only: seed UI language from the device locale, before createWindow
     // so the very first menu/tray render is already in the user's language.
     hydrateFreshInstallLanguage();
-    try {
-      await initializeRemoteSshInstallationIdentity();
-    } catch (err) {
-      _remoteSshInstallationIdentity = null;
-      console.error("Clawd remote-ssh: installation identity initialization failed:", err && err.message);
-    }
-    // safeStorage is only guaranteed after Electron is ready. This reconciles
-    // the local key/quota binding and never performs a Kimi network request.
+    // Remote SSH installation identity is intentionally lazy. Loading it uses
+    // macOS Keychain through safeStorage, so ordinary Clawd startup must not
+    // request credential access when no Remote SSH action is being performed.
+    // Explicit Remote SSH status/actions and connect-on-launch profiles load it
+    // through the single-flight provider injected into remote-ssh-ipc above.
+    // Kimi's separate local key/quota reconciliation still runs after ready.
+    // It may use safeStorage when a Kimi credential exists, but never performs
+    // a Kimi network request during this startup reconciliation.
     try {
       await _kimiQuotaRuntime.initialize();
     } catch (err) {
