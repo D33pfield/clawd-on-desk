@@ -135,6 +135,7 @@ jobs:
 
           umask 077
           api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID_VALUE}.p8"
+          echo "api_key_path=$api_key_path" >> "$GITHUB_OUTPUT"
           if ! printf '%s' "$APPLE_API_KEY_BASE64" | base64 --decode > "$api_key_path"; then
             echo "::error::APPLE_API_KEY is not valid Base64. Store the Base64-encoded .p8 file in this secret."
             exit 1
@@ -144,8 +145,11 @@ jobs:
             exit 1
           fi
           chmod 600 "$api_key_path"
+          if ! openssl pkey -in "$api_key_path" -noout >/dev/null 2>&1; then
+            echo "::error::APPLE_API_KEY did not decode to a valid PKCS#8 private key. Store the Base64-encoded .p8 file in this secret."
+            exit 1
+          fi
           echo "mode=developer-id" >> "$GITHUB_OUTPUT"
-          echo "api_key_path=$api_key_path" >> "$GITHUB_OUTPUT"
 
       - name: Build macOS (Developer ID signed and notarized)
         if: steps.mac-signing.outputs.mode == 'developer-id'
@@ -155,7 +159,7 @@ jobs:
           APPLE_API_KEY: ${{ steps.mac-signing.outputs.api_key_path }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: npx electron-builder --mac --publish never -c.mac.identity="Developer ID Application"
+        run: npx electron-builder --mac --publish never -c.mac.identity="Developer ID Application" -c.forceCodeSigning=true
 
       - name: Build macOS (ad-hoc manual validation only)
         if: steps.mac-signing.outputs.mode == 'adhoc'
