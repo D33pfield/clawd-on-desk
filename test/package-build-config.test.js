@@ -461,7 +461,9 @@ describe("package build config", () => {
     });
 
     it("keeps full tag tests while allowing a manual packaging-only evidence run", () => {
-      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      const workflow = fs
+        .readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8")
+        .replace(/\r\n/g, "\n");
       assert.match(workflow, /artifact_validation_only:/);
       const getJobBlock = (jobName) => {
         const marker = `  ${jobName}:\n`;
