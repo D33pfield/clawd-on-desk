@@ -20,10 +20,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
       - run: npm run verify:release
+
+  native-package-audit:
+    needs: validate-release
+    uses: ./.github/workflows/telegram-retirement-package-audit.yml
 
   build-windows:
     needs: validate-release
@@ -102,8 +108,13 @@ jobs:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID_VALUE: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_VALUE: ${{ secrets.APPLE_API_ISSUER }}
+          EXPECTED_APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+
+          has_non_whitespace() {
+            [[ "$1" =~ [^[:space:]] ]]
+          }
 
           present=0
           for value in \
@@ -112,7 +123,7 @@ jobs:
             "$APPLE_API_KEY_BASE64" \
             "$APPLE_API_KEY_ID_VALUE" \
             "$APPLE_API_ISSUER_VALUE"; do
-            if [[ -n "$value" ]]; then
+            if has_non_whitespace "$value"; then
               present=$((present + 1))
             fi
           done
@@ -128,12 +139,25 @@ jobs:
 
           if (( present != 5 )); then
             missing=()
-            [[ -n "$CSC_LINK_VALUE" ]] || missing+=(CSC_LINK)
-            [[ -n "$CSC_KEY_PASSWORD_VALUE" ]] || missing+=(CSC_KEY_PASSWORD)
-            [[ -n "$APPLE_API_KEY_BASE64" ]] || missing+=(APPLE_API_KEY)
-            [[ -n "$APPLE_API_KEY_ID_VALUE" ]] || missing+=(APPLE_API_KEY_ID)
-            [[ -n "$APPLE_API_ISSUER_VALUE" ]] || missing+=(APPLE_API_ISSUER)
+            has_non_whitespace "$CSC_LINK_VALUE" || missing+=(CSC_LINK)
+            has_non_whitespace "$CSC_KEY_PASSWORD_VALUE" || missing+=(CSC_KEY_PASSWORD)
+            has_non_whitespace "$APPLE_API_KEY_BASE64" || missing+=(APPLE_API_KEY)
+            has_non_whitespace "$APPLE_API_KEY_ID_VALUE" || missing+=(APPLE_API_KEY_ID)
+            has_non_whitespace "$APPLE_API_ISSUER_VALUE" || missing+=(APPLE_API_ISSUER)
             echo "::error::Incomplete macOS signing configuration. Missing: ${missing[*]}"
+            exit 1
+          fi
+
+          if [[ "$APPLE_API_KEY_ID_VALUE" =~ [[:space:]] ]]; then
+            echo "::error::APPLE_API_KEY_ID must not contain spaces or line breaks. Copy only the Key ID value."
+            exit 1
+          fi
+          if [[ "$APPLE_API_ISSUER_VALUE" =~ [[:space:]] ]]; then
+            echo "::error::APPLE_API_ISSUER must not contain spaces or line breaks. Copy only the Issuer ID value."
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]; then
+            echo "::error::APPLE_TEAM_ID repository variable must be the expected 10-character Developer Team ID."
             exit 1
           fi
 
@@ -179,6 +203,8 @@ jobs:
       - name: Verify macOS Developer ID artifacts
         if: steps.mac-signing.outputs.mode == 'developer-id'
         shell: bash
+        env:
+          EXPECTED_APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
 
@@ -186,22 +212,31 @@ jobs:
             local app="$1"
             local signature_details
             local entitlements
+            local entitlements_file
 
             signature_details="$(codesign -dv --verbose=4 "$app" 2>&1)"
-            grep -q "Authority=Developer ID Application:" <<<"$signature_details"
+            grep -Eq "^Authority=Developer ID Application: .+ \($EXPECTED_APPLE_TEAM_ID\)$" <<<"$signature_details"
             grep -Eq "flags=.*\\(runtime\\)" <<<"$signature_details"
-            grep -Eq "^TeamIdentifier=[A-Z0-9]+$" <<<"$signature_details"
+            grep -Fxq "TeamIdentifier=$EXPECTED_APPLE_TEAM_ID" <<<"$signature_details"
             codesign --verify --deep --strict --verbose=2 "$app"
             spctl --assess --type execute --verbose=4 "$app"
             xcrun stapler validate "$app"
 
+            entitlements_file="$(mktemp)"
             entitlements="$(codesign -d --entitlements :- "$app" 2>/dev/null)"
+            printf '%s\n' "$entitlements" > "$entitlements_file"
             for entitlement in \
               com.apple.security.cs.allow-jit \
               com.apple.security.cs.allow-unsigned-executable-memory \
               com.apple.security.cs.disable-library-validation; do
-              grep -q "<key>$entitlement</key>" <<<"$entitlements"
+              entitlement_key="${entitlement//./\\.}"
+              if [[ "$(/usr/bin/plutil -extract "$entitlement_key" raw -o - "$entitlements_file" 2>/dev/null || true)" != "true" ]]; then
+                echo "Required entitlement is not true: $entitlement ($app)" >&2
+                rm -f -- "$entitlements_file"
+                return 1
+              fi
             done
+            rm -f -- "$entitlements_file"
           }
 
           verify_signed_app "dist/mac/Clawd on Desk.app"
@@ -248,13 +283,21 @@ jobs:
             grep -Eq "flags=.*\\(adhoc,runtime\\)" <<<"$signature_details"
             codesign --verify --deep --strict --verbose=2 "$app"
 
+            entitlements_file="$(mktemp)"
             entitlements="$(codesign -d --entitlements :- "$app" 2>/dev/null)"
+            printf '%s\n' "$entitlements" > "$entitlements_file"
             for entitlement in \
               com.apple.security.cs.allow-jit \
               com.apple.security.cs.allow-unsigned-executable-memory \
               com.apple.security.cs.disable-library-validation; do
-              grep -q "<key>$entitlement</key>" <<<"$entitlements"
+              entitlement_key="${entitlement//./\\.}"
+              if [[ "$(/usr/bin/plutil -extract "$entitlement_key" raw -o - "$entitlements_file" 2>/dev/null || true)" != "true" ]]; then
+                echo "Required entitlement is not true: $entitlement ($app)" >&2
+                rm -f -- "$entitlements_file"
+                exit 1
+              fi
             done
+            rm -f -- "$entitlements_file"
           done
       - name: Assert retired Telegram sidecar is absent
         run: |
@@ -356,7 +399,7 @@ jobs:
 
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build-windows, build-mac, build-linux]
+    needs: [build-windows, build-mac, build-linux, native-package-audit]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -25,6 +25,19 @@ const { pathToFileURL } = require("node:url");
 const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-family-bridge-"));
 process.env.HOME = TMP_HOME;
 process.env.USERPROFILE = TMP_HOME;
+const RUNTIME_CONFIG_PATH = path.join(TMP_HOME, ".clawd", "runtime.json");
+
+function writeLiveRuntimeIdentity() {
+  fs.mkdirSync(path.dirname(RUNTIME_CONFIG_PATH), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(RUNTIME_CONFIG_PATH, JSON.stringify({
+    app: "clawd-on-desk",
+    port: 23333,
+    ownerPid: process.pid,
+  }), { mode: 0o600 });
+  if (process.platform !== "win32") fs.chmodSync(RUNTIME_CONFIG_PATH, 0o600);
+}
+
+writeLiveRuntimeIdentity();
 
 let createOpencodeFamilyPlugin;
 const fetchCalls = [];
@@ -145,6 +158,23 @@ describe("opencode-family reverse bridge (plugin side, real handler)", () => {
     assert.strictEqual(permPost.body.bridge_url, oc.plugin.__test._bridgeUrl);
     assert.strictEqual(permPost.body.bridge_token, oc.plugin.__test._bridgeTokenHex);
     assert.notStrictEqual(permPost.body.bridge_url, "", "bridge_url must not be empty (dead bubble path)");
+  });
+
+  it("does not disclose bridge credentials when the live runtime identity is missing", async () => {
+    const oc = await initInstance(OC);
+    fetchCalls.length = 0;
+    fs.unlinkSync(RUNTIME_CONFIG_PATH);
+    try {
+      await emitPermission(oc, "per_no_runtime");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.strictEqual(
+        fetchCalls.some((call) => call.url.endsWith("/permission")),
+        false,
+        "permission delivery must not fall back to the scanned port range"
+      );
+    } finally {
+      writeLiveRuntimeIdentity();
+    }
   });
 
   it("proves lastSeen can mis-associate an interleaved permission for opencode and MiMo", async () => {

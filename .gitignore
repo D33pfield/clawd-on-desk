@@ -64,6 +64,7 @@ docs/**
 !docs/releases/release-v0.13.0.md
 !docs/releases/release-v0.14.0.md
 !docs/releases/release-v0.15.0.md
+!docs/releases/release-v0.16.0.md
 
 # Temp files from testing
 .tmp_*
@@ -121,6 +122,7 @@ scripts/manual/*
 !scripts/audit-repository-assets.js
 !scripts/assert-no-retired-telegram-sidecar.js
 !scripts/verify-release-version.js
+!scripts/verify-release-contributors.js
 !scripts/after-pack-koffi.js
 !scripts/audit-packaged-native.js
 !scripts/native-package-policy.json

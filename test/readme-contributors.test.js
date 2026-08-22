@@ -69,6 +69,9 @@ const VERIFIED_GITHUB_CONTRIBUTORS = [
   "wang4433",
   "shengmai-justin",
   "Zamaniego",
+  "CheeseAgent",
+  "RS-Nocsi",
+  "Cobb04",
 ];
 
 function loadSettingsContributors() {

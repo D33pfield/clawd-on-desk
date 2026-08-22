@@ -61,6 +61,11 @@ test("main startup defers Remote SSH installation identity until IPC use", () =>
     mainSource.slice(readyStart, beforeQuit),
     /(?:initialize|ensure)RemoteSshInstallationIdentity\s*\(/,
   );
+  assert.equal(
+    (mainSource.match(/ensureRemoteSshInstallationIdentity\s*\(/g) || []).length,
+    1,
+    "the function declaration must be the only direct call-shaped occurrence; runtime access stays lazy"
+  );
   assert.match(
     mainSource,
     /getInstallationIdentity:\s*ensureRemoteSshInstallationIdentity/,

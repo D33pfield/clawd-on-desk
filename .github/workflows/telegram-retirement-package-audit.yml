@@ -1,6 +1,7 @@
 name: Five-target Package Audit
 
 on:
+  workflow_call:
   pull_request:
     paths:
       - ".gitignore"

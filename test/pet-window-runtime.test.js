@@ -3024,9 +3024,28 @@ describe("pet-window-runtime", () => {
     const harness = createRuntime();
 
     harness.runtime.setDragLocked(true);
-    harness.runtime.syncHitWin();
+    const outcome = harness.runtime.syncHitWin();
 
+    assert.deepStrictEqual(outcome, { applied: false, deferred: true });
     assert.deepStrictEqual(harness.hitWin.calls, []);
+  });
+
+  it("reports deferred when Linux edge clipping leaves only a transient hit sliver", () => {
+    const renderWin = makeWindow({ x: 0, y: 0, width: 5, height: 100 });
+    const harness = createRuntime({ isWin: false, isLinux: true, renderWin });
+
+    const outcome = harness.runtime.syncHitWin();
+
+    assert.deepStrictEqual(outcome, { applied: false, deferred: true });
+    assert.equal(
+      harness.hitWin.calls.some((call) => call[0] === "setBounds"),
+      false,
+      "a transient sliver must be retried rather than committed"
+    );
+    assert.ok(
+      harness.hitWin.calls.some((call) => call[0] === "setIgnoreMouseEvents" && call[1] === true),
+      "the deferred sliver must remain non-interactive"
+    );
   });
 
   it("I5: recovering from suppressed hit geometry must not re-enable input while petHidden is separately true", () => {

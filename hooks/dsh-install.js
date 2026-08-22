@@ -64,6 +64,32 @@ function resolveCanonicalDshHome(options = {}) {
   return canonical;
 }
 
+// Resolve symlinks in the deepest existing ancestor while preserving any
+// not-yet-created suffix. Managed roots are often created below a temporary or
+// relocated home whose lexical path differs from its real path (for example
+// macOS /var -> /private/var). Keeping the future suffix lets first install and
+// later ownership inspection agree without weakening marker/hash checks.
+function resolveCanonicalLocalPath(value, options = {}) {
+  const platform = options.platform || process.platform;
+  const resolved = path.resolve(value);
+  if (platform !== process.platform) return resolved;
+  const fsImpl = options.fs || fs;
+  const suffix = [];
+  let cursor = resolved;
+  while (true) {
+    try {
+      const realpath = fsImpl.realpathSync.native
+        ? fsImpl.realpathSync.native(cursor)
+        : fsImpl.realpathSync(cursor);
+      return path.join(realpath, ...suffix);
+    } catch {}
+    const parent = path.dirname(cursor);
+    if (parent === cursor) return resolved;
+    suffix.unshift(path.basename(cursor));
+    cursor = parent;
+  }
+}
+
 function freezeDshOperationOptions(options = {}) {
   const canonicalDshHome = resolveCanonicalDshHome(options);
   return {
@@ -96,7 +122,7 @@ function buildManualDshCommand(argv, options = {}) {
 
 function resolveManagedRoot(options = {}) {
   if (typeof options.managedRoot === "string" && options.managedRoot.trim()) {
-    return path.resolve(options.managedRoot);
+    return resolveCanonicalLocalPath(options.managedRoot, options);
   }
   const homeDir = typeof options.homeDir === "string" && options.homeDir.trim()
     ? options.homeDir
@@ -110,7 +136,7 @@ function resolveManagedRoot(options = {}) {
     .update(canonicalDshHome.replace(/\\/g, "/"), "utf8")
     .digest("hex");
   return path.join(
-    path.resolve(homeDir),
+    resolveCanonicalLocalPath(homeDir, options),
     ".clawd",
     "integrations",
     "deepseek-harness",
@@ -593,14 +619,23 @@ function isIntactManaged(record) {
     && record.actualBundleHash === record.clawdManifest.bundleHash;
 }
 
-function isManagedGenerationRecord(record, managedRoot) {
+function isManagedGenerationRecord(record, managedRoot, options = {}) {
   if (!isIntactManaged(record) || !managedRoot) return false;
-  const expected = path.resolve(
-    managedRoot,
+  const platform = options.platform || process.platform;
+  const normalize = (value) => {
+    const resolved = path.resolve(value);
+    return platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  // Canonicalize only the namespace root. Following a symlink at the generation
+  // leaf would let a marker-looking package outside the managed namespace claim
+  // ownership. inspectResolvedPackage* already realpaths record.packageDir, so
+  // a leaf that escapes the canonical root must stay a mismatch.
+  const expected = path.join(
+    resolveCanonicalLocalPath(managedRoot, options),
     "generations",
     record.clawdManifest.bundleHash
   );
-  return path.resolve(record.packageDir) === expected;
+  return normalize(record.packageDir) === normalize(expected);
 }
 
 function classifyDeepSeekHarnessProfile({
@@ -615,6 +650,8 @@ function classifyDeepSeekHarnessProfile({
   sourcePath,
   managedRoot,
   expectedHash,
+  fs: fsImpl,
+  platform,
 }) {
   const dependencies = profileManifest.dependencies && typeof profileManifest.dependencies === "object"
     ? profileManifest.dependencies
@@ -635,8 +672,9 @@ function classifyDeepSeekHarnessProfile({
   const resolved = installationResolved || profileResolved || effectiveFallbackResolved;
   const profileOwned = isIntactManaged(profileResolved);
   const fallbackOwned = isIntactManaged(effectiveFallbackResolved);
-  const sourceOwned = isManagedGenerationRecord(sourceResolved, managedRoot);
-  const managedGenerationOwned = isManagedGenerationRecord(managedGenerationResolved, managedRoot);
+  const ownershipOptions = { fs: fsImpl, platform };
+  const sourceOwned = isManagedGenerationRecord(sourceResolved, managedRoot, ownershipOptions);
+  const managedGenerationOwned = isManagedGenerationRecord(managedGenerationResolved, managedRoot, ownershipOptions);
   const ownershipRecord = sourceOwned
     ? sourceResolved
     : (managedGenerationOwned ? managedGenerationResolved : null);
@@ -791,6 +829,8 @@ function inspectDeepSeekHarnessDiskSync(options = {}) {
     sourcePath,
     managedRoot,
     expectedHash,
+    fs: fsImpl,
+    platform: options.platform,
   });
   const sourceAwareHealth = verifyCurrentSource && !expectedHash && health.owned
     ? { ...health, status: "source-unavailable" }
@@ -880,6 +920,7 @@ async function inspectDeepSeekHarnessIntegration(options = {}) {
     sourcePath,
     managedRoot,
     expectedHash: options.expectedHash,
+    platform: options.platform,
   });
 }
 
@@ -1581,7 +1622,7 @@ async function unlinkManagedProfileResidue(health, options = {}) {
     health.marker.bundleHash
   );
   if (
-    !isManagedGenerationRecord(health.profileResolved, managedRoot)
+    !isManagedGenerationRecord(health.profileResolved, managedRoot, options)
     || !sameResolvedPath(health.profileResolved.packageDir, expectedGeneration, options.platform)
   ) {
     return { removed: false, reason: "residue-target-mismatch" };

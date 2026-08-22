@@ -84,6 +84,10 @@ Piensa cuando envías un prompt, escribe cuando se ejecutan herramientas, se mue
 - **Cierre automático** — si respondes primero en la terminal, el globo desaparece automáticamente
 - **Interruptor por agente** — abre `Ajustes…` → `Agentes`, elige un agente y desactiva `Mostrar globos emergentes` para conservar las solicitudes en la terminal/TUI del propio agente
 
+### Notificaciones remotas
+- **Telegram / Feishu (Lark)** — aprobación remota interactiva: envía solicitudes de permisos al teléfono y permite aprobarlas o denegarlas sin tocar el escritorio
+- **Slack** — **solo notificaciones**: envía tareas **terminadas**, **errores** y **solicitudes de permisos** mediante un Incoming Webhook de Slack (o, de forma opcional, un token de bot `xoxb-` y un id. de canal) como tarjetas Block Kit. Slack no puede aprobar ni denegar en esta versión: los mensajes de permisos son avisos y la decisión se toma en la aplicación de escritorio. Configúralo junto a Telegram/Feishu en los canales de aprobación remota. Los secretos se guardan localmente en un archivo de entorno fuera de las preferencias (`0600` en macOS/Linux; en Windows se usa la ACL de AppData), y el canal se degrada de forma segura si no está configurado o no tiene conexión. Los mensajes pueden incluir el título de la sesión, la carpeta y el nombre del equipo, por lo que se recomienda un **canal privado**. Consulta [slack-notifications.md](docs/guides/slack-notifications.md)
+
 ### Información de sesiones
 - **Seguimiento de varias sesiones** — las sesiones de todos los agentes se resuelven al estado de mayor prioridad
 - **Detección de subagentes** — movimiento con auriculares para 1 subagente y malabares con tres pelotas para 2 o más
@@ -363,6 +367,11 @@ Gracias a todas las personas que han ayudado a mejorar Clawd:
     <td align="center" valign="top" width="110"><a href="https://github.com/shengmai-justin"><img src="https://github.com/shengmai-justin.png" width="50" style="border-radius:50%" /><br /><sub>shengmai-justin</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/aaronWool"><img src="https://github.com/aaronWool.png" width="50" style="border-radius:50%" /><br /><sub>aaronWool</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/Zamaniego"><img src="https://github.com/Zamaniego.png" width="50" style="border-radius:50%" /><br /><sub>Zamaniego</sub></a></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" width="110"><a href="https://github.com/CheeseAgent"><img src="https://github.com/CheeseAgent.png" width="50" style="border-radius:50%" /><br /><sub>CheeseAgent</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/RS-Nocsi"><img src="https://github.com/RS-Nocsi.png" width="50" style="border-radius:50%" /><br /><sub>RS-Nocsi</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/Cobb04"><img src="https://github.com/Cobb04.png" width="50" style="border-radius:50%" /><br /><sub>Cobb04</sub></a></td>
   </tr>
 </table>
 

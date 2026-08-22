@@ -88,6 +88,23 @@ describe("i18n locales", () => {
     assertLocaleObjectParity(i18n, "runtime");
   });
 
+  it("keeps native startup health notices in the runtime dictionary", () => {
+    const keys = [
+      "feishuApprovalMigrationNudgeTitle",
+      "feishuApprovalMigrationNudgeBody",
+      "prefsReadFailureNudgeTitle",
+      "prefsReadFailureNudgeBody",
+      "prefsRecoveredNudgeTitle",
+      "prefsRecoveredNudgeBody",
+    ];
+    for (const lang of SUPPORTED_LANGS) {
+      for (const key of keys) {
+        assert.strictEqual(typeof i18n[lang][key], "string", `${lang}.${key} should exist`);
+        assert.notStrictEqual(i18n[lang][key], key, `${lang}.${key} must not render as its key`);
+      }
+    }
+  });
+
   it("uses the requested Simplified Chinese desktop-pet recovery wording", () => {
     assert.strictEqual(i18n.zh.bringPetToPrimaryDisplay, "将桌宠拉回主屏");
   });

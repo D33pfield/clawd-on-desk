@@ -140,6 +140,7 @@ const {
 } = require("./telegram-approval-runtime-status");
 const { createTelegramMigrationController } = require("./telegram-migration-controller");
 const { createTelegramMigrationNudge } = require("./telegram-migration-nudge");
+const { createFeishuApprovalMigrationNudge } = require("./feishu-approval-migration-nudge");
 const { createTrayBalloonOwner } = require("./tray-balloon-owner");
 const initUpdateBubble = require("./update-bubble");
 const { registerUpdateBubbleIpc } = initUpdateBubble;
@@ -296,6 +297,12 @@ const loginItemHelpers = require("./login-item");
 const { writeCodexAutoStartGate } = require("../hooks/server-config");
 const PREFS_PATH = path.join(app.getPath("userData"), "clawd-prefs.json");
 const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
+// Recovery from readable invalid contents is writable only after the original
+// bytes are safely kept in .bak. That fallback is not user intent for this
+// process, and a backup failure locks persistence as well. Runtime gates stay
+// closed until restart in either case.
+const _initialPrefsRecovered = _initialPrefsLoad.recovered === true;
+const _initialPrefsRecoveryBackupFailed = _initialPrefsLoad.recoveryBackupFailed === true;
 
 function _persistCodexAutoStartGate(enabled) {
   return writeCodexAutoStartGate(enabled === true);
@@ -410,6 +417,7 @@ let codexPetMain = null;
 let telegramApprovalIdentitySignature = "";
 let _telegramMigrationController = null;
 let telegramMigrationNudge = null;
+let feishuApprovalMigrationNudge = null;
 const trayBalloonOwner = createTrayBalloonOwner();
 let telegramNativeRunner = null;
 let telegramCompanion = null;
@@ -1649,10 +1657,10 @@ const {
 } = require("./agent-gate");
 const _runtimeAgentGate = createRuntimeAgentGate({
   getSnapshot: () => _settingsController.getSnapshot(),
-  // locked && recovered means prefs bytes were never read and the snapshot is
-  // only defaults. Keep every prefs-backed agent path closed for this process;
-  // fixing file access and restarting is the only authority transition.
-  isAuthoritative: () => !_settingsController.hasReadFailure(),
+  // Both unreadable prefs and a writable recovered-defaults snapshot are
+  // non-authoritative for this process. The latter may repair the primary file,
+  // but only a clean load after restart can re-open agent paths.
+  isAuthoritative: () => !_initialPrefsRecovered && !_settingsController.hasReadFailure(),
 });
 const _permCtx = {
   get win() { return win; },
@@ -2857,6 +2865,9 @@ function writeFeishuApprovalSecrets(secrets) {
     prepareFeishuSessionAutomationRouteChange(nextRouteSignature);
     feishuApprovalSecretsRevision += 1;
     queueFeishuApprovalSync("secrets");
+    if (feishuApprovalMigrationNudge) {
+      void feishuApprovalMigrationNudge.sync({ allowNotify: false });
+    }
   }
   return result;
 }
@@ -4046,6 +4057,39 @@ const settingsEffectRouter = createSettingsEffectRouter({
   logWarn: console.warn,
 });
 settingsEffectRouter.start();
+feishuApprovalMigrationNudge = createFeishuApprovalMigrationNudge({
+  getConfig: () => getFeishuApprovalPrefs(),
+  getSecrets: () => getFeishuApprovalSecrets(),
+  getLastSignature: () => _settingsController.get("feishuApprovalMigrationLastNotified") || "",
+  setLastSignature: (value) =>
+    _settingsController.applyUpdate("feishuApprovalMigrationLastNotified", value),
+  showNotification: ({ onClick }) => {
+    const title = translate("feishuApprovalMigrationNudgeTitle");
+    const body = translate("feishuApprovalMigrationNudgeBody");
+    try {
+      const tray = _menu && typeof _menu.getTray === "function" ? _menu.getTray() : null;
+      if (process.platform === "win32" && trayBalloonOwner.show(tray, {
+        iconType: "warning",
+        title,
+        content: body,
+        onClick,
+      })) {
+        return true;
+      }
+      if (Notification && typeof Notification.isSupported === "function" && Notification.isSupported()) {
+        const notification = new Notification({ title, body });
+        notification.once("click", onClick);
+        notification.show();
+        return true;
+      }
+    } catch (err) {
+      console.warn("Clawd: Feishu/Lark upgrade nudge failed:", err && err.message);
+    }
+    console.warn(`Clawd: ${body}`);
+    return false;
+  },
+  openSettings: () => settingsWindowRuntime.open(),
+});
 _settingsController.subscribeKey("tgApproval", (value) => {
   syncTelegramSessionAutomationRoute();
   if (suppressTelegramMigrationReconcile > 0) return;
@@ -4068,6 +4112,9 @@ _settingsController.subscribeKey("feishuApproval", () => {
     getFeishuApprovalSecrets()
   ));
   queueFeishuApprovalSync("settings");
+  if (feishuApprovalMigrationNudge) {
+    void feishuApprovalMigrationNudge.sync({ allowNotify: false });
+  }
 });
 _settingsController.subscribeKey("slackNotify", () => {
   slackNotifyConfigRevision += 1;
@@ -4175,6 +4222,10 @@ registerDoctorIpc({
   shell,
   server: _server,
   getPrefsSnapshot: () => _settingsController.getSnapshot(),
+  getPrefsReadFailure: () => _settingsController.hasReadFailure(),
+  getPrefsRecovered: () => _initialPrefsRecovered && !_settingsController.hasReadFailure(),
+  getPrefsRecoveryBackupFailed: () => _initialPrefsRecoveryBackupFailed,
+  getFeishuApprovalSecrets: () => getFeishuApprovalSecrets(),
   getDoNotDisturb: () => doNotDisturb,
   getLocale: () => _settingsController.get("lang") || "en",
   resolveAgentDisplayName: _resolveAgentDisplayName,
@@ -4957,6 +5008,39 @@ if (!gotTheLock) {
     }
   }
 
+  function notifyPrefsAuthorityFailure() {
+    const readFailure = _settingsController.hasReadFailure();
+    if (!readFailure && !_initialPrefsRecovered) return false;
+    const title = translate(_initialPrefsRecoveryBackupFailed
+      ? "prefsRecoveryBackupFailedNudgeTitle"
+      : (readFailure ? "prefsReadFailureNudgeTitle" : "prefsRecoveredNudgeTitle"));
+    const body = translate(_initialPrefsRecoveryBackupFailed
+      ? "prefsRecoveryBackupFailedNudgeBody"
+      : (readFailure ? "prefsReadFailureNudgeBody" : "prefsRecoveredNudgeBody"));
+    const onClick = () => settingsWindowRuntime.open();
+    try {
+      const tray = _menu && typeof _menu.getTray === "function" ? _menu.getTray() : null;
+      if (process.platform === "win32" && trayBalloonOwner.show(tray, {
+        iconType: "warning",
+        title,
+        content: body,
+        onClick,
+      })) {
+        return true;
+      }
+      if (Notification && typeof Notification.isSupported === "function" && Notification.isSupported()) {
+        const notification = new Notification({ title, body });
+        notification.once("click", onClick);
+        notification.show();
+        return true;
+      }
+    } catch (err) {
+      console.warn("Clawd: preferences authority nudge failed:", err && err.message);
+    }
+    console.warn(`Clawd: ${body}`);
+    return false;
+  }
+
   app.whenReady().then(async () => {
     // macOS: override the dock icon with a version padded to the macOS icon
     // grid (~80.5% of the canvas, ~100px transparent margin per side) so the
@@ -4990,15 +5074,6 @@ if (!gotTheLock) {
     // request credential access when no Remote SSH action is being performed.
     // Explicit Remote SSH status/actions and connect-on-launch profiles load it
     // through the single-flight provider injected into remote-ssh-ipc above.
-    // Kimi's separate local key/quota reconciliation still runs after ready.
-    // It may use safeStorage when a Kimi credential exists, but never performs
-    // a Kimi network request during this startup reconciliation.
-    try {
-      await _kimiQuotaRuntime.initialize();
-    } catch (err) {
-      console.warn("Clawd: Kimi quota startup reconciliation failed:", err && err.message);
-    }
-
     permDebugLog = path.join(app.getPath("userData"), "permission-debug.log");
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
@@ -5015,6 +5090,17 @@ if (!gotTheLock) {
     catch (err) { console.warn("Clawd: discord presence startup failed:", err && err.message); }
     queueFeishuApprovalSync("startup");
     createWindow();
+    // Reconcile the local quota binding only after the app has visible UI.
+    // initialize() reads opaque credential metadata but never decrypts the key
+    // or performs a network request, so ordinary startup cannot be held behind
+    // a Keychain/DPAPI prompt.
+    void _kimiQuotaRuntime.initialize().catch((err) => {
+      console.warn("Clawd: Kimi quota startup reconciliation failed:", err && err.message);
+    });
+    notifyPrefsAuthorityFailure();
+    if (feishuApprovalMigrationNudge) {
+      void feishuApprovalMigrationNudge.sync({ allowNotify: true });
+    }
     void telegramMigrationInit.then((controller) => {
       if (!controller || !telegramMigrationNudge) return;
       return telegramMigrationNudge.sync({ allowNotify: true });

@@ -439,8 +439,12 @@ function writeRuntimeConfig(port, options = {}) {
   if (windowsProcessChain) runtimeBody.windowsProcessChain = windowsProcessChain;
   const body = JSON.stringify(runtimeBody, null, 2);
   try {
-    fsApi.mkdirSync(dir, { recursive: true });
-    fsApi.writeFileSync(tmpPath, body, "utf8");
+    fsApi.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // Permission-capable plugins use this file to avoid disclosing their
+    // reverse-bridge bearer token to arbitrary listeners during a port scan.
+    // Keep the replacement owner-only on POSIX; Windows ignores this mode and
+    // relies on the user's profile ACL.
+    fsApi.writeFileSync(tmpPath, body, { encoding: "utf8", mode: 0o600 });
     fsApi.renameSync(tmpPath, filePath);
     return true;
   } catch {

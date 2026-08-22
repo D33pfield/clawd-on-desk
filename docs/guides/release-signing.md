@@ -106,7 +106,7 @@ xcrun stapler validate "dist/mac-arm64/Clawd on Desk.app"
 显示 validation succeeded。首次正式发布前，还必须从 GitHub draft Release
 通过浏览器重新下载 DMG，再做一次 Gatekeeper 双击启动验证。
 
-## 4. 配置 GitHub Actions Secrets
+## 4. 配置 GitHub Actions Secrets 与 Variable
 
 进入仓库 Settings → Secrets and variables → Actions → New repository secret，
 配置以下五项：
@@ -118,6 +118,11 @@ xcrun stapler validate "dist/mac-arm64/Clawd on Desk.app"
 | `APPLE_API_KEY` | `.p8` 文件的 Base64 内容 |
 | `APPLE_API_KEY_ID` | App Store Connect Team Key 的 Key ID |
 | `APPLE_API_ISSUER` | App Store Connect 的 Issuer ID |
+
+另外在 **Variables → Actions → New repository variable** 配置
+`APPLE_TEAM_ID`，值为证书括号中的 10 位 Developer Team ID。它不是秘密，
+但发布门会用它精确核对最终 app 的 `Authority` 与 `TeamIdentifier`；缺失或
+签名团队不一致时，正式构建必须失败。
 
 在 Mac 上可把文件编码后直接送进剪贴板，避免打印在终端：
 

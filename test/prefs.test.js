@@ -109,13 +109,15 @@ describe("prefs.getDefaults", () => {
 
   it("seeds only default-installed agents as enabled", () => {
     const d = prefs.getDefaults();
-    for (const id of ["claude-code", "codex"]) {
-      assert.strictEqual(d.agents[id].enabled, true, `${id} should default enabled`);
-      assert.strictEqual(d.agents[id].integrationInstalled, true, `${id} should default installed`);
-    }
-    for (const id of ["copilot-cli", "cursor-agent", "gemini-cli", "antigravity-cli", "codebuddy", "kiro-cli", "kimi-cli", "qwen-code", "codewhale", "opencode", "pi", "openclaw", "hermes", "qoder"]) {
-      assert.strictEqual(d.agents[id].enabled, false, `${id} should default disabled`);
-      assert.strictEqual(d.agents[id].integrationInstalled, false, `${id} should default not installed`);
+    const defaultInstalled = new Set(["claude-code", "codex"]);
+    for (const [id, config] of Object.entries(d.agents)) {
+      const expected = defaultInstalled.has(id);
+      assert.strictEqual(config.enabled, expected, `${id} default enabled state drifted`);
+      assert.strictEqual(
+        config.integrationInstalled,
+        expected,
+        `${id} default installed state drifted`
+      );
     }
   });
 
@@ -1555,6 +1557,22 @@ describe("prefs.load", () => {
     );
   });
 
+  it("locks an invalid prefs file when its recovery backup cannot be created", () => {
+    const p = makeTempPath();
+    const original = "{ invalid json";
+    fs.writeFileSync(p, original, "utf8");
+    fs.mkdirSync(p + ".bak");
+
+    const loaded = prefs.load(p);
+    assert.strictEqual(loaded.locked, true);
+    assert.strictEqual(loaded.recovered, true);
+    assert.strictEqual(loaded.recoveryBackupFailed, true);
+    assert.deepStrictEqual(loaded.snapshot, prefs.getDefaults());
+
+    if (!loaded.locked) prefs.save(p, loaded.snapshot);
+    assert.strictEqual(fs.readFileSync(p, "utf8"), original);
+  });
+
   // POSIX-only: on Windows `chmod` only toggles the read-only bit and does not deny
   // reads, so the EACCES branch is unreachable there and these assertions would fail
   // for a reason that has nothing to do with prefs. `npm test` does run on
@@ -1621,6 +1639,7 @@ describe("prefs.load", () => {
     assert.strictEqual(fresh, undefined);
     assert.strictEqual(recovered, true);
     assert.deepStrictEqual(snapshot, prefs.getDefaults());
+    assert.strictEqual(fs.readFileSync(p + ".bak", "utf8"), "null");
   });
 
   it("marks an array prefs root as a recovered defaults snapshot", () => {
@@ -1631,6 +1650,7 @@ describe("prefs.load", () => {
     assert.strictEqual(fresh, undefined);
     assert.strictEqual(recovered, true);
     assert.deepStrictEqual(snapshot, prefs.getDefaults());
+    assert.strictEqual(fs.readFileSync(p + ".bak", "utf8"), "[]");
   });
 
   it("marks explicitly malformed Codex gate fields as non-authoritative", () => {
