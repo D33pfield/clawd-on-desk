@@ -16,6 +16,11 @@ npm run audit:assets
 
 4. Run the `Build & Release` workflow manually on `main`.
 
+For macOS Developer ID certificate creation, App Store Connect Team API key
+setup, local verification, and the exact GitHub Actions secret names, follow
+[`docs/guides/release-signing.md`](../guides/release-signing.md). Never commit a
+`.p12`, `.p8`, certificate password, or decoded secret file.
+
 Manual workflow dispatch builds Windows, macOS, and Linux artifacts, checks
 each unpacked resources tree for retired Telegram sidecar binaries/source, and
 gates every package on its target-native Koffi payload, a packaged positive-call
@@ -23,6 +28,14 @@ smoke, and updater metadata matching both the generated artifacts and the exact
 `package.json` release version. It then uploads
 the installers plus JSON evidence manifests. It does not publish a GitHub
 Release.
+
+When all five macOS signing secrets are configured, the manual workflow produces
+Developer ID signed and notarized apps, then mounts both generated DMGs and
+verifies the exact app bundle each DMG contains. With none of the secrets
+configured, a manual run explicitly retains the ad-hoc validation path. A
+partial secret set always fails. A `v*` tag build fails closed unless the full
+secret set is available, so an official draft cannot silently contain an ad-hoc
+macOS build.
 
 Each staged application must contain exactly one physical Koffi native addon at
 `app.asar.unpacked/node_modules/koffi/build/koffi/<target-triplet>/koffi.node`.
@@ -59,6 +72,9 @@ notes.
 Before launching:
 
 - Download the draft release asset for the platform being tested.
+- On macOS, download each DMG through a browser so it carries quarantine
+  metadata. Confirm it opens without a Privacy & Security override, then verify
+  the copied app with `spctl` and `stapler` as documented in the signing guide.
 - Confirm the packaged app shows `0.15.0` metadata.
 - Confirm packaged resources include `app.asar.unpacked/hooks`,
   `app.asar.unpacked/agents`, `app.asar.unpacked/extensions`,

@@ -11,6 +11,14 @@ function matchedByAnyGlob(globs, target) {
   return globs.some((g) => minimatch(target, g));
 }
 
+function sliceWorkflowBlock(workflow, startMarker, endMarker) {
+  const start = workflow.indexOf(startMarker);
+  assert.ok(start >= 0, `workflow should contain ${startMarker.trim()}`);
+  const end = workflow.indexOf(endMarker, start + startMarker.length);
+  assert.ok(end > start, `workflow should contain ${endMarker.trim()} after ${startMarker.trim()}`);
+  return workflow.slice(start, end);
+}
+
 describe("package build config", () => {
   describe("repository asset audit", () => {
     it("exposes a Windows-compatible npm audit command", () => {
@@ -216,19 +224,110 @@ describe("package build config", () => {
 
     it("gates both packaged apps on ad-hoc hardened signatures and required entitlements", () => {
       const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
-      assert.match(workflow, /name: Verify macOS ad-hoc hardened signatures/);
-      assert.match(workflow, /dist\/mac\/Clawd on Desk\.app/);
-      assert.match(workflow, /dist\/mac-arm64\/Clawd on Desk\.app/);
-      assert.match(workflow, /Signature=adhoc/);
-      assert.match(workflow, /adhoc,runtime/);
-      assert.match(workflow, /codesign --verify --deep --strict/);
+      const adHocVerification = sliceWorkflowBlock(
+        workflow,
+        "      - name: Verify macOS ad-hoc hardened signatures",
+        "      - name: Assert retired Telegram sidecar is absent",
+      );
+      assert.match(adHocVerification, /^\s+if: steps\.mac-signing\.outputs\.mode == 'adhoc'$/m);
+      assert.match(adHocVerification, /dist\/mac\/Clawd on Desk\.app/);
+      assert.match(adHocVerification, /dist\/mac-arm64\/Clawd on Desk\.app/);
+      assert.match(adHocVerification, /Signature=adhoc/);
+      assert.match(adHocVerification, /adhoc,runtime/);
+      assert.match(adHocVerification, /codesign --verify --deep --strict/);
       for (const entitlement of [
         "com.apple.security.cs.allow-jit",
         "com.apple.security.cs.allow-unsigned-executable-memory",
         "com.apple.security.cs.disable-library-validation",
       ]) {
-        assert.match(workflow, new RegExp(entitlement.replace(/\./g, "\\.")));
+        assert.match(adHocVerification, new RegExp(entitlement.replace(/\./g, "\\.")));
       }
+    });
+
+    it("fails closed for tag releases unless all Developer ID secrets are present", () => {
+      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      const prepareSigning = sliceWorkflowBlock(
+        workflow,
+        "      - name: Prepare macOS signing credentials",
+        "      - name: Build macOS (Developer ID signed and notarized)",
+      );
+      const developerBuild = sliceWorkflowBlock(
+        workflow,
+        "      - name: Build macOS (Developer ID signed and notarized)",
+        "      - name: Build macOS (ad-hoc manual validation only)",
+      );
+      assert.match(
+        workflow,
+        /^permissions:\r?\n  contents: read$/m,
+        "build jobs should not receive a write-capable token alongside signing secrets",
+      );
+      for (const secret of [
+        "CSC_LINK",
+        "CSC_KEY_PASSWORD",
+        "APPLE_API_KEY",
+        "APPLE_API_KEY_ID",
+        "APPLE_API_ISSUER",
+      ]) {
+        assert.match(workflow, new RegExp(`secrets\\.${secret}`));
+      }
+      assert.match(prepareSigning, /present != 5/);
+      assert.match(
+        prepareSigning,
+        /if \[\[ "\$GITHUB_EVENT_NAME" == "push" && "\$GITHUB_REF" == refs\/tags\/v\* \]\]; then\s+echo "::error::A tag release requires all macOS signing and notarization secrets\.[^"]*"\s+exit 1\s+fi/,
+        "a pushed v* tag without signing secrets must terminate before the ad-hoc fallback",
+      );
+      assert.match(prepareSigning, /Incomplete macOS signing configuration/);
+      assert.match(prepareSigning, /openssl pkey -in "\$api_key_path" -noout/);
+      const keyPathOutput = prepareSigning.indexOf('echo "api_key_path=$api_key_path" >> "$GITHUB_OUTPUT"');
+      const keyDecode = prepareSigning.indexOf("base64 --decode");
+      assert.ok(keyPathOutput >= 0 && keyPathOutput < keyDecode, "cleanup path must be published before decoding can fail");
+      assert.match(developerBuild, /-c\.mac\.identity="Developer ID Application"/);
+      assert.match(developerBuild, /-c\.forceCodeSigning=true/);
+      assert.match(developerBuild, /APPLE_API_KEY: \$\{\{ steps\.mac-signing\.outputs\.api_key_path \}\}/);
+    });
+
+    it("always removes the decoded notarization key before artifact verification", () => {
+      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      const keyCleanup = sliceWorkflowBlock(
+        workflow,
+        "      - name: Remove decoded notarization key",
+        "      - name: Verify macOS Developer ID artifacts",
+      );
+      assert.match(
+        keyCleanup,
+        /^\s+if: \$\{\{ always\(\) && steps\.mac-signing\.outputs\.api_key_path != '' \}\}$/m,
+      );
+      assert.match(keyCleanup, /APPLE_API_KEY_FILE: \$\{\{ steps\.mac-signing\.outputs\.api_key_path \}\}/);
+      assert.match(keyCleanup, /run: rm -f -- "\$APPLE_API_KEY_FILE"/);
+    });
+
+    it("verifies the notarized app inside each final DMG without post-build DMG mutation", () => {
+      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      const developerVerification = sliceWorkflowBlock(
+        workflow,
+        "      - name: Verify macOS Developer ID artifacts",
+        "      - name: Verify macOS ad-hoc hardened signatures",
+      );
+      assert.match(developerVerification, /^\s+if: steps\.mac-signing\.outputs\.mode == 'developer-id'$/m);
+      assert.match(developerVerification, /Authority=Developer ID Application:/);
+      assert.match(developerVerification, /spctl --assess --type execute/);
+      assert.match(developerVerification, /xcrun stapler validate "\$app"/);
+      assert.strictEqual(
+        (developerVerification.match(/^\s+verify_signed_app "dist\/mac\/Clawd on Desk\.app"$/gm) || []).length,
+        1,
+        "Developer ID verification must inspect the unpacked x64 app exactly once",
+      );
+      assert.strictEqual(
+        (developerVerification.match(/^\s+verify_signed_app "dist\/mac-arm64\/Clawd on Desk\.app"$/gm) || []).length,
+        1,
+        "Developer ID verification must inspect the unpacked arm64 app exactly once",
+      );
+      assert.match(developerVerification, /for arch in x64 arm64/);
+      assert.match(developerVerification, /hdiutil verify "\$dmg"/);
+      assert.match(developerVerification, /hdiutil attach -readonly -nobrowse -mountpoint/);
+      assert.match(developerVerification, /verify_signed_app "\$active_mount\/Clawd on Desk\.app"/);
+      assert.doesNotMatch(workflow, /notarytool submit[^\n]*\.dmg/);
+      assert.doesNotMatch(workflow, /stapler staple[^\n]*\.dmg/);
     });
 
     it("uses architecture-specific macOS DMG names without spaces", () => {
@@ -362,42 +461,56 @@ describe("package build config", () => {
     });
 
     it("keeps full tag tests while allowing a manual packaging-only evidence run", () => {
-      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      const workflow = fs
+        .readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8")
+        .replace(/\r\n/g, "\n");
       assert.match(workflow, /artifact_validation_only:/);
-      assert.strictEqual(
-        (workflow.match(/github\.event_name != 'workflow_dispatch' \|\| !inputs\.artifact_validation_only/g) || []).length,
-        1,
-        "the Windows release job must keep npm test for tag pushes and normal manual runs"
-      );
-      assert.strictEqual(
-        (workflow.match(/github\.event_name == 'workflow_dispatch' && inputs\.artifact_validation_only/g) || []).length,
-        1,
-        "only the Windows job should substitute the package-validation tests in evidence mode"
-      );
-      assert.strictEqual(
-        (workflow.match(/name: Run package validation tests/g) || []).length,
-        1,
-      );
-      const focusedLine = workflow.split(/\r?\n/).find((line) => line.includes("node --test test/assert-no-retired"));
-      assert.ok(focusedLine, "Windows evidence mode should retain its focused test command");
-      for (const testFile of [
-        "after-pack-koffi.test.js",
-        "audit-packaged-native.test.js",
-        "koffi-lockfile.test.js",
-        "native-package-target.test.js",
-        "package-koffi-smoke.test.js",
-        "verify-updater-metadata.test.js",
+      const getJobBlock = (jobName) => {
+        const marker = `  ${jobName}:\n`;
+        const start = workflow.indexOf(marker);
+        assert.notStrictEqual(start, -1, `${jobName} should exist`);
+        const remainder = workflow.slice(start + marker.length);
+        const nextJob = remainder.search(/\n  [a-zA-Z0-9_-]+:\n/);
+        return nextJob === -1 ? remainder : remainder.slice(0, nextJob);
+      };
+
+      for (const [label, jobName, fullCommand, focusedPrefix] of [
+        ["Windows", "build-windows", "npm test", "node --test"],
+        ["macOS", "build-mac", "npm test", "node --test"],
+        ["Linux", "build-linux", "xvfb-run -a npm test", "xvfb-run -a node --test"],
       ]) {
-        assert.match(focusedLine, new RegExp(`test/${testFile.replace(/\./g, "\\.")}`));
+        const job = getJobBlock(jobName);
+        assert.ok(
+          job.includes([
+            `      - run: ${fullCommand}`,
+            "        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_validation_only }}",
+          ].join("\n")),
+          `${label} must keep its full test command for tag pushes and normal manual runs`
+        );
+        assert.ok(
+          job.includes([
+            "      - name: Run package validation tests",
+            "        if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_validation_only }}",
+            "        run: ",
+          ].join("\n")),
+          `${label} must substitute focused tests only in evidence mode`
+        );
+        const focusedLine = job
+          .split(/\r?\n/)
+          .find((line) => line.includes("node --test test/assert-no-retired"));
+        assert.ok(focusedLine, `${label} evidence mode should retain its focused test command`);
+        assert.ok(focusedLine.includes(focusedPrefix), `${label} should use the expected focused-test wrapper`);
+        for (const testFile of [
+          "after-pack-koffi.test.js",
+          "audit-packaged-native.test.js",
+          "koffi-lockfile.test.js",
+          "native-package-target.test.js",
+          "package-koffi-smoke.test.js",
+          "verify-updater-metadata.test.js",
+        ]) {
+          assert.ok(focusedLine.includes(`test/${testFile}`));
+        }
       }
-      // A display wrapper is allowed (Linux needs one or the Electron-backed
-      // suites skip themselves), but all three release jobs must still run the
-      // full suite — not a subset, and not nothing.
-      assert.strictEqual(
-        (workflow.match(/      - run: (?:xvfb-run -a )?npm test$/gm) || []).length,
-        3,
-        "Windows, macOS, and Linux release jobs must all retain their npm test step"
-      );
     });
 
     it("builds and uploads all five target artifacts in pull-request CI", () => {
