@@ -463,40 +463,52 @@ describe("package build config", () => {
     it("keeps full tag tests while allowing a manual packaging-only evidence run", () => {
       const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
       assert.match(workflow, /artifact_validation_only:/);
-      assert.strictEqual(
-        (workflow.match(/github\.event_name != 'workflow_dispatch' \|\| !inputs\.artifact_validation_only/g) || []).length,
-        1,
-        "the Windows release job must keep npm test for tag pushes and normal manual runs"
-      );
-      assert.strictEqual(
-        (workflow.match(/github\.event_name == 'workflow_dispatch' && inputs\.artifact_validation_only/g) || []).length,
-        1,
-        "only the Windows job should substitute the package-validation tests in evidence mode"
-      );
-      assert.strictEqual(
-        (workflow.match(/name: Run package validation tests/g) || []).length,
-        1,
-      );
-      const focusedLine = workflow.split(/\r?\n/).find((line) => line.includes("node --test test/assert-no-retired"));
-      assert.ok(focusedLine, "Windows evidence mode should retain its focused test command");
-      for (const testFile of [
-        "after-pack-koffi.test.js",
-        "audit-packaged-native.test.js",
-        "koffi-lockfile.test.js",
-        "native-package-target.test.js",
-        "package-koffi-smoke.test.js",
-        "verify-updater-metadata.test.js",
+      const getJobBlock = (jobName) => {
+        const marker = `  ${jobName}:\n`;
+        const start = workflow.indexOf(marker);
+        assert.notStrictEqual(start, -1, `${jobName} should exist`);
+        const remainder = workflow.slice(start + marker.length);
+        const nextJob = remainder.search(/\n  [a-zA-Z0-9_-]+:\n/);
+        return nextJob === -1 ? remainder : remainder.slice(0, nextJob);
+      };
+
+      for (const [label, jobName, fullCommand, focusedPrefix] of [
+        ["Windows", "build-windows", "npm test", "node --test"],
+        ["macOS", "build-mac", "npm test", "node --test"],
+        ["Linux", "build-linux", "xvfb-run -a npm test", "xvfb-run -a node --test"],
       ]) {
-        assert.match(focusedLine, new RegExp(`test/${testFile.replace(/\./g, "\\.")}`));
+        const job = getJobBlock(jobName);
+        assert.ok(
+          job.includes([
+            `      - run: ${fullCommand}`,
+            "        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_validation_only }}",
+          ].join("\n")),
+          `${label} must keep its full test command for tag pushes and normal manual runs`
+        );
+        assert.ok(
+          job.includes([
+            "      - name: Run package validation tests",
+            "        if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_validation_only }}",
+            "        run: ",
+          ].join("\n")),
+          `${label} must substitute focused tests only in evidence mode`
+        );
+        const focusedLine = job
+          .split(/\r?\n/)
+          .find((line) => line.includes("node --test test/assert-no-retired"));
+        assert.ok(focusedLine, `${label} evidence mode should retain its focused test command`);
+        assert.ok(focusedLine.includes(focusedPrefix), `${label} should use the expected focused-test wrapper`);
+        for (const testFile of [
+          "after-pack-koffi.test.js",
+          "audit-packaged-native.test.js",
+          "koffi-lockfile.test.js",
+          "native-package-target.test.js",
+          "package-koffi-smoke.test.js",
+          "verify-updater-metadata.test.js",
+        ]) {
+          assert.ok(focusedLine.includes(`test/${testFile}`));
+        }
       }
-      // A display wrapper is allowed (Linux needs one or the Electron-backed
-      // suites skip themselves), but all three release jobs must still run the
-      // full suite — not a subset, and not nothing.
-      assert.strictEqual(
-        (workflow.match(/      - run: (?:xvfb-run -a )?npm test$/gm) || []).length,
-        3,
-        "Windows, macOS, and Linux release jobs must all retain their npm test step"
-      );
     });
 
     it("builds and uploads all five target artifacts in pull-request CI", () => {
