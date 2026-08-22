@@ -224,19 +224,23 @@ describe("package build config", () => {
 
     it("gates both packaged apps on ad-hoc hardened signatures and required entitlements", () => {
       const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
-      assert.match(workflow, /name: Verify macOS ad-hoc hardened signatures/);
-      assert.match(workflow, /if: steps\.mac-signing\.outputs\.mode == 'adhoc'/);
-      assert.match(workflow, /dist\/mac\/Clawd on Desk\.app/);
-      assert.match(workflow, /dist\/mac-arm64\/Clawd on Desk\.app/);
-      assert.match(workflow, /Signature=adhoc/);
-      assert.match(workflow, /adhoc,runtime/);
-      assert.match(workflow, /codesign --verify --deep --strict/);
+      const adHocVerification = sliceWorkflowBlock(
+        workflow,
+        "      - name: Verify macOS ad-hoc hardened signatures",
+        "      - name: Assert retired Telegram sidecar is absent",
+      );
+      assert.match(adHocVerification, /^\s+if: steps\.mac-signing\.outputs\.mode == 'adhoc'$/m);
+      assert.match(adHocVerification, /dist\/mac\/Clawd on Desk\.app/);
+      assert.match(adHocVerification, /dist\/mac-arm64\/Clawd on Desk\.app/);
+      assert.match(adHocVerification, /Signature=adhoc/);
+      assert.match(adHocVerification, /adhoc,runtime/);
+      assert.match(adHocVerification, /codesign --verify --deep --strict/);
       for (const entitlement of [
         "com.apple.security.cs.allow-jit",
         "com.apple.security.cs.allow-unsigned-executable-memory",
         "com.apple.security.cs.disable-library-validation",
       ]) {
-        assert.match(workflow, new RegExp(entitlement.replace(/\./g, "\\.")));
+        assert.match(adHocVerification, new RegExp(entitlement.replace(/\./g, "\\.")));
       }
     });
 
@@ -282,6 +286,21 @@ describe("package build config", () => {
       assert.match(developerBuild, /APPLE_API_KEY: \$\{\{ steps\.mac-signing\.outputs\.api_key_path \}\}/);
     });
 
+    it("always removes the decoded notarization key before artifact verification", () => {
+      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      const keyCleanup = sliceWorkflowBlock(
+        workflow,
+        "      - name: Remove decoded notarization key",
+        "      - name: Verify macOS Developer ID artifacts",
+      );
+      assert.match(
+        keyCleanup,
+        /^\s+if: \$\{\{ always\(\) && steps\.mac-signing\.outputs\.api_key_path != '' \}\}$/m,
+      );
+      assert.match(keyCleanup, /APPLE_API_KEY_FILE: \$\{\{ steps\.mac-signing\.outputs\.api_key_path \}\}/);
+      assert.match(keyCleanup, /run: rm -f -- "\$APPLE_API_KEY_FILE"/);
+    });
+
     it("verifies the notarized app inside each final DMG without post-build DMG mutation", () => {
       const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
       const developerVerification = sliceWorkflowBlock(
@@ -289,6 +308,7 @@ describe("package build config", () => {
         "      - name: Verify macOS Developer ID artifacts",
         "      - name: Verify macOS ad-hoc hardened signatures",
       );
+      assert.match(developerVerification, /^\s+if: steps\.mac-signing\.outputs\.mode == 'developer-id'$/m);
       assert.match(developerVerification, /Authority=Developer ID Application:/);
       assert.match(developerVerification, /spctl --assess --type execute/);
       assert.match(developerVerification, /xcrun stapler validate "\$app"/);
