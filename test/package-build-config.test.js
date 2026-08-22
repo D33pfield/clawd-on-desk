@@ -217,6 +217,7 @@ describe("package build config", () => {
     it("gates both packaged apps on ad-hoc hardened signatures and required entitlements", () => {
       const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
       assert.match(workflow, /name: Verify macOS ad-hoc hardened signatures/);
+      assert.match(workflow, /if: steps\.mac-signing\.outputs\.mode == 'adhoc'/);
       assert.match(workflow, /dist\/mac\/Clawd on Desk\.app/);
       assert.match(workflow, /dist\/mac-arm64\/Clawd on Desk\.app/);
       assert.match(workflow, /Signature=adhoc/);
@@ -229,6 +230,44 @@ describe("package build config", () => {
       ]) {
         assert.match(workflow, new RegExp(entitlement.replace(/\./g, "\\.")));
       }
+    });
+
+    it("fails closed for tag releases unless all Developer ID secrets are present", () => {
+      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      assert.match(
+        workflow,
+        /^permissions:\r?\n  contents: read$/m,
+        "build jobs should not receive a write-capable token alongside signing secrets",
+      );
+      for (const secret of [
+        "CSC_LINK",
+        "CSC_KEY_PASSWORD",
+        "APPLE_API_KEY",
+        "APPLE_API_KEY_ID",
+        "APPLE_API_ISSUER",
+      ]) {
+        assert.match(workflow, new RegExp(`secrets\\.${secret}`));
+      }
+      assert.match(workflow, /present != 5/);
+      assert.match(workflow, /A tag release requires all macOS signing and notarization secrets/);
+      assert.match(workflow, /Incomplete macOS signing configuration/);
+      assert.match(workflow, /name: Build macOS \(Developer ID signed and notarized\)/);
+      assert.match(workflow, /-c\.mac\.identity="Developer ID Application"/);
+      assert.match(workflow, /APPLE_API_KEY: \$\{\{ steps\.mac-signing\.outputs\.api_key_path \}\}/);
+    });
+
+    it("verifies the notarized app inside each final DMG without post-build DMG mutation", () => {
+      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      assert.match(workflow, /name: Verify macOS Developer ID artifacts/);
+      assert.match(workflow, /Authority=Developer ID Application:/);
+      assert.match(workflow, /spctl --assess --type execute/);
+      assert.match(workflow, /xcrun stapler validate "\$app"/);
+      assert.match(workflow, /for arch in x64 arm64/);
+      assert.match(workflow, /hdiutil verify "\$dmg"/);
+      assert.match(workflow, /hdiutil attach -readonly -nobrowse -mountpoint/);
+      assert.match(workflow, /verify_signed_app "\$active_mount\/Clawd on Desk\.app"/);
+      assert.doesNotMatch(workflow, /notarytool submit[^\n]*\.dmg/);
+      assert.doesNotMatch(workflow, /stapler staple[^\n]*\.dmg/);
     });
 
     it("uses architecture-specific macOS DMG names without spaces", () => {
