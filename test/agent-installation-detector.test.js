@@ -45,6 +45,12 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
+function canonicalRealpath(filePath) {
+  return fs.realpathSync.native
+    ? fs.realpathSync.native(filePath)
+    : fs.realpathSync(filePath);
+}
+
 function writeText(filePath, value = "") {
   mkdirp(path.dirname(filePath));
   fs.writeFileSync(filePath, value, "utf8");
@@ -188,7 +194,7 @@ describe("agent installation detector", () => {
     dsh = byId(report, "deepseek-harness");
     assert.strictEqual(dsh.clawdIntegration.detected, true);
     assert.strictEqual(dsh.clawdIntegration.reason, "managed-plugin");
-    assert.strictEqual(dsh.clawdIntegration.paths.pluginDir, fs.realpathSync(pluginDir));
+    assert.strictEqual(dsh.clawdIntegration.paths.pluginDir, canonicalRealpath(pluginDir));
   });
 
   it("detects a DSH CLI on PATH before the profile home is initialized", {

@@ -47,6 +47,12 @@ function resolveDshProfileDir(dshHome) {
   return path.join(dshHome, "profiles", WEB_PROFILE_NAME);
 }
 
+function realpathSyncCanonical(fsImpl, value) {
+  return fsImpl.realpathSync.native
+    ? fsImpl.realpathSync.native(value)
+    : fsImpl.realpathSync(value);
+}
+
 function resolveCanonicalDshHome(options = {}) {
   const platform = options.platform || process.platform;
   const pathApi = platform === "win32" ? path.win32 : path.posix;
@@ -56,9 +62,7 @@ function resolveCanonicalDshHome(options = {}) {
   let canonical = pathApi.resolve(configured);
   if (platform === process.platform) {
     try {
-      canonical = fs.realpathSync.native
-        ? fs.realpathSync.native(canonical)
-        : fs.realpathSync(canonical);
+      canonical = realpathSyncCanonical(fs, canonical);
     } catch {}
   }
   return canonical;
@@ -78,9 +82,7 @@ function resolveCanonicalLocalPath(value, options = {}) {
   let cursor = resolved;
   while (true) {
     try {
-      const realpath = fsImpl.realpathSync.native
-        ? fsImpl.realpathSync.native(cursor)
-        : fsImpl.realpathSync(cursor);
+      const realpath = realpathSyncCanonical(fsImpl, cursor);
       return path.join(realpath, ...suffix);
     } catch {}
     const parent = path.dirname(cursor);
@@ -536,7 +538,7 @@ function inspectResolvedPackageSync(fsImpl, packageManifestPath, anchor) {
   }
   let realManifestPath = packageManifestPath;
   try {
-    realManifestPath = fsImpl.realpathSync(packageManifestPath);
+    realManifestPath = realpathSyncCanonical(fsImpl, packageManifestPath);
   } catch {}
   const packageManifest = readJsonSync(fsImpl, realManifestPath);
   const packageDir = path.dirname(realManifestPath);
@@ -575,7 +577,7 @@ function resolveDshInstallRootSync(options = {}) {
   const pathApi = platform === "win32" ? path.win32 : path.posix;
   for (const shim of dshCommandPathsSync(options)) {
     let realShim = shim;
-    try { realShim = fsImpl.realpathSync(shim); } catch {}
+    try { realShim = realpathSyncCanonical(fsImpl, shim); } catch {}
     const normalized = realShim.replace(/\\/g, "/");
     if (normalized.endsWith("/lib/bin.js")) return pathApi.dirname(pathApi.dirname(realShim));
     const candidates = [

@@ -37,6 +37,12 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
+function canonicalRealpath(filePath) {
+  return fs.realpathSync.native
+    ? fs.realpathSync.native(filePath)
+    : fs.realpathSync(filePath);
+}
+
 function makeHarness({ profile = true } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-dsh-managed-"));
   const dshHome = path.join(root, ".dsh");
@@ -691,7 +697,7 @@ test("a DSH_HOME alias is frozen to one real target for namespace, CLI env, and 
   fs.mkdirSync(targetB, { recursive: true });
   fs.symlinkSync(targetA, alias, process.platform === "win32" ? "junction" : "dir");
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const canonicalA = fs.realpathSync.native ? fs.realpathSync.native(targetA) : fs.realpathSync(targetA);
+  const canonicalA = canonicalRealpath(targetA);
   const frozen = dshInstallTest.resolveCanonicalDshHome({ dshHome: alias });
   assert.strictEqual(frozen, canonicalA);
   const managedRoot = resolveManagedRoot({ dshHome: alias, homeDir: root });
@@ -719,7 +725,7 @@ test("a DSH_HOME alias is frozen to one real target for namespace, CLI env, and 
       return cli.runDshCommand(args);
     },
   }));
-  assert.strictEqual(observedDshHome, fs.realpathSync(harness.dshHome));
+  assert.strictEqual(observedDshHome, canonicalRealpath(harness.dshHome));
 });
 
 test("a managed-root alias remains owned after package inspection resolves its real path", async (t) => {
@@ -740,7 +746,7 @@ test("a managed-root alias remains owned after package inspection resolves its r
   assert.strictEqual(result.health.owned, true);
   assert.strictEqual(
     result.health.managedRoot,
-    path.join(fs.realpathSync(managedTarget), "deepseek-harness"),
+    path.join(canonicalRealpath(managedTarget), "deepseek-harness"),
   );
 });
 
