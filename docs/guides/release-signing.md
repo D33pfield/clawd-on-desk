@@ -88,11 +88,12 @@ xcrun notarytool store-credentials "clawd-notary" \
 
 ```bash
 APPLE_KEYCHAIN_PROFILE=clawd-notary \
-  npx electron-builder --mac dmg:arm64 --publish never \
+  npx electron-builder --mac dmg:arm64 zip:arm64 --publish never \
   -c.mac.identity="Developer ID Application"
 ```
 
-构建结束后验证未打包和 DMG 内实际分发的 app：
+构建结束后验证未打包 app；DMG 和 ZIP 内实际分发的 app 也必须执行同一组
+签名、Gatekeeper、stapler、entitlements 与 native payload 检查：
 
 ```bash
 codesign --verify --deep --strict --verbose=2 \
@@ -103,8 +104,10 @@ xcrun stapler validate "dist/mac-arm64/Clawd on Desk.app"
 ```
 
 预期 `spctl` 显示 `accepted`，来源为 `Notarized Developer ID`，`stapler`
-显示 validation succeeded。首次正式发布前，还必须从 GitHub draft Release
-通过浏览器重新下载 DMG，再做一次 Gatekeeper 双击启动验证。
+显示 validation succeeded。构建目录还应同时存在 arm64 DMG、ZIP、
+`ZIP.blockmap` 与 `latest-mac.yml`；DMG 用于首次/手动安装，Squirrel.Mac
+应用内更新使用 ZIP。首次正式发布前，还必须从 GitHub draft Release 通过浏览器
+重新下载 DMG，再做一次 Gatekeeper 双击启动验证。
 
 ## 4. 配置 GitHub Actions Secrets 与 Variable
 
@@ -135,8 +138,8 @@ base64 -i "/绝对路径/AuthKey_<KEY_ID>.p8" | pbcopy
 
 工作流规则：
 
-- 五项全部存在：构建 Developer ID 签名、公证并 stapled 的 app；CI 会挂载
-  x64 和 arm64 两个最终 DMG，验证里面实际分发的 app。
+- 五项全部存在：构建 Developer ID 签名、公证并 stapled 的 app；CI 会分别解包
+  x64 和 arm64 的最终 DMG 与 ZIP，验证里面实际分发的 app。
 - 五项全部不存在：只有手动 `workflow_dispatch` 可以走 ad-hoc 验证。
 - 只配置一部分：立即失败并列出缺少的 Secret 名称，不打印 Secret 内容。
 - 推送 `v*` tag：五项缺任何一项都失败，绝不生成 ad-hoc 官方版本。
@@ -144,8 +147,10 @@ base64 -i "/绝对路径/AuthKey_<KEY_ID>.p8" | pbcopy
 ## 5. 首次发布验证
 
 1. 在 Actions 手动运行 `Build & Release`，不要先推正式 tag。
-2. 确认 macOS job 的签名、公证、DMG 挂载验证和 updater metadata 全部通过。
-3. 下载 `mac-installer` artifact，检查 x64、arm64 DMG 和 `latest-mac.yml`。
+2. 确认 macOS job 的签名、公证、DMG / ZIP 解包验证和 updater metadata 全部通过。
+3. 下载 `mac-installer` artifact，确认恰好包含两个 DMG、两个 ZIP、两个
+   `ZIP.blockmap` 和 `latest-mac.yml`；metadata 必须列出 x64/arm64 的 ZIP 与
+   DMG，top-level `path` 必须指向 x64 ZIP。
 4. 在另一台 Mac 或干净浏览器下载 DMG，双击打开并拖入 Applications。
 5. 确认无需在“隐私与安全”中手动放行，再执行：
 
@@ -154,7 +159,13 @@ spctl --assess --type execute --verbose=4 "/Applications/Clawd on Desk.app"
 xcrun stapler validate "/Applications/Clawd on Desk.app"
 ```
 
-6. 首次验证全部通过后，才按发布流程创建并推送正式 `v*` tag。
+6. 旧版 DMG 没有 ZIP 更新载荷，不能自动升级到第一个 updater-capable 版本；
+   首个桥接版的 release note 必须明确要求现有 macOS 用户手动安装这一次。
+7. 合并前使用不会公开发布的隔离更新源，完成同一 Developer ID 的签名 A→B
+   真机升级：至少覆盖 Apple Silicon 的 Restart Now 与 Later → 正常退出 → 再次启动；
+   Intel 未覆盖时必须明确标为 pending，不能用静态包审计代替。
+8. 首次验证全部通过后，才按发布流程创建并推送正式 `v*` tag；桥接版安装后，
+   后续正式版本才可以宣称支持应用内下载与安装。
 
 ## 参考
 

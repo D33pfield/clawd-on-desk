@@ -299,6 +299,78 @@ jobs:
             done
             rm -f -- "$entitlements_file"
           done
+      - name: Verify macOS ZIP payloads
+        shell: bash
+        env:
+          SIGNING_MODE: ${{ steps.mac-signing.outputs.mode }}
+          EXPECTED_APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          verify_zip_app() {
+            local app="$1"
+            local signature_details
+            local entitlements
+            local entitlements_file
+
+            signature_details="$(codesign -dv --verbose=4 "$app" 2>&1)"
+            if [[ "$SIGNING_MODE" == "developer-id" ]]; then
+              grep -Eq "^Authority=Developer ID Application: .+ \($EXPECTED_APPLE_TEAM_ID\)$" <<<"$signature_details"
+              grep -Eq "flags=.*\(runtime\)" <<<"$signature_details"
+              grep -Fxq "TeamIdentifier=$EXPECTED_APPLE_TEAM_ID" <<<"$signature_details"
+              spctl --assess --type execute --verbose=4 "$app"
+              xcrun stapler validate "$app"
+            else
+              grep -q "Signature=adhoc" <<<"$signature_details"
+              grep -Eq "flags=.*\(adhoc,runtime\)" <<<"$signature_details"
+            fi
+            codesign --verify --deep --strict --verbose=2 "$app"
+
+            entitlements_file="$(mktemp)"
+            entitlements="$(codesign -d --entitlements :- "$app" 2>/dev/null)"
+            printf '%s\n' "$entitlements" > "$entitlements_file"
+            for entitlement in \
+              com.apple.security.cs.allow-jit \
+              com.apple.security.cs.allow-unsigned-executable-memory \
+              com.apple.security.cs.disable-library-validation; do
+              entitlement_key="${entitlement//./\.}"
+              if [[ "$(/usr/bin/plutil -extract "$entitlement_key" raw -o - "$entitlements_file" 2>/dev/null || true)" != "true" ]]; then
+                echo "Required entitlement is not true: $entitlement ($app)" >&2
+                rm -f -- "$entitlements_file"
+                return 1
+              fi
+            done
+            rm -f -- "$entitlements_file"
+          }
+
+          shopt -s nullglob
+          active_archive=""
+          cleanup_archive() {
+            if [[ -n "$active_archive" ]]; then
+              rm -rf -- "$active_archive"
+            fi
+          }
+          trap cleanup_archive EXIT
+
+          for arch in x64 arm64; do
+            zips=(dist/Clawd-on-Desk-*-"$arch".zip)
+            if (( ${#zips[@]} != 1 )); then
+              echo "Expected exactly one $arch ZIP, found ${#zips[@]}" >&2
+              exit 1
+            fi
+            active_archive="$(mktemp -d "$RUNNER_TEMP/clawd-zip-$arch.XXXXXX")"
+            ditto -x -k "${zips[0]}" "$active_archive"
+            entries=("$active_archive"/*)
+            expected_app="$active_archive/Clawd on Desk.app"
+            if (( ${#entries[@]} != 1 )) || [[ "${entries[0]}" != "$expected_app" ]] || [[ ! -d "$expected_app" ]]; then
+              echo "ZIP must contain exactly Clawd on Desk.app at its root: ${zips[0]}" >&2
+              exit 1
+            fi
+            verify_zip_app "$expected_app"
+            node scripts/audit-packaged-native.js --app-root "$expected_app" --target "darwin-$arch" --output "$RUNNER_TEMP/clawd-zip-native-$arch.json"
+            rm -rf -- "$active_archive"
+            active_archive=""
+          done
       - name: Assert retired Telegram sidecar is absent
         run: |
           node scripts/assert-no-retired-telegram-sidecar.js --resources-root "dist/mac/Clawd on Desk.app/Contents/Resources" --output dist/telegram-retirement-manifests/darwin-x64.json
@@ -309,6 +381,34 @@ jobs:
           node scripts/audit-packaged-native.js --app-root "dist/mac-arm64/Clawd on Desk.app" --target darwin-arm64 --output dist/native-package-manifests/darwin-arm64.json
       - name: Run native-host packaged Koffi smoke
         run: node scripts/run-packaged-koffi-smoke.js --executable "dist/mac-arm64/Clawd on Desk.app/Contents/MacOS/Clawd on Desk" --target darwin-arm64 --output dist/koffi-smoke/darwin-arm64.json
+      - name: Assert macOS updater release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          shopt -s nullglob
+          actual_files=(dist/*.dmg dist/*.zip dist/*.zip.blockmap)
+          if [[ -f dist/latest-mac.yml ]]; then
+            actual_files+=(dist/latest-mac.yml)
+          fi
+          if (( ${#actual_files[@]} != 7 )); then
+            echo "Expected exactly 7 macOS release files, found ${#actual_files[@]}" >&2
+            printf '  %s\n' "${actual_files[@]}" >&2
+            exit 1
+          fi
+          for filename in \
+            "Clawd-on-Desk-$version-x64.dmg" \
+            "Clawd-on-Desk-$version-arm64.dmg" \
+            "Clawd-on-Desk-$version-x64.zip" \
+            "Clawd-on-Desk-$version-arm64.zip" \
+            "Clawd-on-Desk-$version-x64.zip.blockmap" \
+            "Clawd-on-Desk-$version-arm64.zip.blockmap" \
+            "latest-mac.yml"; do
+            if [[ ! -f "dist/$filename" ]]; then
+              echo "Missing required macOS release file: dist/$filename" >&2
+              exit 1
+            fi
+          done
       - name: Verify macOS updater metadata
         run: node scripts/verify-updater-metadata.js --metadata dist/latest-mac.yml --artifact-root dist --contract mac --package-json package.json --output dist/updater-metadata-manifests/mac.json
       - uses: actions/upload-artifact@v4
@@ -317,7 +417,10 @@ jobs:
           name: mac-installer
           path: |
             dist/*.dmg
+            dist/*.zip
+            dist/*.zip.blockmap
             dist/latest-mac.yml
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -410,6 +513,34 @@ jobs:
           path: artifacts
           pattern: "*-installer"
           merge-multiple: true
+      - name: Assert macOS release files before draft creation
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          shopt -s nullglob
+          actual_files=(artifacts/*.dmg artifacts/*.zip artifacts/*.zip.blockmap)
+          if [[ -f artifacts/latest-mac.yml ]]; then
+            actual_files+=(artifacts/latest-mac.yml)
+          fi
+          if (( ${#actual_files[@]} != 7 )); then
+            echo "Expected exactly 7 macOS release files, found ${#actual_files[@]}" >&2
+            printf '  %s\n' "${actual_files[@]}" >&2
+            exit 1
+          fi
+          for filename in \
+            "Clawd-on-Desk-$version-x64.dmg" \
+            "Clawd-on-Desk-$version-arm64.dmg" \
+            "Clawd-on-Desk-$version-x64.zip" \
+            "Clawd-on-Desk-$version-arm64.zip" \
+            "Clawd-on-Desk-$version-x64.zip.blockmap" \
+            "Clawd-on-Desk-$version-arm64.zip.blockmap" \
+            "latest-mac.yml"; do
+            if [[ ! -f "artifacts/$filename" ]]; then
+              echo "Missing required macOS release file: artifacts/$filename" >&2
+              exit 1
+            fi
+          done
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*

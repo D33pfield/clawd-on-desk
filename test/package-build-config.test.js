@@ -194,18 +194,28 @@ describe("package build config", () => {
   });
 
   describe("macOS architecture targets", () => {
-    function getMacDmgTarget() {
+    function getMacTarget(name) {
       const targets = pkg.build.mac && pkg.build.mac.target;
-      return Array.isArray(targets) ? targets.find((target) => target && target.target === "dmg") : null;
+      return Array.isArray(targets) ? targets.find((target) => target && target.target === name) : null;
     }
 
     it("builds native macOS DMGs for x64 and arm64", () => {
-      const target = getMacDmgTarget();
+      const target = getMacTarget("dmg");
       assert.ok(target, "build.mac.target should include a dmg target");
       assert.deepStrictEqual(
         target.arch.slice().sort(),
         ["x64", "arm64"].slice().sort(),
         "macOS builds should publish both x64 and ARM64 DMGs"
+      );
+    });
+
+    it("builds native macOS updater ZIPs for x64 and arm64", () => {
+      const target = getMacTarget("zip");
+      assert.ok(target, "build.mac.target should include a zip target");
+      assert.deepStrictEqual(
+        target.arch.slice().sort(),
+        ["x64", "arm64"].slice().sort(),
+        "macOS builds should publish both x64 and ARM64 updater ZIPs"
       );
     });
 
@@ -346,6 +356,57 @@ describe("package build config", () => {
       assert.doesNotMatch(workflow, /stapler staple[^\n]*\.dmg/);
     });
 
+    it("verifies ZIP payloads and gates every required macOS release file twice", () => {
+      const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      const zipVerification = sliceWorkflowBlock(
+        workflow,
+        "      - name: Verify macOS ZIP payloads",
+        "      - name: Assert retired Telegram sidecar is absent",
+      );
+      assert.match(zipVerification, /ditto -x -k/);
+      assert.match(zipVerification, /ZIP must contain exactly Clawd on Desk\.app at its root/);
+      assert.match(zipVerification, /codesign --verify --deep --strict/);
+      assert.match(zipVerification, /spctl --assess --type execute/);
+      assert.match(zipVerification, /xcrun stapler validate/);
+      assert.match(zipVerification, /scripts\/audit-packaged-native\.js/);
+
+      const buildGate = sliceWorkflowBlock(
+        workflow,
+        "      - name: Assert macOS updater release files",
+        "      - name: Verify macOS updater metadata",
+      );
+      const releaseGate = sliceWorkflowBlock(
+        workflow,
+        "      - name: Assert macOS release files before draft creation",
+        "      - uses: softprops/action-gh-release@v2",
+      );
+      for (const filename of [
+        "Clawd-on-Desk-$version-x64.dmg",
+        "Clawd-on-Desk-$version-arm64.dmg",
+        "Clawd-on-Desk-$version-x64.zip",
+        "Clawd-on-Desk-$version-arm64.zip",
+        "Clawd-on-Desk-$version-x64.zip.blockmap",
+        "Clawd-on-Desk-$version-arm64.zip.blockmap",
+        "latest-mac.yml",
+      ]) {
+        assert.ok(buildGate.includes(`\"${filename}\"`), `build gate must require ${filename}`);
+        assert.ok(releaseGate.includes(`\"${filename}\"`), `release gate must require ${filename}`);
+      }
+      assert.match(buildGate, /if \(\( \$\{#actual_files\[@\]\} != 7 \)\); then/);
+      assert.match(releaseGate, /if \(\( \$\{#actual_files\[@\]\} != 7 \)\); then/);
+
+      const installerUpload = sliceWorkflowBlock(
+        workflow,
+        "          name: mac-installer",
+        "      - uses: actions/upload-artifact@v4",
+      );
+      assert.match(installerUpload, /dist\/\*\.dmg/);
+      assert.match(installerUpload, /dist\/\*\.zip$/m);
+      assert.match(installerUpload, /dist\/\*\.zip\.blockmap/);
+      assert.match(installerUpload, /dist\/latest-mac\.yml/);
+      assert.match(installerUpload, /if-no-files-found: error/);
+    });
+
     it("uses architecture-specific macOS DMG names without spaces", () => {
       const artifactName = pkg.build.mac && pkg.build.mac.artifactName;
       assert.strictEqual(
@@ -457,8 +518,8 @@ describe("package build config", () => {
 
     it("declares the asar inspector directly and keeps five target build commands", () => {
       assert.match(pkg.devDependencies["@electron/asar"], /^\^3\./);
-      assert.strictEqual(pkg.scripts["build:mac:x64"], "electron-builder --mac dmg:x64");
-      assert.strictEqual(pkg.scripts["build:mac:arm64"], "electron-builder --mac dmg:arm64");
+      assert.strictEqual(pkg.scripts["build:mac:x64"], "electron-builder --mac dmg:x64 zip:x64");
+      assert.strictEqual(pkg.scripts["build:mac:arm64"], "electron-builder --mac dmg:arm64 zip:arm64");
       assert.strictEqual(pkg.scripts["build:linux:x64"], "electron-builder --linux AppImage:x64 deb:x64");
     });
 
@@ -568,10 +629,9 @@ describe("package build config", () => {
       const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
       assert.match(workflow, /native-package-audit:\s+needs: validate-release\s+uses: \.\/\.github\/workflows\/telegram-retirement-package-audit\.yml/);
       assert.match(workflow, /needs: \[build-windows, build-mac, build-linux, native-package-audit\]/);
-      assert.strictEqual((workflow.match(/scripts\/audit-packaged-native\.js/g) || []).length, 5);
+      assert.strictEqual((workflow.match(/scripts\/audit-packaged-native\.js/g) || []).length, 6);
       assert.strictEqual((workflow.match(/scripts\/run-packaged-koffi-smoke\.js/g) || []).length, 3);
       assert.strictEqual((workflow.match(/scripts\/verify-updater-metadata\.js/g) || []).length, 3);
-      assert.strictEqual((workflow.match(/if-no-files-found: error/g) || []).length, 3);
       assert.strictEqual((workflow.match(/name: Configure Linux Chromium sandbox/g) || []).length, 1);
       assert.match(workflow, /sudo chown root:root dist\/linux-unpacked\/chrome-sandbox/);
       assert.match(workflow, /sudo chmod 4755 dist\/linux-unpacked\/chrome-sandbox/);

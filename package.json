@@ -10,8 +10,8 @@
     "build:win:arm64": "electron-builder --win nsis:arm64",
     "build:win:all": "electron-builder --win nsis:x64 nsis:arm64",
     "build:mac": "electron-builder --mac",
-    "build:mac:x64": "electron-builder --mac dmg:x64",
-    "build:mac:arm64": "electron-builder --mac dmg:arm64",
+    "build:mac:x64": "electron-builder --mac dmg:x64 zip:x64",
+    "build:mac:arm64": "electron-builder --mac dmg:arm64 zip:arm64",
     "build:linux": "electron-builder --linux",
     "build:linux:x64": "electron-builder --linux AppImage:x64 deb:x64",
     "build:all": "electron-builder --win --mac --linux",
@@ -92,6 +92,13 @@
       "target": [
         {
           "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "x64",
             "arm64"
