@@ -8407,20 +8407,20 @@ describe("settings renderer browser environment", () => {
     assert.match(css, /\.language-picker\.open-up \.language-picker-menu\s*\{[\s\S]*bottom:\s*calc\(100% \+ 6px\);/);
   });
 
-  it("opens the seven-language tutorial picker upward when it no longer fits below the default welcome layout", () => {
+  it("opens the seven-language tutorial picker downward in the default welcome layout", () => {
     const harness = loadSharedLanguagePickerForTest({
       options: SUPPORTED_LANGS,
       innerHeight: 700,
     });
     harness.boundary.getBoundingClientRect = () => ({ top: 78, bottom: 635 });
-    harness.trigger.getBoundingClientRect = () => ({ top: 390, bottom: 426 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 366, bottom: 402 });
     Object.defineProperty(harness.menu, "scrollHeight", { value: 220 });
     Object.defineProperty(harness.menu, "offsetHeight", { value: 222 });
     Object.defineProperty(harness.menu, "clientHeight", { value: 220 });
 
     harness.trigger.dispatchEvent({ type: "click" });
 
-    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.picker.classList.contains("open-up"), false);
     assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), false);
     assert.strictEqual(harness.menu.style.maxHeight, "222px");
   });
