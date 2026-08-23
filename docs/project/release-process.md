@@ -298,24 +298,25 @@ an artifact. It holds no long-lived PAT or repository secret; the ambient job
 to winget-pkgs. Automatic submission is deliberately not enabled yet; see the
 staged plan below.
 
-As of 2026-08-17, the upstream 0.14.0 manifest has been repaired and published by
-[`microsoft/winget-pkgs#416019`](https://github.com/microsoft/winget-pkgs/pull/416019).
-It now carries the four expected architecture/scope entries and
-`License: AGPL-3.0-only`. The former Dumplings tracker was also removed in
+As of 2026-08-23, the upstream 0.14.0 manifest has been repaired and published by
+[`microsoft/winget-pkgs#416019`](https://github.com/microsoft/winget-pkgs/pull/416019),
+and v0.15.0 was subsequently published by
+[`microsoft/winget-pkgs#419082`](https://github.com/microsoft/winget-pkgs/pull/419082)
+on 2026-08-18. The v0.15.0 installer manifest carries the four expected
+architecture/scope entries and its locale declares `License: AGPL-3.0-only`.
+The former Dumplings tracker was also removed in
 [`SpecterShell/Dumplings#130`](https://github.com/SpecterShell/Dumplings/issues/130),
-so it is not currently competing with the maintainer-owned release path. The
-workflow stays prepare-only until its **generated output** is validated
-automatically; fixing the upstream shape alone is not sufficient reason to expose
-a submission token.
+so it is not currently competing with the maintainer-owned release path.
 
-The current release gap is **v0.15.0**. Its first prepare run
+The catalog gap is closed, but the published v0.15.0 locale still points both
+`LicenseUrl` and `ReleaseNotesUrl` at v0.14.0. Its files were generated with
+winmatsch, so their publication does not validate this repository's komac output.
+The first v0.15.0 prepare run
 [`31654717731`](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/31654717731)
-ran before the upstream repair and inherited the old two-x64 shape; komac also
-emitted `License: AGPL-3.0` with a `HEAD` license URL. Microsoft currently lists
-0.14.0 as the newest catalog version. Run prepare once against the corrected
-upstream manifest to capture the new raw output, implement the stage 3 gate and
-normalization, then re-run v0.15.0 and require the gated workflow to pass before
-submitting that version manually while stage 4 remains disabled.
+also predates the upstream repair and reproduced the old two-x64 shape. The
+workflow therefore stays prepare-only until its **generated output** is validated
+automatically; a correct upstream installer matrix alone is not sufficient reason
+to expose a submission token.
 
 **The workflow must already be on `main` before the tag is created.** For
 `release` events GitHub reads the workflow definition from the tagged ref, so a
@@ -371,7 +372,7 @@ installer supports (`build.nsis` sets `oneClick: false` and no `perMachine`).
    to the four entries above, changed the license to `AGPL-3.0-only`, passed the
    full validation pipeline and was published on 2026-08-17. The competing
    Dumplings tracker has also been removed.
-3. **Validate komac's output — next.** First run prepare against the corrected
+3. **Validate komac's output — next.** Run prepare against the current four-entry
    upstream shape to retain an unmodified sample. Then extend the gate to parse
    the generated YAML and assert the package identifier/version; exact
    `{x64, arm64} x {user, machine}` set; each entry's URL, SHA256 and `Custom`
@@ -379,11 +380,13 @@ installer supports (`build.nsis` sets `oneClick: false` and no `perMachine`).
    `InstallerSwitches.Upgrade: --updated`; and ProductCode
    `3e932233-a8b2-5530-b285-e0ceb08488f2` at both the installer and
    `AppsAndFeaturesEntries` levels. The locale manifest must carry
-   `License: AGPL-3.0-only` and a version-pinned `LicenseUrl`. Komac overwrites
-   `License` from the repository's current `licenseInfo.spdxId`, which GitHub
-   reports as `AGPL-3.0`, not the `AGPL-3.0-only` in `package.json`, so the gate
-   must rewrite and then assert these fields rather than accepting the raw output.
-   After that change lands, re-run v0.15.0 and require the gated workflow to pass.
+   `License: AGPL-3.0-only` plus version-pinned `LicenseUrl` and `ReleaseNotesUrl`.
+   Komac overwrites `License` from the repository's current `licenseInfo.spdxId`,
+   which GitHub reports as `AGPL-3.0`, not the `AGPL-3.0-only` in `package.json`,
+   so the gate must rewrite and then assert these fields rather than accepting the
+   raw output. Until this gate lands, the per-release manual review must enforce
+   the same contract; the published v0.15.0 manifest is not evidence that komac's
+   generated output is safe.
 4. **Enable submission — optional and not started.** Split into `prepare` and
    `submit` jobs so the PAT exists only in the final step, and pin every `uses:`
    to a commit SHA at that point. Prefer a dedicated account for the token:
@@ -452,13 +455,14 @@ token.
 - Download the `winget-generated-manifest` artifact and confirm it carries
   **four** installer entries — `x64` and `arm64`, each in `user` and `machine`
   scope — with the right filename and `Custom` switch in each.
-- Confirm `License` reads `AGPL-3.0-only`. The live v0.14.0 manifest is corrected;
-  versions v0.6.2 through v0.13.0 still carry the stale `MIT` value from before
-  `3b6277ff` relicensed the project on 2026-04-25.
+- Confirm `License` reads `AGPL-3.0-only`, and that `LicenseUrl` and
+  `ReleaseNotesUrl` are pinned to the release being submitted. The live v0.14.0
+  manifest is corrected; versions v0.6.2 through v0.13.0 still carry the stale
+  `MIT` value from before `3b6277ff` relicensed the project on 2026-04-25.
 - Until stage 4 is enabled, open a one-version PR in `microsoft/winget-pkgs` from
   the validated artifact, then track validation, merge and the publish-pipeline
   result. A successful prepare run alone does **not** publish the release.
-- v0.15.0 is the immediate outstanding submission; do not wait for the next
-  application release to close this gap.
+- v0.15.0 is present upstream, but its locale still points `LicenseUrl` and
+  `ReleaseNotesUrl` at v0.14.0. Do not copy those stale values into v0.16.0.
 - After the catalog refreshes, run an independent Windows `winget install` or
   `winget upgrade` smoke test before documenting the command in the READMEs.
