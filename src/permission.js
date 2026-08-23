@@ -18,6 +18,10 @@ const {
 const { isOpencodeFamilyEntry, getFamilyConfig } = require("../agents/opencode-family");
 const { isPassiveNotifyEntry } = require("./passive-notify-entry");
 const {
+  normalizeOpencodeFamilyBridgeUrl,
+  isValidOpencodeFamilyBridgeToken,
+} = require("./opencode-family-bridge-url");
+const {
   PERMISSION_AUTOMATION_MODE,
   INTERACTION_INTENT,
   AUTOMATION_ACTION,
@@ -2438,12 +2442,16 @@ function permLog(msg) {
 // native terminal or Desktop approval.
 function replyOpencodeFamilyPermission({ agentId, bridgeUrl, bridgeToken, requestId, reply, toolName }) {
   const tag = agentId || "opencode-family";
-  if (!bridgeUrl || !bridgeToken || !requestId) {
-    const missing = !bridgeUrl ? "bridgeUrl" : (!bridgeToken ? "bridgeToken" : "requestId");
+  const normalizedBridgeUrl = normalizeOpencodeFamilyBridgeUrl(bridgeUrl);
+  const validBridgeToken = isValidOpencodeFamilyBridgeToken(bridgeToken);
+  if (!normalizedBridgeUrl || !validBridgeToken || !requestId) {
+    const missing = !normalizedBridgeUrl
+      ? "valid bridgeUrl"
+      : (!validBridgeToken ? "valid bridgeToken" : "requestId");
     permLog(`${tag} reply skipped: missing ${missing}`);
     return;
   }
-  const fullUrl = `${bridgeUrl.replace(/\/$/, "")}/reply`;
+  const fullUrl = `${normalizedBridgeUrl}/reply`;
   permLog(`${tag} reply: tool=${toolName || "?"} request=${requestId} reply=${reply} url=${fullUrl}`);
 
   let parsed;

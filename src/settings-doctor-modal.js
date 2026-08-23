@@ -129,9 +129,11 @@
 
   function checkLabel(core, check) {
     const map = {
+      "prefs-readability": "doctorCheckPrefsReadability",
       "local-server": "doctorCheckLocalServer",
       "agent-integrations": "doctorCheckAgentIntegrations",
       "permission-bubble-policy": "doctorCheckPermissionBubbles",
+      "feishu-approval": "doctorCheckFeishuApproval",
       "theme-health": "doctorCheckTheme",
       "remote-ssh-ingress": "doctorCheckRemoteSshIngress",
       "remote-ssh-isolation": "doctorCheckRemoteSshIsolation",

@@ -12,7 +12,7 @@
 // `validate(snapshot)` — coerces an arbitrary object into a valid snapshot, dropping bad fields
 // `migrate(raw)` — applies version-to-version migrations, returns the upgraded raw snapshot
 //
-// Bad-file handling: unparseable file → backup as `clawd-prefs.json.bak` → return defaults.
+// Bad-file handling: readable invalid contents → backup as `clawd-prefs.json.bak` → return defaults.
 //   Unreadable file (EACCES/EIO/...) → defaults in memory, but `locked` so save() will not
 //   overwrite a file we were never able to read.
 // Future-version handling: read succeeds but version > current → warn + refuse to overwrite
@@ -161,6 +161,9 @@ const SCHEMA = {
   // requires native verification. Cleared after native activation or an
   // explicit switch-off so a future migration requirement can warn once.
   telegramMigrationLastNotified: { type: "string", default: "" },
+  // One-time upgrade nudge for Feishu/Lark credentials saved before platform
+  // and approver provenance binding existed. Cleared after repair or disable.
+  feishuApprovalMigrationLastNotified: { type: "string", default: "" },
   // System-backed: actual truth lives in OS login items / autostart files.
   // `openAtLoginHydrated` starts false; main.js's startup hydrate helper imports
   // the current system value into prefs on first run, then flips this flag.
@@ -1301,6 +1304,18 @@ function normalizeIdleVisual(value, defaultsValue) {
 
 // ── Disk I/O ──
 
+function backupInvalidPrefs(prefsPath, reason) {
+  try {
+    const bak = prefsPath + ".bak";
+    fs.copyFileSync(prefsPath, bak);
+    console.warn(`Clawd: invalid prefs file backed up to ${bak}:`, reason);
+    return true;
+  } catch (bakErr) {
+    console.warn("Clawd: invalid prefs file backup failed:", reason, bakErr.message);
+    return false;
+  }
+}
+
 // Read prefs from disk. Returns
 // `{ snapshot, locked, fresh?, recovered?, codexAutoStartAuthoritative? }`:
 //   - snapshot: a valid prefs object (always — falls back to defaults on any error)
@@ -1356,18 +1371,24 @@ function load(prefsPath) {
     raw = JSON.parse(text);
   } catch (err) {
     // The file WAS readable and its contents are not valid JSON. Backing it up
-    // and continuing from defaults is the intended recovery, unchanged.
-    try {
-      const bak = prefsPath + ".bak";
-      fs.copyFileSync(prefsPath, bak);
-      console.warn(`Clawd: prefs file unreadable, backed up to ${bak}:`, err.message);
-    } catch (bakErr) {
-      console.warn("Clawd: prefs file unreadable and backup failed:", err.message, bakErr.message);
-    }
-    return { snapshot: getDefaults(), locked: false, recovered: true };
+    // and continuing from defaults is the intended recovery. If backup fails,
+    // lock persistence so startup hydration cannot destroy the only copy.
+    const backupCreated = backupInvalidPrefs(prefsPath, err.message);
+    return {
+      snapshot: getDefaults(),
+      locked: !backupCreated,
+      recovered: true,
+      recoveryBackupFailed: !backupCreated,
+    };
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return { snapshot: getDefaults(), locked: false, recovered: true };
+    const backupCreated = backupInvalidPrefs(prefsPath, "root must be a JSON object");
+    return {
+      snapshot: getDefaults(),
+      locked: !backupCreated,
+      recovered: true,
+      recoveryBackupFailed: !backupCreated,
+    };
   }
   const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
   const isObjectRecord = (value) => !!value && typeof value === "object" && !Array.isArray(value);

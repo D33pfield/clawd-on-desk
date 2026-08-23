@@ -22,7 +22,7 @@
 //   - fire-and-forget: event hook never awaits the fetch, so slow/broken Clawd
 //     cannot stall the host
 //   - same-state dedup — consecutive identical states skip POST
-//   - self-healing port discovery: cache hit skips I/O; on miss we read
+//   - self-healing state port discovery: cache hit skips I/O; on miss we read
 //     runtime.json, then fall back to a full SERVER_PORTS scan
 //
 // Phase 2 bridge (permission replies):
@@ -36,9 +36,12 @@
 //   CLI/TUI uses Bun.serve(); Desktop's Electron utilityProcess runs the
 //   sidecar under Node, so it uses node:http with the same Web Request handler.
 //   A random 32-byte hex token gates the bridge endpoint since localhost
-//   TCP is visible to any process on the machine.
+//   TCP is visible to any process on the machine. Permission POSTs never send
+//   that token to a scanned/cached responder: they require the live, owner-only
+//   runtime.json target. This is a same-OS-user trust boundary, not isolation
+//   from another malicious process already running as the same user.
 
-import { readFileSync, writeFileSync, mkdirSync, promises as fsp } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, lstatSync, promises as fsp } from "fs";
 import { homedir, platform } from "os";
 import { join, posix, win32 } from "path";
 import { randomBytes, timingSafeEqual } from "crypto";
@@ -408,6 +411,38 @@ export function createOpencodeFamilyPlugin(config) {
     return null;
   }
 
+  // Permission payloads contain the one-time reverse-bridge bearer token. A
+  // full port scan is acceptable for state telemetry, but must never disclose
+  // that token to an arbitrary listener which merely copies Clawd's static
+  // response header. Pin permission delivery to the runtime identity written
+  // by a live Clawd process, and require owner-only bytes on POSIX.
+  function readPermissionRuntimePort() {
+    try {
+      const stats = lstatSync(RUNTIME_CONFIG_PATH);
+      if (!stats.isFile() || stats.isSymbolicLink()) return null;
+      if (platform() !== "win32") {
+        if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return null;
+        if ((stats.mode & 0o077) !== 0) return null;
+      }
+
+      const raw = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
+      const port = Number(raw && raw.port);
+      const ownerPid = raw && raw.ownerPid;
+      if (raw?.app !== CLAWD_SERVER_ID) return null;
+      if (!Number.isInteger(port) || !SERVER_PORTS.includes(port)) return null;
+      if (!Number.isInteger(ownerPid) || ownerPid <= 0) return null;
+      try {
+        process.kill(ownerPid, 0);
+      } catch (err) {
+        // EPERM still proves that a process owns the PID; ESRCH/unknown does
+        // not prove the runtime writer is alive, so fail closed.
+        if (!err || err.code !== "EPERM") return null;
+      }
+      return port;
+    } catch {}
+    return null;
+  }
+
   // Ordered: cached → runtime.json → full scan. Only touches runtime.json when
   // the cache is empty (avoids a sync fs read on every successful POST).
   function getPortCandidates() {
@@ -423,6 +458,11 @@ export function createOpencodeFamilyPlugin(config) {
     if (_cachedPort == null) add(readRuntimePort());
     SERVER_PORTS.forEach(add);
     return ordered;
+  }
+
+  function getPermissionPortCandidates() {
+    const port = readPermissionRuntimePort();
+    return port ? [port] : [];
   }
 
   // Walks past the first terminal match to pick the OUTERMOST terminal —
@@ -910,7 +950,9 @@ export function createOpencodeFamilyPlugin(config) {
   // happens when delivery begins so a previous queued request can repair the
   // shared cached port before the next request scans.
   async function deliverPost(urlPath, snapshot) {
-    const candidates = getPortCandidates();
+    const candidates = urlPath === "/permission"
+      ? getPermissionPortCandidates()
+      : getPortCandidates();
     debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} cwdSource=${snapshot.cwdSource} start candidates=[${candidates.join(",")}]`);
 
     for (const port of candidates) {
@@ -1271,6 +1313,7 @@ export function createOpencodeFamilyPlugin(config) {
     normalizeDirectoryOwnershipKey,
     postStateToClawd,
     postPermissionToClawd,
+    readPermissionRuntimePort,
     handleContextUsageEvent,
     buildContextUsageBody,
     resolveContextLimit,

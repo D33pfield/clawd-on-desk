@@ -68,6 +68,15 @@ describe("main default idle visual wiring", () => {
     assert.ok(mainSource.includes("holidayAccessoryRuntime.dispose();"));
   });
 
+  it("wires hit-renderer mirror changes back into accessory geometry", () => {
+    const registration = sectionBetween(
+      mainSource,
+      "registerPetInteractionIpc({",
+      "registerPermissionIpc({"
+    );
+    assert.ok(registration.includes("setAccessoryMirror: setAccessoryMirrored,"));
+  });
+
   it("re-rests the pet through the effect-router hook only while idle", () => {
     const hookIndex = mainSource.indexOf("refreshIdleVisual: () => {");
     assert.ok(hookIndex !== -1, "main should wire the refreshIdleVisual router option");

@@ -731,6 +731,29 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [entry]);
   });
 
+  it("rejects non-loopback or path-bearing opencode bridges before enqueue", async () => {
+    for (const bridgeUrl of [
+      "https://127.0.0.1:1234",
+      "http://localhost:1234",
+      "http://127.0.0.1:1234/reply",
+      "http://192.168.1.20:1234",
+      "http://example.com:1234",
+    ]) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: "opencode",
+        session_id: "opencode:invalid-bridge",
+        tool_name: "Bash",
+        request_id: "req-invalid-bridge",
+        bridge_url: bridgeUrl,
+        bridge_token: "token",
+      }));
+      assert.strictEqual(res.statusCode, 200, bridgeUrl);
+      assert.deepStrictEqual(res.ctx.pendingPermissions, [], bridgeUrl);
+      assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, [], bridgeUrl);
+      assert.deepStrictEqual(res.ctx.calls.replyOpencodeFamilyPermission, [], bridgeUrl);
+    }
+  });
+
   it("silently drops headless opencode sessions before auto-pilot can bridge allow", async () => {
     const sessionId = "opencode:headless";
     const res = await callPermissionPost(JSON.stringify({
@@ -2022,6 +2045,25 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.statusCode, 204);
     assert.deepStrictEqual(res.ctx.pendingPermissions, []);
     assert.deepStrictEqual(res.ctx.calls.removePendingPermission.map((item) => item.reason), ["dsh-bubble-failed"]);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
+  });
+
+  it("returns DSH no-decision without enqueue when the session update fails", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "deepseek-harness",
+      session_id: "deepseek-harness:update-fail",
+      tool_name: "execute_shell",
+      tool_input: {},
+    }), {
+      ctx: { updateSession() { throw new Error("state unavailable"); } },
+    });
+    assert.strictEqual(res.statusCode, 204);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.addPendingPermission, []);
+    assert.deepStrictEqual(res.ctx.calls.removePendingPermission.map((item) => item.reason), [
+      "dsh-update-session-failed",
+    ]);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
     assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
   });
 });

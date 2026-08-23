@@ -242,6 +242,9 @@ describe("package build config", () => {
       ]) {
         assert.match(adHocVerification, new RegExp(entitlement.replace(/\./g, "\\.")));
       }
+      assert.match(adHocVerification, /entitlement_key="\$\{entitlement\/\/\.\/\\\\\.\}"/);
+      assert.match(adHocVerification, /\/usr\/bin\/plutil -extract "\$entitlement_key" raw -o -/);
+      assert.match(adHocVerification, /!= "true"/);
     });
 
     it("fails closed for tag releases unless all Developer ID secrets are present", () => {
@@ -278,6 +281,11 @@ describe("package build config", () => {
       );
       assert.match(prepareSigning, /Incomplete macOS signing configuration/);
       assert.match(prepareSigning, /openssl pkey -in "\$api_key_path" -noout/);
+      assert.match(prepareSigning, /has_non_whitespace\(\)/);
+      assert.match(prepareSigning, /APPLE_API_KEY_ID must not contain spaces or line breaks/);
+      assert.match(prepareSigning, /APPLE_API_ISSUER must not contain spaces or line breaks/);
+      assert.match(prepareSigning, /EXPECTED_APPLE_TEAM_ID: \$\{\{ vars\.APPLE_TEAM_ID \}\}/);
+      assert.match(prepareSigning, /EXPECTED_APPLE_TEAM_ID.*\^\[A-Z0-9\]\{10\}\$/);
       const keyPathOutput = prepareSigning.indexOf('echo "api_key_path=$api_key_path" >> "$GITHUB_OUTPUT"');
       const keyDecode = prepareSigning.indexOf("base64 --decode");
       assert.ok(keyPathOutput >= 0 && keyPathOutput < keyDecode, "cleanup path must be published before decoding can fail");
@@ -310,6 +318,14 @@ describe("package build config", () => {
       );
       assert.match(developerVerification, /^\s+if: steps\.mac-signing\.outputs\.mode == 'developer-id'$/m);
       assert.match(developerVerification, /Authority=Developer ID Application:/);
+      assert.ok(
+        developerVerification.includes('^Authority=Developer ID Application: .+ \\($EXPECTED_APPLE_TEAM_ID\\)$'),
+        "Developer ID verification should lock the Authority suffix to the expected team",
+      );
+      assert.match(developerVerification, /TeamIdentifier=\$EXPECTED_APPLE_TEAM_ID/);
+      assert.match(developerVerification, /entitlement_key="\$\{entitlement\/\/\.\/\\\\\.\}"/);
+      assert.match(developerVerification, /\/usr\/bin\/plutil -extract "\$entitlement_key" raw -o -/);
+      assert.match(developerVerification, /!= "true"/);
       assert.match(developerVerification, /spctl --assess --type execute/);
       assert.match(developerVerification, /xcrun stapler validate "\$app"/);
       assert.strictEqual(
@@ -513,10 +529,11 @@ describe("package build config", () => {
       }
     });
 
-    it("builds and uploads all five target artifacts in pull-request CI", () => {
+    it("builds and uploads all five target artifacts in pull-request and release CI", () => {
       const workflowPath = path.join(ROOT, ".github", "workflows", "telegram-retirement-package-audit.yml");
       assert.ok(fs.existsSync(workflowPath), "five-target package audit workflow should exist");
       const workflow = fs.readFileSync(workflowPath, "utf8");
+      assert.match(workflow, /workflow_call:/);
       assert.match(workflow, /pull_request:/);
       assert.match(workflow, /name: Assert installer exists/);
       assert.match(workflow, /Missing built artifact:/);
@@ -549,6 +566,8 @@ describe("package build config", () => {
 
     it("gates release artifacts on native payload, packaged calls, and updater metadata", () => {
       const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build.yml"), "utf8");
+      assert.match(workflow, /native-package-audit:\s+needs: validate-release\s+uses: \.\/\.github\/workflows\/telegram-retirement-package-audit\.yml/);
+      assert.match(workflow, /needs: \[build-windows, build-mac, build-linux, native-package-audit\]/);
       assert.strictEqual((workflow.match(/scripts\/audit-packaged-native\.js/g) || []).length, 5);
       assert.strictEqual((workflow.match(/scripts\/run-packaged-koffi-smoke\.js/g) || []).length, 3);
       assert.strictEqual((workflow.match(/scripts\/verify-updater-metadata\.js/g) || []).length, 3);

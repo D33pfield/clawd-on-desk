@@ -62,7 +62,7 @@ Download and smoke-test the draft release assets before publishing the draft.
 If the draft is wrong, fix the issue before publishing; do not publish a known
 bad draft release.
 
-### v0.15.0 Draft Smoke Checklist
+### v0.16.0 Draft Smoke Checklist
 
 Use the draft release installer or package artifact, not `npm start`. Windows
 required items are the primary publish gate. If macOS or Linux hardware is not
@@ -75,7 +75,7 @@ Before launching:
 - On macOS, download each DMG through a browser so it carries quarantine
   metadata. Confirm it opens without a Privacy & Security override, then verify
   the copied app with `spctl` and `stapler` as documented in the signing guide.
-- Confirm the packaged app shows `0.15.0` metadata.
+- Confirm the packaged app shows `0.16.0` metadata.
 - Confirm packaged resources include `app.asar.unpacked/hooks`,
   `app.asar.unpacked/agents`, `app.asar.unpacked/extensions`,
   and `app.asar.unpacked/themes`.
@@ -86,9 +86,12 @@ Before launching:
 - Download the native-package, Koffi prune/smoke, and updater metadata manifests.
   Confirm the target has one matching `koffi.node`, no foreign native payload,
   and no unreviewed exception. Confirm each updater metadata `version` and every
-  listed artifact filename identify `0.15.0`.
-- For migration smoke, install v0.14.0 first and save a copy of the old
+  listed artifact filename identify `0.16.0`.
+- For migration smoke, install v0.15.0 first and save a copy of the old
   `clawd-prefs.json` before upgrading.
+- For Feishu/Lark migration smoke, enable remote approval in v0.15.0 with saved
+  App credentials and an approver before upgrading. Keep the old
+  `feishu-approval.env` alongside the prefs copy.
 - For Reasonix smoke, prepare a machine with Reasonix initialized so
   `<Reasonix home>/` exists (`%APPDATA%\reasonix` on Windows,
   `~/.reasonix` on macOS/Linux). A skipped install because Reasonix is missing
@@ -99,9 +102,9 @@ Before launching:
 Required all-platform checks:
 
 - Fresh install, launch, pet appears, no error dialog.
-- Upgrade install over v0.14.0, launch, pet appears, no error dialog. Existing
+- Upgrade install over v0.15.0, launch, pet appears, no error dialog. Existing
   agent installation/enabled flags and user theme/animation choices remain intact.
-- Settings -> About shows `v0.15.0`, sourced from `app.getVersion()`.
+- Settings -> About shows `v0.16.0`, sourced from `app.getVersion()`.
 - First-run tutorial opens once for a fresh profile; Finish, Skip, and OS close
   each persist `tutorialSeen=true` and do not reopen on restart.
 - Upgrade profile with no `tutorialSeen` sees the tutorial once; an already-seen
@@ -110,9 +113,21 @@ Required all-platform checks:
   macOS installs default to pet + menu-bar accessory with no Dock tile.
 - Settings -> General / Agents / Animation & Sound render correctly in all supported
   languages, including sidebar SVG icons and the folded Animation Map subtab.
-- Settings -> About contributors include the four v0.15.0 first-time
-  contributors: `weed33834`, `arismarioneves`, `wang4433`, and
-  `shengmai-justin`.
+- Settings -> About contributors include the six v0.16.0 first-time
+  contributors: `CheeseAgent`, `RS-Nocsi`, `Cobb04`, `wang4433`,
+  `shengmai-justin`, and `Zamaniego`.
+- Make `clawd-prefs.json` temporarily unreadable and launch once. Confirm the
+  startup warning and Doctor critical item both explain that agent events and
+  approvals are paused; restore access and restart before continuing.
+- Replace `clawd-prefs.json` with truncated JSON and launch once. Confirm the
+  original bytes are retained in `clawd-prefs.json.bak`, startup and Doctor say
+  the recovered defaults are non-authoritative for this launch, and every agent
+  event/permission/sync gate stays closed until Settings are reviewed and Clawd
+  is restarted.
+- Repeat with a path collision that prevents `clawd-prefs.json.bak` from being
+  created. Confirm the primary file remains byte-for-byte unchanged, Settings
+  writes stay locked, and startup/Doctor report backup failure without claiming
+  that a backup exists.
 - Reinstall one existing hook-based agent, such as Codex, and confirm the
   packaged hook script can `require()` its dependencies.
 - Run one real Claude Code or Codex session and confirm the pet reacts to state
@@ -122,6 +137,9 @@ Required all-platform checks:
 - Run one real OpenCode session through a title rename, tool activity, and
   SessionEnd. HUD/Dashboard must show the bounded title, retain causal ordering,
   and remove the session without replaying a stale state after a slow endpoint.
+- Stop Clawd while OpenCode is running, trigger a permission request, and confirm
+  the plugin leaves the decision in OpenCode's native UI without POSTing its
+  reverse-bridge credentials to another listener in the Clawd port range.
 - Restart Clawd during an active Claude session, then let the real hook resume
   and end it. Dashboard/HUD must keep one canonical session throughout and
   remove it cleanly on SessionEnd, with no duplicate or ghost recovery row.
@@ -156,10 +174,11 @@ Required all-platform checks:
   spaces, and the written command uses the EncodedCommand path when needed.
 - Set `REASONIX_HOME` to an unresolved variable and confirm install/sync fails
   closed without writing `settings.json` into the launch directory.
-- Install ZCode and confirm its state-only events reach Clawd without replacing
-  ZCode's native permission flow. From an Orca pane, jump back to the session
-  and confirm the validated pane key focuses the correct pane locally and over
-  managed Remote SSH.
+- Install ZCode and confirm lifecycle events plus a real `PermissionRequest`
+  reach Clawd. Exercise manual Allow and Deny, then confirm no-decision falls
+  back to ZCode's native permission flow and permission automation stays
+  unavailable. From an Orca pane, jump back to the session and confirm the
+  validated pane key focuses the correct pane locally and over managed Remote SSH.
 - Install QwenWork on Windows or macOS and confirm lifecycle state reaches Clawd,
   `PermissionRequest` / `PermissionDenied` remain observation-only, and uninstall
   removes only Clawd-managed hook entries.
@@ -175,6 +194,14 @@ Required all-platform checks:
   values remain, and approval plus completion notifications stay disabled until
   a real native verification callback succeeds. Failure/timeout must not restart
   the retired sidecar.
+- Upgrade the prepared v0.15.0 Feishu/Lark profile. Confirm the legacy setup
+  remains fail-closed, a one-time startup warning points to Remote Approval,
+  and Doctor reports the binding problem. Re-save the selected platform and
+  App ID/App Secret, then re-save the approver; restart and confirm the client
+  becomes ready without another warning.
+- Install the DeepSeek Harness bridge with its managed root reached through a
+  filesystem symlink. Confirm install and Doctor both report the verified
+  generation as healthy; foreign same-name packages must still fail closed.
 - Enable Discord Rich Presence without animation mirroring, then opt into the
   animation mirror. Confirm coarse status text remains stable, supported Clawd
   animations use the repository-hosted GIFs, and disabling the option returns
@@ -195,7 +222,7 @@ Recommended all-platform checks:
 - Right-click Hide pet / Show pet still works; while hidden, a newly arriving
   permission request still shows a bubble, by design.
 - Settings -> About -> Check for updates completes without an error.
-- Update labels never show a duplicated prefix such as `vv0.15.0`.
+- Update labels never show a duplicated prefix such as `vv0.16.0`.
 - Telegram approval cards show the final outcome for decisions made on Telegram
   and for approvals resolved elsewhere.
 - Scan the mobile PWA pairing URL on a phone and confirm session cards appear.

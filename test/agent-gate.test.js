@@ -2,6 +2,9 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const {
   createRuntimeAgentGate,
@@ -16,6 +19,7 @@ const {
   shouldSyncAgentIntegration,
 } = require("../src/agent-gate");
 const { commandRegistry } = require("../src/settings-actions");
+const { createSettingsController } = require("../src/settings-controller");
 const prefs = require("../src/prefs");
 
 describe("isAgentEnabled", () => {
@@ -266,6 +270,33 @@ describe("createRuntimeAgentGate", () => {
     assert.strictEqual(gate.isCodexNativeNotificationSoundEnabled(), false);
     assert.strictEqual(gate.isCodexPermissionInterceptEnabled(), false);
     assert.strictEqual(gate.hasAnyEnabledAgent(), false);
+  });
+
+  it("keeps a real malformed-prefs recovery non-authoritative until restart", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-agent-gate-recovered-"));
+    const prefsPath = path.join(dir, "clawd-prefs.json");
+    try {
+      fs.writeFileSync(prefsPath, '{"version":15,"agents":', "utf8");
+      const loaded = prefs.load(prefsPath);
+      assert.strictEqual(loaded.recovered, true);
+      assert.strictEqual(loaded.locked, false);
+      assert.strictEqual(fs.readFileSync(`${prefsPath}.bak`, "utf8"), '{"version":15,"agents":');
+      const controller = createSettingsController({ prefsPath, loadResult: loaded });
+      const initialRecovered = loaded.recovered === true;
+      const gate = createRuntimeAgentGate({
+        getSnapshot: () => controller.getSnapshot(),
+        isAuthoritative: () => !initialRecovered && !controller.hasReadFailure(),
+      });
+      assert.strictEqual(controller.hasReadFailure(), false);
+      assert.strictEqual(gate.isAuthoritative(), false);
+      assert.strictEqual(gate.isAgentEnabled("claude-code"), false);
+      assert.strictEqual(gate.isAgentEnabled("codex"), false);
+      assert.strictEqual(gate.shouldSyncAgentIntegration("codex"), false);
+      assert.strictEqual(gate.isAgentPermissionsEnabled("codex"), false);
+      controller.dispose();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("fails closed if the authority probe throws", () => {

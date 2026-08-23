@@ -58,7 +58,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **Qoder** — 可选 state-only command hooks，写入 `~/.qoder/settings.json`（从 Settings → Agents 安装，或执行 `npm run install:qoder-hooks`）；Phase 1 只驱动动画，权限请求仅作为通知观察，Clawd 不弹权限气泡也不代答，所有 Allow / Deny 都在 Qoder 自己的权限流程里完成
 - **QoderWork** — 可选 state-only command hooks，写入 `~/.qoderwork/settings.json`（从 Settings → Agents 安装，或执行 `npm run install:qoderwork-hooks`）；Phase 1 驱动动画与 Session HUD，权限事件作为正常工作流静默观察（不闪通知），Clawd 不弹权限气泡也不代答，所有 Allow / Deny 都在 QoderWork 自己的权限流程里完成
 - **QwenWork（千问办公）** — 可选 hook-only / state-only command hooks，写入 `~/.QwenWorkCN/settings.json`（从 Settings → Agents 安装，或执行 `npm run install:qwenwork-hooks`，卸载用 `npm run uninstall:qwenwork-hooks`）；当前只支持 macOS / Windows 桌面端——[qwenwork.cn/download](https://qwenwork.cn/download) 没有 Linux 客户端，因此也不提供 WSL Pair。Phase 1 驱动动画与 Session HUD；`PermissionRequest` / `PermissionDenied` 仅作观察并映射为 `working`，hook stdout 恒为 `{}`，Clawd 不产生 allow/deny，权限唯一决策者是 QwenWork 原生流程。无 startup recovery：桌面主进程是长驻进程，不代表正在跑任务
-- **DeepSeek Harness** — 零侵入感知 + 可选 Clawd-managed 交互桥：Clawd 内置的 monitor 直接轮询 `$DSH_HOME/storages/`（`workspace.json` + `session_projcache.json`），本身不向 DSH 写任何东西；在 Settings → Agents 点击 **Install** 时，额外通过官方 `dsh plugin` 命令把 Clawd 的 `@dsh-external/dsh-clawd-bridge` 插件注册进 DSH web profile（幂等），桥插件把 DSH 的 `ask_user_question` 与沙箱升级审批转发到 Clawd 权限气泡，决定回传 DSH（启动同步保持只读；卸载时移除桥）。秒级延迟（采样，非事件级精确）。详见 [DeepSeek Harness 指南](docs/guides/dsh-setup.md)
+- **DeepSeek Harness** — 实验性的 web-profile-only 集成，通过 Clawd 管理的 DSH 进程内插件工作。公开 session 事件按 session 顺序驱动 Clawd 状态，公开的阻塞式 `approval/request` 可显示 Allow Once / Deny 气泡；无决定时始终回到 DSH 原生 web answerer。`ask_user_question` 完全留在 DSH 原生 provider，Clawd 从不读取 DSH projection 存储。详见 [DeepSeek Harness 指南](docs/guides/dsh-setup.md)
 - **多 Agent 共存** — 多个 Agent 可同时运行，Clawd 独立追踪每个会话
 
 ### 动画与交互
@@ -335,6 +335,9 @@ Clawd on Desk 是一个社区驱动的项目。欢迎提 Bug、提需求、提 P
 <a href="https://github.com/shengmai-justin"><img src="https://github.com/shengmai-justin.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/aaronWool"><img src="https://github.com/aaronWool.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/Zamaniego"><img src="https://github.com/Zamaniego.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/CheeseAgent"><img src="https://github.com/CheeseAgent.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/RS-Nocsi"><img src="https://github.com/RS-Nocsi.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/Cobb04"><img src="https://github.com/Cobb04.png" width="50" style="border-radius:50%" /></a>
 
 ## 致谢
 

@@ -84,11 +84,11 @@ test("future-version locked settings cannot publish an ephemeral Codex gate", ()
   );
 });
 
-test("unreadable prefs fail every prefs-backed agent runtime gate closed", () => {
+test("unreadable or recovered prefs fail every prefs-backed agent runtime gate closed", () => {
   const source = fs.readFileSync(MAIN_PATH, "utf8").replace(/\r\n/g, "\n");
   const gateIndex = source.indexOf("const _runtimeAgentGate = createRuntimeAgentGate({");
   const authorityIndex = source.indexOf(
-    "isAuthoritative: () => !_settingsController.hasReadFailure()",
+    "isAuthoritative: () => !_initialPrefsRecovered && !_settingsController.hasReadFailure()",
     gateIndex
   );
 

@@ -31,6 +31,10 @@ const {
 const { resolveHookAgentId } = require("./server-agent-id");
 const { getAgent } = require("../agents/registry");
 const { isOpencodeFamily } = require("../agents/opencode-family");
+const {
+  normalizeOpencodeFamilyBridgeUrl,
+  isValidOpencodeFamilyBridgeToken,
+} = require("./opencode-family-bridge-url");
 const { resolveSessionIdentity } = require("./session-key");
 const {
   assessSessionAutomationIdentity,
@@ -677,8 +681,10 @@ function handlePermissionPost(req, res, options) {
         const sessionIdentity = resolvePermissionSession(data.session_id, "default");
         const sessionId = sessionIdentity.sessionId;
         const requestId = typeof data.request_id === "string" ? data.request_id : null;
-        const bridgeUrl = typeof data.bridge_url === "string" ? data.bridge_url : "";
-        const bridgeToken = typeof data.bridge_token === "string" ? data.bridge_token : "";
+        const bridgeUrl = normalizeOpencodeFamilyBridgeUrl(data.bridge_url);
+        const bridgeToken = isValidOpencodeFamilyBridgeToken(data.bridge_token)
+          ? data.bridge_token
+          : "";
         const alwaysCandidates = Array.isArray(data.always) ? data.always : [];
         const patterns = Array.isArray(data.patterns) ? data.patterns : [];
 
@@ -689,7 +695,7 @@ function handlePermissionPost(req, res, options) {
         // which then calls the host's in-process Hono route. Without it
         // we have no way to resolve the pending permission.
         if (!requestId || !bridgeUrl || !bridgeToken) {
-          const missing = !requestId ? "request_id" : (!bridgeUrl ? "bridge_url" : "bridge_token");
+          const missing = !requestId ? "request_id" : (!bridgeUrl ? "valid bridge_url" : "valid bridge_token");
           recordRequestHookEvent.accepted();
           ctx.permLog(`SKIPPED ${agentId} perm: missing ${missing}`);
           return;
@@ -1594,21 +1600,42 @@ function handlePermissionPost(req, res, options) {
         };
         permEntry.abortHandler = abortHandler;
         res.on("close", abortHandler);
+
+        const rollbackDshPermission = (reason) => {
+          removePendingPermission(ctx, permEntry, reason);
+          if (permEntry.bubble && !permEntry.bubble.isDestroyed()) {
+            try { permEntry.bubble.destroy(); } catch {}
+          }
+          permEntry.bubble = null;
+          if (permEntry.autoCloseTimer) {
+            try { clearTimeout(permEntry.autoCloseTimer); } catch {}
+            permEntry.autoCloseTimer = null;
+          }
+          if (permEntry.hideTimer) {
+            try { clearTimeout(permEntry.hideTimer); } catch {}
+            permEntry.hideTimer = null;
+          }
+          if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
+        };
+
+        // Keep enqueue transactional: an updateSession failure must not leave a
+        // windowless pending request after the DSH plugin receives its native
+        // fallback response.
+        try {
+          ctx.updateSession(sessionId, "notification", "PermissionRequest", sessionOptions);
+        } catch (sessionErr) {
+          ctx.permLog(`dsh updateSession failed: ${sessionErr && sessionErr.message} -> native fallback`);
+          rollbackDshPermission("dsh-update-session-failed");
+          sendDshPermissionNoDecision(res);
+          return;
+        }
         addPendingPermission(ctx, permEntry);
-        ctx.updateSession(sessionId, "notification", "PermissionRequest", sessionOptions);
         recordRequestHookEvent.accepted();
         try {
           ctx.showPermissionBubble(permEntry);
         } catch (bubbleErr) {
           ctx.permLog(`dsh bubble failed: ${bubbleErr && bubbleErr.message} -> native fallback`);
-          removePendingPermission(ctx, permEntry, "dsh-bubble-failed");
-          if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
-          if (permEntry.autoCloseTimer) clearTimeout(permEntry.autoCloseTimer);
-          if (permEntry.hideTimer) clearTimeout(permEntry.hideTimer);
-          if (permEntry.bubble && !permEntry.bubble.isDestroyed()) {
-            try { permEntry.bubble.destroy(); } catch {}
-          }
-          permEntry.bubble = null;
+          rollbackDshPermission("dsh-bubble-failed");
           sendDshPermissionNoDecision(res);
           return;
         }

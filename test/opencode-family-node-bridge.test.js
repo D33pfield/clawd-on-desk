@@ -15,6 +15,15 @@ const { pathToFileURL } = require("node:url");
 const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-family-node-bridge-"));
 process.env.HOME = TMP_HOME;
 process.env.USERPROFILE = TMP_HOME;
+const runtimeDir = path.join(TMP_HOME, ".clawd");
+fs.mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+const runtimePath = path.join(runtimeDir, "runtime.json");
+fs.writeFileSync(runtimePath, JSON.stringify({
+  app: "clawd-on-desk",
+  port: 23333,
+  ownerPid: process.pid,
+}), { mode: 0o600 });
+if (process.platform !== "win32") fs.chmodSync(runtimePath, 0o600);
 
 let createOpencodeFamilyPlugin;
 const fetchCalls = [];

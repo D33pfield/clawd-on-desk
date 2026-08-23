@@ -145,7 +145,9 @@ test("packaged bridge source resolves outside app.asar on Windows paths", () => 
   assert.match(resolved, /app\.asar\.unpacked[\\/]hooks[\\/]dsh-clawd-bridge$/);
 });
 
-test("Windows CLI discovery follows a pnpm-style shim instead of assuming one global npm layout", async (t) => {
+test("Windows CLI discovery follows a pnpm-style shim instead of assuming one global npm layout", {
+  skip: process.platform !== "win32",
+}, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-dsh-shim-"));
   const shim = path.join(root, "dsh.cmd");
   const binJs = path.join(root, "pnpm-global", "5", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
@@ -658,7 +660,7 @@ test("an unreadable manual-reference directory is never treated as an empty resi
     });
     assert.strictEqual(result.status, "error", code);
     assert.strictEqual(result.reason, "manual-generation-reference-invalid", code);
-    assert.strictEqual(result.referencePath, harness.managedRoot, code);
+    assert.strictEqual(result.referencePath, resolveManagedRoot({ managedRoot: harness.managedRoot }), code);
     assert.strictEqual(result.manualInspectionRequired, true, code);
     assert.strictEqual(fs.existsSync(generationDir), true, code);
   }
@@ -718,6 +720,45 @@ test("a DSH_HOME alias is frozen to one real target for namespace, CLI env, and 
     },
   }));
   assert.strictEqual(observedDshHome, fs.realpathSync(harness.dshHome));
+});
+
+test("a managed-root alias remains owned after package inspection resolves its real path", async (t) => {
+  const harness = makeHarness();
+  const managedTarget = path.join(harness.root, "managed-target");
+  const managedAlias = path.join(harness.root, "managed-alias");
+  fs.mkdirSync(managedTarget, { recursive: true });
+  fs.symlinkSync(managedTarget, managedAlias, process.platform === "win32" ? "junction" : "dir");
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+
+  const cli = makeOfficialCli(harness, { materializeAsLink: true });
+  const result = await installDeepSeekHarnessBridge(installOptions(harness, cli, {
+    managedRoot: path.join(managedAlias, "deepseek-harness"),
+  }));
+
+  assert.strictEqual(result.status, "ok");
+  assert.strictEqual(result.health.status, "healthy");
+  assert.strictEqual(result.health.owned, true);
+  assert.strictEqual(
+    result.health.managedRoot,
+    path.join(fs.realpathSync(managedTarget), "deepseek-harness"),
+  );
+});
+
+test("a generation symlink that escapes the canonical managed root is never claimed as owned", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness, { materializeAsLink: true });
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+
+  const installed = await installDeepSeekHarnessBridge(installOptions(harness, cli));
+  assert.strictEqual(installed.status, "ok");
+  const generationDir = cli.installedGenerationDir;
+  const escapedDir = path.join(harness.root, "escaped-generation");
+  fs.renameSync(generationDir, escapedDir);
+  fs.symlinkSync(escapedDir, generationDir, process.platform === "win32" ? "junction" : "dir");
+
+  const health = inspectDeepSeekHarnessDiskSync(installOptions(harness, cli));
+  assert.strictEqual(health.owned, false);
+  assert.strictEqual(health.status, "profile-entry-foreign-or-conflicting");
 });
 
 test("failed add returns an error and removes an unreferenced staged generation", async (t) => {
@@ -807,7 +848,9 @@ test("installation-anchor shadowing wins over a healthy profile package and fail
   assert.strictEqual(health.resolved.anchor, "installation");
 });
 
-test("sync disk inspection discovers installation-first shadowing from the real PATH shim", async (t) => {
+test("sync disk inspection discovers installation-first shadowing from the real PATH shim", {
+  skip: process.platform !== "win32",
+}, async (t) => {
   const harness = makeHarness();
   const cli = makeOfficialCli(harness);
   t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
@@ -837,7 +880,9 @@ test("sync disk inspection discovers installation-first shadowing from the real 
   assert.strictEqual(health.resolved.anchor, "installation");
 });
 
-test("sync disk inspection compares the installed DSH package version", async (t) => {
+test("sync disk inspection compares the installed DSH package version", {
+  skip: process.platform !== "win32",
+}, async (t) => {
   const harness = makeHarness();
   const cli = makeOfficialCli(harness);
   t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));

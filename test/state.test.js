@@ -4673,6 +4673,35 @@ describe("Stop completion gate (#406)", () => {
     assert.strictEqual(api.deriveSessionBadge(s), "done");
   });
 
+  it("promoted completion clears stale subagent evidence before the next turn", () => {
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    update(api, {
+      id: "s1",
+      state: "juggling",
+      event: "SubagentStart",
+      subagentId: "child-with-missed-stop",
+      subagentLifecycleSource: "native",
+    });
+    assert.strictEqual(api.sessions.get("s1").subagentTracker.confirmedIds.size, 1);
+
+    update(api, { id: "s1", state: "attention", event: "Stop" });
+    assert.strictEqual(api.sessions.get("s1").state, "juggling", "the debounced Stop still holds the live tracker");
+    mock.timers.tick(1000);
+
+    const completed = api.sessions.get("s1");
+    assert.strictEqual(completed.state, "idle");
+    assert.strictEqual(completed.subagentTracker.confirmedIds.size, 0);
+    assert.strictEqual(completed.subagentTracker.legacyFloor, false);
+    assert.strictEqual(completed.subagentTracker.recoveredFloor, false);
+
+    update(api, { id: "s1", state: "working", event: "UserPromptSubmit" });
+    assert.strictEqual(
+      api.sessions.get("s1").state,
+      "working",
+      "the next turn must not be pinned in juggling by a child whose Stop was lost"
+    );
+  });
+
   it("hard liveWork-held Stop does not become a false 'done' after stale cleanup (#406 regression)", () => {
     update(api, { id: "s1", state: "attention", event: "Stop", backgroundTasksCount: 1, agentPid: 1000, sourcePid: 2000 });
     const held = api.sessions.get("s1");
