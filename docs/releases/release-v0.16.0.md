@@ -132,8 +132,17 @@ with 8,591 passes, zero failures, and 30 platform/dependency skips. The asset
 audit reported zero errors and one warning because the 52.32 MiB tracked tree is
 above its 50 MiB warning budget.
 
-This candidate is not publish-ready until the final committed tree passes the
-manual Build & Release workflow (including the five target-native package
-jobs), downloaded draft-asset smoke tests, and the real platform/agent evidence
-recorded in the release checklist. Skipped tests and local source checks are not
+The exact candidate code tree at `429e81746ce7973bba7699707a8722b51327aaa3`
+passed the manual Build & Release workflow on August 23, 2026. The run completed
+the release validator, Developer ID signing and notarization, Windows/macOS/Linux
+packaging, and target-native package audits for Windows x64/ARM64, macOS
+Intel/Apple Silicon, and Linux x64. Required Windows hardware checks passed on a
+real x64 machine after upgrading from v0.15.0, and the available macOS hardware
+checks passed with the signed candidate. The recommended Windows DPI/display-
+scale change was not run.
+
+Any later commit must rerun the exact-tree manual workflow. This candidate is
+not publish-ready until a tag creates the draft release, its downloaded assets
+pass smoke testing, and the remaining applicable platform/agent evidence in the
+release checklist is recorded. Skipped tests and source-only checks are not
 substitutes for those gates.
