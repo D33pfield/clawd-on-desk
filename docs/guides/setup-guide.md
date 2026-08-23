@@ -333,13 +333,13 @@ node hooks/openclaw-install.js
 ## macOS Notes
 
 - **From source** (`npm start`): works out of the box on Intel and Apple Silicon.
-- **DMG installer**: the app is not signed with an Apple Developer certificate, so macOS Gatekeeper will block it. To open:
-  - Right-click the app → **Open** → click **Open** in the dialog, or
-  - Run `xattr -cr /Applications/Clawd\ on\ Desk.app` in Terminal.
+- **Official DMG installers**: official GitHub Releases provide both x64 and arm64 DMGs. The release workflow signs them with Developer ID, notarizes them with Apple, and staples the notarization ticket. A manual `workflow_dispatch` run without signing credentials may produce only ad-hoc validation artifacts; those are not official distribution packages.
+- **Auto-update bridge**: older DMG releases do not include ZIP update payloads, so they cannot update themselves directly to the first release with in-app updates. Existing users must manually install that bridge release from GitHub Releases once. Afterward, official releases can be downloaded inside Clawd and installed either with **Restart Now**, or with **Later** followed by quitting and reopening the app. The capability is not considered verified until an A→B upgrade signed with the same Developer ID succeeds on real hardware; unit tests are not a substitute.
+- **Source auto-update**: when running from a cloned repo, "Check for Updates" performs `git pull` + `npm install` (if dependencies changed) and restarts the app automatically.
 
 ## Linux Notes
 
 - **From source** (`npm start`): the Electron sandbox is enabled by default. If your Linux dev environment still fails chrome-sandbox initialization, use `CLAWD_DISABLE_SANDBOX=1 npm start` as a temporary workaround.
 - **Packages**: AppImage and `.deb` are available from [GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases). After deb install, the app icon appears in GNOME's app menu.
 - **Terminal focus**: uses `wmctrl` or `xdotool` (whichever is available). Install one for session terminal jumping to work: `sudo apt install wmctrl` or `sudo apt install xdotool`.
-- **Auto-update**: when running from a cloned repo, "Check for Updates" performs `git pull` + `npm install` (if dependencies changed) and restarts the app automatically.
+- **Auto-update**: AppImage and deb installs must still be downloaded manually from GitHub Releases. When running from a cloned repo, "Check for Updates" performs `git pull` + `npm install` (if dependencies changed) and restarts the app automatically.
