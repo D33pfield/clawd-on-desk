@@ -129,17 +129,24 @@ Returning contributors include @chrono-meta (#888, #892), @KaiC5504 (#889),
 Local source-tree validation passed on August 23, 2026: `verify:release`,
 Electron installation verification, and all 8,621 automated tests completed
 with 8,591 passes, zero failures, and 30 platform/dependency skips. The asset
-audit reported zero errors and one warning because the 52.32 MiB tracked tree is
+audit reported zero errors and one warning because the 52.40 MiB tracked tree is
 above its 50 MiB warning budget.
 
-The exact candidate code tree at `429e81746ce7973bba7699707a8722b51327aaa3`
-passed the manual Build & Release workflow on August 23, 2026. The run completed
-the release validator, Developer ID signing and notarization, Windows/macOS/Linux
-packaging, and target-native package audits for Windows x64/ARM64, macOS
-Intel/Apple Silicon, and Linux x64. Required Windows hardware checks passed on a
+The final code-bearing candidate at
+`119257ebad54dbcd8b24df178397e83341cbcc9e` passed the manual
+[Build & Release workflow](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/32621621221)
+on August 23, 2026. The run completed the release validator, Developer ID
+signing and notarization, Windows/macOS/Linux full test and packaging jobs, and
+target-native package audits for Windows x64/ARM64, macOS Intel/Apple Silicon,
+and Linux x64. This release-note-only follow-up must pass the same workflow on
+the final `main` head before the tag is created.
+
+Separate real-device evidence was collected before the final release-note and
+Windows DSH canonical-path repairs: required Windows hardware checks passed on a
 real x64 machine after upgrading from v0.15.0, and the available macOS hardware
-checks passed with the signed candidate. The recommended Windows DPI/display-
-scale change was not run.
+checks passed with the signed pre-final candidate. The recommended Windows
+DPI/display-scale change was not run. The final draft assets still require the
+downloaded-package smoke checks below before publication.
 
 Any later commit must rerun the exact-tree manual workflow. This candidate is
 not publish-ready until a tag creates the draft release, its downloaded assets
