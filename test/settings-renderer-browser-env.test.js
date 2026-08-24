@@ -7825,7 +7825,9 @@ describe("settings renderer browser environment", () => {
       SUPPORTED_LANGS.map((lang) => String.raw`"${lang}"`).join(String.raw`,\s*`) +
       String.raw`\];`
     ).test(generalSource));
-    assert.ok(generalSource.includes("createLanguagePicker"));
+    assert.ok(generalSource.includes("helpers.buildSettingsSelect"));
+    assert.ok(generalSource.includes('className: "settings-language-select"'));
+    assert.ok(!generalSource.includes("createLanguagePicker"));
     assert.ok(pickerSource.includes("picker.className = `language-picker"));
     assert.ok(pickerSource.includes(`role", "combobox"`));
     assert.ok(pickerSource.includes(`aria-haspopup", "listbox"`));
@@ -7837,6 +7839,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(settingsHtml.includes(`src="language-picker.js"`));
     assert.match(settingsHtml, /<main class="content" id="content" data-language-picker-boundary><\/main>/);
     assert.match(settingsCss, /\.content\s*\{[^}]*overflow-y:\s*auto;[^}]*scrollbar-gutter:\s*stable;/);
+    assert.match(settingsCss, /\.settings-language-select\s*\{[^}]*min-width:\s*128px;[^}]*width:\s*128px;/);
     assert.ok(!generalSource.includes("language-segmented"));
     assert.ok(!generalSource.includes("runtime.languageTransition"));
     assert.ok(!generalSource.includes("--language-active-index"));
@@ -7882,6 +7885,9 @@ describe("settings renderer browser environment", () => {
     const trigger = harness.getLangTrigger();
     assert.ok(picker, "language picker should be rendered");
     assert.ok(trigger, "language picker trigger should be rendered");
+    assert.strictEqual(picker.classList.contains("settings-select"), true);
+    assert.strictEqual(picker.classList.contains("settings-language-select"), true);
+    assert.strictEqual(harness.core.state.mountedControls.settingsSelects.size, 1);
     assert.strictEqual(harness.getLangValue().textContent, "English");
     assert.strictEqual(trigger.attributes["aria-label"], "Language: English");
     assert.strictEqual(harness.getLangMenu().attributes["aria-hidden"], "true");
@@ -7910,25 +7916,18 @@ describe("settings renderer browser environment", () => {
     for (const option of options) assert.strictEqual(option.tabIndex, -1);
     assert.strictEqual(harness.getLangValue().textContent, "Chinese");
     assert.strictEqual(trigger.attributes["aria-label"], "Language: Chinese");
-
+    assert.strictEqual(trigger.getAttribute("aria-disabled"), "true");
     trigger.dispatchEvent({ type: "click" });
-    options[1].dispatchEvent({ type: "click" });
-    assert.deepStrictEqual(
-      harness.updateCalls,
-      [{ key: "lang", value: "zh" }],
-      "clicking the already displayed pending language should not submit a duplicate update"
-    );
-
-    trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(picker.classList.contains("open"), false);
     options[0].dispatchEvent({ type: "click" });
     assert.deepStrictEqual(
       harness.updateCalls,
       [{ key: "lang", value: "zh" }],
-      "clicking back to the committed language while pending should not submit a duplicate update"
+      "the shared Settings picker should block further changes while saving"
     );
-    assert.strictEqual(harness.getLangValue().textContent, "English");
-    assert.strictEqual(trigger.attributes["aria-label"], "Language: English");
-    assert.strictEqual(options[0].attributes["aria-selected"], "true");
+    assert.strictEqual(harness.getLangValue().textContent, "Chinese");
+    assert.strictEqual(trigger.attributes["aria-label"], "Language: Chinese");
+    assert.strictEqual(options[1].attributes["aria-selected"], "true");
 
     harness.core.ops.applyChanges({
       changes: { lang: "zh" },
@@ -8722,6 +8721,7 @@ describe("settings renderer browser environment", () => {
     harness.core.ops.requestRender({ content: true });
     assert.strictEqual(harness.getDocumentListenerCount("click"), 1);
     assert.strictEqual(harness.getDocumentListenerCount("keydown"), 1);
+    assert.strictEqual(harness.core.state.mountedControls.settingsSelects.size, 1);
 
     staleOption.dispatchEvent({ type: "click" });
     assert.deepStrictEqual(harness.updateCalls, []);

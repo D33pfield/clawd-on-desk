@@ -79,7 +79,6 @@
       idleVisualPicker: null,
       bubblePolicySummary: null,
       sessionHudSummary: null,
-      languagePicker: null,
       size: null,
       soundSummary: null,
       soundVolume: null,
@@ -1114,9 +1113,6 @@
   }
 
   function clearMountedControls() {
-    if (state.mountedControls.languagePicker && typeof state.mountedControls.languagePicker.dispose === "function") {
-      state.mountedControls.languagePicker.dispose();
-    }
     if (state.mountedControls.idleVisualPicker && typeof state.mountedControls.idleVisualPicker.dispose === "function") {
       state.mountedControls.idleVisualPicker.dispose();
     }
@@ -1151,7 +1147,6 @@
     state.mountedControls.animOverrideTimingSliders.clear();
     state.mountedControls.bubblePolicySummary = null;
     state.mountedControls.sessionHudSummary = null;
-    state.mountedControls.languagePicker = null;
     state.mountedControls.idleVisualPicker = null;
     state.mountedControls.size = null;
     state.mountedControls.soundSummary = null;
