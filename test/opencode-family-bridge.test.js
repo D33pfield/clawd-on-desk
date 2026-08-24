@@ -42,13 +42,31 @@ writeLiveRuntimeIdentity();
 let createOpencodeFamilyPlugin;
 const fetchCalls = [];
 let bridgePortCounter = 40000;
+let clawdResponseRecognized = false;
+let fetchBehavior = null;
+
+function fakeClawdResponse(recognized = clawdResponseRecognized) {
+  return {
+    status: 200,
+    headers: {
+      get(name) {
+        return recognized && String(name).toLowerCase() === "x-clawd-server"
+          ? "clawd-on-desk"
+          : null;
+      },
+    },
+    text: async () => "",
+  };
+}
 
 before(async () => {
   // Fake fetch: record every POST the plugin fires and answer as a non-Clawd
   // server (missing identity header) so the port scan exhausts harmlessly.
   globalThis.fetch = async (url, opts) => {
-    fetchCalls.push({ url: String(url), body: opts && opts.body ? JSON.parse(opts.body) : null });
-    return { status: 200, headers: { get: () => null }, text: async () => "" };
+    const call = { url: String(url), body: opts && opts.body ? JSON.parse(opts.body) : null };
+    fetchCalls.push(call);
+    if (typeof fetchBehavior === "function") return fetchBehavior(call);
+    return fakeClawdResponse();
   };
   const modulePath = path.join(__dirname, "..", "hooks", "opencode-family-plugin", "core.mjs");
   ({ createOpencodeFamilyPlugin } = await import(pathToFileURL(modulePath).href));
@@ -78,6 +96,7 @@ async function initInstance(params, { sdk, plugin: existingPlugin, directory = "
       _client: {
         post: async (args) => {
           sdkCalls.push(args);
+          if (sdk && typeof sdk.onPost === "function") await sdk.onPost(args);
           if (sdk && sdk.throw) throw new Error(sdk.throw);
           if (sdk && sdk.error) return { error: sdk.error };
           return { data: {} };
@@ -102,6 +121,26 @@ async function emitPermission(instance, requestId, sessionID = "ses_permission")
       },
     },
   });
+}
+
+async function emitPermissionReplied(instance, properties) {
+  await instance.hooks.event({
+    event: { type: "permission.replied", properties },
+  });
+}
+
+async function settlePermissionTail(plugin, requestId) {
+  const tail = plugin.__test._permissionPostTailByRequestId.get(requestId);
+  if (tail) await tail;
+  await Promise.resolve();
+}
+
+async function waitUntil(predicate, message, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 const OC = Object.freeze({
@@ -327,5 +366,306 @@ describe("opencode-family reverse bridge (plugin side, real handler)", () => {
     );
     assert.strictEqual(res2.status, 502);
     assert.deepStrictEqual(await res2.json(), { ok: false, error: "socket gone" });
+  });
+});
+
+describe("opencode-family permission completion lifecycle", () => {
+  it("forwards only the current requestID/reply generation and invalidates the reverse target first", async () => {
+    clawdResponseRecognized = true;
+    fetchBehavior = null;
+    try {
+      for (const params of [OC, MC]) {
+        const instance = await initInstance(params);
+        const requestId = `per_current_${params.agentId}`;
+        fetchCalls.length = 0;
+        await emitPermission(instance, requestId, "ses_current");
+        await settlePermissionTail(instance.plugin, requestId);
+        fetchCalls.length = 0;
+
+        await emitPermissionReplied(instance, {
+          sessionID: "ses_current",
+          requestID: requestId,
+          reply: "once",
+        });
+        assert.strictEqual(
+          instance.plugin.__test._permissionTargetByRequestId.has(requestId),
+          false,
+          "native resolution must synchronously invalidate the reverse target"
+        );
+        await settlePermissionTail(instance.plugin, requestId);
+
+        assert.strictEqual(fetchCalls.length, 1);
+        const body = fetchCalls[0].body;
+        assert.deepStrictEqual({
+          agent_id: body.agent_id,
+          hook_source: body.hook_source,
+          permission_event: body.permission_event,
+          session_id: body.session_id,
+          request_id: body.request_id,
+          lifecycle_bridge_url: body.lifecycle_bridge_url,
+          lifecycle_bridge_token: body.lifecycle_bridge_token,
+        }, {
+          agent_id: params.agentId,
+          hook_source: params.hookSource,
+          permission_event: "replied",
+          session_id: `${params.sessionIdPrefix}ses_current`,
+          request_id: requestId,
+          lifecycle_bridge_url: instance.plugin.__test._bridgeUrl,
+          lifecycle_bridge_token: instance.plugin.__test._bridgeTokenHex,
+        });
+        for (const forbidden of ["tool_name", "tool_input", "always", "patterns", "reply", "response", "bridge_url", "bridge_token"]) {
+          assert.strictEqual(Object.hasOwn(body, forbidden), false, forbidden);
+        }
+
+        const staleClick = await instance.captured.fetch(
+          bridgeRequest(instance.plugin, {
+            token: instance.plugin.__test._bridgeTokenHex,
+            body: { request_id: requestId, reply: "once" },
+          })
+        );
+        assert.strictEqual(staleClick.status, 404);
+        assert.strictEqual(instance.sdkCalls.length, 0, "external cleanup must never call the host SDK");
+      }
+    } finally {
+      clawdResponseRecognized = false;
+      fetchBehavior = null;
+    }
+  });
+
+  it("fails stale completion shapes closed and logs bounded key names without values", async () => {
+    const instance = await initInstance(OC);
+    fetchCalls.length = 0;
+    await emitPermissionReplied(instance, {
+      sessionID: "ses_stale",
+      permissionID: "secret-stale-permission-value",
+      response: "secret-stale-response-value",
+    });
+    await emitPermissionReplied(instance, { id: "secret-guessed-id-value" });
+    await instance.plugin.__test.flushDebugLog();
+
+    assert.strictEqual(fetchCalls.length, 0);
+    const log = fs.readFileSync(instance.plugin.__test._debugLogPath, "utf8");
+    assert.match(log, /unsupported-shape keys=\[sessionID,permissionID,response\]/);
+    assert.match(log, /unsupported-shape keys=\[id\]/);
+    assert.doesNotMatch(log, /secret-stale-permission-value|secret-stale-response-value|secret-guessed-id-value/);
+  });
+
+  it("uses the asked target session on mismatch, but still reports an evicted target from the event session", async () => {
+    clawdResponseRecognized = true;
+    try {
+      const instance = await initInstance(OC);
+      await emitPermission(instance, "per_target_session", "ses_target");
+      await settlePermissionTail(instance.plugin, "per_target_session");
+      fetchCalls.length = 0;
+
+      await emitPermissionReplied(instance, {
+        sessionID: "ses_other",
+        requestID: "per_target_session",
+        reply: "reject",
+      });
+      await settlePermissionTail(instance.plugin, "per_target_session");
+      assert.strictEqual(fetchCalls[0].body.session_id, "opencode:ses_target");
+
+      fetchCalls.length = 0;
+      await emitPermissionReplied(instance, {
+        sessionID: "ses_evicted",
+        requestID: "per_evicted",
+        reply: "always",
+      });
+      await settlePermissionTail(instance.plugin, "per_evicted");
+      assert.strictEqual(fetchCalls[0].body.session_id, "opencode:ses_evicted");
+
+      await instance.plugin.__test.flushDebugLog();
+      const log = fs.readFileSync(instance.plugin.__test._debugLogPath, "utf8");
+      assert.match(log, /session mismatch req=per_target_session/);
+    } finally {
+      clawdResponseRecognized = false;
+    }
+  });
+
+  it("does not let a standalone replied event pollute root/last-seen fallback state", async () => {
+    clawdResponseRecognized = true;
+    try {
+      const instance = await initInstance(OC);
+      await emitPermissionReplied(instance, {
+        sessionID: "ses_completion_only",
+        requestID: "per_completion_only",
+        reply: "once",
+      });
+      await settlePermissionTail(instance.plugin, "per_completion_only");
+      assert.strictEqual(instance.plugin.__test._rootSessionId, null);
+      assert.strictEqual(instance.plugin.__test._lastSeenSessionId, null);
+
+      fetchCalls.length = 0;
+      await emitPermission(instance, "per_missing_session", null);
+      await settlePermissionTail(instance.plugin, "per_missing_session");
+      assert.strictEqual(fetchCalls[0].body.session_id, "opencode:default");
+    } finally {
+      clawdResponseRecognized = false;
+    }
+  });
+
+  it("serializes asked→replied for one request while a different request remains parallel", async () => {
+    clawdResponseRecognized = true;
+    let releaseAsked;
+    const askedGate = new Promise((resolve) => { releaseAsked = resolve; });
+    fetchBehavior = async (call) => {
+      if (call.body && call.body.request_id === "per_fifo_a" && !call.body.permission_event) {
+        await askedGate;
+      }
+      return fakeClawdResponse(true);
+    };
+    try {
+      const instance = await initInstance(OC);
+      fetchCalls.length = 0;
+      await emitPermission(instance, "per_fifo_a", "ses_fifo");
+      await waitUntil(() => fetchCalls.length === 1, "asked POST did not start");
+      await emitPermissionReplied(instance, {
+        sessionID: "ses_fifo",
+        requestID: "per_fifo_a",
+        reply: "once",
+      });
+      await emitPermission(instance, "per_fifo_b", "ses_fifo");
+      await waitUntil(
+        () => fetchCalls.some((call) => call.body && call.body.request_id === "per_fifo_b"),
+        "different request was blocked behind stalled request"
+      );
+      assert.strictEqual(
+        fetchCalls.some((call) => call.body && call.body.request_id === "per_fifo_a" && call.body.permission_event === "replied"),
+        false,
+        "same-request lifecycle overtook its asked POST"
+      );
+
+      releaseAsked();
+      await settlePermissionTail(instance.plugin, "per_fifo_a");
+      await settlePermissionTail(instance.plugin, "per_fifo_b");
+      const aCalls = fetchCalls.filter((call) => call.body && call.body.request_id === "per_fifo_a");
+      assert.deepStrictEqual(aCalls.map((call) => call.body.permission_event || "asked"), ["asked", "replied"]);
+      assert.strictEqual(instance.plugin.__test._permissionPostTailByRequestId.size, 0);
+    } finally {
+      releaseAsked();
+      fetchBehavior = null;
+      clawdResponseRecognized = false;
+    }
+  });
+
+  it("stops lifecycle delivery after one recognized response and bounds persistent failure at three attempts", async () => {
+    const instance = await initInstance(OC);
+    try {
+      clawdResponseRecognized = true;
+      fetchCalls.length = 0;
+      await emitPermissionReplied(instance, {
+        sessionID: "ses_retry",
+        requestID: "per_retry_ok",
+        reply: "once",
+      });
+      await settlePermissionTail(instance.plugin, "per_retry_ok");
+      assert.strictEqual(fetchCalls.length, 1);
+
+      clawdResponseRecognized = false;
+      fetchCalls.length = 0;
+      const startedAt = Date.now();
+      await emitPermissionReplied(instance, {
+        sessionID: "ses_retry",
+        requestID: "per_retry_fail",
+        reply: "reject",
+      });
+      await settlePermissionTail(instance.plugin, "per_retry_fail");
+      const elapsed = Date.now() - startedAt;
+      assert.strictEqual(fetchCalls.length, 3);
+      assert.ok(elapsed >= 450 && elapsed < 1800, `retry duration out of bounds: ${elapsed}ms`);
+      assert.strictEqual(instance.plugin.__test._permissionPostTailByRequestId.size, 0);
+    } finally {
+      clawdResponseRecognized = false;
+      fetchBehavior = null;
+    }
+  });
+
+  it("keeps Clawd-first echo and multi-request cascades idempotent without a second host decision", async () => {
+    clawdResponseRecognized = true;
+    const sdk = {};
+    try {
+      const instance = await initInstance(OC, { sdk });
+      sdk.onPost = async () => {
+        await emitPermissionReplied(instance, {
+          sessionID: "ses_echo",
+          requestID: "per_echo",
+          reply: "always",
+        });
+      };
+      await emitPermission(instance, "per_echo", "ses_echo");
+      await settlePermissionTail(instance.plugin, "per_echo");
+      fetchCalls.length = 0;
+
+      const bridgeResponse = await instance.captured.fetch(
+        bridgeRequest(instance.plugin, {
+          token: instance.plugin.__test._bridgeTokenHex,
+          body: { request_id: "per_echo", reply: "always" },
+        })
+      );
+      assert.strictEqual(bridgeResponse.status, 200);
+      await settlePermissionTail(instance.plugin, "per_echo");
+      assert.strictEqual(instance.sdkCalls.length, 1, "Clawd decision reaches the host once");
+      assert.strictEqual(
+        fetchCalls.filter((call) => call.body && call.body.request_id === "per_echo" && call.body.permission_event === "replied").length,
+        1,
+        "host echo is one cleanup lifecycle"
+      );
+
+      sdk.onPost = null;
+      for (const requestId of ["per_cascade_a", "per_cascade_b"]) {
+        await emitPermission(instance, requestId, "ses_echo");
+        await settlePermissionTail(instance.plugin, requestId);
+      }
+      fetchCalls.length = 0;
+      await Promise.all([
+        emitPermissionReplied(instance, { sessionID: "ses_echo", requestID: "per_cascade_a", reply: "reject" }),
+        emitPermissionReplied(instance, { sessionID: "ses_echo", requestID: "per_cascade_b", reply: "always" }),
+      ]);
+      await Promise.all([
+        settlePermissionTail(instance.plugin, "per_cascade_a"),
+        settlePermissionTail(instance.plugin, "per_cascade_b"),
+      ]);
+      assert.deepStrictEqual(
+        fetchCalls.map((call) => call.body.request_id).sort(),
+        ["per_cascade_a", "per_cascade_b"]
+      );
+
+      fetchCalls.length = 0;
+      await emitPermissionReplied(instance, { sessionID: "ses_echo", requestID: "per_cascade_a", reply: "reject" });
+      await settlePermissionTail(instance.plugin, "per_cascade_a");
+      assert.strictEqual(fetchCalls.length, 1, "duplicate completion is an idempotent cleanup delivery");
+      assert.strictEqual(instance.plugin.__test._permissionPostTailByRequestId.size, 0);
+      assert.strictEqual(instance.sdkCalls.length, 1, "completion traffic never calls the SDK");
+    } finally {
+      clawdResponseRecognized = false;
+      fetchBehavior = null;
+    }
+  });
+
+  it("bounds target history and releases lifecycle tails after a large permission sequence", async () => {
+    clawdResponseRecognized = true;
+    try {
+      const instance = await initInstance(OC);
+      const requestIds = Array.from({ length: 270 }, (_, index) => `per_pressure_${index}`);
+      for (const requestId of requestIds) {
+        await emitPermission(instance, requestId, "ses_pressure");
+      }
+      await Promise.all(requestIds.map((requestId) => settlePermissionTail(instance.plugin, requestId)));
+      assert.strictEqual(instance.plugin.__test._permissionTargetByRequestId.size, 256);
+
+      for (const requestId of requestIds) {
+        await emitPermissionReplied(instance, {
+          sessionID: "ses_pressure",
+          requestID: requestId,
+          reply: "once",
+        });
+      }
+      await Promise.all(requestIds.map((requestId) => settlePermissionTail(instance.plugin, requestId)));
+      assert.strictEqual(instance.plugin.__test._permissionTargetByRequestId.size, 0);
+      assert.strictEqual(instance.plugin.__test._permissionPostTailByRequestId.size, 0);
+    } finally {
+      clawdResponseRecognized = false;
+    }
   });
 });

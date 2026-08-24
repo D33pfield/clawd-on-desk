@@ -445,7 +445,7 @@ describe("opencode-family session title (#829)", () => {
     assert.strictEqual(plugin.__test._sessionTitleById.get("opencode:ses_t"), "轻松问候");
     const metaPost = fetchCalls.find((c) => c.url.endsWith("/state") && c.body && c.body.metadata_only === true);
     assert.ok(metaPost, "expected a metadata-only POST for the title change");
-    // postToClawd enriches every POST with process-tree fields. Split those
+    // snapshotPost enriches every POST with process-tree fields. Split those
     // off and deepStrictEqual the rest against the EXACT title-push contract
     // so the complete metadata-only body is covered: a missing field or an
     // unexpected extra one both fail (#841 review).

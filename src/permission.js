@@ -11,6 +11,7 @@ const { MAC_TOPMOST_LEVEL } = require("./topmost-runtime");
 const { redactSecrets } = require("./secret-redact");
 const path = require("path");
 const http = require("http");
+const { timingSafeEqual } = require("crypto");
 const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
@@ -3191,6 +3192,98 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
   }
 }
 
+function opencodeFamilyBridgeTokensEqual(expected, candidate) {
+  if (
+    !isValidOpencodeFamilyBridgeToken(expected)
+    || !isValidOpencodeFamilyBridgeToken(candidate)
+  ) return false;
+  const expectedBytes = Buffer.from(expected, "utf8");
+  const candidateBytes = Buffer.from(candidate, "utf8");
+  if (expectedBytes.length !== candidateBytes.length) return false;
+  try {
+    return timingSafeEqual(expectedBytes, candidateBytes);
+  } catch {
+    return false;
+  }
+}
+
+function normalizeExternalFamilyPermissionIdentity(identity) {
+  if (!identity || typeof identity !== "object") return null;
+  const agentId = typeof identity.agentId === "string" ? identity.agentId : "";
+  if (!getFamilyConfig(agentId)) return null;
+  const requestId = typeof identity.requestId === "string" && identity.requestId
+    ? identity.requestId
+    : null;
+  const sessionId = typeof identity.sessionId === "string" && identity.sessionId
+    ? identity.sessionId
+    : null;
+  const bridgeUrl = normalizeOpencodeFamilyBridgeUrl(identity.bridgeUrl);
+  const bridgeToken = isValidOpencodeFamilyBridgeToken(identity.bridgeToken)
+    ? identity.bridgeToken
+    : null;
+  if (!requestId || !sessionId || !bridgeUrl || !bridgeToken) return null;
+  return { agentId, requestId, sessionId, bridgeUrl, bridgeToken };
+}
+
+function boundedPermissionIdentityForLog(value) {
+  if (typeof value !== "string") return "(invalid)";
+  const clean = value.replace(/[\u0000-\u001F\u007F-\u009F]/g, " ").trim();
+  if (!clean) return "(empty)";
+  return clean.length > 120 ? `${clean.slice(0, 119)}…` : clean;
+}
+
+// A native OpenCode-family UI already resolved this exact request. Remove all
+// exact duplicates locally, but never call resolvePermissionEntry(): that path
+// would send a second once/always/reject decision through the reverse bridge.
+function dismissOpencodeFamilyPermissionResolvedExternally(identity) {
+  const normalized = normalizeExternalFamilyPermissionIdentity(identity);
+  if (!normalized) {
+    permLog("opencode-family external resolve no-op: invalid identity");
+    return 0;
+  }
+
+  const matches = pendingPermissions.filter((entry) => {
+    if (!isOpencodeFamilyEntry(entry) || entry.agentId !== normalized.agentId) return false;
+    if (entry.familyRequestId !== normalized.requestId) return false;
+    if (entry.sessionId !== normalized.sessionId) return false;
+    const entryBridgeUrl = normalizeOpencodeFamilyBridgeUrl(entry.familyBridgeUrl);
+    if (!entryBridgeUrl || entryBridgeUrl !== normalized.bridgeUrl) return false;
+    return opencodeFamilyBridgeTokensEqual(entry.familyBridgeToken, normalized.bridgeToken);
+  });
+
+  if (matches.length === 0) {
+    permLog(`opencode-family external resolve no-op: agent=${normalized.agentId} request=${boundedPermissionIdentityForLog(normalized.requestId)}`);
+    return 0;
+  }
+
+  // Establish non-liveness first for every exact duplicate. A late click,
+  // hotkey, automation callback, or timer will now fail its pending-membership
+  // guard before any slower renderer/notification teardown runs.
+  for (const entry of matches) {
+    const index = pendingPermissions.indexOf(entry);
+    if (index !== -1) pendingPermissions.splice(index, 1);
+  }
+  notifyPermissionsChanged("resolved-externally");
+
+  for (const entry of matches) {
+    cancelRemoteApproval(entry, { reason: "resolved-externally" });
+    if (entry._delayTimer) { clearTimeout(entry._delayTimer); entry._delayTimer = null; }
+    if (entry.autoCloseTimer) { clearTimeout(entry.autoCloseTimer); entry.autoCloseTimer = null; }
+    if (entry.autoExpireTimer) { clearTimeout(entry.autoExpireTimer); entry.autoExpireTimer = null; }
+    if (entry.abortHandler && entry.res) {
+      try { entry.res.removeListener("close", entry.abortHandler); } catch {}
+    }
+    hidePermissionBubbleSafely(entry);
+    notifyPermissionResolved(entry, "resolved-externally");
+  }
+
+  repositionBubbles();
+  repositionDependentBubbles();
+  syncPermissionShortcuts();
+  permLog(`opencode-family external resolve matched: agent=${normalized.agentId} request=${boundedPermissionIdentityForLog(normalized.requestId)} count=${matches.length}`);
+  return matches.length;
+}
+
 // Mirrors the DND dispatcher: CC res.destroy() so it falls back to chat,
 // opencode skips the bridge reply so TUI takes over, codex just closes.
 // options.subagentOnly (#451) restricts the sweep to entries that came from a
@@ -3325,6 +3418,7 @@ return {
   refreshPermissionAutoCloseForPolicy,
   dismissPermissionsByAgent, dismissInteractivePermissionBubbles,
   dismissPermissionsForDnd,
+  dismissOpencodeFamilyPermissionResolvedExternally,
   syncPermissionShortcuts,
   replyOpencodeFamilyPermission,
   // Exposed for the payload↔renderer contract test (plan §3.5/§9): the
