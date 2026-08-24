@@ -7656,6 +7656,25 @@ describe("settings renderer browser environment", () => {
     assert.ok(!i18nSource.includes('doctorOpenLogOpened: "デバッグログを開きました。"'));
   });
 
+  it("keeps collapsible focus outlines aligned with the card's rounded corners", () => {
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.match(
+      css,
+      /\.collapsible-group-header\s*\{[^}]*border-radius:\s*inherit;/,
+      "the full-card disclosure trigger must inherit the card radius so its inset focus outline is not clipped into white corners",
+    );
+    assert.match(
+      css,
+      /\.collapsible-group-disclosure\s*\{[^}]*border-radius:\s*inherit;/,
+      "a disclosure beside a header action must inherit the header radius for the same reason",
+    );
+    assert.match(
+      css,
+      /\.collapsible-group:not\(\.collapsed\)\s*>\s*\.collapsible-group-header\s*\{[^}]*border-bottom-left-radius:\s*0;[^}]*border-bottom-right-radius:\s*0;/,
+      "an expanded trigger must keep square bottom corners where its body continues",
+    );
+  });
+
   it("unifies the size slider on the simple volume-style control (no floating bubble, no ticks)", () => {
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
     const tabSource = fs.readFileSync(SETTINGS_TAB_GENERAL, "utf8");
