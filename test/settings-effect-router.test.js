@@ -157,6 +157,30 @@ describe("settings-effect-router", () => {
     ]);
   });
 
+  it("repositions once for any bubble placement change without hiding", () => {
+    for (const changes of [
+      { bubbleFollowPet: true },
+      { bubbleFollowPreference: "left" },
+      { bubbleFixedCorner: "top-right" },
+      {
+        bubbleFollowPet: false,
+        bubbleFollowPreference: "right",
+        bubbleFixedCorner: "bottom-left",
+      },
+    ]) {
+      const { calls, emit } = createHarness();
+      emit(changes);
+      const expected = [
+        ["updateMirrors", changes],
+        ["repositionFloatingBubbles"],
+      ];
+      // The existing quick-menu follow toggle still needs its label/checkmark
+      // rebuilt; the two new Settings-only preference keys do not.
+      if ("bubbleFollowPet" in changes) expected.push(["rebuildAllMenus"]);
+      assert.deepStrictEqual(calls, expected);
+    }
+  });
+
   it("clears the Codex user-input card on the notification-policy axis, not the permission-policy axis", () => {
     const { calls, emit } = createHarness();
 

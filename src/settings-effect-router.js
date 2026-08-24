@@ -36,6 +36,12 @@ const MENU_AFFECTING_KEYS = new Set([
   "disableMiniMode",
 ]);
 
+const BUBBLE_PLACEMENT_KEYS = new Set([
+  "bubbleFollowPet",
+  "bubbleFollowPreference",
+  "bubbleFixedCorner",
+]);
+
 function requiredDependency(value, name) {
   if (!value) throw new Error(`createSettingsEffectRouter requires ${name}`);
   return value;
@@ -259,7 +265,7 @@ function createSettingsEffectRouter(options = {}) {
         refreshPermissionAutoCloseForPolicy
       );
     }
-    if ("bubbleFollowPet" in changes) {
+    if (Object.keys(changes).some((key) => BUBBLE_PLACEMENT_KEYS.has(key))) {
       safeCall(logWarn, "Clawd: repositionFloatingBubbles failed:", repositionFloatingBubbles);
     }
     if ("textScale" in changes || "textScaleByDisplay" in changes) {

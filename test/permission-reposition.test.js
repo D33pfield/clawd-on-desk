@@ -293,6 +293,98 @@ describe("permission bubble stack layout", () => {
     assert.notStrictEqual(withHud[0].y, 538);
   });
 
+  it("keeps auto placement below the pet by sliding past the real HUD bounds", () => {
+    const bounds = layout({
+      followPet: true,
+      followPreference: "auto",
+      bubbleHeights: [180],
+      workArea: { x: 0, y: 0, width: 1200, height: 900 },
+      hitRect: { left: 540, top: 200, right: 660, bottom: 300 },
+      avoidRects: [{ x: 450, y: 300, width: 300, height: 80 }],
+    });
+
+    assert.deepStrictEqual(bounds, [{ x: 430, y: 386, width: 340, height: 180 }]);
+  });
+
+  it("honors explicit left and right preferences before the automatic below lane", () => {
+    const common = {
+      followPet: true,
+      bubbleHeights: [180],
+      workArea: { x: 0, y: 0, width: 1400, height: 900 },
+      hitRect: { left: 640, top: 300, right: 760, bottom: 400 },
+    };
+    assert.strictEqual(layout({ ...common, followPreference: "left" })[0].x, 300);
+    assert.strictEqual(layout({ ...common, followPreference: "right" })[0].x, 760);
+    assert.strictEqual(layout({ ...common, followPreference: "auto" })[0].y, 400);
+  });
+
+  it("falls through a preferred side that cannot fit without forcing it off-screen", () => {
+    const bounds = layout({
+      followPet: true,
+      followPreference: "right",
+      bubbleHeights: [240],
+      workArea: { x: 0, y: 0, width: 800, height: 600 },
+      hitRect: { left: 650, top: 480, right: 760, bottom: 560 },
+    });
+    assert.strictEqual(bounds[0].x, 310, "right and below fail, so the safe left lane wins");
+  });
+
+  it("keeps a preferred side while sliding vertically around the HUD", () => {
+    const bounds = layout({
+      followPet: true,
+      followPreference: "left",
+      bubbleHeights: [200],
+      workArea: { x: 0, y: 0, width: 1200, height: 800 },
+      hitRect: { left: 600, top: 600, right: 720, bottom: 700 },
+      avoidRects: [{ x: 260, y: 500, width: 340, height: 220 }],
+    });
+    assert.deepStrictEqual(bounds, [{ x: 260, y: 294, width: 340, height: 200 }]);
+  });
+
+  it("anchors fixed stacks at each selected work-area corner", () => {
+    const expected = {
+      "top-left": { x: 8, y: 8, width: 340, height: 200 },
+      "top-right": { x: 1572, y: 8, width: 340, height: 200 },
+      "bottom-left": { x: 8, y: 872, width: 340, height: 200 },
+      "bottom-right": { x: 1572, y: 872, width: 340, height: 200 },
+    };
+    for (const [fixedCorner, firstBounds] of Object.entries(expected)) {
+      assert.deepStrictEqual(layout({
+        followPet: false,
+        fixedCorner,
+        bubbleHeights: [200],
+        workArea: FHD,
+        hitRect: null,
+      }), [firstBounds]);
+    }
+  });
+
+  it("slides within the selected fixed edge to avoid the HUD without changing corners", () => {
+    const bounds = layout({
+      followPet: false,
+      fixedCorner: "bottom-right",
+      bubbleHeights: [200],
+      workArea: { x: 0, y: 0, width: 1200, height: 800 },
+      hitRect: null,
+      avoidRects: [{ x: 850, y: 600, width: 350, height: 100 }],
+    });
+    assert.deepStrictEqual(bounds, [{ x: 852, y: 394, width: 340, height: 200 }]);
+  });
+
+  it("keeps the oldest fixed bubble visible when the stack is taller than the work area", () => {
+    const bounds = layout({
+      followPet: false,
+      fixedCorner: "bottom-left",
+      bubbleHeights: Array(6).fill(200),
+      workArea: { x: -1600, y: -200, width: 1200, height: 800 },
+      hitRect: null,
+    });
+    assert.strictEqual(bounds[0].x, -1592);
+    assert.strictEqual(bounds[0].y, -192);
+    assert.ok(bounds.at(-1).y + bounds.at(-1).height > 600);
+    for (let i = 0; i < bounds.length - 1; i++) assert.ok(bounds[i].y < bounds[i + 1].y);
+  });
+
   it("ignores Hardware Buddy test entries when stacking visible bubbles", () => {
     const runtime = permission({
       win: { isDestroyed: () => false },
@@ -323,5 +415,40 @@ describe("permission bubble stack layout", () => {
       ["old", { x: 1572, y: 666, width: 340, height: 200 }],
       ["new", { x: 1572, y: 872, width: 340, height: 200 }],
     ]);
+  });
+
+  it("uses one fixed target work area for scale, width, height, and corner bounds", () => {
+    const primary = { x: -1600, y: 40, width: 1600, height: 900 };
+    const scaleCalls = [];
+    const runtime = permission({
+      win: { isDestroyed: () => false },
+      bubbleFollowPet: false,
+      bubbleFixedCorner: "top-left",
+      getPetWindowBounds: () => ({ x: 100, y: 100, width: 80, height: 80 }),
+      getBubbleWorkArea: (followPet) => {
+        assert.strictEqual(followPet, false);
+        return primary;
+      },
+      getTextScale: (workArea) => {
+        scaleCalls.push(workArea);
+        return 1.5;
+      },
+      getHitRectScreen: () => null,
+      getHudReservedOffset: () => 0,
+    });
+    const assigned = [];
+    runtime.addPendingPermission({
+      measuredHeight: 200,
+      suggestions: [],
+      bubble: {
+        isDestroyed: () => false,
+        setBounds: (bounds) => assigned.push(bounds),
+      },
+    }, "test");
+
+    runtime.repositionBubbles();
+
+    assert.deepStrictEqual(scaleCalls, [primary]);
+    assert.deepStrictEqual(assigned, [{ x: -1588, y: 52, width: 510, height: 300 }]);
   });
 });

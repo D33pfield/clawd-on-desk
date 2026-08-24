@@ -81,6 +81,9 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.savedPixelWorkArea, null);
     assert.strictEqual(d.settingsWindowBounds, null);
     assert.strictEqual(d.dashboardWindowBounds, null);
+    assert.strictEqual(d.bubbleFollowPet, false);
+    assert.strictEqual(d.bubbleFollowPreference, "auto");
+    assert.strictEqual(d.bubbleFixedCorner, "bottom-right");
     assert.strictEqual(d.permissionBubblesEnabled, true);
     assert.strictEqual(d.notificationBubbleAutoCloseSeconds, 6);
     assert.strictEqual(d.updateBubbleAutoCloseSeconds, 9);
@@ -327,6 +330,26 @@ describe("prefs.validate", () => {
   it("preserves both supported quota ring display modes", () => {
     assert.strictEqual(prefs.validate({ quotaRingDisplayMode: "used" }).quotaRingDisplayMode, "used");
     assert.strictEqual(prefs.validate({ quotaRingDisplayMode: "remaining" }).quotaRingDisplayMode, "remaining");
+  });
+
+  it("validates bubble placement enums independently from the follow toggle", () => {
+    const valid = prefs.validate({
+      bubbleFollowPet: true,
+      bubbleFollowPreference: "left",
+      bubbleFixedCorner: "top-right",
+    });
+    assert.strictEqual(valid.bubbleFollowPet, true);
+    assert.strictEqual(valid.bubbleFollowPreference, "left");
+    assert.strictEqual(valid.bubbleFixedCorner, "top-right");
+
+    const invalid = prefs.validate({
+      bubbleFollowPet: false,
+      bubbleFollowPreference: "strict-left",
+      bubbleFixedCorner: "center",
+    });
+    assert.strictEqual(invalid.bubbleFollowPet, false);
+    assert.strictEqual(invalid.bubbleFollowPreference, "auto");
+    assert.strictEqual(invalid.bubbleFixedCorner, "bottom-right");
   });
 
   it("backfills split bubble prefs from legacy hideBubbles=true", () => {

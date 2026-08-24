@@ -845,6 +845,8 @@ function makeGeneralSnapshot(overrides = {}) {
     autoStartWithClaude: false,
     hideBubbles: false,
     bubbleFollowPet: true,
+    bubbleFollowPreference: "auto",
+    bubbleFixedCorner: "bottom-right",
     permissionBubblesEnabled: true,
     notificationBubbleAutoCloseSeconds: 8,
     updateBubbleAutoCloseSeconds: 12,
@@ -8778,7 +8780,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("state.mountedControls.bubblePolicyControls"));
     assert.ok(generalSource.includes("state.mountedControls.bubblePolicySummary"));
     assert.ok(generalSource.includes("confirmDisableUpdateBubbles"));
-    assert.ok(generalSource.indexOf("buildBubblePolicyRow()") < generalSource.indexOf('key: "bubbleFollowPet"'));
+    assert.ok(generalSource.indexOf("buildBubblePolicyRow(),") < generalSource.indexOf("buildBubblePlacementGroup(),"));
     assert.ok(generalSource.includes("category === \"update\" && next === 0"));
     assert.ok(generalSource.includes("notificationBubbleAutoCloseSeconds"));
     assert.ok(generalSource.includes("updateBubbleAutoCloseSeconds"));
@@ -8795,6 +8797,101 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("rowBubblePolicy"));
     assert.ok(i18nSource.includes("bubbleUpdateWarning"));
     assert.ok(i18nSource.includes("bubbleSecondsPrefix"));
+  });
+
+  it("renders bubble placement as independent conditional controls and patches it in place", async () => {
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.match(css, /\.bubble-placement-group \.row\[hidden\]\s*\{\s*display:\s*none;/);
+    assert.match(css, /@media \(max-width:\s*760px\)[\s\S]*\.bubble-fixed-corner-segmented\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,/);
+    assert.match(css, /\.bubble-placement-group \.settings-segmented-radio button\s*\{[\s\S]*white-space:\s*normal;/);
+    const updateCalls = [];
+    const initialSnapshot = makeGeneralSnapshot({
+      bubbleFollowPet: true,
+      bubbleFollowPreference: "left",
+      bubbleFixedCorner: "top-right",
+    });
+    const harness = loadGeneralTabForTest({
+      snapshot: initialSnapshot,
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+
+    const placement = harness.core.state.mountedControls.bubblePlacement;
+    assert.ok(placement);
+    assert.strictEqual(placement.followRow.hidden, false);
+    assert.strictEqual(placement.cornerRow.hidden, true);
+    assert.strictEqual(placement.followControl.getValue(), "left");
+    assert.strictEqual(placement.cornerControl.getValue(), "top-right");
+    assert.ok(placement.cornerControl.element.querySelectorAll("button").every((button) => button.disabled));
+
+    const fixedButton = placement.modeControl.element.querySelectorAll("button")
+      .find((button) => button.dataset.value === "fixed");
+    fixedButton.dispatchEvent({ type: "click" });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, [{ key: "bubbleFollowPet", value: false }]);
+    assert.strictEqual(placement.followRow.hidden, true);
+    assert.strictEqual(placement.cornerRow.hidden, false);
+
+    const originalElement = placement.element;
+    harness.core.ops.applyChanges({
+      changes: {
+        bubbleFollowPet: false,
+        bubbleFollowPreference: "right",
+        bubbleFixedCorner: "bottom-left",
+      },
+      snapshot: {
+        ...initialSnapshot,
+        bubbleFollowPet: false,
+        bubbleFollowPreference: "right",
+        bubbleFixedCorner: "bottom-left",
+      },
+    });
+    assert.strictEqual(harness.core.state.mountedControls.bubblePlacement.element, originalElement);
+    assert.strictEqual(placement.followControl.getValue(), "right");
+    assert.strictEqual(placement.cornerControl.getValue(), "bottom-left");
+    assert.strictEqual(placement.followRow.hidden, true);
+    assert.strictEqual(placement.cornerRow.hidden, false);
+
+    harness.core.ops.applyChanges({
+      changes: { hideBubbles: true },
+      snapshot: {
+        ...initialSnapshot,
+        bubbleFollowPet: false,
+        bubbleFollowPreference: "right",
+        bubbleFixedCorner: "bottom-left",
+        hideBubbles: true,
+      },
+    });
+    for (const control of [placement.modeControl, placement.followControl, placement.cornerControl]) {
+      assert.ok(control.element.querySelectorAll("button").every((button) => button.disabled));
+    }
+
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    for (const key of [
+      "rowBubblePlacement",
+      "rowBubblePlacementDesc",
+      "bubblePlacementFollow",
+      "bubblePlacementFixed",
+      "rowBubbleFollowPreference",
+      "rowBubbleFollowPreferenceDesc",
+      "bubbleFollowAuto",
+      "bubbleFollowLeft",
+      "bubbleFollowRight",
+      "rowBubbleFixedCorner",
+      "rowBubbleFixedCornerDesc",
+      "bubbleCornerTopLeft",
+      "bubbleCornerTopRight",
+      "bubbleCornerBottomLeft",
+      "bubbleCornerBottomRight",
+    ]) {
+      const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
+      assert.strictEqual(matches ? matches.length : 0, SUPPORTED_LANGS.length);
+    }
   });
 
   it("renders the opt-in test-result reaction switch with all supported translations", () => {
@@ -11319,7 +11416,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("const summaryControl = buildBubblePolicySummary();"));
     assert.ok(generalSource.includes("summary: summaryControl.element"));
     assert.ok(generalSource.includes("children: [buildBubblePolicyList()]"));
-    assert.ok(generalSource.includes('key: "bubbleFollowPet"'));
+    assert.ok(generalSource.includes("buildBubblePlacementGroup"));
     assert.ok(!generalSource.includes('key: "showSessionId"'));
     assert.ok(generalSource.includes('key: "hideBubbles"'));
     assert.ok(i18nSource.includes("bubblePolicySummaryPermission"));

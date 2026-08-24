@@ -70,6 +70,18 @@ Settings 是独立 `BrowserWindow`，采用 5 层结构：
 - `idleVisual` 是 per-theme 文件映射；缺失键表示使用主题默认，主题升级删除已选文件或删除主题时会安静回退，不改变逻辑状态
 - About tab 使用 inline SVG，而不是 `<object>`，因为 `settings.html` CSP 是 `default-src 'none'`
 
+### Bubble display and placement
+
+气泡“是否显示”和“显示在哪里”是两条独立设置轴：
+
+- `hideBubbles`、`permissionBubblesEnabled` 与各类别 auto-close policy 只控制本地气泡显示；不得重置定位偏好或产生权限决定。
+- `bubbleFollowPet` 只选择跟随桌宠或固定在主屏，不影响 permission、notification、update 的显示 gate。
+- 跟随模式读取 `bubbleFollowPreference=auto|left|right`。`auto` 保持下方优先；左右值是安全偏好，空间不足时按候选顺序回退，绝不强制放到工作区外。
+- 固定模式读取 `bubbleFixedCorner=top-left|top-right|bottom-left|bottom-right`，锚定 primary display 的 `workArea`。主屏查询不可用时回退桌宠所在显示器，再失败才使用 synthetic work area。
+- permission stack 先定位并避让可见 Session HUD；update bubble 随后读取真实可见 permission/HUD 外窗矩形再定位；Orbit 最后读取更新后的几何。
+- 跟随模式使用桌宠所在显示器的 text scale；固定模式使用主屏 text scale。窗口 bounds、CSS px → DIP 与 renderer zoom 必须基于同一个目标显示器。
+- 多气泡始终保持最老请求在上；超高 stack 优先保住最老请求，允许较新的请求向下溢出。macOS IME 编辑中的气泡冻结位置，blur 后只执行一次现有 floating-bubble 重排序列。
+
 ## Mini Mode
 
 角色藏在屏幕右边缘，窗口一半推到屏幕外，由屏幕边缘自然遮挡。

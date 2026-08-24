@@ -172,6 +172,12 @@ const SCHEMA = {
   openAtLogin: { type: "boolean", default: false },
   openAtLoginHydrated: { type: "boolean", default: false },
   bubbleFollowPet: { type: "boolean", default: false },
+  bubbleFollowPreference: { type: "string", default: "auto", enum: ["auto", "left", "right"] },
+  bubbleFixedCorner: {
+    type: "string",
+    default: "bottom-right",
+    enum: ["top-left", "top-right", "bottom-left", "bottom-right"],
+  },
   sessionHudEnabled: { type: "boolean", default: true },
   sessionHudShowStateLabels: { type: "boolean", default: true },
   sessionHudShowElapsed: { type: "boolean", default: false },

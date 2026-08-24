@@ -165,6 +165,17 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.quotaRingDisplayMode(true).status, "error");
   });
 
+  it("accepts only supported bubble placement enums", () => {
+    for (const value of ["auto", "left", "right"]) {
+      assert.strictEqual(updateRegistry.bubbleFollowPreference(value).status, "ok");
+    }
+    assert.strictEqual(updateRegistry.bubbleFollowPreference("strict-left").status, "error");
+    for (const value of ["top-left", "top-right", "bottom-left", "bottom-right"]) {
+      assert.strictEqual(updateRegistry.bubbleFixedCorner(value).status, "ok");
+    }
+    assert.strictEqual(updateRegistry.bubbleFixedCorner("center").status, "error");
+  });
+
   it("codexHookHealthLastNotified accepts strings and empty reset", () => {
     const deps = { snapshot: baseSnapshot };
     assert.strictEqual(updateRegistry.codexHookHealthLastNotified("", deps).status, "ok");
