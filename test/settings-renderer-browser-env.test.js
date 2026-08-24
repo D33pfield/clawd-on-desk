@@ -2089,6 +2089,7 @@ function loadAnimOverridesTabForTest({
   };
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "language-picker.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8"), context);
   const core = {
     state: { activeTab: "animOverrides", mountedControls: {} },
@@ -2105,6 +2106,7 @@ function loadAnimOverridesTabForTest({
         if (typeof invoke === "function") el.addEventListener("click", () => invoke());
         return el;
       },
+      buildSettingsSelect: (config) => context.ClawdLanguagePicker.createSettingsSelect(config),
       ...helpersOverrides,
     },
     ops: {
@@ -13859,6 +13861,33 @@ describe("settings renderer browser environment", () => {
       { themeId: "clawd", file: "clawd-idle-reading.svg" }
     );
     assert.strictEqual(valueEl.textContent, "Idle Reading", "optimistic display should show the pick immediately");
+  });
+
+  it("mounts the idle visual menu while open and removes it from layout after close", () => {
+    const runtime = createIdleVisualRuntime();
+    const modalRoot = new FakeElement("div");
+    const { core, document } = loadAnimOverridesTabForTest({ runtime, modalRoot });
+    const parent = new FakeElement("main");
+    document.body.appendChild(parent);
+    core.tabs.animOverrides.render(parent, core);
+
+    const picker = parent.querySelector(".anim-idle-visual-row .language-picker");
+    const trigger = picker.querySelector(".language-picker-trigger");
+    const menu = picker.querySelector(".language-picker-menu");
+
+    trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(trigger.getAttribute("aria-expanded"), "true");
+    assert.strictEqual(menu.getAttribute("aria-hidden"), "false");
+    assert.strictEqual(
+      picker.classList.contains("menu-mounted"),
+      true,
+      "the shared CSS only displays mounted picker menus",
+    );
+
+    trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(trigger.getAttribute("aria-expanded"), "false");
+    assert.strictEqual(menu.getAttribute("aria-hidden"), "true");
+    assert.strictEqual(picker.classList.contains("menu-mounted"), false);
   });
 
   it("patches idleVisual-only broadcasts in place and re-syncs the mounted picker", () => {
