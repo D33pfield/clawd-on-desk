@@ -85,6 +85,7 @@
       soundVolume: null,
       textScale: null,
       roamMovementStyle: null,
+      bubblePlacement: null,
       roamArea: null,
       settingsSelects: new Set(),
       segmentedRadios: new Set(),
@@ -1158,6 +1159,7 @@
     state.mountedControls.soundVolume = null;
     state.mountedControls.textScale = null;
     state.mountedControls.roamMovementStyle = null;
+    state.mountedControls.bubblePlacement = null;
     state.mountedControls.quotaRingDisplayMode = null;
     state.mountedControls.permissionAutomationMode = null;
     state.mountedControls.roamArea = null;

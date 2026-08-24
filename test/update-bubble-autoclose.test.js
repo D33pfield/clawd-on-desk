@@ -20,12 +20,18 @@ class FakeBrowserWindow {
     this.bounds = null;
     this.listeners = new Map();
     this.sent = [];
+    this.insertedCss = [];
     this.webContents = {
       _loading: false,
       isDestroyed: () => false,
       isLoading: () => false,
       once: () => {},
       send: (channel, payload) => this.sent.push({ channel, payload }),
+      setZoomFactor: (value) => { this.zoomFactor = value; },
+      insertCSS: (value) => {
+        this.insertedCss.push(value);
+        return Promise.resolve(`css-${this.insertedCss.length}`);
+      },
     };
     FakeBrowserWindow.instances.push(this);
   }
@@ -122,6 +128,93 @@ describe("update bubble auto-close refresh", () => {
     mock.timers.tick(250);
 
     assert.strictEqual(harness.api.getBubbleWindow().isVisible(), false);
+  });
+
+  it("uses the fixed target work area for initial size, zoom, and final bounds", async () => {
+    const targetWorkArea = { x: -1600, y: 200, width: 1600, height: 900 };
+    const targetCalls = [];
+    const scaleCalls = [];
+    const initUpdateBubble = loadUpdateBubbleWithElectron({ BrowserWindow: FakeBrowserWindow });
+    const api = initUpdateBubble({
+      win: { isDestroyed: () => false },
+      bubbleFollowPet: false,
+      bubbleFixedCorner: "bottom-right",
+      petHidden: false,
+      getBubblePolicy: () => ({ enabled: true, autoCloseMs: 0 }),
+      getPetWindowBounds: () => ({ x: 20, y: 20, width: 120, height: 120 }),
+      getBubbleWorkArea: (followPet) => {
+        targetCalls.push(followPet);
+        return targetWorkArea;
+      },
+      getTextScale: (workArea) => {
+        scaleCalls.push(workArea);
+        return 1.5;
+      },
+      getUpdateBubbleAnchorRect: () => null,
+      getHitRectScreen: () => null,
+      getPermissionBubbleBounds: () => [],
+      getSessionHudBounds: () => [],
+      guardAlwaysOnTop: () => {},
+      reapplyMacVisibility: () => {},
+      repositionQuotaRing: () => {},
+      clipboard: { writeText: () => {} },
+    });
+
+    await api.showUpdateBubble({
+      mode: "up-to-date",
+      title: "Up to date",
+      message: "Already current.",
+      requireAction: false,
+      defaultAction: "dismiss",
+    });
+
+    const bubble = api.getBubbleWindow();
+    assert.strictEqual(bubble.options.width, 510);
+    assert.strictEqual(bubble.zoomFactor, 1);
+    assert.match(bubble.insertedCss.at(-1), /zoom: 1\.5/);
+    assert.deepStrictEqual(bubble.bounds, { x: -522, y: 863, width: 510, height: 225 });
+    assert.ok(targetCalls.every((followPet) => followPet === false));
+    assert.ok(scaleCalls.every((workArea) => workArea === targetWorkArea));
+    api.cleanup();
+  });
+
+  it("wires permission and HUD bounds into fixed update bubble repositioning", async () => {
+    const workArea = { x: 0, y: 0, width: 1200, height: 800 };
+    const initUpdateBubble = loadUpdateBubbleWithElectron({ BrowserWindow: FakeBrowserWindow });
+    const api = initUpdateBubble({
+      win: { isDestroyed: () => false },
+      bubbleFollowPet: false,
+      bubbleFixedCorner: "bottom-right",
+      petHidden: false,
+      getBubblePolicy: () => ({ enabled: true, autoCloseMs: 0 }),
+      getPetWindowBounds: () => ({ x: 20, y: 20, width: 120, height: 120 }),
+      getBubbleWorkArea: () => workArea,
+      getTextScale: () => 1,
+      getUpdateBubbleAnchorRect: () => null,
+      getHitRectScreen: () => null,
+      getPermissionBubbleBounds: () => [{ x: 852, y: 642, width: 340, height: 150 }],
+      getSessionHudBounds: () => [{ x: 852, y: 560, width: 340, height: 60 }],
+      guardAlwaysOnTop: () => {},
+      reapplyMacVisibility: () => {},
+      repositionQuotaRing: () => {},
+      clipboard: { writeText: () => {} },
+    });
+
+    await api.showUpdateBubble({
+      mode: "up-to-date",
+      title: "Up to date",
+      message: "Already current.",
+      requireAction: false,
+      defaultAction: "dismiss",
+    });
+
+    assert.deepStrictEqual(api.getBubbleWindow().bounds, {
+      x: 852,
+      y: 404,
+      width: 340,
+      height: 150,
+    });
+    api.cleanup();
   });
 
   it("uses remaining lifetime instead of restarting the full update-bubble countdown", async () => {

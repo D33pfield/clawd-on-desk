@@ -285,37 +285,119 @@ function computePermissionAutoCloseRemainingMs(entry, autoCloseMs, now = Date.no
   return Math.max(0, timeout - elapsed);
 }
 
-// Pure layout calculator for the permission bubble stack. Extracted out of
-// repositionBubbles() so the geometry can be unit-tested without spinning up
-// real Electron BrowserWindows. Returns one bounds object per height in the
-// input array, in the same (oldest→newest) order.
-//
-// Layout priority when followPet=true:
-//   1. below pet     — stack hangs from hitRect.bottom (oldest closest to
-//                       the pet body, newest at the bottom of the stack)
-//   2. side of pet   — pick the side with more horizontal room (right wins
-//                       on ties), vertically anchored on the pet center and
-//                       clamped to the work area
-//   3. corner fallback — only when neither side has bw of clearance, fall
-//                         back to the work area's bottom-right corner
-//
-// followPet=false → bottom-right of the work area (default Clawd behavior).
-//
-// Visual invariant across ALL branches: bubbles[0] (oldest) ends up at the
-// highest y, bubbles[N-1] (newest) at the lowest y. Crossing a layout
-// threshold only translates the anchor — it does NOT reverse the visual
-// order. PR #89 fixed the original below↔degraded order-flip; this guards
-// the same bug from regressing.
-//
-// Degenerate case (totalH > usable work area height): the second clamp on
-// yBottom intentionally wins, anchoring the stack to the TOP of the work
-// area. The OLDEST bubble stays visible while newer ones overflow off the
-// bottom. Rationale: oldest is the request that has been waiting longest,
-// and Claude Code re-sends on timeout if newest gets dropped — losing
-// oldest is harder to recover. See test
-// "anchors stack top when totalH overflows the work area".
+const FOLLOW_PREFERENCES = new Set(["auto", "left", "right"]);
+const FIXED_CORNERS = new Set(["top-left", "top-right", "bottom-left", "bottom-right"]);
+
+function normalizeFollowPreference(value) {
+  return FOLLOW_PREFERENCES.has(value) ? value : "auto";
+}
+
+function normalizeFixedCorner(value) {
+  return FIXED_CORNERS.has(value) ? value : "bottom-right";
+}
+
+function isUsableRect(rect) {
+  return !!(
+    rect
+    && Number.isFinite(rect.x)
+    && Number.isFinite(rect.y)
+    && Number.isFinite(rect.width)
+    && rect.width > 0
+    && Number.isFinite(rect.height)
+    && rect.height > 0
+  );
+}
+
+function rectsIntersect(a, b) {
+  return a.x < b.x + b.width
+    && a.x + a.width > b.x
+    && a.y < b.y + b.height
+    && a.y + a.height > b.y;
+}
+
+function normalizeAvoidRects(avoidRects) {
+  return Array.isArray(avoidRects) ? avoidRects.filter(isUsableRect) : [];
+}
+
+function stackBoundsFromTop(bubbleHeights, x, yTop, width, gap) {
+  const bounds = new Array(bubbleHeights.length);
+  let y = yTop;
+  for (let i = 0; i < bubbleHeights.length; i++) {
+    const height = bubbleHeights[i];
+    bounds[i] = { x, y, width, height };
+    y += height + gap;
+  }
+  return bounds;
+}
+
+function findNonOverlappingStackTop({
+  x,
+  width,
+  totalHeight,
+  idealTop,
+  workArea,
+  margin,
+  gap,
+  avoidRects,
+}) {
+  const minTop = workArea.y + margin;
+  const maxTop = workArea.y + workArea.height - margin - totalHeight;
+  const rects = normalizeAvoidRects(avoidRects);
+  if (maxTop < minTop) {
+    const overflowRect = { x, y: minTop, width, height: totalHeight };
+    return rects.some((rect) => rectsIntersect(overflowRect, rect)) ? null : minTop;
+  }
+
+  const clampedIdeal = Math.max(minTop, Math.min(idealTop, maxTop));
+  const candidates = new Set([clampedIdeal, minTop, maxTop]);
+  for (const rect of rects) {
+    if (x >= rect.x + rect.width || x + width <= rect.x) continue;
+    candidates.add(rect.y - gap - totalHeight);
+    candidates.add(rect.y + rect.height + gap);
+  }
+
+  return [...candidates]
+    .filter((candidate) => Number.isFinite(candidate) && candidate >= minTop && candidate <= maxTop)
+    .sort((a, b) => Math.abs(a - idealTop) - Math.abs(b - idealTop) || a - b)
+    .find((candidate) => {
+      const stackRect = { x, y: candidate, width, height: totalHeight };
+      return !rects.some((rect) => rectsIntersect(stackRect, rect));
+    });
+}
+
+function findDownwardStackTop({
+  x,
+  width,
+  totalHeight,
+  idealTop,
+  workArea,
+  gap,
+  avoidRects,
+}) {
+  const minTop = workArea.y;
+  const maxTop = workArea.y + workArea.height - totalHeight;
+  if (maxTop < minTop || idealTop > maxTop) return null;
+  let y = Math.max(minTop, idealTop);
+  const rects = normalizeAvoidRects(avoidRects);
+
+  for (let pass = 0; pass <= rects.length; pass++) {
+    const stackRect = { x, y, width, height: totalHeight };
+    const collisions = rects.filter((rect) => rectsIntersect(stackRect, rect));
+    if (collisions.length === 0) return y;
+    y = Math.max(y, ...collisions.map((rect) => rect.y + rect.height + gap));
+    if (y > maxTop) return null;
+  }
+  return null;
+}
+
+// Pure layout calculator for the permission bubble stack. Returns one bounds
+// object per height in oldest→newest order. Follow placement uses an ordered
+// preference with safe fallback; fixed placement anchors to one work-area
+// corner. Across every branch, the oldest request remains visually highest.
 function computeBubbleStackLayout({
   followPet,
+  followPreference = "auto",
+  fixedCorner = "bottom-right",
   bubbleHeights,
   bubbleWidth: bw,
   margin,
@@ -323,10 +405,10 @@ function computeBubbleStackLayout({
   workArea: wa,
   hitRect,
   hudReservedOffset = 0,
+  avoidRects = [],
 }) {
   const N = bubbleHeights.length;
-  const bounds = new Array(N);
-  if (N === 0) return bounds;
+  if (N === 0) return [];
 
   // totalH = sum of heights + (N-1) gaps. The previous in-place loop in
   // repositionBubbles added a gap after every bubble (N gaps total), which
@@ -338,69 +420,94 @@ function computeBubbleStackLayout({
     if (i < N - 1) totalH += gap;
   }
 
-  let x, yBottom;
+  const buildCorner = (corner, allowCollisionFallback = false) => {
+    const normalizedCorner = normalizeFixedCorner(corner);
+    const left = normalizedCorner.endsWith("left");
+    const top = normalizedCorner.startsWith("top");
+    const x = left
+      ? wa.x + margin
+      : wa.x + wa.width - bw - margin;
+    const minTop = wa.y + margin;
+    const bottomTop = wa.y + wa.height - margin - totalH;
+    const idealTop = top || bottomTop < minTop ? minTop : bottomTop;
+    const yTop = findNonOverlappingStackTop({
+      x,
+      width: bw,
+      totalHeight: totalH,
+      idealTop,
+      workArea: wa,
+      margin,
+      gap,
+      avoidRects,
+    });
+    if (yTop !== undefined && yTop !== null) {
+      return stackBoundsFromTop(bubbleHeights, x, yTop, bw, gap);
+    }
+    return allowCollisionFallback
+      ? stackBoundsFromTop(bubbleHeights, x, idealTop, bw, gap)
+      : null;
+  };
+
   if (followPet && hitRect) {
     const hitBottom = Math.round(hitRect.bottom);
     const hitLeft = Math.round(hitRect.left);
     const hitRight = Math.round(hitRect.right);
     const hitCx = Math.round((hitRect.left + hitRect.right) / 2);
     const hitCy = Math.round((hitRect.top + hitRect.bottom) / 2);
-
-    // 1. Below pet — enough vertical room to hang the stack from the hitbox.
-    //    Iterate oldest→newest growing downward so the visual order matches
-    //    the side/corner branches' upward-stacking loop below.
     const reserve = Math.max(0, Number(hudReservedOffset) || 0);
-    if (wa.y + wa.height - hitBottom >= reserve + totalH) {
-      x = Math.max(wa.x, Math.min(hitCx - Math.round(bw / 2), wa.x + wa.width - bw));
-      let yTop = hitBottom + reserve;
-      for (let i = 0; i < N; i++) {
-        const bh = bubbleHeights[i];
-        bounds[i] = { x, y: yTop, width: bw, height: bh };
-        yTop += bh + gap;
-      }
-      return bounds;
-    }
-
-    // 2. Side — pick the side with more room (right wins on ties).
     const spaceRight = wa.x + wa.width - hitRight;
     const spaceLeft = hitLeft - wa.x;
-    if (spaceRight >= bw && spaceRight >= spaceLeft) {
-      x = Math.min(hitRight, wa.x + wa.width - bw);
-    } else if (spaceLeft >= bw) {
-      x = Math.max(wa.x, hitLeft - bw);
-    } else {
-      // 3. Corner fallback — neither side has bw of clearance.
-      x = wa.x + wa.width - bw - margin;
-      yBottom = wa.y + wa.height - margin;
-    }
+    const sideOrder = spaceRight >= spaceLeft ? ["right", "left"] : ["left", "right"];
+    const preference = normalizeFollowPreference(followPreference);
+    const candidateOrder = preference === "left"
+      ? ["left", "below", "right"]
+      : (preference === "right"
+        ? ["right", "below", "left"]
+        : ["below", ...sideOrder]);
 
-    if (yBottom === undefined) {
-      // Side vertical anchor: center the stack on the pet, then clamp to
-      // the work area. When totalH > usable height, minBottom > maxBottom
-      // and the second clamp wins on purpose (see header comment for the
-      // degenerate-case rationale).
-      yBottom = hitCy + Math.round(totalH / 2);
-      const maxBottom = wa.y + wa.height - margin;
-      const minBottom = wa.y + margin + totalH;
-      if (yBottom > maxBottom) yBottom = maxBottom;
-      if (yBottom < minBottom) yBottom = minBottom;
+    const tryBelow = () => {
+      const x = Math.max(wa.x, Math.min(hitCx - Math.round(bw / 2), wa.x + wa.width - bw));
+      const yTop = findDownwardStackTop({
+        x,
+        width: bw,
+        totalHeight: totalH,
+        idealTop: hitBottom + reserve,
+        workArea: wa,
+        gap,
+        avoidRects,
+      });
+      if (yTop === undefined || yTop === null) return null;
+      return stackBoundsFromTop(bubbleHeights, x, yTop, bw, gap);
+    };
+
+    const trySide = (side) => {
+      if (side === "right" && spaceRight < bw) return null;
+      if (side === "left" && spaceLeft < bw) return null;
+      const x = side === "right" ? hitRight : hitLeft - bw;
+      const idealTop = hitCy - Math.round(totalH / 2);
+      const yTop = findNonOverlappingStackTop({
+        x,
+        width: bw,
+        totalHeight: totalH,
+        idealTop,
+        workArea: wa,
+        margin,
+        gap,
+        avoidRects,
+      });
+      return yTop === undefined || yTop === null
+        ? null
+        : stackBoundsFromTop(bubbleHeights, x, yTop, bw, gap);
+    };
+
+    for (const candidate of candidateOrder) {
+      const result = candidate === "below" ? tryBelow() : trySide(candidate);
+      if (result) return result;
     }
-  } else {
-    // followPet=off (or no hit rect): bottom-right of the nearest work area.
-    x = wa.x + wa.width - bw - margin;
-    yBottom = wa.y + wa.height - margin;
+    return buildCorner("bottom-right", true);
   }
 
-  // Default upward stacking loop: newest (i=N-1) sits at yBottom, the rest
-  // grow upward. Combined with the below-branch's downward iteration above,
-  // the invariant holds: oldest highest on screen, newest lowest.
-  for (let i = N - 1; i >= 0; i--) {
-    const bh = bubbleHeights[i];
-    const y = yBottom - bh;
-    yBottom = y - gap;
-    bounds[i] = { x, y, width: bw, height: bh };
-  }
-  return bounds;
+  return buildCorner(fixedCorner, true);
 }
 
 function buildElicitationUpdatedInput(toolInput, answers) {
@@ -700,8 +807,8 @@ function estimateBubbleHeight(sugCount) {
   return 200 + (sugCount || 0) * 37;
 }
 
-function getTextScale() {
-  return clampTextScale(typeof ctx.getTextScale === "function" ? ctx.getTextScale() : 1);
+function getTextScale(workArea) {
+  return clampTextScale(typeof ctx.getTextScale === "function" ? ctx.getTextScale(workArea) : 1);
 }
 
 function getBubbleWidth(scale, workArea) {
@@ -713,22 +820,36 @@ function getBubbleWidth(scale, workArea) {
 
 function getAnchorWorkArea(petBounds) {
   const bounds = petBounds || ctx.getPetWindowBounds();
+  if (typeof ctx.getBubbleWorkArea === "function") {
+    return ctx.getBubbleWorkArea(!!ctx.bubbleFollowPet, bounds);
+  }
   const cx = bounds.x + bounds.width / 2;
   const cy = bounds.y + bounds.height / 2;
   return ctx.getNearestWorkArea(cx, cy);
+}
+
+function getHudAvoidRects() {
+  if (typeof ctx.getSessionHudBounds !== "function") return [];
+  try {
+    const bounds = ctx.getSessionHudBounds();
+    return Array.isArray(bounds) ? bounds : (bounds ? [bounds] : []);
+  } catch {
+    return [];
+  }
 }
 
 function repositionBubbles() {
   // Thin wrapper around computeBubbleStackLayout (top of file). All the
   // geometry lives there so it can be unit-tested without Electron windows.
   if (!ctx.win || ctx.win.isDestroyed()) return;
-  const scale = getTextScale();
-  const margin = Math.round(8 * scale);
-  const gap = Math.round(6 * scale);
   const petBounds = ctx.getPetWindowBounds();
   const wa = getAnchorWorkArea(petBounds);
+  const scale = getTextScale(wa);
+  const margin = Math.round(8 * scale);
+  const gap = Math.round(6 * scale);
   const bw = getBubbleWidth(scale, wa);
   const hitRect = ctx.bubbleFollowPet ? ctx.getHitRectScreen(petBounds) : null;
+  const hudAvoidRects = getHudAvoidRects();
 
   const layoutPermissions = pendingPermissions.filter((perm) => !perm.remoteOnly);
   const bubbleHeights = layoutPermissions.map(perm =>
@@ -744,13 +865,21 @@ function repositionBubbles() {
 
   const bounds = computeBubbleStackLayout({
     followPet: !!ctx.bubbleFollowPet,
+    followPreference: ctx.bubbleFollowPreference,
+    fixedCorner: ctx.bubbleFixedCorner,
     bubbleHeights,
     bubbleWidth: bw,
     margin,
     gap,
     workArea: wa,
     hitRect,
-    hudReservedOffset: typeof ctx.getHudReservedOffset === "function" ? ctx.getHudReservedOffset() : 0,
+    // A live HUD rectangle is the authoritative collision source. Keep the
+    // legacy scalar reserve only as a fallback for older/incomplete runtimes
+    // that cannot expose the actual window bounds.
+    hudReservedOffset: hudAvoidRects.length === 0 && typeof ctx.getHudReservedOffset === "function"
+      ? ctx.getHudReservedOffset()
+      : 0,
+    avoidRects: hudAvoidRects,
   });
 
   for (let i = 0; i < layoutPermissions.length; i++) {
@@ -978,8 +1107,8 @@ function showPermissionBubble(permEntry) {
   const canOfferSessionTrust = typeof ctx.canOfferSessionTrust === "function"
     && ctx.canOfferSessionTrust(permEntry) === true;
   const sugCount = (permEntry.suggestions || []).length + (canOfferSessionTrust ? 1 : 0);
-  const scale = getTextScale();
   const wa = getAnchorWorkArea();
+  const scale = getTextScale(wa);
   const bh = clampBubbleHeight(scaleHeight(estimateBubbleHeight(sugCount), scale), wa.height);
   // Temporary position — repositionBubbles() will finalize after renderer reports real height
   const pos = { x: 0, y: 0, width: getBubbleWidth(scale, wa), height: bh };
@@ -1046,7 +1175,7 @@ function showPermissionBubble(permEntry) {
       permEntry.bubbleReady = true;
       // Explicit even though same-origin propagation usually covers it — a
       // stale partition-persisted factor must never win over prefs.
-      applyZoomToWindow(bub, getTextScale());
+      applyZoomToWindow(bub, getTextScale(getAnchorWorkArea()));
       syncPermissionBubbleContent(permEntry);
       // Elicitation bubbles need keyboard focus so arrow keys and Enter work.
       // Regular permission bubbles must NOT steal focus from the terminal —
@@ -2682,9 +2811,24 @@ function handleImeEditing(event, editing) {
   const senderWin = BrowserWindow.fromWebContents(event.sender);
   const perm = pendingPermissions.find(p => p.bubble === senderWin);
   if (!perm || !perm.bubble || perm.bubble.isDestroyed()) return;
+  const wasEditing = perm.bubble.__clawdMacImeEditing === true;
   if (editing) perm.bubble.__clawdMacImeEditing = true;
   else delete perm.bubble.__clawdMacImeEditing;
   if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
+  if (!editing && wasEditing) {
+    if (typeof ctx.repositionFloatingBubbles === "function") {
+      try { ctx.repositionFloatingBubbles(); } catch {}
+    } else {
+      repositionBubbles();
+      repositionDependentBubbles();
+    }
+    // reapplyMacVisibility() evaluates the pet dodge before the frozen bubble
+    // moves. Re-evaluate once more against its final bounds so blur cannot
+    // strand the pet faded/click-through (or leave it covering the input).
+    if (typeof ctx.syncImeEditingPetDodge === "function") {
+      try { ctx.syncImeEditingPetDodge(); } catch {}
+    }
+  }
 }
 
 // #640: the editing flag is normally cleared by renderer focusout/window-blur

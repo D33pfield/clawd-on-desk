@@ -37,6 +37,8 @@
     "openAtLogin",
     "hideBubbles",
     "bubbleFollowPet",
+    "bubbleFollowPreference",
+    "bubbleFixedCorner",
     "permissionBubblesEnabled",
     "notificationBubbleAutoCloseSeconds",
     "updateBubbleAutoCloseSeconds",
@@ -49,6 +51,11 @@
     "permissionBubbleAutoCloseSeconds",
     "notificationBubbleAutoCloseSeconds",
     "updateBubbleAutoCloseSeconds",
+  ]);
+  const BUBBLE_PLACEMENT_KEYS = new Set([
+    "bubbleFollowPet",
+    "bubbleFollowPreference",
+    "bubbleFixedCorner",
   ]);
   const SESSION_CLEANUP_NUMBER_KEYS = new Set([
     "sessionStaleMs",
@@ -179,6 +186,136 @@
     row.appendChild(controlHost);
     state.mountedControls.roamMovementStyle = control;
     return row;
+  }
+
+  function saveBubblePlacementValue(key, value) {
+    return window.settingsAPI.update(key, value).then((result) => {
+      if (result && result.status === "ok") return true;
+      const message = (result && result.message) || "unknown error";
+      ops.showToast(t("toastSaveFailed") + message, { error: true });
+      return false;
+    }).catch((err) => {
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      return false;
+    });
+  }
+
+  function buildBubblePlacementRow({ labelKey, descKey, className, control }) {
+    const row = document.createElement("div");
+    row.className = `row ${className}`;
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t(labelKey);
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t(descKey);
+    text.appendChild(label);
+    text.appendChild(desc);
+    const host = document.createElement("div");
+    host.className = "row-control";
+    host.appendChild(control.element);
+    row.appendChild(text);
+    row.appendChild(host);
+    return row;
+  }
+
+  function buildBubblePlacementGroup() {
+    const group = document.createElement("div");
+    group.className = "bubble-placement-group";
+    let syncConditionalVisibility = () => {};
+
+    const modeControl = helpers.buildSegmentedRadio({
+      value: state.snapshot && state.snapshot.bubbleFollowPet === true ? "follow" : "fixed",
+      ariaLabel: t("rowBubblePlacement"),
+      className: "bubble-placement-mode-segmented",
+      options: [
+        { value: "follow", label: t("bubblePlacementFollow") },
+        { value: "fixed", label: t("bubblePlacementFixed") },
+      ],
+      onChange(nextMode) {
+        return saveBubblePlacementValue("bubbleFollowPet", nextMode === "follow").then((accepted) => {
+          if (accepted) syncConditionalVisibility(nextMode === "follow");
+          return accepted;
+        });
+      },
+    });
+    const followControl = helpers.buildSegmentedRadio({
+      value: state.snapshot && state.snapshot.bubbleFollowPreference || "auto",
+      ariaLabel: t("rowBubbleFollowPreference"),
+      className: "bubble-follow-preference-segmented",
+      options: [
+        { value: "auto", label: t("bubbleFollowAuto") },
+        { value: "left", label: t("bubbleFollowLeft") },
+        { value: "right", label: t("bubbleFollowRight") },
+      ],
+      onChange: (value) => saveBubblePlacementValue("bubbleFollowPreference", value),
+    });
+    const cornerControl = helpers.buildSegmentedRadio({
+      value: state.snapshot && state.snapshot.bubbleFixedCorner || "bottom-right",
+      ariaLabel: t("rowBubbleFixedCorner"),
+      className: "bubble-fixed-corner-segmented",
+      options: [
+        { value: "top-left", label: t("bubbleCornerTopLeft") },
+        { value: "top-right", label: t("bubbleCornerTopRight") },
+        { value: "bottom-left", label: t("bubbleCornerBottomLeft") },
+        { value: "bottom-right", label: t("bubbleCornerBottomRight") },
+      ],
+      onChange: (value) => saveBubblePlacementValue("bubbleFixedCorner", value),
+    });
+
+    const modeRow = buildBubblePlacementRow({
+      labelKey: "rowBubblePlacement",
+      descKey: "rowBubblePlacementDesc",
+      className: "bubble-placement-mode-row",
+      control: modeControl,
+    });
+    const followRow = buildBubblePlacementRow({
+      labelKey: "rowBubbleFollowPreference",
+      descKey: "rowBubbleFollowPreferenceDesc",
+      className: "bubble-follow-preference-row",
+      control: followControl,
+    });
+    const cornerRow = buildBubblePlacementRow({
+      labelKey: "rowBubbleFixedCorner",
+      descKey: "rowBubbleFixedCornerDesc",
+      className: "bubble-fixed-corner-row",
+      control: cornerControl,
+    });
+    group.appendChild(modeRow);
+    group.appendChild(followRow);
+    group.appendChild(cornerRow);
+
+    syncConditionalVisibility = (followPet) => {
+      const globallyDisabled = !!(state.snapshot && state.snapshot.hideBubbles === true);
+      followRow.hidden = !followPet;
+      cornerRow.hidden = followPet;
+      followRow.setAttribute("aria-hidden", followPet ? "false" : "true");
+      cornerRow.setAttribute("aria-hidden", followPet ? "true" : "false");
+      modeControl.setDisabled(globallyDisabled);
+      followControl.setDisabled(globallyDisabled || !followPet);
+      cornerControl.setDisabled(globallyDisabled || followPet);
+    };
+
+    state.mountedControls.bubblePlacement = {
+      element: group,
+      modeRow,
+      followRow,
+      cornerRow,
+      modeControl,
+      followControl,
+      cornerControl,
+      syncFromSnapshot() {
+        const followPet = !!(state.snapshot && state.snapshot.bubbleFollowPet === true);
+        modeControl.setValue(followPet ? "follow" : "fixed");
+        followControl.setValue(state.snapshot && state.snapshot.bubbleFollowPreference || "auto");
+        cornerControl.setValue(state.snapshot && state.snapshot.bubbleFixedCorner || "bottom-right");
+        syncConditionalVisibility(followPet);
+      },
+    };
+    state.mountedControls.bubblePlacement.syncFromSnapshot();
+    return group;
   }
 
   function buildRoamAreaRow() {
@@ -369,11 +506,7 @@
         onToggle: ({ nextRaw }) => window.settingsAPI.command("setAllBubblesHidden", { hidden: nextRaw }),
       }),
       buildBubblePolicyRow(),
-      helpers.buildSwitchRow({
-        key: "bubbleFollowPet",
-        labelKey: "rowBubbleFollow",
-        descKey: "rowBubbleFollowDesc",
-      }),
+      buildBubblePlacementGroup(),
     ]));
 
     // Behavior & position: how the pet moves and sits on screen. Rarely changed
@@ -2177,6 +2310,19 @@
     return true;
   }
 
+  function getMountedBubblePlacement() {
+    const meta = state.mountedControls.bubblePlacement;
+    if (!meta || !document.body.contains(meta.element)) return null;
+    return meta;
+  }
+
+  function syncBubblePlacementFromSnapshot() {
+    const meta = getMountedBubblePlacement();
+    if (!meta) return false;
+    meta.syncFromSnapshot();
+    return true;
+  }
+
   function patchInPlace(changes) {
     const keys = changes ? Object.keys(changes) : [];
     if (keys.length === 0) return false;
@@ -2218,6 +2364,10 @@
       && !hasMountedBubblePolicyControls()) {
       return false;
     }
+    if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_PLACEMENT_KEYS.has(key)))
+      && !getMountedBubblePlacement()) {
+      return false;
+    }
     if (keys.some((key) => SESSION_CLEANUP_NUMBER_KEYS.has(key))) {
       for (const key of keys) {
         if (!SESSION_CLEANUP_NUMBER_KEYS.has(key)) continue;
@@ -2243,6 +2393,7 @@
         if (!meta || !document.body.contains(meta.row)) return false;
         continue;
       }
+      if (BUBBLE_PLACEMENT_KEYS.has(key)) continue;
       if (SESSION_CLEANUP_NUMBER_KEYS.has(key)) continue;
       if (FLASH_NUMBER_KEYS.has(key)) continue;
       if (key === "roamConstrainAxis") continue;
@@ -2275,6 +2426,7 @@
         state.mountedControls.bubblePolicyControls.get(key).syncFromSnapshot();
         continue;
       }
+      if (BUBBLE_PLACEMENT_KEYS.has(key)) continue;
       if (SESSION_CLEANUP_NUMBER_KEYS.has(key)) {
         state.mountedControls.sessionCleanupControls.get(key).syncFromSnapshot();
         continue;
@@ -2302,6 +2454,8 @@
     }
     if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_POLICY_KEYS.has(key)))
       && !syncBubblePolicyControlsFromSnapshot()) return false;
+    if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_PLACEMENT_KEYS.has(key)))
+      && !syncBubblePlacementFromSnapshot()) return false;
     if ((keys.includes("soundVolume") || keys.includes("soundMuted"))
       && state.mountedControls.soundSummary
       && document.body.contains(state.mountedControls.soundSummary.element)) {

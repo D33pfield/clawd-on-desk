@@ -384,6 +384,13 @@ const updateRegistry = {
     return { status: "ok" };
   },
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
+  bubbleFollowPreference: requireEnum("bubbleFollowPreference", ["auto", "left", "right"]),
+  bubbleFixedCorner: requireEnum("bubbleFixedCorner", [
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+  ]),
   sessionHudEnabled: requireBoolean("sessionHudEnabled"),
   sessionHudShowStateLabels: requireBoolean("sessionHudShowStateLabels"),
   sessionHudShowElapsed: requireBoolean("sessionHudShowElapsed"),

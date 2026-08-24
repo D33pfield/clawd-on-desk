@@ -153,6 +153,10 @@ const {
   SYNTHETIC_WORK_AREA,
 } = require("./work-area");
 const {
+  isUsableWorkArea: isUsableBubbleWorkArea,
+  resolveBubbleWorkArea,
+} = require("./bubble-work-area");
+const {
   getLaunchPixelSize,
   getLaunchSizingWorkArea,
   getProportionalPixelSize,
@@ -1138,6 +1142,8 @@ let manageClaudeHooksAutomatically = _settingsController.get("manageClaudeHooksA
 let autoStartWithClaude = _settingsController.get("autoStartWithClaude");
 let openAtLogin = _settingsController.get("openAtLogin");
 let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
+let bubbleFollowPreference = _settingsController.get("bubbleFollowPreference");
+let bubbleFixedCorner = _settingsController.get("bubbleFixedCorner");
 let sessionHudEnabled = _settingsController.get("sessionHudEnabled");
 let sessionHudShowStateLabels = _settingsController.get("sessionHudShowStateLabels");
 let sessionHudShowElapsed = _settingsController.get("sessionHudShowElapsed");
@@ -1548,6 +1554,35 @@ let sendSessionHudI18n = () => {};
 let getSessionHudReservedOffset = () => 0;
 let getSessionHudWindow = () => null;
 let getQuotaRingWindow = () => null;
+
+function getVisibleSessionHudBounds() {
+  try {
+    const hudWindow = getSessionHudWindow();
+    if (
+      !hudWindow
+      || (typeof hudWindow.isDestroyed === "function" && hudWindow.isDestroyed())
+      || (typeof hudWindow.isVisible === "function" && !hudWindow.isVisible())
+      || typeof hudWindow.getBounds !== "function"
+    ) {
+      return [];
+    }
+    const bounds = hudWindow.getBounds();
+    if (
+      !bounds
+      || !Number.isFinite(bounds.x)
+      || !Number.isFinite(bounds.y)
+      || !Number.isFinite(bounds.width)
+      || bounds.width <= 0
+      || !Number.isFinite(bounds.height)
+      || bounds.height <= 0
+    ) {
+      return [];
+    }
+    return [{ x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }];
+  } catch {
+    return [];
+  }
+}
 const themeFadeSequencer = createThemeFadeSequencer({
   getRenderWindow: () => win,
   getHitWindow: () => hitWin,
@@ -1667,6 +1702,8 @@ const _permCtx = {
   get lang() { return lang; },
   get sessions() { return sessions; },
   get bubbleFollowPet() { return bubbleFollowPet; },
+  get bubbleFollowPreference() { return bubbleFollowPreference; },
+  get bubbleFixedCorner() { return bubbleFixedCorner; },
   get permDebugLog() { return permDebugLog; },
   get doNotDisturb() { return doNotDisturb; },
   get hideBubbles() { return getAllBubblesHidden(); },
@@ -1674,9 +1711,11 @@ const _permCtx = {
   getBubblePolicy: getRuntimeBubblePolicy,
   getPetWindowBounds,
   getNearestWorkArea,
+  getBubbleWorkArea,
   getHitRectScreen,
   getHudReservedOffset: () => getSessionHudReservedOffset(),
-  getTextScale: () => getTextScaleForPetWindows(),
+  getSessionHudBounds: () => getVisibleSessionHudBounds(),
+  getTextScale: (workArea) => getTextScaleForBubbleWorkArea(workArea),
   guardAlwaysOnTop,
   reapplyMacVisibility,
   // #640: permission.js re-runs the editing-overlap dodge scan whenever the
@@ -1739,6 +1778,7 @@ const _permCtx = {
   }),
   reportShortcutFailure: (actionId, reason) => shortcutRuntime.reportFailure(actionId, reason),
   clearShortcutFailure: (actionId) => shortcutRuntime.clearFailure(actionId),
+  repositionFloatingBubbles: () => repositionFloatingBubbles(),
   repositionUpdateBubble: () => repositionUpdateBubble(),
   // permission.js still calls this legacy-shaped callback after the update
   // bubble has moved; only Orbit needs the second geometry pass here.
@@ -1798,15 +1838,18 @@ function getPendingPermissionFocusEntry(sessionId) {
 const _updateBubbleCtx = {
   get win() { return win; },
   get bubbleFollowPet() { return bubbleFollowPet; },
+  get bubbleFollowPreference() { return bubbleFollowPreference; },
+  get bubbleFixedCorner() { return bubbleFixedCorner; },
   get petHidden() { return petWindowRuntime.isPetHidden(); },
   getBubblePolicy: getRuntimeBubblePolicy,
-  getPendingPermissions: () => pendingPermissions,
   getPetWindowBounds,
   getNearestWorkArea,
+  getBubbleWorkArea,
   getUpdateBubbleAnchorRect,
   getHitRectScreen,
-  getHudReservedOffset: () => getSessionHudReservedOffset(),
-  getTextScale: () => getTextScaleForPetWindows(),
+  getPermissionBubbleBounds: () => _perm.getVisibleBubbleBounds(),
+  getSessionHudBounds: () => getVisibleSessionHudBounds(),
+  getTextScale: (workArea) => getTextScaleForBubbleWorkArea(workArea),
   guardAlwaysOnTop,
   reapplyMacVisibility,
   repositionQuotaRing: () => repositionQuotaRing(),
@@ -3957,7 +4000,10 @@ const SETTINGS_MIRROR_SETTERS = {
   lang: (v) => { lang = v; }, size: (v) => { currentSize = v; resetKeepSizeFrozen(); }, showTray: (v) => { showTray = v; },
   showDock: (v) => { showDock = v; if (macHideController) macHideController.noteManualChange(); }, manageClaudeHooksAutomatically: (v) => { manageClaudeHooksAutomatically = v; },
   autoStartWithClaude: (v) => { autoStartWithClaude = v; }, openAtLogin: (v) => { openAtLogin = v; },
-  bubbleFollowPet: (v) => { bubbleFollowPet = v; }, sessionHudEnabled: (v) => { sessionHudEnabled = v; },
+  bubbleFollowPet: (v) => { bubbleFollowPet = v; },
+  bubbleFollowPreference: (v) => { bubbleFollowPreference = v; },
+  bubbleFixedCorner: (v) => { bubbleFixedCorner = v; },
+  sessionHudEnabled: (v) => { sessionHudEnabled = v; },
   sessionHudShowStateLabels: (v) => { sessionHudShowStateLabels = v; },
   sessionHudShowElapsed: (v) => { sessionHudShowElapsed = v; },
   sessionHudShowContextUsage: (v) => { sessionHudShowContextUsage = v; },
@@ -4719,6 +4765,23 @@ function getPrimaryWorkAreaSafe() {
   } catch {
     return null;
   }
+}
+
+function getBubbleWorkArea(followPet, petBounds) {
+  return resolveBubbleWorkArea({
+    followPet,
+    petBounds: petBounds || getPetWindowBounds(),
+    getPrimaryWorkArea: getPrimaryWorkAreaSafe,
+    getNearestWorkArea,
+    syntheticWorkArea: SYNTHETIC_WORK_AREA,
+  });
+}
+
+function getTextScaleForBubbleWorkArea(workArea) {
+  const displayKey = isUsableBubbleWorkArea(workArea)
+    ? getDisplayKeyForBounds(workArea)
+    : null;
+  return effectiveTextScaleForKey(displayKey || getPetDisplayKey());
 }
 
 function getNearestWorkArea(cx, cy) {

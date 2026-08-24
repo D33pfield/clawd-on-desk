@@ -1440,6 +1440,48 @@ html, body {
 .settings-segmented-radio.pending {
   cursor: progress;
 }
+.bubble-placement-group {
+  display: grid;
+}
+.bubble-placement-group .row {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 10px;
+}
+.bubble-placement-group .row[hidden] {
+  display: none;
+}
+.bubble-placement-group .row-control,
+.bubble-placement-group .settings-segmented-radio {
+  width: 100%;
+}
+.bubble-placement-mode-segmented,
+.bubble-follow-preference-segmented,
+.bubble-fixed-corner-segmented {
+  display: grid;
+  width: 100%;
+}
+.bubble-placement-mode-segmented {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.bubble-follow-preference-segmented {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.bubble-fixed-corner-segmented {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.bubble-placement-group .settings-segmented-radio button {
+  align-items: center;
+  justify-content: center;
+  padding-inline: 8px;
+  text-align: center;
+  white-space: normal;
+}
+@media (max-width: 760px) {
+  .bubble-fixed-corner-segmented {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 .quota-ring-display-mode-row .row-control {
   margin-left: auto;
 }
