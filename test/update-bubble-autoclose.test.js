@@ -178,6 +178,45 @@ describe("update bubble auto-close refresh", () => {
     api.cleanup();
   });
 
+  it("wires permission and HUD bounds into fixed update bubble repositioning", async () => {
+    const workArea = { x: 0, y: 0, width: 1200, height: 800 };
+    const initUpdateBubble = loadUpdateBubbleWithElectron({ BrowserWindow: FakeBrowserWindow });
+    const api = initUpdateBubble({
+      win: { isDestroyed: () => false },
+      bubbleFollowPet: false,
+      bubbleFixedCorner: "bottom-right",
+      petHidden: false,
+      getBubblePolicy: () => ({ enabled: true, autoCloseMs: 0 }),
+      getPetWindowBounds: () => ({ x: 20, y: 20, width: 120, height: 120 }),
+      getBubbleWorkArea: () => workArea,
+      getTextScale: () => 1,
+      getUpdateBubbleAnchorRect: () => null,
+      getHitRectScreen: () => null,
+      getPermissionBubbleBounds: () => [{ x: 852, y: 642, width: 340, height: 150 }],
+      getSessionHudBounds: () => [{ x: 852, y: 560, width: 340, height: 60 }],
+      guardAlwaysOnTop: () => {},
+      reapplyMacVisibility: () => {},
+      repositionQuotaRing: () => {},
+      clipboard: { writeText: () => {} },
+    });
+
+    await api.showUpdateBubble({
+      mode: "up-to-date",
+      title: "Up to date",
+      message: "Already current.",
+      requireAction: false,
+      defaultAction: "dismiss",
+    });
+
+    assert.deepStrictEqual(api.getBubbleWindow().bounds, {
+      x: 852,
+      y: 404,
+      width: 340,
+      height: 150,
+    });
+    api.cleanup();
+  });
+
   it("uses remaining lifetime instead of restarting the full update-bubble countdown", async () => {
     mock.timers.enable({ apis: ["setTimeout", "Date"] });
     mock.timers.setTime(100_000);

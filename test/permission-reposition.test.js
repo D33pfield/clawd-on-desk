@@ -451,4 +451,31 @@ describe("permission bubble stack layout", () => {
     assert.deepStrictEqual(scaleCalls, [primary]);
     assert.deepStrictEqual(assigned, [{ x: -1588, y: 52, width: 510, height: 300 }]);
   });
+
+  it("wires live HUD bounds into fixed permission bubble repositioning", () => {
+    const workArea = { x: 0, y: 0, width: 1200, height: 800 };
+    const runtime = permission({
+      win: { isDestroyed: () => false },
+      bubbleFollowPet: false,
+      bubbleFixedCorner: "bottom-right",
+      getPetWindowBounds: () => ({ x: 0, y: 0, width: 80, height: 80 }),
+      getBubbleWorkArea: () => workArea,
+      getHitRectScreen: () => null,
+      getSessionHudBounds: () => [{ x: 850, y: 600, width: 350, height: 100 }],
+      getHudReservedOffset: () => 0,
+    });
+    const assigned = [];
+    runtime.addPendingPermission({
+      measuredHeight: 200,
+      suggestions: [],
+      bubble: {
+        isDestroyed: () => false,
+        setBounds: (bounds) => assigned.push(bounds),
+      },
+    }, "test");
+
+    runtime.repositionBubbles();
+
+    assert.deepStrictEqual(assigned, [{ x: 852, y: 394, width: 340, height: 200 }]);
+  });
 });

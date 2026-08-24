@@ -9,6 +9,21 @@ const NEAREST = { x: 1920, y: 0, width: 1920, height: 1040 };
 const SYNTHETIC = { x: 0, y: 0, width: 1920, height: 1080 };
 
 describe("bubble work-area fallback", () => {
+  it("uses the pet display in follow mode even when the primary display is usable", () => {
+    const primary = { x: 0, y: 0, width: 1920, height: 1040 };
+    assert.strictEqual(resolveBubbleWorkArea({
+      followPet: true,
+      petBounds: PET_BOUNDS,
+      getPrimaryWorkArea: () => primary,
+      getNearestWorkArea: (x, y) => {
+        assert.strictEqual(x, 2160);
+        assert.strictEqual(y, 160);
+        return NEAREST;
+      },
+      syntheticWorkArea: SYNTHETIC,
+    }), NEAREST);
+  });
+
   it("falls back to the pet display when the primary provider fails or is unusable", () => {
     for (const getPrimaryWorkArea of [
       () => { throw new Error("topology race"); },
