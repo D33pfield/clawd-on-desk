@@ -9293,6 +9293,19 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes('checkboxInput.type = "checkbox"'));
     assert.ok(coreSource.includes("checkboxChecked: !!(checkboxInput && checkboxInput.checked)"));
     assert.ok(css.includes("grid-template-columns: repeat(3, minmax(0, 1fr))"));
+    assert.match(
+      css,
+      /\.permission-automation-segmented button\s*\{[^}]*min-height:\s*34px;[^}]*align-items:\s*center;[^}]*justify-content:\s*center;[^}]*text-align:\s*center;/s
+    );
+    assert.match(
+      css,
+      /\.permission-automation-segmented button\.active\s*\{[^}]*font-weight:\s*600;/s
+    );
+    assert.ok(css.includes(".permission-automation-segmented button:not(.active):not(:disabled):hover"));
+    assert.match(
+      css,
+      /\.permission-automation-segmented button:focus-visible\s*\{[^}]*outline-offset:\s*1px;/s
+    );
     assert.ok(generalSource.includes("helpers.buildSegmentedRadio({"));
     assert.ok(generalSource.includes('ariaLabel: t("rowPermissionAutomation")'));
     assert.ok(generalSource.includes('className: "permission-automation-segmented"'));
