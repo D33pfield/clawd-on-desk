@@ -129,9 +129,13 @@ describe("opencode-family plugin factory", () => {
     assert.notStrictEqual(oc.__test._statePostTailBySession, mc.__test._statePostTailBySession);
     assert.notStrictEqual(oc.__test._sessionInstanceDirectoryById, mc.__test._sessionInstanceDirectoryById);
     assert.notStrictEqual(oc.__test._permissionTargetByRequestId, mc.__test._permissionTargetByRequestId);
+    assert.notStrictEqual(oc.__test._permissionPostTailByRequestId, mc.__test._permissionPostTailByRequestId);
     oc.__test._lastStatePerSession.set("opencode:ses_x", "working");
     assert.strictEqual(mc.__test._lastStatePerSession.size, 0);
     oc.__test._lastStatePerSession.clear();
+    oc.__test._permissionPostTailByRequestId.set("per-shared", Promise.resolve(true));
+    assert.strictEqual(mc.__test._permissionPostTailByRequestId.has("per-shared"), false);
+    oc.__test._permissionPostTailByRequestId.clear();
 
     // Port cache: live getter/setter into the closure, isolated per instance.
     assert.strictEqual(oc.__test._cachedPort, null);

@@ -30,7 +30,7 @@ const {
 } = require("./server-permission-utils");
 const { resolveHookAgentId } = require("./server-agent-id");
 const { getAgent } = require("../agents/registry");
-const { isOpencodeFamily } = require("../agents/opencode-family");
+const { isOpencodeFamily, getFamilyConfig } = require("../agents/opencode-family");
 const {
   normalizeOpencodeFamilyBridgeUrl,
   isValidOpencodeFamilyBridgeToken,
@@ -178,6 +178,22 @@ function arePermissionBubblesEnabled(ctx) {
 
 function normalizeString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function boundedPermissionLogValue(value) {
+  if (typeof value !== "string") return "(invalid)";
+  const clean = value.replace(/[\u0000-\u001F\u007F-\u009F]/g, " ").trim();
+  if (!clean) return "(empty)";
+  return clean.length > 120 ? `${clean.slice(0, 119)}…` : clean;
+}
+
+function normalizeOpencodeFamilySessionId(agentId, value) {
+  const config = getFamilyConfig(agentId);
+  if (!config || typeof value !== "string" || !value.trim()) return null;
+  const raw = value.trim();
+  return raw.startsWith(config.sessionIdPrefix)
+    ? raw
+    : `${config.sessionIdPrefix}${raw}`;
 }
 
 const DSH_REASON_MAX_CHARS = 500;
@@ -599,10 +615,24 @@ function handlePermissionPost(req, res, options) {
     const requestHeaders = req && req.headers && typeof req.headers === "object"
       ? req.headers
       : {};
+    const hasPermissionEventDiscriminator = !!data
+      && typeof data === "object"
+      && Object.prototype.hasOwnProperty.call(data, "permission_event");
     const hookIdentity = resolveHookAgentId(data, {
       customAgentIds: typeof ctx.getCustomAgentIds === "function" ? ctx.getCustomAgentIds() : [],
     });
-    const recordRequestHookEvent = createRequestHookRecorder(hookIdentity, data, "permission");
+    // Lifecycle cleanup is not a new PermissionRequest. Do not even construct a
+    // request recorder for it, otherwise a no-op completion can appear in the
+    // hook-event ring as user-facing permission activity.
+    const recordRequestHookEvent = hasPermissionEventDiscriminator
+      ? {
+        accepted() {},
+        droppedByDisabled() {},
+        droppedByDnd() {},
+        droppedInvalidAgent() {},
+        droppedUnsupported() {},
+      }
+      : createRequestHookRecorder(hookIdentity, data, "permission");
     if (hookIdentity.rejected) {
       recordRequestHookEvent.droppedInvalidAgent();
       sendGenericPermissionNoDecision(res);
@@ -614,6 +644,12 @@ function handlePermissionPost(req, res, options) {
       return;
     }
     const { agentId } = hookIdentity;
+    if (hasPermissionEventDiscriminator && !isOpencodeFamily(agentId)) {
+      res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+      res.end("ok");
+      ctx.permLog(`permission lifecycle no-op: unsupported agent=${agentId || "unknown"}`);
+      return;
+    }
     const trustedProfileId = remoteProfile && typeof remoteProfile.profileId === "string"
       ? remoteProfile.profileId
       : "local";
@@ -660,6 +696,47 @@ function handlePermissionPost(req, res, options) {
       if (isOpencodeFamily(agentId)) {
         res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
         res.end("ok");
+
+        if (hasPermissionEventDiscriminator) {
+          if (data.permission_event !== "replied") {
+            ctx.permLog(`${agentId} permission lifecycle no-op: unsupported event`);
+            return;
+          }
+
+          const rawSessionId = normalizeOpencodeFamilySessionId(agentId, data.session_id);
+          const requestId = typeof data.request_id === "string" && data.request_id
+            ? data.request_id
+            : null;
+          const bridgeUrl = normalizeOpencodeFamilyBridgeUrl(data.lifecycle_bridge_url);
+          const bridgeToken = isValidOpencodeFamilyBridgeToken(data.lifecycle_bridge_token)
+            ? data.lifecycle_bridge_token
+            : null;
+          if (!rawSessionId || !requestId || !bridgeUrl || !bridgeToken) {
+            const reason = !rawSessionId
+              ? "missing session_id"
+              : !requestId
+                ? "missing request_id"
+                : !bridgeUrl
+                  ? "invalid lifecycle_bridge_url"
+                  : "invalid lifecycle_bridge_token";
+            ctx.permLog(`${agentId} permission lifecycle no-op: ${reason}`);
+            return;
+          }
+
+          const sessionIdentity = resolvePermissionSession(rawSessionId, rawSessionId);
+          const dismissed = typeof ctx.dismissOpencodeFamilyPermissionResolvedExternally === "function"
+            ? ctx.dismissOpencodeFamilyPermissionResolvedExternally({
+              agentId,
+              requestId,
+              sessionId: sessionIdentity.sessionId,
+              bridgeUrl,
+              bridgeToken,
+            })
+            : 0;
+          ctx.permLog(`${agentId} permission lifecycle replied: request=${boundedPermissionLogValue(requestId)} matched=${dismissed}`);
+          return;
+        }
+
         const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : "unknown";
         const interaction = classifyPermissionInteraction({
           agentId,

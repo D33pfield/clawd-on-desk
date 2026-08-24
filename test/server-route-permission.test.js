@@ -76,6 +76,7 @@ function makeCtx(overrides = {}) {
     showPermissionBubble: [],
     sendPermissionResponse: [],
     replyOpencodeFamilyPermission: [],
+    dismissOpencodeFamilyPermissionResolvedExternally: [],
     resolved: [],
     maybeStartRemoteApproval: [],
     addPendingPermission: [],
@@ -99,6 +100,10 @@ function makeCtx(overrides = {}) {
       res.end(behavior);
     },
     replyOpencodeFamilyPermission: (payload) => calls.replyOpencodeFamilyPermission.push(payload),
+    dismissOpencodeFamilyPermissionResolvedExternally: (payload) => {
+      calls.dismissOpencodeFamilyPermissionResolvedExternally.push(payload);
+      return 0;
+    },
     resolvePermissionEntry: (entry, behavior, message) => calls.resolved.push({ entry, behavior, message }),
     maybeStartRemoteApproval: (entry) => calls.maybeStartRemoteApproval.push(entry),
     addPendingPermission(entry) {
@@ -830,6 +835,140 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(reply.requestId, "req-boom");
     assert.strictEqual(reply.bridgeUrl, "http://127.0.0.1:1234");
     assert.strictEqual(reply.bridgeToken, "token");
+  });
+
+  it("routes a strict family replied lifecycle before every create/decision gate and never records a request", async () => {
+    const lifecycleCalls = [];
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "opencode",
+      hook_source: "opencode-plugin",
+      permission_event: "replied",
+      session_id: "opencode:ses-life",
+      request_id: "per-life",
+      lifecycle_bridge_url: "http://127.0.0.1:43210",
+      lifecycle_bridge_token: "token_life",
+    }), {
+      ctx: {
+        doNotDisturb: true,
+        hideBubbles: true,
+        isAgentEnabled: () => false,
+        isAgentPermissionsEnabled: () => false,
+        dismissOpencodeFamilyPermissionResolvedExternally: (identity) => {
+          lifecycleCalls.push(identity);
+          return 1;
+        },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID);
+    assert.strictEqual(res.body, "ok");
+    assert.deepStrictEqual(lifecycleCalls, [{
+      agentId: "opencode",
+      requestId: "per-life",
+      sessionId: localSessionKey("opencode:ses-life"),
+      bridgeUrl: "http://127.0.0.1:43210",
+      bridgeToken: "token_life",
+    }]);
+    assert.deepStrictEqual(res.recorder, [], "lifecycle must not create a PermissionRequest recorder");
+    assert.deepStrictEqual(res.ctx.calls.updateSession, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    assert.deepStrictEqual(res.ctx.calls.addPendingPermission, []);
+    assert.deepStrictEqual(res.ctx.calls.replyOpencodeFamilyPermission, []);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
+  });
+
+  it("200-no-ops malformed lifecycle identity without a default session or a thrown validator error", async () => {
+    const invalidBodies = [
+      { session_id: null },
+      { session_id: 42 },
+      { lifecycle_bridge_url: "http://localhost:43210" },
+      { lifecycle_bridge_url: { href: "http://127.0.0.1:43210" } },
+      { lifecycle_bridge_token: 42 },
+      { lifecycle_bridge_token: "x".repeat(129) },
+      { request_id: "" },
+    ];
+    for (const delta of invalidBodies) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: "opencode",
+        permission_event: "replied",
+        session_id: "opencode:strict",
+        request_id: "per-strict",
+        lifecycle_bridge_url: "http://127.0.0.1:43210",
+        lifecycle_bridge_token: "token_strict",
+        ...delta,
+      }));
+      assert.strictEqual(res.statusCode, 200);
+      assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID);
+      assert.deepStrictEqual(res.recorder, []);
+      assert.deepStrictEqual(
+        res.ctx.calls.dismissOpencodeFamilyPermissionResolvedExternally,
+        [],
+        JSON.stringify(delta)
+      );
+      assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+      assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    }
+  });
+
+  it("fails closed for unknown permission_event instead of creating an unknown family bubble", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "opencode",
+      permission_event: "resolved-someday",
+      session_id: "opencode:unknown-event",
+      request_id: "per-unknown-event",
+      lifecycle_bridge_url: "http://127.0.0.1:1234",
+      lifecycle_bridge_token: "token-unknown-event",
+    }));
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(res.recorder, []);
+    assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    assert.deepStrictEqual(res.ctx.calls.dismissOpencodeFamilyPermissionResolvedExternally, []);
+  });
+
+  it("keeps ACK and ordinary family enqueue in one synchronous execution segment", () => {
+    const body = JSON.stringify({
+      agent_id: "opencode",
+      session_id: "opencode:sync",
+      tool_name: "Bash",
+      request_id: "per-sync",
+      bridge_url: "http://127.0.0.1:1234",
+      bridge_token: "token",
+    });
+    const ctx = makeCtx();
+    let dataHandler = null;
+    const req = {
+      headers: {},
+      on(eventName, handler) {
+        if (eventName === "data") dataHandler = handler;
+        if (eventName === "end") {
+          dataHandler(Buffer.from(body));
+          handler();
+        }
+        return this;
+      },
+    };
+    const res = makeRes();
+    let pendingAtAck = null;
+    const originalEnd = res.end;
+    res.end = function endAndSnapshot(data) {
+      originalEnd.call(this, data);
+      pendingAtAck = ctx.pendingPermissions.length;
+    };
+
+    handlePermissionPost(req, res, {
+      ctx,
+      createRequestHookRecorder: () => ({
+        accepted() {}, droppedByDisabled() {}, droppedByDnd() {},
+        droppedInvalidAgent() {}, droppedUnsupported() {},
+      }),
+    });
+
+    assert.strictEqual(pendingAtAck, 0, "ACK is written immediately before enqueue");
+    assert.strictEqual(ctx.pendingPermissions.length, 1, "enqueue completes before the handler returns");
+    assert.strictEqual(ctx.pendingPermissions[0].familyRequestId, "per-sync");
   });
 
   it("destroys the Claude/CodeBuddy connection during DND", async () => {

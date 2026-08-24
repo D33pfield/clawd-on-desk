@@ -74,6 +74,11 @@ const MAX_CONTEXT_USAGE_ENTRIES = 1024;
 // generous timeout is safe. 200ms was too tight when Clawd's IPC roundtrip
 // (main → renderer → main) ran under load and silently timed out.
 const POST_TIMEOUT_MS = 1000;
+// A native host reply is a completion signal for an already-forwarded
+// permission. Retry only long enough to cover a transient Clawd restart; the
+// request-scoped queue keeps every attempt behind the original asked POST.
+const PERMISSION_LIFECYCLE_MAX_ATTEMPTS = 3;
+const PERMISSION_LIFECYCLE_RETRY_DELAYS_MS = [100, 400];
 // Keep one in-flight request plus a bounded pending suffix for each session.
 // A localhost process can accept fetches without answering, and OpenCode keeps
 // emitting events while that request waits. Without a hard cap, even an
@@ -345,6 +350,10 @@ export function createOpencodeFamilyPlugin(config) {
   // Using the most recently initialized client here routes interleaved replies
   // into the wrong Instance and produces PermissionNotFound/502.
   const _permissionTargetByRequestId = new Map();
+  // asked/replied share one causal delivery tail per request. A Map.delete()
+  // cannot cancel a live promise, so tails remove themselves only after
+  // settlement and only when their identity is still current.
+  const _permissionPostTailByRequestId = new Map();
   // Reverse bridge state. Set by startBridge() at plugin init. Clawd receives
   // _bridgeUrl + _bridgeToken with every /permission forward and POSTs back.
   let _bridgeUrl = "";
@@ -992,19 +1001,6 @@ export function createOpencodeFamilyPlugin(config) {
     return { recognized: false, metadataAccepted: false };
   }
 
-  // Fire-and-forget direct channel used by /permission. Returning the settled
-  // promise is only for deterministic tests; production event hooks never await
-  // it.
-  function postToClawd(urlPath, body, logTag) {
-    const snapshot = snapshotPost(body, logTag);
-    return deliverPost(urlPath, snapshot)
-      .then((result) => result.recognized)
-      .catch((err) => {
-        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} UNCAUGHT ${err && err.message}`);
-        return false;
-      });
-  }
-
   function isReplaceableStateSnapshot(snapshot) {
     const body = snapshot && snapshot.body;
     return !!body
@@ -1174,11 +1170,54 @@ export function createOpencodeFamilyPlugin(config) {
     return snapshot.completion;
   }
 
+  function waitForPermissionRetry(delayMs) {
+    return new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  async function deliverPermissionSnapshot(snapshot, lifecycle) {
+    const maxAttempts = lifecycle ? PERMISSION_LIFECYCLE_MAX_ATTEMPTS : 1;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const result = await deliverPost("/permission", snapshot);
+      if (result.recognized) return true;
+      if (attempt >= maxAttempts) break;
+      const delayMs = PERMISSION_LIFECYCLE_RETRY_DELAYS_MS[attempt - 1] || 0;
+      debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} retry=${attempt + 1}/${maxAttempts} delay=${delayMs}ms`);
+      if (delayMs > 0) await waitForPermissionRetry(delayMs);
+    }
+    return false;
+  }
+
+  function enqueuePermissionPost(requestId, body, options = {}) {
+    const lifecycle = options.lifecycle === true;
+    const logTag = lifecycle
+      ? `PERM lifecycle=replied req=${requestId}`
+      : `PERM tool=${body && body.tool_name} req=${requestId}`;
+    const snapshot = snapshotPost(body, logTag);
+    const previous = _permissionPostTailByRequestId.get(requestId) || Promise.resolve(true);
+    const current = previous
+      .catch(() => false)
+      .then(() => deliverPermissionSnapshot(snapshot, lifecycle))
+      .catch((err) => {
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} UNCAUGHT ${err && err.message}`);
+        return false;
+      });
+    _permissionPostTailByRequestId.set(requestId, current);
+    void current.finally(() => {
+      if (_permissionPostTailByRequestId.get(requestId) === current) {
+        _permissionPostTailByRequestId.delete(requestId);
+      }
+    });
+    return current;
+  }
+
   // Fire-and-forget permission forward. Clawd decides allow/deny/always in its
   // bubble UI and replies through the reverse bridge (POST /reply with the
-  // request_id + decision). The plugin never waits.
-  function postPermissionToClawd(body) {
-    postToClawd("/permission", body, `PERM tool=${body.tool_name} req=${body.request_id}`);
+  // request_id + decision). The event hook never awaits this settled promise;
+  // it is returned for ordering and deterministic tests only.
+  function postPermissionToClawd(body, options = {}) {
+    const requestId = body && typeof body.request_id === "string" ? body.request_id : "";
+    if (!requestId) return Promise.resolve(false);
+    return enqueuePermissionPost(requestId, body, options);
   }
 
   function buildStateBody(state, eventName, sessionId) {
@@ -1341,6 +1380,9 @@ export function createOpencodeFamilyPlugin(config) {
     get _statePostQueueBySession() { return _statePostQueueBySession; },
     get _statePostMaxPending() { return STATE_POST_MAX_PENDING; },
     get _permissionTargetByRequestId() { return _permissionTargetByRequestId; },
+    get _permissionPostTailByRequestId() { return _permissionPostTailByRequestId; },
+    handlePermissionReplied,
+    enqueuePermissionPost,
     get _cachedPort() { return _cachedPort; },
     set _cachedPort(v) { _cachedPort = v; },
     get _bridgeUrl() { return _bridgeUrl; },
@@ -1644,6 +1686,70 @@ export function createOpencodeFamilyPlugin(config) {
     });
   }
 
+  function permissionShapeKeys(properties) {
+    if (!properties || typeof properties !== "object" || Array.isArray(properties)) return [];
+    return Object.keys(properties)
+      .filter((key) => /^[A-Za-z0-9_.-]{1,64}$/.test(key))
+      .slice(0, 12);
+  }
+
+  function boundedPermissionRequestId(value) {
+    if (typeof value !== "string") return "(invalid)";
+    const clean = value.replace(/[\u0000-\u001F\u007F-\u009F]/g, " ").trim();
+    if (!clean) return "(empty)";
+    return clean.length > 120 ? `${clean.slice(0, 119)}…` : clean;
+  }
+
+  // Current OpenCode/MiMo completion contract:
+  // { sessionID, requestID, reply }. Older permissionID/response shapes belong
+  // to a different upstream generation and intentionally fail closed.
+  function handlePermissionReplied(event) {
+    const properties = event && event.properties && typeof event.properties === "object"
+      ? event.properties
+      : {};
+    const requestId = typeof properties.requestID === "string" && properties.requestID.trim()
+      ? properties.requestID
+      : null;
+    if (!requestId) {
+      debugLog(`PERM lifecycle skip reason=unsupported-shape keys=[${permissionShapeKeys(properties).join(",")}]`);
+      return Promise.resolve(false);
+    }
+
+    const target = _permissionTargetByRequestId.get(requestId) || null;
+    const targetSessionId = normalizeSessionId(target && target.sessionId);
+    const eventSessionId = normalizeSessionId(properties.sessionID);
+    const sessionId = targetSessionId || eventSessionId;
+    const logRequestId = boundedPermissionRequestId(requestId);
+
+    if (targetSessionId && eventSessionId && targetSessionId !== eventSessionId) {
+      debugLog(`PERM lifecycle session mismatch req=${logRequestId} target=${boundedPermissionRequestId(targetSessionId)} event=${boundedPermissionRequestId(eventSessionId)}`);
+    }
+
+    // Native resolution makes the reverse bridge target stale immediately.
+    // Delete before any network wait so a late Clawd click receives 404 and
+    // never calls the host SDK a second time.
+    _permissionTargetByRequestId.delete(requestId);
+
+    if (!sessionId) {
+      debugLog(`PERM lifecycle skip reason=missing-session req=${logRequestId}`);
+      return Promise.resolve(false);
+    }
+    if (!_bridgeUrl || !_bridgeTokenHex) {
+      debugLog(`PERM lifecycle skip reason=bridge-unavailable req=${logRequestId}`);
+      return Promise.resolve(false);
+    }
+
+    return postPermissionToClawd({
+      agent_id: AGENT_ID,
+      hook_source: HOOK_SOURCE,
+      permission_event: "replied",
+      session_id: sessionId,
+      request_id: requestId,
+      lifecycle_bridge_url: _bridgeUrl,
+      lifecycle_bridge_token: _bridgeTokenHex,
+    }, { lifecycle: true });
+  }
+
   // Constant-time token comparison to thwart timing oracle attacks on the
   // bridge auth. Any local process can see 127.0.0.1 binds so the token is
   // the only thing keeping untrusted code from rubber-stamping tool calls.
@@ -1906,6 +2012,14 @@ export function createOpencodeFamilyPlugin(config) {
           if (!event || typeof event.type !== "string") return;
           if (instanceDisposed) return;
 
+          // Completion is cleanup-only. Handle it before session-directory and
+          // root/last-seen capture so a standalone permission.replied cannot
+          // pollute the fallback used by a later legacy permission.asked.
+          if (event.type === "permission.replied") {
+            void handlePermissionReplied(event);
+            return;
+          }
+
           // Phase 3: capture the root session on first sighting. Any later
           // sessionID is a subtask spawned by the parent's `task` tool, and
           // its session.idle will be downgraded to SessionEnd in translateEvent.
@@ -1959,9 +2073,9 @@ export function createOpencodeFamilyPlugin(config) {
             }
           }
 
-          // Phase 2: permission.asked rides a parallel channel — forward to Clawd
-          // and skip state translation. Clawd replies through the reverse bridge,
-          // so we don't need to watch permission.replied here.
+          // permission.asked rides a parallel channel and shares a request FIFO
+          // with permission.replied. Clawd replies through the reverse bridge
+          // only when its own bubble wins the race.
           if (event.type === "permission.asked") {
             handlePermissionAsked(event, {
               client: instanceClient,
