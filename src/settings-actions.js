@@ -211,6 +211,7 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "qoder",
   "reasonix",
   "qoderwork",
+  "traecode",
   "qwenwork",
 ]);
 

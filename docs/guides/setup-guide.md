@@ -125,6 +125,14 @@ Running `npm run install:claude-hooks` for a local hook repair does not opt in. 
 
 **Qoder** — hooks live in `~/.qoder/settings.json`. Install it from **Settings → Agents** when you want local Qoder tracking; after that Clawd keeps the hooks synced on launch while Qoder remains enabled. You can also run `npm run install:qoder-hooks` manually. Qoder is **state-only** in Phase 1: the hook always returns `{}`, and `PermissionRequest` / `PermissionDenied` are observed as passive notifications — Clawd never shows permission bubbles or answers permission decisions, so Qoder's native permission flow stays in control. Startup recovery watches only the Qoder CLI processes (`qodercli` / `qoder-cli`), so an already-open idle Qoder IDE is not treated as active agent work.
 
+**TraeCode (Trae CN)** — experimental, state-only. Hooks live in `~/.trae-cn/hooks.json`. Install it from **Settings → Agents**, or run `npm run install:traecode-hooks` / `npm run uninstall:traecode-hooks`.
+
+- **Manual enable required:** TraeCode hooks must be enabled in the Trae IDE itself — there is no programmatic bypass. Open **Settings → Hooks**, create a **Global** hook, click **Enable** in the security warning panel, and set the run mode to **Sandbox**. Clawd does not require **Local auto-run**. This path has been validated with Trae CN 3.3.94 on Windows and macOS. See the [official Trae hooks doc](https://docs.trae.cn/ide/automate-actions-with-hooks).
+- **Windows command form:** Clawd deliberately writes a quote-free `powershell.exe ... -EncodedCommand <base64>` wrapper. Trae's Windows sandbox passes the hook through a native `--command-line` argument that splits quoted paths such as `C:\Program Files\nodejs\node.exe`; the encoded payload preserves that argument boundary. Decoding only the `<base64>` token with `[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String("<base64>"))` should yield `& '<node.exe>' '<.../traecode-hook.js>'`.
+- **Scope:** this first release covers **Trae CN** (`~/.trae-cn/hooks.json`, process names `Trae CN.exe` / `Trae CN`). The international Trae build (`~/.trae/hooks.json`, `Trae.exe`) is not covered.
+- **State-only:** the hook's stdout is always `{}` on every path — Clawd registers no `/permission` endpoint and produces no Allow / Deny; every approval stays in Trae's own permission flow. There is no `SessionEnd` event.
+- **Session title:** Trae stores the session title server-side, so Clawd derives it from the first prompt line and keeps the **first** title per session (server-side first-wins). Closed conversations retire via the desktop idle-timeout cleanup (traecode-desktop-idle-timeout).
+
 ## Permission handling automation
 
 Use the pet or tray **Permission handling** submenu to choose how Clawd handles supported permission requests:

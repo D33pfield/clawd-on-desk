@@ -216,6 +216,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncTraeCodeHooks() {
+    try {
+      if (typeof ctx.syncTraeCodeHooksImpl === "function") return ctx.syncTraeCodeHooksImpl();
+      const { registerTraeCodeHooks } = require("../hooks/traecode-install.js");
+      const result = registerTraeCodeHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced TraeCode hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "TraeCode", "traecode-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync TraeCode hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync TraeCode hooks" };
+    }
+  }
+
   function syncKiroHooks() {
     try {
       if (typeof ctx.syncKiroHooksImpl === "function") return ctx.syncKiroHooksImpl();
@@ -591,6 +606,7 @@ function createIntegrationSyncRuntime(options = {}) {
     qoder: syncQoderHooks,
     reasonix: syncReasonixHooks,
     qoderwork: syncQoderWorkHooks,
+    traecode: syncTraeCodeHooks,
     qwenwork: syncQwenWorkHooks,
   });
 
@@ -741,6 +757,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncQoderHooks,
     syncReasonixHooks,
     syncQoderWorkHooks,
+    syncTraeCodeHooks,
     repairCodexHooks,
     repairOpenClawPlugin,
     syncIntegrationForAgent,

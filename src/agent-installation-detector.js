@@ -425,6 +425,7 @@ function detectInstallation(descriptor, paths, options) {
     case "mimocode":
     case "qoder":
     case "qoderwork":
+    case "traecode":
     case "qwenwork":
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
       return notFound();
