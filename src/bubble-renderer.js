@@ -44,11 +44,13 @@ let heightReportFrame = 0;
 let currentData = null;
 let currentExpanded = false;
 let measurementEpoch = 0;
+let restoreActiveControlToken = 0;
 let currentIsPlanReview = false;
 let planFeedbackMode = false;
 let pendingRestoreState = null;
 let sessionTrustErrorElement = null;
 let compactContentOverflow = false;
+let lastMeasuredViewportWidth = 0;
 
 // Mirrors body { padding: 6px; } above. Keep this in sync if the body padding changes.
 const BUBBLE_BODY_PADDING_Y = 12;
@@ -508,10 +510,16 @@ function applyElicitationViewport() {
 }
 
 function scheduleBubbleHeightReport() {
+  // A resize can arrive after the document loads but before main's
+  // permission-show payload. Measuring the empty shell would let a compact
+  // epoch-0 report masquerade as the first rendered-content acknowledgement.
+  if (!currentData) return;
   if (heightReportFrame) cancelAnimationFrame(heightReportFrame);
   heightReportFrame = requestAnimationFrame(() => {
     heightReportFrame = 0;
+    if (!currentData) return;
     const height = measureNaturalBubbleHeight();
+    lastMeasuredViewportWidth = window.innerWidth;
     const computed = typeof window.getComputedStyle === "function"
       ? window.getComputedStyle(commandBlock)
       : null;
@@ -642,7 +650,6 @@ function scheduleCompactOverflowMeasurement() {
 function applyPresentationView() {
   if (!currentData) return;
   const data = currentData;
-  const wasExpanded = card.classList.contains("expanded");
   card.classList.toggle("expanded", currentExpanded);
   btnCollapse.title = bubbleText(data.lang, "collapse");
   btnCollapse.setAttribute("aria-label", bubbleText(data.lang, "collapse"));
@@ -711,9 +718,6 @@ function applyPresentationView() {
     planFeedbackForm.classList.remove("visible");
   }
 
-  if (currentExpanded && !wasExpanded && elicitationMode) {
-    requestAnimationFrame(focusActiveElicitationControl);
-  }
   scheduleCompactOverflowMeasurement();
   scheduleBubbleHeightReport();
 }
@@ -1502,6 +1506,7 @@ function show(data) {
 }
 
 function hide() {
+  restoreActiveControlToken += 1;
   card.classList.remove("visible");
   card.classList.add("hiding");
 }
@@ -1577,7 +1582,20 @@ document.addEventListener("keydown", (e) => {
   btnAllow.click();
 });
 
-window.addEventListener("resize", applyElicitationViewport);
+window.addEventListener("resize", () => {
+  applyElicitationViewport();
+  // The card has no width of its own (html/body are 100% and .card fills them),
+  // so its natural height depends on the BrowserWindow width. Main sends the
+  // compact presentation before repositionBubbles() narrows the window from the
+  // expanded width, so the frame that renders compact can measure against the
+  // still-wide window and under-report by a wrapped line. Nothing else
+  // re-measures afterwards, which left the collapsed card clipped. Re-report on
+  // every real width change; the existing epoch/state fence in main drops any
+  // report that no longer matches the requested presentation.
+  const viewportWidth = window.innerWidth;
+  if (!currentData || viewportWidth === lastMeasuredViewportWidth) return;
+  scheduleBubbleHeightReport();
+});
 
 // ── Plan Feedback Mode ──
 
@@ -1654,6 +1672,7 @@ if (typeof window.bubbleAPI.onPresentation === "function") {
     if (!Number.isInteger(nextEpoch) || nextEpoch < measurementEpoch) return;
     measurementEpoch = nextEpoch;
     currentExpanded = presentation.expanded === true;
+    if (!currentExpanded) restoreActiveControlToken += 1;
     applyPresentationView();
   });
 }
@@ -1714,7 +1733,17 @@ if (window.bubbleAPI && typeof window.bubbleAPI.setImeEditing === "function") {
 window.bubbleAPI.onPermissionShow(show);
 if (typeof window.bubbleAPI.onRestoreActiveControl === "function") {
   window.bubbleAPI.onRestoreActiveControl(() => {
+    const restoreToken = ++restoreActiveControlToken;
+    const restoreEpoch = measurementEpoch;
     requestAnimationFrame(() => {
+      if (
+        restoreToken !== restoreActiveControlToken
+        || restoreEpoch !== measurementEpoch
+        || document.visibilityState === "hidden"
+        || !currentExpanded
+      ) {
+        return;
+      }
       if (elicitationMode && currentExpanded) {
         focusActiveElicitationControl();
       } else if (planFeedbackMode && currentExpanded) {
@@ -1723,4 +1752,7 @@ if (typeof window.bubbleAPI.onRestoreActiveControl === "function") {
     });
   });
 }
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") restoreActiveControlToken += 1;
+});
 window.bubbleAPI.onPermissionHide(hide);

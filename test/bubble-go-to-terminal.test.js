@@ -65,7 +65,7 @@ class FakeElement {
   dispatch(type, event = {}) {
     for (const listener of this.listeners.get(type) || []) listener({ target: this, ...event });
   }
-  focus() {}
+  focus() { this.focusCount = (this.focusCount || 0) + 1; }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) || null; }
   removeAttribute(name) { this.attributes.delete(name); }
@@ -73,7 +73,7 @@ class FakeElement {
   querySelectorAll() { return []; }
 }
 
-function createHarness() {
+function createHarness(options = {}) {
   const elements = new Map();
   for (const id of [
     "card", "toolPill", "toolPillText", "commandBlock", "irreversibleBadge",
@@ -89,22 +89,33 @@ function createHarness() {
   const headerTitle = new FakeElement("span");
   const decisions = [];
   const expandedRequests = [];
+  const animationFrames = [];
+  const documentListeners = new Map();
+  const windowListeners = new Map();
+  const heightReports = [];
   let showPermission;
   let showPresentation;
+  let restoreActiveControl;
 
   const document = {
     activeElement: null,
+    visibilityState: options.visibilityState || "visible",
     getElementById: (id) => elements.get(id),
     querySelector: (selector) => selector === ".header-title" ? headerTitle : null,
     createElement: (tagName) => new FakeElement(tagName),
-    addEventListener() {},
+    addEventListener(type, callback) {
+      const listeners = documentListeners.get(type) || [];
+      listeners.push(callback);
+      documentListeners.set(type, listeners);
+    },
   };
   const bubbleAPI = {
     decide: (decision) => decisions.push(decision),
-    reportHeight() {},
+    reportHeight: (report) => heightReports.push(report),
     onPermissionShow: (callback) => { showPermission = callback; },
     onPermissionHide() {},
     onPresentation: (callback) => { showPresentation = callback; },
+    onRestoreActiveControl: (callback) => { restoreActiveControl = callback; },
     setExpanded: (expanded) => expandedRequests.push(expanded),
   };
   const context = {
@@ -116,10 +127,22 @@ function createHarness() {
         detectIrreversible: () => null,
       },
       bubbleAPI,
-      addEventListener() {},
+      innerWidth: options.innerWidth || 480,
+      addEventListener(type, callback) {
+        const listeners = windowListeners.get(type) || [];
+        listeners.push(callback);
+        windowListeners.set(type, listeners);
+      },
     },
     document,
-    requestAnimationFrame(callback) { callback(); return 1; },
+    requestAnimationFrame(callback) {
+      if (options.deferFrames) {
+        animationFrames.push(callback);
+      } else {
+        callback();
+      }
+      return animationFrames.length || 1;
+    },
     cancelAnimationFrame() {},
     console,
   };
@@ -131,6 +154,19 @@ function createHarness() {
     decisions,
     expandedRequests,
     present(data) { showPresentation(data); },
+    restoreActiveControl() { restoreActiveControl(); },
+    setVisibility(state) {
+      document.visibilityState = state;
+      for (const callback of documentListeners.get("visibilitychange") || []) callback();
+    },
+    flushAnimationFrames() {
+      for (const callback of animationFrames.splice(0)) callback();
+    },
+    heightReports,
+    resizeViewport(width) {
+      context.window.innerWidth = width;
+      for (const callback of windowListeners.get("resize") || []) callback();
+    },
     element(id) { return elements.get(id); },
     terminalButtons() {
       return [
@@ -275,6 +311,154 @@ describe("permission bubble compact/detail presentation", () => {
     assert.strictEqual(harness.element("actions").style.display, "none");
     assert.strictEqual(harness.element("btnExpand").textContent, "Answer · Questions: 2");
     assert.strictEqual(harness.element("card").classList.contains("expanded"), false);
+  });
+
+  it("renders an initially expanded Ask without the compact Answer entry", () => {
+    const harness = createHarness();
+    harness.show({
+      toolName: "AskUserQuestion",
+      toolInput: {
+        questions: [
+          {
+            id: "0",
+            question: "Choose one",
+            options: [{ label: "One", description: "First option" }],
+          },
+        ],
+      },
+      interaction: interaction("human-question", { answerQuestions: true }),
+      presentation: { expanded: true, measurementEpoch: 0 },
+    });
+
+    assert.strictEqual(harness.element("card").classList.contains("expanded"), true);
+    assert.strictEqual(harness.element("actions").style.display, "");
+    assert.strictEqual(harness.element("btnExpand").classList.contains("visible"), false);
+    assert.strictEqual(harness.element("btnCollapse").textContent, "Collapse");
+    assert.deepStrictEqual(harness.expandedRequests, []);
+  });
+
+  it("re-measures the compact card after the window finally narrows", () => {
+    const harness = createHarness();
+    harness.show({
+      toolName: "AskUserQuestion",
+      toolInput: {
+        questions: [{
+          id: "0",
+          question: "Choose one",
+          options: [{ label: "One", description: "First option" }],
+        }],
+      },
+      interaction: interaction("human-question", { answerQuestions: true }),
+      presentation: { expanded: true, measurementEpoch: 0 },
+    });
+
+    // Main collapses this card because another request took the expanded owner.
+    // It sends the compact presentation before repositionBubbles() narrows the
+    // window, so this frame can still measure against the expanded width.
+    harness.present({ expanded: false, measurementEpoch: 1 });
+    const wideCount = harness.heightReports.length;
+    assert.ok(wideCount > 0, "collapsing reports a compact height");
+    const wide = harness.heightReports[wideCount - 1];
+    assert.strictEqual(wide.state, "compact");
+
+    // The window narrows to the compact width and the same content wraps taller.
+    harness.element("card").offsetHeight = 160;
+    harness.element("card").scrollHeight = 160;
+    harness.resizeViewport(326);
+
+    const afterResize = harness.heightReports.slice(wideCount);
+    assert.ok(afterResize.length > 0,
+      "a real width change must schedule a fresh measurement, or the card stays clipped");
+    const narrow = afterResize[afterResize.length - 1];
+    assert.strictEqual(narrow.state, "compact");
+    assert.strictEqual(narrow.measurementEpoch, 1,
+      "the correction keeps the epoch main asked for so it is not fenced out");
+    assert.ok(narrow.height > wide.height,
+      "the narrower window reports the taller wrapped height");
+
+    // Main answers a new height by resizing again. That must not loop.
+    const settled = harness.heightReports.length;
+    harness.resizeViewport(326);
+    assert.strictEqual(harness.heightReports.length, settled,
+      "an unchanged width must not schedule another report");
+  });
+
+  it("does not acknowledge a resize before permission content arrives", () => {
+    const harness = createHarness({ innerWidth: 340 });
+
+    harness.resizeViewport(500);
+    assert.strictEqual(harness.heightReports.length, 0,
+      "an empty renderer must not let a resize masquerade as the first rendered-content ACK");
+
+    harness.show({
+      toolName: "Bash",
+      toolInput: { command: "echo ready" },
+      interaction: interaction("tool-approval"),
+      presentation: { expanded: false, measurementEpoch: 0 },
+    });
+    assert.ok(harness.heightReports.length > 0,
+      "the real permission payload still produces its normal initial height report");
+  });
+
+  it("drops a deferred explicit focus request if the bubble is hidden before its frame", () => {
+    const harness = createHarness({ deferFrames: true });
+    const focusTarget = new FakeElement("input");
+    harness.element("elicitationForm").querySelector = () => focusTarget;
+    harness.show({
+      toolName: "AskUserQuestion",
+      toolInput: {
+        questions: [{
+          id: "0",
+          question: "Choose one",
+          options: [{ label: "One", description: "First option" }],
+        }],
+      },
+      interaction: interaction("human-question", { answerQuestions: true }),
+      presentation: { expanded: true, measurementEpoch: 0 },
+    });
+
+    harness.restoreActiveControl();
+    harness.setVisibility("hidden");
+    harness.setVisibility("visible");
+    harness.flushAnimationFrames();
+    assert.strictEqual(focusTarget.focusCount || 0, 0,
+      "a hidden document must not replay an old focus intent when it reappears");
+
+    harness.restoreActiveControl();
+    harness.flushAnimationFrames();
+    assert.strictEqual(focusTarget.focusCount, 1,
+      "a fresh visible explicit restore still focuses the active answer");
+
+    harness.restoreActiveControl();
+    harness.present({ expanded: true, measurementEpoch: 1 });
+    harness.flushAnimationFrames();
+    assert.strictEqual(focusTarget.focusCount, 1,
+      "a restore request from an older presentation epoch must not focus controls");
+  });
+
+  it("restores focus when queue selection sends the IPC before the hidden document becomes visible", () => {
+    const harness = createHarness({ deferFrames: true, visibilityState: "hidden" });
+    const focusTarget = new FakeElement("input");
+    harness.element("elicitationForm").querySelector = () => focusTarget;
+    harness.show({
+      toolName: "AskUserQuestion",
+      toolInput: {
+        questions: [{
+          id: "0",
+          question: "Choose one",
+          options: [{ label: "One", description: "First option" }],
+        }],
+      },
+      interaction: interaction("human-question", { answerQuestions: true }),
+      presentation: { expanded: true, measurementEpoch: 0 },
+    });
+
+    harness.restoreActiveControl();
+    harness.setVisibility("visible");
+    harness.flushAnimationFrames();
+
+    assert.strictEqual(focusTarget.focusCount, 1,
+      "the queued rAF must survive main/show vs renderer/visibility ordering");
   });
 
   it("keeps every ordinary quick action on the compact card and reveals only the full detail after expansion", () => {

@@ -28,12 +28,18 @@ describe("AskUserQuestion bubble stepper", () => {
     assert.doesNotMatch(body, /forEach\(\(question, questionIndex\)/);
   });
 
-  it("does not focus or auto-select an option until the user expands the bubble", () => {
+  it("focuses an option only from the explicit restore event, never from visual expansion", () => {
     const body = functionBody("renderElicitationStep");
     const focusBody = functionBody("focusActiveElicitationControl");
+    const presentationBody = functionBody("applyPresentationView");
     assert.doesNotMatch(body, /\.focus\(/);
     assert.doesNotMatch(focusBody, /\.click\(/);
     assert.match(focusBody, /if \(first\) first\.focus\(\);/);
+    assert.doesNotMatch(presentationBody, /requestAnimationFrame\(focusActiveElicitationControl\)/);
+    assert.match(
+      bubbleRenderer,
+      /onRestoreActiveControl[\s\S]*requestAnimationFrame\(\(\) => \{[\s\S]*focusActiveElicitationControl\(\)/
+    );
   });
 
   it("lets answered summary rows reopen their question", () => {
