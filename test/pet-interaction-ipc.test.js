@@ -68,6 +68,7 @@ function createHarness(overrides = {}) {
     beginDragSnapshot: () => calls.push(["beginDragSnapshot"]),
     clearDragSnapshot: () => calls.push(["clearDragSnapshot"]),
     syncHitWin: () => calls.push(["syncHitWin"]),
+    syncDisplayedVisualGeometry: () => calls.push(["syncDisplayedVisualGeometry"]),
     setAccessoryMirror: overrides.setAccessoryMirror
       || ((value) => calls.push(["setAccessoryMirror", value])),
     syncImeEditingPetDodge: () => calls.push(["syncImeEditingPetDodge"]),
@@ -204,6 +205,11 @@ test("visual settlements trust only the render webContents main frame", () => {
     false
   );
   assert.strictEqual(isTrustedMainFrameEvent({ sender: webContents }, webContents), false);
+  const destroyedFrameEvent = { sender: webContents };
+  Object.defineProperty(destroyedFrameEvent, "senderFrame", {
+    get() { throw new Error("frame destroyed"); },
+  });
+  assert.strictEqual(isTrustedMainFrameEvent(destroyedFrameEvent, webContents), false);
 });
 
 test("pet interaction IPC delegates pet-interaction:reveal-session-hud to revealSessionHud", () => {
@@ -272,6 +278,7 @@ test("pet interaction IPC preserves drag lock lifecycle", () => {
     ["setDragLocked", false],
     ["clearDragSnapshot"],
     ["syncHitWin"],
+    ["syncDisplayedVisualGeometry"],
     // #640: the dodge defers its hit-window click-through write while a drag
     // is in flight — releasing the lock must re-run the sync.
     ["syncImeEditingPetDodge"],
@@ -300,6 +307,7 @@ test("pet interaction IPC finalizes drag end and always clears drag state", () =
     ["reassertWinTopmost"],
     ["scheduleHwndRecovery"],
     ["syncHitWin"],
+    ["syncDisplayedVisualGeometry"],
     ["repositionFloatingBubbles"],
     ["setDragLocked", false],
     ["clearDragSnapshot"],
@@ -311,6 +319,7 @@ test("pet interaction IPC finalizes drag end and always clears drag state", () =
     ["reassertWinTopmost"],
     ["scheduleHwndRecovery"],
     ["syncHitWin"],
+    ["syncDisplayedVisualGeometry"],
     ["repositionFloatingBubbles"],
     ["setDragLocked", false],
     ["clearDragSnapshot"],
@@ -349,6 +358,7 @@ test("pet interaction IPC does not persist when drag-end has no clamped bounds",
     ["reassertWinTopmost"],
     ["scheduleHwndRecovery"],
     ["syncHitWin"],
+    ["syncDisplayedVisualGeometry"],
     ["repositionFloatingBubbles"],
     ["setDragLocked", false],
     ["clearDragSnapshot"],
@@ -370,6 +380,7 @@ test("pet interaction IPC disables mini snap without skipping drag-end cleanup",
     ["reassertWinTopmost"],
     ["scheduleHwndRecovery"],
     ["syncHitWin"],
+    ["syncDisplayedVisualGeometry"],
     ["repositionFloatingBubbles"],
     ["setDragLocked", false],
     ["clearDragSnapshot"],

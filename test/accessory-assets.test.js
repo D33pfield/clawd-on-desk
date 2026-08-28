@@ -197,6 +197,19 @@ describe("accessory asset audit", () => {
     auditCigaretteSmil(source);
   });
 
+  it("keeps the archived PR cigarette fragment reproducible as the runtime asset", () => {
+    const runtime = fs.readFileSync(path.join(ASSET_DIR, "cigarette.svg"), "utf8");
+    const archived = fs.readFileSync(
+      path.join(__dirname, "..", "assets", "source", "outlaw-pr811", "cigarette-fragment.svg"),
+      "utf8"
+    );
+    const withoutComments = (value) => value
+      .replace(/<!--[^]*?-->/g, "")
+      .replace(/>\s+</g, "><")
+      .trim();
+    assert.strictEqual(withoutComments(archived), withoutComments(runtime));
+  });
+
   it("rejects malformed, detached, or unbounded cigarette SMIL", () => {
     const wrap = (animation) => `<svg><rect>${animation}</rect></svg>`;
     const opacity = '<animate attributeName="opacity" values="0;1" dur="1s" repeatCount="indefinite"/>';

@@ -25,6 +25,40 @@ const SVG_URL_ATTRS = new Set([
 ]);
 const WINDOWS_ABSOLUTE_PATH_RE = /^[a-zA-Z]:[\\/]/;
 const ROOT_ABSOLUTE_PATH_RE = /^[\\/](?![\\/])/;
+const ANIMATION_TAGS = new Set(["animate", "animatetransform", "animatemotion", "set"]);
+const DYNAMIC_VALUE_ATTRS = ["from", "to", "by", "values"];
+const DYNAMIC_JAVASCRIPT_RE = /javascript\s*:/i;
+
+function getAttributeCaseInsensitive(attribs, wanted) {
+  if (!attribs || typeof attribs !== "object") return undefined;
+  const key = Object.keys(attribs).find((candidate) => candidate.toLowerCase() === wanted);
+  return key === undefined ? undefined : attribs[key];
+}
+
+function hasUnsafeDynamicAnimation(node) {
+  if (!node || !node.attribs) return false;
+  const rawAnimatedAttribute = getAttributeCaseInsensitive(node.attribs, "attributename");
+  const animatedAttribute = typeof rawAnimatedAttribute === "string"
+    ? rawAnimatedAttribute.trim().toLowerCase()
+    : "";
+  if (
+    DANGEROUS_ATTR_RE.test(animatedAttribute)
+    || HREF_ATTRS.has(animatedAttribute)
+    || animatedAttribute === "style"
+  ) return true;
+
+  for (const key of DYNAMIC_VALUE_ATTRS) {
+    const value = getAttributeCaseInsensitive(node.attribs, key);
+    if (typeof value !== "string") continue;
+    const decoded = decodeResourceTarget(value);
+    if (
+      DYNAMIC_JAVASCRIPT_RE.test(value)
+      || DYNAMIC_JAVASCRIPT_RE.test(decoded)
+      || containsUnsafeCssUrl(value)
+    ) return true;
+  }
+  return false;
+}
 
 function sanitizeSvg(svgContent) {
   const { parseDocument } = require("htmlparser2");
@@ -190,6 +224,14 @@ function sanitizeNode(node) {
     if (child.type === "tag" || child.type === "script" || child.type === "style") {
       const tagName = (child.name || "").toLowerCase();
       if (DANGEROUS_TAGS.has(tagName)) {
+        node.children.splice(i, 1);
+        continue;
+      }
+      // SMIL can mutate attributes after the static markup has been sanitized.
+      // Reject animations that target URL/event/style surfaces or smuggle an
+      // unsafe URL through from/to/by/values; otherwise a safe initial href can
+      // become executable only after the document-backed SVG starts running.
+      if (ANIMATION_TAGS.has(tagName) && hasUnsafeDynamicAnimation(child)) {
         node.children.splice(i, 1);
         continue;
       }

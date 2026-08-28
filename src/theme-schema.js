@@ -188,7 +188,7 @@ function validateTheme(cfg) {
           || cfg.rendering.objectChannelFiles.some((file) => (
             typeof file !== "string"
             || basenameOnly(file) !== file
-            || !file.toLowerCase().endsWith(".svg")
+            || !file.endsWith(".svg")
           )))
       ) {
         errors.push("rendering.objectChannelFiles must contain SVG basenames only");
@@ -595,10 +595,6 @@ function projectThemeVisualUsages(cfg) {
       );
     }
   }
-  for (const file of (cfg && cfg.rendering && cfg.rendering.objectChannelFiles) || []) {
-    addVisualUsage(usages, "normal:object-channel", file, "rendering.objectChannelFiles");
-  }
-
   const rootViewBox = normalizeViewBox(cfg && cfg.viewBox);
   const miniViewBox = normalizeViewBox(cfg && cfg.miniMode && cfg.miniMode.viewBox);
   const fileViewBoxes = getCanonicalFileViewBoxes(cfg);
@@ -1208,6 +1204,9 @@ function collectRequiredAssetFiles(theme) {
   for (const usage of projectThemeVisualUsages(theme)) {
     addThemeAssetFile(files, usage.file);
   }
+  for (const file of (theme && theme.rendering && theme.rendering.objectChannelFiles) || []) {
+    addThemeAssetFile(files, file);
+  }
   return [...files];
 }
 
@@ -1275,8 +1274,9 @@ function normalizeRendering(value) {
   const objectChannelFiles = [];
   const seenObjectChannelFiles = new Set();
   for (const file of Array.isArray(value.objectChannelFiles) ? value.objectChannelFiles : []) {
+    if (typeof file !== "string") continue;
     const safeFile = basenameOnly(file);
-    if (!safeFile || !safeFile.toLowerCase().endsWith(".svg") || seenObjectChannelFiles.has(safeFile)) continue;
+    if (!safeFile || !safeFile.endsWith(".svg") || seenObjectChannelFiles.has(safeFile)) continue;
     seenObjectChannelFiles.add(safeFile);
     objectChannelFiles.push(safeFile);
   }

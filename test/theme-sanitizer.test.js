@@ -36,6 +36,24 @@ test("sanitizeSvg strips unsafe script, href, and CSS URL surfaces", () => {
   assert.ok(sanitized.includes("background:url(nested/sheet.png)"));
 });
 
+test("sanitizeSvg removes SMIL that mutates dynamic URL, event, or style surfaces", () => {
+  const svg = [
+    '<svg xmlns="http://www.w3.org/2000/svg">',
+    '  <a id="target"><rect width="1" height="1"/></a>',
+    '  <set href="#target" attributeName="href" to="javascript:alert(1)"/>',
+    '  <animate attributeName="fill" values="#fff;url(https://bad.example/fill)"/>',
+    '  <set attributeName="onload" to="steal()"/>',
+    '  <animate attributeName="opacity" values="0;1" dur="1s"/>',
+    '</svg>',
+  ].join("");
+
+  const sanitized = sanitizeSvg(svg);
+  assert.ok(!sanitized.includes('attributeName="href"'));
+  assert.ok(!sanitized.includes("bad.example"));
+  assert.ok(!sanitized.includes('attributeName="onload"'));
+  assert.ok(sanitized.includes('attributeName="opacity"'));
+});
+
 test("collectSafeRasterRefs collects only safe relative png and webp dependencies", () => {
   const sourceAssetsDir = path.join(__dirname, "fixtures", "theme-assets");
   const svg = [

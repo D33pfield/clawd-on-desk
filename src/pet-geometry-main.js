@@ -79,13 +79,28 @@ function createPetGeometryMain(options = {}) {
     return current ? current.payloads : getCurrentAccessoryPayloads();
   }
 
+  function getAccessoryChannelOptions(theme) {
+    const payloads = getCanonicalAccessoryPayloads(theme);
+    const hasSelectedAccessory = !!(
+      payloads
+      && typeof payloads === "object"
+      && Object.values(payloads).some((payload) => (
+        payload && typeof payload === "object" && payload.id && payload.id !== "none"
+      ))
+    );
+    return hasSelectedAccessory ? { accessoryPayloads: payloads } : null;
+  }
+
   function getObjRect(bounds) {
     if (!bounds) return null;
     const theme = getActiveTheme();
     const visual = getVisualTuple(theme);
     const state = visual.state;
     const file = visual.file;
-    return hitGeometry.getAssetRectScreen(theme, bounds, state, file) || getFullAssetRect(bounds);
+    const channelOptions = getAccessoryChannelOptions(theme);
+    return (channelOptions
+      ? hitGeometry.getAssetRectScreen(theme, bounds, state, file, channelOptions)
+      : hitGeometry.getAssetRectScreen(theme, bounds, state, file)) || getFullAssetRect(bounds);
   }
 
   function getAssetPointerPayload(bounds, point) {
@@ -95,7 +110,10 @@ function createPetGeometryMain(options = {}) {
     const visual = getVisualTuple(theme);
     const state = visual.state;
     const file = visual.file;
-    return hitGeometry.getAssetPointerPayload(theme, bounds, state, file, point);
+    const channelOptions = getAccessoryChannelOptions(theme);
+    return channelOptions
+      ? hitGeometry.getAssetPointerPayload(theme, bounds, state, file, point, channelOptions)
+      : hitGeometry.getAssetPointerPayload(theme, bounds, state, file, point);
   }
 
   function getHitRectScreen(bounds) {
@@ -121,16 +139,19 @@ function createPetGeometryMain(options = {}) {
       getCanonicalAccessoryPayloads(theme),
       { viewBox, mirrorX }
     );
+    const channelOptions = getAccessoryChannelOptions(theme);
+    const geometryOptions = {
+      padX: miniMode ? getMiniPeekOffset() : 0,
+      padY: miniMode ? 8 : 0,
+      ...(channelOptions || {}),
+    };
     const hit = hitGeometry.getHitRectScreen(
       theme,
       bounds,
       state,
       file,
       hitBox,
-      {
-        padX: miniMode ? getMiniPeekOffset() : 0,
-        padY: miniMode ? 8 : 0,
-      }
+      geometryOptions
     );
     return outwardRound(hit) || getFullHitRect(bounds);
   }

@@ -48,13 +48,14 @@ describe("theme schema validation", () => {
 
   it("strictly validates per-file object-channel SVG basenames", () => {
     assert.deepStrictEqual(schema.validateTheme(validThemeJson({
-      rendering: { objectChannelFiles: ["animated.svg", "UPPER.SVG"] },
+      rendering: { objectChannelFiles: ["animated.svg"] },
     })), []);
 
     for (const objectChannelFiles of [
       "animated.svg",
       ["../animated.svg"],
       ["animated.png"],
+      ["UPPER.SVG"],
       [42],
     ]) {
       const errors = schema.validateTheme(validThemeJson({
@@ -598,6 +599,15 @@ describe("theme schema defaults and normalization", () => {
     assert.deepStrictEqual(external.rendering, { svgChannel: "auto" });
   });
 
+  it("drops non-string object-channel entries instead of throwing during normalization", () => {
+    const input = validThemeJson({
+      rendering: { objectChannelFiles: [{}, 42, true, ["nested.svg"], "valid.svg"] },
+    });
+    assert.doesNotThrow(() => schema.mergeDefaults(input, "external", false));
+    const normalized = schema.mergeDefaults(input, "external", false);
+    assert.deepStrictEqual(normalized.rendering.objectChannelFiles, ["valid.svg"]);
+  });
+
   it("collectRequiredAssetFiles returns unique basename-only references", () => {
     const files = schema.collectRequiredAssetFiles({
       states: { idle: ["../idle.svg"], working: ["working.svg"] },
@@ -638,10 +648,29 @@ describe("theme schema defaults and normalization", () => {
       "tier.svg",
       "working.svg",
     ]);
-    assert.strictEqual(
-      schema.projectThemeVisualUsages({ rendering: { objectChannelFiles: ["bender.svg"] } })
-        .some((usage) => usage.file === "bender.svg" && usage.source === "rendering.objectChannelFiles"),
-      true
+    assert.deepStrictEqual(
+      schema.projectThemeVisualUsages({ rendering: { objectChannelFiles: ["bender.svg"] } }),
+      [],
+      "a channel override is an asset reference, not an independent visual/viewBox usage"
     );
+  });
+
+  it("does not invent a root-viewBox usage for mini object-channel files", () => {
+    const theme = validThemeJson({
+      viewBox: { x: 0, y: 0, width: 100, height: 100 },
+      miniMode: {
+        supported: true,
+        viewBox: { x: 0, y: 0, width: 32, height: 32 },
+        states: { "mini-idle": ["mini-idle.svg"] },
+      },
+      rendering: { objectChannelFiles: ["mini-idle.svg"] },
+    });
+    const usages = schema.projectThemeVisualUsages(theme)
+      .filter((usage) => usage.file === "mini-idle.svg");
+
+    assert.strictEqual(usages.length, 1);
+    assert.strictEqual(usages[0].stateFamily, "mini:mini-idle");
+    assert.deepStrictEqual(usages[0].effectiveViewBox, { x: 0, y: 0, width: 32, height: 32 });
+    assert.ok(schema.collectRequiredAssetFiles(theme).includes("mini-idle.svg"));
   });
 });

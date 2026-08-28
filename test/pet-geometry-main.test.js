@@ -209,6 +209,7 @@ test("getHitRectScreen expands only for the currently selected accessory", () =>
     w: 16,
     h: 28.954545454545453,
   });
+  assert.strictEqual(selected.calls[0][6].accessoryPayloads.head.id, "party-hat");
 
   const none = createHarness({
     theme,

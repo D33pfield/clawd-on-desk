@@ -17,14 +17,14 @@ function electronExecutable() {
 }
 
 test("cigarette SMIL advances and restarts in the production mouth object channel", { timeout: 30_000 }, (t) => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "index.html"), "utf8");
+  assert.match(source, /<object id="clawd-mouth-accessory"[^>]*type="image\/svg\+xml"/);
+
   const executable = electronExecutable();
   if (!executable) return t.skip("Electron executable is not installed");
   if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
     return t.skip("Electron cigarette audit needs an X11/Wayland display (CI can use xvfb-run)");
   }
-
-  const source = fs.readFileSync(path.join(__dirname, "..", "src", "index.html"), "utf8");
-  assert.match(source, /<object id="clawd-mouth-accessory"[^>]*type="image\/svg\+xml"/);
 
   const fixture = path.join(__dirname, "fixtures", "cigarette-accessory-electron.js");
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cigarette-electron-"));
@@ -44,7 +44,7 @@ test("cigarette SMIL advances and restarts in the production mouth object channe
     const tempRoot = `${path.resolve(os.tmpdir())}${path.sep}`;
     const resolvedProfile = path.resolve(profile);
     assert.ok(resolvedProfile.startsWith(tempRoot), "Electron profile must stay under the temp root");
-    fs.rmSync(resolvedProfile, { recursive: true, force: true });
+    fs.rmSync(resolvedProfile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 
   assert.strictEqual(

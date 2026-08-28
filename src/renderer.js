@@ -9,7 +9,6 @@ const motionStage = document.getElementById("pet-motion-stage") || container;
 const assetDirectionStage = document.getElementById("pet-asset-direction-stage") || container;
 const mediaLayer = document.getElementById("pet-media-layer") || container;
 const accessoryLayer = document.getElementById("pet-accessory-layer") || container;
-const mouthAccessoryLayer = document.getElementById("pet-mouth-accessory-layer") || accessoryLayer;
 const particleLayer = document.getElementById("pet-particle-layer") || container;
 const accessoryEl = document.getElementById("clawd-accessory");
 const mouthAccessoryEl = document.getElementById("clawd-mouth-accessory");
@@ -68,6 +67,8 @@ function createAccessorySlotRuntime(element) {
     raf: null,
     lastLayout: null,
     followKey: null,
+    pausedRoot: null,
+    documentPaused: false,
     diagnostics: new Set(),
   };
 }
@@ -250,7 +251,14 @@ function setSvgRootLowPowerPaused(root, paused) {
 function setAccessorySvgLowPowerPaused(slotName, paused) {
   const slot = _accessorySlots[slotName];
   if (!slot || !slot.element || slot.element.tagName !== "OBJECT") return false;
-  return setSvgRootLowPowerPaused(getObjectSvgRoot(slot.element), paused);
+  const root = getObjectSvgRoot(slot.element);
+  if (!root) return false;
+  const next = !!paused;
+  if (slot.pausedRoot === root && slot.documentPaused === next) return true;
+  if (!setSvgRootLowPowerPaused(root, next)) return false;
+  slot.pausedRoot = root;
+  slot.documentPaused = next;
+  return true;
 }
 
 function syncAccessorySvgLowPowerPaused(paused) {
@@ -745,6 +753,9 @@ function hideAccessory(slotName) {
   if (!slot.element) return;
   slot.element.style.display = "none";
   slot.element.style.transform = "";
+  // Hidden document-backed accessories must not keep advancing their SMIL
+  // timeline behind a sprite that declares the slot hidden.
+  setAccessorySvgLowPowerPaused(slotName, true);
 }
 
 function clearAccessoryAssetLoadTimer(slotName) {
@@ -781,6 +792,8 @@ function clearAccessoryRuntime(slotName, options = {}) {
       else slot.element.src = "";
     } catch {}
   }
+  slot.pausedRoot = null;
+  slot.documentPaused = false;
   slot.assetFile = null;
   slot.assetReady = false;
   slot.assetSettled = true;
@@ -869,9 +882,9 @@ function ensureAccessoryAsset(slotName) {
   }, ACCESSORY_SETTLE_TIMEOUT_MS);
   slot.assetLoadTimer = loadTimer;
   const assetUrl = `../assets/accessories/${file}`;
-  // Chromium freezes embedded SVG timelines in <img>. The mouth slot uses a
-  // document-backed <object> so its bounded SMIL smoke/ember animation runs;
-  // the static head slot remains a cheaper <img>.
+  // The mouth slot uses a document-backed <object> so low-power mode can pause
+  // and resume its bounded SMIL timeline through contentDocument. The static
+  // head slot remains a cheaper <img>.
   if (slot.element.tagName === "OBJECT") slot.element.data = assetUrl;
   else slot.element.src = assetUrl;
   return false;
@@ -995,6 +1008,9 @@ function applyAccessoryLayout(context, layout) {
     slot.lastLayout = layout;
   }
   slot.element.style.filter = "none";
+  // hideAccessory() pauses object-backed assets. Restore this document to the
+  // global low-power state before making it visible again.
+  setAccessorySvgLowPowerPaused(context.slotName, lowPowerSvgPaused);
   slot.element.style.display = "block";
   return true;
 }
@@ -1119,7 +1135,7 @@ if (document && typeof document.addEventListener === "function") {
 }
 
 if (window && typeof window.addEventListener === "function") {
-  window.addEventListener("resize", refreshAccessoryLayout);
+  window.addEventListener("resize", () => refreshAccessoryLayout());
   window.addEventListener("beforeunload", () => {
     clearAllAccessoryRuntimes({ clearAsset: true });
     clearTestReactionVisuals();
@@ -1377,7 +1393,7 @@ function refreshAccessoryMediaChannel() {
       const file = pendingSvgFile;
       const visualRequest = pendingNext.__clawdVisualRequest || null;
       const fallbackFromObject = pendingNext.__clawdFallbackFromObject === true;
-      cancelPendingSwap();
+      cancelPendingSwap("channel-refresh", { retainedRequest: visualRequest });
       detachEyeTracking();
       swapToFile(file, pendingState, undefined, { visualRequest, fallbackFromObject });
       return true;
@@ -1624,9 +1640,16 @@ function applyCodexPetVisualToObject(objectEl, file, options = {}) {
 }
 
 function startDragReaction(requestOrDirection, legacyDirection) {
-  if (dndEnabled) return;
   const visualRequest = normalizeVisualRequest(requestOrDirection);
-  const direction = visualRequest ? legacyDirection : requestOrDirection;
+  const direction = legacyDirection !== undefined ? legacyDirection : requestOrDirection;
+  if (dndEnabled) {
+    notifyVisualSettlement(visualRequest, "failed", {
+      actualFile: currentDisplayedSvg || null,
+      channel: clawdEl && clawdEl.tagName === "OBJECT" ? "object" : "img",
+      verified: false,
+    });
+    return;
+  }
   const normalizedDirection = normalizeDragDirection(direction);
   const dragSvg = visualRequest
     ? visualRequest.file
@@ -1640,7 +1663,19 @@ function startDragReaction(requestOrDirection, legacyDirection) {
     if (usesDirectionalDragBridge(dragSvg) && pendingNext && pendingSvgFile === dragSvg) {
       applyDirectionalDragToObject(pendingNext, currentDragDirection);
     }
-    return;
+    if (!visualRequest) return;
+    if (pendingNext && pendingSvgFile === dragSvg) {
+      pendingNext.__clawdVisualRequest = visualRequest;
+      return;
+    }
+    if (clawdEl && clawdEl.isConnected && currentDisplayedSvg === dragSvg) {
+      notifyVisualSettlement(visualRequest, "already-displayed", {
+        actualFile: dragSvg,
+        channel: clawdEl.tagName === "OBJECT" ? "object" : "img",
+        verified: true,
+      });
+      return;
+    }
   }
 
   if (!isDragReacting && isReacting) {
@@ -1804,6 +1839,9 @@ function scheduleSwapVisibilityRescue(token, file, state) {
     if (hasVisiblePetElement()) return;
 
     if (pendingNext && pendingSvgFile === file) {
+      // A verified media load can remain pending solely while an accessory's
+      // bounded waiter settles. Restarting here discards that progress.
+      if (pendingNext.__clawdWaitingForAccessory) return;
       forceImageChannelReload(file, getPendingSwapState(pendingNext, state), true, {
         visualRequest: pendingNext.__clawdVisualRequest || null,
       });
@@ -1840,11 +1878,22 @@ function forceImageChannelReload(file, state, allowImageFallback = true, options
   return true;
 }
 
-function cancelPendingSwap(reason = "superseded") {
+function cancelPendingSwap(reason = "superseded", options = {}) {
   const next = pendingNext;
   if (!next) return false;
+  const visualRequest = normalizeVisualRequest(next.__clawdVisualRequest);
+  const retainedRequest = normalizeVisualRequest(options.retainedRequest);
+  const requestRetained = !!(
+    visualRequest
+    && retainedRequest
+    && visualRequest.visualGeneration === retainedRequest.visualGeneration
+  );
   if (typeof next.__clawdSwapCancelled === "function") {
     next.__clawdSwapCancelled(reason);
+  }
+  if (next.__clawdImageLoadTimer) {
+    clearTimeout(next.__clawdImageLoadTimer);
+    next.__clawdImageLoadTimer = null;
   }
   if (next.tagName === "OBJECT") releaseObject(next);
   else releaseImg(next);
@@ -1852,6 +1901,13 @@ function cancelPendingSwap(reason = "superseded") {
     pendingNext = null;
     pendingSvgFile = null;
     pendingAssetUrl = null;
+  }
+  if (visualRequest && !requestRetained) {
+    notifyVisualSettlement(visualRequest, "failed", {
+      actualFile: currentDisplayedSvg || null,
+      channel: next.tagName === "OBJECT" ? "object" : "img",
+      verified: false,
+    });
   }
   return true;
 }
@@ -1871,7 +1927,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       warn: true,
     });
   if (canReuseCodexPetDocument) {
-    cancelPendingSwap();
+    cancelPendingSwap("superseded", { retainedRequest: visualRequest });
     clearSwapVisibilityRescueTimer();
     currentDisplayedSvg = file;
     currentDisplayedState = state;
@@ -1893,7 +1949,7 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
   }
 
   const swapToken = ++activeSwapToken;
-  cancelPendingSwap();
+  cancelPendingSwap("superseded", { retainedRequest: visualRequest });
 
   pendingSvgFile = file; // track what's loading for dedup
   pendingAssetUrl = url;
@@ -2043,6 +2099,10 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       if (pendingNext !== next) return;
       const commitState = getPendingSwapState(next, state);
       if (deferSwapUntilAccessorySettles(file, commitState, next, swap)) return;
+      if (next.__clawdImageLoadTimer) {
+        clearTimeout(next.__clawdImageLoadTimer);
+        next.__clawdImageLoadTimer = null;
+      }
       if (swapToken === activeSwapToken) clearSwapVisibilityRescueTimer();
       const fadeInMs = (_transitions[file] && _transitions[file].in) || 0;
       const fadeOutMs = (currentDisplayedSvg && _transitions[currentDisplayedSvg] && _transitions[currentDisplayedSvg].out) || 0;
@@ -2082,6 +2142,10 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     next.addEventListener("load", swap, { once: true });
     const failImageSwap = (reason) => {
       if (pendingNext !== next) return;
+      if (next.__clawdImageLoadTimer) {
+        clearTimeout(next.__clawdImageLoadTimer);
+        next.__clawdImageLoadTimer = null;
+      }
       if (next.tagName === "IMG") releaseImg(next);
       if (pendingNext === next) {
         pendingNext = null;
@@ -2114,8 +2178,9 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     scheduleSwapVisibilityRescue(swapToken, file, state);
     // A timed-out image is not verified and must never replace the visible
     // element merely to force progress.
-    setTimeout(() => {
+    next.__clawdImageLoadTimer = setTimeout(() => {
       if (pendingNext !== next) return;
+      if (next.__clawdWaitingForAccessory) return;
       failImageSwap("image-load-timeout");
     }, SWAP_LOAD_FALLBACK_MS);
   }
@@ -2123,6 +2188,10 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
 
 function renderStateFile(requestOrState, legacySvg) {
   const visualRequest = normalizeVisualRequest(requestOrState);
+  if (requestOrState && typeof requestOrState === "object" && !visualRequest) {
+    try { console.warn("Clawd: ignored malformed visual request"); } catch {}
+    return;
+  }
   const state = visualRequest ? visualRequest.displayState : requestOrState;
   const svg = visualRequest ? visualRequest.file : legacySvg;
   // Main process state change → cancel any active click reaction
@@ -2163,7 +2232,7 @@ function renderStateFile(requestOrState, legacySvg) {
   const pendingChannelMatches = !alreadyPending || ((pendingNext.tagName === "OBJECT") === desiredObjectChannel);
 
   if (alreadyPending && !pendingChannelMatches) {
-    cancelPendingSwap();
+    cancelPendingSwap("channel-mismatch", { retainedRequest: visualRequest });
   }
 
   if ((alreadyDisplayed && displayedChannelMatches) || (alreadyPending && pendingChannelMatches)) {
@@ -2211,7 +2280,7 @@ function renderStateFile(requestOrState, legacySvg) {
   }
 
   // Different file — cancel pending, detach, and swap
-  cancelPendingSwap();
+  cancelPendingSwap("superseded", { retainedRequest: visualRequest });
   detachEyeTracking();
 
   swapToFile(effectiveSvg, state, lowPowerStaticImageOverride ? false : undefined, {

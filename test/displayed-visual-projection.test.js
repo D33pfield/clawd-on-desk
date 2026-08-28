@@ -178,6 +178,58 @@ describe("displayed visual projection", () => {
     assert.strictEqual(reloads.length, 1, "renderer reload budget is session-wide");
   });
 
+  it("never replays an expired reaction delivery", () => {
+    const clock = createClock();
+    const delivered = [];
+    const settlements = [];
+    const projection = createDisplayedVisualProjection({
+      now: clock.now,
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+    });
+    const reaction = projection.request(requestInput(
+      (payload) => delivered.push(payload),
+      {
+        source: "reaction",
+        file: "clawd-react-left.svg",
+        onLogicalSettlement: (result) => settlements.push(result),
+      }
+    ));
+
+    clock.advance(policy.VISUAL_SETTLEMENT_DEADLINE_MS);
+    assert.strictEqual(delivered.length, 1);
+    assert.strictEqual(projection.getTerminal(reaction.visualGeneration).status, "failed");
+    assert.deepStrictEqual(settlements.map((entry) => [entry.status, entry.detail]), [
+      ["failed", "settlement-timeout"],
+    ]);
+  });
+
+  it("counts no-ACK requests across logical-state changes for renderer recovery", () => {
+    const clock = createClock();
+    const reloads = [];
+    const projection = createDisplayedVisualProjection({
+      now: clock.now,
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+      onRendererUnresponsive: (detail) => reloads.push(detail),
+    });
+
+    projection.request(requestInput(() => true, {
+      source: "reaction",
+      file: "clawd-react-left.svg",
+    }));
+    clock.advance(policy.VISUAL_SETTLEMENT_DEADLINE_MS);
+    projection.request(requestInput(() => true, {
+      source: "reaction",
+      logicalState: "working",
+      displayState: "working",
+      file: "clawd-react-right.svg",
+    }));
+    clock.advance(policy.VISUAL_SETTLEMENT_DEADLINE_MS);
+
+    assert.strictEqual(reloads.length, 1);
+  });
+
   it("settles one logical callback with the recovery generation that commits", () => {
     const clock = createClock();
     const delivered = [];

@@ -99,7 +99,6 @@ function createDisplayedVisualProjection(options = {}) {
     if (!internal.preserveRecovery && key !== recoveryKey) {
       recoveryKey = key;
       recoveryRequests = 0;
-      consecutiveNoAck = 0;
     }
 
     if (requested) {
@@ -134,7 +133,6 @@ function createDisplayedVisualProjection(options = {}) {
           ? input.onLogicalSettlement
           : null,
       }),
-      sawAck: false,
     });
 
     const payload = Object.freeze({
@@ -167,7 +165,7 @@ function createDisplayedVisualProjection(options = {}) {
       pendingTimer = null;
       rememberTerminal(capturedGeneration, "failed", "settlement-timeout");
       consecutiveNoAck++;
-      if (recoveryRequests < 1) {
+      if (timedOut.source !== "reaction" && recoveryRequests < 1) {
         recoveryRequests++;
         request(timedOut.recoveryInput, { preserveRecovery: true });
         return;
@@ -210,7 +208,6 @@ function createDisplayedVisualProjection(options = {}) {
     if (!RENDERER_OUTCOMES.has(ack.outcome) || !SAFE_CHANNELS.has(ack.channel)) {
       return { accepted: false, reason: "invalid-outcome" };
     }
-    requested = Object.freeze({ ...requested, sawAck: true });
     consecutiveNoAck = 0;
 
     if (ack.outcome === "failed") {

@@ -812,6 +812,50 @@ describe("renderer directional drag reactions (#620)", () => {
     assert.strictEqual(harness.electronCalls.filter((call) => call.name === "pauseCursorPolling").length, 1);
     assert.strictEqual(harness.electronCalls.filter((call) => call.name === "resumeFromReaction").length, 1);
   });
+
+  it("preserves the legacy second-argument direction on same-file main re-sends", () => {
+    const harness = makeDirectionalHarness();
+    const request = {
+      themeId: "codex-pet",
+      logicalState: "idle",
+      displayState: "idle",
+      file: "drag-directional.svg",
+      source: "reaction",
+      visualGeneration: 91,
+    };
+    harness.electronHandlers.onStartDragReaction(request, "left");
+    const pending = harness.api.pendingNext;
+    const { root } = attachDirectionalSvgDocument(pending);
+    pending.listeners.get("load")();
+
+    harness.electronHandlers.onStartDragReaction(null, "right");
+
+    assert.strictEqual(harness.api.currentDragDirection, "right");
+    assert.strictEqual(root.getAttribute("data-clawd-drag-direction"), "right");
+  });
+
+  it("retargets a pending same-file drag request to the newest generation", () => {
+    const harness = makeDirectionalHarness();
+    const request = (visualGeneration) => ({
+      themeId: "codex-pet",
+      logicalState: "idle",
+      displayState: "idle",
+      file: "drag-directional.svg",
+      source: "reaction",
+      visualGeneration,
+    });
+    harness.electronHandlers.onStartDragReaction(request(92), "left");
+    const pending = harness.api.pendingNext;
+    harness.electronHandlers.onStartDragReaction(request(93), "right");
+    assert.strictEqual(harness.api.pendingNext, pending);
+    attachDirectionalSvgDocument(pending);
+    pending.listeners.get("load")();
+
+    const settlements = harness.electronCalls
+      .filter((call) => call.name === "notifyPetVisualSettled")
+      .map((call) => call.args[0]);
+    assert.deepStrictEqual(settlements.map((entry) => entry.visualGeneration), [93]);
+  });
 });
 
 describe("renderer displayed-visual settlement", () => {
@@ -914,6 +958,38 @@ describe("renderer displayed-visual settlement", () => {
       { generation: 30, outcome: "failed", verified: false },
     ]);
     assert.strictEqual(harness.api.currentDisplayedSvg, "current.svg");
+  });
+
+  it("terminally fails a request cancelled by an internal Kimi media pulse", () => {
+    const harness = createRendererHarness();
+    harness.electronHandlers.onStateChange(visualRequest(31, "working.svg"));
+    assert.ok(harness.api.pendingNext);
+
+    harness.electronHandlers.onKimiPermissionPulse();
+
+    assert.deepStrictEqual(settlements(harness).map((entry) => ({
+      generation: entry.visualGeneration,
+      outcome: entry.outcome,
+      verified: entry.verified,
+    })), [
+      { generation: 31, outcome: "failed", verified: false },
+    ]);
+  });
+
+  it("ignores a malformed object request instead of constructing an undefined asset URL", () => {
+    const harness = createRendererHarness();
+    const displayed = harness.api.clawdEl;
+
+    harness.electronHandlers.onStateChange({
+      themeId: "clawd",
+      logicalState: "working",
+      displayState: "working",
+      source: "state",
+    });
+
+    assert.strictEqual(harness.api.clawdEl, displayed);
+    assert.strictEqual(harness.api.pendingNext, null);
+    assert.ok(harness.warnings.some((warning) => warning.includes("malformed visual request")));
   });
 
   it("preload forwards only the bounded settlement contract", () => {
@@ -2229,6 +2305,34 @@ describe("renderer pet accessory wardrobe", () => {
     assert.strictEqual(harness.accessory.style.display, "block", "a late successful load should recover");
   });
 
+  it("does not let the img load deadline kill media already waiting for an accessory", () => {
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: accessoryConfig({ eyeTrackingStates: [] }),
+    });
+    const pendingPet = harness.api.pendingNext;
+    assert.strictEqual(pendingPet.tagName, "IMG");
+    const imageDeadline = pendingPet.__clawdImageLoadTimer;
+    assert.ok(imageDeadline, "initial img swap should own a load deadline");
+
+    pendingPet.listeners.get("load")();
+    assert.strictEqual(pendingPet.__clawdWaitingForAccessory, true);
+    imageDeadline.cleared = true;
+    imageDeadline.callback();
+    const visibilityRescue = harness.activeTimers().find((timer) => timer.ms === 3750);
+    assert.ok(visibilityRescue, "the pending swap should own a visibility rescue timer");
+    visibilityRescue.cleared = true;
+    visibilityRescue.callback();
+
+    assert.strictEqual(harness.api.pendingNext, pendingPet);
+    assert.deepStrictEqual(
+      harness.electronCalls.filter((call) => call.name === "notifyPetVisualSettled"),
+      []
+    );
+    harness.accessory.onload();
+    assert.strictEqual(harness.api.pendingNext, null);
+  });
+
   it("fails open when an accessory asset reports an error", () => {
     const harness = createRendererHarness({
       initialObjectData: "",
@@ -2333,6 +2437,51 @@ describe("renderer pet accessory wardrobe", () => {
     );
   });
 
+  it("lets one mouth object fail without blocking the pet or loaded head slot", () => {
+    const errored = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: dualSlotConfig(),
+    });
+    errored.api.pendingNext.listeners.get("load")();
+    errored.accessory.onload();
+    errored.mouthAccessory.onerror();
+    assert.strictEqual(errored.api.pendingNext, null);
+    assert.strictEqual(errored.accessory.style.display, "block");
+    assert.strictEqual(errored.mouthAccessory.style.display, "none");
+
+    const timedOut = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: dualSlotConfig(),
+    });
+    timedOut.api.pendingNext.listeners.get("load")();
+    timedOut.accessory.onload();
+    const mouthDeadline = timedOut.api.accessorySlots.mouth.assetLoadTimer;
+    assert.ok(mouthDeadline);
+    mouthDeadline.cleared = true;
+    mouthDeadline.callback();
+    assert.strictEqual(timedOut.api.pendingNext, null);
+    assert.strictEqual(timedOut.accessory.style.display, "block");
+    assert.strictEqual(timedOut.mouthAccessory.style.display, "none");
+  });
+
+  it("refreshes both accessory layouts when resize supplies a browser Event", () => {
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: dualSlotConfig(),
+    });
+    harness.api.pendingNext.listeners.get("load")();
+    harness.accessory.onload();
+    harness.mouthAccessory.onload();
+    const initialHeadTransform = harness.accessory.style.transform;
+    const initialMouthTransform = harness.mouthAccessory.style.transform;
+
+    harness.api.clawdEl.offsetLeft += 17;
+    harness.windowListeners.get("resize")({ type: "resize" });
+
+    assert.notStrictEqual(harness.accessory.style.transform, initialHeadTransform);
+    assert.notStrictEqual(harness.mouthAccessory.style.transform, initialMouthTransform);
+  });
+
   it("pauses and clears an object-backed mouth SVG with the pet low-power timeline", () => {
     const harness = createRendererHarness({ themeConfig: dualSlotConfig() });
     const petSvg = attachFakeSvgDocument(harness.clawd);
@@ -2380,6 +2529,32 @@ describe("renderer pet accessory wardrobe", () => {
     assert.strictEqual(mouthSvg.svgDoc.getElementById("clawd-low-power-pause-svg"), null);
   });
 
+  it("pauses a hidden mouth document and resumes it when a later sprite shows the slot", () => {
+    const config = dualSlotConfig();
+    const visible = { staticFrame: { cx: 50, baseY: 40, width: 20 } };
+    config.accessorySlots.head.attachments.files["sleep.svg"] = { visibility: "hidden" };
+    config.accessorySlots.head.attachments.files["reaction.svg"] = visible;
+    config.accessorySlots.mouth.attachments.files["sleep.svg"] = { visibility: "hidden" };
+    config.accessorySlots.mouth.attachments.files["reaction.svg"] = visible;
+    const harness = createRendererHarness({ initialObjectData: "", themeConfig: config });
+    const mouthSvg = attachFakeSvgDocument(harness.mouthAccessory);
+    harness.api.pendingNext.listeners.get("load")();
+    harness.accessory.onload();
+    harness.mouthAccessory.onload();
+    const pauseBefore = mouthSvg.root.pauseCalls;
+    const unpauseBefore = mouthSvg.root.unpauseCalls;
+
+    harness.api.swapToFile("sleep.svg", "sleeping", false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(harness.mouthAccessory.style.display, "none");
+    assert.strictEqual(mouthSvg.root.pauseCalls, pauseBefore + 1);
+
+    harness.api.swapToFile("reaction.svg", null, false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(harness.mouthAccessory.style.display, "block");
+    assert.strictEqual(mouthSvg.root.unpauseCalls, unpauseBefore + 1);
+  });
+
   it("keeps sibling objects outside tint and pet-media swap cleanup", () => {
     const harness = createRendererHarness({
       initialObjectData: "",
@@ -2424,6 +2599,15 @@ describe("renderer pet accessory wardrobe", () => {
     assert.ok(html.includes('<div id="pet-effect-stage">'));
     assert.ok(html.includes('<div id="pet-particle-layer"></div>'));
     assert.ok(html.indexOf('src="pet-accessory-layout.js"') < html.indexOf('src="renderer.js"'));
+    for (const dependency of [
+      "pet-accessory-mirror.js",
+      "pet-accessory-descriptor.js",
+      "pet-visual-swap-policy.js",
+    ]) {
+      const dependencyIndex = html.indexOf(`src="${dependency}"`);
+      assert.notStrictEqual(dependencyIndex, -1, `${dependency} must be loaded by index.html`);
+      assert.ok(dependencyIndex < html.indexOf('src="renderer.js"'), `${dependency} must load before renderer.js`);
+    }
     assert.match(
       css,
       /#pet-effect-stage,\s*#pet-particle-layer\s*\{[^}]*pointer-events: none;[^}]*transform: none;[^}]*translate: none;[^}]*scale: none;[^}]*rotate: none;[^}]*\}/

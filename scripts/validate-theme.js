@@ -114,6 +114,14 @@ if (!themeDir) {
 }
 
 const resolvedDir = path.resolve(themeDir);
+const builtinThemesDir = path.resolve(__dirname, "..", "themes");
+const builtinRelative = path.relative(builtinThemesDir, resolvedDir);
+const isBuiltinTheme = !!(
+  builtinRelative
+  && builtinRelative !== ".."
+  && !builtinRelative.startsWith(`..${path.sep}`)
+  && !path.isAbsolute(builtinRelative)
+);
 const jsonPath = path.join(resolvedDir, "theme.json");
 
 // An explicit --assets override that does not resolve to a usable directory is a
@@ -666,7 +674,9 @@ if (raw.variants !== undefined) {
 }
 
 console.log(`\n${C}[Capabilities]${D}`);
-const capabilities = themeSchema.buildCapabilities(raw);
+const capabilities = themeSchema.buildCapabilities(raw, {
+  trustedRuntimeAllowed: isBuiltinTheme,
+});
 for (const [key, value] of Object.entries(capabilities)) {
   console.log(`  ${PASS} ${key}: ${value}`);
 }

@@ -9,18 +9,48 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function waitForObject(win) {
+async function waitForObjects(win) {
   return win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
-    const object = document.getElementById("cigarette");
-    const ready = () => object.contentDocument && object.contentDocument.documentElement;
+    const objects = [document.getElementById("pet"), document.getElementById("cigarette")];
+    const ready = () => objects.every((object) => object.contentDocument && object.contentDocument.documentElement);
     if (ready()) return resolve(true);
-    const timer = setTimeout(() => reject(new Error("cigarette object load timed out")), 5000);
-    object.addEventListener("load", () => {
-      clearTimeout(timer);
-      if (ready()) resolve(true);
-      else reject(new Error("cigarette object loaded without a document"));
-    }, { once: true });
+    const timer = setTimeout(() => reject(new Error("stacked object load timed out")), 5000);
+    for (const object of objects) {
+      object.addEventListener("load", () => {
+        if (!ready()) return;
+        clearTimeout(timer);
+        resolve(true);
+      }, { once: true });
+    }
   })`);
+}
+
+async function assertProductionStack(win) {
+  const layout = await win.webContents.executeJavaScript(`(() => {
+    const pet = document.getElementById("pet");
+    const cigarette = document.getElementById("cigarette");
+    const petRoot = pet.contentDocument.documentElement;
+    const cigaretteRoot = cigarette.contentDocument.documentElement;
+    if (typeof petRoot.pauseAnimations === "function") petRoot.pauseAnimations();
+    if (typeof cigaretteRoot.pauseAnimations === "function") cigaretteRoot.pauseAnimations();
+    const outer = cigarette.getBoundingClientRect();
+    const inner = cigaretteRoot.getBoundingClientRect();
+    return {
+      outer: { width: outer.width, height: outer.height },
+      inner: { width: inner.width, height: inner.height },
+    };
+  })()`);
+  assert(Math.abs(layout.outer.width - layout.inner.width) < 0.1, "cigarette SVG root did not fill object width");
+  assert(Math.abs(layout.outer.height - layout.inner.height) < 0.1, "cigarette SVG root did not fill object height");
+
+  await win.webContents.executeJavaScript(`document.getElementById("cigarette").style.visibility = "hidden"`);
+  const baseline = await win.webContents.capturePage({ x: 60, y: 45, width: 1, height: 1 });
+  await win.webContents.executeJavaScript(`document.getElementById("cigarette").style.visibility = "visible"`);
+  const stacked = await win.webContents.capturePage({ x: 60, y: 45, width: 1, height: 1 });
+  assert(
+    baseline.toDataURL() === stacked.toDataURL(),
+    "transparent mouth object canvas obscured the real pet layer beneath it"
+  );
 }
 
 async function inspect(win, seconds) {
@@ -59,7 +89,8 @@ async function main() {
   });
   try {
     await win.loadFile(HTML);
-    await waitForObject(win);
+    await waitForObjects(win);
+    await assertProductionStack(win);
     const start = await inspect(win, 0);
     const emberPeak = await inspect(win, 0.8);
     const smokeRise = await inspect(win, 1.6);
