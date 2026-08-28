@@ -282,6 +282,59 @@ describe("displayed visual projection", () => {
     assert.strictEqual(projection.getSnapshot().themeId, "calico");
   });
 
+  it("finishes reset before a settlement callback requests a replacement", () => {
+    const delivered = [];
+    const settlements = [];
+    const projection = createDisplayedVisualProjection();
+    let replacement = null;
+    const pending = projection.request(requestInput(
+      (payload) => delivered.push(payload),
+      {
+        file: "clawd-happy.svg",
+        onLogicalSettlement: (result) => {
+          settlements.push(result);
+          replacement = projection.request(requestInput(
+            (payload) => delivered.push(payload),
+            { file: "clawd-idle-follow.svg" }
+          ));
+        },
+      }
+    ));
+
+    projection.reset({
+      themeId: "clawd",
+      logicalState: "idle",
+      detail: "renderer-process-gone",
+      preserveCommitted: true,
+    });
+
+    assert.strictEqual(projection.getTerminal(pending.visualGeneration).status, "superseded");
+    assert.strictEqual(settlements.length, 1, "the invalidated request settles exactly once");
+    assert.strictEqual(settlements[0].visualGeneration, pending.visualGeneration);
+    assert.strictEqual(projection.getSnapshot().requested.visualGeneration, replacement.visualGeneration);
+    assert.strictEqual(delivered.length, 2, "the callback replacement reaches the renderer");
+    assert.strictEqual(projection.settle(ackFor(replacement)).status, "committed");
+  });
+
+  it("clears a disposed request before notifying its settlement callback", () => {
+    const projection = createDisplayedVisualProjection();
+    let requestedDuringSettlement = "not-called";
+    const pending = projection.request(requestInput(
+      () => true,
+      {
+        onLogicalSettlement: () => {
+          requestedDuringSettlement = projection.getSnapshot().requested;
+        },
+      }
+    ));
+
+    projection.dispose();
+
+    assert.strictEqual(projection.getTerminal(pending.visualGeneration).status, "failed");
+    assert.strictEqual(requestedDuringSettlement, null);
+    assert.strictEqual(projection.getSnapshot().requested, null);
+  });
+
   it("reprojects committed and pending hitboxes without changing their generations", () => {
     const projection = createDisplayedVisualProjection();
     const first = projection.request(requestInput(() => true));

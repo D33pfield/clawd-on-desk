@@ -8,7 +8,7 @@ Subagent events still map to the logical `juggling` state, but Clawd now chooses
 
 The idle rows below describe the theme's stock behavior. Settings → Animation & Sound → Animations can instead choose any idle visual declared by the active theme as its persistent resting look. This changes only the visual shown while the logical state is `idle`: task, permission, completion, sleep, reaction, and roam states still take precedence and return to the selected look afterward. The choice is stored per theme and falls back to the theme default if the file disappears. Non-default idle visuals intentionally do not use cursor eye tracking or spin-to-dizzy.
 
-Clawd also has a conditional Outlaw idle easter egg: while both the cowboy hat and cigarette are selected, an eligible ordinary idle roll has a 5% chance to play `clawd-outlaw-bender.svg`, with a 30-minute cooldown. Hidden, low-power, mini, roaming, dragging, menu-open, and non-idle periods do not consume the roll or cooldown. The animation embeds its own hat and cigarette, so the two external accessory layers are hidden only for that file.
+Clawd also has a conditional Outlaw idle easter egg: while both the Western cowboy hat and cigarette are selected, an eligible ordinary idle roll has a 50% chance to play `clawd-outlaw-bender.svg`, with a 30-minute cooldown. Hidden, low-power, mini, roaming, dragging, menu-open, and non-idle periods do not consume the roll or cooldown. The animation embeds its own hat and cigarette, so the two external accessory layers are hidden only for that file.
 
 | Agent Event | State | Animation | Clawd | Calico | Cloudling |
 |---|---|---|---|---|---|

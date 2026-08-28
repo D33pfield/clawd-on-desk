@@ -311,12 +311,8 @@ function createDisplayedVisualProjection(options = {}) {
 
   function reset(next = {}) {
     clearPendingTimer();
-    if (requested) {
-      const superseded = requested;
-      const detail = typeof next.detail === "string" ? next.detail : "projection-reset";
-      rememberTerminal(superseded.visualGeneration, "superseded", detail);
-      notifyLogicalSettlement(superseded, "superseded", detail);
-    }
+    const superseded = requested;
+    const detail = typeof next.detail === "string" ? next.detail : "projection-reset";
     requested = null;
     if (next.preserveCommitted !== true) committed = null;
     if (Object.prototype.hasOwnProperty.call(next, "themeId")) themeId = next.themeId;
@@ -324,16 +320,20 @@ function createDisplayedVisualProjection(options = {}) {
     recoveryKey = null;
     recoveryRequests = 0;
     consecutiveNoAck = 0;
+    if (superseded) {
+      rememberTerminal(superseded.visualGeneration, "superseded", detail);
+      notifyLogicalSettlement(superseded, "superseded", detail);
+    }
   }
 
   function dispose() {
     clearPendingTimer();
-    if (requested) {
-      const failed = requested;
+    const failed = requested;
+    requested = null;
+    if (failed) {
       rememberTerminal(failed.visualGeneration, "failed", "disposed");
       notifyLogicalSettlement(failed, "failed", "disposed");
     }
-    requested = null;
   }
 
   return {
