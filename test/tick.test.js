@@ -1013,9 +1013,9 @@ describe("tick conditional idle easter eggs", () => {
   const BENDER = {
     file: "clawd-outlaw-bender.svg",
     duration: 15000,
-    chance: 0.05,
+    chance: 0.5,
     cooldownMs: 1800000,
-    requiresAccessories: { head: "cowboy-hat", mouth: "cigarette" },
+    requiresAccessories: { head: "western-cowboy-hat", mouth: "cigarette" },
   };
 
   beforeEach(() => {
@@ -1025,7 +1025,7 @@ describe("tick conditional idle easter eggs", () => {
     rendererCalls = [];
     randomValues = [];
     randomCalls = 0;
-    accessoryIds = { head: "cowboy-hat", mouth: "cigarette" };
+    accessoryIds = { head: "western-cowboy-hat", mouth: "cigarette" };
   });
 
   afterEach(() => {
@@ -1092,8 +1092,8 @@ describe("tick conditional idle easter eggs", () => {
     assert.ok(predicate(), `condition was not reached within ${limit} ms`);
   }
 
-  it("uses the reviewed 5% interval before the ordinary idle pool and returns naturally", () => {
-    randomValues.push(0.049);
+  it("uses the reviewed 50% interval before the ordinary idle pool and returns naturally", () => {
+    randomValues.push(0.499);
     start(makeEggTheme({
       idleAnimations: [{ file: "clawd-idle-look.svg", duration: 500 }],
     }));
@@ -1110,7 +1110,7 @@ describe("tick conditional idle easter eggs", () => {
   });
 
   it("falls through to the ordinary pool on an egg miss", () => {
-    randomValues.push(0.05, 0);
+    randomValues.push(0.5, 0);
     start(makeEggTheme({
       idleAnimations: [{ file: "clawd-idle-look.svg", duration: 500 }],
     }));
@@ -1121,9 +1121,9 @@ describe("tick conditional idle easter eggs", () => {
   });
 
   it("uses declaration-order cumulative probability intervals", () => {
-    randomValues.push(0.05);
+    randomValues.push(0.5);
     start(makeEggTheme({ eggs: [
-      { ...BENDER, chance: 0.05 },
+      { ...BENDER, chance: 0.5 },
       { ...BENDER, file: "second-egg.svg", chance: 0.1 },
     ] }));
 

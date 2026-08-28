@@ -572,7 +572,7 @@
         }
       },
       "itemOverrides": {
-        "cowboy-hat": {
+        "western-cowboy-hat": {
           "files": {
             "clawd-collapse-sleep.svg": {
               "visibility": "hidden"
@@ -1181,10 +1181,10 @@
     {
       "file": "clawd-outlaw-bender.svg",
       "duration": 15000,
-      "chance": 0.05,
+      "chance": 0.5,
       "cooldownMs": 1800000,
       "requiresAccessories": {
-        "head": "cowboy-hat",
+        "head": "western-cowboy-hat",
         "mouth": "cigarette"
       }
     }

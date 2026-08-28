@@ -39,6 +39,7 @@ function freezeAccessory({ id, labelKey, file = null, viewBox = null, widthScale
 const PET_ACCESSORY_CATALOG = Object.freeze([
   freezeAccessory({ id: "none", labelKey: "accessoryNone" }),
   freezeAccessory({ id: "cowboy-hat", labelKey: "accessoryCowboyHat", file: "cowboy-hat.svg", viewBox: { x: 0, y: 0, width: 16, height: 7 } }),
+  freezeAccessory({ id: "western-cowboy-hat", labelKey: "accessoryWesternCowboyHat", file: "western-cowboy-hat.svg", viewBox: { x: -1, y: 1, width: 17, height: 5 }, widthScale: 1.0625, offsetY: -0.5 }),
   freezeAccessory({ id: "party-hat", labelKey: "accessoryPartyHat", file: "party-hat.svg", viewBox: { x: 0, y: 0, width: 11, height: 14 }, widthScale: 0.7, offsetY: 0.3 }),
   freezeAccessory({ id: "wizard-hat", labelKey: "accessoryWizardHat", file: "wizard-hat.svg", viewBox: { x: 0, y: 0, width: 15, height: 16 }, widthScale: 0.95, offsetY: 0.3 }),
   freezeAccessory({ id: "top-hat", labelKey: "accessoryTopHat", file: "top-hat.svg", viewBox: { x: 0, y: 0, width: 14, height: 10 }, widthScale: 0.88, offsetY: 0.2 }),

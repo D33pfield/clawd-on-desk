@@ -131,6 +131,7 @@ describe("pet customization catalog", () => {
       [
         "none",
         "cowboy-hat",
+        "western-cowboy-hat",
         "party-hat",
         "wizard-hat",
         "top-hat",
@@ -174,6 +175,13 @@ describe("pet customization catalog", () => {
       aspect: 15 / 16,
       widthScale: 0.95,
       offsetY: 0.3,
+    });
+    assert.deepStrictEqual(resolvePetAccessoryPayload("western-cowboy-hat", clawd), {
+      id: "western-cowboy-hat",
+      assetFile: "western-cowboy-hat.svg",
+      aspect: 17 / 5,
+      widthScale: 1.0625,
+      offsetY: -0.5,
     });
     assert.deepStrictEqual(resolvePetAccessoryPayload("wizard-hat", calico), {
       id: "none",

@@ -144,7 +144,7 @@ describe("accessory asset audit", () => {
 
     assert.deepStrictEqual(diskAssets, catalogAssets);
     assert.strictEqual(new Set(catalogAssets).size, catalogAssets.length, "catalog asset names must not collide");
-    assert.strictEqual(diskAssets.length, 8);
+    assert.strictEqual(diskAssets.length, 9);
 
     for (const entry of catalogEntries) {
       const source = fs.readFileSync(path.join(ASSET_DIR, entry.file), "utf8");
@@ -208,6 +208,21 @@ describe("accessory asset audit", () => {
       .replace(/>\s+</g, "><")
       .trim();
     assert.strictEqual(withoutComments(archived), withoutComments(runtime));
+  });
+
+  it("keeps the archived PR western hat reproducible without replacing the earlier cowboy hat", () => {
+    const runtime = fs.readFileSync(path.join(ASSET_DIR, "western-cowboy-hat.svg"), "utf8");
+    const archived = fs.readFileSync(
+      path.join(__dirname, "..", "assets", "source", "outlaw-pr811", "western-cowboy-hat.svg"),
+      "utf8"
+    );
+    const existing = fs.readFileSync(path.join(ASSET_DIR, "cowboy-hat.svg"), "utf8");
+    const withoutComments = (value) => value
+      .replace(/<!--[^]*?-->/g, "")
+      .replace(/>\s+</g, "><")
+      .trim();
+    assert.strictEqual(withoutComments(archived), withoutComments(runtime));
+    assert.notStrictEqual(withoutComments(existing), withoutComments(runtime));
   });
 
   it("rejects malformed, detached, or unbounded cigarette SMIL", () => {

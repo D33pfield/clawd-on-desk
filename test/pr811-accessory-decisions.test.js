@@ -168,21 +168,23 @@ test("optional animation-library SVGs never fall back to static moving accessori
   assert.strictEqual(mouth["clawd-static-base.svg"].followTarget, undefined);
 });
 
-test("head pose policy keeps headphones hatless and limits cowboy-only overrides", () => {
+test("head pose policy keeps headphones hatless and limits western-hat-only overrides", () => {
   const theme = themeLoader.loadTheme("clawd", { strict: true });
   const base = theme.customization.accessories.files;
-  const cowboy = theme.customization.accessories.itemOverrides["cowboy-hat"].files;
+  const overrides = theme.customization.accessories.itemOverrides;
+  const western = overrides["western-cowboy-hat"].files;
 
+  assert.strictEqual(overrides["cowboy-hat"], undefined);
   assert.deepStrictEqual(base["clawd-error.svg"], { visibility: "hidden" });
   assert.deepStrictEqual(base["clawd-wake.svg"], { visibility: "hidden" });
-  assert.ok(cowboy["clawd-error.svg"].staticFrame);
-  assert.ok(cowboy["clawd-wake.svg"].staticFrame);
-  assert.strictEqual(cowboy["clawd-error.svg"].staticFrame.baseY, 10.5);
+  assert.ok(western["clawd-error.svg"].staticFrame);
+  assert.ok(western["clawd-wake.svg"].staticFrame);
+  assert.strictEqual(western["clawd-error.svg"].staticFrame.baseY, 10.5);
   assert.deepStrictEqual(
     base["clawd-headphones-groove.svg"],
     { visibility: "hidden" }
   );
-  assert.strictEqual(cowboy["clawd-headphones-groove.svg"], undefined);
+  assert.strictEqual(western["clawd-headphones-groove.svg"], undefined);
   assert.ok(
     theme.customization.mouthAccessories.files["clawd-headphones-groove.svg"].followTarget,
     "hiding hats on the headphones sprite must not hide its cigarette slot"
@@ -194,7 +196,7 @@ test("head pose policy keeps headphones hatless and limits cowboy-only overrides
     "clawd-sleeping.svg",
     "clawd-working-building.svg",
   ]) {
-    assert.deepStrictEqual(cowboy[file], { visibility: "hidden" }, file);
+    assert.deepStrictEqual(western[file], { visibility: "hidden" }, file);
   }
 });
 
@@ -260,14 +262,21 @@ test("every visible animated cigarette has a measured or authored hit envelope",
     );
   }
   assert.ok(
-    theme.customization.accessories.itemOverrides["cowboy-hat"].files["clawd-wake.svg"]
+    theme.customization.accessories.itemOverrides["western-cowboy-hat"].files["clawd-wake.svg"]
       .hitBoxPadding,
-    "the newly visible wake cowboy hat needs its own one-shot motion envelope"
+    "the newly visible wake western hat needs its own one-shot motion envelope"
   );
 });
 
 test("bender uses the one-unit anti-crop viewBox and its measured face-plant hitbox", () => {
   const theme = themeLoader.loadTheme("clawd", { strict: true });
+  assert.deepStrictEqual(theme.idleEasterEggs, [{
+    file: "clawd-outlaw-bender.svg",
+    duration: 15000,
+    chance: 0.5,
+    cooldownMs: 1800000,
+    requiresAccessories: { head: "western-cowboy-hat", mouth: "cigarette" },
+  }]);
   assert.deepStrictEqual(theme.rendering.objectChannelFiles, ["clawd-outlaw-bender.svg"]);
   assert.deepStrictEqual(theme.fileViewBoxes["clawd-outlaw-bender.svg"], {
     x: -15,
