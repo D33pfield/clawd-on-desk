@@ -97,8 +97,14 @@ const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
   buildPetAccessoryPayload,
-  resolvePetAccessoryPayload,
+  getPetMouthAccessoryIdForTheme,
+  buildPetMouthAccessoryPayload,
 } = require("./pet-customization-catalog");
+const {
+  finalizePetAccessorySlotsDelivery,
+  getPetAccessorySlotsSnapshot,
+  preparePetAccessorySlotsDelivery,
+} = require("./pet-accessory-state");
 const {
   getEffectivePetAccessoryIdForTheme,
   createHolidayAccessoryRuntime,
@@ -110,7 +116,7 @@ const {
   selectSessionAutomationDialogParent,
 } = require("./session-automation-dialog-parent");
 const { createSessionFolderOpener } = require("./session-open-folder");
-const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
+const { isTrustedMainFrameEvent, registerPetInteractionIpc } = require("./pet-interaction-ipc");
 const { createSystemWakeRecovery } = require("./system-wake-recovery");
 const { formatLocalTimestamp } = require("./log-timestamp");
 const { launchClaudeSession, openTerminalAt } = require("./launch-claude");
@@ -174,6 +180,9 @@ const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
 const createFloatingWindowRuntime = require("./floating-window-runtime");
 const createPetWindowRuntime = require("./pet-window-runtime");
+const { collectRequiredAssetFiles } = require("./theme-schema");
+const { describeGeometrySync } = require("./pet-accessory-state");
+const { createDisplayedVisualProjection } = require("./displayed-visual-projection");
 const { createTestReactionHandler } = require("./test-reaction");
 const createMacHideController = require("./mac-hide");
 const {
@@ -431,10 +440,12 @@ let telegramNativeRunner = null;
 let telegramCompanion = null;
 let telegramDirectSend = null;
 let discordPresenceBridge = null;
-// Renderer-visible state animations can diverge briefly from state.currentSvg
-// (tick.js idle rotation). Cache every state-change even while Presence is off
-// so a first enable mirrors what the pet is actually showing.
+// Renderer-visible state animations can diverge from state.currentSvg (idle
+// rotation and reactions). Presence is fed only after the renderer confirms
+// what is actually on screen.
 let lastDiscordPresenceVisual = null;
+let displayedVisualProjection = null;
+let lastAppliedVisualGeneration = 0;
 let suppressTelegramMigrationReconcile = 0;
 let _remoteSshTransportCoordinator = null;
 let feishuApprovalClient = null;
@@ -772,6 +783,8 @@ themeRuntime = createThemeRuntime({
   syncHitWin,
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
   startMainTick: () => startMainTick(),
+  invalidateDisplayedVisual: (detail) => resetDisplayedVisualProjection(detail),
+  refreshDisplayedVisualHitBoxes: () => refreshDisplayedVisualHitBoxes(),
   bumpAnimationOverridePreviewPosterGeneration,
   rebuildAllMenus: () => rebuildAllMenus(),
   isManagedTheme: (themeId) => codexPetMain && codexPetMain.isManagedTheme(themeId),
@@ -940,18 +953,53 @@ if (_loadedStartupTheme._id !== _requestedThemeId || _loadedStartupTheme._varian
 
 // ── Pet window geometry / bounds runtime ──
 // Geometry's startup/theme-swap fallback only. It must stay a pure read:
-// resolvePetAccessoryPayload() commits to the canonical payload, so using it
-// here would let a hit-window sync install a payload resolved from its own
+// Slot candidates commit to canonical state, so using one here would let a
+// hit-window sync install a payload resolved from its own
 // wall clock — the midnight/holiday race the canonical payload exists to end.
-function getEffectivePetAccessoryPayload() {
-  const activeTheme = getActiveTheme();
+function getEffectivePetAccessoryPayloads(activeTheme = getActiveTheme()) {
   const snapshot = _settingsController.getSnapshot();
-  const accessoryId = getEffectivePetAccessoryIdForTheme({
+  const headId = getEffectivePetAccessoryIdForTheme({
     petAccessory: snapshot.petAccessory,
     holidayAccessoryEnabled: snapshot.holidayAccessoryEnabled,
     themeId: activeTheme && activeTheme._id,
   });
-  return buildPetAccessoryPayload(accessoryId, activeTheme);
+  const mouthId = getPetMouthAccessoryIdForTheme(
+    snapshot.petMouthAccessory,
+    activeTheme && activeTheme._id
+  );
+  return {
+    head: buildPetAccessoryPayload(headId, activeTheme),
+    mouth: buildPetMouthAccessoryPayload(mouthId, activeTheme),
+  };
+}
+
+function getEffectivePetAccessoryIds() {
+  const activeTheme = getActiveTheme();
+  const canonical = getPetAccessorySlotsSnapshot(activeTheme);
+  const payloads = canonical ? canonical.payloads : getEffectivePetAccessoryPayloads();
+  return Object.freeze({
+    head: payloads.head.id,
+    mouth: payloads.mouth.id,
+  });
+}
+
+function prepareCurrentAccessorySlotsDelivery(activeTheme = getActiveTheme()) {
+  return preparePetAccessorySlotsDelivery(
+    getEffectivePetAccessoryPayloads(activeTheme),
+    activeTheme
+  );
+}
+
+function deliverAccessorySlotsSnapshot(activeTheme = getActiveTheme()) {
+  const delivery = prepareCurrentAccessorySlotsDelivery(activeTheme);
+  const candidate = delivery.snapshot;
+  const delivered = sendToRenderer("pet-accessory-slots-change", candidate);
+  if (!finalizePetAccessorySlotsDelivery(delivery, delivered)) return false;
+  const geometry = describeGeometrySync(syncHitWin());
+  if (geometry.applied) {
+    try { repositionAnchoredFloatingSurfaces(); } catch {}
+  }
+  return true;
 }
 
 // Composed accessory facing as the renderer actually applied it (mini-left
@@ -976,10 +1024,11 @@ const petWindowRuntime = createPetWindowRuntime({
   getHitWindow: () => hitWin,
   getSettingsWindow: () => getSettingsWindow(),
   getActiveTheme: () => getActiveTheme(),
-  getCurrentState: () => _state.getCurrentState(),
-  getCurrentSvg: () => _state.getCurrentSvg(),
-  getCurrentHitBox: () => _state.getCurrentHitBox(),
-  getCurrentAccessoryPayload: getEffectivePetAccessoryPayload,
+  getDisplayedVisual: () => getDisplayedVisualTuple(),
+  getCurrentState: () => getDisplayedVisualTuple().displayState,
+  getCurrentSvg: () => getDisplayedVisualTuple().file,
+  getCurrentHitBox: () => getDisplayedVisualTuple().hitBox,
+  getCurrentAccessoryPayloads: getEffectivePetAccessoryPayloads,
   getAccessoryMirrored: () => _accessoryMirrored,
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
@@ -1168,7 +1217,6 @@ let soundVolume = _settingsController.get("soundVolume");
 let lowPowerIdleMode = _settingsController.get("lowPowerIdleMode");
 let keepAwakeWhileWorking = _settingsController.get("keepAwakeWhileWorking");
 let petTint = _settingsController.get("petTint");
-let petAccessory = _settingsController.get("petAccessory");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let disableMiniModeCached = _settingsController.get("disableMiniMode");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
@@ -1302,29 +1350,121 @@ function bringPetToPrimaryDisplay() {
   return petWindowRuntime.bringPetToPrimaryDisplay();
 }
 
-function sendToRenderer(channel, ...args) {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
-  // State animations flow through this channel (applyState and the tick.js
-  // idle rotation), so it doubles as the presence mirror feed. Reactions,
-  // low-power pauses and tint/accessory changes ride other channels and are
-  // deliberately not mirrored.
-  if (channel === "state-change") {
-    const activeTheme = getActiveTheme();
-    lastDiscordPresenceVisual = {
-      state: args[0],
-      svg: args[1],
-      themeId: activeTheme && activeTheme._id,
-    };
-    if (discordPresenceBridge) {
-      try {
-        discordPresenceBridge.onVisual(
-          lastDiscordPresenceVisual.state,
-          lastDiscordPresenceVisual.svg,
-          lastDiscordPresenceVisual.themeId
-        );
-      } catch {}
-    }
+function sendRawToRenderer(channel, ...args) {
+  if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return false;
+  win.webContents.send(channel, ...args);
+  return true;
+}
+
+function inferVisualSource(displayState, file) {
+  return displayState === "idle" && file !== _state.getCurrentSvg()
+    ? "idle-animation"
+    : "state";
+}
+
+function requestDisplayedVisual(displayState, file, options = {}) {
+  if (!displayedVisualProjection) return null;
+  const activeTheme = getActiveTheme();
+  return displayedVisualProjection.request({
+    themeId: activeTheme && activeTheme._id,
+    logicalState: options.logicalState || _state.getCurrentState(),
+    displayState,
+    file,
+    hitBox: _state.resolveHitBoxForSvg(file),
+    source: options.source || inferVisualSource(displayState, file),
+    deliver: options.deliver || ((payload) => sendRawToRenderer("state-change", payload)),
+    onLogicalSettlement: options.onLogicalSettlement,
+  });
+}
+
+function resetDisplayedVisualProjection(detail = "projection-reset", options = {}) {
+  if (!displayedVisualProjection) return false;
+  const activeTheme = getActiveTheme();
+  displayedVisualProjection.reset({
+    themeId: activeTheme && activeTheme._id,
+    logicalState: _state.getCurrentState(),
+    detail,
+    preserveCommitted: options.preserveCommitted === true,
+  });
+  if (options.preserveCommitted !== true) {
+    lastAppliedVisualGeneration = 0;
+    lastDiscordPresenceVisual = null;
   }
+  return true;
+}
+
+function refreshDisplayedVisualHitBoxes() {
+  if (!displayedVisualProjection) return false;
+  const refreshed = displayedVisualProjection.refreshHitBoxes(
+    (file) => _state.resolveHitBoxForSvg(file)
+  );
+  if (!refreshed) return false;
+  lastAppliedVisualGeneration = 0;
+  return syncDisplayedVisualGeometry();
+}
+
+function refreshDisplayedVisualForLowPowerMode() {
+  const activeTheme = getActiveTheme();
+  const state = _state.getCurrentState();
+  const file = _state.getCurrentSvg();
+  const override = activeTheme
+    && activeTheme.rendering
+    && activeTheme.rendering.lowPowerStaticImageOverrides
+    && activeTheme.rendering.lowPowerStaticImageOverrides[state];
+  if (!override || override.from !== file || !override.to) return false;
+  return !!requestDisplayedVisual(state, file, {
+    logicalState: state,
+    source: "state",
+  });
+}
+
+function isVisualGenerationCurrent(visualGeneration) {
+  if (!displayedVisualProjection || !Number.isSafeInteger(visualGeneration)) return false;
+  const snapshot = displayedVisualProjection.getSnapshot();
+  const current = snapshot.requested || snapshot.committed;
+  return !!(current && current.visualGeneration === visualGeneration);
+}
+
+function resolveDragReactionFile(direction) {
+  const theme = getActiveTheme();
+  const drag = theme && theme.reactions && theme.reactions.drag;
+  if (!drag || typeof drag !== "object") return null;
+  if (direction === "left" && typeof drag.fileLeft === "string") return drag.fileLeft;
+  if (direction === "right" && typeof drag.fileRight === "string") return drag.fileRight;
+  return typeof drag.file === "string" ? drag.file : null;
+}
+
+function requestDragReaction(direction) {
+  const normalizedDirection = direction === "left" || direction === "right" ? direction : null;
+  const file = resolveDragReactionFile(normalizedDirection);
+  if (!file) return null;
+  const snapshot = displayedVisualProjection.getSnapshot();
+  const activeReaction = snapshot.requested || snapshot.committed;
+  if (activeReaction && activeReaction.source === "reaction" && activeReaction.file === file) {
+    sendRawToRenderer("start-drag-reaction", null, normalizedDirection);
+    return activeReaction;
+  }
+  return requestDisplayedVisual(_state.getCurrentState(), file, {
+    source: "reaction",
+    deliver: (payload) => sendRawToRenderer("start-drag-reaction", payload, normalizedDirection),
+  });
+}
+
+function requestClickReaction(file, duration) {
+  const activeTheme = getActiveTheme();
+  if (!activeTheme || !collectRequiredAssetFiles(activeTheme).includes(file)) return null;
+  const safeDuration = Number.isFinite(duration) ? Math.max(0, duration) : 0;
+  return requestDisplayedVisual(_state.getCurrentState(), file, {
+    source: "reaction",
+    deliver: (payload) => sendRawToRenderer("play-click-reaction", payload, safeDuration),
+  });
+}
+
+function sendToRenderer(channel, ...args) {
+  if (channel === "state-change") {
+    return requestDisplayedVisual(args[0], args[1], args[2] || {});
+  }
+  return sendRawToRenderer(channel, ...args);
 }
 function sendToHitWin(channel, ...args) {
   if (hitWin && !hitWin.isDestroyed()) hitWin.webContents.send(channel, ...args);
@@ -1370,7 +1510,6 @@ function applyPetWindowPosition(x, y, opts) { return petWindowRuntime.applyPetWi
 
 function syncHitStateAfterLoad() {
   sendToHitWin("hit-state-sync", {
-    currentSvg: _state.getCurrentSvg(),
     currentState: _state.getCurrentState(),
     miniMode: _mini.getMiniMode(),
     dndEnabled: doNotDisturb,
@@ -1382,12 +1521,7 @@ function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
   const activeTheme = getActiveTheme();
   const tintId = getPetTintIdForTheme(petTint, activeTheme && activeTheme._id);
   sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
-  const accessoryId = getEffectivePetAccessoryIdForTheme({
-    petAccessory,
-    holidayAccessoryEnabled: _settingsController.get("holidayAccessoryEnabled"),
-    themeId: activeTheme && activeTheme._id,
-  });
-  sendToRenderer("pet-accessory-change", resolvePetAccessoryPayload(accessoryId, activeTheme));
+  deliverAccessorySlotsSnapshot(activeTheme);
   sendToRenderer("low-power-idle-mode-change", lowPowerIdleMode);
   if (_mini.getMiniMode()) {
     sendToRenderer("mini-mode-change", true, _mini.getMiniEdge());
@@ -1542,6 +1676,28 @@ function flashTaskbar() {
 }
 
 function syncHitWin() { return petWindowRuntime.syncHitWin(); }
+
+function getDisplayedVisualTuple() {
+  const committed = displayedVisualProjection
+    && displayedVisualProjection.getSnapshot().committed;
+  if (committed) return committed;
+  return {
+    displayState: _state.getCurrentState(),
+    file: _state.getCurrentSvg(),
+    hitBox: _state.getCurrentHitBox(),
+    source: "startup",
+    visualGeneration: 0,
+  };
+}
+
+function syncDisplayedVisualGeometry() {
+  const committed = displayedVisualProjection
+    && displayedVisualProjection.getSnapshot().committed;
+  if (!committed || committed.visualGeneration === lastAppliedVisualGeneration) return true;
+  const outcome = describeGeometrySync(syncHitWin());
+  if (outcome.applied) lastAppliedVisualGeneration = committed.visualGeneration;
+  return outcome.applied;
+}
 
 let mouseOverPet = false;
 let menuOpen = false;
@@ -1929,22 +2085,42 @@ function getIdleVisualChoice() {
 // should already use the selected idle visual and tint instead of briefly
 // showing theme defaults. getRendererConfig() returns a fresh object, safe to
 // extend.
-function buildRendererThemeConfig() {
+function buildRendererThemeConfig(accessorySnapshot = null) {
   const cfg = themeRuntime.getRendererConfig();
   if (cfg) {
     const activeTheme = getActiveTheme();
     const tintSelections = _settingsController.get("petTint");
     const tintId = getPetTintIdForTheme(tintSelections, activeTheme && activeTheme._id);
-    const accessoryId = getEffectivePetAccessoryIdForTheme({
-      petAccessory: _settingsController.get("petAccessory"),
-      holidayAccessoryEnabled: _settingsController.get("holidayAccessoryEnabled"),
-      themeId: activeTheme && activeTheme._id,
-    });
+    const canonical = accessorySnapshot || getPetAccessorySlotsSnapshot(activeTheme);
     cfg.idleDefaultVisual = getIdleVisualChoice();
     cfg.petTintPayload = resolvePetTintPayload(tintId, activeTheme);
-    cfg.accessoryPayload = resolvePetAccessoryPayload(accessoryId, activeTheme);
+    if (canonical) {
+      cfg.accessorySlots = {
+        themeId: canonical.themeId,
+        accessoryGeneration: canonical.accessoryGeneration,
+        head: {
+          supported: cfg.accessorySupported === true,
+          attachments: cfg.accessoryAttachments || null,
+          payload: canonical.payloads.head,
+        },
+        mouth: {
+          supported: cfg.mouthAccessorySupported === true,
+          attachments: cfg.mouthAccessoryAttachments || null,
+          payload: canonical.payloads.mouth,
+        },
+      };
+    }
   }
   return cfg;
+}
+
+function deliverRendererThemeConfig() {
+  const delivery = prepareCurrentAccessorySlotsDelivery();
+  const delivered = sendToRenderer(
+    "theme-config",
+    buildRendererThemeConfig(delivery.snapshot)
+  );
+  return !!finalizePetAccessorySlotsDelivery(delivery, delivered);
 }
 
 const _stateCtx = {
@@ -2050,6 +2226,40 @@ const _stateCtx = {
   hasAnyEnabledAgent: () => _runtimeAgentGate.hasAnyEnabledAgent(),
 };
 const _state = require("./state")(_stateCtx);
+displayedVisualProjection = createDisplayedVisualProjection({
+  projectActualFile: ({ actualFile, requested }) => {
+    const activeTheme = getActiveTheme();
+    if (!activeTheme || !collectRequiredAssetFiles(activeTheme).includes(actualFile)) return null;
+    return {
+      displayState: requested.displayState,
+      hitBox: _state.resolveHitBoxForSvg(actualFile),
+    };
+  },
+  onCommit: (visual) => {
+    syncDisplayedVisualGeometry();
+    try { repositionAnchoredFloatingSurfaces(); } catch {}
+    if (visual.source === "reaction") return;
+    lastDiscordPresenceVisual = {
+      state: visual.displayState,
+      svg: visual.file,
+      themeId: visual.themeId,
+    };
+    if (discordPresenceBridge) {
+      try {
+        discordPresenceBridge.onVisual(
+          lastDiscordPresenceVisual.state,
+          lastDiscordPresenceVisual.svg,
+          lastDiscordPresenceVisual.themeId
+        );
+      } catch {}
+    }
+  },
+  onRendererUnresponsive: () => {
+    if (!win || win.isDestroyed()) return;
+    resetDisplayedVisualProjection("renderer-unresponsive", { preserveCommitted: true });
+    petWindowRuntime.reloadWindowWebContents(win);
+  },
+});
 const _kimiQuotaCredentialStore = createKimiQuotaCredentialStore({ safeStorage });
 const _kimiQuotaRuntime = createKimiQuotaRuntime({
   credentialStore: _kimiQuotaCredentialStore,
@@ -2188,9 +2398,11 @@ const _tickCtx = {
   get startupRecoveryActive() { return _state.getStartupRecoveryActive(); },
   sendToRenderer,
   sendToHitWin,
+  isVisualGenerationCurrent,
   setState,
   applyState,
   getIdleVisualChoice,
+  getEffectiveAccessoryIds: getEffectivePetAccessoryIds,
   miniPeekIn: () => miniPeekIn(),
   miniPeekOut: () => miniPeekOut(),
   getObjRect,
@@ -4037,7 +4249,6 @@ const SETTINGS_MIRROR_SETTERS = {
   soundMuted: (v) => { soundMuted = v; }, soundVolume: (v) => { soundVolume = v; }, lowPowerIdleMode: (v) => { lowPowerIdleMode = v; },
   keepAwakeWhileWorking: (v) => { keepAwakeWhileWorking = v; },
   petTint: (v) => { petTint = v; },
-  petAccessory: (v) => { petAccessory = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, disableMiniMode: (v) => { disableMiniModeCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; resetKeepSizeFrozen(); },
   fullscreenOverlay: (v) => { fullscreenOverlayCached = v; },
   freeRoam: (v) => { _roam.setEnabled(v); },
@@ -4114,6 +4325,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
     if (_state.getCurrentState() !== "idle") return;
     _state.applyState("idle", _state.getSvgOverride("idle"));
   },
+  refreshDisplayedVisual: refreshDisplayedVisualForLowPowerMode,
   rebuildAllMenus,
   reconcilePowerSaveBlocker,
   logWarn: console.warn,
@@ -4522,6 +4734,7 @@ function createWindow() {
     restoreMiniFromPrefs: (prefsSnapshot, pixelSize) => _mini.restoreFromPrefs(prefsSnapshot, pixelSize),
   });
 
+  const initialAccessoryDelivery = prepareCurrentAccessorySlotsDelivery();
   petWindowRuntime.createRenderWindow({
     BrowserWindow,
     size,
@@ -4529,11 +4742,12 @@ function createWindow() {
     initialVirtualBounds,
     preloadPath: path.join(__dirname, "preload.js"),
     loadFilePath: path.join(__dirname, "index.html"),
-    themeConfig: buildRendererThemeConfig(),
+    themeConfig: buildRendererThemeConfig(initialAccessoryDelivery.snapshot),
     setRenderWindow: (createdWindow) => { win = createdWindow; },
     isQuitting: () => isQuitting,
     applyDockVisibility,
   });
+  finalizePetAccessorySlotsDelivery(initialAccessoryDelivery, true);
 
   buildContextMenu();
   if (!isMac || showTray) createTray();
@@ -4588,6 +4802,16 @@ function createWindow() {
     getCurrentState: () => _state.getCurrentState(),
     getCurrentSvg: () => _state.getCurrentSvg(),
     sendToRenderer,
+    requestDragReaction,
+    requestClickReaction,
+    settleVisual: (event, payload) => {
+      if (
+        !win
+        || win.isDestroyed()
+        || !isTrustedMainFrameEvent(event, win.webContents)
+      ) return false;
+      return displayedVisualProjection.settle(payload);
+    },
     recoverVisiblePetAfterRendererLoad: (event) => {
       if (!win || win.isDestroyed()) return;
       if (!event || event.sender !== win.webContents) return;
@@ -4600,6 +4824,7 @@ function createWindow() {
     beginDragSnapshot: () => beginDragSnapshot(),
     clearDragSnapshot: () => clearDragSnapshot(),
     syncHitWin: () => syncHitWin(),
+    syncDisplayedVisualGeometry,
     syncImeEditingPetDodge: () => topmostRuntime.syncImeEditingPetDodge(),
     isMiniMode: () => _mini.getMiniMode(),
     checkMiniModeSnap: () => checkMiniModeSnap(),
@@ -4694,7 +4919,7 @@ function createWindow() {
     setAccessoryMirrored(false);
   });
   win.webContents.on("did-finish-load", () => {
-    sendToRenderer("theme-config", buildRendererThemeConfig());
+    deliverRendererThemeConfig();
     petWindowRuntime.resendViewportOffsets();
     if (themeRuntime.isReloadInProgress()) return;
     syncRendererStateAfterLoad();
@@ -4707,6 +4932,7 @@ function createWindow() {
     petWindowRuntime.setDragLocked(false);
     idlePaused = false;
     mouseOverPet = false;
+    resetDisplayedVisualProjection("renderer-process-gone", { preserveCommitted: true });
     petWindowRuntime.reloadWindowWebContents(win, { crashKey: "renderWin", details });
   });
 
@@ -5325,6 +5551,7 @@ if (!gotTheLock) {
     _server.cleanup();
     if (_lanWss) _lanWss.cleanup();
     _updateBubble.cleanup();
+    if (displayedVisualProjection) displayedVisualProjection.dispose();
     _state.cleanup();
     _tick.cleanup();
     _mini.cleanup();

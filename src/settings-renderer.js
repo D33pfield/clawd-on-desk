@@ -166,14 +166,25 @@ if (window.settingsAPI && typeof window.settingsAPI.getSnapshot === "function") 
         return [];
       })
       : Promise.resolve([]);
+  const mouthAccessoryOptionsPromise =
+    typeof window.settingsAPI.getPetMouthAccessoryOptions === "function"
+      ? window.settingsAPI.getPetMouthAccessoryOptions().catch((err) => {
+        console.warn("settings: getPetMouthAccessoryOptions failed", err);
+        return [];
+      })
+      : Promise.resolve([]);
   Promise.all([
     window.settingsAPI.getSnapshot(),
     tintOptionsPromise,
     accessoryOptionsPromise,
-  ]).then(([snapshot, petTintOptions, petAccessoryOptions]) => {
+    mouthAccessoryOptionsPromise,
+  ]).then(([snapshot, petTintOptions, petAccessoryOptions, petMouthAccessoryOptions]) => {
     core.runtime.petTintOptions = Array.isArray(petTintOptions) ? petTintOptions : [];
     core.runtime.petAccessoryOptions = Array.isArray(petAccessoryOptions)
       ? petAccessoryOptions
+      : [];
+    core.runtime.petMouthAccessoryOptions = Array.isArray(petMouthAccessoryOptions)
+      ? petMouthAccessoryOptions
       : [];
     core.ops.applyBootstrap(snapshot);
   });

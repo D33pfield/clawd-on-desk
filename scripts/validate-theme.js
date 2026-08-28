@@ -114,6 +114,14 @@ if (!themeDir) {
 }
 
 const resolvedDir = path.resolve(themeDir);
+const builtinThemesDir = path.resolve(__dirname, "..", "themes");
+const builtinRelative = path.relative(builtinThemesDir, resolvedDir);
+const isBuiltinTheme = !!(
+  builtinRelative
+  && builtinRelative !== ".."
+  && !builtinRelative.startsWith(`..${path.sep}`)
+  && !path.isAbsolute(builtinRelative)
+);
 const jsonPath = path.join(resolvedDir, "theme.json");
 
 // An explicit --assets override that does not resolve to a usable directory is a
@@ -213,32 +221,32 @@ if (check(vb && vb.x != null && vb.y != null && vb.width != null && vb.height !=
 }
 const sleepMode = deriveSleepMode(raw);
 const normalizedStates = normalizeStateBindings(raw.states);
-const accessorySchemaErrors = themeSchema.validateTheme(raw)
-  .filter((message) => message.includes("customization.accessories"));
-// `false`/`null` is the documented opt-out, not a misconfiguration.
-if (raw.customization && raw.customization.accessories) {
-  if (accessorySchemaErrors.length === 0) {
-    // Schema-valid is not the same as usable: a coverage gap (a visual with no
-    // descriptor to fall back on) raises no schema error but still turns the
-    // capability off, and Settings then hides the wardrobe with no explanation.
-    // Saying "valid" and stopping there is how an author ships a theme whose
-    // accessories silently never appear.
-    if (themeSchema.deriveAccessoryCapability(raw)) {
-      console.log(`  ${PASS} customization.accessories attachment geometry is schema-valid`);
-    } else {
-      console.log(
-        `  ${WARN} customization.accessories is schema-valid but does not cover every visual, `
-        + "so accessories stay disabled for this theme and the wardrobe is hidden"
-      );
-      warnings++;
-    }
-  } else {
-    for (const message of accessorySchemaErrors) {
+function reportAttachmentCapability(fieldName, deriveCapability) {
+  const pathName = `customization.${fieldName}`;
+  const schemaErrors = themeSchema.validateTheme(raw)
+    .filter((message) => message.includes(pathName));
+  // `false`/`null` is the documented opt-out, not a misconfiguration.
+  if (!raw.customization || !raw.customization[fieldName]) return;
+  if (schemaErrors.length > 0) {
+    for (const message of schemaErrors) {
       console.log(`  ${FAIL} ${message}`);
       errors++;
     }
+    return;
   }
+  if (deriveCapability(raw)) {
+    console.log(`  ${PASS} ${pathName} attachment geometry is schema-valid`);
+    return;
+  }
+  console.log(
+    `  ${WARN} ${pathName} is schema-valid but does not cover every visual, `
+    + "so this accessory slot stays disabled and its Settings row is hidden"
+  );
+  warnings++;
 }
+
+reportAttachmentCapability("accessories", themeSchema.deriveAccessoryCapability);
+reportAttachmentCapability("mouthAccessories", themeSchema.deriveMouthAccessoryCapability);
 
 if (check(!!raw.states, "states object exists")) {
   for (const s of REQUIRED_STATES) {
@@ -301,61 +309,7 @@ const assetsDir = assetsOverride ? path.resolve(assetsOverride) : path.join(reso
 const assetsDirExists = fs.existsSync(assetsDir);
 check(assetsDirExists, `assets/ directory exists`);
 
-/** Collect all referenced asset filenames */
-function collectFiles() {
-  const files = new Set();
-  // States
-  if (raw.states) {
-    for (const [key, entry] of Object.entries(raw.states)) {
-      if (key.startsWith("_")) continue; // skip _comment
-      getStateFiles(entry).forEach((f) => files.add(f));
-    }
-  }
-  // Mini mode states
-  if (raw.miniMode && raw.miniMode.states) {
-    for (const [key, arr] of Object.entries(raw.miniMode.states)) {
-      if (key.startsWith("_")) continue;
-      if (Array.isArray(arr)) arr.forEach(f => files.add(f));
-    }
-  }
-  // Working tiers
-  if (raw.workingTiers) {
-    for (const tier of raw.workingTiers) {
-      if (tier.file) files.add(tier.file);
-    }
-  }
-  // Juggling tiers
-  if (raw.jugglingTiers) {
-    for (const tier of raw.jugglingTiers) {
-      if (tier.file) files.add(tier.file);
-    }
-  }
-  // Idle animations
-  if (raw.idleAnimations) {
-    for (const anim of raw.idleAnimations) {
-      if (anim.file) files.add(anim.file);
-    }
-  }
-  // Reactions
-  if (raw.reactions) {
-    for (const [key, react] of Object.entries(raw.reactions)) {
-      if (key.startsWith("_")) continue;
-      if (react.file) files.add(react.file);
-      if (react.fileLeft) files.add(react.fileLeft);
-      if (react.fileRight) files.add(react.fileRight);
-      if (react.files) react.files.forEach(f => files.add(f));
-    }
-  }
-  // Display hint map values
-  if (raw.displayHintMap) {
-    for (const f of Object.values(raw.displayHintMap)) {
-      if (f) files.add(f);
-    }
-  }
-  return files;
-}
-
-const referencedFiles = collectFiles();
+const referencedFiles = new Set(themeSchema.collectRequiredAssetFiles(raw));
 let missingCount = 0;
 let presentCount = 0;
 
@@ -720,20 +674,9 @@ if (raw.variants !== undefined) {
 }
 
 console.log(`\n${C}[Capabilities]${D}`);
-const capabilities = {
-  eyeTracking: !!(
-    isPlainObject(raw.eyeTracking)
-    && raw.eyeTracking.enabled
-    && hasNonEmptyArray(raw.eyeTracking.states)
-  ),
-  miniMode: !!(isPlainObject(raw.miniMode) && raw.miniMode.supported !== false),
-  idleAnimations: hasNonEmptyArray(raw.idleAnimations),
-  reactions: hasReactionBindings(raw.reactions),
-  workingTiers: hasNonEmptyArray(raw.workingTiers),
-  jugglingTiers: hasNonEmptyArray(raw.jugglingTiers),
-  idleMode: deriveIdleMode(raw),
-  sleepMode,
-};
+const capabilities = themeSchema.buildCapabilities(raw, {
+  trustedRuntimeAllowed: isBuiltinTheme,
+});
 for (const [key, value] of Object.entries(capabilities)) {
   console.log(`  ${PASS} ${key}: ${value}`);
 }

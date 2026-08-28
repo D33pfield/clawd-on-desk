@@ -60,9 +60,10 @@ const {
 const {
   PET_TINT_IDS,
   PET_ACCESSORY_IDS,
+  PET_MOUTH_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
-const CURRENT_VERSION = 16;
+const CURRENT_VERSION = 17;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -349,6 +350,13 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => ({}),
     normalize: normalizePetAccessory,
+  },
+  // Per-theme mouth-slot choice. Missing entries mean no mouth accessory.
+  // This is intentionally independent from the legacy-stable head slot above.
+  petMouthAccessory: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizePetMouthAccessory,
   },
   // Per-theme opt-in for temporary date-based holiday accessories. Missing
   // entries mean disabled; the saved manual petAccessory choice remains the
@@ -852,6 +860,20 @@ function migrate(raw) {
     out.shortcuts = migrateLegacyControlShortcuts(out.shortcuts);
     out.version = 16;
   }
+  // v16 -> v17: introduce an independent mouth-accessory map. Never infer a
+  // cigarette choice from the existing head accessory or from theme ids. A
+  // valid explicit map may exist in an unreleased v16 development snapshot;
+  // preserve it instead of erasing that selection during the version split.
+  if (out.version < 17) {
+    if (
+      !out.petMouthAccessory
+      || typeof out.petMouthAccessory !== "object"
+      || Array.isArray(out.petMouthAccessory)
+    ) {
+      out.petMouthAccessory = {};
+    }
+    out.version = 17;
+  }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
   }
@@ -1309,6 +1331,17 @@ function normalizePetAccessory(value, defaultsValue) {
   return out;
 }
 
+function normalizePetMouthAccessory(value, defaultsValue) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
+  const out = {};
+  for (const [themeId, accessoryId] of Object.entries(value)) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)) continue;
+    if (!PET_MOUTH_ACCESSORY_IDS.includes(accessoryId)) continue;
+    if (accessoryId !== "none") out[themeId] = accessoryId;
+  }
+  return out;
+}
+
 function normalizeHolidayAccessoryEnabled(value, defaultsValue) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
   const out = {};
@@ -1506,6 +1539,7 @@ module.exports = {
   mapLocaleToLang,
   normalizeThemeOverrides,
   normalizePetTint,
+  normalizePetMouthAccessory,
   normalizeShortcuts,
   normalizeOptionalHttpUrl,
   normalizePathList,

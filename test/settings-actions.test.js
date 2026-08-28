@@ -113,6 +113,28 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.petAccessory(null, deps).status, "error");
   });
 
+  it("petMouthAccessory accepts only safe per-theme catalog selections", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.petMouthAccessory({}, deps).status, "ok");
+    assert.strictEqual(
+      updateRegistry.petMouthAccessory({ clawd: "cigarette" }, deps).status,
+      "ok"
+    );
+    assert.strictEqual(updateRegistry.petMouthAccessory({ clawd: "none" }, deps).status, "error");
+    assert.strictEqual(updateRegistry.petMouthAccessory({ clawd: "pipe" }, deps).status, "error");
+    assert.strictEqual(
+      updateRegistry.petMouthAccessory({ "../unsafe": "cigarette" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(
+      updateRegistry.petMouthAccessory({ clawd: "file:///secret.svg" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(updateRegistry.petMouthAccessory("cigarette", deps).status, "error");
+    assert.strictEqual(updateRegistry.petMouthAccessory([], deps).status, "error");
+    assert.strictEqual(updateRegistry.petMouthAccessory(null, deps).status, "error");
+  });
+
   it("holidayAccessoryEnabled accepts only canonical per-theme true entries", () => {
     const deps = { snapshot: baseSnapshot };
     assert.strictEqual(updateRegistry.holidayAccessoryEnabled({}, deps).status, "ok");
@@ -2546,11 +2568,12 @@ describe("removeTheme command", () => {
     assert.deepStrictEqual(r.commit.idleVisual, { clawd: "clawd-idle-reading.svg" });
   });
 
-  it("strips pet tint, accessory, and holiday opt-in entries on success when they exist", async () => {
+  it("strips pet tint, both accessory slots, and holiday opt-in entries on success when they exist", async () => {
     const snapshotWithCustomization = {
       ...baseSnapshot,
       petTint: { cat: "matcha", clawd: "gold" },
       petAccessory: { cat: "halo", clawd: "wizard-hat" },
+      petMouthAccessory: { cat: "cigarette", clawd: "cigarette" },
       holidayAccessoryEnabled: { cat: true, clawd: true },
     };
     const { deps } = makeDeps({ snapshot: snapshotWithCustomization });
@@ -2559,6 +2582,7 @@ describe("removeTheme command", () => {
     assert.ok(r.commit, "commit field expected");
     assert.deepStrictEqual(r.commit.petTint, { clawd: "gold" });
     assert.deepStrictEqual(r.commit.petAccessory, { clawd: "wizard-hat" });
+    assert.deepStrictEqual(r.commit.petMouthAccessory, { clawd: "cigarette" });
     assert.deepStrictEqual(r.commit.holidayAccessoryEnabled, { clawd: true });
   });
 
@@ -2667,6 +2691,7 @@ describe("setThemeSelection command", () => {
     assert.deepStrictEqual(r.customizationCapabilities, {
       petTint: true,
       accessories: true,
+      mouthAccessories: false,
     });
   });
 
@@ -2681,6 +2706,7 @@ describe("setThemeSelection command", () => {
     assert.deepStrictEqual(r.customizationCapabilities, {
       petTint: true,
       accessories: false,
+      mouthAccessories: false,
     });
   });
 

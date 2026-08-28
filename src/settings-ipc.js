@@ -9,6 +9,7 @@ const settingsThemeImporter = require("./settings-theme-importer");
 const {
   listPetTintOptions,
   listPetAccessoryOptions,
+  listPetMouthAccessoryOptions,
 } = require("./pet-customization-catalog");
 
 const SOUND_OVERRIDE_ASSET_EXTS = new Set([".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"]);
@@ -416,6 +417,7 @@ function registerSettingsIpc(options = {}) {
   });
   handle("settings:get-pet-tint-options", () => listPetTintOptions());
   handle("settings:get-pet-accessory-options", () => listPetAccessoryOptions());
+  handle("settings:get-pet-mouth-accessory-options", () => listPetMouthAccessoryOptions());
   handle("settings:get-roam-fence", (event) => {
     const rejected = rejectUntrustedSettingsEvent(event);
     return rejected || roamFenceSettings.getStatus();

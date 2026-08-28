@@ -762,7 +762,7 @@ function applyState(state, svgOverride, options = {}) {
 
   ctx.sendToRenderer("state-change", state, svg);
   ctx.syncHitWin();
-  ctx.sendToHitWin("hit-state-sync", { currentSvg: svg, currentState: state });
+  ctx.sendToHitWin("hit-state-sync", { currentState: state });
   ctx.sendToHitWin("hit-cancel-reaction");
 
   if (state !== "idle" && state !== "mini-idle") {
@@ -3142,7 +3142,7 @@ return {
   clearSessionsByAgent,
   disposeAllKimiPermissionState,
   deriveSessionBadge,
-  getCurrentState, getCurrentSvg, getCurrentHitBox, getStartupRecoveryActive,
+  getCurrentState, getCurrentSvg, getCurrentHitBox, resolveHitBoxForSvg, getStartupRecoveryActive,
   sessions, STATE_PRIORITY, ONESHOT_STATES, SLEEP_SEQUENCE,
   get STATE_SVGS() { return STATE_SVGS; },
   get HIT_BOXES() { return HIT_BOXES; },

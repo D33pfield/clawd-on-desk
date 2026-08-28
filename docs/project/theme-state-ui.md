@@ -21,6 +21,7 @@ This document holds the state machine, theme system, UI runtime, and platform ca
 - 一次性状态：`attention/error/sweeping/notification/carrying` 显示后自动回退（`AUTO_RETURN_MS`）
 - 睡眠序列：20s 鼠标静止 → idle-look → 60s → yawning(3s) → dozing → 10min → collapsing(0.8s) → sleeping；鼠标移动触发 waking(1.5s) → 恢复
 - 逻辑 `idle` 与静置视觉分离：Settings 可为当前主题选择一个常驻 idle 变体，但不改变状态优先级；thinking / working / permission / completion / sleep / reaction / roam 仍会覆盖它，结束后再回到所选视觉
+- 逻辑状态与真正显示的视觉也彼此分离：所有 state、reaction、随机 idle、低功耗替换和回退都先生成带 `visualGeneration` 的显示请求；renderer 结算后，main 才提交 `{ displayState, file, hitBox, source, visualGeneration }`。原生 hit window、配饰投影与 Presence 只读这份 committed visual，输入窗口仍即时读取逻辑状态做反应门控
 - DND 模式：跳过 dozing，直接 yawning → collapsing → sleeping；同时屏蔽 hook 事件
 - 隐藏桌宠（petHidden，入口：托盘 / 右键菜单 / 快捷键）：语义是「看不见宠物」而非免打扰——隐藏时收起宠物、Session HUD、update bubble 和当时 pending 的权限气泡（恢复显示时回来），但隐藏期间新到的权限请求仍照常弹气泡，这是有意设计、不要当 bug 修；要连权限气泡都静默是 DND 的职责（它有回终端确认的 fallback）。Allow/Deny 全局快捷键跟随「可见气泡」：隐藏期间只要有可见气泡就保持注册，但只作用于可见的请求，收起的旧气泡不会被盲操作（#601）。petHidden 不持久化，重启恢复显示
 - working 子动画：Clawd 主题为 1 个会话 → typing，2 个 → headphones groove，3+ → building；Calico / Cloudling 仍为 typing / juggling / building
@@ -41,13 +42,27 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 - 默认配置集中在 `theme-loader.js` 顶部的 `DEFAULT_*` 常量；loader 保持 stateless，`src/theme-runtime.js` 是唯一 active-theme owner，主题 reload/sync/cache 不得另设模块级真相
 - 变体是白名单 deep-merge；数组和特定字段会整体替换
 - Animation override 是用户 per-slot 覆盖，和作者定义的 variants 正交
-- 支持配饰的主题可按主题保存常驻 `petAccessory`；独立的 `holidayAccessoryEnabled` 开关只在万圣节、圣诞节和跨年的短日期窗口临时覆盖当前显示，结束后恢复常驻选择，不回写配饰偏好
-- SVG 会经过白名单消毒，阻断脚本、事件属性、外部资源、`javascript:` 和路径穿越
+- 配饰是两个独立的主题级槽：`petAccessory` 对应 head，`petMouthAccessory` 对应 mouth。renderer 中两者都是 pet media 的外部兄弟层，固定顺序为 `pet media → head → mouth`，因此 pet tint 不会染到配饰，mouth 也能稳定画在手或 head 配饰之上
+- head / mouth 选择以一个 `{ themeId, payloads, accessoryGeneration }` 快照原子投递；只有 renderer 收到同一快照后 main 才提交为权威值。主题热切或 renderer 重载会用新的 generation 重建两槽，旧消息不得覆盖新选择
+- 独立的 `holidayAccessoryEnabled` 开关只在万圣节、圣诞节和跨年的短日期窗口临时覆盖 head 槽；mouth 槽保持用户选择。日期窗口结束后恢复常驻 head 选择，不回写任一配饰偏好
+- `idleEasterEggs` 是条件式 idle 彩蛋池：每项声明文件、时长、概率、冷却时间和 head / mouth 的精确配饰组合。只有普通 idle、窗口可见、非 mini / roam / drag / 菜单 / 低功耗且两个槽仍匹配时才参与抽签；只有 renderer 确认该逻辑视觉最终 committed 后才从实际显示时刻开始计时长和冷却
+- 用户主题 SVG 会经过白名单消毒，阻断脚本、事件属性、外部资源、`javascript:` 和路径穿越；内置 SVG 不走运行时 sanitizer，必须由仓库测试做静态安全审计
+- `rendering.objectChannelFiles` 可按 SVG basename 把需要 `contentDocument` 控制、且经逐素材 Electron 验证的少量精灵切到 document-backed `<object>` 通道；普通 CSS / SMIL 动画仍优先使用 `<img>`。这些文件同时进入 required-assets 集合并使主题采用较高功耗档。外部主题仍先走 SVG sanitizer（含动态 SMIL 属性值），该字段不授予脚本能力
 - `trustedRuntime.scriptedSvgFiles` 只对 loader 判定为内置的主题生效；外部主题声明该字段会被忽略
 - 支持 SVG / GIF / APNG / WebP / PNG / JPG；动画周期由 `src/animation-cycle.js` 探测
 - 更新视觉遵循主题绑定：`checking` 可选走 `theme.updateVisuals.checking`，未声明时回退到当前主题的 `thinking`；发现新版本时会进入 `available -> notification`；`downloading / success / error` 继续分别走 `carrying / attention / error`
 
 主题创建流程见 `docs/guides/guide-theme-creation.md`。
+
+### Displayed visual settlement
+
+main 中的 displayed-visual projection 是文件、hitbox 和视觉来源的唯一权威。renderer 对每个仍有效的 request 恰好返回一个终结结果：正常加载为 `swapped`，当前文件已经显示为 `already-displayed`，实际显示了可投影的替代文件为 `fallback`，无法验证则为 `failed`；被后续请求取代的 generation 由 main 标为 `superseded`，renderer 不伪造 ACK。
+
+- renderer 的 object → img → accessory-settle 回退链必须先自行走完；main 的 9750ms settlement deadline 只是无 ACK 兜底
+- 同一 logical visual 最多自动 re-request 一次；连续两个 request 都没有 ACK 时，同一 renderer session 最多 reload 一次。visual timeout 本身不得循环 reload
+- 只有 `verified: true` 且实际 basename 合法的结果可提交；不可投影的 fallback 以 failed 终结，保留上一份 committed visual
+- reaction 也走 generation 合同，但不广播到 Presence；hit renderer 继续即时消费 logical state，不等待视觉 ACK
+- committed visual 到达后触发原生 hit-window 同步。拖拽锁、窗口未 live 或 Linux sliver 导致的 deferred sync，由 drag release、窗口恢复和现有 transition-end sweep 补做
 
 ## Settings Panel
 

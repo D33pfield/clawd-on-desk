@@ -114,6 +114,7 @@
     animationOverridesData: null,
     petTintOptions: [],
     petAccessoryOptions: [],
+    petMouthAccessoryOptions: [],
     animationOverridesFetchSeq: 0,
     animationPosterRenderPending: false,
     animationPosterRenderFlags: null,
