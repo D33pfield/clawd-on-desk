@@ -32,10 +32,6 @@
     ) {
       return attachments.files[file] || null;
     }
-    if (input.state && input.state.startsWith("mini-") && attachments.mini) {
-      return attachments.mini;
-    }
-    if (attachments.default) return attachments.default;
     return null;
   }
 

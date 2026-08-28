@@ -163,6 +163,35 @@ describe("theme schema validation", () => {
     );
   });
 
+  it("validates bounded conditional idle easter eggs", () => {
+    const egg = {
+      file: "clawd-outlaw-bender.svg",
+      duration: 15000,
+      chance: 0.05,
+      cooldownMs: 1800000,
+      requiresAccessories: { head: "cowboy-hat", mouth: "cigarette" },
+    };
+    assert.deepStrictEqual(schema.validateTheme(validThemeJson({ idleEasterEggs: [egg] })), []);
+
+    const cases = [
+      [{ ...egg, file: "../bender.svg" }, ".file must be a safe basename"],
+      [{ ...egg, duration: 0 }, ".duration must be between"],
+      [{ ...egg, chance: 0 }, ".chance must be greater than 0"],
+      [{ ...egg, cooldownMs: Infinity }, ".cooldownMs must be between"],
+      [{ ...egg, requiresAccessories: { head: "cowboy-hat" } }, ".mouth must be a safe accessory item id"],
+      [{ ...egg, requiresAccessories: { ...egg.requiresAccessories, tail: "cape" } }, ".tail is not supported"],
+    ];
+    for (const [badEgg, expected] of cases) {
+      const errors = schema.validateTheme(validThemeJson({ idleEasterEggs: [badEgg] }));
+      assert.ok(errors.some((error) => error.includes(expected)), JSON.stringify(errors));
+    }
+
+    const errors = schema.validateTheme(validThemeJson({
+      idleEasterEggs: [{ ...egg, chance: 0.6 }, { ...egg, file: "second.svg", chance: 0.5 }],
+    }));
+    assert.ok(errors.includes("idleEasterEggs total chance must be at most 1"));
+  });
+
   it("derives the mouth slot independently and preserves reflection normalization", () => {
     const raw = validThemeJson({
       customization: {
@@ -471,6 +500,13 @@ describe("theme schema defaults and normalization", () => {
       },
       workingTiers: [{ minSessions: 2, file: "../tier.svg" }],
       idleAnimations: [{ file: "../look.svg", duration: 100 }],
+      idleEasterEggs: [{
+        file: "bender.svg",
+        duration: 15000,
+        chance: 0.05,
+        cooldownMs: 1800000,
+        requiresAccessories: { head: "cowboy-hat", mouth: "cigarette" },
+      }],
       displayHintMap: { "../old.svg": "../new.svg" },
       updateVisuals: { checking: "../checking.svg" },
     }), "demo", true);
@@ -487,6 +523,13 @@ describe("theme schema defaults and normalization", () => {
     assert.deepStrictEqual(theme.reactions.double.files, ["a.svg", "b.svg"]);
     assert.strictEqual(theme.workingTiers[0].file, "tier.svg");
     assert.strictEqual(theme.idleAnimations[0].file, "look.svg");
+    assert.deepStrictEqual(theme.idleEasterEggs, [{
+      file: "bender.svg",
+      duration: 15000,
+      chance: 0.05,
+      cooldownMs: 1800000,
+      requiresAccessories: { head: "cowboy-hat", mouth: "cigarette" },
+    }]);
     assert.deepStrictEqual(theme.displayHintMap, { "../old.svg": "new.svg" });
     assert.deepStrictEqual(theme.updateVisuals, { checking: "checking.svg" });
   });
@@ -542,6 +585,7 @@ describe("theme schema defaults and normalization", () => {
       workingTiers: [{ file: "../tier.svg" }],
       jugglingTiers: [{ file: "juggling.svg" }],
       idleAnimations: [{ file: "idle-look.svg" }],
+      idleEasterEggs: [{ file: "bender.svg" }],
       rendering: {
         lowPowerStaticImageOverrides: {
           sleeping: { from: "../sleep.svg", to: "sleep.png" },
@@ -557,6 +601,7 @@ describe("theme schema defaults and normalization", () => {
     });
 
     assert.deepStrictEqual(files.sort(), [
+      "bender.svg",
       "checking.svg",
       "dnd-sleep.svg",
       "double.svg",

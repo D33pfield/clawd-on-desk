@@ -71,8 +71,8 @@ describe("built-in accessory capability contracts", () => {
     const usages = projectThemeVisualUsages(raw);
     const files = collectRequiredAssetFiles(raw);
 
-    assert.strictEqual(usages.length, 49);
-    assert.strictEqual(files.length, 36);
+    assert.strictEqual(usages.length, 50);
+    assert.strictEqual(files.length, 37);
     assert.strictEqual(normalized._capabilities.accessories, true);
     assertDeclaredTargetsExist("clawd", raw);
 

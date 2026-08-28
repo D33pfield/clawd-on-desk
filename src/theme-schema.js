@@ -73,6 +73,10 @@ const VISUAL_FALLBACK_STATES = new Set([
   "sleeping",
   "roam",
 ]);
+const SAFE_THEME_ASSET_BASENAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/;
+const SAFE_ACCESSORY_ITEM_ID = /^[a-z][a-z0-9-]{0,31}$/;
+const IDLE_EASTER_EGG_MAX_DURATION_MS = 60000;
+const IDLE_EASTER_EGG_MAX_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 function validateTheme(cfg) {
   const errors = [];
@@ -179,6 +183,9 @@ function validateTheme(cfg) {
     }
   }
 
+  const idleEasterEggResult = normalizeIdleEasterEggs(cfg.idleEasterEggs);
+  errors.push(...idleEasterEggResult.errors);
+
   if (cfg.customization !== undefined) {
     if (!isPlainObject(cfg.customization)) {
       errors.push("customization must be an object when present");
@@ -277,6 +284,87 @@ function isPlainObject(v) {
 
 function hasNonEmptyArray(value) {
   return Array.isArray(value) && value.length > 0;
+}
+
+function normalizeIdleEasterEggs(value) {
+  const errors = [];
+  if (value === undefined || value === null) return { value: [], errors };
+  if (!Array.isArray(value)) {
+    return { value: [], errors: ["idleEasterEggs must be an array when present"] };
+  }
+
+  const normalized = [];
+  let totalChance = 0;
+  for (let index = 0; index < value.length; index++) {
+    const entry = value[index];
+    const pathName = `idleEasterEggs[${index}]`;
+    if (!isPlainObject(entry)) {
+      errors.push(`${pathName} must be an object`);
+      continue;
+    }
+    hasOnlyKeys(
+      entry,
+      new Set(["file", "duration", "chance", "cooldownMs", "requiresAccessories"]),
+      pathName,
+      errors
+    );
+    const file = basenameOnly(entry.file);
+    const safeFile = typeof entry.file === "string"
+      && entry.file === file
+      && SAFE_THEME_ASSET_BASENAME.test(file);
+    if (!safeFile) errors.push(`${pathName}.file must be a safe basename`);
+
+    const safeDuration = Number.isFinite(entry.duration)
+      && entry.duration >= 100
+      && entry.duration <= IDLE_EASTER_EGG_MAX_DURATION_MS;
+    if (!safeDuration) {
+      errors.push(`${pathName}.duration must be between 100 and ${IDLE_EASTER_EGG_MAX_DURATION_MS}`);
+    }
+    const safeChance = Number.isFinite(entry.chance)
+      && entry.chance > 0
+      && entry.chance <= 1;
+    if (!safeChance) errors.push(`${pathName}.chance must be greater than 0 and at most 1`);
+    const safeCooldown = Number.isFinite(entry.cooldownMs)
+      && entry.cooldownMs >= 0
+      && entry.cooldownMs <= IDLE_EASTER_EGG_MAX_COOLDOWN_MS;
+    if (!safeCooldown) {
+      errors.push(`${pathName}.cooldownMs must be between 0 and ${IDLE_EASTER_EGG_MAX_COOLDOWN_MS}`);
+    }
+
+    const requires = entry.requiresAccessories;
+    let safeRequires = isPlainObject(requires);
+    if (!safeRequires) {
+      errors.push(`${pathName}.requiresAccessories must be an object`);
+    } else {
+      const keys = Object.keys(requires);
+      const unknownKeys = keys.filter((key) => key !== "head" && key !== "mouth");
+      for (const key of unknownKeys) {
+        errors.push(`${pathName}.requiresAccessories.${key} is not supported`);
+      }
+      for (const slot of ["head", "mouth"]) {
+        if (!SAFE_ACCESSORY_ITEM_ID.test(requires[slot] || "")) {
+          errors.push(`${pathName}.requiresAccessories.${slot} must be a safe accessory item id`);
+          safeRequires = false;
+        }
+      }
+      if (unknownKeys.length > 0) safeRequires = false;
+    }
+
+    if (safeFile && safeDuration && safeChance && safeCooldown && safeRequires) {
+      totalChance += entry.chance;
+      normalized.push({
+        file,
+        duration: entry.duration,
+        chance: entry.chance,
+        cooldownMs: entry.cooldownMs,
+        requiresAccessories: { head: requires.head, mouth: requires.mouth },
+      });
+    }
+  }
+  if (totalChance > 1 + Number.EPSILON) {
+    errors.push("idleEasterEggs total chance must be at most 1");
+  }
+  return { value: errors.length === 0 ? normalized : [], errors };
 }
 
 function getStateBindingEntry(entry) {
@@ -419,6 +507,7 @@ function projectThemeVisualUsages(cfg) {
     ["workingTiers", cfg && cfg.workingTiers],
     ["jugglingTiers", cfg && cfg.jugglingTiers],
     ["idleAnimations", cfg && cfg.idleAnimations],
+    ["idleEasterEggs", cfg && cfg.idleEasterEggs],
   ]) {
     for (const entry of Array.isArray(group) ? group : []) {
       if (entry && typeof entry.file === "string") {
@@ -1385,6 +1474,7 @@ function mergeDefaults(raw, themeId, isBuiltin) {
 
   // idleAnimations
   theme.idleAnimations = raw.idleAnimations || [];
+  theme.idleEasterEggs = normalizeIdleEasterEggs(raw.idleEasterEggs).value;
 
   // updater-specific visual bindings
   theme.updateVisuals = isPlainObject(raw.updateVisuals) ? { ...raw.updateVisuals } : {};
@@ -1468,6 +1558,7 @@ module.exports = {
   mergeDefaults,
   isPlainObject,
   hasNonEmptyArray,
+  normalizeIdleEasterEggs,
   getStateBindingEntry,
   getStateFiles,
   hasStateFiles,

@@ -56,13 +56,21 @@ const HIDDEN_MOUTH_FILES = Object.freeze([
 test("PR #811 mouth policy covers the approved 36 stock sprites exactly", () => {
   const theme = themeLoader.loadTheme("clawd", { strict: true });
   const files = theme.customization.mouthAccessories.files;
+  const stockFiles = Object.fromEntries(
+    Object.entries(files).filter(([file]) => file !== "clawd-outlaw-bender.svg")
+  );
 
   assert.strictEqual(theme._capabilities.mouthAccessories, true);
   assert.deepStrictEqual(
-    new Set(Object.keys(files)),
+    new Set(Object.keys(stockFiles)),
     new Set([...VISIBLE_MOUTH_FILES, ...HIDDEN_MOUTH_FILES])
   );
-  assert.strictEqual(Object.keys(files).length, 36);
+  assert.strictEqual(Object.keys(stockFiles).length, 36);
+  assert.deepStrictEqual(files["clawd-outlaw-bender.svg"], { visibility: "hidden" });
+  assert.deepStrictEqual(
+    theme.customization.accessories.files["clawd-outlaw-bender.svg"],
+    { visibility: "hidden" }
+  );
 
   for (const file of VISIBLE_MOUTH_FILES) {
     assert.ok(files[file].staticFrame, `${file} must keep a static fallback`);
@@ -147,7 +155,8 @@ test("the canonical cigarette frame reproduces the pinned standard-pose coordina
 test("every visible animated cigarette has a measured or authored hit envelope", () => {
   const theme = themeLoader.loadTheme("clawd", { strict: true });
   const files = theme.customization.mouthAccessories.files;
-  const measured = require("../src/pet-accessory-hitbox").BUILTIN_ACCESSORY_MOTION_PADDING.clawd;
+  const measured = require("../src/pet-accessory-hitbox")
+    .BUILTIN_MOUTH_ACCESSORY_MOTION_PADDING.clawd;
 
   for (const file of VISIBLE_MOUTH_FILES) {
     assert.ok(
@@ -160,4 +169,20 @@ test("every visible animated cigarette has a measured or authored hit envelope",
       .hitBoxPadding,
     "the newly visible wake cowboy hat needs its own one-shot motion envelope"
   );
+});
+
+test("bender uses the one-unit anti-crop viewBox and its measured face-plant hitbox", () => {
+  const theme = themeLoader.loadTheme("clawd", { strict: true });
+  assert.deepStrictEqual(theme.fileViewBoxes["clawd-outlaw-bender.svg"], {
+    x: -15,
+    y: -25,
+    width: 45,
+    height: 46,
+  });
+  assert.deepStrictEqual(theme.fileHitBoxes["clawd-outlaw-bender.svg"], {
+    x: -1,
+    y: 1,
+    w: 27,
+    h: 20,
+  });
 });

@@ -7,7 +7,8 @@ commit `1b7259e938a1bca35f28afc8b291f14b9be30b78`.
   `assets/accessories/cigarette.svg`. Its paper roll and ember keep crisp pixel
   edges; the sub-pixel smoke particles intentionally use normal rendering.
 - `clawd-outlaw-bender.svg` is the unmodified author-provided 15-second bender
-  animation. The runtime copy lives in `assets/svg/`.
+  animation. The runtime copy lives in `assets/svg/`; only its root viewBox is
+  one unit taller so Electron does not crop the final face-plant pose.
 
 The full generated Outlaw theme is not shipped. The existing Clawd sprites,
 the canonical cowboy hat, and the canonical cigarette are composed at runtime.

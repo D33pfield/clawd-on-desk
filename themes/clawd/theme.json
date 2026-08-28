@@ -490,6 +490,9 @@
         "clawd-collapse-sleep.svg": {
           "visibility": "hidden"
         },
+        "clawd-outlaw-bender.svg": {
+          "visibility": "hidden"
+        },
         "clawd-sleeping.svg": {
           "staticFrame": {
             "cx": 7.5,
@@ -550,9 +553,9 @@
               },
               "hitBoxPadding": {
                 "left": 2,
-                "top": 5,
+                "top": 8,
                 "right": 2,
-                "bottom": 1
+                "bottom": 4.3
               },
               "followTarget": {
                 "id": "accessory-anchor",
@@ -892,6 +895,9 @@
         "clawd-collapse-sleep.svg": {
           "visibility": "hidden"
         },
+        "clawd-outlaw-bender.svg": {
+          "visibility": "hidden"
+        },
         "clawd-sleeping.svg": {
           "visibility": "hidden"
         },
@@ -903,9 +909,9 @@
           },
           "hitBoxPadding": {
             "left": 2,
-            "top": 5,
+            "top": 6.4,
             "right": 2,
-            "bottom": 1
+            "bottom": 4.1
           },
           "followTarget": {
             "id": "accessory-anchor",
@@ -1058,6 +1064,18 @@
       "duration": 14000
     }
   ],
+  "idleEasterEggs": [
+    {
+      "file": "clawd-outlaw-bender.svg",
+      "duration": 15000,
+      "chance": 0.05,
+      "cooldownMs": 1800000,
+      "requiresAccessories": {
+        "head": "cowboy-hat",
+        "mouth": "cigarette"
+      }
+    }
+  ],
   "displayHintMap": {
     "clawd-working-building.svg": "clawd-working-building.svg",
     "clawd-working-typing.svg": "clawd-working-typing.svg",
@@ -1116,6 +1134,14 @@
       "h": 14
     }
   },
+  "fileViewBoxes": {
+    "clawd-outlaw-bender.svg": {
+      "x": -15,
+      "y": -25,
+      "width": 45,
+      "height": 46
+    }
+  },
   "fileHitBoxes": {
     "clawd-working-typing.svg": {
       "x": -2,
@@ -1128,6 +1154,12 @@
       "y": -2,
       "w": 17,
       "h": 19
+    },
+    "clawd-outlaw-bender.svg": {
+      "x": -1,
+      "y": 1,
+      "w": 27,
+      "h": 20
     }
   },
   "wideHitboxFiles": [

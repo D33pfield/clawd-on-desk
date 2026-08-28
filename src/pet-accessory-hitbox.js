@@ -77,6 +77,33 @@ const BUILTIN_ACCESSORY_MOTION_PADDING = Object.freeze({
   }),
 });
 
+// The mouth slot has a much taller, narrower aspect than headwear, so the same
+// anchor transform produces a different swept envelope. Keep its measured
+// values separate: wearing only a hat should not create cigarette-shaped input
+// space, while wearing both slots still unions both contributions below.
+const BUILTIN_MOUTH_ACCESSORY_MOTION_PADDING = Object.freeze({
+  clawd: Object.freeze({
+    "clawd-idle-follow.svg": Object.freeze({ right: 0.2, bottom: 0.5 }),
+    "clawd-idle-yawn.svg": Object.freeze({ left: 0.4, top: 3.1, right: 0.7, bottom: 1.5 }),
+    "clawd-idle-doze.svg": Object.freeze({ right: 0.8, bottom: 1.7 }),
+    "clawd-working-thinking.svg": Object.freeze({ left: 0.9, top: 0.2, right: 1, bottom: 0.7 }),
+    "clawd-working-typing.svg": Object.freeze({ right: 0.2, bottom: 1.3 }),
+    "clawd-headphones-groove.svg": Object.freeze({ left: 1, top: 0.6, right: 0.9, bottom: 1.3 }),
+    "clawd-notification.svg": Object.freeze({ left: 0.5, top: 0.2, right: 0.5, bottom: 0.3 }),
+    "clawd-working-carrying.svg": Object.freeze({ left: 0.4, top: 0.4, bottom: 0.9 }),
+    "clawd-wake.svg": Object.freeze({ left: 1.5, top: 6.4, right: 0.4, bottom: 4.1 }),
+    "clawd-dizzy.svg": Object.freeze({ left: 1.2, top: 0.6, right: 1.2, bottom: 0.6 }),
+    "clawd-working-juggling.svg": Object.freeze({ left: 0.6, top: 0.2, right: 0.7, bottom: 1.3 }),
+    "clawd-idle-look.svg": Object.freeze({ left: 1, right: 1.2, bottom: 0.5 }),
+    "clawd-idle-reading.svg": Object.freeze({ right: 0.2, bottom: 0.9 }),
+    "clawd-react-left.svg": Object.freeze({ left: 2.4, top: 0.4 }),
+    "clawd-react-right.svg": Object.freeze({ right: 2.4, bottom: 0.4 }),
+    "clawd-react-annoyed.svg": Object.freeze({ top: 0.6, right: 2, bottom: 1.5 }),
+    "clawd-react-double.svg": Object.freeze({ left: 1, top: 1, right: 1 }),
+    "clawd-react-double-jump.svg": Object.freeze({ left: 0.5, top: 4, right: 0.9, bottom: 1 }),
+  }),
+});
+
 function resolveAccessoryDescriptor(theme, state, file, slot = "head", itemId = "none") {
   const field = slot === "mouth" ? "mouthAccessories" : "accessories";
   const attachments = theme && theme.customization && theme.customization[field];
@@ -112,10 +139,13 @@ function normalizedPadding(value) {
 function getPadding(theme, file, descriptor, slot) {
   const authored = normalizedPadding(descriptor && descriptor.hitBoxPadding);
   const themeId = theme && theme._builtin === true && typeof theme._id === "string" ? theme._id : null;
+  const measuredByTheme = slot === "mouth"
+    ? BUILTIN_MOUTH_ACCESSORY_MOTION_PADDING
+    : BUILTIN_ACCESSORY_MOTION_PADDING;
   const measured = normalizedPadding(
     themeId
-    && BUILTIN_ACCESSORY_MOTION_PADDING[themeId]
-    && BUILTIN_ACCESSORY_MOTION_PADDING[themeId][basenameOnly(file)]
+    && measuredByTheme[themeId]
+    && measuredByTheme[themeId][basenameOnly(file)]
   );
   return {
     left: Math.max(authored.left, measured.left),
@@ -223,6 +253,7 @@ function resolveAccessoryAwareHitBox(theme, state, file, baseHitBox, payloads, o
 
 module.exports = {
   BUILTIN_ACCESSORY_MOTION_PADDING,
+  BUILTIN_MOUTH_ACCESSORY_MOTION_PADDING,
   resolveAccessoryDescriptor,
   resolveAccessoryAwareHitBox,
 };

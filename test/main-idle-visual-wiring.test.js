@@ -26,6 +26,14 @@ describe("main default idle visual wiring", () => {
     const tickCtx = sectionBetween(mainSource, "const _tickCtx = {", 'const _tick = require("./tick")');
     assert.ok(stateCtx.includes("  getIdleVisualChoice,"), "state ctx should expose the live choice");
     assert.ok(tickCtx.includes("  getIdleVisualChoice,"), "tick ctx should expose the live choice");
+    assert.ok(
+      tickCtx.includes("getEffectiveAccessoryIds: getEffectivePetAccessoryIds"),
+      "tick ctx should read canonical effective slots for conditional easter eggs"
+    );
+    assert.ok(
+      mainSource.includes("getPetAccessorySlotsSnapshot(activeTheme)"),
+      "conditional easter eggs should prefer the committed slot snapshot"
+    );
   });
 
   it("stamps pre-IPC visual choices on both renderer theme-config delivery paths", () => {

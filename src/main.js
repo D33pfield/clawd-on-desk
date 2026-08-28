@@ -103,6 +103,7 @@ const {
 } = require("./pet-customization-catalog");
 const {
   commitPetAccessorySlotsCandidate,
+  getPetAccessorySlotsSnapshot,
 } = require("./pet-accessory-state");
 const {
   getEffectivePetAccessoryIdForTheme,
@@ -965,6 +966,16 @@ function getEffectivePetAccessoryPayloads() {
     head: buildPetAccessoryPayload(headId, activeTheme),
     mouth: buildPetMouthAccessoryPayload(mouthId, activeTheme),
   };
+}
+
+function getEffectivePetAccessoryIds() {
+  const activeTheme = getActiveTheme();
+  const canonical = getPetAccessorySlotsSnapshot(activeTheme);
+  const payloads = canonical ? canonical.payloads : getEffectivePetAccessoryPayloads();
+  return Object.freeze({
+    head: payloads.head.id,
+    mouth: payloads.mouth.id,
+  });
 }
 
 function buildCurrentAccessorySlotsCandidate(activeTheme = getActiveTheme()) {
@@ -2347,6 +2358,7 @@ const _tickCtx = {
   setState,
   applyState,
   getIdleVisualChoice,
+  getEffectiveAccessoryIds: getEffectivePetAccessoryIds,
   miniPeekIn: () => miniPeekIn(),
   miniPeekOut: () => miniPeekOut(),
   getObjRect,

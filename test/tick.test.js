@@ -49,6 +49,7 @@ function makeCtx(theme, statesSeen) {
     win: {
       setIgnoreMouseEvents() {},
       isDestroyed() { return false; },
+      isVisible() { return true; },
       getBounds() { return { x: 0, y: 0, width: 120, height: 120 }; },
     },
     currentState: "idle",
@@ -986,5 +987,194 @@ describe("tick default idle visual", () => {
     }
     const eyeMoves = rendererCalls.filter(([ch]) => ch === "eye-move");
     assert.ok(eyeMoves.length > 0, "follow sprite must keep eye tracking");
+  });
+});
+
+describe("tick conditional idle easter eggs", () => {
+  let cursor;
+  let loader;
+  let tickApi;
+  let ctx;
+  let rendererCalls;
+  let randomValues;
+  let randomCalls;
+  let accessoryIds;
+
+  const BENDER = {
+    file: "clawd-outlaw-bender.svg",
+    duration: 15000,
+    chance: 0.05,
+    cooldownMs: 1800000,
+    requiresAccessories: { head: "cowboy-hat", mouth: "cigarette" },
+  };
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    cursor = { x: 40, y: 40 };
+    loader = loadTickWithScreen(() => ({ ...cursor }));
+    rendererCalls = [];
+    randomValues = [];
+    randomCalls = 0;
+    accessoryIds = { head: "cowboy-hat", mouth: "cigarette" };
+  });
+
+  afterEach(() => {
+    if (tickApi) tickApi.cleanup();
+    if (loader) loader.restore();
+    mock.timers.reset();
+    tickApi = null;
+    ctx = null;
+  });
+
+  function makeEggTheme({ eggs = [BENDER], idleAnimations = [] } = {}) {
+    const theme = cloneTheme(_defaultTheme);
+    theme.timings.mouseIdleTimeout = 60;
+    theme.timings.mouseSleepTimeout = 100000000;
+    theme.idleAnimations = idleAnimations;
+    theme.idleEasterEggs = eggs;
+    return theme;
+  }
+
+  function start(theme = makeEggTheme(), configure = () => {}) {
+    ctx = makeCtx(theme, []);
+    let visualGeneration = 0;
+    ctx.getEffectiveAccessoryIds = () => ({ ...accessoryIds });
+    ctx.random = () => {
+      randomCalls++;
+      return randomValues.length > 0 ? randomValues.shift() : 0;
+    };
+    ctx.now = () => Date.now();
+    ctx.sendToRenderer = (channel, ...args) => {
+      rendererCalls.push([channel, ...args]);
+      if (channel === "state-change") return { visualGeneration: ++visualGeneration };
+      return undefined;
+    };
+    configure(ctx);
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+  }
+
+  function idleFiles() {
+    return rendererCalls
+      .filter(([channel, state]) => channel === "state-change" && state === "idle")
+      .map(([, , file]) => file);
+  }
+
+  function advanceUntil(predicate, { step = 25, limit = 2000 } = {}) {
+    for (let elapsed = 0; elapsed < limit && !predicate(); elapsed += step) {
+      mock.timers.tick(step);
+    }
+    assert.ok(predicate(), `condition was not reached within ${limit} ms`);
+  }
+
+  it("uses the reviewed 5% interval before the ordinary idle pool and returns naturally", () => {
+    randomValues.push(0.049);
+    start(makeEggTheme({
+      idleAnimations: [{ file: "clawd-idle-look.svg", duration: 500 }],
+    }));
+
+    advanceUntil(() => idleFiles().length === 1);
+    assert.deepStrictEqual(idleFiles(), ["clawd-outlaw-bender.svg"]);
+    assert.strictEqual(randomCalls, 1, "an egg hit must not also draw from the ordinary pool");
+
+    mock.timers.tick(15000);
+    assert.deepStrictEqual(idleFiles(), [
+      "clawd-outlaw-bender.svg",
+      "clawd-idle-follow.svg",
+    ]);
+  });
+
+  it("falls through to the ordinary pool on an egg miss", () => {
+    randomValues.push(0.05, 0);
+    start(makeEggTheme({
+      idleAnimations: [{ file: "clawd-idle-look.svg", duration: 500 }],
+    }));
+
+    advanceUntil(() => idleFiles().length === 1);
+    assert.deepStrictEqual(idleFiles(), ["clawd-idle-look.svg"]);
+    assert.strictEqual(randomCalls, 2, "miss and ordinary pool selection use separate draws");
+  });
+
+  it("uses declaration-order cumulative probability intervals", () => {
+    randomValues.push(0.05);
+    start(makeEggTheme({ eggs: [
+      { ...BENDER, chance: 0.05 },
+      { ...BENDER, file: "second-egg.svg", chance: 0.1 },
+    ] }));
+
+    advanceUntil(() => idleFiles().length === 1);
+    assert.deepStrictEqual(idleFiles(), ["second-egg.svg"]);
+  });
+
+  it("rechecks canonical accessories during the 250 ms swap delay", () => {
+    randomValues.push(0);
+    start();
+    advanceUntil(() => randomCalls === 1);
+    accessoryIds = { head: "none", mouth: "cigarette" };
+    mock.timers.tick(350);
+
+    assert.deepStrictEqual(idleFiles(), []);
+    assert.strictEqual(randomCalls, 1);
+  });
+
+  it("starts cooldown only after playback begins and permits another play after expiry", () => {
+    const egg = { ...BENDER, duration: 5000, cooldownMs: 10000 };
+    randomValues.push(0, 0);
+    start(makeEggTheme({ eggs: [egg] }));
+    advanceUntil(() => idleFiles().length === 1);
+    assert.deepStrictEqual(idleFiles(), ["clawd-outlaw-bender.svg"]);
+
+    cursor = { x: 80, y: 80 };
+    mock.timers.tick(2000);
+    assert.strictEqual(randomCalls, 1, "cooldown eligibility must be checked before drawing probability");
+
+    mock.timers.tick(9000);
+    cursor = { x: 90, y: 90 };
+    advanceUntil(
+      () => idleFiles().filter((file) => file === "clawd-outlaw-bender.svg").length === 2,
+      { limit: 2000 }
+    );
+    assert.strictEqual(
+      idleFiles().filter((file) => file === "clawd-outlaw-bender.svg").length,
+      2
+    );
+    assert.strictEqual(randomCalls, 2);
+  });
+
+  for (const [label, configure] of [
+    ["renderer hidden", (c) => { c.win.isVisible = () => false; }],
+    ["low-power idle pause", (c) => { c.lowPowerIdlePaused = true; }],
+    ["drag lock", (c) => { c.dragLocked = true; }],
+    ["menu transition", (c) => { c.menuOpen = true; }],
+    ["mini mode", (c) => { c.miniMode = true; c.currentState = "mini-idle"; }],
+    ["roam", (c) => { c.currentState = "roam"; }],
+  ]) {
+    it(`does not consume probability while ${label}`, () => {
+      randomValues.push(0);
+      start(makeEggTheme(), configure);
+      mock.timers.tick(1000);
+      assert.deepStrictEqual(idleFiles(), []);
+      assert.strictEqual(randomCalls, 0);
+    });
+  }
+
+  it("does not trigger for a holiday replacement or any other accessory mismatch", () => {
+    accessoryIds = { head: "santa-hat", mouth: "cigarette" };
+    randomValues.push(0);
+    start();
+    mock.timers.tick(1000);
+    assert.deepStrictEqual(idleFiles(), []);
+    assert.strictEqual(randomCalls, 0);
+  });
+
+  it("does not let the return timer overwrite a higher-priority state", () => {
+    randomValues.push(0);
+    start();
+    advanceUntil(() => idleFiles().length === 1);
+    assert.deepStrictEqual(idleFiles(), ["clawd-outlaw-bender.svg"]);
+
+    ctx.currentState = "working";
+    mock.timers.tick(16000);
+    assert.deepStrictEqual(idleFiles(), ["clawd-outlaw-bender.svg"]);
   });
 });

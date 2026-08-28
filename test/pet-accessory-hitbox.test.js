@@ -8,10 +8,13 @@ const themeLoader = require("../src/theme-loader");
 const hitGeometry = require("../src/hit-geometry");
 const {
   PET_ACCESSORY_IDS,
+  PET_MOUTH_ACCESSORY_IDS,
+  buildPetMouthAccessoryPayload,
   resolvePetAccessoryPayload,
 } = require("../src/pet-customization-catalog");
 const {
   BUILTIN_ACCESSORY_MOTION_PADDING,
+  BUILTIN_MOUTH_ACCESSORY_MOTION_PADDING,
   resolveAccessoryAwareHitBox,
 } = require("../src/pet-accessory-hitbox");
 
@@ -151,6 +154,48 @@ describe("accessory-aware hit boxes", () => {
     assert.strictEqual(authored.right, 1.5);
     assert.ok(measured.left > authored.left);
     assert.ok(measured.right > authored.right);
+  });
+
+  it("keeps a separate measured envelope for every visible animated mouth descriptor", () => {
+    const theme = themeLoader.loadTheme("clawd", { strict: true });
+    const files = theme.customization.mouthAccessories.files;
+    const animated = Object.keys(files).filter((file) => files[file] && files[file].followTarget);
+    const measured = BUILTIN_MOUTH_ACCESSORY_MOTION_PADDING.clawd;
+
+    assert.deepStrictEqual(animated.filter((file) => !measured[file]), []);
+    assert.deepStrictEqual(Object.keys(measured).filter((file) => !animated.includes(file)), []);
+    assert.deepStrictEqual(PET_MOUTH_ACCESSORY_IDS, ["none", "cigarette"]);
+  });
+
+  it("unions head and mouth hit geometry without reviving hidden slots", () => {
+    const theme = themeLoader.loadTheme("clawd", { strict: true });
+    const file = "clawd-working-typing.svg";
+    const base = baseHitBox(theme, file);
+    const head = resolvePetAccessoryPayload("wizard-hat", theme);
+    const mouth = buildPetMouthAccessoryPayload("cigarette", theme);
+    const headOnly = resolveAccessoryAwareHitBox(theme, "working", file, base, { head, mouth: null });
+    const mouthOnly = resolveAccessoryAwareHitBox(theme, "working", file, base, { head: null, mouth });
+    const both = resolveAccessoryAwareHitBox(theme, "working", file, base, { head, mouth });
+
+    for (const box of [headOnly, mouthOnly]) {
+      assert.ok(both.x <= box.x + EPSILON);
+      assert.ok(both.y <= box.y + EPSILON);
+      assert.ok(both.x + both.w + EPSILON >= box.x + box.w);
+      assert.ok(both.y + both.h + EPSILON >= box.y + box.h);
+    }
+
+    const hiddenFile = "clawd-working-building.svg";
+    const hiddenBase = baseHitBox(theme, hiddenFile);
+    assert.deepStrictEqual(
+      resolveAccessoryAwareHitBox(
+        theme,
+        "working",
+        hiddenFile,
+        hiddenBase,
+        { head: null, mouth }
+      ),
+      hiddenBase
+    );
   });
 
   it("keeps hidden accessories from changing the animation hitbox", () => {
