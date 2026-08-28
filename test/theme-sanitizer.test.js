@@ -54,6 +54,23 @@ test("sanitizeSvg removes SMIL that mutates dynamic URL, event, or style surface
   assert.ok(sanitized.includes('attributeName="opacity"'));
 });
 
+test("sanitizeSvg rejects namespace-prefixed SMIL and obfuscated dynamic URLs", () => {
+  const svg = [
+    '<svg xmlns="http://www.w3.org/2000/svg" xmlns:s="http://www.w3.org/2000/svg">',
+    '  <a id="target"><rect width="1" height="1"/></a>',
+    '  <s:animate attributeName="href" values="#target;javascript:alert(1)"/>',
+    '  <animate attributeName="fill" values="#fff;url(h\\74tps://bad.example/escaped)"/>',
+    '  <animate attributeName="fill" values="#fff;url(h/**/ttps://bad.example/commented)"/>',
+    '  <s:animate attributeName="opacity" values="0;1" dur="1s"/>',
+    '</svg>',
+  ].join("");
+
+  const sanitized = sanitizeSvg(svg);
+  assert.ok(!sanitized.includes('attributeName="href"'));
+  assert.ok(!sanitized.includes("bad.example"));
+  assert.ok(sanitized.includes('s:animate attributeName="opacity"'));
+});
+
 test("collectSafeRasterRefs collects only safe relative png and webp dependencies", () => {
   const sourceAssetsDir = path.join(__dirname, "fixtures", "theme-assets");
   const svg = [

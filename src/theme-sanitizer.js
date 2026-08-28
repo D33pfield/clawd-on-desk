@@ -29,6 +29,28 @@ const ANIMATION_TAGS = new Set(["animate", "animatetransform", "animatemotion", 
 const DYNAMIC_VALUE_ATTRS = ["from", "to", "by", "values"];
 const DYNAMIC_JAVASCRIPT_RE = /javascript\s*:/i;
 
+function xmlLocalName(name) {
+  const qualified = typeof name === "string" ? name.toLowerCase() : "";
+  const separator = qualified.lastIndexOf(":");
+  return separator >= 0 ? qualified.slice(separator + 1) : qualified;
+}
+
+function normalizeCssSecurityText(value) {
+  if (typeof value !== "string" || !value) return value || "";
+  const withoutComments = value.replace(/\/\*[\s\S]*?\*\//g, "");
+  return withoutComments.replace(
+    /\\([0-9a-f]{1,6})(?:\r\n|[\t\n\f\r ])?|\\([^\n\f\r])/gi,
+    (_match, hex, escaped) => {
+      if (hex) {
+        const codePoint = Number.parseInt(hex, 16);
+        if (!Number.isFinite(codePoint) || codePoint === 0 || codePoint > 0x10ffff) return "\uFFFD";
+        return String.fromCodePoint(codePoint);
+      }
+      return escaped || "";
+    }
+  );
+}
+
 function getAttributeCaseInsensitive(attribs, wanted) {
   if (!attribs || typeof attribs !== "object") return undefined;
   const key = Object.keys(attribs).find((candidate) => candidate.toLowerCase() === wanted);
@@ -51,10 +73,14 @@ function hasUnsafeDynamicAnimation(node) {
     const value = getAttributeCaseInsensitive(node.attribs, key);
     if (typeof value !== "string") continue;
     const decoded = decodeResourceTarget(value);
+    const normalizedCss = normalizeCssSecurityText(value);
+    const decodedNormalizedCss = decodeResourceTarget(normalizedCss);
     if (
       DYNAMIC_JAVASCRIPT_RE.test(value)
       || DYNAMIC_JAVASCRIPT_RE.test(decoded)
-      || containsUnsafeCssUrl(value)
+      || DYNAMIC_JAVASCRIPT_RE.test(normalizedCss)
+      || DYNAMIC_JAVASCRIPT_RE.test(decodedNormalizedCss)
+      || containsUnsafeCssUrl(normalizedCss)
     ) return true;
   }
   return false;
@@ -222,7 +248,7 @@ function sanitizeNode(node) {
     const child = node.children[i];
 
     if (child.type === "tag" || child.type === "script" || child.type === "style") {
-      const tagName = (child.name || "").toLowerCase();
+      const tagName = xmlLocalName(child.name);
       if (DANGEROUS_TAGS.has(tagName)) {
         node.children.splice(i, 1);
         continue;
@@ -237,7 +263,7 @@ function sanitizeNode(node) {
       }
     }
 
-    if (child.type === "style" || (child.type === "tag" && (child.name || "").toLowerCase() === "style")) {
+    if (child.type === "style" || (child.type === "tag" && xmlLocalName(child.name) === "style")) {
       if (child.children) {
         for (const textNode of child.children) {
           if (textNode.type === "text" && textNode.data) {

@@ -1195,6 +1195,7 @@ function buildCapabilities(cfg, options = {}) {
 }
 
 function addThemeAssetFile(out, filename) {
+  if (typeof filename !== "string") return;
   const safe = basenameOnly(filename);
   if (safe) out.add(safe);
 }

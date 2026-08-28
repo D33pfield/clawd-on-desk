@@ -655,6 +655,12 @@ describe("theme schema defaults and normalization", () => {
     );
   });
 
+  it("collectRequiredAssetFiles ignores malformed raw object-channel entries", () => {
+    assert.deepStrictEqual(schema.collectRequiredAssetFiles({
+      rendering: { objectChannelFiles: [42, {}, ["nested.svg"], "valid.svg"] },
+    }), ["valid.svg"]);
+  });
+
   it("does not invent a root-viewBox usage for mini object-channel files", () => {
     const theme = validThemeJson({
       viewBox: { x: 0, y: 0, width: 100, height: 100 },

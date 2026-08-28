@@ -960,19 +960,22 @@ describe("renderer displayed-visual settlement", () => {
     assert.strictEqual(harness.api.currentDisplayedSvg, "current.svg");
   });
 
-  it("terminally fails a request cancelled by an internal Kimi media pulse", () => {
+  it("keeps a pending notification request intact across the immediate Kimi media pulse", () => {
     const harness = createRendererHarness();
     harness.electronHandlers.onStateChange(visualRequest(31, "working.svg"));
-    assert.ok(harness.api.pendingNext);
+    const pending = harness.api.pendingNext;
+    assert.ok(pending);
 
     harness.electronHandlers.onKimiPermissionPulse();
+    assert.strictEqual(harness.api.pendingNext, pending);
+    pending.listeners.get("load")();
 
     assert.deepStrictEqual(settlements(harness).map((entry) => ({
       generation: entry.visualGeneration,
       outcome: entry.outcome,
       verified: entry.verified,
     })), [
-      { generation: 31, outcome: "failed", verified: false },
+      { generation: 31, outcome: "swapped", verified: true },
     ]);
   });
 
@@ -2512,7 +2515,11 @@ describe("renderer pet accessory wardrobe", () => {
   });
 
   it("immediately pauses a mouth object that finishes loading after low-power pause", () => {
-    const harness = createRendererHarness({ themeConfig: dualSlotConfig() });
+    const config = dualSlotConfig();
+    config.accessorySlots.mouth.attachments.files["current.svg"] = {
+      staticFrame: { cx: 50, baseY: 40, width: 20 },
+    };
+    const harness = createRendererHarness({ themeConfig: config });
     attachFakeSvgDocument(harness.clawd);
     harness.api.setCurrentState("idle");
     harness.api.setLowPowerIdleMode(true);
@@ -2548,6 +2555,16 @@ describe("renderer pet accessory wardrobe", () => {
     harness.api.pendingNext.listeners.get("load")();
     assert.strictEqual(harness.mouthAccessory.style.display, "none");
     assert.strictEqual(mouthSvg.root.pauseCalls, pauseBefore + 1);
+
+    harness.api.setCurrentState("sleeping");
+    harness.api.setLowPowerIdleMode(true);
+    harness.api.pauseCurrentSvgForLowPower();
+    harness.api.setLowPowerIdleMode(false);
+    assert.strictEqual(
+      mouthSvg.root.unpauseCalls,
+      unpauseBefore,
+      "leaving global low-power must not resume a still-hidden mouth document"
+    );
 
     harness.api.swapToFile("reaction.svg", null, false);
     harness.api.pendingNext.listeners.get("load")();

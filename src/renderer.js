@@ -263,7 +263,9 @@ function setAccessorySvgLowPowerPaused(slotName, paused) {
 
 function syncAccessorySvgLowPowerPaused(paused) {
   for (const slotName of ACCESSORY_SLOT_NAMES) {
-    setAccessorySvgLowPowerPaused(slotName, paused);
+    const slot = getAccessorySlot(slotName);
+    const hidden = !!(slot && slot.element && slot.element.style.display === "none");
+    setAccessorySvgLowPowerPaused(slotName, paused || hidden);
   }
 }
 
@@ -2298,6 +2300,10 @@ window.electronAPI.onStateChange((requestOrState, legacySvg) => {
 // Kimi CLI permission hold: re-trigger the current animation so it loops
 // while the user is reviewing the permission prompt.
 window.electronAPI.onKimiPermissionPulse(() => {
+  // applyResolvedDisplayState() sends the notification visual immediately
+  // before this pulse. Its pending media already owns a fresh animation
+  // timeline; replacing it here would terminally fail that generation.
+  if (pendingNext) return;
   if (clawdEl && clawdEl.isConnected && currentDisplayedSvg) {
     swapToFile(currentDisplayedSvg, currentState);
   }
