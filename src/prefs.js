@@ -63,7 +63,7 @@ const {
   PET_MOUTH_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
-const CURRENT_VERSION = 16;
+const CURRENT_VERSION = 17;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -393,6 +393,9 @@ const SCHEMA = {
       // desktop app owns its permission loop natively, so permission bubbles
       // default off (like qoderwork).
       "workbuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      // TraeCode is state-only: hook protocol is Claude Code-compatible but it
+      // has no PermissionRequest event, so permission bubbles default off.
+      "traecode": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
@@ -647,6 +650,21 @@ function normalizeStaleTriple(out) {
 // v3 → v4: Pi returns to a state-only integration. Clawd no longer inserts a
 //   permission prompt into Pi's default YOLO flow, so the Pi permission subgate
 //   is reset off.
+// v15 → v16: preserve the legacy meaning of literal `Control` shortcut tokens
+//   before v16 gives that token Electron's native Control meaning on macOS.
+function migrateLegacyControlShortcuts(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const migrated = { ...value };
+  for (const [actionId, accelerator] of Object.entries(migrated)) {
+    if (typeof accelerator !== "string") continue;
+    migrated[actionId] = accelerator
+      .split("+")
+      .map((token) => token.trim().toLowerCase() === "control" ? "CommandOrControl" : token)
+      .join("+");
+  }
+  return migrated;
+}
+
 function migrate(raw) {
   if (!raw || typeof raw !== "object") return raw;
   const originalAgentIds = raw.agents && typeof raw.agents === "object" && !Array.isArray(raw.agents)
@@ -835,11 +853,26 @@ function migrate(raw) {
     }
     out.version = 15;
   }
-  // v15 -> v16: introduce an independent mouth-accessory map. Never infer a
-  // cigarette choice from the existing head accessory or from theme ids.
+  // v15 -> v16: `Control` used to be an accepted alias for
+  // `CommandOrControl`. Rewrite only pre-v16 persisted values before the
+  // parser starts using `Control` for macOS's distinct native Control key.
   if (out.version < 16) {
-    out.petMouthAccessory = {};
+    out.shortcuts = migrateLegacyControlShortcuts(out.shortcuts);
     out.version = 16;
+  }
+  // v16 -> v17: introduce an independent mouth-accessory map. Never infer a
+  // cigarette choice from the existing head accessory or from theme ids. A
+  // valid explicit map may exist in an unreleased v16 development snapshot;
+  // preserve it instead of erasing that selection during the version split.
+  if (out.version < 17) {
+    if (
+      !out.petMouthAccessory
+      || typeof out.petMouthAccessory !== "object"
+      || Array.isArray(out.petMouthAccessory)
+    ) {
+      out.petMouthAccessory = {};
+    }
+    out.version = 17;
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;

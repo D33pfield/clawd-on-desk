@@ -47,6 +47,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "qoder",
   "reasonix",
   "qoderwork",
+  "traecode",
   "qwenwork",
 ]);
 
@@ -73,6 +74,7 @@ const INSTALLABLE_AGENT_IDS = new Set([
   "qoder",
   "reasonix",
   "qoderwork",
+  "traecode",
   "qwenwork",
 ]);
 const SETTABLE_AGENT_FLAGS = AGENT_FLAGS.filter((flag) => flag !== "integrationInstalled");

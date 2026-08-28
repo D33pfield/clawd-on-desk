@@ -1457,10 +1457,42 @@ describe("prefs.migrate v14 → v15 (ZCode permission bubbles default on)", () =
   });
 });
 
-describe("prefs.migrate v15 → v16 (mouth accessory slot)", () => {
-  it("adds an empty map without inferring a cigarette from the head slot", () => {
+describe("prefs.migrate v15 → v16 (native macOS Control shortcuts)", () => {
+  it("preserves the legacy meaning of literal Control shortcut tokens", () => {
     const upgraded = prefs.validate(prefs.migrate({
       version: 15,
+      shortcuts: {
+        togglePet: "Control+Shift+K",
+        permissionAllow: "shift+CONTROL+Y",
+        permissionDeny: "Ctrl+Shift+N",
+      },
+    }));
+
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
+    assert.deepStrictEqual(upgraded.shortcuts, {
+      togglePet: "CommandOrControl+Shift+K",
+      permissionAllow: "CommandOrControl+Shift+Y",
+      permissionDeny: "CommandOrControl+Shift+N",
+    });
+  });
+
+  it("keeps an explicit native Control shortcut in a v16 file", () => {
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 16,
+      shortcuts: {
+        togglePet: "Control+Shift+1",
+      },
+    }));
+
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(upgraded.shortcuts.togglePet, "Control+Shift+1");
+  });
+});
+
+describe("prefs.migrate v16 → v17 (mouth accessory slot)", () => {
+  it("adds an empty map without inferring a cigarette from the head slot", () => {
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 16,
       petAccessory: { clawd: "cowboy-hat" },
     }));
     assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
@@ -1468,9 +1500,17 @@ describe("prefs.migrate v15 → v16 (mouth accessory slot)", () => {
     assert.deepStrictEqual(upgraded.petMouthAccessory, {});
   });
 
+  it("preserves a valid mouth selection from an unreleased v16 development snapshot", () => {
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 16,
+      petMouthAccessory: { clawd: "cigarette" },
+    }));
+    assert.deepStrictEqual(upgraded.petMouthAccessory, { clawd: "cigarette" });
+  });
+
   it("does not share the new default map between snapshots", () => {
-    const first = prefs.validate(prefs.migrate({ version: 15 }));
-    const second = prefs.validate(prefs.migrate({ version: 15 }));
+    const first = prefs.validate(prefs.migrate({ version: 16 }));
+    const second = prefs.validate(prefs.migrate({ version: 16 }));
     assert.notStrictEqual(first.petMouthAccessory, second.petMouthAccessory);
   });
 });
@@ -1793,22 +1833,22 @@ describe("prefs.load", () => {
     }
   });
 
-  it("accepts the current v16 schema and locks an explicit v17 file", () => {
-    const currentPath = makeTempPath("v16.json");
-    fs.writeFileSync(currentPath, JSON.stringify({ version: 16, lang: "zh" }), "utf8");
+  it("accepts the current v17 schema and locks an explicit v18 file", () => {
+    const currentPath = makeTempPath("v17.json");
+    fs.writeFileSync(currentPath, JSON.stringify({ version: 17, lang: "zh" }), "utf8");
     const current = prefs.load(currentPath);
     assert.strictEqual(current.locked, false);
-    assert.strictEqual(current.snapshot.version, 16);
+    assert.strictEqual(current.snapshot.version, 17);
     assert.strictEqual(current.snapshot.lang, "zh");
 
-    const futurePath = makeTempPath("v17.json");
-    fs.writeFileSync(futurePath, JSON.stringify({ version: 17, lang: "ja" }), "utf8");
+    const futurePath = makeTempPath("v18.json");
+    fs.writeFileSync(futurePath, JSON.stringify({ version: 18, lang: "ja" }), "utf8");
     const originalWarn = console.warn;
     console.warn = () => {};
     try {
       const future = prefs.load(futurePath);
       assert.strictEqual(future.locked, true);
-      assert.strictEqual(future.snapshot.version, 17);
+      assert.strictEqual(future.snapshot.version, 18);
       assert.strictEqual(future.snapshot.lang, "ja");
     } finally {
       console.warn = originalWarn;
@@ -1843,6 +1883,19 @@ describe("prefs.save", () => {
       height: 620,
     });
     assert.strictEqual(snapshot.version, prefs.CURRENT_VERSION);
+  });
+
+  it("round-trips an explicit native macOS Control shortcut", () => {
+    const p = makeTempPath();
+    const snap = prefs.getDefaults();
+    snap.shortcuts.togglePet = "Control+Shift+1";
+
+    prefs.save(p, snap);
+    const { snapshot, locked } = prefs.load(p);
+
+    assert.strictEqual(locked, false);
+    assert.strictEqual(snapshot.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(snapshot.shortcuts.togglePet, "Control+Shift+1");
   });
 
   it("normalizes Settings window bounds and drops invalid geometry", () => {

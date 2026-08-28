@@ -26,6 +26,7 @@ const reasonix = require("../../hooks/reasonix-install");
 const qoderwork = require("../../hooks/qoderwork-install");
 const qwenwork = require("../../hooks/qwenwork-install");
 const workbuddy = require("../../hooks/workbuddy-install");
+const traecode = require("../../hooks/traecode-install");
 const dsh = require("../../hooks/dsh-install");
 
 function agentName(agentId) {
@@ -354,6 +355,18 @@ const AGENT_DESCRIPTORS = Object.freeze([
     nested: true,
     hookEvents: qoderwork.QODERWORK_HOOK_EVENTS,
     hookGroupId: "clawd",
+  }),
+  Object.freeze({
+    agentId: "traecode",
+    agentName: agentName("traecode"),
+    eventSource: agentEventSource("traecode"),
+    parentDir: traecode.DEFAULT_PARENT_DIR,
+    configPath: traecode.DEFAULT_CONFIG_PATH,
+    configMode: "file",
+    autoInstall: true,
+    marker: traecode.MARKER,
+    nested: true,
+    hookEvents: traecode.TRAECODE_HOOK_EVENTS,
   }),
   Object.freeze({
     agentId: "qwenwork",
