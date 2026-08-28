@@ -16,8 +16,8 @@ The idle rows below describe the theme's stock behavior. Settings → Animation 
 | PreToolUse / PostToolUse (1 session) | working (typing) | Typing | <img src="../../assets/gif/clawd-typing.gif" width="160"> | <img src="../../assets/gif/calico-typing.gif" width="130"> | <img src="../../assets/gif/cloudling-typing.gif" width="140"> |
 | PreToolUse / PostToolUse (2 sessions) | working (2-session tier) | Headphones groove | <img src="../../assets/gif/clawd-headphones-groove.gif" width="160"> | <img src="../../assets/gif/calico-juggling.gif" width="130"> | <img src="../../assets/gif/cloudling-juggling.gif" width="140"> |
 | PreToolUse (3+ sessions) | working (building) | Building | <img src="../../assets/gif/clawd-building.gif" width="160"> | <img src="../../assets/gif/calico-building.gif" width="130"> | <img src="../../assets/gif/cloudling-building.gif" width="140"> |
-| SubagentStart (1) | juggling | Headphones groove | <img src="../../assets/gif/clawd-headphones-groove.gif" width="160"> | <img src="../../assets/gif/calico-juggling.gif" width="130"> | <img src="../../assets/gif/cloudling-juggling.gif" width="140"> |
-| SubagentStart (2+) | juggling (2+ tier) | Three-ball juggling | <img src="../../assets/gif/clawd-juggling.gif" width="160"> | <img src="../../assets/gif/calico-conducting.gif" width="130"> | <img src="../../assets/gif/cloudling-conducting.gif" width="140"> |
+| SubagentStart (1 live subagent) | juggling | Headphones groove | <img src="../../assets/gif/clawd-headphones-groove.gif" width="160"> | <img src="../../assets/gif/calico-juggling.gif" width="130"> | <img src="../../assets/gif/cloudling-juggling.gif" width="140"> |
+| SubagentStart (2+ live subagents) | juggling (2+ tier) | Three-ball juggling | <img src="../../assets/gif/clawd-juggling.gif" width="160"> | <img src="../../assets/gif/calico-conducting.gif" width="130"> | <img src="../../assets/gif/cloudling-conducting.gif" width="140"> |
 | PostToolUseFailure | error | Error | <img src="../../assets/gif/clawd-error.gif" width="160"> | <img src="../../assets/gif/calico-error.gif" width="130"> | <img src="../../assets/gif/cloudling-error.gif" width="140"> |
 | Stop / PostCompact | attention | Happy | <img src="../../assets/gif/clawd-happy.gif" width="160"> | <img src="../../assets/gif/calico-happy.gif" width="130"> | <img src="../../assets/gif/cloudling-attention.gif" width="140"> |
 | PermissionRequest | notification | Alert | <img src="../../assets/gif/clawd-notification.gif" width="160"> | <img src="../../assets/gif/calico-notification.gif" width="130"> | <img src="../../assets/gif/cloudling-notification.gif" width="140"> |
@@ -58,7 +58,7 @@ Gemini CLI stays on hook-only integration, but two Gemini-native events are inte
 
 ## ZCode Hook Events
 
-ZCode uses state-only config-file hooks under `~/.zcode/cli/config.json`:
+ZCode uses config-file hooks under `~/.zcode/cli/config.json`:
 
 | ZCode Hook Event | State |
 |---|---|
@@ -68,8 +68,9 @@ ZCode uses state-only config-file hooks under `~/.zcode/cli/config.json`:
 | PostToolUse | working |
 | PostToolUseFailure | error |
 | Stop | attention |
+| PermissionRequest | notification (fail-closed path only) |
 
-ZCode does not provide a `SessionEnd` hook in this integration, so completion relies on `Stop` plus Clawd's normal process-liveness and stale-session cleanup. `PermissionRequest` is intentionally not registered; ZCode remains the only permission decision surface.
+`PermissionRequest` is a blocking permission approval since Phase 2: the hook waits on Clawd's local bubble or remote approval and answers a manual allow/deny via `hookSpecificOutput` on stdout. Permission automation deliberately defers for ZCode until its tool surface and session identity are audited. The `notification` mapping above only fires on the fail-closed path (missing/unknown tool name) or when Clawd is not running; a real decision never posts `/state`. ZCode does not provide a `SessionEnd` hook in this integration, so completion relies on `Stop` plus Clawd's normal process-liveness and stale-session cleanup. When Clawd yields no decision (timeout, disconnect, DND, bubbles off), the hook prints `{}` and ZCode's own permission flow takes over.
 
 ## Pi Extension Events
 

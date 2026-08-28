@@ -12,7 +12,9 @@
 // `validate(snapshot)` — coerces an arbitrary object into a valid snapshot, dropping bad fields
 // `migrate(raw)` — applies version-to-version migrations, returns the upgraded raw snapshot
 //
-// Bad-file handling: read failure → backup as `clawd-prefs.json.bak` → return defaults.
+// Bad-file handling: readable invalid contents → backup as `clawd-prefs.json.bak` → return defaults.
+//   Unreadable file (EACCES/EIO/...) → defaults in memory, but `locked` so save() will not
+//   overwrite a file we were never able to read.
 // Future-version handling: read succeeds but version > current → warn + refuse to overwrite
 //   (caller still gets a valid snapshot, but `save()` becomes a no-op via the locked flag).
 
@@ -39,6 +41,10 @@ const {
   normalizeFeishuApproval,
 } = require("./feishu-approval-settings");
 const {
+  cloneDefaultSlackNotify,
+  normalizeSlackNotify,
+} = require("./slack-notify-settings");
+const {
   NOTIFICATION_DEFAULT_SECONDS,
   UPDATE_DEFAULT_SECONDS,
   PERMISSION_DEFAULT_SECONDS,
@@ -56,7 +62,7 @@ const {
   PET_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
-const CURRENT_VERSION = 13;
+const CURRENT_VERSION = 15;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -111,6 +117,14 @@ const SCHEMA = {
     defaultFactory: () => null,
     normalize: normalizeSettingsWindowBounds,
   },
+  // Normal-state geometry for the resizable Sessions/Dashboard window. Same
+  // contract as settingsWindowBounds: `null` means the user has not placed it
+  // yet, so the runtime keeps the computed pet/Settings-anchored placement.
+  dashboardWindowBounds: {
+    type: "object",
+    defaultFactory: () => null,
+    normalize: normalizeSettingsWindowBounds,
+  },
   size: {
     type: "string",
     default: "P:9",
@@ -125,7 +139,7 @@ const SCHEMA = {
   preMiniX: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   preMiniY: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   // Pure data prefs
-  lang: { type: "string", default: "en", enum: ["en", "zh", "zh-TW", "ko", "ja"] },
+  lang: { type: "string", default: "en", enum: ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"] },
   showTray: { type: "boolean", default: true },
   // Default off (macOS): a fresh install runs as an accessory/agent app — pet +
   // menu-bar icon, no Dock tile. Existing users keep their Dock — a persisted
@@ -147,6 +161,9 @@ const SCHEMA = {
   // requires native verification. Cleared after native activation or an
   // explicit switch-off so a future migration requirement can warn once.
   telegramMigrationLastNotified: { type: "string", default: "" },
+  // One-time upgrade nudge for Feishu/Lark credentials saved before platform
+  // and approver provenance binding existed. Cleared after repair or disable.
+  feishuApprovalMigrationLastNotified: { type: "string", default: "" },
   // System-backed: actual truth lives in OS login items / autostart files.
   // `openAtLoginHydrated` starts false; main.js's startup hydrate helper imports
   // the current system value into prefs on first run, then flips this flag.
@@ -155,15 +172,40 @@ const SCHEMA = {
   openAtLogin: { type: "boolean", default: false },
   openAtLoginHydrated: { type: "boolean", default: false },
   bubbleFollowPet: { type: "boolean", default: false },
+  bubbleFollowPreference: { type: "string", default: "auto", enum: ["auto", "left", "right"] },
+  bubbleFixedCorner: {
+    type: "string",
+    default: "bottom-right",
+    enum: ["top-left", "top-right", "bottom-left", "bottom-right"],
+  },
   sessionHudEnabled: { type: "boolean", default: true },
   sessionHudShowStateLabels: { type: "boolean", default: true },
   sessionHudShowElapsed: { type: "boolean", default: false },
   sessionHudShowContextUsage: { type: "boolean", default: true },
   sessionHudShowQuota: { type: "boolean", default: true },
-  // Claude Code exposes subscription limits only through its visible,
-  // single-slot statusline. Keep collection opt-in so a fresh Clawd install
-  // never changes the user's terminal UI without an explicit choice.
+  // Preserve the historical used-percentage presentation for existing users;
+  // remaining is a display-only choice and never changes stored quota data.
+  quotaRingDisplayMode: { type: "string", default: "used", enum: ["used", "remaining"] },
+  // Empty by default, i.e. every connected provider draws — matching the
+  // behaviour before this preference existed. Storing what is HIDDEN rather
+  // than what is shown is the reason a newly connected provider appears on its
+  // own: an allow-list would leave it silently absent after the user pasted a
+  // key, which reads as a broken integration rather than a default.
+  quotaRingHiddenProviders: {
+    type: "array",
+    defaultFactory: () => [],
+    normalize: normalizeQuotaRingHiddenProviders,
+  },
+  // Claude Code exposes the reported context window and subscription limits
+  // through its visible, single-slot statusline. The historical key name is
+  // retained for compatibility, but it authorizes the whole local Claude
+  // statusline metadata stream. Keep it opt-in so a fresh Clawd install never
+  // changes the user's terminal UI without an explicit choice.
   claudeQuotaCollectionEnabled: { type: "boolean", default: false },
+  // Kimi quota uses a separately encrypted API Key owned by the main process.
+  // This boolean is only the durable collection opt-in; the secret is never a
+  // preference and never enters a settings snapshot.
+  kimiQuotaCollectionEnabled: { type: "boolean", default: false },
   quotaMergeSources: { type: "boolean", default: false },
   sessionHudCleanupDetached: { type: "boolean", default: true },
   sessionHudPinned: { type: "boolean", default: false },
@@ -253,6 +295,9 @@ const SCHEMA = {
   keepSizeAcrossDisplays: { type: "boolean", default: false },
   // Free roam: when enabled and the pet is idle, it will wander around the screen
   freeRoam: { type: "boolean", default: false },
+  // #686: constrain roam movement to horizontal or vertical only (axis-aligned).
+  // When enabled, each roam picks a random target that varies in only one axis.
+  roamConstrainAxis: { type: "boolean", default: false },
   // #562: Windows-only. When ON, the pet floats ON TOP of a foreground
   // fullscreen app (e.g. a borderless game) and stays draggable, instead of
   // standing down below it (#538). Default ON — most users want to glance at
@@ -321,6 +366,7 @@ const SCHEMA = {
       // fired inside a Task subagent. Only claude-code carries the flag —
       // normalizeAgents drops it for agents whose default entry lacks it.
       "claude-code": { integrationInstalled: true, enabled: true, permissionsEnabled: true, subagentPermissionsEnabled: true, notificationHookEnabled: true },
+      "deepseek-harness": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "codex": { integrationInstalled: true, enabled: true, permissionsEnabled: true, notificationHookEnabled: true, permissionMode: "intercept", nativeNotificationSoundEnabled: false },
       "copilot-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "cursor-agent": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
@@ -342,10 +388,11 @@ const SCHEMA = {
       "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
-      // ZCode (智谱/Z.ai desktop ADE) is state-only (Phase 1), so permission
-      // bubbles default off. Its ~/.zcode/cli/config.json schema is distinct:
-      // config-file hooks live under hooks.events.* and use timeoutMs.
-      "zcode": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      // ZCode (智谱/Z.ai desktop ADE) supports blocking PermissionRequest
+      // hooks since Phase 2, so permission bubbles default on like qwen. Its
+      // ~/.zcode/cli/config.json schema is distinct: config-file hooks live
+      // under hooks.events.* and use timeoutMs.
+      "zcode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "codewhale": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "opencode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "mimocode": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
@@ -357,6 +404,8 @@ const SCHEMA = {
       "reasonix": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       // QoderWork is state-only (Phase 1) — permission bubbles default off.
       "qoderwork": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      // QwenWork (千问办公) is state-only (Phase 1) — permission bubbles default off.
+      "qwenwork": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
     }),
     normalize: normalizeAgents,
   },
@@ -430,6 +479,11 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => cloneDefaultFeishuApproval(),
     normalize: normalizeFeishuApproval,
+  },
+  slackNotify: {
+    type: "object",
+    defaultFactory: () => cloneDefaultSlackNotify(),
+    normalize: normalizeSlackNotify,
   },
   // v0.9.0 migration state. transport defaults to null (undecided) so v0.8.x
   // users upgrading without this key fall onto the "detect legacy artefacts"
@@ -751,6 +805,28 @@ function migrate(raw) {
   if (out.version < 13) {
     out.version = 13;
   }
+  // v13 -> v14: Dashboard-window geometry persistence, same contract as the
+  // Settings step above.
+  if (out.version < 14) {
+    out.version = 14;
+  }
+  // v14 -> v15: ZCode Phase 2 permission bubbles. Phase 1 persisted
+  // permissionsEnabled:false while the Settings switch was never rendered
+  // (capabilities.permissionApproval was false), so no user intent exists
+  // behind that stored false — flip it to the new on-default. A false set on
+  // v15 or later is a real user choice and never migrates again.
+  if (out.version < 15) {
+    if (
+      out.agents
+      && typeof out.agents === "object"
+      && out.agents.zcode
+      && typeof out.agents.zcode === "object"
+      && out.agents.zcode.permissionsEnabled === false
+    ) {
+      out.agents.zcode.permissionsEnabled = true;
+    }
+    out.version = 15;
+  }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
   }
@@ -769,6 +845,33 @@ const AGENT_FLAGS = [
 const CODEX_PERMISSION_MODES = ["native", "intercept"];
 const MAX_CUSTOM_DISCOVERY_PATHS = 64;
 const MAX_CUSTOM_DISCOVERY_PATH_LENGTH = 2048;
+
+// Provider keys the user hid from the pet-side quota cluster. Display-only:
+// collection keeps running and the Dashboard keeps every provider, because the
+// cluster caps at four coins with no say over which ones survive while the
+// Dashboard has room for all of them.
+//
+// Unknown keys are kept, not dropped. The authoritative provider list lives in
+// quota-ring-geometry.js, and validating against it here would mean prefs.js
+// silently discarding a user's choice whenever load order, a rename, or a
+// not-yet-registered provider makes a key look unfamiliar — a hidden provider
+// would then reappear on its own. Consumers match by key, so a stale entry
+// costs nothing beyond a few bytes; the cap keeps that bounded.
+const MAX_HIDDEN_QUOTA_PROVIDERS = 32;
+function normalizeQuotaRingHiddenProviders(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.replace(/\0/g, "").trim().slice(0, 64);
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+    if (out.length >= MAX_HIDDEN_QUOTA_PROVIDERS) break;
+  }
+  return out;
+}
 
 function normalizePathList(value, options = {}) {
   const raw = Array.isArray(value)
@@ -1207,11 +1310,28 @@ function normalizeIdleVisual(value, defaultsValue) {
 
 // ── Disk I/O ──
 
+function backupInvalidPrefs(prefsPath, reason) {
+  try {
+    const bak = prefsPath + ".bak";
+    fs.copyFileSync(prefsPath, bak);
+    console.warn(`Clawd: invalid prefs file backed up to ${bak}:`, reason);
+    return true;
+  } catch (bakErr) {
+    console.warn("Clawd: invalid prefs file backup failed:", reason, bakErr.message);
+    return false;
+  }
+}
+
 // Read prefs from disk. Returns
 // `{ snapshot, locked, fresh?, recovered?, codexAutoStartAuthoritative? }`:
 //   - snapshot: a valid prefs object (always — falls back to defaults on any error)
-//   - locked: true if the file came from a future version; save() should be a no-op
-//             to avoid clobbering it.
+//   - locked: true when the on-disk file must not be overwritten, and save() should
+//             be a no-op. Two triggers: the file came from a future version, or the
+//             file exists and could not be read at all. Both mean "we do not know
+//             what is in there", which is the same reason not to write over it.
+//             The unreadable case also sets `recovered`, so `locked && recovered`
+//             together is a valid combination (the future-version case sets only
+//             `locked`, the unparseable case only `recovered`).
 //   - fresh: true ONLY when there was no prefs file at all (brand-new install).
 //            Callers use this to seed first-run-only state (e.g. UI language from
 //            the device locale) without ever overriding an existing user's choices.
@@ -1225,28 +1345,56 @@ function normalizeIdleVisual(value, defaultsValue) {
 //                invalid type. Missing legacy fields retain their historical
 //                default/migration behavior.
 function load(prefsPath) {
-  let raw;
+  // Read and parse are separated on purpose. "We could not read the bytes" and
+  // "we read the bytes and they are not valid prefs" are different states, and
+  // only the second one justifies replacing the file with defaults.
+  let text;
   try {
-    const text = fs.readFileSync(prefsPath, "utf8");
-    raw = JSON.parse(text);
+    text = fs.readFileSync(prefsPath, "utf8");
   } catch (err) {
     // Missing file is normal on first run — return defaults silently, flagged
     // fresh so the caller can seed device-locale language exactly once.
     if (err && err.code === "ENOENT") {
       return { snapshot: getDefaults(), locked: false, fresh: true };
     }
-    // Any other error (parse fail, permission, etc.) → backup + defaults
-    try {
-      const bak = prefsPath + ".bak";
-      fs.copyFileSync(prefsPath, bak);
-      console.warn(`Clawd: prefs file unreadable, backed up to ${bak}:`, err.message);
-    } catch (bakErr) {
-      console.warn("Clawd: prefs file unreadable and backup failed:", err.message, bakErr.message);
-    }
-    return { snapshot: getDefaults(), locked: false, recovered: true };
+    // The file exists but could not be read (EACCES, EIO, a directory, ...).
+    // We do not know what it says, so a later save() must not overwrite it with
+    // defaults — that is exactly what `locked` already means for the
+    // future-version branch below ("save() should be a no-op to avoid
+    // clobbering it"). Reusing it here keeps the user's real prefs on disk.
+    //
+    // No backup is attempted on this path: copyFileSync would read the same
+    // unreadable file, so it could only fail and emit a second warning.
+    console.warn(
+      "Clawd: prefs file could not be read — keeping defaults in memory and refusing to overwrite it:",
+      err.message,
+    );
+    return { snapshot: getDefaults(), locked: true, recovered: true };
+  }
+
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (err) {
+    // The file WAS readable and its contents are not valid JSON. Backing it up
+    // and continuing from defaults is the intended recovery. If backup fails,
+    // lock persistence so startup hydration cannot destroy the only copy.
+    const backupCreated = backupInvalidPrefs(prefsPath, err.message);
+    return {
+      snapshot: getDefaults(),
+      locked: !backupCreated,
+      recovered: true,
+      recoveryBackupFailed: !backupCreated,
+    };
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return { snapshot: getDefaults(), locked: false, recovered: true };
+    const backupCreated = backupInvalidPrefs(prefsPath, "root must be a JSON object");
+    return {
+      snapshot: getDefaults(),
+      locked: !backupCreated,
+      recovered: true,
+      recoveryBackupFailed: !backupCreated,
+    };
   }
   const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
   const isObjectRecord = (value) => !!value && typeof value === "object" && !Array.isArray(value);
@@ -1312,6 +1460,9 @@ function mapLocaleToLang(locale) {
   }
   if (l === "ko" || l.startsWith("ko-")) return "ko";
   if (l === "ja" || l.startsWith("ja-")) return "ja";
+  // Regional locale: only pt-BR itself auto-selects it.
+  if (l === "pt-br") return "pt-BR";
+  if (l === "es" || l.startsWith("es-")) return "es";
   return "en";
 }
 
@@ -1335,5 +1486,6 @@ module.exports = {
   normalizePathList,
   isValidSettingsWindowBounds,
   MAX_CUSTOM_DISCOVERY_PATHS,
+  MAX_HIDDEN_QUOTA_PROVIDERS,
   MAX_CUSTOM_DISCOVERY_PATH_LENGTH,
 };

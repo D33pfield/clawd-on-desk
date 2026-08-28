@@ -12,6 +12,17 @@ const {
 } = require("../src/agent-installation-detector");
 const { getAgentDescriptor } = require("../src/doctor-detectors/agent-descriptors");
 const { registerReasonixHooks } = require("../hooks/reasonix-install");
+const {
+  BRIDGE_PACKAGE_NAME,
+  BRIDGE_PROTOCOL_VERSION,
+  MANAGED_OWNER,
+  resolveManagedRoot,
+  SUPPORTED_DSH_RANGE,
+  SUPPORTED_DSH_VERSION,
+  __test: dshInstallTest,
+} = require("../hooks/dsh-install");
+
+const DSH_BRIDGE_SOURCE_DIR = path.join(__dirname, "..", "hooks", "dsh-clawd-bridge");
 
 const tempDirs = [];
 
@@ -30,6 +41,16 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf8");
 }
 
+function readJson(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function canonicalRealpath(filePath) {
+  return fs.realpathSync.native
+    ? fs.realpathSync.native(filePath)
+    : fs.realpathSync(filePath);
+}
+
 function writeText(filePath, value = "") {
   mkdirp(path.dirname(filePath));
   fs.writeFileSync(filePath, value, "utf8");
@@ -46,16 +67,58 @@ afterEach(() => {
 });
 
 describe("agent installation detector", () => {
-  it("skips default integrations and returns runtime-only checkedAt metadata", () => {
+  // #895 T11a/T11b: only Claude is skipped. Its parent dir is created by Clawd's
+  // own default sync, so ~/.claude proves nothing; ~/.codex is never created by
+  // Clawd, so it stays real evidence and Codex must be reported like any other
+  // agent. This is one code-level route consistent with #895; the reporter's
+  // exact on-disk layout remains unconfirmed.
+  it("skips only the agent whose parent dir Clawd creates itself", () => {
     const homeDir = makeHome();
 
     const report = detectAgentInstallations({ homeDir, now: 12345 });
 
     assert.strictEqual(report.checkedAt, 12345);
-    assert.deepStrictEqual(report.skippedAgentIds, ["claude-code", "codex"]);
+    assert.deepStrictEqual(report.skippedAgentIds, ["claude-code"]);
     assert.ok(!byId(report, "claude-code"));
-    assert.ok(!byId(report, "codex"));
     assert.ok(byId(report, "qwen-code"));
+
+    // Present in the report, and honestly negative on an empty home.
+    const codex = byId(report, "codex");
+    assert.ok(codex, "codex must be examined, not skipped");
+    assert.strictEqual(codex.detectedInstalled, false);
+    assert.strictEqual(codex.confidence, "low");
+    assert.strictEqual(codex.reason, "not-found");
+  });
+
+  it("reports Codex from its own directory once it exists", () => {
+    const homeDir = makeHome();
+    mkdirp(path.join(homeDir, ".codex"));
+
+    const codex = byId(detectAgentInstallations({ homeDir, now: 1 }), "codex");
+
+    assert.strictEqual(codex.detectedInstalled, true);
+    assert.strictEqual(codex.confidence, "medium");
+    assert.strictEqual(codex.reason, "parent-dir");
+  });
+
+  // #895 T11c: the whole reason Codex may be detected from its directory is that
+  // Clawd never creates it. Claude's installer does, which is why Claude stays
+  // skipped. If either half of that asymmetry ever changes, this fails.
+  it("keeps the create-vs-skip asymmetry the skip list is derived from", async () => {
+    const codexHome = makeHome();
+    const codexDir = path.join(codexHome, ".codex");
+    require("../hooks/codex-install.js").registerCodexHooks({ silent: true, env: { CODEX_HOME: codexDir } });
+    assert.strictEqual(fs.existsSync(codexDir), false, "Codex sync must not create ~/.codex");
+
+    const claudeHome = makeHome();
+    const claudeSettings = path.join(claudeHome, ".claude", "settings.json");
+    await require("../hooks/install.js").registerHooksAsync({
+      silent: true,
+      homeDir: claudeHome,
+      nodeBin: process.execPath,
+      claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+    });
+    assert.strictEqual(fs.existsSync(claudeSettings), true, "Claude's production async sync creates ~/.claude");
   });
 
   it("detects generic parent-directory agents and reports Clawd marker presence separately", () => {
@@ -83,6 +146,75 @@ describe("agent installation detector", () => {
     assert.strictEqual(codewhale.detectedInstalled, true);
     assert.strictEqual(codewhale.confidence, "high");
     assert.strictEqual(codewhale.reason, "parent-dir");
+  });
+
+  it("detects DSH host installation separately from a verified managed plugin", () => {
+    const homeDir = makeHome();
+    const dshHome = path.join(homeDir, ".dsh");
+    const profileDir = path.join(dshHome, "profiles", "web");
+    const profileManifestPath = path.join(profileDir, "package.json");
+    writeJson(profileManifestPath, {
+      name: "dsh-profile-web",
+      dependencies: {},
+      dsh: { profile: { bundles: [] } },
+    });
+
+    let report = detectAgentInstallations({ homeDir, now: 1, env: {} });
+    let dsh = byId(report, "deepseek-harness");
+    assert.strictEqual(dsh.detectedInstalled, true);
+    assert.strictEqual(dsh.clawdIntegration.detected, false);
+    assert.strictEqual(dsh.clawdIntegration.reason, "absent");
+    assert.strictEqual(dsh.paths.parentDir, dshHome);
+
+    const pluginDir = path.join(profileDir, "node_modules", ...BRIDGE_PACKAGE_NAME.split("/"));
+    const bundleHash = dshInstallTest.hashBridgeDirectorySync(fs, DSH_BRIDGE_SOURCE_DIR);
+    const generationDir = path.join(
+      resolveManagedRoot({ homeDir, dshHome }),
+      "generations",
+      bundleHash,
+    );
+    const manifest = readJson(profileManifestPath);
+    manifest.dependencies[BRIDGE_PACKAGE_NAME] = `file:${generationDir}`;
+    manifest.dsh.profile.bundles.push(BRIDGE_PACKAGE_NAME);
+    writeJson(profileManifestPath, manifest);
+    fs.cpSync(DSH_BRIDGE_SOURCE_DIR, pluginDir, { recursive: true });
+    fs.cpSync(DSH_BRIDGE_SOURCE_DIR, generationDir, { recursive: true });
+    const marker = {
+      owner: MANAGED_OWNER,
+      schemaVersion: 1,
+      protocolVersion: BRIDGE_PROTOCOL_VERSION,
+      bundleHash,
+      supportedDshRange: SUPPORTED_DSH_RANGE,
+      installedDshVersion: SUPPORTED_DSH_VERSION,
+    };
+    writeJson(path.join(pluginDir, "clawd-manifest.json"), marker);
+    writeJson(path.join(generationDir, "clawd-manifest.json"), marker);
+
+    report = detectAgentInstallations({ homeDir, now: 2, env: {} });
+    dsh = byId(report, "deepseek-harness");
+    assert.strictEqual(dsh.clawdIntegration.detected, true);
+    assert.strictEqual(dsh.clawdIntegration.reason, "managed-plugin");
+    assert.strictEqual(dsh.clawdIntegration.paths.pluginDir, canonicalRealpath(pluginDir));
+  });
+
+  it("detects a DSH CLI on PATH before the profile home is initialized", {
+    skip: process.platform !== "win32",
+  }, () => {
+    const homeDir = makeHome();
+    const binDir = path.join(homeDir, "bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    const shim = path.join(binDir, "dsh.cmd");
+    fs.writeFileSync(shim, "@echo off\r\n", "utf8");
+    const report = detectAgentInstallations({
+      homeDir,
+      now: 1,
+      platform: "win32",
+      env: { PATH: binDir },
+    });
+    const dsh = byId(report, "deepseek-harness");
+    assert.strictEqual(dsh.detectedInstalled, true);
+    assert.strictEqual(dsh.reason, "command-path");
+    assert.deepStrictEqual(dsh.paths.commandPaths, [shim]);
   });
 
   it("detects a Windows Reasonix installation from the legacy fallback home", () => {
@@ -169,6 +301,88 @@ describe("agent installation detector", () => {
     assert.strictEqual(antigravity.detectedInstalled, true);
     assert.strictEqual(antigravity.confidence, "medium");
     assert.strictEqual(antigravity.reason, "parent-dir");
+  });
+
+  // #895 T1/T2/T3: `config` used to be the only Antigravity directory excluded,
+  // which read like a solved problem but covered one of three. Google assigns
+  // ~/.gemini/antigravity to the Antigravity app and ~/.gemini/antigravity-cli
+  // to agy, and installing the app alone creates the former — so a machine with
+  // no Gemini CLI at all was told to connect one. One case per directory: a
+  // single combined test would pass even if a name were dropped from the set.
+  for (const dirName of ["antigravity", "antigravity-cli"]) {
+    it(`does not treat Antigravity's ~/.gemini/${dirName} as a Gemini CLI install`, () => {
+      const homeDir = makeHome();
+      mkdirp(path.join(homeDir, ".gemini", dirName));
+
+      const gemini = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
+
+      assert.strictEqual(gemini.detectedInstalled, false);
+      assert.strictEqual(gemini.reason, "not-found");
+    });
+  }
+
+  it("does not report Gemini CLI from a full Antigravity-only layout", () => {
+    const homeDir = makeHome();
+    writeJson(path.join(homeDir, ".gemini", "config", "hooks.json"), { clawd: {} });
+    writeText(path.join(homeDir, ".gemini", "antigravity", "antigravity_state.pbtxt"), "");
+    writeJson(path.join(homeDir, ".gemini", "antigravity-cli", "settings.json"), {});
+
+    const report = detectAgentInstallations({ homeDir, now: 1, env: {} });
+
+    assert.strictEqual(byId(report, "gemini-cli").detectedInstalled, false);
+    assert.strictEqual(byId(report, "gemini-cli").reason, "not-found");
+    // Antigravity itself must still be found — the point is telling them apart.
+    assert.strictEqual(byId(report, "antigravity-cli").detectedInstalled, true);
+  });
+
+  // #895 T4/T4b: the guard above must not become "Gemini CLI is never detected
+  // from its directory". Each artifact gets its own home, so one still-working
+  // signal cannot mask another that broke. A file and a directory are both
+  // covered because the exclusion is directory-only.
+  for (const [label, make] of [
+    ["installation_id file", (g) => writeText(path.join(g, "installation_id"), "id")],
+    ["oauth_creds.json file", (g) => writeJson(path.join(g, "oauth_creds.json"), {})],
+    ["extensions/ directory", (g) => mkdirp(path.join(g, "extensions"))],
+  ]) {
+    it(`still detects Gemini CLI beside Antigravity from its ${label}`, () => {
+      const homeDir = makeHome();
+      const geminiDir = path.join(homeDir, ".gemini");
+      for (const dirName of ["config", "antigravity", "antigravity-cli"]) {
+        mkdirp(path.join(geminiDir, dirName));
+      }
+      make(geminiDir);
+
+      const gemini = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
+
+      assert.strictEqual(gemini.detectedInstalled, true);
+      assert.strictEqual(gemini.confidence, "medium");
+      assert.strictEqual(gemini.reason, "parent-dir");
+    });
+  }
+
+  // #895 T4c: the exclusion matches Antigravity's directories, not its names. A
+  // plain file that happens to be called `antigravity` is not Antigravity's.
+  it("only excludes the Antigravity names when they are directories", () => {
+    const homeDir = makeHome();
+    writeText(path.join(homeDir, ".gemini", "antigravity"), "a file, not Antigravity's dir");
+
+    const gemini = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
+
+    assert.strictEqual(gemini.detectedInstalled, true);
+    assert.strictEqual(gemini.reason, "parent-dir");
+  });
+
+  // #895 T4d: the higher-confidence settings.json path is untouched by all this.
+  it("still detects Gemini CLI from real settings beside Antigravity", () => {
+    const homeDir = makeHome();
+    mkdirp(path.join(homeDir, ".gemini", "antigravity"));
+    writeJson(path.join(homeDir, ".gemini", "settings.json"), { selectedAuthType: "oauth-personal" });
+
+    const gemini = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
+
+    assert.strictEqual(gemini.detectedInstalled, true);
+    assert.strictEqual(gemini.confidence, "high");
+    assert.strictEqual(gemini.reason, "config-file");
   });
 
   it("treats Gemini Clawd-only settings as integration marker, not install proof", () => {

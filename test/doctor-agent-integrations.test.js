@@ -17,11 +17,30 @@ const { HOOK_ENTRIES: CODEWHALE_HOOK_ENTRIES } = require("../hooks/codewhale-ins
 const { QODER_HOOK_EVENTS, buildQoderHookCommand } = require("../hooks/qoder-install");
 const { KIMI_HOOK_EVENTS } = require("../hooks/kimi-install");
 const {
+  buildStableCodexHookCommand,
+  materializeStableCodexHookLauncher,
+} = require("../hooks/codex-install-utils");
+const {
+  computeCodexHookTrustedHash,
+  findCodexHookTrustPositions,
+} = require("../src/doctor-detectors/codex-features-check");
+const { validateHookTarget } = require("../src/doctor-detectors/agent-node-bin-parser");
+const {
   ZCODE_HOOK_EVENTS,
   buildZcodeHookCommand,
   buildZcodeProcessHook,
   timeoutMsForZcodeEvent,
 } = require("../hooks/zcode-install");
+const {
+  BRIDGE_PACKAGE_NAME,
+  BRIDGE_PROTOCOL_VERSION,
+  MANAGED_OWNER,
+  SUPPORTED_DSH_RANGE,
+  SUPPORTED_DSH_VERSION,
+  __test: dshInstallTest,
+} = require("../hooks/dsh-install");
+
+const DSH_BRIDGE_SOURCE_DIR = path.join(__dirname, "..", "hooks", "dsh-clawd-bridge");
 
 // Complete healthy legacy Kimi config: every event registered, every command
 // carrying the canonical argv mode flag.
@@ -88,6 +107,8 @@ function runOne(descriptor, options = {}) {
       nodeBin: target.nodeBin,
       scriptPath: target.scriptPath,
     })),
+    dshInstallRoot: options.dshInstallRoot,
+    dshManagedRoot: options.dshManagedRoot || descriptor.dshManagedRoot,
   }).details[0];
 }
 
@@ -284,7 +305,7 @@ function zcodeDescriptor() {
     nested: true,
     hookEvents: ZCODE_HOOK_EVENTS,
     hookExecutorShape: "zcode-process",
-    processHookTimeoutMs: timeoutMsForZcodeEvent(),
+    processHookTimeoutMsForEvent: timeoutMsForZcodeEvent,
     hookEventsContainer: ["hooks", "events"],
   });
 }
@@ -320,19 +341,29 @@ function codexDescriptor() {
 function codexHooksConfig(events) {
   const hooks = {};
   for (const event of events) {
-    hooks[event] = [{ hooks: [{ command: `"/node" "/app/hooks/codex-hook.js" ${event}` }] }];
+    hooks[event] = [{ hooks: [{
+      type: "command",
+      command: `"/node" "/app/hooks/codex-hook.js" ${event}`,
+      timeout: event === "PermissionRequest" ? 600 : 30,
+    }] }];
   }
   return { hooks };
 }
 
-function codexTrustState(descriptor, events) {
+function codexTrustState(descriptor, settings, platform = process.platform) {
+  const positions = findCodexHookTrustPositions(settings);
   return [
     "[features]",
     "hooks = true",
     "",
-    ...events.flatMap((event) => [
-      `[hooks.state.'${descriptor.configPath}:${event.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()}:0:0']`,
-      `trusted_hash = "sha256:${"a".repeat(64)}"`,
+    ...positions.flatMap((position) => [
+      `[hooks.state.'${descriptor.configPath}:${position.eventKey}:${position.entryIndex}:${position.hookIndex}']`,
+      `trusted_hash = "${computeCodexHookTrustedHash(
+        position.eventName,
+        position.group,
+        position.hook,
+        platform
+      )}"`,
       "",
     ]),
   ].join("\n");
@@ -345,6 +376,96 @@ afterEach(() => {
 });
 
 describe("checkAgentIntegrations", () => {
+  function dshDescriptor() {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".dsh");
+    return baseDescriptor({
+      agentId: "deepseek-harness",
+      agentName: "DeepSeek Harness",
+      eventSource: "plugin-event",
+      parentDir,
+      configPath: path.join(parentDir, "profiles", "web"),
+      configMode: "dsh-plugin",
+      dshManagedRoot: path.join(root, ".clawd", "integrations", "deepseek-harness"),
+    });
+  }
+
+  function writeDshProfile(descriptor, mode) {
+    const manifestPath = path.join(descriptor.configPath, "package.json");
+    const manifest = {
+      name: "dsh-profile-web",
+      dependencies: {},
+      dsh: { profile: { bundles: [] } },
+    };
+    const pluginDir = path.join(descriptor.configPath, "node_modules", ...BRIDGE_PACKAGE_NAME.split("/"));
+    const bundleHash = dshInstallTest.hashBridgeDirectorySync(fs, DSH_BRIDGE_SOURCE_DIR);
+    const generationDir = path.join(descriptor.dshManagedRoot, "generations", bundleHash);
+    if (mode !== "absent") {
+      manifest.dependencies[BRIDGE_PACKAGE_NAME] = mode === "healthy"
+        ? `file:${generationDir}`
+        : `file:${pluginDir}`;
+      manifest.dsh.profile.bundles.push(BRIDGE_PACKAGE_NAME);
+    }
+    writeJson(manifestPath, manifest);
+    if (mode === "healthy" || mode === "foreign") {
+      if (mode === "healthy") fs.cpSync(DSH_BRIDGE_SOURCE_DIR, pluginDir, { recursive: true });
+      else writeJson(path.join(pluginDir, "package.json"), { name: BRIDGE_PACKAGE_NAME, version: "0.0.0" });
+      if (mode === "healthy") {
+        fs.cpSync(DSH_BRIDGE_SOURCE_DIR, generationDir, { recursive: true });
+        const marker = {
+          owner: MANAGED_OWNER,
+          schemaVersion: 1,
+          protocolVersion: BRIDGE_PROTOCOL_VERSION,
+          bundleHash,
+          supportedDshRange: SUPPORTED_DSH_RANGE,
+          installedDshVersion: SUPPORTED_DSH_VERSION,
+        };
+        writeJson(path.join(pluginDir, "clawd-manifest.json"), marker);
+        writeJson(path.join(generationDir, "clawd-manifest.json"), marker);
+      }
+    }
+  }
+
+  it("reports DSH disk health from the managed plugin rather than host-home presence", () => {
+    const descriptor = dshDescriptor();
+    writeDshProfile(descriptor, "absent");
+    const absent = runOne(descriptor);
+    assert.strictEqual(absent.status, "not-connected");
+    assert.strictEqual(absent.bridgeHealth, "absent");
+    assert.deepStrictEqual(absent.fixAction, { type: "agent-integration", agentId: "deepseek-harness" });
+
+    writeDshProfile(descriptor, "healthy");
+    const healthy = runOne(descriptor);
+    assert.strictEqual(healthy.status, "ok");
+    assert.strictEqual(healthy.bridgeHealth, "healthy");
+    assert.match(healthy.detail, /verified on disk/i);
+    assert.match(healthy.detail, /restart any running dsh web/i);
+  });
+
+  it("does not offer Doctor Fix for a foreign same-name DSH plugin", () => {
+    const descriptor = dshDescriptor();
+    writeDshProfile(descriptor, "foreign");
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "needs-review");
+    assert.strictEqual(detail.bridgeHealth, "profile-entry-foreign-or-conflicting");
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("surfaces a persistent DSH unknown-mutation latch as repairable inspection required", () => {
+    const descriptor = dshDescriptor();
+    writeDshProfile(descriptor, "healthy");
+    const managedRoot = path.join(path.dirname(descriptor.parentDir), ".clawd", "integrations", "deepseek-harness");
+    writeJson(path.join(managedRoot, "inspection-required.json"), {
+      owner: MANAGED_OWNER,
+      schemaVersion: 1,
+      reason: "plugin-add-unknown",
+    });
+    const detail = runOne(descriptor, { dshManagedRoot: managedRoot });
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.bridgeHealth, "inspection-required");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "deepseek-harness" });
+  });
+
   it("returns not-installed when parent dir is missing", () => {
     const detail = runOne(baseDescriptor());
     assert.strictEqual(detail.status, "not-installed");
@@ -513,6 +634,88 @@ describe("checkAgentIntegrations", () => {
     assert.match(detail.detail, /reinstall or re-extract/i);
     assert.strictEqual(detail.claudeHookRuntimeStatus.degradedReason, "source-script-missing");
     assert.strictEqual(detail.fixAction, undefined, "source-script-missing must not offer a configuration Repair");
+  });
+
+  it("explains when an env-indirected Claude hook is preserved because Node is unresolved (#852)", () => {
+    const descriptor = baseDescriptor({
+      agentId: "claude-code",
+      agentName: "Claude Code",
+      marker: "clawd-hook.js",
+      nested: true,
+    });
+    writeJson(descriptor.configPath, { hooks: {} });
+
+    const detail = runOne(descriptor, {
+      server: {
+        getClaudeHookHealthStatus: () => ({
+          status: "degraded",
+          degradedReason: "env-hook-node-unresolved",
+          at: 7000,
+        }),
+      },
+    });
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.match(detail.detail, /CLAWD_NODE_BIN/);
+    assert.strictEqual(detail.claudeHookRuntimeStatus.degradedReason, "env-hook-node-unresolved");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "claude-code" });
+  });
+
+  it("keeps an unverified env-indirected hook visible beside an otherwise valid Claude hook (#852)", () => {
+    const descriptor = baseDescriptor({
+      agentId: "claude-code",
+      agentName: "Claude Code",
+      marker: "clawd-hook.js",
+      nested: true,
+    });
+    writeJson(descriptor.configPath, {
+      hooks: {
+        Stop: [
+          { matcher: "", hooks: [{ type: "command", command: '"node" "/app/hooks/clawd-hook.js" Stop' }] },
+          { matcher: "", hooks: [{ type: "command", command: '"${CLAWD_NODE_BIN}" "${CLAWD_HOOK_PATH}" Stop' }] },
+        ],
+      },
+    });
+
+    const detail = runOne(descriptor, {
+      server: {
+        getClaudeHookHealthStatus: () => ({
+          status: "degraded",
+          degradedReason: "env-indirection-unverified",
+          at: 8000,
+        }),
+      },
+    });
+
+    assert.strictEqual(detail.status, "needs-review", "generic marker success must not hide the degraded env diagnostic");
+    assert.strictEqual(detail.level, "warning");
+    assert.match(detail.detail, /CLAWD_HOOK_PATH/);
+    assert.strictEqual(detail.claudeHookRuntimeStatus.degradedReason, "env-indirection-unverified");
+    assert.strictEqual(detail.fixAction, undefined, "unverified ownership must not offer a destructive automatic Fix");
+  });
+
+  it("does not let a stale env runtime diagnostic hide a corrupt Claude settings file (#852)", () => {
+    const descriptor = baseDescriptor({
+      agentId: "claude-code",
+      agentName: "Claude Code",
+      marker: "clawd-hook.js",
+      nested: true,
+    });
+    writeText(descriptor.configPath, "{not-json");
+
+    const detail = runOne(descriptor, {
+      server: {
+        getClaudeHookHealthStatus: () => ({
+          status: "degraded",
+          degradedReason: "env-indirection-unverified",
+          at: 8100,
+        }),
+      },
+    });
+
+    assert.strictEqual(detail.status, "config-corrupt");
+    assert.match(detail.detail, /parse|JSON|corrupt/i);
+    assert.strictEqual(detail.claudeHookRuntimeStatus, undefined);
   });
 
   it("explains manual-fix-required while still offering an explicit Fix that can bypass the automatic cap", () => {
@@ -1117,6 +1320,58 @@ describe("checkAgentIntegrations", () => {
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "zcode" });
   });
 
+  it("reports a foreign PermissionRequest hook as a conflict without offering a Fix", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    // Replace Clawd's entry with a user's own security hook.
+    config.hooks.events.PermissionRequest = [{
+      hooks: [{ type: "process", command: "/node", args: ["/Users/dev/security-hook.js", "PermissionRequest"], timeoutMs: 30000 }],
+    }];
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.level, "warning");
+    assert.strictEqual(detail.supplementary.value, "permission-conflict");
+    assert.ok(detail.detail.includes("foreign PermissionRequest hook"));
+    // A Fix would re-register Clawd's hook next to the foreign one and create
+    // the exact last-wins override this report exists to prevent.
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("reports a nested non-command PermissionRequest hook as a conflict without offering a Fix", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    config.hooks.events.PermissionRequest = [{
+      hooks: [{ type: "http", url: "http://127.0.0.1:23333/permission", timeout: 600 }],
+    }];
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.level, "warning");
+    assert.strictEqual(detail.supplementary.value, "permission-conflict");
+    assert.ok(detail.detail.includes("foreign PermissionRequest hook"));
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
+  it("reports coexistence of Clawd and foreign PermissionRequest hooks as a conflict", () => {
+    const descriptor = zcodeDescriptor();
+    const config = zcodeHooksConfig();
+    config.hooks.events.PermissionRequest.push({
+      hooks: [{ type: "process", command: "/node", args: ["/Users/dev/security-hook.js", "PermissionRequest"], timeoutMs: 30000 }],
+    });
+    writeJson(descriptor.configPath, config);
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.supplementary.value, "permission-conflict");
+    assert.ok(detail.detail.includes("coexists"));
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+
   it("validates Windows ZCode process hooks with a spaced absolute node path", () => {
     const descriptor = zcodeDescriptor();
     const scriptPath = "D:/app/hooks/zcode-hook.js";
@@ -1714,12 +1969,13 @@ describe("checkAgentIntegrations", () => {
     const descriptor = codexDescriptor();
     const psForm = '& "C:\\Program Files\\nodejs\\node.exe" "D:/app/hooks/codex-hook.js"';
     const interopForm = '"/mnt/c/Program Files/nodejs/node.exe" "D:/app/hooks/codex-hook.js"';
-    writeJson(descriptor.configPath, {
+    const settings = {
       hooks: {
         Stop: [{ hooks: [{ type: "command", command: interopForm, commandWindows: psForm, timeout: 30 }] }],
       },
-    });
-    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, ["Stop"]), "utf8");
+    };
+    writeJson(descriptor.configPath, settings);
+    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, settings, "win32"), "utf8");
 
     const seen = [];
     const result = checkAgentIntegrations({
@@ -1746,12 +2002,13 @@ describe("checkAgentIntegrations", () => {
     const descriptor = codexDescriptor();
     const psForm = '& "C:\\Program Files\\nodejs\\node.exe" "D:/app/hooks/codex-hook.js"';
     const interopForm = '"/mnt/c/Program Files/nodejs/node.exe" "D:/app/hooks/codex-hook.js"';
-    writeJson(descriptor.configPath, {
+    const settings = {
       hooks: {
         Stop: [{ hooks: [{ type: "command", command: interopForm, commandWindows: psForm, timeout: 30 }] }],
       },
-    });
-    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, ["Stop"]), "utf8");
+    };
+    writeJson(descriptor.configPath, settings);
+    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, settings, "linux"), "utf8");
 
     const seen = [];
     const result = checkAgentIntegrations({
@@ -1768,6 +2025,69 @@ describe("checkAgentIntegrations", () => {
 
     assert.deepStrictEqual(seen, [interopForm]);
     assert.strictEqual(result.details[0].status, "ok");
+  });
+
+  it("reports a corrupt Codex stable-launcher manifest as repairable", () => {
+    const descriptor = codexDescriptor();
+    const target = path.join(descriptor.parentDir, "source", "codex-hook.js");
+    writeText(target, "process.stdout.write('{}');\n");
+    const stable = materializeStableCodexHookLauncher(target, {
+      codexDir: descriptor.parentDir,
+      nodeBin: process.execPath,
+      platform: process.platform,
+    });
+    const command = buildStableCodexHookCommand(stable.launcherPath, process.platform);
+    const settings = {
+      hooks: { Stop: [{ hooks: [{ type: "command", command, timeout: 30 }] }] },
+    };
+    writeJson(descriptor.configPath, settings);
+    fs.writeFileSync(
+      descriptor.supplementary.configPath,
+      codexTrustState(descriptor, settings, process.platform),
+      "utf8"
+    );
+    fs.writeFileSync(stable.manifestPath, "{ corrupt", "utf8");
+
+    const detail = runOne(descriptor, {
+      platform: process.platform,
+      validateTarget: validateHookTarget,
+    });
+
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.hookCommandIssue, "stable-manifest-invalid");
+    assert.strictEqual(detail.scriptPath, stable.launcherPath);
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "codex" });
+  });
+
+  it("reports a missing Codex stable-launcher target as repairable", () => {
+    const descriptor = codexDescriptor();
+    const target = path.join(descriptor.parentDir, "source", "codex-hook.js");
+    writeText(target, "process.stdout.write('{}');\n");
+    const stable = materializeStableCodexHookLauncher(target, {
+      codexDir: descriptor.parentDir,
+      nodeBin: process.execPath,
+      platform: process.platform,
+    });
+    const command = buildStableCodexHookCommand(stable.launcherPath, process.platform);
+    const settings = {
+      hooks: { Stop: [{ hooks: [{ type: "command", command, timeout: 30 }] }] },
+    };
+    writeJson(descriptor.configPath, settings);
+    fs.writeFileSync(
+      descriptor.supplementary.configPath,
+      codexTrustState(descriptor, settings, process.platform),
+      "utf8"
+    );
+    fs.unlinkSync(target);
+
+    const detail = runOne(descriptor, {
+      platform: process.platform,
+      validateTarget: validateHookTarget,
+    });
+
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.hookCommandIssue, "scriptPath-missing");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "codex" });
   });
 
   it("reports Codex hooks=false even when hook registration is missing", () => {
@@ -1812,8 +2132,9 @@ describe("checkAgentIntegrations", () => {
   it("keeps Codex ok when Codex hook trust state exists", () => {
     const descriptor = codexDescriptor();
     const events = ["PermissionRequest", "Stop"];
-    writeJson(descriptor.configPath, codexHooksConfig(events));
-    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, events), "utf8");
+    const settings = codexHooksConfig(events);
+    writeJson(descriptor.configPath, settings);
+    fs.writeFileSync(descriptor.supplementary.configPath, codexTrustState(descriptor, settings), "utf8");
 
     const detail = runOne(descriptor);
     assert.strictEqual(detail.status, "ok");
@@ -2101,6 +2422,99 @@ describe("checkAgentIntegrations", () => {
     const detail = runOne(descriptor);
     assert.strictEqual(detail.status, "config-corrupt");
     assert.ok(detail.detail.includes("mimocode.json"), `detail must name the corrupt file: ${detail.detail}`);
+  });
+
+  // #825: opencode's global config is a MERGE of config.json → opencode.json →
+  // opencode.jsonc (later wins, "plugin" arrays REPLACED). The doctor must
+  // validate the MERGED effective view — reading opencode.json alone reported
+  // "plugin entry verified" while opencode was actually running the .jsonc
+  // array with no Clawd plugin in it.
+  function opencodeDescriptor(root, overrides = {}) {
+    const parentDir = path.join(root, ".config", "opencode");
+    fs.mkdirSync(parentDir, { recursive: true });
+    return baseDescriptor({
+      agentId: "opencode",
+      marker: "opencode-plugin",
+      parentDir,
+      configPath: path.join(parentDir, "opencode.json"),
+      detection: "opencode-plugin",
+      configJsonc: true,
+      configCandidates: ["opencode.jsonc", "opencode.json", "config.json"].map((n) => path.join(parentDir, n)),
+      ...overrides,
+    });
+  }
+
+  it("#825: reports NOT connected when opencode.jsonc masks a plugin entry in opencode.json", () => {
+    const root = makeTempDir();
+    const pluginPath = makeValidFamilyPlugin(root, "opencode-plugin");
+    const descriptor = opencodeDescriptor(root);
+    const dir = descriptor.parentDir;
+    writeJson(path.join(dir, "opencode.json"), { plugin: [pluginPath] });
+    writeText(path.join(dir, "opencode.jsonc"), '{\n  // the file opencode runs\n  "plugin": ["@vendor/other"],\n}\n');
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "not-connected", `expected not-connected, got ${detail.status}: ${detail.detail}`);
+    assert.ok(
+      detail.detail.includes("opencode.jsonc"),
+      `detail must name the file opencode actually reads, got: ${detail.detail}`
+    );
+  });
+
+  it("#825: reports ok when the plugin entry lives in the winning opencode.jsonc", () => {
+    const root = makeTempDir();
+    const pluginPath = makeValidFamilyPlugin(root, "opencode-plugin");
+    const descriptor = opencodeDescriptor(root);
+    const dir = descriptor.parentDir;
+    writeJson(path.join(dir, "opencode.json"), { plugin: ["@vendor/other"] });
+    writeText(path.join(dir, "opencode.jsonc"), `{\n  // live\n  "plugin": [${JSON.stringify(pluginPath)}],\n}\n`);
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "ok", `expected ok, got ${detail.status}: ${detail.detail}`);
+    assert.ok(detail.detail.includes("opencode.jsonc"));
+  });
+
+  it("#825: honors opencode.json when a higher-priority opencode.jsonc declares NO plugin key", () => {
+    // The discriminating case: .jsonc is the highest-priority EXISTING file but
+    // does not declare "plugin", so opencode still runs .json's array. Picking
+    // "first existing" instead of "first that declares plugin" would report a
+    // healthy install as not-connected.
+    const root = makeTempDir();
+    const pluginPath = makeValidFamilyPlugin(root, "opencode-plugin");
+    const descriptor = opencodeDescriptor(root);
+    const dir = descriptor.parentDir;
+    writeJson(path.join(dir, "opencode.json"), { plugin: [pluginPath] });
+    writeText(path.join(dir, "opencode.jsonc"), '{\n  // model prefs only — no plugin key\n  "model": "anthropic/claude-sonnet-4-6",\n}\n');
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "ok", `expected ok, got ${detail.status}: ${detail.detail}`);
+    assert.ok(
+      detail.detail.includes("opencode.json") && !detail.detail.includes("opencode.jsonc"),
+      `detail must name the live owner opencode.json, got: ${detail.detail}`
+    );
+  });
+
+  it("#825: single opencode.json installs keep reporting ok (no regression)", () => {
+    const root = makeTempDir();
+    const pluginPath = makeValidFamilyPlugin(root, "opencode-plugin");
+    const descriptor = opencodeDescriptor(root);
+    writeJson(path.join(descriptor.parentDir, "opencode.json"), { plugin: [pluginPath] });
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "ok", `expected ok, got ${detail.status}: ${detail.detail}`);
+    assert.ok(detail.detail.includes("opencode.json"));
+  });
+
+  it("#825: a commented opencode.json is healthy, not config-corrupt", () => {
+    const root = makeTempDir();
+    const pluginPath = makeValidFamilyPlugin(root, "opencode-plugin");
+    const descriptor = opencodeDescriptor(root);
+    writeText(
+      path.join(descriptor.parentDir, "opencode.json"),
+      `{\n  // opencode parses .json with a JSONC reader too\n  "plugin": [${JSON.stringify(pluginPath)}],\n}\n`
+    );
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "ok", `expected ok, got ${detail.status}: ${detail.detail}`);
   });
 
   it("descriptor configJsonc matches the family registry's jsonc flag (drift lock)", () => {

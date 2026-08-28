@@ -861,6 +861,52 @@ test("settings agent actions do not commit uninstall failures", async () => {
   assert.match(result.message, /write failed/);
 });
 
+test("settings agent actions preserve structured DSH inspection guidance", async () => {
+  const snapshot = prefs.getDefaults();
+  const failure = {
+    status: "error",
+    reason: "inspection-required",
+    manualCommand: 'dsh plugin --profile web add "C:/managed/generation"',
+    supportedRange: "=0.1.0-rc.6",
+    detectedVersion: "0.1.0-rc.7",
+    manualInspectionRequired: true,
+    message: "DSH mutation needs inspection",
+  };
+  const result = await agentCommands.installAgentIntegration({ agentId: "deepseek-harness" }, {
+    snapshot,
+    syncIntegrationForAgent: async () => failure,
+  });
+  assert.strictEqual(result.status, "error");
+  assert.strictEqual(result.reason, failure.reason);
+  assert.strictEqual(result.manualCommand, failure.manualCommand);
+  assert.strictEqual(result.supportedRange, failure.supportedRange);
+  assert.strictEqual(result.detectedVersion, failure.detectedVersion);
+  assert.strictEqual(result.manualInspectionRequired, true);
+  assert.match(result.message, /dsh plugin --profile web add/);
+  assert.strictEqual(result.commit, undefined);
+});
+
+test("settings DSH install and repair surface the conservative restart hint", async () => {
+  const restartHint = "DeepSeek Harness bridge verified on disk. Restart any running dsh web process to load this plugin generation.";
+  const installSnapshot = prefs.getDefaults();
+  const install = await agentCommands.installAgentIntegration({ agentId: "deepseek-harness" }, {
+    snapshot: installSnapshot,
+    syncIntegrationForAgent: async () => ({ status: "ok", message: restartHint }),
+  });
+  assert.strictEqual(install.status, "ok");
+  assert.strictEqual(install.message, restartHint);
+
+  const repairSnapshot = prefs.getDefaults();
+  repairSnapshot.agents["deepseek-harness"].integrationInstalled = true;
+  repairSnapshot.agents["deepseek-harness"].enabled = true;
+  const repair = await agentCommands.repairAgentIntegration({ agentId: "deepseek-harness" }, {
+    snapshot: repairSnapshot,
+    repairIntegrationForAgent: async () => ({ status: "ok", message: restartHint }),
+  });
+  assert.strictEqual(repair.status, "ok");
+  assert.strictEqual(repair.message, restartHint);
+});
+
 test("settings agent actions block repair for uninstalled integrations", async () => {
   const snapshot = prefs.getDefaults();
   snapshot.agents["copilot-cli"].integrationInstalled = false;
@@ -969,4 +1015,65 @@ test("every opencode-family member is installable AND auto-repairable (R10 P3)",
       `${agentId} missing from AUTO_REPAIRABLE_AGENT_IDS`
     );
   }
+});
+
+test("successful Hermes WSL Pair opens ingress without claiming a local install", async () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.hermes = {
+    integrationInstalled: false,
+    enabled: false,
+    permissionsEnabled: true,
+    notificationHookEnabled: true,
+  };
+  const result = await agentCommands.deployToWsl({ agentId: "hermes", distro: "Ubuntu" }, {
+    snapshot,
+    deployHooksToWsl: async (distro, agentId) => ({
+      ok: true,
+      distro,
+      agentId,
+      message: "Hermes plugin installed",
+      warning: "one profile failed",
+    }),
+  });
+
+  assert.strictEqual(result.status, "ok", "warning must stay top-level ok so controller applies commit");
+  assert.strictEqual(result.warning, "one profile failed");
+  assert.strictEqual(result.commit.agents.hermes.enabled, true);
+  assert.strictEqual(result.commit.agents.hermes.integrationInstalled, false);
+  assert.strictEqual(result.commit.agents.hermes.permissionsEnabled, true);
+});
+
+test("Hermes WSL Pair preserves an existing local installation flag", async () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.hermes.integrationInstalled = true;
+  snapshot.agents.hermes.enabled = false;
+  const result = await agentCommands.deployToWsl({ agentId: "hermes", distro: "Ubuntu" }, {
+    snapshot,
+    deployHooksToWsl: async () => ({ ok: true }),
+  });
+  assert.strictEqual(result.commit.agents.hermes.integrationInstalled, true);
+  assert.strictEqual(result.commit.agents.hermes.enabled, true);
+});
+
+test("failed Hermes WSL Pair does not open ingress", async () => {
+  const result = await agentCommands.deployToWsl({ agentId: "hermes", distro: "Ubuntu" }, {
+    snapshot: prefs.getDefaults(),
+    deployHooksToWsl: async () => ({ ok: false, message: "enable failed" }),
+  });
+  assert.strictEqual(result.status, "error");
+  assert.strictEqual(result.commit, undefined);
+  assert.match(result.message, /enable failed/);
+});
+
+test("Hermes WSL Unpair propagates warnings without disabling the global gate", async () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.hermes.enabled = true;
+  const result = await agentCommands.removeFromWsl({ agentId: "hermes", distro: "Ubuntu" }, {
+    snapshot,
+    removeHooksFromWsl: async () => ({ ok: true, message: "removed", warning: "disable failed" }),
+  });
+  assert.strictEqual(result.status, "ok");
+  assert.strictEqual(result.warning, "disable failed");
+  assert.strictEqual(result.commit, undefined);
+  assert.strictEqual(snapshot.agents.hermes.enabled, true);
 });

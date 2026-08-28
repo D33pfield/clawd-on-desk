@@ -257,7 +257,7 @@ The existing schema fields are the only runtime truth. They already act as the t
 | `idleAnimations` | Optional idle random pool. Omit or leave empty to keep idle on `states.idle[0]`. |
 | `reactions` | Optional click/drag reaction block. Omit it to disable click and drag reactions entirely. |
 | `workingTiers` | Optional multi-session working overrides. Omit to fall back to `states.working[0]`. |
-| `jugglingTiers` | Optional subagent juggling overrides. Omit to fall back to `states.juggling[0]` if you provide that state. |
+| `jugglingTiers` | Optional subagent juggling overrides. Its legacy `minSessions` / `maxSessions` fields count live subagents, not top-level sessions. Omit to fall back to `states.juggling[0]` if you provide that state. |
 | `customization.petTint` | Opts the theme into the app's built-in pet color filters. Omit it or set it to `false` when filters distort authored colors. Themes cannot provide custom CSS filter strings. |
 | `customization.accessories` | Opts the theme into Clawd's built-in accessory catalog only when every reachable visual has a deterministic attachment or an explicit hidden policy. |
 
@@ -280,6 +280,7 @@ Accessories render outside the pet media, so they keep their own colors. Static 
     "files": {
       "idle.svg": {
         "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 },
+        "hitBoxPadding": { "left": 1, "top": 2, "right": 1, "bottom": 0 },
         "followTarget": {
           "id": "body-js",
           "frame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
@@ -292,6 +293,12 @@ Accessories render outside the pet media, so they keep their own colors. Static 
 ```
 
 - `staticFrame` uses the effective viewBox of that visual. `cx` is the head center, `baseY` is the accessory resting line, and `width` is the reference head width.
+- `hitBoxPadding` is optional per-side non-negative motion padding (`left` / `top` / `right` / `bottom`) in the visual's effective viewBox units. It widens only the **drag/click region**; it never moves the drawn accessory. Use it when an animated `followTarget` carries the accessory outside its `staticFrame` — without it those pixels are visible but not draggable.
+  - Accepted on `default`, `mini`, and any `files[basename]` descriptor, but not alongside `{ "visibility": "hidden" }` (a hidden accessory has no hit region to pad).
+  - Every side is optional and defaults to `0`; `{}` is legal and means "no padding". Each side is capped at one effective viewBox dimension by schema validation, and runtime hit geometry clamps the accessory-only contribution to the render-visible viewBox — so a value past the viewBox buys nothing.
+  - Write the values for the visual as drawn, unmirrored. When the pet mirrors (mini mode against the left edge, or a left-heading free-roam walk) the runtime mirrors the padded box for you, so `left` stays the accessory's own left even after the flip.
+  - Mirroring assumes the art is horizontally centred in the pet window. The renderer mirrors about the window centre while hit geometry mirrors about the art rect, so a theme that pushes its art sideways — via `objectScale.fileOffsets[file].x` or a per-file `fileScales` entry — sees the mirrored hit region drift by twice that offset. Every theme that currently enables accessories is centred; `calico` is not, which is safe only because it has no `customization.accessories`.
+  - To pick values, animate the pose and note how far the `followTarget` anchor travels from its `staticFrame` in viewBox units, then round outward. Deriving the bound from the animation's own constants beats sampling it: a sampled figure depends on how fast the machine ran. Built-in envelopes live in `src/pet-accessory-hitbox.js` and are verified by `test/accessory-motion-electron.test.js`; that table is built-in only, so a third-party theme must declare its own padding here.
 - Accessory projection currently supports the SVG default `preserveAspectRatio="xMidYMid meet"` only (omitting the attribute has that default). Themes using `none`, `slice`, or another alignment must not opt into accessories until that projection mode is supported.
 - `default` covers root-viewBox files. `mini` covers mini-viewBox files. A file with its own `fileViewBoxes` entry needs an exact `files[basename]` descriptor.
 - `followTarget.id` is an exact SVG element id, not a CSS selector. Its `frame` coordinates are expressed in that target element's local SVG coordinate system, before the target's own and ancestor transforms. It is used only while that file renders through an accessible `<object>` document; `<img>`, PNG, APNG, GIF, and WebP use the required static fallback.
@@ -341,6 +348,8 @@ Different animations based on how many agent sessions are running concurrently:
   { "minSessions": 1, "file": "typing.gif" }
 ]
 ```
+
+`jugglingTiers` uses the same object shape, but its legacy `minSessions` and `maxSessions` names count live subagents within a session.
 
 ### Reactions
 

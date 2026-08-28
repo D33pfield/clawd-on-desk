@@ -15,7 +15,10 @@ const { unregisterKimiHooks } = require("./kimi-install");
 const { unregisterQwenCodeHooks } = require("./qwen-code-install");
 const { unregisterZcodeHooks } = require("./zcode-install");
 const { unregisterCodewhaleHooks } = require("./codewhale-install");
-const { unregisterCodexCommandHooks } = require("./codex-install-utils");
+const {
+  removeStableCodexHookLauncher,
+  unregisterCodexCommandHooks,
+} = require("./codex-install-utils");
 const { unregisterOpencodePlugin } = require("./opencode-install");
 const { unregisterMimocodePlugin } = require("./mimocode-install");
 const { unregisterPiExtension } = require("./pi-install");
@@ -24,12 +27,15 @@ const { resolveHermesHome, unregisterHermesPlugin } = require("./hermes-install"
 const { unregisterQoderHooks } = require("./qoder-install");
 const { resolveReasonixConfigTargets, unregisterReasonixHooks } = require("./reasonix-install");
 const { unregisterQoderWorkHooks } = require("./qoderwork-install");
+const { unregisterQwenWorkHooks } = require("./qwenwork-install");
 const { unregisterWorkBuddyHooks } = require("./workbuddy-install");
+const { unregisterDeepSeekHarness } = require("./dsh-install");
 
 const CODEX_MARKERS = ["codex-hook.js", "codex-debug-hook.js"];
 
 const MANAGED_AGENT_IDS = Object.freeze([
   "claude-code",
+  "deepseek-harness",
   "gemini-cli",
   "antigravity-cli",
   "cursor-agent",
@@ -49,11 +55,13 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "qoder",
   "reasonix",
   "qoderwork",
+  "qwenwork",
   "workbuddy",
 ]);
 
 const AGENT_DISPLAY_NAMES = Object.freeze({
   "claude-code": "Claude Code",
+  "deepseek-harness": "DeepSeek Harness",
   "gemini-cli": "Gemini CLI",
   "antigravity-cli": "Antigravity CLI",
   "cursor-agent": "Cursor Agent",
@@ -74,6 +82,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   qoder: "Qoder",
   reasonix: "Reasonix",
   qoderwork: "QoderWork",
+  qwenwork: "QwenWork",
 });
 
 function normalizeHomeDir(value) {
@@ -95,6 +104,11 @@ function buildTargetEnv(homeDir, options = {}) {
   } else if (options.ignoreInheritedReasonixHome) {
     delete env.REASONIX_HOME;
   }
+  if (typeof options.dshHome === "string" && options.dshHome.trim()) {
+    env.DSH_HOME = path.resolve(options.dshHome);
+  } else if (options.ignoreInheritedDshHome) {
+    delete env.DSH_HOME;
+  }
   if ((options.platform || process.platform) === "win32") {
     env.LOCALAPPDATA = options.localAppData || path.join(homeDir, "AppData", "Local");
     env.APPDATA = options.appData || path.join(homeDir, "AppData", "Roaming");
@@ -115,14 +129,34 @@ function resolveCopilotHomeForCleanup(homeDir, env, options = {}) {
 function buildCleanupOptionsForHome(homeDirInput, options = {}) {
   const explicitHomeDir = Boolean(homeDirInput || options.homeDir || options.userHome);
   const homeDir = normalizeHomeDir(homeDirInput || options.homeDir || options.userHome);
+  const explicitDshHome = typeof options.dshHome === "string" && options.dshHome.trim()
+    ? options.dshHome.trim()
+    : (options.env && typeof options.env.DSH_HOME === "string" && options.env.DSH_HOME.trim()
+      ? options.env.DSH_HOME.trim()
+      : null);
   const env = buildTargetEnv(homeDir, {
     ...options,
+    dshHome: explicitDshHome,
     ignoreInheritedHermesHome: explicitHomeDir && !options.hermesHome,
     ignoreInheritedReasonixHome: explicitHomeDir && !options.reasonixHome,
+    ignoreInheritedDshHome: explicitHomeDir && !explicitDshHome,
   });
   const backup = options.backup !== false;
   const silent = options.silent !== false;
   const common = { backup, silent };
+  const explicitCodexHome = typeof options.codexDir === "string" && options.codexDir.trim()
+    ? options.codexDir.trim()
+    : (typeof options.codexHome === "string" && options.codexHome.trim()
+      ? options.codexHome.trim()
+      : (options.env && typeof options.env.CODEX_HOME === "string" && options.env.CODEX_HOME.trim()
+        ? options.env.CODEX_HOME.trim()
+        : null));
+  const inheritedCodexHome = !explicitHomeDir
+    && typeof env.CODEX_HOME === "string"
+    && env.CODEX_HOME.trim()
+    ? env.CODEX_HOME.trim()
+    : null;
+  const codexDir = explicitCodexHome || inheritedCodexHome || path.join(homeDir, ".codex");
   const copilotHome = resolveCopilotHomeForCleanup(homeDir, env, options);
   const openClawStateDir = options.openClawStateDir
     || env.OPENCLAW_STATE_DIR
@@ -141,6 +175,12 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       "claude-code": {
         ...common,
         settingsPath: path.join(homeDir, ".claude", "settings.json"),
+      },
+      "deepseek-harness": {
+        ...common,
+        homeDir,
+        env,
+        dshHome: env.DSH_HOME || path.join(homeDir, ".dsh"),
       },
       "gemini-cli": {
         ...common,
@@ -192,7 +232,8 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       codex: {
         ...common,
         homeDir,
-        hooksPath: path.join(homeDir, ".codex", "hooks.json"),
+        codexDir,
+        hooksPath: path.join(codexDir, "hooks.json"),
         markers: CODEX_MARKERS,
       },
       opencode: {
@@ -237,6 +278,12 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         ...common,
         settingsPath: path.join(homeDir, ".qoderwork", "settings.json"),
       },
+      // QwenWork's user-data home is ~/.QwenWorkCN (case-preserving on disk),
+      // NOT the ~/.qwenwork path its hooks docs mention.
+      qwenwork: {
+        ...common,
+        settingsPath: path.join(homeDir, ".QwenWorkCN", "settings.json"),
+      },
       workbuddy: {
         ...common,
         settingsPaths: [
@@ -272,8 +319,19 @@ function unregisterClaudeIntegration(options = {}) {
   };
 }
 
+function unregisterCodexIntegration(options = {}) {
+  const hooks = unregisterCodexCommandHooks(options);
+  const stableLauncher = removeStableCodexHookLauncher(options);
+  return {
+    ...hooks,
+    changed: changedFromResult(hooks) || stableLauncher.changed,
+    stableLauncher,
+  };
+}
+
 const AGENT_CLEANERS = Object.freeze({
   "claude-code": unregisterClaudeIntegration,
+  "deepseek-harness": unregisterDeepSeekHarness,
   "gemini-cli": unregisterGeminiHooks,
   "antigravity-cli": unregisterAntigravityIntegration,
   "cursor-agent": unregisterCursorHooks,
@@ -284,7 +342,7 @@ const AGENT_CLEANERS = Object.freeze({
   "qwen-code": unregisterQwenCodeHooks,
   zcode: unregisterZcodeHooks,
   codewhale: unregisterCodewhaleHooks,
-  codex: unregisterCodexCommandHooks,
+  codex: unregisterCodexIntegration,
   opencode: unregisterOpencodePlugin,
   mimocode: unregisterMimocodePlugin,
   pi: unregisterPiExtension,
@@ -293,6 +351,7 @@ const AGENT_CLEANERS = Object.freeze({
   qoder: unregisterQoderHooks,
   reasonix: unregisterReasonixHooks,
   qoderwork: unregisterQoderWorkHooks,
+  qwenwork: unregisterQwenWorkHooks,
   workbuddy: unregisterWorkBuddyHooks,
 });
 
@@ -335,7 +394,7 @@ function notesFromResult(agentId, result) {
   return notes;
 }
 
-function cleanupIntegrations(options = {}) {
+async function cleanupIntegrations(options = {}) {
   const plan = buildCleanupOptionsForHome(options.homeDir || options.userHome, options);
   const agents = [];
   let entriesRemoved = 0;
@@ -396,7 +455,7 @@ function cleanupIntegrations(options = {}) {
         agent.error = "No cleaner registered";
         skipped++;
       } else {
-        const result = clean(cleanOptions);
+        const result = await clean(cleanOptions);
         const removed = removedCountFromResult(result);
         const changed = changedFromResult(result);
         agent.removed = removed;
@@ -488,15 +547,17 @@ function printResult(result) {
 
 if (require.main === module) {
   let options;
-  try {
-    options = parseArgs(process.argv.slice(2));
-    const result = cleanupIntegrations(options);
-    if (!options.silent) printResult(result);
-    if (result.summary.failed > 0 && !options.failOpen) process.exitCode = 1;
-  } catch (err) {
-    console.error(err && err.message ? err.message : err);
-    if (!options || !options.failOpen) process.exitCode = 1;
-  }
+  Promise.resolve()
+    .then(async () => {
+      options = parseArgs(process.argv.slice(2));
+      const result = await cleanupIntegrations(options);
+      if (!options.silent) printResult(result);
+      if (result.summary.failed > 0 && !options.failOpen) process.exitCode = 1;
+    })
+    .catch((err) => {
+      console.error(err && err.message ? err.message : err);
+      if (!options || !options.failOpen) process.exitCode = 1;
+    });
 }
 
 module.exports = {

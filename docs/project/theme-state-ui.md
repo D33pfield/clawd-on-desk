@@ -38,7 +38,7 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 - 若 `sleepSequence.mode` 为 `full`（默认），需提供 `yawning / dozing / collapsing / waking`；`direct` 可直接进入 `sleeping`
 - 若 `miniMode.supported` 为 true，需提供 8 个基础 mini 状态；`mini-working` 是可选增强，缺失时优雅跳过
 - 能力缺失时走 `VISUAL_FALLBACK_STATES` 回退链
-- 默认配置集中在 `theme-loader.js` 顶部的 `DEFAULT_*` 常量
+- 默认配置集中在 `theme-loader.js` 顶部的 `DEFAULT_*` 常量；loader 保持 stateless，`src/theme-runtime.js` 是唯一 active-theme owner，主题 reload/sync/cache 不得另设模块级真相
 - 变体是白名单 deep-merge；数组和特定字段会整体替换
 - Animation override 是用户 per-slot 覆盖，和作者定义的 variants 正交
 - 支持配饰的主题可按主题保存常驻 `petAccessory`；独立的 `holidayAccessoryEnabled` 开关只在万圣节、圣诞节和跨年的短日期窗口临时覆盖当前显示，结束后恢复常驻选择，不回写配饰偏好
@@ -51,22 +51,40 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 
 ## Settings Panel
 
-Settings 是独立 `BrowserWindow`，采用 4 层结构：
+Settings 是独立 `BrowserWindow`，采用 5 层结构：
 
 | 层 | 文件 | 职责 |
 |---|---|---|
-| Schema / 持久化 | `src/prefs.js` | `SCHEMA` 定义；`load/save/migrate/validate`；坏文件自动 `.bak` + fallback |
+| Schema / 持久化 | `src/prefs.js` | `SCHEMA` 定义；`load/save/migrate/validate`；JSON 损坏自动 `.bak` + fallback；文件本身不可读时进入不覆盖原文件的 read-failure safe mode |
 | 内存 store | `src/settings-store.js` | `createStore()` 返回 `{ getSnapshot, subscribe, _commit }`；`_commit` closure-private |
-| 控制器 | `src/settings-controller.js` | 唯一写入者；`applyUpdate` / `applyBulk` / `applyCommand` / `hydrate`；pre-commit effect gate |
-| UI | `src/settings-renderer.js` + `settings.html` + `preload-settings.js` | 主题卡片、animation overrides、agent 开关、诊断；只通过 IPC 调 controller |
+| 控制器 / actions | `src/settings-controller.js` + `src/settings-actions*.js` | controller 是唯一写入者；actions 提供校验、command 与失败可阻止提交的 pre-commit gates |
+| 提交后 effects | `src/settings-effect-router.js` | 订阅 committed changes，更新 tray/dock/window/HUD/renderer 等 runtime 状态与广播；失败不得回滚已提交 prefs |
+| UI | `src/settings-ui-core.js` + `src/settings-renderer.js` + `src/settings-tab-*.js` + `src/settings.html` + `src/preload-settings.js` | core 持 shared state，renderer 是侧栏/tab shell，各 tab 只通过 preload/IPC 调 controller；新增 tab 还要登记 script 与 icon |
 
 关键取舍：
 
-- `applyUpdate` 和 `applyBulk` 对同步/异步 effect 同构
-- `hydrate()` 是唯一跳过 effect 的入口
+- `applyUpdate` 和 `applyBulk` 对同步/异步 pre-commit gate 同构
+- `hydrate()` 是唯一跳过 pre-commit gate 的入口；post-commit effects 由 router 订阅 store changes
 - 设置写入路径只有 `controller → store → subscribers`
+- `prefs.load()` 返回 `locked && recovered` 表示文件字节从未成功读取：controller 会在 validator / command / 外部 effect 之前拒绝用户 mutation，agent runtime 的启动同步、monitor、state/permission ingress 与 session recovery 全部 fail closed；修复文件访问并重启后才恢复。可读的 future-version `locked && !recovered` 继续保持既有的当前进程内存可改、磁盘不覆盖语义
 - `idleVisual` 是 per-theme 文件映射；缺失键表示使用主题默认，主题升级删除已选文件或删除主题时会安静回退，不改变逻辑状态
 - About tab 使用 inline SVG，而不是 `<object>`，因为 `settings.html` CSP 是 `default-src 'none'`
+
+### Bubble display and placement
+
+气泡“是否显示”和“显示在哪里”是两条独立设置轴：
+
+- `hideBubbles`、`permissionBubblesEnabled` 与各类别 auto-close policy 只控制本地气泡显示；不得重置定位偏好或产生权限决定。
+- `bubbleFollowPet` 只选择跟随桌宠或固定在主屏，不影响 permission、notification、update 的显示 gate。
+- 跟随模式读取 `bubbleFollowPreference=auto|left|right`。`auto` 保持下方优先；左右值是安全偏好，空间不足时按候选顺序回退，绝不强制放到工作区外。
+- 固定模式读取 `bubbleFixedCorner=top-left|top-right|bottom-left|bottom-right`，锚定 primary display 的 `workArea`。主屏查询不可用时回退桌宠所在显示器，再失败才使用 synthetic work area。
+- permission stack 先定位并避让可见 Session HUD；update bubble 随后读取真实可见 permission/HUD 外窗矩形再定位；Orbit 最后读取更新后的几何。
+- 跟随模式使用桌宠所在显示器的 text scale；固定模式使用主屏 text scale。窗口 bounds、CSS px → DIP 与 renderer zoom 必须基于同一个目标显示器。
+- 权限气泡默认是约 340 CSS px 的三行摘要卡；普通工具在摘要态保留原有 Allow/Deny、Always/suggestion 和会话授权快捷操作，长正文经「查看详情」进入约 500 CSS px 的详情卡。Plan 摘要同时保留「查看计划」和快速批准，反馈/回终端等次级操作在展开后出现；Ask 摘要只可「回答」。详情正文滚动，标题和全部决定区固定，不提供自由拖拽改尺寸。
+- 桌面同时最多一个权限详情卡，切换时其他气泡恢复摘要，但各自 BrowserWindow/DOM 不销毁，因此 Ask 选择、Other 文本、Plan 修改草稿、步骤和滚动位置保留；IME composition 未结束时拒绝切换详情。petHidden 只隐藏窗口，不清空详情 owner 或草稿。
+- 多气泡在当前工作区安全容纳时始终保持原来的逐窗栈与最老请求在上；一旦真实窗口几何无法完整落在工作区并避开 HUD，就按 agent + session 保留每个会话的代表卡，把其余请求收入一个固定高度的「还有 N 个待处理」入口。代表卡仍不够放时只继续减少非保护代表，已展开、正在输入/IME composition 或用户刚选中的请求不得被折叠。
+- 队列入口展开为单独的导航抽屉：抽屉打开时它是唯一可见的 permission surface，只列工具、摘要和「查看/回答/查看计划」，不承载 Allow/Deny。选择一项会恢复该请求原来的 BrowserWindow/DOM；IME composition 未结束时禁止打开抽屉或切换。主进程必须等待抽屉 renderer 对当前 revision 的 ACK 后才隐藏请求窗口；加载、崩溃或 ACK 超时均回退到原逐窗栈，不能产生权限决定。
+- petHidden 以隐藏动作当时的请求序号为切点：旧请求（包括队列）保持收起，隐藏期间的新请求仍可用同一套 overflow/queue 规则出现；恢复桌宠后再合并全部 pending。任意 permission surface 可见时自由漫游暂停，surface 消失后重新等待完整 8 秒，不能沿用拖拽已消耗的 4 秒阶段。macOS IME 编辑中的可见气泡冻结位置，blur 后只执行一次现有 floating-bubble 重排序列。
 
 ## Mini Mode
 

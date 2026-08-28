@@ -287,12 +287,30 @@ function modeLabel(mode, lang) {
     "up-to-date": "Latest",
     error: "Error",
   };
+  const ptBR = {
+    checking: "Verificando",
+    available: "Disponível",
+    downloading: "Baixando",
+    ready: "Pronta",
+    "up-to-date": "Atualizado",
+    error: "Erro",
+  };
+  const es = {
+    checking: "Buscando",
+    available: "Disponible",
+    downloading: "Descargando",
+    ready: "Lista",
+    "up-to-date": "Última versión",
+    error: "Error",
+  };
 
   const dictMap = {
     zh,
     ko,
     en,
     "zh-TW": zhTW,
+    "pt-BR": ptBR,
+    es,
   };
 
   const dict = dictMap[lang] || en;

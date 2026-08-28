@@ -113,6 +113,18 @@ describe("settings-effect-router", () => {
     ]);
   });
 
+  it("destroys the tray when showTray is committed false", () => {
+    const { calls, emit } = createHarness();
+
+    emit({ showTray: false });
+
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { showTray: false }],
+      ["destroyTray"],
+      ["rebuildAllMenus"],
+    ]);
+  });
+
   it("routes bubble policy changes to permission and update bubble effects", () => {
     const { calls, emit } = createHarness();
 
@@ -143,6 +155,30 @@ describe("settings-effect-router", () => {
       ["refreshUpdateBubbleAutoClose"],
       ["rebuildAllMenus"],
     ]);
+  });
+
+  it("repositions once for any bubble placement change without hiding", () => {
+    for (const changes of [
+      { bubbleFollowPet: true },
+      { bubbleFollowPreference: "left" },
+      { bubbleFixedCorner: "top-right" },
+      {
+        bubbleFollowPet: false,
+        bubbleFollowPreference: "right",
+        bubbleFixedCorner: "bottom-left",
+      },
+    ]) {
+      const { calls, emit } = createHarness();
+      emit(changes);
+      const expected = [
+        ["updateMirrors", changes],
+        ["repositionFloatingBubbles"],
+      ];
+      // The existing quick-menu follow toggle still needs its label/checkmark
+      // rebuilt; the two new Settings-only preference keys do not.
+      if ("bubbleFollowPet" in changes) expected.push(["rebuildAllMenus"]);
+      assert.deepStrictEqual(calls, expected);
+    }
   });
 
   it("clears the Codex user-input card on the notification-policy axis, not the permission-policy axis", () => {
@@ -256,6 +292,14 @@ describe("settings-effect-router", () => {
     emit({ sessionHudShowQuota: false });
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { sessionHudShowQuota: false }],
+      ["syncSessionHudVisibility"],
+      ["repositionFloatingBubbles"],
+    ]);
+
+    calls.length = 0;
+    emit({ quotaRingDisplayMode: "remaining" });
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { quotaRingDisplayMode: "remaining" }],
       ["syncSessionHudVisibility"],
       ["repositionFloatingBubbles"],
     ]);
@@ -472,6 +516,7 @@ describe("settings-effect-router", () => {
         widthScale: 0.95,
         offsetY: 0.3,
       }],
+      ["repositionFloatingBubbles"],
     ]);
 
     calls.length = 0;
@@ -490,6 +535,7 @@ describe("settings-effect-router", () => {
         widthScale: 1,
         offsetY: 0,
       }],
+      ["repositionFloatingBubbles"],
     ]);
     assert.strictEqual(calls.some((call) => call[0] === "rebuildAllMenus"), false);
   });
@@ -532,6 +578,67 @@ describe("settings-effect-router", () => {
     emit({ holidayAccessoryEnabled: {} });
     assert.strictEqual(calls[1][2].id, "halo");
     assert.strictEqual(calls.some((call) => call[0] === "rebuildAllMenus"), false);
+  });
+
+  it("resizes the input window after the effective accessory changes", () => {
+    const clawd = {
+      _id: "clawd",
+      _builtin: true,
+      _capabilities: { accessories: true },
+    };
+    const { calls, emit } = createHarness({
+      routerOptions: {
+        getActiveTheme: () => clawd,
+        syncHitWin: () => calls.push(["syncHitWin"]),
+      },
+    });
+
+    emit({ petAccessory: { clawd: "top-hat" } });
+    assert.deepStrictEqual(calls.map((call) => call[0]), [
+      "updateMirrors",
+      "sendToRenderer",
+      "syncHitWin",
+      "repositionFloatingBubbles",
+    ]);
+  });
+
+  it("stays quiet when the hit window defers, e.g. changing hats mid-drag", () => {
+    const clawd = { _id: "clawd", _builtin: true, _capabilities: { accessories: true } };
+    const { calls, logs, emit } = createHarness({
+      routerOptions: {
+        getActiveTheme: () => clawd,
+        syncHitWin: () => {
+          calls.push(["syncHitWin"]);
+          return { applied: false, deferred: true };
+        },
+      },
+    });
+
+    emit({ petAccessory: { clawd: "top-hat" } });
+
+    // The renderer still gets the new hat and the canonical payload is already
+    // committed, so the next sync applies the envelope. Nothing failed.
+    assert.deepStrictEqual(calls.map((call) => call[0]), [
+      "updateMirrors",
+      "sendToRenderer",
+      "syncHitWin",
+    ]);
+    assert.deepStrictEqual(logs, []);
+  });
+
+  it("warns only when the hit window genuinely could not be resolved", () => {
+    const clawd = { _id: "clawd", _builtin: true, _capabilities: { accessories: true } };
+    const { logs, emit } = createHarness({
+      routerOptions: {
+        getActiveTheme: () => clawd,
+        syncHitWin: () => ({ applied: false, deferred: false }),
+      },
+    });
+
+    emit({ petAccessory: { clawd: "top-hat" } });
+
+    assert.strictEqual(logs.length, 1);
+    assert.match(String(logs[0][0]), /accessory geometry apply failed/);
   });
 
   it("broadcasts settings changes only to live renderer windows", () => {

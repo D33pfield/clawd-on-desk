@@ -124,6 +124,8 @@ function createPetWindowRuntime(options = {}) {
   const getCurrentState = options.getCurrentState || (() => null);
   const getCurrentSvg = options.getCurrentSvg || (() => null);
   const getCurrentHitBox = options.getCurrentHitBox || (() => null);
+  const getCurrentAccessoryPayload = options.getCurrentAccessoryPayload || (() => null);
+  const getAccessoryMirrored = options.getAccessoryMirrored || (() => false);
   const getMiniMode = options.getMiniMode || (() => false);
   const getMiniTransitioning = options.getMiniTransitioning || (() => false);
   const getMiniContainedSeam = options.getMiniContainedSeam || (() => null);
@@ -208,6 +210,8 @@ function createPetWindowRuntime(options = {}) {
     getCurrentState,
     getCurrentSvg,
     getCurrentHitBox,
+    getCurrentAccessoryPayload,
+    getAccessoryMirrored,
     getMiniMode,
     getMiniPeekOffset,
   });
@@ -376,20 +380,82 @@ function createPetWindowRuntime(options = {}) {
       : null;
   }
 
-  function getNearestDisplayBottomInset(cx, cy) {
+  function getDisplayNearestPoint(cx, cy) {
     const point = { x: Math.round(cx), y: Math.round(cy) };
-    let display = null;
     try {
       if (typeof screen.getDisplayNearestPoint === "function") {
-        display = screen.getDisplayNearestPoint(point);
+        return screen.getDisplayNearestPoint(point) || null;
       }
     } catch {}
-    if (!display || !display.bounds || !display.workArea) {
-      try {
-        if (typeof screen.getPrimaryDisplay === "function") display = screen.getPrimaryDisplay();
-      } catch {}
+    return null;
+  }
+
+  function getPrimaryDisplaySafe() {
+    try {
+      return typeof screen.getPrimaryDisplay === "function"
+        ? (screen.getPrimaryDisplay() || null)
+        : null;
+    } catch {
+      return null;
     }
+  }
+
+  function getDisplayForInsets(cx, cy) {
+    let display = getDisplayNearestPoint(cx, cy);
+    if (!display || !display.bounds || !display.workArea) {
+      display = getPrimaryDisplaySafe();
+    }
+    return display;
+  }
+
+  function getNearestDisplayBottomInset(cx, cy) {
+    const display = getDisplayForInsets(cx, cy);
     return getDisplayInsets(display).bottom;
+  }
+
+  function getNearestDisplayPhysicalBounds(cx, cy) {
+    // Do not fall back to primary here: callers may be mapping a forced
+    // secondary work area (mini exit). A failed lookup must preserve that
+    // work area, never jump the pet to another display.
+    const display = getDisplayNearestPoint(cx, cy);
+    return display && isValidWorkArea(display.bounds) ? display.bounds : null;
+  }
+
+  function getPrimaryDisplayPhysicalBounds() {
+    const display = getPrimaryDisplaySafe();
+    return display && isValidWorkArea(display.bounds) ? display.bounds : null;
+  }
+
+  function projectDisplaysToPhysicalBounds(displays) {
+    if (!Array.isArray(displays)) return displays;
+    return displays.map((display) => {
+      if (!display || !isValidWorkArea(display.bounds)) return display;
+      return { ...display, workArea: display.bounds };
+    });
+  }
+
+  function hasCompletePhysicalDisplayTopology(displays, primaryBounds) {
+    if (!Array.isArray(displays) || displays.length === 0) return !!primaryBounds;
+    return displays.every((display) => display && isValidWorkArea(display.bounds));
+  }
+
+  function getClampDisplaysSafe() {
+    let rawDisplays;
+    try {
+      rawDisplays = getAllDisplays();
+    } catch {
+      return { displays: [], physicalTopologyComplete: false };
+    }
+    if (!Array.isArray(rawDisplays)) {
+      return { displays: [], physicalTopologyComplete: false };
+    }
+    const displays = rawDisplays.filter(
+      (display) => display && isValidWorkArea(display.workArea)
+    );
+    return {
+      displays,
+      physicalTopologyComplete: displays.length === rawDisplays.length,
+    };
   }
 
   function setViewportOffsetY(offsetY) {
@@ -640,9 +706,28 @@ function createPetWindowRuntime(options = {}) {
   // resolveStartupPlacement() call this exact function so a Linux outer-edge
   // window can never be constructed off-screen and then reconciled — the
   // startup bounds are already correct on the first native write.
+  function resolveMaterializationWorkArea(bounds, workArea, opts = {}) {
+    const requestedWorkArea = isValidWorkArea(workArea)
+      ? workArea
+      : resolveWorkAreaFor(bounds);
+    const allowEdgePinning = "allowEdgePinning" in opts
+      ? !!opts.allowEdgePinning
+      : getAllowEdgePinning();
+    if (!isMac || !allowEdgePinning || getMiniMode()) return requestedWorkArea;
+
+    const probeArea = isValidWorkArea(workArea) ? workArea : null;
+    const probeX = probeArea
+      ? probeArea.x + probeArea.width / 2
+      : bounds.x + bounds.width / 2;
+    const probeY = probeArea
+      ? probeArea.y + probeArea.height / 2
+      : bounds.y + bounds.height / 2;
+    return getNearestDisplayPhysicalBounds(probeX, probeY) || requestedWorkArea;
+  }
+
   function materializeVirtualBounds(bounds, workArea, opts = {}) {
     if (!bounds) return null;
-    const resolvedWorkArea = isValidWorkArea(workArea) ? workArea : resolveWorkAreaFor(bounds);
+    const resolvedWorkArea = resolveMaterializationWorkArea(bounds, workArea, opts);
     const clampBounds = resolveHorizontalClampBounds(bounds, resolvedWorkArea, opts.edgeContext);
     const raw = materializeVirtualBoundsRaw(bounds, resolvedWorkArea, clampBounds);
     if (!raw) return null;
@@ -1149,6 +1234,9 @@ function createPetWindowRuntime(options = {}) {
   //    and topmost's nudge — see recoverVisiblePetAfterRendererLoad below).
   //  - workArea / edgeContext: let a caller that already resolved these
   //    (e.g. a future per-frame mini animation) skip re-resolving them here.
+  //    In normal macOS mode with edge pinning enabled, workArea is only a
+  //    display hint: Y materialization uses that display's physical bounds.
+  //    Mini mode remains explicitly work-area-contained.
   //  - assertNoYOffset: mini's future per-frame X-only entry point. When the
   //    materialize result still has a non-zero Y offset (it shouldn't, if the
   //    caller clamped Y first), refuse to forward it to the renderer and log
@@ -1157,8 +1245,7 @@ function createPetWindowRuntime(options = {}) {
     const win = getRenderWindow();
     if (!isLiveWindow(win) || !next) return null;
 
-    const wa = isValidWorkArea(opts.workArea) ? opts.workArea : resolveWorkAreaFor(next);
-    const m = materializeVirtualBounds(next, wa, { edgeContext: opts.edgeContext });
+    const m = materializeVirtualBounds(next, opts.workArea, opts);
     if (!m) return null;
 
     // Key ordering (this batch's inviolable contract): the storage
@@ -1174,7 +1261,7 @@ function createPetWindowRuntime(options = {}) {
     // says by the time it gets around to checking.
     expectedWrite = {
       physical: { ...m.bounds },
-      workArea: wa,
+      workArea: m.workArea,
       gen: writeGen,
       clampBounds: m.clampBounds,
       displayId: m.clampBounds.displayId,
@@ -1478,11 +1565,26 @@ function createPetWindowRuntime(options = {}) {
   }
 
   function looseClampPetToDisplays(x, y, w, h) {
+    const allowEdgePinning = getAllowEdgePinning();
+    const { displays, physicalTopologyComplete } = getClampDisplaysSafe();
+    // #241: macOS workArea excludes the Dock/menu bar. Edge pinning is visual,
+    // so its clamp topology must follow the physical display rectangle instead.
+    const physicalPrimaryBounds = isMac && allowEdgePinning
+      ? getPrimaryDisplayPhysicalBounds()
+      : null;
+    const usePhysicalBounds = isMac
+      && allowEdgePinning
+      && physicalTopologyComplete
+      && hasCompletePhysicalDisplayTopology(displays, physicalPrimaryBounds);
     const margins = getVisibleContentMargins({ x, y, width: w, height: h });
-    const bottomInset = getNearestDisplayBottomInset(x + w / 2, y + h / 2);
+    const bottomInset = usePhysicalBounds
+      ? 0
+      : getNearestDisplayBottomInset(x + w / 2, y + h / 2);
     return computeLooseClamp(
-      getAllDisplays(),
-      getPrimaryWorkAreaSafe(),
+      usePhysicalBounds ? projectDisplaysToPhysicalBounds(displays) : displays,
+      usePhysicalBounds
+        ? (physicalPrimaryBounds || getPrimaryWorkAreaSafe())
+        : getPrimaryWorkAreaSafe(),
       x,
       y,
       w,
@@ -1491,7 +1593,7 @@ function createPetWindowRuntime(options = {}) {
         width: w,
         height: h,
         visibleMargins: margins,
-        allowEdgePinning: getAllowEdgePinning(),
+        allowEdgePinning,
         bottomInset,
       })
     );
@@ -1517,25 +1619,41 @@ function createPetWindowRuntime(options = {}) {
     const forcedWorkArea = isValidWorkArea(optionsArg.workArea)
       ? optionsArg.workArea
       : null;
-    const nearest = forcedWorkArea || getNearestWorkArea(x + w / 2, y + h / 2);
-    const insetProbeX = forcedWorkArea ? nearest.x + nearest.width / 2 : x + w / 2;
-    const insetProbeY = forcedWorkArea ? nearest.y + nearest.height / 2 : y + h / 2;
-    const bottomInset = getNearestDisplayBottomInset(insetProbeX, insetProbeY);
+    const nearestWorkArea = forcedWorkArea || getNearestWorkArea(x + w / 2, y + h / 2);
+    const insetProbeX = forcedWorkArea
+      ? nearestWorkArea.x + nearestWorkArea.width / 2
+      : x + w / 2;
+    const insetProbeY = forcedWorkArea
+      ? nearestWorkArea.y + nearestWorkArea.height / 2
+      : y + h / 2;
+    const allowEdgePinning = "allowEdgePinning" in optionsArg
+      ? !!optionsArg.allowEdgePinning
+      : getAllowEdgePinning();
+    // A forced work area (for example, mini-mode exit) still identifies the
+    // display; when pinning is enabled, clamp against that display's bounds.
+    const physicalBounds = isMac && allowEdgePinning
+      ? getNearestDisplayPhysicalBounds(insetProbeX, insetProbeY)
+      : null;
+    const clampArea = physicalBounds || nearestWorkArea;
+    const bottomInset = physicalBounds
+      ? 0
+      : getNearestDisplayBottomInset(insetProbeX, insetProbeY);
     const mLeft = Math.round(w * 0.25);
     const mRight = Math.round(w * 0.25);
     const clampMargins = getRestClampMargins({
       height: h,
       visibleMargins: margins,
-      allowEdgePinning: "allowEdgePinning" in optionsArg
-        ? optionsArg.allowEdgePinning
-        : getAllowEdgePinning(),
+      allowEdgePinning,
       bottomInset,
     });
     return {
-      x: Math.max(nearest.x - mLeft, Math.min(x, nearest.x + nearest.width - w + mRight)),
+      x: Math.max(
+        clampArea.x - mLeft,
+        Math.min(x, clampArea.x + clampArea.width - w + mRight)
+      ),
       y: Math.max(
-        nearest.y - clampMargins.top,
-        Math.min(y, nearest.y + nearest.height - h + clampMargins.bottom)
+        clampArea.y - clampMargins.top,
+        Math.min(y, clampArea.y + clampArea.height - h + clampMargins.bottom)
       ),
     };
   }
@@ -1667,6 +1785,17 @@ function createPetWindowRuntime(options = {}) {
     if (hitConfirmTimer) { clearTimeoutFn(hitConfirmTimer); hitConfirmTimer = null; }
   }
 
+  // What syncHitWin() reports back. "deferred" is a normal outcome — a drag is
+  // holding the pointer, the windows are not up yet, or the rect is a
+  // transient sliver — and callers that care about the new geometry should
+  // retry rather than warn. "failed" means the rect could not be resolved at
+  // all; with today's guards that is unreachable (every clip step returns a
+  // rect, and bounds are non-null once the windows are live), so it is defence
+  // in depth for callers that inject their own sync, not a live path.
+  const APPLIED_HIT_SYNC = Object.freeze({ applied: true, deferred: false });
+  const DEFERRED_HIT_SYNC = Object.freeze({ applied: false, deferred: true });
+  const FAILED_HIT_SYNC = Object.freeze({ applied: false, deferred: false });
+
   // syncHitWin() is the ONLY caller that needs the full I5 pipeline in this
   // exact order (§4.3 point 7: outward clip, THEN internal-seam clip) — it
   // calls petGeometryMain.getHitRectScreen() directly (bypassing the exposed
@@ -1676,13 +1805,13 @@ function createPetWindowRuntime(options = {}) {
   function syncHitWin() {
     const hitWin = getHitWindow();
     const win = getRenderWindow();
-    if (!isLiveWindow(hitWin) || !isLiveWindow(win)) return;
+    if (!isLiveWindow(hitWin) || !isLiveWindow(win)) return DEFERRED_HIT_SYNC;
     // Keep the captured pointer stable while dragging. Repositioning the input
     // window mid-drag can break pointer capture on Windows.
-    if (dragLocked) return;
+    if (dragLocked) return DEFERRED_HIT_SYNC;
     const bounds = getPetWindowBounds();
     let hit = petGeometryMain.getHitRectScreen(bounds);
-    if (!hit) return;
+    if (!hit) return FAILED_HIT_SYNC;
 
     const physical = getPhysicalRenderBounds();
     hit = applyOutwardClip(hit, physical);
@@ -1698,7 +1827,7 @@ function createPetWindowRuntime(options = {}) {
       hit = intersectHitWithWorkArea(hit, hitWa, clampBounds);
     }
     hit = clipHitRectToMiniSeam(hit);
-    if (!hit) return;
+    if (!hit) return FAILED_HIT_SYNC;
 
     const x = Math.round(hit.left);
     const y = Math.round(hit.top);
@@ -1722,7 +1851,9 @@ function createPetWindowRuntime(options = {}) {
       applyHitInputState();
       repositionSessionHud();
       syncImeEditingPetDodge();
-      return;
+      // Nothing was written: this rect is a transient sliver. Callers that
+      // need the new geometry should retry, not warn.
+      return DEFERRED_HIT_SYNC;
     }
 
     const target = { x, y, width: w, height: h };
@@ -1773,6 +1904,7 @@ function createPetWindowRuntime(options = {}) {
     // change hitboxes without moving the window, so the overlap answer can
     // flip right here. Cheap + edge-triggered inside.
     syncImeEditingPetDodge();
+    return APPLIED_HIT_SYNC;
   }
 
   // §4.3.11's hit-side reconcile. Debounced on its own (longer) quiet period
