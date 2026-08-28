@@ -222,6 +222,22 @@ async function sampleMatrices(win, targetId, options = {}) {
       return out;
     }
 
+    const smilAnimations = root.querySelectorAll("animate, animateTransform, animateMotion");
+    if (smilAnimations.length > 0 && typeof root.setCurrentTime === "function") {
+      if (typeof root.pauseAnimations === "function") root.pauseAnimations();
+      const parsedDurations = [...smilAnimations]
+        .map((element) => /^([0-9]+(?:\.[0-9]+)?)s$/.exec(element.getAttribute("dur") || ""))
+        .filter(Boolean)
+        .map((match) => Number(match[1]))
+        .filter((duration) => Number.isFinite(duration) && duration > 0);
+      const horizon = Math.min(12, Math.max(4, ...parsedDurations));
+      for (let t = 0; t <= horizon; t += 0.025) {
+        root.setCurrentTime(t);
+        out.push(snapshot());
+      }
+      return out;
+    }
+
     const scriptedCycleMs = ${scriptedCycleMs};
     if (scriptedCycleMs > 0) {
       // Preferred: the visual exposes a pure seek, so sweep its whole cycle

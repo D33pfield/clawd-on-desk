@@ -237,6 +237,21 @@
             }
           }
         },
+        "clawd-working-typing-boss.svg": {
+          "staticFrame": {
+            "cx": 7.5,
+            "baseY": 6.5,
+            "width": 16
+          },
+          "followTarget": {
+            "id": "accessory-anchor",
+            "frame": {
+              "cx": 7.5,
+              "baseY": 6.5,
+              "width": 16
+            }
+          }
+        },
         "clawd-notification.svg": {
           "staticFrame": {
             "cx": 7.5,
@@ -274,25 +289,7 @@
           }
         },
         "clawd-headphones-groove.svg": {
-          "staticFrame": {
-            "cx": 7.5,
-            "baseY": 6.5,
-            "width": 16
-          },
-          "hitBoxPadding": {
-            "left": 1.5,
-            "top": 1.5,
-            "right": 1.5,
-            "bottom": 1.5
-          },
-          "followTarget": {
-            "id": "accessory-anchor",
-            "frame": {
-              "cx": 7.5,
-              "baseY": 6.5,
-              "width": 16
-            }
-          }
+          "visibility": "hidden"
         },
         "clawd-working-juggling.svg": {
           "staticFrame": {
@@ -521,6 +518,57 @@
         },
         "clawd-mini-sleep.svg": {
           "visibility": "hidden"
+        },
+        "clawd-about-hero.svg": {
+          "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 },
+          "followTarget": {
+            "id": "master-group",
+            "frame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
+          }
+        },
+        "clawd-aegyo-shy.svg": {
+          "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 },
+          "followTarget": {
+            "id": "accessory-anchor",
+            "frame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
+          }
+        },
+        "clawd-coffee-hand.svg": {
+          "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 },
+          "followTarget": {
+            "id": "character-motion",
+            "frame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
+          }
+        },
+        "clawd-coffee-head-flip.svg": { "visibility": "hidden" },
+        "clawd-idle-collapse.svg": { "visibility": "hidden" },
+        "clawd-idle-living.svg": {
+          "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 },
+          "followTarget": {
+            "id": "torso",
+            "frame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
+          }
+        },
+        "clawd-idle-low-battery.svg": {
+          "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 },
+          "followTarget": {
+            "id": "accessory-anchor",
+            "frame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
+          }
+        },
+        "clawd-static-base.svg": {
+          "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
+        },
+        "clawd-working-ultrathink.svg": {
+          "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 },
+          "followTarget": {
+            "id": "accessory-anchor",
+            "frame": { "cx": 7.5, "baseY": 6.5, "width": 16 },
+            "normalizeReflection": "x"
+          }
+        },
+        "clawd-working-wizard.svg": {
+          "visibility": "hidden"
         }
       },
       "itemOverrides": {
@@ -706,6 +754,9 @@
               "width": 5
             }
           }
+        },
+        "clawd-working-typing-boss.svg": {
+          "visibility": "hidden"
         },
         "clawd-notification.svg": {
           "staticFrame": {
@@ -932,6 +983,63 @@
         },
         "clawd-mini-sleep.svg": {
           "visibility": "hidden"
+        },
+        "clawd-about-hero.svg": {
+          "staticFrame": { "cx": 14, "baseY": 13, "width": 5 },
+          "followTarget": {
+            "id": "master-group",
+            "frame": { "cx": 14, "baseY": 13, "width": 5 }
+          }
+        },
+        "clawd-aegyo-shy.svg": {
+          "visibility": "hidden"
+        },
+        "clawd-coffee-hand.svg": {
+          "staticFrame": { "cx": 14, "baseY": 13, "width": 5 },
+          "followTarget": {
+            "id": "character-motion",
+            "frame": { "cx": 14, "baseY": 13, "width": 5 }
+          }
+        },
+        "clawd-coffee-head-flip.svg": {
+          "staticFrame": { "cx": 14, "baseY": 13, "width": 5 },
+          "followTarget": {
+            "id": "body-color-group",
+            "frame": { "cx": 14, "baseY": 13, "width": 5 }
+          }
+        },
+        "clawd-idle-collapse.svg": { "visibility": "hidden" },
+        "clawd-idle-living.svg": {
+          "staticFrame": { "cx": 14, "baseY": 13, "width": 5 },
+          "followTarget": {
+            "id": "torso",
+            "frame": { "cx": 14, "baseY": 13, "width": 5 }
+          }
+        },
+        "clawd-idle-low-battery.svg": {
+          "staticFrame": { "cx": 14, "baseY": 13, "width": 5 },
+          "followTarget": {
+            "id": "accessory-anchor",
+            "frame": { "cx": 14, "baseY": 13, "width": 5 }
+          }
+        },
+        "clawd-static-base.svg": {
+          "staticFrame": { "cx": 14, "baseY": 13, "width": 5 }
+        },
+        "clawd-working-ultrathink.svg": {
+          "staticFrame": { "cx": 14, "baseY": 13, "width": 5 },
+          "followTarget": {
+            "id": "accessory-anchor",
+            "frame": { "cx": 1, "baseY": 13, "width": 5 },
+            "normalizeReflection": "x"
+          }
+        },
+        "clawd-working-wizard.svg": {
+          "staticFrame": { "cx": 14, "baseY": 13, "width": 5 },
+          "followTarget": {
+            "id": "body-color-group",
+            "frame": { "cx": 14, "baseY": 13, "width": 5 }
+          }
         }
       }
     }
@@ -1140,6 +1248,18 @@
     }
   },
   "fileViewBoxes": {
+    "clawd-about-hero.svg": {
+      "x": -2,
+      "y": 2,
+      "width": 20,
+      "height": 16
+    },
+    "clawd-static-base.svg": {
+      "x": 0,
+      "y": 0,
+      "width": 15,
+      "height": 16
+    },
     "clawd-outlaw-bender.svg": {
       "x": -15,
       "y": -25,

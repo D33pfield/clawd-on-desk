@@ -984,11 +984,6 @@ function deriveAttachmentCapability(cfg, fieldName, normalize) {
   const usages = projectThemeVisualUsages(cfg);
   if (usages.length === 0) return false;
 
-  const usageFiles = new Set(usages.map((usage) => usage.file));
-  for (const file of Object.keys(attachments.files)) {
-    if (!usageFiles.has(file)) return false;
-  }
-
   const viewBoxesByFile = new Map();
   for (const usage of usages) {
     const keys = viewBoxesByFile.get(usage.file) || new Set();
@@ -1058,7 +1053,11 @@ function resolveEffectiveAttachmentCollection(authoredCfg, effectiveCfg, options
     usagesByFile.set(usage.file, entries);
   }
 
-  const resolved = { files: {} };
+  // Preserve exact descriptors for optional animation-library assets even
+  // when no current binding selects them. The Settings picker can make one of
+  // these files reachable later; retaining the descriptor also keeps direct
+  // preview and geometry audits on the same policy as the eventual override.
+  const resolved = { files: { ...authored.files } };
   for (const [file, usages] of usagesByFile) {
     const viewBoxes = new Map();
     for (const usage of usages) {
@@ -1204,6 +1203,15 @@ function collectRequiredAssetFiles(theme) {
   const files = new Set();
   for (const usage of projectThemeVisualUsages(theme)) {
     addThemeAssetFile(files, usage.file);
+  }
+  // Exact attachment descriptors may also prepare an otherwise optional file
+  // for the animation-override picker. Treat those library assets as required
+  // so typos fail asset validation and external SVGs still pass sanitization.
+  for (const field of ["accessories", "mouthAccessories"]) {
+    const attachments = theme && theme.customization && theme.customization[field];
+    for (const file of Object.keys((attachments && attachments.files) || {})) {
+      addThemeAssetFile(files, file);
+    }
   }
   const objectChannelFiles = theme && theme.rendering && theme.rendering.objectChannelFiles;
   for (const file of Array.isArray(objectChannelFiles) ? objectChannelFiles : []) {

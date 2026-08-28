@@ -15,9 +15,14 @@ function basenameOnly(value) {
 // Unknown/external themes never inherit these built-in measurements.
 const BUILTIN_ACCESSORY_MOTION_PADDING = Object.freeze({
   clawd: Object.freeze({
+    "clawd-about-hero.svg": Object.freeze({ left: 0.4, right: 0.4 }),
+    "clawd-aegyo-shy.svg": Object.freeze({ left: 1.2, right: 0.5, bottom: 1.4 }),
+    "clawd-coffee-hand.svg": Object.freeze({ left: 0.5, top: 0.4, right: 0.5, bottom: 0.4 }),
     "clawd-idle-follow.svg": Object.freeze({ left: 0.2, right: 0.2, bottom: 0.7 }),
     "clawd-dizzy.svg": Object.freeze({ left: 2, top: 0.5, right: 2, bottom: 0.6 }),
     "clawd-happy.svg": Object.freeze({ top: 12, bottom: 1.5 }),
+    "clawd-idle-living.svg": Object.freeze({ left: 1.2, top: 4, right: 1.2, bottom: 2 }),
+    "clawd-idle-low-battery.svg": Object.freeze({ left: 0.7, right: 0.7, bottom: 2.3 }),
     "clawd-idle-look.svg": Object.freeze({ left: 1.2, right: 1.2, bottom: 0.7 }),
     "clawd-idle-yawn.svg": Object.freeze({ left: 0.8, top: 4.5, right: 0.8, bottom: 2 }),
     "clawd-mini-idle.svg": Object.freeze({ left: 3.2, top: 1.6, right: 0.2, bottom: 2.4 }),
@@ -29,9 +34,10 @@ const BUILTIN_ACCESSORY_MOTION_PADDING = Object.freeze({
     "clawd-mini-enter.svg": Object.freeze({ left: 6.2, top: 2.4, right: 25, bottom: 2.1 }),
     "clawd-working-thinking.svg": Object.freeze({ left: 1.6, top: 0.2, right: 1.6, bottom: 0.8 }),
     "clawd-working-typing.svg": Object.freeze({ bottom: 1.5 }),
+    "clawd-working-typing-boss.svg": Object.freeze({ left: 0.5, top: 0.3, right: 0.5, bottom: 0.8 }),
+    "clawd-working-ultrathink.svg": Object.freeze({ left: 0.5, top: 0.1, right: 0.6, bottom: 0.1 }),
     "clawd-notification.svg": Object.freeze({ left: 1.7, top: 0.5, bottom: 0.6 }),
     "clawd-working-building.svg": Object.freeze({ bottom: 5 }),
-    "clawd-headphones-groove.svg": Object.freeze({ left: 2.3, top: 1.5, right: 2.3, bottom: 1.5 }),
     "clawd-working-juggling.svg": Object.freeze({ left: 1.4, top: 0.1, right: 1.4, bottom: 1.4 }),
     "clawd-idle-bubble.svg": Object.freeze({ top: 1.2, bottom: 0.7 }),
     "clawd-idle-reading.svg": Object.freeze({ left: 0.2, right: 0.2, bottom: 1.1 }),
@@ -83,11 +89,18 @@ const BUILTIN_ACCESSORY_MOTION_PADDING = Object.freeze({
 // space, while wearing both slots still unions both contributions below.
 const BUILTIN_MOUTH_ACCESSORY_MOTION_PADDING = Object.freeze({
   clawd: Object.freeze({
+    "clawd-about-hero.svg": Object.freeze({ left: 0.2, top: 0.2, right: 0.2, bottom: 0.2 }),
+    "clawd-coffee-hand.svg": Object.freeze({ left: 0.5, top: 0.4, right: 0.5, bottom: 0.4 }),
+    "clawd-coffee-head-flip.svg": Object.freeze({ top: 1.6, right: 0.4, bottom: 0.4 }),
     "clawd-idle-follow.svg": Object.freeze({ right: 0.2, bottom: 0.5 }),
     "clawd-idle-yawn.svg": Object.freeze({ left: 0.4, top: 3.1, right: 0.7, bottom: 1.5 }),
     "clawd-idle-doze.svg": Object.freeze({ right: 0.8, bottom: 1.7 }),
+    "clawd-idle-living.svg": Object.freeze({ left: 1, top: 2.8, right: 1.2, bottom: 1.4 }),
+    "clawd-idle-low-battery.svg": Object.freeze({ right: 0.8, bottom: 1.7 }),
     "clawd-working-thinking.svg": Object.freeze({ left: 0.9, top: 0.2, right: 1, bottom: 0.7 }),
     "clawd-working-typing.svg": Object.freeze({ right: 0.2, bottom: 1.3 }),
+    "clawd-working-ultrathink.svg": Object.freeze({ left: 0.5, top: 0.1, right: 0.6, bottom: 0.1 }),
+    "clawd-working-wizard.svg": Object.freeze({ left: 3, right: 3.4, bottom: 1.4 }),
     "clawd-headphones-groove.svg": Object.freeze({ left: 1, top: 0.6, right: 0.9, bottom: 1.3 }),
     "clawd-notification.svg": Object.freeze({ left: 0.5, top: 0.2, right: 0.5, bottom: 0.3 }),
     "clawd-working-carrying.svg": Object.freeze({ left: 0.4, top: 0.4, bottom: 0.9 }),

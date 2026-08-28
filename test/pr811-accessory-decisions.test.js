@@ -53,11 +53,27 @@ const HIDDEN_MOUTH_FILES = Object.freeze([
   "clawd-mini-sleep.svg",
 ]);
 
+const OPTIONAL_LIBRARY_FILES = Object.freeze([
+  "clawd-about-hero.svg",
+  "clawd-aegyo-shy.svg",
+  "clawd-coffee-hand.svg",
+  "clawd-coffee-head-flip.svg",
+  "clawd-idle-collapse.svg",
+  "clawd-idle-living.svg",
+  "clawd-idle-low-battery.svg",
+  "clawd-static-base.svg",
+  "clawd-working-typing-boss.svg",
+  "clawd-working-ultrathink.svg",
+  "clawd-working-wizard.svg",
+]);
+
 test("PR #811 mouth policy covers the approved 36 stock sprites exactly", () => {
   const theme = themeLoader.loadTheme("clawd", { strict: true });
   const files = theme.customization.mouthAccessories.files;
   const stockFiles = Object.fromEntries(
-    Object.entries(files).filter(([file]) => file !== "clawd-outlaw-bender.svg")
+    Object.entries(files).filter(([file]) => (
+      file !== "clawd-outlaw-bender.svg" && !OPTIONAL_LIBRARY_FILES.includes(file)
+    ))
   );
 
   assert.strictEqual(theme._capabilities.mouthAccessories, true);
@@ -67,6 +83,11 @@ test("PR #811 mouth policy covers the approved 36 stock sprites exactly", () => 
   );
   assert.strictEqual(Object.keys(stockFiles).length, 36);
   assert.deepStrictEqual(files["clawd-outlaw-bender.svg"], { visibility: "hidden" });
+  assert.deepStrictEqual(
+    files["clawd-working-typing-boss.svg"],
+    { visibility: "hidden" },
+    "the boss sprite already draws its own cigar and code smoke"
+  );
   assert.deepStrictEqual(
     theme.customization.accessories.files["clawd-outlaw-bender.svg"],
     { visibility: "hidden" }
@@ -82,7 +103,72 @@ test("PR #811 mouth policy covers the approved 36 stock sprites exactly", () => 
   }
 });
 
-test("cowboy-only pose policy does not change the other head accessories", () => {
+test("the boss extra keeps its authored cigar and never receives a second cigarette", () => {
+  const boss = fs.readFileSync(
+    path.join(ROOT, "assets", "svg", "clawd-working-typing-boss.svg"),
+    "utf8"
+  );
+  const theme = themeLoader.loadTheme("clawd", { strict: true });
+
+  assert.match(boss, /id="cigarette-rotor"/);
+  assert.match(boss, /id="codesmoke"/);
+  assert.match(boss, /<g id="accessory-anchor" class="body-walk">/);
+  assert.deepStrictEqual(
+    theme.customization.mouthAccessories.files["clawd-working-typing-boss.svg"],
+    { visibility: "hidden" }
+  );
+  assert.strictEqual(
+    theme.customization.accessories.files["clawd-working-typing-boss.svg"]
+      .followTarget.id,
+    "accessory-anchor"
+  );
+});
+
+test("optional animation-library SVGs never fall back to static moving accessories", () => {
+  const theme = themeLoader.loadTheme("clawd", { strict: true });
+  const head = theme.customization.accessories.files;
+  const mouth = theme.customization.mouthAccessories.files;
+
+  for (const [file, target] of Object.entries({
+    "clawd-about-hero.svg": "master-group",
+    "clawd-aegyo-shy.svg": "accessory-anchor",
+    "clawd-coffee-hand.svg": "character-motion",
+    "clawd-idle-living.svg": "torso",
+    "clawd-idle-low-battery.svg": "accessory-anchor",
+    "clawd-working-typing-boss.svg": "accessory-anchor",
+    "clawd-working-ultrathink.svg": "accessory-anchor",
+  })) {
+    assert.strictEqual(head[file].followTarget.id, target, `${file} head target`);
+  }
+  for (const file of [
+    "clawd-coffee-head-flip.svg",
+    "clawd-idle-collapse.svg",
+    "clawd-working-wizard.svg",
+  ]) {
+    assert.deepStrictEqual(head[file], { visibility: "hidden" }, `${file} head policy`);
+  }
+  assert.ok(head["clawd-static-base.svg"].staticFrame);
+  assert.strictEqual(head["clawd-static-base.svg"].followTarget, undefined);
+
+  for (const [file, target] of Object.entries({
+    "clawd-about-hero.svg": "master-group",
+    "clawd-coffee-hand.svg": "character-motion",
+    "clawd-coffee-head-flip.svg": "body-color-group",
+    "clawd-idle-living.svg": "torso",
+    "clawd-idle-low-battery.svg": "accessory-anchor",
+    "clawd-working-ultrathink.svg": "accessory-anchor",
+    "clawd-working-wizard.svg": "body-color-group",
+  })) {
+    assert.strictEqual(mouth[file].followTarget.id, target, `${file} mouth target`);
+  }
+  assert.deepStrictEqual(mouth["clawd-aegyo-shy.svg"], { visibility: "hidden" });
+  assert.deepStrictEqual(mouth["clawd-idle-collapse.svg"], { visibility: "hidden" });
+  assert.deepStrictEqual(mouth["clawd-working-typing-boss.svg"], { visibility: "hidden" });
+  assert.ok(mouth["clawd-static-base.svg"].staticFrame);
+  assert.strictEqual(mouth["clawd-static-base.svg"].followTarget, undefined);
+});
+
+test("head pose policy keeps headphones hatless and limits cowboy-only overrides", () => {
   const theme = themeLoader.loadTheme("clawd", { strict: true });
   const base = theme.customization.accessories.files;
   const cowboy = theme.customization.accessories.itemOverrides["cowboy-hat"].files;
@@ -92,6 +178,15 @@ test("cowboy-only pose policy does not change the other head accessories", () =>
   assert.ok(cowboy["clawd-error.svg"].staticFrame);
   assert.ok(cowboy["clawd-wake.svg"].staticFrame);
   assert.strictEqual(cowboy["clawd-error.svg"].staticFrame.baseY, 10.5);
+  assert.deepStrictEqual(
+    base["clawd-headphones-groove.svg"],
+    { visibility: "hidden" }
+  );
+  assert.strictEqual(cowboy["clawd-headphones-groove.svg"], undefined);
+  assert.ok(
+    theme.customization.mouthAccessories.files["clawd-headphones-groove.svg"].followTarget,
+    "hiding hats on the headphones sprite must not hide its cigarette slot"
+  );
 
   for (const file of [
     "clawd-collapse-sleep.svg",

@@ -346,7 +346,7 @@ describe("theme schema validation", () => {
     assert.ok(lowPowerUsages.every((usage) => usage.effectiveViewBox.width === 20));
   });
 
-  it("fails accessory capability closed on incomplete viewBox coverage or stale file descriptors", () => {
+  it("fails accessory capability closed on incomplete viewBox coverage but permits exact library descriptors", () => {
     const miniStates = Object.fromEntries(
       schema.MINI_REQUIRED_STATES.map((state) => [state, [`${state}.svg`]])
     );
@@ -388,7 +388,17 @@ describe("theme schema validation", () => {
         },
       },
     });
-    assert.strictEqual(schema.deriveAccessoryCapability(staleDescriptor), false);
+    assert.strictEqual(schema.deriveAccessoryCapability(staleDescriptor), true);
+    assert.deepStrictEqual(
+      schema.resolveEffectiveAccessoryAttachments(staleDescriptor, staleDescriptor)
+        .files["not-reachable.svg"],
+      { staticFrame: { cx: 50, baseY: 20, width: 30 } },
+      "an optional picker descriptor must survive until a later override selects it"
+    );
+    assert.ok(
+      schema.collectRequiredAssetFiles(staleDescriptor).includes("not-reachable.svg"),
+      "an exact animation-library descriptor must make its asset required"
+    );
   });
 
   it("does not require unreachable mini attachments when mini mode is disabled", () => {

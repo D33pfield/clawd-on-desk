@@ -140,20 +140,16 @@ describe("accessory-aware hit boxes", () => {
     }
   });
 
-  it("keeps measured animated motion envelopes separate from authored theme padding", () => {
+  it("keeps headphones hatless without hiding its animated mouth accessory", () => {
     const theme = themeLoader.loadTheme("clawd", { strict: true });
     const file = "clawd-headphones-groove.svg";
-    const authored = theme.customization.accessories.files[file].hitBoxPadding;
-    const measured = BUILTIN_ACCESSORY_MOTION_PADDING.clawd[file];
+    const head = theme.customization.accessories.files[file];
+    const mouth = theme.customization.mouthAccessories.files[file];
 
-    // The original authored 1.5-unit padding is intentionally retained in the
-    // theme. Chromium sampling showed it misses horizontally, so the built-in
-    // runtime envelope supplies the measured correction instead of mutating
-    // public theme metadata or teaching this unit test the production union formula.
-    assert.strictEqual(authored.left, 1.5);
-    assert.strictEqual(authored.right, 1.5);
-    assert.ok(measured.left > authored.left);
-    assert.ok(measured.right > authored.right);
+    assert.deepStrictEqual(head, { visibility: "hidden" });
+    assert.strictEqual(BUILTIN_ACCESSORY_MOTION_PADDING.clawd[file], undefined);
+    assert.strictEqual(mouth.followTarget.id, "accessory-anchor");
+    assert.ok(BUILTIN_MOUTH_ACCESSORY_MOTION_PADDING.clawd[file]);
   });
 
   it("keeps a separate measured envelope for every visible animated mouth descriptor", () => {

@@ -72,8 +72,15 @@ describe("built-in accessory capability contracts", () => {
     const files = collectRequiredAssetFiles(raw);
 
     assert.strictEqual(usages.length, 50);
-    assert.strictEqual(files.length, 37);
+    assert.strictEqual(files.length, 48);
+    assert.deepStrictEqual(
+      new Set(files),
+      new Set(fs.readdirSync(path.join(ROOT, "assets", "svg")).filter((file) => file.endsWith(".svg"))),
+      "every SVG exposed by the animation picker must have an audited attachment policy"
+    );
     assert.ok(files.includes("clawd-outlaw-bender.svg"));
+    assert.ok(files.includes("clawd-working-typing-boss.svg"));
+    assert.ok(!usages.some((usage) => usage.file === "clawd-working-typing-boss.svg"));
     assert.ok(!usages.some((usage) => usage.source === "rendering.objectChannelFiles"));
     assert.strictEqual(normalized._capabilities.accessories, true);
     assertDeclaredTargetsExist("clawd", raw);
@@ -106,7 +113,17 @@ describe("built-in accessory capability contracts", () => {
       buildingAccessory.followTarget.frame,
       buildingAccessory.staticFrame
     );
-    for (const tier of raw.workingTiers) {
+    const headphonesTier = raw.workingTiers.find(({ minSessions }) => minSessions === 2);
+    assert.deepStrictEqual(headphonesTier, {
+      minSessions: 2,
+      file: "clawd-headphones-groove.svg",
+    });
+    assert.deepStrictEqual(
+      raw.customization.accessories.files[headphonesTier.file],
+      { visibility: "hidden" },
+      "the headphones sprite should never add a head accessory"
+    );
+    for (const tier of raw.workingTiers.filter(({ minSessions }) => minSessions !== 2)) {
       assert.notStrictEqual(
         raw.customization.accessories.files[tier.file].visibility,
         "hidden",
