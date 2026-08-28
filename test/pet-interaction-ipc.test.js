@@ -3,7 +3,10 @@
 const test = require("node:test");
 const assert = require("node:assert");
 
-const { registerPetInteractionIpc } = require("../src/pet-interaction-ipc");
+const {
+  isTrustedMainFrameEvent,
+  registerPetInteractionIpc,
+} = require("../src/pet-interaction-ipc");
 
 class FakeIpcMain {
   constructor() {
@@ -183,6 +186,24 @@ test("pet interaction IPC delegates renderer settlement with the sender intact",
   assert.deepStrictEqual(calls.filter((c) => c[0] === "settleVisual"), [
     ["settleVisual", "sender-web-contents", payload],
   ]);
+});
+
+test("visual settlements trust only the render webContents main frame", () => {
+  const mainFrame = { url: "file:///index.html" };
+  const webContents = { mainFrame };
+  assert.strictEqual(
+    isTrustedMainFrameEvent({ sender: webContents, senderFrame: mainFrame }, webContents),
+    true
+  );
+  assert.strictEqual(
+    isTrustedMainFrameEvent({ sender: webContents, senderFrame: { ...mainFrame } }, webContents),
+    false
+  );
+  assert.strictEqual(
+    isTrustedMainFrameEvent({ sender: {}, senderFrame: mainFrame }, webContents),
+    false
+  );
+  assert.strictEqual(isTrustedMainFrameEvent({ sender: webContents }, webContents), false);
 });
 
 test("pet interaction IPC delegates pet-interaction:reveal-session-hud to revealSessionHud", () => {

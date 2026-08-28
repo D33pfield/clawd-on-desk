@@ -67,6 +67,7 @@ function createHarness(options = {}) {
     repositionFloatingBubbles: () => calls.push(["repositionFloatingBubbles"]),
     applyTextScale: () => calls.push(["applyTextScale"]),
     syncSessionHudVisibility: () => calls.push(["syncSessionHudVisibility"]),
+    refreshDisplayedVisual: () => calls.push(["refreshDisplayedVisual"]),
     handleSessionHudPinnedChanged: (next) => calls.push(["handleSessionHudPinnedChanged", next]),
     reclampPetAfterEdgePinningChange: () => calls.push(["reclampPetAfterEdgePinningChange"]),
     rebuildAllMenus: () => calls.push(["rebuildAllMenus"]),
@@ -252,6 +253,7 @@ describe("settings-effect-router", () => {
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { lowPowerIdleMode: true }],
       ["sendToRenderer", "low-power-idle-mode-change", true],
+      ["refreshDisplayedVisual"],
       ["syncSessionHudVisibility"],
     ]);
   });

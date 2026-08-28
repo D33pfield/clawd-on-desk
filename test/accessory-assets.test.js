@@ -11,6 +11,125 @@ const {
 } = require("../src/pet-customization-catalog");
 
 const ASSET_DIR = path.join(__dirname, "..", "assets", "accessories");
+const MAX_SMIL_VALUES = 16;
+const MAX_SMIL_DURATION_S = 10;
+const MAX_TRANSLATE_ABS = 16;
+
+function parseStrictXmlElements(source) {
+  const markup = source
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<\?xml[\s\S]*?\?>/g, "");
+  const roots = [];
+  const stack = [];
+  const tagPattern = /<[^>]+>/g;
+  let cursor = 0;
+  let match;
+  while ((match = tagPattern.exec(markup))) {
+    assert.match(markup.slice(cursor, match.index), /^\s*$/, "XML text nodes are not allowed");
+    cursor = tagPattern.lastIndex;
+    const token = match[0];
+    assert.doesNotMatch(token, /^<!/, `unsupported XML declaration: ${token}`);
+    const closing = token.match(/^<\/\s*([A-Za-z][A-Za-z0-9:-]*)\s*>$/);
+    if (closing) {
+      const open = stack.pop();
+      assert.ok(open && open.tag === closing[1], `mismatched closing tag ${closing[1]}`);
+      continue;
+    }
+    const opening = token.match(/^<\s*([A-Za-z][A-Za-z0-9:-]*)([\s\S]*?)(\/?)>$/);
+    assert.ok(opening, `malformed XML tag: ${token}`);
+    const [, tag, rawAttrs, selfClosing] = opening;
+    const attrs = {};
+    const attrPattern = /([A-Za-z_:][A-Za-z0-9:._-]*)\s*=\s*"([^"]*)"/y;
+    let offset = 0;
+    while (offset < rawAttrs.length) {
+      const whitespace = /^\s+/.exec(rawAttrs.slice(offset));
+      if (whitespace) offset += whitespace[0].length;
+      if (offset >= rawAttrs.length) break;
+      attrPattern.lastIndex = offset;
+      const attr = attrPattern.exec(rawAttrs);
+      assert.ok(attr, `${tag}: malformed, unquoted, or unsupported attribute near ${rawAttrs.slice(offset)}`);
+      assert.ok(!Object.prototype.hasOwnProperty.call(attrs, attr[1]), `${tag}: duplicate ${attr[1]}`);
+      attrs[attr[1]] = attr[2];
+      offset = attrPattern.lastIndex;
+    }
+    const node = { tag, attrs, parent: stack[stack.length - 1] || null };
+    if (node.parent) node.parent.children.push(node);
+    else roots.push(node);
+    node.children = [];
+    if (!selfClosing) stack.push(node);
+  }
+  assert.match(markup.slice(cursor), /^\s*$/, "trailing XML text is not allowed");
+  assert.strictEqual(stack.length, 0, "unclosed XML tags");
+  return roots;
+}
+
+function parseSeconds(value, label) {
+  assert.match(String(value || ""), /^-?(?:\d+(?:\.\d+)?|\.\d+)s$/, label);
+  return Number(value.slice(0, -1));
+}
+
+function auditCigaretteSmil(source) {
+  const roots = parseStrictXmlElements(source);
+  const nodes = [];
+  const visit = (node) => {
+    nodes.push(node);
+    node.children.forEach(visit);
+  };
+  roots.forEach(visit);
+  const animations = nodes.filter((node) => node.tag === "animate" || node.tag === "animateTransform");
+  assert.ok(animations.length > 0);
+  for (const node of animations) {
+    const { tag, attrs, parent } = node;
+    assert.strictEqual(parent && parent.tag, "rect", `${tag} must be a direct child of rect`);
+    assert.strictEqual(node.children.length, 0, `${tag} must be empty`);
+    const allowed = new Set([
+      "attributeName", "type", "values", "keyTimes", "dur", "begin",
+      "repeatCount", "calcMode",
+    ]);
+    assert.ok(Object.keys(attrs).every((name) => allowed.has(name)), `${tag}: ${Object.keys(attrs)}`);
+    if (tag === "animateTransform") {
+      assert.strictEqual(attrs.attributeName, "transform");
+      assert.strictEqual(attrs.type, "translate");
+    } else {
+      assert.ok(["fill", "opacity"].includes(attrs.attributeName));
+      assert.strictEqual(attrs.type, undefined);
+    }
+    assert.strictEqual(attrs.repeatCount, "indefinite");
+    if (attrs.calcMode !== undefined) assert.ok(["discrete", "linear"].includes(attrs.calcMode));
+    const dur = parseSeconds(attrs.dur, `${tag}: invalid dur ${attrs.dur}`);
+    assert.ok(dur > 0 && dur <= MAX_SMIL_DURATION_S, attrs.dur);
+    if (attrs.begin !== undefined) {
+      const begin = parseSeconds(attrs.begin, `${tag}: invalid begin ${attrs.begin}`);
+      assert.ok(Math.abs(begin) <= dur, attrs.begin);
+    }
+    const values = String(attrs.values || "").split(";");
+    assert.ok(values.length >= 2 && values.length <= MAX_SMIL_VALUES, attrs.values);
+    if (attrs.attributeName === "fill") {
+      assert.ok(values.every((value) => /^#[0-9a-f]{6}$/i.test(value)));
+    } else if (attrs.attributeName === "opacity") {
+      assert.ok(values.every((value) => {
+        const number = Number(value);
+        return Number.isFinite(number) && number >= 0 && number <= 1;
+      }), attrs.values);
+    } else {
+      assert.ok(values.every((value) => {
+        const parts = value.trim().split(/\s+/).map(Number);
+        return parts.length === 2
+          && parts.every((part) => Number.isFinite(part) && Math.abs(part) <= MAX_TRANSLATE_ABS);
+      }), attrs.values);
+    }
+    if (attrs.keyTimes !== undefined) {
+      const times = attrs.keyTimes.split(";").map(Number);
+      assert.strictEqual(times.length, values.length);
+      assert.ok(times.every((value, index) => (
+        Number.isFinite(value)
+        && value >= 0
+        && value <= 1
+        && (index === 0 || value >= times[index - 1])
+      )));
+    }
+  }
+}
 
 describe("accessory asset audit", () => {
   it("ships exactly the head and mouth catalogs' local SVG assets with matching viewBoxes", () => {
@@ -75,49 +194,18 @@ describe("accessory asset audit", () => {
     assert.match(source, /shape-rendering="crispEdges"/);
     assert.match(source, /shape-rendering="auto"/);
 
-    const animations = [...source.matchAll(/<(animate|animateTransform)\b([^>]*)\/>/g)];
-    assert.ok(animations.length > 0);
-    for (const [, tag, rawAttrs] of animations) {
-      const attrs = Object.fromEntries(
-        [...rawAttrs.matchAll(/([A-Za-z][A-Za-z0-9:-]*)="([^"]*)"/g)]
-          .map((match) => [match[1], match[2]])
-      );
-      const allowed = new Set([
-        "attributeName", "type", "values", "keyTimes", "dur", "begin",
-        "repeatCount", "calcMode",
-      ]);
-      assert.ok(Object.keys(attrs).every((name) => allowed.has(name)), `${tag}: ${Object.keys(attrs)}`);
-      assert.ok(["fill", "opacity", "transform"].includes(attrs.attributeName));
-      if (tag === "animateTransform") assert.strictEqual(attrs.type, "translate");
-      else assert.strictEqual(attrs.type, undefined);
-      assert.strictEqual(attrs.repeatCount, "indefinite");
-      if (attrs.calcMode !== undefined) assert.ok(["discrete", "linear"].includes(attrs.calcMode));
-      const dur = Number(String(attrs.dur || "").replace(/s$/, ""));
-      assert.ok(Number.isFinite(dur) && dur > 0 && dur <= 10, attrs.dur);
-      if (attrs.begin !== undefined) {
-        const begin = Number(String(attrs.begin).replace(/s$/, ""));
-        assert.ok(Number.isFinite(begin) && Math.abs(begin) <= dur, attrs.begin);
-      }
-      const values = String(attrs.values || "").split(";");
-      assert.ok(values.length >= 2 && values.length <= 16, attrs.values);
-      if (attrs.attributeName === "fill") {
-        assert.ok(values.every((value) => /^#[0-9a-f]{6}$/i.test(value)));
-      } else {
-        assert.ok(values.every((value) => (
-          value.trim().split(/\s+/).every((part) => Number.isFinite(Number(part)))
-        )), attrs.values);
-      }
-      if (attrs.keyTimes !== undefined) {
-        const times = attrs.keyTimes.split(";").map(Number);
-        assert.strictEqual(times.length, values.length);
-        assert.ok(times.every((value, index) => (
-          Number.isFinite(value)
-          && value >= 0
-          && value <= 1
-          && (index === 0 || value >= times[index - 1])
-        )));
-      }
-    }
+    auditCigaretteSmil(source);
+  });
+
+  it("rejects malformed, detached, or unbounded cigarette SMIL", () => {
+    const wrap = (animation) => `<svg><rect>${animation}</rect></svg>`;
+    const opacity = '<animate attributeName="opacity" values="0;1" dur="1s" repeatCount="indefinite"/>';
+    const translate = '<animateTransform attributeName="transform" type="translate" values="0 0;1 -2" dur="1s" repeatCount="indefinite"/>';
+    assert.doesNotThrow(() => auditCigaretteSmil(wrap(opacity + translate)));
+    assert.throws(() => auditCigaretteSmil(`<svg><g>${opacity}</g></svg>`), /direct child/);
+    assert.throws(() => auditCigaretteSmil(wrap(opacity.replace('dur="1s"', "dur=1s"))), /unquoted/);
+    assert.throws(() => auditCigaretteSmil(wrap(opacity.replace('values="0;1"', 'values="0;1.1"'))));
+    assert.throws(() => auditCigaretteSmil(wrap(translate.replace('1 -2', '17 -2'))));
   });
 
   it("centers the Santa hat by its seating brim rather than its pompom silhouette", () => {

@@ -174,12 +174,25 @@ function validateTheme(cfg) {
   if (cfg.rendering !== undefined) {
     if (!isPlainObject(cfg.rendering)) {
       errors.push("rendering must be an object when present");
-    } else if (
-      cfg.rendering.svgChannel !== undefined
-      && cfg.rendering.svgChannel !== "auto"
-      && cfg.rendering.svgChannel !== "object"
-    ) {
-      errors.push(`rendering.svgChannel must be "auto" or "object", got ${cfg.rendering.svgChannel}`);
+    } else {
+      if (
+        cfg.rendering.svgChannel !== undefined
+        && cfg.rendering.svgChannel !== "auto"
+        && cfg.rendering.svgChannel !== "object"
+      ) {
+        errors.push(`rendering.svgChannel must be "auto" or "object", got ${cfg.rendering.svgChannel}`);
+      }
+      if (
+        cfg.rendering.objectChannelFiles !== undefined
+        && (!Array.isArray(cfg.rendering.objectChannelFiles)
+          || cfg.rendering.objectChannelFiles.some((file) => (
+            typeof file !== "string"
+            || basenameOnly(file) !== file
+            || !file.toLowerCase().endsWith(".svg")
+          )))
+      ) {
+        errors.push("rendering.objectChannelFiles must contain SVG basenames only");
+      }
     }
   }
 
@@ -453,7 +466,11 @@ function hasScriptedSvgRuntime(cfg, options = {}) {
   if (trustedRuntimeAllowed && scriptedFiles.some((file) => isSvgFilename(file))) return true;
   return !!(
     isPlainObject(cfg && cfg.rendering)
-    && cfg.rendering.svgChannel === "object"
+    && (
+      cfg.rendering.svgChannel === "object"
+      || (Array.isArray(cfg.rendering.objectChannelFiles)
+        && cfg.rendering.objectChannelFiles.some((file) => isSvgFilename(file)))
+    )
   );
 }
 
@@ -577,6 +594,9 @@ function projectThemeVisualUsages(cfg) {
         `rendering.lowPowerStaticImageOverrides.${state}.to`
       );
     }
+  }
+  for (const file of (cfg && cfg.rendering && cfg.rendering.objectChannelFiles) || []) {
+    addVisualUsage(usages, "normal:object-channel", file, "rendering.objectChannelFiles");
   }
 
   const rootViewBox = normalizeViewBox(cfg && cfg.viewBox);
@@ -1252,6 +1272,14 @@ function normalizeTrustedRuntime(value, isBuiltin, themeId) {
 function normalizeRendering(value) {
   if (!isPlainObject(value)) return { svgChannel: "auto" };
   const lowPowerStaticImageOverrides = {};
+  const objectChannelFiles = [];
+  const seenObjectChannelFiles = new Set();
+  for (const file of Array.isArray(value.objectChannelFiles) ? value.objectChannelFiles : []) {
+    const safeFile = basenameOnly(file);
+    if (!safeFile || !safeFile.toLowerCase().endsWith(".svg") || seenObjectChannelFiles.has(safeFile)) continue;
+    seenObjectChannelFiles.add(safeFile);
+    objectChannelFiles.push(safeFile);
+  }
   if (isPlainObject(value.lowPowerStaticImageOverrides)) {
     for (const [state, override] of Object.entries(value.lowPowerStaticImageOverrides)) {
       if (!isPlainObject(override)) continue;
@@ -1267,6 +1295,7 @@ function normalizeRendering(value) {
   if (Object.keys(lowPowerStaticImageOverrides).length > 0) {
     rendering.lowPowerStaticImageOverrides = lowPowerStaticImageOverrides;
   }
+  if (objectChannelFiles.length > 0) rendering.objectChannelFiles = objectChannelFiles;
   return {
     ...rendering,
   };

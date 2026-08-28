@@ -16,6 +16,7 @@ let hasTriggeredYawn = false;  // 60s threshold already fired
 let idleLookPlayed = false;    // idle-look already played once since last movement
 let idleLookReturnTimer = null;
 let idleLookVisualGeneration = null;
+let idleLookAttempt = null;
 let yawnDelayTimer = null;     // tracked setTimeout for yawn/idle-look transitions
 let idleWasActive = false;
 let lastEyeDx = 0, lastEyeDy = 0;
@@ -131,6 +132,32 @@ function chooseIdleEasterEgg() {
     if (roll < upperBound) return egg;
   }
   return null;
+}
+
+function finishIdleVisualPlayback(attempt) {
+  idleLookReturnTimer = null;
+  if (idleLookAttempt !== attempt) return;
+  if (!isMouseIdle || ctx.currentState !== "idle") {
+    idleLookVisualGeneration = null;
+    idleLookAttempt = null;
+    return;
+  }
+  if (
+    idleLookVisualGeneration
+    && typeof ctx.isVisualGenerationCurrent === "function"
+    && !ctx.isVisualGenerationCurrent(idleLookVisualGeneration)
+  ) {
+    isMouseIdle = false;
+    idleLookVisualGeneration = null;
+    idleLookAttempt = null;
+    return;
+  }
+  isMouseIdle = false;
+  idleLookVisualGeneration = null;
+  idleLookAttempt = null;
+  const returnSvg = idleRestSvg();
+  ctx.sendToRenderer("state-change", "idle", returnSvg);
+  setTimeout(() => { ctx.forceEyeResend = true; }, 200);
 }
 
 // ── Unified main tick (cursor polling for eye tracking + sleep + mini peek) ──
@@ -341,6 +368,7 @@ function runMainTickOnce() {
         idleLookPlayed = false;
         if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
         idleLookVisualGeneration = null;
+        idleLookAttempt = null;
         if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
         if (isMouseIdle) {
           isMouseIdle = false;
@@ -407,32 +435,48 @@ function runMainTickOnce() {
             return;
           }
           if (isMouseIdle && ctx.currentState === "idle") {
-            const request = ctx.sendToRenderer("state-change", "idle", pick.svg);
-            idleLookVisualGeneration = request && request.visualGeneration;
-            if (easterEgg && Number.isSafeInteger(idleLookVisualGeneration)) {
-              idleEasterEggLastPlayedAt.set(idleEasterEggKey(easterEgg), now());
+            const attempt = {};
+            idleLookAttempt = attempt;
+            const onLogicalSettlement = (settlement) => {
+              if (idleLookAttempt !== attempt) return;
+              if (
+                !settlement
+                || settlement.status !== "committed"
+                || !Number.isSafeInteger(settlement.visualGeneration)
+                || !isMouseIdle
+                || ctx.currentState !== "idle"
+                || (typeof ctx.isVisualGenerationCurrent === "function"
+                  && !ctx.isVisualGenerationCurrent(settlement.visualGeneration))
+              ) {
+                // A failed/superseded load never started playing. Keep the
+                // once-per-idle attempt consumed so a broken asset cannot spin.
+                isMouseIdle = false;
+                idleLookVisualGeneration = null;
+                idleLookAttempt = null;
+                return;
+              }
+              idleLookVisualGeneration = settlement.visualGeneration;
+              if (easterEgg) {
+                idleEasterEggLastPlayedAt.set(idleEasterEggKey(easterEgg), now());
+              }
+              idleLookReturnTimer = setTimeout(
+                () => finishIdleVisualPlayback(attempt),
+                pick.duration
+              );
+            };
+            const request = ctx.sendToRenderer("state-change", "idle", pick.svg, {
+              onLogicalSettlement,
+            });
+            if (idleLookAttempt !== attempt) return;
+            const visualGeneration = request && request.visualGeneration;
+            idleLookVisualGeneration = visualGeneration;
+            if (!Number.isSafeInteger(visualGeneration)) {
+              isMouseIdle = false;
+              idleLookVisualGeneration = null;
+              idleLookAttempt = null;
             }
           }
         }, 250);
-        idleLookReturnTimer = setTimeout(() => {
-          idleLookReturnTimer = null;
-          if (isMouseIdle && ctx.currentState === "idle") {
-            if (
-              idleLookVisualGeneration
-              && typeof ctx.isVisualGenerationCurrent === "function"
-              && !ctx.isVisualGenerationCurrent(idleLookVisualGeneration)
-            ) {
-              isMouseIdle = false;
-              idleLookVisualGeneration = null;
-              return;
-            }
-            isMouseIdle = false;
-            idleLookVisualGeneration = null;
-            const returnSvg = idleRestSvg();
-            ctx.sendToRenderer("state-change", "idle", returnSvg);
-            setTimeout(() => { ctx.forceEyeResend = true; }, 200);
-          }
-        }, 250 + pick.duration);
         return nextDelay();
       }
 
@@ -554,6 +598,8 @@ function cleanup() {
   if (mainTickTimer) { clearTimeout(mainTickTimer); mainTickTimer = null; }
   nextMainTickAt = 0;
   if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
+  idleLookAttempt = null;
+  idleLookVisualGeneration = null;
   if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
   lastCursorX = null;
   lastCursorY = null;

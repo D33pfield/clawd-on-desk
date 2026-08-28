@@ -50,6 +50,18 @@ function createDisplayedVisualProjection(options = {}) {
   let rendererReloadUsed = false;
   const terminals = new Map();
 
+  function notifyLogicalSettlement(entry, status, detail = null, visual = null) {
+    if (!entry || typeof entry.onLogicalSettlement !== "function") return;
+    try {
+      entry.onLogicalSettlement(Object.freeze({
+        status,
+        detail,
+        visualGeneration: visual ? visual.visualGeneration : entry.visualGeneration,
+        visual,
+      }));
+    } catch {}
+  }
+
   function rememberTerminal(generation, status, detail = null) {
     terminals.set(generation, Object.freeze({ status, detail }));
     while (terminals.size > MAX_TERMINAL_HISTORY) {
@@ -91,8 +103,10 @@ function createDisplayedVisualProjection(options = {}) {
     }
 
     if (requested) {
+      const superseded = requested;
       clearPendingTimer();
-      rememberTerminal(requested.visualGeneration, "superseded");
+      rememberTerminal(superseded.visualGeneration, "superseded");
+      notifyLogicalSettlement(superseded, "superseded");
     }
 
     themeId = input.themeId;
@@ -105,6 +119,9 @@ function createDisplayedVisualProjection(options = {}) {
       logicalState,
       requestedAt: now(),
       deliver: input.deliver,
+      onLogicalSettlement: typeof input.onLogicalSettlement === "function"
+        ? input.onLogicalSettlement
+        : null,
       recoveryInput: Object.freeze({
         themeId: input.themeId,
         logicalState: input.logicalState,
@@ -113,6 +130,9 @@ function createDisplayedVisualProjection(options = {}) {
         hitBox: input.hitBox || null,
         source: input.source,
         deliver: input.deliver,
+        onLogicalSettlement: typeof input.onLogicalSettlement === "function"
+          ? input.onLogicalSettlement
+          : null,
       }),
       sawAck: false,
     });
@@ -132,8 +152,10 @@ function createDisplayedVisualProjection(options = {}) {
       delivered = false;
     }
     if (!delivered) {
+      const failed = requested;
       requested = null;
       rememberTerminal(visualGeneration, "failed", "delivery-failed");
+      notifyLogicalSettlement(failed, "failed", "delivery-failed");
       return payload;
     }
 
@@ -150,6 +172,7 @@ function createDisplayedVisualProjection(options = {}) {
         request(timedOut.recoveryInput, { preserveRecovery: true });
         return;
       }
+      notifyLogicalSettlement(timedOut, "failed", "settlement-timeout");
       if (consecutiveNoAck >= 2 && !rendererReloadUsed) {
         rendererReloadUsed = true;
         onRendererUnresponsive({
@@ -165,10 +188,12 @@ function createDisplayedVisualProjection(options = {}) {
 
   function failCurrent(detail) {
     if (!requested) return false;
-    const generation = requested.visualGeneration;
+    const failed = requested;
+    const generation = failed.visualGeneration;
     clearPendingTimer();
     requested = null;
     rememberTerminal(generation, "failed", detail);
+    notifyLogicalSettlement(failed, "failed", detail);
     return true;
   }
 
@@ -238,12 +263,14 @@ function createDisplayedVisualProjection(options = {}) {
     }
 
     clearPendingTimer();
+    const settledRequest = requested;
     requested = null;
     committed = nextTuple;
     recoveryKey = null;
     recoveryRequests = 0;
     rememberTerminal(nextTuple.visualGeneration, "committed", ack.outcome);
     onCommit(committed, ack);
+    notifyLogicalSettlement(settledRequest, "committed", ack.outcome, committed);
     return { accepted: true, status: "committed", committed };
   }
 
@@ -260,9 +287,55 @@ function createDisplayedVisualProjection(options = {}) {
     return terminals.get(generation) || null;
   }
 
+  function refreshHitBoxes(resolveHitBox) {
+    if (typeof resolveHitBox !== "function") return false;
+    const resolve = (file) => {
+      try { return resolveHitBox(file); } catch { return null; }
+    };
+    if (committed) {
+      committed = Object.freeze({
+        ...committed,
+        ...freezeTuple({ ...committed, hitBox: resolve(committed.file) }),
+      });
+    }
+    if (requested) {
+      const hitBox = resolve(requested.file);
+      requested = Object.freeze({
+        ...requested,
+        ...freezeTuple({ ...requested, hitBox }),
+        recoveryInput: Object.freeze({
+          ...requested.recoveryInput,
+          hitBox,
+        }),
+      });
+    }
+    return !!(requested || committed);
+  }
+
+  function reset(next = {}) {
+    clearPendingTimer();
+    if (requested) {
+      const superseded = requested;
+      const detail = typeof next.detail === "string" ? next.detail : "projection-reset";
+      rememberTerminal(superseded.visualGeneration, "superseded", detail);
+      notifyLogicalSettlement(superseded, "superseded", detail);
+    }
+    requested = null;
+    if (next.preserveCommitted !== true) committed = null;
+    if (Object.prototype.hasOwnProperty.call(next, "themeId")) themeId = next.themeId;
+    if (Object.prototype.hasOwnProperty.call(next, "logicalState")) logicalState = next.logicalState;
+    recoveryKey = null;
+    recoveryRequests = 0;
+    consecutiveNoAck = 0;
+  }
+
   function dispose() {
     clearPendingTimer();
-    if (requested) rememberTerminal(requested.visualGeneration, "failed", "disposed");
+    if (requested) {
+      const failed = requested;
+      rememberTerminal(failed.visualGeneration, "failed", "disposed");
+      notifyLogicalSettlement(failed, "failed", "disposed");
+    }
     requested = null;
   }
 
@@ -272,6 +345,8 @@ function createDisplayedVisualProjection(options = {}) {
     failCurrent,
     getSnapshot,
     getTerminal,
+    refreshHitBoxes,
+    reset,
     dispose,
     get rendererReloadUsed() { return rendererReloadUsed; },
   };

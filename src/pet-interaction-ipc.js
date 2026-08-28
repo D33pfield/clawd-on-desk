@@ -7,6 +7,15 @@ function requiredDependency(value, name) {
   return value;
 }
 
+function isTrustedMainFrameEvent(event, webContents) {
+  if (!event || !webContents || event.sender !== webContents) return false;
+  try {
+    return !!event.senderFrame && event.senderFrame === webContents.mainFrame;
+  } catch {
+    return false;
+  }
+}
+
 function registerPetInteractionIpc(options = {}) {
   const ipcMain = requiredDependency(options.ipcMain, "ipcMain");
   const showContextMenu = requiredDependency(options.showContextMenu, "showContextMenu");
@@ -235,5 +244,6 @@ function registerPetInteractionIpc(options = {}) {
 }
 
 module.exports = {
+  isTrustedMainFrameEvent,
   registerPetInteractionIpc,
 };

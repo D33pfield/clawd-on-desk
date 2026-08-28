@@ -96,6 +96,11 @@ function initWithConfig(cfg) {
   _eyeTrackingStates = (tc.eyeTrackingStates) || ["idle", "dozing", "mini-idle"];
   _trustedScriptedSvgFiles = new Set(Array.isArray(tc.trustedScriptedSvgFiles) ? tc.trustedScriptedSvgFiles : []);
   _forceSvgObjectChannel = !!(tc.rendering && tc.rendering.svgChannel === "object");
+  _objectChannelFiles = new Set(
+    tc.rendering && Array.isArray(tc.rendering.objectChannelFiles)
+      ? tc.rendering.objectChannelFiles
+      : []
+  );
   _lowPowerStaticImageOverrides = (tc.rendering && tc.rendering.lowPowerStaticImageOverrides) || {};
   _petTintSupported = tc.petTintSupported === true;
   if (Object.prototype.hasOwnProperty.call(tc, "petTintPayload")) {
@@ -200,13 +205,57 @@ function applyObjectScaleStyle(el, file, state) {
   }
 }
 
-function getCurrentSvgRoot() {
-  if (!clawdEl || clawdEl.tagName !== "OBJECT") return null;
+function getObjectSvgRoot(objectEl) {
+  if (!objectEl || objectEl.tagName !== "OBJECT") return null;
   try {
-    const svgDoc = clawdEl.contentDocument;
+    const svgDoc = objectEl.contentDocument;
     return svgDoc ? svgDoc.documentElement : null;
   } catch {
     return null;
+  }
+}
+
+function getCurrentSvgRoot() {
+  return getObjectSvgRoot(clawdEl);
+}
+
+function setSvgRootLowPowerPaused(root, paused) {
+  if (!root) return false;
+  try {
+    const svgDoc = root.ownerDocument;
+    const existingStyle = svgDoc && svgDoc.getElementById(LOW_POWER_PAUSE_STYLE_ID);
+    if (paused) {
+      if (!existingStyle && svgDoc) {
+        const style = svgDoc.createElementNS("http://www.w3.org/2000/svg", "style");
+        style.id = LOW_POWER_PAUSE_STYLE_ID;
+        style.textContent = `
+          *, *::before, *::after {
+            animation-play-state: paused !important;
+            transition-property: none !important;
+          }
+        `;
+        root.appendChild(style);
+      }
+      if (typeof root.pauseAnimations === "function") root.pauseAnimations();
+    } else {
+      if (existingStyle) existingStyle.remove();
+      if (typeof root.unpauseAnimations === "function") root.unpauseAnimations();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function setAccessorySvgLowPowerPaused(slotName, paused) {
+  const slot = _accessorySlots[slotName];
+  if (!slot || !slot.element || slot.element.tagName !== "OBJECT") return false;
+  return setSvgRootLowPowerPaused(getObjectSvgRoot(slot.element), paused);
+}
+
+function syncAccessorySvgLowPowerPaused(paused) {
+  for (const slotName of ACCESSORY_SLOT_NAMES) {
+    setAccessorySvgLowPowerPaused(slotName, paused);
   }
 }
 
@@ -238,6 +287,7 @@ function setLowPowerSvgPaused(paused) {
   } else {
     refreshAccessoryLayout();
   }
+  syncAccessorySvgLowPowerPaused(next);
   if (window.electronAPI && typeof window.electronAPI.setLowPowerIdlePaused === "function") {
     window.electronAPI.setLowPowerIdlePaused(next);
   }
@@ -298,8 +348,7 @@ function getLowPowerAnimationBoundaryDelayMs(root) {
 function pauseCurrentSvgForLowPower({ waitForBoundary = false } = {}) {
   if (!shouldPauseForLowPower()) return;
   const root = getCurrentSvgRoot();
-  if (!root) return;
-  if (waitForBoundary) {
+  if (root && waitForBoundary) {
     const delayMs = getLowPowerAnimationBoundaryDelayMs(root);
     if (delayMs > 0) {
       lowPowerIdlePauseTimer = setTimeout(() => {
@@ -309,21 +358,7 @@ function pauseCurrentSvgForLowPower({ waitForBoundary = false } = {}) {
       return;
     }
   }
-  const svgDoc = root.ownerDocument;
-  if (svgDoc && !svgDoc.getElementById(LOW_POWER_PAUSE_STYLE_ID)) {
-    const style = svgDoc.createElementNS("http://www.w3.org/2000/svg", "style");
-    style.id = LOW_POWER_PAUSE_STYLE_ID;
-    style.textContent = `
-      *, *::before, *::after {
-        animation-play-state: paused !important;
-        transition-property: none !important;
-      }
-    `;
-    root.appendChild(style);
-  }
-  try {
-    if (typeof root.pauseAnimations === "function") root.pauseAnimations();
-  } catch {}
+  setSvgRootLowPowerPaused(root, true);
   setCurrentScriptedSvgLowPowerPaused(true);
   setLowPowerSvgPaused(true);
 }
@@ -334,14 +369,7 @@ function resumeCurrentSvgForLowPower() {
     lowPowerIdlePauseTimer = null;
   }
   const root = getCurrentSvgRoot();
-  if (root) {
-    try {
-      const svgDoc = root.ownerDocument;
-      const style = svgDoc && svgDoc.getElementById(LOW_POWER_PAUSE_STYLE_ID);
-      if (style) style.remove();
-      if (typeof root.unpauseAnimations === "function") root.unpauseAnimations();
-    } catch {}
-  }
+  setSvgRootLowPowerPaused(root, false);
   setCurrentScriptedSvgLowPowerPaused(false);
   setLowPowerSvgPaused(false);
 }
@@ -386,7 +414,6 @@ function setLowPowerIdleMode(enabled) {
   } else {
     resumeCurrentSvgForLowPower();
   }
-  refreshCurrentStateForLowPowerStaticImage();
 }
 
 function isSvgFile(file) {
@@ -463,6 +490,7 @@ let _shadowShift;
 let _eyeTrackingStates;
 let _trustedScriptedSvgFiles = new Set();
 let _forceSvgObjectChannel = false;
+let _objectChannelFiles = new Set();
 let _imgCacheBustSeq = 0;
 let _miniViewBox = null;
 let _fileViewBoxes = {};
@@ -745,9 +773,13 @@ function clearAccessoryRuntime(slotName, options = {}) {
   if (!options.clearAsset) return;
   clearAccessoryAssetLoadTimer(slotName);
   if (slot.element) {
+    setAccessorySvgLowPowerPaused(slotName, false);
     slot.element.onload = null;
     slot.element.onerror = null;
-    try { slot.element.src = ""; } catch {}
+    try {
+      if (slot.element.tagName === "OBJECT") slot.element.data = "";
+      else slot.element.src = "";
+    } catch {}
   }
   slot.assetFile = null;
   slot.assetReady = false;
@@ -813,6 +845,7 @@ function ensureAccessoryAsset(slotName) {
     clearAccessoryAssetLoadTimer(slotName);
     slot.assetReady = true;
     slot.assetSettled = true;
+    if (lowPowerSvgPaused) setAccessorySvgLowPowerPaused(slotName, true);
     refreshAccessoryLayout(slotName);
     flushAccessoryAssetWaiters(slotName);
   };
@@ -835,7 +868,12 @@ function ensureAccessoryAsset(slotName) {
     flushAccessoryAssetWaiters(slotName);
   }, ACCESSORY_SETTLE_TIMEOUT_MS);
   slot.assetLoadTimer = loadTimer;
-  slot.element.src = `../assets/accessories/${file}`;
+  const assetUrl = `../assets/accessories/${file}`;
+  // Chromium freezes embedded SVG timelines in <img>. The mouth slot uses a
+  // document-backed <object> so its bounded SMIL smoke/ember animation runs;
+  // the static head slot remains a cheaper <img>.
+  if (slot.element.tagName === "OBJECT") slot.element.data = assetUrl;
+  else slot.element.src = assetUrl;
   return false;
 }
 
@@ -1181,7 +1219,6 @@ let isReacting = false;
 let reactTimer = null;
 let currentIdleSvg = null;    // tracks which SVG is currently showing
 let currentState = null;      // last state name received from main (for re-pulse)
-let currentRequestedSvg = null; // original state file from main, before low-power substitution
 let lastCloudlingPointerPayload = null;
 let dndEnabled = false;
 let miniLeftFlip = false;
@@ -1325,6 +1362,7 @@ function needsObjectChannel(state, file) {
     return !!(slot && slot.payload.id !== "none" && descriptor && descriptor.followTarget);
   });
   return _forceSvgObjectChannel
+    || _objectChannelFiles.has(file)
     || needsEyeTracking(state)
     || _trustedScriptedSvgFiles.has(file)
     || needsAccessoryFollow;
@@ -1337,9 +1375,11 @@ function refreshAccessoryMediaChannel() {
     const pendingIsObject = pendingNext.tagName === "OBJECT";
     if (wantsObject !== pendingIsObject) {
       const file = pendingSvgFile;
+      const visualRequest = pendingNext.__clawdVisualRequest || null;
+      const fallbackFromObject = pendingNext.__clawdFallbackFromObject === true;
       cancelPendingSwap();
       detachEyeTracking();
-      swapToFile(file, pendingState);
+      swapToFile(file, pendingState, undefined, { visualRequest, fallbackFromObject });
       return true;
     }
   }
@@ -1362,11 +1402,6 @@ function resolveLowPowerStaticImageOverride(state, file) {
   const override = _lowPowerStaticImageOverrides && _lowPowerStaticImageOverrides[state];
   if (!override || override.from !== file || !override.to) return null;
   return override.to;
-}
-
-function hasLowPowerStaticImageOverride(state, file) {
-  const override = _lowPowerStaticImageOverrides && _lowPowerStaticImageOverrides[state];
-  return !!(override && override.from === file && override.to);
 }
 
 function shouldUseCloudlingPointerBridge(state, file) {
@@ -2095,7 +2130,6 @@ function renderStateFile(requestOrState, legacySvg) {
   // Track the latest state name so the Kimi permission pulse can re-trigger
   // swapToFile() with the matching state for eye-tracking decisions.
   currentState = state;
-  currentRequestedSvg = svg;
   const requestedSvg = svg;
   const lowPowerStaticImageOverride = resolveLowPowerStaticImageOverride(state, requestedSvg);
   const effectiveSvg = lowPowerStaticImageOverride || requestedSvg;
@@ -2185,12 +2219,6 @@ function renderStateFile(requestOrState, legacySvg) {
     fallbackFromObject: !!lowPowerStaticImageOverride,
   });
   currentIdleSvg = effectiveSvg;
-}
-
-function refreshCurrentStateForLowPowerStaticImage() {
-  if (!currentState || !currentRequestedSvg) return;
-  if (!hasLowPowerStaticImageOverride(currentState, currentRequestedSvg)) return;
-  renderStateFile(currentState, currentRequestedSvg);
 }
 
 // --- State change → switch animation (preload + instant swap) ---

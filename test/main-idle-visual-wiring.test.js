@@ -39,7 +39,7 @@ describe("main default idle visual wiring", () => {
   it("stamps pre-IPC visual choices on both renderer theme-config delivery paths", () => {
     const rendererConfig = sectionBetween(
       mainSource,
-      "function buildRendererThemeConfig()",
+      "function buildRendererThemeConfig(",
       "const _stateCtx = {"
     );
     assert.ok(rendererConfig.includes("cfg.idleDefaultVisual = getIdleVisualChoice();"));
@@ -47,27 +47,30 @@ describe("main default idle visual wiring", () => {
       mainSource,
       /cfg\.petTintPayload = resolvePetTintPayload\(tintId, activeTheme\);/
     );
-    assert.ok(rendererConfig.includes("const accessoryCandidate = buildPetAccessorySlotsCandidate({ headId, mouthId }, activeTheme);"));
+    assert.ok(!rendererConfig.includes("buildPetAccessorySlotsCandidate("));
+    assert.ok(rendererConfig.includes("const canonical = accessorySnapshot || getPetAccessorySlotsSnapshot(activeTheme);"));
     assert.ok(rendererConfig.includes("cfg.accessorySlots = {"));
-    assert.ok(rendererConfig.includes("payload: accessoryCandidate.payloads.head,"));
-    assert.ok(rendererConfig.includes("payload: accessoryCandidate.payloads.mouth,"));
+    assert.ok(rendererConfig.includes("payload: canonical.payloads.head,"));
+    assert.ok(rendererConfig.includes("payload: canonical.payloads.mouth,"));
     assert.ok(mainSource.includes(
       'sendToRenderer("pet-accessory-slots-change", candidate)'
     ));
     assert.ok(
-      mainSource.includes("themeConfig: buildRendererThemeConfig(),"),
+      mainSource.includes("themeConfig: buildRendererThemeConfig(initialAccessoryDelivery.snapshot),"),
       "createRenderWindow should carry the stamped config"
     );
     assert.ok(
-      mainSource.includes('sendToRenderer("theme-config", buildRendererThemeConfig());'),
+      mainSource.includes("deliverRendererThemeConfig();"),
       "did-finish-load re-send should carry the stamped config"
     );
+    assert.ok(mainSource.includes("finalizePetAccessorySlotsDelivery(initialAccessoryDelivery, true);"));
+    assert.ok(mainSource.includes("finalizePetAccessorySlotsDelivery(delivery, delivered)"));
     assert.ok(
       !mainSource.includes("themeConfig: themeRuntime.getRendererConfig()"),
       "an un-stamped renderer config must not reach the render window"
     );
     assert.ok(mainSource.includes("getEffectivePetAccessoryIdForTheme({"));
-    assert.ok(mainSource.includes('_settingsController.get("holidayAccessoryEnabled")'));
+    assert.ok(mainSource.includes("holidayAccessoryEnabled: snapshot.holidayAccessoryEnabled"));
   });
 
   it("starts and disposes the holiday accessory runtime with the app lifecycle", () => {

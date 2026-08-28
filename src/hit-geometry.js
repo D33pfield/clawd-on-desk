@@ -39,13 +39,19 @@ function hasRootViewBoxFileOverride(theme, file) {
 function usesObjectChannel(theme, state, file) {
   if (!theme || !isSvgFile(file)) return false;
   if (theme.rendering && theme.rendering.svgChannel === "object") return true;
+  const objectChannelFiles = theme.rendering && Array.isArray(theme.rendering.objectChannelFiles)
+    ? theme.rendering.objectChannelFiles
+    : [];
   const eyeStates = theme.eyeTracking && theme.eyeTracking.enabled
     ? (theme.eyeTracking.states || [])
     : [];
   const trustedFiles = theme._builtin && theme.trustedRuntime && Array.isArray(theme.trustedRuntime.scriptedSvgFiles)
     ? theme.trustedRuntime.scriptedSvgFiles
     : [];
-  return eyeStates.includes(state) || trustedFiles.includes(basenameOnly(file));
+  const basename = basenameOnly(file);
+  return eyeStates.includes(state)
+    || objectChannelFiles.includes(basename)
+    || trustedFiles.includes(basename);
 }
 
 function usesNormalizedLayout(theme, state, file) {

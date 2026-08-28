@@ -830,7 +830,17 @@ describe("tick default idle visual", () => {
     let visualGeneration = 0;
     c.sendToRenderer = (channel, ...args) => {
       rendererCalls.push([channel, ...args]);
-      if (channel === "state-change") return { visualGeneration: ++visualGeneration };
+      if (channel === "state-change") {
+        const request = { visualGeneration: ++visualGeneration };
+        const options = args[2];
+        if (options && typeof options.onLogicalSettlement === "function") {
+          options.onLogicalSettlement({
+            status: "committed",
+            visualGeneration: request.visualGeneration,
+          });
+        }
+        return request;
+      }
     };
     if (choice !== undefined) c.getIdleVisualChoice = () => choice;
     return c;
@@ -854,8 +864,8 @@ describe("tick default idle visual", () => {
     tickApi = loader.initTick(ctx);
     tickApi.startMainTick();
 
-    for (let i = 0; i < 6; i++) mock.timers.tick(50);   // reach MOUSE_IDLE_TIMEOUT + play delay
-    mock.timers.tick(600);                              // play out pick.duration → revert
+    for (let i = 0; i < 20 && idleStateChanges().length === 0; i++) mock.timers.tick(50);
+    mock.timers.tick(500);                              // duration starts at committed display
 
     const changes = idleStateChanges();
     assert.deepStrictEqual(
@@ -870,8 +880,8 @@ describe("tick default idle visual", () => {
     tickApi = loader.initTick(ctx);
     tickApi.startMainTick();
 
-    for (let i = 0; i < 6; i++) mock.timers.tick(50);
-    mock.timers.tick(600);
+    for (let i = 0; i < 20 && idleStateChanges().length === 0; i++) mock.timers.tick(50);
+    mock.timers.tick(500);
 
     const changes = idleStateChanges();
     assert.deepStrictEqual(
@@ -886,8 +896,8 @@ describe("tick default idle visual", () => {
     tickApi = loader.initTick(ctx);
     tickApi.startMainTick();
 
-    for (let i = 0; i < 6; i++) mock.timers.tick(50);
-    mock.timers.tick(600);
+    for (let i = 0; i < 20 && idleStateChanges().length === 0; i++) mock.timers.tick(50);
+    mock.timers.tick(500);
 
     const changes = idleStateChanges();
     assert.deepStrictEqual(
@@ -950,8 +960,8 @@ describe("tick default idle visual", () => {
     tickApi = loader.initTick(ctx);
     tickApi.startMainTick();
 
-    for (let i = 0; i < 6; i++) mock.timers.tick(50);
-    mock.timers.tick(600);
+    for (let i = 0; i < 20 && idleStateChanges().length === 0; i++) mock.timers.tick(50);
+    mock.timers.tick(500);
 
     assert.deepStrictEqual(
       idleStateChanges().map(([, , svg]) => svg),
@@ -1038,6 +1048,8 @@ describe("tick conditional idle easter eggs", () => {
   function start(theme = makeEggTheme(), configure = () => {}) {
     ctx = makeCtx(theme, []);
     let visualGeneration = 0;
+    ctx.autoSettleVisualRequests = true;
+    ctx.pendingVisualSettlements = [];
     ctx.getEffectiveAccessoryIds = () => ({ ...accessoryIds });
     ctx.random = () => {
       randomCalls++;
@@ -1046,7 +1058,20 @@ describe("tick conditional idle easter eggs", () => {
     ctx.now = () => Date.now();
     ctx.sendToRenderer = (channel, ...args) => {
       rendererCalls.push([channel, ...args]);
-      if (channel === "state-change") return { visualGeneration: ++visualGeneration };
+      if (channel === "state-change") {
+        const request = { visualGeneration: ++visualGeneration };
+        const options = args[2];
+        if (options && typeof options.onLogicalSettlement === "function") {
+          ctx.pendingVisualSettlements.push(options.onLogicalSettlement);
+          if (ctx.autoSettleVisualRequests) {
+            options.onLogicalSettlement({
+              status: "committed",
+              visualGeneration: request.visualGeneration,
+            });
+          }
+        }
+        return request;
+      }
       return undefined;
     };
     configure(ctx);
@@ -1137,6 +1162,47 @@ describe("tick conditional idle easter eggs", () => {
     assert.strictEqual(
       idleFiles().filter((file) => file === "clawd-outlaw-bender.svg").length,
       2
+    );
+    assert.strictEqual(randomCalls, 2);
+  });
+
+  it("starts duration and cooldown from the recovery generation that actually commits", () => {
+    const egg = { ...BENDER, duration: 1000, cooldownMs: 10000 };
+    randomValues.push(0);
+    start(makeEggTheme({ eggs: [egg] }), (c) => {
+      c.autoSettleVisualRequests = false;
+      c.isVisualGenerationCurrent = (generation) => generation === 2;
+    });
+
+    advanceUntil(() => idleFiles().length === 1);
+    mock.timers.tick(4000);
+    assert.deepStrictEqual(idleFiles(), ["clawd-outlaw-bender.svg"]);
+
+    ctx.pendingVisualSettlements[0]({ status: "committed", visualGeneration: 2 });
+    mock.timers.tick(999);
+    assert.deepStrictEqual(idleFiles(), ["clawd-outlaw-bender.svg"]);
+    mock.timers.tick(1);
+    assert.deepStrictEqual(idleFiles(), [
+      "clawd-outlaw-bender.svg",
+      "clawd-idle-follow.svg",
+    ]);
+  });
+
+  it("does not consume cooldown when the requested easter egg fails before display", () => {
+    randomValues.push(0, 0);
+    start(makeEggTheme(), (c) => {
+      c.autoSettleVisualRequests = false;
+    });
+
+    advanceUntil(() => idleFiles().length === 1);
+    ctx.pendingVisualSettlements[0]({ status: "failed", visualGeneration: 1 });
+
+    cursor = { x: 80, y: 80 };
+    mock.timers.tick(100);
+    ctx.autoSettleVisualRequests = true;
+    advanceUntil(
+      () => idleFiles().filter((file) => file === "clawd-outlaw-bender.svg").length === 2,
+      { limit: 2000 }
     );
     assert.strictEqual(randomCalls, 2);
   });

@@ -46,6 +46,24 @@ describe("theme schema validation", () => {
     assert.ok(errors.some((error) => error.includes("updateBubbleAnchorBox must include finite")));
   });
 
+  it("strictly validates per-file object-channel SVG basenames", () => {
+    assert.deepStrictEqual(schema.validateTheme(validThemeJson({
+      rendering: { objectChannelFiles: ["animated.svg", "UPPER.SVG"] },
+    })), []);
+
+    for (const objectChannelFiles of [
+      "animated.svg",
+      ["../animated.svg"],
+      ["animated.png"],
+      [42],
+    ]) {
+      const errors = schema.validateTheme(validThemeJson({
+        rendering: { objectChannelFiles },
+      }));
+      assert.ok(errors.some((error) => error.includes("rendering.objectChannelFiles")));
+    }
+  });
+
   it("treats sleepSequence.mode=direct as not requiring full sleep art", () => {
     const errors = schema.validateTheme(validThemeJson({
       sleepSequence: { mode: "direct" },
@@ -543,6 +561,7 @@ describe("theme schema defaults and normalization", () => {
       },
       rendering: {
         svgChannel: "object",
+        objectChannelFiles: ["../animated.svg", "animated.svg", "still.png"],
         lowPowerStaticImageOverrides: {
           sleeping: { from: "../sleep.svg", to: "../sleep.png" },
           bad: { from: "", to: "missing.png" },
@@ -559,6 +578,7 @@ describe("theme schema defaults and normalization", () => {
     });
     assert.deepStrictEqual(builtin.rendering, {
       svgChannel: "object",
+      objectChannelFiles: ["animated.svg"],
       lowPowerStaticImageOverrides: {
         sleeping: { from: "sleep.svg", to: "sleep.png" },
       },
@@ -587,6 +607,7 @@ describe("theme schema defaults and normalization", () => {
       idleAnimations: [{ file: "idle-look.svg" }],
       idleEasterEggs: [{ file: "bender.svg" }],
       rendering: {
+        objectChannelFiles: ["../bender.svg", "bender.svg"],
         lowPowerStaticImageOverrides: {
           sleeping: { from: "../sleep.svg", to: "sleep.png" },
         },
@@ -617,5 +638,10 @@ describe("theme schema defaults and normalization", () => {
       "tier.svg",
       "working.svg",
     ]);
+    assert.strictEqual(
+      schema.projectThemeVisualUsages({ rendering: { objectChannelFiles: ["bender.svg"] } })
+        .some((usage) => usage.file === "bender.svg" && usage.source === "rendering.objectChannelFiles"),
+      true
+    );
   });
 });

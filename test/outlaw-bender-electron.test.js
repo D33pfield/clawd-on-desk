@@ -16,7 +16,7 @@ function electronExecutable() {
   }
 }
 
-test("outlaw bender completes and restarts in Electron's object SVG channel", { timeout: 30_000 }, (t) => {
+test("outlaw bender completes and restarts in Electron's production object SVG channel", { timeout: 30_000 }, (t) => {
   const executable = electronExecutable();
   if (!executable) return t.skip("Electron executable is not installed");
   if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {

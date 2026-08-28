@@ -6,7 +6,9 @@ const assert = require("node:assert/strict");
 const {
   createPetAccessorySlotsCandidate,
   commitPetAccessorySlotsCandidate,
+  finalizePetAccessorySlotsDelivery,
   getPetAccessorySlotsSnapshot,
+  preparePetAccessorySlotsDelivery,
   resetPetAccessoryStateForTests,
 } = require("../src/pet-accessory-state");
 
@@ -49,4 +51,43 @@ test("rejects commits that were not minted by the canonical candidate builder", 
     }),
     /issued candidate/
   );
+});
+
+test("first delivery commits exactly the snapshot renderer received and reload reuses it", () => {
+  const theme = { _id: "clawd" };
+  const first = preparePetAccessorySlotsDelivery({ head: HAT, mouth: CIGARETTE }, theme);
+
+  assert.strictEqual(first.needsCommit, true);
+  assert.strictEqual(getPetAccessorySlotsSnapshot(theme), null);
+  const delivered = first.snapshot;
+  assert.strictEqual(finalizePetAccessorySlotsDelivery(first, true), delivered);
+  assert.strictEqual(getPetAccessorySlotsSnapshot(theme), delivered);
+
+  const reload = preparePetAccessorySlotsDelivery({ head: HAT, mouth: CIGARETTE }, theme);
+  assert.strictEqual(reload.needsCommit, false);
+  assert.strictEqual(reload.snapshot, delivered);
+  assert.strictEqual(finalizePetAccessorySlotsDelivery(reload, true), delivered);
+  assert.strictEqual(getPetAccessorySlotsSnapshot(theme), delivered);
+});
+
+test("failed config delivery does not commit startup or hot-switch candidates", () => {
+  const clawd = { _id: "clawd" };
+  const cloudling = { _id: "cloudling" };
+  const startup = preparePetAccessorySlotsDelivery({ head: HAT, mouth: CIGARETTE }, clawd);
+
+  assert.strictEqual(finalizePetAccessorySlotsDelivery(startup, false), false);
+  assert.strictEqual(getPetAccessorySlotsSnapshot(clawd), null);
+
+  const retry = preparePetAccessorySlotsDelivery({ head: HAT, mouth: CIGARETTE }, clawd);
+  finalizePetAccessorySlotsDelivery(retry, true);
+  const committedClawd = getPetAccessorySlotsSnapshot(clawd);
+
+  const hotSwitch = preparePetAccessorySlotsDelivery({ head: NONE, mouth: NONE }, cloudling);
+  assert.ok(hotSwitch.snapshot.accessoryGeneration > committedClawd.accessoryGeneration);
+  assert.strictEqual(finalizePetAccessorySlotsDelivery(hotSwitch, false), false);
+  assert.strictEqual(getPetAccessorySlotsSnapshot(clawd), committedClawd);
+  assert.strictEqual(getPetAccessorySlotsSnapshot(cloudling), null);
+
+  assert.strictEqual(finalizePetAccessorySlotsDelivery(hotSwitch, true), hotSwitch.snapshot);
+  assert.strictEqual(getPetAccessorySlotsSnapshot(cloudling), hotSwitch.snapshot);
 });

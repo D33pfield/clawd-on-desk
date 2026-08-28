@@ -99,6 +99,7 @@ function createSettingsEffectRouter(options = {}) {
   const getActiveTheme = options.getActiveTheme || (() => null);
   const syncHitWin = options.syncHitWin || noop;
   const refreshIdleVisual = options.refreshIdleVisual || noop;
+  const refreshDisplayedVisual = options.refreshDisplayedVisual || noop;
   const rebuildAllMenus = options.rebuildAllMenus || noop;
   const reconcilePowerSaveBlocker = options.reconcilePowerSaveBlocker || noop;
   const now = options.now || (() => new Date());
@@ -166,6 +167,10 @@ function createSettingsEffectRouter(options = {}) {
     }
     if ("lowPowerIdleMode" in changes) {
       sendToRenderer("low-power-idle-mode-change", changes.lowPowerIdleMode);
+      // The renderer owns the media-channel substitution, but main must own
+      // the request generation and settlement. Re-request only after the mode
+      // IPC so the next state-change resolves against the new low-power flag.
+      safeCall(logWarn, "Clawd: low-power visual refresh failed:", refreshDisplayedVisual);
       // If the HUD/ring were already hidden when low-power mode was enabled,
       // no visibility transition would otherwise schedule their delayed
       // destruction. Re-sync after mirrors update so hidden windows are

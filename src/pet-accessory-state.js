@@ -19,6 +19,7 @@ let current = Object.freeze({
 });
 let nextAccessoryGeneration = 0;
 let issuedCandidates = new WeakSet();
+let issuedDeliveries = new WeakSet();
 let repositionFloatingSurfaces = null;
 
 function themeIdOf(theme) {
@@ -62,6 +63,43 @@ function createPetAccessorySlotsCandidate(payloads, theme = null) {
   });
   issuedCandidates.add(candidate);
   return candidate;
+}
+
+function payloadEquals(a, b) {
+  return !!(a && b
+    && a.id === b.id
+    && a.assetFile === b.assetFile
+    && a.aspect === b.aspect
+    && a.widthScale === b.widthScale
+    && a.offsetY === b.offsetY);
+}
+
+function preparePetAccessorySlotsDelivery(payloads, theme = null) {
+  const themeId = themeIdOf(theme);
+  const normalizedPayloads = Object.freeze({
+    head: normalizePayload(payloads && payloads.head),
+    mouth: normalizePayload(payloads && payloads.mouth),
+  });
+  const canReuseCurrent = current.themeId === themeId
+    && payloadEquals(current.payloads.head, normalizedPayloads.head)
+    && payloadEquals(current.payloads.mouth, normalizedPayloads.mouth);
+  const delivery = Object.freeze({
+    snapshot: canReuseCurrent
+      ? current
+      : createPetAccessorySlotsCandidate(normalizedPayloads, theme),
+    needsCommit: !canReuseCurrent,
+  });
+  issuedDeliveries.add(delivery);
+  return delivery;
+}
+
+function finalizePetAccessorySlotsDelivery(delivery, delivered) {
+  if (!delivery || !issuedDeliveries.has(delivery)) {
+    throw new Error("pet accessory delivery must be prepared by canonical state");
+  }
+  if (delivered !== true) return false;
+  if (delivery.needsCommit) commitPetAccessorySlotsCandidate(delivery.snapshot);
+  return delivery.snapshot;
 }
 
 function commitPetAccessorySlotsCandidate(candidate) {
@@ -129,6 +167,7 @@ function resetPetAccessoryStateForTests() {
   });
   nextAccessoryGeneration = 0;
   issuedCandidates = new WeakSet();
+  issuedDeliveries = new WeakSet();
   repositionFloatingSurfaces = null;
 }
 
@@ -136,6 +175,8 @@ module.exports = {
   NONE_PAYLOAD,
   describeGeometrySync,
   createPetAccessorySlotsCandidate,
+  preparePetAccessorySlotsDelivery,
+  finalizePetAccessorySlotsDelivery,
   commitPetAccessorySlotsCandidate,
   getPetAccessorySlotsSnapshot,
   commitPetAccessoryPayload,

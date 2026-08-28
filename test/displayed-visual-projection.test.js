@@ -178,6 +178,73 @@ describe("displayed visual projection", () => {
     assert.strictEqual(reloads.length, 1, "renderer reload budget is session-wide");
   });
 
+  it("settles one logical callback with the recovery generation that commits", () => {
+    const clock = createClock();
+    const delivered = [];
+    const settlements = [];
+    const projection = createDisplayedVisualProjection({
+      now: clock.now,
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+    });
+    const first = projection.request(requestInput(
+      (payload) => delivered.push(payload),
+      { onLogicalSettlement: (result) => settlements.push(result) }
+    ));
+
+    clock.advance(policy.VISUAL_SETTLEMENT_DEADLINE_MS);
+    assert.strictEqual(projection.getTerminal(first.visualGeneration).status, "failed");
+    assert.strictEqual(settlements.length, 0, "the automatic recovery is not a logical terminal");
+
+    const retry = delivered[1];
+    projection.settle(ackFor(retry));
+    assert.strictEqual(settlements.length, 1);
+    assert.strictEqual(settlements[0].status, "committed");
+    assert.strictEqual(settlements[0].visualGeneration, retry.visualGeneration);
+    assert.strictEqual(settlements[0].visual.file, retry.file);
+  });
+
+  it("invalidates pending requests while optionally retaining the last committed tuple", () => {
+    const settlements = [];
+    const projection = createDisplayedVisualProjection();
+    const first = projection.request(requestInput(() => true));
+    projection.settle(ackFor(first));
+    const committed = projection.getSnapshot().committed;
+    const pending = projection.request(requestInput(() => true, {
+      file: "clawd-happy.svg",
+      onLogicalSettlement: (result) => settlements.push(result),
+    }));
+
+    projection.reset({
+      themeId: "clawd",
+      logicalState: "idle",
+      detail: "renderer-process-gone",
+      preserveCommitted: true,
+    });
+    assert.strictEqual(projection.getTerminal(pending.visualGeneration).status, "superseded");
+    assert.strictEqual(settlements[0].status, "superseded");
+    assert.strictEqual(projection.getSnapshot().committed, committed);
+
+    projection.reset({ themeId: "calico", logicalState: "idle", detail: "theme-activation" });
+    assert.strictEqual(projection.getSnapshot().committed, null);
+    assert.strictEqual(projection.getSnapshot().themeId, "calico");
+  });
+
+  it("reprojects committed and pending hitboxes without changing their generations", () => {
+    const projection = createDisplayedVisualProjection();
+    const first = projection.request(requestInput(() => true));
+    projection.settle(ackFor(first));
+    const pending = projection.request(requestInput(() => true, { file: "clawd-happy.svg" }));
+
+    projection.refreshHitBoxes((file) => ({ x: file.length, y: 1, w: 2, h: 3 }));
+    const snapshot = projection.getSnapshot();
+    assert.strictEqual(snapshot.committed.visualGeneration, first.visualGeneration);
+    assert.strictEqual(snapshot.requested.visualGeneration, pending.visualGeneration);
+    assert.deepStrictEqual(snapshot.committed.hitBox, { x: 21, y: 1, w: 2, h: 3 });
+    assert.deepStrictEqual(snapshot.requested.hitBox, { x: 15, y: 1, w: 2, h: 3 });
+    assert.deepStrictEqual(snapshot.requested.recoveryInput.hitBox, snapshot.requested.hitBox);
+  });
+
   it("does not commit or wait forever when renderer delivery fails", () => {
     const projection = createDisplayedVisualProjection();
     const request = projection.request(requestInput(() => false));

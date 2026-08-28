@@ -99,11 +99,11 @@ const {
   buildPetAccessoryPayload,
   getPetMouthAccessoryIdForTheme,
   buildPetMouthAccessoryPayload,
-  buildPetAccessorySlotsCandidate,
 } = require("./pet-customization-catalog");
 const {
-  commitPetAccessorySlotsCandidate,
+  finalizePetAccessorySlotsDelivery,
   getPetAccessorySlotsSnapshot,
+  preparePetAccessorySlotsDelivery,
 } = require("./pet-accessory-state");
 const {
   getEffectivePetAccessoryIdForTheme,
@@ -116,7 +116,7 @@ const {
   selectSessionAutomationDialogParent,
 } = require("./session-automation-dialog-parent");
 const { createSessionFolderOpener } = require("./session-open-folder");
-const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
+const { isTrustedMainFrameEvent, registerPetInteractionIpc } = require("./pet-interaction-ipc");
 const { createSystemWakeRecovery } = require("./system-wake-recovery");
 const { formatLocalTimestamp } = require("./log-timestamp");
 const { launchClaudeSession, openTerminalAt } = require("./launch-claude");
@@ -779,6 +779,8 @@ themeRuntime = createThemeRuntime({
   syncHitWin,
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
   startMainTick: () => startMainTick(),
+  invalidateDisplayedVisual: (detail) => resetDisplayedVisualProjection(detail),
+  refreshDisplayedVisualHitBoxes: () => refreshDisplayedVisualHitBoxes(),
   bumpAnimationOverridePreviewPosterGeneration,
   rebuildAllMenus: () => rebuildAllMenus(),
   isManagedTheme: (themeId) => codexPetMain && codexPetMain.isManagedTheme(themeId),
@@ -950,8 +952,7 @@ if (_loadedStartupTheme._id !== _requestedThemeId || _loadedStartupTheme._varian
 // Slot candidates commit to canonical state, so using one here would let a
 // hit-window sync install a payload resolved from its own
 // wall clock — the midnight/holiday race the canonical payload exists to end.
-function getEffectivePetAccessoryPayloads() {
-  const activeTheme = getActiveTheme();
+function getEffectivePetAccessoryPayloads(activeTheme = getActiveTheme()) {
   const snapshot = _settingsController.getSnapshot();
   const headId = getEffectivePetAccessoryIdForTheme({
     petAccessory: snapshot.petAccessory,
@@ -978,22 +979,18 @@ function getEffectivePetAccessoryIds() {
   });
 }
 
-function buildCurrentAccessorySlotsCandidate(activeTheme = getActiveTheme()) {
-  const snapshot = _settingsController.getSnapshot();
-  const themeId = activeTheme && activeTheme._id;
-  const headId = getEffectivePetAccessoryIdForTheme({
-    petAccessory: snapshot.petAccessory,
-    holidayAccessoryEnabled: snapshot.holidayAccessoryEnabled,
-    themeId,
-  });
-  const mouthId = getPetMouthAccessoryIdForTheme(snapshot.petMouthAccessory, themeId);
-  return buildPetAccessorySlotsCandidate({ headId, mouthId }, activeTheme);
+function prepareCurrentAccessorySlotsDelivery(activeTheme = getActiveTheme()) {
+  return preparePetAccessorySlotsDelivery(
+    getEffectivePetAccessoryPayloads(activeTheme),
+    activeTheme
+  );
 }
 
 function deliverAccessorySlotsSnapshot(activeTheme = getActiveTheme()) {
-  const candidate = buildCurrentAccessorySlotsCandidate(activeTheme);
-  if (!sendToRenderer("pet-accessory-slots-change", candidate)) return false;
-  commitPetAccessorySlotsCandidate(candidate);
+  const delivery = prepareCurrentAccessorySlotsDelivery(activeTheme);
+  const candidate = delivery.snapshot;
+  const delivered = sendToRenderer("pet-accessory-slots-change", candidate);
+  if (!finalizePetAccessorySlotsDelivery(delivery, delivered)) return false;
   const geometry = describeGeometrySync(syncHitWin());
   if (geometry.applied) {
     try { repositionAnchoredFloatingSurfaces(); } catch {}
@@ -1372,16 +1369,56 @@ function requestDisplayedVisual(displayState, file, options = {}) {
     hitBox: _state.resolveHitBoxForSvg(file),
     source: options.source || inferVisualSource(displayState, file),
     deliver: options.deliver || ((payload) => sendRawToRenderer("state-change", payload)),
+    onLogicalSettlement: options.onLogicalSettlement,
+  });
+}
+
+function resetDisplayedVisualProjection(detail = "projection-reset", options = {}) {
+  if (!displayedVisualProjection) return false;
+  const activeTheme = getActiveTheme();
+  displayedVisualProjection.reset({
+    themeId: activeTheme && activeTheme._id,
+    logicalState: _state.getCurrentState(),
+    detail,
+    preserveCommitted: options.preserveCommitted === true,
+  });
+  if (options.preserveCommitted !== true) {
+    lastAppliedVisualGeneration = 0;
+    lastDiscordPresenceVisual = null;
+  }
+  return true;
+}
+
+function refreshDisplayedVisualHitBoxes() {
+  if (!displayedVisualProjection) return false;
+  const refreshed = displayedVisualProjection.refreshHitBoxes(
+    (file) => _state.resolveHitBoxForSvg(file)
+  );
+  if (!refreshed) return false;
+  lastAppliedVisualGeneration = 0;
+  return syncDisplayedVisualGeometry();
+}
+
+function refreshDisplayedVisualForLowPowerMode() {
+  const activeTheme = getActiveTheme();
+  const state = _state.getCurrentState();
+  const file = _state.getCurrentSvg();
+  const override = activeTheme
+    && activeTheme.rendering
+    && activeTheme.rendering.lowPowerStaticImageOverrides
+    && activeTheme.rendering.lowPowerStaticImageOverrides[state];
+  if (!override || override.from !== file || !override.to) return false;
+  return !!requestDisplayedVisual(state, file, {
+    logicalState: state,
+    source: "state",
   });
 }
 
 function isVisualGenerationCurrent(visualGeneration) {
   if (!displayedVisualProjection || !Number.isSafeInteger(visualGeneration)) return false;
   const snapshot = displayedVisualProjection.getSnapshot();
-  return !!(
-    (snapshot.requested && snapshot.requested.visualGeneration === visualGeneration)
-    || (snapshot.committed && snapshot.committed.visualGeneration === visualGeneration)
-  );
+  const current = snapshot.requested || snapshot.committed;
+  return !!(current && current.visualGeneration === visualGeneration);
 }
 
 function resolveDragReactionFile(direction) {
@@ -2044,40 +2081,42 @@ function getIdleVisualChoice() {
 // should already use the selected idle visual and tint instead of briefly
 // showing theme defaults. getRendererConfig() returns a fresh object, safe to
 // extend.
-function buildRendererThemeConfig() {
+function buildRendererThemeConfig(accessorySnapshot = null) {
   const cfg = themeRuntime.getRendererConfig();
   if (cfg) {
     const activeTheme = getActiveTheme();
     const tintSelections = _settingsController.get("petTint");
     const tintId = getPetTintIdForTheme(tintSelections, activeTheme && activeTheme._id);
-    const headId = getEffectivePetAccessoryIdForTheme({
-      petAccessory: _settingsController.get("petAccessory"),
-      holidayAccessoryEnabled: _settingsController.get("holidayAccessoryEnabled"),
-      themeId: activeTheme && activeTheme._id,
-    });
-    const mouthId = getPetMouthAccessoryIdForTheme(
-      _settingsController.get("petMouthAccessory"),
-      activeTheme && activeTheme._id
-    );
-    const accessoryCandidate = buildPetAccessorySlotsCandidate({ headId, mouthId }, activeTheme);
+    const canonical = accessorySnapshot || getPetAccessorySlotsSnapshot(activeTheme);
     cfg.idleDefaultVisual = getIdleVisualChoice();
     cfg.petTintPayload = resolvePetTintPayload(tintId, activeTheme);
-    cfg.accessorySlots = {
-      themeId: accessoryCandidate.themeId,
-      accessoryGeneration: accessoryCandidate.accessoryGeneration,
-      head: {
-        supported: cfg.accessorySupported === true,
-        attachments: cfg.accessoryAttachments || null,
-        payload: accessoryCandidate.payloads.head,
-      },
-      mouth: {
-        supported: cfg.mouthAccessorySupported === true,
-        attachments: cfg.mouthAccessoryAttachments || null,
-        payload: accessoryCandidate.payloads.mouth,
-      },
-    };
+    if (canonical) {
+      cfg.accessorySlots = {
+        themeId: canonical.themeId,
+        accessoryGeneration: canonical.accessoryGeneration,
+        head: {
+          supported: cfg.accessorySupported === true,
+          attachments: cfg.accessoryAttachments || null,
+          payload: canonical.payloads.head,
+        },
+        mouth: {
+          supported: cfg.mouthAccessorySupported === true,
+          attachments: cfg.mouthAccessoryAttachments || null,
+          payload: canonical.payloads.mouth,
+        },
+      };
+    }
   }
   return cfg;
+}
+
+function deliverRendererThemeConfig() {
+  const delivery = prepareCurrentAccessorySlotsDelivery();
+  const delivered = sendToRenderer(
+    "theme-config",
+    buildRendererThemeConfig(delivery.snapshot)
+  );
+  return !!finalizePetAccessorySlotsDelivery(delivery, delivered);
 }
 
 const _stateCtx = {
@@ -2213,6 +2252,7 @@ displayedVisualProjection = createDisplayedVisualProjection({
   },
   onRendererUnresponsive: () => {
     if (!win || win.isDestroyed()) return;
+    resetDisplayedVisualProjection("renderer-unresponsive", { preserveCommitted: true });
     petWindowRuntime.reloadWindowWebContents(win);
   },
 });
@@ -4280,6 +4320,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
     if (_state.getCurrentState() !== "idle") return;
     _state.applyState("idle", _state.getSvgOverride("idle"));
   },
+  refreshDisplayedVisual: refreshDisplayedVisualForLowPowerMode,
   rebuildAllMenus,
   reconcilePowerSaveBlocker,
   logWarn: console.warn,
@@ -4688,6 +4729,7 @@ function createWindow() {
     restoreMiniFromPrefs: (prefsSnapshot, pixelSize) => _mini.restoreFromPrefs(prefsSnapshot, pixelSize),
   });
 
+  const initialAccessoryDelivery = prepareCurrentAccessorySlotsDelivery();
   petWindowRuntime.createRenderWindow({
     BrowserWindow,
     size,
@@ -4695,11 +4737,12 @@ function createWindow() {
     initialVirtualBounds,
     preloadPath: path.join(__dirname, "preload.js"),
     loadFilePath: path.join(__dirname, "index.html"),
-    themeConfig: buildRendererThemeConfig(),
+    themeConfig: buildRendererThemeConfig(initialAccessoryDelivery.snapshot),
     setRenderWindow: (createdWindow) => { win = createdWindow; },
     isQuitting: () => isQuitting,
     applyDockVisibility,
   });
+  finalizePetAccessorySlotsDelivery(initialAccessoryDelivery, true);
 
   buildContextMenu();
   if (!isMac || showTray) createTray();
@@ -4757,7 +4800,11 @@ function createWindow() {
     requestDragReaction,
     requestClickReaction,
     settleVisual: (event, payload) => {
-      if (!win || win.isDestroyed() || !event || event.sender !== win.webContents) return false;
+      if (
+        !win
+        || win.isDestroyed()
+        || !isTrustedMainFrameEvent(event, win.webContents)
+      ) return false;
       return displayedVisualProjection.settle(payload);
     },
     recoverVisiblePetAfterRendererLoad: (event) => {
@@ -4867,7 +4914,7 @@ function createWindow() {
     setAccessoryMirrored(false);
   });
   win.webContents.on("did-finish-load", () => {
-    sendToRenderer("theme-config", buildRendererThemeConfig());
+    deliverRendererThemeConfig();
     petWindowRuntime.resendViewportOffsets();
     if (themeRuntime.isReloadInProgress()) return;
     syncRendererStateAfterLoad();
@@ -4880,6 +4927,7 @@ function createWindow() {
     petWindowRuntime.setDragLocked(false);
     idlePaused = false;
     mouseOverPet = false;
+    resetDisplayedVisualProjection("renderer-process-gone", { preserveCommitted: true });
     petWindowRuntime.reloadWindowWebContents(win, { crashKey: "renderWin", details });
   });
 

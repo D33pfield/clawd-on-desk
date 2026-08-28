@@ -71,8 +71,12 @@ describe("built-in accessory capability contracts", () => {
     const usages = projectThemeVisualUsages(raw);
     const files = collectRequiredAssetFiles(raw);
 
-    assert.strictEqual(usages.length, 50);
+    assert.strictEqual(usages.length, 51);
     assert.strictEqual(files.length, 37);
+    assert.ok(usages.some((usage) => (
+      usage.file === "clawd-outlaw-bender.svg"
+      && usage.source === "rendering.objectChannelFiles"
+    )));
     assert.strictEqual(normalized._capabilities.accessories, true);
     assertDeclaredTargetsExist("clawd", raw);
 

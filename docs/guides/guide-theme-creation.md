@@ -124,6 +124,8 @@ External themes are treated as untrusted input. SVG files in user themes are san
 
 Do not build a user theme that depends on JavaScript inside SVG files. The built-in Cloudling theme uses `trustedRuntime.scriptedSvgFiles`, but that capability is only honored for themes loaded from Clawd's packaged/repo `themes/` directory. If an external theme declares `trustedRuntime`, Clawd ignores it.
 
+CSS or SMIL timelines embedded in an SVG do not advance in Chromium's `<img>` channel. If a specific sanitized SVG must keep its internal animation, list its basename in `rendering.objectChannelFiles`; only those files use the document-backed `<object>` channel. The listed files become required theme assets and opt the theme into the higher-power scripted rendering profile. This field does not enable JavaScript: external theme SVGs are still sanitized first.
+
 ## theme.json Reference
 
 ### Required Fields
@@ -253,6 +255,7 @@ The existing schema fields are the only runtime truth. They already act as the t
 |-------|-----------------|
 | `eyeTracking.enabled` | Global eye-tracking on/off switch. When `false`, states do not need SVG just for cursor tracking. |
 | `eyeTracking.states` | Per-state whitelist for eye tracking. Only listed states must be SVG and will use the object channel. |
+| `rendering.objectChannelFiles` | Optional SVG basename list for files whose embedded CSS/SMIL timeline requires the document-backed object channel. Listed files are required assets; external SVGs remain sanitized. |
 | `miniMode.supported` | Enables mini mode for this theme. When `false`, Mini Mode is gated off in the menu/tray and edge-snap path. |
 | `idleAnimations` | Optional idle random pool. Omit or leave empty to keep idle on `states.idle[0]`. |
 | `idleEasterEggs` | Optional conditional idle pool. Each entry runs only for an exact selected head + mouth accessory pair and is subject to its own probability and cooldown. |
@@ -435,7 +438,7 @@ Omit `idleAnimations` or use an empty array if you want idle to stay on `states.
 - `duration` is 100–60000ms. `cooldownMs` is 0–86400000ms.
 - `chance` is greater than 0 and at most 1. Entries are checked in declaration order against one random roll; their cumulative chance must not exceed 1. The ordinary `idleAnimations` pool is used when no easter egg wins.
 - `requiresAccessories.head` and `.mouth` are both required and must exactly match the active catalog item ids. There is no wildcard or `none` shorthand.
-- The runtime checks eligibility before the roll and again immediately before display. Hidden, low-power, mini, roaming, dragging, menu-open, or non-idle pets neither play the egg nor consume its chance/cooldown. Cooldown begins only after a valid display request is issued.
+- The runtime checks eligibility before the roll and again immediately before display. Hidden, low-power, mini, roaming, dragging, menu-open, or non-idle pets neither play the egg nor consume its chance/cooldown. Duration and cooldown begin only after the renderer reports that the logical visual actually committed; an automatic settlement retry may commit under a newer visual generation without losing that playback timer.
 - Both accessory attachment maps must cover the easter-egg file. Use `{ "visibility": "hidden" }` for either external slot when the sprite embeds that item in its own artwork.
 - Third-party easter-egg SVGs receive the normal user-theme sanitizer. Built-in sprites are trusted runtime assets and therefore require repository-level static safety tests instead.
 
