@@ -179,9 +179,10 @@ describe("holiday accessory runtime", () => {
     const harness = createHarness();
     harness.runtime.start();
     assert.strictEqual(harness.calls.length, 1);
-    assert.strictEqual(harness.calls[0][0], "pet-accessory-change");
-    assert.strictEqual(harness.calls[0][1].id, "santa-hat");
-    assert.strictEqual(harness.hitboxPayloads[0].id, "santa-hat");
+    assert.strictEqual(harness.calls[0][0], "pet-accessory-slots-change");
+    assert.strictEqual(harness.calls[0][1].payloads.head.id, "santa-hat");
+    assert.strictEqual(harness.calls[0][1].payloads.mouth.id, "none");
+    assert.strictEqual(harness.hitboxPayloads[0], harness.calls[0][1]);
     assert.strictEqual(harness.timers.length, 1);
 
     assert.strictEqual(harness.runtime.refresh(), false);
@@ -191,8 +192,8 @@ describe("holiday accessory runtime", () => {
 
     harness.setDate(localDate(12, 28));
     harness.timers[0].callback();
-    assert.strictEqual(harness.calls.at(-1)[1].id, "wizard-hat");
-    assert.strictEqual(harness.hitboxPayloads.at(-1).id, "wizard-hat");
+    assert.strictEqual(harness.calls.at(-1)[1].payloads.head.id, "wizard-hat");
+    assert.strictEqual(harness.hitboxPayloads.at(-1), harness.calls.at(-1)[1]);
     assert.strictEqual(harness.timers.length, 2);
   });
 
@@ -202,7 +203,7 @@ describe("holiday accessory runtime", () => {
     const firstTimer = harness.timers[0];
     harness.setDate(localDate(1, 1));
     harness.powerMonitor.emit("resume");
-    assert.strictEqual(harness.calls.at(-1)[1].id, "party-hat");
+    assert.strictEqual(harness.calls.at(-1)[1].payloads.head.id, "party-hat");
     assert.strictEqual(firstTimer.cleared, true);
     assert.strictEqual(harness.timers.length, 2);
 
@@ -221,6 +222,6 @@ describe("holiday accessory runtime", () => {
       holidayAccessoryEnabled: {},
     });
     harness.runtime.refresh({ force: true });
-    assert.strictEqual(harness.calls.at(-1)[1].id, "halo");
+    assert.strictEqual(harness.calls.at(-1)[1].payloads.head.id, "halo");
   });
 });

@@ -39,12 +39,12 @@ describe("main default idle visual wiring", () => {
       mainSource,
       /cfg\.petTintPayload = resolvePetTintPayload\(tintId, activeTheme\);/
     );
-    assert.match(
-      mainSource,
-      /cfg\.accessoryPayload = resolvePetAccessoryPayload\(accessoryId, activeTheme\);/
-    );
+    assert.ok(rendererConfig.includes("const accessoryCandidate = buildPetAccessorySlotsCandidate({ headId, mouthId }, activeTheme);"));
+    assert.ok(rendererConfig.includes("cfg.accessorySlots = {"));
+    assert.ok(rendererConfig.includes("payload: accessoryCandidate.payloads.head,"));
+    assert.ok(rendererConfig.includes("payload: accessoryCandidate.payloads.mouth,"));
     assert.ok(mainSource.includes(
-      'sendToRenderer("pet-accessory-change", resolvePetAccessoryPayload(accessoryId, activeTheme));'
+      'sendToRenderer("pet-accessory-slots-change", candidate)'
     ));
     assert.ok(
       mainSource.includes("themeConfig: buildRendererThemeConfig(),"),

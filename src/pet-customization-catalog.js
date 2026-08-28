@@ -1,6 +1,9 @@
 "use strict";
 
-const { commitPetAccessoryPayload } = require("./pet-accessory-state");
+const {
+  commitPetAccessoryPayload,
+  createPetAccessorySlotsCandidate,
+} = require("./pet-accessory-state");
 
 // Canonical catalogs for pet customization choices. Persisted settings store
 // stable ids only; renderer-facing values are resolved here so neither menus
@@ -158,7 +161,7 @@ function buildPetAccessoryPayload(value, theme = null) {
 // authority, instead of geometry independently re-resolving settings/date.
 function resolvePetAccessoryPayload(value, theme = null) {
   const payload = buildPetAccessoryPayload(value, theme);
-  return commitPetAccessoryPayload(payload, theme).payload;
+  return commitPetAccessoryPayload(payload, theme).payloads.head;
 }
 
 function listPetAccessoryOptions() {
@@ -203,6 +206,13 @@ function listPetMouthAccessoryOptions() {
   return PET_MOUTH_ACCESSORY_CATALOG.map(({ id, labelKey }) => ({ id, labelKey }));
 }
 
+function buildPetAccessorySlotsCandidate({ headId, mouthId } = {}, theme = null) {
+  return createPetAccessorySlotsCandidate({
+    head: buildPetAccessoryPayload(headId, theme),
+    mouth: buildPetMouthAccessoryPayload(mouthId, theme),
+  }, theme);
+}
+
 module.exports = {
   PET_TINT_CATALOG,
   PET_TINT_IDS,
@@ -230,4 +240,5 @@ module.exports = {
   isPetMouthAccessorySupportedForTheme,
   buildPetMouthAccessoryPayload,
   listPetMouthAccessoryOptions,
+  buildPetAccessorySlotsCandidate,
 };

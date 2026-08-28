@@ -3,13 +3,14 @@
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
-  buildPetAccessoryPayload,
+  getPetMouthAccessoryIdForTheme,
+  buildPetAccessorySlotsCandidate,
 } = require("./pet-customization-catalog");
 const {
   getEffectivePetAccessoryIdForTheme,
 } = require("./holiday-accessory");
 const {
-  commitPetAccessoryPayload,
+  commitPetAccessorySlotsCandidate,
   describeGeometrySync,
   setPetAccessoryFloatingSurfaceRepositioner,
   repositionPetAccessoryFloatingSurfaces,
@@ -109,16 +110,26 @@ function createSettingsEffectRouter(options = {}) {
   let unsubscribeShortcuts = null;
   let lastTogglePetShortcut = ((settingsController.getSnapshot().shortcuts) || {}).togglePet || null;
 
-  function applyAccessoryCandidate(activeTheme, accessoryId) {
-    const payload = buildPetAccessoryPayload(accessoryId, activeTheme);
+  function applyAccessoryCandidate(activeTheme, snapshot) {
+    const themeId = activeTheme && activeTheme._id;
+    const headId = getEffectivePetAccessoryIdForTheme({
+      petAccessory: snapshot.petAccessory,
+      holidayAccessoryEnabled: snapshot.holidayAccessoryEnabled,
+      themeId,
+      date: now(),
+    });
+    const mouthId = getPetMouthAccessoryIdForTheme(snapshot.petMouthAccessory, themeId);
+    const candidate = buildPetAccessorySlotsCandidate({ headId, mouthId }, activeTheme);
     try {
-      sendToRenderer("pet-accessory-change", payload);
+      if (sendToRenderer("pet-accessory-slots-change", candidate) === false) {
+        throw new Error("renderer unavailable");
+      }
     } catch (err) {
       warn(logWarn, "Clawd: accessory renderer delivery failed:", err);
       return false;
     }
 
-    commitPetAccessoryPayload(payload, activeTheme);
+    commitPetAccessorySlotsCandidate(candidate);
     try {
       const geometry = describeGeometrySync(syncHitWin());
       if (!geometry.applied) {
@@ -170,16 +181,14 @@ function createSettingsEffectRouter(options = {}) {
       const tintId = getPetTintIdForTheme(changes.petTint, activeTheme && activeTheme._id);
       sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
     }
-    if ("petAccessory" in changes || "holidayAccessoryEnabled" in changes) {
+    if (
+      "petAccessory" in changes
+      || "petMouthAccessory" in changes
+      || "holidayAccessoryEnabled" in changes
+    ) {
       const activeTheme = getActiveTheme();
       const snapshot = settingsController.getSnapshot();
-      const accessoryId = getEffectivePetAccessoryIdForTheme({
-        petAccessory: snapshot.petAccessory,
-        holidayAccessoryEnabled: snapshot.holidayAccessoryEnabled,
-        themeId: activeTheme && activeTheme._id,
-        date: now(),
-      });
-      applyAccessoryCandidate(activeTheme, accessoryId);
+      applyAccessoryCandidate(activeTheme, snapshot);
     }
     if ("keepAwakeWhileWorking" in changes) {
       safeCall(logWarn, "Clawd: reconcilePowerSaveBlocker failed:", reconcilePowerSaveBlocker);

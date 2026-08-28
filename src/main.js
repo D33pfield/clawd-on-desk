@@ -97,8 +97,13 @@ const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
   buildPetAccessoryPayload,
-  resolvePetAccessoryPayload,
+  getPetMouthAccessoryIdForTheme,
+  buildPetMouthAccessoryPayload,
+  buildPetAccessorySlotsCandidate,
 } = require("./pet-customization-catalog");
+const {
+  commitPetAccessorySlotsCandidate,
+} = require("./pet-accessory-state");
 const {
   getEffectivePetAccessoryIdForTheme,
   createHolidayAccessoryRuntime,
@@ -941,18 +946,48 @@ if (_loadedStartupTheme._id !== _requestedThemeId || _loadedStartupTheme._varian
 
 // ── Pet window geometry / bounds runtime ──
 // Geometry's startup/theme-swap fallback only. It must stay a pure read:
-// resolvePetAccessoryPayload() commits to the canonical payload, so using it
-// here would let a hit-window sync install a payload resolved from its own
+// Slot candidates commit to canonical state, so using one here would let a
+// hit-window sync install a payload resolved from its own
 // wall clock — the midnight/holiday race the canonical payload exists to end.
-function getEffectivePetAccessoryPayload() {
+function getEffectivePetAccessoryPayloads() {
   const activeTheme = getActiveTheme();
   const snapshot = _settingsController.getSnapshot();
-  const accessoryId = getEffectivePetAccessoryIdForTheme({
+  const headId = getEffectivePetAccessoryIdForTheme({
     petAccessory: snapshot.petAccessory,
     holidayAccessoryEnabled: snapshot.holidayAccessoryEnabled,
     themeId: activeTheme && activeTheme._id,
   });
-  return buildPetAccessoryPayload(accessoryId, activeTheme);
+  const mouthId = getPetMouthAccessoryIdForTheme(
+    snapshot.petMouthAccessory,
+    activeTheme && activeTheme._id
+  );
+  return {
+    head: buildPetAccessoryPayload(headId, activeTheme),
+    mouth: buildPetMouthAccessoryPayload(mouthId, activeTheme),
+  };
+}
+
+function buildCurrentAccessorySlotsCandidate(activeTheme = getActiveTheme()) {
+  const snapshot = _settingsController.getSnapshot();
+  const themeId = activeTheme && activeTheme._id;
+  const headId = getEffectivePetAccessoryIdForTheme({
+    petAccessory: snapshot.petAccessory,
+    holidayAccessoryEnabled: snapshot.holidayAccessoryEnabled,
+    themeId,
+  });
+  const mouthId = getPetMouthAccessoryIdForTheme(snapshot.petMouthAccessory, themeId);
+  return buildPetAccessorySlotsCandidate({ headId, mouthId }, activeTheme);
+}
+
+function deliverAccessorySlotsSnapshot(activeTheme = getActiveTheme()) {
+  const candidate = buildCurrentAccessorySlotsCandidate(activeTheme);
+  if (!sendToRenderer("pet-accessory-slots-change", candidate)) return false;
+  commitPetAccessorySlotsCandidate(candidate);
+  const geometry = describeGeometrySync(syncHitWin());
+  if (geometry.applied) {
+    try { repositionAnchoredFloatingSurfaces(); } catch {}
+  }
+  return true;
 }
 
 // Composed accessory facing as the renderer actually applied it (mini-left
@@ -981,7 +1016,7 @@ const petWindowRuntime = createPetWindowRuntime({
   getCurrentState: () => getDisplayedVisualTuple().displayState,
   getCurrentSvg: () => getDisplayedVisualTuple().file,
   getCurrentHitBox: () => getDisplayedVisualTuple().hitBox,
-  getCurrentAccessoryPayload: getEffectivePetAccessoryPayload,
+  getCurrentAccessoryPayloads: getEffectivePetAccessoryPayloads,
   getAccessoryMirrored: () => _accessoryMirrored,
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
@@ -1170,7 +1205,6 @@ let soundVolume = _settingsController.get("soundVolume");
 let lowPowerIdleMode = _settingsController.get("lowPowerIdleMode");
 let keepAwakeWhileWorking = _settingsController.get("keepAwakeWhileWorking");
 let petTint = _settingsController.get("petTint");
-let petAccessory = _settingsController.get("petAccessory");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let disableMiniModeCached = _settingsController.get("disableMiniMode");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
@@ -1435,12 +1469,7 @@ function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
   const activeTheme = getActiveTheme();
   const tintId = getPetTintIdForTheme(petTint, activeTheme && activeTheme._id);
   sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
-  const accessoryId = getEffectivePetAccessoryIdForTheme({
-    petAccessory,
-    holidayAccessoryEnabled: _settingsController.get("holidayAccessoryEnabled"),
-    themeId: activeTheme && activeTheme._id,
-  });
-  sendToRenderer("pet-accessory-change", resolvePetAccessoryPayload(accessoryId, activeTheme));
+  deliverAccessorySlotsSnapshot(activeTheme);
   sendToRenderer("low-power-idle-mode-change", lowPowerIdleMode);
   if (_mini.getMiniMode()) {
     sendToRenderer("mini-mode-change", true, _mini.getMiniEdge());
@@ -2010,14 +2039,32 @@ function buildRendererThemeConfig() {
     const activeTheme = getActiveTheme();
     const tintSelections = _settingsController.get("petTint");
     const tintId = getPetTintIdForTheme(tintSelections, activeTheme && activeTheme._id);
-    const accessoryId = getEffectivePetAccessoryIdForTheme({
+    const headId = getEffectivePetAccessoryIdForTheme({
       petAccessory: _settingsController.get("petAccessory"),
       holidayAccessoryEnabled: _settingsController.get("holidayAccessoryEnabled"),
       themeId: activeTheme && activeTheme._id,
     });
+    const mouthId = getPetMouthAccessoryIdForTheme(
+      _settingsController.get("petMouthAccessory"),
+      activeTheme && activeTheme._id
+    );
+    const accessoryCandidate = buildPetAccessorySlotsCandidate({ headId, mouthId }, activeTheme);
     cfg.idleDefaultVisual = getIdleVisualChoice();
     cfg.petTintPayload = resolvePetTintPayload(tintId, activeTheme);
-    cfg.accessoryPayload = resolvePetAccessoryPayload(accessoryId, activeTheme);
+    cfg.accessorySlots = {
+      themeId: accessoryCandidate.themeId,
+      accessoryGeneration: accessoryCandidate.accessoryGeneration,
+      head: {
+        supported: cfg.accessorySupported === true,
+        attachments: cfg.accessoryAttachments || null,
+        payload: accessoryCandidate.payloads.head,
+      },
+      mouth: {
+        supported: cfg.mouthAccessorySupported === true,
+        attachments: cfg.mouthAccessoryAttachments || null,
+        payload: accessoryCandidate.payloads.mouth,
+      },
+    };
   }
   return cfg;
 }
@@ -4145,7 +4192,6 @@ const SETTINGS_MIRROR_SETTERS = {
   soundMuted: (v) => { soundMuted = v; }, soundVolume: (v) => { soundVolume = v; }, lowPowerIdleMode: (v) => { lowPowerIdleMode = v; },
   keepAwakeWhileWorking: (v) => { keepAwakeWhileWorking = v; },
   petTint: (v) => { petTint = v; },
-  petAccessory: (v) => { petAccessory = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, disableMiniMode: (v) => { disableMiniModeCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; resetKeepSizeFrozen(); },
   fullscreenOverlay: (v) => { fullscreenOverlayCached = v; },
   freeRoam: (v) => { _roam.setEnabled(v); },

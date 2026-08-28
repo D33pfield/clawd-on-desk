@@ -6,7 +6,7 @@ const {
   computeThemeAnchorRect: defaultComputeThemeAnchorRect,
 } = require("./visible-margins");
 const { resolveAccessoryAwareHitBox } = require("./pet-accessory-hitbox");
-const { getPetAccessoryPayloadSnapshot } = require("./pet-accessory-state");
+const { getPetAccessorySlotsSnapshot } = require("./pet-accessory-state");
 
 function createPetGeometryMain(options = {}) {
   const hitGeometry = options.hitGeometry || defaultHitGeometry;
@@ -17,7 +17,8 @@ function createPetGeometryMain(options = {}) {
   const getCurrentState = options.getCurrentState || (() => null);
   const getCurrentSvg = options.getCurrentSvg || (() => null);
   const getCurrentHitBox = options.getCurrentHitBox || (() => null);
-  const getCurrentAccessoryPayload = options.getCurrentAccessoryPayload || (() => null);
+  const getCurrentAccessoryPayloads = options.getCurrentAccessoryPayloads
+    || (() => ({ head: options.getCurrentAccessoryPayload ? options.getCurrentAccessoryPayload() : null }));
   const getAccessoryMirrored = options.getAccessoryMirrored || (() => false);
   const getMiniMode = options.getMiniMode || (() => false);
   const getMiniPeekOffset = options.getMiniPeekOffset || (() => 0);
@@ -69,13 +70,13 @@ function createPetGeometryMain(options = {}) {
     };
   }
 
-  function getCanonicalAccessoryPayload(theme) {
-    const current = getPetAccessoryPayloadSnapshot(theme);
+  function getCanonicalAccessoryPayloads(theme) {
+    const current = getPetAccessorySlotsSnapshot(theme);
     // Renderer config/theme reload normally commits before geometry runs. The
     // fallback is read-only for startup/theme-swap resilience — see main.js's
     // getEffectivePetAccessoryPayload, which must stay on the non-committing
     // builder so a hit-window sync can never install a payload of its own.
-    return current ? current.payload : getCurrentAccessoryPayload();
+    return current ? current.payloads : getCurrentAccessoryPayloads();
   }
 
   function getObjRect(bounds) {
@@ -117,7 +118,7 @@ function createPetGeometryMain(options = {}) {
       state,
       file,
       visual.hitBox,
-      getCanonicalAccessoryPayload(theme),
+      getCanonicalAccessoryPayloads(theme),
       { viewBox, mirrorX }
     );
     const hit = hitGeometry.getHitRectScreen(

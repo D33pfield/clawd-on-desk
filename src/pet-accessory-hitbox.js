@@ -1,6 +1,9 @@
 "use strict";
 
 const { resolveViewBox } = require("./hit-geometry");
+const {
+  resolveAccessoryDescriptor: resolveSharedAccessoryDescriptor,
+} = require("./pet-accessory-descriptor");
 
 function basenameOnly(value) {
   return typeof value === "string" ? value.replace(/^.*[\/\\]/, "") : value;
@@ -74,16 +77,17 @@ const BUILTIN_ACCESSORY_MOTION_PADDING = Object.freeze({
   }),
 });
 
-function resolveAccessoryDescriptor(theme, state, file) {
-  const attachments = theme && theme.customization && theme.customization.accessories;
+function resolveAccessoryDescriptor(theme, state, file, slot = "head", itemId = "none") {
+  const field = slot === "mouth" ? "mouthAccessories" : "accessories";
+  const attachments = theme && theme.customization && theme.customization[field];
   if (!attachments || !file) return null;
-
-  const safeFile = basenameOnly(file);
-  if (attachments.files && Object.prototype.hasOwnProperty.call(attachments.files, safeFile)) {
-    return attachments.files[safeFile];
-  }
-  if (state && state.startsWith("mini-") && attachments.mini) return attachments.mini;
-  return attachments.default || null;
+  return resolveSharedAccessoryDescriptor({
+    attachments,
+    slot,
+    itemId,
+    file: basenameOnly(file),
+    state,
+  });
 }
 
 function isFiniteHitBox(value) {
@@ -105,11 +109,12 @@ function normalizedPadding(value) {
   };
 }
 
-function getPadding(theme, file, descriptor) {
+function getPadding(theme, file, descriptor, slot) {
   const authored = normalizedPadding(descriptor && descriptor.hitBoxPadding);
   const themeId = theme && theme._builtin === true && typeof theme._id === "string" ? theme._id : null;
   const measured = normalizedPadding(
     themeId
+    && slot === "head"
     && BUILTIN_ACCESSORY_MOTION_PADDING[themeId]
     && BUILTIN_ACCESSORY_MOTION_PADDING[themeId][basenameOnly(file)]
   );
@@ -137,7 +142,7 @@ function mirrorHorizontal(left, right, viewBox) {
  * staticFrame/padding declaration into a giant transparent native input window.
  * The base hitbox is deliberately never clamped or rewritten.
  */
-function resolveAccessoryAwareHitBox(theme, state, file, baseHitBox, accessory, options = {}) {
+function resolveSlotAccessoryHitBox(theme, state, file, baseHitBox, accessory, slot, options = {}) {
   if (!isFiniteHitBox(baseHitBox)) return baseHitBox;
   if (
     !accessory
@@ -150,7 +155,7 @@ function resolveAccessoryAwareHitBox(theme, state, file, baseHitBox, accessory, 
     || !Number.isFinite(accessory.offsetY)
   ) return baseHitBox;
 
-  const descriptor = resolveAccessoryDescriptor(theme, state, file);
+  const descriptor = resolveAccessoryDescriptor(theme, state, file, slot, accessory.id);
   const frame = descriptor && descriptor.staticFrame;
   if (
     !descriptor
@@ -164,7 +169,7 @@ function resolveAccessoryAwareHitBox(theme, state, file, baseHitBox, accessory, 
   const height = width / accessory.aspect;
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return baseHitBox;
 
-  const padding = getPadding(theme, file, descriptor);
+  const padding = getPadding(theme, file, descriptor, slot);
   let accessoryLeft = frame.cx - width / 2 - padding.left;
   let accessoryTop = frame.baseY + accessory.offsetY - height - padding.top;
   let accessoryRight = frame.cx + width / 2 + padding.right;
@@ -195,6 +200,26 @@ function resolveAccessoryAwareHitBox(theme, state, file, baseHitBox, accessory, 
   const right = Math.max(baseHitBox.x + baseHitBox.w, accessoryRight);
   const bottom = Math.max(baseHitBox.y + baseHitBox.h, accessoryBottom);
   return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
+function resolveAccessoryAwareHitBox(theme, state, file, baseHitBox, payloads, options = {}) {
+  if (!isFiniteHitBox(baseHitBox)) return baseHitBox;
+  const slots = payloads && payloads.id
+    ? { head: payloads, mouth: null }
+    : (payloads || {});
+  let hitBox = baseHitBox;
+  for (const slot of ["head", "mouth"]) {
+    hitBox = resolveSlotAccessoryHitBox(
+      theme,
+      state,
+      file,
+      hitBox,
+      slots[slot],
+      slot,
+      options
+    );
+  }
+  return hitBox;
 }
 
 module.exports = {

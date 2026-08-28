@@ -9,6 +9,7 @@ const vm = require("node:vm");
 const RENDERER = path.join(__dirname, "..", "src", "renderer.js");
 const ACCESSORY_LAYOUT = path.join(__dirname, "..", "src", "pet-accessory-layout.js");
 const ACCESSORY_MIRROR = path.join(__dirname, "..", "src", "pet-accessory-mirror.js");
+const ACCESSORY_DESCRIPTOR = path.join(__dirname, "..", "src", "pet-accessory-descriptor.js");
 const PRELOAD = path.join(__dirname, "..", "src", "preload.js");
 const MAIN = path.join(__dirname, "..", "src", "main.js");
 
@@ -214,6 +215,11 @@ function createRendererHarness(options = {}) {
   const accessory = new FakeElement("img");
   accessory.id = "clawd-accessory";
   accessory.className = "clawd-accessory";
+  const mouthAccessoryLayer = new FakeElement("div");
+  mouthAccessoryLayer.id = "pet-mouth-accessory-layer";
+  const mouthAccessory = new FakeElement("img");
+  mouthAccessory.id = "clawd-mouth-accessory";
+  mouthAccessory.className = "clawd-accessory";
   const effectStage = new FakeElement("div");
   effectStage.id = "pet-effect-stage";
   const particleLayer = new FakeElement("div");
@@ -238,8 +244,10 @@ function createRendererHarness(options = {}) {
   motionStage.appendChild(assetDirectionStage);
   assetDirectionStage.appendChild(mediaLayer);
   assetDirectionStage.appendChild(accessoryLayer);
+  assetDirectionStage.appendChild(mouthAccessoryLayer);
   mediaLayer.appendChild(clawd);
   accessoryLayer.appendChild(accessory);
+  mouthAccessoryLayer.appendChild(mouthAccessory);
   container.appendChild(effectStage);
   effectStage.appendChild(particleLayer);
 
@@ -250,10 +258,12 @@ function createRendererHarness(options = {}) {
     ["pet-asset-direction-stage", assetDirectionStage],
     ["pet-media-layer", mediaLayer],
     ["pet-accessory-layer", accessoryLayer],
+    ["pet-mouth-accessory-layer", mouthAccessoryLayer],
     ["pet-effect-stage", effectStage],
     ["pet-particle-layer", particleLayer],
     ["clawd", clawd],
     ["clawd-accessory", accessory],
+    ["clawd-mouth-accessory", mouthAccessory],
   ]);
   const documentListeners = new Map();
 
@@ -327,8 +337,9 @@ function createRendererHarness(options = {}) {
   };
   context.globalThis = context;
 
-  const source = `${readNormalized(ACCESSORY_LAYOUT)}
+const source = `${readNormalized(ACCESSORY_LAYOUT)}
 ${readNormalized(ACCESSORY_MIRROR)}
+${readNormalized(ACCESSORY_DESCRIPTOR)}
 ${readNormalized(RENDERER)}
 globalThis.__rendererTest = {
   initWithConfig,
@@ -366,8 +377,10 @@ globalThis.__rendererTest = {
   get currentDragSvg() { return currentDragSvg; },
   get currentDragDirection() { return currentDragDirection; },
   get isDragReacting() { return isDragReacting; },
-  get accessoryAssetLoadTimer() { return _accessoryAssetLoadTimer; },
-  get accessoryAssetSettled() { return _accessoryAssetSettled; },
+  get accessoryAssetLoadTimer() { return _accessorySlots.head.assetLoadTimer; },
+  get accessoryAssetSettled() { return _accessorySlots.head.assetSettled; },
+  get accessorySlots() { return _accessorySlots; },
+  get lastAccessoryGeneration() { return _lastAccessoryGeneration; },
   get lowPowerSvgPaused() { return lowPowerSvgPaused; },
   get eyeTarget() { return eyeTarget; },
 };`;
@@ -381,6 +394,7 @@ globalThis.__rendererTest = {
     accessoryLayer,
     assetDirectionStage,
     accessory,
+    mouthAccessory,
     particleLayer,
     clawd,
     timers,
@@ -1027,10 +1041,8 @@ describe("renderer low-power idle mode", () => {
     assert.ok(source.includes("function shouldSuppressPassiveTrackingForLowPower()"));
     assert.ok(source.includes("return lowPowerIdleMode && lowPowerSvgPaused && shouldPauseForLowPower();"));
     assert.ok(source.includes("function _cancelLayerAnimLoop()"));
-    assert.match(
-      source,
-      /if \(next\) \{\s+_cancelLayerAnimLoop\(\);\s+cancelAccessoryFollow\(\);\s+\} else \{\s+refreshAccessoryLayout\(\);\s+\}/
-    );
+    assert.ok(source.includes("for (const slotName of ACCESSORY_SLOT_NAMES) cancelAccessoryFollow(slotName);"));
+    assert.ok(source.includes("else {\n    refreshAccessoryLayout();\n  }"));
     assert.ok(source.includes("if (shouldSuppressPassiveTrackingForLowPower()) { _layerAnimFrame = null; return; }"));
     assert.ok(source.includes("if (shouldSuppressPassiveTrackingForLowPower()) {\n    _cancelLayerAnimLoop();\n    return;\n  }"));
     assert.ok(source.includes("if (shouldSuppressPassiveTrackingForLowPower()) return;\n  if (!shouldUseCloudlingPointerBridge"));
@@ -1659,7 +1671,7 @@ describe("renderer pet tint", () => {
 
 describe("renderer pet accessory wardrobe", () => {
   function accessoryConfig(overrides = {}) {
-    return {
+    const config = {
       viewBox: { x: 0, y: 0, width: 100, height: 100 },
       eyeTracking: { states: [] },
       idleFollowSvg: "first.svg",
@@ -1679,7 +1691,149 @@ describe("renderer pet accessory wardrobe", () => {
       },
       ...overrides,
     };
+    const attachments = config.accessoryAttachments;
+    if (attachments && attachments.default && attachments.files) {
+      for (const file of ["first.svg", "reaction.svg", "static.svg", "dynamic.svg", "working.svg"]) {
+        if (!Object.prototype.hasOwnProperty.call(attachments.files, file)) {
+          attachments.files[file] = attachments.default;
+        }
+      }
+    }
+    return config;
   }
+
+  function dualSlotConfig(overrides = {}) {
+    const descriptor = {
+      staticFrame: { cx: 50, baseY: 40, width: 20 },
+    };
+    return {
+      viewBox: { x: 0, y: 0, width: 100, height: 100 },
+      eyeTracking: { states: [] },
+      idleFollowSvg: "first.svg",
+      accessorySlots: {
+        themeId: "clawd",
+        accessoryGeneration: 5,
+        head: {
+          supported: true,
+          attachments: { files: { "first.svg": descriptor } },
+          payload: {
+            id: "cowboy-hat",
+            assetFile: "cowboy-hat.svg",
+            aspect: 16 / 7,
+            widthScale: 1,
+            offsetY: 0,
+          },
+        },
+        mouth: {
+          supported: true,
+          attachments: { files: { "first.svg": descriptor } },
+          payload: {
+            id: "cigarette",
+            assetFile: "cigarette.svg",
+            aspect: 5 / 9,
+            widthScale: 1,
+            offsetY: 0,
+          },
+        },
+      },
+      ...overrides,
+    };
+  }
+
+  it("settles both independently loaded slots before revealing the first pet visual", () => {
+    const harness = createRendererHarness({
+      initialObjectData: "",
+      themeConfig: dualSlotConfig(),
+    });
+
+    harness.api.pendingNext.listeners.get("load")();
+    assert.ok(harness.api.pendingNext, "the pet should wait for both accessory assets");
+
+    harness.accessory.onload();
+    assert.ok(harness.api.pendingNext, "the mouth slot is still loading");
+    assert.strictEqual(harness.accessory.style.display, "none");
+
+    harness.mouthAccessory.onload();
+    assert.strictEqual(harness.api.pendingNext, null);
+    assert.strictEqual(harness.accessory.style.display, "block");
+    assert.strictEqual(harness.mouthAccessory.style.display, "block");
+    assert.strictEqual(harness.accessory.style.filter, "none");
+    assert.strictEqual(harness.mouthAccessory.style.filter, "none");
+  });
+
+  it("rejects stale and wrong-theme slot snapshots and resets the waterline on hot theme switch", () => {
+    const harness = createRendererHarness({ themeConfig: dualSlotConfig() });
+    harness.accessory.onload();
+    harness.mouthAccessory.onload();
+
+    harness.electronHandlers.onPetAccessorySlotsChange({
+      themeId: "clawd",
+      accessoryGeneration: 7,
+      payloads: {
+        head: {
+          id: "wizard-hat",
+          assetFile: "wizard-hat.svg",
+          aspect: 15 / 16,
+          widthScale: 0.95,
+          offsetY: 0.3,
+        },
+        mouth: { id: "none", assetFile: null, aspect: 1, widthScale: 1, offsetY: 0 },
+      },
+    });
+    assert.strictEqual(harness.api.lastAccessoryGeneration, 7);
+    assert.strictEqual(harness.api.accessorySlots.head.payload.id, "wizard-hat");
+    assert.strictEqual(harness.api.accessorySlots.mouth.payload.id, "none");
+
+    harness.electronHandlers.onPetAccessorySlotsChange({
+      themeId: "clawd",
+      accessoryGeneration: 6,
+      payloads: {
+        head: { id: "none", assetFile: null, aspect: 1, widthScale: 1, offsetY: 0 },
+        mouth: {
+          id: "cigarette",
+          assetFile: "cigarette.svg",
+          aspect: 5 / 9,
+          widthScale: 1,
+          offsetY: 0,
+        },
+      },
+    });
+    harness.electronHandlers.onPetAccessorySlotsChange({
+      themeId: "other",
+      accessoryGeneration: 100,
+      payloads: {
+        head: { id: "none", assetFile: null, aspect: 1, widthScale: 1, offsetY: 0 },
+        mouth: { id: "none", assetFile: null, aspect: 1, widthScale: 1, offsetY: 0 },
+      },
+    });
+    assert.strictEqual(harness.api.lastAccessoryGeneration, 7);
+    assert.strictEqual(harness.api.accessorySlots.head.payload.id, "wizard-hat");
+    assert.strictEqual(harness.api.accessorySlots.mouth.payload.id, "none");
+
+    const nextTheme = dualSlotConfig();
+    nextTheme.accessorySlots = {
+      ...nextTheme.accessorySlots,
+      themeId: "other",
+      accessoryGeneration: 2,
+      head: { ...nextTheme.accessorySlots.head, payload: { id: "none" } },
+      mouth: { ...nextTheme.accessorySlots.mouth, payload: { id: "none" } },
+    };
+    harness.electronHandlers.onThemeConfig(nextTheme);
+    assert.strictEqual(harness.api.lastAccessoryGeneration, 2);
+    assert.strictEqual(harness.api.accessorySlots.head.payload.id, "none");
+    assert.strictEqual(harness.api.accessorySlots.mouth.payload.id, "none");
+
+    harness.electronHandlers.onPetAccessorySlotsChange({
+      themeId: "clawd",
+      accessoryGeneration: 101,
+      payloads: {
+        head: dualSlotConfig().accessorySlots.head.payload,
+        mouth: dualSlotConfig().accessorySlots.mouth.payload,
+      },
+    });
+    assert.strictEqual(harness.api.lastAccessoryGeneration, 2);
+    assert.strictEqual(harness.api.accessorySlots.head.payload.id, "none");
+  });
 
   it("primes the fixed catalog asset before the initial pet swap and reveals it after load", () => {
     const filter = "grayscale(1) brightness(1.05)";
@@ -2111,6 +2265,7 @@ describe("renderer pet accessory wardrobe", () => {
     const preload = readNormalized(PRELOAD);
 
     assert.ok(html.indexOf('id="pet-media-layer"') < html.indexOf('id="pet-accessory-layer"'));
+    assert.ok(html.indexOf('id="pet-accessory-layer"') < html.indexOf('id="pet-mouth-accessory-layer"'));
     assert.ok(html.includes('<div id="pet-effect-stage">'));
     assert.ok(html.includes('<div id="pet-particle-layer"></div>'));
     assert.ok(html.indexOf('src="pet-accessory-layout.js"') < html.indexOf('src="renderer.js"'));
@@ -2127,6 +2282,9 @@ describe("renderer pet accessory wardrobe", () => {
     assert.ok(renderer.includes('assetDirectionStage.style.scale = activeFlip ? "-1 1" : "none";'));
     assert.ok(preload.includes(
       'onPetAccessoryChange: (cb) => ipcRenderer.on("pet-accessory-change", (_, payload) => cb(payload))'
+    ));
+    assert.ok(preload.includes(
+      'onPetAccessorySlotsChange: (cb) => ipcRenderer.on("pet-accessory-slots-change", (_, snapshot) => cb(snapshot))'
     ));
   });
 });

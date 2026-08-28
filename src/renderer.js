@@ -9,9 +9,12 @@ const motionStage = document.getElementById("pet-motion-stage") || container;
 const assetDirectionStage = document.getElementById("pet-asset-direction-stage") || container;
 const mediaLayer = document.getElementById("pet-media-layer") || container;
 const accessoryLayer = document.getElementById("pet-accessory-layer") || container;
+const mouthAccessoryLayer = document.getElementById("pet-mouth-accessory-layer") || accessoryLayer;
 const particleLayer = document.getElementById("pet-particle-layer") || container;
 const accessoryEl = document.getElementById("clawd-accessory");
+const mouthAccessoryEl = document.getElementById("clawd-mouth-accessory");
 const accessoryLayout = globalThis.petAccessoryLayout || null;
+const accessoryDescriptor = globalThis.petAccessoryDescriptor || null;
 const visualSwapPolicy = globalThis.petVisualSwapPolicy || {};
 let clawdEl = document.getElementById("clawd");
 let pendingNext = null;
@@ -50,24 +53,30 @@ let queuedSystemWakeReplayTimer = null;
 let _lowPowerStaticImageOverrides = {};
 let _petTintPayload = { id: "none", filter: "" };
 let _petTintSupported = false;
-let _accessoryPayload = {
-  id: "none",
-  assetFile: null,
-  aspect: 1,
-  widthScale: 1,
-  offsetY: 0,
+const ACCESSORY_SLOT_NAMES = Object.freeze(["head", "mouth"]);
+function createAccessorySlotRuntime(element) {
+  return {
+    element,
+    supported: false,
+    attachments: null,
+    payload: { id: "none", assetFile: null, aspect: 1, widthScale: 1, offsetY: 0 },
+    assetFile: null,
+    assetReady: false,
+    assetSettled: true,
+    assetLoadTimer: null,
+    assetWaiters: [],
+    raf: null,
+    lastLayout: null,
+    followKey: null,
+    diagnostics: new Set(),
+  };
+}
+const _accessorySlots = {
+  head: createAccessorySlotRuntime(accessoryEl),
+  mouth: createAccessorySlotRuntime(mouthAccessoryEl),
 };
-let _accessorySupported = false;
-let _accessoryAttachments = null;
-let _accessoryAssetFile = null;
-let _accessoryAssetReady = false;
-let _accessoryAssetSettled = true;
-let _accessoryAssetLoadTimer = null;
-let _accessoryAssetWaiters = [];
-let _accessoryRaf = null;
-let _accessoryLastLayout = null;
-let _accessoryFollowKey = null;
-const _accessoryDiagnostics = new Set();
+let _accessoryThemeId = null;
+let _lastAccessoryGeneration = 0;
 const PET_TINT_FILTER_TOKEN_RE =
   /^(?:hue-rotate\(-?\d+(?:\.\d+)?deg\)|(?:saturate|brightness|contrast|sepia|grayscale)\(\d+(?:\.\d+)?\))$/;
 
@@ -92,14 +101,31 @@ function initWithConfig(cfg) {
   if (Object.prototype.hasOwnProperty.call(tc, "petTintPayload")) {
     _petTintPayload = normalizePetTintPayload(tc.petTintPayload);
   }
-  _accessorySupported = tc.accessorySupported === true;
-  _accessoryAttachments = (
-    _accessorySupported
-    && tc.accessoryAttachments
-    && typeof tc.accessoryAttachments === "object"
-  ) ? tc.accessoryAttachments : null;
-  if (Object.prototype.hasOwnProperty.call(tc, "accessoryPayload")) {
-    _accessoryPayload = normalizeAccessoryPayload(tc.accessoryPayload);
+  const configuredSlots = tc.accessorySlots && typeof tc.accessorySlots === "object"
+    ? tc.accessorySlots
+    : null;
+  _accessoryThemeId = configuredSlots
+    && (configuredSlots.themeId === null || typeof configuredSlots.themeId === "string")
+    ? configuredSlots.themeId
+    : null;
+  _lastAccessoryGeneration = configuredSlots
+    && Number.isSafeInteger(configuredSlots.accessoryGeneration)
+    && configuredSlots.accessoryGeneration >= 0
+    ? configuredSlots.accessoryGeneration
+    : 0;
+  for (const slotName of ACCESSORY_SLOT_NAMES) {
+    const slot = _accessorySlots[slotName];
+    const configured = configuredSlots && configuredSlots[slotName];
+    const legacyHead = slotName === "head" && !configuredSlots;
+    slot.supported = configured
+      ? configured.supported === true
+      : (legacyHead && tc.accessorySupported === true);
+    slot.attachments = slot.supported
+      ? ((configured && configured.attachments) || (legacyHead && tc.accessoryAttachments) || null)
+      : null;
+    slot.payload = normalizeAccessoryPayload(
+      (configured && configured.payload) || (legacyHead && tc.accessoryPayload)
+    );
   }
   _imgCacheBustSeq = 0;
   _miniViewBox = tc.miniModeViewBox || null;
@@ -141,8 +167,9 @@ function initWithConfig(cfg) {
 
   applyObjectScaleStyle(clawdEl, getObjectSvgName(clawdEl), null);
   applyObjectScaleStyle(pendingNext, getObjectSvgName(pendingNext), null);
-  if (_accessorySupported && _accessoryPayload.id !== "none") {
-    ensureAccessoryAsset();
+  for (const slotName of ACCESSORY_SLOT_NAMES) {
+    const slot = _accessorySlots[slotName];
+    if (slot.supported && slot.payload.id !== "none") ensureAccessoryAsset(slotName);
   }
 }
 
@@ -207,7 +234,7 @@ function setLowPowerSvgPaused(paused) {
   lowPowerSvgPaused = next;
   if (next) {
     _cancelLayerAnimLoop();
-    cancelAccessoryFollow();
+    for (const slotName of ACCESSORY_SLOT_NAMES) cancelAccessoryFollow(slotName);
   } else {
     refreshAccessoryLayout();
   }
@@ -581,7 +608,7 @@ window.electronAPI.onThemeConfig((newConfig) => {
   // Clean up layered tracking before reinitializing
   _cleanupLayeredTracking();
   cancelPendingSwap("theme-config");
-  clearAccessoryRuntime({ clearAsset: true });
+  clearAllAccessoryRuntimes({ clearAsset: true });
   initWithConfig(newConfig);
   applyPetTintToAllMedia();
 });
@@ -668,66 +695,90 @@ function normalizeAccessoryPayload(payload) {
   return { id, assetFile, aspect, widthScale, offsetY };
 }
 
-function cancelAccessoryFollow() {
-  if (_accessoryRaf != null) {
-    cancelAnimationFrame(_accessoryRaf);
-    _accessoryRaf = null;
+function getAccessorySlot(slotName) {
+  return _accessorySlots[slotName] || null;
+}
+
+function cancelAccessoryFollow(slotName) {
+  const slot = getAccessorySlot(slotName);
+  if (!slot) return;
+  if (slot.raf != null) {
+    cancelAnimationFrame(slot.raf);
+    slot.raf = null;
   }
-  _accessoryFollowKey = null;
+  slot.followKey = null;
 }
 
-function hideAccessory() {
-  cancelAccessoryFollow();
-  _accessoryLastLayout = null;
-  if (!accessoryEl) return;
-  accessoryEl.style.display = "none";
-  accessoryEl.style.transform = "";
+function hideAccessory(slotName) {
+  const slot = getAccessorySlot(slotName);
+  if (!slot) return;
+  cancelAccessoryFollow(slotName);
+  slot.lastLayout = null;
+  if (!slot.element) return;
+  slot.element.style.display = "none";
+  slot.element.style.transform = "";
 }
 
-function clearAccessoryAssetLoadTimer() {
-  if (_accessoryAssetLoadTimer == null) return;
-  clearTimeout(_accessoryAssetLoadTimer);
-  _accessoryAssetLoadTimer = null;
+function clearAccessoryAssetLoadTimer(slotName) {
+  const slot = getAccessorySlot(slotName);
+  if (!slot || slot.assetLoadTimer == null) return;
+  clearTimeout(slot.assetLoadTimer);
+  slot.assetLoadTimer = null;
 }
 
-function clearAccessoryRuntime(options = {}) {
-  hideAccessory();
-  _accessoryDiagnostics.clear();
+function flushAccessoryAssetWaiters(slotName) {
+  const slot = getAccessorySlot(slotName);
+  if (!slot) return;
+  const waiters = slot.assetWaiters;
+  slot.assetWaiters = [];
+  for (const waiter of waiters) {
+    if (waiter.timer) clearTimeout(waiter.timer);
+    waiter.callback();
+  }
+}
+
+function clearAccessoryRuntime(slotName, options = {}) {
+  const slot = getAccessorySlot(slotName);
+  if (!slot) return;
+  hideAccessory(slotName);
+  slot.diagnostics.clear();
   if (!options.clearAsset) return;
-  // Fully detach the old request before releasing pet-swap waiters. A waiter
-  // may synchronously re-enter ensureAccessoryAsset() for a newly selected
-  // accessory; no old cleanup is allowed to clear that new request afterward.
-  clearAccessoryAssetLoadTimer();
-  if (accessoryEl) {
-    accessoryEl.onload = null;
-    accessoryEl.onerror = null;
-    try { accessoryEl.src = ""; } catch {}
+  clearAccessoryAssetLoadTimer(slotName);
+  if (slot.element) {
+    slot.element.onload = null;
+    slot.element.onerror = null;
+    try { slot.element.src = ""; } catch {}
   }
-  _accessoryAssetFile = null;
-  _accessoryAssetReady = false;
-  _accessoryAssetSettled = true;
-  flushAccessoryAssetWaiters();
+  slot.assetFile = null;
+  slot.assetReady = false;
+  slot.assetSettled = true;
+  flushAccessoryAssetWaiters(slotName);
 }
 
-function noteAccessoryDiagnostic(file, reason) {
+function clearAllAccessoryRuntimes(options = {}) {
+  for (const slotName of ACCESSORY_SLOT_NAMES) clearAccessoryRuntime(slotName, options);
+}
+
+function noteAccessoryDiagnostic(slotName, file, reason) {
+  const slot = getAccessorySlot(slotName);
+  if (!slot) return;
   const key = `${file || "unknown"}|${reason}`;
-  if (_accessoryDiagnostics.has(key)) return;
-  _accessoryDiagnostics.add(key);
-  try { console.warn(`Clawd: accessory fallback for ${file || "unknown"}: ${reason}`); } catch {}
+  if (slot.diagnostics.has(key)) return;
+  slot.diagnostics.add(key);
+  try { console.warn(`Clawd: ${slotName} accessory fallback for ${file || "unknown"}: ${reason}`); } catch {}
 }
 
-function getAccessoryDescriptor(file, state) {
-  if (!_accessorySupported || !_accessoryAttachments || !file) return null;
-  const safeFile = String(file).replace(/^.*[\/\\]/, "");
-  const files = _accessoryAttachments.files;
-  if (files && typeof files === "object"
-      && Object.prototype.hasOwnProperty.call(files, safeFile)) {
-    return files[safeFile];
-  }
-  if (state && state.startsWith("mini-") && _accessoryAttachments.mini) {
-    return _accessoryAttachments.mini;
-  }
-  return _accessoryAttachments.default || null;
+function getAccessoryDescriptor(slotName, file, state) {
+  const slot = getAccessorySlot(slotName);
+  if (!slot || !slot.supported || !slot.attachments || !file) return null;
+  if (!accessoryDescriptor || typeof accessoryDescriptor.resolveAccessoryDescriptor !== "function") return null;
+  return accessoryDescriptor.resolveAccessoryDescriptor({
+    attachments: slot.attachments,
+    slot: slotName,
+    itemId: slot.payload.id,
+    file: String(file).replace(/^.*[\/\\]/, ""),
+    state,
+  });
 }
 
 function getAccessoryStageSize() {
@@ -747,93 +798,98 @@ function getMediaLayoutBox(media) {
   return { x, y, width, height };
 }
 
-function ensureAccessoryAsset() {
-  if (!accessoryEl || !_accessoryPayload.assetFile) return false;
-  const file = _accessoryPayload.assetFile;
-  if (_accessoryAssetFile === file) return _accessoryAssetReady;
+function ensureAccessoryAsset(slotName) {
+  const slot = getAccessorySlot(slotName);
+  if (!slot || !slot.element || !slot.payload.assetFile) return false;
+  const file = slot.payload.assetFile;
+  if (slot.assetFile === file) return slot.assetReady;
 
-  _accessoryAssetFile = file;
-  _accessoryAssetReady = false;
-  _accessoryAssetSettled = false;
-  accessoryEl.style.display = "none";
-  accessoryEl.onload = () => {
-    if (_accessoryAssetFile !== file) return;
-    clearAccessoryAssetLoadTimer();
-    _accessoryAssetReady = true;
-    _accessoryAssetSettled = true;
-    refreshAccessoryLayout();
-    flushAccessoryAssetWaiters();
+  slot.assetFile = file;
+  slot.assetReady = false;
+  slot.assetSettled = false;
+  slot.element.style.display = "none";
+  slot.element.onload = () => {
+    if (slot.assetFile !== file) return;
+    clearAccessoryAssetLoadTimer(slotName);
+    slot.assetReady = true;
+    slot.assetSettled = true;
+    refreshAccessoryLayout(slotName);
+    flushAccessoryAssetWaiters(slotName);
   };
-  accessoryEl.onerror = () => {
-    if (_accessoryAssetFile !== file) return;
-    clearAccessoryAssetLoadTimer();
-    _accessoryAssetReady = false;
-    _accessoryAssetSettled = true;
-    hideAccessory();
-    noteAccessoryDiagnostic(file, "asset-load-failed");
-    flushAccessoryAssetWaiters();
+  slot.element.onerror = () => {
+    if (slot.assetFile !== file) return;
+    clearAccessoryAssetLoadTimer(slotName);
+    slot.assetReady = false;
+    slot.assetSettled = true;
+    hideAccessory(slotName);
+    noteAccessoryDiagnostic(slotName, file, "asset-load-failed");
+    flushAccessoryAssetWaiters(slotName);
   };
   const loadTimer = setTimeout(() => {
-    if (_accessoryAssetLoadTimer !== loadTimer || _accessoryAssetFile !== file) return;
-    _accessoryAssetLoadTimer = null;
-    _accessoryAssetReady = false;
-    _accessoryAssetSettled = true;
-    hideAccessory();
-    noteAccessoryDiagnostic(file, "asset-load-timeout");
-    flushAccessoryAssetWaiters();
+    if (slot.assetLoadTimer !== loadTimer || slot.assetFile !== file) return;
+    slot.assetLoadTimer = null;
+    slot.assetReady = false;
+    slot.assetSettled = true;
+    hideAccessory(slotName);
+    noteAccessoryDiagnostic(slotName, file, "asset-load-timeout");
+    flushAccessoryAssetWaiters(slotName);
   }, ACCESSORY_SETTLE_TIMEOUT_MS);
-  _accessoryAssetLoadTimer = loadTimer;
-  accessoryEl.src = `../assets/accessories/${file}`;
+  slot.assetLoadTimer = loadTimer;
+  slot.element.src = `../assets/accessories/${file}`;
   return false;
 }
 
-function flushAccessoryAssetWaiters() {
-  const waiters = _accessoryAssetWaiters;
-  _accessoryAssetWaiters = [];
-  for (const waiter of waiters) {
-    if (waiter.timer) clearTimeout(waiter.timer);
-    waiter.callback();
-  }
-}
-
-function shouldWaitForAccessoryAsset(file, state) {
-  if (!_accessorySupported || _accessoryPayload.id === "none") return false;
-  const descriptor = getAccessoryDescriptor(file, state);
+function shouldWaitForAccessoryAsset(slotName, file, state) {
+  const slot = getAccessorySlot(slotName);
+  if (!slot || !slot.supported || slot.payload.id === "none") return false;
+  const descriptor = getAccessoryDescriptor(slotName, file, state);
   if (!descriptor || descriptor.visibility === "hidden") return false;
-  ensureAccessoryAsset();
-  return !_accessoryAssetSettled;
+  ensureAccessoryAsset(slotName);
+  return !slot.assetSettled;
 }
 
 function deferSwapUntilAccessorySettles(file, state, next, callback) {
-  if (!shouldWaitForAccessoryAsset(file, state)) return false;
+  const waitingSlots = ACCESSORY_SLOT_NAMES.filter((slotName) => (
+    shouldWaitForAccessoryAsset(slotName, file, state)
+  ));
+  if (waitingSlots.length === 0) return false;
   if (next.__clawdWaitingForAccessory) return true;
   next.__clawdWaitingForAccessory = true;
   let settled = false;
+  let remaining = waitingSlots.length;
   const resume = () => {
     if (settled) return;
+    remaining--;
+    if (remaining > 0) return;
     settled = true;
     next.__clawdWaitingForAccessory = false;
     callback();
   };
-  const waiter = {
-    callback: resume,
-    timer: setTimeout(() => {
-      const index = _accessoryAssetWaiters.indexOf(waiter);
-      if (index >= 0) _accessoryAssetWaiters.splice(index, 1);
-      resume();
-    }, ACCESSORY_SETTLE_TIMEOUT_MS),
-  };
-  _accessoryAssetWaiters.push(waiter);
+  for (const slotName of waitingSlots) {
+    const slot = getAccessorySlot(slotName);
+    const waiter = {
+      callback: resume,
+      timer: setTimeout(() => {
+        const index = slot.assetWaiters.indexOf(waiter);
+        if (index >= 0) slot.assetWaiters.splice(index, 1);
+        resume();
+      }, ACCESSORY_SETTLE_TIMEOUT_MS),
+    };
+    slot.assetWaiters.push(waiter);
+  }
   return true;
 }
 
-function getCurrentAccessoryContext() {
-  if (!_accessorySupported || !_accessoryAttachments) return null;
-  if (!_accessoryPayload || _accessoryPayload.id === "none" || !_accessoryPayload.assetFile) return null;
+function getCurrentAccessoryContext(slotName) {
+  const slot = getAccessorySlot(slotName);
+  if (!slot || !slot.supported || !slot.attachments) return null;
+  if (!slot.payload || slot.payload.id === "none" || !slot.payload.assetFile) return null;
   if (!clawdEl || !clawdEl.isConnected || !currentDisplayedSvg) return null;
-  const descriptor = getAccessoryDescriptor(currentDisplayedSvg, currentDisplayedState);
+  const descriptor = getAccessoryDescriptor(slotName, currentDisplayedSvg, currentDisplayedState);
   if (!descriptor || typeof descriptor !== "object") return null;
   return {
+    slotName,
+    slot,
     file: currentDisplayedSvg,
     state: currentDisplayedState,
     media: clawdEl,
@@ -852,7 +908,7 @@ function computeStaticAccessoryLayout(context) {
     mediaBox,
     viewBox,
     frame,
-    accessory: _accessoryPayload,
+    accessory: context.slot.payload,
     stageSize,
   });
 }
@@ -880,74 +936,83 @@ function computeFollowAccessoryLayout(context) {
     mediaOffset: { x: mediaBox.x, y: mediaBox.y },
     matrix,
     frame: followTarget.frame,
-    accessory: _accessoryPayload,
+    accessory: context.slot.payload,
+    normalizeReflection: followTarget.normalizeReflection,
     stageSize,
   });
 }
 
-function applyAccessoryLayout(layout) {
-  if (!accessoryEl || !_accessoryAssetReady || !layout) return false;
+function applyAccessoryLayout(context, layout) {
+  const slot = context && context.slot;
+  if (!slot || !slot.element || !slot.assetReady || !layout) return false;
   const unchanged = accessoryLayout
     && typeof accessoryLayout.layoutsEqual === "function"
-    && accessoryLayout.layoutsEqual(_accessoryLastLayout, layout);
+    && accessoryLayout.layoutsEqual(slot.lastLayout, layout);
   if (!unchanged) {
     const matrix = layout.matrix;
-    accessoryEl.style.width = `${layout.width}px`;
-    accessoryEl.style.height = `${layout.height}px`;
-    accessoryEl.style.transform =
+    slot.element.style.width = `${layout.width}px`;
+    slot.element.style.height = `${layout.height}px`;
+    slot.element.style.transform =
       `matrix(${matrix.a}, ${matrix.b}, ${matrix.c}, ${matrix.d}, ${matrix.e}, ${matrix.f})`;
-    _accessoryLastLayout = layout;
+    slot.lastLayout = layout;
   }
-  accessoryEl.style.filter = "none";
-  accessoryEl.style.display = "block";
+  slot.element.style.filter = "none";
+  slot.element.style.display = "block";
   return true;
 }
 
-function accessoryFollowTick(expectedKey) {
-  _accessoryRaf = null;
+function accessoryFollowTick(slotName, expectedKey) {
+  const slot = getAccessorySlot(slotName);
+  if (!slot) return;
+  slot.raf = null;
   if (document.hidden === true || shouldSuppressPassiveTrackingForLowPower()) return;
-  const context = getCurrentAccessoryContext();
+  const context = getCurrentAccessoryContext(slotName);
   if (!context || context.descriptor.visibility === "hidden") {
-    hideAccessory();
+    hideAccessory(slotName);
     return;
   }
   const follow = context.descriptor.followTarget;
   const key = follow
-    ? `${context.file}|${_accessoryPayload.id}|${follow.id}`
+    ? `${context.file}|${slot.payload.id}|${follow.id}`
     : null;
-  if (!key || key !== expectedKey || key !== _accessoryFollowKey) {
-    refreshAccessoryLayout();
+  if (!key || key !== expectedKey || key !== slot.followKey) {
+    refreshAccessoryLayout(slotName);
     return;
   }
   const layout = computeFollowAccessoryLayout(context);
   if (!layout) {
-    noteAccessoryDiagnostic(context.file, `follow-target-unavailable:${follow.id}`);
-    cancelAccessoryFollow();
-    applyAccessoryLayout(computeStaticAccessoryLayout(context));
+    noteAccessoryDiagnostic(slotName, context.file, `follow-target-unavailable:${follow.id}`);
+    cancelAccessoryFollow(slotName);
+    applyAccessoryLayout(context, computeStaticAccessoryLayout(context));
     return;
   }
-  applyAccessoryLayout(layout);
-  _accessoryRaf = requestAnimationFrame(() => accessoryFollowTick(expectedKey));
+  applyAccessoryLayout(context, layout);
+  slot.raf = requestAnimationFrame(() => accessoryFollowTick(slotName, expectedKey));
 }
 
 function startAccessoryFollow(context) {
+  const { slotName, slot } = context;
   const follow = context.descriptor.followTarget;
   if (!follow || shouldSuppressPassiveTrackingForLowPower()) return;
-  const key = `${context.file}|${_accessoryPayload.id}|${follow.id}`;
-  cancelAccessoryFollow();
-  _accessoryFollowKey = key;
-  _accessoryRaf = requestAnimationFrame(() => accessoryFollowTick(key));
+  const key = `${context.file}|${slot.payload.id}|${follow.id}`;
+  cancelAccessoryFollow(slotName);
+  slot.followKey = key;
+  slot.raf = requestAnimationFrame(() => accessoryFollowTick(slotName, key));
 }
 
-function refreshAccessoryLayout() {
-  cancelAccessoryFollow();
-  const context = getCurrentAccessoryContext();
-  if (!context || context.descriptor.visibility === "hidden") {
-    hideAccessory();
+function refreshAccessoryLayout(slotName = null) {
+  if (!slotName) {
+    for (const name of ACCESSORY_SLOT_NAMES) refreshAccessoryLayout(name);
     return;
   }
-  if (!ensureAccessoryAsset()) {
-    hideAccessory();
+  cancelAccessoryFollow(slotName);
+  const context = getCurrentAccessoryContext(slotName);
+  if (!context || context.descriptor.visibility === "hidden") {
+    hideAccessory(slotName);
+    return;
+  }
+  if (!ensureAccessoryAsset(slotName)) {
+    hideAccessory(slotName);
     return;
   }
 
@@ -955,40 +1020,62 @@ function refreshAccessoryLayout() {
   if (follow && context.media.tagName === "OBJECT") {
     const dynamicLayout = computeFollowAccessoryLayout(context);
     if (dynamicLayout) {
-      applyAccessoryLayout(dynamicLayout);
+      applyAccessoryLayout(context, dynamicLayout);
       startAccessoryFollow(context);
       return;
     }
-    noteAccessoryDiagnostic(context.file, `follow-target-unavailable:${follow.id}`);
+    noteAccessoryDiagnostic(slotName, context.file, `follow-target-unavailable:${follow.id}`);
   }
   const staticLayout = computeStaticAccessoryLayout(context);
-  if (!applyAccessoryLayout(staticLayout)) {
-    hideAccessory();
-    noteAccessoryDiagnostic(context.file, "static-layout-unavailable");
+  if (!applyAccessoryLayout(context, staticLayout)) {
+    hideAccessory(slotName);
+    noteAccessoryDiagnostic(slotName, context.file, "static-layout-unavailable");
   }
 }
 
-function setAccessoryPayload(payload) {
+function applyAccessorySlotPayload(slotName, payload) {
+  const slot = getAccessorySlot(slotName);
+  if (!slot) return;
   const next = normalizeAccessoryPayload(payload);
-  const fileChanged = next.assetFile !== _accessoryAssetFile;
-  _accessoryPayload = next;
-  if (next.id === "none" || !_accessorySupported) {
-    clearAccessoryRuntime({ clearAsset: true });
-    refreshAccessoryMediaChannel();
+  const fileChanged = next.assetFile !== slot.assetFile;
+  slot.payload = next;
+  if (next.id === "none" || !slot.supported) {
+    clearAccessoryRuntime(slotName, { clearAsset: true });
     return;
   }
-  if (fileChanged) clearAccessoryRuntime({ clearAsset: true });
-  refreshAccessoryLayout();
+  if (fileChanged) clearAccessoryRuntime(slotName, { clearAsset: true });
+  refreshAccessoryLayout(slotName);
+}
+
+function setAccessorySlotsSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return false;
+  if (snapshot.themeId !== _accessoryThemeId) return false;
+  if (!Number.isSafeInteger(snapshot.accessoryGeneration) || snapshot.accessoryGeneration < 0) return false;
+  if (snapshot.accessoryGeneration < _lastAccessoryGeneration) return false;
+  if (!snapshot.payloads || typeof snapshot.payloads !== "object") return false;
+  _lastAccessoryGeneration = snapshot.accessoryGeneration;
+  for (const slotName of ACCESSORY_SLOT_NAMES) {
+    applyAccessorySlotPayload(slotName, snapshot.payloads[slotName]);
+  }
   refreshAccessoryMediaChannel();
+  return true;
 }
 
 if (window.electronAPI && typeof window.electronAPI.onPetAccessoryChange === "function") {
-  window.electronAPI.onPetAccessoryChange(setAccessoryPayload);
+  window.electronAPI.onPetAccessoryChange((payload) => {
+    applyAccessorySlotPayload("head", payload);
+    refreshAccessoryMediaChannel();
+  });
+}
+if (window.electronAPI && typeof window.electronAPI.onPetAccessorySlotsChange === "function") {
+  window.electronAPI.onPetAccessorySlotsChange(setAccessorySlotsSnapshot);
 }
 
 if (document && typeof document.addEventListener === "function") {
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden === true) cancelAccessoryFollow();
+    if (document.hidden === true) {
+      for (const slotName of ACCESSORY_SLOT_NAMES) cancelAccessoryFollow(slotName);
+    }
     else refreshAccessoryLayout();
   });
 }
@@ -996,7 +1083,7 @@ if (document && typeof document.addEventListener === "function") {
 if (window && typeof window.addEventListener === "function") {
   window.addEventListener("resize", refreshAccessoryLayout);
   window.addEventListener("beforeunload", () => {
-    clearAccessoryRuntime({ clearAsset: true });
+    clearAllAccessoryRuntimes({ clearAsset: true });
     clearTestReactionVisuals();
   });
 }
@@ -1232,12 +1319,11 @@ function tracksEyesForFile(state, file) {
  */
 function needsObjectChannel(state, file) {
   if (!isSvgFile(file)) return false;
-  const accessoryDescriptor = getAccessoryDescriptor(file, state);
-  const needsAccessoryFollow = !!(
-    _accessoryPayload.id !== "none"
-    && accessoryDescriptor
-    && accessoryDescriptor.followTarget
-  );
+  const needsAccessoryFollow = ACCESSORY_SLOT_NAMES.some((slotName) => {
+    const slot = getAccessorySlot(slotName);
+    const descriptor = getAccessoryDescriptor(slotName, file, state);
+    return !!(slot && slot.payload.id !== "none" && descriptor && descriptor.followTarget);
+  });
   return _forceSvgObjectChannel
     || needsEyeTracking(state)
     || _trustedScriptedSvgFiles.has(file)

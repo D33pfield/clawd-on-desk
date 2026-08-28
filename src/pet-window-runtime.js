@@ -125,7 +125,8 @@ function createPetWindowRuntime(options = {}) {
   const getCurrentSvg = options.getCurrentSvg || (() => null);
   const getCurrentHitBox = options.getCurrentHitBox || (() => null);
   const getDisplayedVisual = options.getDisplayedVisual || (() => null);
-  const getCurrentAccessoryPayload = options.getCurrentAccessoryPayload || (() => null);
+  const getCurrentAccessoryPayloads = options.getCurrentAccessoryPayloads
+    || (() => ({ head: options.getCurrentAccessoryPayload ? options.getCurrentAccessoryPayload() : null }));
   const getAccessoryMirrored = options.getAccessoryMirrored || (() => false);
   const getMiniMode = options.getMiniMode || (() => false);
   const getMiniTransitioning = options.getMiniTransitioning || (() => false);
@@ -212,7 +213,7 @@ function createPetWindowRuntime(options = {}) {
     getCurrentState,
     getCurrentSvg,
     getCurrentHitBox,
-    getCurrentAccessoryPayload,
+    getCurrentAccessoryPayloads,
     getAccessoryMirrored,
     getMiniMode,
     getMiniPeekOffset,

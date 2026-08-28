@@ -3,10 +3,11 @@
 const {
   getPetAccessoryIdForTheme,
   isPetAccessoryId,
-  buildPetAccessoryPayload,
+  getPetMouthAccessoryIdForTheme,
+  buildPetAccessorySlotsCandidate,
 } = require("./pet-customization-catalog");
 const {
-  commitPetAccessoryPayload,
+  commitPetAccessorySlotsCandidate,
   describeGeometrySync,
   repositionPetAccessoryFloatingSurfaces,
 } = require("./pet-accessory-state");
@@ -96,16 +97,17 @@ function createHolidayAccessoryRuntime(options = {}) {
     const snapshot = getSettingsSnapshot() || {};
     const theme = getActiveTheme() || null;
     const themeId = theme && theme._id;
-    const accessoryId = getEffectivePetAccessoryIdForTheme({
+    const headId = getEffectivePetAccessoryIdForTheme({
       petAccessory: snapshot.petAccessory,
       holidayAccessoryEnabled: snapshot.holidayAccessoryEnabled,
       themeId,
       date: now(),
     });
+    const mouthId = getPetMouthAccessoryIdForTheme(snapshot.petMouthAccessory, themeId);
     return {
-      key: `${themeId || ""}|${accessoryId}`,
+      key: `${themeId || ""}|${headId}|${mouthId}`,
       theme,
-      payload: buildPetAccessoryPayload(accessoryId, theme),
+      candidate: buildPetAccessorySlotsCandidate({ headId, mouthId }, theme),
     };
   }
 
@@ -119,12 +121,14 @@ function createHolidayAccessoryRuntime(options = {}) {
     let changed = false;
     if (force || resolved.key !== lastDeliveredKey) {
       try {
-        sendToRenderer("pet-accessory-change", resolved.payload);
+        if (sendToRenderer("pet-accessory-slots-change", resolved.candidate) === false) {
+          throw new Error("renderer unavailable");
+        }
       } catch (err) {
         try { logWarn("Clawd: holiday accessory delivery failed:", err && err.message); } catch {}
         return false;
       }
-      commitPetAccessoryPayload(resolved.payload, resolved.theme);
+      commitPetAccessorySlotsCandidate(resolved.candidate);
       lastDeliveredKey = resolved.key;
       changed = true;
     }
@@ -134,7 +138,7 @@ function createHolidayAccessoryRuntime(options = {}) {
     // retries the native geometry without resending an unchanged renderer payload.
     if (force || resolved.key !== lastAppliedKey) {
       try {
-        const geometry = describeGeometrySync(onAccessoryChange(resolved.payload));
+        const geometry = describeGeometrySync(onAccessoryChange(resolved.candidate));
         if (geometry.applied) {
           repositionPetAccessoryFloatingSurfaces();
           lastAppliedKey = resolved.key;
