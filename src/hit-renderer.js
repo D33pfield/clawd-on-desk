@@ -20,13 +20,11 @@ if (window.hitAPI && window.hitAPI.onThemeConfig) {
 }
 
 // --- State synced from main ---
-let currentSvg = null;
 let currentState = null;
 let miniMode = false;
 let dndEnabled = false;
 
 window.hitAPI.onStateSync((data) => {
-  if (data.currentSvg !== undefined) currentSvg = data.currentSvg;
   if (data.currentState !== undefined) currentState = data.currentState;
   if (data.miniMode !== undefined) {
     miniMode = data.miniMode;

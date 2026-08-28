@@ -124,6 +124,7 @@ function createPetWindowRuntime(options = {}) {
   const getCurrentState = options.getCurrentState || (() => null);
   const getCurrentSvg = options.getCurrentSvg || (() => null);
   const getCurrentHitBox = options.getCurrentHitBox || (() => null);
+  const getDisplayedVisual = options.getDisplayedVisual || (() => null);
   const getCurrentAccessoryPayload = options.getCurrentAccessoryPayload || (() => null);
   const getAccessoryMirrored = options.getAccessoryMirrored || (() => false);
   const getMiniMode = options.getMiniMode || (() => false);
@@ -207,6 +208,7 @@ function createPetWindowRuntime(options = {}) {
 
   const petGeometryMain = createPetGeometryMain({
     getActiveTheme,
+    getDisplayedVisual,
     getCurrentState,
     getCurrentSvg,
     getCurrentHitBox,

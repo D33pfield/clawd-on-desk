@@ -12,6 +12,7 @@ let isMouseIdle = false;       // showing idle-look
 let hasTriggeredYawn = false;  // 60s threshold already fired
 let idleLookPlayed = false;    // idle-look already played once since last movement
 let idleLookReturnTimer = null;
+let idleLookVisualGeneration = null;
 let yawnDelayTimer = null;     // tracked setTimeout for yawn/idle-look transitions
 let idleWasActive = false;
 let lastEyeDx = 0, lastEyeDy = 0;
@@ -285,6 +286,7 @@ function runMainTickOnce() {
         hasTriggeredYawn = false;
         idleLookPlayed = false;
         if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
+        idleLookVisualGeneration = null;
         if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
         if (isMouseIdle) {
           isMouseIdle = false;
@@ -333,17 +335,26 @@ function runMainTickOnce() {
         if (!shouldSuppressPassiveIpc()) ctx.sendToRenderer("eye-move", 0, 0);
         setTimeout(() => {
           if (isMouseIdle && ctx.currentState === "idle") {
-            ctx.sendToRenderer("state-change", "idle", pick.svg);
-            ctx.sendToHitWin("hit-state-sync", { currentSvg: pick.svg });
+            const request = ctx.sendToRenderer("state-change", "idle", pick.svg);
+            idleLookVisualGeneration = request && request.visualGeneration;
           }
         }, 250);
         idleLookReturnTimer = setTimeout(() => {
           idleLookReturnTimer = null;
           if (isMouseIdle && ctx.currentState === "idle") {
+            if (
+              idleLookVisualGeneration
+              && typeof ctx.isVisualGenerationCurrent === "function"
+              && !ctx.isVisualGenerationCurrent(idleLookVisualGeneration)
+            ) {
+              isMouseIdle = false;
+              idleLookVisualGeneration = null;
+              return;
+            }
             isMouseIdle = false;
+            idleLookVisualGeneration = null;
             const returnSvg = idleRestSvg();
             ctx.sendToRenderer("state-change", "idle", returnSvg);
-            ctx.sendToHitWin("hit-state-sync", { currentSvg: returnSvg });
             setTimeout(() => { ctx.forceEyeResend = true; }, 200);
           }
         }, 250 + pick.duration);

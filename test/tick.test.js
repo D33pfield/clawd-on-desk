@@ -826,8 +826,10 @@ describe("tick default idle visual", () => {
 
   function makeIdleVisualCtx(theme, choice) {
     const c = makeCtx(theme, statesSeen);
+    let visualGeneration = 0;
     c.sendToRenderer = (channel, ...args) => {
       rendererCalls.push([channel, ...args]);
+      if (channel === "state-change") return { visualGeneration: ++visualGeneration };
     };
     if (choice !== undefined) c.getIdleVisualChoice = () => choice;
     return c;
@@ -938,6 +940,23 @@ describe("tick default idle visual", () => {
     const changes = idleStateChanges();
     assert.ok(changes.length >= 2, "expected play + mouse-move revert");
     assert.strictEqual(changes[changes.length - 1][2], "clawd-idle-reading.svg");
+  });
+
+  it("does not let a stale idle return timer replace a superseding visual generation", () => {
+    const theme = makeIdleTheme([{ file: "clawd-idle-look.svg", duration: 500 }]);
+    ctx = makeIdleVisualCtx(theme, "clawd-idle-reading.svg");
+    ctx.isVisualGenerationCurrent = () => false;
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    for (let i = 0; i < 6; i++) mock.timers.tick(50);
+    mock.timers.tick(600);
+
+    assert.deepStrictEqual(
+      idleStateChanges().map(([, , svg]) => svg),
+      ["clawd-idle-look.svg"],
+      "a superseded idle beat must not fire its old return request"
+    );
   });
 
   it("does not eye-track while resting on a non-follow visual", () => {

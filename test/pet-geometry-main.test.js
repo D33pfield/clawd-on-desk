@@ -49,6 +49,7 @@ function createHarness(overrides = {}) {
     getThemeMarginBox,
     computeThemeAnchorRect,
     getActiveTheme: () => overrides.theme === undefined ? THEME : overrides.theme,
+    getDisplayedVisual: () => overrides.displayedVisual || null,
     getCurrentState: () => overrides.state || "thinking",
     getCurrentSvg: () => overrides.svg === undefined ? "thinking.svg" : overrides.svg,
     getCurrentHitBox: () => overrides.hitBox || { left: 1, top: 2, right: 3, bottom: 4 },
@@ -152,6 +153,28 @@ test("getHitRectScreen passes hitbox and mini padding, with a full-window fallba
   normal.runtime.getHitRectScreen(BOUNDS);
   assert.deepStrictEqual(normal.calls[0][6], { padX: 0, padY: 0 });
   assert.strictEqual(normal.runtime.getHitRectScreen(null), null);
+});
+
+test("all geometry consumers read state, file, and hitbox from one committed visual tuple", () => {
+  const displayedVisual = {
+    displayState: "reacting",
+    file: "reaction.svg",
+    hitBox: { left: 9, top: 8, right: 7, bottom: 6 },
+    visualGeneration: 42,
+  };
+  const harness = createHarness({ displayedVisual });
+
+  harness.runtime.getObjRect(BOUNDS);
+  harness.runtime.getAssetPointerPayload(BOUNDS, { x: 50, y: 60 });
+  harness.runtime.getHitRectScreen(BOUNDS);
+
+  assert.deepStrictEqual(harness.calls[0].slice(3), ["reacting", "reaction.svg"]);
+  assert.deepStrictEqual(harness.calls[1].slice(3, 5), ["reacting", "reaction.svg"]);
+  assert.deepStrictEqual(harness.calls[2].slice(3, 6), [
+    "reacting",
+    "reaction.svg",
+    displayedVisual.hitBox,
+  ]);
 });
 
 test("getHitRectScreen expands only for the currently selected accessory", () => {

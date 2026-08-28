@@ -170,6 +170,9 @@ const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
 const createFloatingWindowRuntime = require("./floating-window-runtime");
 const createPetWindowRuntime = require("./pet-window-runtime");
+const { collectRequiredAssetFiles } = require("./theme-schema");
+const { describeGeometrySync } = require("./pet-accessory-state");
+const { createDisplayedVisualProjection } = require("./displayed-visual-projection");
 const { createTestReactionHandler } = require("./test-reaction");
 const createMacHideController = require("./mac-hide");
 const {
@@ -427,10 +430,12 @@ let telegramNativeRunner = null;
 let telegramCompanion = null;
 let telegramDirectSend = null;
 let discordPresenceBridge = null;
-// Renderer-visible state animations can diverge briefly from state.currentSvg
-// (tick.js idle rotation). Cache every state-change even while Presence is off
-// so a first enable mirrors what the pet is actually showing.
+// Renderer-visible state animations can diverge from state.currentSvg (idle
+// rotation and reactions). Presence is fed only after the renderer confirms
+// what is actually on screen.
 let lastDiscordPresenceVisual = null;
+let displayedVisualProjection = null;
+let lastAppliedVisualGeneration = 0;
 let suppressTelegramMigrationReconcile = 0;
 let _remoteSshTransportCoordinator = null;
 let feishuApprovalClient = null;
@@ -972,9 +977,10 @@ const petWindowRuntime = createPetWindowRuntime({
   getHitWindow: () => hitWin,
   getSettingsWindow: () => getSettingsWindow(),
   getActiveTheme: () => getActiveTheme(),
-  getCurrentState: () => _state.getCurrentState(),
-  getCurrentSvg: () => _state.getCurrentSvg(),
-  getCurrentHitBox: () => _state.getCurrentHitBox(),
+  getDisplayedVisual: () => getDisplayedVisualTuple(),
+  getCurrentState: () => getDisplayedVisualTuple().displayState,
+  getCurrentSvg: () => getDisplayedVisualTuple().file,
+  getCurrentHitBox: () => getDisplayedVisualTuple().hitBox,
   getCurrentAccessoryPayload: getEffectivePetAccessoryPayload,
   getAccessoryMirrored: () => _accessoryMirrored,
   getMiniMode: () => _mini.getMiniMode(),
@@ -1298,29 +1304,81 @@ function bringPetToPrimaryDisplay() {
   return petWindowRuntime.bringPetToPrimaryDisplay();
 }
 
-function sendToRenderer(channel, ...args) {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
-  // State animations flow through this channel (applyState and the tick.js
-  // idle rotation), so it doubles as the presence mirror feed. Reactions,
-  // low-power pauses and tint/accessory changes ride other channels and are
-  // deliberately not mirrored.
-  if (channel === "state-change") {
-    const activeTheme = getActiveTheme();
-    lastDiscordPresenceVisual = {
-      state: args[0],
-      svg: args[1],
-      themeId: activeTheme && activeTheme._id,
-    };
-    if (discordPresenceBridge) {
-      try {
-        discordPresenceBridge.onVisual(
-          lastDiscordPresenceVisual.state,
-          lastDiscordPresenceVisual.svg,
-          lastDiscordPresenceVisual.themeId
-        );
-      } catch {}
-    }
+function sendRawToRenderer(channel, ...args) {
+  if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return false;
+  win.webContents.send(channel, ...args);
+  return true;
+}
+
+function inferVisualSource(displayState, file) {
+  return displayState === "idle" && file !== _state.getCurrentSvg()
+    ? "idle-animation"
+    : "state";
+}
+
+function requestDisplayedVisual(displayState, file, options = {}) {
+  if (!displayedVisualProjection) return null;
+  const activeTheme = getActiveTheme();
+  return displayedVisualProjection.request({
+    themeId: activeTheme && activeTheme._id,
+    logicalState: options.logicalState || _state.getCurrentState(),
+    displayState,
+    file,
+    hitBox: _state.resolveHitBoxForSvg(file),
+    source: options.source || inferVisualSource(displayState, file),
+    deliver: options.deliver || ((payload) => sendRawToRenderer("state-change", payload)),
+  });
+}
+
+function isVisualGenerationCurrent(visualGeneration) {
+  if (!displayedVisualProjection || !Number.isSafeInteger(visualGeneration)) return false;
+  const snapshot = displayedVisualProjection.getSnapshot();
+  return !!(
+    (snapshot.requested && snapshot.requested.visualGeneration === visualGeneration)
+    || (snapshot.committed && snapshot.committed.visualGeneration === visualGeneration)
+  );
+}
+
+function resolveDragReactionFile(direction) {
+  const theme = getActiveTheme();
+  const drag = theme && theme.reactions && theme.reactions.drag;
+  if (!drag || typeof drag !== "object") return null;
+  if (direction === "left" && typeof drag.fileLeft === "string") return drag.fileLeft;
+  if (direction === "right" && typeof drag.fileRight === "string") return drag.fileRight;
+  return typeof drag.file === "string" ? drag.file : null;
+}
+
+function requestDragReaction(direction) {
+  const normalizedDirection = direction === "left" || direction === "right" ? direction : null;
+  const file = resolveDragReactionFile(normalizedDirection);
+  if (!file) return null;
+  const snapshot = displayedVisualProjection.getSnapshot();
+  const activeReaction = snapshot.requested || snapshot.committed;
+  if (activeReaction && activeReaction.source === "reaction" && activeReaction.file === file) {
+    sendRawToRenderer("start-drag-reaction", null, normalizedDirection);
+    return activeReaction;
   }
+  return requestDisplayedVisual(_state.getCurrentState(), file, {
+    source: "reaction",
+    deliver: (payload) => sendRawToRenderer("start-drag-reaction", payload, normalizedDirection),
+  });
+}
+
+function requestClickReaction(file, duration) {
+  const activeTheme = getActiveTheme();
+  if (!activeTheme || !collectRequiredAssetFiles(activeTheme).includes(file)) return null;
+  const safeDuration = Number.isFinite(duration) ? Math.max(0, duration) : 0;
+  return requestDisplayedVisual(_state.getCurrentState(), file, {
+    source: "reaction",
+    deliver: (payload) => sendRawToRenderer("play-click-reaction", payload, safeDuration),
+  });
+}
+
+function sendToRenderer(channel, ...args) {
+  if (channel === "state-change") {
+    return requestDisplayedVisual(args[0], args[1], args[2] || {});
+  }
+  return sendRawToRenderer(channel, ...args);
 }
 function sendToHitWin(channel, ...args) {
   if (hitWin && !hitWin.isDestroyed()) hitWin.webContents.send(channel, ...args);
@@ -1366,7 +1424,6 @@ function applyPetWindowPosition(x, y, opts) { return petWindowRuntime.applyPetWi
 
 function syncHitStateAfterLoad() {
   sendToHitWin("hit-state-sync", {
-    currentSvg: _state.getCurrentSvg(),
     currentState: _state.getCurrentState(),
     miniMode: _mini.getMiniMode(),
     dndEnabled: doNotDisturb,
@@ -1538,6 +1595,28 @@ function flashTaskbar() {
 }
 
 function syncHitWin() { return petWindowRuntime.syncHitWin(); }
+
+function getDisplayedVisualTuple() {
+  const committed = displayedVisualProjection
+    && displayedVisualProjection.getSnapshot().committed;
+  if (committed) return committed;
+  return {
+    displayState: _state.getCurrentState(),
+    file: _state.getCurrentSvg(),
+    hitBox: _state.getCurrentHitBox(),
+    source: "startup",
+    visualGeneration: 0,
+  };
+}
+
+function syncDisplayedVisualGeometry() {
+  const committed = displayedVisualProjection
+    && displayedVisualProjection.getSnapshot().committed;
+  if (!committed || committed.visualGeneration === lastAppliedVisualGeneration) return true;
+  const outcome = describeGeometrySync(syncHitWin());
+  if (outcome.applied) lastAppliedVisualGeneration = committed.visualGeneration;
+  return outcome.applied;
+}
 
 let mouseOverPet = false;
 let menuOpen = false;
@@ -2046,6 +2125,39 @@ const _stateCtx = {
   hasAnyEnabledAgent: () => _runtimeAgentGate.hasAnyEnabledAgent(),
 };
 const _state = require("./state")(_stateCtx);
+displayedVisualProjection = createDisplayedVisualProjection({
+  projectActualFile: ({ actualFile, requested }) => {
+    const activeTheme = getActiveTheme();
+    if (!activeTheme || !collectRequiredAssetFiles(activeTheme).includes(actualFile)) return null;
+    return {
+      displayState: requested.displayState,
+      hitBox: _state.resolveHitBoxForSvg(actualFile),
+    };
+  },
+  onCommit: (visual) => {
+    syncDisplayedVisualGeometry();
+    try { repositionAnchoredFloatingSurfaces(); } catch {}
+    if (visual.source === "reaction") return;
+    lastDiscordPresenceVisual = {
+      state: visual.displayState,
+      svg: visual.file,
+      themeId: visual.themeId,
+    };
+    if (discordPresenceBridge) {
+      try {
+        discordPresenceBridge.onVisual(
+          lastDiscordPresenceVisual.state,
+          lastDiscordPresenceVisual.svg,
+          lastDiscordPresenceVisual.themeId
+        );
+      } catch {}
+    }
+  },
+  onRendererUnresponsive: () => {
+    if (!win || win.isDestroyed()) return;
+    petWindowRuntime.reloadWindowWebContents(win);
+  },
+});
 const _kimiQuotaCredentialStore = createKimiQuotaCredentialStore({ safeStorage });
 const _kimiQuotaRuntime = createKimiQuotaRuntime({
   credentialStore: _kimiQuotaCredentialStore,
@@ -2184,6 +2296,7 @@ const _tickCtx = {
   get startupRecoveryActive() { return _state.getStartupRecoveryActive(); },
   sendToRenderer,
   sendToHitWin,
+  isVisualGenerationCurrent,
   setState,
   applyState,
   getIdleVisualChoice,
@@ -4583,6 +4696,12 @@ function createWindow() {
     getCurrentState: () => _state.getCurrentState(),
     getCurrentSvg: () => _state.getCurrentSvg(),
     sendToRenderer,
+    requestDragReaction,
+    requestClickReaction,
+    settleVisual: (event, payload) => {
+      if (!win || win.isDestroyed() || !event || event.sender !== win.webContents) return false;
+      return displayedVisualProjection.settle(payload);
+    },
     recoverVisiblePetAfterRendererLoad: (event) => {
       if (!win || win.isDestroyed()) return;
       if (!event || event.sender !== win.webContents) return;
@@ -4595,6 +4714,7 @@ function createWindow() {
     beginDragSnapshot: () => beginDragSnapshot(),
     clearDragSnapshot: () => clearDragSnapshot(),
     syncHitWin: () => syncHitWin(),
+    syncDisplayedVisualGeometry,
     syncImeEditingPetDodge: () => topmostRuntime.syncImeEditingPetDodge(),
     isMiniMode: () => _mini.getMiniMode(),
     checkMiniModeSnap: () => checkMiniModeSnap(),
@@ -5318,6 +5438,7 @@ if (!gotTheLock) {
     _server.cleanup();
     if (_lanWss) _lanWss.cleanup();
     _updateBubble.cleanup();
+    if (displayedVisualProjection) displayedVisualProjection.dispose();
     _state.cleanup();
     _tick.cleanup();
     _mini.cleanup();

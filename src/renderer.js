@@ -12,11 +12,13 @@ const accessoryLayer = document.getElementById("pet-accessory-layer") || contain
 const particleLayer = document.getElementById("pet-particle-layer") || container;
 const accessoryEl = document.getElementById("clawd-accessory");
 const accessoryLayout = globalThis.petAccessoryLayout || null;
+const visualSwapPolicy = globalThis.petVisualSwapPolicy || {};
 let clawdEl = document.getElementById("clawd");
 let pendingNext = null;
 const LOW_POWER_IDLE_PAUSE_MS = 5000;
-const SWAP_LOAD_FALLBACK_MS = 3000;
-const SWAP_VISIBILITY_RESCUE_BUFFER_MS = 750;
+const SWAP_LOAD_FALLBACK_MS = visualSwapPolicy.SWAP_LOAD_FALLBACK_MS || 3000;
+const ACCESSORY_SETTLE_TIMEOUT_MS = visualSwapPolicy.ACCESSORY_SETTLE_TIMEOUT_MS || 3000;
+const SWAP_VISIBILITY_RESCUE_BUFFER_MS = visualSwapPolicy.SWAP_VISIBILITY_RESCUE_BUFFER_MS || 750;
 const EYE_ATTACH_RETRY_MS = 16;
 const EYE_ATTACH_MAX_ATTEMPTS = 60;
 const WAKE_OBJECT_RELOAD_RETRIES = 1;
@@ -779,7 +781,7 @@ function ensureAccessoryAsset() {
     hideAccessory();
     noteAccessoryDiagnostic(file, "asset-load-timeout");
     flushAccessoryAssetWaiters();
-  }, SWAP_LOAD_FALLBACK_MS);
+  }, ACCESSORY_SETTLE_TIMEOUT_MS);
   _accessoryAssetLoadTimer = loadTimer;
   accessoryEl.src = `../assets/accessories/${file}`;
   return false;
@@ -819,7 +821,7 @@ function deferSwapUntilAccessorySettles(file, state, next, callback) {
       const index = _accessoryAssetWaiters.indexOf(waiter);
       if (index >= 0) _accessoryAssetWaiters.splice(index, 1);
       resume();
-    }, SWAP_LOAD_FALLBACK_MS),
+    }, ACCESSORY_SETTLE_TIMEOUT_MS),
   };
   _accessoryAssetWaiters.push(waiter);
   return true;
@@ -1348,11 +1350,13 @@ function getAssetUrl(file) {
 }
 
 // --- IPC-triggered reactions (from hit window via main relay) ---
-window.electronAPI.onStartDragReaction((direction) => startDragReaction(direction));
+window.electronAPI.onStartDragReaction((requestOrDirection, legacyDirection) => startDragReaction(requestOrDirection, legacyDirection));
 window.electronAPI.onEndDragReaction(() => endDragReaction());
 window.electronAPI.onPlayClickReaction((svg, duration) => playReaction(svg, duration));
 
-function playReaction(svgFile, durationMs) {
+function playReaction(requestOrFile, durationMs) {
+  const visualRequest = normalizeVisualRequest(requestOrFile);
+  const svgFile = visualRequest ? visualRequest.file : requestOrFile;
   isReacting = true;
   detachEyeTracking();
   resumeCurrentSvgForLowPower();
@@ -1360,7 +1364,7 @@ function playReaction(svgFile, durationMs) {
 
   // Reactions do not attach eye tracking, but some themes force SVGs through
   // <object> so their SVG documents can load local sub-resources.
-  swapToFile(svgFile, null);
+  swapToFile(svgFile, null, undefined, { visualRequest });
 
   reactTimer = setTimeout(() => endReaction(), durationMs);
 }
@@ -1498,10 +1502,14 @@ function applyCodexPetVisualToObject(objectEl, file, options = {}) {
   }
 }
 
-function startDragReaction(direction) {
+function startDragReaction(requestOrDirection, legacyDirection) {
   if (dndEnabled) return;
+  const visualRequest = normalizeVisualRequest(requestOrDirection);
+  const direction = visualRequest ? legacyDirection : requestOrDirection;
   const normalizedDirection = normalizeDragDirection(direction);
-  const dragSvg = (normalizedDirection && _dragSvgs[normalizedDirection]) || _dragSvg;
+  const dragSvg = visualRequest
+    ? visualRequest.file
+    : ((normalizedDirection && _dragSvgs[normalizedDirection]) || _dragSvg);
   if (!dragSvg) return;
   currentDragDirection = normalizedDirection;
   if (isDragReacting && currentDragSvg === dragSvg) {
@@ -1524,7 +1532,7 @@ function startDragReaction(direction) {
   detachEyeTracking();
   resumeCurrentSvgForLowPower();
   window.electronAPI.pauseCursorPolling();
-  swapToFile(dragSvg, null);
+  swapToFile(dragSvg, null, undefined, { visualRequest });
 }
 
 function endDragReaction() {
@@ -1552,6 +1560,64 @@ function notifyPetVisualReadyOnce() {
   if (!window.electronAPI || typeof window.electronAPI.notifyPetVisualReady !== "function") return;
   petVisualReadyNotified = true;
   window.electronAPI.notifyPetVisualReady();
+}
+
+function normalizeVisualRequest(value) {
+  if (!value || typeof value !== "object") return null;
+  if (
+    (value.themeId !== null && typeof value.themeId !== "string")
+    || typeof value.logicalState !== "string"
+    || typeof value.displayState !== "string"
+    || typeof value.file !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(value.file)
+    || typeof value.source !== "string"
+    || !Number.isSafeInteger(value.visualGeneration)
+    || value.visualGeneration <= 0
+  ) return null;
+  return Object.freeze({
+    themeId: value.themeId,
+    logicalState: value.logicalState,
+    displayState: value.displayState,
+    file: value.file,
+    source: value.source,
+    visualGeneration: value.visualGeneration,
+  });
+}
+
+const settledVisualGenerations = new Set();
+function notifyVisualSettlement(request, outcome, options = {}) {
+  if (!request || settledVisualGenerations.has(request.visualGeneration)) return false;
+  if (!window.electronAPI || typeof window.electronAPI.notifyPetVisualSettled !== "function") return false;
+  const channel = options.channel;
+  if (!["object", "img", "bridge"].includes(channel)) return false;
+  const actualFile = typeof options.actualFile === "string" ? options.actualFile : null;
+  settledVisualGenerations.add(request.visualGeneration);
+  while (settledVisualGenerations.size > 128) {
+    settledVisualGenerations.delete(settledVisualGenerations.values().next().value);
+  }
+  window.electronAPI.notifyPetVisualSettled({
+    themeId: request.themeId,
+    displayState: request.displayState,
+    requestedFile: request.file,
+    actualFile,
+    channel,
+    verified: options.verified === true,
+    visualGeneration: request.visualGeneration,
+    outcome,
+  });
+  return true;
+}
+
+function settleSuccessfulVisual(request, actualFile, channel, options = {}) {
+  if (!request) return false;
+  const outcome = options.fallback === true || actualFile !== request.file
+    ? "fallback"
+    : "swapped";
+  return notifyVisualSettlement(request, outcome, {
+    actualFile,
+    channel,
+    verified: true,
+  });
 }
 
 /**
@@ -1617,7 +1683,9 @@ function scheduleSwapVisibilityRescue(token, file, state) {
     if (hasVisiblePetElement()) return;
 
     if (pendingNext && pendingSvgFile === file) {
-      forceImageChannelReload(file, getPendingSwapState(pendingNext, state));
+      forceImageChannelReload(file, getPendingSwapState(pendingNext, state), true, {
+        visualRequest: pendingNext.__clawdVisualRequest || null,
+      });
       return;
     }
 
@@ -1637,12 +1705,17 @@ function getPendingSwapState(next, fallbackState) {
   return fallbackState;
 }
 
-function forceImageChannelReload(file, state, allowImageFallback = true) {
+function forceImageChannelReload(file, state, allowImageFallback = true, options = {}) {
   if (!allowImageFallback) return false;
   if (!file) return false;
-  if (hasVisiblePetElement()) return false;
   console.warn("Clawd: animation stayed invisible; reloading through the image channel:", file);
-  swapToFile(file, state, false, { allowImageFallback: false });
+  swapToFile(file, state, false, {
+    allowImageFallback: false,
+    visualRequest: options.visualRequest || null,
+    fallbackFromObject: true,
+    onReady: options.onReady,
+    onError: options.onError,
+  });
   return true;
 }
 
@@ -1664,6 +1737,7 @@ function cancelPendingSwap(reason = "superseded") {
 
 function swapToFile(file, state, useObjectChannel, options = {}) {
   const allowImageFallback = options.allowImageFallback !== false;
+  const visualRequest = normalizeVisualRequest(options.visualRequest);
   const useObj = useObjectChannel !== undefined ? useObjectChannel : needsObjectChannel(state, file);
   const url = getAssetUrl(file);
   const canReuseCodexPetDocument = useObj
@@ -1686,6 +1760,9 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     applyMiniFlip(clawdEl, state);
     refreshAccessoryLayout();
     notifyPetVisualReadyOnce();
+    settleSuccessfulVisual(visualRequest, file, "bridge", {
+      fallback: options.fallbackFromObject === true,
+    });
     if (state && tracksEyesForFile(state, file)) attachEyeTracking(clawdEl);
     else detachEyeTracking();
     if (miniLeftFlip) applyGlyphFlipCompensation(clawdEl);
@@ -1708,6 +1785,8 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     next.id = "clawd";
     next.style.opacity = "0";
     next.__clawdPendingState = state;
+    next.__clawdVisualRequest = visualRequest;
+    next.__clawdFallbackFromObject = options.fallbackFromObject === true;
     applyObjectScaleStyle(next, file, state);
     applyPetTintToElement(next);
     let swapCallbackSettled = false;
@@ -1761,6 +1840,9 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       applyMiniFlip(next, commitState);
       refreshAccessoryLayout();
       notifyPetVisualReadyOnce();
+      settleSuccessfulVisual(next.__clawdVisualRequest, file, "object", {
+        fallback: next.__clawdFallbackFromObject === true,
+      });
 
       if (commitState && tracksEyesForFile(commitState, file)) {
         attachEyeTracking(next);
@@ -1773,7 +1855,33 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       finishSwapReady();
     };
 
+    const retryThroughImage = (reason) => {
+      if (pendingNext !== next) return;
+      const retryState = getPendingSwapState(next, state);
+      const retryRequest = next.__clawdVisualRequest;
+      releaseObject(next);
+      if (pendingNext === next) {
+        pendingNext = null;
+        pendingSvgFile = null;
+        pendingAssetUrl = null;
+      }
+      if (!pendingNext && forceImageChannelReload(file, retryState, allowImageFallback, {
+        visualRequest: retryRequest,
+        onReady: options.onReady,
+        onError: options.onError,
+      })) return;
+      finishSwapError(reason);
+      notifyVisualSettlement(retryRequest, "failed", {
+        actualFile: currentDisplayedSvg || null,
+        channel: "object",
+        verified: false,
+      });
+    };
+    // A load event verifies that Chromium accepted and rendered the object.
+    // contentDocument can still be transiently null at this exact callback;
+    // reserve that check for the no-load timeout path below.
     next.addEventListener("load", swap, { once: true });
+    next.addEventListener("error", () => retryThroughImage("object-load-error"), { once: true });
     // Same cache-bust as the <img> channel below. Chromium reuses the SVG
     // document (and its CSS animation timeline) across loads of the same
     // URL on the object channel too, so one-shot animations for scripted /
@@ -1789,18 +1897,13 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       if (pendingNext !== next) return;
       try {
         if (!next.contentDocument) {
-          const retryState = getPendingSwapState(next, state);
-          releaseObject(next);
-          if (pendingNext === next) {
-            pendingNext = null;
-            pendingSvgFile = null;
-            pendingAssetUrl = null;
-          }
-          finishSwapError("object-document-unavailable");
-          if (!pendingNext) forceImageChannelReload(file, retryState, allowImageFallback);
+          retryThroughImage("object-document-unavailable");
           return;
         }
-      } catch {}
+      } catch {
+        retryThroughImage("object-document-inaccessible");
+        return;
+      }
       swap();
     }, SWAP_LOAD_FALLBACK_MS);
   } else {
@@ -1810,6 +1913,8 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     next.id = "clawd";
     next.style.opacity = "0";
     next.__clawdPendingState = state;
+    next.__clawdVisualRequest = visualRequest;
+    next.__clawdFallbackFromObject = options.fallbackFromObject === true;
     applyObjectScaleStyle(next, file, state);
     applyPetTintToElement(next);
 
@@ -1846,10 +1951,31 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       applyMiniFlip(next, commitState);
       refreshAccessoryLayout();
       notifyPetVisualReadyOnce();
+      settleSuccessfulVisual(next.__clawdVisualRequest, file, "img", {
+        fallback: next.__clawdFallbackFromObject === true,
+      });
       scheduleLowPowerIdlePause();
+      if (typeof options.onReady === "function") options.onReady(next);
     };
 
     next.addEventListener("load", swap, { once: true });
+    const failImageSwap = (reason) => {
+      if (pendingNext !== next) return;
+      if (next.tagName === "IMG") releaseImg(next);
+      if (pendingNext === next) {
+        pendingNext = null;
+        pendingSvgFile = null;
+        pendingAssetUrl = null;
+      }
+      clearSwapVisibilityRescueTimer();
+      notifyVisualSettlement(next.__clawdVisualRequest, "failed", {
+        actualFile: currentDisplayedSvg || null,
+        channel: "img",
+        verified: false,
+      });
+      if (typeof options.onError === "function") options.onError(reason);
+    };
+    next.addEventListener("error", () => failImageSwap("image-load-error"), { once: true });
     // Cache-bust query param: Chromium reuses the SVG document (and its CSS
     // animation timeline) across <img> elements pointing at the same URL, so
     // one-shot animations (`animation: foo 3.2s 1 forwards`) that already ran
@@ -1865,15 +1991,19 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
     mediaLayer.appendChild(next);
     pendingNext = next;
     scheduleSwapVisibilityRescue(swapToken, file, state);
-    // Timeout fallback for images that fail to load
+    // A timed-out image is not verified and must never replace the visible
+    // element merely to force progress.
     setTimeout(() => {
       if (pendingNext !== next) return;
-      swap();
+      failImageSwap("image-load-timeout");
     }, SWAP_LOAD_FALLBACK_MS);
   }
 }
 
-function renderStateFile(state, svg) {
+function renderStateFile(requestOrState, legacySvg) {
+  const visualRequest = normalizeVisualRequest(requestOrState);
+  const state = visualRequest ? visualRequest.displayState : requestOrState;
+  const svg = visualRequest ? visualRequest.file : legacySvg;
   // Main process state change → cancel any active click reaction
   cancelReaction();
   // Track the latest state name so the Kimi permission pulse can re-trigger
@@ -1932,6 +2062,7 @@ function renderStateFile(state, svg) {
       // attachment descriptor, layout, and eye-tracking decision all use the
       // newest state rather than the state captured when loading began.
       pendingNext.__clawdPendingState = state;
+      pendingNext.__clawdVisualRequest = visualRequest;
       applyObjectScaleStyle(pendingNext, effectiveSvg, state);
     }
     if (alreadyDisplayed) {
@@ -1946,6 +2077,16 @@ function renderStateFile(state, svg) {
       scheduleLowPowerIdlePause();
     }
     currentIdleSvg = effectiveSvg;
+    if (alreadyDisplayed) {
+      const channel = clawdEl.tagName === "OBJECT" ? "object" : "img";
+      notifyVisualSettlement(visualRequest, effectiveSvg === visualRequest?.file
+        ? "already-displayed"
+        : "fallback", {
+        actualFile: effectiveSvg,
+        channel,
+        verified: true,
+      });
+    }
     return;
   }
 
@@ -1953,7 +2094,10 @@ function renderStateFile(state, svg) {
   cancelPendingSwap();
   detachEyeTracking();
 
-  swapToFile(effectiveSvg, state, lowPowerStaticImageOverride ? false : undefined);
+  swapToFile(effectiveSvg, state, lowPowerStaticImageOverride ? false : undefined, {
+    visualRequest,
+    fallbackFromObject: !!lowPowerStaticImageOverride,
+  });
   currentIdleSvg = effectiveSvg;
 }
 
@@ -1964,8 +2108,8 @@ function refreshCurrentStateForLowPowerStaticImage() {
 }
 
 // --- State change → switch animation (preload + instant swap) ---
-window.electronAPI.onStateChange((state, svg) => {
-  renderStateFile(state, svg);
+window.electronAPI.onStateChange((requestOrState, legacySvg) => {
+  renderStateFile(requestOrState, legacySvg);
 });
 
 // Kimi CLI permission hold: re-trigger the current animation so it loops

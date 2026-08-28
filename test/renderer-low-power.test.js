@@ -800,6 +800,121 @@ describe("renderer directional drag reactions (#620)", () => {
   });
 });
 
+describe("renderer displayed-visual settlement", () => {
+  function visualRequest(generation, file, displayState = "working") {
+    return {
+      themeId: "clawd",
+      logicalState: displayState,
+      displayState,
+      file,
+      source: "state",
+      visualGeneration: generation,
+    };
+  }
+
+  function settlements(harness) {
+    return harness.electronCalls
+      .filter((call) => call.name === "notifyPetVisualSettled")
+      .map((call) => call.args[0]);
+  }
+
+  it("ACKs a verified img swap and an already-displayed request exactly once each", () => {
+    const harness = createRendererHarness();
+    harness.electronHandlers.onStateChange(visualRequest(1, "working.svg"));
+    harness.api.pendingNext.listeners.get("load")();
+    harness.electronHandlers.onStateChange(visualRequest(2, "working.svg"));
+
+    assert.deepStrictEqual(settlements(harness).map((entry) => ({
+      generation: entry.visualGeneration,
+      outcome: entry.outcome,
+      actualFile: entry.actualFile,
+      verified: entry.verified,
+    })), [
+      { generation: 1, outcome: "swapped", actualFile: "working.svg", verified: true },
+      { generation: 2, outcome: "already-displayed", actualFile: "working.svg", verified: true },
+    ]);
+  });
+
+  it("retargets a same-file pending swap to the latest generation", () => {
+    const harness = createRendererHarness();
+    harness.electronHandlers.onStateChange(visualRequest(10, "working.svg"));
+    const pending = harness.api.pendingNext;
+    harness.electronHandlers.onStateChange(visualRequest(11, "working.svg"));
+    pending.listeners.get("load")();
+
+    assert.deepStrictEqual(settlements(harness).map((entry) => entry.visualGeneration), [11]);
+  });
+
+  it("reports an object-to-img recovery as a verified fallback", () => {
+    const harness = createRendererHarness({
+      themeConfig: { trustedScriptedSvgFiles: ["scripted.svg"] },
+    });
+    harness.electronHandlers.onStateChange(visualRequest(20, "scripted.svg"));
+    const objectPending = harness.api.pendingNext;
+    assert.strictEqual(objectPending.tagName, "OBJECT");
+    objectPending.listeners.get("error")();
+    const imagePending = harness.api.pendingNext;
+    assert.strictEqual(imagePending.tagName, "IMG");
+    imagePending.listeners.get("load")();
+
+    assert.deepStrictEqual(settlements(harness).map((entry) => ({
+      generation: entry.visualGeneration,
+      outcome: entry.outcome,
+      channel: entry.channel,
+      verified: entry.verified,
+    })), [
+      { generation: 20, outcome: "fallback", channel: "img", verified: true },
+    ]);
+  });
+
+  it("never claims an errored img request was displayed", () => {
+    const harness = createRendererHarness();
+    harness.electronHandlers.onStateChange(visualRequest(30, "broken.svg"));
+    harness.api.pendingNext.listeners.get("error")();
+
+    assert.deepStrictEqual(settlements(harness).map((entry) => ({
+      generation: entry.visualGeneration,
+      outcome: entry.outcome,
+      verified: entry.verified,
+    })), [
+      { generation: 30, outcome: "failed", verified: false },
+    ]);
+    assert.strictEqual(harness.api.currentDisplayedSvg, "current.svg");
+  });
+
+  it("preload forwards only the bounded settlement contract", () => {
+    const loader = loadPreloadWithElectron();
+    try {
+      loader.electronAPI.notifyPetVisualSettled({
+        themeId: "clawd",
+        displayState: "idle",
+        requestedFile: "idle.svg",
+        actualFile: "idle.svg",
+        channel: "img",
+        verified: true,
+        visualGeneration: 4,
+        outcome: "swapped",
+        injected: "drop-me",
+      });
+      const sent = loader.sentToMain.find((entry) => entry.channel === "pet-visual-settled");
+      assert.ok(sent);
+      assert.strictEqual(sent.args[0].injected, undefined);
+      assert.deepStrictEqual(sent.args[0], {
+        themeId: "clawd",
+        displayState: "idle",
+        requestedFile: "idle.svg",
+        actualFile: "idle.svg",
+        channel: "img",
+        verified: true,
+        visualGeneration: 4,
+        outcome: "swapped",
+      });
+    } finally {
+      loader.restore();
+    }
+  });
+});
+
 describe("renderer test-result reactions", () => {
   it("replaces pass bursts instead of accumulating confetti nodes", () => {
     const harness = createRendererHarness();
@@ -1284,7 +1399,7 @@ describe("renderer object-channel selection", () => {
     assert.ok(source.includes("const lowPowerStaticImageOverride = resolveLowPowerStaticImageOverride(state, requestedSvg);"));
     assert.ok(source.includes("const effectiveSvg = lowPowerStaticImageOverride || requestedSvg;"));
     assert.ok(source.includes("const desiredObjectChannel = lowPowerStaticImageOverride ? false : needsObjectChannel(state, effectiveSvg);"));
-    assert.ok(source.includes("swapToFile(effectiveSvg, state, lowPowerStaticImageOverride ? false : undefined);"));
+    assert.ok(source.includes("swapToFile(effectiveSvg, state, lowPowerStaticImageOverride ? false : undefined, {"));
   });
 
   it("refreshes the current sleeping media when low-power static image mode changes", () => {
@@ -1331,8 +1446,8 @@ describe("renderer object-channel selection", () => {
   it("does not hard-code click or drag reactions to the img channel", () => {
     const source = readNormalized(RENDERER);
 
-    assert.ok(source.includes("swapToFile(svgFile, null);"));
-    assert.ok(source.includes("swapToFile(dragSvg, null);"));
+    assert.ok(source.includes("swapToFile(svgFile, null, undefined, { visualRequest });"));
+    assert.ok(source.includes("swapToFile(dragSvg, null, undefined, { visualRequest });"));
     assert.ok(!source.includes("swapToFile(svgFile, null, false);"));
     assert.ok(!source.includes("swapToFile(dragSvg, null, false);"));
   });

@@ -55,6 +55,7 @@ function createHarness(overrides = {}) {
     getCurrentState: () => state.currentState,
     getCurrentSvg: () => state.currentSvg,
     sendToRenderer: (...args) => calls.push(["sendToRenderer", ...args]),
+    settleVisual: (event, payload) => calls.push(["settleVisual", event.sender, payload]),
     recoverVisiblePetAfterRendererLoad: (event) => calls.push(["recoverVisiblePetAfterRendererLoad", event.sender]),
     setDragLocked: (value) => calls.push(["setDragLocked", value]),
     setMouseOverPet: (value) => calls.push(["setMouseOverPet", value]),
@@ -151,6 +152,7 @@ test("pet interaction IPC registers owned channels and disposes them", () => {
     "pet-drop-paths",
     "pet-interaction:reveal-session-hud",
     "pet-visual-ready",
+    "pet-visual-settled",
     "play-click-reaction",
     "resume-from-reaction",
     "show-context-menu",
@@ -169,6 +171,17 @@ test("pet interaction IPC delegates the first rendered visual recovery signal", 
 
   assert.deepStrictEqual(calls.filter((c) => c[0] === "recoverVisiblePetAfterRendererLoad"), [
     ["recoverVisiblePetAfterRendererLoad", "sender-web-contents"],
+  ]);
+});
+
+test("pet interaction IPC delegates renderer settlement with the sender intact", () => {
+  const { ipcMain, calls } = createHarness();
+  const payload = { visualGeneration: 7, outcome: "swapped" };
+
+  ipcMain.send("pet-visual-settled", payload);
+
+  assert.deepStrictEqual(calls.filter((c) => c[0] === "settleVisual"), [
+    ["settleVisual", "sender-web-contents", payload],
   ]);
 });
 

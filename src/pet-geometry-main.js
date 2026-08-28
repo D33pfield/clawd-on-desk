@@ -13,6 +13,7 @@ function createPetGeometryMain(options = {}) {
   const getThemeMarginBox = options.getThemeMarginBox || defaultGetThemeMarginBox;
   const computeThemeAnchorRect = options.computeThemeAnchorRect || defaultComputeThemeAnchorRect;
   const getActiveTheme = options.getActiveTheme || (() => null);
+  const getDisplayedVisual = options.getDisplayedVisual || (() => null);
   const getCurrentState = options.getCurrentState || (() => null);
   const getCurrentSvg = options.getCurrentSvg || (() => null);
   const getCurrentHitBox = options.getCurrentHitBox || (() => null);
@@ -21,8 +22,26 @@ function createPetGeometryMain(options = {}) {
   const getMiniMode = options.getMiniMode || (() => false);
   const getMiniPeekOffset = options.getMiniPeekOffset || (() => 0);
 
+  function getVisualTuple(theme) {
+    const visual = getDisplayedVisual();
+    if (visual && typeof visual === "object") {
+      return {
+        state: visual.displayState || null,
+        file: visual.file || null,
+        hitBox: visual.hitBox || null,
+      };
+    }
+    return {
+      state: getCurrentState(),
+      file: getCurrentSvg()
+        || (theme && theme.states && theme.states.idle && theme.states.idle[0])
+        || null,
+      hitBox: getCurrentHitBox(),
+    };
+  }
+
   function getCurrentFile(theme) {
-    return getCurrentSvg()
+    return getVisualTuple(theme).file
       || (theme && theme.states && theme.states.idle && theme.states.idle[0])
       || null;
   }
@@ -62,8 +81,9 @@ function createPetGeometryMain(options = {}) {
   function getObjRect(bounds) {
     if (!bounds) return null;
     const theme = getActiveTheme();
-    const state = getCurrentState();
-    const file = getCurrentFile(theme);
+    const visual = getVisualTuple(theme);
+    const state = visual.state;
+    const file = visual.file;
     return hitGeometry.getAssetRectScreen(theme, bounds, state, file) || getFullAssetRect(bounds);
   }
 
@@ -71,16 +91,18 @@ function createPetGeometryMain(options = {}) {
     if (!bounds || !point) return null;
     const theme = getActiveTheme();
     if (!theme) return null;
-    const state = getCurrentState();
-    const file = getCurrentFile(theme);
+    const visual = getVisualTuple(theme);
+    const state = visual.state;
+    const file = visual.file;
     return hitGeometry.getAssetPointerPayload(theme, bounds, state, file, point);
   }
 
   function getHitRectScreen(bounds) {
     if (!bounds) return null;
     const theme = getActiveTheme();
-    const state = getCurrentState();
-    const file = getCurrentFile(theme);
+    const visual = getVisualTuple(theme);
+    const state = visual.state;
+    const file = visual.file;
     const miniMode = !!getMiniMode();
     // Reported by the renderer (see applyMiniFlip). Deriving it here from mini
     // edge + theme flags missed free roam and the mini walk-in, neither of
@@ -94,7 +116,7 @@ function createPetGeometryMain(options = {}) {
       theme,
       state,
       file,
-      getCurrentHitBox(),
+      visual.hitBox,
       getCanonicalAccessoryPayload(theme),
       { viewBox, mirrorX }
     );
@@ -121,11 +143,12 @@ function createPetGeometryMain(options = {}) {
     if (stableAnchor) return stableAnchor;
 
     const box = getThemeMarginBox(theme);
-    const currentFile = getCurrentSvg();
+    const visual = getVisualTuple(theme);
+    const currentFile = visual.file;
     if (box && currentFile) {
       const currentAnchor = computeThemeAnchorRect(theme, bounds, {
         box,
-        state: getCurrentState(),
+        state: visual.state,
         file: currentFile,
       });
       if (currentAnchor) return currentAnchor;
