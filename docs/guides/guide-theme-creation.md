@@ -255,6 +255,7 @@ The existing schema fields are the only runtime truth. They already act as the t
 | `eyeTracking.states` | Per-state whitelist for eye tracking. Only listed states must be SVG and will use the object channel. |
 | `miniMode.supported` | Enables mini mode for this theme. When `false`, Mini Mode is gated off in the menu/tray and edge-snap path. |
 | `idleAnimations` | Optional idle random pool. Omit or leave empty to keep idle on `states.idle[0]`. |
+| `idleEasterEggs` | Optional conditional idle pool. Each entry runs only for an exact selected head + mouth accessory pair and is subject to its own probability and cooldown. |
 | `reactions` | Optional click/drag reaction block. Omit it to disable click and drag reactions entirely. |
 | `workingTiers` | Optional multi-session working overrides. Omit to fall back to `states.working[0]`. |
 | `jugglingTiers` | Optional subagent juggling overrides. Its legacy `minSessions` / `maxSessions` fields count live subagents, not top-level sessions. Omit to fall back to `states.juggling[0]` if you provide that state. |
@@ -266,7 +267,7 @@ The loader also derives read-only metadata such as `idleMode` (`tracked` / `anim
 
 #### Accessory attachments
 
-Head and mouth accessories render as separate layers outside the pet media, so they keep their own colors. Static attachments stay on the normal media channel; while either selected slot uses `followTarget`, that SVG is rendered through the object channel so the external layers can follow their animated targets. Each slot must provide complete attachment coverage before Settings exposes its picker:
+Head and mouth accessories render as separate layers outside the pet media, so they keep their own colors. Their fixed paint order is pet media, head, then mouth. Static attachments stay on the normal media channel; while either selected slot uses `followTarget`, that SVG is rendered through the object channel so the external layers can follow their animated targets. Each slot must provide complete attachment coverage before Settings exposes its picker:
 
 ```json
 "customization": {
@@ -410,6 +411,33 @@ Random animations played during idle periods:
 ```
 
 Omit `idleAnimations` or use an empty array if you want idle to stay on `states.idle[0]` with no random pool.
+
+### Conditional Idle Easter Eggs
+
+`idleEasterEggs` declares rare idle visuals that belong to one exact head + mouth accessory combination. It does not add another user-selectable idle option:
+
+```json
+"idleEasterEggs": [
+  {
+    "file": "outlaw-bender.svg",
+    "duration": 15000,
+    "chance": 0.05,
+    "cooldownMs": 1800000,
+    "requiresAccessories": {
+      "head": "cowboy-hat",
+      "mouth": "cigarette"
+    }
+  }
+]
+```
+
+- `file` must be a safe basename and is included in required-asset validation, capability coverage, hitbox projection, and animation-cycle discovery.
+- `duration` is 100–60000ms. `cooldownMs` is 0–86400000ms.
+- `chance` is greater than 0 and at most 1. Entries are checked in declaration order against one random roll; their cumulative chance must not exceed 1. The ordinary `idleAnimations` pool is used when no easter egg wins.
+- `requiresAccessories.head` and `.mouth` are both required and must exactly match the active catalog item ids. There is no wildcard or `none` shorthand.
+- The runtime checks eligibility before the roll and again immediately before display. Hidden, low-power, mini, roaming, dragging, menu-open, or non-idle pets neither play the egg nor consume its chance/cooldown. Cooldown begins only after a valid display request is issued.
+- Both accessory attachment maps must cover the easter-egg file. Use `{ "visibility": "hidden" }` for either external slot when the sprite embeds that item in its own artwork.
+- Third-party easter-egg SVGs receive the normal user-theme sanitizer. Built-in sprites are trusted runtime assets and therefore require repository-level static safety tests instead.
 
 ### Hit Boxes
 
