@@ -659,6 +659,12 @@ describe("theme schema defaults and normalization", () => {
     assert.deepStrictEqual(schema.collectRequiredAssetFiles({
       rendering: { objectChannelFiles: [42, {}, ["nested.svg"], "valid.svg"] },
     }), ["valid.svg"]);
+    assert.deepStrictEqual(schema.collectRequiredAssetFiles({
+      rendering: { objectChannelFiles: 42 },
+    }), []);
+    assert.deepStrictEqual(schema.collectRequiredAssetFiles({
+      rendering: { objectChannelFiles: {} },
+    }), []);
   });
 
   it("does not invent a root-viewBox usage for mini object-channel files", () => {

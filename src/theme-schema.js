@@ -1205,7 +1205,8 @@ function collectRequiredAssetFiles(theme) {
   for (const usage of projectThemeVisualUsages(theme)) {
     addThemeAssetFile(files, usage.file);
   }
-  for (const file of (theme && theme.rendering && theme.rendering.objectChannelFiles) || []) {
+  const objectChannelFiles = theme && theme.rendering && theme.rendering.objectChannelFiles;
+  for (const file of Array.isArray(objectChannelFiles) ? objectChannelFiles : []) {
     addThemeAssetFile(files, file);
   }
   return [...files];

@@ -2237,6 +2237,19 @@ function renderStateFile(requestOrState, legacySvg) {
     cancelPendingSwap("channel-mismatch", { retainedRequest: visualRequest });
   }
 
+  // A request that returns to the currently displayed file is terminal now,
+  // but an older different-file load may still be pending. Cancel that load
+  // before acknowledging the displayed request; otherwise its later load
+  // event can overwrite the visual after the `already-displayed` ACK.
+  if (
+    alreadyDisplayed
+    && displayedChannelMatches
+    && pendingNext
+    && !(alreadyPending && pendingChannelMatches)
+  ) {
+    cancelPendingSwap("superseded");
+  }
+
   if ((alreadyDisplayed && displayedChannelMatches) || (alreadyPending && pendingChannelMatches)) {
     // Same file, no swap — but the flip is state-dependent (mini flip vs roam
     // heading), so re-apply it for the incoming state. E.g. a leftward roam

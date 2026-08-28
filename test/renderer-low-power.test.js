@@ -979,6 +979,36 @@ describe("renderer displayed-visual settlement", () => {
     ]);
   });
 
+  it("cancels an older different-file pending swap before ACKing the displayed visual", () => {
+    const harness = createRendererHarness();
+    harness.electronHandlers.onStateChange(visualRequest(39, "notification.svg", "notification"));
+    harness.api.pendingNext.listeners.get("load")();
+
+    harness.electronHandlers.onStateChange(visualRequest(40, "working.svg"));
+    const staleWorking = harness.api.pendingNext;
+    harness.electronHandlers.onStateChange(visualRequest(41, "notification.svg", "notification"));
+
+    assert.strictEqual(harness.api.pendingNext, null);
+    harness.electronHandlers.onKimiPermissionPulse();
+    const notificationPulse = harness.api.pendingNext;
+    assert.ok(notificationPulse);
+    staleWorking.listeners.get("load")();
+    assert.strictEqual(harness.api.pendingNext, notificationPulse);
+    assert.strictEqual(harness.api.currentDisplayedSvg, "notification.svg");
+    notificationPulse.listeners.get("load")();
+
+    assert.deepStrictEqual(settlements(harness).map((entry) => ({
+      generation: entry.visualGeneration,
+      outcome: entry.outcome,
+      actualFile: entry.actualFile,
+    })), [
+      { generation: 39, outcome: "swapped", actualFile: "notification.svg" },
+      { generation: 40, outcome: "failed", actualFile: "notification.svg" },
+      { generation: 41, outcome: "already-displayed", actualFile: "notification.svg" },
+    ]);
+    assert.strictEqual(harness.api.currentDisplayedSvg, "notification.svg");
+  });
+
   it("ignores a malformed object request instead of constructing an undefined asset URL", () => {
     const harness = createRendererHarness();
     const displayed = harness.api.clawdEl;

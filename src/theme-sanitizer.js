@@ -10,7 +10,7 @@ const DANGEROUS_ATTR_RE = /^on/i;
 const DANGEROUS_HREF_RE = /^\s*javascript\s*:/i;
 const EXTERNAL_RESOURCE_RE = /^\s*(?:\/\/|(https?|data|file|ftp)\s*:)/i;
 const PATH_TRAVERSAL_RE = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
-const HREF_ATTRS = new Set(["href", "xlink:href", "src", "action", "formaction"]);
+const HREF_ATTRS = new Set(["href", "src", "action", "formaction"]);
 const SVG_URL_ATTRS = new Set([
   "style",
   "fill",
@@ -38,7 +38,7 @@ function xmlLocalName(name) {
 function normalizeCssSecurityText(value) {
   if (typeof value !== "string" || !value) return value || "";
   const withoutComments = value.replace(/\/\*[\s\S]*?\*\//g, "");
-  return withoutComments.replace(
+  const decodedEscapes = withoutComments.replace(
     /\\([0-9a-f]{1,6})(?:\r\n|[\t\n\f\r ])?|\\([^\n\f\r])/gi,
     (_match, hex, escaped) => {
       if (hex) {
@@ -49,6 +49,10 @@ function normalizeCssSecurityText(value) {
       return escaped || "";
     }
   );
+  // URL parsers discard ASCII tab/newline/CR inside schemes. Remove them from
+  // the security-only comparison too so CSS escapes such as `h\\9 ttps:` and
+  // `javascr\\a ipt:` cannot reconstruct an external or script URL later.
+  return decodedEscapes.replace(/[\t\n\r]/g, "");
 }
 
 function getAttributeCaseInsensitive(attribs, wanted) {
@@ -61,7 +65,7 @@ function hasUnsafeDynamicAnimation(node) {
   if (!node || !node.attribs) return false;
   const rawAnimatedAttribute = getAttributeCaseInsensitive(node.attribs, "attributename");
   const animatedAttribute = typeof rawAnimatedAttribute === "string"
-    ? rawAnimatedAttribute.trim().toLowerCase()
+    ? xmlLocalName(rawAnimatedAttribute.trim())
     : "";
   if (
     DANGEROUS_ATTR_RE.test(animatedAttribute)
@@ -109,8 +113,8 @@ function collectSafeRasterRefs(svgContent, sourceAssetsDir) {
     if (!node) return;
     if (node.attribs) {
       for (const [rawKey, value] of Object.entries(node.attribs)) {
-        const key = rawKey.toLowerCase();
-        if (key === "href" || key === "xlink:href") {
+        const key = xmlLocalName(rawKey);
+        if (key === "href") {
           const ref = normalizeRasterReference(value, sourceAssetsDir);
           if (ref) out.set(ref.destRel, ref);
         }
@@ -276,20 +280,21 @@ function sanitizeNode(node) {
     if (child.attribs) {
       const keys = Object.keys(child.attribs);
       for (const key of keys) {
-        if (DANGEROUS_ATTR_RE.test(key)) {
+        const localKey = xmlLocalName(key);
+        if (DANGEROUS_ATTR_RE.test(localKey)) {
           delete child.attribs[key];
           continue;
         }
-        if (HREF_ATTRS.has(key.toLowerCase())) {
+        if (HREF_ATTRS.has(localKey)) {
           const val = child.attribs[key];
           if (isUnsafeHrefTarget(val)) {
             delete child.attribs[key];
             continue;
           }
         }
-        if (SVG_URL_ATTRS.has(key.toLowerCase())) {
+        if (SVG_URL_ATTRS.has(localKey)) {
           const val = child.attribs[key];
-          if (key.toLowerCase() === "style") {
+          if (localKey === "style") {
             const sanitized = sanitizeCssUrls(val);
             if (!sanitized || !sanitized.trim()) delete child.attribs[key];
             else child.attribs[key] = sanitized;
