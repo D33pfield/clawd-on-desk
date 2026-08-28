@@ -1892,6 +1892,8 @@ describe("renderer pet accessory wardrobe", () => {
 
     harness.api.pendingNext.listeners.get("load")();
     assert.ok(harness.api.pendingNext, "the pet should wait for both accessory assets");
+    assert.strictEqual(harness.mouthAccessory.style.display, "block");
+    assert.strictEqual(harness.mouthAccessory.style.visibility, "hidden");
 
     harness.accessory.onload();
     assert.ok(harness.api.pendingNext, "the mouth slot is still loading");
@@ -1901,12 +1903,60 @@ describe("renderer pet accessory wardrobe", () => {
     assert.strictEqual(harness.api.pendingNext, null);
     assert.strictEqual(harness.accessory.style.display, "block");
     assert.strictEqual(harness.mouthAccessory.style.display, "block");
+    assert.strictEqual(harness.mouthAccessory.style.visibility, "visible");
     assert.strictEqual(harness.accessory.style.filter, "none");
     assert.strictEqual(harness.mouthAccessory.style.filter, "none");
     assert.strictEqual(harness.accessory.tagName, "IMG");
     assert.strictEqual(harness.accessory.src, "../assets/accessories/cowboy-hat.svg");
     assert.strictEqual(harness.mouthAccessory.tagName, "OBJECT");
     assert.strictEqual(harness.mouthAccessory.data, "../assets/accessories/cigarette.svg");
+  });
+
+  it("keeps a hot-selected mouth object mounted but invisible until its SVG loads", () => {
+    const config = dualSlotConfig();
+    config.accessorySlots.mouth.attachments.files["hidden.svg"] = { visibility: "hidden" };
+    config.accessorySlots.mouth.payload = {
+      id: "none",
+      assetFile: null,
+      aspect: 1,
+      widthScale: 1,
+      offsetY: 0,
+    };
+    const harness = createRendererHarness({ initialObjectData: "", themeConfig: config });
+    harness.api.pendingNext.listeners.get("load")();
+    harness.accessory.onload();
+
+    harness.electronHandlers.onPetAccessorySlotsChange({
+      themeId: "clawd",
+      accessoryGeneration: 6,
+      payloads: {
+        head: dualSlotConfig().accessorySlots.head.payload,
+        mouth: dualSlotConfig().accessorySlots.mouth.payload,
+      },
+    });
+
+    assert.strictEqual(harness.mouthAccessory.style.display, "block");
+    assert.strictEqual(harness.mouthAccessory.style.visibility, "hidden");
+    assert.strictEqual(harness.api.accessorySlots.mouth.assetReady, false);
+    assert.strictEqual(harness.api.accessorySlots.mouth.assetSettled, false);
+
+    harness.api.swapToFile("hidden.svg", "sleeping", false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(
+      harness.mouthAccessory.style.display,
+      "block",
+      "a hidden pose must not unmount an object whose first load is pending"
+    );
+    assert.strictEqual(harness.mouthAccessory.style.visibility, "hidden");
+
+    attachFakeSvgDocument(harness.mouthAccessory);
+    harness.mouthAccessory.onload();
+    assert.strictEqual(harness.mouthAccessory.style.display, "none");
+
+    harness.api.swapToFile("first.svg", "idle", false);
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(harness.mouthAccessory.style.display, "block");
+    assert.strictEqual(harness.mouthAccessory.style.visibility, "visible");
   });
 
   it("rejects stale and wrong-theme slot snapshots and resets the waterline on hot theme switch", () => {

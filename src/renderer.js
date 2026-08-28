@@ -753,7 +753,13 @@ function hideAccessory(slotName) {
   cancelAccessoryFollow(slotName);
   slot.lastLayout = null;
   if (!slot.element) return;
-  slot.element.style.display = "none";
+  slot.element.style.visibility = "hidden";
+  // A document-backed accessory that is still loading must stay mounted;
+  // otherwise a fast state change to a hidden pose can abort its first load
+  // and leave the slot unable to recover when a visible pose returns.
+  slot.element.style.display = (
+    slot.element.tagName === "OBJECT" && !slot.assetSettled
+  ) ? "block" : "none";
   slot.element.style.transform = "";
   // Hidden document-backed accessories must not keep advancing their SMIL
   // timeline behind a sprite that declares the slot hidden.
@@ -854,7 +860,11 @@ function ensureAccessoryAsset(slotName) {
   slot.assetFile = file;
   slot.assetReady = false;
   slot.assetSettled = false;
-  slot.element.style.display = "none";
+  // Chromium does not create an <object>'s nested SVG document while the
+  // element is display:none. Keep document-backed accessories mounted but
+  // visually hidden until their load event and first layout complete.
+  slot.element.style.visibility = "hidden";
+  slot.element.style.display = slot.element.tagName === "OBJECT" ? "block" : "none";
   slot.element.onload = () => {
     if (slot.assetFile !== file) return;
     clearAccessoryAssetLoadTimer(slotName);
@@ -1013,6 +1023,7 @@ function applyAccessoryLayout(context, layout) {
   // hideAccessory() pauses object-backed assets. Restore this document to the
   // global low-power state before making it visible again.
   setAccessorySvgLowPowerPaused(context.slotName, lowPowerSvgPaused);
+  slot.element.style.visibility = "visible";
   slot.element.style.display = "block";
   return true;
 }
@@ -1068,7 +1079,10 @@ function refreshAccessoryLayout(slotName = null) {
     return;
   }
   if (!ensureAccessoryAsset(slotName)) {
-    hideAccessory(slotName);
+    // A pending <object> must remain mounted for Chromium to load its nested
+    // document. It is already visibility:hidden, so there is no pre-layout
+    // flash. Failed/timed-out assets are settled and stay fully hidden.
+    if (context.slot.assetSettled) hideAccessory(slotName);
     return;
   }
 

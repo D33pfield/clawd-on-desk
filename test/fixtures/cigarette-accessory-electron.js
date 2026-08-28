@@ -2,8 +2,12 @@
 
 const path = require("node:path");
 const { app, BrowserWindow } = require("electron");
+const themeLoader = require("../../src/theme-loader");
 
 const HTML = path.join(__dirname, "cigarette-accessory-electron.html");
+const ROOT = path.join(__dirname, "..", "..");
+const PRODUCTION_HTML = path.join(ROOT, "src", "index.html");
+const PRODUCTION_PRELOAD = path.join(ROOT, "src", "preload.js");
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -79,6 +83,93 @@ async function inspect(win, seconds) {
   })()`);
 }
 
+async function assertProductionRendererBootsMouthObject() {
+  themeLoader.init(path.join(ROOT, "src"), app.getPath("userData"));
+  const theme = themeLoader.loadTheme("clawd", { strict: true });
+  const config = themeLoader.createThemeContext(theme).getRendererConfig();
+  config.idleDefaultVisual = "clawd-idle-follow.svg";
+  config.petTintPayload = { id: "none", filter: "none" };
+  config.accessorySlots = {
+    themeId: "clawd",
+    accessoryGeneration: 1,
+    head: {
+      supported: true,
+      attachments: config.accessoryAttachments,
+      payload: { id: "none", assetFile: null, aspect: 1, widthScale: 1, offsetY: 0 },
+    },
+    mouth: {
+      supported: true,
+      attachments: config.mouthAccessoryAttachments,
+      payload: {
+        id: "cigarette",
+        assetFile: "cigarette.svg",
+        aspect: 5 / 9,
+        widthScale: 1,
+        offsetY: 0,
+      },
+    },
+  };
+
+  const win = new BrowserWindow({
+    show: false,
+    width: 200,
+    height: 200,
+    webPreferences: {
+      preload: PRODUCTION_PRELOAD,
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+      additionalArguments: [`--theme-config=${JSON.stringify(config)}`],
+    },
+  });
+  try {
+    await win.loadFile(PRODUCTION_HTML);
+    const result = await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+      const deadline = Date.now() + 5000;
+      const check = () => {
+        const slot = _accessorySlots.mouth;
+        const object = document.getElementById("clawd-mouth-accessory");
+        if (
+          slot.assetReady
+          && object.contentDocument
+          && object.contentDocument.documentElement
+          && getComputedStyle(object).display === "block"
+          && getComputedStyle(object).visibility === "visible"
+        ) {
+          const rect = object.getBoundingClientRect();
+          resolve({
+            file: currentDisplayedSvg,
+            assetFile: slot.assetFile,
+            width: rect.width,
+            height: rect.height,
+            rootWidth: object.contentDocument.documentElement.getAttribute("width"),
+            rootHeight: object.contentDocument.documentElement.getAttribute("height"),
+          });
+          return;
+        }
+        if (Date.now() >= deadline) {
+          reject(new Error(JSON.stringify({
+            assetReady: slot.assetReady,
+            assetSettled: slot.assetSettled,
+            display: object.style.display,
+            visibility: object.style.visibility,
+            contentDocument: !!object.contentDocument,
+          })));
+          return;
+        }
+        setTimeout(check, 25);
+      };
+      check();
+    })`);
+    assert(result.file === "clawd-idle-follow.svg", "production renderer did not settle on idle");
+    assert(result.assetFile === "cigarette.svg", "production renderer selected the wrong mouth asset");
+    assert(result.width > 0 && result.height > 0, "production renderer gave the cigarette an empty layout");
+    assert(result.rootWidth === "100%" && result.rootHeight === "100%", "production cigarette root did not fill its object");
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+  }
+}
+
 async function main() {
   await app.whenReady();
   const win = new BrowserWindow({
@@ -135,6 +226,7 @@ async function main() {
     })()`);
     assert(Math.abs(timing.heldAt - timing.pausedAt) < 0.03, "cigarette timeline advanced while paused");
     assert(timing.resumedAt - timing.heldAt > 0.1, "cigarette timeline did not resume");
+    await assertProductionRendererBootsMouthObject();
   } finally {
     if (!win.isDestroyed()) win.destroy();
   }
