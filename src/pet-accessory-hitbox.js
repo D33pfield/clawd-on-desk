@@ -114,7 +114,6 @@ function getPadding(theme, file, descriptor, slot) {
   const themeId = theme && theme._builtin === true && typeof theme._id === "string" ? theme._id : null;
   const measured = normalizedPadding(
     themeId
-    && slot === "head"
     && BUILTIN_ACCESSORY_MOTION_PADDING[themeId]
     && BUILTIN_ACCESSORY_MOTION_PADDING[themeId][basenameOnly(file)]
   );
