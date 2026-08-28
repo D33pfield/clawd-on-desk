@@ -1025,6 +1025,7 @@ function loadThemeTabForTest({
   snapshot,
   petTintOptions,
   petAccessoryOptions,
+  petMouthAccessoryOptions,
   settingsAPI = {},
 } = {}) {
   const documentListeners = new Map();
@@ -1068,6 +1069,7 @@ function loadThemeTabForTest({
             ? {
                 petTint: target.capabilities && target.capabilities.petTint === true,
                 accessories: target.capabilities && target.capabilities.accessories === true,
+                mouthAccessories: target.capabilities && target.capabilities.mouthAccessories === true,
               }
             : null,
         });
@@ -1128,6 +1130,7 @@ function loadThemeTabForTest({
     lang: "en",
     petTint: {},
     petAccessory: {},
+    petMouthAccessory: {},
     holidayAccessoryEnabled: {},
     ...(snapshot || {}),
   };
@@ -1136,6 +1139,9 @@ function loadThemeTabForTest({
   core.runtime.petTintOptions = Array.isArray(petTintOptions) ? petTintOptions : [];
   core.runtime.petAccessoryOptions = Array.isArray(petAccessoryOptions)
     ? petAccessoryOptions
+    : [];
+  core.runtime.petMouthAccessoryOptions = Array.isArray(petMouthAccessoryOptions)
+    ? petMouthAccessoryOptions
     : [];
   context.ClawdSettingsTabTheme.init(core);
   const renderContent = () => {
@@ -2852,6 +2858,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(rendererSource.includes("settingsAPI.onRemoteApprovalStatusChanged"));
     assert.ok(rendererSource.includes("settingsAPI.getPetTintOptions"));
     assert.ok(rendererSource.includes("settingsAPI.getPetAccessoryOptions"));
+    assert.ok(rendererSource.includes("settingsAPI.getPetMouthAccessoryOptions"));
     assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
       'getPetTintOptions: () => ipcRenderer.invoke("settings:get-pet-tint-options")'
     ));
@@ -2860,6 +2867,9 @@ describe("settings renderer browser environment", () => {
     ));
     assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
       'getPetAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-accessory-options")'
+    ));
+    assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
+      'getPetMouthAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-mouth-accessory-options")'
     ));
     assert.ok(rendererSource.includes("tab.refreshRuntimeStatus(payload)"));
     assert.ok(coreSource.includes("ClawdSettingsSizeSlider"));
@@ -10841,6 +10851,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("themeBackToPets"));
     assert.ok(i18nSource.includes("themeAppearanceTitle"));
     assert.ok(i18nSource.includes("rowPetAccessory"));
+    assert.ok(i18nSource.includes("rowPetMouthAccessory"));
     assert.ok(i18nSource.includes("rowHolidayAccessory"));
     assert.ok(i18nSource.includes("accessoryCowboyHat"));
 
@@ -10854,11 +10865,13 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(strings.en.themeRefreshThemes, "Refresh themes");
     assert.strictEqual(strings.en.themeCapabilityFineMotion, "Fine motion");
     assert.strictEqual(strings.en.themeCustomize, "Customize");
-    assert.strictEqual(strings.en.rowPetAccessory, "Accessory");
+    assert.strictEqual(strings.en.rowPetAccessory, "Head accessory");
+    assert.strictEqual(strings.en.rowPetMouthAccessory, "Mouth accessory");
     assert.strictEqual(strings.en.rowHolidayAccessory, "Holiday auto outfit");
     assert.strictEqual(strings.en.accessoryWizardHat, "Wizard hat");
     assert.strictEqual(strings.zh.themeCustomize, "装扮");
-    assert.strictEqual(strings.zh.rowPetAccessory, "配饰");
+    assert.strictEqual(strings.zh.rowPetAccessory, "头部配饰");
+    assert.strictEqual(strings.zh.rowPetMouthAccessory, "嘴部配饰");
     assert.strictEqual(strings.zh.rowHolidayAccessory, "节日自动换装");
     assert.strictEqual(strings.zh.accessoryWizardHat, "巫师帽");
     assert.strictEqual(strings.zh.themeImportPetZip, "导入 Codex Pet 包（.zip）");
@@ -11083,7 +11096,7 @@ describe("settings renderer browser environment", () => {
           name: "Clawd",
           builtin: true,
           active: true,
-          capabilities: { petTint: true, accessories: true },
+          capabilities: { petTint: true, accessories: true, mouthAccessories: true },
         },
         {
           id: "custom",
@@ -11133,7 +11146,7 @@ describe("settings renderer browser environment", () => {
           name: "Clawd",
           builtin: true,
           active: true,
-          capabilities: { petTint: true, accessories: true },
+          capabilities: { petTint: true, accessories: true, mouthAccessories: true },
         },
         {
           id: "custom",
@@ -11214,12 +11227,13 @@ describe("settings renderer browser environment", () => {
           builtin: true,
           active: true,
           previewFileUrl: "file:///clawd.svg",
-          capabilities: { petTint: true, accessories: true },
+          capabilities: { petTint: true, accessories: true, mouthAccessories: true },
         },
       ],
       snapshot: {
         petTint: { clawd: "matcha", cloudling: "vaporwave" },
         petAccessory: { clawd: "wizard-hat", cloudling: "halo" },
+        petMouthAccessory: { clawd: "cigarette" },
         holidayAccessoryEnabled: {},
       },
       petTintOptions: [
@@ -11236,12 +11250,16 @@ describe("settings renderer browser environment", () => {
         { id: "wizard-hat", labelKey: "accessoryWizardHat" },
         { id: "halo", labelKey: "accessoryHalo" },
       ],
+      petMouthAccessoryOptions: [
+        { id: "none", labelKey: "accessoryNone" },
+        { id: "cigarette", labelKey: "accessoryCigarette" },
+      ],
     });
 
     harness.content.querySelector(".theme-customize-btn").dispatchEvent({ type: "click" });
     assert.ok(harness.content.querySelector(".theme-detail-back"));
     assert.ok(harness.content.querySelector(".theme-detail-hero"));
-    assert.strictEqual(harness.content.querySelectorAll(".theme-customization-row").length, 3);
+    assert.strictEqual(harness.content.querySelectorAll(".theme-customization-row").length, 4);
     assert.strictEqual(harness.content.querySelector(".theme-grid"), null);
 
     const select = harness.content.querySelector(".pet-tint-select");
@@ -11291,13 +11309,28 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").disabled, false);
     assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").getAttribute("aria-disabled"), "false");
 
+    const mouthAccessorySelect = harness.content.querySelector(".pet-mouth-accessory-select");
+    assert.strictEqual(getSelectedPickerValue(mouthAccessorySelect), "cigarette");
+    assert.deepStrictEqual(
+      mouthAccessorySelect.querySelectorAll(".language-picker-option").map((option) => option.textContent),
+      ["None", "Cigarette"]
+    );
+    choosePickerOption(mouthAccessorySelect, "none");
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(harness.updates[2])),
+      { key: "petMouthAccessory", value: {} }
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+
     const holidaySwitch = harness.content.querySelector(".holiday-accessory-switch");
     assert.ok(holidaySwitch);
     assert.strictEqual(holidaySwitch.getAttribute("role"), "switch");
     assert.strictEqual(holidaySwitch.getAttribute("aria-checked"), "false");
     holidaySwitch.dispatchEvent({ type: "click" });
     assert.deepStrictEqual(
-      JSON.parse(JSON.stringify(harness.updates[2])),
+      JSON.parse(JSON.stringify(harness.updates[3])),
       {
         key: "holidayAccessoryEnabled",
         value: { clawd: true },
@@ -11312,7 +11345,7 @@ describe("settings renderer browser environment", () => {
 
     holidaySwitch.dispatchEvent({ type: "keydown", key: "Enter", preventDefault() {} });
     assert.deepStrictEqual(
-      JSON.parse(JSON.stringify(harness.updates[3])),
+      JSON.parse(JSON.stringify(harness.updates[4])),
       {
         key: "holidayAccessoryEnabled",
         value: {},
@@ -11334,12 +11367,13 @@ describe("settings renderer browser environment", () => {
           builtin: true,
           active: true,
           previewFileUrl: "file:///clawd.svg",
-          capabilities: { petTint: true, accessories: true },
+          capabilities: { petTint: true, accessories: true, mouthAccessories: true },
         },
       ],
       snapshot: {
         petTint: { clawd: "matcha" },
         petAccessory: { clawd: "wizard-hat" },
+        petMouthAccessory: { clawd: "cigarette" },
         holidayAccessoryEnabled: {},
       },
       petTintOptions: [
@@ -11352,12 +11386,17 @@ describe("settings renderer browser environment", () => {
         { id: "wizard-hat", labelKey: "accessoryWizardHat" },
         { id: "halo", labelKey: "accessoryHalo" },
       ],
+      petMouthAccessoryOptions: [
+        { id: "none", labelKey: "accessoryNone" },
+        { id: "cigarette", labelKey: "accessoryCigarette" },
+      ],
     });
 
     harness.content.querySelector(".theme-customize-btn").dispatchEvent({ type: "click" });
     const originalHero = harness.content.querySelector(".theme-detail-hero");
     const originalTint = harness.content.querySelector(".pet-tint-select");
     const originalAccessory = harness.content.querySelector(".pet-accessory-select");
+    const originalMouthAccessory = harness.content.querySelector(".pet-mouth-accessory-select");
     const originalHolidaySwitch = harness.content.querySelector(".holiday-accessory-switch");
     harness.content.scrollTop = 137;
 
@@ -11365,12 +11404,14 @@ describe("settings renderer browser environment", () => {
       ...harness.core.state.snapshot,
       petTint: { clawd: "gold" },
       petAccessory: { clawd: "halo" },
+      petMouthAccessory: {},
       holidayAccessoryEnabled: { clawd: true },
     };
     harness.core.ops.applyChanges({
       changes: {
         petTint: nextSnapshot.petTint,
         petAccessory: nextSnapshot.petAccessory,
+        petMouthAccessory: nextSnapshot.petMouthAccessory,
         holidayAccessoryEnabled: nextSnapshot.holidayAccessoryEnabled,
       },
       snapshot: nextSnapshot,
@@ -11379,10 +11420,12 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelector(".theme-detail-hero"), originalHero);
     assert.strictEqual(harness.content.querySelector(".pet-tint-select"), originalTint);
     assert.strictEqual(harness.content.querySelector(".pet-accessory-select"), originalAccessory);
+    assert.strictEqual(harness.content.querySelector(".pet-mouth-accessory-select"), originalMouthAccessory);
     assert.strictEqual(harness.content.querySelector(".holiday-accessory-switch"), originalHolidaySwitch);
     assert.strictEqual(harness.content.scrollTop, 137);
     assert.strictEqual(getSelectedPickerValue(originalTint), "gold");
     assert.strictEqual(getSelectedPickerValue(originalAccessory), "halo");
+    assert.strictEqual(getSelectedPickerValue(originalMouthAccessory), "none");
     assert.strictEqual(originalHolidaySwitch.getAttribute("aria-checked"), "true");
   });
 

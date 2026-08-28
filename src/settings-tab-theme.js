@@ -193,7 +193,11 @@
 
   function supportsThemeCustomization(theme) {
     const caps = theme && theme.capabilities;
-    return !!(caps && (caps.petTint === true || caps.accessories === true));
+    return !!(caps && (
+      caps.petTint === true
+      || caps.accessories === true
+      || caps.mouthAccessories === true
+    ));
   }
 
   function mirrorThemeSelectionResult(themeId, result) {
@@ -270,6 +274,7 @@
       themeId: theme.id,
       petTint: null,
       petAccessory: null,
+      petMouthAccessory: null,
       holidayAccessoryEnabled: null,
     };
     const back = document.createElement("button");
@@ -312,10 +317,9 @@
     section.appendChild(title);
     const caps = theme.capabilities || {};
     if (caps.petTint === true) section.appendChild(buildThemeTintRow(theme));
-    if (caps.accessories === true) {
-      section.appendChild(buildThemeAccessoryRow(theme));
-      section.appendChild(buildHolidayAccessoryRow(theme));
-    }
+    if (caps.accessories === true) section.appendChild(buildThemeAccessoryRow(theme));
+    if (caps.mouthAccessories === true) section.appendChild(buildThemeMouthAccessoryRow(theme));
+    if (caps.accessories === true) section.appendChild(buildHolidayAccessoryRow(theme));
     parent.appendChild(section);
   }
 
@@ -353,6 +357,26 @@
 
   function getThemeAccessoryId(themeId, options) {
     const selections = state.snapshot && state.snapshot.petAccessory;
+    const value = selections && typeof selections === "object" && !Array.isArray(selections)
+      ? selections[themeId]
+      : null;
+    return options.some((entry) => entry.id === value) ? value : "none";
+  }
+
+  function getMouthAccessoryOptions() {
+    return Array.isArray(runtime.petMouthAccessoryOptions)
+      ? runtime.petMouthAccessoryOptions.filter((entry) => (
+        entry
+        && typeof entry.id === "string"
+        && /^[a-z][a-z0-9-]{0,31}$/.test(entry.id)
+        && typeof entry.labelKey === "string"
+        && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(entry.labelKey)
+      ))
+      : [];
+  }
+
+  function getThemeMouthAccessoryId(themeId, options) {
+    const selections = state.snapshot && state.snapshot.petMouthAccessory;
     const value = selections && typeof selections === "object" && !Array.isArray(selections)
       ? selections[themeId]
       : null;
@@ -495,6 +519,74 @@
     return row;
   }
 
+  function buildThemeMouthAccessoryRow(theme) {
+    const row = document.createElement("div");
+    row.className = "row theme-customization-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowPetMouthAccessory");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("themePetMouthAccessoryDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+
+    const control = document.createElement("div");
+    control.className = "row-control";
+    const options = getMouthAccessoryOptions();
+    const pickerOptions = options.length > 0
+      ? options.map((entry) => ({ value: entry.id, label: t(entry.labelKey) }))
+      : [{ value: "none", label: t("accessoryNone") }];
+    const picker = helpers.buildSettingsSelect({
+      value: getThemeMouthAccessoryId(theme.id, options),
+      options: pickerOptions,
+      ariaLabel: t("rowPetMouthAccessory"),
+      className: "pet-mouth-accessory-select",
+      disabled: options.length === 0,
+      onChange(next) {
+        const committed = getThemeMouthAccessoryId(theme.id, options);
+        if (next === committed) return true;
+        const current = state.snapshot && state.snapshot.petMouthAccessory;
+        const nextMap = current && typeof current === "object" && !Array.isArray(current)
+          ? { ...current }
+          : {};
+        if (next === "none") delete nextMap[theme.id];
+        else nextMap[theme.id] = next;
+        return Promise.resolve(window.settingsAPI.update("petMouthAccessory", nextMap))
+          .then((result) => {
+            if (result && result.status === "ok") return true;
+            const message = (result && result.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+            return false;
+          })
+          .catch((err) => {
+            const message = (err && err.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+            return false;
+          });
+      },
+    });
+
+    function syncFromSnapshot() {
+      picker.setValue(getThemeMouthAccessoryId(theme.id, options));
+      picker.setPending(false);
+      picker.setDisabled(options.length === 0);
+    }
+
+    if (mountedCustomizationControls && mountedCustomizationControls.themeId === theme.id) {
+      mountedCustomizationControls.petMouthAccessory = syncFromSnapshot;
+    }
+
+    control.appendChild(picker.element);
+    row.appendChild(text);
+    row.appendChild(control);
+    syncFromSnapshot();
+    return row;
+  }
+
   function getHolidayAccessoryEnabled(themeId) {
     const selections = state.snapshot && state.snapshot.holidayAccessoryEnabled;
     return !!(
@@ -591,6 +683,7 @@
     const customizationKeys = new Set([
       "petTint",
       "petAccessory",
+      "petMouthAccessory",
       "holidayAccessoryEnabled",
     ]);
     if (keys.length === 0 || !keys.every((key) => customizationKeys.has(key))) return false;

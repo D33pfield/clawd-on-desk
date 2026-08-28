@@ -68,6 +68,7 @@ const {
 const {
   isPetTintId,
   isPetAccessoryId,
+  isPetMouthAccessoryId,
 } = require("./pet-customization-catalog");
 const { isValidDisplaySnapshot } = require("./work-area");
 const {
@@ -361,6 +362,24 @@ const updateRegistry = {
         return {
           status: "error",
           message: `petAccessory entry "${themeId}" must map a safe theme id to a non-default catalog accessory id`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
+  petMouthAccessory(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "petMouthAccessory must be a theme-to-accessory object" };
+    }
+    for (const [themeId, accessoryId] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || !isPetMouthAccessoryId(accessoryId)
+        || accessoryId === "none"
+      ) {
+        return {
+          status: "error",
+          message: `petMouthAccessory entry "${themeId}" must map a safe theme id to a non-default catalog accessory id`,
         };
       }
     }
@@ -1064,6 +1083,7 @@ async function removeTheme(payload, deps) {
   const currentIdleVisual = snapshot.idleVisual || {};
   const currentPetTint = snapshot.petTint || {};
   const currentPetAccessory = snapshot.petAccessory || {};
+  const currentPetMouthAccessory = snapshot.petMouthAccessory || {};
   const currentHolidayAccessoryEnabled = snapshot.holidayAccessoryEnabled || {};
   const nextCommit = {};
   if (currentOverrides[themeId]) {
@@ -1090,6 +1110,11 @@ async function removeTheme(payload, deps) {
     const nextPetAccessory = { ...currentPetAccessory };
     delete nextPetAccessory[themeId];
     nextCommit.petAccessory = nextPetAccessory;
+  }
+  if (currentPetMouthAccessory[themeId] !== undefined) {
+    const nextPetMouthAccessory = { ...currentPetMouthAccessory };
+    delete nextPetMouthAccessory[themeId];
+    nextCommit.petMouthAccessory = nextPetMouthAccessory;
   }
   if (currentHolidayAccessoryEnabled[themeId] !== undefined) {
     const nextHolidayAccessoryEnabled = { ...currentHolidayAccessoryEnabled };
@@ -1153,6 +1178,7 @@ function setThemeSelection(payload, deps) {
     ? {
         petTint: activeTheme._capabilities.petTint === true,
         accessories: activeTheme._capabilities.accessories === true,
+        mouthAccessories: activeTheme._capabilities.mouthAccessories === true,
       }
     : null;
 

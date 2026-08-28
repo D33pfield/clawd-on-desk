@@ -118,7 +118,7 @@ describe("theme schema validation", () => {
     );
     assert.deepStrictEqual(
       schema.mergeDefaults(validThemeJson()).customization,
-      { petTint: false, accessories: null }
+      { petTint: false, accessories: null, mouthAccessories: null }
     );
   });
 
@@ -161,6 +161,103 @@ describe("theme schema validation", () => {
       normalized.customization.accessories.files["sleeping.svg"],
       { visibility: "hidden" }
     );
+  });
+
+  it("derives the mouth slot independently and preserves reflection normalization", () => {
+    const raw = validThemeJson({
+      customization: {
+        mouthAccessories: {
+          default: { staticFrame: { cx: 70, baseY: 58, width: 12 } },
+          files: {
+            "idle.svg": {
+              staticFrame: { cx: 68, baseY: 57, width: 12 },
+              followTarget: {
+                id: "mouth-anchor-right",
+                frame: { cx: 2.5, baseY: 8, width: 5 },
+                normalizeReflection: "x",
+              },
+            },
+            "sleeping.svg": { visibility: "hidden" },
+          },
+        },
+      },
+    });
+    const normalized = schema.mergeDefaults(raw, "demo", true);
+    assert.deepStrictEqual(schema.validateTheme(raw), []);
+    assert.strictEqual(schema.deriveMouthAccessoryCapability(raw), true);
+    assert.strictEqual(schema.buildCapabilities(raw).mouthAccessories, true);
+    assert.strictEqual(schema.buildCapabilities(raw).accessories, false);
+    assert.strictEqual(
+      normalized.customization.mouthAccessories.files["idle.svg"].followTarget.normalizeReflection,
+      "x"
+    );
+
+    const invalidMouth = validThemeJson({
+      customization: {
+        accessories: { default: { staticFrame: { cx: 50, baseY: 20, width: 30 } } },
+        mouthAccessories: {
+          default: { staticFrame: { cx: 70, baseY: 58, width: 12 } },
+          files: {
+            "idle.svg": {
+              staticFrame: { cx: 68, baseY: 57, width: 12 },
+              followTarget: {
+                id: "mouth-anchor-right",
+                frame: { cx: 2.5, baseY: 8, width: 5 },
+                normalizeReflection: "both",
+              },
+            },
+          },
+        },
+      },
+    });
+    assert.ok(schema.validateTheme(invalidMouth).some((error) => (
+      error.includes("customization.mouthAccessories")
+      && error.includes("normalizeReflection")
+    )));
+    assert.strictEqual(schema.deriveAccessoryCapability(invalidMouth), true);
+    assert.strictEqual(schema.deriveMouthAccessoryCapability(invalidMouth), false);
+  });
+
+  it("materializes sparse head item overrides without adding a third fallback path", () => {
+    const raw = validThemeJson({
+      customization: {
+        accessories: {
+          default: { staticFrame: { cx: 50, baseY: 20, width: 30 } },
+          itemOverrides: {
+            "cowboy-hat": {
+              files: {
+                "sleeping.svg": { visibility: "hidden" },
+                "idle.svg": { staticFrame: { cx: 48, baseY: 19, width: 31 } },
+              },
+            },
+          },
+        },
+      },
+    });
+    assert.deepStrictEqual(schema.validateTheme(raw), []);
+    const effective = schema.resolveEffectiveAccessoryAttachments(raw, raw);
+    assert.deepStrictEqual(effective.itemOverrides["cowboy-hat"].files["sleeping.svg"], {
+      visibility: "hidden",
+    });
+    assert.deepStrictEqual(effective.itemOverrides["cowboy-hat"].files["idle.svg"], {
+      staticFrame: { cx: 48, baseY: 19, width: 31 },
+    });
+
+    const stale = validThemeJson({
+      customization: {
+        accessories: {
+          default: { staticFrame: { cx: 50, baseY: 20, width: 30 } },
+          itemOverrides: {
+            "cowboy-hat": {
+              files: { "missing.svg": { visibility: "hidden" } },
+            },
+          },
+        },
+      },
+    });
+    assert.ok(schema.validateTheme(stale).some((error) => (
+      error.includes("itemOverrides") && error.includes("reachable")
+    )));
   });
 
   it("projects mini low-power overrides through the mini viewBox", () => {

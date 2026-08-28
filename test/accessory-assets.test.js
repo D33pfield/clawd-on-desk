@@ -7,14 +7,16 @@ const path = require("node:path");
 
 const {
   PET_ACCESSORY_CATALOG,
+  PET_MOUTH_ACCESSORY_CATALOG,
 } = require("../src/pet-customization-catalog");
 
 const ASSET_DIR = path.join(__dirname, "..", "assets", "accessories");
 
 describe("accessory asset audit", () => {
-  it("ships exactly the catalog's seven local SVG assets with matching viewBoxes", () => {
-    const catalogAssets = PET_ACCESSORY_CATALOG
-      .filter((entry) => entry.id !== "none")
+  it("ships exactly the head and mouth catalogs' local SVG assets with matching viewBoxes", () => {
+    const catalogEntries = [...PET_ACCESSORY_CATALOG, ...PET_MOUTH_ACCESSORY_CATALOG]
+      .filter((entry) => entry.id !== "none");
+    const catalogAssets = catalogEntries
       .map((entry) => entry.file)
       .sort();
     const diskAssets = fs.readdirSync(ASSET_DIR)
@@ -22,9 +24,10 @@ describe("accessory asset audit", () => {
       .sort();
 
     assert.deepStrictEqual(diskAssets, catalogAssets);
-    assert.strictEqual(diskAssets.length, 7);
+    assert.strictEqual(new Set(catalogAssets).size, catalogAssets.length, "catalog asset names must not collide");
+    assert.strictEqual(diskAssets.length, 8);
 
-    for (const entry of PET_ACCESSORY_CATALOG.filter((item) => item.id !== "none")) {
+    for (const entry of catalogEntries) {
       const source = fs.readFileSync(path.join(ASSET_DIR, entry.file), "utf8");
       const match = source.match(/\bviewBox="([^"]+)"/);
       assert.ok(match, `${entry.file} should declare a viewBox`);
@@ -37,7 +40,7 @@ describe("accessory asset audit", () => {
   });
 
   it("contains only inert pixel-vector markup and literal colors", () => {
-    for (const file of fs.readdirSync(ASSET_DIR).filter((name) => name.endsWith(".svg"))) {
+    for (const file of PET_ACCESSORY_CATALOG.filter((entry) => entry.file).map((entry) => entry.file)) {
       const source = fs.readFileSync(path.join(ASSET_DIR, file), "utf8");
       const markup = source
         .replace(/<!--[\s\S]*?-->/g, "")
@@ -54,6 +57,65 @@ describe("accessory asset audit", () => {
           /^(?:none|#[0-9a-f]{6})$/i,
           `${file}: unsafe ${paint[1]} ${paint[2]}`
         );
+      }
+    }
+  });
+
+  it("allows the cigarette's narrow, bounded SMIL grammar and no active references", () => {
+    const file = "cigarette.svg";
+    const source = fs.readFileSync(path.join(ASSET_DIR, file), "utf8");
+    const markup = source
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<\?xml[\s\S]*?\?>/g, "");
+    const tags = [...markup.matchAll(/<\s*\/?\s*([A-Za-z][A-Za-z0-9:-]*)/g)]
+      .map((match) => match[1]);
+    assert.ok(tags.every((tag) => ["svg", "g", "rect", "animate", "animateTransform"].includes(tag)), tags.join(","));
+    assert.doesNotMatch(source, /<script|<foreignObject|<image|<use|<!DOCTYPE/i);
+    assert.doesNotMatch(source, /\bon[a-z]+\s*=|\bhref\s*=|url\s*\(|data:/i);
+    assert.match(source, /shape-rendering="crispEdges"/);
+    assert.match(source, /shape-rendering="auto"/);
+
+    const animations = [...source.matchAll(/<(animate|animateTransform)\b([^>]*)\/>/g)];
+    assert.ok(animations.length > 0);
+    for (const [, tag, rawAttrs] of animations) {
+      const attrs = Object.fromEntries(
+        [...rawAttrs.matchAll(/([A-Za-z][A-Za-z0-9:-]*)="([^"]*)"/g)]
+          .map((match) => [match[1], match[2]])
+      );
+      const allowed = new Set([
+        "attributeName", "type", "values", "keyTimes", "dur", "begin",
+        "repeatCount", "calcMode",
+      ]);
+      assert.ok(Object.keys(attrs).every((name) => allowed.has(name)), `${tag}: ${Object.keys(attrs)}`);
+      assert.ok(["fill", "opacity", "transform"].includes(attrs.attributeName));
+      if (tag === "animateTransform") assert.strictEqual(attrs.type, "translate");
+      else assert.strictEqual(attrs.type, undefined);
+      assert.strictEqual(attrs.repeatCount, "indefinite");
+      if (attrs.calcMode !== undefined) assert.ok(["discrete", "linear"].includes(attrs.calcMode));
+      const dur = Number(String(attrs.dur || "").replace(/s$/, ""));
+      assert.ok(Number.isFinite(dur) && dur > 0 && dur <= 10, attrs.dur);
+      if (attrs.begin !== undefined) {
+        const begin = Number(String(attrs.begin).replace(/s$/, ""));
+        assert.ok(Number.isFinite(begin) && Math.abs(begin) <= dur, attrs.begin);
+      }
+      const values = String(attrs.values || "").split(";");
+      assert.ok(values.length >= 2 && values.length <= 16, attrs.values);
+      if (attrs.attributeName === "fill") {
+        assert.ok(values.every((value) => /^#[0-9a-f]{6}$/i.test(value)));
+      } else {
+        assert.ok(values.every((value) => (
+          value.trim().split(/\s+/).every((part) => Number.isFinite(Number(part)))
+        )), attrs.values);
+      }
+      if (attrs.keyTimes !== undefined) {
+        const times = attrs.keyTimes.split(";").map(Number);
+        assert.strictEqual(times.length, values.length);
+        assert.ok(times.every((value, index) => (
+          Number.isFinite(value)
+          && value >= 0
+          && value <= 1
+          && (index === 0 || value >= times[index - 1])
+        )));
       }
     }
   });

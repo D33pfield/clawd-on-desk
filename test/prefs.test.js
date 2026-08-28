@@ -31,6 +31,7 @@ describe("prefs.getDefaults", () => {
     assert.notStrictEqual(a.themeOverrides, b.themeOverrides);
     assert.notStrictEqual(a.petTint, b.petTint);
     assert.notStrictEqual(a.petAccessory, b.petAccessory);
+    assert.notStrictEqual(a.petMouthAccessory, b.petMouthAccessory);
     assert.notStrictEqual(a.shortcuts, b.shortcuts);
     assert.notStrictEqual(a.sessionAliases, b.sessionAliases);
     assert.notStrictEqual(a.tgApproval, b.tgApproval);
@@ -50,6 +51,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.autoStartWithClaude, false);
     assert.deepStrictEqual(d.petTint, {});
     assert.deepStrictEqual(d.petAccessory, {});
+    assert.deepStrictEqual(d.petMouthAccessory, {});
     assert.strictEqual(d.testReactionsEnabled, false);
     assert.strictEqual(d.lowPowerIdleMode, false);
     assert.strictEqual(d.allowEdgePinning, false);
@@ -278,6 +280,7 @@ describe("prefs.validate", () => {
       soundVolume: 2,        // out of range → default 1
       petTint: "custom-css",
       petAccessory: "wizard-hat",
+      petMouthAccessory: "cigarette",
       lowPowerIdleMode: "yes",
       x: NaN,                // not finite
       bubbleFollowPet: true, // ok
@@ -305,6 +308,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.soundVolume, 1);
     assert.deepStrictEqual(v.petTint, {});
     assert.deepStrictEqual(v.petAccessory, {});
+    assert.deepStrictEqual(v.petMouthAccessory, {});
     assert.strictEqual(v.lowPowerIdleMode, false);
     assert.strictEqual(v.x, 0);
     assert.strictEqual(v.bubbleFollowPet, true);
@@ -473,6 +477,7 @@ describe("prefs.validate", () => {
       theme: "calico",
       petTint: { clawd: "gold", cloudling: "matcha" },
       petAccessory: { clawd: "wizard-hat", cloudling: "halo" },
+      petMouthAccessory: { clawd: "cigarette" },
     });
     assert.strictEqual(v.lang, "ko");
     assert.strictEqual(v.soundMuted, true);
@@ -499,6 +504,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.theme, "calico");
     assert.deepStrictEqual(v.petTint, { clawd: "gold", cloudling: "matcha" });
     assert.deepStrictEqual(v.petAccessory, { clawd: "wizard-hat", cloudling: "halo" });
+    assert.deepStrictEqual(v.petMouthAccessory, { clawd: "cigarette" });
   });
 
   it("accepts soundVolume 0 (silent playback is valid)", () => {
@@ -1415,7 +1421,7 @@ describe("prefs.migrate v14 → v15 (ZCode permission bubbles default on)", () =
         zcode: { integrationInstalled: true, enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
       },
     }));
-    assert.strictEqual(upgraded.version, 15);
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
     assert.strictEqual(upgraded.agents.zcode.permissionsEnabled, true);
     // Other agent flags pass through untouched.
     assert.strictEqual(upgraded.agents.zcode.enabled, true);
@@ -1429,7 +1435,7 @@ describe("prefs.migrate v14 → v15 (ZCode permission bubbles default on)", () =
         qoder: { integrationInstalled: true, enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
       },
     }));
-    assert.strictEqual(upgraded.version, 15);
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
     assert.strictEqual(upgraded.agents.qoder.permissionsEnabled, false);
   });
 
@@ -1440,14 +1446,32 @@ describe("prefs.migrate v14 → v15 (ZCode permission bubbles default on)", () =
         zcode: { integrationInstalled: true, enabled: true, permissionsEnabled: false, notificationHookEnabled: true },
       },
     }));
-    assert.strictEqual(upgraded.version, 15);
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
     assert.strictEqual(upgraded.agents.zcode.permissionsEnabled, false);
   });
 
   it("leaves a v14 file without a zcode entry to the schema default (on)", () => {
     const upgraded = prefs.validate(prefs.migrate({ version: 14, lang: "zh" }));
-    assert.strictEqual(upgraded.version, 15);
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
     assert.strictEqual(upgraded.agents.zcode.permissionsEnabled, true);
+  });
+});
+
+describe("prefs.migrate v15 → v16 (mouth accessory slot)", () => {
+  it("adds an empty map without inferring a cigarette from the head slot", () => {
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 15,
+      petAccessory: { clawd: "cowboy-hat" },
+    }));
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
+    assert.deepStrictEqual(upgraded.petAccessory, { clawd: "cowboy-hat" });
+    assert.deepStrictEqual(upgraded.petMouthAccessory, {});
+  });
+
+  it("does not share the new default map between snapshots", () => {
+    const first = prefs.validate(prefs.migrate({ version: 15 }));
+    const second = prefs.validate(prefs.migrate({ version: 15 }));
+    assert.notStrictEqual(first.petMouthAccessory, second.petMouthAccessory);
   });
 });
 
@@ -1769,22 +1793,22 @@ describe("prefs.load", () => {
     }
   });
 
-  it("accepts the restored v15 schema and locks an explicit v16 file", () => {
-    const currentPath = makeTempPath("v15.json");
-    fs.writeFileSync(currentPath, JSON.stringify({ version: 15, lang: "zh" }), "utf8");
+  it("accepts the current v16 schema and locks an explicit v17 file", () => {
+    const currentPath = makeTempPath("v16.json");
+    fs.writeFileSync(currentPath, JSON.stringify({ version: 16, lang: "zh" }), "utf8");
     const current = prefs.load(currentPath);
     assert.strictEqual(current.locked, false);
-    assert.strictEqual(current.snapshot.version, 15);
+    assert.strictEqual(current.snapshot.version, 16);
     assert.strictEqual(current.snapshot.lang, "zh");
 
-    const futurePath = makeTempPath("v16.json");
-    fs.writeFileSync(futurePath, JSON.stringify({ version: 16, lang: "ja" }), "utf8");
+    const futurePath = makeTempPath("v17.json");
+    fs.writeFileSync(futurePath, JSON.stringify({ version: 17, lang: "ja" }), "utf8");
     const originalWarn = console.warn;
     console.warn = () => {};
     try {
       const future = prefs.load(futurePath);
       assert.strictEqual(future.locked, true);
-      assert.strictEqual(future.snapshot.version, 16);
+      assert.strictEqual(future.snapshot.version, 17);
       assert.strictEqual(future.snapshot.lang, "ja");
     } finally {
       console.warn = originalWarn;
@@ -1920,6 +1944,29 @@ describe("prefs.save", () => {
     });
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(p, "utf8")).petAccessory, {});
     assert.deepStrictEqual(prefs.validate({ petAccessory: "wizard-hat" }).petAccessory, {});
+  });
+
+  it("round-trips per-theme mouth accessories and stores only catalog ids", () => {
+    const p = makeTempPath();
+    prefs.save(p, {
+      ...prefs.getDefaults(),
+      petMouthAccessory: { clawd: "cigarette" },
+    });
+    assert.deepStrictEqual(
+      prefs.load(p).snapshot.petMouthAccessory,
+      { clawd: "cigarette" }
+    );
+
+    prefs.save(p, {
+      ...prefs.getDefaults(),
+      petMouthAccessory: {
+        clawd: "pipe",
+        "../unsafe": "cigarette",
+        calico: "none",
+      },
+    });
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(p, "utf8")).petMouthAccessory, {});
+    assert.deepStrictEqual(prefs.validate({ petMouthAccessory: "cigarette" }).petMouthAccessory, {});
   });
 
   it("round-trips per-theme holiday accessory opt-ins and stores only true entries", () => {

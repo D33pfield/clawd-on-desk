@@ -9,6 +9,7 @@
 //   getSnapshot()                       Promise<snapshot>
 //   getPetTintOptions()                 Promise<Array<{id, labelKey}>>
 //   getPetAccessoryOptions()            Promise<Array<{id, labelKey}>>
+//   getPetMouthAccessoryOptions()       Promise<Array<{id, labelKey}>>
 //   update(key, value)                  Promise<{ status, message? }>
 //   command(action, payload)            Promise<{ status, message? }>
 //   listAgents()                        Promise<Array<{id, name, ...}>>
@@ -110,6 +111,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   forgetKimiQuotaCredential: () => ipcRenderer.invoke("settings:kimi-quota-forget"),
   getPetTintOptions: () => ipcRenderer.invoke("settings:get-pet-tint-options"),
   getPetAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-accessory-options"),
+  getPetMouthAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-mouth-accessory-options"),
   getRoamFence: () => ipcRenderer.invoke("settings:get-roam-fence"),
   selectRoamFence: () => ipcRenderer.invoke("settings:select-roam-fence"),
   clearRoamFence: () => ipcRenderer.invoke("settings:clear-roam-fence"),

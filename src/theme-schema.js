@@ -194,6 +194,11 @@ function validateTheme(cfg) {
         cfg
       );
       errors.push(...accessoryResult.errors);
+      const mouthAccessoryResult = normalizeMouthAccessoryAttachments(
+        cfg.customization.mouthAccessories,
+        cfg
+      );
+      errors.push(...mouthAccessoryResult.errors);
     }
   }
 
@@ -546,7 +551,7 @@ function normalizeAccessoryFollowTarget(value, pathName, errors) {
     errors.push(`${pathName} must be an object`);
     return null;
   }
-  hasOnlyKeys(value, new Set(["id", "frame"]), pathName, errors);
+  hasOnlyKeys(value, new Set(["id", "frame", "normalizeReflection"]), pathName, errors);
   if (
     typeof value.id !== "string"
     || !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(value.id)
@@ -561,13 +566,24 @@ function normalizeAccessoryFollowTarget(value, pathName, errors) {
     true
   );
   if (
+    value.normalizeReflection !== undefined
+    && value.normalizeReflection !== "x"
+  ) {
+    errors.push(`${pathName}.normalizeReflection must be "x" when present`);
+  }
+  if (
     typeof value.id !== "string"
     || !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(value.id)
     || !frame
+    || (value.normalizeReflection !== undefined && value.normalizeReflection !== "x")
   ) {
     return null;
   }
-  return { id: value.id, frame };
+  return {
+    id: value.id,
+    frame,
+    ...(value.normalizeReflection === "x" ? { normalizeReflection: "x" } : {}),
+  };
 }
 
 function normalizeAccessoryHitBoxPadding(value, viewBox, pathName, errors) {
@@ -686,12 +702,9 @@ function normalizeAccessoryFileDescriptor(value, viewBox, pathName, errors) {
   };
 }
 
-/**
- * Strictly normalize customization.accessories. Structural errors are
- * returned to validateTheme; coverage gaps are intentionally handled by
- * deriveAccessoryCapability so an otherwise valid theme can simply opt out.
- */
-function normalizeAccessoryAttachments(value, cfg) {
+function normalizeAttachmentCollection(value, cfg, options) {
+  const pathName = options.pathName;
+  const allowItemOverrides = options.allowItemOverrides === true;
   const errors = [];
   if (value === undefined || value === false || value === null) {
     return { value: null, errors };
@@ -699,13 +712,13 @@ function normalizeAccessoryAttachments(value, cfg) {
   if (!isPlainObject(value)) {
     return {
       value: null,
-      errors: ["customization.accessories must be an object or false"],
+      errors: [`${pathName} must be an object or false`],
     };
   }
   hasOnlyKeys(
     value,
-    new Set(["default", "mini", "files"]),
-    "customization.accessories",
+    new Set(["default", "mini", "files", ...(allowItemOverrides ? ["itemOverrides"] : [])]),
+    pathName,
     errors
   );
 
@@ -724,7 +737,7 @@ function normalizeAccessoryAttachments(value, cfg) {
     const defaultSection = normalizeAccessoryStaticSection(
       value.default,
       rootViewBox,
-      "customization.accessories.default",
+      `${pathName}.default`,
       errors
     );
     if (defaultSection) normalized.default = defaultSection;
@@ -733,14 +746,14 @@ function normalizeAccessoryAttachments(value, cfg) {
     const miniSection = normalizeAccessoryStaticSection(
       value.mini,
       miniViewBox,
-      "customization.accessories.mini",
+      `${pathName}.mini`,
       errors
     );
     if (miniSection) normalized.mini = miniSection;
   }
   if (value.files !== undefined) {
     if (!isPlainObject(value.files)) {
-      errors.push("customization.accessories.files must be an object map");
+      errors.push(`${pathName}.files must be an object map`);
     } else {
       for (const [rawFile, descriptor] of Object.entries(value.files)) {
         const file = basenameOnly(rawFile);
@@ -749,7 +762,7 @@ function normalizeAccessoryAttachments(value, cfg) {
           || rawFile !== file
           || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(file)
         ) {
-          errors.push(`customization.accessories.files["${rawFile}"] must be a safe basename`);
+          errors.push(`${pathName}.files["${rawFile}"] must be a safe basename`);
           continue;
         }
         const fileUsages = usagesByFile.get(file) || [];
@@ -758,7 +771,7 @@ function normalizeAccessoryAttachments(value, cfg) {
           uniqueViewBoxes.set(viewBoxKey(usage.effectiveViewBox), usage.effectiveViewBox);
         }
         if (uniqueViewBoxes.size > 1) {
-          errors.push(`customization.accessories.files["${file}"] has multiple effective viewBoxes`);
+          errors.push(`${pathName}.files["${file}"] has multiple effective viewBoxes`);
           continue;
         }
         const effectiveViewBox = uniqueViewBoxes.size === 1
@@ -767,10 +780,68 @@ function normalizeAccessoryAttachments(value, cfg) {
         const normalizedDescriptor = normalizeAccessoryFileDescriptor(
           descriptor,
           effectiveViewBox,
-          `customization.accessories.files["${file}"]`,
+          `${pathName}.files["${file}"]`,
           errors
         );
         if (normalizedDescriptor) normalized.files[file] = normalizedDescriptor;
+      }
+    }
+  }
+
+  if (allowItemOverrides && value.itemOverrides !== undefined) {
+    normalized.itemOverrides = {};
+    if (!isPlainObject(value.itemOverrides)) {
+      errors.push(`${pathName}.itemOverrides must be an object map`);
+    } else {
+      for (const [itemId, itemOverride] of Object.entries(value.itemOverrides)) {
+        const itemPath = `${pathName}.itemOverrides["${itemId}"]`;
+        if (!/^[a-z][a-z0-9-]{0,31}$/.test(itemId)) {
+          errors.push(`${itemPath} must use a safe accessory item id`);
+          continue;
+        }
+        if (!isPlainObject(itemOverride)) {
+          errors.push(`${itemPath} must be an object`);
+          continue;
+        }
+        hasOnlyKeys(itemOverride, new Set(["files"]), itemPath, errors);
+        if (!isPlainObject(itemOverride.files)) {
+          errors.push(`${itemPath}.files must be an object map`);
+          continue;
+        }
+        const normalizedItem = { files: {} };
+        for (const [rawFile, descriptor] of Object.entries(itemOverride.files)) {
+          const file = basenameOnly(rawFile);
+          const descriptorPath = `${itemPath}.files["${rawFile}"]`;
+          if (
+            rawFile !== file
+            || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(file)
+          ) {
+            errors.push(`${descriptorPath} must use a safe basename`);
+            continue;
+          }
+          const fileUsages = usagesByFile.get(file) || [];
+          if (fileUsages.length === 0) {
+            errors.push(`${descriptorPath} must reference a reachable theme visual`);
+            continue;
+          }
+          const uniqueViewBoxes = new Map();
+          for (const usage of fileUsages) {
+            uniqueViewBoxes.set(viewBoxKey(usage.effectiveViewBox), usage.effectiveViewBox);
+          }
+          if (uniqueViewBoxes.size !== 1) {
+            errors.push(`${descriptorPath} has multiple effective viewBoxes`);
+            continue;
+          }
+          const effectiveViewBox = [...uniqueViewBoxes.values()][0];
+          const normalizedDescriptor = normalizeAccessoryFileDescriptor(
+            descriptor,
+            effectiveViewBox,
+            descriptorPath,
+            errors
+          );
+          if (normalizedDescriptor) normalizedItem.files[file] = normalizedDescriptor;
+        }
+        normalized.itemOverrides[itemId] = normalizedItem;
       }
     }
   }
@@ -780,9 +851,27 @@ function normalizeAccessoryAttachments(value, cfg) {
   };
 }
 
-function deriveAccessoryCapability(cfg) {
-  const parsed = normalizeAccessoryAttachments(
-    cfg && cfg.customization && cfg.customization.accessories,
+/**
+ * Strictly normalize head attachments. Structural errors are returned to
+ * validateTheme; ordinary coverage gaps only disable the capability.
+ */
+function normalizeAccessoryAttachments(value, cfg) {
+  return normalizeAttachmentCollection(value, cfg, {
+    pathName: "customization.accessories",
+    allowItemOverrides: true,
+  });
+}
+
+function normalizeMouthAccessoryAttachments(value, cfg) {
+  return normalizeAttachmentCollection(value, cfg, {
+    pathName: "customization.mouthAccessories",
+    allowItemOverrides: false,
+  });
+}
+
+function deriveAttachmentCapability(cfg, fieldName, normalize) {
+  const parsed = normalize(
+    cfg && cfg.customization && cfg.customization[fieldName],
     cfg
   );
   if (parsed.errors.length > 0 || !parsed.value) return false;
@@ -821,6 +910,18 @@ function deriveAccessoryCapability(cfg) {
   return true;
 }
 
+function deriveAccessoryCapability(cfg) {
+  return deriveAttachmentCapability(cfg, "accessories", normalizeAccessoryAttachments);
+}
+
+function deriveMouthAccessoryCapability(cfg) {
+  return deriveAttachmentCapability(
+    cfg,
+    "mouthAccessories",
+    normalizeMouthAccessoryAttachments
+  );
+}
+
 /**
  * Resolve an already-authorized accessory wardrobe against the effective
  * runtime visuals. The authored theme owns the capability decision; user
@@ -831,11 +932,15 @@ function deriveAccessoryCapability(cfg) {
  * unsafe frame fail closed locally without disabling the whole wardrobe, and
  * prevents mini artwork from ever falling through to root coordinates.
  */
-function resolveEffectiveAccessoryAttachments(authoredCfg, effectiveCfg) {
-  if (!deriveAccessoryCapability(authoredCfg)) return null;
+function resolveEffectiveAttachmentCollection(authoredCfg, effectiveCfg, options) {
+  const fieldName = options.fieldName;
+  const pathName = options.pathName;
+  const normalize = options.normalize;
+  const derive = options.derive;
+  if (!derive(authoredCfg)) return null;
 
-  const parsed = normalizeAccessoryAttachments(
-    authoredCfg && authoredCfg.customization && authoredCfg.customization.accessories,
+  const parsed = normalize(
+    authoredCfg && authoredCfg.customization && authoredCfg.customization[fieldName],
     authoredCfg
   );
   if (parsed.errors.length > 0 || !parsed.value) return null;
@@ -866,7 +971,7 @@ function resolveEffectiveAccessoryAttachments(authoredCfg, effectiveCfg) {
       const descriptor = normalizeAccessoryFileDescriptor(
         exact,
         effectiveViewBox,
-        `effective customization.accessories.files["${file}"]`,
+        `effective ${pathName}.files["${file}"]`,
         errors
       );
       resolved.files[file] = errors.length === 0 && descriptor
@@ -898,7 +1003,7 @@ function resolveEffectiveAccessoryAttachments(authoredCfg, effectiveCfg) {
     const descriptor = normalizeAccessoryStaticSection(
       fallback,
       effectiveViewBox,
-      `effective customization.accessories.files["${file}"]`,
+      `effective ${pathName}.files["${file}"]`,
       errors
     );
     resolved.files[file] = errors.length === 0 && descriptor
@@ -906,7 +1011,58 @@ function resolveEffectiveAccessoryAttachments(authoredCfg, effectiveCfg) {
       : { visibility: "hidden" };
   }
 
+  if (authored.itemOverrides) {
+    resolved.itemOverrides = {};
+    for (const [itemId, itemOverride] of Object.entries(authored.itemOverrides)) {
+      const resolvedItem = { files: {} };
+      for (const [file, descriptor] of Object.entries(itemOverride.files || {})) {
+        const usages = usagesByFile.get(file);
+        if (!usages || usages.length === 0) continue;
+        const viewBoxes = new Map();
+        for (const usage of usages) {
+          viewBoxes.set(viewBoxKey(usage.effectiveViewBox), usage.effectiveViewBox);
+        }
+        if (viewBoxes.size !== 1 || ![...viewBoxes.values()][0]) {
+          resolvedItem.files[file] = { visibility: "hidden" };
+          continue;
+        }
+        const errors = [];
+        const normalized = normalizeAccessoryFileDescriptor(
+          descriptor,
+          [...viewBoxes.values()][0],
+          `effective ${pathName}.itemOverrides["${itemId}"].files["${file}"]`,
+          errors
+        );
+        resolvedItem.files[file] = errors.length === 0 && normalized
+          ? normalized
+          : { visibility: "hidden" };
+      }
+      if (Object.keys(resolvedItem.files).length > 0) {
+        resolved.itemOverrides[itemId] = resolvedItem;
+      }
+    }
+  }
+
   return resolved;
+}
+
+
+function resolveEffectiveAccessoryAttachments(authoredCfg, effectiveCfg) {
+  return resolveEffectiveAttachmentCollection(authoredCfg, effectiveCfg, {
+    fieldName: "accessories",
+    pathName: "customization.accessories",
+    normalize: normalizeAccessoryAttachments,
+    derive: deriveAccessoryCapability,
+  });
+}
+
+function resolveEffectiveMouthAccessoryAttachments(authoredCfg, effectiveCfg) {
+  return resolveEffectiveAttachmentCollection(authoredCfg, effectiveCfg, {
+    fieldName: "mouthAccessories",
+    pathName: "customization.mouthAccessories",
+    normalize: normalizeMouthAccessoryAttachments,
+    derive: deriveMouthAccessoryCapability,
+  });
 }
 
 function buildCapabilities(cfg, options = {}) {
@@ -929,6 +1085,7 @@ function buildCapabilities(cfg, options = {}) {
       && cfg.customization.petTint === true
     ),
     accessories: deriveAccessoryCapability(cfg),
+    mouthAccessories: deriveMouthAccessoryCapability(cfg),
   };
 }
 
@@ -1124,6 +1281,7 @@ function mergeDefaults(raw, themeId, isBuiltin) {
       && raw.customization.petTint === true
     ),
     accessories: null,
+    mouthAccessories: null,
   };
 
   // objectScale
@@ -1195,6 +1353,10 @@ function mergeDefaults(raw, themeId, isBuiltin) {
 
   theme.customization.accessories = normalizeAccessoryAttachments(
     isPlainObject(raw.customization) ? raw.customization.accessories : undefined,
+    theme
+  ).value;
+  theme.customization.mouthAccessories = normalizeMouthAccessoryAttachments(
+    isPlainObject(raw.customization) ? raw.customization.mouthAccessories : undefined,
     theme
   ).value;
 
@@ -1318,8 +1480,11 @@ module.exports = {
   buildCapabilities,
   projectThemeVisualUsages,
   normalizeAccessoryAttachments,
+  normalizeMouthAccessoryAttachments,
   deriveAccessoryCapability,
+  deriveMouthAccessoryCapability,
   resolveEffectiveAccessoryAttachments,
+  resolveEffectiveMouthAccessoryAttachments,
   collectRequiredAssetFiles,
   deepMergeObject,
   basenameOnly,

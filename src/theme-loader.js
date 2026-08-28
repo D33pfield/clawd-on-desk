@@ -33,7 +33,9 @@ const {
   deriveSleepMode: _deriveSleepMode,
   buildCapabilities: _buildCapabilities,
   deriveAccessoryCapability: _deriveAccessoryCapability,
+  deriveMouthAccessoryCapability: _deriveMouthAccessoryCapability,
   resolveEffectiveAccessoryAttachments: _resolveEffectiveAccessoryAttachments,
+  resolveEffectiveMouthAccessoryAttachments: _resolveEffectiveMouthAccessoryAttachments,
   collectRequiredAssetFiles: _collectRequiredAssetFiles,
   basenameOnly: _basenameOnly,
 } = require("./theme-schema");
@@ -186,6 +188,7 @@ function loadTheme(themeId, opts = {}) {
   // customization capability merely by making that authored descriptor stale
   // in the effective visual projection.
   const authoredAccessorySupported = _deriveAccessoryCapability(afterVariant);
+  const authoredMouthAccessorySupported = _deriveMouthAccessoryCapability(afterVariant);
   const patchedRaw = userOverrides ? _applyUserOverridesPatch(afterVariant, userOverrides) : afterVariant;
 
   // Merge defaults for optional fields
@@ -210,8 +213,12 @@ function loadTheme(themeId, opts = {}) {
     : [];
   theme._capabilities = _buildCapabilities(theme, { trustedRuntimeAllowed: !!theme._builtin });
   theme._capabilities.accessories = authoredAccessorySupported;
+  theme._capabilities.mouthAccessories = authoredMouthAccessorySupported;
   theme.customization.accessories = authoredAccessorySupported
     ? _resolveEffectiveAccessoryAttachments(afterVariant, theme)
+    : null;
+  theme.customization.mouthAccessories = authoredMouthAccessorySupported
+    ? _resolveEffectiveMouthAccessoryAttachments(afterVariant, theme)
     : null;
 
   // For external themes: sanitize SVGs + resolve asset paths

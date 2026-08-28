@@ -259,13 +259,14 @@ The existing schema fields are the only runtime truth. They already act as the t
 | `workingTiers` | Optional multi-session working overrides. Omit to fall back to `states.working[0]`. |
 | `jugglingTiers` | Optional subagent juggling overrides. Its legacy `minSessions` / `maxSessions` fields count live subagents, not top-level sessions. Omit to fall back to `states.juggling[0]` if you provide that state. |
 | `customization.petTint` | Opts the theme into the app's built-in pet color filters. Omit it or set it to `false` when filters distort authored colors. Themes cannot provide custom CSS filter strings. |
-| `customization.accessories` | Opts the theme into Clawd's built-in accessory catalog only when every reachable visual has a deterministic attachment or an explicit hidden policy. |
+| `customization.accessories` | Opts the theme into Clawd's built-in **head** accessory catalog only when every reachable visual has a deterministic attachment or an explicit hidden policy. |
+| `customization.mouthAccessories` | Independently opts the theme into the built-in mouth accessory catalog under the same complete-coverage rule. Omit it for head-only themes. |
 
 The loader also derives read-only metadata such as `idleMode` (`tracked` / `animated` / `static`) from these fields, but that metadata is not a second schema authority.
 
 #### Accessory attachments
 
-Accessories render outside the pet media, so they keep their own colors. Static attachments stay on the normal media channel; while a selected accessory uses `followTarget`, that SVG is rendered through the object channel so the external accessory layer can follow its animated target. A theme must provide complete attachment coverage before Settings exposes the accessory picker:
+Head and mouth accessories render as separate layers outside the pet media, so they keep their own colors. Static attachments stay on the normal media channel; while either selected slot uses `followTarget`, that SVG is rendered through the object channel so the external layers can follow their animated targets. Each slot must provide complete attachment coverage before Settings exposes its picker:
 
 ```json
 "customization": {
@@ -287,6 +288,28 @@ Accessories render outside the pet media, so they keep their own colors. Static 
         }
       },
       "sleeping.png": { "visibility": "hidden" }
+    },
+    "itemOverrides": {
+      "cowboy-hat": {
+        "files": {
+          "sleeping.png": { "visibility": "hidden" }
+        }
+      }
+    }
+  },
+  "mouthAccessories": {
+    "default": {
+      "staticFrame": { "cx": 12, "baseY": 11, "width": 5 }
+    },
+    "files": {
+      "notification.svg": {
+        "staticFrame": { "cx": 12, "baseY": 11, "width": 5 },
+        "followTarget": {
+          "id": "mouth-anchor-right",
+          "frame": { "cx": 0.5, "baseY": 1, "width": 1 },
+          "normalizeReflection": "x"
+        }
+      }
     }
   }
 }
@@ -302,8 +325,11 @@ Accessories render outside the pet media, so they keep their own colors. Static 
 - Accessory projection currently supports the SVG default `preserveAspectRatio="xMidYMid meet"` only (omitting the attribute has that default). Themes using `none`, `slice`, or another alignment must not opt into accessories until that projection mode is supported.
 - `default` covers root-viewBox files. `mini` covers mini-viewBox files. A file with its own `fileViewBoxes` entry needs an exact `files[basename]` descriptor.
 - `followTarget.id` is an exact SVG element id, not a CSS selector. Its `frame` coordinates are expressed in that target element's local SVG coordinate system, before the target's own and ancestor transforms. It is used only while that file renders through an accessible `<object>` document; `<img>`, PNG, APNG, GIF, and WebP use the required static fallback.
+- Mouth targets may set `normalizeReflection: "x"` when an internally mirrored target would otherwise reverse an asymmetric mouth item. The runtime keeps the full projected position and only flips the accessory pixels around that projected rectangle's own center.
+- Head attachments may define sparse `itemOverrides.<catalog-id>.files` entries. An exact item/file descriptor wins over the materialized base file descriptor; there is no additional default or mini fallback. `itemOverrides` requires the PR #811 accessory runtime (the first release after 0.16.0); Clawd 0.16.0 and older reject this new key instead of ignoring it.
+- `mouthAccessories` intentionally has no `itemOverrides` in this schema version.
 - Use `{ "visibility": "hidden" }` for poses where an accessory should disappear, such as a covered sleeping pose. Do not combine `visibility` with placement fields.
-- Every reachable state, reaction, idle animation, tier, display hint, mini state, low-power override, update visual, and DND sleep transition must be covered. Incomplete or stale metadata makes the entire `accessories` capability false.
+- Every reachable state, reaction, idle animation, tier, display hint, mini state, low-power override, update visual, DND sleep transition, and declared idle easter egg must be covered. Incomplete or stale metadata disables only the affected head or mouth capability.
 - Themes choose attachment geometry only. They cannot add accessory files, URLs, scripts, selector heuristics, or custom renderer code.
 
 ### State Visual Fallback
