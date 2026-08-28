@@ -312,6 +312,7 @@ const {
 } = require("./bubble-policy");
 const loginItemHelpers = require("./login-item");
 const { writeCodexAutoStartGate } = require("../hooks/server-config");
+const { createCodexAutoStartGateEvaluator } = require("./agent-gate");
 const PREFS_PATH = path.join(app.getPath("userData"), "clawd-prefs.json");
 const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
 // Recovery from readable invalid contents is writable only after the original
@@ -320,14 +321,22 @@ const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
 // closed until restart in either case.
 const _initialPrefsRecovered = _initialPrefsLoad.recovered === true;
 const _initialPrefsRecoveryBackupFailed = _initialPrefsLoad.recoveryBackupFailed === true;
+const _codexAutoStartAuthorityLost = (
+  _initialPrefsLoad.locked === true
+  || _initialPrefsRecovered
+  || _initialPrefsRecoveryBackupFailed
+  || _initialPrefsLoad.codexAutoStartAuthoritative === false
+);
+const _evaluateCodexAutoStartGate = createCodexAutoStartGateEvaluator({
+  authorityLost: _codexAutoStartAuthorityLost,
+});
 
 function _persistCodexAutoStartGate(enabled) {
   return writeCodexAutoStartGate(enabled === true);
 }
 
 function _syncCodexAutoStartGate(snapshot, source) {
-  const codex = snapshot && snapshot.agents && snapshot.agents.codex;
-  if (_persistCodexAutoStartGate(!!(codex && codex.enabled === true))) return true;
+  if (_persistCodexAutoStartGate(_evaluateCodexAutoStartGate(snapshot))) return true;
   console.warn(`Clawd: failed to sync Codex auto-start gate (${source})`);
   return false;
 }
@@ -575,6 +584,10 @@ _settingsController.subscribeKey("agents", (_agents, snapshot) => {
   // current process. An unreadable prefs file rejects mutations earlier in the
   // controller. In both locked cases, publishing ephemeral values would let a
   // retained hook cold-launch Clawd against a different durable prefs truth.
+  if (_settingsController.isLocked()) return;
+  _syncCodexAutoStartGate(snapshot, "settings");
+});
+_settingsController.subscribeKey("autoStartWithCodex", (_enabled, snapshot) => {
   if (_settingsController.isLocked()) return;
   _syncCodexAutoStartGate(snapshot, "settings");
 });
@@ -5231,9 +5244,9 @@ if (!gotTheLock) {
   // Only the winning instance may publish the startup gate. A losing instance
   // can have a stale/default prefs snapshot and must never become the final
   // writer after the active instance has disabled Codex.
-  // A future-version or recovered snapshot is not authoritative enough to
-  // publish an enabled external gate. Fail closed until a valid prefs commit
-  // reaches the post-commit agents subscriber above.
+  // A future-version, recovered, or partially malformed snapshot is not
+  // authoritative enough to publish an enabled external gate. The evaluator
+  // latches that decision for this process; only a clean restart can reopen it.
   const startupGateSnapshot = (
     _initialPrefsLoad.locked === true
     || _initialPrefsLoad.recovered === true
