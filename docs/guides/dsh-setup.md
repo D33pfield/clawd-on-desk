@@ -150,9 +150,17 @@ warnings, and rely on DSH's native web flow whenever Clawd yields no decision.
 
 - Windows x64 native DSH web is the first target. Real rc.6 install, config
   composition, web boot, uninstall, and packaged-app source loading were verified
-  on 2026-08-14; API-backed session and approval decisions remain pending and are
-  not yet described as Windows-verified. macOS, Linux, WSL, remote SSH, non-web
-  profiles, and ARM64 packaging are also unverified.
+  on 2026-08-14. On 2026-08-29, a Windows x64 real-machine smoke also verified a
+  real API-backed DSH web session and both manual Clawd **Allow Once** and **Deny**
+  approval round trips for the pinned native web target.
+- On 2026-08-29, a macOS source-checkout smoke under a Finder-like GUI `PATH`
+  verified Settings Install, managed plugin loading, a real API-backed DSH web
+  session, and both manual Clawd **Allow Once** and **Deny** approval round trips.
+  The allowed command completed with exit code 0 and the denied command produced
+  no side effect. This remains source-checkout evidence rather than macOS
+  packaged-app verification.
+- Linux, WSL, remote SSH, non-web profiles, macOS packaging, and ARM64 packaging
+  remain unverified.
 - There is no terminal-focus action because DSH web is a browser surface.
 - Closing the local bubble does not deny the request. If a configured Telegram
   or Feishu/Lark remote channel takes it, that channel may decide; otherwise DSH
