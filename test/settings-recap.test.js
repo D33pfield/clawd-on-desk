@@ -80,6 +80,8 @@ test("recap card keeps every visual cell square and exposes no arbitrary date or
   assert.match(css, /\.recap-cell\s*\{[\s\S]*?aspect-ratio:\s*1/);
   assert.match(css, /\.recap-month-grid[\s\S]*grid-template-columns:\s*repeat\(7/);
   assert.match(css, /\.recap-grid-dim \.recap-cell\s*\{\s*opacity:\s*0\.13/);
+  assert.match(css, /@media \(max-width:\s*980px\)[\s\S]*\.recap-page-header\s*\{\s*grid-template-columns:\s*1fr/);
+  assert.match(css, /@media \(max-width:\s*780px\)[\s\S]*\.recap-agent-row\s*\{\s*grid-template-columns:\s*1fr/);
   assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*\.recap-cell-popover/);
   assert.match(preload, /queryRecap:\s*\(period\)/);
   assert.ok(!preload.includes("exportRecap"));

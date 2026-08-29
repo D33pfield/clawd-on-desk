@@ -375,9 +375,9 @@ html, body {
 }
 .recap-agent-row {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(360px, 2.2fr);
+  grid-template-columns: minmax(96px, 1fr) minmax(320px, 2.6fr);
   align-items: center;
-  gap: 18px;
+  gap: 12px;
   padding: 9px 11px;
   border-radius: 0;
   background: var(--panel-bg);
@@ -657,7 +657,9 @@ html, body {
   border: 0;
 }
 
-@media (max-width: 780px) {
+/* The Settings sidebar consumes 200px, so the page header needs its compact
+   shape before ordinary viewport-only layouts would normally switch. */
+@media (max-width: 980px) {
   .recap-page-header { grid-template-columns: 1fr; }
   .recap-period-tabs {
     grid-column: 1;
@@ -665,6 +667,8 @@ html, body {
     margin-top: 12px;
     justify-self: start;
   }
+}
+@media (max-width: 780px) {
   .recap-card { padding: 16px; }
   .recap-agent-row { grid-template-columns: 1fr; gap: 8px; }
   .recap-agent-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
