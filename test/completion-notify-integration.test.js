@@ -12,6 +12,7 @@ const assert = require("node:assert");
 const path = require("path");
 const themeLoader = require("../src/theme-loader");
 const { createTelegramCompanion } = require("../src/telegram-companion");
+const { createSlackNotifyClient } = require("../src/slack-notify-client");
 
 themeLoader.init(path.join(__dirname, "..", "src"));
 const theme = themeLoader.loadTheme("clawd");
@@ -100,6 +101,25 @@ describe("#406 state -> Telegram completion integration", () => {
     assert.strictEqual(sent.length, 0, "background work pending -> no premature completion push");
   });
 
+  it("typed background subagents suppress Telegram until an authoritative-zero Stop completes (#952)", async () => {
+    stop(api, "s1", {
+      backgroundTasksCount: 1,
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent response while child runs.",
+    });
+    mock.timers.tick(5000);
+    await flush();
+    assert.strictEqual(sent.length, 0, "typed child still running -> no Telegram completion");
+
+    stop(api, "s1", {
+      backgroundSubagentsCount: 0,
+      assistantLastOutput: "Final response after child exit.",
+    });
+    mock.timers.tick(1000);
+    await flush();
+    assert.strictEqual(sent.length, 1, "authoritative zero releases exactly one Telegram completion");
+  });
+
   it("bg-only Stop with final assistant text pushes exactly once after the quiet window", async () => {
     stop(api, "s1", { backgroundTasksCount: 1, assistantLastOutput: "All done." });
     await flush();
@@ -118,6 +138,68 @@ describe("#406 state -> Telegram completion integration", () => {
     mock.timers.tick(1000);
     await flush();
     assert.strictEqual(sent.length, 1, "the Notification does not bury the completion; exactly one push");
+  });
+});
+
+describe("#952 state -> Slack completion integration", () => {
+  let api;
+  let fetchCalls;
+  let slack;
+  let savedDebounceEnv;
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    savedDebounceEnv = process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+    process.env.CLAWD_COMPLETION_DEBOUNCE_MS = "1000";
+    fetchCalls = [];
+    slack = createSlackNotifyClient({
+      getConfig: () => ({
+        enabled: true,
+        channelId: "",
+        notifyOnDone: true,
+        notifyOnError: true,
+        notifyOnPermission: false,
+        outputMode: "off",
+      }),
+      getSecrets: () => ({
+        webhookUrl: "https://hooks.slack.com/services/T/B/test",
+        botToken: "",
+      }),
+      getLang: () => "en",
+      fetchImpl: async (url, options) => {
+        fetchCalls.push({ url, options });
+        return { ok: true, status: 200, text: async () => "ok" };
+      },
+    });
+    slack.onSnapshot({ sessions: [] });
+    api = require("../src/state")(makeCtx({
+      broadcastSessionSnapshot: (snapshot) => slack.onSnapshot(snapshot),
+    }));
+  });
+
+  afterEach(() => {
+    api.cleanup();
+    mock.timers.reset();
+    if (savedDebounceEnv === undefined) delete process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+    else process.env.CLAWD_COMPLETION_DEBOUNCE_MS = savedDebounceEnv;
+  });
+
+  it("does not enqueue Slack completion while a typed child is live, then sends once after known zero", async () => {
+    stop(api, "s1", {
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent response while child runs.",
+    });
+    mock.timers.tick(5000);
+    await slack.drained();
+    assert.strictEqual(fetchCalls.length, 0);
+
+    stop(api, "s1", {
+      backgroundSubagentsCount: 0,
+      assistantLastOutput: "Final response after child exit.",
+    });
+    mock.timers.tick(1000);
+    await slack.drained();
+    assert.strictEqual(fetchCalls.length, 1);
   });
 });
 

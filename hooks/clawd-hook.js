@@ -680,11 +680,34 @@ function buildStateBody(event, payload, resolve) {
       }
     }
   }
-  // #406 completion-gate inputs. A Stop that still has live background shells or
-  // cron wakeups, or a Stop-hook continuation (stop_hook_active), is not a real
-  // turn completion. Forward only counts + the boolean — never the task
-  // command/description — so state.js can suppress the celebration without
-  // leaking shell contents into Clawd state.
+  // #406/#952 completion-gate inputs. A Stop that still has live background
+  // shells, cron wakeups or an exact typed one-shot subagent is not a real turn
+  // completion. Forward only counts + the boolean — never task ids, status,
+  // command or description text — so state.js can suppress the celebration
+  // without leaking background-task details into Clawd state.
+  //
+  // Presence of background_subagents_count is meaningful: an omitted field
+  // means this Claude payload had no usable background_tasks snapshot, while 0
+  // is an authoritative snapshot that contains no exact `type: "subagent"`
+  // entry. Keep the classifier intentionally narrow: teammate entries have
+  // different lifecycle semantics and must not become a completion gate.
+  if (body.event === "Stop" || body.event === "SubagentStop") {
+    const backgroundTasks = Array.isArray(payload.background_tasks)
+      ? payload.background_tasks
+      : null;
+    if (backgroundTasks) {
+      const subagentCount = backgroundTasks.reduce((count, entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return count;
+        const prototype = Object.getPrototypeOf(entry);
+        if (prototype !== Object.prototype && prototype !== null) return count;
+        const type = typeof entry.type === "string"
+          ? entry.type.trim().replace(/[A-Z]/g, (letter) => letter.toLowerCase())
+          : "";
+        return count + (type === "subagent" ? 1 : 0);
+      }, 0);
+      body.background_subagents_count = subagentCount;
+    }
+  }
   if (body.event === "Stop") {
     const bgCount = Array.isArray(payload.background_tasks) ? payload.background_tasks.length : 0;
     const cronCount = Array.isArray(payload.session_crons) ? payload.session_crons.length : 0;
