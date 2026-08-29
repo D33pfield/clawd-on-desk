@@ -1518,15 +1518,14 @@ function isClaudeElicitationCompletionTool(toolName) {
 }
 
 function hasClaudeBackgroundSubagentCompletionHold(sessionOrTracker) {
+  // Only the authoritative typed-count marker may block completion producers.
+  // Tracker-only evidence keeps the pre-#952 recovery behavior: if an older or
+  // malformed hook misses SubagentStop and never sends a typed zero, a later
+  // parent completion must still be able to settle the session.
   return !!(
     sessionOrTracker
-    && (
-      (
-        Number.isFinite(sessionOrTracker.claudeBackgroundSubagentHoldAt)
-        && sessionOrTracker.claudeBackgroundSubagentHoldAt > 0
-      )
-      || hasSubagentHoldEvidence(sessionOrTracker)
-    )
+    && Number.isFinite(sessionOrTracker.claudeBackgroundSubagentHoldAt)
+    && sessionOrTracker.claudeBackgroundSubagentHoldAt > 0
   );
 }
 
@@ -1613,7 +1612,7 @@ function promoteCompletion(sessionId, completionPayload = undefined) {
   if (hasConfirmedPermissionAnimationLock()) {
     const display = resolveDisplayState();
     setState(display, getSvgOverride(display));
-    return;
+    return true;
   }
   // The completion's data (done badge + Telegram push) already landed via the
   // snapshot above. The celebration is visual-only, so let setState()'s
@@ -2035,10 +2034,8 @@ function updateSession(sessionId, state, event, opts = {}) {
     && Number.isFinite(existing.claudeBackgroundSubagentHoldAt)
     && existing.claudeBackgroundSubagentHoldAt > 0
   );
-  const existingTrackerHold = hasSubagentHoldEvidence(existing);
   const effectiveTypedSubagentHold = incomingTypedSubagentCount > 0
     || (existingTypedSubagentHold && !typedSubagentSnapshotKnown);
-  const effectiveTrackerHold = existingTrackerHold && !typedSubagentSnapshotIsZero;
   let claudeBackgroundSubagentHoldAt = existingTypedSubagentHold
     ? existing.claudeBackgroundSubagentHoldAt
     : null;
@@ -2081,8 +2078,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       headless: srcHeadless,
     });
     const hardLiveWork = disposition.kind === "hold"
-      || effectiveTypedSubagentHold
-      || effectiveTrackerHold;
+      || effectiveTypedSubagentHold;
     const debounceMs = hardLiveWork ? 0 : disposition.debounceMs;
     if (hardLiveWork || debounceMs > 0) {
       // Hold the Stop as "working" and DROP the event to null so recentEvents
@@ -2202,6 +2198,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     && (sessionStartSource === "startup" || sessionStartSource === "clear")
   ) {
     clearSubagentTracker(subagentTracker);
+    claudeBackgroundSubagentHoldAt = null;
   }
 
   // A new parent prompt bounds only anonymous evidence. Trusted child ids may
@@ -2237,7 +2234,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   }
 
   if (
-    isSubagentStop
+    (isSubagentStop || isSubagentScopedSessionEnd)
     && typedSubagentSnapshotIsZero
     && !hasSubagentHoldEvidence(subagentTracker)
   ) {
@@ -2306,6 +2303,15 @@ function updateSession(sessionId, state, event, opts = {}) {
         const dh = pickDisplayHint(resumeState, existing, displayHint);
         sessions.set(sessionId, { state: resumeState, updatedAt: Date.now(), displayHint: dh, ...base, resumeState: null });
         debugSession(`subagent-stop restore ${describeSession(sessionId, sessions.get(sessionId))}`);
+      } else if (typedSubagentHoldActive) {
+        sessions.set(sessionId, {
+          state: "working",
+          updatedAt: Date.now(),
+          displayHint: pickDisplayHint("working", existing, displayHint),
+          ...base,
+          resumeState: null,
+        });
+        debugSession(`subagent-stop typed-hold ${describeSession(sessionId, sessions.get(sessionId))}`);
       } else {
         deleteSessionWithCompletionCleanup(sessionId, "subagent-stop-no-resume");
         debugSession(`subagent-stop delete sid=${sessionId} reason=no-resume`);
