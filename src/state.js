@@ -44,7 +44,7 @@ const { ANTIGRAVITY_QUOTA_FIELDS } = require("../hooks/antigravity-context-usage
 const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
 const { getClaudeStopDisposition } = require("../hooks/claude-stop-disposition");
 const { getStartupRecoveryProcessNames } = require("../agents/registry");
-const { mapRecapMetrics } = require("./recap-metrics");
+const { hasReusableDefaultIdentity, mapRecapMetrics } = require("./recap-metrics");
 const {
   NOOP_RECAP_SINK,
   recordCanonicalRecapEvent,
@@ -1152,6 +1152,7 @@ function recordAcceptedRecapEvent(input, snapshot) {
       scopeId: resolveRecapScopeId(input),
       sessionId: input.rawSessionId || input.sessionId,
       dedupeId,
+      sessionStartPartial: hasReusableDefaultIdentity(input.rawSessionId),
     });
   } catch (err) {
     console.warn("recap event rejected:", err && err.message ? err.message : "invalid event");

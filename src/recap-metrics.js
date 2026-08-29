@@ -70,6 +70,16 @@ function hasReusableDefaultIdentity(value) {
   return !normalized || normalized === "default" || normalized.endsWith(":default");
 }
 
+function getMetricSupport(agentId) {
+  const entry = AGENT_METRIC_POLICIES[agentId];
+  if (!entry) return null;
+  return Object.freeze({
+    sessionsStarted: entry.sessionStart !== null && entry.sessionStart !== undefined,
+    turnsCompleted: Array.isArray(entry.turnCompleteEvents),
+    toolCalls: Array.isArray(entry.toolCallEvents),
+  });
+}
+
 function mapRecapMetrics(input) {
   if (!input || typeof input !== "object") return null;
   const policyEntry = AGENT_METRIC_POLICIES[input.agentId];
@@ -123,5 +133,7 @@ assertRegistryCoverage();
 module.exports = {
   AGENT_METRIC_POLICIES,
   assertRegistryCoverage,
+  getMetricSupport,
+  hasReusableDefaultIdentity,
   mapRecapMetrics,
 };

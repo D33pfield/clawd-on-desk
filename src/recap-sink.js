@@ -11,8 +11,9 @@ function normalizeEphemeralIdentity(value) {
   const out = {};
   for (const key of ["scopeId", "sessionId", "dedupeId"]) {
     const raw = value[key];
-    if (typeof raw === "string" && raw && !/[\0\r\n]/.test(raw)) out[key] = raw;
+    if (typeof raw === "string" && raw && raw.length <= 512 && !/[\0\r\n]/.test(raw)) out[key] = raw;
   }
+  if (value.sessionStartPartial === true) out.sessionStartPartial = true;
   return Object.freeze(out);
 }
 
