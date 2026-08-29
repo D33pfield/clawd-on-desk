@@ -287,6 +287,7 @@ describe("agent-runtime-main", () => {
     assert.strictEqual(calls[2][4].profileId, "local");
     assert.strictEqual(calls[2][4].rawSessionId, "codex:s1");
     assert.strictEqual(calls[2][4].transientPermissionEvent, true);
+    assert.strictEqual(calls[2][4].recapSuppressed, true);
     assert.deepStrictEqual(calls[3], expectedTouch);
     assert.deepStrictEqual(calls[4], [
       "clear",
@@ -479,6 +480,8 @@ describe("agent-runtime-main", () => {
         cwd: "D:\\repo",
         agentId: "codex",
         sessionTitle: "Run tests",
+        recapIsSubagent: true,
+        recapSuppressed: true,
         headless: true,
         profileId: "local",
         rawSessionId: "sid",
@@ -784,6 +787,7 @@ describe("agent-runtime-main", () => {
         cwd: "D:\\repo",
         agentId: "codex",
         sessionTitle: "Codex turn",
+        recapSuppressed: true,
         headless: false,
         profileId: "local",
         rawSessionId: "codex:s1",

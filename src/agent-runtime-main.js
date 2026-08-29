@@ -12,6 +12,10 @@ const createCodexTurnFence = require("./codex-turn-fence");
 const createCodexOfficialActivity = require("./codex-official-activity");
 
 const CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS = 10 * 60 * 1000;
+// Intentionally excludes response_item:web_search_call. Codex official hooks
+// do not cover WebSearch, so JSONL is its only lifecycle/tool boundary today.
+// Keep this asymmetry under test: adding it here would silently drop web-search
+// recap; upstream adding an official WebSearch hook requires a new dedupe path.
 const CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS = new Set([
   "session_meta",
   "event_msg:task_started",
@@ -249,7 +253,7 @@ function createAgentRuntimeMain(options = {}) {
         // machine), never into updateSession opts — see state.js
         // updateAccountQuota and src/state-account-quota.js.
         const sessionOptions = {
-          ...buildCodexMonitorSessionOptions(extra, { includeHeadless: true }),
+          ...buildCodexMonitorSessionOptions(extra, { includeHeadless: true, includeRecap: true }),
           profileId: sessionIdentity.profileId,
           rawSessionId: sessionIdentity.rawSessionId,
         };
@@ -319,6 +323,11 @@ function createAgentRuntimeMain(options = {}) {
             profileId: sessionIdentity.profileId,
             rawSessionId: sessionIdentity.rawSessionId,
             transientPermissionEvent: true,
+            // This passive/recovery card deliberately bypasses the ordinary
+            // JSONL timestamp + turn-fence path. Until it carries the original
+            // line time and equivalent official suppression, it is UI-only and
+            // must never be stamped into recap with receipt time.
+            recapSuppressed: true,
           });
         },
         onUserInputResolved: (sid, callId, resolution = null) => {
