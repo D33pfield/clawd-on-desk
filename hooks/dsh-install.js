@@ -17,10 +17,36 @@ const MANAGED_OWNER = "clawd-on-desk";
 const MANIFEST_FILE = "clawd-manifest.json";
 const MANIFEST_SCHEMA_VERSION = 1;
 const BRIDGE_PROTOCOL_VERSION = 1;
-const SUPPORTED_DSH_VERSION = "0.1.1-rc.2";
-const SUPPORTED_DSH_RANGE = `=${SUPPORTED_DSH_VERSION}`;
-const VERIFIED_DSH_ARTIFACT = `@deepseek-ai/dsh@${SUPPORTED_DSH_VERSION}`;
-const VERIFIED_DSH_ARTIFACT_INTEGRITY = "sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==";
+// Verified DSH versions, newest first. Each entry is an exact-version
+// contract: the version, its exact supported range, and the npm artifact
+// bound to it. New installs prefer the first entry; Repair, Uninstall, and
+// manual commands select the contract whose version matches the detected
+// host or the owned marker. Pre-release DSH versions are intentionally
+// exact-pinned — a broad range (>=0.1.x) would admit artifacts this bridge
+// has not verified.
+const DSH_VERSION_CONTRACTS = Object.freeze([
+  Object.freeze({
+    version: "0.1.1-rc.2",
+    supportedDshRange: "=0.1.1-rc.2",
+    verifiedDshArtifact: "@deepseek-ai/dsh@0.1.1-rc.2",
+    verifiedDshArtifactIntegrity: "sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==",
+  }),
+  Object.freeze({
+    version: "0.1.0-rc.6",
+    supportedDshRange: "=0.1.0-rc.6",
+    verifiedDshArtifact: "@deepseek-ai/dsh@0.1.0-rc.6",
+    verifiedDshArtifactIntegrity: "sha512-brpZfED7ieRa2PQ5tUxMhHrM1pb2CmKFVM/f6yMULBDMicahk+Z2OsHgTwTDnoiZm23Ftu9rQz0NN4pflaoJcg==",
+  }),
+]);
+const PREFERRED_DSH_CONTRACT = DSH_VERSION_CONTRACTS[0];
+
+// Backwards-compatible aliases for the preferred contract. Code that acts on a
+// specific detected host or an owned marker should use dshContractForVersion /
+// dshContractForMarker instead of these singletons.
+const SUPPORTED_DSH_VERSION = PREFERRED_DSH_CONTRACT.version;
+const SUPPORTED_DSH_RANGE = PREFERRED_DSH_CONTRACT.supportedDshRange;
+const VERIFIED_DSH_ARTIFACT = PREFERRED_DSH_CONTRACT.verifiedDshArtifact;
+const VERIFIED_DSH_ARTIFACT_INTEGRITY = PREFERRED_DSH_CONTRACT.verifiedDshArtifactIntegrity;
 const SOURCE_AUDIT_BASELINE_COMMIT = "47f943859bef60e4160492346772ded9b24f765a";
 const DEFAULT_OPERATION_TIMEOUT_MS = 120000;
 const MUTATION_LOCK_SCHEMA_VERSION = 2;
@@ -372,8 +398,26 @@ function parseDshVersion(value) {
   return match ? match[1] : null;
 }
 
+function dshContractForVersion(version) {
+  return DSH_VERSION_CONTRACTS.find((contract) => contract.version === version) || null;
+}
+
 function isSupportedDshVersion(version) {
-  return version === SUPPORTED_DSH_VERSION;
+  return dshContractForVersion(version) !== null;
+}
+
+function supportedDshRangeLabel() {
+  return DSH_VERSION_CONTRACTS.map((contract) => contract.supportedDshRange).join(" or ");
+}
+
+// Resolve the exact contract an installed generation was staged for. A marker
+// whose installedDshVersion is not in the table, or whose supportedDshRange
+// disagrees with its version's contract, is unlisted and returns null.
+function dshContractForMarker(marker) {
+  if (!marker || typeof marker.installedDshVersion !== "string") return null;
+  const contract = dshContractForVersion(marker.installedDshVersion);
+  if (!contract || marker.supportedDshRange !== contract.supportedDshRange) return null;
+  return contract;
 }
 
 async function readDshVersion(commandInfo, options = {}) {
@@ -439,7 +483,7 @@ function packagePath(root, packageName) {
   return path.join(root, "node_modules", ...packageName.split("/"), "package.json");
 }
 
-function digestBridgeFiles(files) {
+function digestBridgeFiles(files, contract = PREFERRED_DSH_CONTRACT) {
   const hash = crypto.createHash("sha256");
   for (const file of files) {
     hash.update(file.relativePath);
@@ -448,11 +492,11 @@ function digestBridgeFiles(files) {
     hash.update("\0");
   }
   hash.update(`protocol:${BRIDGE_PROTOCOL_VERSION}\0`);
-  hash.update(`dsh:${SUPPORTED_DSH_RANGE}\0`);
+  hash.update(`dsh:${contract.supportedDshRange}\0`);
   return hash.digest("hex");
 }
 
-async function hashBridgeDirectory(packageDir) {
+async function hashBridgeDirectory(packageDir, contract = PREFERRED_DSH_CONTRACT) {
   try {
     const files = [];
     for (const relativePath of BRIDGE_SOURCE_FILES) {
@@ -461,13 +505,13 @@ async function hashBridgeDirectory(packageDir) {
       if (!stat.isFile() || stat.isSymbolicLink()) return null;
       files.push({ relativePath, content: await fsp.readFile(filePath) });
     }
-    return digestBridgeFiles(files);
+    return digestBridgeFiles(files, contract);
   } catch {
     return null;
   }
 }
 
-function hashBridgeDirectorySync(fsImpl, packageDir) {
+function hashBridgeDirectorySync(fsImpl, packageDir, contract = PREFERRED_DSH_CONTRACT) {
   try {
     const files = [];
     for (const relativePath of BRIDGE_SOURCE_FILES) {
@@ -478,7 +522,31 @@ function hashBridgeDirectorySync(fsImpl, packageDir) {
       if (!stat.isFile() || (typeof stat.isSymbolicLink === "function" && stat.isSymbolicLink())) return null;
       files.push({ relativePath, content: fsImpl.readFileSync(filePath) });
     }
-    return digestBridgeFiles(files);
+    return digestBridgeFiles(files, contract);
+  } catch {
+    return null;
+  }
+}
+
+// Hash the current bridge source once per verified contract so health checks
+// can compare an installed marker against the source hash for the exact
+// contract it was staged for (never against another contract's hash).
+function computeExpectedSourceHashesSync(fsImpl, sourceDir) {
+  try {
+    const files = [];
+    for (const relativePath of BRIDGE_SOURCE_FILES) {
+      const filePath = path.join(sourceDir, ...relativePath.split("/"));
+      const stat = typeof fsImpl.lstatSync === "function"
+        ? fsImpl.lstatSync(filePath)
+        : fsImpl.statSync(filePath);
+      if (!stat.isFile() || (typeof stat.isSymbolicLink === "function" && stat.isSymbolicLink())) return null;
+      files.push({ relativePath, content: fsImpl.readFileSync(filePath) });
+    }
+    const hashes = {};
+    for (const contract of DSH_VERSION_CONTRACTS) {
+      hashes[contract.version] = digestBridgeFiles(files, contract);
+    }
+    return hashes;
   } catch {
     return null;
   }
@@ -506,7 +574,8 @@ async function inspectResolvedPackage(packageManifestPath, anchor) {
   const packageManifest = await readJson(realManifestPath);
   const packageDir = path.dirname(realManifestPath);
   const clawdManifest = await readJson(path.join(packageDir, MANIFEST_FILE));
-  const actualBundleHash = await hashBridgeDirectory(packageDir);
+  const markerContract = dshContractForMarker(clawdManifest);
+  const actualBundleHash = await hashBridgeDirectory(packageDir, markerContract || PREFERRED_DSH_CONTRACT);
   return { anchor, packageDir, packageManifest, clawdManifest, actualBundleHash };
 }
 
@@ -543,7 +612,8 @@ function inspectResolvedPackageSync(fsImpl, packageManifestPath, anchor) {
   const packageManifest = readJsonSync(fsImpl, realManifestPath);
   const packageDir = path.dirname(realManifestPath);
   const clawdManifest = readJsonSync(fsImpl, path.join(packageDir, MANIFEST_FILE));
-  const actualBundleHash = hashBridgeDirectorySync(fsImpl, packageDir);
+  const markerContract = dshContractForMarker(clawdManifest);
+  const actualBundleHash = hashBridgeDirectorySync(fsImpl, packageDir, markerContract || PREFERRED_DSH_CONTRACT);
   return { anchor, packageDir, packageManifest, clawdManifest, actualBundleHash };
 }
 
@@ -651,7 +721,7 @@ function classifyDeepSeekHarnessProfile({
   managedGenerationResolved,
   sourcePath,
   managedRoot,
-  expectedHash,
+  expectedHashes,
   fs: fsImpl,
   platform,
 }) {
@@ -711,13 +781,10 @@ function classifyDeepSeekHarnessProfile({
       status = owned ? "managed-bundle-missing" : "profile-entry-foreign-or-conflicting";
     } else if (!profileOwned && !fallbackOwned) {
       status = "profile-entry-foreign-or-conflicting";
-    } else if (expectedHash && marker.bundleHash !== expectedHash) {
-      status = "generation-mismatch";
-    } else if (
-      marker.supportedDshRange !== SUPPORTED_DSH_RANGE
-      || !isSupportedDshVersion(marker.installedDshVersion)
-    ) {
+    } else if (!dshContractForMarker(marker)) {
       status = "version-unsupported";
+    } else if (expectedHashes && marker.bundleHash !== expectedHashes[marker.installedDshVersion]) {
+      status = "generation-mismatch";
     } else {
       status = "healthy";
     }
@@ -814,10 +881,10 @@ function inspectDeepSeekHarnessDiskSync(options = {}) {
     )
     : null;
   const verifyCurrentSource = options.verifyCurrentSource !== false;
-  const expectedHash = options.expectedHash !== undefined
-    ? options.expectedHash
+  const expectedHashes = options.expectedHashes !== undefined
+    ? options.expectedHashes
     : (verifyCurrentSource
-      ? hashBridgeDirectorySync(fsImpl, options.sourceDir || resolveBridgeSourceDir(options.baseDir))
+      ? computeExpectedSourceHashesSync(fsImpl, options.sourceDir || resolveBridgeSourceDir(options.baseDir))
       : null);
   const health = classifyDeepSeekHarnessProfile({
     dshHome,
@@ -830,11 +897,11 @@ function inspectDeepSeekHarnessDiskSync(options = {}) {
     managedGenerationResolved,
     sourcePath,
     managedRoot,
-    expectedHash,
+    expectedHashes,
     fs: fsImpl,
     platform: options.platform,
   });
-  const sourceAwareHealth = verifyCurrentSource && !expectedHash && health.owned
+  const sourceAwareHealth = verifyCurrentSource && !expectedHashes && health.owned
     ? { ...health, status: "source-unavailable" }
     : health;
   const immutableConflict = new Set([
@@ -848,7 +915,8 @@ function inspectDeepSeekHarnessDiskSync(options = {}) {
     ? { ...sourceAwareHealth, status: "host-version-unsupported" }
     : sourceAwareHealth;
   compatibilityAwareHealth.detectedDshVersion = detectedDshVersion;
-  compatibilityAwareHealth.supportedDshRange = SUPPORTED_DSH_RANGE;
+  compatibilityAwareHealth.supportedDshRange = supportedDshRangeLabel();
+  compatibilityAwareHealth.supportedDshVersions = DSH_VERSION_CONTRACTS.map((contract) => contract.version);
   const latch = readInspectionLatchSync(fsImpl, options);
   if (!latch) return compatibilityAwareHealth;
   const latchBlockedByHigherPriority = immutableConflict
@@ -921,12 +989,13 @@ async function inspectDeepSeekHarnessIntegration(options = {}) {
     managedGenerationResolved,
     sourcePath,
     managedRoot,
-    expectedHash: options.expectedHash,
+    expectedHashes: options.expectedHashes,
     platform: options.platform,
   });
 }
 
 async function readSourceBundle(options = {}) {
+  const contract = options.contract || dshContractForVersion(options.dshVersion) || PREFERRED_DSH_CONTRACT;
   const sourceDir = options.sourceDir || resolveBridgeSourceDir(options.baseDir);
   const files = [];
   for (const relativePath of BRIDGE_SOURCE_FILES) {
@@ -937,7 +1006,7 @@ async function readSourceBundle(options = {}) {
     }
     files.push({ relativePath, content: await fsp.readFile(filePath) });
   }
-  return { sourceDir, files, bundleHash: digestBridgeFiles(files) };
+  return { sourceDir, files, bundleHash: digestBridgeFiles(files, contract), contract };
 }
 
 async function sourceClawdVersion(options = {}) {
@@ -951,21 +1020,23 @@ async function sourceClawdVersion(options = {}) {
 }
 
 async function promoteGeneration(bundle, options = {}) {
+  const contract = options.contract || dshContractForVersion(options.dshVersion) || bundle.contract || PREFERRED_DSH_CONTRACT;
   const managedRoot = resolveManagedRoot(options);
   const generationsDir = path.join(managedRoot, "generations");
   const generationDir = path.join(generationsDir, bundle.bundleHash);
   const version = await sourceClawdVersion(options);
   await fsp.mkdir(generationsDir, { recursive: true });
   const existing = await readJson(path.join(generationDir, MANIFEST_FILE));
-  const existingHash = existing ? await hashBridgeDirectory(generationDir) : null;
+  const existingContract = existing ? dshContractForMarker(existing) : null;
+  const existingHash = existing && existingContract ? await hashBridgeDirectory(generationDir, existingContract) : null;
   if (
     existing
     && existing.owner === MANAGED_OWNER
     && existing.schemaVersion === MANIFEST_SCHEMA_VERSION
     && existing.protocolVersion === BRIDGE_PROTOCOL_VERSION
     && existing.bundleHash === bundle.bundleHash
-    && existing.supportedDshRange === SUPPORTED_DSH_RANGE
-    && isSupportedDshVersion(existing.installedDshVersion)
+    && existingContract
+    && existingContract.version === contract.version
     && existingHash === bundle.bundleHash
   ) {
     return { managedRoot, generationDir, bundleHash: bundle.bundleHash, created: false, manifest: existing };
@@ -988,11 +1059,11 @@ async function promoteGeneration(bundle, options = {}) {
       packageName: BRIDGE_PACKAGE_NAME,
       bundleHash: bundle.bundleHash,
       sourceClawdVersion: version,
-      supportedDshRange: SUPPORTED_DSH_RANGE,
-      installedDshVersion: options.dshVersion || SUPPORTED_DSH_VERSION,
+      supportedDshRange: contract.supportedDshRange,
+      installedDshVersion: options.dshVersion || contract.version,
       installedDshVersionAssumedAtStaging: options.dshVersionAssumed === true,
-      verifiedDshArtifact: VERIFIED_DSH_ARTIFACT,
-      verifiedDshArtifactIntegrity: VERIFIED_DSH_ARTIFACT_INTEGRITY,
+      verifiedDshArtifact: contract.verifiedDshArtifact,
+      verifiedDshArtifactIntegrity: contract.verifiedDshArtifactIntegrity,
       sourceAuditBaselineCommit: SOURCE_AUDIT_BASELINE_COMMIT,
       installedAt: new Date().toISOString(),
     };
@@ -1006,7 +1077,7 @@ async function promoteGeneration(bundle, options = {}) {
     } catch (err) {
       if (!err || (err.code !== "EEXIST" && err.code !== "ENOTEMPTY")) throw err;
       const raced = await readJson(path.join(generationDir, MANIFEST_FILE));
-      const racedHash = raced ? await hashBridgeDirectory(generationDir) : null;
+      const racedHash = raced ? await hashBridgeDirectory(generationDir, contract) : null;
       if (
         !raced
         || raced.owner !== MANAGED_OWNER
@@ -1800,7 +1871,6 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
         message: "DeepSeek Harness web profile is missing; use Settings Repair to initialize it",
       };
     }
-    const bundle = await readSourceBundle(options);
     const commandInfo = await resolveDshCommand(options);
     const before = await inspectDeepSeekHarnessIntegration({ ...options, commandInfo });
     const currentVersion = await sourceClawdVersion(options);
@@ -1821,6 +1891,8 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
       };
     }
     if (!commandInfo) {
+      const noCliContract = (before.marker && dshContractForMarker(before.marker)) || PREFERRED_DSH_CONTRACT;
+      const bundle = await readSourceBundle({ ...options, contract: noCliContract });
       if (before.status === "healthy" && before.marker.bundleHash === bundle.bundleHash) {
         if (latch) return inspectionLatchResult(latch);
         if (manualReference) {
@@ -1866,7 +1938,8 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
           }
           const generation = await promoteGeneration(bundle, {
             ...options,
-            dshVersion: SUPPORTED_DSH_VERSION,
+            contract: noCliContract,
+            dshVersion: noCliContract.version,
             dshVersionAssumed: true,
           });
           await writeManualGenerationReference(generation, options);
@@ -1877,7 +1950,7 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
             message: "DeepSeek Harness was detected, but a global dsh CLI is not available",
             manualCommand: buildManualDshCommand([
               "npx",
-              `@deepseek-ai/dsh@${SUPPORTED_DSH_VERSION}`,
+              `@deepseek-ai/dsh@${noCliContract.version}`,
               "plugin",
               "--profile",
               WEB_PROFILE_NAME,
@@ -1893,13 +1966,15 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
       return { status: "error", reason: "cli-unavailable", message: "DeepSeek Harness CLI is not available" };
     }
     const dshVersion = await readDshVersion(commandInfo, options);
-    if (!isSupportedDshVersion(dshVersion)) {
+    const contract = dshContractForVersion(dshVersion);
+    const bundle = await readSourceBundle({ ...options, contract });
+    if (!contract) {
       return {
         status: "error",
         reason: "version-unsupported",
-        message: `DeepSeek Harness ${dshVersion || "unknown"} is unsupported; this bridge requires ${SUPPORTED_DSH_RANGE}`,
+        message: `DeepSeek Harness ${dshVersion || "unknown"} is unsupported; this bridge supports ${supportedDshRangeLabel()}`,
         detectedVersion: dshVersion,
-        supportedRange: SUPPORTED_DSH_RANGE,
+        supportedRange: supportedDshRangeLabel(),
       };
     }
     if (
@@ -1928,9 +2003,9 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
         return {
           status: "error",
           reason: "version-unsupported",
-          message: `DeepSeek Harness ${lockedVersion || "unknown"} is unsupported; this bridge requires ${SUPPORTED_DSH_RANGE}`,
+          message: `DeepSeek Harness ${lockedVersion || "unknown"} is unsupported; this bridge supports ${supportedDshRangeLabel()}`,
           detectedVersion: lockedVersion,
-          supportedRange: SUPPORTED_DSH_RANGE,
+          supportedRange: supportedDshRangeLabel(),
         };
       }
       if (!hasMutableManagedState(locked)) {
@@ -1962,7 +2037,7 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
           return { status: "error", reason: "generation-conflict", message: "Managed DSH bridge version/hash conflict requires explicit inspection" };
         }
       }
-      const generation = await promoteGeneration(bundle, { ...options, dshVersion });
+      const generation = await promoteGeneration(bundle, { ...options, contract, dshVersion });
       const result = await runDshCommand([
         "plugin", "--profile", WEB_PROFILE_NAME, "add", generation.generationDir,
       ], { ...options, commandInfo });
@@ -1999,7 +2074,7 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
       const after = await inspectDeepSeekHarnessIntegration({
         ...options,
         commandInfo,
-        expectedHash: generation.bundleHash,
+        expectedHashes: { [contract.version]: generation.bundleHash },
       });
       if (after.status !== "healthy") {
         await writeInspectionLatch("plugin-add-verification-failed", after.status, options);
@@ -2071,9 +2146,9 @@ async function uninstallDeepSeekHarnessBridge(options = {}) {
         return {
           status: "error",
           reason: "version-unsupported",
-          message: `DeepSeek Harness ${dshVersion || "unknown"} is unsupported; refusing to clear removal state without the ${SUPPORTED_DSH_VERSION} contract`,
+          message: `DeepSeek Harness ${dshVersion || "unknown"} is unsupported; refusing to clear removal state (supported: ${supportedDshRangeLabel()})`,
           detectedVersion: dshVersion,
-          supportedRange: SUPPORTED_DSH_RANGE,
+          supportedRange: supportedDshRangeLabel(),
           manualInspectionRequired: true,
         };
       }
@@ -2085,9 +2160,9 @@ async function uninstallDeepSeekHarnessBridge(options = {}) {
           return {
             status: "error",
             reason: "version-unsupported",
-            message: `DeepSeek Harness ${lockedVersion || "unknown"} is unsupported; refusing to clear removal state without the ${SUPPORTED_DSH_VERSION} contract`,
+            message: `DeepSeek Harness ${lockedVersion || "unknown"} is unsupported; refusing to clear removal state (supported: ${supportedDshRangeLabel()})`,
             detectedVersion: lockedVersion,
-            supportedRange: SUPPORTED_DSH_RANGE,
+            supportedRange: supportedDshRangeLabel(),
             manualInspectionRequired: true,
           };
         }
@@ -2120,9 +2195,10 @@ async function uninstallDeepSeekHarnessBridge(options = {}) {
         status: "error",
         reason: "cli-unavailable",
         message: "DeepSeek Harness CLI is unavailable; the managed plugin was left installed",
+        removalContract: (before.marker && dshContractForMarker(before.marker)) || PREFERRED_DSH_CONTRACT,
         manualCommand: buildManualDshCommand([
           "npx",
-          `@deepseek-ai/dsh@${SUPPORTED_DSH_VERSION}`,
+          `@deepseek-ai/dsh@${removalContract.version}`,
           "plugin",
           "--profile",
           WEB_PROFILE_NAME,
@@ -2136,9 +2212,9 @@ async function uninstallDeepSeekHarnessBridge(options = {}) {
       return {
         status: "error",
         reason: "version-unsupported",
-        message: `DeepSeek Harness ${dshVersion || "unknown"} is unsupported; refusing to mutate it with a ${SUPPORTED_DSH_VERSION}-specific removal contract`,
+        message: `DeepSeek Harness ${dshVersion || "unknown"} is unsupported; refusing to mutate it with a removal contract for an unlisted version (supported: ${supportedDshRangeLabel()})`,
         detectedVersion: dshVersion,
-        supportedRange: SUPPORTED_DSH_RANGE,
+        supportedRange: supportedDshRangeLabel(),
         manualInspectionRequired: true,
       };
     }
@@ -2150,9 +2226,9 @@ async function uninstallDeepSeekHarnessBridge(options = {}) {
         return {
           status: "error",
           reason: "version-unsupported",
-          message: `DeepSeek Harness ${lockedVersion || "unknown"} is unsupported; refusing to mutate it with a ${SUPPORTED_DSH_VERSION}-specific removal contract`,
+          message: `DeepSeek Harness ${lockedVersion || "unknown"} is unsupported; refusing to mutate it with a removal contract for an unlisted version (supported: ${supportedDshRangeLabel()})`,
           detectedVersion: lockedVersion,
-          supportedRange: SUPPORTED_DSH_RANGE,
+          supportedRange: supportedDshRangeLabel(),
           manualInspectionRequired: true,
         };
       }
@@ -2287,12 +2363,18 @@ module.exports = {
   BRIDGE_PROTOCOL_VERSION,
   BRIDGE_SOURCE_FILES,
   DSH_RESTART_HINT,
+  DSH_VERSION_CONTRACTS,
   MANAGED_OWNER,
+  PREFERRED_DSH_CONTRACT,
   SUPPORTED_DSH_RANGE,
   SUPPORTED_DSH_VERSION,
   VERIFIED_DSH_ARTIFACT,
   VERIFIED_DSH_ARTIFACT_INTEGRITY,
   WEB_PROFILE_NAME,
+  dshContractForMarker,
+  dshContractForVersion,
+  isSupportedDshVersion,
+  supportedDshRangeLabel,
   dshCommandPathsSync,
   hasDshCommand,
   hasPnpm,
@@ -2325,12 +2407,18 @@ module.exports = {
     manualGenerationReferencePath,
     readManualGenerationReference,
     buildManualDshCommand,
+    computeExpectedSourceHashesSync,
+    digestBridgeFiles,
+    dshContractForMarker,
+    dshContractForVersion,
+    isSupportedDshVersion,
     resolveCanonicalDshHome,
     packagePath,
     parseDshVersion,
     promoteGeneration,
     readSourceBundle,
     runCommand,
+    supportedDshRangeLabel,
   },
 };
 
