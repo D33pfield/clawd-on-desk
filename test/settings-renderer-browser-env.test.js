@@ -8424,20 +8424,21 @@ describe("settings renderer browser environment", () => {
     assert.match(css, /\.language-picker\.open-up \.language-picker-menu\s*\{[\s\S]*bottom:\s*calc\(100% \+ 6px\);/);
   });
 
-  it("opens the seven-language tutorial picker upward when it no longer fits below the default welcome layout", () => {
+  it("opens downward for the captured three-line pt-BR/es default-window geometry", () => {
     const harness = loadSharedLanguagePickerForTest({
       options: SUPPORTED_LANGS,
-      innerHeight: 700,
+      innerHeight: 668,
     });
-    harness.boundary.getBoundingClientRect = () => ({ top: 78, bottom: 635 });
-    harness.trigger.getBoundingClientRect = () => ({ top: 390, bottom: 426 });
+    // Captured from real macOS Electron layout; this guards picker placement, not CSS layout.
+    harness.boundary.getBoundingClientRect = () => ({ top: 47, bottom: 603 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 325, bottom: 361 });
     Object.defineProperty(harness.menu, "scrollHeight", { value: 220 });
     Object.defineProperty(harness.menu, "offsetHeight", { value: 222 });
     Object.defineProperty(harness.menu, "clientHeight", { value: 220 });
 
     harness.trigger.dispatchEvent({ type: "click" });
 
-    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.picker.classList.contains("open-up"), false);
     assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), false);
     assert.strictEqual(harness.menu.style.maxHeight, "222px");
   });
