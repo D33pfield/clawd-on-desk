@@ -390,6 +390,10 @@ function handleStatePost(req, res, options) {
       // only — the hook never forwards task command or description text.
       const backgroundTasksCount = Number.isFinite(data.background_tasks_count)
         ? data.background_tasks_count : 0;
+      const backgroundSubagentsCount = Number.isSafeInteger(data.background_subagents_count)
+        && data.background_subagents_count >= 0
+        ? data.background_subagents_count
+        : null;
       const sessionCronsCount = Number.isFinite(data.session_crons_count)
         ? data.session_crons_count : 0;
       const stopHookActive = data.stop_hook_active === true;
@@ -886,6 +890,7 @@ function handleStatePost(req, res, options) {
             hookSource,
             ...(codexHookState.turnId ? { turnId: codexHookState.turnId } : {}),
             backgroundTasksCount,
+            ...(backgroundSubagentsCount !== null ? { backgroundSubagentsCount } : {}),
             sessionCronsCount,
             stopHookActive,
             stdinDiag,

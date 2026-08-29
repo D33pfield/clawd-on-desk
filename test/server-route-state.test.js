@@ -636,6 +636,36 @@ describe("server-route-state POST", () => {
     ]]);
   });
 
+  it("preserves absent versus authoritative zero for typed Claude background subagents (#952)", async () => {
+    const post = (value, include = true) => callStatePost(JSON.stringify({
+      state: "attention",
+      event: "Stop",
+      agent_id: "claude-code",
+      session_id: `typed-${String(value)}`,
+      ...(include ? { background_subagents_count: value } : {}),
+    }));
+
+    const absent = await post(0, false);
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(absent.calls.updateSession[0][3], "backgroundSubagentsCount"),
+      false,
+    );
+
+    const zero = await post(0);
+    assert.strictEqual(zero.calls.updateSession[0][3].backgroundSubagentsCount, 0);
+
+    const positive = await post(2);
+    assert.strictEqual(positive.calls.updateSession[0][3].backgroundSubagentsCount, 2);
+
+    for (const invalid of [-1, 1.5, "1", Number.MAX_SAFE_INTEGER + 1]) {
+      const response = await post(invalid);
+      assert.strictEqual(
+        Object.prototype.hasOwnProperty.call(response.calls.updateSession[0][3], "backgroundSubagentsCount"),
+        false,
+      );
+    }
+  });
+
   it("shows and resolves a normalized remote Codex user-input request", async () => {
     const request = await callStatePost(JSON.stringify({
       state: "notification",

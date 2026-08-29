@@ -103,6 +103,9 @@ function update(api, o = {}) {
       toolName: o.toolName ?? null,
       transcriptPath: o.transcriptPath ?? null,
       backgroundTasksCount: o.backgroundTasksCount ?? 0,
+      ...(Object.prototype.hasOwnProperty.call(o, "backgroundSubagentsCount")
+        ? { backgroundSubagentsCount: o.backgroundSubagentsCount }
+        : {}),
       sessionCronsCount: o.sessionCronsCount ?? 0,
       stopHookActive: o.stopHookActive ?? false,
       transientPermissionEvent: o.transientPermissionEvent === true,
@@ -270,6 +273,10 @@ describe("restoreSessionFromLease()", () => {
     assert.strictEqual(api.sessions.size, 1);
     const sessionId = makeSessionKey({ profileId: "local", rawSessionId: "claude-real-session" });
     const session = api.sessions.get(sessionId);
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(session, "claudeBackgroundSubagentHoldAt"),
+      false,
+    );
     assert.strictEqual(session.state, "working");
     assert.strictEqual(session.profileId, "local");
     assert.strictEqual(session.rawSessionId, "claude-real-session");
@@ -717,7 +724,12 @@ describe("#862 juggling tier counts subagents, not sessions", () => {
   it("a new run resets the count when stops were lost", () => {
     work(); start("s1", "child-a"); start("s1", "child-b");
     // agent crashed — both stops never arrive; session leaves juggling normally
-    update(api, { id: "s1", state: "attention", event: "Stop" });
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 0,
+    });
     work();
     start("s1", "child-c");
     assert.strictEqual(shown(), GROOVE, "stale count must not carry into the new run");
@@ -943,7 +955,12 @@ describe("#862 juggling tier counts subagents, not sessions", () => {
     assert.strictEqual(api.sessions.get("s1").subagentTracker.legacyFloor, true);
     assert.strictEqual(api.resolveDisplayState(), "juggling");
 
-    update(api, { id: "s1", state: "attention", event: "Stop" });
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 0,
+    });
     assert.strictEqual(api.sessions.get("s1").subagentTracker.legacyFloor, false);
     assert.strictEqual(api.resolveDisplayState(), "idle");
   });
@@ -1338,7 +1355,9 @@ describe("cleanStaleSessions()", () => {
 
   it("agentPid dead → delete session", () => {
     api = require("../src/state")(makeCtx({ processKill: makePidKill(new Set()) }));
-    api.sessions.set("s1", rawSession("working", { agentPid: 9999, pidReachable: true }));
+    const session = rawSession("working", { agentPid: 9999, pidReachable: true });
+    session.claudeBackgroundSubagentHoldAt = Date.now();
+    api.sessions.set("s1", session);
     api.cleanStaleSessions();
     assert.strictEqual(api.sessions.size, 0);
   });
@@ -1388,7 +1407,7 @@ describe("cleanStaleSessions()", () => {
 
   it("agentPid alive + sourcePid alive + working > WORKING_STALE_MS → downgrade to idle", () => {
     api = require("../src/state")(makeCtx({ processKill: makePidKill(new Set([1000, 2000])) }));
-    api.sessions.set("s1", rawSession("working", {
+    const staleSession = rawSession("working", {
       agentPid: 1000, sourcePid: 2000, pidReachable: true,
       updatedAt: Date.now() - 310000,
       subagentTracker: {
@@ -1396,13 +1415,42 @@ describe("cleanStaleSessions()", () => {
         legacyFloor: true,
         recoveredFloor: true,
       },
-    }));
+    });
+    staleSession.claudeBackgroundSubagentHoldAt = Date.now() - 310000;
+    api.sessions.set("s1", staleSession);
     api.cleanStaleSessions();
     const session = api.sessions.get("s1");
     assert.strictEqual(session.state, "idle");
     assert.strictEqual(session.subagentTracker.confirmedIds.size, 0);
     assert.strictEqual(session.subagentTracker.legacyFloor, false);
     assert.strictEqual(session.subagentTracker.recoveredFloor, false);
+    assert.strictEqual(session.claudeBackgroundSubagentHoldAt, null);
+  });
+
+  it("parent progress postpones the configured silence fallback without clearing the typed marker", () => {
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+      getStaleConfig: () => ({ sessionStaleMs: 1000, workingStaleMs: 100 }),
+    }));
+    const session = rawSession("working", {
+      agentId: "claude-code",
+      agentPid: 1000,
+      sourcePid: 2000,
+      pidReachable: true,
+      updatedAt: Date.now() - 99,
+    });
+    session.claudeBackgroundSubagentHoldAt = Date.now() - 1000;
+    api.sessions.set("s1", session);
+
+    assert.strictEqual(api.touchSessionActivity("s1", { agentId: "claude-code" }), true);
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.ok(Number.isFinite(api.sessions.get("s1").claudeBackgroundSubagentHoldAt));
+
+    api.sessions.get("s1").updatedAt = Date.now() - 101;
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.get("s1").state, "idle");
+    assert.strictEqual(api.sessions.get("s1").claudeBackgroundSubagentHoldAt, null);
   });
 
   it("keeps local OpenCode blocker-facing work active past the generic session cutoff", () => {
@@ -3873,6 +3921,20 @@ describe("buildSessionSnapshot", () => {
     assert.doesNotThrow(() => JSON.stringify(snapshot));
   });
 
+  it("never exposes the private Claude background-subagent marker in snapshots (#952)", () => {
+    update(api, {
+      id: "typed-private",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent output.",
+    });
+    assert.ok(Number.isFinite(api.sessions.get("typed-private").claudeBackgroundSubagentHoldAt));
+    const serialized = JSON.stringify(api.buildSessionSnapshot());
+    assert.ok(!serialized.includes("claudeBackgroundSubagentHoldAt"));
+    assert.ok(!serialized.includes("backgroundSubagentsCount"));
+  });
+
   it("builds renderer-safe fields, groups, and both dashboard/menu orderings", () => {
     api.sessions.set("old-working", rawSession("working", {
       updatedAt: 1000,
@@ -4375,6 +4437,343 @@ describe("Stop completion gate (#406)", () => {
     assert.ok(!soundsPlayed.includes("complete"), "completion sound must not play");
   });
 
+  it("exact typed background subagents hard-hold even with final assistant text (#952)", () => {
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundTasksCount: 1,
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent response finished.",
+    });
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.state, "working");
+    assert.ok(Number.isFinite(session.claudeBackgroundSubagentHoldAt));
+    assert.strictEqual(api.deriveSessionBadge(session), "running");
+    mock.timers.tick(5000);
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.ok(!soundsPlayed.includes("complete"));
+  });
+
+  it("direct completion promotion refuses typed markers and confirmed tracker evidence (#952)", () => {
+    update(api, {
+      id: "typed",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent response.",
+    });
+    const typedBroadcastsBefore = api.getLastSessionSnapshot();
+    assert.strictEqual(api.promoteCompletion("typed"), false);
+    assert.strictEqual(api.sessions.get("typed").state, "working");
+    assert.ok(Number.isFinite(api.sessions.get("typed").claudeBackgroundSubagentHoldAt));
+    assert.strictEqual(api.getLastSessionSnapshot(), typedBroadcastsBefore);
+
+    update(api, { id: "tracked", state: "working", event: "PreToolUse" });
+    update(api, {
+      id: "tracked",
+      state: "juggling",
+      event: "SubagentStart",
+      subagentId: "child-a",
+    });
+    assert.strictEqual(api.promoteCompletion("tracked"), false);
+    assert.strictEqual(api.sessions.get("tracked").state, "juggling");
+    assert.strictEqual(api.sessions.get("tracked").subagentTracker.confirmedIds.has("child-a"), true);
+    assert.ok(!soundsPlayed.includes("complete"));
+  });
+
+  it("identity-backed typed background work remains juggling past the quiet window (#952)", () => {
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    update(api, {
+      id: "s1",
+      state: "juggling",
+      event: "SubagentStart",
+      subagentId: "child-a",
+    });
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent response.",
+    });
+    mock.timers.tick(5000);
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.state, "juggling");
+    assert.strictEqual(session.subagentTracker.confirmedIds.has("child-a"), true);
+    assert.ok(Number.isFinite(session.claudeBackgroundSubagentHoldAt));
+    assert.ok(!soundsPlayed.includes("complete"));
+  });
+
+  it("disabling completion debounce cannot release a typed background subagent (#952)", () => {
+    process.env.CLAWD_COMPLETION_DEBOUNCE_MS = "0";
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent response.",
+    });
+    mock.timers.tick(5000);
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "running");
+    assert.ok(!soundsPlayed.includes("complete"));
+    process.env.CLAWD_COMPLETION_DEBOUNCE_MS = "1000";
+  });
+
+  it("an absent typed snapshot inherits the private hold instead of completing (#952)", () => {
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Intermediate parent response.",
+    });
+    const holdAt = api.sessions.get("s1").claudeBackgroundSubagentHoldAt;
+
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      assistantLastOutput: "Later Stop without a task snapshot.",
+    });
+    mock.timers.tick(5000);
+
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.claudeBackgroundSubagentHoldAt, holdAt);
+    assert.strictEqual(api.deriveSessionBadge(session), "running");
+    assert.ok(!soundsPlayed.includes("complete"));
+  });
+
+  it("ordinary parent progress and notifications neither clear nor idle a typed hold (#952)", () => {
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent response.",
+    });
+    const holdAt = api.sessions.get("s1").claudeBackgroundSubagentHoldAt;
+    update(api, { id: "s1", state: "thinking", event: "UserPromptSubmit" });
+    assert.strictEqual(api.sessions.get("s1").claudeBackgroundSubagentHoldAt, holdAt);
+    update(api, { id: "s1", state: "notification", event: "PermissionRequest" });
+    assert.strictEqual(api.sessions.get("s1").claudeBackgroundSubagentHoldAt, holdAt);
+    update(api, { id: "s1", state: "notification", event: "Notification" });
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.claudeBackgroundSubagentHoldAt, holdAt);
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(api.deriveSessionBadge(session), "running");
+  });
+
+  it("authoritative typed zero releases the marker before normal Stop debounce (#952)", () => {
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent response while child runs.",
+    });
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 0,
+      assistantLastOutput: "Final response after child exit.",
+    });
+
+    assert.strictEqual(api.sessions.get("s1").claudeBackgroundSubagentHoldAt, null);
+    assert.strictEqual(api.sessions.get("s1").state, "working");
+    mock.timers.tick(1000);
+    assert.strictEqual(api.sessions.get("s1").state, "idle");
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "done");
+    assert.ok(soundsPlayed.includes("complete"));
+  });
+
+  it("an absent typed snapshot also inherits confirmed child tracker evidence (#952)", () => {
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    update(api, {
+      id: "s1",
+      state: "juggling",
+      event: "SubagentStart",
+      subagentId: "child-a",
+    });
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      assistantLastOutput: "Parent finished while child remains.",
+    });
+    mock.timers.tick(5000);
+
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.state, "juggling");
+    assert.strictEqual(session.subagentTracker.confirmedIds.has("child-a"), true);
+    assert.ok(!soundsPlayed.includes("complete"));
+  });
+
+  it("authoritative typed zero releases tracker evidence before debounced completion (#952)", () => {
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    update(api, {
+      id: "s1",
+      state: "juggling",
+      event: "SubagentStart",
+      subagentId: "child-a",
+    });
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 0,
+      assistantLastOutput: "Final response after the authoritative snapshot.",
+    });
+    assert.strictEqual(api.sessions.get("s1").subagentTracker.confirmedIds.size, 0);
+    mock.timers.tick(1000);
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "done");
+  });
+
+  it("SubagentStop known-zero clears the typed marker only after the tracker empties and never completes (#952)", () => {
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    for (const child of ["child-a", "child-b"]) {
+      update(api, {
+        id: "s1",
+        state: "juggling",
+        event: "SubagentStart",
+        subagentId: child,
+      });
+    }
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 2,
+      assistantLastOutput: "Parent response.",
+    });
+
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "SubagentStop",
+      subagentId: "child-a",
+      backgroundSubagentsCount: 1,
+    });
+    assert.ok(Number.isFinite(api.sessions.get("s1").claudeBackgroundSubagentHoldAt));
+    assert.strictEqual(api.sessions.get("s1").subagentTracker.confirmedIds.size, 1);
+
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "SubagentStop",
+      subagentId: "child-b",
+      backgroundSubagentsCount: 0,
+    });
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.claudeBackgroundSubagentHoldAt, null);
+    assert.strictEqual(session.subagentTracker.confirmedIds.size, 0);
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(api.deriveSessionBadge(session), "running");
+    assert.ok(!soundsPlayed.includes("complete"));
+  });
+
+  it("SubagentStop followed by an older typed Stop can only become sticky-working, never prematurely complete (#952)", () => {
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    update(api, {
+      id: "s1",
+      state: "juggling",
+      event: "SubagentStart",
+      subagentId: "child-a",
+    });
+    update(api, {
+      id: "s1",
+      state: "working",
+      event: "SubagentStop",
+      subagentId: "child-a",
+      backgroundSubagentsCount: 0,
+    });
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Late older Stop.",
+    });
+    mock.timers.tick(5000);
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.state, "working");
+    assert.ok(Number.isFinite(session.claudeBackgroundSubagentHoldAt));
+    assert.strictEqual(api.deriveSessionBadge(session), "running");
+    assert.ok(!soundsPlayed.includes("complete"));
+  });
+
+  it("SessionEnd and explicit dismissal remove typed holds instead of persisting them", () => {
+    update(api, {
+      id: "ended",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent response.",
+    });
+    update(api, { id: "ended", state: "sleeping", event: "SessionEnd" });
+    assert.strictEqual(api.sessions.has("ended"), false);
+
+    update(api, {
+      id: "dismissed",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent response.",
+    });
+    assert.strictEqual(api.dismissSession("dismissed"), true);
+    assert.strictEqual(api.sessions.has("dismissed"), false);
+  });
+
+  it("a duplicate typed Stop cannot reopen a completed row or leave a hidden marker (#952)", () => {
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 0,
+    });
+    mock.timers.tick(1000);
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "done");
+
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Late duplicate payload.",
+    });
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.state, "idle");
+    assert.strictEqual(api.deriveSessionBadge(session), "done");
+    assert.strictEqual(session.claudeBackgroundSubagentHoldAt, null);
+  });
+
+  it("a reordered typed Stop supersedes a pending plain-Stop completion without racing the timer (#952)", () => {
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      assistantLastOutput: "Tentative parent answer.",
+    });
+    mock.timers.tick(500);
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent answer while delayed child evidence arrives.",
+    });
+    mock.timers.tick(5000);
+
+    const session = api.sessions.get("s1");
+    assert.strictEqual(session.state, "working");
+    assert.ok(Number.isFinite(session.claudeBackgroundSubagentHoldAt));
+    assert.strictEqual(api.deriveSessionBadge(session), "running");
+    assert.ok(!soundsPlayed.includes("complete"));
+  });
+
   it("background_tasks with final assistant text debounce, then celebrate on a quiet window", () => {
     update(api, {
       id: "s1",
@@ -4464,7 +4863,11 @@ describe("Stop completion gate (#406)", () => {
   });
 
   it("debounce: a Stop followed by PreToolUse within the window never celebrates", () => {
-    update(api, { id: "s1", state: "attention", event: "Stop" });
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+    });
     assert.strictEqual(api.sessions.get("s1").state, "working", "held working during the window");
     mock.timers.tick(500); // still within the 1000ms window
     update(api, { id: "s1", state: "working", event: "PreToolUse" });
@@ -4749,7 +5152,7 @@ describe("Stop completion gate (#406)", () => {
     assert.strictEqual(api.deriveSessionBadge(s), "done");
   });
 
-  it("promoted completion clears stale subagent evidence before the next turn", () => {
+  it("authoritative completion clears stale subagent evidence before the next turn", () => {
     update(api, { id: "s1", state: "working", event: "PreToolUse" });
     update(api, {
       id: "s1",
@@ -4760,8 +5163,13 @@ describe("Stop completion gate (#406)", () => {
     });
     assert.strictEqual(api.sessions.get("s1").subagentTracker.confirmedIds.size, 1);
 
-    update(api, { id: "s1", state: "attention", event: "Stop" });
-    assert.strictEqual(api.sessions.get("s1").state, "juggling", "the debounced Stop still holds the live tracker");
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 0,
+    });
+    assert.strictEqual(api.sessions.get("s1").state, "working", "authoritative zero releases the stale tracker during debounce");
     mock.timers.tick(1000);
 
     const completed = api.sessions.get("s1");
@@ -4858,6 +5266,42 @@ describe("Stop completion gate (#406)", () => {
     assert.strictEqual(api.getCurrentState(), "attention");
     assert.ok(soundsPlayed.includes("complete"));
     assert.strictEqual(api.deriveSessionBadge(session), "done");
+  });
+
+  it("Claude transcript completion cannot promote through a typed background-subagent hold (#952)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
+    const transcript = path.join(dir, "transcript.jsonl");
+    const rawSessionId = "claude-probe-background-subagent";
+    const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
+      JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "Allow" }] } }),
+      JSON.stringify({ type: "assistant", message: { content: "Parent answer while child runs." } }),
+    ].join("\n") + "\n");
+
+    update(api, {
+      id: sessionId,
+      rawSessionId,
+      state: "attention",
+      event: "Stop",
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent answer while child runs.",
+    });
+    update(api, {
+      id: sessionId,
+      rawSessionId,
+      state: "working",
+      event: "PostToolUse",
+      toolName: "AskUserQuestion",
+      transcriptPath: transcript,
+    });
+
+    mock.timers.tick(10000);
+    const session = api.sessions.get(sessionId);
+    assert.strictEqual(session.state, "working");
+    assert.ok(Number.isFinite(session.claudeBackgroundSubagentHoldAt));
+    assert.strictEqual(api.deriveSessionBadge(session), "running");
+    assert.ok(!soundsPlayed.includes("complete"));
   });
 
   it("Claude transcript fallback documents raw transcript sessionId mismatch", () => {
