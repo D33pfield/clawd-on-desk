@@ -123,6 +123,7 @@
     nextAnimationOverrideEditSeq: 1,
     animOverridesSubtab: "map",
     settingsTabScrollPositions: new Map(),
+    persistedSettingsTab: "general",
     // null = not chosen yet; the Agents tab resolves it from what is connected.
     agentsSubtab: null,
     agentsUnavailableQuery: "",
@@ -1244,7 +1245,9 @@
     }
     try {
       localStorage.setItem(NAVIGATION_STORAGE_KEY, JSON.stringify({
-        activeTab: tabs[state.activeTab] ? state.activeTab : "general",
+        activeTab: tabs[runtime.persistedSettingsTab]
+          ? runtime.persistedSettingsTab
+          : (tabs[state.activeTab] ? state.activeTab : "general"),
         scrollPositions,
       }));
     } catch (_) {}
@@ -1261,6 +1264,7 @@
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
       if (typeof parsed.activeTab === "string" && tabs[parsed.activeTab]) {
         state.activeTab = parsed.activeTab;
+        runtime.persistedSettingsTab = parsed.activeTab;
       }
       const scrollPositions = parsed.scrollPositions;
       if (scrollPositions && typeof scrollPositions === "object" && !Array.isArray(scrollPositions)) {
@@ -1290,9 +1294,17 @@
     });
   }
 
-  function selectTab(nextTab) {
+  function selectTab(nextTab, options = {}) {
+    if (!tabs[nextTab]) return false;
     const prevTabId = state.activeTab;
-    if (prevTabId === nextTab) return;
+    const shouldPersist = options.persist !== false;
+    if (prevTabId === nextTab) {
+      if (shouldPersist) {
+        runtime.persistedSettingsTab = nextTab;
+        writeNavigationState();
+      }
+      return false;
+    }
     captureActiveTabScrollPosition();
     const content = document.getElementById("content");
     const prevTab = tabs[prevTabId];
@@ -1300,9 +1312,10 @@
       prevTab.onExit(core);
     }
     state.activeTab = nextTab;
+    if (shouldPersist) runtime.persistedSettingsTab = nextTab;
     writeNavigationState();
     requestRender({ sidebar: true, content: true, modal: true });
-    if (!content) return;
+    if (!content) return true;
 
     const targetScrollTop = runtime.settingsTabScrollPositions.get(nextTab) || 0;
     content.scrollTop = targetScrollTop;
@@ -1311,6 +1324,7 @@
       if (document.getElementById("content") !== content) return;
       content.scrollTop = targetScrollTop;
     });
+    return true;
   }
 
   function applyBootstrap(snapshotValue) {
@@ -1321,7 +1335,9 @@
 
   function applyAgentMetadata(list) {
     runtime.agentMetadata = Array.isArray(list) ? list : [];
-    if (state.activeTab === "agents") requestRender({ content: true });
+    if (state.activeTab === "agents" || state.activeTab === "recap") {
+      requestRender({ content: true });
+    }
   }
 
   function normalizeAgentInstallationHints(result) {

@@ -47,6 +47,8 @@ const remoteApprovalStatusListeners = new Set();
 const textScaleContextListeners = new Set();
 const agentActivityListeners = new Set();
 const updateCheckStatusListeners = new Set();
+const requestedTabListeners = new Set();
+let pendingRequestedTab = null;
 ipcRenderer.on("settings-changed", (_event, payload) => {
   for (const cb of listeners) {
     try { cb(payload); } catch (err) { console.warn("settings onChanged listener threw:", err); }
@@ -95,12 +97,31 @@ ipcRenderer.on("settings:update-check-status", (_event, payload) => {
     try { cb(payload); } catch (err) { console.warn("update check status listener threw:", err); }
   }
 });
+ipcRenderer.on("settings:select-tab", (_event, tab) => {
+  if (typeof tab !== "string") return;
+  pendingRequestedTab = tab;
+  for (const cb of requestedTabListeners) {
+    try { cb(tab); } catch (err) { console.warn("settings requested-tab listener threw:", err); }
+  }
+});
 
 contextBridge.exposeInMainWorld("settingsAPI", {
   // Capability flag: true when a default Discord App ID is hardcoded (maintainer-
   // shipped), so the presence enable switch can be ready without a user-saved App ID.
   discordDefaultAppIdPresent,
   getSnapshot: () => ipcRenderer.invoke("settings:get-snapshot"),
+  queryRecap: (period) => ipcRenderer.invoke("settings:recap-query", period),
+  clearRecap: () => ipcRenderer.invoke("settings:recap-clear"),
+  consumeRequestedTab: () => {
+    const tab = pendingRequestedTab;
+    pendingRequestedTab = null;
+    return tab;
+  },
+  onRequestedTab: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    requestedTabListeners.add(cb);
+    return () => requestedTabListeners.delete(cb);
+  },
   getQuotaSourceCount: () => ipcRenderer.invoke("settings:get-quota-source-count"),
   getQuotaRingProviders: () => ipcRenderer.invoke("settings:get-quota-ring-providers"),
   getKimiQuotaStatus: () => ipcRenderer.invoke("settings:kimi-quota-status"),

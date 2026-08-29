@@ -2654,8 +2654,7 @@ const _tutorial = require("./tutorial")({
   uninstallAgent: (agentId) => _settingsController.applyCommand("uninstallAgentIntegration", { agentId }),
   registerShortcut: (payload) => _settingsController.applyCommand("registerShortcut", payload),
   resetShortcut: (payload) => _settingsController.applyCommand("resetShortcut", payload),
-  // v1: deep-link to a specific tab is deferred — open Settings to its default tab.
-  openSettingsTab: () => settingsWindowRuntime.open(),
+  openSettingsTab: (tab) => settingsWindowRuntime.open({ tab }),
   markTutorialSeen: () => {
     _settingsController.applyUpdate("tutorialSeen", true);
   },
@@ -4246,7 +4245,7 @@ const _menuCtx = {
   getActiveThemeId: () => themeRuntime.getActiveThemeId("clawd"),
   getActiveThemeCapabilities: () => themeRuntime.getActiveThemeCapabilities(),
   ensureUserThemesDir: () => themeLoader.ensureUserThemesDir(),
-  openSettingsWindow: () => settingsWindowRuntime.open(),
+  openSettingsWindow: (options) => settingsWindowRuntime.open(options),
   showTutorial: () => _tutorial.open(),
 };
 const _menu = require("./menu")(_menuCtx);
@@ -4311,6 +4310,7 @@ const holidayAccessoryRuntime = createHolidayAccessoryRuntime({
 
 const settingsEffectRouter = createSettingsEffectRouter({
   settingsController: _settingsController,
+  recapRuntime,
   BrowserWindow,
   updateMirrors: updateSettingsMirrors,
   createTray,
@@ -4625,6 +4625,7 @@ const settingsIpcRuntime = registerSettingsIpc({
   fs,
   path,
   settingsController: _settingsController,
+  recapRuntime,
   getQuotaSourceCount: () => _state.getQuotaSourceCount(),
   getQuotaRingProviders: () => _ringGeom.listQuotaRingProviders(
     _state.buildSessionSnapshot(),

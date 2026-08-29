@@ -96,6 +96,41 @@ function createSettingsWindowRuntime(options = {}) {
   let saveBoundsTimer = null;
   let lastSavedBounds = null;
   let showPendingSettingsWindow = null;
+  let pendingRequestedTab = null;
+  let settingsRendererLoaded = false;
+
+  const ALLOWED_TABS = new Set([
+    "general",
+    "agents",
+    "theme",
+    "animOverrides",
+    "shortcuts",
+    "telegram-approval",
+    "discord-presence",
+    "remote-ssh",
+    "recap",
+    "about",
+  ]);
+
+  function normalizeRequestedTab(value) {
+    return typeof value === "string" && ALLOWED_TABS.has(value) ? value : null;
+  }
+
+  function sendRequestedTab(win) {
+    if (!pendingRequestedTab || !settingsRendererLoaded || !isLiveWindow(win)) return false;
+    const wc = win.webContents;
+    if (!wc || (typeof wc.isDestroyed === "function" && wc.isDestroyed())) return false;
+    if (typeof wc.send !== "function") return false;
+    const tab = pendingRequestedTab;
+    pendingRequestedTab = null;
+    try {
+      wc.send("settings:select-tab", tab);
+      return true;
+    } catch {
+      pendingRequestedTab = tab;
+      return false;
+    }
+  }
 
   function getWindow() {
     return settingsWindow;
@@ -342,16 +377,19 @@ function createSettingsWindowRuntime(options = {}) {
     return true;
   }
 
-  function openWhenReady() {
+  function openWhenReady(openOptions = {}) {
     if (app.isReady()) {
-      open();
+      open(openOptions);
       return;
     }
-    app.once("ready", open);
+    app.once("ready", () => open(openOptions));
   }
 
-  function open() {
+  function open(openOptions = {}) {
+    const requestedTab = normalizeRequestedTab(openOptions && openOptions.tab);
+    if (requestedTab) pendingRequestedTab = requestedTab;
     if (settingsWindow && !settingsWindow.isDestroyed()) {
+      sendRequestedTab(settingsWindow);
       if (typeof showPendingSettingsWindow === "function") {
         showPendingSettingsWindow({ restoreMinimized: true });
       } else {
@@ -394,6 +432,7 @@ function createSettingsWindowRuntime(options = {}) {
 
     if (typeof options.onBeforeCreate === "function") options.onBeforeCreate();
     settingsWindow = new BrowserWindow(opts);
+    settingsRendererLoaded = false;
     const createdWindow = settingsWindow;
     // BrowserWindow's constructor can quantize framed window geometry at
     // fractional Windows DPI (for example, a persisted outer width of 960
@@ -427,8 +466,10 @@ function createSettingsWindowRuntime(options = {}) {
     createdWindow.loadFile(settingsHtmlPath);
     if (createdWindow.webContents && typeof createdWindow.webContents.once === "function") {
       createdWindow.webContents.once("did-finish-load", () => {
+        settingsRendererLoaded = true;
         applyZoomToWindow(createdWindow, getTextScale());
         applyTitleToWindow();
+        sendRequestedTab(createdWindow);
       });
     }
     // textScale is per-display: re-resolve after the user drags the window
@@ -475,6 +516,7 @@ function createSettingsWindowRuntime(options = {}) {
       }
       if (typeof options.onBeforeClosed === "function") options.onBeforeClosed();
       if (isCurrentWindow) settingsWindow = null;
+      if (isCurrentWindow) settingsRendererLoaded = false;
       if (typeof options.onAfterClosed === "function") options.onAfterClosed();
     });
   }

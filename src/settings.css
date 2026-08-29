@@ -195,6 +195,160 @@ html, body {
   font-size: 12px;
   color: var(--text-secondary);
 }
+
+/* ── Recap ── */
+.recap-page-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0 16px;
+  margin-bottom: 20px;
+}
+.recap-page-header h1,
+.recap-page-header .subtitle { grid-column: 1; }
+.recap-page-header .subtitle { margin-bottom: 0; }
+.recap-period-tabs {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--bg);
+}
+.recap-period-button {
+  appearance: none;
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+}
+.recap-period-button:hover { color: var(--text-primary); }
+.recap-period-button.active {
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+.recap-period-button:focus-visible,
+.recap-agent-row:focus-visible,
+.recap-plain-timeline:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 2px;
+}
+.recap-state-card,
+.recap-card {
+  margin-bottom: 24px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel-bg);
+}
+.recap-state-card {
+  min-height: 170px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-direction: column;
+  color: var(--text-secondary);
+  text-align: center;
+  padding: 24px;
+}
+.recap-card { padding: 20px; }
+.recap-card h2 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.35;
+}
+.recap-card-note,
+.recap-footnote,
+.recap-empty {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.recap-card-note { margin: 4px 0 16px; }
+.recap-footnote { margin: 14px 0 0; }
+.recap-agent-list {
+  display: grid;
+  gap: 8px;
+}
+.recap-agent-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(360px, 2.2fr);
+  align-items: center;
+  gap: 18px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  background: var(--bg);
+}
+.recap-agent-identity {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.recap-agent-identity strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recap-agent-identity span {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+.recap-agent-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+.recap-agent-metrics div { min-width: 0; }
+.recap-agent-metrics dt {
+  color: var(--text-tertiary);
+  font-size: 9px;
+  line-height: 1.2;
+}
+.recap-agent-metrics dd {
+  margin: 3px 0 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recap-plain-timeline {
+  display: flex;
+  gap: 4px;
+  margin-top: 16px;
+  min-width: 0;
+}
+.recap-plain-day {
+  flex: 1 1 0;
+  min-width: 2px;
+  aspect-ratio: 1;
+  border-radius: 22%;
+}
+.recap-plain-day.active { background: var(--accent); }
+.recap-plain-day.covered { background: var(--switch-off); opacity: 0.45; }
+.recap-plain-day.uncovered { border: 1px solid var(--switch-off); }
+
+@media (max-width: 780px) {
+  .recap-page-header { grid-template-columns: 1fr; }
+  .recap-period-tabs {
+    grid-column: 1;
+    grid-row: auto;
+    margin-top: 12px;
+    justify-self: start;
+  }
+  .recap-agent-row { grid-template-columns: 1fr; gap: 9px; }
+}
 .general-tutorial-hint {
   margin: -16px 0 24px;
   color: var(--text-tertiary);

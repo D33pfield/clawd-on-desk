@@ -34,6 +34,7 @@ const TAB_MODULES = [
   path.join(SRC_DIR, "settings-tab-shortcuts.js"),
   path.join(SRC_DIR, "settings-tab-telegram-approval.js"),
   SETTINGS_TAB_DISCORD_PRESENCE,
+  path.join(SRC_DIR, "settings-tab-recap.js"),
   path.join(SRC_DIR, "settings-tab-about.js"),
 ];
 const VERIFIED_GITHUB_CONTRIBUTORS = [
@@ -152,6 +153,24 @@ function createQueuedRaf() {
     },
   };
 }
+
+describe("recap metadata refresh", () => {
+  it("rerenders an open recap page when delayed agent metadata arrives", () => {
+    const core = loadSettingsCoreForTest({});
+    core.state.activeTab = "recap";
+    let renders = 0;
+    core.ops.installRenderHooks({
+      sidebar: () => {},
+      content: () => { renders += 1; },
+      modal: () => {},
+    });
+
+    core.ops.applyAgentMetadata([{ id: "codex", name: "Codex" }]);
+
+    assert.strictEqual(renders, 1);
+    assert.strictEqual(core.runtime.agentMetadata[0].name, "Codex");
+  });
+});
 
 class FakeClassList {
   constructor(el) {
@@ -3043,6 +3062,42 @@ describe("settings renderer browser environment", () => {
     second.ops.applyBootstrap({ language: "zh" });
     assert.strictEqual(secondContent.scrollTop, 720);
     assert.strictEqual(second.runtime.settingsTabScrollPositions.get("general"), 180);
+  });
+
+  it("does not let a one-shot recap deep-link replace the user's last ordinary Settings tab", () => {
+    const storageData = {};
+    const localStorage = {
+      getItem: (key) => Object.prototype.hasOwnProperty.call(storageData, key) ? storageData[key] : null,
+      setItem: (key, value) => { storageData[key] = String(value); },
+    };
+    const content = { scrollTop: 0 };
+    const first = loadSettingsCoreForTest({}, {
+      document: {
+        body: { contains: () => false },
+        getElementById: (id) => (id === "content" ? content : null),
+      },
+      localStorage,
+    });
+    first.tabs.general = {};
+    first.tabs.theme = {};
+    first.tabs.recap = {};
+    first.ops.installRenderHooks({ sidebar: () => {}, content: () => {}, modal: () => {} });
+    first.ops.selectTab("theme");
+    first.ops.selectTab("recap", { persist: false });
+    first.ops.persistNavigationState();
+
+    const second = loadSettingsCoreForTest({}, {
+      document: {
+        body: { contains: () => false },
+        getElementById: (id) => (id === "content" ? { scrollTop: 0 } : null),
+      },
+      localStorage,
+    });
+    second.tabs.general = {};
+    second.tabs.theme = {};
+    second.tabs.recap = {};
+    assert.equal(second.ops.restoreNavigationState(), true);
+    assert.equal(second.state.activeTab, "theme");
   });
 
   it("waits for remote cleanup before deleting a profile and warns on incomplete uninstall", () => {
