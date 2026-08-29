@@ -111,8 +111,20 @@ test("disable closes coverage and rejects events; clear rotates all local recap 
   assert.equal(f.runtime.query("today").recordingEnabled, false);
   f.runtime.clear();
   assert.equal(f.runtime.query("today").days[0].rows.length, 0);
+  assert.equal(f.runtime.query("today").recordingEnabled, false);
   f.runtime.setEnabled(true);
   assert.equal(f.runtime.record({ ...event, occurredAt: event.occurredAt + 2 }), true);
+});
+
+test("clear preserves an explicit in-process enable after startup authority was lost", (t) => {
+  const f = fixture(t, { enabled: false });
+  f.runtime.start();
+  assert.equal(f.runtime.query("today").recordingEnabled, false);
+
+  assert.equal(f.runtime.setEnabled(true), true);
+  assert.equal(f.runtime.query("today").recordingEnabled, true);
+  assert.equal(f.runtime.clear(), true);
+  assert.equal(f.runtime.query("today").recordingEnabled, true);
 });
 
 test("period ranges are bounded to current civil period", () => {

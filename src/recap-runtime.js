@@ -76,6 +76,7 @@ function createRecapRuntime(options = {}) {
   let initialized = false;
   let started = false;
   let enabled = false;
+  let explicitEnabledIntent = null;
   let suspended = false;
   let midnightTimer = null;
   let unavailable = false;
@@ -91,6 +92,12 @@ function createRecapRuntime(options = {}) {
 
   function currentLocalDate() {
     return freezeLocalTime(now(), getTimeZone()).localDate;
+  }
+
+  function resolveEnabledIntent() {
+    return explicitEnabledIntent === null
+      ? getEnabled() !== false
+      : explicitEnabledIntent;
   }
 
   function prune() {
@@ -145,7 +152,7 @@ function createRecapRuntime(options = {}) {
     if (started) return false;
     started = true;
     if (!initialize()) return false;
-    enabled = getEnabled() !== false;
+    enabled = resolveEnabledIntent();
     if (enabled && !suspended) coverage.start(now());
     if (powerMonitor && typeof powerMonitor.on === "function") {
       powerMonitor.on("suspend", handleSuspend);
@@ -172,8 +179,12 @@ function createRecapRuntime(options = {}) {
   }
 
   function setEnabled(next) {
-    if (!initialize()) return false;
     const value = next !== false;
+    // A controller-accepted toggle is authoritative for the rest of this
+    // process, even when startup prefs were recovered or storage is currently
+    // unavailable. Clear must not silently revert that explicit user intent.
+    explicitEnabledIntent = value;
+    if (!initialize()) return false;
     if (value === enabled) return false;
     enabled = value;
     if (started && !suspended) {
@@ -288,7 +299,7 @@ function createRecapRuntime(options = {}) {
       return false;
     }
     if (!initialize()) return false;
-    enabled = getEnabled() !== false;
+    enabled = resolveEnabledIntent();
     if (started && enabled && !suspended) coverage.start(now());
     return true;
   }
