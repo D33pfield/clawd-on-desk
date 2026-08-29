@@ -59,6 +59,7 @@ function createRecapRuntime(options = {}) {
   const store = options.store || createRecapStore({
     root: options.root || DEFAULT_ROOT,
     now,
+    getTimeZone,
     logWarn,
   });
   const journal = options.journal || createRecapJournal({ store, now, getTimeZone, logWarn });
@@ -202,7 +203,8 @@ function createRecapRuntime(options = {}) {
   }
 
   function query(period = "today", optionsValue = {}) {
-    const anchorDate = optionsValue.anchorDate || currentLocalDate();
+    const queryTime = freezeLocalTime(now(), getTimeZone());
+    const anchorDate = optionsValue.anchorDate || queryTime.localDate;
     const { startDate, endDate } = rangeForPeriod(period, anchorDate);
     if (compareLocalDates(startDate, endDate) > 0) throw new RangeError("invalid recap range");
     if (!initialize()) {
@@ -231,6 +233,8 @@ function createRecapRuntime(options = {}) {
       return scopeOrdinals.get(key);
     }
     const coverageByDate = new Map(coverageDays.map((day) => [day.localDate, day]));
+    const meta = store.getMeta();
+    const recordingStarted = meta.createdLocalTime || null;
     const days = aggregateDays.map((day) => ({
       localDate: day.localDate,
       coverage: coverageByDate.get(day.localDate) || {
@@ -256,6 +260,9 @@ function createRecapRuntime(options = {}) {
       anchorDate,
       startDate,
       endDate,
+      currentLocalHour: queryTime.localHour,
+      recordingStartedDate: recordingStarted ? recordingStarted.localDate : null,
+      recordingStartedLocalHour: recordingStarted ? recordingStarted.localHour : null,
       recordingEnabled: enabled,
       days,
     };

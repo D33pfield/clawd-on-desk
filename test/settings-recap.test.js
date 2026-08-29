@@ -74,11 +74,125 @@ test("recap tab stays browser-only and aggregates scope rows without turning nul
   assert.equal(summary.rows.find((row) => row.scope === "remote").sessionsStarted, 1);
 });
 
-test("recap skeleton uses square cells and exposes no arbitrary date or export surface", () => {
+test("recap card keeps every visual cell square and exposes no arbitrary date or export surface", () => {
   const css = fs.readFileSync(path.join(SRC, "settings.css"), "utf8");
   const preload = fs.readFileSync(path.join(SRC, "preload-settings.js"), "utf8");
-  assert.match(css, /\.recap-plain-day[\s\S]*aspect-ratio:\s*1/);
+  assert.match(css, /\.recap-cell\s*\{[\s\S]*?aspect-ratio:\s*1/);
+  assert.match(css, /\.recap-month-grid[\s\S]*grid-template-columns:\s*repeat\(7/);
+  assert.match(css, /\.recap-grid-dim \.recap-cell\s*\{\s*opacity:\s*0\.13/);
+  assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*\.recap-cell-popover/);
   assert.match(preload, /queryRecap:\s*\(period\)/);
   assert.ok(!preload.includes("exportRecap"));
   assert.ok(!preload.includes("shareRecap"));
+});
+
+test("recap timeline models have the fixed four geometries", () => {
+  const context = { globalThis: null };
+  context.globalThis = context;
+  vm.runInNewContext(fs.readFileSync(path.join(SRC, "settings-tab-recap.js"), "utf8"), context);
+  const model = context.ClawdSettingsTabRecap.__test.buildTimelineModel;
+  const base = {
+    anchorDate: "2026-08-29",
+    startDate: "2026-08-29",
+    endDate: "2026-08-29",
+    currentLocalHour: 23,
+    recordingStartedDate: "2025-05-12",
+    recordingStartedLocalHour: 9,
+    days: [],
+  };
+  assert.equal(model(base, "today").cells.length, 24);
+  assert.deepEqual(
+    [model({ ...base, startDate: "2026-08-24" }, "week").rows, model({ ...base, startDate: "2026-08-24" }, "week").columns],
+    [7, 24]
+  );
+  assert.equal(model({ ...base, startDate: "2026-08-01" }, "month").columns, 7);
+  assert.equal(model({ ...base, startDate: "2026-01-01" }, "year").cells.length, 372);
+  assert.deepEqual(
+    [model({ ...base, startDate: "2026-01-01" }, "year").rows, model({ ...base, startDate: "2026-01-01" }, "year").columns],
+    [12, 31]
+  );
+});
+
+test("recap timeline separates activity, coverage, future, not-started, gap, and fold", () => {
+  const context = { globalThis: null };
+  context.globalThis = context;
+  vm.runInNewContext(fs.readFileSync(path.join(SRC, "settings-tab-recap.js"), "utf8"), context);
+  const model = context.ClawdSettingsTabRecap.__test.buildTimelineModel;
+  const normalKinds = Array(24).fill("normal");
+  normalKinds[1] = "fold";
+  normalKinds[2] = "gap";
+  const coverageMinutes = Array(24).fill(0);
+  coverageMinutes[1] = 120;
+  coverageMinutes[8] = 30;
+  const hours = Array(24).fill(0);
+  hours[9] = 3;
+  const data = {
+    anchorDate: "2026-08-29",
+    startDate: "2026-08-29",
+    endDate: "2026-08-29",
+    currentLocalHour: 10,
+    recordingStartedDate: "2026-08-29",
+    recordingStartedLocalHour: 0,
+    days: [{
+      localDate: "2026-08-29",
+      coverage: { coverageMinutes, hourKindsByTimeZone: { "America/Los_Angeles": normalKinds } },
+      hourKindsByTimeZone: { "America/Los_Angeles": normalKinds },
+      rows: [{
+        agentId: "codex",
+        scope: "local",
+        scopeInstance: "local-1",
+        metrics: { sessionsStarted: null, turnsCompleted: 1, toolCalls: 2, activityEvents: 3 },
+        hours,
+      }],
+    }],
+  };
+  const cells = model(data, "today").cells;
+  assert.equal(cells[1].state, "covered");
+  assert.equal(cells[1].kind, "fold");
+  assert.equal(cells[2].state, "gap");
+  assert.equal(cells[8].state, "covered");
+  assert.equal(cells[9].state, "activity");
+  assert.equal(cells[9].counts[0].count, 3);
+  assert.equal(cells[10].state, "uncovered");
+  assert.equal(cells[11].state, "future");
+
+  const startedLate = model({ ...data, recordingStartedLocalHour: 8 }, "today").cells;
+  assert.equal(startedLate[2].state, "gap");
+  assert.equal(startedLate[2].kind, "gap");
+  assert.equal(startedLate[7].state, "not-started");
+  assert.equal(startedLate[8].state, "covered");
+});
+
+test("month and year models reserve blank and future cells without inventing activity", () => {
+  const context = { globalThis: null };
+  context.globalThis = context;
+  vm.runInNewContext(fs.readFileSync(path.join(SRC, "settings-tab-recap.js"), "utf8"), context);
+  const model = context.ClawdSettingsTabRecap.__test.buildTimelineModel;
+  const base = {
+    anchorDate: "2026-08-29",
+    currentLocalHour: 12,
+    recordingStartedDate: "2026-05-12",
+    recordingStartedLocalHour: 9,
+    days: [],
+  };
+  const month = model({ ...base, startDate: "2026-08-01", endDate: "2026-08-29" }, "month");
+  assert.equal(month.cells.filter((cell) => cell.state === "blank").length, 5);
+  assert.equal(new Set(month.cells.map((cell) => cell.key)).size, month.cells.length);
+  assert.equal(month.cells.find((cell) => cell.localDate === "2026-08-30").state, "future");
+  const year = model({ ...base, startDate: "2026-01-01", endDate: "2026-08-29" }, "year");
+  assert.equal(year.cells[(2 - 1) * 31 + 30 - 1].state, "blank");
+  assert.equal(year.cells[0].state, "not-started");
+  assert.equal(year.cells[(9 - 1) * 31].state, "future");
+});
+
+test("known agent colors match the approved palette and fallbacks are deterministic", () => {
+  const context = { globalThis: null };
+  context.globalThis = context;
+  vm.runInNewContext(fs.readFileSync(path.join(SRC, "settings-tab-recap.js"), "utf8"), context);
+  const color = context.ClawdSettingsTabRecap.__test.agentColorToken;
+  assert.equal(color("claude-code"), "var(--recap-agent-claude)");
+  assert.equal(color("codex"), "var(--recap-agent-codex)");
+  assert.equal(color("gemini-cli"), "var(--recap-agent-gemini)");
+  assert.equal(color("reasonix"), color("reasonix"));
+  assert.match(color("reasonix"), /^var\(--recap-agent-fallback-\d+\)$/);
 });

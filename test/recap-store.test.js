@@ -14,9 +14,14 @@ function tempRoot() {
 test("store creates private metadata and stable HMAC without leaking input", (t) => {
   const root = tempRoot();
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const store = createRecapStore({ root, now: () => 123 });
+  const store = createRecapStore({ root, now: () => 123, getTimeZone: () => "UTC" });
   const meta = store.initialize();
   assert.equal(meta.schemaVersion, 1);
+  assert.deepEqual(meta.createdLocalTime, {
+    timeZoneId: "UTC",
+    localDate: "1970-01-01",
+    localHour: 0,
+  });
   assert.equal(meta.retention.eventDays, 14);
   assert.equal(meta.retention.dailyDays, 400);
   const first = store.hmac("session", "secret-session-name");

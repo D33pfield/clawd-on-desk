@@ -14,11 +14,12 @@ function fixture(t, options = {}) {
   if (!options.root) t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   let clock = options.now || Date.UTC(2026, 7, 29, 10);
   let enabled = options.enabled !== false;
+  let timeZone = options.timeZone || "UTC";
   const runtime = createRecapRuntime({
     root,
     now: () => clock,
     getEnabled: () => enabled,
-    getTimeZone: () => "UTC",
+    getTimeZone: () => timeZone,
     setTimeout: () => ({ unref() {} }),
     clearTimeout: () => {},
   });
@@ -27,6 +28,7 @@ function fixture(t, options = {}) {
     runtime,
     setClock(value) { clock = value; },
     setPreference(value) { enabled = value; },
+    setTimeZone(value) { timeZone = value; },
   };
 }
 
@@ -51,8 +53,26 @@ test("runtime writes journal before aggregate, dedupes, and exposes no HMAC iden
     activityEvents: 1,
   });
   assert.equal(view.days[0].rows[0].scopeInstance, "remote-1");
+  assert.equal(view.currentLocalHour, 10);
+  assert.equal(view.recordingStartedDate, "2026-08-29");
+  assert.equal(view.recordingStartedLocalHour, 10);
   assert.equal(JSON.stringify(view).includes("hmac:"), false);
   assert.equal(JSON.stringify(view).includes("private-server"), false);
+});
+
+test("recording start keeps its original civil date after travel", (t) => {
+  const f = fixture(t, {
+    now: Date.UTC(2026, 7, 29, 16, 30),
+    timeZone: "Asia/Singapore",
+  });
+  f.runtime.start();
+  assert.equal(f.runtime.query("today").recordingStartedDate, "2026-08-30");
+  assert.equal(f.runtime.query("today").recordingStartedLocalHour, 0);
+
+  f.setTimeZone("America/Los_Angeles");
+  const afterTravel = f.runtime.query("today", { anchorDate: "2026-08-29" });
+  assert.equal(afterTravel.recordingStartedDate, "2026-08-30");
+  assert.equal(afterTravel.recordingStartedLocalHour, 0);
 });
 
 test("runtime rebuilds retained aggregates from journal without double count", (t) => {

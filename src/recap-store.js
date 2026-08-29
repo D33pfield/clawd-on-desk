@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { freezeLocalTime, getSystemTimeZone, isValidTimeZone, parseLocalDate } = require("./recap-time");
 
 const SCHEMA_VERSION = 1;
 const DEFAULT_ROOT = path.join(os.homedir(), ".clawd", "recap-v1");
@@ -57,15 +58,34 @@ function validMeta(value) {
   return !!(
     value
     && value.schemaVersion === SCHEMA_VERSION
+    && Number.isSafeInteger(value.createdAt)
+    && value.createdAt >= 0
     && typeof value.hmacSalt === "string"
     && /^[A-Za-z0-9_-]{40,64}$/.test(value.hmacSalt)
   );
 }
 
-function createMeta(now = Date.now()) {
+function validCreatedLocalTime(value) {
+  if (!value || !isValidTimeZone(value.timeZoneId) || !Number.isInteger(value.localHour)) return false;
+  if (value.localHour < 0 || value.localHour > 23) return false;
+  try {
+    parseLocalDate(value.localDate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function createMeta(now = Date.now(), timeZone = getSystemTimeZone()) {
+  const createdLocalTime = freezeLocalTime(now, timeZone);
   return {
     schemaVersion: SCHEMA_VERSION,
     createdAt: now,
+    createdLocalTime: {
+      timeZoneId: createdLocalTime.timeZoneId,
+      localDate: createdLocalTime.localDate,
+      localHour: createdLocalTime.localHour,
+    },
     hmacSalt: crypto.randomBytes(32).toString("base64url"),
     retention: {
       eventDays: EVENT_RETENTION_DAYS,
@@ -77,7 +97,16 @@ function createMeta(now = Date.now()) {
 function createRecapStore(options = {}) {
   const root = assertRoot(options.root || DEFAULT_ROOT);
   const logWarn = options.logWarn || console.warn;
+  const getTimeZone = options.getTimeZone || getSystemTimeZone;
   let meta = null;
+
+  function copyMeta(value) {
+    return {
+      ...value,
+      createdLocalTime: value.createdLocalTime ? { ...value.createdLocalTime } : null,
+      retention: { ...value.retention },
+    };
+  }
 
   function warn(message, err) {
     try {
@@ -107,6 +136,20 @@ function createRecapStore(options = {}) {
     }
     if (validMeta(existing)) {
       meta = existing;
+      // Freeze the civil start boundary once. Re-projecting createdAt in the
+      // viewer's current zone would move the start date after travel.
+      if (!validCreatedLocalTime(meta.createdLocalTime)) {
+        const frozen = freezeLocalTime(meta.createdAt, getTimeZone());
+        meta = {
+          ...meta,
+          createdLocalTime: {
+            timeZoneId: frozen.timeZoneId,
+            localDate: frozen.localDate,
+            localHour: frozen.localHour,
+          },
+        };
+        writeJsonAtomic(metaPath, meta);
+      }
     } else {
       let eventNames = [];
       let rootNames = [];
@@ -125,15 +168,15 @@ function createRecapStore(options = {}) {
       if (!metaMissing || hasOldData) {
         throw new Error("recap identity metadata is unavailable; clear recap data to reset it");
       }
-      meta = createMeta(options.now ? options.now() : Date.now());
+      meta = createMeta(options.now ? options.now() : Date.now(), getTimeZone());
       writeJsonAtomic(metaPath, meta);
     }
-    return { ...meta, retention: { ...meta.retention } };
+    return copyMeta(meta);
   }
 
   function getMeta() {
     if (!meta) initialize();
-    return { ...meta, retention: { ...meta.retention } };
+    return copyMeta(meta);
   }
 
   function hmac(namespace, ...values) {

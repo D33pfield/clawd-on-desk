@@ -247,6 +247,9 @@ class FakeElement {
       setProperty(name, value) {
         this._values[name] = String(value);
       },
+      removeProperty(name) {
+        delete this._values[name];
+      },
       getPropertyValue(name) {
         return this._values[name] || "";
       },
@@ -446,6 +449,116 @@ class FakeElement {
     if (!this.isConnected) return 0;
     return Math.max(40, this.children.length * 40);
   }
+}
+
+function loadRecapTabForTest({ data, agentMetadata = [] } = {}) {
+  const body = new FakeElement("body");
+  const content = new FakeElement("main");
+  body.appendChild(content);
+  const document = {
+    body,
+    createElement: (tagName) => new FakeElement(tagName),
+    getElementById: () => null,
+  };
+  const strings = loadSettingsI18nForTest().en;
+  const context = {
+    console,
+    document,
+    Intl,
+    setTimeout,
+    clearTimeout,
+    window: null,
+    globalThis: null,
+    settingsAPI: {
+      queryRecap: async () => data,
+      update: async () => ({ status: "ok" }),
+      clearRecap: async () => ({ status: "ok" }),
+    },
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-recap.js"), "utf8"), context);
+  const core = {
+    state: { activeTab: "recap", snapshot: { lang: "en", recapEnabled: true } },
+    runtime: { agentMetadata },
+    helpers: {
+      t: (key) => strings[key] || key,
+      setSwitchVisual: (element, enabled) => element.setAttribute("aria-checked", String(enabled)),
+      buildSection: (title, rows) => {
+        const section = document.createElement("section");
+        section.setAttribute("aria-label", title);
+        for (const row of rows) section.appendChild(row);
+        return section;
+      },
+      showSettingsConfirmModal: async () => "cancel",
+    },
+    ops: {
+      requestRender: ({ content: shouldRender } = {}) => {
+        if (shouldRender) render();
+      },
+      showToast: () => {},
+    },
+    tabs: {},
+  };
+  context.ClawdSettingsTabRecap.init(core);
+  function render() {
+    content.innerHTML = "";
+    core.tabs.recap.render(content, core);
+  }
+  render();
+  return {
+    content,
+    core,
+    async settle() {
+      for (let index = 0; index < 6; index += 1) await Promise.resolve();
+    },
+  };
+}
+
+function sampleRecapView() {
+  const coverageMinutes = Array(24).fill(0);
+  coverageMinutes[8] = 30;
+  coverageMinutes[9] = 60;
+  const codexHours = Array(24).fill(0);
+  codexHours[9] = 9;
+  const claudeHours = Array(24).fill(0);
+  claudeHours[9] = 3;
+  return {
+    schemaVersion: 1,
+    status: "ready",
+    period: "today",
+    anchorDate: "2026-08-29",
+    startDate: "2026-08-29",
+    endDate: "2026-08-29",
+    currentLocalHour: 10,
+    recordingStartedDate: "2026-08-29",
+    recordingStartedLocalHour: 8,
+    recordingEnabled: true,
+    days: [{
+      localDate: "2026-08-29",
+      coverage: { coverageMinutes, hourKindsByTimeZone: { UTC: Array(24).fill("normal") } },
+      hourKindsByTimeZone: { UTC: Array(24).fill("normal") },
+      rows: [
+        {
+          agentId: "codex",
+          scope: "local",
+          scopeInstance: "local-1",
+          metrics: { sessionsStarted: null, turnsCompleted: 2, toolCalls: 4, activityEvents: 9 },
+          sessionsStartedPartial: true,
+          hours: codexHours,
+        },
+        {
+          agentId: "claude-code",
+          scope: "remote",
+          scopeInstance: "remote-1",
+          metrics: { sessionsStarted: 1, turnsCompleted: 1, toolCalls: 2, activityEvents: 3 },
+          sessionsStartedPartial: false,
+          hours: claudeHours,
+        },
+      ],
+    }],
+  };
 }
 
 function loadSharedLanguagePickerForTest({
@@ -2242,6 +2355,127 @@ function createAnimOverridesRuntime(card, overrides = {}) {
 }
 
 describe("settings renderer browser environment", () => {
+  it("renders the recap grid as one keyboard stop with accessible agent locks", async () => {
+    const harness = loadRecapTabForTest({
+      data: sampleRecapView(),
+      agentMetadata: [
+        { id: "codex", name: "Codex" },
+        { id: "claude-code", name: "Claude Code" },
+      ],
+    });
+    await harness.settle();
+
+    const grid = harness.content.querySelector(".recap-grid");
+    const cells = harness.content.querySelectorAll(".recap-cell");
+    const rows = harness.content.querySelectorAll(".recap-agent-row");
+    assert.strictEqual(cells.length, 24);
+    assert.strictEqual(grid.getAttribute("role"), "grid");
+    assert.strictEqual(grid.tabIndex, 0);
+    assert.ok(cells.every((cell) => cell.tabIndex === undefined));
+    assert.strictEqual(rows.length, 2);
+    assert.ok(rows.every((row) => row.getAttribute("role") === "button" && row.tabIndex === 0));
+    assert.ok(rows.every((row) => row.getAttribute("aria-pressed") === "false"));
+
+    const firstActiveDescendant = grid.getAttribute("aria-activedescendant");
+    grid.dispatchEvent({ type: "keydown", key: "ArrowRight", bubbles: false });
+    assert.notStrictEqual(grid.getAttribute("aria-activedescendant"), firstActiveDescendant);
+    assert.ok(collectText(harness.content.querySelector(".recap-sr-only")).length > 0);
+  });
+
+  it("keeps month and year placeholder cells out of the accessibility grid", async () => {
+    const monthHarness = loadRecapTabForTest({ data: sampleRecapView() });
+    await monthHarness.settle();
+    monthHarness.content.querySelectorAll(".recap-period-button")[2].click();
+    await monthHarness.settle();
+    const monthGrid = monthHarness.content.querySelector(".recap-grid");
+    const monthBlanks = monthHarness.content.querySelectorAll(".recap-cell-blank");
+    assert.strictEqual(monthBlanks.length, 5);
+    assert.ok(monthBlanks.every((cell) =>
+      cell.getAttribute("role") === "presentation"
+      && cell.getAttribute("aria-hidden") === "true"
+      && cell.getAttribute("aria-label") === undefined));
+    assert.strictEqual(monthHarness.content.querySelectorAll(".recap-cell")
+      .filter((cell) => cell.getAttribute("role") === "gridcell").length, 31);
+    const monthActive = monthHarness.content.querySelectorAll(".recap-cell")
+      .find((cell) => cell.id === monthGrid.getAttribute("aria-activedescendant"));
+    assert.ok(monthActive);
+    assert.notStrictEqual(monthActive.getAttribute("role"), "presentation");
+
+    const yearHarness = loadRecapTabForTest({ data: sampleRecapView() });
+    await yearHarness.settle();
+    yearHarness.content.querySelectorAll(".recap-period-button")[3].click();
+    await yearHarness.settle();
+    const yearBlanks = yearHarness.content.querySelectorAll(".recap-cell-blank");
+    assert.strictEqual(yearBlanks.length, 7);
+    assert.ok(yearBlanks.every((cell) =>
+      cell.getAttribute("role") === "presentation"
+      && cell.getAttribute("aria-hidden") === "true"
+      && cell.getAttribute("aria-label") === undefined));
+    assert.strictEqual(yearHarness.content.querySelectorAll(".recap-cell")
+      .filter((cell) => cell.getAttribute("role") === "gridcell").length, 365);
+  });
+
+  it("supports hover plus click-lock highlighting and Escape unlock", async () => {
+    const harness = loadRecapTabForTest({
+      data: sampleRecapView(),
+      agentMetadata: [
+        { id: "codex", name: "Codex" },
+        { id: "claude-code", name: "Claude Code" },
+      ],
+    });
+    await harness.settle();
+    const rows = harness.content.querySelectorAll(".recap-agent-row");
+    const codexRow = rows.find((row) => collectText(row).includes("Codex"));
+    const grid = harness.content.querySelector(".recap-grid");
+
+    codexRow.dispatchEvent({ type: "mouseenter", bubbles: false });
+    assert.strictEqual(grid.classList.contains("recap-grid-dim"), true);
+    assert.strictEqual(harness.content.querySelectorAll(".recap-cell-hit").length, 1);
+    codexRow.dispatchEvent({ type: "mouseleave", bubbles: false });
+    assert.strictEqual(grid.classList.contains("recap-grid-dim"), false);
+
+    codexRow.dispatchEvent({ type: "click", bubbles: false });
+    assert.strictEqual(codexRow.getAttribute("aria-pressed"), "true");
+    assert.strictEqual(grid.classList.contains("recap-grid-dim"), true);
+    codexRow.dispatchEvent({ type: "keydown", key: "Escape", bubbles: true });
+    assert.strictEqual(codexRow.getAttribute("aria-pressed"), "false");
+    assert.strictEqual(grid.classList.contains("recap-grid-dim"), false);
+  });
+
+  it("reveals proportional agent segments immediately and the sorted popover after 90ms", async () => {
+    const data = sampleRecapView();
+    const foldKinds = Array(24).fill("normal");
+    foldKinds[9] = "fold";
+    data.days[0].hourKindsByTimeZone = { "America/Los_Angeles": foldKinds };
+    const harness = loadRecapTabForTest({
+      data,
+      agentMetadata: [
+        { id: "codex", name: "Codex" },
+        { id: "claude-code", name: "Claude Code" },
+      ],
+    });
+    await harness.settle();
+    const activeCell = harness.content.querySelector(".recap-cell-activity");
+    const codexRow = harness.content.querySelectorAll(".recap-agent-row")
+      .find((row) => collectText(row).includes("Codex"));
+    codexRow.dispatchEvent({ type: "click", bubbles: false });
+    activeCell.dispatchEvent({ type: "mouseenter", bubbles: false });
+    assert.strictEqual(harness.content.querySelector(".recap-grid").classList.contains("recap-grid-dim"), true);
+    assert.strictEqual(activeCell.classList.contains("recap-cell-hit"), true);
+    assert.strictEqual(activeCell.classList.contains("recap-cell-peek"), true);
+    const segments = activeCell.querySelectorAll(".recap-cell-segments i");
+    assert.strictEqual(segments.length, 2);
+    assert.strictEqual(segments[0].style.flex, "9 1 0%");
+    await new Promise((resolve) => setTimeout(resolve, 110));
+    const popover = harness.content.querySelector(".recap-cell-popover");
+    assert.ok(popover);
+    const text = collectText(popover);
+    assert.ok(text.indexOf("Codex") < text.indexOf("Claude Code"));
+    assert.ok(text.includes("This local hour occurred twice because the clock changed."));
+    activeCell.dispatchEvent({ type: "mouseleave", bubbles: false });
+    assert.strictEqual(harness.content.querySelector(".recap-cell-popover"), null);
+  });
+
   it("does not announce an invalid-email preflight for an untouched empty approver", async () => {
     const harness = createFeishuLookupPreflightHarness();
     await Promise.resolve();

@@ -5,8 +5,17 @@
   let runtime = null;
   let helpers = null;
   let ops = null;
+  let renderSerial = 0;
 
   const PERIODS = ["today", "week", "month", "year"];
+  const KNOWN_AGENT_COLORS = Object.freeze({
+    "claude-code": "var(--recap-agent-claude)",
+    codex: "var(--recap-agent-codex)",
+    opencode: "var(--recap-agent-opencode)",
+    "gemini-cli": "var(--recap-agent-gemini)",
+    codewhale: "var(--recap-agent-whale)",
+  });
+  const FALLBACK_COLOR_COUNT = 12;
   const view = {
     period: "today",
     status: "idle",
@@ -14,6 +23,9 @@
     requestSeq: 0,
     togglePending: false,
     clearPending: false,
+    hoverRowKey: null,
+    lockedRowKey: null,
+    gridIndex: 0,
   };
 
   function t(key) {
@@ -21,12 +33,12 @@
   }
 
   function locale() {
-    const lang = coreState.snapshot && coreState.snapshot.lang;
+    const lang = coreState && coreState.snapshot && coreState.snapshot.lang;
     return ({ zh: "zh-CN", "zh-TW": "zh-TW", ko: "ko-KR", ja: "ja-JP", "pt-BR": "pt-BR", es: "es" })[lang] || "en";
   }
 
-  function formatNumber(value) {
-    return new Intl.NumberFormat(locale()).format(value);
+  function formatNumber(value, options) {
+    return new Intl.NumberFormat(locale(), options).format(value);
   }
 
   function replace(template, values) {
@@ -34,6 +46,48 @@
       (text, [key, value]) => text.replaceAll(`{${key}}`, String(value)),
       String(template || "")
     );
+  }
+
+  function parseLocalDate(localDate) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(localDate || ""));
+    if (!match) return null;
+    const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+    if (
+      date.getUTCFullYear() !== Number(match[1])
+      || date.getUTCMonth() !== Number(match[2]) - 1
+      || date.getUTCDate() !== Number(match[3])
+    ) return null;
+    return date;
+  }
+
+  function toLocalDate(date) {
+    return [
+      String(date.getUTCFullYear()).padStart(4, "0"),
+      String(date.getUTCMonth() + 1).padStart(2, "0"),
+      String(date.getUTCDate()).padStart(2, "0"),
+    ].join("-");
+  }
+
+  function addLocalDays(localDate, amount) {
+    const date = parseLocalDate(localDate);
+    if (!date) return localDate;
+    date.setUTCDate(date.getUTCDate() + amount);
+    return toLocalDate(date);
+  }
+
+  function compareLocalDates(left, right) {
+    return String(left).localeCompare(String(right));
+  }
+
+  function formatDate(localDate, options) {
+    const date = parseLocalDate(localDate);
+    return date
+      ? new Intl.DateTimeFormat(locale(), { timeZone: "UTC", ...options }).format(date)
+      : String(localDate || "");
+  }
+
+  function formatHour(hour) {
+    return `${formatNumber(hour, { minimumIntegerDigits: 2, useGrouping: false })}:00`;
   }
 
   function requestData() {
@@ -63,10 +117,17 @@
     });
   }
 
+  function resetInteraction() {
+    view.hoverRowKey = null;
+    view.lockedRowKey = null;
+    view.gridIndex = 0;
+  }
+
   function reload() {
     view.requestSeq += 1;
     view.status = "idle";
     view.data = null;
+    resetInteraction();
     if (coreState.activeTab === "recap") ops.requestRender({ content: true });
   }
 
@@ -79,14 +140,34 @@
 
   function scopeLabel(row) {
     if (row.scope === "local") return "";
-    const ordinal = Number(String(row.scopeInstance || "").split("-").at(-1)) || 1;
+    const parts = String(row.scopeInstance || "").split("-");
+    const ordinal = Number(parts[parts.length - 1]) || 1;
     const key = row.scope === "wsl" ? "recapScopeWsl" : "recapScopeRemote";
     return replace(t(key), { n: ordinal });
   }
 
+  function rowKey(row) {
+    return `${row.agentId}\0${row.scopeInstance}`;
+  }
+
+  function rowDisplayName(row) {
+    const scope = scopeLabel(row);
+    return scope ? `${agentName(row.agentId)} · ${scope}` : agentName(row.agentId);
+  }
+
+  function agentColorToken(agentId) {
+    if (KNOWN_AGENT_COLORS[agentId]) return KNOWN_AGENT_COLORS[agentId];
+    let hash = 2166136261;
+    for (const char of String(agentId || "")) {
+      hash ^= char.codePointAt(0);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `var(--recap-agent-fallback-${(hash >>> 0) % FALLBACK_COLOR_COUNT})`;
+  }
+
   function combineMetric(current, next) {
     if (current === null || next === null) return null;
-    return current + next;
+    return current + (Number.isSafeInteger(next) ? next : 0);
   }
 
   function summarize(data) {
@@ -98,10 +179,11 @@
       for (const source of day.rows || []) {
         agentIds.add(source.agentId);
         if (source.metrics && source.metrics.activityEvents > 0) dayHasActivity = true;
-        const key = `${source.agentId}\0${source.scopeInstance}`;
+        const key = rowKey(source);
         let row = rows.get(key);
         if (!row) {
           row = {
+            key,
             agentId: source.agentId,
             scope: source.scope,
             scopeInstance: source.scopeInstance,
@@ -129,6 +211,168 @@
         agentName(left.agentId).localeCompare(agentName(right.agentId), locale())
         || String(left.scopeInstance).localeCompare(String(right.scopeInstance))),
     };
+  }
+
+  function depthOf(value) {
+    if (value >= 26) return 3;
+    if (value >= 9) return 2;
+    return value > 0 ? 1 : 0;
+  }
+
+  function coverageForDay(day) {
+    const minutes = day && day.coverage && Array.isArray(day.coverage.coverageMinutes)
+      ? day.coverage.coverageMinutes
+      : [];
+    return Array.from({ length: 24 }, (_, hour) => {
+      const value = Number(minutes[hour]);
+      return Number.isFinite(value) && value > 0 ? value : 0;
+    });
+  }
+
+  function hourKind(day, hour) {
+    const shapes = [];
+    for (const source of [day && day.hourKindsByTimeZone, day && day.coverage && day.coverage.hourKindsByTimeZone]) {
+      for (const kinds of Object.values(source || {})) {
+        if (Array.isArray(kinds) && kinds[hour]) shapes.push(kinds[hour]);
+      }
+    }
+    if (shapes.includes("fold")) return "fold";
+    if (shapes.length > 0 && shapes.every((kind) => kind === "gap")) return "gap";
+    return "normal";
+  }
+
+  function countsForHour(day, hour) {
+    const counts = [];
+    for (const row of day && Array.isArray(day.rows) ? day.rows : []) {
+      const count = Array.isArray(row.hours) && Number.isSafeInteger(row.hours[hour])
+        ? row.hours[hour]
+        : 0;
+      if (count > 0) counts.push({
+        rowKey: rowKey(row),
+        agentId: row.agentId,
+        scope: row.scope,
+        scopeInstance: row.scopeInstance,
+        count,
+      });
+    }
+    return counts;
+  }
+
+  function countsForDay(day) {
+    const counts = [];
+    for (const row of day && Array.isArray(day.rows) ? day.rows : []) {
+      const count = row.metrics && Number.isSafeInteger(row.metrics.activityEvents)
+        ? row.metrics.activityEvents
+        : 0;
+      if (count > 0) counts.push({
+        rowKey: rowKey(row),
+        agentId: row.agentId,
+        scope: row.scope,
+        scopeInstance: row.scopeInstance,
+        count,
+      });
+    }
+    return counts;
+  }
+
+  function classifyCell(data, localDate, hour, day, counts, kind, invalid = false) {
+    const total = counts.reduce((sum, entry) => sum + entry.count, 0);
+    if (invalid) return { state: "blank", total, counts, kind: "normal" };
+    // A DST gap is not a zero, a future slot, or a pre-recording slot: this
+    // local hour did not exist at all.
+    if (kind === "gap") return { state: "gap", total: 0, counts: [], kind };
+    const anchorDate = data.anchorDate;
+    const afterToday = compareLocalDates(localDate, anchorDate) > 0;
+    const futureHour = hour !== null
+      && localDate === anchorDate
+      && hour > (Number.isInteger(data.currentLocalHour) ? data.currentLocalHour : 23);
+    if (afterToday || futureHour) return { state: "future", total: 0, counts: [], kind: "normal" };
+    if (total > 0) return { state: "activity", total, counts, kind };
+    const startedDate = data.recordingStartedDate || data.startDate || anchorDate;
+    const beforeStartedDate = compareLocalDates(localDate, startedDate) < 0;
+    const beforeStartedHour = hour !== null
+      && localDate === startedDate
+      && Number.isInteger(data.recordingStartedLocalHour)
+      && hour < data.recordingStartedLocalHour;
+    if (beforeStartedDate || beforeStartedHour) {
+      return { state: "not-started", total: 0, counts: [], kind: "normal" };
+    }
+    const coverage = coverageForDay(day);
+    const covered = hour === null
+      ? coverage.some((minutes) => minutes > 0)
+      : coverage[hour] > 0;
+    return { state: covered ? "covered" : "uncovered", total: 0, counts: [], kind };
+  }
+
+  function createCell(data, localDate, hour, day, optionsValue = {}) {
+    const counts = hour === null ? countsForDay(day) : countsForHour(day, hour);
+    const kind = hour === null ? "normal" : hourKind(day, hour);
+    return {
+      key: hour === null ? localDate : `${localDate}T${String(hour).padStart(2, "0")}`,
+      localDate,
+      hour,
+      dayNumber: optionsValue.dayNumber || null,
+      ...classifyCell(data, localDate, hour, day, counts, kind, optionsValue.invalid === true),
+    };
+  }
+
+  function buildTimelineModel(data, period) {
+    const dayMap = new Map((data.days || []).map((day) => [day.localDate, day]));
+    const cells = [];
+    let columns = 24;
+    let rows = 1;
+    let startDate = data.startDate;
+    if (period === "today") {
+      const day = dayMap.get(data.anchorDate);
+      for (let hour = 0; hour < 24; hour += 1) {
+        cells.push(createCell(data, data.anchorDate, hour, day));
+      }
+    } else if (period === "week") {
+      startDate = data.startDate;
+      rows = 7;
+      for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
+        const localDate = addLocalDays(startDate, dayIndex);
+        const day = dayMap.get(localDate);
+        for (let hour = 0; hour < 24; hour += 1) {
+          cells.push(createCell(data, localDate, hour, day));
+        }
+      }
+    } else if (period === "month") {
+      const anchor = parseLocalDate(data.anchorDate);
+      const year = anchor.getUTCFullYear();
+      const month = anchor.getUTCMonth();
+      const monthStart = new Date(Date.UTC(year, month, 1));
+      startDate = toLocalDate(monthStart);
+      const leading = (monthStart.getUTCDay() + 6) % 7;
+      const dayCount = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+      columns = 7;
+      rows = Math.ceil((leading + dayCount) / 7);
+      for (let index = 0; index < leading; index += 1) {
+        const blank = createCell(data, startDate, null, null, { invalid: true });
+        blank.key = `month-leading-${index}`;
+        cells.push(blank);
+      }
+      for (let dayNumber = 1; dayNumber <= dayCount; dayNumber += 1) {
+        const localDate = `${String(year).padStart(4, "0")}-${String(month + 1).padStart(2, "0")}-${String(dayNumber).padStart(2, "0")}`;
+        cells.push(createCell(data, localDate, null, dayMap.get(localDate), { dayNumber }));
+      }
+    } else {
+      const year = Number(String(data.anchorDate).slice(0, 4));
+      startDate = `${String(year).padStart(4, "0")}-01-01`;
+      columns = 31;
+      rows = 12;
+      for (let month = 1; month <= 12; month += 1) {
+        const dayCount = new Date(Date.UTC(year, month, 0)).getUTCDate();
+        for (let dayNumber = 1; dayNumber <= 31; dayNumber += 1) {
+          const localDate = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(dayNumber).padStart(2, "0")}`;
+          cells.push(createCell(data, localDate, null, dayMap.get(localDate), {
+            dayNumber,
+            invalid: dayNumber > dayCount,
+          }));
+        }
+      }
+    }
+    return { period, cells, columns, rows, startDate };
   }
 
   function buildPeriodTabs() {
@@ -159,7 +403,7 @@
     return partial ? `${formatted} · ${t("recapMetricPartial")}` : formatted;
   }
 
-  function buildAgentRows(summary) {
+  function buildAgentRows(summary, interaction) {
     const list = document.createElement("div");
     list.className = "recap-agent-list";
     if (summary.rows.length === 0) {
@@ -172,10 +416,22 @@
     for (const row of summary.rows) {
       const item = document.createElement("div");
       item.className = "recap-agent-row";
+      item.dataset.rowKey = row.key;
+      item.tabIndex = 0;
+      item.setAttribute("role", "button");
+      item.setAttribute("aria-pressed", view.lockedRowKey === row.key ? "true" : "false");
+      item.setAttribute("aria-label", replace(t("recapAgentHighlightAria"), {
+        agent: rowDisplayName(row),
+      }));
+      item.style.setProperty("--recap-row-color", agentColorToken(row.agentId));
       const identity = document.createElement("div");
       identity.className = "recap-agent-identity";
+      const swatch = document.createElement("span");
+      swatch.className = "recap-agent-swatch";
+      swatch.setAttribute("aria-hidden", "true");
       const name = document.createElement("strong");
       name.textContent = agentName(row.agentId);
+      identity.appendChild(swatch);
       identity.appendChild(name);
       const scope = scopeLabel(row);
       if (scope) {
@@ -197,59 +453,446 @@
         label.textContent = t(labelKey);
         const count = document.createElement("dd");
         count.textContent = metricText(value, partial);
-        if (value === null) count.title = t("recapMetricUnavailableReason");
+        if (value === null) {
+          count.title = t("recapMetricUnavailableReason");
+          count.setAttribute("aria-label", `${t(labelKey)}: ${t("recapMetricUnavailableReason")}`);
+        }
         pair.appendChild(label);
         pair.appendChild(count);
         metrics.appendChild(pair);
       }
       item.appendChild(metrics);
+      item.addEventListener("mouseenter", () => interaction.setHover(row.key));
+      item.addEventListener("mouseleave", () => interaction.setHover(null));
+      item.addEventListener("focus", () => interaction.setHover(row.key));
+      item.addEventListener("blur", () => interaction.setHover(null));
+      const toggleLock = () => interaction.toggleLock(row.key);
+      item.addEventListener("click", toggleLock);
+      item.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          toggleLock();
+        }
+      });
+      interaction.rowElements.set(row.key, item);
       list.appendChild(item);
     }
     return list;
   }
 
-  function buildPlainTimeline(data) {
-    const timeline = document.createElement("div");
-    timeline.className = "recap-plain-timeline";
-    timeline.setAttribute("aria-label", t("recapTimelineLabel"));
-    for (const day of data.days || []) {
-      const activity = (day.rows || []).reduce(
-        (total, row) => total + (row.metrics && Number.isSafeInteger(row.metrics.activityEvents)
-          ? row.metrics.activityEvents
-          : 0),
-        0
-      );
-      const coverage = day.coverage && Array.isArray(day.coverage.coverageMinutes)
-        ? day.coverage.coverageMinutes.reduce((sum, value) => sum + Number(value || 0), 0)
-        : 0;
-      const cell = document.createElement("div");
-      cell.className = "recap-plain-day";
-      cell.classList.add(activity > 0 ? "active" : (coverage > 0 ? "covered" : "uncovered"));
-      cell.title = activity > 0
-        ? replace(t("recapDayActivity"), { date: day.localDate, count: formatNumber(activity) })
-        : replace(t(coverage > 0 ? "recapDayCovered" : "recapDayUncovered"), { date: day.localDate });
-      cell.setAttribute("aria-label", cell.title);
-      timeline.appendChild(cell);
+  function periodTitle(data) {
+    if (view.period === "today") {
+      return formatDate(data.anchorDate, { year: "numeric", month: "long", day: "numeric", weekday: "short" });
     }
-    return timeline;
+    if (view.period === "week") {
+      const end = addLocalDays(data.startDate, 6);
+      return `${formatDate(data.startDate, { month: "short", day: "numeric" })} — ${formatDate(end, { month: "short", day: "numeric" })}`;
+    }
+    if (view.period === "month") {
+      return formatDate(`${data.anchorDate.slice(0, 7)}-01`, { year: "numeric", month: "long" });
+    }
+    return formatDate(`${data.anchorDate.slice(0, 4)}-01-01`, { year: "numeric" });
+  }
+
+  function cellWhen(cell) {
+    const date = formatDate(cell.localDate, { month: "short", day: "numeric", weekday: "short" });
+    return cell.hour === null ? date : `${date} ${formatHour(cell.hour)}`;
+  }
+
+  function cellAriaLabel(cell, rowByKey) {
+    const when = cellWhen(cell);
+    let text;
+    if (cell.state === "activity") {
+      text = replace(t("recapCellActivity"), { when, count: formatNumber(cell.total) });
+      const details = cell.counts
+        .slice()
+        .sort((left, right) => right.count - left.count)
+        .map((entry) => {
+          const row = rowByKey.get(entry.rowKey) || entry;
+          return `${rowDisplayName(row)} ${formatNumber(entry.count)}`;
+        });
+      if (details.length) text += ` · ${details.join(" · ")}`;
+    } else if (cell.state === "covered") {
+      text = replace(t("recapDayCovered"), { date: when });
+    } else if (cell.state === "uncovered") {
+      text = replace(t("recapDayUncovered"), { date: when });
+    } else if (cell.state === "future") {
+      text = replace(t("recapCellFuture"), { when });
+    } else if (cell.state === "not-started") {
+      text = replace(t("recapCellNotStarted"), { when });
+    } else if (cell.state === "gap") {
+      text = replace(t("recapCellGap"), { when });
+    } else {
+      text = when;
+    }
+    if (cell.kind === "fold") text += ` · ${t("recapCellFold")}`;
+    return text;
+  }
+
+  function buildTimeline(data, summary, interaction) {
+    const model = buildTimelineModel(data, view.period);
+    const rowByKey = new Map(summary.rows.map((row) => [row.key, row]));
+    const section = document.createElement("section");
+    section.className = "recap-visual";
+    interaction.visual = section;
+    const heading = document.createElement("div");
+    heading.className = "recap-visual-heading";
+    const headingTitle = document.createElement("strong");
+    headingTitle.textContent = t("recapTimelineLabel");
+    const headingDetail = document.createElement("span");
+    headingDetail.textContent = t(view.period === "today" || view.period === "week"
+      ? "recapTimelineHours"
+      : "recapTimelineDays");
+    heading.appendChild(headingTitle);
+    heading.appendChild(headingDetail);
+    section.appendChild(heading);
+
+    const grid = document.createElement("div");
+    grid.className = `recap-grid recap-grid-${view.period}`;
+    grid.tabIndex = 0;
+    grid.setAttribute("role", "grid");
+    grid.setAttribute("aria-label", t("recapGridInstructions"));
+    grid.setAttribute("aria-rowcount", String(model.rows));
+    grid.setAttribute("aria-colcount", String(model.columns));
+    interaction.grid = grid;
+    const serial = ++renderSerial;
+    const cellElements = [];
+    let renderedCellCount = 0;
+
+    function appendCell(cell, parent, rowIndex, columnIndex) {
+      const element = document.createElement("div");
+      element.id = `recap-cell-${serial}-${renderedCellCount}`;
+      renderedCellCount += 1;
+      element.className = `recap-cell recap-cell-${cell.state}`;
+      element.dataset.cellKey = cell.key;
+      if (cell.state === "blank") {
+        element.setAttribute("role", "presentation");
+        element.setAttribute("aria-hidden", "true");
+        parent.appendChild(element);
+        return;
+      }
+      element.setAttribute("role", "gridcell");
+      element.setAttribute("aria-rowindex", String(rowIndex));
+      element.setAttribute("aria-colindex", String(columnIndex));
+      const label = cellAriaLabel(cell, rowByKey);
+      element.setAttribute("aria-label", label);
+      element.title = label;
+      if (cell.state === "activity") element.classList.add(`recap-depth-${depthOf(cell.total)}`);
+      if (cell.kind === "fold") element.classList.add("recap-cell-fold");
+      if (cell.dayNumber && view.period === "month") {
+        const dayNumber = document.createElement("span");
+        dayNumber.className = "recap-day-number";
+        dayNumber.textContent = formatNumber(cell.dayNumber);
+        dayNumber.setAttribute("aria-hidden", "true");
+        element.appendChild(dayNumber);
+      }
+      if (cell.state === "activity" || cell.kind === "fold") {
+        element.addEventListener("mouseenter", () => interaction.showPeek(cell, element, rowByKey));
+        element.addEventListener("mouseleave", interaction.clearPeek);
+      }
+      interaction.cellElements.set(cell.key, { cell, element });
+      cellElements.push({ cell, element, rowIndex, columnIndex });
+      parent.appendChild(element);
+    }
+
+    if (view.period === "today") {
+      const band = document.createElement("div");
+      band.className = "recap-band recap-today-band";
+      model.cells.forEach((cell, index) => appendCell(cell, band, 1, index + 1));
+      grid.appendChild(band);
+      const labels = document.createElement("div");
+      labels.className = "recap-hour-labels";
+      for (let hour = 0; hour < 24; hour += 1) {
+        const label = document.createElement("span");
+        label.textContent = hour % 3 === 0 ? formatNumber(hour, { minimumIntegerDigits: 2, useGrouping: false }) : "";
+        labels.appendChild(label);
+      }
+      grid.appendChild(labels);
+    } else if (view.period === "week") {
+      for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
+        const row = document.createElement("div");
+        row.className = "recap-week-row";
+        row.setAttribute("role", "row");
+        const localDate = addLocalDays(model.startDate, dayIndex);
+        const label = document.createElement("span");
+        label.className = "recap-row-label";
+        label.textContent = formatDate(localDate, { weekday: "narrow" });
+        label.setAttribute("aria-hidden", "true");
+        row.appendChild(label);
+        const band = document.createElement("div");
+        band.className = "recap-band";
+        model.cells.slice(dayIndex * 24, (dayIndex + 1) * 24).forEach((cell, hour) => {
+          appendCell(cell, band, dayIndex + 1, hour + 1);
+        });
+        row.appendChild(band);
+        grid.appendChild(row);
+      }
+    } else if (view.period === "month") {
+      const weekdays = document.createElement("div");
+      weekdays.className = "recap-month-weekdays";
+      for (let index = 0; index < 7; index += 1) {
+        const label = document.createElement("span");
+        label.textContent = formatDate(addLocalDays("2026-08-24", index), { weekday: "narrow" });
+        label.setAttribute("aria-hidden", "true");
+        weekdays.appendChild(label);
+      }
+      grid.appendChild(weekdays);
+      const month = document.createElement("div");
+      month.className = "recap-month-grid";
+      model.cells.forEach((cell, index) => appendCell(
+        cell,
+        month,
+        Math.floor(index / 7) + 1,
+        (index % 7) + 1
+      ));
+      grid.appendChild(month);
+    } else {
+      for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+        const row = document.createElement("div");
+        row.className = "recap-year-row";
+        row.setAttribute("role", "row");
+        const label = document.createElement("span");
+        label.className = "recap-row-label";
+        label.textContent = formatDate(`${data.anchorDate.slice(0, 4)}-${String(monthIndex + 1).padStart(2, "0")}-01`, { month: "narrow" });
+        label.setAttribute("aria-hidden", "true");
+        row.appendChild(label);
+        const band = document.createElement("div");
+        band.className = "recap-band";
+        model.cells.slice(monthIndex * 31, (monthIndex + 1) * 31).forEach((cell, dayIndex) => {
+          appendCell(cell, band, monthIndex + 1, dayIndex + 1);
+        });
+        row.appendChild(band);
+        grid.appendChild(row);
+      }
+    }
+
+    const live = document.createElement("div");
+    live.className = "recap-sr-only";
+    live.setAttribute("aria-live", "polite");
+    live.setAttribute("aria-atomic", "true");
+    interaction.live = live;
+    interaction.cellList = cellElements;
+    view.gridIndex = Math.max(0, Math.min(view.gridIndex, cellElements.length - 1));
+    interaction.selectGridCell(view.gridIndex, false);
+    grid.addEventListener("focus", () => interaction.selectGridCell(view.gridIndex, true));
+    grid.addEventListener("keydown", (event) => {
+      let next = view.gridIndex;
+      if (event.key === "ArrowRight") next += 1;
+      else if (event.key === "ArrowLeft") next -= 1;
+      else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        const current = cellElements[view.gridIndex];
+        const direction = event.key === "ArrowDown" ? 1 : -1;
+        let targetRow = current ? current.rowIndex + direction : 0;
+        let target = -1;
+        while (current && targetRow >= 1 && targetRow <= model.rows && target === -1) {
+          target = cellElements.findIndex((entry) =>
+            entry.rowIndex === targetRow && entry.columnIndex === current.columnIndex);
+          targetRow += direction;
+        }
+        if (target !== -1) next = target;
+      }
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = cellElements.length - 1;
+      else return;
+      event.preventDefault();
+      interaction.selectGridCell(Math.max(0, Math.min(next, cellElements.length - 1)), true);
+    });
+    section.appendChild(grid);
+    section.appendChild(live);
+    return section;
   }
 
   function buildDataCard(data) {
     const summary = summarize(data);
     const card = document.createElement("section");
-    card.className = "recap-card recap-skeleton-card";
-    const headline = document.createElement("h2");
-    headline.textContent = replace(t("recapHeadline"), { count: formatNumber(summary.agentCount) });
-    card.appendChild(headline);
-    const note = document.createElement("p");
-    note.className = "recap-card-note";
-    note.textContent = replace(t("recapActiveDays"), { count: formatNumber(summary.activeDays) });
-    card.appendChild(note);
-    card.appendChild(buildAgentRows(summary));
-    card.appendChild(buildPlainTimeline(data));
+    card.className = "recap-card";
+    const heading = document.createElement("div");
+    heading.className = "recap-card-heading";
+    const titleWrap = document.createElement("div");
+    const title = document.createElement("h2");
+    title.textContent = periodTitle(data);
+    const since = document.createElement("p");
+    since.textContent = replace(t("recapRecordingSince"), {
+      date: formatDate(data.recordingStartedDate || data.anchorDate, { year: "numeric", month: "short", day: "numeric" }),
+    });
+    titleWrap.appendChild(title);
+    titleWrap.appendChild(since);
+    const paw = document.createElement("span");
+    paw.className = "recap-paw";
+    paw.textContent = "🐾";
+    paw.setAttribute("aria-hidden", "true");
+    heading.appendChild(titleWrap);
+    heading.appendChild(paw);
+    card.appendChild(heading);
+
+    const lede = document.createElement("p");
+    lede.className = "recap-lede";
+    lede.textContent = replace(t("recapHeadline"), { count: formatNumber(summary.agentCount) });
+    const hint = document.createElement("span");
+    hint.textContent = t("recapInteractionHint");
+    lede.appendChild(hint);
+    card.appendChild(lede);
+
     const footnote = document.createElement("p");
     footnote.className = "recap-footnote";
-    footnote.textContent = t(data.recordingEnabled ? "recapCoverageFootnote" : "recapPausedFootnote");
+    const coverageNote = document.createElement("span");
+    coverageNote.className = "recap-coverage-note";
+    coverageNote.textContent = t(data.recordingEnabled ? "recapCoverageFootnote" : "recapPausedFootnote");
+    const interaction = {
+      rowElements: new Map(),
+      cellElements: new Map(),
+      cellList: [],
+      grid: null,
+      live: null,
+      visual: null,
+      peekTimer: null,
+      popover: null,
+      peekElement: null,
+      setHover(key) {
+        view.hoverRowKey = key;
+        this.applyHighlight();
+      },
+      toggleLock(key) {
+        view.lockedRowKey = view.lockedRowKey === key ? null : key;
+        this.applyHighlight();
+      },
+      applyHighlight() {
+        const activeKey = view.hoverRowKey || view.lockedRowKey;
+        if (this.grid) this.grid.classList.toggle("recap-grid-dim", !!activeKey);
+        let hitCount = 0;
+        for (const { cell, element } of this.cellElements.values()) {
+          element.classList.remove("recap-cell-hit", "recap-depth-1", "recap-depth-2", "recap-depth-3");
+          element.style.removeProperty("--recap-cell-color");
+          const match = activeKey && cell.counts.find((entry) => entry.rowKey === activeKey);
+          if (match) {
+            hitCount += 1;
+            const row = summary.rows.find((candidate) => candidate.key === activeKey);
+            element.classList.add("recap-cell-hit", `recap-depth-${depthOf(match.count)}`);
+            element.style.setProperty("--recap-cell-color", agentColorToken(row ? row.agentId : match.agentId));
+          } else if (cell.state === "activity") {
+            element.classList.add(`recap-depth-${depthOf(cell.total)}`);
+          }
+        }
+        for (const [key, element] of this.rowElements) {
+          element.classList.toggle("active", key === activeKey);
+          element.setAttribute("aria-pressed", view.lockedRowKey === key ? "true" : "false");
+        }
+        if (activeKey) {
+          const row = summary.rows.find((candidate) => candidate.key === activeKey);
+          const unitKey = view.period === "today" || view.period === "week"
+            ? "recapCellUnitHour"
+            : "recapCellUnitDay";
+          footnote.textContent = replace(t("recapLookingAt"), {
+            agent: row ? rowDisplayName(row) : "",
+            count: formatNumber(hitCount),
+            unit: t(unitKey),
+          });
+        } else {
+          footnote.textContent = replace(t("recapActiveDays"), { count: formatNumber(summary.activeDays) });
+        }
+        footnote.appendChild(coverageNote);
+      },
+      clearPeek: () => {
+        if (interaction.peekTimer) clearTimeout(interaction.peekTimer);
+        interaction.peekTimer = null;
+        if (interaction.peekElement) {
+          interaction.peekElement.classList.remove("recap-cell-peek");
+          const segments = interaction.peekElement.querySelector(".recap-cell-segments");
+          if (segments) segments.remove();
+        }
+        interaction.peekElement = null;
+        if (interaction.popover) interaction.popover.remove();
+        interaction.popover = null;
+      },
+      showPeek(cell, element, rowByKey) {
+        this.clearPeek();
+        const entries = cell.counts.slice().sort((left, right) => right.count - left.count);
+        if (entries.length === 0 && cell.kind !== "fold") return;
+        this.peekElement = element;
+        element.classList.add("recap-cell-peek");
+        if (entries.length > 0) {
+          const segments = document.createElement("span");
+          segments.className = "recap-cell-segments";
+          segments.setAttribute("aria-hidden", "true");
+          for (const entry of entries) {
+            const segment = document.createElement("i");
+            segment.style.background = agentColorToken(entry.agentId);
+            segment.style.flex = `${entry.count} 1 0%`;
+            segments.appendChild(segment);
+          }
+          element.appendChild(segments);
+        }
+        this.peekTimer = setTimeout(() => {
+          this.peekTimer = null;
+          if (this.peekElement !== element || !element.parentNode) return;
+          const popover = document.createElement("div");
+          popover.className = "recap-cell-popover";
+          popover.setAttribute("aria-hidden", "true");
+          const popTitle = document.createElement("strong");
+          popTitle.textContent = `${cellWhen(cell)} · ${replace(t("recapTooltipTotal"), { count: formatNumber(cell.total) })}`;
+          popover.appendChild(popTitle);
+          if (cell.kind === "fold") {
+            const foldNote = document.createElement("p");
+            foldNote.className = "recap-cell-popover-note";
+            foldNote.textContent = t("recapCellFold");
+            popover.appendChild(foldNote);
+          }
+          for (const entry of entries) {
+            const row = rowByKey.get(entry.rowKey) || entry;
+            const detail = document.createElement("div");
+            const swatch = document.createElement("i");
+            swatch.style.background = agentColorToken(entry.agentId);
+            const name = document.createElement("span");
+            name.textContent = rowDisplayName(row);
+            const value = document.createElement("em");
+            value.textContent = replace(t("recapTooltipAgent"), {
+              count: formatNumber(entry.count),
+              percent: formatNumber(Math.round(entry.count / cell.total * 100)),
+            });
+            detail.appendChild(swatch);
+            detail.appendChild(name);
+            detail.appendChild(value);
+            popover.appendChild(detail);
+          }
+          this.visual.appendChild(popover);
+          this.popover = popover;
+          if (typeof this.visual.getBoundingClientRect === "function" && typeof element.getBoundingClientRect === "function") {
+            const wrapperRect = this.visual.getBoundingClientRect();
+            const cellRect = element.getBoundingClientRect();
+            const popRect = popover.getBoundingClientRect();
+            let left = cellRect.left - wrapperRect.left + cellRect.width / 2 - popRect.width / 2;
+            left = Math.max(0, Math.min(left, Math.max(0, wrapperRect.width - popRect.width)));
+            let top = cellRect.top - wrapperRect.top - popRect.height - 7;
+            if (top < 0) top = cellRect.bottom - wrapperRect.top + 7;
+            popover.style.left = `${left}px`;
+            popover.style.top = `${top}px`;
+          }
+          popover.classList.add("show");
+        }, 90);
+      },
+      selectGridCell(index, announce) {
+        if (!this.cellList.length) return;
+        view.gridIndex = Math.max(0, Math.min(index, this.cellList.length - 1));
+        this.cellList.forEach(({ element }, cellIndex) => {
+          element.classList.toggle("recap-cell-keyboard", cellIndex === view.gridIndex);
+        });
+        const current = this.cellList[view.gridIndex].element;
+        if (this.grid) this.grid.setAttribute("aria-activedescendant", current.id);
+        if (announce && this.live) this.live.textContent = current.getAttribute("aria-label") || "";
+      },
+    };
+
+    card.appendChild(buildAgentRows(summary, interaction));
+    card.appendChild(buildTimeline(data, summary, interaction));
+    card.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      if (!view.lockedRowKey && !interaction.peekElement) return;
+      event.preventDefault();
+      view.lockedRowKey = null;
+      interaction.clearPeek();
+      interaction.applyHighlight();
+    });
+    interaction.applyHighlight();
     card.appendChild(footnote);
     return card;
   }
@@ -406,6 +1049,11 @@
 
   root.ClawdSettingsTabRecap = {
     init,
-    __test: { summarize },
+    __test: {
+      agentColorToken,
+      buildTimelineModel,
+      depthOf,
+      summarize,
+    },
   };
 })(globalThis);
