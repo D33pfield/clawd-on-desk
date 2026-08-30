@@ -8,6 +8,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const {
   MAX_MANAGED_NODES,
+  PRIVATE_DACL_SECURITY_INFORMATION,
   PRIVATE_ACL_ERROR,
   assertRecapPrivatePathSupported,
   createVerifiedPrivateDaclApplier,
@@ -221,6 +222,11 @@ test("verified DACL writer rejects every readback mismatch", () => {
     readSecuritySddl: () => "O:LAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;LA)",
   });
   assert.doesNotThrow(() => aliased({}, administratorSid, false));
+});
+
+test("protected DACL security information stays an unsigned Win32 mask", () => {
+  assert.equal(PRIVATE_DACL_SECURITY_INFORMATION, 0x80000004);
+  assert.ok(PRIVATE_DACL_SECURITY_INFORMATION > 0);
 });
 
 test("Windows ACL API construction is idempotent for one Koffi instance", {
