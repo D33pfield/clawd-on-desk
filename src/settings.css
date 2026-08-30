@@ -485,7 +485,7 @@ html, body {
 .recap-cell-not-started,
 .recap-cell-blank { background: transparent; }
 .recap-today-band {
-  height: 112px;
+  height: 80px;
   align-items: stretch;
   gap: 3px;
   padding: 5px 0 2px;
@@ -740,7 +740,7 @@ html, body {
   .recap-agent-row { grid-template-columns: 1fr; gap: 8px; }
   .recap-agent-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .recap-visual-heading { align-items: flex-start; flex-direction: column; gap: 2px; }
-  .recap-today-band { height: 96px; gap: 2px; }
+  .recap-today-band { gap: 2px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .recap-period-button,
