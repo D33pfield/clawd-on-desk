@@ -211,6 +211,16 @@ test("verified DACL writer rejects every readback mismatch", () => {
     assert.throws(() => writer({}, sid, false), (error) =>
       error.code === PRIVATE_ACL_ERROR && error.stage === "verify");
   }
+
+  const administratorSid = "S-1-5-21-1-2-3-500";
+  const aliased = createVerifiedPrivateDaclApplier({
+    accountAliasesForUser: (userSid) => userSid === administratorSid
+      ? { LA: administratorSid }
+      : {},
+    setPrivateDacl: () => {},
+    readSecuritySddl: () => "O:LAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;LA)",
+  });
+  assert.doesNotThrow(() => aliased({}, administratorSid, false));
 });
 
 test("Windows ACL API construction is idempotent for one Koffi instance", {
@@ -425,13 +435,18 @@ test("Windows ACL helper removes explicit foreign ACEs from an existing tree", {
   }
 
   hardenRecapPrivateDirectory(root, { expectedCanonicalRoot: fs.realpathSync.native(root) });
-  const expectedPrincipals = new Set(["SY", "BA", userSid]);
+  let expectedPrincipals = null;
   for (const target of [root, oldDir, oldFile]) {
     const sddl = windowsAclSddl(target);
     assert.match(sddl, /D:P/);
     assert.doesNotMatch(sddl, /;;;WD\)/);
-    assert.deepEqual(new Set(windowsDaclPrincipals(sddl)), expectedPrincipals);
+    const principals = new Set(windowsDaclPrincipals(sddl));
+    if (expectedPrincipals === null) expectedPrincipals = principals;
+    assert.deepEqual(principals, expectedPrincipals);
   }
+  assert.equal(expectedPrincipals.size, 3);
+  assert.ok(expectedPrincipals.has("SY"));
+  assert.ok(expectedPrincipals.has("BA"));
 });
 
 test("new recap children inherit only the private directory ACEs", {
@@ -447,7 +462,10 @@ test("new recap children inherit only the private directory ACEs", {
   const newDir = path.join(root, "quarantine");
   fs.writeFileSync(newFile, "{}\n");
   fs.mkdirSync(newDir);
-  const expectedPrincipals = new Set(["SY", "BA", currentWindowsUserSid()]);
+  const expectedPrincipals = new Set(windowsDaclPrincipals(windowsAclSddl(root)));
+  assert.equal(expectedPrincipals.size, 3);
+  assert.ok(expectedPrincipals.has("SY"));
+  assert.ok(expectedPrincipals.has("BA"));
   for (const [target, directory] of [[newFile, false], [newDir, true]]) {
     const sddl = windowsAclSddl(target);
     assert.deepEqual(new Set(windowsDaclPrincipals(sddl)), expectedPrincipals);

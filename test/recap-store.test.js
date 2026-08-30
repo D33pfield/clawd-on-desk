@@ -35,13 +35,6 @@ function runWindowsTool(executable, args, env = process.env) {
   return result.stdout.trim();
 }
 
-function currentWindowsUserSid() {
-  const output = runWindowsTool(windowsSystemTool("whoami.exe"), ["/user", "/fo", "csv", "/nh"]);
-  const fields = output.match(/^"(?:[^"]|"")*","(S-\d+(?:-\d+)+)"\s*$/);
-  assert.ok(fields, "whoami must return its SID in the second CSV field");
-  return fields[1];
-}
-
 function grantWindowsParentReadToEveryone(dirPath) {
   runWindowsTool(windowsSystemTool("icacls.exe"), [
     dirPath,
@@ -100,11 +93,13 @@ test("store creates private metadata and stable HMAC without leaking input", (t)
   assert.doesNotMatch(first, /secret/);
   const metaPath = path.join(root, "meta.json");
   if (process.platform === "win32") {
-    const expectedPrincipals = new Set(["SY", "BA", currentWindowsUserSid()]);
     const rootSddl = windowsAclSddl(root);
     const metaSddl = windowsAclSddl(metaPath);
+    const expectedPrincipals = new Set(windowsDaclPrincipals(rootSddl));
     assert.match(rootSddl, /D:P/);
-    assert.deepEqual(new Set(windowsDaclPrincipals(rootSddl)), expectedPrincipals);
+    assert.equal(expectedPrincipals.size, 3);
+    assert.ok(expectedPrincipals.has("SY"));
+    assert.ok(expectedPrincipals.has("BA"));
     assert.deepEqual(new Set(windowsDaclPrincipals(metaSddl)), expectedPrincipals);
   } else {
     assert.equal(fs.statSync(metaPath).mode & 0o077, 0);

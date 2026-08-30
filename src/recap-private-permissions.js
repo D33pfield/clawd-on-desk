@@ -133,14 +133,18 @@ function createVerifiedPrivateDaclApplier(options) {
   const setPrivateDacl = options && options.setPrivateDacl;
   const readSecuritySddl = options && options.readSecuritySddl;
   const accountAliases = options && options.accountAliases ? options.accountAliases : {};
+  const accountAliasesForUser = options && options.accountAliasesForUser;
   if (typeof setPrivateDacl !== "function" || typeof readSecuritySddl !== "function") {
     throw new TypeError("private DACL applier requires set and read operations");
   }
   return function applyPrivateDacl(handle, userSid, isDirectory) {
     setPrivateDacl(handle, privateDaclDescriptorText(userSid, isDirectory));
     const actual = readSecuritySddl(handle);
-    if (!hasAllowedPrivateOwner(actual, userSid, accountAliases)
-      || !hasExactPrivateDacl(actual, userSid, isDirectory, accountAliases)) {
+    const resolvedAliases = typeof accountAliasesForUser === "function"
+      ? { ...accountAliases, ...accountAliasesForUser(userSid) }
+      : accountAliases;
+    if (!hasAllowedPrivateOwner(actual, userSid, resolvedAliases)
+      || !hasExactPrivateDacl(actual, userSid, isDirectory, resolvedAliases)) {
       throw privateAclError("verify");
     }
   };
@@ -221,9 +225,6 @@ function createWindowsAclApi(koffiOverride) {
   const GetSecurityDescriptorDacl = advapi32.func(
     "int __stdcall GetSecurityDescriptorDacl(const void *descriptor, _Out_ int *present, _Out_ void **dacl, _Out_ int *defaulted)"
   );
-  const GetSecurityDescriptorOwner = advapi32.func(
-    "int __stdcall GetSecurityDescriptorOwner(const void *descriptor, _Out_ void **owner, _Out_ int *defaulted)"
-  );
   const GetSecurityInfo = advapi32.func(
     "uint32_t __stdcall GetSecurityInfo(RECAP_HANDLE handle, int object_type, uint32_t info, void **owner, void **group, void **dacl, void **sacl, _Out_ void **descriptor)"
   );
@@ -278,28 +279,33 @@ function createWindowsAclApi(koffiOverride) {
     }
   }
 
-  function resolveAccountAlias(alias) {
+  function accountAliasesForUser(userSid) {
     const descriptorOut = [null];
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-      `O:${alias}`,
+      `O:${userSid}`,
       SDDL_REVISION_1,
       descriptorOut,
       null
     ) || !descriptorOut[0]) throw privateAclError("native-api");
     try {
-      const ownerOut = [null];
-      const defaulted = [0];
-      if (!GetSecurityDescriptorOwner(descriptorOut[0], ownerOut, defaulted) || !ownerOut[0]) {
-        throw privateAclError("native-api");
-      }
-      const sidOut = [null];
-      if (!ConvertSidToStringSidW(ownerOut[0], sidOut) || !sidOut[0]) {
-        throw privateAclError("native-api");
-      }
+      const textOut = [null];
+      if (!ConvertSecurityDescriptorToStringSecurityDescriptorW(
+        descriptorOut[0],
+        SDDL_REVISION_1,
+        OWNER_SECURITY_INFORMATION,
+        textOut,
+        null
+      ) || !textOut[0]) throw privateAclError("native-api");
       try {
-        return koffi.decode(sidOut[0], "char16_t", -1);
+        const text = koffi.decode(textOut[0], "char16_t", -1);
+        const match = /^O:(.*?)(?=G:|D:|S:|$)/.exec(text);
+        if (!match) throw privateAclError("native-api");
+        const principal = match[1];
+        if (principal === userSid) return {};
+        if (!/^[A-Z]{2}$/.test(principal)) throw privateAclError("native-api");
+        return { [principal]: userSid };
       } finally {
-        LocalFree(sidOut[0]);
+        LocalFree(textOut[0]);
       }
     } finally {
       LocalFree(descriptorOut[0]);
@@ -437,10 +443,7 @@ function createWindowsAclApi(koffiOverride) {
   }
 
   const applyPrivateDacl = createVerifiedPrivateDaclApplier({
-    accountAliases: Object.freeze({
-      LA: resolveAccountAlias("LA"),
-      LG: resolveAccountAlias("LG"),
-    }),
+    accountAliasesForUser,
     readSecuritySddl,
     setPrivateDacl,
   });
