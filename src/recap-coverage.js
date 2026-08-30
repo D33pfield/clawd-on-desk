@@ -16,13 +16,7 @@ const { DAILY_RETENTION_DAYS } = require("./recap-store");
 const HEARTBEAT_MS = 60000;
 const COVERAGE_SCHEMA_VERSION = 2;
 const MAX_OPEN_FUTURE_SKEW_MS = 5 * 60000;
-const MAX_LEGACY_OPEN_DURATION_MS = 36 * 3600000;
 const MAX_COVERAGE_DAYS_PER_MONTH = 31;
-// v1 wrote one interval for every suspend/resume or recording toggle. Keep a
-// generous migration ceiling so a busy but legitimate day survives while the
-// month still has a strict, finite projection bound.
-const MAX_LEGACY_INTERVALS_PER_DAY = 512;
-const MAX_LEGACY_TIME_ZONES_PER_DAY = 16;
 
 function isPlainObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -35,14 +29,6 @@ function hasSafeCoverageFanout(parsed) {
   for (const localDate of dayKeys) {
     const day = parsed.days[localDate];
     if (!isPlainObject(day)) return false;
-    if (parsed.schemaVersion === 1 && day.intervals !== undefined) {
-      if (!Array.isArray(day.intervals) || day.intervals.length > MAX_LEGACY_INTERVALS_PER_DAY) return false;
-      const timeZones = new Set();
-      for (const interval of day.intervals) {
-        if (interval && typeof interval.timeZoneId === "string") timeZones.add(interval.timeZoneId);
-        if (timeZones.size > MAX_LEGACY_TIME_ZONES_PER_DAY) return false;
-      }
-    }
   }
   return true;
 }
@@ -70,47 +56,6 @@ function normalizeBucketDay(value) {
     coverageMinutes: value.coverageMinutes.slice(),
     hourCapacities: value.hourCapacities.slice(),
   };
-}
-
-function normalizeLegacyInterval(value, expectedDate = null) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  if (
-    !Number.isSafeInteger(value.startedAt) || !Number.isSafeInteger(value.endedAt)
-    || value.startedAt < 0 || value.endedAt < value.startedAt
-    || !isValidTimeZone(value.timeZoneId)
-    || !Number.isInteger(value.startedOffsetMinutes)
-    || !Number.isInteger(value.endedOffsetMinutes)
-  ) return null;
-  // The v1 writer split intervals at each local-day boundary, so a legitimate
-  // persisted segment cannot span more than one unusually long civil day.
-  // Bound this before migrateLegacyMonth's hour-wise projection to prevent a
-  // tiny hostile JSON file from blocking startup for centuries of timestamps.
-  if (value.endedAt - value.startedAt > 36 * 3600000) return null;
-  const started = freezeLocalTime(value.startedAt, value.timeZoneId);
-  const ended = freezeLocalTime(value.endedAt, value.timeZoneId);
-  if (expectedDate && started.localDate !== expectedDate) return null;
-  if (expectedDate && compareLocalDates(ended.localDate, addLocalDays(expectedDate, 1)) > 0) return null;
-  if (started.utcOffsetMinutes !== value.startedOffsetMinutes || ended.utcOffsetMinutes !== value.endedOffsetMinutes) {
-    return null;
-  }
-  return { startedAt: value.startedAt, endedAt: value.endedAt, timeZoneId: value.timeZoneId };
-}
-
-function unionLegacyIntervals(intervals) {
-  const sorted = intervals.slice().sort((left, right) =>
-    left.timeZoneId.localeCompare(right.timeZoneId)
-    || left.startedAt - right.startedAt
-    || left.endedAt - right.endedAt);
-  const merged = [];
-  for (const interval of sorted) {
-    const previous = merged[merged.length - 1];
-    if (previous && previous.timeZoneId === interval.timeZoneId && interval.startedAt <= previous.endedAt) {
-      previous.endedAt = Math.max(previous.endedAt, interval.endedAt);
-    } else {
-      merged.push({ ...interval });
-    }
-  }
-  return merged;
 }
 
 function capacityForDate(localDate, timeZoneId) {
@@ -197,11 +142,9 @@ function createRecapCoverage(options = {}) {
       return;
     }
     store.writeJsonAtomic(openPath(), {
-      // v2 open heartbeats are always recovery-only: clean close deletes this
-      // file before committing a coarse bucket. Legacy v1 could survive after
-      // its interval was already committed, so load keeps a compatibility
-      // dedupe heuristic only for that old shape.
-      schemaVersion: 2,
+      // Open heartbeats are recovery-only: clean close deletes this file before
+      // committing a coarse bucket, so recovery can safely add the crash tail.
+      schemaVersion: COVERAGE_SCHEMA_VERSION,
       startedAt: open.startedAt,
       lastHeartbeatAt: open.lastHeartbeatAt,
       timeZoneId: open.timeZoneId,
@@ -248,7 +191,7 @@ function createRecapCoverage(options = {}) {
       throw err;
     }
     const saved = stat.isFile() ? store.readJson(filePath) : null;
-    if (!saved || ![1, 2].includes(saved.schemaVersion)) {
+    if (!saved || saved.schemaVersion !== COVERAGE_SCHEMA_VERSION) {
       try { store.quarantine(filePath, "invalid-open"); } catch (err) {
         if (!err || err.code !== "ENOENT") throw err;
       }
@@ -256,12 +199,11 @@ function createRecapCoverage(options = {}) {
       return null;
     }
     const duration = saved.lastHeartbeatAt - saved.startedAt;
-    const maxDuration = saved.schemaVersion === 2 ? HEARTBEAT_MS : MAX_LEGACY_OPEN_DURATION_MS;
     if (
       !Number.isSafeInteger(saved.startedAt) || !Number.isSafeInteger(saved.lastHeartbeatAt)
       || saved.startedAt < 0 || saved.lastHeartbeatAt < saved.startedAt
       || !isValidTimeZone(saved.timeZoneId)
-      || duration > maxDuration
+      || duration > HEARTBEAT_MS
       || saved.lastHeartbeatAt > now() + MAX_OPEN_FUTURE_SKEW_MS
     ) {
       warn("Clawd: discarded invalid recap coverage heartbeat");
@@ -271,81 +213,16 @@ function createRecapCoverage(options = {}) {
     return saved;
   }
 
-  function legacyOpenAlreadyCovered(saved) {
-    let alreadyCovered = false;
-    const projectedMonths = new Map();
-    accumulateInterval(projectedMonths, saved.startedAt, saved.lastHeartbeatAt, saved.timeZoneId);
-    alreadyCovered = true;
-    for (const projectedMonth of projectedMonths.values()) {
-      for (const [date, projectedDay] of Object.entries(projectedMonth.days)) {
-        const storedMonth = months.get(monthOf(date));
-        const storedDay = storedMonth && storedMonth.days[date];
-        if (!storedDay || projectedDay.coverageMinutes.some((minutes, hour) =>
-          Math.round(minutes) > storedDay.coverageMinutes[hour])) {
-          alreadyCovered = false;
-          break;
-        }
-      }
-      if (!alreadyCovered) break;
-    }
-    return alreadyCovered;
-  }
-
   function recoverOpenInterval(saved) {
     if (!saved) return false;
-    const alreadyCovered = saved.schemaVersion === 1 && legacyOpenAlreadyCovered(saved);
     fs.unlinkSync(openPath());
-    if (!alreadyCovered) addClosedInterval(saved.startedAt, saved.lastHeartbeatAt, saved.timeZoneId);
+    addClosedInterval(saved.startedAt, saved.lastHeartbeatAt, saved.timeZoneId);
     return true;
-  }
-
-  function collectLegacyMonth(parsed, expectedMonth, pending) {
-    // Even a legacy file containing only rejected/empty intervals must be
-    // rewritten (or removed) so precise timestamps and timezone IDs do not
-    // survive indefinitely on disk.
-    ensureMonth(expectedMonth);
-    pending.touched.add(expectedMonth);
-    for (const [localDate, candidate] of Object.entries(parsed.days || {})) {
-      try { parseLocalDate(localDate); } catch { continue; }
-      if (!localDate.startsWith(`${expectedMonth}-`) || !candidate || typeof candidate !== "object") continue;
-      pending.dates.add(localDate);
-      const intervals = unionLegacyIntervals((Array.isArray(candidate.intervals) ? candidate.intervals : [])
-        .map((raw) => normalizeLegacyInterval(raw, localDate))
-        .filter(Boolean));
-      pending.intervals.push(...intervals);
-    }
-  }
-
-  function applyLegacyMigration(pending, savedOpen) {
-    let mergedOpen = false;
-    if (savedOpen && savedOpen.schemaVersion === 1) {
-      const startedDate = freezeLocalTime(savedOpen.startedAt, savedOpen.timeZoneId).localDate;
-      if (pending.dates.has(startedDate)) {
-        pending.intervals.push({
-          startedAt: savedOpen.startedAt,
-          endedAt: savedOpen.lastHeartbeatAt,
-          timeZoneId: savedOpen.timeZoneId,
-        });
-        mergedOpen = true;
-      }
-    }
-    for (const interval of unionLegacyIntervals(pending.intervals)) {
-      for (const monthName of accumulateInterval(
-        months,
-        interval.startedAt,
-        interval.endedAt,
-        interval.timeZoneId
-      )) pending.touched.add(monthName);
-    }
-    for (const monthName of pending.touched) persistMonth(monthName);
-    if (mergedOpen) fs.unlinkSync(openPath());
-    return mergedOpen;
   }
 
   function load() {
     months.clear();
     const savedOpen = readOpenHeartbeat();
-    const pendingLegacy = { dates: new Set(), intervals: [], touched: new Set() };
     let names = [];
     try { names = store.listDirectory(); } catch (err) {
       if (!err || err.code !== "ENOENT") throw err;
@@ -357,16 +234,12 @@ function createRecapCoverage(options = {}) {
       const parsed = store.readJson(filePath);
       if (
         !parsed
-        || ![1, COVERAGE_SCHEMA_VERSION].includes(parsed.schemaVersion)
+        || parsed.schemaVersion !== COVERAGE_SCHEMA_VERSION
         || parsed.month !== match[1]
         || !hasSafeCoverageFanout(parsed)
       ) {
         store.quarantine(filePath, "invalid-coverage");
         warn("Clawd: quarantined invalid recap coverage file");
-        continue;
-      }
-      if (parsed.schemaVersion === 1) {
-        collectLegacyMonth(parsed, match[1], pendingLegacy);
         continue;
       }
       const month = { schemaVersion: COVERAGE_SCHEMA_VERSION, month: match[1], days: {} };
@@ -378,8 +251,7 @@ function createRecapCoverage(options = {}) {
       }
       months.set(match[1], month);
     }
-    const openMergedExactly = applyLegacyMigration(pendingLegacy, savedOpen);
-    if (savedOpen && !openMergedExactly) recoverOpenInterval(savedOpen);
+    if (savedOpen) recoverOpenInterval(savedOpen);
   }
 
   function scheduleHeartbeat() {
@@ -511,11 +383,7 @@ module.exports = {
   COVERAGE_SCHEMA_VERSION,
   HEARTBEAT_MS,
   MAX_COVERAGE_DAYS_PER_MONTH,
-  MAX_LEGACY_INTERVALS_PER_DAY,
-  MAX_LEGACY_TIME_ZONES_PER_DAY,
   createRecapCoverage,
   hasSafeCoverageFanout,
   normalizeBucketDay,
-  normalizeInterval: normalizeLegacyInterval,
-  unionIntervals: unionLegacyIntervals,
 };

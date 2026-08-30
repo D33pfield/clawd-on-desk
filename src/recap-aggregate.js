@@ -6,15 +6,11 @@ const {
   addLocalDays,
   compareLocalDates,
   describeLocalDay,
-  isValidTimeZone,
   parseLocalDate,
 } = require("./recap-time");
 const { DAILY_RETENTION_DAYS } = require("./recap-store");
-const LEGACY_TIME_ZONE_LIMIT = 16;
-const LEGACY_HOUR_KINDS = new Set(["normal", "gap", "fold"]);
 const MAX_DAYS_PER_MONTH = 31;
 const MAX_AGGREGATE_ROWS_PER_DAY = Object.keys(AGENT_METRIC_POLICIES).length * 3;
-const MAX_LEGACY_ROWS_PER_DAY = 512;
 
 function isPlainObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -24,20 +20,11 @@ function hasSafeAggregateFanout(parsed) {
   if (!isPlainObject(parsed.days)) return false;
   const dayKeys = Object.keys(parsed.days);
   if (dayKeys.length > MAX_DAYS_PER_MONTH) return false;
-  const rowLimit = parsed.schemaVersion === 1
-    ? MAX_LEGACY_ROWS_PER_DAY
-    : MAX_AGGREGATE_ROWS_PER_DAY;
   for (const localDate of dayKeys) {
     const day = parsed.days[localDate];
     if (!isPlainObject(day)) return false;
     if (day.rows !== undefined) {
-      if (!isPlainObject(day.rows) || Object.keys(day.rows).length > rowLimit) return false;
-    }
-    if (day.hourKindsByTimeZone !== undefined) {
-      if (
-        !isPlainObject(day.hourKindsByTimeZone)
-        || Object.keys(day.hourKindsByTimeZone).length > LEGACY_TIME_ZONE_LIMIT
-      ) return false;
+      if (!isPlainObject(day.rows) || Object.keys(day.rows).length > MAX_AGGREGATE_ROWS_PER_DAY) return false;
     }
   }
   return true;
@@ -151,32 +138,12 @@ function normalizeDay(localDate, value) {
     existing.sessionsStartedPartial ||= row.sessionsStartedPartial;
     for (let hour = 0; hour < 24; hour += 1) existing.hours[hour] += row.hours[hour];
   }
-  let hourCapacities = Array.isArray(value.hourCapacities)
+  const hourCapacities = Array.isArray(value.hourCapacities)
     && value.hourCapacities.length === 24
     && value.hourCapacities.every((minutes) => Number.isInteger(minutes) && minutes >= 0 && minutes <= 24 * 60)
     ? value.hourCapacities.slice()
     : null;
-  if (!hourCapacities) {
-    hourCapacities = Array(24).fill(0);
-    let acceptedZones = 0;
-    for (const [timeZoneId, kinds] of Object.entries(value.hourKindsByTimeZone || {})) {
-      if (acceptedZones >= LEGACY_TIME_ZONE_LIMIT) break;
-      if (
-        !isValidTimeZone(timeZoneId)
-        || !Array.isArray(kinds)
-        || kinds.length !== 24
-        || kinds.some((kind) => !LEGACY_HOUR_KINDS.has(kind))
-      ) continue;
-      acceptedZones += 1;
-      // The legacy kind only said gap/fold, which is insufficient for
-      // half-hour transitions. Resolve exact 0/30/60/90/120 capacities while
-      // the old timezone key is still available, then erase that identity.
-      const resolved = describeLocalDay(localDate, timeZoneId);
-      for (let hour = 0; hour < 24; hour += 1) {
-        hourCapacities[hour] = Math.max(hourCapacities[hour], resolved[hour].minutes);
-      }
-    }
-  }
+  if (!hourCapacities) return null;
   return { rows, hourCapacities };
 }
 
@@ -188,6 +155,7 @@ function createRecapAggregate(options = {}) {
   const months = new Map();
   const dirtyMonths = new Set();
   let flushTimer = null;
+  let batchDepth = 0;
 
   function warn(message, err) {
     try {
@@ -219,7 +187,7 @@ function createRecapAggregate(options = {}) {
       const parsed = store.readJson(store.childPath(name));
       if (
         !parsed
-        || ![1, 2].includes(parsed.schemaVersion)
+        || parsed.schemaVersion !== 2
         || parsed.month !== match[1]
         || !hasSafeAggregateFanout(parsed)
       ) {
@@ -246,6 +214,7 @@ function createRecapAggregate(options = {}) {
   }
 
   function scheduleFlush() {
+    if (batchDepth > 0) return;
     if (flushTimer) return;
     flushTimer = setTimeout(() => {
       flushTimer = null;
@@ -257,6 +226,19 @@ function createRecapAggregate(options = {}) {
   function markDirty(month) {
     dirtyMonths.add(month);
     scheduleFlush();
+  }
+
+  function beginBatch() {
+    batchDepth += 1;
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+
+  function endBatch(options = {}) {
+    if (batchDepth > 0) batchDepth -= 1;
+    if (batchDepth > 0 || dirtyMonths.size === 0) return;
+    if (options.flush === true) flush();
+    else if (options.schedule !== false) scheduleFlush();
   }
 
   function ensureDay(record) {
@@ -370,17 +352,17 @@ function createRecapAggregate(options = {}) {
   function resetMemory() {
     if (flushTimer) clearTimeout(flushTimer);
     flushTimer = null;
+    batchDepth = 0;
     months.clear();
     dirtyMonths.clear();
   }
 
-  return Object.freeze({ apply, flush, load, prune, query, replaceDates, resetMemory });
+  return Object.freeze({ apply, beginBatch, endBatch, flush, load, prune, query, replaceDates, resetMemory });
 }
 
 module.exports = {
   MAX_AGGREGATE_ROWS_PER_DAY,
   MAX_DAYS_PER_MONTH,
-  MAX_LEGACY_ROWS_PER_DAY,
   createRecapAggregate,
   hasSafeAggregateFanout,
   normalizeDay,

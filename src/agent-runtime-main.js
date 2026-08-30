@@ -126,11 +126,43 @@ function createAgentRuntimeMain(options = {}) {
     return CODEX_WORKING_LIKE_STATES.has(session.state);
   }
 
-  function shouldSuppressCodexLogEvent(sessionId, state, event, turnId = null) {
+  function shouldSuppressCodexLogEvent(sessionId, state, event, turnId = null, extra = null) {
+    // Some Codex builds encode WebSearch as a generic function_call. Official
+    // hooks do not expose that boundary, so keep this privacy-safe monitor bit
+    // on the same fallback path as response_item:web_search_call.
+    if (event === "response_item:function_call" && extra && extra.recapIsWebSearch === true) return false;
     if (!CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS.has(event)) return false;
     if (!hasRecentCodexOfficialHookSession(sessionId, turnId)) return false;
     if (shouldAllowCodexJsonlCompletionFallback(sessionId, state, event)) return false;
     return true;
+  }
+
+  function isCodexWebSearchLogBoundary(event, extra) {
+    return event === "response_item:web_search_call"
+      || (event === "response_item:function_call" && extra && extra.recapIsWebSearch === true);
+  }
+
+  function recordCodexWebSearchRecapOnly(sessionIdentity, sessionOptions, event, extra) {
+    if (
+      !isCodexWebSearchLogBoundary(event, extra)
+      || sessionOptions.recapSuppressed === true
+      || !Number.isSafeInteger(sessionOptions.recapOccurredAt)
+    ) return false;
+    const stateRuntime = getStateRuntime();
+    if (!stateRuntime || typeof stateRuntime.recordRecapEventOnly !== "function") return false;
+    return stateRuntime.recordRecapEventOnly({
+      occurredAt: sessionOptions.recapOccurredAt,
+      sessionId: sessionIdentity.sessionId,
+      rawSessionId: sessionIdentity.rawSessionId,
+      agentId: "codex",
+      profileId: sessionIdentity.profileId,
+      event,
+      toolUseId: sessionOptions.toolUseId || null,
+      recapDedupeId: sessionOptions.recapDedupeId || null,
+      recapIsSubagent: sessionOptions.recapIsSubagent === true,
+      headless: sessionOptions.headless === true,
+      hookSource: "codex-jsonl",
+    });
   }
 
   function updateSessionFromServer(sessionId, state, event, opts = {}) {
@@ -289,11 +321,17 @@ function createAgentRuntimeMain(options = {}) {
           turnBoundaryOpen: extra && extra.turnBoundaryOpen === true,
         });
         if (!fenceDecision.accept) {
+          if (
+            fenceDecision.reason === "closed-turn-id"
+            || fenceDecision.reason === "terminal-latch"
+          ) {
+            recordCodexWebSearchRecapOnly(sessionIdentity, sessionOptions, event, extra);
+          }
           annotateCodexContextUsage();
           annotateCodexAccountQuota();
           return;
         }
-        if (shouldSuppressCodexLogEvent(sessionId, state, event, extra && extra.turnId)) {
+        if (shouldSuppressCodexLogEvent(sessionId, state, event, extra && extra.turnId, extra)) {
           annotateCodexContextUsage();
           annotateCodexAccountQuota();
           return;

@@ -52,11 +52,14 @@ events/YYYY-MM-DD.jsonl          minimized event tickets for 14 local days
 daily-YYYY-MM.json               daily aggregates retained for 400 local days
 coverage-YYYY-MM.json            recording coverage retained for 400 local days
 coverage-open.json               crash-safe heartbeat for the current coverage interval
+quarantine/                      bounded recovery copies of rejected managed files
 ```
 
 The minimized tickets contain a timestamp, frozen local time fields, built-in agent id, local/WSL/remote scope class, metric flags, and HMAC identifiers used for short-term deduplication. Clawd never writes prompt or response text, commands, tool names or arguments, tool output, paths, filenames, project or repository names, branches, session titles, cwd, account identifiers, raw session/profile/event/turn/tool identifiers, or the original upstream event name into recap storage.
 
-Recap does not add telemetry, network requests, export, sharing, notifications, or automatic posting. Local, WSL, and Remote SSH sources remain separate rows; profile and distribution names are replaced by anonymous per-query ordinals.
+Recap does not add telemetry, network requests, export, sharing, notifications, or automatic posting. Local, WSL, and Remote SSH sources remain separate broad rows; profile and distribution names are neither stored in the 400-day aggregate nor returned by recap queries.
+
+Malformed managed files and unsupported pre-release schemas are rejected without historical projection. When possible they move into `quarantine/`, which is pruned after seven days and capped at 16 files / 1 MiB total. It may therefore temporarily contain bounded copies of rejected old shapes. **Clear recap data** removes the quarantine together with the rest of the managed recap generation.
 
 Turn off **Record recap** to stop new event tickets and close the current coverage interval. **Clear recap data** removes the managed recap history and rotates its local HMAC salt; the operation cannot be undone.
 
@@ -68,5 +71,6 @@ Turn off **Record recap** to stop new event tickets and close the current covera
 - Preserve `null` for unsupported metrics. Never render or aggregate it as zero.
 - DND must not stop recap coverage or discard pending completion arbitration. Suspend, process shutdown, and the recording preference do stop coverage.
 - Journal before updating the aggregate so retained tickets can rebuild interrupted writes. Keep 14-day tickets and 400-day daily/coverage retention bounded.
+- Rebuild retained journal history in bounded event-loop batches; do not reintroduce synchronous whole-journal aggregate projection or unreleased schema migration.
 - Historical civil dates are frozen at acceptance time. Preserve real epoch time, IANA time zone, UTC offset, local date, and local hour; keep the UI at 24 cells with explicit gap/fold states.
 - Do not add tokens, duration, cost, streaks, scores, export/share, network delivery, raw content, or long-lived linkable identities without a new product and privacy review.

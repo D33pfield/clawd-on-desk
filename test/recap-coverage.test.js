@@ -6,11 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const {
-  MAX_LEGACY_INTERVALS_PER_DAY,
-  MAX_LEGACY_TIME_ZONES_PER_DAY,
-  createRecapCoverage,
-} = require("../src/recap-coverage");
+const { MAX_COVERAGE_DAYS_PER_MONTH, createRecapCoverage } = require("../src/recap-coverage");
 const { createRecapStore } = require("../src/recap-store");
 
 function fixture(t, options = {}) {
@@ -71,36 +67,12 @@ test("coverage crossing local midnight is split and remains visible on both days
   assert.equal(days[1].coverageMinutes[0], 10);
 });
 
-test("stale heartbeat left after a durable clean stop is unioned, not double counted", (t) => {
-  const { coverage, store } = fixture(t);
-  const base = Date.UTC(2026, 7, 29, 10);
-  coverage.start(base);
-  const staleOpen = {
-    schemaVersion: 1, // legacy close order could leave this behind
-    startedAt: base,
-    lastHeartbeatAt: base + 5 * 60000,
-    timeZoneId: "UTC",
-  };
-  coverage.stop(base + 10 * 60000);
-  // Crash window: closed S→Q reached disk, but stale S→H deletion did not.
-  fs.writeFileSync(store.childPath("coverage-open.json"), JSON.stringify(staleOpen));
-  coverage.resetMemory();
-
-  const restored = createRecapCoverage({
-    store,
-    getTimeZone: () => "UTC",
-    setTimeout: () => ({ unref() {} }),
-    clearTimeout: () => {},
-  });
-  restored.load();
-  const day = restored.query("2026-08-29", "2026-08-29", base + 10 * 60000)[0];
-  assert.equal(day.coverageMinutes[10], 10);
-});
-
-test("legacy open heartbeat is exactly unioned with disjoint same-hour intervals", (t) => {
+test("unreleased coverage schemas are quarantined without projecting their timestamps", (t) => {
   const { store } = fixture(t);
   const base = Date.UTC(2026, 7, 29, 10);
-  fs.writeFileSync(store.childPath("coverage-2026-08.json"), JSON.stringify({
+  const monthPath = store.childPath("coverage-2026-08.json");
+  const openPath = store.childPath("coverage-open.json");
+  fs.writeFileSync(monthPath, JSON.stringify({
     schemaVersion: 1,
     month: "2026-08",
     days: {
@@ -116,7 +88,7 @@ test("legacy open heartbeat is exactly unioned with disjoint same-hour intervals
       },
     },
   }));
-  fs.writeFileSync(store.childPath("coverage-open.json"), JSON.stringify({
+  fs.writeFileSync(openPath, JSON.stringify({
     schemaVersion: 1,
     startedAt: base,
     lastHeartbeatAt: base + 10 * 60000,
@@ -131,8 +103,12 @@ test("legacy open heartbeat is exactly unioned with disjoint same-hour intervals
     clearTimeout: () => {},
   });
   restored.load();
-  assert.equal(restored.query("2026-08-29", "2026-08-29")[0].coverageMinutes[10], 20);
-  assert.equal(fs.existsSync(store.childPath("coverage-open.json")), false);
+  assert.equal(restored.query("2026-08-29", "2026-08-29")[0].coverageMinutes[10], 0);
+  assert.equal(fs.existsSync(monthPath), false);
+  assert.equal(fs.existsSync(openPath), false);
+  const quarantine = fs.readdirSync(store.childPath("quarantine"));
+  assert.ok(quarantine.some((name) => name.startsWith("coverage-2026-08.json.")));
+  assert.ok(quarantine.some((name) => name.startsWith("coverage-open.json.")));
 });
 
 test("a current heartbeat after earlier same-hour coverage is never mistaken for a duplicate", (t) => {
@@ -186,18 +162,16 @@ test("invalid managed coverage files are recoverably quarantined", (t) => {
   assert.ok(fs.readdirSync(store.childPath("quarantine")).some((name) => name.startsWith("coverage-2020-01.json.")));
 });
 
-test("coverage rejects bounded-size legacy interval fan-out before projection", (t) => {
+test("coverage rejects excessive current-schema day fan-out before normalization", (t) => {
   const { store } = fixture(t);
   const filePath = store.childPath("coverage-2026-08.json");
   fs.writeFileSync(filePath, JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     month: "2026-08",
-    days: {
-      "2026-08-29": {
-        intervals: Array(MAX_LEGACY_INTERVALS_PER_DAY + 1).fill(null),
-        hourKindsByTimeZone: {},
-      },
-    },
+    days: Object.fromEntries(Array.from({ length: MAX_COVERAGE_DAYS_PER_MONTH + 1 }, (_, index) => [
+      `2026-08-${String(index + 1).padStart(2, "0")}`,
+      { coverageMinutes: Array(24).fill(0), hourCapacities: Array(24).fill(60) },
+    ])),
   }));
   const coverage = createRecapCoverage({
     store,
@@ -212,22 +186,6 @@ test("coverage rejects bounded-size legacy interval fan-out before projection", 
   assert.ok(performance.now() - started < 500);
   assert.equal(fs.existsSync(filePath), false);
   assert.ok(fs.readdirSync(store.childPath("quarantine")).some((name) => name.startsWith("coverage-2026-08.json.")));
-
-  const zoneFilePath = store.childPath("coverage-2026-09.json");
-  fs.writeFileSync(zoneFilePath, JSON.stringify({
-    schemaVersion: 1,
-    month: "2026-09",
-    days: {
-      "2026-09-01": {
-        intervals: Array.from({ length: MAX_LEGACY_TIME_ZONES_PER_DAY + 1 }, (_, index) => ({
-          timeZoneId: `hostile-zone-${index}`,
-        })),
-        hourKindsByTimeZone: {},
-      },
-    },
-  }));
-  coverage.load();
-  assert.equal(fs.existsSync(zoneFilePath), false);
 });
 
 test("invalid open-heartbeat files self-heal before recording restarts", (t) => {
@@ -265,12 +223,6 @@ test("tiny hostile open heartbeats are rejected before any historical projection
       lastHeartbeatAt: current + 10 * 60000,
       timeZoneId: "UTC",
     },
-    "v1-long": {
-      schemaVersion: 1,
-      startedAt: current - 40 * 3600000,
-      lastHeartbeatAt: current,
-      timeZoneId: "UTC",
-    },
   };
   for (const [name, saved] of Object.entries(variants)) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), `clawd-recap-open-bound-${name}-`));
@@ -293,74 +245,6 @@ test("tiny hostile open heartbeats are rejected before any historical projection
     assert.deepEqual(fs.readdirSync(root).filter((entry) => /^coverage-\d{4}-\d{2}\.json$/.test(entry)), [], name);
     assert.equal(coverage.start(current), true, name);
   }
-});
-
-test("legacy exact intervals migrate once to coarse daily minute buckets", (t) => {
-  const { store } = fixture(t);
-  const filePath = store.childPath("coverage-2026-08.json");
-  const startedAt = Date.UTC(2026, 7, 29, 10);
-  fs.writeFileSync(filePath, JSON.stringify({
-    schemaVersion: 1,
-    month: "2026-08",
-    days: {
-      "2026-08-29": {
-        intervals: [{
-          startedAt,
-          endedAt: startedAt + 30 * 60000,
-          timeZoneId: "UTC",
-          startedOffsetMinutes: 0,
-          endedOffsetMinutes: 0,
-        }],
-        hourKindsByTimeZone: { UTC: Array(24).fill("normal") },
-      },
-    },
-  }));
-  const restored = createRecapCoverage({
-    store,
-    getTimeZone: () => "UTC",
-    setTimeout: () => ({ unref() {} }),
-    clearTimeout: () => {},
-  });
-  restored.load();
-  assert.equal(restored.query("2026-08-29", "2026-08-29")[0].coverageMinutes[10], 30);
-  const migrated = fs.readFileSync(filePath, "utf8");
-  assert.match(migrated, /"schemaVersion":2/);
-  for (const forbidden of ["startedAt", "endedAt", "timeZoneId", "intervals"]) {
-    assert.equal(migrated.includes(forbidden), false);
-  }
-});
-
-test("legacy migration rejects impossible multi-year intervals before projection", (t) => {
-  const { store } = fixture(t);
-  const filePath = store.childPath("coverage-2026-08.json");
-  const startedAt = Date.UTC(2026, 7, 29, 10);
-  fs.writeFileSync(filePath, JSON.stringify({
-    schemaVersion: 1,
-    month: "2026-08",
-    days: {
-      "2026-08-29": {
-        intervals: [{
-          startedAt,
-          endedAt: Date.UTC(2426, 7, 29, 10),
-          timeZoneId: "UTC",
-          startedOffsetMinutes: 0,
-          endedOffsetMinutes: 0,
-        }],
-        hourKindsByTimeZone: { UTC: Array(24).fill("normal") },
-      },
-    },
-  }));
-  const restored = createRecapCoverage({
-    store,
-    getTimeZone: () => "UTC",
-    setTimeout: () => ({ unref() {} }),
-    clearTimeout: () => {},
-  });
-  const started = performance.now();
-  restored.load();
-  assert.ok(performance.now() - started < 500);
-  assert.equal(restored.query("2026-08-29", "2026-08-29")[0].coverageMinutes[10], 0);
-  assert.equal(fs.existsSync(filePath), false, "invalid-only legacy history is removed after migration");
 });
 
 test("coverage projection handles DST gap and fold without minute-by-minute scanning", (t) => {

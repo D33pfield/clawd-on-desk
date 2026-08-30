@@ -30,6 +30,16 @@ describe("main Codex official hook JSONL suppression", () => {
       runtime.shouldSuppressCodexLogEvent(
         "codex-1",
         "working",
+        "response_item:function_call",
+        "turn-1",
+        { recapIsWebSearch: true },
+      ),
+      false,
+    );
+    assert.strictEqual(
+      runtime.shouldSuppressCodexLogEvent(
+        "codex-1",
+        "working",
         "response_item:custom_tool_call",
         "turn-1",
       ),

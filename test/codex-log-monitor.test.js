@@ -4233,15 +4233,19 @@ describe("CodexLogMonitor", () => {
     ].join("\n") + "\n");
 
     const config = makeConfig(tmpDir);
-    const states = [];
+    const observed = [];
     monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
-      states.push(state);
+      observed.push({ state, event, extra });
       assert.strictEqual(extra.permissionDetail, undefined);
     });
     monitor.start();
 
     setTimeout(() => {
-      assert.deepStrictEqual(states, ["idle", "working"]);
+      assert.deepStrictEqual(observed.map((entry) => entry.state), ["idle", "working"]);
+      assert.strictEqual(observed[1].event, "response_item:function_call");
+      assert.strictEqual(observed[1].extra.recapIsWebSearch, true);
+      assert.strictEqual(JSON.stringify(observed[1].extra).includes("test"), false);
+      assert.strictEqual(JSON.stringify(observed[1].extra).includes("web_search"), false);
       done();
     }, 100);
   });

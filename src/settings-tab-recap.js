@@ -141,7 +141,7 @@
   function scopeLabel(row) {
     if (row.scope === "local") return "";
     const key = row.scope === "wsl" ? "recapScopeWsl" : "recapScopeRemote";
-    return replace(t(key), { n: "" }).trim();
+    return t(key);
   }
 
   function rowKey(row) {

@@ -60,7 +60,6 @@ const recapSink = ctx.recapSink && typeof ctx.recapSink.record === "function"
   ? ctx.recapSink
   : NOOP_RECAP_SINK;
 const pendingClaudeRecapStarts = new Map();
-const CLAUDE_RECAP_START_TTL_MS = 10 * 60 * 1000;
 const MAX_PENDING_CLAUDE_RECAP_STARTS = 256;
 
 const _getCursor = ctx.getCursorScreenPoint || (screen ? () => screen.getCursorScreenPoint() : null);
@@ -1109,12 +1108,7 @@ function claudeRecapStartKey(input) {
   return `${resolveRecapScope(input)}\0${resolveRecapScopeId(input)}\0${input.rawSessionId}`;
 }
 
-function prunePendingClaudeRecapStarts(referenceTime = Date.now()) {
-  for (const [key, value] of pendingClaudeRecapStarts) {
-    if (!value || referenceTime - value.receivedAt >= CLAUDE_RECAP_START_TTL_MS) {
-      pendingClaudeRecapStarts.delete(key);
-    }
-  }
+function prunePendingClaudeRecapStarts() {
   while (pendingClaudeRecapStarts.size > MAX_PENDING_CLAUDE_RECAP_STARTS) {
     pendingClaudeRecapStarts.delete(pendingClaudeRecapStarts.keys().next().value);
   }
@@ -1168,7 +1162,7 @@ function recordAcceptedRecapEvent(input, snapshot) {
   );
   if (isFreshClaudeStart) {
     if (!pendingClaudeRecapStarts.has(pendingKey)) {
-      pendingClaudeRecapStarts.set(pendingKey, { input: { ...input }, receivedAt: Date.now() });
+      pendingClaudeRecapStarts.set(pendingKey, { input: { ...input } });
     }
     prunePendingClaudeRecapStarts();
     return false;
@@ -1207,6 +1201,15 @@ function recordAcceptedRecapEvent(input, snapshot) {
     console.warn("recap event rejected:", err && err.message ? err.message : "invalid event");
     return false;
   }
+}
+
+function recordRecapEventOnly(input) {
+  // This narrow path is for a boundary that already passed source/replay
+  // arbitration but arrived too late to re-drive session state (currently a
+  // Codex WebSearch discovered after its official Stop). Never invent receipt
+  // time here: callers must carry the trusted source timestamp.
+  if (!input || !Number.isSafeInteger(input.occurredAt) || input.occurredAt < 0) return false;
+  return recordAcceptedRecapEvent(input, getLastSessionSnapshot());
 }
 
 function getLastSessionSnapshot() {
@@ -3498,7 +3501,7 @@ function cleanup() {
 }
 
 return {
-  setState, applyState, updateSession, restoreSessionFromLease, resolveDisplayState, resolveVisualBinding, setUpdateVisualState,
+  setState, applyState, updateSession, recordRecapEventOnly, restoreSessionFromLease, resolveDisplayState, resolveVisualBinding, setUpdateVisualState,
   shouldDropForDnd,
   enableDoNotDisturb, disableDoNotDisturb,
   startStaleCleanup, stopStaleCleanup, startWakePoll, stopWakePoll,

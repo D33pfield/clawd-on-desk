@@ -18,6 +18,7 @@ const {
 const PERIODS = new Set(["today", "week", "month", "year"]);
 const MAX_FUTURE_SKEW_MS = 5 * 60000;
 const MAX_HYDRATION_BUFFER = 4096;
+const HYDRATION_APPLY_BATCH_SIZE = 250;
 
 function rangeForPeriod(period, anchorDate) {
   if (!PERIODS.has(period)) throw new TypeError("unsupported recap period");
@@ -91,6 +92,12 @@ function createRecapRuntime(options = {}) {
     logWarn,
   });
   const powerMonitor = options.powerMonitor || null;
+  const hydrationApplyBatchSize = Number.isSafeInteger(options.hydrationApplyBatchSize)
+    && options.hydrationApplyBatchSize > 0
+    ? options.hydrationApplyBatchSize
+    : HYDRATION_APPLY_BATCH_SIZE;
+  const yieldHydrationApply = options.yieldHydrationApply
+    || (() => new Promise((resolve) => setImmediate(resolve)));
   let initialized = false;
   let started = false;
   let enabled = false;
@@ -103,6 +110,8 @@ function createRecapRuntime(options = {}) {
   let hydrationPromise = Promise.resolve();
   let hydrationBuffer = [];
   let hydrationOverflow = false;
+  let hydrationRebuilding = false;
+  let hydrationLiveDedupeKeys = new Set();
   let hydrationToken = 0;
   let lifecycleWired = false;
 
@@ -157,13 +166,14 @@ function createRecapRuntime(options = {}) {
     hydrating = true;
     hydrationBuffer = [];
     hydrationOverflow = false;
+    hydrationLiveDedupeKeys = new Set();
     const token = ++hydrationToken;
     const anchorDate = currentLocalDate();
     // loadRetainedAsync snapshots retained file sizes before its first await.
     // Call it directly so events accepted after start() are always beyond that
     // snapshot and can be replayed exactly once from hydrationBuffer.
     hydrationPromise = journal.loadRetainedAsync(anchorDate)
-      .then(({ dates, records, truncated }) => {
+      .then(async ({ dates, records, truncated }) => {
         if (token !== hydrationToken || !initialized || unavailable) return;
         if (hydrationOverflow) {
           hydrating = false;
@@ -172,30 +182,82 @@ function createRecapRuntime(options = {}) {
         if (truncated) {
           hydrating = false;
           hydrationBuffer = [];
+          hydrationLiveDedupeKeys = new Set();
           try { aggregate.flush(); } catch (err) {
             warn("Clawd: recap aggregate privacy migration flush failed", err && err.code ? err.code : "storage-error");
           }
           warn("Clawd: recap journal reconciliation skipped because retained history exceeded its safety bound");
           return;
         }
-        aggregate.replaceDates(dates, records);
-        const restoredDedupeKeys = new Set(records
-          .map((recordValue) => recordValue.dedupeKeyHash)
-          .filter(Boolean));
-        for (const recordValue of hydrationBuffer) {
-          if (recordValue.dedupeKeyHash && restoredDedupeKeys.has(recordValue.dedupeKeyHash)) continue;
-          aggregate.apply(recordValue);
-          if (recordValue.dedupeKeyHash) restoredDedupeKeys.add(recordValue.dedupeKeyHash);
-        }
+
+        // Events accepted before this replacement were applied to the old
+        // monthly cache and are about to be wiped. Replay that exact prefix;
+        // events accepted after replacement apply directly to the new cache.
+        const bufferedBeforeReplace = hydrationBuffer;
         hydrationBuffer = [];
+        hydrationRebuilding = true;
+        aggregate.beginBatch();
+        aggregate.replaceDates(dates, []);
+
+        const applyBatched = async (recordValues, skipLiveDedupe) => {
+          for (let index = 0; index < recordValues.length; index += 1) {
+            if (token !== hydrationToken || !initialized || unavailable || hydrationOverflow) return false;
+            const recordValue = recordValues[index];
+            if (!(
+              skipLiveDedupe
+              && recordValue.dedupeKeyHash
+              && hydrationLiveDedupeKeys.has(recordValue.dedupeKeyHash)
+            )) aggregate.apply(recordValue);
+            if ((index + 1) % hydrationApplyBatchSize === 0 && index + 1 < recordValues.length) {
+              await yieldHydrationApply();
+            }
+          }
+          return token === hydrationToken && initialized && !unavailable && !hydrationOverflow;
+        };
+
+        if (!await applyBatched(records, true) || !await applyBatched(bufferedBeforeReplace, false)) {
+          if (token !== hydrationToken || !initialized || unavailable) return;
+          aggregate.endBatch({ schedule: false });
+          // Never leave the first attempt's partial reconstruction publishable
+          // while the retry is reading. Restore the last complete monthly cache;
+          // every live event remains durable in the journal and the retry will
+          // project it again.
+          aggregate.resetMemory();
+          aggregate.load();
+          hydrationRebuilding = false;
+          hydrating = false;
+          hydrationBuffer = [];
+          hydrationLiveDedupeKeys = new Set();
+          return beginHydration();
+        }
+
+        hydrationBuffer = [];
+        hydrationLiveDedupeKeys = new Set();
         hydrating = false;
-        aggregate.flush();
+        try {
+          aggregate.endBatch({ flush: true });
+        } catch (err) {
+          // Reconstruction is complete in memory. Keep dirty months intact so
+          // a later lifecycle flush can retry instead of discarding the journal
+          // projection and serving an empty/stale cache until restart.
+          warn("Clawd: recap aggregate reconciliation flush failed", err && err.code ? err.code : "storage-error");
+        }
+        hydrationRebuilding = false;
       })
       .catch((err) => {
         if (token !== hydrationToken) return;
+        if (hydrationRebuilding) {
+          try { aggregate.endBatch({ schedule: false }); } catch {}
+          hydrationRebuilding = false;
+          try {
+            aggregate.resetMemory();
+            aggregate.load();
+          } catch {}
+        }
         hydrating = false;
         hydrationBuffer = [];
         hydrationOverflow = false;
+        hydrationLiveDedupeKeys = new Set();
         try { aggregate.flush(); } catch (flushErr) {
           warn("Clawd: recap aggregate privacy migration flush failed", flushErr && flushErr.code ? flushErr.code : "storage-error");
         }
@@ -300,6 +362,7 @@ function createRecapRuntime(options = {}) {
     if (hydrating) {
       if (hydrationBuffer.length < MAX_HYDRATION_BUFFER) hydrationBuffer.push(recordValue);
       else hydrationOverflow = true;
+      if (recordValue.dedupeKeyHash) hydrationLiveDedupeKeys.add(recordValue.dedupeKeyHash);
     }
     return true;
   }
@@ -413,17 +476,21 @@ function createRecapRuntime(options = {}) {
   function clear() {
     // Clear is an explicit user recovery action and is allowed to reset an
     // unavailable/corrupt recap generation. No other path rotates its salt.
-    if (initialized) {
-      try { coverage.stop(now()); } catch {}
-      try { aggregate.flush(); } catch {}
-    }
-    try { coverage.resetMemory(); } catch {}
-    try { aggregate.resetMemory(); } catch {}
-    try { journal.resetMemory(); } catch {}
+    // Invalidate async hydration before touching memory. The generation is
+    // about to be deleted, so writing coverage or an aggregate first has no
+    // value and could publish a partially rebuilt cache if deletion then fails.
     hydrationToken += 1;
     hydrating = false;
     hydrationBuffer = [];
     hydrationOverflow = false;
+    hydrationLiveDedupeKeys = new Set();
+    if (hydrationRebuilding) {
+      try { aggregate.endBatch({ schedule: false }); } catch {}
+      hydrationRebuilding = false;
+    }
+    try { coverage.resetMemory(); } catch {}
+    try { aggregate.resetMemory(); } catch {}
+    try { journal.resetMemory(); } catch {}
     initialized = false;
     unavailable = false;
     unavailableCode = null;
@@ -447,10 +514,11 @@ function createRecapRuntime(options = {}) {
   function flush() {
     if (!initialized || unavailable) return;
     if (started && enabled && !suspended) coverage.tick(now());
-    aggregate.flush();
+    if (!hydrationRebuilding) aggregate.flush();
   }
 
   function dispose() {
+    const discardHydrationRebuild = hydrationRebuilding;
     if (midnightTimer) clearTimer(midnightTimer);
     midnightTimer = null;
     if (lifecycleWired && powerMonitor && typeof powerMonitor.removeListener === "function") {
@@ -463,11 +531,17 @@ function createRecapRuntime(options = {}) {
     hydrating = false;
     hydrationBuffer = [];
     hydrationOverflow = false;
+    hydrationLiveDedupeKeys = new Set();
+    if (hydrationRebuilding) {
+      try { aggregate.endBatch({ schedule: false }); } catch {}
+      hydrationRebuilding = false;
+    }
     try { journal.resetMemory(); } catch {}
     if (initialized) {
       try {
         if (started && enabled && !suspended) coverage.stop(now());
-        aggregate.flush();
+        if (discardHydrationRebuild) aggregate.resetMemory();
+        else aggregate.flush();
       } catch (err) {
         warn("Clawd: local recap shutdown flush failed", err && err.code ? err.code : "storage-error");
       }
@@ -489,6 +563,7 @@ function createRecapRuntime(options = {}) {
 }
 
 module.exports = {
+  HYDRATION_APPLY_BATCH_SIZE,
   MAX_FUTURE_SKEW_MS,
   MAX_HYDRATION_BUFFER,
   PERIODS,

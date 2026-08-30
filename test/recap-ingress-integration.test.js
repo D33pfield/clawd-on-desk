@@ -2,8 +2,11 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const themeLoader = require("../src/theme-loader");
+const { createRecapRuntime } = require("../src/recap-runtime");
 const { createMemoryRecapSink } = require("../src/recap-sink");
 
 themeLoader.init(path.join(__dirname, "..", "src"));
@@ -123,6 +126,39 @@ describe("recap accepted ingress", () => {
       ]);
       assert.equal(sink.snapshot().some((event) => event.occurredAt === 5002), false);
     } finally {
+      api.cleanup();
+    }
+  });
+
+  it("keeps a provisional Claude start until delayed real activity confirms it", () => {
+    const { api, sink } = makeRuntime();
+    const originalNow = Date.now;
+    let clock = originalNow();
+    Date.now = () => clock;
+    try {
+      send(api, "SessionStart", "idle", {
+        sessionId: "delayed-real",
+        rawSessionId: "delayed-real",
+        sessionStartSource: "startup",
+        recapOccurredAt: 6001,
+      });
+      assert.deepStrictEqual(sink.snapshot(), []);
+
+      clock += 11 * 60 * 1000;
+      send(api, "UserPromptSubmit", "thinking", {
+        sessionId: "delayed-real",
+        rawSessionId: "delayed-real",
+        recapOccurredAt: 6002,
+      });
+      assert.deepStrictEqual(sink.snapshot().map((event) => ({
+        occurredAt: event.occurredAt,
+        metrics: event.metrics,
+      })), [
+        { occurredAt: 6001, metrics: ["activity", "session-start"] },
+        { occurredAt: 6002, metrics: ["activity"] },
+      ]);
+    } finally {
+      Date.now = originalNow;
       api.cleanup();
     }
   });
@@ -331,6 +367,73 @@ describe("recap accepted ingress", () => {
       assert.deepStrictEqual(sink.snapshot(), []);
     } finally {
       api.cleanup();
+    }
+  });
+
+  it("records a trusted recap-only Codex boundary without creating or reviving a session", () => {
+    const { api, sink } = makeRuntime();
+    try {
+      assert.equal(api.sessions.size, 0);
+      assert.equal(api.recordRecapEventOnly({
+        occurredAt: 3101,
+        sessionId: "codex:late",
+        rawSessionId: "late",
+        agentId: "codex",
+        profileId: "local",
+        event: "response_item:web_search_call",
+        toolUseId: "search-late",
+        hookSource: "codex-jsonl",
+      }), true);
+      assert.equal(api.sessions.size, 0);
+      assert.deepStrictEqual(sink.snapshot().map((event) => event.metrics), [
+        ["activity", "tool-call"],
+      ]);
+      assert.equal(api.recordRecapEventOnly({
+        sessionId: "codex:late",
+        agentId: "codex",
+        event: "response_item:web_search_call",
+      }), false, "receipt time is never invented on the recap-only path");
+    } finally {
+      api.cleanup();
+    }
+  });
+
+  it("dedupes generic and dedicated late WebSearch shapes by their stable tool id", async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-recap-late-search-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const now = Date.UTC(2026, 7, 30, 1);
+    const recap = createRecapRuntime({
+      root,
+      now: () => now,
+      getTimeZone: () => "UTC",
+      setTimeout: () => ({ unref() {} }),
+      clearTimeout: () => {},
+    });
+    recap.start();
+    const { api } = makeRuntime({ sink: recap });
+    try {
+      for (const [index, event] of [
+        "response_item:function_call",
+        "response_item:web_search_call",
+      ].entries()) {
+        api.recordRecapEventOnly({
+          occurredAt: now + index,
+          sessionId: "codex:late",
+          rawSessionId: "late",
+          agentId: "codex",
+          profileId: "local",
+          event,
+          toolUseId: "search-shared",
+          hookSource: "codex-jsonl",
+        });
+      }
+      await recap.whenReady();
+      const row = recap.query("today").days[0].rows[0];
+      assert.equal(row.metrics.toolCalls, 1);
+      assert.equal(row.metrics.activityEvents, 1);
+    } finally {
+      api.cleanup();
+      recap.dispose();
     }
   });
 

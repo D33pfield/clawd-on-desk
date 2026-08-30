@@ -1627,6 +1627,9 @@ class CodexLogMonitor {
       ...(effectiveTurnId ? { turnId: effectiveTurnId, recapDedupeId: effectiveTurnId } : {}),
       ...(Number.isFinite(parsedOccurredAt) ? { recapOccurredAt: parsedOccurredAt } : {}),
       ...(typeof rawToolUseId === "string" && rawToolUseId ? { toolUseId: rawToolUseId } : {}),
+      ...(key === "response_item:function_call" && payload && payload.name === "web_search"
+        ? { recapIsWebSearch: true }
+        : {}),
     };
 
     // Metadata is needed for future live writes even when the session_meta
