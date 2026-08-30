@@ -29,6 +29,7 @@ const { resolveReasonixConfigTargets, unregisterReasonixHooks } = require("./rea
 const { unregisterQoderWorkHooks } = require("./qoderwork-install");
 const { unregisterQwenWorkHooks } = require("./qwenwork-install");
 const { unregisterWorkBuddyHooks } = require("./workbuddy-install");
+const { unregisterTraeCodeHooks } = require("./traecode-install");
 const { unregisterDeepSeekHarness } = require("./dsh-install");
 
 const CODEX_MARKERS = ["codex-hook.js", "codex-debug-hook.js"];
@@ -57,6 +58,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "qoderwork",
   "qwenwork",
   "workbuddy",
+  "traecode",
 ]);
 
 const AGENT_DISPLAY_NAMES = Object.freeze({
@@ -82,6 +84,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   qoder: "Qoder",
   reasonix: "Reasonix",
   qoderwork: "QoderWork",
+  traecode: "TraeCode",
   qwenwork: "QwenWork",
 });
 
@@ -291,6 +294,10 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
           path.join(homeDir, ".workbuddy", "settings.json"),
         ],
       },
+      traecode: {
+        ...common,
+        hooksPath: path.join(homeDir, ".trae-cn", "hooks.json"),
+      },
     },
   };
 }
@@ -353,6 +360,7 @@ const AGENT_CLEANERS = Object.freeze({
   qoderwork: unregisterQoderWorkHooks,
   qwenwork: unregisterQwenWorkHooks,
   workbuddy: unregisterWorkBuddyHooks,
+  traecode: unregisterTraeCodeHooks,
 });
 
 function removedCountFromResult(result) {

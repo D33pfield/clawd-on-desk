@@ -60,9 +60,10 @@ const {
 const {
   PET_TINT_IDS,
   PET_ACCESSORY_IDS,
+  PET_MOUTH_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
-const CURRENT_VERSION = 15;
+const CURRENT_VERSION = 18;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -150,6 +151,10 @@ const SCHEMA = {
   showDock: { type: "boolean", default: false },
   manageClaudeHooksAutomatically: { type: "boolean", default: true },
   autoStartWithClaude: { type: "boolean", default: false },
+  // Fresh installs require an explicit opt-in before a local Codex
+  // SessionStart hook may cold-launch Clawd. The v17 -> v18 migration pins
+  // this on for existing users so an upgrade does not change prior behavior.
+  autoStartWithCodex: { type: "boolean", default: false },
   // Codex approval awareness depends entirely on the official PermissionRequest
   // hook (JSONL no longer infers approvals). These surface its health: the
   // toggle gates the startup nudge, and LastNotified is the edge-trigger dedup
@@ -222,6 +227,16 @@ const SCHEMA = {
     type: "number",
     default: 300000,
     validate: (v) => Number.isInteger(v) && v >= 30_000 && v <= 86_400_000,
+  },
+  // Local Codex Desktop/CLI turns can remain legitimately silent while the
+  // model or network retries. Keep the historical 20-minute guard as the
+  // default, but make it explicit and independently disableable so it does
+  // not inherit Claude Code's missing-Stop fallback.
+  codexWorkingStaleMs: {
+    type: "number",
+    default: 1_200_000,
+    validate: (v) =>
+      Number.isInteger(v) && (v === 0 || (v >= 30_000 && v <= 86_400_000)),
   },
   detachedIdleStaleMs: {
     type: "number",
@@ -350,6 +365,13 @@ const SCHEMA = {
     defaultFactory: () => ({}),
     normalize: normalizePetAccessory,
   },
+  // Per-theme mouth-slot choice. Missing entries mean no mouth accessory.
+  // This is intentionally independent from the legacy-stable head slot above.
+  petMouthAccessory: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizePetMouthAccessory,
+  },
   // Per-theme opt-in for temporary date-based holiday accessories. Missing
   // entries mean disabled; the saved manual petAccessory choice remains the
   // source restored outside a holiday window.
@@ -385,6 +407,9 @@ const SCHEMA = {
       // desktop app owns its permission loop natively, so permission bubbles
       // default off (like qoderwork).
       "workbuddy": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      // TraeCode is state-only: hook protocol is Claude Code-compatible but it
+      // has no PermissionRequest event, so permission bubbles default off.
+      "traecode": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
@@ -639,6 +664,21 @@ function normalizeStaleTriple(out) {
 // v3 → v4: Pi returns to a state-only integration. Clawd no longer inserts a
 //   permission prompt into Pi's default YOLO flow, so the Pi permission subgate
 //   is reset off.
+// v15 → v16: preserve the legacy meaning of literal `Control` shortcut tokens
+//   before v16 gives that token Electron's native Control meaning on macOS.
+function migrateLegacyControlShortcuts(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const migrated = { ...value };
+  for (const [actionId, accelerator] of Object.entries(migrated)) {
+    if (typeof accelerator !== "string") continue;
+    migrated[actionId] = accelerator
+      .split("+")
+      .map((token) => token.trim().toLowerCase() === "control" ? "CommandOrControl" : token)
+      .join("+");
+  }
+  return migrated;
+}
+
 function migrate(raw) {
   if (!raw || typeof raw !== "object") return raw;
   const originalAgentIds = raw.agents && typeof raw.agents === "object" && !Array.isArray(raw.agents)
@@ -826,6 +866,40 @@ function migrate(raw) {
       out.agents.zcode.permissionsEnabled = true;
     }
     out.version = 15;
+  }
+  // v15 -> v16: `Control` used to be an accepted alias for
+  // `CommandOrControl`. Rewrite only pre-v16 persisted values before the
+  // parser starts using `Control` for macOS's distinct native Control key.
+  if (out.version < 16) {
+    out.shortcuts = migrateLegacyControlShortcuts(out.shortcuts);
+    out.version = 16;
+  }
+  // v16 -> v17: introduce an independent mouth-accessory map. Never infer a
+  // cigarette choice from the existing head accessory or from theme ids. A
+  // valid explicit map may exist in an unreleased v16 development snapshot;
+  // preserve it instead of erasing that selection during the version split.
+  if (out.version < 17) {
+    if (
+      !out.petMouthAccessory
+      || typeof out.petMouthAccessory !== "object"
+      || Array.isArray(out.petMouthAccessory)
+    ) {
+      out.petMouthAccessory = {};
+    }
+    out.version = 17;
+  }
+  // v17 -> v18: split Codex event intake from permission to cold-launch the
+  // desktop app. Existing installs previously got auto-start whenever Codex
+  // itself was enabled, so preserve that behavior on upgrade. Fresh installs
+  // never run migrate() and therefore keep the schema's opt-in default false.
+  if (out.version < 18) {
+    if (!Object.prototype.hasOwnProperty.call(out, "autoStartWithCodex")) {
+      out.autoStartWithCodex = true;
+    } else if (typeof out.autoStartWithCodex !== "boolean") {
+      // An explicitly-present malformed value is not reliable user consent.
+      out.autoStartWithCodex = false;
+    }
+    out.version = 18;
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
@@ -1284,6 +1358,17 @@ function normalizePetAccessory(value, defaultsValue) {
   return out;
 }
 
+function normalizePetMouthAccessory(value, defaultsValue) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
+  const out = {};
+  for (const [themeId, accessoryId] of Object.entries(value)) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)) continue;
+    if (!PET_MOUTH_ACCESSORY_IDS.includes(accessoryId)) continue;
+    if (accessoryId !== "none") out[themeId] = accessoryId;
+  }
+  return out;
+}
+
 function normalizeHolidayAccessoryEnabled(value, defaultsValue) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
   const out = {};
@@ -1399,6 +1484,9 @@ function load(prefsPath) {
   const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
   const isObjectRecord = (value) => !!value && typeof value === "object" && !Array.isArray(value);
   let codexAutoStartAuthoritative = true;
+  if (hasOwn(raw, "autoStartWithCodex") && typeof raw.autoStartWithCodex !== "boolean") {
+    codexAutoStartAuthoritative = false;
+  }
   if (hasOwn(raw, "agents")) {
     if (!isObjectRecord(raw.agents)) {
       codexAutoStartAuthoritative = false;
@@ -1406,8 +1494,11 @@ function load(prefsPath) {
       if (!isObjectRecord(raw.agents.codex)) {
         codexAutoStartAuthoritative = false;
       } else if (
-        hasOwn(raw.agents.codex, "enabled")
-        && typeof raw.agents.codex.enabled !== "boolean"
+        (hasOwn(raw.agents.codex, "enabled") && typeof raw.agents.codex.enabled !== "boolean")
+        || (
+          hasOwn(raw.agents.codex, "integrationInstalled")
+          && typeof raw.agents.codex.integrationInstalled !== "boolean"
+        )
       ) {
         codexAutoStartAuthoritative = false;
       }
@@ -1481,6 +1572,7 @@ module.exports = {
   mapLocaleToLang,
   normalizeThemeOverrides,
   normalizePetTint,
+  normalizePetMouthAccessory,
   normalizeShortcuts,
   normalizeOptionalHttpUrl,
   normalizePathList,

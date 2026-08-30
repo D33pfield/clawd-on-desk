@@ -762,7 +762,7 @@ function applyState(state, svgOverride, options = {}) {
 
   ctx.sendToRenderer("state-change", state, svg);
   ctx.syncHitWin();
-  ctx.sendToHitWin("hit-state-sync", { currentSvg: svg, currentState: state });
+  ctx.sendToHitWin("hit-state-sync", { currentState: state });
   ctx.sendToHitWin("hit-cancel-reaction");
 
   if (state !== "idle" && state !== "mini-idle") {
@@ -1292,6 +1292,40 @@ function updateSessionFocusMetadata(sessionId, opts = {}) {
   return true;
 }
 
+// Refresh lifecycle liveness from a request-bound observer without inventing a
+// hook event. This deliberately sits between updateSessionFocusMetadata (which
+// owns focus-only fields) and updateSessionMetadata (which must never affect
+// staleness): a correlated request_user_input request/output is real turn
+// activity, but it must not create a ghost row, append recentEvents, fire a
+// sound, or manufacture a completion boundary.
+function touchSessionActivity(sessionId, opts = {}) {
+  const id = typeof sessionId === "string" ? sessionId : "";
+  if (!id) return false;
+  const session = sessions.get(id);
+  if (!session) return false;
+  const expectedAgentId = typeof opts.agentId === "string" ? opts.agentId : null;
+  if (expectedAgentId && session.agentId !== expectedAgentId) return false;
+  const expectedProfileId = typeof opts.profileId === "string" ? opts.profileId : null;
+  if (expectedProfileId && (session.profileId || "local") !== expectedProfileId) return false;
+  if (opts.localOnly === true && (session.host || session.headless)) return false;
+  // A completion awaiting acknowledgement is a stronger lifecycle boundary
+  // than a late transcript record; never revive or extend it.
+  if (session.requiresCompletionAck === true) return false;
+
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  const reviveIdle = opts.reviveIdle === true && session.state === "idle";
+  session.updatedAt = now;
+  if (reviveIdle) {
+    session.state = "working";
+    session.displayHint = null;
+    session.subagentTracker = clearSubagentTracker(cloneSubagentTracker(session));
+    const resolved = resolveDisplayState();
+    setState(resolved, getSvgOverride(resolved));
+  }
+  emitSessionSnapshot();
+  return true;
+}
+
 // Statusline refresh POSTs (metadata_only: true) annotate a session that real
 // hook traffic already created — they are telemetry, not lifecycle. Hence:
 // never create a session (a statusline for a dead/unknown session id would
@@ -1483,6 +1517,18 @@ function isClaudeElicitationCompletionTool(toolName) {
   return CLAUDE_ELICITATION_COMPLETION_TOOLS.has(toolName);
 }
 
+function hasClaudeBackgroundSubagentCompletionHold(sessionOrTracker) {
+  // Only the authoritative typed-count marker may block completion producers.
+  // Tracker-only evidence keeps the pre-#952 recovery behavior: if an older or
+  // malformed hook misses SubagentStop and never sends a typed zero, a later
+  // parent completion must still be able to settle the session.
+  return !!(
+    sessionOrTracker
+    && Number.isFinite(sessionOrTracker.claudeBackgroundSubagentHoldAt)
+    && sessionOrTracker.claudeBackgroundSubagentHoldAt > 0
+  );
+}
+
 function scheduleClaudeTranscriptCompletionProbe(sessionId, transcriptPath) {
   const safePath = normalizeTranscriptPath(transcriptPath);
   if (!safePath) return;
@@ -1501,6 +1547,11 @@ function scheduleClaudeTranscriptCompletionProbe(sessionId, transcriptPath) {
     if (Date.now() - startedAt > CLAUDE_ELICITATION_COMPLETION_PROBE_MAX_MS) {
       claudeTranscriptCompletionProbes.delete(sessionId);
       debugSession(`claude-transcript-stop-probe expire sid=${sessionId}`);
+      return;
+    }
+    if (hasClaudeBackgroundSubagentCompletionHold(session)) {
+      probe.timer = setTimeout(runProbe, CLAUDE_ELICITATION_COMPLETION_PROBE_INTERVAL_MS);
+      claudeTranscriptCompletionProbes.set(sessionId, probe);
       return;
     }
 
@@ -1534,7 +1585,11 @@ function scheduleClaudeTranscriptCompletionProbe(sessionId, transcriptPath) {
 // permission lock is holding the pet.
 function promoteCompletion(sessionId, completionPayload = undefined) {
   const session = sessions.get(sessionId);
-  if (!session) return;
+  if (!session) return false;
+  if (hasClaudeBackgroundSubagentCompletionHold(session)) {
+    debugSession(`completion-promote hold sid=${sessionId} reason=background-subagent`);
+    return false;
+  }
   if (completionPayload !== undefined) {
     const text = normalizeAssistantOutput(completionPayload && completionPayload.text);
     session.assistantLastOutput = text;
@@ -1557,7 +1612,7 @@ function promoteCompletion(sessionId, completionPayload = undefined) {
   if (hasConfirmedPermissionAnimationLock()) {
     const display = resolveDisplayState();
     setState(display, getSvgOverride(display));
-    return;
+    return true;
   }
   // The completion's data (done badge + Telegram push) already landed via the
   // snapshot above. The celebration is visual-only, so let setState()'s
@@ -1566,6 +1621,7 @@ function promoteCompletion(sessionId, completionPayload = undefined) {
   // global pending queue here; pendingTimer/pendingState are process-wide, not
   // per-session, so clearing them would swallow another session's visual.
   setState("attention");
+  return true;
 }
 
 // ── Session management ──
@@ -1631,6 +1687,20 @@ function mergeSessionProcessMetadata(existing, incoming = {}, options = {}) {
   };
 }
 
+// Trae stores the session title server-side, so Clawd derives it from the
+// first prompt line. The first title that reaches the server wins — a title
+// whose POST fails is not permanently claimed, and follow-up prompts never
+// overwrite the first one (matching Trae's constant session title).
+const FIRST_WINS_TITLE_AGENT_IDS = new Set(["traecode"]);
+
+function resolveIncomingSessionTitle(existing, agentId, incomingTitle) {
+  const normalized = normalizeTitle(incomingTitle);
+  if (FIRST_WINS_TITLE_AGENT_IDS.has(agentId)) {
+    return (existing && existing.sessionTitle) || normalized || null;
+  }
+  return normalized || (existing && existing.sessionTitle) || null;
+}
+
 function updateSession(sessionId, state, event, opts = {}) {
   try {
   const {
@@ -1676,6 +1746,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     muteNotificationSound = false,
     transientPermissionEvent = false,
     backgroundTasksCount = 0,
+    backgroundSubagentsCount,
     sessionCronsCount = 0,
     stopHookActive = false,
     stdinDiag = null,
@@ -1774,7 +1845,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
       const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
       const srcGhosttyTerminalId = normalizeGhosttyTerminalId(ghosttyTerminalId) || (existing && existing.ghosttyTerminalId) || null;
-      const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
+      const srcSessionTitle = resolveIncomingSessionTitle(existing, srcAgentId, sessionTitle);
       const permissionContext = resolveContextUsageUpdate(existing, contextUsage, contextUsageOrigin);
       const srcContextUsage = permissionContext.contextUsage;
       const srcContextUsageOrigin = permissionContext.contextUsageOrigin;
@@ -1826,6 +1897,12 @@ function updateSession(sessionId, state, event, opts = {}) {
         ),
         resumeState: (existing && existing.resumeState) || null,
         muteNotificationSound: muteNotificationSound === true,
+        subagentTracker: cloneSubagentTracker(existing),
+        claudeBackgroundSubagentHoldAt: existing
+          && Number.isFinite(existing.claudeBackgroundSubagentHoldAt)
+          && existing.claudeBackgroundSubagentHoldAt > 0
+          ? existing.claudeBackgroundSubagentHoldAt
+          : null,
       });
     }
     setState("notification", undefined, { muteNotificationSound: muteNotificationSound === true });
@@ -1903,7 +1980,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcGhosttyTerminalId = normalizeGhosttyTerminalId(ghosttyTerminalId) || (existing && existing.ghosttyTerminalId) || null;
   // Sticky: empty input does not clear an existing title. A session that has
   // ever been named keeps that name until the user explicitly renames it.
-  const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
+  const srcSessionTitle = resolveIncomingSessionTitle(existing, srcAgentId, sessionTitle);
   const normalizedIncomingContextUsage = normalizeContextUsage(contextUsage);
   const effectiveContextUsageOrigin = normalizeContextUsageOrigin(contextUsageOrigin)
     || (srcAgentId === "claude-code" && normalizedIncomingContextUsage && normalizedIncomingContextUsage.source === "claude"
@@ -1939,6 +2016,38 @@ function updateSession(sessionId, state, event, opts = {}) {
   );
   const preservedState = preserveState && existing ? existing.state : null;
   const duplicateCompletionVisualAtEntry = shouldSuppressDuplicateCompletionVisual(existing, state, event);
+  const isClaudeMainStop = event === "Stop"
+    && state === "attention"
+    && srcAgentId === "claude-code"
+    && !normalizedSubagentId;
+  const typedSubagentSnapshotKnown = Object.prototype.hasOwnProperty.call(
+    opts,
+    "backgroundSubagentsCount",
+  ) && Number.isSafeInteger(backgroundSubagentsCount) && backgroundSubagentsCount >= 0;
+  const incomingTypedSubagentCount = typedSubagentSnapshotKnown
+    ? backgroundSubagentsCount
+    : 0;
+  const typedSubagentSnapshotIsZero = typedSubagentSnapshotKnown
+    && incomingTypedSubagentCount === 0;
+  const existingTypedSubagentHold = !!(
+    existing
+    && Number.isFinite(existing.claudeBackgroundSubagentHoldAt)
+    && existing.claudeBackgroundSubagentHoldAt > 0
+  );
+  const effectiveTypedSubagentHold = incomingTypedSubagentCount > 0
+    || (existingTypedSubagentHold && !typedSubagentSnapshotKnown);
+  let claudeBackgroundSubagentHoldAt = existingTypedSubagentHold
+    ? existing.claudeBackgroundSubagentHoldAt
+    : null;
+  if (isClaudeMainStop && duplicateCompletionVisualAtEntry) {
+    // A late duplicate Stop must not reopen a completed session or leave a
+    // private hold behind that can block a later legitimate completion.
+    claudeBackgroundSubagentHoldAt = null;
+  } else if (isClaudeMainStop && incomingTypedSubagentCount > 0) {
+    claudeBackgroundSubagentHoldAt = Math.max(1, Date.now());
+  } else if (isClaudeMainStop && typedSubagentSnapshotIsZero) {
+    claudeBackgroundSubagentHoldAt = null;
+  }
 
   // #406 Stop completion gate — Claude Code only; other agents keep their own
   // completion semantics (Codex task_complete + remote exit probes, etc.). A
@@ -1951,13 +2060,14 @@ function updateSession(sessionId, state, event, opts = {}) {
   // text, can be debounced until a quiet window confirms the turn really ended.
   if (
     !duplicateCompletionVisualAtEntry
-    && event === "Stop"
-    && state === "attention"
-    && srcAgentId === "claude-code"
+    && isClaudeMainStop
   ) {
     cancelCompletionDebounce(sessionId, "stop-superseded");
     const disposition = getClaudeStopDisposition({
       backgroundTasksCount,
+      backgroundSubagentsCount: typedSubagentSnapshotKnown
+        ? incomingTypedSubagentCount
+        : undefined,
       sessionCronsCount,
       stopHookActive,
       // Incoming, never the carried-forward value: this asks whether THIS Stop
@@ -1967,8 +2077,9 @@ function updateSession(sessionId, state, event, opts = {}) {
       hasFinalAssistantText: !!incomingAssistantLastOutput,
       headless: srcHeadless,
     });
-    const hardLiveWork = disposition.kind === "hold";
-    const debounceMs = disposition.debounceMs;
+    const hardLiveWork = disposition.kind === "hold"
+      || effectiveTypedSubagentHold;
+    const debounceMs = hardLiveWork ? 0 : disposition.debounceMs;
     if (hardLiveWork || debounceMs > 0) {
       // Hold the Stop as "working" and DROP the event to null so recentEvents
       // keeps NO "Stop" tail while held. Why null and not "Stop": deriveSessionBadge
@@ -1982,7 +2093,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       event = null;
       if (hardLiveWork) {
         debugSession(
-          `stop-gate sid=${sessionId} bg=${backgroundTasksCount} crons=${sessionCronsCount} active=${stopHookActive} action=hold-working`
+          `stop-gate sid=${sessionId} bg=${backgroundTasksCount} subagents=${typedSubagentSnapshotKnown ? incomingTypedSubagentCount : "unknown"} crons=${sessionCronsCount} active=${stopHookActive} action=hold-working`
         );
         // Hard live work never auto-promotes; a later plain Stop (no hard
         // blockers) will.
@@ -2087,6 +2198,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     && (sessionStartSource === "startup" || sessionStartSource === "clear")
   ) {
     clearSubagentTracker(subagentTracker);
+    claudeBackgroundSubagentHoldAt = null;
   }
 
   // A new parent prompt bounds only anonymous evidence. Trusted child ids may
@@ -2121,17 +2233,37 @@ function updateSession(sessionId, state, event, opts = {}) {
     subagentTracker.confirmedIds.add(normalizedSubagentId);
   }
 
+  if (
+    (isSubagentStop || isSubagentScopedSessionEnd)
+    && typedSubagentSnapshotIsZero
+    && !hasSubagentHoldEvidence(subagentTracker)
+  ) {
+    // SubagentStop is resolving evidence, not a completion event. It may clear
+    // the aggregate typed marker only after the identity tracker agrees that no
+    // child remains; the existing session state is preserved below.
+    claudeBackgroundSubagentHoldAt = null;
+  }
+
   // Reaching this point with a real main Stop means the completion gate above
   // accepted it. Held/debounced stops were rewritten to event=null.
-  if (event === "Stop" && !normalizedSubagentId) {
+  // An authoritative typed zero must release the tracker before a debounced
+  // completion timer can call promoteCompletion(); duplicate completion Stops
+  // likewise cannot retain hidden child evidence on an already-complete row.
+  if (
+    (event === "Stop" && !normalizedSubagentId)
+    || (isClaudeMainStop && typedSubagentSnapshotIsZero)
+    || (isClaudeMainStop && duplicateCompletionVisualAtEntry)
+  ) {
     clearSubagentTracker(subagentTracker);
   }
 
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true, claudeBackgroundSubagentHoldAt };
   if (preserveCompletionAck) base.requiresCompletionAck = true;
   // #862: every branch below rebuilds the session object from `base`; carry the
   // private identity tracker through without exposing it on snapshot surfaces.
   base.subagentTracker = subagentTracker;
+  const typedSubagentHoldActive = Number.isFinite(claudeBackgroundSubagentHoldAt)
+    && claudeBackgroundSubagentHoldAt > 0;
 
   // Evict oldest session if at capacity and this is a new session.
   evictOldestSessionIfNeeded(sessionId);
@@ -2171,6 +2303,15 @@ function updateSession(sessionId, state, event, opts = {}) {
         const dh = pickDisplayHint(resumeState, existing, displayHint);
         sessions.set(sessionId, { state: resumeState, updatedAt: Date.now(), displayHint: dh, ...base, resumeState: null });
         debugSession(`subagent-stop restore ${describeSession(sessionId, sessions.get(sessionId))}`);
+      } else if (typedSubagentHoldActive) {
+        sessions.set(sessionId, {
+          state: "working",
+          updatedAt: Date.now(),
+          displayHint: pickDisplayHint("working", existing, displayHint),
+          ...base,
+          resumeState: null,
+        });
+        debugSession(`subagent-stop typed-hold ${describeSession(sessionId, sessions.get(sessionId))}`);
       } else {
         deleteSessionWithCompletionCleanup(sessionId, "subagent-stop-no-resume");
         debugSession(`subagent-stop delete sid=${sessionId} reason=no-resume`);
@@ -2234,6 +2375,14 @@ function updateSession(sessionId, state, event, opts = {}) {
         ...base,
         resumeState: (existing && existing.resumeState) || null,
       });
+    } else if (typedSubagentHoldActive) {
+      sessions.set(sessionId, {
+        state: "working",
+        updatedAt: Date.now(),
+        displayHint: pickDisplayHint("working", existing, displayHint),
+        ...base,
+        resumeState: (existing && existing.resumeState) || null,
+      });
     } else {
       sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base, resumeState: null });
     }
@@ -2243,6 +2392,14 @@ function updateSession(sessionId, state, event, opts = {}) {
         state: "juggling",
         updatedAt: Date.now(),
         displayHint: pickDisplayHint("juggling", existing, displayHint),
+        ...base,
+        resumeState: (existing && existing.resumeState) || null,
+      });
+    } else if (typedSubagentHoldActive) {
+      sessions.set(sessionId, {
+        state: "working",
+        updatedAt: Date.now(),
+        displayHint: pickDisplayHint("working", existing, displayHint),
         ...base,
         resumeState: (existing && existing.resumeState) || null,
       });
@@ -2275,6 +2432,14 @@ function updateSession(sessionId, state, event, opts = {}) {
         resumeState: (existing && existing.resumeState) || null,
       });
       debugSession(`juggling-hold ${describeSession(sessionId, sessions.get(sessionId))} event=${event || "-"}`);
+    } else if (typedSubagentHoldActive && state === "idle") {
+      sessions.set(sessionId, {
+        state: "working",
+        updatedAt: Date.now(),
+        displayHint: pickDisplayHint("working", existing, displayHint),
+        ...base,
+        resumeState: (existing && existing.resumeState) || null,
+      });
     } else {
       const dh = pickDisplayHint(state, existing, displayHint);
       sessions.set(sessionId, { state, updatedAt: Date.now(), displayHint: dh, ...base, resumeState: null });
@@ -2565,6 +2730,9 @@ function cleanStaleSessions() {
       debugSession(`stale-idle ${decision.reason} ${describeSession(id, s)}`);
       s.state = "idle"; s.displayHint = null;
       s.subagentTracker = clearSubagentTracker(cloneSubagentTracker(s));
+      s.claudeBackgroundSubagentHoldAt = null;
+      cancelCompletionDebounce(id, `stale-idle-${decision.reason}`);
+      cancelClaudeTranscriptCompletionProbe(id, `stale-idle-${decision.reason}`);
       if (decision.updateTimestamp) s.updatedAt = now;
       changed = true;
     }
@@ -3116,6 +3284,7 @@ return {
   dismissSession,
   formatStdinDiag,
   updateSessionFocusMetadata,
+  touchSessionActivity,
   updateSessionMetadata,
   clearClaudeStatuslineAuthority,
   updateAccountQuota,
@@ -3124,11 +3293,12 @@ return {
   clearLocalKimiQuota,
   getQuotaSourceCount,
   clearPermissionNotification,
+  promoteCompletion,
   ackSessionCompletion,
   clearSessionsByAgent,
   disposeAllKimiPermissionState,
   deriveSessionBadge,
-  getCurrentState, getCurrentSvg, getCurrentHitBox, getStartupRecoveryActive,
+  getCurrentState, getCurrentSvg, getCurrentHitBox, resolveHitBoxForSvg, getStartupRecoveryActive,
   sessions, STATE_PRIORITY, ONESHOT_STATES, SLEEP_SEQUENCE,
   get STATE_SVGS() { return STATE_SVGS; },
   get HIT_BOXES() { return HIT_BOXES; },

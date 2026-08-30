@@ -55,6 +55,7 @@ const MAX_MUTATION_LOCK_OPERATION_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const MANUAL_GENERATION_REFERENCE_FILE = "manual-generation-reference.json";
 const MANUAL_GENERATION_REFERENCE_SCHEMA_VERSION = 1;
 const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
+const POSIX_DISCOVERABLE_COMMANDS = new Set(["dsh", "pnpm"]);
 const BRIDGE_SOURCE_FILES = Object.freeze([
   "package.json",
   "cordis.patch.yml",
@@ -280,6 +281,78 @@ async function whereCommand(command, options = {}) {
   return (await whereCommands(command, options))[0] || null;
 }
 
+function posixShellCandidates(options = {}) {
+  const candidates = [];
+  const add = (value) => {
+    const candidate = typeof value === "string" ? value.trim() : "";
+    if (!candidate || !path.posix.isAbsolute(candidate) || candidates.includes(candidate)) return;
+    candidates.push(candidate);
+  };
+  add(options.shellPath);
+  add(options.env && options.env.SHELL);
+  add(process.env.SHELL);
+  add("/bin/zsh");
+  add("/bin/bash");
+  add("/bin/sh");
+  return candidates;
+}
+
+async function executablePathFromShellOutput(raw, options = {}) {
+  const access = options.access || fsp.access.bind(fsp);
+  const lines = String(raw || "").split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const candidate = lines[index].trim();
+    if (!candidate || !path.posix.isAbsolute(candidate) || candidate.includes("\0")) continue;
+    try {
+      await access(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {}
+  }
+  return null;
+}
+
+async function resolvePosixExecutable(command, options = {}) {
+  if (!POSIX_DISCOVERABLE_COMMANDS.has(command)) return null;
+  for (const shell of posixShellCandidates(options)) {
+    for (const shellMode of ["-lc", "-lic"]) {
+      const located = await runCommand(shell, [shellMode, `command -v ${command}`], {
+        ...options,
+        timeoutMs: 5000,
+      });
+      if (located.code !== 0) continue;
+      const resolved = await executablePathFromShellOutput(located.stdout, options);
+      if (resolved) return resolved;
+    }
+  }
+  return null;
+}
+
+function buildPosixCommandEnv(options = {}, commandInfo = null, executables = []) {
+  const env = {
+    ...(options.env || process.env),
+    ...((commandInfo && commandInfo.env) || {}),
+  };
+  const currentEntries = typeof env.PATH === "string"
+    ? env.PATH.split(path.delimiter).map((entry) => entry.trim()).filter(Boolean)
+    : [];
+  const preferredEntries = executables
+    .filter((entry) => typeof entry === "string" && path.posix.isAbsolute(entry))
+    .map((entry) => path.posix.dirname(entry));
+  env.PATH = [...new Set([...preferredEntries, ...currentEntries])].join(path.delimiter);
+  return env;
+}
+
+function commandExecutionOptions(commandInfo, options = {}) {
+  if (!commandInfo || !commandInfo.env) return options;
+  return {
+    ...options,
+    env: {
+      ...(options.env || process.env),
+      ...commandInfo.env,
+    },
+  };
+}
+
 function expandShimCandidate(candidate, shim, platform) {
   const pathApi = platform === "win32" ? path.win32 : path.posix;
   const shimDir = pathApi.dirname(shim);
@@ -343,35 +416,28 @@ async function resolveDshCommand(options = {}) {
   }
   const platform = options.platform || process.platform;
   if (platform !== "win32") {
-    const shell = typeof options.shellPath === "string" && options.shellPath.trim()
-      ? options.shellPath.trim()
-      : (process.env.SHELL || "/bin/sh");
-    const located = await runCommand(shell, ["-lc", "command -v dsh"], {
-      ...options,
-      timeoutMs: 5000,
-    });
-    const bin = located.code === 0
-      ? located.stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean)
-      : null;
+    const bin = await resolvePosixExecutable("dsh", options);
     if (!bin) return null;
     let realBin = bin;
     try { realBin = await fsp.realpath(bin); } catch {}
     const normalized = realBin.replace(/\\/g, "/");
-    let installRoot = normalized.endsWith("/lib/bin.js")
-      ? path.dirname(path.dirname(realBin))
-      : null;
-    if (!installRoot) {
+    let binJs = normalized.endsWith("/lib/bin.js") ? realBin : null;
+    if (!binJs) {
       const parsed = await readShimBinCandidates(bin, platform);
-      let binJs = null;
       for (const candidate of parsed) {
         if (await exists(candidate)) {
           binJs = candidate;
           break;
         }
       }
-      if (binJs) installRoot = path.dirname(path.dirname(binJs));
     }
-    return { command: bin, prefixArgs: [], installRoot };
+    const installRoot = binJs ? path.dirname(path.dirname(binJs)) : null;
+    const nodeRunner = await resolveNodeRunner(options);
+    const env = buildPosixCommandEnv(options, null, [nodeRunner, bin]);
+    if (nodeRunner && binJs) {
+      return { command: nodeRunner, prefixArgs: [binJs], installRoot, env };
+    }
+    return { command: bin, prefixArgs: [], installRoot, env };
   }
   const shims = await whereCommands("dsh", options);
   if (shims.length === 0) return null;
@@ -424,7 +490,7 @@ async function readDshVersion(commandInfo, options = {}) {
   if (typeof options.dshVersion === "string") return parseDshVersion(options.dshVersion);
   if (!commandInfo) return null;
   const result = await runCommand(commandInfo.command, [...commandInfo.prefixArgs, "--version"], {
-    ...options,
+    ...commandExecutionOptions(commandInfo, options),
     timeoutMs: 5000,
   });
   if (result.code !== 0) return null;
@@ -436,19 +502,36 @@ async function hasDshCommand(options = {}) {
   const command = await resolveDshCommand(options);
   if (!command) return false;
   const result = await runCommand(command.command, [...command.prefixArgs, "--version"], {
-    ...options,
+    ...commandExecutionOptions(command, options),
     timeoutMs: 5000,
   });
   return result.code === 0;
 }
 
-async function hasPnpm(options = {}) {
-  if (typeof options.pnpmAvailable === "boolean") return options.pnpmAvailable;
-  if ((options.platform || process.platform) === "win32") {
-    return !!(await whereCommand("pnpm", options));
+async function resolvePnpmRuntime(commandInfo, options = {}) {
+  if (typeof options.pnpmAvailable === "boolean") {
+    return { available: options.pnpmAvailable, commandInfo };
   }
-  const result = await runCommand("pnpm", ["--version"], { ...options, timeoutMs: 5000 });
-  return result.code === 0;
+  if ((options.platform || process.platform) === "win32") {
+    return { available: !!(await whereCommand("pnpm", options)), commandInfo };
+  }
+  const pnpmCommand = await resolvePosixExecutable("pnpm", options);
+  if (!pnpmCommand) return { available: false, commandInfo };
+  const nodeRunner = await resolveNodeRunner(options);
+  const env = buildPosixCommandEnv(options, commandInfo, [pnpmCommand, nodeRunner]);
+  const result = await runCommand(pnpmCommand, ["--version"], {
+    ...options,
+    env,
+    timeoutMs: 5000,
+  });
+  return {
+    available: result.code === 0,
+    commandInfo: commandInfo ? { ...commandInfo, env } : commandInfo,
+  };
+}
+
+async function hasPnpm(options = {}) {
+  return (await resolvePnpmRuntime(null, options)).available;
 }
 
 async function isDshInstalled(options = {}) {
@@ -469,7 +552,11 @@ async function runDshCommand(args, options = {}) {
     }
     const command = await resolveDshCommand(options);
     if (!command) return { code: 127, stdout: "", stderr: "dsh command is not available" };
-    return runCommand(command.command, [...command.prefixArgs, ...args], options);
+    return runCommand(
+      command.command,
+      [...command.prefixArgs, ...args],
+      commandExecutionOptions(command, options),
+    );
   } catch (err) {
     return {
       code: 1,
@@ -2025,7 +2112,8 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
         if (lockedLatch) await clearInspectionLatch(options);
         return { status: "ok", updated: false, health: locked, message: DSH_RESTART_HINT };
       }
-      if (!(await hasPnpm(options))) {
+      const pnpmRuntime = await resolvePnpmRuntime(commandInfo, options);
+      if (!pnpmRuntime.available) {
         return { status: "error", reason: "pnpm-unavailable", message: "pnpm is required by dsh plugin add" };
       }
       if (locked.owned && locked.marker) {
@@ -2040,7 +2128,7 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
       const generation = await promoteGeneration(bundle, { ...options, contract, dshVersion });
       const result = await runDshCommand([
         "plugin", "--profile", WEB_PROFILE_NAME, "add", generation.generationDir,
-      ], { ...options, commandInfo });
+      ], { ...options, commandInfo: pnpmRuntime.commandInfo });
       if (result.code !== 0) {
         const failedHealth = await inspectDeepSeekHarnessIntegration({ ...options, commandInfo });
         const unknown = isUnknownCommandResult(result);
@@ -2270,9 +2358,13 @@ async function uninstallDeepSeekHarnessBridge(options = {}) {
         if (lockedLatch) await clearInspectionLatch(options);
         return { status: "ok", removed: true, updated: true };
       }
+      const pnpmRuntime = await resolvePnpmRuntime(commandInfo, options);
+      if (!pnpmRuntime.available) {
+        return { status: "error", reason: "pnpm-unavailable", message: "pnpm is required by dsh plugin remove" };
+      }
       const result = await runDshCommand([
         "plugin", "--profile", WEB_PROFILE_NAME, "remove", BRIDGE_PACKAGE_NAME,
-      ], { ...options, commandInfo });
+      ], { ...options, commandInfo: pnpmRuntime.commandInfo });
       if (result.code !== 0) {
         const failedHealth = await inspectDeepSeekHarnessIntegration({ ...options, commandInfo });
         const unknown = isUnknownCommandResult(result);

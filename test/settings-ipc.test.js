@@ -13,6 +13,7 @@ const { registerSettingsIpc } = require("../src/settings-ipc");
 const {
   listPetTintOptions,
   listPetAccessoryOptions,
+  listPetMouthAccessoryOptions,
 } = require("../src/pet-customization-catalog");
 const prefs = require("../src/prefs");
 const { createSettingsController } = require("../src/settings-controller");
@@ -313,6 +314,7 @@ test("settings IPC registers owned channels and leaves animation override channe
   assert.ok(ipcMain.handlers.has("settings:get-quota-source-count"));
   assert.ok(ipcMain.handlers.has("settings:get-pet-tint-options"));
   assert.ok(ipcMain.handlers.has("settings:get-pet-accessory-options"));
+  assert.ok(ipcMain.handlers.has("settings:get-pet-mouth-accessory-options"));
   assert.ok(ipcMain.handlers.has("settings:get-roam-fence"));
   assert.ok(ipcMain.handlers.has("settings:select-roam-fence"));
   assert.ok(ipcMain.handlers.has("settings:clear-roam-fence"));
@@ -748,6 +750,10 @@ test("settings IPC delegates controller and size preview handlers", async () => 
   assert.deepStrictEqual(
     await ipcMain.invoke("settings:get-pet-accessory-options"),
     listPetAccessoryOptions()
+  );
+  assert.deepStrictEqual(
+    await ipcMain.invoke("settings:get-pet-mouth-accessory-options"),
+    listPetMouthAccessoryOptions()
   );
   assert.deepStrictEqual(
     await ipcMain.invoke("settings:update", null),

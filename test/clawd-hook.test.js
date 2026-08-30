@@ -259,19 +259,96 @@ describe("buildStateBody", () => {
       mockResolve
     );
     assert.strictEqual(body.background_tasks_count, 2);
+    assert.strictEqual(body.background_subagents_count, 0);
     assert.strictEqual(body.session_crons_count, 1);
+  });
+
+  it("counts only exact typed one-shot background subagents and preserves known zero (#952)", () => {
+    const typed = buildStateBody(
+      "Stop",
+      {
+        session_id: "s",
+        background_tasks: [
+          { type: "subagent", id: "private-1", status: "running" },
+          { type: " SUBAGENT ", description: "private description" },
+          { type: "teammate" },
+          { type: "shell" },
+          { type: "monitor" },
+          { type: "subagent-extra" },
+          { type: 123 },
+          {},
+          null,
+          [],
+        ],
+      },
+      mockResolve
+    );
+    assert.strictEqual(typed.background_tasks_count, 10);
+    assert.strictEqual(typed.background_subagents_count, 2);
+
+    const knownZero = buildStateBody(
+      "Stop",
+      { session_id: "s", background_tasks: [{ type: "teammate" }] },
+      mockResolve
+    );
+    assert.strictEqual(knownZero.background_subagents_count, 0);
+
+    const empty = buildStateBody(
+      "Stop",
+      { session_id: "s", background_tasks: [] },
+      mockResolve
+    );
+    assert.strictEqual(empty.background_subagents_count, 0);
+
+    const absent = buildStateBody("Stop", { session_id: "s" }, mockResolve);
+    assert.ok(!Object.prototype.hasOwnProperty.call(absent, "background_subagents_count"));
+    const malformed = buildStateBody(
+      "Stop",
+      { session_id: "s", background_tasks: { type: "subagent" } },
+      mockResolve
+    );
+    assert.ok(!Object.prototype.hasOwnProperty.call(malformed, "background_subagents_count"));
+  });
+
+  it("derives the typed aggregate on SubagentStop without forwarding task details (#952)", () => {
+    const body = buildStateBody(
+      "SubagentStop",
+      {
+        session_id: "s",
+        background_tasks: [{ type: "subagent", id: "secret-child", command: "secret command" }],
+      },
+      mockResolve
+    );
+    assert.strictEqual(body.background_subagents_count, 1);
+    const serialized = JSON.stringify(body);
+    assert.ok(!serialized.includes("secret-child"));
+    assert.ok(!serialized.includes("secret command"));
   });
 
   it("forwards only counts — never background task command/description text (#406)", () => {
     const body = buildStateBody(
       "Stop",
-      { session_id: "s", background_tasks: [{ command: "npm run secret-dev", description: "do not leak" }] },
+      {
+        session_id: "s",
+        background_tasks: [{
+          type: "teammate",
+          id: "secret-task-id",
+          agent_type: "secret-agent-type",
+          status: "secret-status",
+          command: "npm run secret-dev",
+          description: "do not leak",
+        }],
+      },
       mockResolve
     );
     assert.strictEqual(body.background_tasks_count, 1);
+    assert.strictEqual(body.background_subagents_count, 0);
     const serialized = JSON.stringify(body);
     assert.ok(!serialized.includes("npm run secret-dev"), "task command must not leak");
     assert.ok(!serialized.includes("do not leak"), "task description must not leak");
+    assert.ok(!serialized.includes("secret-task-id"), "task id must not leak");
+    assert.ok(!serialized.includes("secret-agent-type"), "agent type must not leak");
+    assert.ok(!serialized.includes("secret-status"), "task status must not leak");
   });
 
   it("forwards stop_hook_active on Stop (#406)", () => {
@@ -282,6 +359,7 @@ describe("buildStateBody", () => {
   it("omits completion-gate fields on a plain Stop with no background work (#406)", () => {
     const body = buildStateBody("Stop", { session_id: "s" }, mockResolve);
     assert.ok(!("background_tasks_count" in body));
+    assert.ok(!("background_subagents_count" in body));
     assert.ok(!("session_crons_count" in body));
     assert.ok(!("stop_hook_active" in body));
   });

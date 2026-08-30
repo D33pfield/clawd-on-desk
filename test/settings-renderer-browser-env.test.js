@@ -1025,6 +1025,7 @@ function loadThemeTabForTest({
   snapshot,
   petTintOptions,
   petAccessoryOptions,
+  petMouthAccessoryOptions,
   settingsAPI = {},
 } = {}) {
   const documentListeners = new Map();
@@ -1068,6 +1069,7 @@ function loadThemeTabForTest({
             ? {
                 petTint: target.capabilities && target.capabilities.petTint === true,
                 accessories: target.capabilities && target.capabilities.accessories === true,
+                mouthAccessories: target.capabilities && target.capabilities.mouthAccessories === true,
               }
             : null,
         });
@@ -1128,6 +1130,7 @@ function loadThemeTabForTest({
     lang: "en",
     petTint: {},
     petAccessory: {},
+    petMouthAccessory: {},
     holidayAccessoryEnabled: {},
     ...(snapshot || {}),
   };
@@ -1136,6 +1139,9 @@ function loadThemeTabForTest({
   core.runtime.petTintOptions = Array.isArray(petTintOptions) ? petTintOptions : [];
   core.runtime.petAccessoryOptions = Array.isArray(petAccessoryOptions)
     ? petAccessoryOptions
+    : [];
+  core.runtime.petMouthAccessoryOptions = Array.isArray(petMouthAccessoryOptions)
+    ? petMouthAccessoryOptions
     : [];
   context.ClawdSettingsTabTheme.init(core);
   const renderContent = () => {
@@ -1233,6 +1239,8 @@ function loadAgentsTabForTest({
           rowAgentIdleAlertsDesc: "Idle alert desc",
           rowAgentPermissions: "Permissions",
           rowAgentPermissionsDesc: "Permissions desc",
+          rowStartWithCodex: "Start with Codex",
+          rowStartWithCodexDesc: "Start with Codex desc",
           rowCodexPermissionMode: "Permission mode",
           rowCodexPermissionModeDesc: "Permission mode desc",
           codexPermissionModeNative: "Native",
@@ -1240,6 +1248,7 @@ function loadAgentsTabForTest({
           rowCodexNativeNotificationSound: "Native sound",
           rowCodexNativeNotificationSoundDesc: "Native sound desc",
           badgePermissionBubble: "Permission bubble",
+          traecodeEnableHint: "Enable hooks in Trae before they fire.",
           eventSourceHook: "Hook",
           eventSourceLogPoll: "Log poll",
           eventSourcePlugin: "Plugin",
@@ -2091,6 +2100,7 @@ function loadAnimOverridesTabForTest({
   };
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "language-picker.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8"), context);
   const core = {
     state: { activeTab: "animOverrides", mountedControls: {} },
@@ -2107,6 +2117,7 @@ function loadAnimOverridesTabForTest({
         if (typeof invoke === "function") el.addEventListener("click", () => invoke());
         return el;
       },
+      buildSettingsSelect: (config) => context.ClawdLanguagePicker.createSettingsSelect(config),
       ...helpersOverrides,
     },
     ops: {
@@ -2852,6 +2863,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(rendererSource.includes("settingsAPI.onRemoteApprovalStatusChanged"));
     assert.ok(rendererSource.includes("settingsAPI.getPetTintOptions"));
     assert.ok(rendererSource.includes("settingsAPI.getPetAccessoryOptions"));
+    assert.ok(rendererSource.includes("settingsAPI.getPetMouthAccessoryOptions"));
     assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
       'getPetTintOptions: () => ipcRenderer.invoke("settings:get-pet-tint-options")'
     ));
@@ -2860,6 +2872,9 @@ describe("settings renderer browser environment", () => {
     ));
     assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
       'getPetAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-accessory-options")'
+    ));
+    assert.ok(fs.readFileSync(PRELOAD_SETTINGS, "utf8").includes(
+      'getPetMouthAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-mouth-accessory-options")'
     ));
     assert.ok(rendererSource.includes("tab.refreshRuntimeStatus(payload)"));
     assert.ok(coreSource.includes("ClawdSettingsSizeSlider"));
@@ -8409,20 +8424,21 @@ describe("settings renderer browser environment", () => {
     assert.match(css, /\.language-picker\.open-up \.language-picker-menu\s*\{[\s\S]*bottom:\s*calc\(100% \+ 6px\);/);
   });
 
-  it("opens the seven-language tutorial picker upward when it no longer fits below the default welcome layout", () => {
+  it("opens downward for the captured three-line pt-BR/es default-window geometry", () => {
     const harness = loadSharedLanguagePickerForTest({
       options: SUPPORTED_LANGS,
-      innerHeight: 700,
+      innerHeight: 668,
     });
-    harness.boundary.getBoundingClientRect = () => ({ top: 78, bottom: 635 });
-    harness.trigger.getBoundingClientRect = () => ({ top: 390, bottom: 426 });
+    // Captured from real macOS Electron layout; this guards picker placement, not CSS layout.
+    harness.boundary.getBoundingClientRect = () => ({ top: 47, bottom: 603 });
+    harness.trigger.getBoundingClientRect = () => ({ top: 325, bottom: 361 });
     Object.defineProperty(harness.menu, "scrollHeight", { value: 220 });
     Object.defineProperty(harness.menu, "offsetHeight", { value: 222 });
     Object.defineProperty(harness.menu, "clientHeight", { value: 220 });
 
     harness.trigger.dispatchEvent({ type: "click" });
 
-    assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+    assert.strictEqual(harness.picker.classList.contains("open-up"), false);
     assert.strictEqual(harness.picker.classList.contains("menu-scrollable"), false);
     assert.strictEqual(harness.menu.style.maxHeight, "222px");
   });
@@ -9171,7 +9187,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(toasts[0].options.error, true);
   });
 
-  it("registers the Session cleanup group with three number rows, atomic reset, and i18n keys", () => {
+  it("registers the Session cleanup group with four number rows, atomic reset, and i18n keys", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
     const uiCoreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
@@ -9181,9 +9197,10 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("buildSessionCleanupGroup()"));
     assert.ok(generalSource.includes('id: "general:session-cleanup"'));
 
-    // All three numeric prefs map to their own number input row.
+    // All four numeric prefs map to their own number input row.
     assert.ok(generalSource.includes('key: "sessionStaleMs"'));
     assert.ok(generalSource.includes('key: "workingStaleMs"'));
+    assert.ok(generalSource.includes('key: "codexWorkingStaleMs"'));
     assert.ok(generalSource.includes('key: "detachedIdleStaleMs"'));
     assert.ok(generalSource.includes("buildNumberInputRow"));
     assert.ok(generalSource.includes("SESSION_CLEANUP_NUMBER_KEYS"));
@@ -9212,6 +9229,8 @@ describe("settings renderer browser environment", () => {
       "rowStaleSessionDesc",
       "rowStaleWorking",
       "rowStaleWorkingDesc",
+      "rowCodexStaleWorking",
+      "rowCodexStaleWorkingDesc",
       "rowStaleDetached",
       "rowStaleDetachedDesc",
       "unitMinutes",
@@ -10367,6 +10386,69 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(autoStart.extraElement, null);
   });
 
+  it("shows the TraeCode enable-in-Trae hint on the card when the integration is installed", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: { traecode: { integrationInstalled: true, enabled: true } },
+      },
+      agentMetadata: [
+        { id: "traecode", name: "TraeCode", eventSource: "hook", capabilities: {} },
+      ],
+    });
+
+    harness.core.ops.requestRender({ content: true });
+
+    const hint = harness.content.querySelector(".agent-traecode-hint");
+    assert.ok(hint, "TraeCode hint should render on the installed card");
+    assert.match(collectText(hint), /Enable hooks in Trae/);
+  });
+
+  it("omits the TraeCode enable-in-Trae hint until the integration is installed", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: { traecode: { integrationInstalled: false, enabled: false } },
+      },
+      agentMetadata: [
+        { id: "traecode", name: "TraeCode", eventSource: "hook", capabilities: {} },
+      ],
+    });
+
+    harness.core.ops.requestRender({ content: true });
+
+    assert.strictEqual(harness.content.querySelector(".agent-traecode-hint"), null);
+  });
+
+  it("keeps Start with Codex independent and commits through the preference API", async () => {
+    const updates = [];
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        autoStartWithCodex: false,
+        agents: { codex: { integrationInstalled: true, enabled: false, permissionMode: "intercept" } },
+      },
+      agentMetadata: [
+        { id: "codex", name: "Codex", eventSource: "hook", capabilities: {} },
+      ],
+      settingsAPI: {
+        update(key, value) {
+          updates.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+
+    harness.core.ops.requestRender({ content: true });
+
+    const autoStart = harness.core.state.mountedControls.generalSwitches.get("autoStartWithCodex");
+    assert.ok(autoStart, "Start with Codex should mount inside the Codex group");
+    assert.strictEqual(autoStart.element.classList.contains("on"), false);
+    assert.strictEqual(autoStart.element.classList.contains("disabled"), false);
+    assert.strictEqual(autoStart.row.querySelector(".row-label").textContent, "Start with Codex");
+
+    autoStart.element.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.deepStrictEqual(updates, [{ key: "autoStartWithCodex", value: true }]);
+  });
+
   it("patches hide-bubbles aggregate changes without rebuilding General content", () => {
     const initialSnapshot = {
       lang: "en",
@@ -10841,6 +10923,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(i18nSource.includes("themeBackToPets"));
     assert.ok(i18nSource.includes("themeAppearanceTitle"));
     assert.ok(i18nSource.includes("rowPetAccessory"));
+    assert.ok(i18nSource.includes("rowPetMouthAccessory"));
     assert.ok(i18nSource.includes("rowHolidayAccessory"));
     assert.ok(i18nSource.includes("accessoryCowboyHat"));
 
@@ -10854,11 +10937,13 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(strings.en.themeRefreshThemes, "Refresh themes");
     assert.strictEqual(strings.en.themeCapabilityFineMotion, "Fine motion");
     assert.strictEqual(strings.en.themeCustomize, "Customize");
-    assert.strictEqual(strings.en.rowPetAccessory, "Accessory");
+    assert.strictEqual(strings.en.rowPetAccessory, "Head accessory");
+    assert.strictEqual(strings.en.rowPetMouthAccessory, "Mouth accessory");
     assert.strictEqual(strings.en.rowHolidayAccessory, "Holiday auto outfit");
     assert.strictEqual(strings.en.accessoryWizardHat, "Wizard hat");
     assert.strictEqual(strings.zh.themeCustomize, "装扮");
-    assert.strictEqual(strings.zh.rowPetAccessory, "配饰");
+    assert.strictEqual(strings.zh.rowPetAccessory, "头部配饰");
+    assert.strictEqual(strings.zh.rowPetMouthAccessory, "嘴部配饰");
     assert.strictEqual(strings.zh.rowHolidayAccessory, "节日自动换装");
     assert.strictEqual(strings.zh.accessoryWizardHat, "巫师帽");
     assert.strictEqual(strings.zh.themeImportPetZip, "导入 Codex Pet 包（.zip）");
@@ -11083,7 +11168,7 @@ describe("settings renderer browser environment", () => {
           name: "Clawd",
           builtin: true,
           active: true,
-          capabilities: { petTint: true, accessories: true },
+          capabilities: { petTint: true, accessories: true, mouthAccessories: true },
         },
         {
           id: "custom",
@@ -11133,7 +11218,7 @@ describe("settings renderer browser environment", () => {
           name: "Clawd",
           builtin: true,
           active: true,
-          capabilities: { petTint: true, accessories: true },
+          capabilities: { petTint: true, accessories: true, mouthAccessories: true },
         },
         {
           id: "custom",
@@ -11214,12 +11299,13 @@ describe("settings renderer browser environment", () => {
           builtin: true,
           active: true,
           previewFileUrl: "file:///clawd.svg",
-          capabilities: { petTint: true, accessories: true },
+          capabilities: { petTint: true, accessories: true, mouthAccessories: true },
         },
       ],
       snapshot: {
         petTint: { clawd: "matcha", cloudling: "vaporwave" },
         petAccessory: { clawd: "wizard-hat", cloudling: "halo" },
+        petMouthAccessory: { clawd: "cigarette" },
         holidayAccessoryEnabled: {},
       },
       petTintOptions: [
@@ -11236,12 +11322,16 @@ describe("settings renderer browser environment", () => {
         { id: "wizard-hat", labelKey: "accessoryWizardHat" },
         { id: "halo", labelKey: "accessoryHalo" },
       ],
+      petMouthAccessoryOptions: [
+        { id: "none", labelKey: "accessoryNone" },
+        { id: "cigarette", labelKey: "accessoryCigarette" },
+      ],
     });
 
     harness.content.querySelector(".theme-customize-btn").dispatchEvent({ type: "click" });
     assert.ok(harness.content.querySelector(".theme-detail-back"));
     assert.ok(harness.content.querySelector(".theme-detail-hero"));
-    assert.strictEqual(harness.content.querySelectorAll(".theme-customization-row").length, 3);
+    assert.strictEqual(harness.content.querySelectorAll(".theme-customization-row").length, 4);
     assert.strictEqual(harness.content.querySelector(".theme-grid"), null);
 
     const select = harness.content.querySelector(".pet-tint-select");
@@ -11291,13 +11381,28 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").disabled, false);
     assert.strictEqual(accessorySelect.querySelector(".language-picker-trigger").getAttribute("aria-disabled"), "false");
 
+    const mouthAccessorySelect = harness.content.querySelector(".pet-mouth-accessory-select");
+    assert.strictEqual(getSelectedPickerValue(mouthAccessorySelect), "cigarette");
+    assert.deepStrictEqual(
+      mouthAccessorySelect.querySelectorAll(".language-picker-option").map((option) => option.textContent),
+      ["None", "Cigarette"]
+    );
+    choosePickerOption(mouthAccessorySelect, "none");
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(harness.updates[2])),
+      { key: "petMouthAccessory", value: {} }
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+
     const holidaySwitch = harness.content.querySelector(".holiday-accessory-switch");
     assert.ok(holidaySwitch);
     assert.strictEqual(holidaySwitch.getAttribute("role"), "switch");
     assert.strictEqual(holidaySwitch.getAttribute("aria-checked"), "false");
     holidaySwitch.dispatchEvent({ type: "click" });
     assert.deepStrictEqual(
-      JSON.parse(JSON.stringify(harness.updates[2])),
+      JSON.parse(JSON.stringify(harness.updates[3])),
       {
         key: "holidayAccessoryEnabled",
         value: { clawd: true },
@@ -11312,7 +11417,7 @@ describe("settings renderer browser environment", () => {
 
     holidaySwitch.dispatchEvent({ type: "keydown", key: "Enter", preventDefault() {} });
     assert.deepStrictEqual(
-      JSON.parse(JSON.stringify(harness.updates[3])),
+      JSON.parse(JSON.stringify(harness.updates[4])),
       {
         key: "holidayAccessoryEnabled",
         value: {},
@@ -11334,12 +11439,13 @@ describe("settings renderer browser environment", () => {
           builtin: true,
           active: true,
           previewFileUrl: "file:///clawd.svg",
-          capabilities: { petTint: true, accessories: true },
+          capabilities: { petTint: true, accessories: true, mouthAccessories: true },
         },
       ],
       snapshot: {
         petTint: { clawd: "matcha" },
         petAccessory: { clawd: "wizard-hat" },
+        petMouthAccessory: { clawd: "cigarette" },
         holidayAccessoryEnabled: {},
       },
       petTintOptions: [
@@ -11352,12 +11458,17 @@ describe("settings renderer browser environment", () => {
         { id: "wizard-hat", labelKey: "accessoryWizardHat" },
         { id: "halo", labelKey: "accessoryHalo" },
       ],
+      petMouthAccessoryOptions: [
+        { id: "none", labelKey: "accessoryNone" },
+        { id: "cigarette", labelKey: "accessoryCigarette" },
+      ],
     });
 
     harness.content.querySelector(".theme-customize-btn").dispatchEvent({ type: "click" });
     const originalHero = harness.content.querySelector(".theme-detail-hero");
     const originalTint = harness.content.querySelector(".pet-tint-select");
     const originalAccessory = harness.content.querySelector(".pet-accessory-select");
+    const originalMouthAccessory = harness.content.querySelector(".pet-mouth-accessory-select");
     const originalHolidaySwitch = harness.content.querySelector(".holiday-accessory-switch");
     harness.content.scrollTop = 137;
 
@@ -11365,12 +11476,14 @@ describe("settings renderer browser environment", () => {
       ...harness.core.state.snapshot,
       petTint: { clawd: "gold" },
       petAccessory: { clawd: "halo" },
+      petMouthAccessory: {},
       holidayAccessoryEnabled: { clawd: true },
     };
     harness.core.ops.applyChanges({
       changes: {
         petTint: nextSnapshot.petTint,
         petAccessory: nextSnapshot.petAccessory,
+        petMouthAccessory: nextSnapshot.petMouthAccessory,
         holidayAccessoryEnabled: nextSnapshot.holidayAccessoryEnabled,
       },
       snapshot: nextSnapshot,
@@ -11379,10 +11492,12 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelector(".theme-detail-hero"), originalHero);
     assert.strictEqual(harness.content.querySelector(".pet-tint-select"), originalTint);
     assert.strictEqual(harness.content.querySelector(".pet-accessory-select"), originalAccessory);
+    assert.strictEqual(harness.content.querySelector(".pet-mouth-accessory-select"), originalMouthAccessory);
     assert.strictEqual(harness.content.querySelector(".holiday-accessory-switch"), originalHolidaySwitch);
     assert.strictEqual(harness.content.scrollTop, 137);
     assert.strictEqual(getSelectedPickerValue(originalTint), "gold");
     assert.strictEqual(getSelectedPickerValue(originalAccessory), "halo");
+    assert.strictEqual(getSelectedPickerValue(originalMouthAccessory), "none");
     assert.strictEqual(originalHolidaySwitch.getAttribute("aria-checked"), "true");
   });
 
@@ -12172,6 +12287,60 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     await Promise.resolve();
     assert.strictEqual(calls, 1);
+  });
+
+  it("preserves fetched null verdicts and keeps them out of every Settings action surface", async () => {
+    const commandCalls = [];
+    const detectionResult = {
+      checkedAt: 895,
+      agents: [
+        { agentId: "qoder", detectedInstalled: null, confidence: "low", reason: "insufficient-evidence" },
+        { agentId: "zcode", detectedInstalled: null, confidence: "low", reason: "insufficient-evidence" },
+      ],
+      skippedAgentIds: [],
+    };
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          qoder: { integrationInstalled: false, enabled: false },
+          zcode: { integrationInstalled: true, enabled: true },
+        },
+        dismissedAgentInstallHints: { qoder: true },
+        dismissedAgentCleanupHints: { zcode: true },
+      },
+      agentMetadata: [
+        { id: "qoder", name: "Qoder", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
+        { id: "zcode", name: "ZCode", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
+      ],
+      settingsAPI: {
+        detectAgentInstallations: () => Promise.resolve(detectionResult),
+        command: (action, payload) => {
+          commandCalls.push([action, payload]);
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+
+    await harness.core.ops.fetchAgentInstallationHints();
+    harness.raf.flush();
+
+    assert.deepStrictEqual(
+      harness.core.runtime.agentInstallationHints.agents.map((entry) => entry.detectedInstalled),
+      [null, null],
+      "normalization must preserve tri-state null"
+    );
+    assert.strictEqual(harness.content.querySelector(".agent-install-hint-banner"), null);
+    assert.strictEqual(harness.content.querySelector(".agent-cleanup-hint-banner"), null);
+    const connectedPills = harness.content.querySelectorAll(".agents-subtabs .segmented button");
+    assert.strictEqual(connectedPills[1].querySelector(".agents-subtab-count"), null);
+
+    harness.core.runtime.agentsSubtab = "discover";
+    harness.core.ops.requestRender({ content: true });
+    harness.raf.flush();
+    assert.strictEqual(harness.content.querySelector(".agent-section-recommended"), null);
+    assert.strictEqual(harness.content.querySelector(".agent-install-hint-banner"), null);
+    assert.strictEqual(harness.content.querySelector(".agent-cleanup-hint-banner"), null);
+    assert.deepStrictEqual(commandCalls, [], "null must not clear either dismissal bucket");
   });
 
   it("splits connected agents from detected and undetected ones across the subtabs", () => {
@@ -13956,6 +14125,33 @@ describe("settings renderer browser environment", () => {
       { themeId: "clawd", file: "clawd-idle-reading.svg" }
     );
     assert.strictEqual(valueEl.textContent, "Idle Reading", "optimistic display should show the pick immediately");
+  });
+
+  it("mounts the idle visual menu while open and removes it from layout after close", () => {
+    const runtime = createIdleVisualRuntime();
+    const modalRoot = new FakeElement("div");
+    const { core, document } = loadAnimOverridesTabForTest({ runtime, modalRoot });
+    const parent = new FakeElement("main");
+    document.body.appendChild(parent);
+    core.tabs.animOverrides.render(parent, core);
+
+    const picker = parent.querySelector(".anim-idle-visual-row .language-picker");
+    const trigger = picker.querySelector(".language-picker-trigger");
+    const menu = picker.querySelector(".language-picker-menu");
+
+    trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(trigger.getAttribute("aria-expanded"), "true");
+    assert.strictEqual(menu.getAttribute("aria-hidden"), "false");
+    assert.strictEqual(
+      picker.classList.contains("menu-mounted"),
+      true,
+      "the shared CSS only displays mounted picker menus",
+    );
+
+    trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(trigger.getAttribute("aria-expanded"), "false");
+    assert.strictEqual(menu.getAttribute("aria-hidden"), "true");
+    assert.strictEqual(picker.classList.contains("menu-mounted"), false);
   });
 
   it("patches idleVisual-only broadcasts in place and re-syncs the mounted picker", () => {

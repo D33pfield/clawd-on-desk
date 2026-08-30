@@ -68,6 +68,7 @@ const {
 const {
   isPetTintId,
   isPetAccessoryId,
+  isPetMouthAccessoryId,
 } = require("./pet-customization-catalog");
 const { isValidDisplaySnapshot } = require("./work-area");
 const {
@@ -127,6 +128,7 @@ const {
 } = require("./settings-actions-theme-overrides");
 const {
   autoStartWithClaude,
+  autoStartWithCodex,
   createRepairDoctorIssue,
   installHooks,
   manageClaudeHooksAutomatically,
@@ -211,6 +213,7 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "qoder",
   "reasonix",
   "qoderwork",
+  "traecode",
   "qwenwork",
 ]);
 
@@ -366,6 +369,24 @@ const updateRegistry = {
     }
     return { status: "ok" };
   },
+  petMouthAccessory(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "petMouthAccessory must be a theme-to-accessory object" };
+    }
+    for (const [themeId, accessoryId] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || !isPetMouthAccessoryId(accessoryId)
+        || accessoryId === "none"
+      ) {
+        return {
+          status: "error",
+          message: `petMouthAccessory entry "${themeId}" must map a safe theme id to a non-default catalog accessory id`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
   holidayAccessoryEnabled(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       return { status: "error", message: "holidayAccessoryEnabled must be a theme-to-boolean object" };
@@ -511,6 +532,10 @@ const updateRegistry = {
     }
     return { status: "ok" };
   },
+  codexWorkingStaleMs(value) {
+    if (value === 0) return { status: "ok" };
+    return requireIntegerInRange("codexWorkingStaleMs", 30_000, 86_400_000)(value);
+  },
   detachedIdleStaleMs: requireIntegerInRange("detachedIdleStaleMs", 5_000, 300_000),
   allowEdgePinning: requireBoolean("allowEdgePinning"),
   disableMiniMode: requireBoolean("disableMiniMode"),
@@ -522,6 +547,7 @@ const updateRegistry = {
 
   // ── System-backed prefs (object-form: validate + effect pre-commit gate) ──
   autoStartWithClaude,
+  autoStartWithCodex,
   manageClaudeHooksAutomatically,
   openAtLogin,
 
@@ -879,7 +905,9 @@ function setBubbleCategoryEnabled(payload, deps) {
   return { status: "ok", commit: result.commit };
 }
 
-// Atomic three-key writer for the session-cleanup intervals. Lives as a
+// Atomic writer for the session-cleanup intervals. The historical command name
+// is retained for renderer/backward compatibility even though the policy now
+// includes a fourth, Codex-specific value. Lives as a
 // command (not as `applyBulk`) because applyBulk runs each single-key
 // validator against the PRE-bulk snapshot, which would reject a Reset that
 // lowers both knobs simultaneously. The controller's command path re-runs
@@ -894,7 +922,7 @@ function setSessionCleanupTriple(payload, deps) {
 
   // Strict presence check: a present-but-wrong-type value is a programmer
   // error and must surface, not silently fall back to the snapshot.
-  function pick(key) {
+  function pick(key, fallbackDefault = null) {
     if (key in payload) {
       const v = payload[key];
       if (!Number.isInteger(v)) {
@@ -903,21 +931,26 @@ function setSessionCleanupTriple(payload, deps) {
       return { value: v };
     }
     const fallback = Number(snapshot[key]);
-    if (!Number.isFinite(fallback)) {
-      return { error: `${key} missing from payload and not present in snapshot` };
-    }
-    return { value: fallback };
+    if (Number.isFinite(fallback)) return { value: fallback };
+    if (Number.isFinite(fallbackDefault)) return { value: fallbackDefault };
+    return { error: `${key} missing from payload and not present in snapshot` };
   }
 
   const s = pick("sessionStaleMs");
   if (s.error) return { status: "error", message: s.error };
   const w = pick("workingStaleMs");
   if (w.error) return { status: "error", message: w.error };
+  // Older controller snapshots predate the fourth value. An absent key
+  // receives the shipped default; a present malformed value still fails
+  // closed through the strict branch above.
+  const c = pick("codexWorkingStaleMs", 1_200_000);
+  if (c.error) return { status: "error", message: c.error };
   const d = pick("detachedIdleStaleMs");
   if (d.error) return { status: "error", message: d.error };
 
   const sessionStaleMs = s.value;
   const workingStaleMs = w.value;
+  const codexWorkingStaleMs = c.value;
   const detachedIdleStaleMs = d.value;
 
   if (!(sessionStaleMs === 0 || (sessionStaleMs >= 60_000 && sessionStaleMs <= 86_400_000))) {
@@ -925,6 +958,9 @@ function setSessionCleanupTriple(payload, deps) {
   }
   if (!(workingStaleMs >= 30_000 && workingStaleMs <= 86_400_000)) {
     return { status: "error", message: `workingStaleMs out of range: ${workingStaleMs}` };
+  }
+  if (!(codexWorkingStaleMs === 0 || (codexWorkingStaleMs >= 30_000 && codexWorkingStaleMs <= 86_400_000))) {
+    return { status: "error", message: `codexWorkingStaleMs out of range: ${codexWorkingStaleMs}` };
   }
   if (!(detachedIdleStaleMs >= 5_000 && detachedIdleStaleMs <= 300_000)) {
     return { status: "error", message: `detachedIdleStaleMs out of range: ${detachedIdleStaleMs}` };
@@ -939,7 +975,7 @@ function setSessionCleanupTriple(payload, deps) {
 
   return {
     status: "ok",
-    commit: { sessionStaleMs, workingStaleMs, detachedIdleStaleMs },
+    commit: { sessionStaleMs, workingStaleMs, codexWorkingStaleMs, detachedIdleStaleMs },
   };
 }
 
@@ -1064,6 +1100,7 @@ async function removeTheme(payload, deps) {
   const currentIdleVisual = snapshot.idleVisual || {};
   const currentPetTint = snapshot.petTint || {};
   const currentPetAccessory = snapshot.petAccessory || {};
+  const currentPetMouthAccessory = snapshot.petMouthAccessory || {};
   const currentHolidayAccessoryEnabled = snapshot.holidayAccessoryEnabled || {};
   const nextCommit = {};
   if (currentOverrides[themeId]) {
@@ -1090,6 +1127,11 @@ async function removeTheme(payload, deps) {
     const nextPetAccessory = { ...currentPetAccessory };
     delete nextPetAccessory[themeId];
     nextCommit.petAccessory = nextPetAccessory;
+  }
+  if (currentPetMouthAccessory[themeId] !== undefined) {
+    const nextPetMouthAccessory = { ...currentPetMouthAccessory };
+    delete nextPetMouthAccessory[themeId];
+    nextCommit.petMouthAccessory = nextPetMouthAccessory;
   }
   if (currentHolidayAccessoryEnabled[themeId] !== undefined) {
     const nextHolidayAccessoryEnabled = { ...currentHolidayAccessoryEnabled };
@@ -1153,6 +1195,7 @@ function setThemeSelection(payload, deps) {
     ? {
         petTint: activeTheme._capabilities.petTint === true,
         accessories: activeTheme._capabilities.accessories === true,
+        mouthAccessories: activeTheme._capabilities.mouthAccessories === true,
       }
     : null;
 

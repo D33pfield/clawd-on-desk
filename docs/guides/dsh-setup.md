@@ -162,11 +162,19 @@ warnings, and rely on DSH's native web flow whenever Clawd yields no decision.
 
 - Windows x64 native DSH web is the first target. Real rc.6 install, config
   composition, web boot, uninstall, and packaged-app source loading were verified
-  on 2026-08-14. Real rc.2 install, web boot, and Allow Once / Deny approval
-  round trips were verified on 2026-08-29 against the packaged app on Windows;
-  rc.6 and rc.2 generation migration and unlisted-version rejection are covered
-  by the installer test suite. macOS, Linux, WSL, remote SSH, non-web profiles,
-  and ARM64 packaging remain unverified.
+  on 2026-08-14. On 2026-08-29, a Windows x64 packaged-app smoke with real rc.2
+  also verified install, web boot, a real API-backed DSH web session, and both
+  manual Clawd **Allow Once** and **Deny** approval round trips. The installer
+  suite covers rc.6 retention, rc.2 installation, cross-contract generation
+  migration, and unlisted-version rejection.
+- On 2026-08-29, a macOS source-checkout smoke under a Finder-like GUI `PATH`
+  verified Settings Install, managed plugin loading, a real API-backed DSH web
+  session, and both manual Clawd **Allow Once** and **Deny** approval round trips.
+  The allowed command completed with exit code 0 and the denied command produced
+  no side effect. This remains source-checkout evidence rather than macOS
+  packaged-app verification.
+- Linux, WSL, remote SSH, non-web profiles, macOS packaging, and ARM64 packaging
+  remain unverified.
 - There is no terminal-focus action because DSH web is a browser surface.
 - Closing the local bubble does not deny the request. If a configured Telegram
   or Feishu/Lark remote channel takes it, that channel may decide; otherwise DSH

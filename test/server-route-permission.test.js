@@ -212,6 +212,59 @@ function callPermissionPostThroughAutomation(body, mode, options = {}) {
   });
 }
 
+describe("Claude ExitPlanMode updatedInput compatibility", () => {
+  it("keeps the exact request input separate from the truncated display copy", async () => {
+    const rawInput = {
+      plan: `Start of plan ${"x".repeat(700)} end-of-plan`,
+      planFilePath: "C:\\Users\\Ruller\\.claude\\plans\\exact.md",
+      metadata: { source: "permission-hook", untouched: true },
+      steps: ["first", "second"],
+    };
+    const res = await callPermissionPostThroughAutomation(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "claude:exact-plan-input",
+      tool_name: "ExitPlanMode",
+      tool_input: rawInput,
+    }), "off", { showPermissionBubble() {} });
+
+    assert.strictEqual(res.permission.pendingPermissions.length, 1);
+    const entry = res.permission.pendingPermissions[0];
+    assert.notStrictEqual(entry.toolInput.plan, rawInput.plan, "display copy should remain truncated");
+    assert.deepStrictEqual(entry.planReviewWireInput, rawInput, "wire input must remain unmodified");
+
+    res.permission.resolvePermissionEntry(entry, "allow");
+
+    assert.strictEqual(res.body, JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: {
+          behavior: "allow",
+          updatedInput: rawInput,
+        },
+      },
+    }));
+  });
+
+  it("drops the connection instead of allowing when the request omitted tool_input", async () => {
+    const res = await callPermissionPostThroughAutomation(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "claude:missing-plan-input",
+      tool_name: "ExitPlanMode",
+    }), "off", { showPermissionBubble() {} });
+
+    assert.strictEqual(res.permission.pendingPermissions.length, 1);
+    const entry = res.permission.pendingPermissions[0];
+    assert.strictEqual(entry.planReviewWireInput, null);
+
+    res.permission.resolvePermissionEntry(entry, "allow");
+
+    assert.strictEqual(res.body, "", "fallback must not write a decision payload");
+    assert.strictEqual(res.writableFinished, false, "fallback must not end with a false allow");
+    assert.strictEqual(res.destroyed, true, "connection drop returns control to Claude's native prompt");
+    assert.deepStrictEqual(res.permission.pendingPermissions, []);
+  });
+});
+
 describe("server-route-permission helpers", () => {
   it("preserves bubble bypass decisions for CC, Codex, and opencode", () => {
     assert.strictEqual(shouldBypassCCBubble({ hideBubbles: true }, interaction("claude-code", "Bash"), "claude-code"), true);
@@ -290,6 +343,84 @@ describe("server-route-permission POST", () => {
         `${agentId} permission identity must reach the main-owned session path`
       );
     }
+  });
+
+  it("keeps a bounded compact preview and a complete local detail across permission adapters", async () => {
+    const marker = "__CLAWD_PERMISSION_DETAIL_END__";
+    const command = `${"printf x; ".repeat(260)}${marker}`;
+    const cases = [
+      { agentId: "claude-code", body: {} },
+      { agentId: "codebuddy", body: {} },
+      { agentId: "codex", body: { tool_input_description: "Run a generated command" } },
+      { agentId: "qwen-code", body: {} },
+      { agentId: "zcode", body: {} },
+      { agentId: "copilot-cli", body: {} },
+      { agentId: "hermes", body: {} },
+      {
+        agentId: "opencode",
+        body: {
+          request_id: "req-detail",
+          bridge_url: "http://127.0.0.1:9",
+          bridge_token: "detail-token",
+        },
+      },
+    ];
+
+    for (const { agentId, body } of cases) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: agentId,
+        session_id: `${agentId}:detail`,
+        tool_name: "Bash",
+        tool_input: { command },
+        ...body,
+      }));
+      assert.strictEqual(res.ctx.pendingPermissions.length, 1, agentId);
+      const entry = res.ctx.pendingPermissions[0];
+      assert.strictEqual(entry.detailText.endsWith(marker), true, agentId);
+      assert.strictEqual(entry.detailTruncated, false, agentId);
+      assert.strictEqual(JSON.stringify(entry.toolInput).includes(marker), false, agentId);
+    }
+  });
+
+  it("keeps long Ask text for the expanded view without changing the wire answer keys", async () => {
+    const marker = "__CLAWD_ASK_DETAIL_END__";
+    const question = [
+      "Compare the tradeoffs carefully.",
+      "",
+      "1. Keep the compact window.",
+      "2. Open a scrollable detail view.",
+      "",
+      `${"Include every relevant constraint. ".repeat(20)}${marker}`,
+    ].join("\n");
+    const optionDescription = [
+      "Open the detail view.",
+      "",
+      "- Preserve paragraphs.",
+      "- Preserve list structure.",
+    ].join("\n");
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "claude-code:ask-detail",
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [{
+          question,
+          header: "Approach",
+          multiSelect: false,
+          options: [
+            { label: "Option A", description: "Keep the compact window." },
+            { label: "Option B", description: optionDescription },
+          ],
+        }],
+      },
+    }));
+
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1);
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.toolInput.questions[0].question.includes(marker), false);
+    assert.strictEqual(entry.elicitationDetailInput.questions[0].question, question);
+    assert.strictEqual(entry.elicitationDetailInput.questions[0].options[1].description, optionDescription);
+    assert.strictEqual(entry.elicitationWireInput.questions[0].question, question);
   });
 
   it("uses the raw permission session id and ignores sender eligibility claims", async () => {

@@ -14,6 +14,7 @@ function buildSettingsAgentOrderExports() {
     "workbuddy",
     "qoder",
     "qoderwork",
+    "traecode",
     "qwenwork",
   ];
 

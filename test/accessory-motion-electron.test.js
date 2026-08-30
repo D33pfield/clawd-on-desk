@@ -2,6 +2,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
@@ -22,20 +24,30 @@ test("real SVG getCTM motion stays inside the declared accessory envelope", { ti
   }
 
   const fixture = path.join(__dirname, "fixtures", "accessory-motion-electron.js");
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-accessory-motion-electron-"));
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   const args = ["--disable-gpu"];
+  args.push(`--user-data-dir=${profile}`);
   // GitHub's Ubuntu runner cannot satisfy Chromium's setuid helper ownership
   // contract inside the workspace. The audit loads only repository-local SVGs
   // in a disposable hidden window, so disabling the sandbox for this child
   // test process is both scoped and deterministic.
   if (process.platform === "linux") args.push("--no-sandbox");
   args.push(fixture);
-  const result = spawnSync(executable, args, {
-    env,
-    encoding: "utf8",
-    timeout: 85_000,
-  });
+  let result;
+  try {
+    result = spawnSync(executable, args, {
+      env,
+      encoding: "utf8",
+      timeout: 85_000,
+    });
+  } finally {
+    const tempRoot = `${path.resolve(os.tmpdir())}${path.sep}`;
+    const resolvedProfile = path.resolve(profile);
+    assert.ok(resolvedProfile.startsWith(tempRoot), "Electron profile must stay under the temp root");
+    fs.rmSync(resolvedProfile, { recursive: true, force: true });
+  }
 
   assert.strictEqual(
     result.status,

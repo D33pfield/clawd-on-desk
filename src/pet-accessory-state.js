@@ -8,11 +8,18 @@ const NONE_PAYLOAD = Object.freeze({
   offsetY: 0,
 });
 
+function emptyPayloads() {
+  return Object.freeze({ head: NONE_PAYLOAD, mouth: NONE_PAYLOAD });
+}
+
 let current = Object.freeze({
   themeId: null,
-  payload: NONE_PAYLOAD,
-  generation: 0,
+  payloads: emptyPayloads(),
+  accessoryGeneration: 0,
 });
+let nextAccessoryGeneration = 0;
+let issuedCandidates = new WeakSet();
+let issuedDeliveries = new WeakSet();
 let repositionFloatingSurfaces = null;
 
 function themeIdOf(theme) {
@@ -43,34 +50,91 @@ function normalizePayload(payload) {
   });
 }
 
+function createPetAccessorySlotsCandidate(payloads, theme = null) {
+  const themeId = themeIdOf(theme);
+  const normalizedPayloads = Object.freeze({
+    head: normalizePayload(payloads && payloads.head),
+    mouth: normalizePayload(payloads && payloads.mouth),
+  });
+  const candidate = Object.freeze({
+    themeId,
+    payloads: normalizedPayloads,
+    accessoryGeneration: ++nextAccessoryGeneration,
+  });
+  issuedCandidates.add(candidate);
+  return candidate;
+}
+
 function payloadEquals(a, b) {
-  return !!(
-    a && b
+  return !!(a && b
     && a.id === b.id
     && a.assetFile === b.assetFile
     && a.aspect === b.aspect
     && a.widthScale === b.widthScale
-    && a.offsetY === b.offsetY
-  );
+    && a.offsetY === b.offsetY);
 }
 
-function commitPetAccessoryPayload(payload, theme = null) {
+function preparePetAccessorySlotsDelivery(payloads, theme = null) {
   const themeId = themeIdOf(theme);
-  const normalized = normalizePayload(payload);
-  if (current.themeId === themeId && payloadEquals(current.payload, normalized)) {
-    return current;
-  }
-  current = Object.freeze({
-    themeId,
-    payload: normalized,
-    generation: current.generation + 1,
+  const normalizedPayloads = Object.freeze({
+    head: normalizePayload(payloads && payloads.head),
+    mouth: normalizePayload(payloads && payloads.mouth),
   });
+  const canReuseCurrent = current.themeId === themeId
+    && payloadEquals(current.payloads.head, normalizedPayloads.head)
+    && payloadEquals(current.payloads.mouth, normalizedPayloads.mouth);
+  const delivery = Object.freeze({
+    snapshot: canReuseCurrent
+      ? current
+      : createPetAccessorySlotsCandidate(normalizedPayloads, theme),
+    needsCommit: !canReuseCurrent,
+  });
+  issuedDeliveries.add(delivery);
+  return delivery;
+}
+
+function finalizePetAccessorySlotsDelivery(delivery, delivered) {
+  if (!delivery || !issuedDeliveries.has(delivery)) {
+    throw new Error("pet accessory delivery must be prepared by canonical state");
+  }
+  if (delivered !== true) return false;
+  if (delivery.needsCommit) commitPetAccessorySlotsCandidate(delivery.snapshot);
+  return delivery.snapshot;
+}
+
+function commitPetAccessorySlotsCandidate(candidate) {
+  if (!candidate || !issuedCandidates.has(candidate)) {
+    throw new Error("pet accessory commit requires an issued candidate snapshot");
+  }
+  if (candidate.accessoryGeneration < current.accessoryGeneration) return current;
+  current = candidate;
   return current;
+}
+
+function getPetAccessorySlotsSnapshot(theme = null) {
+  if (theme && current.themeId !== themeIdOf(theme)) return null;
+  return current;
+}
+
+// Compatibility wrappers for head-only callers while production migrates to
+// atomic two-slot candidates. New code must use the slots APIs above.
+function commitPetAccessoryPayload(payload, theme = null) {
+  const sameTheme = current.themeId === themeIdOf(theme);
+  const candidate = createPetAccessorySlotsCandidate({
+    head: payload,
+    mouth: sameTheme ? current.payloads.mouth : NONE_PAYLOAD,
+  }, theme);
+  return commitPetAccessorySlotsCandidate(candidate);
 }
 
 function getPetAccessoryPayloadSnapshot(theme = null) {
-  if (theme && current.themeId !== themeIdOf(theme)) return null;
-  return current;
+  const snapshot = getPetAccessorySlotsSnapshot(theme);
+  if (!snapshot) return null;
+  return Object.freeze({
+    themeId: snapshot.themeId,
+    payload: snapshot.payloads.head,
+    generation: snapshot.accessoryGeneration,
+  });
 }
 
 function setPetAccessoryFloatingSurfaceRepositioner(fn) {
@@ -98,15 +162,23 @@ function describeGeometrySync(result) {
 function resetPetAccessoryStateForTests() {
   current = Object.freeze({
     themeId: null,
-    payload: NONE_PAYLOAD,
-    generation: 0,
+    payloads: emptyPayloads(),
+    accessoryGeneration: 0,
   });
+  nextAccessoryGeneration = 0;
+  issuedCandidates = new WeakSet();
+  issuedDeliveries = new WeakSet();
   repositionFloatingSurfaces = null;
 }
 
 module.exports = {
   NONE_PAYLOAD,
   describeGeometrySync,
+  createPetAccessorySlotsCandidate,
+  preparePetAccessorySlotsDelivery,
+  finalizePetAccessorySlotsDelivery,
+  commitPetAccessorySlotsCandidate,
+  getPetAccessorySlotsSnapshot,
   commitPetAccessoryPayload,
   getPetAccessoryPayloadSnapshot,
   setPetAccessoryFloatingSurfaceRepositioner,

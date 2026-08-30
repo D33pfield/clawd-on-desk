@@ -97,8 +97,14 @@ const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
   buildPetAccessoryPayload,
-  resolvePetAccessoryPayload,
+  getPetMouthAccessoryIdForTheme,
+  buildPetMouthAccessoryPayload,
 } = require("./pet-customization-catalog");
+const {
+  finalizePetAccessorySlotsDelivery,
+  getPetAccessorySlotsSnapshot,
+  preparePetAccessorySlotsDelivery,
+} = require("./pet-accessory-state");
 const {
   getEffectivePetAccessoryIdForTheme,
   createHolidayAccessoryRuntime,
@@ -110,7 +116,7 @@ const {
   selectSessionAutomationDialogParent,
 } = require("./session-automation-dialog-parent");
 const { createSessionFolderOpener } = require("./session-open-folder");
-const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
+const { isTrustedMainFrameEvent, registerPetInteractionIpc } = require("./pet-interaction-ipc");
 const { createSystemWakeRecovery } = require("./system-wake-recovery");
 const { formatLocalTimestamp } = require("./log-timestamp");
 const { launchClaudeSession, openTerminalAt } = require("./launch-claude");
@@ -163,6 +169,10 @@ const {
 } = require("./size-utils");
 const { keepOutOfTaskbar } = require("./taskbar");
 const { loadTrayNormalIcon, loadTrayFlashIcon } = require("./tray-flash-icon");
+const {
+  installStartupDockIcon,
+  resolveRuntimeDockIconPolicy,
+} = require("./mac-dock-icon-runtime");
 const createTopmostRuntime = require("./topmost-runtime");
 const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
 const createThemeFadeSequencer = require("./theme-fade-sequencer");
@@ -170,6 +180,9 @@ const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
 const createFloatingWindowRuntime = require("./floating-window-runtime");
 const createPetWindowRuntime = require("./pet-window-runtime");
+const { collectRequiredAssetFiles } = require("./theme-schema");
+const { describeGeometrySync } = require("./pet-accessory-state");
+const { createDisplayedVisualProjection } = require("./displayed-visual-projection");
 const { createTestReactionHandler } = require("./test-reaction");
 const createMacHideController = require("./mac-hide");
 const {
@@ -299,6 +312,7 @@ const {
 } = require("./bubble-policy");
 const loginItemHelpers = require("./login-item");
 const { writeCodexAutoStartGate } = require("../hooks/server-config");
+const { createCodexAutoStartGateEvaluator } = require("./agent-gate");
 const PREFS_PATH = path.join(app.getPath("userData"), "clawd-prefs.json");
 const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
 // Recovery from readable invalid contents is writable only after the original
@@ -307,14 +321,22 @@ const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
 // closed until restart in either case.
 const _initialPrefsRecovered = _initialPrefsLoad.recovered === true;
 const _initialPrefsRecoveryBackupFailed = _initialPrefsLoad.recoveryBackupFailed === true;
+const _codexAutoStartAuthorityLost = (
+  _initialPrefsLoad.locked === true
+  || _initialPrefsRecovered
+  || _initialPrefsRecoveryBackupFailed
+  || _initialPrefsLoad.codexAutoStartAuthoritative === false
+);
+const _evaluateCodexAutoStartGate = createCodexAutoStartGateEvaluator({
+  authorityLost: _codexAutoStartAuthorityLost,
+});
 
 function _persistCodexAutoStartGate(enabled) {
   return writeCodexAutoStartGate(enabled === true);
 }
 
 function _syncCodexAutoStartGate(snapshot, source) {
-  const codex = snapshot && snapshot.agents && snapshot.agents.codex;
-  if (_persistCodexAutoStartGate(!!(codex && codex.enabled === true))) return true;
+  if (_persistCodexAutoStartGate(_evaluateCodexAutoStartGate(snapshot))) return true;
   console.warn(`Clawd: failed to sync Codex auto-start gate (${source})`);
   return false;
 }
@@ -427,10 +449,12 @@ let telegramNativeRunner = null;
 let telegramCompanion = null;
 let telegramDirectSend = null;
 let discordPresenceBridge = null;
-// Renderer-visible state animations can diverge briefly from state.currentSvg
-// (tick.js idle rotation). Cache every state-change even while Presence is off
-// so a first enable mirrors what the pet is actually showing.
+// Renderer-visible state animations can diverge from state.currentSvg (idle
+// rotation and reactions). Presence is fed only after the renderer confirms
+// what is actually on screen.
 let lastDiscordPresenceVisual = null;
+let displayedVisualProjection = null;
+let lastAppliedVisualGeneration = 0;
 let suppressTelegramMigrationReconcile = 0;
 let _remoteSshTransportCoordinator = null;
 let feishuApprovalClient = null;
@@ -560,6 +584,10 @@ _settingsController.subscribeKey("agents", (_agents, snapshot) => {
   // current process. An unreadable prefs file rejects mutations earlier in the
   // controller. In both locked cases, publishing ephemeral values would let a
   // retained hook cold-launch Clawd against a different durable prefs truth.
+  if (_settingsController.isLocked()) return;
+  _syncCodexAutoStartGate(snapshot, "settings");
+});
+_settingsController.subscribeKey("autoStartWithCodex", (_enabled, snapshot) => {
   if (_settingsController.isLocked()) return;
   _syncCodexAutoStartGate(snapshot, "settings");
 });
@@ -768,6 +796,8 @@ themeRuntime = createThemeRuntime({
   syncHitWin,
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
   startMainTick: () => startMainTick(),
+  invalidateDisplayedVisual: (detail) => resetDisplayedVisualProjection(detail),
+  refreshDisplayedVisualHitBoxes: () => refreshDisplayedVisualHitBoxes(),
   bumpAnimationOverridePreviewPosterGeneration,
   rebuildAllMenus: () => rebuildAllMenus(),
   isManagedTheme: (themeId) => codexPetMain && codexPetMain.isManagedTheme(themeId),
@@ -936,18 +966,53 @@ if (_loadedStartupTheme._id !== _requestedThemeId || _loadedStartupTheme._varian
 
 // ── Pet window geometry / bounds runtime ──
 // Geometry's startup/theme-swap fallback only. It must stay a pure read:
-// resolvePetAccessoryPayload() commits to the canonical payload, so using it
-// here would let a hit-window sync install a payload resolved from its own
+// Slot candidates commit to canonical state, so using one here would let a
+// hit-window sync install a payload resolved from its own
 // wall clock — the midnight/holiday race the canonical payload exists to end.
-function getEffectivePetAccessoryPayload() {
-  const activeTheme = getActiveTheme();
+function getEffectivePetAccessoryPayloads(activeTheme = getActiveTheme()) {
   const snapshot = _settingsController.getSnapshot();
-  const accessoryId = getEffectivePetAccessoryIdForTheme({
+  const headId = getEffectivePetAccessoryIdForTheme({
     petAccessory: snapshot.petAccessory,
     holidayAccessoryEnabled: snapshot.holidayAccessoryEnabled,
     themeId: activeTheme && activeTheme._id,
   });
-  return buildPetAccessoryPayload(accessoryId, activeTheme);
+  const mouthId = getPetMouthAccessoryIdForTheme(
+    snapshot.petMouthAccessory,
+    activeTheme && activeTheme._id
+  );
+  return {
+    head: buildPetAccessoryPayload(headId, activeTheme),
+    mouth: buildPetMouthAccessoryPayload(mouthId, activeTheme),
+  };
+}
+
+function getEffectivePetAccessoryIds() {
+  const activeTheme = getActiveTheme();
+  const canonical = getPetAccessorySlotsSnapshot(activeTheme);
+  const payloads = canonical ? canonical.payloads : getEffectivePetAccessoryPayloads();
+  return Object.freeze({
+    head: payloads.head.id,
+    mouth: payloads.mouth.id,
+  });
+}
+
+function prepareCurrentAccessorySlotsDelivery(activeTheme = getActiveTheme()) {
+  return preparePetAccessorySlotsDelivery(
+    getEffectivePetAccessoryPayloads(activeTheme),
+    activeTheme
+  );
+}
+
+function deliverAccessorySlotsSnapshot(activeTheme = getActiveTheme()) {
+  const delivery = prepareCurrentAccessorySlotsDelivery(activeTheme);
+  const candidate = delivery.snapshot;
+  const delivered = sendToRenderer("pet-accessory-slots-change", candidate);
+  if (!finalizePetAccessorySlotsDelivery(delivery, delivered)) return false;
+  const geometry = describeGeometrySync(syncHitWin());
+  if (geometry.applied) {
+    try { repositionAnchoredFloatingSurfaces(); } catch {}
+  }
+  return true;
 }
 
 // Composed accessory facing as the renderer actually applied it (mini-left
@@ -972,10 +1037,11 @@ const petWindowRuntime = createPetWindowRuntime({
   getHitWindow: () => hitWin,
   getSettingsWindow: () => getSettingsWindow(),
   getActiveTheme: () => getActiveTheme(),
-  getCurrentState: () => _state.getCurrentState(),
-  getCurrentSvg: () => _state.getCurrentSvg(),
-  getCurrentHitBox: () => _state.getCurrentHitBox(),
-  getCurrentAccessoryPayload: getEffectivePetAccessoryPayload,
+  getDisplayedVisual: () => getDisplayedVisualTuple(),
+  getCurrentState: () => getDisplayedVisualTuple().displayState,
+  getCurrentSvg: () => getDisplayedVisualTuple().file,
+  getCurrentHitBox: () => getDisplayedVisualTuple().hitBox,
+  getCurrentAccessoryPayloads: getEffectivePetAccessoryPayloads,
   getAccessoryMirrored: () => _accessoryMirrored,
   getMiniMode: () => _mini.getMiniMode(),
   getMiniTransitioning: () => _mini.getMiniTransitioning(),
@@ -1158,13 +1224,13 @@ let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetach
 let sessionHudPinned = _settingsController.get("sessionHudPinned");
 let sessionStaleMs = _settingsController.get("sessionStaleMs");
 let workingStaleMs = _settingsController.get("workingStaleMs");
+let codexWorkingStaleMs = _settingsController.get("codexWorkingStaleMs");
 let detachedIdleStaleMs = _settingsController.get("detachedIdleStaleMs");
 let soundMuted = _settingsController.get("soundMuted");
 let soundVolume = _settingsController.get("soundVolume");
 let lowPowerIdleMode = _settingsController.get("lowPowerIdleMode");
 let keepAwakeWhileWorking = _settingsController.get("keepAwakeWhileWorking");
 let petTint = _settingsController.get("petTint");
-let petAccessory = _settingsController.get("petAccessory");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let disableMiniModeCached = _settingsController.get("disableMiniMode");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
@@ -1298,29 +1364,121 @@ function bringPetToPrimaryDisplay() {
   return petWindowRuntime.bringPetToPrimaryDisplay();
 }
 
-function sendToRenderer(channel, ...args) {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
-  // State animations flow through this channel (applyState and the tick.js
-  // idle rotation), so it doubles as the presence mirror feed. Reactions,
-  // low-power pauses and tint/accessory changes ride other channels and are
-  // deliberately not mirrored.
-  if (channel === "state-change") {
-    const activeTheme = getActiveTheme();
-    lastDiscordPresenceVisual = {
-      state: args[0],
-      svg: args[1],
-      themeId: activeTheme && activeTheme._id,
-    };
-    if (discordPresenceBridge) {
-      try {
-        discordPresenceBridge.onVisual(
-          lastDiscordPresenceVisual.state,
-          lastDiscordPresenceVisual.svg,
-          lastDiscordPresenceVisual.themeId
-        );
-      } catch {}
-    }
+function sendRawToRenderer(channel, ...args) {
+  if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return false;
+  win.webContents.send(channel, ...args);
+  return true;
+}
+
+function inferVisualSource(displayState, file) {
+  return displayState === "idle" && file !== _state.getCurrentSvg()
+    ? "idle-animation"
+    : "state";
+}
+
+function requestDisplayedVisual(displayState, file, options = {}) {
+  if (!displayedVisualProjection) return null;
+  const activeTheme = getActiveTheme();
+  return displayedVisualProjection.request({
+    themeId: activeTheme && activeTheme._id,
+    logicalState: options.logicalState || _state.getCurrentState(),
+    displayState,
+    file,
+    hitBox: _state.resolveHitBoxForSvg(file),
+    source: options.source || inferVisualSource(displayState, file),
+    deliver: options.deliver || ((payload) => sendRawToRenderer("state-change", payload)),
+    onLogicalSettlement: options.onLogicalSettlement,
+  });
+}
+
+function resetDisplayedVisualProjection(detail = "projection-reset", options = {}) {
+  if (!displayedVisualProjection) return false;
+  const activeTheme = getActiveTheme();
+  displayedVisualProjection.reset({
+    themeId: activeTheme && activeTheme._id,
+    logicalState: _state.getCurrentState(),
+    detail,
+    preserveCommitted: options.preserveCommitted === true,
+  });
+  if (options.preserveCommitted !== true) {
+    lastAppliedVisualGeneration = 0;
+    lastDiscordPresenceVisual = null;
   }
+  return true;
+}
+
+function refreshDisplayedVisualHitBoxes() {
+  if (!displayedVisualProjection) return false;
+  const refreshed = displayedVisualProjection.refreshHitBoxes(
+    (file) => _state.resolveHitBoxForSvg(file)
+  );
+  if (!refreshed) return false;
+  lastAppliedVisualGeneration = 0;
+  return syncDisplayedVisualGeometry();
+}
+
+function refreshDisplayedVisualForLowPowerMode() {
+  const activeTheme = getActiveTheme();
+  const state = _state.getCurrentState();
+  const file = _state.getCurrentSvg();
+  const override = activeTheme
+    && activeTheme.rendering
+    && activeTheme.rendering.lowPowerStaticImageOverrides
+    && activeTheme.rendering.lowPowerStaticImageOverrides[state];
+  if (!override || override.from !== file || !override.to) return false;
+  return !!requestDisplayedVisual(state, file, {
+    logicalState: state,
+    source: "state",
+  });
+}
+
+function isVisualGenerationCurrent(visualGeneration) {
+  if (!displayedVisualProjection || !Number.isSafeInteger(visualGeneration)) return false;
+  const snapshot = displayedVisualProjection.getSnapshot();
+  const current = snapshot.requested || snapshot.committed;
+  return !!(current && current.visualGeneration === visualGeneration);
+}
+
+function resolveDragReactionFile(direction) {
+  const theme = getActiveTheme();
+  const drag = theme && theme.reactions && theme.reactions.drag;
+  if (!drag || typeof drag !== "object") return null;
+  if (direction === "left" && typeof drag.fileLeft === "string") return drag.fileLeft;
+  if (direction === "right" && typeof drag.fileRight === "string") return drag.fileRight;
+  return typeof drag.file === "string" ? drag.file : null;
+}
+
+function requestDragReaction(direction) {
+  const normalizedDirection = direction === "left" || direction === "right" ? direction : null;
+  const file = resolveDragReactionFile(normalizedDirection);
+  if (!file) return null;
+  const snapshot = displayedVisualProjection.getSnapshot();
+  const activeReaction = snapshot.requested || snapshot.committed;
+  if (activeReaction && activeReaction.source === "reaction" && activeReaction.file === file) {
+    sendRawToRenderer("start-drag-reaction", null, normalizedDirection);
+    return activeReaction;
+  }
+  return requestDisplayedVisual(_state.getCurrentState(), file, {
+    source: "reaction",
+    deliver: (payload) => sendRawToRenderer("start-drag-reaction", payload, normalizedDirection),
+  });
+}
+
+function requestClickReaction(file, duration) {
+  const activeTheme = getActiveTheme();
+  if (!activeTheme || !collectRequiredAssetFiles(activeTheme).includes(file)) return null;
+  const safeDuration = Number.isFinite(duration) ? Math.max(0, duration) : 0;
+  return requestDisplayedVisual(_state.getCurrentState(), file, {
+    source: "reaction",
+    deliver: (payload) => sendRawToRenderer("play-click-reaction", payload, safeDuration),
+  });
+}
+
+function sendToRenderer(channel, ...args) {
+  if (channel === "state-change") {
+    return requestDisplayedVisual(args[0], args[1], args[2] || {});
+  }
+  return sendRawToRenderer(channel, ...args);
 }
 function sendToHitWin(channel, ...args) {
   if (hitWin && !hitWin.isDestroyed()) hitWin.webContents.send(channel, ...args);
@@ -1366,7 +1524,6 @@ function applyPetWindowPosition(x, y, opts) { return petWindowRuntime.applyPetWi
 
 function syncHitStateAfterLoad() {
   sendToHitWin("hit-state-sync", {
-    currentSvg: _state.getCurrentSvg(),
     currentState: _state.getCurrentState(),
     miniMode: _mini.getMiniMode(),
     dndEnabled: doNotDisturb,
@@ -1378,12 +1535,7 @@ function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
   const activeTheme = getActiveTheme();
   const tintId = getPetTintIdForTheme(petTint, activeTheme && activeTheme._id);
   sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
-  const accessoryId = getEffectivePetAccessoryIdForTheme({
-    petAccessory,
-    holidayAccessoryEnabled: _settingsController.get("holidayAccessoryEnabled"),
-    themeId: activeTheme && activeTheme._id,
-  });
-  sendToRenderer("pet-accessory-change", resolvePetAccessoryPayload(accessoryId, activeTheme));
+  deliverAccessorySlotsSnapshot(activeTheme);
   sendToRenderer("low-power-idle-mode-change", lowPowerIdleMode);
   if (_mini.getMiniMode()) {
     sendToRenderer("mini-mode-change", true, _mini.getMiniEdge());
@@ -1486,14 +1638,14 @@ function flashTaskbar() {
     });
   }
 
-  // Cache the highlight icon (orange dot) on first call. #722: it has to come
-  // back at the same point size as the normal icon, otherwise each blink
-  // resizes the tray icon and reflows the menu bar.
+  // Cache the completion icon on first call. macOS uses a dedicated Template
+  // pair in the same 18pt slot; Windows/Linux retain the 32px orange dot.
   if (!trayFlashHighlightIcon) {
     trayFlashHighlightIcon = loadTrayFlashIcon({
       nativeImage,
       platform: process.platform,
       flashPath: path.join(__dirname, "../assets/tray-icon-flash.png"),
+      flashTemplatePath: path.join(__dirname, "../assets/tray-icon-flashTemplate.png"),
       fileExists: (p) => fs.existsSync(p),
     });
   }
@@ -1538,6 +1690,28 @@ function flashTaskbar() {
 }
 
 function syncHitWin() { return petWindowRuntime.syncHitWin(); }
+
+function getDisplayedVisualTuple() {
+  const committed = displayedVisualProjection
+    && displayedVisualProjection.getSnapshot().committed;
+  if (committed) return committed;
+  return {
+    displayState: _state.getCurrentState(),
+    file: _state.getCurrentSvg(),
+    hitBox: _state.getCurrentHitBox(),
+    source: "startup",
+    visualGeneration: 0,
+  };
+}
+
+function syncDisplayedVisualGeometry() {
+  const committed = displayedVisualProjection
+    && displayedVisualProjection.getSnapshot().committed;
+  if (!committed || committed.visualGeneration === lastAppliedVisualGeneration) return true;
+  const outcome = describeGeometrySync(syncHitWin());
+  if (outcome.applied) lastAppliedVisualGeneration = committed.visualGeneration;
+  return outcome.applied;
+}
 
 let mouseOverPet = false;
 let menuOpen = false;
@@ -1645,6 +1819,7 @@ function setHitWinFocusable(focusable) {
 // See _mini initialization below
 
 // ── alwaysOnTop recovery — delegated to src/topmost-runtime.js ──
+let permissionPresentationRuntime = null;
 const topmostRuntime = createTopmostRuntime({
   isWin,
   isMac,
@@ -1652,6 +1827,12 @@ const topmostRuntime = createTopmostRuntime({
   getHitWin: () => hitWin,
   recoverCloakedPet: () => petWindowRuntime.recoverIfCloaked(),
   getPendingPermissions: () => pendingPermissions,
+  getPermissionPresentationWindows: () => (
+    permissionPresentationRuntime
+    && typeof permissionPresentationRuntime.getPermissionPresentationWindows === "function"
+      ? permissionPresentationRuntime.getPermissionPresentationWindows()
+      : pendingPermissions.map((entry) => entry && entry.bubble).filter(Boolean)
+  ),
   getUpdateBubbleWindow: () => _updateBubble.getBubbleWindow(),
   getSessionHudWindow: () => getSessionHudWindow(),
   getQuotaRingWindow: () => getQuotaRingWindow(),
@@ -1805,6 +1986,7 @@ const _permCtx = {
   },
 };
 const _perm = initPermission(_permCtx);
+permissionPresentationRuntime = _perm;
 const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, isPermissionEntryLive, canAutoResolvePendingPermission, beginSessionTrustConfirmation, endSessionTrustConfirmation, syncPermissionBubbleContent, maybeStartRemoteApproval, clearCodexNotifyBubbles, showCodexUserInputBubble, clearCodexUserInputBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodeFamilyPermission, dismissOpencodeFamilyPermissionResolvedExternally } = _perm;
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
@@ -1870,9 +2052,11 @@ floatingWindowRuntime = createFloatingWindowRuntime({
   repositionSessionHud: () => repositionSessionHud(),
   repositionQuotaRing: () => repositionQuotaRing(),
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
-  syncUpdateBubbleVisibility: () => syncUpdateBubbleVisibility(),
+  syncUpdateBubbleVisibility: (hiddenOverride) => syncUpdateBubbleVisibility(hiddenOverride),
   hideUpdateBubble: () => hideUpdateBubble(),
   keepOutOfTaskbar,
+  showPermissionSurfacesForPet: () => _perm.showPermissionSurfacesForPet(),
+  hidePermissionSurfacesForPet: () => _perm.hidePermissionSurfacesForPet(),
 });
 
 function repositionFloatingBubbles() {
@@ -1915,22 +2099,42 @@ function getIdleVisualChoice() {
 // should already use the selected idle visual and tint instead of briefly
 // showing theme defaults. getRendererConfig() returns a fresh object, safe to
 // extend.
-function buildRendererThemeConfig() {
+function buildRendererThemeConfig(accessorySnapshot = null) {
   const cfg = themeRuntime.getRendererConfig();
   if (cfg) {
     const activeTheme = getActiveTheme();
     const tintSelections = _settingsController.get("petTint");
     const tintId = getPetTintIdForTheme(tintSelections, activeTheme && activeTheme._id);
-    const accessoryId = getEffectivePetAccessoryIdForTheme({
-      petAccessory: _settingsController.get("petAccessory"),
-      holidayAccessoryEnabled: _settingsController.get("holidayAccessoryEnabled"),
-      themeId: activeTheme && activeTheme._id,
-    });
+    const canonical = accessorySnapshot || getPetAccessorySlotsSnapshot(activeTheme);
     cfg.idleDefaultVisual = getIdleVisualChoice();
     cfg.petTintPayload = resolvePetTintPayload(tintId, activeTheme);
-    cfg.accessoryPayload = resolvePetAccessoryPayload(accessoryId, activeTheme);
+    if (canonical) {
+      cfg.accessorySlots = {
+        themeId: canonical.themeId,
+        accessoryGeneration: canonical.accessoryGeneration,
+        head: {
+          supported: cfg.accessorySupported === true,
+          attachments: cfg.accessoryAttachments || null,
+          payload: canonical.payloads.head,
+        },
+        mouth: {
+          supported: cfg.mouthAccessorySupported === true,
+          attachments: cfg.mouthAccessoryAttachments || null,
+          payload: canonical.payloads.mouth,
+        },
+      };
+    }
   }
   return cfg;
+}
+
+function deliverRendererThemeConfig() {
+  const delivery = prepareCurrentAccessorySlotsDelivery();
+  const delivered = sendToRenderer(
+    "theme-config",
+    buildRendererThemeConfig(delivery.snapshot)
+  );
+  return !!finalizePetAccessorySlotsDelivery(delivery, delivered);
 }
 
 const _stateCtx = {
@@ -2021,6 +2225,7 @@ const _stateCtx = {
   getStaleConfig: () => ({
     sessionStaleMs,
     workingStaleMs,
+    codexWorkingStaleMs,
     detachedIdleStaleMs,
   }),
   getSessionAliases: () => _settingsController.get("sessionAliases"),
@@ -2036,6 +2241,40 @@ const _stateCtx = {
   hasAnyEnabledAgent: () => _runtimeAgentGate.hasAnyEnabledAgent(),
 };
 const _state = require("./state")(_stateCtx);
+displayedVisualProjection = createDisplayedVisualProjection({
+  projectActualFile: ({ actualFile, requested }) => {
+    const activeTheme = getActiveTheme();
+    if (!activeTheme || !collectRequiredAssetFiles(activeTheme).includes(actualFile)) return null;
+    return {
+      displayState: requested.displayState,
+      hitBox: _state.resolveHitBoxForSvg(actualFile),
+    };
+  },
+  onCommit: (visual) => {
+    syncDisplayedVisualGeometry();
+    try { repositionAnchoredFloatingSurfaces(); } catch {}
+    if (visual.source === "reaction") return;
+    lastDiscordPresenceVisual = {
+      state: visual.displayState,
+      svg: visual.file,
+      themeId: visual.themeId,
+    };
+    if (discordPresenceBridge) {
+      try {
+        discordPresenceBridge.onVisual(
+          lastDiscordPresenceVisual.state,
+          lastDiscordPresenceVisual.svg,
+          lastDiscordPresenceVisual.themeId
+        );
+      } catch {}
+    }
+  },
+  onRendererUnresponsive: () => {
+    if (!win || win.isDestroyed()) return;
+    resetDisplayedVisualProjection("renderer-unresponsive", { preserveCommitted: true });
+    petWindowRuntime.reloadWindowWebContents(win);
+  },
+});
 const _kimiQuotaCredentialStore = createKimiQuotaCredentialStore({ safeStorage });
 const _kimiQuotaRuntime = createKimiQuotaRuntime({
   credentialStore: _kimiQuotaCredentialStore,
@@ -2174,9 +2413,11 @@ const _tickCtx = {
   get startupRecoveryActive() { return _state.getStartupRecoveryActive(); },
   sendToRenderer,
   sendToHitWin,
+  isVisualGenerationCurrent,
   setState,
   applyState,
   getIdleVisualChoice,
+  getEffectiveAccessoryIds: getEffectivePetAccessoryIds,
   miniPeekIn: () => miniPeekIn(),
   miniPeekOut: () => miniPeekOut(),
   getObjRect,
@@ -3983,6 +4224,7 @@ const _menuCtx = {
   getNearestWorkArea,
   reapplyMacVisibility,
   getSettingsWindow,
+  getSystemVersion: () => process.getSystemVersion(),
   discoverThemes: () => themeLoader.discoverThemes(),
   getActiveThemeId: () => themeRuntime.getActiveThemeId("clawd"),
   getActiveThemeCapabilities: () => themeRuntime.getActiveThemeCapabilities(),
@@ -4018,11 +4260,11 @@ const SETTINGS_MIRROR_SETTERS = {
   sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
   sessionHudPinned: (v) => { sessionHudPinned = v; },
   sessionStaleMs: (v) => { sessionStaleMs = v; }, workingStaleMs: (v) => { workingStaleMs = v; },
+  codexWorkingStaleMs: (v) => { codexWorkingStaleMs = v; },
   detachedIdleStaleMs: (v) => { detachedIdleStaleMs = v; },
   soundMuted: (v) => { soundMuted = v; }, soundVolume: (v) => { soundVolume = v; }, lowPowerIdleMode: (v) => { lowPowerIdleMode = v; },
   keepAwakeWhileWorking: (v) => { keepAwakeWhileWorking = v; },
   petTint: (v) => { petTint = v; },
-  petAccessory: (v) => { petAccessory = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, disableMiniMode: (v) => { disableMiniModeCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; resetKeepSizeFrozen(); },
   fullscreenOverlay: (v) => { fullscreenOverlayCached = v; },
   freeRoam: (v) => { _roam.setEnabled(v); },
@@ -4099,6 +4341,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
     if (_state.getCurrentState() !== "idle") return;
     _state.applyState("idle", _state.getSvgOverride("idle"));
   },
+  refreshDisplayedVisual: refreshDisplayedVisualForLowPowerMode,
   rebuildAllMenus,
   reconcilePowerSaveBlocker,
   logWarn: console.warn,
@@ -4507,6 +4750,7 @@ function createWindow() {
     restoreMiniFromPrefs: (prefsSnapshot, pixelSize) => _mini.restoreFromPrefs(prefsSnapshot, pixelSize),
   });
 
+  const initialAccessoryDelivery = prepareCurrentAccessorySlotsDelivery();
   petWindowRuntime.createRenderWindow({
     BrowserWindow,
     size,
@@ -4514,11 +4758,12 @@ function createWindow() {
     initialVirtualBounds,
     preloadPath: path.join(__dirname, "preload.js"),
     loadFilePath: path.join(__dirname, "index.html"),
-    themeConfig: buildRendererThemeConfig(),
+    themeConfig: buildRendererThemeConfig(initialAccessoryDelivery.snapshot),
     setRenderWindow: (createdWindow) => { win = createdWindow; },
     isQuitting: () => isQuitting,
     applyDockVisibility,
   });
+  finalizePetAccessorySlotsDelivery(initialAccessoryDelivery, true);
 
   buildContextMenu();
   if (!isMac || showTray) createTray();
@@ -4573,6 +4818,16 @@ function createWindow() {
     getCurrentState: () => _state.getCurrentState(),
     getCurrentSvg: () => _state.getCurrentSvg(),
     sendToRenderer,
+    requestDragReaction,
+    requestClickReaction,
+    settleVisual: (event, payload) => {
+      if (
+        !win
+        || win.isDestroyed()
+        || !isTrustedMainFrameEvent(event, win.webContents)
+      ) return false;
+      return displayedVisualProjection.settle(payload);
+    },
     recoverVisiblePetAfterRendererLoad: (event) => {
       if (!win || win.isDestroyed()) return;
       if (!event || event.sender !== win.webContents) return;
@@ -4585,6 +4840,7 @@ function createWindow() {
     beginDragSnapshot: () => beginDragSnapshot(),
     clearDragSnapshot: () => clearDragSnapshot(),
     syncHitWin: () => syncHitWin(),
+    syncDisplayedVisualGeometry,
     syncImeEditingPetDodge: () => topmostRuntime.syncImeEditingPetDodge(),
     isMiniMode: () => _mini.getMiniMode(),
     checkMiniModeSnap: () => checkMiniModeSnap(),
@@ -4679,7 +4935,7 @@ function createWindow() {
     setAccessoryMirrored(false);
   });
   win.webContents.on("did-finish-load", () => {
-    sendToRenderer("theme-config", buildRendererThemeConfig());
+    deliverRendererThemeConfig();
     petWindowRuntime.resendViewportOffsets();
     if (themeRuntime.isReloadInProgress()) return;
     syncRendererStateAfterLoad();
@@ -4692,6 +4948,7 @@ function createWindow() {
     petWindowRuntime.setDragLocked(false);
     idlePaused = false;
     mouseOverPet = false;
+    resetDisplayedVisualProjection("renderer-process-gone", { preserveCommitted: true });
     petWindowRuntime.reloadWindowWebContents(win, { crashKey: "renderWin", details });
   });
 
@@ -4883,8 +5140,13 @@ const _roamCtx = {
   setRoamHeading: (headingLeft) => sendToRenderer("roam-heading", !!headingLeft),
   // #640: hold still while the user types into a bubble text field (macOS)
   isImeEditingActive: () => pendingPermissions.some(
-    (p) => p && p.bubble && !p.bubble.isDestroyed() && p.bubble.__clawdMacImeEditing
+    (p) => p
+      && p.bubble
+      && !p.bubble.isDestroyed()
+      && p.bubble.isVisible()
+      && p.bubble.__clawdMacImeEditing
   ),
+  hasVisiblePermissionBubbles: () => _perm.hasVisiblePermissionBubbles(),
   // #810: optional roam fence — validated async loader for
   // ~/.clawd/roam-area.json; roam reads its in-memory cache at target pick
   // time and kicks refresh() when scheduling walks (see src/roam-fence.js).
@@ -4985,9 +5247,9 @@ if (!gotTheLock) {
   // Only the winning instance may publish the startup gate. A losing instance
   // can have a stale/default prefs snapshot and must never become the final
   // writer after the active instance has disabled Codex.
-  // A future-version or recovered snapshot is not authoritative enough to
-  // publish an enabled external gate. Fail closed until a valid prefs commit
-  // reaches the post-commit agents subscriber above.
+  // A future-version, recovered, or partially malformed snapshot is not
+  // authoritative enough to publish an enabled external gate. The evaluator
+  // latches that decision for this process; only a clean restart can reopen it.
   const startupGateSnapshot = (
     _initialPrefsLoad.locked === true
     || _initialPrefsLoad.recovered === true
@@ -5106,18 +5368,20 @@ if (!gotTheLock) {
   }
 
   app.whenReady().then(async () => {
-    // macOS: override the dock icon with a version padded to the macOS icon
-    // grid (~80.5% of the canvas, ~100px transparent margin per side) so the
-    // Dock tile matches neighbor apps. The build-time icon.png sits ~72.6%
-    // (looks small); the earlier full-bleed dock-icon.png looked oversized
-    // (issue #416). Source preserved at assets/source/dock-icon-fullbleed.png.
-    if (isMac && app.dock && _settingsController.get("showDock") !== false) {
-      try {
-        app.dock.setIcon(path.join(__dirname, "..", "assets", "dock-icon.png"));
-      } catch (_) {
-        // non-fatal: fall back to the bundled icon
-      }
-    }
+    // Older macOS and development builds retain the padded runtime icon from
+    // #416. Packaged Tahoe+ leaves the Dock untouched so macOS can apply the
+    // user's Default/Dark/Clear/Tinted treatment to the bundle icon (#941).
+    const installRuntimeDockIcon = resolveRuntimeDockIconPolicy({
+      platform: process.platform,
+      isPackaged: app.isPackaged === true,
+      getSystemVersion: () => process.getSystemVersion(),
+    });
+    installStartupDockIcon({
+      dock: app.dock,
+      showDock: _settingsController.get("showDock") !== false,
+      dockIconPath: path.join(__dirname, "..", "assets", "dock-icon.png"),
+      installRuntimeIcon: installRuntimeDockIcon,
+    });
 
     const protocolRegistered = codexPetMain.registerProtocolClient();
     if (process.argv.includes(REGISTER_PROTOCOL_DEV_ARG)) {
@@ -5303,6 +5567,7 @@ if (!gotTheLock) {
     _server.cleanup();
     if (_lanWss) _lanWss.cleanup();
     _updateBubble.cleanup();
+    if (displayedVisualProjection) displayedVisualProjection.dispose();
     _state.cleanup();
     _tick.cleanup();
     _mini.cleanup();

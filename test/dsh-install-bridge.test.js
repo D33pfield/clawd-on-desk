@@ -180,6 +180,156 @@ test("Windows CLI discovery follows a pnpm-style shim instead of assuming one gl
   assert.strictEqual(command.installRoot, path.dirname(path.dirname(binJs)));
 });
 
+test("POSIX CLI discovery resolves the DSH entrypoint through an absolute Node binary", {
+  skip: process.platform === "win32",
+}, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-dsh-posix-cli-"));
+  const dshPath = path.join(root, "homebrew", "bin", "dsh");
+  const binJs = path.join(root, "homebrew", "lib", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
+  const nodePath = path.join(root, "homebrew", "opt", "node@22", "bin", "node");
+  fs.mkdirSync(path.dirname(dshPath), { recursive: true });
+  fs.mkdirSync(path.dirname(binJs), { recursive: true });
+  fs.mkdirSync(path.dirname(nodePath), { recursive: true });
+  fs.writeFileSync(binJs, "#!/usr/bin/env node\n", { mode: 0o755 });
+  fs.writeFileSync(nodePath, "#!/bin/sh\n", { mode: 0o755 });
+  fs.symlinkSync(binJs, dshPath);
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const command = await resolveDshCommand({
+    platform: "darwin",
+    shellPath: "/bin/zsh",
+    env: {
+      PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+      SHELL: "/bin/zsh",
+      DSH_HOME: path.join(root, ".dsh"),
+    },
+    resolveNodeBinAsyncImpl: async () => nodePath,
+    runCommand: async (program, args) => {
+      assert.strictEqual(program, "/bin/zsh");
+      assert.deepStrictEqual(args, ["-lc", "command -v dsh"]);
+      return { code: 0, stdout: `${dshPath}\n` };
+    },
+  });
+
+  assert.strictEqual(command.command, nodePath);
+  assert.deepStrictEqual(command.prefixArgs, [canonicalRealpath(binJs)]);
+  assert.strictEqual(command.installRoot, path.dirname(path.dirname(canonicalRealpath(binJs))));
+  assert.strictEqual(command.env.DSH_HOME, path.join(root, ".dsh"));
+  assert.deepStrictEqual(command.env.PATH.split(path.delimiter).slice(0, 2), [
+    path.dirname(nodePath),
+    path.dirname(dshPath),
+  ]);
+});
+
+test("POSIX CLI discovery uses interactive shell startup only as a fallback", {
+  skip: process.platform === "win32",
+}, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-dsh-posix-cli-fallback-"));
+  const dshPath = path.join(root, "interactive", "bin", "dsh");
+  const binJs = path.join(root, "interactive", "lib", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
+  const nodePath = path.join(root, "node", "bin", "node");
+  fs.mkdirSync(path.dirname(dshPath), { recursive: true });
+  fs.mkdirSync(path.dirname(binJs), { recursive: true });
+  fs.mkdirSync(path.dirname(nodePath), { recursive: true });
+  fs.writeFileSync(binJs, "#!/usr/bin/env node\n", { mode: 0o755 });
+  fs.writeFileSync(nodePath, "#!/bin/sh\n", { mode: 0o755 });
+  fs.symlinkSync(binJs, dshPath);
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const discoveryCalls = [];
+  const command = await resolveDshCommand({
+    platform: "darwin",
+    shellPath: "/bin/zsh",
+    env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHELL: "/bin/zsh" },
+    resolveNodeBinAsyncImpl: async () => nodePath,
+    runCommand: async (program, args) => {
+      assert.strictEqual(program, "/bin/zsh");
+      discoveryCalls.push(args);
+      if (args[0] === "-lc") return { code: 1, stderr: "dsh not found" };
+      return { code: 0, stdout: `[interactive startup]\n${dshPath}\n` };
+    },
+  });
+
+  assert.deepStrictEqual(discoveryCalls, [
+    ["-lc", "command -v dsh"],
+    ["-lic", "command -v dsh"],
+  ]);
+  assert.strictEqual(command.command, nodePath);
+  assert.deepStrictEqual(command.prefixArgs, [canonicalRealpath(binJs)]);
+});
+
+test("POSIX DSH install and uninstall reuse a GUI-safe PATH for pnpm mutations", {
+  skip: process.platform === "win32",
+}, async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness);
+  const toolRoot = path.join(harness.root, "toolchain");
+  const dshPath = path.join(toolRoot, "homebrew", "bin", "dsh");
+  const binJs = path.join(toolRoot, "homebrew", "lib", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
+  const nodePath = path.join(toolRoot, "node", "bin", "node");
+  const pnpmPath = path.join(toolRoot, "pnpm", "bin", "pnpm");
+  for (const filePath of [binJs, nodePath, pnpmPath]) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, "#!/bin/sh\n", { mode: 0o755 });
+  }
+  fs.mkdirSync(path.dirname(dshPath), { recursive: true });
+  fs.symlinkSync(binJs, dshPath);
+  const canonicalBinJs = canonicalRealpath(binJs);
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+
+  const guiPath = "/usr/bin:/bin:/usr/sbin:/sbin";
+  const mutationEnvs = [];
+  const runCommand = async (program, args, options) => {
+    if (program === "/bin/zsh" && args[1] === "command -v dsh") {
+      assert.deepStrictEqual(args, ["-lc", "command -v dsh"]);
+      return { code: 0, stdout: `${dshPath}\n` };
+    }
+    if (program === "/bin/zsh" && args[1] === "command -v pnpm") {
+      assert.deepStrictEqual(args, ["-lc", "command -v pnpm"]);
+      return { code: 0, stdout: `${pnpmPath}\n` };
+    }
+    if (program === pnpmPath && args[0] === "--version") {
+      assert.ok(options.env.PATH.split(path.delimiter).includes(path.dirname(nodePath)));
+      return { code: 0, stdout: "10.30.3\n" };
+    }
+    if (program === nodePath && args[0] === canonicalBinJs && args[1] === "--version") {
+      assert.ok(options.env.PATH.split(path.delimiter).includes(path.dirname(nodePath)));
+      return { code: 0, stdout: `${SUPPORTED_DSH_VERSION}\n` };
+    }
+    if (program === nodePath && args[0] === canonicalBinJs && args[1] === "plugin") {
+      mutationEnvs.push(options.env);
+      return cli.runDshCommand(args.slice(1));
+    }
+    return { code: 1, stderr: `unexpected command: ${program} ${args.join(" ")}` };
+  };
+  const options = installOptions(harness, cli, {
+    platform: "darwin",
+    env: { PATH: guiPath, SHELL: "/bin/zsh" },
+    shellPath: "/bin/zsh",
+    commandInfo: undefined,
+    dshVersion: undefined,
+    pnpmAvailable: undefined,
+    runDshCommand: undefined,
+    resolveNodeBinAsyncImpl: async () => nodePath,
+    runCommand,
+  });
+
+  const installed = await installDeepSeekHarnessBridge(options);
+  assert.strictEqual(installed.status, "ok", JSON.stringify(installed));
+  const uninstalled = await uninstallDeepSeekHarnessBridge(options);
+  assert.strictEqual(uninstalled.status, "ok", JSON.stringify(uninstalled));
+  assert.strictEqual(mutationEnvs.length, 2);
+  for (const env of mutationEnvs) {
+    const entries = env.PATH.split(path.delimiter);
+    assert.deepStrictEqual(entries.slice(0, 3), [
+      path.dirname(pnpmPath),
+      path.dirname(nodePath),
+      path.dirname(dshPath),
+    ]);
+    assert.strictEqual(env.DSH_HOME, canonicalRealpath(harness.dshHome));
+  }
+});
+
 test("the cross-process DSH mutation lock rejects a concurrent owner and releases by token", async (t) => {
   const harness = makeHarness();
   t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));

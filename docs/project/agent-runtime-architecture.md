@@ -28,6 +28,8 @@ Codex CLI 状态同步（official hooks primary + JSONL fallback）：
     → hooks/codex-hook.js（stdin JSON，session_id 优先与 transcript_path 的 rollout UUID 对齐）
     → HTTP POST 127.0.0.1:23333/state { state, session_id, event, turn_id, hook_source }
     → 同上状态机（agent_id: codex）
+
+本机 Codex `SessionStart` 首次 POST 发现 Clawd 离线时，只有 durable gate 同时满足 `integrationInstalled=true`、`enabled=true`、`autoStartWithCodex=true` 才调用 `auto-start.js` 冷启动桌面应用并重试事件。全新安装的独立开关默认关闭；prefs v17→v18 为已有用户回填 true 以保持升级前行为。remote、WSL 与 WSL interop 路径一律不冷启动。
   Codex 写入 ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
     → agents/codex-log-monitor.js（fallback：hook 未覆盖事件、hook 禁用/不可用、历史兼容）
     → src/agent-runtime-main.js 对 hook-active session 做事件级 suppression，避免重复状态/重复气泡；本地 JSONL 路径不经过 HTTP server
@@ -100,6 +102,18 @@ QwenWork（千问办公）状态同步（hook-only / state-only，settings.json�
   只发送 tool_input 的 sha1 fingerprint，不把原始 tool_input POST 给 Clawd。
   平台边界：官方只提供 macOS 14+ / Windows 10+ / HarmonyOS 6.1+（https://qwenwork.cn/download），没有 Linux 客户端，
   因此 processNames.linux 与 resolver linux agent name 均为空，也不进 WSL Pair；桌面主进程长驻，无 startup recovery。
+
+TraeCode（Trae CN）状态同步（hook-only / state-only，hooks.json）：
+  Trae CN 触发 SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Stop / Notification
+    → hooks/traecode-hook.js（hook 事件 → agents/traecode.js 映射 → HTTP POST）
+    → 同上状态机（agent_id: traecode，session_id 规范化为 traecode:<raw>；缺 session_id 的事件直接应答 stdout，不进 /state）
+  Hook 注册到 ~/.trae-cn/hooks.json（marker `traecode-hook.js`，增量合并；混合 entry 里第三方 hook 原样保留）。
+  Windows command 用无引号外壳的 PowerShell `-EncodedCommand`（解码后为 `& 'node' 'hook'`，无 `shell` 字段），避免 Trae sandbox 的 native argv 包装拆坏带空格路径；Trae 通过 PowerShell 执行 hook 命令（cloudide.icube-agent-shell-exec）。
+  必须在 Trae IDE 里手动开启 hooks（Settings → Hooks → Enable，运行方式：沙箱运行），无程序化绕过。
+  stdout 恒为 `{}`：不注册 /permission、不进 permission automation eligibility，Allow / Deny 全部留在 Trae 原生权限流程。
+  Trae 服务端存储会话标题，Clawd 从首次 prompt 首行派生并保持首个标题（server 端 first-wins）。
+  无 SessionEnd：关闭的会话由 traecode-desktop-idle-timeout 桌面空闲清理退役。
+  首版只覆盖 Trae CN（~/.trae-cn、进程名 Trae CN.exe）；国际版 Trae（~/.trae/hooks.json）不在范围内。
 
 Kimi Code CLI（Kimi-CLI）状态同步（hook-only，config.toml）：
   Kimi Code CLI（Kimi-CLI）触发事件
@@ -323,8 +337,13 @@ CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL�
 - DeepSeek Harness 普通 approval 进入独立 blocking adapter；人工 Allow/Deny 可用，但 auto-tools、unattended 与 per-session grant 全部 DEFER。`ask_user_question` 返回 204 交给 DSH 原生 provider
 - Codex 的 PermissionRequest 是 official command hook；hook 脚本挂起等待 `/permission`，再把 sanitized allow/deny JSON 写到 stdout
 - `POST /permission` 接收 `{ tool_name, tool_input, session_id, permission_suggestions }`；Codex 额外带 `turn_id`、`tool_input_description`、`tool_input_fingerprint`
-- 每个权限请求都会创建独立 `BrowserWindow`，多个 bubble 从右下向上堆叠
-- bubble 会通过 IPC `bubble-height` 回报真实高度，主进程据此重排
+- 每个权限请求都会创建独立 `BrowserWindow`。普通卡片默认保持约 340 CSS px 的三行摘要；长内容和次级操作通过用户点击进入约 500 CSS px 的详情态，详情正文独立滚动，标题与决定按钮固定可见。安全 normal layout 中到达的首张可回答 Ask 默认直接进入详情态；桌面同时最多一个详情 owner，其他请求仍是摘要卡。切换详情不会销毁窗口，因此 Ask/Plan 的选择、输入草稿、步骤和滚动位置都保留
+- 普通工具摘要态保留 Allow/Deny、permission suggestions（含 Always）和可用的会话授权；Plan 摘要态同时提供「查看计划」与快速批准，反馈/回终端等次级操作只在详情态出现；未能创建期默认展开的 Ask 摘要态只提供「回答」。Plan 与默认展开的 Ask 到达时都不抢焦点；只有本地显式展开或 queue selection 才聚焦窗口并发送一次 restore-active-control。Win/Linux 由创建期 `focusable` 覆盖其潜在输入需求
+- bubble 通过 IPC `bubble-height` 回报 `{state, measurementEpoch, height}`。主进程只接受当前摘要/详情 epoch 的测量，避免展开→收起→展开期间的旧高度覆盖新布局；详情高度以 `min(60% workArea, 620 CSS px)` 为偏好，并以实测 chrome + 5 行正文为可读下限、当前 workArea 为硬上限。卡片没有自己的宽度（`html/body` 撑满窗口），自然高度随 BrowserWindow 宽度变化，所以 renderer 在窗口宽度真正改变后会再报一次高度；详情→摘要的 presentation 早于 `repositionBubbles()` 收窄窗口，没有这次补测就会按详情宽度少算一个折行，摘要卡底部被窗口裁掉
+- `permission.js` 是 permission presentation 的唯一 owner：它用目标 workArea、text scale、HUD avoid rect 和每张卡实测宽高先尝试原逐窗栈；不安全时按 agent + session 选 FIFO 代表并预留队列入口，再只向减少非保护代表的方向收敛。详情、IME composition、文本输入和用户显式选中的请求是保护项。可选代表准入按 expanded owner 的 frozen size 计算，不能靠压扁保护项腾位置；代表集合确定后，带 launcher 的最终 layout 才从 expanded viewport 的本轮有效高度中扣除 launcher、已选其他代表和全部 gaps。该 effective cap 不改 frozen normal-mode budget；含 expanded representative 且最终仍不安全的候选不得进入新的 queue revision/ACK。首次从 normal mode 命中该 guard 时仍应用 crowded normal bounds 并同步全可见 ownership，已有 committed overflow 则保持原样；普通非展开请求继续沿用既有 queue-failure fallback。Follow 模式详情朝远离桌宠的一侧扩展，Fixed 模式保持所选角的边缘对齐
+- overflow 队列使用独立 `permission-queue.html` / preload / renderer，只暴露 open、close、select、ACK 四类导航 IPC，没有任何决定 IPC，也不接收本地详情、wire input、suggestions 或 token。抽屉打开时隐藏请求窗口但不销毁；选中项后恢复原 BrowserWindow/DOM。每个队列 revision 必须先 ACK 再提交 visible/hidden 集合，提交期限从第一条尚未被当前 ACK 表示的请求开始且不会被后续 revision 续期；队列加载、renderer、window 或 ACK 失败时，本 overflow episode 只回退逐窗栈且不重建、不决定请求
+- overflow 模式关闭全局 Allow/Deny 快捷键；Slack 只在请求窗口自身 height ACK 或已 ACK 队列的 main-owned hidden snapshot 上执行现有 once-guard。petHidden 使用 request ordinal cutoff 隔离旧请求与隐藏期间的新请求；topmost、IME overlap、HUD/update/Orbit 避让和 roam hold 都只扫描 presentation owner 返回的真实可见 permission windows（含队列及仍在 fade 的请求窗）
+- 本地详情数据与网络/决策数据分离：route 在生成有界摘要的同时保留最多 128 KiB 的仅本地显示详情；fingerprint、automation、HTTP 回包、Telegram/飞书/Slack payload 继续使用原有数据。Ask 的 wire question/answer key 保持上游原文，长正文和选项说明只影响详情显示
 - 支持 Allow / Deny / suggestion 决策，以及 `addRules` / `setMode` suggestion 类型
 - `permission-automation-policy.js` 的 off / auto-tools / unattended 与 `session-automation-coordinator.js` 的 per-session grant 会在 bubble 渲染前产生真实决定。auto-tools 对 Claude/Qwen 的未知 built-in（除有效 namespaced MCP）fail closed，但其他已知 adapter 对非空工具名不都使用逐工具 allowlist；unattended 在识别已知 decision tools 后仍有意对可作 Allow/Deny 的未知请求保留“handle every request”行为。新增 agent/tool/interaction 必须同时审查 policy 与 tests，不能笼统假设 unknown 一律 defer
 - Telegram 与飞书 / Lark 是和本地 bubble 并行的远程决策通道；关闭本地 bubble 不等于关闭远程审批。远程 client 超时、断连、未配置或启动失败不得产生决定或 deny：本地 bubble 存在时请求继续 pending；仅在 remote-only 且所有可用 client 都无决定时，整体请求才 no-decision 并让 agent 回原生 UI 重问

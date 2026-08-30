@@ -22,6 +22,7 @@ const {
 } = require("../hooks/codex-originator");
 const {
   truncateDeep,
+  preparePermissionDetail,
   normalizePermissionSuggestions,
   prepareElicitationToolInput,
   normalizeHookToolUseId,
@@ -755,6 +756,7 @@ function handlePermissionPost(req, res, options) {
 
         const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
         const toolInput = truncateDeep(rawInput);
+        const permissionDetail = preparePermissionDetail(toolName, rawInput);
         const sessionIdentity = resolvePermissionSession(data.session_id, "default");
         const sessionId = sessionIdentity.sessionId;
         const requestId = typeof data.request_id === "string" ? data.request_id : null;
@@ -813,6 +815,7 @@ function handlePermissionPost(req, res, options) {
           hideTimer: null,
           toolName,
           toolInput,
+          ...permissionDetail,
           resolvedSuggestion: null,
           createdAt: Date.now(),
           interaction,
@@ -896,6 +899,7 @@ function handlePermissionPost(req, res, options) {
           ? data.tool_input_description
           : (typeof rawInput.description === "string" ? rawInput.description : "");
         const toolInput = normalizeCodexPermissionToolInput(rawInput, description);
+        const permissionDetail = preparePermissionDetail(toolName, rawInput, { description });
         const sessionIdentity = resolvePermissionSession(data.session_id, "codex:default");
         const sessionId = sessionIdentity.sessionId;
         const toolUseId = normalizeHookToolUseId(
@@ -1069,6 +1073,7 @@ function handlePermissionPost(req, res, options) {
           hideTimer: null,
           toolName,
           toolInput,
+          ...permissionDetail,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -1139,6 +1144,7 @@ function handlePermissionPost(req, res, options) {
         });
         const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
         const toolInput = truncateDeep(rawInput);
+        const permissionDetail = preparePermissionDetail(toolName, rawInput);
         const sessionIdentity = resolvePermissionSession(data.session_id, "qwen-code:default");
         const sessionId = sessionIdentity.sessionId;
         const toolUseId = normalizeHookToolUseId(
@@ -1194,6 +1200,7 @@ function handlePermissionPost(req, res, options) {
           hideTimer: null,
           toolName,
           toolInput,
+          ...permissionDetail,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -1255,6 +1262,7 @@ function handlePermissionPost(req, res, options) {
         });
         const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
         const toolInput = truncateDeep(rawInput);
+        const permissionDetail = preparePermissionDetail(toolName, rawInput);
         const sessionIdentity = resolvePermissionSession(data.session_id, "zcode:default");
         const sessionId = sessionIdentity.sessionId;
         const toolUseId = normalizeHookToolUseId(
@@ -1351,6 +1359,7 @@ function handlePermissionPost(req, res, options) {
           hideTimer: null,
           toolName,
           toolInput,
+          ...permissionDetail,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -1440,6 +1449,7 @@ function handlePermissionPost(req, res, options) {
         });
         const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
         const toolInput = truncateDeep(rawInput);
+        const permissionDetail = preparePermissionDetail(toolName, rawInput);
         const sessionIdentity = resolvePermissionSession(data.session_id, "copilot-cli:default");
         const sessionId = sessionIdentity.sessionId;
         const toolUseId = normalizeHookToolUseId(
@@ -1495,6 +1505,7 @@ function handlePermissionPost(req, res, options) {
           hideTimer: null,
           toolName,
           toolInput,
+          ...permissionDetail,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -1732,6 +1743,7 @@ function handlePermissionPost(req, res, options) {
         });
         const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
         const toolInput = truncateDeep(rawInput);
+        const permissionDetail = preparePermissionDetail(toolName, rawInput);
         const sessionIdentity = resolvePermissionSession(data.session_id, "hermes:default");
         const sessionId = sessionIdentity.sessionId;
         const toolUseId = normalizeHookToolUseId(
@@ -1799,6 +1811,8 @@ function handlePermissionPost(req, res, options) {
             hideTimer: null,
             toolName,
             toolInput: elicitationInput,
+            elicitationDetailInput: elicitation.detailDisplayInput,
+            detailTruncated: elicitation.detailTruncated,
             elicitationWireInput: elicitation.wireInput,
             toolUseId,
             toolInputFingerprint,
@@ -1867,6 +1881,7 @@ function handlePermissionPost(req, res, options) {
           hideTimer: null,
           toolName,
           toolInput,
+          ...permissionDetail,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -1957,8 +1972,20 @@ function handlePermissionPost(req, res, options) {
         return;
       }
 
-      const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
+      const hasExactToolInput = data.tool_input !== null
+        && typeof data.tool_input === "object"
+        && !Array.isArray(data.tool_input);
+      const rawInput = hasExactToolInput ? data.tool_input : {};
       const toolInput = truncateDeep(rawInput);
+      // Claude Code's PermissionRequest contract needs updatedInput when an
+      // interactive built-in such as ExitPlanMode is allowed. Keep the exact
+      // parsed request object separate from the truncated display copy so an
+      // approval can never echo normalized, clipped, or otherwise unseen data.
+      const planReviewWireInput = interaction.intent === INTERACTION_INTENT.PLAN_REVIEW
+        && hasExactToolInput
+        ? rawInput
+        : null;
+      const permissionDetail = preparePermissionDetail(toolName, rawInput);
       const toolUseId = normalizeHookToolUseId(
         data.tool_use_id ?? data.toolUseId ?? data.toolUseID
       );
@@ -2068,6 +2095,8 @@ function handlePermissionPost(req, res, options) {
           hideTimer: null,
           toolName,
           toolInput: elicitationInput,
+          elicitationDetailInput: elicitation.detailDisplayInput,
+          detailTruncated: elicitation.detailTruncated,
           elicitationWireInput: elicitation.wireInput,
           toolUseId,
           toolInputFingerprint,
@@ -2120,6 +2149,8 @@ function handlePermissionPost(req, res, options) {
         hideTimer: null,
         toolName,
         toolInput,
+        planReviewWireInput,
+        ...permissionDetail,
         toolUseId,
         toolInputFingerprint,
         resolvedSuggestion: null,

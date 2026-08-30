@@ -192,6 +192,23 @@ describe("validate-theme.js CLI (real process, spawnSync)", () => {
     assert.match(result.stderr, /Failed to read or parse theme\.json/);
   });
 
+  it("malformed objectChannelFiles produces a normal validation report instead of crashing", () => {
+    for (const objectChannelFiles of [[42], 42, {}]) {
+      const dir = mkTempThemeDir();
+      const raw = JSON.parse(fs.readFileSync(path.join(CALICO, "theme.json"), "utf8"));
+      raw.schemaVersion = 2;
+      raw.rendering = { ...(raw.rendering || {}), objectChannelFiles };
+      fs.writeFileSync(path.join(dir, "theme.json"), JSON.stringify(raw), "utf8");
+      fs.cpSync(path.join(CALICO, "assets"), path.join(dir, "assets"), { recursive: true });
+
+      const result = runValidateTheme([dir]);
+      assert.strictEqual(result.status, 1, result.stderr || result.stdout);
+      assert.match(result.stdout, /schemaVersion = 1 \(got: 2\)/);
+      assert.match(result.stdout, /error\(s\)/);
+      assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /TypeError/);
+    }
+  });
+
   it("theme.json is a directory: reported as a read failure, not a parse failure", () => {
     // mkdirSync instead of writeFileSync -- readFileSync throws EISDIR before
     // JSON.parse ever runs, so the message must not claim "parse".

@@ -30,9 +30,11 @@ function accessoryTheme(overrides = {}) {
     states: { idle: ["idle.svg"] },
     customization: {
       accessories: {
-        default: {
-          staticFrame: { cx: 20, baseY: 40, width: 10 },
-          hitBoxPadding: { left: 100, top: 100, right: 100, bottom: 100 },
+        files: {
+          "idle.svg": {
+            staticFrame: { cx: 20, baseY: 40, width: 10 },
+            hitBoxPadding: { left: 100, top: 100, right: 100, bottom: 100 },
+          },
         },
       },
     },
@@ -87,8 +89,9 @@ test("accessory mirroring follows the facing the renderer reported", () => {
       miniMode: { viewBox: { x: 0, y: 0, width: 100, height: 100 }, flipAssets: false },
       customization: {
         accessories: {
-          mini: { staticFrame: { cx: 20, baseY: 40, width: 10 } },
-          default: { staticFrame: { cx: 20, baseY: 40, width: 10 } },
+          files: {
+            "idle.svg": { staticFrame: { cx: 20, baseY: 40, width: 10 } },
+          },
         },
       },
     });
