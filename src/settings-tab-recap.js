@@ -217,6 +217,19 @@
     return value > 0 ? 1 : 0;
   }
 
+  function barRatio(value, maximum) {
+    const count = Number(value);
+    const max = Number(maximum);
+    if (!Number.isFinite(count) || count <= 0 || !Number.isFinite(max) || max <= 0) return 0;
+    return Math.min(1, count / max);
+  }
+
+  function setTodayBarLevel(element, value) {
+    const maximum = Number(element && element.dataset && element.dataset.barMaximum);
+    if (!element || !element.style) return;
+    element.style.setProperty("--recap-bar-ratio", String(barRatio(value, maximum)));
+  }
+
   function coverageForDay(day) {
     const minutes = day && day.coverage && Array.isArray(day.coverage.coverageMinutes)
       ? day.coverage.coverageMinutes
@@ -616,9 +629,9 @@
     const headingTitle = document.createElement("strong");
     headingTitle.textContent = t("recapTimelineLabel");
     const headingDetail = document.createElement("span");
-    headingDetail.textContent = t(view.period === "today" || view.period === "week"
-      ? "recapTimelineHours"
-      : "recapTimelineDays");
+    headingDetail.textContent = t(view.period === "today"
+      ? "recapTimelineTodayBars"
+      : view.period === "week" ? "recapTimelineHours" : "recapTimelineDays");
     heading.appendChild(headingTitle);
     heading.appendChild(headingDetail);
     section.appendChild(heading);
@@ -634,12 +647,16 @@
     const serial = ++renderSerial;
     const cellElements = [];
     let renderedCellCount = 0;
+    const todayBarMaximum = view.period === "today"
+      ? Math.max(1, ...model.cells.map((cell) => cell.total))
+      : 1;
 
     function appendCell(cell, parent, rowIndex, columnIndex) {
       const element = document.createElement("div");
       element.id = `recap-cell-${serial}-${renderedCellCount}`;
       renderedCellCount += 1;
       element.className = `recap-cell recap-cell-${cell.state}`;
+      if (view.period === "today") element.classList.add("recap-bar-slot");
       element.dataset.cellKey = cell.key;
       if (cell.state === "blank") {
         element.setAttribute("role", "presentation");
@@ -653,6 +670,14 @@
       const label = cellAriaLabel(cell, rowByKey);
       element.setAttribute("aria-label", label);
       element.title = label;
+      if (view.period === "today") {
+        element.dataset.barMaximum = String(todayBarMaximum);
+        setTodayBarLevel(element, cell.total);
+        const fill = document.createElement("span");
+        fill.className = "recap-bar-fill";
+        fill.setAttribute("aria-hidden", "true");
+        element.appendChild(fill);
+      }
       if (cell.state === "activity") element.classList.add(`recap-depth-${depthOf(cell.total)}`);
       if (cell.kind === "fold") element.classList.add("recap-cell-fold");
       if (cell.dayNumber && view.period === "month") {
@@ -827,11 +852,6 @@
     lede.appendChild(hint);
     card.appendChild(lede);
 
-    const footnote = document.createElement("p");
-    footnote.className = "recap-footnote";
-    const coverageNote = document.createElement("span");
-    coverageNote.className = "recap-coverage-note";
-    coverageNote.textContent = t(data.recordingEnabled ? "recapCoverageFootnote" : "recapPausedFootnote");
     const interaction = {
       rowElements: new Map(),
       cellElements: new Map(),
@@ -842,6 +862,7 @@
       peekTimer: null,
       popover: null,
       peekElement: null,
+      peekCell: null,
       setHover(key) {
         view.hoverRowKey = key;
         this.applyHighlight();
@@ -866,25 +887,23 @@
           } else if (cell.state === "activity") {
             element.classList.add(`recap-depth-${depthOf(cell.total)}`);
           }
+          if (view.period === "today") setTodayBarLevel(element, match ? match.count : cell.total);
         }
         for (const [key, element] of this.rowElements) {
           element.classList.toggle("active", key === activeKey);
           element.setAttribute("aria-pressed", view.lockedRowKey === key ? "true" : "false");
         }
-        if (activeKey) {
+        if (activeKey && this.live) {
           const row = summary.rows.find((candidate) => candidate.key === activeKey);
           const unitKey = view.period === "today" || view.period === "week"
             ? "recapCellUnitHour"
             : "recapCellUnitDay";
-          footnote.textContent = replace(t("recapLookingAt"), {
+          this.live.textContent = replace(t("recapLookingAt"), {
             agent: row ? rowDisplayName(row) : "",
             count: formatNumber(hitCount),
             unit: t(unitKey),
           });
-        } else {
-          footnote.textContent = replace(t("recapActiveDays"), { count: formatNumber(summary.activeDays) });
-        }
-        footnote.appendChild(coverageNote);
+        } else if (this.live) this.live.textContent = "";
       },
       clearPeek: () => {
         if (interaction.peekTimer) clearTimeout(interaction.peekTimer);
@@ -893,8 +912,18 @@
           interaction.peekElement.classList.remove("recap-cell-peek");
           const segments = interaction.peekElement.querySelector(".recap-cell-segments");
           if (segments) segments.remove();
+          if (view.period === "today" && interaction.peekCell) {
+            const activeKey = view.hoverRowKey || view.lockedRowKey;
+            const match = activeKey
+              && interaction.peekCell.counts.find((entry) => entry.rowKey === activeKey);
+            setTodayBarLevel(
+              interaction.peekElement,
+              match ? match.count : interaction.peekCell.total
+            );
+          }
         }
         interaction.peekElement = null;
+        interaction.peekCell = null;
         if (interaction.popover) interaction.popover.remove();
         interaction.popover = null;
       },
@@ -903,7 +932,9 @@
         const entries = cell.counts.slice().sort((left, right) => right.count - left.count);
         if (entries.length === 0 && cell.kind !== "fold") return;
         this.peekElement = element;
+        this.peekCell = cell;
         element.classList.add("recap-cell-peek");
+        if (view.period === "today") setTodayBarLevel(element, cell.total);
         if (entries.length > 0) {
           const segments = document.createElement("span");
           segments.className = "recap-cell-segments";
@@ -914,7 +945,8 @@
             segment.style.flex = `${entry.count} 1 0%`;
             segments.appendChild(segment);
           }
-          element.appendChild(segments);
+          const segmentHost = element.querySelector(".recap-bar-fill") || element;
+          segmentHost.appendChild(segments);
         }
         this.peekTimer = setTimeout(() => {
           this.peekTimer = null;
@@ -952,7 +984,8 @@
           this.popover = popover;
           if (typeof this.visual.getBoundingClientRect === "function" && typeof element.getBoundingClientRect === "function") {
             const wrapperRect = this.visual.getBoundingClientRect();
-            const cellRect = element.getBoundingClientRect();
+            const anchor = element.querySelector(".recap-bar-fill") || element;
+            const cellRect = anchor.getBoundingClientRect();
             const popRect = popover.getBoundingClientRect();
             let left = cellRect.left - wrapperRect.left + cellRect.width / 2 - popRect.width / 2;
             left = Math.max(0, Math.min(left, Math.max(0, wrapperRect.width - popRect.width)));
@@ -987,7 +1020,6 @@
       interaction.applyHighlight();
     });
     interaction.applyHighlight();
-    card.appendChild(footnote);
     return card;
   }
 
@@ -1145,6 +1177,7 @@
     init,
     __test: {
       agentColorToken,
+      barRatio,
       buildTimelineModel,
       depthOf,
       summarize,

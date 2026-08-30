@@ -22,6 +22,14 @@ test("recap tab is loaded before the Settings renderer and sits directly above A
   assert.match(renderer, /\{ id: "recap"[\s\S]*\{ id: "about"/);
 });
 
+test("the user guide names Footprints and documents Today bars", () => {
+  const guide = fs.readFileSync(path.join(__dirname, "..", "docs", "guides", "recap.md"), "utf8");
+  assert.match(guide, /Settings → Footprints/);
+  assert.match(guide, /Open Footprints/);
+  assert.match(guide, /\*\*Today\*\*: 24 local-hour bars/);
+  assert.doesNotMatch(guide, /Settings → Recap|Open Recap|Record recap|Clear recap data/);
+});
+
 test("every supported Settings locale has the complete recap key set", () => {
   const i18n = loadI18n();
   const englishKeys = Object.keys(i18n.STRINGS.en).filter((key) => key === "sidebarRecap" || key.startsWith("recap"));
@@ -32,6 +40,9 @@ test("every supported Settings locale has the complete recap key set", () => {
       assert.notEqual(i18n.STRINGS[lang][key], "", `${lang}.${key}`);
     }
   }
+  assert.equal(i18n.STRINGS.zh.sidebarRecap, "足迹");
+  assert.equal(i18n.STRINGS.zh.recapTitle, "足迹");
+  assert.equal(i18n.STRINGS.zh.recapSubtitle, "回顾你的工作足迹。");
 });
 
 test("recap tab stays browser-only and aggregates scope rows without turning null into zero", () => {
@@ -74,10 +85,14 @@ test("recap tab stays browser-only and aggregates scope rows without turning nul
   assert.equal(summary.rows.find((row) => row.scope === "remote").sessionsStarted, 1);
 });
 
-test("recap card keeps every visual cell square and exposes no arbitrary date or export surface", () => {
+test("recap card keeps day grids square, makes only today a bar chart, and exposes no export surface", () => {
   const css = fs.readFileSync(path.join(SRC, "settings.css"), "utf8");
   const preload = fs.readFileSync(path.join(SRC, "preload-settings.js"), "utf8");
   assert.match(css, /\.recap-cell\s*\{[\s\S]*?aspect-ratio:\s*1/);
+  assert.match(css, /\.recap-grid-today \.recap-cell\s*\{[\s\S]*?aspect-ratio:\s*auto/);
+  assert.match(css, /\.recap-bar-fill\s*\{[\s\S]*?height:\s*calc\(var\(--recap-bar-ratio, 0\) \* 100%\)/);
+  assert.doesNotMatch(css, /\.recap-grid-today \.recap-cell-activity \.recap-bar-fill\s*\{[^}]*min-height/);
+  assert.match(css, /\.recap-grid-today \.recap-cell-fold::after\s*\{[\s\S]*?bottom:\s*max\(3px, calc\(var\(--recap-bar-ratio, 0\) \* 100% - 2px\)\)/);
   assert.match(css, /\.recap-month-row[\s\S]*grid-template-columns:\s*repeat\(7/);
   assert.match(css, /\.recap-grid-dim \.recap-cell\s*\{\s*opacity:\s*0\.13/);
   assert.match(css, /@media \(max-width:\s*980px\)[\s\S]*\.recap-page-header\s*\{\s*grid-template-columns:\s*1fr/);
@@ -86,6 +101,17 @@ test("recap card keeps every visual cell square and exposes no arbitrary date or
   assert.match(preload, /queryRecap:\s*\(period\)/);
   assert.ok(!preload.includes("exportRecap"));
   assert.ok(!preload.includes("shareRecap"));
+});
+
+test("today bar ratios use one honest linear scale", () => {
+  const context = { globalThis: null };
+  context.globalThis = context;
+  vm.runInNewContext(fs.readFileSync(path.join(SRC, "settings-tab-recap.js"), "utf8"), context);
+  const ratio = context.ClawdSettingsTabRecap.__test.barRatio;
+  assert.equal(ratio(0, 20), 0);
+  assert.equal(ratio(5, 20), 0.25);
+  assert.equal(ratio(20, 20), 1);
+  assert.equal(ratio(30, 20), 1);
 });
 
 test("recap timeline models have the fixed four geometries", () => {

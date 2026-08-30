@@ -508,7 +508,7 @@ describe("menu recap action", () => {
     const calls = [];
     const ctx = buildBaseCtx({ openSettingsWindow: (options) => calls.push(options) });
     initMenu(ctx).buildContextMenu();
-    const item = ctx.contextMenu.template.find((candidate) => candidate.label === "Open Recap");
+    const item = ctx.contextMenu.template.find((candidate) => candidate.label === "Open Footprints");
     assert.ok(item);
     item.click();
     assert.deepStrictEqual(calls, [{ tab: "recap" }]);

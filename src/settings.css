@@ -347,22 +347,10 @@ html, body {
   color: var(--text-tertiary);
   font-size: 10.5px;
 }
-.recap-footnote,
 .recap-empty {
   color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.5;
-}
-.recap-footnote {
-  min-height: 46px;
-  margin: 13px 0 0;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-}
-.recap-coverage-note {
-  display: block;
-  margin-top: 3px;
-  color: var(--text-tertiary);
 }
 .recap-agent-list {
   display: flex;
@@ -496,6 +484,70 @@ html, body {
 .recap-cell-future,
 .recap-cell-not-started,
 .recap-cell-blank { background: transparent; }
+.recap-today-band {
+  height: 112px;
+  align-items: stretch;
+  gap: 3px;
+  padding: 5px 0 2px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  background-image:
+    linear-gradient(to bottom, color-mix(in srgb, var(--border) 34%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--border) 24%, transparent) 1px, transparent 1px);
+  background-position: 0 33%, 0 66%;
+  background-repeat: no-repeat;
+  background-size: 100% 1px;
+}
+.recap-grid-today .recap-cell {
+  display: flex;
+  height: 100%;
+  align-items: flex-end;
+  aspect-ratio: auto;
+  border: 0;
+  border-radius: 4px 4px 1px 1px;
+  background: transparent;
+  box-shadow: none;
+}
+.recap-bar-fill {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: calc(var(--recap-bar-ratio, 0) * 100%);
+  max-height: 100%;
+  overflow: hidden;
+  border-radius: 4px 4px 1px 1px;
+  background: transparent;
+  transition: height 0.18s ease, background-color 0.14s ease, opacity 0.14s ease;
+}
+.recap-grid-today .recap-cell-activity.recap-depth-1 .recap-bar-fill {
+  background: color-mix(in srgb, var(--recap-cell-color, var(--accent)) 40%, transparent);
+}
+.recap-grid-today .recap-cell-activity.recap-depth-2 .recap-bar-fill {
+  background: color-mix(in srgb, var(--recap-cell-color, var(--accent)) 70%, transparent);
+}
+.recap-grid-today .recap-cell-activity.recap-depth-3 .recap-bar-fill {
+  background: var(--recap-cell-color, var(--accent));
+}
+.recap-grid-today .recap-cell-covered::before,
+.recap-grid-today .recap-cell-partial::before,
+.recap-grid-today .recap-cell-uncovered::before {
+  content: "";
+  position: absolute;
+  right: 18%;
+  bottom: 1px;
+  left: 18%;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--recap-cell-covered);
+}
+.recap-grid-today .recap-cell-partial::before { opacity: 0.55; }
+.recap-grid-today .recap-cell-uncovered::before {
+  height: 1px;
+  background: var(--border);
+}
+.recap-grid-today .recap-cell-gap::after {
+  top: auto;
+  bottom: 2px;
+}
 .recap-cell-gap::after {
   content: "";
   position: absolute;
@@ -517,6 +569,15 @@ html, body {
   background: var(--text-primary);
   opacity: 0.65;
   z-index: 2;
+}
+.recap-grid-today .recap-cell-fold::after {
+  top: auto;
+  right: 50%;
+  bottom: max(3px, calc(var(--recap-bar-ratio, 0) * 100% - 2px));
+  width: 4px;
+  height: 4px;
+  aspect-ratio: auto;
+  transform: translateX(50%);
 }
 .recap-grid-dim .recap-cell { opacity: 0.13; }
 .recap-grid-dim .recap-cell-hit,
@@ -679,12 +740,14 @@ html, body {
   .recap-agent-row { grid-template-columns: 1fr; gap: 8px; }
   .recap-agent-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .recap-visual-heading { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .recap-today-band { height: 96px; gap: 2px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .recap-period-button,
   .recap-agent-row,
   .recap-agent-swatch,
   .recap-cell,
+  .recap-bar-fill,
   .recap-cell-popover { transition: none; }
 }
 .general-tutorial-hint {

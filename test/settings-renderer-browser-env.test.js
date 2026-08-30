@@ -2370,6 +2370,11 @@ describe("settings renderer browser environment", () => {
     const cells = harness.content.querySelectorAll(".recap-cell");
     const rows = harness.content.querySelectorAll(".recap-agent-row");
     assert.strictEqual(cells.length, 24);
+    assert.strictEqual(harness.content.querySelectorAll(".recap-bar-slot").length, 24);
+    assert.strictEqual(harness.content.querySelectorAll(".recap-bar-fill").length, 24);
+    assert.strictEqual(harness.content.querySelector(".recap-footnote"), null);
+    assert.ok(collectText(harness.content).includes("Footprints"));
+    assert.ok(collectText(harness.content).includes("Look back on your work trail."));
     assert.strictEqual(grid.getAttribute("role"), "grid");
     assert.strictEqual(grid.querySelectorAll(".recap-today-band").length, 1);
     assert.strictEqual(grid.querySelector(".recap-today-band").getAttribute("role"), "row");
@@ -2394,6 +2399,7 @@ describe("settings renderer browser environment", () => {
     harness.content.querySelectorAll(".recap-period-button")[1].click();
     await harness.settle();
     const weekGrid = harness.content.querySelector(".recap-grid");
+    assert.strictEqual(weekGrid.querySelector(".recap-bar-fill"), null);
     weekGrid.dispatchEvent({ type: "keydown", key: "ArrowDown", bubbles: false });
     weekGrid.dispatchEvent({ type: "keydown", key: "End", bubbles: false });
     let active = weekGrid.querySelectorAll(".recap-cell")
@@ -2454,12 +2460,16 @@ describe("settings renderer browser environment", () => {
     const rows = harness.content.querySelectorAll(".recap-agent-row");
     const codexRow = rows.find((row) => collectText(row).includes("Codex"));
     const grid = harness.content.querySelector(".recap-grid");
+    const activeCell = grid.querySelector(".recap-cell-activity");
+    assert.strictEqual(activeCell.style.getPropertyValue("--recap-bar-ratio"), "1");
 
     codexRow.dispatchEvent({ type: "mouseenter", bubbles: false });
     assert.strictEqual(grid.classList.contains("recap-grid-dim"), true);
     assert.strictEqual(harness.content.querySelectorAll(".recap-cell-hit").length, 1);
+    assert.strictEqual(activeCell.style.getPropertyValue("--recap-bar-ratio"), "0.75");
     codexRow.dispatchEvent({ type: "mouseleave", bubbles: false });
     assert.strictEqual(grid.classList.contains("recap-grid-dim"), false);
+    assert.strictEqual(activeCell.style.getPropertyValue("--recap-bar-ratio"), "1");
 
     codexRow.dispatchEvent({ type: "click", bubbles: false });
     assert.strictEqual(codexRow.getAttribute("aria-pressed"), "true");
@@ -2487,10 +2497,12 @@ describe("settings renderer browser environment", () => {
     const codexRow = harness.content.querySelectorAll(".recap-agent-row")
       .find((row) => collectText(row).includes("Codex"));
     codexRow.dispatchEvent({ type: "click", bubbles: false });
+    assert.strictEqual(activeCell.style.getPropertyValue("--recap-bar-ratio"), "0.75");
     activeCell.dispatchEvent({ type: "mouseenter", bubbles: false });
     assert.strictEqual(harness.content.querySelector(".recap-grid").classList.contains("recap-grid-dim"), true);
     assert.strictEqual(activeCell.classList.contains("recap-cell-hit"), true);
     assert.strictEqual(activeCell.classList.contains("recap-cell-peek"), true);
+    assert.strictEqual(activeCell.style.getPropertyValue("--recap-bar-ratio"), "1");
     const segments = activeCell.querySelectorAll(".recap-cell-segments i");
     assert.strictEqual(segments.length, 2);
     assert.strictEqual(segments[0].style.flex, "9 1 0%");
@@ -2502,6 +2514,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(text.includes("This local hour occurred twice because the clock changed."));
     activeCell.dispatchEvent({ type: "mouseleave", bubbles: false });
     assert.strictEqual(harness.content.querySelector(".recap-cell-popover"), null);
+    assert.strictEqual(activeCell.style.getPropertyValue("--recap-bar-ratio"), "0.75");
   });
 
   it("does not announce an invalid-email preflight for an untouched empty approver", async () => {
