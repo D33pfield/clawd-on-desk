@@ -156,12 +156,36 @@ function createQueuedRaf() {
 
 describe("recap metadata refresh", () => {
   it("rerenders an open recap page when delayed agent metadata arrives", () => {
-    const core = loadSettingsCoreForTest({});
+    let rawScrollTop = 620;
+    let maxScrollTop = 2000;
+    const raf = createQueuedRaf();
+    const content = {
+      children: [],
+      get scrollTop() {
+        return Math.min(rawScrollTop, maxScrollTop);
+      },
+      set scrollTop(value) {
+        rawScrollTop = Math.max(0, Math.min(Number(value) || 0, maxScrollTop));
+      },
+    };
+    const document = {
+      body: { contains: () => false },
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, {
+      document,
+      requestAnimationFrame: raf.requestAnimationFrame,
+    });
     core.state.activeTab = "recap";
     let renders = 0;
     core.ops.installRenderHooks({
       sidebar: () => {},
-      content: () => { renders += 1; },
+      content: () => {
+        renders += 1;
+        maxScrollTop = 0;
+        content.scrollTop = content.scrollTop;
+        maxScrollTop = 2000;
+      },
       modal: () => {},
     });
 
@@ -169,6 +193,91 @@ describe("recap metadata refresh", () => {
 
     assert.strictEqual(renders, 1);
     assert.strictEqual(core.runtime.agentMetadata[0].name, "Codex");
+    assert.strictEqual(content.scrollTop, 620);
+    content.scrollTop = 0;
+    raf.flush();
+    assert.strictEqual(content.scrollTop, 620);
+  });
+
+  it("does not enable recap scroll preservation for delayed metadata on Agents", () => {
+    let rawScrollTop = 620;
+    let maxScrollTop = 2000;
+    const raf = createQueuedRaf();
+    const content = {
+      children: [],
+      get scrollTop() {
+        return Math.min(rawScrollTop, maxScrollTop);
+      },
+      set scrollTop(value) {
+        rawScrollTop = Math.max(0, Math.min(Number(value) || 0, maxScrollTop));
+      },
+    };
+    const document = {
+      body: { contains: () => false },
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, {
+      document,
+      requestAnimationFrame: raf.requestAnimationFrame,
+    });
+    core.state.activeTab = "agents";
+    core.ops.installRenderHooks({
+      content: () => {
+        maxScrollTop = 0;
+        content.scrollTop = content.scrollTop;
+        maxScrollTop = 2000;
+      },
+    });
+
+    core.ops.applyAgentMetadata([{ id: "codex", name: "Codex" }]);
+
+    assert.strictEqual(content.scrollTop, 0);
+    raf.flush();
+    assert.strictEqual(content.scrollTop, 0);
+  });
+
+  it("preserves recap scroll for generic settings changes without changing Agents", () => {
+    for (const tabId of ["recap", "agents"]) {
+      let rawScrollTop = 620;
+      let maxScrollTop = 2000;
+      const raf = createQueuedRaf();
+      const content = {
+        children: [],
+        get scrollTop() {
+          return Math.min(rawScrollTop, maxScrollTop);
+        },
+        set scrollTop(value) {
+          rawScrollTop = Math.max(0, Math.min(Number(value) || 0, maxScrollTop));
+        },
+      };
+      const document = {
+        body: { contains: () => false },
+        getElementById: (id) => (id === "content" ? content : null),
+      };
+      const core = loadSettingsCoreForTest({}, {
+        document,
+        requestAnimationFrame: raf.requestAnimationFrame,
+      });
+      core.state.activeTab = tabId;
+      core.state.snapshot = { soundMuted: false };
+      core.tabs[tabId] = {};
+      core.ops.installRenderHooks({
+        sidebar: () => {},
+        content: () => {
+          maxScrollTop = 0;
+          content.scrollTop = content.scrollTop;
+          maxScrollTop = 2000;
+        },
+      });
+
+      core.ops.applyChanges({ changes: { soundMuted: true } });
+
+      const expected = tabId === "recap" ? 620 : 0;
+      assert.strictEqual(content.scrollTop, expected, `${tabId} immediate scroll`);
+      content.scrollTop = 0;
+      raf.flush();
+      assert.strictEqual(content.scrollTop, expected, `${tabId} deferred scroll`);
+    }
   });
 });
 
@@ -451,7 +560,7 @@ class FakeElement {
   }
 }
 
-function loadRecapTabForTest({ data, agentMetadata = [] } = {}) {
+function loadRecapTabForTest({ data, agentMetadata = [], queryRecap } = {}) {
   const body = new FakeElement("body");
   const content = new FakeElement("main");
   body.appendChild(content);
@@ -461,6 +570,7 @@ function loadRecapTabForTest({ data, agentMetadata = [] } = {}) {
     getElementById: () => null,
   };
   const strings = loadSettingsI18nForTest().en;
+  const renderRequests = [];
   const context = {
     console,
     document,
@@ -470,7 +580,7 @@ function loadRecapTabForTest({ data, agentMetadata = [] } = {}) {
     window: null,
     globalThis: null,
     settingsAPI: {
-      queryRecap: async () => data,
+      queryRecap: queryRecap || (async () => data),
       update: async () => ({ status: "ok" }),
       clearRecap: async () => ({ status: "ok" }),
     },
@@ -494,7 +604,9 @@ function loadRecapTabForTest({ data, agentMetadata = [] } = {}) {
       showSettingsConfirmModal: async () => "cancel",
     },
     ops: {
-      requestRender: ({ content: shouldRender } = {}) => {
+      requestRender: (payload = {}) => {
+        renderRequests.push(payload);
+        const { content: shouldRender } = payload;
         if (shouldRender) render();
       },
       showToast: () => {},
@@ -510,6 +622,8 @@ function loadRecapTabForTest({ data, agentMetadata = [] } = {}) {
   return {
     content,
     core,
+    document,
+    renderRequests,
     async settle() {
       for (let index = 0; index < 6; index += 1) await Promise.resolve();
     },
@@ -2356,6 +2470,112 @@ function createAnimOverridesRuntime(card, overrides = {}) {
 }
 
 describe("settings renderer browser environment", () => {
+  it("defers recap recovery queries while the Settings document is hidden", async () => {
+    let queryCount = 0;
+    const harness = loadRecapTabForTest({
+      queryRecap: async () => {
+        queryCount += 1;
+        return queryCount === 1
+          ? { status: "unavailable", reason: "RECAP_PRIVATE_ACL_FAILED" }
+          : sampleRecapView();
+      },
+    });
+    await harness.settle();
+    assert.strictEqual(queryCount, 1);
+
+    harness.document.visibilityState = "hidden";
+    harness.core.tabs.recap.applyDataChanged();
+    await harness.settle();
+    assert.strictEqual(queryCount, 1);
+
+    harness.document.visibilityState = "visible";
+    harness.core.tabs.recap.applyDataChanged();
+    await harness.settle();
+    assert.strictEqual(queryCount, 2);
+  });
+
+  it("re-queries an unavailable recap page after the runtime recovery signal", async () => {
+    let queryCount = 0;
+    const ready = sampleRecapView();
+    const harness = loadRecapTabForTest({
+      queryRecap: async () => {
+        queryCount += 1;
+        return queryCount === 1
+          ? { status: "unavailable", reason: "RECAP_PRIVATE_ACL_FAILED" }
+          : ready;
+      },
+    });
+    await harness.settle();
+    assert.strictEqual(queryCount, 1);
+    assert.ok(harness.content.querySelector(".recap-error"));
+    const retry = harness.content.querySelector(".recap-error button");
+    assert.strictEqual(retry.getAttribute("data-settings-focus-key"), "recap-retry-today");
+    assert.strictEqual(
+      retry.getAttribute("data-settings-focus-fallback-key"),
+      "recap-period-today",
+    );
+
+    harness.core.tabs.recap.applyDataChanged();
+    await harness.settle();
+    assert.strictEqual(queryCount, 2);
+    assert.ok(harness.content.querySelector(".recap-card"));
+    assert.strictEqual(harness.content.querySelector(".recap-error"), null);
+  });
+
+  it("preserves a recovery signal queued while the initial recap query is failing", async () => {
+    let queryCount = 0;
+    let rejectInitial;
+    const harness = loadRecapTabForTest({
+      queryRecap: () => {
+        queryCount += 1;
+        if (queryCount === 1) {
+          return new Promise((_resolve, reject) => { rejectInitial = reject; });
+        }
+        return Promise.resolve(sampleRecapView());
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.strictEqual(typeof rejectInitial, "function");
+    harness.core.tabs.recap.applyDataChanged();
+    rejectInitial(new Error("transient query failure"));
+    await harness.settle();
+    assert.strictEqual(queryCount, 2);
+    assert.ok(harness.content.querySelector(".recap-card"));
+  });
+
+  it("drains a final live signal queued during a recap background query", async () => {
+    const background = createDeferred();
+    const initial = sampleRecapView();
+    const latest = JSON.parse(JSON.stringify(initial));
+    latest.days[0].rows[0].metrics.toolCalls = 5;
+    let queryCount = 0;
+    const harness = loadRecapTabForTest({
+      queryRecap: () => {
+        queryCount += 1;
+        if (queryCount === 1) return Promise.resolve(initial);
+        if (queryCount === 2) return background.promise;
+        return Promise.resolve(latest);
+      },
+    });
+    await harness.settle();
+    assert.strictEqual(queryCount, 1);
+
+    harness.core.tabs.recap.applyDataChanged();
+    await harness.settle();
+    assert.strictEqual(queryCount, 2);
+    harness.core.tabs.recap.applyDataChanged();
+    background.resolve(initial);
+    await harness.settle();
+    await harness.settle();
+
+    assert.strictEqual(queryCount, 3);
+    const codexRow = harness.content.querySelectorAll(".recap-agent-row")
+      .find((row) => row.querySelector("strong").textContent === "codex");
+    const codexMetrics = codexRow.querySelectorAll("dd");
+    assert.strictEqual(codexMetrics[2].textContent, "5");
+  });
+
   it("renders the recap grid as one keyboard stop with accessible agent locks", async () => {
     const harness = loadRecapTabForTest({
       data: sampleRecapView(),
@@ -2376,6 +2596,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(collectText(harness.content).includes("Footprints"));
     assert.ok(collectText(harness.content).includes("Look back on your work trail."));
     assert.strictEqual(grid.getAttribute("role"), "grid");
+    assert.strictEqual(grid.getAttribute("data-settings-focus-key"), "recap-grid-today");
     assert.strictEqual(grid.querySelectorAll(".recap-today-band").length, 1);
     assert.strictEqual(grid.querySelector(".recap-today-band").getAttribute("role"), "row");
     assert.strictEqual(grid.querySelector(".recap-hour-labels").getAttribute("aria-hidden"), "true");
@@ -2384,6 +2605,23 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(rows.length, 2);
     assert.ok(rows.every((row) => row.getAttribute("role") === "button" && row.tabIndex === 0));
     assert.ok(rows.every((row) => row.getAttribute("aria-pressed") === "false"));
+    assert.ok(rows.every((row) => row.getAttribute("data-settings-focus-key")
+      === `recap-agent-${row.dataset.rowKey}`));
+    assert.deepStrictEqual(
+      harness.content.querySelectorAll(".recap-period-button")
+        .map((button) => button.getAttribute("data-settings-focus-key")),
+      ["recap-period-today", "recap-period-week", "recap-period-month", "recap-period-year"]
+    );
+    assert.strictEqual(
+      harness.content.querySelector(".switch").getAttribute("data-settings-focus-key"),
+      "recap-recording-toggle"
+    );
+    const clearButton = harness.content.querySelector(".soft-btn");
+    assert.strictEqual(clearButton.getAttribute("data-settings-focus-key"), "recap-clear");
+    assert.strictEqual(
+      clearButton.getAttribute("data-settings-focus-fallback-key"),
+      "recap-recording-toggle"
+    );
     assert.match(rows[0].getAttribute("aria-label"), /Sessions started: .*Turns completed: .*Tool calls: .*Activity signals:/);
 
     const firstActiveDescendant = grid.getAttribute("aria-activedescendant");
@@ -2411,6 +2649,34 @@ describe("settings renderer browser environment", () => {
     active = weekGrid.querySelectorAll(".recap-cell")
       .find((cell) => cell.id === weekGrid.getAttribute("aria-activedescendant"));
     assert.strictEqual(active.getAttribute("aria-rowindex"), "7");
+  });
+
+  it("keeps every recap keyboard focus key stable across a live data refresh", async () => {
+    const data = sampleRecapView();
+    const harness = loadRecapTabForTest({
+      queryRecap: async () => data,
+      agentMetadata: [
+        { id: "codex", name: "Codex" },
+        { id: "claude-code", name: "Claude Code" },
+      ],
+    });
+    await harness.settle();
+
+    const focusKeys = () => [
+      ...harness.content.querySelectorAll(".recap-period-button"),
+      ...harness.content.querySelectorAll(".recap-agent-row"),
+      harness.content.querySelector(".recap-grid"),
+      harness.content.querySelector(".switch"),
+      harness.content.querySelector(".soft-btn"),
+    ].map((element) => element.getAttribute("data-settings-focus-key"));
+    const before = focusKeys();
+    assert.ok(before.every(Boolean));
+    assert.strictEqual(new Set(before).size, before.length);
+
+    harness.core.tabs.recap.applyDataChanged();
+    await harness.settle();
+    assert.deepStrictEqual(focusKeys(), before);
+    assert.strictEqual(harness.renderRequests.at(-1).preserveScroll, true);
   });
 
   it("keeps month and year placeholder cells out of the accessibility grid", async () => {
@@ -8547,6 +8813,186 @@ describe("settings renderer browser environment", () => {
     assert.equal(replacement.focused, true);
   });
 
+  it("prefers an exact Settings focus key and falls back when that control disappears", () => {
+    const body = new FakeElement("body");
+    const content = new FakeElement("main");
+    content.id = "content";
+    body.appendChild(content);
+    const document = {
+      body,
+      activeElement: body,
+      createElement(tagName) {
+        const element = new FakeElement(tagName);
+        element.focus = () => {
+          element.focused = true;
+          document.activeElement = element;
+        };
+        return element;
+      },
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    let showRetry = true;
+    let period = null;
+    let retry = null;
+    const render = () => {
+      content.innerHTML = "";
+      period = document.createElement("button");
+      period.setAttribute("data-settings-focus-key", "recap-period-today");
+      content.appendChild(period);
+      retry = null;
+      if (showRetry) {
+        retry = document.createElement("button");
+        retry.setAttribute("data-settings-focus-key", "recap-retry-today");
+        retry.setAttribute("data-settings-focus-fallback-key", "recap-period-today");
+        content.appendChild(retry);
+      }
+    };
+    core.ops.installRenderHooks({ content: render });
+    render();
+    retry.focus();
+
+    core.ops.requestRender({ content: true });
+    assert.strictEqual(document.activeElement, retry);
+
+    showRetry = false;
+    core.ops.requestRender({ content: true });
+    assert.strictEqual(document.activeElement, period);
+    assert.equal(period.focused, true);
+  });
+
+  it("falls back when the exact Settings focus target becomes disabled", () => {
+    const body = new FakeElement("body");
+    const content = new FakeElement("main");
+    content.id = "content";
+    body.appendChild(content);
+    const document = {
+      body,
+      activeElement: body,
+      createElement(tagName) {
+        const element = new FakeElement(tagName);
+        element.focus = () => {
+          element.focused = true;
+          document.activeElement = element;
+        };
+        return element;
+      },
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    let disableExact = false;
+    let fallback = null;
+    let exact = null;
+    const render = () => {
+      content.innerHTML = "";
+      fallback = document.createElement("button");
+      fallback.setAttribute("data-settings-focus-key", "recap-recording-toggle");
+      content.appendChild(fallback);
+      exact = document.createElement("button");
+      exact.setAttribute("data-settings-focus-key", "recap-clear");
+      exact.setAttribute("data-settings-focus-fallback-key", "recap-recording-toggle");
+      exact.disabled = disableExact;
+      content.appendChild(exact);
+    };
+    core.ops.installRenderHooks({ content: render });
+    render();
+    exact.focus();
+
+    disableExact = true;
+    core.ops.requestRender({ content: true });
+
+    assert.equal(exact.disabled, true);
+    assert.strictEqual(document.activeElement, fallback);
+    assert.equal(fallback.focused, true);
+  });
+
+  it("does not steal focus acquired by another live control during a Settings render", () => {
+    const body = new FakeElement("body");
+    const content = new FakeElement("main");
+    content.id = "content";
+    body.appendChild(content);
+    const document = {
+      body,
+      activeElement: body,
+      createElement(tagName) {
+        const element = new FakeElement(tagName);
+        element.focus = () => {
+          element.focused = true;
+          document.activeElement = element;
+        };
+        return element;
+      },
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const original = document.createElement("button");
+    original.setAttribute("data-settings-focus-key", "recap-clear");
+    content.appendChild(original);
+    original.focus();
+
+    let replacement = null;
+    let newlyFocused = null;
+    core.ops.installRenderHooks({
+      content() {
+        content.innerHTML = "";
+        replacement = document.createElement("button");
+        replacement.setAttribute("data-settings-focus-key", "recap-clear");
+        content.appendChild(replacement);
+        newlyFocused = document.createElement("button");
+        content.appendChild(newlyFocused);
+        newlyFocused.focus();
+      },
+    });
+
+    core.ops.requestRender({ content: true });
+
+    assert.strictEqual(document.activeElement, newlyFocused);
+    assert.equal(newlyFocused.focused, true);
+    assert.equal(replacement.focused, false);
+  });
+
+  it("restores content scroll after a live full render temporarily clamps it", () => {
+    let rawScrollTop = 740;
+    let maxScrollTop = 2000;
+    const raf = createQueuedRaf();
+    const body = new FakeElement("body");
+    const content = new FakeElement("main");
+    content.id = "content";
+    Object.defineProperty(content, "scrollTop", {
+      configurable: true,
+      get: () => Math.min(rawScrollTop, maxScrollTop),
+      set: (value) => {
+        rawScrollTop = Math.max(0, Math.min(Number(value) || 0, maxScrollTop));
+      },
+    });
+    body.appendChild(content);
+    const document = {
+      body,
+      activeElement: body,
+      getElementById: (id) => (id === "content" ? content : null),
+    };
+    const core = loadSettingsCoreForTest({}, {
+      document,
+      requestAnimationFrame: raf.requestAnimationFrame,
+    });
+    core.state.activeTab = "recap";
+    core.tabs.recap = {};
+    core.ops.installRenderHooks({
+      content() {
+        maxScrollTop = 0;
+        content.scrollTop = content.scrollTop;
+        maxScrollTop = 2000;
+      },
+    });
+
+    core.ops.requestRender({ content: true, preserveScroll: true });
+    assert.equal(content.scrollTop, 740);
+
+    content.scrollTop = 0;
+    raf.flush();
+    assert.equal(content.scrollTop, 740);
+  });
+
   it("builds Settings buttons from one tone, size, and pending-state contract", () => {
     const document = {
       body: new FakeElement("body"),
@@ -9840,7 +10286,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes("state.transientUiState.agentSwitches.clear();"));
     const clearIndex = coreSource.indexOf("clearTransientStateForChanges(changes);");
     const patchIndex = coreSource.indexOf("activeTab.patchInPlace(changes");
-    const renderIndex = coreSource.indexOf("requestRender({ sidebar: true, content: true });", patchIndex);
+    const renderIndex = coreSource.indexOf("requestRender({", patchIndex);
     assert.notStrictEqual(clearIndex, -1);
     assert.notStrictEqual(patchIndex, -1);
     assert.notStrictEqual(renderIndex, -1);

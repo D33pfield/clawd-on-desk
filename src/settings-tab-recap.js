@@ -110,20 +110,28 @@
         view.status = "ready";
         view.data = result;
       }
-      if (coreState.activeTab === "recap") ops.requestRender({ content: true });
+      if (coreState.activeTab === "recap") ops.requestRender({ content: true, preserveScroll: true });
       refreshIfNeeded();
     }).catch(() => {
       if (requestSeq !== view.requestSeq) return;
       view.status = "error";
       view.data = null;
-      if (coreState.activeTab === "recap") ops.requestRender({ content: true });
+      if (coreState.activeTab === "recap") ops.requestRender({ content: true, preserveScroll: true });
     });
   }
 
   function refreshIfNeeded() {
     if (!view.refreshQueued || view.refreshInFlight) return;
-    if (view.status !== "ready" || coreState.activeTab !== "recap") return;
+    if (coreState.activeTab !== "recap") return;
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    if (["unavailable", "error"].includes(view.status)) {
+      view.refreshQueued = false;
+      view.status = "idle";
+      view.data = null;
+      requestData();
+      return;
+    }
+    if (view.status !== "ready") return;
     view.refreshQueued = false;
     view.refreshInFlight = true;
     const requestSeq = ++view.requestSeq;
@@ -138,7 +146,9 @@
       if (result && result.status === "ready") {
         view.status = "ready";
         view.data = result;
-        if (coreState.activeTab === "recap") ops.requestRender({ content: true });
+        if (coreState.activeTab === "recap") {
+          ops.requestRender({ content: true, preserveScroll: true });
+        }
       }
     }).catch(() => {
       // A background refresh must not replace already-visible data with an
@@ -166,7 +176,7 @@
     view.data = null;
     view.refreshQueued = false;
     resetInteraction();
-    if (coreState.activeTab === "recap") ops.requestRender({ content: true });
+    if (coreState.activeTab === "recap") ops.requestRender({ content: true, preserveScroll: true });
   }
 
   function agentName(agentId) {
@@ -497,6 +507,7 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "recap-period-button";
+      button.setAttribute("data-settings-focus-key", `recap-period-${period}`);
       button.textContent = t(`recapPeriod_${period}`);
       button.classList.toggle("active", view.period === period);
       button.setAttribute("aria-pressed", view.period === period ? "true" : "false");
@@ -530,6 +541,7 @@
       const item = document.createElement("div");
       item.className = "recap-agent-row";
       item.dataset.rowKey = row.key;
+      item.setAttribute("data-settings-focus-key", `recap-agent-${row.key}`);
       item.tabIndex = 0;
       item.setAttribute("role", "button");
       item.setAttribute("aria-pressed", view.lockedRowKey === row.key ? "true" : "false");
@@ -671,6 +683,7 @@
 
     const grid = document.createElement("div");
     grid.className = `recap-grid recap-grid-${view.period}`;
+    grid.setAttribute("data-settings-focus-key", `recap-grid-${view.period}`);
     grid.tabIndex = 0;
     grid.setAttribute("role", "grid");
     grid.setAttribute("aria-label", t("recapGridInstructions"));
@@ -1079,19 +1092,20 @@
     control.className = "row-control";
     const sw = document.createElement("div");
     sw.className = "switch";
+    sw.setAttribute("data-settings-focus-key", "recap-recording-toggle");
     sw.setAttribute("role", "switch");
     sw.setAttribute("tabindex", view.togglePending ? "-1" : "0");
     helpers.setSwitchVisual(sw, enabled, { pending: view.togglePending });
     const toggle = () => {
       if (view.togglePending || !window.settingsAPI || typeof window.settingsAPI.update !== "function") return;
       view.togglePending = true;
-      ops.requestRender({ content: true });
+      ops.requestRender({ content: true, preserveScroll: true });
       Promise.resolve(window.settingsAPI.update("recapEnabled", !enabled)).then((result) => {
         if (!result || result.status !== "ok") throw new Error("save failed");
         reload();
       }).catch(() => ops.showToast(t("recapToggleFailed"), { error: true })).finally(() => {
         view.togglePending = false;
-        if (coreState.activeTab === "recap") ops.requestRender({ content: true });
+        if (coreState.activeTab === "recap") ops.requestRender({ content: true, preserveScroll: true });
       });
     };
     sw.addEventListener("click", toggle);
@@ -1123,6 +1137,8 @@
     const clearButton = document.createElement("button");
     clearButton.type = "button";
     clearButton.className = "soft-btn danger";
+    clearButton.setAttribute("data-settings-focus-key", "recap-clear");
+    clearButton.setAttribute("data-settings-focus-fallback-key", "recap-recording-toggle");
     clearButton.textContent = view.clearPending ? t("recapClearing") : t("recapClearAction");
     clearButton.disabled = view.clearPending;
     clearButton.addEventListener("click", async () => {
@@ -1137,7 +1153,7 @@
       });
       if (action !== "confirm") return;
       view.clearPending = true;
-      ops.requestRender({ content: true });
+      ops.requestRender({ content: true, preserveScroll: true });
       try {
         const result = await window.settingsAPI.clearRecap();
         if (!result || result.status !== "ok") throw new Error("clear failed");
@@ -1147,7 +1163,7 @@
         ops.showToast(t("recapClearFailed"), { error: true });
       } finally {
         view.clearPending = false;
-        if (coreState.activeTab === "recap") ops.requestRender({ content: true });
+        if (coreState.activeTab === "recap") ops.requestRender({ content: true, preserveScroll: true });
       }
     });
     clearControl.appendChild(clearButton);
@@ -1188,6 +1204,8 @@
       retry.type = "button";
       retry.className = "soft-btn";
       retry.textContent = t("recapRetry");
+      retry.setAttribute("data-settings-focus-key", `recap-retry-${view.period}`);
+      retry.setAttribute("data-settings-focus-fallback-key", `recap-period-${view.period}`);
       retry.addEventListener("click", reload);
       error.appendChild(retry);
       parent.appendChild(error);

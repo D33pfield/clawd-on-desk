@@ -4,6 +4,7 @@ const { createRecapAggregate } = require("./recap-aggregate");
 const { createRecapCoverage } = require("./recap-coverage");
 const { createCanonicalRecapEvent } = require("./recap-event");
 const { createRecapJournal } = require("./recap-journal");
+const { isTransientRecapPrivateAclError } = require("./recap-private-permissions");
 const { createRecapStore, DEFAULT_ROOT } = require("./recap-store");
 const {
   addLocalDays,
@@ -19,6 +20,7 @@ const PERIODS = new Set(["today", "week", "month", "year"]);
 const MAX_FUTURE_SKEW_MS = 5 * 60000;
 const MAX_HYDRATION_BUFFER = 4096;
 const HYDRATION_APPLY_BATCH_SIZE = 250;
+const STORAGE_RETRY_DELAYS_MS = Object.freeze([100, 250, 500, 1000, 2000, 5000, 10000, 30000]);
 
 function rangeForPeriod(period, anchorDate) {
   if (!PERIODS.has(period)) throw new TypeError("unsupported recap period");
@@ -75,7 +77,7 @@ function createRecapRuntime(options = {}) {
   const setTimer = options.setTimeout || setTimeout;
   const clearTimer = options.clearTimeout || clearTimeout;
   const logWarn = options.logWarn || console.warn;
-  const onRecorded = typeof options.onRecorded === "function" ? options.onRecorded : null;
+  const onChanged = typeof options.onRecorded === "function" ? options.onRecorded : null;
   const store = options.store || createRecapStore({
     root: options.root || DEFAULT_ROOT,
     now,
@@ -115,6 +117,9 @@ function createRecapRuntime(options = {}) {
   let hydrationLiveDedupeKeys = new Set();
   let hydrationToken = 0;
   let lifecycleWired = false;
+  let storageRetryTimer = null;
+  let storageRetryAttempt = 0;
+  let storageRetryGeneration = 0;
 
   function warn(message, err) {
     try {
@@ -122,6 +127,12 @@ function createRecapRuntime(options = {}) {
       if (detail === undefined) logWarn(message);
       else logWarn(message, detail);
     } catch {}
+  }
+
+  function notifyChanged() {
+    if (!onChanged) return;
+    try { onChanged(); }
+    catch (err) { warn("Clawd: recap change notification failed", err); }
   }
 
   function currentLocalDate() {
@@ -141,6 +152,45 @@ function createRecapRuntime(options = {}) {
     coverage.prune(date);
   }
 
+  function cancelStorageRetry() {
+    storageRetryGeneration += 1;
+    if (storageRetryTimer) clearTimer(storageRetryTimer);
+    storageRetryTimer = null;
+    storageRetryAttempt = 0;
+  }
+
+  function activateAfterStorageRecovery() {
+    unavailable = false;
+    unavailableCode = null;
+    storageRetryAttempt = 0;
+    enabled = started || explicitEnabledIntent !== null ? resolveEnabledIntent() : false;
+    if (started && enabled && !suspended) coverage.start(now());
+    if (started) {
+      scheduleMidnight();
+      beginHydration();
+    }
+    notifyChanged();
+  }
+
+  function scheduleStorageRetry(error) {
+    if (!isTransientRecapPrivateAclError(error) || storageRetryTimer) return;
+    const delay = STORAGE_RETRY_DELAYS_MS[Math.min(
+      storageRetryAttempt,
+      STORAGE_RETRY_DELAYS_MS.length - 1
+    )];
+    storageRetryAttempt += 1;
+    const generation = storageRetryGeneration;
+    storageRetryTimer = setTimer(() => {
+      if (generation !== storageRetryGeneration) return;
+      storageRetryTimer = null;
+      unavailable = false;
+      unavailableCode = null;
+      if (!initialize()) return;
+      activateAfterStorageRecovery();
+    }, delay);
+    if (storageRetryTimer && typeof storageRetryTimer.unref === "function") storageRetryTimer.unref();
+  }
+
   function initialize() {
     if (initialized) return true;
     if (unavailable) return false;
@@ -157,7 +207,10 @@ function createRecapRuntime(options = {}) {
       enabled = false;
       try { aggregate.resetMemory(); } catch {}
       try { coverage.resetMemory(); } catch {}
-      warn("Clawd: local recap storage is unavailable; recording is paused", unavailableCode);
+      if (!isTransientRecapPrivateAclError(err) || storageRetryAttempt === 0) {
+        warn("Clawd: local recap storage is unavailable; recording is paused", unavailableCode);
+      }
+      scheduleStorageRetry(err);
       return false;
     }
   }
@@ -365,10 +418,7 @@ function createRecapRuntime(options = {}) {
       else hydrationOverflow = true;
       if (recordValue.dedupeKeyHash) hydrationLiveDedupeKeys.add(recordValue.dedupeKeyHash);
     }
-    if (onRecorded) {
-      try { onRecorded(); }
-      catch (err) { warn("Clawd: recap change notification failed", err); }
-    }
+    notifyChanged();
     return true;
   }
 
@@ -485,6 +535,7 @@ function createRecapRuntime(options = {}) {
     // about to be deleted, so writing coverage or an aggregate first has no
     // value and could publish a partially rebuilt cache if deletion then fails.
     hydrationToken += 1;
+    cancelStorageRetry();
     hydrating = false;
     hydrationBuffer = [];
     hydrationOverflow = false;
@@ -504,6 +555,7 @@ function createRecapRuntime(options = {}) {
       unavailableCode = err && err.code ? err.code : "storage-error";
       enabled = false;
       warn("Clawd: local recap clear failed", unavailableCode);
+      scheduleStorageRetry(err);
       return false;
     }
     if (!initialize()) return false;
@@ -524,6 +576,7 @@ function createRecapRuntime(options = {}) {
 
   function dispose() {
     const discardHydrationRebuild = hydrationRebuilding;
+    cancelStorageRetry();
     if (midnightTimer) clearTimer(midnightTimer);
     midnightTimer = null;
     if (lifecycleWired && powerMonitor && typeof powerMonitor.removeListener === "function") {

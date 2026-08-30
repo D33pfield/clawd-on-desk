@@ -5,6 +5,11 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { freezeLocalTime, getSystemTimeZone, isValidTimeZone, parseLocalDate } = require("./recap-time");
+const {
+  RECAP_ATOMIC_TEMP_PATTERN,
+  assertRecapPrivatePathSupported,
+  hardenRecapPrivateDirectory,
+} = require("./recap-private-permissions");
 
 const SCHEMA_VERSION = 1;
 const DEFAULT_ROOT = path.join(os.homedir(), ".clawd", "recap-v1");
@@ -16,7 +21,6 @@ const QUARANTINE_MAX_FILES = 16;
 const QUARANTINE_MAX_BYTES = 1024 * 1024;
 const MAX_MANAGED_JSON_BYTES = 8 * 1024 * 1024;
 const MAX_META_BYTES = 64 * 1024;
-const ATOMIC_TEMP_PATTERN = /^\.(?:meta\.json|daily-\d{4}-\d{2}\.json|coverage-(?:\d{4}-\d{2}|open)\.json)\.\d+\.[a-f0-9]{12}\.tmp$/;
 
 function assertRoot(root) {
   if (typeof root !== "string" || !path.isAbsolute(root) || path.parse(root).root === path.resolve(root)) {
@@ -116,8 +120,16 @@ function createRecapStore(options = {}) {
   const root = assertRoot(options.root || DEFAULT_ROOT);
   const logWarn = options.logWarn || console.warn;
   const getTimeZone = options.getTimeZone || getSystemTimeZone;
+  const assertPrivatePathSupported = options.assertPrivatePathSupported || assertRecapPrivatePathSupported;
+  const hardenPrivateDirectory = options.hardenPrivateDirectory || hardenRecapPrivateDirectory;
   let meta = null;
   let canonicalRoot = null;
+  let canonicalRootIdentity = null;
+  let hardenedRootIdentity = null;
+
+  function fileIdentity(stat) {
+    return `${stat.dev}:${stat.ino}`;
+  }
 
   function copyMeta(value) {
     return {
@@ -137,13 +149,14 @@ function createRecapStore(options = {}) {
 
   function pinRoot() {
     let stat;
-    try { stat = fs.lstatSync(root); } catch (err) {
+    try { stat = fs.lstatSync(root, { bigint: true }); } catch (err) {
       if (err && err.code === "ENOENT") return false;
       throw err;
     }
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw unsafeLinkError(root);
     const real = fs.realpathSync.native ? fs.realpathSync.native(root) : fs.realpathSync(root);
     canonicalRoot = path.resolve(real);
+    canonicalRootIdentity = fileIdentity(stat);
     return true;
   }
 
@@ -154,13 +167,14 @@ function createRecapStore(options = {}) {
     }
     if (!canonicalRoot) return resolved;
     let rootStat;
-    try { rootStat = fs.lstatSync(root); } catch (err) {
+    try { rootStat = fs.lstatSync(root, { bigint: true }); } catch (err) {
       if (err && err.code === "ENOENT" && optionsValue.allowMissingRoot === true) return resolved;
       throw err;
     }
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw unsafeLinkError(root);
     const currentRoot = fs.realpathSync.native ? fs.realpathSync.native(root) : fs.realpathSync(root);
     if (comparablePath(currentRoot) !== comparablePath(canonicalRoot)) throw unsafeLinkError(root);
+    if (fileIdentity(rootStat) !== canonicalRootIdentity) throw unsafeLinkError(root);
 
     const relative = path.relative(root, resolved);
     if (!relative) return resolved;
@@ -192,7 +206,7 @@ function createRecapStore(options = {}) {
 
   function cleanupTemps(referenceTime = Date.now()) {
     for (const name of listDirectory()) {
-      if (!ATOMIC_TEMP_PATTERN.test(name)) continue;
+      if (!RECAP_ATOMIC_TEMP_PATTERN.test(name)) continue;
       const filePath = managedChild(name);
       let stat;
       try { stat = fs.lstatSync(filePath); } catch (err) {
@@ -249,8 +263,20 @@ function createRecapStore(options = {}) {
   }
 
   function initialize() {
+    assertPrivatePathSupported(root);
     ensureDirectory(root);
-    pinRoot();
+    if (!pinRoot()) throw unsafeLinkError(root);
+    // POSIX modes do not restrict an NTFS DACL. Harden the root before any
+    // metadata or journal directory is created; children then inherit the
+    // protected current-user/SYSTEM/Administrators ACL. Failure is fatal so a
+    // redirected or shared HOME can never silently receive recap data.
+    if (hardenedRootIdentity !== canonicalRootIdentity) {
+      hardenPrivateDirectory(root, {
+        expectedCanonicalRoot: canonicalRoot,
+        expectedIdentity: canonicalRootIdentity,
+      });
+      hardenedRootIdentity = canonicalRootIdentity;
+    }
     ensureDirectory(managedChild("events"));
     assertManagedPath(managedChild("events"));
     cleanupTemps(options.now ? options.now() : Date.now());
@@ -373,7 +399,7 @@ function createRecapStore(options = {}) {
         /^daily-\d{4}-\d{2}\.json$/.test(name)
         || /^coverage-\d{4}-\d{2}\.json$/.test(name)
         || name === "coverage-open.json"
-        || ATOMIC_TEMP_PATTERN.test(name)
+        || RECAP_ATOMIC_TEMP_PATTERN.test(name)
       ) {
         try { fs.rmSync(managedChild(name), { recursive: true, force: true }); } catch (err) {
           if (!err || err.code !== "ENOENT") throw err;

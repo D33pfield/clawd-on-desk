@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { spawn } = require("node:child_process");
 const { EventEmitter } = require("node:events");
 const { createRecapAggregate } = require("../src/recap-aggregate");
 const { createRecapJournal } = require("../src/recap-journal");
@@ -46,6 +47,101 @@ function readDailyActivityCount(store, localDate) {
   const parsed = JSON.parse(fs.readFileSync(store.childPath(`daily-${month}.json`), "utf8"));
   return Object.values(parsed.days[localDate].rows)
     .reduce((sum, row) => sum + row.metrics.activityEvents, 0);
+}
+
+function waitForChildLine(child, expected, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    let output = "";
+    const timer = setTimeout(() => reject(new Error(`timed out waiting for ${expected}`)), timeoutMs);
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (!output.includes(expected)) return;
+      clearTimeout(timer);
+      resolve();
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      if (output.includes(expected)) return;
+      clearTimeout(timer);
+      reject(new Error(`share holder exited before ready (${code})`));
+    });
+  });
+}
+
+function waitForChildExit(child) {
+  if (child.exitCode !== null) return Promise.resolve(child.exitCode);
+  return new Promise((resolve) => child.once("exit", resolve));
+}
+
+async function waitFor(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail("timed out waiting for condition");
+}
+
+function createManualTimers() {
+  const scheduled = [];
+  const cleared = [];
+  return {
+    scheduled,
+    cleared,
+    setTimeout(callback, delay) {
+      const timer = {
+        callback,
+        delay,
+        unrefCalled: false,
+        unref() { this.unrefCalled = true; },
+      };
+      scheduled.push(timer);
+      return timer;
+    },
+    clearTimeout(timer) {
+      cleared.push(timer);
+    },
+  };
+}
+
+function createStorageRetryDependencies(initialize) {
+  return {
+    store: {
+      initialize,
+      getMeta: () => ({
+        createdAt: Date.UTC(2026, 7, 29, 9),
+        createdLocalTime: { timeZoneId: "UTC", localDate: "2026-08-29", localHour: 9 },
+      }),
+    },
+    journal: {
+      loadRetainedAsync: async () => ({ dates: [], records: [], truncated: false }),
+      prune() {},
+      resetMemory() {},
+    },
+    aggregate: {
+      apply() {},
+      beginBatch() {},
+      endBatch() {},
+      flush() {},
+      load() {},
+      prune() {},
+      query: () => [],
+      replaceDates() {},
+      resetMemory() {},
+    },
+    coverage: {
+      load() {},
+      prune() {},
+      query: () => [],
+      resetMemory() {},
+      start() {},
+      stop() {},
+      tick() {},
+    },
+  };
 }
 
 test("runtime writes journal before aggregate, dedupes, and exposes no HMAC identity", async (t) => {
@@ -636,6 +732,180 @@ test("runtime fails quiet when optional storage is unavailable and can recover b
   assert.equal(f.runtime.clear(), true);
   assert.equal(f.runtime.query("today").status, "ready");
   assert.equal(f.runtime.query("today").recordingEnabled, true);
+});
+
+test("runtime retries transient storage failures with bounded backoff and one live timer", () => {
+  const timers = createManualTimers();
+  let initializeCalls = 0;
+  let changeNotifications = 0;
+  const expectedDelays = [100, 250, 500, 1000, 2000, 5000, 10000, 30000, 30000];
+  const transient = () => Object.assign(new Error("sharing violation"), {
+    code: "RECAP_PRIVATE_ACL_FAILED",
+    stage: "open",
+    cause: { win32Code: 32 },
+  });
+  const dependencies = createStorageRetryDependencies(() => {
+    initializeCalls += 1;
+    if (initializeCalls < 10) throw transient();
+  });
+  const runtime = createRecapRuntime({
+    ...dependencies,
+    now: () => Date.UTC(2026, 7, 29, 10),
+    getTimeZone: () => "UTC",
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    logWarn: () => {},
+    onRecorded: () => { changeNotifications += 1; },
+  });
+
+  assert.equal(runtime.query("today").status, "unavailable");
+  assert.deepEqual(timers.scheduled.map((timer) => timer.delay), [100]);
+  assert.equal(timers.scheduled[0].unrefCalled, true);
+  assert.equal(runtime.query("today").status, "unavailable");
+  assert.equal(timers.scheduled.length, 1, "an unavailable query must not double-schedule recovery");
+
+  for (let index = 0; index < expectedDelays.length; index += 1) {
+    assert.equal(timers.scheduled.length, index + 1);
+    assert.equal(timers.scheduled[index].delay, expectedDelays[index]);
+    assert.equal(timers.scheduled[index].unrefCalled, true);
+    timers.scheduled[index].callback();
+  }
+
+  assert.deepEqual(timers.scheduled.map((timer) => timer.delay), expectedDelays);
+  assert.equal(initializeCalls, 10);
+  assert.equal(changeNotifications, 1);
+  assert.equal(runtime.query("today").status, "ready");
+});
+
+test("runtime recovery restarts midnight coverage and hydrates retained journal records", async () => {
+  const timers = createManualTimers();
+  let initializeCalls = 0;
+  let coverageStarts = 0;
+  let hydrationLoads = 0;
+  const replacedDates = [];
+  const applied = [];
+  const retained = { dedupeKeyHash: null, marker: "retained" };
+  const dependencies = createStorageRetryDependencies(() => {
+    initializeCalls += 1;
+    if (initializeCalls === 1) {
+      throw Object.assign(new Error("sharing violation"), {
+        code: "RECAP_PRIVATE_ACL_FAILED",
+        stage: "open",
+        cause: { win32Code: 32 },
+      });
+    }
+  });
+  dependencies.coverage.start = () => { coverageStarts += 1; };
+  dependencies.journal.loadRetainedAsync = async () => {
+    hydrationLoads += 1;
+    return { dates: ["2026-08-29"], records: [retained], truncated: false };
+  };
+  dependencies.aggregate.replaceDates = (dates) => { replacedDates.push(...dates); };
+  dependencies.aggregate.apply = (record) => { applied.push(record); };
+  const runtime = createRecapRuntime({
+    ...dependencies,
+    now: () => Date.UTC(2026, 7, 29, 10),
+    getTimeZone: () => "UTC",
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    logWarn: () => {},
+  });
+
+  assert.equal(runtime.start(), false);
+  assert.deepEqual(timers.scheduled.map((timer) => timer.delay), [100]);
+  timers.scheduled[0].callback();
+  await runtime.whenReady();
+
+  assert.equal(initializeCalls, 2);
+  assert.equal(coverageStarts, 1);
+  assert.equal(hydrationLoads, 1);
+  assert.deepEqual(replacedDates, ["2026-08-29"]);
+  assert.deepEqual(applied, [retained]);
+  assert.equal(timers.scheduled.length, 2, "storage recovery must re-arm the midnight timer");
+  assert.ok(timers.scheduled[1].delay > 1000);
+  runtime.dispose();
+  assert.ok(timers.cleared.includes(timers.scheduled[1]));
+});
+
+test("runtime dispose cancels storage recovery and invalidates a stale retry callback", () => {
+  const timers = createManualTimers();
+  let initializeCalls = 0;
+  const dependencies = createStorageRetryDependencies(() => {
+    initializeCalls += 1;
+    throw Object.assign(new Error("lock violation"), {
+      code: "RECAP_PRIVATE_ACL_FAILED",
+      stage: "open",
+      cause: { win32Code: 33 },
+    });
+  });
+  const runtime = createRecapRuntime({
+    ...dependencies,
+    now: () => Date.UTC(2026, 7, 29, 10),
+    getTimeZone: () => "UTC",
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    logWarn: () => {},
+  });
+
+  assert.equal(runtime.query("today").status, "unavailable");
+  const pending = timers.scheduled[0];
+  runtime.dispose();
+  assert.deepEqual(timers.cleared, [pending]);
+  pending.callback();
+  assert.equal(initializeCalls, 1);
+  assert.equal(timers.scheduled.length, 1);
+});
+
+test("runtime automatically recovers after a transient Windows sharing violation", {
+  skip: process.platform !== "win32",
+  timeout: 10000,
+}, async (t) => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-recap-runtime-sharing-"));
+  const root = path.join(parent, "recap-v1");
+  fs.mkdirSync(root);
+  const fixturePath = path.join(__dirname, "fixtures", "recap-private-permissions-share-holder.js");
+  const child = spawn(process.execPath, [fixturePath, root, "90"], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let changeNotifications = 0;
+  const runtime = createRecapRuntime({
+    root,
+    now: () => Date.UTC(2026, 7, 29, 10),
+    getTimeZone: () => "UTC",
+    logWarn: () => {},
+    onRecorded: () => { changeNotifications += 1; },
+  });
+  t.after(() => {
+    runtime.dispose();
+    if (child.exitCode === null) child.kill();
+    fs.rmSync(parent, { recursive: true, force: true });
+  });
+  await waitForChildLine(child, "READY");
+  const moved = path.join(parent, "moved-recap-v1");
+  assert.throws(() => fs.renameSync(root, moved), (error) =>
+    error && ["EBUSY", "EPERM"].includes(error.code));
+
+  assert.equal(runtime.start(), false);
+  assert.equal(runtime.query("today").status, "unavailable");
+  assert.equal(runtime.query("today").reason, "RECAP_PRIVATE_ACL_FAILED");
+  assert.equal(fs.existsSync(path.join(root, "meta.json")), false);
+  assert.equal(fs.existsSync(path.join(root, "events")), false);
+  assert.equal(changeNotifications, 0);
+  assert.equal(await waitForChildExit(child), 0);
+  await waitFor(() => runtime.query("today").status === "ready");
+  assert.equal(runtime.query("today").recordingEnabled, true);
+  assert.equal(changeNotifications, 1);
+
+  assert.equal(runtime.record({
+    occurredAt: Date.UTC(2026, 7, 29, 10),
+    agentId: "codex",
+    scope: "local",
+    metrics: ["activity"],
+  }), true);
+  assert.equal(changeNotifications, 2);
+  const view = runtime.query("today");
+  assert.equal(view.days[0].rows[0].metrics.activityEvents, 1);
 });
 
 test("clear recovery keeps one power lifecycle wiring and restarts midnight coverage", (t) => {
