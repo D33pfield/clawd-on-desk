@@ -11,6 +11,8 @@ Footprints is a companion-style review, not a time tracker or productivity score
 
 Hover or focus an agent row to highlight only that agent. Click the row, or press Enter/Space, to lock the highlight; press Escape to unlock it. Hover an activity bar or cell to see each agent's share of that period. The timeline is one keyboard stop: use the arrow keys, Home, and End to inspect periods without tabbing through hundreds of marks.
 
+While Footprints is open, newly accepted activity refreshes the visible range automatically. Short hook bursts are coalesced so the page updates promptly without rebuilding for every individual signal.
+
 ## What the numbers mean
 
 Footprints counts accepted Clawd activity signals. It never guesses work time from process uptime or idle thresholds.

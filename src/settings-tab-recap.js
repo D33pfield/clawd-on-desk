@@ -21,6 +21,8 @@
     status: "idle",
     data: null,
     requestSeq: 0,
+    refreshInFlight: false,
+    refreshQueued: false,
     togglePending: false,
     clearPending: false,
     hoverRowKey: null,
@@ -109,12 +111,47 @@
         view.data = result;
       }
       if (coreState.activeTab === "recap") ops.requestRender({ content: true });
+      refreshIfNeeded();
     }).catch(() => {
       if (requestSeq !== view.requestSeq) return;
       view.status = "error";
       view.data = null;
       if (coreState.activeTab === "recap") ops.requestRender({ content: true });
     });
+  }
+
+  function refreshIfNeeded() {
+    if (!view.refreshQueued || view.refreshInFlight) return;
+    if (view.status !== "ready" || coreState.activeTab !== "recap") return;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    view.refreshQueued = false;
+    view.refreshInFlight = true;
+    const requestSeq = ++view.requestSeq;
+    const period = view.period;
+    Promise.resolve().then(() => {
+      if (!window.settingsAPI || typeof window.settingsAPI.queryRecap !== "function") {
+        throw new Error("recap API unavailable");
+      }
+      return window.settingsAPI.queryRecap(period);
+    }).then((result) => {
+      if (requestSeq !== view.requestSeq) return;
+      if (result && result.status === "ready") {
+        view.status = "ready";
+        view.data = result;
+        if (coreState.activeTab === "recap") ops.requestRender({ content: true });
+      }
+    }).catch(() => {
+      // A background refresh must not replace already-visible data with an
+      // error card. The next accepted activity signal will retry naturally.
+    }).finally(() => {
+      view.refreshInFlight = false;
+      refreshIfNeeded();
+    });
+  }
+
+  function applyDataChanged() {
+    view.refreshQueued = true;
+    refreshIfNeeded();
   }
 
   function resetInteraction() {
@@ -127,6 +164,7 @@
     view.requestSeq += 1;
     view.status = "idle";
     view.data = null;
+    view.refreshQueued = false;
     resetInteraction();
     if (coreState.activeTab === "recap") ops.requestRender({ content: true });
   }
@@ -1132,6 +1170,7 @@
     parent.appendChild(header);
 
     if (view.status === "idle") requestData();
+    else refreshIfNeeded();
     if (view.status === "loading" || view.status === "idle") {
       const loading = document.createElement("div");
       loading.className = "recap-state-card";
@@ -1161,8 +1200,14 @@
     runtime = core.runtime;
     helpers = core.helpers;
     ops = core.ops;
+    if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState !== "hidden") refreshIfNeeded();
+      });
+    }
     core.tabs.recap = {
       render,
+      applyDataChanged,
       patchInPlace(changes) {
         if (!changes || !Object.hasOwn(changes, "recapEnabled")) return false;
         reload();

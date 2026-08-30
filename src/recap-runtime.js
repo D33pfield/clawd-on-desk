@@ -75,6 +75,7 @@ function createRecapRuntime(options = {}) {
   const setTimer = options.setTimeout || setTimeout;
   const clearTimer = options.clearTimeout || clearTimeout;
   const logWarn = options.logWarn || console.warn;
+  const onRecorded = typeof options.onRecorded === "function" ? options.onRecorded : null;
   const store = options.store || createRecapStore({
     root: options.root || DEFAULT_ROOT,
     now,
@@ -363,6 +364,10 @@ function createRecapRuntime(options = {}) {
       if (hydrationBuffer.length < MAX_HYDRATION_BUFFER) hydrationBuffer.push(recordValue);
       else hydrationOverflow = true;
       if (recordValue.dedupeKeyHash) hydrationLiveDedupeKeys.add(recordValue.dedupeKeyHash);
+    }
+    if (onRecorded) {
+      try { onRecorded(); }
+      catch (err) { warn("Clawd: recap change notification failed", err); }
     }
     return true;
   }

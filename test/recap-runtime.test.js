@@ -30,6 +30,7 @@ function fixture(t, options = {}) {
     getTimeZone: () => timeZone,
     setTimeout: () => ({ unref() {} }),
     clearTimeout: () => {},
+    onRecorded: options.onRecorded,
   });
   return {
     root,
@@ -76,6 +77,22 @@ test("runtime writes journal before aggregate, dedupes, and exposes no HMAC iden
   assert.equal(JSON.stringify(view).includes("private-server"), false);
   await f.runtime.whenReady();
   assert.equal(f.runtime.query("today").days[0].rows[0].metrics.activityEvents, 1);
+});
+
+test("runtime announces only accepted durable records", (t) => {
+  let announcements = 0;
+  const f = fixture(t, { onRecorded: () => { announcements += 1; } });
+  f.runtime.start();
+  const event = {
+    occurredAt: Date.UTC(2026, 7, 29, 10, 5),
+    agentId: "codex",
+    scope: "local",
+    metrics: ["activity", "tool-call"],
+  };
+  const identity = { sessionId: "s", dedupeId: "tool-1" };
+  assert.equal(f.runtime.record(event, identity), true);
+  assert.equal(f.runtime.record(event, identity), false);
+  assert.equal(announcements, 1);
 });
 
 test("recording start keeps its original civil date after travel", (t) => {

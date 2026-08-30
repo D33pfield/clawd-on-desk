@@ -48,4 +48,5 @@ test("main owns recap runtime lifecycle and wires it to state and Settings IPC",
   assert.match(source, /createWindow\(\);\s*try \{ recapRuntime\.start\(\); \}/);
   assert.match(source, /try \{ recapRuntime\.dispose\(\); \} catch \{}\s*_state\.cleanup\(\);/);
   assert.match(source, /getEnabled: \(\) => !_recapStartupAuthorityLost/);
+  assert.match(source, /onRecorded: \(\) => settingsWindowRuntime\.notifyRecapChanged\(\)/);
 });

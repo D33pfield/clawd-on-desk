@@ -350,6 +350,25 @@ test("settings window holds a requested recap tab until the new renderer is read
   ]);
 });
 
+test("settings window coalesces live recap changes after the renderer is ready", () => {
+  const { runtime, timers } = createRuntime();
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  assert.equal(runtime.notifyRecapChanged(), false);
+  assert.equal(timers.some((timer) => timer.delay === 500 && !timer.cleared), false);
+  win.emitWebContents("did-finish-load");
+  win.calls = [];
+
+  assert.equal(runtime.notifyRecapChanged(), true);
+  assert.equal(runtime.notifyRecapChanged(), false);
+  const refreshTimers = timers.filter((timer) => timer.delay === 500 && !timer.cleared);
+  assert.equal(refreshTimers.length, 1);
+  assert.equal(win.calls.length, 0);
+
+  refreshTimers[0].callback();
+  assert.deepStrictEqual(win.calls, [["send", "settings:recap-changed", undefined]]);
+});
+
 test("settings window deep-link survives a reopen before load and reaches a minimized live window", () => {
   const { runtime, timers } = createRuntime();
   runtime.open();

@@ -123,6 +123,13 @@ if (window.settingsAPI && typeof window.settingsAPI.onAgentActivity === "functio
   });
 }
 
+if (window.settingsAPI && typeof window.settingsAPI.onRecapChanged === "function") {
+  window.settingsAPI.onRecapChanged(() => {
+    const tab = core.tabs.recap;
+    if (tab && typeof tab.applyDataChanged === "function") tab.applyDataChanged();
+  });
+}
+
 if (window.settingsAPI && typeof window.settingsAPI.onAnimationPreviewPosterReady === "function") {
   window.settingsAPI.onAnimationPreviewPosterReady((payload) => core.ops.applyAnimationPreviewPoster(payload));
 }

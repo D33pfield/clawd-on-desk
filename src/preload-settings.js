@@ -17,6 +17,8 @@
 //                                       every settings-changed broadcast
 //   onAgentActivity(cb)                 cb({ agentId, timestamp, eventType }) —
 //                                       accepted custom /state activity only
+//   onRecapChanged(cb)                  cb() — coalesced signal that the local
+//                                       Footprints aggregate changed
 //   onAnimationPreviewPosterReady(cb)   cb({ themeId, filename, previewImageUrl,
 //                                       previewPosterCacheKey }) — incremental
 //                                       animation override preview poster
@@ -46,6 +48,7 @@ const remoteSshProgressListeners = new Set();
 const remoteApprovalStatusListeners = new Set();
 const textScaleContextListeners = new Set();
 const agentActivityListeners = new Set();
+const recapChangedListeners = new Set();
 const updateCheckStatusListeners = new Set();
 const requestedTabListeners = new Set();
 let pendingRequestedTab = null;
@@ -90,6 +93,11 @@ ipcRenderer.on("settings:text-scale-context-changed", () => {
 ipcRenderer.on("settings:agent-activity", (_event, payload) => {
   for (const cb of agentActivityListeners) {
     try { cb(payload); } catch (err) { console.warn("agent activity listener threw:", err); }
+  }
+});
+ipcRenderer.on("settings:recap-changed", () => {
+  for (const cb of recapChangedListeners) {
+    try { cb(); } catch (err) { console.warn("recap changed listener threw:", err); }
   }
 });
 ipcRenderer.on("settings:update-check-status", (_event, payload) => {
@@ -191,6 +199,11 @@ contextBridge.exposeInMainWorld("settingsAPI", {
     if (typeof cb !== "function") return () => {};
     agentActivityListeners.add(cb);
     return () => agentActivityListeners.delete(cb);
+  },
+  onRecapChanged: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    recapChangedListeners.add(cb);
+    return () => recapChangedListeners.delete(cb);
   },
   onAnimationPreviewPosterReady: (cb) => {
     if (typeof cb !== "function") return () => {};

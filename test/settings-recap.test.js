@@ -27,6 +27,7 @@ test("the user guide names Footprints and documents Today bars", () => {
   assert.match(guide, /Settings → Footprints/);
   assert.match(guide, /Open Footprints/);
   assert.match(guide, /\*\*Today\*\*: 24 local-hour bars/);
+  assert.match(guide, /newly accepted activity refreshes the visible range automatically/);
   assert.doesNotMatch(guide, /Settings → Recap|Open Recap|Record recap|Clear recap data/);
   assert.doesNotMatch(guide, /\| Active days \|/);
 });
@@ -90,6 +91,8 @@ test("recap tab stays browser-only and aggregates scope rows without turning nul
 test("recap card keeps day grids square, makes only today a bar chart, and exposes no export surface", () => {
   const css = fs.readFileSync(path.join(SRC, "settings.css"), "utf8");
   const preload = fs.readFileSync(path.join(SRC, "preload-settings.js"), "utf8");
+  const renderer = fs.readFileSync(path.join(SRC, "settings-renderer.js"), "utf8");
+  const tab = fs.readFileSync(path.join(SRC, "settings-tab-recap.js"), "utf8");
   assert.match(css, /\.recap-cell\s*\{[\s\S]*?aspect-ratio:\s*1/);
   assert.match(css, /\.recap-grid-today \.recap-cell\s*\{[\s\S]*?aspect-ratio:\s*auto/);
   assert.match(css, /\.recap-bar-fill\s*\{[\s\S]*?height:\s*calc\(var\(--recap-bar-ratio, 0\) \* 100%\)/);
@@ -101,6 +104,11 @@ test("recap card keeps day grids square, makes only today a bar chart, and expos
   assert.match(css, /@media \(max-width:\s*780px\)[\s\S]*\.recap-agent-row\s*\{\s*grid-template-columns:\s*1fr/);
   assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*\.recap-cell-popover/);
   assert.match(preload, /queryRecap:\s*\(period\)/);
+  assert.match(preload, /onRecapChanged:\s*\(cb\)/);
+  assert.match(renderer, /onRecapChanged\(\(\) =>[\s\S]*?tab\.applyDataChanged\(\)/);
+  assert.match(tab, /function applyDataChanged\(\)[\s\S]*?view\.refreshQueued = true;[\s\S]*?refreshIfNeeded\(\)/);
+  const liveRefreshHandler = tab.match(/function applyDataChanged\(\) \{[^}]*\}/)?.[0] || "";
+  assert.doesNotMatch(liveRefreshHandler, /resetInteraction\(\)/);
   assert.ok(!preload.includes("exportRecap"));
   assert.ok(!preload.includes("shareRecap"));
 });

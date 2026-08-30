@@ -2151,6 +2151,7 @@ const recapRuntime = createRecapRuntime({
     && _settingsController.get("recapEnabled") !== false,
   powerMonitor,
   logWarn: console.warn,
+  onRecorded: () => settingsWindowRuntime.notifyRecapChanged(),
 });
 
 const _stateCtx = {
