@@ -28,17 +28,20 @@ test("the user guide names Footprints and documents Today bars", () => {
   assert.match(guide, /Open Footprints/);
   assert.match(guide, /\*\*Today\*\*: 24 local-hour bars/);
   assert.doesNotMatch(guide, /Settings → Recap|Open Recap|Record recap|Clear recap data/);
+  assert.doesNotMatch(guide, /\| Active days \|/);
 });
 
 test("every supported Settings locale has the complete recap key set", () => {
   const i18n = loadI18n();
   const englishKeys = Object.keys(i18n.STRINGS.en).filter((key) => key === "sidebarRecap" || key.startsWith("recap"));
+  const removedKeys = ["recapActiveDays", "recapDayActivity", "recapCoverageFootnote", "recapPausedFootnote"];
   assert.ok(englishKeys.length > 30);
   for (const lang of ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"]) {
     for (const key of englishKeys) {
       assert.equal(typeof i18n.STRINGS[lang][key], "string", `${lang}.${key}`);
       assert.notEqual(i18n.STRINGS[lang][key], "", `${lang}.${key}`);
     }
+    for (const key of removedKeys) assert.equal(Object.hasOwn(i18n.STRINGS[lang], key), false, `${lang}.${key}`);
   }
   assert.equal(i18n.STRINGS.zh.sidebarRecap, "足迹");
   assert.equal(i18n.STRINGS.zh.recapTitle, "足迹");
@@ -79,7 +82,6 @@ test("recap tab stays browser-only and aggregates scope rows without turning nul
     }],
   });
   assert.equal(summary.agentCount, 1);
-  assert.equal(summary.activeDays, 1);
   assert.equal(summary.rows.length, 2);
   assert.equal(summary.rows.find((row) => row.scope === "local").sessionsStarted, null);
   assert.equal(summary.rows.find((row) => row.scope === "remote").sessionsStarted, 1);

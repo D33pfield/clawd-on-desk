@@ -22,7 +22,6 @@ Footprints counts accepted Clawd activity signals. It never guesses work time fr
 | Turns completed | Completion boundaries that survived the agent-specific completion arbitration |
 | Tool calls | One reliable start or completion boundary per tool, chosen explicitly for each agent |
 | Activity bar/cell | Accepted activity signals in that local hour or day |
-| Active days | Days with at least one accepted activity signal from any agent |
 
 Agent integrations do not expose identical signals. A dash (`—`) means that Clawd cannot reliably measure that value for that agent. It is intentionally different from `0`, which means a supported metric was observed and its count was actually zero. Registered custom HTTP agents are not included in Footprints v1 because their event vocabulary is user-defined and has no trusted metric mapping.
 

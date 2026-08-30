@@ -2378,6 +2378,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(grid.getAttribute("role"), "grid");
     assert.strictEqual(grid.querySelectorAll(".recap-today-band").length, 1);
     assert.strictEqual(grid.querySelector(".recap-today-band").getAttribute("role"), "row");
+    assert.strictEqual(grid.querySelector(".recap-hour-labels").getAttribute("aria-hidden"), "true");
     assert.strictEqual(grid.tabIndex, 0);
     assert.ok(cells.every((cell) => cell.tabIndex === undefined));
     assert.strictEqual(rows.length, 2);
@@ -2419,6 +2420,8 @@ describe("settings renderer browser environment", () => {
     await monthHarness.settle();
     const monthGrid = monthHarness.content.querySelector(".recap-grid");
     const monthBlanks = monthHarness.content.querySelectorAll(".recap-cell-blank");
+    assert.strictEqual(monthGrid.querySelector(".recap-month-weekdays").getAttribute("aria-hidden"), "true");
+    assert.strictEqual(monthGrid.querySelector(".recap-month-grid").getAttribute("role"), "rowgroup");
     assert.strictEqual(monthGrid.querySelectorAll(".recap-month-row").length, 6);
     assert.ok(monthGrid.querySelectorAll(".recap-month-row")
       .every((row) => row.getAttribute("role") === "row"));
@@ -2446,6 +2449,35 @@ describe("settings renderer browser environment", () => {
       && cell.getAttribute("aria-label") === undefined));
     assert.strictEqual(yearHarness.content.querySelectorAll(".recap-cell")
       .filter((cell) => cell.getAttribute("role") === "gridcell").length, 365);
+  });
+
+  it("renders every Today bar on one linear scale and keeps longer periods as cells", async () => {
+    const data = sampleRecapView();
+    data.currentLocalHour = 23;
+    const codex = data.days[0].rows[0];
+    codex.hours[5] = 2;
+    codex.hours[13] = 7;
+    codex.hours[20] = 1;
+    codex.metrics.activityEvents += 10;
+    for (const hour of [5, 13, 20]) data.days[0].coverage.coverageMinutes[hour] = 60;
+    const harness = loadRecapTabForTest({ data });
+    await harness.settle();
+
+    const todayCells = harness.content.querySelectorAll(".recap-cell");
+    const ratios = todayCells.map((cell) => cell.style.getPropertyValue("--recap-bar-ratio"));
+    assert.strictEqual(todayCells.length, 24);
+    assert.strictEqual(todayCells[9].dataset.barMaximum, "12");
+    assert.strictEqual(ratios[5], String(2 / 12));
+    assert.strictEqual(ratios[9], "1");
+    assert.strictEqual(ratios[13], String(7 / 12));
+    assert.strictEqual(ratios[20], String(1 / 12));
+    assert.strictEqual(ratios[0], "0");
+
+    for (const periodIndex of [1, 2, 3]) {
+      harness.content.querySelectorAll(".recap-period-button")[periodIndex].click();
+      await harness.settle();
+      assert.strictEqual(harness.content.querySelector(".recap-bar-fill"), null);
+    }
   });
 
   it("supports hover plus click-lock highlighting and Escape unlock", async () => {

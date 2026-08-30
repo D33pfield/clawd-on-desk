@@ -171,12 +171,9 @@
   function summarize(data) {
     const rows = new Map();
     const agentIds = new Set();
-    let activeDays = 0;
     for (const day of data.days || []) {
-      let dayHasActivity = false;
       for (const source of day.rows || []) {
         agentIds.add(source.agentId);
-        if (source.metrics && source.metrics.activityEvents > 0) dayHasActivity = true;
         const key = rowKey(source);
         let row = rows.get(key);
         if (!row) {
@@ -200,11 +197,9 @@
         row.activityEvents += Number.isSafeInteger(metrics.activityEvents) ? metrics.activityEvents : 0;
         row.sessionsStartedPartial ||= source.sessionsStartedPartial === true;
       }
-      if (dayHasActivity) activeDays += 1;
     }
     return {
       agentCount: agentIds.size,
-      activeDays,
       rows: [...rows.values()].sort((left, right) =>
         agentName(left.agentId).localeCompare(agentName(right.agentId), locale())
         || String(left.scopeInstance).localeCompare(String(right.scopeInstance))),
@@ -704,6 +699,7 @@
       grid.appendChild(band);
       const labels = document.createElement("div");
       labels.className = "recap-hour-labels";
+      labels.setAttribute("aria-hidden", "true");
       for (let hour = 0; hour < 24; hour += 1) {
         const label = document.createElement("span");
         label.textContent = hour % 3 === 0 ? formatNumber(hour, { minimumIntegerDigits: 2, useGrouping: false }) : "";
@@ -732,6 +728,7 @@
     } else if (view.period === "month") {
       const weekdays = document.createElement("div");
       weekdays.className = "recap-month-weekdays";
+      weekdays.setAttribute("aria-hidden", "true");
       for (let index = 0; index < 7; index += 1) {
         const label = document.createElement("span");
         label.textContent = formatDate(addLocalDays("2026-08-24", index), { weekday: "narrow" });
@@ -741,6 +738,7 @@
       grid.appendChild(weekdays);
       const month = document.createElement("div");
       month.className = "recap-month-grid";
+      month.setAttribute("role", "rowgroup");
       for (let rowIndex = 0; rowIndex < model.rows; rowIndex += 1) {
         const row = document.createElement("div");
         row.className = "recap-month-row";
