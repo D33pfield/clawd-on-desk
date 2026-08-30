@@ -63,6 +63,40 @@ function currentWindowsUserSid() {
   return fields[1];
 }
 
+function canonicalWindowsOwnerPrincipal(userSid) {
+  const powershell = path.win32.join(
+    process.env.SystemRoot || process.env.WINDIR,
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe"
+  );
+  const env = { ...process.env, CLAWD_RECAP_TEST_USER_SID: userSid };
+  delete env.PSModulePath;
+  const ownerSddl = runWindowsTool(powershell, [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    "([System.Security.AccessControl.RawSecurityDescriptor]::new(\"O:$env:CLAWD_RECAP_TEST_USER_SID\")).GetSddlForm([System.Security.AccessControl.AccessControlSections]::Owner)",
+  ], env);
+  const match = /^O:(.*?)(?=G:|D:|S:|$)/.exec(ownerSddl);
+  assert.ok(match, "Windows must render the current user as an SDDL owner principal");
+  return match[1];
+}
+
+function assertWindowsPrivatePrincipals(principals) {
+  const userSid = currentWindowsUserSid();
+  const canonicalUser = canonicalWindowsOwnerPrincipal(userSid);
+  assert.equal(principals.size, 3);
+  assert.ok(principals.has("SY"));
+  assert.ok(principals.has("BA"));
+  assert.ok(
+    principals.has(userSid) || principals.has(canonicalUser),
+    "private DACL must grant its third ACE to the current Windows user"
+  );
+}
+
 function windowsDaclPrincipals(sddl) {
   const dacl = sddl.slice(sddl.indexOf("D:"));
   return [...dacl.matchAll(/\([^)]*;;;([^)]+)\)/g)].map((match) => match[1]);
@@ -450,9 +484,7 @@ test("Windows ACL helper removes explicit foreign ACEs from an existing tree", {
     if (expectedPrincipals === null) expectedPrincipals = principals;
     assert.deepEqual(principals, expectedPrincipals);
   }
-  assert.equal(expectedPrincipals.size, 3);
-  assert.ok(expectedPrincipals.has("SY"));
-  assert.ok(expectedPrincipals.has("BA"));
+  assertWindowsPrivatePrincipals(expectedPrincipals);
 });
 
 test("new recap children inherit only the private directory ACEs", {
@@ -469,9 +501,7 @@ test("new recap children inherit only the private directory ACEs", {
   fs.writeFileSync(newFile, "{}\n");
   fs.mkdirSync(newDir);
   const expectedPrincipals = new Set(windowsDaclPrincipals(windowsAclSddl(root)));
-  assert.equal(expectedPrincipals.size, 3);
-  assert.ok(expectedPrincipals.has("SY"));
-  assert.ok(expectedPrincipals.has("BA"));
+  assertWindowsPrivatePrincipals(expectedPrincipals);
   for (const [target, directory] of [[newFile, false], [newDir, true]]) {
     const sddl = windowsAclSddl(target);
     assert.deepEqual(new Set(windowsDaclPrincipals(sddl)), expectedPrincipals);
