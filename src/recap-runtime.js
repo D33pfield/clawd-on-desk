@@ -8,13 +8,16 @@ const { createRecapStore, DEFAULT_ROOT } = require("./recap-store");
 const {
   addLocalDays,
   compareLocalDates,
+  describeLocalDay,
   freezeLocalTime,
+  getZonedDateTimeParts,
   getSystemTimeZone,
   parseLocalDate,
 } = require("./recap-time");
 
 const PERIODS = new Set(["today", "week", "month", "year"]);
 const MAX_FUTURE_SKEW_MS = 5 * 60000;
+const MAX_HYDRATION_BUFFER = 4096;
 
 function rangeForPeriod(period, anchorDate) {
   if (!PERIODS.has(period)) throw new TypeError("unsupported recap period");
@@ -49,6 +52,21 @@ function nextLocalMidnightDelay(nowMs, timeZone) {
   return Math.max(1000, high - nowMs + 1000);
 }
 
+function elapsedMinutesInCurrentLocalHour(epochMs, timeZoneId, current, capacityMinutes) {
+  // Walk the real timeline backwards, not the wall-clock label. During a fold
+  // 01:59 can be followed by 01:00, and Lord Howe repeats only 30 minutes;
+  // multiplying an offset occurrence by 60 gets both cases wrong. The largest
+  // supported civil-hour capacity is already bounded by describeLocalDay().
+  let start = epochMs - current.localSecond * 1000 - (epochMs % 1000);
+  for (let elapsed = 0; elapsed < capacityMinutes; elapsed += 1) {
+    const candidate = start - 60000;
+    const parts = getZonedDateTimeParts(candidate, timeZoneId);
+    if (parts.localDate !== current.localDate || parts.localHour !== current.localHour) break;
+    start = candidate;
+  }
+  return Math.min(capacityMinutes, Math.max(0, Math.floor((epochMs - start) / 60000)));
+}
+
 function createRecapRuntime(options = {}) {
   const now = options.now || Date.now;
   const getEnabled = options.getEnabled || (() => true);
@@ -81,6 +99,12 @@ function createRecapRuntime(options = {}) {
   let midnightTimer = null;
   let unavailable = false;
   let unavailableCode = null;
+  let hydrating = false;
+  let hydrationPromise = Promise.resolve();
+  let hydrationBuffer = [];
+  let hydrationOverflow = false;
+  let hydrationToken = 0;
+  let lifecycleWired = false;
 
   function warn(message, err) {
     try {
@@ -114,11 +138,7 @@ function createRecapRuntime(options = {}) {
       store.initialize();
       aggregate.load();
       coverage.load();
-      const date = currentLocalDate();
-      const records = journal.loadRetained(date);
-      aggregate.replaceDates(journal.retainedDates(date), records);
       prune();
-      aggregate.flush();
       initialized = true;
       return true;
     } catch (err) {
@@ -129,6 +149,68 @@ function createRecapRuntime(options = {}) {
       try { coverage.resetMemory(); } catch {}
       warn("Clawd: local recap storage is unavailable; recording is paused", unavailableCode);
       return false;
+    }
+  }
+
+  function beginHydration() {
+    if (!initialized || unavailable || hydrating) return hydrationPromise;
+    hydrating = true;
+    hydrationBuffer = [];
+    hydrationOverflow = false;
+    const token = ++hydrationToken;
+    const anchorDate = currentLocalDate();
+    // loadRetainedAsync snapshots retained file sizes before its first await.
+    // Call it directly so events accepted after start() are always beyond that
+    // snapshot and can be replayed exactly once from hydrationBuffer.
+    hydrationPromise = journal.loadRetainedAsync(anchorDate)
+      .then(({ dates, records, truncated }) => {
+        if (token !== hydrationToken || !initialized || unavailable) return;
+        if (hydrationOverflow) {
+          hydrating = false;
+          return beginHydration();
+        }
+        if (truncated) {
+          hydrating = false;
+          hydrationBuffer = [];
+          try { aggregate.flush(); } catch (err) {
+            warn("Clawd: recap aggregate privacy migration flush failed", err && err.code ? err.code : "storage-error");
+          }
+          warn("Clawd: recap journal reconciliation skipped because retained history exceeded its safety bound");
+          return;
+        }
+        aggregate.replaceDates(dates, records);
+        const restoredDedupeKeys = new Set(records
+          .map((recordValue) => recordValue.dedupeKeyHash)
+          .filter(Boolean));
+        for (const recordValue of hydrationBuffer) {
+          if (recordValue.dedupeKeyHash && restoredDedupeKeys.has(recordValue.dedupeKeyHash)) continue;
+          aggregate.apply(recordValue);
+          if (recordValue.dedupeKeyHash) restoredDedupeKeys.add(recordValue.dedupeKeyHash);
+        }
+        hydrationBuffer = [];
+        hydrating = false;
+        aggregate.flush();
+      })
+      .catch((err) => {
+        if (token !== hydrationToken) return;
+        hydrating = false;
+        hydrationBuffer = [];
+        hydrationOverflow = false;
+        try { aggregate.flush(); } catch (flushErr) {
+          warn("Clawd: recap aggregate privacy migration flush failed", flushErr && flushErr.code ? flushErr.code : "storage-error");
+        }
+        warn("Clawd: recap journal reconciliation failed", err && err.code ? err.code : "storage-error");
+      });
+    return hydrationPromise;
+  }
+
+  function wireLifecycle() {
+    if (lifecycleWired) return;
+    lifecycleWired = true;
+    if (powerMonitor && typeof powerMonitor.on === "function") {
+      powerMonitor.on("suspend", handleSuspend);
+      powerMonitor.on("resume", handleResume);
+      powerMonitor.on("unlock-screen", handleResume);
     }
   }
 
@@ -151,31 +233,37 @@ function createRecapRuntime(options = {}) {
   function start() {
     if (started) return false;
     started = true;
+    wireLifecycle();
     if (!initialize()) return false;
     enabled = resolveEnabledIntent();
     if (enabled && !suspended) coverage.start(now());
-    if (powerMonitor && typeof powerMonitor.on === "function") {
-      powerMonitor.on("suspend", handleSuspend);
-      powerMonitor.on("resume", handleResume);
-      powerMonitor.on("unlock-screen", handleResume);
-    }
     scheduleMidnight();
+    beginHydration();
     return true;
   }
 
   function handleSuspend() {
-    if (suspended) return;
+    if (!initialized || unavailable || suspended) return;
     suspended = true;
-    if (enabled) coverage.stop(now());
+    try {
+      if (enabled) coverage.stop(now());
+    } catch (err) {
+      warn("Clawd: recap suspend checkpoint failed", err && err.code ? err.code : "storage-error");
+    }
   }
 
   function handleResume() {
+    if (!initialized || unavailable) return;
     const wasSuspended = suspended;
     suspended = false;
-    if (enabled && wasSuspended) coverage.start(now());
-    if (enabled) coverage.tick(now());
-    prune();
-    scheduleMidnight();
+    try {
+      if (enabled && wasSuspended) coverage.start(now());
+      if (enabled) coverage.tick(now());
+      prune();
+      scheduleMidnight();
+    } catch (err) {
+      warn("Clawd: recap resume checkpoint failed", err && err.code ? err.code : "storage-error");
+    }
   }
 
   function setEnabled(next) {
@@ -209,12 +297,24 @@ function createRecapRuntime(options = {}) {
     // without a durable event would permanently overcount after restart.
     if (!journal.append(recordValue)) return false;
     aggregate.apply(recordValue);
-    coverage.tick(now());
+    if (hydrating) {
+      if (hydrationBuffer.length < MAX_HYDRATION_BUFFER) hydrationBuffer.push(recordValue);
+      else hydrationOverflow = true;
+    }
     return true;
   }
 
   function query(period = "today", optionsValue = {}) {
-    const queryTime = freezeLocalTime(now(), getTimeZone());
+    const queryNow = now();
+    const queryTime = freezeLocalTime(queryNow, getTimeZone());
+    const queryParts = getZonedDateTimeParts(queryNow, queryTime.timeZoneId);
+    const currentHourShape = describeLocalDay(queryTime.localDate, queryTime.timeZoneId)[queryTime.localHour];
+    const currentHourElapsedMinutes = elapsedMinutesInCurrentLocalHour(
+      queryNow,
+      queryTime.timeZoneId,
+      queryParts,
+      currentHourShape.minutes
+    );
     const anchorDate = optionsValue.anchorDate || queryTime.localDate;
     const { startDate, endDate } = rangeForPeriod(period, anchorDate);
     if (compareLocalDates(startDate, endDate) > 0) throw new RangeError("invalid recap range");
@@ -232,38 +332,64 @@ function createRecapRuntime(options = {}) {
       };
     }
     const aggregateDays = aggregate.query(startDate, endDate);
-    const coverageDays = coverage.query(startDate, endDate, now());
-    const scopeOrdinals = new Map();
-    const scopeCounts = { local: 0, wsl: 0, remote: 0 };
-    function presentationScope(row) {
-      const key = `${row.scope}\0${row.scopeKeyHash}`;
-      if (!scopeOrdinals.has(key)) {
-        scopeCounts[row.scope] += 1;
-        scopeOrdinals.set(key, `${row.scope}-${scopeCounts[row.scope]}`);
-      }
-      return scopeOrdinals.get(key);
-    }
+    const coverageDays = coverage.query(startDate, endDate, queryNow);
     const coverageByDate = new Map(coverageDays.map((day) => [day.localDate, day]));
     const meta = store.getMeta();
     const recordingStarted = meta.createdLocalTime || null;
-    const days = aggregateDays.map((day) => ({
-      localDate: day.localDate,
-      coverage: coverageByDate.get(day.localDate) || {
+    const days = aggregateDays.map((day) => {
+      const coverageValue = coverageByDate.get(day.localDate);
+      const hasPersistedShape = day.hourCapacities.some(Boolean)
+        || Boolean(coverageValue && coverageValue.hourCapacities.some(Boolean));
+      // A closed day that has no recorded activity or coverage carries no
+      // timezone provenance by design. Treat it as an ordinary civil day
+      // instead of doing 400 expensive timezone scans (or inventing history
+      // from today's zone). Any observed day already persisted its real
+      // 0/60/120-minute capacities; the live day is resolved exactly here.
+      const defaultCapacities = day.localDate === queryTime.localDate
+        ? describeLocalDay(day.localDate, queryTime.timeZoneId).map((cell) => cell.minutes)
+        : hasPersistedShape
+          ? Array(24).fill(0)
+          : Array(24).fill(60);
+      const hourCapacities = defaultCapacities.map((minutes, hour) =>
+        Math.max(
+          minutes,
+          day.hourCapacities[hour] || 0,
+          coverageValue ? coverageValue.hourCapacities[hour] || 0 : 0
+        ));
+      const normalizedCoverage = coverageValue || {
         localDate: day.localDate,
         coverageMinutes: Array(24).fill(0),
-        hourKindsByTimeZone: {},
-      },
-      hourKindsByTimeZone: day.hourKindsByTimeZone,
-      timeZones: day.timeZones,
-      rows: day.rows.map((row) => ({
-        agentId: row.agentId,
-        scope: row.scope,
-        scopeInstance: presentationScope(row),
-        metrics: row.metrics,
-        sessionsStartedPartial: row.sessionsStartedPartial,
-        hours: row.hours,
-      })),
-    }));
+        hourCapacities: hourCapacities.slice(),
+      };
+      normalizedCoverage.hourCapacities = hourCapacities.slice();
+      return {
+        localDate: day.localDate,
+        coverage: normalizedCoverage,
+        hourCapacities,
+        rows: day.rows.map((row) => ({
+          agentId: row.agentId,
+          scope: row.scope,
+          scopeInstance: row.scope,
+          metrics: row.metrics,
+          sessionsStartedPartial: row.sessionsStartedPartial,
+          hours: row.hours,
+        })),
+      };
+    });
+    const startedParts = recordingStarted
+      ? getZonedDateTimeParts(meta.createdAt, recordingStarted.timeZoneId)
+      : null;
+    const startedHourShape = recordingStarted && startedParts
+      ? describeLocalDay(recordingStarted.localDate, recordingStarted.timeZoneId)[recordingStarted.localHour]
+      : null;
+    const recordingStartedHourElapsedMinutes = startedHourShape
+      ? elapsedMinutesInCurrentLocalHour(
+        meta.createdAt,
+        recordingStarted.timeZoneId,
+        startedParts,
+        startedHourShape.minutes
+      )
+      : null;
     return {
       schemaVersion: 1,
       status: "ready",
@@ -272,8 +398,13 @@ function createRecapRuntime(options = {}) {
       startDate,
       endDate,
       currentLocalHour: queryTime.localHour,
+      currentLocalMinute: queryParts.localMinute,
+      currentHourElapsedMinutes,
+      recordingStartedAt: meta.createdAt,
       recordingStartedDate: recordingStarted ? recordingStarted.localDate : null,
       recordingStartedLocalHour: recordingStarted ? recordingStarted.localHour : null,
+      recordingStartedLocalMinute: startedParts ? startedParts.localMinute : null,
+      recordingStartedHourElapsedMinutes,
       recordingEnabled: enabled,
       days,
     };
@@ -288,6 +419,11 @@ function createRecapRuntime(options = {}) {
     }
     try { coverage.resetMemory(); } catch {}
     try { aggregate.resetMemory(); } catch {}
+    try { journal.resetMemory(); } catch {}
+    hydrationToken += 1;
+    hydrating = false;
+    hydrationBuffer = [];
+    hydrationOverflow = false;
     initialized = false;
     unavailable = false;
     unavailableCode = null;
@@ -301,6 +437,10 @@ function createRecapRuntime(options = {}) {
     if (!initialize()) return false;
     enabled = resolveEnabledIntent();
     if (started && enabled && !suspended) coverage.start(now());
+    if (started) {
+      scheduleMidnight();
+      beginHydration();
+    }
     return true;
   }
 
@@ -313,11 +453,17 @@ function createRecapRuntime(options = {}) {
   function dispose() {
     if (midnightTimer) clearTimer(midnightTimer);
     midnightTimer = null;
-    if (powerMonitor && typeof powerMonitor.removeListener === "function") {
+    if (lifecycleWired && powerMonitor && typeof powerMonitor.removeListener === "function") {
       powerMonitor.removeListener("suspend", handleSuspend);
       powerMonitor.removeListener("resume", handleResume);
       powerMonitor.removeListener("unlock-screen", handleResume);
     }
+    lifecycleWired = false;
+    hydrationToken += 1;
+    hydrating = false;
+    hydrationBuffer = [];
+    hydrationOverflow = false;
+    try { journal.resetMemory(); } catch {}
     if (initialized) {
       try {
         if (started && enabled && !suspended) coverage.stop(now());
@@ -338,13 +484,16 @@ function createRecapRuntime(options = {}) {
     record,
     setEnabled,
     start,
+    whenReady: () => hydrationPromise,
   });
 }
 
 module.exports = {
   MAX_FUTURE_SKEW_MS,
+  MAX_HYDRATION_BUFFER,
   PERIODS,
   createRecapRuntime,
+  elapsedMinutesInCurrentLocalHour,
   nextLocalMidnightDelay,
   rangeForPeriod,
 };

@@ -6,9 +6,42 @@ const {
   addLocalDays,
   compareLocalDates,
   describeLocalDay,
+  isValidTimeZone,
   parseLocalDate,
 } = require("./recap-time");
 const { DAILY_RETENTION_DAYS } = require("./recap-store");
+const LEGACY_TIME_ZONE_LIMIT = 16;
+const LEGACY_HOUR_KINDS = new Set(["normal", "gap", "fold"]);
+const MAX_DAYS_PER_MONTH = 31;
+const MAX_AGGREGATE_ROWS_PER_DAY = Object.keys(AGENT_METRIC_POLICIES).length * 3;
+const MAX_LEGACY_ROWS_PER_DAY = 512;
+
+function isPlainObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasSafeAggregateFanout(parsed) {
+  if (!isPlainObject(parsed.days)) return false;
+  const dayKeys = Object.keys(parsed.days);
+  if (dayKeys.length > MAX_DAYS_PER_MONTH) return false;
+  const rowLimit = parsed.schemaVersion === 1
+    ? MAX_LEGACY_ROWS_PER_DAY
+    : MAX_AGGREGATE_ROWS_PER_DAY;
+  for (const localDate of dayKeys) {
+    const day = parsed.days[localDate];
+    if (!isPlainObject(day)) return false;
+    if (day.rows !== undefined) {
+      if (!isPlainObject(day.rows) || Object.keys(day.rows).length > rowLimit) return false;
+    }
+    if (day.hourKindsByTimeZone !== undefined) {
+      if (
+        !isPlainObject(day.hourKindsByTimeZone)
+        || Object.keys(day.hourKindsByTimeZone).length > LEGACY_TIME_ZONE_LIMIT
+      ) return false;
+    }
+  }
+  return true;
+}
 
 function monthOf(localDate) {
   parseLocalDate(localDate);
@@ -16,7 +49,10 @@ function monthOf(localDate) {
 }
 
 function rowKey(record) {
-  return `${record.agentId}\0${record.scope}\0${record.scopeKeyHash}`;
+  // Long-lived summaries intentionally merge machine/profile instances. The
+  // 14-day journal may use HMACs for dedupe, but 400-day files retain only the
+  // broad local / WSL / remote class.
+  return `${record.agentId}\0${record.scope}`;
 }
 
 function emptyCount(supported) {
@@ -28,7 +64,6 @@ function createRow(record) {
   return {
     agentId: record.agentId,
     scope: record.scope,
-    scopeKeyHash: record.scopeKeyHash,
     metrics: {
       sessionsStarted: emptyCount(support.sessionsStarted),
       turnsCompleted: emptyCount(support.turnsCompleted),
@@ -49,7 +84,6 @@ function normalizeRow(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   if (!AGENT_METRIC_POLICIES[value.agentId]) return null;
   if (!["local", "wsl", "remote"].includes(value.scope)) return null;
-  if (typeof value.scopeKeyHash !== "string" || !value.scopeKeyHash.startsWith("hmac:")) return null;
   const metrics = value.metrics || {};
   const support = value.support;
   if (
@@ -80,7 +114,6 @@ function normalizeRow(value) {
   return {
     agentId: value.agentId,
     scope: value.scope,
-    scopeKeyHash: value.scopeKeyHash,
     metrics: {
       sessionsStarted: metrics.sessionsStarted,
       turnsCompleted: metrics.turnsCompleted,
@@ -99,33 +132,52 @@ function normalizeDay(localDate, value) {
   const rows = {};
   for (const candidate of Object.values(value.rows || {})) {
     const row = normalizeRow(candidate);
-    if (row) rows[rowKey(row)] = row;
+    if (!row) continue;
+    const key = rowKey(row);
+    const existing = rows[key];
+    if (!existing) {
+      rows[key] = row;
+      continue;
+    }
+    for (const metric of ["sessionsStarted", "turnsCompleted", "toolCalls"]) {
+      if (existing.support[metric] !== true || row.support[metric] !== true) {
+        existing.support[metric] = false;
+        existing.metrics[metric] = null;
+      } else {
+        existing.metrics[metric] += row.metrics[metric];
+      }
+    }
+    existing.metrics.activityEvents += row.metrics.activityEvents;
+    existing.sessionsStartedPartial ||= row.sessionsStartedPartial;
+    for (let hour = 0; hour < 24; hour += 1) existing.hours[hour] += row.hours[hour];
   }
-  const timeZones = {};
-  for (const [zone, kinds] of Object.entries(value.hourKindsByTimeZone || {})) {
-    if (
-      typeof zone === "string"
-      && Array.isArray(kinds)
-      && kinds.length === 24
-      && kinds.every((kind) => ["normal", "gap", "fold"].includes(kind))
-    ) timeZones[zone] = kinds.slice();
+  let hourCapacities = Array.isArray(value.hourCapacities)
+    && value.hourCapacities.length === 24
+    && value.hourCapacities.every((minutes) => Number.isInteger(minutes) && minutes >= 0 && minutes <= 24 * 60)
+    ? value.hourCapacities.slice()
+    : null;
+  if (!hourCapacities) {
+    hourCapacities = Array(24).fill(0);
+    let acceptedZones = 0;
+    for (const [timeZoneId, kinds] of Object.entries(value.hourKindsByTimeZone || {})) {
+      if (acceptedZones >= LEGACY_TIME_ZONE_LIMIT) break;
+      if (
+        !isValidTimeZone(timeZoneId)
+        || !Array.isArray(kinds)
+        || kinds.length !== 24
+        || kinds.some((kind) => !LEGACY_HOUR_KINDS.has(kind))
+      ) continue;
+      acceptedZones += 1;
+      // The legacy kind only said gap/fold, which is insufficient for
+      // half-hour transitions. Resolve exact 0/30/60/90/120 capacities while
+      // the old timezone key is still available, then erase that identity.
+      const resolved = describeLocalDay(localDate, timeZoneId);
+      for (let hour = 0; hour < 24; hour += 1) {
+        hourCapacities[hour] = Math.max(hourCapacities[hour], resolved[hour].minutes);
+      }
+    }
   }
-  const timeZoneOffsets = [];
-  for (const entry of Array.isArray(value.timeZones) ? value.timeZones : []) {
-    if (
-      entry
-      && typeof entry.id === "string"
-      && Object.hasOwn(timeZones, entry.id)
-      && Number.isInteger(entry.utcOffsetMinutes)
-      && entry.utcOffsetMinutes >= -24 * 60
-      && entry.utcOffsetMinutes <= 24 * 60
-      && !timeZoneOffsets.some((known) =>
-        known.id === entry.id && known.utcOffsetMinutes === entry.utcOffsetMinutes)
-    ) timeZoneOffsets.push({ id: entry.id, utcOffsetMinutes: entry.utcOffsetMinutes });
-  }
-  timeZoneOffsets.sort((left, right) =>
-    left.id.localeCompare(right.id) || left.utcOffsetMinutes - right.utcOffsetMinutes);
-  return { rows, hourKindsByTimeZone: timeZones, timeZones: timeZoneOffsets };
+  return { rows, hourCapacities };
 }
 
 function createRecapAggregate(options = {}) {
@@ -151,21 +203,26 @@ function createRecapAggregate(options = {}) {
   }
 
   function ensureMonth(month) {
-    if (!months.has(month)) months.set(month, { schemaVersion: 1, month, days: {} });
+    if (!months.has(month)) months.set(month, { schemaVersion: 2, month, days: {} });
     return months.get(month);
   }
 
   function load() {
     months.clear();
     let names = [];
-    try { names = fs.readdirSync(store.root); } catch (err) {
+    try { names = store.listDirectory(); } catch (err) {
       if (!err || err.code !== "ENOENT") throw err;
     }
     for (const name of names) {
       const match = /^daily-(\d{4}-\d{2})\.json$/.exec(name);
       if (!match) continue;
       const parsed = store.readJson(store.childPath(name));
-      if (!parsed || parsed.schemaVersion !== 1 || parsed.month !== match[1]) {
+      if (
+        !parsed
+        || ![1, 2].includes(parsed.schemaVersion)
+        || parsed.month !== match[1]
+        || !hasSafeAggregateFanout(parsed)
+      ) {
         try {
           store.quarantine(store.childPath(name), "invalid-daily");
           warn("Clawd: quarantined invalid recap daily aggregate");
@@ -174,7 +231,7 @@ function createRecapAggregate(options = {}) {
         }
         continue;
       }
-      const month = { schemaVersion: 1, month: match[1], days: {} };
+      const month = { schemaVersion: 2, month: match[1], days: {} };
       for (const [localDate, candidate] of Object.entries(parsed.days || {})) {
         if (!localDate.startsWith(`${match[1]}-`)) continue;
         const day = normalizeDay(localDate, candidate);
@@ -185,6 +242,7 @@ function createRecapAggregate(options = {}) {
       // strips invalid rows/fields rather than carrying them indefinitely.
       dirtyMonths.add(match[1]);
     }
+    if (dirtyMonths.size > 0) scheduleFlush();
   }
 
   function scheduleFlush() {
@@ -206,21 +264,11 @@ function createRecapAggregate(options = {}) {
     let day = month.days[record.localDate];
     if (!day) day = month.days[record.localDate] = {
       rows: {},
-      hourKindsByTimeZone: {},
-      timeZones: [],
+      hourCapacities: Array(24).fill(0),
     };
-    if (!day.hourKindsByTimeZone[record.timeZoneId]) {
-      day.hourKindsByTimeZone[record.timeZoneId] = describeLocalDay(
-        record.localDate,
-        record.timeZoneId
-      ).map((cell) => cell.kind);
-    }
-    if (!day.timeZones.some((entry) =>
-      entry.id === record.timeZoneId && entry.utcOffsetMinutes === record.utcOffsetMinutes
-    )) {
-      day.timeZones.push({ id: record.timeZoneId, utcOffsetMinutes: record.utcOffsetMinutes });
-      day.timeZones.sort((left, right) =>
-        left.id.localeCompare(right.id) || left.utcOffsetMinutes - right.utcOffsetMinutes);
+    const capacities = describeLocalDay(record.localDate, record.timeZoneId).map((cell) => cell.minutes);
+    for (let hour = 0; hour < 24; hour += 1) {
+      day.hourCapacities[hour] = Math.max(day.hourCapacities[hour] || 0, capacities[hour] || 0);
     }
     return { month, day };
   }
@@ -307,10 +355,7 @@ function createRecapAggregate(options = {}) {
       const value = day && day.days[date];
       days.push({
         localDate: date,
-        hourKindsByTimeZone: value
-          ? Object.fromEntries(Object.entries(value.hourKindsByTimeZone).map(([zone, kinds]) => [zone, kinds.slice()]))
-          : {},
-        timeZones: value ? value.timeZones.map((entry) => ({ ...entry })) : [],
+        hourCapacities: value ? value.hourCapacities.slice() : Array(24).fill(0),
         rows: value ? Object.values(value.rows).map((row) => ({
           ...row,
           metrics: { ...row.metrics },
@@ -332,4 +377,11 @@ function createRecapAggregate(options = {}) {
   return Object.freeze({ apply, flush, load, prune, query, replaceDates, resetMemory });
 }
 
-module.exports = { createRecapAggregate, normalizeDay };
+module.exports = {
+  MAX_AGGREGATE_ROWS_PER_DAY,
+  MAX_DAYS_PER_MONTH,
+  MAX_LEGACY_ROWS_PER_DAY,
+  createRecapAggregate,
+  hasSafeAggregateFanout,
+  normalizeDay,
+};

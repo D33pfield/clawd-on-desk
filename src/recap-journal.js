@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { StringDecoder } = require("string_decoder");
 const { createCanonicalRecapEvent } = require("./recap-event");
 const { getMetricSupport } = require("./recap-metrics");
 const {
@@ -15,6 +16,9 @@ const {
 const { EVENT_RETENTION_DAYS } = require("./recap-store");
 
 const MAX_PERSISTED_RECORD_BYTES = 2048;
+const MAX_RETAINED_RESTORE_BYTES = 64 * 1024 * 1024;
+const MAX_RETAINED_RESTORE_RECORDS = 100000;
+const RESTORE_READ_CHUNK_BYTES = 64 * 1024;
 const HASH_PATTERN = /^hmac:[A-Za-z0-9_-]{40,64}$/;
 
 function validHash(value) {
@@ -95,7 +99,19 @@ function createRecapJournal(options = {}) {
   const now = options.now || Date.now;
   const getTimeZone = options.getTimeZone || getSystemTimeZone;
   const logWarn = options.logWarn || console.warn;
-  const seenDedupe = new Set();
+  // Keep only the same rolling window as the files themselves. A process can
+  // run for months, so a process-lifetime Set would leak memory and reject a
+  // legitimately reused upstream id long after its journal record expired.
+  const seenDedupe = new Map();
+  let memoryGeneration = 0;
+
+  function rememberDedupe(hash, localDate) {
+    if (!hash) return;
+    const existingDate = seenDedupe.get(hash);
+    if (!existingDate || compareLocalDates(existingDate, localDate) < 0) {
+      seenDedupe.set(hash, localDate);
+    }
+  }
 
   function warn(message, err) {
     try { logWarn(message, err && err.message ? err.message : err); } catch {}
@@ -177,7 +193,7 @@ function createRecapJournal(options = {}) {
       encoding: "utf8",
       mode: 0o600,
     });
-    if (normalized.dedupeKeyHash) seenDedupe.add(normalized.dedupeKeyHash);
+    rememberDedupe(normalized.dedupeKeyHash, normalized.localDate);
     return true;
   }
 
@@ -190,25 +206,37 @@ function createRecapJournal(options = {}) {
       throw err;
     }
     const records = [];
+    const dedupeKeys = new Set();
+    let warnedInvalid = false;
     for (const line of contents.split("\n")) {
-      if (!line.trim()) continue;
-      if (Buffer.byteLength(line, "utf8") > MAX_PERSISTED_RECORD_BYTES) {
-        warn("Clawd: ignored oversized recap journal line");
-        continue;
-      }
-      let parsed;
-      try { parsed = JSON.parse(line); } catch {
-        warn("Clawd: ignored corrupt recap journal line");
-        continue;
-      }
-      const normalized = normalizePersistedRecord(parsed);
-      if (!normalized || normalized.localDate !== localDate) {
-        warn("Clawd: ignored invalid recap journal record");
-        continue;
-      }
-      records.push(normalized);
+      const result = normalizeLine(line, localDate, records, dedupeKeys, !warnedInvalid);
+      if (result === "invalid") warnedInvalid = true;
     }
     return records;
+  }
+
+  function normalizeLine(line, localDate, records, dedupeKeys = null, warnInvalid = true) {
+    if (!line.trim()) return "blank";
+    if (Buffer.byteLength(line, "utf8") > MAX_PERSISTED_RECORD_BYTES) {
+      if (warnInvalid) warn("Clawd: ignored oversized recap journal line");
+      return "invalid";
+    }
+    let parsed;
+    try { parsed = JSON.parse(line); } catch {
+      if (warnInvalid) warn("Clawd: ignored corrupt recap journal line");
+      return "invalid";
+    }
+    const normalized = normalizePersistedRecord(parsed);
+    if (!normalized || normalized.localDate !== localDate) {
+      if (warnInvalid) warn("Clawd: ignored invalid recap journal record");
+      return "invalid";
+    }
+    if (normalized.dedupeKeyHash && dedupeKeys) {
+      if (dedupeKeys.has(normalized.dedupeKeyHash)) return "duplicate";
+      dedupeKeys.add(normalized.dedupeKeyHash);
+    }
+    records.push(normalized);
+    return "accepted";
   }
 
   function retainedDates(anchorDate) {
@@ -218,12 +246,158 @@ function createRecapJournal(options = {}) {
   }
 
   function loadRetained(anchorDate = freezeLocalTime(now(), getTimeZone()).localDate) {
-    const records = retainedDates(anchorDate).flatMap(readDate);
+    memoryGeneration += 1;
     seenDedupe.clear();
+    const records = retainedDates(anchorDate).flatMap(readDate);
     for (const record of records) {
-      if (record.dedupeKeyHash) seenDedupe.add(record.dedupeKeyHash);
+      rememberDedupe(record.dedupeKeyHash, record.localDate);
     }
     return records;
+  }
+
+  async function loadRetainedAsync(
+    anchorDate = freezeLocalTime(now(), getTimeZone()).localDate,
+    optionsValue = {}
+  ) {
+    const dates = retainedDates(anchorDate);
+    const snapshots = [];
+    const generation = ++memoryGeneration;
+    let totalBytes = 0;
+    const maxBytes = Number.isSafeInteger(optionsValue.maxBytes) && optionsValue.maxBytes >= 0
+      ? optionsValue.maxBytes
+      : MAX_RETAINED_RESTORE_BYTES;
+    const maxRecords = Number.isSafeInteger(optionsValue.maxRecords) && optionsValue.maxRecords >= 0
+      ? optionsValue.maxRecords
+      : MAX_RETAINED_RESTORE_RECORDS;
+    for (const localDate of dates) {
+      const filePath = eventPath(localDate);
+      try {
+        const stat = fs.lstatSync(filePath);
+        if (!stat.isFile() || stat.isSymbolicLink()) {
+          const err = new Error("recap journal path must be a regular file");
+          err.code = "RECAP_UNSAFE_LINK";
+          throw err;
+        }
+        totalBytes += stat.size;
+        snapshots.push({ localDate, filePath, size: stat.size });
+      } catch (err) {
+        if (!err || err.code !== "ENOENT") throw err;
+      }
+    }
+
+    if (totalBytes > maxBytes) return { dates, records: [], truncated: true };
+
+    const records = [];
+    const retainedDedupeKeys = new Set();
+    const yieldEvery = Number.isSafeInteger(optionsValue.yieldEvery) && optionsValue.yieldEvery > 0
+      ? optionsValue.yieldEvery
+      : 250;
+    const yieldToMain = optionsValue.yieldToMain || (() => new Promise((resolve) => setImmediate(resolve)));
+    let processed = 0;
+    let warnedInvalid = false;
+    for (const snapshot of snapshots) {
+      if (snapshot.size <= 0) continue;
+      let pending = "";
+      let discardingOversizedLine = false;
+      let position = 0;
+      const decoder = new StringDecoder("utf8");
+      while (position < snapshot.size) {
+        if (generation !== memoryGeneration) {
+          return { dates, records: [], truncated: false, aborted: true };
+        }
+        const requested = Math.min(RESTORE_READ_CHUNK_BYTES, snapshot.size - position);
+        const buffer = Buffer.allocUnsafe(requested);
+        let bytesRead = 0;
+        const fd = fs.openSync(snapshot.filePath, "r");
+        try {
+          bytesRead = fs.readSync(fd, buffer, 0, requested, position);
+        } finally {
+          fs.closeSync(fd);
+        }
+        if (bytesRead <= 0) break;
+        position += bytesRead;
+        let chunk = decoder.write(buffer.subarray(0, bytesRead));
+        if (discardingOversizedLine) {
+          const newline = chunk.indexOf("\n");
+          if (newline === -1) {
+            await yieldToMain();
+            if (generation !== memoryGeneration) {
+              return { dates, records: [], truncated: false, aborted: true };
+            }
+            continue;
+          }
+          chunk = chunk.slice(newline + 1);
+          discardingOversizedLine = false;
+        }
+        pending += chunk;
+        const lines = pending.split("\n");
+        pending = lines.pop() || "";
+        for (const line of lines) {
+          processed += 1;
+          if (processed > maxRecords) {
+            return { dates, records: [], truncated: true };
+          }
+          if (line.trim()) {
+            const result = normalizeLine(
+              line,
+              snapshot.localDate,
+              records,
+              retainedDedupeKeys,
+              !warnedInvalid
+            );
+            if (result === "invalid") warnedInvalid = true;
+          }
+          if (processed % yieldEvery === 0) {
+            await yieldToMain();
+            if (generation !== memoryGeneration) {
+              return { dates, records: [], truncated: false, aborted: true };
+            }
+          }
+        }
+        if (Buffer.byteLength(pending, "utf8") > MAX_PERSISTED_RECORD_BYTES) {
+          processed += 1;
+          if (processed > maxRecords) return { dates, records: [], truncated: true };
+          if (!warnedInvalid) warn("Clawd: ignored oversized recap journal line");
+          warnedInvalid = true;
+          pending = "";
+          discardingOversizedLine = true;
+        }
+        // Handles are always closed before yielding, so Clear can remove the
+        // events directory on Windows and resetMemory can abort promptly.
+        await yieldToMain();
+        if (generation !== memoryGeneration) {
+          return { dates, records: [], truncated: false, aborted: true };
+        }
+      }
+      pending += decoder.end();
+      if (!discardingOversizedLine && pending.trim()) {
+        processed += 1;
+        if (processed > maxRecords) return { dates, records: [], truncated: true };
+        const result = normalizeLine(
+          pending,
+          snapshot.localDate,
+          records,
+          retainedDedupeKeys,
+          !warnedInvalid
+        );
+        if (result === "invalid") warnedInvalid = true;
+      }
+      await yieldToMain();
+      if (generation !== memoryGeneration) {
+        return { dates, records: [], truncated: false, aborted: true };
+      }
+    }
+    if (generation === memoryGeneration) {
+      for (const record of records) {
+        rememberDedupe(record.dedupeKeyHash, record.localDate);
+      }
+    }
+    return { dates, records, truncated: false };
+  }
+
+  function resetMemory() {
+    memoryGeneration += 1;
+    seenDedupe.clear();
   }
 
   function prune(anchorDate = freezeLocalTime(now(), getTimeZone()).localDate) {
@@ -242,6 +416,9 @@ function createRecapJournal(options = {}) {
         if (!err || err.code !== "ENOENT") warn("Clawd: recap event retention failed", err);
       }
     }
+    for (const [hash, localDate] of seenDedupe) {
+      if (compareLocalDates(localDate, oldest) < 0) seenDedupe.delete(hash);
+    }
   }
 
   return Object.freeze({
@@ -249,14 +426,19 @@ function createRecapJournal(options = {}) {
     buildRecord,
     eventPath,
     loadRetained,
+    loadRetainedAsync,
     prune,
     readDate,
+    resetMemory,
     retainedDates,
   });
 }
 
 module.exports = {
   MAX_PERSISTED_RECORD_BYTES,
+  MAX_RETAINED_RESTORE_BYTES,
+  MAX_RETAINED_RESTORE_RECORDS,
+  RESTORE_READ_CHUNK_BYTES,
   createRecapJournal,
   normalizePersistedRecord,
 };

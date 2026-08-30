@@ -78,7 +78,7 @@ test("recap card keeps every visual cell square and exposes no arbitrary date or
   const css = fs.readFileSync(path.join(SRC, "settings.css"), "utf8");
   const preload = fs.readFileSync(path.join(SRC, "preload-settings.js"), "utf8");
   assert.match(css, /\.recap-cell\s*\{[\s\S]*?aspect-ratio:\s*1/);
-  assert.match(css, /\.recap-month-grid[\s\S]*grid-template-columns:\s*repeat\(7/);
+  assert.match(css, /\.recap-month-row[\s\S]*grid-template-columns:\s*repeat\(7/);
   assert.match(css, /\.recap-grid-dim \.recap-cell\s*\{\s*opacity:\s*0\.13/);
   assert.match(css, /@media \(max-width:\s*980px\)[\s\S]*\.recap-page-header\s*\{\s*grid-template-columns:\s*1fr/);
   assert.match(css, /@media \(max-width:\s*780px\)[\s\S]*\.recap-agent-row\s*\{\s*grid-template-columns:\s*1fr/);
@@ -126,6 +126,9 @@ test("recap timeline separates activity, coverage, future, not-started, gap, and
   const coverageMinutes = Array(24).fill(0);
   coverageMinutes[1] = 120;
   coverageMinutes[8] = 30;
+  const hourCapacities = Array(24).fill(60);
+  hourCapacities[1] = 120;
+  hourCapacities[2] = 0;
   const hours = Array(24).fill(0);
   hours[9] = 3;
   const data = {
@@ -137,8 +140,8 @@ test("recap timeline separates activity, coverage, future, not-started, gap, and
     recordingStartedLocalHour: 0,
     days: [{
       localDate: "2026-08-29",
-      coverage: { coverageMinutes, hourKindsByTimeZone: { "America/Los_Angeles": normalKinds } },
-      hourKindsByTimeZone: { "America/Los_Angeles": normalKinds },
+      coverage: { coverageMinutes, hourCapacities },
+      hourCapacities,
       rows: [{
         agentId: "codex",
         scope: "local",
@@ -152,17 +155,77 @@ test("recap timeline separates activity, coverage, future, not-started, gap, and
   assert.equal(cells[1].state, "covered");
   assert.equal(cells[1].kind, "fold");
   assert.equal(cells[2].state, "gap");
-  assert.equal(cells[8].state, "covered");
+  assert.equal(cells[8].state, "partial");
   assert.equal(cells[9].state, "activity");
   assert.equal(cells[9].counts[0].count, 3);
   assert.equal(cells[10].state, "uncovered");
   assert.equal(cells[11].state, "future");
 
+  const sameHourWindow = model({
+    ...data,
+    currentLocalHour: 10,
+    currentLocalMinute: 45,
+    currentHourElapsedMinutes: 45,
+    recordingStartedLocalHour: 10,
+    recordingStartedLocalMinute: 30,
+    recordingStartedHourElapsedMinutes: 30,
+    days: [{
+      ...data.days[0],
+      coverage: {
+        coverageMinutes: coverageMinutes.map((value, hour) => hour === 10 ? 15 : value),
+        hourCapacities,
+      },
+    }],
+  }, "today").cells;
+  assert.equal(sameHourWindow[10].state, "covered");
+
+  const foldedSameHourWindow = model({
+    ...data,
+    currentLocalHour: 1,
+    currentLocalMinute: 30,
+    currentHourElapsedMinutes: 90,
+    recordingStartedLocalHour: 1,
+    recordingStartedLocalMinute: 30,
+    recordingStartedHourElapsedMinutes: 30,
+    days: [{
+      ...data.days[0],
+      coverage: {
+        coverageMinutes: coverageMinutes.map((value, hour) => hour === 1 ? 60 : value),
+        hourCapacities,
+      },
+      rows: [],
+    }],
+  }, "today").cells;
+  assert.equal(foldedSameHourWindow[1].state, "covered");
+
+  const partialGapCapacities = hourCapacities.slice();
+  partialGapCapacities[2] = 30;
+  const partialGapHours = hours.slice();
+  partialGapHours[2] = 1;
+  const partialGap = model({
+    ...data,
+    days: [{
+      ...data.days[0],
+      hourCapacities: partialGapCapacities,
+      coverage: { coverageMinutes, hourCapacities: partialGapCapacities },
+      rows: [{ ...data.days[0].rows[0], hours: partialGapHours }],
+    }],
+  }, "today").cells;
+  assert.equal(partialGap[2].kind, "gap");
+  assert.equal(partialGap[2].state, "activity", "a partial DST gap still contains real time");
+
   const startedLate = model({ ...data, recordingStartedLocalHour: 8 }, "today").cells;
   assert.equal(startedLate[2].state, "gap");
   assert.equal(startedLate[2].kind, "gap");
   assert.equal(startedLate[7].state, "not-started");
-  assert.equal(startedLate[8].state, "covered");
+  assert.equal(startedLate[8].state, "partial");
+
+  const dateline = model({
+    ...data,
+    anchorDate: "2026-08-29",
+    recordingStartedDate: "2026-08-30",
+  }, "today").cells;
+  assert.equal(dateline[8].state, "partial", "real coverage must override a later frozen start date");
 });
 
 test("month and year models reserve blank and future cells without inventing activity", () => {

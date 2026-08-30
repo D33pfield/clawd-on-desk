@@ -92,6 +92,41 @@ describe("recap accepted ingress", () => {
     }
   });
 
+  it("confirms Claude starts only after later activity with the same raw id", () => {
+    const { api, sink } = makeRuntime();
+    try {
+      send(api, "SessionStart", "idle", {
+        sessionId: "resume-real",
+        rawSessionId: "resume-real",
+        sessionStartSource: "startup",
+        recapOccurredAt: 5001,
+      });
+      send(api, "SessionStart", "idle", {
+        sessionId: "resume-phantom",
+        rawSessionId: "resume-phantom",
+        sessionStartSource: "startup",
+        recapOccurredAt: 5002,
+      });
+      assert.deepStrictEqual(sink.snapshot(), []);
+
+      send(api, "UserPromptSubmit", "thinking", {
+        sessionId: "resume-real",
+        rawSessionId: "resume-real",
+        recapOccurredAt: 5003,
+      });
+      assert.deepStrictEqual(sink.snapshot().map((event) => ({
+        occurredAt: event.occurredAt,
+        metrics: event.metrics,
+      })), [
+        { occurredAt: 5001, metrics: ["activity", "session-start"] },
+        { occurredAt: 5003, metrics: ["activity"] },
+      ]);
+      assert.equal(sink.snapshot().some((event) => event.occurredAt === 5002), false);
+    } finally {
+      api.cleanup();
+    }
+  });
+
   it("keeps permission provenance as activity but not a QwenWork tool", () => {
     const { api, sink } = makeRuntime();
     try {
@@ -309,6 +344,11 @@ describe("recap accepted ingress", () => {
         sessionStartSource: "startup",
         recapOccurredAt: 4001,
       });
+      send(api, "UserPromptSubmit", "thinking", {
+        sessionId: "claude-start",
+        rawSessionId: "raw-start",
+        recapOccurredAt: 4001,
+      });
       send(api, "PreToolUse", "working", {
         sessionId: "claude-tool",
         rawSessionId: "raw-tool",
@@ -330,6 +370,7 @@ describe("recap accepted ingress", () => {
 
       assert.deepStrictEqual(sink.identitySnapshot().map((identity) => identity.dedupeId), [
         "session-start:raw-start",
+        undefined,
         "tool-call:tool-1",
         undefined,
         "turn-complete:turn-1",

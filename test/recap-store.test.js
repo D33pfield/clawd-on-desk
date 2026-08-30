@@ -5,7 +5,13 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { createRecapStore } = require("../src/recap-store");
+const {
+  QUARANTINE_MAX_BYTES,
+  QUARANTINE_MAX_FILES,
+  MAX_MANAGED_JSON_BYTES,
+  TEMP_FILE_TTL_MS,
+  createRecapStore,
+} = require("../src/recap-store");
 
 function tempRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "clawd-recap-store-"));
@@ -83,4 +89,71 @@ test("explicit clear recovers exact managed directory corruption and crash temp 
   assert.equal(fs.existsSync(path.join(root, "coverage-open.json")), false);
   assert.equal(fs.existsSync(path.join(root, managedTemp)), false);
   assert.equal(fs.readFileSync(path.join(root, "keep-user-file.txt"), "utf8"), "keep");
+});
+
+test("managed symlinks and junctions fail closed without deleting their targets", (t) => {
+  const parent = tempRoot();
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const outside = path.join(parent, "outside");
+  const linkedRoot = path.join(parent, "linked-root");
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, "sentinel.txt"), "keep");
+  fs.symlinkSync(outside, linkedRoot, process.platform === "win32" ? "junction" : "dir");
+  assert.throws(() => createRecapStore({ root: linkedRoot }).initialize(), /links or reparse/);
+  assert.equal(fs.readFileSync(path.join(outside, "sentinel.txt"), "utf8"), "keep");
+
+  const root = path.join(parent, "safe-root");
+  const store = createRecapStore({ root });
+  store.initialize();
+  fs.rmSync(path.join(root, "events"), { recursive: true, force: true });
+  fs.symlinkSync(outside, path.join(root, "events"), process.platform === "win32" ? "junction" : "dir");
+  assert.throws(() => store.clear(), /links or reparse/);
+  assert.equal(fs.readFileSync(path.join(outside, "sentinel.txt"), "utf8"), "keep");
+});
+
+test("stale atomic temps and quarantine data stay bounded", (t) => {
+  const root = tempRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = createRecapStore({ root, now: () => Date.now() });
+  store.initialize();
+  const staleTemp = path.join(root, ".daily-2026-08.json.1234.abcdefabcdef.tmp");
+  fs.writeFileSync(staleTemp, "partial");
+  const old = new Date(Date.now() - TEMP_FILE_TTL_MS - 1000);
+  fs.utimesSync(staleTemp, old, old);
+
+  for (let index = 0; index < QUARANTINE_MAX_FILES + 5; index += 1) {
+    const filePath = store.childPath(`daily-2020-${String((index % 9) + 1).padStart(2, "0")}.json.${index}`);
+    fs.writeFileSync(filePath, "x".repeat(80000));
+    store.quarantine(filePath, "test");
+  }
+  createRecapStore({ root, now: () => Date.now() }).initialize();
+  assert.equal(fs.existsSync(staleTemp), false);
+  const quarantine = fs.readdirSync(path.join(root, "quarantine"));
+  const bytes = quarantine.reduce((sum, name) => sum + fs.statSync(path.join(root, "quarantine", name)).size, 0);
+  assert.ok(quarantine.length <= QUARANTINE_MAX_FILES);
+  assert.ok(bytes <= QUARANTINE_MAX_BYTES);
+});
+
+test("quarantine rejects nested directories instead of letting them bypass the byte cap", (t) => {
+  const root = tempRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = createRecapStore({ root });
+  store.initialize();
+  const nested = path.join(root, "quarantine", "not-a-flat-entry");
+  fs.mkdirSync(nested, { recursive: true });
+  fs.writeFileSync(path.join(nested, "payload"), Buffer.alloc(QUARANTINE_MAX_BYTES + 1));
+
+  createRecapStore({ root }).initialize();
+  assert.equal(fs.existsSync(nested), false);
+});
+
+test("managed JSON reads reject oversized files without loading them", (t) => {
+  const root = tempRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = createRecapStore({ root });
+  store.initialize();
+  const filePath = store.childPath("daily-2026-08.json");
+  fs.writeFileSync(filePath, "{");
+  fs.truncateSync(filePath, MAX_MANAGED_JSON_BYTES + 1);
+  assert.equal(store.readJson(filePath, "bounded"), "bounded");
 });

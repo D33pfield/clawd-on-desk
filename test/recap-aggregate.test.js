@@ -5,7 +5,11 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { createRecapAggregate, normalizeDay } = require("../src/recap-aggregate");
+const {
+  MAX_AGGREGATE_ROWS_PER_DAY,
+  createRecapAggregate,
+  normalizeDay,
+} = require("../src/recap-aggregate");
 const { createRecapJournal } = require("../src/recap-journal");
 const { createRecapStore } = require("../src/recap-store");
 
@@ -35,7 +39,7 @@ test("aggregate preserves unsupported null separately from supported zero", (t) 
   aggregate.apply(record(journal, "antigravity-cli", ["activity", "turn-complete"], 4));
   const day = aggregate.query("2026-08-29", "2026-08-29")[0];
   const rows = day.rows;
-  assert.deepEqual(day.timeZones, [{ id: "UTC", utcOffsetMinutes: 0 }]);
+  assert.equal(day.hourCapacities[4], 60);
   const codex = rows.find((row) => row.agentId === "codex");
   const agy = rows.find((row) => row.agentId === "antigravity-cli");
   assert.equal(codex.metrics.toolCalls, 1);
@@ -82,6 +86,10 @@ test("retained journal dates rebuild monthly cache after an interrupted flush", 
   const row = restored.query("2026-08-29", "2026-08-29")[0].rows[0];
   assert.equal(row.metrics.toolCalls, 1);
   assert.equal(row.hours[8], 1);
+  const disk = fs.readFileSync(store.childPath("daily-2026-08.json"), "utf8");
+  assert.equal(disk.includes("scopeKeyHash"), false);
+  assert.equal(disk.includes("timeZoneId"), false);
+  assert.equal(disk.includes("utcOffsetMinutes"), false);
 });
 
 test("daily rows freeze their historical metric support instead of following current policy", () => {
@@ -104,6 +112,64 @@ test("daily rows freeze their historical metric support instead of following cur
   assert.equal(row.metrics.activityEvents, 9);
   assert.equal(row.metrics.toolCalls, 7);
   assert.equal(row.support.toolCalls, true);
+  assert.equal(Object.hasOwn(row, "scopeKeyHash"), false);
+});
+
+test("legacy per-machine rows merge without losing counts when long-term identity is removed", () => {
+  const makeRow = (hash, count) => ({
+    agentId: "codex",
+    scope: "remote",
+    scopeKeyHash: hash,
+    support: { sessionsStarted: false, turnsCompleted: true, toolCalls: true },
+    metrics: { sessionsStarted: null, turnsCompleted: count, toolCalls: count, activityEvents: count },
+    sessionsStartedPartial: true,
+    hours: Array(24).fill(count),
+  });
+  const day = normalizeDay("2026-08-29", {
+    rows: {
+      one: makeRow(`hmac:${"a".repeat(43)}`, 2),
+      two: makeRow(`hmac:${"b".repeat(43)}`, 3),
+    },
+    hourKindsByTimeZone: { UTC: Array(24).fill("normal") },
+  });
+  const rows = Object.values(day.rows);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].metrics.activityEvents, 5);
+  assert.equal(rows[0].metrics.toolCalls, 5);
+  assert.equal(rows[0].hours[0], 5);
+});
+
+test("legacy Lord Howe gap and fold migrate to exact capacities without retaining timezone", (t) => {
+  const { store } = fixture(t);
+  const writeLegacy = (month, localDate, transitionHour, kind) => {
+    const kinds = Array(24).fill("normal");
+    kinds[transitionHour] = kind;
+    fs.writeFileSync(store.childPath(`daily-${month}.json`), JSON.stringify({
+      schemaVersion: 1,
+      month,
+      days: {
+        [localDate]: {
+          rows: {},
+          hourKindsByTimeZone: { "Australia/Lord_Howe": kinds },
+          timeZones: [{ id: "Australia/Lord_Howe", utcOffsetMinutes: 630 }],
+        },
+      },
+    }));
+  };
+  writeLegacy("2026-04", "2026-04-05", 1, "fold");
+  writeLegacy("2026-10", "2026-10-04", 2, "gap");
+
+  const aggregate = createRecapAggregate({ store, flushDelayMs: 100000 });
+  aggregate.load();
+  assert.equal(aggregate.query("2026-04-05", "2026-04-05")[0].hourCapacities[1], 90);
+  assert.equal(aggregate.query("2026-10-04", "2026-10-04")[0].hourCapacities[2], 30);
+  aggregate.flush();
+  for (const month of ["2026-04", "2026-10"]) {
+    const disk = fs.readFileSync(store.childPath(`daily-${month}.json`), "utf8");
+    assert.match(disk, /"schemaVersion":2/);
+    assert.equal(disk.includes("Australia/Lord_Howe"), false);
+    assert.equal(disk.includes("timeZone"), false);
+  }
 });
 
 test("a day with mixed supported and unsupported policy segments stays honestly null", (t) => {
@@ -127,4 +193,24 @@ test("invalid managed monthly files are recoverably quarantined", (t) => {
   aggregate.load();
   assert.equal(fs.existsSync(filePath), false);
   assert.ok(fs.readdirSync(store.childPath("quarantine")).some((name) => name.startsWith("daily-2020-01.json.")));
+});
+
+test("aggregate rejects bounded-size schema fan-out before normalizing rows", (t) => {
+  const { store } = fixture(t);
+  const filePath = store.childPath("daily-2026-08.json");
+  const rows = Object.fromEntries(Array.from(
+    { length: MAX_AGGREGATE_ROWS_PER_DAY + 1 },
+    (_, index) => [`row-${index}`, null]
+  ));
+  fs.writeFileSync(filePath, JSON.stringify({
+    schemaVersion: 2,
+    month: "2026-08",
+    days: { "2026-08-29": { rows, hourCapacities: Array(24).fill(60) } },
+  }));
+  const aggregate = createRecapAggregate({ store, flushDelayMs: 100000, logWarn: () => {} });
+  const started = performance.now();
+  aggregate.load();
+  assert.ok(performance.now() - started < 500);
+  assert.equal(fs.existsSync(filePath), false);
+  assert.ok(fs.readdirSync(store.childPath("quarantine")).some((name) => name.startsWith("daily-2026-08.json.")));
 });

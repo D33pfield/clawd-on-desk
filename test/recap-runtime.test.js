@@ -5,8 +5,15 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { EventEmitter } = require("node:events");
 const { createRecapJournal } = require("../src/recap-journal");
-const { createRecapRuntime, MAX_FUTURE_SKEW_MS, rangeForPeriod } = require("../src/recap-runtime");
+const { getZonedDateTimeParts } = require("../src/recap-time");
+const {
+  createRecapRuntime,
+  elapsedMinutesInCurrentLocalHour,
+  MAX_FUTURE_SKEW_MS,
+  rangeForPeriod,
+} = require("../src/recap-runtime");
 const { createRecapStore } = require("../src/recap-store");
 
 function fixture(t, options = {}) {
@@ -32,7 +39,7 @@ function fixture(t, options = {}) {
   };
 }
 
-test("runtime writes journal before aggregate, dedupes, and exposes no HMAC identity", (t) => {
+test("runtime writes journal before aggregate, dedupes, and exposes no HMAC identity", async (t) => {
   const f = fixture(t);
   f.runtime.start();
   const event = {
@@ -52,12 +59,15 @@ test("runtime writes journal before aggregate, dedupes, and exposes no HMAC iden
     toolCalls: 1,
     activityEvents: 1,
   });
-  assert.equal(view.days[0].rows[0].scopeInstance, "remote-1");
+  assert.equal(view.days[0].rows[0].scopeInstance, "remote");
   assert.equal(view.currentLocalHour, 10);
   assert.equal(view.recordingStartedDate, "2026-08-29");
   assert.equal(view.recordingStartedLocalHour, 10);
+  assert.equal(view.recordingStartedHourElapsedMinutes, 0);
   assert.equal(JSON.stringify(view).includes("hmac:"), false);
   assert.equal(JSON.stringify(view).includes("private-server"), false);
+  await f.runtime.whenReady();
+  assert.equal(f.runtime.query("today").days[0].rows[0].metrics.activityEvents, 1);
 });
 
 test("recording start keeps its original civil date after travel", (t) => {
@@ -75,7 +85,7 @@ test("recording start keeps its original civil date after travel", (t) => {
   assert.equal(afterTravel.recordingStartedLocalHour, 0);
 });
 
-test("runtime rebuilds retained aggregates from journal without double count", (t) => {
+test("runtime rebuilds retained aggregates from journal without double count", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-recap-restart-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const first = fixture(t, { root });
@@ -90,10 +100,125 @@ test("runtime rebuilds retained aggregates from journal without double count", (
 
   const second = fixture(t, { root });
   second.runtime.start();
+  await second.runtime.whenReady();
   const row = second.runtime.query("today").days[0].rows[0];
   assert.equal(row.metrics.turnsCompleted, 1);
   assert.equal(row.metrics.activityEvents, 1);
   second.runtime.dispose();
+});
+
+test("a stable event replayed while hydration yields is not double counted", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-recap-hydration-race-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const now = Date.UTC(2026, 7, 30, 1);
+  const store = createRecapStore({ root, now: () => now, getTimeZone: () => "UTC" });
+  store.initialize();
+  const writer = createRecapJournal({ store, now: () => now, getTimeZone: () => "UTC" });
+  const event = {
+    occurredAt: now,
+    agentId: "codex",
+    scope: "local",
+    metrics: ["activity", "tool-call"],
+  };
+  const identity = { sessionId: "s", dedupeId: "tool-1" };
+  assert.equal(writer.append(writer.buildRecord(event, identity)), true);
+
+  const reader = createRecapJournal({ store, now: () => now, getTimeZone: () => "UTC" });
+  let releaseHydration;
+  let hydrationYielded;
+  let paused = false;
+  const hydrationPaused = new Promise((resolve) => { hydrationYielded = resolve; });
+  const journal = {
+    ...reader,
+    loadRetainedAsync(anchorDate) {
+      return reader.loadRetainedAsync(anchorDate, {
+        yieldEvery: 1,
+        yieldToMain: () => {
+          if (paused) return Promise.resolve();
+          paused = true;
+          return new Promise((resolve) => {
+            releaseHydration = resolve;
+            hydrationYielded();
+          });
+        },
+      });
+    },
+  };
+  const runtime = createRecapRuntime({
+    store,
+    journal,
+    now: () => now,
+    getTimeZone: () => "UTC",
+    setTimeout: () => ({ unref() {} }),
+    clearTimeout: () => {},
+  });
+  runtime.start();
+  await hydrationPaused;
+  assert.equal(runtime.record(event, identity), true, "the replay reaches the race window");
+  releaseHydration();
+  await runtime.whenReady();
+  assert.equal(runtime.query("today").days[0].rows[0].metrics.toolCalls, 1);
+
+  runtime.dispose();
+  const rebuilt = fixture(t, { root, now });
+  rebuilt.runtime.start();
+  await rebuilt.runtime.whenReady();
+  assert.equal(rebuilt.runtime.query("today").days[0].rows[0].metrics.toolCalls, 1);
+});
+
+test("dispose aborts a yielded hydration before another file-read batch", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-recap-dispose-hydration-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const now = Date.UTC(2026, 7, 30, 1);
+  const store = createRecapStore({ root, now: () => now, getTimeZone: () => "UTC" });
+  store.initialize();
+  const writer = createRecapJournal({ store, now: () => now, getTimeZone: () => "UTC" });
+  const record = writer.buildRecord({
+    occurredAt: now,
+    agentId: "codex",
+    scope: "local",
+    metrics: ["activity"],
+  });
+  fs.writeFileSync(
+    store.childPath("events", "2026-08-30.jsonl"),
+    Array.from({ length: 600 }, () => JSON.stringify(record)).join("\n") + "\n"
+  );
+  const reader = createRecapJournal({ store, now: () => now, getTimeZone: () => "UTC" });
+  let release;
+  let announceYield;
+  let yieldCalls = 0;
+  const yielded = new Promise((resolve) => { announceYield = resolve; });
+  const journal = {
+    ...reader,
+    loadRetainedAsync(anchorDate) {
+      return reader.loadRetainedAsync(anchorDate, {
+        yieldEvery: 100,
+        yieldToMain: () => {
+          yieldCalls += 1;
+          if (yieldCalls > 1) return Promise.resolve();
+          return new Promise((resolve) => {
+            release = resolve;
+            announceYield();
+          });
+        },
+      });
+    },
+  };
+  const runtime = createRecapRuntime({
+    store,
+    journal,
+    now: () => now,
+    getTimeZone: () => "UTC",
+    setTimeout: () => ({ unref() {} }),
+    clearTimeout: () => {},
+  });
+  runtime.start();
+  const ready = runtime.whenReady();
+  await yielded;
+  runtime.dispose();
+  release();
+  await ready;
+  assert.equal(yieldCalls, 1);
 });
 
 test("disable closes coverage and rejects events; clear rotates all local recap data", (t) => {
@@ -142,6 +267,38 @@ test("period ranges are bounded to current civil period", () => {
   });
 });
 
+test("current-hour progress follows real elapsed minutes across full and half-hour folds", () => {
+  const losAngelesNow = Date.UTC(2026, 10, 1, 9, 30); // second 01:30, PST
+  const losAngelesParts = getZonedDateTimeParts(losAngelesNow, "America/Los_Angeles");
+  assert.equal(elapsedMinutesInCurrentLocalHour(
+    losAngelesNow,
+    "America/Los_Angeles",
+    losAngelesParts,
+    120
+  ), 90);
+
+  const lordHoweNow = Date.UTC(2026, 3, 4, 15, 15); // second 01:45, +10:30
+  const lordHoweParts = getZonedDateTimeParts(lordHoweNow, "Australia/Lord_Howe");
+  assert.equal(elapsedMinutesInCurrentLocalHour(
+    lordHoweNow,
+    "Australia/Lord_Howe",
+    lordHoweParts,
+    90
+  ), 75);
+});
+
+test("runtime freezes start progress on the real fold timeline", (t) => {
+  const f = fixture(t, {
+    now: Date.UTC(2026, 10, 1, 9, 30), // second 01:30, PST
+    timeZone: "America/Los_Angeles",
+  });
+  f.runtime.start();
+  const view = f.runtime.query("today");
+  assert.equal(view.recordingStartedLocalHour, 1);
+  assert.equal(view.recordingStartedLocalMinute, 30);
+  assert.equal(view.recordingStartedHourElapsedMinutes, 90);
+});
+
 test("runtime fails quiet when optional storage is unavailable and can recover by explicit clear", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-recap-unavailable-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -158,6 +315,31 @@ test("runtime fails quiet when optional storage is unavailable and can recover b
   assert.equal(f.runtime.clear(), true);
   assert.equal(f.runtime.query("today").status, "ready");
   assert.equal(f.runtime.query("today").recordingEnabled, true);
+});
+
+test("clear recovery keeps one power lifecycle wiring and restarts midnight coverage", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-recap-recovery-wiring-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, "meta.json"), "{broken");
+  const powerMonitor = new EventEmitter();
+  const runtime = createRecapRuntime({
+    root,
+    powerMonitor,
+    now: () => Date.UTC(2026, 7, 29, 10),
+    getTimeZone: () => "UTC",
+    setTimeout: () => ({ unref() {} }),
+    clearTimeout: () => {},
+  });
+  assert.equal(runtime.start(), false);
+  assert.equal(powerMonitor.listenerCount("suspend"), 1);
+  assert.equal(runtime.clear(), true);
+  assert.equal(runtime.query("today").status, "ready");
+  assert.equal(powerMonitor.listenerCount("suspend"), 1);
+  powerMonitor.emit("suspend");
+  powerMonitor.emit("resume");
+  assert.equal(powerMonitor.listenerCount("resume"), 1);
+  runtime.dispose();
+  assert.equal(powerMonitor.listenerCount("suspend"), 0);
 });
 
 test("runtime rejects same-day events beyond the bounded clock-skew allowance", (t) => {
@@ -177,18 +359,23 @@ test("a non-directory recap root cannot interrupt the rest of application startu
   t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
   const root = path.join(parent, "recap-v1");
   fs.writeFileSync(root, "not-a-directory");
+  const powerMonitor = new EventEmitter();
   const runtime = createRecapRuntime({
     root,
     now: () => Date.UTC(2026, 7, 29, 10),
     getTimeZone: () => "UTC",
+    powerMonitor,
     setTimeout: () => ({ unref() {} }),
     clearTimeout: () => {},
   });
   assert.doesNotThrow(() => runtime.start());
   assert.equal(runtime.query("today").status, "unavailable");
+  assert.doesNotThrow(() => powerMonitor.emit("resume"));
+  assert.doesNotThrow(() => powerMonitor.emit("unlock-screen"));
+  assert.doesNotThrow(() => powerMonitor.emit("suspend"));
 });
 
-test("journal-frozen metric support survives a real restart rebuild", (t) => {
+test("journal-frozen metric support survives a real restart rebuild", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-recap-policy-drift-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const store = createRecapStore({ root });
@@ -214,7 +401,61 @@ test("journal-frozen metric support survives a real restart rebuild", (t) => {
     clearTimeout: () => {},
   });
   runtime.start();
+  await runtime.whenReady();
   const row = runtime.query("today").days[0].rows[0];
   assert.equal(row.metrics.toolCalls, 1);
   assert.equal(row.metrics.activityEvents, 1);
+});
+
+test("an overbound journal cannot postpone the long-term privacy migration", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-recap-privacy-migrate-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const now = Date.UTC(2026, 7, 29, 10);
+  const store = createRecapStore({ root, now: () => now, getTimeZone: () => "UTC" });
+  store.initialize();
+  const hash = `hmac:${"a".repeat(43)}`;
+  const filePath = store.childPath("daily-2026-08.json");
+  fs.writeFileSync(filePath, JSON.stringify({
+    schemaVersion: 1,
+    month: "2026-08",
+    days: {
+      "2026-08-29": {
+        rows: {
+          old: {
+            agentId: "codex",
+            scope: "remote",
+            scopeKeyHash: hash,
+            metrics: { sessionsStarted: null, turnsCompleted: 1, toolCalls: 1, activityEvents: 1 },
+            support: { sessionsStarted: false, turnsCompleted: true, toolCalls: true },
+            sessionsStartedPartial: true,
+            hours: Array(24).fill(0),
+          },
+        },
+        hourKindsByTimeZone: { UTC: Array(24).fill("normal") },
+        timeZones: [{ id: "UTC", utcOffsetMinutes: 0 }],
+      },
+    },
+  }));
+  const actualJournal = createRecapJournal({ store, now: () => now, getTimeZone: () => "UTC" });
+  const journal = {
+    ...actualJournal,
+    async loadRetainedAsync(anchorDate) {
+      return { dates: actualJournal.retainedDates(anchorDate), records: [], truncated: true };
+    },
+  };
+  const runtime = createRecapRuntime({
+    store,
+    journal,
+    now: () => now,
+    getTimeZone: () => "UTC",
+    setTimeout: () => ({ unref() {} }),
+    clearTimeout: () => {},
+    logWarn: () => {},
+  });
+  runtime.start();
+  await runtime.whenReady();
+  const disk = fs.readFileSync(filePath, "utf8");
+  assert.match(disk, /"schemaVersion":2/);
+  assert.equal(disk.includes("scopeKeyHash"), false);
+  assert.equal(disk.includes("timeZone"), false);
 });

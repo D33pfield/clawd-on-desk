@@ -59,6 +59,9 @@ module.exports = function initState(ctx) {
 const recapSink = ctx.recapSink && typeof ctx.recapSink.record === "function"
   ? ctx.recapSink
   : NOOP_RECAP_SINK;
+const pendingClaudeRecapStarts = new Map();
+const CLAUDE_RECAP_START_TTL_MS = 10 * 60 * 1000;
+const MAX_PENDING_CLAUDE_RECAP_STARTS = 256;
 
 const _getCursor = ctx.getCursorScreenPoint || (screen ? () => screen.getCursorScreenPoint() : null);
 const _kill = ctx.processKill || process.kill.bind(process);
@@ -1101,6 +1104,44 @@ function findSnapshotSession(snapshot, sessionId) {
   return entries.find((entry) => entry && entry.id === sessionId) || null;
 }
 
+function claudeRecapStartKey(input) {
+  if (!input || input.agentId !== "claude-code" || hasReusableDefaultIdentity(input.rawSessionId)) return null;
+  return `${resolveRecapScope(input)}\0${resolveRecapScopeId(input)}\0${input.rawSessionId}`;
+}
+
+function prunePendingClaudeRecapStarts(referenceTime = Date.now()) {
+  for (const [key, value] of pendingClaudeRecapStarts) {
+    if (!value || referenceTime - value.receivedAt >= CLAUDE_RECAP_START_TTL_MS) {
+      pendingClaudeRecapStarts.delete(key);
+    }
+  }
+  while (pendingClaudeRecapStarts.size > MAX_PENDING_CLAUDE_RECAP_STARTS) {
+    pendingClaudeRecapStarts.delete(pendingClaudeRecapStarts.keys().next().value);
+  }
+}
+
+function persistRecapMetrics(input, metrics) {
+  let dedupeId = null;
+  if (metrics.includes("session-start")) {
+    dedupeId = `session-start:${input.rawSessionId}`;
+  } else if (metrics.includes("tool-call") && input.toolUseId) {
+    dedupeId = `tool-call:${input.toolUseId}`;
+  } else if (metrics.includes("turn-complete")) {
+    dedupeId = input.recapDedupeId ? `turn-complete:${input.recapDedupeId}` : null;
+  }
+  return recordCanonicalRecapEvent(recapSink, {
+    occurredAt: input.occurredAt,
+    agentId: input.agentId,
+    scope: resolveRecapScope(input),
+    metrics,
+  }, {
+    scopeId: resolveRecapScopeId(input),
+    sessionId: input.rawSessionId || input.sessionId,
+    dedupeId,
+    sessionStartPartial: hasReusableDefaultIdentity(input.rawSessionId),
+  });
+}
+
 function recordAcceptedRecapEvent(input, snapshot) {
   if (!input || !input.agentId || !input.event) return false;
   if (input.recapSuppressed === true) return false;
@@ -1114,6 +1155,31 @@ function recordAcceptedRecapEvent(input, snapshot) {
     && input.profileId !== "local"
     && input.hookSource !== "codex-official"
   ) return false;
+
+  prunePendingClaudeRecapStarts();
+  const pendingKey = claudeRecapStartKey(input);
+  const isFreshClaudeStart = !!(
+    pendingKey
+    && input.event === "SessionStart"
+    && (input.sessionStartSource === "startup" || input.sessionStartSource === "clear")
+    && input.recapIsSubagent !== true
+    && !input.subagentId
+    && !input.subagentType
+  );
+  if (isFreshClaudeStart) {
+    if (!pendingClaudeRecapStarts.has(pendingKey)) {
+      pendingClaudeRecapStarts.set(pendingKey, { input: { ...input }, receivedAt: Date.now() });
+    }
+    prunePendingClaudeRecapStarts();
+    return false;
+  }
+  const pendingStart = pendingKey && pendingClaudeRecapStarts.get(pendingKey);
+  if (pendingStart && input.event === "SessionEnd") pendingClaudeRecapStarts.delete(pendingKey);
+  const confirmsPendingStart = !!(
+    pendingStart
+    && input.event !== "SessionStart"
+    && input.event !== "SessionEnd"
+  );
 
   let completionAccepted = false;
   if (input.completionCandidate === true) {
@@ -1131,29 +1197,12 @@ function recordAcceptedRecapEvent(input, snapshot) {
   const metrics = mapRecapMetrics({ ...input, completionAccepted });
   if (!metrics) return false;
 
-  let dedupeId = null;
-  if (metrics.includes("session-start")) {
-    dedupeId = `session-start:${input.rawSessionId}`;
-  } else if (metrics.includes("tool-call") && input.toolUseId) {
-    dedupeId = `tool-call:${input.toolUseId}`;
-  } else if (metrics.includes("turn-complete")) {
-    dedupeId = input.recapDedupeId
-      ? `turn-complete:${input.recapDedupeId}`
-      : null;
-  }
-
   try {
-    return recordCanonicalRecapEvent(recapSink, {
-      occurredAt: input.occurredAt,
-      agentId: input.agentId,
-      scope: resolveRecapScope(input),
-      metrics,
-    }, {
-      scopeId: resolveRecapScopeId(input),
-      sessionId: input.rawSessionId || input.sessionId,
-      dedupeId,
-      sessionStartPartial: hasReusableDefaultIdentity(input.rawSessionId),
-    });
+    if (confirmsPendingStart) {
+      pendingClaudeRecapStarts.delete(pendingKey);
+      persistRecapMetrics(pendingStart.input, ["activity", "session-start"]);
+    }
+    return persistRecapMetrics(input, metrics);
   } catch (err) {
     console.warn("recap event rejected:", err && err.message ? err.message : "invalid event");
     return false;
@@ -3430,6 +3479,7 @@ function cleanup() {
   accountQuota.flush();
   if (pendingTimer) clearTimeout(pendingTimer);
   pendingState = null;
+  pendingClaudeRecapStarts.clear();
   if (autoReturnTimer) clearTimeout(autoReturnTimer);
   clearAllCompletionDebounces();
   clearAllClaudeTranscriptCompletionProbes();

@@ -336,7 +336,7 @@ function registerSettingsIpc(options = {}) {
   }
 
   handle("settings:get-snapshot", () => settingsController.getSnapshot());
-  handle("settings:recap-query", (event, period) => {
+  handle("settings:recap-query", async (event, period) => {
     const rejected = rejectUntrustedSettingsEvent(event);
     if (rejected) return rejected;
     if (!["today", "week", "month", "year"].includes(period)) {
@@ -346,7 +346,10 @@ function registerSettingsIpc(options = {}) {
     if (!runtime || typeof runtime.query !== "function") {
       return { status: "error", reason: "runtime-unavailable" };
     }
-    try { return runtime.query(period); }
+    try {
+      if (typeof runtime.whenReady === "function") await runtime.whenReady();
+      return runtime.query(period);
+    }
     catch { return { status: "error", reason: "query-failed" }; }
   });
   handle("settings:recap-clear", (event) => {

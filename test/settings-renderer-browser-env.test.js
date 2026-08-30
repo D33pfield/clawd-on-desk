@@ -524,6 +524,7 @@ function sampleRecapView() {
   codexHours[9] = 9;
   const claudeHours = Array(24).fill(0);
   claudeHours[9] = 3;
+  const hourCapacities = Array(24).fill(60);
   return {
     schemaVersion: 1,
     status: "ready",
@@ -537,8 +538,8 @@ function sampleRecapView() {
     recordingEnabled: true,
     days: [{
       localDate: "2026-08-29",
-      coverage: { coverageMinutes, hourKindsByTimeZone: { UTC: Array(24).fill("normal") } },
-      hourKindsByTimeZone: { UTC: Array(24).fill("normal") },
+      coverage: { coverageMinutes, hourCapacities },
+      hourCapacities,
       rows: [
         {
           agentId: "codex",
@@ -2370,16 +2371,39 @@ describe("settings renderer browser environment", () => {
     const rows = harness.content.querySelectorAll(".recap-agent-row");
     assert.strictEqual(cells.length, 24);
     assert.strictEqual(grid.getAttribute("role"), "grid");
+    assert.strictEqual(grid.querySelectorAll(".recap-today-band").length, 1);
+    assert.strictEqual(grid.querySelector(".recap-today-band").getAttribute("role"), "row");
     assert.strictEqual(grid.tabIndex, 0);
     assert.ok(cells.every((cell) => cell.tabIndex === undefined));
     assert.strictEqual(rows.length, 2);
     assert.ok(rows.every((row) => row.getAttribute("role") === "button" && row.tabIndex === 0));
     assert.ok(rows.every((row) => row.getAttribute("aria-pressed") === "false"));
+    assert.match(rows[0].getAttribute("aria-label"), /Sessions started: .*Turns completed: .*Tool calls: .*Activity signals:/);
 
     const firstActiveDescendant = grid.getAttribute("aria-activedescendant");
     grid.dispatchEvent({ type: "keydown", key: "ArrowRight", bubbles: false });
     assert.notStrictEqual(grid.getAttribute("aria-activedescendant"), firstActiveDescendant);
     assert.ok(collectText(harness.content.querySelector(".recap-sr-only")).length > 0);
+
+    grid.dispatchEvent({ type: "keydown", key: "End", bubbles: false });
+    const rowEnd = grid.getAttribute("aria-activedescendant");
+    assert.strictEqual(rowEnd, cells.filter((cell) => cell.getAttribute("role") === "gridcell").at(-1).id);
+    grid.dispatchEvent({ type: "keydown", key: "Home", ctrlKey: true, bubbles: false });
+    assert.strictEqual(grid.getAttribute("aria-activedescendant"), cells[0].id);
+
+    harness.content.querySelectorAll(".recap-period-button")[1].click();
+    await harness.settle();
+    const weekGrid = harness.content.querySelector(".recap-grid");
+    weekGrid.dispatchEvent({ type: "keydown", key: "ArrowDown", bubbles: false });
+    weekGrid.dispatchEvent({ type: "keydown", key: "End", bubbles: false });
+    let active = weekGrid.querySelectorAll(".recap-cell")
+      .find((cell) => cell.id === weekGrid.getAttribute("aria-activedescendant"));
+    assert.strictEqual(active.getAttribute("aria-rowindex"), "2");
+    assert.strictEqual(active.getAttribute("aria-colindex"), "24");
+    weekGrid.dispatchEvent({ type: "keydown", key: "End", ctrlKey: true, bubbles: false });
+    active = weekGrid.querySelectorAll(".recap-cell")
+      .find((cell) => cell.id === weekGrid.getAttribute("aria-activedescendant"));
+    assert.strictEqual(active.getAttribute("aria-rowindex"), "7");
   });
 
   it("keeps month and year placeholder cells out of the accessibility grid", async () => {
@@ -2389,6 +2413,9 @@ describe("settings renderer browser environment", () => {
     await monthHarness.settle();
     const monthGrid = monthHarness.content.querySelector(".recap-grid");
     const monthBlanks = monthHarness.content.querySelectorAll(".recap-cell-blank");
+    assert.strictEqual(monthGrid.querySelectorAll(".recap-month-row").length, 6);
+    assert.ok(monthGrid.querySelectorAll(".recap-month-row")
+      .every((row) => row.getAttribute("role") === "row"));
     assert.strictEqual(monthBlanks.length, 5);
     assert.ok(monthBlanks.every((cell) =>
       cell.getAttribute("role") === "presentation"
@@ -2446,7 +2473,8 @@ describe("settings renderer browser environment", () => {
     const data = sampleRecapView();
     const foldKinds = Array(24).fill("normal");
     foldKinds[9] = "fold";
-    data.days[0].hourKindsByTimeZone = { "America/Los_Angeles": foldKinds };
+    data.days[0].hourCapacities[9] = 120;
+    data.days[0].coverage.hourCapacities[9] = 120;
     const harness = loadRecapTabForTest({
       data,
       agentMetadata: [

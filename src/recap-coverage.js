@@ -14,84 +14,123 @@ const {
 const { DAILY_RETENTION_DAYS } = require("./recap-store");
 
 const HEARTBEAT_MS = 60000;
+const COVERAGE_SCHEMA_VERSION = 2;
+const MAX_OPEN_FUTURE_SKEW_MS = 5 * 60000;
+const MAX_LEGACY_OPEN_DURATION_MS = 36 * 3600000;
+const MAX_COVERAGE_DAYS_PER_MONTH = 31;
+// v1 wrote one interval for every suspend/resume or recording toggle. Keep a
+// generous migration ceiling so a busy but legitimate day survives while the
+// month still has a strict, finite projection bound.
+const MAX_LEGACY_INTERVALS_PER_DAY = 512;
+const MAX_LEGACY_TIME_ZONES_PER_DAY = 16;
+
+function isPlainObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasSafeCoverageFanout(parsed) {
+  if (!isPlainObject(parsed.days)) return false;
+  const dayKeys = Object.keys(parsed.days);
+  if (dayKeys.length > MAX_COVERAGE_DAYS_PER_MONTH) return false;
+  for (const localDate of dayKeys) {
+    const day = parsed.days[localDate];
+    if (!isPlainObject(day)) return false;
+    if (parsed.schemaVersion === 1 && day.intervals !== undefined) {
+      if (!Array.isArray(day.intervals) || day.intervals.length > MAX_LEGACY_INTERVALS_PER_DAY) return false;
+      const timeZones = new Set();
+      for (const interval of day.intervals) {
+        if (interval && typeof interval.timeZoneId === "string") timeZones.add(interval.timeZoneId);
+        if (timeZones.size > MAX_LEGACY_TIME_ZONES_PER_DAY) return false;
+      }
+    }
+  }
+  return true;
+}
 
 function monthOf(localDate) {
   parseLocalDate(localDate);
   return localDate.slice(0, 7);
 }
 
-const HOUR_KINDS = new Set(["normal", "gap", "fold"]);
-
-function describeHourKinds(localDate, timeZoneId) {
-  return describeLocalDay(localDate, timeZoneId).map((cell) => cell.kind);
+function emptyDay() {
+  return { coverageMinutes: Array(24).fill(0), hourCapacities: Array(24).fill(0) };
 }
 
-function normalizeHourKindsByTimeZone(value, timeZones) {
+function validMinuteArray(value, max) {
+  return Array.isArray(value) && value.length === 24
+    && value.every((entry) => Number.isInteger(entry) && entry >= 0 && entry <= max);
+}
+
+function normalizeBucketDay(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const normalized = {};
-  for (const timeZoneId of timeZones) {
-    const kinds = value[timeZoneId];
-    if (
-      !Array.isArray(kinds)
-      || kinds.length !== 24
-      || kinds.some((kind) => !HOUR_KINDS.has(kind))
-    ) return null;
-    normalized[timeZoneId] = kinds.slice();
-  }
-  return normalized;
+  if (!validMinuteArray(value.coverageMinutes, 24 * 60)) return null;
+  if (!validMinuteArray(value.hourCapacities, 24 * 60)) return null;
+  if (value.coverageMinutes.some((minutes, hour) => minutes > value.hourCapacities[hour])) return null;
+  return {
+    coverageMinutes: value.coverageMinutes.slice(),
+    hourCapacities: value.hourCapacities.slice(),
+  };
 }
 
-function normalizeInterval(value, expectedDate = null) {
+function normalizeLegacyInterval(value, expectedDate = null) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   if (
-    !Number.isSafeInteger(value.startedAt)
-    || !Number.isSafeInteger(value.endedAt)
-    || value.startedAt < 0
-    || value.endedAt < value.startedAt
+    !Number.isSafeInteger(value.startedAt) || !Number.isSafeInteger(value.endedAt)
+    || value.startedAt < 0 || value.endedAt < value.startedAt
     || !isValidTimeZone(value.timeZoneId)
     || !Number.isInteger(value.startedOffsetMinutes)
     || !Number.isInteger(value.endedOffsetMinutes)
   ) return null;
-  const local = freezeLocalTime(value.startedAt, value.timeZoneId);
-  const endedLocal = freezeLocalTime(value.endedAt, value.timeZoneId);
-  if (expectedDate && local.localDate !== expectedDate) return null;
-  if (
-    local.utcOffsetMinutes !== value.startedOffsetMinutes
-    || endedLocal.utcOffsetMinutes !== value.endedOffsetMinutes
-  ) return null;
-  return {
-    startedAt: value.startedAt,
-    endedAt: value.endedAt,
-    timeZoneId: value.timeZoneId,
-    startedOffsetMinutes: value.startedOffsetMinutes,
-    endedOffsetMinutes: value.endedOffsetMinutes,
-  };
+  // The v1 writer split intervals at each local-day boundary, so a legitimate
+  // persisted segment cannot span more than one unusually long civil day.
+  // Bound this before migrateLegacyMonth's hour-wise projection to prevent a
+  // tiny hostile JSON file from blocking startup for centuries of timestamps.
+  if (value.endedAt - value.startedAt > 36 * 3600000) return null;
+  const started = freezeLocalTime(value.startedAt, value.timeZoneId);
+  const ended = freezeLocalTime(value.endedAt, value.timeZoneId);
+  if (expectedDate && started.localDate !== expectedDate) return null;
+  if (expectedDate && compareLocalDates(ended.localDate, addLocalDays(expectedDate, 1)) > 0) return null;
+  if (started.utcOffsetMinutes !== value.startedOffsetMinutes || ended.utcOffsetMinutes !== value.endedOffsetMinutes) {
+    return null;
+  }
+  return { startedAt: value.startedAt, endedAt: value.endedAt, timeZoneId: value.timeZoneId };
 }
 
-function unionIntervals(intervals) {
-  const sorted = intervals
-    .map((entry) => ({ ...entry }))
-    .sort((left, right) =>
-      left.timeZoneId.localeCompare(right.timeZoneId)
-      || left.startedAt - right.startedAt
-      || left.endedAt - right.endedAt);
+function unionLegacyIntervals(intervals) {
+  const sorted = intervals.slice().sort((left, right) =>
+    left.timeZoneId.localeCompare(right.timeZoneId)
+    || left.startedAt - right.startedAt
+    || left.endedAt - right.endedAt);
   const merged = [];
   for (const interval of sorted) {
     const previous = merged[merged.length - 1];
-    if (
-      previous
-      && previous.timeZoneId === interval.timeZoneId
-      && interval.startedAt <= previous.endedAt
-    ) {
-      if (interval.endedAt > previous.endedAt) {
-        previous.endedAt = interval.endedAt;
-        previous.endedOffsetMinutes = interval.endedOffsetMinutes;
-      }
-      continue;
+    if (previous && previous.timeZoneId === interval.timeZoneId && interval.startedAt <= previous.endedAt) {
+      previous.endedAt = Math.max(previous.endedAt, interval.endedAt);
+    } else {
+      merged.push({ ...interval });
     }
-    merged.push(interval);
   }
   return merged;
+}
+
+function capacityForDate(localDate, timeZoneId) {
+  return describeLocalDay(localDate, timeZoneId).map((cell) => cell.minutes);
+}
+
+function mergeCapacities(target, source) {
+  for (let hour = 0; hour < 24; hour += 1) {
+    target[hour] = Math.max(target[hour] || 0, source[hour] || 0);
+  }
+}
+
+function quantizeDay(day) {
+  for (let hour = 0; hour < 24; hour += 1) {
+    day.hourCapacities[hour] = Math.max(0, Math.round(day.hourCapacities[hour] || 0));
+    day.coverageMinutes[hour] = Math.min(
+      day.hourCapacities[hour],
+      Math.max(0, Math.round(day.coverageMinutes[hour] || 0))
+    );
+  }
 }
 
 function createRecapCoverage(options = {}) {
@@ -120,52 +159,22 @@ function createRecapCoverage(options = {}) {
     return store.childPath(`coverage-${month}.json`);
   }
 
-  function openPath() {
-    return store.childPath("coverage-open.json");
-  }
-
-  function load() {
-    months.clear();
-    let names = [];
-    try { names = fs.readdirSync(store.root); } catch (err) {
-      if (!err || err.code !== "ENOENT") throw err;
-    }
-    for (const name of names) {
-      const match = /^coverage-(\d{4}-\d{2})\.json$/.exec(name);
-      if (!match) continue;
-      const parsed = store.readJson(store.childPath(name));
-      if (!parsed || parsed.schemaVersion !== 1 || parsed.month !== match[1]) {
-        try {
-          store.quarantine(store.childPath(name), "invalid-coverage");
-          warn("Clawd: quarantined invalid recap coverage file");
-        } catch (err) {
-          throw new Error(`recap coverage could not be quarantined: ${err && err.message}`);
-        }
-        continue;
-      }
-      const month = { schemaVersion: 1, month: match[1], days: {} };
-      for (const [localDate, day] of Object.entries(parsed.days || {})) {
-        try { parseLocalDate(localDate); } catch { continue; }
-        if (!localDate.startsWith(`${match[1]}-`) || !day || typeof day !== "object") continue;
-        const intervals = unionIntervals((Array.isArray(day.intervals) ? day.intervals : [])
-          .map((interval) => normalizeInterval(interval, localDate))
-          .filter(Boolean));
-        const timeZones = [...new Set(intervals.map((interval) => interval.timeZoneId))];
-        const hourKindsByTimeZone = normalizeHourKindsByTimeZone(day.hourKindsByTimeZone, timeZones);
-        if (timeZones.length > 0 && !hourKindsByTimeZone) continue;
-        month.days[localDate] = { intervals, hourKindsByTimeZone: hourKindsByTimeZone || {} };
-      }
-      months.set(match[1], month);
-      // Rewrite through the allowlist so malformed days/intervals cannot stay
-      // indefinitely in an otherwise parseable managed file.
-      persistMonth(match[1]);
-    }
-    recoverOpenInterval();
-  }
+  function openPath() { return store.childPath("coverage-open.json"); }
 
   function ensureMonth(month) {
-    if (!months.has(month)) months.set(month, { schemaVersion: 1, month, days: {} });
+    if (!months.has(month)) months.set(month, { schemaVersion: COVERAGE_SCHEMA_VERSION, month, days: {} });
     return months.get(month);
+  }
+
+  function ensureDay(targetMonths, localDate) {
+    const monthName = monthOf(localDate);
+    let month = targetMonths.get(monthName);
+    if (!month) {
+      month = { schemaVersion: COVERAGE_SCHEMA_VERSION, month: monthName, days: {} };
+      targetMonths.set(monthName, month);
+    }
+    if (!month.days[localDate]) month.days[localDate] = emptyDay();
+    return month.days[localDate];
   }
 
   function persistMonth(monthName) {
@@ -176,6 +185,7 @@ function createRecapCoverage(options = {}) {
       }
       return;
     }
+    for (const day of Object.values(month.days)) quantizeDay(day);
     store.writeJsonAtomic(monthPath(monthName), month);
   }
 
@@ -187,89 +197,196 @@ function createRecapCoverage(options = {}) {
       return;
     }
     store.writeJsonAtomic(openPath(), {
-      schemaVersion: 1,
+      // v2 open heartbeats are always recovery-only: clean close deletes this
+      // file before committing a coarse bucket. Legacy v1 could survive after
+      // its interval was already committed, so load keeps a compatibility
+      // dedupe heuristic only for that old shape.
+      schemaVersion: 2,
       startedAt: open.startedAt,
       lastHeartbeatAt: open.lastHeartbeatAt,
       timeZoneId: open.timeZoneId,
     });
   }
 
-  function addClosedInterval(startedAt, endedAt, timeZoneId) {
-    if (endedAt <= startedAt) return false;
-    // Runtime rollover keeps normal intervals within one local day. Crash
-    // recovery can cross midnight, so find each exact civil-date boundary and
-    // keep one compact interval per local day (not one row per heartbeat).
+  function accumulateInterval(targetMonths, startedAt, endedAt, timeZoneId) {
+    if (endedAt <= startedAt) return new Set();
     const touched = new Set();
+    const capacityCache = new Map();
     let cursor = startedAt;
     while (cursor < endedAt) {
-      const local = freezeLocalTime(cursor, timeZoneId);
-      let next = endedAt;
-      const finalLocal = freezeLocalTime(Math.max(cursor, endedAt - 1), timeZoneId);
-      if (finalLocal.localDate !== local.localDate) {
-        let low = cursor;
-        let high = endedAt;
-        while (high - low > 1) {
-          const mid = Math.floor((low + high) / 2);
-          if (freezeLocalTime(mid, timeZoneId).localDate === local.localDate) low = mid;
-          else high = mid;
-        }
-        next = high;
+      const local = getZonedDateTimeParts(cursor, timeZoneId);
+      const elapsedInWallHourMs = local.localMinute * 60000 + local.localSecond * 1000 + (cursor % 1000);
+      const next = Math.min(endedAt, cursor + Math.max(1, 3600000 - elapsedInWallHourMs));
+      const day = ensureDay(targetMonths, local.localDate);
+      let capacities = capacityCache.get(local.localDate);
+      if (!capacities) {
+        capacities = capacityForDate(local.localDate, timeZoneId);
+        capacityCache.set(local.localDate, capacities);
       }
-      const nextLocal = freezeLocalTime(next, timeZoneId);
-      const monthName = monthOf(local.localDate);
-      const month = ensureMonth(monthName);
-      const day = month.days[local.localDate] || (month.days[local.localDate] = {
-        intervals: [],
-        hourKindsByTimeZone: {},
-      });
-      const interval = {
-        startedAt: cursor,
-        endedAt: next,
-        timeZoneId,
-        startedOffsetMinutes: local.utcOffsetMinutes,
-        endedOffsetMinutes: nextLocal.utcOffsetMinutes,
-      };
-      day.intervals = unionIntervals([...day.intervals, interval]);
-      if (!day.hourKindsByTimeZone[timeZoneId]) {
-        day.hourKindsByTimeZone[timeZoneId] = describeHourKinds(local.localDate, timeZoneId);
-      }
-      touched.add(monthName);
+      mergeCapacities(day.hourCapacities, capacities);
+      day.coverageMinutes[local.localHour] = Math.min(
+        day.hourCapacities[local.localHour],
+        day.coverageMinutes[local.localHour] + (next - cursor) / 60000
+      );
+      touched.add(monthOf(local.localDate));
       cursor = next;
     }
+    return touched;
+  }
+
+  function addClosedInterval(startedAt, endedAt, timeZoneId) {
+    const touched = accumulateInterval(months, startedAt, endedAt, timeZoneId);
     for (const monthName of touched) persistMonth(monthName);
+    return touched.size > 0;
+  }
+
+  function readOpenHeartbeat() {
+    const filePath = openPath();
+    let stat;
+    try { stat = fs.lstatSync(filePath); } catch (err) {
+      if (err && err.code === "ENOENT") return null;
+      throw err;
+    }
+    const saved = stat.isFile() ? store.readJson(filePath) : null;
+    if (!saved || ![1, 2].includes(saved.schemaVersion)) {
+      try { store.quarantine(filePath, "invalid-open"); } catch (err) {
+        if (!err || err.code !== "ENOENT") throw err;
+      }
+      warn("Clawd: discarded invalid recap coverage heartbeat");
+      return null;
+    }
+    const duration = saved.lastHeartbeatAt - saved.startedAt;
+    const maxDuration = saved.schemaVersion === 2 ? HEARTBEAT_MS : MAX_LEGACY_OPEN_DURATION_MS;
+    if (
+      !Number.isSafeInteger(saved.startedAt) || !Number.isSafeInteger(saved.lastHeartbeatAt)
+      || saved.startedAt < 0 || saved.lastHeartbeatAt < saved.startedAt
+      || !isValidTimeZone(saved.timeZoneId)
+      || duration > maxDuration
+      || saved.lastHeartbeatAt > now() + MAX_OPEN_FUTURE_SKEW_MS
+    ) {
+      warn("Clawd: discarded invalid recap coverage heartbeat");
+      try { fs.unlinkSync(filePath); } catch {}
+      return null;
+    }
+    return saved;
+  }
+
+  function legacyOpenAlreadyCovered(saved) {
+    let alreadyCovered = false;
+    const projectedMonths = new Map();
+    accumulateInterval(projectedMonths, saved.startedAt, saved.lastHeartbeatAt, saved.timeZoneId);
+    alreadyCovered = true;
+    for (const projectedMonth of projectedMonths.values()) {
+      for (const [date, projectedDay] of Object.entries(projectedMonth.days)) {
+        const storedMonth = months.get(monthOf(date));
+        const storedDay = storedMonth && storedMonth.days[date];
+        if (!storedDay || projectedDay.coverageMinutes.some((minutes, hour) =>
+          Math.round(minutes) > storedDay.coverageMinutes[hour])) {
+          alreadyCovered = false;
+          break;
+        }
+      }
+      if (!alreadyCovered) break;
+    }
+    return alreadyCovered;
+  }
+
+  function recoverOpenInterval(saved) {
+    if (!saved) return false;
+    const alreadyCovered = saved.schemaVersion === 1 && legacyOpenAlreadyCovered(saved);
+    fs.unlinkSync(openPath());
+    if (!alreadyCovered) addClosedInterval(saved.startedAt, saved.lastHeartbeatAt, saved.timeZoneId);
     return true;
   }
 
-  function recoverOpenInterval() {
-    const saved = store.readJson(openPath());
-    if (!saved || saved.schemaVersion !== 1) return false;
-    if (
-      !Number.isSafeInteger(saved.startedAt)
-      || !Number.isSafeInteger(saved.lastHeartbeatAt)
-      || saved.startedAt < 0
-      || saved.lastHeartbeatAt < saved.startedAt
-      || !isValidTimeZone(saved.timeZoneId)
-    ) {
-      warn("Clawd: discarded invalid recap coverage heartbeat");
-      try { fs.unlinkSync(openPath()); } catch {}
-      return false;
+  function collectLegacyMonth(parsed, expectedMonth, pending) {
+    // Even a legacy file containing only rejected/empty intervals must be
+    // rewritten (or removed) so precise timestamps and timezone IDs do not
+    // survive indefinitely on disk.
+    ensureMonth(expectedMonth);
+    pending.touched.add(expectedMonth);
+    for (const [localDate, candidate] of Object.entries(parsed.days || {})) {
+      try { parseLocalDate(localDate); } catch { continue; }
+      if (!localDate.startsWith(`${expectedMonth}-`) || !candidate || typeof candidate !== "object") continue;
+      pending.dates.add(localDate);
+      const intervals = unionLegacyIntervals((Array.isArray(candidate.intervals) ? candidate.intervals : [])
+        .map((raw) => normalizeLegacyInterval(raw, localDate))
+        .filter(Boolean));
+      pending.intervals.push(...intervals);
     }
-    addClosedInterval(saved.startedAt, saved.lastHeartbeatAt, saved.timeZoneId);
-    try { fs.unlinkSync(openPath()); } catch (err) {
+  }
+
+  function applyLegacyMigration(pending, savedOpen) {
+    let mergedOpen = false;
+    if (savedOpen && savedOpen.schemaVersion === 1) {
+      const startedDate = freezeLocalTime(savedOpen.startedAt, savedOpen.timeZoneId).localDate;
+      if (pending.dates.has(startedDate)) {
+        pending.intervals.push({
+          startedAt: savedOpen.startedAt,
+          endedAt: savedOpen.lastHeartbeatAt,
+          timeZoneId: savedOpen.timeZoneId,
+        });
+        mergedOpen = true;
+      }
+    }
+    for (const interval of unionLegacyIntervals(pending.intervals)) {
+      for (const monthName of accumulateInterval(
+        months,
+        interval.startedAt,
+        interval.endedAt,
+        interval.timeZoneId
+      )) pending.touched.add(monthName);
+    }
+    for (const monthName of pending.touched) persistMonth(monthName);
+    if (mergedOpen) fs.unlinkSync(openPath());
+    return mergedOpen;
+  }
+
+  function load() {
+    months.clear();
+    const savedOpen = readOpenHeartbeat();
+    const pendingLegacy = { dates: new Set(), intervals: [], touched: new Set() };
+    let names = [];
+    try { names = store.listDirectory(); } catch (err) {
       if (!err || err.code !== "ENOENT") throw err;
     }
-    return true;
+    for (const name of names) {
+      const match = /^coverage-(\d{4}-\d{2})\.json$/.exec(name);
+      if (!match) continue;
+      const filePath = store.childPath(name);
+      const parsed = store.readJson(filePath);
+      if (
+        !parsed
+        || ![1, COVERAGE_SCHEMA_VERSION].includes(parsed.schemaVersion)
+        || parsed.month !== match[1]
+        || !hasSafeCoverageFanout(parsed)
+      ) {
+        store.quarantine(filePath, "invalid-coverage");
+        warn("Clawd: quarantined invalid recap coverage file");
+        continue;
+      }
+      if (parsed.schemaVersion === 1) {
+        collectLegacyMonth(parsed, match[1], pendingLegacy);
+        continue;
+      }
+      const month = { schemaVersion: COVERAGE_SCHEMA_VERSION, month: match[1], days: {} };
+      for (const [localDate, candidate] of Object.entries(parsed.days || {})) {
+        try { parseLocalDate(localDate); } catch { continue; }
+        if (!localDate.startsWith(`${match[1]}-`)) continue;
+        const day = normalizeBucketDay(candidate);
+        if (day) month.days[localDate] = day;
+      }
+      months.set(match[1], month);
+    }
+    const openMergedExactly = applyLegacyMigration(pendingLegacy, savedOpen);
+    if (savedOpen && !openMergedExactly) recoverOpenInterval(savedOpen);
   }
 
   function scheduleHeartbeat() {
     if (!open || heartbeatTimer) return;
     heartbeatTimer = setTimer(() => {
       heartbeatTimer = null;
-      try {
-        tick(now());
-      } catch (err) {
-        warn("Clawd: recap coverage heartbeat failed", err);
-      }
+      try { tick(now()); } catch (err) { warn("Clawd: recap coverage heartbeat failed", err); }
       scheduleHeartbeat();
     }, heartbeatMs);
     if (heartbeatTimer && typeof heartbeatTimer.unref === "function") heartbeatTimer.unref();
@@ -289,11 +406,12 @@ function createRecapCoverage(options = {}) {
     if (!open) return false;
     if (heartbeatTimer) clearTimer(heartbeatTimer);
     heartbeatTimer = null;
-    const endedAt = Math.max(open.startedAt, at);
     const closed = { ...open };
     open = null;
-    addClosedInterval(closed.startedAt, endedAt, closed.timeZoneId);
+    // Delete the precise heartbeat before writing coarse history. This makes a
+    // crash lose at most one heartbeat window instead of double-counting it.
     persistOpen();
+    addClosedInterval(closed.startedAt, Math.max(closed.startedAt, at), closed.timeZoneId);
     return true;
   }
 
@@ -305,11 +423,26 @@ function createRecapCoverage(options = {}) {
     const newLocal = freezeLocalTime(at, zone);
     if (zone !== open.timeZoneId || oldLocal.localDate !== newLocal.localDate) {
       const previous = { ...open };
-      open = null;
-      addClosedInterval(previous.startedAt, at, previous.timeZoneId);
+      // Commit the new precise marker first. If the following coarse write is
+      // interrupted, recovery loses only the remainder since the previous
+      // minute checkpoint and can never replay the whole run twice.
       open = { startedAt: at, lastHeartbeatAt: at, timeZoneId: zone };
+      persistOpen();
+      addClosedInterval(previous.startedAt, at, previous.timeZoneId);
+      return true;
     } else {
-      open.lastHeartbeatAt = Math.max(open.lastHeartbeatAt, at);
+      const heartbeatAt = Math.max(open.lastHeartbeatAt, at);
+      const wholeMinutes = Math.floor((heartbeatAt - open.startedAt) / 60000);
+      if (wholeMinutes > 0) {
+        const previousStartedAt = open.startedAt;
+        const checkpointAt = previousStartedAt + wholeMinutes * 60000;
+        open.startedAt = checkpointAt;
+        open.lastHeartbeatAt = heartbeatAt;
+        persistOpen();
+        addClosedInterval(previousStartedAt, checkpointAt, open.timeZoneId);
+        return true;
+      }
+      open.lastHeartbeatAt = heartbeatAt;
     }
     persistOpen();
     return true;
@@ -332,49 +465,34 @@ function createRecapCoverage(options = {}) {
   function query(startDate, endDate, queryNow = now()) {
     parseLocalDate(startDate);
     parseLocalDate(endDate);
+    const projected = new Map();
+    if (open) {
+      const projectionMonths = new Map();
+      accumulateInterval(projectionMonths, open.startedAt, Math.max(open.startedAt, queryNow), open.timeZoneId);
+      for (const month of projectionMonths.values()) {
+        for (const [date, day] of Object.entries(month.days)) projected.set(date, day);
+      }
+    }
     const result = [];
     for (let date = startDate; compareLocalDates(date, endDate) <= 0; date = addLocalDays(date, 1)) {
-      const month = months.get(monthOf(date));
-      const stored = month && month.days[date];
-      const intervals = stored ? stored.intervals.map((entry) => ({ ...entry })) : [];
-      if (open && freezeLocalTime(open.startedAt, open.timeZoneId).localDate === date) {
-        intervals.push({
-          startedAt: open.startedAt,
-          endedAt: Math.max(open.startedAt, queryNow),
-          timeZoneId: open.timeZoneId,
-          startedOffsetMinutes: freezeLocalTime(open.startedAt, open.timeZoneId).utcOffsetMinutes,
-          endedOffsetMinutes: freezeLocalTime(Math.max(open.startedAt, queryNow), open.timeZoneId).utcOffsetMinutes,
-        });
-      }
-      const coverageMinutes = Array(24).fill(0);
-      const timeZones = new Set();
-      for (const interval of unionIntervals(intervals)) {
-        timeZones.add(interval.timeZoneId);
-        for (let cursor = interval.startedAt; cursor < interval.endedAt;) {
-          const local = getZonedDateTimeParts(cursor, interval.timeZoneId);
-          const elapsedInWallHourMs = (
-            local.localMinute * 60000
-            + local.localSecond * 1000
-            + (cursor % 1000)
+      const storedMonth = months.get(monthOf(date));
+      const stored = storedMonth && storedMonth.days[date];
+      const day = stored ? {
+        coverageMinutes: stored.coverageMinutes.slice(),
+        hourCapacities: stored.hourCapacities.slice(),
+      } : emptyDay();
+      const current = projected.get(date);
+      if (current) {
+        mergeCapacities(day.hourCapacities, current.hourCapacities);
+        for (let hour = 0; hour < 24; hour += 1) {
+          day.coverageMinutes[hour] = Math.min(
+            day.hourCapacities[hour],
+            day.coverageMinutes[hour] + current.coverageMinutes[hour]
           );
-          const nextWallHour = cursor + Math.max(1, 3600000 - elapsedInWallHourMs);
-          const next = Math.min(interval.endedAt, nextWallHour);
-          if (local.localDate === date) {
-            coverageMinutes[local.localHour] += (next - cursor) / 60000;
-          }
-          cursor = next;
         }
       }
-      const hourKindsByTimeZone = {};
-      for (const zone of timeZones) {
-        const frozen = stored && stored.hourKindsByTimeZone
-          ? stored.hourKindsByTimeZone[zone]
-          : null;
-        hourKindsByTimeZone[zone] = frozen
-          ? frozen.slice()
-          : describeHourKinds(date, zone);
-      }
-      result.push({ localDate: date, coverageMinutes, hourKindsByTimeZone });
+      quantizeDay(day);
+      result.push({ localDate: date, ...day });
     }
     return result;
   }
@@ -386,15 +504,18 @@ function createRecapCoverage(options = {}) {
     months.clear();
   }
 
-  return Object.freeze({
-    load,
-    prune,
-    query,
-    resetMemory,
-    start,
-    stop,
-    tick,
-  });
+  return Object.freeze({ load, prune, query, resetMemory, start, stop, tick });
 }
 
-module.exports = { HEARTBEAT_MS, createRecapCoverage, normalizeInterval, unionIntervals };
+module.exports = {
+  COVERAGE_SCHEMA_VERSION,
+  HEARTBEAT_MS,
+  MAX_COVERAGE_DAYS_PER_MONTH,
+  MAX_LEGACY_INTERVALS_PER_DAY,
+  MAX_LEGACY_TIME_ZONES_PER_DAY,
+  createRecapCoverage,
+  hasSafeCoverageFanout,
+  normalizeBucketDay,
+  normalizeInterval: normalizeLegacyInterval,
+  unionIntervals: unionLegacyIntervals,
+};

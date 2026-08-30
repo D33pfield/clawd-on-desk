@@ -6,7 +6,11 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const { createRecapCoverage } = require("../src/recap-coverage");
+const {
+  MAX_LEGACY_INTERVALS_PER_DAY,
+  MAX_LEGACY_TIME_ZONES_PER_DAY,
+  createRecapCoverage,
+} = require("../src/recap-coverage");
 const { createRecapStore } = require("../src/recap-store");
 
 function fixture(t, options = {}) {
@@ -71,11 +75,15 @@ test("stale heartbeat left after a durable clean stop is unioned, not double cou
   const { coverage, store } = fixture(t);
   const base = Date.UTC(2026, 7, 29, 10);
   coverage.start(base);
-  coverage.tick(base + 5 * 60000);
-  const staleOpen = fs.readFileSync(store.childPath("coverage-open.json"), "utf8");
+  const staleOpen = {
+    schemaVersion: 1, // legacy close order could leave this behind
+    startedAt: base,
+    lastHeartbeatAt: base + 5 * 60000,
+    timeZoneId: "UTC",
+  };
   coverage.stop(base + 10 * 60000);
   // Crash window: closed S→Q reached disk, but stale S→H deletion did not.
-  fs.writeFileSync(store.childPath("coverage-open.json"), staleOpen);
+  fs.writeFileSync(store.childPath("coverage-open.json"), JSON.stringify(staleOpen));
   coverage.resetMemory();
 
   const restored = createRecapCoverage({
@@ -87,6 +95,80 @@ test("stale heartbeat left after a durable clean stop is unioned, not double cou
   restored.load();
   const day = restored.query("2026-08-29", "2026-08-29", base + 10 * 60000)[0];
   assert.equal(day.coverageMinutes[10], 10);
+});
+
+test("legacy open heartbeat is exactly unioned with disjoint same-hour intervals", (t) => {
+  const { store } = fixture(t);
+  const base = Date.UTC(2026, 7, 29, 10);
+  fs.writeFileSync(store.childPath("coverage-2026-08.json"), JSON.stringify({
+    schemaVersion: 1,
+    month: "2026-08",
+    days: {
+      "2026-08-29": {
+        intervals: [{
+          startedAt: base + 20 * 60000,
+          endedAt: base + 30 * 60000,
+          timeZoneId: "UTC",
+          startedOffsetMinutes: 0,
+          endedOffsetMinutes: 0,
+        }],
+        hourKindsByTimeZone: { UTC: Array(24).fill("normal") },
+      },
+    },
+  }));
+  fs.writeFileSync(store.childPath("coverage-open.json"), JSON.stringify({
+    schemaVersion: 1,
+    startedAt: base,
+    lastHeartbeatAt: base + 10 * 60000,
+    timeZoneId: "UTC",
+  }));
+
+  const restored = createRecapCoverage({
+    store,
+    now: () => base + 60 * 60000,
+    getTimeZone: () => "UTC",
+    setTimeout: () => ({ unref() {} }),
+    clearTimeout: () => {},
+  });
+  restored.load();
+  assert.equal(restored.query("2026-08-29", "2026-08-29")[0].coverageMinutes[10], 20);
+  assert.equal(fs.existsSync(store.childPath("coverage-open.json")), false);
+});
+
+test("a current heartbeat after earlier same-hour coverage is never mistaken for a duplicate", (t) => {
+  const { coverage, store } = fixture(t);
+  const base = Date.UTC(2026, 7, 29, 10);
+  coverage.start(base);
+  coverage.stop(base + 5 * 60000);
+  coverage.start(base + 10 * 60000);
+  coverage.tick(base + 15 * 60000);
+  coverage.resetMemory(); // current v2 heartbeat remains after process loss
+
+  const restored = createRecapCoverage({
+    store,
+    getTimeZone: () => "UTC",
+    setTimeout: () => ({ unref() {} }),
+    clearTimeout: () => {},
+  });
+  restored.load();
+  const day = restored.query("2026-08-29", "2026-08-29", base + 15 * 60000)[0];
+  assert.equal(day.coverageMinutes[10], 10);
+});
+
+test("heartbeats checkpoint coarse minutes and retain only the sub-minute crash tail", (t) => {
+  const { coverage, store } = fixture(t);
+  const base = Date.UTC(2026, 7, 29, 10);
+  coverage.start(base);
+  coverage.tick(base + 5 * 60000 + 30 * 1000);
+  const open = JSON.parse(fs.readFileSync(store.childPath("coverage-open.json"), "utf8"));
+  assert.equal(open.schemaVersion, 2);
+  assert.equal(open.startedAt, base + 5 * 60000);
+  assert.equal(open.lastHeartbeatAt, base + 5 * 60000 + 30 * 1000);
+  assert.equal(coverage.query(
+    "2026-08-29",
+    "2026-08-29",
+    base + 5 * 60000 + 30 * 1000
+  )[0].coverageMinutes[10], 6);
 });
 
 test("invalid managed coverage files are recoverably quarantined", (t) => {
@@ -102,6 +184,183 @@ test("invalid managed coverage files are recoverably quarantined", (t) => {
   restored.load();
   assert.equal(fs.existsSync(filePath), false);
   assert.ok(fs.readdirSync(store.childPath("quarantine")).some((name) => name.startsWith("coverage-2020-01.json.")));
+});
+
+test("coverage rejects bounded-size legacy interval fan-out before projection", (t) => {
+  const { store } = fixture(t);
+  const filePath = store.childPath("coverage-2026-08.json");
+  fs.writeFileSync(filePath, JSON.stringify({
+    schemaVersion: 1,
+    month: "2026-08",
+    days: {
+      "2026-08-29": {
+        intervals: Array(MAX_LEGACY_INTERVALS_PER_DAY + 1).fill(null),
+        hourKindsByTimeZone: {},
+      },
+    },
+  }));
+  const coverage = createRecapCoverage({
+    store,
+    now: () => Date.UTC(2026, 7, 29, 10),
+    getTimeZone: () => "UTC",
+    setTimeout: () => ({ unref() {} }),
+    clearTimeout: () => {},
+    logWarn: () => {},
+  });
+  const started = performance.now();
+  coverage.load();
+  assert.ok(performance.now() - started < 500);
+  assert.equal(fs.existsSync(filePath), false);
+  assert.ok(fs.readdirSync(store.childPath("quarantine")).some((name) => name.startsWith("coverage-2026-08.json.")));
+
+  const zoneFilePath = store.childPath("coverage-2026-09.json");
+  fs.writeFileSync(zoneFilePath, JSON.stringify({
+    schemaVersion: 1,
+    month: "2026-09",
+    days: {
+      "2026-09-01": {
+        intervals: Array.from({ length: MAX_LEGACY_TIME_ZONES_PER_DAY + 1 }, (_, index) => ({
+          timeZoneId: `hostile-zone-${index}`,
+        })),
+        hourKindsByTimeZone: {},
+      },
+    },
+  }));
+  coverage.load();
+  assert.equal(fs.existsSync(zoneFilePath), false);
+});
+
+test("invalid open-heartbeat files self-heal before recording restarts", (t) => {
+  for (const variant of ["corrupt", "oversized", "directory"]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `clawd-recap-open-${variant}-`));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const store = createRecapStore({ root });
+    store.initialize();
+    const filePath = store.childPath("coverage-open.json");
+    if (variant === "directory") fs.mkdirSync(filePath);
+    else if (variant === "oversized") fs.writeFileSync(filePath, "x".repeat(8 * 1024 * 1024 + 1));
+    else fs.writeFileSync(filePath, "{broken");
+    const coverage = createRecapCoverage({
+      store,
+      getTimeZone: () => "UTC",
+      setTimeout: () => ({ unref() {} }),
+      clearTimeout: () => {},
+      logWarn: () => {},
+    });
+    assert.doesNotThrow(() => coverage.load(), variant);
+    assert.doesNotThrow(() => coverage.start(Date.UTC(2026, 7, 29, 10)), variant);
+    assert.equal(fs.lstatSync(filePath).isFile(), true, variant);
+    assert.equal(JSON.parse(fs.readFileSync(filePath, "utf8")).schemaVersion, 2, variant);
+    coverage.resetMemory();
+  }
+});
+
+test("tiny hostile open heartbeats are rejected before any historical projection", (t) => {
+  const current = Date.UTC(2026, 7, 29, 10);
+  const variants = {
+    "v2-long": { schemaVersion: 2, startedAt: 0, lastHeartbeatAt: current, timeZoneId: "UTC" },
+    "v2-future": {
+      schemaVersion: 2,
+      startedAt: current + 10 * 60000,
+      lastHeartbeatAt: current + 10 * 60000,
+      timeZoneId: "UTC",
+    },
+    "v1-long": {
+      schemaVersion: 1,
+      startedAt: current - 40 * 3600000,
+      lastHeartbeatAt: current,
+      timeZoneId: "UTC",
+    },
+  };
+  for (const [name, saved] of Object.entries(variants)) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `clawd-recap-open-bound-${name}-`));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const store = createRecapStore({ root });
+    store.initialize();
+    fs.writeFileSync(store.childPath("coverage-open.json"), JSON.stringify(saved));
+    const coverage = createRecapCoverage({
+      store,
+      now: () => current,
+      getTimeZone: () => "UTC",
+      setTimeout: () => ({ unref() {} }),
+      clearTimeout: () => {},
+      logWarn: () => {},
+    });
+    const started = performance.now();
+    coverage.load();
+    assert.ok(performance.now() - started < 500, name);
+    assert.equal(fs.existsSync(store.childPath("coverage-open.json")), false, name);
+    assert.deepEqual(fs.readdirSync(root).filter((entry) => /^coverage-\d{4}-\d{2}\.json$/.test(entry)), [], name);
+    assert.equal(coverage.start(current), true, name);
+  }
+});
+
+test("legacy exact intervals migrate once to coarse daily minute buckets", (t) => {
+  const { store } = fixture(t);
+  const filePath = store.childPath("coverage-2026-08.json");
+  const startedAt = Date.UTC(2026, 7, 29, 10);
+  fs.writeFileSync(filePath, JSON.stringify({
+    schemaVersion: 1,
+    month: "2026-08",
+    days: {
+      "2026-08-29": {
+        intervals: [{
+          startedAt,
+          endedAt: startedAt + 30 * 60000,
+          timeZoneId: "UTC",
+          startedOffsetMinutes: 0,
+          endedOffsetMinutes: 0,
+        }],
+        hourKindsByTimeZone: { UTC: Array(24).fill("normal") },
+      },
+    },
+  }));
+  const restored = createRecapCoverage({
+    store,
+    getTimeZone: () => "UTC",
+    setTimeout: () => ({ unref() {} }),
+    clearTimeout: () => {},
+  });
+  restored.load();
+  assert.equal(restored.query("2026-08-29", "2026-08-29")[0].coverageMinutes[10], 30);
+  const migrated = fs.readFileSync(filePath, "utf8");
+  assert.match(migrated, /"schemaVersion":2/);
+  for (const forbidden of ["startedAt", "endedAt", "timeZoneId", "intervals"]) {
+    assert.equal(migrated.includes(forbidden), false);
+  }
+});
+
+test("legacy migration rejects impossible multi-year intervals before projection", (t) => {
+  const { store } = fixture(t);
+  const filePath = store.childPath("coverage-2026-08.json");
+  const startedAt = Date.UTC(2026, 7, 29, 10);
+  fs.writeFileSync(filePath, JSON.stringify({
+    schemaVersion: 1,
+    month: "2026-08",
+    days: {
+      "2026-08-29": {
+        intervals: [{
+          startedAt,
+          endedAt: Date.UTC(2426, 7, 29, 10),
+          timeZoneId: "UTC",
+          startedOffsetMinutes: 0,
+          endedOffsetMinutes: 0,
+        }],
+        hourKindsByTimeZone: { UTC: Array(24).fill("normal") },
+      },
+    },
+  }));
+  const restored = createRecapCoverage({
+    store,
+    getTimeZone: () => "UTC",
+    setTimeout: () => ({ unref() {} }),
+    clearTimeout: () => {},
+  });
+  const started = performance.now();
+  restored.load();
+  assert.ok(performance.now() - started < 500);
+  assert.equal(restored.query("2026-08-29", "2026-08-29")[0].coverageMinutes[10], 0);
+  assert.equal(fs.existsSync(filePath), false, "invalid-only legacy history is removed after migration");
 });
 
 test("coverage projection handles DST gap and fold without minute-by-minute scanning", (t) => {
@@ -151,8 +410,8 @@ test("cold-process 400-day coverage query reuses frozen day shapes", (t) => {
     process.stdout.write(JSON.stringify({
       elapsedMs,
       dayCount: days.length,
-      gap: days.find((day) => day.localDate === "2026-03-08").hourKindsByTimeZone["America/Los_Angeles"][2],
-      fold: days.find((day) => day.localDate === "2025-11-02").hourKindsByTimeZone["America/Los_Angeles"][1],
+      gap: days.find((day) => day.localDate === "2026-03-08").hourCapacities[2],
+      fold: days.find((day) => day.localDate === "2025-11-02").hourCapacities[1],
     }));
   `;
   const child = spawnSync(process.execPath, ["-e", childSource], {
@@ -163,7 +422,7 @@ test("cold-process 400-day coverage query reuses frozen day shapes", (t) => {
   assert.equal(child.status, 0, child.stderr || child.error && child.error.message);
   const result = JSON.parse(child.stdout);
   assert.equal(result.dayCount, 400);
-  assert.equal(result.gap, "gap");
-  assert.equal(result.fold, "fold");
+  assert.equal(result.gap, 0);
+  assert.equal(result.fold, 120);
   assert.ok(result.elapsedMs < 500, `cold 400-day coverage query took ${result.elapsedMs.toFixed(1)}ms`);
 });

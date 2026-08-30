@@ -2,13 +2,17 @@
 
 const FORMATTERS = new Map();
 const DAY_SHAPES = new Map();
+const TIME_ZONE_VALIDITY = new Map();
 
 function isValidTimeZone(value) {
   if (typeof value !== "string" || !value || value.length > 128) return false;
+  if (TIME_ZONE_VALIDITY.has(value)) return TIME_ZONE_VALIDITY.get(value);
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: value }).format(0);
+    TIME_ZONE_VALIDITY.set(value, true);
     return true;
   } catch {
+    TIME_ZONE_VALIDITY.set(value, false);
     return false;
   }
 }

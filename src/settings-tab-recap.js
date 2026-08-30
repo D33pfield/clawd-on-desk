@@ -140,14 +140,12 @@
 
   function scopeLabel(row) {
     if (row.scope === "local") return "";
-    const parts = String(row.scopeInstance || "").split("-");
-    const ordinal = Number(parts[parts.length - 1]) || 1;
     const key = row.scope === "wsl" ? "recapScopeWsl" : "recapScopeRemote";
-    return replace(t(key), { n: ordinal });
+    return replace(t(key), { n: "" }).trim();
   }
 
   function rowKey(row) {
-    return `${row.agentId}\0${row.scopeInstance}`;
+    return `${row.agentId}\0${row.scope}`;
   }
 
   function rowDisplayName(row) {
@@ -229,16 +227,70 @@
     });
   }
 
+  function hourCapacity(day, hour) {
+    const hasShape = !!(day && (
+      Array.isArray(day.hourCapacities)
+      || (day.coverage && Array.isArray(day.coverage.hourCapacities))
+    ));
+    const capacities = [
+      day && Array.isArray(day.hourCapacities) ? day.hourCapacities[hour] : 0,
+      day && day.coverage && Array.isArray(day.coverage.hourCapacities)
+        ? day.coverage.hourCapacities[hour]
+        : 0,
+    ];
+    const capacity = Math.max(...capacities.map((value) => Number(value) || 0));
+    return { capacity, hasShape };
+  }
+
   function hourKind(day, hour) {
-    const shapes = [];
-    for (const source of [day && day.hourKindsByTimeZone, day && day.coverage && day.coverage.hourKindsByTimeZone]) {
-      for (const kinds of Object.values(source || {})) {
-        if (Array.isArray(kinds) && kinds[hour]) shapes.push(kinds[hour]);
-      }
-    }
-    if (shapes.includes("fold")) return "fold";
-    if (shapes.length > 0 && shapes.every((kind) => kind === "gap")) return "gap";
+    const { capacity, hasShape } = hourCapacity(day, hour);
+    if (capacity > 60) return "fold";
+    if (hasShape && capacity === 0) return "gap";
+    if (capacity > 0 && capacity < 60) return "gap";
     return "normal";
+  }
+
+  function expectedCoverage(data, localDate, hour, day) {
+    const hasShape = !!(day && (
+      Array.isArray(day.hourCapacities)
+      || (day.coverage && Array.isArray(day.coverage.hourCapacities))
+    ));
+    const capacities = Array.from({ length: 24 }, (_, index) => {
+      const known = Math.max(
+        Number(day && Array.isArray(day.hourCapacities) ? day.hourCapacities[index] : 0) || 0,
+        Number(day && day.coverage && Array.isArray(day.coverage.hourCapacities)
+          ? day.coverage.hourCapacities[index]
+          : 0) || 0
+      );
+      return hasShape ? known : 60;
+    });
+    const startedDate = data.recordingStartedDate || data.startDate || data.anchorDate;
+    const startedHour = localDate === startedDate && Number.isInteger(data.recordingStartedLocalHour)
+      ? data.recordingStartedLocalHour
+      : 0;
+    const endHour = localDate === data.anchorDate && Number.isInteger(data.currentLocalHour)
+      ? data.currentLocalHour
+      : 23;
+    function targetForHour(index) {
+      if (index < startedHour || index > endHour) return 0;
+      const capacity = capacities[index];
+      let eligibleStart = 0;
+      let eligibleEnd = capacity;
+      if (localDate === startedDate && index === startedHour && Number.isInteger(data.recordingStartedLocalMinute)) {
+        eligibleStart = Number.isInteger(data.recordingStartedHourElapsedMinutes)
+          ? data.recordingStartedHourElapsedMinutes
+          : data.recordingStartedLocalMinute;
+      }
+      if (localDate === data.anchorDate && index === endHour && Number.isInteger(data.currentLocalMinute)) {
+        eligibleEnd = Number.isInteger(data.currentHourElapsedMinutes)
+          ? data.currentHourElapsedMinutes
+          : data.currentLocalMinute;
+      }
+      return Math.max(0, Math.min(capacity, eligibleEnd) - Math.min(capacity, eligibleStart));
+    }
+    if (hour !== null) return targetForHour(hour);
+    return Array.from({ length: 24 }, (_, index) => targetForHour(index))
+      .reduce((sum, value) => sum + value, 0);
   }
 
   function countsForHour(day, hour) {
@@ -280,7 +332,13 @@
     if (invalid) return { state: "blank", total, counts, kind: "normal" };
     // A DST gap is not a zero, a future slot, or a pre-recording slot: this
     // local hour did not exist at all.
-    if (kind === "gap") return { state: "gap", total: 0, counts: [], kind };
+    // A zero-capacity gap did not exist. Partial-hour transitions (for
+    // example Lord Howe's 30-minute jump) still have real time in which
+    // activity and coverage can occur, so they must continue through the
+    // normal classification path.
+    if (kind === "gap" && hour !== null && hourCapacity(day, hour).capacity === 0) {
+      return { state: "gap", total: 0, counts: [], kind };
+    }
     const anchorDate = data.anchorDate;
     const afterToday = compareLocalDates(localDate, anchorDate) > 0;
     const futureHour = hour !== null
@@ -288,6 +346,19 @@
       && hour > (Number.isInteger(data.currentLocalHour) ? data.currentLocalHour : 23);
     if (afterToday || futureHour) return { state: "future", total: 0, counts: [], kind: "normal" };
     if (total > 0) return { state: "activity", total, counts, kind };
+    const coverage = coverageForDay(day);
+    const coveredMinutes = hour === null
+      ? coverage.reduce((sum, minutes) => sum + minutes, 0)
+      : coverage[hour];
+    const expectedMinutes = expectedCoverage(data, localDate, hour, day);
+    if (coveredMinutes > 0) {
+      return {
+        state: expectedMinutes > 0 && coveredMinutes >= expectedMinutes ? "covered" : "partial",
+        total: 0,
+        counts: [],
+        kind,
+      };
+    }
     const startedDate = data.recordingStartedDate || data.startDate || anchorDate;
     const beforeStartedDate = compareLocalDates(localDate, startedDate) < 0;
     const beforeStartedHour = hour !== null
@@ -297,11 +368,7 @@
     if (beforeStartedDate || beforeStartedHour) {
       return { state: "not-started", total: 0, counts: [], kind: "normal" };
     }
-    const coverage = coverageForDay(day);
-    const covered = hour === null
-      ? coverage.some((minutes) => minutes > 0)
-      : coverage[hour] > 0;
-    return { state: covered ? "covered" : "uncovered", total: 0, counts: [], kind };
+    return { state: "uncovered", total: 0, counts: [], kind };
   }
 
   function createCell(data, localDate, hour, day, optionsValue = {}) {
@@ -420,9 +487,21 @@
       item.tabIndex = 0;
       item.setAttribute("role", "button");
       item.setAttribute("aria-pressed", view.lockedRowKey === row.key ? "true" : "false");
-      item.setAttribute("aria-label", replace(t("recapAgentHighlightAria"), {
+      const metricEntries = [
+        ["recapMetricSessions", row.sessionsStarted, row.sessionsStartedPartial],
+        ["recapMetricTurns", row.turnsCompleted, false],
+        ["recapMetricTools", row.toolCalls, false],
+        ["recapMetricSignals", row.activityEvents, false],
+      ];
+      const metricDescription = metricEntries.map(([labelKey, value, partial]) => {
+        const accessibleValue = value === null
+          ? t("recapMetricUnavailableReason")
+          : metricText(value, partial);
+        return `${t(labelKey)}: ${accessibleValue}`;
+      }).join(". ");
+      item.setAttribute("aria-label", `${replace(t("recapAgentHighlightAria"), {
         agent: rowDisplayName(row),
-      }));
+      })}. ${metricDescription}`);
       item.style.setProperty("--recap-row-color", agentColorToken(row.agentId));
       const identity = document.createElement("div");
       identity.className = "recap-agent-identity";
@@ -442,12 +521,7 @@
       item.appendChild(identity);
       const metrics = document.createElement("dl");
       metrics.className = "recap-agent-metrics";
-      for (const [labelKey, value, partial] of [
-        ["recapMetricSessions", row.sessionsStarted, row.sessionsStartedPartial],
-        ["recapMetricTurns", row.turnsCompleted, false],
-        ["recapMetricTools", row.toolCalls, false],
-        ["recapMetricSignals", row.activityEvents, false],
-      ]) {
+      for (const [labelKey, value, partial] of metricEntries) {
         const pair = document.createElement("div");
         const label = document.createElement("dt");
         label.textContent = t(labelKey);
@@ -514,6 +588,8 @@
       if (details.length) text += ` · ${details.join(" · ")}`;
     } else if (cell.state === "covered") {
       text = replace(t("recapDayCovered"), { date: when });
+    } else if (cell.state === "partial") {
+      text = replace(t("recapDayPartial"), { date: when });
     } else if (cell.state === "uncovered") {
       text = replace(t("recapDayUncovered"), { date: when });
     } else if (cell.state === "future") {
@@ -598,6 +674,7 @@
     if (view.period === "today") {
       const band = document.createElement("div");
       band.className = "recap-band recap-today-band";
+      band.setAttribute("role", "row");
       model.cells.forEach((cell, index) => appendCell(cell, band, 1, index + 1));
       grid.appendChild(band);
       const labels = document.createElement("div");
@@ -639,12 +716,15 @@
       grid.appendChild(weekdays);
       const month = document.createElement("div");
       month.className = "recap-month-grid";
-      model.cells.forEach((cell, index) => appendCell(
-        cell,
-        month,
-        Math.floor(index / 7) + 1,
-        (index % 7) + 1
-      ));
+      for (let rowIndex = 0; rowIndex < model.rows; rowIndex += 1) {
+        const row = document.createElement("div");
+        row.className = "recap-month-row";
+        row.setAttribute("role", "row");
+        model.cells.slice(rowIndex * 7, (rowIndex + 1) * 7).forEach((cell, columnIndex) => {
+          appendCell(cell, row, rowIndex + 1, columnIndex + 1);
+        });
+        month.appendChild(row);
+      }
       grid.appendChild(month);
     } else {
       for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
@@ -691,8 +771,22 @@
         }
         if (target !== -1) next = target;
       }
-      else if (event.key === "Home") next = 0;
-      else if (event.key === "End") next = cellElements.length - 1;
+      else if (event.key === "Home" || event.key === "End") {
+        if (event.ctrlKey || event.metaKey) {
+          next = event.key === "Home" ? 0 : cellElements.length - 1;
+        } else {
+          const current = cellElements[view.gridIndex];
+          const sameRow = current
+            ? cellElements.map((entry, index) => ({ entry, index }))
+              .filter(({ entry }) => entry.rowIndex === current.rowIndex)
+            : [];
+          if (sameRow.length > 0) {
+            next = event.key === "Home"
+              ? sameRow[0].index
+              : sameRow[sameRow.length - 1].index;
+          }
+        }
+      }
       else return;
       event.preventDefault();
       interaction.selectGridCell(Math.max(0, Math.min(next, cellElements.length - 1)), true);
