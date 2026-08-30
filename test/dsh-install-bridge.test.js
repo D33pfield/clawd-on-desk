@@ -1285,6 +1285,135 @@ test("explicit uninstall recovers an exact managed junction left by a manual off
   assert.strictEqual(fs.existsSync(packageDir(harness.profileDir)), false);
 });
 
+test("npx-only uninstall cleans the exact managed junction left by a manual official remove", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness, { materializeAsLink: true, leaveResolvedResidue: true });
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  const installed = await installDeepSeekHarnessBridge(installOptions(harness, cli, {
+    dshVersion: "0.1.0-rc.6",
+  }));
+  await cli.runDshCommand(["plugin", "--profile", "web", "remove", BRIDGE_PACKAGE_NAME]);
+  assert.strictEqual(inspectDeepSeekHarnessDiskSync({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+  }).status, "managed-residue");
+
+  let lockObservedDuringUnlink = false;
+  const result = await uninstallDeepSeekHarnessBridge(installOptions(harness, cli, {
+    commandInfo: null,
+    dshCommand: false,
+    dshVersion: undefined,
+    unlinkManagedProfileLink: async (isolatedPath) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "mutation.lock")), true);
+      lockObservedDuringUnlink = true;
+      await fs.promises.unlink(isolatedPath);
+    },
+  }));
+
+  assert.strictEqual(result.status, "ok");
+  assert.strictEqual(result.removed, true);
+  assert.strictEqual(lockObservedDuringUnlink, true);
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "mutation.lock")), false);
+  assert.strictEqual(fs.existsSync(packageDir(harness.profileDir)), false);
+  assert.strictEqual(fs.existsSync(installed.generation), false);
+  assert.strictEqual(inspectDeepSeekHarnessDiskSync({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+  }).status, "absent");
+});
+
+test("managed residue isolation preserves a foreign link swapped before unlink", async (t) => {
+  const harness = makeHarness();
+  const foreign = path.join(harness.root, "foreign-package");
+  const cli = makeOfficialCli(harness, { materializeAsLink: true, leaveResolvedResidue: true });
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  const installed = await installDeepSeekHarnessBridge(installOptions(harness, cli));
+  await cli.runDshCommand(["plugin", "--profile", "web", "remove", BRIDGE_PACKAGE_NAME]);
+  fs.mkdirSync(foreign, { recursive: true });
+  fs.writeFileSync(path.join(foreign, "sentinel.txt"), "foreign\n");
+
+  const result = await uninstallDeepSeekHarnessBridge(installOptions(harness, cli, {
+    __testManagedProfileResidueHooks: {
+      beforeIsolateMove: async ({ linkDir }) => {
+        await fs.promises.unlink(linkDir);
+        await fs.promises.symlink(foreign, linkDir, "dir");
+      },
+    },
+  }));
+
+  assert.strictEqual(result.status, "error");
+  assert.strictEqual(result.reason, "inspection-required");
+  assert.strictEqual(result.cleanupReason, "residue-target-changed");
+  assert.strictEqual(fs.realpathSync(packageDir(harness.profileDir)), fs.realpathSync(foreign));
+  assert.strictEqual(fs.readFileSync(path.join(foreign, "sentinel.txt"), "utf8"), "foreign\n");
+  assert.strictEqual(fs.existsSync(installed.generation), true);
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "inspection-required.json")), true);
+});
+
+test("an interrupted managed residue isolation fences retries and preserves every generation", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness, { materializeAsLink: true, leaveResolvedResidue: true });
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  const installed = await installDeepSeekHarnessBridge(installOptions(harness, cli));
+  await cli.runDshCommand(["plugin", "--profile", "web", "remove", BRIDGE_PACKAGE_NAME]);
+  const canonicalLink = packageDir(harness.profileDir);
+  const isolatedLink = `${canonicalLink}.clawd-removing-simulated-crash`;
+  fs.renameSync(canonicalLink, isolatedLink);
+
+  const asyncHealth = await inspectDeepSeekHarnessIntegration({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+    resolveCommandForInspection: false,
+  });
+  assert.strictEqual(asyncHealth.status, "inspection-required");
+  assert.strictEqual(asyncHealth.healthReason, "profile-removal-residue");
+  assert.strictEqual(path.basename(asyncHealth.residuePath), path.basename(isolatedLink));
+  assert.strictEqual(
+    canonicalRealpath(path.dirname(asyncHealth.residuePath)),
+    canonicalRealpath(path.dirname(isolatedLink)),
+  );
+  const syncHealth = inspectDeepSeekHarnessDiskSync({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+  });
+  assert.strictEqual(syncHealth.status, "inspection-required");
+  assert.strictEqual(syncHealth.healthReason, "profile-removal-residue");
+
+  await dshInstallTest.cleanUnreferencedGenerations(null, {
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+  });
+  assert.strictEqual(fs.existsSync(installed.generation), true);
+  assert.strictEqual(fs.existsSync(isolatedLink), true);
+
+  const noCliOptions = installOptions(harness, cli, {
+    commandInfo: null,
+    dshCommand: false,
+    dshVersion: undefined,
+  });
+  const repair = await installDeepSeekHarnessBridge({
+    ...noCliOptions,
+    operation: "explicit-repair",
+  });
+  assert.strictEqual(repair.status, "error");
+  assert.strictEqual(repair.reason, "inspection-required");
+  assert.strictEqual(repair.healthReason, "profile-removal-residue");
+  assert.strictEqual(fs.existsSync(installed.generation), true);
+
+  const result = await uninstallDeepSeekHarnessBridge(noCliOptions);
+  assert.strictEqual(result.status, "error");
+  assert.strictEqual(result.reason, "inspection-required");
+  assert.strictEqual(result.healthReason, "profile-removal-residue");
+  assert.strictEqual(path.basename(result.residuePath), path.basename(isolatedLink));
+  assert.strictEqual(
+    canonicalRealpath(path.dirname(result.residuePath)),
+    canonicalRealpath(path.dirname(isolatedLink)),
+  );
+  assert.strictEqual(fs.existsSync(installed.generation), true);
+  assert.strictEqual(fs.existsSync(isolatedLink), true);
+});
+
 test("explicit uninstall recovers exact residue after an unknown remove result", async (t) => {
   const harness = makeHarness();
   const cli = makeOfficialCli(harness, { materializeAsLink: true, leaveResolvedResidue: true });
@@ -1331,8 +1460,12 @@ test("a profile junction unlink failure latches inspection and a later explicit 
   const cli = makeOfficialCli(harness, { materializeAsLink: true, leaveResolvedResidue: true });
   t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
   await installDeepSeekHarnessBridge(installOptions(harness, cli));
+  let lockObservedDuringFailure = false;
   const first = await uninstallDeepSeekHarnessBridge(installOptions(harness, cli, {
     unlinkManagedProfileLink: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "mutation.lock")), true);
+      lockObservedDuringFailure = true;
       const err = new Error("busy junction");
       err.code = "EPERM";
       throw err;
@@ -1340,6 +1473,8 @@ test("a profile junction unlink failure latches inspection and a later explicit 
   }));
   assert.strictEqual(first.status, "error");
   assert.strictEqual(first.cleanupReason, "residue-unlink-failed");
+  assert.strictEqual(lockObservedDuringFailure, true);
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "mutation.lock")), false);
   assert.strictEqual(fs.lstatSync(packageDir(harness.profileDir)).isSymbolicLink(), true);
   assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "inspection-required.json")), true);
   const callsAfterFirst = cli.calls.length;

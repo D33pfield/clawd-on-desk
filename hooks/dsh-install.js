@@ -570,6 +570,79 @@ function packagePath(root, packageName) {
   return path.join(root, "node_modules", ...packageName.split("/"), "package.json");
 }
 
+function managedProfileRemovalResidueLocation(options = {}) {
+  const dshHome = options.dshHome || resolveDshHome(options.env);
+  const profileDir = resolveDshProfileDir(dshHome);
+  const linkDir = path.dirname(packagePath(profileDir, BRIDGE_PACKAGE_NAME));
+  return {
+    dir: path.dirname(linkDir),
+    prefix: `${path.basename(linkDir)}.clawd-removing-`,
+  };
+}
+
+function listManagedProfileRemovalResiduesSync(fsImpl, options = {}) {
+  const { dir, prefix } = managedProfileRemovalResidueLocation(options);
+  try {
+    return {
+      paths: fsImpl.readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.name.startsWith(prefix))
+        .map((entry) => path.join(dir, entry.name))
+        .sort(),
+      unreadableError: null,
+    };
+  } catch (err) {
+    if (err && err.code === "ENOENT") return { paths: [], unreadableError: null };
+    return { paths: [], unreadableError: err || new Error("DSH profile link directory is unreadable") };
+  }
+}
+
+async function listManagedProfileRemovalResidues(options = {}) {
+  const { dir, prefix } = managedProfileRemovalResidueLocation(options);
+  try {
+    return {
+      paths: (await fsp.readdir(dir, { withFileTypes: true }))
+        .filter((entry) => entry.name.startsWith(prefix))
+        .map((entry) => path.join(dir, entry.name))
+        .sort(),
+      unreadableError: null,
+    };
+  } catch (err) {
+    if (err && err.code === "ENOENT") return { paths: [], unreadableError: null };
+    return { paths: [], unreadableError: err || new Error("DSH profile link directory is unreadable") };
+  }
+}
+
+function managedProfileRemovalResidueHealth(scan, options = {}) {
+  if (!scan || (!scan.unreadableError && scan.paths.length === 0)) return null;
+  const dshHome = options.dshHome || resolveDshHome(options.env);
+  return {
+    status: "inspection-required",
+    healthReason: "profile-removal-residue",
+    dshHome,
+    profileDir: resolveDshProfileDir(dshHome),
+    dependencyPresent: false,
+    bundlePresent: false,
+    owned: false,
+    resolved: null,
+    residuePath: scan.paths[0] || managedProfileRemovalResidueLocation(options).dir,
+    residuePaths: scan.paths,
+    residueScanFailed: !!scan.unreadableError,
+    manualInspectionRequired: true,
+  };
+}
+
+function managedProfileRemovalResidueResult(health) {
+  return {
+    status: "error",
+    reason: "inspection-required",
+    healthReason: "profile-removal-residue",
+    residuePath: health.residuePath,
+    residuePaths: health.residuePaths,
+    message: "A previous DeepSeek Harness profile-link cleanup was interrupted; inspect the exact residue path before retrying",
+    manualInspectionRequired: true,
+  };
+}
+
 function digestBridgeFiles(files, contract = PREFERRED_DSH_CONTRACT) {
   const hash = crypto.createHash("sha256");
   for (const file of files) {
@@ -906,6 +979,11 @@ function inspectDeepSeekHarnessDiskSync(options = {}) {
   const fsImpl = options.fs || fs;
   const dshHome = options.dshHome || resolveDshHome(options.env);
   const profileDir = resolveDshProfileDir(dshHome);
+  const removalResidueHealth = managedProfileRemovalResidueHealth(
+    listManagedProfileRemovalResiduesSync(fsImpl, options),
+    options
+  );
+  if (removalResidueHealth) return removalResidueHealth;
   const profileManifestPath = path.join(profileDir, "package.json");
   const profileManifest = readJsonSync(fsImpl, profileManifestPath);
   if (!profileManifest) {
@@ -1018,6 +1096,11 @@ function inspectDeepSeekHarnessDiskSync(options = {}) {
 async function inspectDeepSeekHarnessIntegration(options = {}) {
   const dshHome = options.dshHome || resolveDshHome(options.env);
   const profileDir = resolveDshProfileDir(dshHome);
+  const removalResidueHealth = managedProfileRemovalResidueHealth(
+    await listManagedProfileRemovalResidues(options),
+    options
+  );
+  if (removalResidueHealth) return removalResidueHealth;
   const profileManifestPath = path.join(profileDir, "package.json");
   const profileManifest = await readJson(profileManifestPath);
   if (!profileManifest) {
@@ -1809,13 +1892,114 @@ async function unlinkManagedProfileResidue(health, options = {}) {
   if (!sameResolvedPath(realTarget, expectedGeneration, options.platform)) {
     return { removed: false, reason: "residue-link-target-mismatch" };
   }
+  if (
+    options.__testManagedProfileResidueHooks
+    && typeof options.__testManagedProfileResidueHooks.beforeIsolateMove === "function"
+  ) {
+    await options.__testManagedProfileResidueHooks.beforeIsolateMove({
+      linkDir,
+      expectedGeneration,
+    });
+  }
+  const isolatedPath = `${linkDir}.clawd-removing-${crypto.randomUUID()}`;
+  try {
+    await fsp.rename(linkDir, isolatedPath);
+  } catch (err) {
+    return { removed: false, reason: "residue-isolation-failed", error: err };
+  }
+  let isolatedStat;
+  let isolatedTarget;
+  try {
+    isolatedStat = await fsp.lstat(isolatedPath);
+    isolatedTarget = await fsp.realpath(isolatedPath);
+  } catch (err) {
+    return {
+      removed: false,
+      reason: "residue-isolation-inspection-failed",
+      residuePath: isolatedPath,
+      error: err,
+    };
+  }
+  if (!isolatedStat.isSymbolicLink() || !sameResolvedPath(
+    isolatedTarget,
+    expectedGeneration,
+    options.platform
+  )) {
+    const restored = await restoreIsolatedProfileSymlink(isolatedPath, linkDir, options);
+    return {
+      removed: false,
+      reason: restored ? "residue-target-changed" : "residue-isolation-changed",
+      residuePath: restored ? null : isolatedPath,
+    };
+  }
   try {
     const unlink = options.unlinkManagedProfileLink || fsp.unlink.bind(fsp);
-    await unlink(linkDir);
+    await unlink(isolatedPath);
   } catch (err) {
-    return { removed: false, reason: "residue-unlink-failed", error: err };
+    const restored = await restoreIsolatedProfileSymlink(isolatedPath, linkDir, options);
+    return {
+      removed: false,
+      reason: restored ? "residue-unlink-failed" : "residue-unlink-restore-failed",
+      residuePath: restored ? null : isolatedPath,
+      error: err,
+    };
   }
   return { removed: true, linkDir };
+}
+
+async function restoreIsolatedProfileSymlink(isolatedPath, linkDir, options = {}) {
+  let target;
+  try {
+    target = await fsp.readlink(isolatedPath);
+  } catch {
+    return false;
+  }
+  try {
+    await fsp.symlink(
+      target,
+      linkDir,
+      (options.platform || process.platform) === "win32" ? "junction" : undefined
+    );
+  } catch {
+    return false;
+  }
+  try {
+    await fsp.unlink(isolatedPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function cleanLockedManagedProfileResidue(locked, commandInfo, lockedLatch, options = {}) {
+  const cleanup = await unlinkManagedProfileResidue(locked, options);
+  if (!cleanup.removed) {
+    await writeInspectionLatch("plugin-remove-residue-cleanup-failed", cleanup.reason, options);
+    return {
+      status: "error",
+      reason: "inspection-required",
+      healthReason: locked.status,
+      cleanupReason: cleanup.reason,
+      residuePath: cleanup.residuePath || null,
+      message: "The DSH profile retains a managed package link that could not be safely removed",
+      manualInspectionRequired: true,
+    };
+  }
+  const recovered = await inspectDeepSeekHarnessIntegration({ ...options, commandInfo });
+  if (recovered.status !== "absent" && recovered.status !== "profile-missing") {
+    await writeInspectionLatch("plugin-remove-verification-failed", recovered.status, options);
+    return {
+      status: "error",
+      reason: "inspection-required",
+      healthReason: recovered.status,
+      message: "The DSH profile still resolves the managed bridge after exact link cleanup",
+      manualInspectionRequired: true,
+    };
+  }
+  await clearManualGenerationReference(options);
+  await cleanUnreferencedGenerations(null, options);
+  if (lockedLatch) await clearInspectionLatch(options);
+  return { status: "ok", removed: true, updated: true };
 }
 
 function healthFingerprint(health) {
@@ -1848,6 +2032,8 @@ function compareVersions(left, right) {
 }
 
 async function cleanUnreferencedGenerations(activeHash, options = {}) {
+  const removalResidues = await listManagedProfileRemovalResidues(options);
+  if (removalResidues.unreadableError || removalResidues.paths.length) return;
   const generationsDir = path.join(resolveManagedRoot(options), "generations");
   let entries;
   try {
@@ -1873,6 +2059,8 @@ function isPathWithin(candidate, parent) {
 }
 
 async function isGenerationReferenced(generationDir, options = {}) {
+  const removalResidues = await listManagedProfileRemovalResidues(options);
+  if (removalResidues.unreadableError || removalResidues.paths.length) return true;
   const manualReference = await readManualGenerationReference(options);
   // An invalid anchor has lost the information needed to identify its one
   // protected generation. Conservatively retain every generation until the
@@ -1949,6 +2137,11 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
   const silent = options.silent === true;
   try {
     return await enqueueMutation(async () => {
+    const removalResidueHealth = managedProfileRemovalResidueHealth(
+      await listManagedProfileRemovalResidues(options),
+      options
+    );
+    if (removalResidueHealth) return managedProfileRemovalResidueResult(removalResidueHealth);
     const latch = await readInspectionLatch(options);
     if (latch && operation === "startup-sync") return inspectionLatchResult(latch);
     if (!(await isDshInstalled(options))) {
@@ -2238,6 +2431,11 @@ async function uninstallDeepSeekHarnessBridge(options = {}) {
   options = freezeDshOperationOptions(options);
   try {
     return await enqueueMutation(async () => {
+    const removalResidueHealth = managedProfileRemovalResidueHealth(
+      await listManagedProfileRemovalResidues(options),
+      options
+    );
+    if (removalResidueHealth) return managedProfileRemovalResidueResult(removalResidueHealth);
     const latch = await readInspectionLatch(options);
     const manualReference = await readManualGenerationReference(options);
     if (manualReference && manualReference.invalid) {
@@ -2327,6 +2525,47 @@ async function uninstallDeepSeekHarnessBridge(options = {}) {
           manualInspectionRequired: true,
         };
       }
+      if (before.status === "managed-residue") {
+        const lock = await acquireMutationLock(options);
+        try {
+          const locked = await inspectDeepSeekHarnessIntegration({ ...options, commandInfo });
+          if (
+            locked.status !== "managed-residue"
+            || !hasMutableManagedState(locked)
+            || !locked.owned
+            || !locked.marker
+            || locked.marker.bundleHash !== before.marker.bundleHash
+          ) {
+            return {
+              status: "error",
+              reason: "ownership-changed",
+              message: "DSH plugin ownership changed before managed residue cleanup",
+            };
+          }
+          const lockedContract = dshContractForMarker(locked.marker);
+          if (!lockedContract) {
+            return {
+              status: "error",
+              reason: "version-unsupported",
+              message: `The installed DeepSeek Harness marker targets ${locked.marker.installedDshVersion || "an unknown version"}; refusing to clean a managed residue for an unlisted contract`,
+              detectedVersion: locked.marker.installedDshVersion || null,
+              supportedRange: supportedDshRangeLabel(),
+              manualInspectionRequired: true,
+            };
+          }
+          if (lockedContract.version !== removalContract.version) {
+            return {
+              status: "error",
+              reason: "ownership-changed",
+              message: "DSH plugin contract changed before managed residue cleanup",
+            };
+          }
+          const lockedLatch = await readInspectionLatch(options);
+          return await cleanLockedManagedProfileResidue(locked, commandInfo, lockedLatch, options);
+        } finally {
+          await lock.release();
+        }
+      }
       return {
         status: "error",
         reason: "cli-unavailable",
@@ -2377,33 +2616,7 @@ async function uninstallDeepSeekHarnessBridge(options = {}) {
       }
       const lockedLatch = await readInspectionLatch(options);
       if (locked.status === "managed-residue") {
-        const cleanup = await unlinkManagedProfileResidue(locked, options);
-        if (!cleanup.removed) {
-          await writeInspectionLatch("plugin-remove-residue-cleanup-failed", cleanup.reason, options);
-          return {
-            status: "error",
-            reason: "inspection-required",
-            healthReason: locked.status,
-            cleanupReason: cleanup.reason,
-            message: "The DSH profile retains a managed package link that could not be safely removed",
-            manualInspectionRequired: true,
-          };
-        }
-        const recovered = await inspectDeepSeekHarnessIntegration({ ...options, commandInfo });
-        if (recovered.status !== "absent" && recovered.status !== "profile-missing") {
-          await writeInspectionLatch("plugin-remove-verification-failed", recovered.status, options);
-          return {
-            status: "error",
-            reason: "inspection-required",
-            healthReason: recovered.status,
-            message: "The DSH profile still resolves the managed bridge after exact link cleanup",
-            manualInspectionRequired: true,
-          };
-        }
-        await clearManualGenerationReference(options);
-        await cleanUnreferencedGenerations(null, options);
-        if (lockedLatch) await clearInspectionLatch(options);
-        return { status: "ok", removed: true, updated: true };
+        return await cleanLockedManagedProfileResidue(locked, commandInfo, lockedLatch, options);
       }
       const pnpmRuntime = await resolvePnpmRuntime(commandInfo, options);
       if (!pnpmRuntime.available) {
