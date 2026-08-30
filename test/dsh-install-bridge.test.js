@@ -646,6 +646,62 @@ test("npx-only hosts get an exact manual command and can later pass read-only ve
   assert.strictEqual(fs.existsSync(referencePath), false);
 });
 
+test("npx-only uninstall selects the exact contract recorded by each supported marker", async (t) => {
+  for (const version of ["0.1.1-rc.2", "0.1.0-rc.6"]) {
+    const harness = makeHarness();
+    const cli = makeOfficialCli(harness);
+    t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+    await installDeepSeekHarnessBridge(installOptions(harness, cli, { dshVersion: version }));
+
+    const result = await uninstallDeepSeekHarnessBridge(installOptions(harness, cli, {
+      commandInfo: null,
+      dshCommand: false,
+      dshVersion: undefined,
+    }));
+
+    assert.strictEqual(result.status, "error", version);
+    assert.strictEqual(result.reason, "cli-unavailable", version);
+    assert.match(result.manualCommand, new RegExp(`@deepseek-ai/dsh@${version.replace(/\./g, "\\.")}`), version);
+    assert.match(result.manualCommand, /'remove'/, version);
+    assert.strictEqual(
+      (await inspectDeepSeekHarnessIntegration({
+        dshHome: harness.dshHome,
+        managedRoot: harness.managedRoot,
+        resolveCommandForInspection: false,
+      })).status,
+      "healthy",
+      version,
+    );
+  }
+});
+
+test("an rc.6 marker keeps its contract when npx-only Repair stages newer bridge bytes", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness);
+  const updatedSource = path.join(harness.root, "updated-rc6-source");
+  fs.cpSync(SOURCE_DIR, updatedSource, { recursive: true });
+  fs.appendFileSync(path.join(updatedSource, "lib", "index.js"), "\n// updated rc.6 bridge source\n", "utf8");
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  await installDeepSeekHarnessBridge(installOptions(harness, cli, { dshVersion: "0.1.0-rc.6" }));
+
+  const result = await installDeepSeekHarnessBridge(installOptions(harness, cli, {
+    commandInfo: null,
+    dshCommand: false,
+    dshVersion: undefined,
+    operation: "explicit-repair",
+    sourceDir: updatedSource,
+  }));
+
+  assert.strictEqual(result.status, "error");
+  assert.strictEqual(result.reason, "cli-unavailable");
+  assert.strictEqual(result.manualGenerationReferenced, true);
+  assert.match(result.manualCommand, /@deepseek-ai\/dsh@0\.1\.0-rc\.6/);
+  const reference = readJson(dshInstallTest.manualGenerationReferencePath({ managedRoot: harness.managedRoot }));
+  const marker = readJson(path.join(harness.managedRoot, "generations", reference.bundleHash, "clawd-manifest.json"));
+  assert.strictEqual(marker.installedDshVersion, "0.1.0-rc.6");
+  assert.strictEqual(marker.supportedDshRange, "=0.1.0-rc.6");
+});
+
 test("explicit uninstall removes an unclaimed manual npx generation reference", async (t) => {
   const harness = makeHarness();
   const cli = makeOfficialCli(harness);
@@ -1585,6 +1641,30 @@ test("the locked version probe runs before a healthy fast return or latch clear"
   assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "inspection-required.json")), true);
 });
 
+test("a supported host version change under the lock aborts before plugin mutation", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness);
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  let probes = 0;
+
+  const result = await installDeepSeekHarnessBridge(installOptions(harness, cli, {
+    dshVersion: undefined,
+    runCommand: async (_command, args) => {
+      assert.deepStrictEqual(args, ["--version"]);
+      probes += 1;
+      return { code: 0, stdout: probes === 1 ? "0.1.0-rc.6" : "0.1.1-rc.2" };
+    },
+  }));
+
+  assert.strictEqual(result.status, "error");
+  assert.strictEqual(result.reason, "version-changed");
+  assert.strictEqual(result.expectedVersion, "0.1.0-rc.6");
+  assert.strictEqual(result.detectedVersion, "0.1.1-rc.2");
+  assert.strictEqual(probes, 2);
+  assert.deepStrictEqual(cli.calls, []);
+  assert.strictEqual(inspectDeepSeekHarnessDiskSync({ dshHome: harness.dshHome }).status, "absent");
+});
+
 test("newer managed generations win and same-version hash conflicts require explicit repair", async (t) => {
   const harness = makeHarness();
   const cli = makeOfficialCli(harness);
@@ -1620,6 +1700,22 @@ test("the verified-version table resolves only listed exact versions", () => {
   assert.strictEqual(isSupportedDshVersion("0.1.0-rc.7"), false);
   assert.strictEqual(isSupportedDshVersion("0.2.0"), false);
   assert.strictEqual(supportedDshRangeLabel(), "=0.1.1-rc.2 or =0.1.0-rc.6");
+  const metadata = readJson(path.join(SOURCE_DIR, "package.json")).clawd;
+  assert.strictEqual(metadata.supportedDshRange, DSH_VERSION_CONTRACTS[0].supportedDshRange);
+  assert.strictEqual(metadata.verifiedDshArtifact, DSH_VERSION_CONTRACTS[0].verifiedDshArtifact);
+  assert.strictEqual(
+    metadata.verifiedDshArtifactIntegrity,
+    DSH_VERSION_CONTRACTS[0].verifiedDshArtifactIntegrity,
+  );
+  assert.deepStrictEqual(
+    metadata.supportedVersions,
+    DSH_VERSION_CONTRACTS.map((contract) => ({
+      version: contract.version,
+      range: contract.supportedDshRange,
+      verifiedArtifact: contract.verifiedDshArtifact,
+      verifiedArtifactIntegrity: contract.verifiedDshArtifactIntegrity,
+    })),
+  );
 });
 
 test("marker contracts accept both listed versions and reject unlisted or mismatched markers", () => {
@@ -1746,4 +1842,24 @@ test("a marker staged for an unlisted DSH version reports version-unsupported", 
     resolveCommandForInspection: false,
   });
   assert.strictEqual(tampered.status, "version-unsupported");
+
+  const noCliOptions = installOptions(harness, cli, {
+    commandInfo: null,
+    dshCommand: false,
+    dshVersion: undefined,
+  });
+  const repair = await installDeepSeekHarnessBridge({ ...noCliOptions, operation: "explicit-repair" });
+  assert.strictEqual(repair.status, "error");
+  assert.strictEqual(repair.reason, "version-unsupported");
+  assert.strictEqual(repair.detectedVersion, "0.1.0-rc.7");
+  assert.strictEqual(repair.manualCommand, undefined);
+  const removed = await uninstallDeepSeekHarnessBridge(noCliOptions);
+  assert.strictEqual(removed.status, "error");
+  assert.strictEqual(removed.reason, "version-unsupported");
+  assert.strictEqual(removed.detectedVersion, "0.1.0-rc.7");
+  assert.strictEqual(removed.manualCommand, undefined);
+  assert.strictEqual(
+    fs.existsSync(dshInstallTest.manualGenerationReferencePath({ managedRoot: harness.managedRoot })),
+    false,
+  );
 });

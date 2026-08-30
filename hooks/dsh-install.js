@@ -1584,9 +1584,13 @@ async function writeManualGenerationReference(generation, options = {}) {
     throw new Error("Refusing to reference a manual DSH generation outside the managed namespace");
   }
   const marker = await readJson(path.join(expectedGeneration, MANIFEST_FILE));
-  const actualHash = marker ? await hashBridgeDirectory(expectedGeneration) : null;
+  const markerContract = dshContractForMarker(marker);
+  const actualHash = markerContract
+    ? await hashBridgeDirectory(expectedGeneration, markerContract)
+    : null;
   if (
     !marker
+    || !markerContract
     || marker.owner !== MANAGED_OWNER
     || marker.bundleHash !== generation.bundleHash
     || actualHash !== generation.bundleHash
@@ -1978,7 +1982,18 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
       };
     }
     if (!commandInfo) {
-      const noCliContract = (before.marker && dshContractForMarker(before.marker)) || PREFERRED_DSH_CONTRACT;
+      const markerContract = before.marker ? dshContractForMarker(before.marker) : null;
+      if (before.marker && !markerContract) {
+        return {
+          status: "error",
+          reason: "version-unsupported",
+          message: `The installed DeepSeek Harness marker targets ${before.marker.installedDshVersion || "an unknown version"}; refusing to stage a manual install for an unlisted contract`,
+          detectedVersion: before.marker.installedDshVersion || null,
+          supportedRange: supportedDshRangeLabel(),
+          manualInspectionRequired: true,
+        };
+      }
+      const noCliContract = markerContract || PREFERRED_DSH_CONTRACT;
       const bundle = await readSourceBundle({ ...options, contract: noCliContract });
       if (before.status === "healthy" && before.marker.bundleHash === bundle.bundleHash) {
         if (latch) return inspectionLatchResult(latch);
@@ -2020,6 +2035,18 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
               status: "error",
               reason: locked.status || "ownership-changed",
               message: "DSH plugin ownership changed before staging the manual install generation",
+              manualInspectionRequired: true,
+            };
+          }
+          const lockedContract = locked.marker ? dshContractForMarker(locked.marker) : null;
+          if (
+            (before.marker && (!lockedContract || lockedContract.version !== noCliContract.version))
+            || (!before.marker && locked.marker)
+          ) {
+            return {
+              status: "error",
+              reason: "ownership-changed",
+              message: "DSH marker contract changed before staging the manual install generation",
               manualInspectionRequired: true,
             };
           }
@@ -2092,6 +2119,16 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
           reason: "version-unsupported",
           message: `DeepSeek Harness ${lockedVersion || "unknown"} is unsupported; this bridge supports ${supportedDshRangeLabel()}`,
           detectedVersion: lockedVersion,
+          supportedRange: supportedDshRangeLabel(),
+        };
+      }
+      if (lockedVersion !== contract.version) {
+        return {
+          status: "error",
+          reason: "version-changed",
+          message: `DeepSeek Harness changed from ${contract.version} to ${lockedVersion} before mutation; retry after the host version is stable`,
+          detectedVersion: lockedVersion,
+          expectedVersion: contract.version,
           supportedRange: supportedDshRangeLabel(),
         };
       }
@@ -2279,11 +2316,21 @@ async function uninstallDeepSeekHarnessBridge(options = {}) {
       };
     }
     if (!commandInfo) {
+      const removalContract = dshContractForMarker(before.marker);
+      if (!removalContract) {
+        return {
+          status: "error",
+          reason: "version-unsupported",
+          message: `The installed DeepSeek Harness marker targets ${before.marker.installedDshVersion || "an unknown version"}; refusing to build a manual uninstall command for an unlisted contract`,
+          detectedVersion: before.marker.installedDshVersion || null,
+          supportedRange: supportedDshRangeLabel(),
+          manualInspectionRequired: true,
+        };
+      }
       return {
         status: "error",
         reason: "cli-unavailable",
         message: "DeepSeek Harness CLI is unavailable; the managed plugin was left installed",
-        removalContract: (before.marker && dshContractForMarker(before.marker)) || PREFERRED_DSH_CONTRACT,
         manualCommand: buildManualDshCommand([
           "npx",
           `@deepseek-ai/dsh@${removalContract.version}`,
