@@ -592,7 +592,7 @@ html, body {
 .collapsible-group.collapsible-no-motion > .collapsible-group-body > .collapsible-group-body-inner {
   transition: none;
 }
-.collapsible-group.collapsible-content-entering > .collapsible-group-body > .collapsible-group-body-inner {
+.collapsible-group-body .collapsible-content-entering {
   animation: collapsibleContentEnter 0.18s ease;
 }
 @keyframes collapsibleContentEnter {
@@ -702,7 +702,7 @@ html, body {
   .collapsible-group-body-inner {
     transition: none;
   }
-  .collapsible-group.collapsible-content-entering > .collapsible-group-body > .collapsible-group-body-inner {
+  .collapsible-group-body .collapsible-content-entering {
     animation: none;
   }
 }

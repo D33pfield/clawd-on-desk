@@ -880,6 +880,7 @@
           if (Number(count) <= 1) return;
           const revealMergeRow = () => {
             mergeRow.style.display = "";
+            return mergeRow;
           };
           if (typeof group.mutateCollapsibleBody === "function") {
             group.mutateCollapsibleBody(revealMergeRow);
@@ -985,6 +986,7 @@
               element.appendChild(buildProviderRow(provider));
             }
             element.style.display = "";
+            return element;
           };
           if (group && typeof group.mutateCollapsibleBody === "function") {
             group.mutateCollapsibleBody(reveal);

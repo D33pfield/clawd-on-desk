@@ -10083,7 +10083,9 @@ describe("settings renderer browser environment", () => {
 
     sourceCount.resolve(2);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(group.classList.contains("collapsible-content-entering"), true);
+    assert.equal(group.classList.contains("collapsible-content-entering"), false);
+    assert.equal(body.querySelector(".collapsible-group-body-inner").classList.contains("collapsible-content-entering"), false);
+    assert.equal(mergeRow.classList.contains("collapsible-content-entering"), true);
     assert.equal(mergeRow.style.display, "");
 
     body.dispatchEvent({
@@ -10096,7 +10098,7 @@ describe("settings renderer browser environment", () => {
     flushAnimationFrame();
   });
 
-  it("makes sound controls interactive immediately while the shared grid animation runs", () => {
+  it("keeps sound controls inert until the shared grid animation finishes", () => {
     const animationFrames = [];
     const harness = loadGeneralTabForTest({
       snapshot: makeGeneralSnapshot({ soundMuted: false, soundVolume: 0.5 }),
@@ -10118,6 +10120,15 @@ describe("settings renderer browser environment", () => {
     assert.equal(group.classList.contains("collapsed"), false);
     assert.equal(body.style.getPropertyValue("--collapsible-body-height"), "");
     assert.equal(body.attributes["aria-hidden"], "false");
+    assert.equal(body.inert, true);
+
+    body.dispatchEvent({
+      type: "transitionend",
+      propertyName: "grid-template-rows",
+      bubbles: false,
+    });
+    assert.equal(group.classList.contains("expanding"), false);
+    assert.equal(body.inert, false);
   });
 
   it("groups sound and volume into one collapsible control with in-place summary updates", () => {
@@ -10829,7 +10840,7 @@ describe("settings renderer browser environment", () => {
     assert.equal(freshGroup.classList.contains("expanding"), true);
     assert.equal(freshHeader.getAttribute("aria-expanded"), "true");
     assert.equal(freshBody.getAttribute("aria-hidden"), "false");
-    assert.equal(freshBody.inert, false);
+    assert.equal(freshBody.inert, true);
     assert.equal(storageWrites.length, 1);
     assert.equal(storageWrites[0].key, collapsedGroupsKey);
     assert.deepStrictEqual(JSON.parse(storageWrites[0].value), {
@@ -10868,12 +10879,18 @@ describe("settings renderer browser environment", () => {
     freshHeader.dispatchEvent({ type: "keydown", key: " " });
     assert.equal(freshHeader.getAttribute("aria-expanded"), "true");
     assert.equal(freshBody.getAttribute("aria-hidden"), "false");
-    assert.equal(freshBody.inert, false);
+    assert.equal(freshBody.inert, true);
     assert.equal(storageWrites.length, 5);
     assert.deepStrictEqual(JSON.parse(storageWrites[4].value), {
       "remote-approval.feishu.api-explorer": false,
       "unrelated-group": false,
     });
+    freshBody.dispatchEvent({
+      type: "transitionend",
+      propertyName: "grid-template-rows",
+      bubbles: false,
+    });
+    assert.equal(freshBody.inert, false);
   });
 
   it("groups Theme cards and exposes theme import actions in Settings", () => {
@@ -11531,14 +11548,16 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes("expanding"));
     assert.ok(coreSource.includes('ev.propertyName !== "grid-template-rows"'));
     assert.ok(coreSource.includes("transitioncancel"));
-    assert.ok(coreSource.includes("function setBodyInteractivity(isCollapsed)"));
+    assert.ok(coreSource.includes("function setBodyInteractivity(isCollapsed, isTransitioning = false)"));
     assert.ok(coreSource.includes('body.setAttribute("aria-hidden"'));
-    assert.ok(coreSource.includes("body.inert = isCollapsed"));
+    assert.ok(coreSource.includes("const bodyInert = isCollapsed || isTransitioning"));
     assert.ok(!coreSource.includes("body.hidden = collapsed;"));
     assert.ok(/\.collapsible-group-body\s*\{[\s\S]*display:\s*grid;[\s\S]*grid-template-rows:\s*1fr;[\s\S]*transition:\s*grid-template-rows 0\.22s cubic-bezier/.test(css));
     assert.ok(/\.collapsible-group-body-inner\s*\{[\s\S]*min-height:\s*0;[\s\S]*overflow:\s*hidden;/.test(css));
     assert.ok(/\.collapsible-group\.collapsed\s*>\s*\.collapsible-group-body\s*\{[\s\S]*grid-template-rows:\s*0fr;/.test(css));
     assert.ok(/\.collapsible-group\.collapsed\s*>\s*\.collapsible-group-body\s*>\s*\.collapsible-group-body-inner\s*\{[\s\S]*opacity:\s*0;[\s\S]*transform:\s*translateY\(-4px\);/.test(css));
+    assert.ok(/\.collapsible-group-body\s+\.collapsible-content-entering\s*\{[\s\S]*animation:\s*collapsibleContentEnter/.test(css));
+    assert.ok(!css.includes(".collapsible-group.collapsible-content-entering"));
     assert.ok(!css.includes("max-height: var(--collapsible-body-height"));
     assert.ok(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.collapsible-group-body/.test(css));
   });

@@ -674,7 +674,7 @@
     body.appendChild(bodyInner);
 
     let transitionTimer = null;
-    let contentAnimationTimer = null;
+    const contentAnimationTimers = new Map();
 
     function scheduleTimeout(callback, delay) {
       if (typeof setTimeout === "function") return setTimeout(callback, delay);
@@ -700,6 +700,7 @@
     function finishTransition() {
       clearTransitionTimer();
       group.classList.remove("expanding", "collapsing");
+      setBodyInteractivity(collapsed);
     }
 
     function refreshCollapsibleHeight() {
@@ -708,16 +709,26 @@
 
     function mutateCollapsibleBody(mutate) {
       if (typeof mutate !== "function") return;
-      mutate();
+      // Callers return the newly inserted or revealed elements so existing
+      // controls do not replay their entrance animation on every async update.
+      const result = mutate();
       if (collapsed || group.classList.contains("collapsing") || prefersReducedMotion()) return;
-      cancelTimeout(contentAnimationTimer);
-      group.classList.remove("collapsible-content-entering");
-      void bodyInner.offsetWidth;
-      group.classList.add("collapsible-content-entering");
-      contentAnimationTimer = scheduleTimeout(() => {
-        contentAnimationTimer = null;
-        group.classList.remove("collapsible-content-entering");
-      }, 240);
+      const targets = Array.isArray(result) ? result : [result];
+      for (const target of targets) {
+        if (!target || !target.classList) continue;
+        if (contentAnimationTimers.has(target)) {
+          cancelTimeout(contentAnimationTimers.get(target));
+          contentAnimationTimers.delete(target);
+        }
+        target.classList.remove("collapsible-content-entering");
+        void target.offsetWidth;
+        target.classList.add("collapsible-content-entering");
+        const timer = scheduleTimeout(() => {
+          contentAnimationTimers.delete(target);
+          target.classList.remove("collapsible-content-entering");
+        }, 240);
+        if (timer !== null) contentAnimationTimers.set(target, timer);
+      }
     }
 
     function suppressTransitionOnce() {
@@ -727,11 +738,12 @@
       });
     }
 
-    function setBodyInteractivity(isCollapsed) {
+    function setBodyInteractivity(isCollapsed, isTransitioning = false) {
       body.setAttribute("aria-hidden", isCollapsed ? "true" : "false");
+      const bodyInert = isCollapsed || isTransitioning;
       if ("inert" in body) {
-        body.inert = isCollapsed;
-      } else if (isCollapsed) {
+        body.inert = bodyInert;
+      } else if (bodyInert) {
         body.setAttribute("inert", "");
       } else {
         body.removeAttribute("inert");
@@ -761,9 +773,11 @@
       disclosure.setAttribute("aria-label", disclosureLabel ? `${actionLabel}: ${disclosureLabel}` : actionLabel);
       clearTransitionTimer();
       group.classList.remove("expanding", "collapsing");
-      setBodyInteractivity(collapsed);
-      if (!animate || prefersReducedMotion()) {
-        if (suppressTransition && !prefersReducedMotion()) suppressTransitionOnce();
+      const reducedMotion = prefersReducedMotion();
+      const shouldAnimate = animate && !reducedMotion;
+      setBodyInteractivity(collapsed, shouldAnimate);
+      if (!shouldAnimate) {
+        if (suppressTransition && !reducedMotion) suppressTransitionOnce();
         group.classList.toggle("collapsed", collapsed);
         return;
       }
