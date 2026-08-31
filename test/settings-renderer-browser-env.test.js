@@ -10861,9 +10861,16 @@ describe("settings renderer browser environment", () => {
       propertyName: "grid-template-rows",
       bubbles: false,
     });
-    assert.equal(freshGroup.classList.contains("expanding"), false);
+    assert.equal(freshGroup.classList.contains("expanding"), true);
     assert.equal(freshGroup.classList.contains("collapsing"), false);
     assert.equal(freshBody.getAttribute("aria-hidden"), "false");
+    assert.equal(freshBody.inert, true);
+    freshBody.dispatchEvent({
+      type: "transitionend",
+      propertyName: "grid-template-rows",
+      bubbles: false,
+    });
+    assert.equal(freshGroup.classList.contains("expanding"), false);
     assert.equal(freshBody.inert, false);
 
     freshHeader.dispatchEvent({ type: "keydown", key: "Enter" });
@@ -11547,7 +11554,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(coreSource.includes("collapsing"));
     assert.ok(coreSource.includes("expanding"));
     assert.ok(coreSource.includes('ev.propertyName !== "grid-template-rows"'));
-    assert.ok(coreSource.includes("transitioncancel"));
+    assert.ok(!coreSource.includes('body.addEventListener("transitioncancel"'));
     assert.ok(coreSource.includes("function setBodyInteractivity(isCollapsed, isTransitioning = false)"));
     assert.ok(coreSource.includes('body.setAttribute("aria-hidden"'));
     assert.ok(coreSource.includes("const bodyInert = isCollapsed || isTransitioning"));

@@ -819,8 +819,10 @@
       if (ev.target !== body || ev.propertyName !== "grid-template-rows") return;
       finishTransition();
     };
+    // Reversing a CSS transition cancels the previous generation after the
+    // next one has started. Ignore that stale cancel and let the current end
+    // event (or the watchdog) release inert state.
     body.addEventListener("transitionend", finishBodyTransition);
-    body.addEventListener("transitioncancel", finishBodyTransition);
     applyCollapsedState();
     group.expand = ({
       persist = true,
