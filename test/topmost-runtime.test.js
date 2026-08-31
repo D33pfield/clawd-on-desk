@@ -640,6 +640,31 @@ describe("topmost runtime Windows recovery", () => {
     assert.strictEqual(timers.intervals[0].cleared, true);
   });
 
+  it("uses one fullscreen native observation for both focusability and auto-hide per poll tick", () => {
+    const timers = makeTimers();
+    let probeCalls = 0;
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => new FakeWindow(),
+      getHitWin: () => new FakeWindow(),
+      isForegroundFullscreen: () => {
+        probeCalls += 1;
+        return "game-1";
+      },
+      getFullscreenAutoHide: () => true,
+      isFullscreenAutoHidden: () => false,
+      setFullscreenAutoHidden: () => ({ applied: true, deferred: false, changed: true }),
+      setHitWinFocusable: () => {},
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+
+    runtime.startFocusablePoll();
+    assert.strictEqual(probeCalls, 1, "the up-front sync must share one foreground snapshot");
+    timers.intervals[0].fn();
+    assert.strictEqual(probeCalls, 2, "each interval tick must make only one native probe call");
+  });
+
   it("watchdog no longer toggles hit-window activation — that moved to the focusable poll (#562)", () => {
     const timers = makeTimers();
     const win = new FakeWindow();
@@ -749,6 +774,41 @@ describe("topmost runtime Windows recovery", () => {
     // than standing down (#538), so the pet stays visible and draggable.
     assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
     assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
+  });
+
+  it("an explicit auto-hide Show stays topmost even when fullscreenOverlay is off (#935)", () => {
+    const timers = makeTimers();
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      isForegroundFullscreen: () => "game-1",
+      getFullscreenOverlay: () => false,
+      getFullscreenAutoHide: () => true,
+      isFullscreenAutoHidden: () => false,
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+
+    runtime.noteFullscreenAutoHideOverride();
+    runtime.reassertWinTopmost();
+    assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
+    assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
+
+    win.calls.length = 0;
+    hitWin.calls.length = 0;
+    runtime.startTopmostWatchdog();
+    timers.intervals[0].fn();
+    assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
+    assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
+
+    hitWin.calls.length = 0;
+    runtime.guardAlwaysOnTop(hitWin);
+    hitWin.emit("always-on-top-changed", null, false);
+    assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]],
+      "the always-on-top guard must not turn an explicit Show into an invisible logical state");
   });
 
   it("watchdog floats the pet on top under fullscreen overlay (#562)", () => {
@@ -1307,7 +1367,7 @@ describe("fullscreen auto-hide sync (#935)", () => {
     const timers = makeTimers();
     const win = new FakeWindow();
     const hitWin = new FakeWindow();
-    const state = { fsApp, pref, autoHidden: false };
+    const state = { fsApp, pref, autoHidden: false, foregroundId: null, observationReliable: true };
     const setCalls = [];
     const runtime = createTopmostRuntime({
       isWin: true,
@@ -1316,6 +1376,13 @@ describe("fullscreen auto-hide sync (#935)", () => {
       // The probe reports an opaque id for the fullscreen foreground app, or
       // false when there is none (win-fullscreen-detect contract).
       isForegroundFullscreen: () => state.fsApp || false,
+      getForegroundFullscreenObservation: () => ({
+        reliable: state.observationReliable,
+        foregroundId: state.foregroundId != null
+          ? state.foregroundId
+          : (typeof state.fsApp === "string" ? state.fsApp : null),
+        fullscreenId: state.fsApp || null,
+      }),
       getFullscreenAutoHide: () => state.pref,
       isFullscreenAutoHidden: () => state.autoHidden,
       setFullscreenAutoHidden: (value) => {
@@ -1369,6 +1436,15 @@ describe("fullscreen auto-hide sync (#935)", () => {
     h.state.fsApp = null;
     h.tick();
     assert.deepStrictEqual(h.setCalls, []);
+  });
+
+  it("does not arm a future override from a Show gesture while the pref is off", () => {
+    const h = createAutoHideHarness({ pref: false });
+    h.runtime.noteFullscreenAutoHideOverride();
+    h.state.pref = true;
+    h.state.fsApp = "app-1";
+    h.start();
+    assert.deepStrictEqual(h.setCalls, [true]);
   });
 
   it("the up-front sync hides immediately when the poll starts mid-fullscreen", () => {
@@ -1467,6 +1543,46 @@ describe("fullscreen auto-hide sync (#935)", () => {
     assert.deepStrictEqual(h.setCalls, [true, true], "the NEXT fullscreen app is a new episode");
   });
 
+  it("a confirmed exit ends the override before the same HWND enters fullscreen again", () => {
+    const h = createAutoHideHarness();
+    h.start();
+    h.state.fsApp = "app-1";
+    h.tick();
+    h.state.autoHidden = false;
+    h.runtime.noteFullscreenAutoHideOverride();
+    h.tick();
+
+    // The same foreground HWND is now a normal window: this is a real F11
+    // exit, not an Alt-Tab/tray excursion to a different HWND.
+    h.state.fsApp = null;
+    h.state.foregroundId = "app-1";
+    h.tick();
+
+    h.state.fsApp = "app-1";
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true, true],
+      "re-entering fullscreen in the same window is a new episode");
+  });
+
+  it("does not clear a bound override on unreliable non-fullscreen probe failures", () => {
+    const h = createAutoHideHarness();
+    h.start();
+    h.state.fsApp = "app-1";
+    h.tick();
+    h.state.autoHidden = false;
+    h.runtime.noteFullscreenAutoHideOverride();
+    h.tick();
+
+    h.state.fsApp = null;
+    h.state.foregroundId = "app-1";
+    h.state.observationReliable = false;
+    h.tick();
+    h.state.fsApp = "app-1";
+    h.state.observationReliable = true;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true]);
+  });
+
   it("an armed override that never sees a fullscreen app decays after the grace window", () => {
     const h = createAutoHideHarness();
     h.start();
@@ -1540,6 +1656,30 @@ describe("fullscreen auto-hide sync (#935)", () => {
     h.state.pref = false;
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true, false]);
+  });
+
+  it("turning the pref off clears a manual-show override before it is enabled again", () => {
+    const h = createAutoHideHarness();
+    h.start();
+    h.state.fsApp = "app-1";
+    h.tick();
+    h.state.autoHidden = false;
+    h.runtime.noteFullscreenAutoHideOverride();
+    h.tick();
+
+    h.state.pref = false;
+    // main.js clears synchronously from the settings mirror so even an off/on
+    // round trip faster than the 1s poll cannot retain the old episode.
+    h.runtime.clearFullscreenAutoHideOverride();
+    h.state.pref = true;
+    h.tick();
+    assert.deepStrictEqual(h.setCalls, [true, true],
+      "re-enabling the pref must not inherit an override from its prior lifetime");
+  });
+
+  it("main clears the override and visibility layer synchronously when the pref is disabled", () => {
+    const mainSource = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+    assert.match(mainSource, /fullscreenAutoHide: \(v\) => \{[\s\S]*?fullscreenAutoHideCached = v;[\s\S]*?if \(!v\) \{[\s\S]*?topmostRuntime\.clearFullscreenAutoHideOverride\(\);[\s\S]*?petWindowRuntime\.setFullscreenAutoHidden\(false\);/);
   });
 
   it("retries a deferred hide on the next tick instead of latching a false override", () => {

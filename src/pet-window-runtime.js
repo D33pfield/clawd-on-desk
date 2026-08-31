@@ -1406,13 +1406,17 @@ function createPetWindowRuntime(options = {}) {
     const target = !!hidden;
     const win = getRenderWindow();
     if (!isLiveWindow(win)) return { applied: false, deferred: false, changed: false };
+    // Preserve the user's explicit Show intent even if a mini transition makes
+    // the visibility write wait for a later fullscreen poll. In the common
+    // auto-hidden case the manual layer is already visible, so the retry only
+    // needs to lift the fullscreen layer once the transition completes.
+    if (!target) noteManualPetShow();
     if (getMiniTransitioning()) return { applied: false, deferred: true, changed: false };
     // #935: a manual show also clears the fullscreen auto-hide — "show" must
     // mean show NOW, not "show once the fullscreen app exits". topmost-
     // runtime's sync observes the cleared flag and holds off re-hiding for the
     // rest of that fullscreen episode.
     const clearAutoHide = !target && fullscreenAutoHidden;
-    if (!target) noteManualPetShow();
     if (target === petHidden && !clearAutoHide) return { applied: true, deferred: false, changed: false };
     const prevEffective = isPetEffectivelyHidden();
     petHidden = target;

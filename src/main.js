@@ -1868,6 +1868,7 @@ const topmostRuntime = createTopmostRuntime({
   isMiniAnimating: () => _mini.getIsAnimating(),
   isMiniTransitioning: () => _mini.getMiniTransitioning(),
   isForegroundFullscreen: () => _isForegroundFullscreen(),
+  getForegroundFullscreenObservation: () => _isForegroundFullscreen.getLastObservation(),
   getFullscreenOverlay: () => fullscreenOverlayCached,
   // #935 fullscreen auto-hide: the pref gate plus pet-window-runtime's
   // dedicated visibility layer (stacked on the user's manual hide).
@@ -4310,7 +4311,13 @@ const SETTINGS_MIRROR_SETTERS = {
   petTint: (v) => { petTint = v; },
   allowEdgePinning: (v) => { allowEdgePinningCached = v; }, disableMiniMode: (v) => { disableMiniModeCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; resetKeepSizeFrozen(); },
   fullscreenOverlay: (v) => { fullscreenOverlayCached = v; },
-  fullscreenAutoHide: (v) => { fullscreenAutoHideCached = v; },
+  fullscreenAutoHide: (v) => {
+    fullscreenAutoHideCached = v;
+    if (!v) {
+      topmostRuntime.clearFullscreenAutoHideOverride();
+      petWindowRuntime.setFullscreenAutoHidden(false);
+    }
+  },
   freeRoam: (v) => { _roam.setEnabled(v); },
   textScale: (v) => { textScale = v; textScalePreview = null; },
   textScaleByDisplay: (v) => { textScaleByDisplay = v; textScalePreview = null; },

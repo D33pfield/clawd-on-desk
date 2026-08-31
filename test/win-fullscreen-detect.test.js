@@ -359,6 +359,32 @@ describe("fullscreen probe identity (#935)", () => {
     assert.strictEqual(probe(), "9");
   });
 
+  it("retains a reliable foreground id when that HWND is not fullscreen", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({ hwnd: {}, hMonitor: {}, winRect: MAXIMIZED_RECT, monitorRect: MONITOR }),
+    });
+    assert.strictEqual(probe(), false);
+    assert.deepStrictEqual(probe.getLastObservation(), {
+      reliable: true,
+      foregroundId: "4242",
+      fullscreenId: null,
+    });
+  });
+
+  it("marks native-call failures unreliable so they cannot end an override episode", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({ hwnd: {}, getWindowRect: false }),
+    });
+    assert.strictEqual(probe(), false);
+    assert.deepStrictEqual(probe.getLastObservation(), {
+      reliable: false,
+      foregroundId: "4242",
+      fullscreenId: null,
+    });
+  });
+
   it("degrades to plain true when koffi.address is unavailable", () => {
     const koffi = fakeKoffi({ ...base, hwnd: {} });
     delete koffi.address;

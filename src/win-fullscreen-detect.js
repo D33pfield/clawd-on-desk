@@ -90,6 +90,7 @@ function rectCoversMonitor(winRect, monitorRect, tolerance = FULLSCREEN_TOLERANC
 function createForegroundFullscreenProbe(options = {}) {
   const isWin = options.isWin != null ? !!options.isWin : process.platform === "win32";
   const noop = () => false;
+  noop.getLastObservation = () => ({ reliable: false, foregroundId: null, fullscreenId: null });
   if (!isWin) return noop;
 
   let GetForegroundWindow;
@@ -139,21 +140,38 @@ function createForegroundFullscreenProbe(options = {}) {
     if (typeof options.onError === "function") options.onError(err);
   }
 
-  return function isForegroundFullscreen() {
+  let lastObservation = { reliable: false, foregroundId: null, fullscreenId: null };
+
+  function getWindowId(hwnd) {
+    if (!addressOf) return null;
+    try {
+      return String(addressOf(hwnd));
+    } catch {
+      return null;
+    }
+  }
+
+  function recordNotFullscreen(foregroundId, reliable = true) {
+    lastObservation = { reliable, foregroundId, fullscreenId: null };
+    return false;
+  }
+
+  function isForegroundFullscreen() {
     try {
       const hwnd = GetForegroundWindow();
-      if (!hwnd) return false;
+      if (!hwnd) return recordNotFullscreen(null, false);
+      const foregroundId = getWindowId(hwnd);
 
       const winRect = {};
-      if (!GetWindowRect(hwnd, winRect)) return false;
+      if (!GetWindowRect(hwnd, winRect)) return recordNotFullscreen(foregroundId, false);
 
       const hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-      if (!hMonitor) return false;
+      if (!hMonitor) return recordNotFullscreen(foregroundId, false);
 
       const info = { cbSize: monitorInfoSize, rcMonitor: {}, rcWork: {}, dwFlags: 0 };
-      if (!GetMonitorInfoW(hMonitor, info)) return false;
+      if (!GetMonitorInfoW(hMonitor, info)) return recordNotFullscreen(foregroundId, false);
 
-      if (!rectCoversMonitor(winRect, info.rcMonitor)) return false;
+      if (!rectCoversMonitor(winRect, info.rcMonitor)) return recordNotFullscreen(foregroundId);
 
       // Geometry matched — rule out the desktop shell (#719). Only reached in
       // the rare covers-monitor case, so the extra FFI call is off the common
@@ -164,7 +182,7 @@ function createForegroundFullscreenProbe(options = {}) {
       if (classLen > 0) {
         let className = "";
         for (let i = 0; i < classLen; i++) className += String.fromCharCode(classBuf[i]);
-        if (isDesktopShellWindowClass(className)) return false;
+        if (isDesktopShellWindowClass(className)) return recordNotFullscreen(foregroundId);
       }
 
       // #871: last, separate a merely maximized window from a real fullscreen
@@ -173,24 +191,30 @@ function createForegroundFullscreenProbe(options = {}) {
       // fallback above.
       if (GetWindowLongPtrW) {
         const style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-        if (isMaximizedNormalWindow(style)) return false;
+        if (isMaximizedNormalWindow(style)) return recordNotFullscreen(foregroundId);
       }
       // Fullscreen: report the window's identity, not just the verdict (#935).
-      if (addressOf) {
-        try {
-          return String(addressOf(hwnd));
-        } catch {
-          // Identity is best-effort; the verdict is what matters.
-        }
+      if (foregroundId != null) {
+        lastObservation = { reliable: true, foregroundId, fullscreenId: foregroundId };
+        return foregroundId;
       }
+      lastObservation = { reliable: true, foregroundId: null, fullscreenId: true };
       return true;
     } catch (err) {
       // Any FFI hiccup at call time: behave as "not fullscreen" so the
       // watchdog keeps the pet visible rather than hiding it on an error.
+      lastObservation = { reliable: false, foregroundId: null, fullscreenId: null };
       if (typeof options.onCallError === "function") options.onCallError(err);
       return false;
     }
-  };
+  }
+
+  // A false fullscreen verdict used to lose the foreground HWND entirely.
+  // Keep the last reliable identity alongside the boolean-compatible return so
+  // the auto-hide override can distinguish "same HWND exited F11" from an
+  // Alt-Tab/tray foreground excursion to a different window.
+  isForegroundFullscreen.getLastObservation = () => ({ ...lastObservation });
+  return isForegroundFullscreen;
 }
 
 module.exports = {

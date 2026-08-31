@@ -3937,6 +3937,18 @@ describe("manual show intent hook (#935 override latch)", () => {
     assert.equal(h.runtime.isPetEffectivelyHidden(), false);
   });
 
+  it("setPetHidden(false) preserves intent when a mini transition defers the write", () => {
+    const notes = [];
+    const h = createRuntime({
+      miniTransitioning: true,
+      noteManualPetShow: () => notes.push("show"),
+    });
+    const result = h.runtime.setPetHidden(false);
+    assert.deepStrictEqual(result, { applied: false, deferred: true, changed: false });
+    assert.deepStrictEqual(notes, ["show"],
+      "the later fullscreen retry needs to know that the user explicitly requested Show");
+  });
+
   it("hides and the auto-hide writer never report show intent", () => {
     const notes = [];
     const h = createRuntime({ noteManualPetShow: () => notes.push("show") });
