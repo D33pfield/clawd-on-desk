@@ -1080,7 +1080,7 @@ const petWindowRuntime = createPetWindowRuntime({
   buildTrayMenu: () => buildTrayMenu(),
   buildContextMenu: () => buildContextMenu(),
   reapplyMacVisibility: () => reapplyMacVisibility(),
-  reassertWinTopmost: () => reassertWinTopmost(),
+  reassertWinTopmost: (...args) => reassertWinTopmost(...args),
   scheduleHwndRecovery: () => scheduleHwndRecovery(),
   cloakInspector: _cloakInspector,
   isMiniAnimating: () => _mini.getIsAnimating(),
@@ -1873,7 +1873,9 @@ const topmostRuntime = createTopmostRuntime({
   // #935 fullscreen auto-hide: the pref gate plus pet-window-runtime's
   // dedicated visibility layer (stacked on the user's manual hide).
   getFullscreenAutoHide: () => fullscreenAutoHideCached,
-  setFullscreenAutoHidden: (hidden) => petWindowRuntime.setFullscreenAutoHidden(hidden),
+  setFullscreenAutoHidden: (hidden, fullscreenObservation) => (
+    petWindowRuntime.setFullscreenAutoHidden(hidden, fullscreenObservation)
+  ),
   isFullscreenAutoHidden: () => petWindowRuntime.isFullscreenAutoHidden(),
   setHitWinFocusable,
   keepOutOfTaskbar,

@@ -1444,7 +1444,7 @@ function createPetWindowRuntime(options = {}) {
   // guards as setPetHidden, acting on the auto layer only — it never touches
   // the manual flag, so a pet the user hid stays hidden when the auto-hide
   // lifts, and the tray/context menus keep reflecting the user's choice.
-  function setFullscreenAutoHidden(hidden) {
+  function setFullscreenAutoHidden(hidden, fullscreenObservation) {
     const target = !!hidden;
     const win = getRenderWindow();
     if (!isLiveWindow(win)) return { applied: false, deferred: false, changed: false };
@@ -1454,6 +1454,14 @@ function createPetWindowRuntime(options = {}) {
     fullscreenAutoHidden = target;
     const changed = applyVisibilityLayerChange(prevEffective, { syncFloatingSurfaces: false });
     setFloatingSurfacesFullscreenSuppressed(target);
+    // Exiting fullscreen can leave showInactive windows visible but displaced
+    // from the topmost band until the 5s watchdog runs. Restore the band now,
+    // using the focus poll's already-known observation so this path does not
+    // perform a second native foreground probe in the same tick.
+    if (!target && changed && !isPetEffectivelyHidden()) {
+      if (arguments.length > 1) reassertWinTopmost(fullscreenObservation);
+      else reassertWinTopmost();
+    }
     return { applied: true, deferred: false, changed };
   }
 

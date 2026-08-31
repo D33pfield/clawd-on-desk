@@ -184,7 +184,7 @@ function createTopmostRuntime(options = {}) {
   // there is nothing left for a second cache to disagree with.
   let imeEditingFadeCancel = null;
 
-  function reassertWinTopmost() {
+  function reassertWinTopmost(fullscreenObservation) {
     if (!isWin) return;
     // A fullscreen foreground app owns the screen — stand down so the pet/hit
     // windows don't claw their topmost band back over it. This is the same
@@ -195,7 +195,14 @@ function createTopmostRuntime(options = {}) {
     // single drag would yank the pet back in front of the fullscreen game.
     // #562: in fullscreen-overlay mode keep re-topping over the fullscreen app
     // rather than standing down here (drag funnels through this function).
-    if (shouldStandDownForFullscreen(isForegroundFullscreen())) return;
+    // Callers already running inside the 1s fullscreen poll can pass its
+    // observation through. That keeps the focusability, auto-hide restore,
+    // and topmost decision on one native foreground snapshot instead of
+    // probing a second time during the same tick.
+    const observation = arguments.length > 0
+      ? fullscreenObservation
+      : isForegroundFullscreen();
+    if (shouldStandDownForFullscreen(observation)) return;
     const win = getWin();
     const hitWin = getHitWin();
     if (isLiveWindow(win)) win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
@@ -612,18 +619,22 @@ function createTopmostRuntime(options = {}) {
   // auto-restored — an inference from "the flag cleared while fullscreen"
   // never sees the very gesture the setting's description promises about.
   //
-  // Lifecycle: the override arms with a grace window measured in poll ticks,
-  // then BINDS to the first fullscreen app the probe reports (the probe
-  // returns an opaque per-window id, or false). A bound override holds for
-  // that app across foreground excursions to a different HWND — alt-tab and
-  // tray menus — plus unreliable probe errors. It ends when that SAME HWND is
-  // reliably observed non-fullscreen (a confirmed F11/borderless exit), or
-  // when a different fullscreen app takes the foreground: exactly "keeps the
-  // pet visible until the next fullscreen episode". An armed override that
-  // never sees a fullscreen app decays after the grace window instead of
-  // suppressing some future session. Known lean: a show clicked on the plain
-  // desktop binds to a fullscreen app started within the grace window and keeps the pet
-  // visible for that app's session — erring toward the explicit show. If the
+  // Lifecycle: while auto-hide is enabled, remember the last concrete
+  // fullscreen HWND until that same HWND is reliably observed non-fullscreen.
+  // This lets a tray-menu Show bind directly to the episode it came from even
+  // when the menu stays open longer than the fallback grace window. If no
+  // episode has been observed, the override arms with a grace window measured
+  // in poll ticks and binds to the first fullscreen app the probe reports. A
+  // bound override holds for that app across foreground excursions to a
+  // different HWND — alt-tab and tray menus — plus unreliable probe errors.
+  // It ends when that SAME HWND is reliably observed non-fullscreen (a
+  // confirmed F11/borderless exit), or when a different fullscreen app takes
+  // the foreground: exactly "keeps the pet visible until the next fullscreen
+  // episode". An armed override that never sees a fullscreen app decays after
+  // the grace window instead of suppressing some future session. Known lean:
+  // a show clicked on the plain desktop binds to a fullscreen app started
+  // within the grace window and keeps the pet visible for that app's session
+  // — erring toward the explicit show. If the
   // probe ever degrades to plain `true` (no per-window identity available),
   // the anonymous bind survives a transient miss but ends after consecutive
   // non-fullscreen observations. That path cannot preserve same-app identity
@@ -631,8 +642,16 @@ function createTopmostRuntime(options = {}) {
   let fsOverridePendingTicks = 0;
   let fsOverrideBoundTo = null;
   let fsOverrideAnonymousExitTicks = 0;
+  let fsLastFullscreenEpisodeId = null;
 
   function clearFullscreenAutoHideOverride() {
+    fsOverridePendingTicks = 0;
+    fsOverrideBoundTo = null;
+    fsOverrideAnonymousExitTicks = 0;
+    fsLastFullscreenEpisodeId = null;
+  }
+
+  function clearFullscreenAutoHideOverrideBinding() {
     fsOverridePendingTicks = 0;
     fsOverrideBoundTo = null;
     fsOverrideAnonymousExitTicks = 0;
@@ -663,9 +682,13 @@ function createTopmostRuntime(options = {}) {
       clearFullscreenAutoHideOverride();
       return;
     }
-    fsOverridePendingTicks = FSAUTOHIDE_OVERRIDE_GRACE_TICKS;
-    // A re-show re-arms cleanly even if an older bind is still around.
-    fsOverrideBoundTo = null;
+    // A tray or Alt-Tab foreground excursion can last arbitrarily long. When
+    // it came from a concrete fullscreen episode, bind to that remembered HWND
+    // immediately instead of making the user's Show gesture race a 15s timer.
+    fsOverrideBoundTo = fsLastFullscreenEpisodeId;
+    fsOverridePendingTicks = fsOverrideBoundTo == null
+      ? FSAUTOHIDE_OVERRIDE_GRACE_TICKS
+      : 0;
     fsOverrideAnonymousExitTicks = 0;
   }
 
@@ -676,6 +699,9 @@ function createTopmostRuntime(options = {}) {
     const autoHideEnabled = !!getFullscreenAutoHide();
     if (!autoHideEnabled) clearFullscreenAutoHideOverride();
     if (fullscreenId != null) {
+      if (autoHideEnabled && hasWindowIdentity) {
+        fsLastFullscreenEpisodeId = fullscreenId;
+      }
       if (autoHideEnabled && fsOverridePendingTicks > 0) {
         fsOverrideBoundTo = hasWindowIdentity ? fullscreenId : true;
       } else if (autoHideEnabled && hasWindowIdentity && fsOverrideBoundTo === true) {
@@ -690,7 +716,7 @@ function createTopmostRuntime(options = {}) {
         && fsOverrideBoundTo !== fullscreenId
       ) {
         // The NEXT fullscreen app: the override's episode is over.
-        fsOverrideBoundTo = null;
+        clearFullscreenAutoHideOverrideBinding();
       }
       fsOverridePendingTicks = 0;
       fsOverrideAnonymousExitTicks = 0;
@@ -702,17 +728,18 @@ function createTopmostRuntime(options = {}) {
         fsOverrideBoundTo = null;
         fsOverrideAnonymousExitTicks = 0;
       }
-    } else if (autoHideEnabled && typeof fsOverrideBoundTo === "string") {
+    } else if (autoHideEnabled && fsLastFullscreenEpisodeId != null) {
       let observation = null;
       try { observation = getForegroundFullscreenObservation(); } catch {}
       if (
         observation
         && observation.reliable === true
-        && observation.foregroundId === fsOverrideBoundTo
+        && observation.foregroundId === fsLastFullscreenEpisodeId
       ) {
-        // The bound HWND itself is still foreground but no longer fullscreen:
-        // this is a confirmed F11/borderless exit, not an Alt-Tab blip. End the
-        // episode so re-entering fullscreen in the same window hides normally.
+        // The remembered HWND itself is still foreground but no longer
+        // fullscreen: this is a confirmed F11/borderless exit, not an Alt-Tab
+        // blip. End the episode so re-entering fullscreen in the same window
+        // hides normally and a later desktop Show cannot inherit it.
         clearFullscreenAutoHideOverride();
       }
     }
@@ -720,7 +747,9 @@ function createTopmostRuntime(options = {}) {
     const want = fullscreenId != null && autoHideEnabled && !overridden;
     // A deferred write (mini transition in flight) leaves the flag untouched,
     // so want !== current still holds next tick and the setter is retried.
-    if (want !== isFullscreenAutoHidden()) setFullscreenAutoHidden(want);
+    if (want !== isFullscreenAutoHidden()) {
+      setFullscreenAutoHidden(want, fullscreenObservation);
+    }
   }
 
   function syncFocusablePollTick() {

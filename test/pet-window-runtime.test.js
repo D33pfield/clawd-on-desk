@@ -182,7 +182,7 @@ function createRuntime(overrides = {}) {
     ...(overrides.syncImeEditingPetDodge
       ? { syncImeEditingPetDodge: overrides.syncImeEditingPetDodge }
       : {}),
-    reassertWinTopmost: () => calls.push(["reassertWinTopmost"]),
+    reassertWinTopmost: (...args) => calls.push(["reassertWinTopmost", ...args]),
     scheduleHwndRecovery: () => calls.push(["scheduleHwndRecovery"]),
     ...(overrides.cloakInspector ? { cloakInspector: overrides.cloakInspector } : {}),
     ...(overrides.noteManualPetShow ? { noteManualPetShow: overrides.noteManualPetShow } : {}),
@@ -3819,6 +3819,20 @@ describe("fullscreen auto-hide visibility layer (#935)", () => {
     assert.ok(h.calls.some((c) => (
       c[0] === "setFloatingSurfacesFullscreenSuppressed" && c[1] === false
     )));
+    assert.ok(h.calls.some((c) => c[0] === "reassertWinTopmost"));
+  });
+
+  it("auto restore reasserts topmost with the focus poll's cached observation", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true, "game-1");
+    h.calls.length = 0;
+
+    h.runtime.setFullscreenAutoHidden(false, false);
+
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "reassertWinTopmost"),
+      [["reassertWinTopmost", false]],
+    );
   });
 
   it("is idempotent when already in the target state", () => {
