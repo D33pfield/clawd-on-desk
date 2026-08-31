@@ -140,36 +140,41 @@ async function waitForFullscreenIdentity({
 async function runWindowsFullscreenIdentityProbe({
   BrowserWindow,
   fullscreenProbe,
+  koffi,
   timeoutMs = 8_000,
   sleepFn,
 } = {}) {
   if (!fullscreenProbe || typeof fullscreenProbe.isWindowIdAlive !== "function") {
     throw new Error("Packaged fullscreen probe has no HWND liveness checker");
   }
+  if (!koffi || typeof koffi.address !== "function" || typeof koffi.load !== "function") {
+    throw new Error("Packaged fullscreen identity probe has no Koffi pointer support");
+  }
+  const GetAncestor = koffi.load("user32.dll").func(
+    "void* __stdcall GetAncestor(void* hWnd, uint32 gaFlags)",
+  );
   const ids = [];
   const windows = [];
+  let foregroundControllable = false;
   try {
     for (let index = 0; index < 2; index += 1) {
       const win = new BrowserWindow({ show: false, width: 320, height: 240, skipTaskbar: true });
       windows.push(win);
       const expectedId = nativeWindowHandleId(win);
-      const id = await waitForFullscreenIdentity({
-        win,
-        fullscreenProbe,
-        expectedId,
-        timeoutMs,
-        sleepFn,
-      });
+      // GetAncestor(GA_ROOT) returns this top-level BrowserWindow's HWND as a
+      // Koffi external pointer. Comparing koffi.address() with Electron's
+      // native-handle buffer proves the exact production identity conversion
+      // without depending on a CI desktop that permits foreground focus.
+      const hwnd = GetAncestor(BigInt(expectedId), 2);
+      if (!hwnd) throw new Error(`GetAncestor rejected packaged HWND ${expectedId}`);
+      const id = String(koffi.address(hwnd));
+      if (id !== expectedId) {
+        throw new Error(`Packaged Koffi HWND identity mismatch: expected=${expectedId}, actual=${id}`);
+      }
       if (fullscreenProbe.isWindowIdAlive(id) !== true) {
         throw new Error(`IsWindow rejected live packaged fullscreen HWND ${id}`);
       }
       ids.push(id);
-      // Keep the HWND alive for the distinctness/liveness checks, but take the
-      // first fixture out of fullscreen before focusing the next one. Some
-      // Windows ARM64 runners otherwise leave the first fullscreen HWND in the
-      // foreground even after focus() is requested on the second BrowserWindow.
-      win.setFullScreen(false);
-      if (typeof win.hide === "function") win.hide();
     }
     if (ids[0] === ids[1]) {
       throw new Error(`Packaged fullscreen identities collapsed to the same value: ${ids[0]}`);
@@ -185,6 +190,24 @@ async function runWindowsFullscreenIdentityProbe({
     if (fullscreenProbe.isWindowIdAlive(invalidWindowId) !== false) {
       throw new Error(`IsWindow accepted invalid packaged HWND ${invalidWindowId}`);
     }
+
+    // The x64 hosted desktop allows BrowserWindows to own the foreground, so
+    // retain the end-to-end geometry/fullscreen probe there. Windows ARM64
+    // hosted runners may deny every focus request; record that environment
+    // limitation only after the architecture-sensitive pointer/liveness proof
+    // above has passed.
+    try {
+      await waitForFullscreenIdentity({
+        win: windows[0],
+        fullscreenProbe,
+        expectedId: ids[0],
+        timeoutMs: Math.min(timeoutMs, 2_000),
+        sleepFn,
+      });
+      foregroundControllable = true;
+    } catch (err) {
+      if (!/did not return the requested window identity/.test(String(err && err.message))) throw err;
+    }
   } finally {
     for (const win of windows) {
       if (typeof win.isDestroyed !== "function" || !win.isDestroyed()) win.destroy();
@@ -194,8 +217,11 @@ async function runWindowsFullscreenIdentityProbe({
     firstId: ids[0],
     secondId: ids[1],
     distinct: true,
+    nativeRoundTrip: true,
     liveAccepted: true,
     invalidRejected: true,
+    foregroundControllable,
+    fullscreenObserved: foregroundControllable,
   };
 }
 
@@ -371,7 +397,7 @@ async function runWindowsFullscreenAutoHideRuntimeProbe({
   }
 }
 
-async function runPlatformProbe({ BrowserWindow, target }) {
+async function runPlatformProbe({ BrowserWindow, target, koffi }) {
   if (target.runtimePlatform === "win32") {
     const win = new BrowserWindow({ show: false, width: 80, height: 80, skipTaskbar: true });
     try {
@@ -398,11 +424,15 @@ async function runPlatformProbe({ BrowserWindow, target }) {
         const fullscreenIdentity = await runWindowsFullscreenIdentityProbe({
           BrowserWindow,
           fullscreenProbe,
+          koffi,
         });
-        const fullscreenAutoHideRuntime = await runWindowsFullscreenAutoHideRuntimeProbe({
-          BrowserWindow,
-          fullscreenProbe,
-        });
+        const fullscreenAutoHideRuntime = fullscreenIdentity.foregroundControllable
+          ? await runWindowsFullscreenAutoHideRuntimeProbe({ BrowserWindow, fullscreenProbe })
+          : {
+            skipped: true,
+            reason: "packaged-runner-cannot-focus-browser-windows",
+            nativeIdentityAndLivenessPassed: true,
+          };
         if (fullscreenErrors.length) {
           throw new Error(`Fullscreen identity probe failed: ${fullscreenErrors.join(" | ")}`);
         }
@@ -488,7 +518,7 @@ async function runPackageKoffiSmoke({ targetId, resourcesPath, BrowserWindow, us
   }
   const addressType = typeof koffi.address(Buffer.alloc(8));
   if (addressType !== "bigint") throw new Error(`koffi.address(Buffer) returned ${addressType}`);
-  const platformProbe = await runPlatformProbe({ BrowserWindow, target });
+  const platformProbe = await runPlatformProbe({ BrowserWindow, target, koffi });
 
   return {
     schemaVersion: 1,

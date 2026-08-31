@@ -151,10 +151,17 @@ test("packaged fullscreen identity smoke requires distinct live HWNDs and reject
     }
     return liveIds.has(id);
   };
+  const koffi = {
+    address: (handle) => BigInt(handle.id),
+    load: () => ({
+      func: () => (id) => ({ id: String(id) }),
+    }),
+  };
 
   const result = await runWindowsFullscreenIdentityProbe({
     BrowserWindow: FakeBrowserWindow,
     fullscreenProbe,
+    koffi,
     timeoutMs: 100,
     sleepFn: async () => {},
   });
@@ -163,8 +170,52 @@ test("packaged fullscreen identity smoke requires distinct live HWNDs and reject
     firstId: "100",
     secondId: "101",
     distinct: true,
+    nativeRoundTrip: true,
     liveAccepted: true,
     invalidRejected: true,
+    foregroundControllable: true,
+    fullscreenObserved: true,
   });
   assert.equal(liveIds.size, 0, "the smoke must destroy both fixture windows during cleanup");
+});
+
+test("packaged native HWND proof survives a runner that cannot foreground BrowserWindows", async () => {
+  let nextId = 200;
+  class UnfocusableBrowserWindow {
+    constructor() {
+      this.id = String(nextId++);
+      this.destroyed = false;
+    }
+    getNativeWindowHandle() {
+      const handle = Buffer.alloc(8);
+      handle.writeBigUInt64LE(BigInt(this.id));
+      return handle;
+    }
+    setFullScreen() {}
+    show() {}
+    focus() {}
+    isFocused() { return false; }
+    isDestroyed() { return this.destroyed; }
+    destroy() { this.destroyed = true; }
+  }
+  const fullscreenProbe = () => false;
+  fullscreenProbe.isWindowIdAlive = (id) => id !== "18446744073709551615";
+  const koffi = {
+    address: (handle) => BigInt(handle.id),
+    load: () => ({ func: () => (id) => ({ id: String(id) }) }),
+  };
+
+  const result = await runWindowsFullscreenIdentityProbe({
+    BrowserWindow: UnfocusableBrowserWindow,
+    fullscreenProbe,
+    koffi,
+    timeoutMs: 5,
+    sleepFn: () => new Promise((resolve) => setTimeout(resolve, 1)),
+  });
+
+  assert.equal(result.nativeRoundTrip, true);
+  assert.equal(result.liveAccepted, true);
+  assert.equal(result.invalidRejected, true);
+  assert.equal(result.foregroundControllable, false);
+  assert.equal(result.fullscreenObserved, false);
 });
