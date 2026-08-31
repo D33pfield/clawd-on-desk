@@ -535,7 +535,13 @@ module.exports = function initUpdateBubble(ctx) {
       expireAutoClose(activePayload);
       return false;
     }
-    if (fullscreenSuppressed || visibilityRestorePending || ctx.petHidden) return true;
+    if (
+      !presentationActive
+      || bubble.webContents.isLoading()
+      || fullscreenSuppressed
+      || visibilityRestorePending
+      || ctx.petHidden
+    ) return true;
     scheduleAutoCloseAfterResume(activePayload, remainingMs);
     return true;
   }

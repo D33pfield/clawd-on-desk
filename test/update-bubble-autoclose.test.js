@@ -152,6 +152,36 @@ describe("update bubble auto-close refresh", () => {
     assert.strictEqual(harness.api.getBubbleWindow().isVisible(), false);
   });
 
+  it("does not let a positive policy refresh start timing before renderer readiness", async () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    mock.timers.setTime(100_000);
+    FakeBrowserWindow.startLoading = true;
+    const harness = createHarness();
+    const pending = harness.api.showUpdateBubble({
+      mode: "update-available",
+      title: "Update available",
+      requireAction: true,
+      defaultAction: "dismiss",
+    });
+    const bubble = harness.api.getBubbleWindow();
+    let settled = false;
+    pending.then(() => { settled = true; });
+
+    harness.setUpdateAutoCloseMs(7_000);
+    assert.strictEqual(harness.api.refreshAutoCloseForPolicy(), true);
+    mock.timers.tick(30_000);
+    await Promise.resolve();
+    assert.equal(settled, false, "loading time must not count as visible time after a policy refresh");
+    assert.strictEqual(bubble.isVisible(), false);
+
+    bubble.finishLoad();
+    assert.strictEqual(bubble.isVisible(), true);
+    mock.timers.tick(6_999);
+    assert.equal(settled, false);
+    mock.timers.tick(1);
+    assert.deepStrictEqual(await pending, { action: "dismiss", source: "autoClose" });
+  });
+
   it("uses the fixed target work area for initial size, zoom, and final bounds", async () => {
     const targetWorkArea = { x: -1600, y: 200, width: 1600, height: 900 };
     const targetCalls = [];
