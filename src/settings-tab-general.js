@@ -868,7 +868,6 @@
       desc: t("rowQuotaRingGroupDesc"),
       defaultCollapsed: true,
       className: "quota-ring-collapsible",
-      animateExpansion: false,
       children: [optionList],
     });
     if (window.settingsAPI && typeof window.settingsAPI.getQuotaSourceCount === "function") {
@@ -877,6 +876,7 @@
           if (Number(count) <= 1) return;
           const revealMergeRow = () => {
             mergeRow.style.display = "";
+            return mergeRow;
           };
           if (typeof group.mutateCollapsibleBody === "function") {
             group.mutateCollapsibleBody(revealMergeRow);
@@ -982,6 +982,7 @@
               element.appendChild(buildProviderRow(provider));
             }
             element.style.display = "";
+            return element;
           };
           if (group && typeof group.mutateCollapsibleBody === "function") {
             group.mutateCollapsibleBody(reveal);
@@ -1244,7 +1245,6 @@
       summary: summaryControl.element,
       defaultCollapsed: true,
       className: "sound-collapsible",
-      animateExpansion: false,
       children: [buildOptionList("sound-option-list", [
         buildSoundEnabledRow(summaryControl),
         buildVolumeSliderRow(),
@@ -1259,7 +1259,6 @@
       desc: t("rowFlashDesc"),
       defaultCollapsed: true,
       className: "flash-collapsible",
-      animateExpansion: false,
       children: [buildOptionList("flash-option-list", [
         helpers.buildSwitchRow({
           key: "flashTaskbarOnComplete",
