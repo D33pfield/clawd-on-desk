@@ -1969,6 +1969,10 @@ html, body {
   max-width: 240px;
   width: 220px;
 }
+.settings-language-select {
+  min-width: 128px;
+  width: 128px;
+}
 .settings-select .language-picker-trigger {
   height: 38px;
 }
